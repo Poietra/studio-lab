@@ -44,6 +44,39 @@ The completed fixture must exercise all of the following in a single session:
 | Portability | behavior differences on Windows, macOS, and Linux |
 | Security | exposed native surface, permission model, update implications |
 
+## Reproducible Linux build
+
+`Dockerfile.linux` pins the Node, pnpm, Rust, and WebKitGTK build environment used for the
+Linux Tauri check. It is a build-reproducibility fixture, not a substitute for measuring
+native WebView behavior on the host desktop. Interactive media, pointer, GPU, and process
+lifecycle observations must still be recorded on an actual Linux desktop session.
+
+### 2026-07-19 preliminary result
+
+Environment: Debian bookworm container, Xvfb, Node 24, pnpm 10.23, Rust 1.92,
+WebKitGTK 4.1, Electron 43.1.1, and Tauri 2.11.x.
+
+| Check | Result |
+| --- | --- |
+| Shared TypeScript/Vite production build | pass |
+| Tauri `cargo check --locked` | pass |
+| Tauri release build without bundling | pass |
+| Tauri five-second Xvfb smoke | stayed alive |
+| Electron five-second Xvfb smoke | stayed alive |
+| Tauri application binary | 10,673,304 bytes |
+| Electron downloaded runtime directory | 326,079,615 bytes |
+| Rough summed process RSS | Tauri ~536 MiB; Electron ~637 MiB |
+
+The RSS values are not a decision metric: Xvfb/container execution is not a native desktop,
+and summing per-process RSS double-counts shared pages. The size values also have different
+boundaries because Tauri uses the system WebView while Electron ships Chromium. This result
+only removes a basic Linux build/start risk for both shells. It does not exercise the
+representative media, overlay, trace, subprocess, or file-watching workload.
+
+Electron was launched with `--no-sandbox` only because the smoke ran as root inside a disposable
+container. The application fixture itself keeps renderer sandboxing, context isolation, and
+Node integration disabled; production must never use the container-only flag.
+
 ## Decision gate
 
 Select Tauri when the representative workflow works without a product-level workaround and its platform differences are containable behind the native adapter.
