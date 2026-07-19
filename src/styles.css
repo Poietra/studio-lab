@@ -14,8 +14,28 @@ body {
   margin: 0;
   min-width: 960px;
   min-height: 100dvh;
+  overflow: hidden;
 }
 
 * {
   box-sizing: border-box;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid #38bdf8;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+  }
 }

@@ -15,6 +15,11 @@ This repository is intentionally separate from the product repository. Its first
 
 The experiment charter and decision gate live in [docs/shell-evaluation.md](docs/shell-evaluation.md).
 
+The current shared screen also contains a disposable
+[drag-interpretation prototype](docs/drag-interpretation-prototype.md). It exists
+to decide the EditPlan interaction from a working canvas, timeline, ghost, and
+source diff before those concepts become protocol contracts.
+
 ## Commands
 
 ```sh
