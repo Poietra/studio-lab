@@ -1,0 +1,38 @@
+{
+  "name": "@poietra/studio-lab",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.23.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev:web": "vite --host 127.0.0.1",
+    "dev:electron": "concurrently --kill-others --success first \"pnpm dev:web\" \"wait-on tcp:127.0.0.1:5173 && electron electron/main.mjs\"",
+    "dev:tauri": "tauri dev",
+    "build:web": "tsc --noEmit && vite build",
+    "check:web": "pnpm build:web",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.11.1",
+    "clsx": "2.1.1",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "tailwind-merge": "3.6.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.3",
+    "@tauri-apps/cli": "2.11.4",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.3",
+    "concurrently": "10.0.3",
+    "electron": "43.1.1",
+    "tailwindcss": "4.3.3",
+    "typescript": "7.0.2",
+    "vite": "8.1.5",
+    "wait-on": "9.0.10"
+  }
+}
