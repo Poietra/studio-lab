@@ -17,8 +17,25 @@ The experiment charter and decision gate live in [docs/shell-evaluation.md](docs
 
 The current shared screen also contains a disposable
 [drag-interpretation prototype](docs/drag-interpretation-prototype.md). It exists
-to decide the EditPlan interaction from a working canvas, timeline, ghost, and
-source diff before those concepts become protocol contracts.
+to examine gesture interpretation from a working canvas, timeline, ghost, and
+source diff before EditOperation concepts become protocol contracts. The same
+screen now includes a playhead-aware instruction composer that can create a
+structured motion draft without requiring a drag, or transform one selected
+`MathTex` object into new equation content as a distinct timed operation. It can
+also create explanatory `Text` beside a selected object with `FadeIn`, including
+an explicit playhead-relative anchor such as “5秒前”. Named
+equations with a dominant conventional form can be inferred—for example,
+“Newtonの運動方程式” becomes a matchable `F = ma` transform—without asking the
+user for literal LaTeX.
+
+Cross-cutting findings from that screen are maintained separately in the
+[Edit operation model memo](docs/edit-operation-model.md). It records the emerging
+GestureConstraint → EditOperation → truthful preview → source-lowering boundary,
+the role of AI, and the highest-risk unresolved semantics.
+
+The implemented versioned state layers, canonical operation registry, dependency
+DAG, pure ProposedState evaluator, transaction rules, and verification boundary are
+documented in the [Studio state and operation model](docs/studio-state-operation-model.md).
 
 ## Commands
 
@@ -28,8 +45,20 @@ pnpm dev:web
 pnpm dev:electron
 pnpm dev:tauri
 pnpm check:web
+pnpm test
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
+
+The instruction composer uses an explicit local fixture in a clean checkout so its
+UX can be evaluated without confusing parser quality with interaction quality. For
+the live-model experiment, set `VITE_POIETRA_AI_ENDPOINT` to
+`/api/ai/edit-suggestions`, place the OpenAI credential in the ignored
+`.openai-key` file, and optionally select the server-side model with
+`POIETRA_OPENAI_MODEL`. The Vite development server uses the Responses API and
+returns the same closed `CreateMotion | CreateTransform | CreateExplanation | CreateSceneTransition | EditProgram`
+suggestion result documented in
+`src/ai/edit-suggestions.ts`. Provider credentials never use a `VITE_` variable and
+are not included in the browser bundle.
 
 Linux development requires the [system packages listed by Tauri](https://v2.tauri.app/start/prerequisites/#linux) before `dev:tauri` or `cargo check` can run.
 

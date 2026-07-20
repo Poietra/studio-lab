@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .vite/
+.env.local
+.openai-key
 src-tauri/target/
 *.log
 .DS_Store
