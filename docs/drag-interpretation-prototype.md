@@ -345,8 +345,11 @@ pnpm dev:tauri
 - Source and edited paths are retained in the in-memory working preview and drive
   both trajectory drawing and playback. Lowering a curved path into Manim source
   or a future Scene IR is deliberately unresolved.
-- Apply changes only the in-memory working preview and can be undone; no renderer,
-  source writer, or validation backend is connected.
+- The main Apply action changes only the in-memory working preview. A separate
+  rendered-validation slice can lower one straight `CreateMotion` with known
+  source targets at an explicit source anchor, run Manim against a temporary copy,
+  then atomically commit or discard it. Other operations still have no source
+  writer or render validation.
 - Natural-language suggestions currently create `CreateMotion`, the narrowly
   supported MathTex `CreateTransform`, bounded `CreateExplanation`, or standalone
   Scene-level `CreateSceneTransition` operations.

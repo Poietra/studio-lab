@@ -17,6 +17,10 @@ import {
 import { validateEditProgram } from "./ai/edit-program-validation";
 import { buildEditProgramSourcePreview } from "./ai/edit-program-source";
 import { cn } from "./lib/cn";
+import {
+  RenderPipelinePanel,
+  type RenderMotionCandidate,
+} from "./render-pipeline/render-pipeline-panel";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./studio/evaluator";
 import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./studio/fixture";
 import type { ProgramRecord } from "./studio/model";
@@ -1483,6 +1487,24 @@ export function App() {
   }
 
   const activeDraftEdit = buildActiveEdit();
+  const renderPipelineCandidate: RenderMotionCandidate | null = activeDraftEdit?.planId === "new-move"
+    && activeDraftEdit.affected.length > 0
+    ? {
+        controlOffsetPixels: activeDraftEdit.pathBend,
+        deltaPixels: activeDraftEdit.delta,
+        interval: activeDraftEdit.motion,
+        targets: activeDraftEdit.affected.map((objectId) => ({
+          entityId: objectId,
+          sourceVariable: SCENE_OBJECTS.find((object) => object.id === objectId)!.variableName,
+        })),
+        viewport: FRAME,
+      }
+    : null;
+  const renderPipelineCandidateUnavailableReason = !activeDraftEdit
+    ? "Create a movement draft to enable rendered validation."
+    : activeDraftEdit.planId !== "new-move"
+      ? "Choose Animate → Create movement; position patches and path edits do not use CreateMotion lowering."
+      : "This CreateMotion cannot be lowered by the current rendered-validation slice.";
   const pendingTimelineEdits = activeDraftEdit ? [...stagedEdits, activeDraftEdit] : stagedEdits;
   const pendingTimelineTransforms = draftTransform ? [...stagedTransforms, draftTransform] : stagedTransforms;
   const pendingTimelineExplanations = draftExplanation
@@ -3278,6 +3300,11 @@ export function App() {
                 </p>
               )}
             </details>
+
+            <RenderPipelinePanel
+              candidate={renderPipelineCandidate}
+              candidateUnavailableReason={renderPipelineCandidateUnavailableReason}
+            />
 
             <details className="border-t border-zinc-800 text-xs">
               <summary className="cursor-pointer py-3 text-zinc-300 hover:text-zinc-100">

@@ -136,6 +136,8 @@ Scene boundaries, camera focus, new MathTex creation, MathTex-to-Text replacemen
 direct motion normalization, shared schemas, and Unknown identity rejection.
 
 Source lowering and browser morph rendering remain prototype-grade. Registry
-metadata labels those paths as `supported`, `illustrative`, or `unsupported`;
-this change does not claim final Manim render validation or arbitrary Python
-execution.
+metadata labels those paths as `supported`, `illustrative`, or `unsupported`.
+The separate rendered-validation experiment now carries one straight
+`CreateMotion` with known source targets through explicit source-anchor lowering
+and an actual Manim MP4 before guarded commit; it does not generalize that evidence
+to other operations or claim arbitrary Python execution.

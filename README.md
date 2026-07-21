@@ -39,6 +39,8 @@ the role of AI, and the highest-risk unresolved semantics.
 The implemented versioned state layers, canonical operation registry, dependency
 DAG, pure ProposedState evaluator, transaction rules, and verification boundary are
 documented in the [Studio state and operation model](docs/studio-state-operation-model.md).
+The first real Manim round trip is documented in the
+[rendered validation pipeline](docs/rendered-validation-pipeline.md).
 
 ## Commands
 
@@ -62,6 +64,31 @@ returns the same closed `CreateMotion | CreateTransform | CreateExplanation | Cr
 suggestion result documented in
 `src/ai/edit-suggestions.ts`. Provider credentials never use a `VITE_` variable and
 are not included in the browser bundle.
+
+The rendered-validation experiment can lower one straight canonical `CreateMotion`
+into a real Manim source marker, render an isolated preview, and commit only after
+the video succeeds. Start Studio with a Manim project root and command when they
+differ from this checkout and the `manim` executable:
+
+```sh
+POIETRA_MANIM_PROJECT_ROOT=/path/to/project \
+POIETRA_MANIM_COMMAND='["uv", "run", "manim"]' \
+pnpm dev:web
+```
+
+If Manim is available through Docker instead, the included runner mounts the
+project read-only, mounts only the operating-system preview directory as writable,
+and disables container networking:
+
+```sh
+POIETRA_MANIM_COMMAND='["node", "scripts/manim-docker-runner.mjs"]' pnpm dev:web
+```
+
+Eligible source boundaries use an explicit marker such as
+`# poietra:anchor 7.000` inside a Scene method. Studio rejects missing anchors,
+curved paths, unknown source variables, stale source hashes, and failed renders
+instead of writing an illustrative patch. The included `examples/relativity.py`
+provides a minimal `GroupedEquation` Scene with a 7-second anchor.
 
 Linux development requires the [system packages listed by Tauri](https://v2.tauri.app/start/prerequisites/#linux) before `dev:tauri` or `cargo check` can run.
 When those packages are not available on the host, the Linux build path can be reproduced in a container:
