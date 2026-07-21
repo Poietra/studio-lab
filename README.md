@@ -28,7 +28,8 @@ equations with a dominant conventional form can be inferred—for example,
 “Newtonの運動方程式” becomes a matchable `F = ma` transform—without asking the
 user for literal LaTeX. The composer also previews a bounded camera-focus preset,
 MathTex-to-explanatory-Text replacement, and new provisional MathTex creation;
-the floating composer itself can be dragged within the rendered frame.
+the floating composer itself can be dragged across the workspace, hidden, and
+restored without losing its instruction or draft preview.
 
 Cross-cutting findings from that screen are maintained separately in the
 [Edit operation model memo](docs/edit-operation-model.md). It records the emerging

@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { LazyMotion, m, useDragControls } from "motion/react";
 
 import {
@@ -119,6 +120,7 @@ export function App() {
   const [suggestion, setSuggestion] = useState<EditSuggestion | null>(null);
   const [suggestionMessage, setSuggestionMessage] = useState<string | null>(null);
   const [suggestionStatus, setSuggestionStatus] = useState<"idle" | "loading" | "ready" | "clarification" | "error">("idle");
+  const [isComposerVisible, setIsComposerVisible] = useState(true);
   const nextGroupNumber = useRef(1);
   const nextExplanationNumber = useRef(1);
   const nextSceneTransitionNumber = useRef(1);
@@ -1654,6 +1656,15 @@ export function App() {
         </div>
         <div className="flex items-center gap-2 text-xs">
           <span className="hidden text-zinc-500 xl:inline">Experiment: drag interpretation</span>
+          <button
+            aria-controls="studio-edit-composer"
+            aria-expanded={isComposerVisible}
+            className="rounded-md border border-zinc-700 px-2 py-1 font-medium text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+            onClick={() => setIsComposerVisible((visible) => !visible)}
+            type="button"
+          >
+            {isComposerVisible ? "Hide composer" : "Show composer"}
+          </button>
           <span
             className={cn(
               "rounded-md border px-2 py-1 font-medium",
@@ -2281,8 +2292,18 @@ export function App() {
 
               </m.div>
 
-              <div className="pointer-events-none absolute inset-2 z-20" ref={floatingBoardBounds}>
-              <div className="absolute left-1/2 top-1 w-[calc(100%-0.5rem)] max-w-xl -translate-x-1/2">
+              {isComposerVisible && createPortal(
+                <div
+                  className="pointer-events-none fixed z-30"
+                  ref={floatingBoardBounds}
+                  style={{
+                    bottom: "max(0.5rem, env(safe-area-inset-bottom))",
+                    left: "max(0.5rem, env(safe-area-inset-left))",
+                    right: "max(0.5rem, env(safe-area-inset-right))",
+                    top: "max(0.5rem, env(safe-area-inset-top))",
+                  }}
+                >
+              <div className="absolute left-1/2 top-12 w-full max-w-xl -translate-x-1/2">
               <LazyMotion features={loadMotionFeatures} strict>
               <m.form
                 aria-label="Describe an edit at the playhead"
@@ -2293,6 +2314,7 @@ export function App() {
                 dragElastic={0}
                 dragListener={false}
                 dragMomentum={false}
+                id="studio-edit-composer"
                 onSubmit={submitInstruction}
               >
                 <div
@@ -2311,6 +2333,14 @@ export function App() {
                     {import.meta.env.VITE_POIETRA_AI_ENDPOINT ? "Model endpoint" : "Local fixture"}
                   </span>
                   <span className="shrink-0 border-l border-zinc-800 pl-2 text-zinc-500">Drag</span>
+                  <button
+                    className="shrink-0 border-l border-zinc-800 pl-2 text-zinc-400 hover:text-zinc-100"
+                    onClick={() => setIsComposerVisible(false)}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    type="button"
+                  >
+                    Hide
+                  </button>
                 </div>
                 <div className="flex items-end gap-1.5">
                   <label className="sr-only" htmlFor="edit-instruction">Edit instruction</label>
@@ -2419,7 +2449,9 @@ export function App() {
               </m.form>
               </LazyMotion>
               </div>
-              </div>
+                </div>,
+                document.body,
+              )}
 
               <div className="absolute bottom-2 left-2 flex gap-2 text-[11px] tabular-nums text-zinc-500">
                 <span>640 × 360</span>

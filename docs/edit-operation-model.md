@@ -203,6 +203,9 @@ Clarification is for competing meanings, not for the absence of user-authored La
 The first Studio experiment uses a compact floating composer instead of a persistent
 chat history. Its hypothesis is that creation requests are local to a selected
 object and playhead; the video and timeline should remain the primary workspace.
+The composer lives at the viewport level rather than inside the rendered-frame
+overlay, so it can move across the workspace. A persistent header control can hide
+or restore it without discarding the current instruction or draft preview.
 Whether a later project-level agent also needs durable conversational memory remains
 an independent product question.
 

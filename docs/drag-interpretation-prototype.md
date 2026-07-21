@@ -102,11 +102,13 @@ showed that hand-authored curves which do not describe the candidate are mislead
 A future iteration should restore them as semantic thumbnails generated from the
 same EditOperation or MotionRecord used by canvas sampling and playback.
 
-The rendered-frame overlay also contains a compact `Describe an edit` composer. It
+The viewport-level workspace also contains a compact `Describe an edit` composer.
+It can be dragged beyond the rendered frame, or hidden and restored from the
+persistent header control without discarding its current instruction or draft. It
 is intentionally not a persistent chat panel. The current playhead and selected
-runtime object are supplied as visible context, so an instruction is interpreted as
-an edit request at a concrete frame rather than as a conversation about the whole
-project. A successful response is converted into a closed EditOperation candidate.
+runtime object are supplied as visible context, so an instruction is interpreted
+as an edit request at a concrete frame rather than as a conversation about the
+whole project. A successful response is converted into a closed EditOperation candidate.
 Spatial instructions use the same `Create movement` candidate as direct
 manipulation. A supported MathTex content request instead produces a distinct
 `CreateTransform` candidate with source and target runtime identities, a target
