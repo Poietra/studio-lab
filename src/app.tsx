@@ -120,15 +120,15 @@ export function App() {
   const [suggestion, setSuggestion] = useState<EditSuggestion | null>(null);
   const [suggestionMessage, setSuggestionMessage] = useState<string | null>(null);
   const [suggestionStatus, setSuggestionStatus] = useState<"idle" | "loading" | "ready" | "clarification" | "error">("idle");
-  const [isComposerVisible, setIsComposerVisible] = useState(true);
+  const [isMagicEditVisible, setIsMagicEditVisible] = useState(true);
   const nextGroupNumber = useRef(1);
   const nextExplanationNumber = useRef(1);
   const nextSceneTransitionNumber = useRef(1);
   const nextCompositeNumber = useRef(1);
   const nextTransactionNumber = useRef(1);
   const suggestionRequest = useRef<AbortController | null>(null);
-  const floatingBoardBounds = useRef<HTMLDivElement | null>(null);
-  const floatingBoardDragControls = useDragControls();
+  const magicEditBounds = useRef<HTMLDivElement | null>(null);
+  const magicEditDragControls = useDragControls();
   const dragState = useRef<{
     pointerId: number;
     clientStart: Point;
@@ -1657,13 +1657,13 @@ export function App() {
         <div className="flex items-center gap-2 text-xs">
           <span className="hidden text-zinc-500 xl:inline">Experiment: drag interpretation</span>
           <button
-            aria-controls="studio-edit-composer"
-            aria-expanded={isComposerVisible}
+            aria-controls="studio-magic-edit"
+            aria-expanded={isMagicEditVisible}
             className="rounded-md border border-zinc-700 px-2 py-1 font-medium text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
-            onClick={() => setIsComposerVisible((visible) => !visible)}
+            onClick={() => setIsMagicEditVisible((visible) => !visible)}
             type="button"
           >
-            {isComposerVisible ? "Hide composer" : "Show composer"}
+            {isMagicEditVisible ? "Hide Magic Edit" : "Show Magic Edit"}
           </button>
           <span
             className={cn(
@@ -2292,10 +2292,10 @@ export function App() {
 
               </m.div>
 
-              {isComposerVisible && createPortal(
+              {isMagicEditVisible && createPortal(
                 <div
                   className="pointer-events-none fixed z-30"
-                  ref={floatingBoardBounds}
+                  ref={magicEditBounds}
                   style={{
                     bottom: "max(0.5rem, env(safe-area-inset-bottom))",
                     left: "max(0.5rem, env(safe-area-inset-left))",
@@ -2306,23 +2306,23 @@ export function App() {
               <div className="absolute left-1/2 top-12 w-full max-w-xl -translate-x-1/2">
               <LazyMotion features={loadMotionFeatures} strict>
               <m.form
-                aria-label="Describe an edit at the playhead"
+                aria-label="Magic Edit at the playhead"
                 className="pointer-events-auto border border-zinc-700 bg-zinc-950/95 p-2 shadow-lg"
                 drag
-                dragConstraints={floatingBoardBounds}
-                dragControls={floatingBoardDragControls}
+                dragConstraints={magicEditBounds}
+                dragControls={magicEditDragControls}
                 dragElastic={0}
                 dragListener={false}
                 dragMomentum={false}
-                id="studio-edit-composer"
+                id="studio-magic-edit"
                 onSubmit={submitInstruction}
               >
                 <div
                   className="mb-1.5 flex min-w-0 cursor-grab items-center gap-2 text-[10px] active:cursor-grabbing"
-                  onPointerDown={(event) => floatingBoardDragControls.start(event.nativeEvent)}
+                  onPointerDown={(event) => magicEditDragControls.start(event.nativeEvent)}
                   style={{ touchAction: "none" }}
                 >
-                  <span className="shrink-0 font-medium text-zinc-300">Describe an edit</span>
+                  <span className="shrink-0 font-medium text-zinc-300">Magic Edit</span>
                   <span className="shrink-0 border border-zinc-700 px-1.5 py-0.5 tabular-nums text-zinc-400">
                     from {currentTime.toFixed(2)}s
                   </span>
@@ -2335,7 +2335,7 @@ export function App() {
                   <span className="shrink-0 border-l border-zinc-800 pl-2 text-zinc-500">Drag</span>
                   <button
                     className="shrink-0 border-l border-zinc-800 pl-2 text-zinc-400 hover:text-zinc-100"
-                    onClick={() => setIsComposerVisible(false)}
+                    onClick={() => setIsMagicEditVisible(false)}
                     onPointerDown={(event) => event.stopPropagation()}
                     type="button"
                   >

@@ -176,7 +176,7 @@ Relative language is semantic input, not arithmetic-looking prose to discard.
 captured playhead before preview. The resolved start and the original anchor both
 remain visible so Studio cannot silently reinterpret the phrase as absolute 5s.
 
-The composer should therefore feed the same candidate pipeline:
+Magic Edit should therefore feed the same candidate pipeline:
 
 ```text
 playhead + selection + instruction
@@ -200,10 +200,10 @@ name with one dominant conventional form, such as Newton's equation of motion in
 the current educational context, may resolve to `F = ma` as an explicit assumption.
 Clarification is for competing meanings, not for the absence of user-authored LaTeX.
 
-The first Studio experiment uses a compact floating composer instead of a persistent
-chat history. Its hypothesis is that creation requests are local to a selected
-object and playhead; the video and timeline should remain the primary workspace.
-The composer lives at the viewport level rather than inside the rendered-frame
+The first Studio experiment uses a compact floating Magic Edit board instead of a
+persistent chat history. Its hypothesis is that creation requests are local to a
+selected object and playhead; the video and timeline should remain the primary workspace.
+The Magic Edit board lives at the viewport level rather than inside the rendered-frame
 overlay, so it can move across the workspace. A persistent header control can hide
 or restore it without discarding the current instruction or draft preview.
 Whether a later project-level agent also needs durable conversational memory remains

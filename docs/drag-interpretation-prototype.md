@@ -102,7 +102,7 @@ showed that hand-authored curves which do not describe the candidate are mislead
 A future iteration should restore them as semantic thumbnails generated from the
 same EditOperation or MotionRecord used by canvas sampling and playback.
 
-The viewport-level workspace also contains a compact `Describe an edit` composer.
+The viewport-level workspace also contains a compact `Magic Edit` board.
 It can be dragged beyond the rendered frame, or hidden and restored from the
 persistent header control without discarding its current instruction or draft. It
 is intentionally not a persistent chat panel. The current playhead and selected

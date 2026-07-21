@@ -19,16 +19,16 @@ The current shared screen also contains a disposable
 [drag-interpretation prototype](docs/drag-interpretation-prototype.md). It exists
 to examine gesture interpretation from a working canvas, timeline, ghost, and
 source diff before EditOperation concepts become protocol contracts. The same
-screen now includes a playhead-aware instruction composer that can create a
+screen now includes a playhead-aware Magic Edit board that can create a
 structured motion draft without requiring a drag, or transform one selected
 `MathTex` object into new equation content as a distinct timed operation. It can
 also create explanatory `Text` beside a selected object with `FadeIn`, including
 an explicit playhead-relative anchor such as “5秒前”. Named
 equations with a dominant conventional form can be inferred—for example,
 “Newtonの運動方程式” becomes a matchable `F = ma` transform—without asking the
-user for literal LaTeX. The composer also previews a bounded camera-focus preset,
+user for literal LaTeX. Magic Edit also previews a bounded camera-focus preset,
 MathTex-to-explanatory-Text replacement, and new provisional MathTex creation;
-the floating composer itself can be dragged across the workspace, hidden, and
+the floating Magic Edit board can be dragged across the workspace, hidden, and
 restored without losing its instruction or draft preview.
 
 Cross-cutting findings from that screen are maintained separately in the
@@ -52,7 +52,7 @@ pnpm test
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
-The instruction composer uses an explicit local fixture in a clean checkout so its
+Magic Edit uses an explicit local fixture in a clean checkout so its
 UX can be evaluated without confusing parser quality with interaction quality. For
 the live-model experiment, set `VITE_POIETRA_AI_ENDPOINT` to
 `/api/ai/edit-suggestions`, place the OpenAI credential in the ignored
