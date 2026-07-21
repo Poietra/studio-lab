@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { RuntimeSceneState, StaticSemanticState } from "../studio/model";
 import { canonicalOperationSchema } from "../studio/operation-registry";
 import type { CanonicalEditProgram } from "../studio/operations";
+import { runtimeSceneStateSchema, staticSemanticStateSchema } from "../studio/state-schema";
 
 const finiteNumber = z.number().finite();
 const resolvedAnchorSchema = z.object({
@@ -144,8 +145,62 @@ export type ManimWorkspaceView = Readonly<{
   command: readonly string[];
   commandAvailable: boolean;
   frame: Readonly<{ height: number; width: number }>;
-  projectRoot: string;
   sources: readonly ManimWorkspaceSource[];
 }>;
+
+export const renderSessionStatusSchema: z.ZodType<RenderSessionStatus> = z.enum([
+  "cancelled",
+  "committed",
+  "discarded",
+  "failed",
+  "preparing",
+  "ready",
+  "rendering",
+  "undone",
+]);
+
+export const renderSessionViewSchema: z.ZodType<RenderSessionView> = z.object({
+  canCancel: z.boolean(),
+  canCommit: z.boolean(),
+  canDiscard: z.boolean(),
+  canUndo: z.boolean(),
+  createdAt: z.string(),
+  error: z.string().nullable(),
+  id: z.string(),
+  logTail: z.string(),
+  patch: z.object({
+    anchorLine: z.number().int().positive(),
+    insertedCode: z.string(),
+    sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
+  }).strict(),
+  programTransactionId: z.string(),
+  progress: finiteNumber.min(0).max(1),
+  sceneName: z.string(),
+  sourcePath: z.string(),
+  status: renderSessionStatusSchema,
+  updatedAt: z.string(),
+  videoUrl: z.string().nullable(),
+}).strict();
+
+export const manimWorkspaceSourceSchema: z.ZodType<ManimWorkspaceSource> = z.object({
+  path: z.string(),
+  scenes: z.array(z.object({
+    anchors: z.array(finiteNumber.nonnegative()),
+    name: z.string(),
+    nextSceneId: z.string().nullable(),
+    runtimeSceneState: runtimeSceneStateSchema,
+    sceneId: z.string(),
+    sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
+    sourceVariables: z.record(z.string(), z.string()),
+    staticSemanticState: staticSemanticStateSchema,
+  }).strict()),
+}).strict();
+
+export const manimWorkspaceViewSchema: z.ZodType<ManimWorkspaceView> = z.object({
+  command: z.array(z.string()),
+  commandAvailable: z.boolean(),
+  frame: z.object({ height: finiteNumber.positive(), width: finiteNumber.positive() }).strict(),
+  sources: z.array(manimWorkspaceSourceSchema),
+}).strict();
 
 export type ManimApiError = Readonly<{ error: string }>;

@@ -1,11 +1,12 @@
+import type { z } from "zod";
+
 import type {
   ManimApiError,
-  ManimWorkspaceView,
   ProgramRenderRequest,
-  RenderSessionView,
 } from "./contracts";
+import { manimWorkspaceViewSchema, renderSessionViewSchema } from "./contracts";
 
-async function readJson<T extends object>(response: Response): Promise<T> {
+async function readJson<T>(response: Response, schema: z.ZodType<T>): Promise<T> {
   const text = await response.text();
   let body: unknown;
   try {
@@ -19,31 +20,32 @@ async function readJson<T extends object>(response: Response): Promise<T> {
       : null;
     throw new Error(typeof error === "string" ? error : `Request failed with ${response.status}.`);
   }
-  if (typeof body !== "object" || body === null) throw new Error("The server returned an invalid JSON response.");
-  return body as T;
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) throw new Error("The server returned a response that does not match the API contract.");
+  return parsed.data;
 }
 
 export async function loadManimWorkspace(signal?: AbortSignal) {
-  return readJson<ManimWorkspaceView>(await fetch("/api/manim/workspace", { signal }));
+  return readJson(await fetch("/api/manim/workspace", { signal }), manimWorkspaceViewSchema);
 }
 
 export async function startManimRender(request: ProgramRenderRequest) {
-  return readJson<RenderSessionView>(await fetch("/api/manim/renders", {
+  return readJson(await fetch("/api/manim/renders", {
     body: JSON.stringify(request),
     headers: { "content-type": "application/json" },
     method: "POST",
-  }));
+  }), renderSessionViewSchema);
 }
 
 export async function loadManimRender(id: string, signal?: AbortSignal) {
-  return readJson<RenderSessionView>(await fetch(`/api/manim/renders/${id}`, { signal }));
+  return readJson(await fetch(`/api/manim/renders/${id}`, { signal }), renderSessionViewSchema);
 }
 
 export async function runManimRenderAction(
   id: string,
   action: "cancel" | "commit" | "discard" | "undo",
 ) {
-  return readJson<RenderSessionView>(await fetch(`/api/manim/renders/${id}/${action}`, {
+  return readJson(await fetch(`/api/manim/renders/${id}/${action}`, {
     method: "POST",
-  }));
+  }), renderSessionViewSchema);
 }

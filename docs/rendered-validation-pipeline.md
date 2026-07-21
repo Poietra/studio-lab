@@ -89,7 +89,14 @@ boundaries without hand-authored comments.
   destination, and Python source paths inside the configured project root;
 - the server revalidates the Program against its own imported Scene and rejects
   stale hashes, unknown targets, and source bindings that do not match that import;
+- render preparation imports only the requested source snapshot; project-wide
+  discovery is reserved for the workspace endpoint and concurrent inspections are
+  coalesced;
+- client responses are parsed through closed runtime schemas before they can enter
+  Studio state;
 - subprocesses are spawned without a shell and can be cancelled as a process group;
+- the manager permits two concurrent render processes, retains at most 32 source
+  snapshots, and terminates a render that exceeds two minutes;
 - preview source and media live in an isolated operating-system temporary directory;
 - the original source is untouched until Manim exits successfully and produces an MP4;
 - commit compares the current source SHA-256 with the previewed snapshot and rejects
@@ -98,7 +105,7 @@ boundaries without hand-authored comments.
   in the live server session for guarded Undo;
 - Undo refuses to overwrite a file changed after Studio's commit;
 - the browser receives a bounded log tail and a session-scoped MP4 URL, never an
-  arbitrary filesystem path.
+  arbitrary filesystem path; the workspace response also omits the absolute project root.
 
 ## Current limits
 

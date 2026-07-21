@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { ClarificationTurn } from "../../src/ai/edit-suggestions";
 import { editSuggestionRequestSchema } from "../../src/ai/edit-suggestion-schema";
-import { HttpRequestError, readJsonBody, sendJson } from "../http/json";
+import { HttpError, readJsonBody, sendJson } from "../http/json";
 import type { StructuredLogger } from "../logging/structured-logger";
 import {
   EditSuggestionGenerationError,
@@ -96,7 +96,7 @@ export function createEditSuggestionHandler(options: HandlerOptions) {
       });
     } catch (error) {
       logger.error("request.failed", errorDetails(error));
-      if (error instanceof HttpRequestError) {
+      if (error instanceof HttpError) {
         respond(error.status, { error: error.message });
         return;
       }

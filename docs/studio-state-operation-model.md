@@ -156,6 +156,9 @@ as visible presence, and repeated presence is preserved as multiple lifetime
 intervals. Facts that cannot be established by this static importer remain outside
 the snapshot instead of being filled from fixture constants.
 
+The local workspace and render-session responses cross an explicit runtime schema
+boundary. TypeScript types alone are not treated as evidence for network data.
+
 Rendered validation now accepts one complete `CanonicalEditProgram`. At an exact
 safe source anchor it can lower straight `CreateMotion`, position changes,
 MathTex/Text creation, `next_to`, FadeIn/removal, matching/replacement transforms,

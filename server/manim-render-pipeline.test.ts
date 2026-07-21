@@ -64,13 +64,19 @@ function request(sourcePath = "scene.py"): ProgramRenderRequest {
   };
 }
 
-async function fixture() {
+async function fixture(options: Readonly<{
+  command?: readonly string[];
+  maxConcurrentRenders?: number;
+  maxRetainedSessions?: number;
+  renderTimeoutMs?: number;
+}> = {}) {
   const projectRoot = await mkdtemp(join(tmpdir(), "poietra-render-test-"));
   temporaryRoots.push(projectRoot);
   await writeFile(join(projectRoot, "scene.py"), sceneSource, "utf8");
   const manager = new ManimRenderManager({
     command: [process.execPath, fakeRenderer],
     frame: { height: 8, width: 14.222 },
+    ...options,
     projectRoot,
   });
   managers.push(manager);
@@ -124,6 +130,20 @@ describe("Manim render manager", () => {
     const undone = await manager.undo(started.id);
     expect(undone.status).toBe("undone");
     expect(await readFile(join(projectRoot, "scene.py"), "utf8")).toBe(sceneSource);
+  });
+
+  it("coalesces concurrent workspace inspections", async () => {
+    const { manager } = await fixture();
+
+    const [first, second] = await Promise.all([manager.workspace(), manager.workspace()]);
+
+    expect(first).toBe(second);
+  });
+
+  it("checks the configured command adapter rather than only its executable", async () => {
+    const { manager } = await fixture({ command: [process.execPath, fakeRenderer, "--fail-version"] });
+
+    await expect(manager.workspace()).resolves.toMatchObject({ commandAvailable: false });
   });
 
   it("refuses to overwrite source changed after preview", async () => {
@@ -183,10 +203,54 @@ class Independent(Scene):
   it("cancels an active render and permits discard", async () => {
     const { manager } = await fixture();
     const started = await manager.start(request());
-    const cancelled = manager.cancel(started.id);
+    const cancelled = await manager.cancel(started.id);
     expect(cancelled.status).toBe("cancelled");
     const discarded = await manager.discard(started.id);
     expect(discarded.status).toBe("discarded");
+  });
+
+  it("bounds concurrent renderer processes", async () => {
+    const { manager } = await fixture({ maxConcurrentRenders: 1 });
+    const started = await manager.start(request());
+
+    await expect(manager.start(request())).rejects.toThrow(/at most 1 concurrent/i);
+
+    await manager.cancel(started.id);
+    await manager.discard(started.id);
+  });
+
+  it("bounds retained source snapshots until a preview is discarded", async () => {
+    const { manager } = await fixture({ maxRetainedSessions: 1 });
+    const started = await manager.start(request());
+    const rendered = await waitForTerminal(manager, started.id);
+    expect(rendered.status).toBe("ready");
+
+    await expect(manager.start(request())).rejects.toThrow(/retains at most 1 render session/i);
+
+    await manager.discard(started.id);
+    await expect(manager.start(request())).resolves.toMatchObject({ status: "rendering" });
+  });
+
+  it("fails a renderer that exceeds its execution deadline", async () => {
+    const { manager } = await fixture({ renderTimeoutMs: 10 });
+    const started = await manager.start(request());
+    const rendered = await waitForTerminal(manager, started.id);
+
+    expect(rendered.status).toBe("failed");
+    expect(rendered.error).toMatch(/10ms timeout/i);
+  });
+
+  it("serializes destructive actions for one render session", async () => {
+    const { manager } = await fixture();
+    const started = await manager.start(request());
+    const rendered = await waitForTerminal(manager, started.id);
+    expect(rendered.status).toBe("ready");
+
+    const commit = manager.commit(started.id);
+    await manager.cleanupExpiredSessions(Date.now() + 60 * 60 * 1_000);
+    expect(manager.view(started.id).status).toBe("ready");
+    await expect(manager.discard(started.id)).rejects.toThrow(/another action is already running/i);
+    expect((await commit).status).toBe("committed");
   });
 
   it("expires terminal sessions so source snapshots and temporary media do not accumulate", async () => {

@@ -1,36 +1,14 @@
 import { createReadStream } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { programRenderRequestSchema } from "../src/render-pipeline/contracts";
-import { ManimPipelineError } from "./manim-pipeline-error";
+import { HttpError, readJsonBody, sendJson } from "./http/json";
+import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import type { ManimRenderManager } from "./manim-render-pipeline";
 
-const MAX_BODY_BYTES = 64 * 1024;
 const RENDER_ROUTE = /^\/api\/manim\/renders\/([0-9a-f-]+)(?:\/(cancel|commit|discard|undo|video))?$/;
-
-async function readJsonBody(request: IncomingMessage) {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    size += buffer.length;
-    if (size > MAX_BODY_BYTES) throw new ManimPipelineError(413, "Request body is too large.");
-    chunks.push(buffer);
-  }
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
-  } catch {
-    throw new ManimPipelineError(400, "Request body must be valid JSON.");
-  }
-}
-
-export function sendJson(response: ServerResponse, status: number, body: unknown) {
-  response.statusCode = status;
-  response.setHeader("content-type", "application/json; charset=utf-8");
-  response.setHeader("cache-control", "no-store");
-  response.end(JSON.stringify(body));
-}
 
 function pipeVideo(response: ServerResponse, path: string, range?: Readonly<{ end: number; start: number }>) {
   const stream = createReadStream(path, range);
@@ -94,7 +72,7 @@ async function runRenderAction(manager: ManimRenderManager, id: string, action: 
     case "commit": return manager.commit(id);
     case "discard": return manager.discard(id);
     case "undo": return manager.undo(id);
-    default: throw new ManimPipelineError(405, "Method not allowed.");
+    default: throw new HttpError("Method not allowed.", 405);
   }
 }
 
@@ -111,13 +89,13 @@ async function routeManimRequest(
   if (request.method === "POST" && url.pathname === "/api/manim/renders") {
     const parsed = programRenderRequestSchema.safeParse(await readJsonBody(request));
     if (!parsed.success) {
-      throw new ManimPipelineError(400, parsed.error.issues[0]?.message ?? "Invalid canonical EditProgram render request.");
+      throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid canonical EditProgram render request.", 400);
     }
     sendJson(response, 202, await manager.start(parsed.data));
     return;
   }
   const match = url.pathname.match(RENDER_ROUTE);
-  if (!match) throw new ManimPipelineError(404, "Manim endpoint not found.");
+  if (!match) throw new HttpError("Manim endpoint not found.", 404);
   const [, id, action] = match;
   if (request.method === "GET" && !action) {
     sendJson(response, 200, manager.view(id));
@@ -127,7 +105,7 @@ async function routeManimRequest(
     await streamVideo(request, response, manager.videoPath(id));
     return;
   }
-  if (request.method !== "POST") throw new ManimPipelineError(405, "Method not allowed.");
+  if (request.method !== "POST") throw new HttpError("Method not allowed.", 405);
   sendJson(response, 200, await runRenderAction(manager, id, action));
 }
 
@@ -135,12 +113,28 @@ export async function handleManimRequest(
   manager: ManimRenderManager,
   request: IncomingMessage,
   response: ServerResponse,
+  baseLogger: StructuredLogger = nullLogger,
 ) {
+  const requestId = randomUUID();
+  const logger = baseLogger.child({
+    method: request.method,
+    requestId,
+    route: request.url,
+  });
+  response.setHeader("x-poietra-request-id", requestId);
+  logger.info("request.started");
   try {
     await routeManimRequest(manager, request, response);
+    logger.info("response.sent", { status: response.statusCode });
   } catch (error) {
-    const status = error instanceof ManimPipelineError ? error.status : 500;
-    const message = error instanceof Error ? error.message : "Manim render pipeline failed.";
+    const expected = error instanceof HttpError;
+    const status = expected ? error.status : 500;
+    const message = expected ? error.message : "Manim render pipeline failed.";
+    const details = error instanceof Error
+      ? { error, message: error.message, name: error.name, status }
+      : { error, status };
+    if (expected) logger.warn("request.rejected", details);
+    else logger.error("request.failed", details);
     sendJson(response, status, { error: message });
   }
 }

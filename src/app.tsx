@@ -90,6 +90,7 @@ export function App() {
   const [isMagicEditVisible, setIsMagicEditVisible] = useState(true);
   const [dragPreview, setDragPreview] = useState<EntityDragPreview | null>(null);
   const suggestionRequest = useRef<AbortController | null>(null);
+  const suggestionContext = useRef("");
   const canvasDrag = useRef<Readonly<{
     entityId: string;
     pointerId: number;
@@ -171,6 +172,7 @@ export function App() {
   }) : "";
   const clarificationIsStale = pendingClarification !== null
     && pendingClarification.contextFingerprint !== contextFingerprint;
+  suggestionContext.current = activeScene ? `${activeScene.sourceHash}:${contextFingerprint}` : "";
 
   function createValidatedDraft(
     operation: EditSuggestionOperation,
@@ -218,6 +220,7 @@ export function App() {
   async function requestEditSuggestion(selectedOption?: ClarificationOption) {
     if (!activeScene || !draftBaseState) return;
     const pending = pendingClarification;
+    const requestedContext = suggestionContext.current;
     const answerText = instruction.trim();
     const prompt = pending?.originalPrompt ?? answerText;
     if (!prompt || suggestionStatus === "loading") return;
@@ -269,6 +272,12 @@ export function App() {
         sceneDuration: draftBaseState.evaluatedScene.duration,
         selectedObjectIds,
       }, { signal: controller.signal });
+      if (suggestionContext.current !== requestedContext) {
+        setSuggestion(null);
+        setSuggestionMessage("The Scene, playhead, or selection changed while Magic Edit was thinking. Try the request again in the current context.");
+        setSuggestionStatus("error");
+        return;
+      }
       if (result.kind === "clarification") {
         const history = pending && clarificationAnswer ? [...pending.history, {
           answer: clarificationAnswer,
@@ -366,11 +375,11 @@ export function App() {
 
   function finishEntityDrag(event: PointerEvent<HTMLButtonElement>) {
     const drag = canvasDrag.current;
-    const preview = dragPreview;
     canvasDrag.current = null;
     setDragPreview(null);
-    if (!drag || drag.pointerId !== event.pointerId || !preview || !activeScene || !draftBaseState) return;
-    if (Math.hypot(preview.delta.x, preview.delta.y) < 1) return;
+    if (!drag || drag.pointerId !== event.pointerId || !activeScene || !draftBaseState) return;
+    const delta = { x: event.clientX - drag.start.x, y: event.clientY - drag.start.y };
+    if (Math.hypot(delta.x, delta.y) < 1) return;
     const targetIds = selectedObjectIds.includes(drag.entityId) ? selectedObjectIds : [drag.entityId];
     const transactionId = `studio-gesture-${crypto.randomUUID()}`;
     if (interactionMode === "animate") {
@@ -382,7 +391,7 @@ export function App() {
       const operation: CreateMotionSuggestion = {
         anchor: { kind: "playhead", referenceSeconds: currentTime },
         controlOffset: { x: 0, y: 0 },
-        delta: preview.delta,
+        delta,
         easing: "smooth",
         end,
         kind: "create-motion",
@@ -392,7 +401,13 @@ export function App() {
       installDraft(operation, transactionId, "direct-manipulation");
       return;
     }
-    installPositionDraft(preview.delta, targetIds, transactionId);
+    installPositionDraft(delta, targetIds, transactionId);
+  }
+
+  function cancelEntityDrag(event: PointerEvent<HTMLButtonElement>) {
+    if (canvasDrag.current?.pointerId !== event.pointerId) return;
+    canvasDrag.current = null;
+    setDragPreview(null);
   }
 
   function installPositionDraft(
@@ -540,7 +555,7 @@ export function App() {
               interactionMode={interactionMode}
               isPlaying={isPlaying}
               onEntityKeyDown={nudgeEntity}
-              onEntityPointerCancel={finishEntityDrag}
+              onEntityPointerCancel={cancelEntityDrag}
               onEntityPointerDown={beginEntityDrag}
               onEntityPointerMove={moveEntityDrag}
               onEntityPointerUp={finishEntityDrag}
