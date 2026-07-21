@@ -15,7 +15,11 @@ import {
   type EditSuggestion,
   suggestEdit,
 } from "./ai/edit-suggestions";
-import { createClarificationContextFingerprint, type PendingClarification } from "./ai/clarification";
+import {
+  createClarificationContextFingerprint,
+  MAX_CLARIFICATION_HISTORY,
+  type PendingClarification,
+} from "./ai/clarification";
 import { ClarificationPanel } from "./ai/clarification-panel";
 import { validateEditProgram } from "./ai/edit-program-validation";
 import { buildEditProgramSourcePreview } from "./ai/edit-program-source";
@@ -848,14 +852,21 @@ export function App() {
     setSuggestionMessage(null);
 
     try {
+      const clarificationAnswer = pending
+        ? selectedOption
+          ? { kind: "option" as const, optionId: selectedOption.id }
+          : { kind: "text" as const, text: answerText }
+        : null;
+      const clarification = pending && clarificationAnswer
+        ? {
+            answer: clarificationAnswer,
+            history: pending.history,
+            options: pending.options,
+            question: pending.question,
+          }
+        : null;
       const result = await suggestEdit({
-        clarification: pending ? {
-          answer: selectedOption
-            ? { kind: "option", optionId: selectedOption.id }
-            : { kind: "text", text: answerText },
-          options: pending.options,
-          question: pending.question,
-        } : null,
+        clarification,
         objects: Object.values(editContextState.evaluatedScene.objectGraph.entities)
           .filter((entity) => !entity.type.startsWith("TransitionOverlay:"))
           .map((entity) => ({
@@ -876,8 +887,16 @@ export function App() {
         selectedObjectIds,
       }, { signal: controller.signal });
       if (result.kind === "clarification") {
+        const history = pending && clarificationAnswer
+          ? [...pending.history, {
+              answer: clarificationAnswer,
+              options: pending.options,
+              question: pending.question,
+            }].slice(-MAX_CLARIFICATION_HISTORY)
+          : [];
         setPendingClarification({
           contextFingerprint: clarificationContextFingerprint,
+          history,
           options: result.options,
           originalPrompt: pending?.originalPrompt ?? prompt,
           question: result.message,

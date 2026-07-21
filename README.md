@@ -64,9 +64,20 @@ suggestion result documented in
 `src/ai/edit-suggestions.ts`. Provider credentials never use a `VITE_` variable and
 are not included in the browser bundle.
 Clarification responses may include two or three structured choices. Studio keeps
-the original request and one pending question so a choice click or a relative
-free-text answer such as `前者` produces a new preview instead of becoming an
-isolated prompt.
+the original request, up to four resolved question/answer turns, and the current
+pending question. A choice click, a relative answer such as `前者`, or a short
+answer such as `はい` therefore reaches the model with the decisions that preceded
+it instead of becoming an isolated prompt.
+
+The development API writes correlated lifecycle events to stdout and full structured
+events to the ignored `.studio-logs/ai-edit-suggestions.jsonl` file. Each request
+receives an `x-poietra-request-id`, and the file records the validated model input,
+instructions, parsed model output, usage, and final HTTP response under that ID. It rotates
+to `.previous` at 2 MiB, is created with user-only permissions, and can contain
+editor content; do not publish it. Set `POIETRA_AI_DEBUG_LOG` to another local path
+or to `off` to disable this debug logging. Provider credentials are never supplied
+to the logger, and common credential-shaped fields are redacted by the logging
+layer.
 
 The rendered-validation experiment can lower one straight canonical `CreateMotion`
 into a real Manim source marker, render an isolated preview, and commit only after

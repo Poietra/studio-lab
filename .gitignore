@@ -3,6 +3,7 @@ dist/
 .vite/
 .env.local
 .openai-key
+.studio-logs/
 src-tauri/target/
 *.log
 .DS_Store

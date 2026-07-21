@@ -214,11 +214,15 @@ const clarificationAnswerSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("text"), text: z.string().trim().min(1).max(2_000) }),
 ]);
 
+const clarificationTurnSchema = z.object({
+  answer: clarificationAnswerSchema,
+  options: z.array(clarificationOptionSchema).max(3),
+  question: z.string().trim().min(1).max(500),
+});
+
 export const editSuggestionRequestSchema = z.object({
-  clarification: z.object({
-    answer: clarificationAnswerSchema,
-    options: z.array(clarificationOptionSchema).max(3),
-    question: z.string().trim().min(1).max(500),
+  clarification: clarificationTurnSchema.extend({
+    history: z.array(clarificationTurnSchema).max(4),
   }).nullable(),
   objects: z.array(z.object({
     displayName: z.string(),
@@ -246,6 +250,8 @@ export const modelSuggestionSchema = z.object({
   options: z.array(modelClarificationOptionSchema).max(3),
   summary: z.string(),
 });
+
+export type ModelSuggestion = z.infer<typeof modelSuggestionSchema>;
 
 const suggestionSchema = z.object({
   assumptions: z.array(z.string()),

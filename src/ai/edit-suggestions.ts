@@ -36,10 +36,14 @@ export type ClarificationAnswer =
   | Readonly<{ kind: "option"; optionId: string }>
   | Readonly<{ kind: "text"; text: string }>;
 
-export type ClarificationFollowUp = Readonly<{
+export type ClarificationTurn = Readonly<{
   answer: ClarificationAnswer;
   options: readonly ClarificationOption[];
   question: string;
+}>;
+
+export type ClarificationFollowUp = ClarificationTurn & Readonly<{
+  history: readonly ClarificationTurn[];
 }>;
 
 export type SuggestionTimeAnchor =

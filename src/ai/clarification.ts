@@ -1,8 +1,11 @@
 import type { RuntimeEntity } from "../studio/model";
-import type { ClarificationOption } from "./edit-suggestions";
+import type { ClarificationOption, ClarificationTurn } from "./edit-suggestions";
+
+export const MAX_CLARIFICATION_HISTORY = 4;
 
 export type PendingClarification = Readonly<{
   contextFingerprint: string;
+  history: readonly ClarificationTurn[];
   options: readonly ClarificationOption[];
   originalPrompt: string;
   question: string;

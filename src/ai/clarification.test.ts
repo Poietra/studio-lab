@@ -55,6 +55,7 @@ describe("bounded clarification context", () => {
     const parsed = editSuggestionRequestSchema.safeParse({
       clarification: {
         answer: { kind: "option", optionId: "option-1" },
+        history: [],
         options,
         question: "Should Studio replace the selected equation or add a new one?",
       },
@@ -77,6 +78,7 @@ describe("bounded clarification context", () => {
     const parsed = editSuggestionRequestSchema.safeParse({
       clarification: {
         answer: { kind: "text", text: "前者" },
+        history: [],
         options,
         question: "Should Studio replace the selected equation or add a new one?",
       },
@@ -87,5 +89,27 @@ describe("bounded clarification context", () => {
       selectedObjectIds: [],
     });
     expect(parsed.success).toBe(true);
+  });
+
+  it("keeps earlier resolved questions when the model asks a follow-up", () => {
+    const parsed = editSuggestionRequestSchema.safeParse({
+      clarification: {
+        answer: { kind: "text", text: "はい" },
+        history: [{
+          answer: { kind: "option", optionId: "option-2" },
+          options,
+          question: "Should Studio replace the selected equation or add a new one?",
+        }],
+        options: [],
+        question: "Should Studio preview the explanation after adding the equation?",
+      },
+      objects: [],
+      playhead: 5,
+      prompt: "Add Maxwell equations and explain them in the next Scene.",
+      sceneDuration: 12,
+      selectedObjectIds: [],
+    });
+    expect(parsed.success).toBe(true);
+    expect(parsed.data?.clarification?.history).toHaveLength(1);
   });
 });

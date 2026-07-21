@@ -11,7 +11,13 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       tailwindcss(),
-      openAiEditSuggestions({ apiKey: env.OPENAI_API_KEY, model: env.POIETRA_OPENAI_MODEL }),
+      openAiEditSuggestions({
+        apiKey: env.OPENAI_API_KEY,
+        logPath: mode === "test" || env.POIETRA_AI_DEBUG_LOG === "off"
+          ? false
+          : env.POIETRA_AI_DEBUG_LOG || undefined,
+        model: env.POIETRA_OPENAI_MODEL,
+      }),
       manimRenderPipeline({
         command: env.POIETRA_MANIM_COMMAND,
         frameHeight: env.POIETRA_MANIM_FRAME_HEIGHT ? Number(env.POIETRA_MANIM_FRAME_HEIGHT) : undefined,
