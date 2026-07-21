@@ -137,6 +137,7 @@ export function StudioViewport({
   anchors,
   appliedTransactionIds,
   boundaryActive,
+  className,
   currentTime,
   draftTransactionId,
   dragPreview,
@@ -159,6 +160,7 @@ export function StudioViewport({
   anchors: readonly number[];
   appliedTransactionIds: ReadonlySet<string>;
   boundaryActive: boolean;
+  className?: string;
   currentTime: number;
   draftTransactionId: string | null;
   dragPreview: EntityDragPreview | null;
@@ -179,7 +181,7 @@ export function StudioViewport({
   selectedIds: ReadonlySet<string>;
 }>) {
   return (
-    <section className="flex min-h-0 min-w-0 flex-col bg-zinc-900">
+    <section className={cn("flex min-h-0 min-w-0 flex-col bg-zinc-900", className)}>
       <div className="flex items-center justify-between gap-3 border-b border-zinc-800 px-3 py-2 text-xs">
         <div className="flex items-center gap-2">
           <span className="text-zinc-500">Direct manipulation</span>

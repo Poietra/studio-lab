@@ -12,7 +12,7 @@
 
 body {
   margin: 0;
-  min-width: 960px;
+  min-width: 320px;
   min-height: 100dvh;
   overflow: hidden;
 }
@@ -22,12 +22,16 @@ body {
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font-family: inherit;
 }
 
 button:focus-visible,
-input:focus-visible {
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
   outline: 2px solid #38bdf8;
   outline-offset: 2px;
 }

@@ -67,6 +67,7 @@ export function App() {
     activeScene,
     activeSceneId,
     error: workspaceError,
+    isRefreshing: workspaceIsRefreshing,
     nextScene,
     refresh: refreshWorkspace,
     scenes,
@@ -87,7 +88,7 @@ export function App() {
   const [suggestionMessage, setSuggestionMessage] = useState<string | null>(null);
   const [instruction, setInstruction] = useState("");
   const [pendingClarification, setPendingClarification] = useState<PendingClarification | null>(null);
-  const [isMagicEditVisible, setIsMagicEditVisible] = useState(true);
+  const [isMagicEditVisible, setIsMagicEditVisible] = useState(() => window.matchMedia("(min-width: 640px)").matches);
   const [dragPreview, setDragPreview] = useState<EntityDragPreview | null>(null);
   const suggestionRequest = useRef<AbortController | null>(null);
   const suggestionContext = useRef("");
@@ -470,14 +471,14 @@ export function App() {
 
   return (
     <LazyMotion features={loadMotionFeatures} strict>
-      <main className="flex h-dvh min-h-[640px] flex-col overflow-hidden bg-zinc-950 text-zinc-100" ref={workspaceBounds}>
-        <header className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-zinc-800 px-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <h1 className="shrink-0 text-balance text-sm font-semibold">Poietra Studio Lab</h1>
+      <main className="flex h-dvh min-h-0 flex-col overflow-hidden bg-zinc-950 text-zinc-100" ref={workspaceBounds}>
+        <header className="flex min-h-12 shrink-0 items-center justify-between gap-2 border-b border-zinc-800 px-3 py-2">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <h1 className="hidden shrink-0 text-balance text-sm font-semibold md:block">Poietra Studio Lab</h1>
             {scenes.length > 0 ? (
               <select
                 aria-label="Active imported Scene"
-                className="h-8 min-w-0 max-w-sm border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-300 outline-none focus:border-sky-500"
+                className="h-8 min-w-0 w-full max-w-sm border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-300 outline-none focus:border-sky-500"
                 onChange={(event) => setActiveSceneId(event.currentTarget.value)}
                 value={activeSceneId ?? ""}
               >
@@ -489,30 +490,41 @@ export function App() {
           </div>
           <div className="flex shrink-0 items-center gap-2 text-xs">
             <button
-              className="border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+              className="border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-wait disabled:text-zinc-600"
+              disabled={workspaceIsRefreshing}
               onClick={() => void refreshWorkspace()}
               type="button"
             >
-              Reimport source
+              {workspaceIsRefreshing ? "Reimporting…" : "Reimport"}
             </button>
             <button
               aria-controls="studio-magic-edit"
               aria-expanded={isMagicEditVisible}
-              className="border border-zinc-700 px-2 py-1 font-medium text-zinc-300 hover:bg-zinc-800"
+              className={isMagicEditVisible
+                ? "border border-sky-800 bg-sky-950 px-2 py-1 font-medium text-sky-300 hover:bg-sky-900"
+                : "border border-zinc-700 px-2 py-1 font-medium text-zinc-300 hover:bg-zinc-800"}
               onClick={() => setIsMagicEditVisible((visible) => !visible)}
               type="button"
             >
-              {isMagicEditVisible ? "Hide Magic Edit" : "Show Magic Edit"}
+              Magic Edit
             </button>
-            <span className="border border-zinc-700 px-2 py-1 text-zinc-500">{shell}</span>
+            <span className="hidden border border-zinc-700 px-2 py-1 text-zinc-500 xl:inline">{shell}</span>
           </div>
         </header>
 
+        {workspaceError && activeScene ? (
+          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-red-950 bg-red-950/40 px-3 py-1.5 text-xs text-red-200" role="alert">
+            <span className="min-w-0 truncate">Reimport failed: {workspaceError}</span>
+            <button className="shrink-0 underline underline-offset-2 hover:text-white" onClick={() => void refreshWorkspace()} type="button">Retry</button>
+          </div>
+        ) : null}
+
         {workspaceStatus === "loading" ? (
-          <div aria-label="Importing Manim workspace" className="grid min-h-0 flex-1 grid-cols-[14rem_1fr_20rem] gap-px bg-zinc-800">
-            <div className="bg-zinc-950 p-3"><div className="h-8 bg-zinc-900" /></div>
-            <div className="bg-zinc-900 p-6"><div className="mx-auto aspect-video max-w-4xl bg-zinc-950" /></div>
-            <div className="bg-zinc-950 p-3"><div className="h-24 bg-zinc-900" /></div>
+          <div aria-label="Importing Manim workspace" className="grid min-h-0 flex-1 place-items-center bg-zinc-900 p-6">
+            <div className="w-full max-w-sm border border-zinc-800 p-5">
+              <h2 className="text-balance text-sm font-medium text-zinc-200">Importing Manim workspace</h2>
+              <p className="mt-2 text-pretty text-xs leading-5 text-zinc-500">Inspecting source files and checking the render adapter…</p>
+            </div>
           </div>
         ) : workspaceStatus === "error" || !activeScene || !projection ? (
           <div className="grid flex-1 place-items-center p-6">
@@ -527,11 +539,12 @@ export function App() {
             </div>
           </div>
         ) : (
-          <div className="grid min-h-0 flex-1 grid-cols-[14rem_minmax(0,1fr)_21rem] gap-px bg-zinc-800">
+          <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(30rem,1fr)_auto_auto] gap-px overflow-y-auto bg-zinc-800 lg:grid-cols-[14rem_minmax(0,1fr)] lg:grid-rows-[minmax(32rem,1fr)_auto] xl:grid-cols-[14rem_minmax(0,1fr)_21rem] xl:grid-rows-1 xl:overflow-hidden">
             <WorkspaceSidebar
               activeScene={activeScene}
               appliedPrograms={appliedPrograms}
               appliedTransactionIds={appliedTransactionIds}
+              className="order-2 min-h-64 lg:order-1 lg:col-start-1 lg:row-start-1 lg:min-h-0"
               duration={activeDuration}
               entities={editableEntities}
               nextScene={nextScene}
@@ -546,6 +559,7 @@ export function App() {
               anchors={activeScene.anchors}
               appliedTransactionIds={appliedTransactionIds}
               boundaryActive={boundary !== null}
+              className="order-1 min-h-[30rem] lg:order-2 lg:col-start-2 lg:row-start-1 lg:min-h-[32rem] xl:min-h-0"
               currentTime={currentTime}
               draftTransactionId={draftProgram?.program.transactionId ?? null}
               dragPreview={dragPreview}
@@ -574,6 +588,7 @@ export function App() {
 
             <StudioInspector
               appliedProgramCount={appliedPrograms.length}
+              className="order-3 min-h-96 lg:col-span-2 lg:col-start-1 lg:row-start-2 xl:col-span-1 xl:col-start-3 xl:row-start-1 xl:min-h-0"
               draftError={draftError}
               draftOperation={draftOperation}
               draftProgram={draftProgram}

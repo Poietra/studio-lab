@@ -13,20 +13,24 @@ function sceneAtId(scenes: readonly ManimWorkspaceScene[], id: string | null) {
 export function useManimWorkspace() {
   const [workspace, setWorkspace] = useState<ManimWorkspaceView | null>(null);
   const [status, setStatus] = useState<WorkspaceStatus>("loading");
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeSceneId, setActiveSceneId] = useState<string | null>(null);
   const request = useRef<AbortController | null>(null);
+  const workspaceRef = useRef<ManimWorkspaceView | null>(null);
 
   const refresh = useCallback(async () => {
     request.current?.abort();
     const controller = new AbortController();
     request.current = controller;
-    setStatus("loading");
+    if (!workspaceRef.current) setStatus("loading");
+    setIsRefreshing(true);
     setError(null);
     try {
       const nextWorkspace = await loadManimWorkspace(controller.signal);
       if (request.current !== controller) return;
       const scenes = workspaceScenes(nextWorkspace);
+      workspaceRef.current = nextWorkspace;
       setWorkspace(nextWorkspace);
       setActiveSceneId((current) => scenes.some((scene) => scene.sceneId === current)
         ? current
@@ -34,16 +38,23 @@ export function useManimWorkspace() {
       setStatus("ready");
     } catch (nextError) {
       if (controller.signal.aborted || request.current !== controller) return;
-      setStatus("error");
+      setStatus(workspaceRef.current ? "ready" : "error");
       setError(nextError instanceof Error ? nextError.message : "Could not import the Manim workspace.");
     } finally {
-      if (request.current === controller) request.current = null;
+      if (request.current === controller) {
+        request.current = null;
+        setIsRefreshing(false);
+      }
     }
   }, []);
 
   useEffect(() => {
     void refresh();
-    return () => request.current?.abort();
+    return () => {
+      const controller = request.current;
+      request.current = null;
+      controller?.abort();
+    };
   }, [refresh]);
 
   const scenes = useMemo(() => workspace ? workspaceScenes(workspace) : [], [workspace]);
@@ -53,6 +64,7 @@ export function useManimWorkspace() {
     activeScene,
     activeSceneId,
     error,
+    isRefreshing,
     nextScene,
     refresh,
     scenes,

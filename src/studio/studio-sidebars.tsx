@@ -11,6 +11,7 @@ export function WorkspaceSidebar({
   activeScene,
   appliedPrograms,
   appliedTransactionIds,
+  className,
   duration,
   entities,
   nextScene,
@@ -21,6 +22,7 @@ export function WorkspaceSidebar({
   activeScene: ManimWorkspaceScene;
   appliedPrograms: readonly ProgramRecord[];
   appliedTransactionIds: ReadonlySet<string>;
+  className?: string;
   duration: number;
   entities: readonly ProjectedEntity[];
   nextScene: ManimWorkspaceScene | null;
@@ -29,7 +31,7 @@ export function WorkspaceSidebar({
   selectedIds: ReadonlySet<string>;
 }>) {
   return (
-    <aside className="min-h-0 overflow-y-auto bg-zinc-950 p-3">
+    <aside className={cn("min-h-0 overflow-y-auto bg-zinc-950 p-3", className)}>
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-balance text-xs font-medium text-zinc-300">Imported objects</h2>
         <span className="tabular-nums text-[10px] text-zinc-600">{entities.length}</span>
@@ -103,6 +105,7 @@ export function WorkspaceSidebar({
 
 export function StudioInspector({
   appliedProgramCount,
+  className,
   draftError,
   draftOperation,
   draftProgram,
@@ -116,6 +119,7 @@ export function StudioInspector({
   workspace,
 }: Readonly<{
   appliedProgramCount: number;
+  className?: string;
   draftError: string | null;
   draftOperation: EditSuggestionOperation | null;
   draftProgram: ProgramRecord | null;
@@ -129,7 +133,7 @@ export function StudioInspector({
   workspace: ManimWorkspaceView | null;
 }>) {
   return (
-    <aside className="min-h-0 overflow-y-auto bg-zinc-950 p-3">
+    <aside className={cn("min-h-0 overflow-y-auto bg-zinc-950 p-3", className)}>
       {draftProgram ? (
         <DraftInspector
           error={draftError}

@@ -81,6 +81,7 @@ const DEFAULT_MAX_RETAINED_SESSIONS = 32;
 const DEFAULT_RENDER_TIMEOUT_MS = 2 * 60 * 1_000;
 const DEFAULT_SESSION_RETENTION_MS = 30 * 60 * 1_000;
 const COMMAND_AVAILABILITY_TTL_MS = 30_000;
+const COMMAND_AVAILABILITY_TIMEOUT_MS = 15_000;
 
 export function parseManimCommand(value: string | undefined): readonly string[] {
   const normalized = value?.trim();
@@ -111,7 +112,7 @@ function commandIsAvailable(command: readonly string[]) {
     const timeout = setTimeout(() => {
       stopRenderProcess(child);
       finish(false);
-    }, 3_000);
+    }, COMMAND_AVAILABILITY_TIMEOUT_MS);
     timeout.unref();
     child.once("error", () => finish(false));
     child.once("exit", (code) => finish(code === 0));
