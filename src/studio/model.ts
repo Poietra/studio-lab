@@ -1,0 +1,211 @@
+import type { CanonicalEditProgram, ProgramValidationIssue } from "./operations";
+
+export const STUDIO_STATE_VERSION = 1 as const;
+
+export type Point = Readonly<{ x: number; y: number }>;
+
+export type Interval = Readonly<{ end: number; start: number }>;
+
+export type Known<T> = Readonly<{ kind: "known"; value: T }>;
+
+export type Unknown = Readonly<{
+  evidence?: readonly string[];
+  kind: "unknown";
+  reason: string;
+}>;
+
+export type Knowledge<T> = Known<T> | Unknown;
+
+export type SourceSnapshot = Readonly<{
+  configId: string;
+  hash: string;
+  sourceId: string;
+  version: typeof STUDIO_STATE_VERSION;
+}>;
+
+export type StaticSemanticEntity = Readonly<{
+  sourceIdentity: string;
+  runtimeIdentities: Knowledge<readonly string[]>;
+  type: Knowledge<string>;
+}>;
+
+export type StaticSemanticState = Readonly<{
+  entities: readonly StaticSemanticEntity[];
+  unknowns: readonly Unknown[];
+  version: typeof STUDIO_STATE_VERSION;
+}>;
+
+export type EntityContent = Readonly<{
+  displayLines: readonly string[];
+  label?: string;
+  texParts?: readonly string[];
+  text?: string;
+}>;
+
+export type RuntimeEntity = Readonly<{
+  content?: EntityContent;
+  id: string;
+  lifetime: readonly Interval[];
+  provisional: boolean;
+  sourceIdentity: Knowledge<string>;
+  transactionId?: string;
+  type: string;
+}>;
+
+export type IdentityLineage = Readonly<{
+  at: number;
+  from: string;
+  operationId: string;
+  relation: "created" | "replaces" | "removed";
+  to: string;
+}>;
+
+export type ObjectGraph = Readonly<{
+  entities: Readonly<Record<string, RuntimeEntity>>;
+  lineage: readonly IdentityLineage[];
+}>;
+
+export type PropertyValue =
+  | boolean
+  | number
+  | string
+  | Point
+  | EntityContent
+  | readonly string[];
+
+export type PropertyChannelSample = Readonly<{
+  control?: Point;
+  easing?: "smooth";
+  from?: PropertyValue;
+  interval: Interval;
+  kind: "animated" | "exact";
+  operationId?: string;
+  provenanceId: string;
+  value: PropertyValue;
+}>;
+
+export type PropertyChannel = Readonly<{
+  entityId: string;
+  key: "appearance" | "camera" | "content" | "ordering" | "position" | "presence" | "rotation" | "scale";
+  samples: readonly PropertyChannelSample[];
+}>;
+
+export type PropertyChannels = Readonly<Record<string, PropertyChannel>>;
+
+export type TimelineEvent = Readonly<{
+  at?: number;
+  id: string;
+  interval?: Interval;
+  kind: "operation" | "play" | "scene-boundary" | "wait";
+  label: string;
+  operationId?: string;
+  transactionId?: string;
+}>;
+
+export type EventTrack = Readonly<{
+  events: readonly TimelineEvent[];
+}>;
+
+export type SceneConstraint = Readonly<{
+  id: string;
+  mode: "live" | "snapshot";
+  operationId: string;
+  relation: "next-to";
+  sourceEntityId: string;
+  targetEntityId: string;
+}>;
+
+export type ConstraintGraph = Readonly<{
+  constraints: readonly SceneConstraint[];
+}>;
+
+export type ProvenanceRecord = Readonly<{
+  evidence: readonly string[];
+  id: string;
+  operationId?: string;
+  origin: "direct-manipulation" | "fixture" | "import" | "remote-model" | "studio-default";
+  transactionId?: string;
+}>;
+
+export type ProvenanceGraph = Readonly<{
+  records: readonly ProvenanceRecord[];
+}>;
+
+export type RuntimeSceneState = Readonly<{
+  constraintGraph: ConstraintGraph;
+  duration: number;
+  eventTrack: EventTrack;
+  objectGraph: ObjectGraph;
+  propertyChannels: PropertyChannels;
+  provenanceGraph: ProvenanceGraph;
+  sceneId: string;
+  version: typeof STUDIO_STATE_VERSION;
+}>;
+
+export type EditorContext = Readonly<{
+  activeSceneId: string;
+  capturedGesture?: Readonly<{ entityIds: readonly string[]; pointerDelta: Point }>;
+  capturedLanguage?: Readonly<{ prompt: string }>;
+  playhead: number;
+  selection: readonly string[];
+  version: typeof STUDIO_STATE_VERSION;
+  viewport: Readonly<{ height: number; width: number }>;
+}>;
+
+export type ProgramRecord = Readonly<{
+  program: CanonicalEditProgram;
+  validation: Readonly<{
+    issues: readonly ProgramValidationIssue[];
+    status: "invalid" | "valid";
+  }>;
+}>;
+
+export type WorkingState = Readonly<{
+  appliedPrograms: readonly ProgramRecord[];
+  editorContext: EditorContext;
+  runtimeSceneState: RuntimeSceneState;
+  sourceSnapshot: SourceSnapshot;
+  stagedPrograms: readonly ProgramRecord[];
+  staticSemanticState: StaticSemanticState;
+  version: typeof STUDIO_STATE_VERSION;
+}>;
+
+export type ProposedState = Readonly<{
+  base: WorkingState;
+  evaluatedScene: RuntimeSceneState;
+  issues: readonly ProgramValidationIssue[];
+  programs: readonly ProgramRecord[];
+  version: typeof STUDIO_STATE_VERSION;
+}>;
+
+export type ProjectedEntity = Readonly<{
+  content?: EntityContent;
+  id: string;
+  opacity: number;
+  position: Point;
+  present: boolean;
+  provisional: boolean;
+  scale: number;
+  sourceIdentity: Knowledge<string>;
+  transactionId?: string;
+  type: string;
+}>;
+
+export type ProposedStateProjection = Readonly<{
+  camera: Readonly<{ sampleId: string; scale: number }>;
+  canvas: Readonly<{ entities: readonly ProjectedEntity[]; sampleId: string }>;
+  inspector: Readonly<{
+    entities: readonly ProjectedEntity[];
+    issues: readonly ProgramValidationIssue[];
+    sampleId: string;
+  }>;
+  objectList: Readonly<{ entities: readonly ProjectedEntity[]; sampleId: string }>;
+  semanticThumbnail: Readonly<{ entities: readonly ProjectedEntity[]; sampleId: string }>;
+  sourcePreview: Readonly<{
+    lowering: readonly Readonly<{ status: "illustrative" | "supported" | "unsupported"; transactionId: string }>[];
+    sampleId: string;
+  }>;
+  time: number;
+  timeline: Readonly<{ events: readonly TimelineEvent[]; sampleId: string }>;
+  workingPlayback: Readonly<{ entities: readonly ProjectedEntity[]; sampleId: string }>;
+}>;
