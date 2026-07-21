@@ -25,9 +25,10 @@ atomic source commit or discard
 ```
 
 The workspace bridge discovers Python files and ordered Scene classes below the
-configured project root. The application imports their conservative runtime
-snapshots once and uses the selected Scene for canvas, object list, timeline, AI
-context, and rendered validation. The right-side panel exposes renderer
+configured project root. `nextSceneId` follows class order within one source file;
+unrelated files are not joined by an invented edge. The application imports
+conservative runtime snapshots once and uses the selected Scene for canvas, object
+list, timeline, AI context, and rendered validation. The right-side panel exposes renderer
 availability, progress, cancellation, bounded logs, the complete inserted source
 block, rendered MP4, commit, discard, and exact Undo.
 
@@ -84,8 +85,10 @@ boundaries without hand-authored comments.
 ## Safety and truthfulness
 
 - request schemas accept only a bounded canonical Program, imported source
-  bindings, finite geometry, an exact Scene destination, and Python source paths
-  inside the configured project root;
+  bindings, the imported source SHA-256, finite geometry, an exact Scene
+  destination, and Python source paths inside the configured project root;
+- the server revalidates the Program against its own imported Scene and rejects
+  stale hashes, unknown targets, and source bindings that do not match that import;
 - subprocesses are spawned without a shell and can be cancelled as a process group;
 - preview source and media live in an isolated operating-system temporary directory;
 - the original source is untouched until Manim exits successfully and produces an MP4;
@@ -108,8 +111,9 @@ boundaries without hand-authored comments.
 - source discovery uses conservative Scene, assignment, play, wait, and marker
   parsing rather than a Python AST plus Runtime Trace, so dynamic control flow and
   updater-driven geometry remain unknown;
-- Undo evidence lives for the Vite server session; durable project history remains
-  future product work;
+- preview and Undo evidence is retained in memory for 30 minutes and temporary
+  media is then removed automatically; durable project history remains future
+  product work;
 - the bridge is a local development experiment, not a remotely exposed render
   service or Python sandbox.
 

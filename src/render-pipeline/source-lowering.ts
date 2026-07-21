@@ -82,6 +82,15 @@ function shiftExpression(
   return terms.join(" + ");
 }
 
+function offsetExpression(
+  offset: Readonly<{ x: number; y: number }>,
+  frame: Readonly<{ height: number; width: number }>,
+  viewport: Readonly<{ height: number; width: number }>,
+) {
+  if (Math.abs(offset.x) < 0.0001 && Math.abs(offset.y) < 0.0001) return "ORIGIN";
+  return shiftExpression(offset, frame, viewport);
+}
+
 function pointExpression(
   point: Readonly<{ x: number; y: number }>,
   frame: Readonly<{ height: number; width: number }>,
@@ -153,16 +162,46 @@ function isPoint(value: unknown): value is Readonly<{ x: number; y: number }> {
     && typeof value.x === "number" && typeof value.y === "number";
 }
 
-function direction(placement: "above" | "below" | "left" | "right") {
-  return { above: "UP", below: "DOWN", left: "LEFT", right: "RIGHT" }[placement];
-}
+type LoweredAnimationOperation = Extract<CanonicalEditOperation, {
+  kind: "ChangePresence" | "CreateMotion" | "TransformContent";
+}>;
 
-function animationOperation(operation: CanonicalEditOperation) {
-  return operation.kind === "AnimateProperty"
-    || operation.kind === "ChangeCamera"
-    || operation.kind === "ChangePresence"
+function animationOperation(operation: CanonicalEditOperation): operation is LoweredAnimationOperation {
+  return operation.kind === "ChangePresence"
     || operation.kind === "CreateMotion"
     || operation.kind === "TransformContent";
+}
+
+function assertLoweringSupported(operation: CanonicalEditOperation) {
+  if (operation.kind === "CreateEntity" || operation.kind === "CreateMotion"
+    || operation.kind === "ChangePresence" || operation.kind === "TransformContent"
+    || operation.kind === "InsertSceneBoundary") return;
+  if (operation.kind === "SetProperty" && operation.key === "position" && isPoint(operation.value)) return;
+  if (operation.kind === "SetRelation" && operation.mode === "snapshot") return;
+  const detail = operation.kind === "SetProperty" ? ` ${operation.key}`
+    : operation.kind === "SetRelation" ? ` ${operation.mode}`
+      : "";
+  throw new ProgramLoweringError(
+    "operation-unsupported",
+    `${operation.kind}${detail} has no truthful source lowering.`,
+  );
+}
+
+function requireVariable(variables: ReadonlyMap<string, string>, entityId: string) {
+  const variable = variables.get(entityId);
+  if (!variable) throw new ProgramLoweringError("source-variable-missing", `No source variable exists for ${entityId}.`);
+  return variable;
+}
+
+function operationBuckets(operations: readonly CanonicalEditOperation[]) {
+  const buckets: Array<{ operations: CanonicalEditOperation[]; time: number }> = [];
+  for (const operation of operations) {
+    const time = operationTime(operation);
+    const current = buckets.at(-1);
+    if (current && Math.abs(current.time - time) < EPSILON) current.operations.push(operation);
+    else buckets.push({ operations: [operation], time });
+  }
+  return buckets;
 }
 
 export function lowerCanonicalProgramSource(
@@ -171,6 +210,13 @@ export function lowerCanonicalProgramSource(
   frame: Readonly<{ height: number; width: number }>,
   incoming: IncomingSceneSetup | null,
 ): LoweredProgramSource {
+  if (request.program.loweringStatus !== "supported") {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      `Program ${request.program.transactionId} is marked ${request.program.loweringStatus}, not supported.`,
+    );
+  }
+  request.program.operations.forEach(assertLoweringSupported);
   const anchor = findSceneMotionAnchors(source, request.sceneName)
     .find((candidate) => Math.abs(candidate.seconds - request.program.anchor.resolvedSeconds) < EPSILON);
   if (!anchor) {
@@ -213,8 +259,7 @@ export function lowerCanonicalProgramSource(
   ));
   const output: string[] = [];
   let cursor = request.program.anchor.resolvedSeconds;
-  const uniqueTimes = [...new Set(operations.map(operationTime))].sort((left, right) => left - right);
-  for (const time of uniqueTimes) {
+  for (const { operations: bucket, time } of operationBuckets(operations)) {
     if (time > cursor + EPSILON) {
       output.push(`self.wait(${formatAmount(time - cursor)})`);
       cursor = time;
@@ -225,31 +270,22 @@ export function lowerCanonicalProgramSource(
         `Operation at ${time.toFixed(3)}s overlaps source time already lowered through ${cursor.toFixed(3)}s.`,
       );
     }
-    const bucket = operations.filter((operation) => Math.abs(operationTime(operation) - time) < EPSILON);
     for (const operation of bucket) {
       if (operation.kind === "CreateEntity") {
-        const variable = variableByEntity.get(operation.entity.id)!;
+        const variable = requireVariable(variableByEntity, operation.entity.id);
         if (!operation.entity.type.startsWith("TransitionOverlay:")) {
           output.push(`# poietra:entity ${JSON.stringify({ id: operation.entity.id, variable })}`);
         }
         output.push(`${variable} = ${entityConstructor(operation)}`);
       } else if (operation.kind === "SetProperty") {
-        const variable = variableByEntity.get(operation.entityId);
-        if (!variable) throw new ProgramLoweringError("source-variable-missing", `No source variable exists for ${operation.entityId}.`);
+        const variable = requireVariable(variableByEntity, operation.entityId);
         if (operation.key === "position" && isPoint(operation.value)) {
           output.push(`${variable}.move_to(${pointExpression(operation.value, frame, request.viewport)})`);
-        } else if (operation.key === "scale" && typeof operation.value === "number") {
-          output.push(`${variable}.scale(${formatAmount(operation.value)})`);
-        } else if (operation.key !== "appearance" && operation.key !== "presence") {
-          throw new ProgramLoweringError("operation-unsupported", `SetProperty ${operation.key} has no safe source lowering.`);
         }
       } else if (operation.kind === "SetRelation") {
-        const sourceVariable = variableByEntity.get(operation.sourceEntityId);
-        const targetVariable = variableByEntity.get(operation.targetEntityId);
-        if (!sourceVariable || !targetVariable) {
-          throw new ProgramLoweringError("source-variable-missing", "SetRelation requires source identities for both entities.");
-        }
-        output.push(`${sourceVariable}.next_to(${targetVariable}, ${direction(operation.placement)})`);
+        const sourceVariable = requireVariable(variableByEntity, operation.sourceEntityId);
+        const targetVariable = requireVariable(variableByEntity, operation.targetEntityId);
+        output.push(`${sourceVariable}.move_to(${targetVariable}.get_center() + ${offsetExpression(operation.offset, frame, request.viewport)})`);
       }
     }
 
@@ -275,7 +311,7 @@ export function lowerCanonicalProgramSource(
         operation.kind === "CreateEntity" && operation.entity.type.startsWith("TransitionOverlay:")
       ));
       if (overlay?.kind === "CreateEntity") {
-        const overlayVariable = variableByEntity.get(overlay.entity.id)!;
+        const overlayVariable = requireVariable(variableByEntity, overlay.entity.id);
         output.push(`self.add(${overlayVariable})`);
         output.push(`self.bring_to_front(${overlayVariable})`);
       }
@@ -297,20 +333,18 @@ export function lowerCanonicalProgramSource(
         }
         const shift = shiftExpression(operation.delta, frame, request.viewport);
         for (const entityId of operation.targetEntityIds) {
-          const variable = variableByEntity.get(entityId);
-          if (!variable) throw new ProgramLoweringError("source-variable-missing", `No source variable exists for ${entityId}.`);
+          const variable = requireVariable(variableByEntity, entityId);
           actions.push(`${variable}.animate.shift(${shift})`);
         }
       } else if (operation.kind === "TransformContent") {
-        const sourceVariable = variableByEntity.get(operation.sourceEntityId);
-        if (!sourceVariable) throw new ProgramLoweringError("source-variable-missing", `No source variable exists for ${operation.sourceEntityId}.`);
+        const sourceVariable = requireVariable(variableByEntity, operation.sourceEntityId);
         const targetVariable = variableByEntity.get(operation.targetEntityId)
           ?? variableToken(request.program.transactionId, createdOperations.length + preludes.length);
         variableByEntity.set(operation.targetEntityId, targetVariable);
         const target = operation.targetType === "Text"
           ? `Text(${JSON.stringify(operation.replacement.text ?? operation.replacement.displayLines.join(" "))})`
           : `MathTex(${(operation.replacement.texParts ?? operation.replacement.displayLines).map((part) => JSON.stringify(part)).join(", ")})`;
-        preludes.push(`# poietra:entity ${JSON.stringify({ id: operation.targetEntityId, variable: sourceVariable })}`);
+        preludes.push(`# poietra:entity ${JSON.stringify({ id: operation.targetEntityId, variable: targetVariable })}`);
         preludes.push(`${targetVariable} = ${target}`);
         actions.push(operation.strategy === "transform-matching-tex"
           ? `TransformMatchingTex(${sourceVariable}, ${targetVariable}, transform_mismatches=True)`
@@ -318,8 +352,7 @@ export function lowerCanonicalProgramSource(
         postludes.push(`${sourceVariable} = ${targetVariable}`);
         variableByEntity.set(operation.targetEntityId, sourceVariable);
       } else if (operation.kind === "ChangePresence") {
-        const variable = variableByEntity.get(operation.entityId);
-        if (!variable) throw new ProgramLoweringError("source-variable-missing", `No source variable exists for ${operation.entityId}.`);
+        const variable = requireVariable(variableByEntity, operation.entityId);
         if (operation.effect === "fade-in") actions.push(`FadeIn(${variable})`);
         else if (operation.effect === "remove") actions.push(`FadeOut(${variable})`);
         else if (operation.effect === "cover") actions.push(`${variable}.animate.scale(800)`);
@@ -327,16 +360,6 @@ export function lowerCanonicalProgramSource(
           actions.push(`${variable}.animate.scale(0.00125)`);
           postludes.push(`self.remove(${variable})`);
         }
-      } else if (operation.kind === "AnimateProperty") {
-        const variable = variableByEntity.get(operation.entityId);
-        if (!variable) throw new ProgramLoweringError("source-variable-missing", `No source variable exists for ${operation.entityId}.`);
-        if (operation.key === "scale" && typeof operation.to === "number") {
-          actions.push(`${variable}.animate.scale(${formatAmount(operation.to)})`);
-        } else {
-          throw new ProgramLoweringError("operation-unsupported", `AnimateProperty ${operation.key} has no safe source lowering.`);
-        }
-      } else if (operation.kind === "ChangeCamera") {
-        throw new ProgramLoweringError("operation-unsupported", "ChangeCamera requires a MovingCameraScene and is not lowered generically.");
       }
     }
     output.push(...preludes);

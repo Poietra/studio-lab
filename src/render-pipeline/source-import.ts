@@ -43,8 +43,7 @@ type MutableEntity = {
   content?: EntityContent;
   id: string;
   initialization: string;
-  lifetimeEnd: number | null;
-  lifetimeStart: number;
+  lifetimes: Array<{ end: number | null; start: number }>;
   position: Point;
   relation?: Readonly<{ direction: "DOWN" | "LEFT" | "RIGHT" | "UP"; target: string }>;
   sourceVariable: string;
@@ -84,20 +83,41 @@ function lineIndent(line: string) {
   return line.match(/^\s*/)?.[0].length ?? 0;
 }
 
+function blockEnd(lines: readonly string[], start: number, limit: number, parentIndent: number) {
+  for (let index = start; index < limit; index += 1) {
+    const line = lines[index] ?? "";
+    if (line.trim().length > 0 && lineIndent(line) <= parentIndent) return index;
+  }
+  return limit;
+}
+
 export function findSceneBlocks(source: string): readonly SourceSceneBlock[] {
   const lines = source.split(/\r?\n/);
   const classes = lines.flatMap((line, index) => {
     const match = line.match(CLASS_PATTERN);
     return match ? [{ classLine: index, indent: lineIndent(line), name: match[1] }] : [];
   });
-  return classes.map((entry, index) => {
-    const nextClassLine = classes[index + 1]?.classLine ?? lines.length;
-    const constructLine = lines.slice(entry.classLine + 1, nextClassLine).findIndex((line) => (
-      /^\s*def\s+construct\s*\(\s*self\s*\)\s*:/.test(line)
+  return classes.map((entry) => {
+    const classEnd = blockEnd(lines, entry.classLine + 1, lines.length, entry.indent);
+    const constructLine = lines.findIndex((line, index) => (
+      index > entry.classLine
+      && index < classEnd
+      && lineIndent(line) > entry.indent
+      && /^\s*def\s+construct\s*\(\s*self\s*\)\s*:/.test(line)
     ));
-    const bodyStart = constructLine < 0 ? entry.classLine + 1 : entry.classLine + 2 + constructLine;
+    if (constructLine < 0) {
+      return {
+        bodyEnd: classEnd,
+        bodyStart: classEnd,
+        classLine: entry.classLine,
+        lines,
+        name: entry.name,
+      };
+    }
+    const constructIndent = lineIndent(lines[constructLine] ?? "");
+    const bodyStart = constructLine + 1;
     return {
-      bodyEnd: nextClassLine,
+      bodyEnd: blockEnd(lines, bodyStart, classEnd, constructIndent),
       bodyStart,
       classLine: entry.classLine,
       lines,
@@ -256,6 +276,17 @@ function add(left: Point, right: Point): Point {
   return { x: left.x + right.x, y: left.y + right.y };
 }
 
+function beginPresence(entity: MutableEntity, at: number) {
+  if (entity.lifetimes.at(-1)?.end === null) return;
+  entity.lifetimes.push({ end: null, start: at });
+}
+
+function endPresence(entity: MutableEntity, at: number) {
+  const active = entity.lifetimes.at(-1);
+  if (active?.end !== null) return;
+  active.end = Math.max(active.start, at);
+}
+
 function durationFrom(statement: string, fallback = 1) {
   const match = statement.match(/\brun_time\s*=\s*([0-9]+(?:\.[0-9]+)?)/);
   return match ? Number(match[1]) : fallback;
@@ -264,10 +295,6 @@ function durationFrom(statement: string, fallback = 1) {
 function waitDuration(statement: string) {
   const match = statement.match(/^self\.wait\(\s*([0-9]+(?:\.[0-9]+)?)?\s*\)/s);
   return match ? Number(match[1] ?? 1) : null;
-}
-
-function operationTargets(statement: string, names: readonly string[]) {
-  return names.filter((name) => new RegExp(`\\b${name}\\b`).test(statement));
 }
 
 function shiftedPosition(point: Point, statement: string, frame: Readonly<{ height: number; width: number }>) {
@@ -319,8 +346,7 @@ export function importManimScene(
       content: entityContent(type, sourceVariable, argumentsSource),
       id: markedIdentity ?? `source:${sceneId}:${sourceVariable}`,
       initialization: statement.text,
-      lifetimeEnd: null,
-      lifetimeStart: 0,
+      lifetimes: [],
       position: defaultPosition(mutableEntities.length),
       relation: relationFrom(statement.text),
       sourceVariable,
@@ -339,6 +365,7 @@ export function importManimScene(
   }
 
   let cursor = 0;
+  let firstPlayEnd: number | null = null;
   const events: TimelineEvent[] = [];
   const positionSamples = new Map<string, PropertyChannelSample[]>();
   for (const entity of mutableEntities) {
@@ -385,9 +412,30 @@ export function importManimScene(
       cursor += wait;
       continue;
     }
+    const add = statement.text.match(/^self\.add\((.*)\)$/s)?.[1];
+    if (add) {
+      for (const entity of mutableEntities) {
+        const variablePattern = entity.sourceVariable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        if (new RegExp(`\\b${variablePattern}\\b`).test(add)) beginPresence(entity, cursor);
+      }
+      continue;
+    }
+    const remove = statement.text.match(/^self\.remove\((.*)\)$/s)?.[1];
+    if (remove) {
+      for (const entity of mutableEntities) {
+        const variablePattern = entity.sourceVariable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        if (new RegExp(`\\b${variablePattern}\\b`).test(remove)) endPresence(entity, cursor);
+      }
+      continue;
+    }
+    if (/^self\.clear\(\s*\)$/.test(statement.text)) {
+      for (const entity of mutableEntities) endPresence(entity, cursor);
+      continue;
+    }
     if (!statement.text.startsWith("self.play(")) continue;
     const duration = durationFrom(statement.text);
     const interval = { end: cursor + duration, start: cursor };
+    firstPlayEnd ??= interval.end;
     events.push({
       id: `import:${sceneId}:play:${statement.line}`,
       interval,
@@ -397,10 +445,10 @@ export function importManimScene(
     for (const entity of mutableEntities) {
       const variablePattern = entity.sourceVariable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
       if (new RegExp(`(?:FadeIn|Create|Write)\\(\\s*${variablePattern}\\b`).test(statement.text)) {
-        entity.lifetimeStart = cursor;
+        beginPresence(entity, cursor);
       }
       if (new RegExp(`(?:FadeOut|Uncreate|Unwrite)\\(\\s*${variablePattern}\\b`).test(statement.text)) {
-        entity.lifetimeEnd = interval.end;
+        endPresence(entity, interval.end);
       }
       if (new RegExp(`\\b${variablePattern}\\.animate\\.shift\\(`).test(statement.text)) {
         const samples = positionSamples.get(entity.id) ?? [];
@@ -419,6 +467,14 @@ export function importManimScene(
         entity.position = to;
       }
     }
+    for (const transform of statement.text.matchAll(
+      /(?:ReplacementTransform|TransformMatchingTex)\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*([A-Za-z_][A-Za-z0-9_]*)/g,
+    )) {
+      const sourceEntity = byVariable.get(transform[1]);
+      const targetEntity = byVariable.get(transform[2]);
+      if (sourceEntity) endPresence(sourceEntity, interval.end);
+      if (targetEntity) beginPresence(targetEntity, interval.start);
+    }
     cursor = interval.end;
   }
   const anchors = statements.flatMap((statement) => {
@@ -429,7 +485,10 @@ export function importManimScene(
   const entities = Object.fromEntries(mutableEntities.map((entity): [string, RuntimeEntity] => [entity.id, {
     content: entity.content,
     id: entity.id,
-    lifetime: [{ end: Math.min(entity.lifetimeEnd ?? duration, duration), start: Math.min(entity.lifetimeStart, duration) }],
+    lifetime: entity.lifetimes.map((lifetime) => ({
+      end: Math.min(lifetime.end ?? duration, duration),
+      start: Math.min(lifetime.start, duration),
+    })),
     provisional: false,
     sourceIdentity: { kind: "known", value: entity.sourceVariable },
     type: entity.type,
@@ -490,9 +549,11 @@ export function importManimScene(
   };
   const firstPlay = statements.find((statement) => statement.text.startsWith("self.play("));
   const firstPlayIndex = firstPlay ? statements.indexOf(firstPlay) : statements.length;
-  const initialVisibleSourceVariables = firstPlay
-    ? operationTargets(firstPlay.text, mutableEntities.map((entity) => entity.sourceVariable))
-    : mutableEntities.map((entity) => entity.sourceVariable);
+  const initialVisibleSourceVariables = mutableEntities
+    .filter((entity) => entity.lifetimes.some((lifetime) => (
+      firstPlayEnd === null ? lifetime.start <= 0 : lifetime.start < firstPlayEnd
+    )))
+    .map((entity) => entity.sourceVariable);
   return {
     anchors,
     initialVisibleSourceVariables,

@@ -500,7 +500,8 @@ export function createDirectManipulationPositionProgram(
     throw new Error(resolution.message);
   }
   const operations = input.targetEntityIds.map((entityId, index): CanonicalEditOperation => {
-    const position = input.positions[entityId] ?? { x: 0, y: 0 };
+    const position = input.positions[entityId];
+    if (!position) throw new Error(`Direct manipulation requires a projected position for ${entityId}.`);
     return {
       dependsOn: [],
       entityId,

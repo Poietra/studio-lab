@@ -13,6 +13,15 @@ class First(Scene):
         # poietra:anchor 3.000
         self.wait(1)
 
+    # poietra:anchor 88.000
+    def helper(self):
+        leaked = Text("Must not be imported")
+        # poietra:anchor 99.000
+
+class NotAScene:
+    def construct(self):
+        also_leaked = Text("Not a Scene")
+
 class Second(Scene):
     def construct(self):
         title = Text("Next")
@@ -37,6 +46,9 @@ describe("conservative Manim source import", () => {
     expect(imported?.runtimeSceneState.eventTrack.events.map((event) => event.kind)).toEqual(["play", "play", "wait"]);
     expect(imported?.runtimeSceneState.propertyChannels["source:scene.py#First:equation/position"]?.samples)
       .toHaveLength(2);
+    expect(imported?.initialVisibleSourceVariables).toEqual(["equation", "label"]);
+    expect(imported?.runtimeSceneState.objectGraph.entities).not.toHaveProperty("source:scene.py#First:leaked");
+    expect(imported?.runtimeSceneState.objectGraph.entities).not.toHaveProperty("source:scene.py#First:also_leaked");
   });
 
   it("restores a transaction-scoped Studio identity from a committed source marker", () => {
@@ -84,5 +96,69 @@ class First(Scene):
       at: 4,
       kind: "scene-boundary",
     }));
+  });
+
+  it("does not treat assignment as presence without add or an introducing animation", () => {
+    const addSource = `from manim import *
+
+class Added(Scene):
+    def construct(self):
+        visible = Text("Visible")
+        unused = Text("Unused")
+        self.add(visible)
+        self.wait(1)
+`;
+    const imported = importManimScene(addSource, "scene.py", "Added");
+
+    expect(imported?.runtimeSceneState.objectGraph.entities["source:scene.py#Added:visible"]?.lifetime)
+      .toEqual([{ end: 1, start: 0 }]);
+    expect(imported?.runtimeSceneState.objectGraph.entities["source:scene.py#Added:unused"]?.lifetime)
+      .toEqual([]);
+    expect(imported?.initialVisibleSourceVariables).toEqual(["visible"]);
+  });
+
+  it("records replacement lineage as non-overlapping source and target lifetimes", () => {
+    const transformed = `from manim import *
+
+class Transforming(Scene):
+    def construct(self):
+        equation = MathTex("E", "=", "m", "c^2")
+        self.add(equation)
+        self.wait(1)
+        # poietra:entity {"id":"tx:one/entity:replacement","variable":"replacement"}
+        replacement = MathTex("F", "=", "m", "a")
+        self.play(TransformMatchingTex(equation, replacement), run_time=2)
+        self.wait(1)
+`;
+    const imported = importManimScene(transformed, "scene.py", "Transforming");
+
+    expect(imported?.runtimeSceneState.objectGraph.entities["source:scene.py#Transforming:equation"]?.lifetime)
+      .toEqual([{ end: 3, start: 0 }]);
+    expect(imported?.runtimeSceneState.objectGraph.entities["tx:one/entity:replacement"]?.lifetime)
+      .toEqual([{ end: 4, start: 1 }]);
+  });
+
+  it("preserves repeated presence intervals and ignores removal before first presence", () => {
+    const repeated = `from manim import *
+
+class Repeated(Scene):
+    def construct(self):
+        item = Text("Again")
+        self.remove(item)
+        self.wait(1)
+        self.add(item)
+        self.wait(1)
+        self.remove(item)
+        self.wait(1)
+        self.add(item)
+        self.wait(1)
+`;
+    const imported = importManimScene(repeated, "scene.py", "Repeated");
+
+    expect(imported?.runtimeSceneState.objectGraph.entities["source:scene.py#Repeated:item"]?.lifetime)
+      .toEqual([
+        { end: 2, start: 1 },
+        { end: 4, start: 3 },
+      ]);
   });
 });

@@ -1,11 +1,12 @@
 import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { ProgramRenderRequest, RenderSessionView } from "../src/render-pipeline/contracts";
+import type { ProgramRenderRequest } from "../src/render-pipeline/contracts";
 import type { CanonicalEditOperation, CanonicalEditProgram } from "../src/studio/operations";
 import { ManimRenderManager, parseManimCommand } from "./manim-render-pipeline";
 
@@ -18,6 +19,8 @@ const sceneSource = `from manim import *
 class GroupedEquation(Scene):
     def construct(self):
         equation = MathTex("E", "=", "m", "c^2")
+        self.add(equation)
+        self.wait(7)
         # poietra:anchor 7.000
         self.wait(1)
 `;
@@ -55,6 +58,7 @@ function request(sourcePath = "scene.py"): ProgramRenderRequest {
     program,
     sceneName: "GroupedEquation",
     sourceBindings: [{ entityId: "source:scene.py#GroupedEquation:equation", sourceVariable: "equation" }],
+    sourceHash: createHash("sha256").update(sceneSource).digest("hex"),
     sourcePath,
     viewport: { height: 360, width: 640 },
   };
@@ -107,6 +111,7 @@ describe("Manim render manager", () => {
     const started = await manager.start(request());
     const rendered = await waitForTerminal(manager, started.id);
     expect(rendered.status).toBe("ready");
+    expect(rendered.programTransactionId).toBe("render-integration");
     expect(rendered.progress).toBe(1);
     expect(rendered.logTail).toContain("100%");
     expect(rendered.videoUrl).toContain(started.id);
@@ -131,6 +136,50 @@ describe("Manim render manager", () => {
     await expect(manager.commit(started.id)).rejects.toThrow(/source changed after preview/i);
   });
 
+  it("refuses to render a draft created from a stale imported source snapshot", async () => {
+    const { manager, projectRoot } = await fixture();
+    await writeFile(join(projectRoot, "scene.py"), `${sceneSource}\n# changed before render\n`, "utf8");
+
+    await expect(manager.start(request())).rejects.toThrow(/imported source changed before rendering/i);
+  });
+
+  it("revalidates target identity and imported source bindings at the server boundary", async () => {
+    const { manager } = await fixture();
+    const invalid = request();
+    const operation = invalid.program.operations[0];
+    if (operation?.kind !== "CreateMotion") throw new Error("Expected CreateMotion fixture.");
+
+    await expect(manager.start({
+      ...invalid,
+      program: {
+        ...invalid.program,
+        operations: [{ ...operation, targetEntityIds: ["invented-identity"] }],
+      },
+      sourceBindings: [{ entityId: "invented-identity", sourceVariable: "equation" }],
+    })).rejects.toThrow(/does not exist|target/i);
+  });
+
+  it("does not invent a next-Scene edge between unrelated Python files", async () => {
+    const { manager, projectRoot } = await fixture();
+    await writeFile(join(projectRoot, "another.py"), `from manim import *
+
+class Independent(Scene):
+    def construct(self):
+        title = Text("Independent")
+        self.add(title)
+`, "utf8");
+
+    const workspace = await manager.workspace();
+    expect(workspace.sources).toHaveLength(2);
+    expect(workspace.sources.flatMap((source) => source.scenes).map((scene) => ({
+      id: scene.sceneId,
+      next: scene.nextSceneId,
+    }))).toEqual([
+      { id: "another.py#Independent", next: null },
+      { id: "scene.py#GroupedEquation", next: null },
+    ]);
+  });
+
   it("cancels an active render and permits discard", async () => {
     const { manager } = await fixture();
     const started = await manager.start(request());
@@ -138,6 +187,17 @@ describe("Manim render manager", () => {
     expect(cancelled.status).toBe("cancelled");
     const discarded = await manager.discard(started.id);
     expect(discarded.status).toBe("discarded");
+  });
+
+  it("expires terminal sessions so source snapshots and temporary media do not accumulate", async () => {
+    const { manager } = await fixture();
+    const started = await manager.start(request());
+    const rendered = await waitForTerminal(manager, started.id);
+    expect(rendered.status).toBe("ready");
+
+    await manager.cleanupExpiredSessions(Date.parse(rendered.updatedAt) + 30 * 60 * 1_000);
+
+    expect(() => manager.view(started.id)).toThrow(/session not found/i);
   });
 
   it("rejects source paths outside the configured root", async () => {

@@ -6,10 +6,20 @@ import type {
 } from "./contracts";
 
 async function readJson<T extends object>(response: Response): Promise<T> {
-  const body = await response.json() as T | ManimApiError;
-  if (!response.ok) {
-    throw new Error("error" in body ? body.error : `Request failed with ${response.status}.`);
+  const text = await response.text();
+  let body: unknown;
+  try {
+    body = text ? JSON.parse(text) as unknown : null;
+  } catch {
+    throw new Error(`Request failed with ${response.status}: the server returned malformed JSON.`);
   }
+  if (!response.ok) {
+    const error = typeof body === "object" && body !== null && "error" in body
+      ? (body as ManimApiError).error
+      : null;
+    throw new Error(typeof error === "string" ? error : `Request failed with ${response.status}.`);
+  }
+  if (typeof body !== "object" || body === null) throw new Error("The server returned an invalid JSON response.");
   return body as T;
 }
 

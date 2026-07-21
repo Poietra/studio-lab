@@ -64,6 +64,7 @@ function request(
     program,
     sceneName: "GroupedEquation",
     sourceBindings,
+    sourceHash: "a".repeat(64),
     sourcePath: "examples/relativity.py",
     viewport: { height: 360, width: 640 },
   };
@@ -121,7 +122,6 @@ describe("Canonical EditProgram source lowering", () => {
     const program = {
       ...canonicalProgram(operations, "compound"),
       intentCount: 3,
-      loweringStatus: "illustrative" as const,
       schedule: { edges: [], mode: "sequence" as const, order: operations.map((operation) => operation.id) },
     };
     const lowered = lowerCanonicalProgramSource(
@@ -136,6 +136,7 @@ describe("Canonical EditProgram source lowering", () => {
 
     expect(lowered.insertedCode).toContain("MathTex(\"E\", \"=\", \"m\", \"c^2\")");
     expect(lowered.insertedCode).toContain("Text(\"Energy\")");
+    expect(lowered.insertedCode).toContain(".get_center() + 3.2222 * RIGHT");
     expect(lowered.insertedCode).toContain("FadeIn(");
     expect(lowered.insertedCode).toContain("self.clear()");
     expect(lowered.insertedCode).toContain('# poietra:scene-boundary {"at":8.5,"destination":"scene.py#Next"}');
@@ -156,6 +157,44 @@ describe("Canonical EditProgram source lowering", () => {
       "operation-unsupported",
       "Rendered validation currently supports straight CreateMotion paths only.",
     ));
+  });
+
+  it("rejects operations that do not have truthful source lowering instead of dropping them", () => {
+    const unsupported: CanonicalEditOperation = {
+      ...operationBase("modify", 7, 8),
+      controlOffset: { x: 0, y: 10 },
+      kind: "ModifyMotion",
+      motionId: "source-motion",
+      preserve: ["start", "end", "duration"],
+    };
+    expect(() => lowerCanonicalProgramSource(
+      source,
+      request(canonicalProgram([unsupported])),
+      { height: 8, width: 14.222 },
+      null,
+    )).toThrow(/ModifyMotion has no truthful source lowering/);
+  });
+
+  it("rejects live relations because a one-shot move cannot preserve that constraint", () => {
+    const liveRelation: CanonicalEditOperation = {
+      ...operationBase("live-relation", 7),
+      kind: "SetRelation",
+      mode: "live",
+      offset: { x: 145, y: 0 },
+      placement: "right",
+      relation: "next-to",
+      sourceEntityId: "label_1",
+      targetEntityId: "equation_1",
+    };
+    expect(() => lowerCanonicalProgramSource(
+      source,
+      request(canonicalProgram([liveRelation]), [
+        { entityId: "equation_1", sourceVariable: "equation" },
+        { entityId: "label_1", sourceVariable: "label" },
+      ]),
+      { height: 8, width: 14.222 },
+      null,
+    )).toThrow(/SetRelation live has no truthful source lowering/);
   });
 
   it("requires imported source identity and an exact source anchor", () => {

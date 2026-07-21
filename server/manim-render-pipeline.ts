@@ -1,4 +1,3 @@
-import { createReadStream } from "node:fs";
 import {
   chmod,
   lstat,
@@ -24,20 +23,21 @@ import {
   sep,
 } from "node:path";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { Plugin } from "vite";
 
 import {
-  programRenderRequestSchema,
   type ProgramRenderRequest,
   type ManimWorkspaceSource,
   type ManimWorkspaceView,
   type RenderSessionStatus,
   type RenderSessionView,
 } from "../src/render-pipeline/contracts";
-import { importManimScene } from "../src/render-pipeline/source-import";
+import { findSceneBlocks, importManimScene } from "../src/render-pipeline/source-import";
 import { lowerCanonicalProgramSource } from "../src/render-pipeline/source-lowering";
+import { validateAndScheduleProgram } from "../src/studio/program-validation";
+import { ManimPipelineError } from "./manim-pipeline-error";
+import { handleManimRequest, sendJson } from "./manim-render-http";
 
 type ManimRenderPipelineOptions = Readonly<{
   command?: string;
@@ -68,15 +68,8 @@ type RenderSession = {
   videoPath: string | null;
 };
 
-class ManimPipelineError extends Error {
-  constructor(readonly status: number, message: string) {
-    super(message);
-    this.name = "ManimPipelineError";
-  }
-}
-
-const MAX_BODY_BYTES = 64 * 1024;
 const MAX_LOG_BYTES = 40 * 1024;
+const DEFAULT_SESSION_RETENTION_MS = 30 * 60 * 1_000;
 const SKIPPED_DIRECTORIES = new Set([
   ".git",
   ".poietra",
@@ -87,7 +80,6 @@ const SKIPPED_DIRECTORIES = new Set([
   "node_modules",
   "target",
 ]);
-const SCENE_PATTERN = /^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*Scene[^)]*)\)\s*:/gm;
 
 function sourceHash(source: string) {
   return createHash("sha256").update(source).digest("hex");
@@ -115,7 +107,7 @@ function commandIsAvailable(command: readonly string[]) {
 }
 
 function scenesInSource(source: string) {
-  return [...source.matchAll(SCENE_PATTERN)].map((match) => match[1]);
+  return findSceneBlocks(source).map((block) => block.name);
 }
 
 async function discoverPythonSources(
@@ -153,22 +145,18 @@ async function discoverPythonSources(
   }
   await visit(projectRoot, "");
   const sorted = sources.sort((left, right) => left.path.localeCompare(right.path));
-  const orderedSceneIds = sorted.flatMap((source) => source.scenes.map((scene) => scene.sceneId));
   return sorted.map((source): ManimWorkspaceSource => ({
     path: source.path,
-    scenes: source.scenes.map((scene) => {
-      const index = orderedSceneIds.indexOf(scene.sceneId);
-      return {
-        anchors: scene.anchors,
-        name: scene.name,
-        nextSceneId: orderedSceneIds[index + 1] ?? null,
-        runtimeSceneState: scene.runtimeSceneState,
-        sceneId: scene.sceneId,
-        sourceHash: scene.sourceHash,
-        sourceVariables: scene.sourceVariables,
-        staticSemanticState: scene.staticSemanticState,
-      };
-    }),
+    scenes: source.scenes.map((scene, index) => ({
+      anchors: scene.anchors,
+      name: scene.name,
+      nextSceneId: source.scenes[index + 1]?.sceneId ?? null,
+      runtimeSceneState: scene.runtimeSceneState,
+      sceneId: scene.sceneId,
+      sourceHash: scene.sourceHash,
+      sourceVariables: scene.sourceVariables,
+      staticSemanticState: scene.staticSemanticState,
+    })),
   }));
 }
 
@@ -251,16 +239,36 @@ export class ManimRenderManager {
   readonly command: readonly string[];
   readonly frame: Readonly<{ height: number; width: number }>;
   readonly projectRoot: string;
+  private readonly cleanupTimer: NodeJS.Timeout;
+  private readonly sessionRetentionMs: number;
   private readonly sessions = new Map<string, RenderSession>();
 
   constructor(options: Readonly<{
     command: readonly string[];
     frame: Readonly<{ height: number; width: number }>;
     projectRoot: string;
+    sessionRetentionMs?: number;
   }>) {
     this.command = options.command;
     this.frame = options.frame;
     this.projectRoot = resolve(options.projectRoot);
+    this.sessionRetentionMs = options.sessionRetentionMs ?? DEFAULT_SESSION_RETENTION_MS;
+    this.cleanupTimer = setInterval(() => {
+      void this.cleanupExpiredSessions();
+    }, Math.min(60_000, Math.max(100, this.sessionRetentionMs)));
+    this.cleanupTimer.unref();
+  }
+
+  async cleanupExpiredSessions(now = Date.now()) {
+    const expired = [...this.sessions.values()].filter((session) => (
+      session.status !== "preparing"
+      && session.status !== "rendering"
+      && now - Date.parse(session.updatedAt) >= this.sessionRetentionMs
+    ));
+    await Promise.all(expired.map(async (session) => {
+      this.sessions.delete(session.id);
+      await rm(session.tempRoot, { force: true, recursive: true });
+    }));
   }
 
   async workspace(): Promise<ManimWorkspaceView> {
@@ -330,6 +338,7 @@ export class ManimRenderManager {
         insertedCode: session.patch.insertedCode,
         sourceHash: session.originalHash,
       },
+      programTransactionId: session.request.program.transactionId,
       progress: session.progress,
       sceneName: session.request.sceneName,
       sourcePath: session.request.sourcePath,
@@ -350,6 +359,9 @@ export class ManimRenderManager {
     }
     const sourcePath = await this.sourcePath(request.sourcePath);
     const originalSource = await readFile(sourcePath, "utf8");
+    if (sourceHash(originalSource) !== request.sourceHash) {
+      throw new ManimPipelineError(409, "The imported source changed before rendering. Reimport the workspace and create the draft again.");
+    }
     if (!scenesInSource(originalSource).includes(request.sceneName)) {
       throw new ManimPipelineError(400, `${request.sceneName} is not declared in ${request.sourcePath}.`);
     }
@@ -360,18 +372,35 @@ export class ManimRenderManager {
     if (!activeScene) {
       throw new ManimPipelineError(400, `${request.sceneName} is not an imported Scene in ${request.sourcePath}.`);
     }
-    const hasSceneBoundary = request.program.operations.some((operation) => operation.kind === "InsertSceneBoundary");
+    if (activeScene.sourceHash !== request.sourceHash) {
+      throw new ManimPipelineError(409, "The source changed while Studio was preparing the render. Reimport and try again.");
+    }
+    const validation = validateAndScheduleProgram(request.program, activeScene.runtimeSceneState);
+    if (validation.kind === "invalid") {
+      throw new ManimPipelineError(
+        400,
+        validation.issues.find((issue) => issue.severity === "error")?.message
+          ?? "The Canonical EditProgram is invalid for the imported Scene.",
+      );
+    }
+    for (const binding of request.sourceBindings) {
+      if (activeScene.sourceVariables[binding.entityId] !== binding.sourceVariable) {
+        throw new ManimPipelineError(400, `Source binding ${binding.entityId} → ${binding.sourceVariable} does not match the imported Scene.`);
+      }
+    }
+    const renderRequest: ProgramRenderRequest = { ...request, program: validation.program };
+    const hasSceneBoundary = renderRequest.program.operations.some((operation) => operation.kind === "InsertSceneBoundary");
     let incoming: Readonly<{
       initialization: readonly string[];
       visibleSourceVariables: readonly string[];
     }> | null = null;
     if (hasSceneBoundary) {
-      if (!activeScene.nextSceneId || !request.destination) {
+      if (!activeScene.nextSceneId || !renderRequest.destination) {
         throw new ManimPipelineError(400, "This Scene transition requires the imported next Scene destination.");
       }
-      const destinationSource = workspace.sources.find((source) => source.path === request.destination?.sourcePath);
+      const destinationSource = workspace.sources.find((source) => source.path === renderRequest.destination?.sourcePath);
       const destinationScene = destinationSource?.scenes.find((scene) => (
-        scene.name === request.destination?.sceneName && scene.sceneId === activeScene.nextSceneId
+        scene.name === renderRequest.destination?.sceneName && scene.sceneId === activeScene.nextSceneId
       ));
       if (!destinationSource || !destinationScene) {
         throw new ManimPipelineError(400, "The requested transition destination is not the active Scene's next imported Scene.");
@@ -391,15 +420,20 @@ export class ManimRenderManager {
         initialization: importedDestination.initialization,
         visibleSourceVariables: importedDestination.initialVisibleSourceVariables,
       };
-    } else if (request.destination) {
+    } else if (renderRequest.destination) {
       throw new ManimPipelineError(400, "A render without a Scene boundary must not include a destination Scene.");
     }
-    const lowered = lowerCanonicalProgramSource(originalSource, request, this.frame, incoming);
+    const lowered = lowerCanonicalProgramSource(originalSource, renderRequest, this.frame, incoming);
     const tempRoot = await mkdtemp(join(tmpdir(), "poietra-manim-render-"));
     const previewSourcePath = join(tempRoot, basename(sourcePath));
     const mediaRoot = join(tempRoot, "media");
-    await mkdir(mediaRoot, { recursive: true });
-    await writeFile(previewSourcePath, lowered.source, "utf8");
+    try {
+      await mkdir(mediaRoot, { recursive: true });
+      await writeFile(previewSourcePath, lowered.source, "utf8");
+    } catch (error) {
+      await rm(tempRoot, { force: true, recursive: true });
+      throw error;
+    }
 
     const now = new Date().toISOString();
     const session: RenderSession = {
@@ -417,7 +451,7 @@ export class ManimRenderManager {
       patchedHash: sourceHash(lowered.source),
       patchedSource: lowered.source,
       progress: 0.1,
-      request,
+      request: renderRequest,
       status: "preparing",
       tempRoot,
       updatedAt: now,
@@ -432,29 +466,28 @@ export class ManimRenderManager {
     session.status = "rendering";
     session.progress = 0.2;
     session.updatedAt = new Date().toISOString();
-    const [executable, ...prefix] = this.command;
-    const child = spawn(executable, [
-      ...prefix,
-      "-ql",
-      "--disable_caching",
-      "--media_dir",
-      mediaRoot,
-      previewSourcePath,
-      session.request.sceneName,
-    ], {
-      cwd: this.projectRoot,
-      detached: process.platform !== "win32",
-      env: {
-        ...process.env,
-        PYTHONPATH: [this.projectRoot, process.env.PYTHONPATH].filter(Boolean).join(process.platform === "win32" ? ";" : ":"),
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    session.child = child;
-    child.stdout?.on("data", (chunk: Buffer) => appendLog(session, chunk));
-    child.stderr?.on("data", (chunk: Buffer) => appendLog(session, chunk));
-
     try {
+      const [executable, ...prefix] = this.command;
+      const child = spawn(executable, [
+        ...prefix,
+        "-ql",
+        "--disable_caching",
+        "--media_dir",
+        mediaRoot,
+        previewSourcePath,
+        session.request.sceneName,
+      ], {
+        cwd: this.projectRoot,
+        detached: process.platform !== "win32",
+        env: {
+          ...process.env,
+          PYTHONPATH: [this.projectRoot, process.env.PYTHONPATH].filter(Boolean).join(process.platform === "win32" ? ";" : ":"),
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      session.child = child;
+      child.stdout?.on("data", (chunk: Buffer) => appendLog(session, chunk));
+      child.stderr?.on("data", (chunk: Buffer) => appendLog(session, chunk));
       const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit, rejectExit) => {
         child.once("error", rejectExit);
         child.once("exit", (code, signal) => resolveExit({ code, signal }));
@@ -540,61 +573,13 @@ export class ManimRenderManager {
   }
 
   async close() {
+    clearInterval(this.cleanupTimer);
     await Promise.all([...this.sessions.values()].map(async (session) => {
       stopChild(session.child);
       await rm(session.tempRoot, { force: true, recursive: true });
     }));
     this.sessions.clear();
   }
-}
-
-async function readJsonBody(request: IncomingMessage) {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    size += buffer.length;
-    if (size > MAX_BODY_BYTES) throw new ManimPipelineError(413, "Request body is too large.");
-    chunks.push(buffer);
-  }
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
-  } catch {
-    throw new ManimPipelineError(400, "Request body must be valid JSON.");
-  }
-}
-
-function sendJson(response: ServerResponse, status: number, body: unknown) {
-  response.statusCode = status;
-  response.setHeader("content-type", "application/json; charset=utf-8");
-  response.setHeader("cache-control", "no-store");
-  response.end(JSON.stringify(body));
-}
-
-async function streamVideo(request: IncomingMessage, response: ServerResponse, path: string) {
-  const metadata = await stat(path);
-  const range = request.headers.range?.match(/^bytes=(\d*)-(\d*)$/);
-  response.setHeader("accept-ranges", "bytes");
-  response.setHeader("cache-control", "no-store");
-  response.setHeader("content-type", "video/mp4");
-  if (!range) {
-    response.statusCode = 200;
-    response.setHeader("content-length", metadata.size);
-    createReadStream(path).pipe(response);
-    return;
-  }
-  const start = range[1] ? Number(range[1]) : 0;
-  const end = range[2] ? Math.min(Number(range[2]), metadata.size - 1) : metadata.size - 1;
-  if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || start >= metadata.size) {
-    response.statusCode = 416;
-    response.setHeader("content-range", `bytes */${metadata.size}`);
-    response.end();
-    return;
-  }
-  response.statusCode = 206;
-  response.setHeader("content-length", end - start + 1);
-  response.setHeader("content-range", `bytes ${start}-${end}/${metadata.size}`);
-  createReadStream(path, { end, start }).pipe(response);
 }
 
 export function manimRenderPipeline(options: ManimRenderPipelineOptions = {}): Plugin {
@@ -621,53 +606,7 @@ export function manimRenderPipeline(options: ManimRenderPipelineOptions = {}): P
           sendJson(response, 503, { error: "Manim render pipeline is not configured." });
           return;
         }
-        try {
-          const url = new URL(request.url, "http://127.0.0.1");
-          if (request.method === "GET" && url.pathname === "/api/manim/workspace") {
-            sendJson(response, 200, await manager.workspace());
-            return;
-          }
-          if (request.method === "POST" && url.pathname === "/api/manim/renders") {
-            const parsed = programRenderRequestSchema.safeParse(await readJsonBody(request));
-            if (!parsed.success) {
-              throw new ManimPipelineError(400, parsed.error.issues[0]?.message ?? "Invalid canonical EditProgram render request.");
-            }
-            sendJson(response, 202, await manager.start(parsed.data as ProgramRenderRequest));
-            return;
-          }
-          const match = url.pathname.match(/^\/api\/manim\/renders\/([0-9a-f-]+)(?:\/(cancel|commit|discard|undo|video))?$/);
-          if (!match) throw new ManimPipelineError(404, "Manim endpoint not found.");
-          const [, id, action] = match;
-          if (request.method === "GET" && !action) {
-            sendJson(response, 200, manager.view(id));
-            return;
-          }
-          if (request.method === "GET" && action === "video") {
-            await streamVideo(request, response, manager.videoPath(id));
-            return;
-          }
-          if (request.method === "POST" && action === "cancel") {
-            sendJson(response, 200, manager.cancel(id));
-            return;
-          }
-          if (request.method === "POST" && action === "commit") {
-            sendJson(response, 200, await manager.commit(id));
-            return;
-          }
-          if (request.method === "POST" && action === "discard") {
-            sendJson(response, 200, await manager.discard(id));
-            return;
-          }
-          if (request.method === "POST" && action === "undo") {
-            sendJson(response, 200, await manager.undo(id));
-            return;
-          }
-          throw new ManimPipelineError(405, "Method not allowed.");
-        } catch (error) {
-          const status = error instanceof ManimPipelineError ? error.status : 500;
-          const message = error instanceof Error ? error.message : "Manim render pipeline failed.";
-          sendJson(response, status, { error: message });
-        }
+        await handleManimRequest(manager, request, response);
       });
       return () => {
         void manager?.close();

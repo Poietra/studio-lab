@@ -5,11 +5,6 @@ import { canonicalOperationSchema } from "../studio/operation-registry";
 import type { CanonicalEditProgram } from "../studio/operations";
 
 const finiteNumber = z.number().finite();
-const pointSchema = z.object({
-  x: finiteNumber,
-  y: finiteNumber,
-}).strict();
-
 const resolvedAnchorSchema = z.object({
   capturedPlayhead: finiteNumber,
   evidence: z.array(z.string().max(500)).max(32),
@@ -65,6 +60,7 @@ export const programRenderRequestSchema = z.object({
     entityId: z.string().min(1).max(240),
     sourceVariable: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
   }).strict()).max(128),
+  sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
   sourcePath: z.string().min(1).max(500),
   viewport: z.object({
     height: finiteNumber.positive(),
@@ -121,6 +117,7 @@ export type RenderSessionView = Readonly<{
     insertedCode: string;
     sourceHash: string;
   }>;
+  programTransactionId: string;
   progress: number;
   sceneName: string;
   sourcePath: string;

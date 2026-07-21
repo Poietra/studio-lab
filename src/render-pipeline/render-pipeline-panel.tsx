@@ -11,6 +11,7 @@ export type RenderProgramCandidate = Readonly<{
   program: CanonicalEditProgram;
   sceneName: string;
   sourceBindings: ProgramRenderRequest["sourceBindings"];
+  sourceHash: string;
   sourcePath: string;
   viewport: ProgramRenderRequest["viewport"];
 }>;
@@ -18,7 +19,7 @@ export type RenderProgramCandidate = Readonly<{
 type RenderPipelinePanelProps = Readonly<{
   candidate: RenderProgramCandidate | null;
   candidateUnavailableReason: string;
-  onCommitted?: () => void | Promise<void>;
+  onSourceChanged?: () => void | Promise<void>;
   workspace: ManimWorkspaceView | null;
 }>;
 
@@ -42,42 +43,51 @@ function terminalStatus(status: RenderSessionView["status"]) {
 export function RenderPipelinePanel({
   candidate,
   candidateUnavailableReason,
-  onCommitted,
+  onSourceChanged,
   workspace,
 }: RenderPipelinePanelProps) {
   const [session, setSession] = useState<RenderSessionView | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<"cancel" | "commit" | "discard" | "render" | "undo" | null>(null);
   const commitDialog = useRef<HTMLDialogElement | null>(null);
 
   useEffect(() => {
-    setSession(null);
-    setError(null);
-  }, [candidate?.program.transactionId, candidate?.sourcePath, candidate?.sceneName]);
-
-  useEffect(() => {
-    if (!session || terminalStatus(session.status)) return;
+    if (!session || terminalStatus(session.status) || pendingAction) return;
     const controller = new AbortController();
-    const timer = window.setTimeout(async () => {
+    let timer = 0;
+    const poll = async () => {
       try {
         setSession(await loadManimRender(session.id, controller.signal));
+        setError(null);
       } catch (nextError) {
         if (nextError instanceof DOMException && nextError.name === "AbortError") return;
         setError(nextError instanceof Error ? nextError.message : "Could not refresh the render status.");
+      } finally {
+        if (!controller.signal.aborted) timer = window.setTimeout(() => void poll(), 500);
       }
-    }, 500);
+    };
+    timer = window.setTimeout(() => void poll(), 500);
     return () => {
       controller.abort();
       window.clearTimeout(timer);
     };
-  }, [session]);
+  }, [pendingAction, session?.id, session?.status]);
 
   const candidateHasAnchor = candidate !== null && candidate.anchors.some((anchor) => (
     Math.abs(anchor - candidate.program.anchor.resolvedSeconds) < 0.0005
   ));
+  const sessionMatchesCandidate = session !== null
+    && candidate !== null
+    && session.programTransactionId === candidate.program.transactionId
+    && session.sourcePath === candidate.sourcePath
+    && session.sceneName === candidate.sceneName;
   const previewBlocker = useMemo(() => {
     if (!workspace) return "Inspecting the Manim workspace…";
     if (!workspace.commandAvailable) return `Manim command ${JSON.stringify(workspace.command)} is unavailable.`;
     if (!candidate) return candidateUnavailableReason;
+    if (candidate.program.loweringStatus !== "supported") {
+      return `This Program is marked ${candidate.program.loweringStatus}; rendered validation requires supported lowering.`;
+    }
     if (!candidateHasAnchor) {
       return `Add # poietra:anchor ${candidate.program.anchor.resolvedSeconds.toFixed(3)} at a safe source boundary.`;
     }
@@ -85,33 +95,52 @@ export function RenderPipelinePanel({
   }, [candidate, candidateHasAnchor, candidateUnavailableReason, workspace]);
 
   async function startPreview() {
-    if (!candidate || previewBlocker) return;
+    if (!candidate || previewBlocker || pendingAction) return;
+    if (session && session.status !== "discarded") {
+      setError("Discard, commit, or undo the current render session before starting another preview.");
+      return;
+    }
     setError(null);
+    setPendingAction("render");
     try {
       setSession(await startManimRender({
         destination: candidate.destination,
         program: candidate.program,
         sceneName: candidate.sceneName,
         sourceBindings: candidate.sourceBindings,
+        sourceHash: candidate.sourceHash,
         sourcePath: candidate.sourcePath,
         viewport: candidate.viewport,
       }));
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Could not start the Manim render.");
+    } finally {
+      setPendingAction(null);
     }
   }
 
   async function runAction(action: "cancel" | "commit" | "discard" | "undo") {
-    if (!session) return false;
+    if (!session || pendingAction) return false;
     setError(null);
+    setPendingAction(action);
     try {
       const nextSession = await runManimRenderAction(session.id, action);
       setSession(nextSession);
-      if (action === "commit") await onCommitted?.();
+      if (action === "commit" || action === "undo") {
+        try {
+          await onSourceChanged?.();
+        } catch (refreshError) {
+          setError(refreshError instanceof Error
+            ? `The source changed, but Studio could not reimport it: ${refreshError.message}`
+            : "The source changed, but Studio could not reimport it.");
+        }
+      }
       return true;
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : `Could not ${action} the render.`);
       return false;
+    } finally {
+      setPendingAction(null);
     }
   }
 
@@ -155,6 +184,12 @@ export function RenderPipelinePanel({
         </dl>
       ) : null}
 
+      {session && candidate && !sessionMatchesCandidate && session.status !== "discarded" ? (
+        <p className="mt-3 border border-amber-900/70 p-2 text-pretty leading-5 text-amber-300">
+          This render belongs to program <span className="font-mono">{session.programTransactionId}</span>. Resolve it before rendering the current draft.
+        </p>
+      ) : null}
+
       {session && !terminalStatus(session.status) ? (
         <div className="mt-3">
           <div className="flex items-center justify-between gap-3 text-[10px] text-zinc-500">
@@ -195,36 +230,37 @@ export function RenderPipelinePanel({
 
       <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
         {session?.canCancel ? (
-          <button className="border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800" onClick={() => void runAction("cancel")} type="button">
+          <button className="border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:text-zinc-600" disabled={pendingAction !== null} onClick={() => void runAction("cancel")} type="button">
             Cancel render
           </button>
         ) : null}
         {session?.canDiscard ? (
-          <button className="border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200" onClick={() => void runAction("discard")} type="button">
+          <button className="border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:text-zinc-600" disabled={pendingAction !== null} onClick={() => void runAction("discard")} type="button">
             Discard preview
           </button>
         ) : null}
         {session?.canUndo ? (
-          <button className="border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800" onClick={() => void runAction("undo")} type="button">
+          <button className="border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:text-zinc-600" disabled={pendingAction !== null} onClick={() => void runAction("undo")} type="button">
             Undo source
           </button>
         ) : null}
         {session?.canCommit ? (
           <button
             className="bg-sky-500 px-3 py-1 font-medium text-sky-950 hover:bg-sky-400"
+            disabled={pendingAction !== null}
             onClick={() => commitDialog.current?.showModal()}
             type="button"
           >
             Commit to source
           </button>
-        ) : session?.status !== "committed" ? (
+        ) : !session || session.status === "discarded" ? (
           <button
             className="bg-sky-500 px-3 py-1 font-medium text-sky-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500"
-            disabled={previewBlocker !== null || session?.canCancel === true}
+            disabled={previewBlocker !== null || pendingAction !== null}
             onClick={() => void startPreview()}
             type="button"
           >
-            Render program
+            {pendingAction === "render" ? "Starting…" : "Render program"}
           </button>
         ) : null}
       </div>
@@ -244,6 +280,7 @@ export function RenderPipelinePanel({
             <button className="border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800" value="cancel">Cancel</button>
             <button
               className="bg-sky-500 px-3 py-1.5 text-xs font-medium text-sky-950 hover:bg-sky-400"
+              disabled={pendingAction !== null}
               onClick={async (event) => {
                 event.preventDefault();
                 if (await runAction("commit")) commitDialog.current?.close();

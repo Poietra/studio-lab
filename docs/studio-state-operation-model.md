@@ -150,9 +150,11 @@ direct motion normalization, shared schemas, and Unknown identity rejection.
 
 The runtime application no longer boots from `STUDIO_FIXTURE_SCENE`. The local
 workspace bridge conservatively imports source assignments, MathTex/Text content,
-source identities, play/wait timing, lifetimes, straight shifts, anchors, and Scene
-order. Facts that cannot be established by this static importer remain outside the
-snapshot instead of being filled from fixture constants.
+source identities, `add`/`remove`/`clear`, replacement lifetimes, play/wait timing,
+straight shifts, anchors, and same-file Scene order. Assignment alone is not treated
+as visible presence, and repeated presence is preserved as multiple lifetime
+intervals. Facts that cannot be established by this static importer remain outside
+the snapshot instead of being filled from fixture constants.
 
 Rendered validation now accepts one complete `CanonicalEditProgram`. At an exact
 safe source anchor it can lower straight `CreateMotion`, position changes,
