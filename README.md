@@ -59,7 +59,7 @@ fixture behavior at runtime. Set `VITE_POIETRA_AI_ENDPOINT` to
 `/api/ai/edit-suggestions`, provide `OPENAI_API_KEY` in the server environment or
 the ignored `.openai-key` file, and optionally select the server-side model with
 `POIETRA_OPENAI_MODEL`. The Vite development server uses the Responses API and
-returns the same closed `CreateMotion | CreateTransform | CreateExplanation | CreateCameraFocus | CreateEquation | CreateTextTransform | CreateSceneTransition | EditProgram`
+returns the same closed `CreateMotion | CreateTransform | CreateExplanation | CreateCameraFocus | CreateEquation | CreateExplainedEquation | CreateTextTransform | CreateSceneTransition | EditProgram`
 suggestion result documented in
 `src/ai/edit-suggestions.ts`. Provider credentials never use a `VITE_` variable and
 are not included in the browser bundle.

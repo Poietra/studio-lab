@@ -89,6 +89,9 @@ UX macros expand before validation:
   `AnimateProperty(scale)` emphasis on the captured selection.
 - New equation → `CreateEntity(MathTex)` → snapshot position → persistent
   `ChangePresence(fade-in)`; no selection is required.
+- New equation + its explanation → the new-equation expansion plus
+  `CreateEntity(Text)` → `SetRelation` to the transaction-local MathTex identity →
+  persistent `ChangePresence`; both intents share one Apply/Undo boundary.
 - MathTex-to-words → `TransformContent(replacement-transform)` with a new Text
   runtime identity and a semantic cross-fade preview.
 - Transform + explanation → `TransformContent` plus the explanation expansion;

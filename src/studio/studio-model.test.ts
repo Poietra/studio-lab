@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { parseEditSuggestionResult } from "../ai/edit-suggestion-schema";
-import type { EditSuggestionOperation, MathTexSuggestionTarget } from "../ai/edit-suggestions";
+import type {
+  CreateExplainedEquationSuggestion,
+  EditSuggestionOperation,
+  MathTexSuggestionTarget,
+} from "../ai/edit-suggestions";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
 import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
 import { EDIT_OPERATION_VERSION, operationId, type CanonicalEditProgram } from "./operations";
@@ -169,6 +173,22 @@ function newEquationSuggestion(playhead = 5): EditSuggestionOperation {
     placement: "right",
     start: playhead,
     target: NEWTON_TARGET,
+  };
+}
+
+function explainedMaxwellEquationSuggestion(playhead = 5): CreateExplainedEquationSuggestion {
+  return {
+    anchor: { kind: "playhead", referenceSeconds: playhead },
+    animation: "fade-in",
+    end: playhead + 1.5,
+    explanation: {
+      placement: "right",
+      text: "電場と磁場の発生と変化を四つの式で表します",
+    },
+    kind: "create-explained-equation",
+    placement: "center",
+    start: playhead,
+    target: MAXWELL_TARGET,
   };
 }
 
@@ -577,6 +597,45 @@ describe("one ProposedState feeds every Studio projection", () => {
     expect(equation?.position).toEqual({ x: 480, y: 180 });
     expect(projection.objectList.entities.find((entity) => entity.id === equation?.id)).toBe(equation);
     expect(projection.timeline.events.some((event) => event.transactionId === "new-equation")).toBe(true);
+  });
+
+  it("creates a new equation and explanation as one atomic program", () => {
+    const operation = explainedMaxwellEquationSuggestion();
+    expect(parseEditSuggestionResult({
+      kind: "suggestion",
+      suggestion: {
+        assumptions: [],
+        confidence: "medium",
+        operation,
+        provider: "remote",
+        summary: "Add Maxwell equations with an explanation.",
+      },
+    }).success).toBe(true);
+    const validation = canonicalize(operation, "explained-maxwell", 5);
+    expect(validation.kind).toBe("valid");
+    expect(validation.program.intentCount).toBe(2);
+    const equation = validation.program.operations.find((candidate) => (
+      candidate.kind === "CreateEntity" && candidate.entity.type === "MathTex"
+    ));
+    const explanation = validation.program.operations.find((candidate) => (
+      candidate.kind === "CreateEntity" && candidate.entity.type === "Text"
+    ));
+    const relation = validation.program.operations.find((candidate) => candidate.kind === "SetRelation");
+    expect(equation?.kind).toBe("CreateEntity");
+    expect(explanation?.kind).toBe("CreateEntity");
+    expect(relation?.kind).toBe("SetRelation");
+    if (equation?.kind !== "CreateEntity" || explanation?.kind !== "CreateEntity" || relation?.kind !== "SetRelation") return;
+    expect(relation.sourceEntityId).toBe(explanation.entity.id);
+    expect(relation.targetEntityId).toBe(equation.entity.id);
+
+    const proposed = evaluateWorkingState(createFixtureWorkingState({
+      stagedPrograms: [programRecord(validation.program, validation)],
+    }));
+    const projection = projectProposedState(proposed, operation.end);
+    expect(projection.canvas.entities.find((entity) => entity.id === equation.entity.id)?.content?.displayLines)
+      .toEqual(MAXWELL_TARGET.displayLines);
+    expect(projection.canvas.entities.find((entity) => entity.id === explanation.entity.id)?.content?.text)
+      .toBe(operation.explanation.text);
   });
 
   it("accepts an applied created entity as the target of the next direct edit", () => {

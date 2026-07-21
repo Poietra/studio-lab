@@ -129,6 +129,20 @@ export const createEquationSuggestionSchema = z.object({
   target: mathTexSuggestionTargetSchema,
 }).superRefine(boundedInterval(0.1));
 
+export const createExplainedEquationSuggestionSchema = z.object({
+  anchor: suggestionTimeAnchorSchema,
+  animation: z.literal("fade-in"),
+  end: z.number(),
+  explanation: z.object({
+    placement: z.enum(["above", "below", "left", "right"]),
+    text: z.string().trim().min(1).max(240),
+  }),
+  kind: z.literal("create-explained-equation"),
+  placement: z.enum(["center", "right"]),
+  start: z.number(),
+  target: mathTexSuggestionTargetSchema,
+}).superRefine(boundedInterval(0.1));
+
 export const createTextTransformSuggestionSchema = z.object({
   anchor: suggestionTimeAnchorSchema,
   easing: z.literal("smooth"),
@@ -143,6 +157,7 @@ export const createTextTransformSuggestionSchema = z.object({
 export const editSuggestionLeafOperationSchema = z.discriminatedUnion("kind", [
   createCameraFocusSuggestionSchema,
   createEquationSuggestionSchema,
+  createExplainedEquationSuggestionSchema,
   createTextTransformSuggestionSchema,
   createMotionSuggestionSchema,
   createTransformSuggestionSchema,

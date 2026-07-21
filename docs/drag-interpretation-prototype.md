@@ -119,6 +119,12 @@ original absolute or playhead-relative time anchor. In all cases the owning obje
 lane, inspector, Code change preview and Apply action
 remain authoritative.
 
+A request to add a new equation together with its explanation produces one
+`CreateExplainedEquation` macro rather than an invalid program containing repeated
+leaf kinds. It creates the MathTex and Text identities in one transaction, connects
+the Text to the newly produced equation identity, and promotes both to editable
+objects only after Apply.
+
 A shape-based Scene-change request produces standalone `CreateSceneTransition`.
 Unlike the object operations, it requires no selected target. Its closed preset
 contains `circle | diamond | hexagon`, `black | sky | white`, a cover/reveal
@@ -348,8 +354,9 @@ pnpm dev:tauri
   then atomically commit or discard it. Other operations still have no source
   writer or render validation.
 - Natural-language suggestions currently create `CreateMotion`, the narrowly
-  supported MathTex `CreateTransform`, bounded `CreateExplanation`, or standalone
-  Scene-level `CreateSceneTransition` operations.
+  supported MathTex `CreateTransform`, bounded `CreateExplanation`, new equations
+  with or without atomic explanation Text, or standalone Scene-level
+  `CreateSceneTransition` operations.
   Explanation creation keeps its relative anchor, adds a Text object on a separate
   timeline lane, and previews target-relative FadeIn plus persistent presence. The
   bounded `EditProgram` transaction combines any two or three unique
@@ -358,6 +365,9 @@ pnpm dev:tauri
   requested effect.
   `CreateSceneTransition` remains standalone in this version because its midpoint
   changes the active Scene composition rather than one object property.
+  A schema-invalid model candidate receives one model repair attempt; repeated
+  invalid output is reported as a focused error rather than exposing raw validator
+  internals in the composer.
   Tests use explicit structured operations. No keyword parser exists in either the
   test path or runtime Magic Edit; runtime requires `VITE_POIETRA_AI_ENDPOINT` and
   labels every accepted candidate as an AI draft.

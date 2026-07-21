@@ -110,6 +110,20 @@ export type CreateEquationSuggestion = Readonly<{
   target: MathTexSuggestionTarget;
 }>;
 
+export type CreateExplainedEquationSuggestion = Readonly<{
+  anchor: SuggestionTimeAnchor;
+  animation: "fade-in";
+  end: number;
+  explanation: Readonly<{
+    placement: "above" | "below" | "left" | "right";
+    text: string;
+  }>;
+  kind: "create-explained-equation";
+  placement: "center" | "right";
+  start: number;
+  target: MathTexSuggestionTarget;
+}>;
+
 export type CreateTextTransformSuggestion = Readonly<{
   anchor: SuggestionTimeAnchor;
   easing: "smooth";
@@ -124,6 +138,7 @@ export type CreateTextTransformSuggestion = Readonly<{
 export type EditSuggestionLeafOperation =
   | CreateCameraFocusSuggestion
   | CreateEquationSuggestion
+  | CreateExplainedEquationSuggestion
   | CreateTextTransformSuggestion
   | CreateMotionSuggestion
   | CreateTransformSuggestion

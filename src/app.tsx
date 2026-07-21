@@ -962,6 +962,7 @@ export function App() {
       if (
         operation.kind === "create-camera-focus"
         || operation.kind === "create-equation"
+        || operation.kind === "create-explained-equation"
         || operation.kind === "create-text-transform"
       ) {
         const selectedIds = new Set(selectedObjectIds);

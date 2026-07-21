@@ -1,6 +1,7 @@
 import type {
   CreateCameraFocusSuggestion,
   CreateEquationSuggestion,
+  CreateExplainedEquationSuggestion,
   CreateExplanationSuggestion,
   CreateSceneTransitionSuggestion,
   CreateTextTransformSuggestion,
@@ -92,7 +93,7 @@ function textTransformOperation(
 }
 
 function equationOperations(
-  operation: CreateEquationSuggestion,
+  operation: Pick<CreateEquationSuggestion, "animation" | "end" | "placement" | "start" | "target">,
   transactionId: string,
   origin: OperationOrigin,
 ) {
@@ -226,6 +227,27 @@ function explanationOperations(
   ] satisfies readonly CanonicalEditOperation[];
 }
 
+function explainedEquationOperations(
+  operation: CreateExplainedEquationSuggestion,
+  transactionId: string,
+  origin: OperationOrigin,
+) {
+  const equationEntityId = provisionalEntityId(transactionId, "new-equation");
+  return [
+    ...equationOperations(operation, transactionId, origin),
+    ...explanationOperations({
+      animation: operation.animation,
+      end: operation.end,
+      kind: "create-explanation",
+      objectKind: "text",
+      placement: operation.explanation.placement,
+      start: operation.start,
+      targetObjectId: equationEntityId,
+      text: operation.explanation.text,
+    }, transactionId, origin, 0, new Map()),
+  ] satisfies readonly CanonicalEditOperation[];
+}
+
 function motionOperation(
   operation: Extract<EditProgramStep, { kind: "create-motion" }>,
   transactionId: string,
@@ -329,7 +351,11 @@ export function canonicalizeSuggestionProgram(
         resolvedSeconds: Number.NaN,
         source: operationAnchor(operation),
       },
-      intentCount: operation.kind === "edit-program" ? operation.operations.length : 1,
+      intentCount: operation.kind === "edit-program"
+        ? operation.operations.length
+        : operation.kind === "create-explained-equation"
+          ? 2
+          : 1,
       loweringStatus: "unsupported",
       operations: [],
       provenance: provenance(context.origin, []),
@@ -352,6 +378,8 @@ export function canonicalizeSuggestionProgram(
     operations = cameraFocusOperations(operation, context.transactionId, context.origin);
   } else if (operation.kind === "create-equation") {
     operations = equationOperations(operation, context.transactionId, context.origin);
+  } else if (operation.kind === "create-explained-equation") {
+    operations = explainedEquationOperations(operation, context.transactionId, context.origin);
   } else if (operation.kind === "create-text-transform") {
     operations = [textTransformOperation(operation, context.transactionId, context.origin)];
   } else {
@@ -376,22 +404,26 @@ export function canonicalizeSuggestionProgram(
 
   const program: CanonicalEditProgram = {
     anchor: resolution.anchor,
-    intentCount: operation.kind === "edit-program" ? operation.operations.length : 1,
-    loweringStatus: ["create-camera-focus", "create-equation", "create-scene-transition", "create-text-transform"].includes(operation.kind)
+    intentCount: operation.kind === "edit-program"
+      ? operation.operations.length
+      : operation.kind === "create-explained-equation"
+        ? 2
+        : 1,
+    loweringStatus: ["create-camera-focus", "create-equation", "create-explained-equation", "create-scene-transition", "create-text-transform"].includes(operation.kind)
       ? "illustrative"
       : "supported",
     operations,
     provenance: provenance(context.origin, [operation.kind]),
     requestedExecution: operation.kind === "edit-program"
       ? operation.execution
-      : operation.kind === "create-camera-focus"
+      : operation.kind === "create-camera-focus" || operation.kind === "create-explained-equation"
         ? "parallel"
         : "sequence",
     schedule: {
       edges: [],
       mode: operation.kind === "edit-program"
         ? operation.execution
-        : operation.kind === "create-camera-focus"
+        : operation.kind === "create-camera-focus" || operation.kind === "create-explained-equation"
           ? "parallel"
           : "sequence",
       order: operations.map((entry) => entry.id),
