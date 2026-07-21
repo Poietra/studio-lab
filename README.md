@@ -54,11 +54,10 @@ pnpm test
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
-Magic Edit uses an explicit local fixture in a clean checkout so its
-UX can be evaluated without confusing parser quality with interaction quality. For
-the live-model experiment, set `VITE_POIETRA_AI_ENDPOINT` to
-`/api/ai/edit-suggestions`, place the OpenAI credential in the ignored
-`.openai-key` file, and optionally select the server-side model with
+Magic Edit requires an explicit model endpoint; it never falls back to keyword or
+fixture behavior at runtime. Set `VITE_POIETRA_AI_ENDPOINT` to
+`/api/ai/edit-suggestions`, provide `OPENAI_API_KEY` in the server environment or
+the ignored `.openai-key` file, and optionally select the server-side model with
 `POIETRA_OPENAI_MODEL`. The Vite development server uses the Responses API and
 returns the same closed `CreateMotion | CreateTransform | CreateExplanation | CreateCameraFocus | CreateEquation | CreateTextTransform | CreateSceneTransition | EditProgram`
 suggestion result documented in

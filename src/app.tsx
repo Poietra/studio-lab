@@ -22,7 +22,7 @@ import {
   type RenderMotionCandidate,
 } from "./render-pipeline/render-pipeline-panel";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./studio/evaluator";
-import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./studio/fixture";
+import { createFixtureWorkingState } from "./studio/fixture";
 import type { ProgramRecord } from "./studio/model";
 import {
   type AppliedEdit,
@@ -40,9 +40,7 @@ import {
   EQUATION,
   FRAME,
   isObjectId,
-  isObjectPresentAt,
   LABEL,
-  lifetimeEndFor,
   OBJECT_HALF_SIZE,
   OBJECT_LIFETIMES,
   ORIGINAL_EQUATION_LINES,
@@ -93,6 +91,7 @@ function detectShell(): Shell {
 
 export function App() {
   const shell = detectShell();
+  const aiEndpointConfigured = Boolean(import.meta.env.VITE_POIETRA_AI_ENDPOINT);
   const [delta, setDelta] = useState<Point>({ x: 0, y: 0 });
   const [pathBend, setPathBend] = useState<Point>({ x: 0, y: 0 });
   const [draftMotion, setDraftMotion] = useState<Interval | null>(null);
@@ -146,25 +145,83 @@ export function App() {
     bounds: DOMRect;
   } | null>(null);
 
+  const editContextState = evaluateWorkingState(createFixtureWorkingState({
+    appliedPrograms,
+    editorContext: {
+      ...createFixtureWorkingState().editorContext,
+      capturedLanguage: instruction.trim() ? { prompt: instruction.trim() } : undefined,
+      playhead: currentTime,
+      selection: selectedObjectIds,
+    },
+    stagedPrograms,
+  }));
+  const proposedState = evaluateWorkingState(createFixtureWorkingState({
+    appliedPrograms,
+    editorContext: editContextState.base.editorContext,
+    stagedPrograms: [
+      ...stagedPrograms,
+      ...(draftProgramRecord ? [draftProgramRecord] : []),
+    ],
+  }));
+  const studioProjection = projectProposedState(proposedState, currentTime);
+  const appliedTransactionIds = new Set(appliedPrograms.map((record) => record.program.transactionId));
+  const editableEntities = studioProjection.objectList.entities.filter((entity) => (
+    !entity.type.startsWith("TransitionOverlay:")
+  ));
   const selectedSet = new Set(selectedObjectIds);
-  const selectedObjects = SCENE_OBJECTS.filter((object) => selectedSet.has(object.id));
-  const presentObjectIds = SCENE_OBJECTS
-    .map((object) => object.id)
-    .filter((objectId) => isObjectPresentAt(objectId, currentTime));
+  const selectedObjects = editableEntities.filter((entity) => selectedSet.has(entity.id));
+  const presentObjectIds = editableEntities.filter((entity) => (
+    entity.present
+    && (entity.transactionId === undefined || appliedTransactionIds.has(entity.transactionId))
+  )).map((entity) => entity.id);
   const presentSet = new Set(presentObjectIds);
   const selectedPresentObjectIds = selectedObjectIds.filter((objectId) => presentSet.has(objectId));
   const canEditSelection = selectedPresentObjectIds.length > 0;
+  function entityPresentAt(entityId: string, time: number) {
+    return editContextState.evaluatedScene.objectGraph.entities[entityId]?.lifetime.some((interval) => (
+      time >= interval.start && time < interval.end
+    )) === true;
+  }
+  function entityLifetimeEndFor(entityId: string, time: number) {
+    return editContextState.evaluatedScene.objectGraph.entities[entityId]?.lifetime.find((interval) => (
+      time >= interval.start && time < interval.end
+    ))?.end ?? time;
+  }
   const selectedGroup = objectGroups.find((group) => sameObjects(group.objectIds, selectedObjectIds));
   const selectionLabel = selectedObjects.length === 1
-    ? selectedObjects[0].displayName
+    ? selectedObjects[0].content?.label
+      ?? SCENE_OBJECTS.find((object) => object.id === selectedObjects[0].id)?.displayName
+      ?? selectedObjects[0].id
     : selectedGroup?.name ?? `${selectedObjects.length} selected objects`;
   const selectionInstruction = selectedObjects.length === 1
     ? selectedObjects[0].id
     : selectedGroup?.name ?? `${selectedObjects.length} selected objects together`;
   const selectedPlay = playAt(currentTime);
+  const selectedFixtureObjectIds = selectedObjectIds.filter(isObjectId);
+  const selectionIsFixtureOnly = selectedFixtureObjectIds.length === selectedObjectIds.length;
   const plans = useMemo(
-    () => plansFor(selectedObjectIds, currentTime, editMode, moveDuration, selectedGroup?.name),
-    [currentTime, editMode, moveDuration, selectedGroup?.name, selectedObjectIds],
+    () => selectionIsFixtureOnly
+      ? plansFor(selectedFixtureObjectIds, currentTime, editMode, moveDuration, selectedGroup?.name)
+      : editMode === "position"
+        ? [{
+            affected: selectedPresentObjectIds,
+            description: `Keep ${selectionLabel} at the dragged position from ${currentTime.toFixed(2)}s onward.`,
+            followers: false,
+            id: "play-followers" as const,
+            rank: "Current frame",
+            temporalScope: "from-now" as const,
+            title: "From this frame",
+          }]
+        : [{
+            affected: selectedPresentObjectIds,
+            description: `Animate ${selectionLabel} from its current position over ${moveDuration.toFixed(2)}s.`,
+            followers: false,
+            id: "new-move" as const,
+            rank: "New",
+            temporalScope: "motion" as const,
+            title: "Create movement",
+          }],
+    [currentTime, editMode, moveDuration, selectedFixtureObjectIds, selectedGroup?.name, selectedPresentObjectIds, selectionIsFixtureOnly, selectionLabel],
   );
   const selectedPlan = plans.find((plan) => plan.id === selectedPlanId) ?? plans[0];
   const defaultPlanId: PlanId = editMode === "position" ? "play-followers" : "new-move";
@@ -192,7 +249,7 @@ export function App() {
   const impactStart = selectedPlan.temporalScope === "whole" ? 0 : (draftMotion?.start ?? currentTime);
   const maximumMoveDuration = selectedPlan.affected.length > 0
     ? Math.max(0, Math.min(
-        ...selectedPlan.affected.map((objectId) => lifetimeEndFor(objectId, currentTime) - currentTime),
+        ...selectedPlan.affected.map((objectId) => entityLifetimeEndFor(objectId, currentTime) - currentTime),
       ))
     : 0;
   const effectiveMoveDuration = Math.min(moveDuration, maximumMoveDuration);
@@ -213,36 +270,25 @@ export function App() {
     ...(draftTransform ? [draftTransform] : []),
   ]
     .sort((left, right) => left.interval.start - right.interval.start);
-  const proposedState = evaluateWorkingState(createFixtureWorkingState({
-    appliedPrograms,
-    editorContext: {
-      ...createFixtureWorkingState().editorContext,
-      capturedLanguage: instruction.trim() ? { prompt: instruction.trim() } : undefined,
-      playhead: currentTime,
-      selection: selectedObjectIds,
-    },
-    stagedPrograms: [
-      ...stagedPrograms,
-      ...(draftProgramRecord ? [draftProgramRecord] : []),
-    ],
-  }));
-  const studioProjection = projectProposedState(proposedState, currentTime);
-  const projectedProvisionalEntities = studioProjection.canvas.entities.filter((entity) => entity.provisional);
-  const projectedExplanationEntities = projectedProvisionalEntities.filter((entity) => (
+  const projectedGeneratedEntities = studioProjection.canvas.entities.filter((entity) => entity.transactionId !== undefined);
+  const isAppliedEntity = (entity: (typeof projectedGeneratedEntities)[number]) => (
+    entity.transactionId !== undefined && appliedTransactionIds.has(entity.transactionId)
+  );
+  const projectedExplanationEntities = projectedGeneratedEntities.filter((entity) => (
     entity.type === "Text"
     && entity.content?.text
     && entity.sourceIdentity.kind === "unknown"
   ));
-  const projectedCreatedMathTexEntities = projectedProvisionalEntities.filter((entity) => (
+  const projectedCreatedMathTexEntities = projectedGeneratedEntities.filter((entity) => (
     entity.type === "MathTex" && entity.sourceIdentity.kind === "unknown"
   ));
-  const projectedTransformTextEntities = projectedProvisionalEntities.filter((entity) => (
+  const projectedTransformTextEntities = projectedGeneratedEntities.filter((entity) => (
     entity.type === "Text"
     && entity.content?.text
     && entity.sourceIdentity.kind === "known"
     && entity.sourceIdentity.value === "equation"
   ));
-  const projectedTransitionEntity = projectedProvisionalEntities.find((entity) => (
+  const projectedTransitionEntity = projectedGeneratedEntities.find((entity) => (
     entity.type.startsWith("TransitionOverlay:") && entity.present
   )) ?? null;
   const [, projectedTransitionShape, projectedTransitionColor] = projectedTransitionEntity?.type.split(":") ?? [];
@@ -321,7 +367,8 @@ export function App() {
       };
   const conflictingSourceMotion = draftTransform
     ? SOURCE_MOTIONS.find((motion) => (
-        motion.objectIds.includes(draftTransform.sourceObjectId)
+        isObjectId(draftTransform.sourceObjectId)
+        && motion.objectIds.includes(draftTransform.sourceObjectId)
         && intervalsOverlap(motion.interval, draftTransform.interval)
       )) ?? null
     : null;
@@ -359,20 +406,22 @@ export function App() {
   function appliedBendFor(motion: MotionRecord): Point {
     return workingEdits.reduce<Point>((bend, edit) => {
       if (edit.planId !== "play-target") return bend;
-      const editsMotion = edit.objectIds.some((objectId) => motion.objectIds.includes(objectId));
+      const editsMotion = edit.objectIds.some((objectId) => (
+        isObjectId(objectId) && motion.objectIds.includes(objectId)
+      ));
       if (!editsMotion || !intervalsOverlap(edit.motion, motion.interval)) return bend;
       return addPoints(bend, edit.pathBend);
     }, { x: 0, y: 0 });
   }
 
   function draftOffsetForAt(objectId: ObjectId, time: number): Point {
-    if (selectedPlan.id === "play-target" && focusedMotion?.objectIds.includes(objectId)) {
+    if (selectedPlan.id === "play-target" && isObjectId(objectId) && focusedMotion?.objectIds.includes(objectId)) {
       return { x: 0, y: 0 };
     }
     if (selectedPlan.id === "new-move") {
       return hasDelta && affected.has(objectId) ? delta : { x: 0, y: 0 };
     }
-    const effectEnd = lifetimeEndFor(objectId, draftMotion?.start ?? currentTime);
+    const effectEnd = entityLifetimeEndFor(objectId, draftMotion?.start ?? currentTime);
     return hasDelta
       && time >= impactStart
       && time < effectEnd
@@ -441,11 +490,28 @@ export function App() {
     arrow_1: previewArrowCenter,
     proof_box: previewProofBox,
   };
+  const projectedEntityById = new Map(editableEntities.map((entity) => [entity.id, entity]));
+  const basePositionFor = (objectId: string) => (
+    isObjectId(objectId)
+      ? basePosition[objectId]
+      : projectedEntityById.get(objectId)?.position ?? { x: FRAME.width / 2, y: FRAME.height / 2 }
+  );
+  const previewPositionFor = (objectId: string) => (
+    isObjectId(objectId)
+      ? previewPosition[objectId]
+      : addPoints(basePositionFor(objectId), draftOffsetForAt(objectId, currentTime))
+  );
+  const halfSizeFor = (objectId: string) => {
+    if (isObjectId(objectId)) return OBJECT_HALF_SIZE[objectId];
+    return projectedEntityById.get(objectId)?.type === "MathTex"
+      ? { x: 70, y: 28 }
+      : { x: 80, y: 24 };
+  };
   const visibleGroupObjectIds = selectedGroup?.objectIds.filter((objectId) => presentSet.has(objectId)) ?? [];
   const selectedGroupBounds = selectedGroup && visibleGroupObjectIds.length > 0 ? visibleGroupObjectIds.reduce(
     (bounds, objectId) => {
-      const point = previewPosition[objectId];
-      const halfSize = OBJECT_HALF_SIZE[objectId];
+      const point = previewPositionFor(objectId);
+      const halfSize = halfSizeFor(objectId);
       return {
         left: Math.min(bounds.left, point.x - halfSize.x),
         right: Math.max(bounds.right, point.x + halfSize.x),
@@ -455,8 +521,8 @@ export function App() {
     },
     { left: Infinity, right: -Infinity, top: Infinity, bottom: -Infinity },
   ) : null;
-  const selectionBaseCenter = averagePoints(selectedPresentObjectIds.map((objectId) => basePosition[objectId]));
-  const selectionPreviewCenter = averagePoints(selectedPresentObjectIds.map((objectId) => previewPosition[objectId]));
+  const selectionBaseCenter = averagePoints(selectedPresentObjectIds.map(basePositionFor));
+  const selectionPreviewCenter = averagePoints(selectedPresentObjectIds.map(previewPositionFor));
   const fallbackPathControl = addPoints({
     x: (selectionBaseCenter.x + selectionPreviewCenter.x) / 2,
     y: (selectionBaseCenter.y + selectionPreviewCenter.y) / 2,
@@ -488,7 +554,7 @@ export function App() {
     || (hasPathBend && (
       selectedPlan.id === "new-move"
         ? affected.has(objectId)
-        : focusedMotion?.objectIds.includes(objectId) === true
+        : isObjectId(objectId) && focusedMotion?.objectIds.includes(objectId) === true
     ))
     )
   );
@@ -496,6 +562,13 @@ export function App() {
   const displayedLabel = selectedSet.has("label_1") ? previewLabel : baseLabel;
   const displayedArrowCenter = selectedSet.has("arrow_1") ? previewArrowCenter : baseArrowCenter;
   const displayedProofBox = selectedSet.has("proof_box") ? previewProofBox : baseProofBox;
+  const projectedEquationPosition = projectedEquationEntity?.id === "equation_1"
+    ? displayedEquation
+    : projectedEquationEntity
+      ? selectedSet.has(projectedEquationEntity.id)
+        ? previewPositionFor(projectedEquationEntity.id)
+        : basePositionFor(projectedEquationEntity.id)
+      : displayedEquation;
   const hasPatchPreview = hasDraftEdit
     || draftTransform !== null
     || draftExplanation !== null
@@ -520,7 +593,7 @@ export function App() {
           context: `Creates a Scene-level ${draftSceneTransition.shape} cover-and-reveal transition. The geometry and timing are executable; final lowering must connect the next Scene composition at the covered midpoint.`,
         };
       }
-      if (draftEditProgram) {
+      if (draftEditProgram && selectionIsFixtureOnly) {
         const motionEdit = buildActiveEdit();
         const programPreview = buildEditProgramSourcePreview({
           existingMotionConflict: conflictingSourceMotion
@@ -552,8 +625,22 @@ export function App() {
         });
         if (programPreview) return programPreview;
       }
+      if (draftEditProgram) {
+        return {
+          before: "# RuntimeSceneState entity",
+          after: JSON.stringify(draftProgramRecord?.program.operations ?? [], null, 2),
+          context: "This edit targets a Studio-created identity. It remains canonical state until source identity is established; Studio does not invent a Python variable for it.",
+        };
+      }
       if (draftTransform) {
-        const source = SCENE_OBJECTS.find((object) => object.id === draftTransform.sourceObjectId)!;
+        const source = SCENE_OBJECTS.find((object) => object.id === draftTransform.sourceObjectId);
+        if (!source) {
+          return {
+            before: "# Studio-created MathTex identity",
+            after: JSON.stringify(draftProgramRecord?.program.operations ?? [], null, 2),
+            context: "The transform is editable in RuntimeSceneState, but source lowering is blocked until this entity has a known Python source identity.",
+          };
+        }
         const targetVariable = `${source.variableName}_target`;
         const duration = draftTransform.interval.end - draftTransform.interval.start;
         const targetArguments = draftTransform.target.texParts
@@ -566,7 +653,14 @@ export function App() {
         };
       }
       if (draftExplanation) {
-        const target = SCENE_OBJECTS.find((object) => object.id === draftExplanation.targetObjectId)!;
+        const target = SCENE_OBJECTS.find((object) => object.id === draftExplanation.targetObjectId);
+        if (!target) {
+          return {
+            before: "# Studio-created target identity",
+            after: JSON.stringify(draftProgramRecord?.program.operations ?? [], null, 2),
+            context: "The explanation is attached in RuntimeSceneState. Studio will not fabricate source code for a target without source identity.",
+          };
+        }
         const direction = {
           above: "UP",
           below: "DOWN",
@@ -594,6 +688,13 @@ export function App() {
           context: "Spatial-path lowering into reproducible Manim source is intentionally unresolved in this prototype.",
         };
       }
+      if (!selectionIsFixtureOnly) {
+        return {
+          before: "# Studio-created runtime identity",
+          after: JSON.stringify(draftProgramRecord?.program.operations ?? [], null, 2),
+          context: "The movement is represented as a canonical operation. Rendered source validation stays unavailable until the selected entity has a known source identity.",
+        };
+      }
       const candidate = patchFor(
         selectedPlan,
         delta,
@@ -606,7 +707,7 @@ export function App() {
         context: `${candidate.context} Curved-path lowering is intentionally unresolved in this prototype.`,
       };
     },
-    [conflictingSourceMotion, delta.x, delta.y, draftEditProgram, draftExplanation, draftMotion, draftMotionTargetIds, draftSceneTransition, draftTransform, focusedMotion, hasDelta, hasPathBend, newMoveInterval, selectedObjectIds, selectedPlan],
+    [conflictingSourceMotion, delta.x, delta.y, draftEditProgram, draftExplanation, draftMotion, draftMotionTargetIds, draftProgramRecord, draftSceneTransition, draftTransform, focusedMotion, hasDelta, hasPathBend, newMoveInterval, selectedObjectIds, selectedPlan, selectionIsFixtureOnly],
   );
 
   useEffect(() => {
@@ -651,7 +752,7 @@ export function App() {
         ? currentTime + effectiveMoveDuration
         : Math.max(
             currentTime,
-            ...selectedPlan.affected.map((objectId) => lifetimeEndFor(objectId, currentTime)),
+            ...selectedPlan.affected.map((objectId) => entityLifetimeEndFor(objectId, currentTime)),
           );
       setDraftMotion({ start: currentTime, end });
     }
@@ -696,7 +797,7 @@ export function App() {
     setMoveDuration(normalized);
     if (selectedPlan.id === "new-move" && draftMotion) {
       const available = Math.max(0, Math.min(
-        ...selectedPlan.affected.map((objectId) => lifetimeEndFor(objectId, draftMotion.start) - draftMotion.start),
+        ...selectedPlan.affected.map((objectId) => entityLifetimeEndFor(objectId, draftMotion.start) - draftMotion.start),
       ));
       setDraftMotion({
         start: draftMotion.start,
@@ -721,21 +822,23 @@ export function App() {
 
     try {
       const result = await suggestEdit({
-        objects: SCENE_OBJECTS.map((object) => ({
-          displayName: object.displayName,
-          id: object.id,
-          lifetimes: OBJECT_LIFETIMES[object.id],
-          mathTex: object.id === "equation_1"
-            ? {
-                displayLines: equationRenderState.lines,
-                texParts: equationRenderState.texParts,
-              }
-            : object.mathTex,
-          type: object.type,
-        })),
+        objects: Object.values(editContextState.evaluatedScene.objectGraph.entities)
+          .filter((entity) => !entity.type.startsWith("TransitionOverlay:"))
+          .map((entity) => ({
+            displayName: entity.content?.label ?? entity.id,
+            id: entity.id,
+            lifetimes: entity.lifetime,
+            mathTex: entity.type === "MathTex" && entity.content?.texParts
+              ? {
+                  displayLines: entity.content.displayLines,
+                  texParts: entity.content.texParts,
+                }
+              : null,
+            type: entity.type,
+          })),
         playhead: currentTime,
         prompt,
-        sceneDuration: SCENE_DURATION,
+        sceneDuration: editContextState.evaluatedScene.duration,
         selectedObjectIds,
       }, { signal: controller.signal });
       if (result.kind === "clarification") {
@@ -749,8 +852,8 @@ export function App() {
       nextTransactionNumber.current += 1;
       const canonicalValidation = canonicalizeSuggestionProgram(operation, {
         capturedPlayhead: currentTime,
-        origin: result.suggestion.provider === "remote" ? "remote-model" : "fixture",
-        scene: STUDIO_FIXTURE_SCENE,
+        origin: "remote-model",
+        scene: editContextState.evaluatedScene,
         transactionId: `studio-edit-${transactionNumber}`,
       });
       if (canonicalValidation.kind === "invalid") {
@@ -764,12 +867,12 @@ export function App() {
       if (operation.kind === "edit-program") {
         const validation = validateEditProgram(operation, {
           capturedPlayhead: currentTime,
-          objects: SCENE_OBJECTS.map((object) => ({
-            id: object.id,
-            lifetimes: OBJECT_LIFETIMES[object.id],
-            type: object.type,
+          objects: Object.values(editContextState.evaluatedScene.objectGraph.entities).map((entity) => ({
+            id: entity.id,
+            lifetimes: entity.lifetime,
+            type: entity.type,
           })),
-          sceneDuration: SCENE_DURATION,
+          sceneDuration: editContextState.evaluatedScene.duration,
           selectedObjectIds,
         });
         if (validation.kind === "invalid") {
@@ -864,9 +967,12 @@ export function App() {
         const selectedIds = new Set(selectedObjectIds);
         const targetsAreValid = operation.kind === "create-camera-focus"
           ? operation.targetObjectIds.length > 0
-            && operation.targetObjectIds.every((objectId) => isObjectId(objectId) && selectedIds.has(objectId))
+            && operation.targetObjectIds.every((objectId) => (
+              editContextState.evaluatedScene.objectGraph.entities[objectId] !== undefined && selectedIds.has(objectId)
+            ))
           : operation.kind === "create-text-transform"
-            ? isObjectId(operation.sourceObjectId) && selectedIds.has(operation.sourceObjectId)
+            ? editContextState.evaluatedScene.objectGraph.entities[operation.sourceObjectId]?.type === "MathTex"
+              && selectedIds.has(operation.sourceObjectId)
             : true;
         if (!targetsAreValid) {
           setSuggestion(null);
@@ -912,11 +1018,11 @@ export function App() {
 
       if (operation.kind === "create-motion") {
         const targetObjectIds = operation.targetObjectIds
-          .filter(isObjectId)
+          .filter((objectId) => editContextState.evaluatedScene.objectGraph.entities[objectId] !== undefined)
           .filter((objectId) => selectedSet.has(objectId))
-          .filter((objectId) => isObjectPresentAt(objectId, start));
+          .filter((objectId) => entityPresentAt(objectId, start));
         const latestTargetEnd = targetObjectIds.length > 0
-          ? Math.min(...targetObjectIds.map((objectId) => lifetimeEndFor(objectId, start)), SCENE_DURATION)
+          ? Math.min(...targetObjectIds.map((objectId) => entityLifetimeEndFor(objectId, start)), SCENE_DURATION)
           : start;
         const end = clamp(start + requestedDuration, start, latestTargetEnd);
         if (
@@ -956,11 +1062,13 @@ export function App() {
         });
         setDraftProgramRecord(canonicalRecord);
       } else if (operation.kind === "create-transform") {
-        const sourceObjectId = isObjectId(operation.sourceObjectId)
+        const sourceObjectId = editContextState.evaluatedScene.objectGraph.entities[operation.sourceObjectId]
           ? operation.sourceObjectId
           : null;
-        const source = SCENE_OBJECTS.find((object) => object.id === sourceObjectId);
-        const latestTargetEnd = sourceObjectId ? lifetimeEndFor(sourceObjectId, start) : start;
+        const source = sourceObjectId
+          ? editContextState.evaluatedScene.objectGraph.entities[sourceObjectId]
+          : null;
+        const latestTargetEnd = sourceObjectId ? entityLifetimeEndFor(sourceObjectId, start) : start;
         const end = clamp(start + requestedDuration, start, Math.min(latestTargetEnd, SCENE_DURATION));
         const displayLines = operation.target.displayLines
           .map((line) => line.trim())
@@ -977,7 +1085,7 @@ export function App() {
           || !source
           || !selectedSet.has(sourceObjectId)
           || source.type !== "MathTex"
-          || !isObjectPresentAt(sourceObjectId, start)
+          || !entityPresentAt(sourceObjectId, start)
           || end - start < 0.1
           || displayLines.length === 0
           || texParts.length === 0
@@ -1026,16 +1134,16 @@ export function App() {
         });
         setDraftProgramRecord(canonicalRecord);
       } else if (operation.kind === "create-explanation") {
-        const targetObjectId = isObjectId(operation.targetObjectId)
+        const targetObjectId = editContextState.evaluatedScene.objectGraph.entities[operation.targetObjectId]
           ? operation.targetObjectId
           : null;
         const text = operation.text.trim().slice(0, 240);
-        const latestTargetEnd = targetObjectId ? lifetimeEndFor(targetObjectId, start) : start;
+        const latestTargetEnd = targetObjectId ? entityLifetimeEndFor(targetObjectId, start) : start;
         const end = clamp(start + requestedDuration, start, Math.min(latestTargetEnd, SCENE_DURATION));
         if (
           !targetObjectId
           || !selectedSet.has(targetObjectId)
-          || !isObjectPresentAt(targetObjectId, start)
+          || !entityPresentAt(targetObjectId, start)
           || text.length === 0
           || end - start < 0.1
         ) {
@@ -1145,10 +1253,10 @@ export function App() {
     const endByObject = Object.fromEntries(
       activeAffected.map((objectId) => [
         objectId,
-        reshapesMotion?.interval.end ?? lifetimeEndFor(objectId, draftMotion?.start ?? currentTime),
+        reshapesMotion?.interval.end ?? entityLifetimeEndFor(objectId, draftMotion?.start ?? currentTime),
       ]),
     ) as Partial<Record<ObjectId, number>>;
-    const editEnd = Math.max(editStart, ...Object.values(endByObject));
+    const editEnd = Math.max(editStart, ...Object.values(endByObject).filter((end): end is number => end !== undefined));
     return {
       affected: activeAffected,
       delta: reshapesMotion ? { x: 0, y: 0 } : delta,
@@ -1179,7 +1287,7 @@ export function App() {
           controlOffset: activeEdit.pathBend,
           interval: activeEdit.motion,
           motionId: focusedMotion.id,
-          scene: STUDIO_FIXTURE_SCENE,
+          scene: editContextState.evaluatedScene,
           transactionId,
         })
       : activeEdit.planId === "new-move"
@@ -1188,15 +1296,18 @@ export function App() {
             controlOffset: activeEdit.pathBend,
             delta: activeEdit.delta,
             interval: activeEdit.motion,
-            scene: STUDIO_FIXTURE_SCENE,
+            scene: editContextState.evaluatedScene,
             targetEntityIds: activeEdit.affected,
             transactionId,
           })
         : createDirectManipulationPositionProgram({
             capturedPlayhead: currentTime,
             delta: activeEdit.delta,
-            positions: basePosition,
-            scene: STUDIO_FIXTURE_SCENE,
+            positions: Object.fromEntries(activeEdit.affected.map((entityId) => [
+              entityId,
+              basePositionFor(entityId),
+            ])),
+            scene: editContextState.evaluatedScene,
             start: activeEdit.start,
             targetEntityIds: activeEdit.affected,
             transactionId,
@@ -1270,6 +1381,15 @@ export function App() {
     const latestTransform = pendingTransforms.at(-1);
     const latestExplanation = pendingExplanations.at(-1);
     const latestSceneTransition = pendingSceneTransitions.at(-1);
+    const createdEntityIds = [...new Set(pendingPrograms.flatMap((record) => (
+      record.program.operations.flatMap((operation) => {
+        if (operation.kind === "CreateEntity" && !operation.entity.type.startsWith("TransitionOverlay:")) {
+          return [operation.entity.id];
+        }
+        if (operation.kind === "TransformContent") return [operation.targetEntityId];
+        return [];
+      })
+    )))];
     setAppliedEdits((current) => [...current, ...pending]);
     setAppliedTransforms((current) => [...current, ...pendingTransforms]);
     setAppliedExplanations((current) => [...current, ...pendingExplanations]);
@@ -1285,6 +1405,12 @@ export function App() {
     setSuggestionMessage(null);
     setSuggestionStatus("idle");
     setInstruction("");
+    if (createdEntityIds.length > 0) {
+      setSelectedObjectIds(createdEntityIds);
+      setEditMode("animate");
+      setSelectedPlanId("new-move");
+      setFocusedMotionId(null);
+    }
     const latestEnd = Math.max(
       latestMovement?.motion.end ?? 0,
       latestTransform?.interval.end ?? 0,
@@ -1299,11 +1425,20 @@ export function App() {
     const latestProgram = appliedPrograms.at(-1);
     if (latestProgram) {
       const transactionId = latestProgram.program.transactionId;
+      const removedEntityIds = new Set(latestProgram.program.operations.flatMap((operation) => {
+        if (operation.kind === "CreateEntity") return [operation.entity.id];
+        if (operation.kind === "TransformContent") return [operation.targetEntityId];
+        return [];
+      }));
       setAppliedPrograms((current) => current.slice(0, -1));
       setAppliedEdits((current) => withoutTransaction(current, transactionId));
       setAppliedTransforms((current) => withoutTransaction(current, transactionId));
       setAppliedExplanations((current) => withoutTransaction(current, transactionId));
       setAppliedSceneTransitions((current) => withoutTransaction(current, transactionId));
+      if (selectedObjectIds.some((entityId) => removedEntityIds.has(entityId))) {
+        setSelectedObjectIds(["equation_1"]);
+        setSelectedPlanId(defaultPlanId);
+      }
       return;
     }
     const latestEdit = appliedEdits.at(-1);
@@ -1339,9 +1474,10 @@ export function App() {
   }
 
   function toggleObject(objectId: ObjectId) {
-    if (!isObjectPresentAt(objectId, currentTime) && !selectedSet.has(objectId)) return;
+    if (!entityPresentAt(objectId, currentTime) && !selectedSet.has(objectId)) return;
     const motionAtPlayhead = SOURCE_MOTIONS.find(
-      (motion) => motion.objectIds.includes(objectId)
+      (motion) => isObjectId(objectId)
+        && motion.objectIds.includes(objectId)
         && currentTime >= motion.interval.start
         && currentTime < motion.interval.end,
     );
@@ -1352,8 +1488,8 @@ export function App() {
       if (current.includes(objectId)) {
         return current.filter((id) => id !== objectId);
       }
-      return SCENE_OBJECTS
-        .map((object) => object.id)
+      return editableEntities
+        .map((entity) => entity.id)
         .filter((id) => current.includes(id) || id === objectId);
     });
     setSelectedPlanId(defaultPlanId);
@@ -1402,7 +1538,8 @@ export function App() {
     const bounds = event.currentTarget.closest("[data-scene-viewport]")?.getBoundingClientRect();
     if (!bounds) return;
     const motionAtPlayhead = SOURCE_MOTIONS.find(
-      (motion) => motion.objectIds.includes(objectId)
+      (motion) => isObjectId(objectId)
+        && motion.objectIds.includes(objectId)
         && currentTime >= motion.interval.start
         && currentTime < motion.interval.end,
     );
@@ -1412,8 +1549,8 @@ export function App() {
     if (!alreadySelected) {
       stageActiveEdit();
       const nextSelection = event.shiftKey
-        ? SCENE_OBJECTS
-            .map((object) => object.id)
+        ? editableEntities
+            .map((entity) => entity.id)
             .filter((id) => selectedSet.has(id) || id === objectId)
         : [objectId];
       setSelectedObjectIds(nextSelection);
@@ -1487,16 +1624,20 @@ export function App() {
   }
 
   const activeDraftEdit = buildActiveEdit();
+  const renderPipelineTargets = activeDraftEdit?.affected.flatMap((entityId) => {
+    const entity = editContextState.evaluatedScene.objectGraph.entities[entityId];
+    return entity?.sourceIdentity.kind === "known"
+      ? [{ entityId, sourceVariable: entity.sourceIdentity.value }]
+      : [];
+  }) ?? [];
   const renderPipelineCandidate: RenderMotionCandidate | null = activeDraftEdit?.planId === "new-move"
     && activeDraftEdit.affected.length > 0
+    && renderPipelineTargets.length === activeDraftEdit.affected.length
     ? {
         controlOffsetPixels: activeDraftEdit.pathBend,
         deltaPixels: activeDraftEdit.delta,
         interval: activeDraftEdit.motion,
-        targets: activeDraftEdit.affected.map((objectId) => ({
-          entityId: objectId,
-          sourceVariable: SCENE_OBJECTS.find((object) => object.id === objectId)!.variableName,
-        })),
+        targets: renderPipelineTargets,
         viewport: FRAME,
       }
     : null;
@@ -1504,7 +1645,9 @@ export function App() {
     ? "Create a movement draft to enable rendered validation."
     : activeDraftEdit.planId !== "new-move"
       ? "Choose Animate → Create movement; position patches and path edits do not use CreateMotion lowering."
-      : "This CreateMotion cannot be lowered by the current rendered-validation slice.";
+      : renderPipelineTargets.length !== activeDraftEdit.affected.length
+        ? "This object is editable in Studio but has no committed Python source identity yet."
+        : "This CreateMotion cannot be lowered by the current rendered-validation slice.";
   const pendingTimelineEdits = activeDraftEdit ? [...stagedEdits, activeDraftEdit] : stagedEdits;
   const pendingTimelineTransforms = draftTransform ? [...stagedTransforms, draftTransform] : stagedTransforms;
   const pendingTimelineExplanations = draftExplanation
@@ -1564,7 +1707,9 @@ export function App() {
   for (const edit of timelineEdits) {
     if (edit.planId !== "play-target") zoneBoundaries.add(edit.start);
     if (edit.planId === "new-move") zoneBoundaries.add(edit.motion.end);
-    for (const end of Object.values(edit.endByObject)) zoneBoundaries.add(end);
+    for (const end of Object.values(edit.endByObject)) {
+      if (end !== undefined) zoneBoundaries.add(end);
+    }
   }
   for (const transform of timelineTransforms) {
     zoneBoundaries.add(transform.interval.start);
@@ -1724,19 +1869,39 @@ export function App() {
                 type={object.type}
               />
             ))}
-            {studioProjection.objectList.entities.filter((entity) => entity.provisional).map((entity) => (
+            {studioProjection.objectList.entities.filter((entity) => (
+              entity.transactionId !== undefined && !entity.type.startsWith("TransitionOverlay:")
+            )).map((entity) => (
               <li
-                className={cn(
-                  "flex items-center gap-2 rounded-md px-2 py-1.5 text-xs",
-                  entity.present ? "text-zinc-400" : "text-zinc-600",
-                )}
                 key={`object-${entity.id}`}
               >
-                <span aria-hidden="true" className="size-3.5 shrink-0 border border-zinc-700" />
-                <span className="min-w-0 flex-1 truncate">{entity.id}</span>
-                <span className="shrink-0 text-[11px] text-sky-400">
-                  {entity.type.split(":")[0]}{entity.present ? " · proposed" : " · not yet"}
-                </span>
+                <button
+                  aria-pressed={selectedSet.has(entity.id)}
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs",
+                    selectedSet.has(entity.id)
+                      ? "bg-sky-950 text-sky-200"
+                      : isAppliedEntity(entity) && entity.present
+                        ? "text-zinc-400 hover:bg-zinc-800"
+                        : "cursor-not-allowed text-zinc-600",
+                  )}
+                  disabled={!isAppliedEntity(entity) || !entity.present}
+                  onClick={() => toggleObject(entity.id)}
+                  type="button"
+                >
+                  <span aria-hidden="true" className={cn(
+                    "size-3.5 shrink-0 border",
+                    selectedSet.has(entity.id) ? "border-sky-400 bg-sky-950" : "border-zinc-700",
+                  )} />
+                  <span className="min-w-0 flex-1 truncate">{entity.content?.label ?? entity.id}</span>
+                  <span className={cn(
+                    "shrink-0 text-[11px]",
+                    isAppliedEntity(entity) ? "text-sky-400" : "text-zinc-600",
+                  )}>
+                    {entity.type.split(":")[0]}
+                    {isAppliedEntity(entity) ? " · editable" : entity.present ? " · preview" : " · not yet"}
+                  </span>
+                </button>
               </li>
             ))}
           </ol>
@@ -2093,22 +2258,26 @@ export function App() {
               </button> : null}
 
               {projectedEquationEntity?.present ? <button
-                aria-label="Move equation_1"
-                aria-pressed={selectedSet.has("equation_1")}
+                aria-label={`Move ${projectedEquationEntity.id}`}
+                aria-pressed={selectedSet.has(projectedEquationEntity.id)}
                 className={cn(
                   "absolute -translate-x-1/2 -translate-y-1/2 cursor-grab select-none border px-3 py-2 outline-none active:cursor-grabbing",
-                  selectedSet.has("equation_1")
+                  projectedEquationEntity.provisional
+                    && !isAppliedEntity(projectedEquationEntity)
+                    && "pointer-events-none cursor-default border-dashed",
+                  selectedSet.has(projectedEquationEntity.id)
                     ? "border-sky-400 bg-sky-950/50 text-sky-100 focus-visible:ring-2 focus-visible:ring-sky-400"
                     : "border-transparent bg-transparent text-zinc-100 hover:border-zinc-600",
                   projectedEquationEntity.scale > 1.01 && "ring-2 ring-sky-300",
                 )}
                 onKeyDown={nudgeSelected}
                 onPointerCancel={endDrag}
-                onPointerDown={(event) => beginDrag(event, "equation_1")}
+                onPointerDown={(event) => beginDrag(event, projectedEquationEntity.id)}
                 onPointerMove={moveDrag}
                 onPointerUp={endDrag}
+                disabled={projectedEquationEntity.provisional && !isAppliedEntity(projectedEquationEntity)}
                 style={{
-                  ...positionStyle(displayedEquation),
+                  ...positionStyle(projectedEquationPosition),
                   opacity: projectedEquationEntity.opacity,
                   scale: projectedEquationEntity.scale,
                   touchAction: "none",
@@ -2129,7 +2298,7 @@ export function App() {
                 ) : (
                   <EquationContent lines={equationRenderState.lines} />
                 )}
-                {selectedSet.has("equation_1") ? (
+                {selectedSet.has(projectedEquationEntity.id) ? (
                   <span className="absolute -top-6 left-0 whitespace-nowrap bg-sky-400 px-1.5 py-0.5 font-sans text-[11px] font-medium text-sky-950">
                     {projectedEquationEntity.id}{selectedPlan.id === "new-move" && hasDelta ? " · destination" : ""}
                   </span>
@@ -2137,60 +2306,111 @@ export function App() {
               </button> : null}
 
               {projectedCreatedMathTexEntities.filter((entity) => entity.present).map((entity) => (
-                <m.div
-                  aria-label={`New equation: ${entity.content?.label ?? entity.content?.displayLines.join(" ")}`}
-                  className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-1/2 border border-dashed border-sky-400 bg-zinc-950/70 px-3 py-2 text-zinc-100"
+                <button
+                  aria-label={`Move ${entity.content?.label ?? entity.id}`}
+                  aria-pressed={selectedSet.has(entity.id)}
+                  className={cn(
+                    "absolute z-10 -translate-x-1/2 -translate-y-1/2 border bg-zinc-950/70 px-3 py-2 text-zinc-100 outline-none",
+                    isAppliedEntity(entity)
+                      ? "cursor-grab active:cursor-grabbing"
+                      : "pointer-events-none border-dashed",
+                    selectedSet.has(entity.id)
+                      ? "border-sky-400 bg-sky-950/70 focus-visible:ring-2 focus-visible:ring-sky-400"
+                      : "border-sky-700 hover:border-sky-400",
+                  )}
                   data-equation-object={entity.id}
                   data-proposed-state-sample={studioProjection.canvas.sampleId}
+                  disabled={!isAppliedEntity(entity)}
                   key={entity.id}
-                  role="img"
+                  onKeyDown={nudgeSelected}
+                  onPointerCancel={endDrag}
+                  onPointerDown={(event) => beginDrag(event, entity.id)}
+                  onPointerMove={moveDrag}
+                  onPointerUp={endDrag}
                   style={{
-                    ...positionStyle(entity.position),
+                    ...positionStyle(selectedSet.has(entity.id) ? previewPositionFor(entity.id) : entity.position),
                     opacity: entity.opacity,
                     scale: entity.scale,
+                    touchAction: "none",
                   }}
+                  type="button"
                 >
                   <EquationContent lines={entity.content?.displayLines ?? []} />
-                </m.div>
+                  {selectedSet.has(entity.id) ? (
+                    <span className="absolute -top-6 left-0 whitespace-nowrap bg-sky-400 px-1.5 py-0.5 font-sans text-[11px] font-medium text-sky-950">
+                      {entity.content?.label ?? entity.id}{hasDelta ? " · destination" : ""}
+                    </span>
+                  ) : null}
+                </button>
               ))}
 
               {projectedTransformTextEntities.filter((entity) => (
                 entity.present && entity.id !== projectedEquationEntity?.id
               )).map((entity) => (
-                <m.div
-                  aria-label={`Transform target: ${entity.content?.text}`}
-                  className="pointer-events-none absolute z-10 max-w-64 -translate-x-1/2 -translate-y-1/2 border border-dashed border-sky-400 bg-zinc-950/70 px-3 py-2 text-pretty text-center text-sm leading-6 text-zinc-100"
+                <button
+                  aria-label={`Move ${entity.content?.label ?? entity.id}`}
+                  aria-pressed={selectedSet.has(entity.id)}
+                  className={cn(
+                    "absolute z-10 max-w-64 -translate-x-1/2 -translate-y-1/2 border bg-zinc-950/70 px-3 py-2 text-pretty text-center text-sm leading-6 text-zinc-100 outline-none",
+                    isAppliedEntity(entity)
+                      ? "cursor-grab active:cursor-grabbing"
+                      : "pointer-events-none border-dashed",
+                    selectedSet.has(entity.id)
+                      ? "border-sky-400 bg-sky-950/70 focus-visible:ring-2 focus-visible:ring-sky-400"
+                      : "border-sky-700 hover:border-sky-400",
+                  )}
                   data-proposed-state-sample={studioProjection.canvas.sampleId}
                   data-text-transform-target={entity.id}
+                  disabled={!isAppliedEntity(entity)}
                   key={entity.id}
-                  role="img"
+                  onKeyDown={nudgeSelected}
+                  onPointerCancel={endDrag}
+                  onPointerDown={(event) => beginDrag(event, entity.id)}
+                  onPointerMove={moveDrag}
+                  onPointerUp={endDrag}
                   style={{
-                    ...positionStyle(entity.position),
+                    ...positionStyle(selectedSet.has(entity.id) ? previewPositionFor(entity.id) : entity.position),
                     opacity: entity.opacity,
                     scale: entity.scale,
+                    touchAction: "none",
                   }}
+                  type="button"
                 >
                   {entity.content?.text}
-                </m.div>
+                </button>
               ))}
 
               {projectedExplanationEntities.filter((entity) => entity.present).map((entity) => (
-                <m.div
-                  aria-label={`Explanation: ${entity.content?.text}`}
+                <button
+                  aria-label={`Move ${entity.content?.label ?? entity.id}`}
+                  aria-pressed={selectedSet.has(entity.id)}
                   className={cn(
-                    "pointer-events-none absolute z-10 max-w-52 -translate-x-1/2 -translate-y-1/2 px-2 py-1 text-center text-xs leading-5 text-zinc-100",
+                    "absolute z-10 max-w-52 -translate-x-1/2 -translate-y-1/2 border px-2 py-1 text-center text-xs leading-5 text-zinc-100 outline-none",
                     entity.transactionId === draftProgramRecord?.program.transactionId
-                      ? "border border-dashed border-sky-400 bg-sky-950/70"
-                      : "bg-zinc-950/70",
+                      ? "pointer-events-none cursor-default border border-dashed border-sky-400 bg-sky-950/70"
+                      : selectedSet.has(entity.id)
+                        ? "cursor-grab border-sky-400 bg-sky-950/70 focus-visible:ring-2 focus-visible:ring-sky-400 active:cursor-grabbing"
+                        : "cursor-grab border-transparent bg-zinc-950/70 hover:border-zinc-600 active:cursor-grabbing",
                   )}
                   data-explanation-object={entity.id}
                   data-proposed-state-sample={studioProjection.canvas.sampleId}
+                  disabled={!isAppliedEntity(entity)}
                   key={entity.id}
-                  role="img"
-                  style={{ ...positionStyle(entity.position), opacity: entity.opacity, scale: entity.scale }}
+                  onKeyDown={nudgeSelected}
+                  onPointerCancel={endDrag}
+                  onPointerDown={(event) => beginDrag(event, entity.id)}
+                  onPointerMove={moveDrag}
+                  onPointerUp={endDrag}
+                  style={{
+                    ...positionStyle(selectedSet.has(entity.id) ? previewPositionFor(entity.id) : entity.position),
+                    opacity: entity.opacity,
+                    scale: entity.scale,
+                    touchAction: "none",
+                  }}
+                  type="button"
                 >
                   {entity.content?.text}
-                </m.div>
+                </button>
               ))}
 
               {(selectedPlan.id === "new-move" && hasDelta)
@@ -2352,7 +2572,7 @@ export function App() {
                     {selectionLabel}
                   </span>
                   <span className="ml-auto shrink-0 text-zinc-600">
-                    {import.meta.env.VITE_POIETRA_AI_ENDPOINT ? "Model endpoint" : "Local fixture"}
+                    {aiEndpointConfigured ? "AI endpoint" : "AI unavailable"}
                   </span>
                   <span className="shrink-0 border-l border-zinc-800 pl-2 text-zinc-500">Drag</span>
                   <button
@@ -2368,7 +2588,7 @@ export function App() {
                   <label className="sr-only" htmlFor="edit-instruction">Edit instruction</label>
                   <textarea
                     className="max-h-20 min-h-8 min-w-0 flex-1 resize-none border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-xs leading-5 text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-sky-500"
-                    disabled={suggestionStatus === "loading"}
+                    disabled={suggestionStatus === "loading" || !aiEndpointConfigured}
                     id="edit-instruction"
                     onChange={(event) => setInstruction(event.currentTarget.value)}
                     onKeyDown={(event) => {
@@ -2383,52 +2603,17 @@ export function App() {
                   />
                   <button
                     className="min-h-8 shrink-0 bg-sky-500 px-3 py-1.5 text-xs font-medium text-sky-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500"
-                    disabled={instruction.trim().length === 0 || suggestionStatus === "loading"}
+                    disabled={!aiEndpointConfigured || instruction.trim().length === 0 || suggestionStatus === "loading"}
                     type="submit"
                   >
                     {suggestionStatus === "loading" ? "Drafting…" : "Preview"}
                   </button>
                 </div>
 
-                {suggestionStatus === "idle" && instruction.length === 0 ? (
-                  <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]">
-                    <span className="text-zinc-600">Try</span>
-                    <button
-                      className="text-zinc-400 underline decoration-zinc-700 underline-offset-2 hover:text-zinc-200"
-                      onClick={() => setInstruction("Move 96 px right in an upward arc over 1.5s")}
-                      type="button"
-                    >
-                      arc right over 1.5s
-                    </button>
-                    <button
-                      className="text-zinc-400 underline decoration-zinc-700 underline-offset-2 hover:text-zinc-200"
-                      onClick={() => setInstruction("10秒の時点から64ピクセル上へ1秒かけて移動")}
-                      type="button"
-                    >
-                      add motion at 10s
-                    </button>
-                    <button
-                      className="text-zinc-400 underline decoration-zinc-700 underline-offset-2 hover:text-zinc-200"
-                      onClick={() => setInstruction("これをマクスウェル方程式に変更して")}
-                      type="button"
-                    >
-                      transform MathTex
-                    </button>
-                    <button
-                      className="text-zinc-400 underline decoration-zinc-700 underline-offset-2 hover:text-zinc-200"
-                      onClick={() => setInstruction("5秒前からマクスウェル方程式に文字を出現させて解説して")}
-                      type="button"
-                    >
-                      explain from 5s ago
-                    </button>
-                    <button
-                      className="text-zinc-400 underline decoration-zinc-700 underline-offset-2 hover:text-zinc-200"
-                      onClick={() => setInstruction("ここで良い感じの図形でシーンチェンジしたい")}
-                      type="button"
-                    >
-                      shape Scene transition
-                    </button>
-                  </div>
+                {!aiEndpointConfigured ? (
+                  <p className="mt-1.5 text-pretty text-[10px] leading-4 text-amber-300" role="alert">
+                    Configure VITE_POIETRA_AI_ENDPOINT and restart Studio to use Magic Edit.
+                  </p>
                 ) : null}
 
                 <div aria-live="polite">
@@ -2437,7 +2622,7 @@ export function App() {
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <p className="text-pretty font-medium text-sky-300">
-                            {suggestion.provider === "remote" ? "AI draft" : "Fixture draft"} · preview only
+                            AI draft · preview only
                           </p>
                           <p className="mt-0.5 text-pretty leading-4 text-zinc-400">{suggestion.summary}</p>
                         </div>

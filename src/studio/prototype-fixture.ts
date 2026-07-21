@@ -8,7 +8,8 @@ import type {
 
 export type EditMode = "position" | "animate";
 export type PlanId = "whole-followers" | "play-followers" | "new-move" | "play-target";
-export type ObjectId = "equation_1" | "label_1" | "arrow_1" | "proof_box";
+export type ObjectId = string;
+export type FixtureObjectId = "equation_1" | "label_1" | "arrow_1" | "proof_box";
 export type Point = { x: number; y: number };
 export type Interval = { start: number; end: number };
 export type EasingName = "smooth";
@@ -20,7 +21,7 @@ export type MotionRecord = {
   id: string;
   interval: Interval;
   label: string;
-  objectIds: readonly ObjectId[];
+  objectIds: readonly FixtureObjectId[];
   start: Point;
 };
 
@@ -104,7 +105,7 @@ export type ObjectGroup = {
 };
 
 export type SceneObjectInfo = {
-  id: ObjectId;
+  id: FixtureObjectId;
   type: string;
   displayName: string;
   mathTex: {
@@ -178,40 +179,40 @@ export const SCENE_OBJECTS: readonly SceneObjectInfo[] = [
   },
 ] as const;
 
-const DEPENDENTS: Readonly<Record<ObjectId, readonly ObjectId[]>> = {
+const DEPENDENTS: Readonly<Record<FixtureObjectId, readonly FixtureObjectId[]>> = {
   equation_1: ["label_1", "arrow_1"],
   label_1: ["arrow_1"],
   arrow_1: [],
   proof_box: [],
 };
 
-export const OBJECT_HALF_SIZE: Readonly<Record<ObjectId, Point>> = {
+export const OBJECT_HALF_SIZE: Readonly<Record<FixtureObjectId, Point>> = {
   equation_1: { x: 62, y: 24 },
   label_1: { x: 34, y: 14 },
   arrow_1: { x: 18, y: 36 },
   proof_box: { x: 115, y: 31 },
 };
 
-export const OBJECT_LIFETIMES: Readonly<Record<ObjectId, readonly Interval[]>> = {
+export const OBJECT_LIFETIMES: Readonly<Record<FixtureObjectId, readonly Interval[]>> = {
   equation_1: [{ start: 0, end: SCENE_DURATION }],
   label_1: [{ start: 0, end: 9.5 }],
   arrow_1: [{ start: 0, end: 9.5 }],
   proof_box: [{ start: 0, end: 10.5 }],
 };
 
-export function lifetimeAt(objectId: ObjectId, time: number): Interval | undefined {
+export function lifetimeAt(objectId: FixtureObjectId, time: number): Interval | undefined {
   return OBJECT_LIFETIMES[objectId].find((interval) => time >= interval.start && time < interval.end);
 }
 
-export function isObjectPresentAt(objectId: ObjectId, time: number) {
+export function isObjectPresentAt(objectId: FixtureObjectId, time: number) {
   return lifetimeAt(objectId, time) !== undefined;
 }
 
-export function lifetimeEndFor(objectId: ObjectId, time: number) {
+export function lifetimeEndFor(objectId: FixtureObjectId, time: number) {
   return lifetimeAt(objectId, time)?.end ?? time;
 }
 
-export function isObjectId(value: string): value is ObjectId {
+export function isObjectId(value: string): value is FixtureObjectId {
   return SCENE_OBJECTS.some((object) => object.id === value);
 }
 
@@ -220,7 +221,7 @@ export function sameObjects(left: readonly ObjectId[], right: readonly ObjectId[
 }
 
 export function plansFor(
-  objectIds: readonly ObjectId[],
+  objectIds: readonly FixtureObjectId[],
   currentTime: number,
   editMode: EditMode,
   moveDuration: number,
@@ -228,7 +229,7 @@ export function plansFor(
 ): readonly EditPlan[] {
   const presentObjectIds = objectIds.filter((objectId) => isObjectPresentAt(objectId, currentTime));
   const selected = new Set(presentObjectIds);
-  const dependentSet = new Set<ObjectId>();
+  const dependentSet = new Set<FixtureObjectId>();
   for (const objectId of presentObjectIds) {
     for (const dependent of DEPENDENTS[objectId]) {
       if (!selected.has(dependent) && isObjectPresentAt(dependent, currentTime)) dependentSet.add(dependent);

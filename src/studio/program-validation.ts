@@ -104,6 +104,8 @@ export function validateAndScheduleProgram(
   for (const operation of input.operations) {
     for (const entityId of referencedEntityIds(operation)) {
       if (!entityId.startsWith("tx:")) continue;
+      const existingEntity = scene.objectGraph.entities[entityId];
+      if (existingEntity && !existingEntity.provisional) continue;
       if (!entityId.startsWith(`tx:${input.transactionId}/entity:`)) {
         issues.push({
           code: "provisional-id-invalid",

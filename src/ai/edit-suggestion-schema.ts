@@ -214,7 +214,7 @@ const suggestionSchema = z.object({
   assumptions: z.array(z.string()),
   confidence: z.literal("medium"),
   operation: editSuggestionOperationSchema,
-  provider: z.enum(["fixture", "remote"]),
+  provider: z.literal("remote"),
   summary: z.string(),
 });
 

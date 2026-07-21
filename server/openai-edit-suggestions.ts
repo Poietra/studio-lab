@@ -12,6 +12,7 @@ import {
 } from "../src/ai/edit-suggestion-schema";
 
 type PluginOptions = {
+  apiKey?: string;
   model?: string;
 };
 
@@ -39,11 +40,11 @@ For a MathTex content change, return create-transform only when exactly one sele
 
 For a request to explain an equation or object with visible words, require exactly one selected object present at start. Generate one concise explanatory text string in the user's language, use objectKind text, animation fade-in, and a placement that keeps it adjacent to the target (prefer right unless the instruction says otherwise). The FadeIn interval defaults to one second and the Text persists after that interval.
 
-For a request to change or transition to the next Scene using a shape, return create-scene-transition. This is a Scene-level creation operation and must not require a selected object. Use destination next-scene, style cover-reveal, and smooth easing. The first half expands the shape until it covers the frame; the Scene boundary is the interval midpoint; the second half contracts the shape to reveal the incoming Scene. Resolve explicit circle, diamond, or hexagon wording. For vague aesthetic wording such as “良い感じの図形”, “nice shape”, or no named shape, choose diamond. Resolve explicit black, white, or sky color wording; otherwise choose sky. Record these defaults in assumptions instead of asking the user to choose. Use an explicit duration when supplied and 1.5 seconds otherwise. Only clarify if the interval cannot fit at least 0.4 seconds, there is no next Scene destination, or the request requires a materially different transition mechanism.
+For a request to change or transition to the next Scene using a shape, return create-scene-transition. This is a Scene-level creation operation and must not require a selected object. Use destination next-scene, style cover-reveal, and smooth easing. The first half expands the shape until it covers the frame; the Scene boundary is the interval midpoint; the second half contracts the shape to reveal the incoming Scene. Resolve explicit circle, diamond, or hexagon wording and explicit black, white, or sky wording. For a vague aesthetic request, choose a fitting shape and color from the schema based on the supplied Scene context and record the choice as an assumption; do not apply a fixed diamond/sky pair. Use an explicit duration when supplied and 1.5 seconds otherwise. Only clarify if the interval cannot fit at least 0.4 seconds, there is no next Scene destination, or the request requires a materially different transition mechanism.
 
-For camera focus wording such as “カメラを寄せながら重要部分を強調して”, return create-camera-focus for the selected visible identities. Use smooth easing, zoomScale 1.35, emphasisScale 1.12, and one shared interval. Treat the selected identities as the important region when no smaller semantic sub-part is available, and record that bounded default in assumptions. Do not return generic camera-work clarification for this supported focus preset.
+For camera focus wording such as “カメラを寄せながら重要部分を強調して”, return create-camera-focus for the selected visible identities. Use smooth easing, choose conservative zoomScale and emphasisScale values that fit the request and schema, and use one shared interval. Treat the selected identities as the important region when no smaller semantic sub-part is available, and record that bounded assumption. Do not return generic camera-work clarification for this supported focus preset.
 
-For a request to add or write a new equation, return create-equation. This creates a new MathTex identity and does not replace selection, so it may run with no selected object. Resolve named conventional equations normally. If no formula is supplied, use F = ma as a visible reversible preview default, placement right, animation fade-in, and record the content default in assumptions.
+For a request to add or write a new equation, return create-equation. This creates a new MathTex identity and does not replace selection, so it may run with no selected object. Resolve named conventional equations normally. If neither a formula nor a conventionally named equation is supplied, ask one focused clarification for the desired equation instead of inventing content. Choose center or right placement from the request and current object context, and record the placement assumption.
 
 For wording that transforms selected MathTex into visible words or explanatory Text, return create-text-transform with strategy replacement-transform and one concise text string in the user's language. Require exactly one selected visible MathTex source. The source is replaced by a Text runtime identity at the interval end; this is not create-explanation beside an unchanged source.
 
@@ -80,7 +81,7 @@ function sendJson(response: { end(body?: string): void; setHeader(name: string, 
 }
 
 export function openAiEditSuggestions(options: PluginOptions = {}): Plugin {
-  let apiKey = "";
+  let apiKey = options.apiKey?.trim() || process.env.OPENAI_API_KEY?.trim() || "";
   let root = process.cwd();
   const model = options.model ?? "gpt-5.6-luna";
 
@@ -88,10 +89,12 @@ export function openAiEditSuggestions(options: PluginOptions = {}): Plugin {
     name: "poietra-openai-edit-suggestions",
     configResolved(config) {
       root = config.root;
-      try {
-        apiKey = readApiKey(root);
-      } catch {
-        apiKey = "";
+      if (!apiKey) {
+        try {
+          apiKey = readApiKey(root);
+        } catch {
+          apiKey = "";
+        }
       }
     },
     configureServer(server) {

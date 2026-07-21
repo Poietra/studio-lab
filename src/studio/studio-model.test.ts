@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { parseEditSuggestionResult } from "../ai/edit-suggestion-schema";
-import { suggestEditWithFixture, type EditSuggestionOperation } from "../ai/edit-suggestions";
+import type { EditSuggestionOperation, MathTexSuggestionTarget } from "../ai/edit-suggestions";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
 import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
 import { EDIT_OPERATION_VERSION, operationId, type CanonicalEditProgram } from "./operations";
@@ -13,29 +13,177 @@ import {
 } from "./suggestion-program";
 import { applyStagedPrograms, stageProgram, undoLastAppliedProgram, withoutTransaction } from "./transactions";
 
-function fixtureSuggestion(
-  prompt: string,
-  options: Readonly<{ playhead?: number; selectedObjectIds?: readonly string[] }> = {},
-) {
-  const result = suggestEditWithFixture({
-    objects: Object.values(STUDIO_FIXTURE_SCENE.objectGraph.entities).map((entity) => ({
-      displayName: entity.id,
-      id: entity.id,
-      lifetimes: entity.lifetime,
-      mathTex: entity.type === "MathTex" && entity.content?.texParts
-        ? { displayLines: entity.content.displayLines, texParts: entity.content.texParts }
-        : null,
-      type: entity.type,
-    })),
-    playhead: options.playhead ?? 8,
-    prompt,
-    sceneDuration: STUDIO_FIXTURE_SCENE.duration,
-    selectedObjectIds: options.selectedObjectIds ?? ["equation_1"],
-  });
-  expect(parseEditSuggestionResult(result).success).toBe(true);
-  expect(result.kind).toBe("suggestion");
-  if (result.kind !== "suggestion") throw new Error(result.message);
-  return result.suggestion.operation;
+const MAXWELL_TARGET: MathTexSuggestionTarget = {
+  displayLines: [
+    "∇·E = ρ/ε₀",
+    "∇·B = 0",
+    "∇×E = −∂B/∂t",
+    "∇×B = μ₀J + μ₀ε₀∂E/∂t",
+  ],
+  kind: "mathtex",
+  label: "Maxwell's equations",
+  texParts: [String.raw`\begin{aligned}\nabla \cdot \mathbf{E} &= \frac{\rho}{\varepsilon_0} \\ \nabla \cdot \mathbf{B} &= 0 \\ \nabla \times \mathbf{E} &= -\frac{\partial \mathbf{B}}{\partial t} \\ \nabla \times \mathbf{B} &= \mu_0 \mathbf{J} + \mu_0 \varepsilon_0 \frac{\partial \mathbf{E}}{\partial t}\end{aligned}`],
+};
+
+const NEWTON_TARGET: MathTexSuggestionTarget = {
+  displayLines: ["F = ma"],
+  kind: "mathtex",
+  label: "Newton's equation of motion",
+  texParts: ["F", "=", "m", "a"],
+};
+
+function motionSuggestion(playhead = 8): EditSuggestionOperation {
+  return {
+    anchor: { kind: "playhead", referenceSeconds: playhead },
+    controlOffset: { x: 0, y: 0 },
+    delta: { x: 96, y: 0 },
+    easing: "smooth",
+    end: playhead + 1.5,
+    kind: "create-motion",
+    start: playhead,
+    targetObjectIds: ["equation_1"],
+  };
+}
+
+function maxwellTransformSuggestion(playhead = 5): EditSuggestionOperation {
+  return {
+    anchor: { kind: "playhead", referenceSeconds: playhead },
+    easing: "smooth",
+    end: playhead + 1.5,
+    identityAfter: "target-replaces-source",
+    kind: "create-transform",
+    mismatchMode: "transform",
+    sourceObjectId: "equation_1",
+    start: playhead,
+    strategy: "transform-matching-tex",
+    target: MAXWELL_TARGET,
+  };
+}
+
+function transformAndExplanationSuggestion(playhead = 8): EditSuggestionOperation {
+  const start = playhead - 5;
+  const end = start + 1;
+  return {
+    anchor: { kind: "playhead-offset", offsetSeconds: -5, referenceSeconds: playhead },
+    execution: "parallel",
+    kind: "edit-program",
+    operations: [
+      {
+        easing: "smooth",
+        end,
+        identityAfter: "target-replaces-source",
+        kind: "create-transform",
+        mismatchMode: "transform",
+        sourceObjectId: "equation_1",
+        start,
+        strategy: "transform-matching-tex",
+        target: MAXWELL_TARGET,
+      },
+      {
+        animation: "fade-in",
+        end,
+        kind: "create-explanation",
+        objectKind: "text",
+        placement: "right",
+        start,
+        targetObjectId: "equation_1",
+        text: "電場と磁場の変化が互いを生み出します",
+      },
+    ],
+  };
+}
+
+function threeStepSuggestion(playhead = 5): EditSuggestionOperation {
+  return {
+    anchor: { kind: "playhead", referenceSeconds: playhead },
+    execution: "sequence",
+    kind: "edit-program",
+    operations: [
+      {
+        controlOffset: { x: 0, y: 0 },
+        delta: { x: 96, y: 0 },
+        easing: "smooth",
+        end: playhead + 1.5,
+        kind: "create-motion",
+        start: playhead,
+        targetObjectIds: ["equation_1"],
+      },
+      {
+        easing: "smooth",
+        end: playhead + 3,
+        identityAfter: "target-replaces-source",
+        kind: "create-transform",
+        mismatchMode: "transform",
+        sourceObjectId: "equation_1",
+        start: playhead + 1.5,
+        strategy: "transform-matching-tex",
+        target: MAXWELL_TARGET,
+      },
+      {
+        animation: "fade-in",
+        end: playhead + 4,
+        kind: "create-explanation",
+        objectKind: "text",
+        placement: "right",
+        start: playhead + 3,
+        targetObjectId: "equation_1",
+        text: "電場と磁場の変化が互いを生み出します",
+      },
+    ],
+  };
+}
+
+function cameraFocusSuggestion(playhead = 4.42): EditSuggestionOperation {
+  return {
+    anchor: { kind: "playhead", referenceSeconds: playhead },
+    easing: "smooth",
+    emphasisScale: 1.12,
+    end: playhead + 1.5,
+    kind: "create-camera-focus",
+    start: playhead,
+    targetObjectIds: ["equation_1"],
+    zoomScale: 1.35,
+  };
+}
+
+function textTransformSuggestion(playhead = 4.42): EditSuggestionOperation {
+  const start = playhead - 1;
+  return {
+    anchor: { kind: "playhead-offset", offsetSeconds: -1, referenceSeconds: playhead },
+    easing: "smooth",
+    end: start + 1.5,
+    kind: "create-text-transform",
+    sourceObjectId: "equation_1",
+    start,
+    strategy: "replacement-transform",
+    text: "この式の意味を、項どうしの関係から読み解きます",
+  };
+}
+
+function newEquationSuggestion(playhead = 5): EditSuggestionOperation {
+  return {
+    anchor: { kind: "playhead", referenceSeconds: playhead },
+    animation: "fade-in",
+    end: playhead + 1,
+    kind: "create-equation",
+    placement: "right",
+    start: playhead,
+    target: NEWTON_TARGET,
+  };
+}
+
+function sceneTransitionSuggestion(playhead = 5): EditSuggestionOperation {
+  return {
+    anchor: { kind: "playhead", referenceSeconds: playhead },
+    color: "sky",
+    destination: "next-scene",
+    easing: "smooth",
+    end: playhead + 1.5,
+    kind: "create-scene-transition",
+    shape: "diamond",
+    start: playhead,
+    style: "cover-reveal",
+  };
 }
 
 function canonicalize(operation: EditSuggestionOperation, transactionId = "test-transaction", playhead = 8) {
@@ -48,28 +196,23 @@ function canonicalize(operation: EditSuggestionOperation, transactionId = "test-
 }
 
 describe("Studio time and transaction invariants", () => {
-  it("runs fixture and remote-shaped results through the same closed validator", () => {
-    const operation = fixtureSuggestion("右に96px動かして");
-    const fixtureResult = {
+  it("accepts a valid remote operation through the closed validator", () => {
+    const operation = motionSuggestion();
+    const remoteResult = {
       kind: "suggestion" as const,
       suggestion: {
         assumptions: [],
         confidence: "medium" as const,
         operation,
-        provider: "fixture" as const,
-        summary: "fixture",
+        provider: "remote" as const,
+        summary: "remote",
       },
     };
-    const remoteResult = {
-      ...fixtureResult,
-      suggestion: { ...fixtureResult.suggestion, provider: "remote" as const, summary: "remote" },
-    };
-    expect(parseEditSuggestionResult(fixtureResult).success).toBe(true);
     expect(parseEditSuggestionResult(remoteResult).success).toBe(true);
   });
 
   it("rejects remote values that the browser would otherwise clamp to a different operation", () => {
-    const operation = fixtureSuggestion("右に96px動かして");
+    const operation = motionSuggestion();
     expect(operation.kind).toBe("create-motion");
     if (operation.kind !== "create-motion") return;
     const remoteResult = {
@@ -89,7 +232,7 @@ describe("Studio time and transaction invariants", () => {
   });
 
   it("normalizes bounded model strings before canonical evaluation", () => {
-    const operation = fixtureSuggestion("マクスウェル方程式に変形して", { playhead: 5 });
+    const operation = maxwellTransformSuggestion();
     expect(operation.kind).toBe("create-transform");
     if (operation.kind !== "create-transform") return;
     const parsed = parseEditSuggestionResult({
@@ -121,7 +264,7 @@ describe("Studio time and transaction invariants", () => {
   });
 
   it("captures a past-relative anchor once and keeps its evidence when the playhead moves", () => {
-    const operation = fixtureSuggestion("5秒前からマクスウェル方程式に文字を出現させて解説して");
+    const operation = transformAndExplanationSuggestion();
     const validation = canonicalize(operation);
     expect(validation.kind).toBe("valid");
     expect(validation.program.anchor.source).toEqual({
@@ -150,7 +293,7 @@ describe("Studio time and transaction invariants", () => {
   });
 
   it("applies and undoes a whole EditProgram as one transaction", () => {
-    const operation = fixtureSuggestion("5秒前からマクスウェル方程式に文字を出現させて解説して");
+    const operation = transformAndExplanationSuggestion();
     const validation = canonicalize(operation, "atomic-program");
     expect(validation.kind).toBe("valid");
     expect(validation.program.operations.length).toBeGreaterThan(2);
@@ -203,9 +346,7 @@ describe("canonical operation expansion and DAG validation", () => {
   });
 
   it("keeps transform and explanation atomic and targets the post-transform identity", () => {
-    const validation = canonicalize(fixtureSuggestion(
-      "5秒前からマクスウェル方程式に文字を出現させて解説して",
-    ));
+    const validation = canonicalize(transformAndExplanationSuggestion());
     expect(validation.kind).toBe("valid");
     expect(validation.program.intentCount).toBe(2);
     const transform = validation.program.operations.find((operation) => operation.kind === "TransformContent");
@@ -224,10 +365,7 @@ describe("canonical operation expansion and DAG validation", () => {
   });
 
   it("preserves all three supported clauses as three leaf intents", () => {
-    const operation = fixtureSuggestion(
-      "右に動かして、マクスウェル方程式に変形して、初心者向けの文字を表示して解説して",
-      { playhead: 5 },
-    );
+    const operation = threeStepSuggestion();
     expect(operation.kind).toBe("edit-program");
     if (operation.kind !== "edit-program") return;
     expect(operation.operations.map((step) => step.kind)).toEqual([
@@ -248,7 +386,7 @@ describe("canonical operation expansion and DAG validation", () => {
   });
 
   it("returns one focused execution issue for conflicting parallel channel writes", () => {
-    const base = canonicalize(fixtureSuggestion("右に96px動かして"), "conflict-base").program;
+    const base = canonicalize(motionSuggestion(), "conflict-base").program;
     const interval = { end: 6, start: 5 };
     const conflictProgram: CanonicalEditProgram = {
       ...base,
@@ -290,7 +428,7 @@ describe("canonical operation expansion and DAG validation", () => {
 
   it("does not reverse a dependency or add a cycle when both operations read and write one channel", () => {
     const base = canonicalize(
-      fixtureSuggestion("右に96px動かして", { playhead: 5 }),
+      motionSuggestion(5),
       "read-write-conflict",
       5,
     ).program;
@@ -340,7 +478,7 @@ describe("canonical operation expansion and DAG validation", () => {
   });
 
   it("revalidates later programs against identities changed by earlier programs", () => {
-    const firstOperation = fixtureSuggestion("マクスウェル方程式に変形して", { playhead: 5 });
+    const firstOperation = maxwellTransformSuggestion();
     expect(firstOperation.kind).toBe("create-transform");
     if (firstOperation.kind !== "create-transform") return;
     const first = canonicalize(firstOperation, "first-transform", 5);
@@ -370,7 +508,7 @@ describe("canonical operation expansion and DAG validation", () => {
 
 describe("one ProposedState feeds every Studio projection", () => {
   it("evaluates camera focus and selected-object emphasis through shared channels", () => {
-    const operation = fixtureSuggestion("カメラを寄せながら重要部分を強調して", { playhead: 4.42 });
+    const operation = cameraFocusSuggestion();
     expect(operation.kind).toBe("create-camera-focus");
     if (operation.kind !== "create-camera-focus") return;
     const validation = canonicalize(operation, "camera-focus", 4.42);
@@ -386,7 +524,7 @@ describe("one ProposedState feeds every Studio projection", () => {
   });
 
   it("resolves immediately-before once and replaces MathTex with explanatory Text", () => {
-    const operation = fixtureSuggestion("直前から説明を開始して文字に変形する", { playhead: 4.42 });
+    const operation = textTransformSuggestion();
     expect(operation.kind).toBe("create-text-transform");
     if (operation.kind !== "create-text-transform") return;
     const validation = canonicalize(operation, "text-transform", 4.42);
@@ -421,10 +559,7 @@ describe("one ProposedState feeds every Studio projection", () => {
   });
 
   it("creates a visible provisional MathTex without requiring selection", () => {
-    const operation = fixtureSuggestion("あたらしく数式を書いて", {
-      playhead: 5,
-      selectedObjectIds: [],
-    });
+    const operation = newEquationSuggestion();
     expect(operation.kind).toBe("create-equation");
     if (operation.kind !== "create-equation") return;
     expect(operation.target.displayLines).toEqual(["F = ma"]);
@@ -444,10 +579,71 @@ describe("one ProposedState feeds every Studio projection", () => {
     expect(projection.timeline.events.some((event) => event.transactionId === "new-equation")).toBe(true);
   });
 
+  it("accepts an applied created entity as the target of the next direct edit", () => {
+    const operation = newEquationSuggestion();
+    expect(operation.kind).toBe("create-equation");
+    if (operation.kind !== "create-equation") return;
+    const creation = canonicalize(operation, "editable-equation", 5);
+    expect(creation.kind).toBe("valid");
+    const creationRecord = programRecord(creation.program, creation);
+    const createdState = evaluateWorkingState(createFixtureWorkingState({
+      appliedPrograms: [creationRecord],
+    }));
+    const createdId = creation.program.operations.find((candidate) => candidate.kind === "CreateEntity")
+      ?.entity.id;
+    expect(createdId).toBeDefined();
+    if (!createdId) return;
+
+    const movement = createDirectManipulationMotionProgram({
+      capturedPlayhead: operation.end,
+      controlOffset: { x: 0, y: 0 },
+      delta: { x: 64, y: 0 },
+      interval: { end: operation.end + 1, start: operation.end },
+      scene: createdState.evaluatedScene,
+      targetEntityIds: [createdId],
+      transactionId: "move-created-equation",
+    });
+    expect(movement.issues).toEqual([]);
+    expect(movement.kind).toBe("valid");
+    const moved = evaluateWorkingState(createFixtureWorkingState({
+      appliedPrograms: [creationRecord, programRecord(movement.program, movement)],
+    }));
+    const projected = projectProposedState(moved, operation.end + 1);
+    expect(projected.canvas.entities.find((entity) => entity.id === createdId)?.position).toEqual({
+      x: 544,
+      y: 180,
+    });
+  });
+
+  it("keeps a created entity transaction-local until its creation is applied", () => {
+    const operation = newEquationSuggestion();
+    expect(operation.kind).toBe("create-equation");
+    if (operation.kind !== "create-equation") return;
+    const creation = canonicalize(operation, "preview-equation", 5);
+    const creationRecord = programRecord(creation.program, creation);
+    const previewState = evaluateWorkingState(createFixtureWorkingState({
+      stagedPrograms: [creationRecord],
+    }));
+    const createdId = creation.program.operations.find((candidate) => candidate.kind === "CreateEntity")
+      ?.entity.id;
+    expect(createdId).toBeDefined();
+    if (!createdId) return;
+
+    const movement = createDirectManipulationMotionProgram({
+      capturedPlayhead: operation.end,
+      controlOffset: { x: 0, y: 0 },
+      delta: { x: 64, y: 0 },
+      interval: { end: operation.end + 1, start: operation.end },
+      scene: previewState.evaluatedScene,
+      targetEntityIds: [createdId],
+      transactionId: "move-unapplied-equation",
+    });
+    expect(movement.kind).toBe("invalid");
+    expect(movement.issues.some((issue) => issue.code === "provisional-id-invalid")).toBe(true);
+  });
+
   it("shows a provisional Text consistently on canvas, object list, timeline and playback", () => {
-    const validation = canonicalize(fixtureSuggestion(
-      "5秒前からマクスウェル方程式に文字を出現させて解説して",
-    ), "projection-program");
+    const validation = canonicalize(transformAndExplanationSuggestion(), "projection-program");
     const proposed = evaluateWorkingState(createFixtureWorkingState({
       stagedPrograms: [programRecord(validation.program, validation)],
     }));
@@ -470,10 +666,7 @@ describe("one ProposedState feeds every Studio projection", () => {
   });
 
   it("creates a Scene-level transition without selection and exposes the full-cover boundary", () => {
-    const operation = fixtureSuggestion("ここで良い感じの図形でシーンチェンジしたい", {
-      playhead: 5,
-      selectedObjectIds: [],
-    });
+    const operation = sceneTransitionSuggestion();
     expect(operation.kind).toBe("create-scene-transition");
     if (operation.kind !== "create-scene-transition") return;
     expect(operation.shape).toBe("diamond");
@@ -495,7 +688,7 @@ describe("one ProposedState feeds every Studio projection", () => {
   });
 
   it("rejects destructive transforms whose source identity is Unknown", () => {
-    const operation = fixtureSuggestion("マクスウェル方程式に変形して", { playhead: 5 });
+    const operation = maxwellTransformSuggestion();
     const unknownScene = {
       ...STUDIO_FIXTURE_SCENE,
       objectGraph: {

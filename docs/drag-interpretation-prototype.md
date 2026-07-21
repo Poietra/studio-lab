@@ -122,8 +122,9 @@ remain authoritative.
 A shape-based Scene-change request produces standalone `CreateSceneTransition`.
 Unlike the object operations, it requires no selected target. Its closed preset
 contains `circle | diamond | hexagon`, `black | sky | white`, a cover/reveal
-interval, and the next-Scene destination. Vague aesthetic wording resolves to the
-diamond and sky defaults as visible assumptions rather than another clarification.
+interval, and the next-Scene destination. For vague aesthetic wording the model
+chooses within that bounded vocabulary from the supplied context and exposes its
+choice as an assumption; Studio does not force a fixed shape/color pair.
 The canvas samples the real coverage curve, the Scene lane exposes the fully
 covered midpoint, and source preview marks where the incoming Scene composition
 must be connected. The browser does not invent the contents of that incoming Scene.
@@ -142,15 +143,11 @@ whose position is observed by a new explanation, is scheduled sequentially. A
 parallel request with those conflicting dependencies is not guessed into a
 different result; it receives a focused ordering clarification.
 
-The default provider is labelled `Local fixture`. It recognizes only a deliberately
-small set of absolute and playhead-relative time, direction, distance, duration and
-curved-path phrases, plus Maxwell/Newton MathTex transforms and one bounded
-explanation fixture. This is a UX and state-propagation
-experiment, not evidence of model quality. If the instruction is outside those
-capabilities, the fixture requests more detail instead of inventing one. A
-configured remote endpoint must return the same closed operation union, and its
-object IDs, object types, interval, content and geometry are checked again before
-preview.
+Magic Edit now requires a configured model endpoint. There is no runtime keyword
+parser or deterministic fixture fallback. If the endpoint is absent the composer is
+disabled with a visible configuration error. The remote endpoint must return the
+closed operation union, and its object IDs, object types, interval, content and
+geometry are checked again before preview.
 
 ### Live-model checkpoint · 2026-07-20
 
@@ -203,8 +200,8 @@ equation even though `F = ma` is the dominant conventional interpretation in thi
 context. The revised policy resolves widely recognized equation names to their
 canonical forms, records the choice as an assumption, and reserves clarification
 for names without a dominant form. The remote model receives the current MathTex
-parts and returns target `texParts`; the deterministic fixture makes the same Newton
-choice so this behavior can be tested without an API.
+parts and returns target `texParts`; a test-only fixture covers the same canonical
+Newton mapping without acting as a runtime provider.
 
 For the fixture source, `E = mc^2` is constructed as the matchable arguments `E`,
 `=`, `m`, and `c^2`. The Newton target is constructed as `F`, `=`, `m`, and `a`.
@@ -361,8 +358,13 @@ pnpm dev:tauri
   requested effect.
   `CreateSceneTransition` remains standalone in this version because its midpoint
   changes the active Scene composition rather than one object property.
-  The local fixture is deterministic, and
-  `VITE_POIETRA_AI_ENDPOINT` is only a provider-neutral experiment boundary.
+  Tests use explicit structured operations. No keyword parser exists in either the
+  test path or runtime Magic Edit; runtime requires `VITE_POIETRA_AI_ENDPOINT` and
+  labels every accepted candidate as an AI draft.
+- Applied `CreateEntity` and `TransformContent` results become normal selectable
+  runtime identities. They can be selected from the object list or canvas, moved
+  directly, and supplied as targets to the next model request. Preview-only
+  identities remain locked until Apply.
 - API credentials must remain in the local or hosted suggestion service. A browser
   or Tauri webview must never receive a provider secret through `VITE_` variables.
 

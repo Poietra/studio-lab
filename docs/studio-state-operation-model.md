@@ -94,8 +94,11 @@ UX macros expand before validation:
 - Transform + explanation → `TransformContent` plus the explanation expansion;
   the relation targets the transform's transaction-scoped replacement identity.
 
-New entity IDs use `tx:<transaction>/entity:<local-name>`. Validation rejects a
-provisional ID from another transaction or one with no producer.
+New entity IDs use `tx:<transaction>/entity:<local-name>`. While a program is only
+staged, validation rejects its provisional IDs from every other transaction. Apply
+promotes the produced runtime entities to stable Studio identities, so later
+transactions may select and edit them without pretending that an unknown Python
+source identity has been recovered.
 
 ## Registry and deterministic invariants
 
@@ -116,9 +119,10 @@ does not claim source or visual validation is complete.
 ## Shared model-output validation
 
 `src/ai/edit-suggestion-schema.ts` is imported by both the Vite server endpoint
-and browser client. The local fixture and remote structured output therefore pass
-the same schema and refinements before canonicalization. Model output remains a
-draft; prompt instructions do not replace deterministic checks.
+and browser client. Remote structured output passes the same schema and refinements
+before canonicalization. Tests construct explicit operation values and contain no
+natural-language suggestion implementation. Model output remains a draft; prompt
+instructions do not replace deterministic safety checks.
 
 ## Transaction behavior
 
@@ -131,7 +135,8 @@ cannot retarget it and Apply/Undo cannot split a multi-intent request.
 `pnpm test` covers relative anchors (including the recorded “直前” -1 second
 default), immutable targets, transform/explanation
 identity dependencies, three-intent preservation, parallel conflicts,
-transactional Apply/Undo, provisional projection consistency, snapshot relations,
+transactional Apply/Undo, provisional-to-stable identity promotion, cross-transaction
+preview rejection, projection consistency, snapshot relations,
 Scene boundaries, camera focus, new MathTex creation, MathTex-to-Text replacement,
 direct motion normalization, shared schemas, and Unknown identity rejection.
 
