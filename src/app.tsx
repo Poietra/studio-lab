@@ -358,7 +358,9 @@ export function App() {
         transition: {
           progress,
           sourceLines: lines,
+          sourceTexParts: texParts,
           targetLines: transform.target.displayLines,
+          targetTexParts: transform.target.texParts,
         },
       };
     }
@@ -2233,7 +2235,7 @@ export function App() {
                   className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 text-zinc-100 opacity-30"
                   style={positionStyle(baseEquation)}
                 >
-                  <EquationContent lines={equationRenderState.lines} />
+                  <EquationContent lines={equationRenderState.lines} texParts={equationRenderState.texParts} />
                 </div>
               ) : null}
               {presentSet.has("label_1") && selectedSet.has("label_1") && objectHasDraftChange("label_1") ? (
@@ -2363,7 +2365,9 @@ export function App() {
                   <EquationMorphContent
                     progress={equationRenderState.transition.progress}
                     sourceLines={equationRenderState.transition.sourceLines}
+                    sourceTexParts={equationRenderState.transition.sourceTexParts}
                     targetLines={equationRenderState.transition.targetLines}
+                    targetTexParts={equationRenderState.transition.targetTexParts}
                   />
                 ) : projectedEquationEntity.type === "Text" ? (
                   <span className="block max-w-64 text-pretty text-center text-sm leading-6">
@@ -2371,7 +2375,7 @@ export function App() {
                       ?? projectedEquationEntity.content?.displayLines.join(" ")}
                   </span>
                 ) : (
-                  <EquationContent lines={equationRenderState.lines} />
+                  <EquationContent lines={equationRenderState.lines} texParts={equationRenderState.texParts} />
                 )}
                 {selectedSet.has(projectedEquationEntity.id) ? (
                   <span className="absolute -top-6 left-0 whitespace-nowrap bg-sky-400 px-1.5 py-0.5 font-sans text-[11px] font-medium text-sky-950">
@@ -2410,7 +2414,10 @@ export function App() {
                   }}
                   type="button"
                 >
-                  <EquationContent lines={entity.content?.displayLines ?? []} />
+                  <EquationContent
+                    lines={entity.content?.displayLines ?? []}
+                    texParts={entity.content?.texParts}
+                  />
                   {selectedSet.has(entity.id) ? (
                     <span className="absolute -top-6 left-0 whitespace-nowrap bg-sky-400 px-1.5 py-0.5 font-sans text-[11px] font-medium text-sky-950">
                       {entity.content?.label ?? entity.id}{hasDelta ? " · destination" : ""}
@@ -3254,7 +3261,12 @@ export function App() {
                 </ol>
                 {draftTransform || draftExplanation ? (
                   <div className="mt-3 border border-zinc-700 bg-zinc-950 p-3 text-zinc-100">
-                    {draftTransform ? <EquationContent lines={draftTransform.target.displayLines} /> : null}
+                    {draftTransform ? (
+                      <EquationContent
+                        lines={draftTransform.target.displayLines}
+                        texParts={draftTransform.target.texParts}
+                      />
+                    ) : null}
                     {draftExplanation ? (
                       <p className={cn(
                         "text-pretty text-center text-xs leading-5 text-zinc-300",
@@ -3372,7 +3384,10 @@ export function App() {
               <section className="border-b border-zinc-800 pb-4 text-xs">
                 <h3 className="text-balance font-medium text-zinc-200">Transform to {draftTransform.target.label}</h3>
                 <div className="mt-3 border border-zinc-700 bg-zinc-950 p-3 text-zinc-100">
-                  <EquationContent lines={draftTransform.target.displayLines} />
+                  <EquationContent
+                    lines={draftTransform.target.displayLines}
+                    texParts={draftTransform.target.texParts}
+                  />
                 </div>
                 <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-2 tabular-nums">
                   <div>

@@ -1,8 +1,8 @@
+import katex from "katex";
 import { m } from "motion/react";
 
 import { cn } from "../lib/cn";
 import type { ObjectId } from "./prototype-fixture";
-import { clamp } from "./prototype-helpers";
 
 export function SceneObject({
   name,
@@ -50,13 +50,81 @@ export function SceneObject({
   );
 }
 
-export function EquationContent({ lines }: { lines: readonly string[] }) {
+type EquationContentProps = Readonly<{
+  lines: readonly string[];
+  texParts?: readonly string[];
+}>;
+
+type EquationRow = Readonly<{
+  fallback: string;
+  tex: string;
+}>;
+
+const mathHtmlCache = new Map<string, string | null>();
+const MAX_MATH_CACHE_ENTRIES = 128;
+
+function equationRows(lines: readonly string[], texParts: readonly string[]): readonly EquationRow[] {
+  if (texParts.length === 0) return [];
+  if (lines.length <= 1) {
+    return [{ fallback: lines[0] ?? texParts.join(" "), tex: texParts.join(" ") }];
+  }
+  if (texParts.length === 1) {
+    return [{ fallback: lines.join(" "), tex: texParts[0] }];
+  }
+  if (texParts.length === lines.length) {
+    return texParts.map((tex, index) => ({ fallback: lines[index], tex }));
+  }
+  return [];
+}
+
+function renderMath(tex: string) {
+  if (mathHtmlCache.has(tex)) return mathHtmlCache.get(tex) ?? null;
+  let html: string | null = null;
+  try {
+    html = katex.renderToString(tex, {
+      displayMode: false,
+      maxExpand: 100,
+      maxSize: 12,
+      output: "htmlAndMathml",
+      strict: "error",
+      throwOnError: true,
+      trust: false,
+    });
+  } catch {
+    html = null;
+  }
+  if (mathHtmlCache.size >= MAX_MATH_CACHE_ENTRIES) {
+    const oldest = mathHtmlCache.keys().next().value;
+    if (oldest !== undefined) mathHtmlCache.delete(oldest);
+  }
+  mathHtmlCache.set(tex, html);
+  return html;
+}
+
+export function EquationContent({ lines, texParts = [] }: EquationContentProps) {
+  const rows = equationRows(lines, texParts);
   return (
     <span className={cn(
       "block whitespace-nowrap text-center font-serif",
       lines.length === 1 ? "text-3xl" : "text-sm leading-5",
     )}>
-      {lines.map((line, index) => <span className="block" key={`${index}-${line}`}>{line}</span>)}
+      {rows.length > 0
+        ? rows.map((row, index) => {
+            const html = renderMath(row.tex);
+            return html
+              ? (
+                  <span
+                    className="block"
+                    dangerouslySetInnerHTML={{ __html: html }}
+                    data-rendered-math
+                    key={`${index}-${row.tex}`}
+                  />
+                )
+              : <span className="block" key={`${index}-${row.fallback}`}>{row.fallback}</span>;
+          })
+        : lines.map((line, index) => (
+            <span className="block" key={`${index}-${line}`}>{line}</span>
+          ))}
     </span>
   );
 }
@@ -64,88 +132,32 @@ export function EquationContent({ lines }: { lines: readonly string[] }) {
 export function EquationMorphContent({
   progress,
   sourceLines,
+  sourceTexParts,
   targetLines,
+  targetTexParts,
 }: {
   progress: number;
   sourceLines: readonly string[];
+  sourceTexParts: readonly string[];
   targetLines: readonly string[];
+  targetTexParts: readonly string[];
 }) {
-  const normalizedProgress = clamp(progress, 0, 1);
-  const canMatchCharacters = sourceLines.length === 1 && targetLines.length === 1;
-
-  if (!canMatchCharacters) {
-    return (
-      <span aria-label={`${sourceLines.join(" ")} to ${targetLines.join(" ")}`} role="img">
-        <span aria-hidden="true" className="grid place-items-center motion-reduce:hidden">
-          <m.span className="col-start-1 row-start-1" style={{ opacity: 1 - normalizedProgress }}>
-            <EquationContent lines={sourceLines} />
-          </m.span>
-          <m.span className="col-start-1 row-start-1" style={{ opacity: normalizedProgress }}>
-            <EquationContent lines={targetLines} />
-          </m.span>
-        </span>
-        <span aria-hidden="true" className="hidden motion-reduce:block">
-          <EquationContent lines={normalizedProgress < 1 ? sourceLines : targetLines} />
-        </span>
-      </span>
-    );
-  }
-
-  const sourceCharacters = [...sourceLines[0].normalize("NFC")].filter((character) => !/\s/u.test(character));
-  const targetCharacters = [...targetLines[0].normalize("NFC")].filter((character) => !/\s/u.test(character));
-  const claimedTargets = new Set<number>();
-  const sourceMatches = sourceCharacters.map((character) => {
-    const targetIndex = targetCharacters.findIndex((candidate, index) => (
-      candidate === character && !claimedTargets.has(index)
-    ));
-    if (targetIndex >= 0) claimedTargets.add(targetIndex);
-    return targetIndex >= 0 ? targetIndex : null;
-  });
-  const slot = (index: number, count: number) => (index - (count - 1) / 2) * 0.78;
-  const width = Math.max(4, Math.max(sourceCharacters.length, targetCharacters.length) * 0.86);
-
+  const normalizedProgress = Math.max(0, Math.min(1, progress));
   return (
-    <span aria-label={`${sourceLines[0]} to ${targetLines[0]}`} role="img">
-      <span
-        aria-hidden="true"
-        className="relative block h-10 font-serif text-3xl motion-reduce:hidden"
-        data-semantic-morph-preview
-        style={{ width: `${width}em` }}
-      >
-        {sourceCharacters.map((character, index) => {
-          const targetIndex = sourceMatches[index];
-          const startX = slot(index, sourceCharacters.length);
-          const endX = targetIndex === null ? startX : slot(targetIndex, targetCharacters.length);
-          const x = startX + (endX - startX) * normalizedProgress;
-          const y = targetIndex === null ? -0.2 * normalizedProgress : 0;
-          return (
-            <m.span
-              className="absolute left-1/2 top-1/2"
-              key={`source-${index}-${character}`}
-              style={{
-                opacity: targetIndex === null ? 1 - normalizedProgress : 1,
-                transform: `translate(-50%, -50%) translate(${x}em, ${y}em)`,
-              }}
-            >
-              {character}
-            </m.span>
-          );
-        })}
-        {targetCharacters.map((character, index) => claimedTargets.has(index) ? null : (
-          <m.span
-            className="absolute left-1/2 top-1/2"
-            key={`target-${index}-${character}`}
-            style={{
-              opacity: normalizedProgress,
-              transform: `translate(-50%, -50%) translate(${slot(index, targetCharacters.length)}em, ${0.2 * (1 - normalizedProgress)}em)`,
-            }}
-          >
-            {character}
-          </m.span>
-        ))}
+    <span aria-label={`${sourceLines.join(" ")} to ${targetLines.join(" ")}`} role="img">
+      <span aria-hidden="true" className="grid place-items-center motion-reduce:hidden">
+        <m.span className="col-start-1 row-start-1" style={{ opacity: 1 - normalizedProgress }}>
+          <EquationContent lines={sourceLines} texParts={sourceTexParts} />
+        </m.span>
+        <m.span className="col-start-1 row-start-1" style={{ opacity: normalizedProgress }}>
+          <EquationContent lines={targetLines} texParts={targetTexParts} />
+        </m.span>
       </span>
       <span aria-hidden="true" className="hidden motion-reduce:block">
-        <EquationContent lines={normalizedProgress < 1 ? sourceLines : targetLines} />
+        <EquationContent
+          lines={normalizedProgress < 1 ? sourceLines : targetLines}
+          texParts={normalizedProgress < 1 ? sourceTexParts : targetTexParts}
+        />
       </span>
     </span>
   );
