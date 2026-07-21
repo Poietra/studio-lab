@@ -32,6 +32,7 @@ function requestBody(): EditSuggestionRequest {
     objects: [],
     playhead: 4.42,
     prompt: "Add Maxwell equations and explain them in the next Scene.",
+    scene: { id: "scene.py#Current", name: "Current", nextSceneId: "scene.py#Next" },
     sceneDuration: 12,
     selectedObjectIds: [],
   };

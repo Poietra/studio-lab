@@ -22,6 +22,11 @@ export type EditSuggestionRequest = Readonly<{
   objects: readonly SuggestionObject[];
   playhead: number;
   prompt: string;
+  scene: Readonly<{
+    id: string;
+    name: string;
+    nextSceneId: string | null;
+  }>;
   sceneDuration: number;
   selectedObjectIds: readonly string[];
 }>;

@@ -1,55 +1,91 @@
 import { z } from "zod";
 
+import type { RuntimeSceneState, StaticSemanticState } from "../studio/model";
+import { canonicalOperationSchema } from "../studio/operation-registry";
+import type { CanonicalEditProgram } from "../studio/operations";
+
 const finiteNumber = z.number().finite();
 const pointSchema = z.object({
   x: finiteNumber,
   y: finiteNumber,
 }).strict();
 
-export const createMotionRenderRequestSchema = z.object({
-  operation: z.object({
-    controlOffsetPixels: pointSchema,
-    deltaPixels: pointSchema,
-    interval: z.object({
-      end: finiteNumber.nonnegative(),
-      start: finiteNumber.nonnegative(),
-    }).strict(),
-    kind: z.literal("CreateMotion"),
-    targets: z.array(z.object({
-      entityId: z.string().min(1).max(160),
-      sourceVariable: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
-    }).strict()).min(1).max(16),
-    transactionId: z.string().regex(/^[A-Za-z0-9_.:-]{1,160}$/),
-    viewport: z.object({
-      height: finiteNumber.positive(),
-      width: finiteNumber.positive(),
-    }).strict(),
-  }).strict(),
+const resolvedAnchorSchema = z.object({
+  capturedPlayhead: finiteNumber,
+  evidence: z.array(z.string().max(500)).max(32),
+  resolvedSeconds: finiteNumber.nonnegative(),
+  source: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("absolute"), seconds: finiteNumber }),
+    z.object({ kind: z.literal("playhead"), referenceSeconds: finiteNumber }),
+    z.object({
+      kind: z.literal("playhead-offset"),
+      offsetSeconds: finiteNumber,
+      referenceSeconds: finiteNumber,
+    }),
+    z.object({
+      boundary: z.enum(["play-end", "play-start", "scene-end", "scene-start"]),
+      eventId: z.string(),
+      kind: z.literal("structural"),
+      offsetSeconds: finiteNumber.optional(),
+    }),
+  ]),
+});
+
+const programSchema = z.object({
+  anchor: resolvedAnchorSchema,
+  intentCount: z.number().int().min(1).max(16),
+  loweringStatus: z.enum(["illustrative", "supported", "unsupported"]),
+  operations: z.array(canonicalOperationSchema).min(1).max(64),
+  provenance: z.object({
+    evidence: z.array(z.string().max(500)).max(64),
+    origin: z.enum(["direct-manipulation", "fixture", "remote-model", "studio-default"]),
+  }),
+  requestedExecution: z.enum(["parallel", "sequence"]),
+  schedule: z.object({
+    edges: z.array(z.object({
+      from: z.string(),
+      reason: z.enum(["explicit", "identity", "lifetime", "read-after-write", "write-conflict"]),
+      to: z.string(),
+    })).max(256),
+    mode: z.enum(["dependency-dag", "parallel", "sequence"]),
+    order: z.array(z.string()).min(1).max(64),
+  }),
+  transactionId: z.string().min(1).max(160),
+  version: z.literal(1),
+});
+
+export const programRenderRequestSchema = z.object({
+  destination: z.object({
+    sceneName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+    sourcePath: z.string().min(1).max(500),
+  }).strict().nullable(),
+  program: programSchema,
   sceneName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+  sourceBindings: z.array(z.object({
+    entityId: z.string().min(1).max(240),
+    sourceVariable: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+  }).strict()).max(128),
   sourcePath: z.string().min(1).max(500),
+  viewport: z.object({
+    height: finiteNumber.positive(),
+    width: finiteNumber.positive(),
+  }).strict(),
 }).strict().superRefine((request, context) => {
-  if (request.operation.interval.end <= request.operation.interval.start) {
-    context.addIssue({
-      code: "custom",
-      message: "CreateMotion must end after it starts.",
-      path: ["operation", "interval", "end"],
-    });
-  }
   const entityIds = new Set<string>();
   const sourceVariables = new Set<string>();
-  request.operation.targets.forEach((target, index) => {
+  request.sourceBindings.forEach((target, index) => {
     if (entityIds.has(target.entityId)) {
       context.addIssue({
         code: "custom",
         message: `Duplicate target entity ${target.entityId}.`,
-        path: ["operation", "targets", index, "entityId"],
+        path: ["sourceBindings", index, "entityId"],
       });
     }
     if (sourceVariables.has(target.sourceVariable)) {
       context.addIssue({
         code: "custom",
         message: `Duplicate source variable ${target.sourceVariable}.`,
-        path: ["operation", "targets", index, "sourceVariable"],
+        path: ["sourceBindings", index, "sourceVariable"],
       });
     }
     entityIds.add(target.entityId);
@@ -57,7 +93,9 @@ export const createMotionRenderRequestSchema = z.object({
   });
 });
 
-export type CreateMotionRenderRequest = z.infer<typeof createMotionRenderRequestSchema>;
+export type ProgramRenderRequest = Omit<z.infer<typeof programRenderRequestSchema>, "program"> & Readonly<{
+  program: CanonicalEditProgram;
+}>;
 
 export type RenderSessionStatus =
   | "cancelled"
@@ -95,7 +133,13 @@ export type ManimWorkspaceSource = Readonly<{
   path: string;
   scenes: readonly Readonly<{
     anchors: readonly number[];
+    nextSceneId: string | null;
     name: string;
+    runtimeSceneState: RuntimeSceneState;
+    sceneId: string;
+    sourceHash: string;
+    sourceVariables: Readonly<Record<string, string>>;
+    staticSemanticState: StaticSemanticState;
   }>[];
 }>;
 

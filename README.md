@@ -15,22 +15,23 @@ This repository is intentionally separate from the product repository. Its first
 
 The experiment charter and decision gate live in [docs/shell-evaluation.md](docs/shell-evaluation.md).
 
-The current shared screen also contains a disposable
-[drag-interpretation prototype](docs/drag-interpretation-prototype.md). It exists
-to examine gesture interpretation from a working canvas, timeline, ghost, and
-source diff before EditOperation concepts become protocol contracts. The same
-screen now includes a playhead-aware Magic Edit board that can create a
-structured motion draft without requiring a drag, or transform one selected
-`MathTex` object into new equation content as a distinct timed operation. It can
-also create explanatory `Text` beside a selected object with `FadeIn`, including
-an explicit playhead-relative anchor such as “5秒前”. Named
+The current shared screen imports conservative Scene, entity, lifetime, event,
+source-identity, and anchor snapshots from the configured Manim workspace. The
+canvas, object list, timeline, Inspector, and Magic Edit request all project that
+same imported `RuntimeSceneState`; runtime fixture data remains test-only. A
+playhead-aware Magic Edit board can create a structured motion draft without
+requiring a drag, or transform one selected `MathTex` object into new equation
+content as a distinct timed operation. It can also create explanatory `Text`
+beside a selected object with `FadeIn`, including an explicit playhead-relative
+anchor such as “5秒前”. Named
 equations with a dominant conventional form can be inferred—for example,
 “Newtonの運動方程式” becomes a matchable `F = ma` transform—without asking the
 user for literal LaTeX. Browser previews typeset the canonical MathTex `texParts`
 with KaTeX and safely fall back to display text when an expression is unsupported.
 Edit Programs can sequence a new equation or atomic equation-plus-explanation macro
 before a Scene-level cover-and-reveal transition, then Apply or Undo the composite as
-one transaction. Magic Edit also previews a bounded camera-focus preset,
+one transaction. The Scene boundary points to the actual next imported Scene, whose
+objects replace the outgoing composition at full cover. Magic Edit also previews a bounded camera-focus preset,
 MathTex-to-explanatory-Text replacement, and new provisional MathTex creation;
 the floating Magic Edit board can be dragged across the workspace, hidden, and
 restored without losing its instruction or draft preview.
@@ -83,10 +84,12 @@ or to `off` to disable this debug logging. Provider credentials are never suppli
 to the logger, and common credential-shaped fields are redacted by the logging
 layer.
 
-The rendered-validation experiment can lower one straight canonical `CreateMotion`
-into a real Manim source marker, render an isolated preview, and commit only after
-the video succeeds. Start Studio with a Manim project root and command when they
-differ from this checkout and the `manim` executable:
+The rendered-validation experiment lowers a complete canonical `EditProgram` at an
+explicit safe source marker. Straight motion, position, MathTex/Text creation,
+relative placement, FadeIn/removal, content transforms, and cover-and-reveal Scene
+boundaries can share one isolated Manim preview and guarded source commit. Start
+Studio with a Manim project root and command when they differ from this checkout and
+the `manim` executable:
 
 ```sh
 POIETRA_MANIM_PROJECT_ROOT=/path/to/project \
@@ -103,10 +106,14 @@ POIETRA_MANIM_COMMAND='["node", "scripts/manim-docker-runner.mjs"]' pnpm dev:web
 ```
 
 Eligible source boundaries use an explicit marker such as
-`# poietra:anchor 7.000` inside a Scene method. Studio rejects missing anchors,
-curved paths, unknown source variables, stale source hashes, and failed renders
-instead of writing an illustrative patch. The included `examples/relativity.py`
-provides a minimal `GroupedEquation` Scene with a 7-second anchor.
+`# poietra:anchor 5.000` inside a Scene method. Studio rejects missing anchors,
+curved paths, unknown source variables, stale source hashes, invalid next-Scene
+destinations, and failed renders instead of writing an illustrative patch. Committed
+generated entities carry data-only `poietra:entity` markers, so a subsequent import
+recovers their Studio identity and Python binding. Scene changes carry an explicit
+boundary marker and terminate the outgoing construct after revealing the imported
+next composition. The included `examples/relativity.py` provides two ordered Scenes
+and safe 5- and 7-second anchors.
 
 Linux development requires the [system packages listed by Tauri](https://v2.tauri.app/start/prerequisites/#linux) before `dev:tauri` or `cargo check` can run.
 When those packages are not available on the host, the Linux build path can be reproduced in a container:

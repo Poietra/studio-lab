@@ -5,18 +5,17 @@ Last updated: 2026-07-21
 
 ## Outcome
 
-Studio can carry one straight canonical `CreateMotion` from the existing gesture
-candidate into a real Manim preview without writing model-authored Python or
-modifying the source before validation.
+Studio can carry one complete canonical `EditProgram` into a real Manim preview
+without writing model-authored Python or modifying the source before validation.
 
 ```text
-canonical CreateMotion
+canonical EditProgram
         ↓
-known runtime → source variable mapping
+imported runtime → source variable bindings and Scene graph
         ↓
 explicit # poietra:anchor boundary
         ↓
-temporary source lowering
+deterministic operation-by-operation source lowering
         ↓
 isolated Manim subprocess + MP4
         ↓
@@ -25,10 +24,12 @@ user review
 atomic source commit or discard
 ```
 
-The right-side `Rendered validation` panel discovers Python files and Scene
-classes below the configured project root. It exposes source anchors, renderer
-availability, progress, cancellation, bounded logs, the inserted source block,
-the rendered MP4, commit, discard, and exact Undo.
+The workspace bridge discovers Python files and ordered Scene classes below the
+configured project root. The application imports their conservative runtime
+snapshots once and uses the selected Scene for canvas, object list, timeline, AI
+context, and rendered validation. The right-side panel exposes renderer
+availability, progress, cancellation, bounded logs, the complete inserted source
+block, rendered MP4, commit, discard, and exact Undo.
 
 ## Configuration
 
@@ -49,25 +50,42 @@ explicit frame and the captured Studio viewport.
 
 ## Source contract
 
-This slice does not pretend arbitrary Python has an unambiguous temporal insertion
-point. A source file opts in with an exact marker inside the Scene method:
+This pipeline does not pretend arbitrary Python has an unambiguous temporal
+insertion point. A source file opts in with an exact marker inside the Scene method:
 
 ```py
 # poietra:anchor 7.000
 ```
 
-The selected source variable must be assigned before that marker. The resolved
-operation start must match the marker exactly. Lowering currently inserts one
-`self.play(variable.animate.shift(...), run_time=..., rate_func=smooth)` block.
+Every referenced imported source variable must be assigned before that marker. The
+resolved Program anchor must match the marker exactly. The lowerer generates Python
+only from the closed Canonical operation vocabulary. It groups animations sharing
+one interval into one `self.play`, preserves sequence gaps with `self.wait`, and
+rejects unsupported overlap.
 
-The explicit marker is temporary integration evidence, not the final Scene IR or
-Runtime Trace format. A later importer should produce equivalent structural
-boundaries without requiring hand-authored comments.
+Supported source forms in this experiment are:
+
+- straight `CreateMotion` and exact 2D position;
+- MathTex and Text creation with stable transaction-scoped identity markers;
+- snapshot `next_to` placement and FadeIn/removal;
+- `TransformMatchingTex` and replacement transform with variable rebinding;
+- circle, diamond, or hexagon cover/reveal;
+- an explicit full-cover boundary that clears the outgoing composition, installs
+  the initial composition of the actual next imported Scene, reveals it, and ends
+  the outgoing construct.
+
+Committed generated entities carry a JSON-encoded `poietra:entity` comment. The
+source importer treats it as data, recovers the same Studio ID and Python binding,
+and ignores unmarked transient `poietra_` variables. Scene changes similarly carry
+a data-only boundary marker. The explicit anchor remains temporary integration
+evidence; a later Runtime Trace importer should produce equivalent safe structural
+boundaries without hand-authored comments.
 
 ## Safety and truthfulness
 
-- request schemas accept only `CreateMotion`, identifiers, finite geometry, and a
-  Python source path inside the configured project root;
+- request schemas accept only a bounded canonical Program, imported source
+  bindings, finite geometry, an exact Scene destination, and Python source paths
+  inside the configured project root;
 - subprocesses are spawned without a shell and can be cancelled as a process group;
 - preview source and media live in an isolated operating-system temporary directory;
 - the original source is untouched until Manim exits successfully and produces an MP4;
@@ -81,12 +99,15 @@ boundaries without requiring hand-authored comments.
 
 ## Current limits
 
-- only one straight `CreateMotion` is supported; all of its targets must have
-  known source variables before the same anchor;
-- curved paths, overlapping motion composition, general source identity recovery,
-  and arbitrary time insertion remain unsupported;
-- source discovery uses conservative Scene-class and anchor parsing rather than a
-  Python AST plus Runtime Trace;
+- all referenced existing targets must have imported source variables before the
+  same safe anchor;
+- curved paths, camera changes, overlapping animation composition, and arbitrary
+  time insertion remain unsupported;
+- the next Scene preview uses its imported initial composition; it does not splice
+  the destination Scene's later animation timeline into the outgoing Scene;
+- source discovery uses conservative Scene, assignment, play, wait, and marker
+  parsing rather than a Python AST plus Runtime Trace, so dynamic control flow and
+  updater-driven geometry remain unknown;
 - Undo evidence lives for the Vite server session; durable project history remains
   future product work;
 - the bridge is a local development experiment, not a remotely exposed render

@@ -68,6 +68,7 @@ describe("bounded clarification context", () => {
       }],
       playhead: 5,
       prompt: "Make this Maxwell equations, either by replacing it or adding a new equation.",
+      scene: { id: "scene.py#Current", name: "Current", nextSceneId: "scene.py#Next" },
       sceneDuration: 12,
       selectedObjectIds: ["equation_1"],
     });
@@ -85,6 +86,7 @@ describe("bounded clarification context", () => {
       objects: [],
       playhead: 5,
       prompt: "Make this Maxwell equations, either by replacing it or adding a new equation.",
+      scene: { id: "scene.py#Current", name: "Current", nextSceneId: "scene.py#Next" },
       sceneDuration: 12,
       selectedObjectIds: [],
     });
@@ -106,6 +108,7 @@ describe("bounded clarification context", () => {
       objects: [],
       playhead: 5,
       prompt: "Add Maxwell equations and explain them in the next Scene.",
+      scene: { id: "scene.py#Current", name: "Current", nextSceneId: "scene.py#Next" },
       sceneDuration: 12,
       selectedObjectIds: [],
     });

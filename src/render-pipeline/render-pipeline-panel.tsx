@@ -1,25 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "../lib/cn";
-import type { CreateMotionRenderRequest, ManimWorkspaceView, RenderSessionView } from "./contracts";
-import {
-  loadManimRender,
-  loadManimWorkspace,
-  runManimRenderAction,
-  startManimRender,
-} from "./client";
+import type { CanonicalEditProgram } from "../studio/operations";
+import type { ManimWorkspaceView, ProgramRenderRequest, RenderSessionView } from "./contracts";
+import { loadManimRender, runManimRenderAction, startManimRender } from "./client";
 
-export type RenderMotionCandidate = Readonly<{
-  controlOffsetPixels: Readonly<{ x: number; y: number }>;
-  deltaPixels: Readonly<{ x: number; y: number }>;
-  interval: Readonly<{ end: number; start: number }>;
-  targets: readonly Readonly<{ entityId: string; sourceVariable: string }>[];
-  viewport: Readonly<{ height: number; width: number }>;
+export type RenderProgramCandidate = Readonly<{
+  anchors: readonly number[];
+  destination: ProgramRenderRequest["destination"];
+  program: CanonicalEditProgram;
+  sceneName: string;
+  sourceBindings: ProgramRenderRequest["sourceBindings"];
+  sourcePath: string;
+  viewport: ProgramRenderRequest["viewport"];
 }>;
 
 type RenderPipelinePanelProps = Readonly<{
-  candidate: RenderMotionCandidate | null;
+  candidate: RenderProgramCandidate | null;
   candidateUnavailableReason: string;
+  onCommitted?: () => void | Promise<void>;
+  workspace: ManimWorkspaceView | null;
 }>;
 
 function statusLabel(session: RenderSessionView) {
@@ -39,41 +39,20 @@ function terminalStatus(status: RenderSessionView["status"]) {
   return ["cancelled", "committed", "discarded", "failed", "ready", "undone"].includes(status);
 }
 
-export function RenderPipelinePanel({ candidate, candidateUnavailableReason }: RenderPipelinePanelProps) {
-  const [workspace, setWorkspace] = useState<ManimWorkspaceView | null>(null);
-  const [workspaceStatus, setWorkspaceStatus] = useState<"loading" | "ready" | "error">("loading");
-  const [sourcePath, setSourcePath] = useState("");
-  const [sceneName, setSceneName] = useState("");
+export function RenderPipelinePanel({
+  candidate,
+  candidateUnavailableReason,
+  onCommitted,
+  workspace,
+}: RenderPipelinePanelProps) {
   const [session, setSession] = useState<RenderSessionView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const commitDialog = useRef<HTMLDialogElement | null>(null);
 
-  async function refreshWorkspace(signal?: AbortSignal) {
-    setWorkspaceStatus("loading");
-    setError(null);
-    try {
-      const nextWorkspace = await loadManimWorkspace(signal);
-      setWorkspace(nextWorkspace);
-      setWorkspaceStatus("ready");
-      const preferredSource = nextWorkspace.sources.find((source) => source.path === "examples/relativity.py")
-        ?? nextWorkspace.sources[0];
-      const nextSource = nextWorkspace.sources.find((source) => source.path === sourcePath) ?? preferredSource;
-      setSourcePath(nextSource?.path ?? "");
-      setSceneName(nextSource?.scenes.some((scene) => scene.name === sceneName)
-        ? sceneName
-        : nextSource?.scenes[0]?.name ?? "");
-    } catch (nextError) {
-      if (nextError instanceof DOMException && nextError.name === "AbortError") return;
-      setWorkspaceStatus("error");
-      setError(nextError instanceof Error ? nextError.message : "Could not inspect the Manim workspace.");
-    }
-  }
-
   useEffect(() => {
-    const controller = new AbortController();
-    void refreshWorkspace(controller.signal);
-    return () => controller.abort();
-  }, []);
+    setSession(null);
+    setError(null);
+  }, [candidate?.program.transactionId, candidate?.sourcePath, candidate?.sceneName]);
 
   useEffect(() => {
     if (!session || terminalStatus(session.status)) return;
@@ -92,40 +71,31 @@ export function RenderPipelinePanel({ candidate, candidateUnavailableReason }: R
     };
   }, [session]);
 
-  const selectedSource = workspace?.sources.find((source) => source.path === sourcePath) ?? null;
-  const selectedScenes = selectedSource?.scenes ?? [];
-  const selectedScene = selectedScenes.find((scene) => scene.name === sceneName) ?? null;
-  const configurationLocked = session?.canCancel === true || session?.canCommit === true || session?.canUndo === true;
-  const candidateHasAnchor = candidate !== null
-    && selectedScene?.anchors.some((anchor) => Math.abs(anchor - candidate.interval.start) < 0.0005) === true;
-  const candidateHasStraightPath = candidate !== null
-    && Math.abs(candidate.controlOffsetPixels.x) < 0.001
-    && Math.abs(candidate.controlOffsetPixels.y) < 0.001;
+  const candidateHasAnchor = candidate !== null && candidate.anchors.some((anchor) => (
+    Math.abs(anchor - candidate.program.anchor.resolvedSeconds) < 0.0005
+  ));
   const previewBlocker = useMemo(() => {
-    if (workspaceStatus !== "ready") return "Inspecting the Manim workspace…";
-    if (!workspace?.commandAvailable) return `Manim command ${JSON.stringify(workspace?.command ?? [])} is unavailable.`;
-    if (!selectedSource || !sceneName) return "Choose a Python source and Scene.";
+    if (!workspace) return "Inspecting the Manim workspace…";
+    if (!workspace.commandAvailable) return `Manim command ${JSON.stringify(workspace.command)} is unavailable.`;
     if (!candidate) return candidateUnavailableReason;
-    if (!candidateHasStraightPath) return "Reset the bend handle; the first rendered lowering supports straight paths only.";
-    if (!candidateHasAnchor) return `Add # poietra:anchor ${candidate.interval.start.toFixed(3)} at a safe source boundary.`;
+    if (!candidateHasAnchor) {
+      return `Add # poietra:anchor ${candidate.program.anchor.resolvedSeconds.toFixed(3)} at a safe source boundary.`;
+    }
     return null;
-  }, [candidate, candidateHasAnchor, candidateHasStraightPath, candidateUnavailableReason, sceneName, selectedSource, workspace, workspaceStatus]);
+  }, [candidate, candidateHasAnchor, candidateUnavailableReason, workspace]);
 
   async function startPreview() {
-    if (!candidate || !workspace || previewBlocker) return;
+    if (!candidate || previewBlocker) return;
     setError(null);
-    const request: CreateMotionRenderRequest = {
-      operation: {
-        ...candidate,
-        kind: "CreateMotion",
-        targets: candidate.targets.map((target) => ({ ...target })),
-        transactionId: `render-${crypto.randomUUID()}`,
-      },
-      sceneName,
-      sourcePath,
-    };
     try {
-      setSession(await startManimRender(request));
+      setSession(await startManimRender({
+        destination: candidate.destination,
+        program: candidate.program,
+        sceneName: candidate.sceneName,
+        sourceBindings: candidate.sourceBindings,
+        sourcePath: candidate.sourcePath,
+        viewport: candidate.viewport,
+      }));
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Could not start the Manim render.");
     }
@@ -135,7 +105,9 @@ export function RenderPipelinePanel({ candidate, candidateUnavailableReason }: R
     if (!session) return false;
     setError(null);
     try {
-      setSession(await runManimRenderAction(session.id, action));
+      const nextSession = await runManimRenderAction(session.id, action);
+      setSession(nextSession);
+      if (action === "commit") await onCommitted?.();
       return true;
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : `Could not ${action} the render.`);
@@ -149,7 +121,7 @@ export function RenderPipelinePanel({ candidate, candidateUnavailableReason }: R
         <div className="min-w-0">
           <h3 className="text-balance font-medium text-zinc-200">Rendered validation</h3>
           <p className="mt-1 text-pretty leading-5 text-zinc-500">
-            Lower one straight CreateMotion into an isolated source copy, render it with Manim, then choose whether to commit.
+            Lower the complete Canonical EditProgram into an isolated source copy, render it with Manim, then commit the exact previewed patch.
           </p>
         </div>
         {session ? (
@@ -164,74 +136,20 @@ export function RenderPipelinePanel({ candidate, candidateUnavailableReason }: R
         ) : null}
       </div>
 
-      {workspaceStatus === "loading" ? (
-        <div aria-label="Inspecting the Manim workspace" className="mt-3 space-y-2">
-          <div className="h-8 border border-zinc-800 bg-zinc-900" />
-          <div className="h-8 border border-zinc-800 bg-zinc-900" />
-        </div>
-      ) : workspace?.sources.length ? (
-        <div className="mt-3 grid grid-cols-2 gap-2">
-          <label className="min-w-0 text-zinc-500">
-            Source
-            <select
-              className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:text-zinc-600"
-              disabled={configurationLocked}
-              onChange={(event) => {
-                const nextPath = event.currentTarget.value;
-                const source = workspace.sources.find((candidateSource) => candidateSource.path === nextPath);
-                setSourcePath(nextPath);
-                setSceneName(source?.scenes[0]?.name ?? "");
-                setSession(null);
-                setError(null);
-              }}
-              value={sourcePath}
-            >
-              {workspace.sources.map((source) => <option key={source.path} value={source.path}>{source.path}</option>)}
-            </select>
-          </label>
-          <label className="min-w-0 text-zinc-500">
-            Scene
-            <select
-              className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:text-zinc-600"
-              disabled={configurationLocked}
-              onChange={(event) => {
-                setSceneName(event.currentTarget.value);
-                setSession(null);
-                setError(null);
-              }}
-              value={sceneName}
-            >
-              {selectedScenes.map((scene) => <option key={scene.name} value={scene.name}>{scene.name}</option>)}
-            </select>
-          </label>
-        </div>
-      ) : (
-        <div className="mt-3 border border-dashed border-zinc-700 p-3">
-          <p className="text-pretty leading-5 text-zinc-500">No Manim Scene was found under the configured project root.</p>
-          <button
-            className="mt-2 border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800"
-            onClick={() => void refreshWorkspace()}
-            type="button"
-          >
-            Inspect again
-          </button>
-        </div>
-      )}
-
-      {workspace ? (
-        <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 text-[10px]">
-          <dt className="text-zinc-600">Project</dt>
-          <dd className="truncate font-mono text-zinc-400" title={workspace.projectRoot}>{workspace.projectRoot}</dd>
-          <dt className="text-zinc-600">Runner</dt>
-          <dd className={workspace.commandAvailable ? "font-mono text-zinc-400" : "font-mono text-amber-300"}>
-            {workspace.command.join(" ")} · {workspace.commandAvailable ? "available" : "not found"}
-          </dd>
-          {selectedScene ? (
+      {candidate ? (
+        <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 text-[10px]">
+          <dt className="text-zinc-600">Source</dt>
+          <dd className="truncate font-mono text-zinc-400" title={candidate.sourcePath}>{candidate.sourcePath}</dd>
+          <dt className="text-zinc-600">Scene</dt>
+          <dd className="truncate text-zinc-400">{candidate.sceneName}</dd>
+          <dt className="text-zinc-600">Program</dt>
+          <dd className="truncate font-mono text-zinc-400">{candidate.program.transactionId}</dd>
+          <dt className="text-zinc-600">Anchor</dt>
+          <dd className="tabular-nums text-zinc-400">{candidate.program.anchor.resolvedSeconds.toFixed(3)}s</dd>
+          {candidate.destination ? (
             <>
-              <dt className="text-zinc-600">Anchors</dt>
-              <dd className="tabular-nums text-zinc-400">
-                {selectedScene.anchors.length > 0 ? selectedScene.anchors.map((anchor) => `${anchor.toFixed(3)}s`).join(", ") : "none"}
-              </dd>
+              <dt className="text-zinc-600">Incoming</dt>
+              <dd className="truncate text-zinc-400">{candidate.destination.sceneName}</dd>
             </>
           ) : null}
         </dl>
@@ -306,7 +224,7 @@ export function RenderPipelinePanel({ candidate, candidateUnavailableReason }: R
             onClick={() => void startPreview()}
             type="button"
           >
-            Render preview
+            Render program
           </button>
         ) : null}
       </div>
@@ -318,9 +236,9 @@ export function RenderPipelinePanel({ candidate, candidateUnavailableReason }: R
         role="alertdialog"
       >
         <form className="p-4" method="dialog">
-          <h3 className="text-balance text-sm font-medium" id="commit-render-title">Commit rendered motion?</h3>
+          <h3 className="text-balance text-sm font-medium" id="commit-render-title">Commit rendered program?</h3>
           <p className="mt-2 text-pretty text-xs leading-5 text-zinc-400">
-            This writes the validated patch to <span className="font-mono text-zinc-200">{session?.sourcePath}</span>. Studio will refuse if the file changed after rendering, and this server session can undo the exact committed source.
+            This writes only the source patch that produced the video above. Studio refuses the write if the source changed after rendering.
           </p>
           <div className="mt-4 flex justify-end gap-2">
             <button className="border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800" value="cancel">Cancel</button>

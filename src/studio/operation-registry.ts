@@ -619,7 +619,7 @@ export const OPERATION_REGISTRY = {
       draft.events.push({ at: operation.at, id: `${operation.id}/boundary`, kind: "scene-boundary", label: "Full-cover Scene boundary", operationId: operation.id, transactionId: program.transactionId });
     },
     lifetimeRequirement: "none",
-    lowering: "illustrative",
+    lowering: "supported",
     projection: ["timeline", "inspector", "semantic-thumbnail", "working-playback"],
     targetRequirement: "none",
     validate: (operation, scene) => baseIssues(operation, scene),

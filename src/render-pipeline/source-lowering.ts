@@ -1,61 +1,64 @@
-import type { CreateMotionRenderRequest } from "./contracts";
+import type { ProgramRenderRequest } from "./contracts";
+import { findSourceSceneBlock } from "./source-import";
+import type { CanonicalEditOperation, CreateEntityOperation } from "../studio/operations";
 
 export type MotionAnchor = Readonly<{
   line: number;
   seconds: number;
 }>;
 
-export type LoweredMotionSource = Readonly<{
+export type IncomingSceneSetup = Readonly<{
+  initialization: readonly string[];
+  visibleSourceVariables: readonly string[];
+}>;
+
+export type LoweredProgramSource = Readonly<{
   anchorLine: number;
   insertedCode: string;
   source: string;
 }>;
 
-export class MotionLoweringError extends Error {
+export class ProgramLoweringError extends Error {
   constructor(
-    readonly code: "anchor-missing" | "curved-path-unsupported" | "source-variable-missing" | "zero-delta",
+    readonly code:
+      | "anchor-missing"
+      | "destination-missing"
+      | "operation-unsupported"
+      | "source-variable-missing"
+      | "zero-delta",
     message: string,
   ) {
     super(message);
-    this.name = "MotionLoweringError";
+    this.name = "ProgramLoweringError";
   }
 }
 
 const ANCHOR_PATTERN = /^\s*#\s*poietra:anchor\s+([0-9]+(?:\.[0-9]+)?)\s*$/;
+const EPSILON = 0.0005;
 
 export function findMotionAnchors(source: string): readonly MotionAnchor[] {
   return source.split(/\r?\n/).flatMap((line, index) => {
     const match = line.match(ANCHOR_PATTERN);
-    if (!match) return [];
-    return [{ line: index + 1, seconds: Number(match[1]) }];
+    return match ? [{ line: index + 1, seconds: Number(match[1]) }] : [];
   });
 }
 
-function sceneBlock(source: string, sceneName: string) {
-  const lines = source.split(/\r?\n/);
-  const scenePattern = new RegExp(`^class\\s+${escapePattern(sceneName)}\\s*\\([^)]*Scene[^)]*\\)\\s*:`);
-  const start = lines.findIndex((line) => scenePattern.test(line));
-  if (start < 0) return null;
-  const nextClassOffset = lines.slice(start + 1).findIndex((line) => /^class\s+[A-Za-z_]/.test(line));
-  return {
-    end: nextClassOffset < 0 ? lines.length : start + 1 + nextClassOffset,
-    lines,
-    start,
-  };
-}
-
 export function findSceneMotionAnchors(source: string, sceneName: string): readonly MotionAnchor[] {
-  const block = sceneBlock(source, sceneName);
+  const block = findSourceSceneBlock(source, sceneName);
   if (!block) return [];
-  return block.lines.slice(block.start + 1, block.end).flatMap((line, index) => {
+  return block.lines.slice(block.bodyStart, block.bodyEnd).flatMap((line, index) => {
     const match = line.match(ANCHOR_PATTERN);
-    if (!match) return [];
-    return [{ line: block.start + index + 2, seconds: Number(match[1]) }];
+    return match ? [{ line: block.bodyStart + index + 1, seconds: Number(match[1]) }] : [];
   });
 }
 
 function formatAmount(value: number) {
-  return Number(value.toFixed(4)).toString();
+  const normalized = Math.abs(value) < 0.00005 ? 0 : value;
+  return Number(normalized.toFixed(4)).toString();
+}
+
+function escapePattern(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function shiftExpression(
@@ -74,62 +77,284 @@ function shiftExpression(
       : null,
   ].filter((term): term is string => term !== null);
   if (terms.length === 0) {
-    throw new MotionLoweringError("zero-delta", "CreateMotion has no visible displacement to render.");
+    throw new ProgramLoweringError("zero-delta", "CreateMotion has no visible displacement to render.");
   }
   return terms.join(" + ");
 }
 
-function escapePattern(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function pointExpression(
+  point: Readonly<{ x: number; y: number }>,
+  frame: Readonly<{ height: number; width: number }>,
+  viewport: Readonly<{ height: number; width: number }>,
+) {
+  const x = (point.x / viewport.width - 0.5) * frame.width;
+  const y = (0.5 - point.y / viewport.height) * frame.height;
+  const terms = [
+    Math.abs(x) > 0.0001 ? `${formatAmount(Math.abs(x))} * ${x > 0 ? "RIGHT" : "LEFT"}` : null,
+    Math.abs(y) > 0.0001 ? `${formatAmount(Math.abs(y))} * ${y > 0 ? "UP" : "DOWN"}` : null,
+  ].filter((term): term is string => term !== null);
+  return terms.length > 0 ? terms.join(" + ") : "ORIGIN";
 }
 
-export function lowerCreateMotionSource(
+function variableToken(transactionId: string, index: number) {
+  const normalized = transactionId.replace(/[^A-Za-z0-9_]/g, "_").replace(/^([^A-Za-z_])/, "_$1").slice(0, 48);
+  return `poietra_${normalized || "edit"}_${index + 1}`;
+}
+
+function entityConstructor(operation: CreateEntityOperation) {
+  const { content, type } = operation.entity;
+  if (type === "MathTex") {
+    const parts = content?.texParts?.length ? content.texParts : content?.displayLines;
+    if (!parts?.length) {
+      throw new ProgramLoweringError("operation-unsupported", "MathTex creation requires canonical texParts or displayLines.");
+    }
+    return `MathTex(${parts.map((part) => JSON.stringify(part)).join(", ")})`;
+  }
+  if (type === "Text") {
+    const text = content?.text ?? content?.displayLines.join(" ") ?? "";
+    return `Text(${JSON.stringify(text)})`;
+  }
+  if (type.startsWith("TransitionOverlay:")) {
+    const [, shape, color] = type.split(":");
+    const constructor = {
+      circle: "Circle(radius=1)",
+      diamond: "Square(side_length=2).rotate(PI / 4)",
+      hexagon: "RegularPolygon(6, radius=1)",
+    }[shape];
+    const fill = { black: "BLACK", sky: "BLUE_D", white: "WHITE" }[color];
+    if (!constructor || !fill) {
+      throw new ProgramLoweringError("operation-unsupported", `Unsupported transition overlay ${type}.`);
+    }
+    return `${constructor}.set_fill(${fill}, opacity=1).set_stroke(width=0).scale(0.01)`;
+  }
+  throw new ProgramLoweringError("operation-unsupported", `CreateEntity type ${type} has no safe Manim lowering.`);
+}
+
+function referencedBaseEntityIds(operations: readonly CanonicalEditOperation[]) {
+  const created = new Set(operations.flatMap((operation) => operation.kind === "CreateEntity" ? [operation.entity.id] : []));
+  const referenced = operations.flatMap((operation): readonly string[] => {
+    if (operation.kind === "CreateMotion") return operation.targetEntityIds;
+    if (operation.kind === "SetProperty" || operation.kind === "AnimateProperty" || operation.kind === "ChangePresence") {
+      return [operation.entityId];
+    }
+    if (operation.kind === "TransformContent") return [operation.sourceEntityId];
+    if (operation.kind === "SetRelation") return [operation.sourceEntityId, operation.targetEntityId];
+    return [];
+  });
+  return [...new Set(referenced.filter((entityId) => !created.has(entityId)))];
+}
+
+function operationTime(operation: CanonicalEditOperation) {
+  return operation.kind === "InsertSceneBoundary" ? operation.at : operation.interval.start;
+}
+
+function isPoint(value: unknown): value is Readonly<{ x: number; y: number }> {
+  return typeof value === "object" && value !== null && "x" in value && "y" in value
+    && typeof value.x === "number" && typeof value.y === "number";
+}
+
+function direction(placement: "above" | "below" | "left" | "right") {
+  return { above: "UP", below: "DOWN", left: "LEFT", right: "RIGHT" }[placement];
+}
+
+function animationOperation(operation: CanonicalEditOperation) {
+  return operation.kind === "AnimateProperty"
+    || operation.kind === "ChangeCamera"
+    || operation.kind === "ChangePresence"
+    || operation.kind === "CreateMotion"
+    || operation.kind === "TransformContent";
+}
+
+export function lowerCanonicalProgramSource(
   source: string,
-  request: CreateMotionRenderRequest,
+  request: ProgramRenderRequest,
   frame: Readonly<{ height: number; width: number }>,
-): LoweredMotionSource {
-  const { operation } = request;
-  if (Math.abs(operation.controlOffsetPixels.x) > 0.001 || Math.abs(operation.controlOffsetPixels.y) > 0.001) {
-    throw new MotionLoweringError(
-      "curved-path-unsupported",
-      "Rendered validation currently supports straight CreateMotion paths only; reset the bend handle first.",
+  incoming: IncomingSceneSetup | null,
+): LoweredProgramSource {
+  const anchor = findSceneMotionAnchors(source, request.sceneName)
+    .find((candidate) => Math.abs(candidate.seconds - request.program.anchor.resolvedSeconds) < EPSILON);
+  if (!anchor) {
+    throw new ProgramLoweringError(
+      "anchor-missing",
+      `No # poietra:anchor ${request.program.anchor.resolvedSeconds.toFixed(3)} marker exists in ${request.sourcePath}.`,
     );
   }
-
   const newline = source.includes("\r\n") ? "\r\n" : "\n";
   const lines = source.split(/\r?\n/);
-  const block = sceneBlock(source, request.sceneName);
-  const anchors = findSceneMotionAnchors(source, request.sceneName);
-  const anchor = anchors.find((candidate) => Math.abs(candidate.seconds - operation.interval.start) < 0.0005);
-  if (!anchor) {
-    throw new MotionLoweringError(
-      "anchor-missing",
-      `No # poietra:anchor ${operation.interval.start.toFixed(3)} marker exists in ${request.sourcePath}.`,
-    );
-  }
-
   const markerLine = lines[anchor.line - 1] ?? "";
   const indentation = markerLine.match(/^\s*/)?.[0] ?? "";
-  const sourceBeforeAnchor = lines.slice((block?.start ?? 0) + 1, anchor.line - 1).join(newline);
-  for (const target of operation.targets) {
-    const assignment = new RegExp(`^${escapePattern(indentation)}${escapePattern(target.sourceVariable)}\\s*=`, "m");
+  const block = findSourceSceneBlock(source, request.sceneName);
+  const sourceBeforeAnchor = lines.slice(block?.bodyStart ?? 0, anchor.line - 1).join(newline);
+  const sourceBindings = new Map(request.sourceBindings.map((binding) => [binding.entityId, binding.sourceVariable]));
+  for (const entityId of referencedBaseEntityIds(request.program.operations)) {
+    const sourceVariable = sourceBindings.get(entityId);
+    if (!sourceVariable) {
+      throw new ProgramLoweringError("source-variable-missing", `Runtime entity ${entityId} has no imported Python source identity.`);
+    }
+    const assignment = new RegExp(`^${escapePattern(indentation)}${escapePattern(sourceVariable)}\\s*=`, "m");
     if (!assignment.test(sourceBeforeAnchor)) {
-      throw new MotionLoweringError(
+      throw new ProgramLoweringError(
         "source-variable-missing",
-        `Source variable ${target.sourceVariable} is not defined before the ${operation.interval.start.toFixed(3)}s anchor.`,
+        `Source variable ${sourceVariable} is not defined before the ${anchor.seconds.toFixed(3)}s anchor.`,
       );
     }
   }
 
-  const duration = operation.interval.end - operation.interval.start;
-  const vector = shiftExpression(operation.deltaPixels, frame, operation.viewport);
-  const insertedLines = [
-    `${indentation}self.play(`,
-    ...operation.targets.map((target) => `${indentation}    ${target.sourceVariable}.animate.shift(${vector}),`),
-    `${indentation}    run_time=${formatAmount(duration)},`,
-    `${indentation}    rate_func=smooth,`,
-    `${indentation})  # poietra:transaction ${operation.transactionId}`,
-  ];
+  const order = new Map(request.program.schedule.order.map((id, index) => [id, index]));
+  const operations = [...request.program.operations].sort((left, right) => (
+    operationTime(left) - operationTime(right)
+    || (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0)
+  ));
+  const variableByEntity = new Map(sourceBindings);
+  const createdOperations = operations.filter((operation): operation is CreateEntityOperation => operation.kind === "CreateEntity");
+  createdOperations.forEach((operation, index) => variableByEntity.set(
+    operation.entity.id,
+    variableToken(request.program.transactionId, index),
+  ));
+  const output: string[] = [];
+  let cursor = request.program.anchor.resolvedSeconds;
+  const uniqueTimes = [...new Set(operations.map(operationTime))].sort((left, right) => left - right);
+  for (const time of uniqueTimes) {
+    if (time > cursor + EPSILON) {
+      output.push(`self.wait(${formatAmount(time - cursor)})`);
+      cursor = time;
+    }
+    if (time < cursor - EPSILON) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        `Operation at ${time.toFixed(3)}s overlaps source time already lowered through ${cursor.toFixed(3)}s.`,
+      );
+    }
+    const bucket = operations.filter((operation) => Math.abs(operationTime(operation) - time) < EPSILON);
+    for (const operation of bucket) {
+      if (operation.kind === "CreateEntity") {
+        const variable = variableByEntity.get(operation.entity.id)!;
+        if (!operation.entity.type.startsWith("TransitionOverlay:")) {
+          output.push(`# poietra:entity ${JSON.stringify({ id: operation.entity.id, variable })}`);
+        }
+        output.push(`${variable} = ${entityConstructor(operation)}`);
+      } else if (operation.kind === "SetProperty") {
+        const variable = variableByEntity.get(operation.entityId);
+        if (!variable) throw new ProgramLoweringError("source-variable-missing", `No source variable exists for ${operation.entityId}.`);
+        if (operation.key === "position" && isPoint(operation.value)) {
+          output.push(`${variable}.move_to(${pointExpression(operation.value, frame, request.viewport)})`);
+        } else if (operation.key === "scale" && typeof operation.value === "number") {
+          output.push(`${variable}.scale(${formatAmount(operation.value)})`);
+        } else if (operation.key !== "appearance" && operation.key !== "presence") {
+          throw new ProgramLoweringError("operation-unsupported", `SetProperty ${operation.key} has no safe source lowering.`);
+        }
+      } else if (operation.kind === "SetRelation") {
+        const sourceVariable = variableByEntity.get(operation.sourceEntityId);
+        const targetVariable = variableByEntity.get(operation.targetEntityId);
+        if (!sourceVariable || !targetVariable) {
+          throw new ProgramLoweringError("source-variable-missing", "SetRelation requires source identities for both entities.");
+        }
+        output.push(`${sourceVariable}.next_to(${targetVariable}, ${direction(operation.placement)})`);
+      }
+    }
+
+    const boundaries = bucket.filter((operation) => operation.kind === "InsertSceneBoundary");
+    for (const boundary of boundaries) {
+      if (!incoming) {
+        throw new ProgramLoweringError("destination-missing", "The Scene transition has no imported next Scene destination.");
+      }
+      output.push(`# poietra:scene-boundary ${JSON.stringify({
+        at: boundary.at,
+        destination: request.destination
+          ? `${request.destination.sourcePath}#${request.destination.sceneName}`
+          : "next-scene",
+      })}`);
+      output.push("self.clear()");
+      output.push("# poietra:incoming-start");
+      output.push(...incoming.initialization);
+      output.push("# poietra:incoming-end");
+      if (incoming.visibleSourceVariables.length > 0) {
+        output.push(`self.add(${incoming.visibleSourceVariables.join(", ")})`);
+      }
+      const overlay = operations.find((operation) => (
+        operation.kind === "CreateEntity" && operation.entity.type.startsWith("TransitionOverlay:")
+      ));
+      if (overlay?.kind === "CreateEntity") {
+        const overlayVariable = variableByEntity.get(overlay.entity.id)!;
+        output.push(`self.add(${overlayVariable})`);
+        output.push(`self.bring_to_front(${overlayVariable})`);
+      }
+    }
+
+    const animations = bucket.filter(animationOperation);
+    if (animations.length === 0) continue;
+    const animationEnd = animations[0].interval.end;
+    if (animations.some((operation) => Math.abs(operation.interval.end - animationEnd) >= EPSILON)) {
+      throw new ProgramLoweringError("operation-unsupported", "Concurrent source animations must share one interval.");
+    }
+    const preludes: string[] = [];
+    const actions: string[] = [];
+    const postludes: string[] = [];
+    for (const operation of animations) {
+      if (operation.kind === "CreateMotion") {
+        if (Math.abs(operation.controlOffset.x) > 0.001 || Math.abs(operation.controlOffset.y) > 0.001) {
+          throw new ProgramLoweringError("operation-unsupported", "Rendered validation currently supports straight CreateMotion paths only.");
+        }
+        const shift = shiftExpression(operation.delta, frame, request.viewport);
+        for (const entityId of operation.targetEntityIds) {
+          const variable = variableByEntity.get(entityId);
+          if (!variable) throw new ProgramLoweringError("source-variable-missing", `No source variable exists for ${entityId}.`);
+          actions.push(`${variable}.animate.shift(${shift})`);
+        }
+      } else if (operation.kind === "TransformContent") {
+        const sourceVariable = variableByEntity.get(operation.sourceEntityId);
+        if (!sourceVariable) throw new ProgramLoweringError("source-variable-missing", `No source variable exists for ${operation.sourceEntityId}.`);
+        const targetVariable = variableByEntity.get(operation.targetEntityId)
+          ?? variableToken(request.program.transactionId, createdOperations.length + preludes.length);
+        variableByEntity.set(operation.targetEntityId, targetVariable);
+        const target = operation.targetType === "Text"
+          ? `Text(${JSON.stringify(operation.replacement.text ?? operation.replacement.displayLines.join(" "))})`
+          : `MathTex(${(operation.replacement.texParts ?? operation.replacement.displayLines).map((part) => JSON.stringify(part)).join(", ")})`;
+        preludes.push(`# poietra:entity ${JSON.stringify({ id: operation.targetEntityId, variable: sourceVariable })}`);
+        preludes.push(`${targetVariable} = ${target}`);
+        actions.push(operation.strategy === "transform-matching-tex"
+          ? `TransformMatchingTex(${sourceVariable}, ${targetVariable}, transform_mismatches=True)`
+          : `ReplacementTransform(${sourceVariable}, ${targetVariable})`);
+        postludes.push(`${sourceVariable} = ${targetVariable}`);
+        variableByEntity.set(operation.targetEntityId, sourceVariable);
+      } else if (operation.kind === "ChangePresence") {
+        const variable = variableByEntity.get(operation.entityId);
+        if (!variable) throw new ProgramLoweringError("source-variable-missing", `No source variable exists for ${operation.entityId}.`);
+        if (operation.effect === "fade-in") actions.push(`FadeIn(${variable})`);
+        else if (operation.effect === "remove") actions.push(`FadeOut(${variable})`);
+        else if (operation.effect === "cover") actions.push(`${variable}.animate.scale(800)`);
+        else {
+          actions.push(`${variable}.animate.scale(0.00125)`);
+          postludes.push(`self.remove(${variable})`);
+        }
+      } else if (operation.kind === "AnimateProperty") {
+        const variable = variableByEntity.get(operation.entityId);
+        if (!variable) throw new ProgramLoweringError("source-variable-missing", `No source variable exists for ${operation.entityId}.`);
+        if (operation.key === "scale" && typeof operation.to === "number") {
+          actions.push(`${variable}.animate.scale(${formatAmount(operation.to)})`);
+        } else {
+          throw new ProgramLoweringError("operation-unsupported", `AnimateProperty ${operation.key} has no safe source lowering.`);
+        }
+      } else if (operation.kind === "ChangeCamera") {
+        throw new ProgramLoweringError("operation-unsupported", "ChangeCamera requires a MovingCameraScene and is not lowered generically.");
+      }
+    }
+    output.push(...preludes);
+    if (actions.length > 0) {
+      output.push("self.play(");
+      output.push(...actions.map((action) => `    ${action},`));
+      output.push(`    run_time=${formatAmount(animationEnd - time)},`);
+      output.push("    rate_func=smooth,");
+      output.push(")");
+    }
+    output.push(...postludes);
+    cursor = animationEnd;
+  }
+  output.push(`# poietra:transaction ${JSON.stringify(request.program.transactionId)}`);
+  if (operations.some((operation) => operation.kind === "InsertSceneBoundary")) {
+    output.push("return  # The imported next Scene now owns the composition.");
+  }
+  const insertedLines = output.map((line) => `${indentation}${line}`);
   lines.splice(anchor.line, 0, ...insertedLines);
   return {
     anchorLine: anchor.line,

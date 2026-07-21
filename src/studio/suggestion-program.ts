@@ -346,10 +346,6 @@ function intentCount(operation: EditSuggestionOperation) {
 function requiresIllustrativeLowering(operation: EditSuggestionOperation) {
   const illustrativeKinds = new Set([
     "create-camera-focus",
-    "create-equation",
-    "create-explained-equation",
-    "create-scene-transition",
-    "create-text-transform",
   ]);
   return operation.kind === "edit-program"
     ? operation.operations.some((step) => illustrativeKinds.has(step.kind))
@@ -519,7 +515,7 @@ export function createDirectManipulationPositionProgram(
   return validateAndScheduleProgram({
     anchor: resolution.anchor,
     intentCount: 1,
-    loweringStatus: "illustrative",
+    loweringStatus: "supported",
     operations,
     provenance: provenance("direct-manipulation", ["gesture constraint"]),
     requestedExecution: "parallel",

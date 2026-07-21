@@ -29,14 +29,15 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Plugin } from "vite";
 
 import {
-  createMotionRenderRequestSchema,
-  type CreateMotionRenderRequest,
+  programRenderRequestSchema,
+  type ProgramRenderRequest,
   type ManimWorkspaceSource,
   type ManimWorkspaceView,
   type RenderSessionStatus,
   type RenderSessionView,
 } from "../src/render-pipeline/contracts";
-import { findSceneMotionAnchors, lowerCreateMotionSource } from "../src/render-pipeline/source-lowering";
+import { importManimScene } from "../src/render-pipeline/source-import";
+import { lowerCanonicalProgramSource } from "../src/render-pipeline/source-lowering";
 
 type ManimRenderPipelineOptions = Readonly<{
   command?: string;
@@ -60,7 +61,7 @@ type RenderSession = {
   patchedHash: string;
   patchedSource: string;
   progress: number;
-  request: CreateMotionRenderRequest;
+  request: ProgramRenderRequest;
   status: RenderSessionStatus;
   tempRoot: string;
   updatedAt: string;
@@ -117,8 +118,14 @@ function scenesInSource(source: string) {
   return [...source.matchAll(SCENE_PATTERN)].map((match) => match[1]);
 }
 
-async function discoverPythonSources(projectRoot: string) {
-  const sources: ManimWorkspaceSource[] = [];
+async function discoverPythonSources(
+  projectRoot: string,
+  frame: Readonly<{ height: number; width: number }>,
+) {
+  const sources: Array<Readonly<{
+    path: string;
+    scenes: readonly NonNullable<ReturnType<typeof importManimScene>>[];
+  }>> = [];
   async function visit(directory: string, relativeDirectory: string) {
     if (sources.length >= 200) return;
     const entries = await readdir(directory, { withFileTypes: true });
@@ -132,19 +139,37 @@ async function discoverPythonSources(projectRoot: string) {
       if (!entry.isFile() || !entry.name.endsWith(".py")) continue;
       const absolutePath = join(directory, entry.name);
       const source = await readFile(absolutePath, "utf8");
-      const scenes = scenesInSource(source);
+      const relativePath = join(relativeDirectory, entry.name).split(sep).join("/");
+      const scenes = scenesInSource(source).flatMap((name) => {
+        const imported = importManimScene(source, relativePath, name, frame);
+        return imported ? [imported] : [];
+      });
       if (scenes.length === 0) continue;
       sources.push({
-        path: join(relativeDirectory, entry.name).split(sep).join("/"),
-        scenes: scenes.map((name) => ({
-          anchors: findSceneMotionAnchors(source, name).map((anchor) => anchor.seconds),
-          name,
-        })),
+        path: relativePath,
+        scenes,
       });
     }
   }
   await visit(projectRoot, "");
-  return sources.sort((left, right) => left.path.localeCompare(right.path));
+  const sorted = sources.sort((left, right) => left.path.localeCompare(right.path));
+  const orderedSceneIds = sorted.flatMap((source) => source.scenes.map((scene) => scene.sceneId));
+  return sorted.map((source): ManimWorkspaceSource => ({
+    path: source.path,
+    scenes: source.scenes.map((scene) => {
+      const index = orderedSceneIds.indexOf(scene.sceneId);
+      return {
+        anchors: scene.anchors,
+        name: scene.name,
+        nextSceneId: orderedSceneIds[index + 1] ?? null,
+        runtimeSceneState: scene.runtimeSceneState,
+        sceneId: scene.sceneId,
+        sourceHash: scene.sourceHash,
+        sourceVariables: scene.sourceVariables,
+        staticSemanticState: scene.staticSemanticState,
+      };
+    }),
+  }));
 }
 
 async function findRenderedVideo(root: string): Promise<string | null> {
@@ -244,7 +269,7 @@ export class ManimRenderManager {
       commandAvailable: commandIsAvailable(this.command),
       frame: this.frame,
       projectRoot: this.projectRoot,
-      sources: await discoverPythonSources(this.projectRoot),
+      sources: await discoverPythonSources(this.projectRoot, this.frame),
     };
   }
 
@@ -316,7 +341,7 @@ export class ManimRenderManager {
     };
   }
 
-  async start(request: CreateMotionRenderRequest) {
+  async start(request: ProgramRenderRequest) {
     if (!commandIsAvailable(this.command)) {
       throw new ManimPipelineError(
         503,
@@ -328,7 +353,48 @@ export class ManimRenderManager {
     if (!scenesInSource(originalSource).includes(request.sceneName)) {
       throw new ManimPipelineError(400, `${request.sceneName} is not declared in ${request.sourcePath}.`);
     }
-    const lowered = lowerCreateMotionSource(originalSource, request, this.frame);
+    const workspace = await this.workspace();
+    const activeScene = workspace.sources
+      .find((source) => source.path === request.sourcePath)
+      ?.scenes.find((scene) => scene.name === request.sceneName);
+    if (!activeScene) {
+      throw new ManimPipelineError(400, `${request.sceneName} is not an imported Scene in ${request.sourcePath}.`);
+    }
+    const hasSceneBoundary = request.program.operations.some((operation) => operation.kind === "InsertSceneBoundary");
+    let incoming: Readonly<{
+      initialization: readonly string[];
+      visibleSourceVariables: readonly string[];
+    }> | null = null;
+    if (hasSceneBoundary) {
+      if (!activeScene.nextSceneId || !request.destination) {
+        throw new ManimPipelineError(400, "This Scene transition requires the imported next Scene destination.");
+      }
+      const destinationSource = workspace.sources.find((source) => source.path === request.destination?.sourcePath);
+      const destinationScene = destinationSource?.scenes.find((scene) => (
+        scene.name === request.destination?.sceneName && scene.sceneId === activeScene.nextSceneId
+      ));
+      if (!destinationSource || !destinationScene) {
+        throw new ManimPipelineError(400, "The requested transition destination is not the active Scene's next imported Scene.");
+      }
+      const destinationPath = await this.sourcePath(destinationSource.path);
+      const destinationSourceText = await readFile(destinationPath, "utf8");
+      const importedDestination = importManimScene(
+        destinationSourceText,
+        destinationSource.path,
+        destinationScene.name,
+        this.frame,
+      );
+      if (!importedDestination) {
+        throw new ManimPipelineError(400, "The next Scene could not be imported for transition preview.");
+      }
+      incoming = {
+        initialization: importedDestination.initialization,
+        visibleSourceVariables: importedDestination.initialVisibleSourceVariables,
+      };
+    } else if (request.destination) {
+      throw new ManimPipelineError(400, "A render without a Scene boundary must not include a destination Scene.");
+    }
+    const lowered = lowerCanonicalProgramSource(originalSource, request, this.frame, incoming);
     const tempRoot = await mkdtemp(join(tmpdir(), "poietra-manim-render-"));
     const previewSourcePath = join(tempRoot, basename(sourcePath));
     const mediaRoot = join(tempRoot, "media");
@@ -562,11 +628,11 @@ export function manimRenderPipeline(options: ManimRenderPipelineOptions = {}): P
             return;
           }
           if (request.method === "POST" && url.pathname === "/api/manim/renders") {
-            const parsed = createMotionRenderRequestSchema.safeParse(await readJsonBody(request));
+            const parsed = programRenderRequestSchema.safeParse(await readJsonBody(request));
             if (!parsed.success) {
-              throw new ManimPipelineError(400, parsed.error.issues[0]?.message ?? "Invalid CreateMotion render request.");
+              throw new ManimPipelineError(400, parsed.error.issues[0]?.message ?? "Invalid canonical EditProgram render request.");
             }
-            sendJson(response, 202, await manager.start(parsed.data));
+            sendJson(response, 202, await manager.start(parsed.data as ProgramRenderRequest));
             return;
           }
           const match = url.pathname.match(/^\/api\/manim\/renders\/([0-9a-f-]+)(?:\/(cancel|commit|discard|undo|video))?$/);

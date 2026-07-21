@@ -1,7 +1,7 @@
 import type {
-  CreateMotionRenderRequest,
   ManimApiError,
   ManimWorkspaceView,
+  ProgramRenderRequest,
   RenderSessionView,
 } from "./contracts";
 
@@ -17,7 +17,7 @@ export async function loadManimWorkspace(signal?: AbortSignal) {
   return readJson<ManimWorkspaceView>(await fetch("/api/manim/workspace", { signal }));
 }
 
-export async function startManimRender(request: CreateMotionRenderRequest) {
+export async function startManimRender(request: ProgramRenderRequest) {
   return readJson<RenderSessionView>(await fetch("/api/manim/renders", {
     body: JSON.stringify(request),
     headers: { "content-type": "application/json" },

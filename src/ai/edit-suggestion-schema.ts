@@ -268,6 +268,11 @@ export const editSuggestionRequestSchema = z.object({
   })),
   playhead: z.number(),
   prompt: z.string().trim().min(1).max(2_000),
+  scene: z.object({
+    id: z.string().min(1).max(500),
+    name: z.string().min(1).max(160),
+    nextSceneId: z.string().min(1).max(500).nullable(),
+  }),
   sceneDuration: z.number().positive(),
   selectedObjectIds: z.array(z.string()),
 });

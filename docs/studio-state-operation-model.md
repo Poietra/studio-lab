@@ -148,9 +148,16 @@ preview rejection, projection consistency, snapshot relations,
 Scene boundaries, camera focus, new MathTex creation, MathTex-to-Text replacement,
 direct motion normalization, shared schemas, and Unknown identity rejection.
 
-Source lowering and browser morph rendering remain prototype-grade. Registry
-metadata labels those paths as `supported`, `illustrative`, or `unsupported`.
-The separate rendered-validation experiment now carries one straight
-`CreateMotion` with known source targets through explicit source-anchor lowering
-and an actual Manim MP4 before guarded commit; it does not generalize that evidence
-to other operations or claim arbitrary Python execution.
+The runtime application no longer boots from `STUDIO_FIXTURE_SCENE`. The local
+workspace bridge conservatively imports source assignments, MathTex/Text content,
+source identities, play/wait timing, lifetimes, straight shifts, anchors, and Scene
+order. Facts that cannot be established by this static importer remain outside the
+snapshot instead of being filled from fixture constants.
+
+Rendered validation now accepts one complete `CanonicalEditProgram`. At an exact
+safe source anchor it can lower straight `CreateMotion`, position changes,
+MathTex/Text creation, `next_to`, FadeIn/removal, matching/replacement transforms,
+and a cover-and-reveal boundary to the actual next imported Scene. A successful
+commit writes transaction and identity markers; reimport recovers generated entity
+IDs and the Scene boundary. Curved motion, camera lowering, arbitrary Python flow,
+and insertion inside an existing play remain explicit blockers.

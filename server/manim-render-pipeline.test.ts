@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { CreateMotionRenderRequest, RenderSessionView } from "../src/render-pipeline/contracts";
+import type { ProgramRenderRequest, RenderSessionView } from "../src/render-pipeline/contracts";
+import type { CanonicalEditOperation, CanonicalEditProgram } from "../src/studio/operations";
 import { ManimRenderManager, parseManimCommand } from "./manim-render-pipeline";
 
 const fakeRenderer = fileURLToPath(new URL("./test-fixtures/fake-manim.mjs", import.meta.url));
@@ -21,19 +22,41 @@ class GroupedEquation(Scene):
         self.wait(1)
 `;
 
-function request(sourcePath = "scene.py"): CreateMotionRenderRequest {
-  return {
-    operation: {
-      controlOffsetPixels: { x: 0, y: 0 },
-      deltaPixels: { x: 64, y: 0 },
-      interval: { end: 8, start: 7 },
-      kind: "CreateMotion",
-      targets: [{ entityId: "equation_1", sourceVariable: "equation" }],
-      transactionId: "render-integration",
-      viewport: { height: 360, width: 640 },
+function request(sourcePath = "scene.py"): ProgramRenderRequest {
+  const operation: CanonicalEditOperation = {
+    controlOffset: { x: 0, y: 0 },
+    delta: { x: 64, y: 0 },
+    dependsOn: [],
+    easing: "smooth",
+    id: "tx:render-integration/operation:motion",
+    interval: { end: 8, start: 7 },
+    kind: "CreateMotion",
+    provenance: { evidence: [], origin: "direct-manipulation" },
+    targetEntityIds: ["source:scene.py#GroupedEquation:equation"],
+  };
+  const program: CanonicalEditProgram = {
+    anchor: {
+      capturedPlayhead: 7,
+      evidence: ["captured-playhead:7.000"],
+      resolvedSeconds: 7,
+      source: { kind: "playhead", referenceSeconds: 7 },
     },
+    intentCount: 1,
+    loweringStatus: "supported",
+    operations: [operation],
+    provenance: { evidence: [], origin: "direct-manipulation" },
+    requestedExecution: "sequence",
+    schedule: { edges: [], mode: "sequence", order: [operation.id] },
+    transactionId: "render-integration",
+    version: 1,
+  };
+  return {
+    destination: null,
+    program,
     sceneName: "GroupedEquation",
+    sourceBindings: [{ entityId: "source:scene.py#GroupedEquation:equation", sourceVariable: "equation" }],
     sourcePath,
+    viewport: { height: 360, width: 640 },
   };
 }
 
@@ -69,10 +92,17 @@ describe("Manim render manager", () => {
     const { manager, projectRoot } = await fixture();
     const workspace = await manager.workspace();
     expect(workspace.commandAvailable).toBe(true);
-    expect(workspace.sources).toEqual([{
-      path: "scene.py",
-      scenes: [{ anchors: [7], name: "GroupedEquation" }],
-    }]);
+    expect(workspace.sources).toHaveLength(1);
+    expect(workspace.sources[0]?.path).toBe("scene.py");
+    expect(workspace.sources[0]?.scenes).toHaveLength(1);
+    expect(workspace.sources[0]?.scenes[0]).toMatchObject({
+      anchors: [7],
+      name: "GroupedEquation",
+      nextSceneId: null,
+      sceneId: "scene.py#GroupedEquation",
+    });
+    expect(workspace.sources[0]?.scenes[0]?.runtimeSceneState.objectGraph.entities)
+      .toHaveProperty("source:scene.py#GroupedEquation:equation");
 
     const started = await manager.start(request());
     const rendered = await waitForTerminal(manager, started.id);
@@ -84,7 +114,7 @@ describe("Manim render manager", () => {
 
     const committed = await manager.commit(started.id);
     expect(committed.status).toBe("committed");
-    expect(await readFile(join(projectRoot, "scene.py"), "utf8")).toContain("poietra:transaction render-integration");
+    expect(await readFile(join(projectRoot, "scene.py"), "utf8")).toContain('poietra:transaction "render-integration"');
 
     const undone = await manager.undo(started.id);
     expect(undone.status).toBe("undone");

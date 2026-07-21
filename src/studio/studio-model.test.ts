@@ -695,7 +695,7 @@ describe("one ProposedState feeds every Studio projection", () => {
     const validation = canonicalize(operation, "maxwell-then-transition", 5);
     expect(validation.kind).toBe("valid");
     expect(validation.program.intentCount).toBe(3);
-    expect(validation.program.loweringStatus).toBe("illustrative");
+    expect(validation.program.loweringStatus).toBe("supported");
     expect(validation.program.schedule.mode).toBe("sequence");
     expect(validation.program.operations.every((candidate) => (
       candidate.id.startsWith("tx:maxwell-then-transition/")
