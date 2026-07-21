@@ -228,7 +228,7 @@ function explanationOperations(
 }
 
 function explainedEquationOperations(
-  operation: CreateExplainedEquationSuggestion,
+  operation: Omit<CreateExplainedEquationSuggestion, "anchor">,
   transactionId: string,
   origin: OperationOrigin,
 ) {
@@ -268,7 +268,7 @@ function motionOperation(
 }
 
 function transitionOperations(
-  operation: CreateSceneTransitionSuggestion,
+  operation: Omit<CreateSceneTransitionSuggestion, "anchor">,
   transactionId: string,
   origin: OperationOrigin,
 ) {
@@ -335,6 +335,27 @@ function operationAnchor(operation: EditSuggestionOperation): SuggestionTimeAnch
   return operation.anchor;
 }
 
+function intentCount(operation: EditSuggestionOperation) {
+  if (operation.kind === "create-explained-equation") return 2;
+  if (operation.kind !== "edit-program") return 1;
+  return operation.operations.reduce((count, step) => (
+    count + (step.kind === "create-explained-equation" ? 2 : 1)
+  ), 0);
+}
+
+function requiresIllustrativeLowering(operation: EditSuggestionOperation) {
+  const illustrativeKinds = new Set([
+    "create-camera-focus",
+    "create-equation",
+    "create-explained-equation",
+    "create-scene-transition",
+    "create-text-transform",
+  ]);
+  return operation.kind === "edit-program"
+    ? operation.operations.some((step) => illustrativeKinds.has(step.kind))
+    : illustrativeKinds.has(operation.kind);
+}
+
 export function canonicalizeSuggestionProgram(
   operation: EditSuggestionOperation,
   context: CanonicalizationContext,
@@ -351,11 +372,7 @@ export function canonicalizeSuggestionProgram(
         resolvedSeconds: Number.NaN,
         source: operationAnchor(operation),
       },
-      intentCount: operation.kind === "edit-program"
-        ? operation.operations.length
-        : operation.kind === "create-explained-equation"
-          ? 2
-          : 1,
+      intentCount: intentCount(operation),
       loweringStatus: "unsupported",
       operations: [],
       provenance: provenance(context.origin, []),
@@ -398,20 +415,23 @@ export function canonicalizeSuggestionProgram(
       if (step.kind === "create-explanation") {
         return explanationOperations(step, context.transactionId, context.origin, index, transforms);
       }
+      if (step.kind === "create-equation") {
+        return equationOperations(step, context.transactionId, context.origin);
+      }
+      if (step.kind === "create-explained-equation") {
+        return explainedEquationOperations(step, context.transactionId, context.origin);
+      }
+      if (step.kind === "create-scene-transition") {
+        return transitionOperations(step, context.transactionId, context.origin);
+      }
       return [];
     });
   }
 
   const program: CanonicalEditProgram = {
     anchor: resolution.anchor,
-    intentCount: operation.kind === "edit-program"
-      ? operation.operations.length
-      : operation.kind === "create-explained-equation"
-        ? 2
-        : 1,
-    loweringStatus: ["create-camera-focus", "create-equation", "create-explained-equation", "create-scene-transition", "create-text-transform"].includes(operation.kind)
-      ? "illustrative"
-      : "supported",
+    intentCount: intentCount(operation),
+    loweringStatus: requiresIllustrativeLowering(operation) ? "illustrative" : "supported",
     operations,
     provenance: provenance(context.origin, [operation.kind]),
     requestedExecution: operation.kind === "edit-program"

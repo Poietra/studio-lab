@@ -8,6 +8,9 @@ import type {
 type MotionStep = Extract<EditProgramStep, { kind: "create-motion" }>;
 type TransformStep = Extract<EditProgramStep, { kind: "create-transform" }>;
 type ExplanationStep = Extract<EditProgramStep, { kind: "create-explanation" }>;
+type EquationStep = Extract<EditProgramStep, { kind: "create-equation" }>;
+type ExplainedEquationStep = Extract<EditProgramStep, { kind: "create-explained-equation" }>;
+type SceneTransitionStep = Extract<EditProgramStep, { kind: "create-scene-transition" }>;
 
 type ProgramObject<TId extends string> = {
   id: TId;
@@ -75,6 +78,10 @@ function lifetimeAt<TId extends string>(object: ProgramObject<TId>, time: number
   return object.lifetimes.find((interval) => time >= interval.start && time < interval.end) ?? null;
 }
 
+function minimumDuration(step: EditProgramStep) {
+  return step.kind === "create-scene-transition" ? 0.4 : 0.1;
+}
+
 export function validateEditProgram<TId extends string>(
   operation: EditProgramSuggestion,
   context: EditProgramValidationContext<TId>,
@@ -88,7 +95,7 @@ export function validateEditProgram<TId extends string>(
     && Number.isFinite(step.end)
     && step.start >= 0
     && step.end <= context.sceneDuration
-    && step.end - step.start >= 0.1
+    && step.end - step.start >= minimumDuration(step)
     && step.end - step.start <= 5
     && (index === 0 || (
       operation.execution === "parallel"
@@ -115,6 +122,13 @@ export function validateEditProgram<TId extends string>(
   const motionStep = operation.operations.find((step): step is MotionStep => step.kind === "create-motion") ?? null;
   const transformStep = operation.operations.find((step): step is TransformStep => step.kind === "create-transform") ?? null;
   const explanationStep = operation.operations.find((step): step is ExplanationStep => step.kind === "create-explanation") ?? null;
+  const equationStep = operation.operations.find((step): step is EquationStep => step.kind === "create-equation") ?? null;
+  const explainedEquationStep = operation.operations.find(
+    (step): step is ExplainedEquationStep => step.kind === "create-explained-equation",
+  ) ?? null;
+  const sceneTransitionStep = operation.operations.find(
+    (step): step is SceneTransitionStep => step.kind === "create-scene-transition",
+  ) ?? null;
   const motionTargets = motionStep
     ? [...new Set(motionStep.targetObjectIds)]
       .map((id) => objectsById.get(id))
@@ -124,6 +138,11 @@ export function validateEditProgram<TId extends string>(
   const explanationTarget = explanationStep ? objectsById.get(explanationStep.targetObjectId) ?? null : null;
   const normalizedTarget = transformStep ? normalizeMathTexTarget(transformStep.target) : null;
   const explanationText = explanationStep?.text.trim().slice(0, 240) ?? "";
+  const normalizedEquationTarget = equationStep ? normalizeMathTexTarget(equationStep.target) : null;
+  const normalizedExplainedEquationTarget = explainedEquationStep
+    ? normalizeMathTexTarget(explainedEquationStep.target)
+    : null;
+  const explainedEquationText = explainedEquationStep?.explanation.text.trim().slice(0, 240) ?? "";
 
   const motionIsValid = !motionStep || (
     motionTargets.length > 0
@@ -143,17 +162,35 @@ export function validateEditProgram<TId extends string>(
     && (lifetimeAt(explanationTarget, explanationStep.start)?.end ?? explanationStep.start) >= explanationStep.end
     && explanationText.length > 0
   );
+  const equationIsValid = !equationStep || normalizedEquationTarget !== null;
+  const explainedEquationIsValid = !explainedEquationStep || (
+    normalizedExplainedEquationTarget !== null && explainedEquationText.length > 0
+  );
+  const sceneTransitionIsValid = !sceneTransitionStep
+    || sceneTransitionStep.end - sceneTransitionStep.start >= 0.4;
+  const equationCreationCount = Number(equationStep !== null) + Number(explainedEquationStep !== null);
   const motionTargetIds = motionTargets.map((object) => object.id);
   const parallelWriteConflict = operation.execution === "parallel" && motionStep !== null && (
     (transformSource !== null && motionTargetIds.includes(transformSource.id))
     || (explanationTarget !== null && motionTargetIds.includes(explanationTarget.id))
   );
-  if (!motionIsValid || !transformIsValid || !explanationIsValid || parallelWriteConflict) {
+  if (
+    !motionIsValid
+    || !transformIsValid
+    || !explanationIsValid
+    || !equationIsValid
+    || !explainedEquationIsValid
+    || !sceneTransitionIsValid
+    || equationCreationCount > 1
+    || parallelWriteConflict
+  ) {
     return {
       kind: "invalid",
-      message: parallelWriteConflict
-        ? "This Edit Program moves and rewrites or observes the same object in parallel. Express those steps in sequence so Studio can preserve the dependency."
-        : "The Edit Program contains an invalid, unselected, or unavailable target.",
+      message: equationCreationCount > 1
+        ? "This Edit Program contains two equation-creation macros. Keep one equation identity and combine its explanation inside create-explained-equation."
+        : parallelWriteConflict
+          ? "This Edit Program moves and rewrites or observes the same object in parallel. Express those steps in sequence so Studio can preserve the dependency."
+          : "The Edit Program contains an invalid, unselected, or unavailable target.",
     };
   }
 
@@ -172,10 +209,27 @@ export function validateEditProgram<TId extends string>(
     step: { ...explanationStep, targetObjectId: explanationTarget.id, text: explanationText },
     targetObjectId: explanationTarget.id,
   } : null;
+  const normalizedEquation = equationStep && normalizedEquationTarget
+    ? { ...equationStep, target: normalizedEquationTarget }
+    : null;
+  const normalizedExplainedEquation = explainedEquationStep && normalizedExplainedEquationTarget
+    ? {
+        ...explainedEquationStep,
+        explanation: {
+          ...explainedEquationStep.explanation,
+          text: explainedEquationText,
+        },
+        target: normalizedExplainedEquationTarget,
+      }
+    : null;
   const normalizedSteps = operation.operations.map((step) => {
     if (step.kind === "create-motion" && normalizedMotion) return normalizedMotion.step;
     if (step.kind === "create-transform" && normalizedTransform) return normalizedTransform.step;
     if (step.kind === "create-explanation" && normalizedExplanation) return normalizedExplanation.step;
+    if (step.kind === "create-equation" && normalizedEquation) return normalizedEquation;
+    if (step.kind === "create-explained-equation" && normalizedExplainedEquation) {
+      return normalizedExplainedEquation;
+    }
     return step;
   });
   const touchedObjectIds = [...new Set<TId>([

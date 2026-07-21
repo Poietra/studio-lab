@@ -390,15 +390,25 @@ export function App() {
       )) ?? null
     : null;
   const isEditProgramDraft = draftEditProgram !== null;
-  const draftProgramIntervals = [
-    draftMotion,
-    draftTransform?.interval,
-    draftExplanation?.interval,
-  ].filter((interval): interval is Interval => interval !== null && interval !== undefined);
+  const draftProgramSteps = isEditProgramDraft && suggestion?.operation.kind === "edit-program"
+    ? suggestion.operation.operations
+    : [];
+  const draftProgramIntervals = draftProgramSteps.map((step) => ({
+    end: step.end,
+    start: step.start,
+  }));
   const draftProgramInterval = draftProgramIntervals.length > 0 ? {
     start: Math.min(...draftProgramIntervals.map((interval) => interval.start)),
     end: Math.max(...draftProgramIntervals.map((interval) => interval.end)),
   } : null;
+  const draftProgramEquationStep = draftProgramSteps.find((step) => (
+    step.kind === "create-equation" || step.kind === "create-explained-equation"
+  ));
+  const draftProgramEquationTarget = draftProgramEquationStep?.target ?? null;
+  const draftProgramPreviewTarget = draftTransform?.target ?? draftProgramEquationTarget;
+  const draftProgramExplanationText = draftProgramEquationStep?.kind === "create-explained-equation"
+    ? draftProgramEquationStep.explanation.text
+    : null;
 
   function appliedOffsetForAt(objectId: ObjectId, time: number): Point {
     return workingEdits.reduce<Point>((offset, edit) => {
@@ -2408,7 +2418,10 @@ export function App() {
                   onPointerUp={endDrag}
                   style={{
                     ...positionStyle(selectedSet.has(entity.id) ? previewPositionFor(entity.id) : entity.position),
-                    opacity: entity.opacity,
+                    opacity: entity.transactionId === draftProgramRecord?.program.transactionId
+                      && entity.opacity === 0
+                      ? 0.35
+                      : entity.opacity,
                     scale: entity.scale,
                     touchAction: "none",
                   }}
@@ -2485,7 +2498,10 @@ export function App() {
                   onPointerUp={endDrag}
                   style={{
                     ...positionStyle(selectedSet.has(entity.id) ? previewPositionFor(entity.id) : entity.position),
-                    opacity: entity.opacity,
+                    opacity: entity.transactionId === draftProgramRecord?.program.transactionId
+                      && entity.opacity === 0
+                      ? 0.35
+                      : entity.opacity,
                     scale: entity.scale,
                     touchAction: "none",
                   }}
@@ -3237,42 +3253,44 @@ export function App() {
               <section className="border-b border-zinc-800 pb-4 text-xs">
                 <h3 className="text-balance font-medium text-zinc-200">Decomposed operations</h3>
                 <ol className="mt-3 space-y-1.5">
-                  {draftEditProgram.operationKinds.map((kind, index) => {
-                    const interval = kind === "create-motion"
-                      ? draftMotion
-                      : kind === "create-transform"
-                        ? draftTransform?.interval
-                        : draftExplanation?.interval;
-                    const label = kind === "create-motion"
+                  {draftProgramSteps.map((step, index) => {
+                    const interval = { end: step.end, start: step.start };
+                    const label = step.kind === "create-motion"
                       ? "Move selected object"
-                      : kind === "create-transform"
+                      : step.kind === "create-transform"
                         ? `Transform to ${draftTransform?.target.label ?? "MathTex target"}`
-                        : `Show ${draftExplanation?.runtimeId ?? "explanation Text"}`;
+                        : step.kind === "create-explanation"
+                          ? `Show ${draftExplanation?.runtimeId ?? "explanation Text"}`
+                          : step.kind === "create-equation"
+                            ? `Create ${step.target.label}`
+                            : step.kind === "create-explained-equation"
+                              ? `Create ${step.target.label} with explanation`
+                              : `${step.shape} Scene transition`;
                     return (
-                      <li className="flex items-center gap-2 border border-zinc-800 bg-zinc-950 px-2 py-1.5" key={`${kind}-${index}`}>
+                      <li className="flex items-center gap-2 border border-zinc-800 bg-zinc-950 px-2 py-1.5" key={`${step.kind}-${index}`}>
                         <span className="font-mono text-[10px] text-zinc-600">{index + 1}</span>
                         <span className="min-w-0 flex-1 truncate text-zinc-300">{label}</span>
                         <span className="shrink-0 tabular-nums text-[10px] text-zinc-500">
-                          {interval ? `${interval.start.toFixed(2)}–${interval.end.toFixed(2)}s` : "invalid"}
+                          {interval.start.toFixed(2)}–{interval.end.toFixed(2)}s
                         </span>
                       </li>
                     );
                   })}
                 </ol>
-                {draftTransform || draftExplanation ? (
+                {draftProgramPreviewTarget || draftExplanation || draftProgramExplanationText ? (
                   <div className="mt-3 border border-zinc-700 bg-zinc-950 p-3 text-zinc-100">
-                    {draftTransform ? (
+                    {draftProgramPreviewTarget ? (
                       <EquationContent
-                        lines={draftTransform.target.displayLines}
-                        texParts={draftTransform.target.texParts}
+                        lines={draftProgramPreviewTarget.displayLines}
+                        texParts={draftProgramPreviewTarget.texParts}
                       />
                     ) : null}
-                    {draftExplanation ? (
+                    {draftExplanation || draftProgramExplanationText ? (
                       <p className={cn(
                         "text-pretty text-center text-xs leading-5 text-zinc-300",
-                        draftTransform && "mt-3 border-t border-zinc-800 pt-3",
+                        draftProgramPreviewTarget && "mt-3 border-t border-zinc-800 pt-3",
                       )}>
-                        {draftExplanation.text}
+                        {draftExplanation?.text ?? draftProgramExplanationText}
                       </p>
                     ) : null}
                   </div>

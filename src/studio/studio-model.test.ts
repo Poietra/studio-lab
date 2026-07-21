@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { parseEditSuggestionResult } from "../ai/edit-suggestion-schema";
+import { validateEditProgram } from "../ai/edit-program-validation";
 import type {
   CreateExplainedEquationSuggestion,
   EditSuggestionOperation,
@@ -189,6 +190,38 @@ function explainedMaxwellEquationSuggestion(playhead = 5): CreateExplainedEquati
     placement: "center",
     start: playhead,
     target: MAXWELL_TARGET,
+  };
+}
+
+function explainedMaxwellThenTransitionSuggestion(playhead = 5): EditSuggestionOperation {
+  return {
+    anchor: { kind: "playhead", referenceSeconds: playhead },
+    execution: "sequence",
+    kind: "edit-program",
+    operations: [
+      {
+        animation: "fade-in",
+        end: playhead + 1.5,
+        explanation: {
+          placement: "right",
+          text: "電場と磁場の発生と変化を四つの式で表します",
+        },
+        kind: "create-explained-equation",
+        placement: "center",
+        start: playhead,
+        target: MAXWELL_TARGET,
+      },
+      {
+        color: "black",
+        destination: "next-scene",
+        easing: "smooth",
+        end: playhead + 3,
+        kind: "create-scene-transition",
+        shape: "circle",
+        start: playhead + 1.5,
+        style: "cover-reveal",
+      },
+    ],
   };
 }
 
@@ -636,6 +669,60 @@ describe("one ProposedState feeds every Studio projection", () => {
       .toEqual(MAXWELL_TARGET.displayLines);
     expect(projection.canvas.entities.find((entity) => entity.id === explanation.entity.id)?.content?.text)
       .toBe(operation.explanation.text);
+  });
+
+  it("creates an explained Maxwell equation and then transitions Scene in one transaction", () => {
+    const operation = explainedMaxwellThenTransitionSuggestion();
+    expect(operation.kind).toBe("edit-program");
+    if (operation.kind !== "edit-program") return;
+    expect(parseEditSuggestionResult({
+      kind: "suggestion",
+      suggestion: {
+        assumptions: [],
+        confidence: "medium",
+        operation,
+        provider: "remote",
+        summary: "Add Maxwell equations and then transition to the next Scene.",
+      },
+    }).success).toBe(true);
+    expect(validateEditProgram(operation, {
+      capturedPlayhead: 5,
+      objects: [],
+      sceneDuration: 12,
+      selectedObjectIds: [],
+    }).kind).toBe("valid");
+
+    const validation = canonicalize(operation, "maxwell-then-transition", 5);
+    expect(validation.kind).toBe("valid");
+    expect(validation.program.intentCount).toBe(3);
+    expect(validation.program.loweringStatus).toBe("illustrative");
+    expect(validation.program.schedule.mode).toBe("sequence");
+    expect(validation.program.operations.every((candidate) => (
+      candidate.id.startsWith("tx:maxwell-then-transition/")
+    ))).toBe(true);
+    expect(validation.program.operations.some((candidate) => (
+      candidate.kind === "CreateEntity" && candidate.entity.type === "MathTex"
+    ))).toBe(true);
+    expect(validation.program.operations.some((candidate) => (
+      candidate.kind === "CreateEntity" && candidate.entity.type === "Text"
+    ))).toBe(true);
+    expect(validation.program.operations.find((candidate) => (
+      candidate.kind === "InsertSceneBoundary"
+    ))?.interval.start).toBe(7.25);
+
+    const proposed = evaluateWorkingState(createFixtureWorkingState({
+      stagedPrograms: [programRecord(validation.program, validation)],
+    }));
+    const beforeTransition = projectProposedState(proposed, 6.5);
+    expect(beforeTransition.canvas.entities.some((entity) => (
+      entity.present && entity.type === "MathTex" && entity.content?.label === MAXWELL_TARGET.label
+    ))).toBe(true);
+    expect(beforeTransition.canvas.entities.some((entity) => (
+      entity.present && entity.type === "Text" && entity.content?.text?.includes("電場と磁場")
+    ))).toBe(true);
+    expect(proposed.evaluatedScene.eventTrack.events.some((event) => (
+      event.kind === "scene-boundary" && event.at === 7.25
+    ))).toBe(true);
   });
 
   it("accepts an applied created entity as the target of the next direct edit", () => {

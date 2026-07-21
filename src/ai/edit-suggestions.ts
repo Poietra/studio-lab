@@ -169,7 +169,10 @@ export type EditSuggestionLeafOperation =
 export type EditProgramStep =
   | Omit<CreateMotionSuggestion, "anchor">
   | Omit<CreateTransformSuggestion, "anchor">
-  | Omit<CreateExplanationSuggestion, "anchor">;
+  | Omit<CreateExplanationSuggestion, "anchor">
+  | Omit<CreateEquationSuggestion, "anchor">
+  | Omit<CreateExplainedEquationSuggestion, "anchor">
+  | Omit<CreateSceneTransitionSuggestion, "anchor">;
 
 export type EditProgramSuggestion = Readonly<{
   anchor: SuggestionTimeAnchor;

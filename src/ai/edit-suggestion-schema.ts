@@ -96,8 +96,7 @@ export const createExplanationSuggestionSchema = z.object({
   ...createExplanationFields,
 }).superRefine(boundedInterval(0.1));
 
-export const createSceneTransitionSuggestionSchema = z.object({
-  anchor: suggestionTimeAnchorSchema,
+const createSceneTransitionFields = {
   color: z.enum(["black", "sky", "white"]),
   destination: z.literal("next-scene"),
   easing: z.literal("smooth"),
@@ -106,6 +105,11 @@ export const createSceneTransitionSuggestionSchema = z.object({
   shape: z.enum(["circle", "diamond", "hexagon"]),
   start: z.number(),
   style: z.literal("cover-reveal"),
+} as const;
+
+export const createSceneTransitionSuggestionSchema = z.object({
+  anchor: suggestionTimeAnchorSchema,
+  ...createSceneTransitionFields,
 }).superRefine(boundedInterval(0.4));
 
 export const createCameraFocusSuggestionSchema = z.object({
@@ -119,18 +123,21 @@ export const createCameraFocusSuggestionSchema = z.object({
   zoomScale: z.number().min(1).max(2),
 }).superRefine(boundedInterval(0.1));
 
-export const createEquationSuggestionSchema = z.object({
-  anchor: suggestionTimeAnchorSchema,
+const createEquationFields = {
   animation: z.literal("fade-in"),
   end: z.number(),
   kind: z.literal("create-equation"),
   placement: z.enum(["center", "right"]),
   start: z.number(),
   target: mathTexSuggestionTargetSchema,
+} as const;
+
+export const createEquationSuggestionSchema = z.object({
+  anchor: suggestionTimeAnchorSchema,
+  ...createEquationFields,
 }).superRefine(boundedInterval(0.1));
 
-export const createExplainedEquationSuggestionSchema = z.object({
-  anchor: suggestionTimeAnchorSchema,
+const createExplainedEquationFields = {
   animation: z.literal("fade-in"),
   end: z.number(),
   explanation: z.object({
@@ -141,6 +148,11 @@ export const createExplainedEquationSuggestionSchema = z.object({
   placement: z.enum(["center", "right"]),
   start: z.number(),
   target: mathTexSuggestionTargetSchema,
+} as const;
+
+export const createExplainedEquationSuggestionSchema = z.object({
+  anchor: suggestionTimeAnchorSchema,
+  ...createExplainedEquationFields,
 }).superRefine(boundedInterval(0.1));
 
 export const createTextTransformSuggestionSchema = z.object({
@@ -169,6 +181,9 @@ export const editProgramStepSchema = z.discriminatedUnion("kind", [
   z.object(createMotionFields).superRefine(boundedInterval(0.1)),
   z.object(createTransformFields).superRefine(boundedInterval(0.1)),
   z.object(createExplanationFields).superRefine(boundedInterval(0.1)),
+  z.object(createEquationFields).superRefine(boundedInterval(0.1)),
+  z.object(createExplainedEquationFields).superRefine(boundedInterval(0.1)),
+  z.object(createSceneTransitionFields).superRefine(boundedInterval(0.4)),
 ]);
 
 export const editProgramSuggestionSchema = z.object({
@@ -180,6 +195,26 @@ export const editProgramSuggestionSchema = z.object({
   const kinds = program.operations.map((operation) => operation.kind);
   if (new Set(kinds).size !== kinds.length) {
     context.addIssue({ code: "custom", message: "EditProgram leaf kinds must be unique.", path: ["operations"] });
+  }
+  const equationCreationCount = kinds.filter((kind) => (
+    kind === "create-equation" || kind === "create-explained-equation"
+  )).length;
+  if (equationCreationCount > 1) {
+    context.addIssue({
+      code: "custom",
+      message: "EditProgram can contain only one equation-creation macro.",
+      path: ["operations"],
+    });
+  }
+  const semanticIntentCount = program.operations.reduce((count, operation) => (
+    count + (operation.kind === "create-explained-equation" ? 2 : 1)
+  ), 0);
+  if (semanticIntentCount > 3) {
+    context.addIssue({
+      code: "custom",
+      message: "EditProgram supports at most three semantic intents.",
+      path: ["operations"],
+    });
   }
   const first = program.operations[0];
   if (!first) return;

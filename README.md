@@ -28,7 +28,9 @@ equations with a dominant conventional form can be inferred—for example,
 “Newtonの運動方程式” becomes a matchable `F = ma` transform—without asking the
 user for literal LaTeX. Browser previews typeset the canonical MathTex `texParts`
 with KaTeX and safely fall back to display text when an expression is unsupported.
-Magic Edit also previews a bounded camera-focus preset,
+Edit Programs can sequence a new equation or atomic equation-plus-explanation macro
+before a Scene-level cover-and-reveal transition, then Apply or Undo the composite as
+one transaction. Magic Edit also previews a bounded camera-focus preset,
 MathTex-to-explanatory-Text replacement, and new provisional MathTex creation;
 the floating Magic Edit board can be dragged across the workspace, hidden, and
 restored without losing its instruction or draft preview.
