@@ -64,6 +64,12 @@ suggestion result documented in
 are not included in the browser bundle.
 
 Linux development requires the [system packages listed by Tauri](https://v2.tauri.app/start/prerequisites/#linux) before `dev:tauri` or `cargo check` can run.
+When those packages are not available on the host, the Linux build path can be reproduced in a container:
+
+```sh
+docker build --file Dockerfile.linux --tag poietra-studio-lab-linux .
+docker run --rm poietra-studio-lab-linux
+```
 
 The application code under `src/` is shared without shell-specific branches. Native integration must stay behind a small adapter so the comparison measures the shell rather than two different implementations.
 
