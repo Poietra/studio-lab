@@ -85,6 +85,12 @@ UX macros expand before validation:
   `ChangePresence(fade-in, persistent)`.
 - Scene transition → provisional overlay → cover → explicit full-cover Scene
   boundary → reveal/remove.
+- Camera focus → `ChangeCamera(scale)` in parallel with bounded
+  `AnimateProperty(scale)` emphasis on the captured selection.
+- New equation → `CreateEntity(MathTex)` → snapshot position → persistent
+  `ChangePresence(fade-in)`; no selection is required.
+- MathTex-to-words → `TransformContent(replacement-transform)` with a new Text
+  runtime identity and a semantic cross-fade preview.
 - Transform + explanation → `TransformContent` plus the explanation expansion;
   the relation targets the transform's transaction-scoped replacement identity.
 
@@ -122,11 +128,12 @@ cannot retarget it and Apply/Undo cannot split a multi-intent request.
 
 ## Verification and current limits
 
-`pnpm test` covers relative anchors, immutable targets, transform/explanation
+`pnpm test` covers relative anchors (including the recorded “直前” -1 second
+default), immutable targets, transform/explanation
 identity dependencies, three-intent preservation, parallel conflicts,
 transactional Apply/Undo, provisional projection consistency, snapshot relations,
-Scene boundaries, direct motion normalization, shared schemas, and Unknown
-identity rejection.
+Scene boundaries, camera focus, new MathTex creation, MathTex-to-Text replacement,
+direct motion normalization, shared schemas, and Unknown identity rejection.
 
 Source lowering and browser morph rendering remain prototype-grade. Registry
 metadata labels those paths as `supported`, `illustrative`, or `unsupported`;

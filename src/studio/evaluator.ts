@@ -12,6 +12,7 @@ import type {
 } from "./model";
 import { STUDIO_STATE_VERSION } from "./model";
 import { evaluateOperation, type EvaluationDraft } from "./operation-registry";
+import { validateAndScheduleProgram } from "./program-validation";
 
 function cloneScene(scene: RuntimeSceneState): EvaluationDraft {
   return {
@@ -44,19 +45,30 @@ function freezeScene(base: RuntimeSceneState, draft: EvaluationDraft): RuntimeSc
 export function evaluateWorkingState(workingState: WorkingState): ProposedState {
   const programs = [...workingState.appliedPrograms, ...workingState.stagedPrograms];
   const draft = cloneScene(workingState.runtimeSceneState);
+  const evaluatedPrograms: ProgramRecord[] = [];
   for (const record of programs) {
-    if (record.validation.status !== "valid") continue;
-    const operationById = new Map(record.program.operations.map((operation) => [operation.id, operation]));
-    for (const operationId of record.program.schedule.order) {
+    if (record.validation.status !== "valid") {
+      evaluatedPrograms.push(record);
+      continue;
+    }
+    const validation = validateAndScheduleProgram(
+      record.program,
+      freezeScene(workingState.runtimeSceneState, draft),
+    );
+    const evaluatedRecord = programRecord(validation.program, validation);
+    evaluatedPrograms.push(evaluatedRecord);
+    if (validation.kind !== "valid") continue;
+    const operationById = new Map(validation.program.operations.map((operation) => [operation.id, operation]));
+    for (const operationId of validation.program.schedule.order) {
       const operation = operationById.get(operationId);
-      if (operation) evaluateOperation(draft, operation, record.program);
+      if (operation) evaluateOperation(draft, operation, validation.program);
     }
   }
   return {
     base: workingState,
     evaluatedScene: freezeScene(workingState.runtimeSceneState, draft),
-    issues: programs.flatMap((record) => record.validation.issues),
-    programs,
+    issues: evaluatedPrograms.flatMap((record) => record.validation.issues),
+    programs: evaluatedPrograms,
     version: STUDIO_STATE_VERSION,
   };
 }
@@ -114,6 +126,7 @@ export function sampleProposedState(proposedState: ProposedState, time: number):
       const position = channelAt(proposedState.evaluatedScene, entity.id, "position", time);
       const appearance = channelAt(proposedState.evaluatedScene, entity.id, "appearance", time);
       const content = channelAt(proposedState.evaluatedScene, entity.id, "content", time);
+      const scale = channelAt(proposedState.evaluatedScene, entity.id, "scale", time);
       return {
         content: isContent(content) ? content : entity.content,
         id: entity.id,
@@ -121,6 +134,7 @@ export function sampleProposedState(proposedState: ProposedState, time: number):
         position: isPoint(position) ? position : { x: 0, y: 0 },
         present: inLifetime && presence !== false,
         provisional: entity.provisional,
+        scale: typeof scale === "number" ? scale : 1,
         sourceIdentity: entity.sourceIdentity,
         transactionId: entity.transactionId,
         type: entity.type,
@@ -134,7 +148,9 @@ export function projectProposedState(proposedState: ProposedState, time: number)
   const entities = sampleProposedState(proposedState, normalizedTime);
   const transactionIds = proposedState.programs.map((record) => record.program.transactionId).join(",");
   const sampleId = `${proposedState.evaluatedScene.sceneId}@${normalizedTime.toFixed(3)}[${transactionIds}]`;
+  const cameraScale = channelAt(proposedState.evaluatedScene, "camera", "camera", normalizedTime);
   return {
+    camera: { sampleId, scale: typeof cameraScale === "number" ? cameraScale : 1 },
     canvas: { entities, sampleId },
     inspector: { entities, issues: proposedState.issues, sampleId },
     objectList: { entities, sampleId },

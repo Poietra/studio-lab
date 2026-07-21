@@ -185,12 +185,14 @@ export type ProjectedEntity = Readonly<{
   position: Point;
   present: boolean;
   provisional: boolean;
+  scale: number;
   sourceIdentity: Knowledge<string>;
   transactionId?: string;
   type: string;
 }>;
 
 export type ProposedStateProjection = Readonly<{
+  camera: Readonly<{ sampleId: string; scale: number }>;
   canvas: Readonly<{ entities: readonly ProjectedEntity[]; sampleId: string }>;
   inspector: Readonly<{
     entities: readonly ProjectedEntity[];

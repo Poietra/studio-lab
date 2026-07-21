@@ -74,8 +74,9 @@ export type TransformContentOperation = OperationBase & Readonly<{
   kind: "TransformContent";
   replacement: EntityContent;
   sourceEntityId: string;
-  strategy: "transform-matching-tex";
+  strategy: "replacement-transform" | "transform-matching-tex";
   targetEntityId: string;
+  targetType?: string;
 }>;
 
 export type SetRelationOperation = OperationBase & Readonly<{

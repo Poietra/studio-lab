@@ -1,6 +1,9 @@
 import type {
+  CreateCameraFocusSuggestion,
+  CreateEquationSuggestion,
   CreateExplanationSuggestion,
   CreateSceneTransitionSuggestion,
+  CreateTextTransformSuggestion,
   CreateTransformSuggestion,
   EditProgramStep,
   EditSuggestionOperation,
@@ -63,6 +66,110 @@ function transformOperation(
     sourceEntityId: operation.sourceObjectId,
     targetEntityId,
   };
+}
+
+function textTransformOperation(
+  operation: CreateTextTransformSuggestion,
+  transactionId: string,
+  origin: OperationOrigin,
+) {
+  return {
+    dependsOn: [],
+    id: operationId(transactionId, "transform-to-text"),
+    interval: { end: operation.end, start: operation.start },
+    kind: "TransformContent",
+    provenance: provenance(origin, [operation.strategy, "MathTex to explanatory Text"]),
+    replacement: {
+      displayLines: [operation.text],
+      label: "explanatory text",
+      text: operation.text,
+    },
+    sourceEntityId: operation.sourceObjectId,
+    strategy: operation.strategy,
+    targetEntityId: provisionalEntityId(transactionId, "text-transform-target"),
+    targetType: "Text",
+  } satisfies CanonicalEditOperation;
+}
+
+function equationOperations(
+  operation: CreateEquationSuggestion,
+  transactionId: string,
+  origin: OperationOrigin,
+) {
+  const entityId = provisionalEntityId(transactionId, "new-equation");
+  const createId = operationId(transactionId, "create-equation");
+  const positionId = operationId(transactionId, "position-equation");
+  const presenceId = operationId(transactionId, "show-equation");
+  return [
+    {
+      dependsOn: [],
+      entity: {
+        content: {
+          displayLines: operation.target.displayLines,
+          label: operation.target.label,
+          texParts: operation.target.texParts,
+        },
+        id: entityId,
+        lifetime: { end: null, start: operation.start },
+        type: "MathTex",
+      },
+      id: createId,
+      interval: { end: operation.start, start: operation.start },
+      kind: "CreateEntity",
+      provenance: provenance(origin, ["CreateEquation macro", operation.target.label]),
+    },
+    {
+      dependsOn: [createId],
+      entityId,
+      id: positionId,
+      interval: { end: operation.start, start: operation.start },
+      key: "position",
+      kind: "SetProperty",
+      provenance: provenance(origin, [`${operation.placement} placement`, "visible preview default"]),
+      value: operation.placement === "right" ? { x: 480, y: 180 } : { x: 320, y: 180 },
+    },
+    {
+      dependsOn: [positionId],
+      effect: "fade-in",
+      entityId,
+      id: presenceId,
+      interval: { end: operation.end, start: operation.start },
+      kind: "ChangePresence",
+      persistent: true,
+      provenance: provenance(origin, [operation.animation, "persistent after interval"]),
+    },
+  ] satisfies readonly CanonicalEditOperation[];
+}
+
+function cameraFocusOperations(
+  operation: CreateCameraFocusSuggestion,
+  transactionId: string,
+  origin: OperationOrigin,
+) {
+  const cameraId = operationId(transactionId, "camera-zoom");
+  return [
+    {
+      dependsOn: [],
+      id: cameraId,
+      interval: { end: operation.end, start: operation.start },
+      kind: "ChangeCamera",
+      property: "scale",
+      provenance: provenance(origin, ["bounded camera focus", `${operation.zoomScale}x zoom`]),
+      value: operation.zoomScale,
+    },
+    ...operation.targetObjectIds.map((entityId, index): CanonicalEditOperation => ({
+      dependsOn: [],
+      easing: operation.easing,
+      entityId,
+      from: 1,
+      id: operationId(transactionId, `emphasize-${index}`),
+      interval: { end: operation.end, start: operation.start },
+      key: "scale",
+      kind: "AnimateProperty",
+      provenance: provenance(origin, ["important region", `${operation.emphasisScale}x emphasis`]),
+      to: operation.emphasisScale,
+    })),
+  ] satisfies readonly CanonicalEditOperation[];
 }
 
 function explanationOperations(
@@ -241,6 +348,12 @@ export function canonicalizeSuggestionProgram(
   let operations: readonly CanonicalEditOperation[];
   if (operation.kind === "create-scene-transition") {
     operations = transitionOperations(operation, context.transactionId, context.origin);
+  } else if (operation.kind === "create-camera-focus") {
+    operations = cameraFocusOperations(operation, context.transactionId, context.origin);
+  } else if (operation.kind === "create-equation") {
+    operations = equationOperations(operation, context.transactionId, context.origin);
+  } else if (operation.kind === "create-text-transform") {
+    operations = [textTransformOperation(operation, context.transactionId, context.origin)];
   } else {
     const steps = operationSteps(operation);
     const transforms = new Map<string, Readonly<{ operationId: string; targetEntityId: string }>>();
@@ -254,18 +367,35 @@ export function canonicalizeSuggestionProgram(
     operations = steps.flatMap((step, index): readonly CanonicalEditOperation[] => {
       if (step.kind === "create-motion") return [motionOperation(step, context.transactionId, context.origin, index)];
       if (step.kind === "create-transform") return [transformByIndex.get(index)!.canonical];
-      return explanationOperations(step, context.transactionId, context.origin, index, transforms);
+      if (step.kind === "create-explanation") {
+        return explanationOperations(step, context.transactionId, context.origin, index, transforms);
+      }
+      return [];
     });
   }
 
   const program: CanonicalEditProgram = {
     anchor: resolution.anchor,
     intentCount: operation.kind === "edit-program" ? operation.operations.length : 1,
-    loweringStatus: operation.kind === "create-scene-transition" ? "illustrative" : "supported",
+    loweringStatus: ["create-camera-focus", "create-equation", "create-scene-transition", "create-text-transform"].includes(operation.kind)
+      ? "illustrative"
+      : "supported",
     operations,
     provenance: provenance(context.origin, [operation.kind]),
-    requestedExecution: operation.kind === "edit-program" ? operation.execution : "sequence",
-    schedule: { edges: [], mode: operation.kind === "edit-program" ? operation.execution : "sequence", order: operations.map((entry) => entry.id) },
+    requestedExecution: operation.kind === "edit-program"
+      ? operation.execution
+      : operation.kind === "create-camera-focus"
+        ? "parallel"
+        : "sequence",
+    schedule: {
+      edges: [],
+      mode: operation.kind === "edit-program"
+        ? operation.execution
+        : operation.kind === "create-camera-focus"
+          ? "parallel"
+          : "sequence",
+      order: operations.map((entry) => entry.id),
+    },
     transactionId: context.transactionId,
     version: EDIT_OPERATION_VERSION,
   };

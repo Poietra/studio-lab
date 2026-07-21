@@ -11,7 +11,7 @@ import {
   createDirectManipulationModifyMotionProgram,
   createDirectManipulationMotionProgram,
 } from "./suggestion-program";
-import { applyStagedPrograms, stageProgram, undoLastAppliedProgram } from "./transactions";
+import { applyStagedPrograms, stageProgram, undoLastAppliedProgram, withoutTransaction } from "./transactions";
 
 function fixtureSuggestion(
   prompt: string,
@@ -68,6 +68,58 @@ describe("Studio time and transaction invariants", () => {
     expect(parseEditSuggestionResult(remoteResult).success).toBe(true);
   });
 
+  it("rejects remote values that the browser would otherwise clamp to a different operation", () => {
+    const operation = fixtureSuggestion("右に96px動かして");
+    expect(operation.kind).toBe("create-motion");
+    if (operation.kind !== "create-motion") return;
+    const remoteResult = {
+      kind: "suggestion" as const,
+      suggestion: {
+        assumptions: [],
+        confidence: "medium" as const,
+        operation: {
+          ...operation,
+          delta: { x: 221, y: 0 },
+        },
+        provider: "remote" as const,
+        summary: "out-of-bounds remote motion",
+      },
+    };
+    expect(parseEditSuggestionResult(remoteResult).success).toBe(false);
+  });
+
+  it("normalizes bounded model strings before canonical evaluation", () => {
+    const operation = fixtureSuggestion("マクスウェル方程式に変形して", { playhead: 5 });
+    expect(operation.kind).toBe("create-transform");
+    if (operation.kind !== "create-transform") return;
+    const parsed = parseEditSuggestionResult({
+      kind: "suggestion",
+      suggestion: {
+        assumptions: [],
+        confidence: "medium",
+        operation: {
+          ...operation,
+          target: {
+            ...operation.target,
+            displayLines: ["  F = ma  "],
+            label: "  Newton's equation  ",
+            texParts: [" F ", " = ", " m ", " a "],
+          },
+        },
+        provider: "remote",
+        summary: "normalized target",
+      },
+    });
+    expect(parsed.success).toBe(true);
+    if (!parsed.success || parsed.data.kind !== "suggestion") return;
+    const normalized = parsed.data.suggestion.operation;
+    expect(normalized.kind).toBe("create-transform");
+    if (normalized.kind !== "create-transform") return;
+    expect(normalized.target.displayLines).toEqual(["F = ma"]);
+    expect(normalized.target.label).toBe("Newton's equation");
+    expect(normalized.target.texParts).toEqual(["F", "=", "m", "a"]);
+  });
+
   it("captures a past-relative anchor once and keeps its evidence when the playhead moves", () => {
     const operation = fixtureSuggestion("5秒前からマクスウェル方程式に文字を出現させて解説して");
     const validation = canonicalize(operation);
@@ -109,6 +161,18 @@ describe("Studio time and transaction invariants", () => {
     expect(applied.appliedPrograms[0].program.transactionId).toBe("atomic-program");
     const undone = undoLastAppliedProgram(applied);
     expect(undone.appliedPrograms).toHaveLength(0);
+  });
+
+  it("removes only legacy projections owned by the canonical transaction being undone", () => {
+    const records = [
+      { id: "older-a", transactionId: "transaction-a" },
+      { id: "newer-b", transactionId: "transaction-b" },
+      { id: "older-a-second-leaf", transactionId: "transaction-a" },
+    ];
+    expect(withoutTransaction(records, "transaction-b").map((record) => record.id)).toEqual([
+      "older-a",
+      "older-a-second-leaf",
+    ]);
   });
 });
 
@@ -223,9 +287,163 @@ describe("canonical operation expansion and DAG validation", () => {
     expect(executionIssues).toHaveLength(1);
     expect(executionIssues[0].message).toContain("Choose their order");
   });
+
+  it("does not reverse a dependency or add a cycle when both operations read and write one channel", () => {
+    const base = canonicalize(
+      fixtureSuggestion("右に96px動かして", { playhead: 5 }),
+      "read-write-conflict",
+      5,
+    ).program;
+    const first = base.operations[0];
+    expect(first.kind).toBe("CreateMotion");
+    if (first.kind !== "CreateMotion") return;
+    const second = {
+      ...first,
+      delta: { x: 24, y: 0 },
+      id: operationId("read-write-conflict", "motion-second"),
+    };
+    const validation = validateAndScheduleProgram({
+      ...base,
+      intentCount: 2,
+      operations: [first, second],
+      requestedExecution: "parallel",
+    }, STUDIO_FIXTURE_SCENE);
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues.filter((issue) => issue.field === "execution")).toHaveLength(1);
+    expect(validation.issues.some((issue) => issue.code === "cycle")).toBe(false);
+    expect(validation.program.schedule.edges).toContainEqual({
+      from: first.id,
+      reason: "write-conflict",
+      to: second.id,
+    });
+    expect(validation.program.schedule.edges).not.toContainEqual(expect.objectContaining({
+      from: second.id,
+      to: first.id,
+    }));
+  });
+
+  it("evaluates a ModifyMotion gesture into the shared position channel", () => {
+    const validation = createDirectManipulationModifyMotionProgram({
+      capturedPlayhead: 5,
+      controlOffset: { x: 0, y: -32 },
+      interval: { end: 7, start: 4 },
+      motionId: "move-equation",
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "modify-motion-projection",
+    });
+    expect(validation.kind).toBe("valid");
+    const proposed = evaluateWorkingState(createFixtureWorkingState({
+      stagedPrograms: [programRecord(validation.program, validation)],
+    }));
+    const equation = projectProposedState(proposed, 5.5).canvas.entities.find((entity) => entity.id === "equation_1");
+    expect(equation?.position).toEqual({ x: 352, y: 120 });
+  });
+
+  it("revalidates later programs against identities changed by earlier programs", () => {
+    const firstOperation = fixtureSuggestion("マクスウェル方程式に変形して", { playhead: 5 });
+    expect(firstOperation.kind).toBe("create-transform");
+    if (firstOperation.kind !== "create-transform") return;
+    const first = canonicalize(firstOperation, "first-transform", 5);
+    const secondOperation = {
+      ...firstOperation,
+      anchor: { kind: "absolute" as const, seconds: 7 },
+      end: 8.5,
+      start: 7,
+    };
+    const second = canonicalize(secondOperation, "stale-second-transform", 5);
+    expect(first.kind).toBe("valid");
+    expect(second.kind).toBe("valid");
+    const proposed = evaluateWorkingState(createFixtureWorkingState({
+      stagedPrograms: [
+        programRecord(first.program, first),
+        programRecord(second.program, second),
+      ],
+    }));
+    expect(proposed.programs[0].validation.status).toBe("valid");
+    expect(proposed.programs[1].validation.status).toBe("invalid");
+    expect(proposed.programs[1].validation.issues.some((issue) => issue.code === "lifetime-unknown")).toBe(true);
+    expect(proposed.evaluatedScene.objectGraph.entities).not.toHaveProperty(
+      "tx:stale-second-transform/entity:transform-target-0",
+    );
+  });
 });
 
 describe("one ProposedState feeds every Studio projection", () => {
+  it("evaluates camera focus and selected-object emphasis through shared channels", () => {
+    const operation = fixtureSuggestion("カメラを寄せながら重要部分を強調して", { playhead: 4.42 });
+    expect(operation.kind).toBe("create-camera-focus");
+    if (operation.kind !== "create-camera-focus") return;
+    const validation = canonicalize(operation, "camera-focus", 4.42);
+    expect(validation.kind).toBe("valid");
+    const proposed = evaluateWorkingState(createFixtureWorkingState({
+      stagedPrograms: [programRecord(validation.program, validation)],
+    }));
+    const projection = projectProposedState(proposed, operation.end);
+    const equation = projection.canvas.entities.find((entity) => entity.id === "equation_1");
+    expect(projection.camera.scale).toBeCloseTo(1.35);
+    expect(equation?.scale).toBeCloseTo(1.12);
+    expect(projection.camera.sampleId).toBe(projection.canvas.sampleId);
+  });
+
+  it("resolves immediately-before once and replaces MathTex with explanatory Text", () => {
+    const operation = fixtureSuggestion("直前から説明を開始して文字に変形する", { playhead: 4.42 });
+    expect(operation.kind).toBe("create-text-transform");
+    if (operation.kind !== "create-text-transform") return;
+    const validation = canonicalize(operation, "text-transform", 4.42);
+    expect(validation.kind).toBe("valid");
+    expect(validation.program.anchor.source).toEqual({
+      kind: "playhead-offset",
+      offsetSeconds: -1,
+      referenceSeconds: 4.42,
+    });
+    expect(validation.program.anchor.resolvedSeconds).toBeCloseTo(3.42);
+    const proposed = evaluateWorkingState(createFixtureWorkingState({
+      stagedPrograms: [programRecord(validation.program, validation)],
+    }));
+    const midpoint = projectProposedState(proposed, (operation.start + operation.end) / 2);
+    const midpointReplacement = midpoint.canvas.entities.find((entity) => (
+      entity.present
+      && entity.type === "Text"
+      && entity.sourceIdentity.kind === "known"
+      && entity.sourceIdentity.value === "equation"
+    ));
+    expect(midpointReplacement?.opacity).toBeGreaterThan(0);
+    expect(midpointReplacement?.opacity).toBeLessThan(1);
+    const projection = projectProposedState(proposed, operation.end);
+    const replacement = projection.canvas.entities.find((entity) => (
+      entity.present
+      && entity.type === "Text"
+      && entity.sourceIdentity.kind === "known"
+      && entity.sourceIdentity.value === "equation"
+    ));
+    expect(replacement?.content?.text).toContain("この式の意味");
+    expect(projection.canvas.entities.find((entity) => entity.id === "equation_1")?.present).toBe(false);
+  });
+
+  it("creates a visible provisional MathTex without requiring selection", () => {
+    const operation = fixtureSuggestion("あたらしく数式を書いて", {
+      playhead: 5,
+      selectedObjectIds: [],
+    });
+    expect(operation.kind).toBe("create-equation");
+    if (operation.kind !== "create-equation") return;
+    expect(operation.target.displayLines).toEqual(["F = ma"]);
+    const validation = canonicalize(operation, "new-equation", 5);
+    expect(validation.kind).toBe("valid");
+    const proposed = evaluateWorkingState(createFixtureWorkingState({
+      editorContext: { ...createFixtureWorkingState().editorContext, playhead: 5, selection: [] },
+      stagedPrograms: [programRecord(validation.program, validation)],
+    }));
+    const projection = projectProposedState(proposed, operation.end);
+    const equation = projection.canvas.entities.find((entity) => (
+      entity.present && entity.provisional && entity.type === "MathTex"
+    ));
+    expect(equation?.content?.displayLines).toEqual(["F = ma"]);
+    expect(equation?.position).toEqual({ x: 480, y: 180 });
+    expect(projection.objectList.entities.find((entity) => entity.id === equation?.id)).toBe(equation);
+    expect(projection.timeline.events.some((event) => event.transactionId === "new-equation")).toBe(true);
+  });
+
   it("shows a provisional Text consistently on canvas, object list, timeline and playback", () => {
     const validation = canonicalize(fixtureSuggestion(
       "5秒前からマクスウェル方程式に文字を出現させて解説して",

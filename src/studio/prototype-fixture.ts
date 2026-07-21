@@ -35,6 +35,7 @@ export type AppliedEdit = {
   planId: PlanId;
   stepIndex?: number;
   start: number;
+  transactionId?: string;
 };
 
 export type TransformEdit = {
@@ -49,6 +50,7 @@ export type TransformEdit = {
   stepIndex?: number;
   target: CreateTransformSuggestion["target"];
   targetRuntimeId: string;
+  transactionId?: string;
 };
 
 export type ExplanationEdit = {
@@ -62,6 +64,7 @@ export type ExplanationEdit = {
   stepIndex?: number;
   targetObjectId: ObjectId;
   text: string;
+  transactionId?: string;
 };
 
 export type SceneTransitionEdit = {
@@ -74,6 +77,7 @@ export type SceneTransitionEdit = {
   runtimeId: string;
   shape: CreateSceneTransitionSuggestion["shape"];
   style: "cover-reveal";
+  transactionId?: string;
 };
 
 export type DraftEditProgram = {

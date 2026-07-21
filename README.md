@@ -26,7 +26,9 @@ also create explanatory `Text` beside a selected object with `FadeIn`, including
 an explicit playhead-relative anchor such as “5秒前”. Named
 equations with a dominant conventional form can be inferred—for example,
 “Newtonの運動方程式” becomes a matchable `F = ma` transform—without asking the
-user for literal LaTeX.
+user for literal LaTeX. The composer also previews a bounded camera-focus preset,
+MathTex-to-explanatory-Text replacement, and new provisional MathTex creation;
+the floating composer itself can be dragged within the rendered frame.
 
 Cross-cutting findings from that screen are maintained separately in the
 [Edit operation model memo](docs/edit-operation-model.md). It records the emerging
@@ -55,7 +57,7 @@ the live-model experiment, set `VITE_POIETRA_AI_ENDPOINT` to
 `/api/ai/edit-suggestions`, place the OpenAI credential in the ignored
 `.openai-key` file, and optionally select the server-side model with
 `POIETRA_OPENAI_MODEL`. The Vite development server uses the Responses API and
-returns the same closed `CreateMotion | CreateTransform | CreateExplanation | CreateSceneTransition | EditProgram`
+returns the same closed `CreateMotion | CreateTransform | CreateExplanation | CreateCameraFocus | CreateEquation | CreateTextTransform | CreateSceneTransition | EditProgram`
 suggestion result documented in
 `src/ai/edit-suggestions.ts`. Provider credentials never use a `VITE_` variable and
 are not included in the browser bundle.

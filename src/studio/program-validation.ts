@@ -188,6 +188,7 @@ export function validateAndScheduleProgram(
       const writeConflict = [...leftWrites].find((key) => rightWrites.has(key));
       const leftWriteRead = [...leftWrites].find((key) => rightReads.has(key));
       const rightWriteRead = [...rightWrites].find((key) => leftReads.has(key));
+      let hasParallelConflictIssue = false;
       if (writeConflict) {
         edges.push({ from: left.id, reason: "write-conflict", to: right.id });
         if (input.requestedExecution === "parallel") {
@@ -198,15 +199,17 @@ export function validateAndScheduleProgram(
             operationId: right.id,
             severity: "error",
           });
+          hasParallelConflictIssue = true;
         }
       }
-      for (const conflict of [leftWriteRead, rightWriteRead]) {
-        if (!conflict) continue;
+      for (const { conflict, from, to } of [
+        { conflict: leftWriteRead, from: left.id, to: right.id },
+        { conflict: rightWriteRead, from: right.id, to: left.id },
+      ]) {
+        if (!conflict || conflict === writeConflict) continue;
         const reason = conflict.endsWith("/identity") ? "identity" as const : "read-after-write" as const;
-        const from = conflict === rightWriteRead ? right.id : left.id;
-        const to = conflict === rightWriteRead ? left.id : right.id;
         edges.push({ from, reason, to });
-        if (input.requestedExecution === "parallel" && reason === "read-after-write") {
+        if (input.requestedExecution === "parallel" && reason === "read-after-write" && !hasParallelConflictIssue) {
           issues.push({
             code: "parallel-conflict",
             field: "execution",
@@ -214,6 +217,7 @@ export function validateAndScheduleProgram(
             operationId: to,
             severity: "error",
           });
+          hasParallelConflictIssue = true;
         }
       }
     }

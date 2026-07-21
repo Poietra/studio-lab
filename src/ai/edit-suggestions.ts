@@ -101,7 +101,42 @@ export type CreateSceneTransitionSuggestion = {
   style: "cover-reveal";
 };
 
+export type CreateCameraFocusSuggestion = {
+  anchor: SuggestionTimeAnchor;
+  easing: "smooth";
+  emphasisScale: number;
+  end: number;
+  kind: "create-camera-focus";
+  start: number;
+  targetObjectIds: readonly string[];
+  zoomScale: number;
+};
+
+export type CreateEquationSuggestion = {
+  anchor: SuggestionTimeAnchor;
+  animation: "fade-in";
+  end: number;
+  kind: "create-equation";
+  placement: "center" | "right";
+  start: number;
+  target: MathTexSuggestionTarget;
+};
+
+export type CreateTextTransformSuggestion = {
+  anchor: SuggestionTimeAnchor;
+  easing: "smooth";
+  end: number;
+  kind: "create-text-transform";
+  sourceObjectId: string;
+  start: number;
+  strategy: "replacement-transform";
+  text: string;
+};
+
 export type EditSuggestionLeafOperation =
+  | CreateCameraFocusSuggestion
+  | CreateEquationSuggestion
+  | CreateTextTransformSuggestion
   | CreateMotionSuggestion
   | CreateTransformSuggestion
   | CreateExplanationSuggestion
@@ -179,6 +214,14 @@ type ParsedAnchor = {
 };
 
 function parseAnchor(prompt: string, fallback: number, sceneDuration: number): ParsedAnchor | null {
+  if (includesAny(prompt, ["直前", "immediately before", "just before"])) {
+    const start = fallback - 1;
+    if (start < 0 || start > sceneDuration) return null;
+    return {
+      anchor: { kind: "playhead-offset", offsetSeconds: -1, referenceSeconds: fallback },
+      start,
+    };
+  }
   const japaneseRelative = prompt.match(/(\d+(?:\.\d+)?)\s*秒(?:前|まえ)/);
   const englishRelative = prompt.match(/(\d+(?:\.\d+)?)\s*(?:s|sec(?:ond)?s?)\s*(?:before|earlier|ago)/i);
   const relative = parseNumber(japaneseRelative?.[1] ?? englishRelative?.[1]);
@@ -282,6 +325,36 @@ function asksForSceneTransition(prompt: string) {
   ]);
 }
 
+function asksForCameraFocus(prompt: string) {
+  return includesAny(prompt, ["camera", "zoom", "カメラ", "ズーム", "寄せ"])
+    && includesAny(prompt, ["focus", "emphasize", "highlight", "important", "強調", "重要", "注目"]);
+}
+
+function asksForNewEquation(prompt: string) {
+  return includesAny(prompt, [
+    "add equation",
+    "create equation",
+    "new equation",
+    "write equation",
+    "あたらしく数式",
+    "新しく数式",
+    "新しい数式",
+    "数式を書",
+    "数式を追加",
+  ]);
+}
+
+function asksForTextTransform(prompt: string) {
+  return includesAny(prompt, [
+    "transform into text",
+    "transform into words",
+    "文字に変形",
+    "文字へ変形",
+    "テキストに変形",
+    "文章に変形",
+  ]);
+}
+
 function transitionShape(prompt: string): CreateSceneTransitionSuggestion["shape"] {
   if (includesAny(prompt, ["circle", "circular", "円", "丸"])) return "circle";
   if (includesAny(prompt, ["hexagon", "hexagonal", "六角"])) return "hexagon";
@@ -300,7 +373,6 @@ function unsupportedIntent(prompt: string) {
     { label: "scale", terms: ["scale", "resize", "拡大", "縮小"] },
     { label: "opacity", terms: ["opacity", "transparent", "透明"] },
     { label: "deletion", terms: ["delete", "remove", "消して", "削除"] },
-    { label: "camera work", terms: ["camera", "zoom", "カメラ", "ズーム"] },
   ] as const;
   return intents.find((intent) => includesAny(prompt, intent.terms))?.label ?? null;
 }
@@ -334,6 +406,11 @@ export function suggestEditWithFixture(request: EditSuggestionRequest): EditSugg
     };
   }
   const { anchor, start } = parsedAnchor;
+  const namedTarget = includesAny(prompt, ["maxwell", "マクスウェル"])
+    ? MAXWELL_TARGET
+    : includesAny(prompt, ["newton", "ニュートン"])
+      ? NEWTON_TARGET
+      : null;
   if (asksForSceneTransition(prompt)) {
     const end = Math.min(start + parseDuration(prompt), request.sceneDuration);
     if (end - start < 0.4) {
@@ -369,6 +446,37 @@ export function suggestEditWithFixture(request: EditSuggestionRequest): EditSugg
       },
     };
   }
+  if (asksForNewEquation(prompt)) {
+    const end = Math.min(start + Math.min(parseDuration(prompt), 1), request.sceneDuration);
+    if (end - start < 0.1) {
+      return { kind: "clarification", message: "There is not enough Scene time remaining to create the equation." };
+    }
+    const target = namedTarget ?? NEWTON_TARGET;
+    return {
+      kind: "suggestion",
+      suggestion: {
+        assumptions: [
+          namedTarget
+            ? `${target.label} is used as the requested conventional equation.`
+            : "No formula was supplied, so F = ma is used as a visible, reversible preview default.",
+          "A new MathTex entity is created on the right side of the frame; the existing equation is not replaced.",
+          "The new entity persists after FadeIn and is applied or undone as one transaction.",
+        ],
+        confidence: "medium",
+        operation: {
+          anchor,
+          animation: "fade-in",
+          end,
+          kind: "create-equation",
+          placement: "right",
+          start,
+          target,
+        },
+        provider: "fixture",
+        summary: `Create a new ${target.label} MathTex entity from ${start.toFixed(2)}s.`,
+      },
+    };
+  }
   const selectedObjects = request.objects.filter((object) => request.selectedObjectIds.includes(object.id));
   const visibleSelection = selectedObjects
     .map((object) => ({ object, lifetime: lifetimeAt(object, start) }))
@@ -381,11 +489,72 @@ export function suggestEditWithFixture(request: EditSuggestionRequest): EditSugg
     };
   }
 
-  const namedTarget = includesAny(prompt, ["maxwell", "マクスウェル"])
-    ? MAXWELL_TARGET
-    : includesAny(prompt, ["newton", "ニュートン"])
-      ? NEWTON_TARGET
-      : null;
+  if (asksForCameraFocus(prompt)) {
+    const latestEnd = Math.min(request.sceneDuration, ...visibleSelection.map((entry) => entry.lifetime.end));
+    const end = Math.min(start + parseDuration(prompt), latestEnd);
+    if (end - start < 0.1) {
+      return { kind: "clarification", message: "There is not enough visible time remaining for the camera focus." };
+    }
+    return {
+      kind: "suggestion",
+      suggestion: {
+        assumptions: [
+          "The camera uses a bounded 1.35× zoom while the selected visible object scales to 1.12×.",
+          "The selected object is the important region because no smaller semantic sub-part is available in the fixture.",
+          "Camera and emphasis channels share one captured interval and one Apply/Undo boundary.",
+        ],
+        confidence: "medium",
+        operation: {
+          anchor,
+          easing: "smooth",
+          emphasisScale: 1.12,
+          end,
+          kind: "create-camera-focus",
+          start,
+          targetObjectIds: visibleSelection.map((entry) => entry.object.id),
+          zoomScale: 1.35,
+        },
+        provider: "fixture",
+        summary: `Focus the camera and emphasize ${visibleSelection.map((entry) => entry.object.displayName).join(", ")} from ${start.toFixed(2)}s.`,
+      },
+    };
+  }
+
+  if (asksForTextTransform(prompt)) {
+    const source = visibleSelection.find((entry) => entry.object.type === "MathTex");
+    if (!source) {
+      return { kind: "clarification", message: "Select one visible MathTex object to transform into explanatory text." };
+    }
+    const end = Math.min(start + parseDuration(prompt), source.lifetime.end, request.sceneDuration);
+    if (end - start < 0.1) {
+      return { kind: "clarification", message: "There is not enough visible time remaining for the text transform." };
+    }
+    const text = explanationText(prompt);
+    return {
+      kind: "suggestion",
+      suggestion: {
+        assumptions: [
+          "“直前” is resolved once as one second before the captured playhead.",
+          "The selected MathTex is replaced by a Text runtime identity containing the explanatory sentence.",
+          "The browser preview is semantic; final glyph-level rendering remains illustrative.",
+        ],
+        confidence: "medium",
+        operation: {
+          anchor,
+          easing: "smooth",
+          end,
+          kind: "create-text-transform",
+          sourceObjectId: source.object.id,
+          start,
+          strategy: "replacement-transform",
+          text,
+        },
+        provider: "fixture",
+        summary: `Transform ${source.object.displayName} into explanatory Text from ${start.toFixed(2)}s.`,
+      },
+    };
+  }
+
   const delta = parseDelta(prompt);
   const wantsExplanation = asksForExplanation(prompt);
 

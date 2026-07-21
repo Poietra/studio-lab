@@ -1,7 +1,27 @@
 import { z } from "zod";
 
-const pointSchema = z.object({ x: z.number(), y: z.number() });
+const motionDeltaSchema = z.object({
+  x: z.number().min(-220).max(220),
+  y: z.number().min(-100).max(100),
+});
+const motionControlOffsetSchema = z.object({
+  x: z.number().min(-160).max(160),
+  y: z.number().min(-100).max(100),
+});
 const intervalSchema = z.object({ end: z.number(), start: z.number() });
+
+function boundedInterval(minimumDuration: number) {
+  return (value: Readonly<{ end: number; start: number }>, context: z.RefinementCtx) => {
+    const duration = value.end - value.start;
+    if (duration < minimumDuration || duration > 5) {
+      context.addIssue({
+        code: "custom",
+        message: `Duration must be between ${minimumDuration} and 5 seconds.`,
+        path: ["end"],
+      });
+    }
+  };
+}
 
 export const suggestionTimeAnchorSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("absolute"), seconds: z.number() }),
@@ -14,25 +34,36 @@ export const suggestionTimeAnchorSchema = z.discriminatedUnion("kind", [
 ]);
 
 export const mathTexSuggestionTargetSchema = z.object({
-  displayLines: z.array(z.string()).min(1).max(4),
+  displayLines: z.array(z.string().trim().min(1).max(120)).min(1).max(4),
   kind: z.literal("mathtex"),
-  label: z.string().min(1).max(120),
-  texParts: z.array(z.string().min(1)).min(1).max(16),
+  label: z.string().trim().min(1).max(120),
+  texParts: z.array(z.string().trim().min(1).max(2_000)).min(1).max(16),
+}).superRefine((target, context) => {
+  if (target.texParts.reduce((length, part) => length + part.length, 0) > 2_000) {
+    context.addIssue({
+      code: "custom",
+      message: "MathTex arguments must contain at most 2,000 characters in total.",
+      path: ["texParts"],
+    });
+  }
 });
 
-export const createMotionSuggestionSchema = z.object({
-  anchor: suggestionTimeAnchorSchema,
-  controlOffset: pointSchema,
-  delta: pointSchema,
+const createMotionFields = {
+  controlOffset: motionControlOffsetSchema,
+  delta: motionDeltaSchema,
   easing: z.literal("smooth"),
   end: z.number(),
   kind: z.literal("create-motion"),
   start: z.number(),
   targetObjectIds: z.array(z.string()).min(1),
-});
+} as const;
 
-export const createTransformSuggestionSchema = z.object({
+export const createMotionSuggestionSchema = z.object({
   anchor: suggestionTimeAnchorSchema,
+  ...createMotionFields,
+}).superRefine(boundedInterval(0.1));
+
+const createTransformFields = {
   easing: z.literal("smooth"),
   end: z.number(),
   identityAfter: z.literal("target-replaces-source"),
@@ -42,10 +73,14 @@ export const createTransformSuggestionSchema = z.object({
   start: z.number(),
   strategy: z.literal("transform-matching-tex"),
   target: mathTexSuggestionTargetSchema,
-});
+} as const;
 
-export const createExplanationSuggestionSchema = z.object({
+export const createTransformSuggestionSchema = z.object({
   anchor: suggestionTimeAnchorSchema,
+  ...createTransformFields,
+}).superRefine(boundedInterval(0.1));
+
+const createExplanationFields = {
   animation: z.literal("fade-in"),
   end: z.number(),
   kind: z.literal("create-explanation"),
@@ -54,7 +89,12 @@ export const createExplanationSuggestionSchema = z.object({
   start: z.number(),
   targetObjectId: z.string(),
   text: z.string().trim().min(1).max(240),
-});
+} as const;
+
+export const createExplanationSuggestionSchema = z.object({
+  anchor: suggestionTimeAnchorSchema,
+  ...createExplanationFields,
+}).superRefine(boundedInterval(0.1));
 
 export const createSceneTransitionSuggestionSchema = z.object({
   anchor: suggestionTimeAnchorSchema,
@@ -66,9 +106,44 @@ export const createSceneTransitionSuggestionSchema = z.object({
   shape: z.enum(["circle", "diamond", "hexagon"]),
   start: z.number(),
   style: z.literal("cover-reveal"),
-});
+}).superRefine(boundedInterval(0.4));
+
+export const createCameraFocusSuggestionSchema = z.object({
+  anchor: suggestionTimeAnchorSchema,
+  easing: z.literal("smooth"),
+  emphasisScale: z.number().min(1).max(1.25),
+  end: z.number(),
+  kind: z.literal("create-camera-focus"),
+  start: z.number(),
+  targetObjectIds: z.array(z.string()).min(1),
+  zoomScale: z.number().min(1).max(2),
+}).superRefine(boundedInterval(0.1));
+
+export const createEquationSuggestionSchema = z.object({
+  anchor: suggestionTimeAnchorSchema,
+  animation: z.literal("fade-in"),
+  end: z.number(),
+  kind: z.literal("create-equation"),
+  placement: z.enum(["center", "right"]),
+  start: z.number(),
+  target: mathTexSuggestionTargetSchema,
+}).superRefine(boundedInterval(0.1));
+
+export const createTextTransformSuggestionSchema = z.object({
+  anchor: suggestionTimeAnchorSchema,
+  easing: z.literal("smooth"),
+  end: z.number(),
+  kind: z.literal("create-text-transform"),
+  sourceObjectId: z.string(),
+  start: z.number(),
+  strategy: z.literal("replacement-transform"),
+  text: z.string().trim().min(1).max(240),
+}).superRefine(boundedInterval(0.1));
 
 export const editSuggestionLeafOperationSchema = z.discriminatedUnion("kind", [
+  createCameraFocusSuggestionSchema,
+  createEquationSuggestionSchema,
+  createTextTransformSuggestionSchema,
   createMotionSuggestionSchema,
   createTransformSuggestionSchema,
   createExplanationSuggestionSchema,
@@ -76,9 +151,9 @@ export const editSuggestionLeafOperationSchema = z.discriminatedUnion("kind", [
 ]);
 
 export const editProgramStepSchema = z.discriminatedUnion("kind", [
-  createMotionSuggestionSchema.omit({ anchor: true }),
-  createTransformSuggestionSchema.omit({ anchor: true }),
-  createExplanationSuggestionSchema.omit({ anchor: true }),
+  z.object(createMotionFields).superRefine(boundedInterval(0.1)),
+  z.object(createTransformFields).superRefine(boundedInterval(0.1)),
+  z.object(createExplanationFields).superRefine(boundedInterval(0.1)),
 ]);
 
 export const editProgramSuggestionSchema = z.object({

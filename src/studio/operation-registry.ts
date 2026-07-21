@@ -80,8 +80,9 @@ export const canonicalOperationSchema = z.discriminatedUnion("kind", [
     kind: z.literal("TransformContent"),
     replacement: contentSchema,
     sourceEntityId: z.string(),
-    strategy: z.literal("transform-matching-tex"),
+    strategy: z.enum(["replacement-transform", "transform-matching-tex"]),
     targetEntityId: z.string(),
+    targetType: z.string().optional(),
   }),
   baseSchema.extend({
     kind: z.literal("SetRelation"),
@@ -377,14 +378,75 @@ export const OPERATION_REGISTRY = {
     validate: (operation, scene) => entityIssues(operation.targetEntityIds, operation, scene),
   } satisfies Capability<"CreateMotion">,
   ModifyMotion: {
-    access: () => ({ reads: [], writes: [] }),
+    access: (operation) => ({
+      reads: [{ channel: "position", entityId: `motion:${operation.motionId}` }],
+      writes: [{ channel: "position", entityId: `motion:${operation.motionId}` }],
+    }),
     defaults: { preserve: ["start", "end", "duration"] },
-    evaluate: recordOperation,
+    evaluate: (draft, operation, program) => {
+      recordOperation(draft, operation, program);
+      for (const [channelId, channel] of Object.entries(draft.propertyChannels)) {
+        if (channel.key !== "position") continue;
+        const samples = channel.samples.map((sample) => {
+          const matchesMotion = sample.operationId === operation.motionId
+            || sample.provenanceId === operation.motionId
+            || sample.provenanceId === `source:${operation.motionId}`;
+          if (!matchesMotion || sample.kind !== "animated" || !isPoint(sample.from) || !isPoint(sample.value)) {
+            return sample;
+          }
+          const control = sample.control ?? {
+            x: (sample.from.x + sample.value.x) / 2,
+            y: (sample.from.y + sample.value.y) / 2,
+          };
+          return {
+            ...sample,
+            control: {
+              x: control.x + operation.controlOffset.x,
+              y: control.y + operation.controlOffset.y,
+            },
+            operationId: operation.id,
+          };
+        });
+        draft.propertyChannels[channelId] = { ...channel, samples };
+      }
+    },
     lifetimeRequirement: "none",
     lowering: "illustrative",
-    projection: ["inspector", "timeline"],
+    projection: allEntityProjections,
     targetRequirement: "none",
-    validate: (operation, scene) => baseIssues(operation, scene),
+    validate: (operation, scene) => {
+      const issues = baseIssues(operation, scene);
+      const matches = Object.values(scene.propertyChannels).flatMap((channel) => (
+        channel.key === "position"
+          ? channel.samples.filter((sample) => (
+              sample.operationId === operation.motionId
+              || sample.provenanceId === operation.motionId
+              || sample.provenanceId === `source:${operation.motionId}`
+            ))
+          : []
+      ));
+      if (matches.length === 0) {
+        issues.push({
+          code: "target-missing",
+          field: "motionId",
+          message: `Motion ${operation.motionId} does not exist in RuntimeSceneState.`,
+          operationId: operation.id,
+          severity: "error",
+        });
+      } else if (matches.some((sample) => (
+        Math.abs(sample.interval.start - operation.interval.start) >= 0.001
+        || Math.abs(sample.interval.end - operation.interval.end) >= 0.001
+      ))) {
+        issues.push({
+          code: "interval-invalid",
+          field: "interval",
+          message: `ModifyMotion must preserve the ${operation.motionId} start, end, and duration.`,
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      return issues;
+    },
   } satisfies Capability<"ModifyMotion">,
   TransformContent: {
     access: (operation) => ({
@@ -405,11 +467,11 @@ export const OPERATION_REGISTRY = {
       draft.entities[operation.targetEntityId] = {
         content: operation.replacement,
         id: operation.targetEntityId,
-        lifetime: [{ end: inheritedEnd, start: operation.interval.end }],
+        lifetime: [{ end: inheritedEnd, start: operation.interval.start }],
         provisional: true,
         sourceIdentity: source.sourceIdentity,
         transactionId: program.transactionId,
-        type: source.type,
+        type: operation.targetType ?? source.type,
       };
       draft.lineage.push({
         at: operation.interval.end,
@@ -431,12 +493,43 @@ export const OPERATION_REGISTRY = {
         provenanceId: `${operation.id}/provenance`,
         value: operation.replacement,
       });
+      appendSample(draft, operation.sourceEntityId, "appearance", {
+        easing: "smooth",
+        from: 1,
+        interval: operation.interval,
+        kind: "animated",
+        operationId: operation.id,
+        provenanceId: `${operation.id}/provenance`,
+        value: 0,
+      });
+      appendSample(draft, operation.targetEntityId, "appearance", {
+        easing: "smooth",
+        from: 0,
+        interval: operation.interval,
+        kind: "animated",
+        operationId: operation.id,
+        provenanceId: `${operation.id}/provenance`,
+        value: 1,
+      });
     },
     lifetimeRequirement: "existing-at-start",
     lowering: "supported",
     projection: allEntityProjections,
     targetRequirement: "entity",
-    validate: (operation, scene) => entityIssues([operation.sourceEntityId], operation, scene),
+    validate: (operation, scene) => {
+      const issues = entityIssues([operation.sourceEntityId], operation, scene);
+      const source = scene.objectGraph.entities[operation.sourceEntityId];
+      if (source && operation.strategy === "transform-matching-tex" && source.type !== "MathTex") {
+        issues.push({
+          code: "schema-invalid",
+          field: "strategy",
+          message: "transform-matching-tex requires a MathTex source entity.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      return issues;
+    },
   } satisfies Capability<"TransformContent">,
   SetRelation: {
     access: (operation) => ({
@@ -547,9 +640,22 @@ export const OPERATION_REGISTRY = {
   ChangeCamera: {
     access: () => ({ reads: [{ channel: "camera", entityId: "camera" }], writes: [{ channel: "camera", entityId: "camera" }] }),
     defaults: {},
-    evaluate: recordOperation,
+    evaluate: (draft, operation, program) => {
+      recordOperation(draft, operation, program);
+      const fallback = operation.property === "position" ? { x: 0, y: 0 } : 1;
+      const current = sampleChannel(draft, "camera", "camera", operation.interval.start) ?? fallback;
+      appendSample(draft, "camera", "camera", {
+        easing: "smooth",
+        from: current,
+        interval: operation.interval,
+        kind: "animated",
+        operationId: operation.id,
+        provenanceId: `${operation.id}/provenance`,
+        value: operation.value,
+      });
+    },
     lifetimeRequirement: "none",
-    lowering: "unsupported",
+    lowering: "illustrative",
     projection: ["canvas", "inspector", "semantic-thumbnail", "working-playback"],
     targetRequirement: "camera",
     validate: (operation, scene) => baseIssues(operation, scene),

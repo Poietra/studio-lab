@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { m } from "motion/react";
+import { LazyMotion, m, useDragControls } from "motion/react";
 
 import {
   type EditSuggestion,
@@ -75,8 +75,11 @@ import {
   createDirectManipulationMotionProgram,
   createDirectManipulationPositionProgram,
 } from "./studio/suggestion-program";
+import { withoutTransaction } from "./studio/transactions";
 
 type Shell = "Browser" | "Electron" | "Tauri";
+const loadMotionFeatures = () => import("./lib/motion-features").then((module) => module.default);
+
 function detectShell(): Shell {
   if ("__TAURI_INTERNALS__" in window) return "Tauri";
   if (navigator.userAgent.includes("Electron")) return "Electron";
@@ -122,6 +125,8 @@ export function App() {
   const nextCompositeNumber = useRef(1);
   const nextTransactionNumber = useRef(1);
   const suggestionRequest = useRef<AbortController | null>(null);
+  const floatingBoardBounds = useRef<HTMLDivElement | null>(null);
+  const floatingBoardDragControls = useDragControls();
   const dragState = useRef<{
     pointerId: number;
     clientStart: Point;
@@ -163,11 +168,13 @@ export function App() {
   const hasAnyDraft = hasDraftEdit
     || draftTransform !== null
     || draftExplanation !== null
-    || draftSceneTransition !== null;
+    || draftSceneTransition !== null
+    || draftProgramRecord !== null;
   const hasPendingEdits = stagedEdits.length > 0
     || stagedTransforms.length > 0
     || stagedExplanations.length > 0
     || stagedSceneTransitions.length > 0
+    || stagedPrograms.length > 0
     || hasAnyDraft;
   const affectedObjectIds = [...new Set<ObjectId>([
     ...(hasDraftEdit ? draftMotionTargetIds ?? selectedPlan.affected : []),
@@ -216,7 +223,18 @@ export function App() {
   const studioProjection = projectProposedState(proposedState, currentTime);
   const projectedProvisionalEntities = studioProjection.canvas.entities.filter((entity) => entity.provisional);
   const projectedExplanationEntities = projectedProvisionalEntities.filter((entity) => (
-    entity.type === "Text" && entity.content?.text
+    entity.type === "Text"
+    && entity.content?.text
+    && entity.sourceIdentity.kind === "unknown"
+  ));
+  const projectedCreatedMathTexEntities = projectedProvisionalEntities.filter((entity) => (
+    entity.type === "MathTex" && entity.sourceIdentity.kind === "unknown"
+  ));
+  const projectedTransformTextEntities = projectedProvisionalEntities.filter((entity) => (
+    entity.type === "Text"
+    && entity.content?.text
+    && entity.sourceIdentity.kind === "known"
+    && entity.sourceIdentity.value === "equation"
   ));
   const projectedTransitionEntity = projectedProvisionalEntities.find((entity) => (
     entity.type.startsWith("TransitionOverlay:") && entity.present
@@ -228,9 +246,25 @@ export function App() {
   const projectedTransitionPhase = projectedSceneBoundary?.at !== undefined && currentTime >= projectedSceneBoundary.at
     ? "incoming" as const
     : "outgoing" as const;
-  const projectedMathTexEntity = studioProjection.canvas.entities.find((entity) => (
-    entity.type === "MathTex" && entity.present
+  const projectedEquationEntity = studioProjection.canvas.entities.find((entity) => (
+    entity.present
+    && entity.sourceIdentity.kind === "known"
+    && entity.sourceIdentity.value === "equation"
   ));
+  const projectedMathTexEntity = projectedEquationEntity?.type === "MathTex"
+    ? projectedEquationEntity
+    : null;
+  const canonicalDraftLabel = draftProgramRecord?.program.operations.some((operation) => operation.kind === "ChangeCamera")
+    ? "Camera focus"
+    : draftProgramRecord?.program.operations.some((operation) => (
+        operation.kind === "TransformContent" && operation.targetType === "Text"
+      ))
+      ? "Text transform"
+      : draftProgramRecord?.program.operations.some((operation) => (
+          operation.kind === "CreateEntity" && operation.entity.type === "MathTex"
+        ))
+        ? "New MathTex"
+        : null;
 
   function equationRenderStateAt(time: number) {
     let lines: readonly string[] = ORIGINAL_EQUATION_LINES;
@@ -579,6 +613,7 @@ export function App() {
       draftTransform?.interval.end ?? 0,
       draftExplanation?.interval.end ?? 0,
       draftSceneTransition?.interval.end ?? 0,
+      ...(draftProgramRecord?.program.operations.map((operation) => operation.interval.end) ?? []),
     ) || SCENE_DURATION;
     const tick = (now: number) => {
       const elapsed = (now - previous) / 1000;
@@ -596,7 +631,7 @@ export function App() {
 
     animationFrame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animationFrame);
-  }, [draftExplanation, draftMotion, draftSceneTransition, draftTransform, isPlaying]);
+  }, [draftExplanation, draftMotion, draftProgramRecord, draftSceneTransition, draftTransform, isPlaying]);
 
   useEffect(() => () => suggestionRequest.current?.abort(), []);
 
@@ -791,12 +826,12 @@ export function App() {
         setDraftMotion(motionStep ? { start: motionStep.start, end: motionStep.end } : null);
         setDraftMotionTargetIds(motionStep ? motionTargets : null);
         setDelta(motionStep ? {
-          x: Math.round(clamp(motionStep.delta.x, -220, 220)),
-          y: Math.round(clamp(motionStep.delta.y, -100, 100)),
+          x: motionStep.delta.x,
+          y: motionStep.delta.y,
         } : { x: 0, y: 0 });
         setPathBend(motionStep ? {
-          x: Math.round(clamp(motionStep.controlOffset.x, -160, 160)),
-          y: Math.round(clamp(motionStep.controlOffset.y, -100, 100)),
+          x: motionStep.controlOffset.x,
+          y: motionStep.controlOffset.y,
         } : { x: 0, y: 0 });
         setDraftTransform(transform);
         setDraftExplanation(explanation);
@@ -811,6 +846,42 @@ export function App() {
           ...result.suggestion,
           operation: program.operation,
         });
+        setSuggestionMessage(null);
+        setSuggestionStatus("ready");
+        return;
+      }
+      if (
+        operation.kind === "create-camera-focus"
+        || operation.kind === "create-equation"
+        || operation.kind === "create-text-transform"
+      ) {
+        const selectedIds = new Set(selectedObjectIds);
+        const targetsAreValid = operation.kind === "create-camera-focus"
+          ? operation.targetObjectIds.length > 0
+            && operation.targetObjectIds.every((objectId) => isObjectId(objectId) && selectedIds.has(objectId))
+          : operation.kind === "create-text-transform"
+            ? isObjectId(operation.sourceObjectId) && selectedIds.has(operation.sourceObjectId)
+            : true;
+        if (!targetsAreValid) {
+          setSuggestion(null);
+          setSuggestionMessage("The proposed target no longer matches the captured selection.");
+          setSuggestionStatus("error");
+          return;
+        }
+        if (hasAnyDraft && !replacesSuggestion) stageActiveEdit();
+        setIsPlaying(false);
+        setCurrentTime(operation.end);
+        setFocusedMotionId(null);
+        setDraftMotion(null);
+        setDraftMotionTargetIds(null);
+        setDelta({ x: 0, y: 0 });
+        setPathBend({ x: 0, y: 0 });
+        setDraftTransform(null);
+        setDraftExplanation(null);
+        setDraftSceneTransition(null);
+        setDraftEditProgram(null);
+        setDraftProgramRecord(canonicalRecord);
+        setSuggestion(result.suggestion);
         setSuggestionMessage(null);
         setSuggestionStatus("ready");
         return;
@@ -831,17 +902,22 @@ export function App() {
         return;
       }
       const start = anchoredStart;
-      const requestedDuration = clamp(operation.end - operation.start, 0.1, 5);
+      const requestedDuration = operation.end - operation.start;
 
       if (operation.kind === "create-motion") {
         const targetObjectIds = operation.targetObjectIds
           .filter(isObjectId)
+          .filter((objectId) => selectedSet.has(objectId))
           .filter((objectId) => isObjectPresentAt(objectId, start));
         const latestTargetEnd = targetObjectIds.length > 0
           ? Math.min(...targetObjectIds.map((objectId) => lifetimeEndFor(objectId, start)), SCENE_DURATION)
           : start;
         const end = clamp(start + requestedDuration, start, latestTargetEnd);
-        if (targetObjectIds.length === 0 || end - start < 0.1) {
+        if (
+          targetObjectIds.length === 0
+          || targetObjectIds.length !== operation.targetObjectIds.length
+          || end - start < 0.1
+        ) {
           setSuggestion(null);
           setSuggestionMessage("The proposed motion does not target a visible object for a usable interval.");
           setSuggestionStatus("error");
@@ -861,12 +937,12 @@ export function App() {
         setDraftExplanation(null);
         setDraftSceneTransition(null);
         setDelta({
-          x: Math.round(clamp(operation.delta.x, -220, 220)),
-          y: Math.round(clamp(operation.delta.y, -100, 100)),
+          x: operation.delta.x,
+          y: operation.delta.y,
         });
         setPathBend({
-          x: Math.round(clamp(operation.controlOffset.x, -160, 160)),
-          y: Math.round(clamp(operation.controlOffset.y, -100, 100)),
+          x: operation.controlOffset.x,
+          y: operation.controlOffset.y,
         });
         setSuggestion({
           ...result.suggestion,
@@ -893,6 +969,7 @@ export function App() {
         if (
           !sourceObjectId
           || !source
+          || !selectedSet.has(sourceObjectId)
           || source.type !== "MathTex"
           || !isObjectPresentAt(sourceObjectId, start)
           || end - start < 0.1
@@ -948,9 +1025,10 @@ export function App() {
           : null;
         const text = operation.text.trim().slice(0, 240);
         const latestTargetEnd = targetObjectId ? lifetimeEndFor(targetObjectId, start) : start;
-        const end = clamp(start + Math.min(requestedDuration, 1), start, Math.min(latestTargetEnd, SCENE_DURATION));
+        const end = clamp(start + requestedDuration, start, Math.min(latestTargetEnd, SCENE_DURATION));
         if (
           !targetObjectId
+          || !selectedSet.has(targetObjectId)
           || !isObjectPresentAt(targetObjectId, start)
           || text.length === 0
           || end - start < 0.1
@@ -1123,10 +1201,11 @@ export function App() {
   function stageActiveEdit() {
     const activeEdit = buildActiveEdit();
     const canonicalRecord = buildActiveProgramRecord(activeEdit);
-    if (activeEdit) setStagedEdits((current) => [...current, activeEdit]);
-    if (draftTransform) setStagedTransforms((current) => [...current, draftTransform]);
-    if (draftExplanation) setStagedExplanations((current) => [...current, draftExplanation]);
-    if (draftSceneTransition) setStagedSceneTransitions((current) => [...current, draftSceneTransition]);
+    const transactionId = canonicalRecord?.program.transactionId;
+    if (activeEdit) setStagedEdits((current) => [...current, { ...activeEdit, transactionId }]);
+    if (draftTransform) setStagedTransforms((current) => [...current, { ...draftTransform, transactionId }]);
+    if (draftExplanation) setStagedExplanations((current) => [...current, { ...draftExplanation, transactionId }]);
+    if (draftSceneTransition) setStagedSceneTransitions((current) => [...current, { ...draftSceneTransition, transactionId }]);
     if (canonicalRecord) setStagedPrograms((current) => [...current, canonicalRecord]);
     resetDraft();
   }
@@ -1134,11 +1213,13 @@ export function App() {
   function togglePlayback() {
     if (hasDraftEdit && !draftEditProgram) stageActiveEdit();
     if (selectedPlanId === "play-target") setSelectedPlanId("new-move");
+    const canonicalIntervals = draftProgramRecord?.program.operations.map((operation) => operation.interval) ?? [];
     const previewIntervals = [
       draftMotion,
       draftTransform?.interval,
       draftExplanation?.interval,
       draftSceneTransition?.interval,
+      ...canonicalIntervals,
     ].filter((interval): interval is Interval => interval !== null && interval !== undefined);
     const previewInterval = previewIntervals.length > 0 ? {
       start: Math.min(...previewIntervals.map((interval) => interval.start)),
@@ -1155,18 +1236,25 @@ export function App() {
   function applyPatch() {
     const activeEdit = buildActiveEdit();
     const activeProgramRecord = buildActiveProgramRecord(activeEdit);
+    const activeTransactionId = activeProgramRecord?.program.transactionId;
     const pendingPrograms = activeProgramRecord
       ? [...stagedPrograms, activeProgramRecord]
       : stagedPrograms;
-    const pending = activeEdit ? [...stagedEdits, activeEdit] : stagedEdits;
-    const pendingTransforms = draftTransform ? [...stagedTransforms, draftTransform] : stagedTransforms;
+    const pending = activeEdit
+      ? [...stagedEdits, { ...activeEdit, transactionId: activeTransactionId }]
+      : stagedEdits;
+    const pendingTransforms = draftTransform
+      ? [...stagedTransforms, { ...draftTransform, transactionId: activeTransactionId }]
+      : stagedTransforms;
     const pendingExplanations = draftExplanation
-      ? [...stagedExplanations, draftExplanation]
+      ? [...stagedExplanations, { ...draftExplanation, transactionId: activeTransactionId }]
       : stagedExplanations;
     const pendingSceneTransitions = draftSceneTransition
-      ? [...stagedSceneTransitions, draftSceneTransition]
+      ? [...stagedSceneTransitions, { ...draftSceneTransition, transactionId: activeTransactionId }]
       : stagedSceneTransitions;
     if (
+      pendingPrograms.length === 0
+      &&
       pending.length === 0
       && pendingTransforms.length === 0
       && pendingExplanations.length === 0
@@ -1196,11 +1284,22 @@ export function App() {
       latestTransform?.interval.end ?? 0,
       latestExplanation?.interval.end ?? 0,
       latestSceneTransition?.interval.end ?? 0,
+      ...pendingPrograms.flatMap((record) => record.program.operations.map((operation) => operation.interval.end)),
     );
     if (latestEnd > 0) setCurrentTime(latestEnd);
   }
 
   function undoLastApplied() {
+    const latestProgram = appliedPrograms.at(-1);
+    if (latestProgram) {
+      const transactionId = latestProgram.program.transactionId;
+      setAppliedPrograms((current) => current.slice(0, -1));
+      setAppliedEdits((current) => withoutTransaction(current, transactionId));
+      setAppliedTransforms((current) => withoutTransaction(current, transactionId));
+      setAppliedExplanations((current) => withoutTransaction(current, transactionId));
+      setAppliedSceneTransitions((current) => withoutTransaction(current, transactionId));
+      return;
+    }
     const latestEdit = appliedEdits.at(-1);
     const latestTransform = appliedTransforms.at(-1);
     const latestExplanation = appliedExplanations.at(-1);
@@ -1215,7 +1314,6 @@ export function App() {
       .sort((left, right) => left.start - right.start)
       .at(-1);
     if (!latest) return;
-    setAppliedPrograms((current) => current.slice(0, -1));
     if (latest.groupId) {
       const groupId = latest.groupId;
       setAppliedEdits((current) => current.filter((entry) => entry.groupId !== groupId));
@@ -1246,7 +1344,7 @@ export function App() {
     if (selectionChanges) stageActiveEdit();
     setSelectedObjectIds((current) => {
       if (current.includes(objectId)) {
-        return current.length === 1 ? current : current.filter((id) => id !== objectId);
+        return current.filter((id) => id !== objectId);
       }
       return SCENE_OBJECTS
         .map((object) => object.id)
@@ -1391,20 +1489,25 @@ export function App() {
   const pendingTimelineSceneTransitions = draftSceneTransition
     ? [...stagedSceneTransitions, draftSceneTransition]
     : stagedSceneTransitions;
-  const pendingEditCount = groupedOperationCount([
+  const legacyPendingEditCount = groupedOperationCount([
     ...pendingTimelineEdits,
     ...pendingTimelineTransforms,
     ...pendingTimelineExplanations,
     ...pendingTimelineSceneTransitions,
   ]);
+  const pendingEditCount = Math.max(
+    legacyPendingEditCount,
+    stagedPrograms.length + (draftProgramRecord ? 1 : 0),
+  );
   const hasPendingEditProgram = [...pendingTimelineEdits, ...pendingTimelineTransforms, ...pendingTimelineExplanations]
     .some((entry) => entry.groupId !== undefined);
-  const appliedOperationCount = groupedOperationCount([
+  const legacyAppliedOperationCount = groupedOperationCount([
     ...appliedEdits,
     ...appliedTransforms,
     ...appliedExplanations,
     ...appliedSceneTransitions,
   ]);
+  const appliedOperationCount = Math.max(legacyAppliedOperationCount, appliedPrograms.length);
   const timelineEdits = [...appliedEdits, ...pendingTimelineEdits];
   const timelineTransforms = [...appliedTransforms, ...pendingTimelineTransforms];
   const timelineExplanations = [...appliedExplanations, ...pendingTimelineExplanations];
@@ -1683,11 +1786,13 @@ export function App() {
                   <h2 className="text-balance text-sm font-medium">Rendered frame</h2>
                   <span className={cn(
                     "border px-1.5 py-0.5 text-[10px]",
-                    draftTransform || draftExplanation || draftSceneTransition || equationRenderState.inProgressTransform || editMode === "animate"
+                    canonicalDraftLabel || draftTransform || draftExplanation || draftSceneTransition || equationRenderState.inProgressTransform || editMode === "animate"
                       ? "border-sky-800 text-sky-300"
                       : "border-zinc-700 text-zinc-400",
                   )}>
-                    {isEditProgramDraft && draftEditProgram
+                    {canonicalDraftLabel
+                      ? canonicalDraftLabel
+                      : isEditProgramDraft && draftEditProgram
                       ? `${draftEditProgram.operationKinds.length}-step program`
                       : draftSceneTransition
                       ? "Shape transition"
@@ -1703,7 +1808,9 @@ export function App() {
                   </span>
                 </div>
                 <p className="mt-0.5 truncate text-xs text-zinc-500">
-                  {isEditProgramDraft && draftEditProgram && draftProgramInterval
+                  {canonicalDraftLabel && draftProgramRecord
+                    ? `${canonicalDraftLabel} from ${draftProgramRecord.program.anchor.resolvedSeconds.toFixed(2)}s · sampled from the shared ProposedState.`
+                    : isEditProgramDraft && draftEditProgram && draftProgramInterval
                     ? `Atomic ${draftEditProgram.execution} Edit Program at ${draftProgramInterval.start.toFixed(2)}–${draftProgramInterval.end.toFixed(2)}s. Play or scrub every requested effect, then Apply or Reset.`
                     : draftSceneTransition
                     ? `${draftSceneTransition.shape} cover-and-reveal at ${draftSceneTransition.interval.start.toFixed(2)}–${draftSceneTransition.interval.end.toFixed(2)}s (${timeAnchorLabel(draftSceneTransition.anchor)}).`
@@ -1737,6 +1844,11 @@ export function App() {
                 className="relative aspect-video h-full max-w-full overflow-hidden rounded-lg border border-zinc-800 bg-black shadow-lg"
                 data-proposed-state-sample={studioProjection.canvas.sampleId}
                 data-scene-viewport
+              >
+              <m.div
+                className="absolute inset-0"
+                data-camera-scale={studioProjection.camera.scale.toFixed(3)}
+                style={{ scale: studioProjection.camera.scale }}
               >
               <svg aria-hidden="true" className="absolute inset-0 size-full" viewBox="0 0 640 360">
                 <g stroke="#27272a" strokeWidth="1">
@@ -1947,7 +2059,7 @@ export function App() {
                 ) : null}
               </button> : null}
 
-              {presentSet.has("equation_1") ? <button
+              {projectedEquationEntity?.present ? <button
                 aria-label="Move equation_1"
                 aria-pressed={selectedSet.has("equation_1")}
                 className={cn(
@@ -1955,13 +2067,19 @@ export function App() {
                   selectedSet.has("equation_1")
                     ? "border-sky-400 bg-sky-950/50 text-sky-100 focus-visible:ring-2 focus-visible:ring-sky-400"
                     : "border-transparent bg-transparent text-zinc-100 hover:border-zinc-600",
+                  projectedEquationEntity.scale > 1.01 && "ring-2 ring-sky-300",
                 )}
                 onKeyDown={nudgeSelected}
                 onPointerCancel={endDrag}
                 onPointerDown={(event) => beginDrag(event, "equation_1")}
                 onPointerMove={moveDrag}
                 onPointerUp={endDrag}
-                style={{ ...positionStyle(displayedEquation), touchAction: "none" }}
+                style={{
+                  ...positionStyle(displayedEquation),
+                  opacity: projectedEquationEntity.opacity,
+                  scale: projectedEquationEntity.scale,
+                  touchAction: "none",
+                }}
                 type="button"
               >
                 {equationRenderState.transition ? (
@@ -1970,15 +2088,58 @@ export function App() {
                     sourceLines={equationRenderState.transition.sourceLines}
                     targetLines={equationRenderState.transition.targetLines}
                   />
+                ) : projectedEquationEntity.type === "Text" ? (
+                  <span className="block max-w-64 text-pretty text-center text-sm leading-6">
+                    {projectedEquationEntity.content?.text
+                      ?? projectedEquationEntity.content?.displayLines.join(" ")}
+                  </span>
                 ) : (
                   <EquationContent lines={equationRenderState.lines} />
                 )}
                 {selectedSet.has("equation_1") ? (
                   <span className="absolute -top-6 left-0 whitespace-nowrap bg-sky-400 px-1.5 py-0.5 font-sans text-[11px] font-medium text-sky-950">
-                    {equationRenderState.runtimeId}{selectedPlan.id === "new-move" && hasDelta ? " · destination" : ""}
+                    {projectedEquationEntity.id}{selectedPlan.id === "new-move" && hasDelta ? " · destination" : ""}
                   </span>
                 ) : null}
               </button> : null}
+
+              {projectedCreatedMathTexEntities.filter((entity) => entity.present).map((entity) => (
+                <m.div
+                  aria-label={`New equation: ${entity.content?.label ?? entity.content?.displayLines.join(" ")}`}
+                  className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-1/2 border border-dashed border-sky-400 bg-zinc-950/70 px-3 py-2 text-zinc-100"
+                  data-equation-object={entity.id}
+                  data-proposed-state-sample={studioProjection.canvas.sampleId}
+                  key={entity.id}
+                  role="img"
+                  style={{
+                    ...positionStyle(entity.position),
+                    opacity: entity.opacity,
+                    scale: entity.scale,
+                  }}
+                >
+                  <EquationContent lines={entity.content?.displayLines ?? []} />
+                </m.div>
+              ))}
+
+              {projectedTransformTextEntities.filter((entity) => (
+                entity.present && entity.id !== projectedEquationEntity?.id
+              )).map((entity) => (
+                <m.div
+                  aria-label={`Transform target: ${entity.content?.text}`}
+                  className="pointer-events-none absolute z-10 max-w-64 -translate-x-1/2 -translate-y-1/2 border border-dashed border-sky-400 bg-zinc-950/70 px-3 py-2 text-pretty text-center text-sm leading-6 text-zinc-100"
+                  data-proposed-state-sample={studioProjection.canvas.sampleId}
+                  data-text-transform-target={entity.id}
+                  key={entity.id}
+                  role="img"
+                  style={{
+                    ...positionStyle(entity.position),
+                    opacity: entity.opacity,
+                    scale: entity.scale,
+                  }}
+                >
+                  {entity.content?.text}
+                </m.div>
+              ))}
 
               {projectedExplanationEntities.filter((entity) => entity.present).map((entity) => (
                 <m.div
@@ -1993,7 +2154,7 @@ export function App() {
                   data-proposed-state-sample={studioProjection.canvas.sampleId}
                   key={entity.id}
                   role="img"
-                  style={{ ...positionStyle(entity.position), opacity: entity.opacity }}
+                  style={{ ...positionStyle(entity.position), opacity: entity.opacity, scale: entity.scale }}
                 >
                   {entity.content?.text}
                 </m.div>
@@ -2118,12 +2279,27 @@ export function App() {
                 </div>
               ) : null}
 
-              <form
+              </m.div>
+
+              <div className="pointer-events-none absolute inset-2 z-20" ref={floatingBoardBounds}>
+              <div className="absolute left-1/2 top-1 w-[calc(100%-0.5rem)] max-w-xl -translate-x-1/2">
+              <LazyMotion features={loadMotionFeatures} strict>
+              <m.form
                 aria-label="Describe an edit at the playhead"
-                className="absolute left-3 right-3 top-3 z-20 mx-auto max-w-xl border border-zinc-700 bg-zinc-950/95 p-2 shadow-lg"
+                className="pointer-events-auto border border-zinc-700 bg-zinc-950/95 p-2 shadow-lg"
+                drag
+                dragConstraints={floatingBoardBounds}
+                dragControls={floatingBoardDragControls}
+                dragElastic={0}
+                dragListener={false}
+                dragMomentum={false}
                 onSubmit={submitInstruction}
               >
-                <div className="mb-1.5 flex min-w-0 items-center gap-2 text-[10px]">
+                <div
+                  className="mb-1.5 flex min-w-0 cursor-grab items-center gap-2 text-[10px] active:cursor-grabbing"
+                  onPointerDown={(event) => floatingBoardDragControls.start(event.nativeEvent)}
+                  style={{ touchAction: "none" }}
+                >
                   <span className="shrink-0 font-medium text-zinc-300">Describe an edit</span>
                   <span className="shrink-0 border border-zinc-700 px-1.5 py-0.5 tabular-nums text-zinc-400">
                     from {currentTime.toFixed(2)}s
@@ -2134,6 +2310,7 @@ export function App() {
                   <span className="ml-auto shrink-0 text-zinc-600">
                     {import.meta.env.VITE_POIETRA_AI_ENDPOINT ? "Model endpoint" : "Local fixture"}
                   </span>
+                  <span className="shrink-0 border-l border-zinc-800 pl-2 text-zinc-500">Drag</span>
                 </div>
                 <div className="flex items-end gap-1.5">
                   <label className="sr-only" htmlFor="edit-instruction">Edit instruction</label>
@@ -2154,7 +2331,7 @@ export function App() {
                   />
                   <button
                     className="min-h-8 shrink-0 bg-sky-500 px-3 py-1.5 text-xs font-medium text-sky-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500"
-                    disabled={instruction.trim().length === 0 || suggestionStatus === "loading" || !canEditSelection}
+                    disabled={instruction.trim().length === 0 || suggestionStatus === "loading"}
                     type="submit"
                   >
                     {suggestionStatus === "loading" ? "Drafting…" : "Preview"}
@@ -2239,7 +2416,10 @@ export function App() {
                     </div>
                   ) : null}
                 </div>
-              </form>
+              </m.form>
+              </LazyMotion>
+              </div>
+              </div>
 
               <div className="absolute bottom-2 left-2 flex gap-2 text-[11px] tabular-nums text-zinc-500">
                 <span>640 × 360</span>
