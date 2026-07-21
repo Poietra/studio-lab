@@ -11,9 +11,12 @@ import { createPortal } from "react-dom";
 import { LazyMotion, m, useDragControls } from "motion/react";
 
 import {
+  type ClarificationOption,
   type EditSuggestion,
   suggestEdit,
 } from "./ai/edit-suggestions";
+import { createClarificationContextFingerprint, type PendingClarification } from "./ai/clarification";
+import { ClarificationPanel } from "./ai/clarification-panel";
 import { validateEditProgram } from "./ai/edit-program-validation";
 import { buildEditProgramSourcePreview } from "./ai/edit-program-source";
 import { cn } from "./lib/cn";
@@ -123,6 +126,7 @@ export function App() {
   const [suggestion, setSuggestion] = useState<EditSuggestion | null>(null);
   const [suggestionMessage, setSuggestionMessage] = useState<string | null>(null);
   const [suggestionStatus, setSuggestionStatus] = useState<"idle" | "loading" | "ready" | "clarification" | "error">("idle");
+  const [pendingClarification, setPendingClarification] = useState<PendingClarification | null>(null);
   const [isMagicEditVisible, setIsMagicEditVisible] = useState(true);
   const nextGroupNumber = useRef(1);
   const nextExplanationNumber = useRef(1);
@@ -155,6 +159,13 @@ export function App() {
     },
     stagedPrograms,
   }));
+  const clarificationContextFingerprint = createClarificationContextFingerprint({
+    entities: Object.values(editContextState.evaluatedScene.objectGraph.entities),
+    playhead: currentTime,
+    selection: selectedObjectIds,
+  });
+  const clarificationIsStale = pendingClarification !== null
+    && pendingClarification.contextFingerprint !== clarificationContextFingerprint;
   const proposedState = evaluateWorkingState(createFixtureWorkingState({
     appliedPrograms,
     editorContext: editContextState.base.editorContext,
@@ -806,13 +817,29 @@ export function App() {
     }
   }
 
-  async function submitInstruction(event: ReactFormEvent<HTMLFormElement>) {
+  function submitInstruction(event: ReactFormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const prompt = instruction.trim();
-    if (prompt.length === 0 || suggestionStatus === "loading") return;
+    void requestEditSuggestion();
+  }
+
+  async function requestEditSuggestion(selectedOption?: ClarificationOption) {
+    const pending = pendingClarification;
+    const answerText = instruction.trim();
+    const prompt = pending?.originalPrompt ?? answerText;
+    if (
+      prompt.length === 0
+      || suggestionStatus === "loading"
+      || (pending !== null && selectedOption === undefined && answerText.length === 0)
+    ) return;
+    if (pending && clarificationIsStale) {
+      setSuggestionMessage("The playhead, selection, or Scene objects changed after this question. Edit the original request and preview it again.");
+      setSuggestionStatus("error");
+      return;
+    }
     const replacesSuggestion = suggestion !== null && hasAnyDraft;
     if (replacesSuggestion) resetDraft();
 
+    setIsPlaying(false);
     suggestionRequest.current?.abort();
     const controller = new AbortController();
     suggestionRequest.current = controller;
@@ -822,6 +849,13 @@ export function App() {
 
     try {
       const result = await suggestEdit({
+        clarification: pending ? {
+          answer: selectedOption
+            ? { kind: "option", optionId: selectedOption.id }
+            : { kind: "text", text: answerText },
+          options: pending.options,
+          question: pending.question,
+        } : null,
         objects: Object.values(editContextState.evaluatedScene.objectGraph.entities)
           .filter((entity) => !entity.type.startsWith("TransitionOverlay:"))
           .map((entity) => ({
@@ -842,11 +876,19 @@ export function App() {
         selectedObjectIds,
       }, { signal: controller.signal });
       if (result.kind === "clarification") {
+        setPendingClarification({
+          contextFingerprint: clarificationContextFingerprint,
+          options: result.options,
+          originalPrompt: pending?.originalPrompt ?? prompt,
+          question: result.message,
+        });
+        setInstruction("");
         setSuggestionMessage(result.message);
         setSuggestionStatus("clarification");
         return;
       }
 
+      setPendingClarification(null);
       const operation = result.suggestion.operation;
       const transactionNumber = nextTransactionNumber.current;
       nextTransactionNumber.current += 1;
@@ -1242,6 +1284,18 @@ export function App() {
     setSuggestion(null);
     setSuggestionMessage(null);
     setSuggestionStatus("idle");
+    setPendingClarification(null);
+  }
+
+  function editClarificationRequest() {
+    if (!pendingClarification) return;
+    suggestionRequest.current?.abort();
+    suggestionRequest.current = null;
+    setInstruction(pendingClarification.originalPrompt);
+    setPendingClarification(null);
+    setSuggestion(null);
+    setSuggestionMessage(null);
+    setSuggestionStatus("idle");
   }
 
   function buildActiveEdit(): AppliedEdit | null {
@@ -1405,6 +1459,7 @@ export function App() {
     setSuggestion(null);
     setSuggestionMessage(null);
     setSuggestionStatus("idle");
+    setPendingClarification(null);
     setInstruction("");
     if (createdEntityIds.length > 0) {
       setSelectedObjectIds(createdEntityIds);
@@ -2585,11 +2640,25 @@ export function App() {
                     Hide
                   </button>
                 </div>
+
+                {pendingClarification ? (
+                  <ClarificationPanel
+                    isLoading={suggestionStatus === "loading"}
+                    isStale={clarificationIsStale}
+                    onEditRequest={editClarificationRequest}
+                    onSelect={(option) => void requestEditSuggestion(option)}
+                    pending={pendingClarification}
+                  />
+                ) : null}
+
                 <div className="flex items-end gap-1.5">
-                  <label className="sr-only" htmlFor="edit-instruction">Edit instruction</label>
+                  <label className="sr-only" htmlFor="edit-instruction">
+                    {pendingClarification ? "Clarification answer" : "Edit instruction"}
+                  </label>
                   <textarea
+                    aria-describedby={pendingClarification ? "magic-edit-clarification-question" : undefined}
                     className="max-h-20 min-h-8 min-w-0 flex-1 resize-none border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-xs leading-5 text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-sky-500"
-                    disabled={suggestionStatus === "loading" || !aiEndpointConfigured}
+                    disabled={suggestionStatus === "loading" || !aiEndpointConfigured || clarificationIsStale}
                     id="edit-instruction"
                     onChange={(event) => setInstruction(event.currentTarget.value)}
                     onKeyDown={(event) => {
@@ -2598,16 +2667,18 @@ export function App() {
                         event.currentTarget.form?.requestSubmit();
                       }
                     }}
-                    placeholder={`At ${currentTime.toFixed(2)}s, e.g. “5秒前から文字で解説して”`}
+                    placeholder={pendingClarification
+                      ? "Answer the question, e.g. “前者” or add another detail"
+                      : `At ${currentTime.toFixed(2)}s, e.g. “5秒前から文字で解説して”`}
                     rows={1}
                     value={instruction}
                   />
                   <button
                     className="min-h-8 shrink-0 bg-sky-500 px-3 py-1.5 text-xs font-medium text-sky-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500"
-                    disabled={!aiEndpointConfigured || instruction.trim().length === 0 || suggestionStatus === "loading"}
+                    disabled={!aiEndpointConfigured || instruction.trim().length === 0 || suggestionStatus === "loading" || clarificationIsStale}
                     type="submit"
                   >
-                    {suggestionStatus === "loading" ? "Drafting…" : "Preview"}
+                    {suggestionStatus === "loading" ? "Drafting…" : pendingClarification ? "Continue" : "Preview"}
                   </button>
                 </div>
 
@@ -2643,14 +2714,9 @@ export function App() {
                       </details>
                     </div>
                   ) : null}
-                  {(suggestionStatus === "clarification" || suggestionStatus === "error") && suggestionMessage ? (
-                    <div className={cn(
-                      "mt-2 border-t pt-2 text-pretty text-[10px] leading-4",
-                      suggestionStatus === "error"
-                        ? "border-red-950 text-red-300"
-                        : "border-amber-950 text-amber-300",
-                    )}>
-                      {suggestionStatus === "error" ? "Could not preview: " : "More detail needed: "}{suggestionMessage}
+                  {suggestionStatus === "error" && suggestionMessage ? (
+                    <div className="mt-2 border-t border-red-950 pt-2 text-pretty text-[10px] leading-4 text-red-300">
+                      Could not preview: {suggestionMessage}
                     </div>
                   ) : null}
                 </div>

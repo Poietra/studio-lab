@@ -63,6 +63,10 @@ returns the same closed `CreateMotion | CreateTransform | CreateExplanation | Cr
 suggestion result documented in
 `src/ai/edit-suggestions.ts`. Provider credentials never use a `VITE_` variable and
 are not included in the browser bundle.
+Clarification responses may include two or three structured choices. Studio keeps
+the original request and one pending question so a choice click or a relative
+free-text answer such as `前者` produces a new preview instead of becoming an
+isolated prompt.
 
 The rendered-validation experiment can lower one straight canonical `CreateMotion`
 into a real Manim source marker, render an isolated preview, and commit only after

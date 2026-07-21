@@ -18,11 +18,28 @@ export type SuggestionObject = Readonly<{
 }>;
 
 export type EditSuggestionRequest = Readonly<{
+  clarification: ClarificationFollowUp | null;
   objects: readonly SuggestionObject[];
   playhead: number;
   prompt: string;
   sceneDuration: number;
   selectedObjectIds: readonly string[];
+}>;
+
+export type ClarificationOption = Readonly<{
+  description: string;
+  id: string;
+  label: string;
+}>;
+
+export type ClarificationAnswer =
+  | Readonly<{ kind: "option"; optionId: string }>
+  | Readonly<{ kind: "text"; text: string }>;
+
+export type ClarificationFollowUp = Readonly<{
+  answer: ClarificationAnswer;
+  options: readonly ClarificationOption[];
+  question: string;
 }>;
 
 export type SuggestionTimeAnchor =
@@ -169,7 +186,11 @@ export type EditSuggestion = Readonly<{
 
 export type EditSuggestionResult =
   | Readonly<{ kind: "suggestion"; suggestion: EditSuggestion }>
-  | Readonly<{ kind: "clarification"; message: string }>;
+  | Readonly<{
+      kind: "clarification";
+      message: string;
+      options: readonly ClarificationOption[];
+    }>;
 
 type SuggestionOptions = Readonly<{ signal?: AbortSignal }>;
 

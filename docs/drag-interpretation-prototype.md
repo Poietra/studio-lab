@@ -155,6 +155,14 @@ disabled with a visible configuration error. The remote endpoint must return the
 closed operation union, and its object IDs, object types, interval, content and
 geometry are checked again before preview.
 
+A clarification is a bounded editor state, not a chat transcript. Studio retains
+the original request, the latest question, two or three structured choices when
+available, and a fingerprint of the captured playhead, selection, and Scene
+objects. Clicking a choice or submitting free text such as `前者` sends that
+context back for a fresh model candidate; it never bypasses Preview or Apply. If
+the Scene fingerprint changes, the choices are disabled and the user is returned
+to the original request rather than applying a stale interpretation.
+
 ### Live-model checkpoint · 2026-07-20
 
 The local server adapter was exercised with `gpt-5.6-luna` through the OpenAI

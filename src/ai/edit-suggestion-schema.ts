@@ -203,7 +203,23 @@ export const editSuggestionOperationSchema = z.union([
   editProgramSuggestionSchema,
 ]);
 
+export const clarificationOptionSchema = z.object({
+  description: z.string().trim().min(1).max(240),
+  id: z.string().trim().min(1).max(40),
+  label: z.string().trim().min(1).max(80),
+});
+
+const clarificationAnswerSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("option"), optionId: z.string().trim().min(1).max(40) }),
+  z.object({ kind: z.literal("text"), text: z.string().trim().min(1).max(2_000) }),
+]);
+
 export const editSuggestionRequestSchema = z.object({
+  clarification: z.object({
+    answer: clarificationAnswerSchema,
+    options: z.array(clarificationOptionSchema).max(3),
+    question: z.string().trim().min(1).max(500),
+  }).nullable(),
   objects: z.array(z.object({
     displayName: z.string(),
     id: z.string(),
@@ -217,11 +233,17 @@ export const editSuggestionRequestSchema = z.object({
   selectedObjectIds: z.array(z.string()),
 });
 
+const modelClarificationOptionSchema = z.object({
+  description: z.string().trim().min(1).max(240),
+  label: z.string().trim().min(1).max(80),
+});
+
 export const modelSuggestionSchema = z.object({
   assumptions: z.array(z.string()),
   kind: z.enum(["suggestion", "clarification"]),
   message: z.string(),
   operation: editSuggestionOperationSchema.nullable(),
+  options: z.array(modelClarificationOptionSchema).max(3),
   summary: z.string(),
 });
 
@@ -234,7 +256,11 @@ const suggestionSchema = z.object({
 });
 
 export const editSuggestionResultSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("clarification"), message: z.string().min(1) }),
+  z.object({
+    kind: z.literal("clarification"),
+    message: z.string().min(1),
+    options: z.array(clarificationOptionSchema).max(3),
+  }),
   z.object({ kind: z.literal("suggestion"), suggestion: suggestionSchema }),
 ]);
 

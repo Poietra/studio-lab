@@ -45,6 +45,11 @@ The records in `src/studio/model.ts` keep five layers explicit:
 5. `WorkingState` stores applied and staged program records. Its pure evaluation
    produces `ProposedState`.
 
+The UI may additionally hold one ephemeral clarification envelope containing the
+original instruction, latest model question, ordered choices, and an editor-context
+fingerprint. It is request context only: it does not enter `RuntimeSceneState`, and
+a choice always requests a new candidate before the normal Preview/Apply boundary.
+
 Absence is represented by entity lifetime/presence. It is not `Unknown`.
 Source identities use `Knowledge<T>` and are not runtime IDs. Timeline events are
 not inferred from source order.
