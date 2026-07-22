@@ -1,4 +1,7 @@
-import { parseEditSuggestionResult } from "./edit-suggestion-schema";
+import {
+  editSuggestionRequestSchema,
+  parseEditSuggestionResult,
+} from "./edit-suggestion-schema";
 
 export type SuggestionPoint = Readonly<{ x: number; y: number }>;
 
@@ -206,22 +209,14 @@ export type EditSuggestionResult =
 
 type SuggestionOptions = Readonly<{ signal?: AbortSignal }>;
 
-export async function suggestEdit(
-  request: EditSuggestionRequest,
-  options: SuggestionOptions = {},
-): Promise<EditSuggestionResult> {
-  const endpoint = import.meta.env.VITE_POIETRA_AI_ENDPOINT as string | undefined;
-  if (!endpoint) {
-    throw new Error("Magic Edit requires a configured AI endpoint. Set VITE_POIETRA_AI_ENDPOINT and restart Studio.");
+async function readSuggestionResponse(response: Response): Promise<EditSuggestionResult> {
+  const text = await response.text();
+  let result: unknown;
+  try {
+    result = text ? JSON.parse(text) as unknown : null;
+  } catch {
+    throw new Error(`Suggestion endpoint returned ${response.status}: malformed JSON.`);
   }
-
-  const response = await fetch(endpoint, {
-    body: JSON.stringify(request),
-    headers: { "content-type": "application/json" },
-    method: "POST",
-    signal: options.signal,
-  });
-  const result: unknown = await response.json();
   if (!response.ok) {
     const message = typeof result === "object"
       && result !== null
@@ -240,4 +235,26 @@ export async function suggestEdit(
     };
   }
   return parsedRemote.data;
+}
+
+export async function suggestEdit(
+  request: EditSuggestionRequest,
+  options: SuggestionOptions = {},
+): Promise<EditSuggestionResult> {
+  const endpoint = import.meta.env.VITE_POIETRA_AI_ENDPOINT as string | undefined;
+  if (!endpoint) {
+    throw new Error("Magic Edit requires a configured AI endpoint. Set VITE_POIETRA_AI_ENDPOINT and restart Studio.");
+  }
+  const parsedRequest = editSuggestionRequestSchema.safeParse(request);
+  if (!parsedRequest.success) {
+    throw new Error("Magic Edit request does not match the AI endpoint contract.");
+  }
+
+  const response = await fetch(endpoint, {
+    body: JSON.stringify(parsedRequest.data),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+    signal: options.signal,
+  });
+  return readSuggestionResponse(response);
 }

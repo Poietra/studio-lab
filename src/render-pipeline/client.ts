@@ -4,7 +4,11 @@ import type {
   ManimApiError,
   ProgramRenderRequest,
 } from "./contracts";
-import { manimWorkspaceViewSchema, renderSessionViewSchema } from "./contracts";
+import {
+  manimWorkspaceViewSchema,
+  programRenderRequestSchema,
+  renderSessionViewSchema,
+} from "./contracts";
 
 async function readJson<T>(response: Response, schema: z.ZodType<T>): Promise<T> {
   const text = await response.text();
@@ -29,23 +33,30 @@ export async function loadManimWorkspace(signal?: AbortSignal) {
   return readJson(await fetch("/api/manim/workspace", { signal }), manimWorkspaceViewSchema);
 }
 
-export async function startManimRender(request: ProgramRenderRequest) {
+export async function startManimRender(request: ProgramRenderRequest, signal?: AbortSignal) {
+  const parsedRequest = programRenderRequestSchema.safeParse(request);
+  if (!parsedRequest.success) {
+    throw new Error("The render request does not match the API contract.");
+  }
   return readJson(await fetch("/api/manim/renders", {
-    body: JSON.stringify(request),
+    body: JSON.stringify(parsedRequest.data),
     headers: { "content-type": "application/json" },
     method: "POST",
+    signal,
   }), renderSessionViewSchema);
 }
 
 export async function loadManimRender(id: string, signal?: AbortSignal) {
-  return readJson(await fetch(`/api/manim/renders/${id}`, { signal }), renderSessionViewSchema);
+  return readJson(await fetch(`/api/manim/renders/${encodeURIComponent(id)}`, { signal }), renderSessionViewSchema);
 }
 
 export async function runManimRenderAction(
   id: string,
   action: "cancel" | "commit" | "discard" | "undo",
+  signal?: AbortSignal,
 ) {
-  return readJson(await fetch(`/api/manim/renders/${id}/${action}`, {
+  return readJson(await fetch(`/api/manim/renders/${encodeURIComponent(id)}/${action}`, {
     method: "POST",
+    signal,
   }), renderSessionViewSchema);
 }

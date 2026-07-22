@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { loadManimRender, loadManimWorkspace } from "./client";
+import type { ProgramRenderRequest } from "./contracts";
+import {
+  loadManimRender,
+  loadManimWorkspace,
+  runManimRenderAction,
+  startManimRender,
+} from "./client";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -67,5 +73,27 @@ describe("Manim API client contracts", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("not-json", { status: 502 })));
 
     await expect(loadManimRender("render-id")).rejects.toThrow(/502.*malformed JSON/i);
+  });
+
+  it("validates render requests before contacting the API", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(startManimRender({} as ProgramRenderRequest)).rejects.toThrow(/request.*API contract/i);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("encodes render identities and forwards abort signals to mutation requests", async () => {
+    const controller = new AbortController();
+    const fetch = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe("/api/manim/renders/render%2Fid/cancel");
+      expect(init.signal).toBe(controller.signal);
+      return new Response(JSON.stringify(session()), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(runManimRenderAction("render/id", "cancel", controller.signal)).resolves.toMatchObject({
+      status: "ready",
+    });
   });
 });

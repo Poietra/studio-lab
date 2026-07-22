@@ -37,7 +37,12 @@ export function projectStudioWorkspace(input: Readonly<{
     : projection.canvas.entities;
   return {
     boundary,
-    editableEntities: visibleEntities.filter((entity) => !isTransitionOverlay(entity)),
+    // The incoming Scene is a playback preview. Editing still targets the
+    // active (outgoing) Scene, so exposing incoming identities as editable
+    // would produce a guaranteed target-missing validation failure.
+    editableEntities: boundary
+      ? []
+      : projection.canvas.entities.filter((entity) => !isTransitionOverlay(entity)),
     projection,
     proposedState,
     visibleEntities,

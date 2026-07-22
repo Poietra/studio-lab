@@ -85,7 +85,22 @@ export function validateAndScheduleProgram(
       severity: "error",
     });
   }
-  if (Math.abs((input.operations[0]?.interval.start ?? Number.NaN) - input.anchor.resolvedSeconds) >= EPSILON) {
+  if (input.operations.length === 0) {
+    issues.push({
+      code: "operation-count",
+      field: "operations",
+      message: "An EditProgram must contain at least one Canonical operation.",
+      severity: "error",
+    });
+  }
+  const firstOperationStart = input.operations[0]?.interval.start;
+  if (
+    !Number.isFinite(input.anchor.resolvedSeconds)
+    || input.anchor.resolvedSeconds < 0
+    || input.anchor.resolvedSeconds > scene.duration
+    || (firstOperationStart !== undefined
+      && Math.abs(firstOperationStart - input.anchor.resolvedSeconds) >= EPSILON)
+  ) {
     issues.push({
       code: "anchor-invalid",
       field: "anchor.resolvedSeconds",
@@ -101,9 +116,47 @@ export function validateAndScheduleProgram(
   for (const operation of input.operations) issues.push(...validateOperation(operation, scene));
 
   const produced = producedEntityIds(input);
+  const producerIds = new Set<string>();
+  for (const operation of input.operations) {
+    const entityId = operation.kind === "CreateEntity"
+      ? operation.entity.id
+      : operation.kind === "TransformContent"
+        ? operation.targetEntityId
+        : null;
+    if (!entityId) continue;
+    if (producerIds.has(entityId)) {
+      issues.push({
+        code: "schema-invalid",
+        field: "target",
+        message: `Provisional identity ${entityId} is produced more than once in this EditProgram.`,
+        operationId: operation.id,
+        severity: "error",
+      });
+    }
+    producerIds.add(entityId);
+    if (!entityId.startsWith(`tx:${input.transactionId}/entity:`)) {
+      issues.push({
+        code: "provisional-id-invalid",
+        field: operation.kind === "CreateEntity" ? "entity.id" : "targetEntityId",
+        message: `Produced identity ${entityId} must belong to transaction ${input.transactionId}.`,
+        operationId: operation.id,
+        severity: "error",
+      });
+    }
+    if (scene.objectGraph.entities[entityId]) {
+      issues.push({
+        code: "provisional-id-invalid",
+        field: operation.kind === "CreateEntity" ? "entity.id" : "targetEntityId",
+        message: `Produced identity ${entityId} would overwrite an existing entity.`,
+        operationId: operation.id,
+        severity: "error",
+      });
+    }
+  }
   for (const operation of input.operations) {
     for (const entityId of referencedEntityIds(operation)) {
       if (!entityId.startsWith("tx:")) continue;
+      if (produced.has(entityId)) continue;
       const existingEntity = scene.objectGraph.entities[entityId];
       if (existingEntity && !existingEntity.provisional) continue;
       if (!entityId.startsWith(`tx:${input.transactionId}/entity:`)) {
@@ -114,7 +167,7 @@ export function validateAndScheduleProgram(
           operationId: operation.id,
           severity: "error",
         });
-      } else if (!produced.has(entityId)) {
+      } else {
         issues.push({
           code: "identity-unknown",
           field: "target",

@@ -73,9 +73,7 @@ describe("Studio workspace projection", () => {
     });
 
     expect(projected.boundary).not.toBeNull();
-    expect(projected.editableEntities.map((entity) => entity.id)).toEqual([
-      "source:scene.py#Second:incoming",
-    ]);
+    expect(projected.editableEntities).toEqual([]);
     expect(projected.visibleEntities.some((entity) => entity.type.startsWith("TransitionOverlay:"))).toBe(true);
   });
 });

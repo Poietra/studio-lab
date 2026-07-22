@@ -115,4 +115,29 @@ describe("bounded clarification context", () => {
     expect(parsed.success).toBe(true);
     expect(parsed.data?.clarification?.history).toHaveLength(1);
   });
+
+  it("rejects stale option answers and duplicate response option identities at the shared contract", () => {
+    const request = editSuggestionRequestSchema.safeParse({
+      clarification: {
+        answer: { kind: "option", optionId: "option-missing" },
+        history: [],
+        options,
+        question: "Which edit should Studio make?",
+      },
+      objects: [],
+      playhead: 5,
+      prompt: "Update the equation.",
+      scene: { id: "scene.py#Current", name: "Current", nextSceneId: null },
+      sceneDuration: 12,
+      selectedObjectIds: [],
+    });
+    const result = parseEditSuggestionResult({
+      kind: "clarification",
+      message: "Which edit should Studio make?",
+      options: [options[0], { ...options[1], id: options[0].id }],
+    });
+
+    expect(request.success).toBe(false);
+    expect(result.success).toBe(false);
+  });
 });

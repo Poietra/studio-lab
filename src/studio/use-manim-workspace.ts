@@ -10,6 +10,16 @@ function sceneAtId(scenes: readonly ManimWorkspaceScene[], id: string | null) {
   return scenes.find((scene) => scene.sceneId === id) ?? null;
 }
 
+export function scheduleWorkspaceRefresh(refresh: () => void | Promise<void>) {
+  let active = true;
+  queueMicrotask(() => {
+    if (active) void refresh();
+  });
+  return () => {
+    active = false;
+  };
+}
+
 export function useManimWorkspace() {
   const [workspace, setWorkspace] = useState<ManimWorkspaceView | null>(null);
   const [status, setStatus] = useState<WorkspaceStatus>("loading");
@@ -49,8 +59,11 @@ export function useManimWorkspace() {
   }, []);
 
   useEffect(() => {
-    void refresh();
+    // StrictMode reconnects effects once in development. Deferring the initial
+    // request lets the discarded setup cancel before it reaches the network.
+    const cancelScheduledRefresh = scheduleWorkspaceRefresh(refresh);
     return () => {
+      cancelScheduledRefresh();
       const controller = request.current;
       request.current = null;
       controller?.abort();

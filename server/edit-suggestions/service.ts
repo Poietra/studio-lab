@@ -6,6 +6,7 @@ export type EditSuggestionGenerator = Readonly<{
   generate: (
     request: EditSuggestionRequest,
     logger: StructuredLogger,
+    signal?: AbortSignal,
   ) => Promise<ModelSuggestion>;
 }>;
 

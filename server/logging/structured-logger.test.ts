@@ -19,15 +19,21 @@ describe("structured logger", () => {
     }).child({ requestId: "request-1", route: "/api/example" });
 
     logger.info("request.received", {
+      accessToken: "access-secret",
       authorization: "Bearer secret",
       clarification: { answer: { kind: "text", text: "はい" } },
+      password: "password-secret",
+      "x-api-key": "key-secret",
     });
 
     expect(records).toEqual([{
       context: { requestId: "request-1", route: "/api/example" },
       data: {
+        accessToken: "[REDACTED]",
         authorization: "[REDACTED]",
         clarification: { answer: { kind: "text", text: "はい" } },
+        password: "[REDACTED]",
+        "x-api-key": "[REDACTED]",
       },
       event: "request.received",
       level: "info",

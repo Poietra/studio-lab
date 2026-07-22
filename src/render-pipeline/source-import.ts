@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { z } from "zod";
 
 import {
   STUDIO_STATE_VERSION,
@@ -74,6 +75,19 @@ const SUPPORTED_TYPES = new Set([
 const ENTITY_MARKER_PATTERN = /^\s*#\s*poietra:entity\s+(.+)\s*$/;
 const ANCHOR_PATTERN = /^\s*#\s*poietra:anchor\s+([0-9]+(?:\.[0-9]+)?)\s*$/;
 const SCENE_BOUNDARY_PATTERN = /^\s*#\s*poietra:scene-boundary\s+(.+)\s*$/;
+// Studio-emitted v1 markers are authoritative 640x360 geometry metadata, not Python facts.
+const POSITION_MARKER_PATTERN = /^\s*#\s*poietra:position(?:\s+(.*))?\s*$/;
+const MOTION_MARKER_PATTERN = /^\s*#\s*poietra:motion(?:\s+(.*))?\s*$/;
+const identifierSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
+const markerPointSchema = z.object({ x: z.number().finite(), y: z.number().finite() }).strict();
+const positionMarkerSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("absolute"), value: markerPointSchema, variable: identifierSchema, version: z.literal(1) }).strict(),
+  z.object({ kind: z.literal("relative"), offset: markerPointSchema, relativeTo: identifierSchema, variable: identifierSchema, version: z.literal(1) }).strict(),
+]);
+const motionMarkerSchema = z.object({
+  motions: z.array(z.object({ delta: markerPointSchema, variables: z.array(identifierSchema).min(1).max(128) }).strict()).min(1).max(128),
+  version: z.literal(1),
+}).strict();
 
 function hashSource(source: string) {
   return createHash("sha256").update(source).digest("hex");
@@ -218,7 +232,11 @@ function stringLiterals(value: string) {
   return literals;
 }
 
-function markerIdentity(statements: readonly SourceStatement[], assignmentIndex: number) {
+function markerIdentity(
+  statements: readonly SourceStatement[],
+  assignmentIndex: number,
+  sourceVariable: string,
+) {
   const previous = statements[assignmentIndex - 1]?.text.match(ENTITY_MARKER_PATTERN)?.[1];
   if (!previous) return null;
   try {
@@ -228,6 +246,8 @@ function markerIdentity(statements: readonly SourceStatement[], assignmentIndex:
       && "id" in parsed
       && typeof parsed.id === "string"
       && parsed.id.length > 0
+      && "variable" in parsed
+      && parsed.variable === sourceVariable
       ? parsed.id
       : null;
   } catch {
@@ -272,7 +292,7 @@ function relationOffset(direction: "DOWN" | "LEFT" | "RIGHT" | "UP"): Point {
   }[direction];
 }
 
-function add(left: Point, right: Point): Point {
+function addPoint(left: Point, right: Point): Point {
   return { x: left.x + right.x, y: left.y + right.y };
 }
 
@@ -297,19 +317,71 @@ function waitDuration(statement: string) {
   return match ? Number(match[1] ?? 1) : null;
 }
 
-function shiftedPosition(point: Point, statement: string, frame: Readonly<{ height: number; width: number }>) {
-  const shift = statement.match(/\.animate\.shift\(([^)]*)\)/s)?.[1];
-  if (!shift) return point;
-  const horizontal = (shift.match(/(?:([0-9]+(?:\.[0-9]+)?)\s*\*\s*)?RIGHT/) ? 1 : 0)
-    - (shift.match(/(?:([0-9]+(?:\.[0-9]+)?)\s*\*\s*)?LEFT/) ? 1 : 0);
-  const vertical = (shift.match(/(?:([0-9]+(?:\.[0-9]+)?)\s*\*\s*)?DOWN/) ? 1 : 0)
-    - (shift.match(/(?:([0-9]+(?:\.[0-9]+)?)\s*\*\s*)?UP/) ? 1 : 0);
-  const horizontalAmount = Number(shift.match(/([0-9]+(?:\.[0-9]+)?)\s*\*\s*(?:RIGHT|LEFT)/)?.[1] ?? 1);
-  const verticalAmount = Number(shift.match(/([0-9]+(?:\.[0-9]+)?)\s*\*\s*(?:UP|DOWN)/)?.[1] ?? 1);
-  return {
-    x: point.x + horizontal * horizontalAmount * (640 / frame.width),
-    y: point.y + vertical * verticalAmount * (360 / frame.height),
-  };
+function markerBefore(
+  statements: readonly SourceStatement[],
+  statementIndex: number,
+  pattern: RegExp,
+): unknown {
+  const match = statements[statementIndex - 1]?.text.match(pattern);
+  if (!match) return undefined;
+  try {
+    return JSON.parse(match[1] ?? "") as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function simpleShiftVector(statement: string, sourceVariable: string) {
+  const variable = sourceVariable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const expression = new RegExp(
+    `(?:^self\\.play\\(\\s*|\\n\\s*)${variable}\\s*\\.\\s*animate\\s*\\.\\s*shift\\s*\\(\\s*([^()]*)\\s*\\)`,
+    "s",
+  ).exec(statement)?.[1].replace(/\s/g, "");
+  const number = "(?:\\d+(?:\\.\\d*)?|\\.\\d+)";
+  const direction = "(?:DOWN|LEFT|RIGHT|UP)";
+  if (!expression || !new RegExp(`^[+-]?(?:${number}\\*)?${direction}(?:[+-](?:${number}\\*)?${direction})*$`).test(expression)) {
+    return null;
+  }
+  const vector = { x: 0, y: 0 };
+  for (const term of expression.matchAll(/([+-]?)(?:(\d+(?:\.\d*)?|\.\d+)\*)?(DOWN|LEFT|RIGHT|UP)/g)) {
+    const amount = (term[1] === "-" ? -1 : 1) * Number(term[2] ?? 1);
+    if (term[3] === "LEFT") vector.x -= amount;
+    if (term[3] === "RIGHT") vector.x += amount;
+    if (term[3] === "UP") vector.y -= amount;
+    if (term[3] === "DOWN") vector.y += amount;
+  }
+  return Number.isFinite(vector.x) && Number.isFinite(vector.y) ? vector : null;
+}
+
+function appendPositionSample(
+  positionSamples: Map<string, PropertyChannelSample[]>,
+  entityId: string,
+  sample: PropertyChannelSample,
+) {
+  const samples = positionSamples.get(entityId) ?? [];
+  const previous = samples.at(-1);
+  if (previous && previous.interval.end > sample.interval.start) {
+    samples[samples.length - 1] = {
+      ...previous,
+      interval: { ...previous.interval, end: Math.max(previous.interval.start, sample.interval.start) },
+    };
+  }
+  samples.push(sample);
+  positionSamples.set(entityId, samples);
+}
+
+function shiftedPosition(
+  point: Point,
+  statement: string,
+  sourceVariable: string,
+  frame: Readonly<{ height: number; width: number }>,
+) {
+  const vector = simpleShiftVector(statement, sourceVariable);
+  if (!vector) return null;
+  return addPoint(point, {
+    x: vector.x * (640 / frame.width),
+    y: vector.y * (360 / frame.height),
+  });
 }
 
 export function importManimScene(
@@ -340,7 +412,7 @@ export function importManimScene(
     const match = statement.text.match(ASSIGNMENT_PATTERN);
     if (!match || !SUPPORTED_TYPES.has(match[2])) return;
     const [, sourceVariable, type, argumentsSource] = match;
-    const markedIdentity = markerIdentity(statements, index);
+    const markedIdentity = markerIdentity(statements, index, sourceVariable);
     if (sourceVariable.startsWith("poietra_") && !markedIdentity) return;
     const entity: MutableEntity = {
       content: entityContent(type, sourceVariable, argumentsSource),
@@ -358,7 +430,7 @@ export function importManimScene(
   for (const entity of mutableEntities) {
     if (entity.relation) {
       const target = byVariable.get(entity.relation.target);
-      if (target) entity.position = add(target.position, relationOffset(entity.relation.direction));
+      if (target) entity.position = addPoint(target.position, relationOffset(entity.relation.direction));
     }
     const surrounded = entity.initialization.match(/SurroundingRectangle\(\s*([A-Za-z_][A-Za-z0-9_]*)/);
     if (surrounded) entity.position = byVariable.get(surrounded[1])?.position ?? entity.position;
@@ -366,6 +438,7 @@ export function importManimScene(
 
   let cursor = 0;
   let firstPlayEnd: number | null = null;
+  let insideIncomingEvents = false;
   const events: TimelineEvent[] = [];
   const positionSamples = new Map<string, PropertyChannelSample[]>();
   for (const entity of mutableEntities) {
@@ -376,7 +449,21 @@ export function importManimScene(
       value: entity.position,
     }]);
   }
-  for (const statement of statements) {
+  for (const [statementIndex, statement] of statements.entries()) {
+    if (statement.text === "# poietra:incoming-start") {
+      insideIncomingEvents = true;
+      continue;
+    }
+    if (statement.text === "# poietra:incoming-end") {
+      insideIncomingEvents = false;
+      continue;
+    }
+    if (insideIncomingEvents) continue;
+    const sourceAnchor = statement.text.match(ANCHOR_PATTERN)?.[1];
+    if (sourceAnchor) {
+      cursor = Number(sourceAnchor);
+      continue;
+    }
     const sceneBoundary = statement.text.match(SCENE_BOUNDARY_PATTERN)?.[1];
     if (sceneBoundary) {
       try {
@@ -412,6 +499,28 @@ export function importManimScene(
       cursor += wait;
       continue;
     }
+    const positionMarker = markerBefore(statements, statementIndex, POSITION_MARKER_PATTERN);
+    const moveToVariable = statement.text.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*move_to\s*\(/s)?.[1];
+    if (positionMarker !== undefined && moveToVariable) {
+      const parsed = positionMarkerSchema.safeParse(positionMarker);
+      if (parsed.success && parsed.data.variable === moveToVariable) {
+        const entity = byVariable.get(parsed.data.variable);
+        const relative = parsed.data.kind === "relative" ? byVariable.get(parsed.data.relativeTo) : null;
+        const position = parsed.data.kind === "absolute"
+          ? parsed.data.value
+          : relative ? addPoint(relative.position, parsed.data.offset) : null;
+        if (entity && position && Number.isFinite(position.x) && Number.isFinite(position.y)) {
+          appendPositionSample(positionSamples, entity.id, {
+            interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
+            kind: "exact",
+            provenanceId: `import:${sceneId}:${entity.sourceVariable}:position-marker:${statement.line}`,
+            value: position,
+          });
+          entity.position = position;
+        }
+      }
+      continue;
+    }
     const add = statement.text.match(/^self\.add\((.*)\)$/s)?.[1];
     if (add) {
       for (const entity of mutableEntities) {
@@ -435,6 +544,26 @@ export function importManimScene(
     if (!statement.text.startsWith("self.play(")) continue;
     const duration = durationFrom(statement.text);
     const interval = { end: cursor + duration, start: cursor };
+    const motionMarker = markerBefore(statements, statementIndex, MOTION_MARKER_PATTERN);
+    const parsedMotion = motionMarkerSchema.safeParse(motionMarker);
+    const markedVariables = parsedMotion.success
+      ? parsedMotion.data.motions.flatMap((motion) => motion.variables)
+      : [];
+    const actualShiftVariables = [...statement.text.matchAll(
+      /(?:^self\.play\(\s*|\n\s*)([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*animate\s*\.\s*shift\s*\(\s*[^()]*\s*\)/g,
+    )].map((match) => match[1]);
+    const validMarkedMotion = motionMarker !== undefined && parsedMotion.success
+      && new Set(markedVariables).size === markedVariables.length
+      && markedVariables.length === actualShiftVariables.length
+      && markedVariables.every((variable) => (
+        byVariable.has(variable)
+        && actualShiftVariables.includes(variable)
+      ));
+    const markedDelta = validMarkedMotion
+      ? new Map(parsedMotion.data.motions.flatMap((motion) => (
+        motion.variables.map((variable) => [variable, motion.delta] as const)
+      )))
+      : new Map<string, Point>();
     firstPlayEnd ??= interval.end;
     events.push({
       id: `import:${sceneId}:play:${statement.line}`,
@@ -450,11 +579,16 @@ export function importManimScene(
       if (new RegExp(`(?:FadeOut|Uncreate|Unwrite)\\(\\s*${variablePattern}\\b`).test(statement.text)) {
         endPresence(entity, interval.end);
       }
-      if (new RegExp(`\\b${variablePattern}\\.animate\\.shift\\(`).test(statement.text)) {
-        const samples = positionSamples.get(entity.id) ?? [];
+      const marked = markedDelta.get(entity.sourceVariable);
+      const shifted = marked
+        ? addPoint(entity.position, marked)
+        : motionMarker !== undefined
+          ? null
+          : shiftedPosition(entity.position, statement.text, entity.sourceVariable, frame);
+      if (shifted && Number.isFinite(shifted.x) && Number.isFinite(shifted.y)) {
         const from = entity.position;
-        const to = shiftedPosition(from, statement.text, frame);
-        samples.push({
+        const to = shifted;
+        appendPositionSample(positionSamples, entity.id, {
           control: { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 },
           easing: "smooth",
           from,
@@ -463,7 +597,6 @@ export function importManimScene(
           provenanceId: `import:${sceneId}:${entity.sourceVariable}:motion:${statement.line}`,
           value: to,
         });
-        positionSamples.set(entity.id, samples);
         entity.position = to;
       }
     }

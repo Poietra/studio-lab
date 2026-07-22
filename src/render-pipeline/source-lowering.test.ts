@@ -7,6 +7,7 @@ import {
   lowerCanonicalProgramSource,
   ProgramLoweringError,
 } from "./source-lowering";
+import { importManimScene } from "./source-import";
 import type { CanonicalEditOperation, CanonicalEditProgram } from "../studio/operations";
 
 const source = `from manim import *
@@ -14,6 +15,18 @@ const source = `from manim import *
 class GroupedEquation(Scene):
     def construct(self):
         equation = MathTex("E", "=", "m", "c^2")
+        # poietra:anchor 7.000
+        self.wait(1)
+`;
+
+const roundTripSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        equation = MathTex("E", "=", "m", "c^2")
+        self.add(equation)
+        self.play(equation.animate.shift(2 * RIGHT + UP), run_time=1)
+        self.wait(6)
         # poietra:anchor 7.000
         self.wait(1)
 `;
@@ -79,6 +92,32 @@ function operationBase(id: string, start: number, end = start) {
   };
 }
 
+function transformOperation(
+  id: string,
+  start: number,
+  sourceEntityId: string,
+  targetEntityId: string,
+  texParts: readonly string[],
+): CanonicalEditOperation {
+  return {
+    ...operationBase(id, start, start + 1),
+    kind: "TransformContent",
+    replacement: { displayLines: [texParts.join(" ")], texParts },
+    sourceEntityId,
+    strategy: "transform-matching-tex",
+    targetEntityId,
+    targetType: "MathTex",
+  };
+}
+
+function latestPosition(
+  imported: NonNullable<ReturnType<typeof importManimScene>>,
+  entityId: string,
+) {
+  return imported.runtimeSceneState.propertyChannels[`${entityId}/position`]
+    ?.samples.at(-1)?.value as Readonly<{ x: number; y: number }>;
+}
+
 describe("Canonical EditProgram source lowering", () => {
   it("discovers explicit source anchors inside their Scene", () => {
     expect(findMotionAnchors(source)).toEqual([{ line: 6, seconds: 7 }]);
@@ -87,11 +126,16 @@ describe("Canonical EditProgram source lowering", () => {
 
   it("converts a canonical screen-space motion at the exact anchor", () => {
     const lowered = lowerCanonicalProgramSource(source, request(), { height: 8, width: 14.222 }, null);
+    const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
 
     expect(lowered.anchorLine).toBe(6);
+    expect(lowered.insertedCode).toContain('# poietra:motion {"motions":[{"delta":{"x":64,"y":-45},"variables":["equation"]}],"version":1}');
     expect(lowered.insertedCode).toContain("equation.animate.shift(1.4222 * RIGHT + 1 * UP)");
     expect(lowered.insertedCode).toContain("run_time=1.5");
     expect(lowered.source.indexOf("# poietra:anchor 7.000")).toBeLessThan(lowered.source.indexOf("self.play("));
+    expect(imported?.runtimeSceneState.propertyChannels[
+      "source:examples/relativity.py#GroupedEquation:equation/position"
+    ]?.samples.at(-1)?.interval).toEqual({ end: 8.5, start: 7 });
   });
 
   it("lowers equation, explanation, and an actual imported Scene boundary as one transaction", () => {
@@ -109,9 +153,9 @@ describe("Canonical EditProgram source lowering", () => {
         },
         kind: "CreateEntity",
       },
-      { ...operationBase("position-equation", 7), entityId: equationId, key: "position", kind: "SetProperty", value: { x: 320, y: 180 } },
       { ...operationBase("create-text", 7), entity: { content: { displayLines: ["Energy"], text: "Energy" }, id: textId, lifetime: { end: null, start: 7 }, type: "Text" }, kind: "CreateEntity" },
       { ...operationBase("place-text", 7), kind: "SetRelation", mode: "snapshot", offset: { x: 145, y: 0 }, placement: "right", relation: "next-to", sourceEntityId: textId, targetEntityId: equationId },
+      { ...operationBase("position-text", 7), entityId: textId, key: "position", kind: "SetProperty", value: { x: 320, y: 180 } },
       { ...operationBase("show-equation", 7, 8), effect: "fade-in", entityId: equationId, kind: "ChangePresence", persistent: true },
       { ...operationBase("show-text", 7, 8), effect: "fade-in", entityId: textId, kind: "ChangePresence", persistent: true },
       { ...operationBase("create-overlay", 8), entity: { content: { displayLines: ["sky circle"] }, id: overlayId, lifetime: { end: 9, start: 8 }, type: "TransitionOverlay:circle:sky" }, kind: "CreateEntity" },
@@ -133,10 +177,13 @@ describe("Canonical EditProgram source lowering", () => {
         visibleSourceVariables: ["title"],
       },
     );
+    const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
 
     expect(lowered.insertedCode).toContain("MathTex(\"E\", \"=\", \"m\", \"c^2\")");
     expect(lowered.insertedCode).toContain("Text(\"Energy\")");
     expect(lowered.insertedCode).toContain(".get_center() + 3.2222 * RIGHT");
+    expect(lowered.insertedCode.indexOf(".get_center() + 3.2222 * RIGHT"))
+      .toBeLessThan(lowered.insertedCode.indexOf(".move_to(ORIGIN)"));
     expect(lowered.insertedCode).toContain("FadeIn(");
     expect(lowered.insertedCode).toContain("self.clear()");
     expect(lowered.insertedCode).toContain('# poietra:scene-boundary {"at":8.5,"destination":"scene.py#Next"}');
@@ -144,6 +191,9 @@ describe("Canonical EditProgram source lowering", () => {
     expect(lowered.insertedCode).toContain("title = Text(\"Next\")");
     expect(lowered.insertedCode).toContain("return  # The imported next Scene now owns the composition.");
     expect(lowered.insertedCode.match(/# poietra:entity/g)).toHaveLength(2);
+    expect(lowered.insertedCode.match(/# poietra:position/g)).toHaveLength(2);
+    expect(imported).not.toBeNull();
+    if (imported) expect(latestPosition(imported, textId)).toEqual({ x: 320, y: 180 });
   });
 
   it("rejects curved motion instead of claiming a reproducible render", () => {
@@ -220,5 +270,75 @@ describe("Canonical EditProgram source lowering", () => {
     const lowered = lowerCanonicalProgramSource(source, request(program), { height: 8, width: 14.222 }, null);
     expect(lowered.insertedCode).toContain("unsafe\\nself.remove(equation)");
     expect(lowered.insertedCode).not.toContain("\nself.remove(equation)\n");
+  });
+
+  it("does not overwrite an existing Python identifier when allocating transaction variables", () => {
+    const collisionSource = source.replace(
+      "        equation = MathTex",
+      "        poietra_collision_1 = Text(\"Existing\")\n        equation = MathTex",
+    );
+    const create: CanonicalEditOperation = {
+      ...operationBase("create", 7),
+      entity: { content: { displayLines: ["x"], texParts: ["x"] }, id: "tx:collision/entity:new", lifetime: { end: null, start: 7 }, type: "MathTex" },
+      kind: "CreateEntity",
+    };
+    const code = lowerCanonicalProgramSource(
+      collisionSource,
+      request(canonicalProgram([create], "collision"), []),
+      { height: 8, width: 14.222 },
+      null,
+    ).insertedCode;
+
+    expect(code).toContain("poietra_collision_1_2 = MathTex(\"x\")");
+    expect(code).not.toContain("poietra_collision_1 = MathTex(\"x\")");
+  });
+
+  it("orders same-bucket dependencies and carries chained transform identities", () => {
+    const firstTarget = "tx:chain/entity:first";
+    const secondTarget = "tx:chain/entity:second";
+    const explanationId = "tx:chain/entity:explanation";
+    const relation: CanonicalEditOperation = {
+      ...operationBase("place-explanation", 7),
+      kind: "SetRelation", mode: "snapshot", offset: { x: 145, y: 0 }, placement: "right", relation: "next-to",
+      sourceEntityId: explanationId, targetEntityId: firstTarget,
+    };
+    const explanation: CanonicalEditOperation = {
+      ...operationBase("create-explanation", 7),
+      entity: { content: { displayLines: ["Explanation"], text: "Explanation" }, id: explanationId, lifetime: { end: null, start: 7 }, type: "Text" },
+      kind: "CreateEntity",
+    };
+    const operations: CanonicalEditOperation[] = [
+      explanation,
+      transformOperation("first-transform", 7, "equation_1", firstTarget, ["F", "=", "m", "a"]),
+      relation,
+      transformOperation("second-transform", 8, firstTarget, secondTarget, ["p", "=", "m", "v"]),
+    ];
+    const lowered = lowerCanonicalProgramSource(roundTripSource, request(canonicalProgram(operations, "chain")), { height: 8, width: 14.222 }, null);
+    const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
+    const targetVariable = imported?.sourceVariables[firstTarget];
+    const explanationVariable = imported?.sourceVariables[explanationId];
+
+    expect(lowered.insertedCode.match(/# poietra:position/g)).toHaveLength(3);
+    expect(lowered.insertedCode).toContain("equation = poietra_chain_3");
+    expect(lowered.insertedCode.indexOf(`${targetVariable} = MathTex(`))
+      .toBeLessThan(lowered.insertedCode.indexOf(`${explanationVariable}.move_to(${targetVariable}.get_center()`));
+    expect(imported?.sourceVariables).toMatchObject({
+      [explanationId]: "poietra_chain_1",
+      [firstTarget]: "poietra_chain_2",
+      [secondTarget]: "poietra_chain_3",
+    });
+    expect([firstTarget, secondTarget].map((id) => imported?.runtimeSceneState.objectGraph.entities[id]?.lifetime))
+      .toEqual([[{ end: 9, start: 7 }], [{ end: 10, start: 8 }]]);
+    expect(imported).not.toBeNull();
+    if (!imported) return;
+    const sourcePosition = latestPosition(imported, "source:examples/relativity.py#GroupedEquation:equation");
+    expect(sourcePosition).toMatchObject({ x: expect.closeTo(260, 2), y: 90 });
+    expect(latestPosition(imported, firstTarget)).toEqual(sourcePosition);
+    expect(latestPosition(imported, secondTarget)).toEqual(sourcePosition);
+    const explanationPosition = latestPosition(imported, explanationId);
+    expect(explanationPosition).toMatchObject({
+      x: expect.closeTo(sourcePosition.x + 145, 1),
+      y: expect.closeTo(sourcePosition.y, 2),
+    });
   });
 });

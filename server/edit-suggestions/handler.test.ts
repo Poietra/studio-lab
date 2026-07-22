@@ -1,4 +1,4 @@
-import { createServer } from "node:http";
+import { createServer, request as createRequest } from "node:http";
 import type { AddressInfo } from "node:net";
 
 import { describe, expect, it } from "vitest";
@@ -9,6 +9,7 @@ import {
   createStructuredLogger,
   type StructuredLogRecord,
 } from "../logging/structured-logger";
+import { openAiEditSuggestions } from "../openai-edit-suggestions";
 import { createEditSuggestionHandler } from "./handler";
 import type { EditSuggestionGenerator } from "./service";
 
@@ -117,5 +118,55 @@ describe("edit suggestion API handler", () => {
     expect(response.status).toBe(400);
     expect(result).toEqual({ error: "A clarification option is no longer available." });
     expect(calls).toBe(0);
+  });
+
+  it("propagates a disconnected client to an in-flight generator", async () => {
+    let resolveStarted!: () => void;
+    let resolveAborted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    const aborted = new Promise<void>((resolve) => {
+      resolveAborted = resolve;
+    });
+    const generator: EditSuggestionGenerator = {
+      generate(_request, _logger, signal): Promise<never> {
+        resolveStarted();
+        return new Promise((_resolve, reject) => {
+          expect(signal).toBeDefined();
+          signal?.addEventListener("abort", () => {
+            resolveAborted();
+            reject(signal.reason);
+          }, { once: true });
+        });
+      },
+    };
+    const server = createServer(createEditSuggestionHandler({
+      generator: () => generator,
+      logger: createStructuredLogger({ sinks: [] }),
+    }));
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address() as AddressInfo;
+      const client = createRequest({
+        headers: { "content-type": "application/json" },
+        host: "127.0.0.1",
+        method: "POST",
+        path: "/",
+        port: address.port,
+      });
+      client.on("error", () => undefined);
+      client.end(JSON.stringify(requestBody()));
+      await started;
+      client.destroy();
+
+      await aborted;
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it("is exposed by a serve-only Vite plugin", () => {
+    expect(openAiEditSuggestions({ logPath: false }).apply).toBe("serve");
   });
 });

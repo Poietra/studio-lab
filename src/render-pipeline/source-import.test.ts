@@ -82,6 +82,7 @@ class First(Scene):
         self.clear()
         # poietra:incoming-start
         incoming_title = Text("Incoming")
+        self.wait(99)
         # poietra:incoming-end
         self.add(incoming_title)
         return
@@ -160,5 +161,72 @@ class Repeated(Scene):
         { end: 2, start: 1 },
         { end: 4, start: 3 },
       ]);
+  });
+
+  it("imports simple per-object shifts and round-trips Studio markers", () => {
+    const positioned = `from manim import *
+
+class Positioned(Scene):
+    def construct(self):
+        base = Dot()
+        label = Text("Label")
+        self.add(base, label)
+        self.play(
+            base.animate.shift(RIGHT + UP),
+            label.animate.shift(2 * LEFT + DOWN),
+            run_time=1,
+        )
+        # poietra:position {"kind":"absolute","value":{"x":280,"y":120},"variable":"base","version":1}
+        base.move_to(0.8889 * LEFT + 1.3333 * UP)
+        # poietra:position {"kind":"relative","offset":{"x":10,"y":20},"relativeTo":"base","variable":"label","version":1}
+        label.move_to(base.get_center() + 0.2222 * RIGHT + 0.4444 * DOWN)
+        # poietra:motion {"motions":[{"delta":{"x":5,"y":-5},"variables":["base","label"]}],"version":1}
+        self.play(
+            base.animate.shift(0.1111 * RIGHT + 0.1111 * UP),
+            label.animate.shift(0.1111 * RIGHT + 0.1111 * UP),
+            run_time=2,
+        )
+        self.wait(1)
+`;
+    const imported = importManimScene(positioned, "scene.py", "Positioned");
+    const samples = (variable: string) => imported?.runtimeSceneState.propertyChannels[
+      `source:scene.py#Positioned:${variable}/position`
+    ]?.samples;
+
+    expect(samples("base")?.[1]?.value).toMatchObject({ x: expect.closeTo(215, 2), y: 90 });
+    expect(samples("label")?.[1]?.value).toMatchObject({ x: expect.closeTo(230, 2), y: 180 });
+    expect(samples("base")).toHaveLength(4);
+    expect(samples("base")?.at(-1)).toMatchObject({
+      from: { x: 280, y: 120 },
+      interval: { end: 3, start: 1 },
+      value: { x: 285, y: 115 },
+    });
+    expect(samples("label")?.at(-1)).toMatchObject({
+      from: { x: 290, y: 140 },
+      interval: { end: 3, start: 1 },
+      value: { x: 295, y: 135 },
+    });
+  });
+
+  it("fails closed for complex Python and an invalid marker", () => {
+    const marked = `from manim import *
+
+class Marked(Scene):
+    def construct(self):
+        dot = Dot()
+        self.add(dot)
+        # poietra:position {}
+        self.play(Write(Text("dot.animate.shift(RIGHT)")), run_time=1)
+        self.play(dot.animate.shift(RIGHT + normalize(UP)), run_time=1)
+        # poietra:motion {"motions":[{"delta":{"x":5,"y":0},"variables":["dot","missing"]}],"version":1}
+        self.play(dot.animate.shift(RIGHT), missing.animate.shift(LEFT), run_time=1)
+        # poietra:motion
+        self.play(dot.animate.shift(RIGHT), run_time=1)
+`;
+    const imported = importManimScene(marked, "scene.py", "Marked");
+    const samples = imported?.runtimeSceneState.propertyChannels["source:scene.py#Marked:dot/position"]?.samples;
+
+    expect(samples).toHaveLength(1);
+    expect(imported?.runtimeSceneState.duration).toBe(4);
   });
 });

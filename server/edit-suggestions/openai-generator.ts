@@ -19,6 +19,12 @@ type OpenAiGeneratorOptions = Readonly<{
   model: string;
 }>;
 
+type CandidateAttempt = Readonly<{
+  kind: "initial" | "repair";
+  repairFeedback?: string;
+  signal?: AbortSignal;
+}>;
+
 function validationFeedback(error: ZodError) {
   return error.issues
     .slice(0, 4)
@@ -44,30 +50,32 @@ export function createOpenAiEditSuggestionGenerator(
   const requestCandidate = async (
     request: EditSuggestionRequest,
     logger: StructuredLogger,
-    attempt: "initial" | "repair",
-    repairFeedback?: string,
+    attempt: CandidateAttempt,
   ): Promise<ModelSuggestion | null> => {
-    const instructions = repairFeedback
-      ? `${options.instructions}\n\nThe previous candidate failed closed-schema validation: ${repairFeedback}. Return a fresh candidate that satisfies every schema invariant. Do not repeat an operation kind. Parallel steps must have identical start and end values. If the complete request cannot be represented, return one focused clarification.`
+    const instructions = attempt.repairFeedback
+      ? `${options.instructions}\n\nThe previous candidate failed closed-schema validation: ${attempt.repairFeedback}. Return a fresh candidate that satisfies every schema invariant. Do not repeat an operation kind. Parallel steps must have identical start and end values. If the complete request cannot be represented, return one focused clarification.`
       : options.instructions;
     logger.info("model.requested", {
-      attempt,
+      attempt: attempt.kind,
       instructions,
       model: options.model,
-      repairFeedback,
+      repairFeedback: attempt.repairFeedback,
       request,
     });
-    const completion = await client.responses.parse({
-      input: [{ content: JSON.stringify(request), role: "user" }],
-      instructions,
-      max_output_tokens: 900,
-      model: options.model,
-      reasoning: { effort: "none" },
-      store: false,
-      text: { format: zodTextFormat(modelSuggestionSchema, "poietra_edit_suggestion") },
-    });
+    const completion = await client.responses.parse(
+      {
+        input: [{ content: JSON.stringify(request), role: "user" }],
+        instructions,
+        max_output_tokens: 900,
+        model: options.model,
+        reasoning: { effort: "none" },
+        store: false,
+        text: { format: zodTextFormat(modelSuggestionSchema, "poietra_edit_suggestion") },
+      },
+      { signal: attempt.signal },
+    );
     logger.info("model.responded", {
-      attempt,
+      attempt: attempt.kind,
       responseId: completion.id,
       result: completion.output_parsed,
       usage: completion.usage,
@@ -78,9 +86,10 @@ export function createOpenAiEditSuggestionGenerator(
   const generateWithRepair = async (
     request: EditSuggestionRequest,
     logger: StructuredLogger,
+    signal?: AbortSignal,
   ) => {
     try {
-      return requireCandidate(await requestCandidate(request, logger, "initial"));
+      return requireCandidate(await requestCandidate(request, logger, { kind: "initial", signal }));
     } catch (error) {
       if (!(error instanceof ZodError)) throw error;
       const feedback = validationFeedback(error);
@@ -90,16 +99,20 @@ export function createOpenAiEditSuggestionGenerator(
         issues: error.issues,
       });
       return requireCandidate(
-        await requestCandidate(request, logger, "repair", feedback),
+        await requestCandidate(request, logger, {
+          kind: "repair",
+          repairFeedback: feedback,
+          signal,
+        }),
         true,
       );
     }
   };
 
   return {
-    async generate(request, logger) {
+    async generate(request, logger, signal) {
       try {
-        return await generateWithRepair(request, logger);
+        return await generateWithRepair(request, logger, signal);
       } catch (error) {
         if (error instanceof EditSuggestionGenerationError) throw error;
         if (error instanceof ZodError) {

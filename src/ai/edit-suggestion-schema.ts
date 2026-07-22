@@ -244,21 +244,53 @@ export const clarificationOptionSchema = z.object({
   label: z.string().trim().min(1).max(80),
 });
 
+const clarificationOptionsSchema = z.array(clarificationOptionSchema).max(3).superRefine((options, context) => {
+  const seen = new Set<string>();
+  options.forEach((option, index) => {
+    if (seen.has(option.id)) {
+      context.addIssue({
+        code: "custom",
+        message: `Clarification option ID ${option.id} is duplicated.`,
+        path: [index, "id"],
+      });
+    }
+    seen.add(option.id);
+  });
+});
+
 const clarificationAnswerSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("option"), optionId: z.string().trim().min(1).max(40) }),
   z.object({ kind: z.literal("text"), text: z.string().trim().min(1).max(2_000) }),
 ]);
 
-const clarificationTurnSchema = z.object({
+const clarificationTurnFields = {
   answer: clarificationAnswerSchema,
-  options: z.array(clarificationOptionSchema).max(3),
+  options: clarificationOptionsSchema,
   question: z.string().trim().min(1).max(500),
-});
+} as const;
+
+function validateClarificationAnswer(
+  turn: Readonly<z.infer<z.ZodObject<typeof clarificationTurnFields>>>,
+  context: z.RefinementCtx,
+) {
+  if (turn.answer.kind !== "option") return;
+  const { optionId } = turn.answer;
+  if (!turn.options.some((option) => option.id === optionId)) {
+    context.addIssue({
+      code: "custom",
+      message: "The selected clarification option is not present in this turn.",
+      path: ["answer", "optionId"],
+    });
+  }
+}
+
+const clarificationTurnSchema = z.object(clarificationTurnFields).superRefine(validateClarificationAnswer);
 
 export const editSuggestionRequestSchema = z.object({
-  clarification: clarificationTurnSchema.extend({
+  clarification: z.object({
+    ...clarificationTurnFields,
     history: z.array(clarificationTurnSchema).max(4),
-  }).nullable(),
+  }).superRefine(validateClarificationAnswer).nullable(),
   objects: z.array(z.object({
     displayName: z.string(),
     id: z.string(),
@@ -289,6 +321,21 @@ export const modelSuggestionSchema = z.object({
   operation: editSuggestionOperationSchema.nullable(),
   options: z.array(modelClarificationOptionSchema).max(3),
   summary: z.string(),
+}).superRefine((suggestion, context) => {
+  if (suggestion.kind === "suggestion" && suggestion.operation === null) {
+    context.addIssue({
+      code: "custom",
+      message: "A suggestion result must include an operation.",
+      path: ["operation"],
+    });
+  }
+  if (suggestion.kind === "clarification" && suggestion.operation !== null) {
+    context.addIssue({
+      code: "custom",
+      message: "A clarification result must not include an operation.",
+      path: ["operation"],
+    });
+  }
 });
 
 export type ModelSuggestion = z.infer<typeof modelSuggestionSchema>;
@@ -305,7 +352,7 @@ export const editSuggestionResultSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("clarification"),
     message: z.string().min(1),
-    options: z.array(clarificationOptionSchema).max(3),
+    options: clarificationOptionsSchema,
   }),
   z.object({ kind: z.literal("suggestion"), suggestion: suggestionSchema }),
 ]);
