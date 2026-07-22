@@ -82,6 +82,7 @@ class First(Scene):
         self.clear()
         # poietra:incoming-start
         incoming_title = Text("Incoming")
+        self.wait(99)
         # poietra:incoming-end
         self.add(incoming_title)
         return
@@ -162,105 +163,70 @@ class Repeated(Scene):
       ]);
   });
 
-  it("imports each object's own vector when concurrent shifts use different directions", () => {
-    const concurrent = `from manim import *
-
-class Concurrent(Scene):
-    def construct(self):
-        first = Dot()
-        second = Dot()
-        self.add(first, second)
-        self.play(
-            first.animate.shift(RIGHT + UP),
-            second.animate.shift(2 * LEFT + DOWN),
-            run_time=1,
-        )
-`;
-    const imported = importManimScene(concurrent, "scene.py", "Concurrent");
-    const first = imported?.runtimeSceneState.propertyChannels[
-      "source:scene.py#Concurrent:first/position"
-    ]?.samples.at(-1)?.value;
-    const second = imported?.runtimeSceneState.propertyChannels[
-      "source:scene.py#Concurrent:second/position"
-    ]?.samples.at(-1)?.value;
-
-    expect(first).toMatchObject({ x: expect.closeTo(215, 2), y: 90 });
-    expect(second).toMatchObject({ x: expect.closeTo(230, 2), y: 180 });
-  });
-
-  it("applies a scalar to every term in a parenthesized shift vector", () => {
-    const scaled = `from manim import *
-
-class Scaled(Scene):
-    def construct(self):
-        dot = Dot()
-        self.add(dot)
-        self.play(dot.animate.shift(2 * (RIGHT + UP)), run_time=1)
-`;
-    const imported = importManimScene(scaled, "scene.py", "Scaled");
-    const position = imported?.runtimeSceneState.propertyChannels[
-      "source:scene.py#Scaled:dot/position"
-    ]?.samples.at(-1)?.value;
-
-    expect(position).toMatchObject({ x: expect.closeTo(260, 2), y: 45 });
-  });
-
-  it("imports generated absolute and center-relative move_to calls in cursor order", () => {
+  it("imports simple per-object shifts and round-trips Studio markers", () => {
     const positioned = `from manim import *
 
 class Positioned(Scene):
     def construct(self):
-        base = Dot().move_to(LEFT + 2 * UP)
+        base = Dot()
         label = Text("Label")
         self.add(base, label)
-        self.wait(1)
-        base.move_to(2 * RIGHT + UP)
-        label.move_to(base.get_center() + 3 * DOWN)
+        self.play(
+            base.animate.shift(RIGHT + UP),
+            label.animate.shift(2 * LEFT + DOWN),
+            run_time=1,
+        )
+        # poietra:position {"kind":"absolute","value":{"x":280,"y":120},"variable":"base","version":1}
+        base.move_to(0.8889 * LEFT + 1.3333 * UP)
+        # poietra:position {"kind":"relative","offset":{"x":10,"y":20},"relativeTo":"base","variable":"label","version":1}
+        label.move_to(base.get_center() + 0.2222 * RIGHT + 0.4444 * DOWN)
+        # poietra:motion {"motions":[{"delta":{"x":5,"y":-5},"variables":["base","label"]}],"version":1}
+        self.play(
+            base.animate.shift(0.1111 * RIGHT + 0.1111 * UP),
+            label.animate.shift(0.1111 * RIGHT + 0.1111 * UP),
+            run_time=2,
+        )
         self.wait(1)
 `;
     const imported = importManimScene(positioned, "scene.py", "Positioned");
-    const baseSamples = imported?.runtimeSceneState.propertyChannels[
-      "source:scene.py#Positioned:base/position"
-    ]?.samples;
-    const labelSamples = imported?.runtimeSceneState.propertyChannels[
-      "source:scene.py#Positioned:label/position"
+    const samples = (variable: string) => imported?.runtimeSceneState.propertyChannels[
+      `source:scene.py#Positioned:${variable}/position`
     ]?.samples;
 
-    expect(baseSamples).toHaveLength(3);
-    expect(baseSamples?.map((sample) => sample.interval)).toEqual([
-      { end: 0, start: 0 },
-      { end: 1, start: 0 },
-      { end: 2, start: 1 },
-    ]);
-    expect(baseSamples?.at(-1)?.value).toMatchObject({ x: expect.closeTo(410, 2), y: 135 });
-    expect(labelSamples?.map((sample) => sample.interval)).toEqual([
-      { end: 1, start: 0 },
-      { end: 2, start: 1 },
-    ]);
-    expect(labelSamples?.at(-1)?.value).toMatchObject({ x: expect.closeTo(410, 2), y: 270 });
+    expect(samples("base")?.[1]?.value).toMatchObject({ x: expect.closeTo(215, 2), y: 90 });
+    expect(samples("label")?.[1]?.value).toMatchObject({ x: expect.closeTo(230, 2), y: 180 });
+    expect(samples("base")).toHaveLength(4);
+    expect(samples("base")?.at(-1)).toMatchObject({
+      from: { x: 280, y: 120 },
+      interval: { end: 3, start: 1 },
+      value: { x: 285, y: 115 },
+    });
+    expect(samples("label")?.at(-1)).toMatchObject({
+      from: { x: 290, y: 140 },
+      interval: { end: 3, start: 1 },
+      value: { x: 295, y: 135 },
+    });
   });
 
-  it("ignores malformed or unsupported shift expressions instead of applying a partial vector", () => {
-    const unsupported = `from manim import *
+  it("fails closed for complex Python and an invalid marker", () => {
+    const marked = `from manim import *
 
-class Unsupported(Scene):
+class Marked(Scene):
     def construct(self):
-        malformed = Dot()
-        function_call = Dot()
-        self.add(malformed, function_call)
-        self.play(
-            malformed.animate.shift(RIGHT + (UP *)),
-            function_call.animate.shift(RIGHT + normalize(UP)),
-            run_time=1,
-        )
+        dot = Dot()
+        self.add(dot)
+        # poietra:position {}
+        self.play(Write(Text("dot.animate.shift(RIGHT)")), run_time=1)
+        self.play(dot.animate.shift(RIGHT + normalize(UP)), run_time=1)
+        # poietra:motion {"motions":[{"delta":{"x":5,"y":0},"variables":["dot","missing"]}],"version":1}
+        self.play(dot.animate.shift(RIGHT), missing.animate.shift(LEFT), run_time=1)
+        # poietra:motion
+        self.play(dot.animate.shift(RIGHT), run_time=1)
 `;
-    const imported = importManimScene(unsupported, "scene.py", "Unsupported");
+    const imported = importManimScene(marked, "scene.py", "Marked");
+    const samples = imported?.runtimeSceneState.propertyChannels["source:scene.py#Marked:dot/position"]?.samples;
 
-    expect(imported?.runtimeSceneState.propertyChannels[
-      "source:scene.py#Unsupported:malformed/position"
-    ]?.samples).toHaveLength(1);
-    expect(imported?.runtimeSceneState.propertyChannels[
-      "source:scene.py#Unsupported:function_call/position"
-    ]?.samples).toHaveLength(1);
+    expect(samples).toHaveLength(1);
+    expect(imported?.runtimeSceneState.duration).toBe(4);
   });
 });

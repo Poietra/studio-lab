@@ -105,6 +105,17 @@ function pointExpression(
   return terms.length > 0 ? terms.join(" + ") : "ORIGIN";
 }
 
+function markerPoint(
+  point: Readonly<{ x: number; y: number }>,
+  viewport: Readonly<{ height: number; width: number }>,
+) {
+  return { x: Number(((point.x / viewport.width) * 640).toFixed(4)), y: Number(((point.y / viewport.height) * 360).toFixed(4)) };
+}
+
+function sourceMarker(kind: "motion" | "position", value: Readonly<Record<string, unknown>>) {
+  return `# poietra:${kind} ${JSON.stringify({ ...value, version: 1 })}`;
+}
+
 function variableToken(transactionId: string, index: number) {
   const normalized = transactionId.replace(/[^A-Za-z0-9_]/g, "_").replace(/^([^A-Za-z_])/, "_$1").slice(0, 48);
   return `poietra_${normalized || "edit"}_${index + 1}`;
@@ -277,12 +288,14 @@ export function lowerCanonicalProgramSource(
     [...sourceBindings].map(([entityId, sourceVariable]) => [entityId, new Set([sourceVariable])]),
   );
   const allocateVariable = variableAllocator(source, request.program.transactionId);
-  const createdOperations = operations.filter((operation): operation is CreateEntityOperation => operation.kind === "CreateEntity");
-  createdOperations.forEach((operation) => {
+  for (const operation of operations) {
+    const entityId = operation.kind === "CreateEntity" ? operation.entity.id
+      : operation.kind === "TransformContent" ? operation.targetEntityId : null;
+    if (!entityId || variableByEntity.has(entityId)) continue;
     const variable = allocateVariable();
-    variableByEntity.set(operation.entity.id, variable);
-    aliasesByEntity.set(operation.entity.id, new Set([variable]));
-  });
+    variableByEntity.set(entityId, variable);
+    aliasesByEntity.set(entityId, new Set([variable]));
+  }
   const output: string[] = [];
   let cursor = request.program.anchor.resolvedSeconds;
   for (const { operations: bucket, time } of operationBuckets(operations)) {
@@ -303,30 +316,32 @@ export function lowerCanonicalProgramSource(
           output.push(`# poietra:entity ${JSON.stringify({ id: operation.entity.id, variable })}`);
         }
         output.push(`${variable} = ${entityConstructor(operation)}`);
-      } else if (operation.kind === "SetProperty") {
-        const variable = requireVariable(variableByEntity, operation.entityId);
-        if (operation.key === "position" && isPoint(operation.value)) {
-          output.push(`${variable}.move_to(${pointExpression(operation.value, frame, request.viewport)})`);
-        }
-      } else if (operation.kind === "SetRelation") {
-        const sourceVariable = requireVariable(variableByEntity, operation.sourceEntityId);
-        const targetVariable = requireVariable(variableByEntity, operation.targetEntityId);
-        output.push(`${sourceVariable}.move_to(${targetVariable}.get_center() + ${offsetExpression(operation.offset, frame, request.viewport)})`);
       } else if (operation.kind === "TransformContent") {
-        const targetVariable = variableByEntity.get(operation.targetEntityId)
-          ?? allocateVariable();
-        variableByEntity.set(operation.targetEntityId, targetVariable);
-        aliasesByEntity.set(
-          operation.targetEntityId,
-          aliasesByEntity.get(operation.targetEntityId) ?? new Set([targetVariable]),
-        );
+        const targetVariable = requireVariable(variableByEntity, operation.targetEntityId);
         const target = operation.targetType === "Text"
           ? `Text(${JSON.stringify(operation.replacement.text ?? operation.replacement.displayLines.join(" "))})`
           : `MathTex(${(operation.replacement.texParts ?? operation.replacement.displayLines).map((part) => JSON.stringify(part)).join(", ")})`;
-        const sourceVariable = requireVariable(variableByEntity, operation.sourceEntityId);
         output.push(`# poietra:entity ${JSON.stringify({ id: operation.targetEntityId, variable: targetVariable })}`);
         output.push(`${targetVariable} = ${target}`);
+      }
+    }
+    for (const operation of bucket) {
+      if (operation.kind === "SetProperty") {
+        const variable = requireVariable(variableByEntity, operation.entityId);
+        if (operation.key === "position" && isPoint(operation.value)) {
+          output.push(sourceMarker("position", { kind: "absolute", value: markerPoint(operation.value, request.viewport), variable }));
+          output.push(`${variable}.move_to(${pointExpression(operation.value, frame, request.viewport)})`);
+        }
+      } else if (operation.kind === "TransformContent") {
+        const targetVariable = requireVariable(variableByEntity, operation.targetEntityId);
+        const sourceVariable = requireVariable(variableByEntity, operation.sourceEntityId);
+        output.push(sourceMarker("position", { kind: "relative", offset: { x: 0, y: 0 }, relativeTo: sourceVariable, variable: targetVariable }));
         output.push(`${targetVariable}.move_to(${sourceVariable}.get_center())`);
+      } else if (operation.kind === "SetRelation") {
+        const sourceVariable = requireVariable(variableByEntity, operation.sourceEntityId);
+        const targetVariable = requireVariable(variableByEntity, operation.targetEntityId);
+        output.push(sourceMarker("position", { kind: "relative", offset: markerPoint(operation.offset, request.viewport), relativeTo: targetVariable, variable: sourceVariable }));
+        output.push(`${sourceVariable}.move_to(${targetVariable}.get_center() + ${offsetExpression(operation.offset, frame, request.viewport)})`);
       }
     }
 
@@ -365,6 +380,7 @@ export function lowerCanonicalProgramSource(
       throw new ProgramLoweringError("operation-unsupported", "Concurrent source animations must share one interval.");
     }
     const actions: string[] = [];
+    const motions: Array<Readonly<{ delta: Readonly<{ x: number; y: number }>; variables: readonly string[] }>> = [];
     const postludes: string[] = [];
     for (const operation of animations) {
       if (operation.kind === "CreateMotion") {
@@ -372,8 +388,9 @@ export function lowerCanonicalProgramSource(
           throw new ProgramLoweringError("operation-unsupported", "Rendered validation currently supports straight CreateMotion paths only.");
         }
         const shift = shiftExpression(operation.delta, frame, request.viewport);
-        for (const entityId of operation.targetEntityIds) {
-          const variable = requireVariable(variableByEntity, entityId);
+        const variables = operation.targetEntityIds.map((entityId) => requireVariable(variableByEntity, entityId));
+        motions.push({ delta: markerPoint(operation.delta, request.viewport), variables });
+        for (const variable of variables) {
           actions.push(`${variable}.animate.shift(${shift})`);
         }
       } else if (operation.kind === "TransformContent") {
@@ -400,6 +417,9 @@ export function lowerCanonicalProgramSource(
       }
     }
     if (actions.length > 0) {
+      if (motions.length > 0) {
+        output.push(sourceMarker("motion", { motions }));
+      }
       output.push("self.play(");
       output.push(...actions.map((action) => `    ${action},`));
       output.push(`    run_time=${formatAmount(animationEnd - time)},`);
