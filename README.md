@@ -55,9 +55,14 @@ pnpm dev:web
 pnpm dev:electron
 pnpm dev:tauri
 pnpm check:web
-pnpm test
+pnpm test # all unit and boundary/integration tests
+pnpm exec playwright install chromium # first E2E run only
+pnpm test:e2e
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
+
+The suite boundaries and the rule for adding regression coverage are documented in
+[the testing strategy](docs/testing-strategy.md).
 
 Magic Edit requires an explicit model endpoint; it never falls back to keyword or
 fixture behavior at runtime. Set `VITE_POIETRA_AI_ENDPOINT` to

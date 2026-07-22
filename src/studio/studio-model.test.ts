@@ -16,7 +16,7 @@ import {
   createDirectManipulationModifyMotionProgram,
   createDirectManipulationMotionProgram,
 } from "./suggestion-program";
-import { applyStagedPrograms, stageProgram, undoLastAppliedProgram, withoutTransaction } from "./transactions";
+import { applyStagedPrograms, stageProgram, undoLastAppliedProgram } from "./transactions";
 
 const MAXWELL_TARGET: MathTexSuggestionTarget = {
   displayLines: [
@@ -249,39 +249,25 @@ function canonicalize(operation: EditSuggestionOperation, transactionId = "test-
 }
 
 describe("Studio time and transaction invariants", () => {
-  it("accepts a valid remote operation through the closed validator", () => {
-    const operation = motionSuggestion();
-    const remoteResult = {
-      kind: "suggestion" as const,
-      suggestion: {
-        assumptions: [],
-        confidence: "medium" as const,
-        operation,
-        provider: "remote" as const,
-        summary: "remote",
-      },
-    };
-    expect(parseEditSuggestionResult(remoteResult).success).toBe(true);
-  });
-
-  it("rejects remote values that the browser would otherwise clamp to a different operation", () => {
+  it("enforces remote motion bounds instead of relying on browser clamping", () => {
     const operation = motionSuggestion();
     expect(operation.kind).toBe("create-motion");
     if (operation.kind !== "create-motion") return;
-    const remoteResult = {
+    const remoteResult = (candidate: EditSuggestionOperation) => ({
       kind: "suggestion" as const,
       suggestion: {
         assumptions: [],
         confidence: "medium" as const,
-        operation: {
-          ...operation,
-          delta: { x: 221, y: 0 },
-        },
+        operation: candidate,
         provider: "remote" as const,
-        summary: "out-of-bounds remote motion",
+        summary: "remote motion",
       },
-    };
-    expect(parseEditSuggestionResult(remoteResult).success).toBe(false);
+    });
+    expect(parseEditSuggestionResult(remoteResult(operation)).success).toBe(true);
+    expect(parseEditSuggestionResult(remoteResult({
+      ...operation,
+      delta: { x: 221, y: 0 },
+    })).success).toBe(false);
   });
 
   it("normalizes bounded model strings before canonical evaluation", () => {
@@ -359,17 +345,6 @@ describe("Studio time and transaction invariants", () => {
     expect(undone.appliedPrograms).toHaveLength(0);
   });
 
-  it("removes only legacy projections owned by the canonical transaction being undone", () => {
-    const records = [
-      { id: "older-a", transactionId: "transaction-a" },
-      { id: "newer-b", transactionId: "transaction-b" },
-      { id: "older-a-second-leaf", transactionId: "transaction-a" },
-    ];
-    expect(withoutTransaction(records, "transaction-b").map((record) => record.id)).toEqual([
-      "older-a",
-      "older-a-second-leaf",
-    ]);
-  });
 });
 
 describe("canonical operation expansion and DAG validation", () => {

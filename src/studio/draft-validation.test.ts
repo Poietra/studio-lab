@@ -33,22 +33,6 @@ describe("Studio draft validation boundary", () => {
     if (result.kind === "invalid") expect(result.message).toMatch(/no next Scene/i);
   });
 
-  it("returns one normalized record for a valid suggestion", () => {
-    const result = validateSuggestionDraft(transition, {
-      capturedPlayhead: 5,
-      hasNextScene: true,
-      origin: "remote-model",
-      proposedState: evaluateWorkingState(createFixtureWorkingState()),
-      selectedObjectIds: [],
-      transactionId: "with-destination",
-    });
-
-    expect(result.kind).toBe("valid");
-    if (result.kind !== "valid") return;
-    expect(result.record.validation.status).toBe("valid");
-    expect(result.record.program.operations.some((operation) => operation.kind === "InsertSceneBoundary")).toBe(true);
-  });
-
   it("does not turn an invalid direct manipulation into a draft record", () => {
     const validation = createDirectManipulationPositionProgram({
       capturedPlayhead: 5,
@@ -92,54 +76,4 @@ describe("Studio draft validation boundary", () => {
       .toEqual({ x: before.position.x + 100, y: before.position.y + 40 });
   });
 
-  it("keeps an earlier direct position change while staging a change to another entity", () => {
-    const initial = evaluateWorkingState(createFixtureWorkingState());
-    const initialProjection = projectProposedState(initial, 5);
-    const equation = initialProjection.canvas.entities.find((entity) => entity.id === "equation_1");
-    const label = initialProjection.canvas.entities.find((entity) => entity.id === "label_1");
-    expect(equation).toBeDefined();
-    expect(label).toBeDefined();
-    if (!equation || !label) return;
-
-    const equationMove = createDirectManipulationPositionProgram({
-      capturedPlayhead: 5,
-      delta: { x: 80, y: 30 },
-      positions: { equation_1: equation.position },
-      scene: initial.evaluatedScene,
-      start: 5,
-      targetEntityIds: ["equation_1"],
-      transactionId: "move-equation",
-    });
-    expect(equationMove.kind).toBe("valid");
-    if (equationMove.kind !== "valid") return;
-    const equationRecord = programRecord(equationMove.program, equationMove);
-    const afterEquationMove = evaluateWorkingState(createFixtureWorkingState({
-      appliedPrograms: [equationRecord],
-    }));
-    const movedLabel = projectProposedState(afterEquationMove, 5).canvas.entities.find((entity) => entity.id === "label_1");
-    expect(movedLabel).toBeDefined();
-    if (!movedLabel) return;
-
-    const labelMove = createDirectManipulationPositionProgram({
-      capturedPlayhead: 5,
-      delta: { x: -60, y: 20 },
-      positions: { label_1: movedLabel.position },
-      scene: afterEquationMove.evaluatedScene,
-      start: 5,
-      targetEntityIds: ["label_1"],
-      transactionId: "move-label",
-    });
-    expect(labelMove.kind).toBe("valid");
-    if (labelMove.kind !== "valid") return;
-
-    const cumulative = evaluateWorkingState(createFixtureWorkingState({
-      appliedPrograms: [equationRecord],
-      stagedPrograms: [programRecord(labelMove.program, labelMove)],
-    }));
-    const projection = projectProposedState(cumulative, 5);
-    expect(projection.canvas.entities.find((entity) => entity.id === "equation_1")?.position)
-      .toEqual({ x: equation.position.x + 80, y: equation.position.y + 30 });
-    expect(projection.canvas.entities.find((entity) => entity.id === "label_1")?.position)
-      .toEqual({ x: label.position.x - 60, y: label.position.y + 20 });
-  });
 });

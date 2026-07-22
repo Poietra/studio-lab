@@ -23,10 +23,3 @@ export function undoLastAppliedProgram(workingState: WorkingState): WorkingState
     appliedPrograms: workingState.appliedPrograms.slice(0, -1),
   };
 }
-
-export function withoutTransaction<T extends Readonly<{ transactionId?: string }>>(
-  records: readonly T[],
-  transactionId: string,
-) {
-  return records.filter((record) => record.transactionId !== transactionId);
-}
