@@ -1,6 +1,7 @@
 import {
   type KeyboardEvent,
   type PointerEvent,
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -20,9 +21,29 @@ import {
   suggestEdit,
 } from "./ai/edit-suggestions";
 import type { RenderProgramCandidate } from "./render-pipeline/render-pipeline-panel";
+import type { RenderSessionView } from "./render-pipeline/contracts";
+import {
+  createRemoveEntitiesProgram,
+  createSceneDurationProgram,
+  createStudioEntitiesProgram,
+  defaultEntityContent,
+  duplicateEntityInput,
+  type StudioEntityInput,
+} from "./studio/authoring-commands";
+import {
+  commandForShortcut,
+  isEditableShortcutTarget,
+  type StudioCommandId,
+} from "./studio/commands";
 import { projectedPositions, validateSuggestionDraft, validatedProgramRecord } from "./studio/draft-validation";
-import type { ProgramRecord, ProposedState } from "./studio/model";
+import type { Point, ProgramRecord, ProposedState } from "./studio/model";
+import { projectMotionPaths, type StudioMotionPath } from "./studio/motion-paths";
 import type { OperationOrigin } from "./studio/operations";
+import {
+  sourceTimeToWorkingTime,
+  workingTimeToSourceTime,
+} from "./studio/program-composition";
+import { projectRuntimeSceneToSourceTimeline } from "./studio/source-timeline";
 import { MagicEditPanel, type SuggestionStatus } from "./studio/magic-edit-panel";
 import {
   createDirectManipulationPositionProgram,
@@ -33,6 +54,7 @@ import {
   STUDIO_VIEWPORT,
   StudioViewport,
 } from "./studio/studio-viewport";
+import type { StudioTool } from "./studio/studio-toolbar";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
 import { useManimWorkspace } from "./studio/use-manim-workspace";
 import { isTransitionOverlay, projectStudioWorkspace } from "./studio/workspace-projection";
@@ -51,6 +73,26 @@ type CanvasDragState = Readonly<{
   start: Readonly<{ x: number; y: number }>;
   targetEntityIds: readonly string[];
 }>;
+type RedoProgramEntry = Readonly<{
+  operation: EditSuggestionOperation | null;
+  record: ProgramRecord;
+  restoreAs: "applied" | "draft";
+  selection: readonly string[];
+}>;
+type EditorSessionSnapshot = Readonly<{
+  appliedPrograms: readonly ProgramRecord[];
+  currentTime: number;
+  draftError: string | null;
+  draftOperation: EditSuggestionOperation | null;
+  draftProgram: ProgramRecord | null;
+  insertTool: StudioTool;
+  insertValue: string;
+  instruction: string;
+  interactionMode: InteractionMode;
+  motionDuration: number;
+  redoPrograms: readonly RedoProgramEntry[];
+  selectedObjectIds: readonly string[];
+}>;
 
 function cancelRequest(request: { current: AbortController | null }) {
   const controller = request.current;
@@ -68,8 +110,10 @@ function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
-function operationHasSceneBoundary(record: ProgramRecord) {
-  return record.program.operations.some((operation) => operation.kind === "InsertSceneBoundary");
+function programsHaveSceneBoundary(programs: readonly ProgramRecord["program"][]) {
+  return programs.some((program) => (
+    program.operations.some((operation) => operation.kind === "InsertSceneBoundary")
+  ));
 }
 
 function canvasPointerDelta(
@@ -88,11 +132,14 @@ export function App() {
   const {
     activeScene,
     activeSceneId,
+    activeProjectId,
     error: workspaceError,
     isRefreshing: workspaceIsRefreshing,
     nextScene,
+    projects,
     refresh: refreshWorkspace,
     scenes,
+    setActiveProjectId,
     setActiveSceneId,
     status: workspaceStatus,
     workspace,
@@ -100,8 +147,13 @@ export function App() {
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [interactionMode, setInteractionMode] = useState<InteractionMode>("animate");
+  const [motionDuration, setMotionDuration] = useState(1.5);
+  const [insertTool, setInsertTool] = useState<StudioTool>("select");
+  const [insertValue, setInsertValue] = useState("");
   const [selectedObjectIds, setSelectedObjectIds] = useState<readonly string[]>([]);
   const [appliedPrograms, setAppliedPrograms] = useState<readonly ProgramRecord[]>([]);
+  const [redoPrograms, setRedoPrograms] = useState<readonly RedoProgramEntry[]>([]);
+  const [renderSessions, setRenderSessions] = useState<Readonly<Record<string, RenderSessionView>>>({});
   const [draftProgram, setDraftProgram] = useState<ProgramRecord | null>(null);
   const [draftOperation, setDraftOperation] = useState<EditSuggestionOperation | null>(null);
   const [draftError, setDraftError] = useState<string | null>(null);
@@ -115,20 +167,109 @@ export function App() {
   const suggestionRequest = useRef<AbortController | null>(null);
   const suggestionContext = useRef("");
   const canvasDrag = useRef<CanvasDragState | null>(null);
+  const studioClipboard = useRef<readonly StudioEntityInput[]>([]);
+  const pasteCount = useRef(0);
+  const commandHandler = useRef<(command: StudioCommandId) => boolean>(() => false);
   const workspaceBounds = useRef<HTMLElement | null>(null);
+  const editorSessions = useRef(new Map<string, EditorSessionSnapshot>());
+  const appliedCanonicalPrograms = appliedPrograms.map((record) => record.program);
+  const sourceCurrentTime = workingTimeToSourceTime(appliedCanonicalPrograms, currentTime);
+  const timelineAnchors = activeScene?.anchors.map((sourceTime) => ({
+    sourceTime,
+    workingTime: sourceTimeToWorkingTime(appliedCanonicalPrograms, sourceTime),
+  })) ?? [];
+
+  function activeEditorSessionKey() {
+    return activeProjectId && activeScene
+      ? `${activeProjectId}/${activeScene.sceneId}/${activeScene.sourceHash}`
+      : null;
+  }
+
+  function saveEditorSession() {
+    const key = activeEditorSessionKey();
+    if (!key) return;
+    editorSessions.current.set(key, {
+      appliedPrograms,
+      currentTime,
+      draftError,
+      draftOperation,
+      draftProgram,
+      insertTool,
+      insertValue,
+      instruction,
+      interactionMode,
+      motionDuration,
+      redoPrograms,
+      selectedObjectIds,
+    });
+  }
 
   useEffect(() => () => cancelRequest(suggestionRequest), []);
+
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented || isEditableShortcutTarget(event.target)) return;
+      if (
+        (event.key === " " || event.key === "Enter")
+        && (event.target instanceof HTMLButtonElement || event.target instanceof HTMLAnchorElement)
+      ) return;
+      if (event.key in NUDGE_DELTAS) {
+        const delta = NUDGE_DELTAS[event.key];
+        const amount = event.shiftKey ? 5 : 1;
+        if (delta && selectedObjectIds.length > 0) {
+          event.preventDefault();
+          commandHandler.current("select-tool");
+          installPositionDraft(
+            { x: delta.x * amount, y: delta.y * amount },
+            selectedObjectIds,
+            `studio-nudge-${crypto.randomUUID()}`,
+          );
+        }
+        return;
+      }
+      const command = commandForShortcut(event);
+      if (command && commandHandler.current(command)) event.preventDefault();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
 
   useEffect(() => {
     if (!activeScene) return;
     cancelRequest(suggestionRequest);
     canvasDrag.current = null;
+    const key = activeProjectId
+      ? `${activeProjectId}/${activeScene.sceneId}/${activeScene.sourceHash}`
+      : null;
+    const saved = key ? editorSessions.current.get(key) : null;
+    if (saved) {
+      setCurrentTime(saved.currentTime);
+      setSelectedObjectIds(saved.selectedObjectIds);
+      setAppliedPrograms(saved.appliedPrograms);
+      setRedoPrograms(saved.redoPrograms);
+      setDraftProgram(saved.draftProgram);
+      setDraftOperation(saved.draftOperation);
+      setDraftError(saved.draftError);
+      setInstruction(saved.instruction);
+      setInteractionMode(saved.interactionMode);
+      setMotionDuration(saved.motionDuration);
+      setInsertTool(saved.insertTool);
+      setInsertValue(saved.insertValue);
+      setSuggestion(null);
+      setPendingClarification(null);
+      setSuggestionStatus("idle");
+      setSuggestionMessage(null);
+      setDragPreview(null);
+      setIsPlaying(false);
+      return;
+    }
     const initialTime = activeScene.anchors[0] ?? 0;
     const initialEntities = Object.values(activeScene.runtimeSceneState.objectGraph.entities)
       .filter((entity) => entity.lifetime.some((lifetime) => initialTime >= lifetime.start && initialTime < lifetime.end));
     setCurrentTime(clamp(initialTime, 0, activeScene.runtimeSceneState.duration));
     setSelectedObjectIds(initialEntities.slice(0, 1).map((entity) => entity.id));
     setAppliedPrograms([]);
+    setRedoPrograms([]);
     setDraftProgram(null);
     setDraftOperation(null);
     setDraftError(null);
@@ -138,29 +279,10 @@ export function App() {
     setSuggestionMessage(null);
     setInstruction("");
     setDragPreview(null);
+    setInsertTool("select");
+    setInsertValue("");
     setIsPlaying(false);
-  }, [activeScene?.sceneId, activeScene?.sourceHash]);
-
-  useEffect(() => {
-    if (!isPlaying || !activeScene) return;
-    let animationFrame = 0;
-    let previous = performance.now();
-    const tick = (now: number) => {
-      const delta = (now - previous) / 1000;
-      previous = now;
-      setCurrentTime((time) => {
-        const next = time + delta;
-        if (next >= activeScene.runtimeSceneState.duration) {
-          setIsPlaying(false);
-          return activeScene.runtimeSceneState.duration;
-        }
-        return next;
-      });
-      animationFrame = requestAnimationFrame(tick);
-    };
-    animationFrame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(animationFrame);
-  }, [activeScene, isPlaying]);
+  }, [activeScene?.sceneId, activeScene?.sourceHash, activeProjectId]);
 
   const workspaceProjection = activeScene ? projectStudioWorkspace({
     activeScene,
@@ -179,13 +301,57 @@ export function App() {
     selectedObjectIds,
   }) : workspaceProjection;
   const draftBaseState = draftBaseProjection?.proposedState ?? null;
+  const draftSourceScene = draftBaseState
+    ? projectRuntimeSceneToSourceTimeline(
+        draftBaseState.evaluatedScene,
+        appliedCanonicalPrograms,
+      )
+    : null;
   const projection = workspaceProjection?.projection ?? null;
   const appliedTransactionIds = new Set(appliedPrograms.map((record) => record.program.transactionId));
   const boundary = workspaceProjection?.boundary ?? null;
   const visibleEntities = workspaceProjection?.visibleEntities ?? [];
   const editableEntities = workspaceProjection?.editableEntities ?? [];
   const selectedSet = new Set(selectedObjectIds);
-  const activeDuration = activeScene?.runtimeSceneState.duration ?? 1;
+  const activeDuration = workspaceProjection?.proposedState.evaluatedScene.duration
+    ?? activeScene?.runtimeSceneState.duration
+    ?? 1;
+  const motionPaths = workspaceProjection
+    ? projectMotionPaths(workspaceProjection.proposedState.evaluatedScene, selectedSet, currentTime)
+    : [];
+  const editableMotionIds = new Set(draftProgram?.program.operations.flatMap((operation) => (
+    operation.kind === "CreateMotion" ? [operation.id] : []
+  )) ?? []);
+  const retainRenderSession = useCallback((session: RenderSessionView | null, projectId?: string) => {
+    setRenderSessions((current) => {
+      if (session) return { ...current, [session.projectId]: session };
+      if (!projectId || !(projectId in current)) return current;
+      const next = { ...current };
+      delete next[projectId];
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!isPlaying || !activeScene) return;
+    let animationFrame = 0;
+    let previous = performance.now();
+    const tick = (now: number) => {
+      const delta = (now - previous) / 1000;
+      previous = now;
+      setCurrentTime((time) => {
+        const next = time + delta;
+        if (next >= activeDuration) {
+          setIsPlaying(false);
+          return activeDuration;
+        }
+        return next;
+      });
+      animationFrame = requestAnimationFrame(tick);
+    };
+    animationFrame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(animationFrame);
+  }, [activeDuration, activeScene, isPlaying]);
   const contextFingerprint = draftBaseState ? createClarificationContextFingerprint({
     entities: Object.values(draftBaseState.evaluatedScene.objectGraph.entities),
     playhead: currentTime,
@@ -200,13 +366,22 @@ export function App() {
     transactionId: string,
     origin: OperationOrigin,
     proposedState: ProposedState | null = draftBaseState,
+    capturedPlayhead = sourceCurrentTime,
+    sourcePrograms: readonly ProgramRecord["program"][] = appliedCanonicalPrograms,
   ) {
     if (!activeScene || !proposedState) throw new Error("Choose an imported Scene first.");
+    const validationState = {
+      ...proposedState,
+      evaluatedScene: projectRuntimeSceneToSourceTimeline(
+        proposedState.evaluatedScene,
+        sourcePrograms,
+      ),
+    };
     const validation = validateSuggestionDraft(operation, {
-      capturedPlayhead: currentTime,
+      capturedPlayhead,
       hasNextScene: nextScene !== null,
       origin,
-      proposedState,
+      proposedState: validationState,
       selectedObjectIds,
       transactionId,
     });
@@ -227,16 +402,24 @@ export function App() {
     options: Readonly<{
       origin?: OperationOrigin;
       preserveDraft?: ProgramRecord | null;
+      preservePlayhead?: boolean;
       proposedState?: ProposedState | null;
+      capturedPlayhead?: number;
     }> = {},
   ) {
     try {
       const origin = options.origin ?? "remote-model";
+      const precedingPrograms = options.preserveDraft
+        && !appliedPrograms.some((record) => record.program.transactionId === options.preserveDraft?.program.transactionId)
+        ? [...appliedCanonicalPrograms, options.preserveDraft.program]
+        : appliedCanonicalPrograms;
       const validated = createValidatedDraft(
         operation,
         transactionId,
         origin,
         options.proposedState,
+        options.capturedPlayhead,
+        precedingPrograms,
       );
       preserveDirectManipulationDraft(options.preserveDraft);
       if (origin === "direct-manipulation") {
@@ -249,7 +432,13 @@ export function App() {
       setDraftOperation(validated.operation);
       setDraftProgram(validated.record);
       setDraftError(null);
-      setCurrentTime(validated.record.program.anchor.resolvedSeconds);
+      setRedoPrograms([]);
+      if (!options.preservePlayhead) {
+        setCurrentTime(sourceTimeToWorkingTime(
+          precedingPrograms,
+          validated.record.program.anchor.resolvedSeconds,
+        ));
+      }
       return true;
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The draft could not be validated.");
@@ -260,7 +449,9 @@ export function App() {
   function updateDraftOperation(operation: EditSuggestionOperation) {
     if (!draftProgram) return;
     if (installDraft(operation, draftProgram.program.transactionId, {
+      capturedPlayhead: draftProgram.program.anchor.capturedPlayhead,
       origin: draftProgram.program.provenance.origin,
+      preservePlayhead: true,
     })) {
       setSuggestion((current) => current ? { ...current, operation } : current);
     }
@@ -270,6 +461,7 @@ export function App() {
     if (!activeScene || !draftBaseState) return;
     const pending = pendingClarification;
     const requestedContext = suggestionContext.current;
+    const requestedPlayhead = sourceCurrentTime;
     const answerText = instruction.trim();
     const prompt = pending?.originalPrompt ?? answerText;
     if (!prompt || suggestionStatus === "loading") return;
@@ -299,7 +491,7 @@ export function App() {
           options: pending.options,
           question: pending.question,
         } : null,
-        objects: Object.values(draftBaseState.evaluatedScene.objectGraph.entities)
+        objects: Object.values((draftSourceScene ?? draftBaseState.evaluatedScene).objectGraph.entities)
           .filter((entity) => !isTransitionOverlay(entity))
           .map((entity) => ({
             displayName: entity.content?.label ?? entity.id,
@@ -311,14 +503,14 @@ export function App() {
             } : null,
             type: entity.type,
           })),
-        playhead: currentTime,
+        playhead: requestedPlayhead,
         prompt,
         scene: {
           id: activeScene.sceneId,
           name: activeScene.name,
           nextSceneId: activeScene.nextSceneId,
         },
-        sceneDuration: draftBaseState.evaluatedScene.duration,
+        sceneDuration: draftSourceScene?.duration ?? draftBaseState.evaluatedScene.duration,
         selectedObjectIds,
       }, { signal: controller.signal });
       if (suggestionRequest.current !== controller) return;
@@ -348,7 +540,9 @@ export function App() {
         return;
       }
       const transactionId = `studio-edit-${crypto.randomUUID()}`;
-      const installed = installDraft(result.suggestion.operation, transactionId);
+      const installed = installDraft(result.suggestion.operation, transactionId, {
+        capturedPlayhead: requestedPlayhead,
+      });
       if (!installed) {
         setSuggestion(null);
         setSuggestionStatus("error");
@@ -378,6 +572,7 @@ export function App() {
   }
 
   function discardDraft() {
+    const discardedTransactionId = draftProgram?.program.transactionId;
     cancelRequest(suggestionRequest);
     setDraftProgram(null);
     setDraftOperation(null);
@@ -386,12 +581,18 @@ export function App() {
     setPendingClarification(null);
     setSuggestionMessage(null);
     setSuggestionStatus("idle");
+    if (discardedTransactionId) {
+      setSelectedObjectIds((ids) => ids.filter((id) => (
+        !id.startsWith(`tx:${discardedTransactionId}/entity:`)
+      )));
+    }
   }
 
   function applyDraft() {
     if (!draftProgram) return;
     cancelRequest(suggestionRequest);
     setAppliedPrograms((programs) => [...programs, draftProgram]);
+    setRedoPrograms([]);
     setDraftProgram(null);
     setDraftOperation(null);
     setDraftError(null);
@@ -402,18 +603,205 @@ export function App() {
   }
 
   function undoProgram() {
-    discardDraft();
-    setAppliedPrograms((programs) => programs.slice(0, -1));
+    if (draftProgram) {
+      setRedoPrograms((redo) => [...redo, {
+        operation: draftOperation,
+        record: draftProgram,
+        restoreAs: "draft",
+        selection: selectedObjectIds,
+      }]);
+      discardDraft();
+      return;
+    }
+    const removed = appliedPrograms.at(-1);
+    if (!removed) return;
+    setAppliedPrograms(appliedPrograms.slice(0, -1));
+    setRedoPrograms((redo) => [...redo, {
+      operation: null,
+      record: removed,
+      restoreAs: "applied",
+      selection: selectedObjectIds,
+    }]);
     setSelectedObjectIds([]);
+  }
+
+  function redoProgram() {
+    if (draftProgram) return false;
+    const entry = redoPrograms.at(-1);
+    if (!entry) return false;
+    if (entry.restoreAs === "draft") {
+      setDraftProgram(entry.record);
+      setDraftOperation(entry.operation);
+      setDraftError(null);
+      setSelectedObjectIds(entry.selection);
+      setCurrentTime(sourceTimeToWorkingTime(
+        appliedCanonicalPrograms,
+        entry.record.program.anchor.resolvedSeconds,
+      ));
+    } else {
+      setAppliedPrograms((applied) => [...applied, entry.record]);
+      setSelectedObjectIds(entry.selection);
+    }
+    setRedoPrograms((programs) => programs.slice(0, -1));
+    return true;
+  }
+
+  function installCanonicalDraft(record: ProgramRecord, selectedIds: readonly string[] = []) {
+    cancelRequest(suggestionRequest);
+    setDraftProgram(record);
+    setDraftOperation(null);
+    setDraftError(null);
+    setSuggestion(null);
+    setPendingClarification(null);
+    setSuggestionMessage(null);
+    setSuggestionStatus("idle");
+    setSelectedObjectIds(selectedIds);
+    setCurrentTime(sourceTimeToWorkingTime(appliedCanonicalPrograms, record.program.anchor.resolvedSeconds));
+    setIsPlaying(false);
+    setRedoPrograms([]);
+  }
+
+  function insertEntitiesAt(point: Point, entities?: readonly StudioEntityInput[]) {
+    if (!draftBaseState || !draftSourceScene) return false;
+    if (draftProgram) {
+      setDraftError("Apply or discard the current draft before inserting another object.");
+      return false;
+    }
+    const inputs = entities ?? (insertTool === "select" ? [] : [{
+      content: defaultEntityContent(insertTool, insertValue),
+      position: point,
+      type: insertTool,
+    }]);
+    if (inputs.length === 0) return false;
+    try {
+      const result = createStudioEntitiesProgram({
+        capturedPlayhead: sourceCurrentTime,
+        entities: inputs,
+        scene: draftSourceScene,
+        transactionId: `studio-insert-${crypto.randomUUID()}`,
+      });
+      const validated = validatedProgramRecord(result.validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      installCanonicalDraft(validated.record, result.entityIds);
+      setInsertTool("select");
+      setInsertValue("");
+      setRedoPrograms([]);
+      return true;
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The object could not be inserted.");
+      return false;
+    }
+  }
+
+  function extendSceneDuration(targetDuration: number) {
+    if (!activeScene || !draftBaseState) return false;
+    if (draftProgram) {
+      setDraftError("Apply or discard the current draft before changing the Scene duration.");
+      return false;
+    }
+    const appliedAnchor = appliedPrograms[0]?.program.anchor.resolvedSeconds;
+    const sourceAnchor = appliedAnchor !== undefined && appliedPrograms.every((record) => (
+      Math.abs(record.program.anchor.resolvedSeconds - appliedAnchor) < 0.0005
+    ))
+      ? appliedAnchor
+      : activeScene.anchors.at(-1);
+    if (sourceAnchor === undefined) {
+      setDraftError("Add a # poietra:anchor at a safe source boundary before extending this Scene.");
+      return false;
+    }
+    try {
+      const validation = createSceneDurationProgram({
+        capturedPlayhead: sourceCurrentTime,
+        scene: draftBaseState.evaluatedScene,
+        sourceAnchor,
+        targetDuration,
+        transactionId: `studio-duration-${crypto.randomUUID()}`,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      installCanonicalDraft(validated.record);
+      return true;
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The Scene duration could not be changed.");
+      return false;
+    }
+  }
+
+  function deleteSelection() {
+    if (!draftBaseState || !draftSourceScene || selectedObjectIds.length === 0) return false;
+    if (draftProgram) {
+      const ownsSelectedDraftEntity = selectedObjectIds.some((entityId) => (
+        entityId.startsWith(`tx:${draftProgram.program.transactionId}/entity:`)
+      ));
+      if (ownsSelectedDraftEntity) {
+        discardDraft();
+        setSelectedObjectIds([]);
+        return true;
+      }
+      setDraftError("Apply or discard the current draft before deleting another object.");
+      return false;
+    }
+    try {
+      const validation = createRemoveEntitiesProgram({
+        capturedPlayhead: sourceCurrentTime,
+        entityIds: selectedObjectIds,
+        scene: draftSourceScene,
+        transactionId: `studio-delete-${crypto.randomUUID()}`,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      installCanonicalDraft(validated.record, selectedObjectIds);
+      setRedoPrograms([]);
+      return true;
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The selected objects could not be deleted.");
+      return false;
+    }
+  }
+
+  function copySelection() {
+    const copied = editableEntities.flatMap((entity) => {
+      if (!selectedSet.has(entity.id) || !entity.present) return [];
+      const input = duplicateEntityInput(entity, 0);
+      return input ? [input] : [];
+    });
+    if (copied.length === 0) return false;
+    studioClipboard.current = copied;
+    pasteCount.current = 0;
+    return true;
+  }
+
+  function pasteSelection() {
+    const copied = studioClipboard.current;
+    if (copied.length === 0) return false;
+    pasteCount.current += 1;
+    const offset = 20 * pasteCount.current;
+    return insertEntitiesAt({ x: 320, y: 180 }, copied.map((entity) => ({
+      ...entity,
+      position: { x: entity.position.x + offset, y: entity.position.y + offset },
+    })));
+  }
+
+  function duplicateSelection() {
+    const inputs = editableEntities.flatMap((entity) => {
+      if (!selectedSet.has(entity.id) || !entity.present) return [];
+      const input = duplicateEntityInput(entity);
+      return input ? [input] : [];
+    });
+    return inputs.length > 0 && insertEntitiesAt({ x: 320, y: 180 }, inputs);
   }
 
   function directGestureContext() {
     const previousDraft = draftProgram?.program.provenance.origin === "direct-manipulation"
       ? draftProgram
       : null;
+    const sourcePrograms = previousDraft
+      ? [...appliedCanonicalPrograms, previousDraft.program]
+      : appliedCanonicalPrograms;
     return {
       preserveDraft: previousDraft,
       proposedState: previousDraft ? workspaceProjection?.proposedState ?? null : draftBaseState,
+      sourcePrograms,
     } as const;
   }
 
@@ -457,26 +845,26 @@ export function App() {
     if (!drag || drag.pointerId !== event.pointerId) return;
     canvasDrag.current = null;
     setDragPreview(null);
-    if (!activeScene || !draftBaseState) return;
+    if (!activeScene || !draftBaseState || !draftSourceScene) return;
     const delta = canvasPointerDelta(drag, { x: event.clientX, y: event.clientY });
     if (Math.hypot(delta.x, delta.y) < 1) return;
     const targetIds = drag.targetEntityIds;
     const transactionId = `studio-gesture-${crypto.randomUUID()}`;
     const gestureContext = directGestureContext();
     if (interactionMode === "animate") {
-      const end = Math.min(activeDuration, currentTime + 1.5);
-      if (end - currentTime < 0.1) {
-        setDraftError("Move the playhead earlier to create a movement of at least 0.1 seconds.");
+      const end = sourceCurrentTime + motionDuration;
+      if (motionDuration < 0.1 || end > draftSourceScene.duration + 0.001) {
+        setDraftError("The motion must be at least 0.1 seconds and fit within the current Scene duration.");
         return;
       }
       const operation: CreateMotionSuggestion = {
-        anchor: { kind: "playhead", referenceSeconds: currentTime },
+        anchor: { kind: "playhead", referenceSeconds: sourceCurrentTime },
         controlOffset: { x: 0, y: 0 },
         delta,
         easing: "smooth",
         end,
         kind: "create-motion",
-        start: currentTime,
+        start: sourceCurrentTime,
         targetObjectIds: targetIds,
       };
       installDraft(operation, transactionId, {
@@ -501,6 +889,7 @@ export function App() {
     gestureContext: Readonly<{
       preserveDraft: ProgramRecord | null;
       proposedState: ProposedState | null;
+      sourcePrograms: readonly ProgramRecord["program"][];
     }> = directGestureContext(),
   ) {
     if (!gestureContext.proposedState || !projection) return;
@@ -509,12 +898,16 @@ export function App() {
       setDraftError(projected.message);
       return;
     }
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
     const validation = createDirectManipulationPositionProgram({
-      capturedPlayhead: currentTime,
+      capturedPlayhead: sourceCurrentTime,
       delta,
       positions: projected.positions,
-      scene: gestureContext.proposedState.evaluatedScene,
-      start: currentTime,
+      scene: sourceScene,
+      start: sourceCurrentTime,
       targetEntityIds: targetIds,
       transactionId,
     });
@@ -532,24 +925,124 @@ export function App() {
     setPendingClarification(null);
     setSuggestionMessage(null);
     setSuggestionStatus("idle");
+    setRedoPrograms([]);
   }
 
   function nudgeEntity(event: KeyboardEvent<HTMLButtonElement>, entityId: string) {
     const delta = NUDGE_DELTAS[event.key];
     if (!delta || !draftBaseState || !projection) return;
     event.preventDefault();
+    const multiplier = event.shiftKey ? 5 : 1;
     const targetIds = selectedObjectIds.includes(entityId) ? selectedObjectIds : [entityId];
-    installPositionDraft(delta, targetIds, `studio-nudge-${crypto.randomUUID()}`);
+    installPositionDraft({ x: delta.x * multiplier, y: delta.y * multiplier }, targetIds, `studio-nudge-${crypto.randomUUID()}`);
   }
 
-  const renderRecord = draftProgram ?? appliedPrograms.at(-1) ?? null;
-  const renderCandidate: RenderProgramCandidate | null = activeScene && renderRecord ? {
+  function changeDraftMotionControl(path: StudioMotionPath, delta: Point) {
+    if (!draftOperation || !editableMotionIds.has(path.motionId)) return;
+    const changeStep = <T extends EditSuggestionOperation>(operation: T): T => {
+      if (operation.kind === "create-motion" && operation.targetObjectIds.includes(path.entityId)) {
+        return {
+          ...operation,
+          controlOffset: {
+            x: clamp(operation.controlOffset.x + delta.x, -160, 160),
+            y: clamp(operation.controlOffset.y + delta.y, -100, 100),
+          },
+        } as T;
+      }
+      if (operation.kind === "edit-program") {
+        return {
+          ...operation,
+          operations: operation.operations.map((step) => (
+            step.kind === "create-motion" && step.targetObjectIds.includes(path.entityId)
+              ? {
+                ...step,
+                controlOffset: {
+                  x: clamp(step.controlOffset.x + delta.x, -160, 160),
+                  y: clamp(step.controlOffset.y + delta.y, -100, 100),
+                },
+              }
+              : step
+          )),
+        } as T;
+      }
+      return operation;
+    };
+    updateDraftOperation(changeStep(draftOperation));
+  }
+
+  function handleStudioCommand(command: StudioCommandId) {
+    const toolByCommand: Partial<Record<StudioCommandId, StudioTool>> = {
+      "insert-arrow": "Arrow",
+      "insert-circle": "Circle",
+      "insert-line": "Line",
+      "insert-mathtex": "MathTex",
+      "insert-rectangle": "Rectangle",
+      "insert-text": "Text",
+      "select-tool": "select",
+    };
+    const tool = toolByCommand[command];
+    if (tool) {
+      setInsertTool(tool);
+      return true;
+    }
+    if (command === "undo") {
+      if (!draftProgram && appliedPrograms.length === 0) return false;
+      undoProgram();
+      return true;
+    }
+    if (command === "redo") return redoProgram();
+    if (command === "delete") return deleteSelection();
+    if (command === "duplicate") return duplicateSelection();
+    if (command === "copy") return copySelection();
+    if (command === "paste") return pasteSelection();
+    if (command === "select-all") {
+      const ids = editableEntities.filter((entity) => entity.present && (
+        !entity.provisional || (entity.transactionId && appliedTransactionIds.has(entity.transactionId))
+      )).map((entity) => entity.id);
+      if (ids.length === 0) return false;
+      setSelectedObjectIds(ids);
+      return true;
+    }
+    if (command === "play-pause") {
+      if (!activeScene) return false;
+      if (currentTime >= activeDuration) setCurrentTime(0);
+      setIsPlaying((playing) => !playing);
+      return true;
+    }
+    if (command === "escape") {
+      if (insertTool !== "select") {
+        setInsertTool("select");
+        return true;
+      }
+      if (draftProgram) {
+        discardDraft();
+        return true;
+      }
+      if (selectedObjectIds.length > 0) {
+        setSelectedObjectIds([]);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  commandHandler.current = handleStudioCommand;
+
+  const renderPrograms = [
+    ...appliedPrograms.map((record) => record.program),
+    ...(draftProgram ? [draftProgram.program] : []),
+  ];
+  const renderProgram = renderPrograms[0] ?? null;
+  const renderCandidateUnavailableReason = "Create or apply a Canonical draft to enable rendered validation.";
+  const renderCandidate: RenderProgramCandidate | null = activeScene && activeProjectId && renderProgram ? {
     anchors: activeScene.anchors,
-    destination: operationHasSceneBoundary(renderRecord) && nextScene ? {
+    destination: programsHaveSceneBoundary(renderPrograms) && nextScene ? {
       sceneName: nextScene.name,
       sourcePath: nextScene.sourcePath,
     } : null,
-    program: renderRecord.program,
+    program: renderProgram,
+    programs: renderPrograms,
+    projectId: activeProjectId,
     sceneName: activeScene.name,
     sourceBindings: Object.entries(activeScene.sourceVariables).map(([entityId, sourceVariable]) => ({
       entityId,
@@ -568,11 +1061,29 @@ export function App() {
         <header className="flex min-h-12 shrink-0 items-center justify-between gap-2 border-b border-zinc-800 px-3 py-2">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <h1 className="hidden shrink-0 text-balance text-sm font-semibold md:block">Poietra Studio Lab</h1>
+            {projects.length > 0 ? (
+              <select
+                aria-label="Active project"
+                className="h-8 min-w-28 max-w-48 border border-zinc-700 bg-zinc-950 px-2 text-xs font-medium text-zinc-200 outline-none focus:border-sky-500"
+                onChange={(event) => {
+                  saveEditorSession();
+                  setActiveProjectId(event.currentTarget.value);
+                }}
+                value={activeProjectId ?? ""}
+              >
+                {projects.map((project) => (
+                  <option key={project.id} value={project.id}>{project.name}</option>
+                ))}
+              </select>
+            ) : null}
             {scenes.length > 0 ? (
               <select
                 aria-label="Active imported Scene"
                 className="h-8 min-w-0 w-full max-w-sm border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-300 outline-none focus:border-sky-500"
-                onChange={(event) => setActiveSceneId(event.currentTarget.value)}
+                onChange={(event) => {
+                  saveEditorSession();
+                  setActiveSceneId(event.currentTarget.value);
+                }}
                 value={activeSceneId ?? ""}
               >
                 {scenes.map((scene) => (
@@ -641,15 +1152,18 @@ export function App() {
               duration={activeDuration}
               entities={editableEntities}
               nextScene={nextScene}
+              onDurationChange={(duration) => void extendSceneDuration(duration)}
+              onRedo={() => void redoProgram()}
               onToggleEntity={(entityId, selected) => setSelectedObjectIds((selection) => selected
                 ? selection.filter((id) => id !== entityId)
                 : [...selection, entityId])}
               onUndo={undoProgram}
+              redoCount={redoPrograms.length}
               selectedIds={selectedSet}
             />
 
             <StudioViewport
-              anchors={activeScene.anchors}
+              anchors={timelineAnchors}
               appliedTransactionIds={appliedTransactionIds}
               boundaryActive={boundary !== null}
               className="order-1 min-h-[30rem] lg:order-2 lg:col-start-2 lg:row-start-1 lg:min-h-[32rem] xl:min-h-0"
@@ -657,16 +1171,27 @@ export function App() {
               draftTransactionId={draftProgram?.program.transactionId ?? null}
               dragPreview={dragPreview}
               duration={activeDuration}
+              editableMotionIds={editableMotionIds}
               entities={visibleEntities}
               incomingSceneName={nextScene?.name ?? null}
+              insertTool={insertTool}
+              insertValue={insertValue}
               interactionMode={interactionMode}
               isPlaying={isPlaying}
+              motionDuration={motionDuration}
+              motionPaths={motionPaths}
+              onCanvasPlace={(point) => void insertEntitiesAt(point)}
               onEntityKeyDown={nudgeEntity}
               onEntityPointerCancel={cancelEntityDrag}
               onEntityPointerDown={beginEntityDrag}
               onEntityPointerMove={moveEntityDrag}
               onEntityPointerUp={finishEntityDrag}
               onInteractionModeChange={setInteractionMode}
+              onInsertAtCenter={() => void insertEntitiesAt({ x: 320, y: 180 })}
+              onInsertToolChange={setInsertTool}
+              onInsertValueChange={setInsertValue}
+              onMotionControlChange={changeDraftMotionControl}
+              onMotionDurationChange={setMotionDuration}
               onSelectEntity={(entityId) => setSelectedObjectIds([entityId])}
               onTimeChange={(time) => {
                 setIsPlaying(false);
@@ -690,12 +1215,17 @@ export function App() {
               onApplyDraft={applyDraft}
               onDiscardDraft={discardDraft}
               onDraftOperationChange={updateDraftOperation}
+              onRenderSessionChange={retainRenderSession}
               onSourceChanged={async () => {
+                const key = activeEditorSessionKey();
+                if (key) editorSessions.current.delete(key);
                 discardDraft();
                 setAppliedPrograms([]);
                 await refreshWorkspace();
               }}
               renderCandidate={renderCandidate}
+              renderCandidateUnavailableReason={renderCandidateUnavailableReason}
+              renderSession={activeProjectId ? renderSessions[activeProjectId] ?? null : null}
               selectedEntity={selectedEntity}
               suggestion={suggestion}
               workspace={workspace}

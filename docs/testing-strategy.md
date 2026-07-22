@@ -12,10 +12,14 @@ Test count is not a coverage target.
 | Browser E2E | `pnpm test:e2e` | Cross-component journeys whose failures depend on React state, pointer events, layout, and the browser. |
 | Real Manim smoke | Manual, before a render-pipeline release | One Docker-backed preview and discard or commit/undo. This checks the external renderer rather than duplicating deterministic lowering cases. |
 
-The browser suite intentionally starts with one journey: moving two different
-objects must retain both positions through Apply. This regression cannot be
-detected by evaluating two already-constructed Programs in a unit test; the defect
-was in the application's Draft-to-working-state orchestration.
+The browser suite stays deliberately small. It covers the original journey where
+moving two different objects must retain both positions through Apply, plus the
+cross-owner editor foundations: manual geometry creation and export, live Bézier
+path editing and export, registered-project switching, and Scene-duration extension
+through an exported wait.
+These regressions cannot be detected by evaluating already-constructed Programs in
+a unit test because the defects sit in React orchestration, pointer geometry, or
+the browser download boundary.
 
 ## Placement rule
 

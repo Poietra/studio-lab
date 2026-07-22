@@ -1,11 +1,30 @@
 import type { EditSuggestion, EditSuggestionOperation } from "../ai/edit-suggestions";
 import { cn } from "../lib/cn";
-import type { ManimWorkspaceView } from "../render-pipeline/contracts";
+import type { ManimWorkspaceView, RenderSessionView } from "../render-pipeline/contracts";
 import { RenderPipelinePanel, type RenderProgramCandidate } from "../render-pipeline/render-pipeline-panel";
 import { DraftInspector } from "./draft-inspector";
 import type { ManimWorkspaceScene } from "./imported-workspace";
 import type { ProgramRecord, ProjectedEntity } from "./model";
+import { shortcutLabel, studioCommand, type StudioCommandId } from "./commands";
 import { entityLabel } from "./studio-viewport";
+
+const SIDEBAR_SHORTCUTS: readonly StudioCommandId[] = [
+  "select-tool",
+  "insert-text",
+  "insert-mathtex",
+  "insert-rectangle",
+  "insert-circle",
+  "insert-line",
+  "insert-arrow",
+  "undo",
+  "redo",
+  "duplicate",
+  "delete",
+  "copy",
+  "paste",
+  "select-all",
+  "play-pause",
+];
 
 export function WorkspaceSidebar({
   activeScene,
@@ -15,8 +34,11 @@ export function WorkspaceSidebar({
   duration,
   entities,
   nextScene,
+  onDurationChange,
+  onRedo,
   onToggleEntity,
   onUndo,
+  redoCount,
   selectedIds,
 }: Readonly<{
   activeScene: ManimWorkspaceScene;
@@ -26,14 +48,17 @@ export function WorkspaceSidebar({
   duration: number;
   entities: readonly ProjectedEntity[];
   nextScene: ManimWorkspaceScene | null;
+  onDurationChange: (duration: number) => void;
+  onRedo: () => void;
   onToggleEntity: (entityId: string, selected: boolean) => void;
   onUndo: () => void;
+  redoCount: number;
   selectedIds: ReadonlySet<string>;
 }>) {
   return (
     <aside className={cn("min-h-0 overflow-y-auto bg-zinc-950 p-3", className)}>
       <div className="flex items-center justify-between gap-2">
-        <h2 className="text-balance text-xs font-medium text-zinc-300">Imported objects</h2>
+        <h2 className="text-balance text-xs font-medium text-zinc-300">Objects</h2>
         <span className="tabular-nums text-[10px] text-zinc-600">{entities.length}</span>
       </div>
       <p className="mt-1 truncate text-[10px] text-zinc-600" title={activeScene.sceneId}>{activeScene.name}</p>
@@ -72,7 +97,30 @@ export function WorkspaceSidebar({
           <dt className="text-zinc-600">Next</dt>
           <dd className="truncate text-zinc-400">{nextScene?.name ?? "none"}</dd>
           <dt className="text-zinc-600">Duration</dt>
-          <dd className="tabular-nums text-zinc-400">{duration.toFixed(2)}s</dd>
+          <dd>
+            <form
+              className="flex items-center gap-1"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const data = new FormData(event.currentTarget);
+                onDurationChange(Number(data.get("duration")));
+              }}
+            >
+              <input
+                aria-label="Scene duration in seconds"
+                className="h-7 min-w-0 w-20 border border-zinc-700 bg-zinc-950 px-1.5 tabular-nums text-[10px] text-zinc-300 outline-none focus:border-sky-500"
+                defaultValue={duration.toFixed(2)}
+                key={`${activeScene.sceneId}/${duration.toFixed(3)}`}
+                min={duration.toFixed(2)}
+                name="duration"
+                step="0.1"
+                type="number"
+              />
+              <button className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100" type="submit">
+                Extend
+              </button>
+            </form>
+          </dd>
           <dt className="text-zinc-600">Anchors</dt>
           <dd className="tabular-nums text-zinc-400">{activeScene.anchors.map((anchor) => anchor.toFixed(2)).join(", ") || "none"}</dd>
         </dl>
@@ -81,11 +129,18 @@ export function WorkspaceSidebar({
       <section className="mt-5 border-t border-zinc-800 pt-4">
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-balance text-xs font-medium text-zinc-300">Applied programs</h2>
-          {appliedPrograms.length > 0 ? (
-            <button className="text-[10px] text-zinc-500 underline underline-offset-2 hover:text-zinc-200" onClick={onUndo} type="button">
-              Undo last
-            </button>
-          ) : null}
+          <div className="flex items-center gap-2">
+            {appliedPrograms.length > 0 ? (
+              <button aria-keyshortcuts="Control+Z Meta+Z" className="text-[10px] text-zinc-500 underline underline-offset-2 hover:text-zinc-200" onClick={onUndo} type="button">
+                Undo
+              </button>
+            ) : null}
+            {redoCount > 0 ? (
+              <button aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z" className="text-[10px] text-zinc-500 underline underline-offset-2 hover:text-zinc-200" onClick={onRedo} type="button">
+                Redo
+              </button>
+            ) : null}
+          </div>
         </div>
         {appliedPrograms.length > 0 ? (
           <ol className="mt-2 space-y-1">
@@ -99,6 +154,25 @@ export function WorkspaceSidebar({
           <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">Apply a draft to add it to the Scene working state.</p>
         )}
       </section>
+
+      <details className="mt-5 border-t border-zinc-800 pt-4 text-[10px]">
+        <summary className="cursor-pointer text-zinc-400 hover:text-zinc-200">Keyboard shortcuts</summary>
+        <dl className="mt-2 grid grid-cols-[1fr_auto] gap-x-3 gap-y-1">
+          {SIDEBAR_SHORTCUTS.map((id) => {
+            const command = studioCommand(id);
+            return (
+              <div className="contents" key={id}>
+                <dt className="text-zinc-600">{command.label}</dt>
+                <dd className="font-mono text-zinc-400">{shortcutLabel(command.shortcut, navigator.platform)}</dd>
+              </div>
+            );
+          })}
+          <div className="contents">
+            <dt className="text-zinc-600">Nudge / coarse nudge</dt>
+            <dd className="font-mono text-zinc-400">Arrow / Shift+Arrow</dd>
+          </div>
+        </dl>
+      </details>
     </aside>
   );
 }
@@ -112,8 +186,11 @@ export function StudioInspector({
   onApplyDraft,
   onDiscardDraft,
   onDraftOperationChange,
+  onRenderSessionChange,
   onSourceChanged,
   renderCandidate,
+  renderCandidateUnavailableReason,
+  renderSession,
   selectedEntity,
   suggestion,
   workspace,
@@ -126,8 +203,11 @@ export function StudioInspector({
   onApplyDraft: () => void;
   onDiscardDraft: () => void;
   onDraftOperationChange: (operation: EditSuggestionOperation) => void;
+  onRenderSessionChange: (session: RenderSessionView | null, projectId?: string) => void;
   onSourceChanged: () => void | Promise<void>;
   renderCandidate: RenderProgramCandidate | null;
+  renderCandidateUnavailableReason: string;
+  renderSession: RenderSessionView | null;
   selectedEntity: ProjectedEntity | null;
   suggestion: EditSuggestion | null;
   workspace: ManimWorkspaceView | null;
@@ -166,7 +246,12 @@ export function StudioInspector({
           )}
           {appliedProgramCount > 0 ? (
             <p className="mt-3 text-pretty text-[10px] leading-4 text-zinc-600">
-              The last applied program remains available for rendered validation until another draft is created.
+              Applied programs at the same source anchor are exported and rendered in their Studio order.
+            </p>
+          ) : null}
+          {draftError ? (
+            <p className="mt-3 border border-red-950 bg-red-950/30 p-2 text-pretty text-xs leading-5 text-red-300" role="alert">
+              {draftError}
             </p>
           ) : null}
         </section>
@@ -186,8 +271,10 @@ export function StudioInspector({
 
       <RenderPipelinePanel
         candidate={renderCandidate}
-        candidateUnavailableReason="Create or apply a Canonical draft to enable rendered validation."
+        candidateUnavailableReason={renderCandidateUnavailableReason}
+        onSessionChange={onRenderSessionChange}
         onSourceChanged={onSourceChanged}
+        session={renderSession}
         workspace={workspace}
       />
     </aside>

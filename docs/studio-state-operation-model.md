@@ -2,7 +2,7 @@
 
 Status: implemented prototype boundary
 Version: 1
-Last updated: 2026-07-21
+Last updated: 2026-07-22
 
 ## Outcome
 
@@ -102,6 +102,12 @@ UX macros expand before validation:
 - Transform + explanation → `TransformContent` plus the explanation expansion;
   the relation targets the transform's transaction-scoped replacement identity.
 
+Manual Insert tools use the same pipeline for Text, MathTex, Rectangle, Circle,
+Line, and Arrow entities. The Scene duration control creates a supported
+`InsertTimelineEvent(wait)` at the latest safe source anchor instead of mutating a
+display-only duration. Keyboard commands invoke these same authoring functions;
+they do not maintain a second shortcut-specific state model.
+
 New entity IDs use `tx:<transaction>/entity:<local-name>`. While a program is only
 staged, validation rejects its provisional IDs from every other transaction. Apply
 promotes the produced runtime entities to stable Studio identities, so later
@@ -151,18 +157,25 @@ direct motion normalization, shared schemas, and Unknown identity rejection.
 The runtime application no longer boots from `STUDIO_FIXTURE_SCENE`. The local
 workspace bridge conservatively imports source assignments, MathTex/Text content,
 source identities, `add`/`remove`/`clear`, replacement lifetimes, play/wait timing,
-straight shifts, anchors, and same-file Scene order. Assignment alone is not treated
-as visible presence, and repeated presence is preserved as multiple lifetime
-intervals. Facts that cannot be established by this static importer remain outside
-the snapshot instead of being filled from fixture constants.
+straight shifts, marked quadratic Bézier moves, anchors, and same-file Scene order.
+Assignment alone is not treated as visible presence, and repeated presence is
+preserved as multiple lifetime intervals. Facts that cannot be established by this
+static importer remain outside the snapshot instead of being filled from fixture
+constants.
 
-The local workspace and render-session responses cross an explicit runtime schema
-boundary. TypeScript types alone are not treated as evidence for network data.
+The local project list, workspace, export, and render-session responses cross an
+explicit runtime schema boundary. TypeScript types alone are not treated as
+evidence for network data. The browser receives only registered opaque project IDs
+and display names; every render/export request and retained session is bound to one
+of those IDs.
 
 Rendered validation now accepts one complete `CanonicalEditProgram`. At an exact
-safe source anchor it can lower straight `CreateMotion`, position changes,
-MathTex/Text creation, `next_to`, FadeIn/removal, matching/replacement transforms,
-and a cover-and-reveal boundary to the actual next imported Scene. A successful
-commit writes transaction and identity markers; reimport recovers generated entity
-IDs and the Scene boundary. Curved motion, camera lowering, arbitrary Python flow,
-and insertion inside an existing play remain explicit blockers.
+safe source anchor it can lower straight or quadratic Bézier `CreateMotion`,
+position changes, MathTex/Text/basic-shape creation, `next_to`, FadeIn/removal,
+sequential transform chains, explicit waits for Scene extension, and a
+cover-and-reveal boundary to the actual next imported Scene. A successful commit
+writes transaction and identity markers; reimport recovers generated entity IDs,
+curved-path controls, and the Scene boundary. The same lowering can be downloaded
+as Python without a Manim subprocess or source write. Camera lowering, arbitrary
+Python flow, overlapping animation composition, shrinking Scene duration, and
+insertion inside an existing play remain explicit blockers.
