@@ -4,6 +4,7 @@ import type {
   MathTexSuggestionTarget,
   SuggestionInterval,
 } from "./edit-suggestions";
+import { editProgramSuggestionSchema } from "./edit-suggestion-schema";
 
 type MotionStep = Extract<EditProgramStep, { kind: "create-motion" }>;
 type TransformStep = Extract<EditProgramStep, { kind: "create-transform" }>;
@@ -78,30 +79,22 @@ function lifetimeAt<TId extends string>(object: ProgramObject<TId>, time: number
   return object.lifetimes.find((interval) => time >= interval.start && time < interval.end) ?? null;
 }
 
-function minimumDuration(step: EditProgramStep) {
-  return step.kind === "create-scene-transition" ? 0.4 : 0.1;
-}
-
 export function validateEditProgram<TId extends string>(
   operation: EditProgramSuggestion,
   context: EditProgramValidationContext<TId>,
 ): EditProgramValidationResult<TId> {
+  const parsedOperation = editProgramSuggestionSchema.safeParse(operation);
+  if (!parsedOperation.success) {
+    return { kind: "invalid", message: "The Edit Program does not match the supported operation contract." };
+  }
+  operation = parsedOperation.data;
   const firstStep = operation.operations[0];
   const start = resolveAnchor(operation.anchor);
   const referenceMatches = operation.anchor.kind === "absolute"
     || Math.abs(operation.anchor.referenceSeconds - context.capturedPlayhead) < 0.001;
-  const intervalsAreValid = firstStep !== undefined && operation.operations.every((step, index) => (
-    Number.isFinite(step.start)
-    && Number.isFinite(step.end)
-    && step.start >= 0
+  const intervalsAreValid = firstStep !== undefined && operation.operations.every((step) => (
+    step.start >= 0
     && step.end <= context.sceneDuration
-    && step.end - step.start >= minimumDuration(step)
-    && step.end - step.start <= 5
-    && (index === 0 || (
-      operation.execution === "parallel"
-        ? Math.abs(step.start - firstStep.start) < 0.001 && Math.abs(step.end - firstStep.end) < 0.001
-        : step.start >= operation.operations[index - 1].end - 0.001
-    ))
   ));
   if (
     !firstStep

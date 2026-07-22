@@ -46,11 +46,17 @@ const NUDGE_DELTAS: Readonly<Record<string, Readonly<{ x: number; y: number }>>>
   ArrowUp: { x: 0, y: -2 },
 };
 type CanvasDragState = Readonly<{
-  entityId: string;
   pointerId: number;
   scale: Readonly<{ x: number; y: number }>;
   start: Readonly<{ x: number; y: number }>;
+  targetEntityIds: readonly string[];
 }>;
+
+function cancelRequest(request: { current: AbortController | null }) {
+  const controller = request.current;
+  request.current = null;
+  controller?.abort();
+}
 
 function detectShell(): Shell {
   if ("__TAURI_INTERNALS__" in window) return "Tauri";
@@ -111,12 +117,12 @@ export function App() {
   const canvasDrag = useRef<CanvasDragState | null>(null);
   const workspaceBounds = useRef<HTMLElement | null>(null);
 
-  useEffect(() => () => suggestionRequest.current?.abort(), []);
+  useEffect(() => () => cancelRequest(suggestionRequest), []);
 
   useEffect(() => {
     if (!activeScene) return;
-    suggestionRequest.current?.abort();
-    suggestionRequest.current = null;
+    cancelRequest(suggestionRequest);
+    canvasDrag.current = null;
     const initialTime = activeScene.anchors[0] ?? 0;
     const initialEntities = Object.values(activeScene.runtimeSceneState.objectGraph.entities)
       .filter((entity) => entity.lifetime.some((lifetime) => initialTime >= lifetime.start && initialTime < lifetime.end));
@@ -130,6 +136,8 @@ export function App() {
     setPendingClarification(null);
     setSuggestionStatus("idle");
     setSuggestionMessage(null);
+    setInstruction("");
+    setDragPreview(null);
     setIsPlaying(false);
   }, [activeScene?.sceneId, activeScene?.sourceHash]);
 
@@ -223,13 +231,21 @@ export function App() {
     }> = {},
   ) {
     try {
+      const origin = options.origin ?? "remote-model";
       const validated = createValidatedDraft(
         operation,
         transactionId,
-        options.origin ?? "remote-model",
+        origin,
         options.proposedState,
       );
       preserveDirectManipulationDraft(options.preserveDraft);
+      if (origin === "direct-manipulation") {
+        cancelRequest(suggestionRequest);
+        setSuggestion(null);
+        setPendingClarification(null);
+        setSuggestionMessage(null);
+        setSuggestionStatus("idle");
+      }
       setDraftOperation(validated.operation);
       setDraftProgram(validated.record);
       setDraftError(null);
@@ -268,7 +284,7 @@ export function App() {
         : { kind: "text" as const, text: answerText }
       : null;
     if (pending && !clarificationAnswer) return;
-    suggestionRequest.current?.abort();
+    cancelRequest(suggestionRequest);
     const controller = new AbortController();
     suggestionRequest.current = controller;
     setIsPlaying(false);
@@ -305,6 +321,7 @@ export function App() {
         sceneDuration: draftBaseState.evaluatedScene.duration,
         selectedObjectIds,
       }, { signal: controller.signal });
+      if (suggestionRequest.current !== controller) return;
       if (suggestionContext.current !== requestedContext) {
         setSuggestion(null);
         setSuggestionMessage("The Scene, playhead, or selection changed while Magic Edit was thinking. Try the request again in the current context.");
@@ -342,6 +359,7 @@ export function App() {
       setSuggestionMessage(null);
       setSuggestionStatus("ready");
     } catch (error) {
+      if (suggestionRequest.current !== controller || controller.signal.aborted) return;
       if (error instanceof DOMException && error.name === "AbortError") return;
       setSuggestion(null);
       setSuggestionMessage(error instanceof Error ? error.message : "Could not generate an edit suggestion.");
@@ -360,25 +378,31 @@ export function App() {
   }
 
   function discardDraft() {
+    cancelRequest(suggestionRequest);
     setDraftProgram(null);
     setDraftOperation(null);
     setDraftError(null);
     setSuggestion(null);
+    setPendingClarification(null);
     setSuggestionMessage(null);
     setSuggestionStatus("idle");
   }
 
   function applyDraft() {
     if (!draftProgram) return;
+    cancelRequest(suggestionRequest);
     setAppliedPrograms((programs) => [...programs, draftProgram]);
     setDraftProgram(null);
     setDraftOperation(null);
     setDraftError(null);
     setSuggestion(null);
+    setPendingClarification(null);
+    setSuggestionMessage(null);
     setSuggestionStatus("idle");
   }
 
   function undoProgram() {
+    discardDraft();
     setAppliedPrograms((programs) => programs.slice(0, -1));
     setSelectedObjectIds([]);
   }
@@ -394,22 +418,29 @@ export function App() {
   }
 
   function beginEntityDrag(event: PointerEvent<HTMLButtonElement>, entityId: string) {
+    if (canvasDrag.current) return;
     const entity = editableEntities.find((candidate) => candidate.id === entityId);
     const editable = entity && (!entity.provisional || (entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
     if (!editable) return;
+    const selectedEditableIds = selectedObjectIds.filter((selectedId) => editableEntities.some((candidate) => (
+      candidate.id === selectedId
+      && candidate.present
+      && (!candidate.provisional || (candidate.transactionId && appliedTransactionIds.has(candidate.transactionId)))
+    )));
+    const targetEntityIds = selectedEditableIds.includes(entityId) ? selectedEditableIds : [entityId];
     event.currentTarget.setPointerCapture(event.pointerId);
     const canvasBounds = event.currentTarget.closest<HTMLElement>("[data-scene-phase]")?.getBoundingClientRect();
-    setSelectedObjectIds((selection) => selection.includes(entityId) ? selection : [entityId]);
+    setSelectedObjectIds(targetEntityIds);
     canvasDrag.current = {
-      entityId,
       pointerId: event.pointerId,
       scale: {
         x: canvasBounds?.width ? STUDIO_VIEWPORT.width / canvasBounds.width : 1,
         y: canvasBounds?.height ? STUDIO_VIEWPORT.height / canvasBounds.height : 1,
       },
       start: { x: event.clientX, y: event.clientY },
+      targetEntityIds,
     };
-    setDragPreview({ delta: { x: 0, y: 0 }, entityId });
+    setDragPreview({ delta: { x: 0, y: 0 }, entityIds: targetEntityIds });
   }
 
   function moveEntityDrag(event: PointerEvent<HTMLButtonElement>) {
@@ -417,18 +448,19 @@ export function App() {
     if (!drag || drag.pointerId !== event.pointerId) return;
     setDragPreview({
       delta: canvasPointerDelta(drag, { x: event.clientX, y: event.clientY }),
-      entityId: drag.entityId,
+      entityIds: drag.targetEntityIds,
     });
   }
 
   function finishEntityDrag(event: PointerEvent<HTMLButtonElement>) {
     const drag = canvasDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
     canvasDrag.current = null;
     setDragPreview(null);
-    if (!drag || drag.pointerId !== event.pointerId || !activeScene || !draftBaseState) return;
+    if (!activeScene || !draftBaseState) return;
     const delta = canvasPointerDelta(drag, { x: event.clientX, y: event.clientY });
     if (Math.hypot(delta.x, delta.y) < 1) return;
-    const targetIds = selectedObjectIds.includes(drag.entityId) ? selectedObjectIds : [drag.entityId];
+    const targetIds = drag.targetEntityIds;
     const transactionId = `studio-gesture-${crypto.randomUUID()}`;
     const gestureContext = directGestureContext();
     if (interactionMode === "animate") {
@@ -492,9 +524,14 @@ export function App() {
       return;
     }
     preserveDirectManipulationDraft(gestureContext.preserveDraft);
+    cancelRequest(suggestionRequest);
     setDraftProgram(validated.record);
     setDraftOperation(null);
     setDraftError(null);
+    setSuggestion(null);
+    setPendingClarification(null);
+    setSuggestionMessage(null);
+    setSuggestionStatus("idle");
   }
 
   function nudgeEntity(event: KeyboardEvent<HTMLButtonElement>, entityId: string) {
@@ -640,6 +677,7 @@ export function App() {
                 setIsPlaying((playing) => !playing);
               }}
               projection={projection}
+              readOnly={boundary !== null}
               selectedIds={selectedSet}
             />
 
@@ -653,9 +691,8 @@ export function App() {
               onDiscardDraft={discardDraft}
               onDraftOperationChange={updateDraftOperation}
               onSourceChanged={async () => {
+                discardDraft();
                 setAppliedPrograms([]);
-                setDraftProgram(null);
-                setDraftOperation(null);
                 await refreshWorkspace();
               }}
               renderCandidate={renderCandidate}

@@ -297,19 +297,258 @@ function waitDuration(statement: string) {
   return match ? Number(match[1] ?? 1) : null;
 }
 
-function shiftedPosition(point: Point, statement: string, frame: Readonly<{ height: number; width: number }>) {
-  const shift = statement.match(/\.animate\.shift\(([^)]*)\)/s)?.[1];
-  if (!shift) return point;
-  const horizontal = (shift.match(/(?:([0-9]+(?:\.[0-9]+)?)\s*\*\s*)?RIGHT/) ? 1 : 0)
-    - (shift.match(/(?:([0-9]+(?:\.[0-9]+)?)\s*\*\s*)?LEFT/) ? 1 : 0);
-  const vertical = (shift.match(/(?:([0-9]+(?:\.[0-9]+)?)\s*\*\s*)?DOWN/) ? 1 : 0)
-    - (shift.match(/(?:([0-9]+(?:\.[0-9]+)?)\s*\*\s*)?UP/) ? 1 : 0);
-  const horizontalAmount = Number(shift.match(/([0-9]+(?:\.[0-9]+)?)\s*\*\s*(?:RIGHT|LEFT)/)?.[1] ?? 1);
-  const verticalAmount = Number(shift.match(/([0-9]+(?:\.[0-9]+)?)\s*\*\s*(?:UP|DOWN)/)?.[1] ?? 1);
-  return {
-    x: point.x + horizontal * horizontalAmount * (640 / frame.width),
-    y: point.y + vertical * verticalAmount * (360 / frame.height),
+type LinearValue =
+  | Readonly<{ kind: "scalar"; value: number }>
+  | Readonly<{ kind: "vector"; x: number; y: number }>;
+
+type VectorToken = Readonly<{
+  kind: "identifier" | "number" | "operator";
+  value: string;
+}>;
+
+function tokenizeVectorExpression(source: string): readonly VectorToken[] | null {
+  const tokens: VectorToken[] = [];
+  let offset = 0;
+  while (offset < source.length) {
+    const rest = source.slice(offset);
+    const whitespace = rest.match(/^\s+/)?.[0];
+    if (whitespace) {
+      offset += whitespace.length;
+      continue;
+    }
+    const number = rest.match(/^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/)?.[0];
+    if (number) {
+      tokens.push({ kind: "number", value: number });
+      offset += number.length;
+      continue;
+    }
+    const identifier = rest.match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0];
+    if (identifier) {
+      tokens.push({ kind: "identifier", value: identifier });
+      offset += identifier.length;
+      continue;
+    }
+    const operator = rest[0];
+    if (operator === "+" || operator === "-" || operator === "*" || operator === "(" || operator === ")") {
+      tokens.push({ kind: "operator", value: operator });
+      offset += 1;
+      continue;
+    }
+    return null;
+  }
+  return tokens;
+}
+
+function scaleLinearValue(value: LinearValue, amount: number): LinearValue {
+  return value.kind === "scalar"
+    ? { kind: "scalar", value: value.value * amount }
+    : { kind: "vector", x: value.x * amount, y: value.y * amount };
+}
+
+function parseLinearVector(source: string): Readonly<{ x: number; y: number }> | null {
+  const parsedTokens = tokenizeVectorExpression(source);
+  if (!parsedTokens || parsedTokens.length === 0) return null;
+  const tokens: readonly VectorToken[] = parsedTokens;
+  let index = 0;
+
+  const parsePrimary = (): LinearValue | null => {
+    const token = tokens[index];
+    if (!token) return null;
+    if (token.kind === "number") {
+      index += 1;
+      const value = Number(token.value);
+      return Number.isFinite(value) ? { kind: "scalar", value } : null;
+    }
+    if (token.kind === "identifier") {
+      index += 1;
+      const vector = {
+        DOWN: { x: 0, y: 1 },
+        LEFT: { x: -1, y: 0 },
+        ORIGIN: { x: 0, y: 0 },
+        RIGHT: { x: 1, y: 0 },
+        UP: { x: 0, y: -1 },
+      }[token.value];
+      return vector ? { kind: "vector", ...vector } : null;
+    }
+    if (token.value !== "(") return null;
+    index += 1;
+    const value = parseSum();
+    if (!value || tokens[index]?.value !== ")") return null;
+    index += 1;
+    return value;
   };
+
+  const parseUnary = (): LinearValue | null => {
+    const operator = tokens[index]?.value;
+    if (operator !== "+" && operator !== "-") return parsePrimary();
+    index += 1;
+    const value = parseUnary();
+    return value ? scaleLinearValue(value, operator === "-" ? -1 : 1) : null;
+  };
+
+  const parseProduct = (): LinearValue | null => {
+    let value = parseUnary();
+    if (!value) return null;
+    while (tokens[index]?.value === "*") {
+      index += 1;
+      const right = parseUnary();
+      if (!right) return null;
+      if (value.kind === "scalar") {
+        value = scaleLinearValue(right, value.value);
+      } else {
+        if (right.kind !== "scalar") return null;
+        value = scaleLinearValue(value, right.value);
+      }
+    }
+    return value;
+  };
+
+  function parseSum(): LinearValue | null {
+    let value = parseProduct();
+    if (!value) return null;
+    while (tokens[index]?.value === "+" || tokens[index]?.value === "-") {
+      const operator = tokens[index]?.value;
+      index += 1;
+      const right = parseProduct();
+      if (!right) return null;
+      const sign = operator === "-" ? -1 : 1;
+      if (value.kind === "scalar") {
+        if (right.kind !== "scalar") return null;
+        value = { kind: "scalar", value: value.value + sign * right.value };
+      } else {
+        if (right.kind !== "vector") return null;
+        value = { kind: "vector", x: value.x + sign * right.x, y: value.y + sign * right.y };
+      }
+    }
+    return value;
+  }
+
+  const value = parseSum();
+  return value?.kind === "vector" && index === tokens.length
+    && Number.isFinite(value.x) && Number.isFinite(value.y)
+    ? { x: value.x, y: value.y }
+    : null;
+}
+
+function parenthesizedArgument(statement: string, openingParenthesis: number) {
+  let depth = 1;
+  let escaped = false;
+  let quote: "\"" | "'" | null = null;
+  for (let index = openingParenthesis + 1; index < statement.length; index += 1) {
+    const character = statement[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote) {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === "(") depth += 1;
+    if (character !== ")") continue;
+    depth -= 1;
+    if (depth === 0) return statement.slice(openingParenthesis + 1, index);
+  }
+  return null;
+}
+
+function shiftExpression(statement: string, sourceVariable: string) {
+  const variablePattern = sourceVariable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(
+    `\\b${variablePattern}\\s*\\.\\s*animate\\s*\\.\\s*shift\\s*\\(`,
+    "s",
+  ).exec(statement);
+  if (!match) return null;
+
+  const openingParenthesis = match.index + match[0].length - 1;
+  return parenthesizedArgument(statement, openingParenthesis);
+}
+
+function moveToExpression(statement: string) {
+  const direct = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*move_to\s*\(/s.exec(statement);
+  if (direct) {
+    const openingParenthesis = direct.index + direct[0].length - 1;
+    const expression = parenthesizedArgument(statement, openingParenthesis);
+    return expression === null ? null : { expression, sourceVariable: direct[1] };
+  }
+
+  const assignment = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/.exec(statement);
+  if (!assignment) return null;
+  const constructorChain = /\.\s*move_to\s*\(/s.exec(statement.slice(assignment[0].length));
+  if (!constructorChain) return null;
+  const openingParenthesis = assignment[0].length + constructorChain.index + constructorChain[0].length - 1;
+  const expression = parenthesizedArgument(statement, openingParenthesis);
+  return expression === null ? null : { expression, sourceVariable: assignment[1] };
+}
+
+function screenDelta(
+  vector: Readonly<{ x: number; y: number }>,
+  frame: Readonly<{ height: number; width: number }>,
+) {
+  return {
+    x: vector.x * (640 / frame.width),
+    y: vector.y * (360 / frame.height),
+  };
+}
+
+function moveToPosition(
+  expression: string,
+  byVariable: ReadonlyMap<string, MutableEntity>,
+  frame: Readonly<{ height: number; width: number }>,
+) {
+  const centered = expression.match(
+    /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*get_center\s*\(\s*\)\s*(?:\+\s*(.+))?\s*$/s,
+  );
+  if (centered) {
+    const target = byVariable.get(centered[1]);
+    if (!target) return null;
+    if (!centered[2]) return { ...target.position };
+    const offset = parseLinearVector(centered[2]);
+    return offset ? add(target.position, screenDelta(offset, frame)) : null;
+  }
+
+  const absolute = parseLinearVector(expression);
+  return absolute ? add({ x: 320, y: 180 }, screenDelta(absolute, frame)) : null;
+}
+
+function appendPositionSample(
+  positionSamples: Map<string, PropertyChannelSample[]>,
+  entityId: string,
+  sample: PropertyChannelSample,
+) {
+  const samples = positionSamples.get(entityId) ?? [];
+  const previous = samples.at(-1);
+  if (previous && previous.interval.end > sample.interval.start) {
+    samples[samples.length - 1] = {
+      ...previous,
+      interval: {
+        ...previous.interval,
+        end: Math.max(previous.interval.start, sample.interval.start),
+      },
+    };
+  }
+  samples.push(sample);
+  positionSamples.set(entityId, samples);
+}
+
+function shiftedPosition(
+  point: Point,
+  statement: string,
+  sourceVariable: string,
+  frame: Readonly<{ height: number; width: number }>,
+) {
+  const shift = shiftExpression(statement, sourceVariable);
+  const vector = shift === null ? null : parseLinearVector(shift);
+  if (!vector) return null;
+  return add(point, screenDelta(vector, frame));
 }
 
 export function importManimScene(
@@ -412,6 +651,21 @@ export function importManimScene(
       cursor += wait;
       continue;
     }
+    const moveTo = moveToExpression(statement.text);
+    if (moveTo) {
+      const entity = byVariable.get(moveTo.sourceVariable);
+      const position = entity ? moveToPosition(moveTo.expression, byVariable, frame) : null;
+      if (entity && position) {
+        appendPositionSample(positionSamples, entity.id, {
+          interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
+          kind: "exact",
+          provenanceId: `import:${sceneId}:${entity.sourceVariable}:move-to:${statement.line}`,
+          value: position,
+        });
+        entity.position = position;
+      }
+      continue;
+    }
     const add = statement.text.match(/^self\.add\((.*)\)$/s)?.[1];
     if (add) {
       for (const entity of mutableEntities) {
@@ -450,11 +704,11 @@ export function importManimScene(
       if (new RegExp(`(?:FadeOut|Uncreate|Unwrite)\\(\\s*${variablePattern}\\b`).test(statement.text)) {
         endPresence(entity, interval.end);
       }
-      if (new RegExp(`\\b${variablePattern}\\.animate\\.shift\\(`).test(statement.text)) {
-        const samples = positionSamples.get(entity.id) ?? [];
+      const shifted = shiftedPosition(entity.position, statement.text, entity.sourceVariable, frame);
+      if (shifted) {
         const from = entity.position;
-        const to = shiftedPosition(from, statement.text, frame);
-        samples.push({
+        const to = shifted;
+        appendPositionSample(positionSamples, entity.id, {
           control: { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 },
           easing: "smooth",
           from,
@@ -463,7 +717,6 @@ export function importManimScene(
           provenanceId: `import:${sceneId}:${entity.sourceVariable}:motion:${statement.line}`,
           value: to,
         });
-        positionSamples.set(entity.id, samples);
         entity.position = to;
       }
     }

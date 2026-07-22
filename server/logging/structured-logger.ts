@@ -49,7 +49,7 @@ type ConsoleSinkOptions = Readonly<{
   prefix?: string;
 }>;
 
-const SENSITIVE_FIELD = /^(?:api[-_]?key|authorization|cookie|secret|token)$/i;
+const SENSITIVE_FIELD = /^(?:(?:x[-_])?api[-_]?key|(?:proxy[-_])?authorization|cookie|set[-_]?cookie|password|passwd|secret|client[-_]?secret|token|(?:access|refresh|id)[-_]?token)$/i;
 
 function sanitize(value: unknown, key = "", seen = new WeakSet<object>()): unknown {
   if (SENSITIVE_FIELD.test(key)) return "[REDACTED]";
@@ -125,6 +125,9 @@ export function createRotatingJsonlSink(options: JsonlSinkOptions): RotatingJson
     : resolve(options.root, options.logPath);
   const previousPath = `${path}.previous`;
   const maxBytes = options.maxBytes ?? 2 * 1024 * 1024;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+    throw new RangeError("Structured log rotation size must be a positive integer.");
+  }
   mkdirSync(dirname(path), { recursive: true });
 
   return {

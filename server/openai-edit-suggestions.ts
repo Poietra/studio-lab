@@ -36,6 +36,7 @@ export function openAiEditSuggestions(options: PluginOptions = {}): Plugin {
   const model = options.model ?? "gpt-5.6-luna";
 
   return {
+    apply: "serve",
     name: "poietra-openai-edit-suggestions",
     configResolved(config) {
       root = config.root;

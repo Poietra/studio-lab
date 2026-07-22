@@ -40,6 +40,10 @@ function terminalStatus(status: RenderSessionView["status"]) {
   return ["cancelled", "committed", "discarded", "failed", "ready", "undone"].includes(status);
 }
 
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError";
+}
+
 export function RenderPipelinePanel({
   candidate,
   candidateUnavailableReason,
@@ -50,6 +54,12 @@ export function RenderPipelinePanel({
   const [error, setError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<"cancel" | "commit" | "discard" | "render" | "undo" | null>(null);
   const commitDialog = useRef<HTMLDialogElement | null>(null);
+  const mutationRequest = useRef<AbortController | null>(null);
+
+  useEffect(() => () => {
+    mutationRequest.current?.abort();
+    mutationRequest.current = null;
+  }, []);
 
   useEffect(() => {
     if (!session || terminalStatus(session.status) || pendingAction) return;
@@ -60,7 +70,7 @@ export function RenderPipelinePanel({
         setSession(await loadManimRender(session.id, controller.signal));
         setError(null);
       } catch (nextError) {
-        if (nextError instanceof DOMException && nextError.name === "AbortError") return;
+        if (isAbortError(nextError)) return;
         setError(nextError instanceof Error ? nextError.message : "Could not refresh the render status.");
       } finally {
         if (!controller.signal.aborted) timer = window.setTimeout(() => void poll(), 500);
@@ -102,6 +112,8 @@ export function RenderPipelinePanel({
     }
     setError(null);
     setPendingAction("render");
+    const controller = new AbortController();
+    mutationRequest.current = controller;
     try {
       setSession(await startManimRender({
         destination: candidate.destination,
@@ -111,11 +123,15 @@ export function RenderPipelinePanel({
         sourceHash: candidate.sourceHash,
         sourcePath: candidate.sourcePath,
         viewport: candidate.viewport,
-      }));
+      }, controller.signal));
     } catch (nextError) {
+      if (isAbortError(nextError)) return;
       setError(nextError instanceof Error ? nextError.message : "Could not start the Manim render.");
     } finally {
-      setPendingAction(null);
+      if (mutationRequest.current === controller) {
+        mutationRequest.current = null;
+        setPendingAction(null);
+      }
     }
   }
 
@@ -123,24 +139,32 @@ export function RenderPipelinePanel({
     if (!session || pendingAction) return false;
     setError(null);
     setPendingAction(action);
+    const controller = new AbortController();
+    mutationRequest.current = controller;
     try {
-      const nextSession = await runManimRenderAction(session.id, action);
+      const nextSession = await runManimRenderAction(session.id, action, controller.signal);
       setSession(nextSession);
       if (action === "commit" || action === "undo") {
         try {
           await onSourceChanged?.();
         } catch (refreshError) {
-          setError(refreshError instanceof Error
-            ? `The source changed, but Studio could not reimport it: ${refreshError.message}`
-            : "The source changed, but Studio could not reimport it.");
+          if (!controller.signal.aborted) {
+            setError(refreshError instanceof Error
+              ? `The source changed, but Studio could not reimport it: ${refreshError.message}`
+              : "The source changed, but Studio could not reimport it.");
+          }
         }
       }
       return true;
     } catch (nextError) {
+      if (isAbortError(nextError)) return false;
       setError(nextError instanceof Error ? nextError.message : `Could not ${action} the render.`);
       return false;
     } finally {
-      setPendingAction(null);
+      if (mutationRequest.current === controller) {
+        mutationRequest.current = null;
+        setPendingAction(null);
+      }
     }
   }
 

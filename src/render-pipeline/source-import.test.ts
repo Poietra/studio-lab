@@ -161,4 +161,106 @@ class Repeated(Scene):
         { end: 4, start: 3 },
       ]);
   });
+
+  it("imports each object's own vector when concurrent shifts use different directions", () => {
+    const concurrent = `from manim import *
+
+class Concurrent(Scene):
+    def construct(self):
+        first = Dot()
+        second = Dot()
+        self.add(first, second)
+        self.play(
+            first.animate.shift(RIGHT + UP),
+            second.animate.shift(2 * LEFT + DOWN),
+            run_time=1,
+        )
+`;
+    const imported = importManimScene(concurrent, "scene.py", "Concurrent");
+    const first = imported?.runtimeSceneState.propertyChannels[
+      "source:scene.py#Concurrent:first/position"
+    ]?.samples.at(-1)?.value;
+    const second = imported?.runtimeSceneState.propertyChannels[
+      "source:scene.py#Concurrent:second/position"
+    ]?.samples.at(-1)?.value;
+
+    expect(first).toMatchObject({ x: expect.closeTo(215, 2), y: 90 });
+    expect(second).toMatchObject({ x: expect.closeTo(230, 2), y: 180 });
+  });
+
+  it("applies a scalar to every term in a parenthesized shift vector", () => {
+    const scaled = `from manim import *
+
+class Scaled(Scene):
+    def construct(self):
+        dot = Dot()
+        self.add(dot)
+        self.play(dot.animate.shift(2 * (RIGHT + UP)), run_time=1)
+`;
+    const imported = importManimScene(scaled, "scene.py", "Scaled");
+    const position = imported?.runtimeSceneState.propertyChannels[
+      "source:scene.py#Scaled:dot/position"
+    ]?.samples.at(-1)?.value;
+
+    expect(position).toMatchObject({ x: expect.closeTo(260, 2), y: 45 });
+  });
+
+  it("imports generated absolute and center-relative move_to calls in cursor order", () => {
+    const positioned = `from manim import *
+
+class Positioned(Scene):
+    def construct(self):
+        base = Dot().move_to(LEFT + 2 * UP)
+        label = Text("Label")
+        self.add(base, label)
+        self.wait(1)
+        base.move_to(2 * RIGHT + UP)
+        label.move_to(base.get_center() + 3 * DOWN)
+        self.wait(1)
+`;
+    const imported = importManimScene(positioned, "scene.py", "Positioned");
+    const baseSamples = imported?.runtimeSceneState.propertyChannels[
+      "source:scene.py#Positioned:base/position"
+    ]?.samples;
+    const labelSamples = imported?.runtimeSceneState.propertyChannels[
+      "source:scene.py#Positioned:label/position"
+    ]?.samples;
+
+    expect(baseSamples).toHaveLength(3);
+    expect(baseSamples?.map((sample) => sample.interval)).toEqual([
+      { end: 0, start: 0 },
+      { end: 1, start: 0 },
+      { end: 2, start: 1 },
+    ]);
+    expect(baseSamples?.at(-1)?.value).toMatchObject({ x: expect.closeTo(410, 2), y: 135 });
+    expect(labelSamples?.map((sample) => sample.interval)).toEqual([
+      { end: 1, start: 0 },
+      { end: 2, start: 1 },
+    ]);
+    expect(labelSamples?.at(-1)?.value).toMatchObject({ x: expect.closeTo(410, 2), y: 270 });
+  });
+
+  it("ignores malformed or unsupported shift expressions instead of applying a partial vector", () => {
+    const unsupported = `from manim import *
+
+class Unsupported(Scene):
+    def construct(self):
+        malformed = Dot()
+        function_call = Dot()
+        self.add(malformed, function_call)
+        self.play(
+            malformed.animate.shift(RIGHT + (UP *)),
+            function_call.animate.shift(RIGHT + normalize(UP)),
+            run_time=1,
+        )
+`;
+    const imported = importManimScene(unsupported, "scene.py", "Unsupported");
+
+    expect(imported?.runtimeSceneState.propertyChannels[
+      "source:scene.py#Unsupported:malformed/position"
+    ]?.samples).toHaveLength(1);
+    expect(imported?.runtimeSceneState.propertyChannels[
+      "source:scene.py#Unsupported:function_call/position"
+    ]?.samples).toHaveLength(1);
+  });
 });

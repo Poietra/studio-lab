@@ -110,6 +110,23 @@ function variableToken(transactionId: string, index: number) {
   return `poietra_${normalized || "edit"}_${index + 1}`;
 }
 
+function variableAllocator(source: string, transactionId: string) {
+  const reserved = new Set(source.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) ?? []);
+  let index = 0;
+  return () => {
+    const base = variableToken(transactionId, index);
+    index += 1;
+    let variable = base;
+    let suffix = 2;
+    while (reserved.has(variable)) {
+      variable = `${base}_${suffix}`;
+      suffix += 1;
+    }
+    reserved.add(variable);
+    return variable;
+  };
+}
+
 function entityConstructor(operation: CreateEntityOperation) {
   const { content, type } = operation.entity;
   if (type === "MathTex") {
@@ -140,7 +157,11 @@ function entityConstructor(operation: CreateEntityOperation) {
 }
 
 function referencedBaseEntityIds(operations: readonly CanonicalEditOperation[]) {
-  const created = new Set(operations.flatMap((operation) => operation.kind === "CreateEntity" ? [operation.entity.id] : []));
+  const created = new Set(operations.flatMap((operation) => {
+    if (operation.kind === "CreateEntity") return [operation.entity.id];
+    if (operation.kind === "TransformContent") return [operation.targetEntityId];
+    return [];
+  }));
   const referenced = operations.flatMap((operation): readonly string[] => {
     if (operation.kind === "CreateMotion") return operation.targetEntityIds;
     if (operation.kind === "SetProperty" || operation.kind === "AnimateProperty" || operation.kind === "ChangePresence") {
@@ -252,11 +273,16 @@ export function lowerCanonicalProgramSource(
     || (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0)
   ));
   const variableByEntity = new Map(sourceBindings);
+  const aliasesByEntity = new Map(
+    [...sourceBindings].map(([entityId, sourceVariable]) => [entityId, new Set([sourceVariable])]),
+  );
+  const allocateVariable = variableAllocator(source, request.program.transactionId);
   const createdOperations = operations.filter((operation): operation is CreateEntityOperation => operation.kind === "CreateEntity");
-  createdOperations.forEach((operation, index) => variableByEntity.set(
-    operation.entity.id,
-    variableToken(request.program.transactionId, index),
-  ));
+  createdOperations.forEach((operation) => {
+    const variable = allocateVariable();
+    variableByEntity.set(operation.entity.id, variable);
+    aliasesByEntity.set(operation.entity.id, new Set([variable]));
+  });
   const output: string[] = [];
   let cursor = request.program.anchor.resolvedSeconds;
   for (const { operations: bucket, time } of operationBuckets(operations)) {
@@ -286,6 +312,21 @@ export function lowerCanonicalProgramSource(
         const sourceVariable = requireVariable(variableByEntity, operation.sourceEntityId);
         const targetVariable = requireVariable(variableByEntity, operation.targetEntityId);
         output.push(`${sourceVariable}.move_to(${targetVariable}.get_center() + ${offsetExpression(operation.offset, frame, request.viewport)})`);
+      } else if (operation.kind === "TransformContent") {
+        const targetVariable = variableByEntity.get(operation.targetEntityId)
+          ?? allocateVariable();
+        variableByEntity.set(operation.targetEntityId, targetVariable);
+        aliasesByEntity.set(
+          operation.targetEntityId,
+          aliasesByEntity.get(operation.targetEntityId) ?? new Set([targetVariable]),
+        );
+        const target = operation.targetType === "Text"
+          ? `Text(${JSON.stringify(operation.replacement.text ?? operation.replacement.displayLines.join(" "))})`
+          : `MathTex(${(operation.replacement.texParts ?? operation.replacement.displayLines).map((part) => JSON.stringify(part)).join(", ")})`;
+        const sourceVariable = requireVariable(variableByEntity, operation.sourceEntityId);
+        output.push(`# poietra:entity ${JSON.stringify({ id: operation.targetEntityId, variable: targetVariable })}`);
+        output.push(`${targetVariable} = ${target}`);
+        output.push(`${targetVariable}.move_to(${sourceVariable}.get_center())`);
       }
     }
 
@@ -323,7 +364,6 @@ export function lowerCanonicalProgramSource(
     if (animations.some((operation) => Math.abs(operation.interval.end - animationEnd) >= EPSILON)) {
       throw new ProgramLoweringError("operation-unsupported", "Concurrent source animations must share one interval.");
     }
-    const preludes: string[] = [];
     const actions: string[] = [];
     const postludes: string[] = [];
     for (const operation of animations) {
@@ -338,19 +378,16 @@ export function lowerCanonicalProgramSource(
         }
       } else if (operation.kind === "TransformContent") {
         const sourceVariable = requireVariable(variableByEntity, operation.sourceEntityId);
-        const targetVariable = variableByEntity.get(operation.targetEntityId)
-          ?? variableToken(request.program.transactionId, createdOperations.length + preludes.length);
-        variableByEntity.set(operation.targetEntityId, targetVariable);
-        const target = operation.targetType === "Text"
-          ? `Text(${JSON.stringify(operation.replacement.text ?? operation.replacement.displayLines.join(" "))})`
-          : `MathTex(${(operation.replacement.texParts ?? operation.replacement.displayLines).map((part) => JSON.stringify(part)).join(", ")})`;
-        preludes.push(`# poietra:entity ${JSON.stringify({ id: operation.targetEntityId, variable: targetVariable })}`);
-        preludes.push(`${targetVariable} = ${target}`);
+        const targetVariable = requireVariable(variableByEntity, operation.targetEntityId);
+        const sourceAliases = aliasesByEntity.get(operation.sourceEntityId) ?? new Set([sourceVariable]);
+        const targetAliases = aliasesByEntity.get(operation.targetEntityId) ?? new Set([targetVariable]);
+        aliasesByEntity.set(operation.targetEntityId, new Set([...targetAliases, ...sourceAliases]));
         actions.push(operation.strategy === "transform-matching-tex"
           ? `TransformMatchingTex(${sourceVariable}, ${targetVariable}, transform_mismatches=True)`
           : `ReplacementTransform(${sourceVariable}, ${targetVariable})`);
-        postludes.push(`${sourceVariable} = ${targetVariable}`);
-        variableByEntity.set(operation.targetEntityId, sourceVariable);
+        postludes.push(...[...sourceAliases]
+          .filter((alias) => alias !== targetVariable)
+          .map((alias) => `${alias} = ${targetVariable}`));
       } else if (operation.kind === "ChangePresence") {
         const variable = requireVariable(variableByEntity, operation.entityId);
         if (operation.effect === "fade-in") actions.push(`FadeIn(${variable})`);
@@ -362,7 +399,6 @@ export function lowerCanonicalProgramSource(
         }
       }
     }
-    output.push(...preludes);
     if (actions.length > 0) {
       output.push("self.play(");
       output.push(...actions.map((action) => `    ${action},`));

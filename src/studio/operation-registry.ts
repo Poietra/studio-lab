@@ -18,6 +18,7 @@ import type {
   ChannelAccess,
   ProgramValidationIssue,
 } from "./operations";
+import { isPointValue, samplePropertyValue } from "./property-sampling";
 
 const pointSchema = z.object({ x: z.number(), y: z.number() });
 const intervalSchema = z.object({ end: z.number(), start: z.number() });
@@ -155,42 +156,9 @@ function appendSample(
   };
 }
 
-function smooth(value: number) {
-  return value * value * (3 - 2 * value);
-}
-
-function isPoint(value: unknown): value is Readonly<{ x: number; y: number }> {
-  return typeof value === "object" && value !== null && "x" in value && "y" in value;
-}
-
 function sampleChannel(draft: EvaluationDraft, entityId: string, key: PropertyChannel["key"], time: number) {
   const samples = draft.propertyChannels[propertyKey(entityId, key)]?.samples ?? [];
-  let value: PropertyChannelSample["value"] | undefined;
-  for (const sample of samples) {
-    if (time < sample.interval.start) continue;
-    if (sample.kind === "exact" || time >= sample.interval.end) {
-      value = sample.value;
-      continue;
-    }
-    const duration = sample.interval.end - sample.interval.start;
-    const progress = duration <= 0 ? 1 : smooth(Math.min(1, Math.max(0, (time - sample.interval.start) / duration)));
-    if (isPoint(sample.from) && isPoint(sample.value)) {
-      const control = sample.control ?? {
-        x: (sample.from.x + sample.value.x) / 2,
-        y: (sample.from.y + sample.value.y) / 2,
-      };
-      const inverse = 1 - progress;
-      value = {
-        x: inverse * inverse * sample.from.x + 2 * inverse * progress * control.x + progress * progress * sample.value.x,
-        y: inverse * inverse * sample.from.y + 2 * inverse * progress * control.y + progress * progress * sample.value.y,
-      };
-    } else if (typeof sample.from === "number" && typeof sample.value === "number") {
-      value = sample.from + (sample.value - sample.from) * progress;
-    } else {
-      value = sample.value;
-    }
-  }
-  return value;
+  return samplePropertyValue(samples, time);
 }
 
 function baseIssues(operation: CanonicalEditOperation, scene: RuntimeSceneState): ProgramValidationIssue[] {
@@ -327,10 +295,13 @@ export const OPERATION_REGISTRY = {
     defaults: { easing: "smooth" },
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
+      const sampledFrom = sampleChannel(draft, operation.entityId, operation.key, operation.interval.start);
+      const from = operation.from
+        ?? (isPointValue(sampledFrom) || typeof sampledFrom === "number" ? sampledFrom : undefined);
       appendSample(draft, operation.entityId, operation.key, {
         control: operation.control,
         easing: operation.easing,
-        from: operation.from,
+        from,
         interval: operation.interval,
         kind: "animated",
         operationId: operation.id,
@@ -354,7 +325,7 @@ export const OPERATION_REGISTRY = {
       recordOperation(draft, operation, program);
       for (const entityId of operation.targetEntityIds) {
         const current = sampleChannel(draft, entityId, "position", operation.interval.start);
-        const from = isPoint(current) ? current : { x: 0, y: 0 };
+        const from = isPointValue(current) ? current : { x: 0, y: 0 };
         const to = { x: from.x + operation.delta.x, y: from.y + operation.delta.y };
         appendSample(draft, entityId, "position", {
           control: {
@@ -391,7 +362,7 @@ export const OPERATION_REGISTRY = {
           const matchesMotion = sample.operationId === operation.motionId
             || sample.provenanceId === operation.motionId
             || sample.provenanceId === `source:${operation.motionId}`;
-          if (!matchesMotion || sample.kind !== "animated" || !isPoint(sample.from) || !isPoint(sample.value)) {
+          if (!matchesMotion || sample.kind !== "animated" || !isPointValue(sample.from) || !isPointValue(sample.value)) {
             return sample;
           }
           const control = sample.control ?? {
@@ -540,7 +511,7 @@ export const OPERATION_REGISTRY = {
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
       const targetPosition = sampleChannel(draft, operation.targetEntityId, "position", operation.interval.start);
-      const position = isPoint(targetPosition)
+      const position = isPointValue(targetPosition)
         ? { x: targetPosition.x + operation.offset.x, y: targetPosition.y + operation.offset.y }
         : operation.offset;
       draft.constraints.push({

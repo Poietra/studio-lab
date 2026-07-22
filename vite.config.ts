@@ -8,6 +8,32 @@ import { manimRenderPipeline } from "./server/manim-render-pipeline";
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   return {
+    base: "./",
+    build: {
+      rolldownOptions: {
+        output: {
+          codeSplitting: {
+            groups: [
+              {
+                name: "react",
+                priority: 30,
+                test: /node_modules[\\/](?:react|react-dom|scheduler)[\\/]/,
+              },
+              {
+                name: "katex",
+                priority: 20,
+                test: /node_modules[\\/]katex[\\/]/,
+              },
+              {
+                name: "zod",
+                priority: 20,
+                test: /node_modules[\\/]zod[\\/]/,
+              },
+            ],
+          },
+        },
+      },
+    },
     plugins: [
       react(),
       tailwindcss(),

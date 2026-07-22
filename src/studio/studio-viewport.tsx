@@ -16,8 +16,14 @@ export const STUDIO_VIEWPORT = { height: 360, width: 640 } as const;
 export type InteractionMode = "animate" | "position";
 export type EntityDragPreview = Readonly<{
   delta: Readonly<{ x: number; y: number }>;
-  entityId: string;
+  entityIds: readonly string[];
 }>;
+
+const ZERO_DELTA = { x: 0, y: 0 } as const;
+
+export function entityDragDelta(preview: EntityDragPreview | null, entityId: string) {
+  return preview?.entityIds.includes(entityId) ? preview.delta : ZERO_DELTA;
+}
 
 export function entityLabel(entity: ProjectedEntity) {
   return entity.content?.label ?? entity.content?.text ?? entity.id.split(":").at(-1) ?? entity.id;
@@ -98,6 +104,7 @@ function Timeline({
   onSelectEntity,
   onTimeChange,
   onTogglePlayback,
+  readOnly,
   selectedIds,
 }: Readonly<{
   anchors: readonly number[];
@@ -112,6 +119,7 @@ function Timeline({
   onSelectEntity: (entityId: string) => void;
   onTimeChange: (time: number) => void;
   onTogglePlayback: () => void;
+  readOnly: boolean;
   selectedIds: ReadonlySet<string>;
 }>) {
   const intervalEvents = events.flatMap((event) => event.interval ? [{ event, interval: event.interval }] : []);
@@ -189,7 +197,8 @@ function Timeline({
         </div>
         {objectTracks.map((track) => {
           const selected = selectedIds.has(track.entityId);
-          const locked = track.provisional && !(track.transactionId && appliedTransactionIds.has(track.transactionId));
+          const locked = readOnly
+            || (track.provisional && !(track.transactionId && appliedTransactionIds.has(track.transactionId)));
           return (
             <div className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 last:border-b-0 sm:grid-cols-[8rem_minmax(0,1fr)]" data-timeline-track={track.entityId} key={track.entityId}>
               <button
@@ -262,6 +271,7 @@ export function StudioViewport({
   onTimeChange,
   onTogglePlayback,
   projection,
+  readOnly,
   selectedIds,
 }: Readonly<{
   anchors: readonly number[];
@@ -286,6 +296,7 @@ export function StudioViewport({
   onTimeChange: (time: number) => void;
   onTogglePlayback: () => void;
   projection: ProposedStateProjection;
+  readOnly?: boolean;
   selectedIds: ReadonlySet<string>;
 }>) {
   return (
@@ -310,8 +321,9 @@ export function StudioViewport({
                 return <div className={transition.className} key={entity.id} style={transition.style} />;
               }
               const selected = selectedIds.has(entity.id);
-              const locked = entity.provisional && !(entity.transactionId && appliedTransactionIds.has(entity.transactionId));
-              const localDelta = dragPreview?.entityId === entity.id ? dragPreview.delta : { x: 0, y: 0 };
+              const locked = readOnly
+                || (entity.provisional && !(entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
+              const localDelta = entityDragDelta(dragPreview, entity.id);
               const position = { x: entity.position.x + localDelta.x, y: entity.position.y + localDelta.y };
               const opacity = draftTransactionId === entity.transactionId && entity.opacity === 0 ? 0.35 : entity.opacity;
               return (
@@ -326,6 +338,7 @@ export function StudioViewport({
                   disabled={locked}
                   key={entity.id}
                   onKeyDown={(event) => onEntityKeyDown(event, entity.id)}
+                  onLostPointerCapture={onEntityPointerCancel}
                   onPointerCancel={onEntityPointerCancel}
                   onPointerDown={(event) => onEntityPointerDown(event, entity.id)}
                   onPointerMove={onEntityPointerMove}
@@ -364,6 +377,7 @@ export function StudioViewport({
         onSelectEntity={onSelectEntity}
         onTimeChange={onTimeChange}
         onTogglePlayback={onTogglePlayback}
+        readOnly={readOnly ?? false}
         selectedIds={selectedIds}
       />
     </section>

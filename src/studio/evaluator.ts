@@ -3,7 +3,6 @@ import type {
   ProgramRecord,
   ProjectedEntity,
   PropertyChannel,
-  PropertyChannelSample,
   PropertyValue,
   ProposedState,
   ProposedStateProjection,
@@ -14,6 +13,7 @@ import type {
 } from "./model";
 import { STUDIO_STATE_VERSION } from "./model";
 import { evaluateOperation, type EvaluationDraft } from "./operation-registry";
+import { isPointValue, samplePropertyValue } from "./property-sampling";
 import { validateAndScheduleProgram } from "./program-validation";
 
 function cloneScene(scene: RuntimeSceneState): EvaluationDraft {
@@ -89,49 +89,12 @@ export function evaluateWorkingState(workingState: WorkingState): ProposedState 
   };
 }
 
-function smooth(value: number) {
-  return value * value * (3 - 2 * value);
-}
-
-function isPoint(value: PropertyValue | undefined): value is Readonly<{ x: number; y: number }> {
-  return typeof value === "object" && value !== null && "x" in value && "y" in value;
-}
-
 function isContent(value: PropertyValue | undefined): value is EntityContent {
   return typeof value === "object" && value !== null && "displayLines" in value;
 }
 
-function valueAt(samples: readonly PropertyChannelSample[], time: number) {
-  let value: PropertyValue | undefined;
-  for (const sample of samples) {
-    if (time < sample.interval.start) continue;
-    if (sample.kind === "exact" || time >= sample.interval.end) {
-      value = sample.value;
-      continue;
-    }
-    const duration = sample.interval.end - sample.interval.start;
-    const progress = duration <= 0 ? 1 : smooth(Math.min(1, Math.max(0, (time - sample.interval.start) / duration)));
-    if (isPoint(sample.from) && isPoint(sample.value)) {
-      const control = sample.control ?? {
-        x: (sample.from.x + sample.value.x) / 2,
-        y: (sample.from.y + sample.value.y) / 2,
-      };
-      const inverse = 1 - progress;
-      value = {
-        x: inverse * inverse * sample.from.x + 2 * inverse * progress * control.x + progress * progress * sample.value.x,
-        y: inverse * inverse * sample.from.y + 2 * inverse * progress * control.y + progress * progress * sample.value.y,
-      };
-    } else if (typeof sample.from === "number" && typeof sample.value === "number") {
-      value = sample.from + (sample.value - sample.from) * progress;
-    } else {
-      value = sample.value;
-    }
-  }
-  return value;
-}
-
 function channelAt(scene: RuntimeSceneState, entityId: string, key: PropertyChannel["key"], time: number) {
-  return valueAt(scene.propertyChannels[`${entityId}/${key}`]?.samples ?? [], time);
+  return samplePropertyValue(scene.propertyChannels[`${entityId}/${key}`]?.samples ?? [], time);
 }
 
 function timelineLabel(entity: RuntimeEntity) {
@@ -185,7 +148,7 @@ export function sampleProposedState(proposedState: ProposedState, time: number):
         content: isContent(content) ? content : entity.content,
         id: entity.id,
         opacity: typeof appearance === "number" ? appearance : 1,
-        position: isPoint(position) ? position : { x: 0, y: 0 },
+        position: isPointValue(position) ? position : { x: 0, y: 0 },
         present: inLifetime && presence !== false,
         provisional: entity.provisional,
         scale: typeof scale === "number" ? scale : 1,

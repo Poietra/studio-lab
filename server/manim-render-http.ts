@@ -12,6 +12,9 @@ const RENDER_ROUTE = /^\/api\/manim\/renders\/([0-9a-f-]+)(?:\/(cancel|commit|di
 
 function pipeVideo(response: ServerResponse, path: string, range?: Readonly<{ end: number; start: number }>) {
   const stream = createReadStream(path, range);
+  const closeStream = () => stream.destroy();
+  response.once("close", closeStream);
+  stream.once("close", () => response.removeListener("close", closeStream));
   stream.once("error", () => {
     if (!response.headersSent) {
       response.removeHeader("content-length");
@@ -43,7 +46,13 @@ export function resolveByteRange(header: string | undefined, size: number): Read
 }
 
 async function streamVideo(request: IncomingMessage, response: ServerResponse, path: string) {
-  const metadata = await stat(path);
+  let metadata;
+  try {
+    metadata = await stat(path);
+  } catch {
+    throw new HttpError("Rendered video not found.", 404);
+  }
+  if (!metadata.isFile()) throw new HttpError("Rendered video not found.", 404);
   const range = resolveByteRange(request.headers.range, metadata.size);
   response.setHeader("accept-ranges", "bytes");
   response.setHeader("cache-control", "no-store");
@@ -76,10 +85,37 @@ async function runRenderAction(manager: ManimRenderManager, id: string, action: 
   }
 }
 
+function sendJsonAndWaitForFinish(response: ServerResponse, status: number, body: unknown) {
+  return new Promise<boolean>((resolveDelivery, rejectDelivery) => {
+    let settled = false;
+    const cleanup = () => {
+      response.removeListener("close", onClose);
+      response.removeListener("finish", onFinish);
+    };
+    const settle = (delivered: boolean) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolveDelivery(delivered);
+    };
+    const onClose = () => settle(false);
+    const onFinish = () => settle(true);
+    response.once("close", onClose);
+    response.once("finish", onFinish);
+    try {
+      if (!sendJson(response, status, body)) settle(false);
+    } catch (error) {
+      cleanup();
+      rejectDelivery(error);
+    }
+  });
+}
+
 async function routeManimRequest(
   manager: ManimRenderManager,
   request: IncomingMessage,
   response: ServerResponse,
+  signal: AbortSignal,
 ) {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
   if (request.method === "GET" && url.pathname === "/api/manim/workspace") {
@@ -91,7 +127,13 @@ async function routeManimRequest(
     if (!parsed.success) {
       throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid canonical EditProgram render request.", 400);
     }
-    sendJson(response, 202, await manager.start(parsed.data));
+    const started = await manager.start(parsed.data, signal);
+    if (!await sendJsonAndWaitForFinish(response, 202, started)) {
+      await manager.abandonStart(started.id);
+      const error = new Error("The render request was disconnected before its response was sent.");
+      error.name = "AbortError";
+      throw error;
+    }
     return;
   }
   const match = url.pathname.match(RENDER_ROUTE);
@@ -122,11 +164,32 @@ export async function handleManimRequest(
     route: request.url,
   });
   response.setHeader("x-poietra-request-id", requestId);
+  const requestAbort = new AbortController();
+  let responseFinished = false;
+  const abortRequest = () => requestAbort.abort();
+  const markResponseFinished = () => {
+    responseFinished = true;
+  };
+  const abortOnClosedResponse = () => {
+    if (!responseFinished) abortRequest();
+  };
+  request.once("aborted", abortRequest);
+  response.once("close", abortOnClosedResponse);
+  response.once("finish", markResponseFinished);
   logger.info("request.started");
   try {
-    await routeManimRequest(manager, request, response);
+    await routeManimRequest(manager, request, response, requestAbort.signal);
     logger.info("response.sent", { status: response.statusCode });
   } catch (error) {
+    if (requestAbort.signal.aborted || (response.destroyed && error instanceof Error && error.name === "AbortError")) {
+      const expectedAbort = error === requestAbort.signal.reason
+        || (error instanceof Error && error.name === "AbortError")
+        || (error instanceof HttpError && error.message === "Request body was interrupted.");
+      const details = error instanceof Error ? { message: error.message, name: error.name } : { error };
+      if (expectedAbort) logger.info("request.aborted", details);
+      else logger.error("request.abort_cleanup_failed", details);
+      return;
+    }
     const expected = error instanceof HttpError;
     const status = expected ? error.status : 500;
     const message = expected ? error.message : "Manim render pipeline failed.";
@@ -135,6 +198,12 @@ export async function handleManimRequest(
       : { error, status };
     if (expected) logger.warn("request.rejected", details);
     else logger.error("request.failed", details);
-    sendJson(response, status, { error: message });
+    if (!sendJson(response, status, { error: message })) {
+      logger.warn("response.abandoned", { status });
+    }
+  } finally {
+    request.removeListener("aborted", abortRequest);
+    response.removeListener("close", abortOnClosedResponse);
+    response.removeListener("finish", markResponseFinished);
   }
 }

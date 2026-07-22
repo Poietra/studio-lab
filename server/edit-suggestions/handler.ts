@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import type { ClarificationTurn } from "../../src/ai/edit-suggestions";
 import { editSuggestionRequestSchema } from "../../src/ai/edit-suggestion-schema";
 import { HttpError, readJsonBody, sendJson } from "../http/json";
 import type { StructuredLogger } from "../logging/structured-logger";
@@ -15,12 +14,6 @@ type HandlerOptions = Readonly<{
   logger: StructuredLogger;
   requestId?: () => string;
 }>;
-
-function hasValidOptionAnswer(turn: ClarificationTurn) {
-  const answer = turn.answer;
-  return answer.kind !== "option"
-    || turn.options.some((option) => option.id === answer.optionId);
-}
 
 function errorDetails(error: unknown) {
   return error instanceof Error
@@ -37,42 +30,56 @@ export function createEditSuggestionHandler(options: HandlerOptions) {
       route: "/api/ai/edit-suggestions",
     });
     response.setHeader("x-poietra-request-id", requestId);
+    const requestAbort = new AbortController();
+    const abortGeneration = () => requestAbort.abort();
+    const abortOnClosedResponse = () => {
+      if (!response.writableEnded) abortGeneration();
+    };
+    request.once("aborted", abortGeneration);
+    response.once("close", abortOnClosedResponse);
 
     const respond = (status: number, body: unknown) => {
+      if (!sendJson(response, status, body)) {
+        logger.warn("response.abandoned", { status });
+        return;
+      }
       logger.info("response.sent", { body, status });
-      sendJson(response, status, body);
     };
 
     logger.info("request.started");
-    if (request.method !== "POST") {
-      respond(405, { error: "Method not allowed." });
-      return;
-    }
-    const generator = options.generator();
-    if (!generator) {
-      respond(503, { error: "The local OpenAI credential is not configured." });
-      return;
-    }
-
     try {
+      const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+      if (pathname !== "/") {
+        respond(404, { error: "Edit-suggestion endpoint not found." });
+        return;
+      }
+      if (request.method !== "POST") {
+        response.setHeader("allow", "POST");
+        respond(405, { error: "Method not allowed." });
+        return;
+      }
+      const generator = options.generator();
+      if (!generator) {
+        respond(503, { error: "The local OpenAI credential is not configured." });
+        return;
+      }
       const body = await readJsonBody(request);
       logger.info("request.received", { body });
       const parsed = editSuggestionRequestSchema.safeParse(body);
       if (!parsed.success) {
         logger.warn("request.validation_failed", { issues: parsed.error.issues });
-        respond(400, { error: "Invalid edit-suggestion context." });
+        const hasUnavailableOption = parsed.error.issues.some((issue) => (
+          issue.code === "custom" && issue.path.at(-1) === "optionId"
+        ));
+        respond(400, {
+          error: hasUnavailableOption
+            ? "A clarification option is no longer available."
+            : "Invalid edit-suggestion context.",
+        });
         return;
       }
 
-      const turns = parsed.data.clarification
-        ? [...parsed.data.clarification.history, parsed.data.clarification]
-        : [];
-      if (!turns.every(hasValidOptionAnswer)) {
-        respond(400, { error: "A clarification option is no longer available." });
-        return;
-      }
-
-      const result = await generator.generate(parsed.data, logger);
+      const result = await generator.generate(parsed.data, logger, requestAbort.signal);
       if (result.kind === "clarification" || !result.operation) {
         respond(200, {
           kind: "clarification",
@@ -105,6 +112,9 @@ export function createEditSuggestionHandler(options: HandlerOptions) {
         return;
       }
       respond(502, { error: "Edit suggestion generation failed." });
+    } finally {
+      request.removeListener("aborted", abortGeneration);
+      response.removeListener("close", abortOnClosedResponse);
     }
   };
 }
