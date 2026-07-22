@@ -69,11 +69,11 @@ export function validateAndScheduleProgram(
   scene: RuntimeSceneState,
 ): ProgramValidationResult {
   const issues: ProgramValidationIssue[] = [];
-  if (input.intentCount < 1 || input.intentCount > 3) {
+  if (input.intentCount < 1 || input.intentCount > 16) {
     issues.push({
       code: "operation-count",
       field: "intentCount",
-      message: "The first Studio slice accepts one standalone intent or two to three composed intents.",
+      message: "A Canonical EditProgram accepts between one and sixteen composed intents.",
       severity: "error",
     });
   }

@@ -21,6 +21,32 @@ const context = {
   selectedObjectIds: ["selected"],
 } as const;
 
+const mathTexContext = {
+  capturedPlayhead: 1,
+  objects: [{ id: "equation", lifetimes: [{ end: 10, start: 0 }], type: "MathTex" }],
+  sceneDuration: 10,
+  selectedObjectIds: ["equation"],
+} as const;
+
+function transform(start: number, end: number, display: string) {
+  return {
+    easing: "smooth",
+    end,
+    identityAfter: "target-replaces-source",
+    kind: "create-transform",
+    mismatchMode: "transform",
+    sourceObjectId: "equation",
+    start,
+    strategy: "transform-matching-tex",
+    target: {
+      displayLines: [`  ${display}  `],
+      kind: "mathtex",
+      label: `  ${display}  `,
+      texParts: [`  ${display}  `],
+    },
+  } as const;
+}
+
 describe("Edit Program validation boundary", () => {
   it("reuses the shared operation schema instead of accepting duplicate leaf kinds", () => {
     const operation: EditProgramSuggestion = {
@@ -60,5 +86,59 @@ describe("Edit Program validation boundary", () => {
     } as EditProgramSuggestion;
 
     expect(validateEditProgram(operation, context).kind).toBe("invalid");
+  });
+
+  it("accepts and normalizes every transform in a sequence", () => {
+    const operation: EditProgramSuggestion = {
+      anchor: { kind: "absolute", seconds: 1 },
+      execution: "sequence",
+      kind: "edit-program",
+      operations: [
+        transform(1, 2, "Maxwell"),
+        transform(2, 3, "E = mc^2"),
+      ],
+    };
+
+    const validation = validateEditProgram(operation, mathTexContext);
+    expect(validation.kind).toBe("valid");
+    if (validation.kind !== "valid") return;
+    expect(validation.program.transforms).toHaveLength(2);
+    expect(validation.program.operation.operations.map((step) => (
+      step.kind === "create-transform" ? step.target.texParts : []
+    ))).toEqual([["Maxwell"], ["E = mc^2"]]);
+  });
+
+  it("rejects repeated transforms in a parallel program", () => {
+    const operation: EditProgramSuggestion = {
+      anchor: { kind: "absolute", seconds: 1 },
+      execution: "parallel",
+      kind: "edit-program",
+      operations: [
+        transform(1, 2, "Maxwell"),
+        transform(1, 2, "E = mc^2"),
+      ],
+    };
+
+    expect(validateEditProgram(operation, mathTexContext)).toEqual({
+      kind: "invalid",
+      message: "The Edit Program does not match the supported operation contract.",
+    });
+  });
+
+  it("validates the source of every repeated transform", () => {
+    const operation: EditProgramSuggestion = {
+      anchor: { kind: "absolute", seconds: 1 },
+      execution: "sequence",
+      kind: "edit-program",
+      operations: [
+        transform(1, 2, "Maxwell"),
+        { ...transform(2, 3, "E = mc^2"), sourceObjectId: "missing" },
+      ],
+    };
+
+    expect(validateEditProgram(operation, mathTexContext)).toEqual({
+      kind: "invalid",
+      message: "The Edit Program contains an invalid, unselected, or unavailable target.",
+    });
   });
 });

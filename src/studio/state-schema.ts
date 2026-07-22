@@ -36,6 +36,7 @@ const propertyChannelSampleSchema = z.object({
   kind: z.enum(["animated", "exact"]),
   operationId: z.string().optional(),
   provenanceId: z.string(),
+  relative: z.boolean().optional(),
   value: propertyValueSchema,
 }).strict();
 const propertyChannelSchema = z.object({

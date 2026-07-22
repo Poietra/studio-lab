@@ -81,6 +81,7 @@ export type PropertyChannelSample = Readonly<{
   kind: "animated" | "exact";
   operationId?: string;
   provenanceId: string;
+  relative?: boolean;
   value: PropertyValue;
 }>;
 

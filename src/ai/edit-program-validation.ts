@@ -45,6 +45,11 @@ export type NormalizedEditProgram<TId extends string> = {
     sourceObjectId: TId;
     step: TransformStep;
   } | null;
+  transforms: readonly {
+    index: number;
+    sourceObjectId: TId;
+    step: TransformStep;
+  }[];
 };
 
 export type EditProgramValidationResult<TId extends string> =
@@ -113,7 +118,9 @@ export function validateEditProgram<TId extends string>(
   );
   const selectedIds = new Set<string>(context.selectedObjectIds);
   const motionStep = operation.operations.find((step): step is MotionStep => step.kind === "create-motion") ?? null;
-  const transformStep = operation.operations.find((step): step is TransformStep => step.kind === "create-transform") ?? null;
+  const transformSteps = operation.operations.flatMap((step, index) => (
+    step.kind === "create-transform" ? [{ index, step }] : []
+  ));
   const explanationStep = operation.operations.find((step): step is ExplanationStep => step.kind === "create-explanation") ?? null;
   const equationStep = operation.operations.find((step): step is EquationStep => step.kind === "create-equation") ?? null;
   const explainedEquationStep = operation.operations.find(
@@ -127,9 +134,13 @@ export function validateEditProgram<TId extends string>(
       .map((id) => objectsById.get(id))
       .filter((object): object is ProgramObject<TId> => object !== undefined && selectedIds.has(object.id))
     : [];
-  const transformSource = transformStep ? objectsById.get(transformStep.sourceObjectId) ?? null : null;
+  const transformCandidates = transformSteps.map(({ index, step }) => ({
+    index,
+    source: objectsById.get(step.sourceObjectId) ?? null,
+    step,
+    target: normalizeMathTexTarget(step.target),
+  }));
   const explanationTarget = explanationStep ? objectsById.get(explanationStep.targetObjectId) ?? null : null;
-  const normalizedTarget = transformStep ? normalizeMathTexTarget(transformStep.target) : null;
   const explanationText = explanationStep?.text.trim().slice(0, 240) ?? "";
   const normalizedEquationTarget = equationStep ? normalizeMathTexTarget(equationStep.target) : null;
   const normalizedExplainedEquationTarget = explainedEquationStep
@@ -142,13 +153,13 @@ export function validateEditProgram<TId extends string>(
     && motionTargets.length === motionStep.targetObjectIds.length
     && motionTargets.every((object) => (lifetimeAt(object, motionStep.start)?.end ?? motionStep.start) >= motionStep.end)
   );
-  const transformIsValid = !transformStep || (
-    transformSource !== null
-    && selectedIds.has(transformSource.id)
-    && transformSource.type === "MathTex"
-    && (lifetimeAt(transformSource, transformStep.start)?.end ?? transformStep.start) >= transformStep.end
-    && normalizedTarget !== null
-  );
+  const transformsAreValid = transformCandidates.every(({ source, step, target }) => (
+    source !== null
+    && selectedIds.has(source.id)
+    && source.type === "MathTex"
+    && (lifetimeAt(source, step.start)?.end ?? step.start) >= step.end
+    && target !== null
+  ));
   const explanationIsValid = !explanationStep || (
     explanationTarget !== null
     && selectedIds.has(explanationTarget.id)
@@ -163,13 +174,14 @@ export function validateEditProgram<TId extends string>(
     || sceneTransitionStep.end - sceneTransitionStep.start >= 0.4;
   const equationCreationCount = Number(equationStep !== null) + Number(explainedEquationStep !== null);
   const motionTargetIds = motionTargets.map((object) => object.id);
+  const transformSourceIds = transformCandidates.flatMap(({ source }) => source ? [source.id] : []);
   const parallelWriteConflict = operation.execution === "parallel" && motionStep !== null && (
-    (transformSource !== null && motionTargetIds.includes(transformSource.id))
+    transformSourceIds.some((sourceId) => motionTargetIds.includes(sourceId))
     || (explanationTarget !== null && motionTargetIds.includes(explanationTarget.id))
   );
   if (
     !motionIsValid
-    || !transformIsValid
+    || !transformsAreValid
     || !explanationIsValid
     || !equationIsValid
     || !explainedEquationIsValid
@@ -192,11 +204,16 @@ export function validateEditProgram<TId extends string>(
     step: { ...motionStep, targetObjectIds: motionTargetIds },
     targetObjectIds: motionTargetIds,
   } : null;
-  const normalizedTransform = transformStep && transformSource && normalizedTarget ? {
-    index: operation.operations.indexOf(transformStep),
-    sourceObjectId: transformSource.id,
-    step: { ...transformStep, sourceObjectId: transformSource.id, target: normalizedTarget },
-  } : null;
+  const normalizedTransforms = transformCandidates.flatMap(({ index, source, step, target }) => (
+    source && target ? [{
+      index,
+      sourceObjectId: source.id,
+      step: { ...step, sourceObjectId: source.id, target },
+    }] : []
+  ));
+  const normalizedTransformByIndex = new Map(normalizedTransforms.map((transform) => (
+    [transform.index, transform] as const
+  )));
   const normalizedExplanation = explanationStep && explanationTarget ? {
     index: operation.operations.indexOf(explanationStep),
     step: { ...explanationStep, targetObjectId: explanationTarget.id, text: explanationText },
@@ -215,9 +232,9 @@ export function validateEditProgram<TId extends string>(
         target: normalizedExplainedEquationTarget,
       }
     : null;
-  const normalizedSteps = operation.operations.map((step) => {
+  const normalizedSteps = operation.operations.map((step, index) => {
     if (step.kind === "create-motion" && normalizedMotion) return normalizedMotion.step;
-    if (step.kind === "create-transform" && normalizedTransform) return normalizedTransform.step;
+    if (step.kind === "create-transform") return normalizedTransformByIndex.get(index)?.step ?? step;
     if (step.kind === "create-explanation" && normalizedExplanation) return normalizedExplanation.step;
     if (step.kind === "create-equation" && normalizedEquation) return normalizedEquation;
     if (step.kind === "create-explained-equation" && normalizedExplainedEquation) {
@@ -227,7 +244,7 @@ export function validateEditProgram<TId extends string>(
   });
   const touchedObjectIds = [...new Set<TId>([
     ...motionTargetIds,
-    ...(normalizedTransform ? [normalizedTransform.sourceObjectId] : []),
+    ...normalizedTransforms.map((transform) => transform.sourceObjectId),
     ...(normalizedExplanation ? [normalizedExplanation.targetObjectId] : []),
   ])];
   return {
@@ -238,7 +255,8 @@ export function validateEditProgram<TId extends string>(
       operation: { ...operation, operations: normalizedSteps },
       start,
       touchedObjectIds,
-      transform: normalizedTransform,
+      transform: normalizedTransforms[0] ?? null,
+      transforms: normalizedTransforms,
     },
   };
 }
