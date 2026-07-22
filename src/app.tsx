@@ -21,7 +21,7 @@ import {
 } from "./ai/edit-suggestions";
 import type { RenderProgramCandidate } from "./render-pipeline/render-pipeline-panel";
 import { projectedPositions, validateSuggestionDraft, validatedProgramRecord } from "./studio/draft-validation";
-import type { ProgramRecord } from "./studio/model";
+import type { ProgramRecord, ProposedState } from "./studio/model";
 import type { OperationOrigin } from "./studio/operations";
 import { MagicEditPanel, type SuggestionStatus } from "./studio/magic-edit-panel";
 import {
@@ -191,13 +191,14 @@ export function App() {
     operation: EditSuggestionOperation,
     transactionId: string,
     origin: OperationOrigin,
+    proposedState: ProposedState | null = draftBaseState,
   ) {
-    if (!activeScene || !draftBaseState) throw new Error("Choose an imported Scene first.");
+    if (!activeScene || !proposedState) throw new Error("Choose an imported Scene first.");
     const validation = validateSuggestionDraft(operation, {
       capturedPlayhead: currentTime,
       hasNextScene: nextScene !== null,
       origin,
-      proposedState: draftBaseState,
+      proposedState,
       selectedObjectIds,
       transactionId,
     });
@@ -205,13 +206,30 @@ export function App() {
     return validation;
   }
 
+  function preserveDirectManipulationDraft(record: ProgramRecord | null | undefined) {
+    if (!record || record.program.provenance.origin !== "direct-manipulation") return;
+    setAppliedPrograms((programs) => programs.some((candidate) => (
+      candidate.program.transactionId === record.program.transactionId
+    )) ? programs : [...programs, record]);
+  }
+
   function installDraft(
     operation: EditSuggestionOperation,
     transactionId: string,
-    origin: OperationOrigin = "remote-model",
+    options: Readonly<{
+      origin?: OperationOrigin;
+      preserveDraft?: ProgramRecord | null;
+      proposedState?: ProposedState | null;
+    }> = {},
   ) {
     try {
-      const validated = createValidatedDraft(operation, transactionId, origin);
+      const validated = createValidatedDraft(
+        operation,
+        transactionId,
+        options.origin ?? "remote-model",
+        options.proposedState,
+      );
+      preserveDirectManipulationDraft(options.preserveDraft);
       setDraftOperation(validated.operation);
       setDraftProgram(validated.record);
       setDraftError(null);
@@ -225,7 +243,9 @@ export function App() {
 
   function updateDraftOperation(operation: EditSuggestionOperation) {
     if (!draftProgram) return;
-    if (installDraft(operation, draftProgram.program.transactionId, draftProgram.program.provenance.origin)) {
+    if (installDraft(operation, draftProgram.program.transactionId, {
+      origin: draftProgram.program.provenance.origin,
+    })) {
       setSuggestion((current) => current ? { ...current, operation } : current);
     }
   }
@@ -363,6 +383,16 @@ export function App() {
     setSelectedObjectIds([]);
   }
 
+  function directGestureContext() {
+    const previousDraft = draftProgram?.program.provenance.origin === "direct-manipulation"
+      ? draftProgram
+      : null;
+    return {
+      preserveDraft: previousDraft,
+      proposedState: previousDraft ? workspaceProjection?.proposedState ?? null : draftBaseState,
+    } as const;
+  }
+
   function beginEntityDrag(event: PointerEvent<HTMLButtonElement>, entityId: string) {
     const entity = editableEntities.find((candidate) => candidate.id === entityId);
     const editable = entity && (!entity.provisional || (entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
@@ -400,6 +430,7 @@ export function App() {
     if (Math.hypot(delta.x, delta.y) < 1) return;
     const targetIds = selectedObjectIds.includes(drag.entityId) ? selectedObjectIds : [drag.entityId];
     const transactionId = `studio-gesture-${crypto.randomUUID()}`;
+    const gestureContext = directGestureContext();
     if (interactionMode === "animate") {
       const end = Math.min(activeDuration, currentTime + 1.5);
       if (end - currentTime < 0.1) {
@@ -416,10 +447,13 @@ export function App() {
         start: currentTime,
         targetObjectIds: targetIds,
       };
-      installDraft(operation, transactionId, "direct-manipulation");
+      installDraft(operation, transactionId, {
+        origin: "direct-manipulation",
+        ...gestureContext,
+      });
       return;
     }
-    installPositionDraft(delta, targetIds, transactionId);
+    installPositionDraft(delta, targetIds, transactionId, gestureContext);
   }
 
   function cancelEntityDrag(event: PointerEvent<HTMLButtonElement>) {
@@ -432,8 +466,12 @@ export function App() {
     delta: Readonly<{ x: number; y: number }>,
     targetIds: readonly string[],
     transactionId: string,
+    gestureContext: Readonly<{
+      preserveDraft: ProgramRecord | null;
+      proposedState: ProposedState | null;
+    }> = directGestureContext(),
   ) {
-    if (!draftBaseState || !projection) return;
+    if (!gestureContext.proposedState || !projection) return;
     const projected = projectedPositions(projection.canvas.entities, targetIds);
     if (projected.kind === "invalid") {
       setDraftError(projected.message);
@@ -443,7 +481,7 @@ export function App() {
       capturedPlayhead: currentTime,
       delta,
       positions: projected.positions,
-      scene: draftBaseState.evaluatedScene,
+      scene: gestureContext.proposedState.evaluatedScene,
       start: currentTime,
       targetEntityIds: targetIds,
       transactionId,
@@ -453,6 +491,7 @@ export function App() {
       setDraftError(validated.message);
       return;
     }
+    preserveDirectManipulationDraft(gestureContext.preserveDraft);
     setDraftProgram(validated.record);
     setDraftOperation(null);
     setDraftError(null);
