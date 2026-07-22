@@ -3,12 +3,14 @@ import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { programRenderRequestSchema } from "../src/render-pipeline/contracts";
+import { programRenderRequestSchema, type ManimSourceExport } from "../src/render-pipeline/contracts";
 import { HttpError, readJsonBody, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
-import type { ManimRenderManager } from "./manim-render-pipeline";
+import type { ManimProjectRegistry, ManimRenderManager } from "./manim-render-pipeline";
 
 const RENDER_ROUTE = /^\/api\/manim\/renders\/([0-9a-f-]+)(?:\/(cancel|commit|discard|undo|video))?$/;
+const PROJECT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/(workspace|renders|export)$/;
+type ManimApi = ManimRenderManager | ManimProjectRegistry;
 
 function pipeVideo(response: ServerResponse, path: string, range?: Readonly<{ end: number; start: number }>) {
   const stream = createReadStream(path, range);
@@ -75,7 +77,7 @@ async function streamVideo(request: IncomingMessage, response: ServerResponse, p
   pipeVideo(response, path, { end: range.end, start: range.start });
 }
 
-async function runRenderAction(manager: ManimRenderManager, id: string, action: string | undefined) {
+async function runRenderAction(manager: ManimApi, id: string, action: string | undefined) {
   switch (action) {
     case "cancel": return manager.cancel(id);
     case "commit": return manager.commit(id);
@@ -83,6 +85,26 @@ async function runRenderAction(manager: ManimRenderManager, id: string, action: 
     case "undo": return manager.undo(id);
     default: throw new HttpError("Method not allowed.", 405);
   }
+}
+
+function sendPythonAttachment(
+  response: ServerResponse,
+  exported: ManimSourceExport,
+) {
+  if (response.destroyed || response.writableEnded) return false;
+  if (response.headersSent) {
+    response.destroy();
+    return false;
+  }
+  response.statusCode = 200;
+  response.setHeader("cache-control", "no-store");
+  response.setHeader("content-disposition", `attachment; filename="${exported.fileName}"`);
+  response.setHeader("content-length", Buffer.byteLength(exported.source));
+  response.setHeader("content-type", "text/x-python; charset=utf-8");
+  response.setHeader("x-content-type-options", "nosniff");
+  response.setHeader("x-poietra-project-id", exported.projectId);
+  response.end(exported.source);
+  return true;
 }
 
 function sendJsonAndWaitForFinish(response: ServerResponse, status: number, body: unknown) {
@@ -112,20 +134,54 @@ function sendJsonAndWaitForFinish(response: ServerResponse, status: number, body
 }
 
 async function routeManimRequest(
-  manager: ManimRenderManager,
+  manager: ManimApi,
   request: IncomingMessage,
   response: ServerResponse,
   signal: AbortSignal,
 ) {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
+  if (request.method === "GET" && url.pathname === "/api/manim/projects") {
+    sendJson(response, 200, manager.projects());
+    return;
+  }
   if (request.method === "GET" && url.pathname === "/api/manim/workspace") {
     sendJson(response, 200, await manager.workspace());
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/manim/renders") {
-    const parsed = programRenderRequestSchema.safeParse(await readJsonBody(request));
+    const parsed = programRenderRequestSchema.safeParse(await readJsonBody(request, 512 * 1024));
     if (!parsed.success) {
       throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid canonical EditProgram render request.", 400);
+    }
+    const started = await manager.start(parsed.data, signal);
+    if (!await sendJsonAndWaitForFinish(response, 202, started)) {
+      await manager.abandonStart(started.id);
+      const error = new Error("The render request was disconnected before its response was sent.");
+      error.name = "AbortError";
+      throw error;
+    }
+    return;
+  }
+  const projectMatch = url.pathname.match(PROJECT_ROUTE);
+  if (projectMatch) {
+    const [, projectId, endpoint] = projectMatch;
+    if (request.method === "GET" && endpoint === "workspace") {
+      sendJson(response, 200, await manager.workspace(projectId));
+      return;
+    }
+    if (request.method !== "POST" || endpoint === "workspace") {
+      throw new HttpError("Method not allowed.", 405);
+    }
+    const parsed = programRenderRequestSchema.safeParse(await readJsonBody(request, 512 * 1024));
+    if (!parsed.success) {
+      throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid canonical EditProgram request.", 400);
+    }
+    if (parsed.data.projectId !== projectId) {
+      throw new HttpError("The request project does not match the project endpoint.", 409);
+    }
+    if (endpoint === "export") {
+      sendPythonAttachment(response, await manager.exportSource(parsed.data, signal));
+      return;
     }
     const started = await manager.start(parsed.data, signal);
     if (!await sendJsonAndWaitForFinish(response, 202, started)) {
@@ -152,7 +208,7 @@ async function routeManimRequest(
 }
 
 export async function handleManimRequest(
-  manager: ManimRenderManager,
+  manager: ManimApi,
   request: IncomingMessage,
   response: ServerResponse,
   baseLogger: StructuredLogger = nullLogger,

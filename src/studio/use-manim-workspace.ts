@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { loadManimWorkspace } from "../render-pipeline/client";
-import type { ManimWorkspaceView } from "../render-pipeline/contracts";
+import { loadManimProjects, loadManimWorkspace } from "../render-pipeline/client";
+import type { ManimProjectSummary, ManimWorkspaceView } from "../render-pipeline/contracts";
 import { type ManimWorkspaceScene, workspaceScenes } from "./imported-workspace";
 
 type WorkspaceStatus = "error" | "loading" | "ready";
@@ -25,11 +25,15 @@ export function useManimWorkspace() {
   const [status, setStatus] = useState<WorkspaceStatus>("loading");
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeSceneId, setActiveSceneId] = useState<string | null>(null);
+  const [projects, setProjects] = useState<readonly ManimProjectSummary[]>([]);
+  const [activeProjectId, setActiveProjectIdState] = useState<string | null>(null);
+  const [activeSceneId, setActiveSceneIdState] = useState<string | null>(null);
   const request = useRef<AbortController | null>(null);
+  const activeProjectIdRef = useRef<string | null>(null);
   const workspaceRef = useRef<ManimWorkspaceView | null>(null);
+  const sceneByProject = useRef(new Map<string, string>());
 
-  const refresh = useCallback(async () => {
+  const loadProject = useCallback(async (requestedProjectId: string | null) => {
     request.current?.abort();
     const controller = new AbortController();
     request.current = controller;
@@ -37,14 +41,30 @@ export function useManimWorkspace() {
     setIsRefreshing(true);
     setError(null);
     try {
-      const nextWorkspace = await loadManimWorkspace(controller.signal);
+      let projectId = requestedProjectId;
+      if (!projectId) {
+        const projectList = await loadManimProjects(controller.signal);
+        if (request.current !== controller) return;
+        setProjects(projectList.projects);
+        projectId = projectList.defaultProjectId;
+      }
+      const nextWorkspace = await loadManimWorkspace(projectId, controller.signal);
       if (request.current !== controller) return;
       const scenes = workspaceScenes(nextWorkspace);
+      activeProjectIdRef.current = projectId;
+      setActiveProjectIdState(projectId);
       workspaceRef.current = nextWorkspace;
       setWorkspace(nextWorkspace);
-      setActiveSceneId((current) => scenes.some((scene) => scene.sceneId === current)
-        ? current
-        : scenes[0]?.sceneId ?? null);
+      setActiveSceneIdState((current) => {
+        const remembered = sceneByProject.current.get(projectId);
+        const nextSceneId = scenes.some((scene) => scene.sceneId === remembered)
+          ? remembered!
+          : scenes.some((scene) => scene.sceneId === current)
+            ? current
+            : scenes[0]?.sceneId ?? null;
+        if (nextSceneId) sceneByProject.current.set(projectId, nextSceneId);
+        return nextSceneId;
+      });
       setStatus("ready");
     } catch (nextError) {
       if (controller.signal.aborted || request.current !== controller) return;
@@ -58,17 +78,35 @@ export function useManimWorkspace() {
     }
   }, []);
 
+  const refresh = useCallback(() => loadProject(activeProjectIdRef.current), [loadProject]);
+
+  const setActiveProjectId = useCallback((projectId: string) => {
+    if (projectId === activeProjectIdRef.current) return;
+    activeProjectIdRef.current = projectId;
+    workspaceRef.current = null;
+    setWorkspace(null);
+    setActiveSceneIdState(null);
+    setStatus("loading");
+    void loadProject(projectId);
+  }, [loadProject]);
+
+  const setActiveSceneId = useCallback((sceneId: string) => {
+    const projectId = activeProjectIdRef.current;
+    if (projectId) sceneByProject.current.set(projectId, sceneId);
+    setActiveSceneIdState(sceneId);
+  }, []);
+
   useEffect(() => {
     // StrictMode reconnects effects once in development. Deferring the initial
     // request lets the discarded setup cancel before it reaches the network.
-    const cancelScheduledRefresh = scheduleWorkspaceRefresh(refresh);
+    const cancelScheduledRefresh = scheduleWorkspaceRefresh(() => loadProject(null));
     return () => {
       cancelScheduledRefresh();
       const controller = request.current;
       request.current = null;
       controller?.abort();
     };
-  }, [refresh]);
+  }, [loadProject]);
 
   const scenes = useMemo(() => workspace ? workspaceScenes(workspace) : [], [workspace]);
   const activeScene = sceneAtId(scenes, activeSceneId);
@@ -76,11 +114,14 @@ export function useManimWorkspace() {
   return {
     activeScene,
     activeSceneId,
+    activeProjectId,
     error,
     isRefreshing,
     nextScene,
+    projects,
     refresh,
     scenes,
+    setActiveProjectId,
     setActiveSceneId,
     status,
     workspace,

@@ -4,8 +4,8 @@ import { programRenderRequestSchema, type ProgramRenderRequest } from "./contrac
 import {
   findMotionAnchors,
   findSceneMotionAnchors,
+  lowerCanonicalProgramBatchSource,
   lowerCanonicalProgramSource,
-  ProgramLoweringError,
 } from "./source-lowering";
 import { importManimScene } from "./source-import";
 import type { CanonicalEditOperation, CanonicalEditProgram } from "../studio/operations";
@@ -75,6 +75,7 @@ function request(
   return {
     destination: null,
     program,
+    projectId: "default",
     sceneName: "GroupedEquation",
     sourceBindings,
     sourceHash: "a".repeat(64),
@@ -131,11 +132,73 @@ describe("Canonical EditProgram source lowering", () => {
     expect(lowered.anchorLine).toBe(6);
     expect(lowered.insertedCode).toContain('# poietra:motion {"motions":[{"delta":{"x":64,"y":-45},"variables":["equation"]}],"version":1}');
     expect(lowered.insertedCode).toContain("equation.animate.shift(1.4222 * RIGHT + 1 * UP)");
+    expect(lowered.insertedCode).not.toContain("MoveAlongPath(");
     expect(lowered.insertedCode).toContain("run_time=1.5");
-    expect(lowered.source.indexOf("# poietra:anchor 7.000")).toBeLessThan(lowered.source.indexOf("self.play("));
+    expect(lowered.source.indexOf("# poietra:cursor 7")).toBeLessThan(lowered.source.indexOf("self.play("));
+    expect(lowered.source.indexOf("self.play(")).toBeLessThan(lowered.source.indexOf("# poietra:anchor 8.5"));
     expect(imported?.runtimeSceneState.propertyChannels[
       "source:examples/relativity.py#GroupedEquation:equation/position"
     ]?.samples.at(-1)?.interval).toEqual({ end: 8.5, start: 7 });
+  });
+
+  it("advances the consumed anchor so a second commit appends in playback order", () => {
+    const firstProgram = canonicalProgram([motionOperation()], "first-commit");
+    const first = lowerCanonicalProgramSource(
+      source,
+      request(firstProgram),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    const secondOperation = motionOperation({
+      id: "tx:second-commit/operation:motion",
+      interval: { end: 10, start: 8.5 },
+    });
+    const secondProgram: CanonicalEditProgram = {
+      ...canonicalProgram([secondOperation], "second-commit"),
+      anchor: {
+        capturedPlayhead: 8.5,
+        evidence: ["captured-playhead:8.500"],
+        resolvedSeconds: 8.5,
+        source: { kind: "playhead", referenceSeconds: 8.5 },
+      },
+    };
+    const second = lowerCanonicalProgramSource(
+      first.source,
+      request(secondProgram),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    const imported = importManimScene(second.source, "examples/relativity.py", "GroupedEquation");
+    const samples = imported?.runtimeSceneState.propertyChannels[
+      "source:examples/relativity.py#GroupedEquation:equation/position"
+    ]?.samples.filter((sample) => sample.kind === "animated") ?? [];
+
+    expect(first.source).toContain("# poietra:cursor 7");
+    expect(findSceneMotionAnchors(first.source, "GroupedEquation").map((anchor) => anchor.seconds)).toEqual([8.5]);
+    expect(second.source.indexOf('poietra:transaction "first-commit"'))
+      .toBeLessThan(second.source.indexOf('poietra:transaction "second-commit"'));
+    expect(findSceneMotionAnchors(second.source, "GroupedEquation").map((anchor) => anchor.seconds)).toEqual([10]);
+    expect(samples.map((sample) => sample.interval)).toEqual([
+      { end: 8.5, start: 7 },
+      { end: 10, start: 8.5 },
+    ]);
+  });
+
+  it("shifts downstream source anchors by the inserted duration", () => {
+    const sourceWithDownstreamAnchor = source.replace(
+      "        self.wait(1)",
+      "        self.wait(3)\n        # poietra:anchor 10.000\n        self.wait(1)",
+    );
+
+    const lowered = lowerCanonicalProgramSource(
+      sourceWithDownstreamAnchor,
+      request(),
+      { height: 8, width: 14.222 },
+      null,
+    );
+
+    expect(findSceneMotionAnchors(lowered.source, "GroupedEquation").map((anchor) => anchor.seconds))
+      .toEqual([8.5, 11.5]);
   });
 
   it("lowers equation, explanation, and an actual imported Scene boundary as one transaction", () => {
@@ -196,17 +259,90 @@ describe("Canonical EditProgram source lowering", () => {
     if (imported) expect(latestPosition(imported, textId)).toEqual({ x: 320, y: 180 });
   });
 
-  it("rejects curved motion instead of claiming a reproducible render", () => {
-    const operation = motionOperation({ controlOffset: { x: 0, y: -20 } });
-    expect(() => lowerCanonicalProgramSource(
+  it("lowers manually inserted geometry with safe default constructors", () => {
+    const types = ["Circle", "Rectangle", "Square", "Line", "Arrow"] as const;
+    const operations = types.flatMap((type, index): CanonicalEditOperation[] => {
+      const entityId = `tx:manual-shapes/entity:shape-${index}`;
+      const createId = `tx:manual-shapes/operation:create-${index}`;
+      const positionId = `tx:manual-shapes/operation:position-${index}`;
+      return [
+        {
+          ...operationBase(createId, 7),
+          entity: { content: { displayLines: [type], label: type }, id: entityId, lifetime: { end: null, start: 7 }, type },
+          kind: "CreateEntity",
+        },
+        {
+          ...operationBase(positionId, 7),
+          dependsOn: [createId],
+          entityId,
+          key: "position",
+          kind: "SetProperty",
+          value: { x: 120 + index * 80, y: 180 },
+        },
+        {
+          ...operationBase(`tx:manual-shapes/operation:show-${index}`, 7, 7.4),
+          dependsOn: [positionId],
+          effect: "fade-in",
+          entityId,
+          kind: "ChangePresence",
+          persistent: true,
+        },
+      ];
+    });
+    const program = canonicalProgram(operations, "manual-shapes");
+    const lowered = lowerCanonicalProgramSource(source, request(program, []), { height: 8, width: 14.222 }, null);
+
+    expect(lowered.insertedCode).toContain("Circle(radius=1)");
+    expect(lowered.insertedCode).toContain("Rectangle(width=4, height=2)");
+    expect(lowered.insertedCode).toContain("Square(side_length=2)");
+    expect(lowered.insertedCode).toContain("Line(LEFT, RIGHT)");
+    expect(lowered.insertedCode).toContain("Arrow(LEFT, RIGHT, buff=0)");
+    expect(lowered.insertedCode.match(/FadeIn\(/g)).toHaveLength(types.length);
+  });
+
+  it("lowers a Scene duration extension to an explicit wait", () => {
+    const wait: CanonicalEditOperation = {
+      ...operationBase("extend-duration", 7, 10),
+      eventKind: "wait",
+      kind: "InsertTimelineEvent",
+      label: "Extend Scene to 11s",
+    };
+    const lowered = lowerCanonicalProgramSource(
+      source,
+      request(canonicalProgram([wait], "extend-duration"), []),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
+
+    expect(lowered.insertedCode).toContain("self.wait(3)");
+    expect(imported?.runtimeSceneState.duration).toBe(11);
+  });
+
+  it("lowers a quadratic screen-space motion to an exact Manim cubic path", () => {
+    const operation = motionOperation({ controlOffset: { x: 32, y: 45 } });
+    const lowered = lowerCanonicalProgramSource(
       source,
       request(canonicalProgram([operation])),
       { height: 8, width: 14.222 },
       null,
-    )).toThrowError(new ProgramLoweringError(
-      "operation-unsupported",
-      "Rendered validation currently supports straight CreateMotion paths only.",
-    ));
+    );
+    const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
+    const sample = imported?.runtimeSceneState.propertyChannels[
+      "source:examples/relativity.py#GroupedEquation:equation/position"
+    ]?.samples.at(-1);
+
+    expect(lowered.insertedCode).toContain('# poietra:motion {"motions":[{"controlOffset":{"x":32,"y":45},"delta":{"x":64,"y":-45},"variables":["equation"]}],"version":1}');
+    expect(lowered.insertedCode).toContain(
+      "MoveAlongPath(equation, CubicBezier(equation.get_center(), equation.get_center() + 0.9481 * RIGHT + 0.3333 * DOWN, equation.get_center() + 1.4222 * RIGHT, equation.get_center() + 1.4222 * RIGHT + 1 * UP))",
+    );
+    expect(lowered.insertedCode).not.toContain("equation.animate.shift(");
+    expect(sample).toMatchObject({
+      control: { x: 234, y: 157.5 },
+      from: { x: 170, y: 135 },
+      interval: { end: 8.5, start: 7 },
+      value: { x: 234, y: 90 },
+    });
   });
 
   it("rejects operations that do not have truthful source lowering instead of dropping them", () => {
@@ -340,5 +476,53 @@ describe("Canonical EditProgram source lowering", () => {
       x: expect.closeTo(sourcePosition.x + 145, 1),
       y: expect.closeTo(sourcePosition.y, 2),
     });
+  });
+
+  it("carries transform alias lineage across Programs in one batch", () => {
+    const firstTarget = "tx:alias-a/entity:first";
+    const secondTarget = "tx:alias-b/entity:second";
+    const first = canonicalProgram([
+      transformOperation("tx:alias-a/operation:transform", 7, "equation_1", firstTarget, ["F", "=", "m", "a"]),
+    ], "alias-a");
+    const secondBase = canonicalProgram([
+      transformOperation("tx:alias-b/operation:transform", 8, firstTarget, secondTarget, ["p", "=", "m", "v"]),
+    ], "alias-b");
+    const second: CanonicalEditProgram = {
+      ...secondBase,
+      anchor: {
+        capturedPlayhead: 8,
+        evidence: [],
+        resolvedSeconds: 8,
+        source: { kind: "playhead", referenceSeconds: 8 },
+      },
+    };
+    const laterMotion = motionOperation({
+      id: "tx:alias-motion/operation:motion",
+      interval: { end: 10, start: 9 },
+      targetEntityIds: ["equation_1"],
+    });
+    const motionBase = canonicalProgram([laterMotion], "alias-motion");
+    const motion: CanonicalEditProgram = {
+      ...motionBase,
+      anchor: {
+        capturedPlayhead: 9,
+        evidence: [],
+        resolvedSeconds: 9,
+        source: { kind: "playhead", referenceSeconds: 9 },
+      },
+    };
+
+    const lowered = lowerCanonicalProgramBatchSource(
+      source,
+      request(first),
+      [first, second, motion].map((program) => ({ program, sourceAnchor: 7 })),
+      { height: 8, width: 14.222 },
+      null,
+    );
+
+    expect(lowered.insertedCode).toContain("poietra_alias_a_1 = poietra_alias_b_1");
+    expect(lowered.insertedCode).toContain("equation = poietra_alias_b_1");
+    expect(lowered.insertedCode.lastIndexOf("equation = poietra_alias_b_1"))
+      .toBeLessThan(lowered.insertedCode.indexOf("equation.animate.shift("));
   });
 });

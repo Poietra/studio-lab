@@ -4,7 +4,8 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { realpathSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import {
   basename,
@@ -17,12 +18,16 @@ import type { Plugin } from "vite";
 
 import {
   type ProgramRenderRequest,
+  type ManimProjectListView,
   type ManimWorkspaceView,
   type RenderSessionStatus,
   type RenderSessionView,
+  renderProgramBatchId,
+  renderRequestPrograms,
 } from "../src/render-pipeline/contracts";
-import { lowerCanonicalProgramSource } from "../src/render-pipeline/source-lowering";
-import { validateAndScheduleProgram } from "../src/studio/program-validation";
+import { lowerCanonicalProgramBatchSource } from "../src/render-pipeline/source-lowering";
+import { evaluateWorkingState, programRecord } from "../src/studio/evaluator";
+import { STUDIO_STATE_VERSION } from "../src/studio/model";
 import { HttpError, sendJson } from "./http/json";
 import {
   createConsoleJsonSink,
@@ -46,15 +51,23 @@ import {
   sceneView,
 } from "./manim-workspace";
 
-type ManimRenderPipelineOptions = Readonly<{
+export type ManimRenderPipelineOptions = Readonly<{
   command?: string;
   frameHeight?: number;
   frameWidth?: number;
+  projects?: readonly ManimProjectConfig[];
   projectRoot?: string;
+}>;
+
+export type ManimProjectConfig = Readonly<{
+  id?: string;
+  name?: string;
+  root: string;
 }>;
 
 type RenderSession = {
   actionInProgress: boolean;
+  batchId: string;
   child: ChildProcess | null;
   createdAt: string;
   error: string | null;
@@ -64,6 +77,7 @@ type RenderSession = {
   originalSource: string;
   patch: {
     anchorLine: number;
+    anchorLines: readonly number[];
     insertedCode: string;
   };
   patchedHash: string;
@@ -88,6 +102,7 @@ const DEFAULT_SESSION_RETENTION_MS = 30 * 60 * 1_000;
 const COMMAND_AVAILABILITY_TTL_MS = 30_000;
 const COMMAND_AVAILABILITY_TIMEOUT_MS = 15_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const PROJECT_ID_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 
 function requirePositiveFinite(value: number, name: string) {
   if (!Number.isFinite(value) || value <= 0) {
@@ -156,7 +171,10 @@ function throwIfAborted(signal: AbortSignal | undefined) {
 
 export class ManimRenderManager {
   readonly command: readonly string[];
+  readonly defaultProjectId: string;
   readonly frame: Readonly<{ height: number; width: number }>;
+  readonly projectId: string;
+  readonly projectName: string;
   readonly projectRoot: string;
   private commandAvailability: Readonly<{ checkedAt: number; value: boolean }> | null = null;
   private commandAvailabilityRequest: Promise<boolean> | null = null;
@@ -168,6 +186,7 @@ export class ManimRenderManager {
   private readonly logger: StructuredLogger;
   private readonly maxConcurrentRenders: number;
   private readonly maxRetainedSessions: number;
+  private readonly onSessionRemoved: (id: string) => void;
   private pendingStarts = 0;
   private pendingRetainedSessions = 0;
   private readonly renderTimeoutMs: number;
@@ -182,6 +201,9 @@ export class ManimRenderManager {
     logger?: StructuredLogger;
     maxConcurrentRenders?: number;
     maxRetainedSessions?: number;
+    onSessionRemoved?: (id: string) => void;
+    projectId?: string;
+    projectName?: string;
     projectRoot: string;
     renderTimeoutMs?: number;
     sessionRetentionMs?: number;
@@ -203,7 +225,15 @@ export class ManimRenderManager {
       options.maxRetainedSessions ?? DEFAULT_MAX_RETAINED_SESSIONS,
       "Maximum retained sessions",
     );
+    this.onSessionRemoved = options.onSessionRemoved ?? (() => undefined);
     this.sourceStore = new ManimSourceStore(options.projectRoot);
+    this.projectId = options.projectId ?? "default";
+    if (!PROJECT_ID_PATTERN.test(this.projectId)) {
+      throw new TypeError("Manim project ID must be an opaque lower-case identifier.");
+    }
+    this.defaultProjectId = this.projectId;
+    this.projectName = options.projectName?.trim() || basename(this.sourceStore.projectRoot) || "Manim Project";
+    if (this.projectName.length > 120) throw new TypeError("Manim project name must be at most 120 characters.");
     this.projectRoot = this.sourceStore.projectRoot;
     this.renderTimeoutMs = requireTimerDelay(
       options.renderTimeoutMs ?? DEFAULT_RENDER_TIMEOUT_MS,
@@ -233,14 +263,22 @@ export class ManimRenderManager {
       session.actionInProgress = true;
       try {
         await rm(session.tempRoot, { force: true, recursive: true });
-        this.sessions.delete(session.id);
+        this.removeSession(session.id);
       } finally {
         session.actionInProgress = false;
       }
     }));
   }
 
-  async workspace(): Promise<ManimWorkspaceView> {
+  projects(): ManimProjectListView {
+    return {
+      defaultProjectId: this.projectId,
+      projects: [{ id: this.projectId, name: this.projectName }],
+    };
+  }
+
+  async workspace(projectId = this.projectId): Promise<ManimWorkspaceView> {
+    if (projectId !== this.projectId) throw new HttpError("Configured Manim project not found.", 404);
     if (this.workspaceRequest) return this.workspaceRequest;
     this.workspaceRequest = (async () => {
       const [commandAvailable, sources] = await Promise.all([
@@ -251,6 +289,8 @@ export class ManimRenderManager {
         command: this.command,
         commandAvailable,
         frame: this.frame,
+        projectId: this.projectId,
+        projectName: this.projectName,
         sources,
       };
     })();
@@ -265,6 +305,11 @@ export class ManimRenderManager {
     const session = this.sessions.get(id);
     if (!session) throw new HttpError("Render session not found.", 404);
     return session;
+  }
+
+  private removeSession(id: string) {
+    if (!this.sessions.delete(id)) return;
+    this.onSessionRemoved(id);
   }
 
   private async isCommandAvailable(now = Date.now()) {
@@ -369,10 +414,15 @@ export class ManimRenderManager {
       logTail: session.logTail,
       patch: {
         anchorLine: session.patch.anchorLine,
+        anchorLines: session.patch.anchorLines,
         insertedCode: session.patch.insertedCode,
         sourceHash: session.originalHash,
       },
-      programTransactionId: session.request.program.transactionId,
+      projectId: this.projectId,
+      programBatchId: session.batchId,
+      // Kept for single-Program clients. Batch sessions expose the same stable
+      // identifier here so an older UI never mistakes them for another draft.
+      programTransactionId: session.batchId,
       progress: session.progress,
       sceneName: session.request.sceneName,
       sourcePath: session.request.sourcePath,
@@ -387,6 +437,7 @@ export class ManimRenderManager {
   async start(request: ProgramRenderRequest, signal?: AbortSignal) {
     const finishStart = this.beginStart();
     try {
+      this.assertRequestProject(request);
       throwIfAborted(signal);
       const commandAvailable = await this.isCommandAvailable();
       throwIfAborted(signal);
@@ -407,6 +458,143 @@ export class ManimRenderManager {
     }
   }
 
+  async exportSource(request: ProgramRenderRequest, signal?: AbortSignal) {
+    const finishExport = this.beginStart();
+    try {
+      this.assertRequestProject(request);
+      const prepared = await this.lowerRequest(request, signal);
+      const stem = basename(request.sourcePath, ".py")
+        .replace(/[^A-Za-z0-9._-]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "manim-scene";
+      return {
+        fileName: `${stem}.poietra.py`,
+        projectId: this.projectId,
+        source: prepared.lowered.source,
+      };
+    } finally {
+      finishExport();
+    }
+  }
+
+  private assertRequestProject(request: ProgramRenderRequest) {
+    if (request.projectId !== this.projectId) {
+      throw new HttpError("The render request belongs to a different configured project.", 409);
+    }
+  }
+
+  private async lowerRequest(request: ProgramRenderRequest, signal?: AbortSignal) {
+    throwIfAborted(signal);
+    const sourceSnapshot = await this.sourceStore.read(request.sourcePath);
+    throwIfAborted(signal);
+    const originalSource = sourceSnapshot.source;
+    if (sourceSnapshot.hash !== request.sourceHash) {
+      throw new HttpError("The imported source changed before rendering or export. Reimport the workspace and create the draft again.", 409);
+    }
+    const importedSnapshot = importSourceSnapshot(originalSource, request.sourcePath, this.frame);
+    const activeScene = sceneView(importedSnapshot.view, request.sceneName);
+    if (!activeScene) {
+      throw new HttpError(`${request.sceneName} is not an imported Scene in ${request.sourcePath}.`, 400);
+    }
+    if (activeScene.sourceHash !== request.sourceHash) {
+      throw new HttpError("The source changed while Studio was lowering the program. Reimport and try again.", 409);
+    }
+    for (const binding of request.sourceBindings) {
+      if (activeScene.sourceVariables[binding.entityId] !== binding.sourceVariable) {
+        throw new HttpError(`Source target binding ${binding.entityId} → ${binding.sourceVariable} does not match the imported Scene.`, 400);
+      }
+    }
+    const orderedPrograms = renderRequestPrograms(request)
+      .map((program, inputIndex) => ({ inputIndex, program, sourceAnchor: program.anchor.resolvedSeconds }))
+      .sort((left, right) => left.sourceAnchor - right.sourceAnchor || left.inputIndex - right.inputIndex);
+    if (orderedPrograms.some(({ program }) => program.loweringStatus !== "supported")) {
+      throw new HttpError("Every Program in a render batch must have supported source lowering.", 400);
+    }
+    const evaluated = evaluateWorkingState({
+      appliedPrograms: orderedPrograms.map(({ program }) => programRecord(program, { issues: [], kind: "valid" })),
+      editorContext: {
+        activeSceneId: activeScene.sceneId,
+        playhead: 0,
+        selection: [],
+        version: STUDIO_STATE_VERSION,
+        viewport: request.viewport,
+      },
+      runtimeSceneState: activeScene.runtimeSceneState,
+      sourceSnapshot: {
+        configId: this.projectId,
+        hash: request.sourceHash,
+        sourceId: request.sourcePath,
+        version: STUDIO_STATE_VERSION,
+      },
+      stagedPrograms: [],
+      staticSemanticState: {
+        entities: [],
+        unknowns: [],
+        version: STUDIO_STATE_VERSION,
+      },
+      version: STUDIO_STATE_VERSION,
+    });
+    const invalidRecord = evaluated.programs.find((record) => record.validation.status === "invalid");
+    if (invalidRecord) {
+      throw new HttpError(
+        invalidRecord.validation.issues.find((issue) => issue.severity === "error")?.message
+          ?? "A Canonical EditProgram is invalid for the imported Scene after timeline insertion.",
+        400,
+      );
+    }
+    const validatedPrograms = evaluated.programs.map((record) => record.program);
+    const renderRequest: ProgramRenderRequest = request.programs
+      ? { ...request, program: validatedPrograms[0]!, programs: validatedPrograms }
+      : { ...request, program: validatedPrograms[0]! };
+    const boundaryProgramIndexes = validatedPrograms.flatMap((program, index) => (
+      program.operations.some((operation) => operation.kind === "InsertSceneBoundary") ? [index] : []
+    ));
+    if (boundaryProgramIndexes.length > 1 || (
+      boundaryProgramIndexes.length === 1 && boundaryProgramIndexes[0] !== validatedPrograms.length - 1
+    )) {
+      throw new HttpError("A Scene-boundary Program must be the final Program in a render batch.", 400);
+    }
+    const hasSceneBoundary = boundaryProgramIndexes.length === 1;
+    let incoming: Readonly<{
+      initialization: readonly string[];
+      visibleSourceVariables: readonly string[];
+    }> | null = null;
+    if (hasSceneBoundary) {
+      if (!activeScene.nextSceneId || !renderRequest.destination) {
+        throw new HttpError("This Scene transition requires the imported next Scene destination.", 400);
+      }
+      const destinationScene = sceneView(importedSnapshot.view, renderRequest.destination.sceneName);
+      if (
+        renderRequest.destination.sourcePath !== request.sourcePath
+        || !destinationScene
+        || destinationScene.sceneId !== activeScene.nextSceneId
+      ) {
+        throw new HttpError("The requested transition destination is not the active Scene's next imported Scene.", 400);
+      }
+      const importedDestination = importedScene(importedSnapshot.importedScenes, destinationScene.name);
+      if (!importedDestination) {
+        throw new HttpError("The next Scene could not be imported for transition preview.", 400);
+      }
+      incoming = {
+        initialization: importedDestination.initialization,
+        visibleSourceVariables: importedDestination.initialVisibleSourceVariables,
+      };
+    } else if (renderRequest.destination) {
+      throw new HttpError("A render without a Scene boundary must not include a destination Scene.", 400);
+    }
+    const lowered = lowerCanonicalProgramBatchSource(
+      originalSource,
+      renderRequest,
+      validatedPrograms.map((program, index) => ({
+        program,
+        sourceAnchor: orderedPrograms[index].sourceAnchor,
+      })),
+      this.frame,
+      incoming,
+    );
+    throwIfAborted(signal);
+    return { lowered, renderRequest, sourceSnapshot };
+  }
+
   private async prepareRender(
     request: ProgramRenderRequest,
     reservation: RenderStartReservation,
@@ -415,65 +603,9 @@ export class ManimRenderManager {
     let session: RenderSession | null = null;
     let tempRoot: string | null = null;
     try {
-      throwIfAborted(signal);
-      const sourceSnapshot = await this.sourceStore.read(request.sourcePath);
-      throwIfAborted(signal);
+      const { lowered, renderRequest, sourceSnapshot } = await this.lowerRequest(request, signal);
       const sourcePath = sourceSnapshot.absolutePath;
       const originalSource = sourceSnapshot.source;
-      if (sourceSnapshot.hash !== request.sourceHash) {
-        throw new HttpError("The imported source changed before rendering. Reimport the workspace and create the draft again.", 409);
-      }
-      const importedSnapshot = importSourceSnapshot(originalSource, request.sourcePath, this.frame);
-      const activeScene = sceneView(importedSnapshot.view, request.sceneName);
-      if (!activeScene) {
-        throw new HttpError(`${request.sceneName} is not an imported Scene in ${request.sourcePath}.`, 400);
-      }
-      if (activeScene.sourceHash !== request.sourceHash) {
-        throw new HttpError("The source changed while Studio was preparing the render. Reimport and try again.", 409);
-      }
-      const validation = validateAndScheduleProgram(request.program, activeScene.runtimeSceneState);
-      if (validation.kind === "invalid") {
-        throw new HttpError(
-          validation.issues.find((issue) => issue.severity === "error")?.message
-            ?? "The Canonical EditProgram is invalid for the imported Scene.",
-          400,
-        );
-      }
-      for (const binding of request.sourceBindings) {
-        if (activeScene.sourceVariables[binding.entityId] !== binding.sourceVariable) {
-          throw new HttpError(`Source binding ${binding.entityId} → ${binding.sourceVariable} does not match the imported Scene.`, 400);
-        }
-      }
-      const renderRequest: ProgramRenderRequest = { ...request, program: validation.program };
-      const hasSceneBoundary = renderRequest.program.operations.some((operation) => operation.kind === "InsertSceneBoundary");
-      let incoming: Readonly<{
-        initialization: readonly string[];
-        visibleSourceVariables: readonly string[];
-      }> | null = null;
-      if (hasSceneBoundary) {
-        if (!activeScene.nextSceneId || !renderRequest.destination) {
-          throw new HttpError("This Scene transition requires the imported next Scene destination.", 400);
-        }
-        const destinationScene = sceneView(importedSnapshot.view, renderRequest.destination.sceneName);
-        if (
-          renderRequest.destination.sourcePath !== request.sourcePath
-          || !destinationScene
-          || destinationScene.sceneId !== activeScene.nextSceneId
-        ) {
-          throw new HttpError("The requested transition destination is not the active Scene's next imported Scene.", 400);
-        }
-        const importedDestination = importedScene(importedSnapshot.importedScenes, destinationScene.name);
-        if (!importedDestination) {
-          throw new HttpError("The next Scene could not be imported for transition preview.", 400);
-        }
-        incoming = {
-          initialization: importedDestination.initialization,
-          visibleSourceVariables: importedDestination.initialVisibleSourceVariables,
-        };
-      } else if (renderRequest.destination) {
-        throw new HttpError("A render without a Scene boundary must not include a destination Scene.", 400);
-      }
-      const lowered = lowerCanonicalProgramSource(originalSource, renderRequest, this.frame, incoming);
       throwIfAborted(signal);
       tempRoot = await mkdtemp(join(tmpdir(), "poietra-manim-render-"));
       throwIfAborted(signal);
@@ -487,6 +619,7 @@ export class ManimRenderManager {
       const now = new Date().toISOString();
       session = {
         actionInProgress: false,
+        batchId: renderProgramBatchId(renderRequestPrograms(request)),
         child: null,
         createdAt: now,
         error: null,
@@ -496,6 +629,7 @@ export class ManimRenderManager {
         originalSource,
         patch: {
           anchorLine: lowered.anchorLine,
+          anchorLines: lowered.anchorLines,
           insertedCode: lowered.insertedCode,
         },
         patchedHash: sourceHash(lowered.source),
@@ -531,7 +665,7 @@ export class ManimRenderManager {
     } finally {
       session.child = null;
       session.videoPath = null;
-      this.sessions.delete(session.id);
+      this.removeSession(session.id);
     }
   }
 
@@ -653,7 +787,7 @@ export class ManimRenderManager {
       session.status = "discarded";
       session.updatedAt = new Date().toISOString();
       const view = this.toView(session);
-      this.sessions.delete(session.id);
+      this.removeSession(session.id);
       return view;
     });
   }
@@ -673,7 +807,7 @@ export class ManimRenderManager {
       await waitForRenderProcessStop(child);
       await rm(session.tempRoot, { force: true, recursive: true });
     }));
-    this.sessions.clear();
+    for (const id of this.sessions.keys()) this.removeSession(id);
     const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
     if (errors.length > 0) throw new AggregateError(errors, "Could not fully close the Manim render pipeline.");
   }
@@ -688,8 +822,179 @@ export class ManimRenderManager {
   }
 }
 
+function opaqueProjectId(canonicalRoot: string) {
+  return `project-${createHash("sha256").update(canonicalRoot).digest("hex").slice(0, 16)}`;
+}
+
+export function parseManimProjects(value: string | undefined): readonly ManimProjectConfig[] | undefined {
+  const normalized = value?.trim();
+  if (!normalized) return undefined;
+  const parsed = JSON.parse(normalized) as unknown;
+  if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > 64) {
+    throw new TypeError("POIETRA_MANIM_PROJECTS must be a JSON array containing 1 to 64 configured projects.");
+  }
+  return parsed.map((entry, index) => {
+    if (typeof entry === "string" && entry.trim()) return { root: entry.trim() };
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw new TypeError(`POIETRA_MANIM_PROJECTS[${index}] must be a root string or project object.`);
+    }
+    const record = entry as Record<string, unknown>;
+    if (Object.keys(record).some((key) => !["id", "name", "root"].includes(key))) {
+      throw new TypeError(`POIETRA_MANIM_PROJECTS[${index}] contains an unsupported field.`);
+    }
+    if (typeof record.root !== "string" || !record.root.trim()) {
+      throw new TypeError(`POIETRA_MANIM_PROJECTS[${index}].root must be a non-empty path.`);
+    }
+    if (record.id !== undefined && (typeof record.id !== "string" || !PROJECT_ID_PATTERN.test(record.id))) {
+      throw new TypeError(`POIETRA_MANIM_PROJECTS[${index}].id must be an opaque lower-case identifier.`);
+    }
+    if (record.name !== undefined && (typeof record.name !== "string" || !record.name.trim() || record.name.trim().length > 120)) {
+      throw new TypeError(`POIETRA_MANIM_PROJECTS[${index}].name must contain 1 to 120 characters.`);
+    }
+    return {
+      ...(record.id === undefined ? {} : { id: record.id }),
+      ...(record.name === undefined ? {} : { name: record.name.trim() }),
+      root: record.root.trim(),
+    };
+  });
+}
+
+export class ManimProjectRegistry {
+  readonly defaultProjectId: string;
+  private readonly managers = new Map<string, ManimRenderManager>();
+  private readonly sessionProjects = new Map<string, string>();
+
+  constructor(options: Readonly<{
+    command: readonly string[];
+    frame: Readonly<{ height: number; width: number }>;
+    logger?: StructuredLogger;
+    maxConcurrentRenders?: number;
+    maxRetainedSessions?: number;
+    projects: readonly ManimProjectConfig[];
+    renderTimeoutMs?: number;
+    sessionRetentionMs?: number;
+  }>) {
+    if (options.projects.length === 0 || options.projects.length > 64) {
+      throw new TypeError("The Manim project registry requires 1 to 64 configured projects.");
+    }
+    const canonicalRoots = new Set<string>();
+    const projectIds = new Set<string>();
+    const configuredProjects = options.projects.map((project) => {
+      const canonicalRoot = realpathSync(resolve(project.root));
+      if (!statSync(canonicalRoot).isDirectory()) {
+        throw new TypeError(`Configured Manim project ${project.name ?? project.id ?? "root"} is not a directory.`);
+      }
+      if (canonicalRoots.has(canonicalRoot)) throw new TypeError("A Manim project root may only be registered once.");
+      canonicalRoots.add(canonicalRoot);
+      const projectId = project.id ?? opaqueProjectId(canonicalRoot);
+      if (!PROJECT_ID_PATTERN.test(projectId)) throw new TypeError("Manim project ID must be an opaque lower-case identifier.");
+      if (projectIds.has(projectId)) throw new TypeError(`Duplicate Manim project ID ${projectId}.`);
+      projectIds.add(projectId);
+      const projectName = project.name?.trim() || basename(canonicalRoot) || "Manim Project";
+      if (projectName.length > 120) throw new TypeError("Manim project name must be at most 120 characters.");
+      return { canonicalRoot, projectId, projectName };
+    });
+    for (const { canonicalRoot, projectId, projectName } of configuredProjects) {
+      this.managers.set(projectId, new ManimRenderManager({
+        command: options.command,
+        frame: options.frame,
+        logger: options.logger?.child({ projectId }) ?? nullLogger,
+        maxConcurrentRenders: options.maxConcurrentRenders,
+        maxRetainedSessions: options.maxRetainedSessions,
+        onSessionRemoved: (id) => this.sessionProjects.delete(id),
+        projectId,
+        projectName,
+        projectRoot: canonicalRoot,
+        renderTimeoutMs: options.renderTimeoutMs,
+        sessionRetentionMs: options.sessionRetentionMs,
+      }));
+    }
+    this.defaultProjectId = this.managers.keys().next().value as string;
+  }
+
+  projects(): ManimProjectListView {
+    return {
+      defaultProjectId: this.defaultProjectId,
+      projects: [...this.managers.values()].map((manager) => ({
+        id: manager.projectId,
+        name: manager.projectName,
+      })),
+    };
+  }
+
+  async cleanupExpiredSessions(now = Date.now()) {
+    await Promise.all([...this.managers.values()].map((manager) => manager.cleanupExpiredSessions(now)));
+  }
+
+  private project(projectId: string) {
+    const manager = this.managers.get(projectId);
+    if (!manager) throw new HttpError("Configured Manim project not found.", 404);
+    return manager;
+  }
+
+  private sessionProject(id: string) {
+    const projectId = this.sessionProjects.get(id);
+    if (!projectId) throw new HttpError("Render session not found.", 404);
+    return this.project(projectId);
+  }
+
+  workspace(projectId = this.defaultProjectId) {
+    return this.project(projectId).workspace(projectId);
+  }
+
+  async start(request: ProgramRenderRequest, signal?: AbortSignal) {
+    const session = await this.project(request.projectId).start(request, signal);
+    this.sessionProjects.set(session.id, request.projectId);
+    return session;
+  }
+
+  exportSource(request: ProgramRenderRequest, signal?: AbortSignal) {
+    return this.project(request.projectId).exportSource(request, signal);
+  }
+
+  view(id: string) {
+    return this.sessionProject(id).view(id);
+  }
+
+  cancel(id: string) {
+    return this.sessionProject(id).cancel(id);
+  }
+
+  commit(id: string) {
+    return this.sessionProject(id).commit(id);
+  }
+
+  undo(id: string) {
+    return this.sessionProject(id).undo(id);
+  }
+
+  async discard(id: string) {
+    const result = await this.sessionProject(id).discard(id);
+    this.sessionProjects.delete(id);
+    return result;
+  }
+
+  async abandonStart(id: string) {
+    const projectId = this.sessionProjects.get(id);
+    if (!projectId) return;
+    await this.project(projectId).abandonStart(id);
+    this.sessionProjects.delete(id);
+  }
+
+  videoPath(id: string) {
+    return this.sessionProject(id).videoPath(id);
+  }
+
+  async close() {
+    const results = await Promise.allSettled([...this.managers.values()].map((manager) => manager.close()));
+    this.sessionProjects.clear();
+    const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+    if (errors.length > 0) throw new AggregateError(errors, "Could not fully close the Manim project registry.");
+  }
+}
+
 export function manimRenderPipeline(options: ManimRenderPipelineOptions = {}): Plugin {
-  let manager: ManimRenderManager | null = null;
+  let manager: ManimProjectRegistry | null = null;
   const logger = createStructuredLogger({
     context: { component: "manim-render-api" },
     sinks: [createConsoleJsonSink({ includeData: false, prefix: "poietra-manim" })],
@@ -698,14 +1003,16 @@ export function manimRenderPipeline(options: ManimRenderPipelineOptions = {}): P
     apply: "serve",
     name: "poietra-manim-render-pipeline",
     configResolved(config) {
-      manager = new ManimRenderManager({
+      manager = new ManimProjectRegistry({
         command: parseManimCommand(options.command),
         frame: {
           height: options.frameHeight ?? 8,
           width: options.frameWidth ?? 14.222,
         },
         logger,
-        projectRoot: options.projectRoot ? resolve(options.projectRoot) : config.root,
+        projects: options.projects?.length
+          ? options.projects
+          : [{ root: options.projectRoot ? resolve(options.projectRoot) : config.root }],
       });
     },
     configureServer(server) {
