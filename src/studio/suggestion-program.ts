@@ -45,12 +45,14 @@ function transformOperation(
   transactionId: string,
   origin: OperationOrigin,
   index: number,
+  sourceEntityId = operation.sourceObjectId,
+  dependsOn: readonly string[] = [],
 ) {
   const id = operationId(transactionId, `transform-${index}`);
   const targetEntityId = provisionalEntityId(transactionId, `transform-target-${index}`);
   return {
     canonical: {
-      dependsOn: [],
+      dependsOn,
       id,
       interval: { end: operation.end, start: operation.start },
       kind: "TransformContent",
@@ -60,11 +62,11 @@ function transformOperation(
         label: operation.target.label,
         texParts: operation.target.texParts,
       },
-      sourceEntityId: operation.sourceObjectId,
+      sourceEntityId,
       strategy: operation.strategy,
       targetEntityId,
     } satisfies CanonicalEditOperation,
-    sourceEntityId: operation.sourceObjectId,
+    sourceEntityId,
     targetEntityId,
   };
 }
@@ -253,17 +255,23 @@ function motionOperation(
   transactionId: string,
   origin: OperationOrigin,
   index: number,
+  transformedTargets: ReadonlyMap<string, Readonly<{ operationId: string; targetEntityId: string }>> = new Map(),
 ) {
+  const replacements = operation.targetObjectIds.map((entityId) => transformedTargets.get(entityId));
   return {
     controlOffset: operation.controlOffset,
     delta: operation.delta,
-    dependsOn: [],
+    dependsOn: [...new Set(replacements.flatMap((replacement) => (
+      replacement ? [replacement.operationId] : []
+    )))],
     easing: operation.easing,
     id: operationId(transactionId, `motion-${index}`),
     interval: { end: operation.end, start: operation.start },
     kind: "CreateMotion",
     provenance: provenance(origin, ["language/direct-manipulation constraint", "new motion"]),
-    targetEntityIds: operation.targetObjectIds,
+    targetEntityIds: operation.targetObjectIds.map((entityId, targetIndex) => (
+      replacements[targetIndex]?.targetEntityId ?? entityId
+    )),
   } satisfies CanonicalEditOperation;
 }
 
@@ -397,19 +405,65 @@ export function canonicalizeSuggestionProgram(
     operations = [textTransformOperation(operation, context.transactionId, context.origin)];
   } else {
     const steps = operationSteps(operation);
-    const transforms = new Map<string, Readonly<{ operationId: string; targetEntityId: string }>>();
     const transformByIndex = new Map<number, ReturnType<typeof transformOperation>>();
-    steps.forEach((step, index) => {
-      if (step.kind !== "create-transform") return;
-      const transformed = transformOperation(step, context.transactionId, context.origin, index);
-      transformByIndex.set(index, transformed);
-      transforms.set(step.sourceObjectId, { operationId: transformed.canonical.id, targetEntityId: transformed.targetEntityId });
-    });
+    const transformsByStep = new Map<number, ReadonlyMap<string, Readonly<{
+      operationId: string;
+      targetEntityId: string;
+    }>>>();
+    if (operation.kind === "edit-program" && operation.execution === "parallel") {
+      const parallelTransforms = new Map<string, Readonly<{ operationId: string; targetEntityId: string }>>();
+      steps.forEach((step, index) => {
+        if (step.kind !== "create-transform") return;
+        const transformed = transformOperation(step, context.transactionId, context.origin, index);
+        transformByIndex.set(index, transformed);
+        parallelTransforms.set(step.sourceObjectId, {
+          operationId: transformed.canonical.id,
+          targetEntityId: transformed.targetEntityId,
+        });
+      });
+      steps.forEach((_, index) => transformsByStep.set(index, parallelTransforms));
+    } else {
+      const latestTransforms = new Map<string, Readonly<{ operationId: string; targetEntityId: string }>>();
+      steps.forEach((step, index) => {
+        transformsByStep.set(index, new Map(latestTransforms));
+        if (step.kind !== "create-transform") return;
+        const previous = latestTransforms.get(step.sourceObjectId);
+        const transformed = transformOperation(
+          step,
+          context.transactionId,
+          context.origin,
+          index,
+          previous?.targetEntityId ?? step.sourceObjectId,
+          previous ? [previous.operationId] : [],
+        );
+        transformByIndex.set(index, transformed);
+        latestTransforms.set(step.sourceObjectId, {
+          operationId: transformed.canonical.id,
+          targetEntityId: transformed.targetEntityId,
+        });
+      });
+    }
     operations = steps.flatMap((step, index): readonly CanonicalEditOperation[] => {
-      if (step.kind === "create-motion") return [motionOperation(step, context.transactionId, context.origin, index)];
+      if (step.kind === "create-motion") {
+        return [motionOperation(
+          step,
+          context.transactionId,
+          context.origin,
+          index,
+          operation.kind === "edit-program" && operation.execution === "sequence"
+            ? transformsByStep.get(index)
+            : undefined,
+        )];
+      }
       if (step.kind === "create-transform") return [transformByIndex.get(index)!.canonical];
       if (step.kind === "create-explanation") {
-        return explanationOperations(step, context.transactionId, context.origin, index, transforms);
+        return explanationOperations(
+          step,
+          context.transactionId,
+          context.origin,
+          index,
+          transformsByStep.get(index) ?? new Map(),
+        );
       }
       if (step.kind === "create-equation") {
         return equationOperations(step, context.transactionId, context.origin);

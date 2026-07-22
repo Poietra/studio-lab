@@ -338,6 +338,7 @@ export const OPERATION_REGISTRY = {
           kind: "animated",
           operationId: operation.id,
           provenanceId: `${operation.id}/provenance`,
+          relative: true,
           value: to,
         });
       }
@@ -562,6 +563,33 @@ export const OPERATION_REGISTRY = {
           value: to,
         });
       }
+      if (operation.effect === "remove" && operation.persistent) {
+        const entity = draft.entities[operation.entityId];
+        if (entity) {
+          draft.entities[operation.entityId] = {
+            ...entity,
+            lifetime: entity.lifetime.map((interval) => (
+              operation.interval.start >= interval.start && operation.interval.start < interval.end
+                ? { ...interval, end: Math.min(interval.end, operation.interval.end) }
+                : interval
+            )),
+          };
+          draft.lineage.push({
+            at: operation.interval.end,
+            from: operation.entityId,
+            operationId: operation.id,
+            relation: "removed",
+            to: operation.entityId,
+          });
+        }
+        appendSample(draft, operation.entityId, "presence", {
+          interval: { end: draft.duration, start: operation.interval.end },
+          kind: "exact",
+          operationId: operation.id,
+          provenanceId: `${operation.id}/provenance`,
+          value: false,
+        });
+      }
     },
     lifetimeRequirement: "existing-at-start",
     lowering: "supported",
@@ -580,7 +608,34 @@ export const OPERATION_REGISTRY = {
     lowering: "supported",
     projection: ["timeline", "inspector"],
     targetRequirement: "none",
-    validate: (operation, scene) => baseIssues(operation, scene),
+    validate: (operation, scene) => {
+      const issues: ProgramValidationIssue[] = [];
+      if (
+        !Number.isFinite(operation.interval.start)
+        || !Number.isFinite(operation.interval.end)
+        || operation.interval.start < 0
+        || operation.interval.start > scene.duration
+        || operation.interval.end < operation.interval.start
+      ) {
+        issues.push({
+          code: "interval-invalid",
+          field: "interval",
+          message: "A timeline insertion must start within the active Scene and have a non-negative duration.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      if (operation.eventKind !== "wait") {
+        issues.push({
+          code: "lowering-unsupported",
+          field: "eventKind",
+          message: "Only an explicit wait can be inserted into Manim source.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      return issues;
+    },
   } satisfies Capability<"InsertTimelineEvent">,
   InsertSceneBoundary: {
     access: () => ({ reads: [], writes: [] }),

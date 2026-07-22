@@ -197,14 +197,44 @@ class Positioned(Scene):
     expect(samples("label")?.[1]?.value).toMatchObject({ x: expect.closeTo(230, 2), y: 180 });
     expect(samples("base")).toHaveLength(4);
     expect(samples("base")?.at(-1)).toMatchObject({
+      control: { x: 282.5, y: 117.5 },
       from: { x: 280, y: 120 },
       interval: { end: 3, start: 1 },
+      relative: true,
       value: { x: 285, y: 115 },
     });
     expect(samples("label")?.at(-1)).toMatchObject({
       from: { x: 290, y: 140 },
       interval: { end: 3, start: 1 },
       value: { x: 295, y: 135 },
+    });
+  });
+
+  it("round-trips Studio quadratic control offsets from MoveAlongPath source", () => {
+    const curved = `from manim import *
+
+class Curved(Scene):
+    def construct(self):
+        dot = Dot()
+        self.add(dot)
+        # poietra:motion {"motions":[{"controlOffset":{"x":10,"y":-20},"delta":{"x":40,"y":30},"variables":["dot"]}],"version":1}
+        self.play(
+            MoveAlongPath(dot, CubicBezier(dot.get_center(), dot.get_center() + 0.4444 * RIGHT + 0.0741 * UP, dot.get_center() + 0.7407 * RIGHT + 0.1481 * DOWN, dot.get_center() + 0.8889 * RIGHT + 0.6667 * DOWN)),
+            run_time=2,
+            rate_func=smooth,
+        )
+`;
+    const imported = importManimScene(curved, "scene.py", "Curved");
+    const sample = imported?.runtimeSceneState.propertyChannels[
+      "source:scene.py#Curved:dot/position"
+    ]?.samples.at(-1);
+
+    expect(sample).toMatchObject({
+      control: { x: 200, y: 130 },
+      from: { x: 170, y: 135 },
+      interval: { end: 2, start: 0 },
+      relative: true,
+      value: { x: 210, y: 165 },
     });
   });
 

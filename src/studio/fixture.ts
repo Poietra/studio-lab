@@ -82,6 +82,7 @@ export const STUDIO_FIXTURE_SCENE: RuntimeSceneState = {
           interval: { end: 7, start: 4 },
           kind: "animated",
           provenanceId: "source:move-equation",
+          relative: true,
           value: { x: 384, y: 146 },
         },
       ],

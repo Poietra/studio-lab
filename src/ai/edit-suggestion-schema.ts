@@ -13,10 +13,10 @@ const intervalSchema = z.object({ end: z.number(), start: z.number() });
 function boundedInterval(minimumDuration: number) {
   return (value: Readonly<{ end: number; start: number }>, context: z.RefinementCtx) => {
     const duration = value.end - value.start;
-    if (duration < minimumDuration || duration > 5) {
+    if (duration < minimumDuration) {
       context.addIssue({
         code: "custom",
-        message: `Duration must be between ${minimumDuration} and 5 seconds.`,
+        message: `Duration must be at least ${minimumDuration} seconds.`,
         path: ["end"],
       });
     }
@@ -193,8 +193,18 @@ export const editProgramSuggestionSchema = z.object({
   operations: z.array(editProgramStepSchema).min(2).max(3),
 }).superRefine((program, context) => {
   const kinds = program.operations.map((operation) => operation.kind);
-  if (new Set(kinds).size !== kinds.length) {
-    context.addIssue({ code: "custom", message: "EditProgram leaf kinds must be unique.", path: ["operations"] });
+  const duplicateKinds = kinds.filter((kind, index) => kinds.indexOf(kind) !== index);
+  const unsupportedDuplicate = duplicateKinds.find((kind) => (
+    kind !== "create-transform" || program.execution !== "sequence"
+  ));
+  if (unsupportedDuplicate) {
+    context.addIssue({
+      code: "custom",
+      message: unsupportedDuplicate === "create-transform"
+        ? "Repeated create-transform steps require sequence execution."
+        : `EditProgram leaf kind ${unsupportedDuplicate} must be unique.`,
+      path: ["operations"],
+    });
   }
   const equationCreationCount = kinds.filter((kind) => (
     kind === "create-equation" || kind === "create-explained-equation"

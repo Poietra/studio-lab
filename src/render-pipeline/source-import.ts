@@ -74,6 +74,7 @@ const SUPPORTED_TYPES = new Set([
 ]);
 const ENTITY_MARKER_PATTERN = /^\s*#\s*poietra:entity\s+(.+)\s*$/;
 const ANCHOR_PATTERN = /^\s*#\s*poietra:anchor\s+([0-9]+(?:\.[0-9]+)?)\s*$/;
+const CURSOR_PATTERN = /^\s*#\s*poietra:cursor\s+([0-9]+(?:\.[0-9]+)?)\s*$/;
 const SCENE_BOUNDARY_PATTERN = /^\s*#\s*poietra:scene-boundary\s+(.+)\s*$/;
 // Studio-emitted v1 markers are authoritative 640x360 geometry metadata, not Python facts.
 const POSITION_MARKER_PATTERN = /^\s*#\s*poietra:position(?:\s+(.*))?\s*$/;
@@ -85,7 +86,11 @@ const positionMarkerSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("relative"), offset: markerPointSchema, relativeTo: identifierSchema, variable: identifierSchema, version: z.literal(1) }).strict(),
 ]);
 const motionMarkerSchema = z.object({
-  motions: z.array(z.object({ delta: markerPointSchema, variables: z.array(identifierSchema).min(1).max(128) }).strict()).min(1).max(128),
+  motions: z.array(z.object({
+    controlOffset: markerPointSchema.optional(),
+    delta: markerPointSchema,
+    variables: z.array(identifierSchema).min(1).max(128),
+  }).strict()).min(1).max(128),
   version: z.literal(1),
 }).strict();
 
@@ -464,6 +469,11 @@ export function importManimScene(
       cursor = Number(sourceAnchor);
       continue;
     }
+    const sourceCursor = statement.text.match(CURSOR_PATTERN)?.[1];
+    if (sourceCursor) {
+      cursor = Number(sourceCursor);
+      continue;
+    }
     const sceneBoundary = statement.text.match(SCENE_BOUNDARY_PATTERN)?.[1];
     if (sceneBoundary) {
       try {
@@ -552,18 +562,25 @@ export function importManimScene(
     const actualShiftVariables = [...statement.text.matchAll(
       /(?:^self\.play\(\s*|\n\s*)([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*animate\s*\.\s*shift\s*\(\s*[^()]*\s*\)/g,
     )].map((match) => match[1]);
+    const actualPathVariables = [...statement.text.matchAll(
+      /(?:^self\.play\(\s*|\n\s*)MoveAlongPath\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*CubicBezier\s*\(/g,
+    )].map((match) => match[1]);
+    const actualMotionVariables = [...actualShiftVariables, ...actualPathVariables];
     const validMarkedMotion = motionMarker !== undefined && parsedMotion.success
       && new Set(markedVariables).size === markedVariables.length
-      && markedVariables.length === actualShiftVariables.length
+      && markedVariables.length === actualMotionVariables.length
       && markedVariables.every((variable) => (
         byVariable.has(variable)
-        && actualShiftVariables.includes(variable)
+        && actualMotionVariables.includes(variable)
       ));
-    const markedDelta = validMarkedMotion
+    const markedMotions = validMarkedMotion && parsedMotion.success
       ? new Map(parsedMotion.data.motions.flatMap((motion) => (
-        motion.variables.map((variable) => [variable, motion.delta] as const)
+        motion.variables.map((variable) => [variable, {
+          controlOffset: motion.controlOffset ?? { x: 0, y: 0 },
+          delta: motion.delta,
+        }] as const)
       )))
-      : new Map<string, Point>();
+      : new Map<string, Readonly<{ controlOffset: Point; delta: Point }>>();
     firstPlayEnd ??= interval.end;
     events.push({
       id: `import:${sceneId}:play:${statement.line}`,
@@ -579,22 +596,27 @@ export function importManimScene(
       if (new RegExp(`(?:FadeOut|Uncreate|Unwrite)\\(\\s*${variablePattern}\\b`).test(statement.text)) {
         endPresence(entity, interval.end);
       }
-      const marked = markedDelta.get(entity.sourceVariable);
+      const marked = markedMotions.get(entity.sourceVariable);
       const shifted = marked
-        ? addPoint(entity.position, marked)
+        ? addPoint(entity.position, marked.delta)
         : motionMarker !== undefined
           ? null
           : shiftedPosition(entity.position, statement.text, entity.sourceVariable, frame);
       if (shifted && Number.isFinite(shifted.x) && Number.isFinite(shifted.y)) {
         const from = entity.position;
         const to = shifted;
+        const controlOffset = marked?.controlOffset ?? { x: 0, y: 0 };
         appendPositionSample(positionSamples, entity.id, {
-          control: { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 },
+          control: {
+            x: (from.x + to.x) / 2 + controlOffset.x,
+            y: (from.y + to.y) / 2 + controlOffset.y,
+          },
           easing: "smooth",
           from,
           interval,
           kind: "animated",
           provenanceId: `import:${sceneId}:${entity.sourceVariable}:motion:${statement.line}`,
+          relative: true,
           value: to,
         });
         entity.position = to;

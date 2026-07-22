@@ -65,6 +65,73 @@ function maxwellTransformSuggestion(playhead = 5): EditSuggestionOperation {
   };
 }
 
+function chainedTransformSuggestion(playhead = 5): EditSuggestionOperation {
+  return {
+    anchor: { kind: "playhead", referenceSeconds: playhead },
+    execution: "sequence",
+    kind: "edit-program",
+    operations: [
+      {
+        easing: "smooth",
+        end: playhead + 1,
+        identityAfter: "target-replaces-source",
+        kind: "create-transform",
+        mismatchMode: "transform",
+        sourceObjectId: "equation_1",
+        start: playhead,
+        strategy: "transform-matching-tex",
+        target: MAXWELL_TARGET,
+      },
+      {
+        easing: "smooth",
+        end: playhead + 2,
+        identityAfter: "target-replaces-source",
+        kind: "create-transform",
+        mismatchMode: "transform",
+        sourceObjectId: "equation_1",
+        start: playhead + 1,
+        strategy: "transform-matching-tex",
+        target: {
+          displayLines: ["E = mc²"],
+          kind: "mathtex",
+          label: "mass-energy equivalence",
+          texParts: ["E", "=", "m", "c^2"],
+        },
+      },
+    ],
+  };
+}
+
+function transformThenMotionSuggestion(playhead = 8): EditSuggestionOperation {
+  return {
+    anchor: { kind: "playhead", referenceSeconds: playhead },
+    execution: "sequence",
+    kind: "edit-program",
+    operations: [
+      {
+        easing: "smooth",
+        end: playhead + 1,
+        identityAfter: "target-replaces-source",
+        kind: "create-transform",
+        mismatchMode: "transform",
+        sourceObjectId: "equation_1",
+        start: playhead,
+        strategy: "transform-matching-tex",
+        target: MAXWELL_TARGET,
+      },
+      {
+        controlOffset: { x: 0, y: -20 },
+        delta: { x: 96, y: 24 },
+        easing: "smooth",
+        end: playhead + 2,
+        kind: "create-motion",
+        start: playhead + 1,
+        targetObjectIds: ["equation_1"],
+      },
+    ],
+  };
+}
+
 function transformAndExplanationSuggestion(playhead = 8): EditSuggestionOperation {
   const start = playhead - 5;
   const end = start + 1;
@@ -390,6 +457,76 @@ describe("canonical operation expansion and DAG validation", () => {
     expect(validation.program.schedule.edges.some((edge) => (
       edge.from === transform.id && edge.to === relation.id && edge.reason === "identity"
     ))).toBe(true);
+  });
+
+  it("rebinds sequential transforms into one provisional identity chain", () => {
+    const operation = chainedTransformSuggestion();
+    expect(operation.kind).toBe("edit-program");
+    if (operation.kind !== "edit-program") return;
+    expect(validateEditProgram(operation, {
+      capturedPlayhead: 5,
+      objects: Object.values(STUDIO_FIXTURE_SCENE.objectGraph.entities).map((entity) => ({
+        id: entity.id,
+        lifetimes: entity.lifetime,
+        type: entity.type,
+      })),
+      sceneDuration: STUDIO_FIXTURE_SCENE.duration,
+      selectedObjectIds: ["equation_1"],
+    }).kind).toBe("valid");
+
+    const validation = canonicalize(operation, "transform-chain", 5);
+    expect(validation.kind).toBe("valid");
+    const transforms = validation.program.operations.filter((candidate) => (
+      candidate.kind === "TransformContent"
+    ));
+    expect(transforms).toHaveLength(2);
+    const [first, second] = transforms;
+    if (first?.kind !== "TransformContent" || second?.kind !== "TransformContent") return;
+    expect(first.sourceEntityId).toBe("equation_1");
+    expect(second.sourceEntityId).toBe(first.targetEntityId);
+    expect(second.dependsOn).toContain(first.id);
+    expect(validation.program.schedule.edges).toContainEqual({
+      from: first.id,
+      reason: "identity",
+      to: second.id,
+    });
+
+    const proposed = evaluateWorkingState(createFixtureWorkingState({
+      stagedPrograms: [programRecord(validation.program, validation)],
+    }));
+    expect(proposed.evaluatedScene.objectGraph.lineage).toEqual(expect.arrayContaining([
+      expect.objectContaining({ from: "equation_1", to: first.targetEntityId }),
+      expect.objectContaining({ from: first.targetEntityId, to: second.targetEntityId }),
+    ]));
+    expect(projectProposedState(proposed, 7).canvas.entities.find((entity) => (
+      entity.id === second.targetEntityId
+    ))?.content?.displayLines).toEqual(["E = mc²"]);
+  });
+
+  it("rebinds motion after a transform to the replacement identity", () => {
+    const validation = canonicalize(transformThenMotionSuggestion(), "transform-then-motion", 8);
+    expect(validation.kind).toBe("valid");
+    const transform = validation.program.operations.find((operation) => operation.kind === "TransformContent");
+    const motion = validation.program.operations.find((operation) => operation.kind === "CreateMotion");
+    expect(transform?.kind).toBe("TransformContent");
+    expect(motion?.kind).toBe("CreateMotion");
+    if (transform?.kind !== "TransformContent" || motion?.kind !== "CreateMotion") return;
+
+    expect(motion.targetEntityIds).toEqual([transform.targetEntityId]);
+    expect(motion.dependsOn).toContain(transform.id);
+    expect(validation.program.schedule.edges).toContainEqual({
+      from: transform.id,
+      reason: "explicit",
+      to: motion.id,
+    });
+
+    const proposed = evaluateWorkingState(createFixtureWorkingState({
+      stagedPrograms: [programRecord(validation.program, validation)],
+    }));
+    const replacement = projectProposedState(proposed, 10).canvas.entities.find((entity) => (
+      entity.id === transform.targetEntityId
+    ));
+    expect(replacement?.position).toEqual({ x: 480, y: 170 });
   });
 
   it("preserves all three supported clauses as three leaf intents", () => {
@@ -729,7 +866,11 @@ describe("one ProposedState feeds every Studio projection", () => {
     const moved = evaluateWorkingState(createFixtureWorkingState({
       appliedPrograms: [creationRecord, programRecord(movement.program, movement)],
     }));
-    const projected = projectProposedState(moved, operation.end + 1);
+    const movementEvent = moved.evaluatedScene.eventTrack.events.find((event) => (
+      event.transactionId === movement.program.transactionId && event.kind === "operation"
+    ));
+    expect(movementEvent?.interval).toEqual({ end: 8, start: 7 });
+    const projected = projectProposedState(moved, movementEvent?.interval?.end ?? 8);
     expect(projected.canvas.entities.find((entity) => entity.id === createdId)?.position).toEqual({
       x: 544,
       y: 180,

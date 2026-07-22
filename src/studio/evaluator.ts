@@ -13,7 +13,8 @@ import type {
 } from "./model";
 import { STUDIO_STATE_VERSION } from "./model";
 import { evaluateOperation, type EvaluationDraft } from "./operation-registry";
-import { isPointValue, samplePropertyValue } from "./property-sampling";
+import { isPointValue, normalizePositionSamples, samplePropertyValue } from "./property-sampling";
+import { insertedProgramDuration, rebaseProgramTime } from "./program-composition";
 import { validateAndScheduleProgram } from "./program-validation";
 
 function cloneScene(scene: RuntimeSceneState): EvaluationDraft {
@@ -35,6 +36,7 @@ function freezeScene(base: RuntimeSceneState, draft: EvaluationDraft): RuntimeSc
   return {
     ...base,
     constraintGraph: { constraints: draft.constraints },
+    duration: draft.duration,
     eventTrack: { events: draft.events.sort((left, right) => (
       (left.at ?? left.interval?.start ?? 0) - (right.at ?? right.interval?.start ?? 0)
     )) },
@@ -44,6 +46,51 @@ function freezeScene(base: RuntimeSceneState, draft: EvaluationDraft): RuntimeSc
   };
 }
 
+function shiftIntervalForInsertion(
+  interval: Readonly<{ end: number; start: number }>,
+  at: number,
+  duration: number,
+) {
+  if (interval.start >= at - 0.0005) {
+    return { end: interval.end + duration, start: interval.start + duration };
+  }
+  if (interval.end > at) return { ...interval, end: interval.end + duration };
+  return interval;
+}
+
+export function insertSceneTime(draft: EvaluationDraft, at: number, duration: number) {
+  if (!Number.isFinite(duration) || duration <= 0) return;
+  draft.duration += duration;
+  draft.entities = Object.fromEntries(Object.entries(draft.entities).map(([id, entity]) => [id, {
+    ...entity,
+    lifetime: entity.lifetime.map((interval) => shiftIntervalForInsertion(interval, at, duration)),
+  }]));
+  draft.events = draft.events.map((event) => ({
+    ...event,
+    at: event.at === undefined ? undefined : event.at >= at - 0.0005 ? event.at + duration : event.at,
+    interval: event.interval ? shiftIntervalForInsertion(event.interval, at, duration) : undefined,
+  }));
+  draft.lineage = draft.lineage.map((lineage) => ({
+    ...lineage,
+    at: lineage.at >= at - 0.0005 ? lineage.at + duration : lineage.at,
+  }));
+  draft.propertyChannels = Object.fromEntries(Object.entries(draft.propertyChannels).map(([id, channel]) => [id, {
+    ...channel,
+    samples: channel.samples.map((sample) => ({
+      ...sample,
+      interval: shiftIntervalForInsertion(sample.interval, at, duration),
+    })),
+  }]));
+}
+
+function normalizePositionChannels(draft: EvaluationDraft) {
+  draft.propertyChannels = Object.fromEntries(Object.entries(draft.propertyChannels).map(([id, channel]) => [id, (
+    channel.key === "position"
+      ? { ...channel, samples: normalizePositionSamples(channel.samples) }
+      : channel
+  )]));
+}
+
 export function evaluateWorkingState(workingState: WorkingState): ProposedState {
   const programs = [
     ...workingState.appliedPrograms.map((record) => ({ applied: true, record })),
@@ -51,23 +98,32 @@ export function evaluateWorkingState(workingState: WorkingState): ProposedState 
   ];
   const draft = cloneScene(workingState.runtimeSceneState);
   const evaluatedPrograms: ProgramRecord[] = [];
+  const insertions: Array<Readonly<{ duration: number; sourceAnchor: number }>> = [];
   for (const { applied, record } of programs) {
     if (record.validation.status !== "valid") {
       evaluatedPrograms.push(record);
       continue;
     }
+    const sourceAnchor = record.program.anchor.resolvedSeconds;
+    const priorInsertionOffset = insertions.reduce((offset, insertion) => (
+      insertion.sourceAnchor <= sourceAnchor + 0.0005 ? offset + insertion.duration : offset
+    ), 0);
+    const rebasedProgram = rebaseProgramTime(record.program, priorInsertionOffset);
     const validation = validateAndScheduleProgram(
-      record.program,
+      rebasedProgram,
       freezeScene(workingState.runtimeSceneState, draft),
     );
     const evaluatedRecord = programRecord(validation.program, validation);
     evaluatedPrograms.push(evaluatedRecord);
     if (validation.kind !== "valid") continue;
+    const insertionDuration = insertedProgramDuration(validation.program);
+    insertSceneTime(draft, validation.program.anchor.resolvedSeconds, insertionDuration);
     const operationById = new Map(validation.program.operations.map((operation) => [operation.id, operation]));
     for (const operationId of validation.program.schedule.order) {
       const operation = operationById.get(operationId);
       if (operation) evaluateOperation(draft, operation, validation.program);
     }
+    normalizePositionChannels(draft);
     if (applied) {
       for (const operation of validation.program.operations) {
         const entityId = operation.kind === "CreateEntity"
@@ -79,6 +135,7 @@ export function evaluateWorkingState(workingState: WorkingState): ProposedState 
         draft.entities[entityId] = { ...draft.entities[entityId], provisional: false };
       }
     }
+    insertions.push({ duration: insertionDuration, sourceAnchor });
   }
   return {
     base: workingState,
