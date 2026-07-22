@@ -106,6 +106,19 @@ export type EventTrack = Readonly<{
   events: readonly TimelineEvent[];
 }>;
 
+export type TimelineObjectTrack = Readonly<{
+  animatedChannels: readonly Readonly<{
+    interval: Interval;
+    key: PropertyChannel["key"];
+  }>[];
+  entityId: string;
+  label: string;
+  lifetimes: readonly Interval[];
+  provisional: boolean;
+  transactionId?: string;
+  type: string;
+}>;
+
 export type SceneConstraint = Readonly<{
   id: string;
   mode: "live" | "snapshot";
@@ -206,6 +219,10 @@ export type ProposedStateProjection = Readonly<{
     sampleId: string;
   }>;
   time: number;
-  timeline: Readonly<{ events: readonly TimelineEvent[]; sampleId: string }>;
+  timeline: Readonly<{
+    events: readonly TimelineEvent[];
+    objectTracks: readonly TimelineObjectTrack[];
+    sampleId: string;
+  }>;
   workingPlayback: Readonly<{ entities: readonly ProjectedEntity[]; sampleId: string }>;
 }>;

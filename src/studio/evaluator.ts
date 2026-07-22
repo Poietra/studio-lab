@@ -7,7 +7,9 @@ import type {
   PropertyValue,
   ProposedState,
   ProposedStateProjection,
+  RuntimeEntity,
   RuntimeSceneState,
+  TimelineObjectTrack,
   WorkingState,
 } from "./model";
 import { STUDIO_STATE_VERSION } from "./model";
@@ -43,10 +45,13 @@ function freezeScene(base: RuntimeSceneState, draft: EvaluationDraft): RuntimeSc
 }
 
 export function evaluateWorkingState(workingState: WorkingState): ProposedState {
-  const programs = [...workingState.appliedPrograms, ...workingState.stagedPrograms];
+  const programs = [
+    ...workingState.appliedPrograms.map((record) => ({ applied: true, record })),
+    ...workingState.stagedPrograms.map((record) => ({ applied: false, record })),
+  ];
   const draft = cloneScene(workingState.runtimeSceneState);
   const evaluatedPrograms: ProgramRecord[] = [];
-  for (const record of programs) {
+  for (const { applied, record } of programs) {
     if (record.validation.status !== "valid") {
       evaluatedPrograms.push(record);
       continue;
@@ -62,6 +67,17 @@ export function evaluateWorkingState(workingState: WorkingState): ProposedState 
     for (const operationId of validation.program.schedule.order) {
       const operation = operationById.get(operationId);
       if (operation) evaluateOperation(draft, operation, validation.program);
+    }
+    if (applied) {
+      for (const operation of validation.program.operations) {
+        const entityId = operation.kind === "CreateEntity"
+          ? operation.entity.id
+          : operation.kind === "TransformContent"
+            ? operation.targetEntityId
+            : null;
+        if (!entityId || !draft.entities[entityId]) continue;
+        draft.entities[entityId] = { ...draft.entities[entityId], provisional: false };
+      }
     }
   }
   return {
@@ -118,6 +134,44 @@ function channelAt(scene: RuntimeSceneState, entityId: string, key: PropertyChan
   return valueAt(scene.propertyChannels[`${entityId}/${key}`]?.samples ?? [], time);
 }
 
+function timelineLabel(entity: RuntimeEntity) {
+  return entity.content?.label
+    ?? entity.content?.text
+    ?? (entity.sourceIdentity.kind === "known" ? entity.sourceIdentity.value : null)
+    ?? entity.id.split(":").at(-1)
+    ?? entity.id;
+}
+
+function projectTimelineObjectTracks(scene: RuntimeSceneState): readonly TimelineObjectTrack[] {
+  const animatedByEntity = new Map<string, Array<TimelineObjectTrack["animatedChannels"][number]>>();
+  for (const channel of Object.values(scene.propertyChannels)) {
+    const animated = channel.samples
+      .filter((sample) => sample.kind === "animated" || sample.operationId)
+      .map((sample) => ({
+        interval: {
+          end: Math.min(scene.duration, sample.interval.end),
+          start: Math.max(0, sample.interval.start),
+        },
+        key: channel.key,
+      }))
+      .filter((sample) => sample.interval.end > sample.interval.start);
+    if (animated.length > 0) {
+      animatedByEntity.set(channel.entityId, [...(animatedByEntity.get(channel.entityId) ?? []), ...animated]);
+    }
+  }
+  return Object.values(scene.objectGraph.entities)
+    .map((entity): TimelineObjectTrack => ({
+      animatedChannels: animatedByEntity.get(entity.id) ?? [],
+      entityId: entity.id,
+      label: timelineLabel(entity),
+      lifetimes: entity.lifetime,
+      provisional: entity.provisional,
+      transactionId: entity.transactionId,
+      type: entity.type,
+    }))
+    .sort((left, right) => left.label.localeCompare(right.label));
+}
+
 export function sampleProposedState(proposedState: ProposedState, time: number): readonly ProjectedEntity[] {
   return Object.values(proposedState.evaluatedScene.objectGraph.entities)
     .map((entity): ProjectedEntity => {
@@ -163,7 +217,11 @@ export function projectProposedState(proposedState: ProposedState, time: number)
       sampleId,
     },
     time: normalizedTime,
-    timeline: { events: proposedState.evaluatedScene.eventTrack.events, sampleId },
+    timeline: {
+      events: proposedState.evaluatedScene.eventTrack.events,
+      objectTracks: projectTimelineObjectTracks(proposedState.evaluatedScene),
+      sampleId,
+    },
     workingPlayback: { entities, sampleId },
   };
 }

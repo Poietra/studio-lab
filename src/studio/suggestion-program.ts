@@ -1,6 +1,7 @@
 import type {
   CreateCameraFocusSuggestion,
   CreateEquationSuggestion,
+  CreateExplainedEquationSuggestion,
   CreateExplanationSuggestion,
   CreateSceneTransitionSuggestion,
   CreateTextTransformSuggestion,
@@ -92,7 +93,7 @@ function textTransformOperation(
 }
 
 function equationOperations(
-  operation: CreateEquationSuggestion,
+  operation: Pick<CreateEquationSuggestion, "animation" | "end" | "placement" | "start" | "target">,
   transactionId: string,
   origin: OperationOrigin,
 ) {
@@ -226,6 +227,27 @@ function explanationOperations(
   ] satisfies readonly CanonicalEditOperation[];
 }
 
+function explainedEquationOperations(
+  operation: Omit<CreateExplainedEquationSuggestion, "anchor">,
+  transactionId: string,
+  origin: OperationOrigin,
+) {
+  const equationEntityId = provisionalEntityId(transactionId, "new-equation");
+  return [
+    ...equationOperations(operation, transactionId, origin),
+    ...explanationOperations({
+      animation: operation.animation,
+      end: operation.end,
+      kind: "create-explanation",
+      objectKind: "text",
+      placement: operation.explanation.placement,
+      start: operation.start,
+      targetObjectId: equationEntityId,
+      text: operation.explanation.text,
+    }, transactionId, origin, 0, new Map()),
+  ] satisfies readonly CanonicalEditOperation[];
+}
+
 function motionOperation(
   operation: Extract<EditProgramStep, { kind: "create-motion" }>,
   transactionId: string,
@@ -246,7 +268,7 @@ function motionOperation(
 }
 
 function transitionOperations(
-  operation: CreateSceneTransitionSuggestion,
+  operation: Omit<CreateSceneTransitionSuggestion, "anchor">,
   transactionId: string,
   origin: OperationOrigin,
 ) {
@@ -313,6 +335,23 @@ function operationAnchor(operation: EditSuggestionOperation): SuggestionTimeAnch
   return operation.anchor;
 }
 
+function intentCount(operation: EditSuggestionOperation) {
+  if (operation.kind === "create-explained-equation") return 2;
+  if (operation.kind !== "edit-program") return 1;
+  return operation.operations.reduce((count, step) => (
+    count + (step.kind === "create-explained-equation" ? 2 : 1)
+  ), 0);
+}
+
+function requiresIllustrativeLowering(operation: EditSuggestionOperation) {
+  const illustrativeKinds = new Set([
+    "create-camera-focus",
+  ]);
+  return operation.kind === "edit-program"
+    ? operation.operations.some((step) => illustrativeKinds.has(step.kind))
+    : illustrativeKinds.has(operation.kind);
+}
+
 export function canonicalizeSuggestionProgram(
   operation: EditSuggestionOperation,
   context: CanonicalizationContext,
@@ -329,7 +368,7 @@ export function canonicalizeSuggestionProgram(
         resolvedSeconds: Number.NaN,
         source: operationAnchor(operation),
       },
-      intentCount: operation.kind === "edit-program" ? operation.operations.length : 1,
+      intentCount: intentCount(operation),
       loweringStatus: "unsupported",
       operations: [],
       provenance: provenance(context.origin, []),
@@ -352,6 +391,8 @@ export function canonicalizeSuggestionProgram(
     operations = cameraFocusOperations(operation, context.transactionId, context.origin);
   } else if (operation.kind === "create-equation") {
     operations = equationOperations(operation, context.transactionId, context.origin);
+  } else if (operation.kind === "create-explained-equation") {
+    operations = explainedEquationOperations(operation, context.transactionId, context.origin);
   } else if (operation.kind === "create-text-transform") {
     operations = [textTransformOperation(operation, context.transactionId, context.origin)];
   } else {
@@ -370,28 +411,35 @@ export function canonicalizeSuggestionProgram(
       if (step.kind === "create-explanation") {
         return explanationOperations(step, context.transactionId, context.origin, index, transforms);
       }
+      if (step.kind === "create-equation") {
+        return equationOperations(step, context.transactionId, context.origin);
+      }
+      if (step.kind === "create-explained-equation") {
+        return explainedEquationOperations(step, context.transactionId, context.origin);
+      }
+      if (step.kind === "create-scene-transition") {
+        return transitionOperations(step, context.transactionId, context.origin);
+      }
       return [];
     });
   }
 
   const program: CanonicalEditProgram = {
     anchor: resolution.anchor,
-    intentCount: operation.kind === "edit-program" ? operation.operations.length : 1,
-    loweringStatus: ["create-camera-focus", "create-equation", "create-scene-transition", "create-text-transform"].includes(operation.kind)
-      ? "illustrative"
-      : "supported",
+    intentCount: intentCount(operation),
+    loweringStatus: requiresIllustrativeLowering(operation) ? "illustrative" : "supported",
     operations,
     provenance: provenance(context.origin, [operation.kind]),
     requestedExecution: operation.kind === "edit-program"
       ? operation.execution
-      : operation.kind === "create-camera-focus"
+      : operation.kind === "create-camera-focus" || operation.kind === "create-explained-equation"
         ? "parallel"
         : "sequence",
     schedule: {
       edges: [],
       mode: operation.kind === "edit-program"
         ? operation.execution
-        : operation.kind === "create-camera-focus"
+        : operation.kind === "create-camera-focus" || operation.kind === "create-explained-equation"
           ? "parallel"
           : "sequence",
       order: operations.map((entry) => entry.id),
@@ -452,7 +500,8 @@ export function createDirectManipulationPositionProgram(
     throw new Error(resolution.message);
   }
   const operations = input.targetEntityIds.map((entityId, index): CanonicalEditOperation => {
-    const position = input.positions[entityId] ?? { x: 0, y: 0 };
+    const position = input.positions[entityId];
+    if (!position) throw new Error(`Direct manipulation requires a projected position for ${entityId}.`);
     return {
       dependsOn: [],
       entityId,
@@ -467,7 +516,7 @@ export function createDirectManipulationPositionProgram(
   return validateAndScheduleProgram({
     anchor: resolution.anchor,
     intentCount: 1,
-    loweringStatus: "illustrative",
+    loweringStatus: "supported",
     operations,
     provenance: provenance("direct-manipulation", ["gesture constraint"]),
     requestedExecution: "parallel",

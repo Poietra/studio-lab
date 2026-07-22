@@ -58,9 +58,11 @@ The difficult part was assigning truthful meaning to those elements:
 - whether an existing motion is replaced, split, reshaped, or combined
 - whether the displayed preview is actually reproducible by the lowered source
 
-The fixture currently hard-codes one 2D translation, one source motion, a small
-dependency graph, and fixed object lifetimes. It demonstrates the shape of the
-problem; it does not yet solve the general case.
+The original fixture hard-coded one 2D translation, one source motion, a small
+dependency graph, and fixed object lifetimes. The runtime application now replaces
+that fixture with a conservative Manim source import; the fixture remains only for
+isolated model tests. A future Runtime Trace importer must still replace static
+estimates for dynamic Python, updaters, and arbitrary geometry.
 
 ## Distinctions established by the experiment
 

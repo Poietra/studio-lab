@@ -45,6 +45,11 @@ The records in `src/studio/model.ts` keep five layers explicit:
 5. `WorkingState` stores applied and staged program records. Its pure evaluation
    produces `ProposedState`.
 
+The UI may additionally hold one ephemeral clarification envelope containing the
+original instruction, latest model question, ordered choices, and an editor-context
+fingerprint. It is request context only: it does not enter `RuntimeSceneState`, and
+a choice always requests a new candidate before the normal Preview/Apply boundary.
+
 Absence is represented by entity lifetime/presence. It is not `Unknown`.
 Source identities use `Knowledge<T>` and are not runtime IDs. Timeline events are
 not inferred from source order.
@@ -89,13 +94,19 @@ UX macros expand before validation:
   `AnimateProperty(scale)` emphasis on the captured selection.
 - New equation → `CreateEntity(MathTex)` → snapshot position → persistent
   `ChangePresence(fade-in)`; no selection is required.
+- New equation + its explanation → the new-equation expansion plus
+  `CreateEntity(Text)` → `SetRelation` to the transaction-local MathTex identity →
+  persistent `ChangePresence`; both intents share one Apply/Undo boundary.
 - MathTex-to-words → `TransformContent(replacement-transform)` with a new Text
   runtime identity and a semantic cross-fade preview.
 - Transform + explanation → `TransformContent` plus the explanation expansion;
   the relation targets the transform's transaction-scoped replacement identity.
 
-New entity IDs use `tx:<transaction>/entity:<local-name>`. Validation rejects a
-provisional ID from another transaction or one with no producer.
+New entity IDs use `tx:<transaction>/entity:<local-name>`. While a program is only
+staged, validation rejects its provisional IDs from every other transaction. Apply
+promotes the produced runtime entities to stable Studio identities, so later
+transactions may select and edit them without pretending that an unknown Python
+source identity has been recovered.
 
 ## Registry and deterministic invariants
 
@@ -116,9 +127,10 @@ does not claim source or visual validation is complete.
 ## Shared model-output validation
 
 `src/ai/edit-suggestion-schema.ts` is imported by both the Vite server endpoint
-and browser client. The local fixture and remote structured output therefore pass
-the same schema and refinements before canonicalization. Model output remains a
-draft; prompt instructions do not replace deterministic checks.
+and browser client. Remote structured output passes the same schema and refinements
+before canonicalization. Tests construct explicit operation values and contain no
+natural-language suggestion implementation. Model output remains a draft; prompt
+instructions do not replace deterministic safety checks.
 
 ## Transaction behavior
 
@@ -131,11 +143,26 @@ cannot retarget it and Apply/Undo cannot split a multi-intent request.
 `pnpm test` covers relative anchors (including the recorded “直前” -1 second
 default), immutable targets, transform/explanation
 identity dependencies, three-intent preservation, parallel conflicts,
-transactional Apply/Undo, provisional projection consistency, snapshot relations,
+transactional Apply/Undo, provisional-to-stable identity promotion, cross-transaction
+preview rejection, projection consistency, snapshot relations,
 Scene boundaries, camera focus, new MathTex creation, MathTex-to-Text replacement,
 direct motion normalization, shared schemas, and Unknown identity rejection.
 
-Source lowering and browser morph rendering remain prototype-grade. Registry
-metadata labels those paths as `supported`, `illustrative`, or `unsupported`;
-this change does not claim final Manim render validation or arbitrary Python
-execution.
+The runtime application no longer boots from `STUDIO_FIXTURE_SCENE`. The local
+workspace bridge conservatively imports source assignments, MathTex/Text content,
+source identities, `add`/`remove`/`clear`, replacement lifetimes, play/wait timing,
+straight shifts, anchors, and same-file Scene order. Assignment alone is not treated
+as visible presence, and repeated presence is preserved as multiple lifetime
+intervals. Facts that cannot be established by this static importer remain outside
+the snapshot instead of being filled from fixture constants.
+
+The local workspace and render-session responses cross an explicit runtime schema
+boundary. TypeScript types alone are not treated as evidence for network data.
+
+Rendered validation now accepts one complete `CanonicalEditProgram`. At an exact
+safe source anchor it can lower straight `CreateMotion`, position changes,
+MathTex/Text creation, `next_to`, FadeIn/removal, matching/replacement transforms,
+and a cover-and-reveal boundary to the actual next imported Scene. A successful
+commit writes transaction and identity markers; reimport recovers generated entity
+IDs and the Scene boundary. Curved motion, camera lowering, arbitrary Python flow,
+and insertion inside an existing play remain explicit blockers.

@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv } from "vite";
 
 import { openAiEditSuggestions } from "./server/openai-edit-suggestions";
+import { manimRenderPipeline } from "./server/manim-render-pipeline";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
@@ -10,7 +11,19 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       tailwindcss(),
-      openAiEditSuggestions({ model: env.POIETRA_OPENAI_MODEL }),
+      openAiEditSuggestions({
+        apiKey: env.OPENAI_API_KEY,
+        logPath: mode === "test" || env.POIETRA_AI_DEBUG_LOG === "off"
+          ? false
+          : env.POIETRA_AI_DEBUG_LOG || undefined,
+        model: env.POIETRA_OPENAI_MODEL,
+      }),
+      manimRenderPipeline({
+        command: env.POIETRA_MANIM_COMMAND,
+        frameHeight: env.POIETRA_MANIM_FRAME_HEIGHT ? Number(env.POIETRA_MANIM_FRAME_HEIGHT) : undefined,
+        frameWidth: env.POIETRA_MANIM_FRAME_WIDTH ? Number(env.POIETRA_MANIM_FRAME_WIDTH) : undefined,
+        projectRoot: env.POIETRA_MANIM_PROJECT_ROOT,
+      }),
     ],
     clearScreen: false,
     server: {
@@ -18,7 +31,7 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       strictPort: true,
       watch: {
-        ignored: ["**/src-tauri/**"],
+        ignored: ["**/*.py", "**/src-tauri/**"],
       },
     },
   };

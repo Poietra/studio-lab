@@ -96,8 +96,7 @@ export const createExplanationSuggestionSchema = z.object({
   ...createExplanationFields,
 }).superRefine(boundedInterval(0.1));
 
-export const createSceneTransitionSuggestionSchema = z.object({
-  anchor: suggestionTimeAnchorSchema,
+const createSceneTransitionFields = {
   color: z.enum(["black", "sky", "white"]),
   destination: z.literal("next-scene"),
   easing: z.literal("smooth"),
@@ -106,6 +105,11 @@ export const createSceneTransitionSuggestionSchema = z.object({
   shape: z.enum(["circle", "diamond", "hexagon"]),
   start: z.number(),
   style: z.literal("cover-reveal"),
+} as const;
+
+export const createSceneTransitionSuggestionSchema = z.object({
+  anchor: suggestionTimeAnchorSchema,
+  ...createSceneTransitionFields,
 }).superRefine(boundedInterval(0.4));
 
 export const createCameraFocusSuggestionSchema = z.object({
@@ -119,14 +123,36 @@ export const createCameraFocusSuggestionSchema = z.object({
   zoomScale: z.number().min(1).max(2),
 }).superRefine(boundedInterval(0.1));
 
-export const createEquationSuggestionSchema = z.object({
-  anchor: suggestionTimeAnchorSchema,
+const createEquationFields = {
   animation: z.literal("fade-in"),
   end: z.number(),
   kind: z.literal("create-equation"),
   placement: z.enum(["center", "right"]),
   start: z.number(),
   target: mathTexSuggestionTargetSchema,
+} as const;
+
+export const createEquationSuggestionSchema = z.object({
+  anchor: suggestionTimeAnchorSchema,
+  ...createEquationFields,
+}).superRefine(boundedInterval(0.1));
+
+const createExplainedEquationFields = {
+  animation: z.literal("fade-in"),
+  end: z.number(),
+  explanation: z.object({
+    placement: z.enum(["above", "below", "left", "right"]),
+    text: z.string().trim().min(1).max(240),
+  }),
+  kind: z.literal("create-explained-equation"),
+  placement: z.enum(["center", "right"]),
+  start: z.number(),
+  target: mathTexSuggestionTargetSchema,
+} as const;
+
+export const createExplainedEquationSuggestionSchema = z.object({
+  anchor: suggestionTimeAnchorSchema,
+  ...createExplainedEquationFields,
 }).superRefine(boundedInterval(0.1));
 
 export const createTextTransformSuggestionSchema = z.object({
@@ -143,6 +169,7 @@ export const createTextTransformSuggestionSchema = z.object({
 export const editSuggestionLeafOperationSchema = z.discriminatedUnion("kind", [
   createCameraFocusSuggestionSchema,
   createEquationSuggestionSchema,
+  createExplainedEquationSuggestionSchema,
   createTextTransformSuggestionSchema,
   createMotionSuggestionSchema,
   createTransformSuggestionSchema,
@@ -154,6 +181,9 @@ export const editProgramStepSchema = z.discriminatedUnion("kind", [
   z.object(createMotionFields).superRefine(boundedInterval(0.1)),
   z.object(createTransformFields).superRefine(boundedInterval(0.1)),
   z.object(createExplanationFields).superRefine(boundedInterval(0.1)),
+  z.object(createEquationFields).superRefine(boundedInterval(0.1)),
+  z.object(createExplainedEquationFields).superRefine(boundedInterval(0.1)),
+  z.object(createSceneTransitionFields).superRefine(boundedInterval(0.4)),
 ]);
 
 export const editProgramSuggestionSchema = z.object({
@@ -165,6 +195,26 @@ export const editProgramSuggestionSchema = z.object({
   const kinds = program.operations.map((operation) => operation.kind);
   if (new Set(kinds).size !== kinds.length) {
     context.addIssue({ code: "custom", message: "EditProgram leaf kinds must be unique.", path: ["operations"] });
+  }
+  const equationCreationCount = kinds.filter((kind) => (
+    kind === "create-equation" || kind === "create-explained-equation"
+  )).length;
+  if (equationCreationCount > 1) {
+    context.addIssue({
+      code: "custom",
+      message: "EditProgram can contain only one equation-creation macro.",
+      path: ["operations"],
+    });
+  }
+  const semanticIntentCount = program.operations.reduce((count, operation) => (
+    count + (operation.kind === "create-explained-equation" ? 2 : 1)
+  ), 0);
+  if (semanticIntentCount > 3) {
+    context.addIssue({
+      code: "custom",
+      message: "EditProgram supports at most three semantic intents.",
+      path: ["operations"],
+    });
   }
   const first = program.operations[0];
   if (!first) return;
@@ -188,7 +238,27 @@ export const editSuggestionOperationSchema = z.union([
   editProgramSuggestionSchema,
 ]);
 
+export const clarificationOptionSchema = z.object({
+  description: z.string().trim().min(1).max(240),
+  id: z.string().trim().min(1).max(40),
+  label: z.string().trim().min(1).max(80),
+});
+
+const clarificationAnswerSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("option"), optionId: z.string().trim().min(1).max(40) }),
+  z.object({ kind: z.literal("text"), text: z.string().trim().min(1).max(2_000) }),
+]);
+
+const clarificationTurnSchema = z.object({
+  answer: clarificationAnswerSchema,
+  options: z.array(clarificationOptionSchema).max(3),
+  question: z.string().trim().min(1).max(500),
+});
+
 export const editSuggestionRequestSchema = z.object({
+  clarification: clarificationTurnSchema.extend({
+    history: z.array(clarificationTurnSchema).max(4),
+  }).nullable(),
   objects: z.array(z.object({
     displayName: z.string(),
     id: z.string(),
@@ -198,8 +268,18 @@ export const editSuggestionRequestSchema = z.object({
   })),
   playhead: z.number(),
   prompt: z.string().trim().min(1).max(2_000),
+  scene: z.object({
+    id: z.string().min(1).max(500),
+    name: z.string().min(1).max(160),
+    nextSceneId: z.string().min(1).max(500).nullable(),
+  }),
   sceneDuration: z.number().positive(),
   selectedObjectIds: z.array(z.string()),
+});
+
+const modelClarificationOptionSchema = z.object({
+  description: z.string().trim().min(1).max(240),
+  label: z.string().trim().min(1).max(80),
 });
 
 export const modelSuggestionSchema = z.object({
@@ -207,19 +287,26 @@ export const modelSuggestionSchema = z.object({
   kind: z.enum(["suggestion", "clarification"]),
   message: z.string(),
   operation: editSuggestionOperationSchema.nullable(),
+  options: z.array(modelClarificationOptionSchema).max(3),
   summary: z.string(),
 });
+
+export type ModelSuggestion = z.infer<typeof modelSuggestionSchema>;
 
 const suggestionSchema = z.object({
   assumptions: z.array(z.string()),
   confidence: z.literal("medium"),
   operation: editSuggestionOperationSchema,
-  provider: z.enum(["fixture", "remote"]),
+  provider: z.literal("remote"),
   summary: z.string(),
 });
 
 export const editSuggestionResultSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("clarification"), message: z.string().min(1) }),
+  z.object({
+    kind: z.literal("clarification"),
+    message: z.string().min(1),
+    options: z.array(clarificationOptionSchema).max(3),
+  }),
   z.object({ kind: z.literal("suggestion"), suggestion: suggestionSchema }),
 ]);
 

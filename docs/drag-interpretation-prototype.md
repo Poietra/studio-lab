@@ -119,11 +119,18 @@ original absolute or playhead-relative time anchor. In all cases the owning obje
 lane, inspector, Code change preview and Apply action
 remain authoritative.
 
+A request to add a new equation together with its explanation produces one
+`CreateExplainedEquation` macro rather than an invalid program containing repeated
+leaf kinds. It creates the MathTex and Text identities in one transaction, connects
+the Text to the newly produced equation identity, and promotes both to editable
+objects only after Apply.
+
 A shape-based Scene-change request produces standalone `CreateSceneTransition`.
 Unlike the object operations, it requires no selected target. Its closed preset
 contains `circle | diamond | hexagon`, `black | sky | white`, a cover/reveal
-interval, and the next-Scene destination. Vague aesthetic wording resolves to the
-diamond and sky defaults as visible assumptions rather than another clarification.
+interval, and the next-Scene destination. For vague aesthetic wording the model
+chooses within that bounded vocabulary from the supplied context and exposes its
+choice as an assumption; Studio does not force a fixed shape/color pair.
 The canvas samples the real coverage curve, the Scene lane exposes the fully
 covered midpoint, and source preview marks where the incoming Scene composition
 must be connected. The browser does not invent the contents of that incoming Scene.
@@ -142,15 +149,19 @@ whose position is observed by a new explanation, is scheduled sequentially. A
 parallel request with those conflicting dependencies is not guessed into a
 different result; it receives a focused ordering clarification.
 
-The default provider is labelled `Local fixture`. It recognizes only a deliberately
-small set of absolute and playhead-relative time, direction, distance, duration and
-curved-path phrases, plus Maxwell/Newton MathTex transforms and one bounded
-explanation fixture. This is a UX and state-propagation
-experiment, not evidence of model quality. If the instruction is outside those
-capabilities, the fixture requests more detail instead of inventing one. A
-configured remote endpoint must return the same closed operation union, and its
-object IDs, object types, interval, content and geometry are checked again before
-preview.
+Magic Edit now requires a configured model endpoint. There is no runtime keyword
+parser or deterministic fixture fallback. If the endpoint is absent the composer is
+disabled with a visible configuration error. The remote endpoint must return the
+closed operation union, and its object IDs, object types, interval, content and
+geometry are checked again before preview.
+
+A clarification is a bounded editor state, not a chat transcript. Studio retains
+the original request, the latest question, two or three structured choices when
+available, and a fingerprint of the captured playhead, selection, and Scene
+objects. Clicking a choice or submitting free text such as `前者` sends that
+context back for a fresh model candidate; it never bypasses Preview or Apply. If
+the Scene fingerprint changes, the choices are disabled and the user is returned
+to the original request rather than applying a stale interpretation.
 
 ### Live-model checkpoint · 2026-07-20
 
@@ -203,8 +214,8 @@ equation even though `F = ma` is the dominant conventional interpretation in thi
 context. The revised policy resolves widely recognized equation names to their
 canonical forms, records the choice as an assumption, and reserves clarification
 for names without a dominant form. The remote model receives the current MathTex
-parts and returns target `texParts`; the deterministic fixture makes the same Newton
-choice so this behavior can be tested without an API.
+parts and returns target `texParts`; a test-only fixture covers the same canonical
+Newton mapping without acting as a runtime provider.
 
 For the fixture source, `E = mc^2` is constructed as the matchable arguments `E`,
 `=`, `m`, and `c^2`. The Newton target is constructed as `F`, `=`, `m`, and `a`.
@@ -345,11 +356,15 @@ pnpm dev:tauri
 - Source and edited paths are retained in the in-memory working preview and drive
   both trajectory drawing and playback. Lowering a curved path into Manim source
   or a future Scene IR is deliberately unresolved.
-- Apply changes only the in-memory working preview and can be undone; no renderer,
-  source writer, or validation backend is connected.
+- The main Apply action changes only the in-memory working preview. A separate
+  rendered-validation slice can lower one straight `CreateMotion` with known
+  source targets at an explicit source anchor, run Manim against a temporary copy,
+  then atomically commit or discard it. Other operations still have no source
+  writer or render validation.
 - Natural-language suggestions currently create `CreateMotion`, the narrowly
-  supported MathTex `CreateTransform`, bounded `CreateExplanation`, or standalone
-  Scene-level `CreateSceneTransition` operations.
+  supported MathTex `CreateTransform`, bounded `CreateExplanation`, new equations
+  with or without atomic explanation Text, or standalone Scene-level
+  `CreateSceneTransition` operations.
   Explanation creation keeps its relative anchor, adds a Text object on a separate
   timeline lane, and previews target-relative FadeIn plus persistent presence. The
   bounded `EditProgram` transaction combines any two or three unique
@@ -358,8 +373,16 @@ pnpm dev:tauri
   requested effect.
   `CreateSceneTransition` remains standalone in this version because its midpoint
   changes the active Scene composition rather than one object property.
-  The local fixture is deterministic, and
-  `VITE_POIETRA_AI_ENDPOINT` is only a provider-neutral experiment boundary.
+  A schema-invalid model candidate receives one model repair attempt; repeated
+  invalid output is reported as a focused error rather than exposing raw validator
+  internals in the composer.
+  Tests use explicit structured operations. No keyword parser exists in either the
+  test path or runtime Magic Edit; runtime requires `VITE_POIETRA_AI_ENDPOINT` and
+  labels every accepted candidate as an AI draft.
+- Applied `CreateEntity` and `TransformContent` results become normal selectable
+  runtime identities. They can be selected from the object list or canvas, moved
+  directly, and supplied as targets to the next model request. Preview-only
+  identities remain locked until Apply.
 - API credentials must remain in the local or hosted suggestion service. A browser
   or Tauri webview must never receive a provider secret through `VITE_` variables.
 
