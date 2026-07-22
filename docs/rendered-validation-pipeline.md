@@ -1,7 +1,7 @@
 # Rendered validation pipeline
 
 Status: implemented experimental slice
-Last updated: 2026-07-21
+Last updated: 2026-07-22
 
 ## Outcome
 
@@ -16,26 +16,30 @@ imported runtime → source variable bindings and Scene graph
 explicit # poietra:anchor boundary
         ↓
 deterministic operation-by-operation source lowering
+        ├──→ text/x-python attachment (no Manim process or source write)
         ↓
-isolated Manim subprocess + MP4
-        ↓
-user review
-        ↓
-atomic source commit or discard
+isolated Manim subprocess + MP4 → user review → atomic source commit or discard
 ```
 
-The workspace bridge discovers Python files and ordered Scene classes below the
-configured project root. `nextSceneId` follows class order within one source file;
+The workspace bridge discovers Python files and ordered Scene classes below each
+configured project root. The header switches between server-authorized projects by
+opaque ID; it never accepts a browser-supplied filesystem path. `nextSceneId`
+follows class order within one source file;
 unrelated files are not joined by an invented edge. The application imports
 conservative runtime snapshots once and uses the selected Scene for canvas, object
-list, timeline, AI context, and rendered validation. The right-side panel exposes renderer
-availability, progress, cancellation, bounded logs, the complete inserted source
-block, rendered MP4, commit, discard, and exact Undo.
+list, timeline, AI context, and rendered validation. The right-side panel exposes
+lowered Python export, renderer availability, progress, cancellation, bounded logs,
+the complete inserted source block, rendered MP4, commit, discard, and exact Undo.
 
 ## Configuration
 
-`POIETRA_MANIM_PROJECT_ROOT` selects the only filesystem root the local Vite
+`POIETRA_MANIM_PROJECT_ROOT` selects the fallback filesystem root the local Vite
 bridge may inspect or edit. It defaults to the Studio Lab checkout.
+
+`POIETRA_MANIM_PROJECTS` may instead contain a JSON array of pre-authorized root
+strings or `{ "id", "name", "root" }` records. The server resolves these roots at
+startup and gives the browser only an opaque project ID and display name. Runtime
+requests cannot register or submit a filesystem root.
 
 `POIETRA_MANIM_COMMAND` is either one executable or a JSON array such as
 `["uv", "run", "manim"]`. The bridge invokes it directly without a shell. The
@@ -48,6 +52,22 @@ the project read-only, and exposes only the isolated preview directory as writab
 `POIETRA_MANIM_FRAME_WIDTH` and `POIETRA_MANIM_FRAME_HEIGHT` default to Manim's
 14.222 × 8 world frame. Screen-pixel deltas are converted once against this
 explicit frame and the captured Studio viewport.
+
+## Local API boundary
+
+- `GET /api/manim/projects` returns only opaque IDs and display names.
+- `GET /api/manim/projects/:projectId/workspace` imports one registered project;
+  `GET /api/manim/workspace` remains a default-project compatibility alias.
+- `POST /api/manim/projects/:projectId/export` validates and lowers the project-bound
+  Program directly to a `text/x-python` attachment. It does not check Manim command
+  availability and does not write the source.
+- `POST /api/manim/projects/:projectId/renders` starts isolated rendered validation.
+  Session status and action URLs use the random session ID; the registry routes
+  Commit, Undo, Discard, and video reads back to the session's original project.
+
+The body of every render/export request also carries `projectId`; the route and body
+must agree. Every workspace and session response repeats its project ID so the
+client can reject a cross-project response before it enters editor state.
 
 ## Source contract
 
@@ -66,10 +86,14 @@ rejects unsupported overlap.
 
 Supported source forms in this experiment are:
 
-- straight `CreateMotion` and exact 2D position;
-- MathTex and Text creation with stable transaction-scoped identity markers;
+- straight and quadratic Bézier `CreateMotion`, lowered exactly through Manim
+  `CubicBezier`/`MoveAlongPath`, plus exact 2D position;
+- MathTex, Text, Rectangle, Circle, Line, Arrow, and Square creation with stable
+  transaction-scoped identity markers;
 - snapshot `next_to` placement and FadeIn/removal;
-- `TransformMatchingTex` and replacement transform with variable rebinding;
+- `TransformMatchingTex` and replacement transform with variable rebinding,
+  including consecutive transforms of one logical MathTex in a sequence;
+- an inserted `wait` used to extend Scene duration at a safe source anchor;
 - circle, diamond, or hexagon cover/reveal;
 - an explicit full-cover boundary that clears the outgoing composition, installs
   the initial composition of the actual next imported Scene, reveals it, and ends
@@ -96,7 +120,7 @@ boundaries without hand-authored comments.
   Studio state;
 - subprocesses are spawned without a shell and can be cancelled as a process group;
 - the manager permits two concurrent render processes, retains at most 32 source
-  snapshots, and terminates a render that exceeds two minutes;
+  snapshots per configured project, and terminates a render that exceeds two minutes;
 - preview source and media live in an isolated operating-system temporary directory;
 - the original source is untouched until Manim exits successfully and produces an MP4;
 - commit compares the current source SHA-256 with the previewed snapshot and rejects
@@ -105,14 +129,24 @@ boundaries without hand-authored comments.
   in the live server session for guarded Undo;
 - Undo refuses to overwrite a file changed after Studio's commit;
 - the browser receives a bounded log tail and a session-scoped MP4 URL, never an
-  arbitrary filesystem path; the workspace response also omits the absolute project root.
+  arbitrary filesystem path; project discovery and workspace responses also omit
+  absolute project roots;
+- every workspace, render, export, and retained session is bound to one registered
+  project ID, so Commit and Undo do not depend on the currently selected project;
+- the editor retains its last render-session view separately per project through a
+  project switch and rejects polling/action responses whose project ID changes;
+- the Python attachment endpoint repeats canonical validation, stale-source checks,
+  and deterministic lowering, but does not require a successful Manim render and
+  never writes the project source.
 
 ## Current limits
 
 - all referenced existing targets must have imported source variables before the
   same safe anchor;
-- curved paths, camera changes, overlapping animation composition, and arbitrary
-  time insertion remain unsupported;
+- camera lowering, overlapping animation composition, and insertion inside an
+  existing source play remain unsupported;
+- Scene duration can be extended by inserting a wait at an existing safe anchor;
+  shrinking a Scene or rewriting arbitrary earlier timing is not implemented;
 - the next Scene preview uses its imported initial composition; it does not splice
   the destination Scene's later animation timeline into the outgoing Scene;
 - source discovery uses conservative Scene, assignment, play, wait, and marker
@@ -121,6 +155,8 @@ boundaries without hand-authored comments.
 - preview and Undo evidence is retained in memory for 30 minutes and temporary
   media is then removed automatically; durable project history remains future
   product work;
+- project roots must be registered when the Vite server starts; the browser cannot
+  open an arbitrary local directory at runtime;
 - the bridge is a local development experiment, not a remotely exposed render
   service or Python sandbox.
 

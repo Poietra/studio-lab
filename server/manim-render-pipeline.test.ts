@@ -9,19 +9,22 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ResolvedConfig, ViteDevServer } from "vite";
 
-import type { ProgramRenderRequest } from "../src/render-pipeline/contracts";
+import { renderProgramBatchId, type ProgramRenderRequest } from "../src/render-pipeline/contracts";
 import type { CanonicalEditOperation, CanonicalEditProgram } from "../src/studio/operations";
 import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import { handleManimRequest } from "./manim-render-http";
 import {
+  ManimProjectRegistry,
   ManimRenderManager,
   manimRenderPipeline,
   parseManimCommand,
+  parseManimProjects,
 } from "./manim-render-pipeline";
 
 const fakeRenderer = fileURLToPath(new URL("./test-fixtures/fake-manim.mjs", import.meta.url));
 const temporaryRoots: string[] = [];
 const managers: ManimRenderManager[] = [];
+const registries: ManimProjectRegistry[] = [];
 
 const sceneSource = `from manim import *
 
@@ -29,7 +32,9 @@ class GroupedEquation(Scene):
     def construct(self):
         equation = MathTex("E", "=", "m", "c^2")
         self.add(equation)
-        self.wait(7)
+        self.wait(5)
+        # poietra:anchor 5.000
+        self.wait(2)
         # poietra:anchor 7.000
         self.wait(1)
 `;
@@ -65,11 +70,107 @@ function request(sourcePath = "scene.py"): ProgramRenderRequest {
   return {
     destination: null,
     program,
+    projectId: "default",
     sceneName: "GroupedEquation",
     sourceBindings: [{ entityId: "source:scene.py#GroupedEquation:equation", sourceVariable: "equation" }],
     sourceHash: createHash("sha256").update(sceneSource).digest("hex"),
     sourcePath,
     viewport: { height: 360, width: 640 },
+  };
+}
+
+function motionProgram(
+  anchor: number,
+  transactionId: string,
+  targetEntityId = "source:scene.py#GroupedEquation:equation",
+): CanonicalEditProgram {
+  const operation: CanonicalEditOperation = {
+    controlOffset: { x: 0, y: 0 },
+    delta: { x: 40, y: 0 },
+    dependsOn: [],
+    easing: "smooth",
+    id: `tx:${transactionId}/operation:motion`,
+    interval: { end: anchor + 1, start: anchor },
+    kind: "CreateMotion",
+    provenance: { evidence: [], origin: "direct-manipulation" },
+    targetEntityIds: [targetEntityId],
+  };
+  return {
+    anchor: {
+      capturedPlayhead: anchor,
+      evidence: [`captured-playhead:${anchor.toFixed(3)}`],
+      resolvedSeconds: anchor,
+      source: { kind: "playhead", referenceSeconds: anchor },
+    },
+    intentCount: 1,
+    loweringStatus: "supported",
+    operations: [operation],
+    provenance: { evidence: [], origin: "direct-manipulation" },
+    requestedExecution: "sequence",
+    schedule: { edges: [], mode: "sequence", order: [operation.id] },
+    transactionId,
+    version: 1,
+  };
+}
+
+function batchRequest(programs: readonly CanonicalEditProgram[]): ProgramRenderRequest {
+  const base = request();
+  return { ...base, program: programs[0]!, programs };
+}
+
+function createCircleProgram(
+  transactionId = "batch-create",
+  entityName = "circle",
+): CanonicalEditProgram {
+  const entityId = `tx:${transactionId}/entity:${entityName}`;
+  const createId = `tx:${transactionId}/operation:create`;
+  const positionId = `tx:${transactionId}/operation:position`;
+  const presenceId = `tx:${transactionId}/operation:presence`;
+  const operations: CanonicalEditOperation[] = [
+    {
+      dependsOn: [],
+      entity: { id: entityId, lifetime: { end: null, start: 5 }, type: "Circle" },
+      id: createId,
+      interval: { end: 5, start: 5 },
+      kind: "CreateEntity",
+      provenance: { evidence: [], origin: "studio-default" },
+    },
+    {
+      dependsOn: [createId],
+      entityId,
+      id: positionId,
+      interval: { end: 5, start: 5 },
+      key: "position",
+      kind: "SetProperty",
+      provenance: { evidence: [], origin: "studio-default" },
+      value: { x: 240, y: 180 },
+    },
+    {
+      dependsOn: [positionId],
+      effect: "fade-in",
+      entityId,
+      id: presenceId,
+      interval: { end: 5.4, start: 5 },
+      kind: "ChangePresence",
+      persistent: true,
+      provenance: { evidence: [], origin: "studio-default" },
+    },
+  ];
+  return {
+    anchor: {
+      capturedPlayhead: 5,
+      evidence: [],
+      resolvedSeconds: 5,
+      source: { kind: "playhead", referenceSeconds: 5 },
+    },
+    intentCount: 1,
+    loweringStatus: "supported",
+    operations,
+    provenance: { evidence: [], origin: "studio-default" },
+    requestedExecution: "sequence",
+    schedule: { edges: [], mode: "sequence", order: operations.map((operation) => operation.id) },
+    transactionId,
+    version: 1,
   };
 }
 
@@ -92,13 +193,33 @@ async function fixture(options: Readonly<{
   return { manager, projectRoot };
 }
 
-async function waitForTerminal(manager: ManimRenderManager, id: string) {
+async function waitForTerminal(manager: Pick<ManimRenderManager, "view">, id: string) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const session = manager.view(id);
     if (["cancelled", "failed", "ready"].includes(session.status)) return session;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error("Render session did not finish.");
+}
+
+async function registryFixture(command: readonly string[] = [process.execPath, fakeRenderer]) {
+  const firstRoot = await mkdtemp(join(tmpdir(), "poietra-project-a-"));
+  const secondRoot = await mkdtemp(join(tmpdir(), "poietra-project-b-"));
+  temporaryRoots.push(firstRoot, secondRoot);
+  await Promise.all([
+    writeFile(join(firstRoot, "scene.py"), sceneSource, "utf8"),
+    writeFile(join(secondRoot, "scene.py"), sceneSource, "utf8"),
+  ]);
+  const registry = new ManimProjectRegistry({
+    command,
+    frame: { height: 8, width: 14.222 },
+    projects: [
+      { id: "project-a", name: "Project A", root: firstRoot },
+      { id: "project-b", name: "Project B", root: secondRoot },
+    ],
+  });
+  registries.push(registry);
+  return { firstRoot, registry, secondRoot };
 }
 
 async function waitUntil(predicate: () => boolean | Promise<boolean>, message: string) {
@@ -111,6 +232,7 @@ async function waitUntil(predicate: () => boolean | Promise<boolean>, message: s
 
 afterEach(async () => {
   await Promise.all(managers.splice(0).map((manager) => manager.close()));
+  await Promise.all(registries.splice(0).map((registry) => registry.close()));
   await Promise.all(temporaryRoots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
 });
 
@@ -123,7 +245,7 @@ describe("Manim render manager", () => {
     expect(workspace.sources[0]?.path).toBe("scene.py");
     expect(workspace.sources[0]?.scenes).toHaveLength(1);
     expect(workspace.sources[0]?.scenes[0]).toMatchObject({
-      anchors: [7],
+      anchors: [5, 7],
       name: "GroupedEquation",
       nextSceneId: null,
       sceneId: "scene.py#GroupedEquation",
@@ -178,6 +300,81 @@ describe("Manim render manager", () => {
     await writeFile(join(projectRoot, "scene.py"), `${sceneSource}\n# changed before render\n`, "utf8");
 
     await expect(manager.start(request())).rejects.toThrow(/imported source changed before rendering/i);
+  });
+
+  it("exports Programs at distinct source anchors in source order", async () => {
+    const { manager } = await fixture();
+    const later = motionProgram(7, "batch-later");
+    const earlier = motionProgram(5, "batch-earlier");
+
+    const exported = await manager.exportSource(batchRequest([later, earlier]));
+
+    expect(exported.source.indexOf('poietra:transaction "batch-earlier"'))
+      .toBeLessThan(exported.source.indexOf('poietra:transaction "batch-later"'));
+    expect(exported.source).toContain("# poietra:cursor 5");
+    expect(exported.source).toContain("# poietra:cursor 8");
+    expect(exported.source).toContain("# poietra:anchor 6");
+    expect(exported.source).toContain("# poietra:anchor 9");
+  });
+
+  it("carries a generated entity binding into a later source-anchor Program", async () => {
+    const { manager } = await fixture();
+    const creation = createCircleProgram();
+    const entityId = "tx:batch-create/entity:circle";
+    const movement = motionProgram(7, "batch-move-created", entityId);
+
+    const exported = await manager.exportSource(batchRequest([creation, movement]));
+    const marker = exported.source.match(new RegExp(
+      `# poietra:entity \\{\\"id\\":\\"${entityId}\\",\\"variable\\":\\"([^\\"]+)\\"\\}`,
+    ));
+
+    expect(marker?.[1]).toBeTruthy();
+    expect(exported.source).toContain(`${marker?.[1]}.animate.shift(`);
+    expect(exported.source).toContain("# poietra:cursor 7.4");
+  });
+
+  it("allocates distinct Python variables when transaction IDs normalize to the same token", async () => {
+    const { manager } = await fixture();
+    const programs = [
+      createCircleProgram("batch-collision", "first"),
+      createCircleProgram("batch_collision", "second"),
+    ];
+
+    const exported = await manager.exportSource(batchRequest(programs));
+    const variables = [...exported.source.matchAll(
+      /# poietra:entity \{"id":"tx:batch[_-]collision\/entity:[^"]+","variable":"([^"]+)"\}/g,
+    )].map((match) => match[1]);
+
+    expect(variables).toHaveLength(2);
+    expect(new Set(variables).size).toBe(2);
+    expect(variables).toEqual(["poietra_batch_collision_1", "poietra_batch_collision_1_2"]);
+  });
+
+  it("exports same-anchor Programs whose rebased intervals exceed the original Scene duration", async () => {
+    const { manager } = await fixture();
+    const first = motionProgram(7, "batch-near-end-first");
+    const second = motionProgram(7, "batch-near-end-second");
+
+    const exported = await manager.exportSource(batchRequest([first, second]));
+
+    expect(exported.source.match(/self\.play\(/g)).toHaveLength(2);
+    expect(exported.source.indexOf('poietra:transaction "batch-near-end-first"'))
+      .toBeLessThan(exported.source.indexOf('poietra:transaction "batch-near-end-second"'));
+    expect(exported.source).toContain("# poietra:anchor 9");
+  });
+
+  it("identifies a render session by the deterministic Program batch", async () => {
+    const { manager } = await fixture();
+    const programs = [
+      motionProgram(5, "batch-session-first"),
+      motionProgram(7, "batch-session-second"),
+    ];
+
+    const started = await manager.start(batchRequest(programs));
+
+    expect(started.programBatchId).toBe(renderProgramBatchId(programs));
+    expect(started.programTransactionId).toBe(started.programBatchId);
+    expect(started.patch.anchorLines).toHaveLength(2);
   });
 
   it("revalidates target identity and imported source bindings at the server boundary", async () => {
@@ -481,10 +678,115 @@ class Independent(Scene):
   });
 });
 
+describe("Manim project registry", () => {
+  it("lists configured projects without exposing their filesystem roots", async () => {
+    const { firstRoot, registry, secondRoot } = await registryFixture();
+
+    const projects = registry.projects();
+    expect(projects).toEqual({
+      defaultProjectId: "project-a",
+      projects: [
+        { id: "project-a", name: "Project A" },
+        { id: "project-b", name: "Project B" },
+      ],
+    });
+    expect(JSON.stringify(projects)).not.toContain(firstRoot);
+    expect(JSON.stringify(projects)).not.toContain(secondRoot);
+    await expect(registry.workspace("project-b")).resolves.toMatchObject({
+      projectId: "project-b",
+      projectName: "Project B",
+    });
+    expect(() => registry.workspace("missing-project")).toThrow(/project not found/i);
+  });
+
+  it("lowers an exact Python export without requiring a working Manim command", async () => {
+    const { firstRoot, registry } = await registryFixture(["poietra-command-that-does-not-exist"]);
+
+    const exported = await registry.exportSource({ ...request(), projectId: "project-a" });
+
+    expect(exported).toMatchObject({
+      fileName: "scene.poietra.py",
+      projectId: "project-a",
+    });
+    expect(exported.source).toContain('poietra:transaction "render-integration"');
+    expect(await readFile(join(firstRoot, "scene.py"), "utf8")).toBe(sceneSource);
+    await expect(registry.start({ ...request(), projectId: "project-a" })).rejects.toThrow(/not available/i);
+  });
+
+  it("routes Commit and Undo to the session's original project after another workspace is opened", async () => {
+    const { firstRoot, registry, secondRoot } = await registryFixture();
+    const started = await registry.start({ ...request(), projectId: "project-a" });
+    await registry.workspace("project-b");
+    expect((await waitForTerminal(registry, started.id)).status).toBe("ready");
+
+    const committed = await registry.commit(started.id);
+    expect(committed).toMatchObject({ projectId: "project-a", status: "committed" });
+    expect(await readFile(join(firstRoot, "scene.py"), "utf8")).toContain('poietra:transaction "render-integration"');
+    expect(await readFile(join(secondRoot, "scene.py"), "utf8")).toBe(sceneSource);
+
+    await registry.undo(started.id);
+    expect(await readFile(join(firstRoot, "scene.py"), "utf8")).toBe(sceneSource);
+  });
+
+  it("prunes the registry session index when a project manager expires a session", async () => {
+    const { registry } = await registryFixture();
+    const started = await registry.start({ ...request(), projectId: "project-a" });
+    const rendered = await waitForTerminal(registry, started.id);
+    const internals = registry as unknown as { sessionProjects: Map<string, string> };
+    expect(internals.sessionProjects.get(started.id)).toBe("project-a");
+
+    await registry.cleanupExpiredSessions(Date.parse(rendered.updatedAt) + 30 * 60 * 1_000);
+
+    expect(internals.sessionProjects.has(started.id)).toBe(false);
+    expect(() => registry.view(started.id)).toThrow(/session not found/i);
+  });
+
+  it("serves project discovery and a safe Python attachment over HTTP", async () => {
+    const { registry } = await registryFixture(["poietra-command-that-does-not-exist"]);
+    const server = createServer((incoming, response) => {
+      void handleManimRequest(registry, incoming, response);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address() as AddressInfo;
+      const origin = `http://127.0.0.1:${address.port}`;
+      const projectsResponse = await fetch(`${origin}/api/manim/projects`);
+      expect(await projectsResponse.json()).toEqual(registry.projects());
+
+      const exportResponse = await fetch(`${origin}/api/manim/projects/project-a/export`, {
+        body: JSON.stringify({ ...request(), projectId: "project-a" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(exportResponse.status).toBe(200);
+      expect(exportResponse.headers.get("content-type")).toBe("text/x-python; charset=utf-8");
+      expect(exportResponse.headers.get("content-disposition")).toBe('attachment; filename="scene.poietra.py"');
+      expect(await exportResponse.text()).toContain('poietra:transaction "render-integration"');
+
+      const mismatchedResponse = await fetch(`${origin}/api/manim/projects/project-b/export`, {
+        body: JSON.stringify({ ...request(), projectId: "project-a" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(mismatchedResponse.status).toBe(409);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+});
+
 describe("Manim command parsing", () => {
   it("accepts a JSON command without invoking a shell", () => {
     expect(parseManimCommand('["uv", "run", "manim"]')).toEqual(["uv", "run", "manim"]);
     expect(parseManimCommand(undefined)).toEqual(["manim"]);
+  });
+
+  it("parses a future multi-project environment registry", () => {
+    expect(parseManimProjects('[{"id":"project-a","name":"A","root":"/tmp/a"},"/tmp/b"]')).toEqual([
+      { id: "project-a", name: "A", root: "/tmp/a" },
+      { root: "/tmp/b" },
+    ]);
+    expect(() => parseManimProjects('[{"root":"/tmp/a","path":"/private"}]')).toThrow(/unsupported field/i);
   });
 });
 
