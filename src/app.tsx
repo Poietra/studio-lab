@@ -45,6 +45,12 @@ const NUDGE_DELTAS: Readonly<Record<string, Readonly<{ x: number; y: number }>>>
   ArrowRight: { x: 2, y: 0 },
   ArrowUp: { x: 0, y: -2 },
 };
+type CanvasDragState = Readonly<{
+  entityId: string;
+  pointerId: number;
+  scale: Readonly<{ x: number; y: number }>;
+  start: Readonly<{ x: number; y: number }>;
+}>;
 
 function detectShell(): Shell {
   if ("__TAURI_INTERNALS__" in window) return "Tauri";
@@ -58,6 +64,16 @@ function clamp(value: number, minimum: number, maximum: number) {
 
 function operationHasSceneBoundary(record: ProgramRecord) {
   return record.program.operations.some((operation) => operation.kind === "InsertSceneBoundary");
+}
+
+function canvasPointerDelta(
+  drag: CanvasDragState,
+  point: Readonly<{ x: number; y: number }>,
+) {
+  return {
+    x: (point.x - drag.start.x) * drag.scale.x,
+    y: (point.y - drag.start.y) * drag.scale.y,
+  };
 }
 
 export function App() {
@@ -92,11 +108,7 @@ export function App() {
   const [dragPreview, setDragPreview] = useState<EntityDragPreview | null>(null);
   const suggestionRequest = useRef<AbortController | null>(null);
   const suggestionContext = useRef("");
-  const canvasDrag = useRef<Readonly<{
-    entityId: string;
-    pointerId: number;
-    start: Readonly<{ x: number; y: number }>;
-  }> | null>(null);
+  const canvasDrag = useRef<CanvasDragState | null>(null);
   const workspaceBounds = useRef<HTMLElement | null>(null);
 
   useEffect(() => () => suggestionRequest.current?.abort(), []);
@@ -356,10 +368,15 @@ export function App() {
     const editable = entity && (!entity.provisional || (entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
     if (!editable) return;
     event.currentTarget.setPointerCapture(event.pointerId);
+    const canvasBounds = event.currentTarget.closest<HTMLElement>("[data-scene-phase]")?.getBoundingClientRect();
     setSelectedObjectIds((selection) => selection.includes(entityId) ? selection : [entityId]);
     canvasDrag.current = {
       entityId,
       pointerId: event.pointerId,
+      scale: {
+        x: canvasBounds?.width ? STUDIO_VIEWPORT.width / canvasBounds.width : 1,
+        y: canvasBounds?.height ? STUDIO_VIEWPORT.height / canvasBounds.height : 1,
+      },
       start: { x: event.clientX, y: event.clientY },
     };
     setDragPreview({ delta: { x: 0, y: 0 }, entityId });
@@ -369,7 +386,7 @@ export function App() {
     const drag = canvasDrag.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     setDragPreview({
-      delta: { x: event.clientX - drag.start.x, y: event.clientY - drag.start.y },
+      delta: canvasPointerDelta(drag, { x: event.clientX, y: event.clientY }),
       entityId: drag.entityId,
     });
   }
@@ -379,7 +396,7 @@ export function App() {
     canvasDrag.current = null;
     setDragPreview(null);
     if (!drag || drag.pointerId !== event.pointerId || !activeScene || !draftBaseState) return;
-    const delta = { x: event.clientX - drag.start.x, y: event.clientY - drag.start.y };
+    const delta = canvasPointerDelta(drag, { x: event.clientX, y: event.clientY });
     if (Math.hypot(delta.x, delta.y) < 1) return;
     const targetIds = selectedObjectIds.includes(drag.entityId) ? selectedObjectIds : [drag.entityId];
     const transactionId = `studio-gesture-${crypto.randomUUID()}`;

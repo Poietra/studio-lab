@@ -319,9 +319,9 @@ export function StudioViewport({
                   aria-label={`Move ${entityLabel(entity)}`}
                   aria-pressed={selected}
                   className={cn(
-                    "absolute z-10 -translate-x-1/2 -translate-y-1/2 border px-3 py-2 outline-none",
+                    "absolute -translate-x-1/2 -translate-y-1/2 border px-3 py-2 outline-none",
                     locked ? "pointer-events-none border-dashed border-sky-800 bg-zinc-950/70" : "cursor-grab active:cursor-grabbing",
-                    selected ? "border-sky-400 bg-sky-950/60 focus-visible:ring-2 focus-visible:ring-sky-400" : "border-transparent hover:border-zinc-600",
+                    selected ? "z-20 border-sky-400 bg-sky-950/60 focus-visible:ring-2 focus-visible:ring-sky-400" : "z-10 border-transparent hover:border-zinc-600",
                   )}
                   disabled={locked}
                   key={entity.id}

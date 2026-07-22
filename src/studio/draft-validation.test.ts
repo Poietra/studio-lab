@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import { projectedPositions, validateSuggestionDraft, validatedProgramRecord } from "./draft-validation";
-import { evaluateWorkingState } from "./evaluator";
+import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
 import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
 import { createDirectManipulationPositionProgram } from "./suggestion-program";
 
@@ -68,5 +68,27 @@ describe("Studio draft validation boundary", () => {
       kind: "invalid",
       message: "The projected position for missing is unavailable.",
     });
+  });
+
+  it("projects a direct position change at the captured playhead", () => {
+    const base = evaluateWorkingState(createFixtureWorkingState());
+    const before = projectProposedState(base, 5).canvas.entities.find((entity) => entity.id === "equation_1");
+    expect(before).toBeDefined();
+    if (!before) return;
+    const validation = createDirectManipulationPositionProgram({
+      capturedPlayhead: 5,
+      delta: { x: 100, y: 40 },
+      positions: { equation_1: before.position },
+      scene: base.evaluatedScene,
+      start: 5,
+      targetEntityIds: ["equation_1"],
+      transactionId: "position-projection",
+    });
+    expect(validation.kind).toBe("valid");
+    const proposed = evaluateWorkingState(createFixtureWorkingState({
+      stagedPrograms: [programRecord(validation.program, validation)],
+    }));
+    expect(projectProposedState(proposed, 5).canvas.entities.find((entity) => entity.id === "equation_1")?.position)
+      .toEqual({ x: before.position.x + 100, y: before.position.y + 40 });
   });
 });

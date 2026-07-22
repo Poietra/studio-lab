@@ -5,6 +5,7 @@ import type { PendingClarification } from "../ai/clarification";
 import { ClarificationPanel } from "../ai/clarification-panel";
 import type { ClarificationOption } from "../ai/edit-suggestions";
 import { cn } from "../lib/cn";
+import { PanelResizeHandles, usePanelResize } from "./panel-resize";
 
 export type SuggestionStatus = "clarification" | "error" | "idle" | "loading" | "ready";
 
@@ -42,22 +43,28 @@ export function MagicEditPanel({
   workspaceBounds: RefObject<HTMLElement | null>;
 }>) {
   const dragControls = useDragControls();
+  const panelResize = usePanelResize(workspaceBounds);
   const isLoading = status === "loading";
   return (
     <div
       className="pointer-events-none fixed inset-0 z-30"
     >
       <m.section
-        className="pointer-events-auto absolute flex min-h-44 w-[25rem] min-w-72 max-w-[calc(100vw-2rem)] max-h-[calc(100dvh-7rem)] resize flex-col overflow-auto border border-zinc-700 bg-zinc-950 shadow-xl"
+        className="pointer-events-auto absolute flex min-h-44 min-w-72 max-w-[calc(100vw-2rem)] max-h-[calc(100dvh-7rem)] flex-col overflow-hidden border border-zinc-700 bg-zinc-950 shadow-xl"
         drag
         dragConstraints={workspaceBounds}
         dragControls={dragControls}
         dragListener={false}
         dragMomentum={false}
         id="studio-magic-edit"
+        ref={panelResize.panelRef}
         style={{
+          height: panelResize.size.height,
           left: "max(1rem, calc(50% - 12.5rem), env(safe-area-inset-left))",
           top: "max(6rem, env(safe-area-inset-top))",
+          width: panelResize.size.width,
+          x: panelResize.x,
+          y: panelResize.y,
         }}
       >
         <div className="flex cursor-grab items-center justify-between border-b border-zinc-800 px-3 py-2 active:cursor-grabbing">
@@ -80,7 +87,7 @@ export function MagicEditPanel({
           </button>
         </div>
         <form
-          className="flex min-h-0 flex-1 flex-col p-3"
+          className="flex min-h-0 flex-1 flex-col overflow-auto p-3"
           onSubmit={(event) => {
             event.preventDefault();
             onRequest();
@@ -130,6 +137,13 @@ export function MagicEditPanel({
             </button>
           </div>
         </form>
+        <PanelResizeHandles
+          onKeyDown={panelResize.onKeyDown}
+          onPointerCancel={panelResize.onPointerCancel}
+          onPointerDown={panelResize.onPointerDown}
+          onPointerMove={panelResize.onPointerMove}
+          onPointerUp={panelResize.onPointerUp}
+        />
       </m.section>
     </div>
   );
