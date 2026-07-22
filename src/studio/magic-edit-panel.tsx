@@ -45,16 +45,20 @@ export function MagicEditPanel({
   const isLoading = status === "loading";
   return (
     <div
-      className="pointer-events-none fixed inset-0 z-30 flex items-start justify-center pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-[max(6rem,env(safe-area-inset-top))]"
+      className="pointer-events-none fixed inset-0 z-30"
     >
       <m.section
-        className="pointer-events-auto w-full max-w-[25rem] border border-zinc-700 bg-zinc-950 shadow-xl"
+        className="pointer-events-auto absolute flex min-h-44 w-[25rem] min-w-72 max-w-[calc(100vw-2rem)] max-h-[calc(100dvh-7rem)] resize flex-col overflow-auto border border-zinc-700 bg-zinc-950 shadow-xl"
         drag
         dragConstraints={workspaceBounds}
         dragControls={dragControls}
         dragListener={false}
         dragMomentum={false}
         id="studio-magic-edit"
+        style={{
+          left: "max(1rem, calc(50% - 12.5rem), env(safe-area-inset-left))",
+          top: "max(6rem, env(safe-area-inset-top))",
+        }}
       >
         <div className="flex cursor-grab items-center justify-between border-b border-zinc-800 px-3 py-2 active:cursor-grabbing">
           <button
@@ -76,7 +80,7 @@ export function MagicEditPanel({
           </button>
         </div>
         <form
-          className="p-3"
+          className="flex min-h-0 flex-1 flex-col p-3"
           onSubmit={(event) => {
             event.preventDefault();
             onRequest();
@@ -94,7 +98,7 @@ export function MagicEditPanel({
           <label className="sr-only" htmlFor="magic-edit-instruction">Describe an edit</label>
           <textarea
             aria-describedby={pendingClarification ? "magic-edit-clarification-question" : undefined}
-            className="min-h-20 w-full resize-y border border-zinc-700 bg-zinc-900 p-2 text-sm leading-5 text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-sky-500 disabled:text-zinc-600"
+            className="min-h-20 w-full flex-1 resize-none border border-zinc-700 bg-zinc-900 p-2 text-sm leading-5 text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-sky-500 disabled:text-zinc-600"
             disabled={!aiEndpointConfigured || isLoading || clarificationIsStale}
             id="magic-edit-instruction"
             maxLength={2_000}

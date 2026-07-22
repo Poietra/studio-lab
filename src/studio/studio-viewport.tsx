@@ -1,7 +1,13 @@
 import type { KeyboardEvent, PointerEvent } from "react";
 
 import { cn } from "../lib/cn";
-import type { ProjectedEntity, ProposedStateProjection, TimelineEvent } from "./model";
+import type {
+  Interval,
+  ProjectedEntity,
+  ProposedStateProjection,
+  TimelineEvent,
+  TimelineObjectTrack,
+} from "./model";
 import { EquationContent } from "./prototype-rendering";
 import { isTransitionOverlay } from "./workspace-projection";
 
@@ -62,22 +68,51 @@ function formatTime(value: number) {
   return `${minutes}:${seconds}`;
 }
 
+function intervalStyle(interval: Interval, duration: number) {
+  return {
+    left: `${(interval.start / duration) * 100}%`,
+    width: `${Math.max(0.25, ((interval.end - interval.start) / duration) * 100)}%`,
+  };
+}
+
+function TimelinePlayhead({ currentTime, duration }: Readonly<{ currentTime: number; duration: number }>) {
+  return (
+    <div
+      aria-hidden="true"
+      className="pointer-events-none absolute bottom-0 top-0 z-20 w-px bg-sky-400"
+      style={{ left: `${(currentTime / duration) * 100}%` }}
+    />
+  );
+}
+
 function Timeline({
   anchors,
+  appliedTransactionIds,
   currentTime,
   duration,
   events,
+  interactionMode,
   isPlaying,
+  objectTracks,
+  onInteractionModeChange,
+  onSelectEntity,
   onTimeChange,
   onTogglePlayback,
+  selectedIds,
 }: Readonly<{
   anchors: readonly number[];
+  appliedTransactionIds: ReadonlySet<string>;
   currentTime: number;
   duration: number;
   events: readonly TimelineEvent[];
+  interactionMode: InteractionMode;
   isPlaying: boolean;
+  objectTracks: readonly TimelineObjectTrack[];
+  onInteractionModeChange: (mode: InteractionMode) => void;
+  onSelectEntity: (entityId: string) => void;
   onTimeChange: (time: number) => void;
   onTogglePlayback: () => void;
+  selectedIds: ReadonlySet<string>;
 }>) {
   const intervalEvents = events.flatMap((event) => event.interval ? [{ event, interval: event.interval }] : []);
   return (
@@ -99,35 +134,106 @@ function Timeline({
         />
         <span className="w-16 text-right tabular-nums text-xs text-zinc-600">{formatTime(duration)}</span>
       </div>
-      <div className="relative mt-3 h-14 border border-zinc-800 bg-zinc-900">
-        {intervalEvents.map(({ event, interval }) => (
-          <div
-            className={cn(
-              "absolute top-2 h-5 min-w-px border px-1 text-[9px] leading-4",
-              event.transactionId ? "border-sky-800 bg-sky-950 text-sky-300" : "border-zinc-700 bg-zinc-800 text-zinc-500",
-            )}
-            key={event.id}
-            style={{
-              left: `${(interval.start / duration) * 100}%`,
-              width: `${Math.max(0.25, ((interval.end - interval.start) / duration) * 100)}%`,
-            }}
-            title={`${event.label} ${interval.start.toFixed(2)}–${interval.end.toFixed(2)}s`}
-          >
-            <span className="block truncate">{event.label}</span>
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-zinc-800 pt-2 text-xs">
+        <span className="text-zinc-400">When dragging an object</span>
+        <div aria-label="Object drag behavior" className="flex border border-zinc-700" role="group">
+          {(["position", "animate"] as const).map((mode) => (
+            <button
+              aria-pressed={interactionMode === mode}
+              className={cn(
+                "px-2.5 py-1 text-xs",
+                interactionMode === mode ? "bg-sky-950 text-sky-300" : "text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200",
+              )}
+              key={mode}
+              onClick={() => onInteractionModeChange(mode)}
+              type="button"
+            >
+              {mode === "position" ? "Set position" : "Create animation"}
+            </button>
+          ))}
+        </div>
+        <span className="hidden text-pretty text-[10px] text-zinc-600 md:inline">
+          {interactionMode === "position" ? "Updates the layout without adding time." : "Adds motion starting at the playhead."}
+        </span>
+      </div>
+      <div aria-label="Scene object timeline" className="mt-3 max-h-56 overflow-y-auto border border-zinc-800 bg-zinc-900" role="group">
+        <div className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 sm:grid-cols-[8rem_minmax(0,1fr)]">
+          <div className="flex min-w-0 items-center px-2 text-[10px] font-medium text-zinc-400">Scene</div>
+          <div className="relative h-8 min-w-0 overflow-hidden">
+            {intervalEvents.map(({ event, interval }) => (
+              <div
+                className={cn(
+                  "absolute top-1 h-5 min-w-px border px-1 text-[9px] leading-4",
+                  event.transactionId ? "border-sky-800 bg-sky-950 text-sky-300" : "border-zinc-700 bg-zinc-800 text-zinc-500",
+                )}
+                key={event.id}
+                style={intervalStyle(interval, duration)}
+                title={`${event.label} ${interval.start.toFixed(2)}–${interval.end.toFixed(2)}s`}
+              >
+                <span className="block truncate">{event.label}</span>
+              </div>
+            ))}
+            {anchors.map((anchor) => (
+              <button
+                aria-label={`Move playhead to source anchor ${anchor.toFixed(3)} seconds`}
+                className="absolute bottom-0 top-0 z-10 w-px bg-amber-500/70 focus-visible:w-0.5"
+                key={anchor}
+                onClick={() => onTimeChange(anchor)}
+                style={{ left: `${(anchor / duration) * 100}%` }}
+                title={`Source anchor ${anchor.toFixed(3)}s`}
+                type="button"
+              />
+            ))}
+            <TimelinePlayhead currentTime={currentTime} duration={duration} />
           </div>
-        ))}
-        {anchors.map((anchor) => (
-          <button
-            aria-label={`Move playhead to source anchor ${anchor.toFixed(3)} seconds`}
-            className="absolute bottom-0 top-0 w-px bg-amber-500/70 focus-visible:w-0.5"
-            key={anchor}
-            onClick={() => onTimeChange(anchor)}
-            style={{ left: `${(anchor / duration) * 100}%` }}
-            title={`Source anchor ${anchor.toFixed(3)}s`}
-            type="button"
-          />
-        ))}
-        <div className="pointer-events-none absolute bottom-0 top-0 w-px bg-sky-400" style={{ left: `${(currentTime / duration) * 100}%` }} />
+        </div>
+        {objectTracks.map((track) => {
+          const selected = selectedIds.has(track.entityId);
+          const locked = track.provisional && !(track.transactionId && appliedTransactionIds.has(track.transactionId));
+          return (
+            <div className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 last:border-b-0 sm:grid-cols-[8rem_minmax(0,1fr)]" data-timeline-track={track.entityId} key={track.entityId}>
+              <button
+                aria-pressed={selected}
+                className={cn(
+                  "min-w-0 truncate px-2 text-left text-[10px]",
+                  locked ? "cursor-not-allowed text-zinc-700" : "hover:bg-zinc-800",
+                  selected ? "bg-sky-950 text-sky-300" : "text-zinc-500",
+                )}
+                disabled={locked}
+                onClick={() => onSelectEntity(track.entityId)}
+                title={`${track.label} · ${track.type}`}
+                type="button"
+              >
+                {track.label}
+              </button>
+              <div className="relative h-7 min-w-0 overflow-hidden">
+                {track.lifetimes.map((interval, index) => (
+                  <div
+                    className={cn(
+                      "absolute inset-y-1 border",
+                      track.provisional ? "border-dashed border-sky-700 bg-sky-950" : "border-zinc-600 bg-zinc-800",
+                    )}
+                    key={`${track.entityId}/lifetime/${index}`}
+                    style={intervalStyle(interval, duration)}
+                    title={`Present ${interval.start.toFixed(2)}–${interval.end.toFixed(2)}s`}
+                  />
+                ))}
+                {track.animatedChannels.map((channel, index) => (
+                  <div
+                    className="absolute bottom-1 z-10 h-1.5 min-w-px bg-sky-400"
+                    key={`${track.entityId}/${channel.key}/${index}`}
+                    style={intervalStyle(channel.interval, duration)}
+                    title={`${channel.key} animation ${channel.interval.start.toFixed(2)}–${channel.interval.end.toFixed(2)}s`}
+                  />
+                ))}
+                {track.lifetimes.length === 0 ? (
+                  <span className="absolute inset-0 flex items-center px-2 text-[9px] text-zinc-700">Not present</span>
+                ) : null}
+                <TimelinePlayhead currentTime={currentTime} duration={duration} />
+              </div>
+            </div>
+          );
+        })}
       </div>
     </section>
   );
@@ -152,6 +258,7 @@ export function StudioViewport({
   onEntityPointerMove,
   onEntityPointerUp,
   onInteractionModeChange,
+  onSelectEntity,
   onTimeChange,
   onTogglePlayback,
   projection,
@@ -175,6 +282,7 @@ export function StudioViewport({
   onEntityPointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
   onEntityPointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
   onInteractionModeChange: (mode: InteractionMode) => void;
+  onSelectEntity: (entityId: string) => void;
   onTimeChange: (time: number) => void;
   onTogglePlayback: () => void;
   projection: ProposedStateProjection;
@@ -182,29 +290,6 @@ export function StudioViewport({
 }>) {
   return (
     <section className={cn("flex min-h-0 min-w-0 flex-col bg-zinc-900", className)}>
-      <div className="flex items-center justify-between gap-3 border-b border-zinc-800 px-3 py-2 text-xs">
-        <div className="flex items-center gap-2">
-          <span className="text-zinc-500">Direct manipulation</span>
-          <div aria-label="Direct manipulation meaning" className="flex border border-zinc-700" role="group">
-            {(["position", "animate"] as const).map((mode) => (
-              <button
-                aria-pressed={interactionMode === mode}
-                className={cn(
-                  "px-2 py-1 text-[10px]",
-                  interactionMode === mode ? "bg-sky-950 text-sky-300" : "text-zinc-500 hover:bg-zinc-800",
-                )}
-                key={mode}
-                onClick={() => onInteractionModeChange(mode)}
-                type="button"
-              >
-                {mode === "position" ? "Set position" : "Create movement"}
-              </button>
-            ))}
-          </div>
-        </div>
-        <span className="truncate text-[10px] text-zinc-600" title={projection.canvas.sampleId}>{projection.canvas.sampleId}</span>
-      </div>
-
       <div className="grid min-h-0 flex-1 place-items-center overflow-auto p-4">
         <div
           className="relative aspect-video w-full max-w-5xl overflow-hidden border border-zinc-700 bg-black"
@@ -268,12 +353,18 @@ export function StudioViewport({
 
       <Timeline
         anchors={anchors}
+        appliedTransactionIds={appliedTransactionIds}
         currentTime={currentTime}
         duration={duration}
         events={projection.timeline.events}
+        interactionMode={interactionMode}
         isPlaying={isPlaying}
+        objectTracks={projection.timeline.objectTracks}
+        onInteractionModeChange={onInteractionModeChange}
+        onSelectEntity={onSelectEntity}
         onTimeChange={onTimeChange}
         onTogglePlayback={onTogglePlayback}
+        selectedIds={selectedIds}
       />
     </section>
   );

@@ -806,6 +806,11 @@ describe("one ProposedState feeds every Studio projection", () => {
     expect(projection.timeline.sampleId).toBe(projection.canvas.sampleId);
     expect(projection.workingPlayback.sampleId).toBe(projection.canvas.sampleId);
     expect(projection.timeline.events.some((event) => event.transactionId === "projection-program")).toBe(true);
+    expect(projection.timeline.objectTracks).toContainEqual(expect.objectContaining({
+      entityId: explanation?.id,
+      provisional: true,
+      type: "Text",
+    }));
     expect(proposed.evaluatedScene.constraintGraph.constraints.some((constraint) => (
       constraint.sourceEntityId === explanation?.id && constraint.mode === "snapshot"
     ))).toBe(true);

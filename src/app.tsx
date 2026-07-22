@@ -574,6 +574,7 @@ export function App() {
               onEntityPointerMove={moveEntityDrag}
               onEntityPointerUp={finishEntityDrag}
               onInteractionModeChange={setInteractionMode}
+              onSelectEntity={(entityId) => setSelectedObjectIds([entityId])}
               onTimeChange={(time) => {
                 setIsPlaying(false);
                 setCurrentTime(time);
