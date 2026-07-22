@@ -36,6 +36,14 @@ MathTex-to-explanatory-Text replacement, and new provisional MathTex creation;
 the floating Magic Edit board can be dragged across the workspace, hidden, and
 restored without losing its instruction or draft preview.
 
+The web editor also has a project picker for server-authorized Manim roots, an
+Insert toolbar for Text, MathTex, Rectangle, Circle, Line, and Arrow objects, and
+PowerPoint-style select/copy/paste/duplicate/delete/undo/redo shortcuts. New motion
+duration is editable, its quadratic Bézier path and control handle are projected
+from executable operation data, and Scene duration can be extended at a safe source
+anchor. Sequential Edit Programs may transform the same logical MathTex more than
+once, rebinding each step to the preceding replacement identity.
+
 Cross-cutting findings from that screen are maintained separately in the
 [Edit operation model memo](docs/edit-operation-model.md). It records the emerging
 GestureConstraint → EditOperation → truthful preview → source-lowering boundary,
@@ -90,9 +98,10 @@ to the logger, and common credential-shaped fields are redacted by the logging
 layer.
 
 The rendered-validation experiment lowers a complete canonical `EditProgram` at an
-explicit safe source marker. Straight motion, position, MathTex/Text creation,
-relative placement, FadeIn/removal, content transforms, and cover-and-reveal Scene
-boundaries can share one isolated Manim preview and guarded source commit. Start
+explicit safe source marker. Straight or quadratic Bézier motion, position,
+MathTex/Text/basic-shape creation, relative placement, FadeIn/removal, chained
+content transforms, explicit waits, and cover-and-reveal Scene boundaries can share
+one isolated Manim preview and guarded source commit. Start
 Studio with a Manim project root and command when they differ from this checkout and
 the `manim` executable:
 
@@ -101,6 +110,14 @@ POIETRA_MANIM_PROJECT_ROOT=/path/to/project \
 POIETRA_MANIM_COMMAND='["uv", "run", "manim"]' \
 pnpm dev:web
 ```
+
+Multiple pre-authorized roots can be registered without accepting filesystem paths
+from the browser. `POIETRA_MANIM_PROJECTS` is a JSON array of root strings or
+`{"id":"project-a","name":"Display name","root":"/path"}` objects; the legacy
+single-root variable remains the fallback. The project-bound export API performs
+the same canonical lowering and stale-source checks without requiring Manim or
+writing the source file; the Inspector exposes it as `Export .py` whenever the
+current composed Program has supported lowering and a matching safe anchor.
 
 If Manim is available through Docker instead, the included runner mounts the
 project read-only, mounts only the operating-system preview directory as writable,
@@ -112,8 +129,9 @@ POIETRA_MANIM_COMMAND='["node", "scripts/manim-docker-runner.mjs"]' pnpm dev:web
 
 Eligible source boundaries use an explicit marker such as
 `# poietra:anchor 5.000` inside a Scene method. Studio rejects missing anchors,
-curved paths, unknown source variables, stale source hashes, invalid next-Scene
-destinations, and failed renders instead of writing an illustrative patch. Committed
+unknown source variables, stale source hashes, unsupported overlap or camera
+operations, invalid next-Scene destinations, and failed renders instead of writing
+an illustrative patch. Committed
 generated entities carry data-only `poietra:entity` markers, so a subsequent import
 recovers their Studio identity and Python binding. Scene changes carry an explicit
 boundary marker and terminate the outgoing construct after revealing the imported

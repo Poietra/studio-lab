@@ -2,35 +2,79 @@ import type { z } from "zod";
 
 import type {
   ManimApiError,
+  ManimSourceExport,
   ProgramRenderRequest,
 } from "./contracts";
 import {
+  manimProjectIdSchema,
+  manimProjectListViewSchema,
   manimWorkspaceViewSchema,
   programRenderRequestSchema,
   renderSessionViewSchema,
 } from "./contracts";
 
-async function readJson<T>(response: Response, schema: z.ZodType<T>): Promise<T> {
+async function responseBody(response: Response) {
   const text = await response.text();
-  let body: unknown;
   try {
-    body = text ? JSON.parse(text) as unknown : null;
+    return text ? JSON.parse(text) as unknown : null;
   } catch {
     throw new Error(`Request failed with ${response.status}: the server returned malformed JSON.`);
   }
-  if (!response.ok) {
-    const error = typeof body === "object" && body !== null && "error" in body
-      ? (body as ManimApiError).error
-      : null;
-    throw new Error(typeof error === "string" ? error : `Request failed with ${response.status}.`);
+}
+
+export class ManimApiRequestError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ManimApiRequestError";
+    this.status = status;
   }
+}
+
+export function isMissingManimSession(error: unknown) {
+  return error instanceof ManimApiRequestError && error.status === 404;
+}
+
+function apiError(response: Response, body: unknown) {
+  const error = typeof body === "object" && body !== null && "error" in body
+    ? (body as ManimApiError).error
+    : null;
+  return new ManimApiRequestError(
+    typeof error === "string" ? error : `Request failed with ${response.status}.`,
+    response.status,
+  );
+}
+
+async function readJson<T>(response: Response, schema: z.ZodType<T>): Promise<T> {
+  const body = await responseBody(response);
+  if (!response.ok) throw apiError(response, body);
   const parsed = schema.safeParse(body);
   if (!parsed.success) throw new Error("The server returned a response that does not match the API contract.");
   return parsed.data;
 }
 
-export async function loadManimWorkspace(signal?: AbortSignal) {
-  return readJson(await fetch("/api/manim/workspace", { signal }), manimWorkspaceViewSchema);
+export async function loadManimProjects(signal?: AbortSignal) {
+  return readJson(await fetch("/api/manim/projects", { signal }), manimProjectListViewSchema);
+}
+
+export async function loadManimWorkspace(
+  projectIdOrSignal?: string | AbortSignal,
+  signal?: AbortSignal,
+) {
+  const projectId = typeof projectIdOrSignal === "string" ? projectIdOrSignal : null;
+  const requestSignal = typeof projectIdOrSignal === "string" ? signal : projectIdOrSignal;
+  if (projectId && !manimProjectIdSchema.safeParse(projectId).success) {
+    throw new Error("The project ID does not match the API contract.");
+  }
+  const path = projectId
+    ? `/api/manim/projects/${encodeURIComponent(projectId)}/workspace`
+    : "/api/manim/workspace";
+  const workspace = await readJson(await fetch(path, { signal: requestSignal }), manimWorkspaceViewSchema);
+  if (projectId && workspace.projectId !== projectId) {
+    throw new Error("The server returned a workspace for a different project.");
+  }
+  return workspace;
 }
 
 export async function startManimRender(request: ProgramRenderRequest, signal?: AbortSignal) {
@@ -38,12 +82,53 @@ export async function startManimRender(request: ProgramRenderRequest, signal?: A
   if (!parsedRequest.success) {
     throw new Error("The render request does not match the API contract.");
   }
-  return readJson(await fetch("/api/manim/renders", {
+  const session = await readJson(await fetch(`/api/manim/projects/${encodeURIComponent(parsedRequest.data.projectId)}/renders`, {
     body: JSON.stringify(parsedRequest.data),
     headers: { "content-type": "application/json" },
     method: "POST",
     signal,
   }), renderSessionViewSchema);
+  if (session.projectId !== parsedRequest.data.projectId) {
+    throw new Error("The server returned a render session for a different project.");
+  }
+  return session;
+}
+
+function attachmentFileName(response: Response) {
+  const disposition = response.headers.get("content-disposition") ?? "";
+  const match = disposition.match(/(?:^|;)\s*filename="([^"]+)"/i);
+  return match?.[1] ?? "manim-scene.py";
+}
+
+export async function exportManimSource(
+  request: ProgramRenderRequest,
+  signal?: AbortSignal,
+): Promise<ManimSourceExport> {
+  const parsedRequest = programRenderRequestSchema.safeParse(request);
+  if (!parsedRequest.success) {
+    throw new Error("The export request does not match the API contract.");
+  }
+  const response = await fetch(`/api/manim/projects/${encodeURIComponent(parsedRequest.data.projectId)}/export`, {
+    body: JSON.stringify(parsedRequest.data),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+    signal,
+  });
+  if (!response.ok) {
+    throw apiError(response, await responseBody(response));
+  }
+  const mediaType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (mediaType !== "text/x-python") {
+    throw new Error("The server returned an export that does not match the API contract.");
+  }
+  if (response.headers.get("x-poietra-project-id") !== parsedRequest.data.projectId) {
+    throw new Error("The server returned an export for a different project.");
+  }
+  return {
+    fileName: attachmentFileName(response),
+    projectId: parsedRequest.data.projectId,
+    source: await response.text(),
+  };
 }
 
 export async function loadManimRender(id: string, signal?: AbortSignal) {

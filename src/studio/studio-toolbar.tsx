@@ -1,0 +1,93 @@
+import { cn } from "../lib/cn";
+import { shortcutLabel, studioCommand, type StudioCommandId } from "./commands";
+import type { InsertEntityType } from "./authoring-commands";
+
+export type StudioTool = "select" | InsertEntityType;
+
+const TOOL_COMMANDS: readonly Readonly<{
+  commandId: StudioCommandId;
+  label: string;
+  tool: StudioTool;
+}>[] = [
+  { commandId: "select-tool", label: "Select", tool: "select" },
+  { commandId: "insert-text", label: "Text", tool: "Text" },
+  { commandId: "insert-mathtex", label: "Math", tool: "MathTex" },
+  { commandId: "insert-rectangle", label: "Rectangle", tool: "Rectangle" },
+  { commandId: "insert-circle", label: "Circle", tool: "Circle" },
+  { commandId: "insert-line", label: "Line", tool: "Line" },
+  { commandId: "insert-arrow", label: "Arrow", tool: "Arrow" },
+] as const;
+
+export function StudioToolbar({
+  insertValue,
+  onInsertAtCenter,
+  onInsertValueChange,
+  onToolChange,
+  tool,
+}: Readonly<{
+  insertValue: string;
+  onInsertAtCenter: () => void;
+  onInsertValueChange: (value: string) => void;
+  onToolChange: (tool: StudioTool) => void;
+  tool: StudioTool;
+}>) {
+  const requiresContent = tool === "Text" || tool === "MathTex";
+  return (
+    <section aria-label="Studio tools" className="shrink-0 border-b border-zinc-800 bg-zinc-950 px-3 py-2">
+      <div className="flex flex-wrap items-center gap-1" role="toolbar">
+        {TOOL_COMMANDS.map((item) => {
+          const command = studioCommand(item.commandId);
+          const shortcut = shortcutLabel(command.shortcut, navigator.platform);
+          return (
+            <button
+              aria-keyshortcuts={command.shortcut.replace("Mod", navigator.platform.includes("Mac") ? "Meta" : "Control")}
+              aria-label={`${command.label} (${shortcut})`}
+              aria-pressed={tool === item.tool}
+              className={cn(
+                "h-8 border px-2.5 text-xs",
+                tool === item.tool
+                  ? "border-sky-700 bg-sky-950 text-sky-200"
+                  : "border-zinc-700 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100",
+              )}
+              key={item.tool}
+              onClick={() => onToolChange(item.tool)}
+              title={`${command.label} · ${shortcut}`}
+              type="button"
+            >
+              {item.label}
+            </button>
+          );
+        })}
+        <span className="ml-2 hidden text-pretty text-[10px] text-zinc-600 md:inline">
+          {tool === "select" ? "Select and move objects" : "Click the canvas to place the object"}
+        </span>
+      </div>
+      {requiresContent ? (
+        <form
+          className="mt-2 flex max-w-xl items-end gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onInsertAtCenter();
+          }}
+        >
+          <label className="min-w-0 flex-1 text-[10px] text-zinc-500">
+            {tool === "Text" ? "Text content" : "MathTex"}
+            <input
+              autoComplete="off"
+              className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-100 outline-none focus:border-sky-500"
+              onChange={(event) => onInsertValueChange(event.currentTarget.value)}
+              placeholder={tool === "Text" ? "Type text" : String.raw`e.g. E = mc^2`}
+              value={insertValue}
+            />
+          </label>
+          <button
+            className="h-8 bg-sky-500 px-3 text-xs font-medium text-sky-950 hover:bg-sky-400"
+            type="submit"
+          >
+            Insert at center
+          </button>
+        </form>
+      ) : null}
+    </section>
+  );
+}
