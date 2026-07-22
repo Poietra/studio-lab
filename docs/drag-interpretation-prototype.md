@@ -1,15 +1,25 @@
 # Drag interpretation prototype
 
+Status: historical fixture findings; production-shaped follow-ups are implemented
+Last updated: 2026-07-22
+
 ## Purpose
 
-This disposable screen turns the discussion about edit intent into a concrete
+This disposable screen turned the discussion about edit intent into a concrete
 interaction. It is not the final Studio design and it does not claim that the
 displayed patches are safe for arbitrary Manim source.
 
 The reusable design conclusions from this fixture are extracted into the
 [Edit operation model memo](edit-operation-model.md). This document describes what
-the current screen does; the memo distinguishes working conclusions from open
+the original fixture screen did; the memo distinguishes working conclusions from open
 product and protocol questions.
+
+The shared runtime screen has since implemented the main follow-ups: executable
+quadratic Bézier handles and Manim lowering, editable motion duration, safe Scene
+extension, manual object Insert tools, keyboard commands, sequential repeated
+MathTex transforms, registered-project switching, and project-bound Python export.
+The fixture assumptions below remain useful as historical evidence, not as a list
+of current runtime limitations.
 
 The fixture starts at five seconds with `equation_1` selected at its rendered
 position. A reviewer can:
@@ -137,11 +147,13 @@ must be connected. The browser does not invent the contents of that incoming Sce
 
 Free-form instructions are first decomposed into the supported leaf operations.
 One effect remains a leaf candidate; two or three effects become a bounded
-`EditProgram` with one captured time anchor, unique operation kinds, and an explicit
-`parallel` or `sequence` schedule. This is not tied to one example sentence or to
-the Transform-plus-Explanation pair. Studio independently verifies every target,
-interval, dependency and parallel write before preview, lowers the accepted program
-as one or more Manim plays, and applies or undoes the transaction atomically.
+`EditProgram` with one captured time anchor, normally unique operation kinds, and
+an explicit `parallel` or `sequence` schedule. A sequence may repeat
+`create-transform`; each later transform is rebound to the preceding provisional
+MathTex identity. This is not tied to one example sentence or to the
+Transform-plus-Explanation pair. Studio independently verifies every target,
+interval, dependency and parallel write before preview, lowers the accepted
+program as one or more Manim plays, and applies or undoes the transaction atomically.
 
 The current compatibility rule permits the MathTex transform and its explanation
 in one parallel play. A movement that writes the same object as a transform, or
@@ -352,27 +364,28 @@ pnpm dev:tauri
   that are present at the playhead; disappeared members remain in the saved group.
 - Multiple staged candidates can be applied together; the prototype does not yet
   expose a dedicated stack for reordering or removing one pending candidate.
-- The source patch is illustrative and is not written to disk.
+- The fixture source patch is illustrative and is not written to disk. The shared
+  runtime now offers guarded Commit/Undo and a lowering-only Python download.
 - Source and edited paths are retained in the in-memory working preview and drive
-  both trajectory drawing and playback. Lowering a curved path into Manim source
-  or a future Scene IR is deliberately unresolved.
-- The main Apply action changes only the in-memory working preview. A separate
-  rendered-validation slice can lower one straight `CreateMotion` with known
-  source targets at an explicit source anchor, run Manim against a temporary copy,
-  then atomically commit or discard it. Other operations still have no source
-  writer or render validation.
+  both trajectory drawing and playback. The runtime follow-up converts the same
+  quadratic control point exactly to Manim `CubicBezier`/`MoveAlongPath` and restores
+  it from a data-only source marker.
+- The fixture's main Apply action changes only its in-memory working preview. The
+  shared runtime can lower a complete supported Canonical EditProgram at an explicit
+  source anchor, export it without Manim, or render a temporary copy before guarded
+  Commit/Undo.
 - Natural-language suggestions currently create `CreateMotion`, the narrowly
   supported MathTex `CreateTransform`, bounded `CreateExplanation`, new equations
   with or without atomic explanation Text, or standalone Scene-level
   `CreateSceneTransition` operations.
   Explanation creation keeps its relative anchor, adds a Text object on a separate
   timeline lane, and previews target-relative FadeIn plus persistent presence. The
-  bounded `EditProgram` transaction combines any two or three unique
-  motion/transform/explanation operation kinds, preserving parallel or sequential
-  order instead of forcing a choose-one clarification or silently discarding one
-  requested effect.
-  `CreateSceneTransition` remains standalone in this version because its midpoint
-  changes the active Scene composition rather than one object property.
+  bounded `EditProgram` transaction combines any two or three supported steps,
+  preserving parallel or sequential order instead of forcing a choose-one
+  clarification or silently discarding one requested effect. Sequential transform
+  steps may repeat for one logical MathTex; other repeated leaf kinds remain
+  rejected. `CreateSceneTransition` may be sequenced with compatible equation
+  creation while its midpoint changes the active Scene composition.
   A schema-invalid model candidate receives one model repair attempt; repeated
   invalid output is reported as a focused error rather than exposing raw validator
   internals in the composer.

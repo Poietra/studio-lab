@@ -1,7 +1,7 @@
 # Edit operation model: findings from direct-manipulation experiments
 
 Status: design findings; the Studio-owned v1 prototype boundary is now implemented
-Last updated: 2026-07-21
+Last updated: 2026-07-22
 
 The implementation contract and module map are documented in
 [Studio state and canonical Edit Operation model](studio-state-operation-model.md).
@@ -316,8 +316,9 @@ structure is:
 
 ## Animation parameters and progressive disclosure
 
-The prototype exposes only duration and easing. A useful movement operation needs
-more semantic state than the raw Manim call shows:
+The first fixture exposed only duration and easing. The shared runtime now also
+projects an executable quadratic path and editable control handle, but a useful
+movement operation still needs more semantic state than the raw Manim call shows:
 
 - temporal anchor, start, end and duration
 - destination state: position and potentially scale, rotation, style or opacity

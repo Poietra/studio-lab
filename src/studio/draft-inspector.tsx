@@ -26,7 +26,7 @@ function minimumDuration(step: EditableSuggestionStep) {
 }
 
 function retimeStep(step: EditableSuggestionStep, start: number, duration: number): EditableSuggestionStep {
-  const normalizedDuration = Math.max(minimumDuration(step), Math.min(5, duration));
+  const normalizedDuration = Math.max(minimumDuration(step), duration);
   return { ...step, end: start + normalizedDuration, start } as EditableSuggestionStep;
 }
 
@@ -67,7 +67,6 @@ function StepEditor({
           Duration
           <input
             className={inputClass}
-            max="5"
             min={minimumDuration(step)}
             onChange={(event) => onChange(retimeStep(step, step.start, Number(event.currentTarget.value)))}
             step="0.1"
@@ -234,10 +233,52 @@ function StepEditor({
       ) : null}
 
       {step.kind === "create-motion" ? (
-        <dl className="mt-3 grid grid-cols-2 gap-2 tabular-nums text-[10px]">
-          <div><dt className="text-zinc-600">Delta X</dt><dd className="text-zinc-300">{step.delta.x.toFixed(1)}px</dd></div>
-          <div><dt className="text-zinc-600">Delta Y</dt><dd className="text-zinc-300">{step.delta.y.toFixed(1)}px</dd></div>
-        </dl>
+        <div className="mt-3">
+          <dl className="grid grid-cols-2 gap-2 tabular-nums text-[10px]">
+            <div><dt className="text-zinc-600">Delta X</dt><dd className="text-zinc-300">{step.delta.x.toFixed(1)}px</dd></div>
+            <div><dt className="text-zinc-600">Delta Y</dt><dd className="text-zinc-300">{step.delta.y.toFixed(1)}px</dd></div>
+          </dl>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <label className="text-[10px] text-zinc-500">
+              Curve X
+              <input
+                className={inputClass}
+                max="160"
+                min="-160"
+                onChange={(event) => onChange({
+                  ...step,
+                  controlOffset: { ...step.controlOffset, x: Number(event.currentTarget.value) },
+                })}
+                step="1"
+                type="number"
+                value={step.controlOffset.x}
+              />
+            </label>
+            <label className="text-[10px] text-zinc-500">
+              Curve Y
+              <input
+                className={inputClass}
+                max="100"
+                min="-100"
+                onChange={(event) => onChange({
+                  ...step,
+                  controlOffset: { ...step.controlOffset, y: Number(event.currentTarget.value) },
+                })}
+                step="1"
+                type="number"
+                value={step.controlOffset.y}
+              />
+            </label>
+          </div>
+          <button
+            className="mt-2 text-[10px] text-zinc-500 underline underline-offset-2 hover:text-zinc-200"
+            disabled={step.controlOffset.x === 0 && step.controlOffset.y === 0}
+            onClick={() => onChange({ ...step, controlOffset: { x: 0, y: 0 } })}
+            type="button"
+          >
+            Reset to straight path
+          </button>
+        </div>
       ) : null}
     </section>
   );

@@ -2,13 +2,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "../lib/cn";
 import type { CanonicalEditProgram } from "../studio/operations";
-import type { ManimWorkspaceView, ProgramRenderRequest, RenderSessionView } from "./contracts";
-import { loadManimRender, runManimRenderAction, startManimRender } from "./client";
+import { renderProgramBatchId, type ManimWorkspaceView, type ProgramRenderRequest, type RenderSessionView } from "./contracts";
+import { exportManimSource, isMissingManimSession, loadManimRender, runManimRenderAction, startManimRender } from "./client";
 
 export type RenderProgramCandidate = Readonly<{
   anchors: readonly number[];
   destination: ProgramRenderRequest["destination"];
   program: CanonicalEditProgram;
+  programs: readonly CanonicalEditProgram[];
+  projectId: string;
   sceneName: string;
   sourceBindings: ProgramRenderRequest["sourceBindings"];
   sourceHash: string;
@@ -19,7 +21,9 @@ export type RenderProgramCandidate = Readonly<{
 type RenderPipelinePanelProps = Readonly<{
   candidate: RenderProgramCandidate | null;
   candidateUnavailableReason: string;
+  onSessionChange: (session: RenderSessionView | null, projectId?: string) => void;
   onSourceChanged?: () => void | Promise<void>;
+  session: RenderSessionView | null;
   workspace: ManimWorkspaceView | null;
 }>;
 
@@ -47,12 +51,13 @@ function isAbortError(error: unknown) {
 export function RenderPipelinePanel({
   candidate,
   candidateUnavailableReason,
+  onSessionChange,
   onSourceChanged,
+  session,
   workspace,
 }: RenderPipelinePanelProps) {
-  const [session, setSession] = useState<RenderSessionView | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [pendingAction, setPendingAction] = useState<"cancel" | "commit" | "discard" | "render" | "undo" | null>(null);
+  const [pendingAction, setPendingAction] = useState<"cancel" | "commit" | "discard" | "export" | "render" | "undo" | null>(null);
   const commitDialog = useRef<HTMLDialogElement | null>(null);
   const mutationRequest = useRef<AbortController | null>(null);
 
@@ -65,15 +70,26 @@ export function RenderPipelinePanel({
     if (!session || terminalStatus(session.status) || pendingAction) return;
     const controller = new AbortController();
     let timer = 0;
+    let continuePolling = true;
     const poll = async () => {
       try {
-        setSession(await loadManimRender(session.id, controller.signal));
+        const nextSession = await loadManimRender(session.id, controller.signal);
+        if (nextSession.projectId !== session.projectId) {
+          throw new Error("The server returned a render session for a different project.");
+        }
+        onSessionChange(nextSession);
         setError(null);
       } catch (nextError) {
         if (isAbortError(nextError)) return;
-        setError(nextError instanceof Error ? nextError.message : "Could not refresh the render status.");
+        if (isMissingManimSession(nextError)) {
+          continuePolling = false;
+          onSessionChange(null, session.projectId);
+          setError("The previous render session expired. You can start a new preview.");
+        } else {
+          setError(nextError instanceof Error ? nextError.message : "Could not refresh the render status.");
+        }
       } finally {
-        if (!controller.signal.aborted) timer = window.setTimeout(() => void poll(), 500);
+        if (!controller.signal.aborted && continuePolling) timer = window.setTimeout(() => void poll(), 500);
       }
     };
     timer = window.setTimeout(() => void poll(), 500);
@@ -81,28 +97,58 @@ export function RenderPipelinePanel({
       controller.abort();
       window.clearTimeout(timer);
     };
-  }, [pendingAction, session?.id, session?.status]);
+  }, [onSessionChange, pendingAction, session?.id, session?.projectId, session?.status]);
 
-  const candidateHasAnchor = candidate !== null && candidate.anchors.some((anchor) => (
-    Math.abs(anchor - candidate.program.anchor.resolvedSeconds) < 0.0005
-  ));
+  useEffect(() => {
+    if (!session || !terminalStatus(session.status) || session.status === "discarded" || pendingAction) return;
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const nextSession = await loadManimRender(session.id, controller.signal);
+        if (nextSession.projectId !== session.projectId) {
+          throw new Error("The server returned a render session for a different project.");
+        }
+        onSessionChange(nextSession);
+      } catch (nextError) {
+        if (!isAbortError(nextError)) {
+          if (isMissingManimSession(nextError)) {
+            onSessionChange(null, session.projectId);
+            setError("The previous render session expired. You can start a new preview.");
+          } else {
+            setError(nextError instanceof Error ? nextError.message : "Could not restore the render session.");
+          }
+        }
+      }
+    })();
+    return () => controller.abort();
+  }, [onSessionChange, pendingAction, session?.id, session?.projectId, session?.status]);
+
+  const missingAnchor = candidate?.programs.find((program) => !candidate.anchors.some((anchor) => (
+    Math.abs(anchor - program.anchor.resolvedSeconds) < 0.0005
+  )))?.anchor.resolvedSeconds ?? null;
+  const unsupportedProgram = candidate?.programs.find((program) => (
+    program.loweringStatus !== "supported"
+  )) ?? null;
   const sessionMatchesCandidate = session !== null
     && candidate !== null
-    && session.programTransactionId === candidate.program.transactionId
+    && session.projectId === candidate.projectId
+    && session.programBatchId === renderProgramBatchId(candidate.programs)
     && session.sourcePath === candidate.sourcePath
     && session.sceneName === candidate.sceneName;
-  const previewBlocker = useMemo(() => {
+  const candidateBlocker = useMemo(() => {
     if (!workspace) return "Inspecting the Manim workspace…";
-    if (!workspace.commandAvailable) return `Manim command ${JSON.stringify(workspace.command)} is unavailable.`;
     if (!candidate) return candidateUnavailableReason;
-    if (candidate.program.loweringStatus !== "supported") {
-      return `This Program is marked ${candidate.program.loweringStatus}; rendered validation requires supported lowering.`;
+    if (candidate.projectId !== workspace.projectId) return "The draft belongs to a different project. Recreate it in the active project.";
+    if (unsupportedProgram) {
+      return `This Program is marked ${unsupportedProgram.loweringStatus}; rendered validation requires supported lowering.`;
     }
-    if (!candidateHasAnchor) {
-      return `Add # poietra:anchor ${candidate.program.anchor.resolvedSeconds.toFixed(3)} at a safe source boundary.`;
+    if (missingAnchor !== null) {
+      return `Add # poietra:anchor ${missingAnchor.toFixed(3)} at a safe source boundary.`;
     }
     return null;
-  }, [candidate, candidateHasAnchor, candidateUnavailableReason, workspace]);
+  }, [candidate, candidateUnavailableReason, missingAnchor, unsupportedProgram, workspace]);
+  const previewBlocker = candidateBlocker
+    ?? (!workspace?.commandAvailable ? `Manim command ${JSON.stringify(workspace?.command ?? [])} is unavailable.` : null);
 
   async function startPreview() {
     if (!candidate || previewBlocker || pendingAction) return;
@@ -115,9 +161,11 @@ export function RenderPipelinePanel({
     const controller = new AbortController();
     mutationRequest.current = controller;
     try {
-      setSession(await startManimRender({
+      onSessionChange(await startManimRender({
         destination: candidate.destination,
         program: candidate.program,
+        programs: candidate.programs,
+        projectId: candidate.projectId,
         sceneName: candidate.sceneName,
         sourceBindings: candidate.sourceBindings,
         sourceHash: candidate.sourceHash,
@@ -135,6 +183,41 @@ export function RenderPipelinePanel({
     }
   }
 
+  async function exportSource() {
+    if (!candidate || candidateBlocker || pendingAction) return;
+    setError(null);
+    setPendingAction("export");
+    const controller = new AbortController();
+    mutationRequest.current = controller;
+    try {
+      const exported = await exportManimSource({
+        destination: candidate.destination,
+        program: candidate.program,
+        programs: candidate.programs,
+        projectId: candidate.projectId,
+        sceneName: candidate.sceneName,
+        sourceBindings: candidate.sourceBindings,
+        sourceHash: candidate.sourceHash,
+        sourcePath: candidate.sourcePath,
+        viewport: candidate.viewport,
+      }, controller.signal);
+      const url = URL.createObjectURL(new Blob([exported.source], { type: "text/x-python;charset=utf-8" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = exported.fileName;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (nextError) {
+      if (isAbortError(nextError)) return;
+      setError(nextError instanceof Error ? nextError.message : "Could not export the Manim source.");
+    } finally {
+      if (mutationRequest.current === controller) {
+        mutationRequest.current = null;
+        setPendingAction(null);
+      }
+    }
+  }
+
   async function runAction(action: "cancel" | "commit" | "discard" | "undo") {
     if (!session || pendingAction) return false;
     setError(null);
@@ -143,7 +226,10 @@ export function RenderPipelinePanel({
     mutationRequest.current = controller;
     try {
       const nextSession = await runManimRenderAction(session.id, action, controller.signal);
-      setSession(nextSession);
+      if (nextSession.projectId !== session.projectId) {
+        throw new Error("The server returned a render action for a different project.");
+      }
+      onSessionChange(nextSession);
       if (action === "commit" || action === "undo") {
         try {
           await onSourceChanged?.();
@@ -158,7 +244,12 @@ export function RenderPipelinePanel({
       return true;
     } catch (nextError) {
       if (isAbortError(nextError)) return false;
-      setError(nextError instanceof Error ? nextError.message : `Could not ${action} the render.`);
+      if (isMissingManimSession(nextError)) {
+        onSessionChange(null, session.projectId);
+        setError("The previous render session expired. You can start a new preview.");
+      } else {
+        setError(nextError instanceof Error ? nextError.message : `Could not ${action} the render.`);
+      }
       return false;
     } finally {
       if (mutationRequest.current === controller) {
@@ -253,6 +344,14 @@ export function RenderPipelinePanel({
       ) : null}
 
       <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+        <button
+          className="border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-600"
+          disabled={candidateBlocker !== null || pendingAction !== null}
+          onClick={() => void exportSource()}
+          type="button"
+        >
+          {pendingAction === "export" ? "Exporting…" : "Export .py"}
+        </button>
         {session?.canCancel ? (
           <button className="border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:text-zinc-600" disabled={pendingAction !== null} onClick={() => void runAction("cancel")} type="button">
             Cancel render

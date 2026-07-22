@@ -1,19 +1,26 @@
-import type { KeyboardEvent, PointerEvent } from "react";
+import { type KeyboardEvent, type PointerEvent, useRef, useState } from "react";
 
 import { cn } from "../lib/cn";
 import type {
   Interval,
+  Point,
   ProjectedEntity,
   ProposedStateProjection,
   TimelineEvent,
   TimelineObjectTrack,
 } from "./model";
 import { EquationContent } from "./prototype-rendering";
+import { quadraticPathData, type StudioMotionPath } from "./motion-paths";
+import { StudioToolbar, type StudioTool } from "./studio-toolbar";
 import { isTransitionOverlay } from "./workspace-projection";
 
 export const STUDIO_VIEWPORT = { height: 360, width: 640 } as const;
 
 export type InteractionMode = "animate" | "position";
+export type StudioTimelineAnchor = Readonly<{
+  sourceTime: number;
+  workingTime: number;
+}>;
 export type EntityDragPreview = Readonly<{
   delta: Readonly<{ x: number; y: number }>;
   entityIds: readonly string[];
@@ -59,11 +66,24 @@ function ObjectVisual({ entity }: Readonly<{ entity: ProjectedEntity }>) {
   if (entity.type === "Text") {
     return <span className="block max-w-56 text-pretty text-center text-sm leading-5">{entity.content?.text ?? entityLabel(entity)}</span>;
   }
-  if (entity.type === "Arrow" || entity.type === "Line") {
-    return <span aria-hidden="true" className="block h-px w-20 bg-zinc-400" />;
+  if (entity.type === "Arrow") {
+    return (
+      <svg aria-hidden="true" className="h-5 w-24" viewBox="0 0 96 20">
+        <path d="M 2 10 H 88 M 80 3 L 89 10 L 80 17" fill="none" stroke="currentColor" strokeWidth="2" />
+      </svg>
+    );
+  }
+  if (entity.type === "Line") {
+    return <span aria-hidden="true" className="block h-px w-24 bg-zinc-400" />;
   }
   if (entity.type === "Rectangle" || entity.type === "SurroundingRectangle" || entity.type === "Square") {
     return <span aria-hidden="true" className="block h-14 w-32 border border-zinc-500" />;
+  }
+  if (entity.type === "Circle" || entity.type === "Dot") {
+    return <span aria-hidden="true" className="block size-16 rounded-full border border-zinc-500" />;
+  }
+  if (entity.type === "RegularPolygon") {
+    return <span aria-hidden="true" className="block size-16 border border-zinc-500 [clip-path:polygon(50%_0%,93%_25%,93%_75%,50%_100%,7%_75%,7%_25%)]" />;
   }
   return <span className="block border border-zinc-600 px-3 py-2 text-xs text-zinc-300">{entityLabel(entity)}</span>;
 }
@@ -79,6 +99,199 @@ function intervalStyle(interval: Interval, duration: number) {
     left: `${(interval.start / duration) * 100}%`,
     width: `${Math.max(0.25, ((interval.end - interval.start) / duration) * 100)}%`,
   };
+}
+
+function MotionControlHandle({
+  onChange,
+  onPreviewChange,
+  path,
+  previewDelta,
+}: Readonly<{
+  onChange: (path: StudioMotionPath, delta: Point) => void;
+  onPreviewChange: (path: StudioMotionPath, delta: Point | null) => void;
+  path: StudioMotionPath;
+  previewDelta: Point;
+}>) {
+  const drag = useRef<Readonly<{
+    pointerId: number;
+    scale: Point;
+    start: Point;
+  }> | null>(null);
+  const point = {
+    x: path.control.x + previewDelta.x,
+    y: path.control.y + previewDelta.y,
+  };
+
+  function finish(event: PointerEvent<HTMLButtonElement>) {
+    const active = drag.current;
+    if (!active || active.pointerId !== event.pointerId) return;
+    const delta = {
+      x: (event.clientX - active.start.x) * active.scale.x,
+      y: (event.clientY - active.start.y) * active.scale.y,
+    };
+    drag.current = null;
+    onPreviewChange(path, null);
+    if (Math.hypot(delta.x, delta.y) >= 0.5) onChange(path, delta);
+  }
+
+  function cancel(event: PointerEvent<HTMLButtonElement>) {
+    if (drag.current?.pointerId !== event.pointerId) return;
+    drag.current = null;
+    onPreviewChange(path, null);
+  }
+
+  return (
+    <button
+      aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
+      aria-label={`Adjust motion path for ${path.entityId}`}
+      className="absolute z-30 size-4 touch-none -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-sky-200 bg-sky-500 outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
+      data-motion-control={path.motionId}
+      onKeyDown={(event) => {
+        const amount = event.shiftKey ? 10 : 2;
+        const delta = {
+          ArrowDown: { x: 0, y: amount },
+          ArrowLeft: { x: -amount, y: 0 },
+          ArrowRight: { x: amount, y: 0 },
+          ArrowUp: { x: 0, y: -amount },
+        }[event.key];
+        if (!delta) return;
+        event.preventDefault();
+        onChange(path, delta);
+      }}
+      onLostPointerCapture={finish}
+      onPointerCancel={cancel}
+      onPointerDown={(event) => {
+        const bounds = event.currentTarget.closest<HTMLElement>("[data-studio-transform-layer]")?.getBoundingClientRect();
+        drag.current = {
+          pointerId: event.pointerId,
+          scale: {
+            x: bounds?.width ? STUDIO_VIEWPORT.width / bounds.width : 1,
+            y: bounds?.height ? STUDIO_VIEWPORT.height / bounds.height : 1,
+          },
+          start: { x: event.clientX, y: event.clientY },
+        };
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }}
+      onPointerMove={(event) => {
+        const active = drag.current;
+        if (!active || active.pointerId !== event.pointerId) return;
+        onPreviewChange(path, {
+          x: (event.clientX - active.start.x) * active.scale.x,
+          y: (event.clientY - active.start.y) * active.scale.y,
+        });
+      }}
+      onPointerUp={finish}
+      style={positionStyle(point)}
+      title="Drag to bend the path · Arrow keys adjust precisely"
+      type="button"
+    />
+  );
+}
+
+function MotionPathOverlay({
+  dragPreview,
+  editableMotionIds,
+  entities,
+  interactionMode,
+  motionPaths,
+  onMotionControlChange,
+}: Readonly<{
+  dragPreview: EntityDragPreview | null;
+  editableMotionIds: ReadonlySet<string>;
+  entities: readonly ProjectedEntity[];
+  interactionMode: InteractionMode;
+  motionPaths: readonly StudioMotionPath[];
+  onMotionControlChange: (path: StudioMotionPath, delta: Point) => void;
+}>) {
+  const [controlPreviews, setControlPreviews] = useState<ReadonlyMap<string, Point>>(() => new Map());
+  const previewedMotionPaths = motionPaths.map((path) => {
+    const preview = controlPreviews.get(path.motionId);
+    return preview ? {
+      ...path,
+      control: { x: path.control.x + preview.x, y: path.control.y + preview.y },
+    } : path;
+  });
+  const dragPaths = interactionMode === "animate" && dragPreview
+    ? entities.flatMap((entity) => {
+      if (!dragPreview.entityIds.includes(entity.id)) return [];
+      const end = {
+        x: entity.position.x + dragPreview.delta.x,
+        y: entity.position.y + dragPreview.delta.y,
+      };
+      return [{
+        control: {
+          x: (entity.position.x + end.x) / 2,
+          y: (entity.position.y + end.y) / 2,
+        },
+        end,
+        entityId: entity.id,
+        interval: { end: 0, start: 0 },
+        motionId: `${entity.id}/drag-preview`,
+        start: entity.position,
+      } satisfies StudioMotionPath];
+    })
+    : [];
+  return (
+    <>
+      <svg aria-hidden="true" className="pointer-events-none absolute inset-0 z-10 size-full" viewBox="0 0 640 360">
+        <defs>
+          <marker id="studio-motion-arrow" markerHeight="7" markerWidth="7" orient="auto" refX="6" refY="3.5">
+            <path d="M0,0 L7,3.5 L0,7 Z" fill="#38bdf8" />
+          </marker>
+        </defs>
+        {previewedMotionPaths.map((path) => (
+          <g key={`${path.entityId}/${path.motionId}`}>
+            <path
+              d={quadraticPathData(path)}
+              data-motion-path={path.motionId}
+              fill="none"
+              markerEnd="url(#studio-motion-arrow)"
+              stroke="#38bdf8"
+              strokeDasharray="5 4"
+              strokeWidth="1.5"
+            />
+            {editableMotionIds.has(path.motionId) ? (
+              <path
+                d={`M ${path.start.x} ${path.start.y} L ${path.control.x} ${path.control.y} L ${path.end.x} ${path.end.y}`}
+                fill="none"
+                opacity="0.5"
+                stroke="#7dd3fc"
+                strokeWidth="1"
+              />
+            ) : null}
+          </g>
+        ))}
+        {dragPaths.map((path) => (
+          <path
+            d={quadraticPathData(path)}
+            data-motion-preview={path.entityId}
+            fill="none"
+            key={path.motionId}
+            markerEnd="url(#studio-motion-arrow)"
+            stroke="#38bdf8"
+            strokeDasharray="5 4"
+            strokeWidth="1.5"
+          />
+        ))}
+      </svg>
+      {motionPaths.filter((path) => editableMotionIds.has(path.motionId)).map((path) => (
+        <MotionControlHandle
+          key={`${path.entityId}/${path.motionId}/control`}
+          onChange={onMotionControlChange}
+          onPreviewChange={(previewPath, delta) => {
+            setControlPreviews((current) => {
+              const next = new Map(current);
+              if (delta) next.set(previewPath.motionId, delta);
+              else next.delete(previewPath.motionId);
+              return next;
+            });
+          }}
+          path={path}
+          previewDelta={controlPreviews.get(path.motionId) ?? ZERO_DELTA}
+        />
+      ))}
+    </>
+  );
 }
 
 function TimelinePlayhead({ currentTime, duration }: Readonly<{ currentTime: number; duration: number }>) {
@@ -99,23 +312,27 @@ function Timeline({
   events,
   interactionMode,
   isPlaying,
+  motionDuration,
   objectTracks,
   onInteractionModeChange,
+  onMotionDurationChange,
   onSelectEntity,
   onTimeChange,
   onTogglePlayback,
   readOnly,
   selectedIds,
 }: Readonly<{
-  anchors: readonly number[];
+  anchors: readonly StudioTimelineAnchor[];
   appliedTransactionIds: ReadonlySet<string>;
   currentTime: number;
   duration: number;
   events: readonly TimelineEvent[];
   interactionMode: InteractionMode;
   isPlaying: boolean;
+  motionDuration: number;
   objectTracks: readonly TimelineObjectTrack[];
   onInteractionModeChange: (mode: InteractionMode) => void;
+  onMotionDurationChange: (duration: number) => void;
   onSelectEntity: (entityId: string) => void;
   onTimeChange: (time: number) => void;
   onTogglePlayback: () => void;
@@ -163,6 +380,21 @@ function Timeline({
         <span className="hidden text-pretty text-[10px] text-zinc-600 md:inline">
           {interactionMode === "position" ? "Updates the layout without adding time." : "Adds motion starting at the playhead."}
         </span>
+        {interactionMode === "animate" ? (
+          <label className="ml-auto flex items-center gap-2 text-[10px] text-zinc-500">
+            Motion duration
+            <input
+              aria-label="New motion duration in seconds"
+              className="h-7 w-20 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-xs text-zinc-200 outline-none focus:border-sky-500"
+              min="0.1"
+              onChange={(event) => onMotionDurationChange(Math.max(0.1, Number(event.currentTarget.value)))}
+              step="0.1"
+              type="number"
+              value={motionDuration}
+            />
+            <span>s</span>
+          </label>
+        ) : null}
       </div>
       <div aria-label="Scene object timeline" className="mt-3 max-h-56 overflow-y-auto border border-zinc-800 bg-zinc-900" role="group">
         <div className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 sm:grid-cols-[8rem_minmax(0,1fr)]">
@@ -183,12 +415,12 @@ function Timeline({
             ))}
             {anchors.map((anchor) => (
               <button
-                aria-label={`Move playhead to source anchor ${anchor.toFixed(3)} seconds`}
+                aria-label={`Move playhead to source anchor ${anchor.sourceTime.toFixed(3)} seconds`}
                 className="absolute bottom-0 top-0 z-10 w-px bg-amber-500/70 focus-visible:w-0.5"
-                key={anchor}
-                onClick={() => onTimeChange(anchor)}
-                style={{ left: `${(anchor / duration) * 100}%` }}
-                title={`Source anchor ${anchor.toFixed(3)}s`}
+                key={anchor.sourceTime}
+                onClick={() => onTimeChange(anchor.workingTime)}
+                style={{ left: `${(anchor.workingTime / duration) * 100}%` }}
+                title={`Source anchor ${anchor.sourceTime.toFixed(3)}s · working time ${anchor.workingTime.toFixed(3)}s`}
                 type="button"
               />
             ))}
@@ -257,16 +489,27 @@ export function StudioViewport({
   draftTransactionId,
   dragPreview,
   duration,
+  editableMotionIds,
   entities,
   incomingSceneName,
+  insertTool,
+  insertValue,
   interactionMode,
   isPlaying,
+  motionDuration,
+  motionPaths,
+  onCanvasPlace,
   onEntityKeyDown,
   onEntityPointerCancel,
   onEntityPointerDown,
   onEntityPointerMove,
   onEntityPointerUp,
   onInteractionModeChange,
+  onInsertAtCenter,
+  onInsertToolChange,
+  onInsertValueChange,
+  onMotionControlChange,
+  onMotionDurationChange,
   onSelectEntity,
   onTimeChange,
   onTogglePlayback,
@@ -274,7 +517,7 @@ export function StudioViewport({
   readOnly,
   selectedIds,
 }: Readonly<{
-  anchors: readonly number[];
+  anchors: readonly StudioTimelineAnchor[];
   appliedTransactionIds: ReadonlySet<string>;
   boundaryActive: boolean;
   className?: string;
@@ -282,16 +525,27 @@ export function StudioViewport({
   draftTransactionId: string | null;
   dragPreview: EntityDragPreview | null;
   duration: number;
+  editableMotionIds: ReadonlySet<string>;
   entities: readonly ProjectedEntity[];
   incomingSceneName: string | null;
+  insertTool: StudioTool;
+  insertValue: string;
   interactionMode: InteractionMode;
   isPlaying: boolean;
+  motionDuration: number;
+  motionPaths: readonly StudioMotionPath[];
+  onCanvasPlace: (point: Point) => void;
   onEntityKeyDown: (event: KeyboardEvent<HTMLButtonElement>, entityId: string) => void;
   onEntityPointerCancel: (event: PointerEvent<HTMLButtonElement>) => void;
   onEntityPointerDown: (event: PointerEvent<HTMLButtonElement>, entityId: string) => void;
   onEntityPointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
   onEntityPointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
   onInteractionModeChange: (mode: InteractionMode) => void;
+  onInsertAtCenter: () => void;
+  onInsertToolChange: (tool: StudioTool) => void;
+  onInsertValueChange: (value: string) => void;
+  onMotionControlChange: (path: StudioMotionPath, delta: Point) => void;
+  onMotionDurationChange: (duration: number) => void;
   onSelectEntity: (entityId: string) => void;
   onTimeChange: (time: number) => void;
   onTogglePlayback: () => void;
@@ -301,19 +555,45 @@ export function StudioViewport({
 }>) {
   return (
     <section className={cn("flex min-h-0 min-w-0 flex-col bg-zinc-900", className)}>
+      <StudioToolbar
+        insertValue={insertValue}
+        onInsertAtCenter={onInsertAtCenter}
+        onInsertValueChange={onInsertValueChange}
+        onToolChange={onInsertToolChange}
+        tool={insertTool}
+      />
       <div className="grid min-h-0 flex-1 place-items-center overflow-auto p-4">
         <div
           className="relative aspect-video w-full max-w-5xl overflow-hidden border border-zinc-700 bg-black"
+          data-studio-canvas
           data-proposed-state-sample={projection.canvas.sampleId}
           data-scene-phase={boundaryActive ? "incoming" : "outgoing"}
+          onPointerDown={(event) => {
+            if (insertTool === "select" || boundaryActive) return;
+            const target = event.target;
+            if (target instanceof Element && target.closest("[data-studio-entity], [data-motion-control]")) return;
+            const bounds = event.currentTarget.getBoundingClientRect();
+            onCanvasPlace({
+              x: ((event.clientX - bounds.left) / bounds.width) * STUDIO_VIEWPORT.width,
+              y: ((event.clientY - bounds.top) / bounds.height) * STUDIO_VIEWPORT.height,
+            });
+          }}
         >
-          <div className="absolute inset-0 origin-center" style={{ scale: projection.camera.scale }}>
+          <div className="absolute inset-0 origin-center" data-studio-transform-layer style={{ scale: projection.camera.scale }}>
             <svg aria-hidden="true" className="absolute inset-0 size-full opacity-10" viewBox="0 0 640 360">
               <g stroke="#a1a1aa" strokeWidth="1">
                 {[80, 160, 240, 320, 400, 480, 560].map((x) => <line key={`x-${x}`} x1={x} x2={x} y1="0" y2="360" />)}
                 {[90, 180, 270].map((y) => <line key={`y-${y}`} x1="0" x2="640" y1={y} y2={y} />)}
               </g>
             </svg>
+            <MotionPathOverlay
+              dragPreview={dragPreview}
+              editableMotionIds={editableMotionIds}
+              entities={entities}
+              interactionMode={interactionMode}
+              motionPaths={motionPaths}
+              onMotionControlChange={onMotionControlChange}
+            />
             {entities.map((entity) => {
               if (!entity.present) return null;
               if (isTransitionOverlay(entity)) {
@@ -335,6 +615,7 @@ export function StudioViewport({
                     locked ? "pointer-events-none border-dashed border-sky-800 bg-zinc-950/70" : "cursor-grab active:cursor-grabbing",
                     selected ? "z-20 border-sky-400 bg-sky-950/60 focus-visible:ring-2 focus-visible:ring-sky-400" : "z-10 border-transparent hover:border-zinc-600",
                   )}
+                  data-studio-entity={entity.id}
                   disabled={locked}
                   key={entity.id}
                   onKeyDown={(event) => onEntityKeyDown(event, entity.id)}
@@ -372,8 +653,10 @@ export function StudioViewport({
         events={projection.timeline.events}
         interactionMode={interactionMode}
         isPlaying={isPlaying}
+        motionDuration={motionDuration}
         objectTracks={projection.timeline.objectTracks}
         onInteractionModeChange={onInteractionModeChange}
+        onMotionDurationChange={onMotionDurationChange}
         onSelectEntity={onSelectEntity}
         onTimeChange={onTimeChange}
         onTogglePlayback={onTogglePlayback}
