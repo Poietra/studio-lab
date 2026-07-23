@@ -163,6 +163,22 @@ function resizedEntityScale(
   return clamp(resize.fromScale * ratio, MIN_ENTITY_SCALE, MAX_ENTITY_SCALE);
 }
 
+function isStudioEntityInsertion(record: ProgramRecord) {
+  if (record.program.provenance.origin !== "studio-default") return false;
+  const createdEntityIds = new Set(record.program.operations.flatMap((operation) => (
+    operation.kind === "CreateEntity" ? [operation.entity.id] : []
+  )));
+  return createdEntityIds.size > 0 && record.program.operations.every((operation) => {
+    if (operation.kind === "CreateEntity") return true;
+    if (operation.kind === "SetProperty") {
+      return operation.key === "position" && createdEntityIds.has(operation.entityId);
+    }
+    return operation.kind === "ChangePresence"
+      && operation.effect === "fade-in"
+      && createdEntityIds.has(operation.entityId);
+  });
+}
+
 export function App() {
   const shell = detectShell();
   const aiEndpointConfigured = Boolean(import.meta.env.VITE_POIETRA_AI_ENDPOINT);
@@ -453,11 +469,16 @@ export function App() {
     return validation;
   }
 
-  function preserveDirectManipulationDraft(record: ProgramRecord | null | undefined) {
-    if (!record || record.program.provenance.origin !== "direct-manipulation") return;
+  function preserveProgramAsApplied(record: ProgramRecord | null | undefined) {
+    if (!record) return;
     setAppliedPrograms((programs) => programs.some((candidate) => (
       candidate.program.transactionId === record.program.transactionId
     )) ? programs : [...programs, record]);
+  }
+
+  function preserveDirectManipulationDraft(record: ProgramRecord | null | undefined) {
+    if (!record || record.program.provenance.origin !== "direct-manipulation") return;
+    preserveProgramAsApplied(record);
   }
 
   function installDraft(
@@ -654,8 +675,14 @@ export function App() {
 
   function applyDraft() {
     if (!draftProgram) return;
+    const nextPrograms = [...appliedCanonicalPrograms, draftProgram.program];
+    const appliedWorkingAnchor = sourceTimeToWorkingTime(
+      nextPrograms,
+      draftProgram.program.anchor.resolvedSeconds,
+    );
     cancelRequest(suggestionRequest);
     setAppliedPrograms((programs) => [...programs, draftProgram]);
+    setCurrentTime(appliedWorkingAnchor);
     setRedoPrograms([]);
     setDraftProgram(null);
     setDraftOperation(null);
@@ -710,7 +737,11 @@ export function App() {
     return true;
   }
 
-  function installCanonicalDraft(record: ProgramRecord, selectedIds: readonly string[] = []) {
+  function installCanonicalDraft(
+    record: ProgramRecord,
+    selectedIds: readonly string[] = [],
+    precedingPrograms: readonly ProgramRecord["program"][] = appliedCanonicalPrograms,
+  ) {
     cancelRequest(suggestionRequest);
     setDraftProgram(record);
     setDraftOperation(null);
@@ -720,33 +751,57 @@ export function App() {
     setSuggestionMessage(null);
     setSuggestionStatus("idle");
     setSelectedObjectIds(selectedIds);
-    setCurrentTime(sourceTimeToWorkingTime(appliedCanonicalPrograms, record.program.anchor.resolvedSeconds));
+    setCurrentTime(sourceTimeToWorkingTime(precedingPrograms, record.program.anchor.resolvedSeconds));
     setIsPlaying(false);
     setRedoPrograms([]);
   }
 
   function insertEntitiesAt(point: Point, entities?: readonly StudioEntityInput[]) {
     if (!draftBaseState || !draftSourceScene) return false;
-    if (draftProgram) {
+    const previousInsertion = draftProgram && isStudioEntityInsertion(draftProgram)
+      ? draftProgram
+      : null;
+    if (draftProgram && !previousInsertion) {
       setDraftError("Apply or discard the current draft before inserting another object.");
       return false;
     }
+    const precedingPrograms = previousInsertion
+      && !appliedPrograms.some((record) => (
+        record.program.transactionId === previousInsertion.program.transactionId
+      ))
+      ? [...appliedCanonicalPrograms, previousInsertion.program]
+      : appliedCanonicalPrograms;
+    const proposedState = previousInsertion
+      ? workspaceProjection?.proposedState ?? null
+      : draftBaseState;
+    if (!proposedState) return false;
+    const sourceScene = previousInsertion
+      ? projectRuntimeSceneToSourceTimeline(proposedState.evaluatedScene, precedingPrograms)
+      : draftSourceScene;
     const inputs = entities ?? (insertTool === "select" ? [] : [{
       content: defaultEntityContent(insertTool, insertValue),
       position: point,
       type: insertTool,
     }]);
     if (inputs.length === 0) return false;
+    const anchor = manualAuthoringAnchor({
+      action: "inserting an object",
+      requireAlignedPlayhead: false,
+      scene: sourceScene,
+      sourcePrograms: precedingPrograms,
+    });
+    if (!anchor) return false;
     try {
       const result = createStudioEntitiesProgram({
-        capturedPlayhead: sourceCurrentTime,
+        capturedPlayhead: anchor.sourceTime,
         entities: inputs,
-        scene: draftSourceScene,
+        scene: sourceScene,
         transactionId: `studio-insert-${crypto.randomUUID()}`,
       });
       const validated = validatedProgramRecord(result.validation);
       if (validated.kind === "invalid") throw new Error(validated.message);
-      installCanonicalDraft(validated.record, result.entityIds);
+      preserveProgramAsApplied(previousInsertion);
+      installCanonicalDraft(validated.record, result.entityIds, precedingPrograms);
       setInsertTool("select");
       setInsertValue("");
       setRedoPrograms([]);

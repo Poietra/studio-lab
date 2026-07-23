@@ -69,6 +69,42 @@ test("inserts geometry without Magic Edit and exports exact Manim source", async
   expect(extendedComposition).toContain("self.wait(0.7)");
 });
 
+test("places a circle alongside a pending rectangle without an intermediate Apply", async ({ page }) => {
+  await openWorkspace(page);
+  const canvas = page.locator("[data-studio-canvas]");
+
+  await page.getByRole("button", { name: /Insert rectangle/ }).click();
+  await canvas.click({ position: { x: 170, y: 110 } });
+  await expect(page.getByRole("button", { name: "Move Rectangle" })).toBeVisible();
+
+  await page.getByRole("button", { name: /Insert circle/ }).click();
+  await canvas.click({ position: { x: 420, y: 220 } });
+
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Move Rectangle" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Move Circle" })).toBeVisible();
+
+  const source = await exportedSource(page);
+  expect(source).toContain("Rectangle(width=4, height=2)");
+  expect(source).toContain("Circle(radius=1)");
+
+  await page.keyboard.press("Control+z");
+  await expect(page.getByRole("button", { name: "Move Circle" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Move Rectangle" })).toBeVisible();
+  await page.keyboard.press("Control+z");
+  await expect(page.getByRole("button", { name: "Move Rectangle" })).toHaveCount(0);
+
+  await page.keyboard.press("Control+Shift+z");
+  await expect(page.getByRole("button", { name: "Move Rectangle" })).toBeVisible();
+  await page.keyboard.press("Control+Shift+z");
+  await expect(page.getByRole("button", { name: "Move Circle" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await expect.poll(async () => Number(
+    await page.getByRole("slider", { name: "Scene playhead" }).inputValue(),
+  )).toBeCloseTo(5.8, 3);
+});
+
 test("retains editor sessions while leaving and reopening workspaces", async ({ page }) => {
   await openWorkspace(page);
 
