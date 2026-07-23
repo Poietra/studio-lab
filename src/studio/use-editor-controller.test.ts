@@ -170,6 +170,50 @@ describe("editor draft history", () => {
     });
   });
 
+  it("preserves a direct-manipulation draft before staging the next ordered draft", () => {
+    const preserved = record("preserved", 4);
+    const next = record("next", 6);
+    const staged = stageEditorDraft(
+      {
+        ...createInitialEditorState(),
+        draftOperation: motionOperation,
+        draftProgram: preserved,
+        selectedObjectIds: ["equation"],
+      },
+      {
+        operation: null,
+        preserveAppliedProgram: preserved,
+        record: next,
+      },
+    );
+
+    expect(staged.appliedPrograms).toEqual([editorProgramRecord(preserved, motionOperation, ["equation"])]);
+    expect(staged.programUndoEntries).toEqual([
+      {
+        index: 0,
+        kind: "append",
+        value: editorProgramRecord(preserved, motionOperation, ["equation"]),
+      },
+    ]);
+    expect(staged.draftProgram).toBe(next);
+  });
+
+  it("rejects a staged draft that would violate applied source order", () => {
+    const applied = editorProgramRecord(record("applied", 7), null, []);
+    const previous = {
+      ...createInitialEditorState(),
+      appliedPrograms: [applied],
+    };
+    const staged = stageEditorDraft(previous, {
+      operation: null,
+      record: record("earlier", 5),
+    });
+
+    expect(staged.appliedPrograms).toEqual([applied]);
+    expect(staged.draftProgram).toBeNull();
+    expect(staged.draftError).toContain("earlier than the latest applied Program");
+  });
+
   it("undoes and redoes a draft with its operation and selection", () => {
     const draft = record("draft");
     const staged = stageEditorDraft(createInitialEditorState(), {
