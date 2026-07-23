@@ -185,19 +185,22 @@ Shared domain/service modules
   -> no Vite, Electron, or Tauri imports
 ```
 
-The Electron main process starts and stops the utility process. A sandboxed preload exposes
-only immutable bootstrap metadata and narrow native requests. The existing closed schemas
-remain the trust boundary for every service request and response.
+The packaged Electron adapter starts and stops the shell-neutral service with the app
+lifecycle. Its sandboxed preload exposes only native folder selection and Python-source
+save requests. The existing closed schemas remain the trust boundary for every service
+request and response. Moving the service from the main process to an Electron utility
+process remains a defense-in-depth follow-up; no renderer contract depends on its location.
 
-The packaged transport must use a random loopback port plus a per-launch capability token,
-or an equivalently isolated application protocol. Every HTTP/API route validates that
-capability. Media URLs require scoped, unguessable capabilities because a `<video>` element
-cannot attach the normal authorization header. The renderer continues to receive opaque
-workspace/session IDs and never absolute filesystem paths. Browser development keeps the
-same client contracts through same-origin routes.
+The packaged transport uses a random loopback port plus a per-launch capability token.
+Electron's isolated session injects the capability header into document, API, asset, and
+media requests after they leave the renderer; JavaScript and the preload API never receive
+the token. Every route validates it in constant time and rejects unexpected Host headers.
+The renderer continues to receive opaque workspace/session IDs and never absolute
+filesystem paths. Browser development keeps the same client contracts through same-origin
+routes.
 
-Moving the current Vite middleware into shell-neutral service modules and implementing this
-bootstrap is #33. This ADR does not pretend the current static packaged window is at parity.
+The packaged bootstrap and parity smoke are implemented by #33. Signing, installers,
+updates, target-OS qualification, and utility-process isolation are outside that adapter.
 
 ## Consequences and known risks
 
@@ -218,8 +221,8 @@ Costs and risks:
   work; moving it to a utility process is required to protect the main/UI processes.
 - Python/Manim discovery, Windows process-tree termination, macOS signing/notarization, Linux
   codecs, and application updates are not yet qualified.
-- The current Electron entry point does not yet enforce navigation allowlists, a production
-  CSP, permission denial, or packaged API parity. These are acceptance criteria for #33.
+- The service currently shares the Electron main process. A crash can therefore end the
+  desktop application until utility-process isolation and restart handling are added.
 - No representative Tauri renderer result, native macOS result, or native Windows result is
   available. The Linux renderer measurement was headless and software rendered.
 

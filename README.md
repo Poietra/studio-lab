@@ -68,6 +68,8 @@ markers, and the independent `manim-lint` project is recorded in
 pnpm install --frozen-lockfile
 pnpm dev:web
 pnpm dev:electron
+pnpm package:electron
+pnpm test:electron-packaged
 pnpm dev:tauri
 pnpm evaluate:shell:native
 pnpm evaluate:shell:serve
@@ -141,9 +143,11 @@ Multiple roots can be seeded before the first launch. `POIETRA_MANIM_PROJECTS` i
 `{"id":"project-a","name":"Display name","root":"/path"}` objects; the legacy
 single-root variable remains the fallback. On first start these values seed the local
 `.poietra/workspace-catalog.json`. In a browser, Add workspace asks only for a name
-and creates an importable `MainScene` under `.poietra/.workspaces`; Electron and
-Tauri retain the existing-folder registration form until their native directory
-pickers are wired. The launcher can rename or remove either registration
+and creates an importable `MainScene` under `.poietra/.workspaces`. Electron uses a
+native directory picker for existing folders and a native Save dialog for `.py`
+exports; neither operation exposes an absolute path to the renderer. Tauri retains
+the existing-folder registration form while it remains an evaluation shell. The
+launcher can rename or remove either registration
 persistently. Removing an existing-folder workspace only unregisters it, leaving
 its folder and Python files in place. Removing a browser-managed workspace moves
 its directory to Studio Trash at `.poietra/.trash` instead of permanently deleting
@@ -152,6 +156,15 @@ it; Studio does not yet provide a UI for restoring trashed workspaces. Set
 workspace content, and Studio Trash. The local server remains bound to loopback,
 validates every registered folder with `realpath`, and never returns filesystem
 roots in API responses.
+
+`pnpm package:electron` builds the web renderer and Electron main process, then
+assembles a host-platform application under `release/electron-<platform>-<arch>`.
+The packaged app starts the same workspace/render/export service on a random loopback
+port. A per-launch capability is injected below the renderer API boundary, and the
+window denies new windows, cross-origin navigation, webviews, and permission requests.
+This output is a development package, not a signed installer. `pnpm
+test:electron-packaged` launches that exact output headlessly and covers native folder
+selection, workspace CRUD, render/video, export/save, commit/undo/discard, and shutdown.
 
 Studio starts at a workspace chooser. Visible cards lazily parse only the first
 importable Scene into a bounded semantic SVG thumbnail; this does not execute
