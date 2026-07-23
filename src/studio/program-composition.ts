@@ -25,6 +25,7 @@ export function insertedProgramDuration(program: CanonicalEditProgram) {
     operation.kind === "ChangePresence"
     || operation.kind === "CreateMotion"
     || operation.kind === "TransformContent"
+    || (operation.kind === "AnimateProperty" && operation.key === "scale")
     || (operation.kind === "InsertTimelineEvent" && operation.eventKind === "wait")
   ));
   const end = Math.max(

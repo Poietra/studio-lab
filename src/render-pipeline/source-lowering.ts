@@ -168,7 +168,7 @@ function markerPoint(
   return { x: Number(((point.x / viewport.width) * 640).toFixed(4)), y: Number(((point.y / viewport.height) * 360).toFixed(4)) };
 }
 
-function sourceMarker(kind: "motion" | "position", value: Readonly<Record<string, unknown>>) {
+function sourceMarker(kind: "motion" | "position" | "scale", value: Readonly<Record<string, unknown>>) {
   return `# poietra:${kind} ${JSON.stringify({ ...value, version: 1 })}`;
 }
 
@@ -266,19 +266,48 @@ function isPoint(value: unknown): value is Readonly<{ x: number; y: number }> {
 }
 
 type LoweredAnimationOperation = Extract<CanonicalEditOperation, {
-  kind: "ChangePresence" | "CreateMotion" | "TransformContent";
+  kind: "AnimateProperty" | "ChangePresence" | "CreateMotion" | "TransformContent";
 }>;
 
 function animationOperation(operation: CanonicalEditOperation): operation is LoweredAnimationOperation {
   return operation.kind === "ChangePresence"
     || operation.kind === "CreateMotion"
-    || operation.kind === "TransformContent";
+    || operation.kind === "TransformContent"
+    || (operation.kind === "AnimateProperty" && operation.key === "scale");
+}
+
+function scaleChange(
+  operation: Extract<CanonicalEditOperation, { kind: "AnimateProperty" }>,
+) {
+  if (
+    operation.key !== "scale"
+    || typeof operation.from !== "number"
+    || typeof operation.to !== "number"
+    || !Number.isFinite(operation.from)
+    || !Number.isFinite(operation.to)
+    || operation.from <= 0
+    || operation.to <= 0
+  ) {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Scale animation requires finite positive absolute from and to values.",
+    );
+  }
+  return {
+    factor: operation.to / operation.from,
+    from: operation.from,
+    to: operation.to,
+  };
 }
 
 function assertLoweringSupported(operation: CanonicalEditOperation) {
   if (operation.kind === "CreateEntity" || operation.kind === "CreateMotion"
     || operation.kind === "ChangePresence" || operation.kind === "TransformContent"
     || operation.kind === "InsertSceneBoundary") return;
+  if (operation.kind === "AnimateProperty" && operation.key === "scale") {
+    scaleChange(operation);
+    return;
+  }
   if (operation.kind === "InsertTimelineEvent" && operation.eventKind === "wait") return;
   if (operation.kind === "SetProperty" && operation.key === "position" && isPoint(operation.value)) return;
   if (operation.kind === "SetRelation" && operation.mode === "snapshot") return;
@@ -432,6 +461,21 @@ export function lowerCanonicalProgramSource(
         output.push(`${sourceVariable}.move_to(${targetVariable}.get_center() + ${offsetExpression(operation.offset, frame, request.viewport)})`);
       }
     }
+    for (const operation of bucket) {
+      if (
+        operation.kind !== "AnimateProperty"
+        || operation.key !== "scale"
+        || operation.interval.end - operation.interval.start > EPSILON
+      ) continue;
+      const variable = requireVariable(variableByEntity, operation.entityId);
+      const change = scaleChange(operation);
+      output.push(sourceMarker("scale", {
+        kind: "exact",
+        value: change.to,
+        variable,
+      }));
+      output.push(`${variable}.scale(${formatAmount(change.factor)})`);
+    }
 
     const boundaries = bucket.filter((operation) => operation.kind === "InsertSceneBoundary");
     for (const boundary of boundaries) {
@@ -504,6 +548,11 @@ export function lowerCanonicalProgramSource(
       delta: Readonly<{ x: number; y: number }>;
       variables: readonly string[];
     }>> = [];
+    const scales: Array<Readonly<{
+      from: number;
+      to: number;
+      variable: string;
+    }>> = [];
     const postludes: string[] = [];
     for (const operation of animations) {
       if (operation.kind === "CreateMotion") {
@@ -543,11 +592,19 @@ export function lowerCanonicalProgramSource(
           actions.push(`${variable}.animate.scale(0.00125)`);
           postludes.push(`self.remove(${variable})`);
         }
+      } else if (operation.kind === "AnimateProperty" && operation.key === "scale") {
+        const variable = requireVariable(variableByEntity, operation.entityId);
+        const change = scaleChange(operation);
+        scales.push({ from: change.from, to: change.to, variable });
+        actions.push(`${variable}.animate.scale(${formatAmount(change.factor)})`);
       }
     }
     if (actions.length > 0) {
       if (motions.length > 0) {
         output.push(sourceMarker("motion", { motions }));
+      }
+      if (scales.length > 0) {
+        output.push(sourceMarker("scale", { kind: "animated", scales }));
       }
       output.push("self.play(");
       output.push(...actions.map((action) => `    ${action},`));
