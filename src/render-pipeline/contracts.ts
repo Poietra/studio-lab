@@ -251,6 +251,20 @@ export type ManimProjectMutationView = Readonly<{
   project: ManimProjectSummary | null;
 }>;
 
+export type ManimThumbnailState = "current" | "failed" | "generating" | "missing" | "stale";
+
+export type ManimThumbnailStatus = Readonly<{
+  cachedSourceHash: string | null;
+  error: string | null;
+  generatedAt: string | null;
+  imageKind: "empty" | "rendered" | "semantic";
+  projectId: string;
+  sceneName: string | null;
+  sourceHash: string | null;
+  sourcePath: string | null;
+  state: ManimThumbnailState;
+}>;
+
 export type ManimProjectCreateRequest =
   | Readonly<{ kind: "managed"; name: string }>
   | Readonly<{ kind: "existing"; name: string; root: string }>;
@@ -389,6 +403,18 @@ export const renameManimProjectRequestSchema = z.object({
 export const manimProjectMutationViewSchema: z.ZodType<ManimProjectMutationView> = z.object({
   catalog: manimProjectListViewSchema,
   project: manimProjectSummarySchema.nullable(),
+}).strict();
+
+export const manimThumbnailStatusSchema: z.ZodType<ManimThumbnailStatus> = z.object({
+  cachedSourceHash: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+  error: z.string().max(500).nullable(),
+  generatedAt: z.string().datetime().nullable(),
+  imageKind: z.enum(["empty", "rendered", "semantic"]),
+  projectId: manimProjectIdSchema,
+  sceneName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).nullable(),
+  sourceHash: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+  sourcePath: z.string().min(1).max(500).nullable(),
+  state: z.enum(["current", "failed", "generating", "missing", "stale"]),
 }).strict();
 
 export type ManimApiError = Readonly<{ error: string }>;

@@ -14,6 +14,11 @@ if (process.argv.includes("--version")) {
   process.exit(0);
 }
 
+if (process.argv.includes("--fail-render")) {
+  process.stderr.write("Thumbnail render failed\n");
+  process.exit(9);
+}
+
 const mediaIndex = process.argv.indexOf("--media_dir");
 const mediaRoot = mediaIndex >= 0 ? process.argv[mediaIndex + 1] : null;
 if (!mediaRoot) {
@@ -28,9 +33,20 @@ if (renderStartMarkerIndex >= 0 && process.argv[renderStartMarkerIndex + 1]) {
 
 process.stdout.write("Rendering 50%\n");
 await new Promise((resolve) => setTimeout(resolve, 80));
-const output = join(mediaRoot, "videos", "fake", "480p15");
-await mkdir(output, { recursive: true });
-await writeFile(join(output, "GroupedEquation.mp4"), Buffer.from("fake-mp4-preview"));
+if (process.argv.includes("-s")) {
+  const sceneName = process.argv.at(-1);
+  const output = join(mediaRoot, "images", "fake");
+  await mkdir(output, { recursive: true });
+  const png = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+  await writeFile(join(output, `${sceneName}.png`), png);
+} else {
+  const output = join(mediaRoot, "videos", "fake", "480p15");
+  await mkdir(output, { recursive: true });
+  await writeFile(join(output, "GroupedEquation.mp4"), Buffer.from("fake-mp4-preview"));
+}
 const completionMarkerIndex = process.argv.indexOf("--completion-marker");
 if (completionMarkerIndex >= 0 && process.argv[completionMarkerIndex + 1]) {
   await writeFile(process.argv[completionMarkerIndex + 1], "completed", "utf8");

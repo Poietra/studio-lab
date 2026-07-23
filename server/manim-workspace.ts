@@ -27,6 +27,12 @@ type DiscoveredPythonSource = Readonly<{
   source: string;
 }>;
 
+export type ManimThumbnailTarget = Readonly<{
+  scene: ImportedManimScene;
+  source: string;
+  sourcePath: string;
+}>;
+
 export type ImportedSourceSnapshot = Readonly<{
   importedScenes: readonly ImportedManimScene[];
   view: ManimWorkspaceSource;
@@ -119,17 +125,24 @@ export async function discoverFirstManimScene(
   projectRoot: string,
   frame: Readonly<{ height: number; width: number }>,
 ): Promise<ImportedManimScene | null> {
-  let firstScene: ImportedManimScene | null = null;
+  return (await discoverManimThumbnailTarget(projectRoot, frame))?.scene ?? null;
+}
+
+export async function discoverManimThumbnailTarget(
+  projectRoot: string,
+  frame: Readonly<{ height: number; width: number }>,
+): Promise<ManimThumbnailTarget | null> {
+  let target: ManimThumbnailTarget | null = null;
   await visitPythonSources(projectRoot, ({ path, source }) => {
     for (const block of findSceneBlocks(source)) {
       const imported = importManimScene(source, path, block.name, frame);
       if (!imported) continue;
-      firstScene = imported;
+      target = { scene: imported, source, sourcePath: path };
       return true;
     }
     return false;
   });
-  return firstScene;
+  return target;
 }
 
 export function sceneView(source: ManimWorkspaceSource, name: string) {
