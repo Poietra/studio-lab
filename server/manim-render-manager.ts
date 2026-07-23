@@ -303,7 +303,6 @@ export class ManimRenderManager {
         discoverPythonSources(this.projectRoot, this.frame),
       ]);
       return {
-        command: this.command,
         commandAvailable,
         frame: this.frame,
         projectId: this.projectId,
