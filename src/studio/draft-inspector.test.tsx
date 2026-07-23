@@ -18,7 +18,7 @@ describe("DraftInspector execution capabilities", () => {
     });
     const markup = renderToStaticMarkup(
       <DraftInspector
-        error={null}
+        error="A newer transient error."
         onApply={() => undefined}
         onDiscard={() => undefined}
         onOperationChange={() => undefined}
@@ -31,6 +31,7 @@ describe("DraftInspector execution capabilities", () => {
     expect(markup).toContain("Apply");
     expect(markup).toContain("Lowering");
     expect(markup).toContain("ModifyMotion has no truthful source lowering yet.");
+    expect(markup).not.toContain("A newer transient error.");
     expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Apply program<\/button>/);
   });
 });

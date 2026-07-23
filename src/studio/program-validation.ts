@@ -306,9 +306,22 @@ export function validateAndScheduleProgram(
       order: order ?? operationIds,
     },
   };
+  const execution = programExecutionCapabilities(scheduledProgram);
+  if (
+    execution.apply === "blocked"
+    && execution.applyBlocker
+    && !issues.some((issue) => issue.code === "lowering-unsupported")
+  ) {
+    issues.push({
+      code: "lowering-unsupported",
+      field: "loweringStatus",
+      message: execution.applyBlocker,
+      severity: execution.lowering === "unsupported" ? "error" : "warning",
+    });
+  }
   const program: CanonicalEditProgram = {
     ...scheduledProgram,
-    loweringStatus: programExecutionCapabilities(scheduledProgram).lowering,
+    loweringStatus: execution.lowering,
   };
   return {
     issues,

@@ -1,7 +1,10 @@
 import { renderRequestPrograms, type ProgramRenderRequest, type SingleProgramRenderRequest } from "./contracts";
 import { findSourceSceneBlock } from "./source-import";
 import type { CanonicalEditOperation, CreateEntityOperation } from "../studio/operations";
-import { operationExecutionCapabilities } from "../studio/operation-registry";
+import {
+  operationExecutionCapabilities,
+  programExecutionCapabilities,
+} from "../studio/operation-registry";
 import { insertedProgramDuration } from "../studio/program-composition";
 
 export type MotionAnchor = Readonly<{
@@ -80,6 +83,13 @@ function formatAmount(value: number) {
   return Number(normalized.toFixed(4)).toString();
 }
 
+function formatShiftAmount(value: number) {
+  const formatted = formatAmount(Math.abs(value));
+  return formatted === "0" && value !== 0
+    ? Number(Math.abs(value).toPrecision(4)).toString()
+    : formatted;
+}
+
 function escapePattern(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -92,11 +102,11 @@ function shiftExpression(
   const worldX = (delta.x / viewport.width) * frame.width;
   const worldY = (-delta.y / viewport.height) * frame.height;
   const terms = [
-    Math.abs(worldX) > 0.0001
-      ? `${formatAmount(Math.abs(worldX))} * ${worldX > 0 ? "RIGHT" : "LEFT"}`
+    worldX !== 0
+      ? `${formatShiftAmount(worldX)} * ${worldX > 0 ? "RIGHT" : "LEFT"}`
       : null,
-    Math.abs(worldY) > 0.0001
-      ? `${formatAmount(Math.abs(worldY))} * ${worldY > 0 ? "UP" : "DOWN"}`
+    worldY !== 0
+      ? `${formatShiftAmount(worldY)} * ${worldY > 0 ? "UP" : "DOWN"}`
       : null,
   ].filter((term): term is string => term !== null);
   if (terms.length === 0) {
@@ -342,10 +352,12 @@ export function lowerCanonicalProgramSource(
     );
   }
   const request = singleProgramRequest(inputRequest, programs[0], inputRequest.sourceBindings);
-  if (request.program.loweringStatus !== "supported") {
+  const execution = programExecutionCapabilities(request.program);
+  if (execution.lowering !== "supported") {
     throw new ProgramLoweringError(
       "operation-unsupported",
-      `Program ${request.program.transactionId} is marked ${request.program.loweringStatus}, not supported.`,
+      execution.applyBlocker
+        ?? `Program ${request.program.transactionId} is marked ${execution.lowering}, not supported.`,
     );
   }
   request.program.operations.forEach(assertLoweringSupported);

@@ -154,6 +154,7 @@ const SUPPORTED_EXECUTION: OperationExecutionCapabilities = {
   lowering: "supported",
   preview: "supported",
 };
+const SOURCE_LOWERING_EPSILON = 0.0005;
 
 function previewOnlyExecution(
   applyBlocker: string,
@@ -212,9 +213,16 @@ function animatePropertyExecution(
 function createMotionExecution(
   operation: Extract<CanonicalEditOperation, { kind: "CreateMotion" }>,
 ): OperationExecutionCapabilities {
-  if (operation.delta.x !== 0 || operation.delta.y !== 0) return SUPPORTED_EXECUTION;
+  if (operation.interval.end - operation.interval.start <= SOURCE_LOWERING_EPSILON) {
+    return previewOnlyExecution(
+      "A zero-duration CreateMotion can be previewed, but it cannot be lowered truthfully to Manim source.",
+    );
+  }
+  const curved = Math.abs(operation.controlOffset.x) > 0.001
+    || Math.abs(operation.controlOffset.y) > 0.001;
+  if (curved || operation.delta.x !== 0 || operation.delta.y !== 0) return SUPPORTED_EXECUTION;
   return previewOnlyExecution(
-    "CreateMotion can be previewed, but a zero-displacement motion cannot be lowered to Manim source.",
+    "A straight CreateMotion with no displacement can be previewed, but it cannot be lowered to Manim source.",
   );
 }
 
@@ -226,6 +234,63 @@ function changePresenceExecution(
   return previewOnlyExecution(
     `Zero-duration ${operation.effect} can be previewed, but it has no truthful Manim source lowering.`,
   );
+}
+
+function operationSourceTime(operation: CanonicalEditOperation) {
+  return operation.kind === "InsertSceneBoundary" ? operation.at : operation.interval.start;
+}
+
+function sourceAnimationEnd(operation: CanonicalEditOperation) {
+  if (operation.interval.end - operation.interval.start <= SOURCE_LOWERING_EPSILON) return null;
+  if (
+    operation.kind === "ChangePresence"
+    || operation.kind === "CreateMotion"
+    || operation.kind === "TransformContent"
+    || (operation.kind === "AnimateProperty" && operation.key === "scale")
+  ) return operation.interval.end;
+  return null;
+}
+
+function programStructureBlocker(program: CanonicalEditProgram) {
+  const scheduleIndex = new Map(program.schedule.order.map((id, index) => [id, index]));
+  const operations = [...program.operations].sort((left, right) => (
+    operationSourceTime(left) - operationSourceTime(right)
+    || (scheduleIndex.get(left.id) ?? 0) - (scheduleIndex.get(right.id) ?? 0)
+  ));
+  const buckets: Array<Readonly<{ operations: CanonicalEditOperation[]; time: number }>> = [];
+  for (const operation of operations) {
+    const time = operationSourceTime(operation);
+    const current = buckets.at(-1);
+    if (current && Math.abs(current.time - time) < SOURCE_LOWERING_EPSILON) current.operations.push(operation);
+    else buckets.push({ operations: [operation], time });
+  }
+  let cursor = program.anchor.resolvedSeconds;
+  for (const bucket of buckets) {
+    if (bucket.time > cursor + SOURCE_LOWERING_EPSILON) cursor = bucket.time;
+    if (bucket.time < cursor - SOURCE_LOWERING_EPSILON) {
+      return `Operation at ${bucket.time.toFixed(3)}s overlaps source time already lowered through ${cursor.toFixed(3)}s.`;
+    }
+    const waits = bucket.operations.filter((operation) => (
+      operation.kind === "InsertTimelineEvent" && operation.eventKind === "wait"
+    ));
+    if (waits.length > 0) {
+      if (waits.length !== 1 || bucket.operations.length !== 1) {
+        return "An inserted wait must occupy its own source interval.";
+      }
+      cursor = waits[0].interval.end;
+      continue;
+    }
+    const animationEnds = bucket.operations.flatMap((operation) => {
+      const end = sourceAnimationEnd(operation);
+      return end === null ? [] : [end];
+    });
+    if (animationEnds.length === 0) continue;
+    if (animationEnds.some((end) => Math.abs(end - animationEnds[0]) >= SOURCE_LOWERING_EPSILON)) {
+      return "Concurrent source animations must share one interval.";
+    }
+    cursor = animationEnds[0];
+  }
+  return null;
 }
 
 function propertyKey(entityId: string, key: PropertyChannel["key"]) {
@@ -577,7 +642,11 @@ export const OPERATION_REGISTRY = {
         value: 1,
       });
     },
-    execution: () => SUPPORTED_EXECUTION,
+    execution: (operation) => operation.interval.end - operation.interval.start > SOURCE_LOWERING_EPSILON
+      ? SUPPORTED_EXECUTION
+      : previewOnlyExecution(
+          "A zero-duration TransformContent can be previewed, but it cannot be lowered truthfully to Manim source.",
+        ),
     lifetimeRequirement: "existing-at-start",
     projection: allEntityProjections,
     targetRequirement: "entity",
@@ -814,7 +883,7 @@ export function programExecutionCapabilities(
   program: CanonicalEditProgram,
 ): ProgramExecutionCapabilities {
   const operationCapabilities = program.operations.map(operationExecutionCapabilities);
-  const lowering = [
+  const operationLowering = [
     program.loweringStatus,
     ...operationCapabilities.map((capability) => capability.lowering),
   ].reduce<OperationExecutionCapabilities["lowering"]>((current, candidate) => (
@@ -822,7 +891,12 @@ export function programExecutionCapabilities(
   ), "supported");
   const blockedOperation = operationCapabilities.find((capability) => capability.apply !== "supported");
   const unsupportedPreview = operationCapabilities.find((capability) => capability.preview !== "supported");
+  const structureBlocker = programStructureBlocker(program);
+  const lowering = structureBlocker && operationLowering === "supported"
+    ? "illustrative"
+    : operationLowering;
   const applyBlocker = blockedOperation?.applyBlocker
+    ?? structureBlocker
     ?? (program.loweringStatus !== "supported"
       ? `This Program is marked ${program.loweringStatus} and cannot be applied until it has truthful Manim source lowering.`
       : null);

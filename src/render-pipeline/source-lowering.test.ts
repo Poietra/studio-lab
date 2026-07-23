@@ -471,6 +471,29 @@ describe("Canonical EditProgram source lowering", () => {
     expect(imported?.runtimeSceneState.duration).toBe(11);
   });
 
+  it("rejects an inserted wait that shares its source bucket", () => {
+    const position: CanonicalEditOperation = {
+      ...operationBase("position-with-wait", 7),
+      entityId: "equation_1",
+      key: "position",
+      kind: "SetProperty",
+      value: { x: 320, y: 180 },
+    };
+    const wait: CanonicalEditOperation = {
+      ...operationBase("shared-wait", 7, 8),
+      eventKind: "wait",
+      kind: "InsertTimelineEvent",
+      label: "wait",
+    };
+
+    expect(() => lowerCanonicalProgramSource(
+      source,
+      request(canonicalProgram([position, wait])),
+      { height: 8, width: 14.222 },
+      null,
+    )).toThrow("An inserted wait must occupy its own source interval.");
+  });
+
   it("lowers a quadratic screen-space motion to an exact Manim cubic path", () => {
     const operation = motionOperation({ controlOffset: { x: 32, y: 45 } });
     const lowered = lowerCanonicalProgramSource(
@@ -497,6 +520,27 @@ describe("Canonical EditProgram source lowering", () => {
     });
   });
 
+  it("preserves curved zero-displacement paths and tiny straight displacements", () => {
+    const curved = lowerCanonicalProgramSource(
+      source,
+      request(canonicalProgram([motionOperation({
+        controlOffset: { x: 0, y: 30 },
+        delta: { x: 0, y: 0 },
+      })])),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    const tiny = lowerCanonicalProgramSource(
+      source,
+      request(canonicalProgram([motionOperation({ delta: { x: 0.001, y: 0 } })])),
+      { height: 8, width: 14.222 },
+      null,
+    );
+
+    expect(curved.insertedCode).toContain("MoveAlongPath(equation, CubicBezier(");
+    expect(tiny.insertedCode).toContain("equation.animate.shift(0.00002222 * RIGHT)");
+  });
+
   it("rejects operations that do not have truthful source lowering instead of dropping them", () => {
     const unsupported: CanonicalEditOperation = {
       ...operationBase("modify", 7, 8),
@@ -511,6 +555,21 @@ describe("Canonical EditProgram source lowering", () => {
       { height: 8, width: 14.222 },
       null,
     )).toThrow(/ModifyMotion has no truthful source lowering/);
+  });
+
+  it("rejects CameraFocus camera changes through the shared capability contract", () => {
+    const cameraFocus: CanonicalEditOperation = {
+      ...operationBase("camera-focus", 7, 8),
+      kind: "ChangeCamera",
+      property: "scale",
+      value: 1.35,
+    };
+    expect(() => lowerCanonicalProgramSource(
+      source,
+      request(canonicalProgram([cameraFocus]), []),
+      { height: 8, width: 14.222 },
+      null,
+    )).toThrow(/CameraFocus can be previewed.*ChangeCamera cannot yet be lowered/);
   });
 
   it("rejects live relations because a one-shot move cannot preserve that constraint", () => {
