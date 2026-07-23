@@ -125,6 +125,92 @@ describe("Canonical EditProgram source lowering", () => {
     expect(findSceneMotionAnchors(source, "GroupedEquation")).toEqual([{ line: 6, seconds: 7 }]);
   });
 
+  it("does not expose marker-looking text inside a triple-quoted string", () => {
+    const stringMarkerSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        equation = MathTex("E", "=", "m", "c^2")
+        documentation = """
+        # poietra:anchor 7.000
+        """
+        self.wait(1)
+`;
+
+    expect(findMotionAnchors(stringMarkerSource)).toEqual([]);
+    expect(findSceneMotionAnchors(stringMarkerSource, "GroupedEquation")).toEqual([]);
+    expect(() => lowerCanonicalProgramSource(
+      stringMarkerSource,
+      request(),
+      { height: 8, width: 14.222 },
+      null,
+    )).toThrow(/No # poietra:anchor 7.000/);
+  });
+
+  it("does not expose anchors from dead or nested construct scopes", () => {
+    const nestedMarkerSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        equation = MathTex("E", "=", "m", "c^2")
+        if False:
+            # poietra:anchor 7.000
+            self.wait(1)
+
+        def helper():
+            # poietra:anchor 8.000
+            return None
+
+        class Nested:
+            # poietra:anchor 9.000
+            pass
+
+        return
+        # poietra:anchor 10.000
+        self.wait(1)
+`;
+
+    expect(findMotionAnchors(nestedMarkerSource)).toEqual([]);
+    expect(findSceneMotionAnchors(nestedMarkerSource, "GroupedEquation")).toEqual([]);
+    expect(() => lowerCanonicalProgramSource(
+      nestedMarkerSource,
+      request(),
+      { height: 8, width: 14.222 },
+      null,
+    )).toThrow(/No # poietra:anchor 7.000/);
+  });
+
+  it("keeps direct construct anchors while ignoring nearby unsafe markers", () => {
+    const mixedMarkerSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        equation = MathTex("E", "=", "m", "c^2")
+        note = """
+        # poietra:anchor 99.000
+        """
+        if False:
+            # poietra:anchor 88.000
+            self.wait(1)
+        # poietra:anchor 7.000
+        self.wait(1)
+`;
+
+    expect(findMotionAnchors(mixedMarkerSource)).toEqual([{ line: 12, seconds: 7 }]);
+    expect(findSceneMotionAnchors(mixedMarkerSource, "GroupedEquation"))
+      .toEqual([{ line: 12, seconds: 7 }]);
+    const lowered = lowerCanonicalProgramSource(
+      mixedMarkerSource,
+      request(),
+      { height: 8, width: 14.222 },
+      null,
+    );
+
+    expect(lowered.insertedCode).toContain("equation.animate.shift(");
+    expect(lowered.source).toContain("        # poietra:anchor 99.000");
+    expect(lowered.source).toContain("            # poietra:anchor 88.000");
+  });
+
   it("converts a canonical screen-space motion at the exact anchor", () => {
     const lowered = lowerCanonicalProgramSource(source, request(), { height: 8, width: 14.222 }, null);
     const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");

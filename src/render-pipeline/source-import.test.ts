@@ -51,6 +51,33 @@ describe("conservative Manim source import", () => {
     expect(imported?.runtimeSceneState.objectGraph.entities).not.toHaveProperty("source:scene.py#First:also_leaked");
   });
 
+  it("ignores marker-looking strings and statements in nested dead scopes", () => {
+    const unsafeMarkers = `from manim import *
+
+class UnsafeMarkers(Scene):
+    def construct(self):
+        visible = Text("Visible")
+        documentation = """
+        # poietra:anchor 99.000
+        leaked_from_string = Text("Not code")
+        """
+        if False:
+            # poietra:anchor 88.000
+            leaked_from_branch = Text("Not executed")
+            self.wait(20)
+        self.add(visible)
+        self.wait(1)
+`;
+    const imported = importManimScene(unsafeMarkers, "scene.py", "UnsafeMarkers");
+
+    expect(imported?.anchors).toEqual([]);
+    expect(imported?.runtimeSceneState.duration).toBe(1);
+    expect(imported?.runtimeSceneState.objectGraph.entities)
+      .not.toHaveProperty("source:scene.py#UnsafeMarkers:leaked_from_string");
+    expect(imported?.runtimeSceneState.objectGraph.entities)
+      .not.toHaveProperty("source:scene.py#UnsafeMarkers:leaked_from_branch");
+  });
+
   it("restores a transaction-scoped Studio identity from a committed source marker", () => {
     const marked = source
       .replace(

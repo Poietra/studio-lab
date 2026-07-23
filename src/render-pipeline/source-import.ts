@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import {
+  analyzePythonSource,
+  isPythonStatementStart,
+  isStandalonePythonComment,
+} from "./python-source-analysis";
+import {
   STUDIO_STATE_VERSION,
   type EntityContent,
   type Interval,
@@ -34,6 +39,7 @@ export type ImportedManimScene = Readonly<{
 
 export type SourceSceneBlock = Readonly<{
   bodyEnd: number;
+  bodyIndent: number | null;
   bodyStart: number;
   classLine: number;
   lines: readonly string[];
@@ -117,48 +123,71 @@ function hashSource(source: string) {
   return createHash("sha256").update(source).digest("hex");
 }
 
-function lineIndent(line: string) {
-  return line.match(/^\s*/)?.[0].length ?? 0;
-}
-
-function blockEnd(lines: readonly string[], start: number, limit: number, parentIndent: number) {
+function blockEnd(
+  lines: ReturnType<typeof analyzePythonSource>["lines"],
+  start: number,
+  limit: number,
+  parentIndent: number,
+) {
   for (let index = start; index < limit; index += 1) {
-    const line = lines[index] ?? "";
-    if (line.trim().length > 0 && lineIndent(line) <= parentIndent) return index;
+    const line = lines[index];
+    if (line && isPythonStatementStart(line) && line.indentation <= parentIndent) return index;
   }
   return limit;
 }
 
+function suiteIndent(
+  lines: ReturnType<typeof analyzePythonSource>["lines"],
+  start: number,
+  limit: number,
+  parentIndent: number,
+) {
+  const indentation = lines.slice(start, limit)
+    .filter((line) => isPythonStatementStart(line) && line.indentation > parentIndent)
+    .map((line) => line.indentation);
+  return indentation.length > 0 ? Math.min(...indentation) : null;
+}
+
 export function findSceneBlocks(source: string): readonly SourceSceneBlock[] {
-  const lines = source.split(/\r?\n/);
-  const classes = lines.flatMap((line, index) => {
-    const match = line.match(CLASS_PATTERN);
-    return match ? [{ classLine: index, indent: lineIndent(line), name: match[1] }] : [];
+  const analysis = analyzePythonSource(source);
+  if (!analysis.valid) return [];
+  const rawLines = source.split(/\r?\n/);
+  const classes = analysis.lines.flatMap((line, index) => {
+    const match = isPythonStatementStart(line) && line.indentation === 0
+      ? line.code.match(CLASS_PATTERN)
+      : null;
+    return match ? [{ classLine: index, indent: line.indentation, name: match[1] }] : [];
   });
   return classes.map((entry) => {
-    const classEnd = blockEnd(lines, entry.classLine + 1, lines.length, entry.indent);
-    const constructLine = lines.findIndex((line, index) => (
+    const classEnd = blockEnd(analysis.lines, entry.classLine + 1, analysis.lines.length, entry.indent);
+    const classBodyIndent = suiteIndent(analysis.lines, entry.classLine + 1, classEnd, entry.indent);
+    const constructLine = analysis.lines.findIndex((line, index) => (
       index > entry.classLine
       && index < classEnd
-      && lineIndent(line) > entry.indent
-      && /^\s*def\s+construct\s*\(\s*self\s*\)\s*:/.test(line)
+      && classBodyIndent !== null
+      && isPythonStatementStart(line)
+      && line.indentation === classBodyIndent
+      && /^\s*def\s+construct\s*\(\s*self\s*\)\s*:/.test(line.code)
     ));
     if (constructLine < 0) {
       return {
         bodyEnd: classEnd,
+        bodyIndent: null,
         bodyStart: classEnd,
         classLine: entry.classLine,
-        lines,
+        lines: rawLines,
         name: entry.name,
       };
     }
-    const constructIndent = lineIndent(lines[constructLine] ?? "");
+    const constructIndent = analysis.lines[constructLine]?.indentation ?? entry.indent;
     const bodyStart = constructLine + 1;
+    const bodyEnd = blockEnd(analysis.lines, bodyStart, classEnd, constructIndent);
     return {
-      bodyEnd: blockEnd(lines, bodyStart, classEnd, constructIndent),
+      bodyEnd,
+      bodyIndent: suiteIndent(analysis.lines, bodyStart, bodyEnd, constructIndent),
       bodyStart,
       classLine: entry.classLine,
-      lines,
+      lines: rawLines,
       name: entry.name,
     };
   });
@@ -168,46 +197,67 @@ export function findSourceSceneBlock(source: string, sceneName: string) {
   return findSceneBlocks(source).find((block) => block.name === sceneName) ?? null;
 }
 
+export type SourceSceneComment = Readonly<{
+  line: number;
+  text: string;
+}>;
+
+function commentsInSceneBlock(
+  analysis: ReturnType<typeof analyzePythonSource>,
+  block: SourceSceneBlock,
+): readonly SourceSceneComment[] {
+  if (!block || block.bodyIndent === null) return [];
+  const terminalOffset = analysis.lines.slice(block.bodyStart, block.bodyEnd).findIndex((line) => (
+    isPythonStatementStart(line)
+    && line.indentation === block.bodyIndent
+    && /^(?:raise|return)\b/.test(line.code.trimStart())
+  ));
+  const reachableEnd = terminalOffset < 0 ? block.bodyEnd : block.bodyStart + terminalOffset;
+  return analysis.lines.slice(block.bodyStart, reachableEnd).flatMap((line, index) => (
+    isStandalonePythonComment(line) && line.indentation === block.bodyIndent && line.comment
+      ? [{ line: block.bodyStart + index + 1, text: line.comment.text }]
+      : []
+  ));
+}
+
+export function findSourceComments(source: string): readonly SourceSceneComment[] {
+  const analysis = analyzePythonSource(source);
+  if (!analysis.valid) return [];
+  return findSceneBlocks(source).flatMap((block) => commentsInSceneBlock(analysis, block));
+}
+
+export function findSourceSceneComments(source: string, sceneName: string): readonly SourceSceneComment[] {
+  const analysis = analyzePythonSource(source);
+  const block = findSourceSceneBlock(source, sceneName);
+  return analysis.valid && block ? commentsInSceneBlock(analysis, block) : [];
+}
+
 function collectStatements(block: SourceSceneBlock): readonly SourceStatement[] {
+  if (block.bodyIndent === null) return [];
+  const analysis = analyzePythonSource(block.lines.join("\n"));
+  if (!analysis.valid) return [];
   const statements: SourceStatement[] = [];
   let current = "";
   let currentLine = block.bodyStart;
-  let depth = 0;
-  let quote: "\"" | "'" | null = null;
-  let escaped = false;
   for (let index = block.bodyStart; index < block.bodyEnd; index += 1) {
     const raw = block.lines[index] ?? "";
+    const line = analysis.lines[index];
+    if (!line) continue;
     const trimmed = raw.trim();
-    if (!current && (!trimmed || trimmed.startsWith("#"))) {
-      if (trimmed) statements.push({ line: index, text: trimmed });
+    if (!current && isStandalonePythonComment(line)) {
+      if (line.indentation === block.bodyIndent && line.comment) {
+        statements.push({ line: index, text: line.comment.text });
+      }
       continue;
     }
-    if (!current) currentLine = index;
-    current = current ? `${current}\n${trimmed}` : trimmed;
-    for (const character of trimmed) {
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (character === "\\" && quote) {
-        escaped = true;
-        continue;
-      }
-      if (quote) {
-        if (character === quote) quote = null;
-        continue;
-      }
-      if (character === "\"" || character === "'") {
-        quote = character;
-        continue;
-      }
-      if (character === "(" || character === "[" || character === "{") depth += 1;
-      if (character === ")" || character === "]" || character === "}") depth -= 1;
+    if (!current) {
+      if (!isPythonStatementStart(line) || line.indentation !== block.bodyIndent) continue;
+      currentLine = index;
     }
-    if (depth <= 0 && !quote) {
+    current = current ? `${current}\n${trimmed}` : trimmed;
+    if (line.bracketDepthAfter === 0 && !line.continuesToNext && !line.endsInString) {
       statements.push({ line: currentLine, text: current });
       current = "";
-      depth = 0;
     }
   }
   if (current) statements.push({ line: currentLine, text: current });

@@ -1,5 +1,9 @@
 import { renderRequestPrograms, type ProgramRenderRequest, type SingleProgramRenderRequest } from "./contracts";
-import { findSourceSceneBlock } from "./source-import";
+import {
+  findSourceComments,
+  findSourceSceneBlock,
+  findSourceSceneComments,
+} from "./source-import";
 import type { CanonicalEditOperation, CreateEntityOperation } from "../studio/operations";
 import { insertedProgramDuration } from "../studio/program-composition";
 
@@ -59,18 +63,16 @@ const ANCHOR_PATTERN = /^\s*#\s*poietra:anchor\s+([0-9]+(?:\.[0-9]+)?)\s*$/;
 const EPSILON = 0.0005;
 
 export function findMotionAnchors(source: string): readonly MotionAnchor[] {
-  return source.split(/\r?\n/).flatMap((line, index) => {
-    const match = line.match(ANCHOR_PATTERN);
-    return match ? [{ line: index + 1, seconds: Number(match[1]) }] : [];
+  return findSourceComments(source).flatMap((comment) => {
+    const match = comment.text.match(ANCHOR_PATTERN);
+    return match ? [{ line: comment.line, seconds: Number(match[1]) }] : [];
   });
 }
 
 export function findSceneMotionAnchors(source: string, sceneName: string): readonly MotionAnchor[] {
-  const block = findSourceSceneBlock(source, sceneName);
-  if (!block) return [];
-  return block.lines.slice(block.bodyStart, block.bodyEnd).flatMap((line, index) => {
-    const match = line.match(ANCHOR_PATTERN);
-    return match ? [{ line: block.bodyStart + index + 1, seconds: Number(match[1]) }] : [];
+  return findSourceSceneComments(source, sceneName).flatMap((comment) => {
+    const match = comment.text.match(ANCHOR_PATTERN);
+    return match ? [{ line: comment.line, seconds: Number(match[1]) }] : [];
   });
 }
 
@@ -365,7 +367,8 @@ export function lowerCanonicalProgramSource(
   if (!anchor) {
     throw new ProgramLoweringError(
       "anchor-missing",
-      `No # poietra:anchor ${sourceAnchor.toFixed(3)} marker exists in ${request.sourcePath}.`,
+      `No # poietra:anchor ${sourceAnchor.toFixed(3)} executable construct-level marker exists in ${request.sourcePath}. `
+        + "Markers inside strings, continuations, nested scopes, or unreachable code are ignored.",
     );
   }
   const newline = source.includes("\r\n") ? "\r\n" : "\n";
@@ -635,12 +638,11 @@ export function lowerCanonicalProgramSource(
   }));
   const insertedDuration = insertedProgramDuration(request.program);
   if (sceneBlock) {
-    for (let index = sceneBlock.bodyStart; index < sceneBlock.bodyEnd; index += 1) {
-      if (index === anchor.line - 1) continue;
-      const match = lines[index]?.match(ANCHOR_PATTERN);
-      if (!match) continue;
-      const seconds = Number(match[1]);
+    for (const sourceMarker of findSceneMotionAnchors(source, request.sceneName)) {
+      if (sourceMarker.line === anchor.line) continue;
+      const seconds = sourceMarker.seconds;
       if (seconds <= sourceAnchor + EPSILON) continue;
+      const index = sourceMarker.line - 1;
       const lineIndentation = lines[index]?.match(/^\s*/)?.[0] ?? "";
       lines[index] = `${lineIndentation}# poietra:anchor ${formatAmount(seconds + insertedDuration)}`;
     }
@@ -763,13 +765,12 @@ export function lowerCanonicalProgramBatchSource(
   if (!sceneBlock) {
     throw new ProgramLoweringError("anchor-missing", `${request.sceneName} is not present in ${request.sourcePath}.`);
   }
-  for (let index = sceneBlock.bodyStart; index < sceneBlock.bodyEnd; index += 1) {
-    const match = lines[index]?.match(ANCHOR_PATTERN);
-    if (!match) continue;
-    const sourceAnchor = Number(match[1]);
+  for (const sourceMarker of findSceneMotionAnchors(source, request.sceneName)) {
+    const sourceAnchor = sourceMarker.seconds;
     const priorDuration = groups.reduce((duration, group) => (
       group.sourceAnchor < sourceAnchor - EPSILON ? duration + group.duration : duration
     ), 0);
+    const index = sourceMarker.line - 1;
     const indentation = lines[index]?.match(/^\s*/)?.[0] ?? "";
     lines[index] = `${indentation}# poietra:anchor ${formatAmount(sourceAnchor + priorDuration)}`;
   }
