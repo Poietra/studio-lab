@@ -51,31 +51,37 @@ describe("manual Studio authoring commands", () => {
         value: expect.objectContaining({ texParts: ["F", "=", "m", "a"] }),
       }),
     ]);
-    const proposed = evaluateWorkingState(createFixtureWorkingState({
-      stagedPrograms: [programRecord(validation.program, validation)],
-    }));
-    expect(projectProposedState(proposed, 5).canvas.entities.find((entity) => (
-      entity.id === "equation_1"
-    ))).toEqual(expect.objectContaining({
-      content: expect.objectContaining({ texParts: ["F", "=", "m", "a"] }),
-      position: { x: 410, y: 170 },
-    }));
+    const proposed = evaluateWorkingState(
+      createFixtureWorkingState({
+        stagedPrograms: [programRecord(validation.program, validation)],
+      }),
+    );
+    expect(projectProposedState(proposed, 5).canvas.entities.find((entity) => entity.id === "equation_1")).toEqual(
+      expect.objectContaining({
+        content: expect.objectContaining({ texParts: ["F", "=", "m", "a"] }),
+        position: { x: 410, y: 170 },
+      }),
+    );
   });
 
   it("keeps Studio-created content visible before a later Inspector edit", () => {
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 1,
-      entities: [{
-        content: defaultEntityContent("Text", "before"),
-        position: { x: 200, y: 120 },
-        type: "Text",
-      }],
+      entities: [
+        {
+          content: defaultEntityContent("Text", "before"),
+          position: { x: 200, y: 120 },
+          type: "Text",
+        },
+      ],
       scene: STUDIO_FIXTURE_SCENE,
       transactionId: "inspector-text-source",
     });
-    const createdScene = evaluateWorkingState(createFixtureWorkingState({
-      appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
-    })).evaluatedScene;
+    const createdScene = evaluateWorkingState(
+      createFixtureWorkingState({
+        appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
+      }),
+    ).evaluatedScene;
     const edit = createInspectorEntityEditProgram({
       capturedPlayhead: 5,
       edits: { content: defaultEntityContent("Text", "after") },
@@ -85,19 +91,23 @@ describe("manual Studio authoring commands", () => {
       transactionId: "inspector-text-edit",
     });
     expect(edit.kind, JSON.stringify(edit.issues)).toBe("valid");
-    const proposed = evaluateWorkingState(createFixtureWorkingState({
-      appliedPrograms: [
-        programRecord(creation.validation.program, creation.validation),
-        programRecord(edit.program, edit),
-      ],
-    }));
+    const proposed = evaluateWorkingState(
+      createFixtureWorkingState({
+        appliedPrograms: [
+          programRecord(creation.validation.program, creation.validation),
+          programRecord(edit.program, edit),
+        ],
+      }),
+    );
 
-    expect(projectProposedState(proposed, 2).canvas.entities.find((entity) => (
-      entity.id === creation.entityIds[0]
-    ))?.content?.text).toBe("before");
-    expect(projectProposedState(proposed, 5.5).canvas.entities.find((entity) => (
-      entity.id === creation.entityIds[0]
-    ))?.content?.text).toBe("after");
+    expect(
+      projectProposedState(proposed, 2).canvas.entities.find((entity) => entity.id === creation.entityIds[0])?.content
+        ?.text,
+    ).toBe("before");
+    expect(
+      projectProposedState(proposed, 5.5).canvas.entities.find((entity) => entity.id === creation.entityIds[0])?.content
+        ?.text,
+    ).toBe("after");
   });
 
   it("combines Inspector position and shape dimensions into the existing ResizeEntity operation", () => {
@@ -107,9 +117,11 @@ describe("manual Studio authoring commands", () => {
       scene: STUDIO_FIXTURE_SCENE,
       transactionId: "inspector-circle-source",
     });
-    const scene = evaluateWorkingState(createFixtureWorkingState({
-      appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
-    })).evaluatedScene;
+    const scene = evaluateWorkingState(
+      createFixtureWorkingState({
+        appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
+      }),
+    ).evaluatedScene;
     const validation = createInspectorEntityEditProgram({
       capturedPlayhead: 5,
       edits: { dimensions: { radius: 3 }, position: { x: 210, y: 150 } },
@@ -154,18 +166,22 @@ describe("manual Studio authoring commands", () => {
     });
     const revalidated = validateAndScheduleProgram(knownValidation.program, scene);
     expect(revalidated.kind).toBe("invalid");
-    expect(revalidated.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "identity-unknown", field: "entityId", severity: "error" }),
-    ]));
+    expect(revalidated.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "identity-unknown", field: "entityId", severity: "error" }),
+      ]),
+    );
 
-    expect(() => createInspectorEntityEditProgram({
-      capturedPlayhead: 5,
-      edits: { content: { displayLines: ["F = ma"], texParts: ["F", "=", "m", "a"] } },
-      entityId: "equation_1",
-      from: { position: { x: 384, y: 146 }, scale: 1 },
-      scene,
-      transactionId: "unsafe-inspector-content",
-    })).toThrow(/known or Studio-generated source identity/i);
+    expect(() =>
+      createInspectorEntityEditProgram({
+        capturedPlayhead: 5,
+        edits: { content: { displayLines: ["F = ma"], texParts: ["F", "=", "m", "a"] } },
+        entityId: "equation_1",
+        from: { position: { x: 384, y: 146 }, scale: 1 },
+        scene,
+        transactionId: "unsafe-inspector-content",
+      }),
+    ).toThrow(/known or Studio-generated source identity/i);
   });
 
   it("rejects content whose canonical shape does not match the selected entity type", () => {
@@ -179,9 +195,9 @@ describe("manual Studio authoring commands", () => {
     });
 
     expect(validation.kind).toBe("invalid");
-    expect(validation.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ field: "value", severity: "error" }),
-    ]));
+    expect(validation.issues).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: "value", severity: "error" })]),
+    );
   });
 
   it("rejects Inspector content outside the shared round-trip contract", () => {
@@ -201,9 +217,9 @@ describe("manual Studio authoring commands", () => {
     });
 
     expect(validation.kind).toBe("invalid");
-    expect(validation.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ field: "value", severity: "error" }),
-    ]));
+    expect(validation.issues).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: "value", severity: "error" })]),
+    );
   });
 
   it("creates and positions an entity through the canonical operation pipeline", () => {

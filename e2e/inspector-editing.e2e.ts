@@ -35,7 +35,8 @@ test("validates, previews, exports, applies, and undoes an Inspector MathTex and
   await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Move equation" })).toContainText("F=ma");
   await expect(page.locator("[data-timeline-animation][title^='content animation']")).toHaveCount(1);
-  await expect.poll(() => page.locator("[data-timeline-animation][title^='position animation']").count())
+  await expect
+    .poll(() => page.locator("[data-timeline-animation][title^='position animation']").count())
     .toBeGreaterThanOrEqual(2);
   const source = await exportedSource(page);
   expect(source).toContain("# poietra:content");

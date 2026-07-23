@@ -217,18 +217,24 @@ const markerContentBaseSchema = z.object({
   label: z.string().max(2_000).optional(),
 });
 const contentMarkerSchema = z.discriminatedUnion("type", [
-  z.object({
-    content: markerContentBaseSchema.extend({ text: z.string().min(1).max(2_000) }).strict(),
-    type: z.literal("Text"),
-    variable: identifierSchema,
-    version: z.literal(1),
-  }).strict(),
-  z.object({
-    content: markerContentBaseSchema.extend({ texParts: z.array(z.string().min(1).max(2_000)).min(1).max(16) }).strict(),
-    type: z.literal("MathTex"),
-    variable: identifierSchema,
-    version: z.literal(1),
-  }).strict(),
+  z
+    .object({
+      content: markerContentBaseSchema.extend({ text: z.string().min(1).max(2_000) }).strict(),
+      type: z.literal("Text"),
+      variable: identifierSchema,
+      version: z.literal(1),
+    })
+    .strict(),
+  z
+    .object({
+      content: markerContentBaseSchema
+        .extend({ texParts: z.array(z.string().min(1).max(2_000)).min(1).max(16) })
+        .strict(),
+      type: z.literal("MathTex"),
+      variable: identifierSchema,
+      version: z.literal(1),
+    })
+    .strict(),
 ]);
 
 function hashSource(source: string) {
@@ -814,18 +820,19 @@ function markerBefore(statements: readonly SourceStatement[], statementIndex: nu
   return undefined;
 }
 
-function verifiedContentReplacement(
-  statement: string,
-  marker: z.infer<typeof contentMarkerSchema>,
-) {
-  const constructor = marker.type === "Text"
-    ? `Text(${JSON.stringify(marker.content.text)})`
-    : `MathTex(${marker.content.texParts.map((part) => JSON.stringify(part)).join(", ")})`;
+function verifiedContentReplacement(statement: string, marker: z.infer<typeof contentMarkerSchema>) {
+  const constructor =
+    marker.type === "Text"
+      ? `Text(${JSON.stringify(marker.content.text)})`
+      : `MathTex(${marker.content.texParts.map((part) => JSON.stringify(part)).join(", ")})`;
   const variable = marker.variable;
-  return statement.trim() === `${variable}.become(${constructor}`
-    + `.match_style(${variable})`
-    + `.match_height(${variable})`
-    + `.move_to(${variable}.get_center()))`;
+  return (
+    statement.trim() ===
+    `${variable}.become(${constructor}` +
+      `.match_style(${variable})` +
+      `.match_height(${variable})` +
+      `.move_to(${variable}.get_center()))`
+  );
 }
 
 type ResizeMarkerEntry = z.infer<typeof resizeMarkerEntrySchema>;
@@ -1169,20 +1176,18 @@ export function importManimScene(
       continue;
     }
     const contentMarker = markerBefore(statements, statementIndex, CONTENT_MARKER_PATTERN);
-    const directContent = statement.text.match(
-      /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*become\(\s*(MathTex|Text)\s*\(/s,
-    );
+    const directContent = statement.text.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*become\(\s*(MathTex|Text)\s*\(/s);
     if (directContent) {
       const parsed = contentMarkerSchema.safeParse(contentMarker);
       const entity = byVariable.get(directContent[1]);
       if (
-        entity
-        && parsed.success
-        && parsed.data.variable === directContent[1]
-        && parsed.data.type === directContent[2]
-        && entity.type === parsed.data.type
-        && canonicalEditableContent(parsed.data.content, parsed.data.type)
-        && verifiedContentReplacement(statement.text, parsed.data)
+        entity &&
+        parsed.success &&
+        parsed.data.variable === directContent[1] &&
+        parsed.data.type === directContent[2] &&
+        entity.type === parsed.data.type &&
+        canonicalEditableContent(parsed.data.content, parsed.data.type) &&
+        verifiedContentReplacement(statement.text, parsed.data)
       ) {
         appendChannelSample(contentSamples, entity.id, {
           interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },

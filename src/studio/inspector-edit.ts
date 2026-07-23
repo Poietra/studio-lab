@@ -19,13 +19,15 @@ export type ValidatedInspectorEdits = Readonly<{
   position?: Point;
 }>;
 
-export type InspectorEditValidation = Readonly<{
-  errors: Readonly<Partial<Record<InspectorEditField, string>>>;
-  kind: "invalid";
-}> | Readonly<{
-  edits: ValidatedInspectorEdits;
-  kind: "valid";
-}>;
+export type InspectorEditValidation =
+  | Readonly<{
+      errors: Readonly<Partial<Record<InspectorEditField, string>>>;
+      kind: "invalid";
+    }>
+  | Readonly<{
+      edits: ValidatedInspectorEdits;
+      kind: "valid";
+    }>;
 
 const MAX_CONTENT_LENGTH = 2_000;
 const MAX_MATHTEX_PARTS = 16;
@@ -81,11 +83,7 @@ function currentContentValue(entity: ProjectedEntity) {
   return null;
 }
 
-function validateContent(
-  entity: ProjectedEntity,
-  value: string,
-  errors: Partial<Record<InspectorEditField, string>>,
-) {
+function validateContent(entity: ProjectedEntity, value: string, errors: Partial<Record<InspectorEditField, string>>) {
   if (entity.sourceIdentity.kind === "unknown" && !entity.transactionId) {
     errors.content = "Reimport this object with a stable source identity before editing its content.";
     return undefined;
@@ -128,9 +126,7 @@ function validateContent(
 }
 
 export function initialInspectorEditValues(entity: ProjectedEntity): InspectorEditValues {
-  const dimensions = entity.geometry.dimensions.kind === "known"
-    ? entity.geometry.dimensions.value
-    : {};
+  const dimensions = entity.geometry.dimensions.kind === "known" ? entity.geometry.dimensions.value : {};
   return {
     content: currentContentValue(entity),
     height: dimensions.height === undefined ? null : formattedNumber(dimensions.height, 2),
@@ -141,10 +137,7 @@ export function initialInspectorEditValues(entity: ProjectedEntity): InspectorEd
   };
 }
 
-export function validateInspectorEdits(
-  entity: ProjectedEntity,
-  values: InspectorEditValues,
-): InspectorEditValidation {
+export function validateInspectorEdits(entity: ProjectedEntity, values: InspectorEditValues): InspectorEditValidation {
   const errors: Partial<Record<InspectorEditField, string>> = {};
   const edits: {
     content?: EntityContent;
@@ -159,11 +152,8 @@ export function validateInspectorEdits(
     } else {
       const x = parseFiniteNumber(values.x, "x", errors);
       const y = parseFiniteNumber(values.y, "y", errors);
-      if (
-        x !== null
-        && y !== null
-        && (changed(x, entity.position.x) || changed(y, entity.position.y))
-      ) edits.position = { x, y };
+      if (x !== null && y !== null && (changed(x, entity.position.x) || changed(y, entity.position.y)))
+        edits.position = { x, y };
     }
   }
 
@@ -177,9 +167,9 @@ export function validateInspectorEdits(
 
   if (entity.type === "Circle" && values.radius !== null) {
     if (
-      entity.geometry.dimensions.kind === "unknown"
-      || entity.geometry.position.kind === "unknown"
-      || entity.geometry.scale.kind === "unknown"
+      entity.geometry.dimensions.kind === "unknown" ||
+      entity.geometry.position.kind === "unknown" ||
+      entity.geometry.scale.kind === "unknown"
     ) {
       errors.radius = "Radius editing requires known dimensions, position, and scale.";
     } else {
@@ -187,18 +177,19 @@ export function validateInspectorEdits(
       if (radius !== null && radius < MIN_SHAPE_SIZE) {
         errors.radius = `Radius must be at least ${MIN_SHAPE_SIZE}.`;
       } else if (
-        radius !== null
-        && (entity.geometry.dimensions.value.radius === undefined
-          || changed(radius, entity.geometry.dimensions.value.radius))
-      ) edits.dimensions = { radius };
+        radius !== null &&
+        (entity.geometry.dimensions.value.radius === undefined ||
+          changed(radius, entity.geometry.dimensions.value.radius))
+      )
+        edits.dimensions = { radius };
     }
   }
 
   if (entity.type === "Rectangle" && values.width !== null && values.height !== null) {
     if (
-      entity.geometry.dimensions.kind === "unknown"
-      || entity.geometry.position.kind === "unknown"
-      || entity.geometry.scale.kind === "unknown"
+      entity.geometry.dimensions.kind === "unknown" ||
+      entity.geometry.position.kind === "unknown" ||
+      entity.geometry.scale.kind === "unknown"
     ) {
       errors.width = "Width editing requires known dimensions, position, and scale.";
       errors.height = "Height editing requires known dimensions, position, and scale.";
@@ -208,21 +199,18 @@ export function validateInspectorEdits(
       if (width !== null && width < MIN_SHAPE_SIZE) errors.width = `Width must be at least ${MIN_SHAPE_SIZE}.`;
       if (height !== null && height < MIN_SHAPE_SIZE) errors.height = `Height must be at least ${MIN_SHAPE_SIZE}.`;
       if (
-        width !== null
-        && height !== null
-        && errors.width === undefined
-        && errors.height === undefined
-        && (
-          entity.geometry.dimensions.value.width === undefined
-          || entity.geometry.dimensions.value.height === undefined
-          || changed(width, entity.geometry.dimensions.value.width)
-          || changed(height, entity.geometry.dimensions.value.height)
-        )
-      ) edits.dimensions = { height, width };
+        width !== null &&
+        height !== null &&
+        errors.width === undefined &&
+        errors.height === undefined &&
+        (entity.geometry.dimensions.value.width === undefined ||
+          entity.geometry.dimensions.value.height === undefined ||
+          changed(width, entity.geometry.dimensions.value.width) ||
+          changed(height, entity.geometry.dimensions.value.height))
+      )
+        edits.dimensions = { height, width };
     }
   }
 
-  return Object.keys(errors).length > 0
-    ? { errors, kind: "invalid" }
-    : { edits, kind: "valid" };
+  return Object.keys(errors).length > 0 ? { errors, kind: "invalid" } : { edits, kind: "valid" };
 }

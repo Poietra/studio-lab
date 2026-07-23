@@ -241,12 +241,17 @@ class GroupedEquation(Scene):
     expect(lowered.insertedCode).toContain(
       'label.become(Text("force").match_style(label).match_height(label).move_to(label.get_center()))',
     );
-    expect(imported?.runtimeSceneState.propertyChannels["source:examples/relativity.py#GroupedEquation:equation/content"]?.samples)
-      .toHaveLength(2);
-    expect(imported?.runtimeSceneState.objectGraph.entities["source:examples/relativity.py#GroupedEquation:equation"]?.content)
-      .toEqual(expect.objectContaining({ texParts: ["F", "=", "m", "a"] }));
-    expect(imported?.runtimeSceneState.objectGraph.entities["source:examples/relativity.py#GroupedEquation:label"]?.content)
-      .toEqual(expect.objectContaining({ text: "force" }));
+    expect(
+      imported?.runtimeSceneState.propertyChannels["source:examples/relativity.py#GroupedEquation:equation/content"]
+        ?.samples,
+    ).toHaveLength(2);
+    expect(
+      imported?.runtimeSceneState.objectGraph.entities["source:examples/relativity.py#GroupedEquation:equation"]
+        ?.content,
+    ).toEqual(expect.objectContaining({ texParts: ["F", "=", "m", "a"] }));
+    expect(
+      imported?.runtimeSceneState.objectGraph.entities["source:examples/relativity.py#GroupedEquation:label"]?.content,
+    ).toEqual(expect.objectContaining({ text: "force" }));
   });
 
   it("rejects content payloads that cannot round-trip through the strict marker contract", () => {
@@ -263,12 +268,14 @@ class GroupedEquation(Scene):
       },
     } as CanonicalEditOperation;
 
-    expect(() => lowerCanonicalProgramSource(
-      source,
-      request(canonicalProgram([invalidContent], "invalid-content")),
-      { height: 8, width: 14.222 },
-      null,
-    )).toThrow(/no truthful source lowering/i);
+    expect(() =>
+      lowerCanonicalProgramSource(
+        source,
+        request(canonicalProgram([invalidContent], "invalid-content")),
+        { height: 8, width: 14.222 },
+        null,
+      ),
+    ).toThrow(/no truthful source lowering/i);
   });
 
   it("does not expose marker-looking text inside a triple-quoted string", () => {

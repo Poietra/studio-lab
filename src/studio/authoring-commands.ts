@@ -171,28 +171,30 @@ export function createStudioEntitiesProgram(
   };
 }
 
-export function createInspectorEntityEditProgram(input: Readonly<{
-  capturedPlayhead: number;
-  edits: InspectorEntityEdits;
-  entityId: string;
-  from: Readonly<{
-    dimensions?: EntityDimensions;
-    position: Point;
-    scale: number;
-  }>;
-  scene: RuntimeSceneState;
-  transactionId: string;
-}>): ProgramValidationResult {
+export function createInspectorEntityEditProgram(
+  input: Readonly<{
+    capturedPlayhead: number;
+    edits: InspectorEntityEdits;
+    entityId: string;
+    from: Readonly<{
+      dimensions?: EntityDimensions;
+      position: Point;
+      scale: number;
+    }>;
+    scene: RuntimeSceneState;
+    transactionId: string;
+  }>,
+): ProgramValidationResult {
   const entity = input.scene.objectGraph.entities[input.entityId];
   if (!entity) throw new Error(`Object ${input.entityId} is no longer available.`);
-  if (!entity.lifetime.some((interval) => (
-    input.capturedPlayhead >= interval.start && input.capturedPlayhead < interval.end
-  ))) {
+  if (
+    !entity.lifetime.some(
+      (interval) => input.capturedPlayhead >= interval.start && input.capturedPlayhead < interval.end,
+    )
+  ) {
     throw new Error("The selected object is not present at the source anchor.");
   }
-  const shape = entity.type === "Circle" ? "circle"
-    : entity.type === "Rectangle" ? "rectangle"
-      : null;
+  const shape = entity.type === "Circle" ? "circle" : entity.type === "Rectangle" ? "rectangle" : null;
   if (input.edits.dimensions && !shape) {
     throw new Error(`${entity.type} does not support shape geometry editing.`);
   }
@@ -202,11 +204,7 @@ export function createInspectorEntityEditProgram(input: Readonly<{
   if (input.edits.content && entity.type !== "Text" && entity.type !== "MathTex") {
     throw new Error(`${entity.type} does not support content editing.`);
   }
-  if (
-    input.edits.content
-    && entity.sourceIdentity.kind === "unknown"
-    && !entity.transactionId
-  ) {
+  if (input.edits.content && entity.sourceIdentity.kind === "unknown" && !entity.transactionId) {
     throw new Error("Studio cannot edit content without a known or Studio-generated source identity.");
   }
   if (Object.keys(input.edits).length === 0) {
@@ -266,12 +264,14 @@ export function createInspectorEntityEditProgram(input: Readonly<{
   });
 }
 
-export function createRemoveEntitiesProgram(input: Readonly<{
-  capturedPlayhead: number;
-  entityIds: readonly string[];
-  scene: RuntimeSceneState;
-  transactionId: string;
-}>): ProgramValidationResult {
+export function createRemoveEntitiesProgram(
+  input: Readonly<{
+    capturedPlayhead: number;
+    entityIds: readonly string[];
+    scene: RuntimeSceneState;
+    transactionId: string;
+  }>,
+): ProgramValidationResult {
   const entityIds = [...new Set(input.entityIds)];
   if (entityIds.length === 0) throw new Error("Select an object to delete.");
   const end = appearanceEnd(input.scene, input.capturedPlayhead);

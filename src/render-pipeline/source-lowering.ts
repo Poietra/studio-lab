@@ -289,7 +289,10 @@ function markerPoint(point: Readonly<{ x: number; y: number }>, viewport: Readon
   };
 }
 
-function sourceMarker(kind: "content" | "dimensions" | "motion" | "position" | "scale", value: Readonly<Record<string, unknown>>) {
+function sourceMarker(
+  kind: "content" | "dimensions" | "motion" | "position" | "scale",
+  value: Readonly<Record<string, unknown>>,
+) {
   return `# poietra:${kind} ${JSON.stringify({ ...value, version: 1 })}`;
 }
 
@@ -404,9 +407,8 @@ function contentTarget(value: unknown): Readonly<{
   type: "MathTex" | "Text";
 }> | null {
   const candidate = value as Partial<EntityContent> | null;
-  const type: EditableContentType | null = typeof candidate?.text === "string"
-    ? "Text"
-    : Array.isArray(candidate?.texParts) ? "MathTex" : null;
+  const type: EditableContentType | null =
+    typeof candidate?.text === "string" ? "Text" : Array.isArray(candidate?.texParts) ? "MathTex" : null;
   if (!type) return null;
   const content = canonicalEditableContent(value, type);
   if (!content) return null;
@@ -422,15 +424,20 @@ function contentTarget(value: unknown): Readonly<{
 }
 
 function contentReplacementExpression(variable: string, target: NonNullable<ReturnType<typeof contentTarget>>) {
-  return `${variable}.become(${target.constructor}`
-    + `.match_style(${variable})`
-    + `.match_height(${variable})`
-    + `.move_to(${variable}.get_center()))`;
+  return (
+    `${variable}.become(${target.constructor}` +
+    `.match_style(${variable})` +
+    `.match_height(${variable})` +
+    `.move_to(${variable}.get_center()))`
+  );
 }
 
-type LoweredAnimationOperation = Extract<CanonicalEditOperation, {
-  kind: "AnimateProperty" | "ChangePresence" | "CreateMotion" | "ResizeEntity" | "TransformContent";
-}>;
+type LoweredAnimationOperation = Extract<
+  CanonicalEditOperation,
+  {
+    kind: "AnimateProperty" | "ChangePresence" | "CreateMotion" | "ResizeEntity" | "TransformContent";
+  }
+>;
 
 function animationOperation(operation: CanonicalEditOperation): operation is LoweredAnimationOperation {
   return (
@@ -955,13 +962,18 @@ export function lowerCanonicalProgramSource(
         } else if (operation.key === "content") {
           const target = contentTarget(operation.value);
           if (!target) {
-            throw new ProgramLoweringError("operation-unsupported", "Content edit requires canonical Text or MathTex content.");
+            throw new ProgramLoweringError(
+              "operation-unsupported",
+              "Content edit requires canonical Text or MathTex content.",
+            );
           }
-          output.push(sourceMarker("content", {
-            content: target.content,
-            type: target.type,
-            variable,
-          }));
+          output.push(
+            sourceMarker("content", {
+              content: target.content,
+              type: target.type,
+              variable,
+            }),
+          );
           output.push(contentReplacementExpression(variable, target));
         }
       } else if (operation.kind === "TransformContent") {

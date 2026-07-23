@@ -362,56 +362,58 @@ export function StudioInspector({
           {selectedEntity ? (
             <>
               <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-2 gap-y-2 text-xs">
-              <dt className="text-zinc-600">Object</dt>
-              <dd className="truncate text-zinc-300">{entityLabel(selectedEntity)}</dd>
-              <dt className="text-zinc-600">Type</dt>
-              <dd className="text-zinc-300">{selectedEntity.type}</dd>
-              <dt className="text-zinc-600">Source</dt>
-              <dd className="truncate font-mono text-[10px] text-zinc-400">
-                {selectedEntity.sourceIdentity.kind === "known" ? selectedEntity.sourceIdentity.value : "not committed"}
-              </dd>
-              <dt className="text-zinc-600">Position</dt>
-              <dd className="tabular-nums text-zinc-300">
-                {selectedEntity.geometry.position.kind === "unknown" ? "≈ " : ""}
-                {selectedEntity.position.x.toFixed(1)}, {selectedEntity.position.y.toFixed(1)}
-              </dd>
-              <dt className="text-zinc-600">Dimensions</dt>
-              <dd className="tabular-nums text-zinc-300">{dimensionSummary(selectedEntity)}</dd>
-              <dt className="text-zinc-600">Style</dt>
-              <dd className="truncate text-zinc-300" title={styleSummary(selectedEntity)}>
-                {styleSummary(selectedEntity)}
-              </dd>
-              <dt className="self-center text-zinc-600">Scale</dt>
-              <dd>
-                <form
-                  className="flex items-center gap-1"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    const data = new FormData(event.currentTarget);
-                    onEntityScaleChange(selectedEntity.id, Number(data.get("scale")));
-                  }}
-                >
-                  <input
-                    aria-label={`Scale ${entityLabel(selectedEntity)}`}
-                    className="h-7 min-w-0 w-20 border border-zinc-700 bg-zinc-950 px-1.5 tabular-nums text-xs text-zinc-300 outline-none focus:border-sky-500"
-                    defaultValue={selectedEntity.scale.toFixed(2)}
-                    disabled={scaleUnknown}
-                    key={`${selectedEntity.id}/${selectedEntity.scale.toFixed(4)}`}
-                    max="8"
-                    min="0.1"
-                    name="scale"
-                    step="0.05"
-                    type="number"
-                  />
-                  <button
-                    className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
-                    disabled={scaleUnknown}
-                    type="submit"
+                <dt className="text-zinc-600">Object</dt>
+                <dd className="truncate text-zinc-300">{entityLabel(selectedEntity)}</dd>
+                <dt className="text-zinc-600">Type</dt>
+                <dd className="text-zinc-300">{selectedEntity.type}</dd>
+                <dt className="text-zinc-600">Source</dt>
+                <dd className="truncate font-mono text-[10px] text-zinc-400">
+                  {selectedEntity.sourceIdentity.kind === "known"
+                    ? selectedEntity.sourceIdentity.value
+                    : "not committed"}
+                </dd>
+                <dt className="text-zinc-600">Position</dt>
+                <dd className="tabular-nums text-zinc-300">
+                  {selectedEntity.geometry.position.kind === "unknown" ? "≈ " : ""}
+                  {selectedEntity.position.x.toFixed(1)}, {selectedEntity.position.y.toFixed(1)}
+                </dd>
+                <dt className="text-zinc-600">Dimensions</dt>
+                <dd className="tabular-nums text-zinc-300">{dimensionSummary(selectedEntity)}</dd>
+                <dt className="text-zinc-600">Style</dt>
+                <dd className="truncate text-zinc-300" title={styleSummary(selectedEntity)}>
+                  {styleSummary(selectedEntity)}
+                </dd>
+                <dt className="self-center text-zinc-600">Scale</dt>
+                <dd>
+                  <form
+                    className="flex items-center gap-1"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      const data = new FormData(event.currentTarget);
+                      onEntityScaleChange(selectedEntity.id, Number(data.get("scale")));
+                    }}
                   >
-                    Set
-                  </button>
-                </form>
-              </dd>
+                    <input
+                      aria-label={`Scale ${entityLabel(selectedEntity)}`}
+                      className="h-7 min-w-0 w-20 border border-zinc-700 bg-zinc-950 px-1.5 tabular-nums text-xs text-zinc-300 outline-none focus:border-sky-500"
+                      defaultValue={selectedEntity.scale.toFixed(2)}
+                      disabled={scaleUnknown}
+                      key={`${selectedEntity.id}/${selectedEntity.scale.toFixed(4)}`}
+                      max="8"
+                      min="0.1"
+                      name="scale"
+                      step="0.05"
+                      type="number"
+                    />
+                    <button
+                      className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
+                      disabled={scaleUnknown}
+                      type="submit"
+                    >
+                      Set
+                    </button>
+                  </form>
+                </dd>
               </dl>
               <EntityInspectorEditor
                 entity={selectedEntity}

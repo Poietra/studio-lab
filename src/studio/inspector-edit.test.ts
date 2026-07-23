@@ -3,18 +3,13 @@ import { describe, expect, it } from "vitest";
 import { evaluateWorkingState, projectProposedState } from "./evaluator";
 import { entityInspectorKey } from "./entity-inspector";
 import { createFixtureWorkingState } from "./fixture";
-import {
-  initialInspectorEditValues,
-  validateInspectorEdits,
-  type InspectorEditValues,
-} from "./inspector-edit";
+import { initialInspectorEditValues, validateInspectorEdits, type InspectorEditValues } from "./inspector-edit";
 import type { ProjectedEntity } from "./model";
 
 function fixtureEntity(id: string) {
-  const entity = projectProposedState(
-    evaluateWorkingState(createFixtureWorkingState()),
-    5,
-  ).inspector.entities.find((candidate) => candidate.id === id);
+  const entity = projectProposedState(evaluateWorkingState(createFixtureWorkingState()), 5).inspector.entities.find(
+    (candidate) => candidate.id === id,
+  );
   if (!entity) throw new Error(`Missing fixture entity ${id}.`);
   return entity;
 }
@@ -26,11 +21,14 @@ function values(entity: ProjectedEntity, changes: Partial<InspectorEditValues> =
 describe("Inspector field validation", () => {
   it("returns only changed position and valid MathTex fields", () => {
     const entity = fixtureEntity("equation_1");
-    const result = validateInspectorEdits(entity, values(entity, {
-      content: "F\n=\nm\na",
-      x: "410",
-      y: "170",
-    }));
+    const result = validateInspectorEdits(
+      entity,
+      values(entity, {
+        content: "F\n=\nm\na",
+        x: "410",
+        y: "170",
+      }),
+    );
 
     expect(result).toEqual({
       edits: {
@@ -61,9 +59,12 @@ describe("Inspector field validation", () => {
 
   it("reports MathTex syntax and empty parts on the content field before staging", () => {
     const entity = fixtureEntity("equation_1");
-    const invalidSyntax = validateInspectorEdits(entity, values(entity, {
-      content: String.raw`\notARealCommand{`,
-    }));
+    const invalidSyntax = validateInspectorEdits(
+      entity,
+      values(entity, {
+        content: String.raw`\notARealCommand{`,
+      }),
+    );
     expect(invalidSyntax).toEqual({
       errors: { content: expect.stringMatching(/cannot parse/i) },
       kind: "invalid",

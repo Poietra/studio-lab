@@ -118,14 +118,12 @@ class ContentEdit(Scene):
     const imported = importManimScene(edited, "scene.py", "ContentEdit");
     const entityId = "source:scene.py#ContentEdit:label";
 
-    expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/content`]?.samples)
-      .toHaveLength(2);
+    expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/content`]?.samples).toHaveLength(2);
     expect(imported?.runtimeSceneState.objectGraph.entities[entityId]?.content?.text).toBe("after");
 
     const tampered = edited.replace('Text("after").match_style', 'Text("other").match_style');
     const rejected = importManimScene(tampered, "scene.py", "ContentEdit");
-    expect(rejected?.runtimeSceneState.propertyChannels[`${entityId}/content`]?.samples)
-      .toHaveLength(2);
+    expect(rejected?.runtimeSceneState.propertyChannels[`${entityId}/content`]?.samples).toHaveLength(2);
     expect(rejected?.runtimeSceneState.objectGraph.entities[entityId]?.content).toBeUndefined();
   });
 
@@ -418,7 +416,8 @@ class Resized(Scene):
   });
 
   it("fails closed after an unverified content replacement", () => {
-    const imported = importManimScene(`from manim import *
+    const imported = importManimScene(
+      `from manim import *
 
 class Replaced(Scene):
     def construct(self):
@@ -428,7 +427,10 @@ class Replaced(Scene):
         # poietra:content {"content":{"displayLines":["tampered"],"texParts":["tampered"]},"type":"MathTex","variable":"label","version":1}
         label.become(MathTex("tampered").move_to(where()))
         self.wait(1)
-`, "scene.py", "Replaced");
+`,
+      "scene.py",
+      "Replaced",
+    );
     expect(imported).not.toBeNull();
     if (!imported) return;
     const entityId = "source:scene.py#Replaced:label";
@@ -450,8 +452,9 @@ class Replaced(Scene):
       scale: expect.objectContaining({ kind: "unknown" }),
       style: expect.objectContaining({ kind: "unknown" }),
     });
-    expect(runtimeSceneStateSchema.parse(JSON.parse(JSON.stringify(imported.runtimeSceneState))))
-      .toEqual(imported.runtimeSceneState);
+    expect(runtimeSceneStateSchema.parse(JSON.parse(JSON.stringify(imported.runtimeSceneState)))).toEqual(
+      imported.runtimeSceneState,
+    );
   });
 
   it("fails closed for common unmarked dimension mutations without inventing position changes", () => {

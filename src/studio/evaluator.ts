@@ -265,9 +265,7 @@ export function sampleProposedState(proposedState: ProposedState, time: number):
         style: { kind: "known" as const, value: {} },
       };
       return {
-        content: content === UNKNOWN_EDITABLE_CONTENT
-          ? undefined
-          : isContent(content) ? content : entity.content,
+        content: content === UNKNOWN_EDITABLE_CONTENT ? undefined : isContent(content) ? content : entity.content,
         geometry: {
           ...(entity.geometry ?? fallbackGeometry),
           dimensions: dimensionsKnowledge ?? entity.geometry?.dimensions ?? fallbackGeometry.dimensions,
