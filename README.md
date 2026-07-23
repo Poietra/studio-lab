@@ -171,6 +171,19 @@ and disables container networking:
 POIETRA_MANIM_COMMAND='["node", "scripts/manim-docker-runner.mjs"]' pnpm dev:web
 ```
 
+Run the fixed real-render smoke fixture with the same Docker adapter used by the
+scheduled and manually dispatched CI workflow:
+
+```sh
+pnpm test:manim-smoke
+```
+
+The smoke test renders an MP4, commits and exactly undoes the lowered source,
+and verifies that both project and render temporary directories are removed.
+Its MP4, source hashes, cleanup result, and captured Vitest/Manim log are written
+under `test-results/manim-smoke/`. Set `POIETRA_MANIM_COMMAND` to use a local
+Manim installation instead of the pinned Docker image.
+
 Eligible source boundaries use an explicit marker such as
 `# poietra:anchor 5.000` inside a Scene method. Studio rejects missing anchors,
 unknown source variables, stale source hashes, unsupported overlap or camera
