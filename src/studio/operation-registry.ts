@@ -95,7 +95,18 @@ export const canonicalOperationSchema = z.discriminatedUnion("kind", [
     kind: z.literal("ChangePresence"),
     persistent: z.boolean(),
   }),
-  baseSchema.extend({ eventKind: z.enum(["play", "wait"]), kind: z.literal("InsertTimelineEvent"), label: z.string() }),
+  baseSchema.extend({
+    eventKind: z.enum(["play", "wait"]),
+    kind: z.literal("InsertTimelineEvent"),
+    label: z.string(),
+    purpose: z.literal("scene-duration").optional(),
+  }),
+  baseSchema.extend({
+    kind: z.literal("TrimSceneDuration"),
+    removedDuration: z.number().finite().positive(),
+    targetDuration: z.number().finite().positive(),
+    waitOperationIds: z.array(z.string().min(1)).min(1).max(32),
+  }),
   baseSchema.extend({ at: z.number(), destination: z.literal("next-scene"), kind: z.literal("InsertSceneBoundary") }),
   baseSchema.extend({
     action: z.enum(["remove", "replace"]),
@@ -400,6 +411,76 @@ function recordOperation(draft: EvaluationDraft, operation: CanonicalEditOperati
     operationId: operation.id,
     transactionId: program.transactionId,
   });
+}
+
+const TIME_EPSILON = 0.0005;
+
+function timeAfterRemoval(time: number, start: number, end: number) {
+  if (time <= start + TIME_EPSILON) return Math.min(time, start);
+  if (time >= end - TIME_EPSILON) return time - (end - start);
+  return start;
+}
+
+function intervalAfterRemoval(interval: Readonly<{ end: number; start: number }>, start: number, end: number) {
+  const nextStart = timeAfterRemoval(interval.start, start, end);
+  return {
+    end: Math.max(nextStart, timeAfterRemoval(interval.end, start, end)),
+    start: nextStart,
+  };
+}
+
+function removeSceneTime(
+  draft: EvaluationDraft,
+  end: number,
+  duration: number,
+  removedWaitOperationIds: ReadonlySet<string>,
+) {
+  const start = end - duration;
+  draft.duration -= duration;
+  draft.entities = Object.fromEntries(
+    Object.entries(draft.entities).map(([id, entity]) => [
+      id,
+      {
+        ...entity,
+        lifetime: entity.lifetime
+          .map((interval) => intervalAfterRemoval(interval, start, end))
+          .filter((interval) => interval.end - interval.start > TIME_EPSILON),
+      },
+    ]),
+  );
+  draft.events = draft.events
+    .map((event) => ({
+      ...event,
+      at: event.at === undefined ? undefined : timeAfterRemoval(event.at, start, end),
+      interval: event.interval ? intervalAfterRemoval(event.interval, start, end) : undefined,
+    }))
+    .filter(
+      (event) =>
+        !(
+          event.operationId &&
+          removedWaitOperationIds.has(event.operationId) &&
+          event.interval &&
+          event.interval.end - event.interval.start <= TIME_EPSILON
+        ),
+    );
+  draft.lineage = draft.lineage.map((lineage) => ({
+    ...lineage,
+    at: timeAfterRemoval(lineage.at, start, end),
+  }));
+  draft.propertyChannels = Object.fromEntries(
+    Object.entries(draft.propertyChannels).map(([id, channel]) => [
+      id,
+      {
+        ...channel,
+        samples: channel.samples
+          .map((sample) => ({
+            ...sample,
+            interval: intervalAfterRemoval(sample.interval, start, end),
+          }))
+          .filter((sample) => sample.interval.end - sample.interval.start > TIME_EPSILON),
+      },
+    ]),
+  );
 }
 
 const allEntityProjections = [
@@ -880,9 +961,76 @@ export const OPERATION_REGISTRY = {
           severity: "error",
         });
       }
+      if (operation.purpose === "scene-duration" && operation.provenance.origin !== "studio-default") {
+        issues.push({
+          code: "schema-invalid",
+          field: "purpose",
+          message: "Only the Studio Scene duration control may create a removable duration wait.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
       return issues;
     },
   } satisfies Capability<"InsertTimelineEvent">,
+  TrimSceneDuration: {
+    access: () => ({ reads: [], writes: [] }),
+    defaults: {},
+    evaluate: (draft, operation, program) => {
+      recordOperation(draft, operation, program);
+      removeSceneTime(draft, operation.interval.start, operation.removedDuration, new Set(operation.waitOperationIds));
+    },
+    execution: () => SUPPORTED_EXECUTION,
+    lifetimeRequirement: "none",
+    projection: ["timeline", "inspector", "working-playback"],
+    targetRequirement: "none",
+    validate: (operation, scene) => {
+      const issues = baseIssues(operation, scene);
+      if (Math.abs(operation.interval.end - operation.interval.start) >= TIME_EPSILON) {
+        issues.push({
+          code: "interval-invalid",
+          field: "interval",
+          message: "A Scene duration trim must be an instantaneous adjustment at its source anchor.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      if (
+        !Number.isFinite(operation.removedDuration) ||
+        operation.removedDuration < 0.1 - TIME_EPSILON ||
+        !Number.isFinite(operation.targetDuration) ||
+        operation.targetDuration < 0.1 ||
+        Math.abs(scene.duration - operation.removedDuration - operation.targetDuration) >= 0.001
+      ) {
+        issues.push({
+          code: "interval-invalid",
+          field: "targetDuration",
+          message: "A Scene duration trim must remove at least 0.1 seconds and resolve to the requested duration.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      if (new Set(operation.waitOperationIds).size !== operation.waitOperationIds.length) {
+        issues.push({
+          code: "schema-invalid",
+          field: "waitOperationIds",
+          message: "A Scene duration trim must reference each Studio wait at most once.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      if (operation.provenance.origin !== "studio-default") {
+        issues.push({
+          code: "schema-invalid",
+          field: "provenance.origin",
+          message: "Only the Studio Scene duration control may shorten a duration wait.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      return issues;
+    },
+  } satisfies Capability<"TrimSceneDuration">,
   InsertSceneBoundary: {
     access: () => ({ reads: [], writes: [] }),
     defaults: { destination: "next-scene" },

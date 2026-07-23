@@ -58,6 +58,7 @@ export type RedoProgramEntry =
 export type EditorSessionSnapshot = Readonly<{
   appliedPrograms: readonly EditorProgramRecord[];
   currentTime: number;
+  durationError: string | null;
   draftError: string | null;
   draftOperation: EditSuggestionOperation | null;
   draftProgram: ProgramRecord | null;
@@ -332,6 +333,7 @@ const durableEditorSessionSnapshotSchema = z
   });
 const editorSessionSnapshotSchema = durableEditorSessionSnapshotSchema
   .safeExtend({
+    durationError: boundedText.nullable(),
     draftError: boundedText.nullable(),
     insertValue: boundedText,
     instruction: boundedText,
@@ -412,6 +414,7 @@ function durableSnapshot(snapshot: EditorSessionSnapshot) {
 function restoredDurableSnapshot(snapshot: z.infer<typeof durableEditorSessionSnapshotSchema>): EditorSessionSnapshot {
   return {
     ...snapshot,
+    durationError: null,
     draftError: null,
     insertValue: "",
     instruction: "",

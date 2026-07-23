@@ -18,6 +18,7 @@ import {
   createTrimEntityLifetimeProgram,
   defaultEntityContent,
   duplicateEntityInput,
+  sceneDurationTrimAvailability,
   type StudioEntityInput,
 } from "./studio/authoring-commands";
 import { commandForShortcut, isEditableShortcutTarget, type StudioCommandId } from "./studio/commands";
@@ -173,6 +174,7 @@ export function App() {
     resetPrograms,
     saveSession,
     setCurrentTime,
+    setDurationError,
     setDraftError,
     setInsertTool,
     setInsertValue,
@@ -189,6 +191,7 @@ export function App() {
     state: {
       appliedPrograms,
       currentTime,
+      durationError,
       draftError,
       draftOperation,
       draftProgram,
@@ -358,6 +361,10 @@ export function App() {
   const selectedSet = new Set(selectedObjectIds);
   const activeDuration =
     workspaceProjection?.proposedState.evaluatedScene.duration ?? activeScene?.runtimeSceneState.duration ?? 1;
+  const durationTrimAvailability = sceneDurationTrimAvailability({
+    appliedPrograms,
+    sceneDuration: draftBaseState?.evaluatedScene.duration ?? activeDuration,
+  });
   const motionPaths = workspaceProjection
     ? projectMotionPaths(workspaceProjection.proposedState.evaluatedScene, selectedSet, currentTime)
     : [];
@@ -375,6 +382,10 @@ export function App() {
       return next;
     });
   }, []);
+
+  useEffect(() => {
+    setCurrentTime((time) => Math.min(time, activeDuration));
+  }, [activeDuration]);
 
   useEffect(() => {
     if (!isPlaying || !activeScene) return;
@@ -705,10 +716,12 @@ export function App() {
     }
   }
 
-  function extendSceneDuration(targetDuration: number) {
+  function changeSceneDuration(targetDuration: number) {
     if (!activeScene || !draftBaseState) return false;
     if (draftProgram) {
-      setDraftError("Apply or discard the current draft before changing the Scene duration.");
+      const message = "Apply or discard the current draft before changing the Scene duration.";
+      setDraftError(message);
+      setDurationError(message);
       return false;
     }
     const appliedAnchor = appliedPrograms[0]?.program.anchor.resolvedSeconds;
@@ -718,11 +731,14 @@ export function App() {
         ? appliedAnchor
         : activeScene.anchors.at(-1);
     if (sourceAnchor === undefined) {
-      setDraftError("Add a # poietra:anchor at a safe source boundary before extending this Scene.");
+      const message = "Add a # poietra:anchor at a safe source boundary before extending this Scene.";
+      setDraftError(message);
+      setDurationError(message);
       return false;
     }
     try {
       const validation = createSceneDurationProgram({
+        appliedPrograms,
         capturedPlayhead: sourceCurrentTime,
         scene: draftBaseState.evaluatedScene,
         sourceAnchor,
@@ -732,9 +748,12 @@ export function App() {
       const validated = validatedProgramRecord(validation);
       if (validated.kind === "invalid") throw new Error(validated.message);
       installCanonicalDraft(validated.record);
+      setDurationError(null);
       return true;
     } catch (error) {
-      setDraftError(error instanceof Error ? error.message : "The Scene duration could not be changed.");
+      const message = error instanceof Error ? error.message : "The Scene duration could not be changed.";
+      setDraftError(message);
+      setDurationError(message);
       return false;
     }
   }
@@ -1600,9 +1619,11 @@ export function App() {
               draftActive={draftProgram !== null}
               duration={activeDuration}
               editingAppliedTransactionId={editingAppliedProgram?.original.program.transactionId ?? null}
+              durationError={durationError}
+              durationMinimum={durationTrimAvailability.minimumDuration}
               entities={editableEntities}
               nextScene={nextScene}
-              onDurationChange={(duration) => void extendSceneDuration(duration)}
+              onDurationChange={(duration) => void changeSceneDuration(duration)}
               onEditAppliedProgram={editAppliedProgram}
               onRedo={() => void redoProgram()}
               onToggleEntity={(entityId, selected) =>

@@ -90,6 +90,7 @@ function snapshot(): EditorSessionSnapshot {
     ...createInitialEditorState(),
     appliedPrograms: [applied],
     currentTime: 7.25,
+    durationError: "Keep this local duration warning.",
     draftError: "Keep this local draft warning.",
     draftOperation: motionOperation,
     draftProgram: draft,
@@ -125,6 +126,7 @@ describe("durable editor session storage", () => {
     expect(serialized).not.toContain("pendingClarification");
     expect(serialized).not.toContain("move the selected object");
     expect(serialized).not.toContain("Keep this local draft warning");
+    expect(serialized).not.toContain("Keep this local duration warning");
     expect(serialized).not.toContain("draft content");
     expect(serialized).not.toContain("sourcePath");
     expect(serialized).not.toContain("examples/scene.py");
@@ -134,6 +136,7 @@ describe("durable editor session storage", () => {
       kind: "restored",
       snapshot: {
         ...snapshot(),
+        durationError: null,
         draftError: null,
         insertValue: "",
         instruction: "",

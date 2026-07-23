@@ -5,15 +5,18 @@ const ANCHOR_EPSILON = 0.0005;
 const MAX_COMPOSED_INTENTS = 16;
 const MAX_COMPOSED_OPERATIONS = 64;
 
-export type ProgramCompositionResult = Readonly<{
-  kind: "empty";
-}> | Readonly<{
-  kind: "incompatible";
-  message: string;
-}> | Readonly<{
-  kind: "composed";
-  program: CanonicalEditProgram;
-}>;
+export type ProgramCompositionResult =
+  | Readonly<{
+      kind: "empty";
+    }>
+  | Readonly<{
+      kind: "incompatible";
+      message: string;
+    }>
+  | Readonly<{
+      kind: "composed";
+      program: CanonicalEditProgram;
+    }>;
 
 type IdMaps = Readonly<{
   entities: ReadonlyMap<string, string>;
@@ -21,18 +24,28 @@ type IdMaps = Readonly<{
 }>;
 
 export function insertedProgramDuration(program: CanonicalEditProgram) {
-  const insertedAnimations = program.operations.filter((operation) => (
-    operation.kind === "ChangePresence"
-    || operation.kind === "CreateMotion"
-    || operation.kind === "TransformContent"
-    || (operation.kind === "AnimateProperty" && operation.key === "scale")
-    || (operation.kind === "InsertTimelineEvent" && operation.eventKind === "wait")
-  ));
+  const insertedAnimations = program.operations.filter(
+    (operation) =>
+      operation.kind === "ChangePresence" ||
+      operation.kind === "CreateMotion" ||
+      operation.kind === "TransformContent" ||
+      (operation.kind === "AnimateProperty" && operation.key === "scale") ||
+      (operation.kind === "InsertTimelineEvent" && operation.eventKind === "wait"),
+  );
   const end = Math.max(
     program.anchor.resolvedSeconds,
     ...insertedAnimations.map((operation) => operation.interval.end),
   );
   return Math.max(0, end - program.anchor.resolvedSeconds);
+}
+
+/** Signed change to working time; Scene duration trims deliberately return a negative delta. */
+export function programTimelineDelta(program: CanonicalEditProgram) {
+  const removedDuration = program.operations.reduce(
+    (duration, operation) => (operation.kind === "TrimSceneDuration" ? duration + operation.removedDuration : duration),
+    0,
+  );
+  return insertedProgramDuration(program) - removedDuration;
 }
 
 type SourceInsertion = Readonly<{
@@ -41,14 +54,16 @@ type SourceInsertion = Readonly<{
 }>;
 
 function sourceInsertions(programs: readonly CanonicalEditProgram[]) {
-  const sorted = programs.map((program, index) => ({ index, program })).sort((left, right) => (
-    left.program.anchor.resolvedSeconds - right.program.anchor.resolvedSeconds
-    || left.index - right.index
-  ));
+  const sorted = programs
+    .map((program, index) => ({ index, program }))
+    .sort(
+      (left, right) =>
+        left.program.anchor.resolvedSeconds - right.program.anchor.resolvedSeconds || left.index - right.index,
+    );
   const insertions: SourceInsertion[] = [];
   for (const { program } of sorted) {
     const sourceAnchor = program.anchor.resolvedSeconds;
-    const duration = insertedProgramDuration(program);
+    const duration = programTimelineDelta(program);
     const current = insertions.at(-1);
     if (current && Math.abs(current.sourceAnchor - sourceAnchor) < ANCHOR_EPSILON) {
       insertions[insertions.length - 1] = {
@@ -63,15 +78,15 @@ function sourceInsertions(programs: readonly CanonicalEditProgram[]) {
 }
 
 /** Maps an original source timestamp to the working timeline after applied insertions. */
-export function sourceTimeToWorkingTime(
-  programs: readonly CanonicalEditProgram[],
-  sourceTime: number,
-) {
-  return sourceTime + sourceInsertions(programs).reduce((offset, insertion) => (
-    insertion.sourceAnchor <= sourceTime + ANCHOR_EPSILON
-      ? offset + insertion.duration
-      : offset
-  ), 0);
+export function sourceTimeToWorkingTime(programs: readonly CanonicalEditProgram[], sourceTime: number) {
+  return (
+    sourceTime +
+    sourceInsertions(programs).reduce(
+      (offset, insertion) =>
+        insertion.sourceAnchor <= sourceTime + ANCHOR_EPSILON ? offset + insertion.duration : offset,
+      0,
+    )
+  );
 }
 
 /**
@@ -79,10 +94,7 @@ export function sourceTimeToWorkingTime(
  * inserted block resolve to that block's source anchor so a new edit appends to
  * the same safe insertion point instead of receiving the offset twice.
  */
-export function workingTimeToSourceTime(
-  programs: readonly CanonicalEditProgram[],
-  workingTime: number,
-) {
+export function workingTimeToSourceTime(programs: readonly CanonicalEditProgram[], workingTime: number) {
   let offset = 0;
   for (const insertion of sourceInsertions(programs)) {
     const insertionStart = insertion.sourceAnchor + offset;
@@ -128,11 +140,7 @@ function remapOperationId(id: string, maps: IdMaps) {
   return maps.operations.get(id) ?? id;
 }
 
-function remapOperation(
-  operation: CanonicalEditOperation,
-  offset: number,
-  maps: IdMaps,
-): CanonicalEditOperation {
+function remapOperation(operation: CanonicalEditOperation, offset: number, maps: IdMaps): CanonicalEditOperation {
   const base = {
     dependsOn: operation.dependsOn.map((id) => remapOperationId(id, maps)),
     id: remapOperationId(operation.id, maps),
@@ -148,9 +156,7 @@ function remapOperation(
           ...operation.entity,
           id: remapEntity(operation.entity.id, maps),
           lifetime: {
-            end: operation.entity.lifetime.end === null
-              ? null
-              : operation.entity.lifetime.end + offset,
+            end: operation.entity.lifetime.end === null ? null : operation.entity.lifetime.end + offset,
             start: operation.entity.lifetime.start + offset,
           },
         },
@@ -187,21 +193,25 @@ function remapOperation(
     case "ChangeConstraint":
     case "ChangeCamera":
       return { ...operation, ...base };
+    case "TrimSceneDuration":
+      return {
+        ...operation,
+        ...base,
+        waitOperationIds: operation.waitOperationIds.map((id) => remapOperationId(id, maps)),
+      };
   }
 }
 
 export function rebaseProgramTime(program: CanonicalEditProgram, offset: number): CanonicalEditProgram {
-  if (!Number.isFinite(offset) || offset < 0) throw new Error("A Program timeline offset must be finite and non-negative.");
+  if (!Number.isFinite(offset) || offset < 0)
+    throw new Error("A Program timeline offset must be finite and non-negative.");
   if (offset < ANCHOR_EPSILON) return program;
   const identityMaps: IdMaps = { entities: new Map(), operations: new Map() };
   return {
     ...program,
     anchor: {
       ...program.anchor,
-      evidence: [
-        ...program.anchor.evidence.slice(0, 31),
-        `inserted-timeline-offset:${offset.toFixed(3)}`,
-      ],
+      evidence: [...program.anchor.evidence.slice(0, 31), `inserted-timeline-offset:${offset.toFixed(3)}`],
       resolvedSeconds: program.anchor.resolvedSeconds + offset,
     },
     operations: program.operations.map((operation) => remapOperation(operation, offset, identityMaps)),
@@ -234,16 +244,12 @@ function orderedOperations(program: CanonicalEditProgram) {
   ];
 }
 
-export function composeProgramsAtSourceAnchor(
-  programs: readonly CanonicalEditProgram[],
-): ProgramCompositionResult {
+export function composeProgramsAtSourceAnchor(programs: readonly CanonicalEditProgram[]): ProgramCompositionResult {
   if (programs.length === 0) return { kind: "empty" };
   if (programs.length === 1) return { kind: "composed", program: programs[0] };
 
   const sourceAnchor = programs[0].anchor.resolvedSeconds;
-  if (programs.some((program) => (
-    Math.abs(program.anchor.resolvedSeconds - sourceAnchor) >= ANCHOR_EPSILON
-  ))) {
+  if (programs.some((program) => Math.abs(program.anchor.resolvedSeconds - sourceAnchor) >= ANCHOR_EPSILON)) {
     return {
       kind: "incompatible",
       message: "Programs from different source anchors cannot be rendered or exported as one source insertion.",
@@ -269,11 +275,12 @@ export function composeProgramsAtSourceAnchor(
         return { kind: "incompatible", message: `Operation ID ${operation.id} occurs in more than one Program.` };
       }
       operationIds.set(operation.id, operationId(transactionId, `p${programIndex}-${index}`));
-      const producedEntityId = operation.kind === "CreateEntity"
-        ? operation.entity.id
-        : operation.kind === "TransformContent"
-          ? operation.targetEntityId
-          : null;
+      const producedEntityId =
+        operation.kind === "CreateEntity"
+          ? operation.entity.id
+          : operation.kind === "TransformContent"
+            ? operation.targetEntityId
+            : null;
       if (!producedEntityId) continue;
       if (entityIds.has(producedEntityId)) {
         return { kind: "incompatible", message: `Entity ID ${producedEntityId} is produced more than once.` };
@@ -288,13 +295,10 @@ export function composeProgramsAtSourceAnchor(
   let offset = 0;
   for (const program of programs) {
     operations.push(...orderedOperations(program).map((operation) => remapOperation(operation, offset, maps)));
-    offset += insertedProgramDuration(program);
+    offset += programTimelineDelta(program);
   }
   const anchor = programs[0].anchor;
-  const evidence = [
-    ...anchor.evidence.slice(0, 31),
-    `composed-transactions:${programs.length}`,
-  ];
+  const evidence = [...anchor.evidence.slice(0, 31), `composed-transactions:${programs.length}`];
   return {
     kind: "composed",
     program: {

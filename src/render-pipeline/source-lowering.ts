@@ -826,6 +826,107 @@ type MutableBatchGroup = {
   sourceAnchor: number;
 };
 
+function normalizeSceneDurationTrims(
+  entries: readonly LoweredProgramBatchEntry[],
+): readonly LoweredProgramBatchEntry[] {
+  const remainingWaitDuration = new Map<string, number>();
+  const waitEntry = new Map<string, Readonly<{ entryIndex: number; sourceAnchor: number }>>();
+
+  entries.forEach((entry, entryIndex) => {
+    for (const operation of entry.program.operations) {
+      if (
+        operation.kind === "InsertTimelineEvent" &&
+        operation.eventKind === "wait" &&
+        operation.purpose === "scene-duration"
+      ) {
+        if (entry.program.provenance.origin !== "studio-default" || operation.provenance.origin !== "studio-default") {
+          throw new ProgramLoweringError(
+            "operation-unsupported",
+            `Duration wait ${operation.id} was not authored by the Studio Scene duration control.`,
+          );
+        }
+        if (remainingWaitDuration.has(operation.id)) {
+          throw new ProgramLoweringError(
+            "operation-unsupported",
+            `Studio duration wait operation ID ${operation.id} occurs more than once in the render batch.`,
+          );
+        }
+        remainingWaitDuration.set(operation.id, operation.interval.end - operation.interval.start);
+        waitEntry.set(operation.id, { entryIndex, sourceAnchor: entry.sourceAnchor });
+      }
+    }
+    const trims = entry.program.operations.filter((operation) => operation.kind === "TrimSceneDuration");
+    if (trims.length === 0) return;
+    if (trims.length !== entry.program.operations.length) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        "A Scene duration trim cannot be lowered together with unrelated operations in one Program.",
+      );
+    }
+    for (const trim of trims) {
+      let remaining = trim.removedDuration;
+      for (const waitOperationId of trim.waitOperationIds) {
+        const source = waitEntry.get(waitOperationId);
+        const available = remainingWaitDuration.get(waitOperationId) ?? 0;
+        if (
+          !source ||
+          source.entryIndex >= entryIndex ||
+          Math.abs(source.sourceAnchor - entry.sourceAnchor) >= EPSILON
+        ) {
+          throw new ProgramLoweringError(
+            "operation-unsupported",
+            `Scene duration trim ${trim.id} does not reference an earlier Studio duration wait at the same source anchor.`,
+          );
+        }
+        const removed = Math.min(available, remaining);
+        remainingWaitDuration.set(waitOperationId, available - removed);
+        remaining -= removed;
+        if (remaining <= EPSILON) break;
+      }
+      if (remaining > EPSILON) {
+        throw new ProgramLoweringError(
+          "operation-unsupported",
+          `Scene duration trim ${trim.id} would remove non-Studio source time.`,
+        );
+      }
+    }
+  });
+
+  return entries.flatMap((entry) => {
+    const operations = entry.program.operations.flatMap((operation): readonly CanonicalEditOperation[] => {
+      if (operation.kind === "TrimSceneDuration") return [];
+      if (
+        operation.kind !== "InsertTimelineEvent" ||
+        operation.eventKind !== "wait" ||
+        operation.purpose !== "scene-duration"
+      )
+        return [operation];
+      const duration = remainingWaitDuration.get(operation.id) ?? operation.interval.end - operation.interval.start;
+      return duration > EPSILON
+        ? [{ ...operation, interval: { end: operation.interval.start + duration, start: operation.interval.start } }]
+        : [];
+    });
+    if (operations.length === 0) return [];
+    const operationIds = new Set(operations.map((operation) => operation.id));
+    return [
+      {
+        ...entry,
+        program: {
+          ...entry.program,
+          operations,
+          schedule: {
+            ...entry.program.schedule,
+            edges: entry.program.schedule.edges.filter(
+              (edge) => operationIds.has(edge.from) && operationIds.has(edge.to),
+            ),
+            order: entry.program.schedule.order.filter((id) => operationIds.has(id)),
+          },
+        },
+      },
+    ];
+  });
+}
+
 /**
  * Lowers validated Programs as one atomic source export. Entries carry both
  * their rebased runtime Program and the immutable source anchor that selected
@@ -853,8 +954,22 @@ export function lowerCanonicalProgramBatchSource(
   const orderedEntries = entries
     .map((entry, inputIndex) => ({ ...entry, inputIndex }))
     .sort((left, right) => left.sourceAnchor - right.sourceAnchor || left.inputIndex - right.inputIndex);
+  const normalizedEntries = normalizeSceneDurationTrims(orderedEntries);
 
-  for (const entry of orderedEntries) {
+  if (normalizedEntries.length === 0) {
+    const anchor = findSceneMotionAnchors(source, request.sceneName).find(
+      (candidate) => Math.abs(candidate.seconds - orderedEntries[0]!.sourceAnchor) < EPSILON,
+    );
+    if (!anchor) {
+      throw new ProgramLoweringError(
+        "anchor-missing",
+        `No # poietra:anchor ${orderedEntries[0]!.sourceAnchor.toFixed(3)} marker exists in ${request.sourcePath}.`,
+      );
+    }
+    return { anchorLine: anchor.line, anchorLines: [anchor.line], insertedCode: "", source };
+  }
+
+  for (const entry of normalizedEntries) {
     const lowered = lowerCanonicalProgramSource(
       source,
       singleProgramRequest(

@@ -19,7 +19,7 @@ import {
   samplePropertyKnowledge,
   samplePropertyValue,
 } from "./property-sampling";
-import { insertedProgramDuration, rebaseProgramTime } from "./program-composition";
+import { programTimelineDelta, rebaseProgramTime } from "./program-composition";
 import { validateAndScheduleProgram } from "./program-validation";
 
 function cloneScene(scene: RuntimeSceneState): EvaluationDraft {
@@ -133,8 +133,10 @@ export function evaluateWorkingState(workingState: WorkingState): ProposedState 
     const evaluatedRecord = programRecord(validation.program, validation);
     evaluatedPrograms.push(evaluatedRecord);
     if (validation.kind !== "valid") continue;
-    const insertionDuration = insertedProgramDuration(validation.program);
-    insertSceneTime(draft, validation.program.anchor.resolvedSeconds, insertionDuration);
+    const timelineDelta = programTimelineDelta(validation.program);
+    if (timelineDelta > 0) {
+      insertSceneTime(draft, validation.program.anchor.resolvedSeconds, timelineDelta);
+    }
     const operationById = new Map(validation.program.operations.map((operation) => [operation.id, operation]));
     for (const operationId of validation.program.schedule.order) {
       const operation = operationById.get(operationId);
@@ -153,7 +155,7 @@ export function evaluateWorkingState(workingState: WorkingState): ProposedState 
         draft.entities[entityId] = { ...draft.entities[entityId], provisional: false };
       }
     }
-    insertions.push({ duration: insertionDuration, sourceAnchor });
+    insertions.push({ duration: timelineDelta, sourceAnchor });
   }
   return {
     base: workingState,

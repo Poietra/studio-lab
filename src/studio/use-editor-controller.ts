@@ -72,6 +72,7 @@ export function createInitialEditorState(): EditorControllerState {
   return {
     appliedPrograms: [],
     currentTime: 0,
+    durationError: null,
     draftError: null,
     draftOperation: null,
     draftProgram: null,
@@ -110,6 +111,7 @@ export function snapshotEditorSession(state: EditorControllerState): EditorSessi
   return {
     appliedPrograms: state.appliedPrograms,
     currentTime: state.currentTime,
+    durationError: state.durationError,
     draftError: state.draftError,
     draftOperation: state.draftOperation,
     draftProgram: state.draftProgram,
@@ -623,6 +625,7 @@ export function useEditorController() {
     resetPrograms,
     saveSession,
     setCurrentTime: (value: SetStateAction<number>) => setField("currentTime", value),
+    setDurationError: (value: SetStateAction<string | null>) => setField("durationError", value),
     setDraftError: (value: SetStateAction<string | null>) => setField("draftError", value),
     setInsertTool: (value: SetStateAction<StudioTool>) => setField("insertTool", value),
     setInsertValue: (value: SetStateAction<string>) => setField("insertValue", value),
