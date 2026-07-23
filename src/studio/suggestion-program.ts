@@ -152,11 +152,7 @@ function equationOperations(
   ] satisfies readonly CanonicalEditOperation[];
 }
 
-function cameraFocusOperations(
-  operation: CreateCameraFocusSuggestion,
-  transactionId: string,
-  origin: OperationOrigin,
-) {
+function cameraFocusOperations(operation: CreateCameraFocusSuggestion, transactionId: string, origin: OperationOrigin) {
   const cameraId = operationId(transactionId, "camera-zoom");
   return [
     {
@@ -168,18 +164,20 @@ function cameraFocusOperations(
       provenance: provenance(origin, ["bounded camera focus", `${operation.zoomScale}x zoom`]),
       value: operation.zoomScale,
     },
-    ...operation.targetObjectIds.map((entityId, index): CanonicalEditOperation => ({
-      dependsOn: [],
-      easing: operation.easing,
-      entityId,
-      from: 1,
-      id: operationId(transactionId, `emphasize-${index}`),
-      interval: { end: operation.end, start: operation.start },
-      key: "scale",
-      kind: "AnimateProperty",
-      provenance: provenance(origin, ["important region", `${operation.emphasisScale}x emphasis`]),
-      to: operation.emphasisScale,
-    })),
+    ...operation.targetObjectIds.map(
+      (entityId, index): CanonicalEditOperation => ({
+        dependsOn: [],
+        easing: operation.easing,
+        entityId,
+        from: 1,
+        id: operationId(transactionId, `emphasize-${index}`),
+        interval: { end: operation.end, start: operation.start },
+        key: "scale",
+        kind: "AnimateProperty",
+        provenance: provenance(origin, ["important region", `${operation.emphasisScale}x emphasis`]),
+        to: operation.emphasisScale,
+      }),
+    ),
   ] satisfies readonly CanonicalEditOperation[];
 }
 
@@ -245,16 +243,22 @@ function explainedEquationOperations(
   const equationEntityId = provisionalEntityId(transactionId, "new-equation");
   return [
     ...equationOperations(operation, transactionId, origin),
-    ...explanationOperations({
-      animation: operation.animation,
-      end: operation.end,
-      kind: "create-explanation",
-      objectKind: "text",
-      placement: operation.explanation.placement,
-      start: operation.start,
-      targetObjectId: equationEntityId,
-      text: operation.explanation.text,
-    }, transactionId, origin, 0, new Map()),
+    ...explanationOperations(
+      {
+        animation: operation.animation,
+        end: operation.end,
+        kind: "create-explanation",
+        objectKind: "text",
+        placement: operation.explanation.placement,
+        start: operation.start,
+        targetObjectId: equationEntityId,
+        text: operation.explanation.text,
+      },
+      transactionId,
+      origin,
+      0,
+      new Map(),
+    ),
   ] satisfies readonly CanonicalEditOperation[];
 }
 
@@ -269,17 +273,15 @@ function motionOperation(
   return {
     controlOffset: operation.controlOffset,
     delta: operation.delta,
-    dependsOn: [...new Set(replacements.flatMap((replacement) => (
-      replacement ? [replacement.operationId] : []
-    )))],
+    dependsOn: [...new Set(replacements.flatMap((replacement) => (replacement ? [replacement.operationId] : [])))],
     easing: operation.easing,
     id: operationId(transactionId, `motion-${index}`),
     interval: { end: operation.end, start: operation.start },
     kind: "CreateMotion",
     provenance: provenance(origin, ["language/direct-manipulation constraint", "new motion"]),
-    targetEntityIds: operation.targetObjectIds.map((entityId, targetIndex) => (
-      replacements[targetIndex]?.targetEntityId ?? entityId
-    )),
+    targetEntityIds: operation.targetObjectIds.map(
+      (entityId, targetIndex) => replacements[targetIndex]?.targetEntityId ?? entityId,
+    ),
   } satisfies CanonicalEditOperation;
 }
 
@@ -307,9 +309,11 @@ function scaleOperations(
     if (!hasSafeMagicEditIdentity(entity)) {
       return {
         kind: "invalid",
-        message: `Studio cannot scale ${logicalEntityId} safely: ${entity.sourceIdentity.kind === "unknown"
-          ? entity.sourceIdentity.reason
-          : "The source identity is not safe to mutate."}`,
+        message: `Studio cannot scale ${logicalEntityId} safely: ${
+          entity.sourceIdentity.kind === "unknown"
+            ? entity.sourceIdentity.reason
+            : "The source identity is not safe to mutate."
+        }`,
       };
     }
     const scale = exactEntityScaleAt(context.scene, entity, operation.start);
@@ -321,14 +325,14 @@ function scaleOperations(
     }
     const targetScale = scale.value * operation.factor;
     if (
-      !Number.isFinite(scale.value)
-      || scale.value <= 0
-      || !Number.isFinite(operation.factor)
-      || operation.factor < MIN_MAGIC_SCALE_FACTOR
-      || operation.factor > MAX_MAGIC_SCALE_FACTOR
-      || !Number.isFinite(targetScale)
-      || targetScale < MIN_ENTITY_SCALE
-      || targetScale > MAX_ENTITY_SCALE
+      !Number.isFinite(scale.value) ||
+      scale.value <= 0 ||
+      !Number.isFinite(operation.factor) ||
+      operation.factor < MIN_MAGIC_SCALE_FACTOR ||
+      operation.factor > MAX_MAGIC_SCALE_FACTOR ||
+      !Number.isFinite(targetScale) ||
+      targetScale < MIN_ENTITY_SCALE ||
+      targetScale > MAX_ENTITY_SCALE
     ) {
       return {
         kind: "invalid",
@@ -372,9 +376,11 @@ function deleteOperations(
     if (!hasSafeMagicEditIdentity(entity)) {
       return {
         kind: "invalid",
-        message: `Studio cannot delete ${logicalEntityId} safely: ${entity.sourceIdentity.kind === "unknown"
-          ? entity.sourceIdentity.reason
-          : "The source identity is not safe to mutate."}`,
+        message: `Studio cannot delete ${logicalEntityId} safely: ${
+          entity.sourceIdentity.kind === "unknown"
+            ? entity.sourceIdentity.reason
+            : "The source identity is not safe to mutate."
+        }`,
       };
     }
     operations.push({
@@ -462,15 +468,11 @@ function operationAnchor(operation: EditSuggestionOperation): SuggestionTimeAnch
 function intentCount(operation: EditSuggestionOperation) {
   if (operation.kind === "create-explained-equation") return 2;
   if (operation.kind !== "edit-program") return 1;
-  return operation.operations.reduce((count, step) => (
-    count + (step.kind === "create-explained-equation" ? 2 : 1)
-  ), 0);
+  return operation.operations.reduce((count, step) => count + (step.kind === "create-explained-equation" ? 2 : 1), 0);
 }
 
 function requiresIllustrativeLowering(operation: EditSuggestionOperation) {
-  const illustrativeKinds = new Set([
-    "create-camera-focus",
-  ]);
+  const illustrativeKinds = new Set(["create-camera-focus"]);
   return operation.kind === "edit-program"
     ? operation.operations.some((step) => illustrativeKinds.has(step.kind))
     : illustrativeKinds.has(operation.kind);
@@ -482,9 +484,10 @@ function requestedExecution(operation: EditSuggestionOperation) {
     return "parallel" as const;
   }
   if (
-    (operation.kind === "scale-objects" || operation.kind === "delete-objects")
-    && operation.targetObjectIds.length > 1
-  ) return "parallel" as const;
+    (operation.kind === "scale-objects" || operation.kind === "delete-objects") &&
+    operation.targetObjectIds.length > 1
+  )
+    return "parallel" as const;
   return "sequence" as const;
 }
 
@@ -521,12 +524,14 @@ export function canonicalizeSuggestionProgram(
   }
 
   const invalidCanonicalization = (message: string): ProgramValidationResult => ({
-    issues: [{
-      code: "schema-invalid",
-      field: "operation",
-      message,
-      severity: "error",
-    }],
+    issues: [
+      {
+        code: "schema-invalid",
+        field: "operation",
+        message,
+        severity: "error",
+      },
+    ],
     kind: "invalid",
     program: {
       anchor: resolution.anchor,
@@ -556,10 +561,16 @@ export function canonicalizeSuggestionProgram(
     const steps = operationSteps(operation);
     let buildFailure: string | null = null;
     const transformByIndex = new Map<number, ReturnType<typeof transformOperation>>();
-    const transformsByStep = new Map<number, ReadonlyMap<string, Readonly<{
-      operationId: string;
-      targetEntityId: string;
-    }>>>();
+    const transformsByStep = new Map<
+      number,
+      ReadonlyMap<
+        string,
+        Readonly<{
+          operationId: string;
+          targetEntityId: string;
+        }>
+      >
+    >();
     if (operation.kind === "edit-program" && operation.execution === "parallel") {
       const parallelTransforms = new Map<string, Readonly<{ operationId: string; targetEntityId: string }>>();
       steps.forEach((step, index) => {
@@ -595,15 +606,17 @@ export function canonicalizeSuggestionProgram(
     }
     operations = steps.flatMap((step, index): readonly CanonicalEditOperation[] => {
       if (step.kind === "create-motion") {
-        return [motionOperation(
-          step,
-          context.transactionId,
-          context.origin,
-          index,
-          operation.kind === "edit-program" && operation.execution === "sequence"
-            ? transformsByStep.get(index)
-            : undefined,
-        )];
+        return [
+          motionOperation(
+            step,
+            context.transactionId,
+            context.origin,
+            index,
+            operation.kind === "edit-program" && operation.execution === "sequence"
+              ? transformsByStep.get(index)
+              : undefined,
+          ),
+        ];
       }
       if (step.kind === "create-transform") return [transformByIndex.get(index)!.canonical];
       if (step.kind === "create-explanation") {
@@ -625,12 +638,7 @@ export function canonicalizeSuggestionProgram(
         return transitionOperations(step, context.transactionId, context.origin);
       }
       if (step.kind === "scale-objects") {
-        const result = scaleOperations(
-          step,
-          context,
-          index,
-          transformsByStep.get(index) ?? new Map(),
-        );
+        const result = scaleOperations(step, context, index, transformsByStep.get(index) ?? new Map());
         if (result.kind === "invalid") {
           buildFailure ??= result.message;
           return [];
@@ -638,12 +646,7 @@ export function canonicalizeSuggestionProgram(
         return result.operations;
       }
       if (step.kind === "delete-objects") {
-        const result = deleteOperations(
-          step,
-          context,
-          index,
-          transformsByStep.get(index) ?? new Map(),
-        );
+        const result = deleteOperations(step, context, index, transformsByStep.get(index) ?? new Map());
         if (result.kind === "invalid") {
           buildFailure ??= result.message;
           return [];
@@ -684,21 +687,24 @@ export function createDirectManipulationMotionProgram(
     transactionId: string;
   }>,
 ) {
-  return canonicalizeSuggestionProgram({
-    anchor: { kind: "playhead", referenceSeconds: input.capturedPlayhead },
-    controlOffset: input.controlOffset,
-    delta: input.delta,
-    easing: "smooth",
-    end: input.interval.end,
-    kind: "create-motion",
-    start: input.interval.start,
-    targetObjectIds: input.targetEntityIds,
-  }, {
-    capturedPlayhead: input.capturedPlayhead,
-    origin: "direct-manipulation",
-    scene: input.scene,
-    transactionId: input.transactionId,
-  });
+  return canonicalizeSuggestionProgram(
+    {
+      anchor: { kind: "playhead", referenceSeconds: input.capturedPlayhead },
+      controlOffset: input.controlOffset,
+      delta: input.delta,
+      easing: "smooth",
+      end: input.interval.end,
+      kind: "create-motion",
+      start: input.interval.start,
+      targetObjectIds: input.targetEntityIds,
+    },
+    {
+      capturedPlayhead: input.capturedPlayhead,
+      origin: "direct-manipulation",
+      scene: input.scene,
+      transactionId: input.transactionId,
+    },
+  );
 }
 
 export function createDirectManipulationPositionProgram(
@@ -712,9 +718,10 @@ export function createDirectManipulationPositionProgram(
     transactionId: string;
   }>,
 ): ProgramValidationResult {
-  const sourceAnchor = Math.abs(input.start - input.capturedPlayhead) < 0.001
-    ? { kind: "playhead" as const, referenceSeconds: input.capturedPlayhead }
-    : { kind: "absolute" as const, seconds: input.start };
+  const sourceAnchor =
+    Math.abs(input.start - input.capturedPlayhead) < 0.001
+      ? { kind: "playhead" as const, referenceSeconds: input.capturedPlayhead }
+      : { kind: "absolute" as const, seconds: input.start };
   const resolution = resolveTimeAnchorOnce(sourceAnchor, {
     capturedPlayhead: input.capturedPlayhead,
     sceneDuration: input.scene.duration,
@@ -736,17 +743,20 @@ export function createDirectManipulationPositionProgram(
       value: { x: position.x + input.delta.x, y: position.y + input.delta.y },
     };
   });
-  return validateAndScheduleProgram({
-    anchor: resolution.anchor,
-    intentCount: 1,
-    loweringStatus: "supported",
-    operations,
-    provenance: provenance("direct-manipulation", ["gesture constraint"]),
-    requestedExecution: "parallel",
-    schedule: { edges: [], mode: "parallel", order: operations.map((operation) => operation.id) },
-    transactionId: input.transactionId,
-    version: EDIT_OPERATION_VERSION,
-  }, input.scene);
+  return validateAndScheduleProgram(
+    {
+      anchor: resolution.anchor,
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations,
+      provenance: provenance("direct-manipulation", ["gesture constraint"]),
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: operations.map((operation) => operation.id) },
+      transactionId: input.transactionId,
+      version: EDIT_OPERATION_VERSION,
+    },
+    input.scene,
+  );
 }
 
 export function createDirectManipulationScaleProgram(
@@ -759,9 +769,10 @@ export function createDirectManipulationScaleProgram(
     transactionId: string;
   }>,
 ): ProgramValidationResult {
-  const sourceAnchor = Math.abs(input.interval.start - input.capturedPlayhead) < 0.001
-    ? { kind: "playhead" as const, referenceSeconds: input.capturedPlayhead }
-    : { kind: "absolute" as const, seconds: input.interval.start };
+  const sourceAnchor =
+    Math.abs(input.interval.start - input.capturedPlayhead) < 0.001
+      ? { kind: "playhead" as const, referenceSeconds: input.capturedPlayhead }
+      : { kind: "absolute" as const, seconds: input.interval.start };
   const resolution = resolveTimeAnchorOnce(sourceAnchor, {
     capturedPlayhead: input.capturedPlayhead,
     sceneDuration: input.scene.duration,
@@ -770,12 +781,7 @@ export function createDirectManipulationScaleProgram(
   const operations = input.targetEntityIds.map((entityId, index): CanonicalEditOperation => {
     const scale = input.scales[entityId];
     if (!scale) throw new Error(`Direct manipulation requires a projected scale for ${entityId}.`);
-    if (
-      !Number.isFinite(scale.from)
-      || !Number.isFinite(scale.to)
-      || scale.from <= 0
-      || scale.to <= 0
-    ) {
+    if (!Number.isFinite(scale.from) || !Number.isFinite(scale.to) || scale.from <= 0 || scale.to <= 0) {
       throw new Error("Object scale must be a finite positive number.");
     }
     return {
@@ -795,17 +801,20 @@ export function createDirectManipulationScaleProgram(
       to: scale.to,
     };
   });
-  return validateAndScheduleProgram({
-    anchor: resolution.anchor,
-    intentCount: 1,
-    loweringStatus: "supported",
-    operations,
-    provenance: provenance("direct-manipulation", ["uniform scale constraint"]),
-    requestedExecution: "parallel",
-    schedule: { edges: [], mode: "parallel", order: operations.map((operation) => operation.id) },
-    transactionId: input.transactionId,
-    version: EDIT_OPERATION_VERSION,
-  }, input.scene);
+  return validateAndScheduleProgram(
+    {
+      anchor: resolution.anchor,
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations,
+      provenance: provenance("direct-manipulation", ["uniform scale constraint"]),
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: operations.map((operation) => operation.id) },
+      transactionId: input.transactionId,
+      version: EDIT_OPERATION_VERSION,
+    },
+    input.scene,
+  );
 }
 
 export function createDirectManipulationModifyMotionProgram(
@@ -818,10 +827,13 @@ export function createDirectManipulationModifyMotionProgram(
     transactionId: string;
   }>,
 ) {
-  const resolution = resolveTimeAnchorOnce({ kind: "absolute", seconds: input.interval.start }, {
-    capturedPlayhead: input.capturedPlayhead,
-    sceneDuration: input.scene.duration,
-  });
+  const resolution = resolveTimeAnchorOnce(
+    { kind: "absolute", seconds: input.interval.start },
+    {
+      capturedPlayhead: input.capturedPlayhead,
+      sceneDuration: input.scene.duration,
+    },
+  );
   if (resolution.kind === "invalid") throw new Error(resolution.message);
   const operation: CanonicalEditOperation = {
     controlOffset: input.controlOffset,
@@ -833,15 +845,18 @@ export function createDirectManipulationModifyMotionProgram(
     preserve: ["start", "end", "duration"],
     provenance: provenance("direct-manipulation", ["path bend gesture", "endpoints preserved"]),
   };
-  return validateAndScheduleProgram({
-    anchor: resolution.anchor,
-    intentCount: 1,
-    loweringStatus: "illustrative",
-    operations: [operation],
-    provenance: provenance("direct-manipulation", ["gesture constraint"]),
-    requestedExecution: "sequence",
-    schedule: { edges: [], mode: "sequence", order: [operation.id] },
-    transactionId: input.transactionId,
-    version: EDIT_OPERATION_VERSION,
-  }, input.scene);
+  return validateAndScheduleProgram(
+    {
+      anchor: resolution.anchor,
+      intentCount: 1,
+      loweringStatus: "illustrative",
+      operations: [operation],
+      provenance: provenance("direct-manipulation", ["gesture constraint"]),
+      requestedExecution: "sequence",
+      schedule: { edges: [], mode: "sequence", order: [operation.id] },
+      transactionId: input.transactionId,
+      version: EDIT_OPERATION_VERSION,
+    },
+    input.scene,
+  );
 }

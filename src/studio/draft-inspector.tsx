@@ -331,10 +331,12 @@ function StepEditor({
             className={inputClass}
             max="80"
             min="0.01"
-            onChange={(event) => onChange({
-              ...step,
-              factor: Number(event.currentTarget.value),
-            })}
+            onChange={(event) =>
+              onChange({
+                ...step,
+                factor: Number(event.currentTarget.value),
+              })
+            }
             step="0.05"
             type="number"
             value={step.factor}

@@ -4,11 +4,7 @@ import { programRecord } from "./evaluator";
 import type { ProgramRecord, ProjectedEntity, ProposedState } from "./model";
 import type { OperationOrigin } from "./operations";
 import type { ProgramValidationResult } from "./program-validation";
-import {
-  magicEditCapabilities,
-  MAX_ENTITY_SCALE,
-  MIN_ENTITY_SCALE,
-} from "./magic-edit-capabilities";
+import { magicEditCapabilities, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./magic-edit-capabilities";
 import { canonicalizeSuggestionProgram } from "./suggestion-program";
 
 export type DraftValidationResult =
@@ -46,9 +42,7 @@ function magicObjectEditIssue(
       if (!entity || !selected.has(entityId)) {
         return "Magic Edit can scale or delete only selected objects that are still available.";
       }
-      const lifetime = entity.lifetime.find((interval) => (
-        step.start >= interval.start && step.start < interval.end
-      ));
+      const lifetime = entity.lifetime.find((interval) => step.start >= interval.start && step.start < interval.end);
       if (!lifetime || step.end > lifetime.end + 0.001) {
         return `Object ${entityId} is not present for the complete ${step.kind} interval.`;
       }

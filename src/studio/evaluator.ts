@@ -116,11 +116,13 @@ export function evaluateWorkingState(workingState: WorkingState): ProposedState 
   const programs = [
     ...workingState.appliedPrograms.map((record) => ({ applied: true, record })),
     ...workingState.stagedPrograms.map((record) => ({ applied: false, record })),
-  ].map((entry, inputIndex) => ({ ...entry, inputIndex }))
-    .sort((left, right) => (
-      left.record.program.anchor.resolvedSeconds - right.record.program.anchor.resolvedSeconds
-      || left.inputIndex - right.inputIndex
-    ));
+  ]
+    .map((entry, inputIndex) => ({ ...entry, inputIndex }))
+    .sort(
+      (left, right) =>
+        left.record.program.anchor.resolvedSeconds - right.record.program.anchor.resolvedSeconds ||
+        left.inputIndex - right.inputIndex,
+    );
   const draft = cloneScene(workingState.runtimeSceneState);
   const evaluatedPrograms: Array<ProgramRecord | undefined> = new Array(programs.length);
   const insertions: Array<Readonly<{ duration: number; sourceAnchor: number }>> = [];

@@ -1,8 +1,4 @@
-import {
-  analyzePythonSource,
-  isPythonStatementStart,
-  type PythonSourceLine,
-} from "./python-source-analysis";
+import { analyzePythonSource, isPythonStatementStart, type PythonSourceLine } from "./python-source-analysis";
 
 type PythonStatement = Readonly<{
   code: string;
@@ -21,16 +17,10 @@ function escapePattern(value: string) {
 }
 
 function referencePattern(reference: string, global = false) {
-  return new RegExp(
-    `\\b${reference.split(".").map(escapePattern).join("\\s*\\.\\s*")}\\b`,
-    global ? "g" : undefined,
-  );
+  return new RegExp(`\\b${reference.split(".").map(escapePattern).join("\\s*\\.\\s*")}\\b`, global ? "g" : undefined);
 }
 
-function staticGlobalsMatches(
-  statement: PythonStatement,
-  references: ReadonlySet<string>,
-) {
+function staticGlobalsMatches(statement: PythonStatement, references: ReadonlySet<string>) {
   const patterns = [
     /\bglobals\s*\(\s*\)\s*\[\s*(?:(?:[fF][rR]?|[rR][fFbB]?|[bB][rR]?|[uU]))?(["'])([A-Za-z_][A-Za-z0-9_]*)\1\s*\]/g,
     /\bglobals\s*\(\s*\)\s*\.\s*get\s*\(\s*(?:(?:[fF][rR]?|[rR][fFbB]?|[bB][rR]?|[uU]))?(["'])([A-Za-z_][A-Za-z0-9_]*)\1\s*\)/g,
@@ -47,10 +37,7 @@ function staticGlobalsMatches(
   return matches;
 }
 
-function staticGlobalsReference(
-  statement: PythonStatement,
-  references: ReadonlySet<string>,
-) {
+function staticGlobalsReference(statement: PythonStatement, references: ReadonlySet<string>) {
   return staticGlobalsMatches(statement, references)[0]?.reference ?? null;
 }
 
@@ -178,34 +165,23 @@ const RETAINING_REFERENCE_CALLS = new Set([
   "update",
 ]);
 
-const PYTHON_GROUPING_KEYWORDS = new Set([
-  "assert",
-  "case",
-  "elif",
-  "for",
-  "if",
-  "match",
-  "return",
-  "while",
-  "with",
-]);
+const PYTHON_GROUPING_KEYWORDS = new Set(["assert", "case", "elif", "for", "if", "match", "return", "while", "with"]);
 
 function referenceMatches(statement: PythonStatement, references: ReadonlySet<string>) {
   const staticMatches = staticGlobalsMatches(statement, references);
-  const identifiers = [...references].flatMap((reference) => (
-    [...statement.code.matchAll(referencePattern(reference, true))].map((match) => ({
-      end: (match.index ?? 0) + match[0].length,
-      reference,
-      staticGlobal: false,
-      start: match.index ?? 0,
-    }))
-  )).filter((identifier) => !staticMatches.some((match) => (
-    identifier.start >= match.start && identifier.end <= match.end
-  )));
-  return [
-    ...identifiers,
-    ...staticMatches.map((match) => ({ ...match, staticGlobal: true })),
-  ];
+  const identifiers = [...references]
+    .flatMap((reference) =>
+      [...statement.code.matchAll(referencePattern(reference, true))].map((match) => ({
+        end: (match.index ?? 0) + match[0].length,
+        reference,
+        staticGlobal: false,
+        start: match.index ?? 0,
+      })),
+    )
+    .filter(
+      (identifier) => !staticMatches.some((match) => identifier.start >= match.start && identifier.end <= match.end),
+    );
+  return [...identifiers, ...staticMatches.map((match) => ({ ...match, staticGlobal: true }))];
 }
 
 function callBeforeOpening(code: string, opening: number) {
@@ -215,9 +191,7 @@ function callBeforeOpening(code: string, opening: number) {
   }
   const direct = prefix.match(/([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*)$/)?.[1];
   if (direct) return direct.replace(/\s/g, "");
-  const parenthesized = prefix.match(
-    /\(\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*\)$/,
-  )?.[1];
+  const parenthesized = prefix.match(/\(\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*\)$/)?.[1];
   if (parenthesized) return parenthesized.replace(/\s/g, "");
   return /[\])]$/.test(prefix) ? "a dynamic callable" : null;
 }
@@ -257,10 +231,7 @@ function enclosingFrames(code: string, position: number, closings: ReadonlyMap<n
   });
 }
 
-type PostfixStage = Readonly<
-  | { call: string; kind: "call" }
-  | { kind: "projection"; property: string | null }
->;
+type PostfixStage = Readonly<{ call: string; kind: "call" } | { kind: "projection"; property: string | null }>;
 
 function postfixStages(
   code: string,
@@ -341,9 +312,9 @@ function referenceRetention(
         } else if (DERIVED_REFERENCE_RECEIVER_CALLS.has(stage.call)) {
           tainted = false;
         } else if (
-          stage.call === "a tracked reference"
-          || SELF_RETURNING_REFERENCE_RECEIVER_CALLS.has(stage.call)
-          || RETAINING_REFERENCE_CALLS.has(stage.call)
+          stage.call === "a tracked reference" ||
+          SELF_RETURNING_REFERENCE_RECEIVER_CALLS.has(stage.call) ||
+          RETAINING_REFERENCE_CALLS.has(stage.call)
         ) {
           directObject = false;
         } else {
@@ -397,11 +368,7 @@ function splitAtTopLevel(statement: PythonStatement, separator: string) {
   return parts;
 }
 
-function logicalStatements(
-  source: string,
-  startLine: number,
-  endLine: number,
-) {
+function logicalStatements(source: string, startLine: number, endLine: number) {
   const analysis = analyzePythonSource(source);
   if (!analysis.valid) {
     throw new PythonReferenceAnalysisError("Python source has an invalid or unfinished lexical structure.");
@@ -425,11 +392,7 @@ function logicalStatements(
   return statements;
 }
 
-function definitionBindings(
-  source: string,
-  startLine: number,
-  endLine: number,
-) {
+function definitionBindings(source: string, startLine: number, endLine: number) {
   const analysis = analyzePythonSource(source);
   if (!analysis.valid) {
     throw new PythonReferenceAnalysisError("Python source has an invalid or unfinished lexical structure.");
@@ -438,13 +401,11 @@ function definitionBindings(
   for (let index = startLine; index < endLine; index += 1) {
     const line = analysis.lines[index];
     if (!line || !isPythonStatementStart(line)) continue;
-    const name = line.code.trimStart().match(
-      /^(?:(?:async\s+)?def|class)\s+([A-Za-z_][A-Za-z0-9_]*)\b/,
-    )?.[1];
+    const name = line.code.trimStart().match(/^(?:(?:async\s+)?def|class)\s+([A-Za-z_][A-Za-z0-9_]*)\b/)?.[1];
     if (!name) continue;
 
     let definitionStart = index;
-    for (let cursor = index - 1; cursor >= startLine;) {
+    for (let cursor = index - 1; cursor >= startLine; ) {
       const previous = analysis.lines[cursor];
       if (!previous || !isPythonStatementStart(previous)) {
         cursor -= 1;
@@ -458,11 +419,7 @@ function definitionBindings(
     let definitionEnd = endLine;
     for (let cursor = index + 1; cursor < endLine; cursor += 1) {
       const candidate = analysis.lines[cursor];
-      if (
-        candidate
-        && isPythonStatementStart(candidate)
-        && candidate.indentation <= line.indentation
-      ) {
+      if (candidate && isPythonStatementStart(candidate) && candidate.indentation <= line.indentation) {
         definitionEnd = cursor;
         break;
       }
@@ -470,8 +427,14 @@ function definitionBindings(
     definitions.push({
       target: { code: name, raw: name },
       value: {
-        code: analysis.lines.slice(definitionStart, definitionEnd).map((entry) => entry.code).join("\n"),
-        raw: analysis.lines.slice(definitionStart, definitionEnd).map((entry) => entry.raw).join("\n"),
+        code: analysis.lines
+          .slice(definitionStart, definitionEnd)
+          .map((entry) => entry.code)
+          .join("\n"),
+        raw: analysis.lines
+          .slice(definitionStart, definitionEnd)
+          .map((entry) => entry.raw)
+          .join("\n"),
       },
     });
   }
@@ -486,11 +449,12 @@ function topLevelAssignmentIndexes(code: string) {
     if (character === "(" || character === "[" || character === "{") stack.push(character);
     else if (character === ")" || character === "]" || character === "}") stack.pop();
     else if (
-      character === "="
-      && stack.length === 0
-      && code[index + 1] !== "="
-      && !/[=!<>:]/.test(code[index - 1] ?? "")
-    ) indexes.push(index);
+      character === "=" &&
+      stack.length === 0 &&
+      code[index + 1] !== "=" &&
+      !/[=!<>:]/.test(code[index - 1] ?? "")
+    )
+      indexes.push(index);
   }
   return indexes;
 }
@@ -511,16 +475,15 @@ function targetReferences(target: PythonStatement): readonly string[] | null {
   let raw = target.raw.trim();
   code = code.replace(/(?:\/\/|<<|>>|[+\-*/%@&|^])\s*$/, "").trim();
   raw = raw.replace(/(?:\/\/|<<|>>|[+\-*/%@&|^])\s*$/, "").trim();
-  const suite = code.match(/^(?:async\s+)?(?:if|elif|else|for|while|try|except|finally|with|match|case)\b[\s\S]*:\s*([\s\S]+)$/);
+  const suite = code.match(
+    /^(?:async\s+)?(?:if|elif|else|for|while|try|except|finally|with|match|case)\b[\s\S]*:\s*([\s\S]+)$/,
+  );
   if (suite) {
     const offset = code.lastIndexOf(suite[1] ?? "");
     code = suite[1]?.trim() ?? "";
     raw = raw.slice(offset).trim();
   }
-  while (
-    (outerPairCovers(code, "(", ")") || outerPairCovers(code, "[", "]"))
-    && code.length >= 2
-  ) {
+  while ((outerPairCovers(code, "(", ")") || outerPairCovers(code, "[", "]")) && code.length >= 2) {
     code = code.slice(1, -1).trim();
     raw = raw.slice(1, -1).trim();
   }
@@ -554,10 +517,12 @@ function targetReferences(target: PythonStatement): readonly string[] | null {
 function assignmentParts(statement: PythonStatement) {
   const indexes = topLevelAssignmentIndexes(statement.code);
   if (indexes.length === 0) return null;
-  const targets: PythonStatement[] = [{
-    code: statement.code.slice(0, indexes[0]),
-    raw: statement.raw.slice(0, indexes[0]),
-  }];
+  const targets: PythonStatement[] = [
+    {
+      code: statement.code.slice(0, indexes[0]),
+      raw: statement.raw.slice(0, indexes[0]),
+    },
+  ];
   let rhsStart = (indexes[0] ?? 0) + 1;
   for (let index = 1; index < indexes.length; index += 1) {
     const start = (indexes[index - 1] ?? 0) + 1;
@@ -612,10 +577,12 @@ function bindingParts(statement: PythonStatement) {
   return withItems.flatMap((item) => {
     const match = item.code.match(/^([\s\S]+)\s+as\s+([\s\S]+)$/);
     if (!match?.[1] || !match[2]) return [];
-    return [{
-      targets: [statementSlice(item, match[2], item.code.lastIndexOf(match[2]))],
-      value: statementSlice(item, match[1]),
-    }];
+    return [
+      {
+        targets: [statementSlice(item, match[2], item.code.lastIndexOf(match[2]))],
+        value: statementSlice(item, match[1]),
+      },
+    ];
   });
 }
 
@@ -658,8 +625,8 @@ export function pythonReferenceClosure(
       }
       for (const binding of bindingParts(statement)) {
         if (
-          referencedPythonReference(binding.value, references)
-          && referenceRetention(binding.value, references, initialReferences, true)
+          referencedPythonReference(binding.value, references) &&
+          referenceRetention(binding.value, references, initialReferences, true)
         ) {
           changed = addReferences(binding.targets, references) || changed;
         }
@@ -674,8 +641,10 @@ export function pythonReferenceClosure(
             /^(?:@|(?:(?:async\s+)?def|class)\b)/.test(definition),
           );
         }
-        const walrusTargets = [...statement.code.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*:=/g)]
-          .map((match) => ({ code: match[1] ?? "", raw: match[1] ?? "" }));
+        const walrusTargets = [...statement.code.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*:=/g)].map((match) => ({
+          code: match[1] ?? "",
+          raw: match[1] ?? "",
+        }));
         changed = addReferences(walrusTargets, references) || changed;
         const mutation = mutationTargets(statement);
         if (mutation === null) {

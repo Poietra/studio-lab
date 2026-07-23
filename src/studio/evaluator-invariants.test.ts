@@ -13,10 +13,7 @@ import {
 } from "./operations";
 import { validateAndScheduleProgram } from "./program-validation";
 import { normalizePositionSamples, normalizeScaleSamples } from "./property-sampling";
-import {
-  createDirectManipulationMotionProgram,
-  canonicalizeSuggestionProgram,
-} from "./suggestion-program";
+import { createDirectManipulationMotionProgram, canonicalizeSuggestionProgram } from "./suggestion-program";
 
 function programWith(
   operations: readonly CanonicalEditOperation[],
@@ -251,20 +248,23 @@ class Scaling(Scene):
     expect(imported).not.toBeNull();
     if (!imported) return;
     const entityId = "source:scaling.py#Scaling:equation";
-    const validation = canonicalizeSuggestionProgram({
-      anchor: { kind: "playhead", referenceSeconds: 5 },
-      easing: "smooth",
-      end: 6,
-      factor: 1.5,
-      kind: "scale-objects",
-      start: 5,
-      targetObjectIds: [entityId],
-    }, {
-      capturedPlayhead: 5,
-      origin: "remote-model",
-      scene: imported.runtimeSceneState,
-      transactionId: "scale-between-source-scales",
-    });
+    const validation = canonicalizeSuggestionProgram(
+      {
+        anchor: { kind: "playhead", referenceSeconds: 5 },
+        easing: "smooth",
+        end: 6,
+        factor: 1.5,
+        kind: "scale-objects",
+        start: 5,
+        targetObjectIds: [entityId],
+      },
+      {
+        capturedPlayhead: 5,
+        origin: "remote-model",
+        scene: imported.runtimeSceneState,
+        transactionId: "scale-between-source-scales",
+      },
+    );
     expect(validation.kind).toBe("valid");
     const workingState: WorkingState = {
       appliedPrograms: [],
@@ -296,9 +296,9 @@ class Scaling(Scene):
       expect.stringMatching(/:equation:scale:\d+$/),
     ]);
     expect(scaleSamples.at(-1)).toMatchObject({ from: 3, relative: true, value: 1.5 });
-    expect(projectProposedState(proposed, 8.5).canvas.entities.find((entity) => (
-      entity.id === entityId
-    ))?.scale).toBeCloseTo(1.5);
+    expect(
+      projectProposedState(proposed, 8.5).canvas.entities.find((entity) => entity.id === entityId)?.scale,
+    ).toBeCloseTo(1.5);
   });
 
   it("rebases relative scale Programs added in reverse source-anchor order", () => {
@@ -365,14 +365,20 @@ class Scaling(Scene):
 
     const proposed = evaluateWorkingState(workingState);
     expect(proposed.programs.every((record) => record.validation.status === "valid")).toBe(true);
-    expect(projectProposedState(proposed, proposed.evaluatedScene.duration).canvas.entities.find((entity) => (
-      entity.id === entityId
-    ))?.scale).toBeCloseTo(3);
+    expect(
+      projectProposedState(proposed, proposed.evaluatedScene.duration).canvas.entities.find(
+        (entity) => entity.id === entityId,
+      )?.scale,
+    ).toBeCloseTo(3);
     const samples = proposed.evaluatedScene.propertyChannels[`${entityId}/scale`]?.samples ?? [];
-    expect(samples.filter((sample) => sample.operationId).map((sample) => ({
-      from: sample.from,
-      value: sample.value,
-    }))).toEqual([
+    expect(
+      samples
+        .filter((sample) => sample.operationId)
+        .map((sample) => ({
+          from: sample.from,
+          value: sample.value,
+        })),
+    ).toEqual([
       { from: 1, value: 1.5 },
       { from: 1.5, value: 3 },
     ]);
@@ -435,17 +441,16 @@ class Scaling(Scene):
       to: 3,
     };
 
-    const validation = validateAndScheduleProgram(
-      programWith([transform, scale], transactionId),
-      STUDIO_FIXTURE_SCENE,
-    );
+    const validation = validateAndScheduleProgram(programWith([transform, scale], transactionId), STUDIO_FIXTURE_SCENE);
 
     expect(validation.kind).toBe("invalid");
-    expect(validation.issues).toContainEqual(expect.objectContaining({
-      code: "lowering-unsupported",
-      message: expect.stringMatching(/Scale and TransformContent/),
-      operationId: scale.id,
-    }));
+    expect(validation.issues).toContainEqual(
+      expect.objectContaining({
+        code: "lowering-unsupported",
+        message: expect.stringMatching(/Scale and TransformContent/),
+        operationId: scale.id,
+      }),
+    );
   });
 
   it("rejects canonical work after a Scene boundary", () => {
@@ -471,16 +476,15 @@ class Scaling(Scene):
       targetEntityIds: ["equation_1"],
     };
 
-    const validation = validateAndScheduleProgram(
-      programWith([boundary, motion], transactionId),
-      STUDIO_FIXTURE_SCENE,
-    );
+    const validation = validateAndScheduleProgram(programWith([boundary, motion], transactionId), STUDIO_FIXTURE_SCENE);
 
     expect(validation.kind).toBe("invalid");
-    expect(validation.issues).toContainEqual(expect.objectContaining({
-      code: "lowering-unsupported",
-      message: expect.stringMatching(/Scene boundary must be terminal/),
-      operationId: motion.id,
-    }));
+    expect(validation.issues).toContainEqual(
+      expect.objectContaining({
+        code: "lowering-unsupported",
+        message: expect.stringMatching(/Scene boundary must be terminal/),
+        operationId: motion.id,
+      }),
+    );
   });
 });

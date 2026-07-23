@@ -2,10 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import type { RuntimeEntity, RuntimeSceneState } from "./model";
-import {
-  exactEntityScaleAt,
-  magicEditCapabilities,
-} from "./magic-edit-capabilities";
+import { exactEntityScaleAt, magicEditCapabilities } from "./magic-edit-capabilities";
 
 function withEntity(
   entity: RuntimeEntity,
@@ -31,12 +28,14 @@ describe("Magic Edit object capabilities", () => {
         "equation_1/scale": {
           entityId: "equation_1",
           key: "scale",
-          samples: [{
-            interval: { end: 12, start: 0 },
-            kind: "exact",
-            provenanceId: "source:scale",
-            value: 1.25,
-          }],
+          samples: [
+            {
+              interval: { end: 12, start: 0 },
+              kind: "exact",
+              provenanceId: "source:scale",
+              value: 1.25,
+            },
+          ],
         },
       },
     } satisfies RuntimeSceneState;
@@ -74,8 +73,10 @@ describe("Magic Edit object capabilities", () => {
       scale: { kind: "blocked", reason: "Runtime identity is unresolved." },
     });
     const forgedTransaction = { ...missingGeometry, transactionId: "unrelated" };
-    expect(magicEditCapabilities(withEntity(forgedTransaction, {}), forgedTransaction, 5).delete)
-      .toEqual({ kind: "blocked", reason: "Runtime identity is unresolved." });
+    expect(magicEditCapabilities(withEntity(forgedTransaction, {}), forgedTransaction, 5).delete).toEqual({
+      kind: "blocked",
+      reason: "Runtime identity is unresolved.",
+    });
   });
 
   it("does not advertise scale from geometry alone when source identity is unknown", () => {

@@ -160,7 +160,8 @@ export function validateAndScheduleProgram(
     issues.push({
       code: "lowering-unsupported",
       field: "operations",
-      message: "Scale and TransformContent cannot target the same logical object because source lowering cannot preserve the replacement's exact scale.",
+      message:
+        "Scale and TransformContent cannot target the same logical object because source lowering cannot preserve the replacement's exact scale.",
       operationId: transformScale.scaleOperationId,
       severity: "error",
     });
@@ -170,7 +171,8 @@ export function validateAndScheduleProgram(
     issues.push({
       code: "lowering-unsupported",
       field: "operations",
-      message: "A Scene boundary must be terminal; only its transition reveal may execute after ownership transfers to the next Scene.",
+      message:
+        "A Scene boundary must be terminal; only its transition reveal may execute after ownership transfers to the next Scene.",
       operationId: boundary.operationId,
       severity: "error",
     });
@@ -262,17 +264,14 @@ export function validateAndScheduleProgram(
       }
       if (source) {
         const scale = exactEntityScaleAt(scene, source, operation.interval.start);
-        if (
-          scale.kind !== "known"
-          || !Number.isFinite(scale.value)
-          || Math.abs(scale.value - 1) >= EPSILON
-        ) {
+        if (scale.kind !== "known" || !Number.isFinite(scale.value) || Math.abs(scale.value - 1) >= EPSILON) {
           issues.push({
             code: "lowering-unsupported",
             field: "sourceEntityId",
-            message: scale.kind === "unknown"
-              ? `TransformContent cannot verify the exact 1x source scale for ${operation.sourceEntityId}: ${scale.reason}`
-              : `TransformContent requires ${operation.sourceEntityId} to have an effective 1x scale; the source is ${scale.value}x.`,
+            message:
+              scale.kind === "unknown"
+                ? `TransformContent cannot verify the exact 1x source scale for ${operation.sourceEntityId}: ${scale.reason}`
+                : `TransformContent requires ${operation.sourceEntityId} to have an effective 1x scale; the source is ${scale.value}x.`,
             operationId: operation.id,
             severity: "error",
           });

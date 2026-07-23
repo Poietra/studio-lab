@@ -9,9 +9,7 @@ export type SuggestionMathTexState = Readonly<{
   texParts: readonly string[];
 }>;
 
-export type SuggestionEditCapability =
-  | Readonly<{ kind: "supported" }>
-  | Readonly<{ kind: "blocked"; reason: string }>;
+export type SuggestionEditCapability = Readonly<{ kind: "supported" }> | Readonly<{ kind: "blocked"; reason: string }>;
 
 export type SuggestionScaleCapability =
   | Readonly<{ current: number; kind: "supported" }>

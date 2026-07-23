@@ -871,9 +871,11 @@ export function App() {
       applyEditorDraft();
     } catch (error) {
       if (currentDraftProgram.current === applyingDraft) {
-        setDraftError(error instanceof Error
-          ? `Apply preflight failed: ${error.message}`
-          : "Apply preflight failed because Studio could not lower the draft safely.");
+        setDraftError(
+          error instanceof Error
+            ? `Apply preflight failed: ${error.message}`
+            : "Apply preflight failed because Studio could not lower the draft safely.",
+        );
       }
     } finally {
       setDraftApplyPending(false);
