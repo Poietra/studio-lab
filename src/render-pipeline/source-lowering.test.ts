@@ -467,15 +467,18 @@ class GroupedEquation(Scene):
     const resize: CanonicalEditOperation = {
       ...operationBase("resize-rectangle", 7),
       entityId: "rectangle_1",
-      from: { dimensions: { height: 2, width: 4 }, position: { x: 320, y: 180 } },
+      from: { dimensions: { height: 2, width: 4 }, position: { x: 640, y: 360 } },
       kind: "ResizeEntity",
       scale: 1,
       shape: "rectangle",
-      to: { dimensions: { height: 3, width: 6 }, position: { x: 365, y: 202.5 } },
+      to: { dimensions: { height: 3, width: 6 }, position: { x: 730, y: 405 } },
     };
     const lowered = lowerCanonicalProgramSource(
       rectangleSource,
-      request(canonicalProgram([resize], "resize-rectangle"), [{ entityId: "rectangle_1", sourceVariable: "shape" }]),
+      {
+        ...request(canonicalProgram([resize], "resize-rectangle"), [{ entityId: "rectangle_1", sourceVariable: "shape" }]),
+        viewport: { height: 720, width: 1280 },
+      },
       { height: 8, width: 14.222 },
       null,
     );

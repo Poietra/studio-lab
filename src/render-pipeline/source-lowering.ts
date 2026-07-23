@@ -464,12 +464,13 @@ function resizeExpression(
 function resizeMarkerEntry(
   variable: string,
   operation: Extract<CanonicalEditOperation, { kind: "ResizeEntity" }>,
+  viewport: Readonly<{ height: number; width: number }>,
 ) {
   return {
-    from: operation.from,
+    from: { dimensions: operation.from.dimensions, position: markerPoint(operation.from.position, viewport) },
     scale: operation.scale,
     shape: operation.shape,
-    to: operation.to,
+    to: { dimensions: operation.to.dimensions, position: markerPoint(operation.to.position, viewport) },
     variable,
   } as const;
 }
@@ -960,7 +961,7 @@ export function lowerCanonicalProgramSource(
       const variable = requireVariable(variableByEntity, operation.entityId);
       output.push(sourceMarker("dimensions", {
         kind: "exact",
-        resize: resizeMarkerEntry(variable, operation),
+        resize: resizeMarkerEntry(variable, operation, request.viewport),
       }));
       output.push(resizeExpression(variable, operation, frame, request.viewport, false));
     }
@@ -1114,7 +1115,7 @@ export function lowerCanonicalProgramSource(
         actions.push(`${variable}.animate.scale(${formatAmount(change.factor)})`);
       } else if (operation.kind === "ResizeEntity") {
         const variable = requireVariable(variableByEntity, operation.entityId);
-        resizes.push(resizeMarkerEntry(variable, operation));
+        resizes.push(resizeMarkerEntry(variable, operation, request.viewport));
         actions.push(resizeExpression(variable, operation, frame, request.viewport, true));
       }
     }
