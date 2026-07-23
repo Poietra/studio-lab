@@ -1263,23 +1263,26 @@ class GroupedEquation(Scene):
       },
       intentCount: 1,
       loweringStatus: "supported",
-      operations: [{
-        ...operationBase(createId, 5),
-        entity: {
-          content: { displayLines: ["Circle"], label: "Circle" },
-          id: entityId,
-          lifetime: { end: 7, start: 5 },
-          type: "Circle",
+      operations: [
+        {
+          ...operationBase(createId, 5),
+          entity: {
+            content: { displayLines: ["Circle"], label: "Circle" },
+            id: entityId,
+            lifetime: { end: 7, start: 5 },
+            type: "Circle",
+          },
+          kind: "CreateEntity",
         },
-        kind: "CreateEntity",
-      }, {
-        ...operationBase(appearId, 5, 5.4),
-        dependsOn: [createId],
-        effect: "fade-in",
-        entityId,
-        kind: "ChangePresence",
-        persistent: true,
-      }],
+        {
+          ...operationBase(appearId, 5, 5.4),
+          dependsOn: [createId],
+          effect: "fade-in",
+          entityId,
+          kind: "ChangePresence",
+          persistent: true,
+        },
+      ],
       provenance: { evidence: [], origin: "direct-manipulation" },
       requestedExecution: "sequence",
       schedule: {
@@ -1291,12 +1294,9 @@ class GroupedEquation(Scene):
       version: 1,
     };
 
-    expect(() => lowerCanonicalProgramSource(
-      finiteSource,
-      request(program, []),
-      { height: 8, width: 14.222 },
-      null,
-    )).toThrow(/batch source pipeline/i);
+    expect(() =>
+      lowerCanonicalProgramSource(finiteSource, request(program, []), { height: 8, width: 14.222 }, null),
+    ).toThrow(/batch source pipeline/i);
 
     const lowered = lowerCanonicalProgramBatchSource(
       finiteSource,
@@ -1311,26 +1311,35 @@ class GroupedEquation(Scene):
     expect(lowered.source).toContain("# poietra:anchor 5.4");
     expect(lowered.source).toContain("# poietra:anchor 7.4");
     const imported = importManimScene(lowered.source, "finite.py", "GroupedEquation", { height: 8, width: 14.222 });
-    expect(imported?.runtimeSceneState.objectGraph.entities[entityId]?.lifetime)
-      .toEqual([{ end: 7.4, start: 5 }]);
+    expect(imported?.runtimeSceneState.objectGraph.entities[entityId]?.lifetime).toEqual([{ end: 7.4, start: 5 }]);
 
-    const endWait = canonicalProgram([{
-      ...operationBase("end-anchor-wait/operation/wait", 7, 8),
-      eventKind: "wait",
-      kind: "InsertTimelineEvent",
-      label: "Wait at lifetime end",
-    }], "end-anchor-wait");
+    const endWait = canonicalProgram(
+      [
+        {
+          ...operationBase("end-anchor-wait/operation/wait", 7, 8),
+          eventKind: "wait",
+          kind: "InsertTimelineEvent",
+          label: "Wait at lifetime end",
+        },
+      ],
+      "end-anchor-wait",
+    );
     const sameAnchor = lowerCanonicalProgramBatchSource(
       finiteSource,
       request(program, []),
-      [{ program, sourceAnchor: 5 }, { program: endWait, sourceAnchor: 7 }],
+      [
+        { program, sourceAnchor: 5 },
+        { program: endWait, sourceAnchor: 7 },
+      ],
       { height: 8, width: 14.222 },
       null,
     );
-    expect(sameAnchor.insertedCode.indexOf("self.remove("))
-      .toBeLessThan(sameAnchor.insertedCode.indexOf('# poietra:transaction "end-anchor-wait"'));
-    expect(importManimScene(sameAnchor.source, "finite.py", "GroupedEquation", { height: 8, width: 14.222 })
-      ?.runtimeSceneState.objectGraph.entities[entityId]?.lifetime)
-      .toEqual([{ end: 7.4, start: 5 }]);
+    expect(sameAnchor.insertedCode.indexOf("self.remove(")).toBeLessThan(
+      sameAnchor.insertedCode.indexOf('# poietra:transaction "end-anchor-wait"'),
+    );
+    expect(
+      importManimScene(sameAnchor.source, "finite.py", "GroupedEquation", { height: 8, width: 14.222 })
+        ?.runtimeSceneState.objectGraph.entities[entityId]?.lifetime,
+    ).toEqual([{ end: 7.4, start: 5 }]);
   });
 });

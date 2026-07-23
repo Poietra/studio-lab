@@ -381,13 +381,16 @@ export function App() {
     ? projectRuntimeSceneToSourceTimeline(draftBaseState.evaluatedScene, draftPrecedingCanonicalPrograms)
     : null;
   const projection = workspaceProjection?.projection ?? null;
-  const lifetimeControls = activeScene && projection ? buildLifetimeEditControls({
-    anchors: activeScene.anchors,
-    baseScene: activeScene.runtimeSceneState,
-    programs: previewAppliedPrograms,
-    sourceDuration: activeScene.runtimeSceneState.duration,
-    tracks: projection.timeline.objectTracks,
-  }) : {};
+  const lifetimeControls =
+    activeScene && projection
+      ? buildLifetimeEditControls({
+          anchors: activeScene.anchors,
+          baseScene: activeScene.runtimeSceneState,
+          programs: previewAppliedPrograms,
+          sourceDuration: activeScene.runtimeSceneState.duration,
+          tracks: projection.timeline.objectTracks,
+        })
+      : {};
   const appliedTransactionIds = new Set(appliedPrograms.map((record) => record.program.transactionId));
   const boundary = workspaceProjection?.boundary ?? null;
   const visibleEntities = workspaceProjection?.visibleEntities ?? [];
@@ -992,12 +995,9 @@ export function App() {
       } as const;
     };
 
-    const assertCompatibleWithAppliedPrograms = (
-      record: ProgramRecord,
-      edit: Readonly<{ index: number }> | null,
-    ) => {
+    const assertCompatibleWithAppliedPrograms = (record: ProgramRecord, edit: Readonly<{ index: number }> | null) => {
       const programs = edit
-        ? appliedPrograms.map((candidate, index) => index === edit.index ? record : candidate)
+        ? appliedPrograms.map((candidate, index) => (index === edit.index ? record : candidate))
         : [...appliedPrograms, record];
       const proposed = projectStudioWorkspace({
         activeScene,
@@ -1010,8 +1010,8 @@ export function App() {
       const invalid = proposed.programs.find((candidate) => candidate.validation.status === "invalid");
       if (!invalid) return;
       throw new Error(
-        invalid.validation.issues.find((issue) => issue.severity === "error")?.message
-          ?? "The lifetime edit conflicts with another applied Program.",
+        invalid.validation.issues.find((issue) => issue.severity === "error")?.message ??
+          "The lifetime edit conflicts with another applied Program.",
       );
     };
 
@@ -1019,7 +1019,9 @@ export function App() {
       const owner = findStudioLifetimeOwner(appliedPrograms, entityId);
       if (owner) {
         if (findCompetingStudioLifetimeOwner(appliedPrograms, entityId, owner.index)) {
-          throw new Error("Another applied Program controls this object's lifetime end. Edit or remove that Program first.");
+          throw new Error(
+            "Another applied Program controls this object's lifetime end. Edit or remove that Program first.",
+          );
         }
         const preceding = sourceSceneBefore(owner.index);
         const validation = replaceStudioEntityLifetimeProgram({
@@ -1033,26 +1035,25 @@ export function App() {
         const validated = validatedProgramRecord(validation);
         if (validated.kind === "invalid") throw new Error(validated.message);
         assertCompatibleWithAppliedPrograms(validated.record, owner);
-        installCanonicalDraft(
-          validated.record,
-          [entityId],
-          preceding.canonical,
-          null,
-          { index: owner.index, original: owner.record },
-        );
+        installCanonicalDraft(validated.record, [entityId], preceding.canonical, null, {
+          index: owner.index,
+          original: owner.record,
+        });
         setLifetimeEditMessage(null);
         return true;
       }
 
       const sourceLifetimeStart = workingTimeToSourceTime(appliedCanonicalPrograms, workingLifetimeStart);
-      const original = activeScene.runtimeSceneState.objectGraph.entities[entityId]?.lifetime.find((interval) => (
-        Math.abs(interval.start - sourceLifetimeStart) < 0.001
-      ));
+      const original = activeScene.runtimeSceneState.objectGraph.entities[entityId]?.lifetime.find(
+        (interval) => Math.abs(interval.start - sourceLifetimeStart) < 0.001,
+      );
       if (!original) {
         throw new Error("Studio cannot map this interval back to one imported source lifetime.");
       }
       if (Math.abs(target.start - original.start) >= 0.001) {
-        throw new Error("The imported lifetime start is read-only because moving its original Python creation is not safely lowerable.");
+        throw new Error(
+          "The imported lifetime start is read-only because moving its original Python creation is not safely lowerable.",
+        );
       }
       const existing = findImportedLifetimeEdit(appliedPrograms, entityId, original.start);
       const currentWorkingInterval = projection?.timeline.objectTracks
@@ -1061,23 +1062,21 @@ export function App() {
       if (!currentWorkingInterval) {
         throw new Error("Studio cannot map the current interval back to one imported source lifetime.");
       }
-      const currentSourceEnd = workingTimeToSourceTime(
-        appliedCanonicalPrograms,
-        currentWorkingInterval.end,
-      );
+      const currentSourceEnd = workingTimeToSourceTime(appliedCanonicalPrograms, currentWorkingInterval.end);
       if (
-        findCompetingImportedLifetimeOwner(appliedPrograms, entityId)
-        || (!existing && currentSourceEnd < original.end - 0.001)
+        findCompetingImportedLifetimeOwner(appliedPrograms, entityId) ||
+        (!existing && currentSourceEnd < original.end - 0.001)
       ) {
-        throw new Error("Another applied Program controls this imported object's lifetime end. Edit or remove that Program first.");
+        throw new Error(
+          "Another applied Program controls this imported object's lifetime end. Edit or remove that Program first.",
+        );
       }
       const restoring = Math.abs(target.end - original.end) < 0.001;
-      const sourceAnchor = restoring
-        ? existing?.record.program.anchor.resolvedSeconds
-        : target.end;
-      if (sourceAnchor === undefined || !activeScene.anchors.some((anchor) => (
-        Math.abs(anchor - sourceAnchor) < 0.001
-      ))) {
+      const sourceAnchor = restoring ? existing?.record.program.anchor.resolvedSeconds : target.end;
+      if (
+        sourceAnchor === undefined ||
+        !activeScene.anchors.some((anchor) => Math.abs(anchor - sourceAnchor) < 0.001)
+      ) {
         throw new Error("The selected lifetime end is not backed by a safe .py source anchor.");
       }
       const preceding = existing ? sourceSceneBefore(existing.index) : null;
@@ -1089,8 +1088,7 @@ export function App() {
         sourceAnchor,
         sourceAnchorBounds: programSourceAnchorBounds(appliedPrograms, editIndex),
         targetEnd: target.end,
-        transactionId: existing?.record.program.transactionId
-          ?? `studio-lifetime-${crypto.randomUUID()}`,
+        transactionId: existing?.record.program.transactionId ?? `studio-lifetime-${crypto.randomUUID()}`,
       });
       const validated = validatedProgramRecord(validation);
       if (validated.kind === "invalid") throw new Error(validated.message);

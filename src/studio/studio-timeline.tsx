@@ -80,11 +80,7 @@ function targetEdge(target: StudioLifetimeTarget, kind: LifetimeDragKind) {
   return kind === "end" ? target.working.end : target.working.start;
 }
 
-function closestLifetimeTarget(
-  targets: readonly StudioLifetimeTarget[],
-  desired: number,
-  kind: LifetimeDragKind,
-) {
+function closestLifetimeTarget(targets: readonly StudioLifetimeTarget[], desired: number, kind: LifetimeDragKind) {
   return targets.reduce<StudioLifetimeTarget | null>(
     (closest, target) =>
       !closest || Math.abs(targetEdge(target, kind) - desired) < Math.abs(targetEdge(closest, kind) - desired)
@@ -130,13 +126,11 @@ function TimelineLifetime({
   selected: boolean;
 }>) {
   const [previewTarget, setPreviewTarget] = useState<StudioLifetimeTarget | null>(null);
-  const lifetimeDrag = useRef<
-    Readonly<{
-      kind: LifetimeDragKind;
-      pointerId: number;
-      startX: number;
-    }> | null
-  >(null);
+  const lifetimeDrag = useRef<Readonly<{
+    kind: LifetimeDragKind;
+    pointerId: number;
+    startX: number;
+  }> | null>(null);
   const displayedInterval = previewTarget?.working ?? interval;
 
   function targetsFor(kind: LifetimeDragKind) {
@@ -153,7 +147,7 @@ function TimelineLifetime({
     const desired =
       kind === "move"
         ? interval.start + ((event.clientX - lifetimeDrag.current!.startX) / bounds.width) * duration
-         : pointerTime;
+        : pointerTime;
     return closestLifetimeTarget(targetsFor(kind), desired, kind);
   }
 
@@ -193,12 +187,7 @@ function TimelineLifetime({
     event.stopPropagation();
     if (disabled) return;
     const current = kind === "end" ? interval.end : interval.start;
-    const target = adjacentLifetimeTarget(
-      targetsFor(kind),
-      current,
-      event.key === "ArrowLeft" ? -1 : 1,
-      kind,
-    );
+    const target = adjacentLifetimeTarget(targetsFor(kind), current, event.key === "ArrowLeft" ? -1 : 1, kind);
     if (target) onChange(target.source);
   }
 

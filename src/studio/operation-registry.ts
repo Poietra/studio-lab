@@ -509,11 +509,12 @@ export const OPERATION_REGISTRY = {
       // endpoint includes the creation Program's insertion duration. Transition
       // overlays already use their animation endpoint and are the exception.
       const finiteEnd = operation.entity.lifetime.end;
-      const end = finiteEnd === null
-        ? draft.duration
-        : operation.entity.type.startsWith("TransitionOverlay:")
-          ? finiteEnd
-          : Math.min(draft.duration, finiteEnd + insertedProgramDuration(program));
+      const end =
+        finiteEnd === null
+          ? draft.duration
+          : operation.entity.type.startsWith("TransitionOverlay:")
+            ? finiteEnd
+            : Math.min(draft.duration, finiteEnd + insertedProgramDuration(program));
       draft.entities[operation.entity.id] = {
         content: operation.entity.content,
         id: operation.entity.id,

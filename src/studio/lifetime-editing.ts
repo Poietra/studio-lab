@@ -45,39 +45,38 @@ export function lifetimeControlKey(entityId: string, index: number) {
 }
 
 function isInterval(value: unknown): value is Interval {
-  return typeof value === "object"
-    && value !== null
-    && "start" in value
-    && "end" in value
-    && typeof value.start === "number"
-    && Number.isFinite(value.start)
-    && typeof value.end === "number"
-    && Number.isFinite(value.end);
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "start" in value &&
+    "end" in value &&
+    typeof value.start === "number" &&
+    Number.isFinite(value.start) &&
+    typeof value.end === "number" &&
+    Number.isFinite(value.end)
+  );
 }
 
 export function importedLifetimeEditEvidence(metadata: ImportedLifetimeEditMetadata) {
   return `${LIFETIME_EDIT_EVIDENCE_PREFIX}${JSON.stringify(metadata)}`;
 }
 
-export function importedLifetimeEditMetadata(
-  record: ProgramRecord,
-): ImportedLifetimeEditMetadata | null {
-  const evidence = record.program.provenance.evidence.find((entry) => (
-    entry.startsWith(LIFETIME_EDIT_EVIDENCE_PREFIX)
-  ));
+export function importedLifetimeEditMetadata(record: ProgramRecord): ImportedLifetimeEditMetadata | null {
+  const evidence = record.program.provenance.evidence.find((entry) => entry.startsWith(LIFETIME_EDIT_EVIDENCE_PREFIX));
   if (!evidence) return null;
   try {
     const parsed: unknown = JSON.parse(evidence.slice(LIFETIME_EDIT_EVIDENCE_PREFIX.length));
     if (
-      typeof parsed !== "object"
-      || parsed === null
-      || !("kind" in parsed)
-      || parsed.kind !== "imported-end"
-      || !("entityId" in parsed)
-      || typeof parsed.entityId !== "string"
-      || !("original" in parsed)
-      || !isInterval(parsed.original)
-    ) return null;
+      typeof parsed !== "object" ||
+      parsed === null ||
+      !("kind" in parsed) ||
+      parsed.kind !== "imported-end" ||
+      !("entityId" in parsed) ||
+      typeof parsed.entityId !== "string" ||
+      !("original" in parsed) ||
+      !isInterval(parsed.original)
+    )
+      return null;
     return {
       entityId: parsed.entityId,
       kind: parsed.kind,
@@ -88,33 +87,28 @@ export function importedLifetimeEditMetadata(
   }
 }
 
-export function findImportedLifetimeEdit(
-  programs: readonly ProgramRecord[],
-  entityId: string,
-  originalStart: number,
-) {
+export function findImportedLifetimeEdit(programs: readonly ProgramRecord[], entityId: string, originalStart: number) {
   const index = programs.findIndex((record) => {
     const metadata = importedLifetimeEditMetadata(record);
-    return metadata?.entityId === entityId
-      && Math.abs(metadata.original.start - originalStart) < 0.001;
+    return metadata?.entityId === entityId && Math.abs(metadata.original.start - originalStart) < 0.001;
   });
-  return index < 0 ? null : { index, record: programs[index]! } as const;
+  return index < 0 ? null : ({ index, record: programs[index]! } as const);
 }
 
 export function findStudioLifetimeOwner(
   programs: readonly ProgramRecord[],
   entityId: string,
 ): StudioLifetimeOwner | null {
-  const index = programs.findIndex((record) => record.program.operations.some((operation) => (
-    operation.kind === "CreateEntity" && operation.entity.id === entityId
-  )));
+  const index = programs.findIndex((record) =>
+    record.program.operations.some(
+      (operation) => operation.kind === "CreateEntity" && operation.entity.id === entityId,
+    ),
+  );
   return index < 0 ? null : { index, record: programs[index]! };
 }
 
 export function studioLifetimeOwnerReason(owner: StudioLifetimeOwner) {
-  const created = owner.record.program.operations.filter((operation) => (
-    operation.kind === "CreateEntity"
-  ));
+  const created = owner.record.program.operations.filter((operation) => operation.kind === "CreateEntity");
   if (created.length !== 1) {
     return "This object shares one creation Program with other objects, so its start and interval cannot move independently yet.";
   }
@@ -132,25 +126,14 @@ export function programSourceAnchorBounds(
   index: number,
 ): ProgramSourceAnchorBounds {
   return {
-    maximum: Math.min(
-      Infinity,
-      ...programs.slice(index + 1).map(({ program }) => program.anchor.resolvedSeconds),
-    ),
-    minimum: Math.max(
-      -Infinity,
-      ...programs.slice(0, index).map(({ program }) => program.anchor.resolvedSeconds),
-    ),
+    maximum: Math.min(Infinity, ...programs.slice(index + 1).map(({ program }) => program.anchor.resolvedSeconds)),
+    minimum: Math.max(-Infinity, ...programs.slice(0, index).map(({ program }) => program.anchor.resolvedSeconds)),
   };
 }
 
-function sourceAnchorInProgramOrder(
-  programs: readonly ProgramRecord[],
-  index: number,
-  candidate: number,
-) {
+function sourceAnchorInProgramOrder(programs: readonly ProgramRecord[], index: number, candidate: number) {
   const bounds = programSourceAnchorBounds(programs, index);
-  return candidate >= (bounds.minimum ?? -Infinity) - 0.001
-    && candidate <= (bounds.maximum ?? Infinity) + 0.001;
+  return candidate >= (bounds.minimum ?? -Infinity) - 0.001 && candidate <= (bounds.maximum ?? Infinity) + 0.001;
 }
 
 function ownerAnchorInOrder(
@@ -161,8 +144,7 @@ function ownerAnchorInOrder(
 ) {
   const create = owner.record.program.operations.find((operation) => createsEntity(operation, entityId));
   if (!create) return false;
-  const candidate = owner.record.program.anchor.resolvedSeconds
-    + targetStart - create.entity.lifetime.start;
+  const candidate = owner.record.program.anchor.resolvedSeconds + targetStart - create.entity.lifetime.start;
   return sourceAnchorInProgramOrder(programs, owner.index, candidate);
 }
 
@@ -192,17 +174,17 @@ function ownerDuration(owner: StudioLifetimeOwner, entityId: string, source: Int
   const delta = source.start - create.entity.lifetime.start;
   const anchor = program.anchor.resolvedSeconds + delta;
   const ends = program.operations.flatMap((operation) => {
-    const inserted = operation.kind === "ChangePresence"
-      || operation.kind === "CreateMotion"
-      || operation.kind === "TransformContent"
-      || (operation.kind === "AnimateProperty" && operation.key === "scale")
-      || (operation.kind === "InsertTimelineEvent" && operation.eventKind === "wait");
+    const inserted =
+      operation.kind === "ChangePresence" ||
+      operation.kind === "CreateMotion" ||
+      operation.kind === "TransformContent" ||
+      (operation.kind === "AnimateProperty" && operation.key === "scale") ||
+      (operation.kind === "InsertTimelineEvent" && operation.eventKind === "wait");
     if (!inserted) return [];
-    const end = operation.kind === "ChangePresence"
-      && operation.entityId === entityId
-      && operation.effect === "fade-in"
-      ? Math.min(source.end, operation.interval.end + delta)
-      : operation.interval.end + delta;
+    const end =
+      operation.kind === "ChangePresence" && operation.entityId === entityId && operation.effect === "fade-in"
+        ? Math.min(source.end, operation.interval.end + delta)
+        : operation.interval.end + delta;
     return [end];
   });
   return Math.max(0, Math.max(anchor, ...ends) - anchor);
@@ -229,9 +211,10 @@ function projectOwnedInterval(
     const at = sourceAnchor + offset;
     if (index === owner.index) {
       working = {
-        end: Math.abs(source.end - sourceDuration) < 0.001
-          ? sourceDuration + insertions.reduce((total, insertion) => total + insertion.duration, 0) + duration
-          : source.end + offset + duration,
+        end:
+          Math.abs(source.end - sourceDuration) < 0.001
+            ? sourceDuration + insertions.reduce((total, insertion) => total + insertion.duration, 0) + duration
+            : source.end + offset + duration,
         start: source.start + offset,
       };
     } else if (working) {
@@ -266,35 +249,38 @@ function importedSourceInterval(
   const canonical = programs.map((record) => record.program);
   const projectedStart = workingTimeToSourceTime(canonical, workingInterval.start);
   const projectedEnd = workingTimeToSourceTime(canonical, workingInterval.end);
-  const original = baseScene.objectGraph.entities[track.entityId]?.lifetime.find((interval) => (
-    Math.abs(interval.start - projectedStart) < 0.001
-    && interval.end >= projectedEnd - 0.001
-  ));
-  return original ? {
-    current: { end: Math.min(original.end, projectedEnd), start: original.start },
-    maximumEnd: original.end,
-  } : null;
+  const original = baseScene.objectGraph.entities[track.entityId]?.lifetime.find(
+    (interval) => Math.abs(interval.start - projectedStart) < 0.001 && interval.end >= projectedEnd - 0.001,
+  );
+  return original
+    ? {
+        current: { end: Math.min(original.end, projectedEnd), start: original.start },
+        maximumEnd: original.end,
+      }
+    : null;
 }
 
 function programChangesEntityLifetime(record: ProgramRecord, entityId: string) {
-  return record.validation.status === "valid"
-    && record.program.operations.some((operation) => (
-      (operation.kind === "ChangePresence"
-        && operation.entityId === entityId
-        && operation.effect === "remove"
-        && operation.persistent)
-      || (operation.kind === "TransformContent" && operation.sourceEntityId === entityId)
-    ));
+  return (
+    record.validation.status === "valid" &&
+    record.program.operations.some(
+      (operation) =>
+        (operation.kind === "ChangePresence" &&
+          operation.entityId === entityId &&
+          operation.effect === "remove" &&
+          operation.persistent) ||
+        (operation.kind === "TransformContent" && operation.sourceEntityId === entityId),
+    )
+  );
 }
 
-export function findCompetingImportedLifetimeOwner(
-  programs: readonly ProgramRecord[],
-  entityId: string,
-) {
-  return programs.find((record) => {
-    const metadata = importedLifetimeEditMetadata(record);
-    return metadata?.entityId !== entityId && programChangesEntityLifetime(record, entityId);
-  }) ?? null;
+export function findCompetingImportedLifetimeOwner(programs: readonly ProgramRecord[], entityId: string) {
+  return (
+    programs.find((record) => {
+      const metadata = importedLifetimeEditMetadata(record);
+      return metadata?.entityId !== entityId && programChangesEntityLifetime(record, entityId);
+    }) ?? null
+  );
 }
 
 export function findCompetingStudioLifetimeOwner(
@@ -302,33 +288,36 @@ export function findCompetingStudioLifetimeOwner(
   entityId: string,
   ownerIndex: number,
 ) {
-  return programs.find((record, index) => (
-    index !== ownerIndex && programChangesEntityLifetime(record, entityId)
-  )) ?? null;
+  return (
+    programs.find((record, index) => index !== ownerIndex && programChangesEntityLifetime(record, entityId)) ?? null
+  );
 }
 
-export function buildLifetimeEditControls(input: Readonly<{
-  anchors: readonly number[];
-  baseScene: RuntimeSceneState;
-  programs: readonly ProgramRecord[];
-  sourceDuration: number;
-  tracks: readonly TimelineObjectTrack[];
-}>): Readonly<Record<string, LifetimeEditControls>> {
+export function buildLifetimeEditControls(
+  input: Readonly<{
+    anchors: readonly number[];
+    baseScene: RuntimeSceneState;
+    programs: readonly ProgramRecord[];
+    sourceDuration: number;
+    tracks: readonly TimelineObjectTrack[];
+  }>,
+): Readonly<Record<string, LifetimeEditControls>> {
   const safeTimes = uniqueTimes(input.anchors);
   const result: Record<string, LifetimeEditControls> = {};
   for (const track of input.tracks) {
     const owner = findStudioLifetimeOwner(input.programs, track.entityId);
-    const create = owner?.record.program.operations.find((operation) => (
-      operation.kind === "CreateEntity" && operation.entity.id === track.entityId
-    ));
+    const create = owner?.record.program.operations.find(
+      (operation) => operation.kind === "CreateEntity" && operation.entity.id === track.entityId,
+    );
     for (const [index, workingInterval] of track.lifetimes.entries()) {
       const imported = owner ? null : importedSourceInterval(input.baseScene, input.programs, track, workingInterval);
-      const source = create?.kind === "CreateEntity"
-        ? {
-            end: create.entity.lifetime.end ?? input.sourceDuration,
-            start: create.entity.lifetime.start,
-          }
-        : imported?.current ?? null;
+      const source =
+        create?.kind === "CreateEntity"
+          ? {
+              end: create.entity.lifetime.end ?? input.sourceDuration,
+              start: create.entity.lifetime.start,
+            }
+          : (imported?.current ?? null);
       if (!source) {
         result[lifetimeControlKey(track.entityId, index)] = {
           endTargets: [],
@@ -338,32 +327,20 @@ export function buildLifetimeEditControls(input: Readonly<{
         };
         continue;
       }
-      const importedEdit = owner
-        ? null
-        : findImportedLifetimeEdit(input.programs, track.entityId, source.start);
-      const competingImportedOwner = owner
-        ? null
-        : findCompetingImportedLifetimeOwner(input.programs, track.entityId);
-      const untrackedImportedOwner = !owner
-        && !importedEdit
-        && source.end < imported!.maximumEnd - 0.001;
+      const importedEdit = owner ? null : findImportedLifetimeEdit(input.programs, track.entityId, source.start);
+      const competingImportedOwner = owner ? null : findCompetingImportedLifetimeOwner(input.programs, track.entityId);
+      const untrackedImportedOwner = !owner && !importedEdit && source.end < imported!.maximumEnd - 0.001;
       const expectedOwnedWorking = owner
         ? targetFor(source, input.programs, owner, track.entityId, input.sourceDuration).working
         : null;
       const competingStudioOwner = owner
         ? findCompetingStudioLifetimeOwner(input.programs, track.entityId, owner.index)
         : null;
-      const studioProjectionMismatch = expectedOwnedWorking !== null
-        && (
-          Math.abs(expectedOwnedWorking.start - workingInterval.start) >= 0.001
-          || Math.abs(expectedOwnedWorking.end - workingInterval.end) >= 0.001
-        );
-      if (
-        competingImportedOwner
-        || untrackedImportedOwner
-        || competingStudioOwner
-        || studioProjectionMismatch
-      ) {
+      const studioProjectionMismatch =
+        expectedOwnedWorking !== null &&
+        (Math.abs(expectedOwnedWorking.start - workingInterval.start) >= 0.001 ||
+          Math.abs(expectedOwnedWorking.end - workingInterval.end) >= 0.001);
+      if (competingImportedOwner || untrackedImportedOwner || competingStudioOwner || studioProjectionMismatch) {
         result[lifetimeControlKey(track.entityId, index)] = {
           endTargets: [],
           moveTargets: [],
@@ -375,70 +352,64 @@ export function buildLifetimeEditControls(input: Readonly<{
         continue;
       }
       const maximumEnd = owner ? input.sourceDuration : imported!.maximumEnd;
-      const ownerInSourceOrder = owner
-        ? ownerAnchorInOrder(input.programs, owner, track.entityId, source.start)
-        : true;
+      const ownerInSourceOrder = owner ? ownerAnchorInOrder(input.programs, owner, track.entityId, source.start) : true;
       const ownershipReason = owner
-        ? studioLifetimeOwnerReason(owner) ?? (!ownerInSourceOrder
-          ? "This creation Program is outside applied source order, so only restoring an open-ended lifetime is safe."
-          : null)
+        ? (studioLifetimeOwnerReason(owner) ??
+          (!ownerInSourceOrder
+            ? "This creation Program is outside applied source order, so only restoring an open-ended lifetime is safe."
+            : null))
         : null;
       const editableStart = owner !== null && ownershipReason === null;
       const startTimes = editableStart
-        ? safeTimes.filter((time) => (
-            time >= 0
-            && source.end - time >= MIN_OBJECT_LIFETIME_SECONDS - 0.001
-            && Math.abs(time - source.start) >= 0.001
-            && ownerAnchorInOrder(input.programs, owner, track.entityId, time)
-          ))
+        ? safeTimes.filter(
+            (time) =>
+              time >= 0 &&
+              source.end - time >= MIN_OBJECT_LIFETIME_SECONDS - 0.001 &&
+              Math.abs(time - source.start) >= 0.001 &&
+              ownerAnchorInOrder(input.programs, owner, track.entityId, time),
+          )
         : [];
-      const candidateEndTimes = uniqueTimes([...safeTimes, maximumEnd]).filter((time) => (
-        time <= maximumEnd + 0.001
-        && time - source.start >= MIN_OBJECT_LIFETIME_SECONDS - 0.001
-        && Math.abs(time - source.end) >= 0.001
-        && (!owner || ownerInSourceOrder || Math.abs(time - maximumEnd) < 0.001)
-      ));
+      const candidateEndTimes = uniqueTimes([...safeTimes, maximumEnd]).filter(
+        (time) =>
+          time <= maximumEnd + 0.001 &&
+          time - source.start >= MIN_OBJECT_LIFETIME_SECONDS - 0.001 &&
+          Math.abs(time - source.end) >= 0.001 &&
+          (!owner || ownerInSourceOrder || Math.abs(time - maximumEnd) < 0.001),
+      );
       const endTimes = candidateEndTimes.filter((time) => {
         if (owner) return true;
         if (importedEdit && Math.abs(time - maximumEnd) < 0.001) return true;
         const editIndex = importedEdit?.index ?? input.programs.length;
-        const sourceAnchor = Math.abs(time - maximumEnd) < 0.001
-          ? importedEdit?.record.program.anchor.resolvedSeconds ?? time
-          : time;
+        const sourceAnchor =
+          Math.abs(time - maximumEnd) < 0.001 ? (importedEdit?.record.program.anchor.resolvedSeconds ?? time) : time;
         return sourceAnchorInProgramOrder(input.programs, editIndex, sourceAnchor);
       });
       const importedSourceOrderLimited = !owner && endTimes.length < candidateEndTimes.length;
       const width = source.end - source.start;
-      const moveTargets = editableStart ? safeTimes.flatMap((start) => {
-        const end = start + width;
-        const endIsSafe = safeTimes.some((time) => Math.abs(time - end) < 0.001)
-          || Math.abs(end - maximumEnd) < 0.001;
-        return end <= maximumEnd + 0.001
-          && endIsSafe
-          && Math.abs(start - source.start) >= 0.001
-          && ownerAnchorInOrder(input.programs, owner, track.entityId, start)
-          ? [targetFor({ end, start }, input.programs, owner, track.entityId, input.sourceDuration)]
-          : [];
-      }) : [];
+      const moveTargets = editableStart
+        ? safeTimes.flatMap((start) => {
+            const end = start + width;
+            const endIsSafe =
+              safeTimes.some((time) => Math.abs(time - end) < 0.001) || Math.abs(end - maximumEnd) < 0.001;
+            return end <= maximumEnd + 0.001 &&
+              endIsSafe &&
+              Math.abs(start - source.start) >= 0.001 &&
+              ownerAnchorInOrder(input.programs, owner, track.entityId, start)
+              ? [targetFor({ end, start }, input.programs, owner, track.entityId, input.sourceDuration)]
+              : [];
+          })
+        : [];
       result[lifetimeControlKey(track.entityId, index)] = {
-        endTargets: endTimes.map((end) => targetFor(
-          { end, start: source.start },
-          input.programs,
-          owner,
-          track.entityId,
-          input.sourceDuration,
-        )),
+        endTargets: endTimes.map((end) =>
+          targetFor({ end, start: source.start }, input.programs, owner, track.entityId, input.sourceDuration),
+        ),
         moveTargets,
         reason: owner
           ? ownershipReason
           : `Imported creation timing is read-only because Studio cannot safely move the original Python statement. Its end can still be trimmed or restored${importedSourceOrderLimited ? ", but some endpoints would move the lifetime Program out of applied source order" : ""}.`,
-        startTargets: startTimes.map((start) => targetFor(
-          { end: source.end, start },
-          input.programs,
-          owner,
-          track.entityId,
-          input.sourceDuration,
-        )),
+        startTargets: startTimes.map((start) =>
+          targetFor({ end: source.end, start }, input.programs, owner, track.entityId, input.sourceDuration),
+        ),
       };
     }
   }

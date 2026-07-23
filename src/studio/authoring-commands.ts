@@ -183,45 +183,42 @@ export function createRemoveEntitiesProgram(
   });
 }
 
-export function createImportedEntityLifetimeProgram(input: Readonly<{
-  entityId: string;
-  original: Interval;
-  scene: RuntimeSceneState;
-  sourceAnchor: number;
-  sourceAnchorBounds?: ProgramSourceAnchorBounds;
-  targetEnd: number;
-  transactionId: string;
-}>): ProgramValidationResult {
+export function createImportedEntityLifetimeProgram(
+  input: Readonly<{
+    entityId: string;
+    original: Interval;
+    scene: RuntimeSceneState;
+    sourceAnchor: number;
+    sourceAnchorBounds?: ProgramSourceAnchorBounds;
+    targetEnd: number;
+    transactionId: string;
+  }>,
+): ProgramValidationResult {
   const entity = input.scene.objectGraph.entities[input.entityId];
   if (!entity) throw new Error(`Object ${input.entityId} is no longer available.`);
-  const original = entity.lifetime.find((interval) => (
-    Math.abs(interval.start - input.original.start) < 0.001
-    && Math.abs(interval.end - input.original.end) < 0.001
-  ));
+  const original = entity.lifetime.find(
+    (interval) =>
+      Math.abs(interval.start - input.original.start) < 0.001 && Math.abs(interval.end - input.original.end) < 0.001,
+  );
   if (!original) throw new Error("The imported lifetime interval changed. Reimport before editing it again.");
-  if (
-    !Number.isFinite(input.targetEnd)
-    || input.targetEnd - original.start < MIN_OBJECT_LIFETIME_SECONDS - 0.001
-  ) {
+  if (!Number.isFinite(input.targetEnd) || input.targetEnd - original.start < MIN_OBJECT_LIFETIME_SECONDS - 0.001) {
     throw new Error(`Keep at least ${MIN_OBJECT_LIFETIME_SECONDS.toFixed(1)} seconds of the selected object lifetime.`);
   }
   if (input.targetEnd > original.end + 0.001) {
     throw new Error("An imported lifetime cannot extend beyond its original source interval.");
   }
   if (
-    !Number.isFinite(input.sourceAnchor)
-    || input.sourceAnchor < original.start - 0.001
-    || input.sourceAnchor > original.end + 0.001
+    !Number.isFinite(input.sourceAnchor) ||
+    input.sourceAnchor < original.start - 0.001 ||
+    input.sourceAnchor > original.end + 0.001
   ) {
     throw new Error("A safe source anchor is required inside the selected lifetime.");
   }
   const restoringOriginal = Math.abs(input.targetEnd - original.end) < 0.001;
   if (
-    !restoringOriginal
-    && (
-      input.sourceAnchor < (input.sourceAnchorBounds?.minimum ?? -Infinity) - 0.001
-      || input.sourceAnchor > (input.sourceAnchorBounds?.maximum ?? Infinity) + 0.001
-    )
+    !restoringOriginal &&
+    (input.sourceAnchor < (input.sourceAnchorBounds?.minimum ?? -Infinity) - 0.001 ||
+      input.sourceAnchor > (input.sourceAnchorBounds?.maximum ?? Infinity) + 0.001)
   ) {
     throw new Error("This lifetime would place its applied Program out of source order relative to another edit.");
   }
@@ -247,16 +244,22 @@ export function createImportedEntityLifetimeProgram(input: Readonly<{
         interval: { end: input.targetEnd, start: input.targetEnd },
         kind: "ChangePresence",
         persistent: true,
-        provenance: provenance("direct-manipulation", ["lifetime right-edge edit", "safe source anchor", "persistent exit"]),
+        provenance: provenance("direct-manipulation", [
+          "lifetime right-edge edit",
+          "safe source anchor",
+          "persistent exit",
+        ]),
       };
   return authoringProgram([operation], {
     capturedPlayhead: input.sourceAnchor,
     origin: "direct-manipulation",
-    programEvidence: [importedLifetimeEditEvidence({
-      entityId: input.entityId,
-      kind: "imported-end",
-      original,
-    })],
+    programEvidence: [
+      importedLifetimeEditEvidence({
+        entityId: input.entityId,
+        kind: "imported-end",
+        original,
+      }),
+    ],
     requestedExecution: "sequence",
     scene: input.scene,
     transactionId: input.transactionId,
@@ -280,24 +283,25 @@ function shiftStudioCreationOperation(
       ...operation,
       entity: {
         ...operation.entity,
-        lifetime: operation.entity.id === entityId
-          ? {
-              end: Math.abs(target.end - sceneDuration) < 0.001 ? null : target.end,
-              start: target.start,
-            }
-          : {
-              end: operation.entity.lifetime.end === null ? null : operation.entity.lifetime.end + delta,
-              start: operation.entity.lifetime.start + delta,
-            },
+        lifetime:
+          operation.entity.id === entityId
+            ? {
+                end: Math.abs(target.end - sceneDuration) < 0.001 ? null : target.end,
+                start: target.start,
+              }
+            : {
+                end: operation.entity.lifetime.end === null ? null : operation.entity.lifetime.end + delta,
+                start: operation.entity.lifetime.start + delta,
+              },
       },
       interval,
     };
   }
   if (
-    operation.kind === "ChangePresence"
-    && operation.entityId === entityId
-    && operation.effect === "fade-in"
-    && interval.end > target.end
+    operation.kind === "ChangePresence" &&
+    operation.entityId === entityId &&
+    operation.effect === "fade-in" &&
+    interval.end > target.end
   ) {
     return { ...operation, interval: { ...interval, end: target.end } };
   }
@@ -309,11 +313,8 @@ function shiftStudioCreationOperation(
 
 function operationTargetsEntity(operation: CanonicalEditOperation, entityId: string) {
   if (operation.kind === "CreateEntity") return operation.entity.id === entityId;
-  if (
-    operation.kind === "SetProperty"
-    || operation.kind === "AnimateProperty"
-    || operation.kind === "ChangePresence"
-  ) return operation.entityId === entityId;
+  if (operation.kind === "SetProperty" || operation.kind === "AnimateProperty" || operation.kind === "ChangePresence")
+    return operation.entityId === entityId;
   if (operation.kind === "CreateMotion") return operation.targetEntityIds.includes(entityId);
   if (operation.kind === "TransformContent") {
     return operation.sourceEntityId === entityId || operation.targetEntityId === entityId;
@@ -324,46 +325,44 @@ function operationTargetsEntity(operation: CanonicalEditOperation, entityId: str
   return false;
 }
 
-export function replaceStudioEntityLifetimeProgram(input: Readonly<{
-  entityId: string;
-  owner: ProgramRecord;
-  scene: RuntimeSceneState;
-  sourceAnchorBounds?: ProgramSourceAnchorBounds;
-  sourceAnchors: readonly number[];
-  target: Interval;
-}>): ProgramValidationResult {
+export function replaceStudioEntityLifetimeProgram(
+  input: Readonly<{
+    entityId: string;
+    owner: ProgramRecord;
+    scene: RuntimeSceneState;
+    sourceAnchorBounds?: ProgramSourceAnchorBounds;
+    sourceAnchors: readonly number[];
+    target: Interval;
+  }>,
+): ProgramValidationResult {
   const created = input.owner.program.operations.filter((operation) => operation.kind === "CreateEntity");
   const create = created.find((operation) => operation.entity.id === input.entityId);
   if (!create) throw new Error("The Studio creation Program no longer owns this object.");
   if (
-    !Number.isFinite(input.target.start)
-    || !Number.isFinite(input.target.end)
-    || input.target.start < 0
-    || input.target.end > input.scene.duration + 0.001
-    || input.target.end - input.target.start < MIN_OBJECT_LIFETIME_SECONDS - 0.001
+    !Number.isFinite(input.target.start) ||
+    !Number.isFinite(input.target.end) ||
+    input.target.start < 0 ||
+    input.target.end > input.scene.duration + 0.001 ||
+    input.target.end - input.target.start < MIN_OBJECT_LIFETIME_SECONDS - 0.001
   ) {
-    throw new Error(`Keep the lifetime within the Scene and at least ${MIN_OBJECT_LIFETIME_SECONDS.toFixed(1)} seconds wide.`);
+    throw new Error(
+      `Keep the lifetime within the Scene and at least ${MIN_OBJECT_LIFETIME_SECONDS.toFixed(1)} seconds wide.`,
+    );
   }
   const delta = input.target.start - create.entity.lifetime.start;
   const movesProgram = Math.abs(delta) >= 0.001;
   if (movesProgram && created.length !== 1) {
     throw new Error("This object shares one creation Program with other objects and cannot move independently.");
   }
-  if (
-    movesProgram
-    && Math.abs(create.entity.lifetime.start - input.owner.program.anchor.resolvedSeconds) >= 0.001
-  ) {
+  if (movesProgram && Math.abs(create.entity.lifetime.start - input.owner.program.anchor.resolvedSeconds) >= 0.001) {
     throw new Error("This object is created after its Program begins and cannot move independently.");
   }
   const replacementAnchor = input.owner.program.anchor.resolvedSeconds + delta;
-  const sourceOrderRequired = movesProgram
-    || Math.abs(input.target.end - input.scene.duration) >= 0.001;
+  const sourceOrderRequired = movesProgram || Math.abs(input.target.end - input.scene.duration) >= 0.001;
   if (
-    sourceOrderRequired
-    && (
-      replacementAnchor < (input.sourceAnchorBounds?.minimum ?? -Infinity) - 0.001
-      || replacementAnchor > (input.sourceAnchorBounds?.maximum ?? Infinity) + 0.001
-    )
+    sourceOrderRequired &&
+    (replacementAnchor < (input.sourceAnchorBounds?.minimum ?? -Infinity) - 0.001 ||
+      replacementAnchor > (input.sourceAnchorBounds?.maximum ?? Infinity) + 0.001)
   ) {
     throw new Error("This lifetime would place its applied Program out of source order relative to another edit.");
   }
@@ -375,17 +374,15 @@ export function replaceStudioEntityLifetimeProgram(input: Readonly<{
     throw new Error("The Studio-owned lifetime end must snap to a safe .py source anchor or the Scene end.");
   }
 
-  const operations = input.owner.program.operations.map((operation) => (
-    shiftStudioCreationOperation(operation, delta, input.entityId, input.target, input.scene.duration)
-  ));
-  const outsideLifetime = operations.find((operation) => (
-    operation.kind !== "CreateEntity"
-    && (movesProgram || operationTargetsEntity(operation, input.entityId))
-    && (
-      operation.interval.start < input.target.start - 0.001
-      || operation.interval.end > input.target.end + 0.001
-    )
-  ));
+  const operations = input.owner.program.operations.map((operation) =>
+    shiftStudioCreationOperation(operation, delta, input.entityId, input.target, input.scene.duration),
+  );
+  const outsideLifetime = operations.find(
+    (operation) =>
+      operation.kind !== "CreateEntity" &&
+      (movesProgram || operationTargetsEntity(operation, input.entityId)) &&
+      (operation.interval.start < input.target.start - 0.001 || operation.interval.end > input.target.end + 0.001),
+  );
   if (outsideLifetime) {
     throw new Error("The creation Program contains work outside the requested lifetime interval.");
   }

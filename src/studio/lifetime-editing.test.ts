@@ -25,14 +25,16 @@ describe("lifetime editing controls", () => {
       baseScene: STUDIO_FIXTURE_SCENE,
       programs: [],
       sourceDuration: 12,
-      tracks: [{
-        animatedChannels: [],
-        entityId: "equation_1",
-        label: "equation",
-        lifetimes: [{ end: 12, start: 0 }],
-        provisional: false,
-        type: "MathTex",
-      }],
+      tracks: [
+        {
+          animatedChannels: [],
+          entityId: "equation_1",
+          label: "equation",
+          lifetimes: [{ end: 12, start: 0 }],
+          provisional: false,
+          type: "MathTex",
+        },
+      ],
     })[lifetimeControlKey("equation_1", 0)]!;
 
     expect(controls.startTargets).toEqual([]);
@@ -50,9 +52,14 @@ describe("lifetime editing controls", () => {
       transactionId: "later-source-program",
     });
     const record = programRecord(wait.program, wait);
-    const track = projectProposedState(evaluateWorkingState(createFixtureWorkingState({
-      appliedPrograms: [record],
-    })), 5).timeline.objectTracks.find((candidate) => candidate.entityId === "equation_1")!;
+    const track = projectProposedState(
+      evaluateWorkingState(
+        createFixtureWorkingState({
+          appliedPrograms: [record],
+        }),
+      ),
+      5,
+    ).timeline.objectTracks.find((candidate) => candidate.entityId === "equation_1")!;
     const controls = buildLifetimeEditControls({
       anchors: [5, 7],
       baseScene: STUDIO_FIXTURE_SCENE,
@@ -73,9 +80,14 @@ describe("lifetime editing controls", () => {
       transactionId: "delete-imported-equation",
     });
     const record = programRecord(removal.program, removal);
-    const track = projectProposedState(evaluateWorkingState(createFixtureWorkingState({
-      appliedPrograms: [record],
-    })), 5).timeline.objectTracks.find((candidate) => candidate.entityId === "equation_1")!;
+    const track = projectProposedState(
+      evaluateWorkingState(
+        createFixtureWorkingState({
+          appliedPrograms: [record],
+        }),
+      ),
+      5,
+    ).timeline.objectTracks.find((candidate) => candidate.entityId === "equation_1")!;
     const controls = buildLifetimeEditControls({
       anchors: [5, 7],
       baseScene: STUDIO_FIXTURE_SCENE,
@@ -98,9 +110,14 @@ describe("lifetime editing controls", () => {
       transactionId: "trim-equation-metadata",
     });
     const record = programRecord(trim.program, trim);
-    const track = projectProposedState(evaluateWorkingState(createFixtureWorkingState({
-      appliedPrograms: [record],
-    })), 5).timeline.objectTracks.find((candidate) => candidate.entityId === "equation_1")!;
+    const track = projectProposedState(
+      evaluateWorkingState(
+        createFixtureWorkingState({
+          appliedPrograms: [record],
+        }),
+      ),
+      5,
+    ).timeline.objectTracks.find((candidate) => candidate.entityId === "equation_1")!;
     const controls = buildLifetimeEditControls({
       anchors: [5, 7],
       baseScene: STUDIO_FIXTURE_SCENE,
@@ -130,9 +147,14 @@ describe("lifetime editing controls", () => {
       transactionId: "out-of-order-existing-trim",
     });
     const records = [programRecord(wait.program, wait), programRecord(trim.program, trim)];
-    const track = projectProposedState(evaluateWorkingState(createFixtureWorkingState({
-      appliedPrograms: records,
-    })), 4).timeline.objectTracks.find((candidate) => candidate.entityId === "equation_1")!;
+    const track = projectProposedState(
+      evaluateWorkingState(
+        createFixtureWorkingState({
+          appliedPrograms: records,
+        }),
+      ),
+      4,
+    ).timeline.objectTracks.find((candidate) => candidate.entityId === "equation_1")!;
     const controls = buildLifetimeEditControls({
       anchors: [5, 7],
       baseScene: STUDIO_FIXTURE_SCENE,
@@ -148,27 +170,34 @@ describe("lifetime editing controls", () => {
   it("offers both edge edits and width-preserving moves for a Studio-owned interval", () => {
     const insertion = createStudioEntitiesProgram({
       capturedPlayhead: 3,
-      entities: [{
-        content: defaultEntityContent("Circle", ""),
-        position: { x: 200, y: 120 },
-        type: "Circle",
-      }],
+      entities: [
+        {
+          content: defaultEntityContent("Circle", ""),
+          position: { x: 200, y: 120 },
+          type: "Circle",
+        },
+      ],
       scene: STUDIO_FIXTURE_SCENE,
       transactionId: "owned-lifetime-controls",
     });
     const create = insertion.validation.program.operations.find((operation) => operation.kind === "CreateEntity")!;
     const finiteProgram = {
       ...insertion.validation.program,
-      operations: insertion.validation.program.operations.map((operation) => operation.kind === "CreateEntity"
-        ? { ...operation, entity: { ...operation.entity, lifetime: { end: 5, start: 3 } } }
-        : operation),
+      operations: insertion.validation.program.operations.map((operation) =>
+        operation.kind === "CreateEntity"
+          ? { ...operation, entity: { ...operation.entity, lifetime: { end: 5, start: 3 } } }
+          : operation,
+      ),
     };
     expect(create.entity.id).toBe(insertion.entityIds[0]);
     const record = programRecord(finiteProgram, { issues: [], kind: "valid" });
-    const delayed = programRecord({
-      ...rebaseProgramTime(finiteProgram, 2),
-      anchor: finiteProgram.anchor,
-    }, { issues: [], kind: "valid" });
+    const delayed = programRecord(
+      {
+        ...rebaseProgramTime(finiteProgram, 2),
+        anchor: finiteProgram.anchor,
+      },
+      { issues: [], kind: "valid" },
+    );
     expect(studioLifetimeOwnerReason({ index: 0, record: delayed })).toMatch(/after its Program begins/i);
     const wait = createSceneDurationProgram({
       capturedPlayhead: 3,
@@ -178,9 +207,14 @@ describe("lifetime editing controls", () => {
       transactionId: "same-anchor-wait",
     });
     const records = [record, programRecord(wait.program, wait)];
-    const track = projectProposedState(evaluateWorkingState(createFixtureWorkingState({
-      appliedPrograms: records,
-    })), 4).timeline.objectTracks.find((candidate) => candidate.entityId === insertion.entityIds[0])!;
+    const track = projectProposedState(
+      evaluateWorkingState(
+        createFixtureWorkingState({
+          appliedPrograms: records,
+        }),
+      ),
+      4,
+    ).timeline.objectTracks.find((candidate) => candidate.entityId === insertion.entityIds[0])!;
     const controls = buildLifetimeEditControls({
       anchors: [1, 3, 5, 7],
       baseScene: STUDIO_FIXTURE_SCENE,
@@ -192,28 +226,29 @@ describe("lifetime editing controls", () => {
     expect(controls.reason).toBeNull();
     expect(controls.startTargets.map((target) => target.source.start)).toEqual([1]);
     expect(controls.endTargets.map((target) => target.source.end)).toEqual([7, 12]);
-    expect(controls.endTargets.find((target) => target.source.end === 7)?.working)
-      .toEqual({ end: 8.4, start: 3 });
-    expect(controls.moveTargets.map((target) => target.source)).toEqual([
-      { end: 3, start: 1 },
-    ]);
+    expect(controls.endTargets.find((target) => target.source.end === 7)?.working).toEqual({ end: 8.4, start: 3 });
+    expect(controls.moveTargets.map((target) => target.source)).toEqual([{ end: 3, start: 1 }]);
   });
 
   it("defers to a later Delete Program that owns a Studio-created lifetime end", () => {
     const insertion = createStudioEntitiesProgram({
       capturedPlayhead: 5,
-      entities: [{
-        content: defaultEntityContent("Circle", ""),
-        position: { x: 200, y: 120 },
-        type: "Circle",
-      }],
+      entities: [
+        {
+          content: defaultEntityContent("Circle", ""),
+          position: { x: 200, y: 120 },
+          type: "Circle",
+        },
+      ],
       scene: STUDIO_FIXTURE_SCENE,
       transactionId: "owned-then-deleted",
     });
     const owner = programRecord(insertion.validation.program, insertion.validation);
-    const ownedScene = evaluateWorkingState(createFixtureWorkingState({
-      appliedPrograms: [owner],
-    })).evaluatedScene;
+    const ownedScene = evaluateWorkingState(
+      createFixtureWorkingState({
+        appliedPrograms: [owner],
+      }),
+    ).evaluatedScene;
     const removal = createRemoveEntitiesProgram({
       capturedPlayhead: 7,
       entityIds: [insertion.entityIds[0]!],
@@ -221,9 +256,14 @@ describe("lifetime editing controls", () => {
       transactionId: "delete-owned-circle",
     });
     const records = [owner, programRecord(removal.program, removal)];
-    const track = projectProposedState(evaluateWorkingState(createFixtureWorkingState({
-      appliedPrograms: records,
-    })), 6).timeline.objectTracks.find((candidate) => candidate.entityId === insertion.entityIds[0])!;
+    const track = projectProposedState(
+      evaluateWorkingState(
+        createFixtureWorkingState({
+          appliedPrograms: records,
+        }),
+      ),
+      6,
+    ).timeline.objectTracks.find((candidate) => candidate.entityId === insertion.entityIds[0])!;
     const controls = buildLifetimeEditControls({
       anchors: [5, 7],
       baseScene: STUDIO_FIXTURE_SCENE,
@@ -247,7 +287,10 @@ describe("lifetime editing controls", () => {
           ...STUDIO_FIXTURE_SCENE.objectGraph.entities,
           equation_1: {
             ...STUDIO_FIXTURE_SCENE.objectGraph.entities.equation_1!,
-            lifetime: [{ end: 2, start: 0 }, { end: 9, start: 5 }],
+            lifetime: [
+              { end: 2, start: 0 },
+              { end: 9, start: 5 },
+            ],
           },
         },
       },
@@ -257,20 +300,23 @@ describe("lifetime editing controls", () => {
       baseScene: repeatedScene,
       programs: [],
       sourceDuration: 12,
-      tracks: [{
-        animatedChannels: [],
-        entityId: "equation_1",
-        label: "equation",
-        lifetimes: [{ end: 2, start: 0 }, { end: 9, start: 5 }],
-        provisional: false,
-        type: "MathTex",
-      }],
+      tracks: [
+        {
+          animatedChannels: [],
+          entityId: "equation_1",
+          label: "equation",
+          lifetimes: [
+            { end: 2, start: 0 },
+            { end: 9, start: 5 },
+          ],
+          provisional: false,
+          type: "MathTex",
+        },
+      ],
     });
 
-    expect(controls[lifetimeControlKey("equation_1", 0)]?.endTargets.map((target) => target.source.end))
-      .toEqual([1]);
-    expect(controls[lifetimeControlKey("equation_1", 1)]?.endTargets.map((target) => target.source.end))
-      .toEqual([7]);
+    expect(controls[lifetimeControlKey("equation_1", 0)]?.endTargets.map((target) => target.source.end)).toEqual([1]);
+    expect(controls[lifetimeControlKey("equation_1", 1)]?.endTargets.map((target) => target.source.end)).toEqual([7]);
 
     const trim = createImportedEntityLifetimeProgram({
       entityId: "equation_1",
@@ -284,8 +330,10 @@ describe("lifetime editing controls", () => {
       ...createFixtureWorkingState({ appliedPrograms: [programRecord(trim.program, trim)] }),
       runtimeSceneState: repeatedScene,
     });
-    expect(trimmed.evaluatedScene.objectGraph.entities.equation_1?.lifetime)
-      .toEqual([{ end: 2, start: 0 }, { end: 7, start: 5 }]);
+    expect(trimmed.evaluatedScene.objectGraph.entities.equation_1?.lifetime).toEqual([
+      { end: 2, start: 0 },
+      { end: 7, start: 5 },
+    ]);
 
     const restore = createImportedEntityLifetimeProgram({
       entityId: "equation_1",
@@ -299,7 +347,9 @@ describe("lifetime editing controls", () => {
       ...createFixtureWorkingState({ appliedPrograms: [programRecord(restore.program, restore)] }),
       runtimeSceneState: repeatedScene,
     });
-    expect(restored.evaluatedScene.objectGraph.entities.equation_1?.lifetime)
-      .toEqual([{ end: 2, start: 0 }, { end: 9, start: 5 }]);
+    expect(restored.evaluatedScene.objectGraph.entities.equation_1?.lifetime).toEqual([
+      { end: 2, start: 0 },
+      { end: 9, start: 5 },
+    ]);
   });
 });

@@ -53,10 +53,7 @@ export type TimelineInsertion = Readonly<{
   sourceAnchor: number;
 }>;
 
-export function timelineInsertionOffset(
-  insertions: readonly TimelineInsertion[],
-  sourceAnchor: number,
-) {
+export function timelineInsertionOffset(insertions: readonly TimelineInsertion[], sourceAnchor: number) {
   return insertions.reduce(
     (offset, insertion) =>
       insertion.sourceAnchor <= sourceAnchor + ANCHOR_EPSILON ? offset + insertion.duration : offset,

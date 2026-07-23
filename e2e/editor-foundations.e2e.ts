@@ -653,7 +653,7 @@ class LifetimeScene(Scene):
     data: { kind: "existing", name: "Lifetime Editing Fixture", root: projectRoot },
   });
   expect(createdResponse.ok()).toBe(true);
-  const created = await createdResponse.json() as { project: { id: string } };
+  const created = (await createdResponse.json()) as { project: { id: string } };
   const projectId = created.project.id;
 
   try {
@@ -667,8 +667,11 @@ class LifetimeScene(Scene):
     let lifetime = page.getByRole("button", { name: /Select Circle lifetime/ });
     await lifetime.click();
     await page.getByRole("combobox", { name: "Lifetime end for Circle" }).selectOption("2");
-    await page.getByRole("combobox", { name: "Lifetime end for Circle" })
-      .locator("xpath=ancestor::form[1]").getByRole("button", { name: "Set" }).click();
+    await page
+      .getByRole("combobox", { name: "Lifetime end for Circle" })
+      .locator("xpath=ancestor::form[1]")
+      .getByRole("button", { name: "Set" })
+      .click();
     await expect(lifetime).toHaveAttribute("title", "Present 0.00–2.40s");
     await applyCurrentDraft(page);
 
@@ -677,9 +680,11 @@ class LifetimeScene(Scene):
     await startHandle.focus();
     await page.keyboard.press("ArrowRight");
     await expect(lifetime).toHaveAttribute("title", "Present 1.00–2.40s");
-    await expect(exportedSource(page)).resolves.toEqual(expect.stringMatching(
-      /# poietra:cursor 1[\s\S]*Circle\(radius=1\)[\s\S]*# poietra:cursor 2\.4[\s\S]*self\.remove\(/,
-    ));
+    await expect(exportedSource(page)).resolves.toEqual(
+      expect.stringMatching(
+        /# poietra:cursor 1[\s\S]*Circle\(radius=1\)[\s\S]*# poietra:cursor 2\.4[\s\S]*self\.remove\(/,
+      ),
+    );
     await applyCurrentDraft(page);
 
     await page.keyboard.press("Control+z");
@@ -713,10 +718,11 @@ class LifetimeScene(Scene):
     await applyCurrentDraft(page);
 
     await writeFile(sourcePath, exported, "utf8");
-    const workspaceResponse = page.waitForResponse((response) => (
-      response.request().method() === "GET"
-      && new URL(response.url()).pathname === `/api/manim/projects/${projectId}/workspace`
-    ));
+    const workspaceResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "GET" &&
+        new URL(response.url()).pathname === `/api/manim/projects/${projectId}/workspace`,
+    );
     await page.getByRole("button", { name: "Reimport" }).click();
     await workspaceResponse;
     lifetime = page.locator("[data-timeline-lifetime]").first();

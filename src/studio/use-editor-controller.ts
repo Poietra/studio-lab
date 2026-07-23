@@ -197,11 +197,7 @@ export function stageEditorDraft(state: EditorControllerState, input: StageDraft
     draftOperation: input.operation,
     draftProgram: input.record,
     editingAppliedProgram:
-      input.appliedEdit !== undefined
-        ? input.appliedEdit
-        : input.clearAppliedEdit
-          ? null
-          : state.editingAppliedProgram,
+      input.appliedEdit !== undefined ? input.appliedEdit : input.clearAppliedEdit ? null : state.editingAppliedProgram,
     isPlaying: input.stopPlayback ? false : state.isPlaying,
     programUndoEntries,
     redoPrograms: [],
