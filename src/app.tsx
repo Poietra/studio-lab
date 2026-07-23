@@ -1,22 +1,10 @@
-import {
-  type KeyboardEvent,
-  type PointerEvent,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { type KeyboardEvent, type PointerEvent, useCallback, useEffect, useRef, useState } from "react";
 import { LazyMotion } from "motion/react";
 
-import {
-  createClarificationContextFingerprint,
-  MAX_CLARIFICATION_HISTORY,
-  type PendingClarification,
-} from "./ai/clarification";
+import { createClarificationContextFingerprint, MAX_CLARIFICATION_HISTORY } from "./ai/clarification";
 import {
   type ClarificationOption,
   type CreateMotionSuggestion,
-  type EditSuggestion,
   type EditSuggestionOperation,
   suggestEdit,
 } from "./ai/edit-suggestions";
@@ -32,24 +20,16 @@ import {
   duplicateEntityInput,
   type StudioEntityInput,
 } from "./studio/authoring-commands";
-import {
-  commandForShortcut,
-  isEditableShortcutTarget,
-  type StudioCommandId,
-} from "./studio/commands";
+import { commandForShortcut, isEditableShortcutTarget, type StudioCommandId } from "./studio/commands";
 import { projectedPositions, validateSuggestionDraft, validatedProgramRecord } from "./studio/draft-validation";
 import type { Point, ProgramRecord, ProposedState, RuntimeSceneState } from "./studio/model";
 import { projectMotionPaths, type StudioMotionPath } from "./studio/motion-paths";
 import { programExecutionCapabilities } from "./studio/operation-registry";
 import type { OperationOrigin } from "./studio/operations";
-import {
-  latestSafeSourceAnchor,
-  sourceTimeToWorkingTime,
-  workingTimeToSourceTime,
-} from "./studio/program-composition";
+import { latestSafeSourceAnchor, sourceTimeToWorkingTime, workingTimeToSourceTime } from "./studio/program-composition";
 import { samplePropertyValue } from "./studio/property-sampling";
 import { projectRuntimeSceneToSourceTimeline } from "./studio/source-timeline";
-import { MagicEditPanel, type SuggestionStatus } from "./studio/magic-edit-panel";
+import { MagicEditPanel } from "./studio/magic-edit-panel";
 import {
   createDirectManipulationPositionProgram,
   createDirectManipulationScaleProgram,
@@ -57,12 +37,12 @@ import {
 import {
   type EntityDragPreview,
   type EntityScalePreview,
-  type InteractionMode,
   STUDIO_VIEWPORT,
   StudioViewport,
 } from "./studio/studio-viewport";
 import type { StudioTool } from "./studio/studio-toolbar";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
+import { editorProgramRecord, useEditorController } from "./studio/use-editor-controller";
 import { useManimWorkspace } from "./studio/use-manim-workspace";
 import { WorkspaceLauncher } from "./studio/workspace-launcher";
 import { isTransitionOverlay, projectStudioWorkspace } from "./studio/workspace-projection";
@@ -93,66 +73,6 @@ type CanvasResizeState = Readonly<{
   sourceAnchor: number;
   start: Readonly<{ x: number; y: number }>;
 }>;
-type AppliedProgramMetadata = Readonly<{
-  operation: EditSuggestionOperation | null;
-  selection: readonly string[];
-}>;
-type EditorProgramRecord = ProgramRecord & Readonly<{
-  editorMetadata?: AppliedProgramMetadata;
-}>;
-type AppliedProgramMutation = Readonly<{
-  index: number;
-  kind: "append";
-  value: EditorProgramRecord;
-}> | Readonly<{
-  index: number;
-  kind: "replace";
-  previous: EditorProgramRecord;
-  value: EditorProgramRecord;
-}>;
-type AppliedProgramEdit = Readonly<{
-  index: number;
-  original: EditorProgramRecord;
-}>;
-type RedoProgramEntry = Readonly<{
-  edit: AppliedProgramEdit | null;
-  kind: "draft";
-  value: EditorProgramRecord;
-}> | Readonly<{
-  kind: "mutation";
-  mutation: AppliedProgramMutation;
-}>;
-type EditorSessionSnapshot = Readonly<{
-  appliedPrograms: readonly EditorProgramRecord[];
-  currentTime: number;
-  draftError: string | null;
-  draftOperation: EditSuggestionOperation | null;
-  draftProgram: ProgramRecord | null;
-  insertTool: StudioTool;
-  insertValue: string;
-  instruction: string;
-  interactionMode: InteractionMode;
-  editingAppliedProgram: AppliedProgramEdit | null;
-  motionDuration: number;
-  programUndoEntries: readonly AppliedProgramMutation[];
-  redoPrograms: readonly RedoProgramEntry[];
-  selectedObjectIds: readonly string[];
-}>;
-
-function editorProgramRecord(
-  record: ProgramRecord,
-  operation: EditSuggestionOperation | null,
-  selection: readonly string[],
-): EditorProgramRecord {
-  return { ...record, editorMetadata: { operation, selection } };
-}
-
-function cancelRequest(request: { current: AbortController | null }) {
-  const controller = request.current;
-  request.current = null;
-  controller?.abort();
-}
-
 function detectShell(): Shell {
   if ("__TAURI_INTERNALS__" in window) return "Tauri";
   if (navigator.userAgent.includes("Electron")) return "Electron";
@@ -164,25 +84,17 @@ function clamp(value: number, minimum: number, maximum: number) {
 }
 
 function programsHaveSceneBoundary(programs: readonly ProgramRecord["program"][]) {
-  return programs.some((program) => (
-    program.operations.some((operation) => operation.kind === "InsertSceneBoundary")
-  ));
+  return programs.some((program) => program.operations.some((operation) => operation.kind === "InsertSceneBoundary"));
 }
 
-function canvasPointerDelta(
-  drag: CanvasDragState,
-  point: Readonly<{ x: number; y: number }>,
-) {
+function canvasPointerDelta(drag: CanvasDragState, point: Readonly<{ x: number; y: number }>) {
   return {
     x: (point.x - drag.start.x) * drag.scale.x,
     y: (point.y - drag.start.y) * drag.scale.y,
   };
 }
 
-function resizedEntityScale(
-  resize: CanvasResizeState,
-  point: Readonly<{ x: number; y: number }>,
-) {
+function resizedEntityScale(resize: CanvasResizeState, point: Readonly<{ x: number; y: number }>) {
   const startVector = {
     x: resize.start.x - resize.center.x,
     y: resize.start.y - resize.center.y,
@@ -192,26 +104,30 @@ function resizedEntityScale(
     y: point.y - resize.center.y,
   };
   const squaredLength = startVector.x ** 2 + startVector.y ** 2;
-  const ratio = squaredLength > 1
-    ? (pointerVector.x * startVector.x + pointerVector.y * startVector.y) / squaredLength
-    : 1;
+  const ratio =
+    squaredLength > 1 ? (pointerVector.x * startVector.x + pointerVector.y * startVector.y) / squaredLength : 1;
   return clamp(resize.fromScale * ratio, MIN_ENTITY_SCALE, MAX_ENTITY_SCALE);
 }
 
 function isStudioEntityInsertion(record: ProgramRecord) {
   if (record.program.provenance.origin !== "studio-default") return false;
-  const createdEntityIds = new Set(record.program.operations.flatMap((operation) => (
-    operation.kind === "CreateEntity" ? [operation.entity.id] : []
-  )));
-  return createdEntityIds.size > 0 && record.program.operations.every((operation) => {
-    if (operation.kind === "CreateEntity") return true;
-    if (operation.kind === "SetProperty") {
-      return operation.key === "position" && createdEntityIds.has(operation.entityId);
-    }
-    return operation.kind === "ChangePresence"
-      && operation.effect === "fade-in"
-      && createdEntityIds.has(operation.entityId);
-  });
+  const createdEntityIds = new Set(
+    record.program.operations.flatMap((operation) => (operation.kind === "CreateEntity" ? [operation.entity.id] : [])),
+  );
+  return (
+    createdEntityIds.size > 0 &&
+    record.program.operations.every((operation) => {
+      if (operation.kind === "CreateEntity") return true;
+      if (operation.kind === "SetProperty") {
+        return operation.key === "position" && createdEntityIds.has(operation.entityId);
+      }
+      return (
+        operation.kind === "ChangePresence" &&
+        operation.effect === "fade-in" &&
+        createdEntityIds.has(operation.entityId)
+      );
+    })
+  );
 }
 
 export function App() {
@@ -240,30 +156,62 @@ export function App() {
     unregisterWorkspace,
     workspace,
   } = useManimWorkspace();
-  const [currentTime, setCurrentTime] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [interactionMode, setInteractionMode] = useState<InteractionMode>("animate");
-  const [motionDuration, setMotionDuration] = useState(1.5);
-  const [insertTool, setInsertTool] = useState<StudioTool>("select");
-  const [insertValue, setInsertValue] = useState("");
-  const [selectedObjectIds, setSelectedObjectIds] = useState<readonly string[]>([]);
-  const [appliedPrograms, setAppliedPrograms] = useState<readonly EditorProgramRecord[]>([]);
-  const [editingAppliedProgram, setEditingAppliedProgram] = useState<AppliedProgramEdit | null>(null);
-  const [programUndoEntries, setProgramUndoEntries] = useState<readonly AppliedProgramMutation[]>([]);
-  const [redoPrograms, setRedoPrograms] = useState<readonly RedoProgramEntry[]>([]);
+  const {
+    applyDraft,
+    beginSuggestionRequest,
+    cancelSuggestionRequest,
+    clearProjectSessions,
+    clearSession,
+    discardDraft,
+    editAppliedProgram,
+    finishSuggestionRequest,
+    isSuggestionRequestCurrent,
+    openSession,
+    pruneSessions,
+    redoProgram,
+    resetPrograms,
+    saveSession,
+    setCurrentTime,
+    setDraftError,
+    setInsertTool,
+    setInsertValue,
+    setInstruction,
+    setInteractionMode,
+    setIsPlaying,
+    setMotionDuration,
+    setPendingClarification,
+    setSelectedObjectIds,
+    setSuggestion,
+    setSuggestionMessage,
+    setSuggestionStatus,
+    stageDraft,
+    state: {
+      appliedPrograms,
+      currentTime,
+      draftError,
+      draftOperation,
+      draftProgram,
+      editingAppliedProgram,
+      insertTool,
+      insertValue,
+      instruction,
+      interactionMode,
+      isPlaying,
+      motionDuration,
+      pendingClarification,
+      redoPrograms,
+      selectedObjectIds,
+      suggestion,
+      suggestionMessage,
+      suggestionStatus,
+    },
+    suspend: suspendEditor,
+    undoProgram,
+  } = useEditorController();
   const [renderSessions, setRenderSessions] = useState<Readonly<Record<string, RenderSessionView>>>({});
-  const [draftProgram, setDraftProgram] = useState<ProgramRecord | null>(null);
-  const [draftOperation, setDraftOperation] = useState<EditSuggestionOperation | null>(null);
-  const [draftError, setDraftError] = useState<string | null>(null);
-  const [suggestion, setSuggestion] = useState<EditSuggestion | null>(null);
-  const [suggestionStatus, setSuggestionStatus] = useState<SuggestionStatus>("idle");
-  const [suggestionMessage, setSuggestionMessage] = useState<string | null>(null);
-  const [instruction, setInstruction] = useState("");
-  const [pendingClarification, setPendingClarification] = useState<PendingClarification | null>(null);
   const [isMagicEditVisible, setIsMagicEditVisible] = useState(() => window.matchMedia("(min-width: 640px)").matches);
   const [dragPreview, setDragPreview] = useState<EntityDragPreview | null>(null);
   const [scalePreview, setScalePreview] = useState<EntityScalePreview | null>(null);
-  const suggestionRequest = useRef<AbortController | null>(null);
   const suggestionContext = useRef("");
   const canvasDrag = useRef<CanvasDragState | null>(null);
   const canvasResize = useRef<CanvasResizeState | null>(null);
@@ -271,13 +219,13 @@ export function App() {
   const pasteCount = useRef(0);
   const commandHandler = useRef<(command: StudioCommandId) => boolean>(() => false);
   const workspaceBounds = useRef<HTMLElement | null>(null);
-  const editorSessions = useRef(new Map<string, EditorSessionSnapshot>());
   const appliedCanonicalPrograms = appliedPrograms.map((record) => record.program);
   const sourceCurrentTime = workingTimeToSourceTime(appliedCanonicalPrograms, currentTime);
-  const timelineAnchors = activeScene?.anchors.map((sourceTime) => ({
-    sourceTime,
-    workingTime: sourceTimeToWorkingTime(appliedCanonicalPrograms, sourceTime),
-  })) ?? [];
+  const timelineAnchors =
+    activeScene?.anchors.map((sourceTime) => ({
+      sourceTime,
+      workingTime: sourceTimeToWorkingTime(appliedCanonicalPrograms, sourceTime),
+    })) ?? [];
 
   function activeEditorSessionKey() {
     return activeProjectId && activeScene
@@ -288,36 +236,16 @@ export function App() {
   function saveEditorSession() {
     const key = activeEditorSessionKey();
     if (!key) return;
-    editorSessions.current.set(key, {
-      appliedPrograms,
-      currentTime,
-      draftError,
-      draftOperation,
-      draftProgram,
-      insertTool,
-      insertValue,
-      instruction,
-      interactionMode,
-      editingAppliedProgram,
-      motionDuration,
-      programUndoEntries,
-      redoPrograms,
-      selectedObjectIds,
-    });
+    saveSession(key);
   }
-
-  useEffect(() => () => cancelRequest(suggestionRequest), []);
 
   useEffect(() => {
     const registeredProjectIds = new Set(projects.map((project) => project.id));
-    for (const key of editorSessions.current.keys()) {
-      const projectId = key.split("/", 1)[0];
-      if (projectId && !registeredProjectIds.has(projectId)) editorSessions.current.delete(key);
-    }
+    pruneSessions(registeredProjectIds);
     setRenderSessions((current) => {
-      const next = Object.fromEntries(Object.entries(current).filter(([projectId]) => (
-        registeredProjectIds.has(projectId)
-      )));
+      const next = Object.fromEntries(
+        Object.entries(current).filter(([projectId]) => registeredProjectIds.has(projectId)),
+      );
       return Object.keys(next).length === Object.keys(current).length ? current : next;
     });
   }, [projects]);
@@ -326,9 +254,10 @@ export function App() {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
       if (!activeScene || event.defaultPrevented || isEditableShortcutTarget(event.target)) return;
       if (
-        (event.key === " " || event.key === "Enter")
-        && (event.target instanceof HTMLButtonElement || event.target instanceof HTMLAnchorElement)
-      ) return;
+        (event.key === " " || event.key === "Enter") &&
+        (event.target instanceof HTMLButtonElement || event.target instanceof HTMLAnchorElement)
+      )
+        return;
       if (event.key in NUDGE_DELTAS) {
         const delta = NUDGE_DELTAS[event.key];
         const amount = event.shiftKey ? 5 : 1;
@@ -352,97 +281,62 @@ export function App() {
 
   useEffect(() => {
     if (!activeScene) return;
-    cancelRequest(suggestionRequest);
+    cancelSuggestionRequest();
     canvasDrag.current = null;
     canvasResize.current = null;
-    const key = activeProjectId
-      ? `${activeProjectId}/${activeScene.sceneId}/${activeScene.sourceHash}`
-      : null;
-    const saved = key ? editorSessions.current.get(key) : null;
-    if (saved) {
-      setCurrentTime(saved.currentTime);
-      setSelectedObjectIds(saved.selectedObjectIds);
-      setAppliedPrograms(saved.appliedPrograms);
-      setEditingAppliedProgram(saved.editingAppliedProgram);
-      setProgramUndoEntries(saved.programUndoEntries);
-      setRedoPrograms(saved.redoPrograms);
-      setDraftProgram(saved.draftProgram);
-      setDraftOperation(saved.draftOperation);
-      setDraftError(saved.draftError);
-      setInstruction(saved.instruction);
-      setInteractionMode(saved.interactionMode);
-      setMotionDuration(saved.motionDuration);
-      setInsertTool(saved.insertTool);
-      setInsertValue(saved.insertValue);
-      setSuggestion(null);
-      setPendingClarification(null);
-      setSuggestionStatus("idle");
-      setSuggestionMessage(null);
-      setDragPreview(null);
-      setScalePreview(null);
-      setIsPlaying(false);
-      return;
-    }
+    const key = activeProjectId ? `${activeProjectId}/${activeScene.sceneId}/${activeScene.sourceHash}` : null;
     const initialTime = activeScene.anchors[0] ?? 0;
-    const initialEntities = Object.values(activeScene.runtimeSceneState.objectGraph.entities)
-      .filter((entity) => entity.lifetime.some((lifetime) => initialTime >= lifetime.start && initialTime < lifetime.end));
-    setCurrentTime(clamp(initialTime, 0, activeScene.runtimeSceneState.duration));
-    setSelectedObjectIds(initialEntities.slice(0, 1).map((entity) => entity.id));
-    setAppliedPrograms([]);
-    setEditingAppliedProgram(null);
-    setProgramUndoEntries([]);
-    setRedoPrograms([]);
-    setDraftProgram(null);
-    setDraftOperation(null);
-    setDraftError(null);
-    setSuggestion(null);
-    setPendingClarification(null);
-    setSuggestionStatus("idle");
-    setSuggestionMessage(null);
-    setInstruction("");
+    const initialEntities = Object.values(activeScene.runtimeSceneState.objectGraph.entities).filter((entity) =>
+      entity.lifetime.some((lifetime) => initialTime >= lifetime.start && initialTime < lifetime.end),
+    );
+    if (key) {
+      openSession(key, {
+        currentTime: clamp(initialTime, 0, activeScene.runtimeSceneState.duration),
+        selectedObjectIds: initialEntities.slice(0, 1).map((entity) => entity.id),
+      });
+    }
     setDragPreview(null);
     setScalePreview(null);
-    setInsertTool("select");
-    setInsertValue("");
-    setIsPlaying(false);
   }, [activeScene?.sceneId, activeScene?.sourceHash, activeProjectId]);
 
-  const previewReplacement = editingAppliedProgram && draftProgram
-    ? replaceAppliedProgram(
-        appliedPrograms,
-        editingAppliedProgram.original.program.transactionId,
-        editorProgramRecord(draftProgram, draftOperation, selectedObjectIds),
-      )
-    : null;
-  const previewAppliedPrograms = previewReplacement?.kind === "replaced"
-    ? previewReplacement.programs
-    : appliedPrograms;
+  const previewReplacement =
+    editingAppliedProgram && draftProgram
+      ? replaceAppliedProgram(
+          appliedPrograms,
+          editingAppliedProgram.original.program.transactionId,
+          editorProgramRecord(draftProgram, draftOperation, selectedObjectIds),
+        )
+      : null;
+  const previewAppliedPrograms =
+    previewReplacement?.kind === "replaced" ? previewReplacement.programs : appliedPrograms;
   const draftPrecedingPrograms = editingAppliedProgram
     ? appliedPrograms.slice(0, editingAppliedProgram.index)
     : appliedPrograms;
   const draftPrecedingCanonicalPrograms = draftPrecedingPrograms.map((record) => record.program);
-  const workspaceProjection = activeScene ? projectStudioWorkspace({
-    activeScene,
-    appliedPrograms: previewAppliedPrograms,
-    currentTime,
-    draftProgram: editingAppliedProgram ? null : draftProgram,
-    nextScene,
-    selectedObjectIds,
-  }) : null;
-  const draftBaseProjection = activeScene && draftProgram ? projectStudioWorkspace({
-    activeScene,
-    appliedPrograms: draftPrecedingPrograms,
-    currentTime,
-    draftProgram: null,
-    nextScene,
-    selectedObjectIds,
-  }) : workspaceProjection;
+  const workspaceProjection = activeScene
+    ? projectStudioWorkspace({
+        activeScene,
+        appliedPrograms: previewAppliedPrograms,
+        currentTime,
+        draftProgram: editingAppliedProgram ? null : draftProgram,
+        nextScene,
+        selectedObjectIds,
+      })
+    : null;
+  const draftBaseProjection =
+    activeScene && draftProgram
+      ? projectStudioWorkspace({
+          activeScene,
+          appliedPrograms: draftPrecedingPrograms,
+          currentTime,
+          draftProgram: null,
+          nextScene,
+          selectedObjectIds,
+        })
+      : workspaceProjection;
   const draftBaseState = draftBaseProjection?.proposedState ?? null;
   const draftSourceScene = draftBaseState
-    ? projectRuntimeSceneToSourceTimeline(
-        draftBaseState.evaluatedScene,
-        draftPrecedingCanonicalPrograms,
-      )
+    ? projectRuntimeSceneToSourceTimeline(draftBaseState.evaluatedScene, draftPrecedingCanonicalPrograms)
     : null;
   const projection = workspaceProjection?.projection ?? null;
   const appliedTransactionIds = new Set(appliedPrograms.map((record) => record.program.transactionId));
@@ -450,15 +344,16 @@ export function App() {
   const visibleEntities = workspaceProjection?.visibleEntities ?? [];
   const editableEntities = workspaceProjection?.editableEntities ?? [];
   const selectedSet = new Set(selectedObjectIds);
-  const activeDuration = workspaceProjection?.proposedState.evaluatedScene.duration
-    ?? activeScene?.runtimeSceneState.duration
-    ?? 1;
+  const activeDuration =
+    workspaceProjection?.proposedState.evaluatedScene.duration ?? activeScene?.runtimeSceneState.duration ?? 1;
   const motionPaths = workspaceProjection
     ? projectMotionPaths(workspaceProjection.proposedState.evaluatedScene, selectedSet, currentTime)
     : [];
-  const editableMotionIds = new Set(draftProgram?.program.operations.flatMap((operation) => (
-    operation.kind === "CreateMotion" ? [operation.id] : []
-  )) ?? []);
+  const editableMotionIds = new Set(
+    draftProgram?.program.operations.flatMap((operation) =>
+      operation.kind === "CreateMotion" ? [operation.id] : [],
+    ) ?? [],
+  );
   const retainRenderSession = useCallback((session: RenderSessionView | null, projectId?: string) => {
     setRenderSessions((current) => {
       if (session) return { ...current, [session.projectId]: session };
@@ -489,13 +384,15 @@ export function App() {
     animationFrame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animationFrame);
   }, [activeDuration, activeScene, isPlaying]);
-  const contextFingerprint = draftBaseState ? createClarificationContextFingerprint({
-    entities: Object.values(draftBaseState.evaluatedScene.objectGraph.entities),
-    playhead: currentTime,
-    selection: selectedObjectIds,
-  }) : "";
-  const clarificationIsStale = pendingClarification !== null
-    && pendingClarification.contextFingerprint !== contextFingerprint;
+  const contextFingerprint = draftBaseState
+    ? createClarificationContextFingerprint({
+        entities: Object.values(draftBaseState.evaluatedScene.objectGraph.entities),
+        playhead: currentTime,
+        selection: selectedObjectIds,
+      })
+    : "";
+  const clarificationIsStale =
+    pendingClarification !== null && pendingClarification.contextFingerprint !== contextFingerprint;
   suggestionContext.current = activeScene ? `${activeScene.sourceHash}:${contextFingerprint}` : "";
 
   function createValidatedDraft(
@@ -509,10 +406,7 @@ export function App() {
     if (!activeScene || !proposedState) throw new Error("Choose an imported Scene first.");
     const validationState = {
       ...proposedState,
-      evaluatedScene: projectRuntimeSceneToSourceTimeline(
-        proposedState.evaluatedScene,
-        sourcePrograms,
-      ),
+      evaluatedScene: projectRuntimeSceneToSourceTimeline(proposedState.evaluatedScene, sourcePrograms),
     };
     const validation = validateSuggestionDraft(operation, {
       capturedPlayhead,
@@ -524,35 +418,6 @@ export function App() {
     });
     if (validation.kind === "invalid") throw new Error(validation.message);
     return validation;
-  }
-
-  function preserveProgramAsApplied(
-    record: ProgramRecord | null | undefined,
-    operation: EditSuggestionOperation | null = draftOperation,
-  ) {
-    if (!record || appliedPrograms.some((candidate) => (
-      candidate.program.transactionId === record.program.transactionId
-    ))) return true;
-    const execution = programExecutionCapabilities(record.program);
-    if (record.validation.status !== "valid" || execution.apply !== "supported") {
-      setDraftError(execution.applyBlocker ?? "This Program is invalid and cannot be applied.");
-      return false;
-    }
-    const value = editorProgramRecord(record, operation, selectedObjectIds);
-    const mutation = {
-      index: appliedPrograms.length,
-      kind: "append",
-      value,
-    } satisfies AppliedProgramMutation;
-    setAppliedPrograms([...appliedPrograms, value]);
-    setProgramUndoEntries((history) => [...history, mutation]);
-    setRedoPrograms([]);
-    return true;
-  }
-
-  function preserveDirectManipulationDraft(record: ProgramRecord | null | undefined) {
-    if (!record || record.program.provenance.origin !== "direct-manipulation") return true;
-    return preserveProgramAsApplied(record);
   }
 
   function installDraft(
@@ -570,10 +435,11 @@ export function App() {
     try {
       const origin = options.origin ?? "remote-model";
       const basePrograms = options.sourcePrograms ?? draftPrecedingCanonicalPrograms;
-      const precedingPrograms = options.preserveDraft
-        && !appliedPrograms.some((record) => record.program.transactionId === options.preserveDraft?.program.transactionId)
-        ? [...basePrograms, options.preserveDraft.program]
-        : basePrograms;
+      const precedingPrograms =
+        options.preserveDraft &&
+        !appliedPrograms.some((record) => record.program.transactionId === options.preserveDraft?.program.transactionId)
+          ? [...basePrograms, options.preserveDraft.program]
+          : basePrograms;
       const validated = createValidatedDraft(
         operation,
         transactionId,
@@ -582,26 +448,18 @@ export function App() {
         options.capturedPlayhead,
         precedingPrograms,
       );
-      if (!preserveDirectManipulationDraft(options.preserveDraft)) return null;
-      if (origin === "direct-manipulation") {
-        cancelRequest(suggestionRequest);
-        setSuggestion(null);
-        setPendingClarification(null);
-        setSuggestionMessage(null);
-        setSuggestionStatus("idle");
-      }
-      setDraftOperation(validated.operation);
-      setDraftProgram(validated.record);
       const execution = programExecutionCapabilities(validated.record.program);
-      setDraftError(execution.applyBlocker);
-      setRedoPrograms([]);
-      if (!options.preservePlayhead) {
-        setCurrentTime(sourceTimeToWorkingTime(
-          precedingPrograms,
-          validated.record.program.anchor.resolvedSeconds,
-        ));
-      }
-      return execution;
+      if (origin === "direct-manipulation") cancelSuggestionRequest();
+      const staged = stageDraft({
+        clearSuggestion: origin === "direct-manipulation",
+        currentTime: options.preservePlayhead
+          ? undefined
+          : sourceTimeToWorkingTime(precedingPrograms, validated.record.program.anchor.resolvedSeconds),
+        operation: validated.operation,
+        preserveAppliedProgram: origin === "direct-manipulation" ? options.preserveDraft : null,
+        record: validated.record,
+      });
+      return staged ? execution : null;
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The draft could not be validated.");
       return null;
@@ -616,7 +474,7 @@ export function App() {
       preservePlayhead: true,
     });
     if (installed) {
-      setSuggestion((current) => current ? { ...current, operation } : current);
+      setSuggestion((current) => (current ? { ...current, operation } : current));
       if (draftProgram.program.provenance.origin !== "direct-manipulation") {
         setSuggestionMessage(installed.applyBlocker);
         setSuggestionStatus(installed.apply === "supported" ? "ready" : "error");
@@ -638,7 +496,9 @@ export function App() {
     const prompt = pending?.originalPrompt ?? answerText;
     if (!prompt || suggestionStatus === "loading") return;
     if (pending && clarificationIsStale) {
-      setSuggestionMessage("The Scene, playhead, or selection changed after this question. Edit the original request and try again.");
+      setSuggestionMessage(
+        "The Scene, playhead, or selection changed after this question. Edit the original request and try again.",
+      );
       setSuggestionStatus("error");
       return;
     }
@@ -648,56 +508,71 @@ export function App() {
         : { kind: "text" as const, text: answerText }
       : null;
     if (pending && !clarificationAnswer) return;
-    cancelRequest(suggestionRequest);
-    const controller = new AbortController();
-    suggestionRequest.current = controller;
+    const controller = beginSuggestionRequest();
     setIsPlaying(false);
     setSuggestionStatus("loading");
     setSuggestionMessage(null);
     setDraftError(null);
     try {
-      const result = await suggestEdit({
-        clarification: pending && clarificationAnswer ? {
-          answer: clarificationAnswer,
-          history: pending.history,
-          options: pending.options,
-          question: pending.question,
-        } : null,
-        objects: Object.values((draftSourceScene ?? draftBaseState.evaluatedScene).objectGraph.entities)
-          .filter((entity) => !isTransitionOverlay(entity))
-          .map((entity) => ({
-            displayName: entity.content?.label ?? entity.id,
-            id: entity.id,
-            lifetimes: entity.lifetime,
-            mathTex: entity.type === "MathTex" && entity.content?.texParts ? {
-              displayLines: entity.content.displayLines,
-              texParts: entity.content.texParts,
-            } : null,
-            type: entity.type,
-          })),
-        playhead: requestedPlayhead,
-        prompt,
-        scene: {
-          id: activeScene.sceneId,
-          name: activeScene.name,
-          nextSceneId: activeScene.nextSceneId,
+      const result = await suggestEdit(
+        {
+          clarification:
+            pending && clarificationAnswer
+              ? {
+                  answer: clarificationAnswer,
+                  history: pending.history,
+                  options: pending.options,
+                  question: pending.question,
+                }
+              : null,
+          objects: Object.values((draftSourceScene ?? draftBaseState.evaluatedScene).objectGraph.entities)
+            .filter((entity) => !isTransitionOverlay(entity))
+            .map((entity) => ({
+              displayName: entity.content?.label ?? entity.id,
+              id: entity.id,
+              lifetimes: entity.lifetime,
+              mathTex:
+                entity.type === "MathTex" && entity.content?.texParts
+                  ? {
+                      displayLines: entity.content.displayLines,
+                      texParts: entity.content.texParts,
+                    }
+                  : null,
+              type: entity.type,
+            })),
+          playhead: requestedPlayhead,
+          prompt,
+          scene: {
+            id: activeScene.sceneId,
+            name: activeScene.name,
+            nextSceneId: activeScene.nextSceneId,
+          },
+          sceneDuration: draftSourceScene?.duration ?? draftBaseState.evaluatedScene.duration,
+          selectedObjectIds,
         },
-        sceneDuration: draftSourceScene?.duration ?? draftBaseState.evaluatedScene.duration,
-        selectedObjectIds,
-      }, { signal: controller.signal });
-      if (suggestionRequest.current !== controller) return;
+        { signal: controller.signal },
+      );
+      if (!isSuggestionRequestCurrent(controller)) return;
       if (suggestionContext.current !== requestedContext) {
         setSuggestion(null);
-        setSuggestionMessage("The Scene, playhead, or selection changed while Magic Edit was thinking. Try the request again in the current context.");
+        setSuggestionMessage(
+          "The Scene, playhead, or selection changed while Magic Edit was thinking. Try the request again in the current context.",
+        );
         setSuggestionStatus("error");
         return;
       }
       if (result.kind === "clarification") {
-        const history = pending && clarificationAnswer ? [...pending.history, {
-          answer: clarificationAnswer,
-          options: pending.options,
-          question: pending.question,
-        }].slice(-MAX_CLARIFICATION_HISTORY) : [];
+        const history =
+          pending && clarificationAnswer
+            ? [
+                ...pending.history,
+                {
+                  answer: clarificationAnswer,
+                  options: pending.options,
+                  question: pending.question,
+                },
+              ].slice(-MAX_CLARIFICATION_HISTORY)
+            : [];
         setPendingClarification({
           contextFingerprint,
           history,
@@ -725,13 +600,13 @@ export function App() {
       setSuggestionMessage(installed.applyBlocker);
       setSuggestionStatus(installed.apply === "supported" ? "ready" : "error");
     } catch (error) {
-      if (suggestionRequest.current !== controller || controller.signal.aborted) return;
+      if (!isSuggestionRequestCurrent(controller) || controller.signal.aborted) return;
       if (error instanceof DOMException && error.name === "AbortError") return;
       setSuggestion(null);
       setSuggestionMessage(error instanceof Error ? error.message : "Could not generate an edit suggestion.");
       setSuggestionStatus("error");
     } finally {
-      if (suggestionRequest.current === controller) suggestionRequest.current = null;
+      finishSuggestionRequest(controller);
     }
   }
 
@@ -743,247 +618,53 @@ export function App() {
     setSuggestionMessage(null);
   }
 
-  function discardDraft() {
-    const discardedTransactionId = draftProgram?.program.transactionId;
-    const discardedAppliedEdit = editingAppliedProgram;
-    cancelRequest(suggestionRequest);
-    setDraftProgram(null);
-    setDraftOperation(null);
-    setEditingAppliedProgram(null);
-    setDraftError(null);
-    setSuggestion(null);
-    setPendingClarification(null);
-    setSuggestionMessage(null);
-    setSuggestionStatus("idle");
-    if (discardedTransactionId && !discardedAppliedEdit) {
-      setSelectedObjectIds((ids) => ids.filter((id) => (
-        !id.startsWith(`tx:${discardedTransactionId}/entity:`)
-      )));
-    }
-  }
-
-  function applyDraft() {
-    if (!draftProgram) return;
-    const execution = programExecutionCapabilities(draftProgram.program);
-    if (draftProgram.validation.status !== "valid" || execution.apply !== "supported") {
-      setDraftError(execution.applyBlocker ?? "This Program is invalid and cannot be applied.");
-      return;
-    }
-    const value = editorProgramRecord(draftProgram, draftOperation, selectedObjectIds);
-    let nextAppliedPrograms: readonly EditorProgramRecord[];
-    let mutation: AppliedProgramMutation;
-    if (editingAppliedProgram) {
-      const replacement = replaceAppliedProgram(
-        appliedPrograms,
-        editingAppliedProgram.original.program.transactionId,
-        value,
-      );
-      if (replacement.kind === "rejected") {
-        setDraftError(replacement.reason);
-        return;
-      }
-      nextAppliedPrograms = replacement.programs;
-      mutation = {
-        index: replacement.index,
-        kind: "replace",
-        previous: editingAppliedProgram.original,
-        value,
-      };
-    } else {
-      nextAppliedPrograms = [...appliedPrograms, value];
-      mutation = {
-        index: appliedPrograms.length,
-        kind: "append",
-        value,
-      };
-    }
-    const nextPrograms = nextAppliedPrograms.map((record) => record.program);
-    const appliedWorkingAnchor = sourceTimeToWorkingTime(
-      nextPrograms,
-      draftProgram.program.anchor.resolvedSeconds,
-    );
-    cancelRequest(suggestionRequest);
-    setAppliedPrograms(nextAppliedPrograms);
-    setProgramUndoEntries((history) => [...history, mutation]);
-    setCurrentTime(appliedWorkingAnchor);
-    setRedoPrograms([]);
-    setDraftProgram(null);
-    setDraftOperation(null);
-    setEditingAppliedProgram(null);
-    setDraftError(null);
-    setSuggestion(null);
-    setPendingClarification(null);
-    setSuggestionMessage(null);
-    setSuggestionStatus("idle");
-  }
-
-  function undoProgram() {
-    if (draftProgram) {
-      setRedoPrograms((redo) => [...redo, {
-        edit: editingAppliedProgram,
-        kind: "draft",
-        value: editorProgramRecord(draftProgram, draftOperation, selectedObjectIds),
-      }]);
-      discardDraft();
-      return;
-    }
-    const mutation = programUndoEntries.at(-1);
-    if (!mutation) return;
-    if (mutation.kind === "append") {
-      const current = appliedPrograms[mutation.index];
-      if (current?.program.transactionId !== mutation.value.program.transactionId) {
-        setDraftError("The applied Program history no longer matches the Scene working state.");
-        return;
-      }
-      setAppliedPrograms([
-        ...appliedPrograms.slice(0, mutation.index),
-        ...appliedPrograms.slice(mutation.index + 1),
-      ]);
-      setSelectedObjectIds([]);
-    } else {
-      const replacement = replaceAppliedProgram(
-        appliedPrograms,
-        mutation.value.program.transactionId,
-        mutation.previous,
-      );
-      if (replacement.kind === "rejected") {
-        setDraftError(replacement.reason);
-        return;
-      }
-      setAppliedPrograms(replacement.programs);
-      setSelectedObjectIds(mutation.previous.editorMetadata?.selection ?? []);
-    }
-    setProgramUndoEntries((history) => history.slice(0, -1));
-    setRedoPrograms((redo) => [...redo, { kind: "mutation", mutation }]);
-  }
-
-  function redoProgram() {
-    if (draftProgram) return false;
-    const entry = redoPrograms.at(-1);
-    if (!entry) return false;
-    if (entry.kind === "draft") {
-      const precedingPrograms = entry.edit
-        ? appliedPrograms.slice(0, entry.edit.index).map((record) => record.program)
-        : appliedCanonicalPrograms;
-      setDraftProgram(entry.value);
-      setDraftOperation(entry.value.editorMetadata?.operation ?? null);
-      setEditingAppliedProgram(entry.edit);
-      setDraftError(programExecutionCapabilities(entry.value.program).applyBlocker);
-      setSelectedObjectIds(entry.value.editorMetadata?.selection ?? []);
-      setCurrentTime(sourceTimeToWorkingTime(
-        precedingPrograms,
-        entry.value.program.anchor.resolvedSeconds,
-      ));
-    } else {
-      const mutation = entry.mutation;
-      const execution = programExecutionCapabilities(mutation.value.program);
-      if (mutation.value.validation.status !== "valid" || execution.apply !== "supported") {
-        setDraftError(execution.applyBlocker ?? "This Program is invalid and cannot be applied.");
-        return false;
-      }
-      if (mutation.kind === "append") {
-        const nextPrograms = [...appliedPrograms];
-        nextPrograms.splice(mutation.index, 0, mutation.value);
-        setAppliedPrograms(nextPrograms);
-      } else {
-        const replacement = replaceAppliedProgram(
-          appliedPrograms,
-          mutation.previous.program.transactionId,
-          mutation.value,
-        );
-        if (replacement.kind === "rejected") {
-          setDraftError(replacement.reason);
-          return false;
-        }
-        setAppliedPrograms(replacement.programs);
-      }
-      setSelectedObjectIds(mutation.value.editorMetadata?.selection ?? []);
-      setProgramUndoEntries((history) => [...history, mutation]);
-    }
-    setRedoPrograms((programs) => programs.slice(0, -1));
-    return true;
-  }
-
-  function editAppliedProgram(record: ProgramRecord, index: number) {
-    if (draftProgram) {
-      setDraftError("Apply or discard the current draft before editing an Applied Program.");
-      return;
-    }
-    const editorRecord = record as EditorProgramRecord;
-    const metadata = editorRecord.editorMetadata;
-    if (!metadata?.operation) {
-      setDraftError("This Program is read-only because editable Studio authoring metadata is unavailable.");
-      return;
-    }
-    const edit = {
-      index,
-      original: editorRecord,
-    } satisfies AppliedProgramEdit;
-    cancelRequest(suggestionRequest);
-    setDraftProgram(record);
-    setDraftOperation(metadata.operation);
-    setEditingAppliedProgram(edit);
-    setDraftError(programExecutionCapabilities(record.program).applyBlocker);
-    setSuggestion(null);
-    setPendingClarification(null);
-    setSuggestionMessage(null);
-    setSuggestionStatus("idle");
-    setSelectedObjectIds(metadata.selection);
-    setCurrentTime(sourceTimeToWorkingTime(
-      appliedPrograms.slice(0, index).map((candidate) => candidate.program),
-      record.program.anchor.resolvedSeconds,
-    ));
-    setIsPlaying(false);
-    setRedoPrograms([]);
-  }
-
   function installCanonicalDraft(
     record: ProgramRecord,
     selectedIds: readonly string[] = [],
     precedingPrograms: readonly ProgramRecord["program"][] = appliedCanonicalPrograms,
+    preserveAppliedProgram: ProgramRecord | null = null,
   ) {
-    cancelRequest(suggestionRequest);
-    setDraftProgram(record);
-    setDraftOperation(null);
-    setEditingAppliedProgram(null);
-    setDraftError(programExecutionCapabilities(record.program).applyBlocker);
-    setSuggestion(null);
-    setPendingClarification(null);
-    setSuggestionMessage(null);
-    setSuggestionStatus("idle");
-    setSelectedObjectIds(selectedIds);
-    setCurrentTime(sourceTimeToWorkingTime(precedingPrograms, record.program.anchor.resolvedSeconds));
-    setIsPlaying(false);
-    setRedoPrograms([]);
+    cancelSuggestionRequest();
+    return stageDraft({
+      clearAppliedEdit: true,
+      clearSuggestion: true,
+      currentTime: sourceTimeToWorkingTime(precedingPrograms, record.program.anchor.resolvedSeconds),
+      operation: null,
+      preserveAppliedProgram,
+      record,
+      selectedObjectIds: selectedIds,
+      stopPlayback: true,
+    });
   }
 
   function insertEntitiesAt(point: Point, entities?: readonly StudioEntityInput[]) {
     if (!draftBaseState || !draftSourceScene) return false;
-    const previousInsertion = draftProgram && isStudioEntityInsertion(draftProgram)
-      ? draftProgram
-      : null;
+    const previousInsertion = draftProgram && isStudioEntityInsertion(draftProgram) ? draftProgram : null;
     if (draftProgram && !previousInsertion) {
       setDraftError("Apply or discard the current draft before inserting another object.");
       return false;
     }
-    const precedingPrograms = previousInsertion
-      && !appliedPrograms.some((record) => (
-        record.program.transactionId === previousInsertion.program.transactionId
-      ))
-      ? [...appliedCanonicalPrograms, previousInsertion.program]
-      : appliedCanonicalPrograms;
-    const proposedState = previousInsertion
-      ? workspaceProjection?.proposedState ?? null
-      : draftBaseState;
+    const precedingPrograms =
+      previousInsertion &&
+      !appliedPrograms.some((record) => record.program.transactionId === previousInsertion.program.transactionId)
+        ? [...appliedCanonicalPrograms, previousInsertion.program]
+        : appliedCanonicalPrograms;
+    const proposedState = previousInsertion ? (workspaceProjection?.proposedState ?? null) : draftBaseState;
     if (!proposedState) return false;
     const sourceScene = previousInsertion
       ? projectRuntimeSceneToSourceTimeline(proposedState.evaluatedScene, precedingPrograms)
       : draftSourceScene;
-    const inputs = entities ?? (insertTool === "select" ? [] : [{
-      content: defaultEntityContent(insertTool, insertValue),
-      position: point,
-      type: insertTool,
-    }]);
+    const inputs =
+      entities ??
+      (insertTool === "select"
+        ? []
+        : [
+            {
+              content: defaultEntityContent(insertTool, insertValue),
+              position: point,
+              type: insertTool,
+            },
+          ]);
     if (inputs.length === 0) return false;
     const anchor = manualAuthoringAnchor({
       action: "inserting an object",
@@ -1001,11 +682,10 @@ export function App() {
       });
       const validated = validatedProgramRecord(result.validation);
       if (validated.kind === "invalid") throw new Error(validated.message);
-      if (!preserveProgramAsApplied(previousInsertion)) return false;
-      installCanonicalDraft(validated.record, result.entityIds, precedingPrograms);
+      if (!installCanonicalDraft(validated.record, result.entityIds, precedingPrograms, previousInsertion))
+        return false;
       setInsertTool("select");
       setInsertValue("");
-      setRedoPrograms([]);
       return true;
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The object could not be inserted.");
@@ -1020,11 +700,11 @@ export function App() {
       return false;
     }
     const appliedAnchor = appliedPrograms[0]?.program.anchor.resolvedSeconds;
-    const sourceAnchor = appliedAnchor !== undefined && appliedPrograms.every((record) => (
-      Math.abs(record.program.anchor.resolvedSeconds - appliedAnchor) < 0.0005
-    ))
-      ? appliedAnchor
-      : activeScene.anchors.at(-1);
+    const sourceAnchor =
+      appliedAnchor !== undefined &&
+      appliedPrograms.every((record) => Math.abs(record.program.anchor.resolvedSeconds - appliedAnchor) < 0.0005)
+        ? appliedAnchor
+        : activeScene.anchors.at(-1);
     if (sourceAnchor === undefined) {
       setDraftError("Add a # poietra:anchor at a safe source boundary before extending this Scene.");
       return false;
@@ -1047,19 +727,13 @@ export function App() {
     }
   }
 
-  function trimEntityLifetime(
-    entityId: string,
-    workingLifetimeStart: number,
-    sourceAnchor: number,
-  ) {
+  function trimEntityLifetime(entityId: string, workingLifetimeStart: number, sourceAnchor: number) {
     if (!draftSourceScene) return false;
     if (draftProgram) {
       setDraftError("Apply or discard the current draft before trimming an object lifetime.");
       return false;
     }
-    const anchor = timelineAnchors.find((candidate) => (
-      Math.abs(candidate.sourceTime - sourceAnchor) < 0.0005
-    ));
+    const anchor = timelineAnchors.find((candidate) => Math.abs(candidate.sourceTime - sourceAnchor) < 0.0005);
     if (!anchor) {
       setDraftError("The selected lifetime end is not backed by a safe .py source anchor.");
       return false;
@@ -1086,9 +760,9 @@ export function App() {
   function deleteSelection() {
     if (!draftBaseState || !draftSourceScene || selectedObjectIds.length === 0) return false;
     if (draftProgram) {
-      const ownsSelectedDraftEntity = selectedObjectIds.some((entityId) => (
-        entityId.startsWith(`tx:${draftProgram.program.transactionId}/entity:`)
-      ));
+      const ownsSelectedDraftEntity = selectedObjectIds.some((entityId) =>
+        entityId.startsWith(`tx:${draftProgram.program.transactionId}/entity:`),
+      );
       if (ownsSelectedDraftEntity) {
         discardDraft();
         setSelectedObjectIds([]);
@@ -1115,7 +789,6 @@ export function App() {
       const validated = validatedProgramRecord(validation);
       if (validated.kind === "invalid") throw new Error(validated.message);
       installCanonicalDraft(validated.record, selectedObjectIds);
-      setRedoPrograms([]);
       return true;
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The selected objects could not be deleted.");
@@ -1140,10 +813,13 @@ export function App() {
     if (copied.length === 0) return false;
     pasteCount.current += 1;
     const offset = 20 * pasteCount.current;
-    return insertEntitiesAt({ x: 320, y: 180 }, copied.map((entity) => ({
-      ...entity,
-      position: { x: entity.position.x + offset, y: entity.position.y + offset },
-    })));
+    return insertEntitiesAt(
+      { x: 320, y: 180 },
+      copied.map((entity) => ({
+        ...entity,
+        position: { x: entity.position.x + offset, y: entity.position.y + offset },
+      })),
+    );
   }
 
   function duplicateSelection() {
@@ -1156,47 +832,49 @@ export function App() {
   }
 
   function directGestureContext() {
-    const previousDraft = !editingAppliedProgram
-      && draftProgram?.program.provenance.origin === "direct-manipulation"
-      ? draftProgram
-      : null;
+    const previousDraft =
+      !editingAppliedProgram && draftProgram?.program.provenance.origin === "direct-manipulation" ? draftProgram : null;
     const sourcePrograms = previousDraft
       ? [...appliedCanonicalPrograms, previousDraft.program]
       : appliedCanonicalPrograms;
     return {
       preserveDraft: previousDraft,
-      proposedState: previousDraft ? workspaceProjection?.proposedState ?? null : draftBaseState,
+      proposedState: previousDraft ? (workspaceProjection?.proposedState ?? null) : draftBaseState,
       sourcePrograms,
     } as const;
   }
 
-  function manualAuthoringAnchor(input: Readonly<{
-    action: string;
-    requireAlignedPlayhead: boolean;
-    scene: RuntimeSceneState;
-    sourcePrograms: readonly ProgramRecord["program"][];
-    targetEntityIds?: readonly string[];
-  }>) {
+  function manualAuthoringAnchor(
+    input: Readonly<{
+      action: string;
+      requireAlignedPlayhead: boolean;
+      scene: RuntimeSceneState;
+      sourcePrograms: readonly ProgramRecord["program"][];
+      targetEntityIds?: readonly string[];
+    }>,
+  ) {
     if (!activeScene) return null;
-    const anchor = latestSafeSourceAnchor(
-      input.sourcePrograms,
-      activeScene.anchors,
-      currentTime,
-    );
+    const anchor = latestSafeSourceAnchor(input.sourcePrograms, activeScene.anchors, currentTime);
     if (!anchor) {
-      setDraftError(`No safe .py source anchor exists before the playhead. Move to a source anchor before ${input.action}.`);
+      setDraftError(
+        `No safe .py source anchor exists before the playhead. Move to a source anchor before ${input.action}.`,
+      );
       setIsPlaying(false);
       return null;
     }
     const missingEntityId = input.targetEntityIds?.find((entityId) => {
       const entity = input.scene.objectGraph.entities[entityId];
-      return !entity || !entity.lifetime.some((interval) => (
-        anchor.sourceTime >= interval.start - 0.0005
-        && anchor.sourceTime < interval.end
-      ));
+      return (
+        !entity ||
+        !entity.lifetime.some(
+          (interval) => anchor.sourceTime >= interval.start - 0.0005 && anchor.sourceTime < interval.end,
+        )
+      );
     });
     if (missingEntityId) {
-      setDraftError(`The selected object is not present at the latest safe .py source anchor, so Studio cannot ${input.action} truthfully.`);
+      setDraftError(
+        `The selected object is not present at the latest safe .py source anchor, so Studio cannot ${input.action} truthfully.`,
+      );
       setIsPlaying(false);
       return null;
     }
@@ -1218,13 +896,17 @@ export function App() {
       return;
     }
     const entity = editableEntities.find((candidate) => candidate.id === entityId);
-    const editable = entity && (!entity.provisional || (entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
+    const editable =
+      entity && (!entity.provisional || (entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
     if (!editable) return;
-    const selectedEditableIds = selectedObjectIds.filter((selectedId) => editableEntities.some((candidate) => (
-      candidate.id === selectedId
-      && candidate.present
-      && (!candidate.provisional || (candidate.transactionId && appliedTransactionIds.has(candidate.transactionId)))
-    )));
+    const selectedEditableIds = selectedObjectIds.filter((selectedId) =>
+      editableEntities.some(
+        (candidate) =>
+          candidate.id === selectedId &&
+          candidate.present &&
+          (!candidate.provisional || (candidate.transactionId && appliedTransactionIds.has(candidate.transactionId))),
+      ),
+    );
     const targetEntityIds = selectedEditableIds.includes(entityId) ? selectedEditableIds : [entityId];
     const gestureContext = directGestureContext();
     if (!gestureContext.proposedState) return;
@@ -1322,9 +1004,10 @@ export function App() {
       return;
     }
     const entity = editableEntities.find((candidate) => candidate.id === entityId);
-    const editable = entity
-      && entity.present
-      && (!entity.provisional || (entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
+    const editable =
+      entity &&
+      entity.present &&
+      (!entity.provisional || (entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
     if (!editable) return;
     const gestureContext = directGestureContext();
     if (!gestureContext.proposedState) return;
@@ -1394,11 +1077,12 @@ export function App() {
   }
 
   function nudgeEntityScale(event: KeyboardEvent<HTMLButtonElement>, entityId: string) {
-    const direction = event.key === "ArrowUp" || event.key === "ArrowRight"
-      ? 1
-      : event.key === "ArrowDown" || event.key === "ArrowLeft"
-        ? -1
-        : 0;
+    const direction =
+      event.key === "ArrowUp" || event.key === "ArrowRight"
+        ? 1
+        : event.key === "ArrowDown" || event.key === "ArrowLeft"
+          ? -1
+          : 0;
     if (direction === 0) return;
     event.preventDefault();
     event.stopPropagation();
@@ -1432,11 +1116,7 @@ export function App() {
       setDraftError("Apply or discard the Applied Program edit before resizing another object.");
       return false;
     }
-    if (
-      !Number.isFinite(targetScale)
-      || targetScale < MIN_ENTITY_SCALE
-      || targetScale > MAX_ENTITY_SCALE
-    ) {
+    if (!Number.isFinite(targetScale) || targetScale < MIN_ENTITY_SCALE || targetScale > MAX_ENTITY_SCALE) {
       setDraftError(`Scale must be between ${MIN_ENTITY_SCALE}x and ${MAX_ENTITY_SCALE}x.`);
       return false;
     }
@@ -1446,15 +1126,16 @@ export function App() {
       gestureContext.proposedState.evaluatedScene,
       gestureContext.sourcePrograms,
     );
-    const anchor = capturedSourceAnchor === undefined
-      ? manualAuthoringAnchor({
-          action: "object resize",
-          requireAlignedPlayhead: true,
-          scene: sourceScene,
-          sourcePrograms: gestureContext.sourcePrograms,
-          targetEntityIds: [entityId],
-        })
-      : { sourceTime: capturedSourceAnchor };
+    const anchor =
+      capturedSourceAnchor === undefined
+        ? manualAuthoringAnchor({
+            action: "object resize",
+            requireAlignedPlayhead: true,
+            scene: sourceScene,
+            sourcePrograms: gestureContext.sourcePrograms,
+            targetEntityIds: [entityId],
+          })
+        : { sourceTime: capturedSourceAnchor };
     if (!anchor) return false;
     const sampledScale = samplePropertyValue(
       sourceScene.propertyChannels[`${entityId}/scale`]?.samples ?? [],
@@ -1477,19 +1158,19 @@ export function App() {
       });
       const validated = validatedProgramRecord(validation);
       if (validated.kind === "invalid") throw new Error(validated.message);
-      if (!preserveDirectManipulationDraft(gestureContext.preserveDraft)) return false;
-      cancelRequest(suggestionRequest);
-      setDraftProgram(validated.record);
-      setDraftOperation(null);
-      setEditingAppliedProgram(null);
-      setDraftError(null);
-      setSuggestion(null);
-      setPendingClarification(null);
-      setSuggestionMessage(null);
-      setSuggestionStatus("idle");
-      setIsPlaying(false);
-      setCurrentTime(sourceTimeToWorkingTime(gestureContext.sourcePrograms, anchor.sourceTime));
-      setRedoPrograms([]);
+      cancelSuggestionRequest();
+      if (
+        !stageDraft({
+          clearAppliedEdit: true,
+          clearSuggestion: true,
+          currentTime: sourceTimeToWorkingTime(gestureContext.sourcePrograms, anchor.sourceTime),
+          operation: null,
+          preserveAppliedProgram: gestureContext.preserveDraft,
+          record: validated.record,
+          stopPlayback: true,
+        })
+      )
+        return false;
       return true;
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The object could not be resized.");
@@ -1534,15 +1215,16 @@ export function App() {
       gestureContext.proposedState.evaluatedScene,
       gestureContext.sourcePrograms,
     );
-    const anchor = capturedSourceAnchor === undefined
-      ? manualAuthoringAnchor({
-          action: "object move",
-          requireAlignedPlayhead: true,
-          scene: sourceScene,
-          sourcePrograms: gestureContext.sourcePrograms,
-          targetEntityIds: targetIds,
-        })
-      : { sourceTime: capturedSourceAnchor };
+    const anchor =
+      capturedSourceAnchor === undefined
+        ? manualAuthoringAnchor({
+            action: "object move",
+            requireAlignedPlayhead: true,
+            scene: sourceScene,
+            sourcePrograms: gestureContext.sourcePrograms,
+            targetEntityIds: targetIds,
+          })
+        : { sourceTime: capturedSourceAnchor };
     if (!anchor) return;
     const validation = createDirectManipulationPositionProgram({
       capturedPlayhead: anchor.sourceTime,
@@ -1558,19 +1240,19 @@ export function App() {
       setDraftError(validated.message);
       return;
     }
-    if (!preserveDirectManipulationDraft(gestureContext.preserveDraft)) return;
-    cancelRequest(suggestionRequest);
-    setDraftProgram(validated.record);
-    setDraftOperation(null);
-    setEditingAppliedProgram(null);
-    setDraftError(null);
-    setSuggestion(null);
-    setPendingClarification(null);
-    setSuggestionMessage(null);
-    setSuggestionStatus("idle");
-    setIsPlaying(false);
-    setCurrentTime(sourceTimeToWorkingTime(gestureContext.sourcePrograms, anchor.sourceTime));
-    setRedoPrograms([]);
+    cancelSuggestionRequest();
+    if (
+      !stageDraft({
+        clearAppliedEdit: true,
+        clearSuggestion: true,
+        currentTime: sourceTimeToWorkingTime(gestureContext.sourcePrograms, anchor.sourceTime),
+        operation: null,
+        preserveAppliedProgram: gestureContext.preserveDraft,
+        record: validated.record,
+        stopPlayback: true,
+      })
+    )
+      return;
   }
 
   function nudgeEntity(event: KeyboardEvent<HTMLButtonElement>, entityId: string) {
@@ -1579,7 +1261,11 @@ export function App() {
     event.preventDefault();
     const multiplier = event.shiftKey ? 5 : 1;
     const targetIds = selectedObjectIds.includes(entityId) ? selectedObjectIds : [entityId];
-    installPositionDraft({ x: delta.x * multiplier, y: delta.y * multiplier }, targetIds, `studio-nudge-${crypto.randomUUID()}`);
+    installPositionDraft(
+      { x: delta.x * multiplier, y: delta.y * multiplier },
+      targetIds,
+      `studio-nudge-${crypto.randomUUID()}`,
+    );
   }
 
   function changeDraftMotionControl(path: StudioMotionPath, delta: Point) {
@@ -1597,17 +1283,17 @@ export function App() {
       if (operation.kind === "edit-program") {
         return {
           ...operation,
-          operations: operation.operations.map((step) => (
+          operations: operation.operations.map((step) =>
             step.kind === "create-motion" && step.targetObjectIds.includes(path.entityId)
               ? {
-                ...step,
-                controlOffset: {
-                  x: clamp(step.controlOffset.x + delta.x, -160, 160),
-                  y: clamp(step.controlOffset.y + delta.y, -100, 100),
-                },
-              }
-              : step
-          )),
+                  ...step,
+                  controlOffset: {
+                    x: clamp(step.controlOffset.x + delta.x, -160, 160),
+                    y: clamp(step.controlOffset.y + delta.y, -100, 100),
+                  },
+                }
+              : step,
+          ),
         } as T;
       }
       return operation;
@@ -1641,9 +1327,13 @@ export function App() {
     if (command === "copy") return copySelection();
     if (command === "paste") return pasteSelection();
     if (command === "select-all") {
-      const ids = editableEntities.filter((entity) => entity.present && (
-        !entity.provisional || (entity.transactionId && appliedTransactionIds.has(entity.transactionId))
-      )).map((entity) => entity.id);
+      const ids = editableEntities
+        .filter(
+          (entity) =>
+            entity.present &&
+            (!entity.provisional || (entity.transactionId && appliedTransactionIds.has(entity.transactionId))),
+        )
+        .map((entity) => entity.id);
       if (ids.length === 0) return false;
       setSelectedObjectIds(ids);
       return true;
@@ -1675,65 +1365,66 @@ export function App() {
 
   const renderPrograms = editingAppliedProgram
     ? previewAppliedPrograms.map((record) => record.program)
-    : [
-        ...appliedPrograms.map((record) => record.program),
-        ...(draftProgram ? [draftProgram.program] : []),
-      ];
+    : [...appliedPrograms.map((record) => record.program), ...(draftProgram ? [draftProgram.program] : [])];
   const renderProgram = renderPrograms[0] ?? null;
-  const renderCandidateUnavailableReason = "Export .py downloads the selected source unchanged. Create or apply a Canonical draft to render or export Studio edits.";
-  const renderCandidate: RenderProgramCandidate | null = activeScene && activeProjectId && renderProgram ? {
-    anchors: activeScene.anchors,
-    destination: programsHaveSceneBoundary(renderPrograms) && nextScene ? {
-      sceneName: nextScene.name,
-      sourcePath: nextScene.sourcePath,
-    } : null,
-    program: renderProgram,
-    programs: renderPrograms,
-    projectId: activeProjectId,
-    sceneName: activeScene.name,
-    sourceBindings: Object.entries(activeScene.sourceVariables).map(([entityId, sourceVariable]) => ({
-      entityId,
-      sourceVariable,
-    })),
-    sourceHash: activeScene.sourceHash,
-    sourcePath: activeScene.sourcePath,
-    viewport: STUDIO_VIEWPORT,
-  } : null;
+  const renderCandidateUnavailableReason =
+    "Export .py downloads the selected source unchanged. Create or apply a Canonical draft to render or export Studio edits.";
+  const renderCandidate: RenderProgramCandidate | null =
+    activeScene && activeProjectId && renderProgram
+      ? {
+          anchors: activeScene.anchors,
+          destination:
+            programsHaveSceneBoundary(renderPrograms) && nextScene
+              ? {
+                  sceneName: nextScene.name,
+                  sourcePath: nextScene.sourcePath,
+                }
+              : null,
+          program: renderProgram,
+          programs: renderPrograms,
+          projectId: activeProjectId,
+          sceneName: activeScene.name,
+          sourceBindings: Object.entries(activeScene.sourceVariables).map(([entityId, sourceVariable]) => ({
+            entityId,
+            sourceVariable,
+          })),
+          sourceHash: activeScene.sourceHash,
+          sourcePath: activeScene.sourcePath,
+          viewport: STUDIO_VIEWPORT,
+        }
+      : null;
 
   const selectedEntity = editableEntities.find((entity) => selectedSet.has(entity.id)) ?? null;
-  const appliedProgramReadOnlyReasons = Object.fromEntries(appliedPrograms.map((record) => {
-    const transactionId = record.program.transactionId;
-    const metadata = record.editorMetadata;
-    return [transactionId, metadata?.operation
-      ? null
-      : metadata
-        ? "This canonical Program was created without editable authoring metadata."
-        : "Editable Studio authoring metadata is unavailable for this Program."];
-  }));
-  const activeWorkspaceName = workspace?.projectName
-    ?? projects.find((project) => project.id === activeProjectId)?.name
-    ?? "Workspace";
+  const appliedProgramReadOnlyReasons = Object.fromEntries(
+    appliedPrograms.map((record) => {
+      const transactionId = record.program.transactionId;
+      const metadata = record.editorMetadata;
+      return [
+        transactionId,
+        metadata?.operation
+          ? null
+          : metadata
+            ? "This canonical Program was created without editable authoring metadata."
+            : "Editable Studio authoring metadata is unavailable for this Program.",
+      ];
+    }),
+  );
+  const activeWorkspaceName =
+    workspace?.projectName ?? projects.find((project) => project.id === activeProjectId)?.name ?? "Workspace";
 
   function returnToWorkspaceLauncher() {
     saveEditorSession();
-    cancelRequest(suggestionRequest);
+    suspendEditor();
     canvasDrag.current = null;
     canvasResize.current = null;
     setDragPreview(null);
     setScalePreview(null);
-    setIsPlaying(false);
-    setSuggestion(null);
-    setPendingClarification(null);
-    setSuggestionMessage(null);
-    setSuggestionStatus("idle");
     leaveWorkspace();
   }
 
   async function unregisterWorkspaceAndClearSession(workspaceId: string) {
-    if (!await unregisterWorkspace(workspaceId)) return false;
-    for (const key of editorSessions.current.keys()) {
-      if (key.startsWith(`${workspaceId}/`)) editorSessions.current.delete(key);
-    }
+    if (!(await unregisterWorkspace(workspaceId))) return false;
+    clearProjectSessions(workspaceId);
     setRenderSessions((current) => {
       if (!(workspaceId in current)) return current;
       const next = { ...current };
@@ -1795,7 +1486,9 @@ export function App() {
                 value={activeSceneId ?? ""}
               >
                 {scenes.map((scene) => (
-                  <option key={scene.sceneId} value={scene.sceneId}>{scene.sourcePath} · {scene.name}</option>
+                  <option key={scene.sceneId} value={scene.sceneId}>
+                    {scene.sourcePath} · {scene.name}
+                  </option>
                 ))}
               </select>
             ) : null}
@@ -1831,17 +1524,31 @@ export function App() {
         </header>
 
         {workspaceError && activeScene ? (
-          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-red-950 bg-red-950/40 px-3 py-1.5 text-xs text-red-200" role="alert">
+          <div
+            className="flex shrink-0 items-center justify-between gap-3 border-b border-red-950 bg-red-950/40 px-3 py-1.5 text-xs text-red-200"
+            role="alert"
+          >
             <span className="min-w-0 truncate">Reimport failed: {workspaceError}</span>
-            <button className="shrink-0 underline underline-offset-2 hover:text-white" onClick={() => void refreshWorkspace()} type="button">Retry</button>
+            <button
+              className="shrink-0 underline underline-offset-2 hover:text-white"
+              onClick={() => void refreshWorkspace()}
+              type="button"
+            >
+              Retry
+            </button>
           </div>
         ) : null}
 
         {workspaceStatus === "loading" ? (
-          <div aria-label="Importing Manim workspace" className="grid min-h-0 flex-1 place-items-center bg-zinc-900 p-6">
+          <div
+            aria-label="Importing Manim workspace"
+            className="grid min-h-0 flex-1 place-items-center bg-zinc-900 p-6"
+          >
             <div className="w-full max-w-sm border border-zinc-800 p-5">
               <h2 className="text-balance text-sm font-medium text-zinc-200">Importing Manim workspace</h2>
-              <p className="mt-2 text-pretty text-xs leading-5 text-zinc-500">Inspecting source files and checking the render adapter…</p>
+              <p className="mt-2 text-pretty text-xs leading-5 text-zinc-500">
+                Inspecting source files and checking the render adapter…
+              </p>
             </div>
           </div>
         ) : workspaceStatus === "error" || !activeScene || !projection ? (
@@ -1851,7 +1558,11 @@ export function App() {
               <p className="mt-2 text-pretty text-xs leading-5 text-zinc-500">
                 {workspaceError ?? "Add a Python file containing a Manim Scene under the configured project root."}
               </p>
-              <button className="mt-4 bg-sky-500 px-3 py-1.5 text-xs font-medium text-sky-950" onClick={() => void refreshWorkspace()} type="button">
+              <button
+                className="mt-4 bg-sky-500 px-3 py-1.5 text-xs font-medium text-sky-950"
+                onClick={() => void refreshWorkspace()}
+                type="button"
+              >
                 Inspect workspace again
               </button>
             </div>
@@ -1872,9 +1583,11 @@ export function App() {
               onDurationChange={(duration) => void extendSceneDuration(duration)}
               onEditAppliedProgram={editAppliedProgram}
               onRedo={() => void redoProgram()}
-              onToggleEntity={(entityId, selected) => setSelectedObjectIds((selection) => selected
-                ? selection.filter((id) => id !== entityId)
-                : [...selection, entityId])}
+              onToggleEntity={(entityId, selected) =>
+                setSelectedObjectIds((selection) =>
+                  selected ? selection.filter((id) => id !== entityId) : [...selection, entityId],
+                )
+              }
               onUndo={undoProgram}
               redoCount={redoPrograms.length}
               selectedIds={selectedSet}
@@ -1947,24 +1660,24 @@ export function App() {
               onRenderSessionChange={retainRenderSession}
               onSourceChanged={async () => {
                 const key = activeEditorSessionKey();
-                if (key) editorSessions.current.delete(key);
-                discardDraft();
-                setAppliedPrograms([]);
-                setEditingAppliedProgram(null);
-                setProgramUndoEntries([]);
-                setRedoPrograms([]);
+                if (key) clearSession(key);
+                resetPrograms();
                 await refreshWorkspace();
               }}
               renderCandidate={renderCandidate}
               renderCandidateUnavailableReason={renderCandidateUnavailableReason}
-              renderSession={activeProjectId ? renderSessions[activeProjectId] ?? null : null}
+              renderSession={activeProjectId ? (renderSessions[activeProjectId] ?? null) : null}
               replacingAppliedProgram={editingAppliedProgram !== null}
               selectedEntity={selectedEntity}
-              sourceExport={activeProjectId && activeScene ? {
-                projectId: activeProjectId,
-                sourceHash: activeScene.sourceHash,
-                sourcePath: activeScene.sourcePath,
-              } : null}
+              sourceExport={
+                activeProjectId && activeScene
+                  ? {
+                      projectId: activeProjectId,
+                      sourceHash: activeScene.sourceHash,
+                      sourcePath: activeScene.sourcePath,
+                    }
+                  : null
+              }
               suggestion={suggestion}
               workspace={workspace}
             />
