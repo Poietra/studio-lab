@@ -6,6 +6,7 @@ import {
   exportManimSource,
   exportOriginalManimSource,
   generateManimThumbnail,
+  isNativeWorkspacePickerCancelled,
   isMissingManimSession,
   loadManimRender,
   loadManimProjects,
@@ -181,6 +182,46 @@ describe("Manim API client contracts", () => {
       method: "DELETE",
       signal: undefined,
     });
+  });
+
+  it("registers a native-picked workspace without exposing its filesystem path", async () => {
+    const created = {
+      catalog: {
+        defaultProjectId: "project-a",
+        projects: [{ id: "project-a", kind: "existing", name: "Demo" }],
+      },
+      project: { id: "project-a", kind: "existing", name: "Demo" },
+    };
+    const registerExistingWorkspace = vi.fn(async () => ({
+      body: created,
+      cancelled: false as const,
+      status: 201,
+    }));
+    const fetch = vi.fn();
+    vi.stubGlobal("window", {
+      poietraDesktop: {
+        registerExistingWorkspace,
+        savePythonSource: vi.fn(),
+      },
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(createManimProject({ kind: "native-existing", name: " Demo " })).resolves.toEqual(created);
+    expect(registerExistingWorkspace).toHaveBeenCalledWith("Demo");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("preserves native folder-picker cancellation as a non-HTTP outcome", async () => {
+    vi.stubGlobal("window", {
+      poietraDesktop: {
+        registerExistingWorkspace: vi.fn(async () => ({ cancelled: true as const })),
+        savePythonSource: vi.fn(),
+      },
+    });
+
+    const error = await createManimProject({ kind: "native-existing", name: "Demo" })
+      .catch((caught: unknown) => caught);
+    expect(isNativeWorkspacePickerCancelled(error)).toBe(true);
   });
 
   it("loads a selected project workspace without sending a filesystem path", async () => {

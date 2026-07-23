@@ -4,14 +4,15 @@ import {
   ManimApiRequestError,
   createManimProject,
   generateManimThumbnail,
+  isNativeWorkspacePickerCancelled,
   loadManimProjects,
   loadManimThumbnailStatus,
   loadManimWorkspace,
   renameManimProject,
   unregisterManimProject,
+  type ManimProjectCreationInput,
 } from "../render-pipeline/client";
 import type {
-  ManimProjectCreateRequest,
   ManimProjectSummary,
   ManimWorkspaceView,
 } from "../render-pipeline/contracts";
@@ -167,7 +168,7 @@ export function useManimWorkspace() {
     setStatus("ready");
   }, []);
 
-  const createWorkspace = useCallback(async (input: ManimProjectCreateRequest) => {
+  const createWorkspace = useCallback(async (input: ManimProjectCreationInput) => {
     mutationRequest.current?.abort();
     const controller = new AbortController();
     mutationRequest.current = controller;
@@ -183,6 +184,7 @@ export function useManimWorkspace() {
       return true;
     } catch (nextError) {
       if (controller.signal.aborted || mutationRequest.current !== controller) return false;
+      if (isNativeWorkspacePickerCancelled(nextError)) return false;
       setMutationError(nextError instanceof Error ? nextError.message : "Could not add the workspace.");
       if (mutationOutcomeMayBeUnknown(nextError)) void loadProjectList();
       return false;

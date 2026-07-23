@@ -10,6 +10,7 @@ import type {
 import {
   createManimProjectRequestSchema,
   manimProjectIdSchema,
+  manimProjectNameSchema,
   manimProjectListViewSchema,
   manimProjectMutationViewSchema,
   manimThumbnailGenerateRequestSchema,
@@ -20,6 +21,10 @@ import {
   renameManimProjectRequestSchema,
   renderSessionViewSchema,
 } from "./contracts";
+import { desktopBridge } from "../shell/desktop-bridge";
+
+export type ManimProjectCreationInput = ManimProjectCreateRequest
+  | Readonly<{ kind: "native-existing"; name: string }>;
 
 async function responseBody(response: Response) {
   const text = await response.text();
@@ -40,6 +45,17 @@ export class ManimApiRequestError extends Error {
   }
 }
 
+export class NativeWorkspacePickerCancelledError extends Error {
+  constructor() {
+    super("Workspace folder selection was cancelled.");
+    this.name = "NativeWorkspacePickerCancelledError";
+  }
+}
+
+export function isNativeWorkspacePickerCancelled(error: unknown) {
+  return error instanceof NativeWorkspacePickerCancelledError;
+}
+
 export function isMissingManimSession(error: unknown) {
   return error instanceof ManimApiRequestError && error.status === 404;
 }
@@ -51,6 +67,16 @@ function apiError(response: Response, body: unknown) {
   return new ManimApiRequestError(
     typeof error === "string" ? error : `Request failed with ${response.status}.`,
     response.status,
+  );
+}
+
+function nativeApiError(status: number, body: unknown) {
+  const error = typeof body === "object" && body !== null && "error" in body
+    ? (body as ManimApiError).error
+    : null;
+  return new ManimApiRequestError(
+    typeof error === "string" ? error : `Native workspace registration failed with ${status}.`,
+    status,
   );
 }
 
@@ -67,9 +93,32 @@ export async function loadManimProjects(signal?: AbortSignal) {
 }
 
 export async function createManimProject(
-  input: ManimProjectCreateRequest,
+  input: ManimProjectCreationInput,
   signal?: AbortSignal,
 ) {
+  if (input.kind === "native-existing") {
+    const name = manimProjectNameSchema.safeParse(input.name);
+    if (!name.success) throw new Error(name.error.issues[0]?.message ?? "The workspace name is invalid.");
+    const bridge = desktopBridge();
+    if (!bridge) throw new Error("The native workspace picker is unavailable in this shell.");
+    signal?.throwIfAborted();
+    const result = await bridge.registerExistingWorkspace(name.data);
+    signal?.throwIfAborted();
+    if (typeof result !== "object" || result === null || typeof result.cancelled !== "boolean") {
+      throw new Error("The desktop shell returned an invalid workspace registration result.");
+    }
+    if (result.cancelled) throw new NativeWorkspacePickerCancelledError();
+    if (!Number.isInteger(result.status) || result.status < 100 || result.status > 599 || !("body" in result)) {
+      throw new Error("The desktop shell returned an invalid workspace registration result.");
+    }
+    if (result.status < 200 || result.status >= 300) throw nativeApiError(result.status, result.body);
+    const created = manimProjectMutationViewSchema.safeParse(result.body);
+    if (!created.success) throw new Error("The desktop shell returned a response that does not match the API contract.");
+    if (!created.data.project || created.data.project.kind !== "existing") {
+      throw new Error("The desktop shell returned a workspace with the wrong ownership kind.");
+    }
+    return created.data;
+  }
   const parsed = createManimProjectRequestSchema.safeParse(input);
   if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "The workspace registration is invalid.");
   const created = await readJson(await fetch("/api/manim/projects", {

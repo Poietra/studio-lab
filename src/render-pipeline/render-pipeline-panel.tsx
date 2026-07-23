@@ -4,6 +4,7 @@ import { cn } from "../lib/cn";
 import type { CanonicalEditProgram } from "../studio/operations";
 import { renderProgramBatchId, type ManimWorkspaceView, type OriginalManimSourceExportRequest, type ProgramRenderRequest, type RenderSessionView } from "./contracts";
 import { exportManimSource, exportOriginalManimSource, isMissingManimSession, loadManimRender, runManimRenderAction, startManimRender } from "./client";
+import { savePythonSourceWithDesktop } from "../shell/desktop-bridge";
 
 export type RenderProgramCandidate = Readonly<{
   anchors: readonly number[];
@@ -210,12 +211,15 @@ export function RenderPipelinePanel({
             viewport: candidate.viewport,
           }, controller.signal)
         : await exportOriginalManimSource(sourceExport!, controller.signal);
-      const url = URL.createObjectURL(new Blob([exported.source], { type: "text/x-python;charset=utf-8" }));
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = exported.fileName;
-      link.click();
-      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      const desktopSaved = await savePythonSourceWithDesktop(exported.fileName, exported.source);
+      if (desktopSaved === null) {
+        const url = URL.createObjectURL(new Blob([exported.source], { type: "text/x-python;charset=utf-8" }));
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = exported.fileName;
+        link.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      }
     } catch (nextError) {
       if (isAbortError(nextError)) return;
       setError(nextError instanceof Error ? nextError.message : "Could not export the Manim source.");

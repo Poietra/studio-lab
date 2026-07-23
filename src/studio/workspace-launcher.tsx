@@ -5,22 +5,22 @@ import {
   generateManimThumbnail,
   loadManimThumbnailStatus,
 } from "../render-pipeline/client";
+import type { ManimProjectCreationInput } from "../render-pipeline/client";
 import type {
-  ManimProjectCreateRequest,
   ManimProjectSummary,
   ManimThumbnailStatus,
 } from "../render-pipeline/contracts";
 import type { WorkspaceMutation } from "./use-manim-workspace";
 
 type WorkspaceLauncherProps = Readonly<{
-  creationMode: "existing" | "managed";
+  creationMode: "existing" | "managed" | "native-existing";
   error: string | null;
   isLoading: boolean;
   mutation: WorkspaceMutation;
   mutationError: string | null;
   onCancelMutation: () => void;
   onClearMutationError: () => void;
-  onCreate: (input: ManimProjectCreateRequest) => Promise<boolean>;
+  onCreate: (input: ManimProjectCreationInput) => Promise<boolean>;
   onOpen: (workspaceId: string) => void;
   onRename: (workspaceId: string, name: string) => Promise<boolean>;
   onRetry: () => void;
@@ -341,6 +341,8 @@ export function WorkspaceLauncher({
   const unregistering = mutation?.kind === "unregister" && mutation.workspaceId === selectedWorkspace?.id;
   const mutationPending = mutation !== null;
   const registeringExistingFolder = creationMode === "existing";
+  const pickingExistingFolder = creationMode === "native-existing";
+  const linkingExistingFolder = registeringExistingFolder || pickingExistingFolder;
   const deletingManagedWorkspace = selectedWorkspace?.kind === "managed";
 
   function clearDialogError() {
@@ -385,9 +387,11 @@ export function WorkspaceLauncher({
       return;
     }
     setFormError(null);
-    const input: ManimProjectCreateRequest = registeringExistingFolder
+    const input: ManimProjectCreationInput = registeringExistingFolder
       ? { kind: "existing", name, root }
-      : { kind: "managed", name };
+      : pickingExistingFolder
+        ? { kind: "native-existing", name }
+        : { kind: "managed", name };
     if (await onCreate(input)) addDialog.current?.close();
   }
 
@@ -424,7 +428,7 @@ export function WorkspaceLauncher({
                 Choose a workspace
               </h2>
               <p className="mt-3 max-w-xl text-pretty text-sm leading-6 text-zinc-400">
-                {registeringExistingFolder
+                {linkingExistingFolder
                   ? "Open a registered Manim folder, or add another workspace to Studio."
                   : "Open a workspace or create a new animation from a starter Scene."}
               </p>
@@ -485,7 +489,7 @@ export function WorkspaceLauncher({
             <div className="mt-8 border border-zinc-800 p-5">
               <h3 className="text-balance text-sm font-medium">No workspaces are registered</h3>
               <p className="mt-2 text-pretty text-xs leading-5 text-zinc-500">
-                {registeringExistingFolder
+                {linkingExistingFolder
                   ? "Add an existing Manim project folder to start editing its Scenes."
                   : "Create a workspace to start with an editable Manim Scene."}
               </p>
@@ -509,8 +513,10 @@ export function WorkspaceLauncher({
         <form aria-busy={creating} className="p-4" method="dialog" noValidate onSubmit={(event) => void submitCreate(event)}>
           <h2 className="text-balance text-sm font-medium" id="add-workspace-title">Add workspace</h2>
           <p className="mt-2 text-pretty text-xs leading-5 text-zinc-400" id="add-workspace-description">
-            {registeringExistingFolder
-              ? "Register an existing folder on this machine. Studio will not move or copy its files."
+            {linkingExistingFolder
+              ? pickingExistingFolder
+                ? "Choose an existing Manim folder on this machine. Studio will not move or copy its files."
+                : "Register an existing folder on this machine. Studio will not move or copy its files."
               : "Create a new workspace with a starter Manim Scene. No folder setup is required."}
           </p>
           <label className="mt-4 block text-xs font-medium text-zinc-300" htmlFor="workspace-name">
@@ -562,8 +568,9 @@ export function WorkspaceLauncher({
             </button>
             <button className={primaryButtonClassName} disabled={creating} type="submit">
               {creating
-                ? registeringExistingFolder ? "Adding…" : "Creating…"
-                : registeringExistingFolder ? "Add workspace" : "Create workspace"}
+                ? linkingExistingFolder ? "Adding…" : "Creating…"
+                : pickingExistingFolder ? "Choose folder…"
+                  : registeringExistingFolder ? "Add workspace" : "Create workspace"}
             </button>
           </div>
         </form>
