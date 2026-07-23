@@ -5,66 +5,30 @@ import type { EditSuggestion, EditSuggestionOperation } from "../ai/edit-suggest
 import type { ProgramRecord } from "./model";
 import { programExecutionCapabilities } from "./operation-registry";
 import { sourceTimeToWorkingTime } from "./program-composition";
+import {
+  type AppliedProgramMutation,
+  browserEditorSessionStorageAdapter,
+  EDITOR_SESSION_STALE_SOURCE_MESSAGE,
+  type EditorProgramRecord,
+  EditorSessionStore,
+  type EditorSessionIdentity,
+  type EditorSessionSnapshot,
+  type RedoProgramEntry,
+} from "./editor-session-store";
 import type { SuggestionStatus } from "./magic-edit-panel";
 import type { InteractionMode } from "./studio-viewport";
 import type { StudioTool } from "./studio-toolbar";
 import { replaceAppliedProgram } from "./transactions";
 
-export type AppliedProgramMetadata = Readonly<{
-  operation: EditSuggestionOperation | null;
-  selection: readonly string[];
-}>;
-
-export type EditorProgramRecord = ProgramRecord &
-  Readonly<{
-    editorMetadata?: AppliedProgramMetadata;
-  }>;
-
-export type AppliedProgramMutation =
-  | Readonly<{
-      index: number;
-      kind: "append";
-      value: EditorProgramRecord;
-    }>
-  | Readonly<{
-      index: number;
-      kind: "replace";
-      previous: EditorProgramRecord;
-      value: EditorProgramRecord;
-    }>;
-
-export type AppliedProgramEdit = Readonly<{
-  index: number;
-  original: EditorProgramRecord;
-}>;
-
-export type RedoProgramEntry =
-  | Readonly<{
-      edit: AppliedProgramEdit | null;
-      kind: "draft";
-      value: EditorProgramRecord;
-    }>
-  | Readonly<{
-      kind: "mutation";
-      mutation: AppliedProgramMutation;
-    }>;
-
-export type EditorSessionSnapshot = Readonly<{
-  appliedPrograms: readonly EditorProgramRecord[];
-  currentTime: number;
-  draftError: string | null;
-  draftOperation: EditSuggestionOperation | null;
-  draftProgram: ProgramRecord | null;
-  editingAppliedProgram: AppliedProgramEdit | null;
-  insertTool: StudioTool;
-  insertValue: string;
-  instruction: string;
-  interactionMode: InteractionMode;
-  motionDuration: number;
-  programUndoEntries: readonly AppliedProgramMutation[];
-  redoPrograms: readonly RedoProgramEntry[];
-  selectedObjectIds: readonly string[];
-}>;
+export type {
+  AppliedProgramEdit,
+  AppliedProgramMetadata,
+  AppliedProgramMutation,
+  EditorProgramRecord,
+  EditorSessionIdentity,
+  EditorSessionSnapshot,
+  RedoProgramEntry,
+} from "./editor-session-store";
 
 export type EditorControllerState = EditorSessionSnapshot &
   Readonly<{
@@ -94,6 +58,7 @@ type EditorControllerAction =
     }>;
 
 const DEFAULT_MOTION_DURATION = 1.5;
+const SESSION_AUTOSAVE_DELAY_MS = 300;
 
 export function editorProgramRecord(
   record: ProgramRecord,
@@ -438,35 +403,6 @@ export function resetEditorPrograms(state: EditorControllerState): EditorControl
   };
 }
 
-export class EditorSessionStore {
-  private readonly sessions = new Map<string, EditorSessionSnapshot>();
-
-  clear(key: string) {
-    this.sessions.delete(key);
-  }
-
-  clearProject(projectId: string) {
-    for (const key of this.sessions.keys()) {
-      if (key.startsWith(`${projectId}/`)) this.sessions.delete(key);
-    }
-  }
-
-  pruneProjects(projectIds: ReadonlySet<string>) {
-    for (const key of this.sessions.keys()) {
-      const projectId = key.split("/", 1)[0];
-      if (projectId && !projectIds.has(projectId)) this.sessions.delete(key);
-    }
-  }
-
-  restore(key: string) {
-    return this.sessions.get(key) ?? null;
-  }
-
-  save(key: string, snapshot: EditorSessionSnapshot) {
-    this.sessions.set(key, snapshot);
-  }
-}
-
 export class LatestRequestController {
   private current: AbortController | null = null;
 
@@ -498,10 +434,35 @@ function resolveStateAction<T>(previous: T, next: SetStateAction<T>) {
 
 export function useEditorController() {
   const [state, dispatch] = useReducer(editorControllerReducer, undefined, createInitialEditorState);
-  const sessionStore = useRef(new EditorSessionStore());
+  const sessionStore = useRef<EditorSessionStore | null>(null);
+  if (!sessionStore.current) {
+    sessionStore.current = new EditorSessionStore(browserEditorSessionStorageAdapter());
+  }
+  const activeSession = useRef<EditorSessionIdentity | null>(null);
+  const stateRef = useRef(state);
+  stateRef.current = state;
   const requestController = useRef(new LatestRequestController());
 
   useEffect(() => () => requestController.current.cancel(), []);
+
+  useEffect(() => {
+    const identity = activeSession.current;
+    if (!identity) return;
+    const timeout = window.setTimeout(() => {
+      if (activeSession.current !== identity) return;
+      sessionStore.current?.save(identity, snapshotEditorSession(stateRef.current));
+    }, SESSION_AUTOSAVE_DELAY_MS);
+    return () => window.clearTimeout(timeout);
+  }, [state]);
+
+  useEffect(() => {
+    const saveBeforePageExit = () => {
+      const identity = activeSession.current;
+      if (identity) sessionStore.current?.save(identity, snapshotEditorSession(stateRef.current));
+    };
+    window.addEventListener("pagehide", saveBeforePageExit);
+    return () => window.removeEventListener("pagehide", saveBeforePageExit);
+  }, []);
 
   const update = useCallback((transition: (current: EditorControllerState) => EditorControllerState) => {
     dispatch({ type: "update", update: transition });
@@ -517,23 +478,39 @@ export function useEditorController() {
     [update],
   );
 
-  const saveSession = useCallback(
-    (key: string) => {
-      sessionStore.current.save(key, snapshotEditorSession(state));
-    },
-    [state],
-  );
+  const saveSession = useCallback((identity: EditorSessionIdentity) => {
+    sessionStore.current?.save(identity, snapshotEditorSession(stateRef.current));
+  }, []);
 
   const openSession = useCallback(
-    (key: string, fallback: Readonly<{ currentTime: number; selectedObjectIds: readonly string[] }>) => {
-      const saved = sessionStore.current.restore(key);
+    (
+      identity: EditorSessionIdentity,
+      fallback: Readonly<{ currentTime: number; selectedObjectIds: readonly string[] }>,
+    ) => {
+      const previousIdentity = activeSession.current;
+      if (
+        previousIdentity &&
+        (previousIdentity.projectId !== identity.projectId ||
+          previousIdentity.sceneId !== identity.sceneId ||
+          previousIdentity.sourceHash !== identity.sourceHash)
+      ) {
+        sessionStore.current?.save(previousIdentity, snapshotEditorSession(stateRef.current));
+      }
+      activeSession.current = identity;
+      const restored = sessionStore.current?.restore(identity) ?? { kind: "empty" as const };
+      const initialized = initializeEditorScene(stateRef.current, fallback);
       dispatch({
-        state: saved ? restoreEditorSession(state, saved) : initializeEditorScene(state, fallback),
+        state:
+          restored.kind === "restored"
+            ? restoreEditorSession(stateRef.current, restored.snapshot)
+            : restored.kind === "stale-source"
+              ? { ...initialized, draftError: EDITOR_SESSION_STALE_SOURCE_MESSAGE }
+              : initialized,
         type: "replace",
       });
-      return saved !== null;
+      return restored.kind;
     },
-    [state],
+    [],
   );
 
   const stageDraft = useCallback(
@@ -617,14 +594,31 @@ export function useEditorController() {
     applyDraft,
     beginSuggestionRequest,
     cancelSuggestionRequest,
-    clearProjectSessions: (projectId: string) => sessionStore.current.clearProject(projectId),
-    clearSession: (key: string) => sessionStore.current.clear(key),
+    clearProjectSessions: (projectId: string) => {
+      sessionStore.current?.clearProject(projectId);
+      if (activeSession.current?.projectId === projectId) activeSession.current = null;
+    },
+    clearSession: (identity: EditorSessionIdentity) => {
+      sessionStore.current?.clear(identity);
+      const current = activeSession.current;
+      if (
+        current &&
+        current.projectId === identity.projectId &&
+        current.sceneId === identity.sceneId &&
+        current.sourceHash === identity.sourceHash
+      )
+        activeSession.current = null;
+    },
     discardDraft,
     editAppliedProgram,
     finishSuggestionRequest,
     isSuggestionRequestCurrent,
     openSession,
-    pruneSessions: (projectIds: ReadonlySet<string>) => sessionStore.current.pruneProjects(projectIds),
+    pruneSessions: (projectIds: ReadonlySet<string>) => {
+      sessionStore.current?.pruneProjects(projectIds);
+      const projectId = activeSession.current?.projectId;
+      if (projectId && !projectIds.has(projectId)) activeSession.current = null;
+    },
     redoProgram,
     resetPrograms,
     saveSession,

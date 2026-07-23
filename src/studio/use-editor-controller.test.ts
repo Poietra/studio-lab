@@ -8,7 +8,6 @@ import {
   discardEditorDraft,
   editEditorAppliedProgram,
   editorProgramRecord,
-  EditorSessionStore,
   initializeEditorScene,
   LatestRequestController,
   redoEditorProgram,
@@ -17,6 +16,7 @@ import {
   stageEditorDraft,
   undoEditorProgram,
 } from "./use-editor-controller";
+import { EditorSessionStore } from "./editor-session-store";
 
 function record(transactionId: string, resolvedSeconds = 5): ProgramRecord {
   return {
@@ -72,11 +72,17 @@ describe("editor session lifecycle", () => {
       suggestionStatus: "loading" as const,
     };
     const store = new EditorSessionStore();
-    store.save("project/scene/hash", snapshotEditorSession(sessionState));
+    const identity = {
+      projectId: "project",
+      sceneId: "scene.py#Scene",
+      sourceHash: "a".repeat(64),
+    };
+    store.save(identity, snapshotEditorSession(sessionState));
 
-    const snapshot = store.restore("project/scene/hash");
-    expect(snapshot).not.toBeNull();
-    const restored = restoreEditorSession(createInitialEditorState(), snapshot!);
+    const snapshot = store.restore(identity);
+    expect(snapshot.kind).toBe("restored");
+    if (snapshot.kind !== "restored") throw new Error("Expected the session to restore.");
+    const restored = restoreEditorSession(createInitialEditorState(), snapshot.snapshot);
 
     expect(restored).toMatchObject({
       appliedPrograms: sessionState.appliedPrograms,
