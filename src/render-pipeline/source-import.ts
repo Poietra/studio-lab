@@ -110,6 +110,7 @@ const POSITION_MARKER_PATTERN = /^\s*#\s*poietra:position(?:\s+(.*))?\s*$/;
 const MOTION_MARKER_PATTERN = /^\s*#\s*poietra:motion(?:\s+(.*))?\s*$/;
 const SCALE_MARKER_PATTERN = /^\s*#\s*poietra:scale(?:\s+(.*))?\s*$/;
 const DIMENSIONS_MARKER_PATTERN = /^\s*#\s*poietra:dimensions(?:\s+(.*))?\s*$/;
+const CONTENT_MARKER_PATTERN = /^\s*#\s*poietra:content(?:\s+(.*))?\s*$/;
 const identifierSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
 const markerPointSchema = z.object({ x: z.number().finite(), y: z.number().finite() }).strict();
 const positionMarkerSchema = z.discriminatedUnion("kind", [
@@ -209,6 +210,24 @@ const scaleMarkerSchema = z.discriminatedUnion("kind", [
       version: z.literal(1),
     })
     .strict(),
+]);
+const markerContentBaseSchema = z.object({
+  displayLines: z.array(z.string()).min(1).max(16),
+  label: z.string().optional(),
+});
+const contentMarkerSchema = z.discriminatedUnion("type", [
+  z.object({
+    content: markerContentBaseSchema.extend({ text: z.string().min(1) }).strict(),
+    type: z.literal("Text"),
+    variable: identifierSchema,
+    version: z.literal(1),
+  }).strict(),
+  z.object({
+    content: markerContentBaseSchema.extend({ texParts: z.array(z.string().min(1)).min(1).max(16) }).strict(),
+    type: z.literal("MathTex"),
+    variable: identifierSchema,
+    version: z.literal(1),
+  }).strict(),
 ]);
 
 function hashSource(source: string) {
@@ -794,6 +813,25 @@ function markerBefore(statements: readonly SourceStatement[], statementIndex: nu
   return undefined;
 }
 
+function verifiedContentReplacement(
+  statement: string,
+  marker: z.infer<typeof contentMarkerSchema>,
+) {
+  const variable = marker.variable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const expression = new RegExp(
+    `^\\s*${variable}\\s*\\.\\s*become\\(\\s*${marker.type}\\s*\\([\\s\\S]*\\)`
+      + `\\s*\\.\\s*match_style\\(\\s*${variable}\\s*\\)`
+      + `\\s*\\.\\s*match_height\\(\\s*${variable}\\s*\\)`
+      + `\\s*\\.\\s*move_to\\(\\s*${variable}\\s*\\.\\s*get_center\\(\\s*\\)\\s*\\)\\s*\\)\\s*$`,
+    "s",
+  );
+  if (!expression.test(statement)) return false;
+  const expectedStrings = marker.type === "Text"
+    ? [marker.content.text]
+    : marker.content.texParts;
+  return JSON.stringify(stringLiterals(statement)) === JSON.stringify(expectedStrings);
+}
+
 type ResizeMarkerEntry = z.infer<typeof resizeMarkerEntrySchema>;
 
 const DIMENSION_MUTATING_METHOD_PATTERN = [
@@ -1037,9 +1075,20 @@ export function importManimScene(
   let insideIncomingEvents = false;
   const events: TimelineEvent[] = [];
   const dimensionsSamples = new Map<string, PropertyChannelSample[]>();
+  const contentSamples = new Map<string, PropertyChannelSample[]>();
   const positionSamples = new Map<string, PropertyChannelSample[]>();
   const scaleSamples = new Map<string, PropertyChannelSample[]>();
   for (const entity of mutableEntities) {
+    if (entity.content) {
+      contentSamples.set(entity.id, [
+        {
+          interval: { end: Number.MAX_SAFE_INTEGER, start: 0 },
+          kind: "exact",
+          provenanceId: `import:${sceneId}:${entity.sourceVariable}:content`,
+          value: entity.content,
+        },
+      ]);
+    }
     dimensionsSamples.set(entity.id, [
       {
         interval: { end: Number.MAX_SAFE_INTEGER, start: 0 },
@@ -1121,6 +1170,30 @@ export function importManimScene(
         label: "wait",
       });
       cursor += wait;
+      continue;
+    }
+    const contentMarker = markerBefore(statements, statementIndex, CONTENT_MARKER_PATTERN);
+    const directContent = statement.text.match(
+      /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*become\(\s*(MathTex|Text)\s*\(/s,
+    );
+    if (directContent) {
+      const parsed = contentMarkerSchema.safeParse(contentMarker);
+      const entity = byVariable.get(directContent[1]);
+      if (
+        entity
+        && parsed.success
+        && parsed.data.variable === directContent[1]
+        && parsed.data.type === directContent[2]
+        && verifiedContentReplacement(statement.text, parsed.data)
+      ) {
+        appendChannelSample(contentSamples, entity.id, {
+          interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
+          kind: "exact",
+          provenanceId: `import:${sceneId}:${entity.sourceVariable}:content:${statement.line}`,
+          value: parsed.data.content,
+        });
+        entity.content = parsed.data.content;
+      }
       continue;
     }
     const positionMarker = markerBefore(statements, statementIndex, POSITION_MARKER_PATTERN);
@@ -1564,14 +1637,15 @@ export function importManimScene(
     ]),
   );
   const propertyChannels: Record<string, PropertyChannel> = Object.fromEntries(
-    mutableEntities.flatMap((entity) =>
-      (
-        [
-          ["dimensions", dimensionsSamples.get(entity.id) ?? []],
-          ["position", positionSamples.get(entity.id) ?? []],
-          ["scale", scaleSamples.get(entity.id) ?? []],
-        ] as const
-      ).map(([key, samples]) => [
+    mutableEntities.flatMap((entity) => {
+      const channels: Array<readonly [PropertyChannel["key"], readonly PropertyChannelSample[]]> = [
+        ["dimensions", dimensionsSamples.get(entity.id) ?? []],
+        ["position", positionSamples.get(entity.id) ?? []],
+        ["scale", scaleSamples.get(entity.id) ?? []],
+      ];
+      const content = contentSamples.get(entity.id);
+      if (content) channels.unshift(["content", content]);
+      return channels.map(([key, samples]) => [
         `${entity.id}/${key}`,
         {
           entityId: entity.id,
@@ -1581,24 +1655,9 @@ export function importManimScene(
             interval: { ...sample.interval, end: Math.min(sample.interval.end, duration) },
           })),
         },
-      ]),
-    ),
+      ]);
+    }),
   );
-  for (const entity of mutableEntities) {
-    if (!entity.content) continue;
-    propertyChannels[`${entity.id}/content`] = {
-      entityId: entity.id,
-      key: "content",
-      samples: [
-        {
-          interval: { end: duration, start: 0 },
-          kind: "exact",
-          provenanceId: `import:${sceneId}:${entity.sourceVariable}:content`,
-          value: entity.content,
-        },
-      ],
-    };
-  }
   const runtimeSceneState: RuntimeSceneState = {
     constraintGraph: {
       constraints: mutableEntities.flatMap((entity) =>

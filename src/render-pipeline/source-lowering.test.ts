@@ -191,6 +191,64 @@ describe("Canonical EditProgram source lowering", () => {
     expect(findSceneMotionAnchors(source, "GroupedEquation")).toEqual([{ line: 6, seconds: 7 }]);
   });
 
+  it("round-trips canonical Inspector Text and MathTex content edits", () => {
+    const contentSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        equation = MathTex("E", "=", "m", "c^2")
+        label = Text("energy")
+        self.add(equation, label)
+        self.wait(7)
+        # poietra:anchor 7.000
+        self.wait(1)
+`;
+    const operations: CanonicalEditOperation[] = [
+      {
+        ...operationBase("set-equation-content", 7),
+        entityId: "equation_1",
+        key: "content",
+        kind: "SetProperty",
+        value: {
+          displayLines: ["F = m a"],
+          label: "equation",
+          texParts: ["F", "=", "m", "a"],
+        },
+      },
+      {
+        ...operationBase("set-label-content", 7),
+        entityId: "label_1",
+        key: "content",
+        kind: "SetProperty",
+        value: { displayLines: ["force"], label: "label", text: "force" },
+      },
+    ];
+    const lowered = lowerCanonicalProgramSource(
+      contentSource,
+      request(canonicalProgram(operations, "inspector-content"), [
+        { entityId: "equation_1", sourceVariable: "equation" },
+        { entityId: "label_1", sourceVariable: "label" },
+      ]),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
+
+    expect(lowered.insertedCode.match(/# poietra:content/g)).toHaveLength(2);
+    expect(lowered.insertedCode).toContain(
+      'equation.become(MathTex("F", "=", "m", "a").match_style(equation).match_height(equation).move_to(equation.get_center()))',
+    );
+    expect(lowered.insertedCode).toContain(
+      'label.become(Text("force").match_style(label).match_height(label).move_to(label.get_center()))',
+    );
+    expect(imported?.runtimeSceneState.propertyChannels["source:examples/relativity.py#GroupedEquation:equation/content"]?.samples)
+      .toHaveLength(2);
+    expect(imported?.runtimeSceneState.objectGraph.entities["source:examples/relativity.py#GroupedEquation:equation"]?.content)
+      .toEqual(expect.objectContaining({ texParts: ["F", "=", "m", "a"] }));
+    expect(imported?.runtimeSceneState.objectGraph.entities["source:examples/relativity.py#GroupedEquation:label"]?.content)
+      .toEqual(expect.objectContaining({ text: "force" }));
+  });
+
   it("does not expose marker-looking text inside a triple-quoted string", () => {
     const stringMarkerSource = `from manim import *
 

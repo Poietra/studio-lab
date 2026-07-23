@@ -7,7 +7,7 @@ import {
   referencedPythonReference,
 } from "./python-reference-analysis";
 import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "../studio/magic-edit-capabilities";
-import type { MotionEasing } from "../studio/model";
+import type { EntityContent, MotionEasing } from "../studio/model";
 import {
   EDIT_OPERATION_VERSION,
   type CanonicalEditOperation,
@@ -288,7 +288,7 @@ function markerPoint(point: Readonly<{ x: number; y: number }>, viewport: Readon
   };
 }
 
-function sourceMarker(kind: "dimensions" | "motion" | "position" | "scale", value: Readonly<Record<string, unknown>>) {
+function sourceMarker(kind: "content" | "dimensions" | "motion" | "position" | "scale", value: Readonly<Record<string, unknown>>) {
   return `# poietra:${kind} ${JSON.stringify({ ...value, version: 1 })}`;
 }
 
@@ -397,12 +397,49 @@ function isPoint(value: unknown): value is Readonly<{ x: number; y: number }> {
   );
 }
 
-type LoweredAnimationOperation = Extract<
-  CanonicalEditOperation,
-  {
-    kind: "AnimateProperty" | "ChangePresence" | "CreateMotion" | "ResizeEntity" | "TransformContent";
+function contentTarget(value: unknown): Readonly<{
+  content: EntityContent;
+  constructor: string;
+  type: "MathTex" | "Text";
+}> | null {
+  if (typeof value !== "object" || value === null || !("displayLines" in value)) return null;
+  const content = value as EntityContent;
+  if (
+    !Array.isArray(content.displayLines)
+    || !content.displayLines.every((line) => typeof line === "string")
+  ) return null;
+  if (
+    typeof content.text === "string"
+    && content.text.trim().length > 0
+    && content.texParts === undefined
+  ) {
+    return { content, constructor: `Text(${JSON.stringify(content.text)})`, type: "Text" };
   }
->;
+  if (
+    content.text === undefined
+    && Array.isArray(content.texParts)
+    && content.texParts.length > 0
+    && content.texParts.every((part) => typeof part === "string" && part.trim().length > 0)
+  ) {
+    return {
+      content,
+      constructor: `MathTex(${content.texParts.map((part) => JSON.stringify(part)).join(", ")})`,
+      type: "MathTex",
+    };
+  }
+  return null;
+}
+
+function contentReplacementExpression(variable: string, target: NonNullable<ReturnType<typeof contentTarget>>) {
+  return `${variable}.become(${target.constructor}`
+    + `.match_style(${variable})`
+    + `.match_height(${variable})`
+    + `.move_to(${variable}.get_center()))`;
+}
+
+type LoweredAnimationOperation = Extract<CanonicalEditOperation, {
+  kind: "AnimateProperty" | "ChangePresence" | "CreateMotion" | "ResizeEntity" | "TransformContent";
+}>;
 
 function animationOperation(operation: CanonicalEditOperation): operation is LoweredAnimationOperation {
   return (
@@ -505,6 +542,7 @@ function assertLoweringSupported(operation: CanonicalEditOperation, options: Pro
       );
     }
   }
+  if (operation.kind === "SetProperty" && operation.key === "content" && contentTarget(operation.value)) return;
   const execution = operationExecutionCapabilities(operation);
   if (execution.lowering === "supported") return;
   throw new ProgramLoweringError(
@@ -923,6 +961,17 @@ export function lowerCanonicalProgramSource(
             }),
           );
           output.push(`${variable}.move_to(${pointExpression(operation.value, frame, request.viewport)})`);
+        } else if (operation.key === "content") {
+          const target = contentTarget(operation.value);
+          if (!target) {
+            throw new ProgramLoweringError("operation-unsupported", "Content edit requires canonical Text or MathTex content.");
+          }
+          output.push(sourceMarker("content", {
+            content: target.content,
+            type: target.type,
+            variable,
+          }));
+          output.push(contentReplacementExpression(variable, target));
         }
       } else if (operation.kind === "TransformContent") {
         const targetVariable = requireVariable(variableByEntity, operation.targetEntityId);
