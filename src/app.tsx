@@ -1517,6 +1517,7 @@ export function App() {
     if (
       shape
       && entity.geometry.dimensions.kind === "known"
+      && entity.geometry.position.kind === "known"
       && hasShapeDimensions(shape, entity.geometry.dimensions.value)
     ) {
       canvasResize.current = {

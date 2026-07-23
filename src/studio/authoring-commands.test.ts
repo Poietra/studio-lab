@@ -14,6 +14,8 @@ import {
   duplicateEntityInput,
   replaceStudioEntityLifetimeProgram,
 } from "./authoring-commands";
+import { createDirectManipulationResizeProgram } from "./suggestion-program";
+import { validateAndScheduleProgram } from "./program-validation";
 
 describe("manual Studio authoring commands", () => {
   it("creates and positions an entity through the canonical operation pipeline", () => {
@@ -71,18 +73,110 @@ describe("manual Studio authoring commands", () => {
     ]));
   });
 
+  it("resizes a newly created shape from its custom dimensions", () => {
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 5,
+      entities: [{ dimensions: { radius: 2 }, position: { x: 180, y: 120 }, type: "Circle" }],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "custom-circle",
+    });
+    expect(creation.validation.kind).toBe("valid");
+    const scene = evaluateWorkingState(createFixtureWorkingState({
+      appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
+    })).evaluatedScene;
+    const resize = createDirectManipulationResizeProgram({
+      capturedPlayhead: 5,
+      entityId: creation.entityIds[0],
+      from: { dimensions: { radius: 2 }, position: { x: 180, y: 120 } },
+      interval: { end: 5, start: 5 },
+      scale: 1,
+      scene,
+      shape: "circle",
+      to: { dimensions: { radius: 3 }, position: { x: 200, y: 140 } },
+      transactionId: "resize-custom-circle",
+    });
+
+    expect(resize.kind, JSON.stringify(resize.issues)).toBe("valid");
+  });
+
+  it("projects canonical defaults when shape creation omits dimensions", () => {
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 5,
+      entities: [{ position: { x: 180, y: 120 }, type: "Circle" }],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "default-circle",
+    });
+    const operations = creation.validation.program.operations.map((operation) => {
+      if (operation.kind !== "CreateEntity") return operation;
+      const { dimensions: _dimensions, ...entity } = operation.entity;
+      return { ...operation, entity };
+    });
+    const program = { ...creation.validation.program, operations };
+    const validation = validateAndScheduleProgram(program, STUDIO_FIXTURE_SCENE);
+    expect(validation.kind).toBe("valid");
+    const projected = projectProposedState(evaluateWorkingState(createFixtureWorkingState({
+      appliedPrograms: [programRecord(validation.program, validation)],
+    })), 5).canvas.entities.find((entity) => entity.id === creation.entityIds[0]);
+
+    expect(projected?.geometry.dimensions).toEqual({ kind: "known", value: { radius: 1 } });
+  });
+
+  it("rejects resize of an entity created in the same unapplied program", () => {
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 5,
+      entities: [{ position: { x: 180, y: 120 }, type: "Rectangle" }],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "create-and-resize",
+    });
+    const create = creation.validation.program.operations.find((operation) => operation.kind === "CreateEntity");
+    if (!create) throw new Error("Expected a CreateEntity operation.");
+    const resize = {
+      dependsOn: [create.id],
+      entityId: creation.entityIds[0],
+      from: { dimensions: { radius: 1 }, position: { x: 180, y: 120 } },
+      id: "tx:create-and-resize/operation:invalid-resize",
+      interval: { end: 5, start: 5 },
+      kind: "ResizeEntity" as const,
+      provenance: { evidence: [], origin: "direct-manipulation" as const },
+      scale: 1,
+      shape: "circle" as const,
+      to: { dimensions: { radius: 2 }, position: { x: 200, y: 140 } },
+    };
+    const operations = [...creation.validation.program.operations, resize];
+    const validation = validateAndScheduleProgram({
+      ...creation.validation.program,
+      operations,
+      schedule: {
+        ...creation.validation.program.schedule,
+        order: [...creation.validation.program.schedule.order, resize.id],
+      },
+    }, STUDIO_FIXTURE_SCENE);
+
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "target", operationId: resize.id, severity: "error" }),
+    ]));
+  });
+
   it("duplicates only types supported by the Insert tool", () => {
     const equation = projectProposedState(evaluateWorkingState(createFixtureWorkingState()), 5).canvas.entities.find(
       (entity) => entity.id === "equation_1",
     );
     expect(equation).toBeDefined();
     if (!equation) return;
-    expect(duplicateEntityInput(equation)).toEqual(
-      expect.objectContaining({
-        position: { x: equation.position.x + 20, y: equation.position.y + 20 },
-        type: "MathTex",
-      }),
-    );
+    const duplicate = duplicateEntityInput(equation);
+    expect(duplicate).toEqual(expect.objectContaining({
+      position: { x: equation.position.x + 20, y: equation.position.y + 20 },
+      type: "MathTex",
+    }));
+    expect(duplicate).not.toHaveProperty("dimensions");
+    if (!duplicate) return;
+    expect(createStudioEntitiesProgram({
+      capturedPlayhead: 5,
+      entities: [duplicate],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "duplicate-equation",
+    }).validation.kind).toBe("valid");
   });
 
   it("creates a persistent remove operation for the Delete command", () => {

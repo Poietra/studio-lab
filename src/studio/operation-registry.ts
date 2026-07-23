@@ -527,6 +527,13 @@ function validCreateDimensions(type: string, dimensions: EntityDimensions | unde
   return false;
 }
 
+function createDimensions(type: string, dimensions: EntityDimensions | undefined) {
+  if (dimensions) return dimensions;
+  if (type === "Circle") return { radius: 1 };
+  if (type === "Rectangle") return { height: 2, width: 4 };
+  return undefined;
+}
+
 function exactShapeDimensions(shape: "circle" | "rectangle", dimensions: EntityDimensions) {
   return shape === "circle"
     ? dimensions.radius !== undefined && dimensions.height === undefined && dimensions.width === undefined
@@ -550,10 +557,13 @@ function matchingResizeStart(
   const entity = scene.objectGraph.entities[operation.entityId];
   const dimensions = isEntityDimensionsValue(sampledDimensions)
     ? sampledDimensions
+    : entity?.geometry?.dimensions.kind === "known" ? entity.geometry.dimensions.value
     : entity?.type === "Circle" ? { radius: 1 }
       : entity?.type === "Rectangle" ? { height: 2, width: 4 }
         : undefined;
-  const scale = typeof sampledScale === "number" ? sampledScale : 1;
+  const scale = typeof sampledScale === "number" ? sampledScale
+    : entity?.geometry?.scale.kind === "known" ? entity.geometry.scale.value
+      : 1;
   const dimensionsKnowledge = dimensions
     ? samplePropertyKnowledge(dimensionsSamples, operation.interval.start, dimensions)
     : undefined;
@@ -611,11 +621,12 @@ export const OPERATION_REGISTRY = {
           : operation.entity.type.startsWith("TransitionOverlay:")
             ? finiteEnd
             : Math.min(draft.duration, finiteEnd + insertedProgramDuration(program));
+      const dimensions = createDimensions(operation.entity.type, operation.entity.dimensions);
       draft.entities[operation.entity.id] = {
         content: operation.entity.content,
-        ...(operation.entity.dimensions ? {
+        ...(dimensions ? {
           geometry: {
-            dimensions: { kind: "known" as const, value: operation.entity.dimensions },
+            dimensions: { kind: "known" as const, value: dimensions },
             position: { kind: "unknown" as const, reason: "Position has not been assigned yet." },
             scale: { kind: "known" as const, value: 1 },
             style: { kind: "known" as const, value: {} },

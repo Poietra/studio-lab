@@ -218,6 +218,19 @@ export function validateAndScheduleProgram(
     }
   }
   for (const operation of input.operations) {
+    if (
+      operation.kind === "ResizeEntity"
+      && produced.has(operation.entityId)
+      && !scene.objectGraph.entities[operation.entityId]
+    ) {
+      issues.push({
+        code: "identity-unknown",
+        field: "target",
+        message: "ResizeEntity cannot target an entity created in the same unapplied EditProgram.",
+        operationId: operation.id,
+        severity: "error",
+      });
+    }
     for (const entityId of referencedEntityIds(operation)) {
       if (!entityId.startsWith("tx:")) continue;
       if (produced.has(entityId)) continue;

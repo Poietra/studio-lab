@@ -645,11 +645,23 @@ export function createSceneDurationProgram(
 
 export function duplicateEntityInput(entity: ProjectedEntity, offset = 20): StudioEntityInput | null {
   if (!INSERT_ENTITY_TYPES.some((type) => type === entity.type)) return null;
+  const knownDimensions = entity.geometry.dimensions.kind === "known"
+    ? entity.geometry.dimensions.value
+    : null;
+  const dimensions = entity.type === "Circle"
+    && knownDimensions?.radius !== undefined
+    && knownDimensions.height === undefined
+    && knownDimensions.width === undefined
+    ? { radius: knownDimensions.radius }
+    : entity.type === "Rectangle"
+      && knownDimensions?.height !== undefined
+      && knownDimensions.width !== undefined
+      && knownDimensions.radius === undefined
+      ? { height: knownDimensions.height, width: knownDimensions.width }
+      : undefined;
   return {
     content: entity.content,
-    ...(entity.geometry.dimensions.kind === "known"
-      ? { dimensions: entity.geometry.dimensions.value }
-      : {}),
+    ...(dimensions ? { dimensions } : {}),
     position: { x: entity.position.x + offset, y: entity.position.y + offset },
     type: entity.type as InsertEntityType,
   };
