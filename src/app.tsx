@@ -43,7 +43,7 @@ import {
 } from "./studio/studio-viewport";
 import type { StudioTool } from "./studio/studio-toolbar";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
-import { editorProgramRecord, useEditorController } from "./studio/use-editor-controller";
+import { editorProgramRecord, type EditorSessionIdentity, useEditorController } from "./studio/use-editor-controller";
 import { useManimWorkspace } from "./studio/use-manim-workspace";
 import { WorkspaceLauncher } from "./studio/workspace-launcher";
 import { isTransitionOverlay, projectStudioWorkspace } from "./studio/workspace-projection";
@@ -228,19 +228,24 @@ export function App() {
       workingTime: sourceTimeToWorkingTime(appliedCanonicalPrograms, sourceTime),
     })) ?? [];
 
-  function activeEditorSessionKey() {
+  function activeEditorSessionIdentity(): EditorSessionIdentity | null {
     return activeProjectId && activeScene
-      ? `${activeProjectId}/${activeScene.sceneId}/${activeScene.sourceHash}`
+      ? {
+          projectId: activeProjectId,
+          sceneId: activeScene.sceneId,
+          sourceHash: activeScene.sourceHash,
+        }
       : null;
   }
 
   function saveEditorSession() {
-    const key = activeEditorSessionKey();
-    if (!key) return;
-    saveSession(key);
+    const identity = activeEditorSessionIdentity();
+    if (!identity) return;
+    saveSession(identity);
   }
 
   useEffect(() => {
+    if (workspaceStatus !== "ready") return;
     const registeredProjectIds = new Set(projects.map((project) => project.id));
     pruneSessions(registeredProjectIds);
     setRenderSessions((current) => {
@@ -249,7 +254,7 @@ export function App() {
       );
       return Object.keys(next).length === Object.keys(current).length ? current : next;
     });
-  }, [projects]);
+  }, [projects, workspaceStatus]);
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -285,13 +290,19 @@ export function App() {
     cancelSuggestionRequest();
     canvasDrag.current = null;
     canvasResize.current = null;
-    const key = activeProjectId ? `${activeProjectId}/${activeScene.sceneId}/${activeScene.sourceHash}` : null;
+    const identity = activeProjectId
+      ? {
+          projectId: activeProjectId,
+          sceneId: activeScene.sceneId,
+          sourceHash: activeScene.sourceHash,
+        }
+      : null;
     const initialTime = activeScene.anchors[0] ?? 0;
     const initialEntities = Object.values(activeScene.runtimeSceneState.objectGraph.entities).filter((entity) =>
       entity.lifetime.some((lifetime) => initialTime >= lifetime.start && initialTime < lifetime.end),
     );
-    if (key) {
-      openSession(key, {
+    if (identity) {
+      openSession(identity, {
         currentTime: clamp(initialTime, 0, activeScene.runtimeSceneState.duration),
         selectedObjectIds: initialEntities.slice(0, 1).map((entity) => entity.id),
       });
@@ -1670,8 +1681,8 @@ export function App() {
               onEntityScaleChange={(entityId, scale) => void resizeEntityFromInspector(entityId, scale)}
               onRenderSessionChange={retainRenderSession}
               onSourceChanged={async () => {
-                const key = activeEditorSessionKey();
-                if (key) clearSession(key);
+                const identity = activeEditorSessionIdentity();
+                if (identity) clearSession(identity);
                 resetPrograms();
                 await refreshWorkspace();
               }}
