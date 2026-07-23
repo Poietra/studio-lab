@@ -35,6 +35,8 @@ export function StudioViewport({
   insertValue,
   interactionMode,
   isPlaying,
+  lifetimeControls,
+  lifetimeEditMessage,
   lifetimeTrimDisabled,
   motionDuration,
   motionPaths,
@@ -55,7 +57,7 @@ export function StudioViewport({
   onInsertAtCenter,
   onInsertToolChange,
   onInsertValueChange,
-  onLifetimeEndChange,
+  onLifetimeChange,
   onMotionControlChange,
   onMotionDurationChange,
   onSelectEntity,
@@ -114,13 +116,15 @@ export function StudioViewport({
         events={projection.timeline.events}
         interactionMode={interactionMode}
         isPlaying={isPlaying}
+        lifetimeControls={lifetimeControls}
+        lifetimeEditMessage={lifetimeEditMessage}
         lifetimeTrimDisabled={lifetimeTrimDisabled}
         motionDuration={motionDuration}
         objectTracks={projection.timeline.objectTracks}
         onAppliedMotionClipChange={onAppliedMotionClipChange}
         onAppliedMotionClipSelect={onAppliedMotionClipSelect}
         onInteractionModeChange={onInteractionModeChange}
-        onLifetimeEndChange={onLifetimeEndChange}
+        onLifetimeChange={onLifetimeChange}
         onMotionDurationChange={onMotionDurationChange}
         onSelectEntity={onSelectEntity}
         onTimeChange={onTimeChange}

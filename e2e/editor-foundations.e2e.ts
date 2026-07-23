@@ -27,6 +27,10 @@ async function exportedSource(page: Page) {
   return readFile(path, "utf8");
 }
 
+async function applyCurrentDraft(page: Page) {
+  await page.getByRole("button", { name: /^(Apply|Replace) program$/ }).click();
+}
+
 test("exports the selected Python source unchanged before any Studio edit", async ({ page }) => {
   await openWorkspace(page);
 
@@ -608,6 +612,120 @@ test("trims an object lifetime at a safe source anchor and exports an instant re
   await page.getByRole("button", { name: "Apply program" }).click();
   await page.keyboard.press("Control+z");
   await expect(lifetime).toHaveAttribute("title", "Present 0.00–12.00s");
+  await page.keyboard.press("Control+Shift+z");
+  await expect(lifetime).toHaveAttribute("title", "Present 0.00–7.00s");
+
+  await lifetime.click();
+  const end = page.getByRole("combobox", { name: "Lifetime end for equation" });
+  await expect(end).toHaveValue("12");
+  await end.locator("xpath=ancestor::form[1]").getByRole("button", { name: "Set" }).click();
+  await expect(lifetime).toHaveAttribute("title", "Present 0.00–12.00s");
+  await expect(exportedSource(page)).resolves.not.toContain("self.remove(equation)");
+  await applyCurrentDraft(page);
+  await page.keyboard.press("Control+z");
+  await expect(lifetime).toHaveAttribute("title", "Present 0.00–7.00s");
+  await page.keyboard.press("Control+Shift+z");
+  await expect(lifetime).toHaveAttribute("title", "Present 0.00–12.00s");
+});
+
+test("edits a Studio-owned lifetime in both directions and reimports the exported interval", async ({ page }) => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "poietra-lifetime-edit-"));
+  const sourcePath = join(projectRoot, "lifetime.py");
+  const source = `from manim import *
+
+class LifetimeScene(Scene):
+    def construct(self):
+        # poietra:anchor 0.000
+        self.wait(1)
+        # poietra:anchor 1.000
+        self.wait(1)
+        # poietra:anchor 2.000
+        self.wait(1)
+        # poietra:anchor 3.000
+        self.wait(1)
+        # poietra:anchor 4.000
+        self.wait(1)
+        # poietra:anchor 5.000
+        self.wait(1)
+`;
+  await writeFile(sourcePath, source, "utf8");
+  const createdResponse = await page.request.post("/api/manim/projects", {
+    data: { kind: "existing", name: "Lifetime Editing Fixture", root: projectRoot },
+  });
+  expect(createdResponse.ok()).toBe(true);
+  const created = await createdResponse.json() as { project: { id: string } };
+  const projectId = created.project.id;
+
+  try {
+    await page.goto("/");
+    await page.getByRole("button", { name: "Open Lifetime Editing Fixture workspace" }).click();
+    const canvas = page.locator("[data-studio-canvas]");
+    await page.getByRole("button", { name: /Insert circle/ }).click();
+    await canvas.click({ position: { x: 240, y: 140 } });
+    await applyCurrentDraft(page);
+
+    let lifetime = page.getByRole("button", { name: /Select Circle lifetime/ });
+    await lifetime.click();
+    await page.getByRole("combobox", { name: "Lifetime end for Circle" }).selectOption("2");
+    await page.getByRole("combobox", { name: "Lifetime end for Circle" })
+      .locator("xpath=ancestor::form[1]").getByRole("button", { name: "Set" }).click();
+    await expect(lifetime).toHaveAttribute("title", "Present 0.00–2.40s");
+    await applyCurrentDraft(page);
+
+    await lifetime.click();
+    const startHandle = page.getByRole("button", { name: "Adjust Circle lifetime start" });
+    await startHandle.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(lifetime).toHaveAttribute("title", "Present 1.00–2.40s");
+    await expect(exportedSource(page)).resolves.toEqual(expect.stringMatching(
+      /# poietra:cursor 1[\s\S]*Circle\(radius=1\)[\s\S]*# poietra:cursor 2\.4[\s\S]*self\.remove\(/,
+    ));
+    await applyCurrentDraft(page);
+
+    await page.keyboard.press("Control+z");
+    await expect(lifetime).toHaveAttribute("title", "Present 0.00–2.40s");
+    await page.keyboard.press("Control+Shift+z");
+    await expect(lifetime).toHaveAttribute("title", "Present 1.00–2.40s");
+
+    await lifetime.click();
+    const lifetimeBox = await lifetime.boundingBox();
+    const laneBox = await lifetime.locator("xpath=ancestor::*[@data-timeline-lane][1]").boundingBox();
+    if (!lifetimeBox || !laneBox) throw new Error("The Studio-owned lifetime interval is not visible.");
+    const center = {
+      x: lifetimeBox.x + lifetimeBox.width / 2,
+      y: lifetimeBox.y + lifetimeBox.height / 2,
+    };
+    await page.mouse.move(center.x, center.y);
+    await page.mouse.down();
+    await page.mouse.move(center.x + laneBox.width / 6.4, center.y, { steps: 5 });
+    await page.mouse.up();
+    await expect(lifetime).toHaveAttribute("title", "Present 2.00–3.40s");
+    await applyCurrentDraft(page);
+
+    await lifetime.click();
+    const endHandle = page.getByRole("button", { name: "Trim Circle lifetime end" });
+    await endHandle.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(lifetime).toHaveAttribute("title", "Present 2.00–4.40s");
+    const exported = await exportedSource(page);
+    expect(exported).toMatch(/# poietra:cursor 2[\s\S]*Circle\(radius=1\)/);
+    expect(exported).toMatch(/# poietra:cursor 4\.4[\s\S]*self\.remove\(/);
+    await applyCurrentDraft(page);
+
+    await writeFile(sourcePath, exported, "utf8");
+    const workspaceResponse = page.waitForResponse((response) => (
+      response.request().method() === "GET"
+      && new URL(response.url()).pathname === `/api/manim/projects/${projectId}/workspace`
+    ));
+    await page.getByRole("button", { name: "Reimport" }).click();
+    await workspaceResponse;
+    lifetime = page.locator("[data-timeline-lifetime]").first();
+    await expect(lifetime).toHaveAttribute("title", "Present 2.00–4.40s");
+    await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+  } finally {
+    await page.request.delete(`/api/manim/projects/${projectId}`).catch(() => undefined);
+    await rm(projectRoot, { force: true, recursive: true });
+  }
 });
 
 test("previews a motion path, bends it, and exports a Bézier move", async ({ page }) => {

@@ -263,32 +263,6 @@ export function createImportedEntityLifetimeProgram(input: Readonly<{
   });
 }
 
-// Compatibility bridge for the timeline UI migrated in the following commit.
-export function createTrimEntityLifetimeProgram(input: Readonly<{
-  entityId: string;
-  lifetimeStart: number;
-  retainedDuration: number;
-  scene: RuntimeSceneState;
-  sourceAnchor: number;
-  transactionId: string;
-}>): ProgramValidationResult {
-  if (!Number.isFinite(input.retainedDuration) || input.retainedDuration < MIN_OBJECT_LIFETIME_SECONDS) {
-    throw new Error(`Keep at least ${MIN_OBJECT_LIFETIME_SECONDS.toFixed(1)} seconds of the selected object lifetime.`);
-  }
-  const original = input.scene.objectGraph.entities[input.entityId]?.lifetime.find((interval) => (
-    Math.abs(interval.start - input.lifetimeStart) < 0.001
-  ));
-  if (!original) throw new Error("The selected lifetime interval is no longer available.");
-  return createImportedEntityLifetimeProgram({
-    entityId: input.entityId,
-    original,
-    scene: input.scene,
-    sourceAnchor: input.sourceAnchor,
-    targetEnd: input.sourceAnchor,
-    transactionId: input.transactionId,
-  });
-}
-
 function shiftInterval(interval: Interval, delta: number): Interval {
   return { end: interval.end + delta, start: interval.start + delta };
 }
