@@ -8,6 +8,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,6 +41,12 @@ type SmokeDiagnostic = {
   render: {
     error: string | null;
     logTail: string;
+    probe: {
+      decodedFrames: number | null;
+      duration: number;
+      formatName: string;
+      videoStreams: number;
+    } | null;
     status: string | null;
     videoBytes: number | null;
   };
@@ -53,6 +60,84 @@ function configuredCommand() {
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ""}`.trim() : String(error);
+}
+
+async function captureCommand(command: readonly string[], timeoutMs = 30_000) {
+  const [executable, ...arguments_] = command;
+  const child = spawn(executable, arguments_, { stdio: ["ignore", "pipe", "pipe"] });
+  let stderr = "";
+  let stdout = "";
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderr = `${stderr}${chunk.toString("utf8")}`.slice(-64 * 1024);
+  });
+  child.stdout.on("data", (chunk: Buffer) => {
+    stdout = `${stdout}${chunk.toString("utf8")}`.slice(-64 * 1024);
+  });
+  const result = await new Promise<{ code: number; error: Error | null }>((resolveExit) => {
+    let spawnError: Error | null = null;
+    const timeout = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+    timeout.unref();
+    child.once("error", (error) => {
+      spawnError = error;
+    });
+    child.once("close", (code) => {
+      clearTimeout(timeout);
+      resolveExit({ code: code ?? 1, error: spawnError });
+    });
+  });
+  if (result.error || result.code !== 0) {
+    throw new Error(`MP4 probe failed: ${result.error?.message ?? (stderr.trim() || `exit code ${result.code}`)}`);
+  }
+  return stdout;
+}
+
+async function probeMp4(videoPath: string) {
+  const explicitProbe = process.env.POIETRA_MANIM_FFPROBE_COMMAND?.trim();
+  const command = explicitProbe
+    ? [
+        ...parseManimCommand(explicitProbe),
+        "-v",
+        "error",
+        "-print_format",
+        "json",
+        "-show_entries",
+        "format=format_name,duration:stream=codec_type,width,height,duration",
+        videoPath,
+      ]
+    : process.env.POIETRA_MANIM_COMMAND?.trim()
+      ? [
+          "ffprobe",
+          "-v",
+          "error",
+          "-print_format",
+          "json",
+          "-show_entries",
+          "format=format_name,duration:stream=codec_type,width,height,duration",
+          videoPath,
+        ]
+      : [process.execPath, dockerRunnerPath, "--poietra-probe-json", videoPath];
+  const parsed = JSON.parse(await captureCommand(command)) as {
+    decoded_frames?: number;
+    format?: { duration?: string; format_name?: string };
+    streams?: readonly { codec_type?: string; height?: number; width?: number }[];
+  };
+  const duration = Number(parsed.format?.duration);
+  const decodedFrames = parsed.decoded_frames ?? null;
+  const formatName = parsed.format?.format_name ?? "";
+  const videoStreams = (parsed.streams ?? []).filter((stream) => (
+    stream.codec_type === "video"
+    && Number.isFinite(stream.width)
+    && Number.isFinite(stream.height)
+    && stream.width! > 0
+    && stream.height! > 0
+  )).length;
+  expect(formatName.split(",")).toContain("mp4");
+  expect(duration).toBeGreaterThan(0);
+  expect(videoStreams).toBeGreaterThan(0);
+  if (!explicitProbe && !process.env.POIETRA_MANIM_COMMAND?.trim()) {
+    expect(decodedFrames).toBeGreaterThan(0);
+  }
+  return { decodedFrames, duration, formatName, videoStreams };
 }
 
 async function pathIsMissing(path: string) {
@@ -94,7 +179,10 @@ function renderRequest(
     dependsOn: [],
     easing: "smooth",
     id: "tx:real-manim-smoke/operation:motion",
-    interval: { end: 0.4, start: 0.2 },
+    interval: {
+      end: process.env.POIETRA_MANIM_SMOKE_INTERRUPT_TARGET === "1" ? 8 : 0.4,
+      start: 0.2,
+    },
     kind: "CreateMotion",
     provenance: { evidence: ["real-manim-smoke"], origin: "direct-manipulation" },
     targetEntityIds: [targetEntityId],
@@ -132,7 +220,14 @@ describe.skipIf(process.env.POIETRA_REAL_MANIM_SMOKE !== "1")("real Manim render
     await mkdir(artifactRoot, { recursive: true });
     const projectRoot = await mkdtemp(join(tmpdir(), "poietra-real-manim-smoke-"));
     const sourcePath = join(projectRoot, "scene.py");
-    await copyFile(fixturePath, sourcePath);
+    const fixtureSource = await readFile(fixturePath, "utf8");
+    await writeFile(
+      sourcePath,
+      process.env.POIETRA_MANIM_SMOKE_INTERRUPT_TARGET === "1"
+        ? fixtureSource.replace("self.wait(0.5)", "self.wait(10)")
+        : fixtureSource,
+      "utf8",
+    );
 
     const command = configuredCommand();
     const manager = new ManimRenderManager({
@@ -149,7 +244,7 @@ describe.skipIf(process.env.POIETRA_REAL_MANIM_SMOKE !== "1")("real Manim render
       error: null,
       hashes: { committed: null, original: null, undone: null },
       outcome: "running",
-      render: { error: null, logTail: "", status: null, videoBytes: null },
+      render: { error: null, logTail: "", probe: null, status: null, videoBytes: null },
     };
     let failure: unknown = null;
     let renderRoot: string | null = null;
@@ -176,6 +271,7 @@ describe.skipIf(process.env.POIETRA_REAL_MANIM_SMOKE !== "1")("real Manim render
       diagnostic.render = {
         error: rendered.error,
         logTail: rendered.logTail,
+        probe: null,
         status: rendered.status,
         videoBytes: null,
       };
@@ -187,8 +283,7 @@ describe.skipIf(process.env.POIETRA_REAL_MANIM_SMOKE !== "1")("real Manim render
       renderRoot = renderTempRoot(videoPath);
       const video = await stat(videoPath);
       expect(video.size).toBeGreaterThan(0);
-      const videoHeader = await readFile(videoPath);
-      expect(videoHeader.subarray(4, 8).toString("ascii")).toBe("ftyp");
+      diagnostic.render.probe = await probeMp4(videoPath);
       diagnostic.render.videoBytes = video.size;
       await copyFile(videoPath, join(artifactRoot, "preview.mp4"));
 
@@ -221,6 +316,7 @@ describe.skipIf(process.env.POIETRA_REAL_MANIM_SMOKE !== "1")("real Manim render
           diagnostic.render = {
             error: session.error,
             logTail: session.logTail,
+            probe: diagnostic.render.probe,
             status: session.status,
             videoBytes: diagnostic.render.videoBytes,
           };

@@ -178,11 +178,15 @@ scheduled and manually dispatched CI workflow:
 pnpm test:manim-smoke
 ```
 
-The smoke test renders an MP4, commits and exactly undoes the lowered source,
-and verifies that both project and render temporary directories are removed.
-Its MP4, source hashes, cleanup result, and captured Vitest/Manim log are written
-under `test-results/manim-smoke/`. Set `POIETRA_MANIM_COMMAND` to use a local
-Manim installation instead of the pinned Docker image.
+The smoke test renders and decodes an MP4 with the pinned image, commits and
+exactly undoes the lowered source, and verifies that both project and render
+temporary directories are removed. It also interrupts a live render to verify
+that the Vitest process tree, owned Docker container, temporary files, and
+artifact writers have all stopped before the runner exits. Its MP4, decoded
+media metadata, source hashes, cleanup result, and captured Vitest/Manim log are
+written under `test-results/manim-smoke/`. Set `POIETRA_MANIM_COMMAND` to use a
+local Manim installation and `POIETRA_MANIM_FFPROBE_COMMAND` when its `ffprobe`
+binary is not available on `PATH`.
 
 Eligible source boundaries use an explicit marker such as
 `# poietra:anchor 5.000` inside a Scene method. Studio rejects missing anchors,
