@@ -661,10 +661,74 @@ function durationFrom(statement: string, fallback = 1) {
   return match ? Number(match[1]) : fallback;
 }
 
+function topLevelPlayKeywordIdentifier(
+  statement: string,
+  keyword: string,
+): string | null | undefined {
+  const call = statement.match(/^self\.play\s*\(/);
+  if (!call) return undefined;
+  const opening = statement.indexOf("(", call.index ?? 0);
+  const stack = ["("];
+  const values: string[] = [];
+  let quote: "\"" | "'" | null = null;
+  let escaped = false;
+  for (let index = opening + 1; index < statement.length; index += 1) {
+    const character = statement[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote) {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === "#") {
+      index = statement.indexOf("\n", index);
+      if (index < 0) break;
+      continue;
+    }
+    if (character === "(" || character === "[" || character === "{") {
+      stack.push(character);
+      continue;
+    }
+    if (character === ")" || character === "]" || character === "}") {
+      const expected = { ")": "(", "]": "[", "}": "{" }[character];
+      if (stack.pop() !== expected) return null;
+      if (stack.length === 0) break;
+      continue;
+    }
+    if (stack.length !== 1 || !/[A-Za-z_]/.test(character)) continue;
+    const identifier = statement.slice(index).match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0];
+    if (!identifier) continue;
+    const previous = statement.slice(0, index).trimEnd().at(-1);
+    index += identifier.length - 1;
+    if (identifier !== keyword || (previous !== "(" && previous !== ",")) continue;
+    let cursor = index + 1;
+    while (/\s/.test(statement[cursor] ?? "")) cursor += 1;
+    if (statement[cursor] !== "=") return null;
+    cursor += 1;
+    while (/\s/.test(statement[cursor] ?? "")) cursor += 1;
+    const value = statement.slice(cursor).match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0];
+    if (!value) return null;
+    values.push(value);
+    index = cursor + value.length - 1;
+  }
+  if (values.length === 0) return undefined;
+  return values.length === 1 ? values[0] : null;
+}
+
 function motionEasingFrom(statement: string): MotionEasing | null {
-  const match = statement.match(/\brate_func\s*=\s*([A-Za-z_][A-Za-z0-9_]*)/);
-  if (!match) return "smooth";
-  return match[1] === "linear" || match[1] === "smooth" ? match[1] : null;
+  const rateFunction = topLevelPlayKeywordIdentifier(statement, "rate_func");
+  if (rateFunction === undefined) return "smooth";
+  return rateFunction === "linear" || rateFunction === "smooth" ? rateFunction : null;
 }
 
 function waitDuration(statement: string) {

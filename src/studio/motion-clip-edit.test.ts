@@ -5,6 +5,7 @@ import { canonicalizeSuggestionProgram } from "./suggestion-program";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import { samplePropertyValue } from "./property-sampling";
 import {
+  adjustAppliedMotionClipControl,
   appliedMotionClipReadOnlyReason,
   retimeAppliedMotionClip,
 } from "./motion-clip-edit";
@@ -149,6 +150,54 @@ describe("applied motion clip editing", () => {
     const canonicalMotion = program.operations.find((operation) => operation.kind === "CreateMotion");
     if (!canonicalMotion) throw new Error("Expected a canonical motion.");
     expect(appliedMotionClipReadOnlyReason(program, null, canonicalMotion.id)).toMatch(/metadata is unavailable/i);
+  });
+
+  it("adjusts only the canonical motion identity selected for one entity", () => {
+    const operation = {
+      anchor: { kind: "absolute", seconds: 5 },
+      execution: "sequence",
+      kind: "edit-program",
+      operations: [
+        {
+          controlOffset: { x: 0, y: -10 },
+          delta: { x: 40, y: 0 },
+          easing: "smooth",
+          end: 6,
+          kind: "create-motion",
+          start: 5,
+          targetObjectIds: ["equation_1"],
+        },
+        {
+          controlOffset: { x: 5, y: 10 },
+          delta: { x: -20, y: 30 },
+          easing: "smooth",
+          end: 7,
+          kind: "create-motion",
+          start: 6,
+          targetObjectIds: ["equation_1"],
+        },
+      ],
+    } satisfies EditSuggestionOperation;
+    const program = canonical(operation);
+    const canonicalMotions = program.operations.filter((candidate) => candidate.kind === "CreateMotion");
+    expect(canonicalMotions).toHaveLength(2);
+
+    const result = adjustAppliedMotionClipControl({
+      delta: { x: 7, y: -4 },
+      operation,
+      operationId: canonicalMotions[1].id,
+      program,
+    });
+
+    expect(result.kind).toBe("valid");
+    if (result.kind !== "valid" || result.operation.kind !== "edit-program") return;
+    expect(result.stepIndex).toBe(1);
+    expect(result.operation.operations.map((step) => (
+      step.kind === "create-motion" ? step.controlOffset : null
+    ))).toEqual([
+      { x: 0, y: -10 },
+      { x: 12, y: 6 },
+    ]);
   });
 
   it("samples linear easing consistently in the working preview", () => {

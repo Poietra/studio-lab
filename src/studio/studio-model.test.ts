@@ -463,9 +463,65 @@ describe("Studio time and transaction invariants", () => {
     });
   });
 
+  it("rejects a replacement that would cross a neighboring source anchor", () => {
+    const firstValidation = canonicalize(motionSuggestion(5), "first-program", 5);
+    const originalValidation = canonicalize(motionSuggestion(7), "edited-program", 7);
+    const lastValidation = canonicalize(motionSuggestion(9), "last-program", 9);
+    const crossingValidation = canonicalize(motionSuggestion(10), "edited-program", 10);
+    const first = programRecord(firstValidation.program, firstValidation);
+    const original = programRecord(originalValidation.program, originalValidation);
+    const last = programRecord(lastValidation.program, lastValidation);
+    const crossing = programRecord(crossingValidation.program, crossingValidation);
+
+    expect(replaceAppliedProgram(
+      [first, original, last],
+      "edited-program",
+      crossing,
+    )).toEqual({
+      kind: "rejected",
+      reason: "The replacement source anchor 10.000 would cross the next applied Program at 9.000. Applied Program source order must remain stable.",
+    });
+  });
+
 });
 
 describe("canonical operation expansion and DAG validation", () => {
+  it("rejects mixed easing before a parallel Program can be applied", () => {
+    const validation = canonicalize({
+      anchor: { kind: "playhead", referenceSeconds: 5 },
+      execution: "parallel",
+      kind: "edit-program",
+      operations: [
+        {
+          controlOffset: { x: 0, y: 0 },
+          delta: { x: 64, y: 0 },
+          easing: "linear",
+          end: 6,
+          kind: "create-motion",
+          start: 5,
+          targetObjectIds: ["equation_1"],
+        },
+        {
+          animation: "fade-in",
+          end: 6,
+          kind: "create-equation",
+          placement: "center",
+          start: 5,
+          target: NEWTON_TARGET,
+        },
+      ],
+    }, "mixed-easing", 5);
+
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "lowering-unsupported",
+        field: "easing",
+        message: expect.stringMatching(/must share one easing function/i),
+      }),
+    ]));
+  });
+
   it("normalizes new and existing motion gestures through the operation registry", () => {
     const created = createDirectManipulationMotionProgram({
       capturedPlayhead: 5,

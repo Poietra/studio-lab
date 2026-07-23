@@ -1,4 +1,4 @@
-import type { RuntimeSceneState } from "./model";
+import type { MotionEasing, RuntimeSceneState } from "./model";
 import {
   channelKey,
   type CanonicalEditOperation,
@@ -76,6 +76,13 @@ function referencedEntityIds(operation: CanonicalEditOperation) {
   return [...new Set([...access.reads, ...access.writes].map((entry) => entry.entityId))].filter(
     (id) => id !== "camera",
   );
+}
+
+function sourceAnimationEasing(operation: CanonicalEditOperation): MotionEasing | null {
+  if (operation.kind === "CreateMotion") return operation.easing;
+  if (operation.kind === "AnimateProperty" && operation.key === "scale") return operation.easing;
+  if (operation.kind === "ChangePresence" || operation.kind === "TransformContent") return "smooth";
+  return null;
 }
 
 export function validateAndScheduleProgram(
@@ -231,6 +238,39 @@ export function validateAndScheduleProgram(
         });
       }
     }
+  }
+
+  const sourceAnimationGroups: Array<Readonly<{
+    easings: Set<MotionEasing>;
+    operationIds: string[];
+    start: number;
+  }>> = [];
+  for (const operation of input.operations) {
+    const easing = sourceAnimationEasing(operation);
+    if (!easing) continue;
+    const group = sourceAnimationGroups.find((candidate) => (
+      Math.abs(candidate.start - operation.interval.start) < EPSILON
+    ));
+    if (group) {
+      group.easings.add(easing);
+      group.operationIds.push(operation.id);
+    } else {
+      sourceAnimationGroups.push({
+        easings: new Set([easing]),
+        operationIds: [operation.id],
+        start: operation.interval.start,
+      });
+    }
+  }
+  for (const group of sourceAnimationGroups) {
+    if (group.easings.size < 2) continue;
+    issues.push({
+      code: "lowering-unsupported",
+      field: "easing",
+      message: "Concurrent source animations must share one easing function before this Program can be applied.",
+      operationId: group.operationIds.at(-1),
+      severity: "error",
+    });
   }
 
   const edges: DependencyEdge[] = [];
