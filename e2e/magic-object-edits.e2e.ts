@@ -83,6 +83,17 @@ test("Magic Edit previews, applies, exports, and undoes scale and delete", async
   await page.getByRole("button", { name: "Undo" }).click();
   await expect(wrapper).toHaveAttribute("data-studio-entity-scale", "1.0000");
 
+  await page.getByRole("button", { name: "Move playhead to source anchor 5.000 seconds" }).click();
+  await page.getByRole("checkbox", { name: "Select equation" }).check();
+  await instruction.fill("delete the selected equation");
+  await page.getByRole("button", { name: "Preview" }).click();
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "Persistent removal is unsafe because source variable equation is referenced after the selected anchor",
+  );
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  await page.getByRole("button", { name: "Discard" }).click();
+
   // Deletion must use the last safe source anchor; the 5s anchor is followed by
   // another equation animation and is intentionally rejected by source lowering.
   await page.getByRole("button", { name: "Move playhead to source anchor 7.000 seconds" }).click();

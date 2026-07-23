@@ -13,6 +13,7 @@ import { EquationContent } from "./prototype-rendering";
 type DraftInspectorProps = Readonly<{
   applyLabel?: "Apply program" | "Replace program";
   error: string | null;
+  isApplying: boolean;
   onApply: () => void;
   onDiscard: () => void;
   onOperationChange: (operation: EditSuggestionOperation) => void;
@@ -347,6 +348,7 @@ function StepEditor({
 export function DraftInspector({
   applyLabel = "Apply program",
   error,
+  isApplying,
   onApply,
   onDiscard,
   onOperationChange,
@@ -462,13 +464,16 @@ export function DraftInspector({
         </button>
         <button
           aria-describedby={displayedError ? "draft-apply-error" : undefined}
-          className="bg-sky-500 px-3 py-1.5 text-xs font-medium text-sky-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500"
-          disabled={applyStatus !== "supported"}
+          className={cn(
+            "bg-sky-500 px-3 py-1.5 text-xs font-medium text-sky-950 hover:bg-sky-400 disabled:bg-zinc-700 disabled:text-zinc-500",
+            isApplying ? "disabled:cursor-wait" : "disabled:cursor-not-allowed",
+          )}
+          disabled={isApplying || applyStatus !== "supported"}
           onClick={onApply}
           title={execution.applyBlocker ?? undefined}
           type="button"
         >
-          {applyLabel}
+          {isApplying ? "Checking source…" : applyLabel}
         </button>
       </div>
     </section>

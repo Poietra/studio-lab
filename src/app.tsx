@@ -10,6 +10,7 @@ import {
 } from "./ai/edit-suggestions";
 import type { RenderProgramCandidate } from "./render-pipeline/render-pipeline-panel";
 import type { RenderSessionView } from "./render-pipeline/contracts";
+import { exportManimSource } from "./render-pipeline/client";
 import { cn } from "./lib/cn";
 import {
   createImportedEntityLifetimeProgram,
@@ -179,7 +180,7 @@ export function App() {
     workspace,
   } = useManimWorkspace();
   const {
-    applyDraft,
+    applyDraft: applyEditorDraft,
     beginSuggestionRequest,
     cancelSuggestionRequest,
     clearProjectSessions,
@@ -233,6 +234,7 @@ export function App() {
     undoProgram,
   } = useEditorController();
   const [renderSessions, setRenderSessions] = useState<Readonly<Record<string, RenderSessionView>>>({});
+  const [draftApplyPending, setDraftApplyPending] = useState(false);
   const [lifetimeEditMessage, setLifetimeEditMessage] = useState<string | null>(null);
   const [isMagicEditVisible, setIsMagicEditVisible] = useState(() => window.matchMedia("(min-width: 640px)").matches);
   const [dragPreview, setDragPreview] = useState<EntityDragPreview | null>(null);
@@ -244,6 +246,8 @@ export function App() {
   const pasteCount = useRef(0);
   const commandHandler = useRef<(command: StudioCommandId) => boolean>(() => false);
   const workspaceBounds = useRef<HTMLElement | null>(null);
+  const currentDraftProgram = useRef<ProgramRecord | null>(null);
+  currentDraftProgram.current = draftProgram;
   const appliedCanonicalPrograms = appliedPrograms.map((record) => record.program);
   const sourceCurrentTime = workingTimeToSourceTime(appliedCanonicalPrograms, currentTime);
   const timelineAnchors =
@@ -844,6 +848,36 @@ export function App() {
       return;
     }
     installAppliedProgramEdit(record, clip.programIndex, retimed.operation, change.sourceStart);
+  }
+
+  async function applyDraft() {
+    if (!draftProgram || !renderCandidate || draftApplyPending) return;
+    const applyingTransactionId = draftProgram.program.transactionId;
+    setDraftApplyPending(true);
+    setDraftError(null);
+    try {
+      await exportManimSource({
+        destination: renderCandidate.destination,
+        program: renderCandidate.program,
+        programs: renderCandidate.programs,
+        projectId: renderCandidate.projectId,
+        sceneName: renderCandidate.sceneName,
+        sourceBindings: renderCandidate.sourceBindings,
+        sourceHash: renderCandidate.sourceHash,
+        sourcePath: renderCandidate.sourcePath,
+        viewport: renderCandidate.viewport,
+      });
+      if (currentDraftProgram.current?.program.transactionId !== applyingTransactionId) return;
+      applyEditorDraft();
+    } catch (error) {
+      if (currentDraftProgram.current?.program.transactionId === applyingTransactionId) {
+        setDraftError(error instanceof Error
+          ? `Apply preflight failed: ${error.message}`
+          : "Apply preflight failed because Studio could not lower the draft safely.");
+      }
+    } finally {
+      setDraftApplyPending(false);
+    }
   }
 
   function installCanonicalDraft(
@@ -2008,9 +2042,10 @@ export function App() {
               appliedProgramCount={appliedPrograms.length}
               className="order-3 min-h-96 md:col-span-2 md:col-start-1 md:row-start-2 xl:col-span-1 xl:col-start-3 xl:row-start-1 xl:min-h-0"
               draftError={draftError}
+              draftApplyPending={draftApplyPending}
               draftOperation={draftOperation}
               draftProgram={draftProgram}
-              onApplyDraft={applyDraft}
+              onApplyDraft={() => void applyDraft()}
               onDiscardDraft={discardDraft}
               onDraftOperationChange={updateDraftOperation}
               onEntityScaleChange={(entityId, scale) => void resizeEntityFromInspector(entityId, scale)}
