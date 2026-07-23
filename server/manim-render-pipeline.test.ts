@@ -11,6 +11,7 @@ import type { ResolvedConfig, ViteDevServer } from "vite";
 
 import { renderProgramBatchId, type ProgramRenderRequest } from "../src/render-pipeline/contracts";
 import { importManimScene } from "../src/render-pipeline/source-import";
+import { createSceneDurationProgram } from "../src/studio/authoring-commands";
 import type { CanonicalEditOperation, CanonicalEditProgram } from "../src/studio/operations";
 import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import { handleManimRequest } from "./manim-render-http";
@@ -504,6 +505,42 @@ class GroupedEquation(Scene):
       exported.source.indexOf('poietra:transaction "batch-near-end-second"'),
     );
     expect(exported.source).toContain("# poietra:anchor 9");
+  });
+
+  it("exports a shorter Scene by reducing a Studio duration wait without truncating source", async () => {
+    const { manager } = await fixture();
+    const imported = importManimScene(sceneSource, "scene.py", "GroupedEquation");
+    expect(imported).not.toBeNull();
+    if (!imported) return;
+    const extension = createSceneDurationProgram({
+      capturedPlayhead: 7,
+      scene: imported.runtimeSceneState,
+      sourceAnchor: 7,
+      targetDuration: 11,
+      transactionId: "integration-duration-extension",
+    });
+    const extensionRecord = {
+      program: extension.program,
+      validation: { issues: extension.issues, status: extension.kind },
+    } as const;
+    const trim = createSceneDurationProgram({
+      appliedPrograms: [extensionRecord],
+      capturedPlayhead: 11,
+      scene: { ...imported.runtimeSceneState, duration: 11 },
+      sourceAnchor: 7,
+      targetDuration: 10,
+      transactionId: "integration-duration-trim",
+    });
+
+    const exported = await manager.exportSource(batchRequest([extension.program, trim.program]));
+    const reimported = importManimScene(exported.source, "scene.py", "GroupedEquation");
+
+    expect(exported.source).toContain("self.wait(2)");
+    expect(exported.source).not.toContain("self.wait(3)");
+    expect(reimported?.runtimeSceneState.duration).toBe(10);
+    expect(reimported?.runtimeSceneState.eventTrack.events.every((event) => (
+      (event.at ?? event.interval?.end ?? 0) <= 10
+    ))).toBe(true);
   });
 
   it("identifies a render session by the deterministic Program batch", async () => {

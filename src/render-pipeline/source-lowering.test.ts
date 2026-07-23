@@ -125,6 +125,41 @@ function operationBase(id: string, start: number, end = start) {
   };
 }
 
+function durationWaitProgram(duration: number, transactionId: string) {
+  const operation: CanonicalEditOperation = {
+    ...operationBase(`tx:${transactionId}/operation:duration-wait`, 7, 7 + duration),
+    eventKind: "wait",
+    kind: "InsertTimelineEvent",
+    label: `Extend Scene by ${duration}s`,
+    purpose: "scene-duration",
+    provenance: { evidence: ["Scene duration control"], origin: "studio-default" },
+  };
+  return {
+    ...canonicalProgram([operation], transactionId),
+    provenance: { evidence: ["manual Scene duration"], origin: "studio-default" as const },
+  };
+}
+
+function durationTrimProgram(
+  removedDuration: number,
+  targetDuration: number,
+  waitOperationIds: readonly string[],
+  transactionId: string,
+) {
+  const operation: CanonicalEditOperation = {
+    ...operationBase(`tx:${transactionId}/operation:duration-trim`, 7),
+    kind: "TrimSceneDuration",
+    provenance: { evidence: ["Scene duration control"], origin: "studio-default" },
+    removedDuration,
+    targetDuration,
+    waitOperationIds,
+  };
+  return {
+    ...canonicalProgram([operation], transactionId),
+    provenance: { evidence: ["manual Scene duration"], origin: "studio-default" as const },
+  };
+}
+
 function transformOperation(
   id: string,
   start: number,
@@ -816,6 +851,65 @@ class GroupedEquation(Scene):
         null,
       ),
     ).toThrow("An inserted wait must occupy its own source interval.");
+  });
+
+  it("lowers a Scene duration trim by reducing only its referenced Studio wait", () => {
+    const extension = durationWaitProgram(3, "duration-extension");
+    const wait = extension.operations[0];
+    expect(wait?.kind).toBe("InsertTimelineEvent");
+    if (wait?.kind !== "InsertTimelineEvent") return;
+    const trim = durationTrimProgram(1, 10, [wait.id], "duration-trim");
+
+    const lowered = lowerCanonicalProgramBatchSource(
+      source,
+      request(extension),
+      [extension, trim].map((program) => ({ program, sourceAnchor: 7 })),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
+
+    expect(lowered.insertedCode).toContain("self.wait(2)");
+    expect(lowered.insertedCode).not.toContain("self.wait(3)");
+    expect(lowered.source).not.toContain('poietra:transaction "duration-trim"');
+    expect(findSceneMotionAnchors(lowered.source, "GroupedEquation").map((anchor) => anchor.seconds))
+      .toEqual([9]);
+    expect(imported?.runtimeSceneState.duration).toBe(10);
+  });
+
+  it("restores the original source exactly when a Scene duration wait is fully removed", () => {
+    const extension = durationWaitProgram(3, "duration-to-remove");
+    const wait = extension.operations[0];
+    expect(wait?.kind).toBe("InsertTimelineEvent");
+    if (wait?.kind !== "InsertTimelineEvent") return;
+    const trim = durationTrimProgram(3, 8, [wait.id], "remove-duration-wait");
+
+    const lowered = lowerCanonicalProgramBatchSource(
+      source,
+      request(extension),
+      [extension, trim].map((program) => ({ program, sourceAnchor: 7 })),
+      { height: 8, width: 14.222 },
+      null,
+    );
+
+    expect(lowered.source).toBe(source);
+    expect(lowered.insertedCode).toBe("");
+    expect(findSceneMotionAnchors(lowered.source, "GroupedEquation").map((anchor) => anchor.seconds))
+      .toEqual([7]);
+    expect(importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation")?.runtimeSceneState.duration)
+      .toBe(8);
+  });
+
+  it("refuses a Scene duration trim that cannot be proven against a Studio wait", () => {
+    const trim = durationTrimProgram(1, 7, ["missing-wait"], "unproven-duration-trim");
+
+    expect(() => lowerCanonicalProgramBatchSource(
+      source,
+      request(trim),
+      [{ program: trim, sourceAnchor: 7 }],
+      { height: 8, width: 14.222 },
+      null,
+     )).toThrow(/does not reference an earlier Studio duration wait/i);
   });
 
   it("lowers a quadratic screen-space motion to an exact Manim cubic path", () => {
