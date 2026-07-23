@@ -4,6 +4,7 @@ import type { CreateCameraFocusSuggestion } from "../ai/edit-suggestions";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
 import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
 import { programExecutionCapabilities } from "./operation-registry";
+import { validateAndScheduleProgram } from "./program-validation";
 import {
   canonicalizeSuggestionProgram,
   createDirectManipulationModifyMotionProgram,
@@ -73,6 +74,12 @@ describe("EditProgram execution capabilities", () => {
       lowering: "illustrative",
       preview: "supported",
     });
+    const revalidated = validateAndScheduleProgram({
+      ...validation.program,
+      loweringStatus: "supported",
+    }, STUDIO_FIXTURE_SCENE);
+    expect(revalidated.program.loweringStatus).toBe("illustrative");
+    expect(programExecutionCapabilities(revalidated.program).apply).toBe("blocked");
     const record = programRecord(validation.program, validation);
     const preview = evaluateWorkingState(createFixtureWorkingState({ stagedPrograms: [record] }));
     const equation = projectProposedState(preview, 5.5).canvas.entities.find((entity) => entity.id === "equation_1");

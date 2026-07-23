@@ -40,6 +40,7 @@ import {
 import { projectedPositions, validateSuggestionDraft, validatedProgramRecord } from "./studio/draft-validation";
 import type { Point, ProgramRecord, ProposedState, RuntimeSceneState } from "./studio/model";
 import { projectMotionPaths, type StudioMotionPath } from "./studio/motion-paths";
+import { programExecutionCapabilities } from "./studio/operation-registry";
 import type { OperationOrigin } from "./studio/operations";
 import {
   latestSafeSourceAnchor,
@@ -470,15 +471,21 @@ export function App() {
   }
 
   function preserveProgramAsApplied(record: ProgramRecord | null | undefined) {
-    if (!record) return;
+    if (!record) return true;
+    const execution = programExecutionCapabilities(record.program);
+    if (record.validation.status !== "valid" || execution.apply !== "supported") {
+      setDraftError(execution.applyBlocker ?? "This Program is invalid and cannot be applied.");
+      return false;
+    }
     setAppliedPrograms((programs) => programs.some((candidate) => (
       candidate.program.transactionId === record.program.transactionId
     )) ? programs : [...programs, record]);
+    return true;
   }
 
   function preserveDirectManipulationDraft(record: ProgramRecord | null | undefined) {
-    if (!record || record.program.provenance.origin !== "direct-manipulation") return;
-    preserveProgramAsApplied(record);
+    if (!record || record.program.provenance.origin !== "direct-manipulation") return true;
+    return preserveProgramAsApplied(record);
   }
 
   function installDraft(
@@ -506,7 +513,7 @@ export function App() {
         options.capturedPlayhead,
         precedingPrograms,
       );
-      preserveDirectManipulationDraft(options.preserveDraft);
+      if (!preserveDirectManipulationDraft(options.preserveDraft)) return null;
       if (origin === "direct-manipulation") {
         cancelRequest(suggestionRequest);
         setSuggestion(null);
@@ -516,7 +523,8 @@ export function App() {
       }
       setDraftOperation(validated.operation);
       setDraftProgram(validated.record);
-      setDraftError(null);
+      const execution = programExecutionCapabilities(validated.record.program);
+      setDraftError(execution.applyBlocker);
       setRedoPrograms([]);
       if (!options.preservePlayhead) {
         setCurrentTime(sourceTimeToWorkingTime(
@@ -524,21 +532,26 @@ export function App() {
           validated.record.program.anchor.resolvedSeconds,
         ));
       }
-      return true;
+      return execution;
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The draft could not be validated.");
-      return false;
+      return null;
     }
   }
 
   function updateDraftOperation(operation: EditSuggestionOperation) {
     if (!draftProgram) return;
-    if (installDraft(operation, draftProgram.program.transactionId, {
+    const installed = installDraft(operation, draftProgram.program.transactionId, {
       capturedPlayhead: draftProgram.program.anchor.capturedPlayhead,
       origin: draftProgram.program.provenance.origin,
       preservePlayhead: true,
-    })) {
+    });
+    if (installed) {
       setSuggestion((current) => current ? { ...current, operation } : current);
+      if (draftProgram.program.provenance.origin !== "direct-manipulation") {
+        setSuggestionMessage(installed.applyBlocker);
+        setSuggestionStatus(installed.apply === "supported" ? "ready" : "error");
+      }
     }
   }
 
@@ -635,8 +648,8 @@ export function App() {
       }
       setPendingClarification(null);
       setSuggestion(result.suggestion);
-      setSuggestionMessage(null);
-      setSuggestionStatus("ready");
+      setSuggestionMessage(installed.applyBlocker);
+      setSuggestionStatus(installed.apply === "supported" ? "ready" : "error");
     } catch (error) {
       if (suggestionRequest.current !== controller || controller.signal.aborted) return;
       if (error instanceof DOMException && error.name === "AbortError") return;
@@ -675,6 +688,11 @@ export function App() {
 
   function applyDraft() {
     if (!draftProgram) return;
+    const execution = programExecutionCapabilities(draftProgram.program);
+    if (draftProgram.validation.status !== "valid" || execution.apply !== "supported") {
+      setDraftError(execution.applyBlocker ?? "This Program is invalid and cannot be applied.");
+      return;
+    }
     const nextPrograms = [...appliedCanonicalPrograms, draftProgram.program];
     const appliedWorkingAnchor = sourceTimeToWorkingTime(
       nextPrograms,
@@ -723,13 +741,18 @@ export function App() {
     if (entry.restoreAs === "draft") {
       setDraftProgram(entry.record);
       setDraftOperation(entry.operation);
-      setDraftError(null);
+      setDraftError(programExecutionCapabilities(entry.record.program).applyBlocker);
       setSelectedObjectIds(entry.selection);
       setCurrentTime(sourceTimeToWorkingTime(
         appliedCanonicalPrograms,
         entry.record.program.anchor.resolvedSeconds,
       ));
     } else {
+      const execution = programExecutionCapabilities(entry.record.program);
+      if (entry.record.validation.status !== "valid" || execution.apply !== "supported") {
+        setDraftError(execution.applyBlocker ?? "This Program is invalid and cannot be applied.");
+        return false;
+      }
       setAppliedPrograms((applied) => [...applied, entry.record]);
       setSelectedObjectIds(entry.selection);
     }
@@ -745,7 +768,7 @@ export function App() {
     cancelRequest(suggestionRequest);
     setDraftProgram(record);
     setDraftOperation(null);
-    setDraftError(null);
+    setDraftError(programExecutionCapabilities(record.program).applyBlocker);
     setSuggestion(null);
     setPendingClarification(null);
     setSuggestionMessage(null);
@@ -800,7 +823,7 @@ export function App() {
       });
       const validated = validatedProgramRecord(result.validation);
       if (validated.kind === "invalid") throw new Error(validated.message);
-      preserveProgramAsApplied(previousInsertion);
+      if (!preserveProgramAsApplied(previousInsertion)) return false;
       installCanonicalDraft(validated.record, result.entityIds, precedingPrograms);
       setInsertTool("select");
       setInsertValue("");
@@ -1263,7 +1286,7 @@ export function App() {
       });
       const validated = validatedProgramRecord(validation);
       if (validated.kind === "invalid") throw new Error(validated.message);
-      preserveDirectManipulationDraft(gestureContext.preserveDraft);
+      if (!preserveDirectManipulationDraft(gestureContext.preserveDraft)) return false;
       cancelRequest(suggestionRequest);
       setDraftProgram(validated.record);
       setDraftOperation(null);
@@ -1339,7 +1362,7 @@ export function App() {
       setDraftError(validated.message);
       return;
     }
-    preserveDirectManipulationDraft(gestureContext.preserveDraft);
+    if (!preserveDirectManipulationDraft(gestureContext.preserveDraft)) return;
     cancelRequest(suggestionRequest);
     setDraftProgram(validated.record);
     setDraftOperation(null);
