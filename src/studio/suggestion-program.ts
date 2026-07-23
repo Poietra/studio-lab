@@ -15,6 +15,7 @@ import type {
 import type { RuntimeSceneState } from "./model";
 import {
   exactEntityScaleAt,
+  hasSafeMagicEditIdentity,
   MAX_ENTITY_SCALE,
   MIN_ENTITY_SCALE,
 } from "./magic-edit-capabilities";
@@ -303,6 +304,14 @@ function scaleOperations(
     if (!entity) {
       return { kind: "invalid", message: `Scale target ${logicalEntityId} is no longer available.` };
     }
+    if (!hasSafeMagicEditIdentity(entity)) {
+      return {
+        kind: "invalid",
+        message: `Studio cannot scale ${logicalEntityId} safely: ${entity.sourceIdentity.kind === "unknown"
+          ? entity.sourceIdentity.reason
+          : "The source identity is not safe to mutate."}`,
+      };
+    }
     const scale = exactEntityScaleAt(context.scene, entity, operation.start);
     if (scale.kind === "unknown") {
       return {
@@ -359,10 +368,12 @@ function deleteOperations(
     if (!entity) {
       return { kind: "invalid", message: `Delete target ${logicalEntityId} is no longer available.` };
     }
-    if (!replacement && entity.sourceIdentity.kind === "unknown" && !entity.transactionId) {
+    if (!hasSafeMagicEditIdentity(entity)) {
       return {
         kind: "invalid",
-        message: `Studio cannot delete ${logicalEntityId} safely: ${entity.sourceIdentity.reason}`,
+        message: `Studio cannot delete ${logicalEntityId} safely: ${entity.sourceIdentity.kind === "unknown"
+          ? entity.sourceIdentity.reason
+          : "The source identity is not safe to mutate."}`,
       };
     }
     operations.push({
@@ -464,6 +475,18 @@ function requiresIllustrativeLowering(operation: EditSuggestionOperation) {
     : illustrativeKinds.has(operation.kind);
 }
 
+function requestedExecution(operation: EditSuggestionOperation) {
+  if (operation.kind === "edit-program") return operation.execution;
+  if (operation.kind === "create-camera-focus" || operation.kind === "create-explained-equation") {
+    return "parallel" as const;
+  }
+  if (
+    (operation.kind === "scale-objects" || operation.kind === "delete-objects")
+    && operation.targetObjectIds.length > 1
+  ) return "parallel" as const;
+  return "sequence" as const;
+}
+
 export function canonicalizeSuggestionProgram(
   operation: EditSuggestionOperation,
   context: CanonicalizationContext,
@@ -484,7 +507,7 @@ export function canonicalizeSuggestionProgram(
       loweringStatus: "unsupported",
       operations: [],
       provenance: provenance(context.origin, []),
-      requestedExecution: operation.kind === "edit-program" ? operation.execution : "sequence",
+      requestedExecution: requestedExecution(operation),
       schedule: { edges: [], mode: "sequence", order: [] },
       transactionId: context.transactionId,
       version: EDIT_OPERATION_VERSION,
@@ -510,7 +533,7 @@ export function canonicalizeSuggestionProgram(
       loweringStatus: "unsupported",
       operations: [],
       provenance: provenance(context.origin, [operation.kind]),
-      requestedExecution: operation.kind === "edit-program" ? operation.execution : "sequence",
+      requestedExecution: requestedExecution(operation),
       schedule: { edges: [], mode: "sequence", order: [] },
       transactionId: context.transactionId,
       version: EDIT_OPERATION_VERSION,
@@ -637,18 +660,10 @@ export function canonicalizeSuggestionProgram(
     loweringStatus: requiresIllustrativeLowering(operation) ? "illustrative" : "supported",
     operations,
     provenance: provenance(context.origin, [operation.kind]),
-    requestedExecution: operation.kind === "edit-program"
-      ? operation.execution
-      : operation.kind === "create-camera-focus" || operation.kind === "create-explained-equation"
-        ? "parallel"
-        : "sequence",
+    requestedExecution: requestedExecution(operation),
     schedule: {
       edges: [],
-      mode: operation.kind === "edit-program"
-        ? operation.execution
-        : operation.kind === "create-camera-focus" || operation.kind === "create-explained-equation"
-          ? "parallel"
-          : "sequence",
+      mode: requestedExecution(operation),
       order: operations.map((entry) => entry.id),
     },
     transactionId: context.transactionId,

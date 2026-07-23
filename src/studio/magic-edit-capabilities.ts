@@ -14,6 +14,10 @@ function isAppliedStudioEntity(entity: RuntimeEntity) {
     && entity.id.startsWith(`tx:${entity.transactionId}/entity:`);
 }
 
+export function hasSafeMagicEditIdentity(entity: RuntimeEntity) {
+  return entity.sourceIdentity.kind === "known" || isAppliedStudioEntity(entity);
+}
+
 export function exactEntityScaleAt(
   scene: RuntimeSceneState,
   entity: RuntimeEntity,
@@ -40,22 +44,27 @@ export function magicEditCapabilities(
   time: number,
 ): SuggestionObject["editCapabilities"] {
   const scale = exactEntityScaleAt(scene, entity, time);
-  const safeScale = scale.kind === "known"
+  const safeIdentity = hasSafeMagicEditIdentity(entity);
+  const safeScale = safeIdentity
+    && scale.kind === "known"
     && Number.isFinite(scale.value)
     && scale.value > 0;
-  const safeDelete = entity.sourceIdentity.kind === "known" || isAppliedStudioEntity(entity);
   return {
-    delete: safeDelete
+    delete: safeIdentity
       ? { kind: "supported" }
       : {
           kind: "blocked",
-          reason: entity.sourceIdentity.reason,
+          reason: entity.sourceIdentity.kind === "unknown"
+            ? entity.sourceIdentity.reason
+            : "The source identity is not safe to mutate.",
         },
     scale: safeScale
       ? { current: scale.value, kind: "supported" }
       : {
           kind: "blocked",
-          reason: scale.kind === "unknown"
+          reason: !safeIdentity && entity.sourceIdentity.kind === "unknown"
+            ? entity.sourceIdentity.reason
+            : scale.kind === "unknown"
             ? scale.reason
             : "The source scale is not a finite positive number.",
         },

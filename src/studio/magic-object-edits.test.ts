@@ -9,6 +9,7 @@ import {
 } from "./evaluator";
 import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
 import type { RuntimeSceneState } from "./model";
+import { canonicalizeSuggestionProgram } from "./suggestion-program";
 import {
   applyStagedPrograms,
   stageProgram,
@@ -156,12 +157,40 @@ describe("Magic Edit scale and delete canonicalization", () => {
 
     expect(validate(scaleSuggestion(), unknownScene)).toEqual({
       kind: "invalid",
-      message: "Studio cannot scale equation_1 safely: Scale comes from a runtime function.",
+      message: "Studio cannot scale equation_1 safely: Runtime identity is unresolved.",
     });
     expect(validate(deleteSuggestion(), unknownScene)).toEqual({
       kind: "invalid",
       message: "Studio cannot delete equation_1 safely: Runtime identity is unresolved.",
     });
+  });
+
+  it("defends canonicalization against a known scale with an unknown source identity", () => {
+    const entity = KNOWN_SCALE_SCENE.objectGraph.entities.equation_1;
+    const unsafeScene: RuntimeSceneState = {
+      ...KNOWN_SCALE_SCENE,
+      objectGraph: {
+        ...KNOWN_SCALE_SCENE.objectGraph,
+        entities: {
+          ...KNOWN_SCALE_SCENE.objectGraph.entities,
+          equation_1: {
+            ...entity,
+            sourceIdentity: { kind: "unknown", reason: "Runtime identity is unresolved." },
+          },
+        },
+      },
+    };
+    const result = canonicalizeSuggestionProgram(scaleSuggestion(), {
+      capturedPlayhead: 5,
+      origin: "remote-model",
+      scene: unsafeScene,
+      transactionId: "unsafe-scale",
+    });
+
+    expect(result.kind).toBe("invalid");
+    expect(result.issues[0]?.message).toBe(
+      "Studio cannot scale equation_1 safely: Runtime identity is unresolved.",
+    );
   });
 
   it("keeps scale then delete as one safe sequence and rejects unsafe orderings", () => {
@@ -226,7 +255,55 @@ describe("Magic Edit scale and delete canonicalization", () => {
     });
   });
 
-  it("rebinds scale and deletion to a preceding transform identity", () => {
+  it("rebinds deletion to a preceding transform identity", () => {
+    const operation: EditSuggestionOperation = {
+      anchor: { kind: "playhead", referenceSeconds: 5 },
+      execution: "sequence",
+      kind: "edit-program",
+      operations: [
+        {
+          easing: "smooth",
+          end: 6,
+          identityAfter: "target-replaces-source",
+          kind: "create-transform",
+          mismatchMode: "transform",
+          sourceObjectId: "equation_1",
+          start: 5,
+          strategy: "transform-matching-tex",
+          target: {
+            displayLines: ["F = ma"],
+            kind: "mathtex",
+            label: "Newton's second law",
+            texParts: ["F", "=", "m", "a"],
+          },
+        },
+        {
+          animation: "fade-out",
+          end: 6.4,
+          kind: "delete-objects",
+          start: 6,
+          targetObjectIds: ["equation_1"],
+        },
+      ],
+    };
+    const result = validate(operation);
+    expect(result.kind).toBe("valid");
+    if (result.kind !== "valid") return;
+    const transform = result.record.program.operations.find((entry) => entry.kind === "TransformContent");
+    const deletion = result.record.program.operations.find((entry) => (
+      entry.kind === "ChangePresence" && entry.effect === "remove"
+    ));
+    expect(transform?.kind).toBe("TransformContent");
+    expect(deletion?.kind).toBe("ChangePresence");
+    if (
+      transform?.kind !== "TransformContent"
+      || deletion?.kind !== "ChangePresence"
+    ) return;
+    expect(deletion.entityId).toBe(transform.targetEntityId);
+    expect(deletion.dependsOn).toContain(transform.id);
+  });
+
+  it("rejects scale combined with TransformContent instead of previewing a default-scale replacement", () => {
     const operation: EditSuggestionOperation = {
       anchor: { kind: "playhead", referenceSeconds: 5 },
       execution: "sequence",
@@ -256,35 +333,13 @@ describe("Magic Edit scale and delete canonicalization", () => {
           start: 6,
           targetObjectIds: ["equation_1"],
         },
-        {
-          animation: "fade-out",
-          end: 7.4,
-          kind: "delete-objects",
-          start: 7,
-          targetObjectIds: ["equation_1"],
-        },
       ],
     };
-    const result = validate(operation);
-    expect(result.kind).toBe("valid");
-    if (result.kind !== "valid") return;
-    const transform = result.record.program.operations.find((entry) => entry.kind === "TransformContent");
-    const scale = result.record.program.operations.find((entry) => entry.kind === "AnimateProperty");
-    const deletion = result.record.program.operations.find((entry) => (
-      entry.kind === "ChangePresence" && entry.effect === "remove"
-    ));
-    expect(transform?.kind).toBe("TransformContent");
-    expect(scale?.kind).toBe("AnimateProperty");
-    expect(deletion?.kind).toBe("ChangePresence");
-    if (
-      transform?.kind !== "TransformContent"
-      || scale?.kind !== "AnimateProperty"
-      || deletion?.kind !== "ChangePresence"
-    ) return;
-    expect(scale.entityId).toBe(transform.targetEntityId);
-    expect(scale.dependsOn).toContain(transform.id);
-    expect(deletion.entityId).toBe(transform.targetEntityId);
-    expect(deletion.dependsOn).toContain(transform.id);
+
+    expect(validate(operation)).toEqual({
+      kind: "invalid",
+      message: "Scaling and transforming the same logical object in one Edit Program is not supported because Studio cannot preserve the target object's exact source scale.",
+    });
   });
 
   it("requires source-sequential execution with a Scene transition", () => {
@@ -322,5 +377,79 @@ describe("Magic Edit scale and delete canonicalization", () => {
       kind: "invalid",
       message: "Scale or deletion must run in sequence with a Scene transition so Studio can lower one truthful source timeline.",
     });
+  });
+
+  it("requires a Scene transition to be the final sequence step", () => {
+    const operation: EditSuggestionOperation = {
+      anchor: { kind: "playhead", referenceSeconds: 5 },
+      execution: "sequence",
+      kind: "edit-program",
+      operations: [
+        {
+          color: "sky",
+          destination: "next-scene",
+          easing: "smooth",
+          end: 6.5,
+          kind: "create-scene-transition",
+          shape: "circle",
+          start: 5,
+          style: "cover-reveal",
+        },
+        {
+          easing: "smooth",
+          end: 7.5,
+          factor: 1.25,
+          kind: "scale-objects",
+          start: 6.5,
+          targetObjectIds: ["equation_1"],
+        },
+      ],
+    };
+
+    expect(validate(operation)).toEqual({
+      kind: "invalid",
+      message: "create-scene-transition must be the final Edit Program step because its Scene boundary transfers ownership to the next Scene.",
+    });
+  });
+
+  it("reports multi-target standalone scale with the parallel schedule it lowers", () => {
+    const scene: RuntimeSceneState = {
+      ...KNOWN_SCALE_SCENE,
+      propertyChannels: {
+        ...KNOWN_SCALE_SCENE.propertyChannels,
+        "arrow_1/scale": {
+          entityId: "arrow_1",
+          key: "scale",
+          samples: [{
+            interval: { end: 12, start: 0 },
+            kind: "exact",
+            provenanceId: "source:arrow-scale",
+            value: 2,
+          }],
+        },
+      },
+    };
+    const result = canonicalizeSuggestionProgram({
+      anchor: { kind: "playhead", referenceSeconds: 5 },
+      easing: "smooth",
+      end: 6,
+      factor: 1.5,
+      kind: "scale-objects",
+      start: 5,
+      targetObjectIds: ["equation_1", "arrow_1"],
+    }, {
+      capturedPlayhead: 5,
+      origin: "remote-model",
+      scene,
+      transactionId: "multi-scale",
+    });
+
+    expect(result.kind).toBe("valid");
+    expect(result.program.requestedExecution).toBe("parallel");
+    expect(result.program.schedule.mode).toBe("parallel");
+    expect(result.program.operations.map((entry) => entry.interval)).toEqual([
+      { end: 6, start: 5 },
+      { end: 6, start: 5 },
+    ]);
   });
 });

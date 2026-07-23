@@ -66,16 +66,37 @@ describe("Magic Edit object capabilities", () => {
     expect(exactEntityScaleAt(scene, entity, 5)).toEqual(entity.geometry?.scale);
     expect(magicEditCapabilities(scene, entity, 5)).toEqual({
       delete: { kind: "blocked", reason: "Runtime identity is unresolved." },
-      scale: { kind: "blocked", reason: "Scale comes from a runtime function." },
+      scale: { kind: "blocked", reason: "Runtime identity is unresolved." },
     });
     const missingGeometry = { ...entity, geometry: undefined };
     expect(magicEditCapabilities(withEntity(missingGeometry, {}), missingGeometry, 5)).toEqual({
       delete: { kind: "blocked", reason: "Runtime identity is unresolved." },
-      scale: { kind: "blocked", reason: "No exact source scale is available at this time." },
+      scale: { kind: "blocked", reason: "Runtime identity is unresolved." },
     });
     const forgedTransaction = { ...missingGeometry, transactionId: "unrelated" };
     expect(magicEditCapabilities(withEntity(forgedTransaction, {}), forgedTransaction, 5).delete)
       .toEqual({ kind: "blocked", reason: "Runtime identity is unresolved." });
+  });
+
+  it("does not advertise scale from geometry alone when source identity is unknown", () => {
+    const entity: RuntimeEntity = {
+      geometry: {
+        dimensions: { kind: "known", value: {} },
+        position: { kind: "known", value: { x: 0, y: 0 } },
+        scale: { kind: "known", value: 1.5 },
+        style: { kind: "known", value: {} },
+      },
+      id: "runtime-object",
+      lifetime: [{ end: 12, start: 0 }],
+      provisional: false,
+      sourceIdentity: { kind: "unknown", reason: "Runtime identity is unresolved." },
+      type: "Circle",
+    };
+
+    expect(magicEditCapabilities(withEntity(entity, {}), entity, 5).scale).toEqual({
+      kind: "blocked",
+      reason: "Runtime identity is unresolved.",
+    });
   });
 
   it("allows a Studio-generated object that can be rebound during batch export", () => {

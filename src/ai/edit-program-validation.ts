@@ -147,6 +147,7 @@ export function validateEditProgram<TId extends string>(
     null;
   const sceneTransitionStep =
     operation.operations.find((step): step is SceneTransitionStep => step.kind === "create-scene-transition") ?? null;
+  const sceneTransitionIndex = sceneTransitionStep ? operation.operations.indexOf(sceneTransitionStep) : -1;
   const scaleStep = operation.operations.find((step): step is ScaleStep => step.kind === "scale-objects") ?? null;
   const deleteStep = operation.operations.find((step): step is DeleteStep => step.kind === "delete-objects") ?? null;
   const motionCandidates = motionSteps.map(({ index, step }) => ({
@@ -235,6 +236,13 @@ export function validateEditProgram<TId extends string>(
     operation.execution === "parallel" &&
     sceneTransitionStep !== null &&
     (scaleStep !== null || deleteStep !== null);
+  const sceneTransitionIsNotFinal =
+    sceneTransitionIndex >= 0 && sceneTransitionIndex !== operation.operations.length - 1;
+  const scaleTransformConflict = transformSteps.some(({ step }) =>
+    operation.operations.some(
+      (candidate) => candidate.kind === "scale-objects" && candidate.targetObjectIds.includes(step.sourceObjectId),
+    ),
+  );
   const editAfterDelete =
     operation.execution === "sequence" &&
     operation.operations.some((step, index) => {
@@ -257,6 +265,8 @@ export function validateEditProgram<TId extends string>(
     parallelWriteConflict ||
     parallelScaleOrDeleteConflict ||
     parallelSceneTransitionObjectEdit ||
+    sceneTransitionIsNotFinal ||
+    scaleTransformConflict ||
     editAfterDelete
   ) {
     return {
@@ -264,15 +274,19 @@ export function validateEditProgram<TId extends string>(
       message:
         equationCreationCount > 1
           ? "This Edit Program contains two equation-creation macros. Keep one equation identity and combine its explanation inside create-explained-equation."
-          : parallelWriteConflict
-            ? "This Edit Program moves and rewrites or observes the same object in parallel. Express those steps in sequence so Studio can preserve the dependency."
-            : parallelScaleOrDeleteConflict
-              ? "Scaling or deleting an object cannot run in parallel with another edit on that object. Express those steps in sequence."
-              : parallelSceneTransitionObjectEdit
-                ? "Scale or deletion must run in sequence with a Scene transition so Studio can lower one truthful source timeline."
-                : editAfterDelete
-                  ? "delete-objects must be the last step that targets an object. Move the later edit before deletion."
-                  : "The Edit Program contains an invalid, unselected, or unavailable target.",
+          : sceneTransitionIsNotFinal
+            ? "create-scene-transition must be the final Edit Program step because its Scene boundary transfers ownership to the next Scene."
+            : scaleTransformConflict
+              ? "Scaling and transforming the same logical object in one Edit Program is not supported because Studio cannot preserve the target object's exact source scale."
+              : parallelWriteConflict
+                ? "This Edit Program moves and rewrites or observes the same object in parallel. Express those steps in sequence so Studio can preserve the dependency."
+                : parallelScaleOrDeleteConflict
+                  ? "Scaling or deleting an object cannot run in parallel with another edit on that object. Express those steps in sequence."
+                  : parallelSceneTransitionObjectEdit
+                    ? "Scale or deletion must run in sequence with a Scene transition so Studio can lower one truthful source timeline."
+                    : editAfterDelete
+                      ? "delete-objects must be the last step that targets an object. Move the later edit before deletion."
+                      : "The Edit Program contains an invalid, unselected, or unavailable target.",
     };
   }
 
