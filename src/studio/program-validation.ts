@@ -1,4 +1,5 @@
 import type { MotionEasing, RuntimeSceneState } from "./model";
+import { exactEntityScaleAt } from "./magic-edit-capabilities";
 import {
   channelKey,
   type CanonicalEditOperation,
@@ -258,6 +259,24 @@ export function validateAndScheduleProgram(
           operationId: operation.id,
           severity: "error",
         });
+      }
+      if (source) {
+        const scale = exactEntityScaleAt(scene, source, operation.interval.start);
+        if (
+          scale.kind !== "known"
+          || !Number.isFinite(scale.value)
+          || Math.abs(scale.value - 1) >= EPSILON
+        ) {
+          issues.push({
+            code: "lowering-unsupported",
+            field: "sourceEntityId",
+            message: scale.kind === "unknown"
+              ? `TransformContent cannot verify the exact 1x source scale for ${operation.sourceEntityId}: ${scale.reason}`
+              : `TransformContent requires ${operation.sourceEntityId} to have an effective 1x scale; the source is ${scale.value}x.`,
+            operationId: operation.id,
+            severity: "error",
+          });
+        }
       }
     }
   }

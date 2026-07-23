@@ -349,6 +349,7 @@ function scaleOperations(
         "Magic Edit uniform scale",
         `${scale.value.toFixed(4)}x * ${operation.factor.toFixed(4)}`,
       ]),
+      relativeFactor: operation.factor,
       to: targetScale,
     });
   }
@@ -790,6 +791,7 @@ export function createDirectManipulationScaleProgram(
         "uniform resize gesture",
         `${scale.from.toFixed(4)}x to ${scale.to.toFixed(4)}x`,
       ]),
+      relativeFactor: scale.to / scale.from,
       to: scale.to,
     };
   });

@@ -55,6 +55,13 @@ export type AnimatePropertyOperation = OperationBase &
     from?: Point | number;
     key: "appearance" | "position" | "rotation" | "scale";
     kind: "AnimateProperty";
+    /**
+     * Preserves the user's multiplicative intent when a scale edit is rebased
+     * around Programs inserted later at an earlier source anchor. `from` and
+     * `to` remain the captured preview pair; evaluators and source lowering
+     * resolve the effective pair from this factor at execution time.
+     */
+    relativeFactor?: number;
     to: Point | number;
   }>;
 

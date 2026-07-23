@@ -575,6 +575,128 @@ class GroupedEquation(Scene):
     expect(samples.at(-1)).toMatchObject({ from: 1.5, value: 3 });
   });
 
+  it("rebases relative scale Programs added in reverse source-anchor order and reimports the same result", () => {
+    const multiAnchorSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        equation = MathTex("x")
+        self.add(equation)
+        self.wait(5)
+        # poietra:anchor 5.000
+        self.wait(2)
+        # poietra:anchor 7.000
+        self.wait(1)
+`;
+    const scaleProgram = (transactionId: string, anchor: number, factor: number) => {
+      const scale: CanonicalEditOperation = {
+        ...operationBase(`tx:${transactionId}/operation:scale`, anchor, anchor + 1),
+        easing: "smooth",
+        entityId: "equation_1",
+        from: 1,
+        key: "scale",
+        kind: "AnimateProperty",
+        relativeFactor: factor,
+        to: factor,
+      };
+      return {
+        ...canonicalProgram([scale], transactionId),
+        anchor: {
+          capturedPlayhead: anchor,
+          evidence: [`captured-playhead:${anchor.toFixed(3)}`],
+          resolvedSeconds: anchor,
+          source: { kind: "playhead" as const, referenceSeconds: anchor },
+        },
+      } satisfies CanonicalEditProgram;
+    };
+    const later = scaleProgram("later-relative-scale", 7, 2);
+    const earlier = scaleProgram("earlier-relative-scale", 5, 1.5);
+
+    const lowered = lowerCanonicalProgramBatchSource(
+      multiAnchorSource,
+      request(later),
+      [
+        { program: later, sourceAnchor: 7 },
+        { program: earlier, sourceAnchor: 5 },
+      ],
+      { height: 8, width: 14.222 },
+      null,
+    );
+    const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
+    const samples = imported?.runtimeSceneState.propertyChannels[
+      "source:examples/relativity.py#GroupedEquation:equation/scale"
+    ]?.samples ?? [];
+
+    expect(lowered.insertedCode.indexOf("equation.animate.scale(1.5)"))
+      .toBeLessThan(lowered.insertedCode.indexOf("equation.animate.scale(2)"));
+    expect(lowered.insertedCode).toContain(
+      '# poietra:scale {"kind":"animated","scales":[{"from":1.5,"to":3,"variable":"equation"}],"version":1}',
+    );
+    expect(samples.at(-1)).toMatchObject({ from: 1.5, relative: true, value: 3 });
+  });
+
+  it("rejects TransformContent when the imported object has a non-1 effective scale", () => {
+    const scaledSource = source.replace(
+      'equation = MathTex("E", "=", "m", "c^2")',
+      'equation = MathTex("E", "=", "m", "c^2").scale(2)',
+    );
+    const transform = transformOperation(
+      "transform-scaled-source",
+      7,
+      "equation_1",
+      "tx:transform-scaled-source/entity:target",
+      ["F", "=", "m", "a"],
+    );
+
+    expect(() => lowerCanonicalProgramSource(
+      scaledSource,
+      request(canonicalProgram([transform], "transform-scaled-source")),
+      { height: 8, width: 14.222 },
+      null,
+    )).toThrow(/TransformContent requires .* effective 1x scale.*2x/i);
+  });
+
+  it("rejects TransformContent after a previous Program leaves the object at a non-1 scale", () => {
+    const scale: CanonicalEditOperation = {
+      ...operationBase("scale-before-transform", 7, 8),
+      easing: "smooth",
+      entityId: "equation_1",
+      from: 1,
+      key: "scale",
+      kind: "AnimateProperty",
+      relativeFactor: 1.5,
+      to: 1.5,
+    };
+    const first = canonicalProgram([scale], "scale-before-transform");
+    const transform = transformOperation(
+      "transform-after-scale",
+      8,
+      "equation_1",
+      "tx:transform-after-scale/entity:target",
+      ["F", "=", "m", "a"],
+    );
+    const second = {
+      ...canonicalProgram([transform], "transform-after-scale"),
+      anchor: {
+        capturedPlayhead: 8,
+        evidence: ["captured-playhead:8.000"],
+        resolvedSeconds: 8,
+        source: { kind: "playhead" as const, referenceSeconds: 8 },
+      },
+    } satisfies CanonicalEditProgram;
+
+    expect(() => lowerCanonicalProgramBatchSource(
+      source,
+      request(first),
+      [
+        { program: first, sourceAnchor: 7 },
+        { program: second, sourceAnchor: 7 },
+      ],
+      { height: 8, width: 14.222 },
+      null,
+    )).toThrow(/TransformContent requires .* effective 1x scale.*1\.5x/i);
+  });
+
   it("lowers an immediate lifetime end to self.remove without a zero-duration play", () => {
     const remove: CanonicalEditOperation = {
       ...operationBase("trim-lifetime", 7),

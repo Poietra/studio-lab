@@ -301,6 +301,83 @@ class Scaling(Scene):
     ))?.scale).toBeCloseTo(1.5);
   });
 
+  it("rebases relative scale Programs added in reverse source-anchor order", () => {
+    const source = `from manim import *
+
+class Scaling(Scene):
+    def construct(self):
+        equation = MathTex("x")
+        self.add(equation)
+        self.wait(5)
+        # poietra:anchor 5.000
+        self.wait(2)
+        # poietra:anchor 7.000
+        self.wait(1)
+`;
+    const imported = importManimScene(source, "scaling.py", "Scaling");
+    expect(imported).not.toBeNull();
+    if (!imported) return;
+    const entityId = "source:scaling.py#Scaling:equation";
+    const scaleProgram = (transactionId: string, anchor: number, factor: number) => {
+      const operation: CanonicalEditOperation = {
+        dependsOn: [],
+        easing: "smooth",
+        entityId,
+        from: 1,
+        id: operationId(transactionId, "scale"),
+        interval: { end: anchor + 1, start: anchor },
+        key: "scale",
+        kind: "AnimateProperty",
+        provenance: { evidence: [], origin: "remote-model" },
+        relativeFactor: factor,
+        to: factor,
+      };
+      return {
+        ...programWith([operation], transactionId, anchor),
+        loweringStatus: "supported" as const,
+      };
+    };
+    const later = scaleProgram("later-scale", 7, 2);
+    const earlier = scaleProgram("earlier-scale", 5, 1.5);
+    const workingState: WorkingState = {
+      appliedPrograms: [
+        programRecord(later, { issues: [], kind: "valid" }),
+        programRecord(earlier, { issues: [], kind: "valid" }),
+      ],
+      editorContext: {
+        activeSceneId: imported.sceneId,
+        playhead: 9,
+        selection: [entityId],
+        version: STUDIO_STATE_VERSION,
+        viewport: { height: 360, width: 640 },
+      },
+      runtimeSceneState: imported.runtimeSceneState,
+      sourceSnapshot: {
+        configId: "test",
+        hash: imported.sourceHash,
+        sourceId: "scaling.py",
+        version: STUDIO_STATE_VERSION,
+      },
+      stagedPrograms: [],
+      staticSemanticState: imported.staticSemanticState,
+      version: STUDIO_STATE_VERSION,
+    };
+
+    const proposed = evaluateWorkingState(workingState);
+    expect(proposed.programs.every((record) => record.validation.status === "valid")).toBe(true);
+    expect(projectProposedState(proposed, proposed.evaluatedScene.duration).canvas.entities.find((entity) => (
+      entity.id === entityId
+    ))?.scale).toBeCloseTo(3);
+    const samples = proposed.evaluatedScene.propertyChannels[`${entityId}/scale`]?.samples ?? [];
+    expect(samples.filter((sample) => sample.operationId).map((sample) => ({
+      from: sample.from,
+      value: sample.value,
+    }))).toEqual([
+      { from: 1, value: 1.5 },
+      { from: 1.5, value: 3 },
+    ]);
+  });
+
   it("rejects two operations that produce the same provisional identity", () => {
     const transactionId = "duplicate-producer";
     const entityId = provisionalEntityId(transactionId, "created");

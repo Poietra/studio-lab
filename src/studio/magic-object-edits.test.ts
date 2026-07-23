@@ -89,6 +89,7 @@ describe("Magic Edit scale and delete canonicalization", () => {
         from: 1,
         key: "scale",
         kind: "AnimateProperty",
+        relativeFactor: 1.5,
         to: 1.5,
       }),
     ]);
@@ -339,6 +340,47 @@ describe("Magic Edit scale and delete canonicalization", () => {
     expect(validate(operation)).toEqual({
       kind: "invalid",
       message: "Scaling and transforming the same logical object in one Edit Program is not supported because Studio cannot preserve the target object's exact source scale.",
+    });
+  });
+
+  it("rejects TransformContent when the imported source has a non-1 effective scale", () => {
+    const scaledScene: RuntimeSceneState = {
+      ...KNOWN_SCALE_SCENE,
+      propertyChannels: {
+        ...KNOWN_SCALE_SCENE.propertyChannels,
+        "equation_1/scale": {
+          entityId: "equation_1",
+          key: "scale",
+          samples: [{
+            interval: { end: 12, start: 0 },
+            kind: "exact",
+            provenanceId: "source:scaled-equation",
+            value: 2,
+          }],
+        },
+      },
+    };
+    const operation: EditSuggestionOperation = {
+      anchor: { kind: "playhead", referenceSeconds: 5 },
+      easing: "smooth",
+      end: 6,
+      identityAfter: "target-replaces-source",
+      kind: "create-transform",
+      mismatchMode: "transform",
+      sourceObjectId: "equation_1",
+      start: 5,
+      strategy: "transform-matching-tex",
+      target: {
+        displayLines: ["F = ma"],
+        kind: "mathtex",
+        label: "Newton's second law",
+        texParts: ["F", "=", "m", "a"],
+      },
+    };
+
+    expect(validate(operation, scaledScene)).toEqual({
+      kind: "invalid",
+      message: expect.stringMatching(/requires .* effective 1x scale.*2x/i),
     });
   });
 

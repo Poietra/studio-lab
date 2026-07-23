@@ -6,6 +6,7 @@ import {
   findSourceSceneComments,
   importManimScene,
 } from "./source-import";
+import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "../studio/magic-edit-capabilities";
 import type { MotionEasing } from "../studio/model";
 import {
   EDIT_OPERATION_VERSION,
@@ -421,8 +422,22 @@ function scaleChange(operation: Extract<CanonicalEditOperation, { kind: "Animate
       "Scale animation requires finite positive absolute from and to values.",
     );
   }
+  const capturedFactor = operation.to / operation.from;
+  if (
+    operation.relativeFactor !== undefined
+    && (
+      !Number.isFinite(operation.relativeFactor)
+      || operation.relativeFactor <= 0
+      || Math.abs(capturedFactor - operation.relativeFactor) >= 0.000001
+    )
+  ) {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "A relative scale factor must be finite, positive, and match its captured absolute scale pair.",
+    );
+  }
   return {
-    factor: operation.to / operation.from,
+    factor: operation.relativeFactor ?? capturedFactor,
     from: operation.from,
     to: operation.to,
   };
@@ -466,7 +481,13 @@ function sourceThroughAnchor(
   return lines.join(source.includes("\r\n") ? "\r\n" : "\n");
 }
 
-function assertScaleOriginsMatchSource(
+type ResolvedScaleChange = Readonly<{
+  factor: number;
+  from: number;
+  to: number;
+}>;
+
+function resolveScaleChangesAndTransforms(
   source: string,
   sourcePath: string,
   sceneName: string,
@@ -482,7 +503,9 @@ function assertScaleOriginsMatchSource(
   const scales = operations.filter((operation): operation is Extract<CanonicalEditOperation, {
     kind: "AnimateProperty";
   }> => operation.kind === "AnimateProperty" && operation.key === "scale");
-  if (scales.length === 0) return;
+  const transforms = operations.filter((operation): operation is Extract<CanonicalEditOperation, {
+    kind: "TransformContent";
+  }> => operation.kind === "TransformContent");
   let imported: ReturnType<typeof importManimScene> | undefined;
   const sourceScale = (entityId: string) => {
     imported ??= importManimScene(
@@ -494,7 +517,7 @@ function assertScaleOriginsMatchSource(
     if (!imported) {
       throw new ProgramLoweringError(
         "operation-unsupported",
-        "Scale lowering cannot verify the source state at the selected anchor.",
+        "Object-edit lowering cannot verify the source scale at the selected anchor.",
       );
     }
     const sourceVariable = sourceBindings.get(entityId);
@@ -517,7 +540,7 @@ function assertScaleOriginsMatchSource(
     ) {
       throw new ProgramLoweringError(
         "operation-unsupported",
-        `Scale lowering cannot verify a finite positive source scale for ${entityId} at the selected anchor.`,
+        `Object-edit lowering cannot verify a finite positive source scale for ${entityId} at the selected anchor.`,
       );
     }
     return knowledge.value;
@@ -529,34 +552,58 @@ function assertScaleOriginsMatchSource(
   )));
   const currentScales = new Map<string, number>();
   const currentScaleStates = new Map<string, SourceScaleState>();
+  for (const [entityId, scale] of createdScales) {
+    const state = { kind: "absolute", value: scale } as const;
+    currentScaleStates.set(entityId, state);
+    entityScaleStates?.set(entityId, state);
+  }
+  const effectiveScale = (entityId: string) => {
+    const current = currentScales.get(entityId);
+    if (current !== undefined) return { current, state: currentScaleStates.get(entityId) };
+    let state = currentScaleStates.get(entityId) ?? entityScaleStates?.get(entityId);
+    if (state?.kind === "absolute") return { current: state.value, state };
+    if (state?.kind === "relative-to-source") {
+      return { current: sourceScale(entityId) * state.factor, state };
+    }
+    const created = createdScales.get(entityId);
+    if (created !== undefined) {
+      state = { kind: "absolute", value: created };
+      return { current: created, state };
+    }
+    if (generatedEntityIds?.has(entityId)) {
+      state = { kind: "absolute", value: 1 };
+      return { current: 1, state };
+    }
+    state = { factor: 1, kind: "relative-to-source" };
+    return { current: sourceScale(entityId), state };
+  };
+  const resolvedChanges = new Map<string, ResolvedScaleChange>();
   for (const operation of scales) {
-    const change = scaleChange(operation);
-    let current = currentScales.get(operation.entityId);
-    let state = currentScaleStates.get(operation.entityId)
-      ?? entityScaleStates?.get(operation.entityId);
-    if (current === undefined && state?.kind === "absolute") current = state.value;
-    if (current === undefined && state?.kind === "relative-to-source") {
-      current = sourceScale(operation.entityId) * state.factor;
-    }
-    if (current === undefined) {
-      current = createdScales.get(operation.entityId);
-      if (current !== undefined) state = { kind: "absolute", value: current };
-    }
-    if (current === undefined && generatedEntityIds?.has(operation.entityId)) {
-      current = change.from;
-      state = { kind: "absolute", value: current };
-    }
-    if (current === undefined) {
-      current = sourceScale(operation.entityId);
-      state = { factor: 1, kind: "relative-to-source" };
-    }
+    const captured = scaleChange(operation);
+    const { current, state } = effectiveScale(operation.entityId);
     const tolerance = Math.max(EPSILON, Math.abs(current) * 0.000001);
-    if (Math.abs(change.from - current) >= tolerance) {
+    if (operation.relativeFactor === undefined && Math.abs(captured.from - current) >= tolerance) {
       throw new ProgramLoweringError(
         "operation-unsupported",
-        `Scale operation ${operation.id} expects ${formatAmount(change.from)}x but source is ${formatAmount(current)}x at that point.`,
+        `Scale operation ${operation.id} expects ${formatAmount(captured.from)}x but source is ${formatAmount(current)}x at that point.`,
       );
     }
+    const change: ResolvedScaleChange = {
+      factor: captured.factor,
+      from: current,
+      to: current * captured.factor,
+    };
+    if (
+      !Number.isFinite(change.to)
+      || change.to < MIN_ENTITY_SCALE
+      || change.to > MAX_ENTITY_SCALE
+    ) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        `Scale operation ${operation.id} must resolve between ${MIN_ENTITY_SCALE}x and ${MAX_ENTITY_SCALE}x.`,
+      );
+    }
+    resolvedChanges.set(operation.id, change);
     currentScales.set(operation.entityId, change.to);
     const nextState: SourceScaleState = state?.kind === "relative-to-source"
       ? { factor: state.factor * change.factor, kind: "relative-to-source" }
@@ -564,6 +611,19 @@ function assertScaleOriginsMatchSource(
     currentScaleStates.set(operation.entityId, nextState);
     entityScaleStates?.set(operation.entityId, nextState);
   }
+  for (const operation of transforms) {
+    const { current } = effectiveScale(operation.sourceEntityId);
+    if (!Number.isFinite(current) || Math.abs(current - 1) >= EPSILON) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        `TransformContent requires ${operation.sourceEntityId} to have an effective 1x scale; source lowering resolved ${formatAmount(current)}x.`,
+      );
+    }
+    const targetState = { kind: "absolute", value: 1 } as const;
+    currentScaleStates.set(operation.targetEntityId, targetState);
+    entityScaleStates?.set(operation.targetEntityId, targetState);
+  }
+  return resolvedChanges;
 }
 
 function persistentRemovalVariables(
@@ -721,7 +781,7 @@ export function lowerCanonicalProgramSource(
     (left, right) =>
       operationTime(left) - operationTime(right) || (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0),
   );
-  assertScaleOriginsMatchSource(
+  const resolvedScaleChanges = resolveScaleChangesAndTransforms(
     source,
     request.sourcePath,
     request.sceneName,
@@ -845,7 +905,7 @@ export function lowerCanonicalProgramSource(
       )
         continue;
       const variable = requireVariable(variableByEntity, operation.entityId);
-      const change = scaleChange(operation);
+      const change = resolvedScaleChanges.get(operation.id) ?? scaleChange(operation);
       output.push(
         sourceMarker("scale", {
           kind: "exact",
@@ -999,7 +1059,7 @@ export function lowerCanonicalProgramSource(
         }
       } else if (operation.kind === "AnimateProperty" && operation.key === "scale") {
         const variable = requireVariable(variableByEntity, operation.entityId);
-        const change = scaleChange(operation);
+        const change = resolvedScaleChanges.get(operation.id) ?? scaleChange(operation);
         scales.push({ from: change.from, to: change.to, variable });
         actions.push(`${variable}.animate.scale(${formatAmount(change.factor)})`);
       }
