@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { manimProjectNameSchema } from "../src/render-pipeline/contracts";
 import { startElectronShellServer, type ElectronShellServer } from "../server/electron-shell-server";
+import { HttpError } from "../server/http/json";
 import {
   createConsoleJsonSink,
   createStructuredLogger,
@@ -74,15 +75,6 @@ function trustedSender(event: Electron.IpcMainInvokeEvent) {
   return senderWindow;
 }
 
-async function responseBody(response: Response) {
-  const text = await response.text();
-  try {
-    return text ? JSON.parse(text) as unknown : null;
-  } catch {
-    return { error: `Native workspace registration returned malformed JSON (${response.status}).` };
-  }
-}
-
 function registerNativeHandlers() {
   ipcMain.handle("poietra:register-existing-workspace", async (event, input: unknown) => {
     const senderWindow = trustedSender(event);
@@ -96,19 +88,22 @@ function registerNativeHandlers() {
       title: "Choose a Manim workspace folder",
     });
     if (selection.canceled || !selection.filePaths[0]) return { cancelled: true };
-    const response = await fetch(`${activeOrigin}/api/manim/projects`, {
-      body: JSON.stringify({ kind: "existing", name: parsedName.data, root: selection.filePaths[0] }),
-      headers: {
-        "content-type": "application/json",
-        "x-poietra-shell-capability": shellServer?.capability ?? "",
-      },
-      method: "POST",
-    });
-    return {
-      body: await responseBody(response),
-      cancelled: false,
-      status: response.status,
-    };
+    if (!shellServer) {
+      return { body: { error: "The packaged workspace service is unavailable." }, cancelled: false, status: 503 };
+    }
+    try {
+      return {
+        body: shellServer.registry.createProject(parsedName.data, selection.filePaths[0]),
+        cancelled: false,
+        status: 201,
+      };
+    } catch (error) {
+      if (error instanceof HttpError) {
+        return { body: { error: error.message }, cancelled: false, status: error.status };
+      }
+      logger.error("workspace.native_registration_failed", { error });
+      return { body: { error: "The selected workspace could not be registered." }, cancelled: false, status: 500 };
+    }
   });
 
   ipcMain.handle("poietra:save-python-source", async (event, input: unknown) => {
@@ -141,9 +136,15 @@ function registerNativeHandlers() {
 function secureWindow(window: BrowserWindow) {
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-attach-webview", (event) => event.preventDefault());
-  window.webContents.on("will-navigate", (event, targetUrl) => {
-    if (new URL(targetUrl).origin !== activeOrigin) event.preventDefault();
-  });
+  const preventUntrustedNavigation = (event: { preventDefault: () => void }, targetUrl: string) => {
+    try {
+      if (new URL(targetUrl).origin !== activeOrigin) event.preventDefault();
+    } catch {
+      event.preventDefault();
+    }
+  };
+  window.webContents.on("will-navigate", preventUntrustedNavigation);
+  window.webContents.on("will-redirect", preventUntrustedNavigation);
   window.webContents.session.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false));
 }
 
@@ -185,29 +186,40 @@ function shutdown() {
   return shutdownRequest;
 }
 
-app.on("before-quit", (event) => {
-  if (allowQuit) return;
-  event.preventDefault();
-  void shutdown().catch((error: unknown) => {
-    logger.error("shutdown.failed", { error });
-  }).finally(() => {
-    allowQuit = true;
-    app.quit();
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
   });
-});
 
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
-});
-
-void app.whenReady().then(async () => {
-  activeOrigin = await startShellService();
-  registerNativeHandlers();
-  createWindow();
-  app.on("activate", () => {
-    if (!mainWindow) createWindow();
+  app.on("before-quit", (event) => {
+    if (allowQuit) return;
+    event.preventDefault();
+    void shutdown().catch((error: unknown) => {
+      logger.error("shutdown.failed", { error });
+    }).finally(() => {
+      allowQuit = true;
+      app.quit();
+    });
   });
-}).catch((error: unknown) => {
-  logger.error("startup.failed", { error });
-  app.exit(1);
-});
+
+  app.on("window-all-closed", () => {
+    if (process.platform !== "darwin") app.quit();
+  });
+
+  void app.whenReady().then(async () => {
+    activeOrigin = await startShellService();
+    registerNativeHandlers();
+    createWindow();
+    app.on("activate", () => {
+      if (!mainWindow) createWindow();
+    });
+  }).catch((error: unknown) => {
+    logger.error("startup.failed", { error });
+    app.exit(1);
+  });
+}

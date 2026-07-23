@@ -124,7 +124,9 @@ export async function startElectronShellServer(options: Readonly<{
     }
     const url = new URL(request.url ?? "/", `http://${expectedHost}`);
     if (url.pathname.startsWith("/api/manim/")) {
-      void handleManimRequest(registry, request, response, options.logger ?? nullLogger);
+      void handleManimRequest(registry, request, response, options.logger ?? nullLogger, {
+        allowExistingProjectRegistration: false,
+      });
       return;
     }
     void (async () => {

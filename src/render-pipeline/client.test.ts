@@ -86,7 +86,6 @@ function renderRequest(projectId = "project-a"): ProgramRenderRequest {
 describe("Manim API client contracts", () => {
   it("accepts a workspace matching the runtime contract", async () => {
     const workspace = {
-      command: ["manim"],
       commandAvailable: true,
       frame: { height: 8, width: 14.222 },
       projectId: "default",
@@ -100,7 +99,6 @@ describe("Manim API client contracts", () => {
 
   it("rejects undeclared workspace fields instead of exposing server paths", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
-      command: ["manim"],
       commandAvailable: true,
       frame: { height: 8, width: 14.222 },
       projectId: "default",
@@ -226,7 +224,6 @@ describe("Manim API client contracts", () => {
 
   it("loads a selected project workspace without sending a filesystem path", async () => {
     const workspace = {
-      command: ["manim"],
       commandAvailable: false,
       frame: { height: 8, width: 14.222 },
       projectId: "project-a",

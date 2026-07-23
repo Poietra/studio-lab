@@ -243,7 +243,6 @@ export type ManimWorkspaceSource = Readonly<{
 }>;
 
 export type ManimWorkspaceView = Readonly<{
-  command: readonly string[];
   commandAvailable: boolean;
   frame: Readonly<{ height: number; width: number }>;
   projectId: string;
@@ -355,7 +354,6 @@ export const manimWorkspaceSourceSchema: z.ZodType<ManimWorkspaceSource> = z.obj
 }).strict();
 
 export const manimWorkspaceViewSchema: z.ZodType<ManimWorkspaceView> = z.object({
-  command: z.array(z.string()),
   commandAvailable: z.boolean(),
   frame: z.object({ height: finiteNumber.positive(), width: finiteNumber.positive() }).strict(),
   projectId: manimProjectIdSchema,

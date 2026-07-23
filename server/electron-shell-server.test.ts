@@ -119,6 +119,18 @@ describe("Electron shell HTTP adapter", () => {
     expect(projects.projects).toEqual([{ id: "shell-project", kind: "existing", name: "Shell project" }]);
     expect(JSON.stringify(projects)).not.toContain(projectRoot);
 
+    const rendererRegistration = await shellFetch(shell, "/api/manim/projects", {
+      body: JSON.stringify({ kind: "existing", name: "Bypass", root: projectRoot }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(rendererRegistration.status).toBe(403);
+    expect(await rendererRegistration.json()).toEqual({
+      error: "Existing-folder registration requires the native folder picker.",
+    });
+    expect((await (await shellFetch(shell, "/api/manim/projects")).json() as { projects: unknown[] }).projects)
+      .toHaveLength(1);
+
     const workspace = await (await shellFetch(shell, "/api/manim/projects/shell-project/workspace")).json() as {
       sources: readonly { scenes: readonly { sourceHash: string; sourceVariables: Readonly<Record<string, string>> }[] }[];
     };

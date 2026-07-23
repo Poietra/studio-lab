@@ -151,7 +151,7 @@ export function RenderPipelinePanel({
     return null;
   }, [candidate, candidateUnavailableReason, missingAnchor, unsupportedProgram, workspace]);
   const previewBlocker = candidateBlocker
-    ?? (!workspace?.commandAvailable ? `Manim command ${JSON.stringify(workspace?.command ?? [])} is unavailable.` : null);
+    ?? (!workspace?.commandAvailable ? "The configured Manim command is unavailable." : null);
   const exportBlocker = candidate
     ? candidateBlocker
     : !workspace ? "Inspecting the Manim workspace…"
