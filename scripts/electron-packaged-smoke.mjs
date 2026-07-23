@@ -54,10 +54,13 @@ try {
   if (resolve(actualUserDataRoot) !== resolve(userDataRoot)) {
     throw new Error(`Electron userData was not isolated under the smoke root: ${actualUserDataRoot}`);
   }
-  await electronApplication.evaluate(({ dialog }, input) => {
-    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [input.workspaceRoot] });
-    dialog.showSaveDialog = async () => ({ canceled: false, filePath: input.exportPath });
-  }, { exportPath, workspaceRoot });
+  await electronApplication.evaluate(
+    ({ dialog }, input) => {
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [input.workspaceRoot] });
+      dialog.showSaveDialog = async () => ({ canceled: false, filePath: input.exportPath });
+    },
+    { exportPath, workspaceRoot },
+  );
   const page = await electronApplication.firstWindow();
   result = await page.evaluate(async () => {
     const readJson = async (response) => {
@@ -96,8 +99,7 @@ try {
     const workspace = await readJson(await fetch(`/api/manim/projects/${project.id}/workspace`));
     const importedSource = workspace.sources[0];
     const scene = importedSource?.scenes[0];
-    const entityId = Object.entries(scene?.sourceVariables ?? {})
-      .find(([, variable]) => variable === "circle")?.[0];
+    const entityId = Object.entries(scene?.sourceVariables ?? {}).find(([, variable]) => variable === "circle")?.[0];
     if (!importedSource || !scene || !entityId) {
       throw new Error("Packaged workspace import did not discover the smoke Circle.");
     }
@@ -139,11 +141,13 @@ try {
       viewport: { height: 360, width: 640 },
     };
 
-    const started = await readJson(await fetch(`/api/manim/projects/${project.id}/renders`, {
-      body: JSON.stringify(request),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    }));
+    const started = await readJson(
+      await fetch(`/api/manim/projects/${project.id}/renders`, {
+        body: JSON.stringify(request),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }),
+    );
     let rendered = null;
     for (let attempt = 0; attempt < 200; attempt += 1) {
       rendered = await readJson(await fetch(`/api/manim/renders/${started.id}`));
@@ -171,19 +175,19 @@ try {
     const saved = await bridge.savePythonSource("packaged-smoke.py", exportedSource);
     if (saved.cancelled) throw new Error("Packaged Save dialog was unexpectedly cancelled.");
 
-    const action = async (name) => readJson(await fetch(
-      `/api/manim/renders/${started.id}/${name}`,
-      { method: "POST" },
-    ));
+    const action = async (name) =>
+      readJson(await fetch(`/api/manim/renders/${started.id}/${name}`, { method: "POST" }));
     if ((await action("commit")).status !== "committed") throw new Error("Packaged commit failed.");
     if ((await action("undo")).status !== "undone") throw new Error("Packaged Undo failed.");
     if ((await action("discard")).status !== "discarded") throw new Error("Packaged discard failed.");
 
-    const renamed = await readJson(await fetch(`/api/manim/projects/${project.id}`, {
-      body: JSON.stringify({ name: "Packaged Renamed" }),
-      headers: { "content-type": "application/json" },
-      method: "PATCH",
-    }));
+    const renamed = await readJson(
+      await fetch(`/api/manim/projects/${project.id}`, {
+        body: JSON.stringify({ name: "Packaged Renamed" }),
+        headers: { "content-type": "application/json" },
+        method: "PATCH",
+      }),
+    );
     if (renamed.project.name !== "Packaged Renamed") throw new Error("Packaged rename failed.");
     await unregisterWhenIdle(project.id);
     const finalCatalog = await readJson(await fetch("/api/manim/projects"));
@@ -200,8 +204,9 @@ try {
     const shutdownWorkspace = await readJson(await fetch(`/api/manim/projects/${shutdownProject.id}/workspace`));
     const shutdownSource = shutdownWorkspace.sources[0];
     const shutdownScene = shutdownSource?.scenes[0];
-    const shutdownEntityId = Object.entries(shutdownScene?.sourceVariables ?? {})
-      .find(([, variable]) => variable === "circle")?.[0];
+    const shutdownEntityId = Object.entries(shutdownScene?.sourceVariables ?? {}).find(
+      ([, variable]) => variable === "circle",
+    )?.[0];
     if (!shutdownSource || !shutdownScene || !shutdownEntityId) {
       throw new Error("Shutdown workspace did not import the smoke Circle.");
     }
@@ -225,11 +230,13 @@ try {
       sourceHash: shutdownScene.sourceHash,
       sourcePath: shutdownSource.path,
     };
-    const activeRender = await readJson(await fetch(`/api/manim/projects/${shutdownProject.id}/renders`, {
-      body: JSON.stringify(shutdownRequest),
-      headers: { "content-type": "application/json" },
-      method: "POST",
-    }));
+    const activeRender = await readJson(
+      await fetch(`/api/manim/projects/${shutdownProject.id}/renders`, {
+        body: JSON.stringify(shutdownRequest),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }),
+    );
     const activeRenderStatus = await readJson(await fetch(`/api/manim/renders/${activeRender.id}`));
     if (!["preparing", "rendering"].includes(activeRenderStatus.status)) {
       throw new Error(`Shutdown render was not active: ${activeRenderStatus.status}.`);
@@ -265,11 +272,7 @@ try {
       await new Promise((resolveWaiter) => setTimeout(resolveWaiter, 20));
     }
   }
-  if (
-    !shutdownProcess
-    || !Number.isSafeInteger(shutdownProcess.pid)
-    || typeof shutdownProcess.tempRoot !== "string"
-  ) {
+  if (!shutdownProcess || !Number.isSafeInteger(shutdownProcess.pid) || typeof shutdownProcess.tempRoot !== "string") {
     throw new Error("The active shutdown render did not publish its process marker.");
   }
 } catch (error) {

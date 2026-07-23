@@ -92,20 +92,32 @@ describe("Manim API client contracts", () => {
       projectName: "Demo",
       sources: [],
     };
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(workspace), { status: 200 })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(workspace), { status: 200 })),
+    );
 
     await expect(loadManimWorkspace()).resolves.toEqual(workspace);
   });
 
   it("rejects undeclared workspace fields instead of exposing server paths", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
-      commandAvailable: true,
-      frame: { height: 8, width: 14.222 },
-      projectId: "default",
-      projectName: "Demo",
-      projectRoot: "/private/project",
-      sources: [],
-    }), { status: 200 })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              commandAvailable: true,
+              frame: { height: 8, width: 14.222 },
+              projectId: "default",
+              projectName: "Demo",
+              projectRoot: "/private/project",
+              sources: [],
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
 
     await expect(loadManimWorkspace()).rejects.toThrow(/does not match the API contract/i);
   });
@@ -146,7 +158,8 @@ describe("Manim API client contracts", () => {
       project: { id: "project-a", kind: "existing", name: "Renamed" },
     };
     const removed = { catalog: { defaultProjectId: null, projects: [] }, project: null };
-    const fetch = vi.fn()
+    const fetch = vi
+      .fn()
       .mockResolvedValueOnce(new Response(JSON.stringify(managedCreated), { status: 201 }))
       .mockResolvedValueOnce(new Response(JSON.stringify(existingCreated), { status: 201 }))
       .mockResolvedValueOnce(new Response(JSON.stringify(renamed), { status: 200 }))
@@ -154,7 +167,9 @@ describe("Manim API client contracts", () => {
     vi.stubGlobal("fetch", fetch);
 
     await expect(createManimProject({ kind: "managed", name: " Demo " })).resolves.toEqual(managedCreated);
-    await expect(createManimProject({ kind: "existing", name: " Demo ", root: " /tmp/demo " })).resolves.toEqual(existingCreated);
+    await expect(createManimProject({ kind: "existing", name: " Demo ", root: " /tmp/demo " })).resolves.toEqual(
+      existingCreated,
+    );
     await expect(renameManimProject("project-a", " Renamed ")).resolves.toEqual(renamed);
     await expect(unregisterManimProject("project-a")).resolves.toEqual(removed);
 
@@ -217,8 +232,9 @@ describe("Manim API client contracts", () => {
       },
     });
 
-    const error = await createManimProject({ kind: "native-existing", name: "Demo" })
-      .catch((caught: unknown) => caught);
+    const error = await createManimProject({ kind: "native-existing", name: "Demo" }).catch(
+      (caught: unknown) => caught,
+    );
     expect(isNativeWorkspacePickerCancelled(error)).toBe(true);
   });
 
@@ -249,29 +265,23 @@ describe("Manim API client contracts", () => {
       sourcePath: "scene.py",
       state: "missing",
     };
-    const fetch = vi.fn(async (_url: string, init?: RequestInit) => new Response(
-      JSON.stringify(init?.method === "POST" ? { ...status, state: "generating" } : status),
-      { status: init?.method === "POST" ? 202 : 200 },
-    ));
+    const fetch = vi.fn(
+      async (_url: string, init?: RequestInit) =>
+        new Response(JSON.stringify(init?.method === "POST" ? { ...status, state: "generating" } : status), {
+          status: init?.method === "POST" ? 202 : 200,
+        }),
+    );
     vi.stubGlobal("fetch", fetch);
 
     await expect(loadManimThumbnailStatus("project-a")).resolves.toEqual(status);
     await expect(generateManimThumbnail("project-a")).resolves.toMatchObject({ state: "generating" });
-    expect(fetch).toHaveBeenNthCalledWith(
-      1,
-      "/api/manim/projects/project-a/thumbnail/status",
-      { signal: undefined },
-    );
-    expect(fetch).toHaveBeenNthCalledWith(
-      2,
-      "/api/manim/projects/project-a/thumbnail/generate",
-      {
-        body: "{}",
-        headers: { "content-type": "application/json" },
-        method: "POST",
-        signal: undefined,
-      },
-    );
+    expect(fetch).toHaveBeenNthCalledWith(1, "/api/manim/projects/project-a/thumbnail/status", { signal: undefined });
+    expect(fetch).toHaveBeenNthCalledWith(2, "/api/manim/projects/project-a/thumbnail/generate", {
+      body: "{}",
+      headers: { "content-type": "application/json" },
+      method: "POST",
+      signal: undefined,
+    });
   });
 
   it.each([
@@ -320,22 +330,33 @@ describe("Manim API client contracts", () => {
       state: "missing",
     },
   ])("rejects thumbnail status that violates lifecycle invariants", async (status) => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(status), { status: 200 })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(status), { status: 200 })),
+    );
     await expect(loadManimThumbnailStatus("project-a")).rejects.toThrow(/API contract/i);
   });
 
   it("rejects thumbnail status for another project", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
-      cachedSourceHash: null,
-      error: null,
-      generatedAt: null,
-      imageKind: "empty",
-      projectId: "project-b",
-      sceneName: null,
-      sourceHash: null,
-      sourcePath: null,
-      state: "missing",
-    }))));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              cachedSourceHash: null,
+              error: null,
+              generatedAt: null,
+              imageKind: "empty",
+              projectId: "project-b",
+              sceneName: null,
+              sourceHash: null,
+              sourcePath: null,
+              state: "missing",
+            }),
+          ),
+      ),
+    );
 
     await expect(loadManimThumbnailStatus("project-a")).rejects.toThrow(/different project/i);
   });
@@ -349,22 +370,28 @@ describe("Manim API client contracts", () => {
   });
 
   it("accepts a render session matching the runtime contract", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(session()), { status: 200 })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(session()), { status: 200 })),
+    );
 
     await expect(loadManimRender("render-id")).resolves.toMatchObject({ status: "ready" });
   });
 
   it("rejects a successful response with an invalid runtime shape", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(session({ progress: "done" })), { status: 200 })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(session({ progress: "done" })), { status: 200 })),
+    );
 
     await expect(loadManimRender("render-id")).rejects.toThrow(/does not match the API contract/i);
   });
 
   it("preserves a missing-session status so the editor can recover", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(
-      JSON.stringify({ error: "Render session not found." }),
-      { status: 404 },
-    )));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ error: "Render session not found." }), { status: 404 })),
+    );
 
     const error = await loadManimRender("expired").catch((caught: unknown) => caught);
     expect(isMissingManimSession(error)).toBe(true);
@@ -372,7 +399,10 @@ describe("Manim API client contracts", () => {
   });
 
   it("reports malformed JSON without masking the HTTP status", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("not-json", { status: 502 })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("not-json", { status: 502 })),
+    );
 
     await expect(loadManimRender("render-id")).rejects.toThrow(/502.*malformed JSON/i);
   });
@@ -429,7 +459,7 @@ describe("Manim API client contracts", () => {
       expect(init.method).toBe("POST");
       return new Response("from manim import *\n", {
         headers: {
-          "content-disposition": "attachment; filename=\"scene.poietra.py\"",
+          "content-disposition": 'attachment; filename="scene.poietra.py"',
           "content-type": "text/x-python; charset=utf-8",
           "x-poietra-project-id": "project-a",
         },
@@ -456,7 +486,7 @@ describe("Manim API client contracts", () => {
       });
       return new Response("from manim import *\n", {
         headers: {
-          "content-disposition": "attachment; filename=\"scene.py\"",
+          "content-disposition": 'attachment; filename="scene.py"',
           "content-type": "text/x-python; charset=utf-8",
           "x-poietra-project-id": "project-a",
         },
@@ -465,11 +495,13 @@ describe("Manim API client contracts", () => {
     });
     vi.stubGlobal("fetch", fetch);
 
-    await expect(exportOriginalManimSource({
-      projectId: "project-a",
-      sourceHash: "a".repeat(64),
-      sourcePath: "nested/scene.py",
-    })).resolves.toEqual({
+    await expect(
+      exportOriginalManimSource({
+        projectId: "project-a",
+        sourceHash: "a".repeat(64),
+        sourcePath: "nested/scene.py",
+      }),
+    ).resolves.toEqual({
       fileName: "scene.py",
       projectId: "project-a",
       source: "from manim import *\n",

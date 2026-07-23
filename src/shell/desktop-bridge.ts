@@ -18,9 +18,9 @@ declare global {
 export function desktopBridge() {
   if (typeof window === "undefined") return null;
   const bridge = window.poietraDesktop;
-  return bridge
-    && typeof bridge.registerExistingWorkspace === "function"
-    && typeof bridge.savePythonSource === "function"
+  return bridge &&
+    typeof bridge.registerExistingWorkspace === "function" &&
+    typeof bridge.savePythonSource === "function"
     ? bridge
     : null;
 }

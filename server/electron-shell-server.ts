@@ -8,10 +8,7 @@ import { sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import { PersistentManimProjectCatalog } from "./manim-project-catalog";
 import { handleManimRequest } from "./manim-render-http";
-import {
-  ManimProjectRegistry,
-  type ManimProjectConfig,
-} from "./manim-render-pipeline";
+import { ManimProjectRegistry, type ManimProjectConfig } from "./manim-render-pipeline";
 
 const CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
@@ -77,14 +74,16 @@ export type ElectronShellServer = Readonly<{
   registry: ManimProjectRegistry;
 }>;
 
-export async function startElectronShellServer(options: Readonly<{
-  command: readonly string[];
-  dataRoot: string;
-  distRoot: string;
-  frame?: Readonly<{ height: number; width: number }>;
-  logger?: StructuredLogger;
-  projects?: readonly ManimProjectConfig[];
-}>): Promise<ElectronShellServer> {
+export async function startElectronShellServer(
+  options: Readonly<{
+    command: readonly string[];
+    dataRoot: string;
+    distRoot: string;
+    frame?: Readonly<{ height: number; width: number }>;
+    logger?: StructuredLogger;
+    projects?: readonly ManimProjectConfig[];
+  }>,
+): Promise<ElectronShellServer> {
   const canonicalDistRoot = await realpath(resolve(options.distRoot));
   const projects = options.projects ?? [];
   const catalog = new PersistentManimProjectCatalog({
@@ -111,14 +110,10 @@ export async function startElectronShellServer(options: Readonly<{
       return;
     }
     const suppliedCapability = request.headers["x-poietra-shell-capability"];
-    const suppliedBytes = typeof suppliedCapability === "string"
-      ? Buffer.from(suppliedCapability, "utf8")
-      : Buffer.alloc(0);
+    const suppliedBytes =
+      typeof suppliedCapability === "string" ? Buffer.from(suppliedCapability, "utf8") : Buffer.alloc(0);
     const expectedBytes = Buffer.from(capability, "utf8");
-    if (
-      suppliedBytes.length !== expectedBytes.length
-      || !timingSafeEqual(suppliedBytes, expectedBytes)
-    ) {
+    if (suppliedBytes.length !== expectedBytes.length || !timingSafeEqual(suppliedBytes, expectedBytes)) {
       sendJson(response, 401, { error: "Electron shell capability is missing or invalid." });
       return;
     }
@@ -141,7 +136,10 @@ export async function startElectronShellServer(options: Readonly<{
       }
       setShellHeaders(response);
       response.statusCode = 200;
-      response.setHeader("cache-control", extname(file.canonicalPath) === ".html" ? "no-store" : "public, max-age=31536000, immutable");
+      response.setHeader(
+        "cache-control",
+        extname(file.canonicalPath) === ".html" ? "no-store" : "public, max-age=31536000, immutable",
+      );
       response.setHeader("content-length", file.metadata.size);
       response.setHeader("content-type", CONTENT_TYPES[extname(file.canonicalPath)] ?? "application/octet-stream");
       if (request.method === "HEAD") response.end();
@@ -170,13 +168,13 @@ export async function startElectronShellServer(options: Readonly<{
       closeRequest ??= (async () => {
         closing = true;
         const networkClosed = new Promise<void>((resolveClose, rejectClose) => {
-          server.close((error) => error ? rejectClose(error) : resolveClose());
+          server.close((error) => (error ? rejectClose(error) : resolveClose()));
           server.closeIdleConnections();
         });
         const registryResult = await Promise.allSettled([registry.close()]);
         server.closeAllConnections();
-        const results = [...registryResult, ...await Promise.allSettled([networkClosed])];
-        const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+        const results = [...registryResult, ...(await Promise.allSettled([networkClosed]))];
+        const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
         if (errors.length > 0) throw new AggregateError(errors, "Could not fully close the Electron shell service.");
       })();
       return closeRequest;

@@ -12,7 +12,8 @@ describe("desktop bridge", () => {
   });
 
   it("reports native save and cancellation without returning a filesystem path", async () => {
-    const savePythonSource = vi.fn()
+    const savePythonSource = vi
+      .fn()
       .mockResolvedValueOnce({ cancelled: false })
       .mockResolvedValueOnce({ cancelled: true });
     vi.stubGlobal("window", {
@@ -35,7 +36,8 @@ describe("desktop bridge", () => {
       },
     });
 
-    await expect(savePythonSourceWithDesktop("scene.py", "print('ok')\n"))
-      .rejects.toThrow(/invalid Python export result/i);
+    await expect(savePythonSourceWithDesktop("scene.py", "print('ok')\n")).rejects.toThrow(
+      /invalid Python export result/i,
+    );
   });
 });

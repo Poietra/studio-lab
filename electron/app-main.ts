@@ -7,10 +7,7 @@ import { fileURLToPath } from "node:url";
 import { manimProjectNameSchema } from "../src/render-pipeline/contracts";
 import { startElectronShellServer, type ElectronShellServer } from "../server/electron-shell-server";
 import { HttpError } from "../server/http/json";
-import {
-  createConsoleJsonSink,
-  createStructuredLogger,
-} from "../server/logging/structured-logger";
+import { createConsoleJsonSink, createStructuredLogger } from "../server/logging/structured-logger";
 import { parseManimCommand, parseManimProjects } from "../server/manim-render-pipeline";
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
@@ -40,8 +37,9 @@ function developmentOrigin() {
 
 async function startShellService() {
   if (!packagedMode) return developmentOrigin();
-  const configuredProjects = parseManimProjects(process.env.POIETRA_MANIM_PROJECTS)
-    ?? (process.env.POIETRA_MANIM_PROJECT_ROOT ? [{ root: process.env.POIETRA_MANIM_PROJECT_ROOT }] : []);
+  const configuredProjects =
+    parseManimProjects(process.env.POIETRA_MANIM_PROJECTS) ??
+    (process.env.POIETRA_MANIM_PROJECT_ROOT ? [{ root: process.env.POIETRA_MANIM_PROJECT_ROOT }] : []);
   shellServer = await startElectronShellServer({
     command: parseManimCommand(process.env.POIETRA_MANIM_COMMAND),
     dataRoot: resolve(process.env.POIETRA_STUDIO_DATA_ROOT ?? join(app.getPath("userData"), "studio-data")),
@@ -54,9 +52,8 @@ async function startShellService() {
     projects: configuredProjects,
   });
   rendererSession = session.fromPartition(`poietra-studio-${randomUUID()}`);
-  rendererSession.webRequest.onBeforeSendHeaders(
-    { urls: [`${shellServer.origin}/*`] },
-    (details, callback) => callback({
+  rendererSession.webRequest.onBeforeSendHeaders({ urls: [`${shellServer.origin}/*`] }, (details, callback) =>
+    callback({
       requestHeaders: {
         ...details.requestHeaders,
         "X-Poietra-Shell-Capability": shellServer!.capability,
@@ -113,12 +110,12 @@ function registerNativeHandlers() {
     }
     const { fileName, source } = input as Record<string, unknown>;
     if (
-      typeof fileName !== "string"
-      || basename(fileName) !== fileName
-      || !fileName.toLowerCase().endsWith(".py")
-      || fileName.length > 200
-      || typeof source !== "string"
-      || Buffer.byteLength(source) > 2 * 1024 * 1024
+      typeof fileName !== "string" ||
+      basename(fileName) !== fileName ||
+      !fileName.toLowerCase().endsWith(".py") ||
+      fileName.length > 200 ||
+      typeof source !== "string" ||
+      Buffer.byteLength(source) > 2 * 1024 * 1024
     ) {
       throw new TypeError("Python export input is invalid.");
     }
@@ -199,27 +196,32 @@ if (!app.requestSingleInstanceLock()) {
   app.on("before-quit", (event) => {
     if (allowQuit) return;
     event.preventDefault();
-    void shutdown().catch((error: unknown) => {
-      logger.error("shutdown.failed", { error });
-    }).finally(() => {
-      allowQuit = true;
-      app.quit();
-    });
+    void shutdown()
+      .catch((error: unknown) => {
+        logger.error("shutdown.failed", { error });
+      })
+      .finally(() => {
+        allowQuit = true;
+        app.quit();
+      });
   });
 
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") app.quit();
   });
 
-  void app.whenReady().then(async () => {
-    activeOrigin = await startShellService();
-    if (packagedMode) registerNativeHandlers();
-    createWindow();
-    app.on("activate", () => {
-      if (!mainWindow) createWindow();
+  void app
+    .whenReady()
+    .then(async () => {
+      activeOrigin = await startShellService();
+      if (packagedMode) registerNativeHandlers();
+      createWindow();
+      app.on("activate", () => {
+        if (!mainWindow) createWindow();
+      });
+    })
+    .catch((error: unknown) => {
+      logger.error("startup.failed", { error });
+      app.exit(1);
     });
-  }).catch((error: unknown) => {
-    logger.error("startup.failed", { error });
-    app.exit(1);
-  });
 }

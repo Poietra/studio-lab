@@ -7,27 +7,26 @@ import { runtimeSceneStateSchema, staticSemanticStateSchema } from "../studio/st
 
 const finiteNumber = z.number().finite();
 export const MANIM_PROJECT_ID_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
-export const manimProjectIdSchema = z.string().regex(
-  MANIM_PROJECT_ID_PATTERN,
-  "Project ID must be an opaque lower-case identifier.",
-);
+export const manimProjectIdSchema = z
+  .string()
+  .regex(MANIM_PROJECT_ID_PATTERN, "Project ID must be an opaque lower-case identifier.");
 export const manimProjectNameSchema = z.string().trim().min(1).max(120);
 export function isManimSourcePath(value: string) {
   if (
-    value.length === 0
-    || value.length > 500
-    || /[\u0000-\u001f\u007f]/.test(value)
-    || value.includes("\\")
-    || value.startsWith("/")
-    || /^[A-Za-z]:/.test(value)
-    || !value.endsWith(".py")
-  ) return false;
+    value.length === 0 ||
+    value.length > 500 ||
+    /[\u0000-\u001f\u007f]/.test(value) ||
+    value.includes("\\") ||
+    value.startsWith("/") ||
+    /^[A-Za-z]:/.test(value) ||
+    !value.endsWith(".py")
+  )
+    return false;
   return value.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
 }
-export const manimSourcePathSchema = z.string().refine(
-  isManimSourcePath,
-  "Source path must be a normalized relative Python file path.",
-);
+export const manimSourcePathSchema = z
+  .string()
+  .refine(isManimSourcePath, "Source path must be a normalized relative Python file path.");
 const resolvedAnchorSchema = z.object({
   capturedPlayhead: finiteNumber,
   evidence: z.array(z.string().max(500)).max(32),
@@ -60,11 +59,15 @@ const programSchema = z.object({
   }),
   requestedExecution: z.enum(["parallel", "sequence"]),
   schedule: z.object({
-    edges: z.array(z.object({
-      from: z.string(),
-      reason: z.enum(["explicit", "identity", "lifetime", "read-after-write", "write-conflict"]),
-      to: z.string(),
-    })).max(256),
+    edges: z
+      .array(
+        z.object({
+          from: z.string(),
+          reason: z.enum(["explicit", "identity", "lifetime", "read-after-write", "write-conflict"]),
+          to: z.string(),
+        }),
+      )
+      .max(256),
     mode: z.enum(["dependency-dag", "parallel", "sequence"]),
     order: z.array(z.string()).min(1).max(64),
   }),
@@ -73,22 +76,33 @@ const programSchema = z.object({
 });
 
 const programRenderRequestBaseSchema = z.object({
-  destination: z.object({
-    sceneName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
-    sourcePath: manimSourcePathSchema,
-  }).strict().nullable(),
+  destination: z
+    .object({
+      sceneName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+      sourcePath: manimSourcePathSchema,
+    })
+    .strict()
+    .nullable(),
   projectId: manimProjectIdSchema,
   sceneName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
-  sourceBindings: z.array(z.object({
-    entityId: z.string().min(1).max(240),
-    sourceVariable: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
-  }).strict()).max(128),
+  sourceBindings: z
+    .array(
+      z
+        .object({
+          entityId: z.string().min(1).max(240),
+          sourceVariable: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+        })
+        .strict(),
+    )
+    .max(128),
   sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
   sourcePath: manimSourcePathSchema,
-  viewport: z.object({
-    height: finiteNumber.positive(),
-    width: finiteNumber.positive(),
-  }).strict(),
+  viewport: z
+    .object({
+      height: finiteNumber.positive(),
+      width: finiteNumber.positive(),
+    })
+    .strict(),
 });
 
 function validateSourceBindings(
@@ -117,60 +131,65 @@ function validateSourceBindings(
   });
 }
 
-export const programRenderRequestSchema = programRenderRequestBaseSchema.extend({
-  program: programSchema,
-  programs: z.array(programSchema).min(1).max(32).optional(),
-}).strict().superRefine((request, context) => {
-  validateSourceBindings(request, context);
-  const programs = request.programs ?? [request.program];
-  if (request.programs && JSON.stringify(request.programs[0]) !== JSON.stringify(request.program)) {
-    context.addIssue({
-      code: "custom",
-      message: "program must equal programs[0] when a render batch is supplied.",
-      path: ["program"],
-    });
-  }
-  const transactionIds = new Set<string>();
-  let operationCount = 0;
-  let intentCount = 0;
-  programs.forEach((program, index) => {
-    if (transactionIds.has(program.transactionId)) {
+export const programRenderRequestSchema = programRenderRequestBaseSchema
+  .extend({
+    program: programSchema,
+    programs: z.array(programSchema).min(1).max(32).optional(),
+  })
+  .strict()
+  .superRefine((request, context) => {
+    validateSourceBindings(request, context);
+    const programs = request.programs ?? [request.program];
+    if (request.programs && JSON.stringify(request.programs[0]) !== JSON.stringify(request.program)) {
       context.addIssue({
         code: "custom",
-        message: `Duplicate transaction ID ${program.transactionId}.`,
-        path: ["programs", index, "transactionId"],
+        message: "program must equal programs[0] when a render batch is supplied.",
+        path: ["program"],
       });
     }
-    transactionIds.add(program.transactionId);
-    operationCount += program.operations.length;
-    intentCount += program.intentCount;
+    const transactionIds = new Set<string>();
+    let operationCount = 0;
+    let intentCount = 0;
+    programs.forEach((program, index) => {
+      if (transactionIds.has(program.transactionId)) {
+        context.addIssue({
+          code: "custom",
+          message: `Duplicate transaction ID ${program.transactionId}.`,
+          path: ["programs", index, "transactionId"],
+        });
+      }
+      transactionIds.add(program.transactionId);
+      operationCount += program.operations.length;
+      intentCount += program.intentCount;
+    });
+    if (operationCount > 256) {
+      context.addIssue({
+        code: "custom",
+        message: "A render batch accepts at most 256 Canonical operations.",
+        path: ["programs"],
+      });
+    }
+    if (intentCount > 64) {
+      context.addIssue({
+        code: "custom",
+        message: "A render batch accepts at most 64 composed intents.",
+        path: ["programs"],
+      });
+    }
   });
-  if (operationCount > 256) {
-    context.addIssue({
-      code: "custom",
-      message: "A render batch accepts at most 256 Canonical operations.",
-      path: ["programs"],
-    });
-  }
-  if (intentCount > 64) {
-    context.addIssue({
-      code: "custom",
-      message: "A render batch accepts at most 64 composed intents.",
-      path: ["programs"],
-    });
-  }
-});
 
 type ProgramRenderRequestBase = Omit<z.infer<typeof programRenderRequestBaseSchema>, never>;
 
-export type ProgramRenderRequest = ProgramRenderRequestBase & Readonly<{
-  program: CanonicalEditProgram;
-  programs?: readonly CanonicalEditProgram[];
-}>;
+export type ProgramRenderRequest = ProgramRenderRequestBase &
+  Readonly<{
+    program: CanonicalEditProgram;
+    programs?: readonly CanonicalEditProgram[];
+  }>;
 
-export type BatchProgramRenderRequest = ProgramRenderRequest & Readonly<{
-  programs: readonly CanonicalEditProgram[];
-}>;
+export type BatchProgramRenderRequest = ProgramRenderRequest &
+  Readonly<{
+    programs: readonly CanonicalEditProgram[];
+  }>;
 
 export type SingleProgramRenderRequest = ProgramRenderRequest & Readonly<{ programs?: undefined }>;
 
@@ -296,11 +315,13 @@ export type OriginalManimSourceExportRequest = Readonly<{
   sourcePath: string;
 }>;
 
-export const originalManimSourceExportRequestSchema: z.ZodType<OriginalManimSourceExportRequest> = z.object({
-  projectId: manimProjectIdSchema,
-  sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
-  sourcePath: manimSourcePathSchema,
-}).strict();
+export const originalManimSourceExportRequestSchema: z.ZodType<OriginalManimSourceExportRequest> = z
+  .object({
+    projectId: manimProjectIdSchema,
+    sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
+    sourcePath: manimSourcePathSchema,
+  })
+  .strict();
 
 export const renderSessionStatusSchema: z.ZodType<RenderSessionStatus> = z.enum([
   "cancelled",
@@ -313,175 +334,219 @@ export const renderSessionStatusSchema: z.ZodType<RenderSessionStatus> = z.enum(
   "undone",
 ]);
 
-export const renderSessionViewSchema: z.ZodType<RenderSessionView> = z.object({
-  canCancel: z.boolean(),
-  canCommit: z.boolean(),
-  canDiscard: z.boolean(),
-  canUndo: z.boolean(),
-  createdAt: z.string(),
-  error: z.string().nullable(),
-  id: z.string(),
-  logTail: z.string(),
-  patch: z.object({
-    anchorLine: z.number().int().positive(),
-    anchorLines: z.array(z.number().int().positive()).min(1).max(128),
-    insertedCode: z.string(),
-    sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
-  }).strict(),
-  projectId: manimProjectIdSchema,
-  programBatchId: z.string(),
-  programTransactionId: z.string(),
-  progress: finiteNumber.min(0).max(1),
-  sceneName: z.string(),
-  sourcePath: manimSourcePathSchema,
-  status: renderSessionStatusSchema,
-  updatedAt: z.string(),
-  videoUrl: z.string().nullable(),
-}).strict();
+export const renderSessionViewSchema: z.ZodType<RenderSessionView> = z
+  .object({
+    canCancel: z.boolean(),
+    canCommit: z.boolean(),
+    canDiscard: z.boolean(),
+    canUndo: z.boolean(),
+    createdAt: z.string(),
+    error: z.string().nullable(),
+    id: z.string(),
+    logTail: z.string(),
+    patch: z
+      .object({
+        anchorLine: z.number().int().positive(),
+        anchorLines: z.array(z.number().int().positive()).min(1).max(128),
+        insertedCode: z.string(),
+        sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
+      })
+      .strict(),
+    projectId: manimProjectIdSchema,
+    programBatchId: z.string(),
+    programTransactionId: z.string(),
+    progress: finiteNumber.min(0).max(1),
+    sceneName: z.string(),
+    sourcePath: manimSourcePathSchema,
+    status: renderSessionStatusSchema,
+    updatedAt: z.string(),
+    videoUrl: z.string().nullable(),
+  })
+  .strict();
 
-export const manimWorkspaceSourceSchema: z.ZodType<ManimWorkspaceSource> = z.object({
-  path: manimSourcePathSchema,
-  scenes: z.array(z.object({
-    anchors: z.array(finiteNumber.nonnegative()),
-    name: z.string(),
-    nextSceneId: z.string().nullable(),
-    runtimeSceneState: runtimeSceneStateSchema,
-    sceneId: z.string(),
-    sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
-    sourceVariables: z.record(z.string(), z.string()),
-    staticSemanticState: staticSemanticStateSchema,
-  }).strict()),
-}).strict();
+export const manimWorkspaceSourceSchema: z.ZodType<ManimWorkspaceSource> = z
+  .object({
+    path: manimSourcePathSchema,
+    scenes: z.array(
+      z
+        .object({
+          anchors: z.array(finiteNumber.nonnegative()),
+          name: z.string(),
+          nextSceneId: z.string().nullable(),
+          runtimeSceneState: runtimeSceneStateSchema,
+          sceneId: z.string(),
+          sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
+          sourceVariables: z.record(z.string(), z.string()),
+          staticSemanticState: staticSemanticStateSchema,
+        })
+        .strict(),
+    ),
+  })
+  .strict();
 
-export const manimWorkspaceViewSchema: z.ZodType<ManimWorkspaceView> = z.object({
-  commandAvailable: z.boolean(),
-  frame: z.object({ height: finiteNumber.positive(), width: finiteNumber.positive() }).strict(),
-  projectId: manimProjectIdSchema,
-  projectName: z.string().min(1).max(120),
-  sources: z.array(manimWorkspaceSourceSchema),
-}).strict();
+export const manimWorkspaceViewSchema: z.ZodType<ManimWorkspaceView> = z
+  .object({
+    commandAvailable: z.boolean(),
+    frame: z.object({ height: finiteNumber.positive(), width: finiteNumber.positive() }).strict(),
+    projectId: manimProjectIdSchema,
+    projectName: z.string().min(1).max(120),
+    sources: z.array(manimWorkspaceSourceSchema),
+  })
+  .strict();
 
-export const manimProjectSummarySchema: z.ZodType<ManimProjectSummary> = z.object({
-  id: manimProjectIdSchema,
-  kind: z.enum(["existing", "managed"]),
-  name: manimProjectNameSchema,
-}).strict();
+export const manimProjectSummarySchema: z.ZodType<ManimProjectSummary> = z
+  .object({
+    id: manimProjectIdSchema,
+    kind: z.enum(["existing", "managed"]),
+    name: manimProjectNameSchema,
+  })
+  .strict();
 
-export const manimProjectListViewSchema: z.ZodType<ManimProjectListView> = z.object({
-  defaultProjectId: manimProjectIdSchema.nullable(),
-  projects: z.array(manimProjectSummarySchema).max(64),
-}).strict().superRefine((value, context) => {
-  const ids = new Set<string>();
-  value.projects.forEach((project, index) => {
-    if (ids.has(project.id)) {
+export const manimProjectListViewSchema: z.ZodType<ManimProjectListView> = z
+  .object({
+    defaultProjectId: manimProjectIdSchema.nullable(),
+    projects: z.array(manimProjectSummarySchema).max(64),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const ids = new Set<string>();
+    value.projects.forEach((project, index) => {
+      if (ids.has(project.id)) {
+        context.addIssue({
+          code: "custom",
+          message: `Duplicate project ID ${project.id}.`,
+          path: ["projects", index, "id"],
+        });
+      }
+      ids.add(project.id);
+    });
+    if (value.defaultProjectId !== null && !ids.has(value.defaultProjectId)) {
       context.addIssue({
         code: "custom",
-        message: `Duplicate project ID ${project.id}.`,
-        path: ["projects", index, "id"],
+        message: "The default project ID is not registered.",
+        path: ["defaultProjectId"],
       });
     }
-    ids.add(project.id);
+    if ((value.projects.length === 0) !== (value.defaultProjectId === null)) {
+      context.addIssue({
+        code: "custom",
+        message: "The default project ID must be null exactly when the project list is empty.",
+        path: ["defaultProjectId"],
+      });
+    }
   });
-  if (value.defaultProjectId !== null && !ids.has(value.defaultProjectId)) {
-    context.addIssue({
-      code: "custom",
-      message: "The default project ID is not registered.",
-      path: ["defaultProjectId"],
-    });
-  }
-  if ((value.projects.length === 0) !== (value.defaultProjectId === null)) {
-    context.addIssue({
-      code: "custom",
-      message: "The default project ID must be null exactly when the project list is empty.",
-      path: ["defaultProjectId"],
-    });
-  }
-});
 
 export const createManimProjectRequestSchema: z.ZodType<ManimProjectCreateRequest> = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("managed"),
-    name: manimProjectNameSchema,
-  }).strict(),
-  z.object({
-    kind: z.literal("existing"),
-    name: manimProjectNameSchema,
-    root: z.string().trim().min(1).max(4_096),
-  }).strict(),
+  z
+    .object({
+      kind: z.literal("managed"),
+      name: manimProjectNameSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("existing"),
+      name: manimProjectNameSchema,
+      root: z.string().trim().min(1).max(4_096),
+    })
+    .strict(),
 ]);
 
-export const renameManimProjectRequestSchema = z.object({
-  name: manimProjectNameSchema,
-}).strict();
+export const renameManimProjectRequestSchema = z
+  .object({
+    name: manimProjectNameSchema,
+  })
+  .strict();
 
-export const manimProjectMutationViewSchema: z.ZodType<ManimProjectMutationView> = z.object({
-  catalog: manimProjectListViewSchema,
-  project: manimProjectSummarySchema.nullable(),
-}).strict();
+export const manimProjectMutationViewSchema: z.ZodType<ManimProjectMutationView> = z
+  .object({
+    catalog: manimProjectListViewSchema,
+    project: manimProjectSummarySchema.nullable(),
+  })
+  .strict();
 
 export const manimThumbnailGenerateRequestSchema = z.object({}).strict();
 
-export const manimThumbnailStatusSchema: z.ZodType<ManimThumbnailStatus> = z.object({
-  cachedSourceHash: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
-  error: z.string().max(500).nullable(),
-  generatedAt: z.string().datetime().nullable(),
-  imageKind: z.enum(["empty", "rendered", "semantic"]),
-  projectId: manimProjectIdSchema,
-  sceneName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).nullable(),
-  sourceHash: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
-  sourcePath: manimSourcePathSchema.nullable(),
-  state: z.enum(["current", "failed", "generating", "missing", "stale", "unavailable"]),
-}).strict().superRefine((status, context) => {
-  const targetFields = [status.sceneName, status.sourceHash, status.sourcePath];
-  const hasTarget = targetFields.every((field) => field !== null);
-  const hasPartialTarget = targetFields.some((field) => field !== null) && !hasTarget;
-  const hasCachedImage = status.cachedSourceHash !== null || status.generatedAt !== null;
-  if (hasPartialTarget) {
-    context.addIssue({ code: "custom", message: "Thumbnail target fields must be all null or all present." });
-  }
-  if ((status.cachedSourceHash === null) !== (status.generatedAt === null)) {
-    context.addIssue({ code: "custom", message: "Cached thumbnail hash and timestamp must be present together." });
-  }
-  if (status.imageKind === "empty" && hasTarget) {
-    context.addIssue({ code: "custom", message: "An empty thumbnail cannot identify a Scene target." });
-  }
-  if (status.imageKind === "rendered" && !hasCachedImage) {
-    context.addIssue({ code: "custom", message: "A rendered thumbnail requires cached image metadata." });
-  }
-  if (status.imageKind === "rendered" && hasTarget && status.cachedSourceHash !== status.sourceHash) {
-    context.addIssue({ code: "custom", message: "A rendered thumbnail must match its active source." });
-  }
-  if ((status.state === "failed" || status.state === "unavailable") !== (status.error !== null)) {
-    context.addIssue({ code: "custom", message: "Only failed or unavailable thumbnails carry an error." });
-  }
-  if (status.state === "current" && (
-    !hasTarget
-    || status.imageKind !== "rendered"
-    || status.cachedSourceHash !== status.sourceHash
-  )) {
-    context.addIssue({ code: "custom", message: "A current thumbnail must render its active source." });
-  }
-  if (status.state === "stale" && (
-    !hasTarget
-    || status.imageKind !== "semantic"
-    || status.cachedSourceHash === null
-    || status.cachedSourceHash === status.sourceHash
-  )) {
-    context.addIssue({ code: "custom", message: "A stale thumbnail requires a different cached source and a semantic fallback." });
-  }
-  if (status.state === "missing" && (
-    status.error !== null
-    || (hasTarget && (status.imageKind !== "semantic" || hasCachedImage))
-    || (!hasTarget && status.imageKind !== "empty")
-  )) {
-    context.addIssue({ code: "custom", message: "A missing thumbnail must be an empty workspace or an uncached semantic target." });
-  }
-  if (status.state === "unavailable" && (hasTarget || status.imageKind !== "empty")) {
-    context.addIssue({ code: "custom", message: "An unavailable workspace cannot expose a current Scene target." });
-  }
-  if ((status.state === "failed" || status.state === "generating") && !hasTarget) {
-    context.addIssue({ code: "custom", message: `${status.state} thumbnails require a Scene target.` });
-  }
-});
+export const manimThumbnailStatusSchema: z.ZodType<ManimThumbnailStatus> = z
+  .object({
+    cachedSourceHash: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .nullable(),
+    error: z.string().max(500).nullable(),
+    generatedAt: z.string().datetime().nullable(),
+    imageKind: z.enum(["empty", "rendered", "semantic"]),
+    projectId: manimProjectIdSchema,
+    sceneName: z
+      .string()
+      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
+      .nullable(),
+    sourceHash: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .nullable(),
+    sourcePath: manimSourcePathSchema.nullable(),
+    state: z.enum(["current", "failed", "generating", "missing", "stale", "unavailable"]),
+  })
+  .strict()
+  .superRefine((status, context) => {
+    const targetFields = [status.sceneName, status.sourceHash, status.sourcePath];
+    const hasTarget = targetFields.every((field) => field !== null);
+    const hasPartialTarget = targetFields.some((field) => field !== null) && !hasTarget;
+    const hasCachedImage = status.cachedSourceHash !== null || status.generatedAt !== null;
+    if (hasPartialTarget) {
+      context.addIssue({ code: "custom", message: "Thumbnail target fields must be all null or all present." });
+    }
+    if ((status.cachedSourceHash === null) !== (status.generatedAt === null)) {
+      context.addIssue({ code: "custom", message: "Cached thumbnail hash and timestamp must be present together." });
+    }
+    if (status.imageKind === "empty" && hasTarget) {
+      context.addIssue({ code: "custom", message: "An empty thumbnail cannot identify a Scene target." });
+    }
+    if (status.imageKind === "rendered" && !hasCachedImage) {
+      context.addIssue({ code: "custom", message: "A rendered thumbnail requires cached image metadata." });
+    }
+    if (status.imageKind === "rendered" && hasTarget && status.cachedSourceHash !== status.sourceHash) {
+      context.addIssue({ code: "custom", message: "A rendered thumbnail must match its active source." });
+    }
+    if ((status.state === "failed" || status.state === "unavailable") !== (status.error !== null)) {
+      context.addIssue({ code: "custom", message: "Only failed or unavailable thumbnails carry an error." });
+    }
+    if (
+      status.state === "current" &&
+      (!hasTarget || status.imageKind !== "rendered" || status.cachedSourceHash !== status.sourceHash)
+    ) {
+      context.addIssue({ code: "custom", message: "A current thumbnail must render its active source." });
+    }
+    if (
+      status.state === "stale" &&
+      (!hasTarget ||
+        status.imageKind !== "semantic" ||
+        status.cachedSourceHash === null ||
+        status.cachedSourceHash === status.sourceHash)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "A stale thumbnail requires a different cached source and a semantic fallback.",
+      });
+    }
+    if (
+      status.state === "missing" &&
+      (status.error !== null ||
+        (hasTarget && (status.imageKind !== "semantic" || hasCachedImage)) ||
+        (!hasTarget && status.imageKind !== "empty"))
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "A missing thumbnail must be an empty workspace or an uncached semantic target.",
+      });
+    }
+    if (status.state === "unavailable" && (hasTarget || status.imageKind !== "empty")) {
+      context.addIssue({ code: "custom", message: "An unavailable workspace cannot expose a current Scene target." });
+    }
+    if ((status.state === "failed" || status.state === "generating") && !hasTarget) {
+      context.addIssue({ code: "custom", message: `${status.state} thumbnails require a Scene target.` });
+    }
+  });
 
 export type ManimApiError = Readonly<{ error: string }>;

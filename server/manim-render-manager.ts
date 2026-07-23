@@ -1,15 +1,7 @@
-import {
-  mkdir,
-  mkdtemp,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
-import {
-  basename,
-  join,
-} from "node:path";
+import { basename, join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 
 import {
@@ -39,12 +31,7 @@ import {
 } from "./manim-render-process";
 import { ManimSourceStore, sourceHash } from "./manim-source-store";
 import { ManimThumbnailCache } from "./manim-thumbnail-cache";
-import {
-  discoverPythonSources,
-  importedScene,
-  importSourceSnapshot,
-  sceneView,
-} from "./manim-workspace";
+import { discoverPythonSources, importedScene, importSourceSnapshot, sceneView } from "./manim-workspace";
 
 type RenderSession = {
   actionInProgress: boolean;
@@ -179,21 +166,23 @@ export class ManimRenderManager {
   private thumbnailStartRequest: Promise<ManimThumbnailStatus> | null = null;
   private workspaceRequest: Promise<ManimWorkspaceView> | null = null;
 
-  constructor(options: Readonly<{
-    command: readonly string[];
-    frame: Readonly<{ height: number; width: number }>;
-    logger?: StructuredLogger;
-    maxConcurrentRenders?: number;
-    maxRetainedSessions?: number;
-    onSessionRemoved?: (id: string) => void;
-    projectId?: string;
-    projectKind?: ManimProjectKind;
-    projectName?: string;
-    projectRoot: string;
-    renderTimeoutMs?: number;
-    sessionRetentionMs?: number;
-    thumbnailCacheRoot?: string;
-  }>) {
+  constructor(
+    options: Readonly<{
+      command: readonly string[];
+      frame: Readonly<{ height: number; width: number }>;
+      logger?: StructuredLogger;
+      maxConcurrentRenders?: number;
+      maxRetainedSessions?: number;
+      onSessionRemoved?: (id: string) => void;
+      projectId?: string;
+      projectKind?: ManimProjectKind;
+      projectName?: string;
+      projectRoot: string;
+      renderTimeoutMs?: number;
+      sessionRetentionMs?: number;
+      thumbnailCacheRoot?: string;
+    }>,
+  ) {
     if (options.command.length === 0 || options.command.some((entry) => entry.length === 0)) {
       throw new TypeError("The Manim command must contain a non-empty executable and arguments.");
     }
@@ -222,10 +211,7 @@ export class ManimRenderManager {
     this.projectName = options.projectName?.trim() || basename(this.sourceStore.projectRoot) || "Manim Project";
     if (this.projectName.length > 120) throw new TypeError("Manim project name must be at most 120 characters.");
     this.projectRoot = this.sourceStore.projectRoot;
-    this.renderTimeoutMs = requireTimerDelay(
-      options.renderTimeoutMs ?? DEFAULT_RENDER_TIMEOUT_MS,
-      "Render timeout",
-    );
+    this.renderTimeoutMs = requireTimerDelay(options.renderTimeoutMs ?? DEFAULT_RENDER_TIMEOUT_MS, "Render timeout");
     this.sessionRetentionMs = requireTimerDelay(
       options.sessionRetentionMs ?? DEFAULT_SESSION_RETENTION_MS,
       "Session retention",
@@ -239,24 +225,29 @@ export class ManimRenderManager {
       projectRoot: this.projectRoot,
       renderTimeoutMs: this.renderTimeoutMs,
     });
-    this.cleanupTimer = setInterval(() => {
-      void this.cleanupExpiredSessions().catch((error: unknown) => {
-        this.logger.error("render.session_cleanup_failed", { error });
-      });
-    }, Math.min(60_000, Math.max(100, this.sessionRetentionMs)));
+    this.cleanupTimer = setInterval(
+      () => {
+        void this.cleanupExpiredSessions().catch((error: unknown) => {
+          this.logger.error("render.session_cleanup_failed", { error });
+        });
+      },
+      Math.min(60_000, Math.max(100, this.sessionRetentionMs)),
+    );
     this.cleanupTimer.unref();
   }
 
   canUnregister() {
-    return this.activeStarts === 0
-      && this.pendingStarts === 0
-      && this.pendingRetainedSessions === 0
-      && this.sessions.size === 0
-      && !this.thumbnailCache.isBusy()
-      && this.thumbnailRefreshRequest === null
-      && this.thumbnailSlotRequest === null
-      && this.thumbnailStartRequest === null
-      && this.workspaceRequest === null;
+    return (
+      this.activeStarts === 0 &&
+      this.pendingStarts === 0 &&
+      this.pendingRetainedSessions === 0 &&
+      this.sessions.size === 0 &&
+      !this.thumbnailCache.isBusy() &&
+      this.thumbnailRefreshRequest === null &&
+      this.thumbnailSlotRequest === null &&
+      this.thumbnailStartRequest === null &&
+      this.workspaceRequest === null
+    );
   }
 
   renameProject(name: string) {
@@ -268,22 +259,25 @@ export class ManimRenderManager {
   }
 
   async cleanupExpiredSessions(now = Date.now()) {
-    const expired = [...this.sessions.values()].filter((session) => (
-      session.status !== "preparing"
-      && session.status !== "rendering"
-      && !session.actionInProgress
-      && now - Date.parse(session.updatedAt) >= this.sessionRetentionMs
-    ));
-    await Promise.all(expired.map(async (session) => {
-      if (session.actionInProgress) return;
-      session.actionInProgress = true;
-      try {
-        await rm(session.tempRoot, { force: true, recursive: true });
-        this.removeSession(session.id);
-      } finally {
-        session.actionInProgress = false;
-      }
-    }));
+    const expired = [...this.sessions.values()].filter(
+      (session) =>
+        session.status !== "preparing" &&
+        session.status !== "rendering" &&
+        !session.actionInProgress &&
+        now - Date.parse(session.updatedAt) >= this.sessionRetentionMs,
+    );
+    await Promise.all(
+      expired.map(async (session) => {
+        if (session.actionInProgress) return;
+        session.actionInProgress = true;
+        try {
+          await rm(session.tempRoot, { force: true, recursive: true });
+          this.removeSession(session.id);
+        } finally {
+          session.actionInProgress = false;
+        }
+      }),
+    );
   }
 
   projects(): ManimProjectListView {
@@ -336,9 +330,11 @@ export class ManimRenderManager {
     if (this.thumbnailStartRequest) return this.thumbnailStartRequest;
     const request = Promise.resolve().then(() => this.runThumbnailGenerationStart());
     this.thumbnailStartRequest = request;
-    void request.finally(() => {
-      if (this.thumbnailStartRequest === request) this.thumbnailStartRequest = null;
-    }).catch(() => undefined);
+    void request
+      .finally(() => {
+        if (this.thumbnailStartRequest === request) this.thumbnailStartRequest = null;
+      })
+      .catch(() => undefined);
     return request;
   }
 
@@ -354,9 +350,11 @@ export class ManimRenderManager {
           slotHeldForRender = true;
           const slotRequest = this.thumbnailCache.waitForIdle().finally(releaseSlot);
           this.thumbnailSlotRequest = slotRequest;
-          void slotRequest.finally(() => {
-            if (this.thumbnailSlotRequest === slotRequest) this.thumbnailSlotRequest = null;
-          }).catch(() => undefined);
+          void slotRequest
+            .finally(() => {
+              if (this.thumbnailSlotRequest === slotRequest) this.thumbnailSlotRequest = null;
+            })
+            .catch(() => undefined);
         }
         return status;
       } finally {
@@ -370,18 +368,22 @@ export class ManimRenderManager {
   private refreshThumbnail() {
     this.thumbnailCache.invalidateTarget();
     if (this.thumbnailRefreshRequest) return;
-    const request = Promise.resolve().then(async () => {
-      await this.thumbnailCache.waitForIdle();
-      this.thumbnailCache.invalidateTarget();
-      if ((await this.thumbnailCache.status()).state === "current") return;
-      await this.startThumbnailGeneration();
-    }).catch((error: unknown) => {
-      this.logger.warn("thumbnail.refresh_failed", { error });
-    });
+    const request = Promise.resolve()
+      .then(async () => {
+        await this.thumbnailCache.waitForIdle();
+        this.thumbnailCache.invalidateTarget();
+        if ((await this.thumbnailCache.status()).state === "current") return;
+        await this.startThumbnailGeneration();
+      })
+      .catch((error: unknown) => {
+        this.logger.warn("thumbnail.refresh_failed", { error });
+      });
     this.thumbnailRefreshRequest = request;
-    void request.finally(() => {
-      if (this.thumbnailRefreshRequest === request) this.thumbnailRefreshRequest = null;
-    }).catch(() => undefined);
+    void request
+      .finally(() => {
+        if (this.thumbnailRefreshRequest === request) this.thumbnailRefreshRequest = null;
+      })
+      .catch(() => undefined);
   }
 
   private session(id: string) {
@@ -415,9 +417,9 @@ export class ManimRenderManager {
         429,
       );
     }
-    const activeRenders = [...this.sessions.values()].filter((session) => (
-      session.status === "preparing" || session.status === "rendering"
-    )).length;
+    const activeRenders = [...this.sessions.values()].filter(
+      (session) => session.status === "preparing" || session.status === "rendering",
+    ).length;
     if (activeRenders + this.pendingStarts >= this.maxConcurrentRenders) {
       throw new HttpError(`Studio permits at most ${this.maxConcurrentRenders} concurrent Manim renders.`, 429);
     }
@@ -441,9 +443,9 @@ export class ManimRenderManager {
   }
 
   private reserveThumbnailSlot() {
-    const activeRenders = [...this.sessions.values()].filter((session) => (
-      session.status === "preparing" || session.status === "rendering"
-    )).length;
+    const activeRenders = [...this.sessions.values()].filter(
+      (session) => session.status === "preparing" || session.status === "rendering",
+    ).length;
     if (activeRenders + this.pendingStarts >= this.maxConcurrentRenders) {
       throw new HttpError(`Studio permits at most ${this.maxConcurrentRenders} concurrent Manim renders.`, 429);
     }
@@ -457,7 +459,8 @@ export class ManimRenderManager {
   }
 
   private beginSessionAction(session: RenderSession) {
-    if (session.actionInProgress) throw new HttpError("Another action is already running for this render session.", 409);
+    if (session.actionInProgress)
+      throw new HttpError("Another action is already running for this render session.", 409);
     session.actionInProgress = true;
     return () => {
       session.actionInProgress = false;
@@ -527,9 +530,7 @@ export class ManimRenderManager {
       sourcePath: session.request.sourcePath,
       status: session.status,
       updatedAt: session.updatedAt,
-      videoUrl: session.videoPath && session.status !== "discarded"
-        ? `/api/manim/renders/${session.id}/video`
-        : null,
+      videoUrl: session.videoPath && session.status !== "discarded" ? `/api/manim/renders/${session.id}/video` : null,
     };
   }
 
@@ -562,9 +563,10 @@ export class ManimRenderManager {
     try {
       this.assertRequestProject(request);
       const prepared = await this.lowerRequest(request, signal);
-      const stem = basename(request.sourcePath, ".py")
-        .replace(/[^A-Za-z0-9._-]+/g, "-")
-        .replace(/^-+|-+$/g, "") || "manim-scene";
+      const stem =
+        basename(request.sourcePath, ".py")
+          .replace(/[^A-Za-z0-9._-]+/g, "-")
+          .replace(/^-+|-+$/g, "") || "manim-scene";
       return {
         fileName: `${stem}.poietra.py`,
         projectId: this.projectId,
@@ -583,14 +585,12 @@ export class ManimRenderManager {
       const snapshot = await this.sourceStore.read(request.sourcePath);
       throwIfAborted(signal);
       if (snapshot.hash !== request.sourceHash) {
-        throw new HttpError(
-          "The imported source changed before export. Reimport the workspace and try again.",
-          409,
-        );
+        throw new HttpError("The imported source changed before export. Reimport the workspace and try again.", 409);
       }
-      const fileName = basename(request.sourcePath)
-        .replace(/[^A-Za-z0-9._-]+/g, "-")
-        .replace(/^-+|-+$/g, "") || "manim-scene.py";
+      const fileName =
+        basename(request.sourcePath)
+          .replace(/[^A-Za-z0-9._-]+/g, "-")
+          .replace(/^-+|-+$/g, "") || "manim-scene.py";
       return {
         fileName: fileName.endsWith(".py") ? fileName : `${fileName}.py`,
         projectId: this.projectId,
@@ -613,7 +613,10 @@ export class ManimRenderManager {
     throwIfAborted(signal);
     const originalSource = sourceSnapshot.source;
     if (sourceSnapshot.hash !== request.sourceHash) {
-      throw new HttpError("The imported source changed before rendering or export. Reimport the workspace and create the draft again.", 409);
+      throw new HttpError(
+        "The imported source changed before rendering or export. Reimport the workspace and create the draft again.",
+        409,
+      );
     }
     const importedSnapshot = importSourceSnapshot(originalSource, request.sourcePath, this.frame);
     const activeScene = sceneView(importedSnapshot.view, request.sceneName);
@@ -625,7 +628,10 @@ export class ManimRenderManager {
     }
     for (const binding of request.sourceBindings) {
       if (activeScene.sourceVariables[binding.entityId] !== binding.sourceVariable) {
-        throw new HttpError(`Source target binding ${binding.entityId} → ${binding.sourceVariable} does not match the imported Scene.`, 400);
+        throw new HttpError(
+          `Source target binding ${binding.entityId} → ${binding.sourceVariable} does not match the imported Scene.`,
+          400,
+        );
       }
     }
     const orderedPrograms = renderRequestPrograms(request)
@@ -661,8 +667,8 @@ export class ManimRenderManager {
     const invalidRecord = evaluated.programs.find((record) => record.validation.status === "invalid");
     if (invalidRecord) {
       throw new HttpError(
-        invalidRecord.validation.issues.find((issue) => issue.severity === "error")?.message
-          ?? "A Canonical EditProgram is invalid for the imported Scene after timeline insertion.",
+        invalidRecord.validation.issues.find((issue) => issue.severity === "error")?.message ??
+          "A Canonical EditProgram is invalid for the imported Scene after timeline insertion.",
         400,
       );
     }
@@ -670,12 +676,13 @@ export class ManimRenderManager {
     const renderRequest: ProgramRenderRequest = request.programs
       ? { ...request, program: validatedPrograms[0]!, programs: validatedPrograms }
       : { ...request, program: validatedPrograms[0]! };
-    const boundaryProgramIndexes = validatedPrograms.flatMap((program, index) => (
-      program.operations.some((operation) => operation.kind === "InsertSceneBoundary") ? [index] : []
-    ));
-    if (boundaryProgramIndexes.length > 1 || (
-      boundaryProgramIndexes.length === 1 && boundaryProgramIndexes[0] !== validatedPrograms.length - 1
-    )) {
+    const boundaryProgramIndexes = validatedPrograms.flatMap((program, index) =>
+      program.operations.some((operation) => operation.kind === "InsertSceneBoundary") ? [index] : [],
+    );
+    if (
+      boundaryProgramIndexes.length > 1 ||
+      (boundaryProgramIndexes.length === 1 && boundaryProgramIndexes[0] !== validatedPrograms.length - 1)
+    ) {
       throw new HttpError("A Scene-boundary Program must be the final Program in a render batch.", 400);
     }
     const hasSceneBoundary = boundaryProgramIndexes.length === 1;
@@ -689,9 +696,9 @@ export class ManimRenderManager {
       }
       const destinationScene = sceneView(importedSnapshot.view, renderRequest.destination.sceneName);
       if (
-        renderRequest.destination.sourcePath !== request.sourcePath
-        || !destinationScene
-        || destinationScene.sceneId !== activeScene.nextSceneId
+        renderRequest.destination.sourcePath !== request.sourcePath ||
+        !destinationScene ||
+        destinationScene.sceneId !== activeScene.nextSceneId
       ) {
         throw new HttpError("The requested transition destination is not the active Scene's next imported Scene.", 400);
       }
@@ -811,23 +818,21 @@ export class ManimRenderManager {
     session.updatedAt = new Date().toISOString();
     try {
       const [executable, ...prefix] = this.command;
-      const child = spawn(executable, [
-        ...prefix,
-        "-ql",
-        "--disable_caching",
-        "--media_dir",
-        mediaRoot,
-        previewSourcePath,
-        session.request.sceneName,
-      ], {
-        cwd: this.projectRoot,
-        detached: process.platform !== "win32",
-        env: {
-          ...process.env,
-          PYTHONPATH: [this.projectRoot, process.env.PYTHONPATH].filter(Boolean).join(process.platform === "win32" ? ";" : ":"),
+      const child = spawn(
+        executable,
+        [...prefix, "-ql", "--disable_caching", "--media_dir", mediaRoot, previewSourcePath, session.request.sceneName],
+        {
+          cwd: this.projectRoot,
+          detached: process.platform !== "win32",
+          env: {
+            ...process.env,
+            PYTHONPATH: [this.projectRoot, process.env.PYTHONPATH]
+              .filter(Boolean)
+              .join(process.platform === "win32" ? ";" : ":"),
+          },
+          stdio: ["ignore", "pipe", "pipe"],
         },
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+      );
       session.child = child;
       child.stdout?.on("data", (chunk: Buffer) => appendRenderLog(session, chunk));
       child.stderr?.on("data", (chunk: Buffer) => appendRenderLog(session, chunk));
@@ -835,7 +840,9 @@ export class ManimRenderManager {
       session.child = null;
       if (sessionWasStopped(session)) return;
       if (exit.code !== 0) {
-        throw new Error(`Manim exited with ${exit.code === null ? `signal ${exit.signal ?? "unknown"}` : `code ${exit.code}`}.`);
+        throw new Error(
+          `Manim exited with ${exit.code === null ? `signal ${exit.signal ?? "unknown"}` : `code ${exit.code}`}.`,
+        );
       }
       const videoPath = await findRenderedVideo(mediaRoot, session.request.sceneName);
       if (!videoPath) throw new Error("Manim completed without producing an MP4 preview.");
@@ -944,7 +951,7 @@ export class ManimRenderManager {
       ...(this.thumbnailSlotRequest ? [this.thumbnailSlotRequest] : []),
     ]);
     for (const id of this.sessions.keys()) this.removeSession(id);
-    const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+    const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
     if (errors.length > 0) throw new AggregateError(errors, "Could not fully close the Manim render pipeline.");
   }
 

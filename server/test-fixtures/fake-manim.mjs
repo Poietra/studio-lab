@@ -38,9 +38,9 @@ const slowTransactionIndex = process.argv.indexOf("--slow-transaction");
 const slowTransaction = slowTransactionIndex >= 0 ? process.argv[slowTransactionIndex + 1] : null;
 const previewSourcePath = process.argv.find((argument) => argument.endsWith(".py"));
 if (
-  slowTransaction
-  && previewSourcePath
-  && (await readFile(previewSourcePath, "utf8")).includes(`poietra:transaction "${slowTransaction}"`)
+  slowTransaction &&
+  previewSourcePath &&
+  (await readFile(previewSourcePath, "utf8")).includes(`poietra:transaction "${slowTransaction}"`)
 ) {
   const shutdownMarkerIndex = process.argv.indexOf("--shutdown-marker");
   if (shutdownMarkerIndex >= 0 && process.argv[shutdownMarkerIndex + 1]) {
@@ -67,8 +67,8 @@ if (process.argv.includes("-s") && thumbnailStartMarkerIndex >= 0 && process.arg
 }
 
 process.stdout.write("Rendering 50%\n");
-const slowRender = process.argv.includes("--slow-render")
-  || (process.argv.includes("--slow-thumbnail") && process.argv.includes("-s"));
+const slowRender =
+  process.argv.includes("--slow-render") || (process.argv.includes("--slow-thumbnail") && process.argv.includes("-s"));
 await new Promise((resolve) => setTimeout(resolve, slowRender ? 10_000 : 80));
 if (process.argv.includes("-s")) {
   const sceneName = process.argv.at(-1);
