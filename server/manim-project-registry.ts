@@ -9,7 +9,7 @@ import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import type { ManimProjectConfig } from "./manim-render-config";
 import { ManimRenderManager } from "./manim-render-manager";
 import {
-  PersistentManimProjectCatalog,
+  type PersistentManimProjectCatalog,
   type ResolvedManimProject,
   resolveManimProjects,
 } from "./manim-project-catalog";
@@ -27,18 +27,20 @@ export class ManimProjectRegistry {
   private readonly sessionRetentionMs: number | undefined;
   private readonly thumbnailCacheRoot: string | undefined;
 
-  constructor(options: Readonly<{
-    catalog?: PersistentManimProjectCatalog;
-    command: readonly string[];
-    frame: Readonly<{ height: number; width: number }>;
-    logger?: StructuredLogger;
-    maxConcurrentRenders?: number;
-    maxRetainedSessions?: number;
-    projects: readonly ManimProjectConfig[];
-    renderTimeoutMs?: number;
-    sessionRetentionMs?: number;
-    thumbnailCacheRoot?: string;
-  }>) {
+  constructor(
+    options: Readonly<{
+      catalog?: PersistentManimProjectCatalog;
+      command: readonly string[];
+      frame: Readonly<{ height: number; width: number }>;
+      logger?: StructuredLogger;
+      maxConcurrentRenders?: number;
+      maxRetainedSessions?: number;
+      projects: readonly ManimProjectConfig[];
+      renderTimeoutMs?: number;
+      sessionRetentionMs?: number;
+      thumbnailCacheRoot?: string;
+    }>,
+  ) {
     if (options.projects.length > 64) throw new TypeError("The Manim project registry accepts at most 64 projects.");
     this.catalog = options.catalog ?? null;
     this.command = options.command;
@@ -59,21 +61,24 @@ export class ManimProjectRegistry {
 
   private addManager({ canonicalRoot, kind, projectId, projectName }: ResolvedManimProject) {
     if (this.managers.has(projectId)) throw new TypeError(`Duplicate Manim project ID ${projectId}.`);
-    this.managers.set(projectId, new ManimRenderManager({
-      command: this.command,
-      frame: this.frame,
-      logger: this.logger.child({ projectId }),
-      maxConcurrentRenders: this.maxConcurrentRenders,
-      maxRetainedSessions: this.maxRetainedSessions,
-      onSessionRemoved: (id) => this.sessionProjects.delete(id),
+    this.managers.set(
       projectId,
-      projectKind: kind,
-      projectName,
-      projectRoot: canonicalRoot,
-      renderTimeoutMs: this.renderTimeoutMs,
-      sessionRetentionMs: this.sessionRetentionMs,
-      thumbnailCacheRoot: this.thumbnailCacheRoot,
-    }));
+      new ManimRenderManager({
+        command: this.command,
+        frame: this.frame,
+        logger: this.logger.child({ projectId }),
+        maxConcurrentRenders: this.maxConcurrentRenders,
+        maxRetainedSessions: this.maxRetainedSessions,
+        onSessionRemoved: (id) => this.sessionProjects.delete(id),
+        projectId,
+        projectKind: kind,
+        projectName,
+        projectRoot: canonicalRoot,
+        renderTimeoutMs: this.renderTimeoutMs,
+        sessionRetentionMs: this.sessionRetentionMs,
+        thumbnailCacheRoot: this.thumbnailCacheRoot,
+      }),
+    );
   }
 
   private mutableCatalog() {
@@ -150,7 +155,10 @@ export class ManimProjectRegistry {
   async unregisterProject(projectId: string) {
     const manager = this.project(projectId);
     if (!manager.canUnregister()) {
-      throw new HttpError("Wait for active workspace work and discard retained render sessions before removing it from Studio.", 409);
+      throw new HttpError(
+        "Wait for active workspace work and discard retained render sessions before removing it from Studio.",
+        409,
+      );
     }
     this.mutableCatalog().remove(projectId);
     this.managers.delete(projectId);
@@ -229,7 +237,7 @@ export class ManimProjectRegistry {
   async close() {
     const results = await Promise.allSettled([...this.managers.values()].map((manager) => manager.close()));
     this.sessionProjects.clear();
-    const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+    const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
     if (errors.length > 0) throw new AggregateError(errors, "Could not fully close the Manim project registry.");
   }
 }

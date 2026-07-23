@@ -12,6 +12,11 @@
     "test:unit": "vitest run src/ai src/studio --exclude src/studio/workspace-projection.test.ts",
     "test:integration": "vitest run server src/render-pipeline src/studio/workspace-projection.test.ts",
     "test:e2e": "playwright test",
+    "lint": "biome lint --error-on-warnings .",
+    "lint:fix": "biome lint --write .",
+    "format": "node scripts/biome-changed.mjs --write",
+    "format:check": "node scripts/biome-changed.mjs",
+    "check:style": "pnpm lint && pnpm format:check",
     "dev:web": "vite --host 127.0.0.1",
     "dev:electron": "concurrently --kill-others --success first \"pnpm dev:web\" \"wait-on tcp:127.0.0.1:5173 && electron electron/main.mjs\"",
     "dev:tauri": "tauri dev",
@@ -33,6 +38,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.5",
     "@playwright/test": "1.61.1",
     "@tailwindcss/vite": "4.3.3",
     "@tauri-apps/cli": "2.11.4",
