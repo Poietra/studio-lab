@@ -1,5 +1,6 @@
 import { renderRequestPrograms, type ProgramRenderRequest, type SingleProgramRenderRequest } from "./contracts";
 import { findSourceComments, findSourceSceneBlock, findSourceSceneComments } from "./source-import";
+import type { MotionEasing } from "../studio/model";
 import type { CanonicalEditOperation, CreateEntityOperation } from "../studio/operations";
 import { operationExecutionCapabilities, programExecutionCapabilities } from "../studio/operation-registry";
 import { insertedProgramDuration } from "../studio/program-composition";
@@ -378,6 +379,10 @@ function animationOperation(operation: CanonicalEditOperation): operation is Low
   );
 }
 
+function animationEasing(operation: LoweredAnimationOperation): MotionEasing {
+  return operation.kind === "CreateMotion" || operation.kind === "AnimateProperty" ? operation.easing : "smooth";
+}
+
 function scaleChange(operation: Extract<CanonicalEditOperation, { kind: "AnimateProperty" }>) {
   if (
     operation.key !== "scale" ||
@@ -675,6 +680,14 @@ export function lowerCanonicalProgramSource(
     if (animations.some((operation) => Math.abs(operation.interval.end - animationEnd) >= EPSILON)) {
       throw new ProgramLoweringError("operation-unsupported", "Concurrent source animations must share one interval.");
     }
+    const animationEasings = new Set(animations.map(animationEasing));
+    if (animationEasings.size !== 1) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        "Concurrent source animations must share one easing function.",
+      );
+    }
+    const rateFunction = animationEasings.values().next().value ?? "smooth";
     const actions: string[] = [];
     const motions: Array<
       Readonly<{
@@ -698,6 +711,7 @@ export function lowerCanonicalProgramSource(
         motions.push({
           ...(curved ? { controlOffset: markerPoint(operation.controlOffset, request.viewport) } : {}),
           delta: markerPoint(operation.delta, request.viewport),
+          ...(operation.easing === "linear" ? { easing: operation.easing } : {}),
           variables,
         });
         for (const variable of variables) {
@@ -751,7 +765,7 @@ export function lowerCanonicalProgramSource(
       output.push("self.play(");
       output.push(...actions.map((action) => `    ${action},`));
       output.push(`    run_time=${formatAmount(animationEnd - time)},`);
-      output.push("    rate_func=smooth,");
+      output.push(`    rate_func=${rateFunction},`);
       output.push(")");
     }
     output.push(...postludes);

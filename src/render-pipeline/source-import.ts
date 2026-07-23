@@ -10,6 +10,7 @@ import {
   type EntityStyle,
   type Interval,
   type Knowledge,
+  type MotionEasing,
   type Point,
   type PropertyChannel,
   type PropertyChannelSample,
@@ -137,6 +138,7 @@ const motionMarkerSchema = z
           .object({
             controlOffset: markerPointSchema.optional(),
             delta: markerPointSchema,
+            easing: z.enum(["linear", "smooth"]).optional(),
             variables: z.array(identifierSchema).min(1).max(128),
           })
           .strict(),
@@ -659,6 +661,12 @@ function durationFrom(statement: string, fallback = 1) {
   return match ? Number(match[1]) : fallback;
 }
 
+function motionEasingFrom(statement: string): MotionEasing | null {
+  const match = statement.match(/\brate_func\s*=\s*([A-Za-z_][A-Za-z0-9_]*)/);
+  if (!match) return "smooth";
+  return match[1] === "linear" || match[1] === "smooth" ? match[1] : null;
+}
+
 function waitDuration(statement: string) {
   const match = statement.match(/^self\.wait\(\s*([0-9]+(?:\.[0-9]+)?)?\s*\)/s);
   return match ? Number(match[1] ?? 1) : null;
@@ -976,6 +984,7 @@ export function importManimScene(
     }
     if (!statement.text.startsWith("self.play(")) continue;
     const duration = durationFrom(statement.text);
+    const sourceMotionEasing = motionEasingFrom(statement.text);
     const interval = { end: cursor + duration, start: cursor };
     const motionMarker = markerBefore(statements, statementIndex, MOTION_MARKER_PATTERN);
     const scaleMarker = markerBefore(statements, statementIndex, SCALE_MARKER_PATTERN);
@@ -1012,6 +1021,7 @@ export function importManimScene(
     const validMarkedMotion =
       motionMarker !== undefined &&
       parsedMotion.success &&
+      sourceMotionEasing !== null &&
       new Set(markedVariables).size === markedVariables.length &&
       markedVariables.length === actualMotionVariables.length &&
       markedVariables.every((variable) => byVariable.has(variable) && actualMotionVariables.includes(variable));
@@ -1026,12 +1036,14 @@ export function importManimScene(
                     {
                       controlOffset: motion.controlOffset ?? { x: 0, y: 0 },
                       delta: motion.delta,
+                      // Python is authoritative for timing. The marker restores screen-space geometry only.
+                      easing: sourceMotionEasing,
                     },
                   ] as const,
               ),
             ),
           )
-        : new Map<string, Readonly<{ controlOffset: Point; delta: Point }>>();
+        : new Map<string, Readonly<{ controlOffset: Point; delta: Point; easing: MotionEasing }>>();
     const validMarkedScale =
       scaleMarker !== undefined &&
       parsedScale.success &&
@@ -1061,11 +1073,14 @@ export function importManimScene(
         endPresence(entity, interval.end);
       }
       const marked = markedMotions.get(entity.sourceVariable);
-      const shifted = marked
-        ? addPoint(entity.position, marked.delta)
-        : motionMarker !== undefined
+      const shifted =
+        sourceMotionEasing === null
           ? null
-          : shiftedPosition(entity.position, statement.text, entity.sourceVariable, frame);
+          : marked
+            ? addPoint(entity.position, marked.delta)
+            : motionMarker !== undefined
+              ? null
+              : shiftedPosition(entity.position, statement.text, entity.sourceVariable, frame);
       if (shifted && Number.isFinite(shifted.x) && Number.isFinite(shifted.y)) {
         const from = entity.position;
         const to = shifted;
@@ -1077,7 +1092,7 @@ export function importManimScene(
             x: (from.x + to.x) / 2 + controlOffset.x,
             y: (from.y + to.y) / 2 + controlOffset.y,
           },
-          easing: "smooth",
+          easing: marked?.easing ?? sourceMotionEasing ?? "smooth",
           from,
           interval,
           kind: "animated",

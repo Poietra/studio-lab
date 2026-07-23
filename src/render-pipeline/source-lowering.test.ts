@@ -299,6 +299,47 @@ class GroupedEquation(Scene):
     ).toEqual({ end: 8.5, start: 7 });
   });
 
+  it("round-trips a retimed linear motion through its generated source marker", () => {
+    const program = canonicalProgram([motionOperation({
+      easing: "linear",
+      interval: { end: 8.25, start: 7 },
+    })], "retimed-linear-motion");
+    const lowered = lowerCanonicalProgramSource(
+      source,
+      request(program),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
+    const sample = imported?.runtimeSceneState.propertyChannels[
+      "source:examples/relativity.py#GroupedEquation:equation/position"
+    ]?.samples.at(-1);
+
+    expect(lowered.insertedCode).toContain('"easing":"linear"');
+    expect(lowered.insertedCode).toContain("run_time=1.25");
+    expect(lowered.insertedCode).toContain("rate_func=linear");
+    expect(sample).toMatchObject({
+      easing: "linear",
+      interval: { end: 8.25, start: 7 },
+      kind: "animated",
+    });
+  });
+
+  it("uses the Python rate function when a motion marker disagrees", () => {
+    const lowered = lowerCanonicalProgramSource(
+      source,
+      request(canonicalProgram([motionOperation({ easing: "linear" })], "linear-motion")),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    const tampered = lowered.source.replace("rate_func=linear", "rate_func=smooth");
+    const imported = importManimScene(tampered, "examples/relativity.py", "GroupedEquation");
+
+    expect(imported?.runtimeSceneState.propertyChannels[
+      "source:examples/relativity.py#GroupedEquation:equation/position"
+    ]?.samples.at(-1)?.easing).toBe("smooth");
+  });
+
   it("lowers an immediate absolute scale as a relative Manim factor and reimports its absolute value", () => {
     const scale: CanonicalEditOperation = {
       ...operationBase("scale-now", 7),
