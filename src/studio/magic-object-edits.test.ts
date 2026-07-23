@@ -15,6 +15,23 @@ import {
   undoLastAppliedProgram,
 } from "./transactions";
 
+const KNOWN_SCALE_SCENE: RuntimeSceneState = {
+  ...STUDIO_FIXTURE_SCENE,
+  propertyChannels: {
+    ...STUDIO_FIXTURE_SCENE.propertyChannels,
+    "equation_1/scale": {
+      entityId: "equation_1",
+      key: "scale",
+      samples: [{
+        interval: { end: 12, start: 0 },
+        kind: "exact",
+        provenanceId: "source:equation-scale",
+        value: 1,
+      }],
+    },
+  },
+};
+
 function scaleSuggestion(factor = 1.5): EditSuggestionOperation {
   return {
     anchor: { kind: "playhead", referenceSeconds: 5 },
@@ -40,7 +57,7 @@ function deleteSuggestion(): EditSuggestionOperation {
 
 function validate(
   operation: EditSuggestionOperation,
-  scene: RuntimeSceneState = STUDIO_FIXTURE_SCENE,
+  scene: RuntimeSceneState = KNOWN_SCALE_SCENE,
   selectedObjectIds: readonly string[] = ["equation_1"],
 ) {
   const workingState = createFixtureWorkingState({

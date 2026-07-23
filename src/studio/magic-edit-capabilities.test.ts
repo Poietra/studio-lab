@@ -68,6 +68,14 @@ describe("Magic Edit object capabilities", () => {
       delete: { kind: "blocked", reason: "Runtime identity is unresolved." },
       scale: { kind: "blocked", reason: "Scale comes from a runtime function." },
     });
+    const missingGeometry = { ...entity, geometry: undefined };
+    expect(magicEditCapabilities(withEntity(missingGeometry, {}), missingGeometry, 5)).toEqual({
+      delete: { kind: "blocked", reason: "Runtime identity is unresolved." },
+      scale: { kind: "blocked", reason: "No exact source scale is available at this time." },
+    });
+    const forgedTransaction = { ...missingGeometry, transactionId: "unrelated" };
+    expect(magicEditCapabilities(withEntity(forgedTransaction, {}), forgedTransaction, 5).delete)
+      .toEqual({ kind: "blocked", reason: "Runtime identity is unresolved." });
   });
 
   it("allows a Studio-generated object that can be rebound during batch export", () => {

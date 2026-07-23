@@ -8,6 +8,12 @@ import {
 export const MIN_ENTITY_SCALE = 0.1;
 export const MAX_ENTITY_SCALE = 8;
 
+function isAppliedStudioEntity(entity: RuntimeEntity) {
+  return entity.transactionId !== undefined
+    && !entity.provisional
+    && entity.id.startsWith(`tx:${entity.transactionId}/entity:`);
+}
+
 export function exactEntityScaleAt(
   scene: RuntimeSceneState,
   entity: RuntimeEntity,
@@ -19,7 +25,9 @@ export function exactEntityScaleAt(
   const sampledKnowledge = samplePropertyKnowledge(samples, time, sampledValue);
   if (sampledKnowledge) return sampledKnowledge;
   if (entity.geometry?.scale) return entity.geometry.scale;
-  if (samples.length === 0) return { kind: "known" as const, value: 1 };
+  if (samples.length === 0 && isAppliedStudioEntity(entity)) {
+    return { kind: "known" as const, value: 1 };
+  }
   return {
     kind: "unknown" as const,
     reason: "No exact source scale is available at this time.",
@@ -35,7 +43,7 @@ export function magicEditCapabilities(
   const safeScale = scale.kind === "known"
     && Number.isFinite(scale.value)
     && scale.value > 0;
-  const safeDelete = entity.sourceIdentity.kind === "known" || entity.transactionId !== undefined;
+  const safeDelete = entity.sourceIdentity.kind === "known" || isAppliedStudioEntity(entity);
   return {
     delete: safeDelete
       ? { kind: "supported" }
