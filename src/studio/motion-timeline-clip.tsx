@@ -210,7 +210,7 @@ export function TimelineMotionClip({
         aria-label={`Edit ${clip.label} motion clip`}
         aria-pressed={editing}
         className={cn(
-          "absolute inset-0 size-full overflow-hidden border px-1 text-left text-[9px] outline-none",
+          "absolute inset-0 size-full touch-none overflow-hidden border px-1 text-left text-[9px] outline-none",
           disabled
             ? "cursor-not-allowed border-zinc-700 bg-zinc-800 text-zinc-600"
             : "cursor-grab border-sky-700 bg-sky-950 text-sky-300 active:cursor-grabbing hover:bg-sky-900 focus-visible:ring-2 focus-visible:ring-sky-300",
@@ -238,7 +238,7 @@ export function TimelineMotionClip({
           <button
             aria-keyshortcuts="ArrowLeft ArrowRight"
             aria-label={`Adjust ${clip.label} motion start`}
-            className="absolute -left-1 top-1/2 z-20 size-3 -translate-y-1/2 cursor-ew-resize border border-sky-100 bg-sky-500 outline-none focus-visible:ring-2 focus-visible:ring-sky-200"
+            className="absolute -left-1 top-1/2 z-20 size-3 touch-none -translate-y-1/2 cursor-ew-resize border border-sky-100 bg-sky-500 outline-none focus-visible:ring-2 focus-visible:ring-sky-200"
             data-motion-clip-start-handle={clip.operationId}
             onKeyDown={startWithKeyboard}
             onLostPointerCapture={finishDrag}
@@ -252,7 +252,7 @@ export function TimelineMotionClip({
           <button
             aria-keyshortcuts="ArrowLeft ArrowRight Shift+ArrowLeft Shift+ArrowRight"
             aria-label={`Adjust ${clip.label} motion end`}
-            className="absolute -right-1 top-1/2 z-20 size-3 -translate-y-1/2 cursor-ew-resize border border-sky-100 bg-sky-500 outline-none focus-visible:ring-2 focus-visible:ring-sky-200"
+            className="absolute -right-1 top-1/2 z-20 size-3 touch-none -translate-y-1/2 cursor-ew-resize border border-sky-100 bg-sky-500 outline-none focus-visible:ring-2 focus-visible:ring-sky-200"
             data-motion-clip-end-handle={clip.operationId}
             onKeyDown={endWithKeyboard}
             onLostPointerCapture={finishDrag}

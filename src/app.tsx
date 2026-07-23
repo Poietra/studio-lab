@@ -24,7 +24,11 @@ import {
 import { commandForShortcut, isEditableShortcutTarget, type StudioCommandId } from "./studio/commands";
 import { projectedPositions, validateSuggestionDraft, validatedProgramRecord } from "./studio/draft-validation";
 import type { Point, ProgramRecord, ProposedState, RuntimeSceneState } from "./studio/model";
-import { appliedMotionClipReadOnlyReason, retimeAppliedMotionClip } from "./studio/motion-clip-edit";
+import {
+  adjustAppliedMotionClipControl,
+  appliedMotionClipReadOnlyReason,
+  retimeAppliedMotionClip,
+} from "./studio/motion-clip-edit";
 import { projectMotionPaths, type StudioMotionPath } from "./studio/motion-paths";
 import type { AppliedMotionClip, AppliedMotionClipChange } from "./studio/motion-timeline-clip";
 import { programExecutionCapabilities } from "./studio/operation-registry";
@@ -1486,36 +1490,18 @@ export function App() {
   }
 
   function changeDraftMotionControl(path: StudioMotionPath, delta: Point) {
-    if (!draftOperation || !editableMotionIds.has(path.motionId)) return;
-    const changeStep = <T extends EditSuggestionOperation>(operation: T): T => {
-      if (operation.kind === "create-motion" && operation.targetObjectIds.includes(path.entityId)) {
-        return {
-          ...operation,
-          controlOffset: {
-            x: clamp(operation.controlOffset.x + delta.x, -160, 160),
-            y: clamp(operation.controlOffset.y + delta.y, -100, 100),
-          },
-        } as T;
-      }
-      if (operation.kind === "edit-program") {
-        return {
-          ...operation,
-          operations: operation.operations.map((step) =>
-            step.kind === "create-motion" && step.targetObjectIds.includes(path.entityId)
-              ? {
-                  ...step,
-                  controlOffset: {
-                    x: clamp(step.controlOffset.x + delta.x, -160, 160),
-                    y: clamp(step.controlOffset.y + delta.y, -100, 100),
-                  },
-                }
-              : step,
-          ),
-        } as T;
-      }
-      return operation;
-    };
-    updateDraftOperation(changeStep(draftOperation));
+    if (!draftOperation || !draftProgram || !editableMotionIds.has(path.motionId)) return;
+    const adjusted = adjustAppliedMotionClipControl({
+      delta,
+      operation: draftOperation,
+      operationId: path.motionId,
+      program: draftProgram.program,
+    });
+    if (adjusted.kind === "invalid") {
+      setDraftError(adjusted.message);
+      return;
+    }
+    updateDraftOperation(adjusted.operation);
   }
 
   function handleStudioCommand(command: StudioCommandId) {

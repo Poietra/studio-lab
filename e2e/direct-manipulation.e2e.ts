@@ -1,4 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
@@ -203,6 +205,69 @@ test("moves and retimes an applied motion clip with pointer and keyboard control
   expect(redone).toContain("# poietra:cursor 7");
   expect(redone).toContain('"easing":"linear"');
   expect(redone).toContain("run_time=1.1");
+});
+
+test("rejects a motion retime that would cross another applied source anchor", async ({ page }) => {
+  const projectRoot = await mkdtemp(join(tmpdir(), "poietra-motion-order-"));
+  const source = `from manim import *
+
+class MotionOrderScene(Scene):
+    def construct(self):
+        dot = Dot()
+        self.add(dot)
+        # poietra:anchor 1.000
+        self.wait(2)
+        # poietra:anchor 3.000
+        self.wait(2)
+        # poietra:anchor 5.000
+        self.wait(1)
+`;
+  await writeFile(join(projectRoot, "motion_order.py"), source, "utf8");
+  const createdResponse = await page.request.post("/api/manim/projects", {
+    data: { kind: "existing", name: "Motion Order Fixture", root: projectRoot },
+  });
+  expect(createdResponse.status()).toBe(201);
+  const created = await createdResponse.json() as { project: { id: string } };
+  try {
+    await page.goto("/");
+    await page.getByRole("button", { name: "Open Motion Order Fixture workspace" }).click();
+    await expect(page.locator("[data-studio-canvas]")).toBeVisible();
+
+    const dot = page.getByRole("button", { name: "Move dot" });
+    await page.getByRole("button", { name: "Create animation" }).click();
+    await page.getByRole("spinbutton", { name: "New motion duration in seconds" }).fill("0.5");
+    await dragBy(page, dot, { x: 30, y: 0 });
+    await page.getByRole("button", { name: "Apply program" }).click();
+
+    await page.getByRole("button", { name: "Move playhead to source anchor 3.000 seconds" }).click();
+    await page.getByRole("button", { name: "Create animation" }).click();
+    await dragBy(page, dot, { x: 0, y: 30 });
+    await page.getByRole("button", { name: "Apply program" }).click();
+
+    const appliedPrograms = page.locator("section").filter({
+      has: page.getByRole("heading", { name: "Applied programs" }),
+    });
+    const rows = await appliedPrograms.getByRole("listitem").allTextContents();
+    const transactionIds = rows.map((row) => row.match(/studio-gesture-[0-9a-f-]{36}/)?.[0]);
+    if (!transactionIds[0] || !transactionIds[1]) {
+      throw new Error("The motion-order transactions were not rendered.");
+    }
+
+    const firstClip = page.getByRole("button", { name: "Edit dot motion clip" }).first();
+    await firstClip.press("ArrowRight");
+    await expect(page.getByRole("spinbutton", { exact: true, name: "Start" })).toHaveValue("3");
+    await firstClip.press("ArrowRight");
+
+    await expect(page.getByRole("alert")).toContainText("would cross the next applied Program");
+    await expect(page.getByRole("spinbutton", { exact: true, name: "Start" })).toHaveValue("3");
+    const exported = await exportedSource(page);
+    expect(transactionBlock(exported, transactionIds[0])).toContain("# poietra:cursor 3");
+    expect(exported.indexOf(`# poietra:transaction ${JSON.stringify(transactionIds[0])}`))
+      .toBeLessThan(exported.indexOf(`# poietra:transaction ${JSON.stringify(transactionIds[1])}`));
+  } finally {
+    await page.request.delete(`/api/manim/projects/${created.project.id}`).catch(() => undefined);
+    await rm(projectRoot, { force: true, recursive: true });
+  }
 });
 
 test("snaps direct manipulation to the latest safe source anchor before creating a draft", async ({ page }) => {
