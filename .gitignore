@@ -7,6 +7,7 @@ test-results/
 .openai-key
 .studio-logs/
 .poietra/
+shell-evaluation/fixture.mp4
 src-tauri/target/
 *.log
 .DS_Store

@@ -2,7 +2,10 @@
 
 Disposable, evidence-driven experiments for choosing the Poietra Studio client architecture.
 
-This repository is intentionally separate from the product repository. Its first experiment compares Tauri and Electron by running the same React application and the same representative Studio workload in both shells.
+This repository is intentionally separate from the product repository. Its first experiment
+compared Tauri and Electron with the same React application and representative Studio
+workload. The accepted [desktop shell ADR](docs/shell-evaluation.md) selects Electron for the
+first product path while preserving a shell-neutral renderer and service boundary.
 
 ## Scope
 
@@ -66,6 +69,8 @@ pnpm install --frozen-lockfile
 pnpm dev:web
 pnpm dev:electron
 pnpm dev:tauri
+pnpm evaluate:shell:native
+pnpm evaluate:shell:serve
 pnpm check:web
 pnpm test:unit
 pnpm test:integration
