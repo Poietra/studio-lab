@@ -437,7 +437,7 @@ test("keeps shape resize routes out of an Applied Program edit", async ({ page }
   const wrapper = page.locator("[data-studio-entity-wrapper]").filter({ has: rectangle });
   const widthInput = page.getByRole("spinbutton", { name: "Width of Rectangle" });
   await widthInput.fill("5");
-  await widthInput.locator("xpath=ancestor::form").getByRole("button", { name: "Set" }).click();
+  await page.getByRole("button", { name: "Create draft" }).click();
   await expect(wrapper).toHaveAttribute("data-studio-entity-width", "5.0000");
   await page.getByRole("button", { name: "Apply program" }).click();
 
