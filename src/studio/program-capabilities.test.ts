@@ -220,6 +220,53 @@ describe("EditProgram execution capabilities", () => {
     );
   });
 
+  it("treats concurrent scale and shape resize on one entity as a dependency conflict", () => {
+    const resize = createDirectManipulationResizeProgram({
+      capturedPlayhead: 5,
+      entityId: "proof_box",
+      from: { dimensions: { height: 2, width: 4 }, position: { x: 320, y: 147 } },
+      interval: { end: 6, start: 5 },
+      scale: 1,
+      scene: STUDIO_FIXTURE_SCENE,
+      shape: "rectangle",
+      to: { dimensions: { height: 3, width: 6 }, position: { x: 320, y: 147 } },
+      transactionId: "resize-scale-conflict-resize",
+    });
+    const scale = createDirectManipulationScaleProgram({
+      capturedPlayhead: 5,
+      interval: { end: 6, start: 5 },
+      scales: { proof_box: { from: 1, to: 2 } },
+      scene: STUDIO_FIXTURE_SCENE,
+      targetEntityIds: ["proof_box"],
+      transactionId: "resize-scale-conflict-scale",
+    });
+    const operations = [...resize.program.operations, ...scale.program.operations];
+    const validation = validateAndScheduleProgram(
+      {
+        ...resize.program,
+        intentCount: 2,
+        operations,
+        requestedExecution: "parallel",
+        schedule: { edges: [], mode: "parallel", order: operations.map((operation) => operation.id) },
+      },
+      STUDIO_FIXTURE_SCENE,
+    );
+    const resizeOperation = operations.find((operation) => operation.kind === "ResizeEntity");
+    const scaleOperation = operations.find(
+      (operation) => operation.kind === "AnimateProperty" && operation.key === "scale",
+    );
+
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues).toContainEqual(
+      expect.objectContaining({ code: "parallel-conflict", field: "execution", severity: "error" }),
+    );
+    expect(validation.program.schedule.edges).toContainEqual({
+      from: scaleOperation?.id,
+      reason: "read-after-write",
+      to: resizeOperation?.id,
+    });
+  });
+
   it("blocks Program schedules that the source lowerer cannot emit", () => {
     const position = createDirectManipulationPositionProgram({
       capturedPlayhead: 8,

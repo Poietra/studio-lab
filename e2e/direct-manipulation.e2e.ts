@@ -427,6 +427,46 @@ test("resizes Rectangle width independently with edge and keyboard controls", as
   await expect(wrapper).toHaveAttribute("data-studio-entity-height", "2.0000");
 });
 
+test("keeps shape resize routes out of an Applied Program edit", async ({ page }) => {
+  await openWorkspace(page);
+  await page.getByRole("button", { name: /Insert rectangle/ }).click();
+  await page.locator("[data-studio-canvas]").click({ position: { x: 150, y: 100 } });
+  await page.getByRole("button", { name: "Apply program" }).click();
+
+  const rectangle = page.getByRole("button", { name: "Move Rectangle" });
+  const wrapper = page.locator("[data-studio-entity-wrapper]").filter({ has: rectangle });
+  const widthInput = page.getByRole("spinbutton", { name: "Width of Rectangle" });
+  await widthInput.fill("5");
+  await widthInput.locator("xpath=ancestor::form").getByRole("button", { name: "Set" }).click();
+  await expect(wrapper).toHaveAttribute("data-studio-entity-width", "5.0000");
+  await page.getByRole("button", { name: "Apply program" }).click();
+
+  await page.getByRole("button", { name: "Create animation" }).click();
+  await page.getByRole("spinbutton", { name: "New motion duration in seconds" }).fill("1");
+  await dragBy(page, rectangle, { x: 40, y: 0 });
+  await page.getByRole("button", { name: "Apply program" }).click();
+
+  const editButton = page.getByRole("button", { name: /Edit applied program/ });
+  await expect(editButton).toHaveCount(1);
+  await editButton.click();
+  await expect(page.getByRole("button", { name: "Replace program" })).toBeVisible();
+  await expect(widthInput).toHaveCount(0);
+
+  const handle = page.getByRole("button", { name: "Resize Rectangle from right edge" });
+  const widthBeforeKey = await wrapper.getAttribute("data-studio-entity-width");
+  await handle.focus();
+  await handle.press("ArrowRight");
+
+  await expect(page.getByRole("alert")).toContainText(
+    "Apply or discard the Applied Program edit before resizing another object.",
+  );
+  await expect(page.getByRole("button", { name: "Replace program" })).toBeVisible();
+  await expect(wrapper).toHaveAttribute("data-studio-entity-width", widthBeforeKey ?? "5.0000");
+
+  await page.getByRole("button", { name: "Discard" }).click();
+  await expect(widthInput).toBeVisible();
+});
+
 test("labels runtime-dependent geometry and blocks unsafe direct manipulation", async ({ page }) => {
   const positionReason = "Position depends on a runtime move_to expression.";
   const scaleReason = "Scale depends on a runtime function call.";

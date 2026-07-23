@@ -1666,6 +1666,10 @@ export function App() {
     capturedSourceAnchor?: number,
   ) {
     if (!activeScene || !draftBaseState) return false;
+    if (editingAppliedProgram) {
+      setDraftError("Apply or discard the Applied Program edit before resizing another object.");
+      return false;
+    }
     if (
       !hasShapeDimensions(shape, target.dimensions) ||
       !Number.isFinite(target.position.x) ||

@@ -794,6 +794,7 @@ export const OPERATION_REGISTRY = {
       reads: [
         { channel: "dimensions", entityId: operation.entityId },
         { channel: "position", entityId: operation.entityId },
+        { channel: "scale", entityId: operation.entityId },
       ],
       writes: [
         { channel: "dimensions", entityId: operation.entityId },
