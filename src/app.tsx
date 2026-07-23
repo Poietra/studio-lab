@@ -852,7 +852,7 @@ export function App() {
 
   async function applyDraft() {
     if (!draftProgram || !renderCandidate || draftApplyPending) return;
-    const applyingTransactionId = draftProgram.program.transactionId;
+    const applyingDraft = draftProgram;
     setDraftApplyPending(true);
     setDraftError(null);
     try {
@@ -867,10 +867,10 @@ export function App() {
         sourcePath: renderCandidate.sourcePath,
         viewport: renderCandidate.viewport,
       });
-      if (currentDraftProgram.current?.program.transactionId !== applyingTransactionId) return;
+      if (currentDraftProgram.current !== applyingDraft) return;
       applyEditorDraft();
     } catch (error) {
-      if (currentDraftProgram.current?.program.transactionId === applyingTransactionId) {
+      if (currentDraftProgram.current === applyingDraft) {
         setDraftError(error instanceof Error
           ? `Apply preflight failed: ${error.message}`
           : "Apply preflight failed because Studio could not lower the draft safely.");
