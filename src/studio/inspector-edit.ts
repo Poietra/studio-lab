@@ -128,11 +128,11 @@ export function initialInspectorEditValues(entity: ProjectedEntity): InspectorEd
     : {};
   return {
     content: currentContentValue(entity),
-    height: dimensions.height === undefined ? null : dimensions.height.toString(),
-    radius: dimensions.radius === undefined ? null : dimensions.radius.toString(),
-    width: dimensions.width === undefined ? null : dimensions.width.toString(),
-    x: entity.geometry.position.kind === "known" ? entity.position.x.toString() : null,
-    y: entity.geometry.position.kind === "known" ? entity.position.y.toString() : null,
+    height: dimensions.height === undefined ? null : dimensions.height.toFixed(2),
+    radius: dimensions.radius === undefined ? null : dimensions.radius.toFixed(2),
+    width: dimensions.width === undefined ? null : dimensions.width.toFixed(2),
+    x: entity.geometry.position.kind === "known" ? entity.position.x.toFixed(1) : null,
+    y: entity.geometry.position.kind === "known" ? entity.position.y.toFixed(1) : null,
   };
 }
 
