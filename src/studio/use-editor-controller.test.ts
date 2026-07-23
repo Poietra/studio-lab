@@ -296,6 +296,32 @@ describe("editor draft history", () => {
     expect(redone.appliedPrograms).toHaveLength(1);
   });
 
+  it("stages a metadata-free lifetime replacement explicitly and persists its edit identity", () => {
+    const original = editorProgramRecord(record("lifetime", 5), null, ["equation"]);
+    const replacement = record("lifetime", 7);
+    const staged = stageEditorDraft(
+      {
+        ...createInitialEditorState(),
+        appliedPrograms: [original],
+        programUndoEntries: [{ index: 0, kind: "append" as const, value: original }],
+      },
+      {
+        appliedEdit: { index: 0, original },
+        currentTime: 7,
+        operation: null,
+        record: replacement,
+        selectedObjectIds: ["equation"],
+      },
+    );
+    const restored = restoreEditorSession(createInitialEditorState(), snapshotEditorSession(staged));
+
+    expect(restored.editingAppliedProgram).toEqual({ index: 0, original });
+    const applied = applyEditorDraft(restored);
+    expect(applied.appliedPrograms).toHaveLength(1);
+    expect(applied.appliedPrograms[0]?.program.anchor.resolvedSeconds).toBe(7);
+    expect(undoEditorProgram(applied).appliedPrograms).toEqual([original]);
+  });
+
   it("keeps a preview-only replacement staged instead of applying it", () => {
     const original = editorProgramRecord(record("motion"), motionOperation, ["equation"]);
     const editing = editEditorAppliedProgram(

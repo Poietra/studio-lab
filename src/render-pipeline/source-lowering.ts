@@ -1,7 +1,12 @@
 import { renderRequestPrograms, type ProgramRenderRequest, type SingleProgramRenderRequest } from "./contracts";
 import { findSourceComments, findSourceSceneBlock, findSourceSceneComments } from "./source-import";
 import type { MotionEasing } from "../studio/model";
-import type { CanonicalEditOperation, CreateEntityOperation } from "../studio/operations";
+import {
+  EDIT_OPERATION_VERSION,
+  type CanonicalEditOperation,
+  type CanonicalEditProgram,
+  type CreateEntityOperation,
+} from "../studio/operations";
 import { operationExecutionCapabilities, programExecutionCapabilities } from "../studio/operation-registry";
 import { insertedProgramDuration } from "../studio/program-composition";
 
@@ -37,6 +42,7 @@ export type LoweredProgramBatchSource = Readonly<{
 
 type ProgramSourceLoweringOptions = Readonly<{
   entityAliases?: ReadonlyMap<string, ReadonlySet<string>>;
+  finiteCreatedLifetimesHandled?: boolean;
   generatedEntityIds?: ReadonlySet<string>;
   reservedSourceVariables?: ReadonlySet<string>;
   sourceAnchor?: number;
@@ -405,7 +411,19 @@ function scaleChange(operation: Extract<CanonicalEditOperation, { kind: "Animate
   };
 }
 
-function assertLoweringSupported(operation: CanonicalEditOperation) {
+function assertLoweringSupported(operation: CanonicalEditOperation, options: ProgramSourceLoweringOptions) {
+  if (operation.kind === "CreateEntity") {
+    if (
+      operation.entity.lifetime.end !== null &&
+      !operation.entity.type.startsWith("TransitionOverlay:") &&
+      !options.finiteCreatedLifetimesHandled
+    ) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        "A finite created lifetime must be lowered through the batch source pipeline.",
+      );
+    }
+  }
   const execution = operationExecutionCapabilities(operation);
   if (execution.lowering === "supported") return;
   throw new ProgramLoweringError(
@@ -455,7 +473,7 @@ export function lowerCanonicalProgramSource(
         `Program ${request.program.transactionId} is marked ${execution.lowering}, not supported.`,
     );
   }
-  request.program.operations.forEach(assertLoweringSupported);
+  request.program.operations.forEach((operation) => assertLoweringSupported(operation, options));
   const sourceAnchor = options.sourceAnchor ?? request.program.anchor.resolvedSeconds;
   const anchor = findSceneMotionAnchors(source, request.sceneName, request.sourcePath).find(
     (candidate) => Math.abs(candidate.seconds - sourceAnchor) < EPSILON,
@@ -941,6 +959,59 @@ function normalizeSceneDurationTrims(
   });
 }
 
+function finiteCreatedLifetimeEntries(
+  entries: readonly LoweredProgramBatchEntry[],
+): readonly LoweredProgramBatchEntry[] {
+  return entries.flatMap((entry) => {
+    const rebaseOffset = entry.program.anchor.resolvedSeconds - entry.sourceAnchor;
+    return entry.program.operations.flatMap((operation, index): readonly LoweredProgramBatchEntry[] => {
+      if (
+        operation.kind !== "CreateEntity" ||
+        operation.entity.lifetime.end === null ||
+        operation.entity.type.startsWith("TransitionOverlay:")
+      )
+        return [];
+      const sourceEnd = operation.entity.lifetime.end - rebaseOffset;
+      if (!Number.isFinite(sourceEnd) || sourceEnd <= entry.sourceAnchor + EPSILON) {
+        throw new ProgramLoweringError(
+          "operation-unsupported",
+          `Created lifetime for ${operation.entity.id} must end after its source anchor.`,
+        );
+      }
+      const transactionId = `${entry.program.transactionId}/lifetime-end-${index}`;
+      const removeId = `${transactionId}/operation/remove`;
+      const program: CanonicalEditProgram = {
+        anchor: {
+          capturedPlayhead: sourceEnd,
+          evidence: ["finite Studio-owned lifetime", `source-anchor:${sourceEnd.toFixed(3)}`],
+          resolvedSeconds: sourceEnd,
+          source: { kind: "absolute", seconds: sourceEnd },
+        },
+        intentCount: 1,
+        loweringStatus: "supported",
+        operations: [
+          {
+            dependsOn: [],
+            effect: "remove",
+            entityId: operation.entity.id,
+            id: removeId,
+            interval: { end: sourceEnd, start: sourceEnd },
+            kind: "ChangePresence",
+            persistent: true,
+            provenance: { evidence: ["finite Studio-owned lifetime end"], origin: "direct-manipulation" },
+          },
+        ],
+        provenance: { evidence: ["finite Studio-owned lifetime end"], origin: "direct-manipulation" },
+        requestedExecution: "sequence",
+        schedule: { edges: [], mode: "sequence", order: [removeId] },
+        transactionId,
+        version: EDIT_OPERATION_VERSION,
+      };
+      return [{ program, sourceAnchor: sourceEnd }];
+    });
+  });
+}
+
 /**
  * Lowers validated Programs as one atomic source export. Entries carry both
  * their rebased runtime Program and the immutable source anchor that selected
@@ -965,7 +1036,10 @@ export function lowerCanonicalProgramBatchSource(
     [...sourceBindings].map(([entityId, sourceVariable]) => [entityId, new Set([sourceVariable])]),
   );
   const groups: MutableBatchGroup[] = [];
-  const orderedEntries = entries
+  // A finite lifetime ends immediately before Programs inserted at that same
+  // source boundary, matching the evaluator's strict end > insertion check.
+  const sourceEntries = [...finiteCreatedLifetimeEntries(entries), ...entries];
+  const orderedEntries = sourceEntries
     .map((entry, inputIndex) => ({ ...entry, inputIndex }))
     .sort((left, right) => left.sourceAnchor - right.sourceAnchor || left.inputIndex - right.inputIndex);
   const normalizedEntries = normalizeSceneDurationTrims(orderedEntries);
@@ -998,6 +1072,7 @@ export function lowerCanonicalProgramBatchSource(
       incoming,
       {
         entityAliases,
+        finiteCreatedLifetimesHandled: true,
         generatedEntityIds,
         reservedSourceVariables: generatedSourceVariables,
         sourceAnchor: entry.sourceAnchor,

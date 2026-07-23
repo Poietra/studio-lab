@@ -13,6 +13,7 @@ import type {
   TimelineEvent,
 } from "./model";
 import type { CanonicalEditOperation, CanonicalEditProgram, ChannelAccess, ProgramValidationIssue } from "./operations";
+import { insertedProgramDuration } from "./program-composition";
 import { isPointValue, samplePropertyValue } from "./property-sampling";
 
 const pointSchema = z.object({ x: z.number(), y: z.number() });
@@ -504,7 +505,16 @@ export const OPERATION_REGISTRY = {
     defaults: { provisional: true },
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
-      const end = operation.entity.lifetime.end ?? draft.duration;
+      // Studio-owned finite endpoints use source coordinates, so their working
+      // endpoint includes the creation Program's insertion duration. Transition
+      // overlays already use their animation endpoint and are the exception.
+      const finiteEnd = operation.entity.lifetime.end;
+      const end =
+        finiteEnd === null
+          ? draft.duration
+          : operation.entity.type.startsWith("TransitionOverlay:")
+            ? finiteEnd
+            : Math.min(draft.duration, finiteEnd + insertedProgramDuration(program));
       draft.entities[operation.entity.id] = {
         content: operation.entity.content,
         id: operation.entity.id,

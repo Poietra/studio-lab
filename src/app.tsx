@@ -12,12 +12,13 @@ import type { RenderProgramCandidate } from "./render-pipeline/render-pipeline-p
 import type { RenderSessionView } from "./render-pipeline/contracts";
 import { cn } from "./lib/cn";
 import {
+  createImportedEntityLifetimeProgram,
   createRemoveEntitiesProgram,
   createSceneDurationProgram,
   createStudioEntitiesProgram,
-  createTrimEntityLifetimeProgram,
   defaultEntityContent,
   duplicateEntityInput,
+  replaceStudioEntityLifetimeProgram,
   sceneDurationTrimAvailability,
   type StudioEntityInput,
 } from "./studio/authoring-commands";
@@ -29,6 +30,14 @@ import {
   appliedMotionClipReadOnlyReason,
   retimeAppliedMotionClip,
 } from "./studio/motion-clip-edit";
+import {
+  buildLifetimeEditControls,
+  findCompetingImportedLifetimeOwner,
+  findCompetingStudioLifetimeOwner,
+  findImportedLifetimeEdit,
+  findStudioLifetimeOwner,
+  programSourceAnchorBounds,
+} from "./studio/lifetime-editing";
 import { projectMotionPaths, type StudioMotionPath } from "./studio/motion-paths";
 import type { AppliedMotionClip, AppliedMotionClipChange } from "./studio/motion-timeline-clip";
 import { programExecutionCapabilities } from "./studio/operation-registry";
@@ -51,6 +60,7 @@ import {
 import type { StudioTool } from "./studio/studio-toolbar";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
 import {
+  type AppliedProgramEdit,
   editorProgramRecord,
   type EditorProgramRecord,
   type EditorSessionIdentity,
@@ -224,6 +234,7 @@ export function App() {
     undoProgram,
   } = useEditorController();
   const [renderSessions, setRenderSessions] = useState<Readonly<Record<string, RenderSessionView>>>({});
+  const [lifetimeEditMessage, setLifetimeEditMessage] = useState<string | null>(null);
   const [isMagicEditVisible, setIsMagicEditVisible] = useState(() => window.matchMedia("(min-width: 640px)").matches);
   const [dragPreview, setDragPreview] = useState<EntityDragPreview | null>(null);
   const [scalePreview, setScalePreview] = useState<EntityScalePreview | null>(null);
@@ -241,6 +252,10 @@ export function App() {
       sourceTime,
       workingTime: sourceTimeToWorkingTime(appliedCanonicalPrograms, sourceTime),
     })) ?? [];
+
+  useEffect(() => {
+    if (draftProgram === null) setLifetimeEditMessage(null);
+  }, [draftProgram]);
 
   function activeEditorSessionIdentity(): EditorSessionIdentity | null {
     return activeProjectId && activeScene
@@ -321,6 +336,7 @@ export function App() {
         selectedObjectIds: initialEntities.slice(0, 1).map((entity) => entity.id),
       });
     }
+    setLifetimeEditMessage(null);
     setDragPreview(null);
     setScalePreview(null);
   }, [activeScene?.sceneId, activeScene?.sourceHash, activeProjectId]);
@@ -365,6 +381,16 @@ export function App() {
     ? projectRuntimeSceneToSourceTimeline(draftBaseState.evaluatedScene, draftPrecedingCanonicalPrograms)
     : null;
   const projection = workspaceProjection?.projection ?? null;
+  const lifetimeControls =
+    activeScene && projection
+      ? buildLifetimeEditControls({
+          anchors: activeScene.anchors,
+          baseScene: activeScene.runtimeSceneState,
+          programs: previewAppliedPrograms,
+          sourceDuration: activeScene.runtimeSceneState.duration,
+          tracks: projection.timeline.objectTracks,
+        })
+      : {};
   const appliedTransactionIds = new Set(appliedPrograms.map((record) => record.program.transactionId));
   const boundary = workspaceProjection?.boundary ?? null;
   const visibleEntities = workspaceProjection?.visibleEntities ?? [];
@@ -821,10 +847,12 @@ export function App() {
     selectedIds: readonly string[] = [],
     precedingPrograms: readonly ProgramRecord["program"][] = appliedCanonicalPrograms,
     preserveAppliedProgram: ProgramRecord | null = null,
+    appliedEdit: AppliedProgramEdit | null = null,
   ) {
     cancelSuggestionRequest();
-    return stageDraft({
-      clearAppliedEdit: true,
+    const staged = stageDraft({
+      appliedEdit,
+      clearAppliedEdit: appliedEdit === null,
       clearSuggestion: true,
       currentTime: sourceTimeToWorkingTime(precedingPrograms, record.program.anchor.resolvedSeconds),
       operation: null,
@@ -833,6 +861,8 @@ export function App() {
       selectedObjectIds: selectedIds,
       stopPlayback: true,
     });
+    if (staged) setLifetimeEditMessage(null);
+    return staged;
   }
 
   function insertEntitiesAt(point: Point, entities?: readonly StudioEntityInput[]) {
@@ -933,32 +963,149 @@ export function App() {
     }
   }
 
-  function trimEntityLifetime(entityId: string, workingLifetimeStart: number, sourceAnchor: number) {
-    if (!draftSourceScene) return false;
+  function editEntityLifetime(
+    entityId: string,
+    workingLifetimeStart: number,
+    target: Readonly<{ end: number; start: number }>,
+  ) {
+    if (!activeScene || !draftSourceScene) return false;
     if (draftProgram) {
-      setDraftError("Apply or discard the current draft before trimming an object lifetime.");
+      const message = "Apply or discard the current draft before editing an object lifetime.";
+      setDraftError(message);
+      setLifetimeEditMessage(message);
       return false;
     }
-    const anchor = timelineAnchors.find((candidate) => Math.abs(candidate.sourceTime - sourceAnchor) < 0.0005);
-    if (!anchor) {
-      setDraftError("The selected lifetime end is not backed by a safe .py source anchor.");
-      return false;
-    }
+
+    const sourceSceneBefore = (index: number) => {
+      const preceding = appliedPrograms.slice(0, index);
+      const state = projectStudioWorkspace({
+        activeScene,
+        appliedPrograms: preceding,
+        currentTime,
+        draftProgram: null,
+        nextScene,
+        selectedObjectIds,
+      }).proposedState.evaluatedScene;
+      return {
+        canonical: preceding.map((record) => record.program),
+        scene: projectRuntimeSceneToSourceTimeline(
+          state,
+          preceding.map((record) => record.program),
+        ),
+      } as const;
+    };
+
+    const assertCompatibleWithAppliedPrograms = (record: ProgramRecord, edit: Readonly<{ index: number }> | null) => {
+      const programs = edit
+        ? appliedPrograms.map((candidate, index) => (index === edit.index ? record : candidate))
+        : [...appliedPrograms, record];
+      const proposed = projectStudioWorkspace({
+        activeScene,
+        appliedPrograms: programs,
+        currentTime,
+        draftProgram: null,
+        nextScene,
+        selectedObjectIds,
+      }).proposedState;
+      const invalid = proposed.programs.find((candidate) => candidate.validation.status === "invalid");
+      if (!invalid) return;
+      throw new Error(
+        invalid.validation.issues.find((issue) => issue.severity === "error")?.message ??
+          "The lifetime edit conflicts with another applied Program.",
+      );
+    };
+
     try {
-      const validation = createTrimEntityLifetimeProgram({
+      const owner = findStudioLifetimeOwner(appliedPrograms, entityId);
+      if (owner) {
+        if (findCompetingStudioLifetimeOwner(appliedPrograms, entityId, owner.index)) {
+          throw new Error(
+            "Another applied Program controls this object's lifetime end. Edit or remove that Program first.",
+          );
+        }
+        const preceding = sourceSceneBefore(owner.index);
+        const validation = replaceStudioEntityLifetimeProgram({
+          entityId,
+          owner: owner.record,
+          scene: preceding.scene,
+          sourceAnchorBounds: programSourceAnchorBounds(appliedPrograms, owner.index),
+          sourceAnchors: activeScene.anchors,
+          target,
+        });
+        const validated = validatedProgramRecord(validation);
+        if (validated.kind === "invalid") throw new Error(validated.message);
+        assertCompatibleWithAppliedPrograms(validated.record, owner);
+        installCanonicalDraft(validated.record, [entityId], preceding.canonical, null, {
+          index: owner.index,
+          original: owner.record,
+        });
+        setLifetimeEditMessage(null);
+        return true;
+      }
+
+      const sourceLifetimeStart = workingTimeToSourceTime(appliedCanonicalPrograms, workingLifetimeStart);
+      const original = activeScene.runtimeSceneState.objectGraph.entities[entityId]?.lifetime.find(
+        (interval) => Math.abs(interval.start - sourceLifetimeStart) < 0.001,
+      );
+      if (!original) {
+        throw new Error("Studio cannot map this interval back to one imported source lifetime.");
+      }
+      if (Math.abs(target.start - original.start) >= 0.001) {
+        throw new Error(
+          "The imported lifetime start is read-only because moving its original Python creation is not safely lowerable.",
+        );
+      }
+      const existing = findImportedLifetimeEdit(appliedPrograms, entityId, original.start);
+      const currentWorkingInterval = projection?.timeline.objectTracks
+        .find((track) => track.entityId === entityId)
+        ?.lifetimes.find((interval) => Math.abs(interval.start - workingLifetimeStart) < 0.001);
+      if (!currentWorkingInterval) {
+        throw new Error("Studio cannot map the current interval back to one imported source lifetime.");
+      }
+      const currentSourceEnd = workingTimeToSourceTime(appliedCanonicalPrograms, currentWorkingInterval.end);
+      if (
+        findCompetingImportedLifetimeOwner(appliedPrograms, entityId) ||
+        (!existing && currentSourceEnd < original.end - 0.001)
+      ) {
+        throw new Error(
+          "Another applied Program controls this imported object's lifetime end. Edit or remove that Program first.",
+        );
+      }
+      const restoring = Math.abs(target.end - original.end) < 0.001;
+      const sourceAnchor = restoring ? existing?.record.program.anchor.resolvedSeconds : target.end;
+      if (
+        sourceAnchor === undefined ||
+        !activeScene.anchors.some((anchor) => Math.abs(anchor - sourceAnchor) < 0.001)
+      ) {
+        throw new Error("The selected lifetime end is not backed by a safe .py source anchor.");
+      }
+      const preceding = existing ? sourceSceneBefore(existing.index) : null;
+      const editIndex = existing?.index ?? appliedPrograms.length;
+      const validation = createImportedEntityLifetimeProgram({
         entityId,
-        lifetimeStart: workingTimeToSourceTime(appliedCanonicalPrograms, workingLifetimeStart),
-        retainedDuration: anchor.workingTime - workingLifetimeStart,
-        scene: draftSourceScene,
-        sourceAnchor: anchor.sourceTime,
-        transactionId: `studio-lifetime-${crypto.randomUUID()}`,
+        original,
+        scene: preceding?.scene ?? draftSourceScene,
+        sourceAnchor,
+        sourceAnchorBounds: programSourceAnchorBounds(appliedPrograms, editIndex),
+        targetEnd: target.end,
+        transactionId: existing?.record.program.transactionId ?? `studio-lifetime-${crypto.randomUUID()}`,
       });
       const validated = validatedProgramRecord(validation);
       if (validated.kind === "invalid") throw new Error(validated.message);
-      installCanonicalDraft(validated.record, [entityId]);
+      assertCompatibleWithAppliedPrograms(validated.record, existing);
+      installCanonicalDraft(
+        validated.record,
+        [entityId],
+        preceding?.canonical ?? appliedCanonicalPrograms,
+        null,
+        existing ? { index: existing.index, original: existing.record } : null,
+      );
+      setLifetimeEditMessage(null);
       return true;
     } catch (error) {
-      setDraftError(error instanceof Error ? error.message : "The object lifetime could not be trimmed.");
+      const message = error instanceof Error ? error.message : "The object lifetime could not be edited.";
+      setDraftError(message);
+      setLifetimeEditMessage(message);
       return false;
     }
   }
@@ -1811,6 +1958,8 @@ export function App() {
               insertValue={insertValue}
               interactionMode={interactionMode}
               isPlaying={isPlaying}
+              lifetimeControls={lifetimeControls}
+              lifetimeEditMessage={lifetimeEditMessage}
               lifetimeTrimDisabled={draftProgram !== null}
               motionDuration={motionDuration}
               motionPaths={motionPaths}
@@ -1831,8 +1980,8 @@ export function App() {
               onInsertAtCenter={() => void insertEntitiesAt({ x: 320, y: 180 })}
               onInsertToolChange={setInsertTool}
               onInsertValueChange={setInsertValue}
-              onLifetimeEndChange={(entityId, lifetimeStart, sourceAnchor) => {
-                void trimEntityLifetime(entityId, lifetimeStart, sourceAnchor);
+              onLifetimeChange={(entityId, lifetimeStart, target) => {
+                void editEntityLifetime(entityId, lifetimeStart, target);
               }}
               onMotionControlChange={changeDraftMotionControl}
               onMotionDurationChange={setMotionDuration}

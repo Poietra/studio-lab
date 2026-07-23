@@ -778,9 +778,10 @@ class GroupedEquation(Scene):
       intentCount: 3,
       schedule: { edges: [], mode: "sequence" as const, order: operations.map((operation) => operation.id) },
     };
-    const lowered = lowerCanonicalProgramSource(
+    const lowered = lowerCanonicalProgramBatchSource(
       source,
       { ...request(program, []), destination: { sceneName: "Next", sourcePath: "scene.py" } },
+      [{ program, sourceAnchor: 7 }],
       { height: 8, width: 14.222 },
       {
         initialization: ['title = Text("Next")'],
@@ -1238,5 +1239,107 @@ class GroupedEquation(Scene):
     expect(lowered.insertedCode.lastIndexOf("equation = poietra_alias_b_1")).toBeLessThan(
       lowered.insertedCode.indexOf("equation.animate.shift("),
     );
+  });
+
+  it("lowers a finite Studio-created lifetime at separate safe anchors", () => {
+    const finiteSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        # poietra:anchor 5.000
+        self.wait(2)
+        # poietra:anchor 7.000
+        self.wait(1)
+`;
+    const entityId = "tx:finite-owned/entity:circle";
+    const createId = "tx:finite-owned/operation:create";
+    const appearId = "tx:finite-owned/operation:appear";
+    const program: CanonicalEditProgram = {
+      anchor: {
+        capturedPlayhead: 5,
+        evidence: [],
+        resolvedSeconds: 5,
+        source: { kind: "absolute", seconds: 5 },
+      },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [
+        {
+          ...operationBase(createId, 5),
+          entity: {
+            content: { displayLines: ["Circle"], label: "Circle" },
+            id: entityId,
+            lifetime: { end: 7, start: 5 },
+            type: "Circle",
+          },
+          kind: "CreateEntity",
+        },
+        {
+          ...operationBase(appearId, 5, 5.4),
+          dependsOn: [createId],
+          effect: "fade-in",
+          entityId,
+          kind: "ChangePresence",
+          persistent: true,
+        },
+      ],
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      requestedExecution: "sequence",
+      schedule: {
+        edges: [{ from: createId, reason: "explicit", to: appearId }],
+        mode: "sequence",
+        order: [createId, appearId],
+      },
+      transactionId: "finite-owned",
+      version: 1,
+    };
+
+    expect(() =>
+      lowerCanonicalProgramSource(finiteSource, request(program, []), { height: 8, width: 14.222 }, null),
+    ).toThrow(/batch source pipeline/i);
+
+    const lowered = lowerCanonicalProgramBatchSource(
+      finiteSource,
+      request(program, []),
+      [{ program, sourceAnchor: 5 }],
+      { height: 8, width: 14.222 },
+      null,
+    );
+
+    expect(lowered.anchorLines).toHaveLength(2);
+    expect(lowered.source.indexOf("Circle(radius=1)")).toBeLessThan(lowered.source.indexOf("self.remove("));
+    expect(lowered.source).toContain("# poietra:anchor 5.4");
+    expect(lowered.source).toContain("# poietra:anchor 7.4");
+    const imported = importManimScene(lowered.source, "finite.py", "GroupedEquation", { height: 8, width: 14.222 });
+    expect(imported?.runtimeSceneState.objectGraph.entities[entityId]?.lifetime).toEqual([{ end: 7.4, start: 5 }]);
+
+    const endWait = canonicalProgram(
+      [
+        {
+          ...operationBase("end-anchor-wait/operation/wait", 7, 8),
+          eventKind: "wait",
+          kind: "InsertTimelineEvent",
+          label: "Wait at lifetime end",
+        },
+      ],
+      "end-anchor-wait",
+    );
+    const sameAnchor = lowerCanonicalProgramBatchSource(
+      finiteSource,
+      request(program, []),
+      [
+        { program, sourceAnchor: 5 },
+        { program: endWait, sourceAnchor: 7 },
+      ],
+      { height: 8, width: 14.222 },
+      null,
+    );
+    expect(sameAnchor.insertedCode.indexOf("self.remove(")).toBeLessThan(
+      sameAnchor.insertedCode.indexOf('# poietra:transaction "end-anchor-wait"'),
+    );
+    expect(
+      importManimScene(sameAnchor.source, "finite.py", "GroupedEquation", { height: 8, width: 14.222 })
+        ?.runtimeSceneState.objectGraph.entities[entityId]?.lifetime,
+    ).toEqual([{ end: 7.4, start: 5 }]);
   });
 });

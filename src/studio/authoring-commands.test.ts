@@ -2,14 +2,17 @@ import { describe, expect, it } from "vitest";
 
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
 import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
-import { sourceTimeToWorkingTime, workingTimeToSourceTime } from "./program-composition";
+import type { CanonicalEditOperation } from "./operations";
+import { rebaseProgramTime, sourceTimeToWorkingTime, workingTimeToSourceTime } from "./program-composition";
+import { projectRuntimeSceneToSourceTimeline } from "./source-timeline";
 import {
+  createImportedEntityLifetimeProgram,
   createRemoveEntitiesProgram,
   createSceneDurationProgram,
   createStudioEntitiesProgram,
-  createTrimEntityLifetimeProgram,
   defaultEntityContent,
   duplicateEntityInput,
+  replaceStudioEntityLifetimeProgram,
 } from "./authoring-commands";
 
 describe("manual Studio authoring commands", () => {
@@ -85,12 +88,12 @@ describe("manual Studio authoring commands", () => {
   });
 
   it("trims a lifetime through a persistent removal from a safe source anchor", () => {
-    const result = createTrimEntityLifetimeProgram({
+    const result = createImportedEntityLifetimeProgram({
       entityId: "equation_1",
-      lifetimeStart: 0,
-      retainedDuration: 7,
+      original: { end: 12, start: 0 },
       scene: STUDIO_FIXTURE_SCENE,
       sourceAnchor: 7,
+      targetEnd: 7,
       transactionId: "trim-equation",
     });
     expect(result.kind).toBe("valid");
@@ -116,27 +119,238 @@ describe("manual Studio authoring commands", () => {
     ).toBe(false);
   });
 
-  it("rejects lifetime extension and a retained lifetime shorter than 0.1 seconds", () => {
+  it("rejects imported extension and a retained lifetime shorter than 0.1 seconds", () => {
     expect(() =>
-      createTrimEntityLifetimeProgram({
+      createImportedEntityLifetimeProgram({
         entityId: "arrow_1",
-        lifetimeStart: 0,
-        retainedDuration: 10,
+        original: { end: 9.5, start: 0 },
         scene: STUDIO_FIXTURE_SCENE,
-        sourceAnchor: 10,
+        sourceAnchor: 9.5,
+        targetEnd: 10,
         transactionId: "extend-arrow",
       }),
-    ).toThrow(/extension is not supported/i);
+    ).toThrow(/cannot extend beyond/i);
     expect(() =>
-      createTrimEntityLifetimeProgram({
+      createImportedEntityLifetimeProgram({
         entityId: "arrow_1",
-        lifetimeStart: 0,
-        retainedDuration: 0.05,
+        original: { end: 9.5, start: 0 },
         scene: STUDIO_FIXTURE_SCENE,
         sourceAnchor: 0.05,
+        targetEnd: 0.05,
         transactionId: "short-arrow",
       }),
     ).toThrow(/at least 0.1 seconds/i);
+    expect(() =>
+      createImportedEntityLifetimeProgram({
+        entityId: "equation_1",
+        original: { end: 12, start: 0 },
+        scene: STUDIO_FIXTURE_SCENE,
+        sourceAnchor: 5,
+        sourceAnchorBounds: { minimum: 7 },
+        targetEnd: 5,
+        transactionId: "out-of-order-imported-trim",
+      }),
+    ).toThrow(/out of source order/i);
+  });
+
+  it("replaces a Studio creation Program to edit both lifetime edges", () => {
+    const insertion = createStudioEntitiesProgram({
+      capturedPlayhead: 5,
+      entities: [
+        {
+          content: defaultEntityContent("Circle", ""),
+          position: { x: 180, y: 120 },
+          type: "Circle",
+        },
+      ],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "insert-owned-circle",
+    });
+    const owner = programRecord(insertion.validation.program, insertion.validation);
+    const replacement = replaceStudioEntityLifetimeProgram({
+      entityId: insertion.entityIds[0]!,
+      owner,
+      scene: STUDIO_FIXTURE_SCENE,
+      sourceAnchors: [5, 7],
+      target: { end: 12, start: 7 },
+    });
+
+    expect(replacement.kind).toBe("valid");
+    expect(replacement.program.transactionId).toBe("insert-owned-circle");
+    expect(replacement.program.anchor.resolvedSeconds).toBe(7);
+    expect(replacement.program.operations.find((operation) => operation.kind === "CreateEntity")).toEqual(
+      expect.objectContaining({
+        entity: expect.objectContaining({ lifetime: { end: null, start: 7 } }),
+      }),
+    );
+    expect(replacement.program.operations.map((operation) => operation.interval.start)).toEqual([7, 7, 7]);
+    expect(() =>
+      replaceStudioEntityLifetimeProgram({
+        entityId: insertion.entityIds[0]!,
+        owner,
+        scene: STUDIO_FIXTURE_SCENE,
+        sourceAnchorBounds: { maximum: 5 },
+        sourceAnchors: [5, 7],
+        target: { end: 12, start: 7 },
+      }),
+    ).toThrow(/out of source order/i);
+  });
+
+  it("projects a finite Studio-owned lifetime back to its source endpoints", () => {
+    const insertion = createStudioEntitiesProgram({
+      capturedPlayhead: 5,
+      entities: [
+        {
+          content: defaultEntityContent("Circle", ""),
+          position: { x: 180, y: 120 },
+          type: "Circle",
+        },
+      ],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "insert-finite-circle",
+    });
+    const owner = programRecord(insertion.validation.program, insertion.validation);
+    const replacement = replaceStudioEntityLifetimeProgram({
+      entityId: insertion.entityIds[0]!,
+      owner,
+      scene: STUDIO_FIXTURE_SCENE,
+      sourceAnchors: [5, 7],
+      target: { end: 7, start: 5 },
+    });
+    const record = programRecord(replacement.program, replacement);
+    const evaluated = evaluateWorkingState(createFixtureWorkingState({ appliedPrograms: [record] }));
+    expect(evaluated.evaluatedScene.objectGraph.entities[insertion.entityIds[0]!]?.lifetime).toEqual([
+      { end: 7.4, start: 5 },
+    ]);
+    expect(
+      projectRuntimeSceneToSourceTimeline(evaluated.evaluatedScene, [replacement.program]).objectGraph.entities[
+        insertion.entityIds[0]!
+      ]?.lifetime,
+    ).toEqual([{ end: 7, start: 5 }]);
+  });
+
+  it("edits one end without moving a shared Studio creation Program", () => {
+    const insertion = createStudioEntitiesProgram({
+      capturedPlayhead: 5,
+      entities: (["Circle", "Rectangle"] as const).map((type) => ({
+        content: defaultEntityContent(type, ""),
+        position: { x: 180, y: 120 },
+        type,
+      })),
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "insert-shared-shapes",
+    });
+    const owner = programRecord(insertion.validation.program, insertion.validation);
+    const replacement = replaceStudioEntityLifetimeProgram({
+      entityId: insertion.entityIds[0]!,
+      owner,
+      scene: STUDIO_FIXTURE_SCENE,
+      sourceAnchors: [5, 7],
+      target: { end: 7, start: 5 },
+    });
+    const lifetimes = replacement.program.operations.flatMap((operation) =>
+      operation.kind === "CreateEntity" ? [operation.entity.lifetime] : [],
+    );
+
+    expect(replacement.kind).toBe("valid");
+    expect(lifetimes).toEqual([
+      { end: 7, start: 5 },
+      { end: null, start: 5 },
+    ]);
+  });
+
+  it("preserves a compound Program anchor for end-only edits", () => {
+    const insertion = createStudioEntitiesProgram({
+      capturedPlayhead: 5,
+      entities: [
+        {
+          content: defaultEntityContent("Circle", ""),
+          position: { x: 180, y: 120 },
+          type: "Circle",
+        },
+      ],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "insert-delayed-shape",
+    });
+    const rebased = rebaseProgramTime(insertion.validation.program, 2);
+    const wait: CanonicalEditOperation = {
+      dependsOn: [],
+      eventKind: "wait",
+      id: "insert-delayed-shape/operation/wait",
+      interval: { end: 7, start: 5 },
+      kind: "InsertTimelineEvent",
+      label: "Wait before creation",
+      provenance: { evidence: [], origin: "fixture" },
+    };
+    const delayedProgram = {
+      ...rebased,
+      anchor: insertion.validation.program.anchor,
+      operations: [wait, ...rebased.operations],
+      requestedExecution: "sequence" as const,
+      schedule: {
+        edges: [],
+        mode: "sequence" as const,
+        order: [wait.id, ...rebased.schedule.order],
+      },
+    };
+    const owner = programRecord(delayedProgram, { issues: [], kind: "valid" });
+    const replacement = replaceStudioEntityLifetimeProgram({
+      entityId: insertion.entityIds[0]!,
+      owner,
+      scene: STUDIO_FIXTURE_SCENE,
+      sourceAnchors: [5, 7, 9],
+      target: { end: 9, start: 7 },
+    });
+
+    expect(replacement.kind).toBe("valid");
+    expect(replacement.program.anchor.resolvedSeconds).toBe(5);
+    expect(() =>
+      replaceStudioEntityLifetimeProgram({
+        entityId: insertion.entityIds[0]!,
+        owner,
+        scene: STUDIO_FIXTURE_SCENE,
+        sourceAnchors: [5, 7, 9],
+        target: { end: 12, start: 9 },
+      }),
+    ).toThrow(/created after its Program begins/i);
+  });
+
+  it("replaces an imported end trim with a source-truthful restore", () => {
+    const trimmed = createImportedEntityLifetimeProgram({
+      entityId: "equation_1",
+      original: { end: 12, start: 0 },
+      scene: STUDIO_FIXTURE_SCENE,
+      sourceAnchor: 7,
+      targetEnd: 7,
+      transactionId: "imported-lifetime-equation",
+    });
+    expect(trimmed.program.operations[0]).toEqual(
+      expect.objectContaining({
+        effect: "remove",
+        interval: { end: 7, start: 7 },
+      }),
+    );
+    const restored = createImportedEntityLifetimeProgram({
+      entityId: "equation_1",
+      original: { end: 12, start: 0 },
+      scene: STUDIO_FIXTURE_SCENE,
+      sourceAnchor: 7,
+      sourceAnchorBounds: { minimum: 9 },
+      targetEnd: 12,
+      transactionId: trimmed.program.transactionId,
+    });
+    expect(restored.program.operations[0]).toEqual(
+      expect.objectContaining({
+        eventKind: "wait",
+        interval: { end: 7, start: 7 },
+      }),
+    );
+    const evaluated = evaluateWorkingState(
+      createFixtureWorkingState({
+        appliedPrograms: [programRecord(restored.program, restored)],
+      }),
+    );
+    expect(evaluated.evaluatedScene.objectGraph.entities.equation_1?.lifetime).toEqual([{ end: 12, start: 0 }]);
   });
 
   it("extends the composition with an explicit source wait", () => {

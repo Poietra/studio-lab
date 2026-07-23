@@ -6,6 +6,7 @@ import type { ProgramRecord } from "./model";
 import { programExecutionCapabilities } from "./operation-registry";
 import { sourceTimeToWorkingTime } from "./program-composition";
 import {
+  type AppliedProgramEdit,
   type AppliedProgramMutation,
   browserEditorSessionStorageAdapter,
   EDITOR_SESSION_STALE_SOURCE_MESSAGE,
@@ -40,6 +41,7 @@ export type EditorControllerState = EditorSessionSnapshot &
   }>;
 
 type StageDraftInput = Readonly<{
+  appliedEdit?: AppliedProgramEdit | null;
   clearAppliedEdit?: boolean;
   clearSuggestion?: boolean;
   currentTime?: number;
@@ -194,7 +196,8 @@ export function stageEditorDraft(state: EditorControllerState, input: StageDraft
     draftError: programExecutionCapabilities(input.record.program).applyBlocker,
     draftOperation: input.operation,
     draftProgram: input.record,
-    editingAppliedProgram: input.clearAppliedEdit ? null : state.editingAppliedProgram,
+    editingAppliedProgram:
+      input.appliedEdit !== undefined ? input.appliedEdit : input.clearAppliedEdit ? null : state.editingAppliedProgram,
     isPlaying: input.stopPlayback ? false : state.isPlaying,
     programUndoEntries,
     redoPrograms: [],

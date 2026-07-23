@@ -1,16 +1,18 @@
-import { type PointerEvent, useRef, useState } from "react";
+import { type KeyboardEvent, type PointerEvent, useRef, useState } from "react";
 
 import { cn } from "../lib/cn";
+import {
+  lifetimeControlKey,
+  type LifetimeEditControls as StudioLifetimeControls,
+  type LifetimeEditTarget as StudioLifetimeTarget,
+} from "./lifetime-editing";
 import type { Interval, TimelineEvent, TimelineObjectTrack } from "./model";
 import { type AppliedMotionClip, type AppliedMotionClipChange, TimelineMotionClip } from "./motion-timeline-clip";
 import {
-  closestLifetimeAnchor,
   formatTimelineTime,
-  lifetimeTrimAnchors,
   type StudioTimelineAnchor,
   timelineIntervalStyle,
   timelinePositionPercent,
-  timelineTimeAtClientX,
 } from "./studio-timeline-geometry";
 import type { InteractionMode } from "./studio-viewport-geometry";
 
@@ -24,13 +26,15 @@ export type StudioTimelineProps = Readonly<{
   events: readonly TimelineEvent[];
   interactionMode: InteractionMode;
   isPlaying: boolean;
+  lifetimeControls: Readonly<Record<string, StudioLifetimeControls>>;
+  lifetimeEditMessage: string | null;
   lifetimeTrimDisabled: boolean;
   motionDuration: number;
   objectTracks: readonly TimelineObjectTrack[];
   onAppliedMotionClipChange: (clip: AppliedMotionClip, change: AppliedMotionClipChange) => void;
   onAppliedMotionClipSelect: (clip: AppliedMotionClip) => void;
   onInteractionModeChange: (mode: InteractionMode) => void;
-  onLifetimeEndChange: (entityId: string, lifetimeStart: number, sourceAnchor: number) => void;
+  onLifetimeChange: (entityId: string, lifetimeStart: number, target: Interval) => void;
   onMotionDurationChange: (duration: number) => void;
   onSelectEntity: (entityId: string) => void;
   onTimeChange: (time: number) => void;
@@ -63,63 +67,128 @@ type SelectedLifetime = Readonly<{
   index: number;
 }>;
 
+const EMPTY_LIFETIME_CONTROLS: StudioLifetimeControls = {
+  endTargets: [],
+  moveTargets: [],
+  reason: null,
+  startTargets: [],
+};
+
+type LifetimeDragKind = "end" | "move" | "start";
+
+function targetEdge(target: StudioLifetimeTarget, kind: LifetimeDragKind) {
+  return kind === "end" ? target.working.end : target.working.start;
+}
+
+function closestLifetimeTarget(targets: readonly StudioLifetimeTarget[], desired: number, kind: LifetimeDragKind) {
+  return targets.reduce<StudioLifetimeTarget | null>(
+    (closest, target) =>
+      !closest || Math.abs(targetEdge(target, kind) - desired) < Math.abs(targetEdge(closest, kind) - desired)
+        ? target
+        : closest,
+    null,
+  );
+}
+
+function adjacentLifetimeTarget(
+  targets: readonly StudioLifetimeTarget[],
+  current: number,
+  direction: -1 | 1,
+  kind: LifetimeDragKind,
+) {
+  const ordered = [...targets].sort((left, right) => targetEdge(left, kind) - targetEdge(right, kind));
+  return direction < 0
+    ? (ordered.filter((target) => targetEdge(target, kind) < current - 0.001).at(-1) ?? null)
+    : (ordered.find((target) => targetEdge(target, kind) > current + 0.001) ?? null);
+}
+
 function TimelineLifetime({
-  anchors,
+  controls,
   disabled,
   duration,
   interval,
   label,
+  onChange,
   onSelect,
-  onTrim,
   provisional,
   selectDisabled,
   selected,
 }: Readonly<{
-  anchors: readonly StudioTimelineAnchor[];
+  controls: StudioLifetimeControls;
   disabled: boolean;
   duration: number;
   interval: Interval;
   label: string;
+  onChange: (target: Interval) => void;
   onSelect: () => void;
-  onTrim: (sourceAnchor: number) => void;
   provisional: boolean;
   selectDisabled: boolean;
   selected: boolean;
 }>) {
-  const [previewAnchor, setPreviewAnchor] = useState<StudioTimelineAnchor | null>(null);
-  const trimDrag = useRef<Readonly<{ pointerId: number; startX: number }> | null>(null);
-  const eligibleAnchors = lifetimeTrimAnchors(anchors, interval);
-  const displayedInterval = previewAnchor ? { ...interval, end: previewAnchor.workingTime } : interval;
+  const [previewTarget, setPreviewTarget] = useState<StudioLifetimeTarget | null>(null);
+  const lifetimeDrag = useRef<Readonly<{
+    kind: LifetimeDragKind;
+    pointerId: number;
+    startX: number;
+  }> | null>(null);
+  const displayedInterval = previewTarget?.working ?? interval;
 
-  function anchorAtPointer(event: PointerEvent<HTMLButtonElement>) {
+  function targetsFor(kind: LifetimeDragKind) {
+    if (kind === "start") return controls.startTargets;
+    if (kind === "end") return controls.endTargets;
+    return controls.moveTargets;
+  }
+
+  function targetAtPointer(event: PointerEvent<HTMLButtonElement>, kind: LifetimeDragKind) {
     const lane = event.currentTarget.closest<HTMLElement>("[data-timeline-lane]");
     const bounds = lane?.getBoundingClientRect();
     if (!bounds?.width) return null;
-    return closestLifetimeAnchor(eligibleAnchors, timelineTimeAtClientX(event.clientX, bounds, duration));
+    const pointerTime = Math.min(duration, Math.max(0, ((event.clientX - bounds.left) / bounds.width) * duration));
+    const desired =
+      kind === "move"
+        ? interval.start + ((event.clientX - lifetimeDrag.current!.startX) / bounds.width) * duration
+        : pointerTime;
+    return closestLifetimeTarget(targetsFor(kind), desired, kind);
   }
 
-  function startTrim(event: PointerEvent<HTMLButtonElement>) {
+  function startEdit(kind: LifetimeDragKind, event: PointerEvent<HTMLButtonElement>) {
+    if (disabled || targetsFor(kind).length === 0) return;
     event.preventDefault();
     event.stopPropagation();
     onSelect();
     event.currentTarget.setPointerCapture(event.pointerId);
-    trimDrag.current = { pointerId: event.pointerId, startX: event.clientX };
-    setPreviewAnchor(null);
+    lifetimeDrag.current = { kind, pointerId: event.pointerId, startX: event.clientX };
+    setPreviewTarget(null);
   }
 
-  function moveTrim(event: PointerEvent<HTMLButtonElement>) {
-    const drag = trimDrag.current;
+  function previewEdit(event: PointerEvent<HTMLButtonElement>) {
+    const drag = lifetimeDrag.current;
     if (!drag || drag.pointerId !== event.pointerId || Math.abs(event.clientX - drag.startX) < 3) return;
-    setPreviewAnchor(anchorAtPointer(event));
+    setPreviewTarget(targetAtPointer(event, drag.kind));
   }
 
-  function finishTrim(event: PointerEvent<HTMLButtonElement>) {
-    const drag = trimDrag.current;
+  function finishEdit(event: PointerEvent<HTMLButtonElement>) {
+    const drag = lifetimeDrag.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    trimDrag.current = null;
-    const anchor = anchorAtPointer(event) ?? previewAnchor;
-    setPreviewAnchor(null);
-    if (anchor && Math.abs(event.clientX - drag.startX) >= 3) onTrim(anchor.sourceTime);
+    const target = targetAtPointer(event, drag.kind) ?? previewTarget;
+    lifetimeDrag.current = null;
+    setPreviewTarget(null);
+    if (target && Math.abs(event.clientX - drag.startX) >= 3) onChange(target.source);
+  }
+
+  function cancelEdit() {
+    lifetimeDrag.current = null;
+    setPreviewTarget(null);
+  }
+
+  function editWithKeyboard(kind: LifetimeDragKind, event: KeyboardEvent<HTMLButtonElement>) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (disabled) return;
+    const current = kind === "end" ? interval.end : interval.start;
+    const target = adjacentLifetimeTarget(targetsFor(kind), current, event.key === "ArrowLeft" ? -1 : 1, kind);
+    if (target) onChange(target.source);
   }
 
   return (
@@ -132,35 +201,110 @@ function TimelineLifetime({
           provisional ? "border-dashed border-sky-700 bg-sky-950" : "border-zinc-600 bg-zinc-800",
           selected && "border-sky-400 bg-sky-950",
           selectDisabled && "cursor-not-allowed",
+          selected && !disabled && controls.moveTargets.length > 0 && "cursor-grab active:cursor-grabbing",
         )}
         data-timeline-lifetime
         disabled={selectDisabled}
         onClick={onSelect}
+        onKeyDown={(event) => editWithKeyboard("move", event)}
+        onLostPointerCapture={cancelEdit}
+        onPointerCancel={cancelEdit}
+        onPointerDown={(event) => startEdit("move", event)}
+        onPointerMove={previewEdit}
+        onPointerUp={finishEdit}
+        style={{ touchAction: "none" }}
         title={`Present ${interval.start.toFixed(2)}–${interval.end.toFixed(2)}s`}
         type="button"
       />
-      {selected && !disabled && !selectDisabled && eligibleAnchors.length > 0 ? (
+      {selected && !disabled && !selectDisabled && controls.startTargets.length > 0 ? (
+        <button
+          aria-label={`Adjust ${label} lifetime start`}
+          className="absolute -left-1 top-1/2 z-30 size-3 -translate-y-1/2 cursor-ew-resize border border-sky-200 bg-sky-500"
+          data-lifetime-handle="start"
+          onKeyDown={(event) => editWithKeyboard("start", event)}
+          onLostPointerCapture={cancelEdit}
+          onPointerCancel={cancelEdit}
+          onPointerDown={(event) => startEdit("start", event)}
+          onPointerMove={previewEdit}
+          onPointerUp={finishEdit}
+          style={{ touchAction: "none" }}
+          title="Drag or use Left/Right Arrow. The start snaps to a safe source anchor."
+          type="button"
+        />
+      ) : null}
+      {selected && !disabled && !selectDisabled && controls.endTargets.length > 0 ? (
         <button
           aria-label={`Trim ${label} lifetime end`}
           className="absolute -right-1 top-1/2 z-30 size-3 -translate-y-1/2 cursor-ew-resize border border-sky-200 bg-sky-500"
+          data-lifetime-handle="end"
           data-lifetime-trim-handle
-          onLostPointerCapture={() => {
-            trimDrag.current = null;
-            setPreviewAnchor(null);
-          }}
-          onPointerCancel={() => {
-            trimDrag.current = null;
-            setPreviewAnchor(null);
-          }}
-          onPointerDown={startTrim}
-          onPointerMove={moveTrim}
-          onPointerUp={finishTrim}
+          onKeyDown={(event) => editWithKeyboard("end", event)}
+          onLostPointerCapture={cancelEdit}
+          onPointerCancel={cancelEdit}
+          onPointerDown={(event) => startEdit("end", event)}
+          onPointerMove={previewEdit}
+          onPointerUp={finishEdit}
           style={{ touchAction: "none" }}
-          title="Drag left to trim. The end snaps to a safe source anchor."
+          title="Drag or use Left/Right Arrow. The end snaps to a safe source anchor or restores its source limit."
           type="button"
         />
       ) : null}
     </div>
+  );
+}
+
+function LifetimeTargetForm({
+  controls,
+  disabled,
+  edge,
+  interval,
+  onChange,
+  track,
+}: Readonly<{
+  controls: StudioLifetimeControls;
+  disabled: boolean;
+  edge: "end" | "start";
+  interval: Interval;
+  onChange: (entityId: string, lifetimeStart: number, target: Interval) => void;
+  track: TimelineObjectTrack;
+}>) {
+  const targets = edge === "start" ? controls.startTargets : controls.endTargets;
+  if (targets.length === 0) return null;
+  const label = edge === "start" ? "Start" : "End";
+  const name = `lifetime-${edge}-target`;
+  return (
+    <form
+      className="flex items-center gap-1"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const value = Number(new FormData(event.currentTarget).get(name));
+        const target = targets.find((candidate) => Math.abs(candidate.source[edge] - value) < 0.001);
+        if (target) onChange(track.entityId, interval.start, target.source);
+      }}
+    >
+      <span className="text-zinc-600">{label}</span>
+      <select
+        aria-label={`Lifetime ${edge} for ${track.label}`}
+        className="h-7 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:text-zinc-600"
+        defaultValue={targets.at(-1)?.source[edge]}
+        disabled={disabled}
+        key={`${edge}/${track.entityId}/${interval.start}/${interval.end}`}
+        name={name}
+      >
+        {targets.map((target) => (
+          <option key={`${target.source.start}/${target.source.end}`} value={target.source[edge]}>
+            {target.working[edge].toFixed(2)} s
+          </option>
+        ))}
+      </select>
+      <button
+        className="h-7 border border-zinc-700 px-2 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:text-zinc-600"
+        disabled={disabled}
+        type="submit"
+      >
+        Set
+      </button>
+    </form>
   );
 }
 
@@ -174,13 +318,15 @@ export function StudioTimeline({
   events,
   interactionMode,
   isPlaying,
+  lifetimeControls,
+  lifetimeEditMessage,
   lifetimeTrimDisabled,
   motionDuration,
   objectTracks,
   onAppliedMotionClipChange,
   onAppliedMotionClipSelect,
   onInteractionModeChange,
-  onLifetimeEndChange,
+  onLifetimeChange,
   onMotionDurationChange,
   onSelectEntity,
   onTimeChange,
@@ -196,9 +342,10 @@ export function StudioTimeline({
       : null;
   const selectedLifetimeInterval =
     selectedLifetimeTrack && selectedLifetime ? selectedLifetimeTrack.lifetimes[selectedLifetime.index] : null;
-  const selectedLifetimeAnchors = selectedLifetimeInterval
-    ? lifetimeTrimAnchors(anchors, selectedLifetimeInterval)
-    : [];
+  const selectedLifetimeControls = selectedLifetime
+    ? (lifetimeControls[lifetimeControlKey(selectedLifetime.entityId, selectedLifetime.index)] ??
+      EMPTY_LIFETIME_CONTROLS)
+    : EMPTY_LIFETIME_CONTROLS;
   const editingMotionClip = editingAppliedTransactionId
     ? (appliedMotionClips.find((clip) => clip.transactionId === editingAppliedTransactionId) ?? null)
     : null;
@@ -271,50 +418,47 @@ export function StudioTimeline({
         ) : null}
       </div>
       {selectedLifetimeTrack && selectedLifetimeInterval ? (
-        <form
-          className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-2 text-[10px]"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const sourceAnchor = Number(new FormData(event.currentTarget).get("lifetime-source-anchor"));
-            if (!Number.isFinite(sourceAnchor)) return;
-            onLifetimeEndChange(selectedLifetimeTrack.entityId, selectedLifetimeInterval.start, sourceAnchor);
-          }}
-        >
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-2 text-[10px]">
           <span className="max-w-40 truncate text-zinc-400" title={selectedLifetimeTrack.label}>
-            Lifetime end · {selectedLifetimeTrack.label}
+            Lifetime · {selectedLifetimeTrack.label}
           </span>
-          {selectedLifetimeAnchors.length > 0 ? (
-            <>
-              <select
-                aria-label={`Lifetime end for ${selectedLifetimeTrack.label}`}
-                className="h-7 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:text-zinc-600"
-                defaultValue={selectedLifetimeAnchors.at(-1)?.sourceTime}
-                disabled={lifetimeTrimDisabled}
-                key={`${selectedLifetimeTrack.entityId}/${selectedLifetimeInterval.start}/${selectedLifetimeInterval.end}`}
-                name="lifetime-source-anchor"
-              >
-                {selectedLifetimeAnchors.map((anchor) => (
-                  <option key={anchor.sourceTime} value={anchor.sourceTime}>
-                    {anchor.workingTime.toFixed(2)} s
-                  </option>
-                ))}
-              </select>
-              <button
-                className="h-7 border border-zinc-700 px-2 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:text-zinc-600"
-                disabled={lifetimeTrimDisabled}
-                type="submit"
-              >
-                Trim
-              </button>
-              <span className="text-pretty text-zinc-600">Snaps to a safe .py source anchor.</span>
-            </>
-          ) : (
-            <span className="text-pretty text-amber-500">No earlier source anchor is available for this interval.</span>
-          )}
+          <LifetimeTargetForm
+            controls={selectedLifetimeControls}
+            disabled={lifetimeTrimDisabled}
+            edge="start"
+            interval={selectedLifetimeInterval}
+            onChange={onLifetimeChange}
+            track={selectedLifetimeTrack}
+          />
+          <LifetimeTargetForm
+            controls={selectedLifetimeControls}
+            disabled={lifetimeTrimDisabled}
+            edge="end"
+            interval={selectedLifetimeInterval}
+            onChange={onLifetimeChange}
+            track={selectedLifetimeTrack}
+          />
+          {selectedLifetimeControls.startTargets.length > 0 ||
+          selectedLifetimeControls.endTargets.length > 0 ||
+          selectedLifetimeControls.moveTargets.length > 0 ? (
+            <span className="text-pretty text-zinc-600">
+              {selectedLifetimeControls.moveTargets.length > 0
+                ? "Edges and interval drag snap to safe .py source anchors. Arrow keys work on the focused handle or interval."
+                : "The editable end snaps to a safe .py source anchor or restores its source limit."}
+            </span>
+          ) : null}
+          {selectedLifetimeControls.reason ? (
+            <span className="text-pretty text-amber-500">{selectedLifetimeControls.reason}</span>
+          ) : null}
           {lifetimeTrimDisabled ? (
             <span className="text-pretty text-zinc-600">Apply or discard the current draft first.</span>
           ) : null}
-        </form>
+          {lifetimeEditMessage ? (
+            <span className="text-pretty text-red-300" role="alert">
+              {lifetimeEditMessage}
+            </span>
+          ) : null}
+        </div>
       ) : null}
       {editingMotionClip ? (
         <p className="mt-2 border-t border-zinc-800 pt-2 text-pretty text-[10px] leading-4 text-zinc-500" role="status">
@@ -417,7 +561,9 @@ export function StudioTimeline({
                       selected && selectedLifetime?.entityId === track.entityId && selectedLifetime.index === index;
                     return (
                       <TimelineLifetime
-                        anchors={anchors}
+                        controls={
+                          lifetimeControls[lifetimeControlKey(track.entityId, index)] ?? EMPTY_LIFETIME_CONTROLS
+                        }
                         disabled={locked || lifetimeTrimDisabled}
                         duration={duration}
                         interval={interval}
@@ -427,7 +573,7 @@ export function StudioTimeline({
                           onSelectEntity(track.entityId);
                           setSelectedLifetime({ entityId: track.entityId, index });
                         }}
-                        onTrim={(sourceAnchor) => onLifetimeEndChange(track.entityId, interval.start, sourceAnchor)}
+                        onChange={(target) => onLifetimeChange(track.entityId, interval.start, target)}
                         provisional={track.provisional}
                         selectDisabled={locked}
                         selected={lifetimeSelected}

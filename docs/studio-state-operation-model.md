@@ -142,7 +142,39 @@ instructions do not replace deterministic safety checks.
 
 `src/studio/transactions.ts` stages, applies, and undoes whole `ProgramRecord`
 values. A record owns one captured anchor and transaction ID, so selection changes
-cannot retarget it and Apply/Undo cannot split a multi-intent request.
+cannot retarget it and Apply/Undo cannot split a multi-intent request. Re-editing a
+Studio-owned value replaces that transaction at the same array index; preview,
+export, Apply, Undo, and Redo all use that same replacement mutation.
+
+## Lifetime editing responsibility
+
+Lifetime handles produce source-backed interval constraints; they do not mutate a
+timeline projection directly. `src/studio/lifetime-editing.ts` derives allowed
+start, end, and width-preserving move targets from safe source anchors and retains
+each imported presence interval independently.
+
+- A Studio-created entity changes by replacing its owning `CreateEntity` Program.
+  Its transaction identity and position in the applied list stay stable. A finite
+  `CreateEntity.lifetime.end` is evaluated in working time, while batch source
+  lowering emits the corresponding `self.remove(...)` at the separate safe end
+  anchor.
+- An imported entity keeps its original start. A dedicated end-edit Program may
+  add an instant removal, replace that removal at a later safe anchor, or replace
+  it with a zero-duration source no-op to restore the original end. The Program
+  stores bounded provenance metadata so repeated intervals are not conflated.
+  Replacement anchors stay between their stable applied-list neighbors.
+- Moving an imported start would require rewriting its original Python creation
+  statement, which the insertion-based lowerer cannot prove safe. The timeline
+  therefore exposes the supported end edit and reports the start/move refusal
+  beside the interaction instead of pretending that export can reproduce it.
+
+For either ownership path, a separate presence or transform Program that owns
+the projected end must be edited directly; lifetime handles do not override it.
+
+The evaluator owns working-time projection, authoring commands own interval and
+minimum-width validation, applied-Program replacement owns history semantics, and
+the batch lowerer owns multi-anchor Python emission. This keeps handle mechanics
+out of source generation and source surgery out of React state.
 
 ## Verification and current limits
 
