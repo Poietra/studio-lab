@@ -120,6 +120,11 @@ export function EntityInspectorEditor({
     if (validation.kind === "invalid") {
       setErrors(validation.errors);
       setMessage("Fix the highlighted fields before creating a draft.");
+      const firstInvalid = (["x", "y", "content", "radius", "width", "height"] as const)
+        .find((field) => validation.errors[field] !== undefined);
+      if (firstInvalid) {
+        event.currentTarget.querySelector<HTMLElement>(`[data-inspector-field="${firstInvalid}"]`)?.focus();
+      }
       return;
     }
     if (Object.keys(validation.edits).length === 0) {

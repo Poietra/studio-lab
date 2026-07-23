@@ -212,7 +212,7 @@ const scaleMarkerSchema = z.discriminatedUnion("kind", [
     .strict(),
 ]);
 const markerContentBaseSchema = z.object({
-  displayLines: z.array(z.string()).min(1).max(16),
+  displayLines: z.array(z.string().max(2_000)).min(1).max(2_000),
   label: z.string().optional(),
 });
 const contentMarkerSchema = z.discriminatedUnion("type", [
@@ -817,19 +817,14 @@ function verifiedContentReplacement(
   statement: string,
   marker: z.infer<typeof contentMarkerSchema>,
 ) {
-  const variable = marker.variable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const expression = new RegExp(
-    `^\\s*${variable}\\s*\\.\\s*become\\(\\s*${marker.type}\\s*\\([\\s\\S]*\\)`
-      + `\\s*\\.\\s*match_style\\(\\s*${variable}\\s*\\)`
-      + `\\s*\\.\\s*match_height\\(\\s*${variable}\\s*\\)`
-      + `\\s*\\.\\s*move_to\\(\\s*${variable}\\s*\\.\\s*get_center\\(\\s*\\)\\s*\\)\\s*\\)\\s*$`,
-    "s",
-  );
-  if (!expression.test(statement)) return false;
-  const expectedStrings = marker.type === "Text"
-    ? [marker.content.text]
-    : marker.content.texParts;
-  return JSON.stringify(stringLiterals(statement)) === JSON.stringify(expectedStrings);
+  const constructor = marker.type === "Text"
+    ? `Text(${JSON.stringify(marker.content.text)})`
+    : `MathTex(${marker.content.texParts.map((part) => JSON.stringify(part)).join(", ")})`;
+  const variable = marker.variable;
+  return statement.trim() === `${variable}.become(${constructor}`
+    + `.match_style(${variable})`
+    + `.match_height(${variable})`
+    + `.move_to(${variable}.get_center()))`;
 }
 
 type ResizeMarkerEntry = z.infer<typeof resizeMarkerEntrySchema>;

@@ -44,6 +44,20 @@ describe("Inspector field validation", () => {
     });
   });
 
+  it("preserves multiline Text content as one canonical content value", () => {
+    const entity = fixtureEntity("label_1");
+    expect(validateInspectorEdits(entity, values(entity, { content: "mass\nand energy" }))).toEqual({
+      edits: {
+        content: {
+          displayLines: ["mass", "and energy"],
+          label: undefined,
+          text: "mass\nand energy",
+        },
+      },
+      kind: "valid",
+    });
+  });
+
   it("reports MathTex syntax and empty parts on the content field before staging", () => {
     const entity = fixtureEntity("equation_1");
     const invalidSyntax = validateInspectorEdits(entity, values(entity, {
@@ -98,6 +112,23 @@ describe("Inspector field validation", () => {
         y: expect.stringMatching(/unavailable/i),
       },
       kind: "invalid",
+    });
+  });
+
+  it("does not revalidate unchanged content when editing an independent field", () => {
+    const base = fixtureEntity("equation_1");
+    const entity: ProjectedEntity = {
+      ...base,
+      content: {
+        displayLines: [String.raw`\notARealCommand{`],
+        texParts: [String.raw`\notARealCommand{`],
+      },
+      sourceIdentity: { kind: "unknown", reason: "Runtime alias" },
+    };
+
+    expect(validateInspectorEdits(entity, values(entity, { x: "410" }))).toEqual({
+      edits: { position: { x: 410, y: entity.position.y } },
+      kind: "valid",
     });
   });
 

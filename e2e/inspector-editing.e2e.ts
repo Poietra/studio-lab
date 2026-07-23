@@ -23,6 +23,7 @@ test("validates, previews, exports, applies, and undoes an Inspector MathTex and
   await content.fill(String.raw`\notARealCommand{`);
   await page.getByRole("button", { name: "Create draft" }).click();
   await expect(page.getByRole("alert")).toContainText("Studio preview cannot parse");
+  await expect(content).toBeFocused();
   await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
 
   await content.fill("F\n=\nm\na");

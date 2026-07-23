@@ -106,6 +106,20 @@ describe("manual Studio authoring commands", () => {
       },
     };
 
+    const knownValidation = createInspectorEntityEditProgram({
+      capturedPlayhead: 5,
+      edits: { content: { displayLines: ["F = ma"], texParts: ["F", "=", "m", "a"] } },
+      entityId: "equation_1",
+      from: { position: { x: 384, y: 146 }, scale: 1 },
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "known-inspector-content",
+    });
+    const revalidated = validateAndScheduleProgram(knownValidation.program, scene);
+    expect(revalidated.kind).toBe("invalid");
+    expect(revalidated.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "identity-unknown", field: "entityId", severity: "error" }),
+    ]));
+
     expect(() => createInspectorEntityEditProgram({
       capturedPlayhead: 5,
       edits: { content: { displayLines: ["F = ma"], texParts: ["F", "=", "m", "a"] } },

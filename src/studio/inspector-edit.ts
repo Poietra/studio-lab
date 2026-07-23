@@ -36,6 +36,11 @@ function changed(left: number, right: number) {
   return Math.abs(left - right) >= NUMBER_EPSILON;
 }
 
+function formattedNumber(value: number, fractionDigits: number) {
+  const fixed = value.toFixed(fractionDigits);
+  return changed(Number(fixed), value) ? value.toString() : fixed;
+}
+
 function parseFiniteNumber(
   value: string,
   field: InspectorEditField,
@@ -128,11 +133,11 @@ export function initialInspectorEditValues(entity: ProjectedEntity): InspectorEd
     : {};
   return {
     content: currentContentValue(entity),
-    height: dimensions.height === undefined ? null : dimensions.height.toFixed(2),
-    radius: dimensions.radius === undefined ? null : dimensions.radius.toFixed(2),
-    width: dimensions.width === undefined ? null : dimensions.width.toFixed(2),
-    x: entity.geometry.position.kind === "known" ? entity.position.x.toFixed(1) : null,
-    y: entity.geometry.position.kind === "known" ? entity.position.y.toFixed(1) : null,
+    height: dimensions.height === undefined ? null : formattedNumber(dimensions.height, 2),
+    radius: dimensions.radius === undefined ? null : formattedNumber(dimensions.radius, 2),
+    width: dimensions.width === undefined ? null : formattedNumber(dimensions.width, 2),
+    x: entity.geometry.position.kind === "known" ? formattedNumber(entity.position.x, 1) : null,
+    y: entity.geometry.position.kind === "known" ? formattedNumber(entity.position.y, 1) : null,
   };
 }
 
@@ -163,8 +168,11 @@ export function validateInspectorEdits(
   }
 
   if (values.content !== null && (entity.type === "Text" || entity.type === "MathTex")) {
-    const content = validateContent(entity, values.content, errors);
-    if (content && values.content !== currentContentValue(entity)) edits.content = content;
+    const contentChanged = values.content !== currentContentValue(entity);
+    if (contentChanged) {
+      const content = validateContent(entity, values.content, errors);
+      if (content) edits.content = content;
+    }
   }
 
   if (entity.type === "Circle" && values.radius !== null) {
