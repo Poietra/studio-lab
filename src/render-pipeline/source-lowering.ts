@@ -1,6 +1,7 @@
 import { renderRequestPrograms, type ProgramRenderRequest, type SingleProgramRenderRequest } from "./contracts";
 import { findSourceSceneBlock } from "./source-import";
 import type { CanonicalEditOperation, CreateEntityOperation } from "../studio/operations";
+import { operationExecutionCapabilities } from "../studio/operation-registry";
 import { insertedProgramDuration } from "../studio/program-composition";
 
 export type MotionAnchor = Readonly<{
@@ -301,22 +302,11 @@ function scaleChange(
 }
 
 function assertLoweringSupported(operation: CanonicalEditOperation) {
-  if (operation.kind === "CreateEntity" || operation.kind === "CreateMotion"
-    || operation.kind === "ChangePresence" || operation.kind === "TransformContent"
-    || operation.kind === "InsertSceneBoundary") return;
-  if (operation.kind === "AnimateProperty" && operation.key === "scale") {
-    scaleChange(operation);
-    return;
-  }
-  if (operation.kind === "InsertTimelineEvent" && operation.eventKind === "wait") return;
-  if (operation.kind === "SetProperty" && operation.key === "position" && isPoint(operation.value)) return;
-  if (operation.kind === "SetRelation" && operation.mode === "snapshot") return;
-  const detail = operation.kind === "SetProperty" ? ` ${operation.key}`
-    : operation.kind === "SetRelation" ? ` ${operation.mode}`
-      : "";
+  const execution = operationExecutionCapabilities(operation);
+  if (execution.lowering === "supported") return;
   throw new ProgramLoweringError(
     "operation-unsupported",
-    `${operation.kind}${detail} has no truthful source lowering.`,
+    execution.applyBlocker ?? `${operation.kind} has no truthful source lowering.`,
   );
 }
 

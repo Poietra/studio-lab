@@ -116,6 +116,15 @@ export type EvaluationDraft = {
   provenance: ProvenanceRecord[];
 };
 
+export type OperationExecutionCapabilities = Readonly<{
+  apply: "blocked" | "supported";
+  applyBlocker: string | null;
+  lowering: "illustrative" | "supported" | "unsupported";
+  preview: "supported" | "unsupported";
+}>;
+
+export type ProgramExecutionCapabilities = OperationExecutionCapabilities;
+
 type Capability<TKind extends CanonicalEditOperation["kind"]> = Readonly<{
   access: (operation: Extract<CanonicalEditOperation, { kind: TKind }>) => Readonly<{
     reads: readonly ChannelAccess[];
@@ -127,8 +136,10 @@ type Capability<TKind extends CanonicalEditOperation["kind"]> = Readonly<{
     operation: Extract<CanonicalEditOperation, { kind: TKind }>,
     program: CanonicalEditProgram,
   ) => void;
+  execution: (
+    operation: Extract<CanonicalEditOperation, { kind: TKind }>,
+  ) => OperationExecutionCapabilities;
   lifetimeRequirement: "existing-at-start" | "explicit" | "none";
-  lowering: "illustrative" | "supported" | "unsupported";
   projection: readonly ("canvas" | "inspector" | "object-list" | "semantic-thumbnail" | "timeline" | "working-playback")[];
   targetRequirement: "camera" | "constraint" | "entity" | "none";
   validate: (
@@ -136,6 +147,86 @@ type Capability<TKind extends CanonicalEditOperation["kind"]> = Readonly<{
     scene: RuntimeSceneState,
   ) => readonly ProgramValidationIssue[];
 }>;
+
+const SUPPORTED_EXECUTION: OperationExecutionCapabilities = {
+  apply: "supported",
+  applyBlocker: null,
+  lowering: "supported",
+  preview: "supported",
+};
+
+function previewOnlyExecution(
+  applyBlocker: string,
+  lowering: OperationExecutionCapabilities["lowering"] = "illustrative",
+): OperationExecutionCapabilities {
+  return {
+    apply: "blocked",
+    applyBlocker,
+    lowering,
+    preview: "supported",
+  };
+}
+
+function createEntityExecution(
+  operation: Extract<CanonicalEditOperation, { kind: "CreateEntity" }>,
+): OperationExecutionCapabilities {
+  const { content, type } = operation.entity;
+  const hasMathTexContent = type === "MathTex"
+    && ((content?.texParts?.length ?? 0) > 0 || (content?.displayLines?.length ?? 0) > 0);
+  const isBuiltIn = type === "Text"
+    || ["Arrow", "Circle", "Line", "Rectangle", "Square"].includes(type);
+  const isTransitionOverlay = /^TransitionOverlay:(circle|diamond|hexagon):(black|sky|white)$/.test(type);
+  if (hasMathTexContent || isBuiltIn || isTransitionOverlay) return SUPPORTED_EXECUTION;
+  return previewOnlyExecution(
+    `CreateEntity type ${type} can be previewed, but it has no safe Manim source lowering.`,
+  );
+}
+
+function setPropertyExecution(
+  operation: Extract<CanonicalEditOperation, { kind: "SetProperty" }>,
+): OperationExecutionCapabilities {
+  if (operation.key === "position" && isPointValue(operation.value)) return SUPPORTED_EXECUTION;
+  return previewOnlyExecution(
+    `SetProperty ${operation.key} can be previewed, but it has no truthful Manim source lowering.`,
+  );
+}
+
+function animatePropertyExecution(
+  operation: Extract<CanonicalEditOperation, { kind: "AnimateProperty" }>,
+): OperationExecutionCapabilities {
+  if (
+    operation.key === "scale"
+    && typeof operation.from === "number"
+    && typeof operation.to === "number"
+    && Number.isFinite(operation.from)
+    && Number.isFinite(operation.to)
+    && operation.from > 0
+    && operation.to > 0
+  ) return SUPPORTED_EXECUTION;
+  const reason = operation.key === "scale"
+    ? "Scale animation requires finite positive absolute from and to values before it can be lowered to Manim source."
+    : `AnimateProperty ${operation.key} can be previewed, but it has no truthful Manim source lowering.`;
+  return previewOnlyExecution(reason);
+}
+
+function createMotionExecution(
+  operation: Extract<CanonicalEditOperation, { kind: "CreateMotion" }>,
+): OperationExecutionCapabilities {
+  if (operation.delta.x !== 0 || operation.delta.y !== 0) return SUPPORTED_EXECUTION;
+  return previewOnlyExecution(
+    "CreateMotion can be previewed, but a zero-displacement motion cannot be lowered to Manim source.",
+  );
+}
+
+function changePresenceExecution(
+  operation: Extract<CanonicalEditOperation, { kind: "ChangePresence" }>,
+): OperationExecutionCapabilities {
+  const hasDuration = operation.interval.end - operation.interval.start > 0.0005;
+  if (hasDuration || operation.effect === "remove") return SUPPORTED_EXECUTION;
+  return previewOnlyExecution(
+    `Zero-duration ${operation.effect} can be previewed, but it has no truthful Manim source lowering.`,
+  );
+}
 
 function propertyKey(entityId: string, key: PropertyChannel["key"]) {
   return `${entityId}/${key}`;
@@ -265,8 +356,8 @@ export const OPERATION_REGISTRY = {
         value: true,
       });
     },
+    execution: createEntityExecution,
     lifetimeRequirement: "explicit",
-    lowering: "supported",
     projection: allEntityProjections,
     targetRequirement: "none",
     validate: (operation, scene) => baseIssues(operation, scene),
@@ -284,8 +375,8 @@ export const OPERATION_REGISTRY = {
         value: operation.value,
       });
     },
+    execution: setPropertyExecution,
     lifetimeRequirement: "existing-at-start",
-    lowering: "illustrative",
     projection: allEntityProjections,
     targetRequirement: "entity",
     validate: (operation, scene) => entityIssues([operation.entityId], operation, scene),
@@ -309,8 +400,8 @@ export const OPERATION_REGISTRY = {
         value: operation.to,
       });
     },
+    execution: animatePropertyExecution,
     lifetimeRequirement: "existing-at-start",
-    lowering: "illustrative",
     projection: allEntityProjections,
     targetRequirement: "entity",
     validate: (operation, scene) => entityIssues([operation.entityId], operation, scene),
@@ -343,8 +434,8 @@ export const OPERATION_REGISTRY = {
         });
       }
     },
+    execution: createMotionExecution,
     lifetimeRequirement: "existing-at-start",
-    lowering: "supported",
     projection: allEntityProjections,
     targetRequirement: "entity",
     validate: (operation, scene) => entityIssues(operation.targetEntityIds, operation, scene),
@@ -382,8 +473,10 @@ export const OPERATION_REGISTRY = {
         draft.propertyChannels[channelId] = { ...channel, samples };
       }
     },
+    execution: () => previewOnlyExecution(
+      "ModifyMotion has no truthful source lowering yet. It can be previewed, but editing an existing motion path cannot be applied.",
+    ),
     lifetimeRequirement: "none",
-    lowering: "illustrative",
     projection: allEntityProjections,
     targetRequirement: "none",
     validate: (operation, scene) => {
@@ -484,8 +577,8 @@ export const OPERATION_REGISTRY = {
         value: 1,
       });
     },
+    execution: () => SUPPORTED_EXECUTION,
     lifetimeRequirement: "existing-at-start",
-    lowering: "supported",
     projection: allEntityProjections,
     targetRequirement: "entity",
     validate: (operation, scene) => {
@@ -531,8 +624,12 @@ export const OPERATION_REGISTRY = {
         value: position,
       });
     },
+    execution: (operation) => operation.mode === "snapshot"
+      ? SUPPORTED_EXECUTION
+      : previewOnlyExecution(
+          "SetRelation live has no truthful source lowering; only snapshot relations can be applied.",
+        ),
     lifetimeRequirement: "existing-at-start",
-    lowering: "supported",
     projection: allEntityProjections,
     targetRequirement: "entity",
     validate: (operation, scene) => entityIssues([operation.sourceEntityId, operation.targetEntityId], operation, scene),
@@ -591,8 +688,8 @@ export const OPERATION_REGISTRY = {
         });
       }
     },
+    execution: changePresenceExecution,
     lifetimeRequirement: "existing-at-start",
-    lowering: "supported",
     projection: allEntityProjections,
     targetRequirement: "entity",
     validate: (operation, scene) => entityIssues([operation.entityId], operation, scene),
@@ -604,8 +701,12 @@ export const OPERATION_REGISTRY = {
       recordOperation(draft, operation, program);
       draft.events.push({ id: `${operation.id}/timeline`, interval: operation.interval, kind: operation.eventKind, label: operation.label, operationId: operation.id, transactionId: program.transactionId });
     },
+    execution: (operation) => operation.eventKind === "wait"
+      ? SUPPORTED_EXECUTION
+      : previewOnlyExecution(
+          "Only an explicit wait timeline event has truthful Manim source lowering.",
+        ),
     lifetimeRequirement: "none",
-    lowering: "supported",
     projection: ["timeline", "inspector"],
     targetRequirement: "none",
     validate: (operation, scene) => {
@@ -644,8 +745,8 @@ export const OPERATION_REGISTRY = {
       recordOperation(draft, operation, program);
       draft.events.push({ at: operation.at, id: `${operation.id}/boundary`, kind: "scene-boundary", label: "Full-cover Scene boundary", operationId: operation.id, transactionId: program.transactionId });
     },
+    execution: () => SUPPORTED_EXECUTION,
     lifetimeRequirement: "none",
-    lowering: "supported",
     projection: ["timeline", "inspector", "semantic-thumbnail", "working-playback"],
     targetRequirement: "none",
     validate: (operation, scene) => baseIssues(operation, scene),
@@ -657,8 +758,11 @@ export const OPERATION_REGISTRY = {
       recordOperation(draft, operation, program);
       draft.constraints = draft.constraints.filter((constraint) => constraint.id !== operation.constraintId);
     },
+    execution: () => previewOnlyExecution(
+      "ChangeConstraint is read-only until constraint edits have truthful Manim source lowering.",
+      "unsupported",
+    ),
     lifetimeRequirement: "none",
-    lowering: "unsupported",
     projection: ["inspector"],
     targetRequirement: "constraint",
     validate: (operation, scene) => baseIssues(operation, scene),
@@ -680,8 +784,10 @@ export const OPERATION_REGISTRY = {
         value: operation.value,
       });
     },
+    execution: () => previewOnlyExecution(
+      "CameraFocus can be previewed, but ChangeCamera cannot yet be lowered back to Manim source.",
+    ),
     lifetimeRequirement: "none",
-    lowering: "illustrative",
     projection: ["canvas", "inspector", "semantic-thumbnail", "working-playback"],
     targetRequirement: "camera",
     validate: (operation, scene) => baseIssues(operation, scene),
@@ -690,6 +796,42 @@ export const OPERATION_REGISTRY = {
 
 export function operationCapability(operation: CanonicalEditOperation) {
   return OPERATION_REGISTRY[operation.kind] as Capability<CanonicalEditOperation["kind"]>;
+}
+
+export function operationExecutionCapabilities(
+  operation: CanonicalEditOperation,
+): OperationExecutionCapabilities {
+  return operationCapability(operation).execution(operation as never);
+}
+
+const LOWERING_PRIORITY: Readonly<Record<OperationExecutionCapabilities["lowering"], number>> = {
+  illustrative: 1,
+  supported: 0,
+  unsupported: 2,
+};
+
+export function programExecutionCapabilities(
+  program: CanonicalEditProgram,
+): ProgramExecutionCapabilities {
+  const operationCapabilities = program.operations.map(operationExecutionCapabilities);
+  const lowering = [
+    program.loweringStatus,
+    ...operationCapabilities.map((capability) => capability.lowering),
+  ].reduce<OperationExecutionCapabilities["lowering"]>((current, candidate) => (
+    LOWERING_PRIORITY[candidate] > LOWERING_PRIORITY[current] ? candidate : current
+  ), "supported");
+  const blockedOperation = operationCapabilities.find((capability) => capability.apply !== "supported");
+  const unsupportedPreview = operationCapabilities.find((capability) => capability.preview !== "supported");
+  const applyBlocker = blockedOperation?.applyBlocker
+    ?? (program.loweringStatus !== "supported"
+      ? `This Program is marked ${program.loweringStatus} and cannot be applied until it has truthful Manim source lowering.`
+      : null);
+  return {
+    apply: applyBlocker === null && lowering === "supported" ? "supported" : "blocked",
+    applyBlocker,
+    lowering,
+    preview: unsupportedPreview ? "unsupported" : "supported",
+  };
 }
 
 export function operationAccess(operation: CanonicalEditOperation) {

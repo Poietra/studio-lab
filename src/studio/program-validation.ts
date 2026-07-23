@@ -1,6 +1,11 @@
 import type { RuntimeSceneState } from "./model";
 import { channelKey, type CanonicalEditOperation, type CanonicalEditProgram, type DependencyEdge, type ProgramValidationIssue } from "./operations";
-import { operationAccess, operationCapability, validateOperation } from "./operation-registry";
+import {
+  operationAccess,
+  operationExecutionCapabilities,
+  programExecutionCapabilities,
+  validateOperation,
+} from "./operation-registry";
 
 const EPSILON = 0.001;
 
@@ -177,14 +182,14 @@ export function validateAndScheduleProgram(
         });
       }
     }
-    if (operationCapability(operation).lowering === "unsupported") {
-      const destructive = operation.kind === "ChangeConstraint";
+    const execution = operationExecutionCapabilities(operation);
+    if (execution.lowering !== "supported") {
       issues.push({
         code: "lowering-unsupported",
         field: "loweringStatus",
-        message: `${operation.kind} has no truthful source lowering yet.`,
+        message: execution.applyBlocker ?? `${operation.kind} has no truthful source lowering yet.`,
         operationId: operation.id,
-        severity: destructive ? "error" : "warning",
+        severity: execution.lowering === "unsupported" ? "error" : "warning",
       });
     }
     if (operation.kind === "TransformContent") {
@@ -289,7 +294,7 @@ export function validateAndScheduleProgram(
   if (!order) {
     issues.push({ code: "cycle", field: "schedule.edges", message: "Operation dependencies contain a cycle.", severity: "error" });
   }
-  const program: CanonicalEditProgram = {
+  const scheduledProgram: CanonicalEditProgram = {
     ...input,
     schedule: {
       edges: normalizedEdges,
@@ -300,6 +305,10 @@ export function validateAndScheduleProgram(
           : "parallel",
       order: order ?? operationIds,
     },
+  };
+  const program: CanonicalEditProgram = {
+    ...scheduledProgram,
+    loweringStatus: programExecutionCapabilities(scheduledProgram).lowering,
   };
   return {
     issues,
