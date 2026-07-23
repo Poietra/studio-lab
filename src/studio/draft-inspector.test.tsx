@@ -19,6 +19,7 @@ describe("DraftInspector execution capabilities", () => {
     const markup = renderToStaticMarkup(
       <DraftInspector
         error="A newer transient error."
+        isApplying={false}
         onApply={() => undefined}
         onDiscard={() => undefined}
         onOperationChange={() => undefined}
@@ -38,6 +39,7 @@ describe("DraftInspector execution capabilities", () => {
       <DraftInspector
         applyLabel="Replace program"
         error={null}
+        isApplying={false}
         onApply={() => undefined}
         onDiscard={() => undefined}
         onOperationChange={() => undefined}
@@ -46,5 +48,18 @@ describe("DraftInspector execution capabilities", () => {
       />,
     );
     expect(replacementMarkup).toMatch(/<button[^>]*disabled=""[^>]*>Replace program<\/button>/);
+
+    const applyingMarkup = renderToStaticMarkup(
+      <DraftInspector
+        error={null}
+        isApplying
+        onApply={() => undefined}
+        onDiscard={() => undefined}
+        onOperationChange={() => undefined}
+        operation={null}
+        record={programRecord(validation.program, validation)}
+      />,
+    );
+    expect(applyingMarkup).toMatch(/<button[^>]*disabled=""[^>]*>Checking source…<\/button>/);
   });
 });
