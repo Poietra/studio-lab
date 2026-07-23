@@ -1,5 +1,11 @@
 import { renderRequestPrograms, type ProgramRenderRequest, type SingleProgramRenderRequest } from "./contracts";
-import { findSourceComments, findSourceSceneBlock, findSourceSceneComments } from "./source-import";
+import { analyzePythonSource, isPythonStatementStart } from "./python-source-analysis";
+import {
+  findSourceComments,
+  findSourceSceneBlock,
+  findSourceSceneComments,
+  importManimScene,
+} from "./source-import";
 import type { MotionEasing } from "../studio/model";
 import {
   EDIT_OPERATION_VERSION,
@@ -9,6 +15,8 @@ import {
 } from "../studio/operations";
 import { operationExecutionCapabilities, programExecutionCapabilities } from "../studio/operation-registry";
 import { insertedProgramDuration } from "../studio/program-composition";
+import { samplePropertyKnowledge, samplePropertyValue } from "../studio/property-sampling";
+import { scaleTransformViolation, sceneBoundaryViolation } from "../studio/source-lowering-invariants";
 
 export type MotionAnchor = Readonly<{
   line: number;
@@ -439,6 +447,155 @@ function requireVariable(variables: ReadonlyMap<string, string>, entityId: strin
   return variable;
 }
 
+function sourceThroughAnchor(
+  source: string,
+  sceneBlock: NonNullable<ReturnType<typeof findSourceSceneBlock>>,
+  anchorLine: number,
+) {
+  const lines = source.split(/\r?\n/);
+  lines.splice(anchorLine, Math.max(0, sceneBlock.bodyEnd - anchorLine));
+  return lines.join(source.includes("\r\n") ? "\r\n" : "\n");
+}
+
+function assertScaleOriginsMatchSource(
+  source: string,
+  sourcePath: string,
+  sceneName: string,
+  sceneBlock: NonNullable<ReturnType<typeof findSourceSceneBlock>>,
+  anchorLine: number,
+  sourceAnchor: number,
+  operations: readonly CanonicalEditOperation[],
+  sourceBindings: ReadonlyMap<string, string>,
+  generatedEntityIds: ReadonlySet<string> | undefined,
+  frame: Readonly<{ height: number; width: number }>,
+) {
+  const scales = operations.filter((operation): operation is Extract<CanonicalEditOperation, {
+    kind: "AnimateProperty";
+  }> => operation.kind === "AnimateProperty" && operation.key === "scale");
+  if (scales.length === 0) return;
+  const imported = importManimScene(
+    sourceThroughAnchor(source, sceneBlock, anchorLine),
+    sourcePath,
+    sceneName,
+    frame,
+  );
+  if (!imported) {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Scale lowering cannot verify the source state at the selected anchor.",
+    );
+  }
+  const createdScales = new Map(operations.flatMap((operation) => (
+    operation.kind === "CreateEntity"
+      ? [[operation.entity.id, operation.entity.type.startsWith("TransitionOverlay:") ? 0.01 : 1] as const]
+      : []
+  )));
+  const currentScales = new Map<string, number>();
+  for (const operation of scales) {
+    const change = scaleChange(operation);
+    let current = currentScales.get(operation.entityId);
+    if (current === undefined) {
+      current = createdScales.get(operation.entityId);
+    }
+    if (current === undefined && generatedEntityIds?.has(operation.entityId)) {
+      current = change.from;
+    }
+    if (current === undefined) {
+      const sourceVariable = sourceBindings.get(operation.entityId);
+      const entity = sourceVariable
+        ? Object.values(imported.runtimeSceneState.objectGraph.entities).find((candidate) => (
+            candidate.sourceIdentity.kind === "known"
+            && candidate.sourceIdentity.value === sourceVariable
+          ))
+        : undefined;
+      const samples = entity
+        ? imported.runtimeSceneState.propertyChannels[`${entity.id}/scale`]?.samples ?? []
+        : [];
+      const value = samplePropertyValue(samples, sourceAnchor);
+      const numericValue = typeof value === "number" ? value : undefined;
+      const knowledge = samplePropertyKnowledge(samples, sourceAnchor, numericValue);
+      if (
+        knowledge?.kind !== "known"
+        || !Number.isFinite(knowledge.value)
+        || knowledge.value <= 0
+      ) {
+        throw new ProgramLoweringError(
+          "operation-unsupported",
+          `Scale lowering cannot verify a finite positive source scale for ${operation.entityId} at the selected anchor.`,
+        );
+      }
+      current = knowledge.value;
+    }
+    const tolerance = Math.max(EPSILON, Math.abs(current) * 0.000001);
+    if (Math.abs(change.from - current) >= tolerance) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        `Scale operation ${operation.id} expects ${formatAmount(change.from)}x but source is ${formatAmount(current)}x at that point.`,
+      );
+    }
+    currentScales.set(operation.entityId, change.to);
+  }
+}
+
+function persistentRemovalVariables(
+  operations: readonly CanonicalEditOperation[],
+  variableByEntity: ReadonlyMap<string, string>,
+  initialAliases: ReadonlyMap<string, ReadonlySet<string>>,
+) {
+  const aliases = new Map([...initialAliases].map(([entityId, values]) => [entityId, new Set(values)]));
+  const removed = new Set<string>();
+  for (const operation of operations) {
+    if (operation.kind === "TransformContent") {
+      const source = aliases.get(operation.sourceEntityId)
+        ?? new Set([requireVariable(variableByEntity, operation.sourceEntityId)]);
+      const target = aliases.get(operation.targetEntityId)
+        ?? new Set([requireVariable(variableByEntity, operation.targetEntityId)]);
+      const merged = new Set([...source, ...target]);
+      aliases.set(operation.sourceEntityId, merged);
+      aliases.set(operation.targetEntityId, merged);
+    }
+    if (operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent) {
+      const values = aliases.get(operation.entityId)
+        ?? new Set([requireVariable(variableByEntity, operation.entityId)]);
+      for (const value of values) removed.add(value);
+    }
+  }
+  return removed;
+}
+
+function referencedVariableAfterAnchor(
+  source: string,
+  sceneBlock: NonNullable<ReturnType<typeof findSourceSceneBlock>>,
+  anchorLine: number,
+  variables: ReadonlySet<string>,
+) {
+  if (variables.size === 0) return null;
+  const analysis = analyzePythonSource(source);
+  if (!analysis.valid) {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Persistent removal cannot inspect an invalid Python source suffix safely.",
+    );
+  }
+  const patterns = [...variables].map((variable) => ({
+    pattern: new RegExp(`\\b${escapePattern(variable)}\\b`),
+    variable,
+  }));
+  for (let index = anchorLine; index < sceneBlock.bodyEnd; index += 1) {
+    const line = analysis.lines[index];
+    if (!line) continue;
+    const reference = patterns.find(({ pattern }) => pattern.test(line.code));
+    if (reference) return reference.variable;
+    if (
+      sceneBlock.bodyIndent !== null
+      && line.indentation === sceneBlock.bodyIndent
+      && isPythonStatementStart(line)
+      && /^(?:raise|return)\b/.test(line.code.trimStart())
+    ) break;
+  }
+  return null;
+}
+
 function operationBuckets(operations: readonly CanonicalEditOperation[]) {
   const buckets: Array<{ operations: CanonicalEditOperation[]; time: number }> = [];
   for (const operation of operations) {
@@ -474,6 +631,20 @@ export function lowerCanonicalProgramSource(
     );
   }
   request.program.operations.forEach((operation) => assertLoweringSupported(operation, options));
+  const transformScale = scaleTransformViolation(request.program.operations);
+  if (transformScale) {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Scale and TransformContent cannot target the same logical object during truthful source lowering.",
+    );
+  }
+  const boundaryViolation = sceneBoundaryViolation(request.program.operations);
+  if (boundaryViolation) {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "A Scene boundary must be terminal; only its transition reveal may execute afterward.",
+    );
+  }
   const sourceAnchor = options.sourceAnchor ?? request.program.anchor.resolvedSeconds;
   const anchor = findSceneMotionAnchors(source, request.sceneName, request.sourcePath).find(
     (candidate) => Math.abs(candidate.seconds - sourceAnchor) < EPSILON,
@@ -490,6 +661,12 @@ export function lowerCanonicalProgramSource(
   const markerLine = lines[anchor.line - 1] ?? "";
   const indentation = markerLine.match(/^\s*/)?.[0] ?? "";
   const sceneBlock = findSourceSceneBlock(source, request.sceneName, request.sourcePath);
+  if (!sceneBlock) {
+    throw new ProgramLoweringError(
+      "anchor-missing",
+      `${request.sceneName} is not present in ${request.sourcePath}.`,
+    );
+  }
   const sourceBeforeAnchor = lines.slice(sceneBlock?.bodyStart ?? 0, anchor.line - 1).join(newline);
   const sourceBindings = new Map(request.sourceBindings.map((binding) => [binding.entityId, binding.sourceVariable]));
   for (const entityId of referencedBaseEntityIds(request.program.operations)) {
@@ -515,6 +692,18 @@ export function lowerCanonicalProgramSource(
     (left, right) =>
       operationTime(left) - operationTime(right) || (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0),
   );
+  assertScaleOriginsMatchSource(
+    source,
+    request.sourcePath,
+    request.sceneName,
+    sceneBlock,
+    anchor.line,
+    sourceAnchor,
+    operations,
+    sourceBindings,
+    options.generatedEntityIds,
+    frame,
+  );
   const variableByEntity = new Map(sourceBindings);
   const aliasesByEntity = new Map(
     [...sourceBindings].map(([entityId, sourceVariable]) => [
@@ -534,6 +723,18 @@ export function lowerCanonicalProgramSource(
     const variable = allocateVariable();
     variableByEntity.set(entityId, variable);
     aliasesByEntity.set(entityId, new Set([variable]));
+  }
+  const unsafeRemovalReference = referencedVariableAfterAnchor(
+    source,
+    sceneBlock,
+    anchor.line,
+    persistentRemovalVariables(operations, variableByEntity, aliasesByEntity),
+  );
+  if (unsafeRemovalReference) {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      `Persistent removal is unsafe because source variable ${unsafeRemovalReference} is referenced after the selected anchor.`,
+    );
   }
   const output: string[] = [];
   let cursor = request.program.anchor.resolvedSeconds;

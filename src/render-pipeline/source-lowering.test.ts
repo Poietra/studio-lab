@@ -480,6 +480,51 @@ class GroupedEquation(Scene):
     ).toThrow(/finite positive absolute from and to/i);
   });
 
+  it("rejects a scale whose absolute origin disagrees with source at the anchor", () => {
+    const scale: CanonicalEditOperation = {
+      ...operationBase("stale-scale", 7, 8),
+      easing: "smooth",
+      entityId: "equation_1",
+      from: 1.25,
+      key: "scale",
+      kind: "AnimateProperty",
+      to: 2,
+    };
+
+    expect(() => lowerCanonicalProgramSource(
+      source,
+      request(canonicalProgram([scale], "stale-scale")),
+      { height: 8, width: 14.222 },
+      null,
+    )).toThrow(/expects 1\.25x but source is 1x/i);
+  });
+
+  it("rejects scale combined with TransformContent on the same logical identity", () => {
+    const targetEntityId = "tx:scale-transform/entity:target";
+    const transform = transformOperation("transform", 7, "equation_1", targetEntityId, ["F", "=", "m", "a"]);
+    const scale: CanonicalEditOperation = {
+      ...operationBase("scale-target", 8, 9),
+      dependsOn: [transform.id],
+      easing: "smooth",
+      entityId: targetEntityId,
+      from: 2,
+      key: "scale",
+      kind: "AnimateProperty",
+      to: 3,
+    };
+    const scaledSource = source.replace(
+      'equation = MathTex("E", "=", "m", "c^2")',
+      'equation = MathTex("E", "=", "m", "c^2").scale(2)',
+    );
+
+    expect(() => lowerCanonicalProgramSource(
+      scaledSource,
+      request(canonicalProgram([transform, scale], "scale-transform")),
+      { height: 8, width: 14.222 },
+      null,
+    )).toThrow(/Scale and TransformContent cannot target the same logical object/i);
+  });
+
   it("lowers an immediate lifetime end to self.remove without a zero-duration play", () => {
     const remove: CanonicalEditOperation = {
       ...operationBase("trim-lifetime", 7),
@@ -503,6 +548,90 @@ class GroupedEquation(Scene):
       imported?.runtimeSceneState.objectGraph.entities["source:examples/relativity.py#GroupedEquation:equation"]
         ?.lifetime,
     ).toEqual([{ end: 7, start: 0 }]);
+  });
+
+  it.each([
+    "self.play(FadeIn(equation), run_time=1)",
+    "self.add(equation)",
+    "self.play(equation.animate.shift(RIGHT), run_time=1)",
+  ])("rejects persistent removal before a source suffix reference: %s", (suffix) => {
+    const remove: CanonicalEditOperation = {
+      ...operationBase("persistent-delete", 7, 7.4),
+      effect: "remove",
+      entityId: "equation_1",
+      kind: "ChangePresence",
+      persistent: true,
+    };
+    const sourceWithReference = source.replace("self.wait(1)", suffix);
+
+    expect(() => lowerCanonicalProgramSource(
+      sourceWithReference,
+      request(canonicalProgram([remove], "persistent-delete")),
+      { height: 8, width: 14.222 },
+      null,
+    )).toThrow(/equation is referenced after the selected anchor/i);
+  });
+
+  it("ignores source-variable text in comments and strings when guarding persistent removal", () => {
+    const remove: CanonicalEditOperation = {
+      ...operationBase("safe-delete", 7, 7.4),
+      effect: "remove",
+      entityId: "equation_1",
+      kind: "ChangePresence",
+      persistent: true,
+    };
+    const safeSuffix = source.replace(
+      "self.wait(1)",
+      'documentation = "equation"\n        # self.add(equation)\n        self.wait(1)',
+    );
+
+    expect(lowerCanonicalProgramSource(
+      safeSuffix,
+      request(canonicalProgram([remove], "safe-delete")),
+      { height: 8, width: 14.222 },
+      null,
+    ).insertedCode).toContain("FadeOut(equation)");
+  });
+
+  it("guards the original source alias when a transformed target is persistently removed", () => {
+    const targetEntityId = "tx:transform-delete/entity:target";
+    const transform = transformOperation("transform", 7, "equation_1", targetEntityId, ["F", "=", "m", "a"]);
+    const remove: CanonicalEditOperation = {
+      ...operationBase("delete-target", 8, 8.4),
+      dependsOn: [transform.id],
+      effect: "remove",
+      entityId: targetEntityId,
+      kind: "ChangePresence",
+      persistent: true,
+    };
+    const sourceWithReference = source.replace("self.wait(1)", "self.add(equation)");
+
+    expect(() => lowerCanonicalProgramSource(
+      sourceWithReference,
+      request(canonicalProgram([transform, remove], "transform-delete")),
+      { height: 8, width: 14.222 },
+      null,
+    )).toThrow(/equation is referenced after the selected anchor/i);
+  });
+
+  it("rejects a non-transition operation at or after a Scene boundary", () => {
+    const boundary: CanonicalEditOperation = {
+      ...operationBase("boundary", 7),
+      at: 7,
+      destination: "next-scene",
+      kind: "InsertSceneBoundary",
+    };
+    const motion = motionOperation({
+      id: "motion-after-boundary",
+      interval: { end: 8, start: 7 },
+    });
+
+    expect(() => lowerCanonicalProgramSource(
+      source,
+      { ...request(canonicalProgram([boundary, motion], "boundary-first")), destination: { sceneName: "Next", sourcePath: "scene.py" } },
+      { height: 8, width: 14.222 },
+      { initialization: [], visibleSourceVariables: [] },
+    )).toThrow(/Scene boundary must be terminal/i);
   });
 
   it("advances the consumed anchor so a second commit appends in playback order", () => {
@@ -775,6 +904,7 @@ class GroupedEquation(Scene):
       { ...operationBase("boundary", 8.5), at: 8.5, destination: "next-scene", kind: "InsertSceneBoundary" },
       {
         ...operationBase("reveal", 8.5, 9),
+        dependsOn: ["boundary"],
         effect: "reveal",
         entityId: overlayId,
         kind: "ChangePresence",

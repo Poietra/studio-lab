@@ -99,6 +99,37 @@ describe("Magic Edit object capabilities", () => {
     });
   });
 
+  it("blocks an order-ambiguous relative source scale at the same timestamp", () => {
+    const entity = STUDIO_FIXTURE_SCENE.objectGraph.entities.equation_1;
+    const scene = withEntity(entity, {
+      "equation_1/scale": {
+        entityId: "equation_1",
+        key: "scale",
+        samples: [
+          {
+            interval: { end: 12, start: 0 },
+            kind: "exact",
+            provenanceId: "source:base-scale",
+            value: 1,
+          },
+          {
+            from: 1,
+            interval: { end: 12, start: 5 },
+            kind: "exact",
+            provenanceId: "source:scale-at-anchor",
+            relative: true,
+            value: 2,
+          },
+        ],
+      },
+    });
+
+    expect(magicEditCapabilities(scene, entity, 5).scale).toEqual({
+      kind: "blocked",
+      reason: "A relative source scale shares this anchor, so source order cannot be represented safely in preview.",
+    });
+  });
+
   it("allows a Studio-generated object that can be rebound during batch export", () => {
     const entity: RuntimeEntity = {
       id: "tx:create/entity:circle",

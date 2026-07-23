@@ -24,6 +24,15 @@ export function exactEntityScaleAt(
   time: number,
 ) {
   const samples = scene.propertyChannels[`${entity.id}/scale`]?.samples ?? [];
+  if (samples.some((sample) => (
+    sample.relative === true
+    && Math.abs(sample.interval.start - time) < 0.0005
+  ))) {
+    return {
+      kind: "unknown" as const,
+      reason: "A relative source scale shares this anchor, so source order cannot be represented safely in preview.",
+    };
+  }
   const sampled = samplePropertyValue(samples, time);
   const sampledValue = typeof sampled === "number" ? sampled : undefined;
   const sampledKnowledge = samplePropertyKnowledge(samples, time, sampledValue);

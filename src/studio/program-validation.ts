@@ -12,6 +12,7 @@ import {
   programExecutionCapabilities,
   validateOperation,
 } from "./operation-registry";
+import { scaleTransformViolation, sceneBoundaryViolation } from "./source-lowering-invariants";
 
 const EPSILON = 0.001;
 
@@ -152,6 +153,27 @@ export function validateAndScheduleProgram(
     });
   }
   for (const operation of input.operations) issues.push(...validateOperation(operation, scene));
+
+  const transformScale = scaleTransformViolation(input.operations);
+  if (transformScale) {
+    issues.push({
+      code: "lowering-unsupported",
+      field: "operations",
+      message: "Scale and TransformContent cannot target the same logical object because source lowering cannot preserve the replacement's exact scale.",
+      operationId: transformScale.scaleOperationId,
+      severity: "error",
+    });
+  }
+  const boundary = sceneBoundaryViolation(input.operations);
+  if (boundary) {
+    issues.push({
+      code: "lowering-unsupported",
+      field: "operations",
+      message: "A Scene boundary must be terminal; only its transition reveal may execute after ownership transfers to the next Scene.",
+      operationId: boundary.operationId,
+      severity: "error",
+    });
+  }
 
   const produced = producedEntityIds(input);
   const producerIds = new Set<string>();

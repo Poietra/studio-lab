@@ -330,4 +330,80 @@ class Scaling(Scene):
       }),
     );
   });
+
+  it("rejects canonical scale on a TransformContent identity", () => {
+    const transactionId = "canonical-scale-transform";
+    const targetEntityId = provisionalEntityId(transactionId, "target");
+    const transform: CanonicalEditOperation = {
+      dependsOn: [],
+      id: operationId(transactionId, "transform"),
+      interval: { end: 9, start: 8 },
+      kind: "TransformContent",
+      provenance: { evidence: [], origin: "fixture" },
+      replacement: { displayLines: ["F = ma"], texParts: ["F", "=", "m", "a"] },
+      sourceEntityId: "equation_1",
+      strategy: "transform-matching-tex",
+      targetEntityId,
+    };
+    const scale: CanonicalEditOperation = {
+      dependsOn: [transform.id],
+      easing: "smooth",
+      entityId: targetEntityId,
+      from: 2,
+      id: operationId(transactionId, "scale"),
+      interval: { end: 10, start: 9 },
+      key: "scale",
+      kind: "AnimateProperty",
+      provenance: { evidence: [], origin: "fixture" },
+      to: 3,
+    };
+
+    const validation = validateAndScheduleProgram(
+      programWith([transform, scale], transactionId),
+      STUDIO_FIXTURE_SCENE,
+    );
+
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues).toContainEqual(expect.objectContaining({
+      code: "lowering-unsupported",
+      message: expect.stringMatching(/Scale and TransformContent/),
+      operationId: scale.id,
+    }));
+  });
+
+  it("rejects canonical work after a Scene boundary", () => {
+    const transactionId = "canonical-boundary-first";
+    const boundary: CanonicalEditOperation = {
+      at: 8,
+      dependsOn: [],
+      destination: "next-scene",
+      id: operationId(transactionId, "boundary"),
+      interval: { end: 8, start: 8 },
+      kind: "InsertSceneBoundary",
+      provenance: { evidence: [], origin: "fixture" },
+    };
+    const motion: CanonicalEditOperation = {
+      controlOffset: { x: 0, y: 0 },
+      delta: { x: 10, y: 0 },
+      dependsOn: [boundary.id],
+      easing: "smooth",
+      id: operationId(transactionId, "motion"),
+      interval: { end: 9, start: 8 },
+      kind: "CreateMotion",
+      provenance: { evidence: [], origin: "fixture" },
+      targetEntityIds: ["equation_1"],
+    };
+
+    const validation = validateAndScheduleProgram(
+      programWith([boundary, motion], transactionId),
+      STUDIO_FIXTURE_SCENE,
+    );
+
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues).toContainEqual(expect.objectContaining({
+      code: "lowering-unsupported",
+      message: expect.stringMatching(/Scene boundary must be terminal/),
+      operationId: motion.id,
+    }));
+  });
 });
