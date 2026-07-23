@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import {
   createManimProjectRequestSchema,
+  manimThumbnailGenerateRequestSchema,
   originalManimSourceExportRequestSchema,
   programRenderRequestSchema,
   renameManimProjectRequestSchema,
@@ -22,6 +23,36 @@ const PROJECT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/(worksp
 const PROJECT_THUMBNAIL_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/thumbnail(?:\/(status|generate))?$/;
 const PROJECT_ITEM_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})$/;
 type ManimApi = ManimRenderManager | ManimProjectRegistry;
+
+function requireSameOriginJsonMutation(request: IncomingMessage) {
+  const mediaType = request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
+  if (mediaType !== "application/json") {
+    request.resume();
+    throw new HttpError("Request content type must be application/json.", 415);
+  }
+  const fetchSite = request.headers["sec-fetch-site"]?.toLowerCase();
+  if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
+    request.resume();
+    throw new HttpError("Cross-origin thumbnail generation is not allowed.", 403);
+  }
+  const origin = request.headers.origin;
+  if (!origin) return;
+  const host = request.headers.host;
+  try {
+    const parsedOrigin = new URL(origin);
+    if (
+      !host
+      || !["http:", "https:"].includes(parsedOrigin.protocol)
+      || parsedOrigin.protocol !== ("encrypted" in request.socket && request.socket.encrypted ? "https:" : "http:")
+      || parsedOrigin.username
+      || parsedOrigin.password
+      || parsedOrigin.host.toLowerCase() !== host.toLowerCase()
+    ) throw new Error("Origin does not match Host.");
+  } catch {
+    request.resume();
+    throw new HttpError("Thumbnail generation requires a same-origin request.", 403);
+  }
+}
 
 function mutableProjectRegistry(manager: ManimApi) {
   if (!("createProject" in manager)) {
@@ -257,6 +288,9 @@ async function routeManimRequest(
       return;
     }
     if (action === "generate" && request.method === "POST") {
+      requireSameOriginJsonMutation(request);
+      const parsed = manimThumbnailGenerateRequestSchema.safeParse(await readJsonBody(request, 1_024));
+      if (!parsed.success) throw new HttpError("Thumbnail generation requires an empty JSON object.", 400);
       signal.throwIfAborted();
       sendJson(response, 202, await manager.generateThumbnail(projectId));
       return;

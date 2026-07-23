@@ -227,8 +227,63 @@ describe("Manim API client contracts", () => {
     expect(fetch).toHaveBeenNthCalledWith(
       2,
       "/api/manim/projects/project-a/thumbnail/generate",
-      { method: "POST", signal: undefined },
+      {
+        body: "{}",
+        headers: { "content-type": "application/json" },
+        method: "POST",
+        signal: undefined,
+      },
     );
+  });
+
+  it.each([
+    {
+      cachedSourceHash: "a".repeat(64),
+      error: null,
+      generatedAt: "2026-07-23T10:00:00.000Z",
+      imageKind: "semantic",
+      projectId: "project-a",
+      sceneName: "SceneOne",
+      sourceHash: "a".repeat(64),
+      sourcePath: "scene.py",
+      state: "current",
+    },
+    {
+      cachedSourceHash: null,
+      error: null,
+      generatedAt: null,
+      imageKind: "semantic",
+      projectId: "project-a",
+      sceneName: "SceneOne",
+      sourceHash: null,
+      sourcePath: "scene.py",
+      state: "missing",
+    },
+    {
+      cachedSourceHash: "a".repeat(64),
+      error: null,
+      generatedAt: "2026-07-23T10:00:00.000Z",
+      imageKind: "semantic",
+      projectId: "project-a",
+      sceneName: "SceneOne",
+      sourceHash: "a".repeat(64),
+      sourcePath: "scene.py",
+      state: "stale",
+    },
+    {
+      cachedSourceHash: null,
+      error: null,
+      generatedAt: null,
+      imageKind: "semantic",
+      projectId: "project-a",
+      sceneName: "SceneOne",
+      sourceHash: "a".repeat(64),
+      sourcePath: "../scene.py",
+      state: "missing",
+    },
+  ])("rejects thumbnail status that violates lifecycle invariants", async (status) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(status), { status: 200 })));
+    await expect(loadManimThumbnailStatus("project-a")).rejects.toThrow(/API contract/i);
   });
 
   it("rejects thumbnail status for another project", async () => {

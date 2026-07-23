@@ -12,6 +12,7 @@ import {
   manimProjectIdSchema,
   manimProjectListViewSchema,
   manimProjectMutationViewSchema,
+  manimThumbnailGenerateRequestSchema,
   manimThumbnailStatusSchema,
   manimWorkspaceViewSchema,
   originalManimSourceExportRequestSchema,
@@ -127,7 +128,12 @@ export async function generateManimThumbnail(projectId: string, signal?: AbortSi
   }
   const status = await readJson(await fetch(
     `/api/manim/projects/${encodeURIComponent(projectId)}/thumbnail/generate`,
-    { method: "POST", signal },
+    {
+      body: JSON.stringify(manimThumbnailGenerateRequestSchema.parse({})),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+      signal,
+    },
   ), manimThumbnailStatusSchema);
   if (status.projectId !== projectId) {
     throw new Error("The server returned a thumbnail status for a different project.");

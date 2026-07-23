@@ -50,7 +50,10 @@ export async function findRenderedVideo(root: string, sceneName: string): Promis
   return candidates.sort((left, right) => right.modified - left.modified)[0]?.path ?? null;
 }
 
-export async function findRenderedImage(root: string, sceneName: string): Promise<string | null> {
+export async function findRenderedImage(root: string, fileName: string): Promise<string | null> {
+  if (!/^[A-Za-z0-9._-]+\.png$/.test(fileName)) {
+    throw new TypeError("Rendered image lookup requires an exact PNG file name.");
+  }
   const candidates: { modified: number; path: string }[] = [];
   let visitedDirectories = 0;
   async function visit(directory: string) {
@@ -62,7 +65,7 @@ export async function findRenderedImage(root: string, sceneName: string): Promis
     for (const entry of entries) {
       const path = join(directory, entry.name);
       if (entry.isDirectory() && entry.name !== PARTIAL_MOVIE_DIRECTORY) await visit(path);
-      else if (entry.isFile() && entry.name === `${sceneName}.png`) {
+      else if (entry.isFile() && entry.name === fileName) {
         const metadata = await lstat(path);
         if (metadata.isFile() && !metadata.isSymbolicLink() && metadata.size > 0) {
           candidates.push({ modified: metadata.mtimeMs, path });

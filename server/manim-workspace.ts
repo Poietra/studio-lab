@@ -1,7 +1,11 @@
-import { lstat, readFile, readdir } from "node:fs/promises";
+import { constants, type BigIntStats } from "node:fs";
+import { open, readdir } from "node:fs/promises";
 import { join, sep } from "node:path";
 
-import type { ManimWorkspaceSource } from "../src/render-pipeline/contracts";
+import {
+  isManimSourcePath,
+  type ManimWorkspaceSource,
+} from "../src/render-pipeline/contracts";
 import {
   findSceneBlocks,
   importManimScene,
@@ -26,6 +30,29 @@ type DiscoveredPythonSource = Readonly<{
   path: string;
   source: string;
 }>;
+
+function isSameFileVersion(first: BigIntStats, second: BigIntStats) {
+  return first.dev === second.dev
+    && first.ino === second.ino
+    && first.mode === second.mode
+    && first.size === second.size
+    && first.mtimeNs === second.mtimeNs
+    && first.ctimeNs === second.ctimeNs;
+}
+
+async function readStablePythonSource(path: string) {
+  const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  try {
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || before.size > BigInt(MAX_PYTHON_SOURCE_BYTES)) return null;
+    const body = await handle.readFile();
+    const after = await handle.stat({ bigint: true });
+    if (!isSameFileVersion(before, after) || body.byteLength > MAX_PYTHON_SOURCE_BYTES) return null;
+    return body.toString("utf8");
+  } finally {
+    await handle.close();
+  }
+}
 
 export type ManimThumbnailTarget = Readonly<{
   scene: ImportedManimScene;
@@ -93,15 +120,15 @@ async function visitPythonSources(
       const absolutePath = join(directory, entry.name);
       let source: string;
       try {
-        const metadata = await lstat(absolutePath);
-        if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > MAX_PYTHON_SOURCE_BYTES) continue;
-        source = await readFile(absolutePath, "utf8");
-        if (Buffer.byteLength(source) > MAX_PYTHON_SOURCE_BYTES) continue;
+        const stableSource = await readStablePythonSource(absolutePath);
+        if (stableSource === null) continue;
+        source = stableSource;
       } catch {
         // Files can disappear or become unreadable during a workspace scan.
         continue;
       }
       const path = join(relativeDirectory, entry.name).split(sep).join("/");
+      if (!isManimSourcePath(path)) continue;
       stopped = await visitSource({ path, source });
     }
   }

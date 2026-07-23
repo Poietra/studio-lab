@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -50,7 +50,9 @@ describe("Manim thumbnail source discovery", () => {
       writeFile(join(projectRoot, "a-scenes", "a.py"), "value = 1\n", "utf8"),
       writeFile(join(projectRoot, "a-scenes", "b.py"), sceneSource("NestedFirst", "first"), "utf8"),
       writeFile(join(projectRoot, "b.py"), sceneSource("RootLater", "later"), "utf8"),
+      writeFile(join(projectRoot, "unsafe\\name.py"), sceneSource("UnsafePath", "unsafe"), "utf8"),
     ]);
+    await symlink(join(projectRoot, "b.py"), join(projectRoot, "linked.py"));
 
     const first = await discoverFirstManimScene(projectRoot, frame);
     expect(first?.sceneId).toBe("a-scenes/b.py#NestedFirst");
@@ -204,8 +206,9 @@ describe("Manim thumbnail manager and HTTP boundary", () => {
     const cacheRoot = await mkdtemp(join(tmpdir(), "poietra-thumbnail-http-cache-"));
     temporaryRoots.push(projectRoot, cacheRoot);
     await writeFile(join(projectRoot, "scene.py"), sceneSource("RenderedThumbnail", "rendered"), "utf8");
+    const renderMarker = join(projectRoot, "thumbnail-render-started");
     const registry = new ManimProjectRegistry({
-      command: [process.execPath, fakeRenderer],
+      command: [process.execPath, fakeRenderer, "--render-start-marker", renderMarker],
       frame,
       projects: [{ id: "project-thumbnail", name: "Thumbnail", root: projectRoot }],
       renderTimeoutMs: 5_000,
@@ -219,7 +222,41 @@ describe("Manim thumbnail manager and HTTP boundary", () => {
     try {
       const address = server.address() as AddressInfo;
       const origin = `http://127.0.0.1:${address.port}`;
+      const rejectedRequests = [
+        fetch(`${origin}/api/manim/projects/project-thumbnail/thumbnail/generate`, { method: "POST" }),
+        fetch(`${origin}/api/manim/projects/project-thumbnail/thumbnail/generate`, {
+          body: "{}",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          method: "POST",
+        }),
+        fetch(`${origin}/api/manim/projects/project-thumbnail/thumbnail/generate`, {
+          body: "{}",
+          headers: { "content-type": "application/problem+json" },
+          method: "POST",
+        }),
+        fetch(`${origin}/api/manim/projects/project-thumbnail/thumbnail/generate`, {
+          body: JSON.stringify({ unexpected: true }),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        }),
+        fetch(`${origin}/api/manim/projects/project-thumbnail/thumbnail/generate`, {
+          body: "{}",
+          headers: { "content-type": "application/json", origin: "https://attacker.example" },
+          method: "POST",
+        }),
+        fetch(`${origin}/api/manim/projects/project-thumbnail/thumbnail/generate`, {
+          body: "{}",
+          headers: { "content-type": "application/json", "sec-fetch-site": "cross-site" },
+          method: "POST",
+        }),
+      ];
+      await expect(Promise.all(rejectedRequests).then((responses) => responses.map((response) => response.status)))
+        .resolves.toEqual([415, 415, 415, 400, 403, 403]);
+      await expect(readFile(renderMarker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+
       const generated = await fetch(`${origin}/api/manim/projects/project-thumbnail/thumbnail/generate`, {
+        body: "{}",
+        headers: { "content-type": "application/json", origin },
         method: "POST",
       });
       expect(generated.status).toBe(202);
