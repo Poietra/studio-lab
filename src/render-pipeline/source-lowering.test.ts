@@ -836,6 +836,55 @@ class GroupedEquation(Scene):
     )).toThrow(/cannot track (?:an alias\/container assignment|a container mutation) target/i);
   });
 
+  it.each([
+    ["unknown function", "remember(equation)", "self.add(recall())", "remember"],
+    ["setattr", 'setattr(holder, "cached", equation)', "self.add(holder.cached)", "setattr"],
+    ["queue mutation", "queue.put(equation)", "self.add(queue.get())", "queue\\.put"],
+  ])("fails closed when a pre-anchor %s may retain the removed object", (_label, setup, suffix, call) => {
+    const remove: CanonicalEditOperation = {
+      ...operationBase("persistent-delete-unknown-call", 7, 7.4),
+      effect: "remove",
+      entityId: "equation_1",
+      kind: "ChangePresence",
+      persistent: true,
+    };
+    const ambiguousSource = source.replace(
+      "        # poietra:anchor 7.000",
+      `        ${setup}\n        # poietra:anchor 7.000`,
+    ).replace("self.wait(1)", suffix);
+
+    expect(() => lowerCanonicalProgramSource(
+      ambiguousSource,
+      request(canonicalProgram([remove], "persistent-delete-unknown-call")),
+      { height: 8, width: 14.222 },
+      null,
+    )).toThrow(new RegExp(`cannot prove whether ${call} retains source reference equation`, "i"));
+  });
+
+  it("does not treat derived Manim geometry as a persistent alias", () => {
+    const remove: CanonicalEditOperation = {
+      ...operationBase("persistent-delete-derived-geometry", 7, 7.4),
+      effect: "remove",
+      entityId: "equation_1",
+      kind: "ChangePresence",
+      persistent: true,
+    };
+    const derivedSource = source.replace(
+      "        # poietra:anchor 7.000",
+      `        label = Text("energy").next_to(equation, DOWN)
+        arrow = Arrow(label.get_top(), equation.get_bottom())
+        proof_box = SurroundingRectangle(equation)
+        # poietra:anchor 7.000`,
+    ).replace("self.wait(1)", "self.add(label, arrow, proof_box)");
+
+    expect(lowerCanonicalProgramSource(
+      derivedSource,
+      request(canonicalProgram([remove], "persistent-delete-derived-geometry")),
+      { height: 8, width: 14.222 },
+      null,
+    ).insertedCode).toContain("FadeOut(equation)");
+  });
+
   it.each(["f", "r", "b"])(
     "does not confuse the %s string prefix with a removed one-letter source variable",
     (sourceVariable) => {

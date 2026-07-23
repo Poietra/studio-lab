@@ -20,8 +20,11 @@ function escapePattern(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function referencePattern(reference: string) {
-  return new RegExp(`\\b${reference.split(".").map(escapePattern).join("\\s*\\.\\s*")}\\b`);
+function referencePattern(reference: string, global = false) {
+  return new RegExp(
+    `\\b${reference.split(".").map(escapePattern).join("\\s*\\.\\s*")}\\b`,
+    global ? "g" : undefined,
+  );
 }
 
 function staticGlobalsReference(
@@ -44,6 +47,158 @@ export function referencedPythonReference(
     if (referencePattern(reference).test(line.code)) return reference;
   }
   return staticGlobalsReference(line, references);
+}
+
+const SAFE_REFERENCE_ARGUMENT_CALLS = new Set([
+  "AnimationGroup",
+  "ApplyMethod",
+  "Arrow",
+  "Circumscribe",
+  "Create",
+  "FadeIn",
+  "FadeOut",
+  "Flash",
+  "GrowFromCenter",
+  "Indicate",
+  "LaggedStart",
+  "Line",
+  "MoveAlongPath",
+  "ReplacementTransform",
+  "Succession",
+  "SurroundingRectangle",
+  "Transform",
+  "TransformMatchingShapes",
+  "TransformMatchingTex",
+  "Uncreate",
+  "Unwrite",
+  "Wiggle",
+  "Write",
+  "align_to",
+  "arrange",
+  "move_to",
+  "next_to",
+  "to_corner",
+  "to_edge",
+]);
+
+const SAFE_REFERENCE_RECEIVER_CALLS = new Set([
+  "align_to",
+  "arrange",
+  "copy",
+  "get_bottom",
+  "get_center",
+  "get_corner",
+  "get_critical_point",
+  "get_end",
+  "get_left",
+  "get_right",
+  "get_start",
+  "get_top",
+  "move_to",
+  "next_to",
+  "rotate",
+  "scale",
+  "set_height",
+  "set_width",
+  "shift",
+  "stretch",
+  "to_corner",
+  "to_edge",
+]);
+
+const RETAINING_REFERENCE_CALLS = new Set([
+  "Group",
+  "VGroup",
+  "__setitem__",
+  "add",
+  "append",
+  "dict",
+  "extend",
+  "insert",
+  "list",
+  "nullcontext",
+  "set",
+  "setdefault",
+  "tuple",
+  "update",
+]);
+
+const PYTHON_GROUPING_KEYWORDS = new Set([
+  "assert",
+  "case",
+  "elif",
+  "for",
+  "if",
+  "match",
+  "return",
+  "while",
+  "with",
+]);
+
+function referenceMatches(statement: PythonStatement, references: ReadonlySet<string>) {
+  return [...references].flatMap((reference) => (
+    [...statement.code.matchAll(referencePattern(reference, true))].map((match) => ({
+      end: (match.index ?? 0) + match[0].length,
+      reference,
+      start: match.index ?? 0,
+    }))
+  ));
+}
+
+function callBeforeOpening(code: string, opening: number) {
+  const prefix = code.slice(0, opening).trimEnd();
+  return prefix.match(/([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*)$/)?.[1]
+    ?.replace(/\s/g, "") ?? null;
+}
+
+function enclosingCall(code: string, position: number) {
+  const stack: Array<{ character: string; index: number }> = [];
+  for (let index = 0; index < position; index += 1) {
+    const character = code[index] ?? "";
+    if (character === "(" || character === "[" || character === "{") {
+      stack.push({ character, index });
+    } else if (character === ")" || character === "]" || character === "}") {
+      stack.pop();
+    }
+  }
+  for (let index = stack.length - 1; index >= 0; index -= 1) {
+    const opening = stack[index];
+    if (opening?.character !== "(") continue;
+    const call = callBeforeOpening(code, opening.index);
+    if (call && !PYTHON_GROUPING_KEYWORDS.has(call)) return call;
+  }
+  return null;
+}
+
+function referenceRetention(
+  statement: PythonStatement,
+  references: ReadonlySet<string>,
+) {
+  let retains = staticGlobalsReference(statement, references) !== null;
+  for (const match of referenceMatches(statement, references)) {
+    const suffix = statement.code.slice(match.end);
+    if (/^\s*\(/.test(suffix)) continue;
+    if (/^\s*\.\s*animate\b/.test(suffix)) continue;
+    const receiverCall = suffix.match(/^\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(/)?.[1];
+    if (receiverCall && SAFE_REFERENCE_RECEIVER_CALLS.has(receiverCall)) continue;
+
+    const call = enclosingCall(statement.code, match.start);
+    if (!call) {
+      retains = true;
+      continue;
+    }
+    if (call === "self.add" || call === "self.play" || call === "self.remove") continue;
+    const callName = call.split(".").at(-1) ?? call;
+    if (SAFE_REFERENCE_ARGUMENT_CALLS.has(callName)) continue;
+    if (RETAINING_REFERENCE_CALLS.has(callName)) {
+      retains = true;
+      continue;
+    }
+    throw new PythonReferenceAnalysisError(
+      `Studio cannot prove whether ${call} retains source reference ${match.reference}.`,
+    );
+  }
+  return retains;
 }
 
 function splitAtTopLevel(statement: PythonStatement, separator: string) {
@@ -318,14 +473,23 @@ export function pythonReferenceClosure(
     for (const statement of statements) {
       const assignment = assignmentParts(statement);
       if (assignment && referencedPythonReference(assignment.rhs, references)) {
-        changed = addReferences(assignment.targets, references) || changed;
+        if (referenceRetention(assignment.rhs, references)) {
+          changed = addReferences(assignment.targets, references) || changed;
+        }
       }
       for (const binding of bindingParts(statement)) {
-        if (referencedPythonReference(binding.value, references)) {
+        if (
+          referencedPythonReference(binding.value, references)
+          && referenceRetention(binding.value, references)
+        ) {
           changed = addReferences(binding.targets, references) || changed;
         }
       }
       if (referencedPythonReference(statement, references)) {
+        const definition = statement.code.trimStart();
+        if (!assignment && !/^(?:@|(?:(?:async\s+)?def|class)\b)/.test(definition)) {
+          referenceRetention(statement, references);
+        }
         const walrusTargets = [...statement.code.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*:=/g)]
           .map((match) => ({ code: match[1] ?? "", raw: match[1] ?? "" }));
         changed = addReferences(walrusTargets, references) || changed;
