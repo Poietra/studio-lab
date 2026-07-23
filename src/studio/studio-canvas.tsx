@@ -4,7 +4,12 @@ import { cn } from "../lib/cn";
 import type { EntityDimensions, Point, ProjectedEntity } from "./model";
 import type { StudioMotionPath } from "./motion-paths";
 import { EquationContent } from "./prototype-rendering";
-import { hasShapeDimensions, resizeKindForType, type ResizeHandleDirection } from "./shape-resize";
+import {
+  hasShapeDimensions,
+  inverseResizeHandleScale,
+  resizeKindForType,
+  type ResizeHandleDirection,
+} from "./shape-resize";
 import { StudioMotionOverlay } from "./studio-motion-overlay";
 import type { StudioTool } from "./studio-toolbar";
 import {
@@ -172,6 +177,7 @@ const RESIZE_HANDLES: readonly Readonly<{
 ];
 
 function EntityResizeHandles({
+  cameraScale,
   displayedScale,
   entity,
   onCancel,
@@ -181,6 +187,7 @@ function EntityResizeHandles({
   onPointerUp,
   shape,
 }: Readonly<{
+  cameraScale: number;
   displayedScale: number;
   entity: ProjectedEntity;
   onCancel: (event: PointerEvent<HTMLButtonElement>) => void;
@@ -196,28 +203,36 @@ function EntityResizeHandles({
       : shape === "circle"
         ? RESIZE_HANDLES.filter((handle) => handle.direction.length === 2)
         : RESIZE_HANDLES.filter((handle) => handle.direction === "se");
-  return handles.map((handle) => (
-    <button
-      aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
-      aria-label={`Resize ${entityLabel(entity)} from ${handle.label}`}
-      className={cn(
-        "absolute z-30 size-6 touch-none bg-transparent outline-none after:absolute after:left-1/2 after:top-1/2 after:size-2.5 after:-translate-x-1/2 after:-translate-y-1/2 after:border-2 after:border-sky-950 after:bg-sky-400 focus-visible:ring-2 focus-visible:ring-sky-300",
-        handle.className,
-      )}
-      data-resize-direction={handle.direction}
-      data-studio-resize-handle={entity.id}
-      key={handle.direction}
-      onKeyDown={(event) => onKeyDown(event, entity.id, handle.direction)}
-      onLostPointerCapture={onCancel}
-      onPointerCancel={onCancel}
-      onPointerDown={(event) => onPointerDown(event, entity.id, handle.direction)}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-      style={{ scale: 1 / displayedScale }}
-      title={`Drag ${handle.label} to resize · Arrow keys adjust precisely`}
-      type="button"
-    />
-  ));
+  return handles.map((handle) => {
+    const arrowKeys =
+      handle.direction.length === 2
+        ? "ArrowUp ArrowDown ArrowLeft ArrowRight"
+        : handle.direction === "e" || handle.direction === "w"
+          ? "ArrowLeft ArrowRight"
+          : "ArrowUp ArrowDown";
+    return (
+      <button
+        aria-keyshortcuts={arrowKeys}
+        aria-label={`Resize ${entityLabel(entity)} from ${handle.label}`}
+        className={cn(
+          "absolute z-30 size-6 touch-none bg-transparent outline-none after:absolute after:left-1/2 after:top-1/2 after:size-2.5 after:-translate-x-1/2 after:-translate-y-1/2 after:border-2 after:border-sky-950 after:bg-sky-400 focus-visible:ring-2 focus-visible:ring-sky-300",
+          handle.className,
+        )}
+        data-resize-direction={handle.direction}
+        data-studio-resize-handle={entity.id}
+        key={handle.direction}
+        onKeyDown={(event) => onKeyDown(event, entity.id, handle.direction)}
+        onLostPointerCapture={onCancel}
+        onPointerCancel={onCancel}
+        onPointerDown={(event) => onPointerDown(event, entity.id, handle.direction)}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        style={{ scale: inverseResizeHandleScale(displayedScale, cameraScale) }}
+        title={`Drag ${handle.label} to resize · ${arrowKeys.replaceAll("Arrow", "")} adjust precisely`}
+        type="button"
+      />
+    );
+  });
 }
 
 export function StudioCanvas({
@@ -315,7 +330,7 @@ export function StudioCanvas({
               !dimensionsUnknown &&
               !positionUnknown &&
               !scaleUnknown;
-            const resizeAvailable = shape ? shapeResizeAvailable : !scaleUnknown;
+            const resizeAvailable = !scaleUnknown;
             return (
               <div
                 className={cn("absolute -translate-x-1/2 -translate-y-1/2", selected ? "z-20" : "z-10")}
@@ -362,6 +377,7 @@ export function StudioCanvas({
                   </button>
                   {selected && selectedIds.size === 1 && !locked && resizeAvailable ? (
                     <EntityResizeHandles
+                      cameraScale={cameraScale}
                       displayedScale={displayedScale}
                       entity={entity}
                       onCancel={onEntityResizeCancel}

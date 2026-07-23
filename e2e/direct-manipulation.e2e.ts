@@ -417,6 +417,9 @@ test("resizes Rectangle width independently with edge and keyboard controls", as
 
   const widthBeforeKey = Number(await wrapper.getAttribute("data-studio-entity-width"));
   await eastHandle.focus();
+  await eastHandle.press("ArrowUp");
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+  await expect(wrapper).toHaveAttribute("data-studio-entity-width", widthBeforeKey.toFixed(4));
   await eastHandle.press("ArrowRight");
   await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
   await expect.poll(async () => Number(await wrapper.getAttribute("data-studio-entity-width")))

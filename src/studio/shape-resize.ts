@@ -16,6 +16,20 @@ export function resizeKindForType(type: string): ShapeResizeKind | null {
   return null;
 }
 
+export function inverseResizeHandleScale(entityScale: number, cameraScale: number) {
+  return 1 / Math.max(entityScale * cameraScale, Number.EPSILON);
+}
+
+export function resizeHandleUsesDelta(direction: ResizeHandleDirection, delta: Point) {
+  return (delta.x !== 0 && (direction.includes("e") || direction.includes("w")))
+    || (delta.y !== 0 && (direction.includes("n") || direction.includes("s")));
+}
+
+export function sameShapeGeometry(left: ShapeGeometry, right: ShapeGeometry) {
+  return JSON.stringify(left.dimensions) === JSON.stringify(right.dimensions)
+    && Math.hypot(left.position.x - right.position.x, left.position.y - right.position.y) < 0.01;
+}
+
 export function hasShapeDimensions(shape: ShapeResizeKind, dimensions: EntityDimensions) {
   return shape === "circle"
     ? typeof dimensions.radius === "number" && Number.isFinite(dimensions.radius) && dimensions.radius > 0

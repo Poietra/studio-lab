@@ -395,6 +395,7 @@ export function StudioInspector({
                         key={`${selectedEntity.id}/radius/${editableDimensions.radius}`}
                         min="0.1"
                         name="radius"
+                        required
                         step="0.1"
                         type="number"
                       />
@@ -407,6 +408,7 @@ export function StudioInspector({
                           key={`${selectedEntity.id}/width/${editableDimensions.width}`}
                           min="0.1"
                           name="width"
+                          required
                           step="0.1"
                           type="number"
                         />
@@ -417,6 +419,7 @@ export function StudioInspector({
                           key={`${selectedEntity.id}/height/${editableDimensions.height}`}
                           min="0.1"
                           name="height"
+                          required
                           step="0.1"
                           type="number"
                         />

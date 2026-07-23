@@ -57,7 +57,9 @@ import {
   centeredShapeGeometry,
   hasShapeDimensions,
   resizeKindForType,
+  resizeHandleUsesDelta,
   resizeShapeByViewportDelta,
+  sameShapeGeometry,
   type ResizeHandleDirection,
   type ShapeGeometry,
   type ShapeResizeKind,
@@ -1475,11 +1477,7 @@ export function App() {
       (!entity.provisional || (entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
     if (!editable) return;
     const shape = resizeKindForType(entity.type);
-    const unknownGeometry = shape && entity.geometry.dimensions.kind === "unknown"
-      ? entity.geometry.dimensions
-      : shape && entity.geometry.position.kind === "unknown"
-        ? entity.geometry.position
-        : entity.geometry.scale.kind === "unknown" ? entity.geometry.scale : null;
+    const unknownGeometry = entity.geometry.scale.kind === "unknown" ? entity.geometry.scale : null;
     if (unknownGeometry) {
       setDraftError(`Studio cannot resize ${entityLabel(entity)} safely: ${unknownGeometry.reason}`);
       return;
@@ -1571,10 +1569,7 @@ export function App() {
     setScalePreview(null);
     if (resize.mode === "shape") {
       const target = resizedShapeGeometry(resize, { x: event.clientX, y: event.clientY });
-      if (
-        JSON.stringify(target.dimensions) === JSON.stringify(resize.from.dimensions)
-        && Math.hypot(target.position.x - resize.from.position.x, target.position.y - resize.from.position.y) < 0.01
-      ) return;
+      if (sameShapeGeometry(target, resize.from)) return;
       installEntityGeometryDraft(
         resize.entityId,
         resize.from,
@@ -1616,6 +1611,7 @@ export function App() {
     if (!delta) return;
     event.preventDefault();
     event.stopPropagation();
+    if (!resizeHandleUsesDelta(handle, delta)) return;
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
     if (!entity) return;
     const shape = resizeKindForType(entity.type);
@@ -1638,6 +1634,7 @@ export function App() {
         viewport: STUDIO_VIEWPORT,
         viewportDelta: { x: delta.x * amount, y: delta.y * amount },
       });
+      if (sameShapeGeometry(target, from)) return;
       installEntityGeometryDraft(
         entityId,
         from,
