@@ -16,7 +16,6 @@ import {
   type EntityScalePreview,
   type InteractionMode,
   isCanvasInteractionTarget,
-  STUDIO_VIEWPORT,
   viewportPositionStyle,
 } from "./studio-viewport-geometry";
 import { isTransitionOverlay } from "./workspace-projection";
@@ -103,15 +102,15 @@ function ObjectVisual({
     ? {
         height:
           dimensions.radius !== undefined
-            ? `${((2 * dimensions.radius) / frame.height) * STUDIO_VIEWPORT.height}px`
+            ? `${((2 * dimensions.radius) / frame.height) * 100}cqh`
             : dimensions.height !== undefined
-              ? `${(dimensions.height / frame.height) * STUDIO_VIEWPORT.height}px`
+              ? `${(dimensions.height / frame.height) * 100}cqh`
               : undefined,
         width:
           dimensions.radius !== undefined
-            ? `${((2 * dimensions.radius) / frame.width) * STUDIO_VIEWPORT.width}px`
+            ? `${((2 * dimensions.radius) / frame.width) * 100}cqw`
             : dimensions.width !== undefined
-              ? `${(dimensions.width / frame.width) * STUDIO_VIEWPORT.width}px`
+              ? `${(dimensions.width / frame.width) * 100}cqw`
               : undefined,
       }
     : undefined;
@@ -255,7 +254,7 @@ export function StudioCanvas({
   return (
     <div className="grid min-h-0 flex-1 place-items-center overflow-auto p-4">
       <div
-        className="relative aspect-video w-full max-w-5xl overflow-hidden border border-zinc-700 bg-black"
+        className="relative aspect-video w-full max-w-5xl overflow-hidden border border-zinc-700 bg-black [container-type:size]"
         data-studio-canvas
         data-proposed-state-sample={sampleId}
         data-scene-phase={boundaryActive ? "incoming" : "outgoing"}

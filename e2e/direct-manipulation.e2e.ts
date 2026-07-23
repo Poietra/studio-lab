@@ -404,6 +404,8 @@ test("resizes Rectangle width independently with edge and keyboard controls", as
   const preview = await rectangle.boundingBox();
   expect(preview?.width ?? 0).toBeGreaterThan(initial.width + 30);
   expect(preview?.height ?? 0).toBeCloseTo(initial.height, 1);
+  const previewHandle = await eastHandle.boundingBox();
+  expect((previewHandle?.x ?? 0) + (previewHandle?.width ?? 0) / 2).toBeCloseTo(origin.x + 45, 0);
   await page.mouse.up();
 
   await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
