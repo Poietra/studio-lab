@@ -184,28 +184,18 @@ function timelineLabel(entity: RuntimeEntity) {
   );
 }
 
-function projectTimelineObjectTracks(
-  scene: RuntimeSceneState,
-  programs: readonly ProgramRecord[],
-): readonly TimelineObjectTrack[] {
-  const transactionByOperation = new Map(programs.flatMap((record) => (
-    record.program.operations.map((operation) => [operation.id, record.program.transactionId] as const)
-  )));
+function projectTimelineObjectTracks(scene: RuntimeSceneState): readonly TimelineObjectTrack[] {
   const animatedByEntity = new Map<string, Array<TimelineObjectTrack["animatedChannels"][number]>>();
   for (const channel of Object.values(scene.propertyChannels)) {
     const animated = channel.samples
       .filter((sample) => sample.kind === "animated" || sample.operationId)
       .map((sample) => ({
-        easing: sample.easing,
         interval: {
           end: Math.min(scene.duration, sample.interval.end),
           start: Math.max(0, sample.interval.start),
         },
         key: channel.key,
         operationId: sample.operationId,
-        transactionId: sample.operationId
-          ? transactionByOperation.get(sample.operationId)
-          : undefined,
       }))
       .filter((sample) => sample.interval.end > sample.interval.start);
     if (animated.length > 0) {
@@ -303,7 +293,7 @@ export function projectProposedState(proposedState: ProposedState, time: number)
     time: normalizedTime,
     timeline: {
       events: proposedState.evaluatedScene.eventTrack.events,
-      objectTracks: projectTimelineObjectTracks(proposedState.evaluatedScene, proposedState.programs),
+      objectTracks: projectTimelineObjectTracks(proposedState.evaluatedScene),
       sampleId,
     },
     workingPlayback: { entities, sampleId },

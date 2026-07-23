@@ -126,11 +126,9 @@ export type EventTrack = Readonly<{
 
 export type TimelineObjectTrack = Readonly<{
   animatedChannels: readonly Readonly<{
-    easing?: MotionEasing;
     interval: Interval;
     key: PropertyChannel["key"];
     operationId?: string;
-    transactionId?: string;
   }>[];
   entityId: string;
   label: string;

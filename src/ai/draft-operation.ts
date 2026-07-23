@@ -39,11 +39,18 @@ export function replaceSuggestionStep(
   step: EditableSuggestionStep,
 ): EditSuggestionOperation {
   if (operation.kind !== "edit-program") {
-    return { ...step, anchor: anchorAt(step.start) } as EditSuggestionLeafOperation;
+    const timingChanged = operation.start !== step.start || operation.end !== step.end;
+    return {
+      ...step,
+      anchor: timingChanged ? anchorAt(step.start) : operation.anchor,
+    } as EditSuggestionLeafOperation;
   }
+  const current = operation.operations[index];
+  const timingChanged = !current || current.start !== step.start || current.end !== step.end;
   const operations = operation.operations.map((candidate, candidateIndex) => (
     candidateIndex === index ? step as EditProgramStep : candidate
   ));
+  if (!timingChanged) return { ...operation, operations };
   const scheduled = operation.execution === "sequence"
     ? cascadeSequence(operations, index)
     : operations.map((candidate) => ({

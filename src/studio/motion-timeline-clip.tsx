@@ -57,7 +57,7 @@ function closestAnchor(
   ), null);
 }
 
-function adjacentAnchor(
+export function adjacentAppliedMotionClipAnchor(
   clip: AppliedMotionClip,
   direction: -1 | 1,
   duration: number,
@@ -70,9 +70,11 @@ function adjacentAnchor(
   const currentIndex = eligible.findIndex((anchor) => (
     Math.abs(anchor.sourceTime - clip.sourceStart) < 0.0005
   ));
-  const fallbackIndex = eligible.findIndex((anchor) => anchor.sourceTime > clip.sourceStart) - 1;
-  const index = currentIndex >= 0 ? currentIndex : Math.max(0, fallbackIndex);
-  return eligible[index + direction] ?? null;
+  if (currentIndex >= 0) return eligible[currentIndex + direction] ?? null;
+  const directional = eligible.filter((anchor) => (
+    direction * (anchor.sourceTime - clip.sourceStart) > 0.0005
+  ));
+  return direction === -1 ? directional.at(-1) ?? null : directional[0] ?? null;
 }
 
 export function TimelineMotionClip({
@@ -173,14 +175,24 @@ export function TimelineMotionClip({
   function moveWithKeyboard(event: KeyboardEvent<HTMLButtonElement>) {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
     event.preventDefault();
-    const anchor = adjacentAnchor(clip, event.key === "ArrowLeft" ? -1 : 1, sourceDuration, false);
+    const anchor = adjacentAppliedMotionClipAnchor(
+      clip,
+      event.key === "ArrowLeft" ? -1 : 1,
+      sourceDuration,
+      false,
+    );
     if (anchor) onChange({ duration: sourceDuration, sourceStart: anchor.sourceTime });
   }
 
   function startWithKeyboard(event: KeyboardEvent<HTMLButtonElement>) {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
     event.preventDefault();
-    const anchor = adjacentAnchor(clip, event.key === "ArrowLeft" ? -1 : 1, sourceDuration, true);
+    const anchor = adjacentAppliedMotionClipAnchor(
+      clip,
+      event.key === "ArrowLeft" ? -1 : 1,
+      sourceDuration,
+      true,
+    );
     if (!anchor) return;
     onChange({ duration: clip.interval.end - anchor.workingTime, sourceStart: anchor.sourceTime });
   }
