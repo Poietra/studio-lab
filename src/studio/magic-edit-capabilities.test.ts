@@ -130,6 +130,38 @@ describe("Magic Edit object capabilities", () => {
     });
   });
 
+  it("keeps the known order of an applied Studio scale at the same source anchor", () => {
+    const entity = STUDIO_FIXTURE_SCENE.objectGraph.entities.equation_1;
+    const scene = withEntity(entity, {
+      "equation_1/scale": {
+        entityId: "equation_1",
+        key: "scale",
+        samples: [
+          {
+            interval: { end: 12, start: 0 },
+            kind: "exact",
+            provenanceId: "source:base-scale",
+            value: 1,
+          },
+          {
+            from: 1,
+            interval: { end: 5, start: 5 },
+            kind: "animated",
+            operationId: "tx:first/operation:scale",
+            provenanceId: "tx:first/operation:scale/provenance",
+            relative: true,
+            value: 2,
+          },
+        ],
+      },
+    });
+
+    expect(magicEditCapabilities(scene, entity, 5).scale).toEqual({
+      current: 2,
+      kind: "supported",
+    });
+  });
+
   it("allows a Studio-generated object that can be rebound during batch export", () => {
     const entity: RuntimeEntity = {
       id: "tx:create/entity:circle",

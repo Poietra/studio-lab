@@ -26,6 +26,7 @@ export function exactEntityScaleAt(
   const samples = scene.propertyChannels[`${entity.id}/scale`]?.samples ?? [];
   if (samples.some((sample) => (
     sample.relative === true
+    && sample.operationId === undefined
     && Math.abs(sample.interval.start - time) < 0.0005
   ))) {
     return {
