@@ -1,4 +1,9 @@
-import type { EntityContent, Point, ProgramRecord, ProjectedEntity, RuntimeSceneState } from "./model";
+import {
+  importedLifetimeEditEvidence,
+  MIN_OBJECT_LIFETIME_SECONDS,
+  type ProgramSourceAnchorBounds,
+} from "./lifetime-editing";
+import type { EntityContent, Interval, Point, ProgramRecord, ProjectedEntity, RuntimeSceneState } from "./model";
 import {
   EDIT_OPERATION_VERSION,
   operationId,
@@ -34,6 +39,7 @@ function authoringProgram(
   input: Readonly<{
     capturedPlayhead: number;
     origin: OperationOrigin;
+    programEvidence?: readonly string[];
     requestedExecution?: "parallel" | "sequence";
     scene: RuntimeSceneState;
     transactionId: string;
@@ -57,7 +63,7 @@ function authoringProgram(
     intentCount: 1,
     loweringStatus: "supported",
     operations,
-    provenance: provenance(input.origin, ["manual Studio authoring"]),
+    provenance: provenance(input.origin, ["manual Studio authoring", ...(input.programEvidence ?? [])]),
     requestedExecution: input.requestedExecution ?? "parallel",
     schedule: {
       edges: [],
@@ -177,56 +183,259 @@ export function createRemoveEntitiesProgram(
   });
 }
 
-export function createTrimEntityLifetimeProgram(
-  input: Readonly<{
-    entityId: string;
-    lifetimeStart: number;
-    retainedDuration: number;
-    scene: RuntimeSceneState;
-    sourceAnchor: number;
-    transactionId: string;
-  }>,
-): ProgramValidationResult {
+export function createImportedEntityLifetimeProgram(input: Readonly<{
+  entityId: string;
+  original: Interval;
+  scene: RuntimeSceneState;
+  sourceAnchor: number;
+  sourceAnchorBounds?: ProgramSourceAnchorBounds;
+  targetEnd: number;
+  transactionId: string;
+}>): ProgramValidationResult {
   const entity = input.scene.objectGraph.entities[input.entityId];
   if (!entity) throw new Error(`Object ${input.entityId} is no longer available.`);
-  const lifetime = entity.lifetime.find((interval) => Math.abs(interval.start - input.lifetimeStart) < 0.001);
-  if (!lifetime) throw new Error("The selected lifetime interval is no longer available.");
-  const targetEnd = input.sourceAnchor;
-  if (!Number.isFinite(input.retainedDuration) || input.retainedDuration < 0.1) {
-    throw new Error("Keep at least 0.1 seconds of the selected object lifetime.");
+  const original = entity.lifetime.find((interval) => (
+    Math.abs(interval.start - input.original.start) < 0.001
+    && Math.abs(interval.end - input.original.end) < 0.001
+  ));
+  if (!original) throw new Error("The imported lifetime interval changed. Reimport before editing it again.");
+  if (
+    !Number.isFinite(input.targetEnd)
+    || input.targetEnd - original.start < MIN_OBJECT_LIFETIME_SECONDS - 0.001
+  ) {
+    throw new Error(`Keep at least ${MIN_OBJECT_LIFETIME_SECONDS.toFixed(1)} seconds of the selected object lifetime.`);
   }
-  if (targetEnd > lifetime.end + 0.001) {
-    throw new Error("Lifetime extension is not supported yet; drag the right edge to the left.");
+  if (input.targetEnd > original.end + 0.001) {
+    throw new Error("An imported lifetime cannot extend beyond its original source interval.");
   }
-  if (lifetime.end - targetEnd < 0.01) {
-    throw new Error("Move the lifetime end at least 0.01 seconds earlier.");
-  }
-
-  if (!Number.isFinite(input.sourceAnchor) || input.sourceAnchor < 0 || input.sourceAnchor < lifetime.start - 0.001) {
+  if (
+    !Number.isFinite(input.sourceAnchor)
+    || input.sourceAnchor < original.start - 0.001
+    || input.sourceAnchor > original.end + 0.001
+  ) {
     throw new Error("A safe source anchor is required inside the selected lifetime.");
   }
-  const removeId = operationId(input.transactionId, "trim-lifetime-end");
-  const operation: CanonicalEditOperation = {
-    dependsOn: [],
-    effect: "remove",
-    entityId: input.entityId,
-    id: removeId,
-    interval: { end: input.sourceAnchor, start: input.sourceAnchor },
-    kind: "ChangePresence",
-    persistent: true,
-    provenance: provenance("direct-manipulation", [
-      "lifetime right-edge trim",
-      "safe source anchor",
-      "persistent exit",
-    ]),
-  };
+  const restoringOriginal = Math.abs(input.targetEnd - original.end) < 0.001;
+  if (
+    !restoringOriginal
+    && (
+      input.sourceAnchor < (input.sourceAnchorBounds?.minimum ?? -Infinity) - 0.001
+      || input.sourceAnchor > (input.sourceAnchorBounds?.maximum ?? Infinity) + 0.001
+    )
+  ) {
+    throw new Error("This lifetime would place its applied Program out of source order relative to another edit.");
+  }
+
+  if (!restoringOriginal && Math.abs(input.sourceAnchor - input.targetEnd) >= 0.001) {
+    throw new Error("The imported lifetime end must snap to its safe source anchor.");
+  }
+  const operation: CanonicalEditOperation = restoringOriginal
+    ? {
+        dependsOn: [],
+        eventKind: "wait",
+        id: operationId(input.transactionId, "restore-lifetime-end"),
+        interval: { end: input.sourceAnchor, start: input.sourceAnchor },
+        kind: "InsertTimelineEvent",
+        label: "Restore imported lifetime",
+        provenance: provenance("direct-manipulation", ["lifetime end restore", "source interval unchanged"]),
+      }
+    : {
+        dependsOn: [],
+        effect: "remove",
+        entityId: input.entityId,
+        id: operationId(input.transactionId, "trim-lifetime-end"),
+        interval: { end: input.targetEnd, start: input.targetEnd },
+        kind: "ChangePresence",
+        persistent: true,
+        provenance: provenance("direct-manipulation", ["lifetime right-edge edit", "safe source anchor", "persistent exit"]),
+      };
   return authoringProgram([operation], {
     capturedPlayhead: input.sourceAnchor,
     origin: "direct-manipulation",
+    programEvidence: [importedLifetimeEditEvidence({
+      entityId: input.entityId,
+      kind: "imported-end",
+      original,
+    })],
     requestedExecution: "sequence",
     scene: input.scene,
     transactionId: input.transactionId,
   });
+}
+
+// Compatibility bridge for the timeline UI migrated in the following commit.
+export function createTrimEntityLifetimeProgram(input: Readonly<{
+  entityId: string;
+  lifetimeStart: number;
+  retainedDuration: number;
+  scene: RuntimeSceneState;
+  sourceAnchor: number;
+  transactionId: string;
+}>): ProgramValidationResult {
+  if (!Number.isFinite(input.retainedDuration) || input.retainedDuration < MIN_OBJECT_LIFETIME_SECONDS) {
+    throw new Error(`Keep at least ${MIN_OBJECT_LIFETIME_SECONDS.toFixed(1)} seconds of the selected object lifetime.`);
+  }
+  const original = input.scene.objectGraph.entities[input.entityId]?.lifetime.find((interval) => (
+    Math.abs(interval.start - input.lifetimeStart) < 0.001
+  ));
+  if (!original) throw new Error("The selected lifetime interval is no longer available.");
+  return createImportedEntityLifetimeProgram({
+    entityId: input.entityId,
+    original,
+    scene: input.scene,
+    sourceAnchor: input.sourceAnchor,
+    targetEnd: input.sourceAnchor,
+    transactionId: input.transactionId,
+  });
+}
+
+function shiftInterval(interval: Interval, delta: number): Interval {
+  return { end: interval.end + delta, start: interval.start + delta };
+}
+
+function shiftStudioCreationOperation(
+  operation: CanonicalEditOperation,
+  delta: number,
+  entityId: string,
+  target: Interval,
+  sceneDuration: number,
+): CanonicalEditOperation {
+  const interval = shiftInterval(operation.interval, delta);
+  if (operation.kind === "CreateEntity") {
+    return {
+      ...operation,
+      entity: {
+        ...operation.entity,
+        lifetime: operation.entity.id === entityId
+          ? {
+              end: Math.abs(target.end - sceneDuration) < 0.001 ? null : target.end,
+              start: target.start,
+            }
+          : {
+              end: operation.entity.lifetime.end === null ? null : operation.entity.lifetime.end + delta,
+              start: operation.entity.lifetime.start + delta,
+            },
+      },
+      interval,
+    };
+  }
+  if (
+    operation.kind === "ChangePresence"
+    && operation.entityId === entityId
+    && operation.effect === "fade-in"
+    && interval.end > target.end
+  ) {
+    return { ...operation, interval: { ...interval, end: target.end } };
+  }
+  if (operation.kind === "InsertSceneBoundary") {
+    return { ...operation, at: operation.at + delta, interval };
+  }
+  return { ...operation, interval };
+}
+
+function operationTargetsEntity(operation: CanonicalEditOperation, entityId: string) {
+  if (operation.kind === "CreateEntity") return operation.entity.id === entityId;
+  if (
+    operation.kind === "SetProperty"
+    || operation.kind === "AnimateProperty"
+    || operation.kind === "ChangePresence"
+  ) return operation.entityId === entityId;
+  if (operation.kind === "CreateMotion") return operation.targetEntityIds.includes(entityId);
+  if (operation.kind === "TransformContent") {
+    return operation.sourceEntityId === entityId || operation.targetEntityId === entityId;
+  }
+  if (operation.kind === "SetRelation") {
+    return operation.sourceEntityId === entityId || operation.targetEntityId === entityId;
+  }
+  return false;
+}
+
+export function replaceStudioEntityLifetimeProgram(input: Readonly<{
+  entityId: string;
+  owner: ProgramRecord;
+  scene: RuntimeSceneState;
+  sourceAnchorBounds?: ProgramSourceAnchorBounds;
+  sourceAnchors: readonly number[];
+  target: Interval;
+}>): ProgramValidationResult {
+  const created = input.owner.program.operations.filter((operation) => operation.kind === "CreateEntity");
+  const create = created.find((operation) => operation.entity.id === input.entityId);
+  if (!create) throw new Error("The Studio creation Program no longer owns this object.");
+  if (
+    !Number.isFinite(input.target.start)
+    || !Number.isFinite(input.target.end)
+    || input.target.start < 0
+    || input.target.end > input.scene.duration + 0.001
+    || input.target.end - input.target.start < MIN_OBJECT_LIFETIME_SECONDS - 0.001
+  ) {
+    throw new Error(`Keep the lifetime within the Scene and at least ${MIN_OBJECT_LIFETIME_SECONDS.toFixed(1)} seconds wide.`);
+  }
+  const delta = input.target.start - create.entity.lifetime.start;
+  const movesProgram = Math.abs(delta) >= 0.001;
+  if (movesProgram && created.length !== 1) {
+    throw new Error("This object shares one creation Program with other objects and cannot move independently.");
+  }
+  if (
+    movesProgram
+    && Math.abs(create.entity.lifetime.start - input.owner.program.anchor.resolvedSeconds) >= 0.001
+  ) {
+    throw new Error("This object is created after its Program begins and cannot move independently.");
+  }
+  const replacementAnchor = input.owner.program.anchor.resolvedSeconds + delta;
+  const sourceOrderRequired = movesProgram
+    || Math.abs(input.target.end - input.scene.duration) >= 0.001;
+  if (
+    sourceOrderRequired
+    && (
+      replacementAnchor < (input.sourceAnchorBounds?.minimum ?? -Infinity) - 0.001
+      || replacementAnchor > (input.sourceAnchorBounds?.maximum ?? Infinity) + 0.001
+    )
+  ) {
+    throw new Error("This lifetime would place its applied Program out of source order relative to another edit.");
+  }
+  const hasAnchor = (time: number) => input.sourceAnchors.some((anchor) => Math.abs(anchor - time) < 0.001);
+  if (movesProgram && !hasAnchor(replacementAnchor)) {
+    throw new Error("The Studio-owned lifetime start must snap to a safe .py source anchor.");
+  }
+  if (Math.abs(input.target.end - input.scene.duration) >= 0.001 && !hasAnchor(input.target.end)) {
+    throw new Error("The Studio-owned lifetime end must snap to a safe .py source anchor or the Scene end.");
+  }
+
+  const operations = input.owner.program.operations.map((operation) => (
+    shiftStudioCreationOperation(operation, delta, input.entityId, input.target, input.scene.duration)
+  ));
+  const outsideLifetime = operations.find((operation) => (
+    operation.kind !== "CreateEntity"
+    && (movesProgram || operationTargetsEntity(operation, input.entityId))
+    && (
+      operation.interval.start < input.target.start - 0.001
+      || operation.interval.end > input.target.end + 0.001
+    )
+  ));
+  if (outsideLifetime) {
+    throw new Error("The creation Program contains work outside the requested lifetime interval.");
+  }
+  const replacement = {
+    ...input.owner.program,
+    anchor: {
+      capturedPlayhead: input.owner.program.anchor.capturedPlayhead + delta,
+      evidence: [
+        ...input.owner.program.anchor.evidence.filter((entry) => !entry.startsWith("lifetime-start:")),
+        `lifetime-start:${input.target.start.toFixed(3)}`,
+      ].slice(-32),
+      resolvedSeconds: replacementAnchor,
+      source: { kind: "absolute", seconds: replacementAnchor } as const,
+    },
+    operations,
+    provenance: {
+      ...input.owner.program.provenance,
+      evidence: [
+        ...input.owner.program.provenance.evidence.filter((entry) => entry !== "Studio-owned lifetime replacement"),
+        "Studio-owned lifetime replacement",
+      ],
+    },
+  };
+  return validateAndScheduleProgram(replacement, input.scene);
 }
 
 const DURATION_EPSILON = 0.001;

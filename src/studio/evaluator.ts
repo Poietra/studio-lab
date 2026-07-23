@@ -19,7 +19,12 @@ import {
   samplePropertyKnowledge,
   samplePropertyValue,
 } from "./property-sampling";
-import { programTimelineDelta, rebaseProgramTime } from "./program-composition";
+import {
+  programTimelineDelta,
+  rebaseProgramTime,
+  shiftIntervalForInsertion,
+  timelineInsertionOffset,
+} from "./program-composition";
 import { validateAndScheduleProgram } from "./program-validation";
 
 function cloneScene(scene: RuntimeSceneState): EvaluationDraft {
@@ -56,14 +61,6 @@ function freezeScene(base: RuntimeSceneState, draft: EvaluationDraft): RuntimeSc
     propertyChannels: draft.propertyChannels,
     provenanceGraph: { records: draft.provenance },
   };
-}
-
-function shiftIntervalForInsertion(interval: Readonly<{ end: number; start: number }>, at: number, duration: number) {
-  if (interval.start >= at - 0.0005) {
-    return { end: interval.end + duration, start: interval.start + duration };
-  }
-  if (interval.end > at) return { ...interval, end: interval.end + duration };
-  return interval;
 }
 
 export function insertSceneTime(draft: EvaluationDraft, at: number, duration: number) {
@@ -124,10 +121,7 @@ export function evaluateWorkingState(workingState: WorkingState): ProposedState 
       continue;
     }
     const sourceAnchor = record.program.anchor.resolvedSeconds;
-    const priorInsertionOffset = insertions.reduce(
-      (offset, insertion) => (insertion.sourceAnchor <= sourceAnchor + 0.0005 ? offset + insertion.duration : offset),
-      0,
-    );
+    const priorInsertionOffset = timelineInsertionOffset(insertions, sourceAnchor);
     const rebasedProgram = rebaseProgramTime(record.program, priorInsertionOffset);
     const validation = validateAndScheduleProgram(rebasedProgram, freezeScene(workingState.runtimeSceneState, draft));
     const evaluatedRecord = programRecord(validation.program, validation);

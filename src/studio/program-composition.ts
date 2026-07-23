@@ -48,10 +48,33 @@ export function programTimelineDelta(program: CanonicalEditProgram) {
   return insertedProgramDuration(program) - removedDuration;
 }
 
-type SourceInsertion = Readonly<{
+export type TimelineInsertion = Readonly<{
   duration: number;
   sourceAnchor: number;
 }>;
+
+export function timelineInsertionOffset(
+  insertions: readonly TimelineInsertion[],
+  sourceAnchor: number,
+) {
+  return insertions.reduce(
+    (offset, insertion) =>
+      insertion.sourceAnchor <= sourceAnchor + ANCHOR_EPSILON ? offset + insertion.duration : offset,
+    0,
+  );
+}
+
+export function shiftIntervalForInsertion(
+  interval: Readonly<{ end: number; start: number }>,
+  at: number,
+  duration: number,
+) {
+  if (!Number.isFinite(duration) || duration <= 0) return interval;
+  if (interval.start >= at - ANCHOR_EPSILON) {
+    return { end: interval.end + duration, start: interval.start + duration };
+  }
+  return interval.end > at ? { ...interval, end: interval.end + duration } : interval;
+}
 
 function sourceInsertions(programs: readonly CanonicalEditProgram[]) {
   const sorted = programs
@@ -60,7 +83,7 @@ function sourceInsertions(programs: readonly CanonicalEditProgram[]) {
       (left, right) =>
         left.program.anchor.resolvedSeconds - right.program.anchor.resolvedSeconds || left.index - right.index,
     );
-  const insertions: SourceInsertion[] = [];
+  const insertions: TimelineInsertion[] = [];
   for (const { program } of sorted) {
     const sourceAnchor = program.anchor.resolvedSeconds;
     const duration = programTimelineDelta(program);

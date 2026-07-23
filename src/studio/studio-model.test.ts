@@ -1150,6 +1150,8 @@ describe("one ProposedState feeds every Studio projection", () => {
     const projection = projectProposedState(proposed, 5.25);
     const overlay = projection.canvas.entities.find((entity) => entity.type === "TransitionOverlay:diamond:sky");
     expect(overlay).toBeDefined();
+    expect(proposed.evaluatedScene.objectGraph.entities[overlay!.id]?.lifetime)
+      .toEqual([{ end: 6.5, start: 5 }]);
     expect(projection.objectList.entities.find((entity) => entity.id === overlay?.id)).toBe(overlay);
     expect(projection.timeline.events.some((event) => event.transactionId === "scene-transition")).toBe(true);
   });
