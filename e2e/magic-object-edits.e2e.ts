@@ -83,12 +83,14 @@ test("Magic Edit previews, applies, exports, and undoes scale and delete", async
   await page.getByRole("button", { name: "Undo" }).click();
   await expect(wrapper).toHaveAttribute("data-studio-entity-scale", "1.0000");
 
-  await page.getByRole("button", { name: "Move playhead to source anchor 5.000 seconds" }).click();
+  // Deletion must use the last safe source anchor; the 5s anchor is followed by
+  // another equation animation and is intentionally rejected by source lowering.
+  await page.getByRole("button", { name: "Move playhead to source anchor 7.000 seconds" }).click();
   await page.getByRole("checkbox", { name: "Select equation" }).check();
   await instruction.fill("delete the selected equation");
   await page.getByRole("button", { name: "Preview" }).click();
   await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
-  await page.getByRole("slider", { name: "Scene playhead" }).fill("5.4");
+  await page.getByRole("slider", { name: "Scene playhead" }).fill("7.4");
   await expect(equation).toHaveCount(0);
   await page.getByRole("button", { name: "Apply program" }).click();
   await expect(await exportSource(page)).toContain("FadeOut(equation)");
