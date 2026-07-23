@@ -97,3 +97,25 @@ test("stages Rectangle position and geometry fields as one ResizeEntity", async 
   await expect(width).toHaveValue("6.00");
   await expect(height).toHaveValue("3.00");
 });
+
+test("keeps an earlier Inspector edit on the failure path when a later Program is already applied", async ({
+  page,
+}) => {
+  await openWorkspace(page);
+  await page.getByRole("button", { name: "Move playhead to source anchor 7.000 seconds" }).click();
+  const x = page.getByRole("spinbutton", { name: "X position of equation" });
+  await x.fill("420");
+  await x.press("Enter");
+  await page.getByRole("button", { name: "Apply program" }).click();
+
+  await page.getByRole("button", { name: "Move playhead to source anchor 5.000 seconds" }).click();
+  const content = page.getByRole("textbox", { name: "MathTex content of equation" });
+  const createDraft = page.getByRole("button", { name: "Create draft" });
+  await content.fill("F\n=\nm\na");
+  await createDraft.click();
+
+  await expect(page.getByRole("alert")).toContainText("earlier than the latest applied Program");
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+  await expect(createDraft).toBeFocused();
+  await expect(content).not.toBeFocused();
+});

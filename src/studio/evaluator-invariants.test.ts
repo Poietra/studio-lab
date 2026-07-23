@@ -380,6 +380,38 @@ class ContentChronology(Scene):
     expect(contentAt(2.5)).toMatchObject({ text: "source future" });
   });
 
+  it("keeps a verified source content replacement authoritative at the same anchor as a Studio edit", () => {
+    const source = `from manim import *
+
+class SameAnchorContentChronology(Scene):
+    def construct(self):
+        label = Text("base")
+        self.add(label)
+        self.wait(1)
+        # poietra:anchor 1.000
+        # poietra:content {"content":{"displayLines":["source same anchor"],"text":"source same anchor"},"type":"Text","variable":"label","version":1}
+        label.become(Text("source same anchor").match_style(label).match_height(label).move_to(label.get_center()))
+        self.wait(1)
+`;
+    const { entityId, operation, proposed } = evaluateImportedContentEdit({
+      className: "SameAnchorContentChronology",
+      source,
+      sourceId: "content-same-anchor.py",
+      transactionId: "content-at-known-source-replacement",
+    });
+    const samples = proposed.evaluatedScene.propertyChannels[`${entityId}/content`]?.samples ?? [];
+    expect(samples.map((sample) => sample.provenanceId)).toEqual([
+      expect.stringMatching(/:label:content$/),
+      `${operation.id}/provenance`,
+      expect.stringMatching(/:label:content:\d+$/),
+    ]);
+    const contentAt = (time: number) =>
+      projectProposedState(proposed, time).canvas.entities.find((entity) => entity.id === entityId)?.content;
+    expect(contentAt(0.999)).toMatchObject({ text: "base" });
+    expect(contentAt(1)).toMatchObject({ text: "source same anchor" });
+    expect(contentAt(1.5)).toMatchObject({ text: "source same anchor" });
+  });
+
   it("keeps a later unverified source content replacement Unknown after a Studio edit", () => {
     const source = `from manim import *
 

@@ -1847,8 +1847,8 @@ export function App() {
       });
       const validated = validatedProgramRecord(validation);
       if (validated.kind === "invalid") throw new Error(validated.message);
+      if (!installCanonicalDraft(validated.record, [entityId], gestureContext.sourcePrograms)) return false;
       setInspectorReturnFocus(returnFocus);
-      installCanonicalDraft(validated.record, [entityId], gestureContext.sourcePrograms);
       return true;
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The Inspector edit could not be staged.");
