@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import {
   createManimProjectRequestSchema,
+  manimThumbnailGenerateRequestSchema,
   originalManimSourceExportRequestSchema,
   programRenderRequestSchema,
   renameManimProjectRequestSchema,
@@ -15,11 +16,43 @@ import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import type { ManimRenderManager } from "./manim-render-manager";
 import type { ManimProjectRegistry } from "./manim-project-registry";
 import { EMPTY_MANIM_THUMBNAIL_SVG } from "./manim-thumbnail";
+import type { ThumbnailAsset } from "./manim-thumbnail-cache";
 
 const RENDER_ROUTE = /^\/api\/manim\/renders\/([0-9a-f-]+)(?:\/(cancel|commit|discard|undo|video))?$/;
-const PROJECT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/(workspace|renders|export|thumbnail)$/;
+const PROJECT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/(workspace|renders|export)$/;
+const PROJECT_THUMBNAIL_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/thumbnail(?:\/(status|generate))?$/;
 const PROJECT_ITEM_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})$/;
 type ManimApi = ManimRenderManager | ManimProjectRegistry;
+
+function requireSameOriginJsonMutation(request: IncomingMessage) {
+  const mediaType = request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
+  if (mediaType !== "application/json") {
+    request.resume();
+    throw new HttpError("Request content type must be application/json.", 415);
+  }
+  const fetchSite = request.headers["sec-fetch-site"]?.toLowerCase();
+  if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
+    request.resume();
+    throw new HttpError("Cross-origin thumbnail generation is not allowed.", 403);
+  }
+  const origin = request.headers.origin;
+  if (!origin) return;
+  const host = request.headers.host;
+  try {
+    const parsedOrigin = new URL(origin);
+    if (
+      !host
+      || !["http:", "https:"].includes(parsedOrigin.protocol)
+      || parsedOrigin.protocol !== ("encrypted" in request.socket && request.socket.encrypted ? "https:" : "http:")
+      || parsedOrigin.username
+      || parsedOrigin.password
+      || parsedOrigin.host.toLowerCase() !== host.toLowerCase()
+    ) throw new Error("Origin does not match Host.");
+  } catch {
+    request.resume();
+    throw new HttpError("Thumbnail generation requires a same-origin request.", 403);
+  }
+}
 
 function mutableProjectRegistry(manager: ManimApi) {
   if (!("createProject" in manager)) {
@@ -123,19 +156,24 @@ function sendPythonAttachment(
   return true;
 }
 
-function sendThumbnailSvg(response: ServerResponse, status: 200 | 404, svg: string) {
+function sendThumbnailAsset(response: ServerResponse, asset: ThumbnailAsset) {
   if (response.destroyed || response.writableEnded) return false;
   if (response.headersSent) {
     response.destroy();
     return false;
   }
-  response.statusCode = status;
+  const body = asset.status === 404 ? Buffer.from(EMPTY_MANIM_THUMBNAIL_SVG, "utf8") : asset.body;
+  response.statusCode = asset.status;
   response.setHeader("cache-control", "no-store");
-  response.setHeader("content-length", Buffer.byteLength(svg));
-  response.setHeader("content-security-policy", "default-src 'none'; sandbox");
-  response.setHeader("content-type", "image/svg+xml; charset=utf-8");
+  response.setHeader("content-length", body.byteLength);
+  if (asset.mediaType.startsWith("image/svg+xml")) {
+    response.setHeader("content-security-policy", "default-src 'none'; sandbox");
+  }
+  response.setHeader("content-type", asset.mediaType);
   response.setHeader("x-content-type-options", "nosniff");
-  response.end(svg);
+  response.setHeader("x-poietra-thumbnail-kind", asset.kind);
+  response.setHeader("x-poietra-thumbnail-state", asset.state);
+  response.end(body);
   return true;
 }
 
@@ -227,25 +265,46 @@ async function routeManimRequest(
     }
     throw new HttpError("Method not allowed.", 405);
   }
+  const thumbnailMatch = url.pathname.match(PROJECT_THUMBNAIL_ROUTE);
+  if (thumbnailMatch) {
+    const [, projectId, action] = thumbnailMatch;
+    if (!action && request.method === "GET") {
+      try {
+        sendThumbnailAsset(response, await manager.thumbnail(projectId));
+      } catch (error) {
+        if (!(error instanceof HttpError) || error.status !== 404) throw error;
+        sendThumbnailAsset(response, {
+          body: Buffer.from("", "utf8"),
+          kind: "empty",
+          mediaType: "image/svg+xml; charset=utf-8",
+          state: "missing",
+          status: 404,
+        });
+      }
+      return;
+    }
+    if (action === "status" && request.method === "GET") {
+      sendJson(response, 200, await manager.thumbnailStatus(projectId));
+      return;
+    }
+    if (action === "generate" && request.method === "POST") {
+      requireSameOriginJsonMutation(request);
+      const parsed = manimThumbnailGenerateRequestSchema.safeParse(await readJsonBody(request, 1_024));
+      if (!parsed.success) throw new HttpError("Thumbnail generation requires an empty JSON object.", 400);
+      signal.throwIfAborted();
+      sendJson(response, 202, await manager.generateThumbnail(projectId));
+      return;
+    }
+    throw new HttpError("Method not allowed.", 405);
+  }
   const projectMatch = url.pathname.match(PROJECT_ROUTE);
   if (projectMatch) {
     const [, projectId, endpoint] = projectMatch;
-    if (request.method === "GET" && endpoint === "thumbnail") {
-      let thumbnail: string | null;
-      try {
-        thumbnail = await manager.thumbnailSvg(projectId);
-      } catch (error) {
-        if (!(error instanceof HttpError) || error.status !== 404) throw error;
-        thumbnail = null;
-      }
-      sendThumbnailSvg(response, thumbnail ? 200 : 404, thumbnail ?? EMPTY_MANIM_THUMBNAIL_SVG);
-      return;
-    }
     if (request.method === "GET" && endpoint === "workspace") {
       sendJson(response, 200, await manager.workspace(projectId));
       return;
     }
-    if (request.method !== "POST" || endpoint === "workspace" || endpoint === "thumbnail") {
+    if (request.method !== "POST" || endpoint === "workspace") {
       throw new HttpError("Method not allowed.", 405);
     }
     if (endpoint === "export") {

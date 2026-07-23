@@ -5,9 +5,11 @@ import {
   createManimProject,
   exportManimSource,
   exportOriginalManimSource,
+  generateManimThumbnail,
   isMissingManimSession,
   loadManimRender,
   loadManimProjects,
+  loadManimThumbnailStatus,
   loadManimWorkspace,
   renameManimProject,
   runManimRenderAction,
@@ -195,6 +197,109 @@ describe("Manim API client contracts", () => {
 
     await expect(loadManimWorkspace("project-a")).resolves.toEqual(workspace);
     expect(fetch).toHaveBeenCalledWith("/api/manim/projects/project-a/workspace", { signal: undefined });
+  });
+
+  it("loads and explicitly generates project-bound thumbnail status", async () => {
+    const status = {
+      cachedSourceHash: null,
+      error: null,
+      generatedAt: null,
+      imageKind: "semantic",
+      projectId: "project-a",
+      sceneName: "SceneOne",
+      sourceHash: "a".repeat(64),
+      sourcePath: "scene.py",
+      state: "missing",
+    };
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => new Response(
+      JSON.stringify(init?.method === "POST" ? { ...status, state: "generating" } : status),
+      { status: init?.method === "POST" ? 202 : 200 },
+    ));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(loadManimThumbnailStatus("project-a")).resolves.toEqual(status);
+    await expect(generateManimThumbnail("project-a")).resolves.toMatchObject({ state: "generating" });
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      "/api/manim/projects/project-a/thumbnail/status",
+      { signal: undefined },
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      "/api/manim/projects/project-a/thumbnail/generate",
+      {
+        body: "{}",
+        headers: { "content-type": "application/json" },
+        method: "POST",
+        signal: undefined,
+      },
+    );
+  });
+
+  it.each([
+    {
+      cachedSourceHash: "a".repeat(64),
+      error: null,
+      generatedAt: "2026-07-23T10:00:00.000Z",
+      imageKind: "semantic",
+      projectId: "project-a",
+      sceneName: "SceneOne",
+      sourceHash: "a".repeat(64),
+      sourcePath: "scene.py",
+      state: "current",
+    },
+    {
+      cachedSourceHash: null,
+      error: null,
+      generatedAt: null,
+      imageKind: "semantic",
+      projectId: "project-a",
+      sceneName: "SceneOne",
+      sourceHash: null,
+      sourcePath: "scene.py",
+      state: "missing",
+    },
+    {
+      cachedSourceHash: "a".repeat(64),
+      error: null,
+      generatedAt: "2026-07-23T10:00:00.000Z",
+      imageKind: "semantic",
+      projectId: "project-a",
+      sceneName: "SceneOne",
+      sourceHash: "a".repeat(64),
+      sourcePath: "scene.py",
+      state: "stale",
+    },
+    {
+      cachedSourceHash: null,
+      error: null,
+      generatedAt: null,
+      imageKind: "semantic",
+      projectId: "project-a",
+      sceneName: "SceneOne",
+      sourceHash: "a".repeat(64),
+      sourcePath: "../scene.py",
+      state: "missing",
+    },
+  ])("rejects thumbnail status that violates lifecycle invariants", async (status) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(status), { status: 200 })));
+    await expect(loadManimThumbnailStatus("project-a")).rejects.toThrow(/API contract/i);
+  });
+
+  it("rejects thumbnail status for another project", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      cachedSourceHash: null,
+      error: null,
+      generatedAt: null,
+      imageKind: "empty",
+      projectId: "project-b",
+      sceneName: null,
+      sourceHash: null,
+      sourcePath: null,
+      state: "missing",
+    }))));
+
+    await expect(loadManimThumbnailStatus("project-a")).rejects.toThrow(/different project/i);
   });
 
   it("rejects a filesystem path where an opaque project ID is required", async () => {

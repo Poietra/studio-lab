@@ -17,13 +17,13 @@ import {
   type OriginalManimSourceExportRequest,
   type ProgramRenderRequest,
   type ManimProjectListView,
+  type ManimThumbnailStatus,
   type ManimWorkspaceView,
   type RenderSessionStatus,
   type RenderSessionView,
   renderProgramBatchId,
   renderRequestPrograms,
 } from "../src/render-pipeline/contracts";
-import type { ImportedManimScene } from "../src/render-pipeline/source-import";
 import { lowerCanonicalProgramBatchSource } from "../src/render-pipeline/source-lowering";
 import { evaluateWorkingState, programRecord } from "../src/studio/evaluator";
 import { STUDIO_STATE_VERSION } from "../src/studio/model";
@@ -38,14 +38,13 @@ import {
   waitForRenderProcessStop,
 } from "./manim-render-process";
 import { ManimSourceStore, sourceHash } from "./manim-source-store";
+import { ManimThumbnailCache } from "./manim-thumbnail-cache";
 import {
-  discoverFirstManimScene,
   discoverPythonSources,
   importedScene,
   importSourceSnapshot,
   sceneView,
 } from "./manim-workspace";
-import { renderManimSceneThumbnailSvg } from "./manim-thumbnail";
 
 type RenderSession = {
   actionInProgress: boolean;
@@ -83,7 +82,6 @@ const DEFAULT_RENDER_TIMEOUT_MS = 2 * 60 * 1_000;
 const DEFAULT_SESSION_RETENTION_MS = 30 * 60 * 1_000;
 const COMMAND_AVAILABILITY_TTL_MS = 30_000;
 const COMMAND_AVAILABILITY_TIMEOUT_MS = 15_000;
-const THUMBNAIL_CACHE_TTL_MS = 30_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 function requirePositiveFinite(value: number, name: string) {
@@ -163,14 +161,10 @@ export class ManimRenderManager {
   private readonly sessionRetentionMs: number;
   private readonly sessions = new Map<string, RenderSession>();
   private readonly sourceStore: ManimSourceStore;
-  private activeThumbnailRequests = 0;
-  private thumbnailCache: Readonly<{ checkedAt: number; value: string | null }> | null = null;
-  private thumbnailGeneration = 0;
-  private thumbnailRequest: Promise<string | null> | null = null;
-  private readonly thumbnailSceneDiscovery: (
-    projectRoot: string,
-    frame: Readonly<{ height: number; width: number }>,
-  ) => Promise<ImportedManimScene | null>;
+  private readonly thumbnailCache: ManimThumbnailCache;
+  private thumbnailRefreshRequest: Promise<void> | null = null;
+  private thumbnailSlotRequest: Promise<void> | null = null;
+  private thumbnailStartRequest: Promise<ManimThumbnailStatus> | null = null;
   private workspaceRequest: Promise<ManimWorkspaceView> | null = null;
 
   constructor(options: Readonly<{
@@ -186,10 +180,7 @@ export class ManimRenderManager {
     projectRoot: string;
     renderTimeoutMs?: number;
     sessionRetentionMs?: number;
-    thumbnailSceneDiscovery?: (
-      projectRoot: string,
-      frame: Readonly<{ height: number; width: number }>,
-    ) => Promise<ImportedManimScene | null>;
+    thumbnailCacheRoot?: string;
   }>) {
     if (options.command.length === 0 || options.command.some((entry) => entry.length === 0)) {
       throw new TypeError("The Manim command must contain a non-empty executable and arguments.");
@@ -227,7 +218,15 @@ export class ManimRenderManager {
       options.sessionRetentionMs ?? DEFAULT_SESSION_RETENTION_MS,
       "Session retention",
     );
-    this.thumbnailSceneDiscovery = options.thumbnailSceneDiscovery ?? discoverFirstManimScene;
+    this.thumbnailCache = new ManimThumbnailCache({
+      cacheRoot: options.thumbnailCacheRoot ?? join(this.projectRoot, ".poietra", "thumbnails"),
+      command: this.command,
+      frame: this.frame,
+      logger: this.logger,
+      projectId: this.projectId,
+      projectRoot: this.projectRoot,
+      renderTimeoutMs: this.renderTimeoutMs,
+    });
     this.cleanupTimer = setInterval(() => {
       void this.cleanupExpiredSessions().catch((error: unknown) => {
         this.logger.error("render.session_cleanup_failed", { error });
@@ -241,7 +240,10 @@ export class ManimRenderManager {
       && this.pendingStarts === 0
       && this.pendingRetainedSessions === 0
       && this.sessions.size === 0
-      && this.activeThumbnailRequests === 0
+      && !this.thumbnailCache.isBusy()
+      && this.thumbnailRefreshRequest === null
+      && this.thumbnailSlotRequest === null
+      && this.thumbnailStartRequest === null
       && this.workspaceRequest === null;
   }
 
@@ -303,42 +305,71 @@ export class ManimRenderManager {
     }
   }
 
-  async thumbnailSvg(projectId = this.projectId, now = Date.now()) {
+  thumbnail(projectId = this.projectId) {
     if (projectId !== this.projectId) throw new HttpError("Configured Manim project not found.", 404);
-    if (this.thumbnailCache && now - this.thumbnailCache.checkedAt < THUMBNAIL_CACHE_TTL_MS) {
-      return this.thumbnailCache.value;
-    }
-    const generation = this.thumbnailGeneration;
-    this.thumbnailRequest ??= (async () => {
-      try {
-        this.activeThumbnailRequests += 1;
-        let value: string | null = null;
-        try {
-          const scene = await this.thumbnailSceneDiscovery(this.projectRoot, this.frame);
-          value = scene ? renderManimSceneThumbnailSvg(scene.runtimeSceneState) : null;
-        } catch (error) {
-          this.logger.warn("thumbnail.discovery_failed", { error });
-        }
-        if (this.thumbnailGeneration === generation) {
-          this.thumbnailCache = { checkedAt: Date.now(), value };
-        }
-        return value;
-      } finally {
-        this.activeThumbnailRequests -= 1;
-      }
-    })();
-    const request = this.thumbnailRequest;
+    return this.thumbnailCache.asset();
+  }
+
+  thumbnailStatus(projectId = this.projectId) {
+    if (projectId !== this.projectId) throw new HttpError("Configured Manim project not found.", 404);
+    return this.thumbnailCache.status();
+  }
+
+  generateThumbnail(projectId = this.projectId) {
+    if (projectId !== this.projectId) throw new HttpError("Configured Manim project not found.", 404);
+    return this.startThumbnailGeneration();
+  }
+
+  private startThumbnailGeneration() {
+    if (this.thumbnailStartRequest) return this.thumbnailStartRequest;
+    const request = Promise.resolve().then(() => this.runThumbnailGenerationStart());
+    this.thumbnailStartRequest = request;
+    void request.finally(() => {
+      if (this.thumbnailStartRequest === request) this.thumbnailStartRequest = null;
+    }).catch(() => undefined);
+    return request;
+  }
+
+  private async runThumbnailGenerationStart() {
+    const finishStart = this.beginStart();
     try {
-      return await request;
+      if (this.thumbnailCache.isGenerating()) return this.thumbnailCache.status();
+      const releaseSlot = this.reserveThumbnailSlot();
+      let slotHeldForRender = false;
+      try {
+        const status = await this.thumbnailCache.generate(() => this.isCommandAvailable());
+        if (status.state === "generating") {
+          slotHeldForRender = true;
+          const slotRequest = this.thumbnailCache.waitForIdle().finally(releaseSlot);
+          this.thumbnailSlotRequest = slotRequest;
+          void slotRequest.finally(() => {
+            if (this.thumbnailSlotRequest === slotRequest) this.thumbnailSlotRequest = null;
+          }).catch(() => undefined);
+        }
+        return status;
+      } finally {
+        if (!slotHeldForRender) releaseSlot();
+      }
     } finally {
-      if (this.thumbnailRequest === request) this.thumbnailRequest = null;
+      finishStart();
     }
   }
 
-  private invalidateThumbnail() {
-    this.thumbnailCache = null;
-    this.thumbnailGeneration += 1;
-    this.thumbnailRequest = null;
+  private refreshThumbnail() {
+    this.thumbnailCache.invalidateTarget();
+    if (this.thumbnailRefreshRequest) return;
+    const request = Promise.resolve().then(async () => {
+      await this.thumbnailCache.waitForIdle();
+      this.thumbnailCache.invalidateTarget();
+      if ((await this.thumbnailCache.status()).state === "current") return;
+      await this.startThumbnailGeneration();
+    }).catch((error: unknown) => {
+      this.logger.warn("thumbnail.refresh_failed", { error });
+    });
+    this.thumbnailRefreshRequest = request;
+    void request.finally(() => {
+      if (this.thumbnailRefreshRequest === request) this.thumbnailRefreshRequest = null;
+    }).catch(() => undefined);
   }
 
   private session(id: string) {
@@ -394,6 +425,22 @@ export class ManimRenderManager {
         retentionTransferred = true;
         this.pendingRetainedSessions -= 1;
       },
+    };
+  }
+
+  private reserveThumbnailSlot() {
+    const activeRenders = [...this.sessions.values()].filter((session) => (
+      session.status === "preparing" || session.status === "rendering"
+    )).length;
+    if (activeRenders + this.pendingStarts >= this.maxConcurrentRenders) {
+      throw new HttpError(`Studio permits at most ${this.maxConcurrentRenders} concurrent Manim renders.`, 429);
+    }
+    this.pendingStarts += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.pendingStarts -= 1;
     };
   }
 
@@ -818,7 +865,7 @@ export class ManimRenderManager {
         session.patchedSource,
         "The source changed after preview. Render again before committing.",
       );
-      this.invalidateThumbnail();
+      this.refreshThumbnail();
       session.status = "committed";
       session.updatedAt = new Date().toISOString();
       return this.toView(session);
@@ -834,7 +881,7 @@ export class ManimRenderManager {
         session.originalSource,
         "The committed source changed again, so Studio will not overwrite it during Undo.",
       );
-      this.invalidateThumbnail();
+      this.refreshThumbnail();
       session.status = "undone";
       session.updatedAt = new Date().toISOString();
       return this.toView(session);
@@ -867,14 +914,20 @@ export class ManimRenderManager {
   }
 
   private async closeResources() {
+    const thumbnailClose = this.thumbnailCache.close();
     await this.waitForStarts();
     clearInterval(this.cleanupTimer);
-    const results = await Promise.allSettled([...this.sessions.values()].map(async (session) => {
-      const child = session.child;
-      stopRenderProcess(child);
-      await waitForRenderProcessStop(child);
-      await rm(session.tempRoot, { force: true, recursive: true });
-    }));
+    const results = await Promise.allSettled([
+      ...[...this.sessions.values()].map(async (session) => {
+        const child = session.child;
+        stopRenderProcess(child);
+        await waitForRenderProcessStop(child);
+        await rm(session.tempRoot, { force: true, recursive: true });
+      }),
+      thumbnailClose,
+      ...(this.thumbnailRefreshRequest ? [this.thumbnailRefreshRequest] : []),
+      ...(this.thumbnailSlotRequest ? [this.thumbnailSlotRequest] : []),
+    ]);
     for (const id of this.sessions.keys()) this.removeSession(id);
     const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
     if (errors.length > 0) throw new AggregateError(errors, "Could not fully close the Manim render pipeline.");
@@ -887,5 +940,9 @@ export class ManimRenderManager {
       this.closeRequest = this.closeResources();
     }
     return this.closeRequest;
+  }
+
+  removeThumbnailCache() {
+    return this.thumbnailCache.remove();
   }
 }

@@ -12,6 +12,22 @@ export const manimProjectIdSchema = z.string().regex(
   "Project ID must be an opaque lower-case identifier.",
 );
 export const manimProjectNameSchema = z.string().trim().min(1).max(120);
+export function isManimSourcePath(value: string) {
+  if (
+    value.length === 0
+    || value.length > 500
+    || /[\u0000-\u001f\u007f]/.test(value)
+    || value.includes("\\")
+    || value.startsWith("/")
+    || /^[A-Za-z]:/.test(value)
+    || !value.endsWith(".py")
+  ) return false;
+  return value.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
+}
+export const manimSourcePathSchema = z.string().refine(
+  isManimSourcePath,
+  "Source path must be a normalized relative Python file path.",
+);
 const resolvedAnchorSchema = z.object({
   capturedPlayhead: finiteNumber,
   evidence: z.array(z.string().max(500)).max(32),
@@ -59,7 +75,7 @@ const programSchema = z.object({
 const programRenderRequestBaseSchema = z.object({
   destination: z.object({
     sceneName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
-    sourcePath: z.string().min(1).max(500),
+    sourcePath: manimSourcePathSchema,
   }).strict().nullable(),
   projectId: manimProjectIdSchema,
   sceneName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
@@ -68,7 +84,7 @@ const programRenderRequestBaseSchema = z.object({
     sourceVariable: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
   }).strict()).max(128),
   sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
-  sourcePath: z.string().min(1).max(500),
+  sourcePath: manimSourcePathSchema,
   viewport: z.object({
     height: finiteNumber.positive(),
     width: finiteNumber.positive(),
@@ -251,6 +267,20 @@ export type ManimProjectMutationView = Readonly<{
   project: ManimProjectSummary | null;
 }>;
 
+export type ManimThumbnailState = "current" | "failed" | "generating" | "missing" | "stale" | "unavailable";
+
+export type ManimThumbnailStatus = Readonly<{
+  cachedSourceHash: string | null;
+  error: string | null;
+  generatedAt: string | null;
+  imageKind: "empty" | "rendered" | "semantic";
+  projectId: string;
+  sceneName: string | null;
+  sourceHash: string | null;
+  sourcePath: string | null;
+  state: ManimThumbnailState;
+}>;
+
 export type ManimProjectCreateRequest =
   | Readonly<{ kind: "managed"; name: string }>
   | Readonly<{ kind: "existing"; name: string; root: string }>;
@@ -270,7 +300,7 @@ export type OriginalManimSourceExportRequest = Readonly<{
 export const originalManimSourceExportRequestSchema: z.ZodType<OriginalManimSourceExportRequest> = z.object({
   projectId: manimProjectIdSchema,
   sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
-  sourcePath: z.string().min(1).max(500),
+  sourcePath: manimSourcePathSchema,
 }).strict();
 
 export const renderSessionStatusSchema: z.ZodType<RenderSessionStatus> = z.enum([
@@ -304,14 +334,14 @@ export const renderSessionViewSchema: z.ZodType<RenderSessionView> = z.object({
   programTransactionId: z.string(),
   progress: finiteNumber.min(0).max(1),
   sceneName: z.string(),
-  sourcePath: z.string(),
+  sourcePath: manimSourcePathSchema,
   status: renderSessionStatusSchema,
   updatedAt: z.string(),
   videoUrl: z.string().nullable(),
 }).strict();
 
 export const manimWorkspaceSourceSchema: z.ZodType<ManimWorkspaceSource> = z.object({
-  path: z.string(),
+  path: manimSourcePathSchema,
   scenes: z.array(z.object({
     anchors: z.array(finiteNumber.nonnegative()),
     name: z.string(),
@@ -390,5 +420,70 @@ export const manimProjectMutationViewSchema: z.ZodType<ManimProjectMutationView>
   catalog: manimProjectListViewSchema,
   project: manimProjectSummarySchema.nullable(),
 }).strict();
+
+export const manimThumbnailGenerateRequestSchema = z.object({}).strict();
+
+export const manimThumbnailStatusSchema: z.ZodType<ManimThumbnailStatus> = z.object({
+  cachedSourceHash: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+  error: z.string().max(500).nullable(),
+  generatedAt: z.string().datetime().nullable(),
+  imageKind: z.enum(["empty", "rendered", "semantic"]),
+  projectId: manimProjectIdSchema,
+  sceneName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/).nullable(),
+  sourceHash: z.string().regex(/^[0-9a-f]{64}$/).nullable(),
+  sourcePath: manimSourcePathSchema.nullable(),
+  state: z.enum(["current", "failed", "generating", "missing", "stale", "unavailable"]),
+}).strict().superRefine((status, context) => {
+  const targetFields = [status.sceneName, status.sourceHash, status.sourcePath];
+  const hasTarget = targetFields.every((field) => field !== null);
+  const hasPartialTarget = targetFields.some((field) => field !== null) && !hasTarget;
+  const hasCachedImage = status.cachedSourceHash !== null || status.generatedAt !== null;
+  if (hasPartialTarget) {
+    context.addIssue({ code: "custom", message: "Thumbnail target fields must be all null or all present." });
+  }
+  if ((status.cachedSourceHash === null) !== (status.generatedAt === null)) {
+    context.addIssue({ code: "custom", message: "Cached thumbnail hash and timestamp must be present together." });
+  }
+  if (status.imageKind === "empty" && hasTarget) {
+    context.addIssue({ code: "custom", message: "An empty thumbnail cannot identify a Scene target." });
+  }
+  if (status.imageKind === "rendered" && !hasCachedImage) {
+    context.addIssue({ code: "custom", message: "A rendered thumbnail requires cached image metadata." });
+  }
+  if (status.imageKind === "rendered" && hasTarget && status.cachedSourceHash !== status.sourceHash) {
+    context.addIssue({ code: "custom", message: "A rendered thumbnail must match its active source." });
+  }
+  if ((status.state === "failed" || status.state === "unavailable") !== (status.error !== null)) {
+    context.addIssue({ code: "custom", message: "Only failed or unavailable thumbnails carry an error." });
+  }
+  if (status.state === "current" && (
+    !hasTarget
+    || status.imageKind !== "rendered"
+    || status.cachedSourceHash !== status.sourceHash
+  )) {
+    context.addIssue({ code: "custom", message: "A current thumbnail must render its active source." });
+  }
+  if (status.state === "stale" && (
+    !hasTarget
+    || status.imageKind !== "semantic"
+    || status.cachedSourceHash === null
+    || status.cachedSourceHash === status.sourceHash
+  )) {
+    context.addIssue({ code: "custom", message: "A stale thumbnail requires a different cached source and a semantic fallback." });
+  }
+  if (status.state === "missing" && (
+    status.error !== null
+    || (hasTarget && (status.imageKind !== "semantic" || hasCachedImage))
+    || (!hasTarget && status.imageKind !== "empty")
+  )) {
+    context.addIssue({ code: "custom", message: "A missing thumbnail must be an empty workspace or an uncached semantic target." });
+  }
+  if (status.state === "unavailable" && (hasTarget || status.imageKind !== "empty")) {
+    context.addIssue({ code: "custom", message: "An unavailable workspace cannot expose a current Scene target." });
+  }
+  if ((status.state === "failed" || status.state === "generating") && !hasTarget) {
+    context.addIssue({ code: "custom", message: `${status.state} thumbnails require a Scene target.` });
+  }
+});
 
 export type ManimApiError = Readonly<{ error: string }>;

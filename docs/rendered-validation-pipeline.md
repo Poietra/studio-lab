@@ -53,6 +53,15 @@ the private catalog, managed workspace content, and Studio Trash. The server
 resolves every root and gives the browser catalog only opaque project IDs and
 display names.
 
+Rendered workspace thumbnails are derived cache data below
+`POIETRA_STUDIO_DATA_ROOT/thumbnails/:projectId`, never inside a linked project.
+Each project retains at most eight PNG frames keyed by source SHA-256 plus the
+source path and Scene identity. Manifest and image writes use same-directory
+atomic replacement; a new manifest is published before old images are collected.
+Startup removes orphan images and interrupted temporary writes. The cache survives
+Studio restarts and is removed through a validated same-root quarantine when its
+workspace is unregistered; it is not part of Python source or project history.
+
 `POIETRA_MANIM_COMMAND` is either one executable or a JSON array such as
 `["uv", "run", "manim"]`. The bridge invokes it directly without a shell. The
 default is `manim`.
@@ -77,10 +86,24 @@ explicit frame and the captured Studio viewport.
   Trash below the configured data root. It does not hard-delete source, and Studio
   does not yet expose a restore UI. Active or retained render sessions must be
   discarded first.
-- `GET /api/manim/projects/:projectId/thumbnail` stops after the first importable
-  Scene and returns a bounded semantic SVG derived from its imported object state.
-  It never runs the Manim command; a missing Scene returns a safe SVG fallback and
-  unsupported entities are omitted.
+- `GET /api/manim/projects/:projectId/thumbnail/status` safely inspects the first
+  importable Scene and reports `current`, `stale`, `missing`, `generating`, `failed`,
+  or `unavailable`, together with whether the served image is rendered, semantic,
+  or empty. `missing` means discovery succeeded but found no Scene; `unavailable`
+  means the workspace root could not be inspected.
+- `GET /api/manim/projects/:projectId/thumbnail` returns the source-matching cached
+  PNG when one exists. Otherwise it returns the bounded semantic SVG derived from
+  current imported object state, or a safe empty SVG when no Scene is available.
+  Neither GET endpoint starts Manim or executes project Python.
+- `POST /api/manim/projects/:projectId/thumbnail/generate` is the explicit execution
+  boundary. It renders the first importable Scene's last frame in an isolated
+  temporary copy with `--output_file poietra-thumbnail` and accepts only a strict
+  `application/json` `{}` request. Cross-origin browser requests are rejected.
+  Studio publishes only the exact `poietra-thumbnail.png` after Manim exits
+  successfully. Opening a workspace invokes this boundary only after the user selected that workspace,
+  only when the renderer is available, and only while the cache is not current.
+  Successful source Commit and Undo also request a refresh. Merely viewing the
+  launcher never invokes it.
 - `GET /api/manim/projects/:projectId/workspace` imports one registered project;
   `GET /api/manim/workspace` remains a default-project compatibility alias.
 - `POST /api/manim/projects/:projectId/export` returns the selected source unchanged
@@ -153,6 +176,13 @@ boundaries without hand-authored comments.
 - the manager permits two concurrent render processes, retains at most 32 source
   snapshots per configured project, and terminates a render that exceeds two minutes;
 - preview source and media live in an isolated operating-system temporary directory;
+- thumbnail generation uses the same direct-spawn, timeout, process-group stop,
+  bounded traversal, and isolated temporary-source boundary. Thumbnail jobs share
+  the per-project concurrent-render limit with validation renders;
+- a generated thumbnail is current only while its persisted source hash, source
+  path, and Scene identity match the safely rediscovered target. A failed generation
+  for a changed source uses the current semantic SVG; a failed refresh of the same
+  source remains visibly `failed` while serving its last successful rendered frame;
 - the original source is untouched until Manim exits successfully and produces an MP4;
 - commit compares the current source SHA-256 with the previewed snapshot and rejects
   stale writes;
@@ -192,6 +222,8 @@ boundaries without hand-authored comments.
   with their native OS directory picker;
 - the bridge is a local development experiment, not a remotely exposed render
   service or Python sandbox.
+- one workspace card currently represents the first importable Scene in sorted
+  source traversal order; choosing another Scene for the card is future metadata.
 
 These limits are visible blockers. The pipeline never substitutes a fixture video
 or marks illustrative lowering as rendered validation when Manim is unavailable.

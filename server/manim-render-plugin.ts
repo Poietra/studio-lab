@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import type { Plugin } from "vite";
@@ -28,8 +29,9 @@ export function manimRenderPipeline(options: ManimRenderPipelineOptions = {}): P
       const seedProjects = options.projects?.length
         ? options.projects
         : [{ root: options.projectRoot ? resolve(options.projectRoot) : config.root }];
+      const dataRoot = options.workspaceDataRoot ? resolve(options.workspaceDataRoot) : join(config.root, ".poietra");
       const catalog = new PersistentManimProjectCatalog({
-        dataRoot: options.workspaceDataRoot ? resolve(options.workspaceDataRoot) : join(config.root, ".poietra"),
+        dataRoot,
         seedProjects,
       });
       manager = new ManimProjectRegistry({
@@ -41,6 +43,7 @@ export function manimRenderPipeline(options: ManimRenderPipelineOptions = {}): P
         },
         logger,
         projects: seedProjects,
+        thumbnailCacheRoot: join(realpathSync(dataRoot), "thumbnails"),
       });
     },
     configureServer(server) {

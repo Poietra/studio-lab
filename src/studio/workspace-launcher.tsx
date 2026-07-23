@@ -1,9 +1,14 @@
-import { type FormEvent, useRef, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 
 import { cn } from "../lib/cn";
+import {
+  generateManimThumbnail,
+  loadManimThumbnailStatus,
+} from "../render-pipeline/client";
 import type {
   ManimProjectCreateRequest,
   ManimProjectSummary,
+  ManimThumbnailStatus,
 } from "../render-pipeline/contracts";
 import type { WorkspaceMutation } from "./use-manim-workspace";
 
@@ -28,6 +33,7 @@ const secondaryButtonClassName = "border border-zinc-700 px-3 py-1.5 text-xs fon
 const primaryButtonClassName = "bg-sky-500 px-3 py-1.5 text-xs font-medium text-sky-950 hover:bg-sky-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400 disabled:cursor-wait disabled:bg-zinc-700 disabled:text-zinc-500";
 const dialogClassName = "m-auto w-full max-w-md border border-zinc-700 bg-zinc-950 p-0 text-zinc-100 shadow-xl backdrop:bg-black/70";
 const cardActionButtonClassName = "cursor-pointer px-2 py-1.5 text-xs font-medium text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-wait disabled:text-zinc-700";
+const MAX_THUMBNAIL_STATUS_ATTEMPTS = 3;
 
 function PlusIcon() {
   return (
@@ -45,11 +51,57 @@ function workspaceInitials(name: string) {
   return Array.from(words[0] ?? "").slice(0, 2).join("").toUpperCase();
 }
 
+function WorkspaceThumbnailImage({
+  assetVersion,
+  projectId,
+}: Readonly<{ assetVersion: string; projectId: string }>) {
+  const [state, setState] = useState<"error" | "loaded" | "loading">("loading");
+  return (
+    <img
+      alt=""
+      aria-hidden="true"
+      className={cn(
+        "pointer-events-none absolute inset-0 size-full bg-zinc-950 object-cover",
+        state === "loaded" ? "opacity-100" : "opacity-0",
+      )}
+      data-state={state}
+      data-workspace-actual-thumbnail={projectId}
+      decoding="async"
+      draggable={false}
+      loading="lazy"
+      onError={() => setState("error")}
+      onLoad={() => setState("loaded")}
+      src={`/api/manim/projects/${encodeURIComponent(projectId)}/thumbnail?v=${encodeURIComponent(assetVersion)}`}
+    />
+  );
+}
+
 function WorkspaceCover({
   interactive,
   project,
-}: Readonly<{ interactive: boolean; project: ManimProjectSummary }>) {
-  const [thumbnailState, setThumbnailState] = useState<"error" | "loaded" | "loading">("loading");
+  status,
+}: Readonly<{
+  interactive: boolean;
+  project: ManimProjectSummary;
+  status: ManimThumbnailStatus | null;
+}>) {
+  const assetVersion = status?.generatedAt ?? status?.sourceHash ?? "unresolved";
+
+  const statusLabel = status?.state === "current"
+    ? "Rendered"
+    : status?.state === "generating"
+      ? "Generating…"
+      : status?.state === "stale"
+        ? "Preview out of date"
+        : status?.state === "failed"
+          ? "Render failed"
+          : status?.state === "unavailable"
+            ? "Workspace unavailable"
+          : status?.imageKind === "empty"
+            ? "No preview"
+            : status
+              ? "Semantic preview"
+              : "Loading preview…";
 
   return (
     <span
@@ -67,26 +119,197 @@ function WorkspaceCover({
       )} data-workspace-thumbnail-fallback>
         {workspaceInitials(project.name)}
       </span>
-      <img
-        alt=""
-        aria-hidden="true"
+      {status && status.imageKind !== "empty" ? (
+        <WorkspaceThumbnailImage assetVersion={assetVersion} key={assetVersion} projectId={project.id} />
+      ) : null}
+      <span
         className={cn(
-          "pointer-events-none absolute inset-0 size-full bg-zinc-950 object-cover",
-          thumbnailState === "loaded" ? "opacity-100" : "opacity-0",
+          "absolute left-3 top-3 border bg-zinc-950/90 px-2 py-1 text-xs font-medium",
+          status?.state === "current"
+            ? "border-sky-800 text-sky-300"
+            : status?.state === "failed" || status?.state === "unavailable"
+              ? "border-red-900 text-red-300"
+              : "border-zinc-700 text-zinc-400",
         )}
-        data-state={thumbnailState}
-        data-workspace-actual-thumbnail={project.id}
-        decoding="async"
-        draggable={false}
-        loading="lazy"
-        onError={() => setThumbnailState("error")}
-        onLoad={() => setThumbnailState("loaded")}
-        src={`/api/manim/projects/${encodeURIComponent(project.id)}/thumbnail`}
-      />
+        data-thumbnail-status={status?.state ?? "loading"}
+      >
+        {statusLabel}
+      </span>
       <span className="absolute bottom-3 right-3 border border-zinc-700 bg-zinc-950/90 px-2 py-1 text-xs font-medium text-zinc-400">
         {project.kind === "managed" ? "Studio" : "Linked"}
       </span>
     </span>
+  );
+}
+
+function WorkspaceCard({
+  mutationPending,
+  onOpen,
+  onRemove,
+  onRename,
+  project,
+}: Readonly<{
+  mutationPending: boolean;
+  onOpen: (workspaceId: string) => void;
+  onRemove: (project: ManimProjectSummary) => void;
+  onRename: (project: ManimProjectSummary) => void;
+  project: ManimProjectSummary;
+}>) {
+  const [thumbnailStatus, setThumbnailStatus] = useState<ManimThumbnailStatus | null>(null);
+  const [thumbnailActionError, setThumbnailActionError] = useState<string | null>(null);
+  const [thumbnailStatusError, setThumbnailStatusError] = useState<string | null>(null);
+  const [thumbnailStatusRetryAvailable, setThumbnailStatusRetryAvailable] = useState(false);
+  const [generatingThumbnail, setGeneratingThumbnail] = useState(false);
+  const [statusRevision, setStatusRevision] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    let active = true;
+    let attempts = 0;
+    const loadStatus = async () => {
+      attempts += 1;
+      try {
+        const status = await loadManimThumbnailStatus(project.id, controller.signal);
+        if (!active) return;
+        attempts = 0;
+        setThumbnailStatusError(null);
+        setThumbnailStatusRetryAvailable(false);
+        setThumbnailStatus(status);
+        if (status.state === "generating") {
+          pollTimer = setTimeout(() => void loadStatus(), 750);
+        }
+      } catch (error) {
+        if (!active || controller.signal.aborted) return;
+        setThumbnailStatusError(error instanceof Error ? error.message : "Could not load the preview status.");
+        if (attempts < MAX_THUMBNAIL_STATUS_ATTEMPTS) {
+          pollTimer = setTimeout(() => void loadStatus(), attempts * 500);
+        } else {
+          setThumbnailStatusRetryAvailable(true);
+        }
+      }
+    };
+    // StrictMode reconnects effects once in development. Deferring avoids sending
+    // a status request from the setup React immediately discards.
+    queueMicrotask(() => {
+      if (active) void loadStatus();
+    });
+    return () => {
+      active = false;
+      controller.abort();
+      if (pollTimer) clearTimeout(pollTimer);
+    };
+  }, [project.id, statusRevision]);
+
+  async function generateThumbnail() {
+    setGeneratingThumbnail(true);
+    setThumbnailActionError(null);
+    try {
+      setThumbnailStatus(await generateManimThumbnail(project.id));
+      setStatusRevision((current) => current + 1);
+    } catch (error) {
+      setThumbnailActionError(error instanceof Error ? error.message : "Could not generate the rendered preview.");
+      setStatusRevision((current) => current + 1);
+    } finally {
+      setGeneratingThumbnail(false);
+    }
+  }
+
+  function retryThumbnailStatus() {
+    setThumbnailStatusError(null);
+    setThumbnailStatusRetryAvailable(false);
+    setStatusRevision((current) => current + 1);
+  }
+
+  const generateLabel = thumbnailStatus?.state === "current" ? "Refresh preview" : "Generate preview";
+  const renderedFailure = thumbnailStatus?.state === "failed" || thumbnailStatus?.state === "unavailable"
+    ? thumbnailStatus.error ?? "The rendered preview is unavailable."
+    : null;
+  return (
+    <li
+      className={cn(
+        "group flex min-h-0 flex-col overflow-hidden border border-zinc-800 bg-zinc-950",
+        !mutationPending && "hover:border-zinc-600 hover:bg-zinc-900 focus-within:border-sky-500",
+      )}
+      data-workspace-card={project.id}
+    >
+      <span aria-live="polite" className="sr-only">
+        {thumbnailStatus
+          ? `Preview status for ${project.name}: ${thumbnailStatus.state}.`
+          : `Loading preview status for ${project.name}.`}
+      </span>
+      <button
+        aria-label={`Open ${project.name} workspace`}
+        className="flex min-h-0 flex-1 cursor-pointer flex-col text-left focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-wait disabled:text-zinc-600"
+        disabled={mutationPending}
+        onClick={() => onOpen(project.id)}
+        type="button"
+      >
+        <WorkspaceCover interactive={!mutationPending} project={project} status={thumbnailStatus} />
+        <span className="flex w-full flex-1 flex-col p-4 pb-2">
+          <span className="block truncate text-sm font-semibold text-zinc-100" title={project.name}>{project.name}</span>
+          <span className="mt-1 block text-pretty text-xs text-zinc-500">
+            {project.kind === "managed" ? "Studio workspace" : "Linked Manim folder"}
+          </span>
+          <span className="mt-3 block text-xs font-medium text-sky-400">Open workspace</span>
+        </span>
+      </button>
+      <div className="flex flex-wrap items-center gap-1 px-2 pb-2">
+        <button
+          aria-label={`${generateLabel} for ${project.name}`}
+          className={cardActionButtonClassName}
+          disabled={mutationPending || generatingThumbnail || thumbnailStatus?.state === "generating"}
+          onClick={() => void generateThumbnail()}
+          type="button"
+        >
+          {generatingThumbnail || thumbnailStatus?.state === "generating" ? "Generating…" : generateLabel}
+        </button>
+        {thumbnailStatusError && thumbnailStatusRetryAvailable ? (
+          <button
+            aria-label={`Retry preview status for ${project.name}`}
+            className={cardActionButtonClassName}
+            disabled={mutationPending}
+            onClick={retryThumbnailStatus}
+            type="button"
+          >
+            Retry status
+          </button>
+        ) : null}
+        <button
+          aria-label={`Rename ${project.name} workspace`}
+          className={cardActionButtonClassName}
+          disabled={mutationPending}
+          onClick={() => onRename(project)}
+          type="button"
+        >
+          Rename
+        </button>
+        <button
+          aria-label={`${project.kind === "managed" ? "Delete" : "Remove"} ${project.name} workspace`}
+          className="cursor-pointer px-2 py-1.5 text-xs font-medium text-zinc-500 hover:bg-red-950 hover:text-red-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500 disabled:cursor-wait disabled:text-zinc-700"
+          disabled={mutationPending}
+          onClick={() => onRemove(project)}
+          type="button"
+        >
+          {project.kind === "managed" ? "Delete" : "Remove"}
+        </button>
+      </div>
+      {renderedFailure ? (
+        <p className="border-t border-red-950 px-4 py-2 text-pretty text-xs leading-5 text-red-300" role="status">
+          {renderedFailure}
+        </p>
+      ) : null}
+      {thumbnailStatusError ? (
+        <p className="border-t border-red-950 px-4 py-2 text-pretty text-xs leading-5 text-red-300" role="alert">
+          Preview status could not be refreshed: {thumbnailStatusError}
+        </p>
+      ) : null}
+      {thumbnailActionError ? (
+        <p className="border-t border-red-950 px-4 py-2 text-pretty text-xs leading-5 text-red-300" role="alert">
+          Preview action failed: {thumbnailActionError}
+        </p>
+      ) : null}
+    </li>
   );
 }
 
@@ -248,51 +471,14 @@ export function WorkspaceLauncher({
           ) : projects.length > 0 ? (
             <ul className="mt-8 grid gap-3 sm:grid-cols-2">
               {projects.map((project) => (
-                <li
-                  className={cn(
-                    "group flex min-h-0 flex-col overflow-hidden border border-zinc-800 bg-zinc-950",
-                    !mutationPending && "hover:border-zinc-600 hover:bg-zinc-900 focus-within:border-sky-500",
-                  )}
-                  data-workspace-card={project.id}
+                <WorkspaceCard
                   key={project.id}
-                >
-                  <button
-                    aria-label={`Open ${project.name} workspace`}
-                    className="flex min-h-0 flex-1 cursor-pointer flex-col text-left focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-wait disabled:text-zinc-600"
-                    disabled={mutationPending}
-                    onClick={() => onOpen(project.id)}
-                    type="button"
-                  >
-                    <WorkspaceCover interactive={!mutationPending} project={project} />
-                    <span className="flex w-full flex-1 flex-col p-4 pb-2">
-                      <span className="block truncate text-sm font-semibold text-zinc-100" title={project.name}>{project.name}</span>
-                      <span className="mt-1 block text-pretty text-xs text-zinc-500">
-                        {project.kind === "managed" ? "Studio workspace" : "Linked Manim folder"}
-                      </span>
-                      <span className="mt-3 block text-xs font-medium text-sky-400">Open workspace</span>
-                    </span>
-                  </button>
-                  <div className="flex flex-wrap items-center gap-1 px-2 pb-2">
-                    <button
-                      aria-label={`Rename ${project.name} workspace`}
-                      className={cardActionButtonClassName}
-                      disabled={mutationPending}
-                      onClick={() => showRenameDialog(project)}
-                      type="button"
-                    >
-                      Rename
-                    </button>
-                    <button
-                      aria-label={`${project.kind === "managed" ? "Delete" : "Remove"} ${project.name} workspace`}
-                      className="cursor-pointer px-2 py-1.5 text-xs font-medium text-zinc-500 hover:bg-red-950 hover:text-red-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500 disabled:cursor-wait disabled:text-zinc-700"
-                      disabled={mutationPending}
-                      onClick={() => showRemoveDialog(project)}
-                      type="button"
-                    >
-                      {project.kind === "managed" ? "Delete" : "Remove"}
-                    </button>
-                  </div>
-                </li>
+                  mutationPending={mutationPending}
+                  onOpen={onOpen}
+                  onRemove={showRemoveDialog}
+                  onRename={showRenameDialog}
+                  project={project}
+                />
               ))}
             </ul>
           ) : error ? null : (

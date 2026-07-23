@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { createServer, request as createHttpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -278,6 +278,15 @@ describe("Manim render manager", () => {
     const undone = await manager.undo(started.id);
     expect(undone.status).toBe("undone");
     expect(await readFile(join(projectRoot, "scene.py"), "utf8")).toBe(sceneSource);
+    await waitUntil(
+      async () => (await manager.thumbnailStatus()).state === "current",
+      "The thumbnail did not refresh after Commit followed by Undo.",
+    );
+    await expect(manager.thumbnailStatus()).resolves.toMatchObject({
+      imageKind: "rendered",
+      sourceHash: request().sourceHash,
+      state: "current",
+    });
   });
 
   it("coalesces concurrent workspace inspections", async () => {
@@ -286,6 +295,41 @@ describe("Manim render manager", () => {
     const [first, second] = await Promise.all([manager.workspace(), manager.workspace()]);
 
     expect(first).toBe(second);
+  });
+
+  it("holds the shared render slot for the full thumbnail subprocess", async () => {
+    const { manager } = await fixture({
+      command: [process.execPath, fakeRenderer, "--slow-thumbnail"],
+      maxConcurrentRenders: 1,
+    });
+
+    await expect(manager.generateThumbnail()).resolves.toMatchObject({ state: "generating" });
+    await expect(manager.start(request())).rejects.toMatchObject({ status: 429 });
+    expect(manager.canUnregister()).toBe(false);
+  });
+
+  it("tracks automatic thumbnail refresh through shutdown and prevents a late subprocess", async () => {
+    const markerRoot = await mkdtemp(join(tmpdir(), "poietra-thumbnail-refresh-"));
+    temporaryRoots.push(markerRoot);
+    const marker = join(markerRoot, "started");
+    const { manager } = await fixture({
+      command: [
+        process.execPath,
+        fakeRenderer,
+        "--slow-thumbnail",
+        "--thumbnail-start-marker",
+        marker,
+      ],
+    });
+    const started = await manager.start(request());
+    await waitForTerminal(manager, started.id);
+    await manager.commit(started.id);
+    await waitUntil(async () => access(marker).then(() => true, () => false), "Thumbnail refresh did not start.");
+    expect(manager.canUnregister()).toBe(false);
+
+    const closingAt = Date.now();
+    await manager.close();
+    expect(Date.now() - closingAt).toBeLessThan(2_000);
   });
 
   it("checks the configured command adapter rather than only its executable", async () => {
