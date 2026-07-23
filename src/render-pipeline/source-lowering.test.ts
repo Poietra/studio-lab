@@ -726,6 +726,7 @@ class GroupedEquation(Scene):
     "self.play(FadeIn(equation), run_time=1)",
     "self.add(equation)",
     "self.play(equation.animate.shift(RIGHT), run_time=1)",
+    'self.add(globals()[f"equation"])',
   ])("rejects persistent removal before a source suffix reference: %s", (suffix) => {
     const remove: CanonicalEditOperation = {
       ...operationBase("persistent-delete", 7, 7.4),
@@ -743,6 +744,121 @@ class GroupedEquation(Scene):
       null,
     )).toThrow(/equation is referenced after the selected anchor/i);
   });
+
+  it.each([
+    ["direct alias", "alias = equation", "self.add(alias)", "alias"],
+    ["Manim container", "group = VGroup(equation)", "self.add(group)", "group"],
+    ["list container", "items = [equation]", "self.add(items[0])", "items"],
+    ["dict container", 'lookup = {"primary": equation}', 'self.add(lookup["primary"])', "lookup"],
+    ["attribute", "self.cached_equation = equation", "self.add(self.cached_equation)", "self.cached_equation"],
+    ["subscript assignment", 'cache = {}\n        cache["primary"] = equation', 'self.add(cache["primary"])', "cache"],
+    ["globals binding", 'globals()["cached_equation"] = equation', "self.add(cached_equation)", "cached_equation"],
+    ["globals subscript", 'globals()["cached_equation"] = equation', 'self.add(globals()["cached_equation"])', "globals"],
+    ["container mutation", "items = []\n        items.append(equation)", "self.add(items[0])", "items"],
+    ["nested container mutation", 'buckets = {"primary": []}\n        buckets["primary"].append(equation)', 'self.add(buckets["primary"][0])', "buckets"],
+    ["for binding", "for alias in [equation]:\n            pass", "self.add(alias)", "alias"],
+    ["with binding", "with nullcontext(equation) as alias:\n            pass", "self.add(alias)", "alias"],
+    ["assignment expression", "if (alias := equation):\n            pass", "self.add(alias)", "alias"],
+  ])("rejects persistent removal through a pre-anchor %s", (_label, setup, suffix, reference) => {
+    const remove: CanonicalEditOperation = {
+      ...operationBase("persistent-delete-alias", 7, 7.4),
+      effect: "remove",
+      entityId: "equation_1",
+      kind: "ChangePresence",
+      persistent: true,
+    };
+    const aliasedSource = source
+      .replace("        # poietra:anchor 7.000", `        ${setup}\n        # poietra:anchor 7.000`)
+      .replace("self.wait(1)", suffix);
+
+    expect(() => lowerCanonicalProgramSource(
+      aliasedSource,
+      request(canonicalProgram([remove], "persistent-delete-alias")),
+      { height: 8, width: 14.222 },
+      null,
+    )).toThrow(new RegExp(`${reference.replaceAll(".", "\\.")} is referenced after the selected anchor`, "i"));
+  });
+
+  it("tracks multi-hop alias and container closure before persistent removal", () => {
+    const remove: CanonicalEditOperation = {
+      ...operationBase("persistent-delete-closure", 7, 7.4),
+      effect: "remove",
+      entityId: "equation_1",
+      kind: "ChangePresence",
+      persistent: true,
+    };
+    const aliasedSource = source
+      .replace(
+        "        # poietra:anchor 7.000",
+        '        alias = equation\n        group = VGroup(alias)\n        registry = {"primary": group}\n        # poietra:anchor 7.000',
+      )
+      .replace("self.wait(1)", 'self.add(registry["primary"])');
+
+    expect(() => lowerCanonicalProgramSource(
+      aliasedSource,
+      request(canonicalProgram([remove], "persistent-delete-closure")),
+      { height: 8, width: 14.222 },
+      null,
+    )).toThrow(/registry is referenced after the selected anchor/i);
+  });
+
+  it.each([
+    'make_registry()["primary"] = equation',
+    "globals()[dynamic_key] = equation",
+    "make_registry().append(equation)",
+    "with nullcontext(equation) as make_holder().value:\n            pass",
+  ])("fails closed when a target-retaining assignment cannot be tracked: %s", (setup) => {
+    const remove: CanonicalEditOperation = {
+      ...operationBase("persistent-delete-unknown-alias", 7, 7.4),
+      effect: "remove",
+      entityId: "equation_1",
+      kind: "ChangePresence",
+      persistent: true,
+    };
+    const ambiguousSource = source.replace(
+      "        # poietra:anchor 7.000",
+      `        ${setup}\n        # poietra:anchor 7.000`,
+    );
+
+    expect(() => lowerCanonicalProgramSource(
+      ambiguousSource,
+      request(canonicalProgram([remove], "persistent-delete-unknown-alias")),
+      { height: 8, width: 14.222 },
+      null,
+    )).toThrow(/cannot track (?:an alias\/container assignment|a container mutation) target/i);
+  });
+
+  it.each(["f", "r", "b"])(
+    "does not confuse the %s string prefix with a removed one-letter source variable",
+    (sourceVariable) => {
+      const remove: CanonicalEditOperation = {
+        ...operationBase("persistent-delete-string-prefix", 7, 7.4),
+        effect: "remove",
+        entityId: "equation_1",
+        kind: "ChangePresence",
+        persistent: true,
+      };
+      const prefixSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        ${sourceVariable} = MathTex("E", "=", "m", "c^2")
+        # poietra:anchor 7.000
+        message = ${sourceVariable}"equation"
+        self.wait(1)
+`;
+
+      expect(lowerCanonicalProgramSource(
+        prefixSource,
+        request(
+          canonicalProgram([remove], "persistent-delete-string-prefix"),
+          [{ entityId: "equation_1", sourceVariable }],
+        ),
+        { height: 8, width: 14.222 },
+        null,
+      ).insertedCode).toContain(`FadeOut(${sourceVariable})`);
+    },
+  );
 
   it("ignores source-variable text in comments and strings when guarding persistent removal", () => {
     const remove: CanonicalEditOperation = {

@@ -6,6 +6,11 @@ import {
   findSourceSceneComments,
   importManimScene,
 } from "./source-import";
+import {
+  pythonReferenceClosure,
+  PythonReferenceAnalysisError,
+  referencedPythonReference,
+} from "./python-reference-analysis";
 import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "../studio/magic-edit-capabilities";
 import type { MotionEasing } from "../studio/model";
 import {
@@ -659,6 +664,21 @@ function referencedVariableAfterAnchor(
   variables: ReadonlySet<string>,
 ) {
   if (variables.size === 0) return null;
+  let references: ReadonlySet<string>;
+  try {
+    references = pythonReferenceClosure(
+      source,
+      sceneBlock.bodyStart,
+      anchorLine - 1,
+      variables,
+    );
+  } catch (error) {
+    if (!(error instanceof PythonReferenceAnalysisError)) throw error;
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      `Persistent removal cannot inspect source aliases safely. ${error.message}`,
+    );
+  }
   const analysis = analyzePythonSource(source);
   if (!analysis.valid) {
     throw new ProgramLoweringError(
@@ -666,15 +686,11 @@ function referencedVariableAfterAnchor(
       "Persistent removal cannot inspect an invalid Python source suffix safely.",
     );
   }
-  const patterns = [...variables].map((variable) => ({
-    pattern: new RegExp(`\\b${escapePattern(variable)}\\b`),
-    variable,
-  }));
   for (let index = anchorLine; index < sceneBlock.bodyEnd; index += 1) {
     const line = analysis.lines[index];
     if (!line) continue;
-    const reference = patterns.find(({ pattern }) => pattern.test(line.code));
-    if (reference) return reference.variable;
+    const reference = referencedPythonReference(line, references);
+    if (reference) return reference;
     if (
       sceneBlock.bodyIndent !== null
       && line.indentation === sceneBlock.bodyIndent
@@ -823,7 +839,7 @@ export function lowerCanonicalProgramSource(
   if (unsafeRemovalReference) {
     throw new ProgramLoweringError(
       "operation-unsupported",
-      `Persistent removal is unsafe because source variable ${unsafeRemovalReference} is referenced after the selected anchor.`,
+      `Persistent removal is unsafe because source reference ${unsafeRemovalReference} is referenced after the selected anchor.`,
     );
   }
   const output: string[] = [];
