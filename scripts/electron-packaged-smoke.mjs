@@ -1,5 +1,5 @@
 import { _electron as electron } from "@playwright/test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +10,7 @@ const root = await mkdtemp(join(tmpdir(), "poietra-electron-packaged-smoke-"));
 const workspaceRoot = join(root, "workspace");
 const dataRoot = join(root, "data");
 const exportPath = join(root, "packaged-smoke.py");
+const shutdownMarker = join(root, "shutdown-render.json");
 const packageLayout = electronPackageLayout();
 const fakeRenderer = fileURLToPath(new URL("../server/test-fixtures/fake-manim.mjs", import.meta.url));
 const source = `from manim import *
@@ -27,12 +28,22 @@ await mkdir(workspaceRoot);
 await writeFile(join(workspaceRoot, "scene.py"), source, "utf8");
 
 let electronApplication;
+let result;
+let shutdownProcess = null;
+let failure = null;
 try {
   electronApplication = await electron.launch({
-    args: ["--headless", "--no-sandbox"],
+    args: ["--headless"],
     env: {
       ...process.env,
-      POIETRA_MANIM_COMMAND: JSON.stringify([process.execPath, fakeRenderer]),
+      POIETRA_MANIM_COMMAND: JSON.stringify([
+        process.execPath,
+        fakeRenderer,
+        "--shutdown-marker",
+        shutdownMarker,
+        "--slow-transaction",
+        "shutdown-smoke",
+      ]),
       POIETRA_STUDIO_DATA_ROOT: dataRoot,
     },
     executablePath: packageLayout.executable,
@@ -43,7 +54,7 @@ try {
     dialog.showSaveDialog = async () => ({ canceled: false, filePath: input.exportPath });
   }, { exportPath, workspaceRoot });
   const page = await electronApplication.firstWindow();
-  const result = await page.evaluate(async () => {
+  result = await page.evaluate(async () => {
     const readJson = async (response) => {
       const body = await response.json();
       if (!response.ok) throw new Error(`${response.status}: ${JSON.stringify(body)}`);
@@ -51,6 +62,14 @@ try {
     };
     const bridge = window.poietraDesktop;
     if (!bridge) throw new Error("Packaged preload bridge is unavailable.");
+    const bypass = await fetch("/api/manim/projects", {
+      body: JSON.stringify({ kind: "existing", name: "Renderer bypass", root: "/tmp/renderer-controlled" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    if (bypass.status !== 403) {
+      throw new Error(`Packaged HTTP accepted an existing-folder path with status ${bypass.status}.`);
+    }
     const registration = await bridge.registerExistingWorkspace("Packaged Smoke");
     if (registration.cancelled) throw new Error("Packaged folder selection was unexpectedly cancelled.");
     if (registration.status !== 201) throw new Error(`Workspace registration failed with ${registration.status}.`);
@@ -155,7 +174,52 @@ try {
       throw new Error("Packaged remove left a workspace registration behind.");
     }
 
+    const shutdownRegistration = await bridge.registerExistingWorkspace("Shutdown Smoke");
+    if (shutdownRegistration.cancelled || shutdownRegistration.status !== 201) {
+      throw new Error(`Shutdown workspace registration failed with ${shutdownRegistration.status}.`);
+    }
+    const shutdownProject = shutdownRegistration.body?.project;
+    if (!shutdownProject?.id) throw new Error("Shutdown workspace registration returned no project ID.");
+    const shutdownWorkspace = await readJson(await fetch(`/api/manim/projects/${shutdownProject.id}/workspace`));
+    const shutdownSource = shutdownWorkspace.sources[0];
+    const shutdownScene = shutdownSource?.scenes[0];
+    const shutdownEntityId = Object.entries(shutdownScene?.sourceVariables ?? {})
+      .find(([, variable]) => variable === "circle")?.[0];
+    if (!shutdownSource || !shutdownScene || !shutdownEntityId) {
+      throw new Error("Shutdown workspace did not import the smoke Circle.");
+    }
+    const shutdownOperation = {
+      ...operation,
+      id: "tx:shutdown-smoke/operation:motion",
+      targetEntityIds: [shutdownEntityId],
+    };
+    const shutdownProgram = {
+      ...program,
+      operations: [shutdownOperation],
+      schedule: { edges: [], mode: "sequence", order: [shutdownOperation.id] },
+      transactionId: "shutdown-smoke",
+    };
+    const shutdownRequest = {
+      ...request,
+      program: shutdownProgram,
+      projectId: shutdownProject.id,
+      sceneName: shutdownScene.name,
+      sourceBindings: [{ entityId: shutdownEntityId, sourceVariable: "circle" }],
+      sourceHash: shutdownScene.sourceHash,
+      sourcePath: shutdownSource.path,
+    };
+    const activeRender = await readJson(await fetch(`/api/manim/projects/${shutdownProject.id}/renders`, {
+      body: JSON.stringify(shutdownRequest),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    }));
+    const activeRenderStatus = await readJson(await fetch(`/api/manim/renders/${activeRender.id}`));
+    if (!["preparing", "rendering"].includes(activeRenderStatus.status)) {
+      throw new Error(`Shutdown render was not active: ${activeRenderStatus.status}.`);
+    }
+
     return {
+      activeRenderStatus: activeRenderStatus.status,
       exportedBytes: new TextEncoder().encode(exportedSource).byteLength,
       projectIdOpaque: !project.id.includes("/") && !project.id.includes("\\"),
       renderStatus: rendered.status,
@@ -169,9 +233,57 @@ try {
   if (!exported.includes('poietra:transaction "packaged-smoke"')) {
     throw new Error("Electron packaged smoke did not save the exported Python source.");
   }
-  process.stdout.write(`POIETRA_ELECTRON_SMOKE_RESULT ${JSON.stringify(result)}\n`);
-} finally {
-  await electronApplication?.close().catch(() => undefined);
-  await rm(root, { force: true, recursive: true });
-  await rm(packageLayout.outputRoot, { force: true, recursive: true });
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      shutdownProcess = JSON.parse(await readFile(shutdownMarker, "utf8"));
+      break;
+    } catch {
+      await new Promise((resolveWaiter) => setTimeout(resolveWaiter, 20));
+    }
+  }
+  if (
+    !shutdownProcess
+    || !Number.isSafeInteger(shutdownProcess.pid)
+    || typeof shutdownProcess.tempRoot !== "string"
+  ) {
+    throw new Error("The active shutdown render did not publish its process marker.");
+  }
+} catch (error) {
+  failure = error;
 }
+
+try {
+  await electronApplication?.close();
+} catch (error) {
+  failure ??= error;
+}
+
+if (shutdownProcess) {
+  try {
+    process.kill(shutdownProcess.pid, 0);
+    throw new Error("Packaged shutdown left the active render process running.");
+  } catch (error) {
+    if (!(error && typeof error === "object" && "code" in error && error.code === "ESRCH")) {
+      failure ??= error;
+    }
+  }
+  try {
+    await stat(shutdownProcess.tempRoot);
+    failure ??= new Error("Packaged shutdown left the active render temporary directory behind.");
+  } catch (error) {
+    if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) {
+      failure ??= error;
+    }
+  }
+}
+
+for (const cleanupRoot of [root, packageLayout.outputRoot]) {
+  try {
+    await rm(cleanupRoot, { force: true, recursive: true });
+  } catch (error) {
+    failure ??= error;
+  }
+}
+
+if (failure) throw failure;
+process.stdout.write(`POIETRA_ELECTRON_SMOKE_RESULT ${JSON.stringify(result)}\n`);

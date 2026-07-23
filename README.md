@@ -159,6 +159,9 @@ roots in API responses.
 
 `pnpm package:electron` builds the web renderer and Electron main process, then
 assembles a host-platform application under `release/electron-<platform>-<arch>`.
+The command explicitly runs Electron's runtime installer first, so a clean pnpm
+checkout downloads the host runtime before packaging instead of depending on a
+previous lifecycle-script side effect.
 The packaged app starts the same workspace/render/export service on a random loopback
 port. A per-launch capability is injected below the renderer API boundary, and the
 window denies new windows, cross-origin navigation, webviews, and permission requests.
