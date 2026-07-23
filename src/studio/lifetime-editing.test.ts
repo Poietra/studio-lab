@@ -167,6 +167,46 @@ describe("lifetime editing controls", () => {
     expect(controls.endTargets.map((target) => target.source.end)).toEqual([7, 12]);
   });
 
+  it("projects imported lifetime targets through a later Scene duration trim", () => {
+    const extension = createSceneDurationProgram({
+      appliedPrograms: [],
+      capturedPlayhead: 7,
+      scene: STUDIO_FIXTURE_SCENE,
+      sourceAnchor: 7,
+      targetDuration: 15,
+      transactionId: "lifetime-duration-extension",
+    });
+    const extensionRecord = programRecord(extension.program, extension);
+    const extendedScene = evaluateWorkingState(
+      createFixtureWorkingState({
+        appliedPrograms: [extensionRecord],
+      }),
+    ).evaluatedScene;
+    const trim = createSceneDurationProgram({
+      appliedPrograms: [extensionRecord],
+      capturedPlayhead: 7,
+      scene: extendedScene,
+      sourceAnchor: 7,
+      targetDuration: 13,
+      transactionId: "lifetime-duration-trim",
+    });
+    const records = [extensionRecord, programRecord(trim.program, trim)];
+    const proposed = evaluateWorkingState(createFixtureWorkingState({ appliedPrograms: records }));
+    const track = projectProposedState(proposed, 6).timeline.objectTracks.find(
+      (candidate) => candidate.entityId === "equation_1",
+    )!;
+    const controls = buildLifetimeEditControls({
+      anchors: [5, 7],
+      baseScene: STUDIO_FIXTURE_SCENE,
+      programs: records,
+      sourceDuration: 12,
+      tracks: [track],
+    })[lifetimeControlKey("equation_1", 0)]!;
+
+    expect(track.lifetimes).toEqual([{ end: 13, start: 0 }]);
+    expect(controls.endTargets.find((target) => target.source.end === 7)?.working).toEqual({ end: 7, start: 0 });
+  });
+
   it("offers both edge edits and width-preserving moves for a Studio-owned interval", () => {
     const insertion = createStudioEntitiesProgram({
       capturedPlayhead: 3,

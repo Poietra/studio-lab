@@ -2,6 +2,7 @@ import type { Interval, ProgramRecord, RuntimeSceneState, TimelineObjectTrack } 
 import type { CanonicalEditOperation } from "./operations";
 import {
   insertedProgramDuration,
+  programTimelineDelta,
   shiftIntervalForInsertion,
   timelineInsertionOffset,
   type TimelineInsertion,
@@ -152,12 +153,28 @@ function projectImportedInterval(source: Interval, programs: readonly ProgramRec
   let working = source;
   const insertions: TimelineInsertion[] = [];
   for (const { program } of programs) {
-    const duration = insertedProgramDuration(program);
+    const duration = programTimelineDelta(program);
     const at = program.anchor.resolvedSeconds + timelineInsertionOffset(insertions, program.anchor.resolvedSeconds);
-    working = shiftIntervalForInsertion(working, at, duration);
+    working = shiftIntervalForTimelineDelta(working, at, duration);
     insertions.push({ duration, sourceAnchor: program.anchor.resolvedSeconds });
   }
   return working;
+}
+
+function timeAfterRemoval(time: number, start: number, end: number) {
+  if (time <= start + 0.0005) return Math.min(time, start);
+  if (time >= end - 0.0005) return time - (end - start);
+  return start;
+}
+
+function shiftIntervalForTimelineDelta(interval: Interval, at: number, delta: number): Interval {
+  if (delta >= 0) return shiftIntervalForInsertion(interval, at, delta);
+  const removalStart = at + delta;
+  const nextStart = timeAfterRemoval(interval.start, removalStart, at);
+  return {
+    end: Math.max(nextStart, timeAfterRemoval(interval.end, removalStart, at)),
+    start: nextStart,
+  };
 }
 
 function createsEntity(
@@ -206,7 +223,7 @@ function projectOwnedInterval(
   let working: Interval | null = null;
   for (const [index, { program }] of programs.entries()) {
     const sourceAnchor = index === owner.index ? candidateAnchor : program.anchor.resolvedSeconds;
-    const duration = index === owner.index ? candidateDuration : insertedProgramDuration(program);
+    const duration = index === owner.index ? candidateDuration : programTimelineDelta(program);
     const offset = timelineInsertionOffset(insertions, sourceAnchor);
     const at = sourceAnchor + offset;
     if (index === owner.index) {
@@ -218,7 +235,7 @@ function projectOwnedInterval(
         start: source.start + offset,
       };
     } else if (working) {
-      working = shiftIntervalForInsertion(working, at, duration);
+      working = shiftIntervalForTimelineDelta(working, at, duration);
     }
     insertions.push({ duration, sourceAnchor });
   }
