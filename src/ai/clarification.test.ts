@@ -61,6 +61,10 @@ describe("bounded clarification context", () => {
       },
       objects: [{
         displayName: "Energy equation",
+        editCapabilities: {
+          delete: { kind: "supported" },
+          scale: { current: 1, kind: "supported" },
+        },
         id: "equation_1",
         lifetimes: [{ end: 12, start: 0 }],
         mathTex: { displayLines: ["E = mc²"], texParts: ["E", "=", "m", "c^2"] },

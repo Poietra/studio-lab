@@ -25,6 +25,7 @@ import {
 import { commandForShortcut, isEditableShortcutTarget, type StudioCommandId } from "./studio/commands";
 import { projectedPositions, validateSuggestionDraft, validatedProgramRecord } from "./studio/draft-validation";
 import type { Point, ProgramRecord, ProposedState, RuntimeSceneState } from "./studio/model";
+import { magicEditCapabilities, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./studio/magic-edit-capabilities";
 import {
   adjustAppliedMotionClipControl,
   appliedMotionClipReadOnlyReason,
@@ -79,8 +80,6 @@ const NUDGE_DELTAS: Readonly<Record<string, Readonly<{ x: number; y: number }>>>
   ArrowRight: { x: 2, y: 0 },
   ArrowUp: { x: 0, y: -2 },
 };
-const MAX_ENTITY_SCALE = 8;
-const MIN_ENTITY_SCALE = 0.1;
 type CanvasDragState = Readonly<{
   pointerId: number;
   scale: Readonly<{ x: number; y: number }>;
@@ -642,6 +641,11 @@ export function App() {
             .filter((entity) => !isTransitionOverlay(entity))
             .map((entity) => ({
               displayName: entity.content?.label ?? entity.id,
+              editCapabilities: magicEditCapabilities(
+                draftSourceScene ?? draftBaseState.evaluatedScene,
+                entity,
+                requestedPlayhead,
+              ),
               id: entity.id,
               lifetimes: entity.lifetime,
               mathTex:

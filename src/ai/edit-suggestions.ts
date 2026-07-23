@@ -9,8 +9,20 @@ export type SuggestionMathTexState = Readonly<{
   texParts: readonly string[];
 }>;
 
+export type SuggestionEditCapability =
+  | Readonly<{ kind: "supported" }>
+  | Readonly<{ kind: "blocked"; reason: string }>;
+
+export type SuggestionScaleCapability =
+  | Readonly<{ current: number; kind: "supported" }>
+  | Readonly<{ kind: "blocked"; reason: string }>;
+
 export type SuggestionObject = Readonly<{
   displayName: string;
+  editCapabilities: Readonly<{
+    delete: SuggestionEditCapability;
+    scale: SuggestionScaleCapability;
+  }>;
   id: string;
   lifetimes: readonly SuggestionInterval[];
   mathTex: SuggestionMathTexState | null;
@@ -162,15 +174,36 @@ export type CreateTextTransformSuggestion = Readonly<{
   text: string;
 }>;
 
+export type ScaleObjectsSuggestion = Readonly<{
+  anchor: SuggestionTimeAnchor;
+  easing: "smooth";
+  end: number;
+  factor: number;
+  kind: "scale-objects";
+  start: number;
+  targetObjectIds: readonly string[];
+}>;
+
+export type DeleteObjectsSuggestion = Readonly<{
+  anchor: SuggestionTimeAnchor;
+  animation: "fade-out";
+  end: number;
+  kind: "delete-objects";
+  start: number;
+  targetObjectIds: readonly string[];
+}>;
+
 export type EditSuggestionLeafOperation =
   | CreateCameraFocusSuggestion
+  | DeleteObjectsSuggestion
   | CreateEquationSuggestion
   | CreateExplainedEquationSuggestion
   | CreateTextTransformSuggestion
   | CreateMotionSuggestion
   | CreateTransformSuggestion
   | CreateExplanationSuggestion
-  | CreateSceneTransitionSuggestion;
+  | CreateSceneTransitionSuggestion
+  | ScaleObjectsSuggestion;
 
 export type EditProgramStep =
   | Omit<CreateMotionSuggestion, "anchor">
@@ -178,7 +211,9 @@ export type EditProgramStep =
   | Omit<CreateExplanationSuggestion, "anchor">
   | Omit<CreateEquationSuggestion, "anchor">
   | Omit<CreateExplainedEquationSuggestion, "anchor">
-  | Omit<CreateSceneTransitionSuggestion, "anchor">;
+  | Omit<CreateSceneTransitionSuggestion, "anchor">
+  | Omit<DeleteObjectsSuggestion, "anchor">
+  | Omit<ScaleObjectsSuggestion, "anchor">;
 
 export type EditProgramSuggestion = Readonly<{
   anchor: SuggestionTimeAnchor;

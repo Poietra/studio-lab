@@ -9,6 +9,15 @@ const motionControlOffsetSchema = z.object({
   y: z.number().min(-100).max(100),
 });
 const intervalSchema = z.object({ end: z.number(), start: z.number() });
+const targetObjectIdsSchema = z.array(z.string()).min(1).max(16).superRefine((ids, context) => {
+  const duplicate = ids.find((id, index) => ids.indexOf(id) !== index);
+  if (duplicate !== undefined) {
+    context.addIssue({
+      code: "custom",
+      message: `Target object ID ${duplicate} must be unique.`,
+    });
+  }
+});
 
 function boundedInterval(minimumDuration: number) {
   return (value: Readonly<{ end: number; start: number }>, context: z.RefinementCtx) => {
@@ -57,7 +66,7 @@ const createMotionFields = {
   end: z.number(),
   kind: z.literal("create-motion"),
   start: z.number(),
-  targetObjectIds: z.array(z.string()).min(1),
+  targetObjectIds: targetObjectIdsSchema,
 } as const;
 
 export const createMotionSuggestionSchema = z
@@ -130,7 +139,7 @@ export const createCameraFocusSuggestionSchema = z
     end: z.number(),
     kind: z.literal("create-camera-focus"),
     start: z.number(),
-    targetObjectIds: z.array(z.string()).min(1),
+    targetObjectIds: targetObjectIdsSchema,
     zoomScale: z.number().min(1).max(2),
   })
   .superRefine(boundedInterval(0.1));
@@ -184,8 +193,36 @@ export const createTextTransformSuggestionSchema = z
   })
   .superRefine(boundedInterval(0.1));
 
+const scaleObjectsFields = {
+  easing: z.literal("smooth"),
+  end: z.number(),
+  factor: z.number().finite().min(0.01).max(80),
+  kind: z.literal("scale-objects"),
+  start: z.number(),
+  targetObjectIds: targetObjectIdsSchema,
+} as const;
+
+export const scaleObjectsSuggestionSchema = z.object({
+  anchor: suggestionTimeAnchorSchema,
+  ...scaleObjectsFields,
+}).strict().superRefine(boundedInterval(0.1));
+
+const deleteObjectsFields = {
+  animation: z.literal("fade-out"),
+  end: z.number(),
+  kind: z.literal("delete-objects"),
+  start: z.number(),
+  targetObjectIds: targetObjectIdsSchema,
+} as const;
+
+export const deleteObjectsSuggestionSchema = z.object({
+  anchor: suggestionTimeAnchorSchema,
+  ...deleteObjectsFields,
+}).strict().superRefine(boundedInterval(0.1));
+
 export const editSuggestionLeafOperationSchema = z.discriminatedUnion("kind", [
   createCameraFocusSuggestionSchema,
+  deleteObjectsSuggestionSchema,
   createEquationSuggestionSchema,
   createExplainedEquationSuggestionSchema,
   createTextTransformSuggestionSchema,
@@ -193,6 +230,7 @@ export const editSuggestionLeafOperationSchema = z.discriminatedUnion("kind", [
   createTransformSuggestionSchema,
   createExplanationSuggestionSchema,
   createSceneTransitionSuggestionSchema,
+  scaleObjectsSuggestionSchema,
 ]);
 
 export const editProgramStepSchema = z.discriminatedUnion("kind", [
@@ -202,6 +240,8 @@ export const editProgramStepSchema = z.discriminatedUnion("kind", [
   z.object(createEquationFields).superRefine(boundedInterval(0.1)),
   z.object(createExplainedEquationFields).superRefine(boundedInterval(0.1)),
   z.object(createSceneTransitionFields).superRefine(boundedInterval(0.4)),
+  z.object(deleteObjectsFields).strict().superRefine(boundedInterval(0.1)),
+  z.object(scaleObjectsFields).strict().superRefine(boundedInterval(0.1)),
 ]);
 
 export const editProgramSuggestionSchema = z
@@ -337,6 +377,16 @@ export const editSuggestionRequestSchema = z.object({
   objects: z.array(
     z.object({
       displayName: z.string(),
+      editCapabilities: z.object({
+        delete: z.discriminatedUnion("kind", [
+          z.object({ kind: z.literal("supported") }),
+          z.object({ kind: z.literal("blocked"), reason: z.string().trim().min(1).max(500) }),
+        ]),
+        scale: z.discriminatedUnion("kind", [
+          z.object({ current: z.number().finite().positive(), kind: z.literal("supported") }),
+          z.object({ kind: z.literal("blocked"), reason: z.string().trim().min(1).max(500) }),
+        ]),
+      }),
       id: z.string(),
       lifetimes: z.array(intervalSchema),
       mathTex: z.object({ displayLines: z.array(z.string()), texParts: z.array(z.string()) }).nullable(),
