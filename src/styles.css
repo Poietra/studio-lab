@@ -36,6 +36,45 @@ textarea:focus-visible {
   outline-offset: 2px;
 }
 
+.timeline-scrubber {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  cursor: ew-resize;
+  padding: 0;
+}
+
+.timeline-scrubber::-webkit-slider-runnable-track {
+  height: 100%;
+  background: transparent;
+}
+
+.timeline-scrubber::-webkit-slider-thumb {
+  width: 12px;
+  height: 100%;
+  appearance: none;
+  border: 0;
+  background: transparent;
+}
+
+.timeline-scrubber::-moz-range-track,
+.timeline-scrubber::-moz-range-progress {
+  height: 100%;
+  background: transparent;
+}
+
+.timeline-scrubber::-moz-range-thumb {
+  width: 12px;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.timeline-scrubber:focus-visible {
+  outline-offset: -2px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

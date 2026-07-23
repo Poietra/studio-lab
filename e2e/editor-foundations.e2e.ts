@@ -365,6 +365,54 @@ test("undo and redo restore an uncommitted draft", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Move Circle" })).toBeVisible();
 });
 
+test("scrubs time from the ruler without blocking object intervals", async ({ page }) => {
+  await openWorkspace(page);
+  const scenePlayhead = page.getByRole("slider", { name: "Scene playhead" });
+  const timelinePlayhead = page.getByRole("slider", { name: "Timeline playhead" });
+  await expect(timelinePlayhead).toBeVisible();
+
+  const duration = Number(await timelinePlayhead.getAttribute("max"));
+  await scenePlayhead.fill(String(duration / 4));
+  const box = await timelinePlayhead.boundingBox();
+  if (!box) throw new Error("The timeline playhead is not visible.");
+
+  const pointerY = box.y + box.height - 8;
+  await page.mouse.move(box.x + box.width * 0.25, pointerY);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width * 0.75, pointerY, { steps: 6 });
+  await page.mouse.up();
+
+  await expect.poll(async () => Number(await timelinePlayhead.inputValue()))
+    .toBeGreaterThan(duration * 0.7);
+  const scrubbedTime = Number(await timelinePlayhead.inputValue());
+  expect(scrubbedTime).toBeLessThan(duration * 0.8);
+  await expect.poll(async () => Number(await scenePlayhead.inputValue()))
+    .toBeCloseTo(scrubbedTime, 2);
+  await expect.poll(async () => timelinePlayhead.getAttribute("aria-valuetext"))
+    .toBe(`${scrubbedTime.toFixed(2)} seconds of ${duration.toFixed(2)} seconds`);
+  const playheadPosition = await page.locator("[data-timeline-playhead]").first().evaluate((node) => (
+    Number.parseFloat((node as HTMLElement).style.left)
+  ));
+  expect(playheadPosition).toBeCloseTo((scrubbedTime / duration) * 100, 2);
+
+  await timelinePlayhead.focus();
+  await page.keyboard.press("ArrowLeft");
+  await expect.poll(async () => Number(await timelinePlayhead.inputValue()))
+    .toBeLessThan(scrubbedTime);
+
+  const lifetime = page.locator("[data-timeline-lifetime]").first();
+  await expect(lifetime).toHaveAttribute("title", /^Present /);
+  const lifetimeBox = await lifetime.boundingBox();
+  if (!lifetimeBox) throw new Error("The object lifetime is not visible.");
+  const hitLifetime = await page.evaluate(({ x, y }) => (
+    document.elementFromPoint(x, y)?.hasAttribute("data-timeline-lifetime") === true
+  ), {
+    x: lifetimeBox.x + lifetimeBox.width / 2,
+    y: lifetimeBox.y + lifetimeBox.height / 2,
+  });
+  expect(hitLifetime).toBe(true);
+});
+
 test("trims an object lifetime at a safe source anchor and exports an instant removal", async ({ page }) => {
   await openWorkspace(page);
   const lifetime = page.getByRole("button", { name: /Select equation lifetime/ });

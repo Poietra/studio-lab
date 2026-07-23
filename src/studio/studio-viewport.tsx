@@ -294,13 +294,22 @@ function MotionPathOverlay({
   );
 }
 
-function TimelinePlayhead({ currentTime, duration }: Readonly<{ currentTime: number; duration: number }>) {
+function TimelinePlayhead({
+  currentTime,
+  duration,
+  showHandle = false,
+}: Readonly<{ currentTime: number; duration: number; showHandle?: boolean }>) {
   return (
     <div
       aria-hidden="true"
       className="pointer-events-none absolute bottom-0 top-0 z-20 w-px bg-sky-400"
+      data-timeline-playhead
       style={{ left: `${(currentTime / duration) * 100}%` }}
-    />
+    >
+      {showHandle ? (
+        <span className="absolute left-1/2 top-1 size-2 -translate-x-1/2 border border-sky-200 bg-sky-500" />
+      ) : null}
+    </div>
   );
 }
 
@@ -597,6 +606,24 @@ function Timeline({
         </form>
       ) : null}
       <div aria-label="Scene object timeline" className="mt-3 max-h-56 overflow-y-auto border border-zinc-800 bg-zinc-900" role="group">
+        <div className="relative">
+          <div className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 sm:grid-cols-[8rem_minmax(0,1fr)]">
+            <div className="flex min-w-0 items-center px-2 text-[10px] font-medium text-zinc-400">Time</div>
+            <div className="relative h-6 min-w-0 overflow-hidden" data-timeline-ruler>
+              <input
+                aria-label="Timeline playhead"
+                aria-valuetext={`${currentTime.toFixed(2)} seconds of ${duration.toFixed(2)} seconds`}
+                className="timeline-scrubber relative z-10 m-0 h-full w-full min-w-0"
+                max={duration}
+                min="0"
+                onChange={(event) => onTimeChange(Number(event.currentTarget.value))}
+                step="0.01"
+                type="range"
+                value={currentTime}
+              />
+              <TimelinePlayhead currentTime={currentTime} duration={duration} showHandle />
+            </div>
+          </div>
           <div className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 sm:grid-cols-[8rem_minmax(0,1fr)]">
             <div className="flex min-w-0 items-center px-2 text-[10px] font-medium text-zinc-400">Scene</div>
             <div className="relative h-8 min-w-0 overflow-hidden">
@@ -616,7 +643,7 @@ function Timeline({
               {anchors.map((anchor) => (
                 <button
                   aria-label={`Move playhead to source anchor ${anchor.sourceTime.toFixed(3)} seconds`}
-                  className="absolute bottom-0 top-0 z-10 w-px bg-amber-500/70 focus-visible:w-0.5"
+                  className="absolute bottom-0 top-0 z-30 w-px bg-amber-500/70 focus-visible:w-0.5"
                   key={anchor.sourceTime}
                   onClick={() => onTimeChange(anchor.workingTime)}
                   style={{ left: `${(anchor.workingTime / duration) * 100}%` }}
@@ -692,6 +719,7 @@ function Timeline({
               </div>
             );
           })}
+        </div>
       </div>
     </section>
   );
