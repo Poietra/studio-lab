@@ -28,13 +28,17 @@ const SIDEBAR_SHORTCUTS: readonly StudioCommandId[] = [
 
 export function WorkspaceSidebar({
   activeScene,
+  appliedProgramReadOnlyReasons,
   appliedPrograms,
   appliedTransactionIds,
   className,
+  draftActive,
   duration,
+  editingAppliedTransactionId,
   entities,
   nextScene,
   onDurationChange,
+  onEditAppliedProgram,
   onRedo,
   onToggleEntity,
   onUndo,
@@ -42,13 +46,17 @@ export function WorkspaceSidebar({
   selectedIds,
 }: Readonly<{
   activeScene: ManimWorkspaceScene;
+  appliedProgramReadOnlyReasons: Readonly<Record<string, string | null>>;
   appliedPrograms: readonly ProgramRecord[];
   appliedTransactionIds: ReadonlySet<string>;
   className?: string;
+  draftActive: boolean;
   duration: number;
+  editingAppliedTransactionId: string | null;
   entities: readonly ProjectedEntity[];
   nextScene: ManimWorkspaceScene | null;
   onDurationChange: (duration: number) => void;
+  onEditAppliedProgram: (record: ProgramRecord, index: number) => void;
   onRedo: () => void;
   onToggleEntity: (entityId: string, selected: boolean) => void;
   onUndo: () => void;
@@ -144,15 +152,47 @@ export function WorkspaceSidebar({
         </div>
         {appliedPrograms.length > 0 ? (
           <ol className="mt-2 space-y-1">
-            {appliedPrograms.map((record, index) => (
-              <li className="truncate border border-zinc-800 px-2 py-1.5 font-mono text-[10px] text-zinc-500" key={record.program.transactionId}>
-                {index + 1}. {record.program.intentCount} intents · {record.program.transactionId}
-              </li>
-            ))}
+            {appliedPrograms.map((record, index) => {
+              const transactionId = record.program.transactionId;
+              const readOnlyReason = appliedProgramReadOnlyReasons[transactionId];
+              const editing = editingAppliedTransactionId === transactionId;
+              return (
+                <li className={cn(
+                  "border px-2 py-1.5 text-[10px]",
+                  editing ? "border-sky-900 bg-sky-950/40" : "border-zinc-800",
+                )} key={transactionId}>
+                  <div className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate font-mono text-zinc-500">
+                      {index + 1}. {record.program.intentCount} intents · {transactionId}
+                    </span>
+                    {readOnlyReason ? (
+                      <span className="shrink-0 text-zinc-600">Read-only</span>
+                    ) : (
+                      <button
+                        aria-label={`Edit applied program ${index + 1}`}
+                        className="shrink-0 border border-zinc-700 px-1.5 py-0.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:text-zinc-600"
+                        disabled={draftActive}
+                        onClick={() => onEditAppliedProgram(record, index)}
+                        title={editing ? "This Program is being edited." : draftActive ? "Apply or discard the current draft first." : undefined}
+                        type="button"
+                      >
+                        {editing ? "Editing" : "Edit"}
+                      </button>
+                    )}
+                  </div>
+                  {readOnlyReason ? (
+                    <p className="mt-1 text-pretty leading-4 text-zinc-600">{readOnlyReason}</p>
+                  ) : null}
+                </li>
+              );
+            })}
           </ol>
         ) : (
           <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">Apply a draft to add it to the Scene working state.</p>
         )}
+        <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">
+          Imported .py operations are read-only because they do not have a Studio-owned transaction that can be replaced safely.
+        </p>
       </section>
 
       <details className="mt-5 border-t border-zinc-800 pt-4 text-[10px]">
@@ -192,6 +232,7 @@ export function StudioInspector({
   renderCandidate,
   renderCandidateUnavailableReason,
   renderSession,
+  replacingAppliedProgram,
   selectedEntity,
   sourceExport,
   suggestion,
@@ -211,6 +252,7 @@ export function StudioInspector({
   renderCandidate: RenderProgramCandidate | null;
   renderCandidateUnavailableReason: string;
   renderSession: RenderSessionView | null;
+  replacingAppliedProgram: boolean;
   selectedEntity: ProjectedEntity | null;
   sourceExport: OriginalManimSourceExportRequest | null;
   suggestion: EditSuggestion | null;
@@ -220,6 +262,7 @@ export function StudioInspector({
     <aside className={cn("min-h-0 overflow-y-auto bg-zinc-950 p-3", className)}>
       {draftProgram ? (
         <DraftInspector
+          applyLabel={replacingAppliedProgram ? "Replace program" : "Apply program"}
           error={draftError}
           onApply={onApplyDraft}
           onDiscard={onDiscardDraft}
