@@ -1,11 +1,6 @@
 import { renderRequestPrograms, type ProgramRenderRequest, type SingleProgramRenderRequest } from "./contracts";
 import { analyzePythonSource, isPythonStatementStart } from "./python-source-analysis";
-import {
-  findSourceComments,
-  findSourceSceneBlock,
-  findSourceSceneComments,
-  importManimScene,
-} from "./source-import";
+import { findSourceComments, findSourceSceneBlock, findSourceSceneComments, importManimScene } from "./source-import";
 import {
   pythonReferenceClosure,
   PythonReferenceAnalysisError,
@@ -63,13 +58,15 @@ type ProgramSourceLoweringOptions = Readonly<{
   sourceAnchor?: number;
 }>;
 
-type SourceScaleState = Readonly<{
-  factor: number;
-  kind: "relative-to-source";
-}> | Readonly<{
-  kind: "absolute";
-  value: number;
-}>;
+type SourceScaleState =
+  | Readonly<{
+      factor: number;
+      kind: "relative-to-source";
+    }>
+  | Readonly<{
+      kind: "absolute";
+      value: number;
+    }>;
 
 export class ProgramLoweringError extends Error {
   constructor(
@@ -429,12 +426,10 @@ function scaleChange(operation: Extract<CanonicalEditOperation, { kind: "Animate
   }
   const capturedFactor = operation.to / operation.from;
   if (
-    operation.relativeFactor !== undefined
-    && (
-      !Number.isFinite(operation.relativeFactor)
-      || operation.relativeFactor <= 0
-      || Math.abs(capturedFactor - operation.relativeFactor) >= 0.000001
-    )
+    operation.relativeFactor !== undefined &&
+    (!Number.isFinite(operation.relativeFactor) ||
+      operation.relativeFactor <= 0 ||
+      Math.abs(capturedFactor - operation.relativeFactor) >= 0.000001)
   ) {
     throw new ProgramLoweringError(
       "operation-unsupported",
@@ -505,20 +500,30 @@ function resolveScaleChangesAndTransforms(
   entityScaleStates: Map<string, SourceScaleState> | undefined,
   frame: Readonly<{ height: number; width: number }>,
 ) {
-  const scales = operations.filter((operation): operation is Extract<CanonicalEditOperation, {
-    kind: "AnimateProperty";
-  }> => operation.kind === "AnimateProperty" && operation.key === "scale");
-  const transforms = operations.filter((operation): operation is Extract<CanonicalEditOperation, {
-    kind: "TransformContent";
-  }> => operation.kind === "TransformContent");
+  const scales = operations.filter(
+    (
+      operation,
+    ): operation is Extract<
+      CanonicalEditOperation,
+      {
+        kind: "AnimateProperty";
+      }
+    > => operation.kind === "AnimateProperty" && operation.key === "scale",
+  );
+  const transforms = operations.filter(
+    (
+      operation,
+    ): operation is Extract<
+      CanonicalEditOperation,
+      {
+        kind: "TransformContent";
+      }
+    > => operation.kind === "TransformContent",
+  );
   let imported: ReturnType<typeof importManimScene> | undefined;
   const sourceScale = (entityId: string) => {
-    imported ??= importManimScene(
-      sourceThroughAnchor(source, sceneBlock, anchorLine),
-      sourcePath,
-      sceneName,
-      frame,
-    ) ?? undefined;
+    imported ??=
+      importManimScene(sourceThroughAnchor(source, sceneBlock, anchorLine), sourcePath, sceneName, frame) ?? undefined;
     if (!imported) {
       throw new ProgramLoweringError(
         "operation-unsupported",
@@ -527,22 +532,15 @@ function resolveScaleChangesAndTransforms(
     }
     const sourceVariable = sourceBindings.get(entityId);
     const entity = sourceVariable
-      ? Object.values(imported.runtimeSceneState.objectGraph.entities).find((candidate) => (
-          candidate.sourceIdentity.kind === "known"
-          && candidate.sourceIdentity.value === sourceVariable
-        ))
+      ? Object.values(imported.runtimeSceneState.objectGraph.entities).find(
+          (candidate) => candidate.sourceIdentity.kind === "known" && candidate.sourceIdentity.value === sourceVariable,
+        )
       : undefined;
-    const samples = entity
-      ? imported.runtimeSceneState.propertyChannels[`${entity.id}/scale`]?.samples ?? []
-      : [];
+    const samples = entity ? (imported.runtimeSceneState.propertyChannels[`${entity.id}/scale`]?.samples ?? []) : [];
     const value = samplePropertyValue(samples, sourceAnchor);
     const numericValue = typeof value === "number" ? value : undefined;
     const knowledge = samplePropertyKnowledge(samples, sourceAnchor, numericValue);
-    if (
-      knowledge?.kind !== "known"
-      || !Number.isFinite(knowledge.value)
-      || knowledge.value <= 0
-    ) {
+    if (knowledge?.kind !== "known" || !Number.isFinite(knowledge.value) || knowledge.value <= 0) {
       throw new ProgramLoweringError(
         "operation-unsupported",
         `Object-edit lowering cannot verify a finite positive source scale for ${entityId} at the selected anchor.`,
@@ -550,11 +548,13 @@ function resolveScaleChangesAndTransforms(
     }
     return knowledge.value;
   };
-  const createdScales = new Map(operations.flatMap((operation) => (
-    operation.kind === "CreateEntity"
-      ? [[operation.entity.id, operation.entity.type.startsWith("TransitionOverlay:") ? 0.01 : 1] as const]
-      : []
-  )));
+  const createdScales = new Map(
+    operations.flatMap((operation) =>
+      operation.kind === "CreateEntity"
+        ? [[operation.entity.id, operation.entity.type.startsWith("TransitionOverlay:") ? 0.01 : 1] as const]
+        : [],
+    ),
+  );
   const currentScales = new Map<string, number>();
   const currentScaleStates = new Map<string, SourceScaleState>();
   for (const [entityId, scale] of createdScales) {
@@ -598,11 +598,7 @@ function resolveScaleChangesAndTransforms(
       from: current,
       to: current * captured.factor,
     };
-    if (
-      !Number.isFinite(change.to)
-      || change.to < MIN_ENTITY_SCALE
-      || change.to > MAX_ENTITY_SCALE
-    ) {
+    if (!Number.isFinite(change.to) || change.to < MIN_ENTITY_SCALE || change.to > MAX_ENTITY_SCALE) {
       throw new ProgramLoweringError(
         "operation-unsupported",
         `Scale operation ${operation.id} must resolve between ${MIN_ENTITY_SCALE}x and ${MAX_ENTITY_SCALE}x.`,
@@ -610,9 +606,10 @@ function resolveScaleChangesAndTransforms(
     }
     resolvedChanges.set(operation.id, change);
     currentScales.set(operation.entityId, change.to);
-    const nextState: SourceScaleState = state?.kind === "relative-to-source"
-      ? { factor: state.factor * change.factor, kind: "relative-to-source" }
-      : { kind: "absolute", value: change.to };
+    const nextState: SourceScaleState =
+      state?.kind === "relative-to-source"
+        ? { factor: state.factor * change.factor, kind: "relative-to-source" }
+        : { kind: "absolute", value: change.to };
     currentScaleStates.set(operation.entityId, nextState);
     entityScaleStates?.set(operation.entityId, nextState);
   }
@@ -640,17 +637,17 @@ function persistentRemovalVariables(
   const removed = new Set<string>();
   for (const operation of operations) {
     if (operation.kind === "TransformContent") {
-      const source = aliases.get(operation.sourceEntityId)
-        ?? new Set([requireVariable(variableByEntity, operation.sourceEntityId)]);
-      const target = aliases.get(operation.targetEntityId)
-        ?? new Set([requireVariable(variableByEntity, operation.targetEntityId)]);
+      const source =
+        aliases.get(operation.sourceEntityId) ?? new Set([requireVariable(variableByEntity, operation.sourceEntityId)]);
+      const target =
+        aliases.get(operation.targetEntityId) ?? new Set([requireVariable(variableByEntity, operation.targetEntityId)]);
       const merged = new Set([...source, ...target]);
       aliases.set(operation.sourceEntityId, merged);
       aliases.set(operation.targetEntityId, merged);
     }
     if (operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent) {
-      const values = aliases.get(operation.entityId)
-        ?? new Set([requireVariable(variableByEntity, operation.entityId)]);
+      const values =
+        aliases.get(operation.entityId) ?? new Set([requireVariable(variableByEntity, operation.entityId)]);
       for (const value of values) removed.add(value);
     }
   }
@@ -666,12 +663,7 @@ function referencedVariableAfterAnchor(
   if (variables.size === 0) return null;
   let references: ReadonlySet<string>;
   try {
-    references = pythonReferenceClosure(
-      source,
-      sceneBlock.bodyStart,
-      anchorLine - 1,
-      variables,
-    );
+    references = pythonReferenceClosure(source, sceneBlock.bodyStart, anchorLine - 1, variables);
   } catch (error) {
     if (!(error instanceof PythonReferenceAnalysisError)) throw error;
     throw new ProgramLoweringError(
@@ -692,11 +684,12 @@ function referencedVariableAfterAnchor(
     const reference = referencedPythonReference(line, references);
     if (reference) return reference;
     if (
-      sceneBlock.bodyIndent !== null
-      && line.indentation === sceneBlock.bodyIndent
-      && isPythonStatementStart(line)
-      && /^(?:raise|return)\b/.test(line.code.trimStart())
-    ) break;
+      sceneBlock.bodyIndent !== null &&
+      line.indentation === sceneBlock.bodyIndent &&
+      isPythonStatementStart(line) &&
+      /^(?:raise|return)\b/.test(line.code.trimStart())
+    )
+      break;
   }
   return null;
 }
@@ -767,10 +760,7 @@ export function lowerCanonicalProgramSource(
   const indentation = markerLine.match(/^\s*/)?.[0] ?? "";
   const sceneBlock = findSourceSceneBlock(source, request.sceneName, request.sourcePath);
   if (!sceneBlock) {
-    throw new ProgramLoweringError(
-      "anchor-missing",
-      `${request.sceneName} is not present in ${request.sourcePath}.`,
-    );
+    throw new ProgramLoweringError("anchor-missing", `${request.sceneName} is not present in ${request.sourcePath}.`);
   }
   const sourceBeforeAnchor = lines.slice(sceneBlock?.bodyStart ?? 0, anchor.line - 1).join(newline);
   const sourceBindings = new Map(request.sourceBindings.map((binding) => [binding.entityId, binding.sourceVariable]));

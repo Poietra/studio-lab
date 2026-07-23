@@ -9,15 +9,19 @@ const motionControlOffsetSchema = z.object({
   y: z.number().min(-100).max(100),
 });
 const intervalSchema = z.object({ end: z.number(), start: z.number() });
-const targetObjectIdsSchema = z.array(z.string()).min(1).max(16).superRefine((ids, context) => {
-  const duplicate = ids.find((id, index) => ids.indexOf(id) !== index);
-  if (duplicate !== undefined) {
-    context.addIssue({
-      code: "custom",
-      message: `Target object ID ${duplicate} must be unique.`,
-    });
-  }
-});
+const targetObjectIdsSchema = z
+  .array(z.string())
+  .min(1)
+  .max(16)
+  .superRefine((ids, context) => {
+    const duplicate = ids.find((id, index) => ids.indexOf(id) !== index);
+    if (duplicate !== undefined) {
+      context.addIssue({
+        code: "custom",
+        message: `Target object ID ${duplicate} must be unique.`,
+      });
+    }
+  });
 
 function boundedInterval(minimumDuration: number) {
   return (value: Readonly<{ end: number; start: number }>, context: z.RefinementCtx) => {
@@ -202,10 +206,13 @@ const scaleObjectsFields = {
   targetObjectIds: targetObjectIdsSchema,
 } as const;
 
-export const scaleObjectsSuggestionSchema = z.object({
-  anchor: suggestionTimeAnchorSchema,
-  ...scaleObjectsFields,
-}).strict().superRefine(boundedInterval(0.1));
+export const scaleObjectsSuggestionSchema = z
+  .object({
+    anchor: suggestionTimeAnchorSchema,
+    ...scaleObjectsFields,
+  })
+  .strict()
+  .superRefine(boundedInterval(0.1));
 
 const deleteObjectsFields = {
   animation: z.literal("fade-out"),
@@ -215,10 +222,13 @@ const deleteObjectsFields = {
   targetObjectIds: targetObjectIdsSchema,
 } as const;
 
-export const deleteObjectsSuggestionSchema = z.object({
-  anchor: suggestionTimeAnchorSchema,
-  ...deleteObjectsFields,
-}).strict().superRefine(boundedInterval(0.1));
+export const deleteObjectsSuggestionSchema = z
+  .object({
+    anchor: suggestionTimeAnchorSchema,
+    ...deleteObjectsFields,
+  })
+  .strict()
+  .superRefine(boundedInterval(0.1));
 
 export const editSuggestionLeafOperationSchema = z.discriminatedUnion("kind", [
   createCameraFocusSuggestionSchema,

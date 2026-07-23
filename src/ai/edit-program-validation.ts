@@ -212,7 +212,9 @@ export function validateEditProgram<TId extends string>(
   const deleteIsValid =
     !deleteStep ||
     (deleteTargets.length === deleteStep.targetObjectIds.length &&
-      deleteTargets.every((object) => (lifetimeAt(object, deleteStep.start)?.end ?? deleteStep.start) >= deleteStep.end));
+      deleteTargets.every(
+        (object) => (lifetimeAt(object, deleteStep.start)?.end ?? deleteStep.start) >= deleteStep.end,
+      ));
   const equationCreationCount = Number(equationStep !== null) + Number(explainedEquationStep !== null);
   const motionTargetIds = [
     ...new Set<TId>(motionCandidates.flatMap(({ targets }) => targets.map((object) => object.id))),
@@ -233,9 +235,7 @@ export function validateEditProgram<TId extends string>(
       );
     });
   const parallelSceneTransitionObjectEdit =
-    operation.execution === "parallel" &&
-    sceneTransitionStep !== null &&
-    (scaleStep !== null || deleteStep !== null);
+    operation.execution === "parallel" && sceneTransitionStep !== null && (scaleStep !== null || deleteStep !== null);
   const sceneTransitionIsNotFinal =
     sceneTransitionIndex >= 0 && sceneTransitionIndex !== operation.operations.length - 1;
   const scaleTransformConflict = transformSteps.some(({ step }) =>
@@ -248,9 +248,7 @@ export function validateEditProgram<TId extends string>(
     operation.operations.some((step, index) => {
       if (step.kind !== "delete-objects") return false;
       const targets = new Set(step.targetObjectIds);
-      return operation.operations
-        .slice(index + 1)
-        .some((later) => stepTargetIds(later).some((id) => targets.has(id)));
+      return operation.operations.slice(index + 1).some((later) => stepTargetIds(later).some((id) => targets.has(id)));
     });
   if (
     !motionsAreValid ||

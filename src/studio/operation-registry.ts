@@ -13,12 +13,7 @@ import type {
   TimelineEvent,
 } from "./model";
 import { exactEntityScaleAt, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./magic-edit-capabilities";
-import type {
-  CanonicalEditOperation,
-  CanonicalEditProgram,
-  ChannelAccess,
-  ProgramValidationIssue,
-} from "./operations";
+import type { CanonicalEditOperation, CanonicalEditProgram, ChannelAccess, ProgramValidationIssue } from "./operations";
 import { insertedProgramDuration } from "./program-composition";
 import { isPointValue, samplePropertyValue } from "./property-sampling";
 
@@ -590,11 +585,9 @@ export const OPERATION_REGISTRY = {
         typeof sampledFrom === "number" &&
         Number.isFinite(sampledFrom) &&
         sampledFrom > 0;
-      const from =
-        relativeScale
-          ? sampledFrom
-          : operation.from ??
-            (isPointValue(sampledFrom) || typeof sampledFrom === "number" ? sampledFrom : undefined);
+      const from = relativeScale
+        ? sampledFrom
+        : (operation.from ?? (isPointValue(sampledFrom) || typeof sampledFrom === "number" ? sampledFrom : undefined));
       const value = relativeScale ? sampledFrom * operation.relativeFactor! : operation.to;
       appendSample(draft, operation.entityId, operation.key, {
         control: operation.control,
@@ -616,16 +609,16 @@ export const OPERATION_REGISTRY = {
       const issues = entityIssues([operation.entityId], operation, scene);
       if (operation.relativeFactor === undefined) return issues;
       if (
-        operation.key !== "scale"
-        || typeof operation.from !== "number"
-        || typeof operation.to !== "number"
-        || !Number.isFinite(operation.relativeFactor)
-        || operation.relativeFactor <= 0
-        || !Number.isFinite(operation.from)
-        || operation.from <= 0
-        || !Number.isFinite(operation.to)
-        || operation.to <= 0
-        || Math.abs(operation.to / operation.from - operation.relativeFactor) >= 0.000001
+        operation.key !== "scale" ||
+        typeof operation.from !== "number" ||
+        typeof operation.to !== "number" ||
+        !Number.isFinite(operation.relativeFactor) ||
+        operation.relativeFactor <= 0 ||
+        !Number.isFinite(operation.from) ||
+        operation.from <= 0 ||
+        !Number.isFinite(operation.to) ||
+        operation.to <= 0 ||
+        Math.abs(operation.to / operation.from - operation.relativeFactor) >= 0.000001
       ) {
         issues.push({
           code: "schema-invalid",
@@ -639,21 +632,20 @@ export const OPERATION_REGISTRY = {
       const entity = scene.objectGraph.entities[operation.entityId];
       if (entity) {
         const scale = exactEntityScaleAt(scene, entity, operation.interval.start);
-        const targetScale = scale.kind === "known"
-          ? scale.value * operation.relativeFactor
-          : Number.NaN;
+        const targetScale = scale.kind === "known" ? scale.value * operation.relativeFactor : Number.NaN;
         if (
-          scale.kind !== "known"
-          || !Number.isFinite(targetScale)
-          || targetScale < MIN_ENTITY_SCALE
-          || targetScale > MAX_ENTITY_SCALE
+          scale.kind !== "known" ||
+          !Number.isFinite(targetScale) ||
+          targetScale < MIN_ENTITY_SCALE ||
+          targetScale > MAX_ENTITY_SCALE
         ) {
           issues.push({
             code: "lowering-unsupported",
             field: "relativeFactor",
-            message: scale.kind === "unknown"
-              ? `Relative scale cannot resolve an exact source value: ${scale.reason}`
-              : `Relative scale must resolve between ${MIN_ENTITY_SCALE}x and ${MAX_ENTITY_SCALE}x; it resolves to ${targetScale}x.`,
+            message:
+              scale.kind === "unknown"
+                ? `Relative scale cannot resolve an exact source value: ${scale.reason}`
+                : `Relative scale must resolve between ${MIN_ENTITY_SCALE}x and ${MAX_ENTITY_SCALE}x; it resolves to ${targetScale}x.`,
             operationId: operation.id,
             severity: "error",
           });
