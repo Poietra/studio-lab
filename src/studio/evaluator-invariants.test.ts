@@ -301,6 +301,39 @@ class Scaling(Scene):
     ).toBeCloseTo(1.5);
   });
 
+  it("rebases a later direct source scale after an inserted Magic scale", () => {
+    const source = `from manim import *
+
+class Scaling(Scene):
+    def construct(self):
+        equation = MathTex("x")
+        self.add(equation)
+        self.wait(2)
+        equation.scale(2)
+`;
+    const imported = importManimScene(source, "direct-scaling.py", "Scaling");
+    expect(imported).not.toBeNull();
+    if (!imported) return;
+    const entityId = "source:direct-scaling.py#Scaling:equation";
+    const sourceSamples = imported.runtimeSceneState.propertyChannels[`${entityId}/scale`]?.samples ?? [];
+    expect(sourceSamples.at(-1)).toMatchObject({ from: 1, relative: true, value: 2 });
+
+    const samples = normalizeScaleSamples([
+      ...sourceSamples,
+      {
+        easing: "smooth",
+        from: 1,
+        interval: { end: 2, start: 1 },
+        kind: "animated",
+        knowledge: { kind: "known", value: 1.5 },
+        operationId: "magic-scale",
+        provenanceId: "magic-scale/provenance",
+        value: 1.5,
+      },
+    ]);
+    expect(samples.at(-1)).toMatchObject({ from: 1.5, relative: true, value: 3 });
+  });
+
   it("rebases relative scale Programs added in reverse source-anchor order", () => {
     const source = `from manim import *
 

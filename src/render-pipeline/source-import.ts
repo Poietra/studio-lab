@@ -1010,7 +1010,8 @@ export function importManimScene(
       const entity = byVariable.get(directScaleVariable);
       if (entity) {
         const factor = positiveNumberLiteral(expression);
-        let value = entity.scale;
+        const from = entity.scale;
+        let value = from;
         let knowledge: Knowledge<number>;
         if (factor !== null) {
           value *= factor;
@@ -1019,6 +1020,7 @@ export function importManimScene(
           knowledge = unknown("Scale is changed by a dynamic source expression.", [expression.trim()]);
         }
         appendChannelSample(scaleSamples, entity.id, {
+          ...(factor !== null ? { from } : {}),
           interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
           kind: "exact",
           knowledge,
