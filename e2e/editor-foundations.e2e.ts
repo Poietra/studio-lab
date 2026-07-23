@@ -141,15 +141,17 @@ test("waits at the launcher and only imports explicitly selected workspaces", as
   let projectCatalogRequests = 0;
   let thumbnailGenerationRequests = 0;
   let thumbnailRequests = 0;
+  let thumbnailStatusRequests = 0;
   let workspaceRequests = 0;
   page.on("request", (request) => {
     const pathname = new URL(request.url()).pathname;
     if (pathname === "/api/manim/projects") projectCatalogRequests += 1;
     if (/^\/api\/manim\/projects\/[^/]+\/thumbnail$/.test(pathname)) thumbnailRequests += 1;
     if (/^\/api\/manim\/projects\/[^/]+\/thumbnail\/generate$/.test(pathname)) thumbnailGenerationRequests += 1;
+    if (/^\/api\/manim\/projects\/[^/]+\/thumbnail\/status$/.test(pathname)) thumbnailStatusRequests += 1;
     if (/^\/api\/manim\/projects\/[^/]+\/workspace$/.test(pathname)) workspaceRequests += 1;
   });
-  await page.route("**/api/manim/projects/examples/thumbnail", async (route) => {
+  await page.route(/\/api\/manim\/projects\/examples\/thumbnail(?:\?.*)?$/, async (route) => {
     await route.abort("failed");
   });
 
@@ -206,6 +208,7 @@ test("waits at the launcher and only imports explicitly selected workspaces", as
   await expect(page.locator("[data-studio-canvas]")).toHaveCount(0);
   expect(thumbnailRequests).toBeGreaterThanOrEqual(2);
   expect(thumbnailGenerationRequests).toBe(0);
+  expect(thumbnailStatusRequests).toBe(2);
   expect(workspaceRequests).toBe(0);
   expect(projectCatalogRequests).toBe(1);
 

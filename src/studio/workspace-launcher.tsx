@@ -116,7 +116,9 @@ function WorkspaceCover({
       )} data-workspace-thumbnail-fallback>
         {workspaceInitials(project.name)}
       </span>
-      <WorkspaceThumbnailImage assetVersion={assetVersion} key={assetVersion} projectId={project.id} />
+      {status ? (
+        <WorkspaceThumbnailImage assetVersion={assetVersion} key={assetVersion} projectId={project.id} />
+      ) : null}
       <span
         className={cn(
           "absolute left-3 top-3 border bg-zinc-950/90 px-2 py-1 text-xs font-medium",
@@ -175,7 +177,11 @@ function WorkspaceCard({
         setThumbnailError(error instanceof Error ? error.message : "Could not load the preview status.");
       }
     };
-    void loadStatus();
+    // StrictMode reconnects effects once in development. Deferring avoids sending
+    // a status request from the setup React immediately discards.
+    queueMicrotask(() => {
+      if (active) void loadStatus();
+    });
     return () => {
       active = false;
       controller.abort();
