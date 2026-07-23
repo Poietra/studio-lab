@@ -824,6 +824,29 @@ class Independent(Scene):
 
     await expect(manager.start(request())).rejects.toThrow(/shutting down/i);
   });
+
+  it("stops an in-flight command probe before shutdown completes", async () => {
+    const markerRoot = await mkdtemp(join(tmpdir(), "poietra-probe-shutdown-"));
+    temporaryRoots.push(markerRoot);
+    const versionMarker = join(markerRoot, "probe-pid");
+    const { manager } = await fixture({
+      command: [process.execPath, fakeRenderer, "--version-marker", versionMarker, "--hang-version"],
+    });
+
+    const workspace = manager.workspace();
+    await waitUntil(async () => {
+      try {
+        return Boolean((await readFile(versionMarker, "utf8")).trim());
+      } catch {
+        return false;
+      }
+    }, "The command availability probe did not start.");
+    const probePid = Number(await readFile(versionMarker, "utf8"));
+
+    await expect(manager.close()).resolves.toBeUndefined();
+    await expect(workspace).resolves.toMatchObject({ commandAvailable: false });
+    expect(() => process.kill(probePid, 0)).toThrow();
+  });
 });
 
 describe("Manim project registry", () => {

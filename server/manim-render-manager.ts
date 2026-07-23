@@ -105,26 +105,37 @@ function requireTimerDelay(value: number, name: string) {
   return value;
 }
 
-function commandIsAvailable(command: readonly string[]) {
+function commandIsAvailable(command: readonly string[], signal?: AbortSignal) {
   return new Promise<boolean>((resolveAvailability) => {
     let settled = false;
-    const finish = (available: boolean) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      resolveAvailability(available);
-    };
+    let stopping = false;
+    let timeout: NodeJS.Timeout | null = null;
     const child = spawn(command[0], [...command.slice(1), "--version"], {
       detached: process.platform !== "win32",
       stdio: "ignore",
     });
-    const timeout = setTimeout(() => {
+    const cleanup = () => {
+      if (timeout) clearTimeout(timeout);
+      signal?.removeEventListener("abort", stop);
+    };
+    const finish = (available: boolean) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolveAvailability(available);
+    };
+    const stop = () => {
+      if (stopping || settled) return;
+      stopping = true;
       stopRenderProcess(child);
-      finish(false);
-    }, COMMAND_AVAILABILITY_TIMEOUT_MS);
+      void waitForRenderProcessStop(child).then(() => finish(false));
+    };
+    timeout = setTimeout(stop, COMMAND_AVAILABILITY_TIMEOUT_MS);
     timeout.unref();
     child.once("error", () => finish(false));
-    child.once("exit", (code) => finish(code === 0));
+    child.once("exit", (code) => finish(!stopping && code === 0));
+    if (signal?.aborted) stop();
+    else signal?.addEventListener("abort", stop, { once: true });
   });
 }
 
@@ -145,6 +156,7 @@ export class ManimRenderManager {
   projectName: string;
   readonly projectRoot: string;
   private commandAvailability: Readonly<{ checkedAt: number; value: boolean }> | null = null;
+  private readonly commandAvailabilityAbort = new AbortController();
   private commandAvailabilityRequest: Promise<boolean> | null = null;
   private activeStarts = 0;
   private closeRequest: Promise<void> | null = null;
@@ -283,6 +295,7 @@ export class ManimRenderManager {
 
   async workspace(projectId = this.projectId): Promise<ManimWorkspaceView> {
     if (projectId !== this.projectId) throw new HttpError("Configured Manim project not found.", 404);
+    if (this.closing) throw new HttpError("The Manim render pipeline is shutting down.", 503);
     if (this.workspaceRequest) return this.workspaceRequest;
     this.workspaceRequest = (async () => {
       const [commandAvailable, sources] = await Promise.all([
@@ -385,7 +398,7 @@ export class ManimRenderManager {
 
   private async isCommandAvailable(now = Date.now()) {
     if (!this.commandAvailability || now - this.commandAvailability.checkedAt >= COMMAND_AVAILABILITY_TTL_MS) {
-      this.commandAvailabilityRequest ??= commandIsAvailable(this.command);
+      this.commandAvailabilityRequest ??= commandIsAvailable(this.command, this.commandAvailabilityAbort.signal);
       try {
         const value = await this.commandAvailabilityRequest;
         this.commandAvailability = { checkedAt: Date.now(), value };
@@ -914,6 +927,8 @@ export class ManimRenderManager {
   }
 
   private async closeResources() {
+    this.commandAvailabilityAbort.abort();
+    const pendingWorkspace = this.workspaceRequest;
     const thumbnailClose = this.thumbnailCache.close();
     await this.waitForStarts();
     clearInterval(this.cleanupTimer);
@@ -925,6 +940,7 @@ export class ManimRenderManager {
         await rm(session.tempRoot, { force: true, recursive: true });
       }),
       thumbnailClose,
+      ...(pendingWorkspace ? [pendingWorkspace] : []),
       ...(this.thumbnailRefreshRequest ? [this.thumbnailRefreshRequest] : []),
       ...(this.thumbnailSlotRequest ? [this.thumbnailSlotRequest] : []),
     ]);
