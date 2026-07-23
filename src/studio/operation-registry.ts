@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import type {
   ConstraintGraph,
+  EntityDimensions,
   IdentityLineage,
   PropertyChannel,
   PropertyChannels,
@@ -13,9 +14,19 @@ import type {
   TimelineEvent,
 } from "./model";
 import { exactEntityScaleAt, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./magic-edit-capabilities";
-import type { CanonicalEditOperation, CanonicalEditProgram, ChannelAccess, ProgramValidationIssue } from "./operations";
+import type {
+  CanonicalEditOperation,
+  CanonicalEditProgram,
+  ChannelAccess,
+  ProgramValidationIssue,
+} from "./operations";
 import { insertedProgramDuration } from "./program-composition";
-import { isPointValue, samplePropertyValue } from "./property-sampling";
+import {
+  isEntityDimensionsValue,
+  isPointValue,
+  samplePropertyKnowledge,
+  samplePropertyValue,
+} from "./property-sampling";
 
 const pointSchema = z.object({ x: z.number(), y: z.number() });
 const dimensionsSchema = z.object({
@@ -509,6 +520,75 @@ const allEntityProjections = [
   "working-playback",
 ] as const;
 
+function validCreateDimensions(type: string, dimensions: EntityDimensions | undefined) {
+  if (dimensions === undefined) return true;
+  if (type === "Circle") return exactShapeDimensions("circle", dimensions);
+  if (type === "Rectangle") return exactShapeDimensions("rectangle", dimensions);
+  return false;
+}
+
+function exactShapeDimensions(shape: "circle" | "rectangle", dimensions: EntityDimensions) {
+  return shape === "circle"
+    ? dimensions.radius !== undefined && dimensions.height === undefined && dimensions.width === undefined
+    : dimensions.height !== undefined && dimensions.width !== undefined && dimensions.radius === undefined;
+}
+
+function closeEnough(left: number, right: number) {
+  return Math.abs(left - right) < 0.001;
+}
+
+function matchingResizeStart(
+  operation: Extract<CanonicalEditOperation, { kind: "ResizeEntity" }>,
+  scene: RuntimeSceneState,
+) {
+  const dimensionsSamples = scene.propertyChannels[propertyKey(operation.entityId, "dimensions")]?.samples ?? [];
+  const positionSamples = scene.propertyChannels[propertyKey(operation.entityId, "position")]?.samples ?? [];
+  const scaleSamples = scene.propertyChannels[propertyKey(operation.entityId, "scale")]?.samples ?? [];
+  const sampledDimensions = samplePropertyValue(dimensionsSamples, operation.interval.start);
+  const position = samplePropertyValue(positionSamples, operation.interval.start);
+  const sampledScale = samplePropertyValue(scaleSamples, operation.interval.start);
+  const entity = scene.objectGraph.entities[operation.entityId];
+  const dimensions = isEntityDimensionsValue(sampledDimensions)
+    ? sampledDimensions
+    : entity?.type === "Circle" ? { radius: 1 }
+      : entity?.type === "Rectangle" ? { height: 2, width: 4 }
+        : undefined;
+  const scale = typeof sampledScale === "number" ? sampledScale : 1;
+  const dimensionsKnowledge = dimensions
+    ? samplePropertyKnowledge(dimensionsSamples, operation.interval.start, dimensions)
+    : undefined;
+  const positionKnowledge = isPointValue(position)
+    ? samplePropertyKnowledge(positionSamples, operation.interval.start, position)
+    : undefined;
+  const scaleKnowledge = typeof sampledScale === "number"
+    ? samplePropertyKnowledge(scaleSamples, operation.interval.start, scale)
+    : undefined;
+  const dimensionsMatch = operation.shape === "circle"
+    ? dimensions !== undefined
+      && dimensions.radius !== undefined
+      && operation.from.dimensions.radius !== undefined
+      && closeEnough(dimensions.radius, operation.from.dimensions.radius)
+    : dimensions !== undefined
+      && dimensions.width !== undefined
+      && dimensions.height !== undefined
+      && operation.from.dimensions.width !== undefined
+      && operation.from.dimensions.height !== undefined
+      && closeEnough(dimensions.width, operation.from.dimensions.width)
+      && closeEnough(dimensions.height, operation.from.dimensions.height);
+  return dimensionsMatch
+    && exactShapeDimensions(operation.shape, operation.from.dimensions)
+    && exactShapeDimensions(operation.shape, operation.to.dimensions)
+    && !(dimensionsSamples.length === 0 && entity?.geometry?.dimensions.kind === "unknown")
+    && dimensionsKnowledge?.kind !== "unknown"
+    && isPointValue(position)
+    && positionKnowledge?.kind !== "unknown"
+    && closeEnough(position.x, operation.from.position.x)
+    && closeEnough(position.y, operation.from.position.y)
+    && !(scaleSamples.length === 0 && entity?.geometry?.scale.kind === "unknown")
+    && scaleKnowledge?.kind !== "unknown"
+    && closeEnough(scale, operation.scale);
+}
+
 export const OPERATION_REGISTRY = {
   CreateEntity: {
     access: (operation) => ({
@@ -571,7 +651,19 @@ export const OPERATION_REGISTRY = {
     lifetimeRequirement: "explicit",
     projection: allEntityProjections,
     targetRequirement: "none",
-    validate: (operation, scene) => baseIssues(operation, scene),
+    validate: (operation, scene) => {
+      const issues = baseIssues(operation, scene);
+      if (!validCreateDimensions(operation.entity.type, operation.entity.dimensions)) {
+        issues.push({
+          code: "schema-invalid",
+          field: "entity.dimensions",
+          message: `CreateEntity dimensions do not match ${operation.entity.type}.`,
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      return issues;
+    },
   } satisfies Capability<"CreateEntity">,
   SetProperty: {
     access: (operation) => ({ reads: [], writes: [{ channel: operation.key, entityId: operation.entityId }] }),
@@ -714,6 +806,27 @@ export const OPERATION_REGISTRY = {
     targetRequirement: "entity",
     validate: (operation, scene) => {
       const issues = entityIssues([operation.entityId], operation, scene);
+      const entity = scene.objectGraph.entities[operation.entityId];
+      const expectedShape = entity?.type === "Circle" ? "circle"
+        : entity?.type === "Rectangle" ? "rectangle"
+          : null;
+      if (entity && expectedShape !== operation.shape) {
+        issues.push({
+          code: "schema-invalid",
+          field: "shape",
+          message: `ResizeEntity shape ${operation.shape} does not match target type ${entity.type}.`,
+          operationId: operation.id,
+          severity: "error",
+        });
+      } else if (entity && !matchingResizeStart(operation, scene)) {
+        issues.push({
+          code: "schema-invalid",
+          field: "from",
+          message: "ResizeEntity must start from the target's known current geometry and scale.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
       const dimensions = operation.shape === "circle"
         ? [operation.from.dimensions.radius, operation.to.dimensions.radius]
         : [
@@ -722,15 +835,22 @@ export const OPERATION_REGISTRY = {
             operation.to.dimensions.width,
             operation.to.dimensions.height,
           ];
+      const lowerMultiplier = operation.shape === "circle" ? 2 : 1;
+      const loweredDimensions = dimensions.map((value) => (
+        typeof value === "number" ? value * operation.scale * lowerMultiplier : Number.NaN
+      ));
       if (
-        dimensions.some((value) => typeof value !== "number" || !Number.isFinite(value) || value <= 0)
+        !exactShapeDimensions(operation.shape, operation.from.dimensions)
+        || !exactShapeDimensions(operation.shape, operation.to.dimensions)
+        || dimensions.some((value) => typeof value !== "number" || !Number.isFinite(value) || value <= 0)
+        || loweredDimensions.some((value) => !Number.isFinite(value) || value <= 0)
         || !Number.isFinite(operation.scale)
         || operation.scale <= 0
       ) {
         issues.push({
           code: "schema-invalid",
           field: "dimensions",
-          message: "Shape resize dimensions and scale must be finite positive numbers.",
+          message: "Shape resize dimensions, scale, and lowered size must be finite positive numbers.",
           operationId: operation.id,
           severity: "error",
         });

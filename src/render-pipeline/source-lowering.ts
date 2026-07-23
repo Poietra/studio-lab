@@ -454,10 +454,22 @@ function resizeExpression(
 ) {
   const target = operation.to.dimensions;
   const prefix = `${variable}${animated ? ".animate" : ""}`;
+  const width = operation.shape === "circle"
+    ? 2 * (target.radius ?? 0) * operation.scale
+    : (target.width ?? 0) * operation.scale;
+  const height = operation.shape === "rectangle"
+    ? (target.height ?? 0) * operation.scale
+    : null;
+  if (!Number.isFinite(width) || width <= 0 || (height !== null && (!Number.isFinite(height) || height <= 0))) {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "ResizeEntity produces a non-finite or non-positive Manim size.",
+    );
+  }
   const resize = operation.shape === "circle"
-    ? `${prefix}.scale_to_fit_width(${formatAmount(2 * (target.radius ?? 0) * operation.scale)})`
-    : `${prefix}.stretch_to_fit_width(${formatAmount((target.width ?? 0) * operation.scale)})`
-      + `.stretch_to_fit_height(${formatAmount((target.height ?? 0) * operation.scale)})`;
+    ? `${prefix}.scale_to_fit_width(${formatAmount(width)})`
+    : `${prefix}.stretch_to_fit_width(${formatAmount(width)})`
+      + `.stretch_to_fit_height(${formatAmount(height ?? 0)})`;
   return `${resize}.move_to(${pointExpression(operation.to.position, frame, viewport)})`;
 }
 

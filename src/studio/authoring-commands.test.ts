@@ -52,6 +52,25 @@ describe("manual Studio authoring commands", () => {
     );
   });
 
+  it("rejects creation dimensions that do not match the entity type", () => {
+    const result = createStudioEntitiesProgram({
+      capturedPlayhead: 5,
+      entities: [{
+        content: defaultEntityContent("Circle", ""),
+        dimensions: { width: 4 },
+        position: { x: 180, y: 120 },
+        type: "Circle",
+      }],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "invalid-circle-dimensions",
+    });
+
+    expect(result.validation.kind).toBe("invalid");
+    expect(result.validation.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "entity.dimensions", severity: "error" }),
+    ]));
+  });
+
   it("duplicates only types supported by the Insert tool", () => {
     const equation = projectProposedState(evaluateWorkingState(createFixtureWorkingState()), 5).canvas.entities.find(
       (entity) => entity.id === "equation_1",

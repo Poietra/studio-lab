@@ -281,4 +281,60 @@ describe("Studio draft validation boundary", () => {
     });
     expect(rectangle?.position).toEqual({ x: 330, y: 157 });
   });
+  it("rejects a resize shape that does not match its target", () => {
+    const validation = createDirectManipulationResizeProgram({
+      capturedPlayhead: 5,
+      entityId: "proof_box",
+      from: { dimensions: { radius: 1 }, position: { x: 320, y: 147 } },
+      interval: { end: 5, start: 5 },
+      scale: 1,
+      scene: STUDIO_FIXTURE_SCENE,
+      shape: "circle",
+      to: { dimensions: { radius: 2 }, position: { x: 340, y: 167 } },
+      transactionId: "wrong-resize-shape",
+    });
+
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "shape", severity: "error" }),
+    ]));
+  });
+
+  it("rejects extra dimension keys on a shape resize", () => {
+    const validation = createDirectManipulationResizeProgram({
+      capturedPlayhead: 5,
+      entityId: "proof_box",
+      from: { dimensions: { height: 2, radius: 99, width: 4 }, position: { x: 320, y: 147 } },
+      interval: { end: 5, start: 5 },
+      scale: 1,
+      scene: STUDIO_FIXTURE_SCENE,
+      shape: "rectangle",
+      to: { dimensions: { height: 3, radius: 99, width: 6 }, position: { x: 340, y: 157 } },
+      transactionId: "extra-resize-dimension",
+    });
+
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "dimensions", severity: "error" }),
+    ]));
+  });
+
+  it("rejects dimensions that overflow during Manim lowering", () => {
+    const validation = createDirectManipulationResizeProgram({
+      capturedPlayhead: 5,
+      entityId: "proof_box",
+      from: { dimensions: { height: 2, width: 4 }, position: { x: 320, y: 147 } },
+      interval: { end: 5, start: 5 },
+      scale: 8,
+      scene: STUDIO_FIXTURE_SCENE,
+      shape: "rectangle",
+      to: { dimensions: { height: 3, width: Number.MAX_VALUE }, position: { x: 340, y: 157 } },
+      transactionId: "overflow-resize-dimension",
+    });
+
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "dimensions", severity: "error" }),
+    ]));
+  });
 });
