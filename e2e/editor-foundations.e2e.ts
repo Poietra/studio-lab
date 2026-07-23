@@ -275,6 +275,84 @@ test("generates a rendered workspace thumbnail only after an explicit launcher a
   await expect(page.locator("[data-studio-canvas]")).toHaveCount(0);
 });
 
+test("bounds thumbnail status polling and exposes an explicit status retry", async ({ page }) => {
+  const sourceHash = "b".repeat(64);
+  let statusRequests = 0;
+  await page.route("**/api/manim/projects/studio-lab/thumbnail/status", async (route) => {
+    statusRequests += 1;
+    if (statusRequests === 1) {
+      await route.fulfill({
+        body: JSON.stringify({
+          cachedSourceHash: null,
+          error: null,
+          generatedAt: null,
+          imageKind: "semantic",
+          projectId: "studio-lab",
+          sceneName: "GroupedEquation",
+          sourceHash,
+          sourcePath: "src/studio/prototype-fixture.py",
+          state: "generating",
+        }),
+        contentType: "application/json",
+        status: 200,
+      });
+      return;
+    }
+    if (statusRequests <= 4) {
+      await route.fulfill({
+        body: JSON.stringify({ error: "Temporary status failure." }),
+        contentType: "application/json",
+        status: 503,
+      });
+      return;
+    }
+    await route.fulfill({
+      body: JSON.stringify({
+        cachedSourceHash: sourceHash,
+        error: null,
+        generatedAt: "2026-07-23T10:00:00.000Z",
+        imageKind: "rendered",
+        projectId: "studio-lab",
+        sceneName: "GroupedEquation",
+        sourceHash,
+        sourcePath: "src/studio/prototype-fixture.py",
+        state: "current",
+      }),
+      contentType: "application/json",
+      status: 200,
+    });
+  });
+
+  await page.goto("/");
+  const card = page.locator("[data-workspace-card='studio-lab']");
+  const retry = page.getByRole("button", { name: "Retry preview status for Studio Lab" });
+  await expect(retry).toBeVisible({ timeout: 6_000 });
+  await expect.poll(() => statusRequests, { timeout: 6_000 }).toBe(4);
+  await page.waitForTimeout(1_750);
+  expect(statusRequests).toBe(4);
+  await expect(card.getByText(/Preview status could not be refreshed/)).toBeVisible();
+
+  await retry.click();
+  await expect(card.locator("[data-thumbnail-status]")).toHaveAttribute("data-thumbnail-status", "current");
+  await expect(retry).toHaveCount(0);
+  expect(statusRequests).toBe(5);
+});
+
+test("keeps thumbnail action failures separate from healthy status reads", async ({ page }) => {
+  await page.route("**/api/manim/projects/studio-lab/thumbnail/generate", async (route) => {
+    await route.fulfill({
+      body: JSON.stringify({ error: "Renderer refused the request." }),
+      contentType: "application/json",
+      status: 503,
+    });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Generate preview for Studio Lab" }).click();
+  const card = page.locator("[data-workspace-card='studio-lab']");
+  await expect(card.getByText(/Preview action failed: Renderer refused the request/)).toBeVisible();
+  await expect(card.getByText(/Preview status could not be refreshed/)).toHaveCount(0);
+});
+
 test("allows a pending workspace mutation dialog to be cancelled", async ({ page }) => {
   let releaseRequest: (() => void) | null = null;
   let resolveRequestStarted!: () => void;

@@ -33,6 +33,7 @@ const secondaryButtonClassName = "border border-zinc-700 px-3 py-1.5 text-xs fon
 const primaryButtonClassName = "bg-sky-500 px-3 py-1.5 text-xs font-medium text-sky-950 hover:bg-sky-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400 disabled:cursor-wait disabled:bg-zinc-700 disabled:text-zinc-500";
 const dialogClassName = "m-auto w-full max-w-md border border-zinc-700 bg-zinc-950 p-0 text-zinc-100 shadow-xl backdrop:bg-black/70";
 const cardActionButtonClassName = "cursor-pointer px-2 py-1.5 text-xs font-medium text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-wait disabled:text-zinc-700";
+const MAX_THUMBNAIL_STATUS_ATTEMPTS = 3;
 
 function PlusIcon() {
   return (
@@ -94,6 +95,8 @@ function WorkspaceCover({
         ? "Preview out of date"
         : status?.state === "failed"
           ? "Render failed"
+          : status?.state === "unavailable"
+            ? "Workspace unavailable"
           : status?.imageKind === "empty"
             ? "No preview"
             : status
@@ -116,7 +119,7 @@ function WorkspaceCover({
       )} data-workspace-thumbnail-fallback>
         {workspaceInitials(project.name)}
       </span>
-      {status ? (
+      {status && status.imageKind !== "empty" ? (
         <WorkspaceThumbnailImage assetVersion={assetVersion} key={assetVersion} projectId={project.id} />
       ) : null}
       <span
@@ -124,7 +127,7 @@ function WorkspaceCover({
           "absolute left-3 top-3 border bg-zinc-950/90 px-2 py-1 text-xs font-medium",
           status?.state === "current"
             ? "border-sky-800 text-sky-300"
-            : status?.state === "failed"
+            : status?.state === "failed" || status?.state === "unavailable"
               ? "border-red-900 text-red-300"
               : "border-zinc-700 text-zinc-400",
         )}
@@ -153,7 +156,9 @@ function WorkspaceCard({
   project: ManimProjectSummary;
 }>) {
   const [thumbnailStatus, setThumbnailStatus] = useState<ManimThumbnailStatus | null>(null);
-  const [thumbnailError, setThumbnailError] = useState<string | null>(null);
+  const [thumbnailActionError, setThumbnailActionError] = useState<string | null>(null);
+  const [thumbnailStatusError, setThumbnailStatusError] = useState<string | null>(null);
+  const [thumbnailStatusRetryAvailable, setThumbnailStatusRetryAvailable] = useState(false);
   const [generatingThumbnail, setGeneratingThumbnail] = useState(false);
   const [statusRevision, setStatusRevision] = useState(0);
 
@@ -161,20 +166,27 @@ function WorkspaceCard({
     const controller = new AbortController();
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
     let active = true;
+    let attempts = 0;
     const loadStatus = async () => {
+      attempts += 1;
       try {
         const status = await loadManimThumbnailStatus(project.id, controller.signal);
         if (!active) return;
-        setThumbnailError(status.state === "failed"
-          ? status.error ?? "The rendered preview failed. The semantic preview is shown instead."
-          : null);
+        attempts = 0;
+        setThumbnailStatusError(null);
+        setThumbnailStatusRetryAvailable(false);
         setThumbnailStatus(status);
         if (status.state === "generating") {
           pollTimer = setTimeout(() => void loadStatus(), 750);
         }
       } catch (error) {
         if (!active || controller.signal.aborted) return;
-        setThumbnailError(error instanceof Error ? error.message : "Could not load the preview status.");
+        setThumbnailStatusError(error instanceof Error ? error.message : "Could not load the preview status.");
+        if (attempts < MAX_THUMBNAIL_STATUS_ATTEMPTS) {
+          pollTimer = setTimeout(() => void loadStatus(), attempts * 500);
+        } else {
+          setThumbnailStatusRetryAvailable(true);
+        }
       }
     };
     // StrictMode reconnects effects once in development. Deferring avoids sending
@@ -191,19 +203,28 @@ function WorkspaceCard({
 
   async function generateThumbnail() {
     setGeneratingThumbnail(true);
-    setThumbnailError(null);
+    setThumbnailActionError(null);
     try {
       setThumbnailStatus(await generateManimThumbnail(project.id));
       setStatusRevision((current) => current + 1);
     } catch (error) {
-      setThumbnailError(error instanceof Error ? error.message : "Could not generate the rendered preview.");
+      setThumbnailActionError(error instanceof Error ? error.message : "Could not generate the rendered preview.");
       setStatusRevision((current) => current + 1);
     } finally {
       setGeneratingThumbnail(false);
     }
   }
 
+  function retryThumbnailStatus() {
+    setThumbnailStatusError(null);
+    setThumbnailStatusRetryAvailable(false);
+    setStatusRevision((current) => current + 1);
+  }
+
   const generateLabel = thumbnailStatus?.state === "current" ? "Refresh preview" : "Generate preview";
+  const renderedFailure = thumbnailStatus?.state === "failed" || thumbnailStatus?.state === "unavailable"
+    ? thumbnailStatus.error ?? "The rendered preview is unavailable."
+    : null;
   return (
     <li
       className={cn(
@@ -243,6 +264,17 @@ function WorkspaceCard({
         >
           {generatingThumbnail || thumbnailStatus?.state === "generating" ? "Generating…" : generateLabel}
         </button>
+        {thumbnailStatusError && thumbnailStatusRetryAvailable ? (
+          <button
+            aria-label={`Retry preview status for ${project.name}`}
+            className={cardActionButtonClassName}
+            disabled={mutationPending}
+            onClick={retryThumbnailStatus}
+            type="button"
+          >
+            Retry status
+          </button>
+        ) : null}
         <button
           aria-label={`Rename ${project.name} workspace`}
           className={cardActionButtonClassName}
@@ -262,9 +294,19 @@ function WorkspaceCard({
           {project.kind === "managed" ? "Delete" : "Remove"}
         </button>
       </div>
-      {thumbnailError ? (
+      {renderedFailure ? (
+        <p className="border-t border-red-950 px-4 py-2 text-pretty text-xs leading-5 text-red-300" role="status">
+          {renderedFailure}
+        </p>
+      ) : null}
+      {thumbnailStatusError ? (
         <p className="border-t border-red-950 px-4 py-2 text-pretty text-xs leading-5 text-red-300" role="alert">
-          {thumbnailError}
+          Preview status could not be refreshed: {thumbnailStatusError}
+        </p>
+      ) : null}
+      {thumbnailActionError ? (
+        <p className="border-t border-red-950 px-4 py-2 text-pretty text-xs leading-5 text-red-300" role="alert">
+          Preview action failed: {thumbnailActionError}
         </p>
       ) : null}
     </li>
