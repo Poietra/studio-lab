@@ -45,6 +45,18 @@ const MAX_ERROR_LENGTH = 500;
 const TARGET_CACHE_TTL_MS = 1_000;
 const THUMBNAIL_OUTPUT_STEM = "poietra-thumbnail";
 const THUMBNAIL_OUTPUT_FILE = `${THUMBNAIL_OUTPUT_STEM}.png`;
+const PUBLIC_COMMAND_UNAVAILABLE_ERROR = [
+  "The Manim renderer is unavailable.",
+  "Check the Studio server logs for configuration details.",
+].join(" ");
+const PUBLIC_DISCOVERY_ERROR = [
+  "The workspace could not be inspected for a preview.",
+  "Check the Studio server logs for details.",
+].join(" ");
+const PUBLIC_RENDER_ERROR = [
+  "The rendered preview could not be generated.",
+  "Check the Studio server logs for details.",
+].join(" ");
 const CACHE_FILE_PATTERN = /^[0-9a-f]{64}-[0-9a-f]{16}\.png$/;
 const TEMP_FILE_PATTERN = /^\.(?:manifest|thumbnail)-[0-9a-f-]+\.tmp$/;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -153,16 +165,6 @@ function cacheFileName(target: ManimThumbnailTarget) {
   return `${target.scene.sourceHash}-${identity}.png`;
 }
 
-function boundedError(error: unknown) {
-  const message = error instanceof Error
-    ? error.message
-    : typeof error === "string"
-      ? error
-      : "Manim thumbnail generation failed.";
-  return message.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, MAX_ERROR_LENGTH)
-    || "Manim thumbnail generation failed.";
-}
-
 async function readStablePrivateFile(path: string, maxBytes: number) {
   const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
@@ -194,6 +196,7 @@ export class ManimThumbnailCache {
   private readonly projectId: string;
   private readonly projectRoot: string;
   private readonly renderTimeoutMs: number;
+  private runtimeFailedAttempt: CacheManifest["lastAttempt"] = null;
   private targetCache: Readonly<{ checkedAt: number; discovery: ThumbnailDiscovery }> | null = null;
   private targetRequest: Promise<ThumbnailDiscovery> | null = null;
 
@@ -367,7 +370,7 @@ export class ManimThumbnailCache {
         return target ? { kind: "target", target } : { kind: "empty" };
       } catch (error) {
         this.logger.warn("thumbnail.discovery_failed", { error });
-        return { error: boundedError(error), kind: "unavailable" };
+        return { error: PUBLIC_DISCOVERY_ERROR, kind: "unavailable" };
       }
     })();
     const request = this.targetRequest;
@@ -463,7 +466,8 @@ export class ManimThumbnailCache {
     const target = discovery.target;
     const currentEntry = await this.currentEntry(manifest, target);
     const generationMatches = this.generation?.key === targetKey(target);
-    const failed = attemptMatchesTarget(manifest.lastAttempt, target) && manifest.lastAttempt?.error;
+    const lastAttempt = this.runtimeFailedAttempt ?? manifest.lastAttempt;
+    const failed = attemptMatchesTarget(lastAttempt, target) && lastAttempt?.error;
     const cachedEntry = currentEntry ?? priorEntry;
     const targetFields = {
       projectId: this.projectId,
@@ -527,7 +531,8 @@ export class ManimThumbnailCache {
     if (discovery.kind === "empty") return this.emptyAsset("missing");
     const target = discovery.target;
     const entry = await this.currentEntry(manifest, target);
-    const failed = attemptMatchesTarget(manifest.lastAttempt, target) && manifest.lastAttempt?.error;
+    const lastAttempt = this.runtimeFailedAttempt ?? manifest.lastAttempt;
+    const failed = attemptMatchesTarget(lastAttempt, target) && lastAttempt?.error;
     if (entry) {
       const body = await this.readEntry(entry);
       if (body) {
@@ -594,11 +599,9 @@ export class ManimThumbnailCache {
     }
     if (!await commandAvailable()) {
       this.assertOpen();
-      await this.recordAttempt(target, `Manim command ${JSON.stringify(this.command)} is not available.`);
-      throw new HttpError(
-        `Manim command ${JSON.stringify(this.command)} is not available. Configure POIETRA_MANIM_COMMAND and restart Studio.`,
-        503,
-      );
+      this.logger.warn("thumbnail.command_unavailable", { command: this.command });
+      await this.recordAttempt(target, PUBLIC_COMMAND_UNAVAILABLE_ERROR);
+      throw new HttpError(PUBLIC_COMMAND_UNAVAILABLE_ERROR, 503);
     }
     this.assertOpen();
     const generation: ThumbnailGeneration = {
@@ -621,17 +624,20 @@ export class ManimThumbnailCache {
   }
 
   private async recordAttempt(target: ManimThumbnailTarget, error: string) {
-    const manifest = await this.loadManifest();
-    await this.persistManifest({
-      ...manifest,
-      lastAttempt: {
-        error: boundedError(error),
-        finishedAt: new Date().toISOString(),
-        sceneName: target.scene.name,
-        sourceHash: target.scene.sourceHash,
-        sourcePath: target.sourcePath,
-      },
-    });
+    const attempt: NonNullable<CacheManifest["lastAttempt"]> = {
+      error,
+      finishedAt: new Date().toISOString(),
+      sceneName: target.scene.name,
+      sourceHash: target.scene.sourceHash,
+      sourcePath: target.sourcePath,
+    };
+    this.runtimeFailedAttempt = attempt;
+    try {
+      const manifest = await this.loadManifest();
+      await this.persistManifest({ ...manifest, lastAttempt: attempt });
+    } catch (persistError) {
+      this.logger.warn("thumbnail.failure_manifest_persist_failed", { error: persistError });
+    }
   }
 
   private async render(generation: ThumbnailGeneration) {
@@ -690,7 +696,7 @@ export class ManimThumbnailCache {
       await this.storeImage(target, image);
     } catch (error) {
       generation.child = null;
-      if (!generation.aborted && !this.closing) await this.recordAttempt(target, boundedError(error));
+      if (!generation.aborted && !this.closing) await this.recordAttempt(target, PUBLIC_RENDER_ERROR);
       throw error;
     } finally {
       if (temporaryRoot) await rm(temporaryRoot, { force: true, recursive: true });
@@ -741,6 +747,7 @@ export class ManimThumbnailCache {
       },
       version: CACHE_VERSION,
     });
+    this.runtimeFailedAttempt = null;
     await this.removeFilesBestEffort(obsoleteFiles);
   }
 

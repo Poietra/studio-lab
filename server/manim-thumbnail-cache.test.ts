@@ -16,6 +16,11 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { findRenderedImage } from "./manim-render-process";
+import {
+  createStructuredLogger,
+  type StructuredLogger,
+  type StructuredLogRecord,
+} from "./logging/structured-logger";
 import { ManimThumbnailCache } from "./manim-thumbnail-cache";
 
 const fakeRenderer = fileURLToPath(new URL("./test-fixtures/fake-manim.mjs", import.meta.url));
@@ -52,12 +57,14 @@ async function fixture() {
 function thumbnailCache(options: Readonly<{
   cacheRoot: string;
   command?: readonly string[];
+  logger?: StructuredLogger;
   projectRoot: string;
 }>) {
   const instance = new ManimThumbnailCache({
     cacheRoot: options.cacheRoot,
     command: options.command ?? [process.execPath, fakeRenderer],
     frame,
+    logger: options.logger,
     projectId: "default",
     projectRoot: options.projectRoot,
     renderTimeoutMs: 5_000,
@@ -170,7 +177,7 @@ describe("persistent real Manim thumbnail cache", () => {
 
     await expect(failing.generate(async () => true)).resolves.toMatchObject({ state: "generating" });
     const failed = await waitForStatus(failing, "failed");
-    expect(failed.error).toMatch(/exited with code 9/i);
+    expect(failed.error).toMatch(/could not be generated/i);
     expect(failed.imageKind).toBe("semantic");
     await expect(failing.asset()).resolves.toMatchObject({
       kind: "semantic",
@@ -203,7 +210,7 @@ describe("persistent real Manim thumbnail cache", () => {
       imageKind: "semantic",
       state: "failed",
     });
-    expect((await invalid.status()).error).toMatch(/not a PNG/i);
+    expect((await invalid.status()).error).toMatch(/could not be generated/i);
     await invalid.close();
 
     const unavailableCacheRoot = await mkdtemp(join(tmpdir(), "poietra-thumbnail-cache-"));
@@ -235,6 +242,67 @@ describe("persistent real Manim thumbnail cache", () => {
       projectRoot,
     });
     await expect(afterClose.status()).resolves.toMatchObject({ error: null, state: "missing" });
+  });
+
+  it("keeps absolute command, project, and cache paths out of public failures", async () => {
+    const { cacheRoot, projectRoot } = await fixture();
+    const records: StructuredLogRecord[] = [];
+    const logger = createStructuredLogger({ sinks: [{ write: (record) => records.push(record) }] });
+    const privateCommand = join(projectRoot, "private-renderer");
+    const instance = thumbnailCache({
+      cacheRoot,
+      command: [privateCommand, "--private-cache", cacheRoot],
+      logger,
+      projectRoot,
+    });
+
+    let rejection: unknown;
+    try {
+      await instance.generate(async () => false);
+    } catch (error) {
+      rejection = error;
+    }
+    const status = await instance.status();
+    const publicPayload = JSON.stringify({
+      rejection: rejection instanceof Error ? rejection.message : rejection,
+      status,
+    });
+    for (const privatePath of [privateCommand, projectRoot, cacheRoot]) {
+      expect(publicPayload).not.toContain(privatePath);
+    }
+    expect(status).toMatchObject({
+      error: expect.stringMatching(/renderer is unavailable/i),
+      state: "failed",
+    });
+    const serverLogs = JSON.stringify(records);
+    expect(serverLogs).toContain(privateCommand);
+    expect(serverLogs).toContain(cacheRoot);
+  });
+
+  it("retains the original runtime failure when its manifest cannot be published", async () => {
+    const { cacheRoot, projectRoot } = await fixture();
+    const records: StructuredLogRecord[] = [];
+    const logger = createStructuredLogger({ sinks: [{ write: (record) => records.push(record) }] });
+    const instance = thumbnailCache({
+      cacheRoot,
+      command: [process.execPath, fakeRenderer, "--fail-render"],
+      logger,
+      projectRoot,
+    });
+    await instance.status();
+    await mkdir(join(cacheRoot, "default", "manifest.json"));
+
+    await expect(instance.generate(async () => true)).resolves.toMatchObject({ state: "generating" });
+    const failed = await waitForStatus(instance, "failed");
+    expect(failed).toMatchObject({
+      error: expect.stringMatching(/could not be generated/i),
+      imageKind: "semantic",
+      state: "failed",
+    });
+    await expect(instance.status()).resolves.toMatchObject({ error: failed.error, state: "failed" });
+    await expect(instance.asset()).resolves.toMatchObject({ kind: "semantic", state: "failed" });
+    expect(records.some((record) => record.event === "thumbnail.failure_manifest_persist_failed")).toBe(true);
+    expect(JSON.stringify(records)).toMatch(/exited with code 9/i);
   });
 
   it("uses one preparation/render flight and prevents a late spawn during shutdown", async () => {
@@ -422,11 +490,14 @@ describe("persistent real Manim thumbnail cache", () => {
     temporaryRoots.push(missingRoot, missingCacheRoot);
     await rm(missingRoot, { recursive: true });
     const missing = thumbnailCache({ cacheRoot: missingCacheRoot, projectRoot: missingRoot });
-    await expect(missing.status()).resolves.toMatchObject({
+    const unavailableStatus = await missing.status();
+    expect(unavailableStatus).toMatchObject({
       imageKind: "empty",
       state: "unavailable",
     });
-    expect((await missing.status()).error).toMatch(/ENOENT|no such file/i);
+    expect(unavailableStatus.error).toMatch(/could not be inspected/i);
+    expect(JSON.stringify(unavailableStatus)).not.toContain(missingRoot);
+    expect(JSON.stringify(unavailableStatus)).not.toContain(missingCacheRoot);
     await expect(missing.asset()).resolves.toMatchObject({ state: "unavailable", status: 404 });
     await expect(missing.generate(async () => true)).rejects.toMatchObject({ status: 503 });
   });

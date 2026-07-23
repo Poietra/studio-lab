@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { importManimScene } from "../src/render-pipeline/source-import";
+import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import { handleManimRequest } from "./manim-render-http";
 import { ManimProjectRegistry, ManimRenderManager } from "./manim-render-pipeline";
 import {
@@ -274,6 +275,50 @@ describe("Manim thumbnail manager and HTTP boundary", () => {
       expect(thumbnail.headers.get("x-poietra-thumbnail-kind")).toBe("rendered");
       expect(Buffer.from(await thumbnail.arrayBuffer()).subarray(0, 8))
         .toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it("never exposes absolute renderer, project, or cache paths through thumbnail HTTP errors", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "poietra-thumbnail-private-project-"));
+    const cacheRoot = await mkdtemp(join(tmpdir(), "poietra-thumbnail-private-cache-"));
+    temporaryRoots.push(projectRoot, cacheRoot);
+    await writeFile(join(projectRoot, "scene.py"), sceneSource("PrivateThumbnail", "private"), "utf8");
+    const privateCommand = join(projectRoot, "private-renderer");
+    const records: StructuredLogRecord[] = [];
+    const logger = createStructuredLogger({ sinks: [{ write: (record) => records.push(record) }] });
+    const registry = new ManimProjectRegistry({
+      command: [privateCommand, "--private-cache", cacheRoot],
+      frame,
+      logger,
+      projects: [{ id: "project-thumbnail", name: "Thumbnail", root: projectRoot }],
+      thumbnailCacheRoot: cacheRoot,
+    });
+    registries.push(registry);
+    const server = createServer((request, response) => {
+      void handleManimRequest(registry, request, response, logger);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address() as AddressInfo;
+      const origin = `http://127.0.0.1:${address.port}`;
+      const rejected = await fetch(`${origin}/api/manim/projects/project-thumbnail/thumbnail/generate`, {
+        body: "{}",
+        headers: { "content-type": "application/json", origin },
+        method: "POST",
+      });
+      expect(rejected.status).toBe(503);
+      const responsePayload = await rejected.text();
+      const statusPayload = await (await fetch(
+        `${origin}/api/manim/projects/project-thumbnail/thumbnail/status`,
+      )).text();
+      const publicPayload = `${responsePayload}\n${statusPayload}`;
+      for (const privatePath of [privateCommand, projectRoot, cacheRoot]) {
+        expect(publicPayload).not.toContain(privatePath);
+      }
+      expect(publicPayload).toMatch(/renderer is unavailable/i);
+      expect(JSON.stringify(records)).toContain(privateCommand);
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
