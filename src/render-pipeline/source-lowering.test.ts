@@ -859,6 +859,13 @@ class GroupedEquation(Scene):
     ["unknown outer setattr sink", 'setattr(holder, "cached", VGroup(equation))', "self.add(holder.cached)", "setattr"],
     ["default sink", "def revive(value=remember(equation)):\n            return value", "self.add(revive())", "remember"],
     ["decorator sink", "@remember(equation)\n        def revive():\n            pass", "self.add(revive())", "remember"],
+    ["postfix wrapper method", "VGroup(equation).register()", "self.add(recall())", "postfix call register"],
+    ["postfix wrapper sink", "VGroup(equation).put_into(queue)", "self.add(queue.get())", "postfix call put_into"],
+    ["postfix subscript method", "VGroup(equation)[0].register()", "self.add(recall())", "postfix call register"],
+    ["postfix self-return method", "equation.scale(2).register()", "self.add(recall())", "postfix call register"],
+    ["postfix grouped method", "(equation).register()", "self.add(recall())", "postfix call register"],
+    ["postfix before self.add", "self.add(VGroup(equation).register())", "self.add(recall())", "postfix call register"],
+    ["postfix before self.play", "self.play(AnimationGroup(FadeIn(equation)).register())", "self.add(recall())", "postfix call register"],
   ])("fails closed when a pre-anchor %s may retain the removed object", (_label, setup, suffix, call) => {
     const remove: CanonicalEditOperation = {
       ...operationBase("persistent-delete-unknown-call", 7, 7.4),
@@ -892,7 +899,7 @@ class GroupedEquation(Scene):
       "        # poietra:anchor 7.000",
       `        self.play(FadeIn(equation))
         self.play(equation.animate.shift(RIGHT))
-        clone = equation.copy()
+        clone = equation.copy().shift(RIGHT)
         label = Text("energy").next_to(equation, DOWN)
         arrow = Arrow(label.get_top(), equation.get_bottom())
         proof_box = SurroundingRectangle(equation)
@@ -902,6 +909,28 @@ class GroupedEquation(Scene):
     expect(lowerCanonicalProgramSource(
       derivedSource,
       request(canonicalProgram([remove], "persistent-delete-derived-geometry")),
+      { height: 8, width: 14.222 },
+      null,
+    ).insertedCode).toContain("FadeOut(equation)");
+  });
+
+  it("does not inspect an unrelated sibling expression as a tainted postfix chain", () => {
+    const remove: CanonicalEditOperation = {
+      ...operationBase("persistent-delete-sibling-expression", 7, 7.4),
+      effect: "remove",
+      entityId: "equation_1",
+      kind: "ChangePresence",
+      persistent: true,
+    };
+    const siblingSource = source.replace(
+      "        # poietra:anchor 7.000",
+      `        temporary = VGroup(equation, Text("x").set_color(BLUE))
+        # poietra:anchor 7.000`,
+    );
+
+    expect(lowerCanonicalProgramSource(
+      siblingSource,
+      request(canonicalProgram([remove], "persistent-delete-sibling-expression")),
       { height: 8, width: 14.222 },
       null,
     ).insertedCode).toContain("FadeOut(equation)");

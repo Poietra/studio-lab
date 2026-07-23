@@ -96,7 +96,13 @@ const SELF_RETURNING_REFERENCE_RECEIVER_CALLS = new Set([
   "next_to",
   "rotate",
   "scale",
+  "set_color",
+  "set_fill",
   "set_height",
+  "set_opacity",
+  "set_rate_func",
+  "set_run_time",
+  "set_stroke",
   "set_width",
   "shift",
   "stretch",
@@ -132,6 +138,7 @@ const RETAINING_REFERENCE_CALLS = new Set([
   "append",
   "dict",
   "extend",
+  "get",
   "insert",
   "list",
   "nullcontext",
@@ -154,6 +161,7 @@ const PYTHON_GROUPING_KEYWORDS = new Set([
 ]);
 
 function referenceMatches(statement: PythonStatement, references: ReadonlySet<string>) {
+  const staticMatches = staticGlobalsMatches(statement, references);
   const identifiers = [...references].flatMap((reference) => (
     [...statement.code.matchAll(referencePattern(reference, true))].map((match) => ({
       end: (match.index ?? 0) + match[0].length,
@@ -161,10 +169,12 @@ function referenceMatches(statement: PythonStatement, references: ReadonlySet<st
       staticGlobal: false,
       start: match.index ?? 0,
     }))
-  ));
+  )).filter((identifier) => !staticMatches.some((match) => (
+    identifier.start >= match.start && identifier.end <= match.end
+  )));
   return [
     ...identifiers,
-    ...staticGlobalsMatches(statement, references).map((match) => ({ ...match, staticGlobal: true })),
+    ...staticMatches.map((match) => ({ ...match, staticGlobal: true })),
   ];
 }
 
@@ -182,7 +192,22 @@ function callBeforeOpening(code: string, opening: number) {
   return /[\])]$/.test(prefix) ? "a dynamic callable" : null;
 }
 
-function enclosingCalls(code: string, position: number) {
+function delimiterClosings(code: string) {
+  const stack: Array<{ character: string; index: number }> = [];
+  const closings = new Map<number, number>();
+  for (let index = 0; index < code.length; index += 1) {
+    const character = code[index] ?? "";
+    if (character === "(" || character === "[" || character === "{") {
+      stack.push({ character, index });
+    } else if (character === ")" || character === "]" || character === "}") {
+      const opening = stack.pop();
+      if (opening) closings.set(opening.index, index);
+    }
+  }
+  return closings;
+}
+
+function enclosingFrames(code: string, position: number, closings: ReadonlyMap<number, number>) {
   const stack: Array<{ character: string; index: number }> = [];
   for (let index = 0; index < position; index += 1) {
     const character = code[index] ?? "";
@@ -192,14 +217,72 @@ function enclosingCalls(code: string, position: number) {
       stack.pop();
     }
   }
-  const calls: string[] = [];
-  for (let index = stack.length - 1; index >= 0; index -= 1) {
-    const opening = stack[index];
-    if (opening?.character !== "(") continue;
-    const call = callBeforeOpening(code, opening.index);
-    if (call && !PYTHON_GROUPING_KEYWORDS.has(call)) calls.push(call);
+  return stack.reverse().map((opening) => {
+    const candidate = opening.character === "(" ? callBeforeOpening(code, opening.index) : null;
+    return {
+      call: candidate && !PYTHON_GROUPING_KEYWORDS.has(candidate) ? candidate : null,
+      character: opening.character,
+      close: closings.get(opening.index) ?? code.length,
+    };
+  });
+}
+
+type PostfixStage = Readonly<
+  | { call: string; kind: "call" }
+  | { kind: "projection" }
+>;
+
+function postfixStages(
+  code: string,
+  start: number,
+  limit: number,
+  closings: ReadonlyMap<number, number>,
+  trackedInvocation: boolean,
+) {
+  const stages: PostfixStage[] = [];
+  let cursor = start;
+  let first = true;
+  while (cursor < limit) {
+    while (/\s/.test(code[cursor] ?? "") && cursor < limit) cursor += 1;
+    const character = code[cursor] ?? "";
+    if (character === ".") {
+      const name = code.slice(cursor + 1, limit).match(/^\s*([A-Za-z_][A-Za-z0-9_]*)/)?.[1];
+      if (!name) break;
+      cursor += 1 + (code.slice(cursor + 1, limit).match(/^\s*/)?.[0].length ?? 0) + name.length;
+      while (/\s/.test(code[cursor] ?? "") && cursor < limit) cursor += 1;
+      if (code[cursor] === "(") {
+        const close = closings.get(cursor);
+        if (close === undefined || close >= limit) break;
+        stages.push({ call: name, kind: "call" });
+        cursor = close + 1;
+      } else {
+        stages.push({ kind: "projection" });
+      }
+      first = false;
+      continue;
+    }
+    if (character === "[") {
+      const close = closings.get(cursor);
+      if (close === undefined || close >= limit) break;
+      stages.push({ kind: "projection" });
+      cursor = close + 1;
+      first = false;
+      continue;
+    }
+    if (character === "(" && first) {
+      const close = closings.get(cursor);
+      if (close === undefined || close >= limit) break;
+      stages.push({
+        call: trackedInvocation ? "a tracked reference" : "a dynamic callable",
+        kind: "call",
+      });
+      cursor = close + 1;
+      first = false;
+      continue;
+    }
+    break;
   }
-  return calls;
+  return stages;
 }
 
 function referenceRetention(
@@ -210,44 +293,56 @@ function referenceRetention(
 ) {
   let retains = false;
   for (const match of referenceMatches(statement, references)) {
-    const suffix = statement.code.slice(match.end);
+    const closings = delimiterClosings(statement.code);
+    const frames = enclosingFrames(statement.code, match.start, closings);
     let tainted = true;
-    if (!match.staticGlobal && !/^\s*\(/.test(suffix)) {
-      if (/^\s*\.\s*animate\b/.test(suffix)) {
-        tainted = true;
-      } else {
-        const receiverCall = suffix.match(/^\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(/)?.[1];
-        if (receiverCall === "copy") {
-          tainted = !directObjectReferences.has(match.reference);
-        } else if (receiverCall && DERIVED_REFERENCE_RECEIVER_CALLS.has(receiverCall)) {
+    let directObject = !match.staticGlobal && directObjectReferences.has(match.reference);
+    const applyPostfix = (start: number, limit: number, trackedInvocation: boolean) => {
+      for (const stage of postfixStages(statement.code, start, limit, closings, trackedInvocation)) {
+        if (!tainted) break;
+        if (stage.kind === "projection") {
+          directObject = false;
+          continue;
+        }
+        if (stage.call === "copy") {
+          if (directObject) tainted = false;
+          else directObject = false;
+        } else if (DERIVED_REFERENCE_RECEIVER_CALLS.has(stage.call)) {
           tainted = false;
-        } else if (receiverCall && SELF_RETURNING_REFERENCE_RECEIVER_CALLS.has(receiverCall)) {
-          tainted = true;
-        } else if (receiverCall && RETAINING_REFERENCE_CALLS.has(receiverCall)) {
-          tainted = true;
-        } else if (receiverCall) {
+        } else if (
+          stage.call === "a tracked reference"
+          || SELF_RETURNING_REFERENCE_RECEIVER_CALLS.has(stage.call)
+          || RETAINING_REFERENCE_CALLS.has(stage.call)
+        ) {
+          directObject = false;
+        } else {
           throw new PythonReferenceAnalysisError(
-            `Studio cannot prove whether ${match.reference}.${receiverCall} retains source reference ${match.reference}.`,
+            `Studio cannot prove whether postfix call ${stage.call} retains source reference ${match.reference}.`,
           );
         }
       }
-    }
+    };
 
-    for (const call of enclosingCalls(statement.code, match.start)) {
-      if (!tainted) break;
-      if (call === "self.add" || call === "self.play" || call === "self.remove") {
+    applyPostfix(match.end, frames[0]?.close ?? statement.code.length, !match.staticGlobal);
+    for (let index = 0; tainted && index < frames.length; index += 1) {
+      const frame = frames[index];
+      if (!frame) continue;
+      if (frame.call === "self.add" || frame.call === "self.play" || frame.call === "self.remove") {
         tainted = false;
         break;
       }
-      const callName = call.split(".").at(-1) ?? call;
-      if (SAFE_REFERENCE_ARGUMENT_CALLS.has(callName)) {
+      const callName = frame.call?.split(".").at(-1) ?? frame.call;
+      if (callName && SAFE_REFERENCE_ARGUMENT_CALLS.has(callName)) {
         tainted = false;
         break;
       }
-      if (call === "a definition header" || RETAINING_REFERENCE_CALLS.has(callName)) continue;
-      throw new PythonReferenceAnalysisError(
-        `Studio cannot prove whether ${call} retains source reference ${match.reference}.`,
-      );
+      if (frame.call && frame.call !== "a definition header" && !RETAINING_REFERENCE_CALLS.has(callName ?? "")) {
+        throw new PythonReferenceAnalysisError(
+          `Studio cannot prove whether ${frame.call} retains source reference ${match.reference}.`,
+        );
+      }
+      if (frame.character !== "(" || frame.call) directObject = false;
+      applyPostfix(frame.close + 1, frames[index + 1]?.close ?? statement.code.length, false);
     }
     if (stored && tainted) retains = true;
   }
