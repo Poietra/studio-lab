@@ -100,6 +100,14 @@ export type InsertTimelineEventOperation = OperationBase & Readonly<{
   eventKind: "play" | "wait";
   kind: "InsertTimelineEvent";
   label: string;
+  purpose?: "scene-duration";
+}>;
+
+export type TrimSceneDurationOperation = OperationBase & Readonly<{
+  kind: "TrimSceneDuration";
+  removedDuration: number;
+  targetDuration: number;
+  waitOperationIds: readonly string[];
 }>;
 
 export type InsertSceneBoundaryOperation = OperationBase & Readonly<{
@@ -132,7 +140,8 @@ export type CanonicalEditOperation =
   | ModifyMotionOperation
   | SetPropertyOperation
   | SetRelationOperation
-  | TransformContentOperation;
+  | TransformContentOperation
+  | TrimSceneDurationOperation;
 
 export type DependencyReason = "explicit" | "identity" | "lifetime" | "read-after-write" | "write-conflict";
 

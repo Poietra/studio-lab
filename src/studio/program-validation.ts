@@ -98,6 +98,21 @@ export function validateAndScheduleProgram(
       severity: "error",
     });
   }
+  if (
+    input.operations.some((operation) => operation.kind === "TrimSceneDuration")
+    && (
+      input.operations.length !== 1
+      || input.requestedExecution !== "sequence"
+      || input.provenance.origin !== "studio-default"
+    )
+  ) {
+    issues.push({
+      code: "schema-invalid",
+      field: "operations",
+      message: "A Scene duration trim must be the only Studio-authored operation in a sequential EditProgram.",
+      severity: "error",
+    });
+  }
   const firstOperationStart = input.operations[0]?.interval.start;
   if (
     !Number.isFinite(input.anchor.resolvedSeconds)

@@ -1,4 +1,4 @@
-import type { EntityContent, Point, ProjectedEntity, RuntimeSceneState } from "./model";
+import type { EntityContent, Point, ProgramRecord, ProjectedEntity, RuntimeSceneState } from "./model";
 import {
   EDIT_OPERATION_VERSION,
   operationId,
@@ -223,17 +223,186 @@ export function createTrimEntityLifetimeProgram(input: Readonly<{
   });
 }
 
+const DURATION_EPSILON = 0.001;
+
+function sceneDurationWait(program: CanonicalEditProgram) {
+  if (program.provenance.origin !== "studio-default" || program.operations.length !== 1) return null;
+  const operation = program.operations[0];
+  return operation?.kind === "InsertTimelineEvent"
+    && operation.eventKind === "wait"
+    && operation.purpose === "scene-duration"
+    ? operation
+    : null;
+}
+
+function sceneDurationTrim(program: CanonicalEditProgram) {
+  if (program.provenance.origin !== "studio-default" || program.operations.length !== 1) return null;
+  const operation = program.operations[0];
+  return operation?.kind === "TrimSceneDuration" ? operation : null;
+}
+
+export type SceneDurationTrimAvailability = Readonly<{
+  anchor: number | null;
+  blocker: string | null;
+  minimumDuration: number;
+  removableDuration: number;
+  waitOperationIds: readonly string[];
+}>;
+
+export function sceneDurationTrimAvailability(input: Readonly<{
+  appliedPrograms: readonly ProgramRecord[];
+  sceneDuration: number;
+}>): SceneDurationTrimAvailability {
+  const controls: Array<Readonly<{
+    anchor: number;
+    duration: number;
+    kind: "trim" | "wait";
+    waitOperationId?: string;
+  }>> = [];
+  let firstNonControlIndex = input.appliedPrograms.length - 1;
+  for (; firstNonControlIndex >= 0; firstNonControlIndex -= 1) {
+    const program = input.appliedPrograms[firstNonControlIndex]?.program;
+    if (!program) continue;
+    const wait = sceneDurationWait(program);
+    if (wait) {
+      controls.unshift({
+        anchor: program.anchor.resolvedSeconds,
+        duration: wait.interval.end - wait.interval.start,
+        kind: "wait",
+        waitOperationId: wait.id,
+      });
+      continue;
+    }
+    const trim = sceneDurationTrim(program);
+    if (trim) {
+      controls.unshift({
+        anchor: program.anchor.resolvedSeconds,
+        duration: trim.removedDuration,
+        kind: "trim",
+      });
+      continue;
+    }
+    break;
+  }
+
+  const allDurationWaitIndexes = input.appliedPrograms.flatMap((record, index) => (
+    sceneDurationWait(record.program) ? [index] : []
+  ));
+  if (controls.length === 0) {
+    const later = allDurationWaitIndexes.length > 0
+      ? input.appliedPrograms.at(-1)?.program
+      : null;
+    return {
+      anchor: null,
+      blocker: later
+        ? `Program ${later.transactionId} was applied after the Studio duration wait. Undo later edits before shortening the Scene.`
+        : "Only a Studio-added trailing Scene duration wait can be shortened; imported or animated content is never truncated.",
+      minimumDuration: input.sceneDuration,
+      removableDuration: 0,
+      waitOperationIds: [],
+    };
+  }
+
+  const anchors = new Set(controls.map((control) => control.anchor.toFixed(4)));
+  const waitOperationIds = controls.flatMap((control) => (
+    control.kind === "wait" && control.waitOperationId ? [control.waitOperationId] : []
+  )).reverse();
+  const removableDuration = controls.reduce((duration, control) => (
+    control.kind === "wait" ? duration + control.duration : duration - control.duration
+  ), 0);
+  const anchor = controls.at(-1)?.anchor ?? null;
+  if (anchors.size !== 1 || anchor === null) {
+    return {
+      anchor: null,
+      blocker: "Studio duration waits at different source anchors cannot be shortened together. Undo the later duration changes first.",
+      minimumDuration: input.sceneDuration,
+      removableDuration: 0,
+      waitOperationIds: [],
+    };
+  }
+  if (removableDuration < 0.1 - DURATION_EPSILON) {
+    return {
+      anchor,
+      blocker: "The Studio-added trailing wait is already fully removed.",
+      minimumDuration: input.sceneDuration,
+      removableDuration: 0,
+      waitOperationIds,
+    };
+  }
+  return {
+    anchor,
+    blocker: null,
+    minimumDuration: input.sceneDuration - removableDuration,
+    removableDuration,
+    waitOperationIds,
+  };
+}
+
 export function createSceneDurationProgram(input: Readonly<{
+  appliedPrograms?: readonly ProgramRecord[];
   capturedPlayhead: number;
   scene: RuntimeSceneState;
   sourceAnchor: number;
   targetDuration: number;
   transactionId: string;
 }>): ProgramValidationResult {
-  const extension = input.targetDuration - input.scene.duration;
-  if (!Number.isFinite(input.targetDuration) || extension < 0.1) {
-    throw new Error("The new Scene duration must extend the current content by at least 0.1 seconds.");
+  const change = input.targetDuration - input.scene.duration;
+  if (!Number.isFinite(input.targetDuration) || input.targetDuration < 0.1) {
+    throw new Error("The new Scene duration must be a finite value of at least 0.1 seconds.");
   }
+  if (Math.abs(change) < 0.1 - DURATION_EPSILON) {
+    throw new Error("Change the Scene duration by at least 0.1 seconds.");
+  }
+
+  if (change < 0) {
+    const availability = sceneDurationTrimAvailability({
+      appliedPrograms: input.appliedPrograms ?? [],
+      sceneDuration: input.scene.duration,
+    });
+    if (availability.blocker) throw new Error(availability.blocker);
+    const removedDuration = -change;
+    if (removedDuration > availability.removableDuration + DURATION_EPSILON) {
+      throw new Error(
+        `The shortest safe duration is ${availability.minimumDuration.toFixed(2)}s. `
+          + `Only ${availability.removableDuration.toFixed(2)}s of Studio-added trailing wait can be removed; imported or animated content would be truncated.`,
+      );
+    }
+    if (availability.anchor === null || availability.waitOperationIds.length === 0) {
+      throw new Error("No Studio-added trailing Scene duration wait is available to shorten.");
+    }
+    const operation: CanonicalEditOperation = {
+      dependsOn: [],
+      id: operationId(input.transactionId, "trim-scene-duration"),
+      interval: { end: availability.anchor, start: availability.anchor },
+      kind: "TrimSceneDuration",
+      provenance: provenance("studio-default", [
+        "Scene duration control",
+        `${removedDuration.toFixed(3)} second Studio wait reduction`,
+      ]),
+      removedDuration,
+      targetDuration: input.targetDuration,
+      waitOperationIds: availability.waitOperationIds,
+    };
+    const program: CanonicalEditProgram = {
+      anchor: {
+        capturedPlayhead: input.capturedPlayhead,
+        evidence: [`source-anchor:${availability.anchor.toFixed(3)}`, "Studio duration wait suffix"],
+        resolvedSeconds: availability.anchor,
+        source: { kind: "absolute", seconds: availability.anchor },
+      },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [operation],
+      provenance: provenance("studio-default", ["manual Scene duration", "safe Studio wait reduction"]),
+      requestedExecution: "sequence",
+      schedule: { edges: [], mode: "sequence", order: [operation.id] },
+      transactionId: input.transactionId,
+      version: EDIT_OPERATION_VERSION,
+    };
+    return validateAndScheduleProgram(program, input.scene);
+  }
+
+  const extension = change;
   if (!Number.isFinite(input.sourceAnchor) || input.sourceAnchor < 0 || input.sourceAnchor > input.scene.duration) {
     throw new Error("A safe source anchor is required to extend the Scene duration.");
   }
@@ -244,6 +413,7 @@ export function createSceneDurationProgram(input: Readonly<{
     interval: { end: input.sourceAnchor + extension, start: input.sourceAnchor },
     kind: "InsertTimelineEvent",
     label: `Extend Scene to ${input.targetDuration.toFixed(2)}s`,
+    purpose: "scene-duration",
     provenance: provenance("studio-default", ["Scene duration control", `${extension.toFixed(3)} second wait`]),
   };
   const program: CanonicalEditProgram = {

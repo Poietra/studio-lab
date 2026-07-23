@@ -35,6 +35,14 @@ export function insertedProgramDuration(program: CanonicalEditProgram) {
   return Math.max(0, end - program.anchor.resolvedSeconds);
 }
 
+/** Signed change to working time; Scene duration trims deliberately return a negative delta. */
+export function programTimelineDelta(program: CanonicalEditProgram) {
+  const removedDuration = program.operations.reduce((duration, operation) => (
+    operation.kind === "TrimSceneDuration" ? duration + operation.removedDuration : duration
+  ), 0);
+  return insertedProgramDuration(program) - removedDuration;
+}
+
 type SourceInsertion = Readonly<{
   duration: number;
   sourceAnchor: number;
@@ -48,7 +56,7 @@ function sourceInsertions(programs: readonly CanonicalEditProgram[]) {
   const insertions: SourceInsertion[] = [];
   for (const { program } of sorted) {
     const sourceAnchor = program.anchor.resolvedSeconds;
-    const duration = insertedProgramDuration(program);
+    const duration = programTimelineDelta(program);
     const current = insertions.at(-1);
     if (current && Math.abs(current.sourceAnchor - sourceAnchor) < ANCHOR_EPSILON) {
       insertions[insertions.length - 1] = {
@@ -187,6 +195,12 @@ function remapOperation(
     case "ChangeConstraint":
     case "ChangeCamera":
       return { ...operation, ...base };
+    case "TrimSceneDuration":
+      return {
+        ...operation,
+        ...base,
+        waitOperationIds: operation.waitOperationIds.map((id) => remapOperationId(id, maps)),
+      };
   }
 }
 
@@ -288,7 +302,7 @@ export function composeProgramsAtSourceAnchor(
   let offset = 0;
   for (const program of programs) {
     operations.push(...orderedOperations(program).map((operation) => remapOperation(operation, offset, maps)));
-    offset += insertedProgramDuration(program);
+    offset += programTimelineDelta(program);
   }
   const anchor = programs[0].anchor;
   const evidence = [
