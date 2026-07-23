@@ -17,6 +17,7 @@ import type { Plugin } from "vite";
 
 import {
   MANIM_PROJECT_ID_PATTERN,
+  type OriginalManimSourceExportRequest,
   type ProgramRenderRequest,
   type ManimProjectListView,
   type ManimProjectMutationView,
@@ -555,7 +556,33 @@ export class ManimRenderManager {
     }
   }
 
-  private assertRequestProject(request: ProgramRenderRequest) {
+  async exportOriginalSource(request: OriginalManimSourceExportRequest, signal?: AbortSignal) {
+    const finishExport = this.beginStart();
+    try {
+      this.assertRequestProject(request);
+      throwIfAborted(signal);
+      const snapshot = await this.sourceStore.read(request.sourcePath);
+      throwIfAborted(signal);
+      if (snapshot.hash !== request.sourceHash) {
+        throw new HttpError(
+          "The imported source changed before export. Reimport the workspace and try again.",
+          409,
+        );
+      }
+      const fileName = basename(request.sourcePath)
+        .replace(/[^A-Za-z0-9._-]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "manim-scene.py";
+      return {
+        fileName: fileName.endsWith(".py") ? fileName : `${fileName}.py`,
+        projectId: this.projectId,
+        source: snapshot.source,
+      };
+    } finally {
+      finishExport();
+    }
+  }
+
+  private assertRequestProject(request: Readonly<{ projectId: string }>) {
     if (request.projectId !== this.projectId) {
       throw new HttpError("The render request belongs to a different configured project.", 409);
     }
@@ -1096,6 +1123,10 @@ export class ManimProjectRegistry {
 
   exportSource(request: ProgramRenderRequest, signal?: AbortSignal) {
     return this.project(request.projectId).exportSource(request, signal);
+  }
+
+  exportOriginalSource(request: OriginalManimSourceExportRequest, signal?: AbortSignal) {
+    return this.project(request.projectId).exportOriginalSource(request, signal);
   }
 
   view(id: string) {

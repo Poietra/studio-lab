@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import {
   createManimProjectRequestSchema,
+  originalManimSourceExportRequestSchema,
   programRenderRequestSchema,
   renameManimProjectRequestSchema,
   type ManimSourceExport,
@@ -246,16 +247,34 @@ async function routeManimRequest(
     if (request.method !== "POST" || endpoint === "workspace" || endpoint === "thumbnail") {
       throw new HttpError("Method not allowed.", 405);
     }
+    if (endpoint === "export") {
+      const body = await readJsonBody(request, 512 * 1024);
+      const programRequest = programRenderRequestSchema.safeParse(body);
+      const originalRequest = originalManimSourceExportRequestSchema.safeParse(body);
+      let exported: ManimSourceExport;
+      if (programRequest.success) {
+        if (programRequest.data.projectId !== projectId) {
+          throw new HttpError("The request project does not match the project endpoint.", 409);
+        }
+        exported = await manager.exportSource(programRequest.data, signal);
+      } else {
+        if (!originalRequest.success) {
+          throw new HttpError(originalRequest.error.issues[0]?.message ?? "Invalid Python export request.", 400);
+        }
+        if (originalRequest.data.projectId !== projectId) {
+          throw new HttpError("The request project does not match the project endpoint.", 409);
+        }
+        exported = await manager.exportOriginalSource(originalRequest.data, signal);
+      }
+      sendPythonAttachment(response, exported);
+      return;
+    }
     const parsed = programRenderRequestSchema.safeParse(await readJsonBody(request, 512 * 1024));
     if (!parsed.success) {
       throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid canonical EditProgram request.", 400);
     }
     if (parsed.data.projectId !== projectId) {
       throw new HttpError("The request project does not match the project endpoint.", 409);
-    }
-    if (endpoint === "export") {
-      sendPythonAttachment(response, await manager.exportSource(parsed.data, signal));
-      return;
     }
     const started = await manager.start(parsed.data, signal);
     if (!await sendJsonAndWaitForFinish(response, 202, started)) {

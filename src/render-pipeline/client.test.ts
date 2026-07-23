@@ -4,6 +4,7 @@ import type { ProgramRenderRequest } from "./contracts";
 import {
   createManimProject,
   exportManimSource,
+  exportOriginalManimSource,
   isMissingManimSession,
   loadManimRender,
   loadManimProjects,
@@ -296,6 +297,37 @@ describe("Manim API client contracts", () => {
 
     await expect(exportManimSource(renderRequest())).resolves.toEqual({
       fileName: "scene.poietra.py",
+      projectId: "project-a",
+      source: "from manim import *\n",
+    });
+  });
+
+  it("downloads an unchanged Python source when there is no EditProgram", async () => {
+    const fetch = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe("/api/manim/projects/project-a/export");
+      expect(init.method).toBe("POST");
+      expect(JSON.parse(String(init.body))).toEqual({
+        projectId: "project-a",
+        sourceHash: "a".repeat(64),
+        sourcePath: "nested/scene.py",
+      });
+      return new Response("from manim import *\n", {
+        headers: {
+          "content-disposition": "attachment; filename=\"scene.py\"",
+          "content-type": "text/x-python; charset=utf-8",
+          "x-poietra-project-id": "project-a",
+        },
+        status: 200,
+      });
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(exportOriginalManimSource({
+      projectId: "project-a",
+      sourceHash: "a".repeat(64),
+      sourcePath: "nested/scene.py",
+    })).resolves.toEqual({
+      fileName: "scene.py",
       projectId: "project-a",
       source: "from manim import *\n",
     });

@@ -261,6 +261,18 @@ export type ManimSourceExport = Readonly<{
   source: string;
 }>;
 
+export type OriginalManimSourceExportRequest = Readonly<{
+  projectId: string;
+  sourceHash: string;
+  sourcePath: string;
+}>;
+
+export const originalManimSourceExportRequestSchema: z.ZodType<OriginalManimSourceExportRequest> = z.object({
+  projectId: manimProjectIdSchema,
+  sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
+  sourcePath: z.string().min(1).max(500),
+}).strict();
+
 export const renderSessionStatusSchema: z.ZodType<RenderSessionStatus> = z.enum([
   "cancelled",
   "committed",

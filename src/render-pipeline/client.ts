@@ -4,6 +4,7 @@ import type {
   ManimApiError,
   ManimProjectCreateRequest,
   ManimSourceExport,
+  OriginalManimSourceExportRequest,
   ProgramRenderRequest,
 } from "./contracts";
 import {
@@ -12,6 +13,7 @@ import {
   manimProjectListViewSchema,
   manimProjectMutationViewSchema,
   manimWorkspaceViewSchema,
+  originalManimSourceExportRequestSchema,
   programRenderRequestSchema,
   renameManimProjectRequestSchema,
   renderSessionViewSchema,
@@ -146,6 +148,24 @@ function attachmentFileName(response: Response) {
   return match?.[1] ?? "manim-scene.py";
 }
 
+async function readPythonExport(response: Response, projectId: string): Promise<ManimSourceExport> {
+  if (!response.ok) {
+    throw apiError(response, await responseBody(response));
+  }
+  const mediaType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (mediaType !== "text/x-python") {
+    throw new Error("The server returned an export that does not match the API contract.");
+  }
+  if (response.headers.get("x-poietra-project-id") !== projectId) {
+    throw new Error("The server returned an export for a different project.");
+  }
+  return {
+    fileName: attachmentFileName(response),
+    projectId,
+    source: await response.text(),
+  };
+}
+
 export async function exportManimSource(
   request: ProgramRenderRequest,
   signal?: AbortSignal,
@@ -160,21 +180,24 @@ export async function exportManimSource(
     method: "POST",
     signal,
   });
-  if (!response.ok) {
-    throw apiError(response, await responseBody(response));
+  return readPythonExport(response, parsedRequest.data.projectId);
+}
+
+export async function exportOriginalManimSource(
+  request: OriginalManimSourceExportRequest,
+  signal?: AbortSignal,
+): Promise<ManimSourceExport> {
+  const parsedRequest = originalManimSourceExportRequestSchema.safeParse(request);
+  if (!parsedRequest.success) {
+    throw new Error("The original source export request does not match the API contract.");
   }
-  const mediaType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
-  if (mediaType !== "text/x-python") {
-    throw new Error("The server returned an export that does not match the API contract.");
-  }
-  if (response.headers.get("x-poietra-project-id") !== parsedRequest.data.projectId) {
-    throw new Error("The server returned an export for a different project.");
-  }
-  return {
-    fileName: attachmentFileName(response),
-    projectId: parsedRequest.data.projectId,
-    source: await response.text(),
-  };
+  const response = await fetch(`/api/manim/projects/${encodeURIComponent(parsedRequest.data.projectId)}/export`, {
+    body: JSON.stringify(parsedRequest.data),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+    signal,
+  });
+  return readPythonExport(response, parsedRequest.data.projectId);
 }
 
 export async function loadManimRender(id: string, signal?: AbortSignal) {

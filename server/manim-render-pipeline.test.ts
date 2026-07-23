@@ -978,6 +978,29 @@ describe("Manim project registry", () => {
     await expect(registry.start({ ...request(), projectId: "project-a" })).rejects.toThrow(/not available/i);
   });
 
+  it("exports the unchanged selected Python file without an EditProgram", async () => {
+    const { firstRoot, registry } = await registryFixture(["poietra-command-that-does-not-exist"]);
+    const sourceHash = createHash("sha256").update(sceneSource).digest("hex");
+
+    const exported = await registry.exportOriginalSource({
+      projectId: "project-a",
+      sourceHash,
+      sourcePath: "scene.py",
+    });
+
+    expect(exported).toEqual({
+      fileName: "scene.py",
+      projectId: "project-a",
+      source: sceneSource,
+    });
+    expect(await readFile(join(firstRoot, "scene.py"), "utf8")).toBe(sceneSource);
+    await expect(registry.exportOriginalSource({
+      projectId: "project-a",
+      sourceHash: "0".repeat(64),
+      sourcePath: "scene.py",
+    })).rejects.toThrow(/source changed before export/i);
+  });
+
   it("routes Commit and Undo to the session's original project after another workspace is opened", async () => {
     const { firstRoot, registry, secondRoot } = await registryFixture();
     const started = await registry.start({ ...request(), projectId: "project-a" });
@@ -1027,6 +1050,19 @@ describe("Manim project registry", () => {
       expect(exportResponse.headers.get("content-type")).toBe("text/x-python; charset=utf-8");
       expect(exportResponse.headers.get("content-disposition")).toBe('attachment; filename="scene.poietra.py"');
       expect(await exportResponse.text()).toContain('poietra:transaction "render-integration"');
+
+      const originalExportResponse = await fetch(`${origin}/api/manim/projects/project-a/export`, {
+        body: JSON.stringify({
+          projectId: "project-a",
+          sourceHash: createHash("sha256").update(sceneSource).digest("hex"),
+          sourcePath: "scene.py",
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(originalExportResponse.status).toBe(200);
+      expect(originalExportResponse.headers.get("content-disposition")).toBe('attachment; filename="scene.py"');
+      expect(await originalExportResponse.text()).toBe(sceneSource);
 
       const mismatchedResponse = await fetch(`${origin}/api/manim/projects/project-b/export`, {
         body: JSON.stringify({ ...request(), projectId: "project-a" }),
