@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const artifactRoot = resolve(process.env.POIETRA_MANIM_SMOKE_ARTIFACTS ?? "test-results/manim-smoke");
-const defaultDockerImage = "manimcommunity/manim@sha256:f18f53f2e4eaf2ea41713437d34363fb3f5cc6008b03fd798676ac0359396c3b";
+const defaultDockerImage =
+  "manimcommunity/manim@sha256:f18f53f2e4eaf2ea41713437d34363fb3f5cc6008b03fd798676ac0359396c3b";
 const outputNames = ["preview.mp4", "runner.json", "summary.json", "vitest.log"];
 const signalExitCodes = { SIGINT: 130, SIGTERM: 143 };
 const runIdPattern = /^[A-Za-z0-9_.-]{1,64}$/;
@@ -24,27 +25,31 @@ const startedAt = new Date().toISOString();
 const runId = runIdPattern.test(process.env.POIETRA_MANIM_SMOKE_RUN_ID ?? "")
   ? process.env.POIETRA_MANIM_SMOKE_RUN_ID
   : randomUUID();
-const child = spawn(process.execPath, [
-  resolve("node_modules/vitest/vitest.mjs"),
-  "run",
-  "server/manim-render-pipeline.real.test.ts",
-  "server/manim-smoke-runner.real.test.ts",
-  "--maxWorkers=1",
-  "--no-file-parallelism",
-  "--reporter=verbose",
-], {
-  detached: process.platform !== "win32",
-  env: {
-    ...process.env,
-    POIETRA_MANIM_DOCKER_IMAGE: process.env.POIETRA_MANIM_DOCKER_IMAGE ?? defaultDockerImage,
-    POIETRA_MANIM_SMOKE_CONTROL_ROOT: dockerControlRoot,
-    POIETRA_MANIM_SMOKE_ARTIFACTS: artifactRoot,
-    POIETRA_MANIM_SMOKE_RUN_ID: runId,
-    POIETRA_REAL_MANIM_SMOKE: "1",
-    TMPDIR: childTemporaryRoot,
+const child = spawn(
+  process.execPath,
+  [
+    resolve("node_modules/vitest/vitest.mjs"),
+    "run",
+    "server/manim-render-pipeline.real.test.ts",
+    "server/manim-smoke-runner.real.test.ts",
+    "--maxWorkers=1",
+    "--no-file-parallelism",
+    "--reporter=verbose",
+  ],
+  {
+    detached: process.platform !== "win32",
+    env: {
+      ...process.env,
+      POIETRA_MANIM_DOCKER_IMAGE: process.env.POIETRA_MANIM_DOCKER_IMAGE ?? defaultDockerImage,
+      POIETRA_MANIM_SMOKE_CONTROL_ROOT: dockerControlRoot,
+      POIETRA_MANIM_SMOKE_ARTIFACTS: artifactRoot,
+      POIETRA_MANIM_SMOKE_RUN_ID: runId,
+      POIETRA_REAL_MANIM_SMOKE: "1",
+      TMPDIR: childTemporaryRoot,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
   },
-  stdio: ["ignore", "pipe", "pipe"],
-});
+);
 
 for (const stream of [child.stdout, child.stderr]) {
   stream.on("data", (chunk) => {
@@ -126,11 +131,12 @@ async function dockerControls() {
     try {
       const value = JSON.parse(await readFile(join(dockerControlRoot, fileName), "utf8"));
       if (
-        typeof value.name === "string"
-        && value.name.startsWith(`poietra-manim-${runId.slice(0, 48)}-`)
-        && Number.isSafeInteger(value.pid)
-        && value.pid > 0
-      ) controls.push(value);
+        typeof value.name === "string" &&
+        value.name.startsWith(`poietra-manim-${runId.slice(0, 48)}-`) &&
+        Number.isSafeInteger(value.pid) &&
+        value.pid > 0
+      )
+        controls.push(value);
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
@@ -172,8 +178,8 @@ async function stopOwnedDocker() {
       ...ids.map((id) => dockerCommand(["container", "rm", "--force", id])),
     ]);
     if (
-      [...ownedControls.values()].every((control) => !processIsAlive(control.pid))
-      && (await labeledContainerIds())?.length === 0
+      [...ownedControls.values()].every((control) => !processIsAlive(control.pid)) &&
+      (await labeledContainerIds())?.length === 0
     ) {
       return true;
     }
@@ -186,7 +192,7 @@ async function stopOwnedDocker() {
       if (error?.code !== "ESRCH") throw error;
     }
   }
-  for (const id of await labeledContainerIds() ?? []) {
+  for (const id of (await labeledContainerIds()) ?? []) {
     await dockerCommand(["container", "rm", "--force", id]);
   }
   return (await labeledContainerIds())?.length === 0;
@@ -233,28 +239,35 @@ try {
   else cleanupError ??= error;
 }
 
-const error = spawnError ?? cleanupError ?? (!treeStopped
-  ? new Error("The real Manim smoke process tree did not stop after cancellation.")
-  : !dockerStopped
-    ? new Error("The real Manim smoke Docker containers did not stop after cancellation.")
-    : null);
-const exitCode = requestedSignal
-  ? signalExitCodes[requestedSignal]
-  : error
-    ? 1
-    : closed.exitCode ?? 1;
-await writeFile(join(artifactRoot, "runner.json"), `${JSON.stringify({
-  cleanup: { temporaryRoot, temporaryRootRemoved },
-  dockerStopped,
-  error: error?.message ?? null,
-  exitCode,
-  finishedAt: new Date().toISOString(),
-  requestedSignal,
-  runId,
-  signal: closed.signal,
-  startedAt,
-  treeStopped,
-}, null, 2)}\n`, "utf8");
+const error =
+  spawnError ??
+  cleanupError ??
+  (!treeStopped
+    ? new Error("The real Manim smoke process tree did not stop after cancellation.")
+    : !dockerStopped
+      ? new Error("The real Manim smoke Docker containers did not stop after cancellation.")
+      : null);
+const exitCode = requestedSignal ? signalExitCodes[requestedSignal] : error ? 1 : (closed.exitCode ?? 1);
+await writeFile(
+  join(artifactRoot, "runner.json"),
+  `${JSON.stringify(
+    {
+      cleanup: { temporaryRoot, temporaryRootRemoved },
+      dockerStopped,
+      error: error?.message ?? null,
+      exitCode,
+      finishedAt: new Date().toISOString(),
+      requestedSignal,
+      runId,
+      signal: closed.signal,
+      startedAt,
+      treeStopped,
+    },
+    null,
+    2,
+  )}\n`,
+  "utf8",
+);
 
 if (error) process.stderr.write(`${error.message}\n`);
 if (closed.signal) process.stderr.write(`Real Manim smoke stopped by ${closed.signal}.\n`);

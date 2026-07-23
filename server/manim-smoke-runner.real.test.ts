@@ -47,9 +47,11 @@ async function waitForRenderMounts(runId: string) {
     for (const id of await dockerContainerIds(runId, true)) {
       const inspected = await captureProcess("docker", ["container", "inspect", id]);
       if (inspected.code !== 0) continue;
-      const container = (JSON.parse(inspected.output) as readonly {
-        Mounts?: readonly { Destination?: string; Source?: string }[];
-      }[])[0];
+      const container = (
+        JSON.parse(inspected.output) as readonly {
+          Mounts?: readonly { Destination?: string; Source?: string }[];
+        }[]
+      )[0];
       const mounts = container?.Mounts ?? [];
       const projectRoot = mounts.find((mount) => mount.Destination === "/workspace")?.Source;
       const renderRoot = mounts.find((mount) => mount.Destination === "/poietra-preview")?.Source;
@@ -81,10 +83,12 @@ function waitForClose(child: ChildProcess, timeoutMs: number) {
 
 async function directorySnapshot(path: string) {
   const entries = await readdir(path);
-  return Promise.all(entries.sort().map(async (name) => ({
-    contents: await readFile(join(path, name), "base64"),
-    name,
-  })));
+  return Promise.all(
+    entries.sort().map(async (name) => ({
+      contents: await readFile(join(path, name), "base64"),
+      name,
+    })),
+  );
 }
 
 async function expectMissing(path: string) {
@@ -92,9 +96,9 @@ async function expectMissing(path: string) {
 }
 
 describe.skipIf(
-  process.env.POIETRA_REAL_MANIM_SMOKE !== "1"
-  || process.env.POIETRA_SKIP_MANIM_INTERRUPT_REGRESSION === "1"
-  || Boolean(process.env.POIETRA_MANIM_COMMAND?.trim()),
+  process.env.POIETRA_REAL_MANIM_SMOKE !== "1" ||
+    process.env.POIETRA_SKIP_MANIM_INTERRUPT_REGRESSION === "1" ||
+    Boolean(process.env.POIETRA_MANIM_COMMAND?.trim()),
 )("real Manim smoke runner interruption", () => {
   it("owns and stops Vitest, Docker, temp roots, and artifact writes", { timeout: 60_000 }, async () => {
     const runId = `interrupt-${randomUUID()}`;

@@ -4,9 +4,10 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 const image = process.env.POIETRA_MANIM_DOCKER_IMAGE ?? "manimcommunity/manim:v0.20.1";
-const user = typeof process.getuid === "function" && typeof process.getgid === "function"
-  ? `${process.getuid()}:${process.getgid()}`
-  : null;
+const user =
+  typeof process.getuid === "function" && typeof process.getgid === "function"
+    ? `${process.getuid()}:${process.getgid()}`
+    : null;
 const runId = (process.env.POIETRA_MANIM_SMOKE_RUN_ID ?? randomUUID()).replace(/[^A-Za-z0-9_.-]/g, "-").slice(0, 48);
 const signalExitCodes = { SIGINT: 130, SIGTERM: 143 };
 
@@ -47,15 +48,11 @@ async function runDocker(arguments_) {
     await mkdir(controlRoot, { recursive: true });
     await writeFile(controlPath, `${JSON.stringify({ name, pid: process.pid })}\n`, { encoding: "utf8", flag: "wx" });
   }
-  const child = spawn("docker", [
-    "run",
-    "--rm",
-    "--name",
-    name,
-    "--label",
-    `io.poietra.smoke-run=${runId}`,
-    ...arguments_,
-  ], { stdio: "inherit" });
+  const child = spawn(
+    "docker",
+    ["run", "--rm", "--name", name, "--label", `io.poietra.smoke-run=${runId}`, ...arguments_],
+    { stdio: "inherit" },
+  );
   let requestedSignal = null;
   let cleanupRequest = null;
   const handlers = new Map();
@@ -105,13 +102,7 @@ function previewPathMapper(previewRoot) {
 async function main() {
   const manimArguments = process.argv.slice(2);
   if (manimArguments.length === 1 && manimArguments[0] === "--version") {
-    return runDocker([
-      "--network",
-      "none",
-      image,
-      "manim",
-      "--version",
-    ]);
+    return runDocker(["--network", "none", image, "manim", "--version"]);
   }
   if (manimArguments.length === 2 && manimArguments[0] === "--poietra-probe-json") {
     const videoPath = manimArguments[1];
@@ -154,11 +145,11 @@ async function main() {
   const containerPreviewPath = previewPathMapper(previewRoot);
   let rewrittenArguments;
   try {
-    rewrittenArguments = manimArguments.map((argument) => (
+    rewrittenArguments = manimArguments.map((argument) =>
       isAbsolute(argument) && (argument === sourcePath || argument === mediaPath)
         ? containerPreviewPath(argument)
-        : argument
-    ));
+        : argument,
+    );
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : "Invalid preview path."}\n`);
     return 2;

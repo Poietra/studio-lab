@@ -1,13 +1,4 @@
-import {
-  access,
-  copyFile,
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  stat,
-  writeFile,
-} from "node:fs/promises";
+import { access, copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -124,13 +115,14 @@ async function probeMp4(videoPath: string) {
   const duration = Number(parsed.format?.duration);
   const decodedFrames = parsed.decoded_frames ?? null;
   const formatName = parsed.format?.format_name ?? "";
-  const videoStreams = (parsed.streams ?? []).filter((stream) => (
-    stream.codec_type === "video"
-    && Number.isFinite(stream.width)
-    && Number.isFinite(stream.height)
-    && stream.width! > 0
-    && stream.height! > 0
-  )).length;
+  const videoStreams = (parsed.streams ?? []).filter(
+    (stream) =>
+      stream.codec_type === "video" &&
+      Number.isFinite(stream.width) &&
+      Number.isFinite(stream.height) &&
+      stream.width! > 0 &&
+      stream.height! > 0,
+  ).length;
   expect(formatName.split(",")).toContain("mp4");
   expect(duration).toBeGreaterThan(0);
   expect(videoStreams).toBeGreaterThan(0);
@@ -169,10 +161,7 @@ async function waitForTerminal(manager: ManimRenderManager, id: string) {
   throw new Error("The real Manim preview did not finish within 120 seconds.");
 }
 
-function renderRequest(
-  originalHash: string,
-  targetEntityId: string,
-): ProgramRenderRequest {
+function renderRequest(originalHash: string, targetEntityId: string): ProgramRenderRequest {
   const operation: CanonicalEditOperation = {
     controlOffset: { x: 0, y: 0 },
     delta: { x: 32, y: 0 },
@@ -261,8 +250,9 @@ describe.skipIf(process.env.POIETRA_REAL_MANIM_SMOKE !== "1")("real Manim render
         .find((source) => source.path === "scene.py")
         ?.scenes.find((candidate) => candidate.name === "SmokeScene");
       expect(scene).toBeDefined();
-      const targetEntityId = Object.entries(scene?.sourceVariables ?? {})
-        .find(([, sourceVariable]) => sourceVariable === "circle")?.[0];
+      const targetEntityId = Object.entries(scene?.sourceVariables ?? {}).find(
+        ([, sourceVariable]) => sourceVariable === "circle",
+      )?.[0];
       expect(targetEntityId).toBeTruthy();
 
       const started = await manager.start(renderRequest(originalHash, targetEntityId!));
