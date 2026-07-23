@@ -7,9 +7,23 @@ const workspaceDataRoot = join(process.cwd(), "test-results", `workspace-store-$
 export default defineConfig({
   forbidOnly: true,
   fullyParallel: false,
+  projects: [
+    {
+      name: "chromium",
+      testMatch: "**/*.e2e.ts",
+      use: { browserName: "chromium" },
+    },
+    {
+      name: "webkit-minimum",
+      testMatch: "**/*.smoke.ts",
+      use: {
+        browserName: "webkit",
+        viewport: { height: 640, width: 960 },
+      },
+    },
+  ],
   reporter: "line",
   testDir: "./e2e",
-  testMatch: "**/*.e2e.ts",
   use: {
     baseURL: "http://127.0.0.1:4173",
     trace: "retain-on-failure",

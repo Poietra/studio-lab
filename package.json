@@ -15,6 +15,7 @@
     "test:manim-smoke": "node scripts/run-manim-smoke.mjs",
     "test:e2e": "playwright test",
     "test:electron-packaged": "pnpm package:electron && node scripts/electron-packaged-smoke.mjs",
+    "test:e2e:webkit-smoke": "playwright test --project=webkit-minimum",
     "lint": "biome lint --error-on-warnings .",
     "lint:fix": "biome lint --write .",
     "format": "node scripts/biome-changed.mjs --write",

@@ -78,8 +78,9 @@ pnpm check:style # zero-warning lint plus incremental format check
 pnpm test:unit
 pnpm test:integration
 pnpm test # all unit and boundary/integration tests
-pnpm exec playwright install chromium # first E2E run only
+pnpm exec playwright install chromium webkit # first E2E run only
 pnpm test:e2e
+pnpm test:e2e:webkit-smoke
 cargo check --locked --manifest-path src-tauri/Cargo.toml
 ```
 
