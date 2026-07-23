@@ -278,9 +278,9 @@ class Curved(Scene):
         self.add(dot)
         # poietra:motion {"motions":[{"controlOffset":{"x":10,"y":-20},"delta":{"x":40,"y":30},"variables":["dot"]}],"version":1}
         self.play(
-            MoveAlongPath(dot, CubicBezier(dot.get_center(), dot.get_center() + 0.4444 * RIGHT + 0.0741 * UP, dot.get_center() + 0.7407 * RIGHT + 0.1481 * DOWN, dot.get_center() + 0.8889 * RIGHT + 0.6667 * DOWN), rate_func=linear),
+            MoveAlongPath(dot, CubicBezier(dot.get_center(), dot.get_center() + 0.4444 * RIGHT + 0.0741 * UP, dot.get_center() + 0.7407 * RIGHT + 0.1481 * DOWN, dot.get_center() + 0.8889 * RIGHT + 0.6667 * DOWN), rate_func=smooth), # keep path easing nested
             run_time=2,
-            rate_func=smooth,
+            rate_func=linear,
         )
 `;
     const imported = importManimScene(curved, "scene.py", "Curved");
@@ -288,7 +288,7 @@ class Curved(Scene):
 
     expect(sample).toMatchObject({
       control: { x: 350, y: 175 },
-      easing: "smooth",
+      easing: "linear",
       from: { x: 320, y: 180 },
       interval: { end: 2, start: 0 },
       relative: true,

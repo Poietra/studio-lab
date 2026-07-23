@@ -41,6 +41,25 @@ function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(maximum, Math.max(minimum, value));
 }
 
+function replaceMotionControlOffset(
+  operation: EditSuggestionOperation,
+  index: number,
+  controlOffset: Point,
+): EditSuggestionOperation {
+  if (operation.kind === "create-motion") {
+    return { ...operation, controlOffset };
+  }
+  if (operation.kind !== "edit-program") return operation;
+  return {
+    ...operation,
+    operations: operation.operations.map((step, candidateIndex) => (
+      candidateIndex === index && step.kind === "create-motion"
+        ? { ...step, controlOffset }
+        : step
+    )),
+  };
+}
+
 export function appliedMotionClipReadOnlyReason(
   program: CanonicalEditProgram,
   operation: EditSuggestionOperation | null | undefined,
@@ -124,7 +143,7 @@ export function adjustAppliedMotionClipControl(input: Readonly<{
   } satisfies MotionStep;
   return {
     kind: "valid",
-    operation: replaceSuggestionStep(input.operation, editable.index, step),
+    operation: replaceMotionControlOffset(input.operation, editable.index, step.controlOffset),
     stepIndex: editable.index,
   };
 }

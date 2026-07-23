@@ -152,9 +152,9 @@ describe("applied motion clip editing", () => {
     expect(appliedMotionClipReadOnlyReason(program, null, canonicalMotion.id)).toMatch(/metadata is unavailable/i);
   });
 
-  it("adjusts only the canonical motion identity selected for one entity", () => {
+  it("adjusts only the selected control without rescheduling any composed interval", () => {
     const operation = {
-      anchor: { kind: "absolute", seconds: 5 },
+      anchor: { kind: "playhead", referenceSeconds: 5 },
       execution: "sequence",
       kind: "edit-program",
       operations: [
@@ -171,9 +171,9 @@ describe("applied motion clip editing", () => {
           controlOffset: { x: 5, y: 10 },
           delta: { x: -20, y: 30 },
           easing: "smooth",
-          end: 7,
+          end: 8,
           kind: "create-motion",
-          start: 6,
+          start: 7,
           targetObjectIds: ["equation_1"],
         },
       ],
@@ -185,18 +185,23 @@ describe("applied motion clip editing", () => {
     const result = adjustAppliedMotionClipControl({
       delta: { x: 7, y: -4 },
       operation,
-      operationId: canonicalMotions[1].id,
+      operationId: canonicalMotions[0].id,
       program,
     });
 
     expect(result.kind).toBe("valid");
     if (result.kind !== "valid" || result.operation.kind !== "edit-program") return;
-    expect(result.stepIndex).toBe(1);
+    expect(result.stepIndex).toBe(0);
+    expect(result.operation.anchor).toBe(operation.anchor);
+    expect(result.operation.operations.map(({ start, end }) => ({ end, start }))).toEqual([
+      { end: 6, start: 5 },
+      { end: 8, start: 7 },
+    ]);
     expect(result.operation.operations.map((step) => (
       step.kind === "create-motion" ? step.controlOffset : null
     ))).toEqual([
-      { x: 0, y: -10 },
-      { x: 12, y: 6 },
+      { x: 7, y: -14 },
+      { x: 5, y: 10 },
     ]);
   });
 

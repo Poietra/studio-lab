@@ -195,13 +195,13 @@ export const editProgramSuggestionSchema = z.object({
   const kinds = program.operations.map((operation) => operation.kind);
   const duplicateKinds = kinds.filter((kind, index) => kinds.indexOf(kind) !== index);
   const unsupportedDuplicate = duplicateKinds.find((kind) => (
-    kind !== "create-transform" || program.execution !== "sequence"
+    (kind !== "create-motion" && kind !== "create-transform") || program.execution !== "sequence"
   ));
   if (unsupportedDuplicate) {
     context.addIssue({
       code: "custom",
-      message: unsupportedDuplicate === "create-transform"
-        ? "Repeated create-transform steps require sequence execution."
+      message: unsupportedDuplicate === "create-motion" || unsupportedDuplicate === "create-transform"
+        ? `Repeated ${unsupportedDuplicate} steps require sequence execution.`
         : `EditProgram leaf kind ${unsupportedDuplicate} must be unique.`,
       path: ["operations"],
     });

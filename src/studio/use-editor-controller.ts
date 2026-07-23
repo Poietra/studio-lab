@@ -18,7 +18,7 @@ import {
 import type { SuggestionStatus } from "./magic-edit-panel";
 import type { InteractionMode } from "./studio-viewport";
 import type { StudioTool } from "./studio-toolbar";
-import { replaceAppliedProgram } from "./transactions";
+import { appendAppliedProgram, replaceAppliedProgram } from "./transactions";
 
 export type {
   AppliedProgramEdit,
@@ -165,6 +165,8 @@ function applyBlocker(record: ProgramRecord) {
 }
 
 export function stageEditorDraft(state: EditorControllerState, input: StageDraftInput): EditorControllerState {
+  const preflightError = editorDraftPreflightError(state, input);
+  if (preflightError) return { ...state, draftError: preflightError };
   let appliedPrograms = state.appliedPrograms;
   let programUndoEntries = state.programUndoEntries;
   const preserved = input.preserveAppliedProgram;
@@ -175,12 +177,14 @@ export function stageEditorDraft(state: EditorControllerState, input: StageDraft
     const blocker = applyBlocker(preserved);
     if (blocker) return { ...state, draftError: blocker };
     const value = editorProgramRecord(preserved, state.draftOperation, state.selectedObjectIds);
+    const appended = appendAppliedProgram(appliedPrograms, value);
+    if (appended.kind === "rejected") return { ...state, draftError: appended.reason };
     const mutation = {
-      index: appliedPrograms.length,
+      index: appended.index,
       kind: "append",
       value,
     } satisfies AppliedProgramMutation;
-    appliedPrograms = [...appliedPrograms, value];
+    appliedPrograms = appended.programs;
     programUndoEntries = [...programUndoEntries, mutation];
   }
   const next = {
@@ -197,6 +201,34 @@ export function stageEditorDraft(state: EditorControllerState, input: StageDraft
     selectedObjectIds: input.selectedObjectIds ?? state.selectedObjectIds,
   };
   return input.clearSuggestion ? withoutSuggestion(next) : next;
+}
+
+function editorDraftPreflightError(state: EditorControllerState, input: StageDraftInput) {
+  let programs = state.appliedPrograms;
+  const preserved = input.preserveAppliedProgram;
+  if (
+    preserved &&
+    !programs.some((candidate) => candidate.program.transactionId === preserved.program.transactionId)
+  ) {
+    const blocker = applyBlocker(preserved);
+    if (blocker) return blocker;
+    const appended = appendAppliedProgram(
+      programs,
+      editorProgramRecord(preserved, state.draftOperation, state.selectedObjectIds),
+    );
+    if (appended.kind === "rejected") return appended.reason;
+    programs = appended.programs;
+  }
+  const candidate = editorProgramRecord(
+    input.record,
+    input.operation,
+    input.selectedObjectIds ?? state.selectedObjectIds,
+  );
+  const activeEdit = input.clearAppliedEdit ? null : state.editingAppliedProgram;
+  const result = activeEdit
+    ? replaceAppliedProgram(programs, activeEdit.original.program.transactionId, candidate)
+    : appendAppliedProgram(programs, candidate);
+  return result.kind === "rejected" ? result.reason : null;
 }
 
 export function discardEditorDraft(state: EditorControllerState): EditorControllerState {
@@ -246,9 +278,13 @@ export function applyEditorDraft(state: EditorControllerState): EditorController
       value,
     };
   } else {
-    appliedPrograms = [...state.appliedPrograms, value];
+    const appended = appendAppliedProgram(state.appliedPrograms, value);
+    if (appended.kind === "rejected") {
+      return { ...state, draftError: appended.reason };
+    }
+    appliedPrograms = appended.programs;
     mutation = {
-      index: state.appliedPrograms.length,
+      index: appended.index,
       kind: "append",
       value,
     };
@@ -537,21 +573,15 @@ export function useEditorController() {
 
   const stageDraft = useCallback(
     (input: StageDraftInput) => {
-      const preserved = input.preserveAppliedProgram;
-      if (
-        preserved &&
-        !state.appliedPrograms.some((candidate) => candidate.program.transactionId === preserved.program.transactionId)
-      ) {
-        const blocker = applyBlocker(preserved);
-        if (blocker) {
-          setField("draftError", blocker);
-          return false;
-        }
+      const preflightError = editorDraftPreflightError(state, input);
+      if (preflightError) {
+        setField("draftError", preflightError);
+        return false;
       }
       update((current) => stageEditorDraft(current, input));
       return true;
     },
-    [setField, state.appliedPrograms, update],
+    [setField, state, update],
   );
 
   const discardDraft = useCallback(() => {

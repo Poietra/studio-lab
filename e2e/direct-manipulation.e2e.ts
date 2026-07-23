@@ -220,6 +220,8 @@ class MotionOrderScene(Scene):
         # poietra:anchor 3.000
         self.wait(2)
         # poietra:anchor 5.000
+        self.wait(2)
+        # poietra:anchor 7.000
         self.wait(1)
 `;
   await writeFile(join(projectRoot, "motion_order.py"), source, "utf8");
@@ -234,19 +236,34 @@ class MotionOrderScene(Scene):
     await expect(page.locator("[data-studio-canvas]")).toBeVisible();
 
     const dot = page.getByRole("button", { name: "Move dot" });
+    await page.getByRole("button", { name: "Move playhead to source anchor 3.000 seconds" }).click();
     await page.getByRole("button", { name: "Create animation" }).click();
     await page.getByRole("spinbutton", { name: "New motion duration in seconds" }).fill("0.5");
     await dragBy(page, dot, { x: 30, y: 0 });
     await page.getByRole("button", { name: "Apply program" }).click();
 
-    await page.getByRole("button", { name: "Move playhead to source anchor 3.000 seconds" }).click();
-    await page.getByRole("button", { name: "Create animation" }).click();
-    await dragBy(page, dot, { x: 0, y: 30 });
-    await page.getByRole("button", { name: "Apply program" }).click();
-
     const appliedPrograms = page.locator("section").filter({
       has: page.getByRole("heading", { name: "Applied programs" }),
     });
+    await expect(appliedPrograms.getByRole("listitem")).toHaveCount(1);
+
+    await page.getByRole("button", { name: "Move playhead to source anchor 1.000 seconds" }).click();
+    await dragBy(page, dot, { x: 0, y: 30 });
+    await expect(page.getByRole("alert")).toContainText("earlier than the latest applied Program");
+    await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+    await expect(appliedPrograms.getByRole("listitem")).toHaveCount(1);
+
+    await page.getByRole("button", { name: "Edit applied program 1" }).click();
+    await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+    await page.getByRole("spinbutton", { exact: true, name: "Duration" }).fill("0.6");
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Move playhead to source anchor 5.000 seconds" }).click();
+    await dragBy(page, dot, { x: 0, y: 30 });
+    await page.getByRole("button", { name: "Apply program" }).click();
+
+    await expect(appliedPrograms.getByRole("listitem")).toHaveCount(2);
     const rows = await appliedPrograms.getByRole("listitem").allTextContents();
     const transactionIds = rows.map((row) => row.match(/studio-gesture-[0-9a-f-]{36}/)?.[0]);
     if (!transactionIds[0] || !transactionIds[1]) {
@@ -255,13 +272,13 @@ class MotionOrderScene(Scene):
 
     const firstClip = page.getByRole("button", { name: "Edit dot motion clip" }).first();
     await firstClip.press("ArrowRight");
-    await expect(page.getByRole("spinbutton", { exact: true, name: "Start" })).toHaveValue("3");
+    await expect(page.getByRole("spinbutton", { exact: true, name: "Start" })).toHaveValue("5");
     await firstClip.press("ArrowRight");
 
     await expect(page.getByRole("alert")).toContainText("would cross the next applied Program");
-    await expect(page.getByRole("spinbutton", { exact: true, name: "Start" })).toHaveValue("3");
+    await expect(page.getByRole("spinbutton", { exact: true, name: "Start" })).toHaveValue("5");
     const exported = await exportedSource(page);
-    expect(transactionBlock(exported, transactionIds[0])).toContain("# poietra:cursor 3");
+    expect(transactionBlock(exported, transactionIds[0])).toContain("# poietra:cursor 5");
     expect(exported.indexOf(`# poietra:transaction ${JSON.stringify(transactionIds[0])}`))
       .toBeLessThan(exported.indexOf(`# poietra:transaction ${JSON.stringify(transactionIds[1])}`));
   } finally {

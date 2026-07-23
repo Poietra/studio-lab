@@ -13,6 +13,34 @@ export type AppliedProgramReplacementResult<TRecord extends ProgramRecord = Prog
   reason: string;
 }>;
 
+export type AppliedProgramAppendResult<TRecord extends ProgramRecord = ProgramRecord> = Readonly<{
+  index: number;
+  kind: "appended";
+  programs: readonly TRecord[];
+}> | Readonly<{
+  kind: "rejected";
+  reason: string;
+}>;
+
+export function appendAppliedProgram<TRecord extends ProgramRecord>(
+  programs: readonly TRecord[],
+  value: TRecord,
+): AppliedProgramAppendResult<TRecord> {
+  const previousAnchor = programs.at(-1)?.program.anchor.resolvedSeconds;
+  const valueAnchor = value.program.anchor.resolvedSeconds;
+  if (previousAnchor !== undefined && valueAnchor < previousAnchor - SOURCE_ORDER_EPSILON) {
+    return {
+      kind: "rejected",
+      reason: `The new source anchor ${valueAnchor.toFixed(3)} is earlier than the latest applied Program at ${previousAnchor.toFixed(3)}. Apply Programs in source order or edit the existing transaction in place.`,
+    };
+  }
+  return {
+    index: programs.length,
+    kind: "appended",
+    programs: [...programs, value],
+  };
+}
+
 export function replaceAppliedProgram<TRecord extends ProgramRecord>(
   programs: readonly TRecord[],
   transactionId: string,

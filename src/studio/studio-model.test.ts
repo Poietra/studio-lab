@@ -17,6 +17,7 @@ import {
   createDirectManipulationMotionProgram,
 } from "./suggestion-program";
 import {
+  appendAppliedProgram,
   applyStagedPrograms,
   replaceAppliedProgram,
   stageProgram,
@@ -481,6 +482,34 @@ describe("Studio time and transaction invariants", () => {
       kind: "rejected",
       reason: "The replacement source anchor 10.000 would cross the next applied Program at 9.000. Applied Program source order must remain stable.",
     });
+  });
+
+  it("rejects a reverse append while keeping the first Program editable in place", () => {
+    const atThreeValidation = canonicalize(motionSuggestion(3), "first-program", 3);
+    const atOneValidation = canonicalize(motionSuggestion(1), "reverse-program", 1);
+    const editedOperation = motionSuggestion(3);
+    expect(editedOperation.kind).toBe("create-motion");
+    if (editedOperation.kind !== "create-motion") return;
+    const editedValidation = canonicalize({
+      ...editedOperation,
+      controlOffset: { x: 18, y: -12 },
+    }, "first-program", 3);
+    const atThree = programRecord(atThreeValidation.program, atThreeValidation);
+    const atOne = programRecord(atOneValidation.program, atOneValidation);
+    const edited = programRecord(editedValidation.program, editedValidation);
+
+    const firstAppend = appendAppliedProgram([], atThree);
+    expect(firstAppend.kind).toBe("appended");
+    if (firstAppend.kind !== "appended") return;
+    expect(appendAppliedProgram(firstAppend.programs, atOne)).toEqual({
+      kind: "rejected",
+      reason: "The new source anchor 1.000 is earlier than the latest applied Program at 3.000. Apply Programs in source order or edit the existing transaction in place.",
+    });
+
+    const replacement = replaceAppliedProgram(firstAppend.programs, "first-program", edited);
+    expect(replacement.kind).toBe("replaced");
+    if (replacement.kind !== "replaced") return;
+    expect(replacement.programs).toEqual([edited]);
   });
 
 });

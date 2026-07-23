@@ -672,6 +672,7 @@ function topLevelPlayKeywordIdentifier(
   const values: string[] = [];
   let quote: "\"" | "'" | null = null;
   let escaped = false;
+  let atArgumentStart = true;
   for (let index = opening + 1; index < statement.length; index += 1) {
     const character = statement[index];
     if (escaped) {
@@ -687,6 +688,7 @@ function topLevelPlayKeywordIdentifier(
       continue;
     }
     if (character === "\"" || character === "'") {
+      if (stack.length === 1) atArgumentStart = false;
       quote = character;
       continue;
     }
@@ -696,6 +698,7 @@ function topLevelPlayKeywordIdentifier(
       continue;
     }
     if (character === "(" || character === "[" || character === "{") {
+      if (stack.length === 1) atArgumentStart = false;
       stack.push(character);
       continue;
     }
@@ -705,12 +708,21 @@ function topLevelPlayKeywordIdentifier(
       if (stack.length === 0) break;
       continue;
     }
-    if (stack.length !== 1 || !/[A-Za-z_]/.test(character)) continue;
+    if (stack.length !== 1 || /\s/.test(character)) continue;
+    if (character === ",") {
+      atArgumentStart = true;
+      continue;
+    }
+    if (!/[A-Za-z_]/.test(character)) {
+      atArgumentStart = false;
+      continue;
+    }
+    const isArgumentStart = atArgumentStart;
+    atArgumentStart = false;
     const identifier = statement.slice(index).match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0];
     if (!identifier) continue;
-    const previous = statement.slice(0, index).trimEnd().at(-1);
     index += identifier.length - 1;
-    if (identifier !== keyword || (previous !== "(" && previous !== ",")) continue;
+    if (identifier !== keyword || !isArgumentStart) continue;
     let cursor = index + 1;
     while (/\s/.test(statement[cursor] ?? "")) cursor += 1;
     if (statement[cursor] !== "=") return null;
