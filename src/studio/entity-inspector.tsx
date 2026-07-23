@@ -68,12 +68,13 @@ function firstChangedField(
 }
 
 export function entityInspectorKey(entity: ProjectedEntity) {
-  const dimensions = entity.geometry.dimensions.kind === "known"
-    ? entity.geometry.dimensions.value
-    : {};
   return JSON.stringify({
     content: entity.content,
-    dimensions,
+    geometry: {
+      dimensions: entity.geometry.dimensions,
+      position: entity.geometry.position,
+      scale: entity.geometry.scale,
+    },
     id: entity.id,
     position: entity.position,
   });

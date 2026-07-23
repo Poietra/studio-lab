@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { evaluateWorkingState, projectProposedState } from "./evaluator";
+import { entityInspectorKey } from "./entity-inspector";
 import { createFixtureWorkingState } from "./fixture";
 import {
   initialInspectorEditValues,
@@ -113,6 +114,19 @@ describe("Inspector field validation", () => {
       },
       kind: "invalid",
     });
+  });
+
+  it("remounts fields when geometry knowledge resolves at the same sampled position", () => {
+    const known = fixtureEntity("equation_1");
+    const unknown: ProjectedEntity = {
+      ...known,
+      geometry: {
+        ...known.geometry,
+        position: { kind: "unknown", reason: "Runtime move_to call" },
+      },
+    };
+
+    expect(entityInspectorKey(unknown)).not.toBe(entityInspectorKey(known));
   });
 
   it("does not revalidate unchanged content when editing an independent field", () => {
