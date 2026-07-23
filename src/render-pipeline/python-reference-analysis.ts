@@ -1,4 +1,8 @@
-import { analyzePythonSource, type PythonSourceLine } from "./python-source-analysis";
+import {
+  analyzePythonSource,
+  isPythonStatementStart,
+  type PythonSourceLine,
+} from "./python-source-analysis";
 
 type PythonStatement = Readonly<{
   code: string;
@@ -85,6 +89,59 @@ function logicalStatements(
     throw new PythonReferenceAnalysisError("The source anchor splits an unfinished Python statement.");
   }
   return statements;
+}
+
+function definitionBindings(
+  source: string,
+  startLine: number,
+  endLine: number,
+) {
+  const analysis = analyzePythonSource(source);
+  if (!analysis.valid) {
+    throw new PythonReferenceAnalysisError("Python source has an invalid or unfinished lexical structure.");
+  }
+  const definitions: Array<{ target: PythonStatement; value: PythonStatement }> = [];
+  for (let index = startLine; index < endLine; index += 1) {
+    const line = analysis.lines[index];
+    if (!line || !isPythonStatementStart(line)) continue;
+    const name = line.code.trimStart().match(
+      /^(?:(?:async\s+)?def|class)\s+([A-Za-z_][A-Za-z0-9_]*)\b/,
+    )?.[1];
+    if (!name) continue;
+
+    let definitionStart = index;
+    for (let cursor = index - 1; cursor >= startLine;) {
+      const previous = analysis.lines[cursor];
+      if (!previous || !isPythonStatementStart(previous)) {
+        cursor -= 1;
+        continue;
+      }
+      if (previous.indentation !== line.indentation || !previous.code.trimStart().startsWith("@")) break;
+      definitionStart = cursor;
+      cursor -= 1;
+    }
+
+    let definitionEnd = endLine;
+    for (let cursor = index + 1; cursor < endLine; cursor += 1) {
+      const candidate = analysis.lines[cursor];
+      if (
+        candidate
+        && isPythonStatementStart(candidate)
+        && candidate.indentation <= line.indentation
+      ) {
+        definitionEnd = cursor;
+        break;
+      }
+    }
+    definitions.push({
+      target: { code: name, raw: name },
+      value: {
+        code: analysis.lines.slice(definitionStart, definitionEnd).map((entry) => entry.code).join("\n"),
+        raw: analysis.lines.slice(definitionStart, definitionEnd).map((entry) => entry.raw).join("\n"),
+      },
+    });
+  }
+  return definitions;
 }
 
 function topLevelAssignmentIndexes(code: string) {
@@ -246,10 +303,16 @@ export function pythonReferenceClosure(
   initialReferences: ReadonlySet<string>,
 ) {
   const statements = logicalStatements(source, startLine, endLine);
+  const definitions = definitionBindings(source, startLine, endLine);
   const references = new Set(initialReferences);
   let changed = true;
   while (changed) {
     changed = false;
+    for (const definition of definitions) {
+      if (referencedPythonReference(definition.value, references)) {
+        changed = addReferences([definition.target], references) || changed;
+      }
+    }
     for (const statement of statements) {
       const assignment = assignmentParts(statement);
       if (assignment && referencedPythonReference(assignment.rhs, references)) {

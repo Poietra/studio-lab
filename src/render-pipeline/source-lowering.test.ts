@@ -759,6 +759,13 @@ class GroupedEquation(Scene):
     ["for binding", "for alias in [equation]:\n            pass", "self.add(alias)", "alias"],
     ["with binding", "with nullcontext(equation) as alias:\n            pass", "self.add(alias)", "alias"],
     ["assignment expression", "if (alias := equation):\n            pass", "self.add(alias)", "alias"],
+    ["function body", "def revive():\n            self.add(equation)", "revive()", "revive"],
+    ["function return", "def get():\n            return equation", "self.add(get())", "get"],
+    ["async function body", "async def revive():\n            self.add(equation)", "self.add(revive)", "revive"],
+    ["function default", "def revive(value=equation):\n            return value", "self.add(revive())", "revive"],
+    ["function decorator", "@register(equation)\n        def revive():\n            pass", "self.add(revive)", "revive"],
+    ["class body", "class Holder:\n            cached = equation", "self.add(Holder.cached)", "Holder"],
+    ["class decorator", "@register(equation)\n        class Holder:\n            pass", "self.add(Holder)", "Holder"],
   ])("rejects persistent removal through a pre-anchor %s", (_label, setup, suffix, reference) => {
     const remove: CanonicalEditOperation = {
       ...operationBase("persistent-delete-alias", 7, 7.4),
