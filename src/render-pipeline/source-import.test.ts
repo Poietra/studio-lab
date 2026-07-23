@@ -352,6 +352,31 @@ class Resized(Scene):
       .toMatchObject({ kind: "unknown", reason: expect.stringMatching(/unverified resize/i) });
   });
 
+  it("fails closed for common unmarked dimension mutations without inventing position changes", () => {
+    const imported = importManimScene(`from manim import *
+
+class Resized(Scene):
+    def construct(self):
+        height_only = Rectangle(width=4, height=2)
+        width_only = Rectangle(width=4, height=2)
+        animated = Rectangle(width=4, height=2)
+        self.add(height_only, width_only, animated)
+        height_only.stretch_to_fit_height(3)
+        width_only.set_width(5)
+        self.play(animated.animate.scale_to_fit_height(4), run_time=1)
+`, "scene.py", "Resized");
+
+    for (const variable of ["height_only", "width_only", "animated"]) {
+      const entityId = `source:scene.py#Resized:${variable}`;
+      expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/dimensions`]?.samples.at(-1)?.knowledge)
+        .toMatchObject({ kind: "unknown" });
+      expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/position`]?.samples)
+        .toHaveLength(1);
+      expect(imported?.runtimeSceneState.objectGraph.entities[entityId]?.geometry?.position)
+        .toMatchObject({ kind: "known" });
+    }
+  });
+
   it("fails closed for complex Python and an invalid marker", () => {
     const marked = `from manim import *
 

@@ -788,6 +788,49 @@ function markerBefore(statements: readonly SourceStatement[], statementIndex: nu
 
 type ResizeMarkerEntry = z.infer<typeof resizeMarkerEntrySchema>;
 
+const DIMENSION_MUTATING_METHOD_PATTERN = [
+  "match_height",
+  "match_width",
+  "rescale_to_fit",
+  "scale_to_fit_height",
+  "scale_to_fit_width",
+  "set_height",
+  "set_width",
+  "stretch",
+  "stretch_to_fit_height",
+  "stretch_to_fit_width",
+].join("|");
+const POSITION_MUTATING_METHOD_PATTERN = [
+  "align_to",
+  "move_to",
+  "next_to",
+  "set_x",
+  "set_y",
+  "set_z",
+  "shift",
+  "to_corner",
+  "to_edge",
+].join("|");
+
+function variableMethodCall(
+  statement: string,
+  variable: string,
+  animated: boolean,
+  methodPattern: string,
+) {
+  const escaped = variable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const receiver = `${escaped}\\s*\\.\\s*${animated ? "animate\\s*\\.\\s*" : ""}`;
+  return new RegExp(`\\b${receiver}[\\s\\S]*?\\.?(?:${methodPattern})\\s*\\(`).test(statement);
+}
+
+function mutatesDimensions(statement: string, variable: string, animated: boolean) {
+  return variableMethodCall(statement, variable, animated, DIMENSION_MUTATING_METHOD_PATTERN);
+}
+
+function mutatesPosition(statement: string, variable: string, animated: boolean) {
+  return variableMethodCall(statement, variable, animated, POSITION_MUTATING_METHOD_PATTERN);
+}
+
 function validResizeDimensions(resize: ResizeMarkerEntry) {
   return resize.shape === "circle"
     ? resize.from.dimensions.radius !== undefined && resize.to.dimensions.radius !== undefined
@@ -1068,9 +1111,10 @@ export function importManimScene(
       continue;
     }
     const directDimensionsMarker = markerBefore(statements, statementIndex, DIMENSIONS_MARKER_PATTERN);
-    const directResizeVariable = statement.text.match(
-      /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*(?:scale_to_fit_width|stretch_to_fit_width)\s*\(/s,
-    )?.[1];
+    const directResizeVariable = statement.text.match(new RegExp(
+      `^\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\.\\s*(?:${DIMENSION_MUTATING_METHOD_PATTERN})\\s*\\(`,
+      "s",
+    ))?.[1];
     if (directResizeVariable) {
       const parsed = dimensionsMarkerSchema.safeParse(directDimensionsMarker);
       const entity = byVariable.get(directResizeVariable);
@@ -1089,10 +1133,13 @@ export function importManimScene(
         const dimensionsKnowledge: Knowledge<EntityDimensions> = valid
           ? { kind: "known", value: dimensions }
           : unknown("Dimensions are changed by an unverified resize expression.", [statement.text.trim()]);
+        const positionChanged = mutatesPosition(statement.text, directResizeVariable, false);
         const position = valid && resize ? resize.to.position : entity.position;
         const positionKnowledge: Knowledge<Point> = valid
           ? { kind: "known", value: position }
-          : unknown("Position is changed by an unverified resize expression.", [statement.text.trim()]);
+          : positionChanged
+            ? unknown("Position is changed by an unverified resize expression.", [statement.text.trim()])
+            : entity.positionKnowledge;
         appendChannelSample(dimensionsSamples, entity.id, {
           interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
           kind: "exact",
@@ -1100,13 +1147,15 @@ export function importManimScene(
           provenanceId: `import:${sceneId}:${entity.sourceVariable}:dimensions:${statement.line}`,
           value: dimensions,
         });
-        appendChannelSample(positionSamples, entity.id, {
-          interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
-          kind: "exact",
-          knowledge: positionKnowledge,
-          provenanceId: `import:${sceneId}:${entity.sourceVariable}:resize-position:${statement.line}`,
-          value: position,
-        });
+        if (valid || positionChanged) {
+          appendChannelSample(positionSamples, entity.id, {
+            interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
+            kind: "exact",
+            knowledge: positionKnowledge,
+            provenanceId: `import:${sceneId}:${entity.sourceVariable}:resize-position:${statement.line}`,
+            value: position,
+          });
+        }
         entity.dimensions = dimensionsKnowledge;
         entity.position = position;
         entity.positionKnowledge = positionKnowledge;
@@ -1200,6 +1249,11 @@ export function importManimScene(
         return shape ? [[entity.sourceVariable, shape] as const] : [];
       }),
     );
+    const actualResizeVariables = new Set(
+      mutableEntities.flatMap((entity) =>
+        mutatesDimensions(statement.text, entity.sourceVariable, true) ? [entity.sourceVariable] : [],
+      ),
+    );
     const literalScaleFactors = new Map(
       actualScaleCalls.flatMap((match) => {
         const factor = positiveNumberLiteral(match[2]);
@@ -1254,6 +1308,7 @@ export function importManimScene(
       && parsedDimensions.data.kind === "animated"
       && new Set(parsedDimensions.data.resizes.map((resize) => resize.variable)).size === parsedDimensions.data.resizes.length
       && parsedDimensions.data.resizes.length === actualResizeShapes.size
+      && parsedDimensions.data.resizes.length === actualResizeVariables.size
       && parsedDimensions.data.resizes.every(
         (resize) =>
           byVariable.has(resize.variable) &&
@@ -1374,16 +1429,19 @@ export function importManimScene(
         entity.dimensions = dimensionsKnowledge;
         entity.position = resize.to.position;
         entity.positionKnowledge = positionKnowledge;
-      } else if (actualResizeShapes.has(entity.sourceVariable)) {
+      } else if (actualResizeVariables.has(entity.sourceVariable)) {
         const dimensions = entity.dimensions.kind === "known" ? entity.dimensions.value : {};
         const dimensionsKnowledge = unknown<EntityDimensions>(
           "Dimensions are changed by an animation expression that Studio cannot evaluate safely.",
           [statement.text.trim()],
         );
-        const positionKnowledge = unknown<Point>(
-          "Position is changed by an animated resize that Studio cannot evaluate safely.",
-          [statement.text.trim()],
-        );
+        const positionChanged = mutatesPosition(statement.text, entity.sourceVariable, true);
+        const positionKnowledge: Knowledge<Point> = positionChanged
+          ? unknown(
+              "Position is changed by an animated resize that Studio cannot evaluate safely.",
+              [statement.text.trim()],
+            )
+          : entity.positionKnowledge;
         appendChannelSample(dimensionsSamples, entity.id, {
           easing: "smooth",
           from: dimensions,
@@ -1393,15 +1451,17 @@ export function importManimScene(
           provenanceId: `import:${sceneId}:${entity.sourceVariable}:unknown-dimensions:${statement.line}`,
           value: dimensions,
         });
-        appendChannelSample(positionSamples, entity.id, {
-          easing: "smooth",
-          from: entity.position,
-          interval,
-          kind: "animated",
-          knowledge: positionKnowledge,
-          provenanceId: `import:${sceneId}:${entity.sourceVariable}:unknown-resize-position:${statement.line}`,
-          value: entity.position,
-        });
+        if (positionChanged) {
+          appendChannelSample(positionSamples, entity.id, {
+            easing: "smooth",
+            from: entity.position,
+            interval,
+            kind: "animated",
+            knowledge: positionKnowledge,
+            provenanceId: `import:${sceneId}:${entity.sourceVariable}:unknown-resize-position:${statement.line}`,
+            value: entity.position,
+          });
+        }
         entity.dimensions = dimensionsKnowledge;
         entity.positionKnowledge = positionKnowledge;
       }
