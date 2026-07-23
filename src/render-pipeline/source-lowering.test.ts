@@ -249,6 +249,28 @@ class GroupedEquation(Scene):
       .toEqual(expect.objectContaining({ text: "force" }));
   });
 
+  it("rejects content payloads that cannot round-trip through the strict marker contract", () => {
+    const invalidContent = {
+      ...operationBase("invalid-content", 7),
+      entityId: "equation_1",
+      key: "content",
+      kind: "SetProperty",
+      value: {
+        displayLines: ["x"],
+        label: "x".repeat(2_001),
+        rogue: true,
+        texParts: ["x"],
+      },
+    } as CanonicalEditOperation;
+
+    expect(() => lowerCanonicalProgramSource(
+      source,
+      request(canonicalProgram([invalidContent], "invalid-content")),
+      { height: 8, width: 14.222 },
+      null,
+    )).toThrow(/no truthful source lowering/i);
+  });
+
   it("does not expose marker-looking text inside a triple-quoted string", () => {
     const stringMarkerSource = `from manim import *
 

@@ -6,6 +6,7 @@ import {
   PythonReferenceAnalysisError,
   referencedPythonReference,
 } from "./python-reference-analysis";
+import { canonicalEditableContent, type EditableContentType } from "../studio/editable-content";
 import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "../studio/magic-edit-capabilities";
 import type { EntityContent, MotionEasing } from "../studio/model";
 import {
@@ -402,39 +403,22 @@ function contentTarget(value: unknown): Readonly<{
   constructor: string;
   type: "MathTex" | "Text";
 }> | null {
-  if (typeof value !== "object" || value === null || !("displayLines" in value)) return null;
-  const content = value as EntityContent;
-  if (
-    !Array.isArray(content.displayLines)
-    || content.displayLines.length === 0
-    || content.displayLines.length > 2_000
-    || !content.displayLines.every((line) => typeof line === "string")
-  ) return null;
-  if (
-    typeof content.text === "string"
-    && content.text.trim().length > 0
-    && content.text.length <= 2_000
-    && content.texParts === undefined
-  ) {
+  const candidate = value as Partial<EntityContent> | null;
+  const type: EditableContentType | null = typeof candidate?.text === "string"
+    ? "Text"
+    : Array.isArray(candidate?.texParts) ? "MathTex" : null;
+  if (!type) return null;
+  const content = canonicalEditableContent(value, type);
+  if (!content) return null;
+  if (type === "Text" && content.text !== undefined) {
     return { content, constructor: `Text(${JSON.stringify(content.text)})`, type: "Text" };
   }
-  if (
-    content.text === undefined
-    && Array.isArray(content.texParts)
-    && content.texParts.length > 0
-    && content.texParts.length <= 16
-    && content.texParts.every((part) => (
-      typeof part === "string" && part.trim().length > 0 && part.length <= 2_000
-    ))
-    && content.texParts.reduce((length, part) => length + part.length, 0) <= 2_000
-  ) {
-    return {
-      content,
-      constructor: `MathTex(${content.texParts.map((part) => JSON.stringify(part)).join(", ")})`,
-      type: "MathTex",
-    };
-  }
-  return null;
+  if (!content.texParts) return null;
+  return {
+    content,
+    constructor: `MathTex(${content.texParts.map((part) => JSON.stringify(part)).join(", ")})`,
+    type: "MathTex",
+  };
 }
 
 function contentReplacementExpression(variable: string, target: NonNullable<ReturnType<typeof contentTarget>>) {

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import { analyzePythonSource, isPythonStatementStart, isStandalonePythonComment } from "./python-source-analysis";
+import { canonicalEditableContent, UNKNOWN_EDITABLE_CONTENT } from "../studio/editable-content";
 import {
   STUDIO_STATE_VERSION,
   type EntityContent,
@@ -1179,6 +1180,8 @@ export function importManimScene(
         && parsed.success
         && parsed.data.variable === directContent[1]
         && parsed.data.type === directContent[2]
+        && entity.type === parsed.data.type
+        && canonicalEditableContent(parsed.data.content, parsed.data.type)
         && verifiedContentReplacement(statement.text, parsed.data)
       ) {
         appendChannelSample(contentSamples, entity.id, {
@@ -1188,6 +1191,41 @@ export function importManimScene(
           value: parsed.data.content,
         });
         entity.content = parsed.data.content;
+      } else if (entity) {
+        const evidence = [statement.text.trim()];
+        appendChannelSample(contentSamples, entity.id, {
+          interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
+          kind: "exact",
+          provenanceId: `import:${sceneId}:${entity.sourceVariable}:content-unknown:${statement.line}`,
+          value: UNKNOWN_EDITABLE_CONTENT,
+        });
+        entity.content = undefined;
+        const dimensions = entity.dimensions.kind === "known" ? entity.dimensions.value : {};
+        entity.dimensions = unknown("Content is replaced by an unverified become expression.", evidence);
+        entity.positionKnowledge = unknown("Position may change in an unverified become expression.", evidence);
+        entity.scaleKnowledge = unknown("Scale may change in an unverified become expression.", evidence);
+        entity.style = unknown("Style may change in an unverified become expression.", evidence);
+        appendChannelSample(dimensionsSamples, entity.id, {
+          interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
+          kind: "exact",
+          knowledge: entity.dimensions,
+          provenanceId: `import:${sceneId}:${entity.sourceVariable}:content-dimensions:${statement.line}`,
+          value: dimensions,
+        });
+        appendChannelSample(positionSamples, entity.id, {
+          interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
+          kind: "exact",
+          knowledge: entity.positionKnowledge,
+          provenanceId: `import:${sceneId}:${entity.sourceVariable}:content-position:${statement.line}`,
+          value: entity.position,
+        });
+        appendChannelSample(scaleSamples, entity.id, {
+          interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
+          kind: "exact",
+          knowledge: entity.scaleKnowledge,
+          provenanceId: `import:${sceneId}:${entity.sourceVariable}:content-scale:${statement.line}`,
+          value: entity.scale,
+        });
       }
       continue;
     }
