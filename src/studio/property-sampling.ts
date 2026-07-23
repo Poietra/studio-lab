@@ -59,6 +59,18 @@ function chronologicalSamples(samples: readonly PropertyChannelSample[]) {
 }
 
 /**
+ * Restores source chronology for discrete content replacements.
+ *
+ * Studio content edits are appended after imported samples during evaluation,
+ * even when their source anchor precedes a later `become`. Sorting puts that
+ * later source replacement back in authority. At the same instant, the base
+ * sample remains first, followed by Studio edits and then source order.
+ */
+export function normalizeContentSamples(samples: readonly PropertyChannelSample[]): readonly PropertyChannelSample[] {
+  return chronologicalSamples(samples).map(({ sample }) => sample);
+}
+
+/**
  * Restores source order for absolute shape geometry mutations.
  *
  * A Studio resize is appended after imported samples even when its source

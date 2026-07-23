@@ -17,6 +17,7 @@ import { evaluateOperation, type EvaluationDraft } from "./operation-registry";
 import {
   isEntityDimensionsValue,
   isPointValue,
+  normalizeContentSamples,
   normalizeDimensionsSamples,
   normalizePositionSamples,
   normalizeScaleSamples,
@@ -106,13 +107,15 @@ function normalizePropertyChannels(draft: EvaluationDraft) {
   draft.propertyChannels = Object.fromEntries(
     Object.entries(draft.propertyChannels).map(([id, channel]) => [
       id,
-      channel.key === "dimensions"
-        ? { ...channel, samples: normalizeDimensionsSamples(channel.samples) }
-        : channel.key === "position"
-          ? { ...channel, samples: normalizePositionSamples(channel.samples) }
-          : channel.key === "scale"
-            ? { ...channel, samples: normalizeScaleSamples(channel.samples) }
-            : channel,
+      channel.key === "content"
+        ? { ...channel, samples: normalizeContentSamples(channel.samples) }
+        : channel.key === "dimensions"
+          ? { ...channel, samples: normalizeDimensionsSamples(channel.samples) }
+          : channel.key === "position"
+            ? { ...channel, samples: normalizePositionSamples(channel.samples) }
+            : channel.key === "scale"
+              ? { ...channel, samples: normalizeScaleSamples(channel.samples) }
+              : channel,
     ]),
   );
 }
