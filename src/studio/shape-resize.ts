@@ -18,9 +18,9 @@ export function resizeKindForType(type: string): ShapeResizeKind | null {
 
 export function hasShapeDimensions(shape: ShapeResizeKind, dimensions: EntityDimensions) {
   return shape === "circle"
-    ? typeof dimensions.radius === "number" && dimensions.radius > 0
-    : typeof dimensions.width === "number" && dimensions.width > 0
-      && typeof dimensions.height === "number" && dimensions.height > 0;
+    ? typeof dimensions.radius === "number" && Number.isFinite(dimensions.radius) && dimensions.radius > 0
+    : typeof dimensions.width === "number" && Number.isFinite(dimensions.width) && dimensions.width > 0
+      && typeof dimensions.height === "number" && Number.isFinite(dimensions.height) && dimensions.height > 0;
 }
 
 function directionSign(direction: ResizeHandleDirection, negative: "n" | "w", positive: "e" | "s") {

@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest";
 
-import { resizeShapeByViewportDelta } from "./shape-resize";
+import { hasShapeDimensions, resizeShapeByViewportDelta } from "./shape-resize";
 
 const frame = { height: 8, width: 16 };
 const viewport = { height: 400, width: 800 };
 
 describe("shape-aware resize geometry", () => {
+  it("rejects incomplete and non-finite shape dimensions", () => {
+    expect(hasShapeDimensions("circle", { radius: Number.POSITIVE_INFINITY })).toBe(false);
+    expect(hasShapeDimensions("circle", { radius: Number.NaN })).toBe(false);
+    expect(hasShapeDimensions("rectangle", { height: 2 })).toBe(false);
+    expect(hasShapeDimensions("rectangle", { height: 2, width: Number.POSITIVE_INFINITY })).toBe(false);
+  });
+
   it("moves only Rectangle's right edge while anchoring its left edge", () => {
     expect(resizeShapeByViewportDelta({
       direction: "e",
