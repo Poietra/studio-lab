@@ -2,15 +2,8 @@ import { constants, type BigIntStats } from "node:fs";
 import { open, readdir } from "node:fs/promises";
 import { join, sep } from "node:path";
 
-import {
-  isManimSourcePath,
-  type ManimWorkspaceSource,
-} from "../src/render-pipeline/contracts";
-import {
-  findSceneBlocks,
-  importManimScene,
-  type ImportedManimScene,
-} from "../src/render-pipeline/source-import";
+import { isManimSourcePath, type ManimWorkspaceSource } from "../src/render-pipeline/contracts";
+import { findSceneBlocks, importManimScene, type ImportedManimScene } from "../src/render-pipeline/source-import";
 
 const SKIPPED_DIRECTORIES = new Set([
   ".git",
@@ -32,12 +25,14 @@ type DiscoveredPythonSource = Readonly<{
 }>;
 
 function isSameFileVersion(first: BigIntStats, second: BigIntStats) {
-  return first.dev === second.dev
-    && first.ino === second.ino
-    && first.mode === second.mode
-    && first.size === second.size
-    && first.mtimeNs === second.mtimeNs
-    && first.ctimeNs === second.ctimeNs;
+  return (
+    first.dev === second.dev &&
+    first.ino === second.ino &&
+    first.mode === second.mode &&
+    first.size === second.size &&
+    first.mtimeNs === second.mtimeNs &&
+    first.ctimeNs === second.ctimeNs
+  );
 }
 
 async function readStablePythonSource(path: string) {
@@ -81,7 +76,8 @@ export function importSourceSnapshot(
       scenes: importedScenes.map((scene, index) => ({
         anchors: scene.anchors,
         name: scene.name,
-        nextSceneId: importedScenes[index + 1]?.sceneId ?? null,
+        nextSceneId:
+          importedScenes[index + 1]?.sceneId === scene.sceneId ? null : (importedScenes[index + 1]?.sceneId ?? null),
         runtimeSceneState: scene.runtimeSceneState,
         sceneId: scene.sceneId,
         sourceHash: scene.sourceHash,
@@ -135,10 +131,7 @@ async function visitPythonSources(
   await visit(projectRoot, "", true);
 }
 
-export async function discoverPythonSources(
-  projectRoot: string,
-  frame: Readonly<{ height: number; width: number }>,
-) {
+export async function discoverPythonSources(projectRoot: string, frame: Readonly<{ height: number; width: number }>) {
   const sources: ManimWorkspaceSource[] = [];
   await visitPythonSources(projectRoot, ({ path, source }) => {
     const imported = importSourceSnapshot(source, path, frame);

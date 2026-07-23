@@ -1,11 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 
-import {
-  analyzePythonSource,
-  isPythonStatementStart,
-  isStandalonePythonComment,
-} from "./python-source-analysis";
+import { analyzePythonSource, isPythonStatementStart, isStandalonePythonComment } from "./python-source-analysis";
 import {
   STUDIO_STATE_VERSION,
   type EntityContent,
@@ -45,6 +41,23 @@ export type SourceSceneBlock = Readonly<{
   lines: readonly string[];
   name: string;
 }>;
+
+export class AmbiguousSourceSceneError extends Error {
+  readonly classLines: readonly number[];
+  readonly sceneName: string;
+  readonly sourcePath: string;
+
+  constructor(sourcePath: string, sceneName: string, classLines: readonly number[]) {
+    const definitionLines = classLines.map((line) => line + 1);
+    super(
+      `Cannot import Scene "${sceneName}" from ${sourcePath}: duplicate Scene class definitions were found at lines ${definitionLines.join(", ")}. Rename or remove the duplicate definitions before editing.`,
+    );
+    this.name = "AmbiguousSourceSceneError";
+    this.classLines = definitionLines;
+    this.sceneName = sceneName;
+    this.sourcePath = sourcePath;
+  }
+}
 
 type MutableEntity = {
   content?: EntityContent;
@@ -89,34 +102,69 @@ const SCALE_MARKER_PATTERN = /^\s*#\s*poietra:scale(?:\s+(.*))?\s*$/;
 const identifierSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
 const markerPointSchema = z.object({ x: z.number().finite(), y: z.number().finite() }).strict();
 const positionMarkerSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("absolute"), value: markerPointSchema, variable: identifierSchema, version: z.literal(1) }).strict(),
-  z.object({ kind: z.literal("relative"), offset: markerPointSchema, relativeTo: identifierSchema, variable: identifierSchema, version: z.literal(1) }).strict(),
+  z
+    .object({
+      kind: z.literal("absolute"),
+      value: markerPointSchema,
+      variable: identifierSchema,
+      version: z.literal(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("relative"),
+      offset: markerPointSchema,
+      relativeTo: identifierSchema,
+      variable: identifierSchema,
+      version: z.literal(1),
+    })
+    .strict(),
 ]);
-const motionMarkerSchema = z.object({
-  motions: z.array(z.object({
-    controlOffset: markerPointSchema.optional(),
-    delta: markerPointSchema,
-    variables: z.array(identifierSchema).min(1).max(128),
-  }).strict()).min(1).max(128),
-  version: z.literal(1),
-}).strict();
+const motionMarkerSchema = z
+  .object({
+    motions: z
+      .array(
+        z
+          .object({
+            controlOffset: markerPointSchema.optional(),
+            delta: markerPointSchema,
+            variables: z.array(identifierSchema).min(1).max(128),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(128),
+    version: z.literal(1),
+  })
+  .strict();
 const positiveScaleSchema = z.number().finite().positive();
 const scaleMarkerSchema = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("exact"),
-    value: positiveScaleSchema,
-    variable: identifierSchema,
-    version: z.literal(1),
-  }).strict(),
-  z.object({
-    kind: z.literal("animated"),
-    scales: z.array(z.object({
-      from: positiveScaleSchema,
-      to: positiveScaleSchema,
+  z
+    .object({
+      kind: z.literal("exact"),
+      value: positiveScaleSchema,
       variable: identifierSchema,
-    }).strict()).min(1).max(128),
-    version: z.literal(1),
-  }).strict(),
+      version: z.literal(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("animated"),
+      scales: z
+        .array(
+          z
+            .object({
+              from: positiveScaleSchema,
+              to: positiveScaleSchema,
+              variable: identifierSchema,
+            })
+            .strict(),
+        )
+        .min(1)
+        .max(128),
+      version: z.literal(1),
+    })
+    .strict(),
 ]);
 
 function hashSource(source: string) {
@@ -142,7 +190,8 @@ function suiteIndent(
   limit: number,
   parentIndent: number,
 ) {
-  const indentation = lines.slice(start, limit)
+  const indentation = lines
+    .slice(start, limit)
     .filter((line) => isPythonStatementStart(line) && line.indentation > parentIndent)
     .map((line) => line.indentation);
   return indentation.length > 0 ? Math.min(...indentation) : null;
@@ -153,22 +202,21 @@ export function findSceneBlocks(source: string): readonly SourceSceneBlock[] {
   if (!analysis.valid) return [];
   const rawLines = source.split(/\r?\n/);
   const classes = analysis.lines.flatMap((line, index) => {
-    const match = isPythonStatementStart(line) && line.indentation === 0
-      ? line.code.match(CLASS_PATTERN)
-      : null;
+    const match = isPythonStatementStart(line) && line.indentation === 0 ? line.code.match(CLASS_PATTERN) : null;
     return match ? [{ classLine: index, indent: line.indentation, name: match[1] }] : [];
   });
   return classes.map((entry) => {
     const classEnd = blockEnd(analysis.lines, entry.classLine + 1, analysis.lines.length, entry.indent);
     const classBodyIndent = suiteIndent(analysis.lines, entry.classLine + 1, classEnd, entry.indent);
-    const constructLine = analysis.lines.findIndex((line, index) => (
-      index > entry.classLine
-      && index < classEnd
-      && classBodyIndent !== null
-      && isPythonStatementStart(line)
-      && line.indentation === classBodyIndent
-      && /^\s*def\s+construct\s*\(\s*self\s*\)\s*:/.test(line.code)
-    ));
+    const constructLine = analysis.lines.findIndex(
+      (line, index) =>
+        index > entry.classLine &&
+        index < classEnd &&
+        classBodyIndent !== null &&
+        isPythonStatementStart(line) &&
+        line.indentation === classBodyIndent &&
+        /^\s*def\s+construct\s*\(\s*self\s*\)\s*:/.test(line.code),
+    );
     if (constructLine < 0) {
       return {
         bodyEnd: classEnd,
@@ -193,8 +241,16 @@ export function findSceneBlocks(source: string): readonly SourceSceneBlock[] {
   });
 }
 
-export function findSourceSceneBlock(source: string, sceneName: string) {
-  return findSceneBlocks(source).find((block) => block.name === sceneName) ?? null;
+export function findSourceSceneBlock(source: string, sceneName: string, sourcePath = "<source>") {
+  const matches = findSceneBlocks(source).filter((block) => block.name === sceneName);
+  if (matches.length > 1) {
+    throw new AmbiguousSourceSceneError(
+      sourcePath,
+      sceneName,
+      matches.map((block) => block.classLine),
+    );
+  }
+  return matches[0] ?? null;
 }
 
 export type SourceSceneComment = Readonly<{
@@ -207,17 +263,22 @@ function commentsInSceneBlock(
   block: SourceSceneBlock,
 ): readonly SourceSceneComment[] {
   if (!block || block.bodyIndent === null) return [];
-  const terminalOffset = analysis.lines.slice(block.bodyStart, block.bodyEnd).findIndex((line) => (
-    isPythonStatementStart(line)
-    && line.indentation === block.bodyIndent
-    && /^(?:raise|return)\b/.test(line.code.trimStart())
-  ));
+  const terminalOffset = analysis.lines
+    .slice(block.bodyStart, block.bodyEnd)
+    .findIndex(
+      (line) =>
+        isPythonStatementStart(line) &&
+        line.indentation === block.bodyIndent &&
+        /^(?:raise|return)\b/.test(line.code.trimStart()),
+    );
   const reachableEnd = terminalOffset < 0 ? block.bodyEnd : block.bodyStart + terminalOffset;
-  return analysis.lines.slice(block.bodyStart, reachableEnd).flatMap((line, index) => (
-    isStandalonePythonComment(line) && line.indentation === block.bodyIndent && line.comment
-      ? [{ line: block.bodyStart + index + 1, text: line.comment.text }]
-      : []
-  ));
+  return analysis.lines
+    .slice(block.bodyStart, reachableEnd)
+    .flatMap((line, index) =>
+      isStandalonePythonComment(line) && line.indentation === block.bodyIndent && line.comment
+        ? [{ line: block.bodyStart + index + 1, text: line.comment.text }]
+        : [],
+    );
 }
 
 export function findSourceComments(source: string): readonly SourceSceneComment[] {
@@ -226,9 +287,13 @@ export function findSourceComments(source: string): readonly SourceSceneComment[
   return findSceneBlocks(source).flatMap((block) => commentsInSceneBlock(analysis, block));
 }
 
-export function findSourceSceneComments(source: string, sceneName: string): readonly SourceSceneComment[] {
+export function findSourceSceneComments(
+  source: string,
+  sceneName: string,
+  sourcePath = "<source>",
+): readonly SourceSceneComment[] {
   const analysis = analyzePythonSource(source);
-  const block = findSourceSceneBlock(source, sceneName);
+  const block = findSourceSceneBlock(source, sceneName, sourcePath);
   return analysis.valid && block ? commentsInSceneBlock(analysis, block) : [];
 }
 
@@ -265,7 +330,7 @@ function collectStatements(block: SourceSceneBlock): readonly SourceStatement[] 
 }
 
 function decodeStringLiteral(literal: string) {
-  if (literal.startsWith("\"") && literal.endsWith("\"")) {
+  if (literal.startsWith('"') && literal.endsWith('"')) {
     try {
       return JSON.parse(literal) as string;
     } catch {
@@ -273,18 +338,14 @@ function decodeStringLiteral(literal: string) {
     }
   }
   const body = literal.slice(1, -1);
-  return body
-    .replace(/\\'/g, "'")
-    .replace(/\\n/g, "\n")
-    .replace(/\\t/g, "\t")
-    .replace(/\\\\/g, "\\");
+  return body.replace(/\\'/g, "'").replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\\\\/g, "\\");
 }
 
 function stringLiterals(value: string) {
   const literals: string[] = [];
   for (let index = 0; index < value.length; index += 1) {
     const quote = value[index];
-    if (quote !== "\"" && quote !== "'") continue;
+    if (quote !== '"' && quote !== "'") continue;
     let end = index + 1;
     let escaped = false;
     for (; end < value.length; end += 1) {
@@ -306,22 +367,18 @@ function stringLiterals(value: string) {
   return literals;
 }
 
-function markerIdentity(
-  statements: readonly SourceStatement[],
-  assignmentIndex: number,
-  sourceVariable: string,
-) {
+function markerIdentity(statements: readonly SourceStatement[], assignmentIndex: number, sourceVariable: string) {
   const previous = statements[assignmentIndex - 1]?.text.match(ENTITY_MARKER_PATTERN)?.[1];
   if (!previous) return null;
   try {
     const parsed = JSON.parse(previous) as unknown;
-    return typeof parsed === "object"
-      && parsed !== null
-      && "id" in parsed
-      && typeof parsed.id === "string"
-      && parsed.id.length > 0
-      && "variable" in parsed
-      && parsed.variable === sourceVariable
+    return typeof parsed === "object" &&
+      parsed !== null &&
+      "id" in parsed &&
+      typeof parsed.id === "string" &&
+      parsed.id.length > 0 &&
+      "variable" in parsed &&
+      parsed.variable === sourceVariable
       ? parsed.id
       : null;
   } catch {
@@ -391,11 +448,7 @@ function waitDuration(statement: string) {
   return match ? Number(match[1] ?? 1) : null;
 }
 
-function markerBefore(
-  statements: readonly SourceStatement[],
-  statementIndex: number,
-  pattern: RegExp,
-): unknown {
+function markerBefore(statements: readonly SourceStatement[], statementIndex: number, pattern: RegExp): unknown {
   for (let index = statementIndex - 1; index >= 0; index -= 1) {
     const text = statements[index]?.text ?? "";
     const match = text.match(pattern);
@@ -416,10 +469,15 @@ function simpleShiftVector(statement: string, sourceVariable: string) {
   const expression = new RegExp(
     `(?:^self\\.play\\(\\s*|\\n\\s*)${variable}\\s*\\.\\s*animate\\s*\\.\\s*shift\\s*\\(\\s*([^()]*)\\s*\\)`,
     "s",
-  ).exec(statement)?.[1].replace(/\s/g, "");
+  )
+    .exec(statement)?.[1]
+    .replace(/\s/g, "");
   const number = "(?:\\d+(?:\\.\\d*)?|\\.\\d+)";
   const direction = "(?:DOWN|LEFT|RIGHT|UP)";
-  if (!expression || !new RegExp(`^[+-]?(?:${number}\\*)?${direction}(?:[+-](?:${number}\\*)?${direction})*$`).test(expression)) {
+  if (
+    !expression ||
+    !new RegExp(`^[+-]?(?:${number}\\*)?${direction}(?:[+-](?:${number}\\*)?${direction})*$`).test(expression)
+  ) {
     return null;
   }
   const vector = { x: 0, y: 0 };
@@ -470,7 +528,7 @@ export function importManimScene(
   sceneName: string,
   frame: Readonly<{ height: number; width: number }> = { height: 8, width: 14.222 },
 ): ImportedManimScene | null {
-  const block = findSourceSceneBlock(source, sceneName);
+  const block = findSourceSceneBlock(source, sceneName, sourcePath);
   if (!block) return null;
   const collectedStatements = collectStatements(block);
   const returnIndex = collectedStatements.findIndex((statement) => /^return\b/.test(statement.text));
@@ -523,18 +581,22 @@ export function importManimScene(
   const positionSamples = new Map<string, PropertyChannelSample[]>();
   const scaleSamples = new Map<string, PropertyChannelSample[]>();
   for (const entity of mutableEntities) {
-    positionSamples.set(entity.id, [{
-      interval: { end: Number.MAX_SAFE_INTEGER, start: 0 },
-      kind: "exact",
-      provenanceId: `import:${sceneId}:${entity.sourceVariable}:position`,
-      value: entity.position,
-    }]);
-    scaleSamples.set(entity.id, [{
-      interval: { end: Number.MAX_SAFE_INTEGER, start: 0 },
-      kind: "exact",
-      provenanceId: `import:${sceneId}:${entity.sourceVariable}:scale`,
-      value: 1,
-    }]);
+    positionSamples.set(entity.id, [
+      {
+        interval: { end: Number.MAX_SAFE_INTEGER, start: 0 },
+        kind: "exact",
+        provenanceId: `import:${sceneId}:${entity.sourceVariable}:position`,
+        value: entity.position,
+      },
+    ]);
+    scaleSamples.set(entity.id, [
+      {
+        interval: { end: Number.MAX_SAFE_INTEGER, start: 0 },
+        kind: "exact",
+        provenanceId: `import:${sceneId}:${entity.sourceVariable}:scale`,
+        value: 1,
+      },
+    ]);
   }
   for (const [statementIndex, statement] of statements.entries()) {
     if (statement.text === "# poietra:incoming-start") {
@@ -561,12 +623,12 @@ export function importManimScene(
       try {
         const parsed = JSON.parse(sceneBoundary) as unknown;
         if (
-          typeof parsed === "object"
-          && parsed !== null
-          && "at" in parsed
-          && typeof parsed.at === "number"
-          && "destination" in parsed
-          && typeof parsed.destination === "string"
+          typeof parsed === "object" &&
+          parsed !== null &&
+          "at" in parsed &&
+          typeof parsed.at === "number" &&
+          "destination" in parsed &&
+          typeof parsed.destination === "string"
         ) {
           events.push({
             at: parsed.at,
@@ -598,9 +660,12 @@ export function importManimScene(
       if (parsed.success && parsed.data.variable === moveToVariable) {
         const entity = byVariable.get(parsed.data.variable);
         const relative = parsed.data.kind === "relative" ? byVariable.get(parsed.data.relativeTo) : null;
-        const position = parsed.data.kind === "absolute"
-          ? parsed.data.value
-          : relative ? addPoint(relative.position, parsed.data.offset) : null;
+        const position =
+          parsed.data.kind === "absolute"
+            ? parsed.data.value
+            : relative
+              ? addPoint(relative.position, parsed.data.offset)
+              : null;
         if (entity && position && Number.isFinite(position.x) && Number.isFinite(position.y)) {
           appendChannelSample(positionSamples, entity.id, {
             interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
@@ -619,11 +684,7 @@ export function importManimScene(
     )?.[1];
     if (directScaleMarker !== undefined && directScaleVariable) {
       const parsed = scaleMarkerSchema.safeParse(directScaleMarker);
-      if (
-        parsed.success
-        && parsed.data.kind === "exact"
-        && parsed.data.variable === directScaleVariable
-      ) {
+      if (parsed.success && parsed.data.kind === "exact" && parsed.data.variable === directScaleVariable) {
         const entity = byVariable.get(parsed.data.variable);
         if (entity) {
           appendChannelSample(scaleSamples, entity.id, {
@@ -663,46 +724,59 @@ export function importManimScene(
     const scaleMarker = markerBefore(statements, statementIndex, SCALE_MARKER_PATTERN);
     const parsedMotion = motionMarkerSchema.safeParse(motionMarker);
     const parsedScale = scaleMarkerSchema.safeParse(scaleMarker);
-    const markedVariables = parsedMotion.success
-      ? parsedMotion.data.motions.flatMap((motion) => motion.variables)
-      : [];
-    const actualShiftVariables = [...statement.text.matchAll(
-      /(?:^self\.play\(\s*|\n\s*)([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*animate\s*\.\s*shift\s*\(\s*[^()]*\s*\)/g,
-    )].map((match) => match[1]);
-    const actualPathVariables = [...statement.text.matchAll(
-      /(?:^self\.play\(\s*|\n\s*)MoveAlongPath\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*CubicBezier\s*\(/g,
-    )].map((match) => match[1]);
+    const markedVariables = parsedMotion.success ? parsedMotion.data.motions.flatMap((motion) => motion.variables) : [];
+    const actualShiftVariables = [
+      ...statement.text.matchAll(
+        /(?:^self\.play\(\s*|\n\s*)([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*animate\s*\.\s*shift\s*\(\s*[^()]*\s*\)/g,
+      ),
+    ].map((match) => match[1]);
+    const actualPathVariables = [
+      ...statement.text.matchAll(
+        /(?:^self\.play\(\s*|\n\s*)MoveAlongPath\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*CubicBezier\s*\(/g,
+      ),
+    ].map((match) => match[1]);
     const actualMotionVariables = [...actualShiftVariables, ...actualPathVariables];
-    const actualScaleVariables = [...statement.text.matchAll(
-      /(?:^self\.play\(\s*|\n\s*)([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*animate\s*\.\s*scale\s*\(\s*[0-9]+(?:\.[0-9]+)?\s*\)/g,
-    )].map((match) => match[1]);
-    const validMarkedMotion = motionMarker !== undefined && parsedMotion.success
-      && new Set(markedVariables).size === markedVariables.length
-      && markedVariables.length === actualMotionVariables.length
-      && markedVariables.every((variable) => (
-        byVariable.has(variable)
-        && actualMotionVariables.includes(variable)
-      ));
-    const markedMotions = validMarkedMotion && parsedMotion.success
-      ? new Map(parsedMotion.data.motions.flatMap((motion) => (
-        motion.variables.map((variable) => [variable, {
-          controlOffset: motion.controlOffset ?? { x: 0, y: 0 },
-          delta: motion.delta,
-        }] as const)
-      )))
-      : new Map<string, Readonly<{ controlOffset: Point; delta: Point }>>();
-    const validMarkedScale = scaleMarker !== undefined
-      && parsedScale.success
-      && parsedScale.data.kind === "animated"
-      && new Set(parsedScale.data.scales.map((scale) => scale.variable)).size === parsedScale.data.scales.length
-      && parsedScale.data.scales.length === actualScaleVariables.length
-      && parsedScale.data.scales.every((scale) => (
-        byVariable.has(scale.variable)
-        && actualScaleVariables.includes(scale.variable)
-      ));
-    const markedScales = validMarkedScale && parsedScale.success && parsedScale.data.kind === "animated"
-      ? new Map(parsedScale.data.scales.map((scale) => [scale.variable, scale] as const))
-      : new Map<string, Readonly<{ from: number; to: number; variable: string }>>();
+    const actualScaleVariables = [
+      ...statement.text.matchAll(
+        /(?:^self\.play\(\s*|\n\s*)([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*animate\s*\.\s*scale\s*\(\s*[0-9]+(?:\.[0-9]+)?\s*\)/g,
+      ),
+    ].map((match) => match[1]);
+    const validMarkedMotion =
+      motionMarker !== undefined &&
+      parsedMotion.success &&
+      new Set(markedVariables).size === markedVariables.length &&
+      markedVariables.length === actualMotionVariables.length &&
+      markedVariables.every((variable) => byVariable.has(variable) && actualMotionVariables.includes(variable));
+    const markedMotions =
+      validMarkedMotion && parsedMotion.success
+        ? new Map(
+            parsedMotion.data.motions.flatMap((motion) =>
+              motion.variables.map(
+                (variable) =>
+                  [
+                    variable,
+                    {
+                      controlOffset: motion.controlOffset ?? { x: 0, y: 0 },
+                      delta: motion.delta,
+                    },
+                  ] as const,
+              ),
+            ),
+          )
+        : new Map<string, Readonly<{ controlOffset: Point; delta: Point }>>();
+    const validMarkedScale =
+      scaleMarker !== undefined &&
+      parsedScale.success &&
+      parsedScale.data.kind === "animated" &&
+      new Set(parsedScale.data.scales.map((scale) => scale.variable)).size === parsedScale.data.scales.length &&
+      parsedScale.data.scales.length === actualScaleVariables.length &&
+      parsedScale.data.scales.every(
+        (scale) => byVariable.has(scale.variable) && actualScaleVariables.includes(scale.variable),
+      );
+    const markedScales =
+      validMarkedScale && parsedScale.success && parsedScale.data.kind === "animated"
+        ? new Map(parsedScale.data.scales.map((scale) => [scale.variable, scale] as const))
+        : new Map<string, Readonly<{ from: number; to: number; variable: string }>>();
     firstPlayEnd ??= interval.end;
     events.push({
       id: `import:${sceneId}:play:${statement.line}`,
@@ -770,60 +844,82 @@ export function importManimScene(
     return match ? [Number(match[1])] : [];
   });
   const duration = Math.max(0.1, cursor, ...anchors);
-  const entities = Object.fromEntries(mutableEntities.map((entity): [string, RuntimeEntity] => [entity.id, {
-    content: entity.content,
-    id: entity.id,
-    lifetime: entity.lifetimes.map((lifetime) => ({
-      end: Math.min(lifetime.end ?? duration, duration),
-      start: Math.min(lifetime.start, duration),
-    })),
-    provisional: false,
-    sourceIdentity: { kind: "known", value: entity.sourceVariable },
-    type: entity.type,
-  }]));
-  const propertyChannels: Record<string, PropertyChannel> = Object.fromEntries(mutableEntities.flatMap((entity) => (
-    ([
-      ["position", positionSamples.get(entity.id) ?? []],
-      ["scale", scaleSamples.get(entity.id) ?? []],
-    ] as const).map(([key, samples]) => [`${entity.id}/${key}`, {
-      entityId: entity.id,
-      key,
-      samples: samples.map((sample) => ({
-        ...sample,
-        interval: { ...sample.interval, end: Math.min(sample.interval.end, duration) },
-      })),
-    }])
-  )));
+  const entities = Object.fromEntries(
+    mutableEntities.map((entity): [string, RuntimeEntity] => [
+      entity.id,
+      {
+        content: entity.content,
+        id: entity.id,
+        lifetime: entity.lifetimes.map((lifetime) => ({
+          end: Math.min(lifetime.end ?? duration, duration),
+          start: Math.min(lifetime.start, duration),
+        })),
+        provisional: false,
+        sourceIdentity: { kind: "known", value: entity.sourceVariable },
+        type: entity.type,
+      },
+    ]),
+  );
+  const propertyChannels: Record<string, PropertyChannel> = Object.fromEntries(
+    mutableEntities.flatMap((entity) =>
+      (
+        [
+          ["position", positionSamples.get(entity.id) ?? []],
+          ["scale", scaleSamples.get(entity.id) ?? []],
+        ] as const
+      ).map(([key, samples]) => [
+        `${entity.id}/${key}`,
+        {
+          entityId: entity.id,
+          key,
+          samples: samples.map((sample) => ({
+            ...sample,
+            interval: { ...sample.interval, end: Math.min(sample.interval.end, duration) },
+          })),
+        },
+      ]),
+    ),
+  );
   for (const entity of mutableEntities) {
     if (!entity.content) continue;
     propertyChannels[`${entity.id}/content`] = {
       entityId: entity.id,
       key: "content",
-      samples: [{
-        interval: { end: duration, start: 0 },
-        kind: "exact",
-        provenanceId: `import:${sceneId}:${entity.sourceVariable}:content`,
-        value: entity.content,
-      }],
+      samples: [
+        {
+          interval: { end: duration, start: 0 },
+          kind: "exact",
+          provenanceId: `import:${sceneId}:${entity.sourceVariable}:content`,
+          value: entity.content,
+        },
+      ],
     };
   }
   const runtimeSceneState: RuntimeSceneState = {
     constraintGraph: {
-      constraints: mutableEntities.flatMap((entity) => entity.relation ? [{
-        id: `import:${sceneId}:${entity.sourceVariable}:next-to`,
-        mode: "snapshot" as const,
-        operationId: `import:${sceneId}:${entity.sourceVariable}:placement`,
-        relation: "next-to" as const,
-        sourceEntityId: entity.id,
-        targetEntityId: byVariable.get(entity.relation.target)?.id ?? entity.id,
-      }] : []),
+      constraints: mutableEntities.flatMap((entity) =>
+        entity.relation
+          ? [
+              {
+                id: `import:${sceneId}:${entity.sourceVariable}:next-to`,
+                mode: "snapshot" as const,
+                operationId: `import:${sceneId}:${entity.sourceVariable}:placement`,
+                relation: "next-to" as const,
+                sourceEntityId: entity.id,
+                targetEntityId: byVariable.get(entity.relation.target)?.id ?? entity.id,
+              },
+            ]
+          : [],
+      ),
     },
     duration,
     eventTrack: { events },
     objectGraph: { entities, lineage: [] },
     propertyChannels,
     provenanceGraph: {
-      records: [{ evidence: [sourcePath, "conservative static source import"], id: `import:${sceneId}`, origin: "import" }],
+      records: [
+        { evidence: [sourcePath, "conservative static source import"], id: `import:${sceneId}`, origin: "import" },
+      ],
     },
     sceneId,
     version: STUDIO_STATE_VERSION,
@@ -840,15 +936,19 @@ export function importManimScene(
   const firstPlay = statements.find((statement) => statement.text.startsWith("self.play("));
   const firstPlayIndex = firstPlay ? statements.indexOf(firstPlay) : statements.length;
   const initialVisibleSourceVariables = mutableEntities
-    .filter((entity) => entity.lifetimes.some((lifetime) => (
-      firstPlayEnd === null ? lifetime.start <= 0 : lifetime.start < firstPlayEnd
-    )))
+    .filter((entity) =>
+      entity.lifetimes.some((lifetime) =>
+        firstPlayEnd === null ? lifetime.start <= 0 : lifetime.start < firstPlayEnd,
+      ),
+    )
     .map((entity) => entity.sourceVariable);
   return {
     anchors,
     initialVisibleSourceVariables,
     initialization: mutableEntities
-      .filter((entity) => statements.findIndex((statement) => statement.text === entity.initialization) < firstPlayIndex)
+      .filter(
+        (entity) => statements.findIndex((statement) => statement.text === entity.initialization) < firstPlayIndex,
+      )
       .map((entity) => entity.initialization),
     name: sceneName,
     runtimeSceneState,

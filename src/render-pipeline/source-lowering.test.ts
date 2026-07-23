@@ -230,6 +230,20 @@ class GroupedEquation(Scene):
     expect(lowered.source).toContain("            # poietra:anchor 88.000");
   });
 
+  it("refuses to lower into an ambiguous Scene name", () => {
+    const duplicate = `${source}
+class GroupedEquation(Scene):
+    def construct(self):
+        other = MathTex("F", "=", "m", "a")
+        # poietra:anchor 7.000
+        self.wait(1)
+`;
+
+    expect(() => lowerCanonicalProgramSource(duplicate, request(), { height: 8, width: 14.222 }, null)).toThrow(
+      /Scene "GroupedEquation".*examples\/relativity\.py.*duplicate/i,
+    );
+  });
+
   it("converts a canonical screen-space motion at the exact anchor", () => {
     const lowered = lowerCanonicalProgramSource(source, request(), { height: 8, width: 14.222 }, null);
     const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");

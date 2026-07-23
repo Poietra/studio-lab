@@ -87,15 +87,19 @@ export function findMotionAnchors(source: string): readonly MotionAnchor[] {
   });
 }
 
-export function findSceneMotionAnchors(source: string, sceneName: string): readonly MotionAnchor[] {
-  return findSourceSceneComments(source, sceneName).flatMap((comment) => {
+export function findSceneMotionAnchors(
+  source: string,
+  sceneName: string,
+  sourcePath = "<source>",
+): readonly MotionAnchor[] {
+  return findSourceSceneComments(source, sceneName, sourcePath).flatMap((comment) => {
     const match = comment.text.match(ANCHOR_PATTERN);
     return match ? [{ line: comment.line, seconds: Number(match[1]) }] : [];
   });
 }
 
-function sceneTemporalMarkers(source: string, sceneName: string): readonly TemporalSourceMarker[] {
-  return findSourceSceneComments(source, sceneName).flatMap((comment): readonly TemporalSourceMarker[] => {
+function sceneTemporalMarkers(source: string, sceneName: string, sourcePath: string): readonly TemporalSourceMarker[] {
+  return findSourceSceneComments(source, sceneName, sourcePath).flatMap((comment): readonly TemporalSourceMarker[] => {
     const anchor = comment.text.match(ANCHOR_PATTERN);
     if (anchor) return [{ kind: "anchor", line: comment.line, seconds: Number(anchor[1]) }];
     const cursor = comment.text.match(CURSOR_PATTERN);
@@ -137,10 +141,11 @@ function formatShiftAmount(value: number) {
 function rewriteSceneTemporalMetadata(
   source: string,
   sceneName: string,
+  sourcePath: string,
   lines: string[],
   insertions: readonly SourceTimeInsertion[],
 ) {
-  for (const marker of sceneTemporalMarkers(source, sceneName)) {
+  for (const marker of sceneTemporalMarkers(source, sceneName, sourcePath)) {
     // At an equal timestamp, source order decides which side of the insertion owns the marker.
     // This keeps metadata before the consumed anchor unchanged while moving metadata after it.
     const offset = insertions.reduce(
@@ -447,7 +452,7 @@ export function lowerCanonicalProgramSource(
   }
   request.program.operations.forEach(assertLoweringSupported);
   const sourceAnchor = options.sourceAnchor ?? request.program.anchor.resolvedSeconds;
-  const anchor = findSceneMotionAnchors(source, request.sceneName).find(
+  const anchor = findSceneMotionAnchors(source, request.sceneName, request.sourcePath).find(
     (candidate) => Math.abs(candidate.seconds - sourceAnchor) < EPSILON,
   );
   if (!anchor) {
@@ -461,7 +466,7 @@ export function lowerCanonicalProgramSource(
   const lines = source.split(/\r?\n/);
   const markerLine = lines[anchor.line - 1] ?? "";
   const indentation = markerLine.match(/^\s*/)?.[0] ?? "";
-  const sceneBlock = findSourceSceneBlock(source, request.sceneName);
+  const sceneBlock = findSourceSceneBlock(source, request.sceneName, request.sourcePath);
   const sourceBeforeAnchor = lines.slice(sceneBlock?.bodyStart ?? 0, anchor.line - 1).join(newline);
   const sourceBindings = new Map(request.sourceBindings.map((binding) => [binding.entityId, binding.sourceVariable]));
   for (const entityId of referencedBaseEntityIds(request.program.operations)) {
@@ -773,7 +778,7 @@ export function lowerCanonicalProgramSource(
     sourceVariables: [...sourceVariables],
   }));
   const insertedDuration = insertedProgramDuration(request.program);
-  rewriteSceneTemporalMetadata(source, request.sceneName, lines, [
+  rewriteSceneTemporalMetadata(source, request.sceneName, request.sourcePath, lines, [
     {
       anchorLine: anchor.line,
       duration: insertedDuration,
@@ -899,11 +904,11 @@ export function lowerCanonicalProgramBatchSource(
   }
 
   const lines = source.split(/\r?\n/);
-  const sceneBlock = findSourceSceneBlock(source, request.sceneName);
+  const sceneBlock = findSourceSceneBlock(source, request.sceneName, request.sourcePath);
   if (!sceneBlock) {
     throw new ProgramLoweringError("anchor-missing", `${request.sceneName} is not present in ${request.sourcePath}.`);
   }
-  rewriteSceneTemporalMetadata(source, request.sceneName, lines, groups);
+  rewriteSceneTemporalMetadata(source, request.sceneName, request.sourcePath, lines, groups);
   for (const group of [...groups].sort((left, right) => right.anchorLine - left.anchorLine)) {
     const priorDuration = groups.reduce(
       (duration, candidate) =>
