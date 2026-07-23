@@ -12,7 +12,8 @@ import {
 } from "../src/render-pipeline/contracts";
 import { HttpError, readJsonBody, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
-import type { ManimProjectRegistry, ManimRenderManager } from "./manim-render-pipeline";
+import type { ManimRenderManager } from "./manim-render-manager";
+import type { ManimProjectRegistry } from "./manim-project-registry";
 import { EMPTY_MANIM_THUMBNAIL_SVG } from "./manim-thumbnail";
 
 const RENDER_ROUTE = /^\/api\/manim\/renders\/([0-9a-f-]+)(?:\/(cancel|commit|discard|undo|video))?$/;
