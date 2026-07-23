@@ -767,6 +767,7 @@ class GroupedEquation(Scene):
     ["function decorator", "@register(equation)\n        def revive():\n            pass", "self.add(revive)", "revive"],
     ["class body", "class Holder:\n            cached = equation", "self.add(Holder.cached)", "Holder"],
     ["class decorator", "@register(equation)\n        class Holder:\n            pass", "self.add(Holder)", "Holder"],
+    ["animation alias", "entrance = FadeIn(equation)", "self.play(entrance)", "entrance"],
   ])("rejects persistent removal through a pre-anchor %s", (_label, setup, suffix, reference) => {
     const remove: CanonicalEditOperation = {
       ...operationBase("persistent-delete-alias", 7, 7.4),
