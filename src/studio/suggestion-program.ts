@@ -856,7 +856,7 @@ export function createDirectManipulationResizeProgram(
   return validateAndScheduleProgram({
     anchor: resolution.anchor,
     intentCount: 1,
-    loweringStatus: "illustrative",
+    loweringStatus: "supported",
     operations: [operation],
     provenance: provenance("direct-manipulation", ["shape-aware resize constraint"]),
     requestedExecution: "sequence",

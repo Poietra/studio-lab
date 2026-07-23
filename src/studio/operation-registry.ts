@@ -709,7 +709,7 @@ export const OPERATION_REGISTRY = {
       });
     },
     lifetimeRequirement: "existing-at-start",
-    lowering: "unsupported",
+    lowering: "supported",
     projection: allEntityProjections,
     targetRequirement: "entity",
     validate: (operation, scene) => {

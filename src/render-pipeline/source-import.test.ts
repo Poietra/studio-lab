@@ -334,6 +334,24 @@ class Geometry(Scene):
     );
   });
 
+  it("marks an unverified source resize as unknown geometry", () => {
+    const imported = importManimScene(`from manim import *
+
+class Resized(Scene):
+    def construct(self):
+        shape = Rectangle(width=4, height=2)
+        self.add(shape)
+        shape.stretch_to_fit_width(get_width()).stretch_to_fit_height(3).move_to(where())
+        self.wait(1)
+`, "scene.py", "Resized");
+    const entityId = "source:scene.py#Resized:shape";
+
+    expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/dimensions`]?.samples.at(-1)?.knowledge)
+      .toMatchObject({ kind: "unknown", reason: expect.stringMatching(/unverified resize/i) });
+    expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/position`]?.samples.at(-1)?.knowledge)
+      .toMatchObject({ kind: "unknown", reason: expect.stringMatching(/unverified resize/i) });
+  });
+
   it("fails closed for complex Python and an invalid marker", () => {
     const marked = `from manim import *
 

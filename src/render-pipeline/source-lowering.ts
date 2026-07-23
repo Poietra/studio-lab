@@ -281,7 +281,7 @@ function markerPoint(point: Readonly<{ x: number; y: number }>, viewport: Readon
   };
 }
 
-function sourceMarker(kind: "motion" | "position" | "scale", value: Readonly<Record<string, unknown>>) {
+function sourceMarker(kind: "dimensions" | "motion" | "position" | "scale", value: Readonly<Record<string, unknown>>) {
   return `# poietra:${kind} ${JSON.stringify({ ...value, version: 1 })}`;
 }
 
@@ -363,7 +363,8 @@ function referencedBaseEntityIds(operations: readonly CanonicalEditOperation[]) 
     if (
       operation.kind === "SetProperty" ||
       operation.kind === "AnimateProperty" ||
-      operation.kind === "ChangePresence"
+      operation.kind === "ChangePresence" ||
+      operation.kind === "ResizeEntity"
     ) {
       return [operation.entityId];
     }
@@ -392,7 +393,7 @@ function isPoint(value: unknown): value is Readonly<{ x: number; y: number }> {
 type LoweredAnimationOperation = Extract<
   CanonicalEditOperation,
   {
-    kind: "AnimateProperty" | "ChangePresence" | "CreateMotion" | "TransformContent";
+    kind: "AnimateProperty" | "ChangePresence" | "CreateMotion" | "ResizeEntity" | "TransformContent";
   }
 >;
 
@@ -400,6 +401,7 @@ function animationOperation(operation: CanonicalEditOperation): operation is Low
   return (
     operation.kind === "ChangePresence" ||
     operation.kind === "CreateMotion" ||
+    operation.kind === "ResizeEntity" ||
     operation.kind === "TransformContent" ||
     (operation.kind === "AnimateProperty" && operation.key === "scale")
   );
@@ -441,6 +443,35 @@ function scaleChange(operation: Extract<CanonicalEditOperation, { kind: "Animate
     from: operation.from,
     to: operation.to,
   };
+}
+
+function resizeExpression(
+  variable: string,
+  operation: Extract<CanonicalEditOperation, { kind: "ResizeEntity" }>,
+  frame: Readonly<{ height: number; width: number }>,
+  viewport: Readonly<{ height: number; width: number }>,
+  animated: boolean,
+) {
+  const target = operation.to.dimensions;
+  const prefix = `${variable}${animated ? ".animate" : ""}`;
+  const resize = operation.shape === "circle"
+    ? `${prefix}.scale_to_fit_width(${formatAmount(2 * (target.radius ?? 0) * operation.scale)})`
+    : `${prefix}.stretch_to_fit_width(${formatAmount((target.width ?? 0) * operation.scale)})`
+      + `.stretch_to_fit_height(${formatAmount((target.height ?? 0) * operation.scale)})`;
+  return `${resize}.move_to(${pointExpression(operation.to.position, frame, viewport)})`;
+}
+
+function resizeMarkerEntry(
+  variable: string,
+  operation: Extract<CanonicalEditOperation, { kind: "ResizeEntity" }>,
+) {
+  return {
+    from: operation.from,
+    scale: operation.scale,
+    shape: operation.shape,
+    to: operation.to,
+    variable,
+  } as const;
 }
 
 function assertLoweringSupported(operation: CanonicalEditOperation, options: ProgramSourceLoweringOptions) {
@@ -921,6 +952,18 @@ export function lowerCanonicalProgramSource(
       );
       output.push(`${variable}.scale(${formatAmount(change.factor)})`);
     }
+    for (const operation of bucket) {
+      if (
+        operation.kind !== "ResizeEntity"
+        || operation.interval.end - operation.interval.start > EPSILON
+      ) continue;
+      const variable = requireVariable(variableByEntity, operation.entityId);
+      output.push(sourceMarker("dimensions", {
+        kind: "exact",
+        resize: resizeMarkerEntry(variable, operation),
+      }));
+      output.push(resizeExpression(variable, operation, frame, request.viewport, false));
+    }
 
     const boundaries = bucket.filter((operation) => operation.kind === "InsertSceneBoundary");
     for (const boundary of boundaries) {
@@ -1018,6 +1061,7 @@ export function lowerCanonicalProgramSource(
         variable: string;
       }>
     > = [];
+    const resizes: Array<ReturnType<typeof resizeMarkerEntry>> = [];
     const postludes: string[] = [];
     for (const operation of animations) {
       if (operation.kind === "CreateMotion") {
@@ -1068,6 +1112,10 @@ export function lowerCanonicalProgramSource(
         const change = resolvedScaleChanges.get(operation.id) ?? scaleChange(operation);
         scales.push({ from: change.from, to: change.to, variable });
         actions.push(`${variable}.animate.scale(${formatAmount(change.factor)})`);
+      } else if (operation.kind === "ResizeEntity") {
+        const variable = requireVariable(variableByEntity, operation.entityId);
+        resizes.push(resizeMarkerEntry(variable, operation));
+        actions.push(resizeExpression(variable, operation, frame, request.viewport, true));
       }
     }
     if (actions.length > 0) {
@@ -1076,6 +1124,9 @@ export function lowerCanonicalProgramSource(
       }
       if (scales.length > 0) {
         output.push(sourceMarker("scale", { kind: "animated", scales }));
+      }
+      if (resizes.length > 0) {
+        output.push(sourceMarker("dimensions", { kind: "animated", resizes }));
       }
       output.push("self.play(");
       output.push(...actions.map((action) => `    ${action},`));
