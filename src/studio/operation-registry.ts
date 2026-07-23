@@ -229,6 +229,11 @@ function setPropertyExecution(
   operation: Extract<CanonicalEditOperation, { kind: "SetProperty" }>,
 ): OperationExecutionCapabilities {
   if (operation.key === "position" && isPointValue(operation.value)) return SUPPORTED_EXECUTION;
+  if (operation.key === "content") {
+    if (canonicalEditableContent(operation.value, "Text") || canonicalEditableContent(operation.value, "MathTex"))
+      return SUPPORTED_EXECUTION;
+    return previewOnlyExecution("SetProperty content has no truthful source lowering.");
+  }
   return previewOnlyExecution(
     `SetProperty ${operation.key} can be previewed, but it has no truthful Manim source lowering.`,
   );
@@ -614,12 +619,8 @@ function setPropertyIssues(
 ) {
   const issues = entityIssues([operation.entityId], operation, scene);
   if (
-    operation.key === "position"
-    && (
-      !isPointValue(operation.value)
-      || !Number.isFinite(operation.value.x)
-      || !Number.isFinite(operation.value.y)
-    )
+    operation.key === "position" &&
+    (!isPointValue(operation.value) || !Number.isFinite(operation.value.x) || !Number.isFinite(operation.value.y))
   ) {
     issues.push({
       code: "schema-invalid" as const,

@@ -26,7 +26,7 @@ import {
 } from "./studio/authoring-commands";
 import { commandForShortcut, isEditableShortcutTarget, type StudioCommandId } from "./studio/commands";
 import { projectedPositions, validateSuggestionDraft, validatedProgramRecord } from "./studio/draft-validation";
-import type { EntityDimensions, Point, ProgramRecord, ProposedState, RuntimeSceneState } from "./studio/model";
+import type { Point, ProgramRecord, ProposedState, RuntimeSceneState } from "./studio/model";
 import { magicEditCapabilities, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./studio/magic-edit-capabilities";
 import type { InspectorEditField, ValidatedInspectorEdits } from "./studio/inspector-edit";
 import {
@@ -1802,22 +1802,19 @@ export function App() {
     );
   }
 
-  function editEntityFromInspector(
-    entityId: string,
-    edits: ValidatedInspectorEdits,
-    returnFocus: InspectorEditField,
-  ) {
+  function editEntityFromInspector(entityId: string, edits: ValidatedInspectorEdits, returnFocus: InspectorEditField) {
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
     if (!entity) return false;
     if (edits.position && entity.geometry.position.kind === "unknown") {
       setDraftError(`Studio cannot move ${entityLabel(entity)} safely: ${entity.geometry.position.reason}`);
       return false;
     }
-    if (edits.dimensions && (
-      entity.geometry.dimensions.kind === "unknown"
-      || entity.geometry.position.kind === "unknown"
-      || entity.geometry.scale.kind === "unknown"
-    )) {
+    if (
+      edits.dimensions &&
+      (entity.geometry.dimensions.kind === "unknown" ||
+        entity.geometry.position.kind === "unknown" ||
+        entity.geometry.scale.kind === "unknown")
+    ) {
       setDraftError("Studio cannot edit this shape because its source geometry is runtime-dependent.");
       return false;
     }
@@ -1841,9 +1838,7 @@ export function App() {
         edits,
         entityId,
         from: {
-          dimensions: entity.geometry.dimensions.kind === "known"
-            ? entity.geometry.dimensions.value
-            : undefined,
+          dimensions: entity.geometry.dimensions.kind === "known" ? entity.geometry.dimensions.value : undefined,
           position: entity.position,
           scale: entity.scale,
         },
