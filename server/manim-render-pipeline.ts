@@ -26,6 +26,7 @@ import {
   renderProgramBatchId,
   renderRequestPrograms,
 } from "../src/render-pipeline/contracts";
+import type { ImportedManimScene } from "../src/render-pipeline/source-import";
 import { lowerCanonicalProgramBatchSource } from "../src/render-pipeline/source-lowering";
 import { evaluateWorkingState, programRecord } from "../src/studio/evaluator";
 import { STUDIO_STATE_VERSION } from "../src/studio/model";
@@ -53,11 +54,13 @@ import {
 } from "./manim-render-process";
 import { ManimSourceStore, sourceHash } from "./manim-source-store";
 import {
+  discoverFirstManimScene,
   discoverPythonSources,
   importedScene,
   importSourceSnapshot,
   sceneView,
 } from "./manim-workspace";
+import { renderManimSceneThumbnailSvg } from "./manim-thumbnail";
 
 export type ManimRenderPipelineOptions = Readonly<{
   command?: string;
@@ -106,6 +109,7 @@ const DEFAULT_RENDER_TIMEOUT_MS = 2 * 60 * 1_000;
 const DEFAULT_SESSION_RETENTION_MS = 30 * 60 * 1_000;
 const COMMAND_AVAILABILITY_TTL_MS = 30_000;
 const COMMAND_AVAILABILITY_TIMEOUT_MS = 15_000;
+const THUMBNAIL_CACHE_TTL_MS = 30_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 function requirePositiveFinite(value: number, name: string) {
@@ -198,6 +202,14 @@ export class ManimRenderManager {
   private readonly sessionRetentionMs: number;
   private readonly sessions = new Map<string, RenderSession>();
   private readonly sourceStore: ManimSourceStore;
+  private activeThumbnailRequests = 0;
+  private thumbnailCache: Readonly<{ checkedAt: number; value: string | null }> | null = null;
+  private thumbnailGeneration = 0;
+  private thumbnailRequest: Promise<string | null> | null = null;
+  private readonly thumbnailSceneDiscovery: (
+    projectRoot: string,
+    frame: Readonly<{ height: number; width: number }>,
+  ) => Promise<ImportedManimScene | null>;
   private workspaceRequest: Promise<ManimWorkspaceView> | null = null;
 
   constructor(options: Readonly<{
@@ -213,6 +225,10 @@ export class ManimRenderManager {
     projectRoot: string;
     renderTimeoutMs?: number;
     sessionRetentionMs?: number;
+    thumbnailSceneDiscovery?: (
+      projectRoot: string,
+      frame: Readonly<{ height: number; width: number }>,
+    ) => Promise<ImportedManimScene | null>;
   }>) {
     if (options.command.length === 0 || options.command.some((entry) => entry.length === 0)) {
       throw new TypeError("The Manim command must contain a non-empty executable and arguments.");
@@ -250,6 +266,7 @@ export class ManimRenderManager {
       options.sessionRetentionMs ?? DEFAULT_SESSION_RETENTION_MS,
       "Session retention",
     );
+    this.thumbnailSceneDiscovery = options.thumbnailSceneDiscovery ?? discoverFirstManimScene;
     this.cleanupTimer = setInterval(() => {
       void this.cleanupExpiredSessions().catch((error: unknown) => {
         this.logger.error("render.session_cleanup_failed", { error });
@@ -263,6 +280,7 @@ export class ManimRenderManager {
       && this.pendingStarts === 0
       && this.pendingRetainedSessions === 0
       && this.sessions.size === 0
+      && this.activeThumbnailRequests === 0
       && this.workspaceRequest === null;
   }
 
@@ -322,6 +340,44 @@ export class ManimRenderManager {
     } finally {
       this.workspaceRequest = null;
     }
+  }
+
+  async thumbnailSvg(projectId = this.projectId, now = Date.now()) {
+    if (projectId !== this.projectId) throw new HttpError("Configured Manim project not found.", 404);
+    if (this.thumbnailCache && now - this.thumbnailCache.checkedAt < THUMBNAIL_CACHE_TTL_MS) {
+      return this.thumbnailCache.value;
+    }
+    const generation = this.thumbnailGeneration;
+    this.thumbnailRequest ??= (async () => {
+      try {
+        this.activeThumbnailRequests += 1;
+        let value: string | null = null;
+        try {
+          const scene = await this.thumbnailSceneDiscovery(this.projectRoot, this.frame);
+          value = scene ? renderManimSceneThumbnailSvg(scene.runtimeSceneState) : null;
+        } catch (error) {
+          this.logger.warn("thumbnail.discovery_failed", { error });
+        }
+        if (this.thumbnailGeneration === generation) {
+          this.thumbnailCache = { checkedAt: Date.now(), value };
+        }
+        return value;
+      } finally {
+        this.activeThumbnailRequests -= 1;
+      }
+    })();
+    const request = this.thumbnailRequest;
+    try {
+      return await request;
+    } finally {
+      if (this.thumbnailRequest === request) this.thumbnailRequest = null;
+    }
+  }
+
+  private invalidateThumbnail() {
+    this.thumbnailCache = null;
+    this.thumbnailGeneration += 1;
+    this.thumbnailRequest = null;
   }
 
   private session(id: string) {
@@ -775,6 +831,7 @@ export class ManimRenderManager {
         session.patchedSource,
         "The source changed after preview. Render again before committing.",
       );
+      this.invalidateThumbnail();
       session.status = "committed";
       session.updatedAt = new Date().toISOString();
       return this.toView(session);
@@ -790,6 +847,7 @@ export class ManimRenderManager {
         session.originalSource,
         "The committed source changed again, so Studio will not overwrite it during Undo.",
       );
+      this.invalidateThumbnail();
       session.status = "undone";
       session.updatedAt = new Date().toISOString();
       return this.toView(session);
@@ -1024,6 +1082,10 @@ export class ManimProjectRegistry {
   workspace(projectId: string | null = this.defaultProjectId) {
     if (!projectId) throw new HttpError("No Manim workspace is registered.", 404);
     return this.project(projectId).workspace(projectId);
+  }
+
+  thumbnailSvg(projectId: string) {
+    return this.project(projectId).thumbnailSvg(projectId);
   }
 
   async start(request: ProgramRenderRequest, signal?: AbortSignal) {

@@ -12,9 +12,10 @@ import {
 import { HttpError, readJsonBody, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import type { ManimProjectRegistry, ManimRenderManager } from "./manim-render-pipeline";
+import { EMPTY_MANIM_THUMBNAIL_SVG } from "./manim-thumbnail";
 
 const RENDER_ROUTE = /^\/api\/manim\/renders\/([0-9a-f-]+)(?:\/(cancel|commit|discard|undo|video))?$/;
-const PROJECT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/(workspace|renders|export)$/;
+const PROJECT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/(workspace|renders|export|thumbnail)$/;
 const PROJECT_ITEM_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})$/;
 type ManimApi = ManimRenderManager | ManimProjectRegistry;
 
@@ -120,6 +121,22 @@ function sendPythonAttachment(
   return true;
 }
 
+function sendThumbnailSvg(response: ServerResponse, status: 200 | 404, svg: string) {
+  if (response.destroyed || response.writableEnded) return false;
+  if (response.headersSent) {
+    response.destroy();
+    return false;
+  }
+  response.statusCode = status;
+  response.setHeader("cache-control", "no-store");
+  response.setHeader("content-length", Buffer.byteLength(svg));
+  response.setHeader("content-security-policy", "default-src 'none'; sandbox");
+  response.setHeader("content-type", "image/svg+xml; charset=utf-8");
+  response.setHeader("x-content-type-options", "nosniff");
+  response.end(svg);
+  return true;
+}
+
 function sendJsonAndWaitForFinish(response: ServerResponse, status: number, body: unknown) {
   return new Promise<boolean>((resolveDelivery, rejectDelivery) => {
     let settled = false;
@@ -211,11 +228,22 @@ async function routeManimRequest(
   const projectMatch = url.pathname.match(PROJECT_ROUTE);
   if (projectMatch) {
     const [, projectId, endpoint] = projectMatch;
+    if (request.method === "GET" && endpoint === "thumbnail") {
+      let thumbnail: string | null;
+      try {
+        thumbnail = await manager.thumbnailSvg(projectId);
+      } catch (error) {
+        if (!(error instanceof HttpError) || error.status !== 404) throw error;
+        thumbnail = null;
+      }
+      sendThumbnailSvg(response, thumbnail ? 200 : 404, thumbnail ?? EMPTY_MANIM_THUMBNAIL_SVG);
+      return;
+    }
     if (request.method === "GET" && endpoint === "workspace") {
       sendJson(response, 200, await manager.workspace(projectId));
       return;
     }
-    if (request.method !== "POST" || endpoint === "workspace") {
+    if (request.method !== "POST" || endpoint === "workspace" || endpoint === "thumbnail") {
       throw new HttpError("Method not allowed.", 405);
     }
     const parsed = programRenderRequestSchema.safeParse(await readJsonBody(request, 512 * 1024));

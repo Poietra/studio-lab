@@ -22,6 +22,11 @@ const MAX_IMPORTED_SOURCES = 200;
 const MAX_INSPECTED_PYTHON_SOURCES = 1_000;
 const MAX_PYTHON_SOURCE_BYTES = 2 * 1024 * 1024;
 
+type DiscoveredPythonSource = Readonly<{
+  path: string;
+  source: string;
+}>;
+
 export type ImportedSourceSnapshot = Readonly<{
   importedScenes: readonly ImportedManimScene[];
   view: ManimWorkspaceSource;
@@ -54,14 +59,14 @@ export function importSourceSnapshot(
   };
 }
 
-export async function discoverPythonSources(
+async function visitPythonSources(
   projectRoot: string,
-  frame: Readonly<{ height: number; width: number }>,
+  visitSource: (source: DiscoveredPythonSource) => boolean | Promise<boolean>,
 ) {
-  const sources: ManimWorkspaceSource[] = [];
   let inspectedPythonSources = 0;
-  async function visit(directory: string, relativeDirectory: string, isRoot = false) {
-    if (sources.length >= MAX_IMPORTED_SOURCES || inspectedPythonSources >= MAX_INSPECTED_PYTHON_SOURCES) return;
+  let stopped = false;
+  async function visit(directory: string, relativeDirectory: string, isRoot = false): Promise<void> {
+    if (stopped || inspectedPythonSources >= MAX_INSPECTED_PYTHON_SOURCES) return;
     let entries;
     try {
       entries = await readdir(directory, { withFileTypes: true });
@@ -71,7 +76,7 @@ export async function discoverPythonSources(
     }
     entries.sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
-      if (sources.length >= MAX_IMPORTED_SOURCES || inspectedPythonSources >= MAX_INSPECTED_PYTHON_SOURCES) return;
+      if (stopped || inspectedPythonSources >= MAX_INSPECTED_PYTHON_SOURCES) return;
       if (entry.isDirectory()) {
         if (SKIPPED_DIRECTORIES.has(entry.name) || entry.name.startsWith(".")) continue;
         await visit(join(directory, entry.name), join(relativeDirectory, entry.name));
@@ -90,13 +95,41 @@ export async function discoverPythonSources(
         // Files can disappear or become unreadable during a workspace scan.
         continue;
       }
-      const relativePath = join(relativeDirectory, entry.name).split(sep).join("/");
-      const imported = importSourceSnapshot(source, relativePath, frame);
-      if (imported.view.scenes.length > 0) sources.push(imported.view);
+      const path = join(relativeDirectory, entry.name).split(sep).join("/");
+      stopped = await visitSource({ path, source });
     }
   }
   await visit(projectRoot, "", true);
+}
+
+export async function discoverPythonSources(
+  projectRoot: string,
+  frame: Readonly<{ height: number; width: number }>,
+) {
+  const sources: ManimWorkspaceSource[] = [];
+  await visitPythonSources(projectRoot, ({ path, source }) => {
+    const imported = importSourceSnapshot(source, path, frame);
+    if (imported.view.scenes.length > 0) sources.push(imported.view);
+    return sources.length >= MAX_IMPORTED_SOURCES;
+  });
   return sources.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+export async function discoverFirstManimScene(
+  projectRoot: string,
+  frame: Readonly<{ height: number; width: number }>,
+): Promise<ImportedManimScene | null> {
+  let firstScene: ImportedManimScene | null = null;
+  await visitPythonSources(projectRoot, ({ path, source }) => {
+    for (const block of findSceneBlocks(source)) {
+      const imported = importManimScene(source, path, block.name, frame);
+      if (!imported) continue;
+      firstScene = imported;
+      return true;
+    }
+    return false;
+  });
+  return firstScene;
 }
 
 export function sceneView(source: ManimWorkspaceSource, name: string) {
