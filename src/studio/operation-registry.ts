@@ -820,8 +820,8 @@ export const OPERATION_REGISTRY = {
         value: operation.to.position,
       });
     },
+    execution: () => SUPPORTED_EXECUTION,
     lifetimeRequirement: "existing-at-start",
-    lowering: "supported",
     projection: allEntityProjections,
     targetRequirement: "entity",
     validate: (operation, scene) => {
