@@ -87,6 +87,11 @@ export const STUDIO_FIXTURE_SCENE: RuntimeSceneState = {
         },
       ],
     },
+    "equation_1/scale": {
+      entityId: "equation_1",
+      key: "scale",
+      samples: [{ interval: { end: duration, start: 0 }, kind: "exact", provenanceId: "source:equation-scale", value: 1 }],
+    },
     "label_1/position": {
       entityId: "label_1",
       key: "position",

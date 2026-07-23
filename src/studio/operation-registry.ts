@@ -12,7 +12,13 @@ import type {
   SceneConstraint,
   TimelineEvent,
 } from "./model";
-import type { CanonicalEditOperation, CanonicalEditProgram, ChannelAccess, ProgramValidationIssue } from "./operations";
+import { exactEntityScaleAt, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./magic-edit-capabilities";
+import type {
+  CanonicalEditOperation,
+  CanonicalEditProgram,
+  ChannelAccess,
+  ProgramValidationIssue,
+} from "./operations";
 import { insertedProgramDuration } from "./program-composition";
 import { isPointValue, samplePropertyValue } from "./property-sampling";
 
@@ -628,6 +634,30 @@ export const OPERATION_REGISTRY = {
           operationId: operation.id,
           severity: "error",
         });
+        return issues;
+      }
+      const entity = scene.objectGraph.entities[operation.entityId];
+      if (entity) {
+        const scale = exactEntityScaleAt(scene, entity, operation.interval.start);
+        const targetScale = scale.kind === "known"
+          ? scale.value * operation.relativeFactor
+          : Number.NaN;
+        if (
+          scale.kind !== "known"
+          || !Number.isFinite(targetScale)
+          || targetScale < MIN_ENTITY_SCALE
+          || targetScale > MAX_ENTITY_SCALE
+        ) {
+          issues.push({
+            code: "lowering-unsupported",
+            field: "relativeFactor",
+            message: scale.kind === "unknown"
+              ? `Relative scale cannot resolve an exact source value: ${scale.reason}`
+              : `Relative scale must resolve between ${MIN_ENTITY_SCALE}x and ${MAX_ENTITY_SCALE}x; it resolves to ${targetScale}x.`,
+            operationId: operation.id,
+            severity: "error",
+          });
+        }
       }
       return issues;
     },
