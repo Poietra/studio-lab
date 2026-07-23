@@ -1,0 +1,46 @@
+name: Real Manim smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
+
+concurrency:
+  group: real-manim-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  real-manim-smoke:
+    name: Docker Manim preview, commit, and Undo
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      POIETRA_MANIM_DOCKER_IMAGE: manimcommunity/manim@sha256:f18f53f2e4eaf2ea41713437d34363fb3f5cc6008b03fd798676ac0359396c3b
+      POIETRA_MANIM_SMOKE_ARTIFACTS: test-results/manim-smoke
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Pull pinned Manim image
+        run: docker pull "$POIETRA_MANIM_DOCKER_IMAGE"
+      - name: Run real Manim smoke
+        run: pnpm test:manim-smoke
+      - name: Upload smoke diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: real-manim-smoke-${{ github.run_id }}
+          path: test-results/manim-smoke/
+          if-no-files-found: error
+          retention-days: 14
