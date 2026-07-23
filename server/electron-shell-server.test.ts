@@ -62,9 +62,15 @@ function request(sourceHash: string, entityId: string): ProgramRenderRequest {
   };
 }
 
-async function waitForRender(origin: string, id: string) {
+function shellFetch(shell: ElectronShellServer, path: string, init: RequestInit = {}) {
+  const headers = new Headers(init.headers);
+  headers.set("x-poietra-shell-capability", shell.capability);
+  return fetch(`${shell.origin}${path}`, { ...init, headers });
+}
+
+async function waitForRender(shell: ElectronShellServer, id: string) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const response = await fetch(`${origin}/api/manim/renders/${id}`);
+    const response = await shellFetch(shell, `/api/manim/renders/${id}`);
     const session = await response.json() as { status: string };
     if (["cancelled", "failed", "ready"].includes(session.status)) return session;
     await new Promise((resolveWaiter) => setTimeout(resolveWaiter, 10));
@@ -96,58 +102,63 @@ describe("Electron shell HTTP adapter", () => {
     });
     servers.push(shell);
 
-    const documentResponse = await fetch(shell.origin);
+    expect((await fetch(shell.origin)).status).toBe(401);
+    expect((await fetch(shell.origin, {
+      headers: { "x-poietra-shell-capability": "not-the-capability" },
+    })).status).toBe(401);
+
+    const documentResponse = await shellFetch(shell, "/");
     expect(documentResponse.status).toBe(200);
     expect(documentResponse.headers.get("content-security-policy")).toContain("default-src 'self'");
     expect(documentResponse.headers.get("x-frame-options")).toBe("DENY");
     expect(await documentResponse.text()).toContain("<title>Shell</title>");
-    expect((await fetch(`${shell.origin}/../package.json`)).status).toBe(404);
+    expect((await shellFetch(shell, "/../package.json")).status).toBe(404);
 
-    const projectsResponse = await fetch(`${shell.origin}/api/manim/projects`);
+    const projectsResponse = await shellFetch(shell, "/api/manim/projects");
     const projects = await projectsResponse.json() as { projects: readonly Record<string, unknown>[] };
     expect(projects.projects).toEqual([{ id: "shell-project", kind: "existing", name: "Shell project" }]);
     expect(JSON.stringify(projects)).not.toContain(projectRoot);
 
-    const workspace = await (await fetch(`${shell.origin}/api/manim/projects/shell-project/workspace`)).json() as {
+    const workspace = await (await shellFetch(shell, "/api/manim/projects/shell-project/workspace")).json() as {
       sources: readonly { scenes: readonly { sourceHash: string; sourceVariables: Readonly<Record<string, string>> }[] }[];
     };
     const scene = workspace.sources[0]!.scenes[0]!;
     const entityId = Object.entries(scene.sourceVariables).find(([, variable]) => variable === "circle")?.[0];
     expect(entityId).toBeTruthy();
 
-    const renderResponse = await fetch(`${shell.origin}/api/manim/projects/shell-project/renders`, {
+    const renderResponse = await shellFetch(shell, "/api/manim/projects/shell-project/renders", {
       body: JSON.stringify(request(scene.sourceHash, entityId!)),
       headers: { "content-type": "application/json" },
       method: "POST",
     });
     expect(renderResponse.status).toBe(202);
     const started = await renderResponse.json() as { id: string };
-    await expect(waitForRender(shell.origin, started.id)).resolves.toMatchObject({ status: "ready" });
-    const video = await fetch(`${shell.origin}/api/manim/renders/${started.id}/video`);
+    await expect(waitForRender(shell, started.id)).resolves.toMatchObject({ status: "ready" });
+    const video = await shellFetch(shell, `/api/manim/renders/${started.id}/video`);
     expect(video.headers.get("content-type")).toBe("video/mp4");
     expect((await video.arrayBuffer()).byteLength).toBeGreaterThan(0);
 
-    const exported = await fetch(`${shell.origin}/api/manim/projects/shell-project/export`, {
+    const exported = await shellFetch(shell, "/api/manim/projects/shell-project/export", {
       body: JSON.stringify(request(scene.sourceHash, entityId!)),
       headers: { "content-type": "application/json" },
       method: "POST",
     });
     expect(exported.status).toBe(200);
     expect(await exported.text()).toContain('poietra:transaction "shell"');
-    await fetch(`${shell.origin}/api/manim/renders/${started.id}/discard`, { method: "POST" });
+    await shellFetch(shell, `/api/manim/renders/${started.id}/discard`, { method: "POST" });
 
-    const managed = await (await fetch(`${shell.origin}/api/manim/projects`, {
+    const managed = await (await shellFetch(shell, "/api/manim/projects", {
       body: JSON.stringify({ kind: "managed", name: "Managed" }),
       headers: { "content-type": "application/json" },
       method: "POST",
     })).json() as { project: { id: string } };
-    const renamed = await fetch(`${shell.origin}/api/manim/projects/${managed.project.id}`, {
+    const renamed = await shellFetch(shell, `/api/manim/projects/${managed.project.id}`, {
       body: JSON.stringify({ name: "Renamed" }),
       headers: { "content-type": "application/json" },
       method: "PATCH",
     });
     expect(await renamed.json()).toMatchObject({ project: { name: "Renamed" } });
-    expect((await fetch(`${shell.origin}/api/manim/projects/${managed.project.id}`, { method: "DELETE" })).status).toBe(200);
+    expect((await shellFetch(shell, `/api/manim/projects/${managed.project.id}`, { method: "DELETE" })).status).toBe(200);
 
     expect(createHash("sha256").update(await readFile(join(projectRoot, "scene.py"))).digest("hex"))
       .toBe(scene.sourceHash);

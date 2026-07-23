@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { extname, relative, resolve, sep } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -70,6 +71,7 @@ async function staticFile(canonicalDistRoot: string, pathname: string) {
 }
 
 export type ElectronShellServer = Readonly<{
+  capability: string;
   close: () => Promise<void>;
   origin: string;
   registry: ManimProjectRegistry;
@@ -96,6 +98,7 @@ export async function startElectronShellServer(options: Readonly<{
     logger: options.logger ?? nullLogger,
     projects,
   });
+  const capability = randomBytes(32).toString("base64url");
   let expectedHost = "";
   let closing = false;
   const server = createServer((request, response) => {
@@ -105,6 +108,18 @@ export async function startElectronShellServer(options: Readonly<{
     }
     if (request.headers.host !== expectedHost) {
       sendJson(response, 421, { error: "Electron shell service rejected an unexpected Host header." });
+      return;
+    }
+    const suppliedCapability = request.headers["x-poietra-shell-capability"];
+    const suppliedBytes = typeof suppliedCapability === "string"
+      ? Buffer.from(suppliedCapability, "utf8")
+      : Buffer.alloc(0);
+    const expectedBytes = Buffer.from(capability, "utf8");
+    if (
+      suppliedBytes.length !== expectedBytes.length
+      || !timingSafeEqual(suppliedBytes, expectedBytes)
+    ) {
+      sendJson(response, 401, { error: "Electron shell capability is missing or invalid." });
       return;
     }
     const url = new URL(request.url ?? "/", `http://${expectedHost}`);
@@ -148,6 +163,7 @@ export async function startElectronShellServer(options: Readonly<{
   let closeRequest: Promise<void> | null = null;
 
   return {
+    capability,
     close: () => {
       closeRequest ??= (async () => {
         closing = true;
