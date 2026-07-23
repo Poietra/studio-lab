@@ -30,6 +30,7 @@ function directionSign(direction: ResizeHandleDirection, negative: "n" | "w", po
 }
 
 export function resizeShapeByViewportDelta(input: Readonly<{
+  cameraScale: number;
   direction: ResizeHandleDirection;
   frame: Readonly<{ height: number; width: number }>;
   from: ShapeGeometry;
@@ -44,16 +45,17 @@ export function resizeShapeByViewportDelta(input: Readonly<{
     x: input.viewport.width / input.frame.width,
     y: input.viewport.height / input.frame.height,
   };
-  const scale = Math.max(input.scale, Number.EPSILON);
+  const entityScale = Math.max(input.scale, Number.EPSILON);
+  const renderedScale = Math.max(entityScale * input.cameraScale, Number.EPSILON);
 
   if (input.shape === "circle") {
     const radius = input.from.dimensions.radius ?? MIN_DIMENSION;
     const horizontalChange = horizontal === 0
       ? null
-      : horizontal * input.viewportDelta.x / pixelsPerUnit.x / scale;
+      : horizontal * input.viewportDelta.x / pixelsPerUnit.x / renderedScale;
     const verticalChange = vertical === 0
       ? null
-      : vertical * input.viewportDelta.y / pixelsPerUnit.y / scale;
+      : vertical * input.viewportDelta.y / pixelsPerUnit.y / renderedScale;
     const diameterChange = horizontalChange === null ? verticalChange ?? 0
       : verticalChange === null ? horizontalChange
         : Math.abs(horizontalChange) >= Math.abs(verticalChange) ? horizontalChange : verticalChange;
@@ -62,8 +64,8 @@ export function resizeShapeByViewportDelta(input: Readonly<{
     return {
       dimensions: { radius: targetRadius },
       position: {
-        x: input.from.position.x + horizontal * appliedDiameterChange * pixelsPerUnit.x * scale / 2,
-        y: input.from.position.y + vertical * appliedDiameterChange * pixelsPerUnit.y * scale / 2,
+        x: input.from.position.x + horizontal * appliedDiameterChange * pixelsPerUnit.x * entityScale / 2,
+        y: input.from.position.y + vertical * appliedDiameterChange * pixelsPerUnit.y * entityScale / 2,
       },
     };
   }
@@ -72,12 +74,12 @@ export function resizeShapeByViewportDelta(input: Readonly<{
   const height = input.from.dimensions.height ?? MIN_DIMENSION;
   const targetWidth = horizontal === 0
     ? width
-    : Math.max(MIN_DIMENSION, width + horizontal * input.viewportDelta.x / pixelsPerUnit.x / scale);
+    : Math.max(MIN_DIMENSION, width + horizontal * input.viewportDelta.x / pixelsPerUnit.x / renderedScale);
   const targetHeight = vertical === 0
     ? height
-    : Math.max(MIN_DIMENSION, height + vertical * input.viewportDelta.y / pixelsPerUnit.y / scale);
-  const appliedHorizontalDelta = horizontal * (targetWidth - width) * pixelsPerUnit.x * scale;
-  const appliedVerticalDelta = vertical * (targetHeight - height) * pixelsPerUnit.y * scale;
+    : Math.max(MIN_DIMENSION, height + vertical * input.viewportDelta.y / pixelsPerUnit.y / renderedScale);
+  const appliedHorizontalDelta = horizontal * (targetWidth - width) * pixelsPerUnit.x * entityScale;
+  const appliedVerticalDelta = vertical * (targetHeight - height) * pixelsPerUnit.y * entityScale;
   return {
     dimensions: { height: targetHeight, width: targetWidth },
     position: {

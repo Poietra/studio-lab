@@ -113,6 +113,7 @@ type CanvasScaleResizeState = CanvasResizeBase & Readonly<{
   mode: "scale";
 }>;
 type CanvasShapeResizeState = CanvasResizeBase & Readonly<{
+  cameraScale: number;
   frame: Readonly<{ height: number; width: number }>;
   from: ShapeGeometry;
   mode: "shape";
@@ -164,6 +165,7 @@ function resizedShapeGeometry(
   point: Readonly<{ x: number; y: number }>,
 ) {
   return resizeShapeByViewportDelta({
+    cameraScale: resize.cameraScale,
     direction: resize.direction,
     frame: resize.frame,
     from: resize.from,
@@ -1521,6 +1523,7 @@ export function App() {
     ) {
       canvasResize.current = {
         ...base,
+        cameraScale: Math.max(projection?.camera.scale ?? 1, Number.EPSILON),
         frame: workspace?.frame ?? { height: 8, width: 14.222 },
         from: { dimensions: entity.geometry.dimensions.value, position: entity.position },
         mode: "shape",
@@ -1626,6 +1629,7 @@ export function App() {
       const amount = event.shiftKey ? 5 : 1;
       const from = { dimensions: entity.geometry.dimensions.value, position: entity.position };
       const target = resizeShapeByViewportDelta({
+        cameraScale: Math.max(projection?.camera.scale ?? 1, Number.EPSILON),
         direction: handle,
         frame: workspace?.frame ?? { height: 8, width: 14.222 },
         from,

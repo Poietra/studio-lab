@@ -15,6 +15,7 @@ describe("shape-aware resize geometry", () => {
 
   it("moves only Rectangle's right edge while anchoring its left edge", () => {
     expect(resizeShapeByViewportDelta({
+      cameraScale: 1,
       direction: "e",
       frame,
       from: { dimensions: { height: 2, width: 4 }, position: { x: 400, y: 200 } },
@@ -30,6 +31,7 @@ describe("shape-aware resize geometry", () => {
 
   it("changes Rectangle width and height independently from a corner", () => {
     expect(resizeShapeByViewportDelta({
+      cameraScale: 1,
       direction: "nw",
       frame,
       from: { dimensions: { height: 2, width: 4 }, position: { x: 400, y: 200 } },
@@ -45,6 +47,7 @@ describe("shape-aware resize geometry", () => {
 
   it("keeps Circle aspect and its opposite corner anchored", () => {
     expect(resizeShapeByViewportDelta({
+      cameraScale: 1,
       direction: "se",
       frame,
       from: { dimensions: { radius: 1 }, position: { x: 400, y: 200 } },
@@ -60,6 +63,7 @@ describe("shape-aware resize geometry", () => {
 
   it("clamps a crossed edge without moving the opposite edge", () => {
     expect(resizeShapeByViewportDelta({
+      cameraScale: 1,
       direction: "w",
       frame,
       from: { dimensions: { height: 2, width: 1 }, position: { x: 400, y: 200 } },
@@ -70,6 +74,22 @@ describe("shape-aware resize geometry", () => {
     })).toEqual({
       dimensions: { height: 2, width: 0.1 },
       position: { x: 422.5, y: 200 },
+    });
+  });
+
+  it("converts pointer movement through the active camera zoom", () => {
+    expect(resizeShapeByViewportDelta({
+      cameraScale: 2,
+      direction: "e",
+      frame,
+      from: { dimensions: { height: 2, width: 4 }, position: { x: 400, y: 200 } },
+      scale: 1,
+      shape: "rectangle",
+      viewport,
+      viewportDelta: { x: 100, y: 0 },
+    })).toEqual({
+      dimensions: { height: 2, width: 5 },
+      position: { x: 425, y: 200 },
     });
   });
 });
