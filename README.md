@@ -59,16 +59,23 @@ The first real Manim round trip is documented in the
 ## Commands
 
 ```sh
-pnpm install
+pnpm install --frozen-lockfile
 pnpm dev:web
 pnpm dev:electron
 pnpm dev:tauri
 pnpm check:web
-pnpm test # all unit and boundary/integration tests
+pnpm test:unit
+pnpm test:integration
 pnpm exec playwright install chromium # first E2E run only
 pnpm test:e2e
-cargo check --manifest-path src-tauri/Cargo.toml
+cargo check --locked --manifest-path src-tauri/Cargo.toml
 ```
+
+Pull requests run the same build, unit, boundary/integration, browser, and Tauri
+checks in GitHub Actions. The stable required-check names are `Web build`,
+`Unit and integration tests`, `Browser E2E`, and `Tauri cargo check`. Playwright
+diagnostics are retained as a workflow artifact when the browser job reaches its
+test step.
 
 The suite boundaries and the rule for adding regression coverage are documented in
 [the testing strategy](docs/testing-strategy.md).
