@@ -4,6 +4,11 @@ import { programRecord } from "./evaluator";
 import type { ProgramRecord, ProjectedEntity, ProposedState } from "./model";
 import type { OperationOrigin } from "./operations";
 import type { ProgramValidationResult } from "./program-validation";
+import {
+  magicEditCapabilities,
+  MAX_ENTITY_SCALE,
+  MIN_ENTITY_SCALE,
+} from "./magic-edit-capabilities";
 import { canonicalizeSuggestionProgram } from "./suggestion-program";
 
 export type DraftValidationResult =
@@ -22,6 +27,46 @@ function includesSceneTransition(operation: EditSuggestionOperation) {
     operation.kind === "create-scene-transition" ||
     (operation.kind === "edit-program" && operation.operations.some((step) => step.kind === "create-scene-transition"))
   );
+}
+
+function magicObjectEditIssue(
+  operation: EditSuggestionOperation,
+  context: Readonly<{
+    proposedState: ProposedState;
+    selectedObjectIds: readonly string[];
+  }>,
+) {
+  const steps = operation.kind === "edit-program" ? operation.operations : [operation];
+  const selected = new Set(context.selectedObjectIds);
+  const scene = context.proposedState.evaluatedScene;
+  for (const step of steps) {
+    if (step.kind !== "scale-objects" && step.kind !== "delete-objects") continue;
+    for (const entityId of step.targetObjectIds) {
+      const entity = scene.objectGraph.entities[entityId];
+      if (!entity || !selected.has(entityId)) {
+        return "Magic Edit can scale or delete only selected objects that are still available.";
+      }
+      const lifetime = entity.lifetime.find((interval) => (
+        step.start >= interval.start && step.start < interval.end
+      ));
+      if (!lifetime || step.end > lifetime.end + 0.001) {
+        return `Object ${entityId} is not present for the complete ${step.kind} interval.`;
+      }
+      const capabilities = magicEditCapabilities(scene, entity, step.start);
+      if (step.kind === "scale-objects") {
+        if (capabilities.scale.kind === "blocked") {
+          return `Studio cannot scale ${entityId} safely: ${capabilities.scale.reason}`;
+        }
+        const target = capabilities.scale.current * step.factor;
+        if (!Number.isFinite(target) || target < MIN_ENTITY_SCALE || target > MAX_ENTITY_SCALE) {
+          return `Scale must produce an absolute value between ${MIN_ENTITY_SCALE}x and ${MAX_ENTITY_SCALE}x.`;
+        }
+      } else if (capabilities.delete.kind === "blocked") {
+        return `Studio cannot delete ${entityId} safely: ${capabilities.delete.reason}`;
+      }
+    }
+  }
+  return null;
 }
 
 export function validateSuggestionDraft(
@@ -56,6 +101,8 @@ export function validateSuggestionDraft(
       message: "The active imported Scene has no next Scene. Choose another Scene or add one to the project.",
     };
   }
+  const objectEditIssue = magicObjectEditIssue(normalizedOperation, context);
+  if (objectEditIssue) return { kind: "invalid", message: objectEditIssue };
   const canonical = canonicalizeSuggestionProgram(normalizedOperation, {
     capturedPlayhead: context.capturedPlayhead,
     origin: context.origin,

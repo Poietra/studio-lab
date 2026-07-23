@@ -322,6 +322,24 @@ function StepEditor({
           </button>
         </div>
       ) : null}
+
+      {step.kind === "scale-objects" ? (
+        <label className="mt-3 block text-[10px] text-zinc-500">
+          Relative scale factor
+          <input
+            className={inputClass}
+            max="80"
+            min="0.01"
+            onChange={(event) => onChange({
+              ...step,
+              factor: Number(event.currentTarget.value),
+            })}
+            step="0.05"
+            type="number"
+            value={step.factor}
+          />
+        </label>
+      ) : null}
     </section>
   );
 }

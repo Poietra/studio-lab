@@ -1,5 +1,6 @@
 import type {
   CreateCameraFocusSuggestion,
+  DeleteObjectsSuggestion,
   CreateEquationSuggestion,
   CreateExplainedEquationSuggestion,
   CreateExplanationSuggestion,
@@ -8,9 +9,15 @@ import type {
   CreateTransformSuggestion,
   EditProgramStep,
   EditSuggestionOperation,
+  ScaleObjectsSuggestion,
   SuggestionTimeAnchor,
 } from "../ai/edit-suggestions";
 import type { RuntimeSceneState } from "./model";
+import {
+  exactEntityScaleAt,
+  MAX_ENTITY_SCALE,
+  MIN_ENTITY_SCALE,
+} from "./magic-edit-capabilities";
 import {
   EDIT_OPERATION_VERSION,
   operationId,
@@ -275,6 +282,96 @@ function motionOperation(
   } satisfies CanonicalEditOperation;
 }
 
+type TargetReplacement = Readonly<{ operationId: string; targetEntityId: string }>;
+
+type OperationBuildResult =
+  | Readonly<{ kind: "invalid"; message: string }>
+  | Readonly<{ kind: "valid"; operations: readonly CanonicalEditOperation[] }>;
+
+function scaleOperations(
+  operation: Omit<ScaleObjectsSuggestion, "anchor">,
+  context: CanonicalizationContext,
+  index: number,
+  transformedTargets: ReadonlyMap<string, TargetReplacement>,
+): OperationBuildResult {
+  const operations: CanonicalEditOperation[] = [];
+  for (const [targetIndex, logicalEntityId] of operation.targetObjectIds.entries()) {
+    const entity = context.scene.objectGraph.entities[logicalEntityId];
+    if (!entity) {
+      return { kind: "invalid", message: `Scale target ${logicalEntityId} is no longer available.` };
+    }
+    const scale = exactEntityScaleAt(context.scene, entity, operation.start);
+    if (scale.kind === "unknown") {
+      return {
+        kind: "invalid",
+        message: `Studio cannot scale ${logicalEntityId} safely: ${scale.reason}`,
+      };
+    }
+    const targetScale = scale.value * operation.factor;
+    if (
+      !Number.isFinite(operation.factor)
+      || !Number.isFinite(targetScale)
+      || targetScale < MIN_ENTITY_SCALE
+      || targetScale > MAX_ENTITY_SCALE
+    ) {
+      return {
+        kind: "invalid",
+        message: `Scale must produce an absolute value between ${MIN_ENTITY_SCALE}x and ${MAX_ENTITY_SCALE}x.`,
+      };
+    }
+    const replacement = transformedTargets.get(logicalEntityId);
+    operations.push({
+      dependsOn: replacement ? [replacement.operationId] : [],
+      easing: operation.easing,
+      entityId: replacement?.targetEntityId ?? logicalEntityId,
+      from: scale.value,
+      id: operationId(context.transactionId, `scale-${index}-${targetIndex}`),
+      interval: { end: operation.end, start: operation.start },
+      key: "scale",
+      kind: "AnimateProperty",
+      provenance: provenance(context.origin, [
+        "Magic Edit uniform scale",
+        `${scale.value.toFixed(4)}x * ${operation.factor.toFixed(4)}`,
+      ]),
+      to: targetScale,
+    });
+  }
+  return { kind: "valid", operations };
+}
+
+function deleteOperations(
+  operation: Omit<DeleteObjectsSuggestion, "anchor">,
+  context: CanonicalizationContext,
+  index: number,
+  transformedTargets: ReadonlyMap<string, TargetReplacement>,
+): OperationBuildResult {
+  const operations: CanonicalEditOperation[] = [];
+  for (const [targetIndex, logicalEntityId] of operation.targetObjectIds.entries()) {
+    const replacement = transformedTargets.get(logicalEntityId);
+    const entity = context.scene.objectGraph.entities[logicalEntityId];
+    if (!entity) {
+      return { kind: "invalid", message: `Delete target ${logicalEntityId} is no longer available.` };
+    }
+    if (!replacement && entity.sourceIdentity.kind === "unknown" && !entity.transactionId) {
+      return {
+        kind: "invalid",
+        message: `Studio cannot delete ${logicalEntityId} safely: ${entity.sourceIdentity.reason}`,
+      };
+    }
+    operations.push({
+      dependsOn: replacement ? [replacement.operationId] : [],
+      effect: "remove",
+      entityId: replacement?.targetEntityId ?? logicalEntityId,
+      id: operationId(context.transactionId, `delete-${index}-${targetIndex}`),
+      interval: { end: operation.end, start: operation.start },
+      kind: "ChangePresence",
+      persistent: true,
+      provenance: provenance(context.origin, [operation.animation, "explicit Magic Edit deletion"]),
+    });
+  }
+  return { kind: "valid", operations };
+}
+
 function transitionOperations(
   operation: Omit<CreateSceneTransitionSuggestion, "anchor">,
   transactionId: string,
@@ -392,6 +489,27 @@ export function canonicalizeSuggestionProgram(
     };
   }
 
+  const invalidCanonicalization = (message: string): ProgramValidationResult => ({
+    issues: [{
+      code: "schema-invalid",
+      field: "operation",
+      message,
+      severity: "error",
+    }],
+    kind: "invalid",
+    program: {
+      anchor: resolution.anchor,
+      intentCount: intentCount(operation),
+      loweringStatus: "unsupported",
+      operations: [],
+      provenance: provenance(context.origin, [operation.kind]),
+      requestedExecution: operation.kind === "edit-program" ? operation.execution : "sequence",
+      schedule: { edges: [], mode: "sequence", order: [] },
+      transactionId: context.transactionId,
+      version: EDIT_OPERATION_VERSION,
+    },
+  });
+
   let operations: readonly CanonicalEditOperation[];
   if (operation.kind === "create-scene-transition") {
     operations = transitionOperations(operation, context.transactionId, context.origin);
@@ -405,6 +523,7 @@ export function canonicalizeSuggestionProgram(
     operations = [textTransformOperation(operation, context.transactionId, context.origin)];
   } else {
     const steps = operationSteps(operation);
+    let buildFailure: string | null = null;
     const transformByIndex = new Map<number, ReturnType<typeof transformOperation>>();
     const transformsByStep = new Map<number, ReadonlyMap<string, Readonly<{
       operationId: string;
@@ -474,8 +593,35 @@ export function canonicalizeSuggestionProgram(
       if (step.kind === "create-scene-transition") {
         return transitionOperations(step, context.transactionId, context.origin);
       }
+      if (step.kind === "scale-objects") {
+        const result = scaleOperations(
+          step,
+          context,
+          index,
+          transformsByStep.get(index) ?? new Map(),
+        );
+        if (result.kind === "invalid") {
+          buildFailure ??= result.message;
+          return [];
+        }
+        return result.operations;
+      }
+      if (step.kind === "delete-objects") {
+        const result = deleteOperations(
+          step,
+          context,
+          index,
+          transformsByStep.get(index) ?? new Map(),
+        );
+        if (result.kind === "invalid") {
+          buildFailure ??= result.message;
+          return [];
+        }
+        return result.operations;
+      }
       return [];
     });
+    if (buildFailure) return invalidCanonicalization(buildFailure);
   }
 
   const program: CanonicalEditProgram = {
