@@ -24,6 +24,7 @@ export default defineConfig({
         { id: "studio-lab", name: "Studio Lab", root: "." },
         { id: "examples", name: "Examples", root: "./examples" },
       ]),
+      VITE_POIETRA_AI_ENDPOINT: "/api/ai/edit-suggestions",
     },
     stdout: "pipe",
     timeout: 120_000,
