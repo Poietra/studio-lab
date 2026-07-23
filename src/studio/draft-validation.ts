@@ -6,20 +6,22 @@ import type { OperationOrigin } from "./operations";
 import type { ProgramValidationResult } from "./program-validation";
 import { canonicalizeSuggestionProgram } from "./suggestion-program";
 
-export type DraftValidationResult = Readonly<{
-  kind: "invalid";
-  message: string;
-}> | Readonly<{
-  kind: "valid";
-  operation: EditSuggestionOperation;
-  record: ProgramRecord;
-}>;
+export type DraftValidationResult =
+  | Readonly<{
+      kind: "invalid";
+      message: string;
+    }>
+  | Readonly<{
+      kind: "valid";
+      operation: EditSuggestionOperation;
+      record: ProgramRecord;
+    }>;
 
 function includesSceneTransition(operation: EditSuggestionOperation) {
-  return operation.kind === "create-scene-transition"
-    || (operation.kind === "edit-program" && operation.operations.some((step) => (
-      step.kind === "create-scene-transition"
-    )));
+  return (
+    operation.kind === "create-scene-transition" ||
+    (operation.kind === "edit-program" && operation.operations.some((step) => step.kind === "create-scene-transition"))
+  );
 }
 
 export function validateSuggestionDraft(
@@ -63,8 +65,9 @@ export function validateSuggestionDraft(
   if (canonical.kind === "invalid") {
     return {
       kind: "invalid",
-      message: canonical.issues.find((issue) => issue.severity === "error")?.message
-        ?? "The Canonical EditProgram is invalid.",
+      message:
+        canonical.issues.find((issue) => issue.severity === "error")?.message ??
+        "The Canonical EditProgram is invalid.",
     };
   }
   return {
@@ -74,18 +77,21 @@ export function validateSuggestionDraft(
   };
 }
 
-export function validatedProgramRecord(validation: ProgramValidationResult): Readonly<{
-  kind: "invalid";
-  message: string;
-}> | Readonly<{
-  kind: "valid";
-  record: ProgramRecord;
-}> {
+export function validatedProgramRecord(validation: ProgramValidationResult):
+  | Readonly<{
+      kind: "invalid";
+      message: string;
+    }>
+  | Readonly<{
+      kind: "valid";
+      record: ProgramRecord;
+    }> {
   if (validation.kind === "invalid") {
     return {
       kind: "invalid",
-      message: validation.issues.find((issue) => issue.severity === "error")?.message
-        ?? "The Canonical EditProgram is invalid.",
+      message:
+        validation.issues.find((issue) => issue.severity === "error")?.message ??
+        "The Canonical EditProgram is invalid.",
     };
   }
   return { kind: "valid", record: programRecord(validation.program, validation) };
@@ -94,18 +100,26 @@ export function validatedProgramRecord(validation: ProgramValidationResult): Rea
 export function projectedPositions(
   entities: readonly ProjectedEntity[],
   entityIds: readonly string[],
-): Readonly<{
-  kind: "invalid";
-  message: string;
-}> | Readonly<{
-  kind: "valid";
-  positions: Readonly<Record<string, Readonly<{ x: number; y: number }>>>;
-}> {
+):
+  | Readonly<{
+      kind: "invalid";
+      message: string;
+    }>
+  | Readonly<{
+      kind: "valid";
+      positions: Readonly<Record<string, Readonly<{ x: number; y: number }>>>;
+    }> {
   const byId = new Map(entities.map((entity) => [entity.id, entity]));
   const positions: Record<string, Readonly<{ x: number; y: number }>> = {};
   for (const entityId of entityIds) {
     const entity = byId.get(entityId);
     if (!entity) return { kind: "invalid", message: `The projected position for ${entityId} is unavailable.` };
+    if (entity.geometry.position.kind === "unknown") {
+      return {
+        kind: "invalid",
+        message: `Studio cannot move ${entityId} safely: ${entity.geometry.position.reason}`,
+      };
+    }
     positions[entityId] = entity.position;
   }
   return {

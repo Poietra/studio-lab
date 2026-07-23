@@ -4,10 +4,7 @@ import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import { projectedPositions, validateSuggestionDraft, validatedProgramRecord } from "./draft-validation";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
 import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
-import {
-  createDirectManipulationPositionProgram,
-  createDirectManipulationScaleProgram,
-} from "./suggestion-program";
+import { createDirectManipulationPositionProgram, createDirectManipulationScaleProgram } from "./suggestion-program";
 
 const transition: EditSuggestionOperation = {
   anchor: { kind: "playhead", referenceSeconds: 5 },
@@ -57,6 +54,28 @@ describe("Studio draft validation boundary", () => {
     });
   });
 
+  it("rejects direct movement when the imported source position is only approximate", () => {
+    const entity = projectProposedState(evaluateWorkingState(createFixtureWorkingState()), 5).canvas.entities[0];
+    expect(entity).toBeDefined();
+    if (!entity) return;
+    const reason = "Position depends on a runtime move_to expression.";
+
+    expect(
+      projectedPositions(
+        [
+          {
+            ...entity,
+            geometry: { ...entity.geometry, position: { kind: "unknown", reason } },
+          },
+        ],
+        [entity.id],
+      ),
+    ).toEqual({
+      kind: "invalid",
+      message: `Studio cannot move ${entity.id} safely: ${reason}`,
+    });
+  });
+
   it("projects a direct position change at the captured playhead", () => {
     const base = evaluateWorkingState(createFixtureWorkingState());
     const before = projectProposedState(base, 5).canvas.entities.find((entity) => entity.id === "equation_1");
@@ -72,11 +91,14 @@ describe("Studio draft validation boundary", () => {
       transactionId: "position-projection",
     });
     expect(validation.kind).toBe("valid");
-    const proposed = evaluateWorkingState(createFixtureWorkingState({
-      stagedPrograms: [programRecord(validation.program, validation)],
-    }));
-    expect(projectProposedState(proposed, 5).canvas.entities.find((entity) => entity.id === "equation_1")?.position)
-      .toEqual({ x: before.position.x + 100, y: before.position.y + 40 });
+    const proposed = evaluateWorkingState(
+      createFixtureWorkingState({
+        stagedPrograms: [programRecord(validation.program, validation)],
+      }),
+    );
+    expect(
+      projectProposedState(proposed, 5).canvas.entities.find((entity) => entity.id === "equation_1")?.position,
+    ).toEqual({ x: before.position.x + 100, y: before.position.y + 40 });
   });
 
   it("projects an immediate resize from an explicit absolute scale pair", () => {
@@ -100,12 +122,14 @@ describe("Studio draft validation boundary", () => {
         to: 1.5,
       }),
     ]);
-    const proposed = evaluateWorkingState(createFixtureWorkingState({
-      stagedPrograms: [programRecord(validation.program, validation)],
-    }));
-    expect(projectProposedState(proposed, 5).canvas.entities.find((entity) => (
-      entity.id === "equation_1"
-    ))?.scale).toBeCloseTo(1.5);
+    const proposed = evaluateWorkingState(
+      createFixtureWorkingState({
+        stagedPrograms: [programRecord(validation.program, validation)],
+      }),
+    );
+    expect(
+      projectProposedState(proposed, 5).canvas.entities.find((entity) => entity.id === "equation_1")?.scale,
+    ).toBeCloseTo(1.5);
   });
 
   it("previews an animated resize throughout its requested interval", () => {
@@ -118,19 +142,20 @@ describe("Studio draft validation boundary", () => {
       transactionId: "animated-scale-projection",
     });
     expect(validation.kind).toBe("valid");
-    const proposed = evaluateWorkingState(createFixtureWorkingState({
-      stagedPrograms: [programRecord(validation.program, validation)],
-    }));
+    const proposed = evaluateWorkingState(
+      createFixtureWorkingState({
+        stagedPrograms: [programRecord(validation.program, validation)],
+      }),
+    );
 
-    expect(projectProposedState(proposed, 5).canvas.entities.find((entity) => (
-      entity.id === "equation_1"
-    ))?.scale).toBeCloseTo(1);
-    expect(projectProposedState(proposed, 6).canvas.entities.find((entity) => (
-      entity.id === "equation_1"
-    ))?.scale).toBeCloseTo(1.5);
-    expect(projectProposedState(proposed, 7).canvas.entities.find((entity) => (
-      entity.id === "equation_1"
-    ))?.scale).toBeCloseTo(2);
+    expect(
+      projectProposedState(proposed, 5).canvas.entities.find((entity) => entity.id === "equation_1")?.scale,
+    ).toBeCloseTo(1);
+    expect(
+      projectProposedState(proposed, 6).canvas.entities.find((entity) => entity.id === "equation_1")?.scale,
+    ).toBeCloseTo(1.5);
+    expect(
+      projectProposedState(proposed, 7).canvas.entities.find((entity) => entity.id === "equation_1")?.scale,
+    ).toBeCloseTo(2);
   });
-
 });

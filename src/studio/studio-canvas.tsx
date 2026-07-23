@@ -70,10 +70,19 @@ function transitionStyle(entity: ProjectedEntity) {
 
 function ObjectVisual({ entity }: Readonly<{ entity: ProjectedEntity }>) {
   if (entity.type === "MathTex") {
-    return <EquationContent lines={entity.content?.displayLines ?? [entityLabel(entity)]} texParts={entity.content?.texParts} />;
+    return (
+      <EquationContent
+        lines={entity.content?.displayLines ?? [entityLabel(entity)]}
+        texParts={entity.content?.texParts}
+      />
+    );
   }
   if (entity.type === "Text") {
-    return <span className="block max-w-56 text-pretty text-center text-sm leading-5">{entity.content?.text ?? entityLabel(entity)}</span>;
+    return (
+      <span className="block max-w-56 text-pretty text-center text-sm leading-5">
+        {entity.content?.text ?? entityLabel(entity)}
+      </span>
+    );
   }
   if (entity.type === "Arrow") {
     return (
@@ -92,7 +101,12 @@ function ObjectVisual({ entity }: Readonly<{ entity: ProjectedEntity }>) {
     return <span aria-hidden="true" className="block size-16 rounded-full border border-zinc-500" />;
   }
   if (entity.type === "RegularPolygon") {
-    return <span aria-hidden="true" className="block size-16 border border-zinc-500 [clip-path:polygon(50%_0%,93%_25%,93%_75%,50%_100%,7%_75%,7%_25%)]" />;
+    return (
+      <span
+        aria-hidden="true"
+        className="block size-16 border border-zinc-500 [clip-path:polygon(50%_0%,93%_25%,93%_75%,50%_100%,7%_75%,7%_25%)]"
+      />
+    );
   }
   return <span className="block border border-zinc-600 px-3 py-2 text-xs text-zinc-300">{entityLabel(entity)}</span>;
 }
@@ -135,17 +149,20 @@ export function StudioCanvas({
         data-scene-phase={boundaryActive ? "incoming" : "outgoing"}
         onPointerDown={(event) => {
           if (insertTool === "select" || boundaryActive || isCanvasInteractionTarget(event.target)) return;
-          onCanvasPlace(clientPointToViewport(
-            event.currentTarget.getBoundingClientRect(),
-            { x: event.clientX, y: event.clientY },
-          ));
+          onCanvasPlace(
+            clientPointToViewport(event.currentTarget.getBoundingClientRect(), { x: event.clientX, y: event.clientY }),
+          );
         }}
       >
         <div className="absolute inset-0 origin-center" data-studio-transform-layer style={{ scale: cameraScale }}>
           <svg aria-hidden="true" className="absolute inset-0 size-full opacity-10" viewBox="0 0 640 360">
             <g stroke="#a1a1aa" strokeWidth="1">
-              {[80, 160, 240, 320, 400, 480, 560].map((x) => <line key={`x-${x}`} x1={x} x2={x} y1="0" y2="360" />)}
-              {[90, 180, 270].map((y) => <line key={`y-${y}`} x1="0" x2="640" y1={y} y2={y} />)}
+              {[80, 160, 240, 320, 400, 480, 560].map((x) => (
+                <line key={`x-${x}`} x1={x} x2={x} y1="0" y2="360" />
+              ))}
+              {[90, 180, 270].map((y) => (
+                <line key={`y-${y}`} x1="0" x2="640" y1={y} y2={y} />
+              ))}
             </g>
           </svg>
           <StudioMotionOverlay
@@ -163,18 +180,21 @@ export function StudioCanvas({
               return <div className={transition.className} key={entity.id} style={transition.style} />;
             }
             const selected = selectedIds.has(entity.id);
-            const locked = readOnly
-              || (entity.provisional && !(entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
+            const locked =
+              readOnly ||
+              (entity.provisional && !(entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
+            const positionUnknown = entity.geometry.position.kind === "unknown";
+            const scaleUnknown = entity.geometry.scale.kind === "unknown";
+            const approximate = Object.values(entity.geometry).some((knowledge) => knowledge.kind === "unknown");
+            const moveLocked = locked || positionUnknown;
             const localDelta = entityDragDelta(dragPreview, entity.id);
             const position = { x: entity.position.x + localDelta.x, y: entity.position.y + localDelta.y };
             const opacity = draftTransactionId === entity.transactionId && entity.opacity === 0 ? 0.35 : entity.opacity;
             const displayedScale = entityPreviewScale(scalePreview, entity);
             return (
               <div
-                className={cn(
-                  "absolute -translate-x-1/2 -translate-y-1/2",
-                  selected ? "z-20" : "z-10",
-                )}
+                className={cn("absolute -translate-x-1/2 -translate-y-1/2", selected ? "z-20" : "z-10")}
+                data-studio-geometry={approximate ? "approximate" : "known"}
                 data-studio-entity-scale={displayedScale.toFixed(4)}
                 data-studio-entity-wrapper={entity.id}
                 key={entity.id}
@@ -186,17 +206,22 @@ export function StudioCanvas({
                     aria-pressed={selected}
                     className={cn(
                       "block border px-3 py-2 outline-none",
-                      locked ? "pointer-events-none border-dashed border-sky-800 bg-zinc-950/70" : "cursor-grab active:cursor-grabbing",
-                      selected ? "border-sky-400 bg-sky-950/60 focus-visible:ring-2 focus-visible:ring-sky-400" : "border-transparent hover:border-zinc-600",
+                      moveLocked
+                        ? "pointer-events-none border-dashed border-sky-800 bg-zinc-950/70"
+                        : "cursor-grab active:cursor-grabbing",
+                      selected
+                        ? "border-sky-400 bg-sky-950/60 focus-visible:ring-2 focus-visible:ring-sky-400"
+                        : "border-transparent hover:border-zinc-600",
                     )}
                     data-studio-entity={entity.id}
-                    disabled={locked}
+                    disabled={moveLocked}
                     onKeyDown={(event) => onEntityKeyDown(event, entity.id)}
                     onLostPointerCapture={onEntityPointerCancel}
                     onPointerCancel={onEntityPointerCancel}
                     onPointerDown={(event) => onEntityPointerDown(event, entity.id)}
                     onPointerMove={onEntityPointerMove}
                     onPointerUp={onEntityPointerUp}
+                    title={positionUnknown ? entity.geometry.position.reason : undefined}
                     type="button"
                   >
                     <ObjectVisual entity={entity} />
@@ -206,7 +231,7 @@ export function StudioCanvas({
                       </span>
                     ) : null}
                   </button>
-                  {selected && selectedIds.size === 1 && !locked ? (
+                  {selected && selectedIds.size === 1 && !locked && !scaleUnknown ? (
                     <button
                       aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
                       aria-label={`Resize ${entityLabel(entity)}`}
