@@ -2,14 +2,18 @@ import type { z } from "zod";
 
 import type {
   ManimApiError,
+  ManimProjectCreateRequest,
   ManimSourceExport,
   ProgramRenderRequest,
 } from "./contracts";
 import {
+  createManimProjectRequestSchema,
   manimProjectIdSchema,
   manimProjectListViewSchema,
+  manimProjectMutationViewSchema,
   manimWorkspaceViewSchema,
   programRenderRequestSchema,
+  renameManimProjectRequestSchema,
   renderSessionViewSchema,
 } from "./contracts";
 
@@ -56,6 +60,48 @@ async function readJson<T>(response: Response, schema: z.ZodType<T>): Promise<T>
 
 export async function loadManimProjects(signal?: AbortSignal) {
   return readJson(await fetch("/api/manim/projects", { signal }), manimProjectListViewSchema);
+}
+
+export async function createManimProject(
+  input: ManimProjectCreateRequest,
+  signal?: AbortSignal,
+) {
+  const parsed = createManimProjectRequestSchema.safeParse(input);
+  if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "The workspace registration is invalid.");
+  const created = await readJson(await fetch("/api/manim/projects", {
+    body: JSON.stringify(parsed.data),
+    headers: { "content-type": "application/json" },
+    method: "POST",
+    signal,
+  }), manimProjectMutationViewSchema);
+  if (!created.project || created.project.kind !== parsed.data.kind) {
+    throw new Error("The server returned a workspace with the wrong ownership kind.");
+  }
+  return created;
+}
+
+export async function renameManimProject(projectId: string, name: string, signal?: AbortSignal) {
+  if (!manimProjectIdSchema.safeParse(projectId).success) {
+    throw new Error("The project ID does not match the API contract.");
+  }
+  const parsed = renameManimProjectRequestSchema.safeParse({ name });
+  if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "The workspace name is invalid.");
+  return readJson(await fetch(`/api/manim/projects/${encodeURIComponent(projectId)}`, {
+    body: JSON.stringify(parsed.data),
+    headers: { "content-type": "application/json" },
+    method: "PATCH",
+    signal,
+  }), manimProjectMutationViewSchema);
+}
+
+export async function unregisterManimProject(projectId: string, signal?: AbortSignal) {
+  if (!manimProjectIdSchema.safeParse(projectId).success) {
+    throw new Error("The project ID does not match the API contract.");
+  }
+  return readJson(await fetch(`/api/manim/projects/${encodeURIComponent(projectId)}`, {
+    method: "DELETE",
+    signal,
+  }), manimProjectMutationViewSchema);
 }
 
 export async function loadManimWorkspace(

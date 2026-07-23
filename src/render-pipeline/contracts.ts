@@ -251,6 +251,10 @@ export type ManimProjectMutationView = Readonly<{
   project: ManimProjectSummary | null;
 }>;
 
+export type ManimProjectCreateRequest =
+  | Readonly<{ kind: "managed"; name: string }>
+  | Readonly<{ kind: "existing"; name: string; root: string }>;
+
 export type ManimSourceExport = Readonly<{
   fileName: string;
   projectId: string;
@@ -353,5 +357,26 @@ export const manimProjectListViewSchema: z.ZodType<ManimProjectListView> = z.obj
     });
   }
 });
+
+export const createManimProjectRequestSchema: z.ZodType<ManimProjectCreateRequest> = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("managed"),
+    name: manimProjectNameSchema,
+  }).strict(),
+  z.object({
+    kind: z.literal("existing"),
+    name: manimProjectNameSchema,
+    root: z.string().trim().min(1).max(4_096),
+  }).strict(),
+]);
+
+export const renameManimProjectRequestSchema = z.object({
+  name: manimProjectNameSchema,
+}).strict();
+
+export const manimProjectMutationViewSchema: z.ZodType<ManimProjectMutationView> = z.object({
+  catalog: manimProjectListViewSchema,
+  project: manimProjectSummarySchema.nullable(),
+}).strict();
 
 export type ManimApiError = Readonly<{ error: string }>;

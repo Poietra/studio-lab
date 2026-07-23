@@ -3,14 +3,27 @@ import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { programRenderRequestSchema, type ManimSourceExport } from "../src/render-pipeline/contracts";
+import {
+  createManimProjectRequestSchema,
+  programRenderRequestSchema,
+  renameManimProjectRequestSchema,
+  type ManimSourceExport,
+} from "../src/render-pipeline/contracts";
 import { HttpError, readJsonBody, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import type { ManimProjectRegistry, ManimRenderManager } from "./manim-render-pipeline";
 
 const RENDER_ROUTE = /^\/api\/manim\/renders\/([0-9a-f-]+)(?:\/(cancel|commit|discard|undo|video))?$/;
 const PROJECT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/(workspace|renders|export)$/;
+const PROJECT_ITEM_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})$/;
 type ManimApi = ManimRenderManager | ManimProjectRegistry;
+
+function mutableProjectRegistry(manager: ManimApi) {
+  if (!("createProject" in manager)) {
+    throw new HttpError("Workspace registry mutations are not configured.", 405);
+  }
+  return manager;
+}
 
 function pipeVideo(response: ServerResponse, path: string, range?: Readonly<{ end: number; start: number }>) {
   const stream = createReadStream(path, range);
@@ -140,8 +153,23 @@ async function routeManimRequest(
   signal: AbortSignal,
 ) {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
-  if (request.method === "GET" && url.pathname === "/api/manim/projects") {
-    sendJson(response, 200, manager.projects());
+  if (url.pathname === "/api/manim/projects") {
+    if (request.method === "GET") {
+      sendJson(response, 200, manager.projects());
+      return;
+    }
+    if (request.method !== "POST") throw new HttpError("Method not allowed.", 405);
+    const parsed = createManimProjectRequestSchema.safeParse(await readJsonBody(request));
+    if (!parsed.success) throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid workspace registration.", 400);
+    signal.throwIfAborted();
+    const registry = mutableProjectRegistry(manager);
+    sendJson(
+      response,
+      201,
+      parsed.data.kind === "managed"
+        ? registry.createManagedProject(parsed.data.name)
+        : registry.createProject(parsed.data.name, parsed.data.root),
+    );
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/manim/workspace") {
@@ -161,6 +189,24 @@ async function routeManimRequest(
       throw error;
     }
     return;
+  }
+  const projectItemMatch = url.pathname.match(PROJECT_ITEM_ROUTE);
+  if (projectItemMatch) {
+    const projectId = projectItemMatch[1]!;
+    const registry = mutableProjectRegistry(manager);
+    if (request.method === "PATCH") {
+      const parsed = renameManimProjectRequestSchema.safeParse(await readJsonBody(request));
+      if (!parsed.success) throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid workspace name.", 400);
+      signal.throwIfAborted();
+      sendJson(response, 200, registry.renameProject(projectId, parsed.data.name));
+      return;
+    }
+    if (request.method === "DELETE") {
+      signal.throwIfAborted();
+      sendJson(response, 200, await registry.unregisterProject(projectId));
+      return;
+    }
+    throw new HttpError("Method not allowed.", 405);
   }
   const projectMatch = url.pathname.match(PROJECT_ROUTE);
   if (projectMatch) {

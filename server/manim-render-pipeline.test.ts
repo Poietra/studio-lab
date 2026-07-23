@@ -1038,6 +1038,93 @@ describe("Manim project registry", () => {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
   });
+
+  it("serves persistent workspace CRUD without exposing or deleting project roots", async () => {
+    const { dataRoot, registry } = await registryFixture(["poietra-command-that-does-not-exist"], true);
+    const addedRoot = await mkdtemp(join(tmpdir(), "poietra-http-project-"));
+    temporaryRoots.push(addedRoot);
+    await writeFile(join(addedRoot, "scene.py"), sceneSource, "utf8");
+    const server = createServer((incoming, response) => {
+      void handleManimRequest(registry, incoming, response);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address() as AddressInfo;
+      const origin = `http://127.0.0.1:${address.port}`;
+      const managedResponse = await fetch(`${origin}/api/manim/projects`, {
+        body: JSON.stringify({ kind: "managed", name: "Managed workspace" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(managedResponse.status).toBe(201);
+      const managed = await managedResponse.json() as { project: { id: string; name: string } };
+      expect(JSON.stringify(managed)).not.toContain(dataRoot);
+      const managedWorkspaceResponse = await fetch(`${origin}/api/manim/projects/${managed.project.id}/workspace`);
+      await expect(managedWorkspaceResponse.json()).resolves.toMatchObject({
+        projectId: managed.project.id,
+        sources: [{ path: "main.py", scenes: [{ name: "MainScene" }] }],
+      });
+      const managedWithRootResponse = await fetch(`${origin}/api/manim/projects`, {
+        body: JSON.stringify({ kind: "managed", name: "Invalid managed", root: addedRoot }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(managedWithRootResponse.status).toBe(400);
+
+      const createResponse = await fetch(`${origin}/api/manim/projects`, {
+        body: JSON.stringify({ kind: "existing", name: "Added workspace", root: addedRoot }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(createResponse.status).toBe(201);
+      const created = await createResponse.json() as {
+        catalog: { projects: { id: string; name: string }[] };
+        project: { id: string; name: string };
+      };
+      expect(JSON.stringify(created)).not.toContain(addedRoot);
+      expect(created.project.name).toBe("Added workspace");
+
+      const duplicateResponse = await fetch(`${origin}/api/manim/projects`, {
+        body: JSON.stringify({ kind: "existing", name: "Duplicate", root: addedRoot }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(duplicateResponse.status).toBe(409);
+      expect(JSON.stringify(await duplicateResponse.json())).not.toContain(addedRoot);
+
+      const renameResponse = await fetch(`${origin}/api/manim/projects/${created.project.id}`, {
+        body: JSON.stringify({ name: "Renamed workspace" }),
+        headers: { "content-type": "application/json" },
+        method: "PATCH",
+      });
+      expect(renameResponse.status).toBe(200);
+      await expect(renameResponse.json()).resolves.toMatchObject({
+        project: { id: created.project.id, name: "Renamed workspace" },
+      });
+
+      const deleteResponse = await fetch(`${origin}/api/manim/projects/${created.project.id}`, {
+        method: "DELETE",
+      });
+      expect(deleteResponse.status).toBe(200);
+      await expect(deleteResponse.json()).resolves.toMatchObject({ project: null });
+      expect(await readFile(join(addedRoot, "scene.py"), "utf8")).toBe(sceneSource);
+
+      const missingRoot = join(addedRoot, "private-missing-root");
+      const invalidResponse = await fetch(`${origin}/api/manim/projects`, {
+        body: JSON.stringify({ kind: "existing", name: "Missing", root: missingRoot }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(invalidResponse.status).toBe(400);
+      expect(JSON.stringify(await invalidResponse.json())).not.toContain(missingRoot);
+      const deleteManagedResponse = await fetch(`${origin}/api/manim/projects/${managed.project.id}`, {
+        method: "DELETE",
+      });
+      expect(deleteManagedResponse.status).toBe(200);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
 });
 
 describe("Manim command parsing", () => {
