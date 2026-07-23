@@ -56,6 +56,8 @@ export function WorkspaceSidebar({
   draftActive,
   duration,
   editingAppliedTransactionId,
+  durationError,
+  durationMinimum,
   entities,
   nextScene,
   onDurationChange,
@@ -74,6 +76,8 @@ export function WorkspaceSidebar({
   draftActive: boolean;
   duration: number;
   editingAppliedTransactionId: string | null;
+  durationError: string | null;
+  durationMinimum: number;
   entities: readonly ProjectedEntity[];
   nextScene: ManimWorkspaceScene | null;
   onDurationChange: (duration: number) => void;
@@ -145,7 +149,8 @@ export function WorkspaceSidebar({
                 className="h-7 min-w-0 w-20 border border-zinc-700 bg-zinc-950 px-1.5 tabular-nums text-[10px] text-zinc-300 outline-none focus:border-sky-500"
                 defaultValue={duration.toFixed(2)}
                 key={`${activeScene.sceneId}/${duration.toFixed(3)}`}
-                min={duration.toFixed(2)}
+                aria-describedby={durationError ? "scene-duration-error" : "scene-duration-hint"}
+                min="0.1"
                 name="duration"
                 step="0.1"
                 type="number"
@@ -154,9 +159,17 @@ export function WorkspaceSidebar({
                 className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
                 type="submit"
               >
-                Extend
+                Update
               </button>
             </form>
+            <p className="mt-1 text-pretty text-[10px] leading-4 text-zinc-600" id="scene-duration-hint">
+              Shortest safe: <span className="tabular-nums">{durationMinimum.toFixed(2)}s</span>
+            </p>
+            {durationError ? (
+              <p className="mt-1 text-pretty text-[10px] leading-4 text-red-300" id="scene-duration-error" role="alert">
+                {durationError}
+              </p>
+            ) : null}
           </dd>
           <dt className="text-zinc-600">Anchors</dt>
           <dd className="tabular-nums text-zinc-400">

@@ -63,7 +63,7 @@ test("inserts geometry without Magic Edit and exports exact Manim source", async
   const duration = page.getByRole("spinbutton", { name: "Scene duration in seconds" });
   await expect(duration).toHaveValue("14.30");
   await duration.fill("15");
-  await page.getByRole("button", { name: "Extend" }).click();
+  await page.getByRole("button", { name: "Update" }).click();
   const extendedComposition = await exportedSource(page);
   expect(extendedComposition.match(/Circle\(radius=1\)/g)).toHaveLength(2);
   expect(extendedComposition).toContain("self.wait(0.7)");
@@ -631,14 +631,47 @@ test("exports one continuous batch across distinct source anchors", async ({ pag
   expect(source).toContain("# poietra:anchor 8.9");
 });
 
-test("extends the Scene duration through an exportable wait", async ({ page }) => {
+test("previews, applies, exports, and undoes safe Scene duration changes", async ({ page }) => {
   await openWorkspace(page);
   const duration = page.getByRole("spinbutton", { name: "Scene duration in seconds" });
   await expect(duration).toHaveValue("12.00");
+  await duration.fill("11");
+  await page.getByRole("button", { name: "Update" }).click();
+  await expect(page.locator("#scene-duration-error")).toContainText(
+    "imported or animated content is never truncated",
+  );
+
   await duration.fill("15");
-  await page.getByRole("button", { name: "Extend" }).click();
+  await page.getByRole("button", { name: "Update" }).click();
 
   await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
   await expect(page.getByRole("spinbutton", { name: "Scene duration in seconds" })).toHaveValue("15.00");
   await expect(exportedSource(page)).resolves.toContain("self.wait(3)");
+  await page.getByRole("button", { name: "Apply program" }).click();
+
+  const playhead = page.getByRole("slider", { name: "Scene playhead" });
+  await playhead.fill("15");
+  await duration.fill("14");
+  await page.getByRole("button", { name: "Update" }).click();
+
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  await expect(duration).toHaveValue("14.00");
+  await expect.poll(async () => Number(await playhead.inputValue())).toBeLessThanOrEqual(14);
+  const shortened = await exportedSource(page);
+  expect(shortened).toContain("self.wait(2)");
+  expect(shortened).not.toContain("self.wait(3)");
+  await page.getByRole("button", { name: "Apply program" }).click();
+
+  await page.keyboard.press("Control+z");
+  await expect(duration).toHaveValue("15.00");
+  await expect(exportedSource(page)).resolves.toContain("self.wait(3)");
+
+  await page.keyboard.press("Control+Shift+z");
+  await expect(duration).toHaveValue("14.00");
+  await duration.fill("12");
+  await page.getByRole("button", { name: "Update" }).click();
+  await expect(duration).toHaveValue("12.00");
+  await expect(exportedSource(page)).resolves.toBe(
+    await readFile(join(process.cwd(), "examples", "relativity.py"), "utf8"),
+  );
 });

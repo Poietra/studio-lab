@@ -58,6 +58,7 @@ describe("editor session lifecycle", () => {
       ...createInitialEditorState(),
       appliedPrograms: [record("applied")],
       currentTime: 7,
+      durationError: "duration needs attention",
       draftError: "kept with the draft",
       draftOperation: motionOperation,
       draftProgram: draft,
@@ -87,6 +88,7 @@ describe("editor session lifecycle", () => {
     expect(restored).toMatchObject({
       appliedPrograms: sessionState.appliedPrograms,
       currentTime: 7,
+      durationError: "duration needs attention",
       draftError: "kept with the draft",
       draftProgram: draft,
       insertTool: "Circle",
