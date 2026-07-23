@@ -387,7 +387,8 @@ class Resized(Scene):
         width_only = Rectangle(width=4, height=2)
         animated = Rectangle(width=4, height=2)
         moved = Rectangle(width=4, height=2)
-        self.add(height_only, width_only, animated, moved)
+        rotated = Rectangle(width=4, height=2)
+        self.add(height_only, width_only, animated, moved, rotated)
         height_only.stretch_to_fit_height(3)
         width_only.set_width(5)
         self.play(
@@ -395,9 +396,10 @@ class Resized(Scene):
             animated.animate.scale_to_fit_height(4),
             run_time=1,
         )
+        self.play(Rotate(rotated, angle=PI / 4), run_time=1)
 `, "scene.py", "Resized");
 
-    for (const variable of ["height_only", "width_only", "animated"]) {
+    for (const variable of ["height_only", "width_only", "animated", "rotated"]) {
       const entityId = `source:scene.py#Resized:${variable}`;
       expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/dimensions`]?.samples.at(-1)?.knowledge)
         .toMatchObject({ kind: "unknown" });

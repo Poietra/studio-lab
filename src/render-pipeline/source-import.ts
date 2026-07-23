@@ -848,6 +848,13 @@ function mutatesRotation(statement: string, variable: string, animated: boolean)
   return variableMethodCall(statement, variable, animated, "rotate");
 }
 
+function animationClassRotates(statement: string, variable: string) {
+  const escaped = variable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return statementExpressions(statement, true).some((expression) =>
+    new RegExp(`^\\s*(?:Rotate|Rotating)\\s*\\(\\s*${escaped}\\b`).test(expression),
+  );
+}
+
 function suffixRotates(suffix: string) {
   return /\.rotate\s*\(/.test(suffix);
 }
@@ -1296,7 +1303,9 @@ export function importManimScene(
     const actualResizeVariables = new Set(
       mutableEntities.flatMap((entity) =>
         mutatesDimensions(statement.text, entity.sourceVariable, true) ||
-        (entity.type === "Rectangle" && mutatesRotation(statement.text, entity.sourceVariable, true))
+        (entity.type === "Rectangle" &&
+          (mutatesRotation(statement.text, entity.sourceVariable, true) ||
+            animationClassRotates(statement.text, entity.sourceVariable)))
           ? [entity.sourceVariable]
           : [],
       ),
