@@ -83,7 +83,8 @@ function referencedEntityIds(operation: CanonicalEditOperation) {
 function sourceAnimationEasing(operation: CanonicalEditOperation): MotionEasing | null {
   if (operation.kind === "CreateMotion") return operation.easing;
   if (operation.kind === "AnimateProperty" && operation.key === "scale") return operation.easing;
-  if (operation.kind === "ChangePresence" || operation.kind === "TransformContent") return "smooth";
+  if (operation.kind === "ChangePresence" || operation.kind === "ResizeEntity" || operation.kind === "TransformContent")
+    return "smooth";
   return null;
 }
 

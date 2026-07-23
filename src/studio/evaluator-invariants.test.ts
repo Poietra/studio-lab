@@ -12,8 +12,12 @@ import {
   type CanonicalEditProgram,
 } from "./operations";
 import { validateAndScheduleProgram } from "./program-validation";
-import { normalizePositionSamples, normalizeScaleSamples } from "./property-sampling";
-import { createDirectManipulationMotionProgram, canonicalizeSuggestionProgram } from "./suggestion-program";
+import { normalizeDimensionsSamples, normalizePositionSamples, normalizeScaleSamples } from "./property-sampling";
+import {
+  canonicalizeSuggestionProgram,
+  createDirectManipulationMotionProgram,
+  createDirectManipulationResizeProgram,
+} from "./suggestion-program";
 
 function programWith(
   operations: readonly CanonicalEditOperation[],
@@ -178,6 +182,123 @@ class Moving(Scene):
       control: { x: 105, y: 200 },
       from: { x: 100, y: 200 },
       value: { x: 110, y: 200 },
+    });
+  });
+
+  it("orders shape resizes chronologically while preserving future Unknown geometry", () => {
+    const samples = normalizeDimensionsSamples([
+      {
+        interval: { end: 10, start: 0 },
+        kind: "exact",
+        knowledge: { kind: "known", value: { height: 2, width: 4 } },
+        provenanceId: "initial",
+        value: { height: 2, width: 4 },
+      },
+      {
+        easing: "smooth",
+        from: { height: 2, width: 4 },
+        interval: { end: 7, start: 6 },
+        kind: "animated",
+        knowledge: { kind: "known", value: { height: 3, width: 6 } },
+        provenanceId: "later-source-resize",
+        value: { height: 3, width: 6 },
+      },
+      {
+        interval: { end: 10, start: 8 },
+        kind: "exact",
+        knowledge: { kind: "unknown", reason: "Source rotation changes the bounding box." },
+        provenanceId: "future-source-rotation",
+        value: { height: 3, width: 6 },
+      },
+      {
+        from: { height: 2, width: 4 },
+        interval: { end: 2, start: 2 },
+        kind: "exact",
+        knowledge: { kind: "known", value: { height: 2.5, width: 5 } },
+        operationId: "studio-resize",
+        provenanceId: "studio-resize/provenance",
+        value: { height: 2.5, width: 5 },
+      },
+    ]);
+
+    expect(samples.map((sample) => sample.provenanceId)).toEqual([
+      "initial",
+      "studio-resize/provenance",
+      "later-source-resize",
+      "future-source-rotation",
+    ]);
+    expect(samples[2]).toMatchObject({
+      from: { height: 2.5, width: 5 },
+      value: { height: 3, width: 6 },
+    });
+    expect(samples[3]).toMatchObject({
+      knowledge: { kind: "unknown", reason: "Source rotation changes the bounding box." },
+      value: { height: 3, width: 6 },
+    });
+  });
+
+  it("keeps later known and unknown source geometry authoritative after a Studio resize", () => {
+    const source = `from manim import *
+
+class Resizing(Scene):
+    def construct(self):
+        shape = Rectangle(width=4, height=2)
+        self.add(shape)
+        self.wait(1)
+        # poietra:anchor 1.000
+        self.wait(1)
+        # poietra:dimensions {"kind":"exact","resize":{"from":{"dimensions":{"height":2,"width":4},"position":{"x":320,"y":180}},"scale":1,"shape":"rectangle","to":{"dimensions":{"height":3,"width":6},"position":{"x":320,"y":180}},"variable":"shape"},"version":1}
+        shape.stretch_to_fit_width(6).stretch_to_fit_height(3).move_to(ORIGIN)
+        self.wait(1)
+        shape.rotate(PI / 4)
+        self.wait(1)
+`;
+    const imported = importManimScene(source, "resizing.py", "Resizing");
+    expect(imported).not.toBeNull();
+    if (!imported) return;
+    const entityId = "source:resizing.py#Resizing:shape";
+    const resize = createDirectManipulationResizeProgram({
+      capturedPlayhead: 1,
+      entityId,
+      from: { dimensions: { height: 2, width: 4 }, position: { x: 320, y: 180 } },
+      interval: { end: 1, start: 1 },
+      scale: 1,
+      scene: imported.runtimeSceneState,
+      shape: "rectangle",
+      to: { dimensions: { height: 2.5, width: 5 }, position: { x: 320, y: 180 } },
+      transactionId: "resize-before-source-geometry",
+    });
+    expect(resize.kind, JSON.stringify(resize.issues)).toBe("valid");
+    const workingState: WorkingState = {
+      appliedPrograms: [],
+      editorContext: {
+        activeSceneId: imported.sceneId,
+        playhead: 1,
+        selection: [entityId],
+        version: STUDIO_STATE_VERSION,
+        viewport: { height: 360, width: 640 },
+      },
+      runtimeSceneState: imported.runtimeSceneState,
+      sourceSnapshot: {
+        configId: "test",
+        hash: imported.sourceHash,
+        sourceId: "resizing.py",
+        version: STUDIO_STATE_VERSION,
+      },
+      stagedPrograms: [programRecord(resize.program, resize)],
+      staticSemanticState: imported.staticSemanticState,
+      version: STUDIO_STATE_VERSION,
+    };
+
+    const proposed = evaluateWorkingState(workingState);
+    const dimensionsAt = (time: number) =>
+      projectProposedState(proposed, time).canvas.entities.find((entity) => entity.id === entityId)?.geometry
+        .dimensions;
+    expect(dimensionsAt(1.5)).toEqual({ kind: "known", value: { height: 2.5, width: 5 } });
+    expect(dimensionsAt(2.5)).toEqual({ kind: "known", value: { height: 3, width: 6 } });
+    expect(dimensionsAt(3.5)).toMatchObject({
+      kind: "unknown",
+      reason: expect.stringMatching(/unverified resize/i),
     });
   });
 

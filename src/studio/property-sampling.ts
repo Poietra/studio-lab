@@ -59,6 +59,40 @@ function chronologicalSamples(samples: readonly PropertyChannelSample[]) {
 }
 
 /**
+ * Restores source order for absolute shape geometry mutations.
+ *
+ * A Studio resize is appended after imported samples even when its source
+ * anchor precedes them. Later source resizes must therefore be put back after
+ * the Studio sample. Animated source resizes start from the geometry produced
+ * by everything before them, while an unknown mutation keeps its Unknown
+ * knowledge and uses that geometry only as a stable preview placeholder.
+ */
+export function normalizeDimensionsSamples(
+  samples: readonly PropertyChannelSample[],
+): readonly PropertyChannelSample[] {
+  const normalized: PropertyChannelSample[] = [];
+  for (const { sample } of chronologicalSamples(samples)) {
+    const current = samplePropertyValue(normalized, sample.interval.start);
+    if (!isEntityDimensionsValue(current)) {
+      normalized.push(sample);
+      continue;
+    }
+    if (sample.knowledge?.kind === "unknown") {
+      normalized.push({
+        ...sample,
+        ...(sample.kind === "animated" ? { from: current } : {}),
+        value: current,
+      });
+      continue;
+    }
+    normalized.push(
+      sample.kind === "animated" && isEntityDimensionsValue(sample.from) ? { ...sample, from: current } : sample,
+    );
+  }
+  return normalized;
+}
+
+/**
  * Restores the chronological, relative semantics of Manim shift/path motions.
  *
  * Source-imported motions retain their original delta and control offset. When
