@@ -406,11 +406,14 @@ function contentTarget(value: unknown): Readonly<{
   const content = value as EntityContent;
   if (
     !Array.isArray(content.displayLines)
+    || content.displayLines.length === 0
+    || content.displayLines.length > 2_000
     || !content.displayLines.every((line) => typeof line === "string")
   ) return null;
   if (
     typeof content.text === "string"
     && content.text.trim().length > 0
+    && content.text.length <= 2_000
     && content.texParts === undefined
   ) {
     return { content, constructor: `Text(${JSON.stringify(content.text)})`, type: "Text" };
@@ -419,7 +422,11 @@ function contentTarget(value: unknown): Readonly<{
     content.text === undefined
     && Array.isArray(content.texParts)
     && content.texParts.length > 0
-    && content.texParts.every((part) => typeof part === "string" && part.trim().length > 0)
+    && content.texParts.length <= 16
+    && content.texParts.every((part) => (
+      typeof part === "string" && part.trim().length > 0 && part.length <= 2_000
+    ))
+    && content.texParts.reduce((length, part) => length + part.length, 0) <= 2_000
   ) {
     return {
       content,

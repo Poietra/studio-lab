@@ -213,17 +213,17 @@ const scaleMarkerSchema = z.discriminatedUnion("kind", [
 ]);
 const markerContentBaseSchema = z.object({
   displayLines: z.array(z.string().max(2_000)).min(1).max(2_000),
-  label: z.string().optional(),
+  label: z.string().max(2_000).optional(),
 });
 const contentMarkerSchema = z.discriminatedUnion("type", [
   z.object({
-    content: markerContentBaseSchema.extend({ text: z.string().min(1) }).strict(),
+    content: markerContentBaseSchema.extend({ text: z.string().min(1).max(2_000) }).strict(),
     type: z.literal("Text"),
     variable: identifierSchema,
     version: z.literal(1),
   }).strict(),
   z.object({
-    content: markerContentBaseSchema.extend({ texParts: z.array(z.string().min(1)).min(1).max(16) }).strict(),
+    content: markerContentBaseSchema.extend({ texParts: z.array(z.string().min(1).max(2_000)).min(1).max(16) }).strict(),
     type: z.literal("MathTex"),
     variable: identifierSchema,
     version: z.literal(1),

@@ -130,6 +130,22 @@ describe("manual Studio authoring commands", () => {
     })).toThrow(/known or Studio-generated source identity/i);
   });
 
+  it("rejects content whose canonical shape does not match the selected entity type", () => {
+    const validation = createInspectorEntityEditProgram({
+      capturedPlayhead: 5,
+      edits: { content: { displayLines: ["plain text"], text: "plain text" } },
+      entityId: "equation_1",
+      from: { position: { x: 384, y: 146 }, scale: 1 },
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "invalid-inspector-content-shape",
+    });
+
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "value", severity: "error" }),
+    ]));
+  });
+
   it("creates and positions an entity through the canonical operation pipeline", () => {
     const result = createStudioEntitiesProgram({
       capturedPlayhead: 5,
