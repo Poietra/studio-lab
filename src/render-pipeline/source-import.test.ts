@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { findSceneBlocks, importManimScene } from "./source-import";
+import { AmbiguousSourceSceneError, findSceneBlocks, importManimScene } from "./source-import";
 
 const source = `from manim import *
 
@@ -41,11 +41,13 @@ describe("conservative Manim source import", () => {
       "source:scene.py#First:equation": "equation",
       "source:scene.py#First:label": "label",
     });
-    expect(imported?.runtimeSceneState.objectGraph.entities["source:scene.py#First:equation"]?.content?.texParts)
-      .toEqual(["E", "=", "m", "c^2"]);
+    expect(
+      imported?.runtimeSceneState.objectGraph.entities["source:scene.py#First:equation"]?.content?.texParts,
+    ).toEqual(["E", "=", "m", "c^2"]);
     expect(imported?.runtimeSceneState.eventTrack.events.map((event) => event.kind)).toEqual(["play", "play", "wait"]);
-    expect(imported?.runtimeSceneState.propertyChannels["source:scene.py#First:equation/position"]?.samples)
-      .toHaveLength(2);
+    expect(
+      imported?.runtimeSceneState.propertyChannels["source:scene.py#First:equation/position"]?.samples,
+    ).toHaveLength(2);
     expect(imported?.initialVisibleSourceVariables).toEqual(["equation", "label"]);
     expect(imported?.runtimeSceneState.objectGraph.entities).not.toHaveProperty("source:scene.py#First:leaked");
     expect(imported?.runtimeSceneState.objectGraph.entities).not.toHaveProperty("source:scene.py#First:also_leaked");
@@ -72,10 +74,12 @@ class UnsafeMarkers(Scene):
 
     expect(imported?.anchors).toEqual([]);
     expect(imported?.runtimeSceneState.duration).toBe(1);
-    expect(imported?.runtimeSceneState.objectGraph.entities)
-      .not.toHaveProperty("source:scene.py#UnsafeMarkers:leaked_from_string");
-    expect(imported?.runtimeSceneState.objectGraph.entities)
-      .not.toHaveProperty("source:scene.py#UnsafeMarkers:leaked_from_branch");
+    expect(imported?.runtimeSceneState.objectGraph.entities).not.toHaveProperty(
+      "source:scene.py#UnsafeMarkers:leaked_from_string",
+    );
+    expect(imported?.runtimeSceneState.objectGraph.entities).not.toHaveProperty(
+      "source:scene.py#UnsafeMarkers:leaked_from_branch",
+    );
   });
 
   it("restores a transaction-scoped Studio identity from a committed source marker", () => {
@@ -90,8 +94,33 @@ class UnsafeMarkers(Scene):
     const imported = importManimScene(marked, "scene.py", "First");
 
     expect(imported?.sourceVariables["tx:one/entity:new-equation"]).toBe("poietra_one_1");
-    expect(imported?.runtimeSceneState.objectGraph.entities["tx:one/entity:new-equation"]?.sourceIdentity)
-      .toEqual({ kind: "known", value: "poietra_one_1" });
+    expect(imported?.runtimeSceneState.objectGraph.entities["tx:one/entity:new-equation"]?.sourceIdentity).toEqual({
+      kind: "known",
+      value: "poietra_one_1",
+    });
+  });
+
+  it("rejects duplicate Scene names instead of importing the first definition twice", () => {
+    const duplicate = `from manim import *
+
+class RepeatedName(Scene):
+    def construct(self):
+        first = Text("First definition")
+        self.add(first)
+
+class RepeatedName(Scene):
+    def construct(self):
+        second = Text("Effective Python definition")
+        self.add(second)
+`;
+
+    expect(findSceneBlocks(duplicate).map((block) => block.name)).toEqual(["RepeatedName", "RepeatedName"]);
+    expect(() => importManimScene(duplicate, "scenes/duplicate.py", "RepeatedName")).toThrowError(
+      AmbiguousSourceSceneError,
+    );
+    expect(() => importManimScene(duplicate, "scenes/duplicate.py", "RepeatedName")).toThrow(
+      /Scene "RepeatedName".*scenes\/duplicate\.py.*lines 3, 8/i,
+    );
   });
 
   it("restores a committed Scene boundary without importing its transient incoming copy", () => {
@@ -120,10 +149,12 @@ class First(Scene):
     expect(imported?.runtimeSceneState.duration).toBe(4);
     expect(imported?.runtimeSceneState.objectGraph.entities).toHaveProperty("tx:one/entity:equation");
     expect(imported?.runtimeSceneState.objectGraph.entities).not.toHaveProperty("source:scene.py#First:incoming_title");
-    expect(imported?.runtimeSceneState.eventTrack.events).toContainEqual(expect.objectContaining({
-      at: 4,
-      kind: "scene-boundary",
-    }));
+    expect(imported?.runtimeSceneState.eventTrack.events).toContainEqual(
+      expect.objectContaining({
+        at: 4,
+        kind: "scene-boundary",
+      }),
+    );
   });
 
   it("does not treat assignment as presence without add or an introducing animation", () => {
@@ -138,10 +169,10 @@ class Added(Scene):
 `;
     const imported = importManimScene(addSource, "scene.py", "Added");
 
-    expect(imported?.runtimeSceneState.objectGraph.entities["source:scene.py#Added:visible"]?.lifetime)
-      .toEqual([{ end: 1, start: 0 }]);
-    expect(imported?.runtimeSceneState.objectGraph.entities["source:scene.py#Added:unused"]?.lifetime)
-      .toEqual([]);
+    expect(imported?.runtimeSceneState.objectGraph.entities["source:scene.py#Added:visible"]?.lifetime).toEqual([
+      { end: 1, start: 0 },
+    ]);
+    expect(imported?.runtimeSceneState.objectGraph.entities["source:scene.py#Added:unused"]?.lifetime).toEqual([]);
     expect(imported?.initialVisibleSourceVariables).toEqual(["visible"]);
   });
 
@@ -160,10 +191,12 @@ class Transforming(Scene):
 `;
     const imported = importManimScene(transformed, "scene.py", "Transforming");
 
-    expect(imported?.runtimeSceneState.objectGraph.entities["source:scene.py#Transforming:equation"]?.lifetime)
-      .toEqual([{ end: 3, start: 0 }]);
-    expect(imported?.runtimeSceneState.objectGraph.entities["tx:one/entity:replacement"]?.lifetime)
-      .toEqual([{ end: 4, start: 1 }]);
+    expect(imported?.runtimeSceneState.objectGraph.entities["source:scene.py#Transforming:equation"]?.lifetime).toEqual(
+      [{ end: 3, start: 0 }],
+    );
+    expect(imported?.runtimeSceneState.objectGraph.entities["tx:one/entity:replacement"]?.lifetime).toEqual([
+      { end: 4, start: 1 },
+    ]);
   });
 
   it("preserves repeated presence intervals and ignores removal before first presence", () => {
@@ -183,11 +216,10 @@ class Repeated(Scene):
 `;
     const imported = importManimScene(repeated, "scene.py", "Repeated");
 
-    expect(imported?.runtimeSceneState.objectGraph.entities["source:scene.py#Repeated:item"]?.lifetime)
-      .toEqual([
-        { end: 2, start: 1 },
-        { end: 4, start: 3 },
-      ]);
+    expect(imported?.runtimeSceneState.objectGraph.entities["source:scene.py#Repeated:item"]?.lifetime).toEqual([
+      { end: 2, start: 1 },
+      { end: 4, start: 3 },
+    ]);
   });
 
   it("imports simple per-object shifts and round-trips Studio markers", () => {
@@ -216,9 +248,8 @@ class Positioned(Scene):
         self.wait(1)
 `;
     const imported = importManimScene(positioned, "scene.py", "Positioned");
-    const samples = (variable: string) => imported?.runtimeSceneState.propertyChannels[
-      `source:scene.py#Positioned:${variable}/position`
-    ]?.samples;
+    const samples = (variable: string) =>
+      imported?.runtimeSceneState.propertyChannels[`source:scene.py#Positioned:${variable}/position`]?.samples;
 
     expect(samples("base")?.[1]?.value).toMatchObject({ x: expect.closeTo(215, 2), y: 90 });
     expect(samples("label")?.[1]?.value).toMatchObject({ x: expect.closeTo(230, 2), y: 180 });
@@ -252,9 +283,7 @@ class Curved(Scene):
         )
 `;
     const imported = importManimScene(curved, "scene.py", "Curved");
-    const sample = imported?.runtimeSceneState.propertyChannels[
-      "source:scene.py#Curved:dot/position"
-    ]?.samples.at(-1);
+    const sample = imported?.runtimeSceneState.propertyChannels["source:scene.py#Curved:dot/position"]?.samples.at(-1);
 
     expect(sample).toMatchObject({
       control: { x: 200, y: 130 },

@@ -370,6 +370,42 @@ describe("Manim render manager", () => {
     await expect(manager.start(request())).rejects.toThrow(/imported source changed before rendering/i);
   });
 
+  it("reports duplicate Scene names and refuses export or preview before a commit can exist", async () => {
+    const { manager, projectRoot } = await fixture();
+    const duplicateSource = `${sceneSource}
+class GroupedEquation(Scene):
+    def construct(self):
+        replacement = Text("Effective Python definition")
+        self.add(replacement)
+        # poietra:anchor 7.000
+`;
+    await writeFile(join(projectRoot, "scene.py"), duplicateSource, "utf8");
+    const duplicateRequest = {
+      ...request(),
+      sourceHash: createHash("sha256").update(duplicateSource).digest("hex"),
+    };
+    const server = createServer((incoming, response) => {
+      void handleManimRequest(manager, incoming, response);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address() as AddressInfo;
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/manim/workspace`);
+      const body = (await response.json()) as { error: string };
+
+      expect(response.status).toBe(409);
+      expect(body.error).toMatch(/Scene "GroupedEquation".*scene\.py.*duplicate/i);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+
+    await expect(manager.exportSource(duplicateRequest)).rejects.toThrow(
+      /Scene "GroupedEquation".*scene\.py.*duplicate/i,
+    );
+    await expect(manager.start(duplicateRequest)).rejects.toThrow(/Scene "GroupedEquation".*scene\.py.*duplicate/i);
+    expect(manager.canUnregister()).toBe(true);
+  });
+
   it("exports Programs at distinct source anchors in source order", async () => {
     const { manager } = await fixture();
     const later = motionProgram(7, "batch-later");

@@ -11,6 +11,7 @@ import {
   renameManimProjectRequestSchema,
   type ManimSourceExport,
 } from "../src/render-pipeline/contracts";
+import { AmbiguousSourceSceneError } from "../src/render-pipeline/source-import";
 import { HttpError, readJsonBody, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import type { ManimRenderManager } from "./manim-render-manager";
@@ -41,13 +42,14 @@ function requireSameOriginJsonMutation(request: IncomingMessage) {
   try {
     const parsedOrigin = new URL(origin);
     if (
-      !host
-      || !["http:", "https:"].includes(parsedOrigin.protocol)
-      || parsedOrigin.protocol !== ("encrypted" in request.socket && request.socket.encrypted ? "https:" : "http:")
-      || parsedOrigin.username
-      || parsedOrigin.password
-      || parsedOrigin.host.toLowerCase() !== host.toLowerCase()
-    ) throw new Error("Origin does not match Host.");
+      !host ||
+      !["http:", "https:"].includes(parsedOrigin.protocol) ||
+      parsedOrigin.protocol !== ("encrypted" in request.socket && request.socket.encrypted ? "https:" : "http:") ||
+      parsedOrigin.username ||
+      parsedOrigin.password ||
+      parsedOrigin.host.toLowerCase() !== host.toLowerCase()
+    )
+      throw new Error("Origin does not match Host.");
   } catch {
     request.resume();
     throw new HttpError("Thumbnail generation requires a same-origin request.", 403);
@@ -70,13 +72,16 @@ function pipeVideo(response: ServerResponse, path: string, range?: Readonly<{ en
     if (!response.headersSent) {
       response.removeHeader("content-length");
       sendJson(response, 500, { error: "Could not read the rendered video." });
-    }
-    else response.destroy();
+    } else response.destroy();
   });
   stream.pipe(response);
 }
 
-export function resolveByteRange(header: string | undefined, size: number): Readonly<{ kind: "full" }>
+export function resolveByteRange(
+  header: string | undefined,
+  size: number,
+):
+  | Readonly<{ kind: "full" }>
   | Readonly<{ kind: "invalid" }>
   | Readonly<{ end: number; kind: "partial"; start: number }> {
   if (!header) return { kind: "full" };
@@ -86,13 +91,14 @@ export function resolveByteRange(header: string | undefined, size: number): Read
   const start = suffixLength === null ? Number(match[1]) : Math.max(0, size - suffixLength);
   const end = suffixLength === null && match[2] ? Math.min(Number(match[2]), size - 1) : size - 1;
   if (
-    !Number.isInteger(start)
-    || !Number.isInteger(end)
-    || (suffixLength !== null && (!Number.isInteger(suffixLength) || suffixLength <= 0))
-    || start < 0
-    || end < start
-    || start >= size
-  ) return { kind: "invalid" };
+    !Number.isInteger(start) ||
+    !Number.isInteger(end) ||
+    (suffixLength !== null && (!Number.isInteger(suffixLength) || suffixLength <= 0)) ||
+    start < 0 ||
+    end < start ||
+    start >= size
+  )
+    return { kind: "invalid" };
   return { end, kind: "partial", start };
 }
 
@@ -128,18 +134,20 @@ async function streamVideo(request: IncomingMessage, response: ServerResponse, p
 
 async function runRenderAction(manager: ManimApi, id: string, action: string | undefined) {
   switch (action) {
-    case "cancel": return manager.cancel(id);
-    case "commit": return manager.commit(id);
-    case "discard": return manager.discard(id);
-    case "undo": return manager.undo(id);
-    default: throw new HttpError("Method not allowed.", 405);
+    case "cancel":
+      return manager.cancel(id);
+    case "commit":
+      return manager.commit(id);
+    case "discard":
+      return manager.discard(id);
+    case "undo":
+      return manager.undo(id);
+    default:
+      throw new HttpError("Method not allowed.", 405);
   }
 }
 
-function sendPythonAttachment(
-  response: ServerResponse,
-  exported: ManimSourceExport,
-) {
+function sendPythonAttachment(response: ServerResponse, exported: ManimSourceExport) {
   if (response.destroyed || response.writableEnded) return false;
   if (response.headersSent) {
     response.destroy();
@@ -239,7 +247,7 @@ async function routeManimRequest(
       throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid canonical EditProgram render request.", 400);
     }
     const started = await manager.start(parsed.data, signal);
-    if (!await sendJsonAndWaitForFinish(response, 202, started)) {
+    if (!(await sendJsonAndWaitForFinish(response, 202, started))) {
       await manager.abandonStart(started.id);
       const error = new Error("The render request was disconnected before its response was sent.");
       error.name = "AbortError";
@@ -337,7 +345,7 @@ async function routeManimRequest(
       throw new HttpError("The request project does not match the project endpoint.", 409);
     }
     const started = await manager.start(parsed.data, signal);
-    if (!await sendJsonAndWaitForFinish(response, 202, started)) {
+    if (!(await sendJsonAndWaitForFinish(response, 202, started))) {
       await manager.abandonStart(started.id);
       const error = new Error("The render request was disconnected before its response was sent.");
       error.name = "AbortError";
@@ -391,20 +399,21 @@ export async function handleManimRequest(
     logger.info("response.sent", { status: response.statusCode });
   } catch (error) {
     if (requestAbort.signal.aborted || (response.destroyed && error instanceof Error && error.name === "AbortError")) {
-      const expectedAbort = error === requestAbort.signal.reason
-        || (error instanceof Error && error.name === "AbortError")
-        || (error instanceof HttpError && error.message === "Request body was interrupted.");
+      const expectedAbort =
+        error === requestAbort.signal.reason ||
+        (error instanceof Error && error.name === "AbortError") ||
+        (error instanceof HttpError && error.message === "Request body was interrupted.");
       const details = error instanceof Error ? { message: error.message, name: error.name } : { error };
       if (expectedAbort) logger.info("request.aborted", details);
       else logger.error("request.abort_cleanup_failed", details);
       return;
     }
-    const expected = error instanceof HttpError;
-    const status = expected ? error.status : 500;
-    const message = expected ? error.message : "Manim render pipeline failed.";
-    const details = error instanceof Error
-      ? { error, message: error.message, name: error.name, status }
-      : { error, status };
+    const ambiguousScene = error instanceof AmbiguousSourceSceneError;
+    const expected = error instanceof HttpError || ambiguousScene;
+    const status = error instanceof HttpError ? error.status : ambiguousScene ? 409 : 500;
+    const message = expected && error instanceof Error ? error.message : "Manim render pipeline failed.";
+    const details =
+      error instanceof Error ? { error, message: error.message, name: error.name, status } : { error, status };
     if (expected) logger.warn("request.rejected", details);
     else logger.error("request.failed", details);
     if (!sendJson(response, status, { error: message })) {
