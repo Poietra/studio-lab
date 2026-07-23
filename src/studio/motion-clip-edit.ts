@@ -1,8 +1,4 @@
-import {
-  editableSuggestionSteps,
-  replaceSuggestionStep,
-  type EditableSuggestionStep,
-} from "../ai/draft-operation";
+import { editableSuggestionSteps, replaceSuggestionStep, type EditableSuggestionStep } from "../ai/draft-operation";
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import type { Point } from "./model";
 import type { CanonicalEditProgram } from "./operations";
@@ -11,14 +7,16 @@ const MINIMUM_MOTION_DURATION = 0.1;
 
 type MotionStep = Extract<EditableSuggestionStep, { kind: "create-motion" }>;
 
-export type MotionClipEditResult = Readonly<{
-  kind: "invalid";
-  message: string;
-}> | Readonly<{
-  kind: "valid";
-  operation: EditSuggestionOperation;
-  stepIndex: number;
-}>;
+export type MotionClipEditResult =
+  | Readonly<{
+      kind: "invalid";
+      message: string;
+    }>
+  | Readonly<{
+      kind: "valid";
+      operation: EditSuggestionOperation;
+      stepIndex: number;
+    }>;
 
 function editableMotionStep(
   program: CanonicalEditProgram,
@@ -26,13 +24,13 @@ function editableMotionStep(
   operationId: string,
 ): Readonly<{ index: number; step: MotionStep }> | null {
   const canonicalMotions = program.operations.filter((candidate) => candidate.kind === "CreateMotion");
-  const matchingCanonicalMotions = canonicalMotions.flatMap((candidate, index) => (
-    candidate.id === operationId ? [index] : []
-  ));
+  const matchingCanonicalMotions = canonicalMotions.flatMap((candidate, index) =>
+    candidate.id === operationId ? [index] : [],
+  );
   if (matchingCanonicalMotions.length !== 1) return null;
-  const motionSteps = editableSuggestionSteps(operation).flatMap((step, index) => (
-    step.kind === "create-motion" ? [{ index, step }] : []
-  ));
+  const motionSteps = editableSuggestionSteps(operation).flatMap((step, index) =>
+    step.kind === "create-motion" ? [{ index, step }] : [],
+  );
   if (motionSteps.length !== canonicalMotions.length) return null;
   return motionSteps[matchingCanonicalMotions[0]] ?? null;
 }
@@ -52,11 +50,9 @@ function replaceMotionControlOffset(
   if (operation.kind !== "edit-program") return operation;
   return {
     ...operation,
-    operations: operation.operations.map((step, candidateIndex) => (
-      candidateIndex === index && step.kind === "create-motion"
-        ? { ...step, controlOffset }
-        : step
-    )),
+    operations: operation.operations.map((step, candidateIndex) =>
+      candidateIndex === index && step.kind === "create-motion" ? { ...step, controlOffset } : step,
+    ),
   };
 }
 
@@ -72,13 +68,15 @@ export function appliedMotionClipReadOnlyReason(
   return null;
 }
 
-export function retimeAppliedMotionClip(input: Readonly<{
-  duration: number;
-  operation: EditSuggestionOperation;
-  operationId: string;
-  program: CanonicalEditProgram;
-  start: number;
-}>): MotionClipEditResult {
+export function retimeAppliedMotionClip(
+  input: Readonly<{
+    duration: number;
+    operation: EditSuggestionOperation;
+    operationId: string;
+    program: CanonicalEditProgram;
+    start: number;
+  }>,
+): MotionClipEditResult {
   if (!Number.isFinite(input.start) || !Number.isFinite(input.duration)) {
     return { kind: "invalid", message: "Motion clip timing must use finite values." };
   }
@@ -92,8 +90,9 @@ export function retimeAppliedMotionClip(input: Readonly<{
   if (!editable) {
     return {
       kind: "invalid",
-      message: appliedMotionClipReadOnlyReason(input.program, input.operation, input.operationId)
-        ?? "The motion clip is read-only.",
+      message:
+        appliedMotionClipReadOnlyReason(input.program, input.operation, input.operationId) ??
+        "The motion clip is read-only.",
     };
   }
   if (input.operation.kind === "edit-program" && input.operation.execution === "sequence") {
@@ -101,7 +100,8 @@ export function retimeAppliedMotionClip(input: Readonly<{
     if (previous && input.start < previous.end - 0.0005) {
       return {
         kind: "invalid",
-        message: "The motion clip would overlap the previous sequential step. Move it after that step or switch the Program to parallel execution.",
+        message:
+          "The motion clip would overlap the previous sequential step. Move it after that step or switch the Program to parallel execution.",
       };
     }
   }
@@ -117,12 +117,14 @@ export function retimeAppliedMotionClip(input: Readonly<{
   };
 }
 
-export function adjustAppliedMotionClipControl(input: Readonly<{
-  delta: Point;
-  operation: EditSuggestionOperation;
-  operationId: string;
-  program: CanonicalEditProgram;
-}>): MotionClipEditResult {
+export function adjustAppliedMotionClipControl(
+  input: Readonly<{
+    delta: Point;
+    operation: EditSuggestionOperation;
+    operationId: string;
+    program: CanonicalEditProgram;
+  }>,
+): MotionClipEditResult {
   if (!Number.isFinite(input.delta.x) || !Number.isFinite(input.delta.y)) {
     return { kind: "invalid", message: "Motion control changes must use finite values." };
   }
@@ -130,8 +132,9 @@ export function adjustAppliedMotionClipControl(input: Readonly<{
   if (!editable) {
     return {
       kind: "invalid",
-      message: appliedMotionClipReadOnlyReason(input.program, input.operation, input.operationId)
-        ?? "The motion clip is read-only.",
+      message:
+        appliedMotionClipReadOnlyReason(input.program, input.operation, input.operationId) ??
+        "The motion clip is read-only.",
     };
   }
   const step = {

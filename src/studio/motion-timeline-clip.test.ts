@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  adjacentAppliedMotionClipAnchor,
-  type AppliedMotionClip,
-} from "./motion-timeline-clip";
+import { adjacentAppliedMotionClipAnchor, type AppliedMotionClip } from "./motion-timeline-clip";
 
 const anchors = [3, 5, 7].map((sourceTime) => ({
   maximumDuration: 10 - sourceTime,

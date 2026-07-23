@@ -33,20 +33,22 @@ export const suggestionTimeAnchorSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 
-export const mathTexSuggestionTargetSchema = z.object({
-  displayLines: z.array(z.string().trim().min(1).max(120)).min(1).max(4),
-  kind: z.literal("mathtex"),
-  label: z.string().trim().min(1).max(120),
-  texParts: z.array(z.string().trim().min(1).max(2_000)).min(1).max(16),
-}).superRefine((target, context) => {
-  if (target.texParts.reduce((length, part) => length + part.length, 0) > 2_000) {
-    context.addIssue({
-      code: "custom",
-      message: "MathTex arguments must contain at most 2,000 characters in total.",
-      path: ["texParts"],
-    });
-  }
-});
+export const mathTexSuggestionTargetSchema = z
+  .object({
+    displayLines: z.array(z.string().trim().min(1).max(120)).min(1).max(4),
+    kind: z.literal("mathtex"),
+    label: z.string().trim().min(1).max(120),
+    texParts: z.array(z.string().trim().min(1).max(2_000)).min(1).max(16),
+  })
+  .superRefine((target, context) => {
+    if (target.texParts.reduce((length, part) => length + part.length, 0) > 2_000) {
+      context.addIssue({
+        code: "custom",
+        message: "MathTex arguments must contain at most 2,000 characters in total.",
+        path: ["texParts"],
+      });
+    }
+  });
 
 const createMotionFields = {
   controlOffset: motionControlOffsetSchema,
@@ -58,10 +60,12 @@ const createMotionFields = {
   targetObjectIds: z.array(z.string()).min(1),
 } as const;
 
-export const createMotionSuggestionSchema = z.object({
-  anchor: suggestionTimeAnchorSchema,
-  ...createMotionFields,
-}).superRefine(boundedInterval(0.1));
+export const createMotionSuggestionSchema = z
+  .object({
+    anchor: suggestionTimeAnchorSchema,
+    ...createMotionFields,
+  })
+  .superRefine(boundedInterval(0.1));
 
 const createTransformFields = {
   easing: z.literal("smooth"),
@@ -75,10 +79,12 @@ const createTransformFields = {
   target: mathTexSuggestionTargetSchema,
 } as const;
 
-export const createTransformSuggestionSchema = z.object({
-  anchor: suggestionTimeAnchorSchema,
-  ...createTransformFields,
-}).superRefine(boundedInterval(0.1));
+export const createTransformSuggestionSchema = z
+  .object({
+    anchor: suggestionTimeAnchorSchema,
+    ...createTransformFields,
+  })
+  .superRefine(boundedInterval(0.1));
 
 const createExplanationFields = {
   animation: z.literal("fade-in"),
@@ -91,10 +97,12 @@ const createExplanationFields = {
   text: z.string().trim().min(1).max(240),
 } as const;
 
-export const createExplanationSuggestionSchema = z.object({
-  anchor: suggestionTimeAnchorSchema,
-  ...createExplanationFields,
-}).superRefine(boundedInterval(0.1));
+export const createExplanationSuggestionSchema = z
+  .object({
+    anchor: suggestionTimeAnchorSchema,
+    ...createExplanationFields,
+  })
+  .superRefine(boundedInterval(0.1));
 
 const createSceneTransitionFields = {
   color: z.enum(["black", "sky", "white"]),
@@ -107,21 +115,25 @@ const createSceneTransitionFields = {
   style: z.literal("cover-reveal"),
 } as const;
 
-export const createSceneTransitionSuggestionSchema = z.object({
-  anchor: suggestionTimeAnchorSchema,
-  ...createSceneTransitionFields,
-}).superRefine(boundedInterval(0.4));
+export const createSceneTransitionSuggestionSchema = z
+  .object({
+    anchor: suggestionTimeAnchorSchema,
+    ...createSceneTransitionFields,
+  })
+  .superRefine(boundedInterval(0.4));
 
-export const createCameraFocusSuggestionSchema = z.object({
-  anchor: suggestionTimeAnchorSchema,
-  easing: z.literal("smooth"),
-  emphasisScale: z.number().min(1).max(1.25),
-  end: z.number(),
-  kind: z.literal("create-camera-focus"),
-  start: z.number(),
-  targetObjectIds: z.array(z.string()).min(1),
-  zoomScale: z.number().min(1).max(2),
-}).superRefine(boundedInterval(0.1));
+export const createCameraFocusSuggestionSchema = z
+  .object({
+    anchor: suggestionTimeAnchorSchema,
+    easing: z.literal("smooth"),
+    emphasisScale: z.number().min(1).max(1.25),
+    end: z.number(),
+    kind: z.literal("create-camera-focus"),
+    start: z.number(),
+    targetObjectIds: z.array(z.string()).min(1),
+    zoomScale: z.number().min(1).max(2),
+  })
+  .superRefine(boundedInterval(0.1));
 
 const createEquationFields = {
   animation: z.literal("fade-in"),
@@ -132,10 +144,12 @@ const createEquationFields = {
   target: mathTexSuggestionTargetSchema,
 } as const;
 
-export const createEquationSuggestionSchema = z.object({
-  anchor: suggestionTimeAnchorSchema,
-  ...createEquationFields,
-}).superRefine(boundedInterval(0.1));
+export const createEquationSuggestionSchema = z
+  .object({
+    anchor: suggestionTimeAnchorSchema,
+    ...createEquationFields,
+  })
+  .superRefine(boundedInterval(0.1));
 
 const createExplainedEquationFields = {
   animation: z.literal("fade-in"),
@@ -150,21 +164,25 @@ const createExplainedEquationFields = {
   target: mathTexSuggestionTargetSchema,
 } as const;
 
-export const createExplainedEquationSuggestionSchema = z.object({
-  anchor: suggestionTimeAnchorSchema,
-  ...createExplainedEquationFields,
-}).superRefine(boundedInterval(0.1));
+export const createExplainedEquationSuggestionSchema = z
+  .object({
+    anchor: suggestionTimeAnchorSchema,
+    ...createExplainedEquationFields,
+  })
+  .superRefine(boundedInterval(0.1));
 
-export const createTextTransformSuggestionSchema = z.object({
-  anchor: suggestionTimeAnchorSchema,
-  easing: z.literal("smooth"),
-  end: z.number(),
-  kind: z.literal("create-text-transform"),
-  sourceObjectId: z.string(),
-  start: z.number(),
-  strategy: z.literal("replacement-transform"),
-  text: z.string().trim().min(1).max(240),
-}).superRefine(boundedInterval(0.1));
+export const createTextTransformSuggestionSchema = z
+  .object({
+    anchor: suggestionTimeAnchorSchema,
+    easing: z.literal("smooth"),
+    end: z.number(),
+    kind: z.literal("create-text-transform"),
+    sourceObjectId: z.string(),
+    start: z.number(),
+    strategy: z.literal("replacement-transform"),
+    text: z.string().trim().min(1).max(240),
+  })
+  .superRefine(boundedInterval(0.1));
 
 export const editSuggestionLeafOperationSchema = z.discriminatedUnion("kind", [
   createCameraFocusSuggestionSchema,
@@ -186,67 +204,76 @@ export const editProgramStepSchema = z.discriminatedUnion("kind", [
   z.object(createSceneTransitionFields).superRefine(boundedInterval(0.4)),
 ]);
 
-export const editProgramSuggestionSchema = z.object({
-  anchor: suggestionTimeAnchorSchema,
-  execution: z.enum(["parallel", "sequence"]),
-  kind: z.literal("edit-program"),
-  operations: z.array(editProgramStepSchema).min(2).max(3),
-}).superRefine((program, context) => {
-  const kinds = program.operations.map((operation) => operation.kind);
-  const duplicateKinds = kinds.filter((kind, index) => kinds.indexOf(kind) !== index);
-  const unsupportedDuplicate = duplicateKinds.find((kind) => (
-    (kind !== "create-motion" && kind !== "create-transform") || program.execution !== "sequence"
-  ));
-  if (unsupportedDuplicate) {
-    context.addIssue({
-      code: "custom",
-      message: unsupportedDuplicate === "create-motion" || unsupportedDuplicate === "create-transform"
-        ? `Repeated ${unsupportedDuplicate} steps require sequence execution.`
-        : `EditProgram leaf kind ${unsupportedDuplicate} must be unique.`,
-      path: ["operations"],
-    });
-  }
-  const equationCreationCount = kinds.filter((kind) => (
-    kind === "create-equation" || kind === "create-explained-equation"
-  )).length;
-  if (equationCreationCount > 1) {
-    context.addIssue({
-      code: "custom",
-      message: "EditProgram can contain only one equation-creation macro.",
-      path: ["operations"],
-    });
-  }
-  const semanticIntentCount = program.operations.reduce((count, operation) => (
-    count + (operation.kind === "create-explained-equation" ? 2 : 1)
-  ), 0);
-  if (semanticIntentCount > 3) {
-    context.addIssue({
-      code: "custom",
-      message: "EditProgram supports at most three semantic intents.",
-      path: ["operations"],
-    });
-  }
-  const first = program.operations[0];
-  if (!first) return;
-  if (program.execution === "parallel") {
-    program.operations.slice(1).forEach((operation, index) => {
-      if (Math.abs(operation.start - first.start) >= 0.001 || Math.abs(operation.end - first.end) >= 0.001) {
-        context.addIssue({ code: "custom", message: "Parallel steps must share one interval.", path: ["operations", index + 1] });
-      }
-    });
-  } else {
-    program.operations.slice(1).forEach((operation, index) => {
-      if (operation.start < program.operations[index].end - 0.001) {
-        context.addIssue({ code: "custom", message: "Sequence steps must not overlap.", path: ["operations", index + 1] });
-      }
-    });
-  }
-});
+export const editProgramSuggestionSchema = z
+  .object({
+    anchor: suggestionTimeAnchorSchema,
+    execution: z.enum(["parallel", "sequence"]),
+    kind: z.literal("edit-program"),
+    operations: z.array(editProgramStepSchema).min(2).max(3),
+  })
+  .superRefine((program, context) => {
+    const kinds = program.operations.map((operation) => operation.kind);
+    const duplicateKinds = kinds.filter((kind, index) => kinds.indexOf(kind) !== index);
+    const unsupportedDuplicate = duplicateKinds.find(
+      (kind) => (kind !== "create-motion" && kind !== "create-transform") || program.execution !== "sequence",
+    );
+    if (unsupportedDuplicate) {
+      context.addIssue({
+        code: "custom",
+        message:
+          unsupportedDuplicate === "create-motion" || unsupportedDuplicate === "create-transform"
+            ? `Repeated ${unsupportedDuplicate} steps require sequence execution.`
+            : `EditProgram leaf kind ${unsupportedDuplicate} must be unique.`,
+        path: ["operations"],
+      });
+    }
+    const equationCreationCount = kinds.filter(
+      (kind) => kind === "create-equation" || kind === "create-explained-equation",
+    ).length;
+    if (equationCreationCount > 1) {
+      context.addIssue({
+        code: "custom",
+        message: "EditProgram can contain only one equation-creation macro.",
+        path: ["operations"],
+      });
+    }
+    const semanticIntentCount = program.operations.reduce(
+      (count, operation) => count + (operation.kind === "create-explained-equation" ? 2 : 1),
+      0,
+    );
+    if (semanticIntentCount > 3) {
+      context.addIssue({
+        code: "custom",
+        message: "EditProgram supports at most three semantic intents.",
+        path: ["operations"],
+      });
+    }
+    const first = program.operations[0];
+    if (!first) return;
+    if (program.execution === "parallel") {
+      program.operations.slice(1).forEach((operation, index) => {
+        if (Math.abs(operation.start - first.start) >= 0.001 || Math.abs(operation.end - first.end) >= 0.001) {
+          context.addIssue({
+            code: "custom",
+            message: "Parallel steps must share one interval.",
+            path: ["operations", index + 1],
+          });
+        }
+      });
+    } else {
+      program.operations.slice(1).forEach((operation, index) => {
+        if (operation.start < program.operations[index].end - 0.001) {
+          context.addIssue({
+            code: "custom",
+            message: "Sequence steps must not overlap.",
+            path: ["operations", index + 1],
+          });
+        }
+      });
+    }
+  });
 
-export const editSuggestionOperationSchema = z.union([
-  editSuggestionLeafOperationSchema,
-  editProgramSuggestionSchema,
-]);
+export const editSuggestionOperationSchema = z.union([editSuggestionLeafOperationSchema, editProgramSuggestionSchema]);
 
 export const clarificationOptionSchema = z.object({
   description: z.string().trim().min(1).max(240),
@@ -254,19 +281,22 @@ export const clarificationOptionSchema = z.object({
   label: z.string().trim().min(1).max(80),
 });
 
-const clarificationOptionsSchema = z.array(clarificationOptionSchema).max(3).superRefine((options, context) => {
-  const seen = new Set<string>();
-  options.forEach((option, index) => {
-    if (seen.has(option.id)) {
-      context.addIssue({
-        code: "custom",
-        message: `Clarification option ID ${option.id} is duplicated.`,
-        path: [index, "id"],
-      });
-    }
-    seen.add(option.id);
+const clarificationOptionsSchema = z
+  .array(clarificationOptionSchema)
+  .max(3)
+  .superRefine((options, context) => {
+    const seen = new Set<string>();
+    options.forEach((option, index) => {
+      if (seen.has(option.id)) {
+        context.addIssue({
+          code: "custom",
+          message: `Clarification option ID ${option.id} is duplicated.`,
+          path: [index, "id"],
+        });
+      }
+      seen.add(option.id);
+    });
   });
-});
 
 const clarificationAnswerSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("option"), optionId: z.string().trim().min(1).max(40) }),
@@ -297,17 +327,22 @@ function validateClarificationAnswer(
 const clarificationTurnSchema = z.object(clarificationTurnFields).superRefine(validateClarificationAnswer);
 
 export const editSuggestionRequestSchema = z.object({
-  clarification: z.object({
-    ...clarificationTurnFields,
-    history: z.array(clarificationTurnSchema).max(4),
-  }).superRefine(validateClarificationAnswer).nullable(),
-  objects: z.array(z.object({
-    displayName: z.string(),
-    id: z.string(),
-    lifetimes: z.array(intervalSchema),
-    mathTex: z.object({ displayLines: z.array(z.string()), texParts: z.array(z.string()) }).nullable(),
-    type: z.string(),
-  })),
+  clarification: z
+    .object({
+      ...clarificationTurnFields,
+      history: z.array(clarificationTurnSchema).max(4),
+    })
+    .superRefine(validateClarificationAnswer)
+    .nullable(),
+  objects: z.array(
+    z.object({
+      displayName: z.string(),
+      id: z.string(),
+      lifetimes: z.array(intervalSchema),
+      mathTex: z.object({ displayLines: z.array(z.string()), texParts: z.array(z.string()) }).nullable(),
+      type: z.string(),
+    }),
+  ),
   playhead: z.number(),
   prompt: z.string().trim().min(1).max(2_000),
   scene: z.object({
@@ -324,29 +359,31 @@ const modelClarificationOptionSchema = z.object({
   label: z.string().trim().min(1).max(80),
 });
 
-export const modelSuggestionSchema = z.object({
-  assumptions: z.array(z.string()),
-  kind: z.enum(["suggestion", "clarification"]),
-  message: z.string(),
-  operation: editSuggestionOperationSchema.nullable(),
-  options: z.array(modelClarificationOptionSchema).max(3),
-  summary: z.string(),
-}).superRefine((suggestion, context) => {
-  if (suggestion.kind === "suggestion" && suggestion.operation === null) {
-    context.addIssue({
-      code: "custom",
-      message: "A suggestion result must include an operation.",
-      path: ["operation"],
-    });
-  }
-  if (suggestion.kind === "clarification" && suggestion.operation !== null) {
-    context.addIssue({
-      code: "custom",
-      message: "A clarification result must not include an operation.",
-      path: ["operation"],
-    });
-  }
-});
+export const modelSuggestionSchema = z
+  .object({
+    assumptions: z.array(z.string()),
+    kind: z.enum(["suggestion", "clarification"]),
+    message: z.string(),
+    operation: editSuggestionOperationSchema.nullable(),
+    options: z.array(modelClarificationOptionSchema).max(3),
+    summary: z.string(),
+  })
+  .superRefine((suggestion, context) => {
+    if (suggestion.kind === "suggestion" && suggestion.operation === null) {
+      context.addIssue({
+        code: "custom",
+        message: "A suggestion result must include an operation.",
+        path: ["operation"],
+      });
+    }
+    if (suggestion.kind === "clarification" && suggestion.operation !== null) {
+      context.addIssue({
+        code: "custom",
+        message: "A clarification result must not include an operation.",
+        path: ["operation"],
+      });
+    }
+  });
 
 export type ModelSuggestion = z.infer<typeof modelSuggestionSchema>;
 

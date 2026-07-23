@@ -2,11 +2,7 @@ import { type PointerEvent, useRef, useState } from "react";
 
 import { cn } from "../lib/cn";
 import type { Interval, TimelineEvent, TimelineObjectTrack } from "./model";
-import {
-  type AppliedMotionClip,
-  type AppliedMotionClipChange,
-  TimelineMotionClip,
-} from "./motion-timeline-clip";
+import { type AppliedMotionClip, type AppliedMotionClipChange, TimelineMotionClip } from "./motion-timeline-clip";
 import {
   closestLifetimeAnchor,
   formatTimelineTime,
@@ -93,18 +89,13 @@ function TimelineLifetime({
   const [previewAnchor, setPreviewAnchor] = useState<StudioTimelineAnchor | null>(null);
   const trimDrag = useRef<Readonly<{ pointerId: number; startX: number }> | null>(null);
   const eligibleAnchors = lifetimeTrimAnchors(anchors, interval);
-  const displayedInterval = previewAnchor
-    ? { ...interval, end: previewAnchor.workingTime }
-    : interval;
+  const displayedInterval = previewAnchor ? { ...interval, end: previewAnchor.workingTime } : interval;
 
   function anchorAtPointer(event: PointerEvent<HTMLButtonElement>) {
     const lane = event.currentTarget.closest<HTMLElement>("[data-timeline-lane]");
     const bounds = lane?.getBoundingClientRect();
     if (!bounds?.width) return null;
-    return closestLifetimeAnchor(
-      eligibleAnchors,
-      timelineTimeAtClientX(event.clientX, bounds, duration),
-    );
+    return closestLifetimeAnchor(eligibleAnchors, timelineTimeAtClientX(event.clientX, bounds, duration));
   }
 
   function startTrim(event: PointerEvent<HTMLButtonElement>) {
@@ -132,10 +123,7 @@ function TimelineLifetime({
   }
 
   return (
-    <div
-      className="absolute inset-y-1"
-      style={timelineIntervalStyle(displayedInterval, duration)}
-    >
+    <div className="absolute inset-y-1" style={timelineIntervalStyle(displayedInterval, duration)}>
       <button
         aria-label={`Select ${label} lifetime from ${interval.start.toFixed(2)} to ${interval.end.toFixed(2)} seconds`}
         aria-pressed={selected}
@@ -200,19 +188,19 @@ export function StudioTimeline({
   readOnly,
   selectedIds,
 }: StudioTimelineProps) {
-  const intervalEvents = events.flatMap((event) => event.interval ? [{ event, interval: event.interval }] : []);
+  const intervalEvents = events.flatMap((event) => (event.interval ? [{ event, interval: event.interval }] : []));
   const [selectedLifetime, setSelectedLifetime] = useState<SelectedLifetime | null>(null);
-  const selectedLifetimeTrack = selectedLifetime && selectedIds.has(selectedLifetime.entityId)
-    ? objectTracks.find((track) => track.entityId === selectedLifetime.entityId)
-    : null;
-  const selectedLifetimeInterval = selectedLifetimeTrack && selectedLifetime
-    ? selectedLifetimeTrack.lifetimes[selectedLifetime.index]
-    : null;
+  const selectedLifetimeTrack =
+    selectedLifetime && selectedIds.has(selectedLifetime.entityId)
+      ? objectTracks.find((track) => track.entityId === selectedLifetime.entityId)
+      : null;
+  const selectedLifetimeInterval =
+    selectedLifetimeTrack && selectedLifetime ? selectedLifetimeTrack.lifetimes[selectedLifetime.index] : null;
   const selectedLifetimeAnchors = selectedLifetimeInterval
     ? lifetimeTrimAnchors(anchors, selectedLifetimeInterval)
     : [];
   const editingMotionClip = editingAppliedTransactionId
-    ? appliedMotionClips.find((clip) => clip.transactionId === editingAppliedTransactionId) ?? null
+    ? (appliedMotionClips.find((clip) => clip.transactionId === editingAppliedTransactionId) ?? null)
     : null;
   const displayedTimelineAnchors = editingMotionClip?.anchors ?? anchors;
   const motionClipBlockers = [
@@ -221,7 +209,11 @@ export function StudioTimeline({
   return (
     <section className="shrink-0 border-t border-zinc-800 bg-zinc-950 p-3">
       <div className="flex items-center gap-3">
-        <button className="w-14 border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800" onClick={onTogglePlayback} type="button">
+        <button
+          className="w-14 border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+          onClick={onTogglePlayback}
+          type="button"
+        >
           {isPlaying ? "Pause" : "Play"}
         </button>
         <span className="w-24 tabular-nums text-xs text-zinc-400">{formatTimelineTime(currentTime)}</span>
@@ -245,7 +237,9 @@ export function StudioTimeline({
               aria-pressed={interactionMode === mode}
               className={cn(
                 "px-2.5 py-1 text-xs",
-                interactionMode === mode ? "bg-sky-950 text-sky-300" : "text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200",
+                interactionMode === mode
+                  ? "bg-sky-950 text-sky-300"
+                  : "text-zinc-500 hover:bg-zinc-800 hover:text-zinc-200",
               )}
               key={mode}
               onClick={() => onInteractionModeChange(mode)}
@@ -256,7 +250,9 @@ export function StudioTimeline({
           ))}
         </div>
         <span className="hidden text-pretty text-[10px] text-zinc-600 md:inline">
-          {interactionMode === "position" ? "Updates the layout without adding time." : "Adds motion starting at the playhead."}
+          {interactionMode === "position"
+            ? "Updates the layout without adding time."
+            : "Adds motion starting at the playhead."}
         </span>
         {interactionMode === "animate" ? (
           <label className="ml-auto flex items-center gap-2 text-[10px] text-zinc-500">
@@ -281,11 +277,7 @@ export function StudioTimeline({
             event.preventDefault();
             const sourceAnchor = Number(new FormData(event.currentTarget).get("lifetime-source-anchor"));
             if (!Number.isFinite(sourceAnchor)) return;
-            onLifetimeEndChange(
-              selectedLifetimeTrack.entityId,
-              selectedLifetimeInterval.start,
-              sourceAnchor,
-            );
+            onLifetimeEndChange(selectedLifetimeTrack.entityId, selectedLifetimeInterval.start, sourceAnchor);
           }}
         >
           <span className="max-w-40 truncate text-zinc-400" title={selectedLifetimeTrack.label}>
@@ -326,8 +318,8 @@ export function StudioTimeline({
       ) : null}
       {editingMotionClip ? (
         <p className="mt-2 border-t border-zinc-800 pt-2 text-pretty text-[10px] leading-4 text-zinc-500" role="status">
-          Editing {editingMotionClip.label} motion. The body and left edge snap to safe amber source anchors; the
-          right edge changes duration.
+          Editing {editingMotionClip.label} motion. The body and left edge snap to safe amber source anchors; the right
+          edge changes duration.
         </p>
       ) : motionClipBlockers.length > 0 ? (
         <p
@@ -337,7 +329,11 @@ export function StudioTimeline({
           Motion clip editing is unavailable: {motionClipBlockers.join(" ")}
         </p>
       ) : null}
-      <div aria-label="Scene object timeline" className="mt-3 max-h-56 overflow-y-auto border border-zinc-800 bg-zinc-900" role="group">
+      <div
+        aria-label="Scene object timeline"
+        className="mt-3 max-h-56 overflow-y-auto border border-zinc-800 bg-zinc-900"
+        role="group"
+      >
         <div className="relative">
           <div className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 sm:grid-cols-[8rem_minmax(0,1fr)]">
             <div className="flex min-w-0 items-center px-2 text-[10px] font-medium text-zinc-400">Time</div>
@@ -363,7 +359,9 @@ export function StudioTimeline({
                 <div
                   className={cn(
                     "absolute top-1 h-5 min-w-px border px-1 text-[9px] leading-4",
-                    event.transactionId ? "border-sky-800 bg-sky-950 text-sky-300" : "border-zinc-700 bg-zinc-800 text-zinc-500",
+                    event.transactionId
+                      ? "border-sky-800 bg-sky-950 text-sky-300"
+                      : "border-zinc-700 bg-zinc-800 text-zinc-500",
                   )}
                   key={event.id}
                   style={timelineIntervalStyle(interval, duration)}
@@ -390,10 +388,15 @@ export function StudioTimeline({
             const selected = selectedIds.has(track.entityId);
             const trackMotionClips = appliedMotionClips.filter((clip) => clip.entityId === track.entityId);
             const trackMotionOperationIds = new Set(trackMotionClips.map((clip) => clip.operationId));
-            const locked = readOnly
-              || (track.provisional && !(track.transactionId && appliedTransactionIds.has(track.transactionId)));
+            const locked =
+              readOnly ||
+              (track.provisional && !(track.transactionId && appliedTransactionIds.has(track.transactionId)));
             return (
-              <div className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 last:border-b-0 sm:grid-cols-[8rem_minmax(0,1fr)]" data-timeline-track={track.entityId} key={track.entityId}>
+              <div
+                className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 last:border-b-0 sm:grid-cols-[8rem_minmax(0,1fr)]"
+                data-timeline-track={track.entityId}
+                key={track.entityId}
+              >
                 <button
                   aria-pressed={selected}
                   className={cn(
@@ -410,9 +413,8 @@ export function StudioTimeline({
                 </button>
                 <div className="relative h-7 min-w-0 overflow-hidden" data-timeline-lane>
                   {track.lifetimes.map((interval, index) => {
-                    const lifetimeSelected = selected
-                      && selectedLifetime?.entityId === track.entityId
-                      && selectedLifetime.index === index;
+                    const lifetimeSelected =
+                      selected && selectedLifetime?.entityId === track.entityId && selectedLifetime.index === index;
                     return (
                       <TimelineLifetime
                         anchors={anchors}
@@ -425,11 +427,7 @@ export function StudioTimeline({
                           onSelectEntity(track.entityId);
                           setSelectedLifetime({ entityId: track.entityId, index });
                         }}
-                        onTrim={(sourceAnchor) => onLifetimeEndChange(
-                          track.entityId,
-                          interval.start,
-                          sourceAnchor,
-                        )}
+                        onTrim={(sourceAnchor) => onLifetimeEndChange(track.entityId, interval.start, sourceAnchor)}
                         provisional={track.provisional}
                         selectDisabled={locked}
                         selected={lifetimeSelected}
@@ -458,7 +456,9 @@ export function StudioTimeline({
                     />
                   ))}
                   {track.lifetimes.length === 0 ? (
-                    <span className="absolute inset-0 flex items-center px-2 text-[9px] text-zinc-700">Not present</span>
+                    <span className="absolute inset-0 flex items-center px-2 text-[9px] text-zinc-700">
+                      Not present
+                    </span>
                   ) : null}
                   <TimelinePlayhead currentTime={currentTime} duration={duration} />
                 </div>

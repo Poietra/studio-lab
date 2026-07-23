@@ -240,17 +240,19 @@ export function validateAndScheduleProgram(
     }
   }
 
-  const sourceAnimationGroups: Array<Readonly<{
-    easings: Set<MotionEasing>;
-    operationIds: string[];
-    start: number;
-  }>> = [];
+  const sourceAnimationGroups: Array<
+    Readonly<{
+      easings: Set<MotionEasing>;
+      operationIds: string[];
+      start: number;
+    }>
+  > = [];
   for (const operation of input.operations) {
     const easing = sourceAnimationEasing(operation);
     if (!easing) continue;
-    const group = sourceAnimationGroups.find((candidate) => (
-      Math.abs(candidate.start - operation.interval.start) < EPSILON
-    ));
+    const group = sourceAnimationGroups.find(
+      (candidate) => Math.abs(candidate.start - operation.interval.start) < EPSILON,
+    );
     if (group) {
       group.easings.add(easing);
       group.operationIds.push(operation.id);

@@ -5,17 +5,16 @@ import { StudioTimeline, type StudioTimelineProps } from "./studio-timeline";
 import { StudioToolbar, type StudioTool } from "./studio-toolbar";
 
 export type StudioViewportProps = Readonly<
-  Omit<StudioCanvasProps, "cameraScale" | "readOnly" | "sampleId">
-  & Omit<StudioTimelineProps, "events" | "objectTracks" | "readOnly">
-  & {
-    className?: string;
-    insertValue: string;
-    onInsertAtCenter: () => void;
-    onInsertToolChange: (tool: StudioTool) => void;
-    onInsertValueChange: (value: string) => void;
-    projection: ProposedStateProjection;
-    readOnly?: boolean;
-  }
+  Omit<StudioCanvasProps, "cameraScale" | "readOnly" | "sampleId"> &
+    Omit<StudioTimelineProps, "events" | "objectTracks" | "readOnly"> & {
+      className?: string;
+      insertValue: string;
+      onInsertAtCenter: () => void;
+      onInsertToolChange: (tool: StudioTool) => void;
+      onInsertValueChange: (value: string) => void;
+      projection: ProposedStateProjection;
+      readOnly?: boolean;
+    }
 >;
 
 export function StudioViewport({

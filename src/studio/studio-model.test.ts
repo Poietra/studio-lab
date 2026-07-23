@@ -25,15 +25,12 @@ import {
 } from "./transactions";
 
 const MAXWELL_TARGET: MathTexSuggestionTarget = {
-  displayLines: [
-    "∇·E = ρ/ε₀",
-    "∇·B = 0",
-    "∇×E = −∂B/∂t",
-    "∇×B = μ₀J + μ₀ε₀∂E/∂t",
-  ],
+  displayLines: ["∇·E = ρ/ε₀", "∇·B = 0", "∇×E = −∂B/∂t", "∇×B = μ₀J + μ₀ε₀∂E/∂t"],
   kind: "mathtex",
   label: "Maxwell's equations",
-  texParts: [String.raw`\begin{aligned}\nabla \cdot \mathbf{E} &= \frac{\rho}{\varepsilon_0} \\ \nabla \cdot \mathbf{B} &= 0 \\ \nabla \times \mathbf{E} &= -\frac{\partial \mathbf{B}}{\partial t} \\ \nabla \times \mathbf{B} &= \mu_0 \mathbf{J} + \mu_0 \varepsilon_0 \frac{\partial \mathbf{E}}{\partial t}\end{aligned}`],
+  texParts: [
+    String.raw`\begin{aligned}\nabla \cdot \mathbf{E} &= \frac{\rho}{\varepsilon_0} \\ \nabla \cdot \mathbf{B} &= 0 \\ \nabla \times \mathbf{E} &= -\frac{\partial \mathbf{B}}{\partial t} \\ \nabla \times \mathbf{B} &= \mu_0 \mathbf{J} + \mu_0 \varepsilon_0 \frac{\partial \mathbf{E}}{\partial t}\end{aligned}`,
+  ],
 };
 
 const NEWTON_TARGET: MathTexSuggestionTarget = {
@@ -337,10 +334,14 @@ describe("Studio time and transaction invariants", () => {
       },
     });
     expect(parseEditSuggestionResult(remoteResult(operation)).success).toBe(true);
-    expect(parseEditSuggestionResult(remoteResult({
-      ...operation,
-      delta: { x: 221, y: 0 },
-    })).success).toBe(false);
+    expect(
+      parseEditSuggestionResult(
+        remoteResult({
+          ...operation,
+          delta: { x: 221, y: 0 },
+        }),
+      ).success,
+    ).toBe(false);
   });
 
   it("normalizes bounded model strings before canonical evaluation", () => {
@@ -394,14 +395,18 @@ describe("Studio time and transaction invariants", () => {
       playhead: 11,
       selection: ["label_1"],
     };
-    const proposed = evaluateWorkingState(createFixtureWorkingState({
-      editorContext: movedEditorContext,
-      stagedPrograms: [record],
-    }));
+    const proposed = evaluateWorkingState(
+      createFixtureWorkingState({
+        editorContext: movedEditorContext,
+        stagedPrograms: [record],
+      }),
+    );
     expect(proposed.programs[0].program.anchor.resolvedSeconds).toBe(3);
-    expect(proposed.programs[0].program.operations.some((candidate) => (
-      candidate.kind === "TransformContent" && candidate.sourceEntityId === "equation_1"
-    ))).toBe(true);
+    expect(
+      proposed.programs[0].program.operations.some(
+        (candidate) => candidate.kind === "TransformContent" && candidate.sourceEntityId === "equation_1",
+      ),
+    ).toBe(true);
   });
 
   it("applies and undoes a whole EditProgram as one transaction", () => {
@@ -425,11 +430,15 @@ describe("Studio time and transaction invariants", () => {
     const replacementOperation = motionSuggestion(7);
     expect(replacementOperation.kind).toBe("create-motion");
     if (replacementOperation.kind !== "create-motion") return;
-    const replacementValidation = canonicalize({
-      ...replacementOperation,
-      controlOffset: { x: 24, y: -16 },
-      end: 9,
-    }, "edited-program", 7);
+    const replacementValidation = canonicalize(
+      {
+        ...replacementOperation,
+        controlOffset: { x: 24, y: -16 },
+        end: 9,
+      },
+      "edited-program",
+      7,
+    );
     const first = programRecord(firstValidation.program, firstValidation);
     const original = programRecord(originalValidation.program, originalValidation);
     const last = programRecord(lastValidation.program, lastValidation);
@@ -474,13 +483,10 @@ describe("Studio time and transaction invariants", () => {
     const last = programRecord(lastValidation.program, lastValidation);
     const crossing = programRecord(crossingValidation.program, crossingValidation);
 
-    expect(replaceAppliedProgram(
-      [first, original, last],
-      "edited-program",
-      crossing,
-    )).toEqual({
+    expect(replaceAppliedProgram([first, original, last], "edited-program", crossing)).toEqual({
       kind: "rejected",
-      reason: "The replacement source anchor 10.000 would cross the next applied Program at 9.000. Applied Program source order must remain stable.",
+      reason:
+        "The replacement source anchor 10.000 would cross the next applied Program at 9.000. Applied Program source order must remain stable.",
     });
   });
 
@@ -490,10 +496,14 @@ describe("Studio time and transaction invariants", () => {
     const editedOperation = motionSuggestion(3);
     expect(editedOperation.kind).toBe("create-motion");
     if (editedOperation.kind !== "create-motion") return;
-    const editedValidation = canonicalize({
-      ...editedOperation,
-      controlOffset: { x: 18, y: -12 },
-    }, "first-program", 3);
+    const editedValidation = canonicalize(
+      {
+        ...editedOperation,
+        controlOffset: { x: 18, y: -12 },
+      },
+      "first-program",
+      3,
+    );
     const atThree = programRecord(atThreeValidation.program, atThreeValidation);
     const atOne = programRecord(atOneValidation.program, atOneValidation);
     const edited = programRecord(editedValidation.program, editedValidation);
@@ -503,7 +513,8 @@ describe("Studio time and transaction invariants", () => {
     if (firstAppend.kind !== "appended") return;
     expect(appendAppliedProgram(firstAppend.programs, atOne)).toEqual({
       kind: "rejected",
-      reason: "The new source anchor 1.000 is earlier than the latest applied Program at 3.000. Apply Programs in source order or edit the existing transaction in place.",
+      reason:
+        "The new source anchor 1.000 is earlier than the latest applied Program at 3.000. Apply Programs in source order or edit the existing transaction in place.",
     });
 
     const replacement = replaceAppliedProgram(firstAppend.programs, "first-program", edited);
@@ -511,44 +522,49 @@ describe("Studio time and transaction invariants", () => {
     if (replacement.kind !== "replaced") return;
     expect(replacement.programs).toEqual([edited]);
   });
-
 });
 
 describe("canonical operation expansion and DAG validation", () => {
   it("rejects mixed easing before a parallel Program can be applied", () => {
-    const validation = canonicalize({
-      anchor: { kind: "playhead", referenceSeconds: 5 },
-      execution: "parallel",
-      kind: "edit-program",
-      operations: [
-        {
-          controlOffset: { x: 0, y: 0 },
-          delta: { x: 64, y: 0 },
-          easing: "linear",
-          end: 6,
-          kind: "create-motion",
-          start: 5,
-          targetObjectIds: ["equation_1"],
-        },
-        {
-          animation: "fade-in",
-          end: 6,
-          kind: "create-equation",
-          placement: "center",
-          start: 5,
-          target: NEWTON_TARGET,
-        },
-      ],
-    }, "mixed-easing", 5);
+    const validation = canonicalize(
+      {
+        anchor: { kind: "playhead", referenceSeconds: 5 },
+        execution: "parallel",
+        kind: "edit-program",
+        operations: [
+          {
+            controlOffset: { x: 0, y: 0 },
+            delta: { x: 64, y: 0 },
+            easing: "linear",
+            end: 6,
+            kind: "create-motion",
+            start: 5,
+            targetObjectIds: ["equation_1"],
+          },
+          {
+            animation: "fade-in",
+            end: 6,
+            kind: "create-equation",
+            placement: "center",
+            start: 5,
+            target: NEWTON_TARGET,
+          },
+        ],
+      },
+      "mixed-easing",
+      5,
+    );
 
     expect(validation.kind).toBe("invalid");
-    expect(validation.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        code: "lowering-unsupported",
-        field: "easing",
-        message: expect.stringMatching(/must share one easing function/i),
-      }),
-    ]));
+    expect(validation.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "lowering-unsupported",
+          field: "easing",
+          message: expect.stringMatching(/must share one easing function/i),
+        }),
+      ]),
+    );
   });
 
   it("normalizes new and existing motion gestures through the operation registry", () => {
@@ -590,31 +606,33 @@ describe("canonical operation expansion and DAG validation", () => {
     expect(relation.mode).toBe("snapshot");
     expect(relation.dependsOn).toContain(transform.id);
     expect(presence?.kind === "ChangePresence" && presence.persistent).toBe(true);
-    expect(validation.program.schedule.edges.some((edge) => (
-      edge.from === transform.id && edge.to === relation.id && edge.reason === "identity"
-    ))).toBe(true);
+    expect(
+      validation.program.schedule.edges.some(
+        (edge) => edge.from === transform.id && edge.to === relation.id && edge.reason === "identity",
+      ),
+    ).toBe(true);
   });
 
   it("rebinds sequential transforms into one provisional identity chain", () => {
     const operation = chainedTransformSuggestion();
     expect(operation.kind).toBe("edit-program");
     if (operation.kind !== "edit-program") return;
-    expect(validateEditProgram(operation, {
-      capturedPlayhead: 5,
-      objects: Object.values(STUDIO_FIXTURE_SCENE.objectGraph.entities).map((entity) => ({
-        id: entity.id,
-        lifetimes: entity.lifetime,
-        type: entity.type,
-      })),
-      sceneDuration: STUDIO_FIXTURE_SCENE.duration,
-      selectedObjectIds: ["equation_1"],
-    }).kind).toBe("valid");
+    expect(
+      validateEditProgram(operation, {
+        capturedPlayhead: 5,
+        objects: Object.values(STUDIO_FIXTURE_SCENE.objectGraph.entities).map((entity) => ({
+          id: entity.id,
+          lifetimes: entity.lifetime,
+          type: entity.type,
+        })),
+        sceneDuration: STUDIO_FIXTURE_SCENE.duration,
+        selectedObjectIds: ["equation_1"],
+      }).kind,
+    ).toBe("valid");
 
     const validation = canonicalize(operation, "transform-chain", 5);
     expect(validation.kind).toBe("valid");
-    const transforms = validation.program.operations.filter((candidate) => (
-      candidate.kind === "TransformContent"
-    ));
+    const transforms = validation.program.operations.filter((candidate) => candidate.kind === "TransformContent");
     expect(transforms).toHaveLength(2);
     const [first, second] = transforms;
     if (first?.kind !== "TransformContent" || second?.kind !== "TransformContent") return;
@@ -627,16 +645,21 @@ describe("canonical operation expansion and DAG validation", () => {
       to: second.id,
     });
 
-    const proposed = evaluateWorkingState(createFixtureWorkingState({
-      stagedPrograms: [programRecord(validation.program, validation)],
-    }));
-    expect(proposed.evaluatedScene.objectGraph.lineage).toEqual(expect.arrayContaining([
-      expect.objectContaining({ from: "equation_1", to: first.targetEntityId }),
-      expect.objectContaining({ from: first.targetEntityId, to: second.targetEntityId }),
-    ]));
-    expect(projectProposedState(proposed, 7).canvas.entities.find((entity) => (
-      entity.id === second.targetEntityId
-    ))?.content?.displayLines).toEqual(["E = mc²"]);
+    const proposed = evaluateWorkingState(
+      createFixtureWorkingState({
+        stagedPrograms: [programRecord(validation.program, validation)],
+      }),
+    );
+    expect(proposed.evaluatedScene.objectGraph.lineage).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ from: "equation_1", to: first.targetEntityId }),
+        expect.objectContaining({ from: first.targetEntityId, to: second.targetEntityId }),
+      ]),
+    );
+    expect(
+      projectProposedState(proposed, 7).canvas.entities.find((entity) => entity.id === second.targetEntityId)?.content
+        ?.displayLines,
+    ).toEqual(["E = mc²"]);
   });
 
   it("rebinds motion after a transform to the replacement identity", () => {
@@ -656,12 +679,14 @@ describe("canonical operation expansion and DAG validation", () => {
       to: motion.id,
     });
 
-    const proposed = evaluateWorkingState(createFixtureWorkingState({
-      stagedPrograms: [programRecord(validation.program, validation)],
-    }));
-    const replacement = projectProposedState(proposed, 10).canvas.entities.find((entity) => (
-      entity.id === transform.targetEntityId
-    ));
+    const proposed = evaluateWorkingState(
+      createFixtureWorkingState({
+        stagedPrograms: [programRecord(validation.program, validation)],
+      }),
+    );
+    const replacement = projectProposedState(proposed, 10).canvas.entities.find(
+      (entity) => entity.id === transform.targetEntityId,
+    );
     expect(replacement?.position).toEqual({ x: 480, y: 170 });
   });
 
@@ -677,13 +702,9 @@ describe("canonical operation expansion and DAG validation", () => {
     const validation = canonicalize(operation, "three-intents", 5);
     expect(validation.kind).toBe("valid");
     expect(validation.program.intentCount).toBe(3);
-    expect(new Set(validation.program.operations.map((candidate) => candidate.kind))).toEqual(new Set([
-      "ChangePresence",
-      "CreateEntity",
-      "CreateMotion",
-      "SetRelation",
-      "TransformContent",
-    ]));
+    expect(new Set(validation.program.operations.map((candidate) => candidate.kind))).toEqual(
+      new Set(["ChangePresence", "CreateEntity", "CreateMotion", "SetRelation", "TransformContent"]),
+    );
   });
 
   it("returns one focused execution issue for conflicting parallel channel writes", () => {
@@ -728,11 +749,7 @@ describe("canonical operation expansion and DAG validation", () => {
   });
 
   it("does not reverse a dependency or add a cycle when both operations read and write one channel", () => {
-    const base = canonicalize(
-      motionSuggestion(5),
-      "read-write-conflict",
-      5,
-    ).program;
+    const base = canonicalize(motionSuggestion(5), "read-write-conflict", 5).program;
     const first = base.operations[0];
     expect(first.kind).toBe("CreateMotion");
     if (first.kind !== "CreateMotion") return;
@@ -741,12 +758,15 @@ describe("canonical operation expansion and DAG validation", () => {
       delta: { x: 24, y: 0 },
       id: operationId("read-write-conflict", "motion-second"),
     };
-    const validation = validateAndScheduleProgram({
-      ...base,
-      intentCount: 2,
-      operations: [first, second],
-      requestedExecution: "parallel",
-    }, STUDIO_FIXTURE_SCENE);
+    const validation = validateAndScheduleProgram(
+      {
+        ...base,
+        intentCount: 2,
+        operations: [first, second],
+        requestedExecution: "parallel",
+      },
+      STUDIO_FIXTURE_SCENE,
+    );
     expect(validation.kind).toBe("invalid");
     expect(validation.issues.filter((issue) => issue.field === "execution")).toHaveLength(1);
     expect(validation.issues.some((issue) => issue.code === "cycle")).toBe(false);
@@ -755,10 +775,12 @@ describe("canonical operation expansion and DAG validation", () => {
       reason: "write-conflict",
       to: second.id,
     });
-    expect(validation.program.schedule.edges).not.toContainEqual(expect.objectContaining({
-      from: second.id,
-      to: first.id,
-    }));
+    expect(validation.program.schedule.edges).not.toContainEqual(
+      expect.objectContaining({
+        from: second.id,
+        to: first.id,
+      }),
+    );
   });
 
   it("evaluates a ModifyMotion gesture into the shared position channel", () => {
@@ -771,9 +793,11 @@ describe("canonical operation expansion and DAG validation", () => {
       transactionId: "modify-motion-projection",
     });
     expect(validation.kind).toBe("valid");
-    const proposed = evaluateWorkingState(createFixtureWorkingState({
-      stagedPrograms: [programRecord(validation.program, validation)],
-    }));
+    const proposed = evaluateWorkingState(
+      createFixtureWorkingState({
+        stagedPrograms: [programRecord(validation.program, validation)],
+      }),
+    );
     const equation = projectProposedState(proposed, 5.5).canvas.entities.find((entity) => entity.id === "equation_1");
     expect(equation?.position).toEqual({ x: 352, y: 120 });
   });
@@ -792,12 +816,11 @@ describe("canonical operation expansion and DAG validation", () => {
     const second = canonicalize(secondOperation, "stale-second-transform", 5);
     expect(first.kind).toBe("valid");
     expect(second.kind).toBe("valid");
-    const proposed = evaluateWorkingState(createFixtureWorkingState({
-      stagedPrograms: [
-        programRecord(first.program, first),
-        programRecord(second.program, second),
-      ],
-    }));
+    const proposed = evaluateWorkingState(
+      createFixtureWorkingState({
+        stagedPrograms: [programRecord(first.program, first), programRecord(second.program, second)],
+      }),
+    );
     expect(proposed.programs[0].validation.status).toBe("valid");
     expect(proposed.programs[1].validation.status).toBe("invalid");
     expect(proposed.programs[1].validation.issues.some((issue) => issue.code === "lifetime-unknown")).toBe(true);
@@ -814,9 +837,11 @@ describe("one ProposedState feeds every Studio projection", () => {
     if (operation.kind !== "create-camera-focus") return;
     const validation = canonicalize(operation, "camera-focus", 4.42);
     expect(validation.kind).toBe("valid");
-    const proposed = evaluateWorkingState(createFixtureWorkingState({
-      stagedPrograms: [programRecord(validation.program, validation)],
-    }));
+    const proposed = evaluateWorkingState(
+      createFixtureWorkingState({
+        stagedPrograms: [programRecord(validation.program, validation)],
+      }),
+    );
     const projection = projectProposedState(proposed, operation.end);
     const equation = projection.canvas.entities.find((entity) => entity.id === "equation_1");
     expect(projection.camera.scale).toBeCloseTo(1.35);
@@ -836,25 +861,29 @@ describe("one ProposedState feeds every Studio projection", () => {
       referenceSeconds: 4.42,
     });
     expect(validation.program.anchor.resolvedSeconds).toBeCloseTo(3.42);
-    const proposed = evaluateWorkingState(createFixtureWorkingState({
-      stagedPrograms: [programRecord(validation.program, validation)],
-    }));
+    const proposed = evaluateWorkingState(
+      createFixtureWorkingState({
+        stagedPrograms: [programRecord(validation.program, validation)],
+      }),
+    );
     const midpoint = projectProposedState(proposed, (operation.start + operation.end) / 2);
-    const midpointReplacement = midpoint.canvas.entities.find((entity) => (
-      entity.present
-      && entity.type === "Text"
-      && entity.sourceIdentity.kind === "known"
-      && entity.sourceIdentity.value === "equation"
-    ));
+    const midpointReplacement = midpoint.canvas.entities.find(
+      (entity) =>
+        entity.present &&
+        entity.type === "Text" &&
+        entity.sourceIdentity.kind === "known" &&
+        entity.sourceIdentity.value === "equation",
+    );
     expect(midpointReplacement?.opacity).toBeGreaterThan(0);
     expect(midpointReplacement?.opacity).toBeLessThan(1);
     const projection = projectProposedState(proposed, operation.end);
-    const replacement = projection.canvas.entities.find((entity) => (
-      entity.present
-      && entity.type === "Text"
-      && entity.sourceIdentity.kind === "known"
-      && entity.sourceIdentity.value === "equation"
-    ));
+    const replacement = projection.canvas.entities.find(
+      (entity) =>
+        entity.present &&
+        entity.type === "Text" &&
+        entity.sourceIdentity.kind === "known" &&
+        entity.sourceIdentity.value === "equation",
+    );
     expect(replacement?.content?.text).toContain("この式の意味");
     expect(projection.canvas.entities.find((entity) => entity.id === "equation_1")?.present).toBe(false);
   });
@@ -866,14 +895,16 @@ describe("one ProposedState feeds every Studio projection", () => {
     expect(operation.target.displayLines).toEqual(["F = ma"]);
     const validation = canonicalize(operation, "new-equation", 5);
     expect(validation.kind).toBe("valid");
-    const proposed = evaluateWorkingState(createFixtureWorkingState({
-      editorContext: { ...createFixtureWorkingState().editorContext, playhead: 5, selection: [] },
-      stagedPrograms: [programRecord(validation.program, validation)],
-    }));
+    const proposed = evaluateWorkingState(
+      createFixtureWorkingState({
+        editorContext: { ...createFixtureWorkingState().editorContext, playhead: 5, selection: [] },
+        stagedPrograms: [programRecord(validation.program, validation)],
+      }),
+    );
     const projection = projectProposedState(proposed, operation.end);
-    const equation = projection.canvas.entities.find((entity) => (
-      entity.present && entity.provisional && entity.type === "MathTex"
-    ));
+    const equation = projection.canvas.entities.find(
+      (entity) => entity.present && entity.provisional && entity.type === "MathTex",
+    );
     expect(equation?.content?.displayLines).toEqual(["F = ma"]);
     expect(equation?.position).toEqual({ x: 480, y: 180 });
     expect(projection.objectList.entities.find((entity) => entity.id === equation?.id)).toBe(equation);
@@ -882,95 +913,116 @@ describe("one ProposedState feeds every Studio projection", () => {
 
   it("creates a new equation and explanation as one atomic program", () => {
     const operation = explainedMaxwellEquationSuggestion();
-    expect(parseEditSuggestionResult({
-      kind: "suggestion",
-      suggestion: {
-        assumptions: [],
-        confidence: "medium",
-        operation,
-        provider: "remote",
-        summary: "Add Maxwell equations with an explanation.",
-      },
-    }).success).toBe(true);
+    expect(
+      parseEditSuggestionResult({
+        kind: "suggestion",
+        suggestion: {
+          assumptions: [],
+          confidence: "medium",
+          operation,
+          provider: "remote",
+          summary: "Add Maxwell equations with an explanation.",
+        },
+      }).success,
+    ).toBe(true);
     const validation = canonicalize(operation, "explained-maxwell", 5);
     expect(validation.kind).toBe("valid");
     expect(validation.program.intentCount).toBe(2);
-    const equation = validation.program.operations.find((candidate) => (
-      candidate.kind === "CreateEntity" && candidate.entity.type === "MathTex"
-    ));
-    const explanation = validation.program.operations.find((candidate) => (
-      candidate.kind === "CreateEntity" && candidate.entity.type === "Text"
-    ));
+    const equation = validation.program.operations.find(
+      (candidate) => candidate.kind === "CreateEntity" && candidate.entity.type === "MathTex",
+    );
+    const explanation = validation.program.operations.find(
+      (candidate) => candidate.kind === "CreateEntity" && candidate.entity.type === "Text",
+    );
     const relation = validation.program.operations.find((candidate) => candidate.kind === "SetRelation");
     expect(equation?.kind).toBe("CreateEntity");
     expect(explanation?.kind).toBe("CreateEntity");
     expect(relation?.kind).toBe("SetRelation");
-    if (equation?.kind !== "CreateEntity" || explanation?.kind !== "CreateEntity" || relation?.kind !== "SetRelation") return;
+    if (equation?.kind !== "CreateEntity" || explanation?.kind !== "CreateEntity" || relation?.kind !== "SetRelation")
+      return;
     expect(relation.sourceEntityId).toBe(explanation.entity.id);
     expect(relation.targetEntityId).toBe(equation.entity.id);
 
-    const proposed = evaluateWorkingState(createFixtureWorkingState({
-      stagedPrograms: [programRecord(validation.program, validation)],
-    }));
+    const proposed = evaluateWorkingState(
+      createFixtureWorkingState({
+        stagedPrograms: [programRecord(validation.program, validation)],
+      }),
+    );
     const projection = projectProposedState(proposed, operation.end);
-    expect(projection.canvas.entities.find((entity) => entity.id === equation.entity.id)?.content?.displayLines)
-      .toEqual(MAXWELL_TARGET.displayLines);
-    expect(projection.canvas.entities.find((entity) => entity.id === explanation.entity.id)?.content?.text)
-      .toBe(operation.explanation.text);
+    expect(
+      projection.canvas.entities.find((entity) => entity.id === equation.entity.id)?.content?.displayLines,
+    ).toEqual(MAXWELL_TARGET.displayLines);
+    expect(projection.canvas.entities.find((entity) => entity.id === explanation.entity.id)?.content?.text).toBe(
+      operation.explanation.text,
+    );
   });
 
   it("creates an explained Maxwell equation and then transitions Scene in one transaction", () => {
     const operation = explainedMaxwellThenTransitionSuggestion();
     expect(operation.kind).toBe("edit-program");
     if (operation.kind !== "edit-program") return;
-    expect(parseEditSuggestionResult({
-      kind: "suggestion",
-      suggestion: {
-        assumptions: [],
-        confidence: "medium",
-        operation,
-        provider: "remote",
-        summary: "Add Maxwell equations and then transition to the next Scene.",
-      },
-    }).success).toBe(true);
-    expect(validateEditProgram(operation, {
-      capturedPlayhead: 5,
-      objects: [],
-      sceneDuration: 12,
-      selectedObjectIds: [],
-    }).kind).toBe("valid");
+    expect(
+      parseEditSuggestionResult({
+        kind: "suggestion",
+        suggestion: {
+          assumptions: [],
+          confidence: "medium",
+          operation,
+          provider: "remote",
+          summary: "Add Maxwell equations and then transition to the next Scene.",
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      validateEditProgram(operation, {
+        capturedPlayhead: 5,
+        objects: [],
+        sceneDuration: 12,
+        selectedObjectIds: [],
+      }).kind,
+    ).toBe("valid");
 
     const validation = canonicalize(operation, "maxwell-then-transition", 5);
     expect(validation.kind).toBe("valid");
     expect(validation.program.intentCount).toBe(3);
     expect(validation.program.loweringStatus).toBe("supported");
     expect(validation.program.schedule.mode).toBe("sequence");
-    expect(validation.program.operations.every((candidate) => (
-      candidate.id.startsWith("tx:maxwell-then-transition/")
-    ))).toBe(true);
-    expect(validation.program.operations.some((candidate) => (
-      candidate.kind === "CreateEntity" && candidate.entity.type === "MathTex"
-    ))).toBe(true);
-    expect(validation.program.operations.some((candidate) => (
-      candidate.kind === "CreateEntity" && candidate.entity.type === "Text"
-    ))).toBe(true);
-    expect(validation.program.operations.find((candidate) => (
-      candidate.kind === "InsertSceneBoundary"
-    ))?.interval.start).toBe(7.25);
+    expect(
+      validation.program.operations.every((candidate) => candidate.id.startsWith("tx:maxwell-then-transition/")),
+    ).toBe(true);
+    expect(
+      validation.program.operations.some(
+        (candidate) => candidate.kind === "CreateEntity" && candidate.entity.type === "MathTex",
+      ),
+    ).toBe(true);
+    expect(
+      validation.program.operations.some(
+        (candidate) => candidate.kind === "CreateEntity" && candidate.entity.type === "Text",
+      ),
+    ).toBe(true);
+    expect(
+      validation.program.operations.find((candidate) => candidate.kind === "InsertSceneBoundary")?.interval.start,
+    ).toBe(7.25);
 
-    const proposed = evaluateWorkingState(createFixtureWorkingState({
-      stagedPrograms: [programRecord(validation.program, validation)],
-    }));
+    const proposed = evaluateWorkingState(
+      createFixtureWorkingState({
+        stagedPrograms: [programRecord(validation.program, validation)],
+      }),
+    );
     const beforeTransition = projectProposedState(proposed, 6.5);
-    expect(beforeTransition.canvas.entities.some((entity) => (
-      entity.present && entity.type === "MathTex" && entity.content?.label === MAXWELL_TARGET.label
-    ))).toBe(true);
-    expect(beforeTransition.canvas.entities.some((entity) => (
-      entity.present && entity.type === "Text" && entity.content?.text?.includes("電場と磁場")
-    ))).toBe(true);
-    expect(proposed.evaluatedScene.eventTrack.events.some((event) => (
-      event.kind === "scene-boundary" && event.at === 7.25
-    ))).toBe(true);
+    expect(
+      beforeTransition.canvas.entities.some(
+        (entity) => entity.present && entity.type === "MathTex" && entity.content?.label === MAXWELL_TARGET.label,
+      ),
+    ).toBe(true);
+    expect(
+      beforeTransition.canvas.entities.some(
+        (entity) => entity.present && entity.type === "Text" && entity.content?.text?.includes("電場と磁場"),
+      ),
+    ).toBe(true);
+    expect(
+      proposed.evaluatedScene.eventTrack.events.some((event) => event.kind === "scene-boundary" && event.at === 7.25),
+    ).toBe(true);
   });
 
   it("accepts an applied created entity as the target of the next direct edit", () => {
@@ -980,11 +1032,12 @@ describe("one ProposedState feeds every Studio projection", () => {
     const creation = canonicalize(operation, "editable-equation", 5);
     expect(creation.kind).toBe("valid");
     const creationRecord = programRecord(creation.program, creation);
-    const createdState = evaluateWorkingState(createFixtureWorkingState({
-      appliedPrograms: [creationRecord],
-    }));
-    const createdId = creation.program.operations.find((candidate) => candidate.kind === "CreateEntity")
-      ?.entity.id;
+    const createdState = evaluateWorkingState(
+      createFixtureWorkingState({
+        appliedPrograms: [creationRecord],
+      }),
+    );
+    const createdId = creation.program.operations.find((candidate) => candidate.kind === "CreateEntity")?.entity.id;
     expect(createdId).toBeDefined();
     if (!createdId) return;
 
@@ -999,12 +1052,14 @@ describe("one ProposedState feeds every Studio projection", () => {
     });
     expect(movement.issues).toEqual([]);
     expect(movement.kind).toBe("valid");
-    const moved = evaluateWorkingState(createFixtureWorkingState({
-      appliedPrograms: [creationRecord, programRecord(movement.program, movement)],
-    }));
-    const movementEvent = moved.evaluatedScene.eventTrack.events.find((event) => (
-      event.transactionId === movement.program.transactionId && event.kind === "operation"
-    ));
+    const moved = evaluateWorkingState(
+      createFixtureWorkingState({
+        appliedPrograms: [creationRecord, programRecord(movement.program, movement)],
+      }),
+    );
+    const movementEvent = moved.evaluatedScene.eventTrack.events.find(
+      (event) => event.transactionId === movement.program.transactionId && event.kind === "operation",
+    );
     expect(movementEvent?.interval).toEqual({ end: 8, start: 7 });
     const projected = projectProposedState(moved, movementEvent?.interval?.end ?? 8);
     expect(projected.canvas.entities.find((entity) => entity.id === createdId)?.position).toEqual({
@@ -1019,11 +1074,12 @@ describe("one ProposedState feeds every Studio projection", () => {
     if (operation.kind !== "create-equation") return;
     const creation = canonicalize(operation, "preview-equation", 5);
     const creationRecord = programRecord(creation.program, creation);
-    const previewState = evaluateWorkingState(createFixtureWorkingState({
-      stagedPrograms: [creationRecord],
-    }));
-    const createdId = creation.program.operations.find((candidate) => candidate.kind === "CreateEntity")
-      ?.entity.id;
+    const previewState = evaluateWorkingState(
+      createFixtureWorkingState({
+        stagedPrograms: [creationRecord],
+      }),
+    );
+    const createdId = creation.program.operations.find((candidate) => candidate.kind === "CreateEntity")?.entity.id;
     expect(createdId).toBeDefined();
     if (!createdId) return;
 
@@ -1042,9 +1098,11 @@ describe("one ProposedState feeds every Studio projection", () => {
 
   it("shows a provisional Text consistently on canvas, object list, timeline and playback", () => {
     const validation = canonicalize(transformAndExplanationSuggestion(), "projection-program");
-    const proposed = evaluateWorkingState(createFixtureWorkingState({
-      stagedPrograms: [programRecord(validation.program, validation)],
-    }));
+    const proposed = evaluateWorkingState(
+      createFixtureWorkingState({
+        stagedPrograms: [programRecord(validation.program, validation)],
+      }),
+    );
     const projection = projectProposedState(proposed, 3.5);
     const explanation = projection.canvas.entities.find((entity) => entity.type === "Text" && entity.provisional);
     expect(explanation?.id).toMatch(/^tx:projection-program\/entity:explanation-/);
@@ -1058,14 +1116,18 @@ describe("one ProposedState feeds every Studio projection", () => {
     expect(projection.timeline.sampleId).toBe(projection.canvas.sampleId);
     expect(projection.workingPlayback.sampleId).toBe(projection.canvas.sampleId);
     expect(projection.timeline.events.some((event) => event.transactionId === "projection-program")).toBe(true);
-    expect(projection.timeline.objectTracks).toContainEqual(expect.objectContaining({
-      entityId: explanation?.id,
-      provisional: true,
-      type: "Text",
-    }));
-    expect(proposed.evaluatedScene.constraintGraph.constraints.some((constraint) => (
-      constraint.sourceEntityId === explanation?.id && constraint.mode === "snapshot"
-    ))).toBe(true);
+    expect(projection.timeline.objectTracks).toContainEqual(
+      expect.objectContaining({
+        entityId: explanation?.id,
+        provisional: true,
+        type: "Text",
+      }),
+    );
+    expect(
+      proposed.evaluatedScene.constraintGraph.constraints.some(
+        (constraint) => constraint.sourceEntityId === explanation?.id && constraint.mode === "snapshot",
+      ),
+    ).toBe(true);
   });
 
   it("creates a Scene-level transition without selection and exposes the full-cover boundary", () => {
@@ -1076,10 +1138,12 @@ describe("one ProposedState feeds every Studio projection", () => {
     expect(operation.color).toBe("sky");
     const validation = canonicalize(operation, "scene-transition", 5);
     expect(validation.kind).toBe("valid");
-    const proposed = evaluateWorkingState(createFixtureWorkingState({
-      editorContext: { ...createFixtureWorkingState().editorContext, playhead: 5, selection: [] },
-      stagedPrograms: [programRecord(validation.program, validation)],
-    }));
+    const proposed = evaluateWorkingState(
+      createFixtureWorkingState({
+        editorContext: { ...createFixtureWorkingState().editorContext, playhead: 5, selection: [] },
+        stagedPrograms: [programRecord(validation.program, validation)],
+      }),
+    );
     const boundary = proposed.evaluatedScene.eventTrack.events.find((event) => event.kind === "scene-boundary");
     expect(boundary?.at).toBe(5.75);
     expect(boundary?.label).toBe("Full-cover Scene boundary");

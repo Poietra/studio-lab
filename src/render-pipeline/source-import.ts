@@ -661,16 +661,13 @@ function durationFrom(statement: string, fallback = 1) {
   return match ? Number(match[1]) : fallback;
 }
 
-function topLevelPlayKeywordIdentifier(
-  statement: string,
-  keyword: string,
-): string | null | undefined {
+function topLevelPlayKeywordIdentifier(statement: string, keyword: string): string | null | undefined {
   const call = statement.match(/^self\.play\s*\(/);
   if (!call) return undefined;
   const opening = statement.indexOf("(", call.index ?? 0);
   const stack = ["("];
   const values: string[] = [];
-  let quote: "\"" | "'" | null = null;
+  let quote: '"' | "'" | null = null;
   let escaped = false;
   let atArgumentStart = true;
   for (let index = opening + 1; index < statement.length; index += 1) {
@@ -687,7 +684,7 @@ function topLevelPlayKeywordIdentifier(
       if (character === quote) quote = null;
       continue;
     }
-    if (character === "\"" || character === "'") {
+    if (character === '"' || character === "'") {
       if (stack.length === 1) atArgumentStart = false;
       quote = character;
       continue;

@@ -86,13 +86,19 @@ describe("Studio draft validation boundary", () => {
     expect(result.kind).toBe("valid");
     if (result.kind !== "valid" || result.operation.kind !== "edit-program") return;
     expect(result.operation.operations).toEqual(operation.operations);
-    expect(result.record.program.operations.flatMap((entry) => (
-      entry.kind === "CreateMotion" ? [{
-        controlOffset: entry.controlOffset,
-        delta: entry.delta,
-        interval: entry.interval,
-      }] : []
-    ))).toEqual([
+    expect(
+      result.record.program.operations.flatMap((entry) =>
+        entry.kind === "CreateMotion"
+          ? [
+              {
+                controlOffset: entry.controlOffset,
+                delta: entry.delta,
+                interval: entry.interval,
+              },
+            ]
+          : [],
+      ),
+    ).toEqual([
       {
         controlOffset: { x: 8, y: -12 },
         delta: { x: 40, y: 0 },

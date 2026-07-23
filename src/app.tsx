@@ -393,9 +393,7 @@ export function App() {
     ? previewAppliedPrograms.flatMap((record, programIndex) => {
         const evaluatedProgram = evaluatedProgramsByTransaction.get(record.program.transactionId);
         if (!evaluatedProgram) return [];
-        const precedingPrograms = previewAppliedPrograms
-          .slice(0, programIndex)
-          .map((candidate) => candidate.program);
+        const precedingPrograms = previewAppliedPrograms.slice(0, programIndex).map((candidate) => candidate.program);
         const metadata = record.editorMetadata;
         return evaluatedProgram.operations.flatMap((operation) => {
           if (operation.kind !== "CreateMotion") return [];
@@ -427,10 +425,7 @@ export function App() {
               entityId,
               interval: operation.interval,
               label: entity?.content?.label ?? entity?.content?.text ?? entityId.split(":").at(-1) ?? entityId,
-              maximumDuration: Math.max(
-                0.1,
-                activeScene.runtimeSceneState.duration - sourceOperation.interval.start,
-              ),
+              maximumDuration: Math.max(0.1, activeScene.runtimeSceneState.duration - sourceOperation.interval.start),
               operationId: operation.id,
               programIndex,
               readOnlyReason: busyReason ?? metadataReason,

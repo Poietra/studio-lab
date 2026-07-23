@@ -206,10 +206,7 @@ export function stageEditorDraft(state: EditorControllerState, input: StageDraft
 function editorDraftPreflightError(state: EditorControllerState, input: StageDraftInput) {
   let programs = state.appliedPrograms;
   const preserved = input.preserveAppliedProgram;
-  if (
-    preserved &&
-    !programs.some((candidate) => candidate.program.transactionId === preserved.program.transactionId)
-  ) {
+  if (preserved && !programs.some((candidate) => candidate.program.transactionId === preserved.program.transactionId)) {
     const blocker = applyBlocker(preserved);
     if (blocker) return blocker;
     const appended = appendAppliedProgram(
@@ -412,9 +409,7 @@ export function editEditorAppliedProgram(
   const editorRecord = record as EditorProgramRecord;
   const transactionId = editorRecord.program.transactionId;
   const activeEdit =
-    state.editingAppliedProgram?.original.program.transactionId === transactionId
-      ? state.editingAppliedProgram
-      : null;
+    state.editingAppliedProgram?.original.program.transactionId === transactionId ? state.editingAppliedProgram : null;
   if (state.draftProgram && !activeEdit) {
     return {
       ...state,

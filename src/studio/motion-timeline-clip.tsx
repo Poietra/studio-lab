@@ -45,16 +45,14 @@ function intervalStyle(interval: Interval, duration: number) {
   };
 }
 
-function closestAnchor(
-  anchors: readonly AppliedMotionClipAnchor[],
-  desiredWorkingTime: number,
-) {
-  return anchors.reduce<AppliedMotionClipAnchor | null>((closest, anchor) => (
-    !closest
-    || Math.abs(anchor.workingTime - desiredWorkingTime) < Math.abs(closest.workingTime - desiredWorkingTime)
-      ? anchor
-      : closest
-  ), null);
+function closestAnchor(anchors: readonly AppliedMotionClipAnchor[], desiredWorkingTime: number) {
+  return anchors.reduce<AppliedMotionClipAnchor | null>(
+    (closest, anchor) =>
+      !closest || Math.abs(anchor.workingTime - desiredWorkingTime) < Math.abs(closest.workingTime - desiredWorkingTime)
+        ? anchor
+        : closest,
+    null,
+  );
 }
 
 export function adjacentAppliedMotionClipAnchor(
@@ -67,14 +65,10 @@ export function adjacentAppliedMotionClipAnchor(
     const nextDuration = keepEnd ? clip.interval.end - anchor.workingTime : duration;
     return nextDuration >= MINIMUM_DURATION - 0.0005 && nextDuration <= anchor.maximumDuration + 0.0005;
   });
-  const currentIndex = eligible.findIndex((anchor) => (
-    Math.abs(anchor.sourceTime - clip.sourceStart) < 0.0005
-  ));
+  const currentIndex = eligible.findIndex((anchor) => Math.abs(anchor.sourceTime - clip.sourceStart) < 0.0005);
   if (currentIndex >= 0) return eligible[currentIndex + direction] ?? null;
-  const directional = eligible.filter((anchor) => (
-    direction * (anchor.sourceTime - clip.sourceStart) > 0.0005
-  ));
-  return direction === -1 ? directional.at(-1) ?? null : directional[0] ?? null;
+  const directional = eligible.filter((anchor) => direction * (anchor.sourceTime - clip.sourceStart) > 0.0005);
+  return direction === -1 ? (directional.at(-1) ?? null) : (directional[0] ?? null);
 }
 
 export function TimelineMotionClip({
@@ -101,9 +95,7 @@ export function TimelineMotionClip({
     const bounds = lane?.getBoundingClientRect();
     const active = drag.current;
     if (!bounds?.width || !active) return null;
-    const pointerTime = Math.min(duration, Math.max(0, (
-      (event.clientX - bounds.left) / bounds.width
-    ) * duration));
+    const pointerTime = Math.min(duration, Math.max(0, ((event.clientX - bounds.left) / bounds.width) * duration));
     if (mode === "end") {
       const nextDuration = Math.min(
         clip.maximumDuration,
@@ -115,20 +107,19 @@ export function TimelineMotionClip({
         sourceStart: clip.sourceStart,
       };
     }
-    const desiredStart = mode === "move"
-      ? clip.interval.start + ((event.clientX - active.originX) / bounds.width) * duration
-      : pointerTime;
-    const anchor = closestAnchor(clip.anchors.filter((candidate) => {
-      const nextDuration = mode === "start"
-        ? clip.interval.end - candidate.workingTime
-        : sourceDuration;
-      return nextDuration >= MINIMUM_DURATION - 0.0005
-        && nextDuration <= candidate.maximumDuration + 0.0005;
-    }), desiredStart);
+    const desiredStart =
+      mode === "move"
+        ? clip.interval.start + ((event.clientX - active.originX) / bounds.width) * duration
+        : pointerTime;
+    const anchor = closestAnchor(
+      clip.anchors.filter((candidate) => {
+        const nextDuration = mode === "start" ? clip.interval.end - candidate.workingTime : sourceDuration;
+        return nextDuration >= MINIMUM_DURATION - 0.0005 && nextDuration <= candidate.maximumDuration + 0.0005;
+      }),
+      desiredStart,
+    );
     if (!anchor) return null;
-    const nextDuration = mode === "start"
-      ? clip.interval.end - anchor.workingTime
-      : sourceDuration;
+    const nextDuration = mode === "start" ? clip.interval.end - anchor.workingTime : sourceDuration;
     return {
       duration: nextDuration,
       interval: {
@@ -158,9 +149,8 @@ export function TimelineMotionClip({
   function finishDrag(event: PointerEvent<HTMLButtonElement>) {
     const active = drag.current;
     if (!active || active.pointerId !== event.pointerId) return;
-    const next = Math.abs(event.clientX - active.originX) >= 3
-      ? previewAtPointer(event, active.mode) ?? preview
-      : null;
+    const next =
+      Math.abs(event.clientX - active.originX) >= 3 ? (previewAtPointer(event, active.mode) ?? preview) : null;
     drag.current = null;
     setPreview(null);
     if (next) onChange({ duration: next.duration, sourceStart: next.sourceStart });
@@ -175,24 +165,14 @@ export function TimelineMotionClip({
   function moveWithKeyboard(event: KeyboardEvent<HTMLButtonElement>) {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
     event.preventDefault();
-    const anchor = adjacentAppliedMotionClipAnchor(
-      clip,
-      event.key === "ArrowLeft" ? -1 : 1,
-      sourceDuration,
-      false,
-    );
+    const anchor = adjacentAppliedMotionClipAnchor(clip, event.key === "ArrowLeft" ? -1 : 1, sourceDuration, false);
     if (anchor) onChange({ duration: sourceDuration, sourceStart: anchor.sourceTime });
   }
 
   function startWithKeyboard(event: KeyboardEvent<HTMLButtonElement>) {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
     event.preventDefault();
-    const anchor = adjacentAppliedMotionClipAnchor(
-      clip,
-      event.key === "ArrowLeft" ? -1 : 1,
-      sourceDuration,
-      true,
-    );
+    const anchor = adjacentAppliedMotionClipAnchor(clip, event.key === "ArrowLeft" ? -1 : 1, sourceDuration, true);
     if (!anchor) return;
     onChange({ duration: clip.interval.end - anchor.workingTime, sourceStart: anchor.sourceTime });
   }

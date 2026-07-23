@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { EditSuggestionOperation } from "./edit-suggestions";
-import {
-  changeSuggestionExecution,
-  editableSuggestionSteps,
-  replaceSuggestionStep,
-} from "./draft-operation";
+import { changeSuggestionExecution, editableSuggestionSteps, replaceSuggestionStep } from "./draft-operation";
 
 const program: EditSuggestionOperation = {
   anchor: { kind: "absolute", seconds: 5 },

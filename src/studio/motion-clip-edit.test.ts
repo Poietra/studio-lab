@@ -133,15 +133,18 @@ describe("applied motion clip editing", () => {
     const canonicalMotion = program.operations.find((candidate) => candidate.kind === "CreateMotion");
     if (!canonicalMotion) throw new Error("Expected a canonical motion.");
 
-    expect(retimeAppliedMotionClip({
-      duration: 1,
-      operation,
-      operationId: canonicalMotion.id,
-      program,
-      start: 5.5,
-    })).toEqual({
+    expect(
+      retimeAppliedMotionClip({
+        duration: 1,
+        operation,
+        operationId: canonicalMotion.id,
+        program,
+        start: 5.5,
+      }),
+    ).toEqual({
       kind: "invalid",
-      message: "The motion clip would overlap the previous sequential step. Move it after that step or switch the Program to parallel execution.",
+      message:
+        "The motion clip would overlap the previous sequential step. Move it after that step or switch the Program to parallel execution.",
     });
   });
 
@@ -197,9 +200,9 @@ describe("applied motion clip editing", () => {
       { end: 6, start: 5 },
       { end: 8, start: 7 },
     ]);
-    expect(result.operation.operations.map((step) => (
-      step.kind === "create-motion" ? step.controlOffset : null
-    ))).toEqual([
+    expect(
+      result.operation.operations.map((step) => (step.kind === "create-motion" ? step.controlOffset : null)),
+    ).toEqual([
       { x: 7, y: -14 },
       { x: 5, y: 10 },
     ]);

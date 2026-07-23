@@ -172,7 +172,7 @@ test("moves and retimes an applied motion clip with pointer and keyboard control
   const origin = { x: clipBox.x + clipBox.width / 2, y: clipBox.y + clipBox.height / 2 };
   await page.mouse.move(origin.x, origin.y);
   await page.mouse.down();
-  await page.mouse.move(origin.x + laneBox.width * 2 / duration, origin.y, { steps: 4 });
+  await page.mouse.move(origin.x + (laneBox.width * 2) / duration, origin.y, { steps: 4 });
   await page.mouse.up();
 
   await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
@@ -229,7 +229,7 @@ class MotionOrderScene(Scene):
     data: { kind: "existing", name: "Motion Order Fixture", root: projectRoot },
   });
   expect(createdResponse.status()).toBe(201);
-  const created = await createdResponse.json() as { project: { id: string } };
+  const created = (await createdResponse.json()) as { project: { id: string } };
   try {
     await page.goto("/");
     await page.getByRole("button", { name: "Open Motion Order Fixture workspace" }).click();
@@ -279,8 +279,9 @@ class MotionOrderScene(Scene):
     await expect(page.getByRole("spinbutton", { exact: true, name: "Start" })).toHaveValue("5");
     const exported = await exportedSource(page);
     expect(transactionBlock(exported, transactionIds[0])).toContain("# poietra:cursor 5");
-    expect(exported.indexOf(`# poietra:transaction ${JSON.stringify(transactionIds[0])}`))
-      .toBeLessThan(exported.indexOf(`# poietra:transaction ${JSON.stringify(transactionIds[1])}`));
+    expect(exported.indexOf(`# poietra:transaction ${JSON.stringify(transactionIds[0])}`)).toBeLessThan(
+      exported.indexOf(`# poietra:transaction ${JSON.stringify(transactionIds[1])}`),
+    );
   } finally {
     await page.request.delete(`/api/manim/projects/${created.project.id}`).catch(() => undefined);
     await rm(projectRoot, { force: true, recursive: true });
