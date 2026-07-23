@@ -204,7 +204,9 @@ function targetReferences(target: PythonStatement): readonly string[] | null {
   raw = raw.replace(/^\*+\s*/, "");
   const compact = code.replace(/\s/g, "");
   if (/^globals\(\)\[\]$/.test(compact)) {
-    const key = raw.match(/^globals\s*\(\s*\)\s*\[\s*(?:[rRuUbB]{0,2})?(["'])([A-Za-z_][A-Za-z0-9_]*)\1\s*\]$/)?.[2];
+    const key = raw.match(
+      /^globals\s*\(\s*\)\s*\[\s*(?:(?:[fF][rR]?|[rR][fFbB]?|[bB][rR]?|[uU]))?(["'])([A-Za-z_][A-Za-z0-9_]*)\1\s*\]$/,
+    )?.[2];
     return key ? ["globals", key] : ["globals"];
   }
   if (/^globals\(\)\[/.test(compact)) return null;

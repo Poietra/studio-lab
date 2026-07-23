@@ -753,6 +753,7 @@ class GroupedEquation(Scene):
     ["attribute", "self.cached_equation = equation", "self.add(self.cached_equation)", "self.cached_equation"],
     ["subscript assignment", 'cache = {}\n        cache["primary"] = equation', 'self.add(cache["primary"])', "cache"],
     ["globals binding", 'globals()["cached_equation"] = equation', "self.add(cached_equation)", "cached_equation"],
+    ["prefixed globals binding", 'globals()[f"cached_equation"] = equation', "self.add(cached_equation)", "cached_equation"],
     ["globals subscript", 'globals()["cached_equation"] = equation', 'self.add(globals()["cached_equation"])', "globals"],
     ["container mutation", "items = []\n        items.append(equation)", "self.add(items[0])", "items"],
     ["nested container mutation", 'buckets = {"primary": []}\n        buckets["primary"].append(equation)', 'self.add(buckets["primary"][0])', "buckets"],
