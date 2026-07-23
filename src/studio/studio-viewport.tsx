@@ -20,6 +20,7 @@ export type StudioViewportProps = Readonly<
 
 export function StudioViewport({
   anchors,
+  appliedMotionClips,
   appliedTransactionIds,
   boundaryActive,
   className,
@@ -28,6 +29,7 @@ export function StudioViewport({
   dragPreview,
   duration,
   editableMotionIds,
+  editingAppliedTransactionId,
   entities,
   incomingSceneName,
   insertTool,
@@ -37,6 +39,8 @@ export function StudioViewport({
   lifetimeTrimDisabled,
   motionDuration,
   motionPaths,
+  onAppliedMotionClipChange,
+  onAppliedMotionClipSelect,
   onCanvasPlace,
   onEntityKeyDown,
   onEntityPointerCancel,
@@ -103,15 +107,19 @@ export function StudioViewport({
       />
       <StudioTimeline
         anchors={anchors}
+        appliedMotionClips={appliedMotionClips}
         appliedTransactionIds={appliedTransactionIds}
         currentTime={currentTime}
         duration={duration}
+        editingAppliedTransactionId={editingAppliedTransactionId}
         events={projection.timeline.events}
         interactionMode={interactionMode}
         isPlaying={isPlaying}
         lifetimeTrimDisabled={lifetimeTrimDisabled}
         motionDuration={motionDuration}
         objectTracks={projection.timeline.objectTracks}
+        onAppliedMotionClipChange={onAppliedMotionClipChange}
+        onAppliedMotionClipSelect={onAppliedMotionClipSelect}
         onInteractionModeChange={onInteractionModeChange}
         onLifetimeEndChange={onLifetimeEndChange}
         onMotionDurationChange={onMotionDurationChange}

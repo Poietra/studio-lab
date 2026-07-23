@@ -3,6 +3,11 @@ import { type PointerEvent, useRef, useState } from "react";
 import { cn } from "../lib/cn";
 import type { Interval, TimelineEvent, TimelineObjectTrack } from "./model";
 import {
+  type AppliedMotionClip,
+  type AppliedMotionClipChange,
+  TimelineMotionClip,
+} from "./motion-timeline-clip";
+import {
   closestLifetimeAnchor,
   formatTimelineTime,
   lifetimeTrimAnchors,
@@ -15,15 +20,19 @@ import type { InteractionMode } from "./studio-viewport-geometry";
 
 export type StudioTimelineProps = Readonly<{
   anchors: readonly StudioTimelineAnchor[];
+  appliedMotionClips: readonly AppliedMotionClip[];
   appliedTransactionIds: ReadonlySet<string>;
   currentTime: number;
   duration: number;
+  editingAppliedTransactionId: string | null;
   events: readonly TimelineEvent[];
   interactionMode: InteractionMode;
   isPlaying: boolean;
   lifetimeTrimDisabled: boolean;
   motionDuration: number;
   objectTracks: readonly TimelineObjectTrack[];
+  onAppliedMotionClipChange: (clip: AppliedMotionClip, change: AppliedMotionClipChange) => void;
+  onAppliedMotionClipSelect: (clip: AppliedMotionClip) => void;
   onInteractionModeChange: (mode: InteractionMode) => void;
   onLifetimeEndChange: (entityId: string, lifetimeStart: number, sourceAnchor: number) => void;
   onMotionDurationChange: (duration: number) => void;
@@ -169,15 +178,19 @@ function TimelineLifetime({
 
 export function StudioTimeline({
   anchors,
+  appliedMotionClips,
   appliedTransactionIds,
   currentTime,
   duration,
+  editingAppliedTransactionId,
   events,
   interactionMode,
   isPlaying,
   lifetimeTrimDisabled,
   motionDuration,
   objectTracks,
+  onAppliedMotionClipChange,
+  onAppliedMotionClipSelect,
   onInteractionModeChange,
   onLifetimeEndChange,
   onMotionDurationChange,
@@ -198,6 +211,13 @@ export function StudioTimeline({
   const selectedLifetimeAnchors = selectedLifetimeInterval
     ? lifetimeTrimAnchors(anchors, selectedLifetimeInterval)
     : [];
+  const editingMotionClip = editingAppliedTransactionId
+    ? appliedMotionClips.find((clip) => clip.transactionId === editingAppliedTransactionId) ?? null
+    : null;
+  const displayedTimelineAnchors = editingMotionClip?.anchors ?? anchors;
+  const motionClipBlockers = [
+    ...new Set(appliedMotionClips.flatMap((clip) => (clip.readOnlyReason ? [clip.readOnlyReason] : []))),
+  ];
   return (
     <section className="shrink-0 border-t border-zinc-800 bg-zinc-950 p-3">
       <div className="flex items-center gap-3">
@@ -304,6 +324,19 @@ export function StudioTimeline({
           ) : null}
         </form>
       ) : null}
+      {editingMotionClip ? (
+        <p className="mt-2 border-t border-zinc-800 pt-2 text-pretty text-[10px] leading-4 text-zinc-500" role="status">
+          Editing {editingMotionClip.label} motion. The body and left edge snap to safe amber source anchors; the
+          right edge changes duration.
+        </p>
+      ) : motionClipBlockers.length > 0 ? (
+        <p
+          className="mt-2 border-t border-zinc-800 pt-2 text-pretty text-[10px] leading-4 text-amber-500"
+          data-motion-clip-blocker
+        >
+          Motion clip editing is unavailable: {motionClipBlockers.join(" ")}
+        </p>
+      ) : null}
       <div aria-label="Scene object timeline" className="mt-3 max-h-56 overflow-y-auto border border-zinc-800 bg-zinc-900" role="group">
         <div className="relative">
           <div className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 sm:grid-cols-[8rem_minmax(0,1fr)]">
@@ -339,7 +372,7 @@ export function StudioTimeline({
                   <span className="block truncate">{event.label}</span>
                 </div>
               ))}
-              {anchors.map((anchor) => (
+              {displayedTimelineAnchors.map((anchor) => (
                 <button
                   aria-label={`Move playhead to source anchor ${anchor.sourceTime.toFixed(3)} seconds`}
                   className="absolute bottom-0 top-0 z-30 w-px bg-amber-500/70 focus-visible:w-0.5"
@@ -355,6 +388,8 @@ export function StudioTimeline({
           </div>
           {objectTracks.map((track) => {
             const selected = selectedIds.has(track.entityId);
+            const trackMotionClips = appliedMotionClips.filter((clip) => clip.entityId === track.entityId);
+            const trackMotionOperationIds = new Set(trackMotionClips.map((clip) => clip.operationId));
             const locked = readOnly
               || (track.provisional && !(track.transactionId && appliedTransactionIds.has(track.transactionId)));
             return (
@@ -401,13 +436,25 @@ export function StudioTimeline({
                       />
                     );
                   })}
-                  {track.animatedChannels.map((channel, index) => (
-                    <div
-                      className="absolute bottom-1 z-10 h-1.5 min-w-px bg-sky-400"
-                      data-timeline-animation
-                      key={`${track.entityId}/${channel.key}/${index}`}
-                      style={timelineIntervalStyle(channel.interval, duration)}
-                      title={`${channel.key} animation ${channel.interval.start.toFixed(2)}–${channel.interval.end.toFixed(2)}s`}
+                  {track.animatedChannels.map((channel, index) =>
+                    channel.operationId && trackMotionOperationIds.has(channel.operationId) ? null : (
+                      <div
+                        className="absolute bottom-1 z-10 h-1.5 min-w-px bg-sky-400"
+                        data-timeline-animation
+                        key={`${track.entityId}/${channel.key}/${index}`}
+                        style={timelineIntervalStyle(channel.interval, duration)}
+                        title={`${channel.key} animation ${channel.interval.start.toFixed(2)}–${channel.interval.end.toFixed(2)}s`}
+                      />
+                    ),
+                  )}
+                  {trackMotionClips.map((clip) => (
+                    <TimelineMotionClip
+                      clip={clip}
+                      duration={duration}
+                      editing={editingAppliedTransactionId === clip.transactionId}
+                      key={`${clip.operationId}/${clip.entityId}`}
+                      onChange={(change) => onAppliedMotionClipChange(clip, change)}
+                      onSelect={() => onAppliedMotionClipSelect(clip)}
                     />
                   ))}
                   {track.lifetimes.length === 0 ? (

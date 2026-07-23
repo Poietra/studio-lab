@@ -272,6 +272,20 @@ function StepEditor({
               />
             </label>
           </div>
+          <label className="mt-2 block text-[10px] text-zinc-500">
+            Easing
+            <select
+              className={inputClass}
+              onChange={(event) => onChange({
+                ...step,
+                easing: event.currentTarget.value as "linear" | "smooth",
+              })}
+              value={step.easing}
+            >
+              <option value="smooth">Smooth</option>
+              <option value="linear">Linear</option>
+            </select>
+          </label>
           <button
             className="mt-2 text-[10px] text-zinc-500 underline underline-offset-2 hover:text-zinc-200"
             disabled={step.controlOffset.x === 0 && step.controlOffset.y === 0}

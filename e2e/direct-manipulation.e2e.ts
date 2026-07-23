@@ -145,6 +145,66 @@ test("reopens an applied motion and replaces it in place with undoable export hi
   );
 });
 
+test("moves and retimes an applied motion clip with pointer and keyboard controls", async ({ page }) => {
+  await openWorkspace(page);
+  await page.getByRole("button", { name: "Create animation" }).click();
+  await page.getByRole("spinbutton", { name: "New motion duration in seconds" }).fill("1");
+  await dragBy(page, page.getByRole("button", { name: "Move equation" }), { x: 64, y: -20 });
+  await page.getByRole("button", { name: "Apply program" }).click();
+
+  const appliedPrograms = page.locator("section").filter({
+    has: page.getByRole("heading", { name: "Applied programs" }),
+  });
+  const transactionText = await appliedPrograms.getByRole("listitem").first().innerText();
+  const transactionId = transactionText.match(/studio-gesture-[0-9a-f-]{36}/)?.[0];
+  if (!transactionId) throw new Error("The applied motion transaction was not rendered.");
+
+  const clip = page.getByRole("button", { name: "Edit equation motion clip" });
+  await expect(clip).toBeVisible();
+  const clipBox = await clip.boundingBox();
+  const laneBox = await clip.locator("xpath=../..").boundingBox();
+  const duration = Number(await page.getByRole("slider", { name: "Scene playhead" }).getAttribute("max"));
+  if (!clipBox || !laneBox || !Number.isFinite(duration)) {
+    throw new Error("The applied motion clip lane is not measurable.");
+  }
+  const origin = { x: clipBox.x + clipBox.width / 2, y: clipBox.y + clipBox.height / 2 };
+  await page.mouse.move(origin.x, origin.y);
+  await page.mouse.down();
+  await page.mouse.move(origin.x + laneBox.width * 2 / duration, origin.y, { steps: 4 });
+  await page.mouse.up();
+
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  await expect(page.getByRole("spinbutton", { exact: true, name: "Start" })).toHaveValue("7");
+  await expect(page.getByRole("status")).toContainText("safe amber source anchors");
+  await expect(page.locator("[data-motion-control]")).toBeVisible();
+  await page.getByRole("combobox", { name: "Easing" }).selectOption("linear");
+  await page.locator("[data-motion-control]").press("ArrowUp");
+
+  const endHandle = page.getByRole("button", { name: "Adjust equation motion end" });
+  await expect(endHandle).toBeVisible();
+  await endHandle.press("ArrowRight");
+  await expect(page.getByRole("spinbutton", { exact: true, name: "Duration" })).toHaveValue("1.1");
+
+  const preview = transactionBlock(await exportedSource(page), transactionId);
+  expect(preview).toContain("# poietra:cursor 7");
+  expect(preview).toContain('"easing":"linear"');
+  expect(preview).toContain("run_time=1.1");
+  expect(preview).toContain("rate_func=linear");
+
+  await page.getByRole("button", { name: "Replace program" }).click();
+  await page.keyboard.press("Control+z");
+  const undone = transactionBlock(await exportedSource(page), transactionId);
+  expect(undone).toContain("# poietra:cursor 5");
+  expect(undone).toContain("run_time=1");
+  expect(undone).toContain("rate_func=smooth");
+
+  await page.keyboard.press("Control+Shift+z");
+  const redone = transactionBlock(await exportedSource(page), transactionId);
+  expect(redone).toContain("# poietra:cursor 7");
+  expect(redone).toContain('"easing":"linear"');
+  expect(redone).toContain("run_time=1.1");
+});
+
 test("snaps direct manipulation to the latest safe source anchor before creating a draft", async ({ page }) => {
   await openWorkspace(page);
   const equation = page.getByRole("button", { name: "Move equation" });

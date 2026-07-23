@@ -50,6 +50,12 @@ type StageDraftInput = Readonly<{
   stopPlayback?: boolean;
 }>;
 
+type AppliedProgramEditInput = Readonly<{
+  focusSourceTime?: number;
+  operation?: EditSuggestionOperation;
+  record?: ProgramRecord;
+}>;
+
 type EditorControllerAction =
   | Readonly<{ state: EditorControllerState; type: "replace" }>
   | Readonly<{
@@ -365,16 +371,30 @@ export function editEditorAppliedProgram(
   state: EditorControllerState,
   record: ProgramRecord,
   index: number,
+  input: AppliedProgramEditInput = {},
 ): EditorControllerState {
-  if (state.draftProgram) {
+  const editorRecord = record as EditorProgramRecord;
+  const transactionId = editorRecord.program.transactionId;
+  const activeEdit =
+    state.editingAppliedProgram?.original.program.transactionId === transactionId
+      ? state.editingAppliedProgram
+      : null;
+  if (state.draftProgram && !activeEdit) {
     return {
       ...state,
       draftError: "Apply or discard the current draft before editing an Applied Program.",
     };
   }
-  const editorRecord = record as EditorProgramRecord;
   const metadata = editorRecord.editorMetadata;
-  if (!metadata?.operation) {
+  const operation = input.operation ?? metadata?.operation;
+  const draftRecord = input.record ?? record;
+  const appliedRecord = state.appliedPrograms[index];
+  if (
+    !metadata?.operation ||
+    !operation ||
+    draftRecord.program.transactionId !== transactionId ||
+    appliedRecord?.program.transactionId !== transactionId
+  ) {
     return {
       ...state,
       draftError: "This Program is read-only because editable Studio authoring metadata is unavailable.",
@@ -384,12 +404,12 @@ export function editEditorAppliedProgram(
     ...state,
     currentTime: sourceTimeToWorkingTime(
       state.appliedPrograms.slice(0, index).map((candidate) => candidate.program),
-      record.program.anchor.resolvedSeconds,
+      input.focusSourceTime ?? draftRecord.program.anchor.resolvedSeconds,
     ),
-    draftError: programExecutionCapabilities(record.program).applyBlocker,
-    draftOperation: metadata.operation,
-    draftProgram: record,
-    editingAppliedProgram: { index, original: editorRecord },
+    draftError: programExecutionCapabilities(draftRecord.program).applyBlocker,
+    draftOperation: operation,
+    draftProgram: draftRecord,
+    editingAppliedProgram: activeEdit ?? { index, original: editorRecord },
     isPlaying: false,
     redoPrograms: [],
     selectedObjectIds: metadata.selection,
@@ -564,12 +584,15 @@ export function useEditorController() {
   }, [state.draftProgram, state.redoPrograms.length, update]);
 
   const editAppliedProgram = useCallback(
-    (record: ProgramRecord, index: number) => {
+    (record: ProgramRecord, index: number, input?: AppliedProgramEditInput) => {
       const metadata = (record as EditorProgramRecord).editorMetadata;
-      if (!state.draftProgram && metadata?.operation) requestController.current.cancel();
-      update((current) => editEditorAppliedProgram(current, record, index));
+      const editingTransactionId = state.editingAppliedProgram?.original.program.transactionId;
+      if ((!state.draftProgram || editingTransactionId === record.program.transactionId) && metadata?.operation) {
+        requestController.current.cancel();
+      }
+      update((current) => editEditorAppliedProgram(current, record, index, input));
     },
-    [state.draftProgram, update],
+    [state.draftProgram, state.editingAppliedProgram, update],
   );
 
   const resetPrograms = useCallback(() => {
