@@ -739,28 +739,36 @@ function persistentRemovalVariables(
   return removed;
 }
 
-function referencedVariableAfterAnchor(
+function sourceReferenceClosureBeforeAnchor(
   source: string,
   sceneBlock: NonNullable<ReturnType<typeof findSourceSceneBlock>>,
   anchorLine: number,
   variables: ReadonlySet<string>,
+  context = "Persistent removal",
 ) {
-  if (variables.size === 0) return null;
-  let references: ReadonlySet<string>;
   try {
-    references = pythonReferenceClosure(source, sceneBlock.bodyStart, anchorLine - 1, variables);
+    return pythonReferenceClosure(source, sceneBlock.bodyStart, anchorLine - 1, variables);
   } catch (error) {
     if (!(error instanceof PythonReferenceAnalysisError)) throw error;
     throw new ProgramLoweringError(
       "operation-unsupported",
-      `Persistent removal cannot inspect source aliases safely. ${error.message}`,
+      `${context} cannot inspect source aliases safely. ${error.message}`,
     );
   }
+}
+
+function referencedSourceAfterAnchor(
+  source: string,
+  sceneBlock: NonNullable<ReturnType<typeof findSourceSceneBlock>>,
+  anchorLine: number,
+  references: ReadonlySet<string>,
+  context: string,
+) {
   const analysis = analyzePythonSource(source);
   if (!analysis.valid) {
     throw new ProgramLoweringError(
       "operation-unsupported",
-      "Persistent removal cannot inspect an invalid Python source suffix safely.",
+      `${context} cannot inspect an invalid Python source suffix safely.`,
     );
   }
   for (let index = anchorLine; index < sceneBlock.bodyEnd; index += 1) {
@@ -777,6 +785,93 @@ function referencedVariableAfterAnchor(
       break;
   }
   return null;
+}
+
+function referencedVariableAfterAnchor(
+  source: string,
+  sceneBlock: NonNullable<ReturnType<typeof findSourceSceneBlock>>,
+  anchorLine: number,
+  variables: ReadonlySet<string>,
+  context = "Persistent removal",
+) {
+  if (variables.size === 0) return null;
+  const references = sourceReferenceClosureBeforeAnchor(source, sceneBlock, anchorLine, variables, context);
+  return referencedSourceAfterAnchor(source, sceneBlock, anchorLine, references, context);
+}
+
+function assertContentReplacementSafety(
+  source: string,
+  sourcePath: string,
+  sceneName: string,
+  sceneBlock: NonNullable<ReturnType<typeof findSourceSceneBlock>>,
+  anchorLine: number,
+  operations: readonly CanonicalEditOperation[],
+  sourceBindings: ReadonlyMap<string, string>,
+  options: ProgramSourceLoweringOptions,
+  frame: Readonly<{ height: number; width: number }>,
+) {
+  const contentEdits = operations.filter(
+    (operation): operation is Extract<CanonicalEditOperation, { kind: "SetProperty" }> =>
+      operation.kind === "SetProperty" && operation.key === "content",
+  );
+  if (contentEdits.length === 0) return;
+  const locallyCreated = new Set(
+    operations.flatMap((operation) => {
+      if (operation.kind === "CreateEntity") return [operation.entity.id];
+      if (operation.kind === "TransformContent") return [operation.targetEntityId];
+      return [];
+    }),
+  );
+  const imported = importManimScene(sourceThroughAnchor(source, sceneBlock, anchorLine), sourcePath, sceneName, frame);
+  if (!imported) {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Content replacement cannot verify the imported object state at the selected anchor.",
+    );
+  }
+  for (const operation of contentEdits) {
+    if (locallyCreated.has(operation.entityId) || options.generatedEntityIds?.has(operation.entityId)) continue;
+    const sourceVariable = sourceBindings.get(operation.entityId);
+    if (!sourceVariable) {
+      throw new ProgramLoweringError("source-variable-missing", `No source variable exists for ${operation.entityId}.`);
+    }
+    const safety = imported.contentReplacementSafety[sourceVariable];
+    if (safety?.kind !== "safe") {
+      const detail = safety?.reason ?? "Studio could not verify a default Text or MathTex constructor.";
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        `Content replacement for ${sourceVariable} cannot preserve its source appearance. ${detail}`,
+      );
+    }
+    const sourceAliases = new Set([sourceVariable, ...(options.entityAliases?.get(operation.entityId) ?? [])]);
+    const sourceReferences = sourceReferenceClosureBeforeAnchor(
+      source,
+      sceneBlock,
+      anchorLine,
+      sourceAliases,
+      "Content replacement",
+    );
+    const retainedAlias = [...sourceReferences].find((reference) => !sourceAliases.has(reference));
+    if (retainedAlias) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        `Content replacement for ${sourceVariable} is unsafe because source alias ${retainedAlias} retains the object before the selected anchor.`,
+      );
+    }
+    const unsafeReference = referencedSourceAfterAnchor(
+      source,
+      sceneBlock,
+      anchorLine,
+      sourceReferences,
+      "Content replacement",
+    );
+    if (unsafeReference) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        `Content replacement for ${sourceVariable} is unsafe because source reference ${unsafeReference} is used after the selected anchor.`,
+      );
+    }
+  }
 }
 
 function operationBuckets(operations: readonly CanonicalEditOperation[]) {
@@ -871,6 +966,17 @@ export function lowerCanonicalProgramSource(
   const operations = [...request.program.operations].sort(
     (left, right) =>
       operationTime(left) - operationTime(right) || (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0),
+  );
+  assertContentReplacementSafety(
+    source,
+    request.sourcePath,
+    request.sceneName,
+    sceneBlock,
+    anchor.line,
+    operations,
+    sourceBindings,
+    options,
+    frame,
   );
   const resolvedScaleChanges = resolveScaleChangesAndTransforms(
     source,
