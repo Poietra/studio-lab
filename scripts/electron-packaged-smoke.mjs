@@ -65,6 +65,18 @@ try {
       if (!response.ok) throw new Error(`${response.status}: ${JSON.stringify(body)}`);
       return body;
     };
+    const unregisterWhenIdle = async (projectId) => {
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const response = await fetch(`/api/manim/projects/${projectId}`, { method: "DELETE" });
+        if (response.ok) return readJson(response);
+        const body = await response.json();
+        if (response.status !== 409) {
+          throw new Error(`${response.status}: ${JSON.stringify(body)}`);
+        }
+        await new Promise((resolveWaiter) => setTimeout(resolveWaiter, 20));
+      }
+      throw new Error("Workspace background work did not become idle before removal.");
+    };
     const bridge = window.poietraDesktop;
     if (!bridge) throw new Error("Packaged preload bridge is unavailable.");
     const bypass = await fetch("/api/manim/projects", {
@@ -173,7 +185,7 @@ try {
       method: "PATCH",
     }));
     if (renamed.project.name !== "Packaged Renamed") throw new Error("Packaged rename failed.");
-    await readJson(await fetch(`/api/manim/projects/${project.id}`, { method: "DELETE" }));
+    await unregisterWhenIdle(project.id);
     const finalCatalog = await readJson(await fetch("/api/manim/projects"));
     if (finalCatalog.projects.length !== 0) {
       throw new Error("Packaged remove left a workspace registration behind.");
