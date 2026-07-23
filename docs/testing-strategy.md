@@ -10,6 +10,7 @@ Test count is not a coverage target.
 | Unit | `pnpm test:unit` | Pure state rules, closed schemas, canonicalization, scheduling, and component rendering. |
 | Boundary and integration | `pnpm test:integration` | Source parsing/lowering, HTTP, filesystem/process safety, and the render manager with a fake process adapter. |
 | Browser E2E | `pnpm test:e2e` | Cross-component journeys whose failures depend on React state, pointer events, layout, and the browser. |
+| WebKit minimum smoke | `pnpm test:e2e:webkit-smoke` | Workspace open, object creation, and export in WebKit at the supported 960×640 viewport. |
 | Real Manim smoke | Manual, before a render-pipeline release | One Docker-backed preview and discard or commit/undo. This checks the external renderer rather than duplicating deterministic lowering cases. |
 
 The browser suite stays deliberately small. It covers the original journey where
@@ -20,6 +21,8 @@ through an exported wait.
 These regressions cannot be detected by evaluating already-constructed Programs in
 a unit test because the defects sit in React orchestration, pointer geometry, or
 the browser download boundary.
+The WebKit journey lives in its own `*.smoke.ts` project so browser-specific
+coverage stays one test instead of multiplying the full Chromium suite.
 
 ## Placement rule
 
@@ -50,3 +53,4 @@ belongs at a different layer or should be removed.
 - `server/*test.ts` owns HTTP, logging, filesystem, process, concurrency, and
   session-safety boundaries.
 - `e2e/*.e2e.ts` owns a deliberately small set of user journeys.
+- `e2e/*.smoke.ts` owns the minimum-viewport WebKit compatibility journey.

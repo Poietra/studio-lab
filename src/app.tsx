@@ -1568,13 +1568,13 @@ export function App() {
             </div>
           </div>
         ) : (
-          <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(30rem,1fr)_auto_auto] gap-px overflow-y-auto bg-zinc-800 lg:grid-cols-[14rem_minmax(0,1fr)] lg:grid-rows-[minmax(32rem,1fr)_auto] xl:grid-cols-[14rem_minmax(0,1fr)_21rem] xl:grid-rows-1 xl:overflow-hidden">
+          <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(30rem,1fr)_auto_auto] gap-px overflow-y-auto bg-zinc-800 md:grid-cols-[14rem_minmax(0,1fr)] md:grid-rows-[minmax(32rem,1fr)_auto] xl:grid-cols-[14rem_minmax(0,1fr)_21rem] xl:grid-rows-1 xl:overflow-hidden">
             <WorkspaceSidebar
               activeScene={activeScene}
               appliedProgramReadOnlyReasons={appliedProgramReadOnlyReasons}
               appliedPrograms={appliedPrograms}
               appliedTransactionIds={appliedTransactionIds}
-              className="order-2 min-h-64 lg:order-1 lg:col-start-1 lg:row-start-1 lg:min-h-0"
+              className="order-2 min-h-64 md:order-1 md:col-start-1 md:row-start-1 md:min-h-0"
               draftActive={draftProgram !== null}
               duration={activeDuration}
               editingAppliedTransactionId={editingAppliedProgram?.original.program.transactionId ?? null}
@@ -1597,7 +1597,7 @@ export function App() {
               anchors={timelineAnchors}
               appliedTransactionIds={appliedTransactionIds}
               boundaryActive={boundary !== null}
-              className="order-1 min-h-[30rem] lg:order-2 lg:col-start-2 lg:row-start-1 lg:min-h-[32rem] xl:min-h-0"
+              className="order-1 min-h-[30rem] md:order-2 md:col-start-2 md:row-start-1 md:min-h-[32rem] xl:min-h-0"
               currentTime={currentTime}
               draftTransactionId={draftProgram?.program.transactionId ?? null}
               dragPreview={dragPreview}
@@ -1649,7 +1649,7 @@ export function App() {
 
             <StudioInspector
               appliedProgramCount={appliedPrograms.length}
-              className="order-3 min-h-96 lg:col-span-2 lg:col-start-1 lg:row-start-2 xl:col-span-1 xl:col-start-3 xl:row-start-1 xl:min-h-0"
+              className="order-3 min-h-96 md:col-span-2 md:col-start-1 md:row-start-2 xl:col-span-1 xl:col-start-3 xl:row-start-1 xl:min-h-0"
               draftError={draftError}
               draftOperation={draftOperation}
               draftProgram={draftProgram}
