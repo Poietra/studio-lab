@@ -7,6 +7,7 @@ import {
 } from "../ai/draft-operation";
 import { cn } from "../lib/cn";
 import type { ProgramRecord } from "./model";
+import { programExecutionCapabilities } from "./operation-registry";
 import { EquationContent } from "./prototype-rendering";
 
 type DraftInspectorProps = Readonly<{
@@ -293,6 +294,13 @@ export function DraftInspector({
   record,
 }: DraftInspectorProps) {
   const steps = operation ? editableSuggestionSteps(operation) : [];
+  const execution = programExecutionCapabilities(record.program);
+  const validationError = record.validation.status === "invalid"
+    ? record.validation.issues.find((issue) => issue.severity === "error")?.message
+      ?? "This Program is invalid and cannot be applied."
+    : null;
+  const applyStatus = record.validation.status === "valid" ? execution.apply : "blocked";
+  const displayedError = execution.applyBlocker ?? validationError ?? error;
   return (
     <section data-draft-inspector>
       <div className="flex items-start justify-between gap-3">
@@ -344,15 +352,17 @@ export function DraftInspector({
       )}
 
       <dl className="mt-3 grid grid-cols-2 gap-2 text-[10px]">
+        <div><dt className="text-zinc-600">Preview</dt><dd className="mt-0.5 text-zinc-300">{execution.preview}</dd></div>
+        <div><dt className="text-zinc-600">Apply</dt><dd className={cn("mt-0.5", applyStatus === "supported" ? "text-zinc-300" : "text-red-300")}>{applyStatus}</dd></div>
+        <div><dt className="text-zinc-600">Lowering</dt><dd className="mt-0.5 text-zinc-300">{execution.lowering}</dd></div>
         <div><dt className="text-zinc-600">Schedule</dt><dd className="mt-0.5 text-zinc-300">{record.program.schedule.mode}</dd></div>
-        <div><dt className="text-zinc-600">Lowering</dt><dd className="mt-0.5 text-zinc-300">{record.program.loweringStatus}</dd></div>
         <div><dt className="text-zinc-600">Operations</dt><dd className="mt-0.5 tabular-nums text-zinc-300">{record.program.operations.length}</dd></div>
         <div><dt className="text-zinc-600">Anchor</dt><dd className="mt-0.5 tabular-nums text-zinc-300">{record.program.anchor.resolvedSeconds.toFixed(2)}s</dd></div>
       </dl>
 
-      {error ? (
-        <p className="mt-3 border border-red-950 bg-red-950/30 p-2 text-pretty text-xs leading-5 text-red-300" role="alert">
-          {error}
+      {displayedError ? (
+        <p className="mt-3 border border-red-950 bg-red-950/30 p-2 text-pretty text-xs leading-5 text-red-300" id="draft-apply-error" role="alert">
+          {displayedError}
         </p>
       ) : null}
 
@@ -360,7 +370,14 @@ export function DraftInspector({
         <button className="border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800" onClick={onDiscard} type="button">
           Discard
         </button>
-        <button className="bg-sky-500 px-3 py-1.5 text-xs font-medium text-sky-950 hover:bg-sky-400" onClick={onApply} type="button">
+        <button
+          aria-describedby={displayedError ? "draft-apply-error" : undefined}
+          className="bg-sky-500 px-3 py-1.5 text-xs font-medium text-sky-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500"
+          disabled={applyStatus !== "supported"}
+          onClick={onApply}
+          title={execution.applyBlocker ?? undefined}
+          type="button"
+        >
           Apply program
         </button>
       </div>
