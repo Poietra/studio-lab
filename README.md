@@ -72,8 +72,10 @@ pnpm dev:tauri
 pnpm evaluate:shell:native
 pnpm evaluate:shell:serve
 pnpm check:web
+pnpm check:style # zero-warning lint plus incremental format check
 pnpm test:unit
 pnpm test:integration
+pnpm test # all unit and boundary/integration tests
 pnpm exec playwright install chromium # first E2E run only
 pnpm test:e2e
 cargo check --locked --manifest-path src-tauri/Cargo.toml
@@ -84,6 +86,13 @@ checks in GitHub Actions. The stable required-check names are `Web build`,
 `Unit and integration tests`, `Browser E2E`, and `Tauri cargo check`. Playwright
 diagnostics are retained as a workflow artifact when the browser job reaches its
 test step.
+
+Biome provides the TypeScript/React lint and formatting baseline. Run `pnpm lint:fix`
+for safe lint fixes and `pnpm format` to format files changed from `main`;
+`pnpm lint`, `pnpm format:check`, and the combined `pnpm check:style` never write files.
+The incremental format scope includes committed, staged, unstaged, and untracked files,
+preventing a one-time rewrite of untouched source. CI must fetch the pull request's
+`main` base ref before running `pnpm check:style`.
 
 The suite boundaries and the rule for adding regression coverage are documented in
 [the testing strategy](docs/testing-strategy.md).
