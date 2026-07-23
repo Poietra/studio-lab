@@ -1004,20 +1004,15 @@ export function importManimScene(
       }
       continue;
     }
-    const directScaleMarker = markerBefore(statements, statementIndex, SCALE_MARKER_PATTERN);
     const directScale = statement.text.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*scale\s*\((.*)\)\s*$/s);
     if (directScale) {
       const [, directScaleVariable, expression] = directScale;
       const entity = byVariable.get(directScaleVariable);
       if (entity) {
-        const parsed = scaleMarkerSchema.safeParse(directScaleMarker);
         const factor = positiveNumberLiteral(expression);
         let value = entity.scale;
         let knowledge: Knowledge<number>;
-        if (parsed.success && parsed.data.kind === "exact" && parsed.data.variable === directScaleVariable) {
-          value = parsed.data.value;
-          knowledge = { kind: "known", value };
-        } else if (factor !== null) {
+        if (factor !== null) {
           value *= factor;
           knowledge = entity.scaleKnowledge.kind === "known" ? { kind: "known", value } : entity.scaleKnowledge;
         } else {
@@ -1028,6 +1023,7 @@ export function importManimScene(
           kind: "exact",
           knowledge,
           provenanceId: `import:${sceneId}:${entity.sourceVariable}:scale:${statement.line}`,
+          relative: factor !== null,
           value,
         });
         entity.scale = value;
@@ -1124,7 +1120,11 @@ export function importManimScene(
       new Set(parsedScale.data.scales.map((scale) => scale.variable)).size === parsedScale.data.scales.length &&
       parsedScale.data.scales.length === actualScaleVariables.length &&
       parsedScale.data.scales.every(
-        (scale) => byVariable.has(scale.variable) && actualScaleVariables.includes(scale.variable),
+        (scale) =>
+          byVariable.has(scale.variable) &&
+          actualScaleVariables.includes(scale.variable) &&
+          literalScaleFactors.has(scale.variable) &&
+          Math.abs((literalScaleFactors.get(scale.variable) ?? 0) - scale.to / scale.from) < 0.0005,
       );
     const markedScales =
       validMarkedScale && parsedScale.success && parsedScale.data.kind === "animated"
@@ -1192,21 +1192,7 @@ export function importManimScene(
         });
         entity.positionKnowledge = knowledge;
       }
-      const scale = markedScales.get(entity.sourceVariable);
-      if (scale) {
-        const knowledge = { kind: "known" as const, value: scale.to };
-        appendChannelSample(scaleSamples, entity.id, {
-          easing: "smooth",
-          from: scale.from,
-          interval,
-          kind: "animated",
-          knowledge,
-          provenanceId: `import:${sceneId}:${entity.sourceVariable}:scale-marker:${statement.line}`,
-          value: scale.to,
-        });
-        entity.scale = scale.to;
-        entity.scaleKnowledge = knowledge;
-      } else if (actualScaleVariables.includes(entity.sourceVariable)) {
+      if (actualScaleVariables.includes(entity.sourceVariable)) {
         const factor = literalScaleFactors.get(entity.sourceVariable);
         const from = entity.scale;
         const to = factor === undefined ? from : from * factor;
@@ -1222,7 +1208,8 @@ export function importManimScene(
           interval,
           kind: "animated",
           knowledge,
-          provenanceId: `import:${sceneId}:${entity.sourceVariable}:scale:${statement.line}`,
+          provenanceId: `import:${sceneId}:${entity.sourceVariable}:${markedScales.has(entity.sourceVariable) ? "scale-marker" : "scale"}:${statement.line}`,
+          relative: factor !== undefined,
           value: to,
         });
         entity.scale = to;

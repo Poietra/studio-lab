@@ -18,19 +18,12 @@ function sameStartPriority(sample: PropertyChannelSample, index: number, baseInd
   return 2;
 }
 
-/**
- * Restores the chronological, relative semantics of Manim shift/path motions.
- *
- * Source-imported motions retain their original delta and control offset. When
- * Studio inserts an operation before one of those motions, this pass rebases
- * the later motion on the position produced by everything that now precedes it.
- */
-export function normalizePositionSamples(samples: readonly PropertyChannelSample[]): readonly PropertyChannelSample[] {
+function chronologicalSamples(samples: readonly PropertyChannelSample[]) {
   const firstStart = Math.min(...samples.map((sample) => sample.interval.start));
   const baseIndex = samples.findIndex(
     (sample) => sample.kind === "exact" && sample.operationId === undefined && sample.interval.start === firstStart,
   );
-  const ordered = samples
+  return samples
     .map((sample, index) => ({ index, sample }))
     .sort((left, right) => {
       const startDelta = left.sample.interval.start - right.sample.interval.start;
@@ -40,8 +33,18 @@ export function normalizePositionSamples(samples: readonly PropertyChannelSample
           sameStartPriority(right.sample, right.index, baseIndex) || left.index - right.index
       );
     });
+}
+
+/**
+ * Restores the chronological, relative semantics of Manim shift/path motions.
+ *
+ * Source-imported motions retain their original delta and control offset. When
+ * Studio inserts an operation before one of those motions, this pass rebases
+ * the later motion on the position produced by everything that now precedes it.
+ */
+export function normalizePositionSamples(samples: readonly PropertyChannelSample[]): readonly PropertyChannelSample[] {
   const normalized: PropertyChannelSample[] = [];
-  for (const { sample } of ordered) {
+  for (const { sample } of chronologicalSamples(samples)) {
     if (
       sample.kind !== "animated" ||
       sample.relative !== true ||
@@ -68,6 +71,60 @@ export function normalizePositionSamples(samples: readonly PropertyChannelSample
       ...sample,
       control,
       from,
+      knowledge: sample.knowledge?.kind === "known" ? { kind: "known", value } : sample.knowledge,
+      value,
+    });
+  }
+  return normalized;
+}
+
+/**
+ * Restores the chronological, multiplicative semantics of Manim scale calls.
+ * Imported `.scale(factor)` operations retain their original relative factor;
+ * an inserted absolute Studio scale therefore becomes the base for any source
+ * scale that now follows it instead of being overwritten by array order.
+ */
+export function normalizeScaleSamples(samples: readonly PropertyChannelSample[]): readonly PropertyChannelSample[] {
+  const normalized: PropertyChannelSample[] = [];
+  for (const { sample } of chronologicalSamples(samples)) {
+    if (
+      sample.relative !== true ||
+      typeof sample.from !== "number" ||
+      typeof sample.value !== "number" ||
+      !Number.isFinite(sample.from) ||
+      !Number.isFinite(sample.value) ||
+      sample.from <= 0 ||
+      sample.value <= 0
+    ) {
+      normalized.push(sample);
+      continue;
+    }
+    const sampledFrom = samplePropertyValue(normalized, sample.interval.start);
+    if (typeof sampledFrom !== "number" || !Number.isFinite(sampledFrom) || sampledFrom <= 0) {
+      normalized.push({
+        ...sample,
+        knowledge: {
+          kind: "unknown",
+          reason: "Relative source scale has no finite positive chronological base.",
+        },
+      });
+      continue;
+    }
+    const factor = sample.value / sample.from;
+    const value = sampledFrom * factor;
+    if (!Number.isFinite(factor) || factor <= 0 || !Number.isFinite(value) || value <= 0) {
+      normalized.push({
+        ...sample,
+        knowledge: {
+          kind: "unknown",
+          reason: "Relative source scale does not produce a finite positive value.",
+        },
+      });
+      continue;
+    }
+    normalized.push({
+      ...sample,
+      from: sampledFrom,
       knowledge: sample.knowledge?.kind === "known" ? { kind: "known", value } : sample.knowledge,
       value,
     });

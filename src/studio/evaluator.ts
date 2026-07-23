@@ -16,6 +16,7 @@ import { evaluateOperation, type EvaluationDraft } from "./operation-registry";
 import {
   isPointValue,
   normalizePositionSamples,
+  normalizeScaleSamples,
   samplePropertyKnowledge,
   samplePropertyValue,
 } from "./property-sampling";
@@ -98,11 +99,15 @@ export function insertSceneTime(draft: EvaluationDraft, at: number, duration: nu
   );
 }
 
-function normalizePositionChannels(draft: EvaluationDraft) {
+function normalizeRelativeChannels(draft: EvaluationDraft) {
   draft.propertyChannels = Object.fromEntries(
     Object.entries(draft.propertyChannels).map(([id, channel]) => [
       id,
-      channel.key === "position" ? { ...channel, samples: normalizePositionSamples(channel.samples) } : channel,
+      channel.key === "position"
+        ? { ...channel, samples: normalizePositionSamples(channel.samples) }
+        : channel.key === "scale"
+          ? { ...channel, samples: normalizeScaleSamples(channel.samples) }
+          : channel,
     ]),
   );
 }
@@ -136,7 +141,7 @@ export function evaluateWorkingState(workingState: WorkingState): ProposedState 
       const operation = operationById.get(operationId);
       if (operation) evaluateOperation(draft, operation, validation.program);
     }
-    normalizePositionChannels(draft);
+    normalizeRelativeChannels(draft);
     if (applied) {
       for (const operation of validation.program.operations) {
         const entityId =

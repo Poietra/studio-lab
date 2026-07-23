@@ -344,6 +344,10 @@ class GroupedEquation(Scene):
   });
 
   it("lowers an immediate absolute scale as a relative Manim factor and reimports its absolute value", () => {
+    const scaledSource = source.replace(
+      'equation = MathTex("E", "=", "m", "c^2")',
+      'equation = MathTex("E", "=", "m", "c^2").scale(1.25)',
+    );
     const scale: CanonicalEditOperation = {
       ...operationBase("scale-now", 7),
       easing: "smooth",
@@ -355,7 +359,7 @@ class GroupedEquation(Scene):
     };
 
     const lowered = lowerCanonicalProgramSource(
-      source,
+      scaledSource,
       request(canonicalProgram([scale], "scale-now")),
       { height: 8, width: 14.222 },
       null,
@@ -378,6 +382,10 @@ class GroupedEquation(Scene):
   });
 
   it("lowers an animated absolute scale as a relative Manim factor and reimports its animation", () => {
+    const scaledSource = source.replace(
+      'equation = MathTex("E", "=", "m", "c^2")',
+      'equation = MathTex("E", "=", "m", "c^2").scale(1.5)',
+    );
     const scale: CanonicalEditOperation = {
       ...operationBase("scale-over-time", 7, 8.5),
       easing: "smooth",
@@ -389,7 +397,7 @@ class GroupedEquation(Scene):
     };
 
     const lowered = lowerCanonicalProgramSource(
-      source,
+      scaledSource,
       request(canonicalProgram([scale], "scale-over-time")),
       { height: 8, width: 14.222 },
       null,
