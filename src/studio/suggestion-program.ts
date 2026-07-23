@@ -830,9 +830,10 @@ export function createDirectManipulationResizeProgram(
     transactionId: string;
   }>,
 ): ProgramValidationResult {
-  const sourceAnchor = Math.abs(input.interval.start - input.capturedPlayhead) < 0.001
-    ? { kind: "playhead" as const, referenceSeconds: input.capturedPlayhead }
-    : { kind: "absolute" as const, seconds: input.interval.start };
+  const sourceAnchor =
+    Math.abs(input.interval.start - input.capturedPlayhead) < 0.001
+      ? { kind: "playhead" as const, referenceSeconds: input.capturedPlayhead }
+      : { kind: "absolute" as const, seconds: input.interval.start };
   const resolution = resolveTimeAnchorOnce(sourceAnchor, {
     capturedPlayhead: input.capturedPlayhead,
     sceneDuration: input.scene.duration,
@@ -845,25 +846,25 @@ export function createDirectManipulationResizeProgram(
     id: operationId(input.transactionId, "resize-shape"),
     interval: input.interval,
     kind: "ResizeEntity",
-    provenance: provenance("direct-manipulation", [
-      `${input.shape} geometry resize`,
-      "opposite edge anchored",
-    ]),
+    provenance: provenance("direct-manipulation", [`${input.shape} geometry resize`, "opposite edge anchored"]),
     scale: input.scale,
     shape: input.shape,
     to: input.to,
   };
-  return validateAndScheduleProgram({
-    anchor: resolution.anchor,
-    intentCount: 1,
-    loweringStatus: "supported",
-    operations: [operation],
-    provenance: provenance("direct-manipulation", ["shape-aware resize constraint"]),
-    requestedExecution: "sequence",
-    schedule: { edges: [], mode: "sequence", order: [operation.id] },
-    transactionId: input.transactionId,
-    version: EDIT_OPERATION_VERSION,
-  }, input.scene);
+  return validateAndScheduleProgram(
+    {
+      anchor: resolution.anchor,
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [operation],
+      provenance: provenance("direct-manipulation", ["shape-aware resize constraint"]),
+      requestedExecution: "sequence",
+      schedule: { edges: [], mode: "sequence", order: [operation.id] },
+      transactionId: input.transactionId,
+      version: EDIT_OPERATION_VERSION,
+    },
+    input.scene,
+  );
 }
 
 export function createDirectManipulationModifyMotionProgram(

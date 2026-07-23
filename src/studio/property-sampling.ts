@@ -16,19 +16,23 @@ export function isEntityDimensionsValue(value: unknown): value is EntityDimensio
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const record = value as Readonly<Record<string, unknown>>;
   const keys = Object.keys(record);
-  return keys.length > 0
-    && keys.every((key) => key === "height" || key === "radius" || key === "width")
-    && keys.every((key) => typeof record[key] === "number" && Number.isFinite(record[key]));
+  return (
+    keys.length > 0 &&
+    keys.every((key) => key === "height" || key === "radius" || key === "width") &&
+    keys.every((key) => typeof record[key] === "number" && Number.isFinite(record[key]))
+  );
 }
 
 function interpolateDimensions(from: EntityDimensions, to: EntityDimensions, progress: number) {
-  return Object.fromEntries((["height", "radius", "width"] as const).flatMap((key) => {
-    const start = from[key];
-    const end = to[key];
-    return typeof start === "number" && typeof end === "number"
-      ? [[key, start + (end - start) * progress] as const]
-      : [];
-  })) as EntityDimensions;
+  return Object.fromEntries(
+    (["height", "radius", "width"] as const).flatMap((key) => {
+      const start = from[key];
+      const end = to[key];
+      return typeof start === "number" && typeof end === "number"
+        ? [[key, start + (end - start) * progress] as const]
+        : [];
+    }),
+  ) as EntityDimensions;
 }
 
 function sameStartPriority(sample: PropertyChannelSample, index: number, baseIndex: number) {

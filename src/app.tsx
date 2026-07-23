@@ -109,19 +109,21 @@ type CanvasResizeBase = Readonly<{
   sourceAnchor: number;
   start: Readonly<{ x: number; y: number }>;
 }>;
-type CanvasScaleResizeState = CanvasResizeBase & Readonly<{
-  center: Readonly<{ x: number; y: number }>;
-  fromScale: number;
-  mode: "scale";
-}>;
-type CanvasShapeResizeState = CanvasResizeBase & Readonly<{
-  cameraScale: number;
-  frame: Readonly<{ height: number; width: number }>;
-  from: ShapeGeometry;
-  mode: "shape";
-  scale: number;
-  shape: ShapeResizeKind;
-}>;
+type CanvasScaleResizeState = CanvasResizeBase &
+  Readonly<{
+    center: Readonly<{ x: number; y: number }>;
+    fromScale: number;
+    mode: "scale";
+  }>;
+type CanvasShapeResizeState = CanvasResizeBase &
+  Readonly<{
+    cameraScale: number;
+    frame: Readonly<{ height: number; width: number }>;
+    from: ShapeGeometry;
+    mode: "shape";
+    scale: number;
+    shape: ShapeResizeKind;
+  }>;
 type CanvasResizeState = CanvasScaleResizeState | CanvasShapeResizeState;
 function detectShell(): Shell {
   if ("__TAURI_INTERNALS__" in window) return "Tauri";
@@ -144,10 +146,7 @@ function canvasPointerDelta(drag: CanvasDragState, point: Readonly<{ x: number; 
   };
 }
 
-function resizedEntityScale(
-  resize: CanvasScaleResizeState,
-  point: Readonly<{ x: number; y: number }>,
-) {
+function resizedEntityScale(resize: CanvasScaleResizeState, point: Readonly<{ x: number; y: number }>) {
   const startVector = {
     x: resize.start.x - resize.center.x,
     y: resize.start.y - resize.center.y,
@@ -162,10 +161,7 @@ function resizedEntityScale(
   return clamp(resize.fromScale * ratio, MIN_ENTITY_SCALE, MAX_ENTITY_SCALE);
 }
 
-function resizedShapeGeometry(
-  resize: CanvasShapeResizeState,
-  point: Readonly<{ x: number; y: number }>,
-) {
+function resizedShapeGeometry(resize: CanvasShapeResizeState, point: Readonly<{ x: number; y: number }>) {
   return resizeShapeByViewportDelta({
     cameraScale: resize.cameraScale,
     direction: resize.direction,
@@ -1515,10 +1511,10 @@ export function App() {
       start: { x: event.clientX, y: event.clientY },
     } as const;
     if (
-      shape
-      && entity.geometry.dimensions.kind === "known"
-      && entity.geometry.position.kind === "known"
-      && hasShapeDimensions(shape, entity.geometry.dimensions.value)
+      shape &&
+      entity.geometry.dimensions.kind === "known" &&
+      entity.geometry.position.kind === "known" &&
+      hasShapeDimensions(shape, entity.geometry.dimensions.value)
     ) {
       canvasResize.current = {
         ...base,
@@ -1603,11 +1599,7 @@ export function App() {
     setScalePreview(null);
   }
 
-  function nudgeEntityResize(
-    event: KeyboardEvent<HTMLButtonElement>,
-    entityId: string,
-    handle: ResizeHandleDirection,
-  ) {
+  function nudgeEntityResize(event: KeyboardEvent<HTMLButtonElement>, entityId: string, handle: ResizeHandleDirection) {
     const delta = NUDGE_DELTAS[event.key];
     if (!delta) return;
     event.preventDefault();
@@ -1617,11 +1609,11 @@ export function App() {
     if (!entity) return;
     const shape = resizeKindForType(entity.type);
     if (
-      shape
-      && entity.geometry.dimensions.kind === "known"
-      && entity.geometry.position.kind === "known"
-      && entity.geometry.scale.kind === "known"
-      && hasShapeDimensions(shape, entity.geometry.dimensions.value)
+      shape &&
+      entity.geometry.dimensions.kind === "known" &&
+      entity.geometry.position.kind === "known" &&
+      entity.geometry.scale.kind === "known" &&
+      hasShapeDimensions(shape, entity.geometry.dimensions.value)
     ) {
       const amount = event.shiftKey ? 5 : 1;
       const from = { dimensions: entity.geometry.dimensions.value, position: entity.position };
@@ -1675,9 +1667,9 @@ export function App() {
   ) {
     if (!activeScene || !draftBaseState) return false;
     if (
-      !hasShapeDimensions(shape, target.dimensions)
-      || !Number.isFinite(target.position.x)
-      || !Number.isFinite(target.position.y)
+      !hasShapeDimensions(shape, target.dimensions) ||
+      !Number.isFinite(target.position.x) ||
+      !Number.isFinite(target.position.y)
     ) {
       setDraftError("Shape dimensions must be finite positive numbers.");
       return false;
@@ -1690,15 +1682,16 @@ export function App() {
       gestureContext.proposedState.evaluatedScene,
       gestureContext.sourcePrograms,
     );
-    const anchor = capturedSourceAnchor === undefined
-      ? manualAuthoringAnchor({
-          action: "shape resize",
-          requireAlignedPlayhead: true,
-          scene: sourceScene,
-          sourcePrograms: gestureContext.sourcePrograms,
-          targetEntityIds: [entityId],
-        })
-      : { sourceTime: capturedSourceAnchor };
+    const anchor =
+      capturedSourceAnchor === undefined
+        ? manualAuthoringAnchor({
+            action: "shape resize",
+            requireAlignedPlayhead: true,
+            scene: sourceScene,
+            sourcePrograms: gestureContext.sourcePrograms,
+            targetEntityIds: [entityId],
+          })
+        : { sourceTime: capturedSourceAnchor };
     if (!anchor) return false;
     const end = animated ? anchor.sourceTime + motionDuration : anchor.sourceTime;
     if (animated && (motionDuration < 0.1 || end > sourceScene.duration + 0.001)) {
@@ -1807,9 +1800,9 @@ export function App() {
     const shape = entity ? resizeKindForType(entity.type) : null;
     if (!entity || !shape) return false;
     if (
-      entity.geometry.dimensions.kind === "unknown"
-      || entity.geometry.position.kind === "unknown"
-      || entity.geometry.scale.kind === "unknown"
+      entity.geometry.dimensions.kind === "unknown" ||
+      entity.geometry.position.kind === "unknown" ||
+      entity.geometry.scale.kind === "unknown"
     ) {
       setDraftError("Studio cannot resize this shape because its source geometry is runtime-dependent.");
       return false;
@@ -2287,7 +2280,9 @@ export function App() {
               onApplyDraft={() => void applyDraft()}
               onDiscardDraft={discardDraft}
               onDraftOperationChange={updateDraftOperation}
-              onEntityDimensionsChange={(entityId, dimensions) => void resizeEntityDimensionsFromInspector(entityId, dimensions)}
+              onEntityDimensionsChange={(entityId, dimensions) =>
+                void resizeEntityDimensionsFromInspector(entityId, dimensions)
+              }
               onEntityScaleChange={(entityId, scale) => void resizeEntityFromInspector(entityId, scale)}
               onRenderSessionChange={retainRenderSession}
               onSourceChanged={async () => {

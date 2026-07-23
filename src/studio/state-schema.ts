@@ -32,10 +32,7 @@ const propertyKnowledgeSchema = z.union([
 ]);
 const geometrySchema = z
   .object({
-    dimensions: z.union([
-      z.object({ kind: z.literal("known"), value: dimensionsSchema }).strict(),
-      unknownSchema,
-    ]),
+    dimensions: z.union([z.object({ kind: z.literal("known"), value: dimensionsSchema }).strict(), unknownSchema]),
     position: z.union([z.object({ kind: z.literal("known"), value: pointSchema }).strict(), unknownSchema]),
     scale: z.union([z.object({ kind: z.literal("known"), value: finiteNumber.positive() }).strict(), unknownSchema]),
     style: z.union([

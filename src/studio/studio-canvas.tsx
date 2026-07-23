@@ -148,7 +148,9 @@ function ObjectVisual({
     return <span aria-hidden="true" className="block h-14 w-32 border border-zinc-500" style={dimensionStyle} />;
   }
   if (entity.type === "Circle" || entity.type === "Dot") {
-    return <span aria-hidden="true" className="block size-16 rounded-full border border-zinc-500" style={dimensionStyle} />;
+    return (
+      <span aria-hidden="true" className="block size-16 rounded-full border border-zinc-500" style={dimensionStyle} />
+    );
   }
   if (entity.type === "RegularPolygon") {
     return (

@@ -219,9 +219,9 @@ export function validateAndScheduleProgram(
   }
   for (const operation of input.operations) {
     if (
-      operation.kind === "ResizeEntity"
-      && produced.has(operation.entityId)
-      && !scene.objectGraph.entities[operation.entityId]
+      operation.kind === "ResizeEntity" &&
+      produced.has(operation.entityId) &&
+      !scene.objectGraph.entities[operation.entityId]
     ) {
       issues.push({
         code: "identity-unknown",

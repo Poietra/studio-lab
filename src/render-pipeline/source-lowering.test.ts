@@ -476,7 +476,9 @@ class GroupedEquation(Scene):
     const lowered = lowerCanonicalProgramSource(
       rectangleSource,
       {
-        ...request(canonicalProgram([resize], "resize-rectangle"), [{ entityId: "rectangle_1", sourceVariable: "shape" }]),
+        ...request(canonicalProgram([resize], "resize-rectangle"), [
+          { entityId: "rectangle_1", sourceVariable: "shape" },
+        ]),
         viewport: { height: 720, width: 1280 },
       },
       { height: 8, width: 14.222 },

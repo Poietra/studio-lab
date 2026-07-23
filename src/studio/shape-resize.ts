@@ -21,20 +21,28 @@ export function inverseResizeHandleScale(entityScale: number, cameraScale: numbe
 }
 
 export function resizeHandleUsesDelta(direction: ResizeHandleDirection, delta: Point) {
-  return (delta.x !== 0 && (direction.includes("e") || direction.includes("w")))
-    || (delta.y !== 0 && (direction.includes("n") || direction.includes("s")));
+  return (
+    (delta.x !== 0 && (direction.includes("e") || direction.includes("w"))) ||
+    (delta.y !== 0 && (direction.includes("n") || direction.includes("s")))
+  );
 }
 
 export function sameShapeGeometry(left: ShapeGeometry, right: ShapeGeometry) {
-  return JSON.stringify(left.dimensions) === JSON.stringify(right.dimensions)
-    && Math.hypot(left.position.x - right.position.x, left.position.y - right.position.y) < 0.01;
+  return (
+    JSON.stringify(left.dimensions) === JSON.stringify(right.dimensions) &&
+    Math.hypot(left.position.x - right.position.x, left.position.y - right.position.y) < 0.01
+  );
 }
 
 export function hasShapeDimensions(shape: ShapeResizeKind, dimensions: EntityDimensions) {
   return shape === "circle"
     ? typeof dimensions.radius === "number" && Number.isFinite(dimensions.radius) && dimensions.radius > 0
-    : typeof dimensions.width === "number" && Number.isFinite(dimensions.width) && dimensions.width > 0
-      && typeof dimensions.height === "number" && Number.isFinite(dimensions.height) && dimensions.height > 0;
+    : typeof dimensions.width === "number" &&
+        Number.isFinite(dimensions.width) &&
+        dimensions.width > 0 &&
+        typeof dimensions.height === "number" &&
+        Number.isFinite(dimensions.height) &&
+        dimensions.height > 0;
 }
 
 function directionSign(direction: ResizeHandleDirection, negative: "n" | "w", positive: "e" | "s") {
@@ -43,16 +51,18 @@ function directionSign(direction: ResizeHandleDirection, negative: "n" | "w", po
   return 0;
 }
 
-export function resizeShapeByViewportDelta(input: Readonly<{
-  cameraScale: number;
-  direction: ResizeHandleDirection;
-  frame: Readonly<{ height: number; width: number }>;
-  from: ShapeGeometry;
-  scale: number;
-  shape: ShapeResizeKind;
-  viewport: Readonly<{ height: number; width: number }>;
-  viewportDelta: Point;
-}>): ShapeGeometry {
+export function resizeShapeByViewportDelta(
+  input: Readonly<{
+    cameraScale: number;
+    direction: ResizeHandleDirection;
+    frame: Readonly<{ height: number; width: number }>;
+    from: ShapeGeometry;
+    scale: number;
+    shape: ShapeResizeKind;
+    viewport: Readonly<{ height: number; width: number }>;
+    viewportDelta: Point;
+  }>,
+): ShapeGeometry {
   const horizontal = directionSign(input.direction, "w", "e");
   const vertical = directionSign(input.direction, "n", "s");
   const pixelsPerUnit = {
@@ -64,34 +74,38 @@ export function resizeShapeByViewportDelta(input: Readonly<{
 
   if (input.shape === "circle") {
     const radius = input.from.dimensions.radius ?? MIN_DIMENSION;
-    const horizontalChange = horizontal === 0
-      ? null
-      : horizontal * input.viewportDelta.x / pixelsPerUnit.x / renderedScale;
-    const verticalChange = vertical === 0
-      ? null
-      : vertical * input.viewportDelta.y / pixelsPerUnit.y / renderedScale;
-    const diameterChange = horizontalChange === null ? verticalChange ?? 0
-      : verticalChange === null ? horizontalChange
-        : Math.abs(horizontalChange) >= Math.abs(verticalChange) ? horizontalChange : verticalChange;
+    const horizontalChange =
+      horizontal === 0 ? null : (horizontal * input.viewportDelta.x) / pixelsPerUnit.x / renderedScale;
+    const verticalChange = vertical === 0 ? null : (vertical * input.viewportDelta.y) / pixelsPerUnit.y / renderedScale;
+    const diameterChange =
+      horizontalChange === null
+        ? (verticalChange ?? 0)
+        : verticalChange === null
+          ? horizontalChange
+          : Math.abs(horizontalChange) >= Math.abs(verticalChange)
+            ? horizontalChange
+            : verticalChange;
     const targetRadius = Math.max(MIN_DIMENSION, radius + diameterChange / 2);
     const appliedDiameterChange = 2 * (targetRadius - radius);
     return {
       dimensions: { radius: targetRadius },
       position: {
-        x: input.from.position.x + horizontal * appliedDiameterChange * pixelsPerUnit.x * entityScale / 2,
-        y: input.from.position.y + vertical * appliedDiameterChange * pixelsPerUnit.y * entityScale / 2,
+        x: input.from.position.x + (horizontal * appliedDiameterChange * pixelsPerUnit.x * entityScale) / 2,
+        y: input.from.position.y + (vertical * appliedDiameterChange * pixelsPerUnit.y * entityScale) / 2,
       },
     };
   }
 
   const width = input.from.dimensions.width ?? MIN_DIMENSION;
   const height = input.from.dimensions.height ?? MIN_DIMENSION;
-  const targetWidth = horizontal === 0
-    ? width
-    : Math.max(MIN_DIMENSION, width + horizontal * input.viewportDelta.x / pixelsPerUnit.x / renderedScale);
-  const targetHeight = vertical === 0
-    ? height
-    : Math.max(MIN_DIMENSION, height + vertical * input.viewportDelta.y / pixelsPerUnit.y / renderedScale);
+  const targetWidth =
+    horizontal === 0
+      ? width
+      : Math.max(MIN_DIMENSION, width + (horizontal * input.viewportDelta.x) / pixelsPerUnit.x / renderedScale);
+  const targetHeight =
+    vertical === 0
+      ? height
+      : Math.max(MIN_DIMENSION, height + (vertical * input.viewportDelta.y) / pixelsPerUnit.y / renderedScale);
   const appliedHorizontalDelta = horizontal * (targetWidth - width) * pixelsPerUnit.x * entityScale;
   const appliedVerticalDelta = vertical * (targetHeight - height) * pixelsPerUnit.y * entityScale;
   return {
@@ -103,9 +117,6 @@ export function resizeShapeByViewportDelta(input: Readonly<{
   };
 }
 
-export function centeredShapeGeometry(
-  from: ShapeGeometry,
-  dimensions: EntityDimensions,
-): ShapeGeometry {
+export function centeredShapeGeometry(from: ShapeGeometry, dimensions: EntityDimensions): ShapeGeometry {
   return { dimensions, position: from.position };
 }

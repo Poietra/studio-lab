@@ -243,11 +243,7 @@ export function sampleProposedState(proposedState: ProposedState, time: number):
       const scaleSamples = proposedState.evaluatedScene.propertyChannels[`${entity.id}/scale`]?.samples ?? [];
       const positionKnowledge = samplePropertyKnowledge(positionSamples, time, positionValue);
       const scaleKnowledge = samplePropertyKnowledge(scaleSamples, time, scaleValue);
-      const dimensionsKnowledge = samplePropertyKnowledge(
-        dimensionsSamples,
-        time,
-        dimensionsValue,
-      );
+      const dimensionsKnowledge = samplePropertyKnowledge(dimensionsSamples, time, dimensionsValue);
       const fallbackGeometry = {
         dimensions: { kind: "known" as const, value: {} },
         position: positionKnowledge ?? {

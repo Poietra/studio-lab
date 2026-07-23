@@ -335,7 +335,8 @@ class Geometry(Scene):
   });
 
   it("fails closed when constructor chains mutate dimensions", () => {
-    const imported = importManimScene(`from manim import *
+    const imported = importManimScene(
+      `from manim import *
 
 class Geometry(Scene):
     def construct(self):
@@ -345,23 +346,28 @@ class Geometry(Scene):
         placed = Rectangle().set_x(3)
         rotated = Rectangle().rotate(PI / 4)
         self.add(fitted, stretched, matched, placed, rotated)
-`, "scene.py", "Geometry");
+`,
+      "scene.py",
+      "Geometry",
+    );
 
     for (const variable of ["fitted", "stretched", "matched"]) {
-      const geometry = imported?.runtimeSceneState.objectGraph.entities[
-        `source:scene.py#Geometry:${variable}`
-      ]?.geometry;
+      const geometry =
+        imported?.runtimeSceneState.objectGraph.entities[`source:scene.py#Geometry:${variable}`]?.geometry;
       expect(geometry?.dimensions).toMatchObject({ kind: "unknown" });
       expect(geometry?.scale).toMatchObject({ kind: "unknown" });
     }
-    expect(imported?.runtimeSceneState.objectGraph.entities["source:scene.py#Geometry:placed"]?.geometry?.position)
-      .toMatchObject({ kind: "unknown" });
-    expect(imported?.runtimeSceneState.objectGraph.entities["source:scene.py#Geometry:rotated"]?.geometry?.dimensions)
-      .toMatchObject({ kind: "unknown" });
+    expect(
+      imported?.runtimeSceneState.objectGraph.entities["source:scene.py#Geometry:placed"]?.geometry?.position,
+    ).toMatchObject({ kind: "unknown" });
+    expect(
+      imported?.runtimeSceneState.objectGraph.entities["source:scene.py#Geometry:rotated"]?.geometry?.dimensions,
+    ).toMatchObject({ kind: "unknown" });
   });
 
   it("marks an unverified source resize as unknown geometry", () => {
-    const imported = importManimScene(`from manim import *
+    const imported = importManimScene(
+      `from manim import *
 
 class Resized(Scene):
     def construct(self):
@@ -369,17 +375,23 @@ class Resized(Scene):
         self.add(shape)
         shape.stretch_to_fit_width(get_width()).stretch_to_fit_height(3).move_to(where())
         self.wait(1)
-`, "scene.py", "Resized");
+`,
+      "scene.py",
+      "Resized",
+    );
     const entityId = "source:scene.py#Resized:shape";
 
-    expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/dimensions`]?.samples.at(-1)?.knowledge)
-      .toMatchObject({ kind: "unknown", reason: expect.stringMatching(/unverified resize/i) });
-    expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/position`]?.samples.at(-1)?.knowledge)
-      .toMatchObject({ kind: "unknown", reason: expect.stringMatching(/unverified resize/i) });
+    expect(
+      imported?.runtimeSceneState.propertyChannels[`${entityId}/dimensions`]?.samples.at(-1)?.knowledge,
+    ).toMatchObject({ kind: "unknown", reason: expect.stringMatching(/unverified resize/i) });
+    expect(
+      imported?.runtimeSceneState.propertyChannels[`${entityId}/position`]?.samples.at(-1)?.knowledge,
+    ).toMatchObject({ kind: "unknown", reason: expect.stringMatching(/unverified resize/i) });
   });
 
   it("fails closed for common unmarked dimension mutations without inventing position changes", () => {
-    const imported = importManimScene(`from manim import *
+    const imported = importManimScene(
+      `from manim import *
 
 class Resized(Scene):
     def construct(self):
@@ -397,26 +409,33 @@ class Resized(Scene):
             run_time=1,
         )
         self.play(Rotate(rotated, angle=PI / 4), run_time=1)
-`, "scene.py", "Resized");
+`,
+      "scene.py",
+      "Resized",
+    );
 
     for (const variable of ["height_only", "width_only", "animated", "rotated"]) {
       const entityId = `source:scene.py#Resized:${variable}`;
-      expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/dimensions`]?.samples.at(-1)?.knowledge)
-        .toMatchObject({ kind: "unknown" });
-      expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/position`]?.samples)
-        .toHaveLength(1);
-      expect(imported?.runtimeSceneState.objectGraph.entities[entityId]?.geometry?.position)
-        .toMatchObject({ kind: "known" });
+      expect(
+        imported?.runtimeSceneState.propertyChannels[`${entityId}/dimensions`]?.samples.at(-1)?.knowledge,
+      ).toMatchObject({ kind: "unknown" });
+      expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/position`]?.samples).toHaveLength(1);
+      expect(imported?.runtimeSceneState.objectGraph.entities[entityId]?.geometry?.position).toMatchObject({
+        kind: "known",
+      });
     }
     const movedId = "source:scene.py#Resized:moved";
-    expect(imported?.runtimeSceneState.propertyChannels[`${movedId}/dimensions`]?.samples.at(-1)?.knowledge)
-      .toMatchObject({ kind: "known", value: { height: 2, width: 4 } });
-    expect(imported?.runtimeSceneState.propertyChannels[`${movedId}/position`]?.samples.at(-1)?.knowledge)
-      .toMatchObject({ kind: "known" });
+    expect(
+      imported?.runtimeSceneState.propertyChannels[`${movedId}/dimensions`]?.samples.at(-1)?.knowledge,
+    ).toMatchObject({ kind: "known", value: { height: 2, width: 4 } });
+    expect(
+      imported?.runtimeSceneState.propertyChannels[`${movedId}/position`]?.samples.at(-1)?.knowledge,
+    ).toMatchObject({ kind: "known" });
   });
 
   it("does not validate a resize marker with move_to from another play action", () => {
-    const imported = importManimScene(`from manim import *
+    const imported = importManimScene(
+      `from manim import *
 
 class Resized(Scene):
     def construct(self):
@@ -429,13 +448,16 @@ class Resized(Scene):
             b.animate.move_to(RIGHT),
             run_time=1,
         )
-`, "scene.py", "Resized");
+`,
+      "scene.py",
+      "Resized",
+    );
     const entityId = "source:scene.py#Resized:a";
 
-    expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/dimensions`]?.samples.at(-1)?.knowledge)
-      .toMatchObject({ kind: "unknown" });
-    expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/position`]?.samples)
-      .toHaveLength(1);
+    expect(
+      imported?.runtimeSceneState.propertyChannels[`${entityId}/dimensions`]?.samples.at(-1)?.knowledge,
+    ).toMatchObject({ kind: "unknown" });
+    expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/position`]?.samples).toHaveLength(1);
   });
 
   it("fails closed for complex Python and an invalid marker", () => {

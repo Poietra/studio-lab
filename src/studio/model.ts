@@ -87,14 +87,7 @@ export type ObjectGraph = Readonly<{
   lineage: readonly IdentityLineage[];
 }>;
 
-export type PropertyValue =
-  | boolean
-  | number
-  | string
-  | Point
-  | EntityDimensions
-  | EntityContent
-  | readonly string[];
+export type PropertyValue = boolean | number | string | Point | EntityDimensions | EntityContent | readonly string[];
 
 export type PropertyChannelSample = Readonly<{
   control?: Point;

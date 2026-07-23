@@ -347,8 +347,7 @@ test("previews, exports, applies, and undoes a Circle geometry resize", async ({
   await page.mouse.move(origin.x, origin.y);
   await page.mouse.down();
   await page.mouse.move(origin.x + 45, origin.y + 35, { steps: 4 });
-  await expect.poll(async () => Number(await wrapper.getAttribute("data-studio-entity-radius")))
-    .toBeGreaterThan(1.25);
+  await expect.poll(async () => Number(await wrapper.getAttribute("data-studio-entity-radius"))).toBeGreaterThan(1.25);
   const previewBox = await circle.boundingBox();
   expect(previewBox?.width ?? 0).toBeGreaterThan(initialBox.width);
   const previewHandleBox = await handle.boundingBox();
@@ -368,7 +367,8 @@ test("previews, exports, applies, and undoes a Circle geometry resize", async ({
   await page.keyboard.press("Control+z");
   await expect(wrapper).toHaveAttribute("data-studio-entity-radius", "1.0000");
   await page.keyboard.press("Control+Shift+z");
-  await expect.poll(async () => Number(await wrapper.getAttribute("data-studio-entity-radius")))
+  await expect
+    .poll(async () => Number(await wrapper.getAttribute("data-studio-entity-radius")))
     .toBeCloseTo(committedRadius, 2);
 });
 
@@ -398,8 +398,7 @@ test("resizes Rectangle width independently with edge and keyboard controls", as
   await page.mouse.move(origin.x, origin.y);
   await page.mouse.down();
   await page.mouse.move(origin.x + 45, origin.y, { steps: 4 });
-  await expect.poll(async () => Number(await wrapper.getAttribute("data-studio-entity-width")))
-    .toBeGreaterThan(4.7);
+  await expect.poll(async () => Number(await wrapper.getAttribute("data-studio-entity-width"))).toBeGreaterThan(4.7);
   await expect(wrapper).toHaveAttribute("data-studio-entity-height", "2.0000");
   const preview = await rectangle.boundingBox();
   expect(preview?.width ?? 0).toBeGreaterThan(initial.width + 30);
@@ -422,7 +421,8 @@ test("resizes Rectangle width independently with edge and keyboard controls", as
   await expect(wrapper).toHaveAttribute("data-studio-entity-width", widthBeforeKey.toFixed(4));
   await eastHandle.press("ArrowRight");
   await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
-  await expect.poll(async () => Number(await wrapper.getAttribute("data-studio-entity-width")))
+  await expect
+    .poll(async () => Number(await wrapper.getAttribute("data-studio-entity-width")))
     .toBeGreaterThan(widthBeforeKey);
   await expect(wrapper).toHaveAttribute("data-studio-entity-height", "2.0000");
 });

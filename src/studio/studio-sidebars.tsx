@@ -337,12 +337,13 @@ export function StudioInspector({
       ).flatMap(([label, knowledge]) => (knowledge.kind === "unknown" ? [{ label, reason: knowledge.reason }] : []))
     : [];
   const scaleUnknown = selectedEntity?.geometry.scale.kind === "unknown";
-  const editableDimensions = selectedEntity?.geometry.dimensions.kind === "known"
-    && selectedEntity.geometry.position.kind === "known"
-    && selectedEntity.geometry.scale.kind === "known"
-    && (selectedEntity.type === "Circle" || selectedEntity.type === "Rectangle")
-    ? selectedEntity.geometry.dimensions.value
-    : null;
+  const editableDimensions =
+    selectedEntity?.geometry.dimensions.kind === "known" &&
+    selectedEntity.geometry.position.kind === "known" &&
+    selectedEntity.geometry.scale.kind === "known" &&
+    (selectedEntity.type === "Circle" || selectedEntity.type === "Rectangle")
+      ? selectedEntity.geometry.dimensions.value
+      : null;
   return (
     <aside className={cn("min-h-0 overflow-y-auto bg-zinc-950 p-3", className)}>
       {draftProgram ? (
@@ -382,9 +383,12 @@ export function StudioInspector({
                     onSubmit={(event) => {
                       event.preventDefault();
                       const data = new FormData(event.currentTarget);
-                      onEntityDimensionsChange(selectedEntity.id, selectedEntity.type === "Circle"
-                        ? { radius: Number(data.get("radius")) }
-                        : { height: Number(data.get("height")), width: Number(data.get("width")) });
+                      onEntityDimensionsChange(
+                        selectedEntity.id,
+                        selectedEntity.type === "Circle"
+                          ? { radius: Number(data.get("radius")) }
+                          : { height: Number(data.get("height")), width: Number(data.get("width")) },
+                      );
                     }}
                   >
                     {selectedEntity.type === "Circle" ? (
@@ -432,7 +436,9 @@ export function StudioInspector({
                       Set
                     </button>
                   </form>
-                ) : dimensionSummary(selectedEntity)}
+                ) : (
+                  dimensionSummary(selectedEntity)
+                )}
               </dd>
               <dt className="text-zinc-600">Style</dt>
               <dd className="truncate text-zinc-300" title={styleSummary(selectedEntity)}>

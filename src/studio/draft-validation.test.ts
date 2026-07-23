@@ -25,16 +25,18 @@ const transition: EditSuggestionOperation = {
 
 describe("Studio draft validation boundary", () => {
   it("reserves the dimensions channel for ResizeEntity", () => {
-    expect(canonicalOperationSchema.safeParse({
-      dependsOn: [],
-      entityId: "proof_box",
-      id: "invalid-dimensions-property",
-      interval: { end: 5, start: 5 },
-      key: "dimensions",
-      kind: "SetProperty",
-      provenance: { evidence: [], origin: "remote-model" },
-      value: 1,
-    }).success).toBe(false);
+    expect(
+      canonicalOperationSchema.safeParse({
+        dependsOn: [],
+        entityId: "proof_box",
+        id: "invalid-dimensions-property",
+        interval: { end: 5, start: 5 },
+        key: "dimensions",
+        kind: "SetProperty",
+        provenance: { evidence: [], origin: "remote-model" },
+        value: 1,
+      }).success,
+    ).toBe(false);
   });
 
   it("rejects a Scene transition before canonicalization when no next Scene exists", () => {
@@ -255,12 +257,12 @@ describe("Studio draft validation boundary", () => {
       transactionId: "rectangle-geometry",
     });
     expect(validation.kind).toBe("valid");
-    const proposed = evaluateWorkingState(createFixtureWorkingState({
-      stagedPrograms: [programRecord(validation.program, validation)],
-    }));
-    const rectangle = projectProposedState(proposed, 5).canvas.entities.find((entity) => (
-      entity.id === "proof_box"
-    ));
+    const proposed = evaluateWorkingState(
+      createFixtureWorkingState({
+        stagedPrograms: [programRecord(validation.program, validation)],
+      }),
+    );
+    const rectangle = projectProposedState(proposed, 5).canvas.entities.find((entity) => entity.id === "proof_box");
 
     expect(rectangle?.geometry.dimensions).toEqual({
       kind: "known",
@@ -282,12 +284,12 @@ describe("Studio draft validation boundary", () => {
       transactionId: "animated-rectangle-geometry",
     });
     expect(validation.kind).toBe("valid");
-    const proposed = evaluateWorkingState(createFixtureWorkingState({
-      stagedPrograms: [programRecord(validation.program, validation)],
-    }));
-    const rectangle = projectProposedState(proposed, 6).canvas.entities.find((entity) => (
-      entity.id === "proof_box"
-    ));
+    const proposed = evaluateWorkingState(
+      createFixtureWorkingState({
+        stagedPrograms: [programRecord(validation.program, validation)],
+      }),
+    );
+    const rectangle = projectProposedState(proposed, 6).canvas.entities.find((entity) => entity.id === "proof_box");
 
     expect(rectangle?.geometry.dimensions).toEqual({
       kind: "known",
@@ -309,9 +311,9 @@ describe("Studio draft validation boundary", () => {
     });
 
     expect(validation.kind).toBe("invalid");
-    expect(validation.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ field: "shape", severity: "error" }),
-    ]));
+    expect(validation.issues).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: "shape", severity: "error" })]),
+    );
   });
 
   it("rejects extra dimension keys on a shape resize", () => {
@@ -328,9 +330,9 @@ describe("Studio draft validation boundary", () => {
     });
 
     expect(validation.kind).toBe("invalid");
-    expect(validation.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ field: "dimensions", severity: "error" }),
-    ]));
+    expect(validation.issues).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: "dimensions", severity: "error" })]),
+    );
   });
 
   it("rejects dimensions that overflow during Manim lowering", () => {
@@ -347,8 +349,8 @@ describe("Studio draft validation boundary", () => {
     });
 
     expect(validation.kind).toBe("invalid");
-    expect(validation.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ field: "dimensions", severity: "error" }),
-    ]));
+    expect(validation.issues).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: "dimensions", severity: "error" })]),
+    );
   });
 });

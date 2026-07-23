@@ -461,22 +461,20 @@ function resizeExpression(
 ) {
   const target = operation.to.dimensions;
   const prefix = `${variable}${animated ? ".animate" : ""}`;
-  const width = operation.shape === "circle"
-    ? 2 * (target.radius ?? 0) * operation.scale
-    : (target.width ?? 0) * operation.scale;
-  const height = operation.shape === "rectangle"
-    ? (target.height ?? 0) * operation.scale
-    : null;
+  const width =
+    operation.shape === "circle" ? 2 * (target.radius ?? 0) * operation.scale : (target.width ?? 0) * operation.scale;
+  const height = operation.shape === "rectangle" ? (target.height ?? 0) * operation.scale : null;
   if (!Number.isFinite(width) || width <= 0 || (height !== null && (!Number.isFinite(height) || height <= 0))) {
     throw new ProgramLoweringError(
       "operation-unsupported",
       "ResizeEntity produces a non-finite or non-positive Manim size.",
     );
   }
-  const resize = operation.shape === "circle"
-    ? `${prefix}.scale_to_fit_width(${formatPositiveAmount(width)})`
-    : `${prefix}.stretch_to_fit_width(${formatPositiveAmount(width)})`
-      + `.stretch_to_fit_height(${formatPositiveAmount(height ?? 0)})`;
+  const resize =
+    operation.shape === "circle"
+      ? `${prefix}.scale_to_fit_width(${formatPositiveAmount(width)})`
+      : `${prefix}.stretch_to_fit_width(${formatPositiveAmount(width)})` +
+        `.stretch_to_fit_height(${formatPositiveAmount(height ?? 0)})`;
   return `${resize}.move_to(${pointExpression(operation.to.position, frame, viewport)})`;
 }
 
@@ -973,15 +971,14 @@ export function lowerCanonicalProgramSource(
       output.push(`${variable}.scale(${formatAmount(change.factor)})`);
     }
     for (const operation of bucket) {
-      if (
-        operation.kind !== "ResizeEntity"
-        || operation.interval.end - operation.interval.start > EPSILON
-      ) continue;
+      if (operation.kind !== "ResizeEntity" || operation.interval.end - operation.interval.start > EPSILON) continue;
       const variable = requireVariable(variableByEntity, operation.entityId);
-      output.push(sourceMarker("dimensions", {
-        kind: "exact",
-        resize: resizeMarkerEntry(variable, operation, request.viewport),
-      }));
+      output.push(
+        sourceMarker("dimensions", {
+          kind: "exact",
+          resize: resizeMarkerEntry(variable, operation, request.viewport),
+        }),
+      );
       output.push(resizeExpression(variable, operation, frame, request.viewport, false));
     }
 

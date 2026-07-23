@@ -38,23 +38,14 @@ export function entityPreviewScale(
   return preview?.entityId === entity.id ? preview.scale : entity.scale;
 }
 
-export function clientPointToViewport(
-  bounds: SurfaceBounds,
-  clientPoint: Point,
-): Point {
+export function clientPointToViewport(bounds: SurfaceBounds, clientPoint: Point): Point {
   return {
-    x: bounds.width
-      ? ((clientPoint.x - bounds.left) / bounds.width) * STUDIO_VIEWPORT.width
-      : 0,
-    y: bounds.height
-      ? ((clientPoint.y - bounds.top) / bounds.height) * STUDIO_VIEWPORT.height
-      : 0,
+    x: bounds.width ? ((clientPoint.x - bounds.left) / bounds.width) * STUDIO_VIEWPORT.width : 0,
+    y: bounds.height ? ((clientPoint.y - bounds.top) / bounds.height) * STUDIO_VIEWPORT.height : 0,
   };
 }
 
-export function viewportScaleForBounds(
-  bounds: Readonly<Pick<SurfaceBounds, "height" | "width">> | null,
-): Point {
+export function viewportScaleForBounds(bounds: Readonly<Pick<SurfaceBounds, "height" | "width">> | null): Point {
   return {
     x: bounds?.width ? STUDIO_VIEWPORT.width / bounds.width : 1,
     y: bounds?.height ? STUDIO_VIEWPORT.height / bounds.height : 1,
@@ -78,6 +69,5 @@ export function viewportPositionStyle(position: Point) {
 export function isCanvasInteractionTarget(target: unknown) {
   if (!target || typeof target !== "object" || !("closest" in target)) return false;
   const closest = (target as { closest?: unknown }).closest;
-  return typeof closest === "function"
-    && Boolean(closest.call(target, CANVAS_INTERACTION_SELECTOR));
+  return typeof closest === "function" && Boolean(closest.call(target, CANVAS_INTERACTION_SELECTOR));
 }

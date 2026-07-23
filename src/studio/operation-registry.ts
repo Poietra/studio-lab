@@ -14,12 +14,7 @@ import type {
   TimelineEvent,
 } from "./model";
 import { exactEntityScaleAt, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./magic-edit-capabilities";
-import type {
-  CanonicalEditOperation,
-  CanonicalEditProgram,
-  ChannelAccess,
-  ProgramValidationIssue,
-} from "./operations";
+import type { CanonicalEditOperation, CanonicalEditProgram, ChannelAccess, ProgramValidationIssue } from "./operations";
 import { insertedProgramDuration } from "./program-composition";
 import {
   isEntityDimensionsValue,
@@ -29,11 +24,13 @@ import {
 } from "./property-sampling";
 
 const pointSchema = z.object({ x: z.number(), y: z.number() });
-const dimensionsSchema = z.object({
-  height: z.number().positive().optional(),
-  radius: z.number().positive().optional(),
-  width: z.number().positive().optional(),
-}).strict();
+const dimensionsSchema = z
+  .object({
+    height: z.number().positive().optional(),
+    radius: z.number().positive().optional(),
+    width: z.number().positive().optional(),
+  })
+  .strict();
 const intervalSchema = z.object({ end: z.number(), start: z.number() });
 const provenanceSchema = z.object({
   evidence: z.array(z.string()),
@@ -557,46 +554,56 @@ function matchingResizeStart(
   const entity = scene.objectGraph.entities[operation.entityId];
   const dimensions = isEntityDimensionsValue(sampledDimensions)
     ? sampledDimensions
-    : entity?.geometry?.dimensions.kind === "known" ? entity.geometry.dimensions.value
-    : entity?.type === "Circle" ? { radius: 1 }
-      : entity?.type === "Rectangle" ? { height: 2, width: 4 }
-        : undefined;
-  const scale = typeof sampledScale === "number" ? sampledScale
-    : entity?.geometry?.scale.kind === "known" ? entity.geometry.scale.value
-      : 1;
+    : entity?.geometry?.dimensions.kind === "known"
+      ? entity.geometry.dimensions.value
+      : entity?.type === "Circle"
+        ? { radius: 1 }
+        : entity?.type === "Rectangle"
+          ? { height: 2, width: 4 }
+          : undefined;
+  const scale =
+    typeof sampledScale === "number"
+      ? sampledScale
+      : entity?.geometry?.scale.kind === "known"
+        ? entity.geometry.scale.value
+        : 1;
   const dimensionsKnowledge = dimensions
     ? samplePropertyKnowledge(dimensionsSamples, operation.interval.start, dimensions)
     : undefined;
   const positionKnowledge = isPointValue(position)
     ? samplePropertyKnowledge(positionSamples, operation.interval.start, position)
     : undefined;
-  const scaleKnowledge = typeof sampledScale === "number"
-    ? samplePropertyKnowledge(scaleSamples, operation.interval.start, scale)
-    : undefined;
-  const dimensionsMatch = operation.shape === "circle"
-    ? dimensions !== undefined
-      && dimensions.radius !== undefined
-      && operation.from.dimensions.radius !== undefined
-      && closeEnough(dimensions.radius, operation.from.dimensions.radius)
-    : dimensions !== undefined
-      && dimensions.width !== undefined
-      && dimensions.height !== undefined
-      && operation.from.dimensions.width !== undefined
-      && operation.from.dimensions.height !== undefined
-      && closeEnough(dimensions.width, operation.from.dimensions.width)
-      && closeEnough(dimensions.height, operation.from.dimensions.height);
-  return dimensionsMatch
-    && exactShapeDimensions(operation.shape, operation.from.dimensions)
-    && exactShapeDimensions(operation.shape, operation.to.dimensions)
-    && !(dimensionsSamples.length === 0 && entity?.geometry?.dimensions.kind === "unknown")
-    && dimensionsKnowledge?.kind !== "unknown"
-    && isPointValue(position)
-    && positionKnowledge?.kind !== "unknown"
-    && closeEnough(position.x, operation.from.position.x)
-    && closeEnough(position.y, operation.from.position.y)
-    && !(scaleSamples.length === 0 && entity?.geometry?.scale.kind === "unknown")
-    && scaleKnowledge?.kind !== "unknown"
-    && closeEnough(scale, operation.scale);
+  const scaleKnowledge =
+    typeof sampledScale === "number"
+      ? samplePropertyKnowledge(scaleSamples, operation.interval.start, scale)
+      : undefined;
+  const dimensionsMatch =
+    operation.shape === "circle"
+      ? dimensions !== undefined &&
+        dimensions.radius !== undefined &&
+        operation.from.dimensions.radius !== undefined &&
+        closeEnough(dimensions.radius, operation.from.dimensions.radius)
+      : dimensions !== undefined &&
+        dimensions.width !== undefined &&
+        dimensions.height !== undefined &&
+        operation.from.dimensions.width !== undefined &&
+        operation.from.dimensions.height !== undefined &&
+        closeEnough(dimensions.width, operation.from.dimensions.width) &&
+        closeEnough(dimensions.height, operation.from.dimensions.height);
+  return (
+    dimensionsMatch &&
+    exactShapeDimensions(operation.shape, operation.from.dimensions) &&
+    exactShapeDimensions(operation.shape, operation.to.dimensions) &&
+    !(dimensionsSamples.length === 0 && entity?.geometry?.dimensions.kind === "unknown") &&
+    dimensionsKnowledge?.kind !== "unknown" &&
+    isPointValue(position) &&
+    positionKnowledge?.kind !== "unknown" &&
+    closeEnough(position.x, operation.from.position.x) &&
+    closeEnough(position.y, operation.from.position.y) &&
+    !(scaleSamples.length === 0 && entity?.geometry?.scale.kind === "unknown") &&
+    scaleKnowledge?.kind !== "unknown" &&
+    closeEnough(scale, operation.scale)
+  );
 }
 
 export const OPERATION_REGISTRY = {
@@ -624,14 +631,16 @@ export const OPERATION_REGISTRY = {
       const dimensions = createDimensions(operation.entity.type, operation.entity.dimensions);
       draft.entities[operation.entity.id] = {
         content: operation.entity.content,
-        ...(dimensions ? {
-          geometry: {
-            dimensions: { kind: "known" as const, value: dimensions },
-            position: { kind: "unknown" as const, reason: "Position has not been assigned yet." },
-            scale: { kind: "known" as const, value: 1 },
-            style: { kind: "known" as const, value: {} },
-          },
-        } : {}),
+        ...(dimensions
+          ? {
+              geometry: {
+                dimensions: { kind: "known" as const, value: dimensions },
+                position: { kind: "unknown" as const, reason: "Position has not been assigned yet." },
+                scale: { kind: "known" as const, value: 1 },
+                style: { kind: "known" as const, value: {} },
+              },
+            }
+          : {}),
         id: operation.entity.id,
         lifetime: [{ end, start: operation.entity.lifetime.start }],
         provisional: true,
@@ -818,9 +827,7 @@ export const OPERATION_REGISTRY = {
     validate: (operation, scene) => {
       const issues = entityIssues([operation.entityId], operation, scene);
       const entity = scene.objectGraph.entities[operation.entityId];
-      const expectedShape = entity?.type === "Circle" ? "circle"
-        : entity?.type === "Rectangle" ? "rectangle"
-          : null;
+      const expectedShape = entity?.type === "Circle" ? "circle" : entity?.type === "Rectangle" ? "rectangle" : null;
       if (entity && expectedShape !== operation.shape) {
         issues.push({
           code: "schema-invalid",
@@ -838,25 +845,26 @@ export const OPERATION_REGISTRY = {
           severity: "error",
         });
       }
-      const dimensions = operation.shape === "circle"
-        ? [operation.from.dimensions.radius, operation.to.dimensions.radius]
-        : [
-            operation.from.dimensions.width,
-            operation.from.dimensions.height,
-            operation.to.dimensions.width,
-            operation.to.dimensions.height,
-          ];
+      const dimensions =
+        operation.shape === "circle"
+          ? [operation.from.dimensions.radius, operation.to.dimensions.radius]
+          : [
+              operation.from.dimensions.width,
+              operation.from.dimensions.height,
+              operation.to.dimensions.width,
+              operation.to.dimensions.height,
+            ];
       const lowerMultiplier = operation.shape === "circle" ? 2 : 1;
-      const loweredDimensions = dimensions.map((value) => (
-        typeof value === "number" ? value * operation.scale * lowerMultiplier : Number.NaN
-      ));
+      const loweredDimensions = dimensions.map((value) =>
+        typeof value === "number" ? value * operation.scale * lowerMultiplier : Number.NaN,
+      );
       if (
-        !exactShapeDimensions(operation.shape, operation.from.dimensions)
-        || !exactShapeDimensions(operation.shape, operation.to.dimensions)
-        || dimensions.some((value) => typeof value !== "number" || !Number.isFinite(value) || value <= 0)
-        || loweredDimensions.some((value) => !Number.isFinite(value) || value <= 0)
-        || !Number.isFinite(operation.scale)
-        || operation.scale <= 0
+        !exactShapeDimensions(operation.shape, operation.from.dimensions) ||
+        !exactShapeDimensions(operation.shape, operation.to.dimensions) ||
+        dimensions.some((value) => typeof value !== "number" || !Number.isFinite(value) || value <= 0) ||
+        loweredDimensions.some((value) => !Number.isFinite(value) || value <= 0) ||
+        !Number.isFinite(operation.scale) ||
+        operation.scale <= 0
       ) {
         issues.push({
           code: "schema-invalid",

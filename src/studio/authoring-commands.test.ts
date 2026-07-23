@@ -57,20 +57,22 @@ describe("manual Studio authoring commands", () => {
   it("rejects creation dimensions that do not match the entity type", () => {
     const result = createStudioEntitiesProgram({
       capturedPlayhead: 5,
-      entities: [{
-        content: defaultEntityContent("Circle", ""),
-        dimensions: { width: 4 },
-        position: { x: 180, y: 120 },
-        type: "Circle",
-      }],
+      entities: [
+        {
+          content: defaultEntityContent("Circle", ""),
+          dimensions: { width: 4 },
+          position: { x: 180, y: 120 },
+          type: "Circle",
+        },
+      ],
       scene: STUDIO_FIXTURE_SCENE,
       transactionId: "invalid-circle-dimensions",
     });
 
     expect(result.validation.kind).toBe("invalid");
-    expect(result.validation.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ field: "entity.dimensions", severity: "error" }),
-    ]));
+    expect(result.validation.issues).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: "entity.dimensions", severity: "error" })]),
+    );
   });
 
   it("resizes a newly created shape from its custom dimensions", () => {
@@ -81,9 +83,11 @@ describe("manual Studio authoring commands", () => {
       transactionId: "custom-circle",
     });
     expect(creation.validation.kind).toBe("valid");
-    const scene = evaluateWorkingState(createFixtureWorkingState({
-      appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
-    })).evaluatedScene;
+    const scene = evaluateWorkingState(
+      createFixtureWorkingState({
+        appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
+      }),
+    ).evaluatedScene;
     const resize = createDirectManipulationResizeProgram({
       capturedPlayhead: 5,
       entityId: creation.entityIds[0],
@@ -114,9 +118,14 @@ describe("manual Studio authoring commands", () => {
     const program = { ...creation.validation.program, operations };
     const validation = validateAndScheduleProgram(program, STUDIO_FIXTURE_SCENE);
     expect(validation.kind).toBe("valid");
-    const projected = projectProposedState(evaluateWorkingState(createFixtureWorkingState({
-      appliedPrograms: [programRecord(validation.program, validation)],
-    })), 5).canvas.entities.find((entity) => entity.id === creation.entityIds[0]);
+    const projected = projectProposedState(
+      evaluateWorkingState(
+        createFixtureWorkingState({
+          appliedPrograms: [programRecord(validation.program, validation)],
+        }),
+      ),
+      5,
+    ).canvas.entities.find((entity) => entity.id === creation.entityIds[0]);
 
     expect(projected?.geometry.dimensions).toEqual({ kind: "known", value: { radius: 1 } });
   });
@@ -143,19 +152,22 @@ describe("manual Studio authoring commands", () => {
       to: { dimensions: { radius: 2 }, position: { x: 200, y: 140 } },
     };
     const operations = [...creation.validation.program.operations, resize];
-    const validation = validateAndScheduleProgram({
-      ...creation.validation.program,
-      operations,
-      schedule: {
-        ...creation.validation.program.schedule,
-        order: [...creation.validation.program.schedule.order, resize.id],
+    const validation = validateAndScheduleProgram(
+      {
+        ...creation.validation.program,
+        operations,
+        schedule: {
+          ...creation.validation.program.schedule,
+          order: [...creation.validation.program.schedule.order, resize.id],
+        },
       },
-    }, STUDIO_FIXTURE_SCENE);
+      STUDIO_FIXTURE_SCENE,
+    );
 
     expect(validation.kind).toBe("invalid");
-    expect(validation.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ field: "target", operationId: resize.id, severity: "error" }),
-    ]));
+    expect(validation.issues).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: "target", operationId: resize.id, severity: "error" })]),
+    );
   });
 
   it("duplicates only types supported by the Insert tool", () => {
@@ -165,18 +177,22 @@ describe("manual Studio authoring commands", () => {
     expect(equation).toBeDefined();
     if (!equation) return;
     const duplicate = duplicateEntityInput(equation);
-    expect(duplicate).toEqual(expect.objectContaining({
-      position: { x: equation.position.x + 20, y: equation.position.y + 20 },
-      type: "MathTex",
-    }));
+    expect(duplicate).toEqual(
+      expect.objectContaining({
+        position: { x: equation.position.x + 20, y: equation.position.y + 20 },
+        type: "MathTex",
+      }),
+    );
     expect(duplicate).not.toHaveProperty("dimensions");
     if (!duplicate) return;
-    expect(createStudioEntitiesProgram({
-      capturedPlayhead: 5,
-      entities: [duplicate],
-      scene: STUDIO_FIXTURE_SCENE,
-      transactionId: "duplicate-equation",
-    }).validation.kind).toBe("valid");
+    expect(
+      createStudioEntitiesProgram({
+        capturedPlayhead: 5,
+        entities: [duplicate],
+        scene: STUDIO_FIXTURE_SCENE,
+        transactionId: "duplicate-equation",
+      }).validation.kind,
+    ).toBe("valid");
   });
 
   it("creates a persistent remove operation for the Delete command", () => {
