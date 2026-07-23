@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      content="default-src 'self'; connect-src 'self'; media-src 'self' blob:; script-src 'self'; style-src 'unsafe-inline'"
+      http-equiv="Content-Security-Policy"
+    />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <title>Poietra shell workload</title>
+    <style>
+      :root { color-scheme: dark; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+      body { background: #09090b; color: #d4d4d8; margin: 0; padding: 24px; }
+      main { margin: 0 auto; max-width: 1000px; }
+      h1 { font: 600 20px/1.3 system-ui, sans-serif; }
+      p { color: #a1a1aa; font: 14px/1.5 system-ui, sans-serif; }
+      button { background: #0284c7; border: 0; color: white; cursor: pointer; padding: 8px 14px; }
+      button:disabled { cursor: wait; opacity: .55; }
+      .stage { aspect-ratio: 16 / 9; background: black; margin: 18px 0; max-width: 960px; position: relative; }
+      video, canvas { height: 100%; inset: 0; position: absolute; width: 100%; }
+      canvas { pointer-events: none; }
+      pre { background: #18181b; border: 1px solid #3f3f46; max-height: 360px; overflow: auto; padding: 12px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Poietra representative renderer workload</h1>
+      <p id="status">Ready. Keep this window unobscured and avoid interacting with it while the run is active.</p>
+      <button id="run" type="button">Run workload</button>
+      <div class="stage">
+        <video id="video" muted playsinline preload="auto" src="./fixture.mp4"></video>
+        <canvas height="720" id="overlay" width="1280"></canvas>
+      </div>
+      <pre id="result">No result yet.</pre>
+    </main>
+    <script src="./workload.js" type="module"></script>
+  </body>
+</html>

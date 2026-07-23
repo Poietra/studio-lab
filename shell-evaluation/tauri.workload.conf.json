@@ -1,0 +1,6 @@
+{
+  "build": {
+    "beforeDevCommand": "",
+    "devUrl": "http://127.0.0.1:4174/shell-evaluation/workload.html?shell=tauri&autorun=1"
+  }
+}
