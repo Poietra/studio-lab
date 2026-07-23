@@ -47,6 +47,15 @@ export function useManimWorkspace() {
         if (request.current !== controller) return;
         setProjects(projectList.projects);
         projectId = projectList.defaultProjectId;
+        if (!projectId) {
+          activeProjectIdRef.current = null;
+          workspaceRef.current = null;
+          setActiveProjectIdState(null);
+          setActiveSceneIdState(null);
+          setWorkspace(null);
+          setStatus("ready");
+          return;
+        }
       }
       const nextWorkspace = await loadManimWorkspace(projectId, controller.signal);
       if (request.current !== controller) return;

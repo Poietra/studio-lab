@@ -108,7 +108,7 @@ describe("Manim API client contracts", () => {
   it("loads only opaque project descriptors", async () => {
     const projects = {
       defaultProjectId: "project-a",
-      projects: [{ id: "project-a", name: "Demo" }],
+      projects: [{ id: "project-a", kind: "existing", name: "Demo" }],
     };
     const fetch = vi.fn(async () => new Response(JSON.stringify(projects), { status: 200 }));
     vi.stubGlobal("fetch", fetch);

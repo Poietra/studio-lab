@@ -1,4 +1,8 @@
+import { join } from "node:path";
+
 import { defineConfig } from "@playwright/test";
+
+const workspaceDataRoot = join(process.cwd(), "test-results", `workspace-store-${process.pid}`);
 
 export default defineConfig({
   forbidOnly: true,
@@ -15,6 +19,7 @@ export default defineConfig({
     command: "pnpm dev:web --port 4173",
     env: {
       POIETRA_AI_DEBUG_LOG: "off",
+      POIETRA_STUDIO_DATA_ROOT: workspaceDataRoot,
       POIETRA_MANIM_PROJECTS: JSON.stringify([
         { id: "studio-lab", name: "Studio Lab", root: "." },
         { id: "examples", name: "Examples", root: "./examples" },

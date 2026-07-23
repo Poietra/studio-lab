@@ -6,10 +6,12 @@ import type { CanonicalEditProgram } from "../studio/operations";
 import { runtimeSceneStateSchema, staticSemanticStateSchema } from "../studio/state-schema";
 
 const finiteNumber = z.number().finite();
+export const MANIM_PROJECT_ID_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 export const manimProjectIdSchema = z.string().regex(
-  /^[a-z][a-z0-9_-]{0,63}$/,
+  MANIM_PROJECT_ID_PATTERN,
   "Project ID must be an opaque lower-case identifier.",
 );
+export const manimProjectNameSchema = z.string().trim().min(1).max(120);
 const resolvedAnchorSchema = z.object({
   capturedPlayhead: finiteNumber,
   evidence: z.array(z.string().max(500)).max(32),
@@ -235,12 +237,18 @@ export type ManimWorkspaceView = Readonly<{
 
 export type ManimProjectSummary = Readonly<{
   id: string;
+  kind: "existing" | "managed";
   name: string;
 }>;
 
 export type ManimProjectListView = Readonly<{
-  defaultProjectId: string;
+  defaultProjectId: string | null;
   projects: readonly ManimProjectSummary[];
+}>;
+
+export type ManimProjectMutationView = Readonly<{
+  catalog: ManimProjectListView;
+  project: ManimProjectSummary | null;
 }>;
 
 export type ManimSourceExport = Readonly<{
@@ -311,12 +319,13 @@ export const manimWorkspaceViewSchema: z.ZodType<ManimWorkspaceView> = z.object(
 
 export const manimProjectSummarySchema: z.ZodType<ManimProjectSummary> = z.object({
   id: manimProjectIdSchema,
-  name: z.string().min(1).max(120),
+  kind: z.enum(["existing", "managed"]),
+  name: manimProjectNameSchema,
 }).strict();
 
 export const manimProjectListViewSchema: z.ZodType<ManimProjectListView> = z.object({
-  defaultProjectId: manimProjectIdSchema,
-  projects: z.array(manimProjectSummarySchema).min(1).max(64),
+  defaultProjectId: manimProjectIdSchema.nullable(),
+  projects: z.array(manimProjectSummarySchema).max(64),
 }).strict().superRefine((value, context) => {
   const ids = new Set<string>();
   value.projects.forEach((project, index) => {
@@ -329,10 +338,17 @@ export const manimProjectListViewSchema: z.ZodType<ManimProjectListView> = z.obj
     }
     ids.add(project.id);
   });
-  if (!ids.has(value.defaultProjectId)) {
+  if (value.defaultProjectId !== null && !ids.has(value.defaultProjectId)) {
     context.addIssue({
       code: "custom",
       message: "The default project ID is not registered.",
+      path: ["defaultProjectId"],
+    });
+  }
+  if ((value.projects.length === 0) !== (value.defaultProjectId === null)) {
+    context.addIssue({
+      code: "custom",
+      message: "The default project ID must be null exactly when the project list is empty.",
       path: ["defaultProjectId"],
     });
   }

@@ -4,8 +4,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { createHash, randomUUID } from "node:crypto";
-import { realpathSync, statSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import {
   basename,
@@ -17,8 +16,10 @@ import { spawn, type ChildProcess } from "node:child_process";
 import type { Plugin } from "vite";
 
 import {
+  MANIM_PROJECT_ID_PATTERN,
   type ProgramRenderRequest,
   type ManimProjectListView,
+  type ManimProjectMutationView,
   type ManimWorkspaceView,
   type RenderSessionStatus,
   type RenderSessionView,
@@ -36,6 +37,13 @@ import {
   type StructuredLogger,
 } from "./logging/structured-logger";
 import { handleManimRequest } from "./manim-render-http";
+import {
+  type ManimProjectKind,
+  type ManimProjectSeed,
+  PersistentManimProjectCatalog,
+  type ResolvedManimProject,
+  resolveManimProjects,
+} from "./manim-project-catalog";
 import {
   appendRenderLog,
   findRenderedVideo,
@@ -57,13 +65,10 @@ export type ManimRenderPipelineOptions = Readonly<{
   frameWidth?: number;
   projects?: readonly ManimProjectConfig[];
   projectRoot?: string;
+  workspaceDataRoot?: string;
 }>;
 
-export type ManimProjectConfig = Readonly<{
-  id?: string;
-  name?: string;
-  root: string;
-}>;
+export type ManimProjectConfig = ManimProjectSeed;
 
 type RenderSession = {
   actionInProgress: boolean;
@@ -102,7 +107,6 @@ const DEFAULT_SESSION_RETENTION_MS = 30 * 60 * 1_000;
 const COMMAND_AVAILABILITY_TTL_MS = 30_000;
 const COMMAND_AVAILABILITY_TIMEOUT_MS = 15_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
-const PROJECT_ID_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
 
 function requirePositiveFinite(value: number, name: string) {
   if (!Number.isFinite(value) || value <= 0) {
@@ -174,7 +178,8 @@ export class ManimRenderManager {
   readonly defaultProjectId: string;
   readonly frame: Readonly<{ height: number; width: number }>;
   readonly projectId: string;
-  readonly projectName: string;
+  readonly projectKind: ManimProjectKind;
+  projectName: string;
   readonly projectRoot: string;
   private commandAvailability: Readonly<{ checkedAt: number; value: boolean }> | null = null;
   private commandAvailabilityRequest: Promise<boolean> | null = null;
@@ -203,6 +208,7 @@ export class ManimRenderManager {
     maxRetainedSessions?: number;
     onSessionRemoved?: (id: string) => void;
     projectId?: string;
+    projectKind?: ManimProjectKind;
     projectName?: string;
     projectRoot: string;
     renderTimeoutMs?: number;
@@ -228,10 +234,11 @@ export class ManimRenderManager {
     this.onSessionRemoved = options.onSessionRemoved ?? (() => undefined);
     this.sourceStore = new ManimSourceStore(options.projectRoot);
     this.projectId = options.projectId ?? "default";
-    if (!PROJECT_ID_PATTERN.test(this.projectId)) {
+    if (!MANIM_PROJECT_ID_PATTERN.test(this.projectId)) {
       throw new TypeError("Manim project ID must be an opaque lower-case identifier.");
     }
     this.defaultProjectId = this.projectId;
+    this.projectKind = options.projectKind ?? "existing";
     this.projectName = options.projectName?.trim() || basename(this.sourceStore.projectRoot) || "Manim Project";
     if (this.projectName.length > 120) throw new TypeError("Manim project name must be at most 120 characters.");
     this.projectRoot = this.sourceStore.projectRoot;
@@ -249,6 +256,22 @@ export class ManimRenderManager {
       });
     }, Math.min(60_000, Math.max(100, this.sessionRetentionMs)));
     this.cleanupTimer.unref();
+  }
+
+  canUnregister() {
+    return this.activeStarts === 0
+      && this.pendingStarts === 0
+      && this.pendingRetainedSessions === 0
+      && this.sessions.size === 0
+      && this.workspaceRequest === null;
+  }
+
+  renameProject(name: string) {
+    const normalized = name.trim();
+    if (!normalized || normalized.length > 120) {
+      throw new TypeError("Manim project name must contain 1 to 120 characters.");
+    }
+    this.projectName = normalized;
   }
 
   async cleanupExpiredSessions(now = Date.now()) {
@@ -273,7 +296,7 @@ export class ManimRenderManager {
   projects(): ManimProjectListView {
     return {
       defaultProjectId: this.projectId,
-      projects: [{ id: this.projectId, name: this.projectName }],
+      projects: [{ id: this.projectId, kind: this.projectKind, name: this.projectName }],
     };
   }
 
@@ -822,10 +845,6 @@ export class ManimRenderManager {
   }
 }
 
-function opaqueProjectId(canonicalRoot: string) {
-  return `project-${createHash("sha256").update(canonicalRoot).digest("hex").slice(0, 16)}`;
-}
-
 export function parseManimProjects(value: string | undefined): readonly ManimProjectConfig[] | undefined {
   const normalized = value?.trim();
   if (!normalized) return undefined;
@@ -845,7 +864,7 @@ export function parseManimProjects(value: string | undefined): readonly ManimPro
     if (typeof record.root !== "string" || !record.root.trim()) {
       throw new TypeError(`POIETRA_MANIM_PROJECTS[${index}].root must be a non-empty path.`);
     }
-    if (record.id !== undefined && (typeof record.id !== "string" || !PROJECT_ID_PATTERN.test(record.id))) {
+    if (record.id !== undefined && (typeof record.id !== "string" || !MANIM_PROJECT_ID_PATTERN.test(record.id))) {
       throw new TypeError(`POIETRA_MANIM_PROJECTS[${index}].id must be an opaque lower-case identifier.`);
     }
     if (record.name !== undefined && (typeof record.name !== "string" || !record.name.trim() || record.name.trim().length > 120)) {
@@ -860,11 +879,19 @@ export function parseManimProjects(value: string | undefined): readonly ManimPro
 }
 
 export class ManimProjectRegistry {
-  readonly defaultProjectId: string;
+  private readonly catalog: PersistentManimProjectCatalog | null;
+  private readonly command: readonly string[];
+  private readonly frame: Readonly<{ height: number; width: number }>;
+  private readonly logger: StructuredLogger;
   private readonly managers = new Map<string, ManimRenderManager>();
+  private readonly maxConcurrentRenders: number | undefined;
+  private readonly maxRetainedSessions: number | undefined;
+  private readonly renderTimeoutMs: number | undefined;
   private readonly sessionProjects = new Map<string, string>();
+  private readonly sessionRetentionMs: number | undefined;
 
   constructor(options: Readonly<{
+    catalog?: PersistentManimProjectCatalog;
     command: readonly string[];
     frame: Readonly<{ height: number; width: number }>;
     logger?: StructuredLogger;
@@ -874,42 +901,48 @@ export class ManimProjectRegistry {
     renderTimeoutMs?: number;
     sessionRetentionMs?: number;
   }>) {
-    if (options.projects.length === 0 || options.projects.length > 64) {
-      throw new TypeError("The Manim project registry requires 1 to 64 configured projects.");
-    }
-    const canonicalRoots = new Set<string>();
-    const projectIds = new Set<string>();
-    const configuredProjects = options.projects.map((project) => {
-      const canonicalRoot = realpathSync(resolve(project.root));
-      if (!statSync(canonicalRoot).isDirectory()) {
-        throw new TypeError(`Configured Manim project ${project.name ?? project.id ?? "root"} is not a directory.`);
-      }
-      if (canonicalRoots.has(canonicalRoot)) throw new TypeError("A Manim project root may only be registered once.");
-      canonicalRoots.add(canonicalRoot);
-      const projectId = project.id ?? opaqueProjectId(canonicalRoot);
-      if (!PROJECT_ID_PATTERN.test(projectId)) throw new TypeError("Manim project ID must be an opaque lower-case identifier.");
-      if (projectIds.has(projectId)) throw new TypeError(`Duplicate Manim project ID ${projectId}.`);
-      projectIds.add(projectId);
-      const projectName = project.name?.trim() || basename(canonicalRoot) || "Manim Project";
-      if (projectName.length > 120) throw new TypeError("Manim project name must be at most 120 characters.");
-      return { canonicalRoot, projectId, projectName };
-    });
-    for (const { canonicalRoot, projectId, projectName } of configuredProjects) {
-      this.managers.set(projectId, new ManimRenderManager({
-        command: options.command,
-        frame: options.frame,
-        logger: options.logger?.child({ projectId }) ?? nullLogger,
-        maxConcurrentRenders: options.maxConcurrentRenders,
-        maxRetainedSessions: options.maxRetainedSessions,
-        onSessionRemoved: (id) => this.sessionProjects.delete(id),
-        projectId,
-        projectName,
-        projectRoot: canonicalRoot,
-        renderTimeoutMs: options.renderTimeoutMs,
-        sessionRetentionMs: options.sessionRetentionMs,
-      }));
-    }
-    this.defaultProjectId = this.managers.keys().next().value as string;
+    if (options.projects.length > 64) throw new TypeError("The Manim project registry accepts at most 64 projects.");
+    this.catalog = options.catalog ?? null;
+    this.command = options.command;
+    this.frame = options.frame;
+    this.logger = options.logger ?? nullLogger;
+    this.maxConcurrentRenders = options.maxConcurrentRenders;
+    this.maxRetainedSessions = options.maxRetainedSessions;
+    this.renderTimeoutMs = options.renderTimeoutMs;
+    this.sessionRetentionMs = options.sessionRetentionMs;
+    const configuredProjects = this.catalog?.projects() ?? resolveManimProjects(options.projects);
+    for (const project of configuredProjects) this.addManager(project);
+  }
+
+  get defaultProjectId() {
+    return this.managers.keys().next().value ?? null;
+  }
+
+  private addManager({ canonicalRoot, kind, projectId, projectName }: ResolvedManimProject) {
+    if (this.managers.has(projectId)) throw new TypeError(`Duplicate Manim project ID ${projectId}.`);
+    this.managers.set(projectId, new ManimRenderManager({
+      command: this.command,
+      frame: this.frame,
+      logger: this.logger.child({ projectId }),
+      maxConcurrentRenders: this.maxConcurrentRenders,
+      maxRetainedSessions: this.maxRetainedSessions,
+      onSessionRemoved: (id) => this.sessionProjects.delete(id),
+      projectId,
+      projectKind: kind,
+      projectName,
+      projectRoot: canonicalRoot,
+      renderTimeoutMs: this.renderTimeoutMs,
+      sessionRetentionMs: this.sessionRetentionMs,
+    }));
+  }
+
+  private mutableCatalog() {
+    if (!this.catalog) throw new HttpError("Workspace registry mutations are not configured.", 405);
+    return this.catalog;
+  }
+
+  private mutationView(project: ManimProjectMutationView["project"]): ManimProjectMutationView {
+    return { catalog: this.projects(), project };
   }
 
   projects(): ManimProjectListView {
@@ -917,6 +950,7 @@ export class ManimProjectRegistry {
       defaultProjectId: this.defaultProjectId,
       projects: [...this.managers.values()].map((manager) => ({
         id: manager.projectId,
+        kind: manager.projectKind,
         name: manager.projectName,
       })),
     };
@@ -938,7 +972,57 @@ export class ManimProjectRegistry {
     return this.project(projectId);
   }
 
-  workspace(projectId = this.defaultProjectId) {
+  createProject(name: string, root: string) {
+    const catalog = this.mutableCatalog();
+    const created = catalog.create(name, root);
+    try {
+      this.addManager(created);
+    } catch (error) {
+      catalog.unregister(created.projectId);
+      throw error;
+    }
+    return this.mutationView({ id: created.projectId, kind: created.kind, name: created.projectName });
+  }
+
+  createManagedProject(name: string) {
+    const catalog = this.mutableCatalog();
+    const created = catalog.createManaged(name);
+    try {
+      this.addManager(created);
+    } catch (error) {
+      try {
+        catalog.rollbackManagedCreation(created.projectId);
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], "Could not roll back the managed workspace creation.");
+      }
+      throw error;
+    }
+    return this.mutationView({ id: created.projectId, kind: created.kind, name: created.projectName });
+  }
+
+  renameProject(projectId: string, name: string) {
+    const manager = this.project(projectId);
+    const renamed = this.mutableCatalog().rename(projectId, name);
+    manager.renameProject(renamed.projectName);
+    return this.mutationView({ id: projectId, kind: renamed.kind, name: renamed.projectName });
+  }
+
+  async unregisterProject(projectId: string) {
+    const manager = this.project(projectId);
+    if (!manager.canUnregister()) {
+      throw new HttpError("Wait for active workspace work and discard retained render sessions before removing it from Studio.", 409);
+    }
+    this.mutableCatalog().remove(projectId);
+    this.managers.delete(projectId);
+    for (const [sessionId, sessionProjectId] of this.sessionProjects) {
+      if (sessionProjectId === projectId) this.sessionProjects.delete(sessionId);
+    }
+    await manager.close();
+    return this.mutationView(null);
+  }
+
+  workspace(projectId: string | null = this.defaultProjectId) {
+    if (!projectId) throw new HttpError("No Manim workspace is registered.", 404);
     return this.project(projectId).workspace(projectId);
   }
 
@@ -1003,16 +1087,22 @@ export function manimRenderPipeline(options: ManimRenderPipelineOptions = {}): P
     apply: "serve",
     name: "poietra-manim-render-pipeline",
     configResolved(config) {
+      const seedProjects = options.projects?.length
+        ? options.projects
+        : [{ root: options.projectRoot ? resolve(options.projectRoot) : config.root }];
+      const catalog = new PersistentManimProjectCatalog({
+        dataRoot: options.workspaceDataRoot ? resolve(options.workspaceDataRoot) : join(config.root, ".poietra"),
+        seedProjects,
+      });
       manager = new ManimProjectRegistry({
+        catalog,
         command: parseManimCommand(options.command),
         frame: {
           height: options.frameHeight ?? 8,
           width: options.frameWidth ?? 14.222,
         },
         logger,
-        projects: options.projects?.length
-          ? options.projects
-          : [{ root: options.projectRoot ? resolve(options.projectRoot) : config.root }],
+        projects: seedProjects,
       });
     },
     configureServer(server) {
