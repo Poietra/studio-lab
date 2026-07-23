@@ -89,7 +89,7 @@ test("Magic Edit previews, applies, exports, and undoes scale and delete", async
   await page.getByRole("button", { name: "Preview" }).click();
   await page.getByRole("button", { name: "Apply program" }).click();
   await expect(page.getByRole("alert")).toContainText(
-    "Persistent removal is unsafe because source variable equation is referenced after the selected anchor",
+    "Persistent removal is unsafe because source reference equation is referenced after the selected anchor",
   );
   await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
   await page.getByRole("button", { name: "Discard" }).click();
