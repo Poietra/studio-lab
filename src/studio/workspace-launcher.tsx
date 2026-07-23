@@ -1,26 +1,20 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
 
 import { cn } from "../lib/cn";
-import {
-  generateManimThumbnail,
-  loadManimThumbnailStatus,
-} from "../render-pipeline/client";
-import type {
-  ManimProjectCreateRequest,
-  ManimProjectSummary,
-  ManimThumbnailStatus,
-} from "../render-pipeline/contracts";
+import { generateManimThumbnail, loadManimThumbnailStatus } from "../render-pipeline/client";
+import type { ManimProjectCreationInput } from "../render-pipeline/client";
+import type { ManimProjectSummary, ManimThumbnailStatus } from "../render-pipeline/contracts";
 import type { WorkspaceMutation } from "./use-manim-workspace";
 
 type WorkspaceLauncherProps = Readonly<{
-  creationMode: "existing" | "managed";
+  creationMode: "existing" | "managed" | "native-existing";
   error: string | null;
   isLoading: boolean;
   mutation: WorkspaceMutation;
   mutationError: string | null;
   onCancelMutation: () => void;
   onClearMutationError: () => void;
-  onCreate: (input: ManimProjectCreateRequest) => Promise<boolean>;
+  onCreate: (input: ManimProjectCreationInput) => Promise<boolean>;
   onOpen: (workspaceId: string) => void;
   onRename: (workspaceId: string, name: string) => Promise<boolean>;
   onRetry: () => void;
@@ -28,11 +22,16 @@ type WorkspaceLauncherProps = Readonly<{
   projects: readonly ManimProjectSummary[];
 }>;
 
-const fieldClassName = "mt-1 h-9 w-full border border-zinc-700 bg-zinc-950 px-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-sky-500 disabled:cursor-wait disabled:text-zinc-500";
-const secondaryButtonClassName = "border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-wait disabled:text-zinc-600";
-const primaryButtonClassName = "bg-sky-500 px-3 py-1.5 text-xs font-medium text-sky-950 hover:bg-sky-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400 disabled:cursor-wait disabled:bg-zinc-700 disabled:text-zinc-500";
-const dialogClassName = "m-auto w-full max-w-md border border-zinc-700 bg-zinc-950 p-0 text-zinc-100 shadow-xl backdrop:bg-black/70";
-const cardActionButtonClassName = "cursor-pointer px-2 py-1.5 text-xs font-medium text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-wait disabled:text-zinc-700";
+const fieldClassName =
+  "mt-1 h-9 w-full border border-zinc-700 bg-zinc-950 px-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-sky-500 disabled:cursor-wait disabled:text-zinc-500";
+const secondaryButtonClassName =
+  "border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-wait disabled:text-zinc-600";
+const primaryButtonClassName =
+  "bg-sky-500 px-3 py-1.5 text-xs font-medium text-sky-950 hover:bg-sky-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400 disabled:cursor-wait disabled:bg-zinc-700 disabled:text-zinc-500";
+const dialogClassName =
+  "m-auto w-full max-w-md border border-zinc-700 bg-zinc-950 p-0 text-zinc-100 shadow-xl backdrop:bg-black/70";
+const cardActionButtonClassName =
+  "cursor-pointer px-2 py-1.5 text-xs font-medium text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-wait disabled:text-zinc-700";
 const MAX_THUMBNAIL_STATUS_ATTEMPTS = 3;
 
 function PlusIcon() {
@@ -46,15 +45,19 @@ function PlusIcon() {
 function workspaceInitials(name: string) {
   const words = name.trim().split(/\s+/u);
   if (words.length > 1) {
-    return words.slice(0, 2).map((word) => Array.from(word)[0] ?? "").join("").toUpperCase();
+    return words
+      .slice(0, 2)
+      .map((word) => Array.from(word)[0] ?? "")
+      .join("")
+      .toUpperCase();
   }
-  return Array.from(words[0] ?? "").slice(0, 2).join("").toUpperCase();
+  return Array.from(words[0] ?? "")
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
 }
 
-function WorkspaceThumbnailImage({
-  assetVersion,
-  projectId,
-}: Readonly<{ assetVersion: string; projectId: string }>) {
+function WorkspaceThumbnailImage({ assetVersion, projectId }: Readonly<{ assetVersion: string; projectId: string }>) {
   const [state, setState] = useState<"error" | "loaded" | "loading">("loading");
   return (
     <img
@@ -87,21 +90,22 @@ function WorkspaceCover({
 }>) {
   const assetVersion = status?.generatedAt ?? status?.sourceHash ?? "unresolved";
 
-  const statusLabel = status?.state === "current"
-    ? "Rendered"
-    : status?.state === "generating"
-      ? "Generating…"
-      : status?.state === "stale"
-        ? "Preview out of date"
-        : status?.state === "failed"
-          ? "Render failed"
-          : status?.state === "unavailable"
-            ? "Workspace unavailable"
-          : status?.imageKind === "empty"
-            ? "No preview"
-            : status
-              ? "Semantic preview"
-              : "Loading preview…";
+  const statusLabel =
+    status?.state === "current"
+      ? "Rendered"
+      : status?.state === "generating"
+        ? "Generating…"
+        : status?.state === "stale"
+          ? "Preview out of date"
+          : status?.state === "failed"
+            ? "Render failed"
+            : status?.state === "unavailable"
+              ? "Workspace unavailable"
+              : status?.imageKind === "empty"
+                ? "No preview"
+                : status
+                  ? "Semantic preview"
+                  : "Loading preview…";
 
   return (
     <span
@@ -113,10 +117,10 @@ function WorkspaceCover({
       data-workspace-thumbnail
     >
       <span className="absolute inset-3 border border-zinc-800" />
-      <span className={cn(
-        "text-3xl font-semibold text-zinc-600",
-        interactive && "group-hover:text-sky-400",
-      )} data-workspace-thumbnail-fallback>
+      <span
+        className={cn("text-3xl font-semibold text-zinc-600", interactive && "group-hover:text-sky-400")}
+        data-workspace-thumbnail-fallback
+      >
         {workspaceInitials(project.name)}
       </span>
       {status && status.imageKind !== "empty" ? (
@@ -222,9 +226,10 @@ function WorkspaceCard({
   }
 
   const generateLabel = thumbnailStatus?.state === "current" ? "Refresh preview" : "Generate preview";
-  const renderedFailure = thumbnailStatus?.state === "failed" || thumbnailStatus?.state === "unavailable"
-    ? thumbnailStatus.error ?? "The rendered preview is unavailable."
-    : null;
+  const renderedFailure =
+    thumbnailStatus?.state === "failed" || thumbnailStatus?.state === "unavailable"
+      ? (thumbnailStatus.error ?? "The rendered preview is unavailable.")
+      : null;
   return (
     <li
       className={cn(
@@ -247,7 +252,9 @@ function WorkspaceCard({
       >
         <WorkspaceCover interactive={!mutationPending} project={project} status={thumbnailStatus} />
         <span className="flex w-full flex-1 flex-col p-4 pb-2">
-          <span className="block truncate text-sm font-semibold text-zinc-100" title={project.name}>{project.name}</span>
+          <span className="block truncate text-sm font-semibold text-zinc-100" title={project.name}>
+            {project.name}
+          </span>
           <span className="mt-1 block text-pretty text-xs text-zinc-500">
             {project.kind === "managed" ? "Studio workspace" : "Linked Manim folder"}
           </span>
@@ -341,6 +348,8 @@ export function WorkspaceLauncher({
   const unregistering = mutation?.kind === "unregister" && mutation.workspaceId === selectedWorkspace?.id;
   const mutationPending = mutation !== null;
   const registeringExistingFolder = creationMode === "existing";
+  const pickingExistingFolder = creationMode === "native-existing";
+  const linkingExistingFolder = registeringExistingFolder || pickingExistingFolder;
   const deletingManagedWorkspace = selectedWorkspace?.kind === "managed";
 
   function clearDialogError() {
@@ -379,15 +388,19 @@ export function WorkspaceLauncher({
     const name = createName.trim();
     const root = createRoot.trim();
     if (!name || (registeringExistingFolder && !root)) {
-      setFormError(registeringExistingFolder
-        ? "Enter both a workspace name and an existing folder path."
-        : "Enter a workspace name.");
+      setFormError(
+        registeringExistingFolder
+          ? "Enter both a workspace name and an existing folder path."
+          : "Enter a workspace name.",
+      );
       return;
     }
     setFormError(null);
-    const input: ManimProjectCreateRequest = registeringExistingFolder
+    const input: ManimProjectCreationInput = registeringExistingFolder
       ? { kind: "existing", name, root }
-      : { kind: "managed", name };
+      : pickingExistingFolder
+        ? { kind: "native-existing", name }
+        : { kind: "managed", name };
     if (await onCreate(input)) addDialog.current?.close();
   }
 
@@ -420,11 +433,9 @@ export function WorkspaceLauncher({
           <div className="flex items-start justify-between gap-6">
             <div>
               <p className="text-xs font-medium text-sky-400">Workspaces</p>
-              <h2 className="mt-2 text-balance text-2xl font-semibold text-zinc-100">
-                Choose a workspace
-              </h2>
+              <h2 className="mt-2 text-balance text-2xl font-semibold text-zinc-100">Choose a workspace</h2>
               <p className="mt-3 max-w-xl text-pretty text-sm leading-6 text-zinc-400">
-                {registeringExistingFolder
+                {linkingExistingFolder
                   ? "Open a registered Manim folder, or add another workspace to Studio."
                   : "Open a workspace or create a new animation from a starter Scene."}
               </p>
@@ -456,7 +467,12 @@ export function WorkspaceLauncher({
           ) : null}
 
           {isLoading ? (
-            <div aria-busy="true" aria-label="Loading workspaces" className="mt-8 grid gap-3 sm:grid-cols-2" role="status">
+            <div
+              aria-busy="true"
+              aria-label="Loading workspaces"
+              className="mt-8 grid gap-3 sm:grid-cols-2"
+              role="status"
+            >
               {[0, 1].map((index) => (
                 <div className="overflow-hidden border border-zinc-800 bg-zinc-950" key={index}>
                   <div className="aspect-video bg-zinc-900" />
@@ -485,11 +501,15 @@ export function WorkspaceLauncher({
             <div className="mt-8 border border-zinc-800 p-5">
               <h3 className="text-balance text-sm font-medium">No workspaces are registered</h3>
               <p className="mt-2 text-pretty text-xs leading-5 text-zinc-500">
-                {registeringExistingFolder
+                {linkingExistingFolder
                   ? "Add an existing Manim project folder to start editing its Scenes."
                   : "Create a workspace to start with an editable Manim Scene."}
               </p>
-              <button className={cn(primaryButtonClassName, "mt-4 inline-flex items-center gap-1.5")} onClick={showAddDialog} type="button">
+              <button
+                className={cn(primaryButtonClassName, "mt-4 inline-flex items-center gap-1.5")}
+                onClick={showAddDialog}
+                type="button"
+              >
                 <PlusIcon />
                 Add workspace
               </button>
@@ -506,11 +526,21 @@ export function WorkspaceLauncher({
         onClose={clearDialogError}
         ref={addDialog}
       >
-        <form aria-busy={creating} className="p-4" method="dialog" noValidate onSubmit={(event) => void submitCreate(event)}>
-          <h2 className="text-balance text-sm font-medium" id="add-workspace-title">Add workspace</h2>
+        <form
+          aria-busy={creating}
+          className="p-4"
+          method="dialog"
+          noValidate
+          onSubmit={(event) => void submitCreate(event)}
+        >
+          <h2 className="text-balance text-sm font-medium" id="add-workspace-title">
+            Add workspace
+          </h2>
           <p className="mt-2 text-pretty text-xs leading-5 text-zinc-400" id="add-workspace-description">
-            {registeringExistingFolder
-              ? "Register an existing folder on this machine. Studio will not move or copy its files."
+            {linkingExistingFolder
+              ? pickingExistingFolder
+                ? "Choose an existing Manim folder on this machine. Studio will not move or copy its files."
+                : "Register an existing folder on this machine. Studio will not move or copy its files."
               : "Create a new workspace with a starter Manim Scene. No folder setup is required."}
           </p>
           <label className="mt-4 block text-xs font-medium text-zinc-300" htmlFor="workspace-name">
@@ -550,7 +580,9 @@ export function WorkspaceLauncher({
             </>
           ) : null}
           {formError || mutationError ? (
-            <p className="mt-3 text-pretty text-xs leading-5 text-red-300" id="add-workspace-error" role="alert">{formError ?? mutationError}</p>
+            <p className="mt-3 text-pretty text-xs leading-5 text-red-300" id="add-workspace-error" role="alert">
+              {formError ?? mutationError}
+            </p>
           ) : null}
           <div className="mt-5 flex justify-end gap-2">
             <button
@@ -562,8 +594,14 @@ export function WorkspaceLauncher({
             </button>
             <button className={primaryButtonClassName} disabled={creating} type="submit">
               {creating
-                ? registeringExistingFolder ? "Adding…" : "Creating…"
-                : registeringExistingFolder ? "Add workspace" : "Create workspace"}
+                ? linkingExistingFolder
+                  ? "Adding…"
+                  : "Creating…"
+                : pickingExistingFolder
+                  ? "Choose folder…"
+                  : registeringExistingFolder
+                    ? "Add workspace"
+                    : "Create workspace"}
             </button>
           </div>
         </form>
@@ -577,8 +615,16 @@ export function WorkspaceLauncher({
         onClose={clearDialogError}
         ref={renameDialog}
       >
-        <form aria-busy={renaming} className="p-4" method="dialog" noValidate onSubmit={(event) => void submitRename(event)}>
-          <h2 className="text-balance text-sm font-medium" id="rename-workspace-title">Rename workspace</h2>
+        <form
+          aria-busy={renaming}
+          className="p-4"
+          method="dialog"
+          noValidate
+          onSubmit={(event) => void submitRename(event)}
+        >
+          <h2 className="text-balance text-sm font-medium" id="rename-workspace-title">
+            Rename workspace
+          </h2>
           <p className="mt-2 text-pretty text-xs leading-5 text-zinc-400" id="rename-workspace-description">
             Change the name shown in Studio. The workspace content stays the same.
           </p>
@@ -598,7 +644,9 @@ export function WorkspaceLauncher({
             value={renameName}
           />
           {formError || mutationError ? (
-            <p className="mt-3 text-pretty text-xs leading-5 text-red-300" id="rename-workspace-error" role="alert">{formError ?? mutationError}</p>
+            <p className="mt-3 text-pretty text-xs leading-5 text-red-300" id="rename-workspace-error" role="alert">
+              {formError ?? mutationError}
+            </p>
           ) : null}
           <div className="mt-5 flex justify-end gap-2">
             <button
@@ -635,7 +683,9 @@ export function WorkspaceLauncher({
               : "This only unregisters the workspace. Its source files and folder remain on disk."}
           </p>
           {mutationError ? (
-            <p className="mt-3 text-pretty text-xs leading-5 text-red-300" role="alert">{mutationError}</p>
+            <p className="mt-3 text-pretty text-xs leading-5 text-red-300" role="alert">
+              {mutationError}
+            </p>
           ) : null}
           <div className="mt-5 flex justify-end gap-2">
             <button
@@ -651,8 +701,12 @@ export function WorkspaceLauncher({
               type="submit"
             >
               {unregistering
-                ? deletingManagedWorkspace ? "Deleting…" : "Removing…"
-                : deletingManagedWorkspace ? "Delete workspace" : "Remove workspace"}
+                ? deletingManagedWorkspace
+                  ? "Deleting…"
+                  : "Removing…"
+                : deletingManagedWorkspace
+                  ? "Delete workspace"
+                  : "Remove workspace"}
             </button>
           </div>
         </form>

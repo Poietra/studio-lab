@@ -824,6 +824,29 @@ class Independent(Scene):
 
     await expect(manager.start(request())).rejects.toThrow(/shutting down/i);
   });
+
+  it("stops an in-flight command probe before shutdown completes", async () => {
+    const markerRoot = await mkdtemp(join(tmpdir(), "poietra-probe-shutdown-"));
+    temporaryRoots.push(markerRoot);
+    const versionMarker = join(markerRoot, "probe-pid");
+    const { manager } = await fixture({
+      command: [process.execPath, fakeRenderer, "--version-marker", versionMarker, "--hang-version"],
+    });
+
+    const workspace = manager.workspace();
+    await waitUntil(async () => {
+      try {
+        return Boolean((await readFile(versionMarker, "utf8")).trim());
+      } catch {
+        return false;
+      }
+    }, "The command availability probe did not start.");
+    const probePid = Number(await readFile(versionMarker, "utf8"));
+
+    await expect(manager.close()).resolves.toBeUndefined();
+    await expect(workspace).resolves.toMatchObject({ commandAvailable: false });
+    expect(() => process.kill(probePid, 0)).toThrow();
+  });
 });
 
 describe("Manim project registry", () => {
@@ -1111,7 +1134,7 @@ describe("Manim project registry", () => {
     });
     expect(exported.source).toContain('poietra:transaction "render-integration"');
     expect(await readFile(join(firstRoot, "scene.py"), "utf8")).toBe(sceneSource);
-    await expect(registry.start({ ...request(), projectId: "project-a" })).rejects.toThrow(/not available/i);
+    await expect(registry.start({ ...request(), projectId: "project-a" })).rejects.toThrow(/unavailable/i);
   });
 
   it("exports the unchanged selected Python file without an EditProgram", async () => {
@@ -1168,7 +1191,11 @@ describe("Manim project registry", () => {
   });
 
   it("serves project discovery and a safe Python attachment over HTTP", async () => {
-    const { registry } = await registryFixture(["poietra-command-that-does-not-exist"]);
+    const privateCommandRoot = await mkdtemp(join(tmpdir(), "poietra-private-command-"));
+    temporaryRoots.push(privateCommandRoot);
+    const privateCommandPath = join(privateCommandRoot, "bin", "manim");
+    const privateCommandArgument = "--private-adapter-path";
+    const { registry } = await registryFixture([privateCommandPath, privateCommandArgument]);
     const server = createServer((incoming, response) => {
       void handleManimRequest(registry, incoming, response);
     });
@@ -1208,6 +1235,17 @@ describe("Manim project registry", () => {
         method: "POST",
       });
       expect(mismatchedResponse.status).toBe(409);
+
+      const unavailableRenderResponse = await fetch(`${origin}/api/manim/projects/project-a/renders`, {
+        body: JSON.stringify({ ...request(), projectId: "project-a" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(unavailableRenderResponse.status).toBe(503);
+      const unavailableRenderBody = await unavailableRenderResponse.text();
+      expect(unavailableRenderBody).toContain("The configured Manim command is unavailable.");
+      expect(unavailableRenderBody).not.toContain(privateCommandPath);
+      expect(unavailableRenderBody).not.toContain(privateCommandArgument);
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }

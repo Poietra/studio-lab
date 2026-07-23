@@ -75,7 +75,7 @@ type CanvasResizeState = Readonly<{
 }>;
 function detectShell(): Shell {
   if ("__TAURI_INTERNALS__" in window) return "Tauri";
-  if (navigator.userAgent.includes("Electron")) return "Electron";
+  if (window.poietraDesktop || navigator.userAgent.includes("Electron")) return "Electron";
   return "Browser";
 }
 
@@ -1437,7 +1437,7 @@ export function App() {
   if (activeProjectId === null) {
     return (
       <WorkspaceLauncher
-        creationMode={shell === "Browser" ? "managed" : "existing"}
+        creationMode={shell === "Browser" ? "managed" : window.poietraDesktop ? "native-existing" : "existing"}
         error={workspaceError}
         isLoading={workspaceStatus === "loading"}
         mutation={workspaceMutation}

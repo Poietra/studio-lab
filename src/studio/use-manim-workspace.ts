@@ -4,17 +4,15 @@ import {
   ManimApiRequestError,
   createManimProject,
   generateManimThumbnail,
+  isNativeWorkspacePickerCancelled,
   loadManimProjects,
   loadManimThumbnailStatus,
   loadManimWorkspace,
   renameManimProject,
   unregisterManimProject,
+  type ManimProjectCreationInput,
 } from "../render-pipeline/client";
-import type {
-  ManimProjectCreateRequest,
-  ManimProjectSummary,
-  ManimWorkspaceView,
-} from "../render-pipeline/contracts";
+import type { ManimProjectSummary, ManimWorkspaceView } from "../render-pipeline/contracts";
 import { type ManimWorkspaceScene, workspaceScenes } from "./imported-workspace";
 
 type WorkspaceStatus = "error" | "loading" | "ready";
@@ -120,7 +118,7 @@ export function useManimWorkspace() {
           ? remembered!
           : scenes.some((scene) => scene.sceneId === current)
             ? current
-            : scenes[0]?.sceneId ?? null;
+            : (scenes[0]?.sceneId ?? null);
         if (nextSceneId) sceneByProject.current.set(projectId, nextSceneId);
         return nextSceneId;
       });
@@ -142,16 +140,19 @@ export function useManimWorkspace() {
     return projectId ? loadProject(projectId) : loadProjectList();
   }, [loadProject, loadProjectList]);
 
-  const setActiveProjectId = useCallback((projectId: string) => {
-    if (projectId === activeProjectIdRef.current) return;
-    activeProjectIdRef.current = projectId;
-    workspaceRef.current = null;
-    setWorkspace(null);
-    setActiveProjectIdState(projectId);
-    setActiveSceneIdState(null);
-    setStatus("loading");
-    void loadProject(projectId);
-  }, [loadProject]);
+  const setActiveProjectId = useCallback(
+    (projectId: string) => {
+      if (projectId === activeProjectIdRef.current) return;
+      activeProjectIdRef.current = projectId;
+      workspaceRef.current = null;
+      setWorkspace(null);
+      setActiveProjectIdState(projectId);
+      setActiveSceneIdState(null);
+      setStatus("loading");
+      void loadProject(projectId);
+    },
+    [loadProject],
+  );
 
   const leaveWorkspace = useCallback(() => {
     const controller = request.current;
@@ -167,89 +168,99 @@ export function useManimWorkspace() {
     setStatus("ready");
   }, []);
 
-  const createWorkspace = useCallback(async (input: ManimProjectCreateRequest) => {
-    mutationRequest.current?.abort();
-    const controller = new AbortController();
-    mutationRequest.current = controller;
-    setMutation({ kind: "create" });
-    setMutationError(null);
-    try {
-      const result = await createManimProject(input, controller.signal);
-      if (mutationRequest.current !== controller) return false;
-      if (!result.project) throw new Error("The server did not identify the registered workspace.");
-      setProjects(result.catalog.projects);
-      sceneByProject.current.delete(result.project.id);
-      setActiveProjectId(result.project.id);
-      return true;
-    } catch (nextError) {
-      if (controller.signal.aborted || mutationRequest.current !== controller) return false;
-      setMutationError(nextError instanceof Error ? nextError.message : "Could not add the workspace.");
-      if (mutationOutcomeMayBeUnknown(nextError)) void loadProjectList();
-      return false;
-    } finally {
-      if (mutationRequest.current === controller) {
-        mutationRequest.current = null;
-        setMutation(null);
+  const createWorkspace = useCallback(
+    async (input: ManimProjectCreationInput) => {
+      mutationRequest.current?.abort();
+      const controller = new AbortController();
+      mutationRequest.current = controller;
+      setMutation({ kind: "create" });
+      setMutationError(null);
+      try {
+        const result = await createManimProject(input, controller.signal);
+        if (mutationRequest.current !== controller) return false;
+        if (!result.project) throw new Error("The server did not identify the registered workspace.");
+        setProjects(result.catalog.projects);
+        sceneByProject.current.delete(result.project.id);
+        setActiveProjectId(result.project.id);
+        return true;
+      } catch (nextError) {
+        if (controller.signal.aborted || mutationRequest.current !== controller) return false;
+        if (isNativeWorkspacePickerCancelled(nextError)) return false;
+        setMutationError(nextError instanceof Error ? nextError.message : "Could not add the workspace.");
+        if (mutationOutcomeMayBeUnknown(nextError)) void loadProjectList();
+        return false;
+      } finally {
+        if (mutationRequest.current === controller) {
+          mutationRequest.current = null;
+          setMutation(null);
+        }
       }
-    }
-  }, [loadProjectList, setActiveProjectId]);
+    },
+    [loadProjectList, setActiveProjectId],
+  );
 
-  const renameWorkspace = useCallback(async (workspaceId: string, name: string) => {
-    mutationRequest.current?.abort();
-    const controller = new AbortController();
-    mutationRequest.current = controller;
-    setMutation({ kind: "rename", workspaceId });
-    setMutationError(null);
-    try {
-      const result = await renameManimProject(workspaceId, name, controller.signal);
-      if (mutationRequest.current !== controller) return false;
-      if (!result.project || result.project.id !== workspaceId) {
-        throw new Error("The server did not identify the renamed workspace.");
+  const renameWorkspace = useCallback(
+    async (workspaceId: string, name: string) => {
+      mutationRequest.current?.abort();
+      const controller = new AbortController();
+      mutationRequest.current = controller;
+      setMutation({ kind: "rename", workspaceId });
+      setMutationError(null);
+      try {
+        const result = await renameManimProject(workspaceId, name, controller.signal);
+        if (mutationRequest.current !== controller) return false;
+        if (!result.project || result.project.id !== workspaceId) {
+          throw new Error("The server did not identify the renamed workspace.");
+        }
+        setProjects(result.catalog.projects);
+        if (workspaceRef.current?.projectId === workspaceId) {
+          const renamedWorkspace = { ...workspaceRef.current, projectName: result.project.name };
+          workspaceRef.current = renamedWorkspace;
+          setWorkspace(renamedWorkspace);
+        }
+        return true;
+      } catch (nextError) {
+        if (controller.signal.aborted || mutationRequest.current !== controller) return false;
+        setMutationError(nextError instanceof Error ? nextError.message : "Could not rename the workspace.");
+        if (mutationOutcomeMayBeUnknown(nextError)) void loadProjectList();
+        return false;
+      } finally {
+        if (mutationRequest.current === controller) {
+          mutationRequest.current = null;
+          setMutation(null);
+        }
       }
-      setProjects(result.catalog.projects);
-      if (workspaceRef.current?.projectId === workspaceId) {
-        const renamedWorkspace = { ...workspaceRef.current, projectName: result.project.name };
-        workspaceRef.current = renamedWorkspace;
-        setWorkspace(renamedWorkspace);
-      }
-      return true;
-    } catch (nextError) {
-      if (controller.signal.aborted || mutationRequest.current !== controller) return false;
-      setMutationError(nextError instanceof Error ? nextError.message : "Could not rename the workspace.");
-      if (mutationOutcomeMayBeUnknown(nextError)) void loadProjectList();
-      return false;
-    } finally {
-      if (mutationRequest.current === controller) {
-        mutationRequest.current = null;
-        setMutation(null);
-      }
-    }
-  }, [loadProjectList]);
+    },
+    [loadProjectList],
+  );
 
-  const unregisterWorkspace = useCallback(async (workspaceId: string) => {
-    mutationRequest.current?.abort();
-    const controller = new AbortController();
-    mutationRequest.current = controller;
-    setMutation({ kind: "unregister", workspaceId });
-    setMutationError(null);
-    try {
-      const result = await unregisterManimProject(workspaceId, controller.signal);
-      if (mutationRequest.current !== controller) return false;
-      setProjects(result.catalog.projects);
-      sceneByProject.current.delete(workspaceId);
-      return true;
-    } catch (nextError) {
-      if (controller.signal.aborted || mutationRequest.current !== controller) return false;
-      setMutationError(nextError instanceof Error ? nextError.message : "Could not remove the workspace.");
-      if (mutationOutcomeMayBeUnknown(nextError)) void loadProjectList();
-      return false;
-    } finally {
-      if (mutationRequest.current === controller) {
-        mutationRequest.current = null;
-        setMutation(null);
+  const unregisterWorkspace = useCallback(
+    async (workspaceId: string) => {
+      mutationRequest.current?.abort();
+      const controller = new AbortController();
+      mutationRequest.current = controller;
+      setMutation({ kind: "unregister", workspaceId });
+      setMutationError(null);
+      try {
+        const result = await unregisterManimProject(workspaceId, controller.signal);
+        if (mutationRequest.current !== controller) return false;
+        setProjects(result.catalog.projects);
+        sceneByProject.current.delete(workspaceId);
+        return true;
+      } catch (nextError) {
+        if (controller.signal.aborted || mutationRequest.current !== controller) return false;
+        setMutationError(nextError instanceof Error ? nextError.message : "Could not remove the workspace.");
+        if (mutationOutcomeMayBeUnknown(nextError)) void loadProjectList();
+        return false;
+      } finally {
+        if (mutationRequest.current === controller) {
+          mutationRequest.current = null;
+          setMutation(null);
+        }
       }
-    }
-  }, [loadProjectList]);
+    },
+    [loadProjectList],
+  );
 
   const clearMutationError = useCallback(() => setMutationError(null), []);
 
@@ -288,7 +299,7 @@ export function useManimWorkspace() {
     };
   }, [loadProjectList]);
 
-  const scenes = useMemo(() => workspace ? workspaceScenes(workspace) : [], [workspace]);
+  const scenes = useMemo(() => (workspace ? workspaceScenes(workspace) : []), [workspace]);
   const activeScene = sceneAtId(scenes, activeSceneId);
   const nextScene = sceneAtId(scenes, activeScene?.nextSceneId ?? null);
   return {

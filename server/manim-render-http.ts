@@ -24,6 +24,13 @@ const PROJECT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/(worksp
 const PROJECT_THUMBNAIL_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/thumbnail(?:\/(status|generate))?$/;
 const PROJECT_ITEM_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})$/;
 type ManimApi = ManimRenderManager | ManimProjectRegistry;
+export type ManimRequestPolicy = Readonly<{
+  allowExistingProjectRegistration: boolean;
+}>;
+
+const DEFAULT_MANIM_REQUEST_POLICY: ManimRequestPolicy = {
+  allowExistingProjectRegistration: true,
+};
 
 function requireSameOriginJsonMutation(request: IncomingMessage) {
   const mediaType = request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
@@ -216,6 +223,7 @@ async function routeManimRequest(
   request: IncomingMessage,
   response: ServerResponse,
   signal: AbortSignal,
+  policy: ManimRequestPolicy,
 ) {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
   if (url.pathname === "/api/manim/projects") {
@@ -226,6 +234,9 @@ async function routeManimRequest(
     if (request.method !== "POST") throw new HttpError("Method not allowed.", 405);
     const parsed = createManimProjectRequestSchema.safeParse(await readJsonBody(request));
     if (!parsed.success) throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid workspace registration.", 400);
+    if (parsed.data.kind === "existing" && !policy.allowExistingProjectRegistration) {
+      throw new HttpError("Existing-folder registration requires the native folder picker.", 403);
+    }
     signal.throwIfAborted();
     const registry = mutableProjectRegistry(manager);
     sendJson(
@@ -373,6 +384,7 @@ export async function handleManimRequest(
   request: IncomingMessage,
   response: ServerResponse,
   baseLogger: StructuredLogger = nullLogger,
+  policy: ManimRequestPolicy = DEFAULT_MANIM_REQUEST_POLICY,
 ) {
   const requestId = randomUUID();
   const logger = baseLogger.child({
@@ -395,7 +407,7 @@ export async function handleManimRequest(
   response.once("finish", markResponseFinished);
   logger.info("request.started");
   try {
-    await routeManimRequest(manager, request, response, requestAbort.signal);
+    await routeManimRequest(manager, request, response, requestAbort.signal, policy);
     logger.info("response.sent", { status: response.statusCode });
   } catch (error) {
     if (requestAbort.signal.aborted || (response.destroyed && error instanceof Error && error.name === "AbortError")) {

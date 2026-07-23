@@ -2,8 +2,22 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "../lib/cn";
 import type { CanonicalEditProgram } from "../studio/operations";
-import { renderProgramBatchId, type ManimWorkspaceView, type OriginalManimSourceExportRequest, type ProgramRenderRequest, type RenderSessionView } from "./contracts";
-import { exportManimSource, exportOriginalManimSource, isMissingManimSession, loadManimRender, runManimRenderAction, startManimRender } from "./client";
+import {
+  renderProgramBatchId,
+  type ManimWorkspaceView,
+  type OriginalManimSourceExportRequest,
+  type ProgramRenderRequest,
+  type RenderSessionView,
+} from "./contracts";
+import {
+  exportManimSource,
+  exportOriginalManimSource,
+  isMissingManimSession,
+  loadManimRender,
+  runManimRenderAction,
+  startManimRender,
+} from "./client";
+import { savePythonSourceWithDesktop } from "../shell/desktop-bridge";
 
 export type RenderProgramCandidate = Readonly<{
   anchors: readonly number[];
@@ -59,14 +73,19 @@ export function RenderPipelinePanel({
   workspace,
 }: RenderPipelinePanelProps) {
   const [error, setError] = useState<string | null>(null);
-  const [pendingAction, setPendingAction] = useState<"cancel" | "commit" | "discard" | "export" | "render" | "undo" | null>(null);
+  const [pendingAction, setPendingAction] = useState<
+    "cancel" | "commit" | "discard" | "export" | "render" | "undo" | null
+  >(null);
   const commitDialog = useRef<HTMLDialogElement | null>(null);
   const mutationRequest = useRef<AbortController | null>(null);
 
-  useEffect(() => () => {
-    mutationRequest.current?.abort();
-    mutationRequest.current = null;
-  }, []);
+  useEffect(
+    () => () => {
+      mutationRequest.current?.abort();
+      mutationRequest.current = null;
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!session || terminalStatus(session.status) || pendingAction) return;
@@ -125,22 +144,23 @@ export function RenderPipelinePanel({
     return () => controller.abort();
   }, [onSessionChange, pendingAction, session?.id, session?.projectId, session?.status]);
 
-  const missingAnchor = candidate?.programs.find((program) => !candidate.anchors.some((anchor) => (
-    Math.abs(anchor - program.anchor.resolvedSeconds) < 0.0005
-  )))?.anchor.resolvedSeconds ?? null;
-  const unsupportedProgram = candidate?.programs.find((program) => (
-    program.loweringStatus !== "supported"
-  )) ?? null;
-  const sessionMatchesCandidate = session !== null
-    && candidate !== null
-    && session.projectId === candidate.projectId
-    && session.programBatchId === renderProgramBatchId(candidate.programs)
-    && session.sourcePath === candidate.sourcePath
-    && session.sceneName === candidate.sceneName;
+  const missingAnchor =
+    candidate?.programs.find(
+      (program) => !candidate.anchors.some((anchor) => Math.abs(anchor - program.anchor.resolvedSeconds) < 0.0005),
+    )?.anchor.resolvedSeconds ?? null;
+  const unsupportedProgram = candidate?.programs.find((program) => program.loweringStatus !== "supported") ?? null;
+  const sessionMatchesCandidate =
+    session !== null &&
+    candidate !== null &&
+    session.projectId === candidate.projectId &&
+    session.programBatchId === renderProgramBatchId(candidate.programs) &&
+    session.sourcePath === candidate.sourcePath &&
+    session.sceneName === candidate.sceneName;
   const candidateBlocker = useMemo(() => {
     if (!workspace) return "Inspecting the Manim workspace…";
     if (!candidate) return candidateUnavailableReason;
-    if (candidate.projectId !== workspace.projectId) return "The draft belongs to a different project. Recreate it in the active project.";
+    if (candidate.projectId !== workspace.projectId)
+      return "The draft belongs to a different project. Recreate it in the active project.";
     if (unsupportedProgram) {
       return `This Program is marked ${unsupportedProgram.loweringStatus}; rendered validation requires supported lowering.`;
     }
@@ -149,12 +169,14 @@ export function RenderPipelinePanel({
     }
     return null;
   }, [candidate, candidateUnavailableReason, missingAnchor, unsupportedProgram, workspace]);
-  const previewBlocker = candidateBlocker
-    ?? (!workspace?.commandAvailable ? `Manim command ${JSON.stringify(workspace?.command ?? [])} is unavailable.` : null);
+  const previewBlocker =
+    candidateBlocker ?? (!workspace?.commandAvailable ? "The configured Manim command is unavailable." : null);
   const exportBlocker = candidate
     ? candidateBlocker
-    : !workspace ? "Inspecting the Manim workspace…"
-      : !sourceExport ? "Choose an imported Scene to export its Python source."
+    : !workspace
+      ? "Inspecting the Manim workspace…"
+      : !sourceExport
+        ? "Choose an imported Scene to export its Python source."
         : null;
 
   async function startPreview() {
@@ -168,17 +190,22 @@ export function RenderPipelinePanel({
     const controller = new AbortController();
     mutationRequest.current = controller;
     try {
-      onSessionChange(await startManimRender({
-        destination: candidate.destination,
-        program: candidate.program,
-        programs: candidate.programs,
-        projectId: candidate.projectId,
-        sceneName: candidate.sceneName,
-        sourceBindings: candidate.sourceBindings,
-        sourceHash: candidate.sourceHash,
-        sourcePath: candidate.sourcePath,
-        viewport: candidate.viewport,
-      }, controller.signal));
+      onSessionChange(
+        await startManimRender(
+          {
+            destination: candidate.destination,
+            program: candidate.program,
+            programs: candidate.programs,
+            projectId: candidate.projectId,
+            sceneName: candidate.sceneName,
+            sourceBindings: candidate.sourceBindings,
+            sourceHash: candidate.sourceHash,
+            sourcePath: candidate.sourcePath,
+            viewport: candidate.viewport,
+          },
+          controller.signal,
+        ),
+      );
     } catch (nextError) {
       if (isAbortError(nextError)) return;
       setError(nextError instanceof Error ? nextError.message : "Could not start the Manim render.");
@@ -198,24 +225,30 @@ export function RenderPipelinePanel({
     mutationRequest.current = controller;
     try {
       const exported = candidate
-        ? await exportManimSource({
-            destination: candidate.destination,
-            program: candidate.program,
-            programs: candidate.programs,
-            projectId: candidate.projectId,
-            sceneName: candidate.sceneName,
-            sourceBindings: candidate.sourceBindings,
-            sourceHash: candidate.sourceHash,
-            sourcePath: candidate.sourcePath,
-            viewport: candidate.viewport,
-          }, controller.signal)
+        ? await exportManimSource(
+            {
+              destination: candidate.destination,
+              program: candidate.program,
+              programs: candidate.programs,
+              projectId: candidate.projectId,
+              sceneName: candidate.sceneName,
+              sourceBindings: candidate.sourceBindings,
+              sourceHash: candidate.sourceHash,
+              sourcePath: candidate.sourcePath,
+              viewport: candidate.viewport,
+            },
+            controller.signal,
+          )
         : await exportOriginalManimSource(sourceExport!, controller.signal);
-      const url = URL.createObjectURL(new Blob([exported.source], { type: "text/x-python;charset=utf-8" }));
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = exported.fileName;
-      link.click();
-      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      const desktopSaved = await savePythonSourceWithDesktop(exported.fileName, exported.source);
+      if (desktopSaved === null) {
+        const url = URL.createObjectURL(new Blob([exported.source], { type: "text/x-python;charset=utf-8" }));
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = exported.fileName;
+        link.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      }
     } catch (nextError) {
       if (isAbortError(nextError)) return;
       setError(nextError instanceof Error ? nextError.message : "Could not export the Manim source.");
@@ -244,9 +277,11 @@ export function RenderPipelinePanel({
           await onSourceChanged?.();
         } catch (refreshError) {
           if (!controller.signal.aborted) {
-            setError(refreshError instanceof Error
-              ? `The source changed, but Studio could not reimport it: ${refreshError.message}`
-              : "The source changed, but Studio could not reimport it.");
+            setError(
+              refreshError instanceof Error
+                ? `The source changed, but Studio could not reimport it: ${refreshError.message}`
+                : "The source changed, but Studio could not reimport it.",
+            );
           }
         }
       }
@@ -274,16 +309,21 @@ export function RenderPipelinePanel({
         <div className="min-w-0">
           <h3 className="text-balance font-medium text-zinc-200">Rendered validation</h3>
           <p className="mt-1 text-pretty leading-5 text-zinc-500">
-            Lower the complete Canonical EditProgram into an isolated source copy, render it with Manim, then commit the exact previewed patch.
+            Lower the complete Canonical EditProgram into an isolated source copy, render it with Manim, then commit the
+            exact previewed patch.
           </p>
         </div>
         {session ? (
-          <span className={cn(
-            "shrink-0 border px-1.5 py-0.5 text-[10px]",
-            session.status === "failed" ? "border-red-900 text-red-300"
-              : session.status === "ready" || session.status === "committed" ? "border-sky-800 text-sky-300"
-                : "border-zinc-700 text-zinc-400",
-          )}>
+          <span
+            className={cn(
+              "shrink-0 border px-1.5 py-0.5 text-[10px]",
+              session.status === "failed"
+                ? "border-red-900 text-red-300"
+                : session.status === "ready" || session.status === "committed"
+                  ? "border-sky-800 text-sky-300"
+                  : "border-zinc-700 text-zinc-400",
+            )}
+          >
             {statusLabel(session)}
           </span>
         ) : null}
@@ -292,7 +332,9 @@ export function RenderPipelinePanel({
       {candidate ? (
         <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 text-[10px]">
           <dt className="text-zinc-600">Source</dt>
-          <dd className="truncate font-mono text-zinc-400" title={candidate.sourcePath}>{candidate.sourcePath}</dd>
+          <dd className="truncate font-mono text-zinc-400" title={candidate.sourcePath}>
+            {candidate.sourcePath}
+          </dd>
           <dt className="text-zinc-600">Scene</dt>
           <dd className="truncate text-zinc-400">{candidate.sceneName}</dd>
           <dt className="text-zinc-600">Program</dt>
@@ -310,7 +352,8 @@ export function RenderPipelinePanel({
 
       {session && candidate && !sessionMatchesCandidate && session.status !== "discarded" ? (
         <p className="mt-3 border border-amber-900/70 p-2 text-pretty leading-5 text-amber-300">
-          This render belongs to program <span className="font-mono">{session.programTransactionId}</span>. Resolve it before rendering the current draft.
+          This render belongs to program <span className="font-mono">{session.programTransactionId}</span>. Resolve it
+          before rendering the current draft.
         </p>
       ) : null}
 
@@ -339,8 +382,12 @@ export function RenderPipelinePanel({
         <details className="mt-3 border border-zinc-800 px-2 text-[10px]">
           <summary className="cursor-pointer py-2 text-zinc-400 hover:text-zinc-200">Rendered source and log</summary>
           <p className="mb-1 text-zinc-600">Inserted after line {session.patch.anchorLine}</p>
-          <pre className="overflow-x-auto whitespace-pre border border-zinc-800 bg-zinc-950 p-2 leading-4 text-emerald-300/80">{session.patch.insertedCode}</pre>
-          <pre className="my-2 max-h-32 overflow-auto whitespace-pre-wrap border border-zinc-800 bg-zinc-950 p-2 leading-4 text-zinc-500">{session.logTail || "Waiting for Manim output…"}</pre>
+          <pre className="overflow-x-auto whitespace-pre border border-zinc-800 bg-zinc-950 p-2 leading-4 text-emerald-300/80">
+            {session.patch.insertedCode}
+          </pre>
+          <pre className="my-2 max-h-32 overflow-auto whitespace-pre-wrap border border-zinc-800 bg-zinc-950 p-2 leading-4 text-zinc-500">
+            {session.logTail || "Waiting for Manim output…"}
+          </pre>
         </details>
       ) : null}
 
@@ -362,17 +409,32 @@ export function RenderPipelinePanel({
           {pendingAction === "export" ? "Exporting…" : "Export .py"}
         </button>
         {session?.canCancel ? (
-          <button className="border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:text-zinc-600" disabled={pendingAction !== null} onClick={() => void runAction("cancel")} type="button">
+          <button
+            className="border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:text-zinc-600"
+            disabled={pendingAction !== null}
+            onClick={() => void runAction("cancel")}
+            type="button"
+          >
             Cancel render
           </button>
         ) : null}
         {session?.canDiscard ? (
-          <button className="border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:text-zinc-600" disabled={pendingAction !== null} onClick={() => void runAction("discard")} type="button">
+          <button
+            className="border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:text-zinc-600"
+            disabled={pendingAction !== null}
+            onClick={() => void runAction("discard")}
+            type="button"
+          >
             Discard preview
           </button>
         ) : null}
         {session?.canUndo ? (
-          <button className="border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:text-zinc-600" disabled={pendingAction !== null} onClick={() => void runAction("undo")} type="button">
+          <button
+            className="border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:text-zinc-600"
+            disabled={pendingAction !== null}
+            onClick={() => void runAction("undo")}
+            type="button"
+          >
             Undo source
           </button>
         ) : null}
@@ -404,12 +466,20 @@ export function RenderPipelinePanel({
         role="alertdialog"
       >
         <form className="p-4" method="dialog">
-          <h3 className="text-balance text-sm font-medium" id="commit-render-title">Commit rendered program?</h3>
+          <h3 className="text-balance text-sm font-medium" id="commit-render-title">
+            Commit rendered program?
+          </h3>
           <p className="mt-2 text-pretty text-xs leading-5 text-zinc-400">
-            This writes only the source patch that produced the video above. Studio refuses the write if the source changed after rendering.
+            This writes only the source patch that produced the video above. Studio refuses the write if the source
+            changed after rendering.
           </p>
           <div className="mt-4 flex justify-end gap-2">
-            <button className="border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800" value="cancel">Cancel</button>
+            <button
+              className="border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+              value="cancel"
+            >
+              Cancel
+            </button>
             <button
               className="bg-sky-500 px-3 py-1.5 text-xs font-medium text-sky-950 hover:bg-sky-400"
               disabled={pendingAction !== null}
