@@ -1,14 +1,7 @@
 import { renderRequestPrograms, type ProgramRenderRequest, type SingleProgramRenderRequest } from "./contracts";
-import {
-  findSourceComments,
-  findSourceSceneBlock,
-  findSourceSceneComments,
-} from "./source-import";
+import { findSourceComments, findSourceSceneBlock, findSourceSceneComments } from "./source-import";
 import type { CanonicalEditOperation, CreateEntityOperation } from "../studio/operations";
-import {
-  operationExecutionCapabilities,
-  programExecutionCapabilities,
-} from "../studio/operation-registry";
+import { operationExecutionCapabilities, programExecutionCapabilities } from "../studio/operation-registry";
 import { insertedProgramDuration } from "../studio/program-composition";
 
 export type MotionAnchor = Readonly<{
@@ -64,7 +57,28 @@ export class ProgramLoweringError extends Error {
 }
 
 const ANCHOR_PATTERN = /^\s*#\s*poietra:anchor\s+([0-9]+(?:\.[0-9]+)?)\s*$/;
+const CURSOR_PATTERN = /^\s*#\s*poietra:cursor\s+([0-9]+(?:\.[0-9]+)?)\s*$/;
+const SCENE_BOUNDARY_PATTERN = /^\s*#\s*poietra:scene-boundary\s+(.+)\s*$/;
 const EPSILON = 0.0005;
+
+type TemporalSourceMarker =
+  | Readonly<{
+      kind: "anchor" | "cursor";
+      line: number;
+      seconds: number;
+    }>
+  | Readonly<{
+      kind: "scene-boundary";
+      line: number;
+      payload: Readonly<Record<string, unknown>>;
+      seconds: number;
+    }>;
+
+type SourceTimeInsertion = Readonly<{
+  anchorLine: number;
+  duration: number;
+  sourceAnchor: number;
+}>;
 
 export function findMotionAnchors(source: string): readonly MotionAnchor[] {
   return findSourceComments(source).flatMap((comment) => {
@@ -80,6 +94,36 @@ export function findSceneMotionAnchors(source: string, sceneName: string): reado
   });
 }
 
+function sceneTemporalMarkers(source: string, sceneName: string): readonly TemporalSourceMarker[] {
+  return findSourceSceneComments(source, sceneName).flatMap((comment): readonly TemporalSourceMarker[] => {
+    const anchor = comment.text.match(ANCHOR_PATTERN);
+    if (anchor) return [{ kind: "anchor", line: comment.line, seconds: Number(anchor[1]) }];
+    const cursor = comment.text.match(CURSOR_PATTERN);
+    if (cursor) return [{ kind: "cursor", line: comment.line, seconds: Number(cursor[1]) }];
+    const boundary = comment.text.match(SCENE_BOUNDARY_PATTERN);
+    if (!boundary) return [];
+    try {
+      const payload = JSON.parse(boundary[1]) as unknown;
+      if (
+        typeof payload !== "object" ||
+        payload === null ||
+        Array.isArray(payload) ||
+        !("at" in payload) ||
+        typeof payload.at !== "number" ||
+        !Number.isFinite(payload.at) ||
+        payload.at < 0 ||
+        !("destination" in payload) ||
+        typeof payload.destination !== "string"
+      )
+        return [];
+      return [{ kind: "scene-boundary", line: comment.line, payload, seconds: payload.at }];
+    } catch {
+      // Malformed Studio-looking comments are inert metadata and must never be partially rewritten.
+      return [];
+    }
+  });
+}
+
 function formatAmount(value: number) {
   const normalized = Math.abs(value) < 0.00005 ? 0 : value;
   return Number(normalized.toFixed(4)).toString();
@@ -87,9 +131,39 @@ function formatAmount(value: number) {
 
 function formatShiftAmount(value: number) {
   const formatted = formatAmount(Math.abs(value));
-  return formatted === "0" && value !== 0
-    ? Number(Math.abs(value).toPrecision(4)).toString()
-    : formatted;
+  return formatted === "0" && value !== 0 ? Number(Math.abs(value).toPrecision(4)).toString() : formatted;
+}
+
+function rewriteSceneTemporalMetadata(
+  source: string,
+  sceneName: string,
+  lines: string[],
+  insertions: readonly SourceTimeInsertion[],
+) {
+  for (const marker of sceneTemporalMarkers(source, sceneName)) {
+    // At an equal timestamp, source order decides which side of the insertion owns the marker.
+    // This keeps metadata before the consumed anchor unchanged while moving metadata after it.
+    const offset = insertions.reduce(
+      (total, insertion) =>
+        insertion.sourceAnchor < marker.seconds - EPSILON ||
+        (Math.abs(insertion.sourceAnchor - marker.seconds) < EPSILON && insertion.anchorLine <= marker.line)
+          ? total + insertion.duration
+          : total,
+      0,
+    );
+    if (Math.abs(offset) < 0.00005) continue;
+    const shiftedSeconds = Number(formatAmount(marker.seconds + offset));
+    const index = marker.line - 1;
+    const indentation = lines[index]?.match(/^\s*/)?.[0] ?? "";
+    if (marker.kind === "scene-boundary") {
+      lines[index] = `${indentation}# poietra:scene-boundary ${JSON.stringify({
+        ...marker.payload,
+        at: shiftedSeconds,
+      })}`;
+    } else {
+      lines[index] = `${indentation}# poietra:${marker.kind} ${formatAmount(shiftedSeconds)}`;
+    }
+  }
 }
 
 function escapePattern(value: string) {
@@ -104,12 +178,8 @@ function shiftExpression(
   const worldX = (delta.x / viewport.width) * frame.width;
   const worldY = (-delta.y / viewport.height) * frame.height;
   const terms = [
-    worldX !== 0
-      ? `${formatShiftAmount(worldX)} * ${worldX > 0 ? "RIGHT" : "LEFT"}`
-      : null,
-    worldY !== 0
-      ? `${formatShiftAmount(worldY)} * ${worldY > 0 ? "UP" : "DOWN"}`
-      : null,
+    worldX !== 0 ? `${formatShiftAmount(worldX)} * ${worldX > 0 ? "RIGHT" : "LEFT"}` : null,
+    worldY !== 0 ? `${formatShiftAmount(worldY)} * ${worldY > 0 ? "UP" : "DOWN"}` : null,
   ].filter((term): term is string => term !== null);
   if (terms.length === 0) {
     throw new ProgramLoweringError("zero-delta", "CreateMotion has no visible displacement to render.");
@@ -133,9 +203,7 @@ function centerWithOffsetExpression(
   viewport: Readonly<{ height: number; width: number }>,
 ) {
   const expression = offsetExpression(offset, frame, viewport);
-  return expression === "ORIGIN"
-    ? `${variable}.get_center()`
-    : `${variable}.get_center() + ${expression}`;
+  return expression === "ORIGIN" ? `${variable}.get_center()` : `${variable}.get_center() + ${expression}`;
 }
 
 function quadraticMotionExpression(
@@ -149,12 +217,12 @@ function quadraticMotionExpression(
   // representation of the Studio quadratic whose control point is
   // midpoint(start, end) + controlOffset.
   const startHandleOffset = {
-    x: delta.x / 3 + controlOffset.x * 2 / 3,
-    y: delta.y / 3 + controlOffset.y * 2 / 3,
+    x: delta.x / 3 + (controlOffset.x * 2) / 3,
+    y: delta.y / 3 + (controlOffset.y * 2) / 3,
   };
   const endHandleOffset = {
-    x: delta.x * 2 / 3 + controlOffset.x * 2 / 3,
-    y: delta.y * 2 / 3 + controlOffset.y * 2 / 3,
+    x: (delta.x * 2) / 3 + (controlOffset.x * 2) / 3,
+    y: (delta.y * 2) / 3 + (controlOffset.y * 2) / 3,
   };
   const start = `${variable}.get_center()`;
   return `MoveAlongPath(${variable}, CubicBezier(${start}, ${centerWithOffsetExpression(variable, startHandleOffset, frame, viewport)}, ${centerWithOffsetExpression(variable, endHandleOffset, frame, viewport)}, ${centerWithOffsetExpression(variable, delta, frame, viewport)}))`;
@@ -174,11 +242,11 @@ function pointExpression(
   return terms.length > 0 ? terms.join(" + ") : "ORIGIN";
 }
 
-function markerPoint(
-  point: Readonly<{ x: number; y: number }>,
-  viewport: Readonly<{ height: number; width: number }>,
-) {
-  return { x: Number(((point.x / viewport.width) * 640).toFixed(4)), y: Number(((point.y / viewport.height) * 360).toFixed(4)) };
+function markerPoint(point: Readonly<{ x: number; y: number }>, viewport: Readonly<{ height: number; width: number }>) {
+  return {
+    x: Number(((point.x / viewport.width) * 640).toFixed(4)),
+    y: Number(((point.y / viewport.height) * 360).toFixed(4)),
+  };
 }
 
 function sourceMarker(kind: "motion" | "position" | "scale", value: Readonly<Record<string, unknown>>) {
@@ -186,19 +254,15 @@ function sourceMarker(kind: "motion" | "position" | "scale", value: Readonly<Rec
 }
 
 function variableToken(transactionId: string, index: number) {
-  const normalized = transactionId.replace(/[^A-Za-z0-9_]/g, "_").replace(/^([^A-Za-z_])/, "_$1").slice(0, 48);
+  const normalized = transactionId
+    .replace(/[^A-Za-z0-9_]/g, "_")
+    .replace(/^([^A-Za-z_])/, "_$1")
+    .slice(0, 48);
   return `poietra_${normalized || "edit"}_${index + 1}`;
 }
 
-function variableAllocator(
-  source: string,
-  transactionId: string,
-  additionalReserved: ReadonlySet<string> = new Set(),
-) {
-  const reserved = new Set([
-    ...(source.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) ?? []),
-    ...additionalReserved,
-  ]);
+function variableAllocator(source: string, transactionId: string, additionalReserved: ReadonlySet<string> = new Set()) {
+  const reserved = new Set([...(source.match(/\b[A-Za-z_][A-Za-z0-9_]*\b/g) ?? []), ...additionalReserved]);
   let index = 0;
   return () => {
     const base = variableToken(transactionId, index);
@@ -219,7 +283,10 @@ function entityConstructor(operation: CreateEntityOperation) {
   if (type === "MathTex") {
     const parts = content?.texParts?.length ? content.texParts : content?.displayLines;
     if (!parts?.length) {
-      throw new ProgramLoweringError("operation-unsupported", "MathTex creation requires canonical texParts or displayLines.");
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        "MathTex creation requires canonical texParts or displayLines.",
+      );
     }
     return `MathTex(${parts.map((part) => JSON.stringify(part)).join(", ")})`;
   }
@@ -252,14 +319,20 @@ function entityConstructor(operation: CreateEntityOperation) {
 }
 
 function referencedBaseEntityIds(operations: readonly CanonicalEditOperation[]) {
-  const created = new Set(operations.flatMap((operation) => {
-    if (operation.kind === "CreateEntity") return [operation.entity.id];
-    if (operation.kind === "TransformContent") return [operation.targetEntityId];
-    return [];
-  }));
+  const created = new Set(
+    operations.flatMap((operation) => {
+      if (operation.kind === "CreateEntity") return [operation.entity.id];
+      if (operation.kind === "TransformContent") return [operation.targetEntityId];
+      return [];
+    }),
+  );
   const referenced = operations.flatMap((operation): readonly string[] => {
     if (operation.kind === "CreateMotion") return operation.targetEntityIds;
-    if (operation.kind === "SetProperty" || operation.kind === "AnimateProperty" || operation.kind === "ChangePresence") {
+    if (
+      operation.kind === "SetProperty" ||
+      operation.kind === "AnimateProperty" ||
+      operation.kind === "ChangePresence"
+    ) {
       return [operation.entityId];
     }
     if (operation.kind === "TransformContent") return [operation.sourceEntityId];
@@ -274,32 +347,41 @@ function operationTime(operation: CanonicalEditOperation) {
 }
 
 function isPoint(value: unknown): value is Readonly<{ x: number; y: number }> {
-  return typeof value === "object" && value !== null && "x" in value && "y" in value
-    && typeof value.x === "number" && typeof value.y === "number";
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "x" in value &&
+    "y" in value &&
+    typeof value.x === "number" &&
+    typeof value.y === "number"
+  );
 }
 
-type LoweredAnimationOperation = Extract<CanonicalEditOperation, {
-  kind: "AnimateProperty" | "ChangePresence" | "CreateMotion" | "TransformContent";
-}>;
+type LoweredAnimationOperation = Extract<
+  CanonicalEditOperation,
+  {
+    kind: "AnimateProperty" | "ChangePresence" | "CreateMotion" | "TransformContent";
+  }
+>;
 
 function animationOperation(operation: CanonicalEditOperation): operation is LoweredAnimationOperation {
-  return operation.kind === "ChangePresence"
-    || operation.kind === "CreateMotion"
-    || operation.kind === "TransformContent"
-    || (operation.kind === "AnimateProperty" && operation.key === "scale");
+  return (
+    operation.kind === "ChangePresence" ||
+    operation.kind === "CreateMotion" ||
+    operation.kind === "TransformContent" ||
+    (operation.kind === "AnimateProperty" && operation.key === "scale")
+  );
 }
 
-function scaleChange(
-  operation: Extract<CanonicalEditOperation, { kind: "AnimateProperty" }>,
-) {
+function scaleChange(operation: Extract<CanonicalEditOperation, { kind: "AnimateProperty" }>) {
   if (
-    operation.key !== "scale"
-    || typeof operation.from !== "number"
-    || typeof operation.to !== "number"
-    || !Number.isFinite(operation.from)
-    || !Number.isFinite(operation.to)
-    || operation.from <= 0
-    || operation.to <= 0
+    operation.key !== "scale" ||
+    typeof operation.from !== "number" ||
+    typeof operation.to !== "number" ||
+    !Number.isFinite(operation.from) ||
+    !Number.isFinite(operation.to) ||
+    operation.from <= 0 ||
+    operation.to <= 0
   ) {
     throw new ProgramLoweringError(
       "operation-unsupported",
@@ -324,7 +406,8 @@ function assertLoweringSupported(operation: CanonicalEditOperation) {
 
 function requireVariable(variables: ReadonlyMap<string, string>, entityId: string) {
   const variable = variables.get(entityId);
-  if (!variable) throw new ProgramLoweringError("source-variable-missing", `No source variable exists for ${entityId}.`);
+  if (!variable)
+    throw new ProgramLoweringError("source-variable-missing", `No source variable exists for ${entityId}.`);
   return variable;
 }
 
@@ -358,19 +441,20 @@ export function lowerCanonicalProgramSource(
   if (execution.lowering !== "supported") {
     throw new ProgramLoweringError(
       "operation-unsupported",
-      execution.applyBlocker
-        ?? `Program ${request.program.transactionId} is marked ${execution.lowering}, not supported.`,
+      execution.applyBlocker ??
+        `Program ${request.program.transactionId} is marked ${execution.lowering}, not supported.`,
     );
   }
   request.program.operations.forEach(assertLoweringSupported);
   const sourceAnchor = options.sourceAnchor ?? request.program.anchor.resolvedSeconds;
-  const anchor = findSceneMotionAnchors(source, request.sceneName)
-    .find((candidate) => Math.abs(candidate.seconds - sourceAnchor) < EPSILON);
+  const anchor = findSceneMotionAnchors(source, request.sceneName).find(
+    (candidate) => Math.abs(candidate.seconds - sourceAnchor) < EPSILON,
+  );
   if (!anchor) {
     throw new ProgramLoweringError(
       "anchor-missing",
-      `No # poietra:anchor ${sourceAnchor.toFixed(3)} executable construct-level marker exists in ${request.sourcePath}. `
-        + "Markers inside strings, continuations, nested scopes, or unreachable code are ignored.",
+      `No # poietra:anchor ${sourceAnchor.toFixed(3)} executable construct-level marker exists in ${request.sourcePath}. ` +
+        "Markers inside strings, continuations, nested scopes, or unreachable code are ignored.",
     );
   }
   const newline = source.includes("\r\n") ? "\r\n" : "\n";
@@ -383,7 +467,10 @@ export function lowerCanonicalProgramSource(
   for (const entityId of referencedBaseEntityIds(request.program.operations)) {
     const sourceVariable = sourceBindings.get(entityId);
     if (!sourceVariable) {
-      throw new ProgramLoweringError("source-variable-missing", `Runtime entity ${entityId} has no imported Python source identity.`);
+      throw new ProgramLoweringError(
+        "source-variable-missing",
+        `Runtime entity ${entityId} has no imported Python source identity.`,
+      );
     }
     if (options.generatedEntityIds?.has(entityId)) continue;
     const assignment = new RegExp(`^${escapePattern(indentation)}${escapePattern(sourceVariable)}\\s*=`, "m");
@@ -396,23 +483,25 @@ export function lowerCanonicalProgramSource(
   }
 
   const order = new Map(request.program.schedule.order.map((id, index) => [id, index]));
-  const operations = [...request.program.operations].sort((left, right) => (
-    operationTime(left) - operationTime(right)
-    || (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0)
-  ));
-  const variableByEntity = new Map(sourceBindings);
-  const aliasesByEntity = new Map([...sourceBindings].map(([entityId, sourceVariable]) => [
-    entityId,
-    new Set([sourceVariable, ...(options.entityAliases?.get(entityId) ?? [])]),
-  ]));
-  const allocateVariable = variableAllocator(
-    source,
-    request.program.transactionId,
-    options.reservedSourceVariables,
+  const operations = [...request.program.operations].sort(
+    (left, right) =>
+      operationTime(left) - operationTime(right) || (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0),
   );
+  const variableByEntity = new Map(sourceBindings);
+  const aliasesByEntity = new Map(
+    [...sourceBindings].map(([entityId, sourceVariable]) => [
+      entityId,
+      new Set([sourceVariable, ...(options.entityAliases?.get(entityId) ?? [])]),
+    ]),
+  );
+  const allocateVariable = variableAllocator(source, request.program.transactionId, options.reservedSourceVariables);
   for (const operation of operations) {
-    const entityId = operation.kind === "CreateEntity" ? operation.entity.id
-      : operation.kind === "TransformContent" ? operation.targetEntityId : null;
+    const entityId =
+      operation.kind === "CreateEntity"
+        ? operation.entity.id
+        : operation.kind === "TransformContent"
+          ? operation.targetEntityId
+          : null;
     if (!entityId || variableByEntity.has(entityId)) continue;
     const variable = allocateVariable();
     variableByEntity.set(entityId, variable);
@@ -440,9 +529,10 @@ export function lowerCanonicalProgramSource(
         output.push(`${variable} = ${entityConstructor(operation)}`);
       } else if (operation.kind === "TransformContent") {
         const targetVariable = requireVariable(variableByEntity, operation.targetEntityId);
-        const target = operation.targetType === "Text"
-          ? `Text(${JSON.stringify(operation.replacement.text ?? operation.replacement.displayLines.join(" "))})`
-          : `MathTex(${(operation.replacement.texParts ?? operation.replacement.displayLines).map((part) => JSON.stringify(part)).join(", ")})`;
+        const target =
+          operation.targetType === "Text"
+            ? `Text(${JSON.stringify(operation.replacement.text ?? operation.replacement.displayLines.join(" "))})`
+            : `MathTex(${(operation.replacement.texParts ?? operation.replacement.displayLines).map((part) => JSON.stringify(part)).join(", ")})`;
         output.push(`# poietra:entity ${JSON.stringify({ id: operation.targetEntityId, variable: targetVariable })}`);
         output.push(`${targetVariable} = ${target}`);
       }
@@ -451,48 +541,78 @@ export function lowerCanonicalProgramSource(
       if (operation.kind === "SetProperty") {
         const variable = requireVariable(variableByEntity, operation.entityId);
         if (operation.key === "position" && isPoint(operation.value)) {
-          output.push(sourceMarker("position", { kind: "absolute", value: markerPoint(operation.value, request.viewport), variable }));
+          output.push(
+            sourceMarker("position", {
+              kind: "absolute",
+              value: markerPoint(operation.value, request.viewport),
+              variable,
+            }),
+          );
           output.push(`${variable}.move_to(${pointExpression(operation.value, frame, request.viewport)})`);
         }
       } else if (operation.kind === "TransformContent") {
         const targetVariable = requireVariable(variableByEntity, operation.targetEntityId);
         const sourceVariable = requireVariable(variableByEntity, operation.sourceEntityId);
-        output.push(sourceMarker("position", { kind: "relative", offset: { x: 0, y: 0 }, relativeTo: sourceVariable, variable: targetVariable }));
+        output.push(
+          sourceMarker("position", {
+            kind: "relative",
+            offset: { x: 0, y: 0 },
+            relativeTo: sourceVariable,
+            variable: targetVariable,
+          }),
+        );
         output.push(`${targetVariable}.move_to(${sourceVariable}.get_center())`);
       } else if (operation.kind === "SetRelation") {
         const sourceVariable = requireVariable(variableByEntity, operation.sourceEntityId);
         const targetVariable = requireVariable(variableByEntity, operation.targetEntityId);
-        output.push(sourceMarker("position", { kind: "relative", offset: markerPoint(operation.offset, request.viewport), relativeTo: targetVariable, variable: sourceVariable }));
-        output.push(`${sourceVariable}.move_to(${targetVariable}.get_center() + ${offsetExpression(operation.offset, frame, request.viewport)})`);
+        output.push(
+          sourceMarker("position", {
+            kind: "relative",
+            offset: markerPoint(operation.offset, request.viewport),
+            relativeTo: targetVariable,
+            variable: sourceVariable,
+          }),
+        );
+        output.push(
+          `${sourceVariable}.move_to(${targetVariable}.get_center() + ${offsetExpression(operation.offset, frame, request.viewport)})`,
+        );
       }
     }
     for (const operation of bucket) {
       if (
-        operation.kind !== "AnimateProperty"
-        || operation.key !== "scale"
-        || operation.interval.end - operation.interval.start > EPSILON
-      ) continue;
+        operation.kind !== "AnimateProperty" ||
+        operation.key !== "scale" ||
+        operation.interval.end - operation.interval.start > EPSILON
+      )
+        continue;
       const variable = requireVariable(variableByEntity, operation.entityId);
       const change = scaleChange(operation);
-      output.push(sourceMarker("scale", {
-        kind: "exact",
-        value: change.to,
-        variable,
-      }));
+      output.push(
+        sourceMarker("scale", {
+          kind: "exact",
+          value: change.to,
+          variable,
+        }),
+      );
       output.push(`${variable}.scale(${formatAmount(change.factor)})`);
     }
 
     const boundaries = bucket.filter((operation) => operation.kind === "InsertSceneBoundary");
     for (const boundary of boundaries) {
       if (!incoming) {
-        throw new ProgramLoweringError("destination-missing", "The Scene transition has no imported next Scene destination.");
+        throw new ProgramLoweringError(
+          "destination-missing",
+          "The Scene transition has no imported next Scene destination.",
+        );
       }
-      output.push(`# poietra:scene-boundary ${JSON.stringify({
-        at: boundary.at,
-        destination: request.destination
-          ? `${request.destination.sourcePath}#${request.destination.sceneName}`
-          : "next-scene",
-      })}`);
+      output.push(
+        `# poietra:scene-boundary ${JSON.stringify({
+          at: boundary.at,
+          destination: request.destination
+            ? `${request.destination.sourcePath}#${request.destination.sceneName}`
+            : "next-scene",
+        })}`,
+      );
       output.push("self.clear()");
       output.push("# poietra:incoming-start");
       output.push(...incoming.initialization);
@@ -500,9 +620,9 @@ export function lowerCanonicalProgramSource(
       if (incoming.visibleSourceVariables.length > 0) {
         output.push(`self.add(${incoming.visibleSourceVariables.join(", ")})`);
       }
-      const overlay = operations.find((operation) => (
-        operation.kind === "CreateEntity" && operation.entity.type.startsWith("TransitionOverlay:")
-      ));
+      const overlay = operations.find(
+        (operation) => operation.kind === "CreateEntity" && operation.entity.type.startsWith("TransitionOverlay:"),
+      );
       if (overlay?.kind === "CreateEntity") {
         const overlayVariable = requireVariable(variableByEntity, overlay.entity.id);
         output.push(`self.add(${overlayVariable})`);
@@ -510,12 +630,15 @@ export function lowerCanonicalProgramSource(
       }
     }
 
-    const insertedWaits = bucket.filter((operation) => (
-      operation.kind === "InsertTimelineEvent" && operation.eventKind === "wait"
-    ));
+    const insertedWaits = bucket.filter(
+      (operation) => operation.kind === "InsertTimelineEvent" && operation.eventKind === "wait",
+    );
     if (insertedWaits.length > 0) {
       if (insertedWaits.length !== 1 || bucket.length !== 1) {
-        throw new ProgramLoweringError("operation-unsupported", "An inserted wait must occupy its own source interval.");
+        throw new ProgramLoweringError(
+          "operation-unsupported",
+          "An inserted wait must occupy its own source interval.",
+        );
       }
       const wait = insertedWaits[0];
       const waitDuration = wait.interval.end - wait.interval.start;
@@ -524,10 +647,10 @@ export function lowerCanonicalProgramSource(
       continue;
     }
 
-    const instantPresenceChanges = bucket.filter((operation): operation is Extract<CanonicalEditOperation, { kind: "ChangePresence" }> => (
-      operation.kind === "ChangePresence"
-      && operation.interval.end - operation.interval.start <= EPSILON
-    ));
+    const instantPresenceChanges = bucket.filter(
+      (operation): operation is Extract<CanonicalEditOperation, { kind: "ChangePresence" }> =>
+        operation.kind === "ChangePresence" && operation.interval.end - operation.interval.start <= EPSILON,
+    );
     for (const operation of instantPresenceChanges) {
       if (operation.effect !== "remove") {
         throw new ProgramLoweringError(
@@ -538,31 +661,34 @@ export function lowerCanonicalProgramSource(
       output.push(`self.remove(${requireVariable(variableByEntity, operation.entityId)})`);
     }
 
-    const animations = bucket.filter((operation): operation is LoweredAnimationOperation => (
-      animationOperation(operation)
-      && operation.interval.end - operation.interval.start > EPSILON
-    ));
+    const animations = bucket.filter(
+      (operation): operation is LoweredAnimationOperation =>
+        animationOperation(operation) && operation.interval.end - operation.interval.start > EPSILON,
+    );
     if (animations.length === 0) continue;
     const animationEnd = animations[0].interval.end;
     if (animations.some((operation) => Math.abs(operation.interval.end - animationEnd) >= EPSILON)) {
       throw new ProgramLoweringError("operation-unsupported", "Concurrent source animations must share one interval.");
     }
     const actions: string[] = [];
-    const motions: Array<Readonly<{
-      controlOffset?: Readonly<{ x: number; y: number }>;
-      delta: Readonly<{ x: number; y: number }>;
-      variables: readonly string[];
-    }>> = [];
-    const scales: Array<Readonly<{
-      from: number;
-      to: number;
-      variable: string;
-    }>> = [];
+    const motions: Array<
+      Readonly<{
+        controlOffset?: Readonly<{ x: number; y: number }>;
+        delta: Readonly<{ x: number; y: number }>;
+        variables: readonly string[];
+      }>
+    > = [];
+    const scales: Array<
+      Readonly<{
+        from: number;
+        to: number;
+        variable: string;
+      }>
+    > = [];
     const postludes: string[] = [];
     for (const operation of animations) {
       if (operation.kind === "CreateMotion") {
-        const curved = Math.abs(operation.controlOffset.x) > 0.001
-          || Math.abs(operation.controlOffset.y) > 0.001;
+        const curved = Math.abs(operation.controlOffset.x) > 0.001 || Math.abs(operation.controlOffset.y) > 0.001;
         const variables = operation.targetEntityIds.map((entityId) => requireVariable(variableByEntity, entityId));
         motions.push({
           ...(curved ? { controlOffset: markerPoint(operation.controlOffset, request.viewport) } : {}),
@@ -570,9 +696,11 @@ export function lowerCanonicalProgramSource(
           variables,
         });
         for (const variable of variables) {
-          actions.push(curved
-            ? quadraticMotionExpression(variable, operation.delta, operation.controlOffset, frame, request.viewport)
-            : `${variable}.animate.shift(${shiftExpression(operation.delta, frame, request.viewport)})`);
+          actions.push(
+            curved
+              ? quadraticMotionExpression(variable, operation.delta, operation.controlOffset, frame, request.viewport)
+              : `${variable}.animate.shift(${shiftExpression(operation.delta, frame, request.viewport)})`,
+          );
         }
       } else if (operation.kind === "TransformContent") {
         const sourceVariable = requireVariable(variableByEntity, operation.sourceEntityId);
@@ -582,12 +710,16 @@ export function lowerCanonicalProgramSource(
         const inheritedAliases = new Set([...targetAliases, ...sourceAliases]);
         aliasesByEntity.set(operation.sourceEntityId, inheritedAliases);
         aliasesByEntity.set(operation.targetEntityId, inheritedAliases);
-        actions.push(operation.strategy === "transform-matching-tex"
-          ? `TransformMatchingTex(${sourceVariable}, ${targetVariable}, transform_mismatches=True)`
-          : `ReplacementTransform(${sourceVariable}, ${targetVariable})`);
-        postludes.push(...[...sourceAliases]
-          .filter((alias) => alias !== targetVariable)
-          .map((alias) => `${alias} = ${targetVariable}`));
+        actions.push(
+          operation.strategy === "transform-matching-tex"
+            ? `TransformMatchingTex(${sourceVariable}, ${targetVariable}, transform_mismatches=True)`
+            : `ReplacementTransform(${sourceVariable}, ${targetVariable})`,
+        );
+        postludes.push(
+          ...[...sourceAliases]
+            .filter((alias) => alias !== targetVariable)
+            .map((alias) => `${alias} = ${targetVariable}`),
+        );
       } else if (operation.kind === "ChangePresence") {
         const variable = requireVariable(variableByEntity, operation.entityId);
         if (operation.effect === "fade-in") actions.push(`FadeIn(${variable})`);
@@ -625,11 +757,13 @@ export function lowerCanonicalProgramSource(
     output.push("return  # The imported next Scene now owns the composition.");
   }
   const insertedLines = output.map((line) => `${indentation}${line}`);
-  const producedEntityIds = new Set(request.program.operations.flatMap((operation) => {
-    if (operation.kind === "CreateEntity") return [operation.entity.id];
-    if (operation.kind === "TransformContent") return [operation.targetEntityId];
-    return [];
-  }));
+  const producedEntityIds = new Set(
+    request.program.operations.flatMap((operation) => {
+      if (operation.kind === "CreateEntity") return [operation.entity.id];
+      if (operation.kind === "TransformContent") return [operation.targetEntityId];
+      return [];
+    }),
+  );
   const entityBindings = [...producedEntityIds].map((entityId) => ({
     entityId,
     sourceVariable: requireVariable(variableByEntity, entityId),
@@ -639,16 +773,13 @@ export function lowerCanonicalProgramSource(
     sourceVariables: [...sourceVariables],
   }));
   const insertedDuration = insertedProgramDuration(request.program);
-  if (sceneBlock) {
-    for (const sourceMarker of findSceneMotionAnchors(source, request.sceneName)) {
-      if (sourceMarker.line === anchor.line) continue;
-      const seconds = sourceMarker.seconds;
-      if (seconds <= sourceAnchor + EPSILON) continue;
-      const index = sourceMarker.line - 1;
-      const lineIndentation = lines[index]?.match(/^\s*/)?.[0] ?? "";
-      lines[index] = `${lineIndentation}# poietra:anchor ${formatAmount(seconds + insertedDuration)}`;
-    }
-  }
+  rewriteSceneTemporalMetadata(source, request.sceneName, lines, [
+    {
+      anchorLine: anchor.line,
+      duration: insertedDuration,
+      sourceAnchor,
+    },
+  ]);
   const advancedAnchor = request.program.anchor.resolvedSeconds + insertedDuration;
   lines.splice(
     anchor.line - 1,
@@ -714,16 +845,21 @@ export function lowerCanonicalProgramBatchSource(
     [...sourceBindings].map(([entityId, sourceVariable]) => [entityId, new Set([sourceVariable])]),
   );
   const groups: MutableBatchGroup[] = [];
-  const orderedEntries = entries.map((entry, inputIndex) => ({ ...entry, inputIndex }))
+  const orderedEntries = entries
+    .map((entry, inputIndex) => ({ ...entry, inputIndex }))
     .sort((left, right) => left.sourceAnchor - right.sourceAnchor || left.inputIndex - right.inputIndex);
 
   for (const entry of orderedEntries) {
     const lowered = lowerCanonicalProgramSource(
       source,
-      singleProgramRequest(request, entry.program, [...sourceBindings].map(([entityId, sourceVariable]) => ({
-        entityId,
-        sourceVariable,
-      }))),
+      singleProgramRequest(
+        request,
+        entry.program,
+        [...sourceBindings].map(([entityId, sourceVariable]) => ({
+          entityId,
+          sourceVariable,
+        })),
+      ),
       frame,
       incoming,
       {
@@ -767,19 +903,13 @@ export function lowerCanonicalProgramBatchSource(
   if (!sceneBlock) {
     throw new ProgramLoweringError("anchor-missing", `${request.sceneName} is not present in ${request.sourcePath}.`);
   }
-  for (const sourceMarker of findSceneMotionAnchors(source, request.sceneName)) {
-    const sourceAnchor = sourceMarker.seconds;
-    const priorDuration = groups.reduce((duration, group) => (
-      group.sourceAnchor < sourceAnchor - EPSILON ? duration + group.duration : duration
-    ), 0);
-    const index = sourceMarker.line - 1;
-    const indentation = lines[index]?.match(/^\s*/)?.[0] ?? "";
-    lines[index] = `${indentation}# poietra:anchor ${formatAmount(sourceAnchor + priorDuration)}`;
-  }
+  rewriteSceneTemporalMetadata(source, request.sceneName, lines, groups);
   for (const group of [...groups].sort((left, right) => right.anchorLine - left.anchorLine)) {
-    const priorDuration = groups.reduce((duration, candidate) => (
-      candidate.sourceAnchor < group.sourceAnchor - EPSILON ? duration + candidate.duration : duration
-    ), 0);
+    const priorDuration = groups.reduce(
+      (duration, candidate) =>
+        candidate.sourceAnchor < group.sourceAnchor - EPSILON ? duration + candidate.duration : duration,
+      0,
+    );
     const indentation = lines[group.anchorLine - 1]?.match(/^\s*/)?.[0] ?? "";
     lines.splice(
       group.anchorLine - 1,
