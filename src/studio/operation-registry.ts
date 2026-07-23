@@ -607,6 +607,56 @@ function matchingResizeStart(
   );
 }
 
+function setPropertyIssues(
+  operation: Extract<CanonicalEditOperation, { kind: "SetProperty" }>,
+  scene: RuntimeSceneState,
+) {
+  const issues = entityIssues([operation.entityId], operation, scene);
+  if (
+    operation.key === "position"
+    && (
+      !isPointValue(operation.value)
+      || !Number.isFinite(operation.value.x)
+      || !Number.isFinite(operation.value.y)
+    )
+  ) {
+    issues.push({
+      code: "schema-invalid" as const,
+      field: "value",
+      message: "Position edits require finite x and y values.",
+      operationId: operation.id,
+      severity: "error" as const,
+    });
+  }
+  if (operation.key === "content") {
+    const entity = scene.objectGraph.entities[operation.entityId];
+    const value = operation.value;
+    const content = typeof value === "object"
+      && value !== null
+      && "displayLines" in value
+      && Array.isArray(value.displayLines)
+      ? value
+      : null;
+    const textIsValid = entity?.type === "Text"
+      && typeof content?.text === "string"
+      && content.text.trim().length > 0;
+    const mathTexIsValid = entity?.type === "MathTex"
+      && Array.isArray(content?.texParts)
+      && content.texParts.length > 0
+      && content.texParts.every((part) => typeof part === "string" && part.trim().length > 0);
+    if (!textIsValid && !mathTexIsValid) {
+      issues.push({
+        code: "schema-invalid" as const,
+        field: "value",
+        message: "Content edits must match a Text or MathTex target with non-empty content.",
+        operationId: operation.id,
+        severity: "error" as const,
+      });
+    }
+  }
+  return issues;
+}
+
 export const OPERATION_REGISTRY = {
   CreateEntity: {
     access: (operation) => ({
@@ -703,7 +753,7 @@ export const OPERATION_REGISTRY = {
     lifetimeRequirement: "existing-at-start",
     projection: allEntityProjections,
     targetRequirement: "entity",
-    validate: (operation, scene) => entityIssues([operation.entityId], operation, scene),
+    validate: setPropertyIssues,
   } satisfies Capability<"SetProperty">,
   AnimateProperty: {
     access: (operation) => ({

@@ -7,6 +7,7 @@ import { rebaseProgramTime, sourceTimeToWorkingTime, workingTimeToSourceTime } f
 import { projectRuntimeSceneToSourceTimeline } from "./source-timeline";
 import {
   createImportedEntityLifetimeProgram,
+  createInspectorEntityEditProgram,
   createRemoveEntitiesProgram,
   createSceneDurationProgram,
   createStudioEntitiesProgram,
@@ -18,6 +19,103 @@ import { createDirectManipulationResizeProgram } from "./suggestion-program";
 import { validateAndScheduleProgram } from "./program-validation";
 
 describe("manual Studio authoring commands", () => {
+  it("projects Inspector position and content edits from one canonical program", () => {
+    const validation = createInspectorEntityEditProgram({
+      capturedPlayhead: 5,
+      edits: {
+        content: {
+          displayLines: ["F = ma"],
+          label: "equation",
+          texParts: ["F", "=", "m", "a"],
+        },
+        position: { x: 410, y: 170 },
+      },
+      entityId: "equation_1",
+      from: { position: { x: 384, y: 146 }, scale: 1 },
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "inspector-equation",
+    });
+
+    expect(validation.kind, JSON.stringify(validation.issues)).toBe("valid");
+    expect(validation.program.operations).toEqual([
+      expect.objectContaining({
+        entityId: "equation_1",
+        key: "position",
+        kind: "SetProperty",
+        value: { x: 410, y: 170 },
+      }),
+      expect.objectContaining({
+        entityId: "equation_1",
+        key: "content",
+        kind: "SetProperty",
+        value: expect.objectContaining({ texParts: ["F", "=", "m", "a"] }),
+      }),
+    ]);
+    const proposed = evaluateWorkingState(createFixtureWorkingState({
+      stagedPrograms: [programRecord(validation.program, validation)],
+    }));
+    expect(projectProposedState(proposed, 5).canvas.entities.find((entity) => (
+      entity.id === "equation_1"
+    ))).toEqual(expect.objectContaining({
+      content: expect.objectContaining({ texParts: ["F", "=", "m", "a"] }),
+      position: { x: 410, y: 170 },
+    }));
+  });
+
+  it("combines Inspector position and shape dimensions into the existing ResizeEntity operation", () => {
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 5,
+      entities: [{ dimensions: { radius: 2 }, position: { x: 180, y: 120 }, type: "Circle" }],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "inspector-circle-source",
+    });
+    const scene = evaluateWorkingState(createFixtureWorkingState({
+      appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
+    })).evaluatedScene;
+    const validation = createInspectorEntityEditProgram({
+      capturedPlayhead: 5,
+      edits: { dimensions: { radius: 3 }, position: { x: 210, y: 150 } },
+      entityId: creation.entityIds[0],
+      from: { dimensions: { radius: 2 }, position: { x: 180, y: 120 }, scale: 1 },
+      scene,
+      transactionId: "inspector-circle-edit",
+    });
+
+    expect(validation.kind, JSON.stringify(validation.issues)).toBe("valid");
+    expect(validation.program.operations).toEqual([
+      expect.objectContaining({
+        from: { dimensions: { radius: 2 }, position: { x: 180, y: 120 } },
+        kind: "ResizeEntity",
+        to: { dimensions: { radius: 3 }, position: { x: 210, y: 150 } },
+      }),
+    ]);
+  });
+
+  it("fails closed when Inspector content targets an imported entity without source identity", () => {
+    const scene = {
+      ...STUDIO_FIXTURE_SCENE,
+      objectGraph: {
+        ...STUDIO_FIXTURE_SCENE.objectGraph,
+        entities: {
+          ...STUDIO_FIXTURE_SCENE.objectGraph.entities,
+          equation_1: {
+            ...STUDIO_FIXTURE_SCENE.objectGraph.entities.equation_1,
+            sourceIdentity: { kind: "unknown" as const, reason: "Runtime alias" },
+          },
+        },
+      },
+    };
+
+    expect(() => createInspectorEntityEditProgram({
+      capturedPlayhead: 5,
+      edits: { content: { displayLines: ["F = ma"], texParts: ["F", "=", "m", "a"] } },
+      entityId: "equation_1",
+      from: { position: { x: 384, y: 146 }, scale: 1 },
+      scene,
+      transactionId: "unsafe-inspector-content",
+    })).toThrow(/known or Studio-generated source identity/i);
+  });
+
   it("creates and positions an entity through the canonical operation pipeline", () => {
     const result = createStudioEntitiesProgram({
       capturedPlayhead: 5,
