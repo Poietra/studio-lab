@@ -14,6 +14,7 @@ import type {
 import { STUDIO_STATE_VERSION } from "./model";
 import { evaluateOperation, type EvaluationDraft } from "./operation-registry";
 import {
+  isEntityDimensionsValue,
   isPointValue,
   normalizePositionSamples,
   normalizeScaleSamples,
@@ -230,15 +231,23 @@ export function sampleProposedState(proposedState: ProposedState, time: number):
       const position = channelAt(proposedState.evaluatedScene, entity.id, "position", time);
       const appearance = channelAt(proposedState.evaluatedScene, entity.id, "appearance", time);
       const content = channelAt(proposedState.evaluatedScene, entity.id, "content", time);
+      const dimensions = channelAt(proposedState.evaluatedScene, entity.id, "dimensions", time);
       const scale = channelAt(proposedState.evaluatedScene, entity.id, "scale", time);
       const positionValue = isPointValue(position) ? position : undefined;
+      const dimensionsValue = isEntityDimensionsValue(dimensions) ? dimensions : undefined;
       const scaleValue = typeof scale === "number" ? scale : undefined;
       const sampledPosition = positionValue ?? { x: 0, y: 0 };
       const sampledScale = scaleValue ?? 1;
       const positionSamples = proposedState.evaluatedScene.propertyChannels[`${entity.id}/position`]?.samples ?? [];
+      const dimensionsSamples = proposedState.evaluatedScene.propertyChannels[`${entity.id}/dimensions`]?.samples ?? [];
       const scaleSamples = proposedState.evaluatedScene.propertyChannels[`${entity.id}/scale`]?.samples ?? [];
       const positionKnowledge = samplePropertyKnowledge(positionSamples, time, positionValue);
       const scaleKnowledge = samplePropertyKnowledge(scaleSamples, time, scaleValue);
+      const dimensionsKnowledge = samplePropertyKnowledge(
+        dimensionsSamples,
+        time,
+        dimensionsValue,
+      );
       const fallbackGeometry = {
         dimensions: { kind: "known" as const, value: {} },
         position: positionKnowledge ?? {
@@ -259,6 +268,7 @@ export function sampleProposedState(proposedState: ProposedState, time: number):
         content: isContent(content) ? content : entity.content,
         geometry: {
           ...(entity.geometry ?? fallbackGeometry),
+          dimensions: dimensionsKnowledge ?? entity.geometry?.dimensions ?? fallbackGeometry.dimensions,
           position: positionKnowledge ?? entity.geometry?.position ?? fallbackGeometry.position,
           scale: scaleKnowledge ?? entity.geometry?.scale ?? fallbackGeometry.scale,
         },

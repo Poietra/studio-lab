@@ -87,7 +87,14 @@ export type ObjectGraph = Readonly<{
   lineage: readonly IdentityLineage[];
 }>;
 
-export type PropertyValue = boolean | number | string | Point | EntityContent | readonly string[];
+export type PropertyValue =
+  | boolean
+  | number
+  | string
+  | Point
+  | EntityDimensions
+  | EntityContent
+  | readonly string[];
 
 export type PropertyChannelSample = Readonly<{
   control?: Point;
@@ -95,7 +102,7 @@ export type PropertyChannelSample = Readonly<{
   from?: PropertyValue;
   interval: Interval;
   kind: "animated" | "exact";
-  knowledge?: Knowledge<number | Point>;
+  knowledge?: Knowledge<EntityDimensions | number | Point>;
   operationId?: string;
   provenanceId: string;
   relative?: boolean;
@@ -104,7 +111,7 @@ export type PropertyChannelSample = Readonly<{
 
 export type PropertyChannel = Readonly<{
   entityId: string;
-  key: "appearance" | "camera" | "content" | "ordering" | "position" | "presence" | "rotation" | "scale";
+  key: "appearance" | "camera" | "content" | "dimensions" | "ordering" | "position" | "presence" | "rotation" | "scale";
   samples: readonly PropertyChannelSample[];
 }>;
 

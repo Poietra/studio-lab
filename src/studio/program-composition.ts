@@ -28,6 +28,7 @@ export function insertedProgramDuration(program: CanonicalEditProgram) {
     (operation) =>
       operation.kind === "ChangePresence" ||
       operation.kind === "CreateMotion" ||
+      operation.kind === "ResizeEntity" ||
       operation.kind === "TransformContent" ||
       (operation.kind === "AnimateProperty" && operation.key === "scale") ||
       (operation.kind === "InsertTimelineEvent" && operation.eventKind === "wait"),
@@ -183,6 +184,7 @@ function remapOperation(operation: CanonicalEditOperation, offset: number, maps:
       };
     case "SetProperty":
     case "AnimateProperty":
+    case "ResizeEntity":
     case "ChangePresence":
       return { ...operation, ...base, entityId: remapEntity(operation.entityId, maps) };
     case "CreateMotion":

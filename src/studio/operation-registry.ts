@@ -18,6 +18,11 @@ import { insertedProgramDuration } from "./program-composition";
 import { isPointValue, samplePropertyValue } from "./property-sampling";
 
 const pointSchema = z.object({ x: z.number(), y: z.number() });
+const dimensionsSchema = z.object({
+  height: z.number().positive().optional(),
+  radius: z.number().positive().optional(),
+  width: z.number().positive().optional(),
+}).strict();
 const intervalSchema = z.object({ end: z.number(), start: z.number() });
 const provenanceSchema = z.object({
   evidence: z.array(z.string()),
@@ -40,6 +45,7 @@ export const canonicalOperationSchema = z.discriminatedUnion("kind", [
   baseSchema.extend({
     entity: z.object({
       content: contentSchema.optional(),
+      dimensions: dimensionsSchema.optional(),
       id: z.string(),
       lifetime: z.object({ end: z.number().nullable(), start: z.number() }),
       type: z.string(),
@@ -48,7 +54,7 @@ export const canonicalOperationSchema = z.discriminatedUnion("kind", [
   }),
   baseSchema.extend({
     entityId: z.string(),
-    key: z.enum(["appearance", "camera", "content", "ordering", "position", "presence", "rotation", "scale"]),
+    key: z.enum(["appearance", "camera", "content", "dimensions", "ordering", "position", "presence", "rotation", "scale"]),
     kind: z.literal("SetProperty"),
     value: z.union([z.boolean(), z.number(), z.string(), pointSchema, contentSchema]),
   }),
@@ -61,6 +67,14 @@ export const canonicalOperationSchema = z.discriminatedUnion("kind", [
     kind: z.literal("AnimateProperty"),
     relativeFactor: z.number().positive().optional(),
     to: z.union([pointSchema, z.number()]),
+  }),
+  baseSchema.extend({
+    entityId: z.string(),
+    from: z.object({ dimensions: dimensionsSchema, position: pointSchema }).strict(),
+    kind: z.literal("ResizeEntity"),
+    scale: z.number().positive(),
+    shape: z.enum(["circle", "rectangle"]),
+    to: z.object({ dimensions: dimensionsSchema, position: pointSchema }).strict(),
   }),
   baseSchema.extend({
     controlOffset: pointSchema,
@@ -519,6 +533,14 @@ export const OPERATION_REGISTRY = {
             : Math.min(draft.duration, finiteEnd + insertedProgramDuration(program));
       draft.entities[operation.entity.id] = {
         content: operation.entity.content,
+        ...(operation.entity.dimensions ? {
+          geometry: {
+            dimensions: { kind: "known" as const, value: operation.entity.dimensions },
+            position: { kind: "unknown" as const, reason: "Position has not been assigned yet." },
+            scale: { kind: "known" as const, value: 1 },
+            style: { kind: "known" as const, value: {} },
+          },
+        } : {}),
         id: operation.entity.id,
         lifetime: [{ end, start: operation.entity.lifetime.start }],
         provisional: true,
@@ -654,6 +676,68 @@ export const OPERATION_REGISTRY = {
       return issues;
     },
   } satisfies Capability<"AnimateProperty">,
+  ResizeEntity: {
+    access: (operation) => ({
+      reads: [
+        { channel: "dimensions", entityId: operation.entityId },
+        { channel: "position", entityId: operation.entityId },
+      ],
+      writes: [
+        { channel: "dimensions", entityId: operation.entityId },
+        { channel: "position", entityId: operation.entityId },
+      ],
+    }),
+    defaults: {},
+    evaluate: (draft, operation, program) => {
+      recordOperation(draft, operation, program);
+      const kind = operation.interval.end > operation.interval.start ? "animated" : "exact";
+      appendSample(draft, operation.entityId, "dimensions", {
+        from: operation.from.dimensions,
+        interval: operation.interval,
+        kind,
+        operationId: operation.id,
+        provenanceId: `${operation.id}/dimensions-provenance`,
+        value: operation.to.dimensions,
+      });
+      appendSample(draft, operation.entityId, "position", {
+        from: operation.from.position,
+        interval: operation.interval,
+        kind,
+        operationId: operation.id,
+        provenanceId: `${operation.id}/position-provenance`,
+        value: operation.to.position,
+      });
+    },
+    lifetimeRequirement: "existing-at-start",
+    lowering: "unsupported",
+    projection: allEntityProjections,
+    targetRequirement: "entity",
+    validate: (operation, scene) => {
+      const issues = entityIssues([operation.entityId], operation, scene);
+      const dimensions = operation.shape === "circle"
+        ? [operation.from.dimensions.radius, operation.to.dimensions.radius]
+        : [
+            operation.from.dimensions.width,
+            operation.from.dimensions.height,
+            operation.to.dimensions.width,
+            operation.to.dimensions.height,
+          ];
+      if (
+        dimensions.some((value) => typeof value !== "number" || !Number.isFinite(value) || value <= 0)
+        || !Number.isFinite(operation.scale)
+        || operation.scale <= 0
+      ) {
+        issues.push({
+          code: "schema-invalid",
+          field: "dimensions",
+          message: "Shape resize dimensions and scale must be finite positive numbers.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      return issues;
+    },
+  } satisfies Capability<"ResizeEntity">,
   CreateMotion: {
     access: (operation) => ({
       reads: operation.targetEntityIds.map((entityId) => ({ channel: "position" as const, entityId })),

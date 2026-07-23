@@ -4,7 +4,11 @@ import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import { projectedPositions, validateSuggestionDraft, validatedProgramRecord } from "./draft-validation";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
 import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
-import { createDirectManipulationPositionProgram, createDirectManipulationScaleProgram } from "./suggestion-program";
+import {
+  createDirectManipulationPositionProgram,
+  createDirectManipulationResizeProgram,
+  createDirectManipulationScaleProgram,
+} from "./suggestion-program";
 
 const transition: EditSuggestionOperation = {
   anchor: { kind: "playhead", referenceSeconds: 5 },
@@ -222,5 +226,59 @@ describe("Studio draft validation boundary", () => {
     expect(
       projectProposedState(proposed, 7).canvas.entities.find((entity) => entity.id === "equation_1")?.scale,
     ).toBeCloseTo(2);
+  });
+
+  it("projects Rectangle dimensions and its anchored center from one resize operation", () => {
+    const validation = createDirectManipulationResizeProgram({
+      capturedPlayhead: 5,
+      entityId: "proof_box",
+      from: { dimensions: { height: 2, width: 4 }, position: { x: 320, y: 147 } },
+      interval: { end: 5, start: 5 },
+      scale: 1,
+      scene: STUDIO_FIXTURE_SCENE,
+      shape: "rectangle",
+      to: { dimensions: { height: 3, width: 6 }, position: { x: 340, y: 157 } },
+      transactionId: "rectangle-geometry",
+    });
+    expect(validation.kind).toBe("valid");
+    const proposed = evaluateWorkingState(createFixtureWorkingState({
+      stagedPrograms: [programRecord(validation.program, validation)],
+    }));
+    const rectangle = projectProposedState(proposed, 5).canvas.entities.find((entity) => (
+      entity.id === "proof_box"
+    ));
+
+    expect(rectangle?.geometry.dimensions).toEqual({
+      kind: "known",
+      value: { height: 3, width: 6 },
+    });
+    expect(rectangle?.position).toEqual({ x: 340, y: 157 });
+  });
+
+  it("interpolates shape dimensions during an animated resize", () => {
+    const validation = createDirectManipulationResizeProgram({
+      capturedPlayhead: 5,
+      entityId: "proof_box",
+      from: { dimensions: { height: 2, width: 4 }, position: { x: 320, y: 147 } },
+      interval: { end: 7, start: 5 },
+      scale: 1,
+      scene: STUDIO_FIXTURE_SCENE,
+      shape: "rectangle",
+      to: { dimensions: { height: 4, width: 8 }, position: { x: 340, y: 167 } },
+      transactionId: "animated-rectangle-geometry",
+    });
+    expect(validation.kind).toBe("valid");
+    const proposed = evaluateWorkingState(createFixtureWorkingState({
+      stagedPrograms: [programRecord(validation.program, validation)],
+    }));
+    const rectangle = projectProposedState(proposed, 6).canvas.entities.find((entity) => (
+      entity.id === "proof_box"
+    ));
+
+    expect(rectangle?.geometry.dimensions).toEqual({
+      kind: "known",
+      value: { height: 3, width: 6 },
+    });
+    expect(rectangle?.position).toEqual({ x: 330, y: 157 });
   });
 });

@@ -12,7 +12,7 @@ import type {
   ScaleObjectsSuggestion,
   SuggestionTimeAnchor,
 } from "../ai/edit-suggestions";
-import type { RuntimeSceneState } from "./model";
+import type { EntityDimensions, Point, RuntimeSceneState } from "./model";
 import {
   exactEntityScaleAt,
   hasSafeMagicEditIdentity,
@@ -815,6 +815,55 @@ export function createDirectManipulationScaleProgram(
     },
     input.scene,
   );
+}
+
+export function createDirectManipulationResizeProgram(
+  input: Readonly<{
+    capturedPlayhead: number;
+    entityId: string;
+    from: Readonly<{ dimensions: EntityDimensions; position: Point }>;
+    interval: Readonly<{ end: number; start: number }>;
+    scale: number;
+    scene: RuntimeSceneState;
+    shape: "circle" | "rectangle";
+    to: Readonly<{ dimensions: EntityDimensions; position: Point }>;
+    transactionId: string;
+  }>,
+): ProgramValidationResult {
+  const sourceAnchor = Math.abs(input.interval.start - input.capturedPlayhead) < 0.001
+    ? { kind: "playhead" as const, referenceSeconds: input.capturedPlayhead }
+    : { kind: "absolute" as const, seconds: input.interval.start };
+  const resolution = resolveTimeAnchorOnce(sourceAnchor, {
+    capturedPlayhead: input.capturedPlayhead,
+    sceneDuration: input.scene.duration,
+  });
+  if (resolution.kind === "invalid") throw new Error(resolution.message);
+  const operation: CanonicalEditOperation = {
+    dependsOn: [],
+    entityId: input.entityId,
+    from: input.from,
+    id: operationId(input.transactionId, "resize-shape"),
+    interval: input.interval,
+    kind: "ResizeEntity",
+    provenance: provenance("direct-manipulation", [
+      `${input.shape} geometry resize`,
+      "opposite edge anchored",
+    ]),
+    scale: input.scale,
+    shape: input.shape,
+    to: input.to,
+  };
+  return validateAndScheduleProgram({
+    anchor: resolution.anchor,
+    intentCount: 1,
+    loweringStatus: "illustrative",
+    operations: [operation],
+    provenance: provenance("direct-manipulation", ["shape-aware resize constraint"]),
+    requestedExecution: "sequence",
+    schedule: { edges: [], mode: "sequence", order: [operation.id] },
+    transactionId: input.transactionId,
+    version: EDIT_OPERATION_VERSION,
+  }, input.scene);
 }
 
 export function createDirectManipulationModifyMotionProgram(

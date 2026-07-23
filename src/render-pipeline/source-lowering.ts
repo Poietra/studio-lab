@@ -311,7 +311,7 @@ function variableAllocator(source: string, transactionId: string, additionalRese
 }
 
 function entityConstructor(operation: CreateEntityOperation) {
-  const { content, type } = operation.entity;
+  const { content, dimensions, type } = operation.entity;
   if (type === "MathTex") {
     const parts = content?.texParts?.length ? content.texParts : content?.displayLines;
     if (!parts?.length) {
@@ -328,9 +328,9 @@ function entityConstructor(operation: CreateEntityOperation) {
   }
   const shapeConstructor = {
     Arrow: "Arrow(LEFT, RIGHT, buff=0)",
-    Circle: "Circle(radius=1)",
+    Circle: `Circle(radius=${formatAmount(dimensions?.radius ?? 1)})`,
     Line: "Line(LEFT, RIGHT)",
-    Rectangle: "Rectangle(width=4, height=2)",
+    Rectangle: `Rectangle(width=${formatAmount(dimensions?.width ?? 4)}, height=${formatAmount(dimensions?.height ?? 2)})`,
     Square: "Square(side_length=2)",
   }[type];
   if (shapeConstructor) return shapeConstructor;
