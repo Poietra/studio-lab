@@ -12,6 +12,7 @@ import {
   manimProjectIdSchema,
   manimProjectListViewSchema,
   manimProjectMutationViewSchema,
+  manimThumbnailStatusSchema,
   manimWorkspaceViewSchema,
   originalManimSourceExportRequestSchema,
   programRenderRequestSchema,
@@ -104,6 +105,34 @@ export async function unregisterManimProject(projectId: string, signal?: AbortSi
     method: "DELETE",
     signal,
   }), manimProjectMutationViewSchema);
+}
+
+export async function loadManimThumbnailStatus(projectId: string, signal?: AbortSignal) {
+  if (!manimProjectIdSchema.safeParse(projectId).success) {
+    throw new Error("The project ID does not match the API contract.");
+  }
+  const status = await readJson(await fetch(
+    `/api/manim/projects/${encodeURIComponent(projectId)}/thumbnail/status`,
+    { signal },
+  ), manimThumbnailStatusSchema);
+  if (status.projectId !== projectId) {
+    throw new Error("The server returned a thumbnail status for a different project.");
+  }
+  return status;
+}
+
+export async function generateManimThumbnail(projectId: string, signal?: AbortSignal) {
+  if (!manimProjectIdSchema.safeParse(projectId).success) {
+    throw new Error("The project ID does not match the API contract.");
+  }
+  const status = await readJson(await fetch(
+    `/api/manim/projects/${encodeURIComponent(projectId)}/thumbnail/generate`,
+    { method: "POST", signal },
+  ), manimThumbnailStatusSchema);
+  if (status.projectId !== projectId) {
+    throw new Error("The server returned a thumbnail status for a different project.");
+  }
+  return status;
 }
 
 export async function loadManimWorkspace(
