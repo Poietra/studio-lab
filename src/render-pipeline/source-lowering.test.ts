@@ -525,6 +525,56 @@ class GroupedEquation(Scene):
     )).toThrow(/Scale and TransformContent cannot target the same logical object/i);
   });
 
+  it("verifies consecutive same-anchor scale Programs against accumulated batch factors", () => {
+    const firstScale: CanonicalEditOperation = {
+      ...operationBase("first-scale", 7, 8),
+      easing: "smooth",
+      entityId: "equation_1",
+      from: 1,
+      key: "scale",
+      kind: "AnimateProperty",
+      to: 1.5,
+    };
+    const secondScale: CanonicalEditOperation = {
+      ...operationBase("second-scale", 8, 9),
+      easing: "smooth",
+      entityId: "equation_1",
+      from: 1.5,
+      key: "scale",
+      kind: "AnimateProperty",
+      to: 3,
+    };
+    const firstProgram = canonicalProgram([firstScale], "first-scale");
+    const secondProgram: CanonicalEditProgram = {
+      ...canonicalProgram([secondScale], "second-scale"),
+      anchor: {
+        capturedPlayhead: 8,
+        evidence: ["captured-playhead:8.000"],
+        resolvedSeconds: 8,
+        source: { kind: "playhead", referenceSeconds: 8 },
+      },
+    };
+
+    const lowered = lowerCanonicalProgramBatchSource(
+      source,
+      request(firstProgram),
+      [
+        { program: firstProgram, sourceAnchor: 7 },
+        { program: secondProgram, sourceAnchor: 7 },
+      ],
+      { height: 8, width: 14.222 },
+      null,
+    );
+    const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
+    const samples = imported?.runtimeSceneState.propertyChannels[
+      "source:examples/relativity.py#GroupedEquation:equation/scale"
+    ]?.samples ?? [];
+
+    expect(lowered.insertedCode).toContain("equation.animate.scale(1.5)");
+    expect(lowered.insertedCode).toContain("equation.animate.scale(2)");
+    expect(samples.at(-1)).toMatchObject({ from: 1.5, value: 3 });
+  });
+
   it("lowers an immediate lifetime end to self.remove without a zero-duration play", () => {
     const remove: CanonicalEditOperation = {
       ...operationBase("trim-lifetime", 7),

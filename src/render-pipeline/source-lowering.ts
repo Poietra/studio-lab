@@ -50,10 +50,19 @@ export type LoweredProgramBatchSource = Readonly<{
 
 type ProgramSourceLoweringOptions = Readonly<{
   entityAliases?: ReadonlyMap<string, ReadonlySet<string>>;
+  entityScaleStates?: Map<string, SourceScaleState>;
   finiteCreatedLifetimesHandled?: boolean;
   generatedEntityIds?: ReadonlySet<string>;
   reservedSourceVariables?: ReadonlySet<string>;
   sourceAnchor?: number;
+}>;
+
+type SourceScaleState = Readonly<{
+  factor: number;
+  kind: "relative-to-source";
+}> | Readonly<{
+  kind: "absolute";
+  value: number;
 }>;
 
 export class ProgramLoweringError extends Error {
@@ -467,64 +476,79 @@ function assertScaleOriginsMatchSource(
   operations: readonly CanonicalEditOperation[],
   sourceBindings: ReadonlyMap<string, string>,
   generatedEntityIds: ReadonlySet<string> | undefined,
+  entityScaleStates: Map<string, SourceScaleState> | undefined,
   frame: Readonly<{ height: number; width: number }>,
 ) {
   const scales = operations.filter((operation): operation is Extract<CanonicalEditOperation, {
     kind: "AnimateProperty";
   }> => operation.kind === "AnimateProperty" && operation.key === "scale");
   if (scales.length === 0) return;
-  const imported = importManimScene(
-    sourceThroughAnchor(source, sceneBlock, anchorLine),
-    sourcePath,
-    sceneName,
-    frame,
-  );
-  if (!imported) {
-    throw new ProgramLoweringError(
-      "operation-unsupported",
-      "Scale lowering cannot verify the source state at the selected anchor.",
-    );
-  }
+  let imported: ReturnType<typeof importManimScene> | undefined;
+  const sourceScale = (entityId: string) => {
+    imported ??= importManimScene(
+      sourceThroughAnchor(source, sceneBlock, anchorLine),
+      sourcePath,
+      sceneName,
+      frame,
+    ) ?? undefined;
+    if (!imported) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        "Scale lowering cannot verify the source state at the selected anchor.",
+      );
+    }
+    const sourceVariable = sourceBindings.get(entityId);
+    const entity = sourceVariable
+      ? Object.values(imported.runtimeSceneState.objectGraph.entities).find((candidate) => (
+          candidate.sourceIdentity.kind === "known"
+          && candidate.sourceIdentity.value === sourceVariable
+        ))
+      : undefined;
+    const samples = entity
+      ? imported.runtimeSceneState.propertyChannels[`${entity.id}/scale`]?.samples ?? []
+      : [];
+    const value = samplePropertyValue(samples, sourceAnchor);
+    const numericValue = typeof value === "number" ? value : undefined;
+    const knowledge = samplePropertyKnowledge(samples, sourceAnchor, numericValue);
+    if (
+      knowledge?.kind !== "known"
+      || !Number.isFinite(knowledge.value)
+      || knowledge.value <= 0
+    ) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        `Scale lowering cannot verify a finite positive source scale for ${entityId} at the selected anchor.`,
+      );
+    }
+    return knowledge.value;
+  };
   const createdScales = new Map(operations.flatMap((operation) => (
     operation.kind === "CreateEntity"
       ? [[operation.entity.id, operation.entity.type.startsWith("TransitionOverlay:") ? 0.01 : 1] as const]
       : []
   )));
   const currentScales = new Map<string, number>();
+  const currentScaleStates = new Map<string, SourceScaleState>();
   for (const operation of scales) {
     const change = scaleChange(operation);
     let current = currentScales.get(operation.entityId);
+    let state = currentScaleStates.get(operation.entityId)
+      ?? entityScaleStates?.get(operation.entityId);
+    if (current === undefined && state?.kind === "absolute") current = state.value;
+    if (current === undefined && state?.kind === "relative-to-source") {
+      current = sourceScale(operation.entityId) * state.factor;
+    }
     if (current === undefined) {
       current = createdScales.get(operation.entityId);
+      if (current !== undefined) state = { kind: "absolute", value: current };
     }
     if (current === undefined && generatedEntityIds?.has(operation.entityId)) {
       current = change.from;
+      state = { kind: "absolute", value: current };
     }
     if (current === undefined) {
-      const sourceVariable = sourceBindings.get(operation.entityId);
-      const entity = sourceVariable
-        ? Object.values(imported.runtimeSceneState.objectGraph.entities).find((candidate) => (
-            candidate.sourceIdentity.kind === "known"
-            && candidate.sourceIdentity.value === sourceVariable
-          ))
-        : undefined;
-      const samples = entity
-        ? imported.runtimeSceneState.propertyChannels[`${entity.id}/scale`]?.samples ?? []
-        : [];
-      const value = samplePropertyValue(samples, sourceAnchor);
-      const numericValue = typeof value === "number" ? value : undefined;
-      const knowledge = samplePropertyKnowledge(samples, sourceAnchor, numericValue);
-      if (
-        knowledge?.kind !== "known"
-        || !Number.isFinite(knowledge.value)
-        || knowledge.value <= 0
-      ) {
-        throw new ProgramLoweringError(
-          "operation-unsupported",
-          `Scale lowering cannot verify a finite positive source scale for ${operation.entityId} at the selected anchor.`,
-        );
-      }
-      current = knowledge.value;
+      current = sourceScale(operation.entityId);
+      state = { factor: 1, kind: "relative-to-source" };
     }
     const tolerance = Math.max(EPSILON, Math.abs(current) * 0.000001);
     if (Math.abs(change.from - current) >= tolerance) {
@@ -534,6 +558,11 @@ function assertScaleOriginsMatchSource(
       );
     }
     currentScales.set(operation.entityId, change.to);
+    const nextState: SourceScaleState = state?.kind === "relative-to-source"
+      ? { factor: state.factor * change.factor, kind: "relative-to-source" }
+      : { kind: "absolute", value: change.to };
+    currentScaleStates.set(operation.entityId, nextState);
+    entityScaleStates?.set(operation.entityId, nextState);
   }
 }
 
@@ -702,6 +731,7 @@ export function lowerCanonicalProgramSource(
     operations,
     sourceBindings,
     options.generatedEntityIds,
+    options.entityScaleStates,
     frame,
   );
   const variableByEntity = new Map(sourceBindings);
@@ -1233,6 +1263,7 @@ export function lowerCanonicalProgramBatchSource(
   const sourceBindings = new Map(request.sourceBindings.map((binding) => [binding.entityId, binding.sourceVariable]));
   const generatedEntityIds = new Set<string>();
   const generatedSourceVariables = new Set<string>();
+  const entityScaleStates = new Map<string, SourceScaleState>();
   const entityAliases = new Map<string, ReadonlySet<string>>(
     [...sourceBindings].map(([entityId, sourceVariable]) => [entityId, new Set([sourceVariable])]),
   );
@@ -1273,6 +1304,7 @@ export function lowerCanonicalProgramBatchSource(
       incoming,
       {
         entityAliases,
+        entityScaleStates,
         finiteCreatedLifetimesHandled: true,
         generatedEntityIds,
         reservedSourceVariables: generatedSourceVariables,
