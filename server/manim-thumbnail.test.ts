@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { importManimScene, type ImportedManimScene } from "../src/render-pipeline/source-import";
+import { importManimScene } from "../src/render-pipeline/source-import";
 import { handleManimRequest } from "./manim-render-http";
 import { ManimProjectRegistry, ManimRenderManager } from "./manim-render-pipeline";
 import {
@@ -112,42 +112,29 @@ ${assignments.join("\n")}
 });
 
 describe("Manim thumbnail manager and HTTP boundary", () => {
-  it("coalesces and caches discovery, does not run Manim, and blocks unregister while scanning", async () => {
+  it("serves a semantic fallback without running Manim", async () => {
     const projectRoot = await mkdtemp(join(tmpdir(), "poietra-thumbnail-manager-"));
     temporaryRoots.push(projectRoot);
-    const imported = importManimScene(sceneSource("Cached", "cached"), "scene.py", "Cached", frame);
-    if (!imported) throw new Error("The cached thumbnail fixture Scene was not imported.");
+    await writeFile(join(projectRoot, "scene.py"), sceneSource("Cached", "cached"), "utf8");
     const commandMarker = join(projectRoot, "command-ran");
     const command = join(projectRoot, "command.mjs");
     await writeFile(command, `import { writeFile } from "node:fs/promises"; await writeFile(${JSON.stringify(commandMarker)}, "ran");\n`, "utf8");
-    let discoveryCount = 0;
-    let releaseDiscovery!: (scene: ImportedManimScene) => void;
-    const pendingDiscovery = new Promise<ImportedManimScene>((resolve) => {
-      releaseDiscovery = resolve;
-    });
     const manager = new ManimRenderManager({
       command: [process.execPath, command],
       frame,
       projectRoot,
-      thumbnailSceneDiscovery: async () => {
-        discoveryCount += 1;
-        return pendingDiscovery;
-      },
     });
     managers.push(manager);
 
-    const first = manager.thumbnailSvg();
-    const second = manager.thumbnailSvg();
-    expect(discoveryCount).toBe(1);
-    expect(manager.canUnregister()).toBe(false);
-    releaseDiscovery(imported);
-    const [firstSvg, secondSvg] = await Promise.all([first, second]);
-    expect(firstSvg).toBe(secondSvg);
+    const [first, second] = await Promise.all([manager.thumbnail(), manager.thumbnail()]);
+    expect(first.kind).toBe("semantic");
+    expect(first.body.equals(second.body)).toBe(true);
+    expect(first.body.toString("utf8")).toContain("cached");
+    await expect(manager.thumbnailStatus()).resolves.toMatchObject({
+      imageKind: "semantic",
+      state: "missing",
+    });
     expect(manager.canUnregister()).toBe(true);
-    expect(await manager.thumbnailSvg()).toBe(firstSvg);
-    expect(discoveryCount).toBe(1);
-    await manager.thumbnailSvg("default", Date.now() + 31_000);
-    expect(discoveryCount).toBe(2);
     await expect(readFile(commandMarker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -178,6 +165,8 @@ describe("Manim thumbnail manager and HTTP boundary", () => {
       expect(thumbnail.headers.get("x-content-type-options")).toBe("nosniff");
       expect(thumbnail.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
       expect(thumbnail.headers.get("cache-control")).toBe("no-store");
+      expect(thumbnail.headers.get("x-poietra-thumbnail-kind")).toBe("semantic");
+      expect(thumbnail.headers.get("x-poietra-thumbnail-state")).toBe("missing");
       const svg = await thumbnail.text();
       expect(svg).toContain("&lt;safe &amp; visible&gt;");
       expect(svg).not.toMatch(/<script\b|foreignObject/i);
@@ -188,6 +177,14 @@ describe("Manim thumbnail manager and HTTP boundary", () => {
         method: "POST",
       });
       expect(rejectedMethod.status).toBe(405);
+
+      const status = await fetch(`${origin}/api/manim/projects/project-thumbnail/thumbnail/status`);
+      expect(status.status).toBe(200);
+      await expect(status.json()).resolves.toMatchObject({
+        imageKind: "semantic",
+        projectId: "project-thumbnail",
+        state: "missing",
+      });
 
       for (const projectId of ["project-empty", "project-missing"]) {
         const fallback = await fetch(`${origin}/api/manim/projects/${projectId}/thumbnail`);

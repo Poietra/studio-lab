@@ -25,6 +25,7 @@ export class ManimProjectRegistry {
   private readonly renderTimeoutMs: number | undefined;
   private readonly sessionProjects = new Map<string, string>();
   private readonly sessionRetentionMs: number | undefined;
+  private readonly thumbnailCacheRoot: string | undefined;
 
   constructor(options: Readonly<{
     catalog?: PersistentManimProjectCatalog;
@@ -36,6 +37,7 @@ export class ManimProjectRegistry {
     projects: readonly ManimProjectConfig[];
     renderTimeoutMs?: number;
     sessionRetentionMs?: number;
+    thumbnailCacheRoot?: string;
   }>) {
     if (options.projects.length > 64) throw new TypeError("The Manim project registry accepts at most 64 projects.");
     this.catalog = options.catalog ?? null;
@@ -46,6 +48,7 @@ export class ManimProjectRegistry {
     this.maxRetainedSessions = options.maxRetainedSessions;
     this.renderTimeoutMs = options.renderTimeoutMs;
     this.sessionRetentionMs = options.sessionRetentionMs;
+    this.thumbnailCacheRoot = options.thumbnailCacheRoot;
     const configuredProjects = this.catalog?.projects() ?? resolveManimProjects(options.projects);
     for (const project of configuredProjects) this.addManager(project);
   }
@@ -69,6 +72,7 @@ export class ManimProjectRegistry {
       projectRoot: canonicalRoot,
       renderTimeoutMs: this.renderTimeoutMs,
       sessionRetentionMs: this.sessionRetentionMs,
+      thumbnailCacheRoot: this.thumbnailCacheRoot,
     }));
   }
 
@@ -154,6 +158,7 @@ export class ManimProjectRegistry {
       if (sessionProjectId === projectId) this.sessionProjects.delete(sessionId);
     }
     await manager.close();
+    await manager.removeThumbnailCache();
     return this.mutationView(null);
   }
 
@@ -162,8 +167,16 @@ export class ManimProjectRegistry {
     return this.project(projectId).workspace(projectId);
   }
 
-  thumbnailSvg(projectId: string) {
-    return this.project(projectId).thumbnailSvg(projectId);
+  thumbnail(projectId: string) {
+    return this.project(projectId).thumbnail(projectId);
+  }
+
+  thumbnailStatus(projectId: string) {
+    return this.project(projectId).thumbnailStatus(projectId);
+  }
+
+  generateThumbnail(projectId: string) {
+    return this.project(projectId).generateThumbnail(projectId);
   }
 
   async start(request: ProgramRenderRequest, signal?: AbortSignal) {
