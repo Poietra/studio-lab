@@ -139,12 +139,14 @@ test("retains editor sessions while leaving and reopening workspaces", async ({ 
 
 test("waits at the launcher and only imports explicitly selected workspaces", async ({ page }) => {
   let projectCatalogRequests = 0;
+  let thumbnailGenerationRequests = 0;
   let thumbnailRequests = 0;
   let workspaceRequests = 0;
   page.on("request", (request) => {
     const pathname = new URL(request.url()).pathname;
     if (pathname === "/api/manim/projects") projectCatalogRequests += 1;
     if (/^\/api\/manim\/projects\/[^/]+\/thumbnail$/.test(pathname)) thumbnailRequests += 1;
+    if (/^\/api\/manim\/projects\/[^/]+\/thumbnail\/generate$/.test(pathname)) thumbnailGenerationRequests += 1;
     if (/^\/api\/manim\/projects\/[^/]+\/workspace$/.test(pathname)) workspaceRequests += 1;
   });
   await page.route("**/api/manim/projects/examples/thumbnail", async (route) => {
@@ -203,6 +205,7 @@ test("waits at the launcher and only imports explicitly selected workspaces", as
   await expect(addWorkspace.locator("svg[aria-hidden='true']")).toBeVisible();
   await expect(page.locator("[data-studio-canvas]")).toHaveCount(0);
   expect(thumbnailRequests).toBeGreaterThanOrEqual(2);
+  expect(thumbnailGenerationRequests).toBe(0);
   expect(workspaceRequests).toBe(0);
   expect(projectCatalogRequests).toBe(1);
 
@@ -231,6 +234,42 @@ test("waits at the launcher and only imports explicitly selected workspaces", as
   await expect(page.locator("[data-studio-canvas]")).toBeVisible();
   expect(workspaceRequests).toBe(2);
   expect(projectCatalogRequests).toBe(1);
+  expect(thumbnailGenerationRequests).toBe(0);
+});
+
+test("generates a rendered workspace thumbnail only after an explicit launcher action", async ({ page }) => {
+  let generated = false;
+  const sourceHash = "a".repeat(64);
+  const status = () => ({
+    cachedSourceHash: generated ? sourceHash : null,
+    error: null,
+    generatedAt: generated ? "2026-07-23T10:00:00.000Z" : null,
+    imageKind: generated ? "rendered" : "semantic",
+    projectId: "studio-lab",
+    sceneName: "GroupedEquation",
+    sourceHash,
+    sourcePath: "src/studio/prototype-fixture.py",
+    state: generated ? "current" : "missing",
+  });
+  await page.route("**/api/manim/projects/studio-lab/thumbnail/status", async (route) => {
+    await route.fulfill({ body: JSON.stringify(status()), contentType: "application/json", status: 200 });
+  });
+  await page.route("**/api/manim/projects/studio-lab/thumbnail/generate", async (route) => {
+    generated = true;
+    await route.fulfill({ body: JSON.stringify(status()), contentType: "application/json", status: 202 });
+  });
+
+  await page.goto("/");
+  const card = page.locator("[data-workspace-card='studio-lab']");
+  await expect(card.locator("[data-thumbnail-status]"))
+    .toHaveAttribute("data-thumbnail-status", "missing");
+  const generate = page.getByRole("button", { name: "Generate preview for Studio Lab" });
+  await expect(generate).toBeVisible();
+  await generate.click();
+  await expect(card.locator("[data-thumbnail-status]"))
+    .toHaveAttribute("data-thumbnail-status", "current");
+  await expect(page.getByRole("button", { name: "Refresh preview for Studio Lab" })).toBeVisible();
+  await expect(page.locator("[data-studio-canvas]")).toHaveCount(0);
 });
 
 test("allows a pending workspace mutation dialog to be cancelled", async ({ page }) => {

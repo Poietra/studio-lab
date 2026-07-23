@@ -3,7 +3,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ManimApiRequestError,
   createManimProject,
+  generateManimThumbnail,
   loadManimProjects,
+  loadManimThumbnailStatus,
   loadManimWorkspace,
   renameManimProject,
   unregisterManimProject,
@@ -38,6 +40,16 @@ export function scheduleWorkspaceRefresh(refresh: () => void | Promise<void>) {
   return () => {
     active = false;
   };
+}
+
+export async function refreshThumbnailAfterOpen(
+  projectId: string,
+  loadStatus = loadManimThumbnailStatus,
+  generate = generateManimThumbnail,
+) {
+  const status = await loadStatus(projectId);
+  if (status.state === "current" || status.state === "generating") return status;
+  return generate(projectId);
 }
 
 export function useManimWorkspace() {
@@ -99,6 +111,9 @@ export function useManimWorkspace() {
       setActiveProjectIdState(projectId);
       workspaceRef.current = nextWorkspace;
       setWorkspace(nextWorkspace);
+      if (nextWorkspace.commandAvailable) {
+        void refreshThumbnailAfterOpen(projectId).catch(() => undefined);
+      }
       setActiveSceneIdState((current) => {
         const remembered = sceneByProject.current.get(projectId);
         const nextSceneId = scenes.some((scene) => scene.sceneId === remembered)
