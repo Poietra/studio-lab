@@ -330,7 +330,12 @@ export class ManimRenderManager {
 
   private refreshThumbnail() {
     this.thumbnailCache.invalidateTarget();
-    void this.startThumbnailGeneration().catch((error: unknown) => {
+    void (async () => {
+      await this.thumbnailCache.waitForIdle();
+      this.thumbnailCache.invalidateTarget();
+      if ((await this.thumbnailCache.status()).state === "current") return;
+      await this.startThumbnailGeneration();
+    })().catch((error: unknown) => {
       this.logger.warn("thumbnail.refresh_failed", { error });
     });
   }

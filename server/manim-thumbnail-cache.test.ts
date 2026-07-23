@@ -169,4 +169,44 @@ describe("persistent real Manim thumbnail cache", () => {
       state: "current",
     });
   });
+
+  it("rejects invalid PNG output, bounds failures, and stops an in-flight job during close", async () => {
+    const { cacheRoot, projectRoot } = await fixture();
+    const invalid = thumbnailCache({
+      cacheRoot,
+      command: [process.execPath, fakeRenderer, "--invalid-png"],
+      projectRoot,
+    });
+    await invalid.generate(async () => true);
+    await expect(waitForStatus(invalid, "failed")).resolves.toMatchObject({
+      imageKind: "semantic",
+      state: "failed",
+    });
+    expect((await invalid.status()).error).toMatch(/not a PNG/i);
+    await invalid.close();
+
+    const unavailableCacheRoot = await mkdtemp(join(tmpdir(), "poietra-thumbnail-cache-"));
+    temporaryRoots.push(unavailableCacheRoot);
+    const unavailable = thumbnailCache({
+      cacheRoot: unavailableCacheRoot,
+      command: ["x".repeat(1_000)],
+      projectRoot,
+    });
+    await expect(unavailable.generate(async () => false)).rejects.toMatchObject({ status: 503 });
+    expect((await unavailable.status()).error?.length).toBeLessThanOrEqual(500);
+    await unavailable.close();
+
+    const slowCacheRoot = await mkdtemp(join(tmpdir(), "poietra-thumbnail-cache-"));
+    temporaryRoots.push(slowCacheRoot);
+    const slow = thumbnailCache({
+      cacheRoot: slowCacheRoot,
+      command: [process.execPath, fakeRenderer, "--slow-render"],
+      projectRoot,
+    });
+    await slow.generate(async () => true);
+    const startedAt = Date.now();
+    await slow.close();
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+    await expect(slow.status()).resolves.toMatchObject({ error: null, state: "missing" });
+  });
 });

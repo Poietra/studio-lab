@@ -278,6 +278,15 @@ describe("Manim render manager", () => {
     const undone = await manager.undo(started.id);
     expect(undone.status).toBe("undone");
     expect(await readFile(join(projectRoot, "scene.py"), "utf8")).toBe(sceneSource);
+    await waitUntil(
+      async () => (await manager.thumbnailStatus()).state === "current",
+      "The thumbnail did not refresh after Commit followed by Undo.",
+    );
+    await expect(manager.thumbnailStatus()).resolves.toMatchObject({
+      imageKind: "rendered",
+      sourceHash: request().sourceHash,
+      state: "current",
+    });
   });
 
   it("coalesces concurrent workspace inspections", async () => {

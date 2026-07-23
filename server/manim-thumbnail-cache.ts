@@ -5,6 +5,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rename,
   rm,
   writeFile,
@@ -36,6 +37,7 @@ const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const MAX_ERROR_LENGTH = 500;
 const TARGET_CACHE_TTL_MS = 1_000;
 const CACHE_FILE_PATTERN = /^[0-9a-f]{64}-[0-9a-f]{16}\.png$/;
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 const cacheEntrySchema = z.object({
   fileName: z.string().regex(CACHE_FILE_PATTERN),
@@ -77,6 +79,7 @@ type ThumbnailProcessProgress = {
 };
 
 type ThumbnailGeneration = {
+  aborted: boolean;
   child: ChildProcess | null;
   key: string;
   promise: Promise<void>;
@@ -115,7 +118,11 @@ function cacheFileName(target: ManimThumbnailTarget) {
 }
 
 function boundedError(error: unknown) {
-  const message = error instanceof Error ? error.message : "Manim thumbnail generation failed.";
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === "string"
+      ? error
+      : "Manim thumbnail generation failed.";
   return message.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, MAX_ERROR_LENGTH)
     || "Manim thumbnail generation failed.";
 }
@@ -160,14 +167,33 @@ export class ManimThumbnailCache {
     return this.generation !== null;
   }
 
+  async waitForIdle() {
+    await this.generation?.promise;
+  }
+
   invalidateTarget() {
     this.targetCache = null;
+  }
+
+  private async ensureCacheDirectory() {
+    await mkdir(this.cacheDirectory, { mode: 0o700, recursive: true });
+    const [metadata, canonicalDirectory] = await Promise.all([
+      lstat(this.cacheDirectory),
+      realpath(this.cacheDirectory),
+    ]);
+    if (
+      !metadata.isDirectory()
+      || metadata.isSymbolicLink()
+      || canonicalDirectory !== this.cacheDirectory
+    ) {
+      throw new TypeError("The thumbnail cache must be a real private directory.");
+    }
   }
 
   private async loadManifest() {
     if (this.manifest) return this.manifest;
     this.manifestRequest ??= (async () => {
-      await mkdir(this.cacheDirectory, { mode: 0o700, recursive: true });
+      await this.ensureCacheDirectory();
       try {
         const parsed = cacheManifestSchema.safeParse(JSON.parse(
           await readFile(join(this.cacheDirectory, "manifest.json"), "utf8"),
@@ -193,7 +219,7 @@ export class ManimThumbnailCache {
   }
 
   private async persistManifest(next: CacheManifest) {
-    await mkdir(this.cacheDirectory, { mode: 0o700, recursive: true });
+    await this.ensureCacheDirectory();
     const temporaryPath = join(this.cacheDirectory, `.manifest-${randomUUID()}.tmp`);
     try {
       await writeFile(temporaryPath, `${JSON.stringify(next, null, 2)}\n`, {
@@ -371,6 +397,7 @@ export class ManimThumbnailCache {
       );
     }
     const generation: ThumbnailGeneration = {
+      aborted: false,
       child: null,
       key: targetKey(target),
       promise: Promise.resolve(),
@@ -379,7 +406,7 @@ export class ManimThumbnailCache {
     this.generation = generation;
     generation.promise = this.render(generation)
       .catch((error: unknown) => {
-        this.logger.warn("thumbnail.render_failed", { error });
+        if (!generation.aborted) this.logger.warn("thumbnail.render_failed", { error });
       })
       .finally(() => {
         if (this.generation === generation) this.generation = null;
@@ -392,7 +419,7 @@ export class ManimThumbnailCache {
     await this.persistManifest({
       ...manifest,
       lastAttempt: {
-        error,
+        error: error === null ? null : boundedError(error),
         finishedAt: new Date().toISOString(),
         sceneName: target.scene.name,
         sourceHash: target.scene.sourceHash,
@@ -415,6 +442,7 @@ export class ManimThumbnailCache {
       const mediaRoot = join(temporaryRoot, "media");
       await mkdir(mediaRoot, { recursive: true });
       await writeFile(sourcePath, target.source, { encoding: "utf8", mode: 0o600 });
+      if (generation.aborted) throw new Error("Thumbnail generation was cancelled.");
       const [executable, ...prefix] = this.command;
       const child = spawn(executable, [
         ...prefix,
@@ -437,6 +465,7 @@ export class ManimThumbnailCache {
         stdio: ["ignore", "pipe", "pipe"],
       });
       generation.child = child;
+      if (generation.aborted) stopRenderProcess(child);
       child.stdout?.on("data", (chunk: Buffer) => appendRenderLog(progress, chunk));
       child.stderr?.on("data", (chunk: Buffer) => appendRenderLog(progress, chunk));
       const exit = await waitForRenderExit(child, this.renderTimeoutMs);
@@ -455,11 +484,15 @@ export class ManimThumbnailCache {
       ) {
         throw new Error("Manim produced an invalid or oversized PNG thumbnail.");
       }
-      await this.storeImage(target, await readFile(renderedImage));
+      const image = await readFile(renderedImage);
+      if (image.length < PNG_SIGNATURE.length || !image.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
+        throw new Error("Manim produced a file that is not a PNG thumbnail.");
+      }
+      await this.storeImage(target, image);
       await this.recordAttempt(target, null);
     } catch (error) {
       generation.child = null;
-      await this.recordAttempt(target, boundedError(error));
+      if (!generation.aborted) await this.recordAttempt(target, boundedError(error));
       throw error;
     } finally {
       if (temporaryRoot) await rm(temporaryRoot, { force: true, recursive: true });
@@ -468,7 +501,7 @@ export class ManimThumbnailCache {
 
   private async storeImage(target: ManimThumbnailTarget, image: Buffer) {
     const manifest = await this.loadManifest();
-    await mkdir(this.cacheDirectory, { mode: 0o700, recursive: true });
+    await this.ensureCacheDirectory();
     const fileName = cacheFileName(target);
     const temporaryPath = join(this.cacheDirectory, `.thumbnail-${randomUUID()}.tmp`);
     try {
@@ -496,6 +529,7 @@ export class ManimThumbnailCache {
   async close() {
     const generation = this.generation;
     if (!generation) return;
+    generation.aborted = true;
     stopRenderProcess(generation.child);
     await waitForRenderProcessStop(generation.child);
     await generation.promise;

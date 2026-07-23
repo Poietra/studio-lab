@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -19,6 +20,7 @@ const temporaryRoots: string[] = [];
 const managers: ManimRenderManager[] = [];
 const registries: ManimProjectRegistry[] = [];
 const frame = { height: 8, width: 14.222 } as const;
+const fakeRenderer = fileURLToPath(new URL("./test-fixtures/fake-manim.mjs", import.meta.url));
 
 afterEach(async () => {
   await Promise.allSettled([
@@ -192,6 +194,49 @@ describe("Manim thumbnail manager and HTTP boundary", () => {
         expect(fallback.headers.get("content-type")).toBe("image/svg+xml; charset=utf-8");
         expect(await fallback.text()).toContain("No scene preview");
       }
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it("generates and serves a real PNG only through the explicit HTTP action", async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), "poietra-thumbnail-http-render-"));
+    const cacheRoot = await mkdtemp(join(tmpdir(), "poietra-thumbnail-http-cache-"));
+    temporaryRoots.push(projectRoot, cacheRoot);
+    await writeFile(join(projectRoot, "scene.py"), sceneSource("RenderedThumbnail", "rendered"), "utf8");
+    const registry = new ManimProjectRegistry({
+      command: [process.execPath, fakeRenderer],
+      frame,
+      projects: [{ id: "project-thumbnail", name: "Thumbnail", root: projectRoot }],
+      renderTimeoutMs: 5_000,
+      thumbnailCacheRoot: cacheRoot,
+    });
+    registries.push(registry);
+    const server = createServer((request, response) => {
+      void handleManimRequest(registry, request, response);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address() as AddressInfo;
+      const origin = `http://127.0.0.1:${address.port}`;
+      const generated = await fetch(`${origin}/api/manim/projects/project-thumbnail/thumbnail/generate`, {
+        method: "POST",
+      });
+      expect(generated.status).toBe(202);
+      await expect(generated.json()).resolves.toMatchObject({ state: "generating" });
+
+      let status: { state?: string } = {};
+      for (let attempt = 0; attempt < 100 && status.state !== "current"; attempt += 1) {
+        status = await (await fetch(`${origin}/api/manim/projects/project-thumbnail/thumbnail/status`)).json();
+        if (status.state !== "current") await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(status.state).toBe("current");
+      const thumbnail = await fetch(`${origin}/api/manim/projects/project-thumbnail/thumbnail`);
+      expect(thumbnail.status).toBe(200);
+      expect(thumbnail.headers.get("content-type")).toBe("image/png");
+      expect(thumbnail.headers.get("x-poietra-thumbnail-kind")).toBe("rendered");
+      expect(Buffer.from(await thumbnail.arrayBuffer()).subarray(0, 8))
+        .toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }

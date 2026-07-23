@@ -32,15 +32,17 @@ if (renderStartMarkerIndex >= 0 && process.argv[renderStartMarkerIndex + 1]) {
 }
 
 process.stdout.write("Rendering 50%\n");
-await new Promise((resolve) => setTimeout(resolve, 80));
+await new Promise((resolve) => setTimeout(resolve, process.argv.includes("--slow-render") ? 10_000 : 80));
 if (process.argv.includes("-s")) {
   const sceneName = process.argv.at(-1);
   const output = join(mediaRoot, "images", "fake");
   await mkdir(output, { recursive: true });
-  const png = Buffer.from(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
-    "base64",
-  );
+  const png = process.argv.includes("--invalid-png")
+    ? Buffer.from("not-a-png")
+    : Buffer.from(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+        "base64",
+      );
   await writeFile(join(output, `${sceneName}.png`), png);
 } else {
   const output = join(mediaRoot, "videos", "fake", "480p15");

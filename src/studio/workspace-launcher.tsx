@@ -163,7 +163,9 @@ function WorkspaceCard({
       try {
         const status = await loadManimThumbnailStatus(project.id, controller.signal);
         if (!active) return;
-        setThumbnailError(null);
+        setThumbnailError(status.state === "failed"
+          ? status.error ?? "The rendered preview failed. The semantic preview is shown instead."
+          : null);
         setThumbnailStatus(status);
         if (status.state === "generating") {
           pollTimer = setTimeout(() => void loadStatus(), 750);
@@ -204,6 +206,11 @@ function WorkspaceCard({
       )}
       data-workspace-card={project.id}
     >
+      <span aria-live="polite" className="sr-only">
+        {thumbnailStatus
+          ? `Preview status for ${project.name}: ${thumbnailStatus.state}.`
+          : `Loading preview status for ${project.name}.`}
+      </span>
       <button
         aria-label={`Open ${project.name} workspace`}
         className="flex min-h-0 flex-1 cursor-pointer flex-col text-left focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-wait disabled:text-zinc-600"

@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import type { Plugin } from "vite";
@@ -42,7 +43,7 @@ export function manimRenderPipeline(options: ManimRenderPipelineOptions = {}): P
         },
         logger,
         projects: seedProjects,
-        thumbnailCacheRoot: join(dataRoot, "thumbnails"),
+        thumbnailCacheRoot: join(realpathSync(dataRoot), "thumbnails"),
       });
     },
     configureServer(server) {
