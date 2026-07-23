@@ -5,7 +5,11 @@ import { analyzePythonSource, isPythonStatementStart, isStandalonePythonComment 
 import {
   STUDIO_STATE_VERSION,
   type EntityContent,
+  type EntityDimensions,
+  type EntityGeometryKnowledge,
+  type EntityStyle,
   type Interval,
+  type Knowledge,
   type Point,
   type PropertyChannel,
   type PropertyChannelSample,
@@ -61,12 +65,17 @@ export class AmbiguousSourceSceneError extends Error {
 
 type MutableEntity = {
   content?: EntityContent;
+  dimensions: Knowledge<EntityDimensions>;
   id: string;
   initialization: string;
   lifetimes: Array<{ end: number | null; start: number }>;
   position: Point;
+  positionKnowledge: Knowledge<Point>;
   relation?: Readonly<{ direction: "DOWN" | "LEFT" | "RIGHT" | "UP"; target: string }>;
+  scale: number;
+  scaleKnowledge: Knowledge<number>;
   sourceVariable: string;
+  style: Knowledge<EntityStyle>;
   type: string;
 };
 
@@ -76,7 +85,7 @@ type SourceStatement = Readonly<{
 }>;
 
 const CLASS_PATTERN = /^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*Scene[^)]*)\)\s*:/;
-const ASSIGNMENT_PATTERN = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)(.*)$/s;
+const ASSIGNMENT_PREFIX_PATTERN = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(/;
 const SUPPORTED_TYPES = new Set([
   "Arrow",
   "Circle",
@@ -367,6 +376,213 @@ function stringLiterals(value: string) {
   return literals;
 }
 
+function matchingCallEnd(source: string, openingIndex: number) {
+  let depth = 0;
+  let quote: '"' | "'" | '"""' | "'''" | null = null;
+  for (let index = openingIndex; index < source.length; index += 1) {
+    if (quote) {
+      if (source.startsWith(quote, index)) {
+        index += quote.length - 1;
+        quote = null;
+      } else if (source[index] === "\\" && quote.length === 1) {
+        index += 1;
+      }
+      continue;
+    }
+    if (source[index] === "#") {
+      const newline = source.indexOf("\n", index);
+      if (newline < 0) return null;
+      index = newline;
+      continue;
+    }
+    if (source.startsWith('"""', index) || source.startsWith("'''", index)) {
+      quote = source.slice(index, index + 3) as '"""' | "'''";
+      index += 2;
+      continue;
+    }
+    if (source[index] === '"' || source[index] === "'") {
+      quote = source[index] as '"' | "'";
+      continue;
+    }
+    if (source[index] === "(") depth += 1;
+    if (source[index] === ")") {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return null;
+}
+
+function parseEntityAssignment(source: string) {
+  const match = source.match(ASSIGNMENT_PREFIX_PATTERN);
+  if (!match || !SUPPORTED_TYPES.has(match[2])) return null;
+  const openingIndex = match[0].lastIndexOf("(");
+  const closingIndex = matchingCallEnd(source, openingIndex);
+  if (closingIndex === null) return null;
+  return {
+    argumentsSource: source.slice(openingIndex + 1, closingIndex),
+    sourceVariable: match[1],
+    suffix: source.slice(closingIndex + 1),
+    type: match[2],
+  };
+}
+
+function splitTopLevelArguments(source: string) {
+  const segments: string[] = [];
+  let start = 0;
+  let depth = 0;
+  let quote: '"' | "'" | null = null;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (quote) {
+      if (character === "\\") index += 1;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === "(" || character === "[" || character === "{") depth += 1;
+    else if (character === ")" || character === "]" || character === "}") depth -= 1;
+    else if (character === "," && depth === 0) {
+      const segment = source.slice(start, index).trim();
+      if (segment) segments.push(segment);
+      start = index + 1;
+    }
+  }
+  const tail = source.slice(start).trim();
+  if (tail) segments.push(tail);
+  return segments;
+}
+
+function constructorArguments(source: string) {
+  const positional: string[] = [];
+  const keywords = new Map<string, string>();
+  for (const argument of splitTopLevelArguments(source)) {
+    const keyword = argument.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/s);
+    if (keyword) keywords.set(keyword[1], keyword[2].trim());
+    else positional.push(argument);
+  }
+  return { keywords, positional };
+}
+
+function positiveNumberLiteral(source: string) {
+  const normalized = source.trim().replaceAll("_", "");
+  if (!/^[+]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$/.test(normalized)) return null;
+  const value = Number(normalized);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function unknown<T>(reason: string, evidence: readonly string[]): Knowledge<T> {
+  return { evidence, kind: "unknown", reason };
+}
+
+function dimensionsFrom(type: string, argumentsSource: string): Knowledge<EntityDimensions> {
+  const { keywords, positional } = constructorArguments(argumentsSource);
+  const read = (keyword: string, index: number, fallback: number) => {
+    const expression = keywords.get(keyword) ?? positional[index];
+    return expression === undefined ? fallback : positiveNumberLiteral(expression);
+  };
+  let dimensions: EntityDimensions | null = null;
+  if (type === "Circle") {
+    const radius = read("radius", 0, 1);
+    if (radius !== null) dimensions = { radius };
+  } else if (type === "Dot") {
+    const radius = read("radius", 1, 0.08);
+    if (radius !== null) dimensions = { radius };
+  } else if (type === "Rectangle") {
+    const width = read("width", 0, 4);
+    const height = read("height", 1, 2);
+    if (width !== null && height !== null) dimensions = { height, width };
+  } else if (type === "Square") {
+    const side = read("side_length", 0, 2);
+    if (side !== null) dimensions = { height: side, width: side };
+  } else if (type === "RegularPolygon") {
+    const radius = read("radius", Number.MAX_SAFE_INTEGER, 1);
+    if (radius !== null) dimensions = { radius };
+  }
+  if (dimensions) return { kind: "known", value: dimensions };
+  return unknown(`${type} dimensions depend on a dynamic constructor expression or Manim runtime layout.`, [
+    argumentsSource || `${type}()`,
+  ]);
+}
+
+function literalStyleValue(source: string) {
+  const value = source.trim();
+  if (/^[A-Z][A-Z0-9_]*$/.test(value)) return value;
+  if (/^(?:[rRuUbB]{0,2})?(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')$/s.test(value)) {
+    return stringLiterals(value)[0] ?? null;
+  }
+  return null;
+}
+
+function styleFrom(argumentsSource: string, suffix: string): Knowledge<EntityStyle> {
+  const { keywords } = constructorArguments(argumentsSource);
+  const properties: Array<readonly ["color" | "fillColor" | "strokeColor", string | undefined]> = [
+    ["color", keywords.get("color")],
+    ["fillColor", keywords.get("fill_color")],
+    ["strokeColor", keywords.get("stroke_color")],
+  ];
+  if (/\.(?:set_fill|set_stroke)\s*\(/.test(suffix)) {
+    return unknown("Object style is changed by a chained source method.", [suffix.trim()]);
+  }
+  const setColor = suffix.match(/\.set_color\(\s*([^()]*)\s*\)/s)?.[1];
+  if (setColor !== undefined) properties.push(["color", setColor]);
+  if (suffix.includes(".set_color(") && setColor === undefined) {
+    return unknown("Object color uses a dynamic set_color expression.", [suffix.trim()]);
+  }
+  const style: Record<string, string> = {};
+  for (const [property, expression] of properties) {
+    if (expression === undefined) continue;
+    const literal = literalStyleValue(expression);
+    if (literal === null) {
+      return unknown(`Object ${property} uses a dynamic source expression.`, [expression]);
+    }
+    style[property] = literal;
+  }
+  return { kind: "known", value: style };
+}
+
+function initialScaleFrom(suffix: string): Readonly<{ knowledge: Knowledge<number>; value: number }> {
+  if (/\.(?:stretch|set_width|set_height)\s*\(/.test(suffix)) {
+    return {
+      knowledge: unknown("Initial scale is changed by a dimension-dependent source method.", [suffix.trim()]),
+      value: 1,
+    };
+  }
+  const scaleCalls = [...suffix.matchAll(/\.scale\(\s*([^()]*)\s*\)/g)];
+  if (suffix.includes(".scale(") && scaleCalls.length === 0) {
+    return { knowledge: unknown("Initial scale uses a dynamic source expression.", [suffix.trim()]), value: 1 };
+  }
+  let value = 1;
+  for (const call of scaleCalls) {
+    const factor = positiveNumberLiteral(call[1]);
+    if (factor === null) {
+      return { knowledge: unknown("Initial scale uses a dynamic source expression.", [call[1]]), value };
+    }
+    value *= factor;
+  }
+  return { knowledge: { kind: "known", value }, value };
+}
+
+function initialPositionFrom(type: string, suffix: string, approximate: Point) {
+  if (/\.(?:align_to|arrange|move_to|next_to|shift|to_corner|to_edge)\s*\(/.test(suffix)) {
+    return {
+      knowledge: unknown<Point>("Initial position depends on a source placement expression.", [suffix.trim()]),
+      value: approximate,
+    };
+  }
+  if (["Arrow", "Group", "Line", "SurroundingRectangle", "VGroup"].includes(type)) {
+    return {
+      knowledge: unknown<Point>(`${type} position depends on other runtime geometry.`, [`${type}(...)`]),
+      value: approximate,
+    };
+  }
+  const center = { x: 320, y: 180 };
+  return { knowledge: { kind: "known" as const, value: center }, value: center };
+}
+
 function markerIdentity(statements: readonly SourceStatement[], assignmentIndex: number, sourceVariable: string) {
   const previous = statements[assignmentIndex - 1]?.text.match(ENTITY_MARKER_PATTERN)?.[1];
   if (!previous) return null;
@@ -547,19 +763,27 @@ export function importManimScene(
       return;
     }
     if (insideIncomingCopy) return;
-    const match = statement.text.match(ASSIGNMENT_PATTERN);
-    if (!match || !SUPPORTED_TYPES.has(match[2])) return;
-    const [, sourceVariable, type, argumentsSource] = match;
+    const assignment = parseEntityAssignment(statement.text);
+    if (!assignment) return;
+    const { argumentsSource, sourceVariable, suffix, type } = assignment;
     const markedIdentity = markerIdentity(statements, index, sourceVariable);
     if (sourceVariable.startsWith("poietra_") && !markedIdentity) return;
+    const approximatePosition = defaultPosition(mutableEntities.length);
+    const initialPosition = initialPositionFrom(type, suffix, approximatePosition);
+    const initialScale = initialScaleFrom(suffix);
     const entity: MutableEntity = {
       content: entityContent(type, sourceVariable, argumentsSource),
+      dimensions: dimensionsFrom(type, argumentsSource),
       id: markedIdentity ?? `source:${sceneId}:${sourceVariable}`,
       initialization: statement.text,
       lifetimes: [],
-      position: defaultPosition(mutableEntities.length),
+      position: initialPosition.value,
+      positionKnowledge: initialPosition.knowledge,
       relation: relationFrom(statement.text),
+      scale: initialScale.value,
+      scaleKnowledge: initialScale.knowledge,
       sourceVariable,
+      style: styleFrom(argumentsSource, suffix),
       type,
     };
     mutableEntities.push(entity);
@@ -571,7 +795,10 @@ export function importManimScene(
       if (target) entity.position = addPoint(target.position, relationOffset(entity.relation.direction));
     }
     const surrounded = entity.initialization.match(/SurroundingRectangle\(\s*([A-Za-z_][A-Za-z0-9_]*)/);
-    if (surrounded) entity.position = byVariable.get(surrounded[1])?.position ?? entity.position;
+    if (surrounded) {
+      const target = byVariable.get(surrounded[1]);
+      if (target) entity.position = target.position;
+    }
   }
 
   let cursor = 0;
@@ -585,6 +812,7 @@ export function importManimScene(
       {
         interval: { end: Number.MAX_SAFE_INTEGER, start: 0 },
         kind: "exact",
+        knowledge: entity.positionKnowledge,
         provenanceId: `import:${sceneId}:${entity.sourceVariable}:position`,
         value: entity.position,
       },
@@ -593,8 +821,9 @@ export function importManimScene(
       {
         interval: { end: Number.MAX_SAFE_INTEGER, start: 0 },
         kind: "exact",
+        knowledge: entity.scaleKnowledge,
         provenanceId: `import:${sceneId}:${entity.sourceVariable}:scale`,
-        value: 1,
+        value: entity.scale,
       },
     ]);
   }
@@ -655,45 +884,73 @@ export function importManimScene(
     }
     const positionMarker = markerBefore(statements, statementIndex, POSITION_MARKER_PATTERN);
     const moveToVariable = statement.text.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*move_to\s*\(/s)?.[1];
-    if (positionMarker !== undefined && moveToVariable) {
+    if (moveToVariable) {
       const parsed = positionMarkerSchema.safeParse(positionMarker);
-      if (parsed.success && parsed.data.variable === moveToVariable) {
-        const entity = byVariable.get(parsed.data.variable);
-        const relative = parsed.data.kind === "relative" ? byVariable.get(parsed.data.relativeTo) : null;
-        const position =
-          parsed.data.kind === "absolute"
-            ? parsed.data.value
-            : relative
-              ? addPoint(relative.position, parsed.data.offset)
-              : null;
-        if (entity && position && Number.isFinite(position.x) && Number.isFinite(position.y)) {
+      const entity = byVariable.get(moveToVariable);
+      if (entity) {
+        let position = entity.position;
+        let knowledge: Knowledge<Point> = unknown("Position is changed by an unverified move_to expression.", [
+          statement.text.trim(),
+        ]);
+        if (parsed.success && parsed.data.variable === moveToVariable) {
+          if (parsed.data.kind === "absolute") {
+            position = parsed.data.value;
+            knowledge = { kind: "known", value: position };
+          } else {
+            const relative = byVariable.get(parsed.data.relativeTo);
+            if (relative) {
+              position = addPoint(relative.position, parsed.data.offset);
+              knowledge =
+                relative.positionKnowledge.kind === "known"
+                  ? { kind: "known", value: position }
+                  : unknown(`Relative position depends on the unknown position of ${parsed.data.relativeTo}.`, [
+                      statement.text.trim(),
+                    ]);
+            }
+          }
+        }
+        if (Number.isFinite(position.x) && Number.isFinite(position.y)) {
           appendChannelSample(positionSamples, entity.id, {
             interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
             kind: "exact",
-            provenanceId: `import:${sceneId}:${entity.sourceVariable}:position-marker:${statement.line}`,
+            knowledge,
+            provenanceId: `import:${sceneId}:${entity.sourceVariable}:position:${statement.line}`,
             value: position,
           });
           entity.position = position;
+          entity.positionKnowledge = knowledge;
         }
       }
       continue;
     }
     const directScaleMarker = markerBefore(statements, statementIndex, SCALE_MARKER_PATTERN);
-    const directScaleVariable = statement.text.match(
-      /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*scale\s*\(\s*[0-9]+(?:\.[0-9]+)?\s*\)\s*$/s,
-    )?.[1];
-    if (directScaleMarker !== undefined && directScaleVariable) {
-      const parsed = scaleMarkerSchema.safeParse(directScaleMarker);
-      if (parsed.success && parsed.data.kind === "exact" && parsed.data.variable === directScaleVariable) {
-        const entity = byVariable.get(parsed.data.variable);
-        if (entity) {
-          appendChannelSample(scaleSamples, entity.id, {
-            interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
-            kind: "exact",
-            provenanceId: `import:${sceneId}:${entity.sourceVariable}:scale-marker:${statement.line}`,
-            value: parsed.data.value,
-          });
+    const directScale = statement.text.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*scale\s*\((.*)\)\s*$/s);
+    if (directScale) {
+      const [, directScaleVariable, expression] = directScale;
+      const entity = byVariable.get(directScaleVariable);
+      if (entity) {
+        const parsed = scaleMarkerSchema.safeParse(directScaleMarker);
+        const factor = positiveNumberLiteral(expression);
+        let value = entity.scale;
+        let knowledge: Knowledge<number>;
+        if (parsed.success && parsed.data.kind === "exact" && parsed.data.variable === directScaleVariable) {
+          value = parsed.data.value;
+          knowledge = { kind: "known", value };
+        } else if (factor !== null) {
+          value *= factor;
+          knowledge = entity.scaleKnowledge.kind === "known" ? { kind: "known", value } : entity.scaleKnowledge;
+        } else {
+          knowledge = unknown("Scale is changed by a dynamic source expression.", [expression.trim()]);
         }
+        appendChannelSample(scaleSamples, entity.id, {
+          interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
+          kind: "exact",
+          knowledge,
+          provenanceId: `import:${sceneId}:${entity.sourceVariable}:scale:${statement.line}`,
+          value,
+        });
+        entity.scale = value;
+        entity.scaleKnowledge = knowledge;
       }
       continue;
     }
@@ -727,7 +984,7 @@ export function importManimScene(
     const markedVariables = parsedMotion.success ? parsedMotion.data.motions.flatMap((motion) => motion.variables) : [];
     const actualShiftVariables = [
       ...statement.text.matchAll(
-        /(?:^self\.play\(\s*|\n\s*)([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*animate\s*\.\s*shift\s*\(\s*[^()]*\s*\)/g,
+        /(?:^self\.play\(\s*|\n\s*)([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*animate\s*\.\s*shift\s*\(/g,
       ),
     ].map((match) => match[1]);
     const actualPathVariables = [
@@ -736,11 +993,22 @@ export function importManimScene(
       ),
     ].map((match) => match[1]);
     const actualMotionVariables = [...actualShiftVariables, ...actualPathVariables];
+    const actualScaleCalls = [
+      ...statement.text.matchAll(
+        /(?:^self\.play\(\s*|\n\s*)([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*animate\s*\.\s*scale\s*\(\s*([^()]*)\s*\)/g,
+      ),
+    ];
     const actualScaleVariables = [
       ...statement.text.matchAll(
-        /(?:^self\.play\(\s*|\n\s*)([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*animate\s*\.\s*scale\s*\(\s*[0-9]+(?:\.[0-9]+)?\s*\)/g,
+        /(?:^self\.play\(\s*|\n\s*)([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*animate\s*\.\s*scale\s*\(/g,
       ),
     ].map((match) => match[1]);
+    const literalScaleFactors = new Map(
+      actualScaleCalls.flatMap((match) => {
+        const factor = positiveNumberLiteral(match[2]);
+        return factor === null ? [] : [[match[1], factor] as const];
+      }),
+    );
     const validMarkedMotion =
       motionMarker !== undefined &&
       parsedMotion.success &&
@@ -802,6 +1070,8 @@ export function importManimScene(
         const from = entity.position;
         const to = shifted;
         const controlOffset = marked?.controlOffset ?? { x: 0, y: 0 };
+        const knowledge: Knowledge<Point> =
+          entity.positionKnowledge.kind === "known" ? { kind: "known", value: to } : entity.positionKnowledge;
         appendChannelSample(positionSamples, entity.id, {
           control: {
             x: (from.x + to.x) / 2 + controlOffset.x,
@@ -811,22 +1081,64 @@ export function importManimScene(
           from,
           interval,
           kind: "animated",
+          knowledge,
           provenanceId: `import:${sceneId}:${entity.sourceVariable}:motion:${statement.line}`,
           relative: true,
           value: to,
         });
         entity.position = to;
+        entity.positionKnowledge = knowledge;
+      } else if (actualMotionVariables.includes(entity.sourceVariable)) {
+        const knowledge = unknown<Point>(
+          "Position is changed by a motion expression that Studio cannot evaluate safely.",
+          [statement.text.trim()],
+        );
+        appendChannelSample(positionSamples, entity.id, {
+          easing: "smooth",
+          from: entity.position,
+          interval,
+          kind: "animated",
+          knowledge,
+          provenanceId: `import:${sceneId}:${entity.sourceVariable}:unknown-motion:${statement.line}`,
+          value: entity.position,
+        });
+        entity.positionKnowledge = knowledge;
       }
       const scale = markedScales.get(entity.sourceVariable);
       if (scale) {
+        const knowledge = { kind: "known" as const, value: scale.to };
         appendChannelSample(scaleSamples, entity.id, {
           easing: "smooth",
           from: scale.from,
           interval,
           kind: "animated",
+          knowledge,
           provenanceId: `import:${sceneId}:${entity.sourceVariable}:scale-marker:${statement.line}`,
           value: scale.to,
         });
+        entity.scale = scale.to;
+        entity.scaleKnowledge = knowledge;
+      } else if (actualScaleVariables.includes(entity.sourceVariable)) {
+        const factor = literalScaleFactors.get(entity.sourceVariable);
+        const from = entity.scale;
+        const to = factor === undefined ? from : from * factor;
+        const knowledge: Knowledge<number> =
+          factor !== undefined && entity.scaleKnowledge.kind === "known"
+            ? { kind: "known", value: to }
+            : unknown("Scale is changed by an animation expression that Studio cannot evaluate safely.", [
+                statement.text.trim(),
+              ]);
+        appendChannelSample(scaleSamples, entity.id, {
+          easing: "smooth",
+          from,
+          interval,
+          kind: "animated",
+          knowledge,
+          provenanceId: `import:${sceneId}:${entity.sourceVariable}:scale:${statement.line}`,
+          value: to,
+        });
+        entity.scale = to;
+        entity.scaleKnowledge = knowledge;
       }
     }
     for (const transform of statement.text.matchAll(
@@ -849,6 +1161,12 @@ export function importManimScene(
       entity.id,
       {
         content: entity.content,
+        geometry: {
+          dimensions: entity.dimensions,
+          position: entity.positionKnowledge,
+          scale: entity.scaleKnowledge,
+          style: entity.style,
+        } satisfies EntityGeometryKnowledge,
         id: entity.id,
         lifetime: entity.lifetimes.map((lifetime) => ({
           end: Math.min(lifetime.end ?? duration, duration),

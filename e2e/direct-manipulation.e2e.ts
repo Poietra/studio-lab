@@ -41,40 +41,46 @@ function transactionBlock(source: string, transactionId: string) {
 
 test("keeps the first object position while moving and applying a second object", async ({ page }) => {
   await openWorkspace(page);
+  await page.getByRole("button", { name: /Insert circle/ }).click();
+  await page.locator("[data-studio-canvas]").click({ position: { x: 40, y: 60 } });
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await page.getByRole("button", { name: "Move playhead to source anchor 7.000 seconds" }).click();
   const equation = page.getByRole("button", { name: "Move equation" });
-  const label = page.getByRole("button", { name: "Move label" });
+  const circle = page.getByRole("button", { name: "Move Circle" });
   await expect(equation).toBeVisible();
   await page.getByRole("button", { name: "Set position" }).click();
+  await page.getByRole("checkbox", { name: "Select Circle" }).uncheck();
+  await page.getByRole("checkbox", { name: "Select equation" }).check();
 
   const initialEquation = await position(equation);
-  const initialLabel = await position(label);
+  const initialCircle = await position(circle);
   await dragBy(page, equation, { x: 80, y: 30 });
   await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
   const movedEquation = await position(equation);
   expect(movedEquation.x - initialEquation.x).toBeCloseTo(80, 0);
   expect(movedEquation.y - initialEquation.y).toBeCloseTo(30, 0);
 
-  await dragBy(page, label, { x: -60, y: 20 });
+  await dragBy(page, circle, { x: 60, y: 20 });
   const appliedPrograms = page.locator("section").filter({
     has: page.getByRole("heading", { name: "Applied programs" }),
   });
-  await expect(appliedPrograms.getByRole("listitem")).toHaveCount(1);
+  await expect(appliedPrograms.getByRole("listitem")).toHaveCount(2);
   const equationAfterSecondMove = await position(equation);
-  const movedLabel = await position(label);
+  const movedCircle = await position(circle);
   expect(equationAfterSecondMove.x).toBeCloseTo(movedEquation.x, 1);
   expect(equationAfterSecondMove.y).toBeCloseTo(movedEquation.y, 1);
-  expect(movedLabel.x - initialLabel.x).toBeCloseTo(-60, 0);
-  expect(movedLabel.y - initialLabel.y).toBeCloseTo(20, 0);
+  expect(movedCircle.x - initialCircle.x).toBeCloseTo(60, 0);
+  expect(movedCircle.y - initialCircle.y).toBeCloseTo(20, 0);
 
   await page.getByRole("button", { name: "Apply program" }).click();
-  await expect(appliedPrograms.getByRole("listitem")).toHaveCount(2);
+  await expect(appliedPrograms.getByRole("listitem")).toHaveCount(3);
   await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
   const equationAfterApply = await position(equation);
-  const labelAfterApply = await position(label);
+  const circleAfterApply = await position(circle);
   expect(equationAfterApply.x).toBeCloseTo(movedEquation.x, 1);
   expect(equationAfterApply.y).toBeCloseTo(movedEquation.y, 1);
-  expect(labelAfterApply.x).toBeCloseTo(movedLabel.x, 1);
-  expect(labelAfterApply.y).toBeCloseTo(movedLabel.y, 1);
+  expect(circleAfterApply.x).toBeCloseTo(movedCircle.x, 1);
+  expect(circleAfterApply.y).toBeCloseTo(movedCircle.y, 1);
 });
 
 test("reopens an applied motion and replaces it in place with undoable export history", async ({ page }) => {
@@ -103,8 +109,9 @@ test("reopens an applied motion and replaces it in place with undoable export hi
   }
 
   const originalSource = await exportedSource(page);
-  expect(originalSource.indexOf(`# poietra:transaction "${firstTransactionId}"`))
-    .toBeLessThan(originalSource.indexOf(`# poietra:transaction "${secondTransactionId}"`));
+  expect(originalSource.indexOf(`# poietra:transaction "${firstTransactionId}"`)).toBeLessThan(
+    originalSource.indexOf(`# poietra:transaction "${secondTransactionId}"`),
+  );
   expect(transactionBlock(originalSource, firstTransactionId)).toContain("run_time=1");
   expect(transactionBlock(originalSource, secondTransactionId)).toContain("Circle(radius=1)");
 
@@ -116,8 +123,9 @@ test("reopens an applied motion and replaces it in place with undoable export hi
 
   const previewSource = await exportedSource(page);
   expect(transactionBlock(previewSource, firstTransactionId)).toContain("run_time=2");
-  expect(previewSource.indexOf(`# poietra:transaction "${firstTransactionId}"`))
-    .toBeLessThan(previewSource.indexOf(`# poietra:transaction "${secondTransactionId}"`));
+  expect(previewSource.indexOf(`# poietra:transaction "${firstTransactionId}"`)).toBeLessThan(
+    previewSource.indexOf(`# poietra:transaction "${secondTransactionId}"`),
+  );
   expect(transactionBlock(previewSource, secondTransactionId)).toContain("Circle(radius=1)");
 
   await page.getByRole("button", { name: "Replace program" }).click();
@@ -132,8 +140,9 @@ test("reopens an applied motion and replaces it in place with undoable export hi
   await expect(rows).toHaveCount(2);
   const redoneSource = await exportedSource(page);
   expect(transactionBlock(redoneSource, firstTransactionId)).toContain("run_time=2");
-  expect(redoneSource.indexOf(`# poietra:transaction "${firstTransactionId}"`))
-    .toBeLessThan(redoneSource.indexOf(`# poietra:transaction "${secondTransactionId}"`));
+  expect(redoneSource.indexOf(`# poietra:transaction "${firstTransactionId}"`)).toBeLessThan(
+    redoneSource.indexOf(`# poietra:transaction "${secondTransactionId}"`),
+  );
 });
 
 test("snaps direct manipulation to the latest safe source anchor before creating a draft", async ({ page }) => {
@@ -146,9 +155,7 @@ test("snaps direct manipulation to the latest safe source anchor before creating
 
   await dragBy(page, equation, { x: 40, y: 20 });
   await expect(scenePlayhead).toHaveValue("5");
-  await expect(page.getByRole("alert")).toContainText(
-    "Moved the playhead to the latest safe .py source anchor",
-  );
+  await expect(page.getByRole("alert")).toContainText("Moved the playhead to the latest safe .py source anchor");
   await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
   const anchored = await position(equation);
 
@@ -180,14 +187,9 @@ test("previews, applies, and undoes a uniform canvas resize", async ({ page }) =
 
   const unsafeHandleBox = await handle.boundingBox();
   if (!unsafeHandleBox) throw new Error("The Circle resize handle is not visible.");
-  await page.mouse.click(
-    unsafeHandleBox.x + unsafeHandleBox.width / 2,
-    unsafeHandleBox.y + unsafeHandleBox.height / 2,
-  );
+  await page.mouse.click(unsafeHandleBox.x + unsafeHandleBox.width / 2, unsafeHandleBox.y + unsafeHandleBox.height / 2);
   await expect(scenePlayhead).toHaveValue("5.4");
-  await expect(page.getByRole("alert")).toContainText(
-    "Moved the playhead to the latest safe .py source anchor",
-  );
+  await expect(page.getByRole("alert")).toContainText("Moved the playhead to the latest safe .py source anchor");
   await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
 
   const initialBox = await circle.boundingBox();
@@ -201,8 +203,7 @@ test("previews, applies, and undoes a uniform canvas resize", async ({ page }) =
   await page.mouse.move(origin.x, origin.y);
   await page.mouse.down();
   await page.mouse.move(origin.x + 45, origin.y + 35, { steps: 4 });
-  await expect.poll(async () => Number(await wrapper.getAttribute("data-studio-entity-scale")))
-    .toBeGreaterThan(1.25);
+  await expect.poll(async () => Number(await wrapper.getAttribute("data-studio-entity-scale"))).toBeGreaterThan(1.25);
   const previewBox = await circle.boundingBox();
   expect(previewBox?.width ?? 0).toBeGreaterThan(initialBox.width);
   const previewHandleBox = await handle.boundingBox();
@@ -222,6 +223,55 @@ test("previews, applies, and undoes a uniform canvas resize", async ({ page }) =
   await page.keyboard.press("Control+z");
   await expect(wrapper).toHaveAttribute("data-studio-entity-scale", "1.0000");
   await page.keyboard.press("Control+Shift+z");
-  await expect.poll(async () => Number(await wrapper.getAttribute("data-studio-entity-scale")))
+  await expect
+    .poll(async () => Number(await wrapper.getAttribute("data-studio-entity-scale")))
     .toBeCloseTo(committedScale, 2);
+});
+
+test("labels runtime-dependent geometry and blocks unsafe direct manipulation", async ({ page }) => {
+  const positionReason = "Position depends on a runtime move_to expression.";
+  const scaleReason = "Scale depends on a runtime function call.";
+  await page.route("**/api/manim/projects/studio-lab/workspace", async (route) => {
+    const response = await route.fetch();
+    const workspace = (await response.json()) as {
+      sources: Array<{
+        scenes: Array<{
+          name: string;
+          runtimeSceneState: {
+            objectGraph: { entities: Record<string, { geometry: { position: unknown; scale: unknown } }> };
+            propertyChannels: Record<string, { samples: Array<{ knowledge?: unknown }> }>;
+          };
+        }>;
+      }>;
+    };
+    const scene = workspace.sources
+      .flatMap((source) => source.scenes)
+      .find((candidate) => candidate.name === "GroupedEquation");
+    if (!scene) throw new Error("The GroupedEquation fixture Scene is missing.");
+    const entityId = Object.keys(scene.runtimeSceneState.objectGraph.entities).find((candidate) =>
+      candidate.endsWith(":equation"),
+    );
+    if (!entityId) throw new Error("The equation fixture entity is missing.");
+    const entity = scene.runtimeSceneState.objectGraph.entities[entityId];
+    entity.geometry.position = { kind: "unknown", reason: positionReason };
+    entity.geometry.scale = { kind: "unknown", reason: scaleReason };
+    for (const sample of scene.runtimeSceneState.propertyChannels[`${entityId}/position`].samples) {
+      sample.knowledge = { kind: "unknown", reason: positionReason };
+    }
+    for (const sample of scene.runtimeSceneState.propertyChannels[`${entityId}/scale`].samples) {
+      sample.knowledge = { kind: "unknown", reason: scaleReason };
+    }
+    await route.fulfill({ json: workspace, response });
+  });
+
+  await openWorkspace(page);
+  await page.getByRole("checkbox", { name: "Select equation" }).check();
+  const equation = page.getByRole("button", { name: "Move equation" });
+  await expect(equation).toBeDisabled();
+  await expect(page.locator("[data-studio-geometry='approximate']").filter({ has: equation })).toBeVisible();
+  await expect(page.getByRole("spinbutton", { name: "Scale equation" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Resize equation" })).toHaveCount(0);
+  const notice = page.getByRole("region", { name: "Approximate source geometry" });
+  await expect(notice).toContainText(positionReason);
+  await expect(notice).toContainText(scaleReason);
 });

@@ -16,6 +16,25 @@ export type Unknown = Readonly<{
 
 export type Knowledge<T> = Known<T> | Unknown;
 
+export type EntityDimensions = Readonly<{
+  height?: number;
+  radius?: number;
+  width?: number;
+}>;
+
+export type EntityStyle = Readonly<{
+  color?: string;
+  fillColor?: string;
+  strokeColor?: string;
+}>;
+
+export type EntityGeometryKnowledge = Readonly<{
+  dimensions: Knowledge<EntityDimensions>;
+  position: Knowledge<Point>;
+  scale: Knowledge<number>;
+  style: Knowledge<EntityStyle>;
+}>;
+
 export type SourceSnapshot = Readonly<{
   configId: string;
   hash: string;
@@ -44,6 +63,7 @@ export type EntityContent = Readonly<{
 
 export type RuntimeEntity = Readonly<{
   content?: EntityContent;
+  geometry?: EntityGeometryKnowledge;
   id: string;
   lifetime: readonly Interval[];
   provisional: boolean;
@@ -65,13 +85,7 @@ export type ObjectGraph = Readonly<{
   lineage: readonly IdentityLineage[];
 }>;
 
-export type PropertyValue =
-  | boolean
-  | number
-  | string
-  | Point
-  | EntityContent
-  | readonly string[];
+export type PropertyValue = boolean | number | string | Point | EntityContent | readonly string[];
 
 export type PropertyChannelSample = Readonly<{
   control?: Point;
@@ -79,6 +93,7 @@ export type PropertyChannelSample = Readonly<{
   from?: PropertyValue;
   interval: Interval;
   kind: "animated" | "exact";
+  knowledge?: Knowledge<number | Point>;
   operationId?: string;
   provenanceId: string;
   relative?: boolean;
@@ -194,6 +209,7 @@ export type ProposedState = Readonly<{
 
 export type ProjectedEntity = Readonly<{
   content?: EntityContent;
+  geometry: EntityGeometryKnowledge;
   id: string;
   opacity: number;
   position: Point;

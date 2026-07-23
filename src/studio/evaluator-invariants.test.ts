@@ -43,10 +43,12 @@ describe("Studio evaluator invariants", () => {
     const validation = validateAndScheduleProgram(programWith([], "empty-program"), STUDIO_FIXTURE_SCENE);
 
     expect(validation.kind).toBe("invalid");
-    expect(validation.issues).toContainEqual(expect.objectContaining({
-      code: "operation-count",
-      field: "operations",
-    }));
+    expect(validation.issues).toContainEqual(
+      expect.objectContaining({
+        code: "operation-count",
+        field: "operations",
+      }),
+    );
   });
 
   it("samples an omitted animation origin from the channel at its start", () => {
@@ -62,18 +64,15 @@ describe("Studio evaluator invariants", () => {
       provenance: { evidence: [], origin: "fixture" },
       to: { x: 484, y: 146 },
     };
-    const validation = validateAndScheduleProgram(
-      programWith([operation], transactionId),
-      STUDIO_FIXTURE_SCENE,
-    );
+    const validation = validateAndScheduleProgram(programWith([operation], transactionId), STUDIO_FIXTURE_SCENE);
     expect(validation.kind).toBe("valid");
 
-    const proposed = evaluateWorkingState(createFixtureWorkingState({
-      stagedPrograms: [programRecord(validation.program, validation)],
-    }));
-    const equation = projectProposedState(proposed, 9).canvas.entities.find((entity) => (
-      entity.id === "equation_1"
-    ));
+    const proposed = evaluateWorkingState(
+      createFixtureWorkingState({
+        stagedPrograms: [programRecord(validation.program, validation)],
+      }),
+    );
+    const equation = projectProposedState(proposed, 9).canvas.entities.find((entity) => entity.id === "equation_1");
 
     expect(equation?.position).toEqual({ x: 434, y: 146 });
   });
@@ -129,17 +128,17 @@ class Moving(Scene):
     const inserted = samples.find((sample) => sample.operationId?.includes("motion-0"));
     const shifted = samples.find((sample) => sample.provenanceId.includes(":motion:"));
     expect(inserted).toMatchObject({
-      control: { x: 190, y: 135 },
-      from: { x: 170, y: 135 },
+      control: { x: 340, y: 180 },
+      from: { x: 320, y: 180 },
       interval: { end: 2, start: 1 },
       relative: true,
-      value: { x: 210, y: 155 },
+      value: { x: 360, y: 200 },
     });
     expect(shifted).toMatchObject({
-      from: { x: 210, y: 155 },
+      from: { x: 360, y: 200 },
       interval: { end: 3, start: 2 },
       relative: true,
-      value: { x: expect.closeTo(255, 2), y: 155 },
+      value: { x: expect.closeTo(405, 2), y: 200 },
     });
   });
 
@@ -204,9 +203,11 @@ class Moving(Scene):
     );
 
     expect(validation.kind).toBe("invalid");
-    expect(validation.issues).toContainEqual(expect.objectContaining({
-      code: "schema-invalid",
-      message: expect.stringMatching(/produced more than once/i),
-    }));
+    expect(validation.issues).toContainEqual(
+      expect.objectContaining({
+        code: "schema-invalid",
+        message: expect.stringMatching(/produced more than once/i),
+      }),
+    );
   });
 });

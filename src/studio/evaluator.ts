@@ -13,7 +13,12 @@ import type {
 } from "./model";
 import { STUDIO_STATE_VERSION } from "./model";
 import { evaluateOperation, type EvaluationDraft } from "./operation-registry";
-import { isPointValue, normalizePositionSamples, samplePropertyValue } from "./property-sampling";
+import {
+  isPointValue,
+  normalizePositionSamples,
+  samplePropertyKnowledge,
+  samplePropertyValue,
+} from "./property-sampling";
 import { insertedProgramDuration, rebaseProgramTime } from "./program-composition";
 import { validateAndScheduleProgram } from "./program-validation";
 
@@ -24,10 +29,15 @@ function cloneScene(scene: RuntimeSceneState): EvaluationDraft {
     entities: { ...scene.objectGraph.entities },
     events: [...scene.eventTrack.events],
     lineage: [...scene.objectGraph.lineage],
-    propertyChannels: Object.fromEntries(Object.entries(scene.propertyChannels).map(([key, channel]) => [key, {
-      ...channel,
-      samples: [...channel.samples],
-    }])),
+    propertyChannels: Object.fromEntries(
+      Object.entries(scene.propertyChannels).map(([key, channel]) => [
+        key,
+        {
+          ...channel,
+          samples: [...channel.samples],
+        },
+      ]),
+    ),
     provenance: [...scene.provenanceGraph.records],
   };
 }
@@ -37,20 +47,18 @@ function freezeScene(base: RuntimeSceneState, draft: EvaluationDraft): RuntimeSc
     ...base,
     constraintGraph: { constraints: draft.constraints },
     duration: draft.duration,
-    eventTrack: { events: draft.events.sort((left, right) => (
-      (left.at ?? left.interval?.start ?? 0) - (right.at ?? right.interval?.start ?? 0)
-    )) },
+    eventTrack: {
+      events: draft.events.sort(
+        (left, right) => (left.at ?? left.interval?.start ?? 0) - (right.at ?? right.interval?.start ?? 0),
+      ),
+    },
     objectGraph: { entities: draft.entities, lineage: draft.lineage },
     propertyChannels: draft.propertyChannels,
     provenanceGraph: { records: draft.provenance },
   };
 }
 
-function shiftIntervalForInsertion(
-  interval: Readonly<{ end: number; start: number }>,
-  at: number,
-  duration: number,
-) {
+function shiftIntervalForInsertion(interval: Readonly<{ end: number; start: number }>, at: number, duration: number) {
   if (interval.start >= at - 0.0005) {
     return { end: interval.end + duration, start: interval.start + duration };
   }
@@ -61,10 +69,15 @@ function shiftIntervalForInsertion(
 export function insertSceneTime(draft: EvaluationDraft, at: number, duration: number) {
   if (!Number.isFinite(duration) || duration <= 0) return;
   draft.duration += duration;
-  draft.entities = Object.fromEntries(Object.entries(draft.entities).map(([id, entity]) => [id, {
-    ...entity,
-    lifetime: entity.lifetime.map((interval) => shiftIntervalForInsertion(interval, at, duration)),
-  }]));
+  draft.entities = Object.fromEntries(
+    Object.entries(draft.entities).map(([id, entity]) => [
+      id,
+      {
+        ...entity,
+        lifetime: entity.lifetime.map((interval) => shiftIntervalForInsertion(interval, at, duration)),
+      },
+    ]),
+  );
   draft.events = draft.events.map((event) => ({
     ...event,
     at: event.at === undefined ? undefined : event.at >= at - 0.0005 ? event.at + duration : event.at,
@@ -74,21 +87,27 @@ export function insertSceneTime(draft: EvaluationDraft, at: number, duration: nu
     ...lineage,
     at: lineage.at >= at - 0.0005 ? lineage.at + duration : lineage.at,
   }));
-  draft.propertyChannels = Object.fromEntries(Object.entries(draft.propertyChannels).map(([id, channel]) => [id, {
-    ...channel,
-    samples: channel.samples.map((sample) => ({
-      ...sample,
-      interval: shiftIntervalForInsertion(sample.interval, at, duration),
-    })),
-  }]));
+  draft.propertyChannels = Object.fromEntries(
+    Object.entries(draft.propertyChannels).map(([id, channel]) => [
+      id,
+      {
+        ...channel,
+        samples: channel.samples.map((sample) => ({
+          ...sample,
+          interval: shiftIntervalForInsertion(sample.interval, at, duration),
+        })),
+      },
+    ]),
+  );
 }
 
 function normalizePositionChannels(draft: EvaluationDraft) {
-  draft.propertyChannels = Object.fromEntries(Object.entries(draft.propertyChannels).map(([id, channel]) => [id, (
-    channel.key === "position"
-      ? { ...channel, samples: normalizePositionSamples(channel.samples) }
-      : channel
-  )]));
+  draft.propertyChannels = Object.fromEntries(
+    Object.entries(draft.propertyChannels).map(([id, channel]) => [
+      id,
+      channel.key === "position" ? { ...channel, samples: normalizePositionSamples(channel.samples) } : channel,
+    ]),
+  );
 }
 
 export function evaluateWorkingState(workingState: WorkingState): ProposedState {
@@ -105,14 +124,12 @@ export function evaluateWorkingState(workingState: WorkingState): ProposedState 
       continue;
     }
     const sourceAnchor = record.program.anchor.resolvedSeconds;
-    const priorInsertionOffset = insertions.reduce((offset, insertion) => (
-      insertion.sourceAnchor <= sourceAnchor + 0.0005 ? offset + insertion.duration : offset
-    ), 0);
-    const rebasedProgram = rebaseProgramTime(record.program, priorInsertionOffset);
-    const validation = validateAndScheduleProgram(
-      rebasedProgram,
-      freezeScene(workingState.runtimeSceneState, draft),
+    const priorInsertionOffset = insertions.reduce(
+      (offset, insertion) => (insertion.sourceAnchor <= sourceAnchor + 0.0005 ? offset + insertion.duration : offset),
+      0,
     );
+    const rebasedProgram = rebaseProgramTime(record.program, priorInsertionOffset);
+    const validation = validateAndScheduleProgram(rebasedProgram, freezeScene(workingState.runtimeSceneState, draft));
     const evaluatedRecord = programRecord(validation.program, validation);
     evaluatedPrograms.push(evaluatedRecord);
     if (validation.kind !== "valid") continue;
@@ -126,11 +143,12 @@ export function evaluateWorkingState(workingState: WorkingState): ProposedState 
     normalizePositionChannels(draft);
     if (applied) {
       for (const operation of validation.program.operations) {
-        const entityId = operation.kind === "CreateEntity"
-          ? operation.entity.id
-          : operation.kind === "TransformContent"
-            ? operation.targetEntityId
-            : null;
+        const entityId =
+          operation.kind === "CreateEntity"
+            ? operation.entity.id
+            : operation.kind === "TransformContent"
+              ? operation.targetEntityId
+              : null;
         if (!entityId || !draft.entities[entityId]) continue;
         draft.entities[entityId] = { ...draft.entities[entityId], provisional: false };
       }
@@ -155,11 +173,13 @@ function channelAt(scene: RuntimeSceneState, entityId: string, key: PropertyChan
 }
 
 function timelineLabel(entity: RuntimeEntity) {
-  return entity.content?.label
-    ?? entity.content?.text
-    ?? (entity.sourceIdentity.kind === "known" ? entity.sourceIdentity.value : null)
-    ?? entity.id.split(":").at(-1)
-    ?? entity.id;
+  return (
+    entity.content?.label ??
+    entity.content?.text ??
+    (entity.sourceIdentity.kind === "known" ? entity.sourceIdentity.value : null) ??
+    entity.id.split(":").at(-1) ??
+    entity.id
+  );
 }
 
 function projectTimelineObjectTracks(scene: RuntimeSceneState): readonly TimelineObjectTrack[] {
@@ -180,15 +200,17 @@ function projectTimelineObjectTracks(scene: RuntimeSceneState): readonly Timelin
     }
   }
   return Object.values(scene.objectGraph.entities)
-    .map((entity): TimelineObjectTrack => ({
-      animatedChannels: animatedByEntity.get(entity.id) ?? [],
-      entityId: entity.id,
-      label: timelineLabel(entity),
-      lifetimes: entity.lifetime,
-      provisional: entity.provisional,
-      transactionId: entity.transactionId,
-      type: entity.type,
-    }))
+    .map(
+      (entity): TimelineObjectTrack => ({
+        animatedChannels: animatedByEntity.get(entity.id) ?? [],
+        entityId: entity.id,
+        label: timelineLabel(entity),
+        lifetimes: entity.lifetime,
+        provisional: entity.provisional,
+        transactionId: entity.transactionId,
+        type: entity.type,
+      }),
+    )
     .sort((left, right) => left.label.localeCompare(right.label));
 }
 
@@ -201,14 +223,43 @@ export function sampleProposedState(proposedState: ProposedState, time: number):
       const appearance = channelAt(proposedState.evaluatedScene, entity.id, "appearance", time);
       const content = channelAt(proposedState.evaluatedScene, entity.id, "content", time);
       const scale = channelAt(proposedState.evaluatedScene, entity.id, "scale", time);
+      const positionValue = isPointValue(position) ? position : undefined;
+      const scaleValue = typeof scale === "number" ? scale : undefined;
+      const sampledPosition = positionValue ?? { x: 0, y: 0 };
+      const sampledScale = scaleValue ?? 1;
+      const positionSamples = proposedState.evaluatedScene.propertyChannels[`${entity.id}/position`]?.samples ?? [];
+      const scaleSamples = proposedState.evaluatedScene.propertyChannels[`${entity.id}/scale`]?.samples ?? [];
+      const positionKnowledge = samplePropertyKnowledge(positionSamples, time, positionValue);
+      const scaleKnowledge = samplePropertyKnowledge(scaleSamples, time, scaleValue);
+      const fallbackGeometry = {
+        dimensions: { kind: "known" as const, value: {} },
+        position: positionKnowledge ?? {
+          kind: "unknown" as const,
+          reason: "No exact source position is available at this time.",
+        },
+        scale:
+          scaleKnowledge ??
+          (scaleSamples.length === 0
+            ? { kind: "known" as const, value: sampledScale }
+            : {
+                kind: "unknown" as const,
+                reason: "No exact source scale is available at this time.",
+              }),
+        style: { kind: "known" as const, value: {} },
+      };
       return {
         content: isContent(content) ? content : entity.content,
+        geometry: {
+          ...(entity.geometry ?? fallbackGeometry),
+          position: positionKnowledge ?? entity.geometry?.position ?? fallbackGeometry.position,
+          scale: scaleKnowledge ?? entity.geometry?.scale ?? fallbackGeometry.scale,
+        },
         id: entity.id,
         opacity: typeof appearance === "number" ? appearance : 1,
-        position: isPointValue(position) ? position : { x: 0, y: 0 },
+        position: sampledPosition,
         present: inLifetime && presence !== false,
         provisional: entity.provisional,
-        scale: typeof scale === "number" ? scale : 1,
+        scale: sampledScale,
         sourceIdentity: entity.sourceIdentity,
         transactionId: entity.transactionId,
         type: entity.type,

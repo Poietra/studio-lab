@@ -37,6 +37,7 @@ import {
 import {
   type EntityDragPreview,
   type EntityScalePreview,
+  entityLabel,
   STUDIO_VIEWPORT,
   StudioViewport,
 } from "./studio/studio-viewport";
@@ -1009,6 +1010,10 @@ export function App() {
       entity.present &&
       (!entity.provisional || (entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
     if (!editable) return;
+    if (entity.geometry.scale.kind === "unknown") {
+      setDraftError(`Studio cannot resize ${entityLabel(entity)} safely: ${entity.geometry.scale.reason}`);
+      return;
+    }
     const gestureContext = directGestureContext();
     if (!gestureContext.proposedState) return;
     const sourceScene = projectRuntimeSceneToSourceTimeline(
@@ -1114,6 +1119,12 @@ export function App() {
     if (!activeScene || !draftBaseState) return false;
     if (editingAppliedProgram) {
       setDraftError("Apply or discard the Applied Program edit before resizing another object.");
+      return false;
+    }
+    const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
+    if (!entity) return false;
+    if (entity.geometry.scale.kind === "unknown") {
+      setDraftError(`Studio cannot resize ${entityLabel(entity)} safely: ${entity.geometry.scale.reason}`);
       return false;
     }
     if (!Number.isFinite(targetScale) || targetScale < MIN_ENTITY_SCALE || targetScale > MAX_ENTITY_SCALE) {

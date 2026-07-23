@@ -840,10 +840,10 @@ class GroupedEquation(Scene):
     );
     expect(lowered.insertedCode).not.toContain("equation.animate.shift(");
     expect(sample).toMatchObject({
-      control: { x: 234, y: 157.5 },
-      from: { x: 170, y: 135 },
+      control: { x: 384, y: 202.5 },
+      from: { x: 320, y: 180 },
       interval: { end: 8.5, start: 7 },
-      value: { x: 234, y: 90 },
+      value: { x: 384, y: 135 },
     });
   });
 
@@ -1040,7 +1040,7 @@ class GroupedEquation(Scene):
     expect(imported).not.toBeNull();
     if (!imported) return;
     const sourcePosition = latestPosition(imported, "source:examples/relativity.py#GroupedEquation:equation");
-    expect(sourcePosition).toMatchObject({ x: expect.closeTo(260, 2), y: 90 });
+    expect(sourcePosition).toMatchObject({ x: expect.closeTo(410, 2), y: 135 });
     expect(latestPosition(imported, firstTarget)).toEqual(sourcePosition);
     expect(latestPosition(imported, secondTarget)).toEqual(sourcePosition);
     const explanationPosition = latestPosition(imported, explanationId);

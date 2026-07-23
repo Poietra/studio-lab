@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { runtimeSceneStateSchema } from "../studio/state-schema";
 import { AmbiguousSourceSceneError, findSceneBlocks, importManimScene } from "./source-import";
 
 const source = `from manim import *
@@ -251,8 +252,8 @@ class Positioned(Scene):
     const samples = (variable: string) =>
       imported?.runtimeSceneState.propertyChannels[`source:scene.py#Positioned:${variable}/position`]?.samples;
 
-    expect(samples("base")?.[1]?.value).toMatchObject({ x: expect.closeTo(215, 2), y: 90 });
-    expect(samples("label")?.[1]?.value).toMatchObject({ x: expect.closeTo(230, 2), y: 180 });
+    expect(samples("base")?.[1]?.value).toMatchObject({ x: expect.closeTo(365, 2), y: 135 });
+    expect(samples("label")?.[1]?.value).toMatchObject({ x: expect.closeTo(230, 2), y: 225 });
     expect(samples("base")).toHaveLength(4);
     expect(samples("base")?.at(-1)).toMatchObject({
       control: { x: 282.5, y: 117.5 },
@@ -286,12 +287,50 @@ class Curved(Scene):
     const sample = imported?.runtimeSceneState.propertyChannels["source:scene.py#Curved:dot/position"]?.samples.at(-1);
 
     expect(sample).toMatchObject({
-      control: { x: 200, y: 130 },
-      from: { x: 170, y: 135 },
+      control: { x: 350, y: 175 },
+      from: { x: 320, y: 180 },
       interval: { end: 2, start: 0 },
       relative: true,
-      value: { x: 210, y: 165 },
+      value: { x: 360, y: 210 },
     });
+  });
+
+  it("separates literal geometry facts from runtime-dependent approximations", () => {
+    const geometrySource = `from manim import *
+
+class Geometry(Scene):
+    def construct(self):
+        circle = Circle(radius=2, color=RED)
+        rectangle = Rectangle(width=3, height=1, fill_color="#123456").scale(0.5)
+        dynamic = Circle(radius=get_radius(), color=choose_color()).move_to(where()).scale(get_scale())
+        self.add(circle, rectangle, dynamic)
+        self.wait(1)
+`;
+    const imported = importManimScene(geometrySource, "scene.py", "Geometry");
+    const entities = imported?.runtimeSceneState.objectGraph.entities;
+    const circle = entities?.["source:scene.py#Geometry:circle"];
+    const rectangle = entities?.["source:scene.py#Geometry:rectangle"];
+    const dynamic = entities?.["source:scene.py#Geometry:dynamic"];
+
+    expect(circle?.geometry).toEqual({
+      dimensions: { kind: "known", value: { radius: 2 } },
+      position: { kind: "known", value: { x: 320, y: 180 } },
+      scale: { kind: "known", value: 1 },
+      style: { kind: "known", value: { color: "RED" } },
+    });
+    expect(rectangle?.geometry).toEqual({
+      dimensions: { kind: "known", value: { height: 1, width: 3 } },
+      position: { kind: "known", value: { x: 320, y: 180 } },
+      scale: { kind: "known", value: 0.5 },
+      style: { kind: "known", value: { fillColor: "#123456" } },
+    });
+    expect(dynamic?.geometry?.dimensions).toMatchObject({ kind: "unknown", reason: expect.any(String) });
+    expect(dynamic?.geometry?.position).toMatchObject({ kind: "unknown", reason: expect.any(String) });
+    expect(dynamic?.geometry?.scale).toMatchObject({ kind: "unknown", reason: expect.any(String) });
+    expect(dynamic?.geometry?.style).toMatchObject({ kind: "unknown", reason: expect.any(String) });
+    expect(runtimeSceneStateSchema.parse(JSON.parse(JSON.stringify(imported?.runtimeSceneState)))).toEqual(
+      imported?.runtimeSceneState,
+    );
   });
 
   it("fails closed for complex Python and an invalid marker", () => {
@@ -312,7 +351,11 @@ class Marked(Scene):
     const imported = importManimScene(marked, "scene.py", "Marked");
     const samples = imported?.runtimeSceneState.propertyChannels["source:scene.py#Marked:dot/position"]?.samples;
 
-    expect(samples).toHaveLength(1);
+    expect(samples).toHaveLength(4);
+    expect(samples?.slice(1)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ knowledge: expect.objectContaining({ kind: "unknown" }) })]),
+    );
+    expect(samples?.slice(1).every((sample) => sample.knowledge?.kind === "unknown")).toBe(true);
     expect(imported?.runtimeSceneState.duration).toBe(4);
   });
 });
