@@ -764,12 +764,21 @@ class GroupedEquation(Scene):
     ["function return", "def get():\n            return equation", "self.add(get())", "get"],
     ["async function body", "async def revive():\n            self.add(equation)", "self.add(revive)", "revive"],
     ["function default", "def revive(value=equation):\n            return value", "self.add(revive())", "revive"],
-    ["function decorator", "@register(equation)\n        def revive():\n            pass", "self.add(revive)", "revive"],
     ["class body", "class Holder:\n            cached = equation", "self.add(Holder.cached)", "Holder"],
-    ["class decorator", "@register(equation)\n        class Holder:\n            pass", "self.add(Holder)", "Holder"],
+    ["function return alias", "def retrieve():\n            return equation\n        alias = retrieve()", "self.add(alias)", "alias"],
+    ["class instance alias", "class Holder:\n            def __new__(cls):\n                return equation\n        holder = Holder()", "self.add(holder)", "holder"],
+    ["globals get alias", 'globals()["cached_equation"] = equation\n        alias = globals().get("cached_equation")', "self.add(alias)", "alias"],
+    ["shallow list copy", "items = [equation]\n        copied = items.copy()", "self.add(copied[0])", "copied"],
+    ["shallow dict copy", 'items = {"primary": equation}\n        copied = items.copy()', 'self.add(copied["primary"])', "copied"],
     ["animation alias", "entrance = FadeIn(equation)", "self.play(entrance)", "entrance"],
     ["animation list", "entrances = [FadeIn(equation)]", "self.play(*entrances)", "entrances"],
     ["nested animation group", "entrance = AnimationGroup(FadeIn(equation))", "self.play(entrance)", "entrance"],
+    ["self-returning scale", "alias = equation.scale(2)", "self.add(alias)", "alias"],
+    ["self-returning shift", "alias = equation.shift(RIGHT)", "self.add(alias)", "alias"],
+    ["self-returning rotate", "alias = equation.rotate(PI / 2)", "self.add(alias)", "alias"],
+    ["self-returning placement", "alias = equation.next_to(ORIGIN)", "self.add(alias)", "alias"],
+    ["animation builder alias", "motion = equation.animate.shift(RIGHT)", "self.play(motion)", "motion"],
+    ["animation builder container", "motions = [equation.animate.shift(RIGHT)]", "self.play(*motions)", "motions"],
   ])("rejects persistent removal through a pre-anchor %s", (_label, setup, suffix, reference) => {
     const remove: CanonicalEditOperation = {
       ...operationBase("persistent-delete-alias", 7, 7.4),
@@ -843,6 +852,13 @@ class GroupedEquation(Scene):
     ["unknown function", "remember(equation)", "self.add(recall())", "remember"],
     ["setattr", 'setattr(holder, "cached", equation)', "self.add(holder.cached)", "setattr"],
     ["queue mutation", "queue.put(equation)", "self.add(queue.get())", "queue\\.put"],
+    ["parenthesized method", "(queue.put)(equation)", "self.add(queue.get())", "queue\\.put"],
+    ["dynamic callable", 'getattr(queue, "put")(equation)', "self.add(queue.get())", "a dynamic callable"],
+    ["unknown outer wrapper", "remember(VGroup(equation))", "self.add(recall())", "remember"],
+    ["unknown outer queue sink", "queue.put(VGroup(equation))", "self.add(queue.get())", "queue\\.put"],
+    ["unknown outer setattr sink", 'setattr(holder, "cached", VGroup(equation))', "self.add(holder.cached)", "setattr"],
+    ["default sink", "def revive(value=remember(equation)):\n            return value", "self.add(revive())", "remember"],
+    ["decorator sink", "@remember(equation)\n        def revive():\n            pass", "self.add(revive())", "remember"],
   ])("fails closed when a pre-anchor %s may retain the removed object", (_label, setup, suffix, call) => {
     const remove: CanonicalEditOperation = {
       ...operationBase("persistent-delete-unknown-call", 7, 7.4),
@@ -875,11 +891,13 @@ class GroupedEquation(Scene):
     const derivedSource = source.replace(
       "        # poietra:anchor 7.000",
       `        self.play(FadeIn(equation))
+        self.play(equation.animate.shift(RIGHT))
+        clone = equation.copy()
         label = Text("energy").next_to(equation, DOWN)
         arrow = Arrow(label.get_top(), equation.get_bottom())
         proof_box = SurroundingRectangle(equation)
         # poietra:anchor 7.000`,
-    ).replace("self.wait(1)", "self.add(label, arrow, proof_box)");
+    ).replace("self.wait(1)", "self.add(clone, label, arrow, proof_box)");
 
     expect(lowerCanonicalProgramSource(
       derivedSource,

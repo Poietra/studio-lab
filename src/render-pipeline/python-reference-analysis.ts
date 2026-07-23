@@ -27,16 +27,31 @@ function referencePattern(reference: string, global = false) {
   );
 }
 
+function staticGlobalsMatches(
+  statement: PythonStatement,
+  references: ReadonlySet<string>,
+) {
+  const patterns = [
+    /\bglobals\s*\(\s*\)\s*\[\s*(?:(?:[fF][rR]?|[rR][fFbB]?|[bB][rR]?|[uU]))?(["'])([A-Za-z_][A-Za-z0-9_]*)\1\s*\]/g,
+    /\bglobals\s*\(\s*\)\s*\.\s*get\s*\(\s*(?:(?:[fF][rR]?|[rR][fFbB]?|[bB][rR]?|[uU]))?(["'])([A-Za-z_][A-Za-z0-9_]*)\1\s*\)/g,
+  ];
+  const matches: Array<{ end: number; reference: string; start: number }> = [];
+  for (const pattern of patterns) {
+    for (const match of statement.raw.matchAll(pattern)) {
+      const start = match.index;
+      const reference = match[2] ?? "";
+      if (start === undefined || statement.code.slice(start, start + 7) !== "globals") continue;
+      if (references.has(reference)) matches.push({ end: start + match[0].length, reference, start });
+    }
+  }
+  return matches;
+}
+
 function staticGlobalsReference(
   statement: PythonStatement,
   references: ReadonlySet<string>,
 ) {
-  const pattern = /\bglobals\s*\(\s*\)\s*\[\s*(?:(?:[fF][rR]?|[rR][fFbB]?|[bB][rR]?|[uU]))?(["'])([A-Za-z_][A-Za-z0-9_]*)\1\s*\]/g;
-  for (const match of statement.raw.matchAll(pattern)) {
-    if (match.index === undefined || statement.code.slice(match.index, match.index + 7) !== "globals") continue;
-    if (references.has(match[2] ?? "")) return match[2] ?? null;
-  }
-  return null;
+  return staticGlobalsMatches(statement, references)[0]?.reference ?? null;
 }
 
 export function referencedPythonReference(
@@ -61,9 +76,7 @@ const SAFE_REFERENCE_ARGUMENT_CALLS = new Set([
   "to_edge",
 ]);
 
-const SAFE_REFERENCE_RECEIVER_CALLS = new Set([
-  "align_to",
-  "arrange",
+const DERIVED_REFERENCE_RECEIVER_CALLS = new Set([
   "copy",
   "get_bottom",
   "get_center",
@@ -74,6 +87,11 @@ const SAFE_REFERENCE_RECEIVER_CALLS = new Set([
   "get_right",
   "get_start",
   "get_top",
+]);
+
+const SELF_RETURNING_REFERENCE_RECEIVER_CALLS = new Set([
+  "align_to",
+  "arrange",
   "move_to",
   "next_to",
   "rotate",
@@ -136,22 +154,35 @@ const PYTHON_GROUPING_KEYWORDS = new Set([
 ]);
 
 function referenceMatches(statement: PythonStatement, references: ReadonlySet<string>) {
-  return [...references].flatMap((reference) => (
+  const identifiers = [...references].flatMap((reference) => (
     [...statement.code.matchAll(referencePattern(reference, true))].map((match) => ({
       end: (match.index ?? 0) + match[0].length,
       reference,
+      staticGlobal: false,
       start: match.index ?? 0,
     }))
   ));
+  return [
+    ...identifiers,
+    ...staticGlobalsMatches(statement, references).map((match) => ({ ...match, staticGlobal: true })),
+  ];
 }
 
 function callBeforeOpening(code: string, opening: number) {
   const prefix = code.slice(0, opening).trimEnd();
-  return prefix.match(/([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*)$/)?.[1]
-    ?.replace(/\s/g, "") ?? null;
+  if (/\b(?:(?:async\s+)?def|class)\s+[A-Za-z_][A-Za-z0-9_]*$/.test(prefix)) {
+    return "a definition header";
+  }
+  const direct = prefix.match(/([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*)$/)?.[1];
+  if (direct) return direct.replace(/\s/g, "");
+  const parenthesized = prefix.match(
+    /\(\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*\)$/,
+  )?.[1];
+  if (parenthesized) return parenthesized.replace(/\s/g, "");
+  return /[\])]$/.test(prefix) ? "a dynamic callable" : null;
 }
 
-function enclosingCall(code: string, position: number) {
+function enclosingCalls(code: string, position: number) {
   const stack: Array<{ character: string; index: number }> = [];
   for (let index = 0; index < position; index += 1) {
     const character = code[index] ?? "";
@@ -161,42 +192,64 @@ function enclosingCall(code: string, position: number) {
       stack.pop();
     }
   }
+  const calls: string[] = [];
   for (let index = stack.length - 1; index >= 0; index -= 1) {
     const opening = stack[index];
     if (opening?.character !== "(") continue;
     const call = callBeforeOpening(code, opening.index);
-    if (call && !PYTHON_GROUPING_KEYWORDS.has(call)) return call;
+    if (call && !PYTHON_GROUPING_KEYWORDS.has(call)) calls.push(call);
   }
-  return null;
+  return calls;
 }
 
 function referenceRetention(
   statement: PythonStatement,
   references: ReadonlySet<string>,
+  directObjectReferences: ReadonlySet<string>,
+  stored: boolean,
 ) {
-  let retains = staticGlobalsReference(statement, references) !== null;
+  let retains = false;
   for (const match of referenceMatches(statement, references)) {
     const suffix = statement.code.slice(match.end);
-    if (/^\s*\(/.test(suffix)) continue;
-    if (/^\s*\.\s*animate\b/.test(suffix)) continue;
-    const receiverCall = suffix.match(/^\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(/)?.[1];
-    if (receiverCall && SAFE_REFERENCE_RECEIVER_CALLS.has(receiverCall)) continue;
+    let tainted = true;
+    if (!match.staticGlobal && !/^\s*\(/.test(suffix)) {
+      if (/^\s*\.\s*animate\b/.test(suffix)) {
+        tainted = true;
+      } else {
+        const receiverCall = suffix.match(/^\s*\.\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(/)?.[1];
+        if (receiverCall === "copy") {
+          tainted = !directObjectReferences.has(match.reference);
+        } else if (receiverCall && DERIVED_REFERENCE_RECEIVER_CALLS.has(receiverCall)) {
+          tainted = false;
+        } else if (receiverCall && SELF_RETURNING_REFERENCE_RECEIVER_CALLS.has(receiverCall)) {
+          tainted = true;
+        } else if (receiverCall && RETAINING_REFERENCE_CALLS.has(receiverCall)) {
+          tainted = true;
+        } else if (receiverCall) {
+          throw new PythonReferenceAnalysisError(
+            `Studio cannot prove whether ${match.reference}.${receiverCall} retains source reference ${match.reference}.`,
+          );
+        }
+      }
+    }
 
-    const call = enclosingCall(statement.code, match.start);
-    if (!call) {
-      retains = true;
-      continue;
+    for (const call of enclosingCalls(statement.code, match.start)) {
+      if (!tainted) break;
+      if (call === "self.add" || call === "self.play" || call === "self.remove") {
+        tainted = false;
+        break;
+      }
+      const callName = call.split(".").at(-1) ?? call;
+      if (SAFE_REFERENCE_ARGUMENT_CALLS.has(callName)) {
+        tainted = false;
+        break;
+      }
+      if (call === "a definition header" || RETAINING_REFERENCE_CALLS.has(callName)) continue;
+      throw new PythonReferenceAnalysisError(
+        `Studio cannot prove whether ${call} retains source reference ${match.reference}.`,
+      );
     }
-    if (call === "self.add" || call === "self.play" || call === "self.remove") continue;
-    const callName = call.split(".").at(-1) ?? call;
-    if (SAFE_REFERENCE_ARGUMENT_CALLS.has(callName)) continue;
-    if (RETAINING_REFERENCE_CALLS.has(callName)) {
-      retains = true;
-      continue;
-    }
-    throw new PythonReferenceAnalysisError(
-      `Studio cannot prove whether ${call} retains source reference ${match.reference}.`,
-    );
+    if (stored && tainted) retains = true;
   }
   return retains;
 }
@@ -473,22 +526,27 @@ export function pythonReferenceClosure(
     for (const statement of statements) {
       const assignment = assignmentParts(statement);
       if (assignment && referencedPythonReference(assignment.rhs, references)) {
-        if (referenceRetention(assignment.rhs, references)) {
+        if (referenceRetention(assignment.rhs, references, initialReferences, true)) {
           changed = addReferences(assignment.targets, references) || changed;
         }
       }
       for (const binding of bindingParts(statement)) {
         if (
           referencedPythonReference(binding.value, references)
-          && referenceRetention(binding.value, references)
+          && referenceRetention(binding.value, references, initialReferences, true)
         ) {
           changed = addReferences(binding.targets, references) || changed;
         }
       }
       if (referencedPythonReference(statement, references)) {
         const definition = statement.code.trimStart();
-        if (!assignment && !/^(?:@|(?:(?:async\s+)?def|class)\b)/.test(definition)) {
-          referenceRetention(statement, references);
+        if (!assignment) {
+          referenceRetention(
+            statement,
+            references,
+            initialReferences,
+            /^(?:@|(?:(?:async\s+)?def|class)\b)/.test(definition),
+          );
         }
         const walrusTargets = [...statement.code.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\s*:=/g)]
           .map((match) => ({ code: match[1] ?? "", raw: match[1] ?? "" }));
