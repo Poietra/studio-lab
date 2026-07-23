@@ -27,6 +27,7 @@ import {
   createRemoveEntitiesProgram,
   createSceneDurationProgram,
   createStudioEntitiesProgram,
+  createTrimEntityLifetimeProgram,
   defaultEntityContent,
   duplicateEntityInput,
   type StudioEntityInput,
@@ -751,6 +752,42 @@ export function App() {
     }
   }
 
+  function trimEntityLifetime(
+    entityId: string,
+    workingLifetimeStart: number,
+    sourceAnchor: number,
+  ) {
+    if (!draftSourceScene) return false;
+    if (draftProgram) {
+      setDraftError("Apply or discard the current draft before trimming an object lifetime.");
+      return false;
+    }
+    const anchor = timelineAnchors.find((candidate) => (
+      Math.abs(candidate.sourceTime - sourceAnchor) < 0.0005
+    ));
+    if (!anchor) {
+      setDraftError("The selected lifetime end is not backed by a safe .py source anchor.");
+      return false;
+    }
+    try {
+      const validation = createTrimEntityLifetimeProgram({
+        entityId,
+        lifetimeStart: workingTimeToSourceTime(appliedCanonicalPrograms, workingLifetimeStart),
+        retainedDuration: anchor.workingTime - workingLifetimeStart,
+        scene: draftSourceScene,
+        sourceAnchor: anchor.sourceTime,
+        transactionId: `studio-lifetime-${crypto.randomUUID()}`,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      installCanonicalDraft(validated.record, [entityId]);
+      return true;
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The object lifetime could not be trimmed.");
+      return false;
+    }
+  }
+
   function deleteSelection() {
     if (!draftBaseState || !draftSourceScene || selectedObjectIds.length === 0) return false;
     if (draftProgram) {
@@ -1258,6 +1295,7 @@ export function App() {
               insertValue={insertValue}
               interactionMode={interactionMode}
               isPlaying={isPlaying}
+              lifetimeTrimDisabled={draftProgram !== null}
               motionDuration={motionDuration}
               motionPaths={motionPaths}
               onCanvasPlace={(point) => void insertEntitiesAt(point)}
@@ -1270,6 +1308,9 @@ export function App() {
               onInsertAtCenter={() => void insertEntitiesAt({ x: 320, y: 180 })}
               onInsertToolChange={setInsertTool}
               onInsertValueChange={setInsertValue}
+              onLifetimeEndChange={(entityId, lifetimeStart, sourceAnchor) => {
+                void trimEntityLifetime(entityId, lifetimeStart, sourceAnchor);
+              }}
               onMotionControlChange={changeDraftMotionControl}
               onMotionDurationChange={setMotionDuration}
               onSelectEntity={(entityId) => setSelectedObjectIds([entityId])}

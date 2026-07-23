@@ -365,6 +365,35 @@ test("undo and redo restore an uncommitted draft", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Move Circle" })).toBeVisible();
 });
 
+test("trims an object lifetime at a safe source anchor and exports an instant removal", async ({ page }) => {
+  await openWorkspace(page);
+  const lifetime = page.getByRole("button", { name: /Select equation lifetime/ });
+  await lifetime.click();
+  await expect(page.getByRole("combobox", { name: "Lifetime end for equation" })).toHaveValue("7");
+
+  const handle = page.getByRole("button", { name: "Trim equation lifetime end" });
+  const handleBox = await handle.boundingBox();
+  const laneBox = await lifetime.locator("xpath=ancestor::*[@data-timeline-track][1]")
+    .locator("[data-timeline-lane]").boundingBox();
+  if (!handleBox || !laneBox) throw new Error("The equation lifetime trim handle is not visible.");
+  const handleCenter = { x: handleBox.x + handleBox.width / 2, y: handleBox.y + handleBox.height / 2 };
+  await page.mouse.move(handleCenter.x, handleCenter.y);
+  await page.mouse.down();
+  await page.mouse.move(laneBox.x + laneBox.width * (7 / 12), handleCenter.y, { steps: 5 });
+  await page.mouse.up();
+
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  await expect(lifetime).toHaveAttribute("title", "Present 0.00–7.00s");
+  await expect(page.getByRole("spinbutton", { name: "Scene duration in seconds" })).toHaveValue("12.00");
+  const source = await exportedSource(page);
+  expect(source).toContain("self.remove(equation)");
+  expect(source).not.toContain("run_time=0");
+
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await page.keyboard.press("Control+z");
+  await expect(lifetime).toHaveAttribute("title", "Present 0.00–12.00s");
+});
+
 test("previews a motion path, bends it, and exports a Bézier move", async ({ page }) => {
   await openWorkspace(page);
   const equation = page.getByRole("button", { name: "Move equation" });
