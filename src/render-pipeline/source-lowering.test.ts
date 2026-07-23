@@ -537,6 +537,31 @@ class GroupedEquation(Scene):
     });
   });
 
+  it("preserves a tiny positive effective resize instead of rounding it to zero", () => {
+    const circleSource = source.replace(
+      'equation = MathTex("E", "=", "m", "c^2")',
+      "shape = Circle(radius=1).scale(0.00001)",
+    );
+    const resize: CanonicalEditOperation = {
+      ...operationBase("tiny-circle", 7),
+      entityId: "circle_1",
+      from: { dimensions: { radius: 1 }, position: { x: 320, y: 180 } },
+      kind: "ResizeEntity",
+      scale: 0.00001,
+      shape: "circle",
+      to: { dimensions: { radius: 2 }, position: { x: 320, y: 180 } },
+    };
+    const lowered = lowerCanonicalProgramSource(
+      circleSource,
+      request(canonicalProgram([resize], "tiny-circle"), [{ entityId: "circle_1", sourceVariable: "shape" }]),
+      { height: 8, width: 14.222 },
+      null,
+    );
+
+    expect(lowered.insertedCode).toContain("shape.scale_to_fit_width(0.00004)");
+    expect(lowered.insertedCode).not.toContain("scale_to_fit_width(0)");
+  });
+
   it("rejects scale lowering without finite positive absolute endpoints", () => {
     const scale: CanonicalEditOperation = {
       ...operationBase("invalid-scale", 7),

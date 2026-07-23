@@ -165,6 +165,13 @@ function formatShiftAmount(value: number) {
   return formatted === "0" && value !== 0 ? Number(Math.abs(value).toPrecision(4)).toString() : formatted;
 }
 
+function formatPositiveAmount(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new ProgramLoweringError("operation-unsupported", "A positive finite Manim size is required.");
+  }
+  return Number(value.toPrecision(12)).toString();
+}
+
 function rewriteSceneTemporalMetadata(
   source: string,
   sceneName: string,
@@ -467,9 +474,9 @@ function resizeExpression(
     );
   }
   const resize = operation.shape === "circle"
-    ? `${prefix}.scale_to_fit_width(${formatAmount(width)})`
-    : `${prefix}.stretch_to_fit_width(${formatAmount(width)})`
-      + `.stretch_to_fit_height(${formatAmount(height ?? 0)})`;
+    ? `${prefix}.scale_to_fit_width(${formatPositiveAmount(width)})`
+    : `${prefix}.stretch_to_fit_width(${formatPositiveAmount(width)})`
+      + `.stretch_to_fit_height(${formatPositiveAmount(height ?? 0)})`;
   return `${resize}.move_to(${pointExpression(operation.to.position, frame, viewport)})`;
 }
 
