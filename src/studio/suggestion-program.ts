@@ -288,6 +288,9 @@ type OperationBuildResult =
   | Readonly<{ kind: "invalid"; message: string }>
   | Readonly<{ kind: "valid"; operations: readonly CanonicalEditOperation[] }>;
 
+const MIN_MAGIC_SCALE_FACTOR = 0.01;
+const MAX_MAGIC_SCALE_FACTOR = 80;
+
 function scaleOperations(
   operation: Omit<ScaleObjectsSuggestion, "anchor">,
   context: CanonicalizationContext,
@@ -309,7 +312,11 @@ function scaleOperations(
     }
     const targetScale = scale.value * operation.factor;
     if (
-      !Number.isFinite(operation.factor)
+      !Number.isFinite(scale.value)
+      || scale.value <= 0
+      || !Number.isFinite(operation.factor)
+      || operation.factor < MIN_MAGIC_SCALE_FACTOR
+      || operation.factor > MAX_MAGIC_SCALE_FACTOR
       || !Number.isFinite(targetScale)
       || targetScale < MIN_ENTITY_SCALE
       || targetScale > MAX_ENTITY_SCALE
