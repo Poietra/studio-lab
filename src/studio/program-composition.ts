@@ -94,6 +94,28 @@ export function workingTimeToSourceTime(
   return workingTime - offset;
 }
 
+/**
+ * Resolves the latest source-backed insertion boundary at or before a working
+ * playhead. `workingTime` deliberately points after every Program already
+ * inserted at that source anchor, which is the only truthful append position.
+ */
+export function latestSafeSourceAnchor(
+  programs: readonly CanonicalEditProgram[],
+  sourceAnchors: readonly number[],
+  workingTime: number,
+) {
+  const sourceTime = workingTimeToSourceTime(programs, workingTime);
+  const sourceAnchor = sourceAnchors
+    .filter((anchor) => Number.isFinite(anchor) && anchor <= sourceTime + ANCHOR_EPSILON)
+    .sort((left, right) => left - right)
+    .at(-1);
+  if (sourceAnchor === undefined) return null;
+  return {
+    sourceTime: sourceAnchor,
+    workingTime: sourceTimeToWorkingTime(programs, sourceAnchor),
+  } as const;
+}
+
 function shiftedInterval(interval: CanonicalEditOperation["interval"], offset: number) {
   return { end: interval.end + offset, start: interval.start + offset };
 }

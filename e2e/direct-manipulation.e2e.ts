@@ -55,3 +55,26 @@ test("keeps the first object position while moving and applying a second object"
   expect(labelAfterApply.x).toBeCloseTo(movedLabel.x, 1);
   expect(labelAfterApply.y).toBeCloseTo(movedLabel.y, 1);
 });
+
+test("snaps direct manipulation to the latest safe source anchor before creating a draft", async ({ page }) => {
+  await openWorkspace(page);
+  const equation = page.getByRole("button", { name: "Move equation" });
+  const scenePlayhead = page.getByRole("slider", { name: "Scene playhead" });
+  await expect(equation).toBeVisible();
+  await scenePlayhead.fill("5.6");
+  await page.getByRole("button", { name: "Set position" }).click();
+
+  await dragBy(page, equation, { x: 40, y: 20 });
+  await expect(scenePlayhead).toHaveValue("5");
+  await expect(page.getByRole("alert")).toContainText(
+    "Moved the playhead to the latest safe .py source anchor",
+  );
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+  const anchored = await position(equation);
+
+  await dragBy(page, equation, { x: 40, y: 20 });
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  const afterSafeDrag = await position(equation);
+  expect(afterSafeDrag.x - anchored.x).toBeCloseTo(40, 0);
+  expect(afterSafeDrag.y - anchored.y).toBeCloseTo(20, 0);
+});

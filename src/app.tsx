@@ -38,10 +38,11 @@ import {
   type StudioCommandId,
 } from "./studio/commands";
 import { projectedPositions, validateSuggestionDraft, validatedProgramRecord } from "./studio/draft-validation";
-import type { Point, ProgramRecord, ProposedState } from "./studio/model";
+import type { Point, ProgramRecord, ProposedState, RuntimeSceneState } from "./studio/model";
 import { projectMotionPaths, type StudioMotionPath } from "./studio/motion-paths";
 import type { OperationOrigin } from "./studio/operations";
 import {
+  latestSafeSourceAnchor,
   sourceTimeToWorkingTime,
   workingTimeToSourceTime,
 } from "./studio/program-composition";
@@ -73,6 +74,7 @@ const NUDGE_DELTAS: Readonly<Record<string, Readonly<{ x: number; y: number }>>>
 type CanvasDragState = Readonly<{
   pointerId: number;
   scale: Readonly<{ x: number; y: number }>;
+  sourceAnchor: number;
   start: Readonly<{ x: number; y: number }>;
   targetEntityIds: readonly string[];
 }>;
@@ -802,9 +804,17 @@ export function App() {
       setDraftError("Apply or discard the current draft before deleting another object.");
       return false;
     }
+    const anchor = manualAuthoringAnchor({
+      action: "deletion",
+      requireAlignedPlayhead: true,
+      scene: draftSourceScene,
+      sourcePrograms: appliedCanonicalPrograms,
+      targetEntityIds: selectedObjectIds,
+    });
+    if (!anchor) return false;
     try {
       const validation = createRemoveEntitiesProgram({
-        capturedPlayhead: sourceCurrentTime,
+        capturedPlayhead: anchor.sourceTime,
         entityIds: selectedObjectIds,
         scene: draftSourceScene,
         transactionId: `studio-delete-${crypto.randomUUID()}`,
@@ -866,6 +876,47 @@ export function App() {
     } as const;
   }
 
+  function manualAuthoringAnchor(input: Readonly<{
+    action: string;
+    requireAlignedPlayhead: boolean;
+    scene: RuntimeSceneState;
+    sourcePrograms: readonly ProgramRecord["program"][];
+    targetEntityIds?: readonly string[];
+  }>) {
+    if (!activeScene) return null;
+    const anchor = latestSafeSourceAnchor(
+      input.sourcePrograms,
+      activeScene.anchors,
+      currentTime,
+    );
+    if (!anchor) {
+      setDraftError(`No safe .py source anchor exists before the playhead. Move to a source anchor before ${input.action}.`);
+      setIsPlaying(false);
+      return null;
+    }
+    const missingEntityId = input.targetEntityIds?.find((entityId) => {
+      const entity = input.scene.objectGraph.entities[entityId];
+      return !entity || !entity.lifetime.some((interval) => (
+        anchor.sourceTime >= interval.start - 0.0005
+        && anchor.sourceTime < interval.end
+      ));
+    });
+    if (missingEntityId) {
+      setDraftError(`The selected object is not present at the latest safe .py source anchor, so Studio cannot ${input.action} truthfully.`);
+      setIsPlaying(false);
+      return null;
+    }
+    if (input.requireAlignedPlayhead && Math.abs(currentTime - anchor.workingTime) >= 0.0005) {
+      setCurrentTime(anchor.workingTime);
+      setIsPlaying(false);
+      setDraftError(
+        `Moved the playhead to the latest safe .py source anchor at ${anchor.workingTime.toFixed(2)}s. Repeat the ${input.action}.`,
+      );
+      return null;
+    }
+    return anchor;
+  }
+
   function beginEntityDrag(event: PointerEvent<HTMLButtonElement>, entityId: string) {
     if (canvasDrag.current) return;
     const entity = editableEntities.find((candidate) => candidate.id === entityId);
@@ -877,6 +928,20 @@ export function App() {
       && (!candidate.provisional || (candidate.transactionId && appliedTransactionIds.has(candidate.transactionId)))
     )));
     const targetEntityIds = selectedEditableIds.includes(entityId) ? selectedEditableIds : [entityId];
+    const gestureContext = directGestureContext();
+    if (!gestureContext.proposedState) return;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
+    const anchor = manualAuthoringAnchor({
+      action: "object drag",
+      requireAlignedPlayhead: true,
+      scene: sourceScene,
+      sourcePrograms: gestureContext.sourcePrograms,
+      targetEntityIds,
+    });
+    if (!anchor) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     const canvasBounds = event.currentTarget.closest<HTMLElement>("[data-scene-phase]")?.getBoundingClientRect();
     setSelectedObjectIds(targetEntityIds);
@@ -886,9 +951,11 @@ export function App() {
         x: canvasBounds?.width ? STUDIO_VIEWPORT.width / canvasBounds.width : 1,
         y: canvasBounds?.height ? STUDIO_VIEWPORT.height / canvasBounds.height : 1,
       },
+      sourceAnchor: anchor.sourceTime,
       start: { x: event.clientX, y: event.clientY },
       targetEntityIds,
     };
+    setIsPlaying(false);
     setDragPreview({ delta: { x: 0, y: 0 }, entityIds: targetEntityIds });
   }
 
@@ -912,29 +979,35 @@ export function App() {
     const targetIds = drag.targetEntityIds;
     const transactionId = `studio-gesture-${crypto.randomUUID()}`;
     const gestureContext = directGestureContext();
+    if (!gestureContext.proposedState) return;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
     if (interactionMode === "animate") {
-      const end = sourceCurrentTime + motionDuration;
-      if (motionDuration < 0.1 || end > draftSourceScene.duration + 0.001) {
+      const end = drag.sourceAnchor + motionDuration;
+      if (motionDuration < 0.1 || end > sourceScene.duration + 0.001) {
         setDraftError("The motion must be at least 0.1 seconds and fit within the current Scene duration.");
         return;
       }
       const operation: CreateMotionSuggestion = {
-        anchor: { kind: "playhead", referenceSeconds: sourceCurrentTime },
+        anchor: { kind: "playhead", referenceSeconds: drag.sourceAnchor },
         controlOffset: { x: 0, y: 0 },
         delta,
         easing: "smooth",
         end,
         kind: "create-motion",
-        start: sourceCurrentTime,
+        start: drag.sourceAnchor,
         targetObjectIds: targetIds,
       };
       installDraft(operation, transactionId, {
+        capturedPlayhead: drag.sourceAnchor,
         origin: "direct-manipulation",
         ...gestureContext,
       });
       return;
     }
-    installPositionDraft(delta, targetIds, transactionId, gestureContext);
+    installPositionDraft(delta, targetIds, transactionId, gestureContext, drag.sourceAnchor);
   }
 
   function cancelEntityDrag(event: PointerEvent<HTMLButtonElement>) {
@@ -952,6 +1025,7 @@ export function App() {
       proposedState: ProposedState | null;
       sourcePrograms: readonly ProgramRecord["program"][];
     }> = directGestureContext(),
+    capturedSourceAnchor?: number,
   ) {
     if (!gestureContext.proposedState || !projection) return;
     const projected = projectedPositions(projection.canvas.entities, targetIds);
@@ -963,12 +1037,22 @@ export function App() {
       gestureContext.proposedState.evaluatedScene,
       gestureContext.sourcePrograms,
     );
+    const anchor = capturedSourceAnchor === undefined
+      ? manualAuthoringAnchor({
+          action: "object move",
+          requireAlignedPlayhead: true,
+          scene: sourceScene,
+          sourcePrograms: gestureContext.sourcePrograms,
+          targetEntityIds: targetIds,
+        })
+      : { sourceTime: capturedSourceAnchor };
+    if (!anchor) return;
     const validation = createDirectManipulationPositionProgram({
-      capturedPlayhead: sourceCurrentTime,
+      capturedPlayhead: anchor.sourceTime,
       delta,
       positions: projected.positions,
       scene: sourceScene,
-      start: sourceCurrentTime,
+      start: anchor.sourceTime,
       targetEntityIds: targetIds,
       transactionId,
     });
@@ -986,6 +1070,8 @@ export function App() {
     setPendingClarification(null);
     setSuggestionMessage(null);
     setSuggestionStatus("idle");
+    setIsPlaying(false);
+    setCurrentTime(sourceTimeToWorkingTime(gestureContext.sourcePrograms, anchor.sourceTime));
     setRedoPrograms([]);
   }
 
