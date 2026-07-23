@@ -1,5 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
+import { openWorkspace } from "./workspace";
+
 async function position(locator: Locator) {
   const box = await locator.boundingBox();
   if (!box) throw new Error("The object is not visible in the Studio canvas.");
@@ -17,7 +19,7 @@ async function dragBy(page: Page, locator: Locator, delta: Readonly<{ x: number;
 }
 
 test("keeps the first object position while moving and applying a second object", async ({ page }) => {
-  await page.goto("/");
+  await openWorkspace(page);
   const equation = page.getByRole("button", { name: "Move equation" });
   const label = page.getByRole("button", { name: "Move label" });
   await expect(equation).toBeVisible();

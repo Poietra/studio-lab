@@ -22,6 +22,7 @@ import {
 } from "./ai/edit-suggestions";
 import type { RenderProgramCandidate } from "./render-pipeline/render-pipeline-panel";
 import type { RenderSessionView } from "./render-pipeline/contracts";
+import { cn } from "./lib/cn";
 import {
   createRemoveEntitiesProgram,
   createSceneDurationProgram,
@@ -57,6 +58,7 @@ import {
 import type { StudioTool } from "./studio/studio-toolbar";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
 import { useManimWorkspace } from "./studio/use-manim-workspace";
+import { WorkspaceLauncher } from "./studio/workspace-launcher";
 import { isTransitionOverlay, projectStudioWorkspace } from "./studio/workspace-projection";
 
 type Shell = "Browser" | "Electron" | "Tauri";
@@ -133,15 +135,23 @@ export function App() {
     activeScene,
     activeSceneId,
     activeProjectId,
+    cancelMutation: cancelWorkspaceMutation,
+    clearMutationError,
+    createWorkspace,
     error: workspaceError,
     isRefreshing: workspaceIsRefreshing,
+    leaveWorkspace,
+    mutation: workspaceMutation,
+    mutationError: workspaceMutationError,
     nextScene,
     projects,
     refresh: refreshWorkspace,
+    renameWorkspace,
     scenes,
     setActiveProjectId,
     setActiveSceneId,
     status: workspaceStatus,
+    unregisterWorkspace,
     workspace,
   } = useManimWorkspace();
   const [currentTime, setCurrentTime] = useState(0);
@@ -207,8 +217,22 @@ export function App() {
   useEffect(() => () => cancelRequest(suggestionRequest), []);
 
   useEffect(() => {
+    const registeredProjectIds = new Set(projects.map((project) => project.id));
+    for (const key of editorSessions.current.keys()) {
+      const projectId = key.split("/", 1)[0];
+      if (projectId && !registeredProjectIds.has(projectId)) editorSessions.current.delete(key);
+    }
+    setRenderSessions((current) => {
+      const next = Object.fromEntries(Object.entries(current).filter(([projectId]) => (
+        registeredProjectIds.has(projectId)
+      )));
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
+  }, [projects]);
+
+  useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.defaultPrevented || isEditableShortcutTarget(event.target)) return;
+      if (!activeScene || event.defaultPrevented || isEditableShortcutTarget(event.target)) return;
       if (
         (event.key === " " || event.key === "Enter")
         && (event.target instanceof HTMLButtonElement || event.target instanceof HTMLAnchorElement)
@@ -1054,6 +1078,56 @@ export function App() {
   } : null;
 
   const selectedEntity = editableEntities.find((entity) => selectedSet.has(entity.id)) ?? null;
+  const activeWorkspaceName = workspace?.projectName
+    ?? projects.find((project) => project.id === activeProjectId)?.name
+    ?? "Workspace";
+
+  function returnToWorkspaceLauncher() {
+    saveEditorSession();
+    cancelRequest(suggestionRequest);
+    canvasDrag.current = null;
+    setDragPreview(null);
+    setIsPlaying(false);
+    setSuggestion(null);
+    setPendingClarification(null);
+    setSuggestionMessage(null);
+    setSuggestionStatus("idle");
+    leaveWorkspace();
+  }
+
+  async function unregisterWorkspaceAndClearSession(workspaceId: string) {
+    if (!await unregisterWorkspace(workspaceId)) return false;
+    for (const key of editorSessions.current.keys()) {
+      if (key.startsWith(`${workspaceId}/`)) editorSessions.current.delete(key);
+    }
+    setRenderSessions((current) => {
+      if (!(workspaceId in current)) return current;
+      const next = { ...current };
+      delete next[workspaceId];
+      return next;
+    });
+    return true;
+  }
+
+  if (activeProjectId === null) {
+    return (
+      <WorkspaceLauncher
+        creationMode={shell === "Browser" ? "managed" : "existing"}
+        error={workspaceError}
+        isLoading={workspaceStatus === "loading"}
+        mutation={workspaceMutation}
+        mutationError={workspaceMutationError}
+        onCancelMutation={cancelWorkspaceMutation}
+        onClearMutationError={clearMutationError}
+        onCreate={createWorkspace}
+        onOpen={setActiveProjectId}
+        onRename={renameWorkspace}
+        onRetry={() => void refreshWorkspace()}
+        onUnregister={unregisterWorkspaceAndClearSession}
+        projects={projects}
+      />
+    );
+  }
 
   return (
     <LazyMotion features={loadMotionFeatures} strict>
@@ -1061,21 +1135,21 @@ export function App() {
         <header className="flex min-h-12 shrink-0 items-center justify-between gap-2 border-b border-zinc-800 px-3 py-2">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <h1 className="hidden shrink-0 text-balance text-sm font-semibold md:block">Poietra Studio Lab</h1>
-            {projects.length > 0 ? (
-              <select
-                aria-label="Active project"
-                className="h-8 min-w-28 max-w-48 border border-zinc-700 bg-zinc-950 px-2 text-xs font-medium text-zinc-200 outline-none focus:border-sky-500"
-                onChange={(event) => {
-                  saveEditorSession();
-                  setActiveProjectId(event.currentTarget.value);
-                }}
-                value={activeProjectId ?? ""}
-              >
-                {projects.map((project) => (
-                  <option key={project.id} value={project.id}>{project.name}</option>
-                ))}
-              </select>
-            ) : null}
+            <button
+              aria-label="Back to workspaces"
+              className="shrink-0 border border-zinc-700 px-2 py-1 text-xs font-medium text-zinc-300 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500"
+              onClick={returnToWorkspaceLauncher}
+              type="button"
+            >
+              Workspaces
+            </button>
+            <span
+              aria-label="Current workspace"
+              className="hidden max-w-40 shrink-0 truncate text-xs font-medium text-zinc-400 sm:block"
+              title={activeWorkspaceName}
+            >
+              {activeWorkspaceName}
+            </span>
             {scenes.length > 0 ? (
               <select
                 aria-label="Active imported Scene"
@@ -1103,10 +1177,16 @@ export function App() {
             </button>
             <button
               aria-controls="studio-magic-edit"
-              aria-expanded={isMagicEditVisible}
-              className={isMagicEditVisible
-                ? "border border-sky-800 bg-sky-950 px-2 py-1 font-medium text-sky-300 hover:bg-sky-900"
-                : "border border-zinc-700 px-2 py-1 font-medium text-zinc-300 hover:bg-zinc-800"}
+              aria-expanded={Boolean(activeScene && isMagicEditVisible)}
+              className={cn(
+                "border px-2 py-1 font-medium",
+                !activeScene
+                  ? "cursor-wait border-zinc-800 text-zinc-600"
+                  : isMagicEditVisible
+                    ? "border-sky-800 bg-sky-950 text-sky-300 hover:bg-sky-900"
+                    : "border-zinc-700 text-zinc-300 hover:bg-zinc-800",
+              )}
+              disabled={!activeScene}
               onClick={() => setIsMagicEditVisible((visible) => !visible)}
               type="button"
             >
@@ -1233,7 +1313,7 @@ export function App() {
           </div>
         )}
 
-        {isMagicEditVisible ? (
+        {isMagicEditVisible && activeScene ? (
           <MagicEditPanel
             aiEndpointConfigured={aiEndpointConfigured}
             clarificationIsStale={clarificationIsStale}

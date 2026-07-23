@@ -36,7 +36,8 @@ MathTex-to-explanatory-Text replacement, and new provisional MathTex creation;
 the floating Magic Edit board can be dragged across the workspace, hidden, and
 restored without losing its instruction or draft preview.
 
-The web editor also has a project picker for server-authorized Manim roots, an
+The web editor also has a workspace launcher that creates a ready-to-edit managed
+Manim workspace from a name alone, an
 Insert toolbar for Text, MathTex, Rectangle, Circle, Line, and Arrow objects, and
 PowerPoint-style select/copy/paste/duplicate/delete/undo/redo shortcuts. New motion
 duration is editable, its quadratic Bézier path and control handle are projected
@@ -111,10 +112,28 @@ POIETRA_MANIM_COMMAND='["uv", "run", "manim"]' \
 pnpm dev:web
 ```
 
-Multiple pre-authorized roots can be registered without accepting filesystem paths
-from the browser. `POIETRA_MANIM_PROJECTS` is a JSON array of root strings or
+Multiple roots can be seeded before the first launch. `POIETRA_MANIM_PROJECTS` is a JSON array of root strings or
 `{"id":"project-a","name":"Display name","root":"/path"}` objects; the legacy
-single-root variable remains the fallback. The project-bound export API performs
+single-root variable remains the fallback. On first start these values seed the local
+`.poietra/workspace-catalog.json`. In a browser, Add workspace asks only for a name
+and creates an importable `MainScene` under `.poietra/.workspaces`; Electron and
+Tauri retain the existing-folder registration form until their native directory
+pickers are wired. The launcher can rename or remove either registration
+persistently. Removing an existing-folder workspace only unregisters it, leaving
+its folder and Python files in place. Removing a browser-managed workspace moves
+its directory to Studio Trash at `.poietra/.trash` instead of permanently deleting
+it; Studio does not yet provide a UI for restoring trashed workspaces. Set
+`POIETRA_STUDIO_DATA_ROOT` to relocate the private catalog, browser-managed
+workspace content, and Studio Trash. The local server remains bound to loopback,
+validates every registered folder with `realpath`, and never returns filesystem
+roots in API responses.
+
+Studio starts at a workspace chooser. Visible cards lazily parse only the first
+importable Scene into a bounded semantic SVG thumbnail; this does not execute
+Manim or import the rest of the project, and failures retain the metadata cover.
+The complete workspace is imported only after it is opened. Returning to the
+chooser keeps each Scene's in-memory editor session available for the next open.
+The project-bound export API performs
 the same canonical lowering and stale-source checks without requiring Manim or
 writing the source file; the Inspector exposes it as `Export .py` whenever the
 current composed Program has supported lowering and a matching safe anchor.

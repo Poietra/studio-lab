@@ -23,7 +23,9 @@ isolated Manim subprocess + MP4 → user review → atomic source commit or disc
 
 The workspace bridge discovers Python files and ordered Scene classes below each
 configured project root. The header switches between server-authorized projects by
-opaque ID; it never accepts a browser-supplied filesystem path. `nextSceneId`
+opaque ID. Browser Add creates a managed workspace and starter Scene from a display
+name alone; desktop shells may register an existing local folder. Workspace,
+render, and export requests use only the resulting opaque ID. `nextSceneId`
 follows class order within one source file;
 unrelated files are not joined by an invented edge. The application imports
 conservative runtime snapshots once and uses the selected Scene for canvas, object
@@ -36,10 +38,18 @@ the complete inserted source block, rendered MP4, commit, discard, and exact Und
 `POIETRA_MANIM_PROJECT_ROOT` selects the fallback filesystem root the local Vite
 bridge may inspect or edit. It defaults to the Studio Lab checkout.
 
-`POIETRA_MANIM_PROJECTS` may instead contain a JSON array of pre-authorized root
-strings or `{ "id", "name", "root" }` records. The server resolves these roots at
-startup and gives the browser only an opaque project ID and display name. Runtime
-requests cannot register or submit a filesystem root.
+`POIETRA_MANIM_PROJECTS` may instead contain a JSON array of root strings or
+`{ "id", "name", "root" }` records. These values seed the private
+`.poietra/workspace-catalog.json` on first start. The launcher then owns persistent
+creation/registration, display-name changes, and unregistration. Browser-created
+workspaces live below `.poietra/.workspaces` with an importable `main.py`. Removing
+an existing-folder workspace only unregisters it and leaves its root and Python
+source in place. Removing a browser-managed workspace moves its root to Studio
+Trash at `.poietra/.trash` rather than hard-deleting it; there is currently no
+Studio UI for restoring a trashed workspace. `POIETRA_STUDIO_DATA_ROOT` relocates
+the private catalog, managed workspace content, and Studio Trash. The server
+resolves every root and gives the browser catalog only opaque project IDs and
+display names.
 
 `POIETRA_MANIM_COMMAND` is either one executable or a JSON array such as
 `["uv", "run", "manim"]`. The bridge invokes it directly without a shell. The
@@ -55,7 +65,20 @@ explicit frame and the captured Studio viewport.
 
 ## Local API boundary
 
-- `GET /api/manim/projects` returns only opaque IDs and display names.
+- `GET /api/manim/projects` returns only opaque IDs, ownership kinds, and display names.
+- `POST /api/manim/projects` accepts either `{ "kind": "managed", "name" }` to
+  create a starter workspace or `{ "kind": "existing", "name", "root" }` for a
+  desktop-selected folder. Its response always omits filesystem roots.
+- `PATCH /api/manim/projects/:projectId` changes only the display name.
+- `DELETE /api/manim/projects/:projectId` unregisters an existing-folder workspace
+  without changing its source, or moves a browser-managed workspace to Studio
+  Trash below the configured data root. It does not hard-delete source, and Studio
+  does not yet expose a restore UI. Active or retained render sessions must be
+  discarded first.
+- `GET /api/manim/projects/:projectId/thumbnail` stops after the first importable
+  Scene and returns a bounded semantic SVG derived from its imported object state.
+  It never runs the Manim command; a missing Scene returns a safe SVG fallback and
+  unsupported entities are omitted.
 - `GET /api/manim/projects/:projectId/workspace` imports one registered project;
   `GET /api/manim/workspace` remains a default-project compatibility alias.
 - `POST /api/manim/projects/:projectId/export` validates and lowers the project-bound
@@ -155,8 +178,8 @@ boundaries without hand-authored comments.
 - preview and Undo evidence is retained in memory for 30 minutes and temporary
   media is then removed automatically; durable project history remains future
   product work;
-- project roots must be registered when the Vite server starts; the browser cannot
-  open an arbitrary local directory at runtime;
+- desktop shells still use a path field for existing folders and should replace it
+  with their native OS directory picker;
 - the bridge is a local development experiment, not a remotely exposed render
   service or Python sandbox.
 
