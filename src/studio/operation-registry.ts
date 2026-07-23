@@ -62,7 +62,7 @@ export const canonicalOperationSchema = z.discriminatedUnion("kind", [
   baseSchema.extend({
     controlOffset: pointSchema,
     delta: pointSchema,
-    easing: z.literal("smooth"),
+    easing: z.enum(["linear", "smooth"]),
     kind: z.literal("CreateMotion"),
     targetEntityIds: z.array(z.string()).min(1),
   }),

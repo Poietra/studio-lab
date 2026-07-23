@@ -67,7 +67,7 @@ export type CreateMotionSuggestion = Readonly<{
   anchor: SuggestionTimeAnchor;
   controlOffset: SuggestionPoint;
   delta: SuggestionPoint;
-  easing: "smooth";
+  easing: "linear" | "smooth";
   end: number;
   kind: "create-motion";
   start: number;

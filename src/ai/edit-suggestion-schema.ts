@@ -51,7 +51,7 @@ export const mathTexSuggestionTargetSchema = z.object({
 const createMotionFields = {
   controlOffset: motionControlOffsetSchema,
   delta: motionDeltaSchema,
-  easing: z.literal("smooth"),
+  easing: z.enum(["linear", "smooth"]),
   end: z.number(),
   kind: z.literal("create-motion"),
   start: z.number(),

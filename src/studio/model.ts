@@ -6,6 +6,8 @@ export type Point = Readonly<{ x: number; y: number }>;
 
 export type Interval = Readonly<{ end: number; start: number }>;
 
+export type MotionEasing = "linear" | "smooth";
+
 export type Known<T> = Readonly<{ kind: "known"; value: T }>;
 
 export type Unknown = Readonly<{
@@ -89,7 +91,7 @@ export type PropertyValue = boolean | number | string | Point | EntityContent | 
 
 export type PropertyChannelSample = Readonly<{
   control?: Point;
-  easing?: "smooth";
+  easing?: MotionEasing;
   from?: PropertyValue;
   interval: Interval;
   kind: "animated" | "exact";
@@ -124,8 +126,11 @@ export type EventTrack = Readonly<{
 
 export type TimelineObjectTrack = Readonly<{
   animatedChannels: readonly Readonly<{
+    easing?: MotionEasing;
     interval: Interval;
     key: PropertyChannel["key"];
+    operationId?: string;
+    transactionId?: string;
   }>[];
   entityId: string;
   label: string;
