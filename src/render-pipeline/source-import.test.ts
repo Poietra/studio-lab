@@ -360,10 +360,15 @@ class Resized(Scene):
         height_only = Rectangle(width=4, height=2)
         width_only = Rectangle(width=4, height=2)
         animated = Rectangle(width=4, height=2)
-        self.add(height_only, width_only, animated)
+        moved = Rectangle(width=4, height=2)
+        self.add(height_only, width_only, animated, moved)
         height_only.stretch_to_fit_height(3)
         width_only.set_width(5)
-        self.play(animated.animate.scale_to_fit_height(4), run_time=1)
+        self.play(
+            moved.animate.shift(RIGHT),
+            animated.animate.scale_to_fit_height(4),
+            run_time=1,
+        )
 `, "scene.py", "Resized");
 
     for (const variable of ["height_only", "width_only", "animated"]) {
@@ -375,6 +380,11 @@ class Resized(Scene):
       expect(imported?.runtimeSceneState.objectGraph.entities[entityId]?.geometry?.position)
         .toMatchObject({ kind: "known" });
     }
+    const movedId = "source:scene.py#Resized:moved";
+    expect(imported?.runtimeSceneState.propertyChannels[`${movedId}/dimensions`]?.samples.at(-1)?.knowledge)
+      .toMatchObject({ kind: "known", value: { height: 2, width: 4 } });
+    expect(imported?.runtimeSceneState.propertyChannels[`${movedId}/position`]?.samples.at(-1)?.knowledge)
+      .toMatchObject({ kind: "known" });
   });
 
   it("fails closed for complex Python and an invalid marker", () => {

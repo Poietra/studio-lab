@@ -820,7 +820,12 @@ function variableMethodCall(
 ) {
   const escaped = variable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const receiver = `${escaped}\\s*\\.\\s*${animated ? "animate\\s*\\.\\s*" : ""}`;
-  return new RegExp(`\\b${receiver}[\\s\\S]*?\\.?(?:${methodPattern})\\s*\\(`).test(statement);
+  const expressions = animated && statement.startsWith("self.play(")
+    ? splitTopLevelArguments(statement.slice(statement.indexOf("(") + 1, statement.lastIndexOf(")")))
+    : [statement];
+  return expressions.some((expression) => (
+    new RegExp(`\\b${receiver}[\\s\\S]*?\\.?(?:${methodPattern})\\s*\\(`).test(expression)
+  ));
 }
 
 function mutatesDimensions(statement: string, variable: string, animated: boolean) {
