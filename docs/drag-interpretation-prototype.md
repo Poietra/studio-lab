@@ -265,7 +265,7 @@ records one proposed meaning, its temporal domain, identities, propagation and
 conflict policy. Selection, candidate, source patch, and validation status must not
 be combined into one mutable record.
 
-Run it in the provisional Tauri shell with:
+The Tauri experiment can still run the shared renderer with:
 
 ```sh
 pnpm dev:tauri
