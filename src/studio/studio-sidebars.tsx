@@ -284,6 +284,7 @@ export function WorkspaceSidebar({
 export function StudioInspector({
   appliedProgramCount,
   className,
+  draftApplyPending,
   draftError,
   draftOperation,
   draftProgram,
@@ -304,6 +305,7 @@ export function StudioInspector({
 }: Readonly<{
   appliedProgramCount: number;
   className?: string;
+  draftApplyPending: boolean;
   draftError: string | null;
   draftOperation: EditSuggestionOperation | null;
   draftProgram: ProgramRecord | null;
@@ -339,6 +341,7 @@ export function StudioInspector({
         <DraftInspector
           applyLabel={replacingAppliedProgram ? "Replace program" : "Apply program"}
           error={draftError}
+          isApplying={draftApplyPending}
           onApply={onApplyDraft}
           onDiscard={onDiscardDraft}
           onOperationChange={onDraftOperationChange}

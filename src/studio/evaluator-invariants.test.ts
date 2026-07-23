@@ -12,8 +12,8 @@ import {
   type CanonicalEditProgram,
 } from "./operations";
 import { validateAndScheduleProgram } from "./program-validation";
-import { normalizePositionSamples } from "./property-sampling";
-import { createDirectManipulationMotionProgram } from "./suggestion-program";
+import { normalizePositionSamples, normalizeScaleSamples } from "./property-sampling";
+import { createDirectManipulationMotionProgram, canonicalizeSuggestionProgram } from "./suggestion-program";
 
 function programWith(
   operations: readonly CanonicalEditOperation[],
@@ -181,6 +181,242 @@ class Moving(Scene):
     });
   });
 
+  it("sorts and rebases relative scale samples around an inserted absolute scale", () => {
+    const samples = normalizeScaleSamples([
+      {
+        interval: { end: 10, start: 0 },
+        kind: "exact",
+        knowledge: { kind: "known", value: 1 },
+        provenanceId: "initial",
+        value: 1,
+      },
+      {
+        easing: "smooth",
+        from: 1,
+        interval: { end: 8, start: 7 },
+        kind: "animated",
+        knowledge: { kind: "known", value: 0.5 },
+        provenanceId: "later-source-half",
+        relative: true,
+        value: 0.5,
+      },
+      {
+        easing: "smooth",
+        from: 1,
+        interval: { end: 3, start: 2 },
+        kind: "animated",
+        knowledge: { kind: "known", value: 2 },
+        provenanceId: "earlier-source-double",
+        relative: true,
+        value: 2,
+      },
+      {
+        easing: "smooth",
+        from: 2,
+        interval: { end: 6, start: 5 },
+        kind: "animated",
+        operationId: "magic-scale",
+        provenanceId: "magic-scale/provenance",
+        value: 3,
+      },
+    ]);
+
+    expect(samples.map((sample) => sample.provenanceId)).toEqual([
+      "initial",
+      "earlier-source-double",
+      "magic-scale/provenance",
+      "later-source-half",
+    ]);
+    expect(samples.at(-1)).toMatchObject({ from: 3, value: 1.5 });
+  });
+
+  it("previews source scales before and after Magic scale with Manim's multiplicative semantics", () => {
+    const source = `from manim import *
+
+class Scaling(Scene):
+    def construct(self):
+        equation = MathTex("x")
+        self.add(equation)
+        self.play(equation.animate.scale(2), run_time=1)
+        self.wait(4)
+        # poietra:anchor 5.000
+        self.wait(1)
+        self.play(equation.animate.scale(0.5), run_time=1)
+        self.wait(1)
+`;
+    const imported = importManimScene(source, "scaling.py", "Scaling");
+    expect(imported).not.toBeNull();
+    if (!imported) return;
+    const entityId = "source:scaling.py#Scaling:equation";
+    const validation = canonicalizeSuggestionProgram(
+      {
+        anchor: { kind: "playhead", referenceSeconds: 5 },
+        easing: "smooth",
+        end: 6,
+        factor: 1.5,
+        kind: "scale-objects",
+        start: 5,
+        targetObjectIds: [entityId],
+      },
+      {
+        capturedPlayhead: 5,
+        origin: "remote-model",
+        scene: imported.runtimeSceneState,
+        transactionId: "scale-between-source-scales",
+      },
+    );
+    expect(validation.kind).toBe("valid");
+    const workingState: WorkingState = {
+      appliedPrograms: [],
+      editorContext: {
+        activeSceneId: imported.sceneId,
+        playhead: 5,
+        selection: [entityId],
+        version: STUDIO_STATE_VERSION,
+        viewport: { height: 360, width: 640 },
+      },
+      runtimeSceneState: imported.runtimeSceneState,
+      sourceSnapshot: {
+        configId: "test",
+        hash: imported.sourceHash,
+        sourceId: "scaling.py",
+        version: STUDIO_STATE_VERSION,
+      },
+      stagedPrograms: [programRecord(validation.program, validation)],
+      staticSemanticState: imported.staticSemanticState,
+      version: STUDIO_STATE_VERSION,
+    };
+
+    const proposed = evaluateWorkingState(workingState);
+    const scaleSamples = proposed.evaluatedScene.propertyChannels[`${entityId}/scale`]?.samples ?? [];
+    expect(scaleSamples.map((sample) => sample.provenanceId)).toEqual([
+      expect.stringMatching(/:equation:scale$/),
+      expect.stringMatching(/:equation:scale:\d+$/),
+      expect.stringMatching(/scale-0-0\/provenance$/),
+      expect.stringMatching(/:equation:scale:\d+$/),
+    ]);
+    expect(scaleSamples.at(-1)).toMatchObject({ from: 3, relative: true, value: 1.5 });
+    expect(
+      projectProposedState(proposed, 8.5).canvas.entities.find((entity) => entity.id === entityId)?.scale,
+    ).toBeCloseTo(1.5);
+  });
+
+  it("rebases a later direct source scale after an inserted Magic scale", () => {
+    const source = `from manim import *
+
+class Scaling(Scene):
+    def construct(self):
+        equation = MathTex("x")
+        self.add(equation)
+        self.wait(2)
+        equation.scale(2)
+`;
+    const imported = importManimScene(source, "direct-scaling.py", "Scaling");
+    expect(imported).not.toBeNull();
+    if (!imported) return;
+    const entityId = "source:direct-scaling.py#Scaling:equation";
+    const sourceSamples = imported.runtimeSceneState.propertyChannels[`${entityId}/scale`]?.samples ?? [];
+    expect(sourceSamples.at(-1)).toMatchObject({ from: 1, relative: true, value: 2 });
+
+    const samples = normalizeScaleSamples([
+      ...sourceSamples,
+      {
+        easing: "smooth",
+        from: 1,
+        interval: { end: 2, start: 1 },
+        kind: "animated",
+        knowledge: { kind: "known", value: 1.5 },
+        operationId: "magic-scale",
+        provenanceId: "magic-scale/provenance",
+        value: 1.5,
+      },
+    ]);
+    expect(samples.at(-1)).toMatchObject({ from: 1.5, relative: true, value: 3 });
+  });
+
+  it("rebases relative scale Programs added in reverse source-anchor order", () => {
+    const source = `from manim import *
+
+class Scaling(Scene):
+    def construct(self):
+        equation = MathTex("x")
+        self.add(equation)
+        self.wait(5)
+        # poietra:anchor 5.000
+        self.wait(2)
+        # poietra:anchor 7.000
+        self.wait(1)
+`;
+    const imported = importManimScene(source, "scaling.py", "Scaling");
+    expect(imported).not.toBeNull();
+    if (!imported) return;
+    const entityId = "source:scaling.py#Scaling:equation";
+    const scaleProgram = (transactionId: string, anchor: number, factor: number) => {
+      const operation: CanonicalEditOperation = {
+        dependsOn: [],
+        easing: "smooth",
+        entityId,
+        from: 1,
+        id: operationId(transactionId, "scale"),
+        interval: { end: anchor + 1, start: anchor },
+        key: "scale",
+        kind: "AnimateProperty",
+        provenance: { evidence: [], origin: "remote-model" },
+        relativeFactor: factor,
+        to: factor,
+      };
+      return {
+        ...programWith([operation], transactionId, anchor),
+        loweringStatus: "supported" as const,
+      };
+    };
+    const later = scaleProgram("later-scale", 7, 2);
+    const earlier = scaleProgram("earlier-scale", 5, 1.5);
+    const workingState: WorkingState = {
+      appliedPrograms: [
+        programRecord(later, { issues: [], kind: "valid" }),
+        programRecord(earlier, { issues: [], kind: "valid" }),
+      ],
+      editorContext: {
+        activeSceneId: imported.sceneId,
+        playhead: 9,
+        selection: [entityId],
+        version: STUDIO_STATE_VERSION,
+        viewport: { height: 360, width: 640 },
+      },
+      runtimeSceneState: imported.runtimeSceneState,
+      sourceSnapshot: {
+        configId: "test",
+        hash: imported.sourceHash,
+        sourceId: "scaling.py",
+        version: STUDIO_STATE_VERSION,
+      },
+      stagedPrograms: [],
+      staticSemanticState: imported.staticSemanticState,
+      version: STUDIO_STATE_VERSION,
+    };
+
+    const proposed = evaluateWorkingState(workingState);
+    expect(proposed.programs.every((record) => record.validation.status === "valid")).toBe(true);
+    expect(
+      projectProposedState(proposed, proposed.evaluatedScene.duration).canvas.entities.find(
+        (entity) => entity.id === entityId,
+      )?.scale,
+    ).toBeCloseTo(3);
+    const samples = proposed.evaluatedScene.propertyChannels[`${entityId}/scale`]?.samples ?? [];
+    expect(
+      samples
+        .filter((sample) => sample.operationId)
+        .map((sample) => ({
+          from: sample.from,
+          value: sample.value,
+        })),
+    ).toEqual([
+      { from: 1, value: 1.5 },
+      { from: 1.5, value: 3 },
+    ]);
+  });
+
   it("rejects two operations that produce the same provisional identity", () => {
     const transactionId = "duplicate-producer";
     const entityId = provisionalEntityId(transactionId, "created");
@@ -207,6 +443,80 @@ class Moving(Scene):
       expect.objectContaining({
         code: "schema-invalid",
         message: expect.stringMatching(/produced more than once/i),
+      }),
+    );
+  });
+
+  it("rejects canonical scale on a TransformContent identity", () => {
+    const transactionId = "canonical-scale-transform";
+    const targetEntityId = provisionalEntityId(transactionId, "target");
+    const transform: CanonicalEditOperation = {
+      dependsOn: [],
+      id: operationId(transactionId, "transform"),
+      interval: { end: 9, start: 8 },
+      kind: "TransformContent",
+      provenance: { evidence: [], origin: "fixture" },
+      replacement: { displayLines: ["F = ma"], texParts: ["F", "=", "m", "a"] },
+      sourceEntityId: "equation_1",
+      strategy: "transform-matching-tex",
+      targetEntityId,
+    };
+    const scale: CanonicalEditOperation = {
+      dependsOn: [transform.id],
+      easing: "smooth",
+      entityId: targetEntityId,
+      from: 2,
+      id: operationId(transactionId, "scale"),
+      interval: { end: 10, start: 9 },
+      key: "scale",
+      kind: "AnimateProperty",
+      provenance: { evidence: [], origin: "fixture" },
+      to: 3,
+    };
+
+    const validation = validateAndScheduleProgram(programWith([transform, scale], transactionId), STUDIO_FIXTURE_SCENE);
+
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues).toContainEqual(
+      expect.objectContaining({
+        code: "lowering-unsupported",
+        message: expect.stringMatching(/Scale and TransformContent/),
+        operationId: scale.id,
+      }),
+    );
+  });
+
+  it("rejects canonical work after a Scene boundary", () => {
+    const transactionId = "canonical-boundary-first";
+    const boundary: CanonicalEditOperation = {
+      at: 8,
+      dependsOn: [],
+      destination: "next-scene",
+      id: operationId(transactionId, "boundary"),
+      interval: { end: 8, start: 8 },
+      kind: "InsertSceneBoundary",
+      provenance: { evidence: [], origin: "fixture" },
+    };
+    const motion: CanonicalEditOperation = {
+      controlOffset: { x: 0, y: 0 },
+      delta: { x: 10, y: 0 },
+      dependsOn: [boundary.id],
+      easing: "smooth",
+      id: operationId(transactionId, "motion"),
+      interval: { end: 9, start: 8 },
+      kind: "CreateMotion",
+      provenance: { evidence: [], origin: "fixture" },
+      targetEntityIds: ["equation_1"],
+    };
+
+    const validation = validateAndScheduleProgram(programWith([boundary, motion], transactionId), STUDIO_FIXTURE_SCENE);
+
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues).toContainEqual(
+      expect.objectContaining({
+        code: "lowering-unsupported",
+        message: expect.stringMatching(/Scene boundary must be terminal/),
+        operationId: motion.id,
       }),
     );
   });

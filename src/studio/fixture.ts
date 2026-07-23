@@ -63,18 +63,37 @@ export const STUDIO_FIXTURE_SCENE: RuntimeSceneState = {
     "arrow_1/position": {
       entityId: "arrow_1",
       key: "position",
-      samples: [{ interval: { end: duration, start: 0 }, kind: "exact", provenanceId: "source:arrow-position", value: { x: 320, y: 194.5 } }],
+      samples: [
+        {
+          interval: { end: duration, start: 0 },
+          kind: "exact",
+          provenanceId: "source:arrow-position",
+          value: { x: 320, y: 194.5 },
+        },
+      ],
     },
     "equation_1/content": {
       entityId: "equation_1",
       key: "content",
-      samples: [{ interval: { end: duration, start: 0 }, kind: "exact", provenanceId: "source:equation-content", value: { displayLines: ["E = mc²"], label: "equation", texParts: ["E", "=", "m", "c^2"] } }],
+      samples: [
+        {
+          interval: { end: duration, start: 0 },
+          kind: "exact",
+          provenanceId: "source:equation-content",
+          value: { displayLines: ["E = mc²"], label: "equation", texParts: ["E", "=", "m", "c^2"] },
+        },
+      ],
     },
     "equation_1/position": {
       entityId: "equation_1",
       key: "position",
       samples: [
-        { interval: { end: 4, start: 0 }, kind: "exact", provenanceId: "source:equation-position", value: { x: 320, y: 146 } },
+        {
+          interval: { end: 4, start: 0 },
+          kind: "exact",
+          provenanceId: "source:equation-position",
+          value: { x: 320, y: 146 },
+        },
         {
           control: { x: 352, y: 126 },
           easing: "smooth",
@@ -87,21 +106,40 @@ export const STUDIO_FIXTURE_SCENE: RuntimeSceneState = {
         },
       ],
     },
+    "equation_1/scale": {
+      entityId: "equation_1",
+      key: "scale",
+      samples: [
+        { interval: { end: duration, start: 0 }, kind: "exact", provenanceId: "source:equation-scale", value: 1 },
+      ],
+    },
     "label_1/position": {
       entityId: "label_1",
       key: "position",
-      samples: [{ interval: { end: 9.5, start: 0 }, kind: "exact", provenanceId: "source:label-position", value: { x: 320, y: 236 } }],
+      samples: [
+        {
+          interval: { end: 9.5, start: 0 },
+          kind: "exact",
+          provenanceId: "source:label-position",
+          value: { x: 320, y: 236 },
+        },
+      ],
     },
     "proof_box/position": {
       entityId: "proof_box",
       key: "position",
-      samples: [{ interval: { end: 10.5, start: 0 }, kind: "exact", provenanceId: "source:proof-position", value: { x: 320, y: 147 } }],
+      samples: [
+        {
+          interval: { end: 10.5, start: 0 },
+          kind: "exact",
+          provenanceId: "source:proof-position",
+          value: { x: 320, y: 147 },
+        },
+      ],
     },
   },
   provenanceGraph: {
-    records: [
-      { evidence: ["examples/relativity.py"], id: "source:fixture", origin: "import" },
-    ],
+    records: [{ evidence: ["examples/relativity.py"], id: "source:fixture", origin: "import" }],
   },
   sceneId: "GroupedEquation",
   version: STUDIO_STATE_VERSION,

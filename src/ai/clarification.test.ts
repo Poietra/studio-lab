@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  editSuggestionRequestSchema,
-  parseEditSuggestionResult,
-} from "./edit-suggestion-schema";
+import { editSuggestionRequestSchema, parseEditSuggestionResult } from "./edit-suggestion-schema";
 import { createClarificationContextFingerprint } from "./clarification";
 import { STUDIO_FIXTURE_SCENE } from "../studio/fixture";
 
@@ -28,16 +25,20 @@ describe("bounded clarification context", () => {
       playhead: 5,
       selection: ["label_1", "equation_1"],
     });
-    expect(createClarificationContextFingerprint({
-      entities,
-      playhead: 5,
-      selection: ["equation_1", "label_1"],
-    })).toBe(captured);
-    expect(createClarificationContextFingerprint({
-      entities,
-      playhead: 5.25,
-      selection: ["equation_1", "label_1"],
-    })).not.toBe(captured);
+    expect(
+      createClarificationContextFingerprint({
+        entities,
+        playhead: 5,
+        selection: ["equation_1", "label_1"],
+      }),
+    ).toBe(captured);
+    expect(
+      createClarificationContextFingerprint({
+        entities,
+        playhead: 5.25,
+        selection: ["equation_1", "label_1"],
+      }),
+    ).not.toBe(captured);
   });
 
   it("accepts structured choices from the remote endpoint", () => {
@@ -59,13 +60,19 @@ describe("bounded clarification context", () => {
         options,
         question: "Should Studio replace the selected equation or add a new one?",
       },
-      objects: [{
-        displayName: "Energy equation",
-        id: "equation_1",
-        lifetimes: [{ end: 12, start: 0 }],
-        mathTex: { displayLines: ["E = mc²"], texParts: ["E", "=", "m", "c^2"] },
-        type: "MathTex",
-      }],
+      objects: [
+        {
+          displayName: "Energy equation",
+          editCapabilities: {
+            delete: { kind: "supported" },
+            scale: { current: 1, kind: "supported" },
+          },
+          id: "equation_1",
+          lifetimes: [{ end: 12, start: 0 }],
+          mathTex: { displayLines: ["E = mc²"], texParts: ["E", "=", "m", "c^2"] },
+          type: "MathTex",
+        },
+      ],
       playhead: 5,
       prompt: "Make this Maxwell equations, either by replacing it or adding a new equation.",
       scene: { id: "scene.py#Current", name: "Current", nextSceneId: "scene.py#Next" },
@@ -97,11 +104,13 @@ describe("bounded clarification context", () => {
     const parsed = editSuggestionRequestSchema.safeParse({
       clarification: {
         answer: { kind: "text", text: "はい" },
-        history: [{
-          answer: { kind: "option", optionId: "option-2" },
-          options,
-          question: "Should Studio replace the selected equation or add a new one?",
-        }],
+        history: [
+          {
+            answer: { kind: "option", optionId: "option-2" },
+            options,
+            question: "Should Studio replace the selected equation or add a new one?",
+          },
+        ],
         options: [],
         question: "Should Studio preview the explanation after adding the equation?",
       },

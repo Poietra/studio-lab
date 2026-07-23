@@ -16,6 +16,7 @@ import { evaluateOperation, type EvaluationDraft } from "./operation-registry";
 import {
   isPointValue,
   normalizePositionSamples,
+  normalizeScaleSamples,
   samplePropertyKnowledge,
   samplePropertyValue,
 } from "./property-sampling";
@@ -98,11 +99,15 @@ export function insertSceneTime(draft: EvaluationDraft, at: number, duration: nu
   );
 }
 
-function normalizePositionChannels(draft: EvaluationDraft) {
+function normalizeRelativeChannels(draft: EvaluationDraft) {
   draft.propertyChannels = Object.fromEntries(
     Object.entries(draft.propertyChannels).map(([id, channel]) => [
       id,
-      channel.key === "position" ? { ...channel, samples: normalizePositionSamples(channel.samples) } : channel,
+      channel.key === "position"
+        ? { ...channel, samples: normalizePositionSamples(channel.samples) }
+        : channel.key === "scale"
+          ? { ...channel, samples: normalizeScaleSamples(channel.samples) }
+          : channel,
     ]),
   );
 }
@@ -111,13 +116,19 @@ export function evaluateWorkingState(workingState: WorkingState): ProposedState 
   const programs = [
     ...workingState.appliedPrograms.map((record) => ({ applied: true, record })),
     ...workingState.stagedPrograms.map((record) => ({ applied: false, record })),
-  ];
+  ]
+    .map((entry, inputIndex) => ({ ...entry, inputIndex }))
+    .sort(
+      (left, right) =>
+        left.record.program.anchor.resolvedSeconds - right.record.program.anchor.resolvedSeconds ||
+        left.inputIndex - right.inputIndex,
+    );
   const draft = cloneScene(workingState.runtimeSceneState);
-  const evaluatedPrograms: ProgramRecord[] = [];
+  const evaluatedPrograms: Array<ProgramRecord | undefined> = new Array(programs.length);
   const insertions: Array<Readonly<{ duration: number; sourceAnchor: number }>> = [];
-  for (const { applied, record } of programs) {
+  for (const { applied, inputIndex, record } of programs) {
     if (record.validation.status !== "valid") {
-      evaluatedPrograms.push(record);
+      evaluatedPrograms[inputIndex] = record;
       continue;
     }
     const sourceAnchor = record.program.anchor.resolvedSeconds;
@@ -125,7 +136,7 @@ export function evaluateWorkingState(workingState: WorkingState): ProposedState 
     const rebasedProgram = rebaseProgramTime(record.program, priorInsertionOffset);
     const validation = validateAndScheduleProgram(rebasedProgram, freezeScene(workingState.runtimeSceneState, draft));
     const evaluatedRecord = programRecord(validation.program, validation);
-    evaluatedPrograms.push(evaluatedRecord);
+    evaluatedPrograms[inputIndex] = evaluatedRecord;
     if (validation.kind !== "valid") continue;
     const timelineDelta = programTimelineDelta(validation.program);
     if (timelineDelta > 0) {
@@ -136,7 +147,7 @@ export function evaluateWorkingState(workingState: WorkingState): ProposedState 
       const operation = operationById.get(operationId);
       if (operation) evaluateOperation(draft, operation, validation.program);
     }
-    normalizePositionChannels(draft);
+    normalizeRelativeChannels(draft);
     if (applied) {
       for (const operation of validation.program.operations) {
         const entityId =
@@ -154,8 +165,8 @@ export function evaluateWorkingState(workingState: WorkingState): ProposedState 
   return {
     base: workingState,
     evaluatedScene: freezeScene(workingState.runtimeSceneState, draft),
-    issues: evaluatedPrograms.flatMap((record) => record.validation.issues),
-    programs: evaluatedPrograms,
+    issues: evaluatedPrograms.flatMap((record) => record?.validation.issues ?? []),
+    programs: evaluatedPrograms.filter((record): record is ProgramRecord => record !== undefined),
     version: STUDIO_STATE_VERSION,
   };
 }

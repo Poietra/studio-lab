@@ -16,7 +16,7 @@ import {
   renderProgramBatchId,
   renderRequestPrograms,
 } from "../src/render-pipeline/contracts";
-import { lowerCanonicalProgramBatchSource } from "../src/render-pipeline/source-lowering";
+import { lowerCanonicalProgramBatchSource, ProgramLoweringError } from "../src/render-pipeline/source-lowering";
 import { evaluateWorkingState, programRecord } from "../src/studio/evaluator";
 import { STUDIO_STATE_VERSION } from "../src/studio/model";
 import { HttpError } from "./http/json";
@@ -713,16 +713,22 @@ export class ManimRenderManager {
     } else if (renderRequest.destination) {
       throw new HttpError("A render without a Scene boundary must not include a destination Scene.", 400);
     }
-    const lowered = lowerCanonicalProgramBatchSource(
-      originalSource,
-      renderRequest,
-      validatedPrograms.map((program, index) => ({
-        program,
-        sourceAnchor: orderedPrograms[index].sourceAnchor,
-      })),
-      this.frame,
-      incoming,
-    );
+    let lowered;
+    try {
+      lowered = lowerCanonicalProgramBatchSource(
+        originalSource,
+        renderRequest,
+        validatedPrograms.map((program, index) => ({
+          program,
+          sourceAnchor: orderedPrograms[index].sourceAnchor,
+        })),
+        this.frame,
+        incoming,
+      );
+    } catch (error) {
+      if (error instanceof ProgramLoweringError) throw new HttpError(error.message, 400);
+      throw error;
+    }
     throwIfAborted(signal);
     return { lowered, renderRequest, sourceSnapshot };
   }

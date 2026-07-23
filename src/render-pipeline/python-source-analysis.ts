@@ -22,7 +22,9 @@ export type PythonSourceAnalysis = Readonly<{
   valid: boolean;
 }>;
 
-type StringDelimiter = "\"" | "'" | "\"\"\"" | "'''";
+type StringDelimiter = '"' | "'" | '"""' | "'''";
+
+const PYTHON_STRING_PREFIXES = new Set(["b", "br", "f", "fr", "r", "rb", "rf", "u"]);
 
 function indentationWidth(line: string) {
   let width = 0;
@@ -52,8 +54,20 @@ function isEscaped(line: string, index: number) {
   return backslashes % 2 === 1;
 }
 
-function isSingleQuote(delimiter: StringDelimiter): delimiter is "\"" | "'" {
+function isSingleQuote(delimiter: StringDelimiter): delimiter is '"' | "'" {
   return delimiter.length === 1;
+}
+
+function stringPrefixStart(line: string, quoteIndex: number) {
+  for (const length of [2, 1]) {
+    const start = quoteIndex - length;
+    if (start < 0) continue;
+    const prefix = line.slice(start, quoteIndex);
+    if (!PYTHON_STRING_PREFIXES.has(prefix.toLowerCase())) continue;
+    const preceding = line[start - 1];
+    if (preceding === undefined || !/[A-Za-z0-9_]/.test(preceding)) return start;
+  }
+  return quoteIndex;
 }
 
 /**
@@ -98,9 +112,11 @@ export function analyzePythonSource(source: string): PythonSourceAnalysis {
         comment = { column: index, text: raw.slice(index) };
         break;
       }
-      if (character === "\"" || character === "'") {
+      if (character === '"' || character === "'") {
+        const prefixStart = stringPrefixStart(raw, index);
+        for (let cursor = prefixStart; cursor < index; cursor += 1) code[cursor] = " ";
         const triple = raw.slice(index, index + 3) === character.repeat(3);
-        delimiter = triple ? character.repeat(3) as StringDelimiter : character;
+        delimiter = triple ? (character.repeat(3) as StringDelimiter) : character;
         hasSignificantToken = true;
         index += delimiter.length;
         continue;
@@ -132,9 +148,7 @@ export function analyzePythonSource(source: string): PythonSourceAnalysis {
     }
 
     const codeText = code.join("");
-    explicitContinuation = delimiter === null
-      && bracketStack.length === 0
-      && /\\\s*$/.test(codeText);
+    explicitContinuation = delimiter === null && bracketStack.length === 0 && /\\\s*$/.test(codeText);
     lines.push({
       bracketDepthAfter: bracketStack.length,
       bracketDepthBefore,
@@ -155,17 +169,18 @@ export function analyzePythonSource(source: string): PythonSourceAnalysis {
 }
 
 export function isPythonStatementStart(line: PythonSourceLine) {
-  return line.bracketDepthBefore === 0
-    && !line.continuedFromPrevious
-    && !line.startsInString
-    && line.hasSignificantToken;
+  return (
+    line.bracketDepthBefore === 0 && !line.continuedFromPrevious && !line.startsInString && line.hasSignificantToken
+  );
 }
 
 export function isStandalonePythonComment(line: PythonSourceLine) {
-  return line.comment !== null
-    && line.bracketDepthBefore === 0
-    && !line.continuedFromPrevious
-    && !line.startsInString
-    && !line.hasSignificantToken
-    && line.code.trim().length === 0;
+  return (
+    line.comment !== null &&
+    line.bracketDepthBefore === 0 &&
+    !line.continuedFromPrevious &&
+    !line.startsInString &&
+    !line.hasSignificantToken &&
+    line.code.trim().length === 0
+  );
 }

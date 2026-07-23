@@ -12,6 +12,7 @@ import type {
   SceneConstraint,
   TimelineEvent,
 } from "./model";
+import { exactEntityScaleAt, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./magic-edit-capabilities";
 import type { CanonicalEditOperation, CanonicalEditProgram, ChannelAccess, ProgramValidationIssue } from "./operations";
 import { insertedProgramDuration } from "./program-composition";
 import { isPointValue, samplePropertyValue } from "./property-sampling";
@@ -58,6 +59,7 @@ export const canonicalOperationSchema = z.discriminatedUnion("kind", [
     from: z.union([pointSchema, z.number()]).optional(),
     key: z.enum(["appearance", "position", "rotation", "scale"]),
     kind: z.literal("AnimateProperty"),
+    relativeFactor: z.number().positive().optional(),
     to: z.union([pointSchema, z.number()]),
   }),
   baseSchema.extend({
@@ -577,8 +579,16 @@ export const OPERATION_REGISTRY = {
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
       const sampledFrom = sampleChannel(draft, operation.entityId, operation.key, operation.interval.start);
-      const from =
-        operation.from ?? (isPointValue(sampledFrom) || typeof sampledFrom === "number" ? sampledFrom : undefined);
+      const relativeScale =
+        operation.key === "scale" &&
+        operation.relativeFactor !== undefined &&
+        typeof sampledFrom === "number" &&
+        Number.isFinite(sampledFrom) &&
+        sampledFrom > 0;
+      const from = relativeScale
+        ? sampledFrom
+        : (operation.from ?? (isPointValue(sampledFrom) || typeof sampledFrom === "number" ? sampledFrom : undefined));
+      const value = relativeScale ? sampledFrom * operation.relativeFactor! : operation.to;
       appendSample(draft, operation.entityId, operation.key, {
         control: operation.control,
         easing: operation.easing,
@@ -587,14 +597,62 @@ export const OPERATION_REGISTRY = {
         kind: "animated",
         operationId: operation.id,
         provenanceId: `${operation.id}/provenance`,
-        value: operation.to,
+        ...(relativeScale ? { relative: true } : {}),
+        value,
       });
     },
     execution: animatePropertyExecution,
     lifetimeRequirement: "existing-at-start",
     projection: allEntityProjections,
     targetRequirement: "entity",
-    validate: (operation, scene) => entityIssues([operation.entityId], operation, scene),
+    validate: (operation, scene) => {
+      const issues = entityIssues([operation.entityId], operation, scene);
+      if (operation.relativeFactor === undefined) return issues;
+      if (
+        operation.key !== "scale" ||
+        typeof operation.from !== "number" ||
+        typeof operation.to !== "number" ||
+        !Number.isFinite(operation.relativeFactor) ||
+        operation.relativeFactor <= 0 ||
+        !Number.isFinite(operation.from) ||
+        operation.from <= 0 ||
+        !Number.isFinite(operation.to) ||
+        operation.to <= 0 ||
+        Math.abs(operation.to / operation.from - operation.relativeFactor) >= 0.000001
+      ) {
+        issues.push({
+          code: "schema-invalid",
+          field: "relativeFactor",
+          message: "A relative scale requires a finite positive factor matching its captured from/to pair.",
+          operationId: operation.id,
+          severity: "error",
+        });
+        return issues;
+      }
+      const entity = scene.objectGraph.entities[operation.entityId];
+      if (entity) {
+        const scale = exactEntityScaleAt(scene, entity, operation.interval.start);
+        const targetScale = scale.kind === "known" ? scale.value * operation.relativeFactor : Number.NaN;
+        if (
+          scale.kind !== "known" ||
+          !Number.isFinite(targetScale) ||
+          targetScale < MIN_ENTITY_SCALE ||
+          targetScale > MAX_ENTITY_SCALE
+        ) {
+          issues.push({
+            code: "lowering-unsupported",
+            field: "relativeFactor",
+            message:
+              scale.kind === "unknown"
+                ? `Relative scale cannot resolve an exact source value: ${scale.reason}`
+                : `Relative scale must resolve between ${MIN_ENTITY_SCALE}x and ${MAX_ENTITY_SCALE}x; it resolves to ${targetScale}x.`,
+            operationId: operation.id,
+            severity: "error",
+          });
+        }
+      }
+      return issues;
+    },
   } satisfies Capability<"AnimateProperty">,
   CreateMotion: {
     access: (operation) => ({

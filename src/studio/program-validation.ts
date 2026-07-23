@@ -1,4 +1,5 @@
 import type { MotionEasing, RuntimeSceneState } from "./model";
+import { exactEntityScaleAt } from "./magic-edit-capabilities";
 import {
   channelKey,
   type CanonicalEditOperation,
@@ -12,6 +13,7 @@ import {
   programExecutionCapabilities,
   validateOperation,
 } from "./operation-registry";
+import { scaleTransformViolation, sceneBoundaryViolation } from "./source-lowering-invariants";
 
 const EPSILON = 0.001;
 
@@ -153,6 +155,29 @@ export function validateAndScheduleProgram(
   }
   for (const operation of input.operations) issues.push(...validateOperation(operation, scene));
 
+  const transformScale = scaleTransformViolation(input.operations);
+  if (transformScale) {
+    issues.push({
+      code: "lowering-unsupported",
+      field: "operations",
+      message:
+        "Scale and TransformContent cannot target the same logical object because source lowering cannot preserve the replacement's exact scale.",
+      operationId: transformScale.scaleOperationId,
+      severity: "error",
+    });
+  }
+  const boundary = sceneBoundaryViolation(input.operations);
+  if (boundary) {
+    issues.push({
+      code: "lowering-unsupported",
+      field: "operations",
+      message:
+        "A Scene boundary must be terminal; only its transition reveal may execute after ownership transfers to the next Scene.",
+      operationId: boundary.operationId,
+      severity: "error",
+    });
+  }
+
   const produced = producedEntityIds(input);
   const producerIds = new Set<string>();
   for (const operation of input.operations) {
@@ -236,6 +261,21 @@ export function validateAndScheduleProgram(
           operationId: operation.id,
           severity: "error",
         });
+      }
+      if (source) {
+        const scale = exactEntityScaleAt(scene, source, operation.interval.start);
+        if (scale.kind !== "known" || !Number.isFinite(scale.value) || Math.abs(scale.value - 1) >= EPSILON) {
+          issues.push({
+            code: "lowering-unsupported",
+            field: "sourceEntityId",
+            message:
+              scale.kind === "unknown"
+                ? `TransformContent cannot verify the exact 1x source scale for ${operation.sourceEntityId}: ${scale.reason}`
+                : `TransformContent requires ${operation.sourceEntityId} to have an effective 1x scale; the source is ${scale.value}x.`,
+            operationId: operation.id,
+            severity: "error",
+          });
+        }
       }
     }
   }

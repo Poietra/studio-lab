@@ -12,6 +12,8 @@ type ExplanationStep = Extract<EditProgramStep, { kind: "create-explanation" }>;
 type EquationStep = Extract<EditProgramStep, { kind: "create-equation" }>;
 type ExplainedEquationStep = Extract<EditProgramStep, { kind: "create-explained-equation" }>;
 type SceneTransitionStep = Extract<EditProgramStep, { kind: "create-scene-transition" }>;
+type ScaleStep = Extract<EditProgramStep, { kind: "scale-objects" }>;
+type DeleteStep = Extract<EditProgramStep, { kind: "delete-objects" }>;
 
 type ProgramObject<TId extends string> = {
   id: TId;
@@ -90,6 +92,15 @@ function lifetimeAt<TId extends string>(object: ProgramObject<TId>, time: number
   return object.lifetimes.find((interval) => time >= interval.start && time < interval.end) ?? null;
 }
 
+function stepTargetIds(step: EditProgramStep): readonly string[] {
+  if (step.kind === "create-motion" || step.kind === "scale-objects" || step.kind === "delete-objects") {
+    return step.targetObjectIds;
+  }
+  if (step.kind === "create-transform") return [step.sourceObjectId];
+  if (step.kind === "create-explanation") return [step.targetObjectId];
+  return [];
+}
+
 export function validateEditProgram<TId extends string>(
   operation: EditProgramSuggestion,
   context: EditProgramValidationContext<TId>,
@@ -136,6 +147,9 @@ export function validateEditProgram<TId extends string>(
     null;
   const sceneTransitionStep =
     operation.operations.find((step): step is SceneTransitionStep => step.kind === "create-scene-transition") ?? null;
+  const sceneTransitionIndex = sceneTransitionStep ? operation.operations.indexOf(sceneTransitionStep) : -1;
+  const scaleStep = operation.operations.find((step): step is ScaleStep => step.kind === "scale-objects") ?? null;
+  const deleteStep = operation.operations.find((step): step is DeleteStep => step.kind === "delete-objects") ?? null;
   const motionCandidates = motionSteps.map(({ index, step }) => ({
     index,
     step,
@@ -150,6 +164,16 @@ export function validateEditProgram<TId extends string>(
     target: normalizeMathTexTarget(step.target),
   }));
   const explanationTarget = explanationStep ? (objectsById.get(explanationStep.targetObjectId) ?? null) : null;
+  const scaleTargets = scaleStep
+    ? scaleStep.targetObjectIds
+        .map((id) => objectsById.get(id))
+        .filter((object): object is ProgramObject<TId> => object !== undefined && selectedIds.has(object.id))
+    : [];
+  const deleteTargets = deleteStep
+    ? deleteStep.targetObjectIds
+        .map((id) => objectsById.get(id))
+        .filter((object): object is ProgramObject<TId> => object !== undefined && selectedIds.has(object.id))
+    : [];
   const explanationText = explanationStep?.text.trim().slice(0, 240) ?? "";
   const normalizedEquationTarget = equationStep ? normalizeMathTexTarget(equationStep.target) : null;
   const normalizedExplainedEquationTarget = explainedEquationStep
@@ -181,6 +205,16 @@ export function validateEditProgram<TId extends string>(
   const explainedEquationIsValid =
     !explainedEquationStep || (normalizedExplainedEquationTarget !== null && explainedEquationText.length > 0);
   const sceneTransitionIsValid = !sceneTransitionStep || sceneTransitionStep.end - sceneTransitionStep.start >= 0.4;
+  const scaleIsValid =
+    !scaleStep ||
+    (scaleTargets.length === scaleStep.targetObjectIds.length &&
+      scaleTargets.every((object) => (lifetimeAt(object, scaleStep.start)?.end ?? scaleStep.start) >= scaleStep.end));
+  const deleteIsValid =
+    !deleteStep ||
+    (deleteTargets.length === deleteStep.targetObjectIds.length &&
+      deleteTargets.every(
+        (object) => (lifetimeAt(object, deleteStep.start)?.end ?? deleteStep.start) >= deleteStep.end,
+      ));
   const equationCreationCount = Number(equationStep !== null) + Number(explainedEquationStep !== null);
   const motionTargetIds = [
     ...new Set<TId>(motionCandidates.flatMap(({ targets }) => targets.map((object) => object.id))),
@@ -191,6 +225,31 @@ export function validateEditProgram<TId extends string>(
     motionSteps.length > 0 &&
     (transformSourceIds.some((sourceId) => motionTargetIds.includes(sourceId)) ||
       (explanationTarget !== null && motionTargetIds.includes(explanationTarget.id)));
+  const parallelScaleOrDeleteConflict =
+    operation.execution === "parallel" &&
+    operation.operations.some((step, index) => {
+      if (step.kind !== "scale-objects" && step.kind !== "delete-objects") return false;
+      const targets = new Set(stepTargetIds(step));
+      return operation.operations.some(
+        (other, otherIndex) => otherIndex !== index && stepTargetIds(other).some((id) => targets.has(id)),
+      );
+    });
+  const parallelSceneTransitionObjectEdit =
+    operation.execution === "parallel" && sceneTransitionStep !== null && (scaleStep !== null || deleteStep !== null);
+  const sceneTransitionIsNotFinal =
+    sceneTransitionIndex >= 0 && sceneTransitionIndex !== operation.operations.length - 1;
+  const scaleTransformConflict = transformSteps.some(({ step }) =>
+    operation.operations.some(
+      (candidate) => candidate.kind === "scale-objects" && candidate.targetObjectIds.includes(step.sourceObjectId),
+    ),
+  );
+  const editAfterDelete =
+    operation.execution === "sequence" &&
+    operation.operations.some((step, index) => {
+      if (step.kind !== "delete-objects") return false;
+      const targets = new Set(step.targetObjectIds);
+      return operation.operations.slice(index + 1).some((later) => stepTargetIds(later).some((id) => targets.has(id)));
+    });
   if (
     !motionsAreValid ||
     !transformsAreValid ||
@@ -198,17 +257,34 @@ export function validateEditProgram<TId extends string>(
     !equationIsValid ||
     !explainedEquationIsValid ||
     !sceneTransitionIsValid ||
+    !scaleIsValid ||
+    !deleteIsValid ||
     equationCreationCount > 1 ||
-    parallelWriteConflict
+    parallelWriteConflict ||
+    parallelScaleOrDeleteConflict ||
+    parallelSceneTransitionObjectEdit ||
+    sceneTransitionIsNotFinal ||
+    scaleTransformConflict ||
+    editAfterDelete
   ) {
     return {
       kind: "invalid",
       message:
         equationCreationCount > 1
           ? "This Edit Program contains two equation-creation macros. Keep one equation identity and combine its explanation inside create-explained-equation."
-          : parallelWriteConflict
-            ? "This Edit Program moves and rewrites or observes the same object in parallel. Express those steps in sequence so Studio can preserve the dependency."
-            : "The Edit Program contains an invalid, unselected, or unavailable target.",
+          : sceneTransitionIsNotFinal
+            ? "create-scene-transition must be the final Edit Program step because its Scene boundary transfers ownership to the next Scene."
+            : scaleTransformConflict
+              ? "Scaling and transforming the same logical object in one Edit Program is not supported because Studio cannot preserve the target object's exact source scale."
+              : parallelWriteConflict
+                ? "This Edit Program moves and rewrites or observes the same object in parallel. Express those steps in sequence so Studio can preserve the dependency."
+                : parallelScaleOrDeleteConflict
+                  ? "Scaling or deleting an object cannot run in parallel with another edit on that object. Express those steps in sequence."
+                  : parallelSceneTransitionObjectEdit
+                    ? "Scale or deletion must run in sequence with a Scene transition so Studio can lower one truthful source timeline."
+                    : editAfterDelete
+                      ? "delete-objects must be the last step that targets an object. Move the later edit before deletion."
+                      : "The Edit Program contains an invalid, unselected, or unavailable target.",
     };
   }
 
@@ -243,6 +319,18 @@ export function validateEditProgram<TId extends string>(
           targetObjectId: explanationTarget.id,
         }
       : null;
+  const normalizedScale = scaleStep
+    ? {
+        ...scaleStep,
+        targetObjectIds: scaleTargets.map((object) => object.id),
+      }
+    : null;
+  const normalizedDelete = deleteStep
+    ? {
+        ...deleteStep,
+        targetObjectIds: deleteTargets.map((object) => object.id),
+      }
+    : null;
   const normalizedEquation =
     equationStep && normalizedEquationTarget ? { ...equationStep, target: normalizedEquationTarget } : null;
   const normalizedExplainedEquation =
@@ -264,6 +352,8 @@ export function validateEditProgram<TId extends string>(
     if (step.kind === "create-explained-equation" && normalizedExplainedEquation) {
       return normalizedExplainedEquation;
     }
+    if (step.kind === "scale-objects" && normalizedScale) return normalizedScale;
+    if (step.kind === "delete-objects" && normalizedDelete) return normalizedDelete;
     return step;
   });
   const touchedObjectIds = [
@@ -271,6 +361,8 @@ export function validateEditProgram<TId extends string>(
       ...motionTargetIds,
       ...normalizedTransforms.map((transform) => transform.sourceObjectId),
       ...(normalizedExplanation ? [normalizedExplanation.targetObjectId] : []),
+      ...(normalizedScale?.targetObjectIds ?? []),
+      ...(normalizedDelete?.targetObjectIds ?? []),
     ]),
   ];
   return {
