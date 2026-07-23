@@ -2,13 +2,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ProgramRenderRequest } from "./contracts";
 import {
+  createManimProject,
   exportManimSource,
+  exportOriginalManimSource,
   isMissingManimSession,
   loadManimRender,
   loadManimProjects,
   loadManimWorkspace,
+  renameManimProject,
   runManimRenderAction,
   startManimRender,
+  unregisterManimProject,
 } from "./client";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -108,13 +112,73 @@ describe("Manim API client contracts", () => {
   it("loads only opaque project descriptors", async () => {
     const projects = {
       defaultProjectId: "project-a",
-      projects: [{ id: "project-a", name: "Demo" }],
+      projects: [{ id: "project-a", kind: "existing", name: "Demo" }],
     };
     const fetch = vi.fn(async () => new Response(JSON.stringify(projects), { status: 200 }));
     vi.stubGlobal("fetch", fetch);
 
     await expect(loadManimProjects()).resolves.toEqual(projects);
     expect(fetch).toHaveBeenCalledWith("/api/manim/projects", { signal: undefined });
+  });
+
+  it("creates, renames, and unregisters workspaces through opaque project responses", async () => {
+    const existingCreated = {
+      catalog: {
+        defaultProjectId: "project-a",
+        projects: [{ id: "project-a", kind: "existing", name: "Demo" }],
+      },
+      project: { id: "project-a", kind: "existing", name: "Demo" },
+    };
+    const managedCreated = {
+      catalog: {
+        defaultProjectId: "project-a",
+        projects: [{ id: "project-a", kind: "managed", name: "Demo" }],
+      },
+      project: { id: "project-a", kind: "managed", name: "Demo" },
+    };
+    const renamed = {
+      ...existingCreated,
+      catalog: {
+        defaultProjectId: "project-a",
+        projects: [{ id: "project-a", kind: "existing", name: "Renamed" }],
+      },
+      project: { id: "project-a", kind: "existing", name: "Renamed" },
+    };
+    const removed = { catalog: { defaultProjectId: null, projects: [] }, project: null };
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(managedCreated), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(existingCreated), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(renamed), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(removed), { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(createManimProject({ kind: "managed", name: " Demo " })).resolves.toEqual(managedCreated);
+    await expect(createManimProject({ kind: "existing", name: " Demo ", root: " /tmp/demo " })).resolves.toEqual(existingCreated);
+    await expect(renameManimProject("project-a", " Renamed ")).resolves.toEqual(renamed);
+    await expect(unregisterManimProject("project-a")).resolves.toEqual(removed);
+
+    expect(fetch).toHaveBeenNthCalledWith(1, "/api/manim/projects", {
+      body: JSON.stringify({ kind: "managed", name: "Demo" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+      signal: undefined,
+    });
+    expect(fetch).toHaveBeenNthCalledWith(2, "/api/manim/projects", {
+      body: JSON.stringify({ kind: "existing", name: "Demo", root: "/tmp/demo" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+      signal: undefined,
+    });
+    expect(fetch).toHaveBeenNthCalledWith(3, "/api/manim/projects/project-a", {
+      body: JSON.stringify({ name: "Renamed" }),
+      headers: { "content-type": "application/json" },
+      method: "PATCH",
+      signal: undefined,
+    });
+    expect(fetch).toHaveBeenNthCalledWith(4, "/api/manim/projects/project-a", {
+      method: "DELETE",
+      signal: undefined,
+    });
   });
 
   it("loads a selected project workspace without sending a filesystem path", async () => {
@@ -233,6 +297,37 @@ describe("Manim API client contracts", () => {
 
     await expect(exportManimSource(renderRequest())).resolves.toEqual({
       fileName: "scene.poietra.py",
+      projectId: "project-a",
+      source: "from manim import *\n",
+    });
+  });
+
+  it("downloads an unchanged Python source when there is no EditProgram", async () => {
+    const fetch = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe("/api/manim/projects/project-a/export");
+      expect(init.method).toBe("POST");
+      expect(JSON.parse(String(init.body))).toEqual({
+        projectId: "project-a",
+        sourceHash: "a".repeat(64),
+        sourcePath: "nested/scene.py",
+      });
+      return new Response("from manim import *\n", {
+        headers: {
+          "content-disposition": "attachment; filename=\"scene.py\"",
+          "content-type": "text/x-python; charset=utf-8",
+          "x-poietra-project-id": "project-a",
+        },
+        status: 200,
+      });
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(exportOriginalManimSource({
+      projectId: "project-a",
+      sourceHash: "a".repeat(64),
+      sourcePath: "nested/scene.py",
+    })).resolves.toEqual({
+      fileName: "scene.py",
       projectId: "project-a",
       source: "from manim import *\n",
     });

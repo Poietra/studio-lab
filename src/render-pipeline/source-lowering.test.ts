@@ -141,6 +141,158 @@ describe("Canonical EditProgram source lowering", () => {
     ]?.samples.at(-1)?.interval).toEqual({ end: 8.5, start: 7 });
   });
 
+  it("lowers an immediate absolute scale as a relative Manim factor and reimports its absolute value", () => {
+    const scale: CanonicalEditOperation = {
+      ...operationBase("scale-now", 7),
+      easing: "smooth",
+      entityId: "equation_1",
+      from: 1.25,
+      key: "scale",
+      kind: "AnimateProperty",
+      to: 2,
+    };
+
+    const lowered = lowerCanonicalProgramSource(
+      source,
+      request(canonicalProgram([scale], "scale-now")),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
+    const samples = imported?.runtimeSceneState.propertyChannels[
+      "source:examples/relativity.py#GroupedEquation:equation/scale"
+    ]?.samples ?? [];
+
+    expect(lowered.insertedCode).toContain(
+      '# poietra:scale {"kind":"exact","value":2,"variable":"equation","version":1}',
+    );
+    expect(lowered.insertedCode).toContain("equation.scale(1.6)");
+    expect(lowered.insertedCode).not.toContain("self.play(");
+    expect(samples.at(-1)).toMatchObject({
+      interval: { end: 8, start: 7 },
+      kind: "exact",
+      value: 2,
+    });
+  });
+
+  it("lowers an animated absolute scale as a relative Manim factor and reimports its animation", () => {
+    const scale: CanonicalEditOperation = {
+      ...operationBase("scale-over-time", 7, 8.5),
+      easing: "smooth",
+      entityId: "equation_1",
+      from: 1.5,
+      key: "scale",
+      kind: "AnimateProperty",
+      to: 3,
+    };
+
+    const lowered = lowerCanonicalProgramSource(
+      source,
+      request(canonicalProgram([scale], "scale-over-time")),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
+    const sample = imported?.runtimeSceneState.propertyChannels[
+      "source:examples/relativity.py#GroupedEquation:equation/scale"
+    ]?.samples.at(-1);
+
+    expect(lowered.insertedCode).toContain(
+      '# poietra:scale {"kind":"animated","scales":[{"from":1.5,"to":3,"variable":"equation"}],"version":1}',
+    );
+    expect(lowered.insertedCode).toContain("equation.animate.scale(2)");
+    expect(lowered.insertedCode).toContain("run_time=1.5");
+    expect(sample).toMatchObject({
+      easing: "smooth",
+      from: 1.5,
+      interval: { end: 8.5, start: 7 },
+      kind: "animated",
+      value: 3,
+    });
+  });
+
+  it("reimports adjacent motion and scale markers from one parallel play", () => {
+    const scale: CanonicalEditOperation = {
+      ...operationBase("scale-with-motion", 7, 8.5),
+      easing: "smooth",
+      entityId: "equation_1",
+      from: 1,
+      key: "scale",
+      kind: "AnimateProperty",
+      to: 1.5,
+    };
+
+    const lowered = lowerCanonicalProgramSource(
+      source,
+      request(canonicalProgram([motionOperation(), scale], "motion-and-scale")),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
+    const entityId = "source:examples/relativity.py#GroupedEquation:equation";
+    const motionSample = imported?.runtimeSceneState.propertyChannels[`${entityId}/position`]
+      ?.samples.at(-1);
+    const scaleSample = imported?.runtimeSceneState.propertyChannels[`${entityId}/scale`]
+      ?.samples.at(-1);
+
+    expect(lowered.insertedCode.indexOf("# poietra:motion")).toBeLessThan(
+      lowered.insertedCode.indexOf("# poietra:scale"),
+    );
+    expect(motionSample).toMatchObject({
+      interval: { end: 8.5, start: 7 },
+      kind: "animated",
+    });
+    expect(scaleSample).toMatchObject({
+      from: 1,
+      interval: { end: 8.5, start: 7 },
+      kind: "animated",
+      value: 1.5,
+    });
+  });
+
+  it("rejects scale lowering without finite positive absolute endpoints", () => {
+    const scale: CanonicalEditOperation = {
+      ...operationBase("invalid-scale", 7),
+      easing: "smooth",
+      entityId: "equation_1",
+      from: 0,
+      key: "scale",
+      kind: "AnimateProperty",
+      to: 2,
+    };
+
+    expect(() => lowerCanonicalProgramSource(
+      source,
+      request(canonicalProgram([scale], "invalid-scale")),
+      { height: 8, width: 14.222 },
+      null,
+    )).toThrow(/finite positive absolute from and to/i);
+  });
+
+  it("lowers an immediate lifetime end to self.remove without a zero-duration play", () => {
+    const remove: CanonicalEditOperation = {
+      ...operationBase("trim-lifetime", 7),
+      effect: "remove",
+      entityId: "equation_1",
+      kind: "ChangePresence",
+      persistent: true,
+    };
+
+    const lowered = lowerCanonicalProgramSource(
+      roundTripSource,
+      request(canonicalProgram([remove], "trim-lifetime")),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
+
+    expect(lowered.insertedCode).toContain("self.remove(equation)");
+    expect(lowered.insertedCode).not.toContain("self.play(");
+    expect(imported?.runtimeSceneState.objectGraph.entities[
+      "source:examples/relativity.py#GroupedEquation:equation"
+    ]?.lifetime).toEqual([{ end: 7, start: 0 }]);
+  });
+
   it("advances the consumed anchor so a second commit appends in playback order", () => {
     const firstProgram = canonicalProgram([motionOperation()], "first-commit");
     const first = lowerCanonicalProgramSource(

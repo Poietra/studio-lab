@@ -25,6 +25,7 @@ export function insertedProgramDuration(program: CanonicalEditProgram) {
     operation.kind === "ChangePresence"
     || operation.kind === "CreateMotion"
     || operation.kind === "TransformContent"
+    || (operation.kind === "AnimateProperty" && operation.key === "scale")
     || (operation.kind === "InsertTimelineEvent" && operation.eventKind === "wait")
   ));
   const end = Math.max(
@@ -91,6 +92,28 @@ export function workingTimeToSourceTime(
     offset += insertion.duration;
   }
   return workingTime - offset;
+}
+
+/**
+ * Resolves the latest source-backed insertion boundary at or before a working
+ * playhead. `workingTime` deliberately points after every Program already
+ * inserted at that source anchor, which is the only truthful append position.
+ */
+export function latestSafeSourceAnchor(
+  programs: readonly CanonicalEditProgram[],
+  sourceAnchors: readonly number[],
+  workingTime: number,
+) {
+  const sourceTime = workingTimeToSourceTime(programs, workingTime);
+  const sourceAnchor = sourceAnchors
+    .filter((anchor) => Number.isFinite(anchor) && anchor <= sourceTime + ANCHOR_EPSILON)
+    .sort((left, right) => left - right)
+    .at(-1);
+  if (sourceAnchor === undefined) return null;
+  return {
+    sourceTime: sourceAnchor,
+    workingTime: sourceTimeToWorkingTime(programs, sourceAnchor),
+  } as const;
 }
 
 function shiftedInterval(interval: CanonicalEditOperation["interval"], offset: number) {

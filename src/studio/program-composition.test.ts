@@ -7,6 +7,7 @@ import type { CanonicalEditProgram } from "./operations";
 import {
   composeProgramsAtSourceAnchor,
   insertedProgramDuration,
+  latestSafeSourceAnchor,
   rebaseProgramTime,
   sourceTimeToWorkingTime,
   workingTimeToSourceTime,
@@ -67,6 +68,31 @@ function transformProgram(
 }
 
 describe("inserted Program timeline composition", () => {
+  it("counts an animated scale as inserted playback time but not an immediate scale", () => {
+    const base = motionProgram(5, "scale-duration");
+    const operation = base.operations[0]!;
+    const animated: CanonicalEditProgram = {
+      ...base,
+      operations: [{
+        ...operation,
+        easing: "smooth",
+        entityId: "equation_1",
+        from: 1,
+        interval: { end: 6.5, start: 5 },
+        key: "scale",
+        kind: "AnimateProperty",
+        to: 1.5,
+      }],
+    };
+    const immediate: CanonicalEditProgram = {
+      ...animated,
+      operations: [{ ...animated.operations[0]!, interval: { end: 5, start: 5 } }],
+    };
+
+    expect(insertedProgramDuration(animated)).toBe(1.5);
+    expect(insertedProgramDuration(immediate)).toBe(0);
+  });
+
   it("maps source and working time without applying insertion offsets twice", () => {
     const atFive = motionProgram(5, "time-map-five");
     const atSeven = motionProgram(7, "time-map-seven");
@@ -79,6 +105,26 @@ describe("inserted Program timeline composition", () => {
     expect(workingTimeToSourceTime(programs, 6.5)).toBe(5.5);
     expect(workingTimeToSourceTime(programs, 8.5)).toBe(7);
     expect(workingTimeToSourceTime(programs, 10)).toBe(8);
+  });
+
+  it("resolves manual edits to the latest prior safe anchor after existing insertions", () => {
+    const atFive = motionProgram(5, "safe-anchor-five");
+    const atSeven = motionProgram(7, "safe-anchor-seven");
+    const programs = [atFive, atSeven];
+
+    expect(latestSafeSourceAnchor(programs, [5, 7], 5.5)).toEqual({
+      sourceTime: 5,
+      workingTime: 6,
+    });
+    expect(latestSafeSourceAnchor(programs, [5, 7], 6.5)).toEqual({
+      sourceTime: 5,
+      workingTime: 6,
+    });
+    expect(latestSafeSourceAnchor(programs, [5, 7], 8.5)).toEqual({
+      sourceTime: 7,
+      workingTime: 9,
+    });
+    expect(latestSafeSourceAnchor(programs, [5, 7], 4.9)).toBeNull();
   });
 
   it("places later applied Programs after earlier Programs at the same source anchor", () => {

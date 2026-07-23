@@ -3,14 +3,29 @@ import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { programRenderRequestSchema, type ManimSourceExport } from "../src/render-pipeline/contracts";
+import {
+  createManimProjectRequestSchema,
+  originalManimSourceExportRequestSchema,
+  programRenderRequestSchema,
+  renameManimProjectRequestSchema,
+  type ManimSourceExport,
+} from "../src/render-pipeline/contracts";
 import { HttpError, readJsonBody, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import type { ManimProjectRegistry, ManimRenderManager } from "./manim-render-pipeline";
+import { EMPTY_MANIM_THUMBNAIL_SVG } from "./manim-thumbnail";
 
 const RENDER_ROUTE = /^\/api\/manim\/renders\/([0-9a-f-]+)(?:\/(cancel|commit|discard|undo|video))?$/;
-const PROJECT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/(workspace|renders|export)$/;
+const PROJECT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/(workspace|renders|export|thumbnail)$/;
+const PROJECT_ITEM_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})$/;
 type ManimApi = ManimRenderManager | ManimProjectRegistry;
+
+function mutableProjectRegistry(manager: ManimApi) {
+  if (!("createProject" in manager)) {
+    throw new HttpError("Workspace registry mutations are not configured.", 405);
+  }
+  return manager;
+}
 
 function pipeVideo(response: ServerResponse, path: string, range?: Readonly<{ end: number; start: number }>) {
   const stream = createReadStream(path, range);
@@ -107,6 +122,22 @@ function sendPythonAttachment(
   return true;
 }
 
+function sendThumbnailSvg(response: ServerResponse, status: 200 | 404, svg: string) {
+  if (response.destroyed || response.writableEnded) return false;
+  if (response.headersSent) {
+    response.destroy();
+    return false;
+  }
+  response.statusCode = status;
+  response.setHeader("cache-control", "no-store");
+  response.setHeader("content-length", Buffer.byteLength(svg));
+  response.setHeader("content-security-policy", "default-src 'none'; sandbox");
+  response.setHeader("content-type", "image/svg+xml; charset=utf-8");
+  response.setHeader("x-content-type-options", "nosniff");
+  response.end(svg);
+  return true;
+}
+
 function sendJsonAndWaitForFinish(response: ServerResponse, status: number, body: unknown) {
   return new Promise<boolean>((resolveDelivery, rejectDelivery) => {
     let settled = false;
@@ -140,8 +171,23 @@ async function routeManimRequest(
   signal: AbortSignal,
 ) {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
-  if (request.method === "GET" && url.pathname === "/api/manim/projects") {
-    sendJson(response, 200, manager.projects());
+  if (url.pathname === "/api/manim/projects") {
+    if (request.method === "GET") {
+      sendJson(response, 200, manager.projects());
+      return;
+    }
+    if (request.method !== "POST") throw new HttpError("Method not allowed.", 405);
+    const parsed = createManimProjectRequestSchema.safeParse(await readJsonBody(request));
+    if (!parsed.success) throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid workspace registration.", 400);
+    signal.throwIfAborted();
+    const registry = mutableProjectRegistry(manager);
+    sendJson(
+      response,
+      201,
+      parsed.data.kind === "managed"
+        ? registry.createManagedProject(parsed.data.name)
+        : registry.createProject(parsed.data.name, parsed.data.root),
+    );
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/manim/workspace") {
@@ -162,15 +208,66 @@ async function routeManimRequest(
     }
     return;
   }
+  const projectItemMatch = url.pathname.match(PROJECT_ITEM_ROUTE);
+  if (projectItemMatch) {
+    const projectId = projectItemMatch[1]!;
+    const registry = mutableProjectRegistry(manager);
+    if (request.method === "PATCH") {
+      const parsed = renameManimProjectRequestSchema.safeParse(await readJsonBody(request));
+      if (!parsed.success) throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid workspace name.", 400);
+      signal.throwIfAborted();
+      sendJson(response, 200, registry.renameProject(projectId, parsed.data.name));
+      return;
+    }
+    if (request.method === "DELETE") {
+      signal.throwIfAborted();
+      sendJson(response, 200, await registry.unregisterProject(projectId));
+      return;
+    }
+    throw new HttpError("Method not allowed.", 405);
+  }
   const projectMatch = url.pathname.match(PROJECT_ROUTE);
   if (projectMatch) {
     const [, projectId, endpoint] = projectMatch;
+    if (request.method === "GET" && endpoint === "thumbnail") {
+      let thumbnail: string | null;
+      try {
+        thumbnail = await manager.thumbnailSvg(projectId);
+      } catch (error) {
+        if (!(error instanceof HttpError) || error.status !== 404) throw error;
+        thumbnail = null;
+      }
+      sendThumbnailSvg(response, thumbnail ? 200 : 404, thumbnail ?? EMPTY_MANIM_THUMBNAIL_SVG);
+      return;
+    }
     if (request.method === "GET" && endpoint === "workspace") {
       sendJson(response, 200, await manager.workspace(projectId));
       return;
     }
-    if (request.method !== "POST" || endpoint === "workspace") {
+    if (request.method !== "POST" || endpoint === "workspace" || endpoint === "thumbnail") {
       throw new HttpError("Method not allowed.", 405);
+    }
+    if (endpoint === "export") {
+      const body = await readJsonBody(request, 512 * 1024);
+      const programRequest = programRenderRequestSchema.safeParse(body);
+      const originalRequest = originalManimSourceExportRequestSchema.safeParse(body);
+      let exported: ManimSourceExport;
+      if (programRequest.success) {
+        if (programRequest.data.projectId !== projectId) {
+          throw new HttpError("The request project does not match the project endpoint.", 409);
+        }
+        exported = await manager.exportSource(programRequest.data, signal);
+      } else {
+        if (!originalRequest.success) {
+          throw new HttpError(originalRequest.error.issues[0]?.message ?? "Invalid Python export request.", 400);
+        }
+        if (originalRequest.data.projectId !== projectId) {
+          throw new HttpError("The request project does not match the project endpoint.", 409);
+        }
+        exported = await manager.exportOriginalSource(originalRequest.data, signal);
+      }
+      sendPythonAttachment(response, exported);
+      return;
     }
     const parsed = programRenderRequestSchema.safeParse(await readJsonBody(request, 512 * 1024));
     if (!parsed.success) {
@@ -178,10 +275,6 @@ async function routeManimRequest(
     }
     if (parsed.data.projectId !== projectId) {
       throw new HttpError("The request project does not match the project endpoint.", 409);
-    }
-    if (endpoint === "export") {
-      sendPythonAttachment(response, await manager.exportSource(parsed.data, signal));
-      return;
     }
     const started = await manager.start(parsed.data, signal);
     if (!await sendJsonAndWaitForFinish(response, 202, started)) {

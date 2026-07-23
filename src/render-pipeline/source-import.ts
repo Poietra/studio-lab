@@ -79,6 +79,7 @@ const SCENE_BOUNDARY_PATTERN = /^\s*#\s*poietra:scene-boundary\s+(.+)\s*$/;
 // Studio-emitted v1 markers are authoritative 640x360 geometry metadata, not Python facts.
 const POSITION_MARKER_PATTERN = /^\s*#\s*poietra:position(?:\s+(.*))?\s*$/;
 const MOTION_MARKER_PATTERN = /^\s*#\s*poietra:motion(?:\s+(.*))?\s*$/;
+const SCALE_MARKER_PATTERN = /^\s*#\s*poietra:scale(?:\s+(.*))?\s*$/;
 const identifierSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
 const markerPointSchema = z.object({ x: z.number().finite(), y: z.number().finite() }).strict();
 const positionMarkerSchema = z.discriminatedUnion("kind", [
@@ -93,6 +94,24 @@ const motionMarkerSchema = z.object({
   }).strict()).min(1).max(128),
   version: z.literal(1),
 }).strict();
+const positiveScaleSchema = z.number().finite().positive();
+const scaleMarkerSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("exact"),
+    value: positiveScaleSchema,
+    variable: identifierSchema,
+    version: z.literal(1),
+  }).strict(),
+  z.object({
+    kind: z.literal("animated"),
+    scales: z.array(z.object({
+      from: positiveScaleSchema,
+      to: positiveScaleSchema,
+      variable: identifierSchema,
+    }).strict()).min(1).max(128),
+    version: z.literal(1),
+  }).strict(),
+]);
 
 function hashSource(source: string) {
   return createHash("sha256").update(source).digest("hex");
@@ -327,13 +346,19 @@ function markerBefore(
   statementIndex: number,
   pattern: RegExp,
 ): unknown {
-  const match = statements[statementIndex - 1]?.text.match(pattern);
-  if (!match) return undefined;
-  try {
-    return JSON.parse(match[1] ?? "") as unknown;
-  } catch {
-    return null;
+  for (let index = statementIndex - 1; index >= 0; index -= 1) {
+    const text = statements[index]?.text ?? "";
+    const match = text.match(pattern);
+    if (match) {
+      try {
+        return JSON.parse(match[1] ?? "") as unknown;
+      } catch {
+        return null;
+      }
+    }
+    if (!text.startsWith("#")) return undefined;
   }
+  return undefined;
 }
 
 function simpleShiftVector(statement: string, sourceVariable: string) {
@@ -358,12 +383,12 @@ function simpleShiftVector(statement: string, sourceVariable: string) {
   return Number.isFinite(vector.x) && Number.isFinite(vector.y) ? vector : null;
 }
 
-function appendPositionSample(
-  positionSamples: Map<string, PropertyChannelSample[]>,
+function appendChannelSample(
+  channelSamples: Map<string, PropertyChannelSample[]>,
   entityId: string,
   sample: PropertyChannelSample,
 ) {
-  const samples = positionSamples.get(entityId) ?? [];
+  const samples = channelSamples.get(entityId) ?? [];
   const previous = samples.at(-1);
   if (previous && previous.interval.end > sample.interval.start) {
     samples[samples.length - 1] = {
@@ -372,7 +397,7 @@ function appendPositionSample(
     };
   }
   samples.push(sample);
-  positionSamples.set(entityId, samples);
+  channelSamples.set(entityId, samples);
 }
 
 function shiftedPosition(
@@ -446,12 +471,19 @@ export function importManimScene(
   let insideIncomingEvents = false;
   const events: TimelineEvent[] = [];
   const positionSamples = new Map<string, PropertyChannelSample[]>();
+  const scaleSamples = new Map<string, PropertyChannelSample[]>();
   for (const entity of mutableEntities) {
     positionSamples.set(entity.id, [{
       interval: { end: Number.MAX_SAFE_INTEGER, start: 0 },
       kind: "exact",
       provenanceId: `import:${sceneId}:${entity.sourceVariable}:position`,
       value: entity.position,
+    }]);
+    scaleSamples.set(entity.id, [{
+      interval: { end: Number.MAX_SAFE_INTEGER, start: 0 },
+      kind: "exact",
+      provenanceId: `import:${sceneId}:${entity.sourceVariable}:scale`,
+      value: 1,
     }]);
   }
   for (const [statementIndex, statement] of statements.entries()) {
@@ -520,13 +552,36 @@ export function importManimScene(
           ? parsed.data.value
           : relative ? addPoint(relative.position, parsed.data.offset) : null;
         if (entity && position && Number.isFinite(position.x) && Number.isFinite(position.y)) {
-          appendPositionSample(positionSamples, entity.id, {
+          appendChannelSample(positionSamples, entity.id, {
             interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
             kind: "exact",
             provenanceId: `import:${sceneId}:${entity.sourceVariable}:position-marker:${statement.line}`,
             value: position,
           });
           entity.position = position;
+        }
+      }
+      continue;
+    }
+    const directScaleMarker = markerBefore(statements, statementIndex, SCALE_MARKER_PATTERN);
+    const directScaleVariable = statement.text.match(
+      /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*scale\s*\(\s*[0-9]+(?:\.[0-9]+)?\s*\)\s*$/s,
+    )?.[1];
+    if (directScaleMarker !== undefined && directScaleVariable) {
+      const parsed = scaleMarkerSchema.safeParse(directScaleMarker);
+      if (
+        parsed.success
+        && parsed.data.kind === "exact"
+        && parsed.data.variable === directScaleVariable
+      ) {
+        const entity = byVariable.get(parsed.data.variable);
+        if (entity) {
+          appendChannelSample(scaleSamples, entity.id, {
+            interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
+            kind: "exact",
+            provenanceId: `import:${sceneId}:${entity.sourceVariable}:scale-marker:${statement.line}`,
+            value: parsed.data.value,
+          });
         }
       }
       continue;
@@ -555,7 +610,9 @@ export function importManimScene(
     const duration = durationFrom(statement.text);
     const interval = { end: cursor + duration, start: cursor };
     const motionMarker = markerBefore(statements, statementIndex, MOTION_MARKER_PATTERN);
+    const scaleMarker = markerBefore(statements, statementIndex, SCALE_MARKER_PATTERN);
     const parsedMotion = motionMarkerSchema.safeParse(motionMarker);
+    const parsedScale = scaleMarkerSchema.safeParse(scaleMarker);
     const markedVariables = parsedMotion.success
       ? parsedMotion.data.motions.flatMap((motion) => motion.variables)
       : [];
@@ -566,6 +623,9 @@ export function importManimScene(
       /(?:^self\.play\(\s*|\n\s*)MoveAlongPath\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*CubicBezier\s*\(/g,
     )].map((match) => match[1]);
     const actualMotionVariables = [...actualShiftVariables, ...actualPathVariables];
+    const actualScaleVariables = [...statement.text.matchAll(
+      /(?:^self\.play\(\s*|\n\s*)([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*animate\s*\.\s*scale\s*\(\s*[0-9]+(?:\.[0-9]+)?\s*\)/g,
+    )].map((match) => match[1]);
     const validMarkedMotion = motionMarker !== undefined && parsedMotion.success
       && new Set(markedVariables).size === markedVariables.length
       && markedVariables.length === actualMotionVariables.length
@@ -581,6 +641,18 @@ export function importManimScene(
         }] as const)
       )))
       : new Map<string, Readonly<{ controlOffset: Point; delta: Point }>>();
+    const validMarkedScale = scaleMarker !== undefined
+      && parsedScale.success
+      && parsedScale.data.kind === "animated"
+      && new Set(parsedScale.data.scales.map((scale) => scale.variable)).size === parsedScale.data.scales.length
+      && parsedScale.data.scales.length === actualScaleVariables.length
+      && parsedScale.data.scales.every((scale) => (
+        byVariable.has(scale.variable)
+        && actualScaleVariables.includes(scale.variable)
+      ));
+    const markedScales = validMarkedScale && parsedScale.success && parsedScale.data.kind === "animated"
+      ? new Map(parsedScale.data.scales.map((scale) => [scale.variable, scale] as const))
+      : new Map<string, Readonly<{ from: number; to: number; variable: string }>>();
     firstPlayEnd ??= interval.end;
     events.push({
       id: `import:${sceneId}:play:${statement.line}`,
@@ -606,7 +678,7 @@ export function importManimScene(
         const from = entity.position;
         const to = shifted;
         const controlOffset = marked?.controlOffset ?? { x: 0, y: 0 };
-        appendPositionSample(positionSamples, entity.id, {
+        appendChannelSample(positionSamples, entity.id, {
           control: {
             x: (from.x + to.x) / 2 + controlOffset.x,
             y: (from.y + to.y) / 2 + controlOffset.y,
@@ -620,6 +692,17 @@ export function importManimScene(
           value: to,
         });
         entity.position = to;
+      }
+      const scale = markedScales.get(entity.sourceVariable);
+      if (scale) {
+        appendChannelSample(scaleSamples, entity.id, {
+          easing: "smooth",
+          from: scale.from,
+          interval,
+          kind: "animated",
+          provenanceId: `import:${sceneId}:${entity.sourceVariable}:scale-marker:${statement.line}`,
+          value: scale.to,
+        });
       }
     }
     for (const transform of statement.text.matchAll(
@@ -648,17 +731,19 @@ export function importManimScene(
     sourceIdentity: { kind: "known", value: entity.sourceVariable },
     type: entity.type,
   }]));
-  const propertyChannels: Record<string, PropertyChannel> = Object.fromEntries(mutableEntities.map((entity) => {
-    const samples = positionSamples.get(entity.id) ?? [];
-    return [`${entity.id}/position`, {
+  const propertyChannels: Record<string, PropertyChannel> = Object.fromEntries(mutableEntities.flatMap((entity) => (
+    ([
+      ["position", positionSamples.get(entity.id) ?? []],
+      ["scale", scaleSamples.get(entity.id) ?? []],
+    ] as const).map(([key, samples]) => [`${entity.id}/${key}`, {
       entityId: entity.id,
-      key: "position" as const,
+      key,
       samples: samples.map((sample) => ({
         ...sample,
         interval: { ...sample.interval, end: Math.min(sample.interval.end, duration) },
       })),
-    }];
-  }));
+    }])
+  )));
   for (const entity of mutableEntities) {
     if (!entity.content) continue;
     propertyChannels[`${entity.id}/content`] = {

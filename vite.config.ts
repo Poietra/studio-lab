@@ -50,6 +50,7 @@ export default defineConfig(({ mode }) => {
         frameWidth: env.POIETRA_MANIM_FRAME_WIDTH ? Number(env.POIETRA_MANIM_FRAME_WIDTH) : undefined,
         projects: parseManimProjects(env.POIETRA_MANIM_PROJECTS),
         projectRoot: env.POIETRA_MANIM_PROJECT_ROOT,
+        workspaceDataRoot: env.POIETRA_STUDIO_DATA_ROOT,
       }),
     ],
     clearScreen: false,

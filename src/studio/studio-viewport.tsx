@@ -25,11 +25,22 @@ export type EntityDragPreview = Readonly<{
   delta: Readonly<{ x: number; y: number }>;
   entityIds: readonly string[];
 }>;
+export type EntityScalePreview = Readonly<{
+  entityId: string;
+  scale: number;
+}>;
 
 const ZERO_DELTA = { x: 0, y: 0 } as const;
 
 export function entityDragDelta(preview: EntityDragPreview | null, entityId: string) {
   return preview?.entityIds.includes(entityId) ? preview.delta : ZERO_DELTA;
+}
+
+export function entityPreviewScale(
+  preview: EntityScalePreview | null,
+  entity: Readonly<Pick<ProjectedEntity, "id" | "scale">>,
+) {
+  return preview?.entityId === entity.id ? preview.scale : entity.scale;
 }
 
 export function entityLabel(entity: ProjectedEntity) {
@@ -294,13 +305,158 @@ function MotionPathOverlay({
   );
 }
 
-function TimelinePlayhead({ currentTime, duration }: Readonly<{ currentTime: number; duration: number }>) {
+function TimelinePlayhead({
+  currentTime,
+  duration,
+  showHandle = false,
+}: Readonly<{ currentTime: number; duration: number; showHandle?: boolean }>) {
   return (
     <div
       aria-hidden="true"
       className="pointer-events-none absolute bottom-0 top-0 z-20 w-px bg-sky-400"
+      data-timeline-playhead
       style={{ left: `${(currentTime / duration) * 100}%` }}
-    />
+    >
+      {showHandle ? (
+        <span className="absolute left-1/2 top-1 size-2 -translate-x-1/2 border border-sky-200 bg-sky-500" />
+      ) : null}
+    </div>
+  );
+}
+
+type SelectedLifetime = Readonly<{
+  entityId: string;
+  index: number;
+}>;
+
+function lifetimeTrimAnchors(
+  anchors: readonly StudioTimelineAnchor[],
+  interval: Interval,
+) {
+  return anchors.filter((anchor) => (
+    anchor.workingTime - interval.start >= 0.1
+    && interval.end - anchor.workingTime >= 0.01
+  ));
+}
+
+function closestLifetimeAnchor(
+  anchors: readonly StudioTimelineAnchor[],
+  desiredEnd: number,
+) {
+  return anchors.reduce<StudioTimelineAnchor | null>((closest, anchor) => (
+    !closest
+    || Math.abs(anchor.workingTime - desiredEnd) < Math.abs(closest.workingTime - desiredEnd)
+      ? anchor
+      : closest
+  ), null);
+}
+
+function TimelineLifetime({
+  anchors,
+  disabled,
+  duration,
+  interval,
+  label,
+  onSelect,
+  onTrim,
+  provisional,
+  selectDisabled,
+  selected,
+}: Readonly<{
+  anchors: readonly StudioTimelineAnchor[];
+  disabled: boolean;
+  duration: number;
+  interval: Interval;
+  label: string;
+  onSelect: () => void;
+  onTrim: (sourceAnchor: number) => void;
+  provisional: boolean;
+  selectDisabled: boolean;
+  selected: boolean;
+}>) {
+  const [previewAnchor, setPreviewAnchor] = useState<StudioTimelineAnchor | null>(null);
+  const trimDrag = useRef<Readonly<{ pointerId: number; startX: number }> | null>(null);
+  const eligibleAnchors = lifetimeTrimAnchors(anchors, interval);
+  const displayedInterval = previewAnchor
+    ? { ...interval, end: previewAnchor.workingTime }
+    : interval;
+
+  function anchorAtPointer(event: PointerEvent<HTMLButtonElement>) {
+    const lane = event.currentTarget.closest<HTMLElement>("[data-timeline-lane]");
+    const bounds = lane?.getBoundingClientRect();
+    if (!bounds?.width) return null;
+    const desiredEnd = Math.min(duration, Math.max(0, (
+      (event.clientX - bounds.left) / bounds.width
+    ) * duration));
+    return closestLifetimeAnchor(eligibleAnchors, desiredEnd);
+  }
+
+  function startTrim(event: PointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    onSelect();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    trimDrag.current = { pointerId: event.pointerId, startX: event.clientX };
+    setPreviewAnchor(null);
+  }
+
+  function moveTrim(event: PointerEvent<HTMLButtonElement>) {
+    const drag = trimDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId || Math.abs(event.clientX - drag.startX) < 3) return;
+    setPreviewAnchor(anchorAtPointer(event));
+  }
+
+  function finishTrim(event: PointerEvent<HTMLButtonElement>) {
+    const drag = trimDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    trimDrag.current = null;
+    const anchor = anchorAtPointer(event) ?? previewAnchor;
+    setPreviewAnchor(null);
+    if (anchor && Math.abs(event.clientX - drag.startX) >= 3) onTrim(anchor.sourceTime);
+  }
+
+  return (
+    <div
+      className="absolute inset-y-1"
+      style={intervalStyle(displayedInterval, duration)}
+    >
+      <button
+        aria-label={`Select ${label} lifetime from ${interval.start.toFixed(2)} to ${interval.end.toFixed(2)} seconds`}
+        aria-pressed={selected}
+        className={cn(
+          "absolute inset-0 size-full border text-left",
+          provisional ? "border-dashed border-sky-700 bg-sky-950" : "border-zinc-600 bg-zinc-800",
+          selected && "border-sky-400 bg-sky-950",
+          selectDisabled && "cursor-not-allowed",
+        )}
+        data-timeline-lifetime
+        disabled={selectDisabled}
+        onClick={onSelect}
+        title={`Present ${interval.start.toFixed(2)}–${interval.end.toFixed(2)}s`}
+        type="button"
+      />
+      {selected && !disabled && !selectDisabled && eligibleAnchors.length > 0 ? (
+        <button
+          aria-label={`Trim ${label} lifetime end`}
+          className="absolute -right-1 top-1/2 z-30 size-3 -translate-y-1/2 cursor-ew-resize border border-sky-200 bg-sky-500"
+          data-lifetime-trim-handle
+          onLostPointerCapture={() => {
+            trimDrag.current = null;
+            setPreviewAnchor(null);
+          }}
+          onPointerCancel={() => {
+            trimDrag.current = null;
+            setPreviewAnchor(null);
+          }}
+          onPointerDown={startTrim}
+          onPointerMove={moveTrim}
+          onPointerUp={finishTrim}
+          style={{ touchAction: "none" }}
+          title="Drag left to trim. The end snaps to a safe source anchor."
+          type="button"
+        />
+      ) : null}
+    </div>
   );
 }
 
@@ -312,9 +468,11 @@ function Timeline({
   events,
   interactionMode,
   isPlaying,
+  lifetimeTrimDisabled,
   motionDuration,
   objectTracks,
   onInteractionModeChange,
+  onLifetimeEndChange,
   onMotionDurationChange,
   onSelectEntity,
   onTimeChange,
@@ -331,7 +489,9 @@ function Timeline({
   isPlaying: boolean;
   motionDuration: number;
   objectTracks: readonly TimelineObjectTrack[];
+  lifetimeTrimDisabled: boolean;
   onInteractionModeChange: (mode: InteractionMode) => void;
+  onLifetimeEndChange: (entityId: string, lifetimeStart: number, sourceAnchor: number) => void;
   onMotionDurationChange: (duration: number) => void;
   onSelectEntity: (entityId: string) => void;
   onTimeChange: (time: number) => void;
@@ -340,6 +500,16 @@ function Timeline({
   selectedIds: ReadonlySet<string>;
 }>) {
   const intervalEvents = events.flatMap((event) => event.interval ? [{ event, interval: event.interval }] : []);
+  const [selectedLifetime, setSelectedLifetime] = useState<SelectedLifetime | null>(null);
+  const selectedLifetimeTrack = selectedLifetime && selectedIds.has(selectedLifetime.entityId)
+    ? objectTracks.find((track) => track.entityId === selectedLifetime.entityId)
+    : null;
+  const selectedLifetimeInterval = selectedLifetimeTrack && selectedLifetime
+    ? selectedLifetimeTrack.lifetimes[selectedLifetime.index]
+    : null;
+  const selectedLifetimeAnchors = selectedLifetimeInterval
+    ? lifetimeTrimAnchors(anchors, selectedLifetimeInterval)
+    : [];
   return (
     <section className="shrink-0 border-t border-zinc-800 bg-zinc-950 p-3">
       <div className="flex items-center gap-3">
@@ -396,85 +566,171 @@ function Timeline({
           </label>
         ) : null}
       </div>
-      <div aria-label="Scene object timeline" className="mt-3 max-h-56 overflow-y-auto border border-zinc-800 bg-zinc-900" role="group">
-        <div className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 sm:grid-cols-[8rem_minmax(0,1fr)]">
-          <div className="flex min-w-0 items-center px-2 text-[10px] font-medium text-zinc-400">Scene</div>
-          <div className="relative h-8 min-w-0 overflow-hidden">
-            {intervalEvents.map(({ event, interval }) => (
-              <div
-                className={cn(
-                  "absolute top-1 h-5 min-w-px border px-1 text-[9px] leading-4",
-                  event.transactionId ? "border-sky-800 bg-sky-950 text-sky-300" : "border-zinc-700 bg-zinc-800 text-zinc-500",
-                )}
-                key={event.id}
-                style={intervalStyle(interval, duration)}
-                title={`${event.label} ${interval.start.toFixed(2)}–${interval.end.toFixed(2)}s`}
+      {selectedLifetimeTrack && selectedLifetimeInterval ? (
+        <form
+          className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-2 text-[10px]"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const sourceAnchor = Number(new FormData(event.currentTarget).get("lifetime-source-anchor"));
+            if (!Number.isFinite(sourceAnchor)) return;
+            onLifetimeEndChange(
+              selectedLifetimeTrack.entityId,
+              selectedLifetimeInterval.start,
+              sourceAnchor,
+            );
+          }}
+        >
+          <span className="max-w-40 truncate text-zinc-400" title={selectedLifetimeTrack.label}>
+            Lifetime end · {selectedLifetimeTrack.label}
+          </span>
+          {selectedLifetimeAnchors.length > 0 ? (
+            <>
+              <select
+                aria-label={`Lifetime end for ${selectedLifetimeTrack.label}`}
+                className="h-7 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:text-zinc-600"
+                defaultValue={selectedLifetimeAnchors.at(-1)?.sourceTime}
+                disabled={lifetimeTrimDisabled}
+                key={`${selectedLifetimeTrack.entityId}/${selectedLifetimeInterval.start}/${selectedLifetimeInterval.end}`}
+                name="lifetime-source-anchor"
               >
-                <span className="block truncate">{event.label}</span>
-              </div>
-            ))}
-            {anchors.map((anchor) => (
+                {selectedLifetimeAnchors.map((anchor) => (
+                  <option key={anchor.sourceTime} value={anchor.sourceTime}>
+                    {anchor.workingTime.toFixed(2)} s
+                  </option>
+                ))}
+              </select>
               <button
-                aria-label={`Move playhead to source anchor ${anchor.sourceTime.toFixed(3)} seconds`}
-                className="absolute bottom-0 top-0 z-10 w-px bg-amber-500/70 focus-visible:w-0.5"
-                key={anchor.sourceTime}
-                onClick={() => onTimeChange(anchor.workingTime)}
-                style={{ left: `${(anchor.workingTime / duration) * 100}%` }}
-                title={`Source anchor ${anchor.sourceTime.toFixed(3)}s · working time ${anchor.workingTime.toFixed(3)}s`}
-                type="button"
-              />
-            ))}
-            <TimelinePlayhead currentTime={currentTime} duration={duration} />
-          </div>
-        </div>
-        {objectTracks.map((track) => {
-          const selected = selectedIds.has(track.entityId);
-          const locked = readOnly
-            || (track.provisional && !(track.transactionId && appliedTransactionIds.has(track.transactionId)));
-          return (
-            <div className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 last:border-b-0 sm:grid-cols-[8rem_minmax(0,1fr)]" data-timeline-track={track.entityId} key={track.entityId}>
-              <button
-                aria-pressed={selected}
-                className={cn(
-                  "min-w-0 truncate px-2 text-left text-[10px]",
-                  locked ? "cursor-not-allowed text-zinc-700" : "hover:bg-zinc-800",
-                  selected ? "bg-sky-950 text-sky-300" : "text-zinc-500",
-                )}
-                disabled={locked}
-                onClick={() => onSelectEntity(track.entityId)}
-                title={`${track.label} · ${track.type}`}
-                type="button"
+                className="h-7 border border-zinc-700 px-2 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:text-zinc-600"
+                disabled={lifetimeTrimDisabled}
+                type="submit"
               >
-                {track.label}
+                Trim
               </button>
-              <div className="relative h-7 min-w-0 overflow-hidden">
-                {track.lifetimes.map((interval, index) => (
-                  <div
-                    className={cn(
-                      "absolute inset-y-1 border",
-                      track.provisional ? "border-dashed border-sky-700 bg-sky-950" : "border-zinc-600 bg-zinc-800",
-                    )}
-                    key={`${track.entityId}/lifetime/${index}`}
-                    style={intervalStyle(interval, duration)}
-                    title={`Present ${interval.start.toFixed(2)}–${interval.end.toFixed(2)}s`}
-                  />
-                ))}
-                {track.animatedChannels.map((channel, index) => (
-                  <div
-                    className="absolute bottom-1 z-10 h-1.5 min-w-px bg-sky-400"
-                    key={`${track.entityId}/${channel.key}/${index}`}
-                    style={intervalStyle(channel.interval, duration)}
-                    title={`${channel.key} animation ${channel.interval.start.toFixed(2)}–${channel.interval.end.toFixed(2)}s`}
-                  />
-                ))}
-                {track.lifetimes.length === 0 ? (
-                  <span className="absolute inset-0 flex items-center px-2 text-[9px] text-zinc-700">Not present</span>
-                ) : null}
-                <TimelinePlayhead currentTime={currentTime} duration={duration} />
-              </div>
+              <span className="text-pretty text-zinc-600">Snaps to a safe .py source anchor.</span>
+            </>
+          ) : (
+            <span className="text-pretty text-amber-500">No earlier source anchor is available for this interval.</span>
+          )}
+          {lifetimeTrimDisabled ? (
+            <span className="text-pretty text-zinc-600">Apply or discard the current draft first.</span>
+          ) : null}
+        </form>
+      ) : null}
+      <div aria-label="Scene object timeline" className="mt-3 max-h-56 overflow-y-auto border border-zinc-800 bg-zinc-900" role="group">
+        <div className="relative">
+          <div className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 sm:grid-cols-[8rem_minmax(0,1fr)]">
+            <div className="flex min-w-0 items-center px-2 text-[10px] font-medium text-zinc-400">Time</div>
+            <div className="relative h-6 min-w-0 overflow-hidden" data-timeline-ruler>
+              <input
+                aria-label="Timeline playhead"
+                aria-valuetext={`${currentTime.toFixed(2)} seconds of ${duration.toFixed(2)} seconds`}
+                className="timeline-scrubber relative z-10 m-0 h-full w-full min-w-0"
+                max={duration}
+                min="0"
+                onChange={(event) => onTimeChange(Number(event.currentTarget.value))}
+                step="0.01"
+                type="range"
+                value={currentTime}
+              />
+              <TimelinePlayhead currentTime={currentTime} duration={duration} showHandle />
             </div>
-          );
-        })}
+          </div>
+          <div className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 sm:grid-cols-[8rem_minmax(0,1fr)]">
+            <div className="flex min-w-0 items-center px-2 text-[10px] font-medium text-zinc-400">Scene</div>
+            <div className="relative h-8 min-w-0 overflow-hidden">
+              {intervalEvents.map(({ event, interval }) => (
+                <div
+                  className={cn(
+                    "absolute top-1 h-5 min-w-px border px-1 text-[9px] leading-4",
+                    event.transactionId ? "border-sky-800 bg-sky-950 text-sky-300" : "border-zinc-700 bg-zinc-800 text-zinc-500",
+                  )}
+                  key={event.id}
+                  style={intervalStyle(interval, duration)}
+                  title={`${event.label} ${interval.start.toFixed(2)}–${interval.end.toFixed(2)}s`}
+                >
+                  <span className="block truncate">{event.label}</span>
+                </div>
+              ))}
+              {anchors.map((anchor) => (
+                <button
+                  aria-label={`Move playhead to source anchor ${anchor.sourceTime.toFixed(3)} seconds`}
+                  className="absolute bottom-0 top-0 z-30 w-px bg-amber-500/70 focus-visible:w-0.5"
+                  key={anchor.sourceTime}
+                  onClick={() => onTimeChange(anchor.workingTime)}
+                  style={{ left: `${(anchor.workingTime / duration) * 100}%` }}
+                  title={`Source anchor ${anchor.sourceTime.toFixed(3)}s · working time ${anchor.workingTime.toFixed(3)}s`}
+                  type="button"
+                />
+              ))}
+              <TimelinePlayhead currentTime={currentTime} duration={duration} />
+            </div>
+          </div>
+          {objectTracks.map((track) => {
+            const selected = selectedIds.has(track.entityId);
+            const locked = readOnly
+              || (track.provisional && !(track.transactionId && appliedTransactionIds.has(track.transactionId)));
+            return (
+              <div className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 last:border-b-0 sm:grid-cols-[8rem_minmax(0,1fr)]" data-timeline-track={track.entityId} key={track.entityId}>
+                <button
+                  aria-pressed={selected}
+                  className={cn(
+                    "min-w-0 truncate px-2 text-left text-[10px]",
+                    locked ? "cursor-not-allowed text-zinc-700" : "hover:bg-zinc-800",
+                    selected ? "bg-sky-950 text-sky-300" : "text-zinc-500",
+                  )}
+                  disabled={locked}
+                  onClick={() => onSelectEntity(track.entityId)}
+                  title={`${track.label} · ${track.type}`}
+                  type="button"
+                >
+                  {track.label}
+                </button>
+                <div className="relative h-7 min-w-0 overflow-hidden" data-timeline-lane>
+                  {track.lifetimes.map((interval, index) => {
+                    const lifetimeSelected = selected
+                      && selectedLifetime?.entityId === track.entityId
+                      && selectedLifetime.index === index;
+                    return (
+                      <TimelineLifetime
+                        anchors={anchors}
+                        disabled={locked || lifetimeTrimDisabled}
+                        duration={duration}
+                        interval={interval}
+                        key={`${track.entityId}/lifetime/${index}`}
+                        label={track.label}
+                        onSelect={() => {
+                          onSelectEntity(track.entityId);
+                          setSelectedLifetime({ entityId: track.entityId, index });
+                        }}
+                        onTrim={(sourceAnchor) => onLifetimeEndChange(
+                          track.entityId,
+                          interval.start,
+                          sourceAnchor,
+                        )}
+                        provisional={track.provisional}
+                        selectDisabled={locked}
+                        selected={lifetimeSelected}
+                      />
+                    );
+                  })}
+                  {track.animatedChannels.map((channel, index) => (
+                    <div
+                      className="absolute bottom-1 z-10 h-1.5 min-w-px bg-sky-400"
+                      data-timeline-animation
+                      key={`${track.entityId}/${channel.key}/${index}`}
+                      style={intervalStyle(channel.interval, duration)}
+                      title={`${channel.key} animation ${channel.interval.start.toFixed(2)}–${channel.interval.end.toFixed(2)}s`}
+                    />
+                  ))}
+                  {track.lifetimes.length === 0 ? (
+                    <span className="absolute inset-0 flex items-center px-2 text-[9px] text-zinc-700">Not present</span>
+                  ) : null}
+                  <TimelinePlayhead currentTime={currentTime} duration={duration} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </section>
   );
@@ -496,6 +752,7 @@ export function StudioViewport({
   insertValue,
   interactionMode,
   isPlaying,
+  lifetimeTrimDisabled,
   motionDuration,
   motionPaths,
   onCanvasPlace,
@@ -504,10 +761,16 @@ export function StudioViewport({
   onEntityPointerDown,
   onEntityPointerMove,
   onEntityPointerUp,
+  onEntityResizeCancel,
+  onEntityResizeKeyDown,
+  onEntityResizePointerDown,
+  onEntityResizePointerMove,
+  onEntityResizePointerUp,
   onInteractionModeChange,
   onInsertAtCenter,
   onInsertToolChange,
   onInsertValueChange,
+  onLifetimeEndChange,
   onMotionControlChange,
   onMotionDurationChange,
   onSelectEntity,
@@ -515,6 +778,7 @@ export function StudioViewport({
   onTogglePlayback,
   projection,
   readOnly,
+  scalePreview,
   selectedIds,
 }: Readonly<{
   anchors: readonly StudioTimelineAnchor[];
@@ -532,6 +796,7 @@ export function StudioViewport({
   insertValue: string;
   interactionMode: InteractionMode;
   isPlaying: boolean;
+  lifetimeTrimDisabled: boolean;
   motionDuration: number;
   motionPaths: readonly StudioMotionPath[];
   onCanvasPlace: (point: Point) => void;
@@ -540,10 +805,16 @@ export function StudioViewport({
   onEntityPointerDown: (event: PointerEvent<HTMLButtonElement>, entityId: string) => void;
   onEntityPointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
   onEntityPointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
+  onEntityResizeCancel: (event: PointerEvent<HTMLButtonElement>) => void;
+  onEntityResizeKeyDown: (event: KeyboardEvent<HTMLButtonElement>, entityId: string) => void;
+  onEntityResizePointerDown: (event: PointerEvent<HTMLButtonElement>, entityId: string) => void;
+  onEntityResizePointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
+  onEntityResizePointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
   onInteractionModeChange: (mode: InteractionMode) => void;
   onInsertAtCenter: () => void;
   onInsertToolChange: (tool: StudioTool) => void;
   onInsertValueChange: (value: string) => void;
+  onLifetimeEndChange: (entityId: string, lifetimeStart: number, sourceAnchor: number) => void;
   onMotionControlChange: (path: StudioMotionPath, delta: Point) => void;
   onMotionDurationChange: (duration: number) => void;
   onSelectEntity: (entityId: string) => void;
@@ -551,6 +822,7 @@ export function StudioViewport({
   onTogglePlayback: () => void;
   projection: ProposedStateProjection;
   readOnly?: boolean;
+  scalePreview: EntityScalePreview | null;
   selectedIds: ReadonlySet<string>;
 }>) {
   return (
@@ -571,7 +843,7 @@ export function StudioViewport({
           onPointerDown={(event) => {
             if (insertTool === "select" || boundaryActive) return;
             const target = event.target;
-            if (target instanceof Element && target.closest("[data-studio-entity], [data-motion-control]")) return;
+            if (target instanceof Element && target.closest("[data-studio-entity], [data-motion-control], [data-studio-resize-handle]")) return;
             const bounds = event.currentTarget.getBoundingClientRect();
             onCanvasPlace({
               x: ((event.clientX - bounds.left) / bounds.width) * STUDIO_VIEWPORT.width,
@@ -606,34 +878,63 @@ export function StudioViewport({
               const localDelta = entityDragDelta(dragPreview, entity.id);
               const position = { x: entity.position.x + localDelta.x, y: entity.position.y + localDelta.y };
               const opacity = draftTransactionId === entity.transactionId && entity.opacity === 0 ? 0.35 : entity.opacity;
+              const displayedScale = entityPreviewScale(scalePreview, entity);
               return (
-                <button
-                  aria-label={`Move ${entityLabel(entity)}`}
-                  aria-pressed={selected}
+                <div
                   className={cn(
-                    "absolute -translate-x-1/2 -translate-y-1/2 border px-3 py-2 outline-none",
-                    locked ? "pointer-events-none border-dashed border-sky-800 bg-zinc-950/70" : "cursor-grab active:cursor-grabbing",
-                    selected ? "z-20 border-sky-400 bg-sky-950/60 focus-visible:ring-2 focus-visible:ring-sky-400" : "z-10 border-transparent hover:border-zinc-600",
+                    "absolute -translate-x-1/2 -translate-y-1/2",
+                    selected ? "z-20" : "z-10",
                   )}
-                  data-studio-entity={entity.id}
-                  disabled={locked}
+                  data-studio-entity-scale={displayedScale.toFixed(4)}
+                  data-studio-entity-wrapper={entity.id}
                   key={entity.id}
-                  onKeyDown={(event) => onEntityKeyDown(event, entity.id)}
-                  onLostPointerCapture={onEntityPointerCancel}
-                  onPointerCancel={onEntityPointerCancel}
-                  onPointerDown={(event) => onEntityPointerDown(event, entity.id)}
-                  onPointerMove={onEntityPointerMove}
-                  onPointerUp={onEntityPointerUp}
-                  style={{ ...positionStyle(position), opacity, scale: entity.scale, touchAction: "none" }}
-                  type="button"
+                  style={{ ...positionStyle(position), opacity, touchAction: "none" }}
                 >
-                  <ObjectVisual entity={entity} />
-                  {selected ? (
-                    <span className="absolute -top-6 left-0 max-w-56 truncate bg-sky-400 px-1.5 py-0.5 text-[10px] font-medium text-sky-950">
-                      {entityLabel(entity)}
-                    </span>
-                  ) : null}
-                </button>
+                  <div className="relative origin-center" style={{ scale: displayedScale }}>
+                    <button
+                      aria-label={`Move ${entityLabel(entity)}`}
+                      aria-pressed={selected}
+                      className={cn(
+                        "block border px-3 py-2 outline-none",
+                        locked ? "pointer-events-none border-dashed border-sky-800 bg-zinc-950/70" : "cursor-grab active:cursor-grabbing",
+                        selected ? "border-sky-400 bg-sky-950/60 focus-visible:ring-2 focus-visible:ring-sky-400" : "border-transparent hover:border-zinc-600",
+                      )}
+                      data-studio-entity={entity.id}
+                      disabled={locked}
+                      onKeyDown={(event) => onEntityKeyDown(event, entity.id)}
+                      onLostPointerCapture={onEntityPointerCancel}
+                      onPointerCancel={onEntityPointerCancel}
+                      onPointerDown={(event) => onEntityPointerDown(event, entity.id)}
+                      onPointerMove={onEntityPointerMove}
+                      onPointerUp={onEntityPointerUp}
+                      type="button"
+                    >
+                      <ObjectVisual entity={entity} />
+                      {selected ? (
+                        <span className="absolute -top-6 left-0 max-w-56 truncate bg-sky-400 px-1.5 py-0.5 text-[10px] font-medium text-sky-950">
+                          {entityLabel(entity)}
+                        </span>
+                      ) : null}
+                    </button>
+                    {selected && selectedIds.size === 1 && !locked ? (
+                      <button
+                        aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
+                        aria-label={`Resize ${entityLabel(entity)}`}
+                        className="absolute -bottom-2 -right-2 z-30 size-4 touch-none cursor-nwse-resize border-2 border-sky-950 bg-sky-400 outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
+                        data-studio-resize-handle={entity.id}
+                        onKeyDown={(event) => onEntityResizeKeyDown(event, entity.id)}
+                        onLostPointerCapture={onEntityResizeCancel}
+                        onPointerCancel={onEntityResizeCancel}
+                        onPointerDown={(event) => onEntityResizePointerDown(event, entity.id)}
+                        onPointerMove={onEntityResizePointerMove}
+                        onPointerUp={onEntityResizePointerUp}
+                        style={{ scale: 1 / displayedScale }}
+                        title="Drag to resize uniformly · Arrow keys adjust precisely"
+                        type="button"
+                      />
+                    ) : null}
+                  </div>
+                </div>
               );
             })}
           </div>
@@ -653,9 +954,11 @@ export function StudioViewport({
         events={projection.timeline.events}
         interactionMode={interactionMode}
         isPlaying={isPlaying}
+        lifetimeTrimDisabled={lifetimeTrimDisabled}
         motionDuration={motionDuration}
         objectTracks={projection.timeline.objectTracks}
         onInteractionModeChange={onInteractionModeChange}
+        onLifetimeEndChange={onLifetimeEndChange}
         onMotionDurationChange={onMotionDurationChange}
         onSelectEntity={onSelectEntity}
         onTimeChange={onTimeChange}

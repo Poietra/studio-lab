@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "../lib/cn";
 import type { CanonicalEditProgram } from "../studio/operations";
-import { renderProgramBatchId, type ManimWorkspaceView, type ProgramRenderRequest, type RenderSessionView } from "./contracts";
-import { exportManimSource, isMissingManimSession, loadManimRender, runManimRenderAction, startManimRender } from "./client";
+import { renderProgramBatchId, type ManimWorkspaceView, type OriginalManimSourceExportRequest, type ProgramRenderRequest, type RenderSessionView } from "./contracts";
+import { exportManimSource, exportOriginalManimSource, isMissingManimSession, loadManimRender, runManimRenderAction, startManimRender } from "./client";
 
 export type RenderProgramCandidate = Readonly<{
   anchors: readonly number[];
@@ -24,6 +24,7 @@ type RenderPipelinePanelProps = Readonly<{
   onSessionChange: (session: RenderSessionView | null, projectId?: string) => void;
   onSourceChanged?: () => void | Promise<void>;
   session: RenderSessionView | null;
+  sourceExport: OriginalManimSourceExportRequest | null;
   workspace: ManimWorkspaceView | null;
 }>;
 
@@ -54,6 +55,7 @@ export function RenderPipelinePanel({
   onSessionChange,
   onSourceChanged,
   session,
+  sourceExport,
   workspace,
 }: RenderPipelinePanelProps) {
   const [error, setError] = useState<string | null>(null);
@@ -149,6 +151,11 @@ export function RenderPipelinePanel({
   }, [candidate, candidateUnavailableReason, missingAnchor, unsupportedProgram, workspace]);
   const previewBlocker = candidateBlocker
     ?? (!workspace?.commandAvailable ? `Manim command ${JSON.stringify(workspace?.command ?? [])} is unavailable.` : null);
+  const exportBlocker = candidate
+    ? candidateBlocker
+    : !workspace ? "Inspecting the Manim workspace…"
+      : !sourceExport ? "Choose an imported Scene to export its Python source."
+        : null;
 
   async function startPreview() {
     if (!candidate || previewBlocker || pendingAction) return;
@@ -184,23 +191,25 @@ export function RenderPipelinePanel({
   }
 
   async function exportSource() {
-    if (!candidate || candidateBlocker || pendingAction) return;
+    if (exportBlocker || pendingAction || (!candidate && !sourceExport)) return;
     setError(null);
     setPendingAction("export");
     const controller = new AbortController();
     mutationRequest.current = controller;
     try {
-      const exported = await exportManimSource({
-        destination: candidate.destination,
-        program: candidate.program,
-        programs: candidate.programs,
-        projectId: candidate.projectId,
-        sceneName: candidate.sceneName,
-        sourceBindings: candidate.sourceBindings,
-        sourceHash: candidate.sourceHash,
-        sourcePath: candidate.sourcePath,
-        viewport: candidate.viewport,
-      }, controller.signal);
+      const exported = candidate
+        ? await exportManimSource({
+            destination: candidate.destination,
+            program: candidate.program,
+            programs: candidate.programs,
+            projectId: candidate.projectId,
+            sceneName: candidate.sceneName,
+            sourceBindings: candidate.sourceBindings,
+            sourceHash: candidate.sourceHash,
+            sourcePath: candidate.sourcePath,
+            viewport: candidate.viewport,
+          }, controller.signal)
+        : await exportOriginalManimSource(sourceExport!, controller.signal);
       const url = URL.createObjectURL(new Blob([exported.source], { type: "text/x-python;charset=utf-8" }));
       const link = document.createElement("a");
       link.href = url;
@@ -346,7 +355,7 @@ export function RenderPipelinePanel({
       <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
         <button
           className="border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-600"
-          disabled={candidateBlocker !== null || pendingAction !== null}
+          disabled={exportBlocker !== null || pendingAction !== null}
           onClick={() => void exportSource()}
           type="button"
         >

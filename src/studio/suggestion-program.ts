@@ -580,6 +580,64 @@ export function createDirectManipulationPositionProgram(
   }, input.scene);
 }
 
+export function createDirectManipulationScaleProgram(
+  input: Readonly<{
+    capturedPlayhead: number;
+    interval: Readonly<{ end: number; start: number }>;
+    scales: Readonly<Record<string, Readonly<{ from: number; to: number }>>>;
+    scene: RuntimeSceneState;
+    targetEntityIds: readonly string[];
+    transactionId: string;
+  }>,
+): ProgramValidationResult {
+  const sourceAnchor = Math.abs(input.interval.start - input.capturedPlayhead) < 0.001
+    ? { kind: "playhead" as const, referenceSeconds: input.capturedPlayhead }
+    : { kind: "absolute" as const, seconds: input.interval.start };
+  const resolution = resolveTimeAnchorOnce(sourceAnchor, {
+    capturedPlayhead: input.capturedPlayhead,
+    sceneDuration: input.scene.duration,
+  });
+  if (resolution.kind === "invalid") throw new Error(resolution.message);
+  const operations = input.targetEntityIds.map((entityId, index): CanonicalEditOperation => {
+    const scale = input.scales[entityId];
+    if (!scale) throw new Error(`Direct manipulation requires a projected scale for ${entityId}.`);
+    if (
+      !Number.isFinite(scale.from)
+      || !Number.isFinite(scale.to)
+      || scale.from <= 0
+      || scale.to <= 0
+    ) {
+      throw new Error("Object scale must be a finite positive number.");
+    }
+    return {
+      dependsOn: [],
+      easing: "smooth",
+      entityId,
+      from: scale.from,
+      id: operationId(input.transactionId, `scale-${index}`),
+      interval: input.interval,
+      key: "scale",
+      kind: "AnimateProperty",
+      provenance: provenance("direct-manipulation", [
+        "uniform resize gesture",
+        `${scale.from.toFixed(4)}x to ${scale.to.toFixed(4)}x`,
+      ]),
+      to: scale.to,
+    };
+  });
+  return validateAndScheduleProgram({
+    anchor: resolution.anchor,
+    intentCount: 1,
+    loweringStatus: "supported",
+    operations,
+    provenance: provenance("direct-manipulation", ["uniform scale constraint"]),
+    requestedExecution: "parallel",
+    schedule: { edges: [], mode: "parallel", order: operations.map((operation) => operation.id) },
+    transactionId: input.transactionId,
+    version: EDIT_OPERATION_VERSION,
+  }, input.scene);
+}
+
 export function createDirectManipulationModifyMotionProgram(
   input: Readonly<{
     capturedPlayhead: number;
