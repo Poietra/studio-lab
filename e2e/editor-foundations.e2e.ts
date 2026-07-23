@@ -100,9 +100,9 @@ test("places a circle alongside a pending rectangle without an intermediate Appl
   await expect(page.getByRole("button", { name: "Move Circle" })).toBeVisible();
 
   await page.getByRole("button", { name: "Apply program" }).click();
-  await expect.poll(async () => Number(
-    await page.getByRole("slider", { name: "Scene playhead" }).inputValue(),
-  )).toBeCloseTo(5.8, 3);
+  await expect
+    .poll(async () => Number(await page.getByRole("slider", { name: "Scene playhead" }).inputValue()))
+    .toBeCloseTo(5.8, 3);
 });
 
 test("retains editor sessions while leaving and reopening workspaces", async ({ page }) => {
@@ -155,12 +155,12 @@ test("waits at the launcher and only imports explicitly selected workspaces", as
     await route.abort("failed");
   });
 
-  const catalogResponse = page.waitForResponse((response) => (
-    new URL(response.url()).pathname === "/api/manim/projects"
-  ));
-  const thumbnailResponsePromise = page.waitForResponse((response) => (
-    new URL(response.url()).pathname === "/api/manim/projects/studio-lab/thumbnail"
-  ));
+  const catalogResponse = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/manim/projects",
+  );
+  const thumbnailResponsePromise = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/manim/projects/studio-lab/thumbnail",
+  );
   await page.goto("/");
   await catalogResponse;
   const thumbnailResponse = await thumbnailResponsePromise;
@@ -178,30 +178,40 @@ test("waits at the launcher and only imports explicitly selected workspaces", as
   await expect(actualStudioThumbnail).toHaveAttribute("alt", "");
   await expect(actualStudioThumbnail).toHaveAttribute("loading", "lazy");
   await expect(actualStudioThumbnail).toHaveAttribute("data-state", "loaded");
-  await expect.poll(() => actualStudioThumbnail.evaluate((image) => (
-    image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0
-  ))).toBe(true);
+  await expect
+    .poll(() =>
+      actualStudioThumbnail.evaluate(
+        (image) => image instanceof HTMLImageElement && image.complete && image.naturalWidth > 0,
+      ),
+    )
+    .toBe(true);
   expect(thumbnailResponse.status()).toBe(200);
   expect(thumbnailResponse.headers()["content-type"]).toContain("image/svg+xml");
   expect(await thumbnailResponse.text()).toContain("E = m c^2");
   const openExamples = page.getByRole("button", { name: "Open Examples workspace" });
-  await expect(openExamples.locator("[data-workspace-actual-thumbnail='examples']"))
-    .toHaveAttribute("data-state", "error");
+  await expect(openExamples.locator("[data-workspace-actual-thumbnail='examples']")).toHaveAttribute(
+    "data-state",
+    "error",
+  );
   await expect(openExamples.locator("[data-workspace-thumbnail-fallback]")).toBeVisible();
   const idleCardBackground = await studioCard.evaluate((node) => getComputedStyle(node).backgroundColor);
   await openStudio.hover();
-  await expect.poll(() => studioCard.evaluate((node) => getComputedStyle(node).backgroundColor))
+  await expect
+    .poll(() => studioCard.evaluate((node) => getComputedStyle(node).backgroundColor))
     .not.toBe(idleCardBackground);
   const hoveredCardBackground = await studioCard.evaluate((node) => getComputedStyle(node).backgroundColor);
   const idleRenameBackground = await renameStudio.evaluate((node) => getComputedStyle(node).backgroundColor);
   await renameStudio.hover();
-  await expect.poll(() => renameStudio.evaluate((node) => getComputedStyle(node).backgroundColor))
+  await expect
+    .poll(() => renameStudio.evaluate((node) => getComputedStyle(node).backgroundColor))
     .not.toBe(idleRenameBackground);
-  await expect.poll(() => studioCard.evaluate((node) => getComputedStyle(node).backgroundColor))
+  await expect
+    .poll(() => studioCard.evaluate((node) => getComputedStyle(node).backgroundColor))
     .toBe(hoveredCardBackground);
   const idleRemoveBackground = await removeStudio.evaluate((node) => getComputedStyle(node).backgroundColor);
   await removeStudio.hover();
-  await expect.poll(() => removeStudio.evaluate((node) => getComputedStyle(node).backgroundColor))
+  await expect
+    .poll(() => removeStudio.evaluate((node) => getComputedStyle(node).backgroundColor))
     .not.toBe(idleRemoveBackground);
   const addWorkspace = page.getByRole("button", { name: "Add workspace" });
   await expect(addWorkspace.locator("svg[aria-hidden='true']")).toBeVisible();
@@ -264,13 +274,11 @@ test("generates a rendered workspace thumbnail only after an explicit launcher a
 
   await page.goto("/");
   const card = page.locator("[data-workspace-card='studio-lab']");
-  await expect(card.locator("[data-thumbnail-status]"))
-    .toHaveAttribute("data-thumbnail-status", "missing");
+  await expect(card.locator("[data-thumbnail-status]")).toHaveAttribute("data-thumbnail-status", "missing");
   const generate = page.getByRole("button", { name: "Generate preview for Studio Lab" });
   await expect(generate).toBeVisible();
   await generate.click();
-  await expect(card.locator("[data-thumbnail-status]"))
-    .toHaveAttribute("data-thumbnail-status", "current");
+  await expect(card.locator("[data-thumbnail-status]")).toHaveAttribute("data-thumbnail-status", "current");
   await expect(page.getByRole("button", { name: "Refresh preview for Studio Lab" })).toBeVisible();
   await expect(page.locator("[data-studio-canvas]")).toHaveCount(0);
 });
@@ -392,14 +400,14 @@ test("creates, persists, renames, and deletes a browser-managed workspace", asyn
     await addDialog.getByRole("button", { name: "Create workspace" }).click();
     await expect(addDialog.getByRole("alert")).toContainText("Enter a workspace name");
     await addDialog.getByRole("textbox", { name: "Workspace name" }).fill("CRUD Fixture");
-    const createResponsePromise = page.waitForResponse((response) => (
-      response.request().method() === "POST"
-      && new URL(response.url()).pathname === "/api/manim/projects"
-    ));
+    const createResponsePromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" && new URL(response.url()).pathname === "/api/manim/projects",
+    );
     await addDialog.getByRole("button", { name: "Create workspace" }).click();
     const createResponse = await createResponsePromise;
     expect(createResponse.request().postDataJSON()).toEqual({ kind: "managed", name: "CRUD Fixture" });
-    const created = await createResponse.json() as { project: { id: string } };
+    const created = (await createResponse.json()) as { project: { id: string } };
     projectId = created.project.id;
     await expect(page.getByLabel("Current workspace")).toHaveText("CRUD Fixture");
     await expect(page.locator("[data-studio-canvas]")).toBeVisible();
@@ -409,10 +417,11 @@ test("creates, persists, renames, and deletes a browser-managed workspace", asyn
     await page.getByRole("button", { name: "Rename CRUD Fixture workspace" }).click();
     const renameDialog = page.getByRole("dialog", { name: "Rename workspace" });
     await renameDialog.getByRole("textbox", { name: "Workspace name" }).fill("Renamed Fixture");
-    const renameResponse = page.waitForResponse((response) => (
-      response.request().method() === "PATCH"
-      && new URL(response.url()).pathname === `/api/manim/projects/${projectId}`
-    ));
+    const renameResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "PATCH" &&
+        new URL(response.url()).pathname === `/api/manim/projects/${projectId}`,
+    );
     await renameDialog.getByRole("button", { name: "Save name" }).click();
     await renameResponse;
     await expect(page.getByRole("button", { name: "Open Renamed Fixture workspace" })).toBeVisible();
@@ -425,10 +434,11 @@ test("creates, persists, renames, and deletes a browser-managed workspace", asyn
     await expect(page.getByRole("button", { name: "Open Renamed Fixture workspace" })).toBeVisible();
 
     await page.getByRole("button", { name: "Delete Renamed Fixture workspace" }).click();
-    const deleteResponse = page.waitForResponse((response) => (
-      response.request().method() === "DELETE"
-      && new URL(response.url()).pathname === `/api/manim/projects/${projectId}`
-    ));
+    const deleteResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "DELETE" &&
+        new URL(response.url()).pathname === `/api/manim/projects/${projectId}`,
+    );
     await page.getByRole("alertdialog").getByRole("button", { name: "Delete workspace" }).click();
     await deleteResponse;
     await expect(page.getByRole("button", { name: "Open Renamed Fixture workspace" })).toHaveCount(0);
@@ -460,7 +470,7 @@ class DeleteRaceScene(Scene):
   const createdResponse = await page.request.post("/api/manim/projects", {
     data: { kind: "existing", name: "Delete Race Fixture", root: projectRoot },
   });
-  const created = await createdResponse.json() as { project: { id: string } };
+  const created = (await createdResponse.json()) as { project: { id: string } };
   const projectId = created.project.id;
   try {
     await page.goto("/");
@@ -491,12 +501,12 @@ class DeleteRaceScene(Scene):
     const addDialog = page.getByRole("dialog", { name: "Add workspace" });
     await addDialog.getByRole("textbox", { name: "Workspace name" }).fill("Delete Race Fixture");
     await addDialog.getByRole("textbox", { name: "Existing folder path" }).fill(projectRoot);
-    const recreatedResponsePromise = page.waitForResponse((response) => (
-      response.request().method() === "POST"
-      && new URL(response.url()).pathname === "/api/manim/projects"
-    ));
+    const recreatedResponsePromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" && new URL(response.url()).pathname === "/api/manim/projects",
+    );
     await addDialog.getByRole("button", { name: "Add workspace" }).click();
-    const recreated = await (await recreatedResponsePromise).json() as { project: { id: string } };
+    const recreated = (await (await recreatedResponsePromise).json()) as { project: { id: string } };
     expect(recreated.project.id).toBe(projectId);
     await expect(page.locator("[data-studio-canvas]")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
@@ -538,34 +548,34 @@ test("scrubs time from the ruler without blocking object intervals", async ({ pa
   await page.mouse.move(box.x + box.width * 0.75, pointerY, { steps: 6 });
   await page.mouse.up();
 
-  await expect.poll(async () => Number(await timelinePlayhead.inputValue()))
-    .toBeGreaterThan(duration * 0.7);
+  await expect.poll(async () => Number(await timelinePlayhead.inputValue())).toBeGreaterThan(duration * 0.7);
   const scrubbedTime = Number(await timelinePlayhead.inputValue());
   expect(scrubbedTime).toBeLessThan(duration * 0.8);
-  await expect.poll(async () => Number(await scenePlayhead.inputValue()))
-    .toBeCloseTo(scrubbedTime, 2);
-  await expect.poll(async () => timelinePlayhead.getAttribute("aria-valuetext"))
+  await expect.poll(async () => Number(await scenePlayhead.inputValue())).toBeCloseTo(scrubbedTime, 2);
+  await expect
+    .poll(async () => timelinePlayhead.getAttribute("aria-valuetext"))
     .toBe(`${scrubbedTime.toFixed(2)} seconds of ${duration.toFixed(2)} seconds`);
-  const playheadPosition = await page.locator("[data-timeline-playhead]").first().evaluate((node) => (
-    Number.parseFloat((node as HTMLElement).style.left)
-  ));
+  const playheadPosition = await page
+    .locator("[data-timeline-playhead]")
+    .first()
+    .evaluate((node) => Number.parseFloat((node as HTMLElement).style.left));
   expect(playheadPosition).toBeCloseTo((scrubbedTime / duration) * 100, 2);
 
   await timelinePlayhead.focus();
   await page.keyboard.press("ArrowLeft");
-  await expect.poll(async () => Number(await timelinePlayhead.inputValue()))
-    .toBeLessThan(scrubbedTime);
+  await expect.poll(async () => Number(await timelinePlayhead.inputValue())).toBeLessThan(scrubbedTime);
 
   const lifetime = page.locator("[data-timeline-lifetime]").first();
   await expect(lifetime).toHaveAttribute("title", /^Present /);
   const lifetimeBox = await lifetime.boundingBox();
   if (!lifetimeBox) throw new Error("The object lifetime is not visible.");
-  const hitLifetime = await page.evaluate(({ x, y }) => (
-    document.elementFromPoint(x, y)?.hasAttribute("data-timeline-lifetime") === true
-  ), {
-    x: lifetimeBox.x + lifetimeBox.width / 2,
-    y: lifetimeBox.y + lifetimeBox.height / 2,
-  });
+  const hitLifetime = await page.evaluate(
+    ({ x, y }) => document.elementFromPoint(x, y)?.hasAttribute("data-timeline-lifetime") === true,
+    {
+      x: lifetimeBox.x + lifetimeBox.width / 2,
+      y: lifetimeBox.y + lifetimeBox.height / 2,
+    },
+  );
   expect(hitLifetime).toBe(true);
 });
 
@@ -577,8 +587,10 @@ test("trims an object lifetime at a safe source anchor and exports an instant re
 
   const handle = page.getByRole("button", { name: "Trim equation lifetime end" });
   const handleBox = await handle.boundingBox();
-  const laneBox = await lifetime.locator("xpath=ancestor::*[@data-timeline-track][1]")
-    .locator("[data-timeline-lane]").boundingBox();
+  const laneBox = await lifetime
+    .locator("xpath=ancestor::*[@data-timeline-track][1]")
+    .locator("[data-timeline-lane]")
+    .boundingBox();
   if (!handleBox || !laneBox) throw new Error("The equation lifetime trim handle is not visible.");
   const handleCenter = { x: handleBox.x + handleBox.width / 2, y: handleBox.y + handleBox.height / 2 };
   await page.mouse.move(handleCenter.x, handleCenter.y);
@@ -637,9 +649,7 @@ test("previews, applies, exports, and undoes safe Scene duration changes", async
   await expect(duration).toHaveValue("12.00");
   await duration.fill("11");
   await page.getByRole("button", { name: "Update" }).click();
-  await expect(page.locator("#scene-duration-error")).toContainText(
-    "imported or animated content is never truncated",
-  );
+  await expect(page.locator("#scene-duration-error")).toContainText("imported or animated content is never truncated");
 
   await duration.fill("15");
   await page.getByRole("button", { name: "Update" }).click();

@@ -421,11 +421,7 @@ function timeAfterRemoval(time: number, start: number, end: number) {
   return start;
 }
 
-function intervalAfterRemoval(
-  interval: Readonly<{ end: number; start: number }>,
-  start: number,
-  end: number,
-) {
+function intervalAfterRemoval(interval: Readonly<{ end: number; start: number }>, start: number, end: number) {
   const nextStart = timeAfterRemoval(interval.start, start, end);
   return {
     end: Math.max(nextStart, timeAfterRemoval(interval.end, start, end)),
@@ -982,12 +978,7 @@ export const OPERATION_REGISTRY = {
     defaults: {},
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
-      removeSceneTime(
-        draft,
-        operation.interval.start,
-        operation.removedDuration,
-        new Set(operation.waitOperationIds),
-      );
+      removeSceneTime(draft, operation.interval.start, operation.removedDuration, new Set(operation.waitOperationIds));
     },
     execution: () => SUPPORTED_EXECUTION,
     lifetimeRequirement: "none",
@@ -1005,11 +996,11 @@ export const OPERATION_REGISTRY = {
         });
       }
       if (
-        !Number.isFinite(operation.removedDuration)
-        || operation.removedDuration < 0.1 - TIME_EPSILON
-        || !Number.isFinite(operation.targetDuration)
-        || operation.targetDuration < 0.1
-        || Math.abs(scene.duration - operation.removedDuration - operation.targetDuration) >= 0.001
+        !Number.isFinite(operation.removedDuration) ||
+        operation.removedDuration < 0.1 - TIME_EPSILON ||
+        !Number.isFinite(operation.targetDuration) ||
+        operation.targetDuration < 0.1 ||
+        Math.abs(scene.duration - operation.removedDuration - operation.targetDuration) >= 0.001
       ) {
         issues.push({
           code: "interval-invalid",

@@ -835,14 +835,11 @@ function normalizeSceneDurationTrims(
   entries.forEach((entry, entryIndex) => {
     for (const operation of entry.program.operations) {
       if (
-        operation.kind === "InsertTimelineEvent"
-        && operation.eventKind === "wait"
-        && operation.purpose === "scene-duration"
+        operation.kind === "InsertTimelineEvent" &&
+        operation.eventKind === "wait" &&
+        operation.purpose === "scene-duration"
       ) {
-        if (
-          entry.program.provenance.origin !== "studio-default"
-          || operation.provenance.origin !== "studio-default"
-        ) {
+        if (entry.program.provenance.origin !== "studio-default" || operation.provenance.origin !== "studio-default") {
           throw new ProgramLoweringError(
             "operation-unsupported",
             `Duration wait ${operation.id} was not authored by the Studio Scene duration control.`,
@@ -872,9 +869,9 @@ function normalizeSceneDurationTrims(
         const source = waitEntry.get(waitOperationId);
         const available = remainingWaitDuration.get(waitOperationId) ?? 0;
         if (
-          !source
-          || source.entryIndex >= entryIndex
-          || Math.abs(source.sourceAnchor - entry.sourceAnchor) >= EPSILON
+          !source ||
+          source.entryIndex >= entryIndex ||
+          Math.abs(source.sourceAnchor - entry.sourceAnchor) >= EPSILON
         ) {
           throw new ProgramLoweringError(
             "operation-unsupported",
@@ -899,10 +896,11 @@ function normalizeSceneDurationTrims(
     const operations = entry.program.operations.flatMap((operation): readonly CanonicalEditOperation[] => {
       if (operation.kind === "TrimSceneDuration") return [];
       if (
-        operation.kind !== "InsertTimelineEvent"
-        || operation.eventKind !== "wait"
-        || operation.purpose !== "scene-duration"
-      ) return [operation];
+        operation.kind !== "InsertTimelineEvent" ||
+        operation.eventKind !== "wait" ||
+        operation.purpose !== "scene-duration"
+      )
+        return [operation];
       const duration = remainingWaitDuration.get(operation.id) ?? operation.interval.end - operation.interval.start;
       return duration > EPSILON
         ? [{ ...operation, interval: { end: operation.interval.start + duration, start: operation.interval.start } }]
@@ -910,20 +908,22 @@ function normalizeSceneDurationTrims(
     });
     if (operations.length === 0) return [];
     const operationIds = new Set(operations.map((operation) => operation.id));
-    return [{
-      ...entry,
-      program: {
-        ...entry.program,
-        operations,
-        schedule: {
-          ...entry.program.schedule,
-          edges: entry.program.schedule.edges.filter((edge) => (
-            operationIds.has(edge.from) && operationIds.has(edge.to)
-          )),
-          order: entry.program.schedule.order.filter((id) => operationIds.has(id)),
+    return [
+      {
+        ...entry,
+        program: {
+          ...entry.program,
+          operations,
+          schedule: {
+            ...entry.program.schedule,
+            edges: entry.program.schedule.edges.filter(
+              (edge) => operationIds.has(edge.from) && operationIds.has(edge.to),
+            ),
+            order: entry.program.schedule.order.filter((id) => operationIds.has(id)),
+          },
         },
       },
-    }];
+    ];
   });
 }
 
@@ -957,9 +957,9 @@ export function lowerCanonicalProgramBatchSource(
   const normalizedEntries = normalizeSceneDurationTrims(orderedEntries);
 
   if (normalizedEntries.length === 0) {
-    const anchor = findSceneMotionAnchors(source, request.sceneName).find((candidate) => (
-      Math.abs(candidate.seconds - orderedEntries[0]!.sourceAnchor) < EPSILON
-    ));
+    const anchor = findSceneMotionAnchors(source, request.sceneName).find(
+      (candidate) => Math.abs(candidate.seconds - orderedEntries[0]!.sourceAnchor) < EPSILON,
+    );
     if (!anchor) {
       throw new ProgramLoweringError(
         "anchor-missing",

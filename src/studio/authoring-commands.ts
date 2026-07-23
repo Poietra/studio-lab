@@ -10,16 +10,9 @@ import {
 import { validateAndScheduleProgram, type ProgramValidationResult } from "./program-validation";
 import { resolveTimeAnchorOnce } from "./time";
 
-export const INSERT_ENTITY_TYPES = [
-  "Text",
-  "MathTex",
-  "Rectangle",
-  "Circle",
-  "Line",
-  "Arrow",
-] as const;
+export const INSERT_ENTITY_TYPES = ["Text", "MathTex", "Rectangle", "Circle", "Line", "Arrow"] as const;
 
-export type InsertEntityType = typeof INSERT_ENTITY_TYPES[number];
+export type InsertEntityType = (typeof INSERT_ENTITY_TYPES)[number];
 
 export type StudioEntityInput = Readonly<{
   content?: EntityContent;
@@ -46,13 +39,16 @@ function authoringProgram(
     transactionId: string;
   }>,
 ): ProgramValidationResult {
-  const resolution = resolveTimeAnchorOnce({
-    kind: "playhead",
-    referenceSeconds: input.capturedPlayhead,
-  }, {
-    capturedPlayhead: input.capturedPlayhead,
-    sceneDuration: input.scene.duration,
-  });
+  const resolution = resolveTimeAnchorOnce(
+    {
+      kind: "playhead",
+      referenceSeconds: input.capturedPlayhead,
+    },
+    {
+      capturedPlayhead: input.capturedPlayhead,
+      sceneDuration: input.scene.duration,
+    },
+  );
   if (resolution.kind === "invalid") {
     throw new Error(resolution.message);
   }
@@ -63,7 +59,11 @@ function authoringProgram(
     operations,
     provenance: provenance(input.origin, ["manual Studio authoring"]),
     requestedExecution: input.requestedExecution ?? "parallel",
-    schedule: { edges: [], mode: input.requestedExecution ?? "parallel", order: operations.map((operation) => operation.id) },
+    schedule: {
+      edges: [],
+      mode: input.requestedExecution ?? "parallel",
+      order: operations.map((operation) => operation.id),
+    },
     transactionId: input.transactionId,
     version: EDIT_OPERATION_VERSION,
   };
@@ -74,13 +74,15 @@ function appearanceEnd(scene: RuntimeSceneState, start: number) {
   return Math.min(scene.duration, start + 0.4);
 }
 
-export function createStudioEntitiesProgram(input: Readonly<{
-  capturedPlayhead: number;
-  entities: readonly StudioEntityInput[];
-  origin?: OperationOrigin;
-  scene: RuntimeSceneState;
-  transactionId: string;
-}>): AuthoringProgramResult {
+export function createStudioEntitiesProgram(
+  input: Readonly<{
+    capturedPlayhead: number;
+    entities: readonly StudioEntityInput[];
+    origin?: OperationOrigin;
+    scene: RuntimeSceneState;
+    transactionId: string;
+  }>,
+): AuthoringProgramResult {
   if (input.entities.length === 0) throw new Error("Choose at least one object to insert.");
   const end = appearanceEnd(input.scene, input.capturedPlayhead);
   if (end - input.capturedPlayhead < 0.1) {
@@ -141,28 +143,32 @@ export function createStudioEntitiesProgram(input: Readonly<{
   };
 }
 
-export function createRemoveEntitiesProgram(input: Readonly<{
-  capturedPlayhead: number;
-  entityIds: readonly string[];
-  scene: RuntimeSceneState;
-  transactionId: string;
-}>): ProgramValidationResult {
+export function createRemoveEntitiesProgram(
+  input: Readonly<{
+    capturedPlayhead: number;
+    entityIds: readonly string[];
+    scene: RuntimeSceneState;
+    transactionId: string;
+  }>,
+): ProgramValidationResult {
   const entityIds = [...new Set(input.entityIds)];
   if (entityIds.length === 0) throw new Error("Select an object to delete.");
   const end = appearanceEnd(input.scene, input.capturedPlayhead);
   if (end - input.capturedPlayhead < 0.1) {
     throw new Error("Move the playhead at least 0.1 seconds before the Scene end to delete an object.");
   }
-  const operations = entityIds.map((entityId, index): CanonicalEditOperation => ({
-    dependsOn: [],
-    effect: "remove",
-    entityId,
-    id: operationId(input.transactionId, `remove-${index}`),
-    interval: { end, start: input.capturedPlayhead },
-    kind: "ChangePresence",
-    persistent: true,
-    provenance: provenance("studio-default", ["Delete command"]),
-  }));
+  const operations = entityIds.map(
+    (entityId, index): CanonicalEditOperation => ({
+      dependsOn: [],
+      effect: "remove",
+      entityId,
+      id: operationId(input.transactionId, `remove-${index}`),
+      interval: { end, start: input.capturedPlayhead },
+      kind: "ChangePresence",
+      persistent: true,
+      provenance: provenance("studio-default", ["Delete command"]),
+    }),
+  );
   return authoringProgram(operations, {
     capturedPlayhead: input.capturedPlayhead,
     origin: "studio-default",
@@ -171,19 +177,19 @@ export function createRemoveEntitiesProgram(input: Readonly<{
   });
 }
 
-export function createTrimEntityLifetimeProgram(input: Readonly<{
-  entityId: string;
-  lifetimeStart: number;
-  retainedDuration: number;
-  scene: RuntimeSceneState;
-  sourceAnchor: number;
-  transactionId: string;
-}>): ProgramValidationResult {
+export function createTrimEntityLifetimeProgram(
+  input: Readonly<{
+    entityId: string;
+    lifetimeStart: number;
+    retainedDuration: number;
+    scene: RuntimeSceneState;
+    sourceAnchor: number;
+    transactionId: string;
+  }>,
+): ProgramValidationResult {
   const entity = input.scene.objectGraph.entities[input.entityId];
   if (!entity) throw new Error(`Object ${input.entityId} is no longer available.`);
-  const lifetime = entity.lifetime.find((interval) => (
-    Math.abs(interval.start - input.lifetimeStart) < 0.001
-  ));
+  const lifetime = entity.lifetime.find((interval) => Math.abs(interval.start - input.lifetimeStart) < 0.001);
   if (!lifetime) throw new Error("The selected lifetime interval is no longer available.");
   const targetEnd = input.sourceAnchor;
   if (!Number.isFinite(input.retainedDuration) || input.retainedDuration < 0.1) {
@@ -196,11 +202,7 @@ export function createTrimEntityLifetimeProgram(input: Readonly<{
     throw new Error("Move the lifetime end at least 0.01 seconds earlier.");
   }
 
-  if (
-    !Number.isFinite(input.sourceAnchor)
-    || input.sourceAnchor < 0
-    || input.sourceAnchor < lifetime.start - 0.001
-  ) {
+  if (!Number.isFinite(input.sourceAnchor) || input.sourceAnchor < 0 || input.sourceAnchor < lifetime.start - 0.001) {
     throw new Error("A safe source anchor is required inside the selected lifetime.");
   }
   const removeId = operationId(input.transactionId, "trim-lifetime-end");
@@ -212,7 +214,11 @@ export function createTrimEntityLifetimeProgram(input: Readonly<{
     interval: { end: input.sourceAnchor, start: input.sourceAnchor },
     kind: "ChangePresence",
     persistent: true,
-    provenance: provenance("direct-manipulation", ["lifetime right-edge trim", "safe source anchor", "persistent exit"]),
+    provenance: provenance("direct-manipulation", [
+      "lifetime right-edge trim",
+      "safe source anchor",
+      "persistent exit",
+    ]),
   };
   return authoringProgram([operation], {
     capturedPlayhead: input.sourceAnchor,
@@ -228,9 +234,9 @@ const DURATION_EPSILON = 0.001;
 function sceneDurationWait(program: CanonicalEditProgram) {
   if (program.provenance.origin !== "studio-default" || program.operations.length !== 1) return null;
   const operation = program.operations[0];
-  return operation?.kind === "InsertTimelineEvent"
-    && operation.eventKind === "wait"
-    && operation.purpose === "scene-duration"
+  return operation?.kind === "InsertTimelineEvent" &&
+    operation.eventKind === "wait" &&
+    operation.purpose === "scene-duration"
     ? operation
     : null;
 }
@@ -249,16 +255,20 @@ export type SceneDurationTrimAvailability = Readonly<{
   waitOperationIds: readonly string[];
 }>;
 
-export function sceneDurationTrimAvailability(input: Readonly<{
-  appliedPrograms: readonly ProgramRecord[];
-  sceneDuration: number;
-}>): SceneDurationTrimAvailability {
-  const controls: Array<Readonly<{
-    anchor: number;
-    duration: number;
-    kind: "trim" | "wait";
-    waitOperationId?: string;
-  }>> = [];
+export function sceneDurationTrimAvailability(
+  input: Readonly<{
+    appliedPrograms: readonly ProgramRecord[];
+    sceneDuration: number;
+  }>,
+): SceneDurationTrimAvailability {
+  const controls: Array<
+    Readonly<{
+      anchor: number;
+      duration: number;
+      kind: "trim" | "wait";
+      waitOperationId?: string;
+    }>
+  > = [];
   let firstNonControlIndex = input.appliedPrograms.length - 1;
   for (; firstNonControlIndex >= 0; firstNonControlIndex -= 1) {
     const program = input.appliedPrograms[firstNonControlIndex]?.program;
@@ -285,13 +295,11 @@ export function sceneDurationTrimAvailability(input: Readonly<{
     break;
   }
 
-  const allDurationWaitIndexes = input.appliedPrograms.flatMap((record, index) => (
-    sceneDurationWait(record.program) ? [index] : []
-  ));
+  const allDurationWaitIndexes = input.appliedPrograms.flatMap((record, index) =>
+    sceneDurationWait(record.program) ? [index] : [],
+  );
   if (controls.length === 0) {
-    const later = allDurationWaitIndexes.length > 0
-      ? input.appliedPrograms.at(-1)?.program
-      : null;
+    const later = allDurationWaitIndexes.length > 0 ? input.appliedPrograms.at(-1)?.program : null;
     return {
       anchor: null,
       blocker: later
@@ -304,17 +312,19 @@ export function sceneDurationTrimAvailability(input: Readonly<{
   }
 
   const anchors = new Set(controls.map((control) => control.anchor.toFixed(4)));
-  const waitOperationIds = controls.flatMap((control) => (
-    control.kind === "wait" && control.waitOperationId ? [control.waitOperationId] : []
-  )).reverse();
-  const removableDuration = controls.reduce((duration, control) => (
-    control.kind === "wait" ? duration + control.duration : duration - control.duration
-  ), 0);
+  const waitOperationIds = controls
+    .flatMap((control) => (control.kind === "wait" && control.waitOperationId ? [control.waitOperationId] : []))
+    .reverse();
+  const removableDuration = controls.reduce(
+    (duration, control) => (control.kind === "wait" ? duration + control.duration : duration - control.duration),
+    0,
+  );
   const anchor = controls.at(-1)?.anchor ?? null;
   if (anchors.size !== 1 || anchor === null) {
     return {
       anchor: null,
-      blocker: "Studio duration waits at different source anchors cannot be shortened together. Undo the later duration changes first.",
+      blocker:
+        "Studio duration waits at different source anchors cannot be shortened together. Undo the later duration changes first.",
       minimumDuration: input.sceneDuration,
       removableDuration: 0,
       waitOperationIds: [],
@@ -338,14 +348,16 @@ export function sceneDurationTrimAvailability(input: Readonly<{
   };
 }
 
-export function createSceneDurationProgram(input: Readonly<{
-  appliedPrograms?: readonly ProgramRecord[];
-  capturedPlayhead: number;
-  scene: RuntimeSceneState;
-  sourceAnchor: number;
-  targetDuration: number;
-  transactionId: string;
-}>): ProgramValidationResult {
+export function createSceneDurationProgram(
+  input: Readonly<{
+    appliedPrograms?: readonly ProgramRecord[];
+    capturedPlayhead: number;
+    scene: RuntimeSceneState;
+    sourceAnchor: number;
+    targetDuration: number;
+    transactionId: string;
+  }>,
+): ProgramValidationResult {
   const change = input.targetDuration - input.scene.duration;
   if (!Number.isFinite(input.targetDuration) || input.targetDuration < 0.1) {
     throw new Error("The new Scene duration must be a finite value of at least 0.1 seconds.");
@@ -363,8 +375,8 @@ export function createSceneDurationProgram(input: Readonly<{
     const removedDuration = -change;
     if (removedDuration > availability.removableDuration + DURATION_EPSILON) {
       throw new Error(
-        `The shortest safe duration is ${availability.minimumDuration.toFixed(2)}s. `
-          + `Only ${availability.removableDuration.toFixed(2)}s of Studio-added trailing wait can be removed; imported or animated content would be truncated.`,
+        `The shortest safe duration is ${availability.minimumDuration.toFixed(2)}s. ` +
+          `Only ${availability.removableDuration.toFixed(2)}s of Studio-added trailing wait can be removed; imported or animated content would be truncated.`,
       );
     }
     if (availability.anchor === null || availability.waitOperationIds.length === 0) {

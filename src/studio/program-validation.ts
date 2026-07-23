@@ -1,5 +1,11 @@
 import type { RuntimeSceneState } from "./model";
-import { channelKey, type CanonicalEditOperation, type CanonicalEditProgram, type DependencyEdge, type ProgramValidationIssue } from "./operations";
+import {
+  channelKey,
+  type CanonicalEditOperation,
+  type CanonicalEditProgram,
+  type DependencyEdge,
+  type ProgramValidationIssue,
+} from "./operations";
 import {
   operationAccess,
   operationExecutionCapabilities,
@@ -56,17 +62,20 @@ function topologicalOrder(operationIds: readonly string[], edges: readonly Depen
 }
 
 function producedEntityIds(program: CanonicalEditProgram) {
-  return new Set(program.operations.flatMap((operation) => {
-    if (operation.kind === "CreateEntity") return [operation.entity.id];
-    if (operation.kind === "TransformContent") return [operation.targetEntityId];
-    return [];
-  }));
+  return new Set(
+    program.operations.flatMap((operation) => {
+      if (operation.kind === "CreateEntity") return [operation.entity.id];
+      if (operation.kind === "TransformContent") return [operation.targetEntityId];
+      return [];
+    }),
+  );
 }
 
 function referencedEntityIds(operation: CanonicalEditOperation) {
   const access = operationAccess(operation);
-  return [...new Set([...access.reads, ...access.writes].map((entry) => entry.entityId))]
-    .filter((id) => id !== "camera");
+  return [...new Set([...access.reads, ...access.writes].map((entry) => entry.entityId))].filter(
+    (id) => id !== "camera",
+  );
 }
 
 export function validateAndScheduleProgram(
@@ -99,12 +108,10 @@ export function validateAndScheduleProgram(
     });
   }
   if (
-    input.operations.some((operation) => operation.kind === "TrimSceneDuration")
-    && (
-      input.operations.length !== 1
-      || input.requestedExecution !== "sequence"
-      || input.provenance.origin !== "studio-default"
-    )
+    input.operations.some((operation) => operation.kind === "TrimSceneDuration") &&
+    (input.operations.length !== 1 ||
+      input.requestedExecution !== "sequence" ||
+      input.provenance.origin !== "studio-default")
   ) {
     issues.push({
       code: "schema-invalid",
@@ -115,11 +122,10 @@ export function validateAndScheduleProgram(
   }
   const firstOperationStart = input.operations[0]?.interval.start;
   if (
-    !Number.isFinite(input.anchor.resolvedSeconds)
-    || input.anchor.resolvedSeconds < 0
-    || input.anchor.resolvedSeconds > scene.duration
-    || (firstOperationStart !== undefined
-      && Math.abs(firstOperationStart - input.anchor.resolvedSeconds) >= EPSILON)
+    !Number.isFinite(input.anchor.resolvedSeconds) ||
+    input.anchor.resolvedSeconds < 0 ||
+    input.anchor.resolvedSeconds > scene.duration ||
+    (firstOperationStart !== undefined && Math.abs(firstOperationStart - input.anchor.resolvedSeconds) >= EPSILON)
   ) {
     issues.push({
       code: "anchor-invalid",
@@ -131,18 +137,24 @@ export function validateAndScheduleProgram(
 
   const operationIds = input.operations.map((operation) => operation.id);
   if (new Set(operationIds).size !== operationIds.length) {
-    issues.push({ code: "schema-invalid", field: "operations[].id", message: "Operation IDs must be unique within a transaction.", severity: "error" });
+    issues.push({
+      code: "schema-invalid",
+      field: "operations[].id",
+      message: "Operation IDs must be unique within a transaction.",
+      severity: "error",
+    });
   }
   for (const operation of input.operations) issues.push(...validateOperation(operation, scene));
 
   const produced = producedEntityIds(input);
   const producerIds = new Set<string>();
   for (const operation of input.operations) {
-    const entityId = operation.kind === "CreateEntity"
-      ? operation.entity.id
-      : operation.kind === "TransformContent"
-        ? operation.targetEntityId
-        : null;
+    const entityId =
+      operation.kind === "CreateEntity"
+        ? operation.entity.id
+        : operation.kind === "TransformContent"
+          ? operation.targetEntityId
+          : null;
     if (!entityId) continue;
     if (producerIds.has(entityId)) {
       issues.push({
@@ -282,7 +294,7 @@ export function validateAndScheduleProgram(
         { conflict: rightWriteRead, from: right.id, to: left.id },
       ]) {
         if (!conflict || conflict === writeConflict) continue;
-        const reason = conflict.endsWith("/identity") ? "identity" as const : "read-after-write" as const;
+        const reason = conflict.endsWith("/identity") ? ("identity" as const) : ("read-after-write" as const);
         edges.push({ from, reason, to });
         if (input.requestedExecution === "parallel" && reason === "read-after-write" && !hasParallelConflictIssue) {
           issues.push({
@@ -307,25 +319,31 @@ export function validateAndScheduleProgram(
   const normalizedEdges = uniqueEdges(edges);
   const order = topologicalOrder(operationIds, normalizedEdges);
   if (!order) {
-    issues.push({ code: "cycle", field: "schedule.edges", message: "Operation dependencies contain a cycle.", severity: "error" });
+    issues.push({
+      code: "cycle",
+      field: "schedule.edges",
+      message: "Operation dependencies contain a cycle.",
+      severity: "error",
+    });
   }
   const scheduledProgram: CanonicalEditProgram = {
     ...input,
     schedule: {
       edges: normalizedEdges,
-      mode: input.requestedExecution === "sequence"
-        ? "sequence"
-        : normalizedEdges.length > 0
-          ? "dependency-dag"
-          : "parallel",
+      mode:
+        input.requestedExecution === "sequence"
+          ? "sequence"
+          : normalizedEdges.length > 0
+            ? "dependency-dag"
+            : "parallel",
       order: order ?? operationIds,
     },
   };
   const execution = programExecutionCapabilities(scheduledProgram);
   if (
-    execution.apply === "blocked"
-    && execution.applyBlocker
-    && !issues.some((issue) => issue.code === "lowering-unsupported")
+    execution.apply === "blocked" &&
+    execution.applyBlocker &&
+    !issues.some((issue) => issue.code === "lowering-unsupported")
   ) {
     issues.push({
       code: "lowering-unsupported",

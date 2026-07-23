@@ -28,105 +28,118 @@ export type OperationBase = Readonly<{
   provenance: Readonly<{ evidence: readonly string[]; origin: OperationOrigin }>;
 }>;
 
-export type CreateEntityOperation = OperationBase & Readonly<{
-  entity: Readonly<{
-    content?: EntityContent;
-    id: string;
-    lifetime: Readonly<{ end: number | null; start: number }>;
-    type: string;
+export type CreateEntityOperation = OperationBase &
+  Readonly<{
+    entity: Readonly<{
+      content?: EntityContent;
+      id: string;
+      lifetime: Readonly<{ end: number | null; start: number }>;
+      type: string;
+    }>;
+    kind: "CreateEntity";
   }>;
-  kind: "CreateEntity";
-}>;
 
-export type SetPropertyOperation = OperationBase & Readonly<{
-  entityId: string;
-  key: Exclude<PropertyChannelKey, "identity">;
-  kind: "SetProperty";
-  value: boolean | number | string | Point | EntityContent;
-}>;
+export type SetPropertyOperation = OperationBase &
+  Readonly<{
+    entityId: string;
+    key: Exclude<PropertyChannelKey, "identity">;
+    kind: "SetProperty";
+    value: boolean | number | string | Point | EntityContent;
+  }>;
 
-export type AnimatePropertyOperation = OperationBase & Readonly<{
-  control?: Point;
-  easing: "smooth";
-  entityId: string;
-  from?: Point | number;
-  key: "appearance" | "position" | "rotation" | "scale";
-  kind: "AnimateProperty";
-  to: Point | number;
-}>;
+export type AnimatePropertyOperation = OperationBase &
+  Readonly<{
+    control?: Point;
+    easing: "smooth";
+    entityId: string;
+    from?: Point | number;
+    key: "appearance" | "position" | "rotation" | "scale";
+    kind: "AnimateProperty";
+    to: Point | number;
+  }>;
 
-export type CreateMotionOperation = OperationBase & Readonly<{
-  controlOffset: Point;
-  delta: Point;
-  easing: "smooth";
-  kind: "CreateMotion";
-  targetEntityIds: readonly string[];
-}>;
+export type CreateMotionOperation = OperationBase &
+  Readonly<{
+    controlOffset: Point;
+    delta: Point;
+    easing: "smooth";
+    kind: "CreateMotion";
+    targetEntityIds: readonly string[];
+  }>;
 
-export type ModifyMotionOperation = OperationBase & Readonly<{
-  controlOffset: Point;
-  kind: "ModifyMotion";
-  motionId: string;
-  preserve: readonly ("duration" | "end" | "start")[];
-}>;
+export type ModifyMotionOperation = OperationBase &
+  Readonly<{
+    controlOffset: Point;
+    kind: "ModifyMotion";
+    motionId: string;
+    preserve: readonly ("duration" | "end" | "start")[];
+  }>;
 
-export type TransformContentOperation = OperationBase & Readonly<{
-  kind: "TransformContent";
-  replacement: EntityContent;
-  sourceEntityId: string;
-  strategy: "replacement-transform" | "transform-matching-tex";
-  targetEntityId: string;
-  targetType?: string;
-}>;
+export type TransformContentOperation = OperationBase &
+  Readonly<{
+    kind: "TransformContent";
+    replacement: EntityContent;
+    sourceEntityId: string;
+    strategy: "replacement-transform" | "transform-matching-tex";
+    targetEntityId: string;
+    targetType?: string;
+  }>;
 
-export type SetRelationOperation = OperationBase & Readonly<{
-  kind: "SetRelation";
-  mode: "live" | "snapshot";
-  offset: Point;
-  placement: "above" | "below" | "left" | "right";
-  relation: "next-to";
-  sourceEntityId: string;
-  targetEntityId: string;
-}>;
+export type SetRelationOperation = OperationBase &
+  Readonly<{
+    kind: "SetRelation";
+    mode: "live" | "snapshot";
+    offset: Point;
+    placement: "above" | "below" | "left" | "right";
+    relation: "next-to";
+    sourceEntityId: string;
+    targetEntityId: string;
+  }>;
 
-export type ChangePresenceOperation = OperationBase & Readonly<{
-  effect: "cover" | "fade-in" | "remove" | "reveal";
-  entityId: string;
-  kind: "ChangePresence";
-  persistent: boolean;
-}>;
+export type ChangePresenceOperation = OperationBase &
+  Readonly<{
+    effect: "cover" | "fade-in" | "remove" | "reveal";
+    entityId: string;
+    kind: "ChangePresence";
+    persistent: boolean;
+  }>;
 
-export type InsertTimelineEventOperation = OperationBase & Readonly<{
-  eventKind: "play" | "wait";
-  kind: "InsertTimelineEvent";
-  label: string;
-  purpose?: "scene-duration";
-}>;
+export type InsertTimelineEventOperation = OperationBase &
+  Readonly<{
+    eventKind: "play" | "wait";
+    kind: "InsertTimelineEvent";
+    label: string;
+    purpose?: "scene-duration";
+  }>;
 
-export type TrimSceneDurationOperation = OperationBase & Readonly<{
-  kind: "TrimSceneDuration";
-  removedDuration: number;
-  targetDuration: number;
-  waitOperationIds: readonly string[];
-}>;
+export type TrimSceneDurationOperation = OperationBase &
+  Readonly<{
+    kind: "TrimSceneDuration";
+    removedDuration: number;
+    targetDuration: number;
+    waitOperationIds: readonly string[];
+  }>;
 
-export type InsertSceneBoundaryOperation = OperationBase & Readonly<{
-  at: number;
-  destination: "next-scene";
-  kind: "InsertSceneBoundary";
-}>;
+export type InsertSceneBoundaryOperation = OperationBase &
+  Readonly<{
+    at: number;
+    destination: "next-scene";
+    kind: "InsertSceneBoundary";
+  }>;
 
-export type ChangeConstraintOperation = OperationBase & Readonly<{
-  action: "remove" | "replace";
-  constraintId: string;
-  kind: "ChangeConstraint";
-}>;
+export type ChangeConstraintOperation = OperationBase &
+  Readonly<{
+    action: "remove" | "replace";
+    constraintId: string;
+    kind: "ChangeConstraint";
+  }>;
 
-export type ChangeCameraOperation = OperationBase & Readonly<{
-  kind: "ChangeCamera";
-  property: "position" | "rotation" | "scale";
-  value: number | Point;
-}>;
+export type ChangeCameraOperation = OperationBase &
+  Readonly<{
+    kind: "ChangeCamera";
+    property: "position" | "rotation" | "scale";
+    value: number | Point;
+  }>;
 
 export type CanonicalEditOperation =
   | AnimatePropertyOperation

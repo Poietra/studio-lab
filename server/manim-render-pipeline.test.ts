@@ -538,9 +538,9 @@ class GroupedEquation(Scene):
     expect(exported.source).toContain("self.wait(2)");
     expect(exported.source).not.toContain("self.wait(3)");
     expect(reimported?.runtimeSceneState.duration).toBe(10);
-    expect(reimported?.runtimeSceneState.eventTrack.events.every((event) => (
-      (event.at ?? event.interval?.end ?? 0) <= 10
-    ))).toBe(true);
+    expect(
+      reimported?.runtimeSceneState.eventTrack.events.every((event) => (event.at ?? event.interval?.end ?? 0) <= 10),
+    ).toBe(true);
   });
 
   it("identifies a render session by the deterministic Program batch", async () => {

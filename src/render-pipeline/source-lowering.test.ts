@@ -872,8 +872,7 @@ class GroupedEquation(Scene):
     expect(lowered.insertedCode).toContain("self.wait(2)");
     expect(lowered.insertedCode).not.toContain("self.wait(3)");
     expect(lowered.source).not.toContain('poietra:transaction "duration-trim"');
-    expect(findSceneMotionAnchors(lowered.source, "GroupedEquation").map((anchor) => anchor.seconds))
-      .toEqual([9]);
+    expect(findSceneMotionAnchors(lowered.source, "GroupedEquation").map((anchor) => anchor.seconds)).toEqual([9]);
     expect(imported?.runtimeSceneState.duration).toBe(10);
   });
 
@@ -894,22 +893,24 @@ class GroupedEquation(Scene):
 
     expect(lowered.source).toBe(source);
     expect(lowered.insertedCode).toBe("");
-    expect(findSceneMotionAnchors(lowered.source, "GroupedEquation").map((anchor) => anchor.seconds))
-      .toEqual([7]);
-    expect(importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation")?.runtimeSceneState.duration)
-      .toBe(8);
+    expect(findSceneMotionAnchors(lowered.source, "GroupedEquation").map((anchor) => anchor.seconds)).toEqual([7]);
+    expect(
+      importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation")?.runtimeSceneState.duration,
+    ).toBe(8);
   });
 
   it("refuses a Scene duration trim that cannot be proven against a Studio wait", () => {
     const trim = durationTrimProgram(1, 7, ["missing-wait"], "unproven-duration-trim");
 
-    expect(() => lowerCanonicalProgramBatchSource(
-      source,
-      request(trim),
-      [{ program: trim, sourceAnchor: 7 }],
-      { height: 8, width: 14.222 },
-      null,
-     )).toThrow(/does not reference an earlier Studio duration wait/i);
+    expect(() =>
+      lowerCanonicalProgramBatchSource(
+        source,
+        request(trim),
+        [{ program: trim, sourceAnchor: 7 }],
+        { height: 8, width: 14.222 },
+        null,
+      ),
+    ).toThrow(/does not reference an earlier Studio duration wait/i);
   });
 
   it("lowers a quadratic screen-space motion to an exact Manim cubic path", () => {
