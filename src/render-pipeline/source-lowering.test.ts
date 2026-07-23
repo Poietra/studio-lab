@@ -31,6 +31,22 @@ class GroupedEquation(Scene):
         self.wait(1)
 `;
 
+const temporalMetadataSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        equation = MathTex("E", "=", "m", "c^2")
+        self.add(equation)
+        self.wait(5)
+        # poietra:anchor 5.000
+        self.wait(2)
+        # poietra:cursor 7.000
+        self.wait(1)
+        # poietra:anchor 8.000
+        # poietra:scene-boundary {"at":8,"destination":"scene.py#Next"}
+        self.wait(1)
+`;
+
 function canonicalProgram(
   operations: readonly CanonicalEditOperation[],
   transactionId = "render-test",
@@ -66,6 +82,22 @@ function motionOperation(overrides: Partial<Extract<CanonicalEditOperation, { ki
     targetEntityIds: ["equation_1"],
     ...overrides,
   } satisfies CanonicalEditOperation;
+}
+
+function motionProgramAt(anchor: number, duration: number, transactionId: string) {
+  const operation = motionOperation({
+    id: `tx:${transactionId}/operation:motion`,
+    interval: { end: anchor + duration, start: anchor },
+  });
+  return {
+    ...canonicalProgram([operation], transactionId),
+    anchor: {
+      capturedPlayhead: anchor,
+      evidence: [`captured-playhead:${anchor.toFixed(3)}`],
+      resolvedSeconds: anchor,
+      source: { kind: "playhead" as const, referenceSeconds: anchor },
+    },
+  } satisfies CanonicalEditProgram;
 }
 
 function request(
@@ -111,12 +143,11 @@ function transformOperation(
   };
 }
 
-function latestPosition(
-  imported: NonNullable<ReturnType<typeof importManimScene>>,
-  entityId: string,
-) {
-  return imported.runtimeSceneState.propertyChannels[`${entityId}/position`]
-    ?.samples.at(-1)?.value as Readonly<{ x: number; y: number }>;
+function latestPosition(imported: NonNullable<ReturnType<typeof importManimScene>>, entityId: string) {
+  return imported.runtimeSceneState.propertyChannels[`${entityId}/position`]?.samples.at(-1)?.value as Readonly<{
+    x: number;
+    y: number;
+  }>;
 }
 
 describe("Canonical EditProgram source lowering", () => {
@@ -139,12 +170,9 @@ class GroupedEquation(Scene):
 
     expect(findMotionAnchors(stringMarkerSource)).toEqual([]);
     expect(findSceneMotionAnchors(stringMarkerSource, "GroupedEquation")).toEqual([]);
-    expect(() => lowerCanonicalProgramSource(
-      stringMarkerSource,
-      request(),
-      { height: 8, width: 14.222 },
-      null,
-    )).toThrow(/No # poietra:anchor 7.000/);
+    expect(() =>
+      lowerCanonicalProgramSource(stringMarkerSource, request(), { height: 8, width: 14.222 }, null),
+    ).toThrow(/No # poietra:anchor 7.000/);
   });
 
   it("does not expose anchors from dead or nested construct scopes", () => {
@@ -172,12 +200,9 @@ class GroupedEquation(Scene):
 
     expect(findMotionAnchors(nestedMarkerSource)).toEqual([]);
     expect(findSceneMotionAnchors(nestedMarkerSource, "GroupedEquation")).toEqual([]);
-    expect(() => lowerCanonicalProgramSource(
-      nestedMarkerSource,
-      request(),
-      { height: 8, width: 14.222 },
-      null,
-    )).toThrow(/No # poietra:anchor 7.000/);
+    expect(() =>
+      lowerCanonicalProgramSource(nestedMarkerSource, request(), { height: 8, width: 14.222 }, null),
+    ).toThrow(/No # poietra:anchor 7.000/);
   });
 
   it("keeps direct construct anchors while ignoring nearby unsafe markers", () => {
@@ -197,14 +222,8 @@ class GroupedEquation(Scene):
 `;
 
     expect(findMotionAnchors(mixedMarkerSource)).toEqual([{ line: 12, seconds: 7 }]);
-    expect(findSceneMotionAnchors(mixedMarkerSource, "GroupedEquation"))
-      .toEqual([{ line: 12, seconds: 7 }]);
-    const lowered = lowerCanonicalProgramSource(
-      mixedMarkerSource,
-      request(),
-      { height: 8, width: 14.222 },
-      null,
-    );
+    expect(findSceneMotionAnchors(mixedMarkerSource, "GroupedEquation")).toEqual([{ line: 12, seconds: 7 }]);
+    const lowered = lowerCanonicalProgramSource(mixedMarkerSource, request(), { height: 8, width: 14.222 }, null);
 
     expect(lowered.insertedCode).toContain("equation.animate.shift(");
     expect(lowered.source).toContain("        # poietra:anchor 99.000");
@@ -216,15 +235,19 @@ class GroupedEquation(Scene):
     const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
 
     expect(lowered.anchorLine).toBe(6);
-    expect(lowered.insertedCode).toContain('# poietra:motion {"motions":[{"delta":{"x":64,"y":-45},"variables":["equation"]}],"version":1}');
+    expect(lowered.insertedCode).toContain(
+      '# poietra:motion {"motions":[{"delta":{"x":64,"y":-45},"variables":["equation"]}],"version":1}',
+    );
     expect(lowered.insertedCode).toContain("equation.animate.shift(1.4222 * RIGHT + 1 * UP)");
     expect(lowered.insertedCode).not.toContain("MoveAlongPath(");
     expect(lowered.insertedCode).toContain("run_time=1.5");
     expect(lowered.source.indexOf("# poietra:cursor 7")).toBeLessThan(lowered.source.indexOf("self.play("));
     expect(lowered.source.indexOf("self.play(")).toBeLessThan(lowered.source.indexOf("# poietra:anchor 8.5"));
-    expect(imported?.runtimeSceneState.propertyChannels[
-      "source:examples/relativity.py#GroupedEquation:equation/position"
-    ]?.samples.at(-1)?.interval).toEqual({ end: 8.5, start: 7 });
+    expect(
+      imported?.runtimeSceneState.propertyChannels[
+        "source:examples/relativity.py#GroupedEquation:equation/position"
+      ]?.samples.at(-1)?.interval,
+    ).toEqual({ end: 8.5, start: 7 });
   });
 
   it("lowers an immediate absolute scale as a relative Manim factor and reimports its absolute value", () => {
@@ -245,9 +268,9 @@ class GroupedEquation(Scene):
       null,
     );
     const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
-    const samples = imported?.runtimeSceneState.propertyChannels[
-      "source:examples/relativity.py#GroupedEquation:equation/scale"
-    ]?.samples ?? [];
+    const samples =
+      imported?.runtimeSceneState.propertyChannels["source:examples/relativity.py#GroupedEquation:equation/scale"]
+        ?.samples ?? [];
 
     expect(lowered.insertedCode).toContain(
       '# poietra:scale {"kind":"exact","value":2,"variable":"equation","version":1}',
@@ -279,9 +302,10 @@ class GroupedEquation(Scene):
       null,
     );
     const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
-    const sample = imported?.runtimeSceneState.propertyChannels[
-      "source:examples/relativity.py#GroupedEquation:equation/scale"
-    ]?.samples.at(-1);
+    const sample =
+      imported?.runtimeSceneState.propertyChannels[
+        "source:examples/relativity.py#GroupedEquation:equation/scale"
+      ]?.samples.at(-1);
 
     expect(lowered.insertedCode).toContain(
       '# poietra:scale {"kind":"animated","scales":[{"from":1.5,"to":3,"variable":"equation"}],"version":1}',
@@ -316,10 +340,8 @@ class GroupedEquation(Scene):
     );
     const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
     const entityId = "source:examples/relativity.py#GroupedEquation:equation";
-    const motionSample = imported?.runtimeSceneState.propertyChannels[`${entityId}/position`]
-      ?.samples.at(-1);
-    const scaleSample = imported?.runtimeSceneState.propertyChannels[`${entityId}/scale`]
-      ?.samples.at(-1);
+    const motionSample = imported?.runtimeSceneState.propertyChannels[`${entityId}/position`]?.samples.at(-1);
+    const scaleSample = imported?.runtimeSceneState.propertyChannels[`${entityId}/scale`]?.samples.at(-1);
 
     expect(lowered.insertedCode.indexOf("# poietra:motion")).toBeLessThan(
       lowered.insertedCode.indexOf("# poietra:scale"),
@@ -347,12 +369,14 @@ class GroupedEquation(Scene):
       to: 2,
     };
 
-    expect(() => lowerCanonicalProgramSource(
-      source,
-      request(canonicalProgram([scale], "invalid-scale")),
-      { height: 8, width: 14.222 },
-      null,
-    )).toThrow(/finite positive absolute from and to/i);
+    expect(() =>
+      lowerCanonicalProgramSource(
+        source,
+        request(canonicalProgram([scale], "invalid-scale")),
+        { height: 8, width: 14.222 },
+        null,
+      ),
+    ).toThrow(/finite positive absolute from and to/i);
   });
 
   it("lowers an immediate lifetime end to self.remove without a zero-duration play", () => {
@@ -374,19 +398,15 @@ class GroupedEquation(Scene):
 
     expect(lowered.insertedCode).toContain("self.remove(equation)");
     expect(lowered.insertedCode).not.toContain("self.play(");
-    expect(imported?.runtimeSceneState.objectGraph.entities[
-      "source:examples/relativity.py#GroupedEquation:equation"
-    ]?.lifetime).toEqual([{ end: 7, start: 0 }]);
+    expect(
+      imported?.runtimeSceneState.objectGraph.entities["source:examples/relativity.py#GroupedEquation:equation"]
+        ?.lifetime,
+    ).toEqual([{ end: 7, start: 0 }]);
   });
 
   it("advances the consumed anchor so a second commit appends in playback order", () => {
     const firstProgram = canonicalProgram([motionOperation()], "first-commit");
-    const first = lowerCanonicalProgramSource(
-      source,
-      request(firstProgram),
-      { height: 8, width: 14.222 },
-      null,
-    );
+    const first = lowerCanonicalProgramSource(source, request(firstProgram), { height: 8, width: 14.222 }, null);
     const secondOperation = motionOperation({
       id: "tx:second-commit/operation:motion",
       interval: { end: 10, start: 8.5 },
@@ -407,14 +427,16 @@ class GroupedEquation(Scene):
       null,
     );
     const imported = importManimScene(second.source, "examples/relativity.py", "GroupedEquation");
-    const samples = imported?.runtimeSceneState.propertyChannels[
-      "source:examples/relativity.py#GroupedEquation:equation/position"
-    ]?.samples.filter((sample) => sample.kind === "animated") ?? [];
+    const samples =
+      imported?.runtimeSceneState.propertyChannels[
+        "source:examples/relativity.py#GroupedEquation:equation/position"
+      ]?.samples.filter((sample) => sample.kind === "animated") ?? [];
 
     expect(first.source).toContain("# poietra:cursor 7");
     expect(findSceneMotionAnchors(first.source, "GroupedEquation").map((anchor) => anchor.seconds)).toEqual([8.5]);
-    expect(second.source.indexOf('poietra:transaction "first-commit"'))
-      .toBeLessThan(second.source.indexOf('poietra:transaction "second-commit"'));
+    expect(second.source.indexOf('poietra:transaction "first-commit"')).toBeLessThan(
+      second.source.indexOf('poietra:transaction "second-commit"'),
+    );
     expect(findSceneMotionAnchors(second.source, "GroupedEquation").map((anchor) => anchor.seconds)).toEqual([10]);
     expect(samples.map((sample) => sample.interval)).toEqual([
       { end: 8.5, start: 7 },
@@ -435,8 +457,145 @@ class GroupedEquation(Scene):
       null,
     );
 
-    expect(findSceneMotionAnchors(lowered.source, "GroupedEquation").map((anchor) => anchor.seconds))
-      .toEqual([8.5, 11.5]);
+    expect(findSceneMotionAnchors(lowered.source, "GroupedEquation").map((anchor) => anchor.seconds)).toEqual([
+      8.5, 11.5,
+    ]);
+  });
+
+  it("shifts every safe downstream temporal marker and reimports execution-aligned timing", () => {
+    const lowered = lowerCanonicalProgramSource(
+      temporalMetadataSource,
+      request(motionProgramAt(5, 1, "temporal-single")),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
+    const motion = imported?.runtimeSceneState.propertyChannels[
+      "source:examples/relativity.py#GroupedEquation:equation/position"
+    ]?.samples.find((sample) => sample.kind === "animated");
+    const boundary = imported?.runtimeSceneState.eventTrack.events.find((event) => event.kind === "scene-boundary");
+
+    expect(findSceneMotionAnchors(lowered.source, "GroupedEquation").map((anchor) => anchor.seconds)).toEqual([6, 9]);
+    expect(lowered.source).toContain("# poietra:cursor 8");
+    expect(lowered.source).toContain('# poietra:scene-boundary {"at":9,"destination":"scene.py#Next"}');
+    expect(motion?.interval).toEqual({ end: 6, start: 5 });
+    expect(boundary).toMatchObject({ at: 9, kind: "scene-boundary" });
+    expect(imported?.runtimeSceneState.duration).toBe(10);
+  });
+
+  it("moves original metadata at the exact insertion boundary and remains stable across repeated insertion", () => {
+    const sourceWithEqualMetadata = temporalMetadataSource
+      .replace(
+        "        self.wait(5)\n        # poietra:anchor 5.000",
+        [
+          "        self.wait(5)",
+          "        # poietra:cursor 5.000",
+          '        # poietra:scene-boundary {"at":5,"destination":"scene.py#BeforeAnchor"}',
+          "        # poietra:anchor 5.000",
+        ].join("\n"),
+      )
+      .replace(
+        "        # poietra:anchor 5.000",
+        [
+          "        # poietra:anchor 5.000",
+          "        # poietra:cursor 5.000",
+          '        # poietra:scene-boundary {"at":5,"destination":"scene.py#AfterAnchor"}',
+        ].join("\n"),
+      );
+    const first = lowerCanonicalProgramSource(
+      sourceWithEqualMetadata,
+      request(motionProgramAt(5, 1, "temporal-first")),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    const second = lowerCanonicalProgramSource(
+      first.source,
+      request(motionProgramAt(6, 0.75, "temporal-second")),
+      { height: 8, width: 14.222 },
+      null,
+    );
+
+    expect(first.source.match(/# poietra:cursor [0-9.]+/g)).toEqual([
+      "# poietra:cursor 5.000",
+      "# poietra:cursor 5",
+      "# poietra:cursor 6",
+      "# poietra:cursor 8",
+    ]);
+    expect(first.source).toContain('# poietra:scene-boundary {"at":5,"destination":"scene.py#BeforeAnchor"}');
+    expect(first.source).toContain('# poietra:scene-boundary {"at":6,"destination":"scene.py#AfterAnchor"}');
+    expect(second.source.match(/# poietra:cursor [0-9.]+/g)).toEqual([
+      "# poietra:cursor 5.000",
+      "# poietra:cursor 5",
+      "# poietra:cursor 6",
+      "# poietra:cursor 6.75",
+      "# poietra:cursor 8.75",
+    ]);
+    expect(second.source).toContain('# poietra:scene-boundary {"at":5,"destination":"scene.py#BeforeAnchor"}');
+    expect(second.source).toContain('# poietra:scene-boundary {"at":6.75,"destination":"scene.py#AfterAnchor"}');
+    expect(second.source).toContain('# poietra:scene-boundary {"at":9.75,"destination":"scene.py#Next"}');
+    expect(findSceneMotionAnchors(second.source, "GroupedEquation").map((anchor) => anchor.seconds)).toEqual([
+      6.75, 9.75,
+    ]);
+  });
+
+  it("applies the same cumulative temporal rewrite to distinct source anchors in a batch", () => {
+    const earlier = motionProgramAt(5, 1, "temporal-batch-earlier");
+    const later = motionProgramAt(9, 1.25, "temporal-batch-later");
+    const lowered = lowerCanonicalProgramBatchSource(
+      temporalMetadataSource,
+      request(earlier),
+      [
+        { program: later, sourceAnchor: 8 },
+        { program: earlier, sourceAnchor: 5 },
+      ],
+      { height: 8, width: 14.222 },
+      null,
+    );
+    const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
+
+    expect(findSceneMotionAnchors(lowered.source, "GroupedEquation").map((anchor) => anchor.seconds)).toEqual([
+      6, 10.25,
+    ]);
+    expect(lowered.source).toContain("# poietra:cursor 8");
+    expect(lowered.source).toContain("# poietra:cursor 9");
+    expect(lowered.source).toContain('# poietra:scene-boundary {"at":10.25,"destination":"scene.py#Next"}');
+    expect(imported?.runtimeSceneState.eventTrack.events).toContainEqual(
+      expect.objectContaining({
+        at: 10.25,
+        kind: "scene-boundary",
+      }),
+    );
+  });
+
+  it("leaves string, nested, and malformed temporal markers inert while shifting valid markers", () => {
+    const sourceWithUnsafeMetadata = temporalMetadataSource.replace(
+      "        self.add(equation)",
+      `        self.add(equation)
+        documentation = """
+        # poietra:cursor 70.000
+        # poietra:scene-boundary {"at":80,"destination":"scene.py#String"}
+        """
+        if False:
+            # poietra:cursor 60.000
+            # poietra:scene-boundary {"at":70,"destination":"scene.py#Nested"}
+        # poietra:cursor later
+        # poietra:scene-boundary {"at":7}`,
+    );
+    const lowered = lowerCanonicalProgramSource(
+      sourceWithUnsafeMetadata,
+      request(motionProgramAt(5, 1, "temporal-safe-only")),
+      { height: 8, width: 14.222 },
+      null,
+    );
+
+    expect(lowered.source).toContain("        # poietra:cursor 70.000");
+    expect(lowered.source).toContain('        # poietra:scene-boundary {"at":80,"destination":"scene.py#String"}');
+    expect(lowered.source).toContain("            # poietra:cursor 60.000");
+    expect(lowered.source).toContain('            # poietra:scene-boundary {"at":70,"destination":"scene.py#Nested"}');
+    expect(lowered.source).toContain("        # poietra:cursor later");
+    expect(lowered.source).toContain('        # poietra:scene-boundary {"at":7');
+    expect(lowered.source).toContain("# poietra:cursor 8");
+    expect(lowered.source).toContain('# poietra:scene-boundary {"at":9,"destination":"scene.py#Next"}');
   });
 
   it("lowers equation, explanation, and an actual imported Scene boundary as one transaction", () => {
@@ -454,15 +613,72 @@ class GroupedEquation(Scene):
         },
         kind: "CreateEntity",
       },
-      { ...operationBase("create-text", 7), entity: { content: { displayLines: ["Energy"], text: "Energy" }, id: textId, lifetime: { end: null, start: 7 }, type: "Text" }, kind: "CreateEntity" },
-      { ...operationBase("place-text", 7), kind: "SetRelation", mode: "snapshot", offset: { x: 145, y: 0 }, placement: "right", relation: "next-to", sourceEntityId: textId, targetEntityId: equationId },
-      { ...operationBase("position-text", 7), entityId: textId, key: "position", kind: "SetProperty", value: { x: 320, y: 180 } },
-      { ...operationBase("show-equation", 7, 8), effect: "fade-in", entityId: equationId, kind: "ChangePresence", persistent: true },
-      { ...operationBase("show-text", 7, 8), effect: "fade-in", entityId: textId, kind: "ChangePresence", persistent: true },
-      { ...operationBase("create-overlay", 8), entity: { content: { displayLines: ["sky circle"] }, id: overlayId, lifetime: { end: 9, start: 8 }, type: "TransitionOverlay:circle:sky" }, kind: "CreateEntity" },
-      { ...operationBase("cover", 8, 8.5), effect: "cover", entityId: overlayId, kind: "ChangePresence", persistent: false },
+      {
+        ...operationBase("create-text", 7),
+        entity: {
+          content: { displayLines: ["Energy"], text: "Energy" },
+          id: textId,
+          lifetime: { end: null, start: 7 },
+          type: "Text",
+        },
+        kind: "CreateEntity",
+      },
+      {
+        ...operationBase("place-text", 7),
+        kind: "SetRelation",
+        mode: "snapshot",
+        offset: { x: 145, y: 0 },
+        placement: "right",
+        relation: "next-to",
+        sourceEntityId: textId,
+        targetEntityId: equationId,
+      },
+      {
+        ...operationBase("position-text", 7),
+        entityId: textId,
+        key: "position",
+        kind: "SetProperty",
+        value: { x: 320, y: 180 },
+      },
+      {
+        ...operationBase("show-equation", 7, 8),
+        effect: "fade-in",
+        entityId: equationId,
+        kind: "ChangePresence",
+        persistent: true,
+      },
+      {
+        ...operationBase("show-text", 7, 8),
+        effect: "fade-in",
+        entityId: textId,
+        kind: "ChangePresence",
+        persistent: true,
+      },
+      {
+        ...operationBase("create-overlay", 8),
+        entity: {
+          content: { displayLines: ["sky circle"] },
+          id: overlayId,
+          lifetime: { end: 9, start: 8 },
+          type: "TransitionOverlay:circle:sky",
+        },
+        kind: "CreateEntity",
+      },
+      {
+        ...operationBase("cover", 8, 8.5),
+        effect: "cover",
+        entityId: overlayId,
+        kind: "ChangePresence",
+        persistent: false,
+      },
       { ...operationBase("boundary", 8.5), at: 8.5, destination: "next-scene", kind: "InsertSceneBoundary" },
-      { ...operationBase("reveal", 8.5, 9), effect: "reveal", entityId: overlayId, kind: "ChangePresence", persistent: true },
+      {
+        ...operationBase("reveal", 8.5, 9),
+        effect: "reveal",
+        entityId: overlayId,
+        kind: "ChangePresence",
+        persistent: true,
+      },
     ];
     const program = {
       ...canonicalProgram(operations, "compound"),
@@ -474,22 +690,23 @@ class GroupedEquation(Scene):
       { ...request(program, []), destination: { sceneName: "Next", sourcePath: "scene.py" } },
       { height: 8, width: 14.222 },
       {
-        initialization: ["title = Text(\"Next\")"],
+        initialization: ['title = Text("Next")'],
         visibleSourceVariables: ["title"],
       },
     );
     const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
 
-    expect(lowered.insertedCode).toContain("MathTex(\"E\", \"=\", \"m\", \"c^2\")");
-    expect(lowered.insertedCode).toContain("Text(\"Energy\")");
+    expect(lowered.insertedCode).toContain('MathTex("E", "=", "m", "c^2")');
+    expect(lowered.insertedCode).toContain('Text("Energy")');
     expect(lowered.insertedCode).toContain(".get_center() + 3.2222 * RIGHT");
-    expect(lowered.insertedCode.indexOf(".get_center() + 3.2222 * RIGHT"))
-      .toBeLessThan(lowered.insertedCode.indexOf(".move_to(ORIGIN)"));
+    expect(lowered.insertedCode.indexOf(".get_center() + 3.2222 * RIGHT")).toBeLessThan(
+      lowered.insertedCode.indexOf(".move_to(ORIGIN)"),
+    );
     expect(lowered.insertedCode).toContain("FadeIn(");
     expect(lowered.insertedCode).toContain("self.clear()");
     expect(lowered.insertedCode).toContain('# poietra:scene-boundary {"at":8.5,"destination":"scene.py#Next"}');
     expect(lowered.insertedCode).toContain("# poietra:incoming-start");
-    expect(lowered.insertedCode).toContain("title = Text(\"Next\")");
+    expect(lowered.insertedCode).toContain('title = Text("Next")');
     expect(lowered.insertedCode).toContain("return  # The imported next Scene now owns the composition.");
     expect(lowered.insertedCode.match(/# poietra:entity/g)).toHaveLength(2);
     expect(lowered.insertedCode.match(/# poietra:position/g)).toHaveLength(2);
@@ -506,7 +723,12 @@ class GroupedEquation(Scene):
       return [
         {
           ...operationBase(createId, 7),
-          entity: { content: { displayLines: [type], label: type }, id: entityId, lifetime: { end: null, start: 7 }, type },
+          entity: {
+            content: { displayLines: [type], label: type },
+            id: entityId,
+            lifetime: { end: null, start: 7 },
+            type,
+          },
           kind: "CreateEntity",
         },
         {
@@ -572,12 +794,14 @@ class GroupedEquation(Scene):
       label: "wait",
     };
 
-    expect(() => lowerCanonicalProgramSource(
-      source,
-      request(canonicalProgram([position, wait])),
-      { height: 8, width: 14.222 },
-      null,
-    )).toThrow("An inserted wait must occupy its own source interval.");
+    expect(() =>
+      lowerCanonicalProgramSource(
+        source,
+        request(canonicalProgram([position, wait])),
+        { height: 8, width: 14.222 },
+        null,
+      ),
+    ).toThrow("An inserted wait must occupy its own source interval.");
   });
 
   it("lowers a quadratic screen-space motion to an exact Manim cubic path", () => {
@@ -589,11 +813,14 @@ class GroupedEquation(Scene):
       null,
     );
     const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
-    const sample = imported?.runtimeSceneState.propertyChannels[
-      "source:examples/relativity.py#GroupedEquation:equation/position"
-    ]?.samples.at(-1);
+    const sample =
+      imported?.runtimeSceneState.propertyChannels[
+        "source:examples/relativity.py#GroupedEquation:equation/position"
+      ]?.samples.at(-1);
 
-    expect(lowered.insertedCode).toContain('# poietra:motion {"motions":[{"controlOffset":{"x":32,"y":45},"delta":{"x":64,"y":-45},"variables":["equation"]}],"version":1}');
+    expect(lowered.insertedCode).toContain(
+      '# poietra:motion {"motions":[{"controlOffset":{"x":32,"y":45},"delta":{"x":64,"y":-45},"variables":["equation"]}],"version":1}',
+    );
     expect(lowered.insertedCode).toContain(
       "MoveAlongPath(equation, CubicBezier(equation.get_center(), equation.get_center() + 0.9481 * RIGHT + 0.3333 * DOWN, equation.get_center() + 1.4222 * RIGHT, equation.get_center() + 1.4222 * RIGHT + 1 * UP))",
     );
@@ -609,10 +836,14 @@ class GroupedEquation(Scene):
   it("preserves curved zero-displacement paths and tiny straight displacements", () => {
     const curved = lowerCanonicalProgramSource(
       source,
-      request(canonicalProgram([motionOperation({
-        controlOffset: { x: 0, y: 30 },
-        delta: { x: 0, y: 0 },
-      })])),
+      request(
+        canonicalProgram([
+          motionOperation({
+            controlOffset: { x: 0, y: 30 },
+            delta: { x: 0, y: 0 },
+          }),
+        ]),
+      ),
       { height: 8, width: 14.222 },
       null,
     );
@@ -635,12 +866,9 @@ class GroupedEquation(Scene):
       motionId: "source-motion",
       preserve: ["start", "end", "duration"],
     };
-    expect(() => lowerCanonicalProgramSource(
-      source,
-      request(canonicalProgram([unsupported])),
-      { height: 8, width: 14.222 },
-      null,
-    )).toThrow(/ModifyMotion has no truthful source lowering/);
+    expect(() =>
+      lowerCanonicalProgramSource(source, request(canonicalProgram([unsupported])), { height: 8, width: 14.222 }, null),
+    ).toThrow(/ModifyMotion has no truthful source lowering/);
   });
 
   it("rejects CameraFocus camera changes through the shared capability contract", () => {
@@ -650,12 +878,14 @@ class GroupedEquation(Scene):
       property: "scale",
       value: 1.35,
     };
-    expect(() => lowerCanonicalProgramSource(
-      source,
-      request(canonicalProgram([cameraFocus]), []),
-      { height: 8, width: 14.222 },
-      null,
-    )).toThrow(/CameraFocus can be previewed.*ChangeCamera cannot yet be lowered/);
+    expect(() =>
+      lowerCanonicalProgramSource(
+        source,
+        request(canonicalProgram([cameraFocus]), []),
+        { height: 8, width: 14.222 },
+        null,
+      ),
+    ).toThrow(/CameraFocus can be previewed.*ChangeCamera cannot yet be lowered/);
   });
 
   it("rejects live relations because a one-shot move cannot preserve that constraint", () => {
@@ -669,20 +899,28 @@ class GroupedEquation(Scene):
       sourceEntityId: "label_1",
       targetEntityId: "equation_1",
     };
-    expect(() => lowerCanonicalProgramSource(
-      source,
-      request(canonicalProgram([liveRelation]), [
-        { entityId: "equation_1", sourceVariable: "equation" },
-        { entityId: "label_1", sourceVariable: "label" },
-      ]),
-      { height: 8, width: 14.222 },
-      null,
-    )).toThrow(/SetRelation live has no truthful source lowering/);
+    expect(() =>
+      lowerCanonicalProgramSource(
+        source,
+        request(canonicalProgram([liveRelation]), [
+          { entityId: "equation_1", sourceVariable: "equation" },
+          { entityId: "label_1", sourceVariable: "label" },
+        ]),
+        { height: 8, width: 14.222 },
+        null,
+      ),
+    ).toThrow(/SetRelation live has no truthful source lowering/);
   });
 
   it("requires imported source identity and an exact source anchor", () => {
-    expect(() => lowerCanonicalProgramSource(source, request(canonicalProgram([motionOperation()]), []), { height: 8, width: 14.222 }, null))
-      .toThrow(/no imported Python source identity/i);
+    expect(() =>
+      lowerCanonicalProgramSource(
+        source,
+        request(canonicalProgram([motionOperation()]), []),
+        { height: 8, width: 14.222 },
+        null,
+      ),
+    ).toThrow(/no imported Python source identity/i);
     const program = {
       ...canonicalProgram([motionOperation()]),
       anchor: {
@@ -692,8 +930,9 @@ class GroupedEquation(Scene):
         source: { kind: "playhead" as const, referenceSeconds: 5 },
       },
     };
-    expect(() => lowerCanonicalProgramSource(source, request(program), { height: 8, width: 14.222 }, null))
-      .toThrow(/No # poietra:anchor 5.000/);
+    expect(() => lowerCanonicalProgramSource(source, request(program), { height: 8, width: 14.222 }, null)).toThrow(
+      /No # poietra:anchor 5.000/,
+    );
   });
 
   it("keeps transaction text data-only while generating safe Python variables", () => {
@@ -708,11 +947,16 @@ class GroupedEquation(Scene):
   it("does not overwrite an existing Python identifier when allocating transaction variables", () => {
     const collisionSource = source.replace(
       "        equation = MathTex",
-      "        poietra_collision_1 = Text(\"Existing\")\n        equation = MathTex",
+      '        poietra_collision_1 = Text("Existing")\n        equation = MathTex',
     );
     const create: CanonicalEditOperation = {
       ...operationBase("create", 7),
-      entity: { content: { displayLines: ["x"], texParts: ["x"] }, id: "tx:collision/entity:new", lifetime: { end: null, start: 7 }, type: "MathTex" },
+      entity: {
+        content: { displayLines: ["x"], texParts: ["x"] },
+        id: "tx:collision/entity:new",
+        lifetime: { end: null, start: 7 },
+        type: "MathTex",
+      },
       kind: "CreateEntity",
     };
     const code = lowerCanonicalProgramSource(
@@ -722,8 +966,8 @@ class GroupedEquation(Scene):
       null,
     ).insertedCode;
 
-    expect(code).toContain("poietra_collision_1_2 = MathTex(\"x\")");
-    expect(code).not.toContain("poietra_collision_1 = MathTex(\"x\")");
+    expect(code).toContain('poietra_collision_1_2 = MathTex("x")');
+    expect(code).not.toContain('poietra_collision_1 = MathTex("x")');
   });
 
   it("orders same-bucket dependencies and carries chained transform identities", () => {
@@ -732,12 +976,22 @@ class GroupedEquation(Scene):
     const explanationId = "tx:chain/entity:explanation";
     const relation: CanonicalEditOperation = {
       ...operationBase("place-explanation", 7),
-      kind: "SetRelation", mode: "snapshot", offset: { x: 145, y: 0 }, placement: "right", relation: "next-to",
-      sourceEntityId: explanationId, targetEntityId: firstTarget,
+      kind: "SetRelation",
+      mode: "snapshot",
+      offset: { x: 145, y: 0 },
+      placement: "right",
+      relation: "next-to",
+      sourceEntityId: explanationId,
+      targetEntityId: firstTarget,
     };
     const explanation: CanonicalEditOperation = {
       ...operationBase("create-explanation", 7),
-      entity: { content: { displayLines: ["Explanation"], text: "Explanation" }, id: explanationId, lifetime: { end: null, start: 7 }, type: "Text" },
+      entity: {
+        content: { displayLines: ["Explanation"], text: "Explanation" },
+        id: explanationId,
+        lifetime: { end: null, start: 7 },
+        type: "Text",
+      },
       kind: "CreateEntity",
     };
     const operations: CanonicalEditOperation[] = [
@@ -746,22 +1000,29 @@ class GroupedEquation(Scene):
       relation,
       transformOperation("second-transform", 8, firstTarget, secondTarget, ["p", "=", "m", "v"]),
     ];
-    const lowered = lowerCanonicalProgramSource(roundTripSource, request(canonicalProgram(operations, "chain")), { height: 8, width: 14.222 }, null);
+    const lowered = lowerCanonicalProgramSource(
+      roundTripSource,
+      request(canonicalProgram(operations, "chain")),
+      { height: 8, width: 14.222 },
+      null,
+    );
     const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
     const targetVariable = imported?.sourceVariables[firstTarget];
     const explanationVariable = imported?.sourceVariables[explanationId];
 
     expect(lowered.insertedCode.match(/# poietra:position/g)).toHaveLength(3);
     expect(lowered.insertedCode).toContain("equation = poietra_chain_3");
-    expect(lowered.insertedCode.indexOf(`${targetVariable} = MathTex(`))
-      .toBeLessThan(lowered.insertedCode.indexOf(`${explanationVariable}.move_to(${targetVariable}.get_center()`));
+    expect(lowered.insertedCode.indexOf(`${targetVariable} = MathTex(`)).toBeLessThan(
+      lowered.insertedCode.indexOf(`${explanationVariable}.move_to(${targetVariable}.get_center()`),
+    );
     expect(imported?.sourceVariables).toMatchObject({
       [explanationId]: "poietra_chain_1",
       [firstTarget]: "poietra_chain_2",
       [secondTarget]: "poietra_chain_3",
     });
-    expect([firstTarget, secondTarget].map((id) => imported?.runtimeSceneState.objectGraph.entities[id]?.lifetime))
-      .toEqual([[{ end: 9, start: 7 }], [{ end: 10, start: 8 }]]);
+    expect(
+      [firstTarget, secondTarget].map((id) => imported?.runtimeSceneState.objectGraph.entities[id]?.lifetime),
+    ).toEqual([[{ end: 9, start: 7 }], [{ end: 10, start: 8 }]]);
     expect(imported).not.toBeNull();
     if (!imported) return;
     const sourcePosition = latestPosition(imported, "source:examples/relativity.py#GroupedEquation:equation");
@@ -778,12 +1039,14 @@ class GroupedEquation(Scene):
   it("carries transform alias lineage across Programs in one batch", () => {
     const firstTarget = "tx:alias-a/entity:first";
     const secondTarget = "tx:alias-b/entity:second";
-    const first = canonicalProgram([
-      transformOperation("tx:alias-a/operation:transform", 7, "equation_1", firstTarget, ["F", "=", "m", "a"]),
-    ], "alias-a");
-    const secondBase = canonicalProgram([
-      transformOperation("tx:alias-b/operation:transform", 8, firstTarget, secondTarget, ["p", "=", "m", "v"]),
-    ], "alias-b");
+    const first = canonicalProgram(
+      [transformOperation("tx:alias-a/operation:transform", 7, "equation_1", firstTarget, ["F", "=", "m", "a"])],
+      "alias-a",
+    );
+    const secondBase = canonicalProgram(
+      [transformOperation("tx:alias-b/operation:transform", 8, firstTarget, secondTarget, ["p", "=", "m", "v"])],
+      "alias-b",
+    );
     const second: CanonicalEditProgram = {
       ...secondBase,
       anchor: {
@@ -819,7 +1082,8 @@ class GroupedEquation(Scene):
 
     expect(lowered.insertedCode).toContain("poietra_alias_a_1 = poietra_alias_b_1");
     expect(lowered.insertedCode).toContain("equation = poietra_alias_b_1");
-    expect(lowered.insertedCode.lastIndexOf("equation = poietra_alias_b_1"))
-      .toBeLessThan(lowered.insertedCode.indexOf("equation.animate.shift("));
+    expect(lowered.insertedCode.lastIndexOf("equation = poietra_alias_b_1")).toBeLessThan(
+      lowered.insertedCode.indexOf("equation.animate.shift("),
+    );
   });
 });
