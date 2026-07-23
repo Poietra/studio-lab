@@ -145,9 +145,10 @@ single-root variable remains the fallback. On first start these values seed the 
 `.poietra/workspace-catalog.json`. In a browser, Add workspace asks only for a name
 and creates an importable `MainScene` under `.poietra/.workspaces`. Electron uses a
 native directory picker for existing folders and a native Save dialog for `.py`
-exports; neither operation exposes an absolute path to the renderer. Tauri retains
-the existing-folder registration form while it remains an evaluation shell. The
-launcher can rename or remove either registration
+exports in the packaged app; neither operation exposes an absolute path to the renderer.
+`pnpm dev:electron` deliberately leaves the native bridge disabled and uses Vite's
+existing-folder registration form instead. Tauri retains that form while it remains
+an evaluation shell. The launcher can rename or remove either registration
 persistently. Removing an existing-folder workspace only unregisters it, leaving
 its folder and Python files in place. Removing a browser-managed workspace moves
 its directory to Studio Trash at `.poietra/.trash` instead of permanently deleting

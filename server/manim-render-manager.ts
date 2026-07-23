@@ -543,7 +543,7 @@ export class ManimRenderManager {
       throwIfAborted(signal);
       if (!commandAvailable) {
         throw new HttpError(
-          `Manim command ${JSON.stringify(this.command)} is not available. Configure POIETRA_MANIM_COMMAND and restart Studio.`,
+          "The configured Manim command is unavailable. Configure POIETRA_MANIM_COMMAND and restart Studio.",
           503,
         );
       }

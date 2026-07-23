@@ -158,7 +158,7 @@ function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      preload: preloadPath,
+      ...(packagedMode ? { preload: preloadPath } : {}),
       sandbox: true,
       session: rendererSession ?? session.defaultSession,
       webSecurity: true,
@@ -213,7 +213,7 @@ if (!app.requestSingleInstanceLock()) {
 
   void app.whenReady().then(async () => {
     activeOrigin = await startShellService();
-    registerNativeHandlers();
+    if (packagedMode) registerNativeHandlers();
     createWindow();
     app.on("activate", () => {
       if (!mainWindow) createWindow();

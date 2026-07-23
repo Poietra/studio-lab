@@ -1,7 +1,7 @@
 import { _electron as electron } from "@playwright/test";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { electronPackageLayout } from "./electron-package-layout.mjs";
@@ -9,6 +9,7 @@ import { electronPackageLayout } from "./electron-package-layout.mjs";
 const root = await mkdtemp(join(tmpdir(), "poietra-electron-packaged-smoke-"));
 const workspaceRoot = join(root, "workspace");
 const dataRoot = join(root, "data");
+const userDataRoot = join(root, "electron-user-data");
 const exportPath = join(root, "packaged-smoke.py");
 const shutdownMarker = join(root, "shutdown-render.json");
 const packageLayout = electronPackageLayout();
@@ -33,7 +34,7 @@ let shutdownProcess = null;
 let failure = null;
 try {
   electronApplication = await electron.launch({
-    args: ["--headless"],
+    args: ["--headless", `--user-data-dir=${userDataRoot}`],
     env: {
       ...process.env,
       POIETRA_MANIM_COMMAND: JSON.stringify([
@@ -49,6 +50,10 @@ try {
     executablePath: packageLayout.executable,
     timeout: 60_000,
   });
+  const actualUserDataRoot = await electronApplication.evaluate(({ app }) => app.getPath("userData"));
+  if (resolve(actualUserDataRoot) !== resolve(userDataRoot)) {
+    throw new Error(`Electron userData was not isolated under the smoke root: ${actualUserDataRoot}`);
+  }
   await electronApplication.evaluate(({ dialog }, input) => {
     dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [input.workspaceRoot] });
     dialog.showSaveDialog = async () => ({ canceled: false, filePath: input.exportPath });
@@ -233,6 +238,13 @@ try {
   if (!exported.includes('poietra:transaction "packaged-smoke"')) {
     throw new Error("Electron packaged smoke did not save the exported Python source.");
   }
+  await stat(join(dataRoot, "workspace-catalog.json"));
+  try {
+    await stat(join(userDataRoot, "studio-data", "workspace-catalog.json"));
+    throw new Error("Electron packaged smoke wrote its workspace catalog to userData.");
+  } catch (error) {
+    if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error;
+  }
   for (let attempt = 0; attempt < 200; attempt += 1) {
     try {
       shutdownProcess = JSON.parse(await readFile(shutdownMarker, "utf8"));
@@ -282,6 +294,20 @@ for (const cleanupRoot of [root, packageLayout.outputRoot]) {
     await rm(cleanupRoot, { force: true, recursive: true });
   } catch (error) {
     failure ??= error;
+  }
+}
+
+for (const [cleanupRoot, description] of [
+  [root, "temporary smoke root"],
+  [packageLayout.outputRoot, "packaged application output"],
+]) {
+  try {
+    await stat(cleanupRoot);
+    failure ??= new Error(`Electron packaged smoke left its ${description} behind.`);
+  } catch (error) {
+    if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) {
+      failure ??= error;
+    }
   }
 }
 
