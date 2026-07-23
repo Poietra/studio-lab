@@ -768,6 +768,8 @@ class GroupedEquation(Scene):
     ["class body", "class Holder:\n            cached = equation", "self.add(Holder.cached)", "Holder"],
     ["class decorator", "@register(equation)\n        class Holder:\n            pass", "self.add(Holder)", "Holder"],
     ["animation alias", "entrance = FadeIn(equation)", "self.play(entrance)", "entrance"],
+    ["animation list", "entrances = [FadeIn(equation)]", "self.play(*entrances)", "entrances"],
+    ["nested animation group", "entrance = AnimationGroup(FadeIn(equation))", "self.play(entrance)", "entrance"],
   ])("rejects persistent removal through a pre-anchor %s", (_label, setup, suffix, reference) => {
     const remove: CanonicalEditOperation = {
       ...operationBase("persistent-delete-alias", 7, 7.4),
@@ -872,7 +874,8 @@ class GroupedEquation(Scene):
     };
     const derivedSource = source.replace(
       "        # poietra:anchor 7.000",
-      `        label = Text("energy").next_to(equation, DOWN)
+      `        self.play(FadeIn(equation))
+        label = Text("energy").next_to(equation, DOWN)
         arrow = Arrow(label.get_top(), equation.get_bottom())
         proof_box = SurroundingRectangle(equation)
         # poietra:anchor 7.000`,
