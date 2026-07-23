@@ -334,6 +334,32 @@ class Geometry(Scene):
     );
   });
 
+  it("fails closed when constructor chains mutate dimensions", () => {
+    const imported = importManimScene(`from manim import *
+
+class Geometry(Scene):
+    def construct(self):
+        fitted = Circle().scale_to_fit_width(4)
+        stretched = Rectangle().stretch_to_fit_width(5)
+        matched = Rectangle().match_width(fitted)
+        placed = Rectangle().set_x(3)
+        rotated = Rectangle().rotate(PI / 4)
+        self.add(fitted, stretched, matched, placed, rotated)
+`, "scene.py", "Geometry");
+
+    for (const variable of ["fitted", "stretched", "matched"]) {
+      const geometry = imported?.runtimeSceneState.objectGraph.entities[
+        `source:scene.py#Geometry:${variable}`
+      ]?.geometry;
+      expect(geometry?.dimensions).toMatchObject({ kind: "unknown" });
+      expect(geometry?.scale).toMatchObject({ kind: "unknown" });
+    }
+    expect(imported?.runtimeSceneState.objectGraph.entities["source:scene.py#Geometry:placed"]?.geometry?.position)
+      .toMatchObject({ kind: "unknown" });
+    expect(imported?.runtimeSceneState.objectGraph.entities["source:scene.py#Geometry:rotated"]?.geometry?.dimensions)
+      .toMatchObject({ kind: "unknown" });
+  });
+
   it("marks an unverified source resize as unknown geometry", () => {
     const imported = importManimScene(`from manim import *
 
@@ -385,6 +411,29 @@ class Resized(Scene):
       .toMatchObject({ kind: "known", value: { height: 2, width: 4 } });
     expect(imported?.runtimeSceneState.propertyChannels[`${movedId}/position`]?.samples.at(-1)?.knowledge)
       .toMatchObject({ kind: "known" });
+  });
+
+  it("does not validate a resize marker with move_to from another play action", () => {
+    const imported = importManimScene(`from manim import *
+
+class Resized(Scene):
+    def construct(self):
+        a = Circle(radius=1)
+        b = Circle(radius=1)
+        self.add(a, b)
+        # poietra:dimensions {"kind":"animated","resizes":[{"from":{"dimensions":{"radius":1},"position":{"x":320,"y":180}},"scale":1,"shape":"circle","to":{"dimensions":{"radius":2},"position":{"x":500,"y":180}},"variable":"a"}],"version":1}
+        self.play(
+            a.animate.scale_to_fit_width(4),
+            b.animate.move_to(RIGHT),
+            run_time=1,
+        )
+`, "scene.py", "Resized");
+    const entityId = "source:scene.py#Resized:a";
+
+    expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/dimensions`]?.samples.at(-1)?.knowledge)
+      .toMatchObject({ kind: "unknown" });
+    expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/position`]?.samples)
+      .toHaveLength(1);
   });
 
   it("fails closed for complex Python and an invalid marker", () => {

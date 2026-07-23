@@ -572,7 +572,7 @@ function styleFrom(argumentsSource: string, suffix: string): Knowledge<EntitySty
 }
 
 function initialScaleFrom(suffix: string): Readonly<{ knowledge: Knowledge<number>; value: number }> {
-  if (/\.(?:stretch|set_width|set_height)\s*\(/.test(suffix)) {
+  if (suffixMutatesDimensions(suffix)) {
     return {
       knowledge: unknown("Initial scale is changed by a dimension-dependent source method.", [suffix.trim()]),
       value: 1,
@@ -594,7 +594,7 @@ function initialScaleFrom(suffix: string): Readonly<{ knowledge: Knowledge<numbe
 }
 
 function initialPositionFrom(type: string, suffix: string, approximate: Point) {
-  if (/\.(?:align_to|arrange|move_to|next_to|shift|to_corner|to_edge)\s*\(/.test(suffix)) {
+  if (suffixMutatesPosition(suffix)) {
     return {
       knowledge: unknown<Point>("Initial position depends on a source placement expression.", [suffix.trim()]),
       value: approximate,
@@ -802,6 +802,7 @@ const DIMENSION_MUTATING_METHOD_PATTERN = [
 ].join("|");
 const POSITION_MUTATING_METHOD_PATTERN = [
   "align_to",
+  "arrange",
   "move_to",
   "next_to",
   "set_x",
@@ -812,6 +813,12 @@ const POSITION_MUTATING_METHOD_PATTERN = [
   "to_edge",
 ].join("|");
 
+function statementExpressions(statement: string, animated: boolean) {
+  return animated && statement.startsWith("self.play(")
+    ? splitTopLevelArguments(statement.slice(statement.indexOf("(") + 1, statement.lastIndexOf(")")))
+    : [statement];
+}
+
 function variableMethodCall(
   statement: string,
   variable: string,
@@ -820,10 +827,7 @@ function variableMethodCall(
 ) {
   const escaped = variable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const receiver = `${escaped}\\s*\\.\\s*${animated ? "animate\\s*\\.\\s*" : ""}`;
-  const expressions = animated && statement.startsWith("self.play(")
-    ? splitTopLevelArguments(statement.slice(statement.indexOf("(") + 1, statement.lastIndexOf(")")))
-    : [statement];
-  return expressions.some((expression) => (
+  return statementExpressions(statement, animated).some((expression) => (
     new RegExp(`\\b${receiver}[\\s\\S]*?\\.?(?:${methodPattern})\\s*\\(`).test(expression)
   ));
 }
@@ -832,17 +836,40 @@ function mutatesDimensions(statement: string, variable: string, animated: boolea
   return variableMethodCall(statement, variable, animated, DIMENSION_MUTATING_METHOD_PATTERN);
 }
 
+function suffixMutatesDimensions(suffix: string) {
+  return new RegExp(`\\.(?:${DIMENSION_MUTATING_METHOD_PATTERN})\\s*\\(`).test(suffix);
+}
+
+function suffixMutatesPosition(suffix: string) {
+  return new RegExp(`\\.(?:${POSITION_MUTATING_METHOD_PATTERN})\\s*\\(`).test(suffix);
+}
+
+function mutatesRotation(statement: string, variable: string, animated: boolean) {
+  return variableMethodCall(statement, variable, animated, "rotate");
+}
+
+function suffixRotates(suffix: string) {
+  return /\.rotate\s*\(/.test(suffix);
+}
+
 function mutatesPosition(statement: string, variable: string, animated: boolean) {
   return variableMethodCall(statement, variable, animated, POSITION_MUTATING_METHOD_PATTERN);
 }
 
 function validResizeDimensions(resize: ResizeMarkerEntry) {
   return resize.shape === "circle"
-    ? resize.from.dimensions.radius !== undefined && resize.to.dimensions.radius !== undefined
+    ? resize.from.dimensions.radius !== undefined
+      && resize.from.dimensions.height === undefined
+      && resize.from.dimensions.width === undefined
+      && resize.to.dimensions.radius !== undefined
+      && resize.to.dimensions.height === undefined
+      && resize.to.dimensions.width === undefined
     : resize.from.dimensions.width !== undefined
       && resize.from.dimensions.height !== undefined
+      && resize.from.dimensions.radius === undefined
       && resize.to.dimensions.width !== undefined
-      && resize.to.dimensions.height !== undefined;
+      && resize.to.dimensions.height !== undefined
+      && resize.to.dimensions.radius === undefined;
 }
 
 function resizeStatementShape(
@@ -852,11 +879,16 @@ function resizeStatementShape(
 ): ResizeMarkerEntry["shape"] | null {
   const escaped = variable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const receiver = `${escaped}\\s*\\.\\s*${animated ? "animate\\s*\\.\\s*" : ""}`;
-  const moved = new RegExp(`${receiver}(?:scale_to_fit_width|stretch_to_fit_width)\\s*\\([^)]*\\)[\\s\\S]*?\\.\\s*move_to\\s*\\(`).test(statement);
+  const matchingExpressions = statementExpressions(statement, animated).filter((expression) => (
+    new RegExp(`\\b${receiver}`).test(expression)
+  ));
+  if (matchingExpressions.length !== 1) return null;
+  const expression = matchingExpressions[0];
+  const moved = new RegExp(`${receiver}(?:scale_to_fit_width|stretch_to_fit_width)\\s*\\([^)]*\\)[\\s\\S]*?\\.\\s*move_to\\s*\\(`).test(expression);
   if (!moved) return null;
-  const circle = new RegExp(`${receiver}scale_to_fit_width\\s*\\(`).test(statement);
-  const width = new RegExp(`${receiver}stretch_to_fit_width\\s*\\(`).test(statement);
-  const height = new RegExp(`${receiver}stretch_to_fit_width\\s*\\([^)]*\\)[\\s\\S]*?\\.\\s*stretch_to_fit_height\\s*\\(`).test(statement);
+  const circle = new RegExp(`${receiver}scale_to_fit_width\\s*\\(`).test(expression);
+  const width = new RegExp(`${receiver}stretch_to_fit_width\\s*\\(`).test(expression);
+  const height = new RegExp(`${receiver}stretch_to_fit_width\\s*\\([^)]*\\)[\\s\\S]*?\\.\\s*stretch_to_fit_height\\s*\\(`).test(expression);
   if (circle && !width && !height) return "circle";
   if (!circle && width && height) return "rectangle";
   return null;
@@ -955,7 +987,9 @@ export function importManimScene(
     const initialScale = initialScaleFrom(suffix);
     const entity: MutableEntity = {
       content: entityContent(type, sourceVariable, argumentsSource),
-      dimensions: dimensionsFrom(type, argumentsSource),
+      dimensions: suffixMutatesDimensions(suffix) || (type === "Rectangle" && suffixRotates(suffix))
+        ? unknown("Initial dimensions are changed by a chained source method.", [suffix.trim()])
+        : dimensionsFrom(type, argumentsSource),
       id: markedIdentity ?? `source:${sceneId}:${sourceVariable}`,
       initialization: statement.text,
       lifetimes: [],
@@ -1120,16 +1154,21 @@ export function importManimScene(
       `^\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\.\\s*(?:${DIMENSION_MUTATING_METHOD_PATTERN})\\s*\\(`,
       "s",
     ))?.[1];
-    if (directResizeVariable) {
+    const directRotateVariable = statement.text.match(
+      /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*rotate\s*\(/s,
+    )?.[1];
+    const directGeometryVariable = directResizeVariable ?? directRotateVariable;
+    if (directGeometryVariable) {
       const parsed = dimensionsMarkerSchema.safeParse(directDimensionsMarker);
-      const entity = byVariable.get(directResizeVariable);
-      if (entity) {
-        const detectedShape = resizeStatementShape(statement.text, directResizeVariable, false);
+      const entity = byVariable.get(directGeometryVariable);
+      const changesDimensions = directResizeVariable !== undefined || entity?.type === "Rectangle";
+      if (entity && changesDimensions) {
+        const detectedShape = resizeStatementShape(statement.text, directGeometryVariable, false);
         const resize = parsed.success && parsed.data.kind === "exact"
           ? parsed.data.resize
           : null;
         const valid = resize !== null
-          && resize.variable === directResizeVariable
+          && resize.variable === directGeometryVariable
           && resize.shape === detectedShape
           && validResizeDimensions(resize);
         const dimensions = valid && resize
@@ -1138,7 +1177,7 @@ export function importManimScene(
         const dimensionsKnowledge: Knowledge<EntityDimensions> = valid
           ? { kind: "known", value: dimensions }
           : unknown("Dimensions are changed by an unverified resize expression.", [statement.text.trim()]);
-        const positionChanged = mutatesPosition(statement.text, directResizeVariable, false);
+        const positionChanged = mutatesPosition(statement.text, directGeometryVariable, false);
         const position = valid && resize ? resize.to.position : entity.position;
         const positionKnowledge: Knowledge<Point> = valid
           ? { kind: "known", value: position }
@@ -1164,8 +1203,8 @@ export function importManimScene(
         entity.dimensions = dimensionsKnowledge;
         entity.position = position;
         entity.positionKnowledge = positionKnowledge;
+        continue;
       }
-      continue;
     }
     const directScale = statement.text.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*scale\s*\((.*)\)\s*$/s);
     if (directScale) {
@@ -1256,7 +1295,10 @@ export function importManimScene(
     );
     const actualResizeVariables = new Set(
       mutableEntities.flatMap((entity) =>
-        mutatesDimensions(statement.text, entity.sourceVariable, true) ? [entity.sourceVariable] : [],
+        mutatesDimensions(statement.text, entity.sourceVariable, true) ||
+        (entity.type === "Rectangle" && mutatesRotation(statement.text, entity.sourceVariable, true))
+          ? [entity.sourceVariable]
+          : [],
       ),
     );
     const literalScaleFactors = new Map(
