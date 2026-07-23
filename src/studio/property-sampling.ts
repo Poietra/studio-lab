@@ -1,4 +1,4 @@
-import type { Knowledge, Point, PropertyChannelSample, PropertyValue, Unknown } from "./model";
+import type { EntityDimensions, Knowledge, Point, PropertyChannelSample, PropertyValue, Unknown } from "./model";
 
 function smooth(value: number) {
   return value * value * (3 - 2 * value);
@@ -10,6 +10,29 @@ function easingProgress(sample: PropertyChannelSample, value: number) {
 
 export function isPointValue(value: unknown): value is Point {
   return typeof value === "object" && value !== null && "x" in value && "y" in value;
+}
+
+export function isEntityDimensionsValue(value: unknown): value is EntityDimensions {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Readonly<Record<string, unknown>>;
+  const keys = Object.keys(record);
+  return (
+    keys.length > 0 &&
+    keys.every((key) => key === "height" || key === "radius" || key === "width") &&
+    keys.every((key) => typeof record[key] === "number" && Number.isFinite(record[key]))
+  );
+}
+
+function interpolateDimensions(from: EntityDimensions, to: EntityDimensions, progress: number) {
+  return Object.fromEntries(
+    (["height", "radius", "width"] as const).flatMap((key) => {
+      const start = from[key];
+      const end = to[key];
+      return typeof start === "number" && typeof end === "number"
+        ? [[key, start + (end - start) * progress] as const]
+        : [];
+    }),
+  ) as EntityDimensions;
 }
 
 function sameStartPriority(sample: PropertyChannelSample, index: number, baseIndex: number) {
@@ -33,6 +56,40 @@ function chronologicalSamples(samples: readonly PropertyChannelSample[]) {
           sameStartPriority(right.sample, right.index, baseIndex) || left.index - right.index
       );
     });
+}
+
+/**
+ * Restores source order for absolute shape geometry mutations.
+ *
+ * A Studio resize is appended after imported samples even when its source
+ * anchor precedes them. Later source resizes must therefore be put back after
+ * the Studio sample. Animated source resizes start from the geometry produced
+ * by everything before them, while an unknown mutation keeps its Unknown
+ * knowledge and uses that geometry only as a stable preview placeholder.
+ */
+export function normalizeDimensionsSamples(
+  samples: readonly PropertyChannelSample[],
+): readonly PropertyChannelSample[] {
+  const normalized: PropertyChannelSample[] = [];
+  for (const { sample } of chronologicalSamples(samples)) {
+    const current = samplePropertyValue(normalized, sample.interval.start);
+    if (!isEntityDimensionsValue(current)) {
+      normalized.push(sample);
+      continue;
+    }
+    if (sample.knowledge?.kind === "unknown") {
+      normalized.push({
+        ...sample,
+        ...(sample.kind === "animated" ? { from: current } : {}),
+        value: current,
+      });
+      continue;
+    }
+    normalized.push(
+      sample.kind === "animated" && isEntityDimensionsValue(sample.from) ? { ...sample, from: current } : sample,
+    );
+  }
+  return normalized;
 }
 
 /**
@@ -132,7 +189,7 @@ export function normalizeScaleSamples(samples: readonly PropertyChannelSample[])
   return normalized;
 }
 
-export function samplePropertyKnowledge<T extends number | Point>(
+export function samplePropertyKnowledge<T extends EntityDimensions | number | Point>(
   samples: readonly PropertyChannelSample[],
   time: number,
   value: T | undefined,
@@ -175,6 +232,8 @@ export function samplePropertyValue(
       };
     } else if (typeof sample.from === "number" && typeof sample.value === "number") {
       value = sample.from + (sample.value - sample.from) * progress;
+    } else if (isEntityDimensionsValue(sample.from) && isEntityDimensionsValue(sample.value)) {
+      value = interpolateDimensions(sample.from, sample.value, progress);
     } else {
       value = sample.value;
     }

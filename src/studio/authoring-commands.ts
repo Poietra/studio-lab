@@ -3,7 +3,15 @@ import {
   MIN_OBJECT_LIFETIME_SECONDS,
   type ProgramSourceAnchorBounds,
 } from "./lifetime-editing";
-import type { EntityContent, Interval, Point, ProgramRecord, ProjectedEntity, RuntimeSceneState } from "./model";
+import type {
+  EntityContent,
+  EntityDimensions,
+  Interval,
+  Point,
+  ProgramRecord,
+  ProjectedEntity,
+  RuntimeSceneState,
+} from "./model";
 import {
   EDIT_OPERATION_VERSION,
   operationId,
@@ -21,9 +29,16 @@ export type InsertEntityType = (typeof INSERT_ENTITY_TYPES)[number];
 
 export type StudioEntityInput = Readonly<{
   content?: EntityContent;
+  dimensions?: EntityDimensions;
   position: Point;
   type: InsertEntityType;
 }>;
+
+export function defaultEntityDimensions(type: InsertEntityType): EntityDimensions | undefined {
+  if (type === "Circle") return { radius: 1 };
+  if (type === "Rectangle") return { height: 2, width: 4 };
+  return undefined;
+}
 
 type AuthoringProgramResult = Readonly<{
   entityIds: readonly string[];
@@ -107,6 +122,7 @@ export function createStudioEntitiesProgram(
         dependsOn: [],
         entity: {
           content: entity.content,
+          dimensions: entity.dimensions ?? defaultEntityDimensions(entity.type),
           id: entityId,
           lifetime: { end: null, start: input.capturedPlayhead },
           type: entity.type,
@@ -629,8 +645,22 @@ export function createSceneDurationProgram(
 
 export function duplicateEntityInput(entity: ProjectedEntity, offset = 20): StudioEntityInput | null {
   if (!INSERT_ENTITY_TYPES.some((type) => type === entity.type)) return null;
+  const knownDimensions = entity.geometry.dimensions.kind === "known" ? entity.geometry.dimensions.value : null;
+  const dimensions =
+    entity.type === "Circle" &&
+    knownDimensions?.radius !== undefined &&
+    knownDimensions.height === undefined &&
+    knownDimensions.width === undefined
+      ? { radius: knownDimensions.radius }
+      : entity.type === "Rectangle" &&
+          knownDimensions?.height !== undefined &&
+          knownDimensions.width !== undefined &&
+          knownDimensions.radius === undefined
+        ? { height: knownDimensions.height, width: knownDimensions.width }
+        : undefined;
   return {
     content: entity.content,
+    ...(dimensions ? { dimensions } : {}),
     position: { x: entity.position.x + offset, y: entity.position.y + offset },
     type: entity.type as InsertEntityType,
   };

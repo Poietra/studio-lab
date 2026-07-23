@@ -165,6 +165,13 @@ function formatShiftAmount(value: number) {
   return formatted === "0" && value !== 0 ? Number(Math.abs(value).toPrecision(4)).toString() : formatted;
 }
 
+function formatPositiveAmount(value: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new ProgramLoweringError("operation-unsupported", "A positive finite Manim size is required.");
+  }
+  return Number(value.toPrecision(12)).toString();
+}
+
 function rewriteSceneTemporalMetadata(
   source: string,
   sceneName: string,
@@ -281,7 +288,7 @@ function markerPoint(point: Readonly<{ x: number; y: number }>, viewport: Readon
   };
 }
 
-function sourceMarker(kind: "motion" | "position" | "scale", value: Readonly<Record<string, unknown>>) {
+function sourceMarker(kind: "dimensions" | "motion" | "position" | "scale", value: Readonly<Record<string, unknown>>) {
   return `# poietra:${kind} ${JSON.stringify({ ...value, version: 1 })}`;
 }
 
@@ -311,7 +318,7 @@ function variableAllocator(source: string, transactionId: string, additionalRese
 }
 
 function entityConstructor(operation: CreateEntityOperation) {
-  const { content, type } = operation.entity;
+  const { content, dimensions, type } = operation.entity;
   if (type === "MathTex") {
     const parts = content?.texParts?.length ? content.texParts : content?.displayLines;
     if (!parts?.length) {
@@ -328,9 +335,9 @@ function entityConstructor(operation: CreateEntityOperation) {
   }
   const shapeConstructor = {
     Arrow: "Arrow(LEFT, RIGHT, buff=0)",
-    Circle: "Circle(radius=1)",
+    Circle: `Circle(radius=${formatAmount(dimensions?.radius ?? 1)})`,
     Line: "Line(LEFT, RIGHT)",
-    Rectangle: "Rectangle(width=4, height=2)",
+    Rectangle: `Rectangle(width=${formatAmount(dimensions?.width ?? 4)}, height=${formatAmount(dimensions?.height ?? 2)})`,
     Square: "Square(side_length=2)",
   }[type];
   if (shapeConstructor) return shapeConstructor;
@@ -363,7 +370,8 @@ function referencedBaseEntityIds(operations: readonly CanonicalEditOperation[]) 
     if (
       operation.kind === "SetProperty" ||
       operation.kind === "AnimateProperty" ||
-      operation.kind === "ChangePresence"
+      operation.kind === "ChangePresence" ||
+      operation.kind === "ResizeEntity"
     ) {
       return [operation.entityId];
     }
@@ -392,7 +400,7 @@ function isPoint(value: unknown): value is Readonly<{ x: number; y: number }> {
 type LoweredAnimationOperation = Extract<
   CanonicalEditOperation,
   {
-    kind: "AnimateProperty" | "ChangePresence" | "CreateMotion" | "TransformContent";
+    kind: "AnimateProperty" | "ChangePresence" | "CreateMotion" | "ResizeEntity" | "TransformContent";
   }
 >;
 
@@ -400,6 +408,7 @@ function animationOperation(operation: CanonicalEditOperation): operation is Low
   return (
     operation.kind === "ChangePresence" ||
     operation.kind === "CreateMotion" ||
+    operation.kind === "ResizeEntity" ||
     operation.kind === "TransformContent" ||
     (operation.kind === "AnimateProperty" && operation.key === "scale")
   );
@@ -441,6 +450,46 @@ function scaleChange(operation: Extract<CanonicalEditOperation, { kind: "Animate
     from: operation.from,
     to: operation.to,
   };
+}
+
+function resizeExpression(
+  variable: string,
+  operation: Extract<CanonicalEditOperation, { kind: "ResizeEntity" }>,
+  frame: Readonly<{ height: number; width: number }>,
+  viewport: Readonly<{ height: number; width: number }>,
+  animated: boolean,
+) {
+  const target = operation.to.dimensions;
+  const prefix = `${variable}${animated ? ".animate" : ""}`;
+  const width =
+    operation.shape === "circle" ? 2 * (target.radius ?? 0) * operation.scale : (target.width ?? 0) * operation.scale;
+  const height = operation.shape === "rectangle" ? (target.height ?? 0) * operation.scale : null;
+  if (!Number.isFinite(width) || width <= 0 || (height !== null && (!Number.isFinite(height) || height <= 0))) {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "ResizeEntity produces a non-finite or non-positive Manim size.",
+    );
+  }
+  const resize =
+    operation.shape === "circle"
+      ? `${prefix}.scale_to_fit_width(${formatPositiveAmount(width)})`
+      : `${prefix}.stretch_to_fit_width(${formatPositiveAmount(width)})` +
+        `.stretch_to_fit_height(${formatPositiveAmount(height ?? 0)})`;
+  return `${resize}.move_to(${pointExpression(operation.to.position, frame, viewport)})`;
+}
+
+function resizeMarkerEntry(
+  variable: string,
+  operation: Extract<CanonicalEditOperation, { kind: "ResizeEntity" }>,
+  viewport: Readonly<{ height: number; width: number }>,
+) {
+  return {
+    from: { dimensions: operation.from.dimensions, position: markerPoint(operation.from.position, viewport) },
+    scale: operation.scale,
+    shape: operation.shape,
+    to: { dimensions: operation.to.dimensions, position: markerPoint(operation.to.position, viewport) },
+    variable,
+  } as const;
 }
 
 function assertLoweringSupported(operation: CanonicalEditOperation, options: ProgramSourceLoweringOptions) {
@@ -921,6 +970,17 @@ export function lowerCanonicalProgramSource(
       );
       output.push(`${variable}.scale(${formatAmount(change.factor)})`);
     }
+    for (const operation of bucket) {
+      if (operation.kind !== "ResizeEntity" || operation.interval.end - operation.interval.start > EPSILON) continue;
+      const variable = requireVariable(variableByEntity, operation.entityId);
+      output.push(
+        sourceMarker("dimensions", {
+          kind: "exact",
+          resize: resizeMarkerEntry(variable, operation, request.viewport),
+        }),
+      );
+      output.push(resizeExpression(variable, operation, frame, request.viewport, false));
+    }
 
     const boundaries = bucket.filter((operation) => operation.kind === "InsertSceneBoundary");
     for (const boundary of boundaries) {
@@ -1018,6 +1078,7 @@ export function lowerCanonicalProgramSource(
         variable: string;
       }>
     > = [];
+    const resizes: Array<ReturnType<typeof resizeMarkerEntry>> = [];
     const postludes: string[] = [];
     for (const operation of animations) {
       if (operation.kind === "CreateMotion") {
@@ -1068,6 +1129,10 @@ export function lowerCanonicalProgramSource(
         const change = resolvedScaleChanges.get(operation.id) ?? scaleChange(operation);
         scales.push({ from: change.from, to: change.to, variable });
         actions.push(`${variable}.animate.scale(${formatAmount(change.factor)})`);
+      } else if (operation.kind === "ResizeEntity") {
+        const variable = requireVariable(variableByEntity, operation.entityId);
+        resizes.push(resizeMarkerEntry(variable, operation, request.viewport));
+        actions.push(resizeExpression(variable, operation, frame, request.viewport, true));
       }
     }
     if (actions.length > 0) {
@@ -1076,6 +1141,9 @@ export function lowerCanonicalProgramSource(
       }
       if (scales.length > 0) {
         output.push(sourceMarker("scale", { kind: "animated", scales }));
+      }
+      if (resizes.length > 0) {
+        output.push(sourceMarker("dimensions", { kind: "animated", resizes }));
       }
       output.push("self.play(");
       output.push(...actions.map((action) => `    ${action},`));

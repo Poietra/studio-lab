@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import type {
   ConstraintGraph,
+  EntityDimensions,
   IdentityLineage,
   PropertyChannel,
   PropertyChannels,
@@ -15,9 +16,21 @@ import type {
 import { exactEntityScaleAt, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./magic-edit-capabilities";
 import type { CanonicalEditOperation, CanonicalEditProgram, ChannelAccess, ProgramValidationIssue } from "./operations";
 import { insertedProgramDuration } from "./program-composition";
-import { isPointValue, samplePropertyValue } from "./property-sampling";
+import {
+  isEntityDimensionsValue,
+  isPointValue,
+  samplePropertyKnowledge,
+  samplePropertyValue,
+} from "./property-sampling";
 
 const pointSchema = z.object({ x: z.number(), y: z.number() });
+const dimensionsSchema = z
+  .object({
+    height: z.number().positive().optional(),
+    radius: z.number().positive().optional(),
+    width: z.number().positive().optional(),
+  })
+  .strict();
 const intervalSchema = z.object({ end: z.number(), start: z.number() });
 const provenanceSchema = z.object({
   evidence: z.array(z.string()),
@@ -40,6 +53,7 @@ export const canonicalOperationSchema = z.discriminatedUnion("kind", [
   baseSchema.extend({
     entity: z.object({
       content: contentSchema.optional(),
+      dimensions: dimensionsSchema.optional(),
       id: z.string(),
       lifetime: z.object({ end: z.number().nullable(), start: z.number() }),
       type: z.string(),
@@ -61,6 +75,14 @@ export const canonicalOperationSchema = z.discriminatedUnion("kind", [
     kind: z.literal("AnimateProperty"),
     relativeFactor: z.number().positive().optional(),
     to: z.union([pointSchema, z.number()]),
+  }),
+  baseSchema.extend({
+    entityId: z.string(),
+    from: z.object({ dimensions: dimensionsSchema, position: pointSchema }).strict(),
+    kind: z.literal("ResizeEntity"),
+    scale: z.number().positive(),
+    shape: z.enum(["circle", "rectangle"]),
+    to: z.object({ dimensions: dimensionsSchema, position: pointSchema }).strict(),
   }),
   baseSchema.extend({
     controlOffset: pointSchema,
@@ -265,6 +287,7 @@ function sourceAnimationEnd(operation: CanonicalEditOperation) {
   if (
     operation.kind === "ChangePresence" ||
     operation.kind === "CreateMotion" ||
+    operation.kind === "ResizeEntity" ||
     operation.kind === "TransformContent" ||
     (operation.kind === "AnimateProperty" && operation.key === "scale")
   )
@@ -495,6 +518,95 @@ const allEntityProjections = [
   "working-playback",
 ] as const;
 
+function validCreateDimensions(type: string, dimensions: EntityDimensions | undefined) {
+  if (dimensions === undefined) return true;
+  if (type === "Circle") return exactShapeDimensions("circle", dimensions);
+  if (type === "Rectangle") return exactShapeDimensions("rectangle", dimensions);
+  return false;
+}
+
+function createDimensions(type: string, dimensions: EntityDimensions | undefined) {
+  if (dimensions) return dimensions;
+  if (type === "Circle") return { radius: 1 };
+  if (type === "Rectangle") return { height: 2, width: 4 };
+  return undefined;
+}
+
+function exactShapeDimensions(shape: "circle" | "rectangle", dimensions: EntityDimensions) {
+  return shape === "circle"
+    ? dimensions.radius !== undefined && dimensions.height === undefined && dimensions.width === undefined
+    : dimensions.height !== undefined && dimensions.width !== undefined && dimensions.radius === undefined;
+}
+
+function closeEnough(left: number, right: number) {
+  return Math.abs(left - right) < 0.001;
+}
+
+function matchingResizeStart(
+  operation: Extract<CanonicalEditOperation, { kind: "ResizeEntity" }>,
+  scene: RuntimeSceneState,
+) {
+  const dimensionsSamples = scene.propertyChannels[propertyKey(operation.entityId, "dimensions")]?.samples ?? [];
+  const positionSamples = scene.propertyChannels[propertyKey(operation.entityId, "position")]?.samples ?? [];
+  const scaleSamples = scene.propertyChannels[propertyKey(operation.entityId, "scale")]?.samples ?? [];
+  const sampledDimensions = samplePropertyValue(dimensionsSamples, operation.interval.start);
+  const position = samplePropertyValue(positionSamples, operation.interval.start);
+  const sampledScale = samplePropertyValue(scaleSamples, operation.interval.start);
+  const entity = scene.objectGraph.entities[operation.entityId];
+  const dimensions = isEntityDimensionsValue(sampledDimensions)
+    ? sampledDimensions
+    : entity?.geometry?.dimensions.kind === "known"
+      ? entity.geometry.dimensions.value
+      : entity?.type === "Circle"
+        ? { radius: 1 }
+        : entity?.type === "Rectangle"
+          ? { height: 2, width: 4 }
+          : undefined;
+  const scale =
+    typeof sampledScale === "number"
+      ? sampledScale
+      : entity?.geometry?.scale.kind === "known"
+        ? entity.geometry.scale.value
+        : 1;
+  const dimensionsKnowledge = dimensions
+    ? samplePropertyKnowledge(dimensionsSamples, operation.interval.start, dimensions)
+    : undefined;
+  const positionKnowledge = isPointValue(position)
+    ? samplePropertyKnowledge(positionSamples, operation.interval.start, position)
+    : undefined;
+  const scaleKnowledge =
+    typeof sampledScale === "number"
+      ? samplePropertyKnowledge(scaleSamples, operation.interval.start, scale)
+      : undefined;
+  const dimensionsMatch =
+    operation.shape === "circle"
+      ? dimensions !== undefined &&
+        dimensions.radius !== undefined &&
+        operation.from.dimensions.radius !== undefined &&
+        closeEnough(dimensions.radius, operation.from.dimensions.radius)
+      : dimensions !== undefined &&
+        dimensions.width !== undefined &&
+        dimensions.height !== undefined &&
+        operation.from.dimensions.width !== undefined &&
+        operation.from.dimensions.height !== undefined &&
+        closeEnough(dimensions.width, operation.from.dimensions.width) &&
+        closeEnough(dimensions.height, operation.from.dimensions.height);
+  return (
+    dimensionsMatch &&
+    exactShapeDimensions(operation.shape, operation.from.dimensions) &&
+    exactShapeDimensions(operation.shape, operation.to.dimensions) &&
+    !(dimensionsSamples.length === 0 && entity?.geometry?.dimensions.kind === "unknown") &&
+    dimensionsKnowledge?.kind !== "unknown" &&
+    isPointValue(position) &&
+    positionKnowledge?.kind !== "unknown" &&
+    closeEnough(position.x, operation.from.position.x) &&
+    closeEnough(position.y, operation.from.position.y) &&
+    !(scaleSamples.length === 0 && entity?.geometry?.scale.kind === "unknown") &&
+    scaleKnowledge?.kind !== "unknown" &&
+    closeEnough(scale, operation.scale)
+  );
+}
+
 export const OPERATION_REGISTRY = {
   CreateEntity: {
     access: (operation) => ({
@@ -517,8 +629,19 @@ export const OPERATION_REGISTRY = {
           : operation.entity.type.startsWith("TransitionOverlay:")
             ? finiteEnd
             : Math.min(draft.duration, finiteEnd + insertedProgramDuration(program));
+      const dimensions = createDimensions(operation.entity.type, operation.entity.dimensions);
       draft.entities[operation.entity.id] = {
         content: operation.entity.content,
+        ...(dimensions
+          ? {
+              geometry: {
+                dimensions: { kind: "known" as const, value: dimensions },
+                position: { kind: "unknown" as const, reason: "Position has not been assigned yet." },
+                scale: { kind: "known" as const, value: 1 },
+                style: { kind: "known" as const, value: {} },
+              },
+            }
+          : {}),
         id: operation.entity.id,
         lifetime: [{ end, start: operation.entity.lifetime.start }],
         provisional: true,
@@ -549,7 +672,19 @@ export const OPERATION_REGISTRY = {
     lifetimeRequirement: "explicit",
     projection: allEntityProjections,
     targetRequirement: "none",
-    validate: (operation, scene) => baseIssues(operation, scene),
+    validate: (operation, scene) => {
+      const issues = baseIssues(operation, scene);
+      if (!validCreateDimensions(operation.entity.type, operation.entity.dimensions)) {
+        issues.push({
+          code: "schema-invalid",
+          field: "entity.dimensions",
+          message: `CreateEntity dimensions do not match ${operation.entity.type}.`,
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      return issues;
+    },
   } satisfies Capability<"CreateEntity">,
   SetProperty: {
     access: (operation) => ({ reads: [], writes: [{ channel: operation.key, entityId: operation.entityId }] }),
@@ -654,6 +789,96 @@ export const OPERATION_REGISTRY = {
       return issues;
     },
   } satisfies Capability<"AnimateProperty">,
+  ResizeEntity: {
+    access: (operation) => ({
+      reads: [
+        { channel: "dimensions", entityId: operation.entityId },
+        { channel: "position", entityId: operation.entityId },
+        { channel: "scale", entityId: operation.entityId },
+      ],
+      writes: [
+        { channel: "dimensions", entityId: operation.entityId },
+        { channel: "position", entityId: operation.entityId },
+      ],
+    }),
+    defaults: {},
+    evaluate: (draft, operation, program) => {
+      recordOperation(draft, operation, program);
+      const kind = operation.interval.end > operation.interval.start ? "animated" : "exact";
+      appendSample(draft, operation.entityId, "dimensions", {
+        from: operation.from.dimensions,
+        interval: operation.interval,
+        kind,
+        operationId: operation.id,
+        provenanceId: `${operation.id}/dimensions-provenance`,
+        value: operation.to.dimensions,
+      });
+      appendSample(draft, operation.entityId, "position", {
+        from: operation.from.position,
+        interval: operation.interval,
+        kind,
+        operationId: operation.id,
+        provenanceId: `${operation.id}/position-provenance`,
+        value: operation.to.position,
+      });
+    },
+    execution: () => SUPPORTED_EXECUTION,
+    lifetimeRequirement: "existing-at-start",
+    projection: allEntityProjections,
+    targetRequirement: "entity",
+    validate: (operation, scene) => {
+      const issues = entityIssues([operation.entityId], operation, scene);
+      const entity = scene.objectGraph.entities[operation.entityId];
+      const expectedShape = entity?.type === "Circle" ? "circle" : entity?.type === "Rectangle" ? "rectangle" : null;
+      if (entity && expectedShape !== operation.shape) {
+        issues.push({
+          code: "schema-invalid",
+          field: "shape",
+          message: `ResizeEntity shape ${operation.shape} does not match target type ${entity.type}.`,
+          operationId: operation.id,
+          severity: "error",
+        });
+      } else if (entity && !matchingResizeStart(operation, scene)) {
+        issues.push({
+          code: "schema-invalid",
+          field: "from",
+          message: "ResizeEntity must start from the target's known current geometry and scale.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      const dimensions =
+        operation.shape === "circle"
+          ? [operation.from.dimensions.radius, operation.to.dimensions.radius]
+          : [
+              operation.from.dimensions.width,
+              operation.from.dimensions.height,
+              operation.to.dimensions.width,
+              operation.to.dimensions.height,
+            ];
+      const lowerMultiplier = operation.shape === "circle" ? 2 : 1;
+      const loweredDimensions = dimensions.map((value) =>
+        typeof value === "number" ? value * operation.scale * lowerMultiplier : Number.NaN,
+      );
+      if (
+        !exactShapeDimensions(operation.shape, operation.from.dimensions) ||
+        !exactShapeDimensions(operation.shape, operation.to.dimensions) ||
+        dimensions.some((value) => typeof value !== "number" || !Number.isFinite(value) || value <= 0) ||
+        loweredDimensions.some((value) => !Number.isFinite(value) || value <= 0) ||
+        !Number.isFinite(operation.scale) ||
+        operation.scale <= 0
+      ) {
+        issues.push({
+          code: "schema-invalid",
+          field: "dimensions",
+          message: "Shape resize dimensions, scale, and lowered size must be finite positive numbers.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      return issues;
+    },
+  } satisfies Capability<"ResizeEntity">,
   CreateMotion: {
     access: (operation) => ({
       reads: operation.targetEntityIds.map((entityId) => ({ channel: "position" as const, entityId })),

@@ -4,7 +4,12 @@ import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import { projectedPositions, validateSuggestionDraft, validatedProgramRecord } from "./draft-validation";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
 import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
-import { createDirectManipulationPositionProgram, createDirectManipulationScaleProgram } from "./suggestion-program";
+import { canonicalOperationSchema } from "./operation-registry";
+import {
+  createDirectManipulationPositionProgram,
+  createDirectManipulationResizeProgram,
+  createDirectManipulationScaleProgram,
+} from "./suggestion-program";
 
 const transition: EditSuggestionOperation = {
   anchor: { kind: "playhead", referenceSeconds: 5 },
@@ -19,6 +24,21 @@ const transition: EditSuggestionOperation = {
 };
 
 describe("Studio draft validation boundary", () => {
+  it("reserves the dimensions channel for ResizeEntity", () => {
+    expect(
+      canonicalOperationSchema.safeParse({
+        dependsOn: [],
+        entityId: "proof_box",
+        id: "invalid-dimensions-property",
+        interval: { end: 5, start: 5 },
+        key: "dimensions",
+        kind: "SetProperty",
+        provenance: { evidence: [], origin: "remote-model" },
+        value: 1,
+      }).success,
+    ).toBe(false);
+  });
+
   it("rejects a Scene transition before canonicalization when no next Scene exists", () => {
     const result = validateSuggestionDraft(transition, {
       capturedPlayhead: 5,
@@ -222,5 +242,115 @@ describe("Studio draft validation boundary", () => {
     expect(
       projectProposedState(proposed, 7).canvas.entities.find((entity) => entity.id === "equation_1")?.scale,
     ).toBeCloseTo(2);
+  });
+
+  it("projects Rectangle dimensions and its anchored center from one resize operation", () => {
+    const validation = createDirectManipulationResizeProgram({
+      capturedPlayhead: 5,
+      entityId: "proof_box",
+      from: { dimensions: { height: 2, width: 4 }, position: { x: 320, y: 147 } },
+      interval: { end: 5, start: 5 },
+      scale: 1,
+      scene: STUDIO_FIXTURE_SCENE,
+      shape: "rectangle",
+      to: { dimensions: { height: 3, width: 6 }, position: { x: 340, y: 157 } },
+      transactionId: "rectangle-geometry",
+    });
+    expect(validation.kind).toBe("valid");
+    const proposed = evaluateWorkingState(
+      createFixtureWorkingState({
+        stagedPrograms: [programRecord(validation.program, validation)],
+      }),
+    );
+    const rectangle = projectProposedState(proposed, 5).canvas.entities.find((entity) => entity.id === "proof_box");
+
+    expect(rectangle?.geometry.dimensions).toEqual({
+      kind: "known",
+      value: { height: 3, width: 6 },
+    });
+    expect(rectangle?.position).toEqual({ x: 340, y: 157 });
+  });
+
+  it("interpolates shape dimensions during an animated resize", () => {
+    const validation = createDirectManipulationResizeProgram({
+      capturedPlayhead: 5,
+      entityId: "proof_box",
+      from: { dimensions: { height: 2, width: 4 }, position: { x: 320, y: 147 } },
+      interval: { end: 7, start: 5 },
+      scale: 1,
+      scene: STUDIO_FIXTURE_SCENE,
+      shape: "rectangle",
+      to: { dimensions: { height: 4, width: 8 }, position: { x: 340, y: 167 } },
+      transactionId: "animated-rectangle-geometry",
+    });
+    expect(validation.kind).toBe("valid");
+    const proposed = evaluateWorkingState(
+      createFixtureWorkingState({
+        stagedPrograms: [programRecord(validation.program, validation)],
+      }),
+    );
+    const rectangle = projectProposedState(proposed, 6).canvas.entities.find((entity) => entity.id === "proof_box");
+
+    expect(rectangle?.geometry.dimensions).toEqual({
+      kind: "known",
+      value: { height: 3, width: 6 },
+    });
+    expect(rectangle?.position).toEqual({ x: 330, y: 157 });
+  });
+  it("rejects a resize shape that does not match its target", () => {
+    const validation = createDirectManipulationResizeProgram({
+      capturedPlayhead: 5,
+      entityId: "proof_box",
+      from: { dimensions: { radius: 1 }, position: { x: 320, y: 147 } },
+      interval: { end: 5, start: 5 },
+      scale: 1,
+      scene: STUDIO_FIXTURE_SCENE,
+      shape: "circle",
+      to: { dimensions: { radius: 2 }, position: { x: 340, y: 167 } },
+      transactionId: "wrong-resize-shape",
+    });
+
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: "shape", severity: "error" })]),
+    );
+  });
+
+  it("rejects extra dimension keys on a shape resize", () => {
+    const validation = createDirectManipulationResizeProgram({
+      capturedPlayhead: 5,
+      entityId: "proof_box",
+      from: { dimensions: { height: 2, radius: 99, width: 4 }, position: { x: 320, y: 147 } },
+      interval: { end: 5, start: 5 },
+      scale: 1,
+      scene: STUDIO_FIXTURE_SCENE,
+      shape: "rectangle",
+      to: { dimensions: { height: 3, radius: 99, width: 6 }, position: { x: 340, y: 157 } },
+      transactionId: "extra-resize-dimension",
+    });
+
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: "dimensions", severity: "error" })]),
+    );
+  });
+
+  it("rejects dimensions that overflow during Manim lowering", () => {
+    const validation = createDirectManipulationResizeProgram({
+      capturedPlayhead: 5,
+      entityId: "proof_box",
+      from: { dimensions: { height: 2, width: 4 }, position: { x: 320, y: 147 } },
+      interval: { end: 5, start: 5 },
+      scale: 8,
+      scene: STUDIO_FIXTURE_SCENE,
+      shape: "rectangle",
+      to: { dimensions: { height: 3, width: Number.MAX_VALUE }, position: { x: 340, y: 157 } },
+      transactionId: "overflow-resize-dimension",
+    });
+
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: "dimensions", severity: "error" })]),
+    );
   });
 });

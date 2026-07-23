@@ -2,6 +2,13 @@ import { z } from "zod";
 
 const finiteNumber = z.number().finite();
 const pointSchema = z.object({ x: finiteNumber, y: finiteNumber }).strict();
+const dimensionsSchema = z
+  .object({
+    height: finiteNumber.positive().optional(),
+    radius: finiteNumber.positive().optional(),
+    width: finiteNumber.positive().optional(),
+  })
+  .strict();
 const intervalSchema = z
   .object({
     end: finiteNumber.nonnegative(),
@@ -19,27 +26,13 @@ const unknownSchema = z
     reason: z.string(),
   })
   .strict();
-const numberOrPointKnowledgeSchema = z.union([
-  z.object({ kind: z.literal("known"), value: z.union([finiteNumber, pointSchema]) }).strict(),
+const propertyKnowledgeSchema = z.union([
+  z.object({ kind: z.literal("known"), value: z.union([dimensionsSchema, finiteNumber, pointSchema]) }).strict(),
   unknownSchema,
 ]);
 const geometrySchema = z
   .object({
-    dimensions: z.union([
-      z
-        .object({
-          kind: z.literal("known"),
-          value: z
-            .object({
-              height: finiteNumber.positive().optional(),
-              radius: finiteNumber.positive().optional(),
-              width: finiteNumber.positive().optional(),
-            })
-            .strict(),
-        })
-        .strict(),
-      unknownSchema,
-    ]),
+    dimensions: z.union([z.object({ kind: z.literal("known"), value: dimensionsSchema }).strict(), unknownSchema]),
     position: z.union([z.object({ kind: z.literal("known"), value: pointSchema }).strict(), unknownSchema]),
     scale: z.union([z.object({ kind: z.literal("known"), value: finiteNumber.positive() }).strict(), unknownSchema]),
     style: z.union([
@@ -72,6 +65,7 @@ const propertyValueSchema = z.union([
   finiteNumber,
   z.string(),
   pointSchema,
+  dimensionsSchema,
   contentSchema,
   z.array(z.string()),
 ]);
@@ -82,7 +76,7 @@ const propertyChannelSampleSchema = z
     from: propertyValueSchema.optional(),
     interval: intervalSchema,
     kind: z.enum(["animated", "exact"]),
-    knowledge: numberOrPointKnowledgeSchema.optional(),
+    knowledge: propertyKnowledgeSchema.optional(),
     operationId: z.string().optional(),
     provenanceId: z.string(),
     relative: z.boolean().optional(),
@@ -92,7 +86,17 @@ const propertyChannelSampleSchema = z
 const propertyChannelSchema = z
   .object({
     entityId: z.string(),
-    key: z.enum(["appearance", "camera", "content", "ordering", "position", "presence", "rotation", "scale"]),
+    key: z.enum([
+      "appearance",
+      "camera",
+      "content",
+      "dimensions",
+      "ordering",
+      "position",
+      "presence",
+      "rotation",
+      "scale",
+    ]),
     samples: z.array(propertyChannelSampleSchema),
   })
   .strict();

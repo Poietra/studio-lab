@@ -459,6 +459,111 @@ class GroupedEquation(Scene):
     });
   });
 
+  it("lowers and reimports an immediate Rectangle geometry resize", () => {
+    const rectangleSource = source.replace(
+      'equation = MathTex("E", "=", "m", "c^2")',
+      "shape = Rectangle(width=4, height=2)",
+    );
+    const resize: CanonicalEditOperation = {
+      ...operationBase("resize-rectangle", 7),
+      entityId: "rectangle_1",
+      from: { dimensions: { height: 2, width: 4 }, position: { x: 640, y: 360 } },
+      kind: "ResizeEntity",
+      scale: 1,
+      shape: "rectangle",
+      to: { dimensions: { height: 3, width: 6 }, position: { x: 730, y: 405 } },
+    };
+    const lowered = lowerCanonicalProgramSource(
+      rectangleSource,
+      {
+        ...request(canonicalProgram([resize], "resize-rectangle"), [
+          { entityId: "rectangle_1", sourceVariable: "shape" },
+        ]),
+        viewport: { height: 720, width: 1280 },
+      },
+      { height: 8, width: 14.222 },
+      null,
+    );
+    const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
+    const entityId = "source:examples/relativity.py#GroupedEquation:shape";
+
+    expect(lowered.insertedCode).toContain('# poietra:dimensions {"kind":"exact"');
+    expect(lowered.insertedCode).toContain("shape.stretch_to_fit_width(6).stretch_to_fit_height(3).move_to(");
+    expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/dimensions`]?.samples.at(-1)).toMatchObject({
+      interval: { end: 8, start: 7 },
+      kind: "exact",
+      value: { height: 3, width: 6 },
+    });
+    expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/position`]?.samples.at(-1)).toMatchObject({
+      kind: "exact",
+      value: { x: 365, y: 202.5 },
+    });
+  });
+
+  it("keeps Circle aspect while lowering and reimporting an animated geometry resize", () => {
+    const circleSource = source.replace(
+      'equation = MathTex("E", "=", "m", "c^2")',
+      "shape = Circle(radius=1).scale(1.25)",
+    );
+    const resize: CanonicalEditOperation = {
+      ...operationBase("resize-circle", 7, 8.5),
+      entityId: "circle_1",
+      from: { dimensions: { radius: 1 }, position: { x: 320, y: 180 } },
+      kind: "ResizeEntity",
+      scale: 1.25,
+      shape: "circle",
+      to: { dimensions: { radius: 2 }, position: { x: 342.5, y: 157.5 } },
+    };
+    const lowered = lowerCanonicalProgramSource(
+      circleSource,
+      request(canonicalProgram([resize], "resize-circle"), [{ entityId: "circle_1", sourceVariable: "shape" }]),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
+    const entityId = "source:examples/relativity.py#GroupedEquation:shape";
+
+    expect(lowered.insertedCode).toContain('# poietra:dimensions {"kind":"animated"');
+    expect(lowered.insertedCode).toContain("shape.animate.scale_to_fit_width(5).move_to(");
+    expect(lowered.insertedCode).not.toContain("stretch_to_fit_height");
+    expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/dimensions`]?.samples.at(-1)).toMatchObject({
+      from: { radius: 1 },
+      interval: { end: 8.5, start: 7 },
+      kind: "animated",
+      value: { radius: 2 },
+    });
+    expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/position`]?.samples.at(-1)).toMatchObject({
+      from: { x: 320, y: 180 },
+      kind: "animated",
+      value: { x: 342.5, y: 157.5 },
+    });
+  });
+
+  it("preserves a tiny positive effective resize instead of rounding it to zero", () => {
+    const circleSource = source.replace(
+      'equation = MathTex("E", "=", "m", "c^2")',
+      "shape = Circle(radius=1).scale(0.00001)",
+    );
+    const resize: CanonicalEditOperation = {
+      ...operationBase("tiny-circle", 7),
+      entityId: "circle_1",
+      from: { dimensions: { radius: 1 }, position: { x: 320, y: 180 } },
+      kind: "ResizeEntity",
+      scale: 0.00001,
+      shape: "circle",
+      to: { dimensions: { radius: 2 }, position: { x: 320, y: 180 } },
+    };
+    const lowered = lowerCanonicalProgramSource(
+      circleSource,
+      request(canonicalProgram([resize], "tiny-circle"), [{ entityId: "circle_1", sourceVariable: "shape" }]),
+      { height: 8, width: 14.222 },
+      null,
+    );
+
+    expect(lowered.insertedCode).toContain("shape.scale_to_fit_width(0.00004)");
+    expect(lowered.insertedCode).not.toContain("scale_to_fit_width(0)");
+  });
+
   it("rejects scale lowering without finite positive absolute endpoints", () => {
     const scale: CanonicalEditOperation = {
       ...operationBase("invalid-scale", 7),

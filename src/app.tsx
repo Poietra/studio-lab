@@ -25,7 +25,7 @@ import {
 } from "./studio/authoring-commands";
 import { commandForShortcut, isEditableShortcutTarget, type StudioCommandId } from "./studio/commands";
 import { projectedPositions, validateSuggestionDraft, validatedProgramRecord } from "./studio/draft-validation";
-import type { Point, ProgramRecord, ProposedState, RuntimeSceneState } from "./studio/model";
+import type { EntityDimensions, Point, ProgramRecord, ProposedState, RuntimeSceneState } from "./studio/model";
 import { magicEditCapabilities, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./studio/magic-edit-capabilities";
 import {
   adjustAppliedMotionClipControl,
@@ -49,11 +49,24 @@ import { samplePropertyValue } from "./studio/property-sampling";
 import { projectRuntimeSceneToSourceTimeline } from "./studio/source-timeline";
 import { MagicEditPanel } from "./studio/magic-edit-panel";
 import {
+  createDirectManipulationResizeProgram,
   createDirectManipulationPositionProgram,
   createDirectManipulationScaleProgram,
 } from "./studio/suggestion-program";
 import {
+  centeredShapeGeometry,
+  hasShapeDimensions,
+  resizeKindForType,
+  resizeHandleUsesDelta,
+  resizeShapeByViewportDelta,
+  sameShapeGeometry,
+  type ResizeHandleDirection,
+  type ShapeGeometry,
+  type ShapeResizeKind,
+} from "./studio/shape-resize";
+import {
   type EntityDragPreview,
+  type EntityGeometryPreview,
   type EntityScalePreview,
   entityLabel,
   STUDIO_VIEWPORT,
@@ -88,14 +101,30 @@ type CanvasDragState = Readonly<{
   start: Readonly<{ x: number; y: number }>;
   targetEntityIds: readonly string[];
 }>;
-type CanvasResizeState = Readonly<{
-  center: Readonly<{ x: number; y: number }>;
+type CanvasResizeBase = Readonly<{
+  canvasScale: Readonly<{ x: number; y: number }>;
+  direction: ResizeHandleDirection;
   entityId: string;
-  fromScale: number;
   pointerId: number;
   sourceAnchor: number;
   start: Readonly<{ x: number; y: number }>;
 }>;
+type CanvasScaleResizeState = CanvasResizeBase &
+  Readonly<{
+    center: Readonly<{ x: number; y: number }>;
+    fromScale: number;
+    mode: "scale";
+  }>;
+type CanvasShapeResizeState = CanvasResizeBase &
+  Readonly<{
+    cameraScale: number;
+    frame: Readonly<{ height: number; width: number }>;
+    from: ShapeGeometry;
+    mode: "shape";
+    scale: number;
+    shape: ShapeResizeKind;
+  }>;
+type CanvasResizeState = CanvasScaleResizeState | CanvasShapeResizeState;
 function detectShell(): Shell {
   if ("__TAURI_INTERNALS__" in window) return "Tauri";
   if (window.poietraDesktop || navigator.userAgent.includes("Electron")) return "Electron";
@@ -117,7 +146,7 @@ function canvasPointerDelta(drag: CanvasDragState, point: Readonly<{ x: number; 
   };
 }
 
-function resizedEntityScale(resize: CanvasResizeState, point: Readonly<{ x: number; y: number }>) {
+function resizedEntityScale(resize: CanvasScaleResizeState, point: Readonly<{ x: number; y: number }>) {
   const startVector = {
     x: resize.start.x - resize.center.x,
     y: resize.start.y - resize.center.y,
@@ -130,6 +159,22 @@ function resizedEntityScale(resize: CanvasResizeState, point: Readonly<{ x: numb
   const ratio =
     squaredLength > 1 ? (pointerVector.x * startVector.x + pointerVector.y * startVector.y) / squaredLength : 1;
   return clamp(resize.fromScale * ratio, MIN_ENTITY_SCALE, MAX_ENTITY_SCALE);
+}
+
+function resizedShapeGeometry(resize: CanvasShapeResizeState, point: Readonly<{ x: number; y: number }>) {
+  return resizeShapeByViewportDelta({
+    cameraScale: resize.cameraScale,
+    direction: resize.direction,
+    frame: resize.frame,
+    from: resize.from,
+    scale: resize.scale,
+    shape: resize.shape,
+    viewport: STUDIO_VIEWPORT,
+    viewportDelta: {
+      x: (point.x - resize.start.x) * resize.canvasScale.x,
+      y: (point.y - resize.start.y) * resize.canvasScale.y,
+    },
+  });
 }
 
 function isStudioEntityInsertion(record: ProgramRecord) {
@@ -238,6 +283,7 @@ export function App() {
   const [lifetimeEditMessage, setLifetimeEditMessage] = useState<string | null>(null);
   const [isMagicEditVisible, setIsMagicEditVisible] = useState(() => window.matchMedia("(min-width: 640px)").matches);
   const [dragPreview, setDragPreview] = useState<EntityDragPreview | null>(null);
+  const [geometryPreview, setGeometryPreview] = useState<EntityGeometryPreview | null>(null);
   const [scalePreview, setScalePreview] = useState<EntityScalePreview | null>(null);
   const suggestionContext = useRef("");
   const canvasDrag = useRef<CanvasDragState | null>(null);
@@ -341,6 +387,7 @@ export function App() {
     }
     setLifetimeEditMessage(null);
     setDragPreview(null);
+    setGeometryPreview(null);
     setScalePreview(null);
   }, [activeScene?.sceneId, activeScene?.sourceHash, activeProjectId]);
 
@@ -1237,6 +1284,25 @@ export function App() {
     } as const;
   }
 
+  function acceptDirectManipulationDraft(
+    validation: Parameters<typeof validatedProgramRecord>[0],
+    gestureContext: ReturnType<typeof directGestureContext>,
+    sourceTime: number,
+  ) {
+    const validated = validatedProgramRecord(validation);
+    if (validated.kind === "invalid") throw new Error(validated.message);
+    cancelSuggestionRequest();
+    return stageDraft({
+      clearAppliedEdit: true,
+      clearSuggestion: true,
+      currentTime: sourceTimeToWorkingTime(gestureContext.sourcePrograms, sourceTime),
+      operation: null,
+      preserveAppliedProgram: gestureContext.preserveDraft,
+      record: validated.record,
+      stopPlayback: true,
+    });
+  }
+
   function manualAuthoringAnchor(
     input: Readonly<{
       action: string;
@@ -1389,7 +1455,11 @@ export function App() {
     setDragPreview(null);
   }
 
-  function beginEntityResize(event: PointerEvent<HTMLButtonElement>, entityId: string) {
+  function beginEntityResize(
+    event: PointerEvent<HTMLButtonElement>,
+    entityId: string,
+    direction: ResizeHandleDirection,
+  ) {
     event.stopPropagation();
     if (canvasDrag.current || canvasResize.current) return;
     if (editingAppliedProgram) {
@@ -1402,8 +1472,10 @@ export function App() {
       entity.present &&
       (!entity.provisional || (entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
     if (!editable) return;
-    if (entity.geometry.scale.kind === "unknown") {
-      setDraftError(`Studio cannot resize ${entityLabel(entity)} safely: ${entity.geometry.scale.reason}`);
+    const shape = resizeKindForType(entity.type);
+    const unknownGeometry = entity.geometry.scale.kind === "unknown" ? entity.geometry.scale : null;
+    if (unknownGeometry) {
+      setDraftError(`Studio cannot resize ${entityLabel(entity)} safely: ${unknownGeometry.reason}`);
       return;
     }
     const gestureContext = directGestureContext();
@@ -1423,18 +1495,50 @@ export function App() {
     const wrapper = event.currentTarget.closest<HTMLElement>("[data-studio-entity-wrapper]");
     const object = wrapper?.querySelector<HTMLElement>("[data-studio-entity]");
     const bounds = object?.getBoundingClientRect();
-    if (!bounds) return;
+    const canvasBounds = event.currentTarget.closest<HTMLElement>("[data-scene-phase]")?.getBoundingClientRect();
+    if (!bounds || !canvasBounds) return;
     setSelectedObjectIds([entityId]);
     setIsPlaying(false);
-    canvasResize.current = {
-      center: { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 },
+    const base = {
+      canvasScale: {
+        x: STUDIO_VIEWPORT.width / canvasBounds.width,
+        y: STUDIO_VIEWPORT.height / canvasBounds.height,
+      },
+      direction,
       entityId,
-      fromScale: entity.scale,
       pointerId: event.pointerId,
       sourceAnchor: anchor.sourceTime,
       start: { x: event.clientX, y: event.clientY },
-    };
-    setScalePreview({ entityId, scale: entity.scale });
+    } as const;
+    if (
+      shape &&
+      entity.geometry.dimensions.kind === "known" &&
+      entity.geometry.position.kind === "known" &&
+      hasShapeDimensions(shape, entity.geometry.dimensions.value)
+    ) {
+      canvasResize.current = {
+        ...base,
+        cameraScale: Math.max(projection?.camera.scale ?? 1, Number.EPSILON),
+        frame: workspace?.frame ?? { height: 8, width: 14.222 },
+        from: { dimensions: entity.geometry.dimensions.value, position: entity.position },
+        mode: "shape",
+        scale: entity.scale,
+        shape,
+      };
+      setGeometryPreview({
+        dimensions: entity.geometry.dimensions.value,
+        entityId,
+        position: entity.position,
+      });
+    } else {
+      canvasResize.current = {
+        ...base,
+        center: { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 },
+        fromScale: entity.scale,
+        mode: "scale",
+      };
+      setScalePreview({ entityId, scale: entity.scale });
+    }
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
@@ -1442,19 +1546,40 @@ export function App() {
     event.stopPropagation();
     const resize = canvasResize.current;
     if (!resize || resize.pointerId !== event.pointerId) return;
-    setScalePreview({
-      entityId: resize.entityId,
-      scale: resizedEntityScale(resize, { x: event.clientX, y: event.clientY }),
-    });
+    if (resize.mode === "shape") {
+      const geometry = resizedShapeGeometry(resize, { x: event.clientX, y: event.clientY });
+      setGeometryPreview({ ...geometry, entityId: resize.entityId });
+    } else {
+      setScalePreview({
+        entityId: resize.entityId,
+        scale: resizedEntityScale(resize, { x: event.clientX, y: event.clientY }),
+      });
+    }
   }
 
   function finishEntityResize(event: PointerEvent<HTMLButtonElement>) {
     event.stopPropagation();
     const resize = canvasResize.current;
     if (!resize || resize.pointerId !== event.pointerId) return;
-    const targetScale = resizedEntityScale(resize, { x: event.clientX, y: event.clientY });
     canvasResize.current = null;
+    setGeometryPreview(null);
     setScalePreview(null);
+    if (resize.mode === "shape") {
+      const target = resizedShapeGeometry(resize, { x: event.clientX, y: event.clientY });
+      if (sameShapeGeometry(target, resize.from)) return;
+      installEntityGeometryDraft(
+        resize.entityId,
+        resize.from,
+        target,
+        resize.shape,
+        resize.scale,
+        interactionMode === "animate",
+        `studio-shape-resize-${crypto.randomUUID()}`,
+        resize.sourceAnchor,
+      );
+      return;
+    }
+    const targetScale = resizedEntityScale(resize, { x: event.clientX, y: event.clientY });
     if (Math.abs(targetScale - resize.fromScale) < 0.01) return;
     installEntityScaleDraft(
       resize.entityId,
@@ -1470,21 +1595,51 @@ export function App() {
     event.stopPropagation();
     if (canvasResize.current?.pointerId !== event.pointerId) return;
     canvasResize.current = null;
+    setGeometryPreview(null);
     setScalePreview(null);
   }
 
-  function nudgeEntityScale(event: KeyboardEvent<HTMLButtonElement>, entityId: string) {
-    const direction =
-      event.key === "ArrowUp" || event.key === "ArrowRight"
-        ? 1
-        : event.key === "ArrowDown" || event.key === "ArrowLeft"
-          ? -1
-          : 0;
-    if (direction === 0) return;
+  function nudgeEntityResize(event: KeyboardEvent<HTMLButtonElement>, entityId: string, handle: ResizeHandleDirection) {
+    const delta = NUDGE_DELTAS[event.key];
+    if (!delta) return;
     event.preventDefault();
     event.stopPropagation();
+    if (!resizeHandleUsesDelta(handle, delta)) return;
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
     if (!entity) return;
+    const shape = resizeKindForType(entity.type);
+    if (
+      shape &&
+      entity.geometry.dimensions.kind === "known" &&
+      entity.geometry.position.kind === "known" &&
+      entity.geometry.scale.kind === "known" &&
+      hasShapeDimensions(shape, entity.geometry.dimensions.value)
+    ) {
+      const amount = event.shiftKey ? 5 : 1;
+      const from = { dimensions: entity.geometry.dimensions.value, position: entity.position };
+      const target = resizeShapeByViewportDelta({
+        cameraScale: Math.max(projection?.camera.scale ?? 1, Number.EPSILON),
+        direction: handle,
+        frame: workspace?.frame ?? { height: 8, width: 14.222 },
+        from,
+        scale: entity.scale,
+        shape,
+        viewport: STUDIO_VIEWPORT,
+        viewportDelta: { x: delta.x * amount, y: delta.y * amount },
+      });
+      if (sameShapeGeometry(target, from)) return;
+      installEntityGeometryDraft(
+        entityId,
+        from,
+        target,
+        shape,
+        entity.scale,
+        interactionMode === "animate",
+        `studio-shape-resize-key-${crypto.randomUUID()}`,
+      );
+      return;
+    }
+    const direction = event.key === "ArrowUp" || event.key === "ArrowRight" ? 1 : -1;
     const factor = event.shiftKey ? 1.25 : 1.05;
     const targetScale = clamp(
       direction > 0 ? entity.scale * factor : entity.scale / factor,
@@ -1498,6 +1653,72 @@ export function App() {
       interactionMode === "animate",
       `studio-resize-key-${crypto.randomUUID()}`,
     );
+  }
+
+  function installEntityGeometryDraft(
+    entityId: string,
+    from: ShapeGeometry,
+    target: ShapeGeometry,
+    shape: ShapeResizeKind,
+    scale: number,
+    animated: boolean,
+    transactionId: string,
+    capturedSourceAnchor?: number,
+  ) {
+    if (!activeScene || !draftBaseState) return false;
+    if (editingAppliedProgram) {
+      setDraftError("Apply or discard the Applied Program edit before resizing another object.");
+      return false;
+    }
+    if (
+      !hasShapeDimensions(shape, target.dimensions) ||
+      !Number.isFinite(target.position.x) ||
+      !Number.isFinite(target.position.y)
+    ) {
+      setDraftError("Shape dimensions must be finite positive numbers.");
+      return false;
+    }
+    const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
+    if (!entity) return false;
+    const gestureContext = directGestureContext();
+    if (!gestureContext.proposedState) return false;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
+    const anchor =
+      capturedSourceAnchor === undefined
+        ? manualAuthoringAnchor({
+            action: "shape resize",
+            requireAlignedPlayhead: true,
+            scene: sourceScene,
+            sourcePrograms: gestureContext.sourcePrograms,
+            targetEntityIds: [entityId],
+          })
+        : { sourceTime: capturedSourceAnchor };
+    if (!anchor) return false;
+    const end = animated ? anchor.sourceTime + motionDuration : anchor.sourceTime;
+    if (animated && (motionDuration < 0.1 || end > sourceScene.duration + 0.001)) {
+      setDraftError("The resize must be at least 0.1 seconds and fit within the current Scene duration.");
+      return false;
+    }
+    try {
+      const validation = createDirectManipulationResizeProgram({
+        capturedPlayhead: anchor.sourceTime,
+        entityId,
+        from,
+        interval: { end, start: anchor.sourceTime },
+        scale,
+        scene: sourceScene,
+        shape,
+        to: target,
+        transactionId,
+      });
+      return acceptDirectManipulationDraft(validation, gestureContext, anchor.sourceTime);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The shape could not be resized.");
+      return false;
+    }
   }
 
   function installEntityScaleDraft(
@@ -1559,22 +1780,7 @@ export function App() {
         targetEntityIds: [entityId],
         transactionId,
       });
-      const validated = validatedProgramRecord(validation);
-      if (validated.kind === "invalid") throw new Error(validated.message);
-      cancelSuggestionRequest();
-      if (
-        !stageDraft({
-          clearAppliedEdit: true,
-          clearSuggestion: true,
-          currentTime: sourceTimeToWorkingTime(gestureContext.sourcePrograms, anchor.sourceTime),
-          operation: null,
-          preserveAppliedProgram: gestureContext.preserveDraft,
-          record: validated.record,
-          stopPlayback: true,
-        })
-      )
-        return false;
-      return true;
+      return acceptDirectManipulationDraft(validation, gestureContext, anchor.sourceTime);
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The object could not be resized.");
       return false;
@@ -1590,6 +1796,31 @@ export function App() {
       targetScale,
       false,
       `studio-resize-input-${crypto.randomUUID()}`,
+    );
+  }
+
+  function resizeEntityDimensionsFromInspector(entityId: string, dimensions: EntityDimensions) {
+    const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
+    const shape = entity ? resizeKindForType(entity.type) : null;
+    if (!entity || !shape) return false;
+    if (
+      entity.geometry.dimensions.kind === "unknown" ||
+      entity.geometry.position.kind === "unknown" ||
+      entity.geometry.scale.kind === "unknown"
+    ) {
+      setDraftError("Studio cannot resize this shape because its source geometry is runtime-dependent.");
+      return false;
+    }
+    const from = { dimensions: entity.geometry.dimensions.value, position: entity.position };
+    if (JSON.stringify(from.dimensions) === JSON.stringify(dimensions)) return false;
+    return installEntityGeometryDraft(
+      entityId,
+      from,
+      centeredShapeGeometry(from, dimensions),
+      shape,
+      entity.scale,
+      false,
+      `studio-shape-resize-input-${crypto.randomUUID()}`,
     );
   }
 
@@ -1803,6 +2034,7 @@ export function App() {
     canvasDrag.current = null;
     canvasResize.current = null;
     setDragPreview(null);
+    setGeometryPreview(null);
     setScalePreview(null);
     leaveWorkspace();
   }
@@ -1993,6 +2225,8 @@ export function App() {
               editableMotionIds={editableMotionIds}
               editingAppliedTransactionId={editingAppliedProgram?.original.program.transactionId ?? null}
               entities={visibleEntities}
+              frame={workspace?.frame ?? { height: 8, width: 14.222 }}
+              geometryPreview={geometryPreview}
               incomingSceneName={nextScene?.name ?? null}
               insertTool={insertTool}
               insertValue={insertValue}
@@ -2012,7 +2246,7 @@ export function App() {
               onEntityPointerMove={moveEntityDrag}
               onEntityPointerUp={finishEntityDrag}
               onEntityResizeCancel={cancelEntityResize}
-              onEntityResizeKeyDown={nudgeEntityScale}
+              onEntityResizeKeyDown={nudgeEntityResize}
               onEntityResizePointerDown={beginEntityResize}
               onEntityResizePointerMove={moveEntityResize}
               onEntityResizePointerUp={finishEntityResize}
@@ -2050,6 +2284,9 @@ export function App() {
               onApplyDraft={() => void applyDraft()}
               onDiscardDraft={discardDraft}
               onDraftOperationChange={updateDraftOperation}
+              onEntityDimensionsChange={(entityId, dimensions) =>
+                void resizeEntityDimensionsFromInspector(entityId, dimensions)
+              }
               onEntityScaleChange={(entityId, scale) => void resizeEntityFromInspector(entityId, scale)}
               onRenderSessionChange={retainRenderSession}
               onSourceChanged={async () => {

@@ -8,7 +8,7 @@ import type {
 import { RenderPipelinePanel, type RenderProgramCandidate } from "../render-pipeline/render-pipeline-panel";
 import { DraftInspector } from "./draft-inspector";
 import type { ManimWorkspaceScene } from "./imported-workspace";
-import type { ProgramRecord, ProjectedEntity } from "./model";
+import type { EntityDimensions, ProgramRecord, ProjectedEntity } from "./model";
 import { shortcutLabel, studioCommand, type StudioCommandId } from "./commands";
 import { entityLabel } from "./studio-viewport";
 
@@ -291,6 +291,7 @@ export function StudioInspector({
   onApplyDraft,
   onDiscardDraft,
   onDraftOperationChange,
+  onEntityDimensionsChange,
   onEntityScaleChange,
   onRenderSessionChange,
   onSourceChanged,
@@ -312,6 +313,7 @@ export function StudioInspector({
   onApplyDraft: () => void;
   onDiscardDraft: () => void;
   onDraftOperationChange: (operation: EditSuggestionOperation) => void;
+  onEntityDimensionsChange: (entityId: string, dimensions: EntityDimensions) => void;
   onEntityScaleChange: (entityId: string, scale: number) => void;
   onRenderSessionChange: (session: RenderSessionView | null, projectId?: string) => void;
   onSourceChanged: () => void | Promise<void>;
@@ -335,6 +337,13 @@ export function StudioInspector({
       ).flatMap(([label, knowledge]) => (knowledge.kind === "unknown" ? [{ label, reason: knowledge.reason }] : []))
     : [];
   const scaleUnknown = selectedEntity?.geometry.scale.kind === "unknown";
+  const editableDimensions =
+    selectedEntity?.geometry.dimensions.kind === "known" &&
+    selectedEntity.geometry.position.kind === "known" &&
+    selectedEntity.geometry.scale.kind === "known" &&
+    (selectedEntity.type === "Circle" || selectedEntity.type === "Rectangle")
+      ? selectedEntity.geometry.dimensions.value
+      : null;
   return (
     <aside className={cn("min-h-0 overflow-y-auto bg-zinc-950 p-3", className)}>
       {draftProgram ? (
@@ -367,7 +376,70 @@ export function StudioInspector({
                 {selectedEntity.position.x.toFixed(1)}, {selectedEntity.position.y.toFixed(1)}
               </dd>
               <dt className="text-zinc-600">Dimensions</dt>
-              <dd className="text-zinc-300">{dimensionSummary(selectedEntity)}</dd>
+              <dd className="text-zinc-300">
+                {editableDimensions ? (
+                  <form
+                    className="flex flex-wrap items-center gap-1"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      const data = new FormData(event.currentTarget);
+                      onEntityDimensionsChange(
+                        selectedEntity.id,
+                        selectedEntity.type === "Circle"
+                          ? { radius: Number(data.get("radius")) }
+                          : { height: Number(data.get("height")), width: Number(data.get("width")) },
+                      );
+                    }}
+                  >
+                    {selectedEntity.type === "Circle" ? (
+                      <input
+                        aria-label={`Radius of ${entityLabel(selectedEntity)}`}
+                        className="h-7 w-20 border border-zinc-700 bg-zinc-950 px-1.5 tabular-nums text-xs text-zinc-300 outline-none focus:border-sky-500"
+                        defaultValue={editableDimensions.radius?.toFixed(2)}
+                        key={`${selectedEntity.id}/radius/${editableDimensions.radius}`}
+                        min="0.1"
+                        name="radius"
+                        required
+                        step="0.1"
+                        type="number"
+                      />
+                    ) : (
+                      <>
+                        <input
+                          aria-label={`Width of ${entityLabel(selectedEntity)}`}
+                          className="h-7 w-16 border border-zinc-700 bg-zinc-950 px-1.5 tabular-nums text-xs text-zinc-300 outline-none focus:border-sky-500"
+                          defaultValue={editableDimensions.width?.toFixed(2)}
+                          key={`${selectedEntity.id}/width/${editableDimensions.width}`}
+                          min="0.1"
+                          name="width"
+                          required
+                          step="0.1"
+                          type="number"
+                        />
+                        <input
+                          aria-label={`Height of ${entityLabel(selectedEntity)}`}
+                          className="h-7 w-16 border border-zinc-700 bg-zinc-950 px-1.5 tabular-nums text-xs text-zinc-300 outline-none focus:border-sky-500"
+                          defaultValue={editableDimensions.height?.toFixed(2)}
+                          key={`${selectedEntity.id}/height/${editableDimensions.height}`}
+                          min="0.1"
+                          name="height"
+                          required
+                          step="0.1"
+                          type="number"
+                        />
+                      </>
+                    )}
+                    <button
+                      className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+                      type="submit"
+                    >
+                      Set
+                    </button>
+                  </form>
+                ) : (
+                  dimensionSummary(selectedEntity)
+                )}
+              </dd>
               <dt className="text-zinc-600">Style</dt>
               <dd className="truncate text-zinc-300" title={styleSummary(selectedEntity)}>
                 {styleSummary(selectedEntity)}

@@ -11,6 +11,7 @@ import {
   createDirectManipulationModifyMotionProgram,
   createDirectManipulationMotionProgram,
   createDirectManipulationPositionProgram,
+  createDirectManipulationResizeProgram,
   createDirectManipulationScaleProgram,
 } from "./suggestion-program";
 import { applyStagedPrograms, stageProgram } from "./transactions";
@@ -26,6 +27,48 @@ function cameraFocusSuggestion(): CreateCameraFocusSuggestion {
     targetObjectIds: ["equation_1"],
     zoomScale: 1.35,
   };
+}
+
+function resizeWithConcurrentMotion(
+  testId: string,
+  input: Readonly<{ motionEasing: "linear" | "smooth"; motionEnd: number; resizeEnd: number }>,
+) {
+  const resize = createDirectManipulationResizeProgram({
+    capturedPlayhead: 5,
+    entityId: "proof_box",
+    from: { dimensions: { height: 2, width: 4 }, position: { x: 320, y: 147 } },
+    interval: { end: input.resizeEnd, start: 5 },
+    scale: 1,
+    scene: STUDIO_FIXTURE_SCENE,
+    shape: "rectangle",
+    to: { dimensions: { height: 3, width: 6 }, position: { x: 320, y: 147 } },
+    transactionId: `${testId}-resize`,
+  });
+  const motion = createDirectManipulationMotionProgram({
+    capturedPlayhead: 5,
+    controlOffset: { x: 0, y: 0 },
+    delta: { x: 40, y: 0 },
+    interval: { end: input.motionEnd, start: 5 },
+    scene: STUDIO_FIXTURE_SCENE,
+    targetEntityIds: ["arrow_1"],
+    transactionId: `${testId}-motion`,
+  });
+  const operations: CanonicalEditOperation[] = [
+    ...resize.program.operations,
+    ...motion.program.operations.map((operation) =>
+      operation.kind === "CreateMotion" ? { ...operation, easing: input.motionEasing } : operation,
+    ),
+  ];
+  return validateAndScheduleProgram(
+    {
+      ...resize.program,
+      intentCount: 2,
+      operations,
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: operations.map((operation) => operation.id) },
+    },
+    STUDIO_FIXTURE_SCENE,
+  );
 }
 
 describe("EditProgram execution capabilities", () => {
@@ -44,11 +87,13 @@ describe("EditProgram execution capabilities", () => {
       lowering: "illustrative",
       preview: "supported",
     });
-    expect(validation.issues).toContainEqual(expect.objectContaining({
-      code: "lowering-unsupported",
-      operationId: expect.stringContaining("camera-zoom"),
-      severity: "warning",
-    }));
+    expect(validation.issues).toContainEqual(
+      expect.objectContaining({
+        code: "lowering-unsupported",
+        operationId: expect.stringContaining("camera-zoom"),
+        severity: "warning",
+      }),
+    );
 
     const record = programRecord(validation.program, validation);
     const preview = evaluateWorkingState(createFixtureWorkingState({ stagedPrograms: [record] }));
@@ -71,14 +116,18 @@ describe("EditProgram execution capabilities", () => {
     expect(validation.kind).toBe("valid");
     expect(programExecutionCapabilities(validation.program)).toEqual({
       apply: "blocked",
-      applyBlocker: "ModifyMotion has no truthful source lowering yet. It can be previewed, but editing an existing motion path cannot be applied.",
+      applyBlocker:
+        "ModifyMotion has no truthful source lowering yet. It can be previewed, but editing an existing motion path cannot be applied.",
       lowering: "illustrative",
       preview: "supported",
     });
-    const revalidated = validateAndScheduleProgram({
-      ...validation.program,
-      loweringStatus: "supported",
-    }, STUDIO_FIXTURE_SCENE);
+    const revalidated = validateAndScheduleProgram(
+      {
+        ...validation.program,
+        loweringStatus: "supported",
+      },
+      STUDIO_FIXTURE_SCENE,
+    );
     expect(revalidated.program.loweringStatus).toBe("illustrative");
     expect(programExecutionCapabilities(revalidated.program).apply).toBe("blocked");
     const record = programRecord(validation.program, validation);
@@ -138,6 +187,86 @@ describe("EditProgram execution capabilities", () => {
     ]);
   });
 
+  it("blocks a shape resize whose concurrent source animation has a different end", () => {
+    const validation = resizeWithConcurrentMotion("mismatched-end", {
+      motionEasing: "smooth",
+      motionEnd: 7,
+      resizeEnd: 6,
+    });
+
+    expect(validation.kind).toBe("valid");
+    expect(validation.program.loweringStatus).toBe("illustrative");
+    expect(programExecutionCapabilities(validation.program)).toMatchObject({
+      apply: "blocked",
+      applyBlocker: "Concurrent source animations must share one interval.",
+    });
+  });
+
+  it("rejects a shape resize whose concurrent source animation has different easing", () => {
+    const validation = resizeWithConcurrentMotion("mismatched-easing", {
+      motionEasing: "linear",
+      motionEnd: 6,
+      resizeEnd: 6,
+    });
+
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues).toContainEqual(
+      expect.objectContaining({
+        code: "lowering-unsupported",
+        field: "easing",
+        message: expect.stringMatching(/must share one easing function/i),
+        severity: "error",
+      }),
+    );
+  });
+
+  it("treats concurrent scale and shape resize on one entity as a dependency conflict", () => {
+    const resize = createDirectManipulationResizeProgram({
+      capturedPlayhead: 5,
+      entityId: "proof_box",
+      from: { dimensions: { height: 2, width: 4 }, position: { x: 320, y: 147 } },
+      interval: { end: 6, start: 5 },
+      scale: 1,
+      scene: STUDIO_FIXTURE_SCENE,
+      shape: "rectangle",
+      to: { dimensions: { height: 3, width: 6 }, position: { x: 320, y: 147 } },
+      transactionId: "resize-scale-conflict-resize",
+    });
+    const scale = createDirectManipulationScaleProgram({
+      capturedPlayhead: 5,
+      interval: { end: 6, start: 5 },
+      scales: { proof_box: { from: 1, to: 2 } },
+      scene: STUDIO_FIXTURE_SCENE,
+      targetEntityIds: ["proof_box"],
+      transactionId: "resize-scale-conflict-scale",
+    });
+    const operations = [...resize.program.operations, ...scale.program.operations];
+    const validation = validateAndScheduleProgram(
+      {
+        ...resize.program,
+        intentCount: 2,
+        operations,
+        requestedExecution: "parallel",
+        schedule: { edges: [], mode: "parallel", order: operations.map((operation) => operation.id) },
+      },
+      STUDIO_FIXTURE_SCENE,
+    );
+    const resizeOperation = operations.find((operation) => operation.kind === "ResizeEntity");
+    const scaleOperation = operations.find(
+      (operation) => operation.kind === "AnimateProperty" && operation.key === "scale",
+    );
+
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues).toContainEqual(
+      expect.objectContaining({ code: "parallel-conflict", field: "execution", severity: "error" }),
+    );
+    expect(validation.program.schedule.edges).toContainEqual({
+      from: scaleOperation?.id,
+      reason: "read-after-write",
+      to: resizeOperation?.id,
+    });
+  });
+
   it("blocks Program schedules that the source lowerer cannot emit", () => {
     const position = createDirectManipulationPositionProgram({
       capturedPlayhead: 8,
@@ -158,24 +287,29 @@ describe("EditProgram execution capabilities", () => {
       provenance: { evidence: [], origin: "fixture" },
     };
     const operations = [...position.program.operations, wait];
-    const validation = validateAndScheduleProgram({
-      ...position.program,
-      intentCount: 2,
-      operations,
-      requestedExecution: "parallel",
-      schedule: { edges: [], mode: "parallel", order: operations.map((operation) => operation.id) },
-    }, STUDIO_FIXTURE_SCENE);
+    const validation = validateAndScheduleProgram(
+      {
+        ...position.program,
+        intentCount: 2,
+        operations,
+        requestedExecution: "parallel",
+        schedule: { edges: [], mode: "parallel", order: operations.map((operation) => operation.id) },
+      },
+      STUDIO_FIXTURE_SCENE,
+    );
 
     expect(validation.kind).toBe("valid");
     expect(validation.program.loweringStatus).toBe("illustrative");
     expect(programExecutionCapabilities(validation.program).applyBlocker).toBe(
       "An inserted wait must occupy its own source interval.",
     );
-    expect(validation.issues).toContainEqual(expect.objectContaining({
-      code: "lowering-unsupported",
-      message: "An inserted wait must occupy its own source interval.",
-      severity: "warning",
-    }));
+    expect(validation.issues).toContainEqual(
+      expect.objectContaining({
+        code: "lowering-unsupported",
+        message: "An inserted wait must occupy its own source interval.",
+        severity: "warning",
+      }),
+    );
     const record = programRecord(validation.program, validation);
     const applied = applyStagedPrograms(stageProgram(createFixtureWorkingState(), record));
     expect(applied.appliedPrograms).toHaveLength(0);
@@ -202,13 +336,16 @@ describe("EditProgram execution capabilities", () => {
       transactionId: "overlap-second",
     });
     const operations = [...first.program.operations, ...second.program.operations];
-    const validation = validateAndScheduleProgram({
-      ...first.program,
-      intentCount: 2,
-      operations,
-      requestedExecution: "sequence",
-      schedule: { edges: [], mode: "sequence", order: operations.map((operation) => operation.id) },
-    }, STUDIO_FIXTURE_SCENE);
+    const validation = validateAndScheduleProgram(
+      {
+        ...first.program,
+        intentCount: 2,
+        operations,
+        requestedExecution: "sequence",
+        schedule: { edges: [], mode: "sequence", order: operations.map((operation) => operation.id) },
+      },
+      STUDIO_FIXTURE_SCENE,
+    );
 
     expect(validation.kind).toBe("valid");
     expect(programExecutionCapabilities(validation.program)).toMatchObject({

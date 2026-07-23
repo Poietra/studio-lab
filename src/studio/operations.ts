@@ -1,4 +1,4 @@
-import type { EntityContent, Interval, MotionEasing, Point } from "./model";
+import type { EntityContent, EntityDimensions, Interval, MotionEasing, Point } from "./model";
 import type { ResolvedTimeAnchor } from "./time";
 
 export const EDIT_OPERATION_VERSION = 1 as const;
@@ -7,6 +7,7 @@ export type PropertyChannelKey =
   | "appearance"
   | "camera"
   | "content"
+  | "dimensions"
   | "identity"
   | "ordering"
   | "position"
@@ -32,6 +33,7 @@ export type CreateEntityOperation = OperationBase &
   Readonly<{
     entity: Readonly<{
       content?: EntityContent;
+      dimensions?: EntityDimensions;
       id: string;
       lifetime: Readonly<{ end: number | null; start: number }>;
       type: string;
@@ -39,10 +41,20 @@ export type CreateEntityOperation = OperationBase &
     kind: "CreateEntity";
   }>;
 
+export type ResizeEntityOperation = OperationBase &
+  Readonly<{
+    entityId: string;
+    from: Readonly<{ dimensions: EntityDimensions; position: Point }>;
+    kind: "ResizeEntity";
+    scale: number;
+    shape: "circle" | "rectangle";
+    to: Readonly<{ dimensions: EntityDimensions; position: Point }>;
+  }>;
+
 export type SetPropertyOperation = OperationBase &
   Readonly<{
     entityId: string;
-    key: Exclude<PropertyChannelKey, "identity">;
+    key: Exclude<PropertyChannelKey, "dimensions" | "identity">;
     kind: "SetProperty";
     value: boolean | number | string | Point | EntityContent;
   }>;
@@ -158,6 +170,7 @@ export type CanonicalEditOperation =
   | InsertSceneBoundaryOperation
   | InsertTimelineEventOperation
   | ModifyMotionOperation
+  | ResizeEntityOperation
   | SetPropertyOperation
   | SetRelationOperation
   | TransformContentOperation

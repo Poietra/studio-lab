@@ -30,6 +30,8 @@ export function StudioViewport({
   editableMotionIds,
   editingAppliedTransactionId,
   entities,
+  frame,
+  geometryPreview,
   incomingSceneName,
   insertTool,
   insertValue,
@@ -85,6 +87,8 @@ export function StudioViewport({
         dragPreview={dragPreview}
         editableMotionIds={editableMotionIds}
         entities={entities}
+        frame={frame}
+        geometryPreview={geometryPreview}
         incomingSceneName={incomingSceneName}
         insertTool={insertTool}
         interactionMode={interactionMode}
@@ -138,13 +142,10 @@ export function StudioViewport({
 
 export { entityLabel } from "./studio-canvas";
 export type { StudioTimelineAnchor } from "./studio-timeline-geometry";
-export {
-  entityDragDelta,
-  entityPreviewScale,
-  STUDIO_VIEWPORT,
-} from "./studio-viewport-geometry";
+export { entityDragDelta, entityPreviewScale, STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 export type {
   EntityDragPreview,
+  EntityGeometryPreview,
   EntityScalePreview,
   InteractionMode,
 } from "./studio-viewport-geometry";

@@ -83,7 +83,8 @@ function referencedEntityIds(operation: CanonicalEditOperation) {
 function sourceAnimationEasing(operation: CanonicalEditOperation): MotionEasing | null {
   if (operation.kind === "CreateMotion") return operation.easing;
   if (operation.kind === "AnimateProperty" && operation.key === "scale") return operation.easing;
-  if (operation.kind === "ChangePresence" || operation.kind === "TransformContent") return "smooth";
+  if (operation.kind === "ChangePresence" || operation.kind === "ResizeEntity" || operation.kind === "TransformContent")
+    return "smooth";
   return null;
 }
 
@@ -218,6 +219,19 @@ export function validateAndScheduleProgram(
     }
   }
   for (const operation of input.operations) {
+    if (
+      operation.kind === "ResizeEntity" &&
+      produced.has(operation.entityId) &&
+      !scene.objectGraph.entities[operation.entityId]
+    ) {
+      issues.push({
+        code: "identity-unknown",
+        field: "target",
+        message: "ResizeEntity cannot target an entity created in the same unapplied EditProgram.",
+        operationId: operation.id,
+        severity: "error",
+      });
+    }
     for (const entityId of referencedEntityIds(operation)) {
       if (!entityId.startsWith("tx:")) continue;
       if (produced.has(entityId)) continue;
