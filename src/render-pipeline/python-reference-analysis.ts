@@ -80,13 +80,43 @@ const DERIVED_REFERENCE_RECEIVER_CALLS = new Set([
   "copy",
   "get_bottom",
   "get_center",
+  "get_color",
   "get_corner",
   "get_critical_point",
   "get_end",
+  "get_fill_color",
+  "get_fill_opacity",
   "get_left",
   "get_right",
+  "get_sheen_factor",
   "get_start",
+  "get_stroke_color",
+  "get_stroke_opacity",
+  "get_stroke_width",
+  "get_tex_string",
   "get_top",
+  "get_x",
+  "get_y",
+  "get_z",
+]);
+
+const DERIVED_REFERENCE_PROPERTIES = new Set([
+  "background_stroke_color",
+  "background_stroke_opacity",
+  "background_stroke_width",
+  "color",
+  "depth",
+  "fill_color",
+  "fill_opacity",
+  "height",
+  "sheen_factor",
+  "stroke_color",
+  "stroke_opacity",
+  "stroke_width",
+  "tex_string",
+  "text",
+  "width",
+  "z_index",
 ]);
 
 const SELF_RETURNING_REFERENCE_RECEIVER_CALLS = new Set([
@@ -229,7 +259,7 @@ function enclosingFrames(code: string, position: number, closings: ReadonlyMap<n
 
 type PostfixStage = Readonly<
   | { call: string; kind: "call" }
-  | { kind: "projection" }
+  | { kind: "projection"; property: string | null }
 >;
 
 function postfixStages(
@@ -256,7 +286,7 @@ function postfixStages(
         stages.push({ call: name, kind: "call" });
         cursor = close + 1;
       } else {
-        stages.push({ kind: "projection" });
+        stages.push({ kind: "projection", property: name });
       }
       first = false;
       continue;
@@ -264,7 +294,7 @@ function postfixStages(
     if (character === "[") {
       const close = closings.get(cursor);
       if (close === undefined || close >= limit) break;
-      stages.push({ kind: "projection" });
+      stages.push({ kind: "projection", property: null });
       cursor = close + 1;
       first = false;
       continue;
@@ -301,7 +331,8 @@ function referenceRetention(
       for (const stage of postfixStages(statement.code, start, limit, closings, trackedInvocation)) {
         if (!tainted) break;
         if (stage.kind === "projection") {
-          directObject = false;
+          if (stage.property && DERIVED_REFERENCE_PROPERTIES.has(stage.property)) tainted = false;
+          else directObject = false;
           continue;
         }
         if (stage.call === "copy") {

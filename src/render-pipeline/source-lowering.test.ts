@@ -779,6 +779,8 @@ class GroupedEquation(Scene):
     ["self-returning placement", "alias = equation.next_to(ORIGIN)", "self.add(alias)", "alias"],
     ["animation builder alias", "motion = equation.animate.shift(RIGHT)", "self.play(motion)", "motion"],
     ["animation builder container", "motions = [equation.animate.shift(RIGHT)]", "self.play(*motions)", "motions"],
+    ["submobjects projection", "parts = equation.submobjects", "self.add(parts[0])", "parts"],
+    ["target projection", "target = equation.target", "self.add(target)", "target"],
   ])("rejects persistent removal through a pre-anchor %s", (_label, setup, suffix, reference) => {
     const remove: CanonicalEditOperation = {
       ...operationBase("persistent-delete-alias", 7, 7.4),
@@ -866,6 +868,7 @@ class GroupedEquation(Scene):
     ["postfix grouped method", "(equation).register()", "self.add(recall())", "postfix call register"],
     ["postfix before self.add", "self.add(VGroup(equation).register())", "self.add(recall())", "postfix call register"],
     ["postfix before self.play", "self.play(AnimationGroup(FadeIn(equation)).register())", "self.add(recall())", "postfix call register"],
+    ["dynamic width getter", "value = equation.get_width()", "self.wait(value)", "postfix call get_width"],
   ])("fails closed when a pre-anchor %s may retain the removed object", (_label, setup, suffix, call) => {
     const remove: CanonicalEditOperation = {
       ...operationBase("persistent-delete-unknown-call", 7, 7.4),
@@ -909,6 +912,45 @@ class GroupedEquation(Scene):
     expect(lowerCanonicalProgramSource(
       derivedSource,
       request(canonicalProgram([remove], "persistent-delete-derived-geometry")),
+      { height: 8, width: 14.222 },
+      null,
+    ).insertedCode).toContain("FadeOut(equation)");
+  });
+
+  it.each([
+    ["width property", "equation.width", null],
+    ["height property", "equation.height", null],
+    ["depth property", "equation.depth", null],
+    ["color property", "equation.color", null],
+    ["fill opacity property", "equation.fill_opacity", null],
+    ["stroke color property", "equation.stroke_color", null],
+    ["MathTex string property", "equation.tex_string", null],
+    ["Text string property", "equation.text", 'Text("energy")'],
+    ["x getter", "equation.get_x()", null],
+    ["y getter", "equation.get_y()", null],
+    ["z getter", "equation.get_z()", null],
+    ["color getter", "equation.get_color()", null],
+    ["fill opacity getter", "equation.get_fill_opacity()", null],
+    ["stroke color getter", "equation.get_stroke_color()", null],
+    ["MathTex string getter", "equation.get_tex_string()", null],
+  ])("does not retain the removed object through a derived %s", (_label, expression, constructor) => {
+    const remove: CanonicalEditOperation = {
+      ...operationBase("persistent-delete-derived-value", 7, 7.4),
+      effect: "remove",
+      entityId: "equation_1",
+      kind: "ChangePresence",
+      persistent: true,
+    };
+    const sourceWithConstructor = constructor
+      ? source.replace('MathTex("E", "=", "m", "c^2")', constructor)
+      : source;
+    const derivedSource = sourceWithConstructor
+      .replace("        # poietra:anchor 7.000", `        value = ${expression}\n        # poietra:anchor 7.000`)
+      .replace("self.wait(1)", "self.add(Text(str(value)))");
+
+    expect(lowerCanonicalProgramSource(
+      derivedSource,
+      request(canonicalProgram([remove], "persistent-delete-derived-value")),
       { height: 8, width: 14.222 },
       null,
     ).insertedCode).toContain("FadeOut(equation)");
