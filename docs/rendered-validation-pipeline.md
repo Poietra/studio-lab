@@ -97,6 +97,11 @@ client can reject a cross-project response before it enters editor state.
 
 ## Source contract
 
+The ownership and evidence rules for static facts, Studio markers, Runtime Trace,
+and fail-closed editing are defined by
+[ADR 0001](adr/0001-studio-owned-source-analysis.md). Source analysis is a Studio
+editing responsibility; it is not implemented as a Studio mode in `manim-lint`.
+
 This pipeline does not pretend arbitrary Python has an unambiguous temporal
 insertion point. A source file opts in with an exact marker inside the Scene method:
 
@@ -176,9 +181,10 @@ boundaries without hand-authored comments.
   shrinking a Scene or rewriting arbitrary earlier timing is not implemented;
 - the next Scene preview uses its imported initial composition; it does not splice
   the destination Scene's later animation timeline into the outgoing Scene;
-- source discovery uses conservative Scene, assignment, play, wait, and marker
-  parsing rather than a Python AST plus Runtime Trace, so dynamic control flow and
-  updater-driven geometry remain unknown;
+- source discovery still uses a transitional conservative parser for Scene,
+  assignment, play, wait, and marker facts. ADR 0001 requires migration to AST
+  source occurrences plus optional Runtime Trace; until then dynamic control flow
+  and updater-driven geometry remain unknown;
 - preview and Undo evidence is retained in memory for 30 minutes and temporary
   media is then removed automatically; durable project history remains future
   product work;
