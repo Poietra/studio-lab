@@ -1,19 +1,22 @@
 import type { KeyboardEvent, PointerEvent } from "react";
 
 import { cn } from "../lib/cn";
-import type { Point, ProjectedEntity } from "./model";
+import type { EntityDimensions, Point, ProjectedEntity } from "./model";
 import type { StudioMotionPath } from "./motion-paths";
 import { EquationContent } from "./prototype-rendering";
+import { hasShapeDimensions, resizeKindForType, type ResizeHandleDirection } from "./shape-resize";
 import { StudioMotionOverlay } from "./studio-motion-overlay";
 import type { StudioTool } from "./studio-toolbar";
 import {
   clientPointToViewport,
   entityDragDelta,
   type EntityDragPreview,
+  type EntityGeometryPreview,
   entityPreviewScale,
   type EntityScalePreview,
   type InteractionMode,
   isCanvasInteractionTarget,
+  STUDIO_VIEWPORT,
   viewportPositionStyle,
 } from "./studio-viewport-geometry";
 import { isTransitionOverlay } from "./workspace-projection";
@@ -26,6 +29,8 @@ export type StudioCanvasProps = Readonly<{
   dragPreview: EntityDragPreview | null;
   editableMotionIds: ReadonlySet<string>;
   entities: readonly ProjectedEntity[];
+  frame: Readonly<{ height: number; width: number }>;
+  geometryPreview: EntityGeometryPreview | null;
   incomingSceneName: string | null;
   insertTool: StudioTool;
   interactionMode: InteractionMode;
@@ -37,8 +42,16 @@ export type StudioCanvasProps = Readonly<{
   onEntityPointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
   onEntityPointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
   onEntityResizeCancel: (event: PointerEvent<HTMLButtonElement>) => void;
-  onEntityResizeKeyDown: (event: KeyboardEvent<HTMLButtonElement>, entityId: string) => void;
-  onEntityResizePointerDown: (event: PointerEvent<HTMLButtonElement>, entityId: string) => void;
+  onEntityResizeKeyDown: (
+    event: KeyboardEvent<HTMLButtonElement>,
+    entityId: string,
+    direction: ResizeHandleDirection,
+  ) => void;
+  onEntityResizePointerDown: (
+    event: PointerEvent<HTMLButtonElement>,
+    entityId: string,
+    direction: ResizeHandleDirection,
+  ) => void;
   onEntityResizePointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
   onEntityResizePointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
   onMotionControlChange: (path: StudioMotionPath, delta: Point) => void;
@@ -50,6 +63,15 @@ export type StudioCanvasProps = Readonly<{
 
 export function entityLabel(entity: ProjectedEntity) {
   return entity.content?.label ?? entity.content?.text ?? entity.id.split(":").at(-1) ?? entity.id;
+}
+
+function entityPreviewGeometry(preview: EntityGeometryPreview | null, entity: ProjectedEntity) {
+  return preview?.entityId === entity.id
+    ? { dimensions: preview.dimensions, position: preview.position }
+    : {
+        dimensions: entity.geometry.dimensions.kind === "known" ? entity.geometry.dimensions.value : null,
+        position: entity.position,
+      };
 }
 
 function transitionStyle(entity: ProjectedEntity) {
@@ -68,7 +90,31 @@ function transitionStyle(entity: ProjectedEntity) {
   };
 }
 
-function ObjectVisual({ entity }: Readonly<{ entity: ProjectedEntity }>) {
+function ObjectVisual({
+  dimensions,
+  entity,
+  frame,
+}: Readonly<{
+  dimensions: EntityDimensions | null;
+  entity: ProjectedEntity;
+  frame: Readonly<{ height: number; width: number }>;
+}>) {
+  const dimensionStyle = dimensions
+    ? {
+        height:
+          dimensions.radius !== undefined
+            ? `${((2 * dimensions.radius) / frame.height) * STUDIO_VIEWPORT.height}px`
+            : dimensions.height !== undefined
+              ? `${(dimensions.height / frame.height) * STUDIO_VIEWPORT.height}px`
+              : undefined,
+        width:
+          dimensions.radius !== undefined
+            ? `${((2 * dimensions.radius) / frame.width) * STUDIO_VIEWPORT.width}px`
+            : dimensions.width !== undefined
+              ? `${(dimensions.width / frame.width) * STUDIO_VIEWPORT.width}px`
+              : undefined,
+      }
+    : undefined;
   if (entity.type === "MathTex") {
     return (
       <EquationContent
@@ -95,10 +141,10 @@ function ObjectVisual({ entity }: Readonly<{ entity: ProjectedEntity }>) {
     return <span aria-hidden="true" className="block h-px w-24 bg-zinc-400" />;
   }
   if (entity.type === "Rectangle" || entity.type === "SurroundingRectangle" || entity.type === "Square") {
-    return <span aria-hidden="true" className="block h-14 w-32 border border-zinc-500" />;
+    return <span aria-hidden="true" className="block h-14 w-32 border border-zinc-500" style={dimensionStyle} />;
   }
   if (entity.type === "Circle" || entity.type === "Dot") {
-    return <span aria-hidden="true" className="block size-16 rounded-full border border-zinc-500" />;
+    return <span aria-hidden="true" className="block size-16 rounded-full border border-zinc-500" style={dimensionStyle} />;
   }
   if (entity.type === "RegularPolygon") {
     return (
@@ -111,6 +157,70 @@ function ObjectVisual({ entity }: Readonly<{ entity: ProjectedEntity }>) {
   return <span className="block border border-zinc-600 px-3 py-2 text-xs text-zinc-300">{entityLabel(entity)}</span>;
 }
 
+const RESIZE_HANDLES: readonly Readonly<{
+  className: string;
+  direction: ResizeHandleDirection;
+  label: string;
+}>[] = [
+  { className: "-top-3 left-1/2 -translate-x-1/2 cursor-n-resize", direction: "n", label: "top edge" },
+  { className: "-right-3 top-1/2 -translate-y-1/2 cursor-e-resize", direction: "e", label: "right edge" },
+  { className: "-bottom-3 left-1/2 -translate-x-1/2 cursor-s-resize", direction: "s", label: "bottom edge" },
+  { className: "-left-3 top-1/2 -translate-y-1/2 cursor-w-resize", direction: "w", label: "left edge" },
+  { className: "-left-3 -top-3 cursor-nw-resize", direction: "nw", label: "top-left corner" },
+  { className: "-right-3 -top-3 cursor-ne-resize", direction: "ne", label: "top-right corner" },
+  { className: "-bottom-3 -left-3 cursor-sw-resize", direction: "sw", label: "bottom-left corner" },
+  { className: "-bottom-3 -right-3 cursor-se-resize", direction: "se", label: "bottom-right corner" },
+];
+
+function EntityResizeHandles({
+  displayedScale,
+  entity,
+  onCancel,
+  onKeyDown,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+  shape,
+}: Readonly<{
+  displayedScale: number;
+  entity: ProjectedEntity;
+  onCancel: (event: PointerEvent<HTMLButtonElement>) => void;
+  onKeyDown: (event: KeyboardEvent<HTMLButtonElement>, entityId: string, direction: ResizeHandleDirection) => void;
+  onPointerDown: (event: PointerEvent<HTMLButtonElement>, entityId: string, direction: ResizeHandleDirection) => void;
+  onPointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
+  onPointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
+  shape: "circle" | "rectangle" | null;
+}>) {
+  const handles =
+    shape === "rectangle"
+      ? RESIZE_HANDLES
+      : shape === "circle"
+        ? RESIZE_HANDLES.filter((handle) => handle.direction.length === 2)
+        : RESIZE_HANDLES.filter((handle) => handle.direction === "se");
+  return handles.map((handle) => (
+    <button
+      aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
+      aria-label={`Resize ${entityLabel(entity)} from ${handle.label}`}
+      className={cn(
+        "absolute z-30 size-6 touch-none bg-transparent outline-none after:absolute after:left-1/2 after:top-1/2 after:size-2.5 after:-translate-x-1/2 after:-translate-y-1/2 after:border-2 after:border-sky-950 after:bg-sky-400 focus-visible:ring-2 focus-visible:ring-sky-300",
+        handle.className,
+      )}
+      data-resize-direction={handle.direction}
+      data-studio-resize-handle={entity.id}
+      key={handle.direction}
+      onKeyDown={(event) => onKeyDown(event, entity.id, handle.direction)}
+      onLostPointerCapture={onCancel}
+      onPointerCancel={onCancel}
+      onPointerDown={(event) => onPointerDown(event, entity.id, handle.direction)}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      style={{ scale: 1 / displayedScale }}
+      title={`Drag ${handle.label} to resize · Arrow keys adjust precisely`}
+      type="button"
+    />
+  ));
+}
+
 export function StudioCanvas({
   appliedTransactionIds,
   boundaryActive,
@@ -119,6 +229,8 @@ export function StudioCanvas({
   dragPreview,
   editableMotionIds,
   entities,
+  frame,
+  geometryPreview,
   incomingSceneName,
   insertTool,
   interactionMode,
@@ -185,17 +297,34 @@ export function StudioCanvas({
               (entity.provisional && !(entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
             const positionUnknown = entity.geometry.position.kind === "unknown";
             const scaleUnknown = entity.geometry.scale.kind === "unknown";
+            const dimensionsUnknown = entity.geometry.dimensions.kind === "unknown";
             const approximate = Object.values(entity.geometry).some((knowledge) => knowledge.kind === "unknown");
             const moveLocked = locked || positionUnknown;
             const localDelta = entityDragDelta(dragPreview, entity.id);
-            const position = { x: entity.position.x + localDelta.x, y: entity.position.y + localDelta.y };
+            const previewGeometry = entityPreviewGeometry(geometryPreview, entity);
+            const position = {
+              x: previewGeometry.position.x + localDelta.x,
+              y: previewGeometry.position.y + localDelta.y,
+            };
             const opacity = draftTransactionId === entity.transactionId && entity.opacity === 0 ? 0.35 : entity.opacity;
             const displayedScale = entityPreviewScale(scalePreview, entity);
+            const shape = resizeKindForType(entity.type);
+            const shapeResizeAvailable =
+              shape !== null &&
+              previewGeometry.dimensions !== null &&
+              hasShapeDimensions(shape, previewGeometry.dimensions) &&
+              !dimensionsUnknown &&
+              !positionUnknown &&
+              !scaleUnknown;
+            const resizeAvailable = shape ? shapeResizeAvailable : !scaleUnknown;
             return (
               <div
                 className={cn("absolute -translate-x-1/2 -translate-y-1/2", selected ? "z-20" : "z-10")}
                 data-studio-geometry={approximate ? "approximate" : "known"}
+                data-studio-entity-height={previewGeometry.dimensions?.height?.toFixed(4)}
+                data-studio-entity-radius={previewGeometry.dimensions?.radius?.toFixed(4)}
                 data-studio-entity-scale={displayedScale.toFixed(4)}
+                data-studio-entity-width={previewGeometry.dimensions?.width?.toFixed(4)}
                 data-studio-entity-wrapper={entity.id}
                 key={entity.id}
                 style={{ ...viewportPositionStyle(position), opacity, touchAction: "none" }}
@@ -205,7 +334,8 @@ export function StudioCanvas({
                     aria-label={`Move ${entityLabel(entity)}`}
                     aria-pressed={selected}
                     className={cn(
-                      "block border px-3 py-2 outline-none",
+                      "block border outline-none",
+                      shape ? "p-0" : "px-3 py-2",
                       moveLocked
                         ? "pointer-events-none border-dashed border-sky-800 bg-zinc-950/70"
                         : "cursor-grab active:cursor-grabbing",
@@ -224,28 +354,23 @@ export function StudioCanvas({
                     title={positionUnknown ? entity.geometry.position.reason : undefined}
                     type="button"
                   >
-                    <ObjectVisual entity={entity} />
+                    <ObjectVisual dimensions={previewGeometry.dimensions} entity={entity} frame={frame} />
                     {selected ? (
                       <span className="absolute -top-6 left-0 max-w-56 truncate bg-sky-400 px-1.5 py-0.5 text-[10px] font-medium text-sky-950">
                         {entityLabel(entity)}
                       </span>
                     ) : null}
                   </button>
-                  {selected && selectedIds.size === 1 && !locked && !scaleUnknown ? (
-                    <button
-                      aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
-                      aria-label={`Resize ${entityLabel(entity)}`}
-                      className="absolute -bottom-2 -right-2 z-30 size-4 touch-none cursor-nwse-resize border-2 border-sky-950 bg-sky-400 outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
-                      data-studio-resize-handle={entity.id}
-                      onKeyDown={(event) => onEntityResizeKeyDown(event, entity.id)}
-                      onLostPointerCapture={onEntityResizeCancel}
-                      onPointerCancel={onEntityResizeCancel}
-                      onPointerDown={(event) => onEntityResizePointerDown(event, entity.id)}
+                  {selected && selectedIds.size === 1 && !locked && resizeAvailable ? (
+                    <EntityResizeHandles
+                      displayedScale={displayedScale}
+                      entity={entity}
+                      onCancel={onEntityResizeCancel}
+                      onKeyDown={onEntityResizeKeyDown}
+                      onPointerDown={onEntityResizePointerDown}
                       onPointerMove={onEntityResizePointerMove}
                       onPointerUp={onEntityResizePointerUp}
-                      style={{ scale: 1 / displayedScale }}
-                      title="Drag to resize uniformly · Arrow keys adjust precisely"
-                      type="button"
+                      shape={shapeResizeAvailable ? shape : null}
                     />
                   ) : null}
                 </div>

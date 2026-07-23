@@ -1,4 +1,4 @@
-import type { Point, ProjectedEntity } from "./model";
+import type { EntityDimensions, Point, ProjectedEntity } from "./model";
 
 export const STUDIO_VIEWPORT = { height: 360, width: 640 } as const;
 
@@ -10,6 +10,11 @@ export type EntityDragPreview = Readonly<{
 export type EntityScalePreview = Readonly<{
   entityId: string;
   scale: number;
+}>;
+export type EntityGeometryPreview = Readonly<{
+  dimensions: EntityDimensions;
+  entityId: string;
+  position: Point;
 }>;
 
 export type SurfaceBounds = Readonly<{

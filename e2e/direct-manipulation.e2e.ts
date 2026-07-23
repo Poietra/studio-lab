@@ -309,7 +309,7 @@ test("snaps direct manipulation to the latest safe source anchor before creating
   expect(afterSafeDrag.y - anchored.y).toBeCloseTo(20, 0);
 });
 
-test("previews, applies, and undoes a uniform canvas resize", async ({ page }) => {
+test("previews, exports, applies, and undoes a Circle geometry resize", async ({ page }) => {
   await openWorkspace(page);
   await page.getByRole("button", { name: /Insert circle/ }).click();
   const canvas = page.locator("[data-studio-canvas]");
@@ -324,9 +324,10 @@ test("previews, applies, and undoes a uniform canvas resize", async ({ page }) =
 
   const circle = page.getByRole("button", { name: "Move Circle" });
   const wrapper = page.locator("[data-studio-entity-wrapper]").filter({ has: circle });
-  const handle = page.getByRole("button", { name: "Resize Circle" });
+  const handle = page.getByRole("button", { name: "Resize Circle from bottom-right corner" });
   await expect(handle).toBeVisible();
   await expect(wrapper).toHaveAttribute("data-studio-entity-scale", "1.0000");
+  await expect(wrapper).toHaveAttribute("data-studio-entity-radius", "1.0000");
 
   const unsafeHandleBox = await handle.boundingBox();
   if (!unsafeHandleBox) throw new Error("The Circle resize handle is not visible.");
@@ -346,7 +347,8 @@ test("previews, applies, and undoes a uniform canvas resize", async ({ page }) =
   await page.mouse.move(origin.x, origin.y);
   await page.mouse.down();
   await page.mouse.move(origin.x + 45, origin.y + 35, { steps: 4 });
-  await expect.poll(async () => Number(await wrapper.getAttribute("data-studio-entity-scale"))).toBeGreaterThan(1.25);
+  await expect.poll(async () => Number(await wrapper.getAttribute("data-studio-entity-radius")))
+    .toBeGreaterThan(1.25);
   const previewBox = await circle.boundingBox();
   expect(previewBox?.width ?? 0).toBeGreaterThan(initialBox.width);
   const previewHandleBox = await handle.boundingBox();
@@ -355,20 +357,69 @@ test("previews, applies, and undoes a uniform canvas resize", async ({ page }) =
   await page.mouse.up();
 
   await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
-  const committedScale = Number(await wrapper.getAttribute("data-studio-entity-scale"));
-  expect(committedScale).toBeGreaterThan(1.25);
+  const committedRadius = Number(await wrapper.getAttribute("data-studio-entity-radius"));
+  expect(committedRadius).toBeGreaterThan(1.25);
   const source = await exportedSource(page);
-  expect(source).toContain("# poietra:scale");
-  expect(source).toMatch(/\.scale\([0-9.]+\)/);
-  expect(source).not.toContain(".animate.scale(");
+  expect(source).toContain("# poietra:dimensions");
+  expect(source).toMatch(/\.scale_to_fit_width\([0-9.]+\)/);
+  expect(source).not.toContain(".animate.scale_to_fit_width(");
   expect(source).not.toMatch(/run_time=0(?:\.0+)?[,)]/);
   await page.getByRole("button", { name: "Apply program" }).click();
   await page.keyboard.press("Control+z");
-  await expect(wrapper).toHaveAttribute("data-studio-entity-scale", "1.0000");
+  await expect(wrapper).toHaveAttribute("data-studio-entity-radius", "1.0000");
   await page.keyboard.press("Control+Shift+z");
-  await expect
-    .poll(async () => Number(await wrapper.getAttribute("data-studio-entity-scale")))
-    .toBeCloseTo(committedScale, 2);
+  await expect.poll(async () => Number(await wrapper.getAttribute("data-studio-entity-radius")))
+    .toBeCloseTo(committedRadius, 2);
+});
+
+test("resizes Rectangle width independently with edge and keyboard controls", async ({ page }) => {
+  await openWorkspace(page);
+  await page.getByRole("button", { name: /Insert rectangle/ }).click();
+  await page.locator("[data-studio-canvas]").click({ position: { x: 150, y: 100 } });
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await page.getByRole("button", { name: "Move playhead to source anchor 7.000 seconds" }).click();
+  await page.getByRole("button", { name: "Set position" }).click();
+
+  const rectangle = page.getByRole("button", { name: "Move Rectangle" });
+  const wrapper = page.locator("[data-studio-entity-wrapper]").filter({ has: rectangle });
+  const eastHandle = page.getByRole("button", { name: "Resize Rectangle from right edge" });
+  await expect(page.getByRole("spinbutton", { name: "Width of Rectangle" })).toHaveValue("4.00");
+  await expect(page.getByRole("spinbutton", { name: "Height of Rectangle" })).toHaveValue("2.00");
+  await expect(eastHandle).toBeVisible();
+  await expect(wrapper).toHaveAttribute("data-studio-entity-width", "4.0000");
+  await expect(wrapper).toHaveAttribute("data-studio-entity-height", "2.0000");
+  const initial = await rectangle.boundingBox();
+  const handleBox = await eastHandle.boundingBox();
+  if (!initial || !handleBox) throw new Error("The Rectangle resize controls are not visible.");
+  const origin = {
+    x: handleBox.x + handleBox.width / 2,
+    y: handleBox.y + handleBox.height / 2,
+  };
+  await page.mouse.move(origin.x, origin.y);
+  await page.mouse.down();
+  await page.mouse.move(origin.x + 45, origin.y, { steps: 4 });
+  await expect.poll(async () => Number(await wrapper.getAttribute("data-studio-entity-width")))
+    .toBeGreaterThan(4.7);
+  await expect(wrapper).toHaveAttribute("data-studio-entity-height", "2.0000");
+  const preview = await rectangle.boundingBox();
+  expect(preview?.width ?? 0).toBeGreaterThan(initial.width + 30);
+  expect(preview?.height ?? 0).toBeCloseTo(initial.height, 1);
+  await page.mouse.up();
+
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  const source = await exportedSource(page);
+  expect(source).toContain("# poietra:dimensions");
+  expect(source).toContain(".stretch_to_fit_width(");
+  expect(source).toContain(".stretch_to_fit_height(2)");
+  await page.getByRole("button", { name: "Apply program" }).click();
+
+  const widthBeforeKey = Number(await wrapper.getAttribute("data-studio-entity-width"));
+  await eastHandle.focus();
+  await eastHandle.press("ArrowRight");
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  await expect.poll(async () => Number(await wrapper.getAttribute("data-studio-entity-width")))
+    .toBeGreaterThan(widthBeforeKey);
+  await expect(wrapper).toHaveAttribute("data-studio-entity-height", "2.0000");
 });
 
 test("labels runtime-dependent geometry and blocks unsafe direct manipulation", async ({ page }) => {
