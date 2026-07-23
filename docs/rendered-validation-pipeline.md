@@ -29,9 +29,11 @@ render, and export requests use only the resulting opaque ID. `nextSceneId`
 follows class order within one source file;
 unrelated files are not joined by an invented edge. The application imports
 conservative runtime snapshots once and uses the selected Scene for canvas, object
-list, timeline, AI context, and rendered validation. The right-side panel exposes
-lowered Python export, renderer availability, progress, cancellation, bounded logs,
-the complete inserted source block, rendered MP4, commit, discard, and exact Undo.
+list, timeline, AI context, and rendered validation. The right-side panel exports
+the selected Python source unchanged before the first edit and switches to validated
+canonical lowering after an edit. It also exposes renderer availability, progress,
+cancellation, bounded logs, the complete inserted source block, rendered MP4,
+commit, discard, and exact Undo.
 
 ## Configuration
 
@@ -81,9 +83,10 @@ explicit frame and the captured Studio viewport.
   unsupported entities are omitted.
 - `GET /api/manim/projects/:projectId/workspace` imports one registered project;
   `GET /api/manim/workspace` remains a default-project compatibility alias.
-- `POST /api/manim/projects/:projectId/export` validates and lowers the project-bound
-  Program directly to a `text/x-python` attachment. It does not check Manim command
-  availability and does not write the source.
+- `POST /api/manim/projects/:projectId/export` returns the selected source unchanged
+  when no Program is supplied. Otherwise it validates and lowers the project-bound
+  Program to a `text/x-python` attachment. It does not check Manim command availability
+  and does not write the source.
 - `POST /api/manim/projects/:projectId/renders` starts isolated rendered validation.
   Session status and action URLs use the random session ID; the registry routes
   Commit, Undo, Discard, and video reads back to the session's original project.
@@ -158,9 +161,10 @@ boundaries without hand-authored comments.
   project ID, so Commit and Undo do not depend on the currently selected project;
 - the editor retains its last render-session view separately per project through a
   project switch and rejects polling/action responses whose project ID changes;
-- the Python attachment endpoint repeats canonical validation, stale-source checks,
-  and deterministic lowering, but does not require a successful Manim render and
-  never writes the project source.
+- when a Program is present, the Python attachment endpoint repeats canonical
+  validation, stale-source checks, and deterministic lowering; without a Program it
+  verifies the selected source identity and returns that source byte-for-byte. Neither
+  path requires a successful Manim render or writes the project source.
 
 ## Current limits
 

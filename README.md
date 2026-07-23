@@ -133,10 +133,10 @@ importable Scene into a bounded semantic SVG thumbnail; this does not execute
 Manim or import the rest of the project, and failures retain the metadata cover.
 The complete workspace is imported only after it is opened. Returning to the
 chooser keeps each Scene's in-memory editor session available for the next open.
-The project-bound export API performs
-the same canonical lowering and stale-source checks without requiring Manim or
-writing the source file; the Inspector exposes it as `Export .py` whenever the
-current composed Program has supported lowering and a matching safe anchor.
+The project-bound export API does not require Manim and never writes the source
+file. Before the first edit, `Export .py` downloads the selected Scene's Python
+source unchanged. Once an edit exists, it exports the result of canonical lowering
+after the same validation and stale-source checks used by rendered validation.
 
 If Manim is available through Docker instead, the included runner mounts the
 project read-only, mounts only the operating-system preview directory as writable,

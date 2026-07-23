@@ -27,6 +27,16 @@ async function exportedSource(page: Page) {
   return readFile(path, "utf8");
 }
 
+test("exports the selected Python source unchanged before any Studio edit", async ({ page }) => {
+  await openWorkspace(page);
+
+  const exportButton = page.getByRole("button", { name: "Export .py" });
+  await expect(exportButton).toBeEnabled();
+  await expect(exportedSource(page)).resolves.toBe(
+    await readFile(join(process.cwd(), "examples", "relativity.py"), "utf8"),
+  );
+});
+
 test("inserts geometry without Magic Edit and exports exact Manim source", async ({ page }) => {
   await openWorkspace(page);
 

@@ -1,6 +1,6 @@
 import type { EditSuggestion, EditSuggestionOperation } from "../ai/edit-suggestions";
 import { cn } from "../lib/cn";
-import type { ManimWorkspaceView, RenderSessionView } from "../render-pipeline/contracts";
+import type { ManimWorkspaceView, OriginalManimSourceExportRequest, RenderSessionView } from "../render-pipeline/contracts";
 import { RenderPipelinePanel, type RenderProgramCandidate } from "../render-pipeline/render-pipeline-panel";
 import { DraftInspector } from "./draft-inspector";
 import type { ManimWorkspaceScene } from "./imported-workspace";
@@ -192,6 +192,7 @@ export function StudioInspector({
   renderCandidateUnavailableReason,
   renderSession,
   selectedEntity,
+  sourceExport,
   suggestion,
   workspace,
 }: Readonly<{
@@ -209,6 +210,7 @@ export function StudioInspector({
   renderCandidateUnavailableReason: string;
   renderSession: RenderSessionView | null;
   selectedEntity: ProjectedEntity | null;
+  sourceExport: OriginalManimSourceExportRequest | null;
   suggestion: EditSuggestion | null;
   workspace: ManimWorkspaceView | null;
 }>) {
@@ -275,6 +277,7 @@ export function StudioInspector({
         onSessionChange={onRenderSessionChange}
         onSourceChanged={onSourceChanged}
         session={renderSession}
+        sourceExport={sourceExport}
         workspace={workspace}
       />
     </aside>

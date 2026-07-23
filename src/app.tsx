@@ -1057,7 +1057,7 @@ export function App() {
     ...(draftProgram ? [draftProgram.program] : []),
   ];
   const renderProgram = renderPrograms[0] ?? null;
-  const renderCandidateUnavailableReason = "Create or apply a Canonical draft to enable rendered validation.";
+  const renderCandidateUnavailableReason = "Export .py downloads the selected source unchanged. Create or apply a Canonical draft to render or export Studio edits.";
   const renderCandidate: RenderProgramCandidate | null = activeScene && activeProjectId && renderProgram ? {
     anchors: activeScene.anchors,
     destination: programsHaveSceneBoundary(renderPrograms) && nextScene ? {
@@ -1307,6 +1307,11 @@ export function App() {
               renderCandidateUnavailableReason={renderCandidateUnavailableReason}
               renderSession={activeProjectId ? renderSessions[activeProjectId] ?? null : null}
               selectedEntity={selectedEntity}
+              sourceExport={activeProjectId && activeScene ? {
+                projectId: activeProjectId,
+                sourceHash: activeScene.sourceHash,
+                sourcePath: activeScene.sourcePath,
+              } : null}
               suggestion={suggestion}
               workspace={workspace}
             />
