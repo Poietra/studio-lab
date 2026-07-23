@@ -12,12 +12,7 @@ import type {
   SceneConstraint,
   TimelineEvent,
 } from "./model";
-import type {
-  CanonicalEditOperation,
-  CanonicalEditProgram,
-  ChannelAccess,
-  ProgramValidationIssue,
-} from "./operations";
+import type { CanonicalEditOperation, CanonicalEditProgram, ChannelAccess, ProgramValidationIssue } from "./operations";
 import { isPointValue, samplePropertyValue } from "./property-sampling";
 
 const pointSchema = z.object({ x: z.number(), y: z.number() });
@@ -102,8 +97,16 @@ export const canonicalOperationSchema = z.discriminatedUnion("kind", [
   }),
   baseSchema.extend({ eventKind: z.enum(["play", "wait"]), kind: z.literal("InsertTimelineEvent"), label: z.string() }),
   baseSchema.extend({ at: z.number(), destination: z.literal("next-scene"), kind: z.literal("InsertSceneBoundary") }),
-  baseSchema.extend({ action: z.enum(["remove", "replace"]), constraintId: z.string(), kind: z.literal("ChangeConstraint") }),
-  baseSchema.extend({ kind: z.literal("ChangeCamera"), property: z.enum(["position", "rotation", "scale"]), value: z.union([z.number(), pointSchema]) }),
+  baseSchema.extend({
+    action: z.enum(["remove", "replace"]),
+    constraintId: z.string(),
+    kind: z.literal("ChangeConstraint"),
+  }),
+  baseSchema.extend({
+    kind: z.literal("ChangeCamera"),
+    property: z.enum(["position", "rotation", "scale"]),
+    value: z.union([z.number(), pointSchema]),
+  }),
 ]);
 
 export type EvaluationDraft = {
@@ -136,11 +139,16 @@ type Capability<TKind extends CanonicalEditOperation["kind"]> = Readonly<{
     operation: Extract<CanonicalEditOperation, { kind: TKind }>,
     program: CanonicalEditProgram,
   ) => void;
-  execution: (
-    operation: Extract<CanonicalEditOperation, { kind: TKind }>,
-  ) => OperationExecutionCapabilities;
+  execution: (operation: Extract<CanonicalEditOperation, { kind: TKind }>) => OperationExecutionCapabilities;
   lifetimeRequirement: "existing-at-start" | "explicit" | "none";
-  projection: readonly ("canvas" | "inspector" | "object-list" | "semantic-thumbnail" | "timeline" | "working-playback")[];
+  projection: readonly (
+    | "canvas"
+    | "inspector"
+    | "object-list"
+    | "semantic-thumbnail"
+    | "timeline"
+    | "working-playback"
+  )[];
   targetRequirement: "camera" | "constraint" | "entity" | "none";
   validate: (
     operation: Extract<CanonicalEditOperation, { kind: TKind }>,
@@ -172,15 +180,12 @@ function createEntityExecution(
   operation: Extract<CanonicalEditOperation, { kind: "CreateEntity" }>,
 ): OperationExecutionCapabilities {
   const { content, type } = operation.entity;
-  const hasMathTexContent = type === "MathTex"
-    && ((content?.texParts?.length ?? 0) > 0 || (content?.displayLines?.length ?? 0) > 0);
-  const isBuiltIn = type === "Text"
-    || ["Arrow", "Circle", "Line", "Rectangle", "Square"].includes(type);
+  const hasMathTexContent =
+    type === "MathTex" && ((content?.texParts?.length ?? 0) > 0 || (content?.displayLines?.length ?? 0) > 0);
+  const isBuiltIn = type === "Text" || ["Arrow", "Circle", "Line", "Rectangle", "Square"].includes(type);
   const isTransitionOverlay = /^TransitionOverlay:(circle|diamond|hexagon):(black|sky|white)$/.test(type);
   if (hasMathTexContent || isBuiltIn || isTransitionOverlay) return SUPPORTED_EXECUTION;
-  return previewOnlyExecution(
-    `CreateEntity type ${type} can be previewed, but it has no safe Manim source lowering.`,
-  );
+  return previewOnlyExecution(`CreateEntity type ${type} can be previewed, but it has no safe Manim source lowering.`);
 }
 
 function setPropertyExecution(
@@ -196,17 +201,19 @@ function animatePropertyExecution(
   operation: Extract<CanonicalEditOperation, { kind: "AnimateProperty" }>,
 ): OperationExecutionCapabilities {
   if (
+    operation.key === "scale" &&
+    typeof operation.from === "number" &&
+    typeof operation.to === "number" &&
+    Number.isFinite(operation.from) &&
+    Number.isFinite(operation.to) &&
+    operation.from > 0 &&
+    operation.to > 0
+  )
+    return SUPPORTED_EXECUTION;
+  const reason =
     operation.key === "scale"
-    && typeof operation.from === "number"
-    && typeof operation.to === "number"
-    && Number.isFinite(operation.from)
-    && Number.isFinite(operation.to)
-    && operation.from > 0
-    && operation.to > 0
-  ) return SUPPORTED_EXECUTION;
-  const reason = operation.key === "scale"
-    ? "Scale animation requires finite positive absolute from and to values before it can be lowered to Manim source."
-    : `AnimateProperty ${operation.key} can be previewed, but it has no truthful Manim source lowering.`;
+      ? "Scale animation requires finite positive absolute from and to values before it can be lowered to Manim source."
+      : `AnimateProperty ${operation.key} can be previewed, but it has no truthful Manim source lowering.`;
   return previewOnlyExecution(reason);
 }
 
@@ -218,8 +225,7 @@ function createMotionExecution(
       "A zero-duration CreateMotion can be previewed, but it cannot be lowered truthfully to Manim source.",
     );
   }
-  const curved = Math.abs(operation.controlOffset.x) > 0.001
-    || Math.abs(operation.controlOffset.y) > 0.001;
+  const curved = Math.abs(operation.controlOffset.x) > 0.001 || Math.abs(operation.controlOffset.y) > 0.001;
   if (curved || operation.delta.x !== 0 || operation.delta.y !== 0) return SUPPORTED_EXECUTION;
   return previewOnlyExecution(
     "A straight CreateMotion with no displacement can be previewed, but it cannot be lowered to Manim source.",
@@ -243,20 +249,22 @@ function operationSourceTime(operation: CanonicalEditOperation) {
 function sourceAnimationEnd(operation: CanonicalEditOperation) {
   if (operation.interval.end - operation.interval.start <= SOURCE_LOWERING_EPSILON) return null;
   if (
-    operation.kind === "ChangePresence"
-    || operation.kind === "CreateMotion"
-    || operation.kind === "TransformContent"
-    || (operation.kind === "AnimateProperty" && operation.key === "scale")
-  ) return operation.interval.end;
+    operation.kind === "ChangePresence" ||
+    operation.kind === "CreateMotion" ||
+    operation.kind === "TransformContent" ||
+    (operation.kind === "AnimateProperty" && operation.key === "scale")
+  )
+    return operation.interval.end;
   return null;
 }
 
 function programStructureBlocker(program: CanonicalEditProgram) {
   const scheduleIndex = new Map(program.schedule.order.map((id, index) => [id, index]));
-  const operations = [...program.operations].sort((left, right) => (
-    operationSourceTime(left) - operationSourceTime(right)
-    || (scheduleIndex.get(left.id) ?? 0) - (scheduleIndex.get(right.id) ?? 0)
-  ));
+  const operations = [...program.operations].sort(
+    (left, right) =>
+      operationSourceTime(left) - operationSourceTime(right) ||
+      (scheduleIndex.get(left.id) ?? 0) - (scheduleIndex.get(right.id) ?? 0),
+  );
   const buckets: Array<Readonly<{ operations: CanonicalEditOperation[]; time: number }>> = [];
   for (const operation of operations) {
     const time = operationSourceTime(operation);
@@ -270,9 +278,9 @@ function programStructureBlocker(program: CanonicalEditProgram) {
     if (bucket.time < cursor - SOURCE_LOWERING_EPSILON) {
       return `Operation at ${bucket.time.toFixed(3)}s overlaps source time already lowered through ${cursor.toFixed(3)}s.`;
     }
-    const waits = bucket.operations.filter((operation) => (
-      operation.kind === "InsertTimelineEvent" && operation.eventKind === "wait"
-    ));
+    const waits = bucket.operations.filter(
+      (operation) => operation.kind === "InsertTimelineEvent" && operation.eventKind === "wait",
+    );
     if (waits.length > 0) {
       if (waits.length !== 1 || bucket.operations.length !== 1) {
         return "An inserted wait must occupy its own source interval.";
@@ -320,11 +328,11 @@ function sampleChannel(draft: EvaluationDraft, entityId: string, key: PropertyCh
 function baseIssues(operation: CanonicalEditOperation, scene: RuntimeSceneState): ProgramValidationIssue[] {
   const issues: ProgramValidationIssue[] = [];
   if (
-    !Number.isFinite(operation.interval.start)
-    || !Number.isFinite(operation.interval.end)
-    || operation.interval.start < 0
-    || operation.interval.end > scene.duration
-    || operation.interval.end < operation.interval.start
+    !Number.isFinite(operation.interval.start) ||
+    !Number.isFinite(operation.interval.end) ||
+    operation.interval.start < 0 ||
+    operation.interval.end > scene.duration ||
+    operation.interval.end < operation.interval.start
   ) {
     issues.push({
       code: "interval-invalid",
@@ -351,9 +359,9 @@ function entityIssues(entityIds: readonly string[], operation: CanonicalEditOper
       });
       continue;
     }
-    const activeLifetime = entity?.lifetime.find((lifetime) => (
-      operation.interval.start >= lifetime.start && operation.interval.start < lifetime.end
-    ));
+    const activeLifetime = entity?.lifetime.find(
+      (lifetime) => operation.interval.start >= lifetime.start && operation.interval.start < lifetime.end,
+    );
     if (entity && !activeLifetime) {
       issues.push({
         code: "lifetime-unknown" as const,
@@ -394,11 +402,24 @@ function recordOperation(draft: EvaluationDraft, operation: CanonicalEditOperati
   });
 }
 
-const allEntityProjections = ["canvas", "inspector", "object-list", "semantic-thumbnail", "timeline", "working-playback"] as const;
+const allEntityProjections = [
+  "canvas",
+  "inspector",
+  "object-list",
+  "semantic-thumbnail",
+  "timeline",
+  "working-playback",
+] as const;
 
 export const OPERATION_REGISTRY = {
   CreateEntity: {
-    access: (operation) => ({ reads: [], writes: [{ channel: "identity", entityId: operation.entity.id }, { channel: "presence", entityId: operation.entity.id }] }),
+    access: (operation) => ({
+      reads: [],
+      writes: [
+        { channel: "identity", entityId: operation.entity.id },
+        { channel: "presence", entityId: operation.entity.id },
+      ],
+    }),
     defaults: { provisional: true },
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
@@ -408,11 +429,21 @@ export const OPERATION_REGISTRY = {
         id: operation.entity.id,
         lifetime: [{ end, start: operation.entity.lifetime.start }],
         provisional: true,
-        sourceIdentity: { evidence: [operation.id], kind: "unknown", reason: "Entity has not been lowered to source yet." },
+        sourceIdentity: {
+          evidence: [operation.id],
+          kind: "unknown",
+          reason: "Entity has not been lowered to source yet.",
+        },
         transactionId: program.transactionId,
         type: operation.entity.type,
       };
-      draft.lineage.push({ at: operation.interval.start, from: operation.entity.id, operationId: operation.id, relation: "created", to: operation.entity.id });
+      draft.lineage.push({
+        at: operation.interval.start,
+        from: operation.entity.id,
+        operationId: operation.id,
+        relation: "created",
+        to: operation.entity.id,
+      });
       appendSample(draft, operation.entity.id, "presence", {
         interval: { end, start: operation.entity.lifetime.start },
         kind: "exact",
@@ -447,13 +478,16 @@ export const OPERATION_REGISTRY = {
     validate: (operation, scene) => entityIssues([operation.entityId], operation, scene),
   } satisfies Capability<"SetProperty">,
   AnimateProperty: {
-    access: (operation) => ({ reads: [{ channel: operation.key, entityId: operation.entityId }], writes: [{ channel: operation.key, entityId: operation.entityId }] }),
+    access: (operation) => ({
+      reads: [{ channel: operation.key, entityId: operation.entityId }],
+      writes: [{ channel: operation.key, entityId: operation.entityId }],
+    }),
     defaults: { easing: "smooth" },
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
       const sampledFrom = sampleChannel(draft, operation.entityId, operation.key, operation.interval.start);
-      const from = operation.from
-        ?? (isPointValue(sampledFrom) || typeof sampledFrom === "number" ? sampledFrom : undefined);
+      const from =
+        operation.from ?? (isPointValue(sampledFrom) || typeof sampledFrom === "number" ? sampledFrom : undefined);
       appendSample(draft, operation.entityId, operation.key, {
         control: operation.control,
         easing: operation.easing,
@@ -516,10 +550,16 @@ export const OPERATION_REGISTRY = {
       for (const [channelId, channel] of Object.entries(draft.propertyChannels)) {
         if (channel.key !== "position") continue;
         const samples = channel.samples.map((sample) => {
-          const matchesMotion = sample.operationId === operation.motionId
-            || sample.provenanceId === operation.motionId
-            || sample.provenanceId === `source:${operation.motionId}`;
-          if (!matchesMotion || sample.kind !== "animated" || !isPointValue(sample.from) || !isPointValue(sample.value)) {
+          const matchesMotion =
+            sample.operationId === operation.motionId ||
+            sample.provenanceId === operation.motionId ||
+            sample.provenanceId === `source:${operation.motionId}`;
+          if (
+            !matchesMotion ||
+            sample.kind !== "animated" ||
+            !isPointValue(sample.from) ||
+            !isPointValue(sample.value)
+          ) {
             return sample;
           }
           const control = sample.control ?? {
@@ -538,23 +578,25 @@ export const OPERATION_REGISTRY = {
         draft.propertyChannels[channelId] = { ...channel, samples };
       }
     },
-    execution: () => previewOnlyExecution(
-      "ModifyMotion has no truthful source lowering yet. It can be previewed, but editing an existing motion path cannot be applied.",
-    ),
+    execution: () =>
+      previewOnlyExecution(
+        "ModifyMotion has no truthful source lowering yet. It can be previewed, but editing an existing motion path cannot be applied.",
+      ),
     lifetimeRequirement: "none",
     projection: allEntityProjections,
     targetRequirement: "none",
     validate: (operation, scene) => {
       const issues = baseIssues(operation, scene);
-      const matches = Object.values(scene.propertyChannels).flatMap((channel) => (
+      const matches = Object.values(scene.propertyChannels).flatMap((channel) =>
         channel.key === "position"
-          ? channel.samples.filter((sample) => (
-              sample.operationId === operation.motionId
-              || sample.provenanceId === operation.motionId
-              || sample.provenanceId === `source:${operation.motionId}`
-            ))
-          : []
-      ));
+          ? channel.samples.filter(
+              (sample) =>
+                sample.operationId === operation.motionId ||
+                sample.provenanceId === operation.motionId ||
+                sample.provenanceId === `source:${operation.motionId}`,
+            )
+          : [],
+      );
       if (matches.length === 0) {
         issues.push({
           code: "target-missing",
@@ -563,10 +605,13 @@ export const OPERATION_REGISTRY = {
           operationId: operation.id,
           severity: "error",
         });
-      } else if (matches.some((sample) => (
-        Math.abs(sample.interval.start - operation.interval.start) >= 0.001
-        || Math.abs(sample.interval.end - operation.interval.end) >= 0.001
-      ))) {
+      } else if (
+        matches.some(
+          (sample) =>
+            Math.abs(sample.interval.start - operation.interval.start) >= 0.001 ||
+            Math.abs(sample.interval.end - operation.interval.end) >= 0.001,
+        )
+      ) {
         issues.push({
           code: "interval-invalid",
           field: "interval",
@@ -580,22 +625,33 @@ export const OPERATION_REGISTRY = {
   } satisfies Capability<"ModifyMotion">,
   TransformContent: {
     access: (operation) => ({
-      reads: [{ channel: "content", entityId: operation.sourceEntityId }, { channel: "position", entityId: operation.sourceEntityId }],
-      writes: [{ channel: "content", entityId: operation.sourceEntityId }, { channel: "identity", entityId: operation.targetEntityId }],
+      reads: [
+        { channel: "content", entityId: operation.sourceEntityId },
+        { channel: "position", entityId: operation.sourceEntityId },
+      ],
+      writes: [
+        { channel: "content", entityId: operation.sourceEntityId },
+        { channel: "identity", entityId: operation.targetEntityId },
+      ],
     }),
     defaults: { strategy: "transform-matching-tex" },
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
       const source = draft.entities[operation.sourceEntityId];
       if (!source) return;
-      const sourceLifetime = source.lifetime.find((entry) => operation.interval.start >= entry.start && operation.interval.start < entry.end);
+      const sourceLifetime = source.lifetime.find(
+        (entry) => operation.interval.start >= entry.start && operation.interval.start < entry.end,
+      );
       const inheritedEnd = sourceLifetime?.end ?? draft.duration;
       draft.entities[operation.sourceEntityId] = {
         ...source,
-        lifetime: source.lifetime.map((entry) => entry === sourceLifetime ? { ...entry, end: Math.min(entry.end, operation.interval.end) } : entry),
+        lifetime: source.lifetime.map((entry) =>
+          entry === sourceLifetime ? { ...entry, end: Math.min(entry.end, operation.interval.end) } : entry,
+        ),
       };
       draft.entities[operation.targetEntityId] = {
         content: operation.replacement,
+        geometry: source.geometry,
         id: operation.targetEntityId,
         lifetime: [{ end: inheritedEnd, start: operation.interval.start }],
         provisional: true,
@@ -610,7 +666,9 @@ export const OPERATION_REGISTRY = {
         relation: "replaces",
         to: operation.targetEntityId,
       });
-      for (const channel of Object.values(draft.propertyChannels).filter((entry) => entry.entityId === operation.sourceEntityId && entry.key !== "content")) {
+      for (const channel of Object.values(draft.propertyChannels).filter(
+        (entry) => entry.entityId === operation.sourceEntityId && entry.key !== "content",
+      )) {
         draft.propertyChannels[propertyKey(operation.targetEntityId, channel.key)] = {
           ...channel,
           entityId: operation.targetEntityId,
@@ -642,11 +700,12 @@ export const OPERATION_REGISTRY = {
         value: 1,
       });
     },
-    execution: (operation) => operation.interval.end - operation.interval.start > SOURCE_LOWERING_EPSILON
-      ? SUPPORTED_EXECUTION
-      : previewOnlyExecution(
-          "A zero-duration TransformContent can be previewed, but it cannot be lowered truthfully to Manim source.",
-        ),
+    execution: (operation) =>
+      operation.interval.end - operation.interval.start > SOURCE_LOWERING_EPSILON
+        ? SUPPORTED_EXECUTION
+        : previewOnlyExecution(
+            "A zero-duration TransformContent can be previewed, but it cannot be lowered truthfully to Manim source.",
+          ),
     lifetimeRequirement: "existing-at-start",
     projection: allEntityProjections,
     targetRequirement: "entity",
@@ -667,7 +726,10 @@ export const OPERATION_REGISTRY = {
   } satisfies Capability<"TransformContent">,
   SetRelation: {
     access: (operation) => ({
-      reads: [{ channel: "identity", entityId: operation.targetEntityId }, { channel: "position", entityId: operation.targetEntityId }],
+      reads: [
+        { channel: "identity", entityId: operation.targetEntityId },
+        { channel: "position", entityId: operation.targetEntityId },
+      ],
       writes: [{ channel: "position", entityId: operation.sourceEntityId }],
     }),
     defaults: { mode: "snapshot" },
@@ -693,18 +755,26 @@ export const OPERATION_REGISTRY = {
         value: position,
       });
     },
-    execution: (operation) => operation.mode === "snapshot"
-      ? SUPPORTED_EXECUTION
-      : previewOnlyExecution(
-          "SetRelation live has no truthful source lowering; only snapshot relations can be applied.",
-        ),
+    execution: (operation) =>
+      operation.mode === "snapshot"
+        ? SUPPORTED_EXECUTION
+        : previewOnlyExecution(
+            "SetRelation live has no truthful source lowering; only snapshot relations can be applied.",
+          ),
     lifetimeRequirement: "existing-at-start",
     projection: allEntityProjections,
     targetRequirement: "entity",
-    validate: (operation, scene) => entityIssues([operation.sourceEntityId, operation.targetEntityId], operation, scene),
+    validate: (operation, scene) =>
+      entityIssues([operation.sourceEntityId, operation.targetEntityId], operation, scene),
   } satisfies Capability<"SetRelation">,
   ChangePresence: {
-    access: (operation) => ({ reads: [{ channel: "presence", entityId: operation.entityId }], writes: [{ channel: "appearance", entityId: operation.entityId }, { channel: "presence", entityId: operation.entityId }] }),
+    access: (operation) => ({
+      reads: [{ channel: "presence", entityId: operation.entityId }],
+      writes: [
+        { channel: "appearance", entityId: operation.entityId },
+        { channel: "presence", entityId: operation.entityId },
+      ],
+    }),
     defaults: { persistent: false },
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
@@ -734,11 +804,11 @@ export const OPERATION_REGISTRY = {
         if (entity) {
           draft.entities[operation.entityId] = {
             ...entity,
-            lifetime: entity.lifetime.map((interval) => (
+            lifetime: entity.lifetime.map((interval) =>
               operation.interval.start >= interval.start && operation.interval.start < interval.end
                 ? { ...interval, end: Math.min(interval.end, operation.interval.end) }
-                : interval
-            )),
+                : interval,
+            ),
           };
           draft.lineage.push({
             at: operation.interval.end,
@@ -768,24 +838,30 @@ export const OPERATION_REGISTRY = {
     defaults: {},
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
-      draft.events.push({ id: `${operation.id}/timeline`, interval: operation.interval, kind: operation.eventKind, label: operation.label, operationId: operation.id, transactionId: program.transactionId });
+      draft.events.push({
+        id: `${operation.id}/timeline`,
+        interval: operation.interval,
+        kind: operation.eventKind,
+        label: operation.label,
+        operationId: operation.id,
+        transactionId: program.transactionId,
+      });
     },
-    execution: (operation) => operation.eventKind === "wait"
-      ? SUPPORTED_EXECUTION
-      : previewOnlyExecution(
-          "Only an explicit wait timeline event has truthful Manim source lowering.",
-        ),
+    execution: (operation) =>
+      operation.eventKind === "wait"
+        ? SUPPORTED_EXECUTION
+        : previewOnlyExecution("Only an explicit wait timeline event has truthful Manim source lowering."),
     lifetimeRequirement: "none",
     projection: ["timeline", "inspector"],
     targetRequirement: "none",
     validate: (operation, scene) => {
       const issues: ProgramValidationIssue[] = [];
       if (
-        !Number.isFinite(operation.interval.start)
-        || !Number.isFinite(operation.interval.end)
-        || operation.interval.start < 0
-        || operation.interval.start > scene.duration
-        || operation.interval.end < operation.interval.start
+        !Number.isFinite(operation.interval.start) ||
+        !Number.isFinite(operation.interval.end) ||
+        operation.interval.start < 0 ||
+        operation.interval.start > scene.duration ||
+        operation.interval.end < operation.interval.start
       ) {
         issues.push({
           code: "interval-invalid",
@@ -812,7 +888,14 @@ export const OPERATION_REGISTRY = {
     defaults: { destination: "next-scene" },
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
-      draft.events.push({ at: operation.at, id: `${operation.id}/boundary`, kind: "scene-boundary", label: "Full-cover Scene boundary", operationId: operation.id, transactionId: program.transactionId });
+      draft.events.push({
+        at: operation.at,
+        id: `${operation.id}/boundary`,
+        kind: "scene-boundary",
+        label: "Full-cover Scene boundary",
+        operationId: operation.id,
+        transactionId: program.transactionId,
+      });
     },
     execution: () => SUPPORTED_EXECUTION,
     lifetimeRequirement: "none",
@@ -827,17 +910,21 @@ export const OPERATION_REGISTRY = {
       recordOperation(draft, operation, program);
       draft.constraints = draft.constraints.filter((constraint) => constraint.id !== operation.constraintId);
     },
-    execution: () => previewOnlyExecution(
-      "ChangeConstraint is read-only until constraint edits have truthful Manim source lowering.",
-      "unsupported",
-    ),
+    execution: () =>
+      previewOnlyExecution(
+        "ChangeConstraint is read-only until constraint edits have truthful Manim source lowering.",
+        "unsupported",
+      ),
     lifetimeRequirement: "none",
     projection: ["inspector"],
     targetRequirement: "constraint",
     validate: (operation, scene) => baseIssues(operation, scene),
   } satisfies Capability<"ChangeConstraint">,
   ChangeCamera: {
-    access: () => ({ reads: [{ channel: "camera", entityId: "camera" }], writes: [{ channel: "camera", entityId: "camera" }] }),
+    access: () => ({
+      reads: [{ channel: "camera", entityId: "camera" }],
+      writes: [{ channel: "camera", entityId: "camera" }],
+    }),
     defaults: {},
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
@@ -853,9 +940,10 @@ export const OPERATION_REGISTRY = {
         value: operation.value,
       });
     },
-    execution: () => previewOnlyExecution(
-      "CameraFocus can be previewed, but ChangeCamera cannot yet be lowered back to Manim source.",
-    ),
+    execution: () =>
+      previewOnlyExecution(
+        "CameraFocus can be previewed, but ChangeCamera cannot yet be lowered back to Manim source.",
+      ),
     lifetimeRequirement: "none",
     projection: ["canvas", "inspector", "semantic-thumbnail", "working-playback"],
     targetRequirement: "camera",
@@ -867,9 +955,7 @@ export function operationCapability(operation: CanonicalEditOperation) {
   return OPERATION_REGISTRY[operation.kind] as Capability<CanonicalEditOperation["kind"]>;
 }
 
-export function operationExecutionCapabilities(
-  operation: CanonicalEditOperation,
-): OperationExecutionCapabilities {
+export function operationExecutionCapabilities(operation: CanonicalEditOperation): OperationExecutionCapabilities {
   return operationCapability(operation).execution(operation as never);
 }
 
@@ -879,25 +965,23 @@ const LOWERING_PRIORITY: Readonly<Record<OperationExecutionCapabilities["lowerin
   unsupported: 2,
 };
 
-export function programExecutionCapabilities(
-  program: CanonicalEditProgram,
-): ProgramExecutionCapabilities {
+export function programExecutionCapabilities(program: CanonicalEditProgram): ProgramExecutionCapabilities {
   const operationCapabilities = program.operations.map(operationExecutionCapabilities);
   const operationLowering = [
     program.loweringStatus,
     ...operationCapabilities.map((capability) => capability.lowering),
-  ].reduce<OperationExecutionCapabilities["lowering"]>((current, candidate) => (
-    LOWERING_PRIORITY[candidate] > LOWERING_PRIORITY[current] ? candidate : current
-  ), "supported");
+  ].reduce<OperationExecutionCapabilities["lowering"]>(
+    (current, candidate) => (LOWERING_PRIORITY[candidate] > LOWERING_PRIORITY[current] ? candidate : current),
+    "supported",
+  );
   const blockedOperation = operationCapabilities.find((capability) => capability.apply !== "supported");
   const unsupportedPreview = operationCapabilities.find((capability) => capability.preview !== "supported");
   const structureBlocker = programStructureBlocker(program);
-  const lowering = structureBlocker && operationLowering === "supported"
-    ? "illustrative"
-    : operationLowering;
-  const applyBlocker = blockedOperation?.applyBlocker
-    ?? structureBlocker
-    ?? (program.loweringStatus !== "supported"
+  const lowering = structureBlocker && operationLowering === "supported" ? "illustrative" : operationLowering;
+  const applyBlocker =
+    blockedOperation?.applyBlocker ??
+    structureBlocker ??
+    (program.loweringStatus !== "supported"
       ? `This Program is marked ${program.loweringStatus} and cannot be applied until it has truthful Manim source lowering.`
       : null);
   return {
@@ -915,18 +999,24 @@ export function operationAccess(operation: CanonicalEditOperation) {
 export function validateOperation(operation: CanonicalEditOperation, scene: RuntimeSceneState) {
   const parsed = canonicalOperationSchema.safeParse(operation);
   if (!parsed.success) {
-    return [{
-      code: "schema-invalid" as const,
-      field: parsed.error.issues[0]?.path.join(".") || "operation",
-      message: parsed.error.issues[0]?.message ?? "Operation does not match the closed schema.",
-      operationId: operation.id,
-      severity: "error" as const,
-    }];
+    return [
+      {
+        code: "schema-invalid" as const,
+        field: parsed.error.issues[0]?.path.join(".") || "operation",
+        message: parsed.error.issues[0]?.message ?? "Operation does not match the closed schema.",
+        operationId: operation.id,
+        severity: "error" as const,
+      },
+    ];
   }
   return operationCapability(operation).validate(operation as never, scene);
 }
 
-export function evaluateOperation(draft: EvaluationDraft, operation: CanonicalEditOperation, program: CanonicalEditProgram) {
+export function evaluateOperation(
+  draft: EvaluationDraft,
+  operation: CanonicalEditOperation,
+  program: CanonicalEditProgram,
+) {
   operationCapability(operation).evaluate(draft, operation as never, program);
 }
 

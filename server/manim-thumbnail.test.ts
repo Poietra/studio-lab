@@ -11,10 +11,7 @@ import { importManimScene } from "../src/render-pipeline/source-import";
 import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import { handleManimRequest } from "./manim-render-http";
 import { ManimProjectRegistry, ManimRenderManager } from "./manim-render-pipeline";
-import {
-  renderManimSceneThumbnailSvg,
-  representativeManimSceneTime,
-} from "./manim-thumbnail";
+import { renderManimSceneThumbnailSvg, representativeManimSceneTime } from "./manim-thumbnail";
 import { discoverFirstManimScene, discoverPythonSources } from "./manim-workspace";
 
 const temporaryRoots: string[] = [];
@@ -57,8 +54,10 @@ describe("Manim thumbnail source discovery", () => {
 
     const first = await discoverFirstManimScene(projectRoot, frame);
     expect(first?.sceneId).toBe("a-scenes/b.py#NestedFirst");
-    expect((await discoverPythonSources(projectRoot, frame)).map((source) => source.path))
-      .toEqual(["a-scenes/b.py", "b.py"]);
+    expect((await discoverPythonSources(projectRoot, frame)).map((source) => source.path)).toEqual([
+      "a-scenes/b.py",
+      "b.py",
+    ]);
   });
 });
 
@@ -83,17 +82,18 @@ class Representative(Scene):
 
     expect(representativeManimSceneTime(imported.runtimeSceneState)).toBe(2);
     const svg = renderManimSceneThumbnailSvg(imported.runtimeSceneState);
-    expect(svg).toContain('transform="translate(320 135) scale(1)"');
-    expect(svg).toContain('transform="translate(470 135) scale(1)"');
+    expect(svg.match(/transform="translate\(320 180\) scale\(1\)"/g)).toHaveLength(2);
     expect(svg).toContain("x &lt; y &amp; z");
     expect(svg).toContain("<circle");
     expect(svg).not.toContain("early");
   });
 
   it("bounds entities and text while emitting only escaped, inert SVG markup", () => {
-    const assignments = Array.from({ length: 48 }, (_, index) => (
-      `        item_${index} = Text(${JSON.stringify(index === 0 ? "<script>& exploit" : `item ${index}`)})`
-    ));
+    const assignments = Array.from(
+      { length: 48 },
+      (_, index) =>
+        `        item_${index} = Text(${JSON.stringify(index === 0 ? "<script>& exploit" : `item ${index}`)})`,
+    );
     const variables = Array.from({ length: 48 }, (_, index) => `item_${index}`).join(", ");
     const source = `from manim import *
 
@@ -123,7 +123,11 @@ describe("Manim thumbnail manager and HTTP boundary", () => {
     await writeFile(join(projectRoot, "scene.py"), sceneSource("Cached", "cached"), "utf8");
     const commandMarker = join(projectRoot, "command-ran");
     const command = join(projectRoot, "command.mjs");
-    await writeFile(command, `import { writeFile } from "node:fs/promises"; await writeFile(${JSON.stringify(commandMarker)}, "ran");\n`, "utf8");
+    await writeFile(
+      command,
+      `import { writeFile } from "node:fs/promises"; await writeFile(${JSON.stringify(commandMarker)}, "ran");\n`,
+      "utf8",
+    );
     const manager = new ManimRenderManager({
       command: [process.execPath, command],
       frame,
@@ -198,7 +202,7 @@ describe("Manim thumbnail manager and HTTP boundary", () => {
         expect(await fallback.text()).toContain("No scene preview");
       }
     } finally {
-      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
   });
 
@@ -251,8 +255,9 @@ describe("Manim thumbnail manager and HTTP boundary", () => {
           method: "POST",
         }),
       ];
-      await expect(Promise.all(rejectedRequests).then((responses) => responses.map((response) => response.status)))
-        .resolves.toEqual([415, 415, 415, 400, 403, 403]);
+      await expect(
+        Promise.all(rejectedRequests).then((responses) => responses.map((response) => response.status)),
+      ).resolves.toEqual([415, 415, 415, 400, 403, 403]);
       await expect(readFile(renderMarker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
 
       const generated = await fetch(`${origin}/api/manim/projects/project-thumbnail/thumbnail/generate`, {
@@ -273,10 +278,11 @@ describe("Manim thumbnail manager and HTTP boundary", () => {
       expect(thumbnail.status).toBe(200);
       expect(thumbnail.headers.get("content-type")).toBe("image/png");
       expect(thumbnail.headers.get("x-poietra-thumbnail-kind")).toBe("rendered");
-      expect(Buffer.from(await thumbnail.arrayBuffer()).subarray(0, 8))
-        .toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+      expect(Buffer.from(await thumbnail.arrayBuffer()).subarray(0, 8)).toEqual(
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      );
     } finally {
-      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
   });
 
@@ -310,9 +316,9 @@ describe("Manim thumbnail manager and HTTP boundary", () => {
       });
       expect(rejected.status).toBe(503);
       const responsePayload = await rejected.text();
-      const statusPayload = await (await fetch(
-        `${origin}/api/manim/projects/project-thumbnail/thumbnail/status`,
-      )).text();
+      const statusPayload = await (
+        await fetch(`${origin}/api/manim/projects/project-thumbnail/thumbnail/status`)
+      ).text();
       const publicPayload = `${responsePayload}\n${statusPayload}`;
       for (const privatePath of [privateCommand, projectRoot, cacheRoot]) {
         expect(publicPayload).not.toContain(privatePath);
@@ -320,7 +326,7 @@ describe("Manim thumbnail manager and HTTP boundary", () => {
       expect(publicPayload).toMatch(/renderer is unavailable/i);
       expect(JSON.stringify(records)).toContain(privateCommand);
     } finally {
-      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
   });
 });

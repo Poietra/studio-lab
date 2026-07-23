@@ -55,12 +55,7 @@ function isContent(value: PropertyValue | undefined): value is EntityContent {
   return typeof value === "object" && value !== null && "displayLines" in value;
 }
 
-function channelAt(
-  scene: RuntimeSceneState,
-  entityId: string,
-  key: PropertyChannel["key"],
-  time: number,
-) {
+function channelAt(scene: RuntimeSceneState, entityId: string, key: PropertyChannel["key"], time: number) {
   return samplePropertyValue(scene.propertyChannels[`${entityId}/${key}`]?.samples ?? [], time);
 }
 
@@ -72,11 +67,21 @@ function entityAt(scene: RuntimeSceneState, entity: RuntimeEntity, time: number)
   const scale = channelAt(scene, entity.id, "scale", time);
   return {
     content: isContent(content) ? content : entity.content,
+    geometry: entity.geometry ?? {
+      dimensions: { kind: "known", value: {} },
+      position: isPointValue(position)
+        ? { kind: "known", value: position }
+        : { kind: "unknown", reason: "No projected position is available." },
+      scale:
+        typeof scale === "number"
+          ? { kind: "known", value: scale }
+          : { kind: "unknown", reason: "No projected scale is available." },
+      style: { kind: "known", value: {} },
+    },
     id: entity.id,
     opacity: typeof appearance === "number" ? appearance : 1,
     position: isPointValue(position) ? position : { x: THUMBNAIL_WIDTH / 2, y: THUMBNAIL_HEIGHT / 2 },
-    present: entity.lifetime.some((interval) => time >= interval.start && time < interval.end)
-      && presence !== false,
+    present: entity.lifetime.some((interval) => time >= interval.start && time < interval.end) && presence !== false,
     provisional: entity.provisional,
     scale: typeof scale === "number" ? scale : 1,
     sourceIdentity: entity.sourceIdentity,
@@ -86,12 +91,14 @@ function entityAt(scene: RuntimeSceneState, entity: RuntimeEntity, time: number)
 }
 
 function isVisible(entity: ProjectedEntity) {
-  return entity.present
-    && Number.isFinite(entity.opacity)
-    && entity.opacity > MIN_VISIBLE_OPACITY
-    && Number.isFinite(entity.scale)
-    && entity.scale > 0
-    && RENDERED_ENTITY_TYPES.has(entity.type);
+  return (
+    entity.present &&
+    Number.isFinite(entity.opacity) &&
+    entity.opacity > MIN_VISIBLE_OPACITY &&
+    Number.isFinite(entity.scale) &&
+    entity.scale > 0 &&
+    RENDERED_ENTITY_TYPES.has(entity.type)
+  );
 }
 
 function candidateTimes(scene: RuntimeSceneState) {
@@ -126,8 +133,7 @@ export function representativeManimSceneTime(scene: RuntimeSceneState) {
   for (const time of candidateTimes(scene)) {
     const visibleEntities = Object.values(scene.objectGraph.entities)
       .map((entity) => entityAt(scene, entity, time))
-      .filter(isVisible)
-      .length;
+      .filter(isVisible).length;
     if (visibleEntities > maximumVisibleEntities) {
       maximumVisibleEntities = visibleEntities;
       representativeTime = time;
@@ -138,9 +144,10 @@ export function representativeManimSceneTime(scene: RuntimeSceneState) {
 
 function entityText(entity: ProjectedEntity) {
   const content = entity.content;
-  const value = entity.type === "MathTex"
-    ? content?.displayLines.join(" ") || content?.texParts?.join(" ") || content?.label || "MathTex"
-    : content?.text || content?.displayLines.join(" ") || content?.label || "Text";
+  const value =
+    entity.type === "MathTex"
+      ? content?.displayLines.join(" ") || content?.texParts?.join(" ") || content?.label || "MathTex"
+      : content?.text || content?.displayLines.join(" ") || content?.label || "Text";
   return value.replace(/\s+/g, " ").trim().slice(0, MAX_THUMBNAIL_TEXT_LENGTH);
 }
 
@@ -180,21 +187,25 @@ export function renderManimSceneThumbnailSvg(scene: RuntimeSceneState) {
     .sort((left, right) => {
       const leftOrdering = channelAt(scene, left.entity.id, "ordering", time);
       const rightOrdering = channelAt(scene, right.entity.id, "ordering", time);
-      return (typeof leftOrdering === "number" ? leftOrdering : left.index)
-        - (typeof rightOrdering === "number" ? rightOrdering : right.index)
-        || left.entity.id.localeCompare(right.entity.id);
+      return (
+        (typeof leftOrdering === "number" ? leftOrdering : left.index) -
+          (typeof rightOrdering === "number" ? rightOrdering : right.index) ||
+        left.entity.id.localeCompare(right.entity.id)
+      );
     })
     .slice(0, MAX_THUMBNAIL_ENTITIES);
   let renderedTextEntities = 0;
-  const body = entities.map(({ entity }) => {
-    const isText = entity.type === "MathTex" || entity.type === "Text";
-    const canRenderText = !isText || renderedTextEntities < MAX_THUMBNAIL_TEXT_ENTITIES;
-    if (isText && canRenderText) renderedTextEntities += 1;
-    const x = clamp(finiteOr(entity.position.x, THUMBNAIL_WIDTH / 2), 0, THUMBNAIL_WIDTH);
-    const y = clamp(finiteOr(entity.position.y, THUMBNAIL_HEIGHT / 2), 0, THUMBNAIL_HEIGHT);
-    const opacity = clamp(finiteOr(entity.opacity, 1), 0, 1);
-    const scale = clamp(finiteOr(entity.scale, 1), 0.1, 4);
-    return `<g transform="translate(${formatNumber(x)} ${formatNumber(y)}) scale(${formatNumber(scale)})" opacity="${formatNumber(opacity)}">${renderShape(entity, canRenderText)}</g>`;
-  }).join("");
+  const body = entities
+    .map(({ entity }) => {
+      const isText = entity.type === "MathTex" || entity.type === "Text";
+      const canRenderText = !isText || renderedTextEntities < MAX_THUMBNAIL_TEXT_ENTITIES;
+      if (isText && canRenderText) renderedTextEntities += 1;
+      const x = clamp(finiteOr(entity.position.x, THUMBNAIL_WIDTH / 2), 0, THUMBNAIL_WIDTH);
+      const y = clamp(finiteOr(entity.position.y, THUMBNAIL_HEIGHT / 2), 0, THUMBNAIL_HEIGHT);
+      const opacity = clamp(finiteOr(entity.opacity, 1), 0, 1);
+      const scale = clamp(finiteOr(entity.scale, 1), 0.1, 4);
+      return `<g transform="translate(${formatNumber(x)} ${formatNumber(y)}) scale(${formatNumber(scale)})" opacity="${formatNumber(opacity)}">${renderShape(entity, canRenderText)}</g>`;
+    })
+    .join("");
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" width="640" height="360"><rect width="640" height="360" fill="#09090b"/>${body}</svg>`;
 }
