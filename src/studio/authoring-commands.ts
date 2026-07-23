@@ -41,6 +41,7 @@ function authoringProgram(
   input: Readonly<{
     capturedPlayhead: number;
     origin: OperationOrigin;
+    requestedExecution?: "parallel" | "sequence";
     scene: RuntimeSceneState;
     transactionId: string;
   }>,
@@ -61,8 +62,8 @@ function authoringProgram(
     loweringStatus: "supported",
     operations,
     provenance: provenance(input.origin, ["manual Studio authoring"]),
-    requestedExecution: "parallel",
-    schedule: { edges: [], mode: "parallel", order: operations.map((operation) => operation.id) },
+    requestedExecution: input.requestedExecution ?? "parallel",
+    schedule: { edges: [], mode: input.requestedExecution ?? "parallel", order: operations.map((operation) => operation.id) },
     transactionId: input.transactionId,
     version: EDIT_OPERATION_VERSION,
   };
@@ -165,6 +166,58 @@ export function createRemoveEntitiesProgram(input: Readonly<{
   return authoringProgram(operations, {
     capturedPlayhead: input.capturedPlayhead,
     origin: "studio-default",
+    scene: input.scene,
+    transactionId: input.transactionId,
+  });
+}
+
+export function createTrimEntityLifetimeProgram(input: Readonly<{
+  entityId: string;
+  lifetimeStart: number;
+  retainedDuration: number;
+  scene: RuntimeSceneState;
+  sourceAnchor: number;
+  transactionId: string;
+}>): ProgramValidationResult {
+  const entity = input.scene.objectGraph.entities[input.entityId];
+  if (!entity) throw new Error(`Object ${input.entityId} is no longer available.`);
+  const lifetime = entity.lifetime.find((interval) => (
+    Math.abs(interval.start - input.lifetimeStart) < 0.001
+  ));
+  if (!lifetime) throw new Error("The selected lifetime interval is no longer available.");
+  const targetEnd = input.sourceAnchor;
+  if (!Number.isFinite(input.retainedDuration) || input.retainedDuration < 0.1) {
+    throw new Error("Keep at least 0.1 seconds of the selected object lifetime.");
+  }
+  if (targetEnd > lifetime.end + 0.001) {
+    throw new Error("Lifetime extension is not supported yet; drag the right edge to the left.");
+  }
+  if (lifetime.end - targetEnd < 0.01) {
+    throw new Error("Move the lifetime end at least 0.01 seconds earlier.");
+  }
+
+  if (
+    !Number.isFinite(input.sourceAnchor)
+    || input.sourceAnchor < 0
+    || input.sourceAnchor < lifetime.start - 0.001
+  ) {
+    throw new Error("A safe source anchor is required inside the selected lifetime.");
+  }
+  const removeId = operationId(input.transactionId, "trim-lifetime-end");
+  const operation: CanonicalEditOperation = {
+    dependsOn: [],
+    effect: "remove",
+    entityId: input.entityId,
+    id: removeId,
+    interval: { end: input.sourceAnchor, start: input.sourceAnchor },
+    kind: "ChangePresence",
+    persistent: true,
+    provenance: provenance("direct-manipulation", ["lifetime right-edge trim", "safe source anchor", "persistent exit"]),
+  };
+  return authoringProgram([operation], {
+    capturedPlayhead: input.sourceAnchor,
+    origin: "direct-manipulation",
+    requestedExecution: "sequence",
     scene: input.scene,
     transactionId: input.transactionId,
   });

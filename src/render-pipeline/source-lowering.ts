@@ -475,7 +475,24 @@ export function lowerCanonicalProgramSource(
       continue;
     }
 
-    const animations = bucket.filter(animationOperation);
+    const instantPresenceChanges = bucket.filter((operation): operation is Extract<CanonicalEditOperation, { kind: "ChangePresence" }> => (
+      operation.kind === "ChangePresence"
+      && operation.interval.end - operation.interval.start <= EPSILON
+    ));
+    for (const operation of instantPresenceChanges) {
+      if (operation.effect !== "remove") {
+        throw new ProgramLoweringError(
+          "operation-unsupported",
+          `Zero-duration ${operation.effect} has no truthful source lowering.`,
+        );
+      }
+      output.push(`self.remove(${requireVariable(variableByEntity, operation.entityId)})`);
+    }
+
+    const animations = bucket.filter((operation): operation is LoweredAnimationOperation => (
+      animationOperation(operation)
+      && operation.interval.end - operation.interval.start > EPSILON
+    ));
     if (animations.length === 0) continue;
     const animationEnd = animations[0].interval.end;
     if (animations.some((operation) => Math.abs(operation.interval.end - animationEnd) >= EPSILON)) {

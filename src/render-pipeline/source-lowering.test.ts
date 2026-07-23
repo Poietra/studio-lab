@@ -141,6 +141,30 @@ describe("Canonical EditProgram source lowering", () => {
     ]?.samples.at(-1)?.interval).toEqual({ end: 8.5, start: 7 });
   });
 
+  it("lowers an immediate lifetime end to self.remove without a zero-duration play", () => {
+    const remove: CanonicalEditOperation = {
+      ...operationBase("trim-lifetime", 7),
+      effect: "remove",
+      entityId: "equation_1",
+      kind: "ChangePresence",
+      persistent: true,
+    };
+
+    const lowered = lowerCanonicalProgramSource(
+      roundTripSource,
+      request(canonicalProgram([remove], "trim-lifetime")),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
+
+    expect(lowered.insertedCode).toContain("self.remove(equation)");
+    expect(lowered.insertedCode).not.toContain("self.play(");
+    expect(imported?.runtimeSceneState.objectGraph.entities[
+      "source:examples/relativity.py#GroupedEquation:equation"
+    ]?.lifetime).toEqual([{ end: 7, start: 0 }]);
+  });
+
   it("advances the consumed anchor so a second commit appends in playback order", () => {
     const firstProgram = canonicalProgram([motionOperation()], "first-commit");
     const first = lowerCanonicalProgramSource(
