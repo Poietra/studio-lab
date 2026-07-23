@@ -1,7 +1,4 @@
-import {
-  editSuggestionRequestSchema,
-  parseEditSuggestionResult,
-} from "./edit-suggestion-schema";
+import { editSuggestionRequestSchema, parseEditSuggestionResult } from "./edit-suggestion-schema";
 
 export type SuggestionPoint = Readonly<{ x: number; y: number }>;
 
@@ -50,9 +47,10 @@ export type ClarificationTurn = Readonly<{
   question: string;
 }>;
 
-export type ClarificationFollowUp = ClarificationTurn & Readonly<{
-  history: readonly ClarificationTurn[];
-}>;
+export type ClarificationFollowUp = ClarificationTurn &
+  Readonly<{
+    history: readonly ClarificationTurn[];
+  }>;
 
 export type SuggestionTimeAnchor =
   | Readonly<{ kind: "absolute"; seconds: number }>
@@ -67,7 +65,7 @@ export type CreateMotionSuggestion = Readonly<{
   anchor: SuggestionTimeAnchor;
   controlOffset: SuggestionPoint;
   delta: SuggestionPoint;
-  easing: "smooth";
+  easing: "linear" | "smooth";
   end: number;
   kind: "create-motion";
   start: number;
@@ -213,17 +211,15 @@ async function readSuggestionResponse(response: Response): Promise<EditSuggestio
   const text = await response.text();
   let result: unknown;
   try {
-    result = text ? JSON.parse(text) as unknown : null;
+    result = text ? (JSON.parse(text) as unknown) : null;
   } catch {
     throw new Error(`Suggestion endpoint returned ${response.status}: malformed JSON.`);
   }
   if (!response.ok) {
-    const message = typeof result === "object"
-      && result !== null
-      && "error" in result
-      && typeof result.error === "string"
-      ? result.error
-      : `Suggestion endpoint returned ${response.status}.`;
+    const message =
+      typeof result === "object" && result !== null && "error" in result && typeof result.error === "string"
+        ? result.error
+        : `Suggestion endpoint returned ${response.status}.`;
     throw new Error(message);
   }
   const parsedRemote = parseEditSuggestionResult(result);

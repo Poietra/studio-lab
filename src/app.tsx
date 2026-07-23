@@ -24,7 +24,13 @@ import {
 import { commandForShortcut, isEditableShortcutTarget, type StudioCommandId } from "./studio/commands";
 import { projectedPositions, validateSuggestionDraft, validatedProgramRecord } from "./studio/draft-validation";
 import type { Point, ProgramRecord, ProposedState, RuntimeSceneState } from "./studio/model";
+import {
+  adjustAppliedMotionClipControl,
+  appliedMotionClipReadOnlyReason,
+  retimeAppliedMotionClip,
+} from "./studio/motion-clip-edit";
 import { projectMotionPaths, type StudioMotionPath } from "./studio/motion-paths";
+import type { AppliedMotionClip, AppliedMotionClipChange } from "./studio/motion-timeline-clip";
 import { programExecutionCapabilities } from "./studio/operation-registry";
 import type { OperationOrigin } from "./studio/operations";
 import { latestSafeSourceAnchor, sourceTimeToWorkingTime, workingTimeToSourceTime } from "./studio/program-composition";
@@ -44,7 +50,12 @@ import {
 } from "./studio/studio-viewport";
 import type { StudioTool } from "./studio/studio-toolbar";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
-import { editorProgramRecord, type EditorSessionIdentity, useEditorController } from "./studio/use-editor-controller";
+import {
+  editorProgramRecord,
+  type EditorProgramRecord,
+  type EditorSessionIdentity,
+  useEditorController,
+} from "./studio/use-editor-controller";
 import { useManimWorkspace } from "./studio/use-manim-workspace";
 import { WorkspaceLauncher } from "./studio/workspace-launcher";
 import { isTransitionOverlay, projectStudioWorkspace } from "./studio/workspace-projection";
@@ -165,7 +176,7 @@ export function App() {
     clearProjectSessions,
     clearSession,
     discardDraft,
-    editAppliedProgram,
+    editAppliedProgram: stageAppliedProgramEdit,
     finishSuggestionRequest,
     isSuggestionRequestCurrent,
     openSession,
@@ -373,6 +384,58 @@ export function App() {
       operation.kind === "CreateMotion" ? [operation.id] : [],
     ) ?? [],
   );
+  const evaluatedProgramsByTransaction = new Map(
+    workspaceProjection?.proposedState.programs.map(
+      (record) => [record.program.transactionId, record.program] as const,
+    ) ?? [],
+  );
+  const appliedMotionClips: readonly AppliedMotionClip[] = activeScene
+    ? previewAppliedPrograms.flatMap((record, programIndex) => {
+        const evaluatedProgram = evaluatedProgramsByTransaction.get(record.program.transactionId);
+        if (!evaluatedProgram) return [];
+        const precedingPrograms = previewAppliedPrograms.slice(0, programIndex).map((candidate) => candidate.program);
+        const metadata = record.editorMetadata;
+        return evaluatedProgram.operations.flatMap((operation) => {
+          if (operation.kind !== "CreateMotion") return [];
+          const sourceOperation = record.program.operations.find(
+            (candidate) => candidate.kind === "CreateMotion" && candidate.id === operation.id,
+          );
+          if (sourceOperation?.kind !== "CreateMotion") return [];
+          const metadataReason = appliedMotionClipReadOnlyReason(
+            record.program,
+            metadata?.operation,
+            sourceOperation.id,
+          );
+          const busyReason =
+            draftProgram && editingAppliedProgram?.original.program.transactionId !== record.program.transactionId
+              ? "Apply or discard the current draft before editing this motion clip."
+              : null;
+          const anchors = activeScene.anchors
+            .map((sourceTime) => ({
+              maximumDuration: activeScene.runtimeSceneState.duration - sourceTime,
+              sourceTime,
+              workingTime: sourceTimeToWorkingTime(precedingPrograms, sourceTime),
+            }))
+            .filter((anchor) => anchor.maximumDuration >= 0.1 - 0.0005);
+          return operation.targetEntityIds.map((entityId) => {
+            const entity = workspaceProjection?.proposedState.evaluatedScene.objectGraph.entities[entityId];
+            return {
+              anchors,
+              easing: sourceOperation.easing,
+              entityId,
+              interval: operation.interval,
+              label: entity?.content?.label ?? entity?.content?.text ?? entityId.split(":").at(-1) ?? entityId,
+              maximumDuration: Math.max(0.1, activeScene.runtimeSceneState.duration - sourceOperation.interval.start),
+              operationId: operation.id,
+              programIndex,
+              readOnlyReason: busyReason ?? metadataReason,
+              sourceStart: sourceOperation.interval.start,
+              transactionId: record.program.transactionId,
+            } satisfies AppliedMotionClip;
+          });
+        });
+      })
+    : [];
   const retainRenderSession = useCallback((session: RenderSessionView | null, projectId?: string) => {
     setRenderSessions((current) => {
       if (session) return { ...current, [session.projectId]: session };
@@ -425,6 +488,7 @@ export function App() {
     proposedState: ProposedState | null = draftBaseState,
     capturedPlayhead = sourceCurrentTime,
     sourcePrograms: readonly ProgramRecord["program"][] = draftPrecedingCanonicalPrograms,
+    validationSelection: readonly string[] = selectedObjectIds,
   ) {
     if (!activeScene || !proposedState) throw new Error("Choose an imported Scene first.");
     const validationState = {
@@ -436,7 +500,7 @@ export function App() {
       hasNextScene: nextScene !== null,
       origin,
       proposedState: validationState,
-      selectedObjectIds,
+      selectedObjectIds: validationSelection,
       transactionId,
     });
     if (validation.kind === "invalid") throw new Error(validation.message);
@@ -639,6 +703,117 @@ export function App() {
     setPendingClarification(null);
     setSuggestionStatus("idle");
     setSuggestionMessage(null);
+  }
+
+  function installAppliedProgramEdit(
+    editorRecord: EditorProgramRecord,
+    index: number,
+    operation: EditSuggestionOperation,
+    focusSourceTime = editorRecord.program.anchor.resolvedSeconds,
+  ) {
+    const transactionId = editorRecord.program.transactionId;
+    const activeEdit =
+      editingAppliedProgram?.original.program.transactionId === transactionId ? editingAppliedProgram : null;
+    if (draftProgram && !activeEdit) {
+      setDraftError("Apply or discard the current draft before editing an Applied Program.");
+      return false;
+    }
+    const metadata = editorRecord.editorMetadata;
+    if (!metadata?.operation || !activeScene) {
+      setDraftError("This Program is read-only because editable Studio authoring metadata is unavailable.");
+      return false;
+    }
+    const precedingRecords = appliedPrograms.slice(0, index);
+    const precedingPrograms = precedingRecords.map((candidate) => candidate.program);
+    const workingFocus = sourceTimeToWorkingTime(precedingPrograms, focusSourceTime);
+    const baseProjection = projectStudioWorkspace({
+      activeScene,
+      appliedPrograms: precedingRecords,
+      currentTime: workingFocus,
+      draftProgram: null,
+      nextScene,
+      selectedObjectIds: metadata.selection,
+    });
+    try {
+      const validated = createValidatedDraft(
+        operation,
+        transactionId,
+        editorRecord.program.provenance.origin,
+        baseProjection.proposedState,
+        editorRecord.program.anchor.capturedPlayhead,
+        precedingPrograms,
+        metadata.selection,
+      );
+      const replacement = replaceAppliedProgram(
+        appliedPrograms,
+        transactionId,
+        editorProgramRecord(validated.record, validated.operation, metadata.selection),
+      );
+      if (replacement.kind === "rejected") throw new Error(replacement.reason);
+      stageAppliedProgramEdit(editorRecord, index, {
+        focusSourceTime,
+        operation: validated.operation,
+        record: validated.record,
+      });
+      return true;
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The applied Program edit is invalid.");
+      return false;
+    }
+  }
+
+  function editAppliedProgram(record: ProgramRecord, index: number) {
+    const editorRecord = record as EditorProgramRecord;
+    const operation = editorRecord.editorMetadata?.operation;
+    if (!operation) {
+      setDraftError("This Program is read-only because editable Studio authoring metadata is unavailable.");
+      return;
+    }
+    installAppliedProgramEdit(editorRecord, index, operation);
+  }
+
+  function editAppliedMotionClip(clip: AppliedMotionClip) {
+    const record = appliedPrograms[clip.programIndex];
+    if (!record || record.program.transactionId !== clip.transactionId) {
+      setDraftError("The motion clip no longer matches the applied Program history.");
+      return;
+    }
+    const operation =
+      editingAppliedProgram?.original.program.transactionId === clip.transactionId
+        ? draftOperation
+        : record.editorMetadata?.operation;
+    if (!operation) {
+      setDraftError(clip.readOnlyReason ?? "This motion clip is read-only.");
+      return;
+    }
+    installAppliedProgramEdit(record, clip.programIndex, operation, clip.sourceStart);
+  }
+
+  function changeAppliedMotionClip(clip: AppliedMotionClip, change: AppliedMotionClipChange) {
+    const record = appliedPrograms[clip.programIndex];
+    if (!record || record.program.transactionId !== clip.transactionId) {
+      setDraftError("The motion clip no longer matches the applied Program history.");
+      return;
+    }
+    const editingThisClip = editingAppliedProgram?.original.program.transactionId === clip.transactionId;
+    const operation = editingThisClip ? draftOperation : record.editorMetadata?.operation;
+    const program = editingThisClip && draftProgram ? draftProgram.program : record.program;
+    if (!operation) {
+      setDraftError(clip.readOnlyReason ?? "This motion clip is read-only.");
+      return;
+    }
+    const retimed = retimeAppliedMotionClip({
+      duration: change.duration,
+      operation,
+      operationId: clip.operationId,
+      program,
+      start: change.sourceStart,
+    });
+    if (retimed.kind === "invalid") {
+      setDraftError(retimed.message);
+      return;
+    }
+    installAppliedProgramEdit(record, clip.programIndex, retimed.operation, change.sourceStart);
   }
 
   function installCanonicalDraft(
@@ -1310,36 +1485,18 @@ export function App() {
   }
 
   function changeDraftMotionControl(path: StudioMotionPath, delta: Point) {
-    if (!draftOperation || !editableMotionIds.has(path.motionId)) return;
-    const changeStep = <T extends EditSuggestionOperation>(operation: T): T => {
-      if (operation.kind === "create-motion" && operation.targetObjectIds.includes(path.entityId)) {
-        return {
-          ...operation,
-          controlOffset: {
-            x: clamp(operation.controlOffset.x + delta.x, -160, 160),
-            y: clamp(operation.controlOffset.y + delta.y, -100, 100),
-          },
-        } as T;
-      }
-      if (operation.kind === "edit-program") {
-        return {
-          ...operation,
-          operations: operation.operations.map((step) =>
-            step.kind === "create-motion" && step.targetObjectIds.includes(path.entityId)
-              ? {
-                  ...step,
-                  controlOffset: {
-                    x: clamp(step.controlOffset.x + delta.x, -160, 160),
-                    y: clamp(step.controlOffset.y + delta.y, -100, 100),
-                  },
-                }
-              : step,
-          ),
-        } as T;
-      }
-      return operation;
-    };
-    updateDraftOperation(changeStep(draftOperation));
+    if (!draftOperation || !draftProgram || !editableMotionIds.has(path.motionId)) return;
+    const adjusted = adjustAppliedMotionClipControl({
+      delta,
+      operation: draftOperation,
+      operationId: path.motionId,
+      program: draftProgram.program,
+    });
+    if (adjusted.kind === "invalid") {
+      setDraftError(adjusted.message);
+      return;
+    }
+    updateDraftOperation(adjusted.operation);
   }
 
   function handleStudioCommand(command: StudioCommandId) {
@@ -1638,6 +1795,7 @@ export function App() {
 
             <StudioViewport
               anchors={timelineAnchors}
+              appliedMotionClips={appliedMotionClips}
               appliedTransactionIds={appliedTransactionIds}
               boundaryActive={boundary !== null}
               className="order-1 min-h-[30rem] md:order-2 md:col-start-2 md:row-start-1 md:min-h-[32rem] xl:min-h-0"
@@ -1646,6 +1804,7 @@ export function App() {
               dragPreview={dragPreview}
               duration={activeDuration}
               editableMotionIds={editableMotionIds}
+              editingAppliedTransactionId={editingAppliedProgram?.original.program.transactionId ?? null}
               entities={visibleEntities}
               incomingSceneName={nextScene?.name ?? null}
               insertTool={insertTool}
@@ -1655,6 +1814,8 @@ export function App() {
               lifetimeTrimDisabled={draftProgram !== null}
               motionDuration={motionDuration}
               motionPaths={motionPaths}
+              onAppliedMotionClipChange={changeAppliedMotionClip}
+              onAppliedMotionClipSelect={editAppliedMotionClip}
               onCanvasPlace={(point) => void insertEntitiesAt(point)}
               onEntityKeyDown={nudgeEntity}
               onEntityPointerCancel={cancelEntityDrag}

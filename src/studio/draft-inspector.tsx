@@ -20,8 +20,10 @@ type DraftInspectorProps = Readonly<{
   record: ProgramRecord;
 }>;
 
-const inputClass = "mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-200 outline-none focus:border-sky-500";
-const textareaClass = "mt-1 min-h-20 w-full resize-y border border-zinc-700 bg-zinc-950 p-2 text-xs leading-5 text-zinc-200 outline-none focus:border-sky-500";
+const inputClass =
+  "mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-200 outline-none focus:border-sky-500";
+const textareaClass =
+  "mt-1 min-h-20 w-full resize-y border border-zinc-700 bg-zinc-950 p-2 text-xs leading-5 text-zinc-200 outline-none focus:border-sky-500";
 
 function minimumDuration(step: EditableSuggestionStep) {
   return step.kind === "create-scene-transition" ? 0.4 : 0.1;
@@ -78,17 +80,21 @@ function StepEditor({
         </label>
       </div>
 
-      {step.kind === "create-equation" || step.kind === "create-explained-equation" || step.kind === "create-transform" ? (
+      {step.kind === "create-equation" ||
+      step.kind === "create-explained-equation" ||
+      step.kind === "create-transform" ? (
         <>
           <label className="mt-3 block text-[10px] text-zinc-500">
             Equation label
             <input
               className={inputClass}
               maxLength={120}
-              onChange={(event) => onChange({
-                ...step,
-                target: { ...step.target, label: event.currentTarget.value },
-              })}
+              onChange={(event) =>
+                onChange({
+                  ...step,
+                  target: { ...step.target, label: event.currentTarget.value },
+                })
+              }
               value={step.target.label}
             />
           </label>
@@ -134,10 +140,12 @@ function StepEditor({
             <textarea
               className={textareaClass}
               maxLength={240}
-              onChange={(event) => onChange({
-                ...step,
-                explanation: { ...step.explanation, text: event.currentTarget.value },
-              })}
+              onChange={(event) =>
+                onChange({
+                  ...step,
+                  explanation: { ...step.explanation, text: event.currentTarget.value },
+                })
+              }
               value={step.explanation.text}
             />
           </label>
@@ -145,13 +153,15 @@ function StepEditor({
             Explanation placement
             <select
               className={inputClass}
-              onChange={(event) => onChange({
-                ...step,
-                explanation: {
-                  ...step.explanation,
-                  placement: event.currentTarget.value as "above" | "below" | "left" | "right",
-                },
-              })}
+              onChange={(event) =>
+                onChange({
+                  ...step,
+                  explanation: {
+                    ...step.explanation,
+                    placement: event.currentTarget.value as "above" | "below" | "left" | "right",
+                  },
+                })
+              }
               value={step.explanation.placement}
             >
               <option value="above">Above</option>
@@ -178,10 +188,12 @@ function StepEditor({
             Placement
             <select
               className={inputClass}
-              onChange={(event) => onChange({
-                ...step,
-                placement: event.currentTarget.value as "above" | "below" | "left" | "right",
-              })}
+              onChange={(event) =>
+                onChange({
+                  ...step,
+                  placement: event.currentTarget.value as "above" | "below" | "left" | "right",
+                })
+              }
               value={step.placement}
             >
               <option value="above">Above</option>
@@ -211,7 +223,9 @@ function StepEditor({
             Shape
             <select
               className={inputClass}
-              onChange={(event) => onChange({ ...step, shape: event.currentTarget.value as "circle" | "diamond" | "hexagon" })}
+              onChange={(event) =>
+                onChange({ ...step, shape: event.currentTarget.value as "circle" | "diamond" | "hexagon" })
+              }
               value={step.shape}
             >
               <option value="circle">Circle</option>
@@ -237,8 +251,14 @@ function StepEditor({
       {step.kind === "create-motion" ? (
         <div className="mt-3">
           <dl className="grid grid-cols-2 gap-2 tabular-nums text-[10px]">
-            <div><dt className="text-zinc-600">Delta X</dt><dd className="text-zinc-300">{step.delta.x.toFixed(1)}px</dd></div>
-            <div><dt className="text-zinc-600">Delta Y</dt><dd className="text-zinc-300">{step.delta.y.toFixed(1)}px</dd></div>
+            <div>
+              <dt className="text-zinc-600">Delta X</dt>
+              <dd className="text-zinc-300">{step.delta.x.toFixed(1)}px</dd>
+            </div>
+            <div>
+              <dt className="text-zinc-600">Delta Y</dt>
+              <dd className="text-zinc-300">{step.delta.y.toFixed(1)}px</dd>
+            </div>
           </dl>
           <div className="mt-2 grid grid-cols-2 gap-2">
             <label className="text-[10px] text-zinc-500">
@@ -247,10 +267,12 @@ function StepEditor({
                 className={inputClass}
                 max="160"
                 min="-160"
-                onChange={(event) => onChange({
-                  ...step,
-                  controlOffset: { ...step.controlOffset, x: Number(event.currentTarget.value) },
-                })}
+                onChange={(event) =>
+                  onChange({
+                    ...step,
+                    controlOffset: { ...step.controlOffset, x: Number(event.currentTarget.value) },
+                  })
+                }
                 step="1"
                 type="number"
                 value={step.controlOffset.x}
@@ -262,16 +284,34 @@ function StepEditor({
                 className={inputClass}
                 max="100"
                 min="-100"
-                onChange={(event) => onChange({
-                  ...step,
-                  controlOffset: { ...step.controlOffset, y: Number(event.currentTarget.value) },
-                })}
+                onChange={(event) =>
+                  onChange({
+                    ...step,
+                    controlOffset: { ...step.controlOffset, y: Number(event.currentTarget.value) },
+                  })
+                }
                 step="1"
                 type="number"
                 value={step.controlOffset.y}
               />
             </label>
           </div>
+          <label className="mt-2 block text-[10px] text-zinc-500">
+            Easing
+            <select
+              className={inputClass}
+              onChange={(event) =>
+                onChange({
+                  ...step,
+                  easing: event.currentTarget.value as "linear" | "smooth",
+                })
+              }
+              value={step.easing}
+            >
+              <option value="smooth">Smooth</option>
+              <option value="linear">Linear</option>
+            </select>
+          </label>
           <button
             className="mt-2 text-[10px] text-zinc-500 underline underline-offset-2 hover:text-zinc-200"
             disabled={step.controlOffset.x === 0 && step.controlOffset.y === 0}
@@ -297,10 +337,11 @@ export function DraftInspector({
 }: DraftInspectorProps) {
   const steps = operation ? editableSuggestionSteps(operation) : [];
   const execution = programExecutionCapabilities(record.program);
-  const validationError = record.validation.status === "invalid"
-    ? record.validation.issues.find((issue) => issue.severity === "error")?.message
-      ?? "This Program is invalid and cannot be applied."
-    : null;
+  const validationError =
+    record.validation.status === "invalid"
+      ? (record.validation.issues.find((issue) => issue.severity === "error")?.message ??
+        "This Program is invalid and cannot be applied.")
+      : null;
   const applyStatus = record.validation.status === "valid" ? execution.apply : "blocked";
   const displayedError = execution.applyBlocker ?? validationError ?? error;
   return (
@@ -322,10 +363,11 @@ export function DraftInspector({
           Execution
           <select
             className={inputClass}
-            onChange={(event) => onOperationChange(changeSuggestionExecution(
-              operation,
-              event.currentTarget.value as "parallel" | "sequence",
-            ))}
+            onChange={(event) =>
+              onOperationChange(
+                changeSuggestionExecution(operation, event.currentTarget.value as "parallel" | "sequence"),
+              )
+            }
             value={operation.execution}
           >
             <option value="sequence">Sequence</option>
@@ -354,22 +396,50 @@ export function DraftInspector({
       )}
 
       <dl className="mt-3 grid grid-cols-2 gap-2 text-[10px]">
-        <div><dt className="text-zinc-600">Preview</dt><dd className="mt-0.5 text-zinc-300">{execution.preview}</dd></div>
-        <div><dt className="text-zinc-600">Apply</dt><dd className={cn("mt-0.5", applyStatus === "supported" ? "text-zinc-300" : "text-red-300")}>{applyStatus}</dd></div>
-        <div><dt className="text-zinc-600">Lowering</dt><dd className="mt-0.5 text-zinc-300">{execution.lowering}</dd></div>
-        <div><dt className="text-zinc-600">Schedule</dt><dd className="mt-0.5 text-zinc-300">{record.program.schedule.mode}</dd></div>
-        <div><dt className="text-zinc-600">Operations</dt><dd className="mt-0.5 tabular-nums text-zinc-300">{record.program.operations.length}</dd></div>
-        <div><dt className="text-zinc-600">Anchor</dt><dd className="mt-0.5 tabular-nums text-zinc-300">{record.program.anchor.resolvedSeconds.toFixed(2)}s</dd></div>
+        <div>
+          <dt className="text-zinc-600">Preview</dt>
+          <dd className="mt-0.5 text-zinc-300">{execution.preview}</dd>
+        </div>
+        <div>
+          <dt className="text-zinc-600">Apply</dt>
+          <dd className={cn("mt-0.5", applyStatus === "supported" ? "text-zinc-300" : "text-red-300")}>
+            {applyStatus}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-zinc-600">Lowering</dt>
+          <dd className="mt-0.5 text-zinc-300">{execution.lowering}</dd>
+        </div>
+        <div>
+          <dt className="text-zinc-600">Schedule</dt>
+          <dd className="mt-0.5 text-zinc-300">{record.program.schedule.mode}</dd>
+        </div>
+        <div>
+          <dt className="text-zinc-600">Operations</dt>
+          <dd className="mt-0.5 tabular-nums text-zinc-300">{record.program.operations.length}</dd>
+        </div>
+        <div>
+          <dt className="text-zinc-600">Anchor</dt>
+          <dd className="mt-0.5 tabular-nums text-zinc-300">{record.program.anchor.resolvedSeconds.toFixed(2)}s</dd>
+        </div>
       </dl>
 
       {displayedError ? (
-        <p className="mt-3 border border-red-950 bg-red-950/30 p-2 text-pretty text-xs leading-5 text-red-300" id="draft-apply-error" role="alert">
+        <p
+          className="mt-3 border border-red-950 bg-red-950/30 p-2 text-pretty text-xs leading-5 text-red-300"
+          id="draft-apply-error"
+          role="alert"
+        >
           {displayedError}
         </p>
       ) : null}
 
       <div className="mt-4 flex justify-end gap-2 border-t border-zinc-800 pt-3">
-        <button className="border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800" onClick={onDiscard} type="button">
+        <button
+          className="border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+          onClick={onDiscard}
+          type="button"
+        >
           Discard
         </button>
         <button

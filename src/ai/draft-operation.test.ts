@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { EditSuggestionOperation } from "./edit-suggestions";
-import {
-  changeSuggestionExecution,
-  editableSuggestionSteps,
-  replaceSuggestionStep,
-} from "./draft-operation";
+import { changeSuggestionExecution, editableSuggestionSteps, replaceSuggestionStep } from "./draft-operation";
 
 const program: EditSuggestionOperation = {
   anchor: { kind: "absolute", seconds: 5 },
@@ -31,6 +27,32 @@ const program: EditSuggestionOperation = {
       shape: "circle",
       start: 6.5,
       style: "cover-reveal",
+    },
+  ],
+};
+
+const gappedMotionProgram: EditSuggestionOperation = {
+  anchor: { kind: "playhead", referenceSeconds: 5 },
+  execution: "sequence",
+  kind: "edit-program",
+  operations: [
+    {
+      controlOffset: { x: 0, y: -10 },
+      delta: { x: 40, y: 0 },
+      easing: "smooth",
+      end: 6,
+      kind: "create-motion",
+      start: 5,
+      targetObjectIds: ["equation"],
+    },
+    {
+      controlOffset: { x: 5, y: 10 },
+      delta: { x: -20, y: 30 },
+      easing: "smooth",
+      end: 8,
+      kind: "create-motion",
+      start: 7,
+      targetObjectIds: ["equation"],
     },
   ],
 };
@@ -78,6 +100,26 @@ describe("editable suggestion programs", () => {
     expect(updated.operations).toHaveLength(2);
     expect(updated.operations.every((step) => step.start === 5.25 && step.end === 7.25)).toBe(true);
     expect(updated.operations[1]).toMatchObject({ shape: "hexagon" });
+  });
+
+  it("preserves a gapped sequence and its anchor when the Inspector changes only easing", () => {
+    const first = editableSuggestionSteps(gappedMotionProgram)[0];
+    expect(first.kind).toBe("create-motion");
+    if (first.kind !== "create-motion") return;
+
+    const updated = replaceSuggestionStep(gappedMotionProgram, 0, {
+      ...first,
+      easing: "linear",
+    });
+
+    expect(updated.anchor).toBe(gappedMotionProgram.anchor);
+    expect(updated.kind).toBe("edit-program");
+    if (updated.kind !== "edit-program") return;
+    expect(updated.operations.map(({ start, end }) => ({ end, start }))).toEqual([
+      { end: 6, start: 5 },
+      { end: 8, start: 7 },
+    ]);
+    expect(updated.operations[0]).toMatchObject({ easing: "linear" });
   });
 
   it("turns a parallel interval into a contiguous sequence", () => {

@@ -18,7 +18,7 @@ import {
 import type { SuggestionStatus } from "./magic-edit-panel";
 import type { InteractionMode } from "./studio-viewport";
 import type { StudioTool } from "./studio-toolbar";
-import { replaceAppliedProgram } from "./transactions";
+import { appendAppliedProgram, replaceAppliedProgram } from "./transactions";
 
 export type {
   AppliedProgramEdit,
@@ -48,6 +48,12 @@ type StageDraftInput = Readonly<{
   record: ProgramRecord;
   selectedObjectIds?: readonly string[];
   stopPlayback?: boolean;
+}>;
+
+type AppliedProgramEditInput = Readonly<{
+  focusSourceTime?: number;
+  operation?: EditSuggestionOperation;
+  record?: ProgramRecord;
 }>;
 
 type EditorControllerAction =
@@ -159,6 +165,8 @@ function applyBlocker(record: ProgramRecord) {
 }
 
 export function stageEditorDraft(state: EditorControllerState, input: StageDraftInput): EditorControllerState {
+  const preflightError = editorDraftPreflightError(state, input);
+  if (preflightError) return { ...state, draftError: preflightError };
   let appliedPrograms = state.appliedPrograms;
   let programUndoEntries = state.programUndoEntries;
   const preserved = input.preserveAppliedProgram;
@@ -169,12 +177,14 @@ export function stageEditorDraft(state: EditorControllerState, input: StageDraft
     const blocker = applyBlocker(preserved);
     if (blocker) return { ...state, draftError: blocker };
     const value = editorProgramRecord(preserved, state.draftOperation, state.selectedObjectIds);
+    const appended = appendAppliedProgram(appliedPrograms, value);
+    if (appended.kind === "rejected") return { ...state, draftError: appended.reason };
     const mutation = {
-      index: appliedPrograms.length,
+      index: appended.index,
       kind: "append",
       value,
     } satisfies AppliedProgramMutation;
-    appliedPrograms = [...appliedPrograms, value];
+    appliedPrograms = appended.programs;
     programUndoEntries = [...programUndoEntries, mutation];
   }
   const next = {
@@ -191,6 +201,31 @@ export function stageEditorDraft(state: EditorControllerState, input: StageDraft
     selectedObjectIds: input.selectedObjectIds ?? state.selectedObjectIds,
   };
   return input.clearSuggestion ? withoutSuggestion(next) : next;
+}
+
+function editorDraftPreflightError(state: EditorControllerState, input: StageDraftInput) {
+  let programs = state.appliedPrograms;
+  const preserved = input.preserveAppliedProgram;
+  if (preserved && !programs.some((candidate) => candidate.program.transactionId === preserved.program.transactionId)) {
+    const blocker = applyBlocker(preserved);
+    if (blocker) return blocker;
+    const appended = appendAppliedProgram(
+      programs,
+      editorProgramRecord(preserved, state.draftOperation, state.selectedObjectIds),
+    );
+    if (appended.kind === "rejected") return appended.reason;
+    programs = appended.programs;
+  }
+  const candidate = editorProgramRecord(
+    input.record,
+    input.operation,
+    input.selectedObjectIds ?? state.selectedObjectIds,
+  );
+  const activeEdit = input.clearAppliedEdit ? null : state.editingAppliedProgram;
+  const result = activeEdit
+    ? replaceAppliedProgram(programs, activeEdit.original.program.transactionId, candidate)
+    : appendAppliedProgram(programs, candidate);
+  return result.kind === "rejected" ? result.reason : null;
 }
 
 export function discardEditorDraft(state: EditorControllerState): EditorControllerState {
@@ -240,9 +275,13 @@ export function applyEditorDraft(state: EditorControllerState): EditorController
       value,
     };
   } else {
-    appliedPrograms = [...state.appliedPrograms, value];
+    const appended = appendAppliedProgram(state.appliedPrograms, value);
+    if (appended.kind === "rejected") {
+      return { ...state, draftError: appended.reason };
+    }
+    appliedPrograms = appended.programs;
     mutation = {
-      index: state.appliedPrograms.length,
+      index: appended.index,
       kind: "append",
       value,
     };
@@ -365,16 +404,28 @@ export function editEditorAppliedProgram(
   state: EditorControllerState,
   record: ProgramRecord,
   index: number,
+  input: AppliedProgramEditInput = {},
 ): EditorControllerState {
-  if (state.draftProgram) {
+  const editorRecord = record as EditorProgramRecord;
+  const transactionId = editorRecord.program.transactionId;
+  const activeEdit =
+    state.editingAppliedProgram?.original.program.transactionId === transactionId ? state.editingAppliedProgram : null;
+  if (state.draftProgram && !activeEdit) {
     return {
       ...state,
       draftError: "Apply or discard the current draft before editing an Applied Program.",
     };
   }
-  const editorRecord = record as EditorProgramRecord;
   const metadata = editorRecord.editorMetadata;
-  if (!metadata?.operation) {
+  const operation = input.operation ?? metadata?.operation;
+  const draftRecord = input.record ?? record;
+  const appliedRecord = state.appliedPrograms[index];
+  if (
+    !metadata?.operation ||
+    !operation ||
+    draftRecord.program.transactionId !== transactionId ||
+    appliedRecord?.program.transactionId !== transactionId
+  ) {
     return {
       ...state,
       draftError: "This Program is read-only because editable Studio authoring metadata is unavailable.",
@@ -384,12 +435,12 @@ export function editEditorAppliedProgram(
     ...state,
     currentTime: sourceTimeToWorkingTime(
       state.appliedPrograms.slice(0, index).map((candidate) => candidate.program),
-      record.program.anchor.resolvedSeconds,
+      input.focusSourceTime ?? draftRecord.program.anchor.resolvedSeconds,
     ),
-    draftError: programExecutionCapabilities(record.program).applyBlocker,
-    draftOperation: metadata.operation,
-    draftProgram: record,
-    editingAppliedProgram: { index, original: editorRecord },
+    draftError: programExecutionCapabilities(draftRecord.program).applyBlocker,
+    draftOperation: operation,
+    draftProgram: draftRecord,
+    editingAppliedProgram: activeEdit ?? { index, original: editorRecord },
     isPlaying: false,
     redoPrograms: [],
     selectedObjectIds: metadata.selection,
@@ -517,21 +568,15 @@ export function useEditorController() {
 
   const stageDraft = useCallback(
     (input: StageDraftInput) => {
-      const preserved = input.preserveAppliedProgram;
-      if (
-        preserved &&
-        !state.appliedPrograms.some((candidate) => candidate.program.transactionId === preserved.program.transactionId)
-      ) {
-        const blocker = applyBlocker(preserved);
-        if (blocker) {
-          setField("draftError", blocker);
-          return false;
-        }
+      const preflightError = editorDraftPreflightError(state, input);
+      if (preflightError) {
+        setField("draftError", preflightError);
+        return false;
       }
       update((current) => stageEditorDraft(current, input));
       return true;
     },
-    [setField, state.appliedPrograms, update],
+    [setField, state, update],
   );
 
   const discardDraft = useCallback(() => {
@@ -564,12 +609,15 @@ export function useEditorController() {
   }, [state.draftProgram, state.redoPrograms.length, update]);
 
   const editAppliedProgram = useCallback(
-    (record: ProgramRecord, index: number) => {
+    (record: ProgramRecord, index: number, input?: AppliedProgramEditInput) => {
       const metadata = (record as EditorProgramRecord).editorMetadata;
-      if (!state.draftProgram && metadata?.operation) requestController.current.cancel();
-      update((current) => editEditorAppliedProgram(current, record, index));
+      const editingTransactionId = state.editingAppliedProgram?.original.program.transactionId;
+      if ((!state.draftProgram || editingTransactionId === record.program.transactionId) && metadata?.operation) {
+        requestController.current.cancel();
+      }
+      update((current) => editEditorAppliedProgram(current, record, index, input));
     },
-    [state.draftProgram, update],
+    [state.draftProgram, state.editingAppliedProgram, update],
   );
 
   const resetPrograms = useCallback(() => {

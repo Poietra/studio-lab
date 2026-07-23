@@ -4,6 +4,10 @@ function smooth(value: number) {
   return value * value * (3 - 2 * value);
 }
 
+function easingProgress(sample: PropertyChannelSample, value: number) {
+  return sample.easing === "linear" ? value : smooth(value);
+}
+
 export function isPointValue(value: unknown): value is Point {
   return typeof value === "object" && value !== null && "x" in value && "y" in value;
 }
@@ -98,7 +102,8 @@ export function samplePropertyValue(
       continue;
     }
     const duration = sample.interval.end - sample.interval.start;
-    const progress = duration <= 0 ? 1 : smooth(Math.min(1, Math.max(0, (time - sample.interval.start) / duration)));
+    const progress =
+      duration <= 0 ? 1 : easingProgress(sample, Math.min(1, Math.max(0, (time - sample.interval.start) / duration)));
     if (isPointValue(sample.from) && isPointValue(sample.value)) {
       const control = sample.control ?? {
         x: (sample.from.x + sample.value.x) / 2,

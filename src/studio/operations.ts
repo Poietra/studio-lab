@@ -1,4 +1,4 @@
-import type { EntityContent, Interval, Point } from "./model";
+import type { EntityContent, Interval, MotionEasing, Point } from "./model";
 import type { ResolvedTimeAnchor } from "./time";
 
 export const EDIT_OPERATION_VERSION = 1 as const;
@@ -62,7 +62,7 @@ export type CreateMotionOperation = OperationBase &
   Readonly<{
     controlOffset: Point;
     delta: Point;
-    easing: "smooth";
+    easing: MotionEasing;
     kind: "CreateMotion";
     targetEntityIds: readonly string[];
   }>;

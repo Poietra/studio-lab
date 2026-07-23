@@ -195,6 +195,7 @@ function projectTimelineObjectTracks(scene: RuntimeSceneState): readonly Timelin
           start: Math.max(0, sample.interval.start),
         },
         key: channel.key,
+        operationId: sample.operationId,
       }))
       .filter((sample) => sample.interval.end > sample.interval.start);
     if (animated.length > 0) {

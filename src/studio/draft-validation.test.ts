@@ -47,6 +47,71 @@ describe("Studio draft validation boundary", () => {
     expect(validatedProgramRecord(validation)).toEqual(expect.objectContaining({ kind: "invalid" }));
   });
 
+  it("keeps distinct sequential motions through the complete draft validation path", () => {
+    const operation = {
+      anchor: { kind: "playhead", referenceSeconds: 5 },
+      execution: "sequence",
+      kind: "edit-program",
+      operations: [
+        {
+          controlOffset: { x: 8, y: -12 },
+          delta: { x: 40, y: 0 },
+          easing: "smooth",
+          end: 6,
+          kind: "create-motion",
+          start: 5,
+          targetObjectIds: ["equation_1"],
+        },
+        {
+          controlOffset: { x: -4, y: 16 },
+          delta: { x: 0, y: 30 },
+          easing: "smooth",
+          end: 8,
+          kind: "create-motion",
+          start: 7,
+          targetObjectIds: ["equation_1"],
+        },
+      ],
+    } satisfies EditSuggestionOperation;
+
+    const result = validateSuggestionDraft(operation, {
+      capturedPlayhead: 5,
+      hasNextScene: false,
+      origin: "fixture",
+      proposedState: evaluateWorkingState(createFixtureWorkingState()),
+      selectedObjectIds: ["equation_1"],
+      transactionId: "sequential-motion-draft",
+    });
+
+    expect(result.kind).toBe("valid");
+    if (result.kind !== "valid" || result.operation.kind !== "edit-program") return;
+    expect(result.operation.operations).toEqual(operation.operations);
+    expect(
+      result.record.program.operations.flatMap((entry) =>
+        entry.kind === "CreateMotion"
+          ? [
+              {
+                controlOffset: entry.controlOffset,
+                delta: entry.delta,
+                interval: entry.interval,
+              },
+            ]
+          : [],
+      ),
+    ).toEqual([
+      {
+        controlOffset: { x: 8, y: -12 },
+        delta: { x: 40, y: 0 },
+        interval: { end: 6, start: 5 },
+      },
+      {
+        controlOffset: { x: -4, y: 16 },
+        delta: { x: 0, y: 30 },
+        interval: { end: 8, start: 7 },
+      },
+    ]);
+  });
+
   it("does not invent an origin position for an entity missing from the projection", () => {
     expect(projectedPositions([], ["missing"])).toEqual({
       kind: "invalid",

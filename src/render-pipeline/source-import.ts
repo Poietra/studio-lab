@@ -10,6 +10,7 @@ import {
   type EntityStyle,
   type Interval,
   type Knowledge,
+  type MotionEasing,
   type Point,
   type PropertyChannel,
   type PropertyChannelSample,
@@ -137,6 +138,7 @@ const motionMarkerSchema = z
           .object({
             controlOffset: markerPointSchema.optional(),
             delta: markerPointSchema,
+            easing: z.enum(["linear", "smooth"]).optional(),
             variables: z.array(identifierSchema).min(1).max(128),
           })
           .strict(),
@@ -659,6 +661,85 @@ function durationFrom(statement: string, fallback = 1) {
   return match ? Number(match[1]) : fallback;
 }
 
+function topLevelPlayKeywordIdentifier(statement: string, keyword: string): string | null | undefined {
+  const call = statement.match(/^self\.play\s*\(/);
+  if (!call) return undefined;
+  const opening = statement.indexOf("(", call.index ?? 0);
+  const stack = ["("];
+  const values: string[] = [];
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+  let atArgumentStart = true;
+  for (let index = opening + 1; index < statement.length; index += 1) {
+    const character = statement[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (character === "\\" && quote) {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      if (stack.length === 1) atArgumentStart = false;
+      quote = character;
+      continue;
+    }
+    if (character === "#") {
+      index = statement.indexOf("\n", index);
+      if (index < 0) break;
+      continue;
+    }
+    if (character === "(" || character === "[" || character === "{") {
+      if (stack.length === 1) atArgumentStart = false;
+      stack.push(character);
+      continue;
+    }
+    if (character === ")" || character === "]" || character === "}") {
+      const expected = { ")": "(", "]": "[", "}": "{" }[character];
+      if (stack.pop() !== expected) return null;
+      if (stack.length === 0) break;
+      continue;
+    }
+    if (stack.length !== 1 || /\s/.test(character)) continue;
+    if (character === ",") {
+      atArgumentStart = true;
+      continue;
+    }
+    if (!/[A-Za-z_]/.test(character)) {
+      atArgumentStart = false;
+      continue;
+    }
+    const isArgumentStart = atArgumentStart;
+    atArgumentStart = false;
+    const identifier = statement.slice(index).match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0];
+    if (!identifier) continue;
+    index += identifier.length - 1;
+    if (identifier !== keyword || !isArgumentStart) continue;
+    let cursor = index + 1;
+    while (/\s/.test(statement[cursor] ?? "")) cursor += 1;
+    if (statement[cursor] !== "=") return null;
+    cursor += 1;
+    while (/\s/.test(statement[cursor] ?? "")) cursor += 1;
+    const value = statement.slice(cursor).match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0];
+    if (!value) return null;
+    values.push(value);
+    index = cursor + value.length - 1;
+  }
+  if (values.length === 0) return undefined;
+  return values.length === 1 ? values[0] : null;
+}
+
+function motionEasingFrom(statement: string): MotionEasing | null {
+  const rateFunction = topLevelPlayKeywordIdentifier(statement, "rate_func");
+  if (rateFunction === undefined) return "smooth";
+  return rateFunction === "linear" || rateFunction === "smooth" ? rateFunction : null;
+}
+
 function waitDuration(statement: string) {
   const match = statement.match(/^self\.wait\(\s*([0-9]+(?:\.[0-9]+)?)?\s*\)/s);
   return match ? Number(match[1] ?? 1) : null;
@@ -976,6 +1057,7 @@ export function importManimScene(
     }
     if (!statement.text.startsWith("self.play(")) continue;
     const duration = durationFrom(statement.text);
+    const sourceMotionEasing = motionEasingFrom(statement.text);
     const interval = { end: cursor + duration, start: cursor };
     const motionMarker = markerBefore(statements, statementIndex, MOTION_MARKER_PATTERN);
     const scaleMarker = markerBefore(statements, statementIndex, SCALE_MARKER_PATTERN);
@@ -1012,6 +1094,7 @@ export function importManimScene(
     const validMarkedMotion =
       motionMarker !== undefined &&
       parsedMotion.success &&
+      sourceMotionEasing !== null &&
       new Set(markedVariables).size === markedVariables.length &&
       markedVariables.length === actualMotionVariables.length &&
       markedVariables.every((variable) => byVariable.has(variable) && actualMotionVariables.includes(variable));
@@ -1026,12 +1109,14 @@ export function importManimScene(
                     {
                       controlOffset: motion.controlOffset ?? { x: 0, y: 0 },
                       delta: motion.delta,
+                      // Python is authoritative for timing. The marker restores screen-space geometry only.
+                      easing: sourceMotionEasing,
                     },
                   ] as const,
               ),
             ),
           )
-        : new Map<string, Readonly<{ controlOffset: Point; delta: Point }>>();
+        : new Map<string, Readonly<{ controlOffset: Point; delta: Point; easing: MotionEasing }>>();
     const validMarkedScale =
       scaleMarker !== undefined &&
       parsedScale.success &&
@@ -1061,11 +1146,14 @@ export function importManimScene(
         endPresence(entity, interval.end);
       }
       const marked = markedMotions.get(entity.sourceVariable);
-      const shifted = marked
-        ? addPoint(entity.position, marked.delta)
-        : motionMarker !== undefined
+      const shifted =
+        sourceMotionEasing === null
           ? null
-          : shiftedPosition(entity.position, statement.text, entity.sourceVariable, frame);
+          : marked
+            ? addPoint(entity.position, marked.delta)
+            : motionMarker !== undefined
+              ? null
+              : shiftedPosition(entity.position, statement.text, entity.sourceVariable, frame);
       if (shifted && Number.isFinite(shifted.x) && Number.isFinite(shifted.y)) {
         const from = entity.position;
         const to = shifted;
@@ -1077,7 +1165,7 @@ export function importManimScene(
             x: (from.x + to.x) / 2 + controlOffset.x,
             y: (from.y + to.y) / 2 + controlOffset.y,
           },
-          easing: "smooth",
+          easing: marked?.easing ?? sourceMotionEasing ?? "smooth",
           from,
           interval,
           kind: "animated",
