@@ -186,6 +186,7 @@ export function StudioInspector({
   onApplyDraft,
   onDiscardDraft,
   onDraftOperationChange,
+  onEntityScaleChange,
   onRenderSessionChange,
   onSourceChanged,
   renderCandidate,
@@ -204,6 +205,7 @@ export function StudioInspector({
   onApplyDraft: () => void;
   onDiscardDraft: () => void;
   onDraftOperationChange: (operation: EditSuggestionOperation) => void;
+  onEntityScaleChange: (entityId: string, scale: number) => void;
   onRenderSessionChange: (session: RenderSessionView | null, projectId?: string) => void;
   onSourceChanged: () => void | Promise<void>;
   renderCandidate: RenderProgramCandidate | null;
@@ -240,6 +242,35 @@ export function StudioInspector({
               </dd>
               <dt className="text-zinc-600">Position</dt>
               <dd className="tabular-nums text-zinc-300">{selectedEntity.position.x.toFixed(1)}, {selectedEntity.position.y.toFixed(1)}</dd>
+              <dt className="self-center text-zinc-600">Scale</dt>
+              <dd>
+                <form
+                  className="flex items-center gap-1"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    const data = new FormData(event.currentTarget);
+                    onEntityScaleChange(selectedEntity.id, Number(data.get("scale")));
+                  }}
+                >
+                  <input
+                    aria-label={`Scale ${entityLabel(selectedEntity)}`}
+                    className="h-7 min-w-0 w-20 border border-zinc-700 bg-zinc-950 px-1.5 tabular-nums text-xs text-zinc-300 outline-none focus:border-sky-500"
+                    defaultValue={selectedEntity.scale.toFixed(2)}
+                    key={`${selectedEntity.id}/${selectedEntity.scale.toFixed(4)}`}
+                    max="8"
+                    min="0.1"
+                    name="scale"
+                    step="0.05"
+                    type="number"
+                  />
+                  <button
+                    className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+                    type="submit"
+                  >
+                    Set
+                  </button>
+                </form>
+              </dd>
             </dl>
           ) : (
             <div className="mt-3 border border-dashed border-zinc-700 p-3">

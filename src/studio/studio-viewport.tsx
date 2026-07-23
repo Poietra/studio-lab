@@ -25,11 +25,22 @@ export type EntityDragPreview = Readonly<{
   delta: Readonly<{ x: number; y: number }>;
   entityIds: readonly string[];
 }>;
+export type EntityScalePreview = Readonly<{
+  entityId: string;
+  scale: number;
+}>;
 
 const ZERO_DELTA = { x: 0, y: 0 } as const;
 
 export function entityDragDelta(preview: EntityDragPreview | null, entityId: string) {
   return preview?.entityIds.includes(entityId) ? preview.delta : ZERO_DELTA;
+}
+
+export function entityPreviewScale(
+  preview: EntityScalePreview | null,
+  entity: Readonly<Pick<ProjectedEntity, "id" | "scale">>,
+) {
+  return preview?.entityId === entity.id ? preview.scale : entity.scale;
 }
 
 export function entityLabel(entity: ProjectedEntity) {
@@ -750,6 +761,11 @@ export function StudioViewport({
   onEntityPointerDown,
   onEntityPointerMove,
   onEntityPointerUp,
+  onEntityResizeCancel,
+  onEntityResizeKeyDown,
+  onEntityResizePointerDown,
+  onEntityResizePointerMove,
+  onEntityResizePointerUp,
   onInteractionModeChange,
   onInsertAtCenter,
   onInsertToolChange,
@@ -762,6 +778,7 @@ export function StudioViewport({
   onTogglePlayback,
   projection,
   readOnly,
+  scalePreview,
   selectedIds,
 }: Readonly<{
   anchors: readonly StudioTimelineAnchor[];
@@ -788,6 +805,11 @@ export function StudioViewport({
   onEntityPointerDown: (event: PointerEvent<HTMLButtonElement>, entityId: string) => void;
   onEntityPointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
   onEntityPointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
+  onEntityResizeCancel: (event: PointerEvent<HTMLButtonElement>) => void;
+  onEntityResizeKeyDown: (event: KeyboardEvent<HTMLButtonElement>, entityId: string) => void;
+  onEntityResizePointerDown: (event: PointerEvent<HTMLButtonElement>, entityId: string) => void;
+  onEntityResizePointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
+  onEntityResizePointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
   onInteractionModeChange: (mode: InteractionMode) => void;
   onInsertAtCenter: () => void;
   onInsertToolChange: (tool: StudioTool) => void;
@@ -800,6 +822,7 @@ export function StudioViewport({
   onTogglePlayback: () => void;
   projection: ProposedStateProjection;
   readOnly?: boolean;
+  scalePreview: EntityScalePreview | null;
   selectedIds: ReadonlySet<string>;
 }>) {
   return (
@@ -820,7 +843,7 @@ export function StudioViewport({
           onPointerDown={(event) => {
             if (insertTool === "select" || boundaryActive) return;
             const target = event.target;
-            if (target instanceof Element && target.closest("[data-studio-entity], [data-motion-control]")) return;
+            if (target instanceof Element && target.closest("[data-studio-entity], [data-motion-control], [data-studio-resize-handle]")) return;
             const bounds = event.currentTarget.getBoundingClientRect();
             onCanvasPlace({
               x: ((event.clientX - bounds.left) / bounds.width) * STUDIO_VIEWPORT.width,
@@ -855,34 +878,63 @@ export function StudioViewport({
               const localDelta = entityDragDelta(dragPreview, entity.id);
               const position = { x: entity.position.x + localDelta.x, y: entity.position.y + localDelta.y };
               const opacity = draftTransactionId === entity.transactionId && entity.opacity === 0 ? 0.35 : entity.opacity;
+              const displayedScale = entityPreviewScale(scalePreview, entity);
               return (
-                <button
-                  aria-label={`Move ${entityLabel(entity)}`}
-                  aria-pressed={selected}
+                <div
                   className={cn(
-                    "absolute -translate-x-1/2 -translate-y-1/2 border px-3 py-2 outline-none",
-                    locked ? "pointer-events-none border-dashed border-sky-800 bg-zinc-950/70" : "cursor-grab active:cursor-grabbing",
-                    selected ? "z-20 border-sky-400 bg-sky-950/60 focus-visible:ring-2 focus-visible:ring-sky-400" : "z-10 border-transparent hover:border-zinc-600",
+                    "absolute -translate-x-1/2 -translate-y-1/2",
+                    selected ? "z-20" : "z-10",
                   )}
-                  data-studio-entity={entity.id}
-                  disabled={locked}
+                  data-studio-entity-scale={displayedScale.toFixed(4)}
+                  data-studio-entity-wrapper={entity.id}
                   key={entity.id}
-                  onKeyDown={(event) => onEntityKeyDown(event, entity.id)}
-                  onLostPointerCapture={onEntityPointerCancel}
-                  onPointerCancel={onEntityPointerCancel}
-                  onPointerDown={(event) => onEntityPointerDown(event, entity.id)}
-                  onPointerMove={onEntityPointerMove}
-                  onPointerUp={onEntityPointerUp}
-                  style={{ ...positionStyle(position), opacity, scale: entity.scale, touchAction: "none" }}
-                  type="button"
+                  style={{ ...positionStyle(position), opacity, touchAction: "none" }}
                 >
-                  <ObjectVisual entity={entity} />
-                  {selected ? (
-                    <span className="absolute -top-6 left-0 max-w-56 truncate bg-sky-400 px-1.5 py-0.5 text-[10px] font-medium text-sky-950">
-                      {entityLabel(entity)}
-                    </span>
-                  ) : null}
-                </button>
+                  <div className="relative origin-center" style={{ scale: displayedScale }}>
+                    <button
+                      aria-label={`Move ${entityLabel(entity)}`}
+                      aria-pressed={selected}
+                      className={cn(
+                        "block border px-3 py-2 outline-none",
+                        locked ? "pointer-events-none border-dashed border-sky-800 bg-zinc-950/70" : "cursor-grab active:cursor-grabbing",
+                        selected ? "border-sky-400 bg-sky-950/60 focus-visible:ring-2 focus-visible:ring-sky-400" : "border-transparent hover:border-zinc-600",
+                      )}
+                      data-studio-entity={entity.id}
+                      disabled={locked}
+                      onKeyDown={(event) => onEntityKeyDown(event, entity.id)}
+                      onLostPointerCapture={onEntityPointerCancel}
+                      onPointerCancel={onEntityPointerCancel}
+                      onPointerDown={(event) => onEntityPointerDown(event, entity.id)}
+                      onPointerMove={onEntityPointerMove}
+                      onPointerUp={onEntityPointerUp}
+                      type="button"
+                    >
+                      <ObjectVisual entity={entity} />
+                      {selected ? (
+                        <span className="absolute -top-6 left-0 max-w-56 truncate bg-sky-400 px-1.5 py-0.5 text-[10px] font-medium text-sky-950">
+                          {entityLabel(entity)}
+                        </span>
+                      ) : null}
+                    </button>
+                    {selected && selectedIds.size === 1 && !locked ? (
+                      <button
+                        aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
+                        aria-label={`Resize ${entityLabel(entity)}`}
+                        className="absolute -bottom-2 -right-2 z-30 size-4 touch-none cursor-nwse-resize border-2 border-sky-950 bg-sky-400 outline-none focus-visible:ring-2 focus-visible:ring-sky-300"
+                        data-studio-resize-handle={entity.id}
+                        onKeyDown={(event) => onEntityResizeKeyDown(event, entity.id)}
+                        onLostPointerCapture={onEntityResizeCancel}
+                        onPointerCancel={onEntityResizeCancel}
+                        onPointerDown={(event) => onEntityResizePointerDown(event, entity.id)}
+                        onPointerMove={onEntityResizePointerMove}
+                        onPointerUp={onEntityResizePointerUp}
+                        style={{ scale: 1 / displayedScale }}
+                        title="Drag to resize uniformly · Arrow keys adjust precisely"
+                        type="button"
+                      />
+                    ) : null}
+                  </div>
+                </div>
               );
             })}
           </div>

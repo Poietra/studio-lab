@@ -46,13 +46,16 @@ import {
   sourceTimeToWorkingTime,
   workingTimeToSourceTime,
 } from "./studio/program-composition";
+import { samplePropertyValue } from "./studio/property-sampling";
 import { projectRuntimeSceneToSourceTimeline } from "./studio/source-timeline";
 import { MagicEditPanel, type SuggestionStatus } from "./studio/magic-edit-panel";
 import {
   createDirectManipulationPositionProgram,
+  createDirectManipulationScaleProgram,
 } from "./studio/suggestion-program";
 import {
   type EntityDragPreview,
+  type EntityScalePreview,
   type InteractionMode,
   STUDIO_VIEWPORT,
   StudioViewport,
@@ -71,12 +74,22 @@ const NUDGE_DELTAS: Readonly<Record<string, Readonly<{ x: number; y: number }>>>
   ArrowRight: { x: 2, y: 0 },
   ArrowUp: { x: 0, y: -2 },
 };
+const MAX_ENTITY_SCALE = 8;
+const MIN_ENTITY_SCALE = 0.1;
 type CanvasDragState = Readonly<{
   pointerId: number;
   scale: Readonly<{ x: number; y: number }>;
   sourceAnchor: number;
   start: Readonly<{ x: number; y: number }>;
   targetEntityIds: readonly string[];
+}>;
+type CanvasResizeState = Readonly<{
+  center: Readonly<{ x: number; y: number }>;
+  entityId: string;
+  fromScale: number;
+  pointerId: number;
+  sourceAnchor: number;
+  start: Readonly<{ x: number; y: number }>;
 }>;
 type RedoProgramEntry = Readonly<{
   operation: EditSuggestionOperation | null;
@@ -131,6 +144,25 @@ function canvasPointerDelta(
   };
 }
 
+function resizedEntityScale(
+  resize: CanvasResizeState,
+  point: Readonly<{ x: number; y: number }>,
+) {
+  const startVector = {
+    x: resize.start.x - resize.center.x,
+    y: resize.start.y - resize.center.y,
+  };
+  const pointerVector = {
+    x: point.x - resize.center.x,
+    y: point.y - resize.center.y,
+  };
+  const squaredLength = startVector.x ** 2 + startVector.y ** 2;
+  const ratio = squaredLength > 1
+    ? (pointerVector.x * startVector.x + pointerVector.y * startVector.y) / squaredLength
+    : 1;
+  return clamp(resize.fromScale * ratio, MIN_ENTITY_SCALE, MAX_ENTITY_SCALE);
+}
+
 export function App() {
   const shell = detectShell();
   const aiEndpointConfigured = Boolean(import.meta.env.VITE_POIETRA_AI_ENDPOINT);
@@ -177,9 +209,11 @@ export function App() {
   const [pendingClarification, setPendingClarification] = useState<PendingClarification | null>(null);
   const [isMagicEditVisible, setIsMagicEditVisible] = useState(() => window.matchMedia("(min-width: 640px)").matches);
   const [dragPreview, setDragPreview] = useState<EntityDragPreview | null>(null);
+  const [scalePreview, setScalePreview] = useState<EntityScalePreview | null>(null);
   const suggestionRequest = useRef<AbortController | null>(null);
   const suggestionContext = useRef("");
   const canvasDrag = useRef<CanvasDragState | null>(null);
+  const canvasResize = useRef<CanvasResizeState | null>(null);
   const studioClipboard = useRef<readonly StudioEntityInput[]>([]);
   const pasteCount = useRef(0);
   const commandHandler = useRef<(command: StudioCommandId) => boolean>(() => false);
@@ -265,6 +299,7 @@ export function App() {
     if (!activeScene) return;
     cancelRequest(suggestionRequest);
     canvasDrag.current = null;
+    canvasResize.current = null;
     const key = activeProjectId
       ? `${activeProjectId}/${activeScene.sceneId}/${activeScene.sourceHash}`
       : null;
@@ -287,6 +322,7 @@ export function App() {
       setSuggestionStatus("idle");
       setSuggestionMessage(null);
       setDragPreview(null);
+      setScalePreview(null);
       setIsPlaying(false);
       return;
     }
@@ -306,6 +342,7 @@ export function App() {
     setSuggestionMessage(null);
     setInstruction("");
     setDragPreview(null);
+    setScalePreview(null);
     setInsertTool("select");
     setInsertValue("");
     setIsPlaying(false);
@@ -918,7 +955,7 @@ export function App() {
   }
 
   function beginEntityDrag(event: PointerEvent<HTMLButtonElement>, entityId: string) {
-    if (canvasDrag.current) return;
+    if (canvasDrag.current || canvasResize.current) return;
     const entity = editableEntities.find((candidate) => candidate.id === entityId);
     const editable = entity && (!entity.provisional || (entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
     if (!editable) return;
@@ -1014,6 +1051,192 @@ export function App() {
     if (canvasDrag.current?.pointerId !== event.pointerId) return;
     canvasDrag.current = null;
     setDragPreview(null);
+  }
+
+  function beginEntityResize(event: PointerEvent<HTMLButtonElement>, entityId: string) {
+    event.stopPropagation();
+    if (canvasDrag.current || canvasResize.current) return;
+    const entity = editableEntities.find((candidate) => candidate.id === entityId);
+    const editable = entity
+      && entity.present
+      && (!entity.provisional || (entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
+    if (!editable) return;
+    const gestureContext = directGestureContext();
+    if (!gestureContext.proposedState) return;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
+    const anchor = manualAuthoringAnchor({
+      action: "object resize",
+      requireAlignedPlayhead: true,
+      scene: sourceScene,
+      sourcePrograms: gestureContext.sourcePrograms,
+      targetEntityIds: [entityId],
+    });
+    if (!anchor) return;
+    const wrapper = event.currentTarget.closest<HTMLElement>("[data-studio-entity-wrapper]");
+    const object = wrapper?.querySelector<HTMLElement>("[data-studio-entity]");
+    const bounds = object?.getBoundingClientRect();
+    if (!bounds) return;
+    setSelectedObjectIds([entityId]);
+    setIsPlaying(false);
+    canvasResize.current = {
+      center: { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 },
+      entityId,
+      fromScale: entity.scale,
+      pointerId: event.pointerId,
+      sourceAnchor: anchor.sourceTime,
+      start: { x: event.clientX, y: event.clientY },
+    };
+    setScalePreview({ entityId, scale: entity.scale });
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function moveEntityResize(event: PointerEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    const resize = canvasResize.current;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    setScalePreview({
+      entityId: resize.entityId,
+      scale: resizedEntityScale(resize, { x: event.clientX, y: event.clientY }),
+    });
+  }
+
+  function finishEntityResize(event: PointerEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    const resize = canvasResize.current;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    const targetScale = resizedEntityScale(resize, { x: event.clientX, y: event.clientY });
+    canvasResize.current = null;
+    setScalePreview(null);
+    if (Math.abs(targetScale - resize.fromScale) < 0.01) return;
+    installEntityScaleDraft(
+      resize.entityId,
+      resize.fromScale,
+      targetScale,
+      interactionMode === "animate",
+      `studio-resize-${crypto.randomUUID()}`,
+      resize.sourceAnchor,
+    );
+  }
+
+  function cancelEntityResize(event: PointerEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    if (canvasResize.current?.pointerId !== event.pointerId) return;
+    canvasResize.current = null;
+    setScalePreview(null);
+  }
+
+  function nudgeEntityScale(event: KeyboardEvent<HTMLButtonElement>, entityId: string) {
+    const direction = event.key === "ArrowUp" || event.key === "ArrowRight"
+      ? 1
+      : event.key === "ArrowDown" || event.key === "ArrowLeft"
+        ? -1
+        : 0;
+    if (direction === 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
+    if (!entity) return;
+    const factor = event.shiftKey ? 1.25 : 1.05;
+    const targetScale = clamp(
+      direction > 0 ? entity.scale * factor : entity.scale / factor,
+      MIN_ENTITY_SCALE,
+      MAX_ENTITY_SCALE,
+    );
+    installEntityScaleDraft(
+      entityId,
+      entity.scale,
+      targetScale,
+      interactionMode === "animate",
+      `studio-resize-key-${crypto.randomUUID()}`,
+    );
+  }
+
+  function installEntityScaleDraft(
+    entityId: string,
+    fromScale: number,
+    targetScale: number,
+    animated: boolean,
+    transactionId: string,
+    capturedSourceAnchor?: number,
+  ) {
+    if (!activeScene || !draftBaseState) return false;
+    if (
+      !Number.isFinite(targetScale)
+      || targetScale < MIN_ENTITY_SCALE
+      || targetScale > MAX_ENTITY_SCALE
+    ) {
+      setDraftError(`Scale must be between ${MIN_ENTITY_SCALE}x and ${MAX_ENTITY_SCALE}x.`);
+      return false;
+    }
+    const gestureContext = directGestureContext();
+    if (!gestureContext.proposedState) return false;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
+    const anchor = capturedSourceAnchor === undefined
+      ? manualAuthoringAnchor({
+          action: "object resize",
+          requireAlignedPlayhead: true,
+          scene: sourceScene,
+          sourcePrograms: gestureContext.sourcePrograms,
+          targetEntityIds: [entityId],
+        })
+      : { sourceTime: capturedSourceAnchor };
+    if (!anchor) return false;
+    const sampledScale = samplePropertyValue(
+      sourceScene.propertyChannels[`${entityId}/scale`]?.samples ?? [],
+      anchor.sourceTime,
+    );
+    const executionScale = typeof sampledScale === "number" ? sampledScale : fromScale;
+    const end = animated ? anchor.sourceTime + motionDuration : anchor.sourceTime;
+    if (animated && (motionDuration < 0.1 || end > sourceScene.duration + 0.001)) {
+      setDraftError("The resize must be at least 0.1 seconds and fit within the current Scene duration.");
+      return false;
+    }
+    try {
+      const validation = createDirectManipulationScaleProgram({
+        capturedPlayhead: anchor.sourceTime,
+        interval: { end, start: anchor.sourceTime },
+        scales: { [entityId]: { from: executionScale, to: targetScale } },
+        scene: sourceScene,
+        targetEntityIds: [entityId],
+        transactionId,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      preserveDirectManipulationDraft(gestureContext.preserveDraft);
+      cancelRequest(suggestionRequest);
+      setDraftProgram(validated.record);
+      setDraftOperation(null);
+      setDraftError(null);
+      setSuggestion(null);
+      setPendingClarification(null);
+      setSuggestionMessage(null);
+      setSuggestionStatus("idle");
+      setIsPlaying(false);
+      setCurrentTime(sourceTimeToWorkingTime(gestureContext.sourcePrograms, anchor.sourceTime));
+      setRedoPrograms([]);
+      return true;
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The object could not be resized.");
+      return false;
+    }
+  }
+
+  function resizeEntityFromInspector(entityId: string, targetScale: number) {
+    const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
+    if (!entity || Math.abs(entity.scale - targetScale) < 0.001) return false;
+    return installEntityScaleDraft(
+      entityId,
+      entity.scale,
+      targetScale,
+      false,
+      `studio-resize-input-${crypto.randomUUID()}`,
+    );
   }
 
   function installPositionDraft(
@@ -1209,7 +1432,9 @@ export function App() {
     saveEditorSession();
     cancelRequest(suggestionRequest);
     canvasDrag.current = null;
+    canvasResize.current = null;
     setDragPreview(null);
+    setScalePreview(null);
     setIsPlaying(false);
     setSuggestion(null);
     setPendingClarification(null);
@@ -1390,6 +1615,11 @@ export function App() {
               onEntityPointerDown={beginEntityDrag}
               onEntityPointerMove={moveEntityDrag}
               onEntityPointerUp={finishEntityDrag}
+              onEntityResizeCancel={cancelEntityResize}
+              onEntityResizeKeyDown={nudgeEntityScale}
+              onEntityResizePointerDown={beginEntityResize}
+              onEntityResizePointerMove={moveEntityResize}
+              onEntityResizePointerUp={finishEntityResize}
               onInteractionModeChange={setInteractionMode}
               onInsertAtCenter={() => void insertEntitiesAt({ x: 320, y: 180 })}
               onInsertToolChange={setInsertTool}
@@ -1410,6 +1640,7 @@ export function App() {
               }}
               projection={projection}
               readOnly={boundary !== null}
+              scalePreview={scalePreview}
               selectedIds={selectedSet}
             />
 
@@ -1422,6 +1653,7 @@ export function App() {
               onApplyDraft={applyDraft}
               onDiscardDraft={discardDraft}
               onDraftOperationChange={updateDraftOperation}
+              onEntityScaleChange={(entityId, scale) => void resizeEntityFromInspector(entityId, scale)}
               onRenderSessionChange={retainRenderSession}
               onSourceChanged={async () => {
                 const key = activeEditorSessionKey();
