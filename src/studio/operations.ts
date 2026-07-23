@@ -54,7 +54,7 @@ export type ResizeEntityOperation = OperationBase &
 export type SetPropertyOperation = OperationBase &
   Readonly<{
     entityId: string;
-    key: Exclude<PropertyChannelKey, "identity">;
+    key: Exclude<PropertyChannelKey, "dimensions" | "identity">;
     kind: "SetProperty";
     value: boolean | number | string | Point | EntityContent;
   }>;

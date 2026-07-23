@@ -65,7 +65,7 @@ export const canonicalOperationSchema = z.discriminatedUnion("kind", [
   }),
   baseSchema.extend({
     entityId: z.string(),
-    key: z.enum(["appearance", "camera", "content", "dimensions", "ordering", "position", "presence", "rotation", "scale"]),
+    key: z.enum(["appearance", "camera", "content", "ordering", "position", "presence", "rotation", "scale"]),
     kind: z.literal("SetProperty"),
     value: z.union([z.boolean(), z.number(), z.string(), pointSchema, contentSchema]),
   }),

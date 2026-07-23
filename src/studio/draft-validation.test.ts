@@ -4,6 +4,7 @@ import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import { projectedPositions, validateSuggestionDraft, validatedProgramRecord } from "./draft-validation";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
 import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
+import { canonicalOperationSchema } from "./operation-registry";
 import {
   createDirectManipulationPositionProgram,
   createDirectManipulationResizeProgram,
@@ -23,6 +24,19 @@ const transition: EditSuggestionOperation = {
 };
 
 describe("Studio draft validation boundary", () => {
+  it("reserves the dimensions channel for ResizeEntity", () => {
+    expect(canonicalOperationSchema.safeParse({
+      dependsOn: [],
+      entityId: "proof_box",
+      id: "invalid-dimensions-property",
+      interval: { end: 5, start: 5 },
+      key: "dimensions",
+      kind: "SetProperty",
+      provenance: { evidence: [], origin: "remote-model" },
+      value: 1,
+    }).success).toBe(false);
+  });
+
   it("rejects a Scene transition before canonicalization when no next Scene exists", () => {
     const result = validateSuggestionDraft(transition, {
       capturedPlayhead: 5,
