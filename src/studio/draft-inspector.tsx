@@ -11,6 +11,7 @@ import { programExecutionCapabilities } from "./operation-registry";
 import { EquationContent } from "./prototype-rendering";
 
 type DraftInspectorProps = Readonly<{
+  applyLabel?: "Apply program" | "Replace program";
   error: string | null;
   onApply: () => void;
   onDiscard: () => void;
@@ -286,6 +287,7 @@ function StepEditor({
 }
 
 export function DraftInspector({
+  applyLabel = "Apply program",
   error,
   onApply,
   onDiscard,
@@ -378,7 +380,7 @@ export function DraftInspector({
           title={execution.applyBlocker ?? undefined}
           type="button"
         >
-          Apply program
+          {applyLabel}
         </button>
       </div>
     </section>

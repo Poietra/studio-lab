@@ -33,5 +33,18 @@ describe("DraftInspector execution capabilities", () => {
     expect(markup).toContain("ModifyMotion has no truthful source lowering yet.");
     expect(markup).not.toContain("A newer transient error.");
     expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Apply program<\/button>/);
+
+    const replacementMarkup = renderToStaticMarkup(
+      <DraftInspector
+        applyLabel="Replace program"
+        error={null}
+        onApply={() => undefined}
+        onDiscard={() => undefined}
+        onOperationChange={() => undefined}
+        operation={null}
+        record={programRecord(validation.program, validation)}
+      />,
+    );
+    expect(replacementMarkup).toMatch(/<button[^>]*disabled=""[^>]*>Replace program<\/button>/);
   });
 });

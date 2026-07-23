@@ -29,6 +29,16 @@ async function exportedSource(page: Page) {
   return readFile(path, "utf8");
 }
 
+function transactionBlock(source: string, transactionId: string) {
+  const marker = `# poietra:transaction ${JSON.stringify(transactionId)}`;
+  const end = source.indexOf(marker);
+  if (end < 0) throw new Error(`Transaction ${transactionId} is missing from the exported source.`);
+  const previousTransaction = source.lastIndexOf("# poietra:transaction ", end - 1);
+  const precedingCursor = source.lastIndexOf("# poietra:cursor ", end);
+  const start = Math.max(0, previousTransaction, precedingCursor);
+  return source.slice(start, end + marker.length);
+}
+
 test("keeps the first object position while moving and applying a second object", async ({ page }) => {
   await openWorkspace(page);
   const equation = page.getByRole("button", { name: "Move equation" });
@@ -65,6 +75,65 @@ test("keeps the first object position while moving and applying a second object"
   expect(equationAfterApply.y).toBeCloseTo(movedEquation.y, 1);
   expect(labelAfterApply.x).toBeCloseTo(movedLabel.x, 1);
   expect(labelAfterApply.y).toBeCloseTo(movedLabel.y, 1);
+});
+
+test("reopens an applied motion and replaces it in place with undoable export history", async ({ page }) => {
+  await openWorkspace(page);
+  await page.getByRole("button", { name: "Create animation" }).click();
+  await page.getByRole("spinbutton", { name: "New motion duration in seconds" }).fill("1");
+  await dragBy(page, page.getByRole("button", { name: "Move equation" }), { x: 64, y: -20 });
+  await page.getByRole("button", { name: "Apply program" }).click();
+
+  await page.getByRole("button", { name: /Insert circle/ }).click();
+  await page.locator("[data-studio-canvas]").click({ position: { x: 460, y: 260 } });
+  await page.getByRole("button", { name: "Apply program" }).click();
+
+  const appliedPrograms = page.locator("section").filter({
+    has: page.getByRole("heading", { name: "Applied programs" }),
+  });
+  const rows = appliedPrograms.getByRole("listitem");
+  await expect(rows).toHaveCount(2);
+  await expect(rows.nth(1)).toContainText("This canonical Program was created without editable authoring metadata.");
+  await expect(appliedPrograms).toContainText("Imported .py operations are read-only");
+  const beforeRows = await rows.allTextContents();
+  const firstTransactionId = beforeRows[0]?.match(/studio-gesture-[0-9a-f-]{36}/)?.[0];
+  const secondTransactionId = beforeRows[1]?.match(/studio-insert-[0-9a-f-]{36}/)?.[0];
+  if (!firstTransactionId || !secondTransactionId) {
+    throw new Error("Applied transaction identities were not rendered in source order.");
+  }
+
+  const originalSource = await exportedSource(page);
+  expect(originalSource.indexOf(`# poietra:transaction "${firstTransactionId}"`))
+    .toBeLessThan(originalSource.indexOf(`# poietra:transaction "${secondTransactionId}"`));
+  expect(transactionBlock(originalSource, firstTransactionId)).toContain("run_time=1");
+  expect(transactionBlock(originalSource, secondTransactionId)).toContain("Circle(radius=1)");
+
+  await page.getByRole("button", { name: "Edit applied program 1" }).click();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Replace program" })).toBeVisible();
+  await expect(page.getByText("5.00s", { exact: true })).toBeVisible();
+  await page.getByRole("spinbutton", { exact: true, name: "Duration" }).fill("2");
+
+  const previewSource = await exportedSource(page);
+  expect(transactionBlock(previewSource, firstTransactionId)).toContain("run_time=2");
+  expect(previewSource.indexOf(`# poietra:transaction "${firstTransactionId}"`))
+    .toBeLessThan(previewSource.indexOf(`# poietra:transaction "${secondTransactionId}"`));
+  expect(transactionBlock(previewSource, secondTransactionId)).toContain("Circle(radius=1)");
+
+  await page.getByRole("button", { name: "Replace program" }).click();
+  await expect(rows).toHaveCount(2);
+  expect(await rows.allTextContents()).toEqual(beforeRows);
+
+  await page.keyboard.press("Control+z");
+  await expect(rows).toHaveCount(2);
+  expect(transactionBlock(await exportedSource(page), firstTransactionId)).toContain("run_time=1");
+
+  await page.keyboard.press("Control+Shift+z");
+  await expect(rows).toHaveCount(2);
+  const redoneSource = await exportedSource(page);
+  expect(transactionBlock(redoneSource, firstTransactionId)).toContain("run_time=2");
+  expect(redoneSource.indexOf(`# poietra:transaction "${firstTransactionId}"`))
+    .toBeLessThan(redoneSource.indexOf(`# poietra:transaction "${secondTransactionId}"`));
 });
 
 test("snaps direct manipulation to the latest safe source anchor before creating a draft", async ({ page }) => {

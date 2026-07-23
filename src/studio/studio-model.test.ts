@@ -16,7 +16,12 @@ import {
   createDirectManipulationModifyMotionProgram,
   createDirectManipulationMotionProgram,
 } from "./suggestion-program";
-import { applyStagedPrograms, stageProgram, undoLastAppliedProgram } from "./transactions";
+import {
+  applyStagedPrograms,
+  replaceAppliedProgram,
+  stageProgram,
+  undoLastAppliedProgram,
+} from "./transactions";
 
 const MAXWELL_TARGET: MathTexSuggestionTarget = {
   displayLines: [
@@ -410,6 +415,52 @@ describe("Studio time and transaction invariants", () => {
     expect(applied.appliedPrograms[0].program.transactionId).toBe("atomic-program");
     const undone = undoLastAppliedProgram(applied);
     expect(undone.appliedPrograms).toHaveLength(0);
+  });
+
+  it("replaces one applied transaction without disturbing identity or source order", () => {
+    const firstValidation = canonicalize(motionSuggestion(5), "first-program", 5);
+    const originalValidation = canonicalize(motionSuggestion(7), "edited-program", 7);
+    const lastValidation = canonicalize(motionSuggestion(9), "last-program", 9);
+    const replacementOperation = motionSuggestion(7);
+    expect(replacementOperation.kind).toBe("create-motion");
+    if (replacementOperation.kind !== "create-motion") return;
+    const replacementValidation = canonicalize({
+      ...replacementOperation,
+      controlOffset: { x: 24, y: -16 },
+      end: 9,
+    }, "edited-program", 7);
+    const first = programRecord(firstValidation.program, firstValidation);
+    const original = programRecord(originalValidation.program, originalValidation);
+    const last = programRecord(lastValidation.program, lastValidation);
+    const replacement = programRecord(replacementValidation.program, replacementValidation);
+
+    const result = replaceAppliedProgram([first, original, last], "edited-program", replacement);
+
+    expect(result.kind).toBe("replaced");
+    if (result.kind !== "replaced") return;
+    expect(result.index).toBe(1);
+    expect(result.previous).toBe(original);
+    expect(result.programs).toEqual([first, replacement, last]);
+    expect(result.programs[0]).toBe(first);
+    expect(result.programs[2]).toBe(last);
+    expect(result.programs.map((record) => record.program.transactionId)).toEqual([
+      "first-program",
+      "edited-program",
+      "last-program",
+    ]);
+    expect(result.programs[1].program.anchor).toEqual(original.program.anchor);
+  });
+
+  it("rejects a replacement that changes the transaction identity", () => {
+    const originalValidation = canonicalize(motionSuggestion(7), "edited-program", 7);
+    const replacementValidation = canonicalize(motionSuggestion(7), "different-program", 7);
+    const original = programRecord(originalValidation.program, originalValidation);
+    const replacement = programRecord(replacementValidation.program, replacementValidation);
+
+    expect(replaceAppliedProgram([original], "edited-program", replacement)).toEqual({
+      kind: "rejected",
+      reason: "A replacement must preserve the original transaction identity.",
+    });
   });
 
 });

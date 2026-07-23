@@ -66,6 +66,7 @@ import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
 import { useManimWorkspace } from "./studio/use-manim-workspace";
 import { WorkspaceLauncher } from "./studio/workspace-launcher";
 import { isTransitionOverlay, projectStudioWorkspace } from "./studio/workspace-projection";
+import { replaceAppliedProgram } from "./studio/transactions";
 
 type Shell = "Browser" | "Electron" | "Tauri";
 const loadMotionFeatures = () => import("./lib/motion-features").then((module) => module.default);
@@ -92,14 +93,37 @@ type CanvasResizeState = Readonly<{
   sourceAnchor: number;
   start: Readonly<{ x: number; y: number }>;
 }>;
-type RedoProgramEntry = Readonly<{
+type AppliedProgramMetadata = Readonly<{
   operation: EditSuggestionOperation | null;
-  record: ProgramRecord;
-  restoreAs: "applied" | "draft";
   selection: readonly string[];
 }>;
+type EditorProgramRecord = ProgramRecord & Readonly<{
+  editorMetadata?: AppliedProgramMetadata;
+}>;
+type AppliedProgramMutation = Readonly<{
+  index: number;
+  kind: "append";
+  value: EditorProgramRecord;
+}> | Readonly<{
+  index: number;
+  kind: "replace";
+  previous: EditorProgramRecord;
+  value: EditorProgramRecord;
+}>;
+type AppliedProgramEdit = Readonly<{
+  index: number;
+  original: EditorProgramRecord;
+}>;
+type RedoProgramEntry = Readonly<{
+  edit: AppliedProgramEdit | null;
+  kind: "draft";
+  value: EditorProgramRecord;
+}> | Readonly<{
+  kind: "mutation";
+  mutation: AppliedProgramMutation;
+}>;
 type EditorSessionSnapshot = Readonly<{
-  appliedPrograms: readonly ProgramRecord[];
+  appliedPrograms: readonly EditorProgramRecord[];
   currentTime: number;
   draftError: string | null;
   draftOperation: EditSuggestionOperation | null;
@@ -108,10 +132,20 @@ type EditorSessionSnapshot = Readonly<{
   insertValue: string;
   instruction: string;
   interactionMode: InteractionMode;
+  editingAppliedProgram: AppliedProgramEdit | null;
   motionDuration: number;
+  programUndoEntries: readonly AppliedProgramMutation[];
   redoPrograms: readonly RedoProgramEntry[];
   selectedObjectIds: readonly string[];
 }>;
+
+function editorProgramRecord(
+  record: ProgramRecord,
+  operation: EditSuggestionOperation | null,
+  selection: readonly string[],
+): EditorProgramRecord {
+  return { ...record, editorMetadata: { operation, selection } };
+}
 
 function cancelRequest(request: { current: AbortController | null }) {
   const controller = request.current;
@@ -213,7 +247,9 @@ export function App() {
   const [insertTool, setInsertTool] = useState<StudioTool>("select");
   const [insertValue, setInsertValue] = useState("");
   const [selectedObjectIds, setSelectedObjectIds] = useState<readonly string[]>([]);
-  const [appliedPrograms, setAppliedPrograms] = useState<readonly ProgramRecord[]>([]);
+  const [appliedPrograms, setAppliedPrograms] = useState<readonly EditorProgramRecord[]>([]);
+  const [editingAppliedProgram, setEditingAppliedProgram] = useState<AppliedProgramEdit | null>(null);
+  const [programUndoEntries, setProgramUndoEntries] = useState<readonly AppliedProgramMutation[]>([]);
   const [redoPrograms, setRedoPrograms] = useState<readonly RedoProgramEntry[]>([]);
   const [renderSessions, setRenderSessions] = useState<Readonly<Record<string, RenderSessionView>>>({});
   const [draftProgram, setDraftProgram] = useState<ProgramRecord | null>(null);
@@ -262,7 +298,9 @@ export function App() {
       insertValue,
       instruction,
       interactionMode,
+      editingAppliedProgram,
       motionDuration,
+      programUndoEntries,
       redoPrograms,
       selectedObjectIds,
     });
@@ -325,6 +363,8 @@ export function App() {
       setCurrentTime(saved.currentTime);
       setSelectedObjectIds(saved.selectedObjectIds);
       setAppliedPrograms(saved.appliedPrograms);
+      setEditingAppliedProgram(saved.editingAppliedProgram);
+      setProgramUndoEntries(saved.programUndoEntries);
       setRedoPrograms(saved.redoPrograms);
       setDraftProgram(saved.draftProgram);
       setDraftOperation(saved.draftOperation);
@@ -349,6 +389,8 @@ export function App() {
     setCurrentTime(clamp(initialTime, 0, activeScene.runtimeSceneState.duration));
     setSelectedObjectIds(initialEntities.slice(0, 1).map((entity) => entity.id));
     setAppliedPrograms([]);
+    setEditingAppliedProgram(null);
+    setProgramUndoEntries([]);
     setRedoPrograms([]);
     setDraftProgram(null);
     setDraftOperation(null);
@@ -365,17 +407,31 @@ export function App() {
     setIsPlaying(false);
   }, [activeScene?.sceneId, activeScene?.sourceHash, activeProjectId]);
 
+  const previewReplacement = editingAppliedProgram && draftProgram
+    ? replaceAppliedProgram(
+        appliedPrograms,
+        editingAppliedProgram.original.program.transactionId,
+        editorProgramRecord(draftProgram, draftOperation, selectedObjectIds),
+      )
+    : null;
+  const previewAppliedPrograms = previewReplacement?.kind === "replaced"
+    ? previewReplacement.programs
+    : appliedPrograms;
+  const draftPrecedingPrograms = editingAppliedProgram
+    ? appliedPrograms.slice(0, editingAppliedProgram.index)
+    : appliedPrograms;
+  const draftPrecedingCanonicalPrograms = draftPrecedingPrograms.map((record) => record.program);
   const workspaceProjection = activeScene ? projectStudioWorkspace({
     activeScene,
-    appliedPrograms,
+    appliedPrograms: previewAppliedPrograms,
     currentTime,
-    draftProgram,
+    draftProgram: editingAppliedProgram ? null : draftProgram,
     nextScene,
     selectedObjectIds,
   }) : null;
   const draftBaseProjection = activeScene && draftProgram ? projectStudioWorkspace({
     activeScene,
-    appliedPrograms,
+    appliedPrograms: draftPrecedingPrograms,
     currentTime,
     draftProgram: null,
     nextScene,
@@ -385,7 +441,7 @@ export function App() {
   const draftSourceScene = draftBaseState
     ? projectRuntimeSceneToSourceTimeline(
         draftBaseState.evaluatedScene,
-        appliedCanonicalPrograms,
+        draftPrecedingCanonicalPrograms,
       )
     : null;
   const projection = workspaceProjection?.projection ?? null;
@@ -448,7 +504,7 @@ export function App() {
     origin: OperationOrigin,
     proposedState: ProposedState | null = draftBaseState,
     capturedPlayhead = sourceCurrentTime,
-    sourcePrograms: readonly ProgramRecord["program"][] = appliedCanonicalPrograms,
+    sourcePrograms: readonly ProgramRecord["program"][] = draftPrecedingCanonicalPrograms,
   ) {
     if (!activeScene || !proposedState) throw new Error("Choose an imported Scene first.");
     const validationState = {
@@ -470,16 +526,27 @@ export function App() {
     return validation;
   }
 
-  function preserveProgramAsApplied(record: ProgramRecord | null | undefined) {
-    if (!record) return true;
+  function preserveProgramAsApplied(
+    record: ProgramRecord | null | undefined,
+    operation: EditSuggestionOperation | null = draftOperation,
+  ) {
+    if (!record || appliedPrograms.some((candidate) => (
+      candidate.program.transactionId === record.program.transactionId
+    ))) return true;
     const execution = programExecutionCapabilities(record.program);
     if (record.validation.status !== "valid" || execution.apply !== "supported") {
       setDraftError(execution.applyBlocker ?? "This Program is invalid and cannot be applied.");
       return false;
     }
-    setAppliedPrograms((programs) => programs.some((candidate) => (
-      candidate.program.transactionId === record.program.transactionId
-    )) ? programs : [...programs, record]);
+    const value = editorProgramRecord(record, operation, selectedObjectIds);
+    const mutation = {
+      index: appliedPrograms.length,
+      kind: "append",
+      value,
+    } satisfies AppliedProgramMutation;
+    setAppliedPrograms([...appliedPrograms, value]);
+    setProgramUndoEntries((history) => [...history, mutation]);
+    setRedoPrograms([]);
     return true;
   }
 
@@ -497,14 +564,16 @@ export function App() {
       preservePlayhead?: boolean;
       proposedState?: ProposedState | null;
       capturedPlayhead?: number;
+      sourcePrograms?: readonly ProgramRecord["program"][];
     }> = {},
   ) {
     try {
       const origin = options.origin ?? "remote-model";
+      const basePrograms = options.sourcePrograms ?? draftPrecedingCanonicalPrograms;
       const precedingPrograms = options.preserveDraft
         && !appliedPrograms.some((record) => record.program.transactionId === options.preserveDraft?.program.transactionId)
-        ? [...appliedCanonicalPrograms, options.preserveDraft.program]
-        : appliedCanonicalPrograms;
+        ? [...basePrograms, options.preserveDraft.program]
+        : basePrograms;
       const validated = createValidatedDraft(
         operation,
         transactionId,
@@ -557,6 +626,11 @@ export function App() {
 
   async function requestEditSuggestion(selectedOption?: ClarificationOption) {
     if (!activeScene || !draftBaseState) return;
+    if (editingAppliedProgram) {
+      setSuggestionMessage("Apply or discard the Applied Program edit before starting another Magic Edit.");
+      setSuggestionStatus("error");
+      return;
+    }
     const pending = pendingClarification;
     const requestedContext = suggestionContext.current;
     const requestedPlayhead = sourceCurrentTime;
@@ -671,15 +745,17 @@ export function App() {
 
   function discardDraft() {
     const discardedTransactionId = draftProgram?.program.transactionId;
+    const discardedAppliedEdit = editingAppliedProgram;
     cancelRequest(suggestionRequest);
     setDraftProgram(null);
     setDraftOperation(null);
+    setEditingAppliedProgram(null);
     setDraftError(null);
     setSuggestion(null);
     setPendingClarification(null);
     setSuggestionMessage(null);
     setSuggestionStatus("idle");
-    if (discardedTransactionId) {
+    if (discardedTransactionId && !discardedAppliedEdit) {
       setSelectedObjectIds((ids) => ids.filter((id) => (
         !id.startsWith(`tx:${discardedTransactionId}/entity:`)
       )));
@@ -693,17 +769,47 @@ export function App() {
       setDraftError(execution.applyBlocker ?? "This Program is invalid and cannot be applied.");
       return;
     }
-    const nextPrograms = [...appliedCanonicalPrograms, draftProgram.program];
+    const value = editorProgramRecord(draftProgram, draftOperation, selectedObjectIds);
+    let nextAppliedPrograms: readonly EditorProgramRecord[];
+    let mutation: AppliedProgramMutation;
+    if (editingAppliedProgram) {
+      const replacement = replaceAppliedProgram(
+        appliedPrograms,
+        editingAppliedProgram.original.program.transactionId,
+        value,
+      );
+      if (replacement.kind === "rejected") {
+        setDraftError(replacement.reason);
+        return;
+      }
+      nextAppliedPrograms = replacement.programs;
+      mutation = {
+        index: replacement.index,
+        kind: "replace",
+        previous: editingAppliedProgram.original,
+        value,
+      };
+    } else {
+      nextAppliedPrograms = [...appliedPrograms, value];
+      mutation = {
+        index: appliedPrograms.length,
+        kind: "append",
+        value,
+      };
+    }
+    const nextPrograms = nextAppliedPrograms.map((record) => record.program);
     const appliedWorkingAnchor = sourceTimeToWorkingTime(
       nextPrograms,
       draftProgram.program.anchor.resolvedSeconds,
     );
     cancelRequest(suggestionRequest);
-    setAppliedPrograms((programs) => [...programs, draftProgram]);
+    setAppliedPrograms(nextAppliedPrograms);
+    setProgramUndoEntries((history) => [...history, mutation]);
     setCurrentTime(appliedWorkingAnchor);
     setRedoPrograms([]);
     setDraftProgram(null);
     setDraftOperation(null);
+    setEditingAppliedProgram(null);
     setDraftError(null);
     setSuggestion(null);
     setPendingClarification(null);
@@ -714,50 +820,121 @@ export function App() {
   function undoProgram() {
     if (draftProgram) {
       setRedoPrograms((redo) => [...redo, {
-        operation: draftOperation,
-        record: draftProgram,
-        restoreAs: "draft",
-        selection: selectedObjectIds,
+        edit: editingAppliedProgram,
+        kind: "draft",
+        value: editorProgramRecord(draftProgram, draftOperation, selectedObjectIds),
       }]);
       discardDraft();
       return;
     }
-    const removed = appliedPrograms.at(-1);
-    if (!removed) return;
-    setAppliedPrograms(appliedPrograms.slice(0, -1));
-    setRedoPrograms((redo) => [...redo, {
-      operation: null,
-      record: removed,
-      restoreAs: "applied",
-      selection: selectedObjectIds,
-    }]);
-    setSelectedObjectIds([]);
+    const mutation = programUndoEntries.at(-1);
+    if (!mutation) return;
+    if (mutation.kind === "append") {
+      const current = appliedPrograms[mutation.index];
+      if (current?.program.transactionId !== mutation.value.program.transactionId) {
+        setDraftError("The applied Program history no longer matches the Scene working state.");
+        return;
+      }
+      setAppliedPrograms([
+        ...appliedPrograms.slice(0, mutation.index),
+        ...appliedPrograms.slice(mutation.index + 1),
+      ]);
+      setSelectedObjectIds([]);
+    } else {
+      const replacement = replaceAppliedProgram(
+        appliedPrograms,
+        mutation.value.program.transactionId,
+        mutation.previous,
+      );
+      if (replacement.kind === "rejected") {
+        setDraftError(replacement.reason);
+        return;
+      }
+      setAppliedPrograms(replacement.programs);
+      setSelectedObjectIds(mutation.previous.editorMetadata?.selection ?? []);
+    }
+    setProgramUndoEntries((history) => history.slice(0, -1));
+    setRedoPrograms((redo) => [...redo, { kind: "mutation", mutation }]);
   }
 
   function redoProgram() {
     if (draftProgram) return false;
     const entry = redoPrograms.at(-1);
     if (!entry) return false;
-    if (entry.restoreAs === "draft") {
-      setDraftProgram(entry.record);
-      setDraftOperation(entry.operation);
-      setDraftError(programExecutionCapabilities(entry.record.program).applyBlocker);
-      setSelectedObjectIds(entry.selection);
+    if (entry.kind === "draft") {
+      const precedingPrograms = entry.edit
+        ? appliedPrograms.slice(0, entry.edit.index).map((record) => record.program)
+        : appliedCanonicalPrograms;
+      setDraftProgram(entry.value);
+      setDraftOperation(entry.value.editorMetadata?.operation ?? null);
+      setEditingAppliedProgram(entry.edit);
+      setDraftError(programExecutionCapabilities(entry.value.program).applyBlocker);
+      setSelectedObjectIds(entry.value.editorMetadata?.selection ?? []);
       setCurrentTime(sourceTimeToWorkingTime(
-        appliedCanonicalPrograms,
-        entry.record.program.anchor.resolvedSeconds,
+        precedingPrograms,
+        entry.value.program.anchor.resolvedSeconds,
       ));
     } else {
-      const execution = programExecutionCapabilities(entry.record.program);
-      if (entry.record.validation.status !== "valid" || execution.apply !== "supported") {
+      const mutation = entry.mutation;
+      const execution = programExecutionCapabilities(mutation.value.program);
+      if (mutation.value.validation.status !== "valid" || execution.apply !== "supported") {
         setDraftError(execution.applyBlocker ?? "This Program is invalid and cannot be applied.");
         return false;
       }
-      setAppliedPrograms((applied) => [...applied, entry.record]);
-      setSelectedObjectIds(entry.selection);
+      if (mutation.kind === "append") {
+        const nextPrograms = [...appliedPrograms];
+        nextPrograms.splice(mutation.index, 0, mutation.value);
+        setAppliedPrograms(nextPrograms);
+      } else {
+        const replacement = replaceAppliedProgram(
+          appliedPrograms,
+          mutation.previous.program.transactionId,
+          mutation.value,
+        );
+        if (replacement.kind === "rejected") {
+          setDraftError(replacement.reason);
+          return false;
+        }
+        setAppliedPrograms(replacement.programs);
+      }
+      setSelectedObjectIds(mutation.value.editorMetadata?.selection ?? []);
+      setProgramUndoEntries((history) => [...history, mutation]);
     }
     setRedoPrograms((programs) => programs.slice(0, -1));
     return true;
+  }
+
+  function editAppliedProgram(record: ProgramRecord, index: number) {
+    if (draftProgram) {
+      setDraftError("Apply or discard the current draft before editing an Applied Program.");
+      return;
+    }
+    const editorRecord = record as EditorProgramRecord;
+    const metadata = editorRecord.editorMetadata;
+    if (!metadata?.operation) {
+      setDraftError("This Program is read-only because editable Studio authoring metadata is unavailable.");
+      return;
+    }
+    const edit = {
+      index,
+      original: editorRecord,
+    } satisfies AppliedProgramEdit;
+    cancelRequest(suggestionRequest);
+    setDraftProgram(record);
+    setDraftOperation(metadata.operation);
+    setEditingAppliedProgram(edit);
+    setDraftError(programExecutionCapabilities(record.program).applyBlocker);
+    setSuggestion(null);
+    setPendingClarification(null);
+    setSuggestionMessage(null);
+    setSuggestionStatus("idle");
+    setSelectedObjectIds(metadata.selection);
+    setCurrentTime(sourceTimeToWorkingTime(
+      appliedPrograms.slice(0, index).map((candidate) => candidate.program),
+      record.program.anchor.resolvedSeconds,
+    ));
+    setIsPlaying(false);
+    setRedoPrograms([]);
   }
 
   function installCanonicalDraft(
@@ -768,6 +945,7 @@ export function App() {
     cancelRequest(suggestionRequest);
     setDraftProgram(record);
     setDraftOperation(null);
+    setEditingAppliedProgram(null);
     setDraftError(programExecutionCapabilities(record.program).applyBlocker);
     setSuggestion(null);
     setPendingClarification(null);
@@ -978,7 +1156,8 @@ export function App() {
   }
 
   function directGestureContext() {
-    const previousDraft = draftProgram?.program.provenance.origin === "direct-manipulation"
+    const previousDraft = !editingAppliedProgram
+      && draftProgram?.program.provenance.origin === "direct-manipulation"
       ? draftProgram
       : null;
     const sourcePrograms = previousDraft
@@ -1034,6 +1213,10 @@ export function App() {
 
   function beginEntityDrag(event: PointerEvent<HTMLButtonElement>, entityId: string) {
     if (canvasDrag.current || canvasResize.current) return;
+    if (editingAppliedProgram) {
+      setDraftError("Apply or discard the Applied Program edit before moving another object.");
+      return;
+    }
     const entity = editableEntities.find((candidate) => candidate.id === entityId);
     const editable = entity && (!entity.provisional || (entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
     if (!editable) return;
@@ -1134,6 +1317,10 @@ export function App() {
   function beginEntityResize(event: PointerEvent<HTMLButtonElement>, entityId: string) {
     event.stopPropagation();
     if (canvasDrag.current || canvasResize.current) return;
+    if (editingAppliedProgram) {
+      setDraftError("Apply or discard the Applied Program edit before resizing another object.");
+      return;
+    }
     const entity = editableEntities.find((candidate) => candidate.id === entityId);
     const editable = entity
       && entity.present
@@ -1241,6 +1428,10 @@ export function App() {
     capturedSourceAnchor?: number,
   ) {
     if (!activeScene || !draftBaseState) return false;
+    if (editingAppliedProgram) {
+      setDraftError("Apply or discard the Applied Program edit before resizing another object.");
+      return false;
+    }
     if (
       !Number.isFinite(targetScale)
       || targetScale < MIN_ENTITY_SCALE
@@ -1290,6 +1481,7 @@ export function App() {
       cancelRequest(suggestionRequest);
       setDraftProgram(validated.record);
       setDraftOperation(null);
+      setEditingAppliedProgram(null);
       setDraftError(null);
       setSuggestion(null);
       setPendingClarification(null);
@@ -1328,6 +1520,10 @@ export function App() {
     }> = directGestureContext(),
     capturedSourceAnchor?: number,
   ) {
+    if (editingAppliedProgram) {
+      setDraftError("Apply or discard the Applied Program edit before moving another object.");
+      return;
+    }
     if (!gestureContext.proposedState || !projection) return;
     const projected = projectedPositions(projection.canvas.entities, targetIds);
     if (projected.kind === "invalid") {
@@ -1366,6 +1562,7 @@ export function App() {
     cancelRequest(suggestionRequest);
     setDraftProgram(validated.record);
     setDraftOperation(null);
+    setEditingAppliedProgram(null);
     setDraftError(null);
     setSuggestion(null);
     setPendingClarification(null);
@@ -1476,10 +1673,12 @@ export function App() {
 
   commandHandler.current = handleStudioCommand;
 
-  const renderPrograms = [
-    ...appliedPrograms.map((record) => record.program),
-    ...(draftProgram ? [draftProgram.program] : []),
-  ];
+  const renderPrograms = editingAppliedProgram
+    ? previewAppliedPrograms.map((record) => record.program)
+    : [
+        ...appliedPrograms.map((record) => record.program),
+        ...(draftProgram ? [draftProgram.program] : []),
+      ];
   const renderProgram = renderPrograms[0] ?? null;
   const renderCandidateUnavailableReason = "Export .py downloads the selected source unchanged. Create or apply a Canonical draft to render or export Studio edits.";
   const renderCandidate: RenderProgramCandidate | null = activeScene && activeProjectId && renderProgram ? {
@@ -1502,6 +1701,15 @@ export function App() {
   } : null;
 
   const selectedEntity = editableEntities.find((entity) => selectedSet.has(entity.id)) ?? null;
+  const appliedProgramReadOnlyReasons = Object.fromEntries(appliedPrograms.map((record) => {
+    const transactionId = record.program.transactionId;
+    const metadata = record.editorMetadata;
+    return [transactionId, metadata?.operation
+      ? null
+      : metadata
+        ? "This canonical Program was created without editable authoring metadata."
+        : "Editable Studio authoring metadata is unavailable for this Program."];
+  }));
   const activeWorkspaceName = workspace?.projectName
     ?? projects.find((project) => project.id === activeProjectId)?.name
     ?? "Workspace";
@@ -1652,13 +1860,17 @@ export function App() {
           <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(30rem,1fr)_auto_auto] gap-px overflow-y-auto bg-zinc-800 lg:grid-cols-[14rem_minmax(0,1fr)] lg:grid-rows-[minmax(32rem,1fr)_auto] xl:grid-cols-[14rem_minmax(0,1fr)_21rem] xl:grid-rows-1 xl:overflow-hidden">
             <WorkspaceSidebar
               activeScene={activeScene}
+              appliedProgramReadOnlyReasons={appliedProgramReadOnlyReasons}
               appliedPrograms={appliedPrograms}
               appliedTransactionIds={appliedTransactionIds}
               className="order-2 min-h-64 lg:order-1 lg:col-start-1 lg:row-start-1 lg:min-h-0"
+              draftActive={draftProgram !== null}
               duration={activeDuration}
+              editingAppliedTransactionId={editingAppliedProgram?.original.program.transactionId ?? null}
               entities={editableEntities}
               nextScene={nextScene}
               onDurationChange={(duration) => void extendSceneDuration(duration)}
+              onEditAppliedProgram={editAppliedProgram}
               onRedo={() => void redoProgram()}
               onToggleEntity={(entityId, selected) => setSelectedObjectIds((selection) => selected
                 ? selection.filter((id) => id !== entityId)
@@ -1738,11 +1950,15 @@ export function App() {
                 if (key) editorSessions.current.delete(key);
                 discardDraft();
                 setAppliedPrograms([]);
+                setEditingAppliedProgram(null);
+                setProgramUndoEntries([]);
+                setRedoPrograms([]);
                 await refreshWorkspace();
               }}
               renderCandidate={renderCandidate}
               renderCandidateUnavailableReason={renderCandidateUnavailableReason}
               renderSession={activeProjectId ? renderSessions[activeProjectId] ?? null : null}
+              replacingAppliedProgram={editingAppliedProgram !== null}
               selectedEntity={selectedEntity}
               sourceExport={activeProjectId && activeScene ? {
                 projectId: activeProjectId,
