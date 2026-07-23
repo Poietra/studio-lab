@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 
 const projectRoot = fileURLToPath(new URL("..", import.meta.url));
 const baseBranch = process.env.GITHUB_BASE_REF?.trim() || "main";
+const eventBaseRef = process.env.POIETRA_FORMAT_BASE_REF?.trim();
 
 function git(args) {
   return execFileSync("git", args, {
@@ -23,9 +24,11 @@ function existingRef(candidates) {
   });
 }
 
-const baseRef = existingRef([`origin/${baseBranch}`, baseBranch]);
+const hasEventBaseRef = Boolean(eventBaseRef && !/^0+$/.test(eventBaseRef));
+const baseRef = existingRef(hasEventBaseRef ? [eventBaseRef] : [`origin/${baseBranch}`, baseBranch]);
 if (!baseRef) {
-  console.error(`Cannot find the ${baseBranch} base ref. Fetch it before running the format check.`);
+  const requested = eventBaseRef ? `event base ${eventBaseRef}` : `${baseBranch} base`;
+  console.error(`Cannot find the ${requested} ref. Fetch it before running the format check.`);
   process.exitCode = 1;
 } else {
   const mergeBase = git(["merge-base", "HEAD", baseRef]).trim();

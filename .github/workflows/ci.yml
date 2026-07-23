@@ -17,6 +17,29 @@ env:
   CI: true
 
 jobs:
+  style:
+    name: Style checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository with base history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Run lint and incremental format checks
+        env:
+          POIETRA_FORMAT_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: pnpm check:style
+
   web-build:
     name: Web build
     runs-on: ubuntu-latest

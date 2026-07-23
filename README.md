@@ -82,17 +82,18 @@ cargo check --locked --manifest-path src-tauri/Cargo.toml
 ```
 
 Pull requests run the same build, unit, boundary/integration, browser, and Tauri
-checks in GitHub Actions. The stable required-check names are `Web build`,
-`Unit and integration tests`, `Browser E2E`, and `Tauri cargo check`. Playwright
-diagnostics are retained as a workflow artifact when the browser job reaches its
-test step.
+checks in GitHub Actions. The stable required-check names are `Style checks`,
+`Web build`, `Unit and integration tests`, `Browser E2E`, and `Tauri cargo check`.
+Playwright diagnostics are retained as a workflow artifact when the browser job
+reaches its test step.
 
 Biome provides the TypeScript/React lint and formatting baseline. Run `pnpm lint:fix`
-for safe lint fixes and `pnpm format` to format files changed from `main`;
-`pnpm lint`, `pnpm format:check`, and the combined `pnpm check:style` never write files.
+for safe lint fixes and `pnpm format` to format files changed from the pull request
+base (or `main` locally); `pnpm lint`, `pnpm format:check`, and the combined
+`pnpm check:style` never write files.
 The incremental format scope includes committed, staged, unstaged, and untracked files,
-preventing a one-time rewrite of untouched source. CI must fetch the pull request's
-`main` base ref before running `pnpm check:style`.
+preventing a one-time rewrite of untouched source. CI fetches full history and passes
+the pull request base SHA or push event's previous SHA to `pnpm check:style`.
 
 The suite boundaries and the rule for adding regression coverage are documented in
 [the testing strategy](docs/testing-strategy.md).
