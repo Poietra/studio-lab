@@ -125,6 +125,22 @@ function operationBase(id: string, start: number, end = start) {
   };
 }
 
+function lowerTextContentSource(source: string, transactionId: string) {
+  const operation: CanonicalEditOperation = {
+    ...operationBase(`set-${transactionId}`, 7),
+    entityId: "label_1",
+    key: "content",
+    kind: "SetProperty",
+    value: { displayLines: ["after"], text: "after" },
+  };
+  return lowerCanonicalProgramSource(
+    source,
+    request(canonicalProgram([operation], transactionId), [{ entityId: "label_1", sourceVariable: "label" }]),
+    { height: 8, width: 14.222 },
+    null,
+  );
+}
+
 function durationWaitProgram(duration: number, transactionId: string) {
   const operation: CanonicalEditOperation = {
     ...operationBase(`tx:${transactionId}/operation:duration-wait`, 7, 7 + duration),
@@ -189,6 +205,256 @@ describe("Canonical EditProgram source lowering", () => {
   it("discovers explicit source anchors inside their Scene", () => {
     expect(findMotionAnchors(source)).toEqual([{ line: 6, seconds: 7 }]);
     expect(findSceneMotionAnchors(source, "GroupedEquation")).toEqual([{ line: 6, seconds: 7 }]);
+  });
+
+  it("round-trips canonical Inspector Text and MathTex content edits", () => {
+    const contentSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        equation = MathTex("E", "=", "m", "c^2")
+        label = Text("energy").scale(1.25).set_color(RED).move_to(LEFT)
+        self.add(equation, label)
+        self.wait(7)
+        # poietra:anchor 7.000
+        self.wait(1)
+`;
+    const operations: CanonicalEditOperation[] = [
+      {
+        ...operationBase("set-equation-content", 7),
+        entityId: "equation_1",
+        key: "content",
+        kind: "SetProperty",
+        value: {
+          displayLines: ["F = m a"],
+          label: "equation",
+          texParts: ["F", "=", "m", "a"],
+        },
+      },
+      {
+        ...operationBase("set-label-content", 7),
+        entityId: "label_1",
+        key: "content",
+        kind: "SetProperty",
+        value: { displayLines: ["force"], label: "label", text: "force" },
+      },
+    ];
+    const lowered = lowerCanonicalProgramSource(
+      contentSource,
+      request(canonicalProgram(operations, "inspector-content"), [
+        { entityId: "equation_1", sourceVariable: "equation" },
+        { entityId: "label_1", sourceVariable: "label" },
+      ]),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
+
+    expect(lowered.insertedCode.match(/# poietra:content/g)).toHaveLength(2);
+    expect(lowered.insertedCode).toContain(
+      'equation.become(MathTex("F", "=", "m", "a").match_style(equation).match_height(equation).move_to(equation.get_center()))',
+    );
+    expect(lowered.insertedCode).toContain(
+      'label.become(Text("force").match_style(label).match_height(label).move_to(label.get_center()))',
+    );
+    expect(
+      imported?.runtimeSceneState.propertyChannels["source:examples/relativity.py#GroupedEquation:equation/content"]
+        ?.samples,
+    ).toHaveLength(2);
+    expect(
+      imported?.runtimeSceneState.objectGraph.entities["source:examples/relativity.py#GroupedEquation:equation"]
+        ?.content,
+    ).toEqual(expect.objectContaining({ texParts: ["F", "=", "m", "a"] }));
+    expect(
+      imported?.runtimeSceneState.objectGraph.entities["source:examples/relativity.py#GroupedEquation:label"]?.content,
+    ).toEqual(expect.objectContaining({ text: "force" }));
+  });
+
+  it.each([
+    ["constructor typography", 'Text("before", font="Noto Sans", weight=BOLD)', /constructor keyword arguments/i],
+    ["dynamic Text content", "Text(name)", /static string literal arguments/i],
+    ["dynamic MathTex content", "MathTex(expression)", /static string literal arguments/i],
+    ["chained rotation", 'Text("before").rotate(PI / 4)', /unsupported chained source mutation/i],
+    ["dynamic chained scale", 'Text("before").scale(factor)', /unsupported chained source mutation/i],
+    ["negative chained scale", 'Text("before").scale(-1)', /unsupported chained source mutation/i],
+    ["unknown chained mutation", 'Text("before").apply_matrix(matrix)', /unsupported chained source mutation/i],
+  ])("rejects a content edit that cannot preserve imported Text %s", (_label, constructor, reason) => {
+    const styledSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        label = ${constructor}
+        self.add(label)
+        self.wait(7)
+        # poietra:anchor 7.000
+        self.wait(1)
+`;
+    expect(() => lowerTextContentSource(styledSource, "styled-content")).toThrow(reason);
+  });
+
+  it.each([
+    ["direct stretch", "label.stretch_to_fit_width(4)"],
+    ["animated rotation", "self.play(Rotate(label), run_time=1)"],
+    ["dynamic direct scale", "label.scale(factor)"],
+    ["negative animated scale", "self.play(label.animate.scale(-1), run_time=1)"],
+    ["content transform", 'self.play(Transform(label, Text("transformed")), run_time=1)'],
+  ])("rejects a content edit after a prefix %s", (_label, mutation) => {
+    const mutatedSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        label = Text("before")
+        self.add(label)
+        ${mutation}
+        self.wait(7)
+        # poietra:anchor 7.000
+        self.wait(1)
+`;
+    expect(() => lowerTextContentSource(mutatedSource, "mutated-content")).toThrow(
+      /cannot preserve its source appearance/i,
+    );
+  });
+
+  it.each([
+    ["direct alias", "alias = label\n        alias.rotate(PI / 4)", "alias"],
+    ["group alias", "group = VGroup(label)\n        group.rotate(PI / 4)", "group"],
+  ])("rejects a content edit when a prefix %s retains the object", (_label, setup, expectedAlias) => {
+    const aliasedSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        label = Text("before")
+        self.add(label)
+        ${setup}
+        self.wait(7)
+        # poietra:anchor 7.000
+        self.wait(1)
+`;
+    expect(() => lowerTextContentSource(aliasedSource, "aliased-content")).toThrow(
+      new RegExp(`source alias ${expectedAlias} retains the object before the selected anchor`, "i"),
+    );
+  });
+
+  it.each([
+    ["content property", "", "value = label.text", "label"],
+    ["subobject indexing", "", "self.add(label[0])", "label"],
+    ["unknown call", "", "remember(label)", "label"],
+  ])("rejects a content edit before a post-anchor %s reference", (_label, setup, suffix, expectedReference) => {
+    const referencedSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        label = Text("before")
+        self.add(label)
+        ${setup}
+        self.wait(7)
+        # poietra:anchor 7.000
+        ${suffix}
+`;
+    expect(() => lowerTextContentSource(referencedSource, "referenced-content")).toThrow(
+      new RegExp(`source reference ${expectedReference} is used after the selected anchor`, "i"),
+    );
+  });
+
+  it("allows a content edit before a static source shift", () => {
+    const shiftedSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        label = Text("before")
+        self.add(label)
+        self.wait(7)
+        # poietra:anchor 7.000
+        self.play(label.animate.shift(0.5 * RIGHT), run_time=1, rate_func=smooth)
+`;
+
+    const lowered = lowerTextContentSource(shiftedSource, "shifted-content");
+
+    expect(lowered.insertedCode).toContain('label.become(Text("after")');
+  });
+
+  it.each([
+    ["a second tracked reference", "label.width * RIGHT"],
+    ["a dynamic vector", "direction"],
+  ])("rejects a content edit before a source shift with %s", (_label, vector) => {
+    const shiftedSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        label = Text("before")
+        self.add(label)
+        self.wait(7)
+        # poietra:anchor 7.000
+        self.play(label.animate.shift(${vector}), run_time=1, rate_func=smooth)
+`;
+
+    expect(() => lowerTextContentSource(shiftedSource, "unsafe-shifted-content")).toThrow(
+      /source reference label is used after the selected anchor/i,
+    );
+  });
+
+  it("rejects a static source shift combined with a globals reference to the same object", () => {
+    const shiftedSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        label = Text("before")
+        other = Text("other")
+        self.add(label, other)
+        self.wait(7)
+        # poietra:anchor 7.000
+        self.play(label.animate.shift(RIGHT), Transform(other, globals()["label"]), run_time=1)
+`;
+
+    expect(() => lowerTextContentSource(shiftedSource, "globals-shifted-content")).toThrow(
+      /source reference label is used after the selected anchor/i,
+    );
+  });
+
+  it.each([
+    ["rotation", ".rotate(PI / 2)"],
+    ["stretch", ".stretch(2, 0)"],
+    ["dynamic scale", ".scale(factor)"],
+    ["an unknown call", ".apply_matrix(matrix)"],
+  ])("rejects a content edit before a source shift followed by %s", (_label, suffix) => {
+    const shiftedSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        label = Text("before")
+        self.add(label)
+        self.wait(7)
+        # poietra:anchor 7.000
+        self.play(label.animate.shift(RIGHT)${suffix}, run_time=1)
+`;
+
+    expect(() => lowerTextContentSource(shiftedSource, "chained-shifted-content")).toThrow(
+      /source reference label is used after the selected anchor/i,
+    );
+  });
+
+  it("rejects content payloads that cannot round-trip through the strict marker contract", () => {
+    const invalidContent = {
+      ...operationBase("invalid-content", 7),
+      entityId: "equation_1",
+      key: "content",
+      kind: "SetProperty",
+      value: {
+        displayLines: ["x"],
+        label: "x".repeat(2_001),
+        rogue: true,
+        texParts: ["x"],
+      },
+    } as CanonicalEditOperation;
+
+    expect(() =>
+      lowerCanonicalProgramSource(
+        source,
+        request(canonicalProgram([invalidContent], "invalid-content")),
+        { height: 8, width: 14.222 },
+        null,
+      ),
+    ).toThrow(/no truthful source lowering/i);
   });
 
   it("does not expose marker-looking text inside a triple-quoted string", () => {

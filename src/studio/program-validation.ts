@@ -292,6 +292,18 @@ export function validateAndScheduleProgram(
         }
       }
     }
+    if (operation.kind === "SetProperty" && operation.key === "content") {
+      const source = scene.objectGraph.entities[operation.entityId];
+      if (source?.sourceIdentity.kind === "unknown" && !source.transactionId) {
+        issues.push({
+          code: "identity-unknown",
+          field: "entityId",
+          message: `SetProperty content cannot replace ${operation.entityId} while source identity is Unknown.`,
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+    }
   }
 
   const sourceAnimationGroups: Array<

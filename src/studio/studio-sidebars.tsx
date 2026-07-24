@@ -7,8 +7,10 @@ import type {
 } from "../render-pipeline/contracts";
 import { RenderPipelinePanel, type RenderProgramCandidate } from "../render-pipeline/render-pipeline-panel";
 import { DraftInspector } from "./draft-inspector";
+import { EntityInspectorEditor, entityInspectorKey } from "./entity-inspector";
 import type { ManimWorkspaceScene } from "./imported-workspace";
-import type { EntityDimensions, ProgramRecord, ProjectedEntity } from "./model";
+import type { ProgramRecord, ProjectedEntity } from "./model";
+import type { InspectorEditField, ValidatedInspectorEdits } from "./inspector-edit";
 import { shortcutLabel, studioCommand, type StudioCommandId } from "./commands";
 import { entityLabel } from "./studio-viewport";
 
@@ -291,8 +293,9 @@ export function StudioInspector({
   onApplyDraft,
   onDiscardDraft,
   onDraftOperationChange,
-  onEntityDimensionsChange,
+  onEntityEdit,
   onEntityScaleChange,
+  onInspectorFocusRestored,
   onRenderSessionChange,
   onSourceChanged,
   renderCandidate,
@@ -300,6 +303,7 @@ export function StudioInspector({
   renderSession,
   replacingAppliedProgram,
   selectedEntity,
+  inspectorReturnFocus,
   sourceExport,
   suggestion,
   workspace,
@@ -313,8 +317,9 @@ export function StudioInspector({
   onApplyDraft: () => void;
   onDiscardDraft: () => void;
   onDraftOperationChange: (operation: EditSuggestionOperation) => void;
-  onEntityDimensionsChange: (entityId: string, dimensions: EntityDimensions) => void;
+  onEntityEdit: (entityId: string, edits: ValidatedInspectorEdits, returnFocus: InspectorEditField) => boolean;
   onEntityScaleChange: (entityId: string, scale: number) => void;
+  onInspectorFocusRestored: () => void;
   onRenderSessionChange: (session: RenderSessionView | null, projectId?: string) => void;
   onSourceChanged: () => void | Promise<void>;
   renderCandidate: RenderProgramCandidate | null;
@@ -322,6 +327,7 @@ export function StudioInspector({
   renderSession: RenderSessionView | null;
   replacingAppliedProgram: boolean;
   selectedEntity: ProjectedEntity | null;
+  inspectorReturnFocus: InspectorEditField | null;
   sourceExport: OriginalManimSourceExportRequest | null;
   suggestion: EditSuggestion | null;
   workspace: ManimWorkspaceView | null;
@@ -337,13 +343,6 @@ export function StudioInspector({
       ).flatMap(([label, knowledge]) => (knowledge.kind === "unknown" ? [{ label, reason: knowledge.reason }] : []))
     : [];
   const scaleUnknown = selectedEntity?.geometry.scale.kind === "unknown";
-  const editableDimensions =
-    selectedEntity?.geometry.dimensions.kind === "known" &&
-    selectedEntity.geometry.position.kind === "known" &&
-    selectedEntity.geometry.scale.kind === "known" &&
-    (selectedEntity.type === "Circle" || selectedEntity.type === "Rectangle")
-      ? selectedEntity.geometry.dimensions.value
-      : null;
   return (
     <aside className={cn("min-h-0 overflow-y-auto bg-zinc-950 p-3", className)}>
       {draftProgram ? (
@@ -361,121 +360,69 @@ export function StudioInspector({
         <section>
           <h2 className="text-balance text-sm font-medium text-zinc-100">Inspector</h2>
           {selectedEntity ? (
-            <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-2 gap-y-2 text-xs">
-              <dt className="text-zinc-600">Object</dt>
-              <dd className="truncate text-zinc-300">{entityLabel(selectedEntity)}</dd>
-              <dt className="text-zinc-600">Type</dt>
-              <dd className="text-zinc-300">{selectedEntity.type}</dd>
-              <dt className="text-zinc-600">Source</dt>
-              <dd className="truncate font-mono text-[10px] text-zinc-400">
-                {selectedEntity.sourceIdentity.kind === "known" ? selectedEntity.sourceIdentity.value : "not committed"}
-              </dd>
-              <dt className="text-zinc-600">Position</dt>
-              <dd className="tabular-nums text-zinc-300">
-                {selectedEntity.geometry.position.kind === "unknown" ? "≈ " : ""}
-                {selectedEntity.position.x.toFixed(1)}, {selectedEntity.position.y.toFixed(1)}
-              </dd>
-              <dt className="text-zinc-600">Dimensions</dt>
-              <dd className="text-zinc-300">
-                {editableDimensions ? (
+            <>
+              <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-2 gap-y-2 text-xs">
+                <dt className="text-zinc-600">Object</dt>
+                <dd className="truncate text-zinc-300">{entityLabel(selectedEntity)}</dd>
+                <dt className="text-zinc-600">Type</dt>
+                <dd className="text-zinc-300">{selectedEntity.type}</dd>
+                <dt className="text-zinc-600">Source</dt>
+                <dd className="truncate font-mono text-[10px] text-zinc-400">
+                  {selectedEntity.sourceIdentity.kind === "known"
+                    ? selectedEntity.sourceIdentity.value
+                    : "not committed"}
+                </dd>
+                <dt className="text-zinc-600">Position</dt>
+                <dd className="tabular-nums text-zinc-300">
+                  {selectedEntity.geometry.position.kind === "unknown" ? "≈ " : ""}
+                  {selectedEntity.position.x.toFixed(1)}, {selectedEntity.position.y.toFixed(1)}
+                </dd>
+                <dt className="text-zinc-600">Dimensions</dt>
+                <dd className="tabular-nums text-zinc-300">{dimensionSummary(selectedEntity)}</dd>
+                <dt className="text-zinc-600">Style</dt>
+                <dd className="truncate text-zinc-300" title={styleSummary(selectedEntity)}>
+                  {styleSummary(selectedEntity)}
+                </dd>
+                <dt className="self-center text-zinc-600">Scale</dt>
+                <dd>
                   <form
-                    className="flex flex-wrap items-center gap-1"
+                    className="flex items-center gap-1"
                     onSubmit={(event) => {
                       event.preventDefault();
                       const data = new FormData(event.currentTarget);
-                      onEntityDimensionsChange(
-                        selectedEntity.id,
-                        selectedEntity.type === "Circle"
-                          ? { radius: Number(data.get("radius")) }
-                          : { height: Number(data.get("height")), width: Number(data.get("width")) },
-                      );
+                      onEntityScaleChange(selectedEntity.id, Number(data.get("scale")));
                     }}
                   >
-                    {selectedEntity.type === "Circle" ? (
-                      <input
-                        aria-label={`Radius of ${entityLabel(selectedEntity)}`}
-                        className="h-7 w-20 border border-zinc-700 bg-zinc-950 px-1.5 tabular-nums text-xs text-zinc-300 outline-none focus:border-sky-500"
-                        defaultValue={editableDimensions.radius?.toFixed(2)}
-                        key={`${selectedEntity.id}/radius/${editableDimensions.radius}`}
-                        min="0.1"
-                        name="radius"
-                        required
-                        step="0.1"
-                        type="number"
-                      />
-                    ) : (
-                      <>
-                        <input
-                          aria-label={`Width of ${entityLabel(selectedEntity)}`}
-                          className="h-7 w-16 border border-zinc-700 bg-zinc-950 px-1.5 tabular-nums text-xs text-zinc-300 outline-none focus:border-sky-500"
-                          defaultValue={editableDimensions.width?.toFixed(2)}
-                          key={`${selectedEntity.id}/width/${editableDimensions.width}`}
-                          min="0.1"
-                          name="width"
-                          required
-                          step="0.1"
-                          type="number"
-                        />
-                        <input
-                          aria-label={`Height of ${entityLabel(selectedEntity)}`}
-                          className="h-7 w-16 border border-zinc-700 bg-zinc-950 px-1.5 tabular-nums text-xs text-zinc-300 outline-none focus:border-sky-500"
-                          defaultValue={editableDimensions.height?.toFixed(2)}
-                          key={`${selectedEntity.id}/height/${editableDimensions.height}`}
-                          min="0.1"
-                          name="height"
-                          required
-                          step="0.1"
-                          type="number"
-                        />
-                      </>
-                    )}
+                    <input
+                      aria-label={`Scale ${entityLabel(selectedEntity)}`}
+                      className="h-7 min-w-0 w-20 border border-zinc-700 bg-zinc-950 px-1.5 tabular-nums text-xs text-zinc-300 outline-none focus:border-sky-500"
+                      defaultValue={selectedEntity.scale.toFixed(2)}
+                      disabled={scaleUnknown}
+                      key={`${selectedEntity.id}/${selectedEntity.scale.toFixed(4)}`}
+                      max="8"
+                      min="0.1"
+                      name="scale"
+                      step="0.05"
+                      type="number"
+                    />
                     <button
-                      className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+                      className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
+                      disabled={scaleUnknown}
                       type="submit"
                     >
                       Set
                     </button>
                   </form>
-                ) : (
-                  dimensionSummary(selectedEntity)
-                )}
-              </dd>
-              <dt className="text-zinc-600">Style</dt>
-              <dd className="truncate text-zinc-300" title={styleSummary(selectedEntity)}>
-                {styleSummary(selectedEntity)}
-              </dd>
-              <dt className="self-center text-zinc-600">Scale</dt>
-              <dd>
-                <form
-                  className="flex items-center gap-1"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    const data = new FormData(event.currentTarget);
-                    onEntityScaleChange(selectedEntity.id, Number(data.get("scale")));
-                  }}
-                >
-                  <input
-                    aria-label={`Scale ${entityLabel(selectedEntity)}`}
-                    className="h-7 min-w-0 w-20 border border-zinc-700 bg-zinc-950 px-1.5 tabular-nums text-xs text-zinc-300 outline-none focus:border-sky-500"
-                    defaultValue={selectedEntity.scale.toFixed(2)}
-                    disabled={scaleUnknown}
-                    key={`${selectedEntity.id}/${selectedEntity.scale.toFixed(4)}`}
-                    max="8"
-                    min="0.1"
-                    name="scale"
-                    step="0.05"
-                    type="number"
-                  />
-                  <button
-                    className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
-                    disabled={scaleUnknown}
-                    type="submit"
-                  >
-                    Set
-                  </button>
-                </form>
-              </dd>
-            </dl>
+                </dd>
+              </dl>
+              <EntityInspectorEditor
+                entity={selectedEntity}
+                key={entityInspectorKey(selectedEntity)}
+                onCreateDraft={onEntityEdit}
+                onFocusRestored={onInspectorFocusRestored}
+                restoreFocus={inspectorReturnFocus}
+              />
+            </>
           ) : (
             <div className="mt-3 border border-dashed border-zinc-700 p-3">
               <p className="text-pretty text-xs leading-5 text-zinc-500">

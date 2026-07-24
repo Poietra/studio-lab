@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { evaluateWorkingState, projectProposedState } from "../studio/evaluator";
+import { createFixtureWorkingState } from "../studio/fixture";
 import { runtimeSceneStateSchema } from "../studio/state-schema";
 import { AmbiguousSourceSceneError, findSceneBlocks, importManimScene } from "./source-import";
 
@@ -99,6 +101,30 @@ class UnsafeMarkers(Scene):
       kind: "known",
       value: "poietra_one_1",
     });
+  });
+
+  it("accepts content metadata only when it matches the emitted replacement expression", () => {
+    const edited = `from manim import *
+
+class ContentEdit(Scene):
+    def construct(self):
+        label = Text("before")
+        self.add(label)
+        self.wait(1)
+        # poietra:content {"content":{"displayLines":["after"],"text":"after"},"type":"Text","variable":"label","version":1}
+        label.become(Text("after").match_style(label).match_height(label).move_to(label.get_center()))
+        self.wait(1)
+`;
+    const imported = importManimScene(edited, "scene.py", "ContentEdit");
+    const entityId = "source:scene.py#ContentEdit:label";
+
+    expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/content`]?.samples).toHaveLength(2);
+    expect(imported?.runtimeSceneState.objectGraph.entities[entityId]?.content?.text).toBe("after");
+
+    const tampered = edited.replace('Text("after").match_style', 'Text("other").match_style');
+    const rejected = importManimScene(tampered, "scene.py", "ContentEdit");
+    expect(rejected?.runtimeSceneState.propertyChannels[`${entityId}/content`]?.samples).toHaveLength(2);
+    expect(rejected?.runtimeSceneState.objectGraph.entities[entityId]?.content).toBeUndefined();
   });
 
   it("rejects duplicate Scene names instead of importing the first definition twice", () => {
@@ -387,6 +413,48 @@ class Resized(Scene):
     expect(
       imported?.runtimeSceneState.propertyChannels[`${entityId}/position`]?.samples.at(-1)?.knowledge,
     ).toMatchObject({ kind: "unknown", reason: expect.stringMatching(/unverified resize/i) });
+  });
+
+  it("fails closed after an unverified content replacement", () => {
+    const imported = importManimScene(
+      `from manim import *
+
+class Replaced(Scene):
+    def construct(self):
+        label = Text("before")
+        self.add(label)
+        self.wait(1)
+        # poietra:content {"content":{"displayLines":["tampered"],"texParts":["tampered"]},"type":"MathTex","variable":"label","version":1}
+        label.become(MathTex("tampered").move_to(where()))
+        self.wait(1)
+`,
+      "scene.py",
+      "Replaced",
+    );
+    expect(imported).not.toBeNull();
+    if (!imported) return;
+    const entityId = "source:scene.py#Replaced:label";
+    const workingState = createFixtureWorkingState();
+    const proposed = evaluateWorkingState({
+      ...workingState,
+      runtimeSceneState: imported.runtimeSceneState,
+      staticSemanticState: imported.staticSemanticState,
+    });
+    const before = projectProposedState(proposed, 0.5).canvas.entities.find((entity) => entity.id === entityId);
+    const after = projectProposedState(proposed, 1.5).canvas.entities.find((entity) => entity.id === entityId);
+
+    expect(before?.content?.text).toBe("before");
+    expect(after?.content).toBeUndefined();
+    expect(imported.runtimeSceneState.objectGraph.entities[entityId]?.content).toBeUndefined();
+    expect(imported.runtimeSceneState.objectGraph.entities[entityId]?.geometry).toEqual({
+      dimensions: expect.objectContaining({ kind: "unknown" }),
+      position: expect.objectContaining({ kind: "unknown" }),
+      scale: expect.objectContaining({ kind: "unknown" }),
+      style: expect.objectContaining({ kind: "unknown" }),
+    });
+    expect(runtimeSceneStateSchema.parse(JSON.parse(JSON.stringify(imported.runtimeSceneState)))).toEqual(
+      imported.runtimeSceneState,
+    );
   });
 
   it("fails closed for common unmarked dimension mutations without inventing position changes", () => {

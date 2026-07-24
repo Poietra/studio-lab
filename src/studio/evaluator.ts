@@ -11,11 +11,13 @@ import type {
   TimelineObjectTrack,
   WorkingState,
 } from "./model";
+import { UNKNOWN_EDITABLE_CONTENT } from "./editable-content";
 import { STUDIO_STATE_VERSION } from "./model";
 import { evaluateOperation, type EvaluationDraft } from "./operation-registry";
 import {
   isEntityDimensionsValue,
   isPointValue,
+  normalizeContentSamples,
   normalizeDimensionsSamples,
   normalizePositionSamples,
   normalizeScaleSamples,
@@ -105,13 +107,15 @@ function normalizePropertyChannels(draft: EvaluationDraft) {
   draft.propertyChannels = Object.fromEntries(
     Object.entries(draft.propertyChannels).map(([id, channel]) => [
       id,
-      channel.key === "dimensions"
-        ? { ...channel, samples: normalizeDimensionsSamples(channel.samples) }
-        : channel.key === "position"
-          ? { ...channel, samples: normalizePositionSamples(channel.samples) }
-          : channel.key === "scale"
-            ? { ...channel, samples: normalizeScaleSamples(channel.samples) }
-            : channel,
+      channel.key === "content"
+        ? { ...channel, samples: normalizeContentSamples(channel.samples) }
+        : channel.key === "dimensions"
+          ? { ...channel, samples: normalizeDimensionsSamples(channel.samples) }
+          : channel.key === "position"
+            ? { ...channel, samples: normalizePositionSamples(channel.samples) }
+            : channel.key === "scale"
+              ? { ...channel, samples: normalizeScaleSamples(channel.samples) }
+              : channel,
     ]),
   );
 }
@@ -264,7 +268,7 @@ export function sampleProposedState(proposedState: ProposedState, time: number):
         style: { kind: "known" as const, value: {} },
       };
       return {
-        content: isContent(content) ? content : entity.content,
+        content: content === UNKNOWN_EDITABLE_CONTENT ? undefined : isContent(content) ? content : entity.content,
         geometry: {
           ...(entity.geometry ?? fallbackGeometry),
           dimensions: dimensionsKnowledge ?? entity.geometry?.dimensions ?? fallbackGeometry.dimensions,

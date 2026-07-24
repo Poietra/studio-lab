@@ -45,6 +45,12 @@ type AuthoringProgramResult = Readonly<{
   validation: ProgramValidationResult;
 }>;
 
+export type InspectorEntityEdits = Readonly<{
+  content?: EntityContent;
+  dimensions?: EntityDimensions;
+  position?: Point;
+}>;
+
 function provenance(origin: OperationOrigin, evidence: readonly string[]) {
   return { evidence, origin } as const;
 }
@@ -163,6 +169,99 @@ export function createStudioEntitiesProgram(
       transactionId: input.transactionId,
     }),
   };
+}
+
+export function createInspectorEntityEditProgram(
+  input: Readonly<{
+    capturedPlayhead: number;
+    edits: InspectorEntityEdits;
+    entityId: string;
+    from: Readonly<{
+      dimensions?: EntityDimensions;
+      position: Point;
+      scale: number;
+    }>;
+    scene: RuntimeSceneState;
+    transactionId: string;
+  }>,
+): ProgramValidationResult {
+  const entity = input.scene.objectGraph.entities[input.entityId];
+  if (!entity) throw new Error(`Object ${input.entityId} is no longer available.`);
+  if (
+    !entity.lifetime.some(
+      (interval) => input.capturedPlayhead >= interval.start && input.capturedPlayhead < interval.end,
+    )
+  ) {
+    throw new Error("The selected object is not present at the source anchor.");
+  }
+  const shape = entity.type === "Circle" ? "circle" : entity.type === "Rectangle" ? "rectangle" : null;
+  if (input.edits.dimensions && !shape) {
+    throw new Error(`${entity.type} does not support shape geometry editing.`);
+  }
+  if (input.edits.dimensions && !input.from.dimensions) {
+    throw new Error("Shape geometry editing requires known current dimensions.");
+  }
+  if (input.edits.content && entity.type !== "Text" && entity.type !== "MathTex") {
+    throw new Error(`${entity.type} does not support content editing.`);
+  }
+  if (input.edits.content && entity.sourceIdentity.kind === "unknown" && !entity.transactionId) {
+    throw new Error("Studio cannot edit content without a known or Studio-generated source identity.");
+  }
+  if (Object.keys(input.edits).length === 0) {
+    throw new Error("Change at least one Inspector field before creating a draft.");
+  }
+
+  const interval = { end: input.capturedPlayhead, start: input.capturedPlayhead };
+  const operations: CanonicalEditOperation[] = [];
+  if (input.edits.dimensions && input.from.dimensions && shape) {
+    operations.push({
+      dependsOn: [],
+      entityId: input.entityId,
+      from: { dimensions: input.from.dimensions, position: input.from.position },
+      id: operationId(input.transactionId, "set-geometry"),
+      interval,
+      kind: "ResizeEntity",
+      provenance: provenance("studio-default", ["Inspector geometry fields", "center anchored"]),
+      scale: input.from.scale,
+      shape,
+      to: {
+        dimensions: input.edits.dimensions,
+        position: input.edits.position ?? input.from.position,
+      },
+    });
+  } else if (input.edits.position) {
+    operations.push({
+      dependsOn: [],
+      entityId: input.entityId,
+      id: operationId(input.transactionId, "set-position"),
+      interval,
+      key: "position",
+      kind: "SetProperty",
+      provenance: provenance("studio-default", ["Inspector position fields", "one-shot position"]),
+      value: input.edits.position,
+    });
+  }
+  if (input.edits.content) {
+    operations.push({
+      dependsOn: [],
+      entityId: input.entityId,
+      id: operationId(input.transactionId, "set-content"),
+      interval,
+      key: "content",
+      kind: "SetProperty",
+      provenance: provenance("studio-default", ["Inspector content field", entity.type]),
+      value: input.edits.content,
+    });
+  }
+  if (operations.length === 0) {
+    throw new Error("Change at least one Inspector field before creating a draft.");
+  }
+  return authoringProgram(operations, {
+    capturedPlayhead: input.capturedPlayhead,
+    origin: "studio-default",
+    scene: input.scene,
+    transactionId: input.transactionId,
+  });
 }
 
 export function createRemoveEntitiesProgram(

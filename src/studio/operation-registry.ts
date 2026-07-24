@@ -14,6 +14,7 @@ import type {
   TimelineEvent,
 } from "./model";
 import { exactEntityScaleAt, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./magic-edit-capabilities";
+import { canonicalEditableContent } from "./editable-content";
 import type { CanonicalEditOperation, CanonicalEditProgram, ChannelAccess, ProgramValidationIssue } from "./operations";
 import { insertedProgramDuration } from "./program-composition";
 import {
@@ -228,6 +229,11 @@ function setPropertyExecution(
   operation: Extract<CanonicalEditOperation, { kind: "SetProperty" }>,
 ): OperationExecutionCapabilities {
   if (operation.key === "position" && isPointValue(operation.value)) return SUPPORTED_EXECUTION;
+  if (operation.key === "content") {
+    if (canonicalEditableContent(operation.value, "Text") || canonicalEditableContent(operation.value, "MathTex"))
+      return SUPPORTED_EXECUTION;
+    return previewOnlyExecution("SetProperty content has no truthful source lowering.");
+  }
   return previewOnlyExecution(
     `SetProperty ${operation.key} can be previewed, but it has no truthful Manim source lowering.`,
   );
@@ -607,6 +613,39 @@ function matchingResizeStart(
   );
 }
 
+function setPropertyIssues(
+  operation: Extract<CanonicalEditOperation, { kind: "SetProperty" }>,
+  scene: RuntimeSceneState,
+) {
+  const issues = entityIssues([operation.entityId], operation, scene);
+  if (
+    operation.key === "position" &&
+    (!isPointValue(operation.value) || !Number.isFinite(operation.value.x) || !Number.isFinite(operation.value.y))
+  ) {
+    issues.push({
+      code: "schema-invalid" as const,
+      field: "value",
+      message: "Position edits require finite x and y values.",
+      operationId: operation.id,
+      severity: "error" as const,
+    });
+  }
+  if (operation.key === "content") {
+    const entity = scene.objectGraph.entities[operation.entityId];
+    const type = entity?.type === "Text" || entity?.type === "MathTex" ? entity.type : null;
+    if (!type || !canonicalEditableContent(operation.value, type)) {
+      issues.push({
+        code: "schema-invalid" as const,
+        field: "value",
+        message: "Content edits must match a Text or MathTex target with non-empty content.",
+        operationId: operation.id,
+        severity: "error" as const,
+      });
+    }
+  }
+  return issues;
+}
+
 export const OPERATION_REGISTRY = {
   CreateEntity: {
     access: (operation) => ({
@@ -703,7 +742,7 @@ export const OPERATION_REGISTRY = {
     lifetimeRequirement: "existing-at-start",
     projection: allEntityProjections,
     targetRequirement: "entity",
-    validate: (operation, scene) => entityIssues([operation.entityId], operation, scene),
+    validate: setPropertyIssues,
   } satisfies Capability<"SetProperty">,
   AnimateProperty: {
     access: (operation) => ({

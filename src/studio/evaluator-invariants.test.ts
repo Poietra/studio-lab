@@ -42,6 +42,52 @@ function programWith(
   };
 }
 
+function evaluateImportedContentEdit({
+  className,
+  source,
+  sourceId,
+  transactionId,
+}: Readonly<{ className: string; source: string; sourceId: string; transactionId: string }>) {
+  const imported = importManimScene(source, sourceId, className);
+  if (!imported) throw new Error(`Could not import ${className} from ${sourceId}.`);
+  const entityId = `source:${sourceId}#${className}:label`;
+  const operation: CanonicalEditOperation = {
+    dependsOn: [],
+    entityId,
+    id: operationId(transactionId, "content"),
+    interval: { end: 1, start: 1 },
+    key: "content",
+    kind: "SetProperty",
+    provenance: { evidence: [], origin: "fixture" },
+    value: { displayLines: ["studio"], text: "studio" },
+  };
+  const program = { ...programWith([operation], transactionId, 1), loweringStatus: "supported" as const };
+  const validation = validateAndScheduleProgram(program, imported.runtimeSceneState);
+  expect(validation.kind, JSON.stringify(validation.issues)).toBe("valid");
+  const workingState: WorkingState = {
+    appliedPrograms: [],
+    editorContext: {
+      activeSceneId: imported.sceneId,
+      playhead: 1,
+      selection: [entityId],
+      version: STUDIO_STATE_VERSION,
+      viewport: { height: 360, width: 640 },
+    },
+    runtimeSceneState: imported.runtimeSceneState,
+    sourceSnapshot: {
+      configId: "test",
+      hash: imported.sourceHash,
+      sourceId,
+      version: STUDIO_STATE_VERSION,
+    },
+    stagedPrograms: [programRecord(validation.program, validation)],
+    staticSemanticState: imported.staticSemanticState,
+    version: STUDIO_STATE_VERSION,
+  };
+
+  return { entityId, operation, proposed: evaluateWorkingState(workingState) };
+}
+
 describe("Studio evaluator invariants", () => {
   it("rejects an EditProgram that declares an intent but contains no operations", () => {
     const validation = validateAndScheduleProgram(programWith([], "empty-program"), STUDIO_FIXTURE_SCENE);
@@ -300,6 +346,101 @@ class Resizing(Scene):
       kind: "unknown",
       reason: expect.stringMatching(/unverified resize/i),
     });
+  });
+
+  it("keeps a later verified source content replacement authoritative after a Studio edit", () => {
+    const source = `from manim import *
+
+class ContentChronology(Scene):
+    def construct(self):
+        label = Text("base")
+        self.add(label)
+        self.wait(1)
+        # poietra:anchor 1.000
+        self.wait(1)
+        # poietra:content {"content":{"displayLines":["source future"],"text":"source future"},"type":"Text","variable":"label","version":1}
+        label.become(Text("source future").match_style(label).match_height(label).move_to(label.get_center()))
+        self.wait(1)
+`;
+    const { entityId, operation, proposed } = evaluateImportedContentEdit({
+      className: "ContentChronology",
+      source,
+      sourceId: "content-known.py",
+      transactionId: "content-before-known-source-replacement",
+    });
+    const samples = proposed.evaluatedScene.propertyChannels[`${entityId}/content`]?.samples ?? [];
+    expect(samples.map((sample) => sample.provenanceId)).toEqual([
+      expect.stringMatching(/:label:content$/),
+      `${operation.id}/provenance`,
+      expect.stringMatching(/:label:content:\d+$/),
+    ]);
+    const contentAt = (time: number) =>
+      projectProposedState(proposed, time).canvas.entities.find((entity) => entity.id === entityId)?.content;
+    expect(contentAt(1.5)).toMatchObject({ text: "studio" });
+    expect(contentAt(2.5)).toMatchObject({ text: "source future" });
+  });
+
+  it("keeps a verified source content replacement authoritative at the same anchor as a Studio edit", () => {
+    const source = `from manim import *
+
+class SameAnchorContentChronology(Scene):
+    def construct(self):
+        label = Text("base")
+        self.add(label)
+        self.wait(1)
+        # poietra:anchor 1.000
+        # poietra:content {"content":{"displayLines":["source same anchor"],"text":"source same anchor"},"type":"Text","variable":"label","version":1}
+        label.become(Text("source same anchor").match_style(label).match_height(label).move_to(label.get_center()))
+        self.wait(1)
+`;
+    const { entityId, operation, proposed } = evaluateImportedContentEdit({
+      className: "SameAnchorContentChronology",
+      source,
+      sourceId: "content-same-anchor.py",
+      transactionId: "content-at-known-source-replacement",
+    });
+    const samples = proposed.evaluatedScene.propertyChannels[`${entityId}/content`]?.samples ?? [];
+    expect(samples.map((sample) => sample.provenanceId)).toEqual([
+      expect.stringMatching(/:label:content$/),
+      `${operation.id}/provenance`,
+      expect.stringMatching(/:label:content:\d+$/),
+    ]);
+    const contentAt = (time: number) =>
+      projectProposedState(proposed, time).canvas.entities.find((entity) => entity.id === entityId)?.content;
+    expect(contentAt(0.999)).toMatchObject({ text: "base" });
+    expect(contentAt(1)).toMatchObject({ text: "source same anchor" });
+    expect(contentAt(1.5)).toMatchObject({ text: "source same anchor" });
+  });
+
+  it("keeps a later unverified source content replacement Unknown after a Studio edit", () => {
+    const source = `from manim import *
+
+class UnknownContentChronology(Scene):
+    def construct(self):
+        label = Text("base")
+        self.add(label)
+        self.wait(1)
+        # poietra:anchor 1.000
+        self.wait(1)
+        label.become(Text("source future"))
+        self.wait(1)
+`;
+    const { entityId, operation, proposed } = evaluateImportedContentEdit({
+      className: "UnknownContentChronology",
+      source,
+      sourceId: "content-unknown.py",
+      transactionId: "content-before-unknown-source-replacement",
+    });
+    const samples = proposed.evaluatedScene.propertyChannels[`${entityId}/content`]?.samples ?? [];
+    expect(samples.map((sample) => sample.provenanceId)).toEqual([
+      expect.stringMatching(/:label:content$/),
+      `${operation.id}/provenance`,
+      expect.stringMatching(/:label:content-unknown:\d+$/),
+    ]);
+    const contentAt = (time: number) =>
+      projectProposedState(proposed, time).canvas.entities.find((entity) => entity.id === entityId)?.content;
+    expect(contentAt(1.5)).toMatchObject({ text: "studio" });
+    expect(contentAt(2.5)).toBeUndefined();
   });
 
   it("sorts and rebases relative scale samples around an inserted absolute scale", () => {

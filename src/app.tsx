@@ -14,6 +14,7 @@ import { exportManimSource } from "./render-pipeline/client";
 import { cn } from "./lib/cn";
 import {
   createImportedEntityLifetimeProgram,
+  createInspectorEntityEditProgram,
   createRemoveEntitiesProgram,
   createSceneDurationProgram,
   createStudioEntitiesProgram,
@@ -25,8 +26,9 @@ import {
 } from "./studio/authoring-commands";
 import { commandForShortcut, isEditableShortcutTarget, type StudioCommandId } from "./studio/commands";
 import { projectedPositions, validateSuggestionDraft, validatedProgramRecord } from "./studio/draft-validation";
-import type { EntityDimensions, Point, ProgramRecord, ProposedState, RuntimeSceneState } from "./studio/model";
+import type { Point, ProgramRecord, ProposedState, RuntimeSceneState } from "./studio/model";
 import { magicEditCapabilities, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./studio/magic-edit-capabilities";
+import type { InspectorEditField, ValidatedInspectorEdits } from "./studio/inspector-edit";
 import {
   adjustAppliedMotionClipControl,
   appliedMotionClipReadOnlyReason,
@@ -54,7 +56,6 @@ import {
   createDirectManipulationScaleProgram,
 } from "./studio/suggestion-program";
 import {
-  centeredShapeGeometry,
   hasShapeDimensions,
   resizeKindForType,
   resizeHandleUsesDelta,
@@ -285,6 +286,7 @@ export function App() {
   const [dragPreview, setDragPreview] = useState<EntityDragPreview | null>(null);
   const [geometryPreview, setGeometryPreview] = useState<EntityGeometryPreview | null>(null);
   const [scalePreview, setScalePreview] = useState<EntityScalePreview | null>(null);
+  const [inspectorReturnFocus, setInspectorReturnFocus] = useState<InspectorEditField | null>(null);
   const suggestionContext = useRef("");
   const canvasDrag = useRef<CanvasDragState | null>(null);
   const canvasResize = useRef<CanvasResizeState | null>(null);
@@ -389,6 +391,7 @@ export function App() {
     setDragPreview(null);
     setGeometryPreview(null);
     setScalePreview(null);
+    setInspectorReturnFocus(null);
   }, [activeScene?.sceneId, activeScene?.sourceHash, activeProjectId]);
 
   const previewReplacement =
@@ -1799,29 +1802,58 @@ export function App() {
     );
   }
 
-  function resizeEntityDimensionsFromInspector(entityId: string, dimensions: EntityDimensions) {
+  function editEntityFromInspector(entityId: string, edits: ValidatedInspectorEdits, returnFocus: InspectorEditField) {
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
-    const shape = entity ? resizeKindForType(entity.type) : null;
-    if (!entity || !shape) return false;
-    if (
-      entity.geometry.dimensions.kind === "unknown" ||
-      entity.geometry.position.kind === "unknown" ||
-      entity.geometry.scale.kind === "unknown"
-    ) {
-      setDraftError("Studio cannot resize this shape because its source geometry is runtime-dependent.");
+    if (!entity) return false;
+    if (edits.position && entity.geometry.position.kind === "unknown") {
+      setDraftError(`Studio cannot move ${entityLabel(entity)} safely: ${entity.geometry.position.reason}`);
       return false;
     }
-    const from = { dimensions: entity.geometry.dimensions.value, position: entity.position };
-    if (JSON.stringify(from.dimensions) === JSON.stringify(dimensions)) return false;
-    return installEntityGeometryDraft(
-      entityId,
-      from,
-      centeredShapeGeometry(from, dimensions),
-      shape,
-      entity.scale,
-      false,
-      `studio-shape-resize-input-${crypto.randomUUID()}`,
+    if (
+      edits.dimensions &&
+      (entity.geometry.dimensions.kind === "unknown" ||
+        entity.geometry.position.kind === "unknown" ||
+        entity.geometry.scale.kind === "unknown")
+    ) {
+      setDraftError("Studio cannot edit this shape because its source geometry is runtime-dependent.");
+      return false;
+    }
+    const gestureContext = directGestureContext();
+    if (!gestureContext.proposedState) return false;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
     );
+    const anchor = manualAuthoringAnchor({
+      action: "Inspector edit",
+      requireAlignedPlayhead: true,
+      scene: sourceScene,
+      sourcePrograms: gestureContext.sourcePrograms,
+      targetEntityIds: [entityId],
+    });
+    if (!anchor) return false;
+    try {
+      const validation = createInspectorEntityEditProgram({
+        capturedPlayhead: anchor.sourceTime,
+        edits,
+        entityId,
+        from: {
+          dimensions: entity.geometry.dimensions.kind === "known" ? entity.geometry.dimensions.value : undefined,
+          position: entity.position,
+          scale: entity.scale,
+        },
+        scene: sourceScene,
+        transactionId: `studio-inspector-${crypto.randomUUID()}`,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      if (!installCanonicalDraft(validated.record, [entityId], gestureContext.sourcePrograms)) return false;
+      setInspectorReturnFocus(returnFocus);
+      return true;
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The Inspector edit could not be staged.");
+      return false;
+    }
   }
 
   function installPositionDraft(
@@ -2036,6 +2068,7 @@ export function App() {
     setDragPreview(null);
     setGeometryPreview(null);
     setScalePreview(null);
+    setInspectorReturnFocus(null);
     leaveWorkspace();
   }
 
@@ -2281,13 +2314,13 @@ export function App() {
               draftApplyPending={draftApplyPending}
               draftOperation={draftOperation}
               draftProgram={draftProgram}
+              inspectorReturnFocus={inspectorReturnFocus}
               onApplyDraft={() => void applyDraft()}
               onDiscardDraft={discardDraft}
               onDraftOperationChange={updateDraftOperation}
-              onEntityDimensionsChange={(entityId, dimensions) =>
-                void resizeEntityDimensionsFromInspector(entityId, dimensions)
-              }
+              onEntityEdit={editEntityFromInspector}
               onEntityScaleChange={(entityId, scale) => void resizeEntityFromInspector(entityId, scale)}
+              onInspectorFocusRestored={() => setInspectorReturnFocus(null)}
               onRenderSessionChange={retainRenderSession}
               onSourceChanged={async () => {
                 const identity = activeEditorSessionIdentity();

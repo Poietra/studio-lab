@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import { analyzePythonSource, isPythonStatementStart, isStandalonePythonComment } from "./python-source-analysis";
+import { canonicalEditableContent, UNKNOWN_EDITABLE_CONTENT } from "../studio/editable-content";
 import {
   STUDIO_STATE_VERSION,
   type EntityContent,
@@ -26,8 +27,17 @@ export type ImportedManimEntity = Readonly<{
   sourceVariable: string;
 }>;
 
+export type ImportedContentReplacementSafety =
+  | Readonly<{ kind: "safe" }>
+  | Readonly<{
+      evidence: readonly string[];
+      kind: "unsafe";
+      reason: string;
+    }>;
+
 export type ImportedManimScene = Readonly<{
   anchors: readonly number[];
+  contentReplacementSafety: Readonly<Record<string, ImportedContentReplacementSafety>>;
   initialVisibleSourceVariables: readonly string[];
   initialization: readonly string[];
   name: string;
@@ -66,6 +76,7 @@ export class AmbiguousSourceSceneError extends Error {
 
 type MutableEntity = {
   content?: EntityContent;
+  contentReplacementSafety: ImportedContentReplacementSafety;
   dimensions: Knowledge<EntityDimensions>;
   id: string;
   initialization: string;
@@ -110,6 +121,7 @@ const POSITION_MARKER_PATTERN = /^\s*#\s*poietra:position(?:\s+(.*))?\s*$/;
 const MOTION_MARKER_PATTERN = /^\s*#\s*poietra:motion(?:\s+(.*))?\s*$/;
 const SCALE_MARKER_PATTERN = /^\s*#\s*poietra:scale(?:\s+(.*))?\s*$/;
 const DIMENSIONS_MARKER_PATTERN = /^\s*#\s*poietra:dimensions(?:\s+(.*))?\s*$/;
+const CONTENT_MARKER_PATTERN = /^\s*#\s*poietra:content(?:\s+(.*))?\s*$/;
 const identifierSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
 const markerPointSchema = z.object({ x: z.number().finite(), y: z.number().finite() }).strict();
 const positionMarkerSchema = z.discriminatedUnion("kind", [
@@ -206,6 +218,30 @@ const scaleMarkerSchema = z.discriminatedUnion("kind", [
         )
         .min(1)
         .max(128),
+      version: z.literal(1),
+    })
+    .strict(),
+]);
+const markerContentBaseSchema = z.object({
+  displayLines: z.array(z.string().max(2_000)).min(1).max(2_000),
+  label: z.string().max(2_000).optional(),
+});
+const contentMarkerSchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      content: markerContentBaseSchema.extend({ text: z.string().min(1).max(2_000) }).strict(),
+      type: z.literal("Text"),
+      variable: identifierSchema,
+      version: z.literal(1),
+    })
+    .strict(),
+  z
+    .object({
+      content: markerContentBaseSchema
+        .extend({ texParts: z.array(z.string().min(1).max(2_000)).min(1).max(16) })
+        .strict(),
+      type: z.literal("MathTex"),
+      variable: identifierSchema,
       version: z.literal(1),
     })
     .strict(),
@@ -794,6 +830,21 @@ function markerBefore(statements: readonly SourceStatement[], statementIndex: nu
   return undefined;
 }
 
+function verifiedContentReplacement(statement: string, marker: z.infer<typeof contentMarkerSchema>) {
+  const constructor =
+    marker.type === "Text"
+      ? `Text(${JSON.stringify(marker.content.text)})`
+      : `MathTex(${marker.content.texParts.map((part) => JSON.stringify(part)).join(", ")})`;
+  const variable = marker.variable;
+  return (
+    statement.trim() ===
+    `${variable}.become(${constructor}` +
+      `.match_style(${variable})` +
+      `.match_height(${variable})` +
+      `.move_to(${variable}.get_center()))`
+  );
+}
+
 type ResizeMarkerEntry = z.infer<typeof resizeMarkerEntrySchema>;
 
 const DIMENSION_MUTATING_METHOD_PATTERN = [
@@ -860,6 +911,145 @@ function animationClassRotates(statement: string, variable: string) {
 
 function suffixRotates(suffix: string) {
   return /\.rotate\s*\(/.test(suffix);
+}
+
+function unsafeContentReplacement(reason: string, evidence: readonly string[]): ImportedContentReplacementSafety {
+  return { evidence, kind: "unsafe", reason };
+}
+
+const CONTENT_REPLACEMENT_SAFE_SUFFIX_METHODS = new Set([
+  "align_to",
+  "move_to",
+  "next_to",
+  "scale",
+  "set_color",
+  "set_fill",
+  "set_opacity",
+  "set_stroke",
+  "set_x",
+  "set_y",
+  "set_z",
+  "shift",
+  "to_corner",
+  "to_edge",
+]);
+
+function chainedMethods(suffix: string) {
+  const methods: Array<Readonly<{ argumentsSource: string; name: string }>> = [];
+  let cursor = 0;
+  while (cursor < suffix.length) {
+    while (/\s/.test(suffix[cursor] ?? "")) cursor += 1;
+    if (cursor >= suffix.length) return methods;
+    if (suffix[cursor] === "#") return methods;
+    if (suffix[cursor] !== ".") return null;
+    cursor += 1;
+    while (/\s/.test(suffix[cursor] ?? "")) cursor += 1;
+    const method = suffix.slice(cursor).match(/^([A-Za-z_][A-Za-z0-9_]*)/)?.[1];
+    if (!method) return null;
+    cursor += method.length;
+    while (/\s/.test(suffix[cursor] ?? "")) cursor += 1;
+    if (suffix[cursor] !== "(") return null;
+    const closing = matchingCallEnd(suffix, cursor);
+    if (closing === null) return null;
+    methods.push({ argumentsSource: suffix.slice(cursor + 1, closing), name: method });
+    cursor = closing + 1;
+  }
+  return methods;
+}
+
+function isStaticStringLiteral(source: string) {
+  const value = source.trim();
+  if (!/^(?:[rRuU])?(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')$/s.test(value)) return false;
+  return stringLiterals(value).length === 1;
+}
+
+function unsafeScaleMutation(statement: string, sourceVariable: string, animated: boolean) {
+  if (!variableMethodCall(statement, sourceVariable, animated, "scale")) return false;
+  const variable = sourceVariable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const receiver = `${variable}\\s*\\.\\s*${animated ? "animate\\s*\\.\\s*" : ""}`;
+  const scaleCalls = statementExpressions(statement, animated).flatMap((expression) => [
+    ...expression.matchAll(new RegExp(`\\b${receiver}scale\\s*\\(\\s*([^()]*)\\s*\\)`, "g")),
+  ]);
+  return scaleCalls.length === 0 || scaleCalls.some((call) => positiveNumberLiteral(call[1] ?? "") === null);
+}
+
+function initialContentReplacementSafety(
+  type: string,
+  argumentsSource: string,
+  suffix: string,
+): ImportedContentReplacementSafety {
+  if (type !== "MathTex" && type !== "Text") {
+    return unsafeContentReplacement(`${type} does not support content-only replacement.`, [`${type}(...)`]);
+  }
+  const { keywords, positional } = constructorArguments(argumentsSource);
+  if (keywords.size > 0) {
+    return unsafeContentReplacement(
+      `${type} uses constructor keyword arguments that Studio cannot preserve during content replacement.`,
+      [...keywords.keys()],
+    );
+  }
+  if (
+    (type === "Text" && positional.length !== 1) ||
+    (type === "MathTex" && positional.length === 0) ||
+    positional.some((argument) => !isStaticStringLiteral(argument))
+  ) {
+    return unsafeContentReplacement(`${type} content replacement requires static string literal arguments.`, [
+      argumentsSource,
+    ]);
+  }
+  const suffixMethods = chainedMethods(suffix);
+  if (
+    suffixMethods === null ||
+    suffixMethods.some(
+      (method) =>
+        !CONTENT_REPLACEMENT_SAFE_SUFFIX_METHODS.has(method.name) ||
+        (method.name === "scale" && positiveNumberLiteral(method.argumentsSource) === null),
+    )
+  ) {
+    return unsafeContentReplacement(
+      `${type} has an unsupported chained source mutation that content-only replacement cannot preserve.`,
+      [suffix.trim()],
+    );
+  }
+  return { kind: "safe" };
+}
+
+function contentReplacementMutationReason(statement: string, entity: MutableEntity) {
+  if (entity.type !== "MathTex" && entity.type !== "Text") return null;
+  const animated = statement.startsWith("self.play(");
+  if (
+    mutatesDimensions(statement, entity.sourceVariable, animated) ||
+    mutatesRotation(statement, entity.sourceVariable, animated) ||
+    (animated && animationClassRotates(statement, entity.sourceVariable)) ||
+    unsafeScaleMutation(statement, entity.sourceVariable, animated) ||
+    variableMethodCall(
+      statement,
+      entity.sourceVariable,
+      animated,
+      "apply_complex_function|apply_function|apply_matrix|flip|set_color_by_gradient|set_color_by_tex|set_points|shear",
+    )
+  ) {
+    return "Source geometry is changed in a way that content-only replacement cannot preserve.";
+  }
+  if (variableMethodCall(statement, entity.sourceVariable, animated, "become")) {
+    return "Source content is replaced by an expression that Studio cannot verify.";
+  }
+  const variable = entity.sourceVariable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  if (
+    new RegExp(
+      `\\b(?:ReplacementTransform|Transform|TransformMatchingShapes|TransformMatchingTex)\\s*\\(\\s*${variable}\\b`,
+    ).test(statement)
+  ) {
+    return "A source Transform changes the object's content or geometry before the selected anchor.";
+  }
+  if (
+    new RegExp(
+      `\\b${variable}\\s*\\.\\s*(?:font|font_size|original_text|submobjects|tex_string|tex_strings|text)\\s*=`,
+    ).test(statement)
+  ) {
+    return "A source assignment changes content-dependent object state before the selected anchor.";
+  }
+  return null;
 }
 
 function mutatesPosition(statement: string, variable: string, animated: boolean) {
@@ -935,6 +1125,22 @@ function simpleShiftVector(statement: string, sourceVariable: string) {
   return Number.isFinite(vector.x) && Number.isFinite(vector.y) ? vector : null;
 }
 
+/**
+ * Reports whether the tracked object is used by one exact, importer-supported
+ * shift animation argument. Other `self.play` arguments are allowed; callers
+ * remain responsible for rejecting additional references to the object.
+ */
+export function isSimpleShiftAnimationStatement(statement: string, sourceVariable: string) {
+  const trimmed = statement.trim();
+  if (!trimmed.startsWith("self.play(") || !trimmed.endsWith(")")) return false;
+  const argumentsSource = trimmed.slice(trimmed.indexOf("(") + 1, -1);
+  const variable = sourceVariable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const exactShift = new RegExp(`^${variable}\\s*\\.\\s*animate\\s*\\.\\s*shift\\s*\\(\\s*[^()]*\\s*\\)$`, "s");
+  return splitTopLevelArguments(argumentsSource).some(
+    (argument) => exactShift.test(argument) && simpleShiftVector(`self.play(${argument})`, sourceVariable) !== null,
+  );
+}
+
 function appendChannelSample(
   channelSamples: Map<string, PropertyChannelSample[]>,
   entityId: string,
@@ -1001,6 +1207,7 @@ export function importManimScene(
     const initialScale = initialScaleFrom(suffix);
     const entity: MutableEntity = {
       content: entityContent(type, sourceVariable, argumentsSource),
+      contentReplacementSafety: initialContentReplacementSafety(type, argumentsSource, suffix),
       dimensions:
         suffixMutatesDimensions(suffix) || (type === "Rectangle" && suffixRotates(suffix))
           ? unknown("Initial dimensions are changed by a chained source method.", [suffix.trim()])
@@ -1037,9 +1244,20 @@ export function importManimScene(
   let insideIncomingEvents = false;
   const events: TimelineEvent[] = [];
   const dimensionsSamples = new Map<string, PropertyChannelSample[]>();
+  const contentSamples = new Map<string, PropertyChannelSample[]>();
   const positionSamples = new Map<string, PropertyChannelSample[]>();
   const scaleSamples = new Map<string, PropertyChannelSample[]>();
   for (const entity of mutableEntities) {
+    if (entity.content) {
+      contentSamples.set(entity.id, [
+        {
+          interval: { end: Number.MAX_SAFE_INTEGER, start: 0 },
+          kind: "exact",
+          provenanceId: `import:${sceneId}:${entity.sourceVariable}:content`,
+          value: entity.content,
+        },
+      ]);
+    }
     dimensionsSamples.set(entity.id, [
       {
         interval: { end: Number.MAX_SAFE_INTEGER, start: 0 },
@@ -1122,6 +1340,76 @@ export function importManimScene(
       });
       cursor += wait;
       continue;
+    }
+    const contentMarker = markerBefore(statements, statementIndex, CONTENT_MARKER_PATTERN);
+    const directContent = statement.text.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*become\(\s*(MathTex|Text)\s*\(/s);
+    if (directContent) {
+      const parsed = contentMarkerSchema.safeParse(contentMarker);
+      const entity = byVariable.get(directContent[1]);
+      if (
+        entity &&
+        parsed.success &&
+        parsed.data.variable === directContent[1] &&
+        parsed.data.type === directContent[2] &&
+        entity.type === parsed.data.type &&
+        canonicalEditableContent(parsed.data.content, parsed.data.type) &&
+        verifiedContentReplacement(statement.text, parsed.data)
+      ) {
+        appendChannelSample(contentSamples, entity.id, {
+          interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
+          kind: "exact",
+          provenanceId: `import:${sceneId}:${entity.sourceVariable}:content:${statement.line}`,
+          value: parsed.data.content,
+        });
+        entity.content = parsed.data.content;
+        entity.contentReplacementSafety = { kind: "safe" };
+      } else if (entity) {
+        const evidence = [statement.text.trim()];
+        appendChannelSample(contentSamples, entity.id, {
+          interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
+          kind: "exact",
+          provenanceId: `import:${sceneId}:${entity.sourceVariable}:content-unknown:${statement.line}`,
+          value: UNKNOWN_EDITABLE_CONTENT,
+        });
+        entity.content = undefined;
+        entity.contentReplacementSafety = unsafeContentReplacement(
+          "Content is replaced by an unverified become expression.",
+          evidence,
+        );
+        const dimensions = entity.dimensions.kind === "known" ? entity.dimensions.value : {};
+        entity.dimensions = unknown("Content is replaced by an unverified become expression.", evidence);
+        entity.positionKnowledge = unknown("Position may change in an unverified become expression.", evidence);
+        entity.scaleKnowledge = unknown("Scale may change in an unverified become expression.", evidence);
+        entity.style = unknown("Style may change in an unverified become expression.", evidence);
+        appendChannelSample(dimensionsSamples, entity.id, {
+          interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
+          kind: "exact",
+          knowledge: entity.dimensions,
+          provenanceId: `import:${sceneId}:${entity.sourceVariable}:content-dimensions:${statement.line}`,
+          value: dimensions,
+        });
+        appendChannelSample(positionSamples, entity.id, {
+          interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
+          kind: "exact",
+          knowledge: entity.positionKnowledge,
+          provenanceId: `import:${sceneId}:${entity.sourceVariable}:content-position:${statement.line}`,
+          value: entity.position,
+        });
+        appendChannelSample(scaleSamples, entity.id, {
+          interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
+          kind: "exact",
+          knowledge: entity.scaleKnowledge,
+          provenanceId: `import:${sceneId}:${entity.sourceVariable}:content-scale:${statement.line}`,
+          value: entity.scale,
+        });
+      }
+      continue;
+    }
+    for (const entity of mutableEntities) {
+      const reason = contentReplacementMutationReason(statement.text, entity);
+      if (reason && entity.contentReplacementSafety.kind === "safe") {
+        entity.contentReplacementSafety = unsafeContentReplacement(reason, [statement.text.trim()]);
+      }
     }
     const positionMarker = markerBefore(statements, statementIndex, POSITION_MARKER_PATTERN);
     const moveToVariable = statement.text.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*move_to\s*\(/s)?.[1];
@@ -1564,14 +1852,15 @@ export function importManimScene(
     ]),
   );
   const propertyChannels: Record<string, PropertyChannel> = Object.fromEntries(
-    mutableEntities.flatMap((entity) =>
-      (
-        [
-          ["dimensions", dimensionsSamples.get(entity.id) ?? []],
-          ["position", positionSamples.get(entity.id) ?? []],
-          ["scale", scaleSamples.get(entity.id) ?? []],
-        ] as const
-      ).map(([key, samples]) => [
+    mutableEntities.flatMap((entity) => {
+      const channels: Array<readonly [PropertyChannel["key"], readonly PropertyChannelSample[]]> = [
+        ["dimensions", dimensionsSamples.get(entity.id) ?? []],
+        ["position", positionSamples.get(entity.id) ?? []],
+        ["scale", scaleSamples.get(entity.id) ?? []],
+      ];
+      const content = contentSamples.get(entity.id);
+      if (content) channels.unshift(["content", content]);
+      return channels.map(([key, samples]) => [
         `${entity.id}/${key}`,
         {
           entityId: entity.id,
@@ -1581,24 +1870,9 @@ export function importManimScene(
             interval: { ...sample.interval, end: Math.min(sample.interval.end, duration) },
           })),
         },
-      ]),
-    ),
+      ]);
+    }),
   );
-  for (const entity of mutableEntities) {
-    if (!entity.content) continue;
-    propertyChannels[`${entity.id}/content`] = {
-      entityId: entity.id,
-      key: "content",
-      samples: [
-        {
-          interval: { end: duration, start: 0 },
-          kind: "exact",
-          provenanceId: `import:${sceneId}:${entity.sourceVariable}:content`,
-          value: entity.content,
-        },
-      ],
-    };
-  }
   const runtimeSceneState: RuntimeSceneState = {
     constraintGraph: {
       constraints: mutableEntities.flatMap((entity) =>
@@ -1648,6 +1922,11 @@ export function importManimScene(
     .map((entity) => entity.sourceVariable);
   return {
     anchors,
+    contentReplacementSafety: Object.fromEntries(
+      mutableEntities
+        .filter((entity) => entity.type === "MathTex" || entity.type === "Text")
+        .map((entity) => [entity.sourceVariable, entity.contentReplacementSafety]),
+    ),
     initialVisibleSourceVariables,
     initialization: mutableEntities
       .filter(

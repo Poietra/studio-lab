@@ -1,13 +1,20 @@
 import { renderRequestPrograms, type ProgramRenderRequest, type SingleProgramRenderRequest } from "./contracts";
 import { analyzePythonSource, isPythonStatementStart } from "./python-source-analysis";
-import { findSourceComments, findSourceSceneBlock, findSourceSceneComments, importManimScene } from "./source-import";
+import {
+  findSourceComments,
+  findSourceSceneBlock,
+  findSourceSceneComments,
+  importManimScene,
+  isSimpleShiftAnimationStatement,
+} from "./source-import";
 import {
   pythonReferenceClosure,
   PythonReferenceAnalysisError,
-  referencedPythonReference,
+  referencedPythonReferences,
 } from "./python-reference-analysis";
+import { canonicalEditableContent, type EditableContentType } from "../studio/editable-content";
 import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "../studio/magic-edit-capabilities";
-import type { MotionEasing } from "../studio/model";
+import type { EntityContent, MotionEasing } from "../studio/model";
 import {
   EDIT_OPERATION_VERSION,
   type CanonicalEditOperation,
@@ -288,7 +295,10 @@ function markerPoint(point: Readonly<{ x: number; y: number }>, viewport: Readon
   };
 }
 
-function sourceMarker(kind: "dimensions" | "motion" | "position" | "scale", value: Readonly<Record<string, unknown>>) {
+function sourceMarker(
+  kind: "content" | "dimensions" | "motion" | "position" | "scale",
+  value: Readonly<Record<string, unknown>>,
+) {
   return `# poietra:${kind} ${JSON.stringify({ ...value, version: 1 })}`;
 }
 
@@ -394,6 +404,37 @@ function isPoint(value: unknown): value is Readonly<{ x: number; y: number }> {
     "y" in value &&
     typeof value.x === "number" &&
     typeof value.y === "number"
+  );
+}
+
+function contentTarget(value: unknown): Readonly<{
+  content: EntityContent;
+  constructor: string;
+  type: "MathTex" | "Text";
+}> | null {
+  const candidate = value as Partial<EntityContent> | null;
+  const type: EditableContentType | null =
+    typeof candidate?.text === "string" ? "Text" : Array.isArray(candidate?.texParts) ? "MathTex" : null;
+  if (!type) return null;
+  const content = canonicalEditableContent(value, type);
+  if (!content) return null;
+  if (type === "Text" && content.text !== undefined) {
+    return { content, constructor: `Text(${JSON.stringify(content.text)})`, type: "Text" };
+  }
+  if (!content.texParts) return null;
+  return {
+    content,
+    constructor: `MathTex(${content.texParts.map((part) => JSON.stringify(part)).join(", ")})`,
+    type: "MathTex",
+  };
+}
+
+function contentReplacementExpression(variable: string, target: NonNullable<ReturnType<typeof contentTarget>>) {
+  return (
+    `${variable}.become(${target.constructor}` +
+    `.match_style(${variable})` +
+    `.match_height(${variable})` +
+    `.move_to(${variable}.get_center()))`
   );
 }
 
@@ -505,6 +546,7 @@ function assertLoweringSupported(operation: CanonicalEditOperation, options: Pro
       );
     }
   }
+  if (operation.kind === "SetProperty" && operation.key === "content" && contentTarget(operation.value)) return;
   const execution = operationExecutionCapabilities(operation);
   if (execution.lowering === "supported") return;
   throw new ProgramLoweringError(
@@ -703,35 +745,45 @@ function persistentRemovalVariables(
   return removed;
 }
 
-function referencedVariableAfterAnchor(
+function sourceReferenceClosureBeforeAnchor(
   source: string,
   sceneBlock: NonNullable<ReturnType<typeof findSourceSceneBlock>>,
   anchorLine: number,
   variables: ReadonlySet<string>,
+  context = "Persistent removal",
 ) {
-  if (variables.size === 0) return null;
-  let references: ReadonlySet<string>;
   try {
-    references = pythonReferenceClosure(source, sceneBlock.bodyStart, anchorLine - 1, variables);
+    return pythonReferenceClosure(source, sceneBlock.bodyStart, anchorLine - 1, variables);
   } catch (error) {
     if (!(error instanceof PythonReferenceAnalysisError)) throw error;
     throw new ProgramLoweringError(
       "operation-unsupported",
-      `Persistent removal cannot inspect source aliases safely. ${error.message}`,
+      `${context} cannot inspect source aliases safely. ${error.message}`,
     );
   }
+}
+
+function referencedSourceAfterAnchor(
+  source: string,
+  sceneBlock: NonNullable<ReturnType<typeof findSourceSceneBlock>>,
+  anchorLine: number,
+  references: ReadonlySet<string>,
+  context: string,
+  safeReference?: (line: Readonly<{ code: string; raw: string }>, reference: string) => boolean,
+) {
   const analysis = analyzePythonSource(source);
   if (!analysis.valid) {
     throw new ProgramLoweringError(
       "operation-unsupported",
-      "Persistent removal cannot inspect an invalid Python source suffix safely.",
+      `${context} cannot inspect an invalid Python source suffix safely.`,
     );
   }
   for (let index = anchorLine; index < sceneBlock.bodyEnd; index += 1) {
     const line = analysis.lines[index];
     if (!line) continue;
-    const reference = referencedPythonReference(line, references);
-    if (reference) return reference;
+    for (const reference of referencedPythonReferences(line, references)) {
+      if (!safeReference?.(line, reference)) return reference;
+    }
     if (
       sceneBlock.bodyIndent !== null &&
       line.indentation === sceneBlock.bodyIndent &&
@@ -741,6 +793,107 @@ function referencedVariableAfterAnchor(
       break;
   }
   return null;
+}
+
+/**
+ * A static source shift changes only the object's center, so it remains
+ * truthful after a content-only replacement. Keep this exception deliberately
+ * narrow: the importer must recognize the cardinal vector and the tracked
+ * object may appear exactly once in the physical statement.
+ */
+function safeContentReferenceAfterAnchor(line: Readonly<{ code: string; raw: string }>, reference: string) {
+  return (
+    referencedPythonReferences(line, new Set([reference])).length === 1 &&
+    isSimpleShiftAnimationStatement(line.raw, reference)
+  );
+}
+
+function referencedVariableAfterAnchor(
+  source: string,
+  sceneBlock: NonNullable<ReturnType<typeof findSourceSceneBlock>>,
+  anchorLine: number,
+  variables: ReadonlySet<string>,
+  context = "Persistent removal",
+) {
+  if (variables.size === 0) return null;
+  const references = sourceReferenceClosureBeforeAnchor(source, sceneBlock, anchorLine, variables, context);
+  return referencedSourceAfterAnchor(source, sceneBlock, anchorLine, references, context);
+}
+
+function assertContentReplacementSafety(
+  source: string,
+  sourcePath: string,
+  sceneName: string,
+  sceneBlock: NonNullable<ReturnType<typeof findSourceSceneBlock>>,
+  anchorLine: number,
+  operations: readonly CanonicalEditOperation[],
+  sourceBindings: ReadonlyMap<string, string>,
+  options: ProgramSourceLoweringOptions,
+  frame: Readonly<{ height: number; width: number }>,
+) {
+  const contentEdits = operations.filter(
+    (operation): operation is Extract<CanonicalEditOperation, { kind: "SetProperty" }> =>
+      operation.kind === "SetProperty" && operation.key === "content",
+  );
+  if (contentEdits.length === 0) return;
+  const locallyCreated = new Set(
+    operations.flatMap((operation) => {
+      if (operation.kind === "CreateEntity") return [operation.entity.id];
+      if (operation.kind === "TransformContent") return [operation.targetEntityId];
+      return [];
+    }),
+  );
+  const imported = importManimScene(sourceThroughAnchor(source, sceneBlock, anchorLine), sourcePath, sceneName, frame);
+  if (!imported) {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Content replacement cannot verify the imported object state at the selected anchor.",
+    );
+  }
+  for (const operation of contentEdits) {
+    if (locallyCreated.has(operation.entityId) || options.generatedEntityIds?.has(operation.entityId)) continue;
+    const sourceVariable = sourceBindings.get(operation.entityId);
+    if (!sourceVariable) {
+      throw new ProgramLoweringError("source-variable-missing", `No source variable exists for ${operation.entityId}.`);
+    }
+    const safety = imported.contentReplacementSafety[sourceVariable];
+    if (safety?.kind !== "safe") {
+      const detail = safety?.reason ?? "Studio could not verify a default Text or MathTex constructor.";
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        `Content replacement for ${sourceVariable} cannot preserve its source appearance. ${detail}`,
+      );
+    }
+    const sourceAliases = new Set([sourceVariable, ...(options.entityAliases?.get(operation.entityId) ?? [])]);
+    const sourceReferences = sourceReferenceClosureBeforeAnchor(
+      source,
+      sceneBlock,
+      anchorLine,
+      sourceAliases,
+      "Content replacement",
+    );
+    const retainedAlias = [...sourceReferences].find((reference) => !sourceAliases.has(reference));
+    if (retainedAlias) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        `Content replacement for ${sourceVariable} is unsafe because source alias ${retainedAlias} retains the object before the selected anchor.`,
+      );
+    }
+    const unsafeReference = referencedSourceAfterAnchor(
+      source,
+      sceneBlock,
+      anchorLine,
+      sourceReferences,
+      "Content replacement",
+      safeContentReferenceAfterAnchor,
+    );
+    if (unsafeReference) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        `Content replacement for ${sourceVariable} is unsafe because source reference ${unsafeReference} is used after the selected anchor.`,
+      );
+    }
+  }
 }
 
 function operationBuckets(operations: readonly CanonicalEditOperation[]) {
@@ -836,6 +989,17 @@ export function lowerCanonicalProgramSource(
     (left, right) =>
       operationTime(left) - operationTime(right) || (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0),
   );
+  assertContentReplacementSafety(
+    source,
+    request.sourcePath,
+    request.sceneName,
+    sceneBlock,
+    anchor.line,
+    operations,
+    sourceBindings,
+    options,
+    frame,
+  );
   const resolvedScaleChanges = resolveScaleChangesAndTransforms(
     source,
     request.sourcePath,
@@ -923,6 +1087,22 @@ export function lowerCanonicalProgramSource(
             }),
           );
           output.push(`${variable}.move_to(${pointExpression(operation.value, frame, request.viewport)})`);
+        } else if (operation.key === "content") {
+          const target = contentTarget(operation.value);
+          if (!target) {
+            throw new ProgramLoweringError(
+              "operation-unsupported",
+              "Content edit requires canonical Text or MathTex content.",
+            );
+          }
+          output.push(
+            sourceMarker("content", {
+              content: target.content,
+              type: target.type,
+              variable,
+            }),
+          );
+          output.push(contentReplacementExpression(variable, target));
         }
       } else if (operation.kind === "TransformContent") {
         const targetVariable = requireVariable(variableByEntity, operation.targetEntityId);
