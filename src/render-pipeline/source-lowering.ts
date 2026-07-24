@@ -1,10 +1,16 @@
 import { renderRequestPrograms, type ProgramRenderRequest, type SingleProgramRenderRequest } from "./contracts";
 import { analyzePythonSource, isPythonStatementStart } from "./python-source-analysis";
-import { findSourceComments, findSourceSceneBlock, findSourceSceneComments, importManimScene } from "./source-import";
+import {
+  findSourceComments,
+  findSourceSceneBlock,
+  findSourceSceneComments,
+  importManimScene,
+  isSimpleShiftAnimationStatement,
+} from "./source-import";
 import {
   pythonReferenceClosure,
   PythonReferenceAnalysisError,
-  referencedPythonReference,
+  referencedPythonReferences,
 } from "./python-reference-analysis";
 import { canonicalEditableContent, type EditableContentType } from "../studio/editable-content";
 import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "../studio/magic-edit-capabilities";
@@ -763,6 +769,7 @@ function referencedSourceAfterAnchor(
   anchorLine: number,
   references: ReadonlySet<string>,
   context: string,
+  safeReference?: (line: Readonly<{ code: string; raw: string }>, reference: string) => boolean,
 ) {
   const analysis = analyzePythonSource(source);
   if (!analysis.valid) {
@@ -774,8 +781,9 @@ function referencedSourceAfterAnchor(
   for (let index = anchorLine; index < sceneBlock.bodyEnd; index += 1) {
     const line = analysis.lines[index];
     if (!line) continue;
-    const reference = referencedPythonReference(line, references);
-    if (reference) return reference;
+    for (const reference of referencedPythonReferences(line, references)) {
+      if (!safeReference?.(line, reference)) return reference;
+    }
     if (
       sceneBlock.bodyIndent !== null &&
       line.indentation === sceneBlock.bodyIndent &&
@@ -785,6 +793,19 @@ function referencedSourceAfterAnchor(
       break;
   }
   return null;
+}
+
+/**
+ * A static source shift changes only the object's center, so it remains
+ * truthful after a content-only replacement. Keep this exception deliberately
+ * narrow: the importer must recognize the cardinal vector and the tracked
+ * object may appear exactly once in the physical statement.
+ */
+function safeContentReferenceAfterAnchor(line: Readonly<{ code: string; raw: string }>, reference: string) {
+  return (
+    referencedPythonReferences(line, new Set([reference])).length === 1 &&
+    isSimpleShiftAnimationStatement(line.raw, reference)
+  );
 }
 
 function referencedVariableAfterAnchor(
@@ -864,6 +885,7 @@ function assertContentReplacementSafety(
       anchorLine,
       sourceReferences,
       "Content replacement",
+      safeContentReferenceAfterAnchor,
     );
     if (unsafeReference) {
       throw new ProgramLoweringError(

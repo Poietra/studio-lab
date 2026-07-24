@@ -356,6 +356,83 @@ class GroupedEquation(Scene):
     );
   });
 
+  it("allows a content edit before a static source shift", () => {
+    const shiftedSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        label = Text("before")
+        self.add(label)
+        self.wait(7)
+        # poietra:anchor 7.000
+        self.play(label.animate.shift(0.5 * RIGHT), run_time=1, rate_func=smooth)
+`;
+
+    const lowered = lowerTextContentSource(shiftedSource, "shifted-content");
+
+    expect(lowered.insertedCode).toContain('label.become(Text("after")');
+  });
+
+  it.each([
+    ["a second tracked reference", "label.width * RIGHT"],
+    ["a dynamic vector", "direction"],
+  ])("rejects a content edit before a source shift with %s", (_label, vector) => {
+    const shiftedSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        label = Text("before")
+        self.add(label)
+        self.wait(7)
+        # poietra:anchor 7.000
+        self.play(label.animate.shift(${vector}), run_time=1, rate_func=smooth)
+`;
+
+    expect(() => lowerTextContentSource(shiftedSource, "unsafe-shifted-content")).toThrow(
+      /source reference label is used after the selected anchor/i,
+    );
+  });
+
+  it("rejects a static source shift combined with a globals reference to the same object", () => {
+    const shiftedSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        label = Text("before")
+        other = Text("other")
+        self.add(label, other)
+        self.wait(7)
+        # poietra:anchor 7.000
+        self.play(label.animate.shift(RIGHT), Transform(other, globals()["label"]), run_time=1)
+`;
+
+    expect(() => lowerTextContentSource(shiftedSource, "globals-shifted-content")).toThrow(
+      /source reference label is used after the selected anchor/i,
+    );
+  });
+
+  it.each([
+    ["rotation", ".rotate(PI / 2)"],
+    ["stretch", ".stretch(2, 0)"],
+    ["dynamic scale", ".scale(factor)"],
+    ["an unknown call", ".apply_matrix(matrix)"],
+  ])("rejects a content edit before a source shift followed by %s", (_label, suffix) => {
+    const shiftedSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        label = Text("before")
+        self.add(label)
+        self.wait(7)
+        # poietra:anchor 7.000
+        self.play(label.animate.shift(RIGHT)${suffix}, run_time=1)
+`;
+
+    expect(() => lowerTextContentSource(shiftedSource, "chained-shifted-content")).toThrow(
+      /source reference label is used after the selected anchor/i,
+    );
+  });
+
   it("rejects content payloads that cannot round-trip through the strict marker contract", () => {
     const invalidContent = {
       ...operationBase("invalid-content", 7),

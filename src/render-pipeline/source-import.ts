@@ -1125,6 +1125,22 @@ function simpleShiftVector(statement: string, sourceVariable: string) {
   return Number.isFinite(vector.x) && Number.isFinite(vector.y) ? vector : null;
 }
 
+/**
+ * Reports whether the tracked object is used by one exact, importer-supported
+ * shift animation argument. Other `self.play` arguments are allowed; callers
+ * remain responsible for rejecting additional references to the object.
+ */
+export function isSimpleShiftAnimationStatement(statement: string, sourceVariable: string) {
+  const trimmed = statement.trim();
+  if (!trimmed.startsWith("self.play(") || !trimmed.endsWith(")")) return false;
+  const argumentsSource = trimmed.slice(trimmed.indexOf("(") + 1, -1);
+  const variable = sourceVariable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const exactShift = new RegExp(`^${variable}\\s*\\.\\s*animate\\s*\\.\\s*shift\\s*\\(\\s*[^()]*\\s*\\)$`, "s");
+  return splitTopLevelArguments(argumentsSource).some(
+    (argument) => exactShift.test(argument) && simpleShiftVector(`self.play(${argument})`, sourceVariable) !== null,
+  );
+}
+
 function appendChannelSample(
   channelSamples: Map<string, PropertyChannelSample[]>,
   entityId: string,

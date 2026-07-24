@@ -37,18 +37,22 @@ function staticGlobalsMatches(statement: PythonStatement, references: ReadonlySe
   return matches;
 }
 
-function staticGlobalsReference(statement: PythonStatement, references: ReadonlySet<string>) {
-  return staticGlobalsMatches(statement, references)[0]?.reference ?? null;
-}
-
 export function referencedPythonReference(
   line: Pick<PythonSourceLine, "code" | "raw">,
   references: ReadonlySet<string>,
 ) {
-  for (const reference of references) {
-    if (referencePattern(reference).test(line.code)) return reference;
-  }
-  return staticGlobalsReference(line, references);
+  return referencedPythonReferences(line, references)[0] ?? null;
+}
+
+/** Returns every tracked occurrence, including repeated and static globals lookups. */
+export function referencedPythonReferences(
+  line: Pick<PythonSourceLine, "code" | "raw">,
+  references: ReadonlySet<string>,
+) {
+  const identifiers = [...references].flatMap((reference) =>
+    [...line.code.matchAll(referencePattern(reference, true))].map(() => reference),
+  );
+  return [...identifiers, ...staticGlobalsMatches(line, references).map((match) => match.reference)];
 }
 
 const SAFE_REFERENCE_ARGUMENT_CALLS = new Set([
