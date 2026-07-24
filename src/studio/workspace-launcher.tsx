@@ -429,7 +429,7 @@ export function WorkspaceLauncher({
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <section className="mx-auto w-full max-w-3xl px-6 py-12 sm:py-16">
+        <section className="mx-auto w-full max-w-7xl px-6 py-12 sm:py-16">
           <div className="flex items-start justify-between gap-6">
             <div>
               <p className="text-xs font-medium text-sky-400">Workspaces</p>
@@ -470,10 +470,11 @@ export function WorkspaceLauncher({
             <div
               aria-busy="true"
               aria-label="Loading workspaces"
-              className="mt-8 grid gap-3 sm:grid-cols-2"
+              className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+              data-workspace-grid
               role="status"
             >
-              {[0, 1].map((index) => (
+              {[0, 1, 2, 3].map((index) => (
                 <div className="overflow-hidden border border-zinc-800 bg-zinc-950" key={index}>
                   <div className="aspect-video bg-zinc-900" />
                   <div className="p-4">
@@ -485,7 +486,7 @@ export function WorkspaceLauncher({
               ))}
             </div>
           ) : projects.length > 0 ? (
-            <ul className="mt-8 grid gap-3 sm:grid-cols-2">
+            <ul className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4" data-workspace-grid>
               {projects.map((project) => (
                 <WorkspaceCard
                   key={project.id}

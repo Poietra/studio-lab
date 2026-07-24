@@ -171,6 +171,13 @@ test("waits at the launcher and only imports explicitly selected workspaces", as
 
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
   await expect(page.getByRole("button", { name: /Open .* workspace/ })).toHaveCount(2);
+  await expect
+    .poll(() =>
+      page
+        .locator("[data-workspace-grid]")
+        .evaluate((node) => getComputedStyle(node).gridTemplateColumns.split(/\s+/u).length),
+    )
+    .toBe(4);
   const studioCard = page.locator("[data-workspace-card='studio-lab']");
   const openStudio = page.getByRole("button", { name: "Open Studio Lab workspace" });
   const studioThumbnail = openStudio.locator("[data-workspace-thumbnail]");
