@@ -226,6 +226,12 @@ test("waits at the launcher and only imports explicitly selected workspaces", as
     .not.toBe(idleRemoveBackground);
   const addWorkspace = page.getByRole("button", { name: "Add workspace" });
   await expect(addWorkspace.locator("svg[aria-hidden='true']")).toBeVisible();
+  await expect
+    .poll(async () => {
+      const box = await addWorkspace.boundingBox();
+      return Boolean(box && box.height >= 44 && box.width >= 160);
+    })
+    .toBe(true);
   await expect(page.locator("[data-studio-canvas]")).toHaveCount(0);
   expect(thumbnailRequests).toBeGreaterThanOrEqual(2);
   expect(thumbnailGenerationRequests).toBe(0);
