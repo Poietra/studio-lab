@@ -94,10 +94,22 @@ Animation channel meaning is fixed as follows. An affine or opacity channel
 replaces the entity's base value at the sampled time. Path trim is the visible
 prefix fraction `[0, 1]`, measured by cubic arc length across subpaths in declaration
 order. Motion-path values are arc-length progress `[0, 1]`; `orientToPath` uses the
-forward tangent, retaining the previous non-zero tangent at a cusp; v1 motion paths
-contain exactly one subpath. Path morph is component-wise interpolation of matching
-cubic control points. A camera channel replaces the base camera view. Only one
-channel may write a given entity/property, and only one camera channel may exist.
+forward tangent, retaining the previous non-zero tangent at a cusp. At a stationary
+path start with no previous tangent, evaluation uses the first following non-zero
+tangent; if the entire path has no tangent, oriented evaluation rejects the frame.
+V1 motion paths contain exactly one subpath. Path morph is component-wise
+interpolation of matching cubic control points. Path trim is restricted to
+stroke-only entities because filling an open prefix would introduce an implicit
+closing edge. A camera channel replaces the base camera view. Only one channel may
+write a given entity/property, and only one camera channel may exist.
+
+V1 arc length is deterministic rather than adaptive: every cubic is sampled at 64
+equal parameter intervals and the resulting chord lengths are accumulated. A
+position inside an interval linearly interpolates its parameter endpoints. Path
+trim splits the selected cubic at that parameter with de Casteljau's algorithm.
+Progress zero is represented by one degenerate cubic at the first path point, since
+empty subpaths are not valid v1 data. Motion-path pose replaces the sampled affine
+translation; orientation, when enabled, pre-rotates its sampled linear 2x2 part.
 
 Before a channel's first keyframe, the base value is used; at and after its final
 keyframe, the final value is held. Every non-final keyframe supplies the easing for
@@ -105,12 +117,17 @@ its outgoing segment. `linear` uses `t`, and `smooth` uses `3t² - 2t³`. After 
 numbers, points, camera values, affine matrix components, and cubic control points
 interpolate component-wise. The evaluation order is base geometry, path morph,
 path trim, base/affine transform, motion-path pose, then root-to-leaf parent
-composition. Opacity and camera are sampled independently from their base values.
+composition. Parent and child opacity multiply. Opacity and camera are sampled
+independently from their base values.
 
 `cubic-bezier` easing uses the CSS timing-function interpretation: solve the
 monotonic x curve for normalized segment time, then evaluate y. All four controls
 are bounded to `[0, 1]`, so opacity and trim cannot overshoot. An unsolvable or
 non-finite sample rejects evaluation rather than falling back to linear easing.
+The v1 reference solver begins at the normalized segment time, performs at most
+eight Newton iterations, and then falls back to 24 bisection iterations when the
+derivative is too small or Newton would leave `[0, 1]`; convergence tolerance is
+`1e-7` in x.
 
 ### Source authority
 
@@ -233,6 +250,10 @@ Canonical hashing normalizes negative zero to positive zero before serialization
 The schemas bound each value and also bound document-wide entity, channel,
 keyframe, draw, cubic-segment, asset-byte, decoded-pixel, and viewport-pixel totals.
 Limits are v1 semantics, not renderer hints.
+Scene cubic-segment accounting includes canonical primitive lowering (Circle 4,
+Line 1, Rectangle 4, rounded Rectangle 8) and conservatively reserves one
+synthetic closing segment for every closed explicit subpath, so a valid Scene
+cannot overflow the RenderPacket segment bound merely by being lowered.
 
 ## Fail-closed behavior and fallback
 

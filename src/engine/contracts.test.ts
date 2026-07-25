@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   type AssetManifestV1,
   assetManifestV1Schema,
+  countLoweredSceneGeometrySegmentsV1,
   digestAssetManifestV1,
   engineFrameV1Schema,
   parseVerifiedEngineFrameV1,
@@ -273,6 +274,42 @@ describe("Poietra Engine v1 contracts", () => {
         requiredCapabilities: validScene.requiredCapabilities.filter((capability) => capability !== "png-image"),
       }).success,
     ).toBe(false);
+  });
+
+  it("accounts for primitive lowering and synthetic close segments", () => {
+    expect(countLoweredSceneGeometrySegmentsV1({ center: { x: 0, y: 0 }, kind: "circle", radius: 1 })).toBe(4);
+    expect(
+      countLoweredSceneGeometrySegmentsV1({
+        center: { x: 0, y: 0 },
+        cornerRadius: 0.25,
+        height: 2,
+        kind: "rectangle",
+        width: 3,
+      }),
+    ).toBe(8);
+    expect(countLoweredSceneGeometrySegmentsV1({ kind: "cubic-path", path })).toBe(2);
+  });
+
+  it("rejects fill semantics that path-trim v1 cannot represent truthfully", async () => {
+    const assets = await manifest();
+    const validScene = scene(assets);
+    const trimChannel = {
+      entityId: "circle",
+      id: "circle-trim",
+      keyframes: [
+        { at: 0, easingToNext: { kind: "linear" }, value: 0 },
+        { at: 1, easingToNext: null, value: 1 },
+      ],
+      kind: "path-trim",
+      provenanceId: "fixture",
+    } as const;
+    const result = sceneIrV1Schema.safeParse({
+      ...validScene,
+      animationChannels: [...validScene.animationChannels, trimChannel],
+      requiredCapabilities: [...validScene.requiredCapabilities, "path-trim-animation"].sort(),
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.issues.some((issue) => /stroke-only/.test(issue.message))).toBe(true);
   });
 
   it("requires resolved provenance, lifetime, hierarchy, and keyframe invariants", async () => {

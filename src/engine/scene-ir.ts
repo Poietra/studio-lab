@@ -99,6 +99,14 @@ const sceneGeometryV1Schema = z.discriminatedUnion("kind", [
   rectangleGeometryV1Schema,
 ]);
 
+export function countLoweredSceneGeometrySegmentsV1(geometry: z.infer<typeof sceneGeometryV1Schema>) {
+  if (geometry.kind === "image") return 0;
+  if (geometry.kind === "circle") return 4;
+  if (geometry.kind === "line") return 1;
+  if (geometry.kind === "rectangle") return geometry.cornerRadius === 0 ? 4 : 8;
+  return countCubicPathSegments(geometry.path) + geometry.path.subpaths.filter((subpath) => subpath.closed).length;
+}
+
 const vectorAppearanceV1Schema = z
   .object({
     fill: fillStyleV1Schema.nullable(),
@@ -524,6 +532,13 @@ function validateChannels(scene: SceneIrV1Input, context: z.RefinementCtx) {
         path: ["animationChannels", index, "entityId"],
       });
     }
+    if (channel.kind === "path-trim" && entity.appearance.kind === "vector" && entity.appearance.fill !== null) {
+      context.addIssue({
+        code: "custom",
+        message: "path-trim v1 requires stroke-only vector appearance.",
+        path: ["animationChannels", index, "entityId"],
+      });
+    }
     if (channel.kind === "path-morph") {
       if (entity.geometry.kind !== "cubic-path") {
         context.addIssue({
@@ -602,7 +617,7 @@ function validateCapabilities(scene: SceneIrV1Input, context: z.RefinementCtx) {
 function totalPathSegments(scene: SceneIrV1Input) {
   let total = 0;
   for (const entity of scene.entities) {
-    if (entity.geometry.kind === "cubic-path") total += countCubicPathSegments(entity.geometry.path);
+    total += countLoweredSceneGeometrySegmentsV1(entity.geometry);
   }
   for (const channel of scene.animationChannels) {
     if (channel.kind === "motion-path") total += countCubicPathSegments(channel.path);

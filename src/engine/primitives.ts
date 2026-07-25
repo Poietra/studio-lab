@@ -134,3 +134,5 @@ export function reportDuplicateIds(
 }
 
 export type CubicPathV1 = z.infer<typeof cubicPathV1Schema>;
+export type EngineAffineTransformV1 = z.infer<typeof engineAffineTransformV1Schema>;
+export type EnginePointV1 = z.infer<typeof enginePointV1Schema>;
