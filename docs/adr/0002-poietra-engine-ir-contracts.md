@@ -336,6 +336,13 @@ CPU, GPU/adapter, driver, power mode, viewport, warm-up count, and sample count.
 Correctness runs use the Playwright 1.61.1 Chromium revision pinned by this
 repository. The first performance reference host is:
 
+The checked-in TypeScript harness enforces at least 30 warm-up and 300 measured
+frames, records every evaluator sample, uses nearest-rank p50/p95, and hashes the
+canonical sampled RenderPackets for reproducibility. Its metric is explicitly
+`typescript-reference` evaluation time; GPU submit/presentation, cold start,
+memory, transfer, and bundle measurements remain separate reports rather than
+being mislabeled as part of that number.
+
 - Linux 6.6 WSL2, x86-64;
 - Intel Core Ultra 7 255H, 16 logical CPUs, 32 GiB RAM;
 - NVIDIA RTX PRO 500 Blackwell Laptop GPU, 6 GiB, driver 595.71.
