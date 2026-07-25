@@ -268,18 +268,29 @@ that display projection intentionally substitutes `(0,0)`, scale `1`, and opacit
 `1` when evidence is absent, and sorts entities for UI display. Those conveniences
 would fabricate render evidence and lose paint order.
 
-The first adapter may also consult the Canonical Edit Program that produced the
-evaluated state; it does not infer facts absent from both. Its initial mapping is:
+The adapter may also consult the Canonical Edit Program that produced the
+evaluated state; it does not infer facts absent from both. The first checked-in
+adapter is deliberately a static Circle/Rectangle slice. Resolved camera,
+appearance, and complete paint order are explicit adapter inputs because the
+current Runtime Scene does not contain enough evidence to reconstruct them. Its
+initial mapping is:
 
 | Input evidence | v1 result |
 | --- | --- |
-| known Circle/Rectangle dimensions, position, style, and ordering | normalized shape entity |
-| Edit Program motion with explicit timing/control | affine or motion-path channel |
-| default camera with fixed viewport evidence | normalized base camera |
+| known, lifetime-constant Circle/Rectangle dimensions, position, and scale plus explicit appearance/order | normalized shape entity |
+| any animated or discontinuous property | structured unsupported result and whole-Scene fallback |
+| exact camera and matching fixed viewport/frame evidence | normalized base camera |
 | Line endpoints or cubic points absent from state/program | compilation error and fallback |
 | ambiguous current `camera` number channel | compilation error and fallback |
 | image without exact PNG digest, dimensions, and nearest/linear sampler | compilation error and fallback |
 | any required `Knowledge.unknown` | compilation error and fallback |
+
+This static boundary is replaced or extended only when an animated mapping has
+fixture proof. In particular, current Studio curved motion is parameter-time
+quadratic motion while Scene IR motion progress is arc length; copying its values
+would change intermediate positions. The adapter therefore rejects it rather than
+claiming an inexact motion channel. A failure for one entity rejects the complete
+Scene and never returns a partial Scene IR.
 
 In particular, fast-manim's default bicubic ImageMobject sampling is not silently
 downgraded to v1 linear sampling. It remains on the server fallback unless an
