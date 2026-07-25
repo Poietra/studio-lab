@@ -72,6 +72,11 @@ returns a structured compilation error outside the wire document. It must not em
 a Scene with a `supported` assertion. An explicitly `approximate` Scene is allowed
 only with non-empty evidence so the preview can label its fidelity.
 
+Scene, entity, channel, and provenance identities preserve the portable ASCII
+source fragment separator `#` used by imported IDs such as `scene.py#Scene`.
+Generated packet/manifest IDs and asset IDs use the stricter portable subset
+without `#`; source identity rules therefore do not leak into asset resolution.
+
 Entity lifetimes are positive, ordered, non-overlapping, and bounded by Scene
 duration; a child's lifetime is contained by its parent's lifetime. Parent
 references are complete and acyclic. `sceneOrder` is unique.

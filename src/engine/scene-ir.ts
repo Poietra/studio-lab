@@ -14,11 +14,11 @@ import {
   MAX_COORDINATE,
   MAX_TOTAL_PATH_SEGMENTS,
   normalizedNumberV1Schema,
-  opaqueIdV1Schema,
   POIETRA_ENGINE_CONTRACT_VERSION,
   reportDuplicateIds,
   rgbaColorV1Schema,
   sha256V1Schema,
+  sourceIdentityV1Schema,
   strokeStyleV1Schema,
 } from "./primitives";
 
@@ -127,10 +127,10 @@ const sceneEntityV1Schema = z
   .object({
     appearance: z.discriminatedUnion("kind", [imageAppearanceV1Schema, vectorAppearanceV1Schema]),
     geometry: sceneGeometryV1Schema,
-    id: opaqueIdV1Schema,
+    id: sourceIdentityV1Schema,
     lifetimes: z.array(intervalV1Schema).min(1).max(64),
-    parentId: opaqueIdV1Schema.nullable(),
-    provenanceId: opaqueIdV1Schema,
+    parentId: sourceIdentityV1Schema.nullable(),
+    provenanceId: sourceIdentityV1Schema,
     sceneOrder: z
       .number()
       .int()
@@ -166,9 +166,9 @@ function keyframeV1Schema<T extends z.ZodType>(value: T) {
 }
 
 const entityChannelBase = {
-  entityId: opaqueIdV1Schema,
-  id: opaqueIdV1Schema,
-  provenanceId: opaqueIdV1Schema,
+  entityId: sourceIdentityV1Schema,
+  id: sourceIdentityV1Schema,
+  provenanceId: sourceIdentityV1Schema,
 };
 
 const affineTransformChannelV1Schema = z
@@ -223,10 +223,10 @@ export const sceneCameraViewV1Schema = z
 
 const cameraChannelV1Schema = z
   .object({
-    id: opaqueIdV1Schema,
+    id: sourceIdentityV1Schema,
     keyframes: z.array(keyframeV1Schema(sceneCameraViewV1Schema)).min(2).max(MAX_KEYFRAMES),
     kind: z.literal("camera"),
-    provenanceId: opaqueIdV1Schema,
+    provenanceId: sourceIdentityV1Schema,
   })
   .strict();
 
@@ -261,7 +261,7 @@ const sceneSourceV1Schema = z.discriminatedUnion("kind", [
 const provenanceRecordV1Schema = z
   .object({
     evidence: z.array(evidenceV1Schema).max(64),
-    id: opaqueIdV1Schema,
+    id: sourceIdentityV1Schema,
     origin: z.enum(["fast-manim-server-snapshot", "fixture", "studio-edit-program"]),
   })
   .strict();
@@ -316,7 +316,7 @@ const sceneIrV1BaseSchema = z
       .min(1)
       .max(MAX_ENTITIES + MAX_CHANNELS),
     requiredCapabilities: z.array(sceneCapabilityV1Schema).max(sceneCapabilityV1Schema.options.length),
-    sceneId: opaqueIdV1Schema,
+    sceneId: sourceIdentityV1Schema,
     schema: z.literal("poietra.scene-ir"),
     source: sceneSourceV1Schema,
     version: z.literal(POIETRA_ENGINE_CONTRACT_VERSION),

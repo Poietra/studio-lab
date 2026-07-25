@@ -16,6 +16,7 @@ import {
   POIETRA_ENGINE_CONTRACT_VERSION,
   rgbaColorV1Schema,
   sha256V1Schema,
+  sourceIdentityV1Schema,
   strokeStyleV1Schema,
 } from "./primitives";
 
@@ -36,7 +37,7 @@ const imageLocalRectV1Schema = z
 
 const drawBase = {
   drawId: opaqueIdV1Schema,
-  entityId: opaqueIdV1Schema,
+  entityId: sourceIdentityV1Schema,
   opacity: normalizedNumberV1Schema,
   paintOrder: z
     .number()
@@ -114,7 +115,7 @@ const renderPacketV1BaseSchema = z
     requiredCapabilities: z.array(renderCapabilityV1Schema).max(renderCapabilityV1Schema.options.length),
     sampleTime: finiteNumberV1Schema.nonnegative(),
     sceneDuration: finiteNumberV1Schema.positive(),
-    sceneId: opaqueIdV1Schema,
+    sceneId: sourceIdentityV1Schema,
     sceneRevisionHash: sha256V1Schema,
     schema: z.literal("poietra.render-packet"),
     sceneContractVersion: z.literal(POIETRA_ENGINE_CONTRACT_VERSION),

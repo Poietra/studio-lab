@@ -21,6 +21,10 @@ export const opaqueIdV1Schema = boundedUnpaddedString(240, "IDs").refine(
   (value) => /^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/.test(value),
   "IDs must use the portable ASCII identifier subset.",
 );
+export const sourceIdentityV1Schema = boundedUnpaddedString(240, "Source identities").refine(
+  (value) => /^[A-Za-z0-9][A-Za-z0-9._:@/#-]*$/.test(value),
+  "Source identities must use the portable ASCII identity subset.",
+);
 export const assetIdV1Schema = opaqueIdV1Schema;
 export const evidenceV1Schema = boundedUnpaddedString(500, "Evidence");
 export const sha256V1Schema = z.string().regex(/^[0-9a-f]{64}$/, "Expected a lower-case SHA-256 digest.");

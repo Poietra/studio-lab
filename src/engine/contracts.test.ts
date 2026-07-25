@@ -264,6 +264,32 @@ describe("Poietra Engine v1 contracts", () => {
     ).toBe(false);
   });
 
+  it("preserves imported source identities without relaxing asset IDs", async () => {
+    const assets = await manifest();
+    const validScene = scene(assets);
+    const importedEntityId = "source:scene.py#Scene:circle";
+    expect(
+      sceneIrV1Schema.safeParse({
+        ...validScene,
+        animationChannels: validScene.animationChannels.map((channel) =>
+          channel.kind === "camera" || channel.entityId !== "circle"
+            ? channel
+            : { ...channel, entityId: importedEntityId },
+        ),
+        entities: validScene.entities.map((entity) =>
+          entity.id === "circle" ? { ...entity, id: importedEntityId } : entity,
+        ),
+        sceneId: "scene.py#Scene",
+      }).success,
+    ).toBe(true);
+    expect(
+      assetManifestV1Schema.safeParse({
+        ...assets,
+        assets: assets.assets.map((asset) => ({ ...asset, id: "image#asset" })),
+      }).success,
+    ).toBe(false);
+  });
+
   it("derives an exact, closed Scene capability set", async () => {
     const assets = await manifest();
     const validScene = scene(assets);
