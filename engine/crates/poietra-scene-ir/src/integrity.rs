@@ -199,48 +199,42 @@ fn entity_is_active(entity: &SceneEntityV1, sample_time: f64) -> bool {
         .any(|lifetime| sample_time >= lifetime.start && sample_time < lifetime.end)
 }
 
-/// Validates a complete sampled frame, including scene/packet linkage and active draw integrity.
-///
-/// # Errors
-///
-/// Returns all detected v1 contract violations.
 #[allow(clippy::too_many_lines, clippy::float_cmp)]
-pub fn validate_engine_frame_v1(frame: &EngineFrameV1) -> Result<(), ValidationErrors> {
+fn validate_render_packet_for_scene(
+    packet: &RenderPacketV1,
+    scene: &SceneIrV1,
+    assets: &AssetManifestV1,
+    validate_source_bundle: bool,
+) -> Result<(), ValidationErrors> {
     let mut issues = Vec::new();
-    collect_at(
-        &mut issues,
-        validate_asset_manifest_v1(&frame.assets),
-        "$.assets",
-    );
-    collect_at(
-        &mut issues,
-        validate_asset_manifest_digest_v1(&frame.assets),
-        "$.assets",
-    );
-    collect_at(&mut issues, validate_scene_ir_v1(&frame.scene), "$.scene");
-    collect_at(
-        &mut issues,
-        validate_render_packet_v1(&frame.packet),
-        "$.packet",
-    );
-    validate_scene_assets(&frame.scene, &frame.assets, "$.scene", &mut issues);
-    validate_packet_assets(&frame.packet, &frame.assets, "$.packet", &mut issues);
+    if validate_source_bundle {
+        collect_at(&mut issues, validate_asset_manifest_v1(assets), "$.assets");
+        collect_at(
+            &mut issues,
+            validate_asset_manifest_digest_v1(assets),
+            "$.assets",
+        );
+        collect_at(&mut issues, validate_scene_ir_v1(scene), "$.scene");
+        validate_scene_assets(scene, assets, "$.scene", &mut issues);
+    }
+    collect_at(&mut issues, validate_render_packet_v1(packet), "$.packet");
+    validate_packet_assets(packet, assets, "$.packet", &mut issues);
 
-    if frame.packet.scene_id != frame.scene.scene_id {
+    if packet.scene_id != scene.scene_id {
         issue(
             &mut issues,
             "$.packet.sceneId",
             "packet scene ID does not match scene IR",
         );
     }
-    if frame.packet.scene_duration != frame.scene.duration {
+    if packet.scene_duration != scene.duration {
         issue(
             &mut issues,
             "$.packet.sceneDuration",
             "packet scene duration does not match scene IR",
         );
     }
-    if frame.packet.scene_revision_hash != frame.scene.source.revision_hash() {
+    if packet.scene_revision_hash != scene.source.revision_hash() {
         issue(
             &mut issues,
             "$.packet.sceneRevisionHash",
@@ -248,14 +242,13 @@ pub fn validate_engine_frame_v1(frame: &EngineFrameV1) -> Result<(), ValidationE
         );
     }
 
-    let entities: HashMap<&str, &SceneEntityV1> = frame
-        .scene
+    let entities: HashMap<&str, &SceneEntityV1> = scene
         .entities
         .iter()
         .map(|entity| (entity.id.as_str(), entity))
         .collect();
     let mut drawn_entities = HashSet::new();
-    for (index, draw) in frame.packet.draws.iter().enumerate() {
+    for (index, draw) in packet.draws.iter().enumerate() {
         let path = format!("$.packet.draws[{index}]");
         let Some(entity) = entities.get(draw.entity_id()) else {
             issue(
@@ -272,7 +265,7 @@ pub fn validate_engine_frame_v1(frame: &EngineFrameV1) -> Result<(), ValidationE
                 format!("entity {} has more than one draw", draw.entity_id()),
             );
         }
-        if !entity_is_active(entity, frame.packet.sample_time) {
+        if !entity_is_active(entity, packet.sample_time) {
             issue(
                 &mut issues,
                 format!("{path}.entityId"),
@@ -351,8 +344,8 @@ pub fn validate_engine_frame_v1(frame: &EngineFrameV1) -> Result<(), ValidationE
         }
     }
 
-    for entity in &frame.scene.entities {
-        if entity_is_active(entity, frame.packet.sample_time)
+    for entity in &scene.entities {
+        if entity_is_active(entity, packet.sample_time)
             && !drawn_entities.contains(entity.id.as_str())
         {
             issue(
@@ -363,9 +356,9 @@ pub fn validate_engine_frame_v1(frame: &EngineFrameV1) -> Result<(), ValidationE
         }
     }
 
-    for index in 1..frame.packet.draws.len() {
-        let previous = entities.get(frame.packet.draws[index - 1].entity_id());
-        let current = entities.get(frame.packet.draws[index].entity_id());
+    for index in 1..packet.draws.len() {
+        let previous = entities.get(packet.draws[index - 1].entity_id());
+        let current = entities.get(packet.draws[index].entity_id());
         if let (Some(previous), Some(current)) = (previous, current) {
             if previous.source_z_index > current.source_z_index
                 || (previous.source_z_index == current.source_z_index
@@ -380,4 +373,28 @@ pub fn validate_engine_frame_v1(frame: &EngineFrameV1) -> Result<(), ValidationE
         }
     }
     finish(issues)
+}
+
+/// Validates an evaluated packet against a Scene and manifest that already passed
+/// [`validate_scene_ir_with_assets_v1`]. The packet and all cross-document links
+/// are still checked in full, without rescanning immutable Scene geometry.
+///
+/// # Errors
+///
+/// Returns all detected packet or cross-document contract violations.
+pub fn validate_render_packet_for_validated_scene_v1(
+    packet: &RenderPacketV1,
+    scene: &SceneIrV1,
+    assets: &AssetManifestV1,
+) -> Result<(), ValidationErrors> {
+    validate_render_packet_for_scene(packet, scene, assets, false)
+}
+
+/// Validates a complete sampled frame, including scene/packet linkage and active draw integrity.
+///
+/// # Errors
+///
+/// Returns all detected v1 contract violations.
+pub fn validate_engine_frame_v1(frame: &EngineFrameV1) -> Result<(), ValidationErrors> {
+    validate_render_packet_for_scene(&frame.packet, &frame.scene, &frame.assets, true)
 }

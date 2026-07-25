@@ -27,6 +27,7 @@
     "dev:tauri": "tauri dev",
     "evaluate:shell:native": "node scripts/shell-evaluation.mjs native",
     "evaluate:shell:serve": "node scripts/shell-evaluation.mjs prepare && vite --host 127.0.0.1 --port 4174 --strictPort",
+    "build:engine:wasm": "node scripts/build-engine-wasm.mjs",
     "build:web": "tsc --noEmit && vite build",
     "build:electron:main": "vite build --config vite.electron.config.ts",
     "build:electron": "pnpm build:web && pnpm build:electron:main",

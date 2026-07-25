@@ -10,8 +10,8 @@ use poietra_scene_ir::{
     AffineTransformV1, AnimationChannelV1, AssetManifestV1, ContractVersionV1, CubicPathV1,
     EngineFrameV1, KeyframeV1, RenderCameraKindV1, RenderCameraV1, RenderCapabilityV1,
     RenderDrawV1, RenderPacketSchemaV1, RenderPacketV1, SceneAppearanceV1, SceneCameraViewV1,
-    SceneEntityV1, SceneGeometryV1, SceneIrV1, ViewportV1, validate_engine_frame_v1,
-    validate_scene_ir_with_assets_v1,
+    SceneEntityV1, SceneGeometryV1, SceneIrBundleV1, SceneIrV1, ViewportV1,
+    validate_render_packet_for_validated_scene_v1, validate_scene_ir_with_assets_v1,
 };
 
 /// A scene cannot be sampled into a truthful v1 frame.
@@ -36,6 +36,81 @@ pub struct CompileEngineFrameOptionsV1<'a> {
     pub sample_time: f64,
     pub scene: &'a SceneIrV1,
     pub viewport: ViewportV1,
+}
+
+/// Per-sample evidence for a retained, already validated Engine session.
+#[derive(Clone, Debug)]
+pub struct SampleEngineSessionOptionsV1<'a> {
+    pub evidence: &'a [String],
+    pub packet_id: &'a str,
+    pub sample_time: f64,
+    pub viewport: ViewportV1,
+}
+
+/// Owns one validated immutable snapshot so browser workers do not resend or
+/// revalidate the entire Scene for every playhead sample.
+#[derive(Debug)]
+pub struct EngineSessionV1 {
+    assets: AssetManifestV1,
+    scene: SceneIrV1,
+}
+
+impl EngineSessionV1 {
+    /// Creates a retained session after fully validating its source bundle.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvaluationError::InvalidInput`] when the snapshot violates the v1 contract.
+    pub fn new(bundle: SceneIrBundleV1) -> Result<Self, EvaluationError> {
+        validate_scene_ir_with_assets_v1(&bundle.scene, &bundle.assets)
+            .map_err(|error| EvaluationError::InvalidInput(error.to_string()))?;
+        Ok(Self {
+            assets: bundle.assets,
+            scene: bundle.scene,
+        })
+    }
+
+    /// Atomically replaces the retained snapshot after validating the candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvaluationError::InvalidInput`] and preserves the current snapshot
+    /// when the candidate violates the v1 contract.
+    pub fn replace_snapshot(&mut self, bundle: SceneIrBundleV1) -> Result<(), EvaluationError> {
+        let replacement = Self::new(bundle)?;
+        *self = replacement;
+        Ok(())
+    }
+
+    #[must_use]
+    pub const fn assets(&self) -> &AssetManifestV1 {
+        &self.assets
+    }
+
+    #[must_use]
+    pub const fn scene(&self) -> &SceneIrV1 {
+        &self.scene
+    }
+
+    /// Samples only a `RenderPacket`; the retained Scene and manifest do not cross
+    /// the worker boundary again.
+    ///
+    /// # Errors
+    ///
+    /// Returns an evaluation error for invalid request evidence or undefined geometry.
+    pub fn sample_render_packet(
+        &self,
+        options: SampleEngineSessionOptionsV1<'_>,
+    ) -> Result<RenderPacketV1, EvaluationError> {
+        compile_render_packet_from_validated_v1(CompileEngineFrameOptionsV1 {
+            assets: &self.assets,
+            evidence: options.evidence,
+            packet_id: options.packet_id,
+            sample_time: options.sample_time,
+            scene: &self.scene,
+            viewport: options.viewport,
+        })
+    }
 }
 
 type MotionChannel<'a> = (&'a [KeyframeV1<f64>], &'a CubicPathV1, bool);
@@ -346,27 +421,13 @@ fn entity_is_active(entity: &SceneEntityV1, time: f64) -> bool {
         .any(|lifetime| time >= lifetime.start && time < lifetime.end)
 }
 
-/// Compiles a validated scene and immutable asset manifest into one sampled frame.
-///
-/// Both the input bundle and the produced composite frame are validated at the
-/// trust boundary. Any unsupported or inconsistent state fails closed.
-///
-/// # Errors
-///
-/// Returns [`EvaluationError::InvalidInput`] for a contract violation,
-/// [`EvaluationError::Geometry`] for undefined geometry semantics, or
-/// [`EvaluationError::InvalidOutput`] if the sampled composite frame fails its
-/// integrity check.
 #[allow(
     clippy::too_many_lines,
     reason = "keeps the single frame-boundary assembly order visible and auditable"
 )]
-pub fn compile_engine_frame_v1(
+fn compile_render_packet_from_validated_v1(
     options: CompileEngineFrameOptionsV1<'_>,
-) -> Result<EngineFrameV1, EvaluationError> {
-    validate_scene_ir_with_assets_v1(options.scene, options.assets)
-        .map_err(|error| EvaluationError::InvalidInput(error.to_string()))?;
-
+) -> Result<RenderPacketV1, EvaluationError> {
     if !options.sample_time.is_finite()
         || options.sample_time < 0.0
         || options.sample_time > options.scene.duration
@@ -489,14 +550,48 @@ pub fn compile_engine_frame_v1(
         version: ContractVersionV1,
         viewport: options.viewport,
     };
-    let frame = EngineFrameV1 {
-        assets: options.assets.clone(),
-        packet,
-        scene: options.scene.clone(),
-    };
-    validate_engine_frame_v1(&frame)
+    validate_render_packet_for_validated_scene_v1(&packet, options.scene, options.assets)
         .map_err(|error| EvaluationError::InvalidOutput(error.to_string()))?;
-    Ok(frame)
+    Ok(packet)
+}
+
+/// Compiles a Scene IR and immutable asset manifest into one sampled `RenderPacket`.
+///
+/// The source bundle and produced packet are validated at the trust boundary. Any
+/// unsupported or inconsistent state fails closed.
+///
+/// # Errors
+///
+/// Returns [`EvaluationError::InvalidInput`] for a contract violation,
+/// [`EvaluationError::Geometry`] for undefined geometry semantics, or
+/// [`EvaluationError::InvalidOutput`] if the sampled packet fails its integrity check.
+pub fn compile_render_packet_v1(
+    options: CompileEngineFrameOptionsV1<'_>,
+) -> Result<RenderPacketV1, EvaluationError> {
+    validate_scene_ir_with_assets_v1(options.scene, options.assets)
+        .map_err(|error| EvaluationError::InvalidInput(error.to_string()))?;
+    compile_render_packet_from_validated_v1(options)
+}
+
+/// Compiles a Scene IR and immutable asset manifest into one self-contained frame.
+///
+/// Prefer [`EngineSessionV1::sample_render_packet`] at a browser worker boundary so
+/// the immutable Scene and asset metadata are retained instead of cloned per frame.
+///
+/// # Errors
+///
+/// Returns the same fail-closed errors as [`compile_render_packet_v1`].
+pub fn compile_engine_frame_v1(
+    options: CompileEngineFrameOptionsV1<'_>,
+) -> Result<EngineFrameV1, EvaluationError> {
+    let assets = options.assets;
+    let scene = options.scene;
+    let packet = compile_render_packet_v1(options)?;
+    Ok(EngineFrameV1 {
+        assets: assets.clone(),
+        packet,
+        scene: scene.clone(),
+    })
 }
 
 #[cfg(test)]
@@ -732,5 +827,32 @@ mod tests {
         })
         .unwrap();
         assert!(frame.packet.draws.is_empty());
+    }
+
+    #[test]
+    fn retained_session_samples_packets_and_rejects_snapshot_replacement_atomically() {
+        let (assets, scene) = fixture();
+        let mut session = EngineSessionV1::new(SceneIrBundleV1 { assets, scene }).unwrap();
+        let packet = session
+            .sample_render_packet(SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id: "packet:retained",
+                sample_time: 1.0,
+                viewport: ViewportV1 {
+                    height_px: 900,
+                    width_px: 1600,
+                },
+            })
+            .unwrap();
+        assert_eq!(packet.draws.len(), 1);
+
+        let mut invalid_scene = session.scene().clone();
+        invalid_scene.duration = 0.0;
+        let rejected = session.replace_snapshot(SceneIrBundleV1 {
+            assets: session.assets().clone(),
+            scene: invalid_scene,
+        });
+        assert!(matches!(rejected, Err(EvaluationError::InvalidInput(_))));
+        assert!((session.scene().duration - 2.0).abs() < f64::EPSILON);
     }
 }

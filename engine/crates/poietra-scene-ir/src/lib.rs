@@ -18,7 +18,8 @@ pub use digest::{
     canonical_asset_manifest_v1, digest_asset_manifest_v1, validate_asset_manifest_digest_v1,
 };
 pub use integrity::{
-    validate_engine_frame_v1, validate_render_packet_bundle_v1, validate_scene_ir_bundle_v1,
+    validate_engine_frame_v1, validate_render_packet_bundle_v1,
+    validate_render_packet_for_validated_scene_v1, validate_scene_ir_bundle_v1,
     validate_scene_ir_with_assets_v1,
 };
 pub use model::*;

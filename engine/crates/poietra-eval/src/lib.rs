@@ -7,4 +7,7 @@
 
 mod evaluator;
 
-pub use evaluator::{CompileEngineFrameOptionsV1, EvaluationError, compile_engine_frame_v1};
+pub use evaluator::{
+    CompileEngineFrameOptionsV1, EngineSessionV1, EvaluationError, SampleEngineSessionOptionsV1,
+    compile_engine_frame_v1, compile_render_packet_v1,
+};
