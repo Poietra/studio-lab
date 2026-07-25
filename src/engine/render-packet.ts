@@ -85,7 +85,7 @@ const renderCameraV1Schema = z
     message: "Camera extents must have positive width and height.",
   });
 
-const viewportV1Schema = z
+export const renderViewportV1Schema = z
   .object({
     heightPx: z.number().int().positive().max(16_384),
     widthPx: z.number().int().positive().max(16_384),
@@ -120,7 +120,7 @@ const renderPacketV1BaseSchema = z
     schema: z.literal("poietra.render-packet"),
     sceneContractVersion: z.literal(POIETRA_ENGINE_CONTRACT_VERSION),
     version: z.literal(POIETRA_ENGINE_CONTRACT_VERSION),
-    viewport: viewportV1Schema,
+    viewport: renderViewportV1Schema,
   })
   .strict();
 
