@@ -99,7 +99,7 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --locked --workspace --all-targets --all-features --manifest-path engine/Cargo.toml -- -D warnings
       - name: Check the browser WASM target
-        run: cargo check --locked --package poietra-wasm --target wasm32-unknown-unknown --manifest-path engine/Cargo.toml
+        run: cargo check --locked --package poietra-wasm --package poietra-render-wgpu --target wasm32-unknown-unknown --manifest-path engine/Cargo.toml
       - name: Install pinned wasm-pack
         run: cargo install wasm-pack --locked --version 0.15.0
       - name: Build browser WASM bindings

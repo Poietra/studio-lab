@@ -1,0 +1,24 @@
+[package]
+name = "poietra-render-wgpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version = "1.92"
+
+[dependencies]
+poietra-scene-ir.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { workspace = true, features = ["std", "webgpu", "wgsl"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+wgpu = { workspace = true, features = ["dx12", "gles", "metal", "std", "vulkan", "wgsl"] }
+
+[dev-dependencies]
+poietra-eval.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
