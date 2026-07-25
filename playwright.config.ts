@@ -10,8 +10,25 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
+      testIgnore: "**/*.webgpu.ts",
       testMatch: "**/*.e2e.ts",
       use: { browserName: "chromium" },
+    },
+    {
+      name: "chromium-webgpu",
+      testMatch: "**/*.webgpu.ts",
+      use: {
+        browserName: "chromium",
+        channel: "chromium",
+        launchOptions: {
+          args: [
+            "--disable-vulkan-surface",
+            "--enable-features=Vulkan",
+            "--enable-unsafe-webgpu",
+            "--use-angle=vulkan",
+          ],
+        },
+      },
     },
     {
       name: "webkit-minimum",
