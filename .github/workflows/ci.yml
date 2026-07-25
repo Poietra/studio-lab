@@ -104,6 +104,8 @@ jobs:
         run: cargo install wasm-pack --locked --version 0.15.0
       - name: Build browser WASM bindings
         run: node scripts/build-engine-wasm.mjs
+      - name: Smoke-test generated WASM bindings
+        run: node scripts/smoke-engine-wasm.mjs
 
   browser-e2e:
     name: Browser E2E

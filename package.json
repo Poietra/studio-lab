@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:unit": "vitest run src/ai src/engine src/studio --exclude src/studio/workspace-projection.test.ts",
     "test:integration": "vitest run server src/render-pipeline src/studio/workspace-projection.test.ts",
+    "test:engine:wasm-smoke": "node scripts/smoke-engine-wasm.mjs",
     "test:manim-smoke": "node scripts/run-manim-smoke.mjs",
     "test:e2e": "playwright test",
     "test:electron-packaged": "pnpm package:electron && node scripts/electron-packaged-smoke.mjs",
