@@ -30,18 +30,21 @@ function sampleKeyframes<T>(
   const final = keyframes.at(-1)!;
   if (time >= final.at) return { active: true, value: final.value };
 
-  for (let index = 0; index < keyframes.length - 1; index += 1) {
-    const left = keyframes[index];
-    const right = keyframes[index + 1];
-    if (time < left.at || time >= right.at) continue;
-    if (!left.easingToNext) throw new Error("A sampled keyframe segment is missing easingToNext.");
-    const progress = (time - left.at) / (right.at - left.at);
-    return {
-      active: true,
-      value: interpolate(left.value, right.value, applyEngineEasingV1(left.easingToNext, progress)),
-    };
+  let lower = 0;
+  let upper = keyframes.length;
+  while (lower < upper) {
+    const middle = lower + Math.floor((upper - lower) / 2);
+    if (keyframes[middle].at <= time) lower = middle + 1;
+    else upper = middle;
   }
-  return { active: true, value: final.value };
+  const left = keyframes[lower - 1];
+  const right = keyframes[lower];
+  if (!left?.easingToNext || !right) throw new Error("A sampled keyframe segment is missing easingToNext.");
+  const progress = (time - left.at) / (right.at - left.at);
+  return {
+    active: true,
+    value: interpolate(left.value, right.value, applyEngineEasingV1(left.easingToNext, progress)),
+  };
 }
 
 function interpolateNumber(left: number, right: number, progress: number) {
@@ -132,10 +135,14 @@ function sampleLocalEntity(
 
 type WorldSample = Readonly<{ opacity: number; transform: EngineAffineTransformV1 }>;
 
-function worldSamples(scene: SceneIrV1, local: ReadonlyMap<string, SampledLocalEntity>) {
+function worldSamples(
+  scene: SceneIrV1,
+  active: readonly SceneIrV1["entities"][number][],
+  local: ReadonlyMap<string, SampledLocalEntity>,
+) {
   const output = new Map<string, WorldSample>();
   const byId = new Map(scene.entities.map((entity) => [entity.id, entity]));
-  for (const entity of scene.entities) {
+  for (const entity of active) {
     if (output.has(entity.id)) continue;
     const chain: SceneIrV1["entities"][number][] = [];
     let current: SceneIrV1["entities"][number] | undefined = entity;
@@ -195,7 +202,7 @@ export type CompileEngineFrameV1Result =
   | Readonly<{ frame: EngineFrameV1; kind: "ready" }>;
 
 export async function compileEngineFrameV1(options: CompileEngineFrameV1Options): Promise<CompileEngineFrameV1Result> {
-  const evidence = [...(options.evidence ?? ["Poietra TypeScript reference evaluator v1"])];
+  const evidence = [...(options.evidence ?? ["Poietra reference evaluator v1"])];
   const packetId = options.packetId;
   const sampleTime = options.sampleTime;
   const viewport = { heightPx: options.viewport.heightPx, widthPx: options.viewport.widthPx };
@@ -206,16 +213,20 @@ export async function compileEngineFrameV1(options: CompileEngineFrameV1Options)
     return { code: "invalid-input", kind: "error", message: errorMessage(error) };
   }
 
+  if (!Number.isFinite(sampleTime) || sampleTime < 0 || sampleTime > verified.scene.duration) {
+    return { code: "invalid-input", kind: "error", message: "sampleTime must be finite and inside Scene duration" };
+  }
+
   try {
     const { assets, scene } = verified;
     const channels = indexEntityChannels(scene);
-    const local = new Map(scene.entities.map((entity) => [entity.id, sampleLocalEntity(channels, entity, sampleTime)]));
-    const world = worldSamples(scene, local);
     const active = scene.entities
       .filter((entity) =>
         entity.lifetimes.some((lifetime) => sampleTime >= lifetime.start && sampleTime < lifetime.end),
       )
       .sort((left, right) => left.sourceZIndex - right.sourceZIndex || left.sceneOrder - right.sceneOrder);
+    const local = new Map(active.map((entity) => [entity.id, sampleLocalEntity(channels, entity, sampleTime)]));
+    const world = worldSamples(scene, active, local);
 
     const draws = active.map((entity, paintOrder) => {
       const localSample = local.get(entity.id)!;

@@ -361,6 +361,14 @@ The checked-in golden suite will contain 10–20 stable fixture IDs and at least
 - camera pan/zoom;
 - Create, FadeIn, Transform, and MoveAlongPath sampled at start, midpoint, and end.
 
+Executable cross-runtime fixtures live under `fixtures/engine-v1`. Enumerations,
+IDs, ordering, counts, and other discrete semantics compare exactly. Floating
+results compare with each fixture's explicit combined absolute/relative tolerance:
+`abs(actual - expected) <= tolerance * max(1, abs(expected))`. Packet byte hashes
+remain reproducibility evidence within one evaluator/runtime; cross-runtime byte
+identity is not claimed until transcendental math and number serialization are
+specified independently of the host runtime.
+
 Each benchmark uses 30 warm-up frames and at least 300 measured frames. Browser and
 native/headless consume byte-identical EngineFrames. Adoption needs all fail-closed
 fixtures and the following budgets on the reference host:

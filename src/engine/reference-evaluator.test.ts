@@ -375,6 +375,46 @@ describe("Poietra TypeScript reference evaluator v1", () => {
     expect(frame.packet.camera).toMatchObject({ bottom: -2.375, left: -4, right: 8, top: 4.375 });
   });
 
+  it("does not sample or lower inactive entities", async () => {
+    const assets = await emptyManifest();
+    const point = { x: 3, y: 4 };
+    const stationaryPath = {
+      subpaths: [
+        {
+          closed: false,
+          segments: [{ control1: point, control2: point, end: point }],
+          start: point,
+        },
+      ],
+    };
+    const scene = createScene(assets, {
+      animationChannels: [
+        {
+          entityId: "circle",
+          id: "motion:circle",
+          keyframes: [
+            { at: 0, easingToNext: { kind: "linear" }, value: 0 },
+            { at: 2, easingToNext: null, value: 1 },
+          ],
+          kind: "motion-path",
+          orientToPath: true,
+          path: stationaryPath,
+          provenanceId: "fixture",
+        },
+      ],
+      entities: [
+        {
+          ...vectorEntity("circle", 0, { center: { x: 0, y: 0 }, kind: "circle", radius: 1 }),
+          lifetimes: [{ end: 2, start: 1 }],
+        },
+      ],
+      requiredCapabilities: ["motion-path-animation", "shape-primitives"],
+    });
+
+    const frame = await compile(scene, assets, 0.5);
+    expect(frame.packet.draws).toEqual([]);
+  });
+
   it("returns a fail-closed error for invalid time or viewport evidence", async () => {
     const assets = await emptyManifest();
     const scene = createScene(assets, { entities: [], requiredCapabilities: [] });
@@ -392,7 +432,7 @@ describe("Poietra TypeScript reference evaluator v1", () => {
       scene,
       viewport: { heightPx: 1_000, widthPx: 1_000 },
     });
-    expect(invalidTime).toMatchObject({ code: "invalid-output", kind: "error" });
+    expect(invalidTime).toMatchObject({ code: "invalid-input", kind: "error" });
     expect(invalidAspect).toMatchObject({ code: "invalid-output", kind: "error" });
   });
 });
