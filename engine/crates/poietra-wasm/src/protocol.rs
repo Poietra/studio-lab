@@ -44,6 +44,56 @@ struct SampleRequestV1 {
     viewport: ViewportV1,
 }
 
+/// Correlation copied from one syntactically decoded sample request.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SampleRequestCorrelationV1 {
+    pub(crate) packet_id: String,
+    pub(crate) sample_time: f64,
+    pub(crate) viewport: ViewportV1,
+}
+
+/// Typed result used by renderers without a JSON round-trip through the worker response.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SampledRenderPacketV1 {
+    pub(crate) correlation: SampleRequestCorrelationV1,
+    pub(crate) packet: RenderPacketV1,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SamplePacketErrorCodeV1 {
+    EvaluationFailed,
+    InvalidRequest,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SamplePacketErrorV1 {
+    pub(crate) code: SamplePacketErrorCodeV1,
+    pub(crate) correlation: Option<SampleRequestCorrelationV1>,
+    pub(crate) message: String,
+}
+
+impl SamplePacketErrorV1 {
+    fn without_correlation(code: SamplePacketErrorCodeV1, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            correlation: None,
+            message: message.into(),
+        }
+    }
+
+    fn with_correlation(
+        code: SamplePacketErrorCodeV1,
+        message: impl Into<String>,
+        correlation: SampleRequestCorrelationV1,
+    ) -> Self {
+        Self {
+            code,
+            correlation: Some(correlation),
+            message: message.into(),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize)]
 enum WorkerResponseSchemaV1 {
     #[serde(rename = "poietra.engine-worker-response")]
@@ -195,6 +245,9 @@ fn validate_request(request: &SampleRequestV1) -> Result<(), &'static str> {
     {
         return Err("evidence must contain at most 64 bounded unpadded entries");
     }
+    if !request.sample_time.is_finite() || request.sample_time < 0.0 {
+        return Err("sampleTime must be finite and non-negative");
+    }
     let viewport_pixels =
         u64::from(request.viewport.width_px) * u64::from(request.viewport.height_px);
     if request.viewport.width_px == 0
@@ -241,33 +294,40 @@ impl EngineWorkerSessionV1 {
         Ok(())
     }
 
-    /// Evaluates one small playhead request and always returns a versioned response.
-    #[must_use]
-    pub fn sample_json(&self, request_json: &[u8]) -> Vec<u8> {
+    /// Parses, validates, and evaluates one bounded request into a typed packet.
+    ///
+    /// The worker response and canvas renderer both use this path so the canvas
+    /// renderer never serializes and reparses an intermediate `RenderPacket`.
+    pub(crate) fn sample_packet_json(
+        &self,
+        request_json: &[u8],
+    ) -> Result<SampledRenderPacketV1, SamplePacketErrorV1> {
         if request_json.len() > MAX_SAMPLE_REQUEST_JSON_BYTES_V1 {
-            return serialize_response(&WorkerResponseV1::error(
-                WorkerErrorCodeV1::InvalidRequest,
+            return Err(SamplePacketErrorV1::without_correlation(
+                SamplePacketErrorCodeV1::InvalidRequest,
                 format!(
                     "sample request contains {} bytes; maximum is {MAX_SAMPLE_REQUEST_JSON_BYTES_V1}",
                     request_json.len()
                 ),
             ));
         }
-        let request: SampleRequestV1 = match serde_json::from_slice(request_json) {
-            Ok(request) => request,
-            Err(error) => {
-                return serialize_response(&WorkerResponseV1::error(
-                    WorkerErrorCodeV1::InvalidRequest,
-                    format!("invalid sample request JSON: {error}"),
-                ));
-            }
-        };
+        let request: SampleRequestV1 = serde_json::from_slice(request_json).map_err(|error| {
+            SamplePacketErrorV1::without_correlation(
+                SamplePacketErrorCodeV1::InvalidRequest,
+                format!("invalid sample request JSON: {error}"),
+            )
+        })?;
         if let Err(message) = validate_request(&request) {
-            return serialize_response(&WorkerResponseV1::error(
-                WorkerErrorCodeV1::InvalidRequest,
+            return Err(SamplePacketErrorV1::without_correlation(
+                SamplePacketErrorCodeV1::InvalidRequest,
                 message,
             ));
         }
+        let correlation = SampleRequestCorrelationV1 {
+            packet_id: request.packet_id.clone(),
+            sample_time: request.sample_time,
+            viewport: request.viewport.clone(),
+        };
         let packet = self
             .session
             .sample_render_packet(SampleEngineSessionOptionsV1 {
@@ -275,16 +335,34 @@ impl EngineWorkerSessionV1 {
                 packet_id: &request.packet_id,
                 sample_time: request.sample_time,
                 viewport: request.viewport,
-            });
-        match packet {
-            Ok(packet) => serialize_response(&WorkerResponseV1::ready(packet)),
-            Err(error) => {
+            })
+            .map_err(|error| {
                 let code = if matches!(error, EvaluationError::InvalidInput(_)) {
-                    WorkerErrorCodeV1::InvalidRequest
+                    SamplePacketErrorCodeV1::InvalidRequest
                 } else {
-                    WorkerErrorCodeV1::EvaluationFailed
+                    SamplePacketErrorCodeV1::EvaluationFailed
                 };
-                serialize_response(&WorkerResponseV1::error(code, error.to_string()))
+                SamplePacketErrorV1::with_correlation(code, error.to_string(), correlation.clone())
+            })?;
+        Ok(SampledRenderPacketV1 {
+            correlation,
+            packet,
+        })
+    }
+
+    /// Evaluates one small playhead request and always returns a versioned response.
+    #[must_use]
+    pub fn sample_json(&self, request_json: &[u8]) -> Vec<u8> {
+        match self.sample_packet_json(request_json) {
+            Ok(sampled) => serialize_response(&WorkerResponseV1::ready(sampled.packet)),
+            Err(error) => {
+                let code = match error.code {
+                    SamplePacketErrorCodeV1::EvaluationFailed => {
+                        WorkerErrorCodeV1::EvaluationFailed
+                    }
+                    SamplePacketErrorCodeV1::InvalidRequest => WorkerErrorCodeV1::InvalidRequest,
+                };
+                serialize_response(&WorkerResponseV1::error(code, error.message))
             }
         }
     }
@@ -337,6 +415,41 @@ mod tests {
         );
         assert!(response["result"].get("scene").is_none());
         assert!(response["result"].get("assets").is_none());
+    }
+
+    #[test]
+    fn typed_sample_path_preserves_request_correlation_without_json_round_trip() {
+        let fixture = fixture();
+        let session = EngineWorkerSessionV1::from_snapshot_json(&snapshot(&fixture)).unwrap();
+        let sampled = session.sample_packet_json(&sample_request()).unwrap();
+
+        assert_eq!(sampled.correlation.packet_id, "wasm:midpoint");
+        assert!((sampled.correlation.sample_time - 1.0).abs() < f64::EPSILON);
+        assert_eq!(sampled.correlation.viewport.width_px, 160);
+        assert_eq!(sampled.packet.packet_id, sampled.correlation.packet_id);
+        assert!(
+            (sampled.packet.sample_time - sampled.correlation.sample_time).abs() < f64::EPSILON
+        );
+        assert_eq!(sampled.packet.viewport, sampled.correlation.viewport);
+    }
+
+    #[test]
+    fn structurally_invalid_request_never_becomes_response_correlation() {
+        let fixture = fixture();
+        let session = EngineWorkerSessionV1::from_snapshot_json(&snapshot(&fixture)).unwrap();
+        let invalid = serde_json::to_vec(&json!({
+            "evidence": [],
+            "packetId": " padded ",
+            "sampleTime": -1,
+            "schema": "poietra.engine-sample-request",
+            "version": 1,
+            "viewport": { "heightPx": 0, "widthPx": 160 },
+        }))
+        .unwrap();
+
+        let error = session.sample_packet_json(&invalid).unwrap_err();
+        assert_eq!(error.code, SamplePacketErrorCodeV1::InvalidRequest);
+        assert!(error.correlation.is_none());
     }
 
     #[test]

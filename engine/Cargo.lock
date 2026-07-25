@@ -672,12 +672,17 @@ dependencies = [
 name = "poietra-wasm"
 version = "0.1.0"
 dependencies = [
+ "js-sys",
  "poietra-eval",
+ "poietra-render-wgpu",
  "poietra-scene-ir",
  "serde",
  "serde_json",
  "thiserror",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "wgpu",
 ]
 
 [[package]]

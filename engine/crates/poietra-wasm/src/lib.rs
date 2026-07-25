@@ -1,25 +1,42 @@
 //! Browser-facing retained Poietra Engine session.
 //!
 //! The JavaScript worker installs one validated Scene snapshot, then sends only
-//! bounded playhead requests. Each response contains a `RenderPacket` rather than
-//! cloning the Scene and manifest across the worker boundary.
+//! bounded playhead requests. The legacy sampling handle returns a `RenderPacket`;
+//! the canvas handle keeps that packet in Rust and returns presentation metadata.
 
+#[cfg(target_arch = "wasm32")]
+mod canvas;
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+mod canvas_protocol;
 mod protocol;
 
 use wasm_bindgen::prelude::*;
 
+pub use canvas_protocol::MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES_V1;
 pub use protocol::{
     EngineWorkerSessionV1, MAX_SAMPLE_REQUEST_JSON_BYTES_V1, MAX_WORKER_RESPONSE_JSON_BYTES_V1,
 };
 
+#[cfg(target_arch = "wasm32")]
+pub use canvas::PoietraCanvasEngineV1;
+
 /// JavaScript/WASM module handshake version, independent of Scene IR revisions.
 pub const POIETRA_ENGINE_ABI_VERSION_V1: u32 = 1;
+/// `OffscreenCanvas` render ABI version, independent of worker packet sampling.
+pub const POIETRA_CANVAS_ABI_VERSION_V1: u32 = 1;
 
 /// Returns the worker ABI version before a session is constructed.
 #[must_use]
 #[wasm_bindgen(js_name = poietraEngineAbiVersion)]
 pub fn poietra_engine_abi_version() -> u32 {
     POIETRA_ENGINE_ABI_VERSION_V1
+}
+
+/// Returns the `OffscreenCanvas` ABI version before WebGPU initialization.
+#[must_use]
+#[wasm_bindgen(js_name = poietraCanvasAbiVersion)]
+pub fn poietra_canvas_abi_version() -> u32 {
+    POIETRA_CANVAS_ABI_VERSION_V1
 }
 
 /// Opaque WASM handle owned by one dedicated browser worker.
@@ -69,5 +86,6 @@ mod tests {
     #[test]
     fn exported_abi_version_is_v1() {
         assert_eq!(poietra_engine_abi_version(), 1);
+        assert_eq!(poietra_canvas_abi_version(), 1);
     }
 }

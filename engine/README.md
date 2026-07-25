@@ -52,9 +52,16 @@ The shared browser/native WGPU 30 pipeline accepts caller-owned `Device`, `Queue
 and `TextureView` values, clears an extent-checked target, and draws premultiplied
 linear-light indexed triangles in packet paint order. It accepts only
 `Rgba8UnormSrgb` and `Bgra8UnormSrgb` single-sample render targets. Device creation,
-surface lifecycle, browser WebGPU fallback, stroke/image support, and general path
-tessellation remain outside this initial slice. A native software-adapter smoke
-test proves the shared fixture through actual GPU submission and readback.
+browser fallback policy, stroke/image support, and general path tessellation remain
+outside this initial slice. A native software-adapter smoke test proves the shared
+fixture through actual GPU submission and readback.
+
+On `wasm32`, `PoietraCanvasEngineV1` owns an `OffscreenCanvas` WebGPU surface,
+device, queue, and the fill renderer. Its asynchronous `create` method installs a
+validated snapshot, `replaceSnapshot` atomically replaces that snapshot, and
+`render` consumes the existing bounded sample request. Render responses contain
+only presentation correlation metadata or a structured error; they never transfer
+a `RenderPacket` back to JavaScript.
 
 The WASM session validates and retains a complete Scene bundle on installation.
 Subsequent playhead requests are bounded JSON messages and return only the sampled
