@@ -80,6 +80,24 @@ jobs:
       - name: Run boundary and integration tests
         run: pnpm test:integration
 
+  engine-rust:
+    name: Poietra Engine Rust core
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Select pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component clippy,rustfmt
+          rustup default 1.92.0
+      - name: Check formatting
+        run: cargo fmt --all --manifest-path engine/Cargo.toml -- --check
+      - name: Run Engine tests
+        run: cargo test --locked --workspace --manifest-path engine/Cargo.toml
+      - name: Run Clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features --manifest-path engine/Cargo.toml -- -D warnings
+
   browser-e2e:
     name: Browser E2E
     runs-on: ubuntu-latest
