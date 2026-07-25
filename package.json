@@ -10,7 +10,7 @@
   },
   "scripts": {
     "test": "vitest run",
-    "test:unit": "vitest run src/ai src/studio --exclude src/studio/workspace-projection.test.ts",
+    "test:unit": "vitest run src/ai src/engine src/studio --exclude src/studio/workspace-projection.test.ts",
     "test:integration": "vitest run server src/render-pipeline src/studio/workspace-projection.test.ts",
     "test:manim-smoke": "node scripts/run-manim-smoke.mjs",
     "test:e2e": "playwright test",
