@@ -21,6 +21,17 @@ cargo check --locked --package poietra-wasm --target wasm32-unknown-unknown --ma
 cargo check --locked --package poietra-render-wgpu --target wasm32-unknown-unknown --manifest-path engine/Cargo.toml
 ```
 
+The native GPU proof is ignored by the portable default test suite. On a host
+with a software Vulkan adapter such as Mesa Lavapipe, run it explicitly with:
+
+```sh
+WGPU_BACKEND=vulkan cargo test --locked --package poietra-render-wgpu --test headless_gpu --manifest-path engine/Cargo.toml renders_shared_fixture_with_fallback_adapter -- --ignored --exact --nocapture
+```
+
+The proof fails when no fallback adapter is available. It renders the shared
+fixture into an sRGB texture, reads aligned rows back to the CPU, checks stable
+interior pixels, and emits machine-readable adapter evidence.
+
 Both evaluators consume the JSON fixtures under `fixtures/engine-v1`; categorical
 results are exact and floating-point results use the fixture's explicit combined
 absolute/relative tolerance. The TypeScript evaluator remains Studio's current
@@ -41,8 +52,9 @@ The shared browser/native WGPU 30 pipeline accepts caller-owned `Device`, `Queue
 and `TextureView` values, clears an extent-checked target, and draws premultiplied
 linear-light indexed triangles in packet paint order. It accepts only
 `Rgba8UnormSrgb` and `Bgra8UnormSrgb` single-sample render targets. Device creation,
-surface lifecycle, WebGPU fallback, stroke/image support, general path
-tessellation, and GPU-backed correctness tests remain outside this initial slice.
+surface lifecycle, browser WebGPU fallback, stroke/image support, and general path
+tessellation remain outside this initial slice. A native software-adapter smoke
+test proves the shared fixture through actual GPU submission and readback.
 
 The WASM session validates and retains a complete Scene bundle on installation.
 Subsequent playhead requests are bounded JSON messages and return only the sampled

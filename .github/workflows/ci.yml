@@ -96,6 +96,16 @@ jobs:
         run: cargo fmt --all --manifest-path engine/Cargo.toml -- --check
       - name: Run Engine tests
         run: cargo test --locked --workspace --manifest-path engine/Cargo.toml
+      - name: Install software Vulkan adapter when absent
+        run: |
+          if ! dpkg-query --show --showformat='${Status}' mesa-vulkan-drivers 2>/dev/null | grep --quiet 'install ok installed'; then
+            sudo apt-get update
+            sudo apt-get install --yes --no-install-recommends mesa-vulkan-drivers
+          fi
+      - name: Prove headless WGPU rendering with Lavapipe
+        env:
+          WGPU_BACKEND: vulkan
+        run: cargo test --locked --package poietra-render-wgpu --test headless_gpu --manifest-path engine/Cargo.toml renders_shared_fixture_with_fallback_adapter -- --ignored --exact --nocapture
       - name: Run Clippy
         run: cargo clippy --locked --workspace --all-targets --all-features --manifest-path engine/Cargo.toml -- -D warnings
       - name: Check the browser WASM target
