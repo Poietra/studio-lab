@@ -11,5 +11,6 @@ test-results/
 .poietra/
 shell-evaluation/fixture.mp4
 src-tauri/target/
+public/engine-wasm/
 *.log
 .DS_Store

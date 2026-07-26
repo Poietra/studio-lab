@@ -1,0 +1,159 @@
+{
+  "id": "eng-v1-shared-circle-opacity",
+  "assets": {
+    "assets": [],
+    "manifestDigest": "e675cb4bad3da6b425e5a6bbe88d7da7a986e3cac61dab06139ef63950dcc181",
+    "manifestId": "manifest",
+    "schema": "poietra.asset-manifest",
+    "version": 1
+  },
+  "scene": {
+    "animationChannels": [
+      {
+        "entityId": "earlier",
+        "id": "opacity:earlier",
+        "keyframes": [
+          {
+            "at": 0,
+            "easingToNext": { "kind": "smooth" },
+            "value": 0
+          },
+          {
+            "at": 2,
+            "easingToNext": null,
+            "value": 1
+          }
+        ],
+        "kind": "opacity",
+        "provenanceId": "fixture"
+      }
+    ],
+    "assetManifest": {
+      "manifestDigest": "e675cb4bad3da6b425e5a6bbe88d7da7a986e3cac61dab06139ef63950dcc181",
+      "manifestId": "manifest"
+    },
+    "camera": {
+      "background": { "alpha": 1, "blue": 0, "green": 0, "red": 0 },
+      "view": {
+        "center": { "x": 0, "y": 0 },
+        "frameHeight": 9,
+        "frameWidth": 16
+      }
+    },
+    "coordinateSpace": {
+      "cpuPrecision": "f64",
+      "kind": "cartesian-2d",
+      "origin": "center",
+      "unit": "scene-unit",
+      "xAxis": "right",
+      "yAxis": "up"
+    },
+    "duration": 2,
+    "entities": [
+      {
+        "appearance": {
+          "fill": {
+            "color": { "alpha": 1, "blue": 1, "green": 0, "red": 0 },
+            "rule": "nonzero"
+          },
+          "kind": "vector",
+          "opacity": 1,
+          "stroke": null
+        },
+        "geometry": {
+          "center": { "x": 1, "y": 0 },
+          "kind": "circle",
+          "radius": 0.5
+        },
+        "id": "later",
+        "lifetimes": [{ "end": 2, "start": 0 }],
+        "parentId": null,
+        "provenanceId": "fixture",
+        "sceneOrder": 1,
+        "sourceZIndex": -0,
+        "transform": { "m11": 1, "m12": 0, "m21": 0, "m22": 1, "tx": 0, "ty": 0 }
+      },
+      {
+        "appearance": {
+          "fill": {
+            "color": { "alpha": 1, "blue": 0, "green": 0, "red": 1 },
+            "rule": "nonzero"
+          },
+          "kind": "vector",
+          "opacity": 1,
+          "stroke": null
+        },
+        "geometry": {
+          "center": { "x": -1, "y": 0 },
+          "kind": "circle",
+          "radius": 1
+        },
+        "id": "earlier",
+        "lifetimes": [{ "end": 2, "start": 0 }],
+        "parentId": null,
+        "provenanceId": "fixture",
+        "sceneOrder": 0,
+        "sourceZIndex": 0,
+        "transform": { "m11": 1, "m12": 0, "m21": 0, "m22": 1, "tx": 0, "ty": 0 }
+      },
+      {
+        "appearance": {
+          "fill": null,
+          "kind": "vector",
+          "opacity": 0.5,
+          "stroke": {
+            "cap": "round",
+            "color": { "alpha": 1, "blue": 0, "green": 1, "red": 0 },
+            "join": "miter",
+            "miterLimit": 4,
+            "widthWorld": 1
+          }
+        },
+        "geometry": {
+          "end": { "x": -2, "y": 2 },
+          "kind": "line",
+          "start": { "x": -4, "y": 2 }
+        },
+        "id": "stroke",
+        "lifetimes": [{ "end": 2, "start": 0 }],
+        "parentId": null,
+        "provenanceId": "fixture",
+        "sceneOrder": 2,
+        "sourceZIndex": 2,
+        "transform": { "m11": 1, "m12": 0, "m21": 0, "m22": 1, "tx": 0, "ty": 0 }
+      }
+    ],
+    "fidelity": { "kind": "exact" },
+    "provenance": [
+      {
+        "evidence": ["Shared TypeScript and Rust golden fixture"],
+        "id": "fixture",
+        "origin": "fixture"
+      }
+    ],
+    "requiredCapabilities": ["opacity-animation", "shape-primitives"],
+    "sceneId": "shared:circle-opacity",
+    "schema": "poietra.scene-ir",
+    "source": {
+      "editProgramVersion": 1,
+      "kind": "studio-edit-program",
+      "revisionHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "version": 1
+  },
+  "sample": {
+    "evidence": ["Poietra shared evaluator fixture v1"],
+    "packetId": "shared:circle-opacity:midpoint",
+    "sampleTime": 1,
+    "viewport": { "heightPx": 90, "widthPx": 160 }
+  },
+  "expected": {
+    "camera": { "bottom": -4.5, "left": -8, "right": 8, "top": 4.5 },
+    "drawEntityIds": ["earlier", "later", "stroke"],
+    "drawKinds": ["path", "path", "path"],
+    "opacities": [0.5, 1, 0.5],
+    "pathSegmentCounts": [4, 4, 1],
+    "requiredCapabilities": ["cubic-path-fill", "cubic-path-stroke"],
+    "tolerance": 0.000000000001
+  }
+}

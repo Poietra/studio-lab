@@ -1,0 +1,27 @@
+[package]
+name = "poietra-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+poietra-eval.workspace = true
+poietra-scene-ir.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+wasm-bindgen.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "=0.3.103"
+poietra-render-wgpu = { path = "../poietra-render-wgpu" }
+wasm-bindgen-futures = "=0.4.76"
+web-sys = { version = "=0.3.103", features = ["OffscreenCanvas"] }
+wgpu = { workspace = true, features = ["std", "webgpu", "wgsl"] }
+
+[lints]
+workspace = true

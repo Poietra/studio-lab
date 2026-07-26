@@ -92,6 +92,7 @@ describe("Electron shell HTTP adapter", () => {
     await Promise.all([mkdir(distRoot), mkdir(projectRoot)]);
     await Promise.all([
       writeFile(join(distRoot, "index.html"), "<!doctype html><title>Shell</title>", "utf8"),
+      writeFile(join(distRoot, "engine.wasm"), Uint8Array.from([0, 97, 115, 109, 1, 0, 0, 0])),
       writeFile(join(projectRoot, "scene.py"), source, "utf8"),
     ]);
     const shell = await startElectronShellServer({
@@ -116,6 +117,9 @@ describe("Electron shell HTTP adapter", () => {
     expect(documentResponse.headers.get("content-security-policy")).toContain("default-src 'self'");
     expect(documentResponse.headers.get("x-frame-options")).toBe("DENY");
     expect(await documentResponse.text()).toContain("<title>Shell</title>");
+    const wasmResponse = await shellFetch(shell, "/engine.wasm");
+    expect(wasmResponse.headers.get("content-type")).toBe("application/wasm");
+    expect(new Uint8Array(await wasmResponse.arrayBuffer())).toEqual(Uint8Array.from([0, 97, 115, 109, 1, 0, 0, 0]));
     expect((await shellFetch(shell, "/../package.json")).status).toBe(404);
 
     const projectsResponse = await shellFetch(shell, "/api/manim/projects");
