@@ -310,7 +310,12 @@ export class PoietraCanvasWorkerRuntimeV1 {
       result.viewport.widthPx !== request.viewport.widthPx
     ) {
       this.postMessage(
-        errorResponse(correlation, "protocol-violation", null, "The presented frame was not correlated."),
+        errorResponse(
+          correlation,
+          "protocol-violation",
+          null,
+          `The presented frame was not correlated: expected ${packetId} at ${request.sampleTime} for ${request.viewport.widthPx}x${request.viewport.heightPx}, received ${result.packetId} at ${result.sampleTime} for ${result.viewport.widthPx}x${result.viewport.heightPx}.`,
+        ),
       );
       return;
     }

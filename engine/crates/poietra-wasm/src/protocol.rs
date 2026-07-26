@@ -371,6 +371,19 @@ impl EngineWorkerSessionV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_sample_time_preserves_the_javascript_binary64_value() {
+        let request: SampleRequestV1 = serde_json::from_slice(
+            br#"{"evidence":[],"packetId":"frame:roundtrip","sampleTime":2.2661000000000002,"schema":"poietra.engine-sample-request","version":1,"viewport":{"heightPx":1080,"widthPx":1920}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            request.sample_time.to_bits(),
+            2.266_100_000_000_000_2_f64.to_bits()
+        );
+    }
     use serde_json::{Value, json};
     use std::fs;
     use std::path::PathBuf;

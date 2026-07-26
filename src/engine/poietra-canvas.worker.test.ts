@@ -135,6 +135,30 @@ describe("Poietra canvas worker runtime", () => {
     expect(posted[1]).not.toHaveProperty("responseJson");
   });
 
+  it("rejects an adjacent binary64 playhead at a semantic boundary", async () => {
+    class Engine implements PoietraWasmCanvasEngineV1 {
+      static async create() {
+        return new Engine();
+      }
+
+      replaceSnapshot() {}
+      async render(requestJson: Uint8Array) {
+        const request = canvasEngineSampleRequestV1Schema.parse(JSON.parse(new TextDecoder().decode(requestJson)));
+        return encodeResponse(presentedResponse(request.packetId, 1.999_999_999_999_999_8));
+      }
+    }
+    const posted: CanvasWorkerResponseV1[] = [];
+    const runtime = new PoietraCanvasWorkerRuntimeV1({
+      loadWasm: async () => Engine,
+      postMessage: (response) => posted.push(response),
+      scopeUrl: "https://studio.test/worker.js",
+    });
+
+    await runtime.accept(installRequest());
+    await runtime.accept(renderRequest({ sampleTime: 2 }));
+    expect(posted.at(-1)).toMatchObject({ code: "protocol-violation", kind: "error", requestId: 2 });
+  });
+
   it("checks same-origin loading and atomically replaces a matching revision", async () => {
     const replaceSnapshot = vi.fn();
     class Engine implements PoietraWasmCanvasEngineV1 {
