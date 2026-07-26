@@ -2,6 +2,8 @@ import type { KeyboardEvent, PointerEvent } from "react";
 
 import { cn } from "../lib/cn";
 import type { EntityDimensions, Point, ProjectedEntity } from "./model";
+import { describeStudioPreviewFallbackV1 } from "./preview-renderer-policy";
+import type { StudioPreviewRendererViewV1 } from "./use-preview-renderer";
 import type { StudioMotionPath } from "./motion-paths";
 import { EquationContent } from "./prototype-rendering";
 import {
@@ -59,6 +61,7 @@ export type StudioCanvasProps = Readonly<{
   onEntityResizePointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
   onEntityResizePointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
   onMotionControlChange: (path: StudioMotionPath, delta: Point) => void;
+  preview?: StudioPreviewRendererViewV1 | null;
   readOnly: boolean;
   sampleId: string;
   scalePreview: EntityScalePreview | null;
@@ -263,16 +266,36 @@ export function StudioCanvas({
   onEntityResizePointerMove,
   onEntityResizePointerUp,
   onMotionControlChange,
+  preview = null,
   readOnly,
   sampleId,
   scalePreview,
   selectedIds,
 }: StudioCanvasProps) {
+  // Only a fully correlated, presented WebGPU frame may replace the duplicate
+  // DOM fill/stroke paint: `preview.state` is resolved synchronously against
+  // the current playhead, viewport, snapshot correlation, and host, so hiding
+  // the paint here never trusts a stale emission. Hit targets, focus,
+  // selection, resize handles, and the object/timeline/Inspector DOM stay
+  // fully interactive as a paint-free overlay, and any fallback restores the
+  // semantic paint in the same render.
+  const presentingCanvasPixels = preview?.state.phase === "presented";
   return (
     <div className="grid min-h-0 flex-1 place-items-center overflow-auto p-4">
       <div
         className="relative aspect-video w-full max-w-5xl overflow-hidden border border-zinc-700 bg-black [container-type:size]"
         data-studio-canvas
+        data-preview-fallback-reason={preview?.state.phase === "fallback" ? preview.state.reason : undefined}
+        data-preview-packet-id={preview?.state.phase === "presented" ? preview.state.frame.packetId : undefined}
+        data-preview-renderer={preview ? preview.state.phase : "off"}
+        data-preview-sample-time={
+          preview?.state.phase === "presented" ? String(preview.state.frame.sampleTime) : undefined
+        }
+        data-preview-viewport={
+          preview?.state.phase === "presented"
+            ? `${preview.state.frame.viewport.widthPx}x${preview.state.frame.viewport.heightPx}`
+            : undefined
+        }
         data-proposed-state-sample={sampleId}
         data-scene-phase={boundaryActive ? "incoming" : "outgoing"}
         onPointerDown={(event) => {
@@ -282,8 +305,23 @@ export function StudioCanvas({
           );
         }}
       >
+        {preview ? (
+          <canvas
+            className={cn(
+              "pointer-events-none absolute inset-0 z-0 size-full",
+              preview.state.phase !== "presented" && "invisible",
+            )}
+            data-studio-preview-canvas=""
+            key={`preview-${preview.epoch}`}
+            ref={preview.attachCanvas}
+          />
+        ) : null}
         <div className="absolute inset-0 origin-center" data-studio-transform-layer style={{ scale: cameraScale }}>
-          <svg aria-hidden="true" className="absolute inset-0 size-full opacity-10" viewBox="0 0 640 360">
+          <svg
+            aria-hidden="true"
+            className={cn("absolute inset-0 size-full", presentingCanvasPixels ? "opacity-0" : "opacity-10")}
+            viewBox="0 0 640 360"
+          >
             <g stroke="#a1a1aa" strokeWidth="1">
               {[80, 160, 240, 320, 400, 480, 560].map((x) => (
                 <line key={`x-${x}`} x1={x} x2={x} y1="0" y2="360" />
@@ -315,9 +353,18 @@ export function StudioCanvas({
             const scaleUnknown = entity.geometry.scale.kind === "unknown";
             const dimensionsUnknown = entity.geometry.dimensions.kind === "unknown";
             const approximate = Object.values(entity.geometry).some((knowledge) => knowledge.kind === "unknown");
-            const moveLocked = locked || positionUnknown;
+            // While a fully correlated frame is presented, the hit-target
+            // geometry comes from the verified snapshot itself so interaction
+            // targets sit exactly where the WebGPU pixels draw the objects —
+            // which also supplies a known position for entities whose semantic
+            // projection could not resolve one, keeping them selectable.
+            const presentedGeometry =
+              presentingCanvasPixels && entity.sourceIdentity.kind === "known"
+                ? (preview?.interactionGeometry?.get(entity.sourceIdentity.value) ?? null)
+                : null;
+            const moveLocked = locked || (positionUnknown && presentedGeometry === null);
             const localDelta = entityDragDelta(dragPreview, entity.id);
-            const previewGeometry = entityPreviewGeometry(geometryPreview, entity);
+            const previewGeometry = presentedGeometry ?? entityPreviewGeometry(geometryPreview, entity);
             const position = {
               x: previewGeometry.position.x + localDelta.x,
               y: previewGeometry.position.y + localDelta.y,
@@ -370,7 +417,12 @@ export function StudioCanvas({
                     title={positionUnknown ? entity.geometry.position.reason : undefined}
                     type="button"
                   >
-                    <ObjectVisual dimensions={previewGeometry.dimensions} entity={entity} frame={frame} />
+                    <span
+                      className={cn("block", presentingCanvasPixels && "opacity-0")}
+                      data-studio-semantic-paint={presentingCanvasPixels ? "deferred-to-canvas" : "painted"}
+                    >
+                      <ObjectVisual dimensions={previewGeometry.dimensions} entity={entity} frame={frame} />
+                    </span>
                     {selected ? (
                       <span className="absolute -top-6 left-0 max-w-56 truncate bg-sky-400 px-1.5 py-0.5 text-[10px] font-medium text-sky-950">
                         {entityLabel(entity)}
@@ -395,6 +447,17 @@ export function StudioCanvas({
             );
           })}
         </div>
+        {preview ? (
+          <div
+            className="absolute right-2 top-2 z-30 border border-zinc-700 bg-zinc-950/90 px-2 py-1 text-[10px] text-zinc-300"
+            data-studio-preview-status={preview.state.phase}
+            title={preview.state.phase === "fallback" ? (preview.state.detail ?? undefined) : undefined}
+          >
+            {preview.state.phase === "presented"
+              ? `Canvas preview · ${preview.sourceLabel ?? "verified snapshot"} · editing preview only`
+              : `Canvas preview fallback · ${describeStudioPreviewFallbackV1(preview.state.reason)}`}
+          </div>
+        ) : null}
         {boundaryActive && incomingSceneName ? (
           <div className="absolute bottom-2 left-2 z-30 border border-zinc-700 bg-zinc-950/90 px-2 py-1 text-[10px] text-zinc-300">
             Incoming Scene · {incomingSceneName}

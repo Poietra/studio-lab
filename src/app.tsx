@@ -1,4 +1,4 @@
-import { type KeyboardEvent, type PointerEvent, useCallback, useEffect, useRef, useState } from "react";
+import { type KeyboardEvent, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LazyMotion } from "motion/react";
 
 import { createClarificationContextFingerprint, MAX_CLARIFICATION_HISTORY } from "./ai/clarification";
@@ -48,7 +48,14 @@ import { programExecutionCapabilities } from "./studio/operation-registry";
 import type { OperationOrigin } from "./studio/operations";
 import { latestSafeSourceAnchor, sourceTimeToWorkingTime, workingTimeToSourceTime } from "./studio/program-composition";
 import { samplePropertyValue } from "./studio/property-sampling";
+import {
+  PRISTINE_WORKING_REVISION,
+  resolveStudioPreviewSnapshotProviderV1,
+  type StudioPreviewEditingContextV1,
+  type StudioPreviewSnapshotProviderV1,
+} from "./studio/preview-snapshot-provider";
 import { projectRuntimeSceneToSourceTimeline } from "./studio/source-timeline";
+import { useStudioPreviewRenderer } from "./studio/use-preview-renderer";
 import { MagicEditPanel } from "./studio/magic-edit-panel";
 import {
   createDirectManipulationResizeProgram,
@@ -446,6 +453,40 @@ export function App() {
       : {};
   const appliedTransactionIds = new Set(appliedPrograms.map((record) => record.program.transactionId));
   const boundary = workspaceProjection?.boundary ?? null;
+  // The provider resolves through a DEV-gated dynamic import; production
+  // builds resolve to null without loading any fixture/evidence code.
+  const [previewSnapshotProvider, setPreviewSnapshotProvider] = useState<StudioPreviewSnapshotProviderV1 | null>(null);
+  useEffect(() => {
+    if (typeof location === "undefined") return;
+    let cancelled = false;
+    void resolveStudioPreviewSnapshotProviderV1(location.search).then((provider) => {
+      if (!cancelled) setPreviewSnapshotProvider(provider);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const previewEditingContext = useMemo<StudioPreviewEditingContextV1 | null>(() => {
+    if (!activeScene || !workspace) return null;
+    const pristine = appliedPrograms.length === 0 && draftProgram === null && editingAppliedProgram === null;
+    return {
+      projectId: workspace.projectId,
+      sceneName: activeScene.name,
+      sourceDuration: activeScene.runtimeSceneState.duration,
+      sourceHash: activeScene.sourceHash,
+      sourcePath: activeScene.sourcePath,
+      workingRevision: pristine
+        ? PRISTINE_WORKING_REVISION
+        : `programs:${appliedPrograms.map((record) => record.program.transactionId).join(",")}${draftProgram ? "+draft" : ""}`,
+    };
+  }, [activeScene, appliedPrograms, draftProgram, editingAppliedProgram, workspace]);
+  const previewRenderer = useStudioPreviewRenderer({
+    context: previewEditingContext,
+    frame: workspace?.frame ?? { height: 8, width: 14.222 },
+    provider: previewSnapshotProvider,
+    sampleTime: currentTime,
+    transientEdit: dragPreview !== null || geometryPreview !== null || scalePreview !== null || boundary !== null,
+  });
   const visibleEntities = workspaceProjection?.visibleEntities ?? [];
   const editableEntities = workspaceProjection?.editableEntities ?? [];
   const selectedSet = new Set(selectedObjectIds);
@@ -1360,7 +1401,13 @@ export function App() {
     const entity = editableEntities.find((candidate) => candidate.id === entityId);
     const editable =
       entity && (!entity.provisional || (entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
-    if (!editable) return;
+    if (!editable) {
+      // A pointer press is still a selection gesture even when no drag can
+      // start from this entity (for example a line whose semantic position
+      // evidence cannot support a move program).
+      setSelectedObjectIds([entityId]);
+      return;
+    }
     const selectedEditableIds = selectedObjectIds.filter((selectedId) =>
       editableEntities.some(
         (candidate) =>
@@ -1383,7 +1430,10 @@ export function App() {
       sourcePrograms: gestureContext.sourcePrograms,
       targetEntityIds,
     });
-    if (!anchor) return;
+    if (!anchor) {
+      setSelectedObjectIds(targetEntityIds);
+      return;
+    }
     event.currentTarget.setPointerCapture(event.pointerId);
     const canvasBounds = event.currentTarget.closest<HTMLElement>("[data-scene-phase]")?.getBoundingClientRect();
     setSelectedObjectIds(targetEntityIds);
@@ -2301,6 +2351,7 @@ export function App() {
                 if (currentTime >= activeDuration) setCurrentTime(0);
                 setIsPlaying((playing) => !playing);
               }}
+              preview={previewRenderer}
               projection={projection}
               readOnly={boundary !== null}
               scalePreview={scalePreview}

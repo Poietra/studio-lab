@@ -65,6 +65,7 @@ export function StudioViewport({
   onSelectEntity,
   onTimeChange,
   onTogglePlayback,
+  preview = null,
   projection,
   readOnly = false,
   scalePreview,
@@ -105,6 +106,7 @@ export function StudioViewport({
         onEntityResizePointerMove={onEntityResizePointerMove}
         onEntityResizePointerUp={onEntityResizePointerUp}
         onMotionControlChange={onMotionControlChange}
+        preview={preview}
         readOnly={readOnly}
         sampleId={projection.canvas.sampleId}
         scalePreview={scalePreview}
