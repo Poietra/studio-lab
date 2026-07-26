@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
+import { createFakeGpuDevice } from "./canvas-frame-evidence.test-fixtures";
+import { createCanvasWorkerEvidenceSupportV1 } from "./canvas-worker-evidence";
 import {
   type CanvasRenderResponseV1,
   type CanvasWorkerResponseV1,
@@ -336,6 +337,279 @@ describe("Poietra canvas worker runtime", () => {
     expect(posted).toEqual([
       expect.objectContaining({ code: "invalid-message", kind: "error", requestId: 1, revision: REVISION_A }),
     ]);
+  });
+});
+
+function createEvidenceHarness() {
+  const { buffers, device } = createFakeGpuDevice();
+  let currentTexture: { fill: number } | null = null;
+  const adapter = { requestDevice: () => Promise.resolve(device) };
+  const gpu = { requestAdapter: () => Promise.resolve(adapter) };
+  const context = {
+    configure: () => undefined,
+    getCurrentTexture: () => currentTexture,
+  };
+  class EvidenceCanvas extends FakeOffscreenCanvas {
+    getContext(contextId: string) {
+      return contextId === "webgpu" ? context : null;
+    }
+  }
+  return {
+    acquireTexture: (fill: number) => {
+      currentTexture = { fill };
+      context.getCurrentTexture();
+    },
+    buffers,
+    canvas: new EvidenceCanvas(160, 90),
+    gpu,
+  };
+}
+
+type EvidenceRenderPlan = Readonly<{
+  fill?: number;
+  respond: (request: Readonly<{ packetId: string; sampleTime: number }>) => Uint8Array;
+  submissions?: number;
+}>;
+
+function createEvidenceEngineClass(
+  harness: ReturnType<typeof createEvidenceHarness>,
+  plans: EvidenceRenderPlan[],
+  options: Readonly<{ failingCreates?: number; rejectReplaces?: boolean }> = {},
+) {
+  let remainingCreateFailures = options.failingCreates ?? 0;
+  class Engine implements PoietraWasmCanvasEngineV1 {
+    private device: ReturnType<typeof createFakeGpuDevice>["device"] | null = null;
+
+    static async create(_snapshotJson: Uint8Array, canvas: OffscreenCanvas) {
+      if (remainingCreateFailures > 0) {
+        remainingCreateFailures -= 1;
+        throw new Error("The WebGPU adapter rejected this configuration.");
+      }
+      const engine = new Engine();
+      const context = (canvas as unknown as { getContext: (contextId: string) => unknown }).getContext("webgpu") as {
+        configure: (configuration: unknown) => void;
+      };
+      const navigatorGpu = (globalThis.navigator as unknown as { gpu: typeof harness.gpu }).gpu;
+      const adapter = await navigatorGpu.requestAdapter();
+      engine.device = await adapter.requestDevice();
+      context.configure({ device: engine.device, format: "rgba8unorm" });
+      return engine;
+    }
+
+    replaceSnapshot() {
+      if (options.rejectReplaces) {
+        const error = new Error("The replacement snapshot was rejected.");
+        error.name = "PoietraCanvasSnapshotRejected";
+        throw error;
+      }
+    }
+
+    async render(requestJson: Uint8Array) {
+      const request = canvasEngineSampleRequestV1Schema.parse(JSON.parse(new TextDecoder().decode(requestJson)));
+      const plan = plans.shift();
+      if (!plan || !this.device) throw new Error("No render plan is queued for this fake engine.");
+      if (plan.fill !== undefined) {
+        harness.acquireTexture(plan.fill);
+        for (let index = 0; index < (plan.submissions ?? 1); index += 1) {
+          this.device.queue.submit([]);
+        }
+      }
+      return plan.respond(request);
+    }
+  }
+  return Engine;
+}
+
+function captureEvidenceRequest(requestId: number, revision = REVISION_A) {
+  return {
+    kind: "capture-frame-evidence",
+    requestId,
+    revision,
+    samples: [{ fractionX: 0, fractionY: 0 }],
+    schema: "poietra.canvas-worker-request",
+    version: 1,
+  };
+}
+
+function replaceSceneRequest(requestId: number) {
+  return {
+    baseRevision: REVISION_A,
+    kind: "replace-scene",
+    requestId,
+    revision: REVISION_B,
+    schema: "poietra.canvas-worker-request",
+    snapshotJson: new TextEncoder().encode("snapshot-b").buffer,
+    version: 1,
+  };
+}
+
+const presentPlan: EvidenceRenderPlan["respond"] = (request) =>
+  encodeResponse(presentedResponse(request.packetId, request.sampleTime));
+
+describe("Poietra canvas worker frame evidence lifecycle", () => {
+  async function setupEvidenceWorker(
+    plans: EvidenceRenderPlan[],
+    options: Readonly<{ failingCreates?: number; rejectReplaces?: boolean }> = {},
+  ) {
+    const harness = createEvidenceHarness();
+    vi.stubGlobal("navigator", { gpu: harness.gpu });
+    const Engine = createEvidenceEngineClass(harness, plans, options);
+    const posted: CanvasWorkerResponseV1[] = [];
+    const runtime = new PoietraCanvasWorkerRuntimeV1({
+      evidence: createCanvasWorkerEvidenceSupportV1(),
+      loadWasm: async () => Engine,
+      postMessage: (response) => posted.push(response),
+      scopeUrl: "https://studio.test/assets/canvas-worker.js",
+    });
+    await runtime.accept(installRequest({ canvas: harness.canvas, captureFrameEvidence: true }));
+    return { harness, posted, runtime };
+  }
+
+  it("keeps the production runtime evidence-free: extended requests are bounded protocol errors", async () => {
+    const harness = createEvidenceHarness();
+    vi.stubGlobal("navigator", { gpu: harness.gpu });
+    const Engine = createEvidenceEngineClass(harness, []);
+    const posted: CanvasWorkerResponseV1[] = [];
+    const runtime = new PoietraCanvasWorkerRuntimeV1({
+      loadWasm: async () => Engine,
+      postMessage: (response) => posted.push(response),
+      scopeUrl: "https://studio.test/assets/canvas-worker.js",
+    });
+    await runtime.accept(installRequest({ canvas: harness.canvas, captureFrameEvidence: true }));
+    expect(posted.at(-1)).toMatchObject({ code: "invalid-state", kind: "error", requestId: 1 });
+    await runtime.accept(installRequest({ canvas: harness.canvas, requestId: 2 }));
+    expect(posted.at(-1)).toMatchObject({ kind: "canvas-ready", operation: "install", requestId: 2 });
+    await runtime.accept(captureEvidenceRequest(3));
+    expect(posted.at(-1)).toMatchObject({ code: "invalid-message", kind: "error", requestId: 3 });
+    expect(harness.buffers).toHaveLength(0);
+  });
+
+  it("discards staged evidence on a decode/protocol failure and keeps the last committed frame", async () => {
+    const { harness, posted, runtime } = await setupEvidenceWorker([
+      { fill: 10, respond: presentPlan },
+      { fill: 20, respond: () => new Uint8Array([0xff]) },
+    ]);
+    await runtime.accept(renderRequest({ requestId: 2 }));
+    expect(posted.at(-1)).toMatchObject({ kind: "frame-presented", packetId: "canvas:2" });
+    await runtime.accept(captureEvidenceRequest(3));
+    expect(posted.at(-1)).toMatchObject({ kind: "frame-evidence", packetId: "canvas:2", samples: [[10, 10, 10, 10]] });
+    await runtime.accept(renderRequest({ requestId: 4 }));
+    expect(posted.at(-1)).toMatchObject({ code: "protocol-violation", kind: "error", requestId: 4 });
+    expect(harness.buffers.map((buffer) => buffer.destroyCalls)).toEqual([0, 1]);
+    await runtime.accept(captureEvidenceRequest(5));
+    expect(posted.at(-1)).toMatchObject({ kind: "frame-evidence", packetId: "canvas:2", samples: [[10, 10, 10, 10]] });
+  });
+
+  it("resets the evidence capture when Engine.create fails so a plain retry is evidence-free", async () => {
+    const { harness, posted, runtime } = await setupEvidenceWorker([{ fill: 30, respond: presentPlan }], {
+      failingCreates: 1,
+    });
+    expect(posted.at(-1)).toMatchObject({ code: "renderer-unavailable", kind: "error", requestId: 1 });
+
+    await runtime.accept(installRequest({ canvas: harness.canvas, requestId: 2 }));
+    expect(posted.at(-1)).toMatchObject({ kind: "canvas-ready", operation: "install", requestId: 2 });
+    await runtime.accept(renderRequest({ requestId: 3 }));
+    expect(posted.at(-1)).toMatchObject({ kind: "frame-presented", packetId: "canvas:3" });
+    expect(harness.buffers).toHaveLength(0);
+    await runtime.accept(captureEvidenceRequest(4));
+    expect(posted.at(-1)).toMatchObject({
+      code: "invalid-state",
+      kind: "error",
+      message: "Frame evidence capture is not enabled on this worker.",
+    });
+  });
+
+  it("supports an evidence-enabled retry after a failed create without double-wrapping the hooks", async () => {
+    const { harness, posted, runtime } = await setupEvidenceWorker([{ fill: 40, respond: presentPlan }], {
+      failingCreates: 1,
+    });
+    expect(posted.at(-1)).toMatchObject({ code: "renderer-unavailable", kind: "error", requestId: 1 });
+    await runtime.accept(installRequest({ canvas: harness.canvas, captureFrameEvidence: true, requestId: 2 }));
+    expect(posted.at(-1)).toMatchObject({ kind: "canvas-ready", operation: "install", requestId: 2 });
+    await runtime.accept(renderRequest({ requestId: 3 }));
+    expect(posted.at(-1)).toMatchObject({ kind: "frame-presented", packetId: "canvas:3" });
+    expect(harness.buffers).toHaveLength(1);
+    await runtime.accept(captureEvidenceRequest(4));
+    expect(posted.at(-1)).toMatchObject({ kind: "frame-evidence", packetId: "canvas:3", samples: [[40, 40, 40, 40]] });
+  });
+
+  it("invalidates committed evidence on a successful Scene replace until a new frame commits", async () => {
+    const { harness, posted, runtime } = await setupEvidenceWorker([
+      { fill: 10, respond: presentPlan },
+      { fill: 20, respond: presentPlan },
+    ]);
+    await runtime.accept(renderRequest({ requestId: 2 }));
+    await runtime.accept(captureEvidenceRequest(3));
+    expect(posted.at(-1)).toMatchObject({ kind: "frame-evidence", revision: REVISION_A, samples: [[10, 10, 10, 10]] });
+
+    // The successful replace installs a new Scene: the old frame no longer
+    // describes it, so its evidence is destroyed and capture refuses.
+    await runtime.accept(replaceSceneRequest(4));
+    expect(posted.at(-1)).toMatchObject({ kind: "canvas-ready", operation: "replace", revision: REVISION_B });
+    expect(harness.buffers.map((buffer) => buffer.destroyCalls)).toEqual([1]);
+    await runtime.accept(captureEvidenceRequest(5, REVISION_B));
+    expect(posted.at(-1)).toMatchObject({
+      code: "invalid-state",
+      kind: "error",
+      message: "No presented frame has been captured yet.",
+    });
+
+    // A frame of the new revision re-arms the evidence with the revision the
+    // frame was actually drawn for.
+    await runtime.accept(renderRequest({ requestId: 6, revision: REVISION_B }));
+    expect(posted.at(-1)).toMatchObject({ kind: "frame-presented", packetId: "canvas:6" });
+    await runtime.accept(captureEvidenceRequest(7, REVISION_B));
+    expect(posted.at(-1)).toMatchObject({
+      kind: "frame-evidence",
+      packetId: "canvas:6",
+      revision: REVISION_B,
+      samples: [[20, 20, 20, 20]],
+    });
+  });
+
+  it("preserves committed evidence when a Scene replace is atomically rejected", async () => {
+    const { harness, posted, runtime } = await setupEvidenceWorker([{ fill: 10, respond: presentPlan }], {
+      rejectReplaces: true,
+    });
+    await runtime.accept(renderRequest({ requestId: 2 }));
+    await runtime.accept(replaceSceneRequest(3));
+    expect(posted.at(-1)).toMatchObject({ code: "snapshot-rejected", kind: "error", requestId: 3 });
+
+    // The Scene and the presented surface are unchanged, so the previously
+    // committed frame is still valid evidence for the base revision.
+    await runtime.accept(captureEvidenceRequest(4));
+    expect(posted.at(-1)).toMatchObject({
+      kind: "frame-evidence",
+      packetId: "canvas:2",
+      revision: REVISION_A,
+      samples: [[10, 10, 10, 10]],
+    });
+    expect(harness.buffers.map((buffer) => buffer.destroyCalls)).toEqual([0]);
+  });
+
+  it("refuses evidence after a presented response with no staged submission instead of exposing a stale frame", async () => {
+    const { harness, posted, runtime } = await setupEvidenceWorker([
+      { fill: 10, respond: presentPlan },
+      // The second render responds "presented" without acquiring a texture or
+      // submitting anything.
+      { respond: presentPlan },
+    ]);
+    await runtime.accept(renderRequest({ requestId: 2 }));
+    await runtime.accept(captureEvidenceRequest(3));
+    expect(posted.at(-1)).toMatchObject({ kind: "frame-evidence", packetId: "canvas:2" });
+
+    // Production presentation is unaffected by the missing submission...
+    await runtime.accept(renderRequest({ requestId: 4 }));
+    expect(posted.at(-1)).toMatchObject({ kind: "frame-presented", packetId: "canvas:4", requestId: 4 });
+    // ...but the stale committed frame was cleared, so the evidence channel
+    // fails closed instead of exposing the old frame as this response's proof.
+    expect(harness.buffers.map((buffer) => buffer.destroyCalls)).toEqual([1]);
+    await runtime.accept(captureEvidenceRequest(5));
+    expect(posted.at(-1)).toMatchObject({
+      code: "invalid-state",
+      kind: "error",
+      message: "No presented frame has been captured yet.",
+    });
   });
 });
 

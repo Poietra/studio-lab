@@ -8,6 +8,10 @@ import {
   type PresentedCanvasFrameV1,
 } from "./canvas-worker-client";
 import {
+  captureFrameEvidenceRequestV1Schema,
+  createCanvasWorkerClientEvidenceAdapterV1,
+} from "./canvas-worker-evidence";
+import {
   type CanvasWorkerRequestV1,
   type CanvasWorkerResponseV1,
   canvasWorkerRequestV1Schema,
@@ -611,6 +615,98 @@ describe("Poietra canvas worker client", () => {
     expect(oversizedUrlWorker.posted).toHaveLength(0);
     oversizedUrlClient.dispose();
     crossOriginClient.dispose();
+    client.dispose();
+  });
+
+  function createEvidenceClient(worker: FakeWorker) {
+    return new PoietraCanvasWorkerClient({
+      evidence: createCanvasWorkerClientEvidenceAdapterV1(),
+      requestTimeoutMs: 5_000,
+      wasmModuleUrl: "./engine-wasm/poietra_wasm.js",
+      workerFactory: () => worker as unknown as Worker,
+    });
+  }
+
+  function captureRequestAt(worker: FakeWorker, index: number) {
+    return captureFrameEvidenceRequestV1Schema.parse(worker.posted[index]?.message);
+  }
+
+  function evidenceResponse(
+    request: ReturnType<typeof captureRequestAt>,
+    overrides: Readonly<Record<string, unknown>> = {},
+  ): CanvasWorkerResponseV1 {
+    return {
+      kind: "frame-evidence",
+      packetId: "canvas:2",
+      requestId: request.requestId,
+      revision: request.revision,
+      sampleTime: 1,
+      samples: [[1, 2, 3, 255]],
+      schema: "poietra.canvas-worker-response",
+      surfaceFormat: "rgba8unorm",
+      version: 1,
+      viewport: { heightPx: 90, widthPx: 160 },
+      ...overrides,
+    } as unknown as CanvasWorkerResponseV1;
+  }
+
+  it("refuses frame evidence relabeled for a different Scene revision", async () => {
+    const bundle = await fixtureBundle();
+    const worker = new FakeWorker();
+    const client = createEvidenceClient(worker);
+    await install(client, worker, bundle);
+    const capturing = client.captureFrameEvidence({ revision: REVISION_A, samples: [{ fractionX: 0, fractionY: 0 }] });
+    worker.emitMessage(evidenceResponse(captureRequestAt(worker, 1), { revision: REVISION_B }));
+    await expect(capturing).rejects.toMatchObject({ code: "protocol-violation" });
+    client.dispose();
+  });
+
+  it("binds evidence to the replace lifecycle: a successful replace invalidates the old revision's evidence", async () => {
+    const bundle = await fixtureBundle();
+    const replacement = revisionBundle(bundle, REVISION_B);
+    const worker = new FakeWorker();
+    const client = createEvidenceClient(worker);
+    await install(client, worker, bundle);
+
+    const replacing = client.replaceScene({ baseRevision: REVISION_A, revision: REVISION_B, snapshot: replacement });
+    const replaceRequest = requestAt(worker, 1);
+    if (replaceRequest.kind !== "replace-scene") throw new Error("missing replacement request");
+    worker.emitMessage(readyResponse(replaceRequest));
+    await replacing;
+
+    // Evidence for the replaced revision is refused client-side without ever
+    // reaching the worker.
+    await expect(
+      client.captureFrameEvidence({ revision: REVISION_A, samples: [{ fractionX: 0, fractionY: 0 }] }),
+    ).rejects.toMatchObject({ code: "invalid-state" });
+    expect(worker.posted).toHaveLength(2);
+
+    // Evidence for the new revision reaches the worker, which refuses until a
+    // frame of the new Scene has committed.
+    const capturing = client.captureFrameEvidence({ revision: REVISION_B, samples: [{ fractionX: 0, fractionY: 0 }] });
+    const request = captureRequestAt(worker, 2);
+    expect(request.revision).toBe(REVISION_B);
+    worker.emitMessage(errorResponse(request as unknown as CanvasWorkerRequestV1, "invalid-state"));
+    await expect(capturing).rejects.toMatchObject({ code: "invalid-state" });
+    client.dispose();
+  });
+
+  it("keeps serving the base revision's evidence after an atomically rejected replace", async () => {
+    const bundle = await fixtureBundle();
+    const replacement = revisionBundle(bundle, REVISION_B);
+    const worker = new FakeWorker();
+    const client = createEvidenceClient(worker);
+    await install(client, worker, bundle);
+
+    const replacing = client.replaceScene({ baseRevision: REVISION_A, revision: REVISION_B, snapshot: replacement });
+    const replaceRequest = requestAt(worker, 1);
+    worker.emitMessage(errorResponse(replaceRequest, "snapshot-rejected"));
+    await expect(replacing).rejects.toMatchObject({ code: "snapshot-rejected" });
+
+    // The Scene and surface are unchanged, so the old evidence stays valid.
+    const capturing = client.captureFrameEvidence({ revision: REVISION_A, samples: [{ fractionX: 0, fractionY: 0 }] });
+    worker.emitMessage(evidenceResponse(captureRequestAt(worker, 2)));
+    await expect(capturing).resolves.toMatchObject({ kind: "frame-evidence", revision: REVISION_A });
     client.dispose();
   });
 });
