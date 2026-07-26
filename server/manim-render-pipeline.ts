@@ -1,4 +1,5 @@
 export {
+  parseFastManimSnapshotProducerCommand,
   parseManimCommand,
   parseManimProjects,
   type ManimProjectConfig,
