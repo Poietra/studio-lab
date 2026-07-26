@@ -329,6 +329,56 @@ and native consumers pass the same golden fixtures and a release/compatibility
 process exists. fast-manim remains a separate Python frontend/reference renderer;
 its fork-specific runtime is not copied here.
 
+### Server snapshot evidence boundary
+
+The Studio server accepts a fast-manim snapshot result only through the strict
+`poietra.fast-manim-snapshot-result` v1 envelope. The request ID, project, source
+path, Scene name and ID, source hash, and runtime-configuration hash must all match
+the pending server request. A compiled result is then checked as a complete
+`SceneIrBundleV1`, including the asset-manifest digest and references, and must
+contain fast-manim snapshot provenance. Unsupported results are explicit and
+bounded rather than partial Scene snapshots.
+
+Snapshot sealing is server-owned. A producer emits the all-zero SHA-256 sentinel
+in both snapshot-hash positions. After all structural, correlation, provenance,
+and manifest checks pass, the server hashes canonical bundle JSON with the
+snapshot hash replaced by that sentinel and installs the resulting digest in both
+positions. This avoids requiring the Python producer to reproduce JavaScript
+floating-point JSON serialization. Revalidation accepts the resulting sealed
+document, rejects a return to the zero sentinel, and rejects content changes.
+Every provenance record in an imported snapshot must use the fast-manim server
+origin; an unreferenced marker cannot authorize data with another origin.
+
+Raw producer bytes are bounded before UTF-8 decoding or JSON parsing. Compiled
+bundles are limited to 5 MiB and structured unsupported evidence to 256 KiB. The
+initial bridge also rejects JSON deeper than 64 levels, arrays above 10,000 items,
+or more than 25,000 total container entries before Zod validation. These bridge
+limits are intentionally narrower than the general Scene IR theoretical maxima:
+larger imported Scenes use the server-rendered fallback instead of amplifying
+validation errors in the Studio server.
+
+This contract is not a fast-manim exporter, process runner, or HTTP endpoint.
+RenderTrace v0 still cannot populate the complete geometry, appearance, camera,
+ordering, animation, and asset evidence, so the producer remains upstream work
+and the existing server-rendered artifact remains the fallback.
+
+### Incremental Scene transaction boundary
+
+`poietra.scene-delta` v1 is a bounded atomic transaction for Studio Edit Program
+snapshots. It correlates one Scene ID and exact base/next revision hashes, carries
+at most 256 non-duplicated operations, and has a 256 KiB encoded hard limit.
+Entity, animation-channel, and Scene-metadata changes are applied to an isolated
+candidate. The candidate replaces the installed snapshot only after the complete
+`SceneIrBundleV1` and asset-manifest integrity checks succeed; any stale revision,
+operation conflict, unknown field/version, size violation, or final invariant
+failure requests a full-snapshot fallback and leaves the base unchanged.
+
+Imported Manim snapshots deliberately do not use this delta. Their revision is a
+server-sealed content digest whose integrity cannot be established from a client
+edit transaction, so they require another verified full server snapshot. The v1
+delta contract and pure atomic apply are present, but Worker/WASM transport is a
+separate follow-up and is not claimed by this boundary alone.
+
 ## Fixed experiment protocol and adoption budget
 
 Every result records commit, contract version, fixture ID, browser build, OS/kernel,
@@ -412,8 +462,8 @@ The following evidence is reproducible in this repository:
 | fixture breadth and visual parity | partial | the catalog fixes 15 workload IDs, but only one fixture currently executes through both GPU backends; SSIM and pixel-difference corpus reports do not yet exist |
 | renderer capability coverage | partial | solid convex cubic fills and static untrimmed canonical Line strokes work; broader stroke, image, multiple subpaths, other open paths, and non-convex fill remain truthful fallbacks |
 | Studio preview integration | not met | the current workspace payload lacks complete appearance, paint-order, camera, and asset evidence, so switching the visible editor would require invented data |
-| incremental edit transfer | not met | snapshot replacement is atomic but still transfers a complete replacement snapshot rather than a bounded transaction/delta |
-| fast-manim bridge | not met | RenderTrace v0 still lacks the complete geometry/style/camera snapshot required by `SceneIrV1` |
+| incremental edit transfer | partial | a Studio-only, 256 KiB, stale-revision-safe atomic delta contract is verified in TypeScript; Worker/WASM still receives complete replacement snapshots |
+| fast-manim bridge | partial at the server boundary | strict correlation, 5 MiB intake, manifest/provenance checks, and server-owned snapshot sealing are implemented; RenderTrace v0 still cannot produce the complete `SceneIrV1` evidence |
 | frame, scrub, and cold-start latency | instrumented, decision evidence not met | an opt-in browser harness records 20 cold starts and warm/scrub acknowledgement p95, but no reference-host report for evaluate-plus-submit or input-to-present is checked in |
 | browser memory budget | unmeasured | no loaded-baseline/peak-memory report has been checked in |
 
