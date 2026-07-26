@@ -1,4 +1,5 @@
 import {
+  type CanvasFrameTelemetryV1,
   type CanvasWorkerErrorCodeV1,
   type CanvasWorkerRequestV1,
   type CanvasWorkerResponseV1,
@@ -34,6 +35,7 @@ const RECOVERABLE_RENDER_ERROR_CODES = new Set<CanvasWorkerClientErrorCode>([
   "surface-occluded",
   "surface-outdated",
   "surface-timeout",
+  "telemetry-unavailable",
   "unsupported-frame",
 ]);
 
@@ -46,6 +48,33 @@ export class CanvasWorkerClientError extends Error {
     super(message, options);
     this.code = code;
     this.name = "CanvasWorkerClientError";
+  }
+}
+
+/**
+ * A telemetry render that failed inside the engine while still producing
+ * partial per-phase telemetry. The typed error preserves that telemetry and
+ * the engine's error correlation for the harness; it never widens the normal
+ * render error path.
+ */
+export class CanvasTelemetryRenderError extends CanvasWorkerClientError {
+  readonly errorCorrelation: Readonly<{
+    packetId: string | null;
+    sampleTime: number | null;
+    viewport: Readonly<{ heightPx: number; widthPx: number }> | null;
+  }>;
+  readonly telemetry: CanvasFrameTelemetryV1;
+
+  constructor(
+    code: CanvasWorkerClientErrorCode,
+    message: string,
+    telemetry: CanvasFrameTelemetryV1,
+    errorCorrelation: CanvasTelemetryRenderError["errorCorrelation"],
+  ) {
+    super(code, message);
+    this.errorCorrelation = errorCorrelation;
+    this.name = "CanvasTelemetryRenderError";
+    this.telemetry = telemetry;
   }
 }
 
@@ -75,9 +104,14 @@ export type CanvasWorkerClientOptions = Readonly<{
 
 type SuccessfulResponseV1 = Exclude<CanvasWorkerResponseV1, Readonly<{ kind: "error" }>>;
 export type PresentedCanvasFrameV1 = Extract<SuccessfulResponseV1, Readonly<{ kind: "frame-presented" }>>;
+export type PresentedCanvasFrameTelemetryV1 = Extract<
+  SuccessfulResponseV1,
+  Readonly<{ kind: "frame-presented-telemetry" }>
+>;
+export type CollectedAdapterEvidenceV1 = Extract<SuccessfulResponseV1, Readonly<{ kind: "adapter-evidence" }>>;
 
 type PendingRequestV1 = {
-  expectedKind: SuccessfulResponseV1["kind"];
+  expectedKinds: readonly SuccessfulResponseV1["kind"][];
   expectedOperation?: "install" | "replace";
   reject: (error: CanvasWorkerClientError) => void;
   resolve: (response: SuccessfulResponseV1) => void;
@@ -92,6 +126,8 @@ type ScheduledRenderV1 = {
   resolve: (frame: PresentedCanvasFrameV1) => void;
   settled: boolean;
 };
+
+type ExclusiveCanvasOperationV1 = "adapter-evidence" | "telemetry-render";
 
 function createCanvasWorker() {
   return new Worker(new URL("./poietra-canvas.worker.ts", import.meta.url), { type: "module" });
@@ -161,6 +197,7 @@ export class PoietraCanvasWorkerClient {
   private currentRevision: string | null = null;
   private nextRequestId = 1;
   private queuedRender: ScheduledRenderV1 | null = null;
+  private exclusiveOperation: ExclusiveCanvasOperationV1 | null = null;
   private state: "empty" | "failed" | "installing" | "ready" | "replacing" | "disposed" = "empty";
 
   private readonly handleError = (event: ErrorEvent) => {
@@ -197,7 +234,7 @@ export class PoietraCanvasWorkerClient {
     const pending = this.correlatedPending(response.requestId, response.revision);
     if (!pending) return;
     if (
-      response.kind !== pending.expectedKind ||
+      !pending.expectedKinds.includes(response.kind) ||
       (response.kind === "canvas-ready" && response.operation !== pending.expectedOperation)
     ) {
       const error = new CanvasWorkerClientError(
@@ -265,7 +302,7 @@ export class PoietraCanvasWorkerClient {
     }
     this.state = "installing";
     try {
-      await this.dispatch(request, "canvas-ready", "install", [canvas, snapshotJson]);
+      await this.dispatch(request, ["canvas-ready"], "install", [canvas, snapshotJson]);
       this.requirePendingState("installing", "The canvas Scene installation was superseded.");
       this.currentRevision = input.revision;
       this.state = "ready";
@@ -277,6 +314,12 @@ export class PoietraCanvasWorkerClient {
   }
 
   async replaceScene(input: ReplaceCanvasSceneInputV1) {
+    if (this.exclusiveOperation !== null) {
+      throw new CanvasWorkerClientError(
+        "invalid-state",
+        `The ${this.exclusiveOperation} operation is in flight; Scene replacement is mutually exclusive with it.`,
+      );
+    }
     if (this.state !== "ready" || this.currentRevision !== input.baseRevision) {
       throw new CanvasWorkerClientError("invalid-state", "The replacement base revision is not installed.");
     }
@@ -298,7 +341,7 @@ export class PoietraCanvasWorkerClient {
     );
     this.state = "replacing";
     try {
-      await this.dispatch(request, "canvas-ready", "replace", [snapshotJson]);
+      await this.dispatch(request, ["canvas-ready"], "replace", [snapshotJson]);
       this.requirePendingState("replacing", "The canvas Scene replacement was superseded.");
       this.currentRevision = input.revision;
       this.state = "ready";
@@ -314,6 +357,12 @@ export class PoietraCanvasWorkerClient {
   }
 
   async render(input: RenderCanvasFrameInputV1): Promise<PresentedCanvasFrameV1> {
+    if (this.exclusiveOperation !== null) {
+      throw new CanvasWorkerClientError(
+        "invalid-state",
+        `The ${this.exclusiveOperation} operation is in flight; normal renders are mutually exclusive with it.`,
+      );
+    }
     if (this.state !== "ready" || this.currentRevision !== input.revision) {
       throw new CanvasWorkerClientError("invalid-state", "The requested canvas Scene revision is not installed.");
     }
@@ -349,6 +398,129 @@ export class PoietraCanvasWorkerClient {
     });
   }
 
+  /**
+   * Opt-in stage telemetry render. A telemetry render is mutually exclusive
+   * with EVERY other client operation: while one is in flight, a second
+   * telemetry render, a normal render, a Scene replacement, or adapter
+   * evidence collection all reject synchronously with invalid-state, and all
+   * of them recover once the telemetry render settles. A failed telemetry
+   * frame surfaces as [`CanvasTelemetryRenderError`], preserving the engine's
+   * partial per-phase telemetry and error correlation.
+   */
+  async renderTelemetry(input: RenderCanvasFrameInputV1): Promise<PresentedCanvasFrameTelemetryV1> {
+    if (this.exclusiveOperation !== null) {
+      throw new CanvasWorkerClientError(
+        "invalid-state",
+        `The ${this.exclusiveOperation} operation is in flight; telemetry renders are mutually exclusive with it.`,
+      );
+    }
+    if (this.state !== "ready" || this.currentRevision !== input.revision) {
+      throw new CanvasWorkerClientError("invalid-state", "The requested canvas Scene revision is not installed.");
+    }
+    // A settled active render may linger until its finally-cleanup microtask
+    // runs; only genuinely unsettled work counts as interleaving.
+    if (this.activeRender?.settled === false || this.queuedRender?.settled === false) {
+      throw new CanvasWorkerClientError(
+        "invalid-state",
+        "A telemetry render cannot interleave with in-flight canvas renders.",
+      );
+    }
+    const request = parseWorkerRequest({
+      kind: "render-frame-telemetry",
+      requestId: this.takeRequestId(),
+      revision: input.revision,
+      sampleTime: input.sampleTime,
+      schema: "poietra.canvas-worker-request",
+      version: POIETRA_CANVAS_WORKER_VERSION,
+      viewport: input.viewport,
+    });
+    if (request.kind !== "render-frame-telemetry") {
+      throw new CanvasWorkerClientError("protocol-violation", "The telemetry render request kind was lost.");
+    }
+    this.exclusiveOperation = "telemetry-render";
+    try {
+      const response = await this.dispatch(request, ["frame-presented-telemetry", "frame-telemetry-failed"]);
+      if (response.kind === "frame-telemetry-failed") {
+        throw new CanvasTelemetryRenderError(response.error.code, response.error.message, response.telemetry, {
+          packetId: response.error.packetId,
+          sampleTime: response.error.sampleTime,
+          viewport: response.error.viewport,
+        });
+      }
+      if (response.kind !== "frame-presented-telemetry") {
+        throw new CanvasWorkerClientError("protocol-violation", "The canvas worker did not present a telemetry frame.");
+      }
+      if (
+        response.packetId !== `canvas:${request.requestId}` ||
+        response.sampleTime !== request.sampleTime ||
+        response.viewport.heightPx !== request.viewport.heightPx ||
+        response.viewport.widthPx !== request.viewport.widthPx
+      ) {
+        throw new CanvasWorkerClientError(
+          "protocol-violation",
+          "The presented telemetry frame does not match its correlated request.",
+        );
+      }
+      return response;
+    } catch (error) {
+      const normalized = normalizeError(error, "internal-error", "The canvas telemetry render failed.");
+      if (!RECOVERABLE_RENDER_ERROR_CODES.has(normalized.code)) {
+        this.failFatally(normalized);
+      }
+      throw normalized;
+    } finally {
+      this.exclusiveOperation = null;
+    }
+  }
+
+  /**
+   * Collects bounded adapter/device evidence captured inside the Worker's
+   * own WASM engine, as opposed to the page-level `navigator.gpu` hint.
+   */
+  async collectAdapterEvidence(): Promise<CollectedAdapterEvidenceV1> {
+    if (this.exclusiveOperation !== null) {
+      throw new CanvasWorkerClientError(
+        "invalid-state",
+        `The ${this.exclusiveOperation} operation is in flight; adapter evidence collection is mutually exclusive with it.`,
+      );
+    }
+    if (this.state !== "ready" || this.currentRevision === null) {
+      throw new CanvasWorkerClientError("invalid-state", "No canvas Scene revision is installed.");
+    }
+    if (this.activeRender?.settled === false || this.queuedRender?.settled === false) {
+      throw new CanvasWorkerClientError(
+        "invalid-state",
+        "Adapter evidence collection cannot interleave with in-flight canvas renders.",
+      );
+    }
+    const request = parseWorkerRequest({
+      kind: "collect-adapter-evidence",
+      requestId: this.takeRequestId(),
+      revision: this.currentRevision,
+      schema: "poietra.canvas-worker-request",
+      version: POIETRA_CANVAS_WORKER_VERSION,
+    });
+    if (request.kind !== "collect-adapter-evidence") {
+      throw new CanvasWorkerClientError("protocol-violation", "The adapter evidence request kind was lost.");
+    }
+    this.exclusiveOperation = "adapter-evidence";
+    try {
+      const response = await this.dispatch(request, ["adapter-evidence"]);
+      if (response.kind !== "adapter-evidence") {
+        throw new CanvasWorkerClientError("protocol-violation", "The canvas worker did not return adapter evidence.");
+      }
+      return response;
+    } catch (error) {
+      const normalized = normalizeError(error, "internal-error", "The adapter evidence collection failed.");
+      if (!RECOVERABLE_RENDER_ERROR_CODES.has(normalized.code)) {
+        this.failFatally(normalized);
+      }
+      throw normalized;
+    } finally {
+      this.exclusiveOperation = null;
+    }
+  }
+
   dispose() {
     if (this.state === "disposed") return;
     this.state = "disposed";
@@ -361,7 +533,7 @@ export class PoietraCanvasWorkerClient {
 
   private dispatch(
     request: CanvasWorkerRequestV1,
-    expectedKind: SuccessfulResponseV1["kind"],
+    expectedKinds: readonly SuccessfulResponseV1["kind"][],
     expectedOperation?: "install" | "replace",
     transfer: Transferable[] = [],
   ) {
@@ -375,7 +547,7 @@ export class PoietraCanvasWorkerClient {
         );
       }, this.requestTimeoutMs);
       this.pending.set(request.requestId, {
-        expectedKind,
+        expectedKinds,
         expectedOperation,
         reject,
         resolve,
@@ -396,7 +568,7 @@ export class PoietraCanvasWorkerClient {
 
   private startRender(render: ScheduledRenderV1) {
     this.activeRender = render;
-    void this.dispatch(render.request, "frame-presented")
+    void this.dispatch(render.request, ["frame-presented"])
       .then((response) => {
         if (response.kind !== "frame-presented") {
           this.settleRenderError(

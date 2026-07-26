@@ -1,8 +1,9 @@
 import { readFile } from "node:fs/promises";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
+import { adapterEvidenceFixtureV1, measuredTelemetryFixtureV1 } from "./canvas-telemetry-test-fixtures";
 import {
+  CanvasTelemetryRenderError,
   type CanvasWorkerClientError,
   PoietraCanvasWorkerClient,
   type PresentedCanvasFrameV1,
@@ -98,6 +99,25 @@ function presentedResponse(
     viewport: request.viewport,
     ...overrides,
   };
+}
+
+function presentedTelemetryResponse(
+  request: Extract<CanvasWorkerRequestV1, Readonly<{ kind: "render-frame-telemetry" }>>,
+  overrides: Readonly<Record<string, unknown>> = {},
+): CanvasWorkerResponseV1 {
+  return {
+    kind: "frame-presented-telemetry",
+    packetId: `canvas:${request.requestId}`,
+    requestId: request.requestId,
+    revision: request.revision,
+    sampleTime: request.sampleTime,
+    schema: "poietra.canvas-worker-response",
+    suboptimal: false,
+    telemetry: measuredTelemetryFixtureV1(),
+    version: 1,
+    viewport: request.viewport,
+    ...overrides,
+  } as CanvasWorkerResponseV1;
 }
 
 function errorResponse(
@@ -570,6 +590,227 @@ describe("Poietra canvas worker client", () => {
     replaceWorker.emitMessage(readyResponse(replaceRequest));
     await expect(replacing).rejects.toMatchObject({ code: "disposed" });
     expect(replaceClient.revision).toBeNull();
+  });
+
+  it("returns correlated stage telemetry without interleaving normal renders", async () => {
+    const bundle = await fixtureBundle();
+    const worker = new FakeWorker();
+    const client = createClient(worker);
+    await install(client, worker, bundle);
+
+    const inFlight = client.render({ revision: REVISION_A, sampleTime: 0.5, viewport: { heightPx: 90, widthPx: 160 } });
+    await expect(
+      client.renderTelemetry({ revision: REVISION_A, sampleTime: 1, viewport: { heightPx: 90, widthPx: 160 } }),
+    ).rejects.toMatchObject({ code: "invalid-state" });
+    const inFlightRequest = requestAt(worker, 1);
+    if (inFlightRequest.kind !== "render-frame") throw new Error("missing in-flight render");
+    worker.emitMessage(presentedResponse(inFlightRequest));
+    await expect(inFlight).resolves.toMatchObject({ kind: "frame-presented" });
+
+    const measured = client.renderTelemetry({
+      revision: REVISION_A,
+      sampleTime: 1,
+      viewport: { heightPx: 90, widthPx: 160 },
+    });
+    const telemetryRequest = requestAt(worker, 2);
+    if (telemetryRequest.kind !== "render-frame-telemetry") throw new Error("missing telemetry render request");
+    worker.emitMessage(presentedTelemetryResponse(telemetryRequest));
+    await expect(measured).resolves.toMatchObject({
+      kind: "frame-presented-telemetry",
+      packetId: `canvas:${telemetryRequest.requestId}`,
+      telemetry: measuredTelemetryFixtureV1(),
+    });
+    expect(worker.terminate).not.toHaveBeenCalled();
+    client.dispose();
+  });
+
+  it("fails closed on uncorrelated telemetry and survives a missing telemetry ABI", async () => {
+    const bundle = await fixtureBundle();
+
+    const uncorrelatedWorker = new FakeWorker();
+    const uncorrelatedClient = createClient(uncorrelatedWorker);
+    await install(uncorrelatedClient, uncorrelatedWorker, bundle);
+    const uncorrelated = uncorrelatedClient.renderTelemetry({
+      revision: REVISION_A,
+      sampleTime: 1,
+      viewport: { heightPx: 90, widthPx: 160 },
+    });
+    const uncorrelatedRequest = requestAt(uncorrelatedWorker, 1);
+    if (uncorrelatedRequest.kind !== "render-frame-telemetry") throw new Error("missing telemetry request");
+    uncorrelatedWorker.emitMessage(presentedTelemetryResponse(uncorrelatedRequest, { sampleTime: 99 }));
+    await expect(uncorrelated).rejects.toMatchObject({ code: "protocol-violation" });
+    expect(uncorrelatedWorker.terminate).toHaveBeenCalledOnce();
+
+    const legacyWorker = new FakeWorker();
+    const legacyClient = createClient(legacyWorker);
+    await install(legacyClient, legacyWorker, bundle);
+    const unavailable = legacyClient.renderTelemetry({
+      revision: REVISION_A,
+      sampleTime: 1,
+      viewport: { heightPx: 90, widthPx: 160 },
+    });
+    const unavailableRequest = requestAt(legacyWorker, 1);
+    legacyWorker.emitMessage(errorResponse(unavailableRequest, "telemetry-unavailable"));
+    await expect(unavailable).rejects.toMatchObject({ code: "telemetry-unavailable", fallback: "whole-scene" });
+    expect(legacyWorker.terminate).not.toHaveBeenCalled();
+
+    const next = legacyClient.render({
+      revision: REVISION_A,
+      sampleTime: 0.5,
+      viewport: { heightPx: 90, widthPx: 160 },
+    });
+    await vi.waitFor(() => expect(legacyWorker.posted).toHaveLength(3));
+    const nextRequest = requestAt(legacyWorker, 2);
+    if (nextRequest.kind !== "render-frame") throw new Error("missing render after telemetry rejection");
+    legacyWorker.emitMessage(presentedResponse(nextRequest));
+    await expect(next).resolves.toMatchObject({ sampleTime: 0.5 });
+    legacyClient.dispose();
+  });
+
+  it.each(["surface-lost", "gpu-validation", "device-lost", "gpu-internal"] as const)(
+    "surfaces a failed %s telemetry frame as a typed error that keeps partial telemetry",
+    async (code) => {
+      const bundle = await fixtureBundle();
+      const worker = new FakeWorker();
+      const client = createClient(worker);
+      await install(client, worker, bundle);
+
+      const failing = client.renderTelemetry({
+        revision: REVISION_A,
+        sampleTime: 1,
+        viewport: { heightPx: 90, widthPx: 160 },
+      });
+      const outcome = failing.catch((error: unknown) => error);
+      const request = requestAt(worker, 1);
+      if (request.kind !== "render-frame-telemetry") throw new Error("missing telemetry request");
+      worker.emitMessage({
+        error: {
+          code,
+          message: `${code} while rendering telemetry`,
+          packetId: `canvas:${request.requestId}`,
+          sampleTime: request.sampleTime,
+          viewport: request.viewport,
+        },
+        kind: "frame-telemetry-failed",
+        requestId: request.requestId,
+        revision: request.revision,
+        schema: "poietra.canvas-worker-response",
+        telemetry: measuredTelemetryFixtureV1(),
+        version: 1,
+      });
+      const error = await outcome;
+      expect(error).toBeInstanceOf(CanvasTelemetryRenderError);
+      const typed = error as CanvasTelemetryRenderError;
+      expect(typed.code).toBe(code);
+      expect(typed.telemetry).toEqual(measuredTelemetryFixtureV1());
+      expect(typed.errorCorrelation.packetId).toBe(`canvas:${request.requestId}`);
+      client.dispose();
+    },
+  );
+
+  it("keeps telemetry and adapter evidence mutually exclusive with every other operation", async () => {
+    const bundle = await fixtureBundle();
+    const worker = new FakeWorker();
+    const client = createClient(worker);
+    await install(client, worker, bundle);
+
+    const inFlight = client.renderTelemetry({
+      revision: REVISION_A,
+      sampleTime: 1,
+      viewport: { heightPx: 90, widthPx: 160 },
+    });
+    const telemetryRequest = requestAt(worker, 1);
+    if (telemetryRequest.kind !== "render-frame-telemetry") throw new Error("missing telemetry request");
+
+    // Every concurrent operation rejects synchronously with invalid-state.
+    await expect(
+      client.renderTelemetry({ revision: REVISION_A, sampleTime: 0.5, viewport: { heightPx: 90, widthPx: 160 } }),
+    ).rejects.toMatchObject({ code: "invalid-state" });
+    await expect(
+      client.render({ revision: REVISION_A, sampleTime: 0.5, viewport: { heightPx: 90, widthPx: 160 } }),
+    ).rejects.toMatchObject({ code: "invalid-state" });
+    await expect(
+      client.replaceScene({
+        baseRevision: REVISION_A,
+        revision: REVISION_B,
+        snapshot: revisionBundle(bundle, REVISION_B),
+      }),
+    ).rejects.toMatchObject({ code: "invalid-state" });
+    await expect(client.collectAdapterEvidence()).rejects.toMatchObject({ code: "invalid-state" });
+    // Nothing beyond the telemetry request reached the worker.
+    expect(worker.posted).toHaveLength(2);
+
+    worker.emitMessage(presentedTelemetryResponse(telemetryRequest));
+    await expect(inFlight).resolves.toMatchObject({ kind: "frame-presented-telemetry" });
+
+    // After settling, every operation recovers.
+    const evidenceRequest = client.collectAdapterEvidence();
+    const collect = requestAt(worker, 2);
+    if (collect.kind !== "collect-adapter-evidence") throw new Error("missing evidence request");
+
+    // Adapter collection owns the same exclusive-operation slot as telemetry.
+    await expect(client.collectAdapterEvidence()).rejects.toMatchObject({ code: "invalid-state" });
+    await expect(
+      client.renderTelemetry({ revision: REVISION_A, sampleTime: 0.5, viewport: { heightPx: 90, widthPx: 160 } }),
+    ).rejects.toMatchObject({ code: "invalid-state" });
+    await expect(
+      client.render({ revision: REVISION_A, sampleTime: 0.5, viewport: { heightPx: 90, widthPx: 160 } }),
+    ).rejects.toMatchObject({ code: "invalid-state" });
+    await expect(
+      client.replaceScene({
+        baseRevision: REVISION_A,
+        revision: REVISION_B,
+        snapshot: revisionBundle(bundle, REVISION_B),
+      }),
+    ).rejects.toMatchObject({ code: "invalid-state" });
+    expect(worker.posted).toHaveLength(3);
+
+    worker.emitMessage({
+      evidence: adapterEvidenceFixtureV1(),
+      kind: "adapter-evidence",
+      requestId: collect.requestId,
+      revision: collect.revision,
+      schema: "poietra.canvas-worker-response",
+      version: 1,
+    });
+    await expect(evidenceRequest).resolves.toMatchObject({ kind: "adapter-evidence" });
+
+    const next = client.render({ revision: REVISION_A, sampleTime: 0.25, viewport: { heightPx: 90, widthPx: 160 } });
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(4));
+    const nextRequest = requestAt(worker, 3);
+    if (nextRequest.kind !== "render-frame") throw new Error("missing recovered render");
+    await expect(client.collectAdapterEvidence()).rejects.toMatchObject({ code: "invalid-state" });
+    expect(worker.posted).toHaveLength(4);
+    worker.emitMessage(presentedResponse(nextRequest));
+    await expect(next).resolves.toMatchObject({ kind: "frame-presented" });
+    client.dispose();
+  });
+
+  it("collects Worker adapter evidence for the installed revision", async () => {
+    const bundle = await fixtureBundle();
+    const worker = new FakeWorker();
+    const client = createClient(worker);
+    await install(client, worker, bundle);
+
+    const collecting = client.collectAdapterEvidence();
+    const request = requestAt(worker, 1);
+    if (request.kind !== "collect-adapter-evidence") throw new Error("missing adapter evidence request");
+    expect(request.revision).toBe(REVISION_A);
+    worker.emitMessage({
+      evidence: adapterEvidenceFixtureV1(),
+      kind: "adapter-evidence",
+      requestId: request.requestId,
+      revision: request.revision,
+      schema: "poietra.canvas-worker-response",
+      version: 1,
+    });
+    await expect(collecting).resolves.toMatchObject({
+      evidence: adapterEvidenceFixtureV1(),
+      kind: "adapter-evidence",
+    });
+    client.dispose();
+
+    await expect(client.collectAdapterEvidence()).rejects.toMatchObject({ code: "invalid-state" });
   });
 
   it("rejects invalid state through the Promise API and validates origin before transferring", async () => {

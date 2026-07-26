@@ -457,7 +457,7 @@ The following evidence is reproducible in this repository:
 | browser WASM/WebGPU output | met for the shared fill/Line fixture | Chromium 146 Worker readback proves the same fill and round-capped Line sample points through retained Scene evaluation |
 | retained browser boundary | met | the Worker transfers one Scene snapshot and canvas, retains both in Rust, and returns only bounded presentation correlation per frame |
 | whole-Scene failure policy | met at contract, renderer, Worker, and client boundaries | unsupported draws, malformed responses, stale correlation, surface/device failures, and protocol divergence never produce a partial success |
-| generated payload | met for the current slice | release WASM is 738,050 bytes and Node gzip evidence is 273,351 bytes, below the 3 MiB budget |
+| generated payload | mechanically enforced; clean evidence pending | the WASM smoke gate rejects compressed payloads above the 3 MiB budget, while the canonical benchmark records the exact served release-WASM byte and gzip sizes; adoption evidence must come from a clean-commit report rather than a mutable working-tree measurement |
 | initial shared snapshot | met for the fixture | 2,414 encoded bytes, below the 5 MiB budget |
 | fixture breadth and visual parity | partial | the catalog fixes 15 workload IDs, but only one fixture currently executes through both GPU backends; SSIM and pixel-difference corpus reports do not yet exist |
 | renderer capability coverage | partial | solid convex cubic fills and static untrimmed canonical Line strokes work; broader stroke, image, multiple subpaths, other open paths, and non-convex fill remain truthful fallbacks |

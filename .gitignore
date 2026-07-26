@@ -5,6 +5,8 @@ release/
 .vite/
 playwright-report/
 test-results/
+test-results-benchmark/
+dist-benchmark/
 .env.local
 .openai-key
 .studio-logs/

@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { adapterEvidenceFixtureV1, measuredTelemetryFixtureV1 } from "./canvas-telemetry-test-fixtures";
 import {
   type CanvasRenderResponseV1,
+  type CanvasRenderTelemetryResponseV1,
   type CanvasWorkerResponseV1,
   canvasEngineSampleRequestV1Schema,
 } from "./canvas-worker-protocol";
@@ -37,6 +39,25 @@ function presentedResponse(packetId: string, sampleTime = 1): CanvasRenderRespon
     schema: "poietra.canvas-render-response",
     version: 1,
   };
+}
+
+function telemetryResponse(packetId: string, sampleTime = 1): CanvasRenderTelemetryResponseV1 {
+  return {
+    result: {
+      kind: "presented",
+      packetId,
+      sampleTime,
+      suboptimal: false,
+      viewport: { heightPx: 90, widthPx: 160 },
+    },
+    schema: "poietra.canvas-render-telemetry-response",
+    telemetry: measuredTelemetryFixtureV1(),
+    version: 1,
+  };
+}
+
+function encodeUnknown(value: unknown) {
+  return new TextEncoder().encode(JSON.stringify(value));
 }
 
 function installRequest(overrides: Readonly<Record<string, unknown>> = {}) {
@@ -325,6 +346,319 @@ describe("Poietra canvas worker runtime", () => {
     expect(posted.at(-1)).toMatchObject({ code: "renderer-unavailable" });
   });
 
+  it("returns telemetry only through the opt-in kind and keeps the normal response compact", async () => {
+    class Engine implements PoietraWasmCanvasEngineV1 {
+      static async create() {
+        return new Engine();
+      }
+
+      replaceSnapshot() {}
+      async render(requestJson: Uint8Array) {
+        const request = canvasEngineSampleRequestV1Schema.parse(JSON.parse(new TextDecoder().decode(requestJson)));
+        return encodeResponse(presentedResponse(request.packetId, request.sampleTime));
+      }
+
+      async renderWithTelemetry(requestJson: Uint8Array) {
+        const request = canvasEngineSampleRequestV1Schema.parse(JSON.parse(new TextDecoder().decode(requestJson)));
+        return encodeUnknown(telemetryResponse(request.packetId, request.sampleTime));
+      }
+    }
+    const posted: CanvasWorkerResponseV1[] = [];
+    const runtime = new PoietraCanvasWorkerRuntimeV1({
+      loadWasm: async () => Engine,
+      postMessage: (response) => posted.push(response),
+      scopeUrl: "https://studio.test/worker.js",
+    });
+
+    await runtime.accept(installRequest());
+    await runtime.accept(renderRequest());
+    expect(posted.at(-1)).toMatchObject({ kind: "frame-presented" });
+    expect(posted.at(-1)).not.toHaveProperty("telemetry");
+
+    await runtime.accept({
+      kind: "render-frame-telemetry",
+      requestId: 3,
+      revision: REVISION_A,
+      sampleTime: 1,
+      schema: "poietra.canvas-worker-request",
+      version: 1,
+      viewport: { heightPx: 90, widthPx: 160 },
+    });
+    expect(posted.at(-1)).toEqual({
+      kind: "frame-presented-telemetry",
+      packetId: "canvas:3",
+      requestId: 3,
+      revision: REVISION_A,
+      sampleTime: 1,
+      schema: "poietra.canvas-worker-response",
+      suboptimal: false,
+      telemetry: measuredTelemetryFixtureV1(),
+      version: 1,
+      viewport: { heightPx: 90, widthPx: 160 },
+    });
+  });
+
+  it("fails closed when telemetry is uncorrelated or the ABI is missing", async () => {
+    let telemetryBytes = encodeUnknown(telemetryResponse("canvas:wrong"));
+    class Engine implements PoietraWasmCanvasEngineV1 {
+      static async create() {
+        return new Engine();
+      }
+
+      replaceSnapshot() {}
+      async render() {
+        return encodeResponse(presentedResponse("canvas:2"));
+      }
+
+      async renderWithTelemetry() {
+        return telemetryBytes;
+      }
+    }
+    const posted: CanvasWorkerResponseV1[] = [];
+    const runtime = new PoietraCanvasWorkerRuntimeV1({
+      loadWasm: async () => Engine,
+      postMessage: (response) => posted.push(response),
+      scopeUrl: "https://studio.test/worker.js",
+    });
+    const telemetryRequest = (requestId: number) => ({
+      kind: "render-frame-telemetry",
+      requestId,
+      revision: REVISION_A,
+      sampleTime: 1,
+      schema: "poietra.canvas-worker-request",
+      version: 1,
+      viewport: { heightPx: 90, widthPx: 160 },
+    });
+
+    await runtime.accept(installRequest());
+    await runtime.accept(telemetryRequest(2));
+    expect(posted.at(-1)).toMatchObject({ code: "protocol-violation", kind: "error", requestId: 2 });
+
+    telemetryBytes = encodeResponse(presentedResponse("canvas:3"));
+    await runtime.accept(telemetryRequest(3));
+    expect(posted.at(-1)).toMatchObject({ code: "protocol-violation", kind: "error", requestId: 3 });
+
+    class LegacyEngine implements PoietraWasmCanvasEngineV1 {
+      static async create() {
+        return new LegacyEngine();
+      }
+
+      replaceSnapshot() {}
+      async render() {
+        return encodeResponse(presentedResponse("canvas:2"));
+      }
+    }
+    const legacyPosted: CanvasWorkerResponseV1[] = [];
+    const legacyRuntime = new PoietraCanvasWorkerRuntimeV1({
+      loadWasm: async () => LegacyEngine,
+      postMessage: (response) => legacyPosted.push(response),
+      scopeUrl: "https://studio.test/worker.js",
+    });
+    await legacyRuntime.accept(installRequest());
+    await legacyRuntime.accept(telemetryRequest(2));
+    expect(legacyPosted.at(-1)).toMatchObject({
+      code: "telemetry-unavailable",
+      fallback: "whole-scene",
+      kind: "error",
+      requestId: 2,
+    });
+    await legacyRuntime.accept({
+      kind: "collect-adapter-evidence",
+      requestId: 3,
+      revision: REVISION_A,
+      schema: "poietra.canvas-worker-request",
+      version: 1,
+    });
+    expect(legacyPosted.at(-1)).toMatchObject({ code: "telemetry-unavailable", kind: "error", requestId: 3 });
+  });
+
+  it.each([
+    ["surface-lost", "surface was lost and must be recreated"],
+    ["gpu-validation", "error scope reported a validation failure"],
+    ["device-lost", "WebGPU device lost (Destroyed): device destroyed"],
+    ["gpu-internal", "the GPUQueue.onSubmittedWorkDone fence rejected: device error"],
+  ] as const)("preserves partial telemetry for a correlated %s telemetry failure", async (code, message) => {
+    class Engine implements PoietraWasmCanvasEngineV1 {
+      static async create() {
+        return new Engine();
+      }
+
+      replaceSnapshot() {}
+      async render() {
+        return encodeResponse(presentedResponse("canvas:2"));
+      }
+
+      async renderWithTelemetry(requestJson: Uint8Array) {
+        const request = canvasEngineSampleRequestV1Schema.parse(JSON.parse(new TextDecoder().decode(requestJson)));
+        return encodeUnknown({
+          result: {
+            code,
+            kind: "error",
+            message,
+            packetId: request.packetId,
+            sampleTime: request.sampleTime,
+            viewport: request.viewport,
+          },
+          schema: "poietra.canvas-render-telemetry-response",
+          telemetry: measuredTelemetryFixtureV1(),
+          version: 1,
+        });
+      }
+    }
+    const posted: CanvasWorkerResponseV1[] = [];
+    const runtime = new PoietraCanvasWorkerRuntimeV1({
+      loadWasm: async () => Engine,
+      postMessage: (response) => posted.push(response),
+      scopeUrl: "https://studio.test/worker.js",
+    });
+
+    await runtime.accept(installRequest());
+    await runtime.accept({
+      kind: "render-frame-telemetry",
+      requestId: 2,
+      revision: REVISION_A,
+      sampleTime: 1,
+      schema: "poietra.canvas-worker-request",
+      version: 1,
+      viewport: { heightPx: 90, widthPx: 160 },
+    });
+    // The failure travels in the dedicated telemetry envelope with its
+    // partial stage telemetry; the normal error response is never widened.
+    expect(posted.at(-1)).toEqual({
+      error: {
+        code,
+        message,
+        packetId: "canvas:2",
+        sampleTime: 1,
+        viewport: { heightPx: 90, widthPx: 160 },
+      },
+      kind: "frame-telemetry-failed",
+      requestId: 2,
+      revision: REVISION_A,
+      schema: "poietra.canvas-worker-response",
+      telemetry: measuredTelemetryFixtureV1(),
+      version: 1,
+    });
+  });
+
+  it("serializes engine operations strictly: one active call, request order preserved", async () => {
+    let active = 0;
+    let maxActive = 0;
+    const startOrder: string[] = [];
+    const resolvers: (() => void)[] = [];
+    class Engine implements PoietraWasmCanvasEngineV1 {
+      static async create() {
+        return new Engine();
+      }
+
+      replaceSnapshot() {}
+      async render(requestJson: Uint8Array) {
+        const request = canvasEngineSampleRequestV1Schema.parse(JSON.parse(new TextDecoder().decode(requestJson)));
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        startOrder.push(request.packetId);
+        await new Promise<void>((resolve) => resolvers.push(resolve));
+        active -= 1;
+        return encodeResponse(presentedResponse(request.packetId, request.sampleTime));
+      }
+    }
+    const posted: CanvasWorkerResponseV1[] = [];
+    const runtime = new PoietraCanvasWorkerRuntimeV1({
+      loadWasm: async () => Engine,
+      postMessage: (response) => posted.push(response),
+      scopeUrl: "https://studio.test/worker.js",
+    });
+
+    await runtime.accept(installRequest());
+    const first = runtime.accept(renderRequest({ requestId: 2 }));
+    const second = runtime.accept(renderRequest({ requestId: 3 }));
+    const third = runtime.accept(renderRequest({ requestId: 4 }));
+    await vi.waitFor(() => expect(startOrder).toEqual(["canvas:2"]));
+    // Later requests must not enter the engine while the first is active.
+    expect(maxActive).toBe(1);
+    resolvers.shift()!();
+    await vi.waitFor(() => expect(startOrder).toEqual(["canvas:2", "canvas:3"]));
+    expect(maxActive).toBe(1);
+    resolvers.shift()!();
+    await vi.waitFor(() => expect(startOrder).toEqual(["canvas:2", "canvas:3", "canvas:4"]));
+    resolvers.shift()!();
+    await Promise.all([first, second, third]);
+    expect(maxActive).toBe(1);
+    expect(
+      posted.filter((response) => response.kind === "frame-presented").map((response) => response.packetId),
+    ).toEqual(["canvas:2", "canvas:3", "canvas:4"]);
+  });
+
+  it("returns bounded worker adapter evidence for the current revision only", async () => {
+    class Engine implements PoietraWasmCanvasEngineV1 {
+      private evidenceCalls = 0;
+
+      static async create() {
+        return new Engine();
+      }
+
+      replaceSnapshot() {}
+      async render() {
+        return encodeResponse(presentedResponse("canvas:2"));
+      }
+
+      adapterEvidence() {
+        this.evidenceCalls += 1;
+        return encodeUnknown(
+          this.evidenceCalls === 1
+            ? adapterEvidenceFixtureV1()
+            : {
+                kind: "unavailable",
+                reason: "Canvas adapter evidence serialization failed",
+                schema: "poietra.canvas-adapter-evidence",
+                version: 1,
+              },
+        );
+      }
+    }
+    const posted: CanvasWorkerResponseV1[] = [];
+    const runtime = new PoietraCanvasWorkerRuntimeV1({
+      loadWasm: async () => Engine,
+      postMessage: (response) => posted.push(response),
+      scopeUrl: "https://studio.test/worker.js",
+    });
+
+    await runtime.accept(installRequest());
+    await runtime.accept({
+      kind: "collect-adapter-evidence",
+      requestId: 2,
+      revision: REVISION_B,
+      schema: "poietra.canvas-worker-request",
+      version: 1,
+    });
+    expect(posted.at(-1)).toMatchObject({ code: "stale-revision", kind: "error", requestId: 2 });
+
+    await runtime.accept({
+      kind: "collect-adapter-evidence",
+      requestId: 3,
+      revision: REVISION_A,
+      schema: "poietra.canvas-worker-request",
+      version: 1,
+    });
+    expect(posted.at(-1)).toEqual({
+      evidence: adapterEvidenceFixtureV1(),
+      kind: "adapter-evidence",
+      requestId: 3,
+      revision: REVISION_A,
+      schema: "poietra.canvas-worker-response",
+      version: 1,
+    });
+
+    await runtime.accept({
+      kind: "collect-adapter-evidence",
+      requestId: 4,
+      revision: REVISION_A,
+      schema: "poietra.canvas-worker-request",
+      version: 1,
+    });
+    expect(posted.at(-1)).toMatchObject({ code: "telemetry-unavailable", kind: "error", requestId: 4 });
+  });
+
   it("preserves correlation while rejecting a widened request", async () => {
     const posted: CanvasWorkerResponseV1[] = [];
     const runtime = new PoietraCanvasWorkerRuntimeV1({
@@ -378,5 +712,68 @@ describe("Poietra canvas WASM binding handshake", () => {
         PoietraCanvasEngineV1: class Incomplete {},
       }),
     ).rejects.toThrow(/PoietraCanvasEngineV1/i);
+  });
+
+  it("requires an exact telemetry version-1 handshake for any telemetry surface", async () => {
+    class TelemetryEngine extends Engine {
+      adapterEvidence() {
+        return new Uint8Array();
+      }
+
+      async renderWithTelemetry() {
+        return new Uint8Array();
+      }
+    }
+    await expect(
+      initializePoietraCanvasBindingsV1({
+        default: async () => undefined,
+        poietraCanvasAbiVersion: () => 1,
+        poietraCanvasTelemetryAbiVersion: () => 1,
+        PoietraCanvasEngineV1: TelemetryEngine,
+      }),
+    ).resolves.toBe(TelemetryEngine);
+
+    // A foreign telemetry version fails closed even with complete methods.
+    await expect(
+      initializePoietraCanvasBindingsV1({
+        default: async () => undefined,
+        poietraCanvasAbiVersion: () => 1,
+        poietraCanvasTelemetryAbiVersion: () => 2,
+        PoietraCanvasEngineV1: TelemetryEngine,
+      }),
+    ).rejects.toThrow(/telemetry ABI version 1/i);
+
+    // Telemetry methods without the version export are never trusted.
+    await expect(
+      initializePoietraCanvasBindingsV1({
+        default: async () => undefined,
+        poietraCanvasAbiVersion: () => 1,
+        PoietraCanvasEngineV1: TelemetryEngine,
+      }),
+    ).rejects.toThrow(/telemetry ABI version 1/i);
+
+    // A version export without the complete method pair is inconsistent.
+    class PartialTelemetryEngine extends Engine {
+      async renderWithTelemetry() {
+        return new Uint8Array();
+      }
+    }
+    await expect(
+      initializePoietraCanvasBindingsV1({
+        default: async () => undefined,
+        poietraCanvasAbiVersion: () => 1,
+        poietraCanvasTelemetryAbiVersion: () => 1,
+        PoietraCanvasEngineV1: PartialTelemetryEngine,
+      }),
+    ).rejects.toThrow(/telemetry ABI version 1/i);
+
+    // A telemetry-free module stays valid and simply reports unavailable.
+    await expect(
+      initializePoietraCanvasBindingsV1({
+        default: async () => undefined,
+        poietraCanvasAbiVersion: () => 1,
+        PoietraCanvasEngineV1: Engine,
+      }),
+    ).resolves.toBe(Engine);
   });
 });

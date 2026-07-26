@@ -1,11 +1,11 @@
-use std::io::{self, Write};
-
 use poietra_eval::{EngineSessionV1, EvaluationError, SampleEngineSessionOptionsV1};
 use poietra_scene_ir::{
     ContractJsonError, ContractVersionV1, MAX_VIEWPORT_PIXELS_V1, RenderPacketV1, ViewportV1,
     parse_scene_ir_bundle_json_v1,
 };
 use serde::{Deserialize, Serialize};
+
+use crate::bounded_writer::BoundedWriter;
 
 /// Playhead requests should remain small compared with the retained snapshot.
 /// The envelope still accommodates every contract-valid evidence array.
@@ -155,48 +155,12 @@ impl WorkerResponseV1 {
     }
 }
 
-#[derive(Debug)]
-struct BoundedWriter {
-    bytes: Vec<u8>,
-    limit: usize,
-    overflowed: bool,
-}
-
-impl BoundedWriter {
-    fn new(limit: usize) -> Self {
-        Self {
-            bytes: Vec::new(),
-            limit,
-            overflowed: false,
-        }
-    }
-}
-
-impl Write for BoundedWriter {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        let Some(next_length) = self.bytes.len().checked_add(buffer.len()) else {
-            self.overflowed = true;
-            return Err(io::Error::other("serialized response length overflow"));
-        };
-        if next_length > self.limit {
-            self.overflowed = true;
-            return Err(io::Error::other("serialized response exceeds limit"));
-        }
-        self.bytes.extend_from_slice(buffer);
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
 fn serialize_response(response: &WorkerResponseV1) -> Vec<u8> {
     let mut writer = BoundedWriter::new(MAX_WORKER_RESPONSE_JSON_BYTES_V1);
     if serde_json::to_writer(&mut writer, response).is_ok() {
-        return writer.bytes;
+        return writer.into_bytes();
     }
-    let fallback = if writer.overflowed {
+    let fallback = if writer.overflowed() {
         WorkerResponseV1::error(
             WorkerErrorCodeV1::ResponseTooLarge,
             "RenderPacket response exceeds the worker transfer limit",

@@ -2,6 +2,8 @@ import { join } from "node:path";
 
 import { defineConfig } from "@playwright/test";
 
+import { WEBGPU_CHROMIUM_CHANNEL, WEBGPU_CHROMIUM_LAUNCH_ARGS } from "./e2e/webgpu-launch";
+
 const workspaceDataRoot = join(process.cwd(), "test-results", `workspace-store-${process.pid}`);
 
 export default defineConfig({
@@ -19,14 +21,9 @@ export default defineConfig({
       testMatch: "**/*.webgpu.ts",
       use: {
         browserName: "chromium",
-        channel: "chromium",
+        channel: WEBGPU_CHROMIUM_CHANNEL,
         launchOptions: {
-          args: [
-            "--disable-vulkan-surface",
-            "--enable-features=Vulkan",
-            "--enable-unsafe-webgpu",
-            "--use-angle=vulkan",
-          ],
+          args: [...WEBGPU_CHROMIUM_LAUNCH_ARGS],
         },
       },
     },

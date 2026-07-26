@@ -1,6 +1,9 @@
 mod support;
 
-use poietra_render_wgpu::{PrepareFrameErrorV1, UnsupportedDrawReasonV1, prepare_frame_v1};
+use poietra_render_wgpu::{
+    PrepareFrameErrorV1, UnsupportedDrawReasonV1, prepare_frame_v1, tessellate_validated_frame_v1,
+    validate_frame_packet_v1,
+};
 use poietra_scene_ir::{RenderDrawV1, StrokeCapV1, StrokeJoinV1};
 
 use support::{sampled_packet, straight_stroke_packet};
@@ -266,6 +269,42 @@ fn unsupported_stroke_topologies_fail_closed_with_specific_reasons() {
             Err(PrepareFrameErrorV1::Unsupported { reason, .. }) if reason == expected_reason
         ));
     }
+}
+
+#[test]
+fn tessellation_calls_count_actual_per_draw_operations() {
+    // The shared fixture holds three accepted draws (two fills, one stroke):
+    // exactly three tessellation operations run, counted at the call sites.
+    let prepared = prepare_frame_v1(&sampled_packet()).unwrap();
+    assert_eq!(prepared.tessellation_calls(), 3);
+    assert_eq!(prepared.tessellation_calls(), prepared.draws().len() as u64);
+
+    let stroke = prepare_frame_v1(&straight_stroke_packet(StrokeCapV1::Butt)).unwrap();
+    assert_eq!(stroke.tessellation_calls(), 1);
+}
+
+#[test]
+fn split_prepare_phases_cannot_bypass_validation() {
+    // The only path to `tessellate_validated_frame_v1` is the token returned
+    // by `validate_frame_packet_v1`: `ValidatedRenderPacketV1` has a private
+    // field and no public constructor, so an unvalidated packet cannot be
+    // tessellated. This test pins the observable halves of that invariant.
+    let packet = sampled_packet();
+    let validated = validate_frame_packet_v1(&packet).expect("shared fixture must validate");
+    let split = tessellate_validated_frame_v1(validated).expect("shared fixture must tessellate");
+    let combined = prepare_frame_v1(&packet).expect("shared fixture must prepare");
+    assert_eq!(split, combined);
+
+    let mut invalid = sampled_packet();
+    invalid.viewport.width_px = 0;
+    assert!(matches!(
+        validate_frame_packet_v1(&invalid),
+        Err(PrepareFrameErrorV1::InvalidPacket(_))
+    ));
+    assert!(matches!(
+        prepare_frame_v1(&invalid),
+        Err(PrepareFrameErrorV1::InvalidPacket(_))
+    ));
 }
 
 #[test]
