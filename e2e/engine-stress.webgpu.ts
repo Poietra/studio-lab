@@ -1,51 +1,35 @@
-import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 
 import { expect, test } from "@playwright/test";
 
+import { type SceneIrBundleV1, sceneIrBundleV1Schema } from "../src/engine/contracts";
 import {
-  type AnimationChannelV1,
-  type CubicPathV1,
-  type EngineAffineTransformV1,
-  type SceneEntityV1,
-  type SceneIrBundleV1,
-  sceneIrBundleV1Schema,
-} from "../src/engine/contracts";
+  assessDecisionEligibility,
+  canonicalSceneBundleSha256,
+  collectHostEnvironment,
+  readServedWasmEvidence,
+  reportContracts,
+  requireStableCommitIdentity,
+  resolveBenchmarkProvenance,
+} from "./benchmark-environment";
+import { makeServedBuildVerifier } from "./benchmark-manifest";
+import { engineWebgpuStressReportSchema } from "./benchmark-report-schemas";
+import {
+  collectPageAdapterHintOnce,
+  STRESS_DEFINITIONS,
+  STRESS_VIEWPORT,
+  stressBundle,
+  summarizeTiming,
+} from "./engine-stress-workloads";
+import { WEBGPU_CHROMIUM_CHANNEL, WEBGPU_CHROMIUM_LAUNCH_ARGS } from "./webgpu-launch";
 
 const FRAME_BUDGET_MS = 1_000 / 60;
 const LONG_FRAME_MS = 25;
-const VIEWPORT = { heightPx: 1_080, widthPx: 1_920 } as const;
+const VIEWPORT = STRESS_VIEWPORT;
 const WARMUP_FRAMES = 30;
 const MEASURED_FRAMES = 300;
 const PACED_FRAMES = 301;
 const CONTINUOUS_SCRUB_FRAMES = 120;
-
-type StressDefinition = Readonly<{
-  entityCount: 100 | 1_000;
-  id: string;
-  profile: "animated-cubic-paths" | "shape-primitives";
-  revision: string;
-}>;
-
-const STRESS_DEFINITIONS: readonly StressDefinition[] = [
-  { entityCount: 100, id: "shape-primitives-100", profile: "shape-primitives", revision: "1".repeat(64) },
-  { entityCount: 1_000, id: "shape-primitives-1000", profile: "shape-primitives", revision: "2".repeat(64) },
-  { entityCount: 100, id: "animated-cubic-paths-100", profile: "animated-cubic-paths", revision: "3".repeat(64) },
-  {
-    entityCount: 1_000,
-    id: "animated-cubic-paths-1000",
-    profile: "animated-cubic-paths",
-    revision: "4".repeat(64),
-  },
-];
-
-type TimingSummary = Readonly<{
-  maximumMs: number;
-  p50Ms: number;
-  p95Ms: number;
-  p99Ms: number;
-  samplesMs: readonly number[];
-}>;
 
 type BrowserStressResult = Readonly<{
   browser: Readonly<{ hardwareConcurrency: number; platform: string; userAgent: string }>;
@@ -60,244 +44,13 @@ type BrowserStressResult = Readonly<{
     supersededRequests: number;
   }>;
   installMs: number;
-  pageAdapterHint: Readonly<{ architecture: string; description: string; device: string; vendor: string }> | null;
   pacedAckMs: readonly number[];
   pacedFrameIntervalMs: readonly number[];
   randomSeekAckMs: readonly number[];
+  workerDeviceAdapter:
+    | Readonly<{ evidence: unknown; kind: "available" }>
+    | Readonly<{ kind: "unavailable"; reason: string }>;
 }>;
-
-const IDENTITY: EngineAffineTransformV1 = { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 };
-
-function gridPosition(index: number, count: number) {
-  const columns = Math.ceil(Math.sqrt((count * 16) / 9));
-  const rows = Math.ceil(count / columns);
-  const cellWidth = 14.4 / columns;
-  const cellHeight = 7.6 / rows;
-  return {
-    cellHeight,
-    cellWidth,
-    x: -7.2 + ((index % columns) + 0.5) * cellWidth,
-    y: 3.8 - (Math.floor(index / columns) + 0.5) * cellHeight,
-  };
-}
-
-function color(index: number) {
-  return {
-    alpha: 1,
-    blue: 0.25 + ((index * 17) % 60) / 100,
-    green: 0.25 + ((index * 29) % 60) / 100,
-    red: 0.25 + ((index * 43) % 60) / 100,
-  };
-}
-
-function ellipsePath(center: Readonly<{ x: number; y: number }>, radiusX: number, radiusY: number): CubicPathV1 {
-  const kappa = 0.552_284_749_830_793_6;
-  return {
-    subpaths: [
-      {
-        closed: true,
-        segments: [
-          {
-            control1: { x: center.x + radiusX, y: center.y + kappa * radiusY },
-            control2: { x: center.x + kappa * radiusX, y: center.y + radiusY },
-            end: { x: center.x, y: center.y + radiusY },
-          },
-          {
-            control1: { x: center.x - kappa * radiusX, y: center.y + radiusY },
-            control2: { x: center.x - radiusX, y: center.y + kappa * radiusY },
-            end: { x: center.x - radiusX, y: center.y },
-          },
-          {
-            control1: { x: center.x - radiusX, y: center.y - kappa * radiusY },
-            control2: { x: center.x - kappa * radiusX, y: center.y - radiusY },
-            end: { x: center.x, y: center.y - radiusY },
-          },
-          {
-            control1: { x: center.x + kappa * radiusX, y: center.y - radiusY },
-            control2: { x: center.x + radiusX, y: center.y - kappa * radiusY },
-            end: { x: center.x + radiusX, y: center.y },
-          },
-        ],
-        start: { x: center.x + radiusX, y: center.y },
-      },
-    ],
-  };
-}
-
-function shapeEntity(index: number, count: number): SceneEntityV1 {
-  const position = gridPosition(index, count);
-  const size = Math.min(position.cellWidth, position.cellHeight);
-  const id = `stress:shape:${index}`;
-  const common = {
-    id,
-    lifetimes: [{ end: 4, start: 0 }],
-    parentId: null,
-    provenanceId: "stress-fixture",
-    sceneOrder: index,
-    sourceZIndex: index,
-    transform: IDENTITY,
-  } as const;
-  if (index % 3 === 2) {
-    return {
-      ...common,
-      appearance: {
-        fill: null,
-        kind: "vector",
-        opacity: 0.9,
-        stroke: {
-          cap: "round",
-          color: color(index),
-          join: "miter",
-          miterLimit: 4,
-          widthWorld: Math.max(0.01, size * 0.12),
-        },
-      },
-      geometry: {
-        end: { x: position.x + position.cellWidth * 0.3, y: position.y + position.cellHeight * 0.2 },
-        kind: "line",
-        start: { x: position.x - position.cellWidth * 0.3, y: position.y - position.cellHeight * 0.2 },
-      },
-    };
-  }
-  return {
-    ...common,
-    appearance: { fill: { color: color(index), rule: "nonzero" }, kind: "vector", opacity: 0.9, stroke: null },
-    geometry:
-      index % 3 === 0
-        ? { center: { x: position.x, y: position.y }, kind: "circle", radius: size * 0.28 }
-        : {
-            center: { x: position.x, y: position.y },
-            cornerRadius: size * 0.08,
-            height: position.cellHeight * 0.55,
-            kind: "rectangle",
-            width: position.cellWidth * 0.55,
-          },
-  };
-}
-
-function animatedCubicEntity(index: number, count: number): SceneEntityV1 {
-  const position = gridPosition(index, count);
-  const radiusX = position.cellWidth * 0.28;
-  const radiusY = position.cellHeight * 0.28;
-  return {
-    appearance: { fill: { color: color(index), rule: "nonzero" }, kind: "vector", opacity: 0.9, stroke: null },
-    geometry: { kind: "cubic-path", path: ellipsePath(position, radiusX, radiusY) },
-    id: `stress:cubic:${index}`,
-    lifetimes: [{ end: 4, start: 0 }],
-    parentId: null,
-    provenanceId: "stress-fixture",
-    sceneOrder: index,
-    sourceZIndex: index,
-    transform: IDENTITY,
-  };
-}
-
-function animatedChannel(index: number, count: number): AnimationChannelV1 {
-  const entityId = `stress:cubic:${index}`;
-  const position = gridPosition(index, count);
-  if (index % 2 === 0) {
-    return {
-      entityId,
-      id: `stress:affine:${index}`,
-      keyframes: [
-        {
-          at: 0,
-          easingToNext: { kind: "cubic-bezier", x1: 0.42, x2: 0.58, y1: 0, y2: 1 },
-          value: IDENTITY,
-        },
-        {
-          at: 4,
-          easingToNext: null,
-          value: { ...IDENTITY, tx: (index % 4 === 0 ? 1 : -1) * position.cellWidth * 0.3 },
-        },
-      ],
-      kind: "affine-transform",
-      provenanceId: "stress-fixture",
-    };
-  }
-  const radiusX = position.cellWidth * 0.28;
-  const radiusY = position.cellHeight * 0.28;
-  return {
-    entityId,
-    id: `stress:morph:${index}`,
-    keyframes: [
-      {
-        at: 0,
-        easingToNext: { kind: "cubic-bezier", x1: 0.25, x2: 0.75, y1: 0.1, y2: 1 },
-        value: ellipsePath(position, radiusX, radiusY),
-      },
-      {
-        at: 4,
-        easingToNext: null,
-        value: ellipsePath(position, radiusX * 0.72, radiusY * 1.18),
-      },
-    ],
-    kind: "path-morph",
-    provenanceId: "stress-fixture",
-  };
-}
-
-function stressBundle(base: SceneIrBundleV1, definition: StressDefinition) {
-  const animated = definition.profile === "animated-cubic-paths";
-  const entities = Array.from({ length: definition.entityCount }, (_, index) =>
-    animated ? animatedCubicEntity(index, definition.entityCount) : shapeEntity(index, definition.entityCount),
-  );
-  const animationChannels: AnimationChannelV1[] = animated
-    ? [
-        ...Array.from({ length: definition.entityCount }, (_, index) => animatedChannel(index, definition.entityCount)),
-        {
-          id: "stress:camera",
-          keyframes: [
-            {
-              at: 0,
-              easingToNext: { kind: "smooth" },
-              value: { center: { x: 0, y: 0 }, frameHeight: 9, frameWidth: 16 },
-            },
-            {
-              at: 4,
-              easingToNext: null,
-              value: { center: { x: 0.3, y: -0.2 }, frameHeight: 8.1, frameWidth: 14.4 },
-            },
-          ],
-          kind: "camera",
-          provenanceId: "stress-fixture",
-        },
-      ]
-    : [];
-  return sceneIrBundleV1Schema.parse({
-    assets: base.assets,
-    scene: {
-      ...base.scene,
-      animationChannels,
-      duration: 4,
-      entities,
-      provenance: [
-        {
-          evidence: [`Generated ${definition.id} WebGPU stress workload`],
-          id: "stress-fixture",
-          origin: "fixture",
-        },
-      ],
-      requiredCapabilities: animated
-        ? ["affine-transform-animation", "camera-animation", "cubic-path-geometry", "path-morph-animation"]
-        : ["shape-primitives"],
-      sceneId: `stress:${definition.id}`,
-      source: { editProgramVersion: 1, kind: "studio-edit-program", revisionHash: definition.revision },
-    },
-  });
-}
-
-function summarizeTiming(samples: readonly number[]): TimingSummary {
-  const sorted = [...samples].sort((left, right) => left - right);
-  const percentile = (fraction: number) => sorted[Math.max(0, Math.ceil(sorted.length * fraction) - 1)]!;
-  return {
-    maximumMs: sorted.at(-1)!,
-    p50Ms: percentile(0.5),
-    p95Ms: percentile(0.95),
-    p99Ms: percentile(0.99),
-    samplesMs: [...samples],
-  };
-}
 
 async function runBrowserStress(input: {
   bundle: SceneIrBundleV1;
@@ -318,31 +71,16 @@ async function runBrowserStress(input: {
   canvas.style.width = "960px";
   document.body.append(canvas);
 
-  const clientModuleUrl = "/src/engine/canvas-worker-client.ts";
-  const { PoietraCanvasWorkerClient } = (await import(
-    clientModuleUrl
-  )) as typeof import("../src/engine/canvas-worker-client");
+  const host = (
+    globalThis as {
+      __poietraCanvasBenchmarkHostV1?: import("../src/engine/benchmark-host").PoietraCanvasBenchmarkHostV1;
+    }
+  ).__poietraCanvasBenchmarkHostV1;
+  if (!host) throw new Error("The benchmark host page did not expose the canvas benchmark handle.");
+  const { PoietraCanvasWorkerClient } = await host.loadCanvasWorkerClient();
   const client = new PoietraCanvasWorkerClient({ requestTimeoutMs: 60_000 });
   const render = (sampleTime: number) =>
     client.render({ revision: input.revision, sampleTime, viewport: input.viewport });
-  const gpu = (
-    navigator as unknown as {
-      gpu?: {
-        requestAdapter: () => Promise<Readonly<{
-          info: Readonly<{ architecture?: string; description?: string; device?: string; vendor?: string }>;
-        }> | null>;
-      };
-    }
-  ).gpu;
-  const adapter = await gpu?.requestAdapter();
-  const adapterInfo = adapter
-    ? {
-        architecture: adapter.info.architecture ?? "unreported",
-        description: adapter.info.description ?? "unreported",
-        device: adapter.info.device ?? "unreported",
-        vendor: adapter.info.vendor ?? "unreported",
-      }
-    : null;
 
   const installStarted = performance.now();
   await client.installScene({ canvas, revision: input.revision, snapshot: input.bundle });
@@ -411,6 +149,13 @@ async function runBrowserStress(input: {
     const settleStarted = performance.now();
     await Promise.all(outcomes);
     const settleDurationMs = performance.now() - settleStarted;
+
+    let workerDeviceAdapter: { evidence: unknown; kind: "available" } | { kind: "unavailable"; reason: string };
+    try {
+      workerDeviceAdapter = { evidence: (await client.collectAdapterEvidence()).evidence, kind: "available" };
+    } catch (error) {
+      workerDeviceAdapter = { kind: "unavailable", reason: error instanceof Error ? error.message : String(error) };
+    }
     return {
       browser: {
         hardwareConcurrency: navigator.hardwareConcurrency,
@@ -428,10 +173,10 @@ async function runBrowserStress(input: {
         supersededRequests,
       },
       installMs,
-      pageAdapterHint: adapterInfo,
       pacedAckMs,
       pacedFrameIntervalMs,
       randomSeekAckMs,
+      workerDeviceAdapter,
     };
   } finally {
     client.dispose();
@@ -439,23 +184,25 @@ async function runBrowserStress(input: {
   }
 }
 
-test("records the 1080p WebGPU stress matrix", async ({ page }, testInfo) => {
+test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInfo) => {
   test.skip(process.env.POIETRA_ENGINE_BENCHMARK !== "1", "Run pnpm benchmark:engine:webgpu explicitly.");
   test.setTimeout(600_000);
+  expect(testInfo.retry).toBe(0);
+  expect(testInfo.project.retries).toBe(0);
   const fixture = JSON.parse(await readFile("fixtures/engine-v1/shared-circle-opacity.json", "utf8")) as Readonly<{
     assets: unknown;
     scene: unknown;
   }>;
   const base = sceneIrBundleV1Schema.parse({ assets: fixture.assets, scene: fixture.scene });
-  const wasmBytes = await readFile("public/engine-wasm/poietra_wasm_bg.wasm");
-  const wasm = {
-    byteLength: wasmBytes.byteLength,
-    sha256: createHash("sha256").update(wasmBytes).digest("hex"),
-  };
-  await page.goto("/");
+  const provenance = resolveBenchmarkProvenance();
+  const wasm = await readServedWasmEvidence();
+  const verifyServedBuild = makeServedBuildVerifier(request, provenance.commitIdentity);
+  await verifyServedBuild();
+  await page.goto("/benchmark.html");
+  const devClientPresent = await page.evaluate(() => Boolean(document.querySelector('script[src*="@vite/client"]')));
+  expect(devClientPresent, "the benchmark lane must not run against the HMR dev server").toBe(false);
 
   const workloads = [];
-  let pageAdapterHint: BrowserStressResult["pageAdapterHint"] = null;
   let browser: BrowserStressResult["browser"] | null = null;
   for (const definition of STRESS_DEFINITIONS) {
     const bundle = stressBundle(base, definition);
@@ -469,10 +216,11 @@ test("records the 1080p WebGPU stress matrix", async ({ page }, testInfo) => {
       viewport: VIEWPORT,
       warmupFrames: WARMUP_FRAMES,
     });
-    pageAdapterHint ??= measured.pageAdapterHint;
     browser ??= measured.browser;
-    expect(measured.pageAdapterHint).toEqual(pageAdapterHint);
     expect(measured.browser).toEqual(browser);
+    expect(measured.workerDeviceAdapter.kind, "the benchmark lane requires Worker device adapter evidence").toBe(
+      "available",
+    );
     expect(measured.randomSeekAckMs).toHaveLength(MEASURED_FRAMES);
     expect(measured.pacedAckMs).toHaveLength(PACED_FRAMES);
     expect(measured.pacedFrameIntervalMs).toHaveLength(PACED_FRAMES - 1);
@@ -481,9 +229,9 @@ test("records the 1080p WebGPU stress matrix", async ({ page }, testInfo) => {
       CONTINUOUS_SCRUB_FRAMES,
     );
     expect(measured.continuousScrub.latestFulfilledSampleTime).toBe(measured.continuousScrub.finalSampleTime);
-    const randomSeekAck = summarizeTiming(measured.randomSeekAckMs);
-    const pacedAck = summarizeTiming(measured.pacedAckMs);
-    const pacedFrameInterval = summarizeTiming(measured.pacedFrameIntervalMs);
+    const randomSeekAck = summarizeTiming(measured.randomSeekAckMs, MEASURED_FRAMES);
+    const pacedAck = summarizeTiming(measured.pacedAckMs, PACED_FRAMES);
+    const pacedFrameInterval = summarizeTiming(measured.pacedFrameIntervalMs, PACED_FRAMES - 1);
     const longFrameIntervals = measured.pacedFrameIntervalMs.filter((value) => value > LONG_FRAME_MS).length;
     const estimatedMissed60HzSlots = measured.pacedFrameIntervalMs.reduce(
       (total, value) => total + Math.max(0, Math.round(value / FRAME_BUDGET_MS) - 1),
@@ -508,17 +256,40 @@ test("records the 1080p WebGPU stress matrix", async ({ page }, testInfo) => {
       },
       randomSeekAck,
       snapshotBytes,
+      snapshotSha256: canonicalSceneBundleSha256(bundle),
+      workerDeviceAdapter: measured.workerDeviceAdapter,
     });
   }
 
+  const pageAdapterHint = await page.evaluate(collectPageAdapterHintOnce);
+  await verifyServedBuild();
+  requireStableCommitIdentity(provenance.commitIdentity);
+  const decisionEligibility = assessDecisionEligibility({
+    grade: provenance.grade,
+    host: collectHostEnvironment(),
+    pageAdapterHintArchitecture: pageAdapterHint.kind === "available" ? pageAdapterHint.architecture : null,
+    workerAdapters: workloads.map((workload) => {
+      const adapter = workload.workerDeviceAdapter;
+      if (adapter.kind !== "available") throw new Error("worker adapter evidence was asserted available");
+      return (adapter.evidence as { adapter: { backend: string; deviceType: string; name: string } }).adapter;
+    }),
+  });
+
   const report = {
     capturedAt: new Date().toISOString(),
-    evidenceLevel: "exploratory",
+    decisionEligibility,
+    evidenceLevel: decisionEligibility.eligible ? "decision-candidate" : "exploratory",
+    provenance,
+    provenanceStableThroughRun: true,
+    baseFixtureId: "eng-v1-shared-circle-opacity",
+    contracts: reportContracts("poietra.engine-webgpu-stress-benchmark", 2),
     configuration: {
+      lane: "production-build-static-server",
       frameBudgetMs: FRAME_BUDGET_MS,
       longFrameThresholdMs: LONG_FRAME_MS,
       measuredFrames: MEASURED_FRAMES,
       pacedFrames: PACED_FRAMES,
+      retries: { projectRetries: testInfo.project.retries, testRetry: testInfo.retry },
       scrubFrames: CONTINUOUS_SCRUB_FRAMES,
       viewport: VIEWPORT,
       warmupFrames: WARMUP_FRAMES,
@@ -562,11 +333,14 @@ test("records the 1080p WebGPU stress matrix", async ({ page }, testInfo) => {
     },
     environment: {
       browser,
+      browserLaunch: { args: [...WEBGPU_CHROMIUM_LAUNCH_ARGS], channel: WEBGPU_CHROMIUM_CHANNEL },
+      host: collectHostEnvironment(),
       nodePlatform: process.platform,
       pageAdapterHint,
       wasm,
     },
     notes: [
+      "This lane serves the production build from an owned static server; Worker device adapter evidence is collected after each workload's measured spans, and the page-scope hint exactly once after all workloads.",
       "Presented acknowledgements cover Worker dispatch, retained WASM evaluation, CPU tessellation, GPU submission, and surface present.",
       "They do not wait for GPU completion or browser display compositing.",
       "Paced acknowledgement intervals provide a 60 Hz deadline-slot proxy, not compositor frame telemetry.",
@@ -576,12 +350,13 @@ test("records the 1080p WebGPU stress matrix", async ({ page }, testInfo) => {
       "Budget booleans describe this recorded host only and do not fail CI.",
     ],
     schema: "poietra.engine-webgpu-stress-benchmark",
-    version: 1,
+    version: 2,
     workloads,
   } as const;
   const encoded = `${JSON.stringify(report, null, 2)}\n`;
   const reportPath = testInfo.outputPath("poietra-engine-webgpu-stress-benchmark.json");
   await writeFile(reportPath, encoded);
+  engineWebgpuStressReportSchema.parse(JSON.parse(await readFile(reportPath, "utf8")));
   await testInfo.attach("poietra-engine-webgpu-stress-benchmark", {
     contentType: "application/json",
     path: reportPath,
