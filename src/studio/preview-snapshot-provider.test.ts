@@ -15,7 +15,12 @@ describe("resolveStudioPreviewSnapshotProviderV1", () => {
   it("keeps the existing semantic preview as the default", async () => {
     await expect(resolveStudioPreviewSnapshotProviderV1("")).resolves.toBeNull();
     await expect(resolveStudioPreviewSnapshotProviderV1("?other=1")).resolves.toBeNull();
-    await expect(resolveStudioPreviewSnapshotProviderV1("?previewRenderer=server")).resolves.toBeNull();
+  });
+
+  it("resolves the production server provider only on explicit opt-in", async () => {
+    const provider = await resolveStudioPreviewSnapshotProviderV1("?previewRenderer=server");
+    expect(provider?.id).toBe("server-scene-snapshot");
+    expect(provider?.evidence).toBeUndefined();
   });
 
   it("resolves the fixture provider only on explicit opt-in in a dev/test build", async () => {

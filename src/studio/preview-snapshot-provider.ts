@@ -56,15 +56,15 @@ export type StudioPreviewSnapshotRequestV1 = Readonly<{
 }>;
 
 /**
- * Supplies one verified Scene snapshot for the retained WebGPU preview. The
- * checked-in fixture provider below is the interim source until the server
- * snapshot endpoint (issue #65) implements this same interface.
+ * Supplies one verified Scene snapshot for the retained WebGPU preview. Both
+ * the production server endpoint and the checked-in dev fixture implement
+ * this interface without sharing their trust or evidence boundaries.
  */
 export type StudioPreviewSnapshotProviderV1 = Readonly<{
   /**
    * Dev/test-only client extension proving presented frames. Harness
    * providers wire it explicitly; a server provider must never set it, and
-   * production builds never resolve a provider at all.
+   * production builds never include the fixture implementation.
    */
   evidence?: CanvasWorkerClientEvidenceAdapterV1;
   id: string;
@@ -87,18 +87,22 @@ export function studioPreviewWorkspaceKeyV1(context: StudioPreviewEditingContext
 }
 
 /**
- * The retained WebGPU preview stays off unless explicitly requested, and the
- * fixture provider lives behind this DEV-gated dynamic import boundary: a
- * production build ships neither the fixture schema/identity nor the client
- * evidence extension, and can never present the checked-in fixture. The
- * existing semantic preview remains the default editing surface everywhere.
+ * The retained WebGPU preview stays off unless explicitly requested. The
+ * server provider ships in production behind `?previewRenderer=server`; the
+ * checked-in fixture remains behind a DEV-only dynamic import, so production
+ * can never present fixture data or include its client evidence extension.
+ * The existing semantic preview remains the default editing surface.
  */
 export async function resolveStudioPreviewSnapshotProviderV1(
   search: string,
 ): Promise<StudioPreviewSnapshotProviderV1 | null> {
-  if (!import.meta.env.DEV) return null;
   const params = new URLSearchParams(search);
-  if (params.get(STUDIO_PREVIEW_RENDERER_QUERY_PARAM) !== "fixture") return null;
+  const requested = params.get(STUDIO_PREVIEW_RENDERER_QUERY_PARAM);
+  if (requested === "server") {
+    const server = await import("./preview-snapshot-provider.server");
+    return server.createServerPreviewSnapshotProviderV1();
+  }
+  if (!import.meta.env.DEV || requested !== "fixture") return null;
   const fixture = await import("./preview-snapshot-provider.fixture");
   return fixture.createFixturePreviewSnapshotProviderV1();
 }
