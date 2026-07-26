@@ -3,6 +3,7 @@ import harnessManifest from "../../fixtures/engine-v1/shared-circle-opacity.harn
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import {
   PRISTINE_WORKING_REVISION,
+  createUnavailableStudioPreviewSnapshotProviderV1,
   loadStudioPreviewSnapshotMetadataV1,
   resolveStudioPreviewSnapshotProviderV1,
   type StudioPreviewSceneIdentityV1,
@@ -74,6 +75,18 @@ describe("loadStudioPreviewSnapshotMetadataV1", () => {
       }),
     ).rejects.toBe(failure);
     expect(loadVerifiedSnapshot).toHaveBeenCalledWith({ identity: HARNESS_IDENTITY, signal: controller.signal });
+  });
+});
+
+describe("createUnavailableStudioPreviewSnapshotProviderV1", () => {
+  it("turns a provider chunk failure into the regular snapshot-unavailable path", async () => {
+    const cause = new Error("dynamic import failed");
+    const provider = createUnavailableStudioPreviewSnapshotProviderV1(cause);
+
+    await expect(provider.loadVerifiedSnapshot({ identity: HARNESS_IDENTITY })).rejects.toMatchObject({
+      cause,
+      message: "The requested Scene preview provider could not be loaded.",
+    });
   });
 });
 

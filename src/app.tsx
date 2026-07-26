@@ -51,6 +51,7 @@ import { samplePropertyValue } from "./studio/property-sampling";
 import { projectVerifiedSourceDuration } from "./studio/imported-workspace";
 import {
   PRISTINE_WORKING_REVISION,
+  createUnavailableStudioPreviewSnapshotProviderV1,
   resolveStudioPreviewSnapshotProviderV1,
   type StudioPreviewEditingContextV1,
   type StudioPreviewSnapshotProviderV1,
@@ -409,9 +410,13 @@ export function App() {
   useEffect(() => {
     if (typeof location === "undefined") return;
     let cancelled = false;
-    void resolveStudioPreviewSnapshotProviderV1(location.search).then((provider) => {
-      if (!cancelled) setPreviewSnapshotProvider(provider);
-    });
+    void resolveStudioPreviewSnapshotProviderV1(location.search)
+      .then((provider) => {
+        if (!cancelled) setPreviewSnapshotProvider(provider);
+      })
+      .catch((cause: unknown) => {
+        if (!cancelled) setPreviewSnapshotProvider(createUnavailableStudioPreviewSnapshotProviderV1(cause));
+      });
     return () => {
       cancelled = true;
     };

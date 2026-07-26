@@ -76,6 +76,19 @@ export type StudioPreviewSnapshotProviderV1 = Readonly<{
 }>;
 
 /**
+ * Keeps an explicitly requested preview on the normal whole-Scene fallback
+ * path when its provider chunk cannot be loaded. The original loader error is
+ * retained as a cause for diagnostics but is not exposed as provider data.
+ */
+export function createUnavailableStudioPreviewSnapshotProviderV1(cause: unknown): StudioPreviewSnapshotProviderV1 {
+  const error = new Error("The requested Scene preview provider could not be loaded.", { cause });
+  return {
+    id: "preview-provider-unavailable",
+    loadVerifiedSnapshot: () => Promise.reject(error),
+  };
+}
+
+/**
  * Loads source metadata whenever an explicit provider and Scene context exist.
  * Renderer capabilities deliberately are not an input: verified runtime time
  * remains useful to the semantic editor when WebGPU must fall back.
