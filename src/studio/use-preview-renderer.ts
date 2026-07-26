@@ -18,6 +18,7 @@ import {
   studioPreviewVerifiedSourceDurationV1,
 } from "./preview-renderer-policy";
 import {
+  loadStudioPreviewSnapshotMetadataV1,
   type StudioPreviewEditingContextV1,
   type StudioPreviewSnapshotProviderV1,
   type StudioVerifiedPreviewSnapshotV1,
@@ -96,20 +97,11 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
   const attachCanvas = useCallback((canvas: HTMLCanvasElement | null) => setCanvasEl(canvas), []);
 
   useEffect(() => {
-    if (!provider || !eligibility.eligible || !context || workspaceKey === null) return;
+    if (!provider || !context || workspaceKey === null) return;
     const controller = new AbortController();
     setSnapshot(null);
     setSnapshotError(null);
-    provider
-      .loadVerifiedSnapshot({
-        identity: {
-          projectId: context.projectId,
-          sceneName: context.sceneName,
-          sourceHash: context.sourceHash,
-          sourcePath: context.sourcePath,
-        },
-        signal: controller.signal,
-      })
+    loadStudioPreviewSnapshotMetadataV1({ context, provider, signal: controller.signal })
       .then((loaded) => {
         if (!controller.signal.aborted) setSnapshot(loaded);
       })
@@ -119,7 +111,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     return () => controller.abort();
     // Keyed by Scene identity, not the full context: the working revision must
     // not re-trigger loads, only gate presentation.
-  }, [eligibility.eligible, workspaceKey, provider]);
+  }, [workspaceKey, provider]);
 
   // The engine rejects frames whose viewport aspect deviates from the camera,
   // so the measured box is snapped to the snapshot camera's exact aspect.

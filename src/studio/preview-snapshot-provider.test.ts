@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import harnessManifest from "../../fixtures/engine-v1/shared-circle-opacity.harness.json";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import {
   PRISTINE_WORKING_REVISION,
+  loadStudioPreviewSnapshotMetadataV1,
   resolveStudioPreviewSnapshotProviderV1,
   type StudioPreviewSceneIdentityV1,
   studioPreviewWorkspaceKeyV1,
@@ -45,6 +46,34 @@ describe("studioPreviewWorkspaceKeyV1", () => {
     // incremental snapshot replacement is issue #67's boundary.
     expect(studioPreviewWorkspaceKeyV1({ ...context, workingRevision: "programs:tx-1" })).toBe(key);
     expect(studioPreviewWorkspaceKeyV1({ ...context })).toBe(key);
+  });
+});
+
+describe("loadStudioPreviewSnapshotMetadataV1", () => {
+  const context = { ...HARNESS_IDENTITY, sourceDuration: 0.1, workingRevision: "programs:tx-1" };
+
+  it("does not execute without both an explicit provider and Scene context", async () => {
+    const loadVerifiedSnapshot = vi.fn(async () => {
+      throw new Error("must not execute");
+    });
+    const provider = { id: "test", loadVerifiedSnapshot };
+    await expect(loadStudioPreviewSnapshotMetadataV1({ context, provider: null })).resolves.toBeNull();
+    await expect(loadStudioPreviewSnapshotMetadataV1({ context: null, provider })).resolves.toBeNull();
+    expect(loadVerifiedSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("forwards identity and abort ownership while propagating provider failure", async () => {
+    const failure = new Error("snapshot producer unavailable");
+    const loadVerifiedSnapshot = vi.fn().mockRejectedValue(failure);
+    const controller = new AbortController();
+    await expect(
+      loadStudioPreviewSnapshotMetadataV1({
+        context,
+        provider: { id: "test", loadVerifiedSnapshot },
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(failure);
+    expect(loadVerifiedSnapshot).toHaveBeenCalledWith({ identity: HARNESS_IDENTITY, signal: controller.signal });
   });
 });
 

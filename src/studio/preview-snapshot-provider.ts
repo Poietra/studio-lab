@@ -75,6 +75,30 @@ export type StudioPreviewSnapshotProviderV1 = Readonly<{
   loadVerifiedSnapshot: (request: StudioPreviewSnapshotRequestV1) => Promise<StudioVerifiedPreviewSnapshotV1>;
 }>;
 
+/**
+ * Loads source metadata whenever an explicit provider and Scene context exist.
+ * Renderer capabilities deliberately are not an input: verified runtime time
+ * remains useful to the semantic editor when WebGPU must fall back.
+ */
+export function loadStudioPreviewSnapshotMetadataV1(
+  input: Readonly<{
+    context: StudioPreviewEditingContextV1 | null;
+    provider: StudioPreviewSnapshotProviderV1 | null;
+    signal?: AbortSignal;
+  }>,
+): Promise<StudioVerifiedPreviewSnapshotV1 | null> {
+  if (!input.provider || !input.context) return Promise.resolve(null);
+  return input.provider.loadVerifiedSnapshot({
+    identity: {
+      projectId: input.context.projectId,
+      sceneName: input.context.sceneName,
+      sourceHash: input.context.sourceHash,
+      sourcePath: input.context.sourcePath,
+    },
+    signal: input.signal,
+  });
+}
+
 export const STUDIO_PREVIEW_RENDERER_QUERY_PARAM = "previewRenderer";
 
 /**

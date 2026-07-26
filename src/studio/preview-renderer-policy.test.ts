@@ -14,10 +14,11 @@ import {
   studioPreviewSnapshotCorrelatesV1,
   studioPreviewVerifiedSourceDurationV1,
 } from "./preview-renderer-policy";
-import type {
-  StudioPreviewEditingContextV1,
-  StudioPreviewSnapshotCorrelationV1,
-  StudioVerifiedPreviewSnapshotV1,
+import {
+  loadStudioPreviewSnapshotMetadataV1,
+  type StudioPreviewEditingContextV1,
+  type StudioPreviewSnapshotCorrelationV1,
+  type StudioVerifiedPreviewSnapshotV1,
 } from "./preview-snapshot-provider";
 
 const CAPABLE: StudioPreviewEligibilityInputV1 = {
@@ -219,6 +220,35 @@ const PRESENTED_VIEW_INPUT: StudioPreviewViewStateInputV1 = {
 };
 
 describe("resolveStudioPreviewViewStateV1", () => {
+  it("loads verified source time while an ineligible renderer stays on semantic fallback", async () => {
+    const editedContext = { ...CONTEXT, sourceDuration: 0.1, workingRevision: "programs:tx-1" };
+    const loaded = await loadStudioPreviewSnapshotMetadataV1({
+      context: editedContext,
+      provider: { id: "metadata-only", loadVerifiedSnapshot: async () => VIEW_SNAPSHOT },
+    });
+    const eligibility = evaluateStudioPreviewEligibilityV1({ ...CAPABLE, webgpuAvailable: false });
+
+    expect(studioPreviewVerifiedSourceDurationV1(loaded, editedContext)).toBe(2);
+    expect(
+      resolveStudioPreviewViewStateV1({
+        ...PRESENTED_VIEW_INPUT,
+        context: editedContext,
+        eligibility,
+        snapshot: loaded,
+      }),
+    ).toMatchObject({ phase: "fallback", reason: "capability-unsupported" });
+  });
+
+  it("fails closed when snapshot metadata loading reports a provider error", () => {
+    expect(
+      resolveStudioPreviewViewStateV1({
+        ...PRESENTED_VIEW_INPUT,
+        snapshot: null,
+        snapshotError: "snapshot producer unavailable",
+      }),
+    ).toMatchObject({ phase: "fallback", reason: "snapshot-unavailable" });
+  });
+
   it("presents only when the host frame matches this render exactly", () => {
     expect(resolveStudioPreviewViewStateV1(PRESENTED_VIEW_INPUT)).toBe(PRESENTED_VIEW_INPUT.hostState);
   });
