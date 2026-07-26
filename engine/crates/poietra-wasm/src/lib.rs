@@ -4,15 +4,22 @@
 //! bounded playhead requests. The legacy sampling handle returns a `RenderPacket`;
 //! the canvas handle keeps that packet in Rust and returns presentation metadata.
 
+mod bounded_writer;
 #[cfg(target_arch = "wasm32")]
 mod canvas;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod canvas_protocol;
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+mod canvas_telemetry;
 mod protocol;
 
 use wasm_bindgen::prelude::*;
 
 pub use canvas_protocol::MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES_V1;
+pub use canvas_telemetry::{
+    MAX_CANVAS_ADAPTER_EVIDENCE_JSON_BYTES_V1, MAX_CANVAS_TELEMETRY_RESPONSE_JSON_BYTES_V1,
+    POIETRA_CANVAS_TELEMETRY_ABI_VERSION_V1,
+};
 pub use protocol::{
     EngineWorkerSessionV1, MAX_SAMPLE_REQUEST_JSON_BYTES_V1, MAX_WORKER_RESPONSE_JSON_BYTES_V1,
 };
@@ -37,6 +44,14 @@ pub fn poietra_engine_abi_version() -> u32 {
 #[wasm_bindgen(js_name = poietraCanvasAbiVersion)]
 pub fn poietra_canvas_abi_version() -> u32 {
     POIETRA_CANVAS_ABI_VERSION_V1
+}
+
+/// Returns the opt-in stage telemetry ABI version, independent of the base
+/// canvas ABI so normal rendering never depends on telemetry support.
+#[must_use]
+#[wasm_bindgen(js_name = poietraCanvasTelemetryAbiVersion)]
+pub fn poietra_canvas_telemetry_abi_version() -> u32 {
+    POIETRA_CANVAS_TELEMETRY_ABI_VERSION_V1
 }
 
 /// Opaque WASM handle owned by one dedicated browser worker.
@@ -87,5 +102,6 @@ mod tests {
     fn exported_abi_version_is_v1() {
         assert_eq!(poietra_engine_abi_version(), 1);
         assert_eq!(poietra_canvas_abi_version(), 1);
+        assert_eq!(poietra_canvas_telemetry_abi_version(), 1);
     }
 }

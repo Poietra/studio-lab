@@ -67,6 +67,76 @@ pub enum CreateRendererErrorV1 {
     UnsupportedTargetFormat { format: wgpu::TextureFormat },
 }
 
+/// CPU-side stage evidence recorded while submitting one prepared frame.
+///
+/// Timings are raw wall-clock differences in milliseconds observed on the
+/// calling thread around each named CPU interval. They measure command
+/// recording and resource-creation cost, never GPU execution or transfer.
+/// A timing of `None` means the interval could not be observed (no clock, or
+/// a clock probe returned nothing); it never means the stage did not run —
+/// `geometry_stages_executed` states that separately, so consumers can tell
+/// "executed but unmeasurable" apart from "did not execute".
+/// Raw differences are NOT sanitized here: a non-monotonic or non-finite
+/// clock can surface as a negative or non-finite value, and consumers must
+/// reject such intervals rather than report them as healthy timings.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RenderStageEvidenceV1 {
+    /// Wall time for the two `create_buffer_init` calls, which create the
+    /// vertex/index buffers and stage the encoded bytes into them. This is a
+    /// CPU-side create-and-stage cost, not a GPU transfer measurement.
+    pub buffer_create_and_stage_ms: Option<f64>,
+    /// `create_buffer_init` calls issued for this frame (0 for empty frames).
+    pub buffer_creations: u32,
+    /// Wall time from command-encoder creation through `encoder.finish()`.
+    /// This is a nested total: it INCLUDES the `draw_record_ms` interval.
+    /// Command encoding and submission always execute, even for empty frames.
+    pub command_encode_total_ms: Option<f64>,
+    /// Indexed draw calls recorded into the render pass.
+    pub draw_calls: u64,
+    /// Wall time recording the per-draw `draw_indexed` loop; nested inside
+    /// `command_encode_total_ms`.
+    pub draw_record_ms: Option<f64>,
+    /// Whether the geometry stages (`vertex_index_encode`,
+    /// `buffer_create_and_stage`, `draw_record`) executed for this frame.
+    /// They are skipped as a group exactly when the frame has no indices.
+    pub geometry_stages_executed: bool,
+    /// Wall time submitting the finished command buffer to the queue. Queue
+    /// submission returning says nothing about GPU execution completion.
+    pub submit_ms: Option<f64>,
+    /// Vertex plus index bytes encoded and staged through buffer creation.
+    pub upload_bytes: u64,
+    /// Wall time encoding vertices/indices into little-endian byte vectors on
+    /// the CPU, before any buffer exists.
+    pub vertex_index_encode_ms: Option<f64>,
+}
+
+impl RenderStageEvidenceV1 {
+    const fn empty() -> Self {
+        Self {
+            buffer_create_and_stage_ms: None,
+            buffer_creations: 0,
+            command_encode_total_ms: None,
+            draw_calls: 0,
+            draw_record_ms: None,
+            geometry_stages_executed: false,
+            submit_ms: None,
+            upload_bytes: 0,
+            vertex_index_encode_ms: None,
+        }
+    }
+}
+
+type StageClock<'a> = Option<&'a dyn Fn() -> Option<f64>>;
+
+fn stage_elapsed(clock: StageClock<'_>, started: Option<f64>) -> Option<f64> {
+    let ended = clock.and_then(|now| now())?;
+    Some(ended - started?)
+}
+
+fn stage_started(clock: StageClock<'_>) -> Option<f64> {
+    clock.and_then(|now| now())
+}
+
 /// Browser/native WGPU pipeline for premultiplied solid-paint triangles.
 ///
 /// The historical `Fill` name remains for API compatibility; new callers may
@@ -156,6 +226,27 @@ impl WgpuFillRendererV1 {
         target: WgpuRenderTargetV1<'_>,
         frame: &PreparedFrameV1,
     ) -> Result<wgpu::SubmissionIndex, RenderFrameErrorV1> {
+        self.render_with_stage_evidence(device, queue, target, frame, None)
+            .map(|(submission, _)| submission)
+    }
+
+    /// Renders exactly like [`Self::render`] while recording CPU-side stage
+    /// evidence for opt-in telemetry.
+    ///
+    /// The optional `clock` returns wall-clock milliseconds; when it is absent
+    /// or returns `None`, counts are still recorded and every timing is `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same format or extent mismatch errors as [`Self::render`].
+    pub fn render_with_stage_evidence(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        target: WgpuRenderTargetV1<'_>,
+        frame: &PreparedFrameV1,
+        clock: Option<&dyn Fn() -> Option<f64>>,
+    ) -> Result<(wgpu::SubmissionIndex, RenderStageEvidenceV1), RenderFrameErrorV1> {
         let [expected_width, expected_height] = frame.viewport();
         if target.width_px != expected_width || target.height_px != expected_height {
             return Err(RenderFrameErrorV1::TargetExtentMismatch {
@@ -172,12 +263,19 @@ impl WgpuFillRendererV1 {
             });
         }
 
+        let mut evidence = RenderStageEvidenceV1::empty();
         let buffers = if frame.indices().is_empty() {
             None
         } else {
+            evidence.geometry_stages_executed = true;
+            let vertex_index_encode_started = stage_started(clock);
             let vertex_bytes = encode_vertices(frame);
             let index_bytes = encode_indices(frame);
-            Some((
+            evidence.vertex_index_encode_ms = stage_elapsed(clock, vertex_index_encode_started);
+            evidence.buffer_creations = 2;
+            evidence.upload_bytes = vertex_bytes.len() as u64 + index_bytes.len() as u64;
+            let buffer_create_started = stage_started(clock);
+            let created = (
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("poietra solid paint vertices v1"),
                     contents: &vertex_bytes,
@@ -188,9 +286,13 @@ impl WgpuFillRendererV1 {
                     contents: &index_bytes,
                     usage: wgpu::BufferUsages::INDEX,
                 }),
-            ))
+            );
+            evidence.buffer_create_and_stage_ms = stage_elapsed(clock, buffer_create_started);
+            Some(created)
         };
 
+        let command_encode_started = stage_started(clock);
+        let mut draw_record_ms = None;
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("poietra solid paint encoder v1"),
         });
@@ -222,12 +324,22 @@ impl WgpuFillRendererV1 {
                 pass.set_pipeline(&self.pipeline);
                 pass.set_vertex_buffer(0, vertex_buffer.slice(..));
                 pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                let draw_record_started = stage_started(clock);
                 for draw in frame.draws() {
                     pass.draw_indexed(draw.index_range().clone(), 0, 0..1);
                 }
+                draw_record_ms = stage_elapsed(clock, draw_record_started);
+                evidence.draw_calls = frame.draws().len() as u64;
             }
         }
-        Ok(queue.submit([encoder.finish()]))
+        let command_buffer = encoder.finish();
+        evidence.draw_record_ms = draw_record_ms;
+        // Labeled nested total: includes the draw-record interval above.
+        evidence.command_encode_total_ms = stage_elapsed(clock, command_encode_started);
+        let submit_started = stage_started(clock);
+        let submission = queue.submit([command_buffer]);
+        evidence.submit_ms = stage_elapsed(clock, submit_started);
+        Ok((submission, evidence))
     }
 }
 

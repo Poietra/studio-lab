@@ -107,6 +107,7 @@ pub struct PreparedFrameV1 {
     clear_color: [f64; 4],
     draws: Vec<PreparedDrawV1>,
     indices: Vec<u32>,
+    tessellation_calls: u64,
     vertices: Vec<PreparedVertexV1>,
     viewport: [u32; 2],
 }
@@ -125,6 +126,15 @@ impl PreparedFrameV1 {
     #[must_use]
     pub fn indices(&self) -> &[u32] {
         &self.indices
+    }
+
+    /// Number of per-draw tessellation operations that actually ran while
+    /// preparing this frame, counted at the tessellation call sites (one
+    /// stroke or fill tessellation per accepted draw) — never inferred from
+    /// vertex or index totals.
+    #[must_use]
+    pub const fn tessellation_calls(&self) -> u64 {
+        self.tessellation_calls
     }
 
     #[must_use]
@@ -735,6 +745,35 @@ fn prepared_clear_color(color: &RgbaColorV1) -> Result<[f64; 4], PrepareFrameErr
     Ok(result)
 }
 
+/// Unforgeable proof that a packet passed [`validate_frame_packet_v1`].
+///
+/// The field is private and there is no public constructor, so callers cannot
+/// hand [`tessellate_validated_frame_v1`] an unvalidated packet: the only way
+/// to obtain this token is through validation. This keeps the telemetry split
+/// exactly as fail-closed as the combined [`prepare_frame_v1`] entry point.
+#[derive(Clone, Copy, Debug)]
+pub struct ValidatedRenderPacketV1<'a> {
+    packet: &'a RenderPacketV1,
+}
+
+/// Validates a complete packet before tessellation without accessing a GPU.
+///
+/// This is the packet-validation half of [`prepare_frame_v1`], exposed so
+/// opt-in telemetry can time validation and tessellation separately without
+/// validating twice. The returned token is the only way to reach
+/// [`tessellate_validated_frame_v1`].
+///
+/// # Errors
+///
+/// Returns a structured validation error.
+pub fn validate_frame_packet_v1(
+    packet: &RenderPacketV1,
+) -> Result<ValidatedRenderPacketV1<'_>, PrepareFrameErrorV1> {
+    validate_render_packet_v1(packet)
+        .map_err(|error| PrepareFrameErrorV1::InvalidPacket(error.to_string()))?;
+    Ok(ValidatedRenderPacketV1 { packet })
+}
+
 /// Validates and prepares a complete packet without accessing a GPU.
 ///
 /// Local cubic sampling, affine transformation, camera-relative clip mapping,
@@ -745,14 +784,30 @@ fn prepared_clear_color(color: &RgbaColorV1) -> Result<[f64; 4], PrepareFrameErr
 ///
 /// Returns a structured validation, unsupported-feature, numeric, tessellation,
 /// or index error.
-#[allow(clippy::too_many_lines)]
 pub fn prepare_frame_v1(packet: &RenderPacketV1) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
-    validate_render_packet_v1(packet)
-        .map_err(|error| PrepareFrameErrorV1::InvalidPacket(error.to_string()))?;
+    tessellate_validated_frame_v1(validate_frame_packet_v1(packet)?)
+}
 
+/// Tessellates a packet that [`validate_frame_packet_v1`] has already accepted.
+///
+/// This is the tessellation half of [`prepare_frame_v1`]. The
+/// [`ValidatedRenderPacketV1`] token proves validation happened; the split
+/// exists so opt-in telemetry can time the phases separately without running
+/// validation twice.
+///
+/// # Errors
+///
+/// Returns a structured unsupported-feature, numeric, tessellation, or index
+/// error.
+#[allow(clippy::too_many_lines)]
+pub fn tessellate_validated_frame_v1(
+    validated: ValidatedRenderPacketV1<'_>,
+) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
+    let packet = validated.packet;
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     let mut draws = Vec::with_capacity(packet.draws.len());
+    let mut tessellation_calls: u64 = 0;
     for draw in &packet.draws {
         let RenderDrawV1::Path {
             draw_id,
@@ -815,6 +870,7 @@ pub fn prepare_frame_v1(packet: &RenderPacketV1) -> Result<PreparedFrameV1, Prep
                 &packet.viewport,
                 draw_id,
             )?;
+            tessellation_calls += 1;
         } else {
             let Some(fill) = fill else {
                 return Err(PrepareFrameErrorV1::Unsupported {
@@ -886,6 +942,7 @@ pub fn prepare_frame_v1(packet: &RenderPacketV1) -> Result<PreparedFrameV1, Prep
                         .ok_or(PrepareFrameErrorV1::IndexRange)?,
                 ]);
             }
+            tessellation_calls += 1;
         }
         let index_end =
             u32::try_from(indices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
@@ -899,6 +956,7 @@ pub fn prepare_frame_v1(packet: &RenderPacketV1) -> Result<PreparedFrameV1, Prep
         clear_color: prepared_clear_color(&packet.camera.clear_color)?,
         draws,
         indices,
+        tessellation_calls,
         vertices,
         viewport: [packet.viewport.width_px, packet.viewport.height_px],
     })

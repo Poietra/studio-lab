@@ -1,8 +1,7 @@
-use std::io::{self, Write};
-
 use poietra_scene_ir::{ContractVersionV1, ViewportV1};
 use serde::Serialize;
 
+use crate::bounded_writer::BoundedWriter;
 use crate::protocol::{SamplePacketErrorCodeV1, SamplePacketErrorV1, SampleRequestCorrelationV1};
 
 /// Canvas acknowledgements are deliberately much smaller than `RenderPacket` responses.
@@ -65,14 +64,14 @@ struct CanvasRenderResponseV1 {
     version: ContractVersionV1,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(
     tag = "kind",
     rename_all = "kebab-case",
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
-enum CanvasRenderResultV1 {
+pub(crate) enum CanvasRenderResultV1 {
     Error {
         code: CanvasRenderErrorCodeV1,
         message: String,
@@ -88,45 +87,7 @@ enum CanvasRenderResultV1 {
     },
 }
 
-#[derive(Debug)]
-struct BoundedWriter {
-    bytes: Vec<u8>,
-    limit: usize,
-    overflowed: bool,
-}
-
-impl BoundedWriter {
-    fn new(limit: usize) -> Self {
-        Self {
-            bytes: Vec::new(),
-            limit,
-            overflowed: false,
-        }
-    }
-}
-
-impl Write for BoundedWriter {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        let Some(next_length) = self.bytes.len().checked_add(buffer.len()) else {
-            self.overflowed = true;
-            return Err(io::Error::other(
-                "serialized canvas response length overflow",
-            ));
-        };
-        if next_length > self.limit {
-            self.overflowed = true;
-            return Err(io::Error::other("serialized canvas response exceeds limit"));
-        }
-        self.bytes.extend_from_slice(buffer);
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
-fn truncate_utf16(value: &str, maximum: usize) -> String {
+pub(crate) fn truncate_utf16(value: &str, maximum: usize) -> String {
     let mut used = 0;
     value
         .chars()
@@ -152,10 +113,10 @@ fn response(
     };
     let mut writer = BoundedWriter::new(MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES_V1);
     if serde_json::to_writer(&mut writer, &response).is_ok() {
-        return writer.bytes;
+        return writer.into_bytes();
     }
 
-    let code = if writer.overflowed {
+    let code = if writer.overflowed() {
         CanvasRenderErrorCodeV1::ResponseTooLarge
     } else {
         CanvasRenderErrorCodeV1::SerializationFailed
@@ -176,19 +137,43 @@ fn response(
     })
 }
 
+pub(crate) fn presented_result(
+    correlation: &SampleRequestCorrelationV1,
+    suboptimal: bool,
+) -> CanvasRenderResultV1 {
+    CanvasRenderResultV1::Presented {
+        packet_id: correlation.packet_id.clone(),
+        sample_time: correlation.sample_time,
+        suboptimal,
+        viewport: correlation.viewport.clone(),
+    }
+}
+
+pub(crate) fn error_result(
+    code: CanvasRenderErrorCodeV1,
+    message: &str,
+    correlation: Option<&SampleRequestCorrelationV1>,
+) -> CanvasRenderResultV1 {
+    let message = truncate_utf16(message, MAX_CANVAS_ERROR_MESSAGE_UTF16_UNITS_V1);
+    let message = if message.is_empty() {
+        "Canvas rendering failed".to_owned()
+    } else {
+        message
+    };
+    CanvasRenderResultV1::Error {
+        code,
+        message,
+        packet_id: correlation.map(|value| value.packet_id.clone()),
+        sample_time: correlation.map(|value| value.sample_time),
+        viewport: correlation.map(|value| value.viewport.clone()),
+    }
+}
+
 pub(crate) fn presented_response(
     correlation: &SampleRequestCorrelationV1,
     suboptimal: bool,
 ) -> Vec<u8> {
-    response(
-        CanvasRenderResultV1::Presented {
-            packet_id: correlation.packet_id.clone(),
-            sample_time: correlation.sample_time,
-            suboptimal,
-            viewport: correlation.viewport.clone(),
-        },
-        Some(correlation),
-    )
+    response(presented_result(correlation, suboptimal), Some(correlation))
 }
 
 pub(crate) fn error_response(
@@ -196,30 +181,22 @@ pub(crate) fn error_response(
     message: &str,
     correlation: Option<&SampleRequestCorrelationV1>,
 ) -> Vec<u8> {
-    let message = truncate_utf16(message, MAX_CANVAS_ERROR_MESSAGE_UTF16_UNITS_V1);
-    let message = if message.is_empty() {
-        "Canvas rendering failed".to_owned()
-    } else {
-        message
-    };
-    response(
-        CanvasRenderResultV1::Error {
-            code,
-            message,
-            packet_id: correlation.map(|value| value.packet_id.clone()),
-            sample_time: correlation.map(|value| value.sample_time),
-            viewport: correlation.map(|value| value.viewport.clone()),
-        },
-        correlation,
-    )
+    response(error_result(code, message, correlation), correlation)
+}
+
+pub(crate) fn sample_error_code(code: SamplePacketErrorCodeV1) -> CanvasRenderErrorCodeV1 {
+    match code {
+        SamplePacketErrorCodeV1::EvaluationFailed => CanvasRenderErrorCodeV1::EvaluationFailed,
+        SamplePacketErrorCodeV1::InvalidRequest => CanvasRenderErrorCodeV1::InvalidRequest,
+    }
 }
 
 pub(crate) fn sample_error_response(error: &SamplePacketErrorV1) -> Vec<u8> {
-    let code = match error.code {
-        SamplePacketErrorCodeV1::EvaluationFailed => CanvasRenderErrorCodeV1::EvaluationFailed,
-        SamplePacketErrorCodeV1::InvalidRequest => CanvasRenderErrorCodeV1::InvalidRequest,
-    };
-    error_response(code, &error.message, error.correlation.as_ref())
+    error_response(
+        sample_error_code(error.code),
+        &error.message,
+        error.correlation.as_ref(),
+    )
 }
 
 pub(crate) fn surface_configuration_required(
