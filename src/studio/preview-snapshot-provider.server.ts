@@ -5,6 +5,7 @@ import {
   sha256V1Schema,
   sourceIdentityV1Schema,
 } from "../engine/contracts";
+import { digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import {
   PRISTINE_WORKING_REVISION,
@@ -108,10 +109,28 @@ async function readBoundedJson(response: Response) {
   if (declaredLength !== null && Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
     throw providerError("The Scene snapshot endpoint response is too large.");
   }
-  const text = await response.text();
-  if (new TextEncoder().encode(text).byteLength > MAX_RESPONSE_BYTES) {
-    throw providerError("The Scene snapshot endpoint response is too large.");
+  const chunks: Uint8Array[] = [];
+  let encodedBytes = 0;
+  const reader = response.body?.getReader();
+  if (reader) {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      encodedBytes += value.byteLength;
+      if (encodedBytes > MAX_RESPONSE_BYTES) {
+        await reader.cancel();
+        throw providerError("The Scene snapshot endpoint response is too large.");
+      }
+      chunks.push(value);
+    }
   }
+  const encoded = new Uint8Array(encodedBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    encoded.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const text = new TextDecoder().decode(encoded);
   try {
     return JSON.parse(text) as unknown;
   } catch (cause) {
@@ -159,6 +178,8 @@ async function validateVerifiedRun(value: unknown, identity: StudioPreviewSceneI
   assertEqual("Scene IR source hash", source.sourceHash, identity.sourceHash);
   assertEqual("Scene IR runtime configuration", source.runtimeConfigHash, run.runtimeConfigHash);
   assertEqual("Scene IR server seal", source.snapshotHash, envelope.snapshotHash);
+  const canonicalSnapshotHash = await digestFastManimSnapshotBundleInBrowserV1(bundle);
+  assertEqual("canonical snapshot digest", canonicalSnapshotHash, envelope.snapshotHash);
   const engineRevisionHash = sceneIrSourceRevisionHash(bundle.scene);
   assertEqual("engine revision", engineRevisionHash, envelope.snapshotHash);
   assertEqual("asset manifest", bundle.scene.assetManifest.manifestDigest, bundle.assets.manifestDigest);

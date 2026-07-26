@@ -453,8 +453,9 @@ export function App() {
       : {};
   const appliedTransactionIds = new Set(appliedPrograms.map((record) => record.program.transactionId));
   const boundary = workspaceProjection?.boundary ?? null;
-  // The provider resolves through a DEV-gated dynamic import; production
-  // builds resolve to null without loading any fixture/evidence code.
+  // The server provider is an explicit production opt-in. The checked-in
+  // fixture remains behind a DEV-only dynamic import and is never bundled as
+  // production preview authority.
   const [previewSnapshotProvider, setPreviewSnapshotProvider] = useState<StudioPreviewSnapshotProviderV1 | null>(null);
   useEffect(() => {
     if (typeof location === "undefined") return;

@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import bundleFixture from "../../server/test-fixtures/fast-manim-static-bundle.json";
+import { parseVerifiedSceneIrBundleV1 } from "../engine/contracts";
+import { digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
 import type { StudioPreviewSceneIdentityV1 } from "./preview-snapshot-provider";
 import { createServerPreviewSnapshotProviderV1 } from "./preview-snapshot-provider.server";
 
 const REQUEST_ID = "studio-preview:test-request";
 const SOURCE_HASH = "a".repeat(64);
 const RUNTIME_HASH = "b".repeat(64);
-const SNAPSHOT_HASH = "c".repeat(64);
 const identity: StudioPreviewSceneIdentityV1 = {
   projectId: "default",
   sceneName: "ExampleScene",
@@ -24,7 +25,7 @@ async function sceneId() {
 
 async function verifiedRun() {
   const id = await sceneId();
-  const bundle = {
+  const unsealedBundle = {
     ...bundleFixture,
     scene: {
       ...bundleFixture.scene,
@@ -32,12 +33,21 @@ async function verifiedRun() {
       source: {
         kind: "imported-manim-server-snapshot",
         runtimeConfigHash: RUNTIME_HASH,
-        snapshotHash: SNAPSHOT_HASH,
+        snapshotHash: "0".repeat(64),
         snapshotVersion: 1,
         sourceHash: SOURCE_HASH,
       },
     },
   };
+  const parsedUnsealedBundle = await parseVerifiedSceneIrBundleV1(unsealedBundle);
+  const snapshotHash = await digestFastManimSnapshotBundleInBrowserV1(parsedUnsealedBundle);
+  const bundle = await parseVerifiedSceneIrBundleV1({
+    ...unsealedBundle,
+    scene: {
+      ...unsealedBundle.scene,
+      source: { ...unsealedBundle.scene.source, snapshotHash },
+    },
+  });
   return {
     projectId: identity.projectId,
     publishedAt: "2026-07-27T00:00:00.000Z",
@@ -55,7 +65,7 @@ async function verifiedRun() {
       sceneId: id,
       sceneName: identity.sceneName,
       schema: "poietra.fast-manim-snapshot-result",
-      snapshotHash: SNAPSHOT_HASH,
+      snapshotHash,
       sourceHash: SOURCE_HASH,
       sourcePath: identity.sourcePath,
       version: 1,
@@ -94,7 +104,7 @@ describe("createServerPreviewSnapshotProviderV1", () => {
       correlation: {
         assetsManifestDigest: run.snapshot.bundle.assets.manifestDigest,
         context: { ...identity, sourceDuration: 1, workingRevision: "pristine" },
-        engineRevisionHash: SNAPSHOT_HASH,
+        engineRevisionHash: run.snapshot.snapshotHash,
         sceneDuration: 1,
         sceneId: run.snapshot.sceneId,
         serverPublicationRevision: 7,
@@ -193,6 +203,38 @@ describe("createServerPreviewSnapshotProviderV1", () => {
       requestIdFactory: () => REQUEST_ID,
     });
     await expect(httpFailure.loadVerifiedSnapshot({ identity })).rejects.toThrow("HTTP 503");
+
+    const streamedOversize = createServerPreviewSnapshotProviderV1({
+      fetcher: async () =>
+        new Response(new Uint8Array(5 * 1024 * 1024 + 32 * 1024 + 1), {
+          headers: { "content-type": "application/json" },
+        }),
+      requestIdFactory: () => REQUEST_ID,
+    });
+    await expect(streamedOversize.loadVerifiedSnapshot({ identity })).rejects.toThrow("response is too large");
+  });
+
+  it("rejects content tampering even when every copied seal string still matches", async () => {
+    const run = await verifiedRun();
+    const tampered = {
+      ...run,
+      snapshot: {
+        ...run.snapshot,
+        bundle: {
+          ...run.snapshot.bundle,
+          scene: {
+            ...run.snapshot.bundle.scene,
+            camera: {
+              ...run.snapshot.bundle.scene.camera,
+              background: { ...run.snapshot.bundle.scene.camera.background, red: 0.5 },
+            },
+          },
+        },
+      },
+    };
+    await expect(providerReturning(tampered).provider.loadVerifiedSnapshot({ identity })).rejects.toThrow(
+      "canonical snapshot digest",
+    );
   });
 
   it("honors aborts before and during a request even when an injected fetcher ignores the signal", async () => {

@@ -11,6 +11,7 @@ import {
   sha256V1Schema,
   sourceIdentityV1Schema,
 } from "../src/engine/contracts";
+import { canonicalFastManimSnapshotBundleJsonV1, canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import { manimProjectIdSchema, manimSourcePathSchema } from "../src/render-pipeline/contracts";
 
 export const FAST_MANIM_SNAPSHOT_SCHEMA_V1 = "poietra.fast-manim-snapshot-result" as const;
@@ -166,22 +167,6 @@ export class FastManimSnapshotContractError extends Error {
   }
 }
 
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new TypeError("Snapshot canonicalization requires finite numbers.");
-    return JSON.stringify(Object.is(value, -0) ? 0 : value);
-  }
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (typeof value === "object") {
-    return `{${Object.entries(value)
-      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-      .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
-      .join(",")}}`;
-  }
-  throw new TypeError("Snapshot canonicalization received a non-JSON value.");
-}
-
 /**
  * Server-owned snapshot sealing. Producers send the zero digest sentinel and do
  * not need to reproduce JavaScript number serialization.
@@ -193,14 +178,7 @@ export function digestFastManimSnapshotBundleV1(bundle: SceneIrBundleV1) {
       "A fast-manim snapshot must use imported-manim-server-snapshot source evidence.",
     );
   }
-  const digestInput = {
-    ...bundle,
-    scene: {
-      ...bundle.scene,
-      source: { ...bundle.scene.source, snapshotHash: ZERO_SHA256 },
-    },
-  };
-  return createHash("sha256").update(canonicalJson(digestInput)).digest("hex");
+  return createHash("sha256").update(canonicalFastManimSnapshotBundleJsonV1(bundle)).digest("hex");
 }
 
 function assertCorrelation(result: ParsedFastManimSnapshotResultV1, expected: ExpectedFastManimSnapshotCorrelationV1) {
@@ -817,7 +795,7 @@ export function digestFastManimSnapshotRuntimeConfigV1(config: FastManimSnapshot
       width: canonicalF64HexV1(parsed.frame.width),
     },
   };
-  return createHash("sha256").update(canonicalJson(digestInput)).digest("hex");
+  return createHash("sha256").update(canonicalJsonV1(digestInput)).digest("hex");
 }
 
 export const fastManimSnapshotRunRequestV1Schema = z
