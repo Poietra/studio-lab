@@ -12,12 +12,15 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      testIgnore: "**/*.webgpu.ts",
+      // The retained-preview tests run on their own server via
+      // playwright.preview.config.ts (pnpm test:e2e:preview).
+      testIgnore: ["**/*.webgpu.ts", "**/preview-renderer.e2e.ts"],
       testMatch: "**/*.e2e.ts",
       use: { browserName: "chromium" },
     },
     {
       name: "chromium-webgpu",
+      testIgnore: "**/preview-renderer.webgpu.ts",
       testMatch: "**/*.webgpu.ts",
       use: {
         browserName: "chromium",

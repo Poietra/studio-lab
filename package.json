@@ -15,6 +15,7 @@
     "test:engine:wasm-smoke": "node scripts/smoke-engine-wasm.mjs",
     "test:manim-smoke": "node scripts/run-manim-smoke.mjs",
     "test:e2e": "playwright test",
+    "test:e2e:preview": "playwright test --config playwright.preview.config.ts",
     "test:electron-packaged": "pnpm package:electron && node scripts/electron-packaged-smoke.mjs",
     "test:e2e:webkit-smoke": "playwright test --project=webkit-minimum",
     "lint": "biome lint --error-on-warnings .",
