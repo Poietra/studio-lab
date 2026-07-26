@@ -154,6 +154,9 @@ function installReadbackHooks(canvas: OffscreenCanvas, viewport: ProofRequestV1[
       const pixels = {
         background: pixelAt(5, 5),
         blueCenter: pixelAt(90, 45),
+        greenCapExterior: pixelAt(34, 25),
+        greenRoundCap: pixelAt(36, 25),
+        greenStrokeCenter: pixelAt(50, 25),
         nonBlackBounds: bounds,
         redCenter: pixelAt(70, 45),
         surfaceFormat,

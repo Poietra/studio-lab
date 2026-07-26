@@ -392,41 +392,42 @@ to this ADR before production migration.
 ## Interim Go/No-Go decision (2026-07-25)
 
 **Conditional Go for continuing the bounded Rust/WASM/WGPU experiment; No-Go for
-switching the production Studio preview to WebGPU.** This decision covers the
-initial solid-fill slice through commit `b24e41c`. It does not claim that the full
-v1 capability set or the production migration criteria are complete.
+switching the production Studio preview to WebGPU.** This decision was first made
+against the solid-fill slice through commit `b24e41c`; the evidence table is kept
+current with bounded follow-up slices. It does not claim that the full v1 capability
+set or the production migration criteria are complete.
 
 The following evidence is reproducible in this repository:
 
 | Area | Status | Evidence |
 | --- | --- | --- |
 | closed v1 contracts and integrity checks | met | TypeScript and Rust reject unknown fields, versions, capabilities, stale manifests, invalid references, and bounded-resource violations |
-| cross-runtime evaluation | met for the shared fill fixture | TypeScript and Rust produce the pinned semantic result for `eng-v1-shared-circle-opacity` |
-| native WGPU output | met for the shared fill fixture | Lavapipe readback is black `[0,0,0,255]`, blue `[0,0,255,255]`, and opacity-composited red `[187,0,0,255]` |
-| browser WASM/WebGPU output | met for the shared fill fixture | Chromium 146 Worker readback is black `[0,0,0,255]`, blue `[0,0,255,255]`, and red `[188,0,0,255]` |
+| cross-runtime evaluation | met for the shared fill/Line fixture | TypeScript and Rust produce the pinned semantic result for `eng-v1-shared-circle-opacity`, including the canonical Line cubic |
+| native WGPU output | met for the shared fill/Line fixture | Lavapipe readback proves black background, opaque blue fill, opacity-composited red fill, and green round-cap/interior pixels |
+| browser WASM/WebGPU output | met for the shared fill/Line fixture | Chromium 146 Worker readback proves the same fill and round-capped Line sample points through retained Scene evaluation |
 | retained browser boundary | met | the Worker transfers one Scene snapshot and canvas, retains both in Rust, and returns only bounded presentation correlation per frame |
 | whole-Scene failure policy | met at contract, renderer, Worker, and client boundaries | unsupported draws, malformed responses, stale correlation, surface/device failures, and protocol divergence never produce a partial success |
-| generated payload | met for the initial slice | release WASM is 733,570 bytes and Node gzip evidence is 271,504 bytes, below the 3 MiB budget |
-| initial shared snapshot | met for the fixture | 1,986 encoded bytes, below the 5 MiB budget |
+| generated payload | met for the current slice | release WASM is 738,050 bytes and Node gzip evidence is 273,351 bytes, below the 3 MiB budget |
+| initial shared snapshot | met for the fixture | 2,414 encoded bytes, below the 5 MiB budget |
 | fixture breadth and visual parity | partial | the catalog fixes 15 workload IDs, but only one fixture currently executes through both GPU backends; SSIM and pixel-difference corpus reports do not yet exist |
-| renderer capability coverage | partial | solid convex cubic fills work; stroke, image, multiple subpaths, open paths, and non-convex fill remain truthful fallbacks |
+| renderer capability coverage | partial | solid convex cubic fills and static untrimmed canonical Line strokes work; broader stroke, image, multiple subpaths, other open paths, and non-convex fill remain truthful fallbacks |
 | Studio preview integration | not met | the current workspace payload lacks complete appearance, paint-order, camera, and asset evidence, so switching the visible editor would require invented data |
 | incremental edit transfer | not met | snapshot replacement is atomic but still transfers a complete replacement snapshot rather than a bounded transaction/delta |
 | fast-manim bridge | not met | RenderTrace v0 still lacks the complete geometry/style/camera snapshot required by `SceneIrV1` |
-| frame, scrub, and cold-start latency | unmeasured | no reference-host p95 report has been checked in for evaluate-plus-submit, input-to-present, or 20 cold starts |
+| frame, scrub, and cold-start latency | instrumented, decision evidence not met | an opt-in browser harness records 20 cold starts and warm/scrub acknowledgement p95, but no reference-host report for evaluate-plus-submit or input-to-present is checked in |
 | browser memory budget | unmeasured | no loaded-baseline/peak-memory report has been checked in |
 
 The correctness run used Rust 1.92.0, Node 24.13.0, Playwright 1.61.1,
 Chromium 146.0.7678.0, and Linux 6.6.87.2 WSL2 on the reference CPU. It passed
-50 Rust workspace tests, the separately enabled native GPU proof, 323 web unit
-tests, wasm32 check and Clippy, release WASM smoke, and the Chromium WebGPU pixel
-proof. These are correctness results; they are not substituted for the unmeasured
-performance budgets.
+all Rust workspace tests, both separately enabled native GPU proofs, web unit tests,
+wasm32 check and Clippy, release WASM smoke, and the Chromium WebGPU pixel proof.
+These are correctness results; they are not substituted for the missing
+decision-grade performance evidence.
 
 Production migration remains blocked until independent follow-up work provides:
 
-1. executable stroke, image, transform, camera, animation, and stress fixtures with
-   native/browser visual-diff reports;
+1. executable broader-stroke, image, transform, camera, animation, and stress
+   fixtures with native/browser visual-diff reports;
 2. checked-in reference-host reports for every latency, memory, transfer, and cold
    start budget;
 3. an incremental Scene transaction/delta protocol with atomic replacement and

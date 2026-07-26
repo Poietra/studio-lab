@@ -24,6 +24,9 @@ type ReadbackProofV1 = Readonly<{
   pixels: Readonly<{
     background: RgbaPixel;
     blueCenter: RgbaPixel;
+    greenCapExterior: RgbaPixel;
+    greenRoundCap: RgbaPixel;
+    greenStrokeCenter: RgbaPixel;
     nonBlackBounds: readonly [number, number, number, number] | null;
     redCenter: RgbaPixel;
     surfaceFormat: string;
@@ -181,6 +184,9 @@ test("samples and presents the shared Scene entirely inside a real WASM WebGPU W
   expect(proof.pixels.nonBlackBounds).not.toBeNull();
   expectPixelNear(proof.pixels.background, [0, 0, 0, 255]);
   expectPixelNear(proof.pixels.blueCenter, [0, 0, 255, 255]);
+  expectPixelNear(proof.pixels.greenCapExterior, [0, 0, 0, 255]);
+  expectPixelNear(proof.pixels.greenRoundCap, [0, 188, 0, 255], 4);
+  expectPixelNear(proof.pixels.greenStrokeCenter, [0, 188, 0, 255], 4);
   expectPixelNear(proof.pixels.redCenter, [188, 0, 0, 255], 4);
 
   await page.evaluate(() => {

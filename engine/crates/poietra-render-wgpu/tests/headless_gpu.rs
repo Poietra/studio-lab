@@ -5,9 +5,10 @@ mod support;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use poietra_render_wgpu::{WgpuFillRendererV1, WgpuRenderTargetV1, prepare_frame_v1};
+use poietra_render_wgpu::{WgpuPaintRendererV1, WgpuRenderTargetV1, prepare_frame_v1};
+use poietra_scene_ir::{RenderPacketV1, StrokeCapV1};
 use serde::Serialize;
-use support::sampled_packet;
+use support::{sampled_packet, straight_stroke_packet};
 
 const BYTES_PER_PIXEL: u32 = 4;
 const GPU_TIMEOUT: Duration = Duration::from_secs(10);
@@ -31,6 +32,9 @@ struct AdapterEvidence {
 struct PixelEvidence {
     background: [u8; 4],
     blue_center: [u8; 4],
+    green_cap_exterior: [u8; 4],
+    green_round_cap: [u8; 4],
+    green_stroke_center: [u8; 4],
     red_center: [u8; 4],
 }
 
@@ -139,8 +143,12 @@ fn track_device_loss(
     device_loss
 }
 
-fn render_fixture(device: &wgpu::Device, queue: &wgpu::Queue) -> (wgpu::Texture, wgpu::Extent3d) {
-    let prepared = prepare_frame_v1(&sampled_packet()).expect("shared fixture must prepare");
+fn render_packet(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    packet: &RenderPacketV1,
+) -> (wgpu::Texture, wgpu::Extent3d) {
+    let prepared = prepare_frame_v1(packet).expect("packet must prepare");
     let [width_px, height_px] = prepared.viewport();
     let extent = wgpu::Extent3d {
         depth_or_array_layers: 1,
@@ -158,7 +166,7 @@ fn render_fixture(device: &wgpu::Device, queue: &wgpu::Queue) -> (wgpu::Texture,
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let renderer = WgpuFillRendererV1::new(device, TARGET_FORMAT)
+    let renderer = WgpuPaintRendererV1::new(device, TARGET_FORMAT)
         .expect("proof target format must be supported by the renderer");
     renderer
         .render(
@@ -271,8 +279,11 @@ fn record_and_assert_evidence(
     let [width_px, _] = viewport;
     let pixels = PixelEvidence {
         background: pixel(rgba, width_px, 0, 0),
-        red_center: pixel(rgba, width_px, 70, 45),
         blue_center: pixel(rgba, width_px, 90, 45),
+        green_cap_exterior: pixel(rgba, width_px, 34, 25),
+        green_round_cap: pixel(rgba, width_px, 36, 25),
+        green_stroke_center: pixel(rgba, width_px, 50, 25),
+        red_center: pixel(rgba, width_px, 70, 45),
     };
     let evidence = SmokeEvidence {
         adapter: AdapterEvidence {
@@ -299,6 +310,17 @@ fn record_and_assert_evidence(
     assert_eq!(evidence.pixels.background, [0, 0, 0, 255]);
     assert_pixel_close(evidence.pixels.red_center, [188, 0, 0, 255], [1, 0, 0, 0]);
     assert_eq!(evidence.pixels.blue_center, [0, 0, 255, 255]);
+    assert_eq!(evidence.pixels.green_cap_exterior, [0, 0, 0, 255]);
+    assert_pixel_close(
+        evidence.pixels.green_round_cap,
+        [0, 188, 0, 255],
+        [0, 1, 0, 0],
+    );
+    assert_pixel_close(
+        evidence.pixels.green_stroke_center,
+        [0, 188, 0, 255],
+        [0, 1, 0, 0],
+    );
 }
 
 #[test]
@@ -321,7 +343,7 @@ fn renders_shared_fixture_with_fallback_adapter() {
     let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
     let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
 
-    let (texture, extent) = render_fixture(&device, &queue);
+    let (texture, extent) = render_packet(&device, &queue, &sampled_packet());
     let (padded_bytes_per_row, rgba) = readback_texture(&device, &queue, &texture, extent);
 
     assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
@@ -342,5 +364,50 @@ fn renders_shared_fixture_with_fallback_adapter() {
         padded_bytes_per_row,
         &rgba,
         [extent.width, extent.height],
+    );
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the dedicated CI step runs this proof"]
+fn renders_round_capped_stroke_with_fallback_adapter() {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = request_fallback_adapter(&instance);
+    assert_target_format_support(&adapter);
+    let (device, queue) = request_device(&adapter);
+    let device_loss = track_device_loss(&device);
+    let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+    let packet = straight_stroke_packet(StrokeCapV1::Round);
+    let (texture, extent) = render_packet(&device, &queue, &packet);
+    let (_, rgba) = readback_texture(&device, &queue, &texture, extent);
+
+    assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
+    assert_no_gpu_error("internal", pollster::block_on(internal_scope.pop()));
+    assert_no_gpu_error(
+        "out-of-memory",
+        pollster::block_on(out_of_memory_scope.pop()),
+    );
+    assert!(
+        device_loss
+            .lock()
+            .expect("device-loss evidence mutex must not be poisoned")
+            .is_none(),
+        "device must remain available through stroke readback"
+    );
+
+    assert_eq!(pixel(&rgba, extent.width, 54, 45), [0, 0, 0, 255]);
+    assert_pixel_close(
+        pixel(&rgba, extent.width, 56, 45),
+        [0, 188, 0, 255],
+        [0, 1, 0, 0],
+    );
+    assert_eq!(pixel(&rgba, extent.width, 56, 40), [0, 0, 0, 255]);
+    assert_pixel_close(
+        pixel(&rgba, extent.width, 80, 45),
+        [0, 188, 0, 255],
+        [0, 1, 0, 0],
     );
 }

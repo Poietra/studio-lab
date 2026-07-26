@@ -105,7 +105,7 @@ jobs:
       - name: Prove headless WGPU rendering with Lavapipe
         env:
           WGPU_BACKEND: vulkan
-        run: cargo test --locked --package poietra-render-wgpu --test headless_gpu --manifest-path engine/Cargo.toml renders_shared_fixture_with_fallback_adapter -- --ignored --exact --nocapture
+        run: cargo test --locked --package poietra-render-wgpu --test headless_gpu --manifest-path engine/Cargo.toml -- --ignored --nocapture
       - name: Run Clippy
         run: cargo clippy --locked --workspace --all-targets --all-features --manifest-path engine/Cargo.toml -- -D warnings
       - name: Check the browser WASM target
