@@ -2,29 +2,29 @@ import type { KeyboardEvent, PointerEvent } from "react";
 
 import { cn } from "../lib/cn";
 import type { EntityDimensions, Point, ProjectedEntity } from "./model";
-import { describeStudioPreviewFallbackV1 } from "./preview-renderer-policy";
-import type { StudioPreviewRendererViewV1 } from "./use-preview-renderer";
 import type { StudioMotionPath } from "./motion-paths";
+import { describeStudioPreviewFallbackV1 } from "./preview-renderer-policy";
 import { EquationContent } from "./prototype-rendering";
 import {
   hasShapeDimensions,
   inverseResizeHandleScale,
-  resizeKindForType,
   type ResizeHandleDirection,
+  resizeKindForType,
 } from "./shape-resize";
 import { StudioMotionOverlay } from "./studio-motion-overlay";
 import type { StudioTool } from "./studio-toolbar";
 import {
   clientPointToViewport,
-  entityDragDelta,
   type EntityDragPreview,
   type EntityGeometryPreview,
-  entityPreviewScale,
   type EntityScalePreview,
+  entityDragDelta,
+  entityPreviewScale,
   type InteractionMode,
   isCanvasInteractionTarget,
   viewportPositionStyle,
 } from "./studio-viewport-geometry";
+import type { StudioPreviewRendererViewV1 } from "./use-preview-renderer";
 import { isTransitionOverlay } from "./workspace-projection";
 
 export type StudioCanvasProps = Readonly<{
@@ -288,6 +288,7 @@ export function StudioCanvas({
         data-preview-fallback-reason={preview?.state.phase === "fallback" ? preview.state.reason : undefined}
         data-preview-packet-id={preview?.state.phase === "presented" ? preview.state.frame.packetId : undefined}
         data-preview-renderer={preview ? preview.state.phase : "off"}
+        data-preview-revision={preview?.state.phase === "presented" ? preview.state.frame.revision : undefined}
         data-preview-sample-time={
           preview?.state.phase === "presented" ? String(preview.state.frame.sampleTime) : undefined
         }
