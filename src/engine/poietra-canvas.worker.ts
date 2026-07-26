@@ -10,6 +10,7 @@ import {
   MAX_CANVAS_SAMPLE_JSON_BYTES,
   POIETRA_CANVAS_WORKER_VERSION,
 } from "./canvas-worker-protocol";
+import type { CanvasFrameEvidenceCaptureV1 } from "./canvas-frame-evidence";
 
 const MAX_ERROR_MESSAGE_LENGTH = 4_096;
 
@@ -23,7 +24,27 @@ export type PoietraWasmCanvasEngineClassV1 = {
   prototype: PoietraWasmCanvasEngineV1;
 };
 
+/**
+ * Dev-only seam for the frame-proof extension: the production runtime carries
+ * no readback code and treats extended requests as ordinary protocol errors;
+ * the dev worker entry injects this support object instead. All evidence
+ * types here are erased at build time (type-only imports).
+ */
+export type CanvasWorkerEvidenceHostV1 = Readonly<{
+  capture: CanvasFrameEvidenceCaptureV1 | null;
+  postError: (value: unknown, code: CanvasWorkerErrorCodeV1, error: unknown, fallback: string) => void;
+  postResponse: (response: Record<string, unknown>) => void;
+  revision: string | null;
+}>;
+
+export type CanvasWorkerEvidenceSupportV1 = Readonly<{
+  createCapture: (canvas: OffscreenCanvas) => CanvasFrameEvidenceCaptureV1;
+  /** Handles an extended-protocol request; false when it is not one. */
+  handleRequest: (value: unknown, host: CanvasWorkerEvidenceHostV1) => Promise<boolean>;
+}>;
+
 export type CanvasWorkerRuntimeOptionsV1 = Readonly<{
+  evidence?: CanvasWorkerEvidenceSupportV1;
   loadWasm?: (moduleUrl: URL) => Promise<PoietraWasmCanvasEngineClassV1>;
   postMessage: (response: CanvasWorkerResponseV1) => void;
   scopeUrl: string;
@@ -127,11 +148,14 @@ export class PoietraCanvasWorkerRuntimeV1 {
   private readonly loadWasm: (moduleUrl: URL) => Promise<PoietraWasmCanvasEngineClassV1>;
   private readonly postMessage: (response: CanvasWorkerResponseV1) => void;
   private readonly scopeUrl: URL;
+  private readonly evidence: CanvasWorkerEvidenceSupportV1 | null;
   private currentRevision: string | null = null;
   private engine: PoietraWasmCanvasEngineV1 | null = null;
+  private evidenceCapture: CanvasFrameEvidenceCaptureV1 | null = null;
   private queue: Promise<void> = Promise.resolve();
 
   constructor(options: CanvasWorkerRuntimeOptionsV1) {
+    this.evidence = options.evidence ?? null;
     this.loadWasm = options.loadWasm ?? loadPoietraCanvasWasm;
     this.postMessage = options.postMessage;
     this.scopeUrl = new URL(options.scopeUrl);
@@ -152,6 +176,7 @@ export class PoietraCanvasWorkerRuntimeV1 {
   private async handle(value: unknown) {
     const parsed = canvasWorkerRequestV1Schema.safeParse(value);
     if (!parsed.success) {
+      if (this.evidence && (await this.evidence.handleRequest(value, this.evidenceHost()))) return;
       this.postMessage(
         errorResponse(
           correlationFromUnknown(value),
@@ -172,6 +197,16 @@ export class PoietraCanvasWorkerRuntimeV1 {
       return;
     }
     await this.render(request);
+  }
+
+  private evidenceHost(): CanvasWorkerEvidenceHostV1 {
+    return {
+      capture: this.engine ? this.evidenceCapture : null,
+      postError: (value, code, error, fallback) =>
+        this.postMessage(errorResponse(correlationFromUnknown(value), code, error, fallback)),
+      postResponse: (response) => this.postMessage(response as unknown as CanvasWorkerResponseV1),
+      revision: this.currentRevision,
+    };
   }
 
   private async install(request: Extract<CanvasWorkerRequestV1, Readonly<{ kind: "install-canvas" }>>) {
@@ -196,10 +231,28 @@ export class PoietraCanvasWorkerRuntimeV1 {
       );
       return;
     }
+    if (request.captureFrameEvidence === true && !this.evidence) {
+      this.postMessage(
+        errorResponse(
+          correlation,
+          "invalid-state",
+          null,
+          "This worker build cannot fulfil the requested install options.",
+        ),
+      );
+      return;
+    }
     try {
+      if (request.captureFrameEvidence === true && this.evidence) {
+        this.evidenceCapture = this.evidence.createCapture(request.canvas);
+      }
       this.engine = await Engine.create(new Uint8Array(request.snapshotJson), request.canvas);
       this.currentRevision = request.revision;
     } catch (error) {
+      // A failed create must fully unwind the evidence hooks so a retried
+      // install cannot double-wrap them or retain the dead capture's buffers.
+      this.evidenceCapture?.dispose();
+      this.evidenceCapture = null;
       this.postMessage(
         errorResponse(
           correlation,
@@ -234,9 +287,15 @@ export class PoietraCanvasWorkerRuntimeV1 {
       this.engine.replaceSnapshot(new Uint8Array(request.snapshotJson));
       this.currentRevision = request.revision;
     } catch (error) {
+      // A rejected replace leaves both the Scene and the surface in their
+      // previous state, so the previously committed evidence stays valid.
       this.postMessage(errorResponse(correlation, "snapshot-rejected", error, "The Scene snapshot was rejected."));
       return;
     }
+    // A successful replace atomically installs a new Scene: the committed
+    // evidence describes a frame of the OLD Scene, so it is invalidated and
+    // evidence capture refuses until a frame of the new revision commits.
+    this.evidenceCapture?.invalidateCommitted();
     this.postMessage({
       kind: "canvas-ready",
       operation: "replace",
@@ -271,65 +330,85 @@ export class PoietraCanvasWorkerRuntimeV1 {
       this.postMessage(errorResponse(correlation, "invalid-request", null, "The encoded render request is too large."));
       return;
     }
-    let responseJson: Uint8Array;
+    this.evidenceCapture?.beginFrame(request.viewport);
+    let committedEvidence = false;
     try {
-      responseJson = await this.engine.render(requestJson);
-    } catch (error) {
-      this.postMessage(errorResponse(correlation, "internal-error", error, "The canvas engine render call failed."));
-      return;
-    }
-    let response: ReturnType<typeof decodeRenderResponse>;
-    try {
-      response = decodeRenderResponse(responseJson);
-    } catch (error) {
-      this.postMessage(
-        errorResponse(correlation, "protocol-violation", error, "The canvas engine returned an invalid response."),
-      );
-      return;
-    }
-    const result = response.result;
-    if (result.kind === "error") {
-      if (
-        result.packetId !== packetId ||
-        result.sampleTime !== request.sampleTime ||
-        result.viewport?.heightPx !== request.viewport.heightPx ||
-        result.viewport?.widthPx !== request.viewport.widthPx
-      ) {
+      let responseJson: Uint8Array;
+      try {
+        responseJson = await this.engine.render(requestJson);
+      } catch (error) {
+        this.postMessage(errorResponse(correlation, "internal-error", error, "The canvas engine render call failed."));
+        return;
+      }
+      let response: ReturnType<typeof decodeRenderResponse>;
+      try {
+        response = decodeRenderResponse(responseJson);
+      } catch (error) {
         this.postMessage(
-          errorResponse(correlation, "protocol-violation", null, "The canvas engine error was not correlated."),
+          errorResponse(correlation, "protocol-violation", error, "The canvas engine returned an invalid response."),
         );
         return;
       }
-      this.postMessage(errorResponse(correlation, result.code, result.message, result.message));
-      return;
+      const result = response.result;
+      if (result.kind === "error") {
+        if (
+          result.packetId !== packetId ||
+          result.sampleTime !== request.sampleTime ||
+          result.viewport?.heightPx !== request.viewport.heightPx ||
+          result.viewport?.widthPx !== request.viewport.widthPx
+        ) {
+          this.postMessage(
+            errorResponse(correlation, "protocol-violation", null, "The canvas engine error was not correlated."),
+          );
+          return;
+        }
+        this.postMessage(errorResponse(correlation, result.code, result.message, result.message));
+        return;
+      }
+      if (
+        result.packetId !== packetId ||
+        result.sampleTime !== request.sampleTime ||
+        result.viewport.heightPx !== request.viewport.heightPx ||
+        result.viewport.widthPx !== request.viewport.widthPx
+      ) {
+        this.postMessage(
+          errorResponse(
+            correlation,
+            "protocol-violation",
+            null,
+            `The presented frame was not correlated: expected ${packetId} at ${request.sampleTime} for ${request.viewport.widthPx}x${request.viewport.heightPx}, received ${result.packetId} at ${result.sampleTime} for ${result.viewport.widthPx}x${result.viewport.heightPx}.`,
+          ),
+        );
+        return;
+      }
+      // Only a fully verified, correlated response commits the staged copy.
+      // A non-"committed" outcome (zero submissions) already cleared the
+      // committed evidence inside the capture, so a later evidence request
+      // refuses; the production frame-presented response is unaffected.
+      this.evidenceCapture?.commit({
+        packetId,
+        revision: request.revision,
+        sampleTime: result.sampleTime,
+        viewport: result.viewport,
+      });
+      committedEvidence = true;
+      this.postMessage({
+        kind: "frame-presented",
+        packetId: result.packetId,
+        requestId: request.requestId,
+        revision: request.revision,
+        sampleTime: result.sampleTime,
+        schema: "poietra.canvas-worker-response",
+        suboptimal: result.suboptimal,
+        version: POIETRA_CANVAS_WORKER_VERSION,
+        viewport: result.viewport,
+      });
+    } finally {
+      // Every non-committing path — engine throw, malformed or uncorrelated
+      // response, unexpected internal throw — discards the staged copy and
+      // closes the staging window.
+      if (!committedEvidence) this.evidenceCapture?.discard();
     }
-    if (
-      result.packetId !== packetId ||
-      result.sampleTime !== request.sampleTime ||
-      result.viewport.heightPx !== request.viewport.heightPx ||
-      result.viewport.widthPx !== request.viewport.widthPx
-    ) {
-      this.postMessage(
-        errorResponse(
-          correlation,
-          "protocol-violation",
-          null,
-          `The presented frame was not correlated: expected ${packetId} at ${request.sampleTime} for ${request.viewport.widthPx}x${request.viewport.heightPx}, received ${result.packetId} at ${result.sampleTime} for ${result.viewport.widthPx}x${result.viewport.heightPx}.`,
-        ),
-      );
-      return;
-    }
-    this.postMessage({
-      kind: "frame-presented",
-      packetId: result.packetId,
-      requestId: request.requestId,
-      revision: request.revision,
-      sampleTime: result.sampleTime,
-      schema: "poietra.canvas-worker-response",
-      suboptimal: result.suboptimal,
-      version: POIETRA_CANVAS_WORKER_VERSION,
-      viewport: result.viewport,
-    });
   }
 }
 
@@ -337,21 +416,39 @@ type WorkerScopeV1 = {
   addEventListener: (type: "message", listener: (event: MessageEvent<unknown>) => void) => void;
   location: Location;
   postMessage: (response: CanvasWorkerResponseV1) => void;
+  removeEventListener: (type: "message", listener: (event: MessageEvent<unknown>) => void) => void;
 };
 
-const possibleWorkerScope = globalThis as unknown as Partial<WorkerScopeV1> & { document?: unknown };
-if (
-  possibleWorkerScope.document === undefined &&
-  typeof possibleWorkerScope.addEventListener === "function" &&
-  typeof possibleWorkerScope.postMessage === "function" &&
-  possibleWorkerScope.location
+let activeScopeListener: ((event: MessageEvent<unknown>) => void) | null = null;
+
+/**
+ * Registers a runtime on the current worker scope; a no-op elsewhere. This
+ * module registers the evidence-free production runtime on load; the dev
+ * worker entry re-registers with its injected support and takes over.
+ */
+export function registerPoietraCanvasWorkerScopeV1(
+  options: Readonly<{ evidence?: CanvasWorkerEvidenceSupportV1 }> = {},
 ) {
+  const possibleWorkerScope = globalThis as unknown as Partial<WorkerScopeV1> & { document?: unknown };
+  if (
+    possibleWorkerScope.document !== undefined ||
+    typeof possibleWorkerScope.addEventListener !== "function" ||
+    typeof possibleWorkerScope.postMessage !== "function" ||
+    !possibleWorkerScope.location
+  ) {
+    return;
+  }
   const scope = possibleWorkerScope as WorkerScopeV1;
+  if (activeScopeListener) scope.removeEventListener("message", activeScopeListener);
   const runtime = new PoietraCanvasWorkerRuntimeV1({
+    evidence: options.evidence,
     postMessage: (response) => scope.postMessage(response),
     scopeUrl: scope.location.href,
   });
-  scope.addEventListener("message", (event) => {
+  activeScopeListener = (event) => {
     void runtime.accept(event.data);
-  });
+  };
+  scope.addEventListener("message", activeScopeListener);
 }
+
+registerPoietraCanvasWorkerScopeV1();

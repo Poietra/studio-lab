@@ -29,16 +29,20 @@ const snapshotJsonSchema = z
   });
 const offscreenCanvasSchema = z.custom<OffscreenCanvas>(isOffscreenCanvas, "Expected an OffscreenCanvas.");
 
-const requestEnvelope = {
+export const canvasWorkerRequestEnvelopeV1 = {
   requestId: requestIdSchema,
   schema: z.literal("poietra.canvas-worker-request"),
   version: z.literal(POIETRA_CANVAS_WORKER_VERSION),
 };
+const requestEnvelope = canvasWorkerRequestEnvelopeV1;
 
 const installCanvasRequestV1Schema = z
   .object({
     ...requestEnvelope,
     canvas: offscreenCanvasSchema,
+    // Dev/test-only flag: asks a dev worker build to arm its frame-proof
+    // channel. Production workers reject flagged installs as a bounded error.
+    captureFrameEvidence: z.boolean().optional(),
     kind: z.literal("install-canvas"),
     revision: revisionSchema,
     snapshotJson: snapshotJsonSchema,
@@ -133,7 +137,7 @@ export const canvasWorkerErrorCodeV1Schema = z.union([
   canvasRenderErrorCodeV1Schema,
 ]);
 
-const responseEnvelope = {
+export const canvasWorkerResponseEnvelopeV1 = {
   requestId: requestIdSchema,
   revision: revisionSchema,
   schema: z.literal("poietra.canvas-worker-response"),
@@ -142,7 +146,7 @@ const responseEnvelope = {
 
 const canvasReadyResponseV1Schema = z
   .object({
-    ...responseEnvelope,
+    ...canvasWorkerResponseEnvelopeV1,
     kind: z.literal("canvas-ready"),
     operation: z.enum(["install", "replace"]),
   })
@@ -150,7 +154,7 @@ const canvasReadyResponseV1Schema = z
 
 const framePresentedResponseV1Schema = z
   .object({
-    ...responseEnvelope,
+    ...canvasWorkerResponseEnvelopeV1,
     kind: z.literal("frame-presented"),
     packetId: opaqueIdV1Schema,
     sampleTime: finiteNumberV1Schema.nonnegative(),

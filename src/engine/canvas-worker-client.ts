@@ -9,6 +9,7 @@ import {
   MAX_CANVAS_WASM_MODULE_URL_LENGTH,
   POIETRA_CANVAS_WORKER_VERSION,
 } from "./canvas-worker-protocol";
+import type { CanvasFrameEvidenceResponseV1 } from "./canvas-worker-evidence";
 import type { SceneIrBundleV1 } from "./contracts";
 import { sceneIrBundleV1Schema } from "./contracts";
 import { sceneIrSourceRevisionHash } from "./scene-ir";
@@ -36,6 +37,15 @@ const RECOVERABLE_RENDER_ERROR_CODES = new Set<CanvasWorkerClientErrorCode>([
   "surface-timeout",
   "unsupported-frame",
 ]);
+
+/**
+ * Single source of truth for render-error fatality: any code outside this set
+ * makes the client terminate its worker, so callers holding the client must
+ * treat the renderer as dead and dispose it.
+ */
+export function isRecoverableCanvasRenderError(code: CanvasWorkerClientErrorCode) {
+  return RECOVERABLE_RENDER_ERROR_CODES.has(code);
+}
 
 export class CanvasWorkerClientError extends Error {
   readonly code: CanvasWorkerClientErrorCode;
@@ -67,7 +77,34 @@ export type RenderCanvasFrameInputV1 = Readonly<{
   viewport: Readonly<{ heightPx: number; widthPx: number }>;
 }>;
 
+export type CaptureCanvasFrameEvidenceInputV1 = Readonly<{
+  revision: string;
+  samples: readonly Readonly<{ fractionX: number; fractionY: number }>[];
+}>;
+
+/**
+ * Dev/test-only extension seam: the extended evidence protocol lives in
+ * canvas-worker-evidence (never imported as a value here), so a production
+ * client carries no evidence request/response code. Providers wire the
+ * adapter in; it supplies the dev worker entry, the extended response
+ * parser, and the capture dispatch.
+ */
+export type CanvasWorkerClientEvidenceAdapterV1 = Readonly<{
+  capture: (
+    context: Readonly<{
+      dispatch: (request: object, expectedKind: string) => Promise<unknown>;
+      requestId: number;
+      revision: string;
+      samples: CaptureCanvasFrameEvidenceInputV1["samples"];
+    }>,
+  ) => Promise<CanvasFrameEvidenceResponseV1>;
+  createWorker: () => Worker;
+  parseResponse: (value: unknown) => ReturnType<typeof canvasWorkerResponseV1Schema.safeParse>;
+}>;
+
 export type CanvasWorkerClientOptions = Readonly<{
+  /** Dev/test-only frame-proof extension; never set by production callers. */
+  evidence?: CanvasWorkerClientEvidenceAdapterV1;
   requestTimeoutMs?: number;
   wasmModuleUrl?: string | URL;
   workerFactory?: () => Worker;
@@ -75,9 +112,10 @@ export type CanvasWorkerClientOptions = Readonly<{
 
 type SuccessfulResponseV1 = Exclude<CanvasWorkerResponseV1, Readonly<{ kind: "error" }>>;
 export type PresentedCanvasFrameV1 = Extract<SuccessfulResponseV1, Readonly<{ kind: "frame-presented" }>>;
+export type { CanvasFrameEvidenceResponseV1 };
 
 type PendingRequestV1 = {
-  expectedKind: SuccessfulResponseV1["kind"];
+  expectedKind: string;
   expectedOperation?: "install" | "replace";
   reject: (error: CanvasWorkerClientError) => void;
   resolve: (response: SuccessfulResponseV1) => void;
@@ -153,6 +191,7 @@ function normalizeError(error: unknown, code: CanvasWorkerClientErrorCode, messa
 }
 
 export class PoietraCanvasWorkerClient {
+  private readonly evidence: CanvasWorkerClientEvidenceAdapterV1 | null;
   private readonly pending = new Map<number, PendingRequestV1>();
   private readonly requestTimeoutMs: number;
   private readonly wasmModuleUrl: string | URL | undefined;
@@ -169,7 +208,7 @@ export class PoietraCanvasWorkerClient {
   };
 
   private readonly handleMessage = (event: MessageEvent<unknown>) => {
-    const parsed = canvasWorkerResponseV1Schema.safeParse(event.data);
+    const parsed = (this.evidence?.parseResponse ?? canvasWorkerResponseV1Schema.safeParse)(event.data);
     if (!parsed.success) {
       this.failFatally(
         new CanvasWorkerClientError("protocol-violation", "The canvas worker returned an invalid response.", {
@@ -218,9 +257,10 @@ export class PoietraCanvasWorkerClient {
   };
 
   constructor(options: CanvasWorkerClientOptions = {}) {
+    this.evidence = options.evidence ?? null;
     this.requestTimeoutMs = validateTimeout(options.requestTimeoutMs);
     this.wasmModuleUrl = options.wasmModuleUrl;
-    this.worker = (options.workerFactory ?? createCanvasWorker)();
+    this.worker = (options.workerFactory ?? this.evidence?.createWorker ?? createCanvasWorker)();
     this.worker.addEventListener("error", this.handleError);
     this.worker.addEventListener("message", this.handleMessage);
     this.worker.addEventListener("messageerror", this.handleMessageError);
@@ -248,6 +288,7 @@ export class PoietraCanvasWorkerClient {
     try {
       const parsed = parseWorkerRequest({
         canvas,
+        ...(this.evidence ? { captureFrameEvidence: true } : {}),
         kind: "install-canvas",
         requestId: this.takeRequestId(),
         revision: input.revision,
@@ -349,6 +390,21 @@ export class PoietraCanvasWorkerClient {
     });
   }
 
+  async captureFrameEvidence(input: CaptureCanvasFrameEvidenceInputV1): Promise<CanvasFrameEvidenceResponseV1> {
+    if (!this.evidence) {
+      throw new CanvasWorkerClientError("invalid-state", "This client was created without the dev evidence extension.");
+    }
+    if (this.state !== "ready" || this.currentRevision !== input.revision) {
+      throw new CanvasWorkerClientError("invalid-state", "The requested canvas Scene revision is not installed.");
+    }
+    return this.evidence.capture({
+      dispatch: (request, expectedKind) => this.dispatch(request as CanvasWorkerRequestV1, expectedKind),
+      requestId: this.takeRequestId(),
+      revision: input.revision,
+      samples: input.samples,
+    });
+  }
+
   dispose() {
     if (this.state === "disposed") return;
     this.state = "disposed";
@@ -361,7 +417,7 @@ export class PoietraCanvasWorkerClient {
 
   private dispatch(
     request: CanvasWorkerRequestV1,
-    expectedKind: SuccessfulResponseV1["kind"],
+    expectedKind: string,
     expectedOperation?: "install" | "replace",
     transfer: Transferable[] = [],
   ) {
