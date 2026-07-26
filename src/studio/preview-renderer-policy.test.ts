@@ -98,15 +98,24 @@ describe("studioPreviewSnapshotCorrelatesV1", () => {
     ["sceneName", { sceneName: "FieldSummary" }],
     ["sourceHash", { sourceHash: "c".repeat(64) }],
     ["sourcePath", { sourcePath: "other.py" }],
-    ["sourceDuration", { sourceDuration: 12 }],
     ["workingRevision", { workingRevision: "programs:tx-1" }],
   ] as const)("breaks correlation when %s changes (workspace switch or Studio edit)", (_axis, change) => {
     expect(studioPreviewSnapshotCorrelatesV1(CORRELATION, { ...CONTEXT, ...change })).toBe(false);
   });
 
-  it("never treats a Scene IR whose duration differs from the source as correlated", () => {
+  it("uses the verified runtime duration instead of Studio's conservative static-import estimate", () => {
+    expect(studioPreviewSnapshotCorrelatesV1(CORRELATION, { ...CONTEXT, sourceDuration: 0.1 })).toBe(true);
+  });
+
+  it("never treats an internally inconsistent Scene IR duration as correlated", () => {
     const unrelatedIr: StudioPreviewSnapshotCorrelationV1 = { ...CORRELATION, sceneDuration: 7 };
     expect(studioPreviewSnapshotCorrelatesV1(unrelatedIr, CONTEXT)).toBe(false);
+    expect(
+      studioPreviewSnapshotCorrelatesV1(
+        { ...CORRELATION, context: { ...CORRELATION.context, sourceDuration: 7 } },
+        CONTEXT,
+      ),
+    ).toBe(false);
   });
 
   it("never adopts a snapshot loaded for a previously active workspace", () => {

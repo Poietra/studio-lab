@@ -13,7 +13,10 @@ export const PRISTINE_WORKING_REVISION = "pristine" as const;
 export type StudioPreviewEditingContextV1 = StudioPreviewSceneIdentityV1 &
   Readonly<{
     /**
-     * Duration of the imported source Scene, before any Studio edits.
+     * Conservative duration projected by Studio's source importer before any
+     * edits. A verified server snapshot may carry a different duration because
+     * fast-manim execution, not static source analysis, is authoritative for
+     * imported Python Scenes.
      */
     sourceDuration: number;
     /**
@@ -30,8 +33,9 @@ export type StudioPreviewEditingContextV1 = StudioPreviewSceneIdentityV1 &
  * counter, which is a different namespace and must never be conflated with the
  * engine hash; `assetsManifestDigest` pins the verified asset revision the
  * snapshot was checked against; `sceneDuration` and `sceneId` identify the
- * Scene IR itself. A snapshot may only be presented while `context` matches
- * the live editing context exactly, including the source duration.
+ * Scene IR itself. Snapshot duration is internally self-correlated, while the
+ * live context is correlated by project/source/Scene identity and working
+ * revision: its conservative importer duration is not Python runtime evidence.
  */
 export type StudioPreviewSnapshotCorrelationV1 = Readonly<{
   assetsManifestDigest: string;

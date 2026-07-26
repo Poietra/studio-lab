@@ -75,11 +75,11 @@ export function evaluateStudioPreviewEligibilityV1(input: StudioPreviewEligibili
 
 /**
  * A verified snapshot may only be presented while it correlates with the live
- * editing context on every axis: project, source path, Scene name, source
- * hash, source duration, and the working revision of applied Studio edits.
- * The Scene IR's own duration must additionally match the source duration, so
- * an unrelated Scene IR can never be treated as correlated. Any mismatch
- * (workspace switch, source change, applied program, draft) is a whole-Scene
+ * editing context by project, source path, Scene name, source hash, and the
+ * working revision of applied Studio edits. The snapshot's duration must be
+ * internally self-correlated, but it need not equal Studio's conservative
+ * static-import duration: for imported Python Scenes the verified fast-manim
+ * execution is authoritative. Any identity/edit mismatch is a whole-Scene
  * fallback regardless of what the renderer has already presented.
  */
 export function studioPreviewSnapshotCorrelatesV1(
@@ -91,9 +91,8 @@ export function studioPreviewSnapshotCorrelatesV1(
     correlation.context.sceneName === context.sceneName &&
     correlation.context.sourceHash === context.sourceHash &&
     correlation.context.sourcePath === context.sourcePath &&
-    correlation.context.sourceDuration === context.sourceDuration &&
     correlation.context.workingRevision === context.workingRevision &&
-    correlation.sceneDuration === context.sourceDuration
+    correlation.sceneDuration === correlation.context.sourceDuration
   );
 }
 
