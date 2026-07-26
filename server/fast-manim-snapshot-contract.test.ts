@@ -9,6 +9,7 @@ import {
   FAST_MANIM_SNAPSHOT_UNSUPPORTED_MESSAGES_V1,
   fastManimSnapshotRunViewV1Schema,
   fastManimSnapshotSceneIdV1,
+  isCanonicalFastManimLineSegmentV1,
   MAX_FAST_MANIM_SNAPSHOT_ARRAY_ITEMS,
   MAX_FAST_MANIM_SNAPSHOT_BUNDLE_JSON_BYTES,
   MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES,
@@ -116,6 +117,55 @@ function compiled(bundle: SceneIrBundleV1) {
 function parseProducer(value: unknown, expectedValue: ExpectedFastManimSnapshotCorrelationV1 = expected) {
   return parseAndSealFastManimSnapshotProducerJsonV1(JSON.stringify(value), expectedValue);
 }
+
+function offsetRawF64Bits(value: number, offset: bigint) {
+  const buffer = Buffer.alloc(8);
+  buffer.writeDoubleBE(value);
+  buffer.writeBigUInt64BE(buffer.readBigUInt64BE() + offset);
+  return buffer.readDoubleBE();
+}
+
+describe("canonical fast-manim Line cubic", () => {
+  const start = { x: -4, y: 2 };
+  const end = { x: 4, y: 2 };
+  const canonical = {
+    control1: { x: start.x + (end.x - start.x) / 3, y: 2 },
+    control2: { x: start.x + ((end.x - start.x) * 2) / 3, y: 2 },
+    end,
+  };
+
+  it("accepts the actual exporter control that differs by one ordered-f64 ULP", () => {
+    expect(
+      isCanonicalFastManimLineSegmentV1(start, {
+        ...canonical,
+        control1: { x: -1.3333333333333337, y: 2 },
+        control2: { x: 1.333333333333333, y: 2 },
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects two ULP drift and arbitrary collinear controls", () => {
+    expect(
+      isCanonicalFastManimLineSegmentV1(start, {
+        ...canonical,
+        control1: { ...canonical.control1, x: offsetRawF64Bits(canonical.control1.x, 2n) },
+      }),
+    ).toBe(false);
+    expect(isCanonicalFastManimLineSegmentV1(start, { control1: start, control2: end, end })).toBe(false);
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    "rejects a non-finite control at the helper boundary (%s)",
+    (value) => {
+      expect(
+        isCanonicalFastManimLineSegmentV1(start, {
+          ...canonical,
+          control2: { ...canonical.control2, y: value },
+        }),
+      ).toBe(false);
+    },
+  );
+});
 
 describe("fast-manim snapshot result v1", () => {
   it("verifies a compiled Scene bundle and accepts a closed unsupported result", async () => {
@@ -404,6 +454,19 @@ describe("fast-manim snapshot result v1", () => {
       mutate({
         entities: scene.entities.map((entity, at) => (at === index ? { ...entity, ...patch } : entity)),
       } as Partial<typeof scene>);
+    const line = scene.entities[2]!;
+    if (line.geometry.kind !== "cubic-path") throw new Error("Expected the Line cubic fixture.");
+    const lineSubpath = line.geometry.path.subpaths[0]!;
+    const lineSegment = lineSubpath.segments[0]!;
+    const mutateLineSegment = (patch: Partial<typeof lineSegment>) =>
+      mutateEntity(2, {
+        geometry: {
+          ...line.geometry,
+          path: {
+            subpaths: [{ ...lineSubpath, segments: [{ ...lineSegment, ...patch }] }],
+          },
+        },
+      });
 
     const profileViolations: SceneIrBundleV1[] = [
       // Not the canonical 1-second static duration.
@@ -480,6 +543,9 @@ describe("fast-manim snapshot result v1", () => {
           stroke: { ...(scene.entities[2]!.appearance as { stroke: object }).stroke, join: "round" },
         },
       }),
+      // Collinearity alone is insufficient: the renderer accepts only the
+      // exporter's canonical 1/3 and 2/3 Line controls within one f64 ULP.
+      mutateLineSegment({ control1: lineSubpath.start, control2: lineSegment.end }),
       // Fully transparent fill: the exporter never emits invisible paint.
       mutateEntity(0, {
         appearance: {
