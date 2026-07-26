@@ -3,7 +3,7 @@ use std::ops::Range;
 
 use poietra_scene_ir::{
     AffineTransformV1, CubicSegmentV1, CubicSubpathV1, RenderCameraV1, RenderDrawV1,
-    RenderPacketV1, RgbaColorV1, ViewportV1, validate_render_packet_v1,
+    RenderPacketV1, RgbaColorV1, StrokeCapV1, StrokeStyleV1, ViewportV1, validate_render_packet_v1,
 };
 
 /// Maximum deviation between a cubic control hull and its emitted chord.
@@ -12,13 +12,13 @@ pub const FLATTEN_TOLERANCE_PIXELS_V1: f64 = 0.25;
 pub const MAX_PREPARED_VERTICES_V1: usize = 1_000_000;
 const MAX_FLATTEN_DEPTH_V1: u8 = 20;
 
-/// A valid v1 draw feature not implemented by the initial WGPU fill slice.
+/// A valid v1 draw feature not implemented by the bounded WGPU paint slice.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum UnsupportedDrawReasonV1 {
     #[error("image draws are not implemented")]
     Image,
-    #[error("stroke rendering is not implemented")]
-    Stroke,
+    #[error("combined fill and stroke draws are not implemented")]
+    FillAndStroke,
     #[error("path draws must contain a solid fill")]
     MissingFill,
     #[error("multiple subpaths are not implemented")]
@@ -27,6 +27,14 @@ pub enum UnsupportedDrawReasonV1 {
     OpenSubpath,
     #[error("only non-degenerate convex subpaths are implemented")]
     NonConvexOrDegenerate,
+    #[error("closed stroke subpaths are not implemented")]
+    ClosedStrokeSubpath,
+    #[error("the stroke slice requires exactly one cubic segment")]
+    StrokeSegmentCount,
+    #[error("the stroke slice accepts only a static, untrimmed canonical Line cubic")]
+    CurvedStroke,
+    #[error("the transformed stroke line is degenerate")]
+    DegenerateStroke,
 }
 
 /// A `RenderPacketV1` cannot be prepared without inventing or dropping pixels.
@@ -93,7 +101,7 @@ impl PreparedDrawV1 {
     }
 }
 
-/// Complete, fail-closed CPU output consumed by [`crate::WgpuFillRendererV1`].
+/// Complete, fail-closed CPU output consumed by [`crate::WgpuPaintRendererV1`].
 #[derive(Debug, PartialEq)]
 pub struct PreparedFrameV1 {
     clear_color: [f64; 4],
@@ -449,6 +457,244 @@ fn flatten_subpath_world(
     Ok(points)
 }
 
+fn canonical_line_control(
+    start: &poietra_scene_ir::PointV1,
+    end: &poietra_scene_ir::PointV1,
+    factor: f64,
+) -> PointF64 {
+    PointF64 {
+        x: start.x + (end.x - start.x) * factor,
+        y: start.y + (end.y - start.y) * factor,
+    }
+}
+
+#[allow(clippy::float_cmp)] // Exact producer recognition; a tolerance could silently accept curves.
+fn is_canonical_line_cubic(start: &poietra_scene_ir::PointV1, segment: &CubicSegmentV1) -> bool {
+    let control1 = canonical_line_control(start, &segment.end, 1.0 / 3.0);
+    let control2 = canonical_line_control(start, &segment.end, 2.0 / 3.0);
+    segment.control1.x == control1.x
+        && segment.control1.y == control1.y
+        && segment.control2.x == control2.x
+        && segment.control2.y == control2.y
+}
+
+fn append_prepared_vertex(
+    vertices: &mut Vec<PreparedVertexV1>,
+    world: PointF64,
+    color: [f32; 4],
+    camera: &RenderCameraV1,
+    draw_id: &str,
+) -> Result<u32, PrepareFrameErrorV1> {
+    if vertices.len() >= MAX_PREPARED_VERTICES_V1 {
+        return Err(PrepareFrameErrorV1::TessellationVertexLimit {
+            draw_id: draw_id.to_owned(),
+            maximum_vertices: MAX_PREPARED_VERTICES_V1,
+        });
+    }
+    let clip = world_to_clip(world, camera, draw_id)?;
+    let index = u32::try_from(vertices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+    vertices.push(PreparedVertexV1 {
+        position: [
+            checked_f32(clip.x, Some(draw_id), "clip x")?,
+            checked_f32(clip.y, Some(draw_id), "clip y")?,
+        ],
+        premultiplied_linear_color: color,
+    });
+    Ok(index)
+}
+
+fn append_stroke_quad(
+    vertices: &mut Vec<PreparedVertexV1>,
+    indices: &mut Vec<u32>,
+    corners: [PointF64; 4],
+    color: [f32; 4],
+    camera: &RenderCameraV1,
+    draw_id: &str,
+) -> Result<(), PrepareFrameErrorV1> {
+    let [start_left, start_right, end_left, end_right] = corners;
+    let start_left = append_prepared_vertex(vertices, start_left, color, camera, draw_id)?;
+    let start_right = append_prepared_vertex(vertices, start_right, color, camera, draw_id)?;
+    let end_left = append_prepared_vertex(vertices, end_left, color, camera, draw_id)?;
+    let end_right = append_prepared_vertex(vertices, end_right, color, camera, draw_id)?;
+    indices.extend_from_slice(&[
+        start_left,
+        start_right,
+        end_left,
+        end_left,
+        start_right,
+        end_right,
+    ]);
+    Ok(())
+}
+
+fn round_cap_segments(
+    radius: f64,
+    tolerance_world: f64,
+    draw_id: &str,
+) -> Result<u32, PrepareFrameErrorV1> {
+    let mut segments = 1u32;
+    let mut depth = 0u8;
+    while radius * (1.0 - (std::f64::consts::PI / (2.0 * f64::from(segments))).cos())
+        > tolerance_world
+    {
+        if depth >= MAX_FLATTEN_DEPTH_V1 {
+            return Err(PrepareFrameErrorV1::TessellationDepthLimit {
+                draw_id: draw_id.to_owned(),
+                maximum_depth: MAX_FLATTEN_DEPTH_V1,
+            });
+        }
+        segments = segments.checked_mul(2).ok_or_else(|| {
+            PrepareFrameErrorV1::TessellationVertexLimit {
+                draw_id: draw_id.to_owned(),
+                maximum_vertices: MAX_PREPARED_VERTICES_V1,
+            }
+        })?;
+        depth += 1;
+    }
+    Ok(segments)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_round_cap(
+    vertices: &mut Vec<PreparedVertexV1>,
+    indices: &mut Vec<u32>,
+    center: PointF64,
+    first: PointF64,
+    first_angle: f64,
+    last: PointF64,
+    radius: f64,
+    segments: u32,
+    color: [f32; 4],
+    camera: &RenderCameraV1,
+    draw_id: &str,
+) -> Result<(), PrepareFrameErrorV1> {
+    let center_index = append_prepared_vertex(vertices, center, color, camera, draw_id)?;
+    let mut previous = append_prepared_vertex(vertices, first, color, camera, draw_id)?;
+    for step in 1..=segments {
+        let progress = f64::from(step) / f64::from(segments);
+        let angle = first_angle + std::f64::consts::PI * progress;
+        let point = if step == segments {
+            last
+        } else {
+            PointF64 {
+                x: center.x + radius * angle.cos(),
+                y: center.y + radius * angle.sin(),
+            }
+        };
+        let next = append_prepared_vertex(vertices, point, color, camera, draw_id)?;
+        indices.extend_from_slice(&[center_index, previous, next]);
+        previous = next;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_straight_stroke(
+    vertices: &mut Vec<PreparedVertexV1>,
+    indices: &mut Vec<u32>,
+    start: PointF64,
+    end: PointF64,
+    stroke: &StrokeStyleV1,
+    opacity: f64,
+    camera: &RenderCameraV1,
+    viewport: &ViewportV1,
+    draw_id: &str,
+) -> Result<(), PrepareFrameErrorV1> {
+    let delta_x = end.x - start.x;
+    let delta_y = end.y - start.y;
+    let length = delta_x.hypot(delta_y);
+    if !length.is_finite() {
+        return Err(numeric_error(Some(draw_id), "stroke length"));
+    }
+    if length == 0.0 {
+        return Err(PrepareFrameErrorV1::Unsupported {
+            draw_id: draw_id.to_owned(),
+            reason: UnsupportedDrawReasonV1::DegenerateStroke,
+        });
+    }
+
+    let direction = PointF64 {
+        x: delta_x / length,
+        y: delta_y / length,
+    };
+    let normal = PointF64 {
+        x: -direction.y,
+        y: direction.x,
+    };
+    let radius = stroke.width_world * 0.5;
+    let (start_center, end_center) = if stroke.cap == StrokeCapV1::Square {
+        (
+            PointF64 {
+                x: start.x - direction.x * radius,
+                y: start.y - direction.y * radius,
+            },
+            PointF64 {
+                x: end.x + direction.x * radius,
+                y: end.y + direction.y * radius,
+            },
+        )
+    } else {
+        (start, end)
+    };
+    let offset = PointF64 {
+        x: normal.x * radius,
+        y: normal.y * radius,
+    };
+    let corners = [
+        PointF64 {
+            x: start_center.x + offset.x,
+            y: start_center.y + offset.y,
+        },
+        PointF64 {
+            x: start_center.x - offset.x,
+            y: start_center.y - offset.y,
+        },
+        PointF64 {
+            x: end_center.x + offset.x,
+            y: end_center.y + offset.y,
+        },
+        PointF64 {
+            x: end_center.x - offset.x,
+            y: end_center.y - offset.y,
+        },
+    ];
+    let color = premultiplied_linear_color(&stroke.color, opacity, Some(draw_id))?;
+    append_stroke_quad(vertices, indices, corners, color, camera, draw_id)?;
+
+    if stroke.cap == StrokeCapV1::Round {
+        let segments =
+            round_cap_segments(radius, world_flatten_tolerance(camera, viewport), draw_id)?;
+        let direction_angle = direction.y.atan2(direction.x);
+        append_round_cap(
+            vertices,
+            indices,
+            start,
+            corners[0],
+            direction_angle + std::f64::consts::FRAC_PI_2,
+            corners[1],
+            radius,
+            segments,
+            color,
+            camera,
+            draw_id,
+        )?;
+        append_round_cap(
+            vertices,
+            indices,
+            end,
+            corners[3],
+            direction_angle - std::f64::consts::FRAC_PI_2,
+            corners[2],
+            radius,
+            segments,
+            color,
+            camera,
+            draw_id,
+        )?;
+    }
+    Ok(())
+}
+
 fn srgb_to_linear(value: f64) -> f64 {
     if value <= 0.040_45 {
         value / 12.92
@@ -523,83 +769,123 @@ pub fn prepare_frame_v1(packet: &RenderPacketV1) -> Result<PreparedFrameV1, Prep
                 reason: UnsupportedDrawReasonV1::Image,
             });
         };
-        if stroke.is_some() {
+        if fill.is_some() && stroke.is_some() {
             return Err(PrepareFrameErrorV1::Unsupported {
                 draw_id: draw_id.clone(),
-                reason: UnsupportedDrawReasonV1::Stroke,
+                reason: UnsupportedDrawReasonV1::FillAndStroke,
             });
         }
-        let Some(fill) = fill else {
-            return Err(PrepareFrameErrorV1::Unsupported {
-                draw_id: draw_id.clone(),
-                reason: UnsupportedDrawReasonV1::MissingFill,
-            });
-        };
-        if path.subpaths.len() != 1 {
-            return Err(PrepareFrameErrorV1::Unsupported {
-                draw_id: draw_id.clone(),
-                reason: UnsupportedDrawReasonV1::MultipleSubpaths,
-            });
-        }
-        let subpath = &path.subpaths[0];
-        if !subpath.closed {
-            return Err(PrepareFrameErrorV1::Unsupported {
-                draw_id: draw_id.clone(),
-                reason: UnsupportedDrawReasonV1::OpenSubpath,
-            });
-        }
-        let remaining_vertices = MAX_PREPARED_VERTICES_V1
-            .checked_sub(vertices.len())
-            .ok_or_else(|| PrepareFrameErrorV1::TessellationVertexLimit {
-                draw_id: draw_id.clone(),
-                maximum_vertices: MAX_PREPARED_VERTICES_V1,
-            })?;
-        let world_points = flatten_subpath_world(
-            subpath,
-            transform,
-            &packet.camera,
-            &packet.viewport,
-            draw_id,
-            remaining_vertices,
-        )?;
-        if !is_non_degenerate_convex(&world_points) {
-            return Err(PrepareFrameErrorV1::Unsupported {
-                draw_id: draw_id.clone(),
-                reason: UnsupportedDrawReasonV1::NonConvexOrDegenerate,
-            });
-        }
-        let points = world_points
-            .into_iter()
-            .map(|point| world_to_clip(point, &packet.camera, draw_id))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let color = premultiplied_linear_color(&fill.color, *opacity, Some(draw_id))?;
-        let base_vertex =
-            u32::try_from(vertices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
-        for point in &points {
-            vertices.push(PreparedVertexV1 {
-                position: [
-                    checked_f32(point.x, Some(draw_id), "clip x")?,
-                    checked_f32(point.y, Some(draw_id), "clip y")?,
-                ],
-                premultiplied_linear_color: color,
-            });
-        }
-
         let index_start =
             u32::try_from(indices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
-        for offset in 1..(points.len() - 1) {
-            let middle = u32::try_from(offset).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
-            let end = u32::try_from(offset + 1).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
-            indices.extend_from_slice(&[
-                base_vertex,
-                base_vertex
-                    .checked_add(middle)
-                    .ok_or(PrepareFrameErrorV1::IndexRange)?,
-                base_vertex
-                    .checked_add(end)
-                    .ok_or(PrepareFrameErrorV1::IndexRange)?,
-            ]);
+        if let Some(stroke) = stroke {
+            if path.subpaths.len() != 1 {
+                return Err(PrepareFrameErrorV1::Unsupported {
+                    draw_id: draw_id.clone(),
+                    reason: UnsupportedDrawReasonV1::MultipleSubpaths,
+                });
+            }
+            let subpath = &path.subpaths[0];
+            if subpath.closed {
+                return Err(PrepareFrameErrorV1::Unsupported {
+                    draw_id: draw_id.clone(),
+                    reason: UnsupportedDrawReasonV1::ClosedStrokeSubpath,
+                });
+            }
+            if subpath.segments.len() != 1 {
+                return Err(PrepareFrameErrorV1::Unsupported {
+                    draw_id: draw_id.clone(),
+                    reason: UnsupportedDrawReasonV1::StrokeSegmentCount,
+                });
+            }
+            let segment = &subpath.segments[0];
+            if !is_canonical_line_cubic(&subpath.start, segment) {
+                return Err(PrepareFrameErrorV1::Unsupported {
+                    draw_id: draw_id.clone(),
+                    reason: UnsupportedDrawReasonV1::CurvedStroke,
+                });
+            }
+            append_straight_stroke(
+                &mut vertices,
+                &mut indices,
+                transform_to_world(&subpath.start, transform, draw_id)?,
+                transform_to_world(&segment.end, transform, draw_id)?,
+                stroke,
+                *opacity,
+                &packet.camera,
+                &packet.viewport,
+                draw_id,
+            )?;
+        } else {
+            let Some(fill) = fill else {
+                return Err(PrepareFrameErrorV1::Unsupported {
+                    draw_id: draw_id.clone(),
+                    reason: UnsupportedDrawReasonV1::MissingFill,
+                });
+            };
+            if path.subpaths.len() != 1 {
+                return Err(PrepareFrameErrorV1::Unsupported {
+                    draw_id: draw_id.clone(),
+                    reason: UnsupportedDrawReasonV1::MultipleSubpaths,
+                });
+            }
+            let subpath = &path.subpaths[0];
+            if !subpath.closed {
+                return Err(PrepareFrameErrorV1::Unsupported {
+                    draw_id: draw_id.clone(),
+                    reason: UnsupportedDrawReasonV1::OpenSubpath,
+                });
+            }
+            let remaining_vertices = MAX_PREPARED_VERTICES_V1
+                .checked_sub(vertices.len())
+                .ok_or_else(|| PrepareFrameErrorV1::TessellationVertexLimit {
+                    draw_id: draw_id.clone(),
+                    maximum_vertices: MAX_PREPARED_VERTICES_V1,
+                })?;
+            let world_points = flatten_subpath_world(
+                subpath,
+                transform,
+                &packet.camera,
+                &packet.viewport,
+                draw_id,
+                remaining_vertices,
+            )?;
+            if !is_non_degenerate_convex(&world_points) {
+                return Err(PrepareFrameErrorV1::Unsupported {
+                    draw_id: draw_id.clone(),
+                    reason: UnsupportedDrawReasonV1::NonConvexOrDegenerate,
+                });
+            }
+            let points = world_points
+                .into_iter()
+                .map(|point| world_to_clip(point, &packet.camera, draw_id))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let color = premultiplied_linear_color(&fill.color, *opacity, Some(draw_id))?;
+            let base_vertex =
+                u32::try_from(vertices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+            for point in &points {
+                vertices.push(PreparedVertexV1 {
+                    position: [
+                        checked_f32(point.x, Some(draw_id), "clip x")?,
+                        checked_f32(point.y, Some(draw_id), "clip y")?,
+                    ],
+                    premultiplied_linear_color: color,
+                });
+            }
+
+            for offset in 1..(points.len() - 1) {
+                let middle = u32::try_from(offset).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+                let end = u32::try_from(offset + 1).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+                indices.extend_from_slice(&[
+                    base_vertex,
+                    base_vertex
+                        .checked_add(middle)
+                        .ok_or(PrepareFrameErrorV1::IndexRange)?,
+                    base_vertex
+                        .checked_add(end)
+                        .ok_or(PrepareFrameErrorV1::IndexRange)?,
+                ]);
+            }
         }
         let index_end =
             u32::try_from(indices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;

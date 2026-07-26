@@ -95,6 +95,32 @@
         "sceneOrder": 0,
         "sourceZIndex": 0,
         "transform": { "m11": 1, "m12": 0, "m21": 0, "m22": 1, "tx": 0, "ty": 0 }
+      },
+      {
+        "appearance": {
+          "fill": null,
+          "kind": "vector",
+          "opacity": 0.5,
+          "stroke": {
+            "cap": "round",
+            "color": { "alpha": 1, "blue": 0, "green": 1, "red": 0 },
+            "join": "miter",
+            "miterLimit": 4,
+            "widthWorld": 1
+          }
+        },
+        "geometry": {
+          "end": { "x": -2, "y": 2 },
+          "kind": "line",
+          "start": { "x": -4, "y": 2 }
+        },
+        "id": "stroke",
+        "lifetimes": [{ "end": 2, "start": 0 }],
+        "parentId": null,
+        "provenanceId": "fixture",
+        "sceneOrder": 2,
+        "sourceZIndex": 2,
+        "transform": { "m11": 1, "m12": 0, "m21": 0, "m22": 1, "tx": 0, "ty": 0 }
       }
     ],
     "fidelity": { "kind": "exact" },
@@ -123,11 +149,11 @@
   },
   "expected": {
     "camera": { "bottom": -4.5, "left": -8, "right": 8, "top": 4.5 },
-    "drawEntityIds": ["earlier", "later"],
-    "drawKinds": ["path", "path"],
-    "opacities": [0.5, 1],
-    "pathSegmentCounts": [4, 4],
-    "requiredCapabilities": ["cubic-path-fill"],
+    "drawEntityIds": ["earlier", "later", "stroke"],
+    "drawKinds": ["path", "path", "path"],
+    "opacities": [0.5, 1, 0.5],
+    "pathSegmentCounts": [4, 4, 1],
+    "requiredCapabilities": ["cubic-path-fill", "cubic-path-stroke"],
     "tolerance": 0.000000000001
   }
 }

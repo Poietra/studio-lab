@@ -67,7 +67,10 @@ pub enum CreateRendererErrorV1 {
     UnsupportedTargetFormat { format: wgpu::TextureFormat },
 }
 
-/// Browser/native WGPU pipeline for premultiplied solid-fill triangles.
+/// Browser/native WGPU pipeline for premultiplied solid-paint triangles.
+///
+/// The historical `Fill` name remains for API compatibility; new callers may
+/// use the [`crate::WgpuPaintRendererV1`] alias.
 #[derive(Debug)]
 pub struct WgpuFillRendererV1 {
     pipeline: wgpu::RenderPipeline,
@@ -94,7 +97,7 @@ impl WgpuFillRendererV1 {
         }
         let shader = device.create_shader_module(wgpu::include_wgsl!("fill.wgsl"));
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("poietra solid fill pipeline v1"),
+            label: Some("poietra solid paint pipeline v1"),
             layout: None,
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -176,12 +179,12 @@ impl WgpuFillRendererV1 {
             let index_bytes = encode_indices(frame);
             Some((
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("poietra solid fill vertices v1"),
+                    label: Some("poietra solid paint vertices v1"),
                     contents: &vertex_bytes,
                     usage: wgpu::BufferUsages::VERTEX,
                 }),
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("poietra solid fill indices v1"),
+                    label: Some("poietra solid paint indices v1"),
                     contents: &index_bytes,
                     usage: wgpu::BufferUsages::INDEX,
                 }),
@@ -189,7 +192,7 @@ impl WgpuFillRendererV1 {
         };
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("poietra solid fill encoder v1"),
+            label: Some("poietra solid paint encoder v1"),
         });
         {
             let clear = frame.clear_color();
@@ -208,7 +211,7 @@ impl WgpuFillRendererV1 {
                 },
             })];
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("poietra solid fill pass v1"),
+                label: Some("poietra solid paint pass v1"),
                 color_attachments: &attachments,
                 depth_stencil_attachment: None,
                 timestamp_writes: None,

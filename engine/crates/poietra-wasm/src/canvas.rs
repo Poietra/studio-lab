@@ -2,7 +2,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use poietra_render_wgpu::{
-    PreparedFrameV1, WgpuFillRendererV1, WgpuRenderTargetV1, prepare_frame_v1,
+    PreparedFrameV1, WgpuPaintRendererV1, WgpuRenderTargetV1, prepare_frame_v1,
 };
 use poietra_scene_ir::ViewportV1;
 use wasm_bindgen::JsCast;
@@ -131,7 +131,7 @@ pub struct PoietraCanvasEngineV1 {
     device: wgpu::Device,
     device_lost: SharedFailureV1,
     queue: wgpu::Queue,
-    renderer: WgpuFillRendererV1,
+    renderer: WgpuPaintRendererV1,
     session: EngineWorkerSessionV1,
     surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
@@ -209,8 +209,8 @@ impl PoietraCanvasEngineV1 {
 
         let scopes = GpuErrorScopesV1::push(&device)
             .map_err(|failure| renderer_unavailable(&failure.message))?;
-        let renderer = WgpuFillRendererV1::new(&device, selection.view_format).map_err(|error| {
-            renderer_unavailable(&format!("could not create fill renderer: {error}"))
+        let renderer = WgpuPaintRendererV1::new(&device, selection.view_format).map_err(|error| {
+            renderer_unavailable(&format!("could not create paint renderer: {error}"))
         });
         let scoped_failure = scopes.finish().await;
         if let Some(failure) = scoped_failure {

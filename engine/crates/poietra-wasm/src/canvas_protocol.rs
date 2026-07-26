@@ -371,7 +371,7 @@ mod tests {
         let correlation = correlation();
         let response = error_response(
             CanvasRenderErrorCodeV1::UnsupportedFrame,
-            "stroke rendering is outside the fill-only slice",
+            "curved stroke rendering is outside the bounded paint slice",
             Some(&correlation),
         );
         let value: Value = serde_json::from_slice(&response).unwrap();
