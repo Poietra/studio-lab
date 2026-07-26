@@ -5,10 +5,11 @@ import type {
   PreviewViewportV1,
 } from "../engine/preview-renderer";
 import type { EntityDimensions, Point } from "./model";
-import type {
-  StudioPreviewEditingContextV1,
-  StudioPreviewSnapshotCorrelationV1,
-  StudioVerifiedPreviewSnapshotV1,
+import {
+  PRISTINE_WORKING_REVISION,
+  type StudioPreviewEditingContextV1,
+  type StudioPreviewSnapshotCorrelationV1,
+  type StudioVerifiedPreviewSnapshotV1,
 } from "./preview-snapshot-provider";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 
@@ -87,13 +88,51 @@ export function studioPreviewSnapshotCorrelatesV1(
   context: StudioPreviewEditingContextV1,
 ): boolean {
   return (
-    correlation.context.projectId === context.projectId &&
-    correlation.context.sceneName === context.sceneName &&
-    correlation.context.sourceHash === context.sourceHash &&
-    correlation.context.sourcePath === context.sourcePath &&
+    studioPreviewSnapshotMatchesSourceV1(correlation, context) &&
     correlation.context.workingRevision === context.workingRevision &&
     correlation.sceneDuration === correlation.context.sourceDuration
   );
+}
+
+function studioPreviewSnapshotMatchesSourceV1(
+  correlation: StudioPreviewSnapshotCorrelationV1,
+  context: StudioPreviewEditingContextV1,
+) {
+  return (
+    correlation.context.projectId === context.projectId &&
+    correlation.context.sceneName === context.sceneName &&
+    correlation.context.sourceHash === context.sourceHash &&
+    correlation.context.sourcePath === context.sourcePath
+  );
+}
+
+/**
+ * Returns fast-manim's authoritative imported-Scene duration independently of
+ * Studio's working revision. Applied Programs invalidate snapshot pixels, but
+ * they are still evaluated on top of the same verified source execution.
+ * Every source-identity and internal Scene-IR seam is checked synchronously so
+ * a result retained across a workspace switch can never project stale time.
+ */
+export function studioPreviewVerifiedSourceDurationV1(
+  snapshot: StudioVerifiedPreviewSnapshotV1 | null,
+  context: StudioPreviewEditingContextV1 | null,
+): number | null {
+  if (!snapshot || !context) return null;
+  const correlation = snapshot.correlation;
+  const duration = correlation.sceneDuration;
+  if (
+    !studioPreviewSnapshotMatchesSourceV1(correlation, context) ||
+    correlation.context.workingRevision !== PRISTINE_WORKING_REVISION ||
+    !Number.isFinite(duration) ||
+    duration < 0.1 ||
+    correlation.context.sourceDuration !== duration ||
+    snapshot.duration !== duration ||
+    snapshot.snapshot.scene.duration !== duration ||
+    snapshot.sceneId !== correlation.sceneId ||
+    snapshot.snapshot.scene.sceneId !== correlation.sceneId
+  )
+    return null;
+  return duration;
 }
 
 const FALLBACK_LABELS: Readonly<Record<PreviewFallbackReasonV1, string>> = {

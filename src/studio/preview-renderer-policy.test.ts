@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import sceneBundleFixture from "../../fixtures/engine-v1/shared-circle-opacity.json";
 import type { SceneIrBundleV1 } from "../engine/contracts";
 import {
   describeStudioPreviewFallbackV1,
@@ -11,6 +12,7 @@ import {
   snapStudioPreviewViewportV1,
   studioPreviewHostBindingCurrentV1,
   studioPreviewSnapshotCorrelatesV1,
+  studioPreviewVerifiedSourceDurationV1,
 } from "./preview-renderer-policy";
 import type {
   StudioPreviewEditingContextV1,
@@ -147,9 +149,54 @@ const VIEW_SNAPSHOT = {
   correlation: CORRELATION,
   duration: 2,
   sceneId: "shared:circle-opacity",
-  snapshot: {} as SceneIrBundleV1,
+  snapshot: sceneBundleFixture as unknown as SceneIrBundleV1,
   sourceLabel: "verified fixture",
 } satisfies StudioVerifiedPreviewSnapshotV1;
+
+describe("studioPreviewVerifiedSourceDurationV1", () => {
+  it("keeps verified source time authoritative after Studio edits", () => {
+    expect(
+      studioPreviewVerifiedSourceDurationV1(VIEW_SNAPSHOT, {
+        ...CONTEXT,
+        sourceDuration: 0.1,
+        workingRevision: "programs:tx-1",
+      }),
+    ).toBe(2);
+  });
+
+  it.each([
+    ["project", { projectId: "previous-project" }],
+    ["path", { sourcePath: "other.py" }],
+    ["Scene", { sceneName: "FieldSummary" }],
+    ["source hash", { sourceHash: "c".repeat(64) }],
+  ] as const)("rejects a retained snapshot with stale %s identity", (_axis, change) => {
+    expect(studioPreviewVerifiedSourceDurationV1(VIEW_SNAPSHOT, { ...CONTEXT, ...change })).toBeNull();
+  });
+
+  it("fails closed when the provider has no result or any duration seam disagrees", () => {
+    expect(studioPreviewVerifiedSourceDurationV1(null, CONTEXT)).toBeNull();
+    expect(studioPreviewVerifiedSourceDurationV1({ ...VIEW_SNAPSHOT, duration: 3 }, CONTEXT)).toBeNull();
+    const tooShort = {
+      ...VIEW_SNAPSHOT,
+      correlation: { ...CORRELATION, context: { ...CONTEXT, sourceDuration: 0.05 }, sceneDuration: 0.05 },
+      duration: 0.05,
+      snapshot: { ...VIEW_SNAPSHOT.snapshot, scene: { ...VIEW_SNAPSHOT.snapshot.scene, duration: 0.05 } },
+    };
+    expect(studioPreviewVerifiedSourceDurationV1(tooShort, CONTEXT)).toBeNull();
+    expect(
+      studioPreviewVerifiedSourceDurationV1(
+        {
+          ...VIEW_SNAPSHOT,
+          snapshot: {
+            ...VIEW_SNAPSHOT.snapshot,
+            scene: { ...VIEW_SNAPSHOT.snapshot.scene, duration: 3 },
+          },
+        },
+        CONTEXT,
+      ),
+    ).toBeNull();
+  });
+});
 
 const PRESENTED_VIEW_INPUT: StudioPreviewViewStateInputV1 = {
   context: CONTEXT,

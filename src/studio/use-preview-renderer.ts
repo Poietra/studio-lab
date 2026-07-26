@@ -15,6 +15,7 @@ import {
   type StudioPreviewHostBindingV1,
   type StudioPreviewInteractionGeometryV1,
   studioPreviewHostBindingCurrentV1,
+  studioPreviewVerifiedSourceDurationV1,
 } from "./preview-renderer-policy";
 import {
   type StudioPreviewEditingContextV1,
@@ -33,6 +34,8 @@ export type StudioPreviewRendererViewV1 = Readonly<{
   interactionGeometry: StudioPreviewInteractionGeometryV1 | null;
   sourceLabel: string | null;
   state: PreviewRendererHostStateV1;
+  /** Verified fast-manim base duration for the current source identity. */
+  verifiedSourceDuration: number | null;
 }>;
 
 export type UseStudioPreviewRendererInputV1 = Readonly<{
@@ -234,7 +237,15 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
         : null,
     [frame, snapshot, state],
   );
+  const verifiedSourceDuration = studioPreviewVerifiedSourceDurationV1(snapshot, context);
 
   if (!provider) return null;
-  return { attachCanvas, epoch, interactionGeometry, sourceLabel: snapshot?.sourceLabel ?? null, state };
+  return {
+    attachCanvas,
+    epoch,
+    interactionGeometry,
+    sourceLabel: snapshot?.sourceLabel ?? null,
+    state,
+    verifiedSourceDuration,
+  };
 }

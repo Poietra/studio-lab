@@ -48,6 +48,7 @@ import { programExecutionCapabilities } from "./studio/operation-registry";
 import type { OperationOrigin } from "./studio/operations";
 import { latestSafeSourceAnchor, sourceTimeToWorkingTime, workingTimeToSourceTime } from "./studio/program-composition";
 import { samplePropertyValue } from "./studio/property-sampling";
+import { projectVerifiedSourceDuration } from "./studio/imported-workspace";
 import {
   PRISTINE_WORKING_REVISION,
   resolveStudioPreviewSnapshotProviderV1,
@@ -401,58 +402,6 @@ export function App() {
     setInspectorReturnFocus(null);
   }, [activeScene?.sceneId, activeScene?.sourceHash, activeProjectId]);
 
-  const previewReplacement =
-    editingAppliedProgram && draftProgram
-      ? replaceAppliedProgram(
-          appliedPrograms,
-          editingAppliedProgram.original.program.transactionId,
-          editorProgramRecord(draftProgram, draftOperation, selectedObjectIds),
-        )
-      : null;
-  const previewAppliedPrograms =
-    previewReplacement?.kind === "replaced" ? previewReplacement.programs : appliedPrograms;
-  const draftPrecedingPrograms = editingAppliedProgram
-    ? appliedPrograms.slice(0, editingAppliedProgram.index)
-    : appliedPrograms;
-  const draftPrecedingCanonicalPrograms = draftPrecedingPrograms.map((record) => record.program);
-  const workspaceProjection = activeScene
-    ? projectStudioWorkspace({
-        activeScene,
-        appliedPrograms: previewAppliedPrograms,
-        currentTime,
-        draftProgram: editingAppliedProgram ? null : draftProgram,
-        nextScene,
-        selectedObjectIds,
-      })
-    : null;
-  const draftBaseProjection =
-    activeScene && draftProgram
-      ? projectStudioWorkspace({
-          activeScene,
-          appliedPrograms: draftPrecedingPrograms,
-          currentTime,
-          draftProgram: null,
-          nextScene,
-          selectedObjectIds,
-        })
-      : workspaceProjection;
-  const draftBaseState = draftBaseProjection?.proposedState ?? null;
-  const draftSourceScene = draftBaseState
-    ? projectRuntimeSceneToSourceTimeline(draftBaseState.evaluatedScene, draftPrecedingCanonicalPrograms)
-    : null;
-  const projection = workspaceProjection?.projection ?? null;
-  const lifetimeControls =
-    activeScene && projection
-      ? buildLifetimeEditControls({
-          anchors: activeScene.anchors,
-          baseScene: activeScene.runtimeSceneState,
-          programs: previewAppliedPrograms,
-          sourceDuration: activeScene.runtimeSceneState.duration,
-          tracks: projection.timeline.objectTracks,
-        })
-      : {};
-  const appliedTransactionIds = new Set(appliedPrograms.map((record) => record.program.transactionId));
-  const boundary = workspaceProjection?.boundary ?? null;
   // The server provider is an explicit production opt-in. The checked-in
   // fixture remains behind a DEV-only dynamic import and is never bundled as
   // production preview authority.
@@ -481,18 +430,83 @@ export function App() {
         : `programs:${appliedPrograms.map((record) => record.program.transactionId).join(",")}${draftProgram ? "+draft" : ""}`,
     };
   }, [activeScene, appliedPrograms, draftProgram, editingAppliedProgram, workspace]);
+  const importedSceneBoundaryActive =
+    activeScene?.runtimeSceneState.eventTrack.events.some(
+      (event) => event.kind === "scene-boundary" && event.at !== undefined && event.at <= currentTime,
+    ) ?? false;
+  // Imported boundaries still gate the canvas directly. Studio-authored
+  // boundaries are already fail-closed by their non-pristine revision.
   const previewRenderer = useStudioPreviewRenderer({
     context: previewEditingContext,
     frame: workspace?.frame ?? { height: 8, width: 14.222 },
     provider: previewSnapshotProvider,
     sampleTime: currentTime,
-    transientEdit: dragPreview !== null || geometryPreview !== null || scalePreview !== null || boundary !== null,
+    transientEdit:
+      dragPreview !== null || geometryPreview !== null || scalePreview !== null || importedSceneBoundaryActive,
   });
+  const projectedActiveScene = useMemo(
+    () =>
+      activeScene ? projectVerifiedSourceDuration(activeScene, previewRenderer?.verifiedSourceDuration ?? null) : null,
+    [activeScene, previewRenderer?.verifiedSourceDuration],
+  );
+
+  const previewReplacement =
+    editingAppliedProgram && draftProgram
+      ? replaceAppliedProgram(
+          appliedPrograms,
+          editingAppliedProgram.original.program.transactionId,
+          editorProgramRecord(draftProgram, draftOperation, selectedObjectIds),
+        )
+      : null;
+  const previewAppliedPrograms =
+    previewReplacement?.kind === "replaced" ? previewReplacement.programs : appliedPrograms;
+  const draftPrecedingPrograms = editingAppliedProgram
+    ? appliedPrograms.slice(0, editingAppliedProgram.index)
+    : appliedPrograms;
+  const draftPrecedingCanonicalPrograms = draftPrecedingPrograms.map((record) => record.program);
+  const workspaceProjection = projectedActiveScene
+    ? projectStudioWorkspace({
+        activeScene: projectedActiveScene,
+        appliedPrograms: previewAppliedPrograms,
+        currentTime,
+        draftProgram: editingAppliedProgram ? null : draftProgram,
+        nextScene,
+        selectedObjectIds,
+      })
+    : null;
+  const draftBaseProjection =
+    projectedActiveScene && draftProgram
+      ? projectStudioWorkspace({
+          activeScene: projectedActiveScene,
+          appliedPrograms: draftPrecedingPrograms,
+          currentTime,
+          draftProgram: null,
+          nextScene,
+          selectedObjectIds,
+        })
+      : workspaceProjection;
+  const draftBaseState = draftBaseProjection?.proposedState ?? null;
+  const draftSourceScene = draftBaseState
+    ? projectRuntimeSceneToSourceTimeline(draftBaseState.evaluatedScene, draftPrecedingCanonicalPrograms)
+    : null;
+  const projection = workspaceProjection?.projection ?? null;
+  const lifetimeControls =
+    projectedActiveScene && projection
+      ? buildLifetimeEditControls({
+          anchors: projectedActiveScene.anchors,
+          baseScene: projectedActiveScene.runtimeSceneState,
+          programs: previewAppliedPrograms,
+          sourceDuration: projectedActiveScene.runtimeSceneState.duration,
+          tracks: projection.timeline.objectTracks,
+        })
+      : {};
+  const appliedTransactionIds = new Set(appliedPrograms.map((record) => record.program.transactionId));
+  const boundary = workspaceProjection?.boundary ?? null;
   const visibleEntities = workspaceProjection?.visibleEntities ?? [];
   const editableEntities = workspaceProjection?.editableEntities ?? [];
   const selectedSet = new Set(selectedObjectIds);
   const activeDuration =
-    workspaceProjection?.proposedState.evaluatedScene.duration ?? activeScene?.runtimeSceneState.duration ?? 1;
+    workspaceProjection?.proposedState.evaluatedScene.duration ?? projectedActiveScene?.runtimeSceneState.duration ?? 1;
   const durationTrimAvailability = sceneDurationTrimAvailability({
     appliedPrograms,
     sceneDuration: draftBaseState?.evaluatedScene.duration ?? activeDuration,
@@ -510,7 +524,7 @@ export function App() {
       (record) => [record.program.transactionId, record.program] as const,
     ) ?? [],
   );
-  const appliedMotionClips: readonly AppliedMotionClip[] = activeScene
+  const appliedMotionClips: readonly AppliedMotionClip[] = projectedActiveScene
     ? previewAppliedPrograms.flatMap((record, programIndex) => {
         const evaluatedProgram = evaluatedProgramsByTransaction.get(record.program.transactionId);
         if (!evaluatedProgram) return [];
@@ -531,9 +545,9 @@ export function App() {
             draftProgram && editingAppliedProgram?.original.program.transactionId !== record.program.transactionId
               ? "Apply or discard the current draft before editing this motion clip."
               : null;
-          const anchors = activeScene.anchors
+          const anchors = projectedActiveScene.anchors
             .map((sourceTime) => ({
-              maximumDuration: activeScene.runtimeSceneState.duration - sourceTime,
+              maximumDuration: projectedActiveScene.runtimeSceneState.duration - sourceTime,
               sourceTime,
               workingTime: sourceTimeToWorkingTime(precedingPrograms, sourceTime),
             }))
@@ -546,7 +560,10 @@ export function App() {
               entityId,
               interval: operation.interval,
               label: entity?.content?.label ?? entity?.content?.text ?? entityId.split(":").at(-1) ?? entityId,
-              maximumDuration: Math.max(0.1, activeScene.runtimeSceneState.duration - sourceOperation.interval.start),
+              maximumDuration: Math.max(
+                0.1,
+                projectedActiveScene.runtimeSceneState.duration - sourceOperation.interval.start,
+              ),
               operationId: operation.id,
               programIndex,
               readOnlyReason: busyReason ?? metadataReason,
@@ -845,7 +862,7 @@ export function App() {
       return false;
     }
     const metadata = editorRecord.editorMetadata;
-    if (!metadata?.operation || !activeScene) {
+    if (!metadata?.operation || !projectedActiveScene) {
       setDraftError("This Program is read-only because editable Studio authoring metadata is unavailable.");
       return false;
     }
@@ -853,7 +870,7 @@ export function App() {
     const precedingPrograms = precedingRecords.map((candidate) => candidate.program);
     const workingFocus = sourceTimeToWorkingTime(precedingPrograms, focusSourceTime);
     const baseProjection = projectStudioWorkspace({
-      activeScene,
+      activeScene: projectedActiveScene,
       appliedPrograms: precedingRecords,
       currentTime: workingFocus,
       draftProgram: null,
@@ -1100,7 +1117,7 @@ export function App() {
     workingLifetimeStart: number,
     target: Readonly<{ end: number; start: number }>,
   ) {
-    if (!activeScene || !draftSourceScene) return false;
+    if (!projectedActiveScene || !draftSourceScene) return false;
     if (draftProgram) {
       const message = "Apply or discard the current draft before editing an object lifetime.";
       setDraftError(message);
@@ -1111,7 +1128,7 @@ export function App() {
     const sourceSceneBefore = (index: number) => {
       const preceding = appliedPrograms.slice(0, index);
       const state = projectStudioWorkspace({
-        activeScene,
+        activeScene: projectedActiveScene,
         appliedPrograms: preceding,
         currentTime,
         draftProgram: null,
@@ -1132,7 +1149,7 @@ export function App() {
         ? appliedPrograms.map((candidate, index) => (index === edit.index ? record : candidate))
         : [...appliedPrograms, record];
       const proposed = projectStudioWorkspace({
-        activeScene,
+        activeScene: projectedActiveScene,
         appliedPrograms: programs,
         currentTime,
         draftProgram: null,
@@ -1161,7 +1178,7 @@ export function App() {
           owner: owner.record,
           scene: preceding.scene,
           sourceAnchorBounds: programSourceAnchorBounds(appliedPrograms, owner.index),
-          sourceAnchors: activeScene.anchors,
+          sourceAnchors: projectedActiveScene.anchors,
           target,
         });
         const validated = validatedProgramRecord(validation);
@@ -1176,7 +1193,7 @@ export function App() {
       }
 
       const sourceLifetimeStart = workingTimeToSourceTime(appliedCanonicalPrograms, workingLifetimeStart);
-      const original = activeScene.runtimeSceneState.objectGraph.entities[entityId]?.lifetime.find(
+      const original = projectedActiveScene.runtimeSceneState.objectGraph.entities[entityId]?.lifetime.find(
         (interval) => Math.abs(interval.start - sourceLifetimeStart) < 0.001,
       );
       if (!original) {
@@ -1207,7 +1224,7 @@ export function App() {
       const sourceAnchor = restoring ? existing?.record.program.anchor.resolvedSeconds : target.end;
       if (
         sourceAnchor === undefined ||
-        !activeScene.anchors.some((anchor) => Math.abs(anchor - sourceAnchor) < 0.001)
+        !projectedActiveScene.anchors.some((anchor) => Math.abs(anchor - sourceAnchor) < 0.001)
       ) {
         throw new Error("The selected lifetime end is not backed by a safe .py source anchor.");
       }

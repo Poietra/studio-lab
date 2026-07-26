@@ -59,7 +59,14 @@ function previewView(
   state: StudioPreviewRendererViewV1["state"],
   interactionGeometry: StudioPreviewRendererViewV1["interactionGeometry"] = null,
 ): StudioPreviewRendererViewV1 {
-  return { attachCanvas: vi.fn(), epoch: 0, interactionGeometry, sourceLabel: "verified fixture", state };
+  return {
+    attachCanvas: vi.fn(),
+    epoch: 0,
+    interactionGeometry,
+    sourceLabel: "verified fixture",
+    state,
+    verifiedSourceDuration: 2,
+  };
 }
 
 describe("StudioCanvas retained preview layer", () => {
