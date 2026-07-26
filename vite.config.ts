@@ -11,6 +11,9 @@ export default defineConfig(({ mode }) => {
     base: "./",
     build: {
       rolldownOptions: {
+        // The benchmark host entry ships only in explicit benchmark builds;
+        // the normal Studio production build never bundles it.
+        ...(env.POIETRA_BENCHMARK_BUILD === "1" ? { input: { benchmark: "benchmark.html", main: "index.html" } } : {}),
         output: {
           codeSplitting: {
             groups: [
@@ -39,9 +42,7 @@ export default defineConfig(({ mode }) => {
       tailwindcss(),
       openAiEditSuggestions({
         apiKey: env.OPENAI_API_KEY,
-        logPath: mode === "test" || env.POIETRA_AI_DEBUG_LOG === "off"
-          ? false
-          : env.POIETRA_AI_DEBUG_LOG || undefined,
+        logPath: mode === "test" || env.POIETRA_AI_DEBUG_LOG === "off" ? false : env.POIETRA_AI_DEBUG_LOG || undefined,
         model: env.POIETRA_OPENAI_MODEL,
       }),
       manimRenderPipeline({
