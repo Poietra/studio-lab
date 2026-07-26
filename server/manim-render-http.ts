@@ -12,6 +12,7 @@ import {
   type ManimSourceExport,
 } from "../src/render-pipeline/contracts";
 import { AmbiguousSourceSceneError } from "../src/render-pipeline/source-import";
+import { fastManimSnapshotQueryV1Schema, fastManimSnapshotRunRequestV1Schema } from "./fast-manim-snapshot-contract";
 import { HttpError, readJsonBody, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import type { ManimRenderManager } from "./manim-render-manager";
@@ -22,6 +23,7 @@ import type { ThumbnailAsset } from "./manim-thumbnail-cache";
 const RENDER_ROUTE = /^\/api\/manim\/renders\/([0-9a-f-]+)(?:\/(cancel|commit|discard|undo|video))?$/;
 const PROJECT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/(workspace|renders|export)$/;
 const PROJECT_THUMBNAIL_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/thumbnail(?:\/(status|generate))?$/;
+const PROJECT_SCENE_SNAPSHOT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/scene-snapshots$/;
 const PROJECT_ITEM_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})$/;
 type ManimApi = ManimRenderManager | ManimProjectRegistry;
 export type ManimRequestPolicy = Readonly<{
@@ -283,6 +285,29 @@ async function routeManimRequest(
       return;
     }
     throw new HttpError("Method not allowed.", 405);
+  }
+  const sceneSnapshotMatch = url.pathname.match(PROJECT_SCENE_SNAPSHOT_ROUTE);
+  if (sceneSnapshotMatch) {
+    const projectId = sceneSnapshotMatch[1]!;
+    if (request.method === "GET") {
+      const parsedQuery = fastManimSnapshotQueryV1Schema.safeParse({
+        sceneName: url.searchParams.get("sceneName"),
+        sourcePath: url.searchParams.get("sourcePath"),
+      });
+      if (!parsedQuery.success) {
+        throw new HttpError("Scene snapshot lookup requires sourcePath and sceneName query parameters.", 400);
+      }
+      sendJson(response, 200, await manager.sceneSnapshot(projectId, parsedQuery.data));
+      return;
+    }
+    if (request.method !== "POST") throw new HttpError("Method not allowed.", 405);
+    const parsed = fastManimSnapshotRunRequestV1Schema.safeParse(await readJsonBody(request, 16 * 1024));
+    if (!parsed.success) throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid Scene snapshot request.", 400);
+    if (parsed.data.projectId !== projectId) {
+      throw new HttpError("The request project does not match the project endpoint.", 409);
+    }
+    sendJson(response, 200, await manager.runSceneSnapshot(parsed.data, signal));
+    return;
   }
   const thumbnailMatch = url.pathname.match(PROJECT_THUMBNAIL_ROUTE);
   if (thumbnailMatch) {

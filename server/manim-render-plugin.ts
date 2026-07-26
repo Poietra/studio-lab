@@ -4,14 +4,8 @@ import { join, resolve } from "node:path";
 import type { Plugin } from "vite";
 
 import { sendJson } from "./http/json";
-import {
-  createConsoleJsonSink,
-  createStructuredLogger,
-} from "./logging/structured-logger";
-import {
-  parseManimCommand,
-  type ManimRenderPipelineOptions,
-} from "./manim-render-config";
+import { createConsoleJsonSink, createStructuredLogger } from "./logging/structured-logger";
+import { parseManimCommand, type ManimRenderPipelineOptions } from "./manim-render-config";
 import { handleManimRequest } from "./manim-render-http";
 import { PersistentManimProjectCatalog } from "./manim-project-catalog";
 import { ManimProjectRegistry } from "./manim-project-registry";
@@ -39,10 +33,15 @@ export function manimRenderPipeline(options: ManimRenderPipelineOptions = {}): P
         command: parseManimCommand(options.command),
         frame: {
           height: options.frameHeight ?? 8,
-          width: options.frameWidth ?? 14.222,
+          // Canonical Manim 16:9 frame width (128/9). The exact double
+          // matters: producers reject a frame that fails their camera
+          // normalization, so all snapshot configs must agree bit-for-bit.
+          width: options.frameWidth ?? 14.222222222222221,
         },
         logger,
         projects: seedProjects,
+        snapshotProducerCommand: options.snapshotProducerCommand,
+        snapshotProducerEnabled: options.snapshotProducerDevOptIn ?? false,
         thumbnailCacheRoot: join(realpathSync(dataRoot), "thumbnails"),
       });
     },

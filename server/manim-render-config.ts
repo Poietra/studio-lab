@@ -9,6 +9,8 @@ export type ManimRenderPipelineOptions = Readonly<{
   frameWidth?: number;
   projects?: readonly ManimProjectConfig[];
   projectRoot?: string;
+  snapshotProducerCommand?: readonly string[];
+  snapshotProducerDevOptIn?: boolean;
   workspaceDataRoot?: string;
 }>;
 
@@ -17,12 +19,27 @@ export function parseManimCommand(value: string | undefined): readonly string[] 
   if (!normalized) return ["manim"];
   if (normalized.startsWith("[")) {
     const parsed = JSON.parse(normalized) as unknown;
-    if (!Array.isArray(parsed) || parsed.length === 0 || !parsed.every((entry) => typeof entry === "string" && entry.length > 0)) {
+    if (
+      !Array.isArray(parsed) ||
+      parsed.length === 0 ||
+      !parsed.every((entry) => typeof entry === "string" && entry.length > 0)
+    ) {
       throw new Error("POIETRA_MANIM_COMMAND must be a non-empty JSON array of command arguments.");
     }
     return parsed;
   }
   return normalized.split(/\s+/);
+}
+
+/**
+ * The fast-manim snapshot producer has no default executable: until
+ * Poietra/fast-manim#4 ships an exporter, leaving this unset keeps the
+ * endpoint truthfully gated on the server-authoritative render fallback.
+ */
+export function parseFastManimSnapshotProducerCommand(value: string | undefined): readonly string[] | undefined {
+  const normalized = value?.trim();
+  if (!normalized) return undefined;
+  return parseManimCommand(normalized);
 }
 
 export function parseManimProjects(value: string | undefined): readonly ManimProjectConfig[] | undefined {
@@ -47,7 +64,10 @@ export function parseManimProjects(value: string | undefined): readonly ManimPro
     if (record.id !== undefined && (typeof record.id !== "string" || !MANIM_PROJECT_ID_PATTERN.test(record.id))) {
       throw new TypeError(`POIETRA_MANIM_PROJECTS[${index}].id must be an opaque lower-case identifier.`);
     }
-    if (record.name !== undefined && (typeof record.name !== "string" || !record.name.trim() || record.name.trim().length > 120)) {
+    if (
+      record.name !== undefined &&
+      (typeof record.name !== "string" || !record.name.trim() || record.name.trim().length > 120)
+    ) {
       throw new TypeError(`POIETRA_MANIM_PROJECTS[${index}].name must contain 1 to 120 characters.`);
     }
     return {

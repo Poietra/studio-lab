@@ -19,6 +19,8 @@ import {
 import { lowerCanonicalProgramBatchSource, ProgramLoweringError } from "../src/render-pipeline/source-lowering";
 import { evaluateWorkingState, programRecord } from "../src/studio/evaluator";
 import { STUDIO_STATE_VERSION } from "../src/studio/model";
+import type { FastManimSnapshotQueryV1, FastManimSnapshotRunRequestV1 } from "./fast-manim-snapshot-contract";
+import { FastManimSnapshotRunner } from "./fast-manim-snapshot-runner";
 import { HttpError } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import type { ManimProjectKind } from "./manim-project-catalog";
@@ -159,6 +161,7 @@ export class ManimRenderManager {
   private readonly renderTimeoutMs: number;
   private readonly sessionRetentionMs: number;
   private readonly sessions = new Map<string, RenderSession>();
+  private readonly snapshotRunner: FastManimSnapshotRunner;
   private readonly sourceStore: ManimSourceStore;
   private readonly thumbnailCache: ManimThumbnailCache;
   private thumbnailRefreshRequest: Promise<void> | null = null;
@@ -180,6 +183,9 @@ export class ManimRenderManager {
       projectRoot: string;
       renderTimeoutMs?: number;
       sessionRetentionMs?: number;
+      snapshotProducerCommand?: readonly string[];
+      snapshotProducerEnabled?: boolean;
+      snapshotTimeoutMs?: number;
       thumbnailCacheRoot?: string;
     }>,
   ) {
@@ -216,6 +222,15 @@ export class ManimRenderManager {
       options.sessionRetentionMs ?? DEFAULT_SESSION_RETENTION_MS,
       "Session retention",
     );
+    this.snapshotRunner = new FastManimSnapshotRunner({
+      command: options.snapshotProducerCommand ?? null,
+      enabled: options.snapshotProducerEnabled ?? false,
+      frame: this.frame,
+      logger: this.logger,
+      projectId: this.projectId,
+      projectRoot: this.projectRoot,
+      timeoutMs: options.snapshotTimeoutMs,
+    });
     this.thumbnailCache = new ManimThumbnailCache({
       cacheRoot: options.thumbnailCacheRoot ?? join(this.projectRoot, ".poietra", "thumbnails"),
       command: this.command,
@@ -243,6 +258,7 @@ export class ManimRenderManager {
       this.pendingRetainedSessions === 0 &&
       this.sessions.size === 0 &&
       !this.thumbnailCache.isBusy() &&
+      !this.snapshotRunner.busy &&
       this.thumbnailRefreshRequest === null &&
       this.thumbnailSlotRequest === null &&
       this.thumbnailStartRequest === null &&
@@ -938,6 +954,18 @@ export class ManimRenderManager {
     return session.videoPath;
   }
 
+  runSceneSnapshot(request: FastManimSnapshotRunRequestV1, signal?: AbortSignal) {
+    if (this.closing) throw new HttpError("The Manim render pipeline is shutting down.", 503);
+    if (request.projectId !== this.projectId) throw new HttpError("Configured Manim project not found.", 404);
+    return this.snapshotRunner.run(request, signal);
+  }
+
+  sceneSnapshot(projectId: string, query: FastManimSnapshotQueryV1) {
+    if (this.closing) throw new HttpError("The Manim render pipeline is shutting down.", 503);
+    if (projectId !== this.projectId) throw new HttpError("Configured Manim project not found.", 404);
+    return this.snapshotRunner.snapshot(query);
+  }
+
   private async closeResources() {
     this.commandAvailabilityAbort.abort();
     const pendingWorkspace = this.workspaceRequest;
@@ -952,6 +980,7 @@ export class ManimRenderManager {
         await rm(session.tempRoot, { force: true, recursive: true });
       }),
       thumbnailClose,
+      this.snapshotRunner.close(),
       ...(pendingWorkspace ? [pendingWorkspace] : []),
       ...(this.thumbnailRefreshRequest ? [this.thumbnailRefreshRequest] : []),
       ...(this.thumbnailSlotRequest ? [this.thumbnailSlotRequest] : []),

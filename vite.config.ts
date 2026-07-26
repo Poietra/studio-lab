@@ -3,7 +3,11 @@ import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv } from "vite";
 
 import { openAiEditSuggestions } from "./server/openai-edit-suggestions";
-import { manimRenderPipeline, parseManimProjects } from "./server/manim-render-pipeline";
+import {
+  manimRenderPipeline,
+  parseFastManimSnapshotProducerCommand,
+  parseManimProjects,
+} from "./server/manim-render-pipeline";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
@@ -39,9 +43,7 @@ export default defineConfig(({ mode }) => {
       tailwindcss(),
       openAiEditSuggestions({
         apiKey: env.OPENAI_API_KEY,
-        logPath: mode === "test" || env.POIETRA_AI_DEBUG_LOG === "off"
-          ? false
-          : env.POIETRA_AI_DEBUG_LOG || undefined,
+        logPath: mode === "test" || env.POIETRA_AI_DEBUG_LOG === "off" ? false : env.POIETRA_AI_DEBUG_LOG || undefined,
         model: env.POIETRA_OPENAI_MODEL,
       }),
       manimRenderPipeline({
@@ -50,6 +52,8 @@ export default defineConfig(({ mode }) => {
         frameWidth: env.POIETRA_MANIM_FRAME_WIDTH ? Number(env.POIETRA_MANIM_FRAME_WIDTH) : undefined,
         projects: parseManimProjects(env.POIETRA_MANIM_PROJECTS),
         projectRoot: env.POIETRA_MANIM_PROJECT_ROOT,
+        snapshotProducerCommand: parseFastManimSnapshotProducerCommand(env.POIETRA_FAST_MANIM_SNAPSHOT_COMMAND),
+        snapshotProducerDevOptIn: env.POIETRA_FAST_MANIM_SNAPSHOT_DEV_OPT_IN === "1",
         workspaceDataRoot: env.POIETRA_STUDIO_DATA_ROOT,
       }),
     ],
