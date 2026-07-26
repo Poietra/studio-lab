@@ -123,7 +123,7 @@ const imageAppearanceV1Schema = z
   })
   .strict();
 
-const sceneEntityV1Schema = z
+export const sceneEntityV1Schema = z
   .object({
     appearance: z.discriminatedUnion("kind", [imageAppearanceV1Schema, vectorAppearanceV1Schema]),
     geometry: sceneGeometryV1Schema,
@@ -221,6 +221,13 @@ export const sceneCameraViewV1Schema = z
   })
   .strict();
 
+export const sceneCameraV1Schema = z
+  .object({
+    background: rgbaColorV1Schema,
+    view: sceneCameraViewV1Schema,
+  })
+  .strict();
+
 const cameraChannelV1Schema = z
   .object({
     id: sourceIdentityV1Schema,
@@ -230,7 +237,7 @@ const cameraChannelV1Schema = z
   })
   .strict();
 
-const animationChannelV1Schema = z.discriminatedUnion("kind", [
+export const animationChannelV1Schema = z.discriminatedUnion("kind", [
   affineTransformChannelV1Schema,
   cameraChannelV1Schema,
   motionPathChannelV1Schema,
@@ -239,7 +246,7 @@ const animationChannelV1Schema = z.discriminatedUnion("kind", [
   pathTrimChannelV1Schema,
 ]);
 
-const sceneSourceV1Schema = z.discriminatedUnion("kind", [
+export const sceneSourceV1Schema = z.discriminatedUnion("kind", [
   z
     .object({
       editProgramVersion: z.literal(1),
@@ -258,7 +265,7 @@ const sceneSourceV1Schema = z.discriminatedUnion("kind", [
     .strict(),
 ]);
 
-const provenanceRecordV1Schema = z
+export const provenanceRecordV1Schema = z
   .object({
     evidence: z.array(evidenceV1Schema).max(64),
     id: sourceIdentityV1Schema,
@@ -266,7 +273,7 @@ const provenanceRecordV1Schema = z
   })
   .strict();
 
-const fidelityV1Schema = z.discriminatedUnion("kind", [
+export const fidelityV1Schema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("exact") }).strict(),
   z
     .object({
@@ -276,7 +283,7 @@ const fidelityV1Schema = z.discriminatedUnion("kind", [
     .strict(),
 ]);
 
-const sceneCapabilityV1Schema = z.enum([
+export const sceneCapabilityV1Schema = z.enum([
   "affine-transform-animation",
   "camera-animation",
   "cubic-path-geometry",
@@ -292,12 +299,7 @@ const sceneIrV1BaseSchema = z
   .object({
     animationChannels: z.array(animationChannelV1Schema).max(MAX_CHANNELS),
     assetManifest: assetManifestReferenceV1Schema,
-    camera: z
-      .object({
-        background: rgbaColorV1Schema,
-        view: sceneCameraViewV1Schema,
-      })
-      .strict(),
+    camera: sceneCameraV1Schema,
     coordinateSpace: z
       .object({
         cpuPrecision: z.literal("f64"),
@@ -324,8 +326,8 @@ const sceneIrV1BaseSchema = z
   .strict();
 
 type SceneIrV1Input = z.infer<typeof sceneIrV1BaseSchema>;
-type SceneEntityV1 = SceneIrV1Input["entities"][number];
-type AnimationChannelV1 = SceneIrV1Input["animationChannels"][number];
+export type SceneEntityV1 = SceneIrV1Input["entities"][number];
+export type AnimationChannelV1 = SceneIrV1Input["animationChannels"][number];
 
 function validateHierarchy(scene: SceneIrV1Input, context: z.RefinementCtx) {
   const parentById = new Map(scene.entities.map((entity) => [entity.id, entity.parentId]));
