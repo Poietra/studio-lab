@@ -354,11 +354,11 @@ export function StudioCanvas({
             const scaleUnknown = entity.geometry.scale.kind === "unknown";
             const dimensionsUnknown = entity.geometry.dimensions.kind === "unknown";
             const approximate = Object.values(entity.geometry).some((knowledge) => knowledge.kind === "unknown");
-            // While a fully correlated frame is presented, the hit-target
-            // geometry comes from the verified snapshot itself so interaction
-            // targets sit exactly where the WebGPU pixels draw the objects —
-            // which also supplies a known position for entities whose semantic
-            // projection could not resolve one, keeping them selectable.
+            // A provider may share a verified IR entity ID with Studio's
+            // source identity. Only then can its hit target follow the WebGPU
+            // geometry exactly. Real fast-manim snapshots do not yet carry
+            // that source-to-runtime identity map, so a miss deliberately
+            // keeps the semantic geometry authoritative.
             const presentedGeometry =
               presentingCanvasPixels && entity.sourceIdentity.kind === "known"
                 ? (preview?.interactionGeometry?.get(entity.sourceIdentity.value) ?? null)

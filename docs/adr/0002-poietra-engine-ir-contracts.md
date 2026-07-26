@@ -439,13 +439,14 @@ Meeting a timing budget cannot override correctness, asset integrity, visual par
 or fallback failure. The experiment produces a Go, conditional Go, or No-Go update
 to this ADR before production migration.
 
-## Interim Go/No-Go decision (2026-07-25)
+## Interim Go/No-Go decision (updated 2026-07-26)
 
-**Conditional Go for continuing the bounded Rust/WASM/WGPU experiment; No-Go for
-switching the production Studio preview to WebGPU.** This decision was first made
-against the solid-fill slice through commit `b24e41c`; the evidence table is kept
-current with bounded follow-up slices. It does not claim that the full v1 capability
-set or the production migration criteria are complete.
+**Conditional Go for the explicit, verified static-Scene integration experiment;
+No-Go for calling it visible-preview adoption evidence, making it Studio's default
+renderer, or exposing Python execution to untrusted SaaS traffic.** This decision
+was first made against the solid-fill slice through commit `b24e41c`; the evidence
+table is kept current with bounded follow-up slices. It does not claim that the full
+v1 capability set or the production migration criteria are complete.
 
 The following evidence is reproducible in this repository:
 
@@ -461,9 +462,9 @@ The following evidence is reproducible in this repository:
 | initial shared snapshot | met for the fixture | 2,414 encoded bytes, below the 5 MiB budget |
 | fixture breadth and visual parity | partial | the catalog fixes 15 workload IDs, but only one fixture currently executes through both GPU backends; SSIM and pixel-difference corpus reports do not yet exist |
 | renderer capability coverage | partial | solid convex cubic fills and static untrimmed canonical Line strokes work; broader stroke, image, multiple subpaths, other open paths, and non-convex fill remain truthful fallbacks |
-| Studio preview integration | not met | the current workspace payload lacks complete appearance, paint-order, camera, and asset evidence, so switching the visible editor would require invented data |
+| Studio preview integration | partial for the opt-in static profile | `?previewRenderer=server` selects a real project source and Scene, installs its verified server snapshot once, and accepts only exactly correlated retained frame acknowledgements while the semantic editor stays mounted; exact GPU texture readback is covered, but a visible browser-compositor golden on a named real-GPU host remains #78 evidence and verified source-to-runtime hit geometry remains #91 |
 | incremental edit transfer | partial | a Studio-only, 256 KiB, stale-revision-safe atomic delta contract is verified in TypeScript; Worker/WASM still receives complete replacement snapshots |
-| fast-manim bridge | partial at the server boundary | strict correlation, 5 MiB intake, manifest/provenance checks, and server-owned snapshot sealing are implemented; RenderTrace v0 still cannot produce the complete `SceneIrV1` evidence |
+| fast-manim bridge | met for the bounded static profile | the real exporter emits complete camera, paint-order, appearance, and geometry evidence for a filled Circle, filled Rectangle, and canonical stroked Line; the server executes it with bounded local controls, verifies and seals it, and unsupported or failed results fall back as a whole Scene; this profile still fixes duration at one second, while variable runtime timing remains #75 and Poietra/fast-manim#7 |
 | frame, scrub, and cold-start latency | instrumented, decision evidence not met | an opt-in browser harness records 20 cold starts and warm/scrub acknowledgement p95, but no reference-host report for evaluate-plus-submit or input-to-present is checked in |
 | browser memory budget | unmeasured | no loaded-baseline/peak-memory report has been checked in |
 
@@ -477,18 +478,25 @@ decision-grade performance evidence.
 Production migration remains blocked until independent follow-up work provides:
 
 1. executable broader-stroke, image, transform, camera, animation, and stress
-   fixtures with native/browser visual-diff reports;
+   fixtures with native/browser visual-diff reports (#72–#78);
 2. checked-in reference-host reports for every latency, memory, transfer, and cold
-   start budget;
+   start budget, including retained preparation/buffers and removal of normal-path
+   serialized GPU error-scope waits (#69–#71, #78, #86);
 3. an incremental Scene transaction/delta protocol with atomic replacement and
-   stale-revision tests;
-4. a Studio `PreviewRenderer` host that keeps the semantic DOM editor mounted and
-   switches only after an exactly correlated WebGPU frame is presented; and
-5. explicit appearance, paint-order, camera, geometry, and asset evidence from the
-   Studio-native producer or a server-side fast-manim snapshot exporter.
+   stale-revision tests (#67); and
+4. a production fail-closed OS sandbox for arbitrary Python execution, with
+   immutable request inputs, network/credential/host isolation, hard resource
+   limits, descendant reaping, and multi-tenant adversarial evidence (#80–#85).
 
-Until all five are satisfied, WebGPU remains optional experimental preview work and
-the existing semantic/server paths remain authoritative fallbacks.
+The previously listed `PreviewRenderer` host and explicit server-side fast-manim
+snapshot exporter are implemented for the narrow static profile. The host's visible
+real-GPU compositor evidence remains open, and these pieces do not satisfy the
+remaining capability, visual-parity, performance, or sandbox gates.
+
+Until the remaining gates are satisfied, WebGPU remains an explicit experimental
+client preview. The semantic preview remains the default fallback, and server-side
+video rendering/export remains authoritative; presenting a client frame never
+asserts that a final render or source commit succeeded.
 
 ## Consequences
 
