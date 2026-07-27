@@ -59,6 +59,7 @@ type WasmBindingsV1 = {
 type ProofRequestV1 = Readonly<{
   kind: "prove-frame";
   requestJson: ArrayBuffer;
+  samplePoints?: Readonly<Record<string, readonly [number, number]>>;
   snapshotJson: ArrayBuffer;
   viewport: Readonly<{ heightPx: number; widthPx: number }>;
   wasmModuleUrl: string;
@@ -203,7 +204,7 @@ function installReadbackHooks(canvas: OffscreenCanvas, viewport: ProofRequestV1[
       if (scheduledNativePopRejection) throw new Error("A native pop rejection is already scheduled.");
       scheduledNativePopRejection = { call: errorScopePopCalls + offset, error };
     },
-    readPixels: async () => {
+    readPixels: async (samplePoints: Readonly<Record<string, readonly [number, number]>> = {}) => {
       if (!readback || !surfaceFormat) throw new Error("The WASM renderer did not submit a readable surface frame.");
       await readback.mapAsync(GPU_MAP_MODE_READ);
       const mapped = new Uint8Array(readback.getMappedRange());
@@ -235,6 +236,7 @@ function installReadbackHooks(canvas: OffscreenCanvas, viewport: ProofRequestV1[
         greenStrokeCenter: pixelAt(50, 25),
         nonBlackBounds: bounds,
         redCenter: pixelAt(70, 45),
+        samples: Object.fromEntries(Object.entries(samplePoints).map(([name, [x, y]]) => [name, pixelAt(x, y)])),
         surfaceFormat,
       };
       readback.unmap();
@@ -540,7 +542,7 @@ self.addEventListener("message", (event: MessageEvent<WorkerRequestV1>) => {
     hooks.arm();
     const responseJson = await engine.render(new Uint8Array(request.requestJson));
     const response = decodeJson(responseJson);
-    const pixels = await hooks.readPixels();
+    const pixels = await hooks.readPixels(request.samplePoints);
     self.postMessage({ kind: "proof", pixels, response });
   })().catch((error: unknown) => {
     self.postMessage({ kind: "error", message: error instanceof Error ? error.message : String(error) });
