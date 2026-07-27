@@ -1,8 +1,5 @@
 use std::cmp::Ordering;
-use std::fmt;
-use std::mem::size_of;
 use std::ops::Range;
-use std::sync::OnceLock;
 
 use poietra_scene_ir::{
     AffineTransformV1, CubicSegmentV1, CubicSubpathV1, RenderCameraV1, RenderDrawV1,
@@ -65,41 +62,6 @@ pub enum PrepareFrameErrorV1 {
         "draw {draw_id} exceeded the adaptive tessellation subdivision depth of {maximum_depth}"
     )]
     TessellationDepthLimit { draw_id: String, maximum_depth: u8 },
-}
-
-/// Existing V1 interleaved vertex view retained for API compatibility.
-///
-/// The renderer-neutral geometry source is [`PreparedGeometryVertexV1`]; this
-/// view is projected lazily and is never part of a geometry cache key.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PreparedVertexV1 {
-    position: [f32; 2],
-    premultiplied_linear_color: [f32; 4],
-}
-
-/// Maximum element-byte payload requested by the lazy V1 interleaved
-/// compatibility view (allocator bookkeeping is outside this ceiling).
-///
-/// The source geometry ceiling is expressed as a vertex count. Deriving this
-/// byte ceiling with checked arithmetic keeps the compatibility allocation
-/// bounded even if the vertex layout changes in a future revision.
-pub const MAX_COMPATIBILITY_VERTEX_BYTES_V1: usize =
-    match MAX_PREPARED_VERTICES_V1.checked_mul(size_of::<PreparedVertexV1>()) {
-        Some(bytes) => bytes,
-        None => panic!("compatibility vertex byte ceiling overflowed usize"),
-    };
-const _: () = assert!(MAX_COMPATIBILITY_VERTEX_BYTES_V1 <= 24 * 1024 * 1024);
-
-impl PreparedVertexV1 {
-    #[must_use]
-    pub const fn position(&self) -> [f32; 2] {
-        self.position
-    }
-
-    #[must_use]
-    pub const fn premultiplied_linear_color(&self) -> [f32; 4] {
-        self.premultiplied_linear_color
-    }
 }
 
 /// Position-only prepared geometry. Material interleaving is deferred to the
@@ -182,37 +144,12 @@ pub struct OrderedDrawPlanV1 {
 }
 
 /// Complete, fail-closed CPU output consumed by [`crate::WgpuPaintRendererV1`].
+#[derive(Debug, PartialEq)]
 pub struct PreparedFrameV1 {
-    compatibility_vertices: OnceLock<Vec<PreparedVertexV1>>,
     geometry: PreparedGeometryPlanV1,
     materials: PreparedMaterialPlanV1,
     ordered_draws: OrderedDrawPlanV1,
     viewport: [u32; 2],
-}
-
-#[allow(
-    clippy::missing_fields_in_debug,
-    reason = "the lazy compatibility cache is intentionally not observable"
-)]
-impl fmt::Debug for PreparedFrameV1 {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("PreparedFrameV1")
-            .field("geometry", &self.geometry)
-            .field("materials", &self.materials)
-            .field("ordered_draws", &self.ordered_draws)
-            .field("viewport", &self.viewport)
-            .finish()
-    }
-}
-
-impl PartialEq for PreparedFrameV1 {
-    fn eq(&self, other: &Self) -> bool {
-        self.geometry == other.geometry
-            && self.materials == other.materials
-            && self.ordered_draws == other.ordered_draws
-            && self.viewport == other.viewport
-    }
 }
 
 impl PreparedFrameV1 {
@@ -262,22 +199,6 @@ impl PreparedFrameV1 {
         self.geometry.tessellation_calls
     }
 
-    /// Returns the legacy position-and-material vertex view.
-    ///
-    /// This view is projected only on first access, retained for the lifetime
-    /// of this prepared frame, and discarded with the frame. Render uploads use
-    /// the position-only geometry and material plans directly.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the bounded compatibility allocation cannot be reserved or
-    /// if private prepared-plan invariants have been violated.
-    #[must_use]
-    pub fn vertices(&self) -> &[PreparedVertexV1] {
-        self.compatibility_vertices
-            .get_or_init(|| project_compatibility_vertices(self))
-    }
-
     #[must_use]
     pub const fn viewport(&self) -> [u32; 2] {
         self.viewport
@@ -286,7 +207,6 @@ impl PreparedFrameV1 {
     #[cfg(test)]
     pub(crate) fn triangle_for_upload_test() -> Self {
         Self {
-            compatibility_vertices: OnceLock::new(),
             geometry: PreparedGeometryPlanV1 {
                 indices: vec![0, 1, 2],
                 tessellation_calls: 1,
@@ -355,52 +275,6 @@ impl OrderedDrawPlanV1 {
     pub fn draws(&self) -> &[PreparedDrawV1] {
         &self.draws
     }
-}
-
-fn project_compatibility_vertices(frame: &PreparedFrameV1) -> Vec<PreparedVertexV1> {
-    let vertex_count = frame.geometry.vertices.len();
-    let Some(projected_bytes) = vertex_count.checked_mul(size_of::<PreparedVertexV1>()) else {
-        panic!("compatibility vertex byte accounting overflowed usize");
-    };
-    assert!(
-        projected_bytes <= MAX_COMPATIBILITY_VERTEX_BYTES_V1,
-        "compatibility vertex projection exceeded its byte ceiling"
-    );
-
-    let mut projected = Vec::new();
-    projected
-        .try_reserve_exact(vertex_count)
-        .unwrap_or_else(|_| panic!("could not reserve the bounded compatibility vertex view"));
-    let mut next_vertex = 0usize;
-    for draw in &frame.ordered_draws.draws {
-        let material = frame
-            .material_for_draw(draw)
-            .expect("prepared draw must reference a material");
-        let start =
-            usize::try_from(draw.vertex_range.start).expect("prepared vertex start must fit usize");
-        let end =
-            usize::try_from(draw.vertex_range.end).expect("prepared vertex end must fit usize");
-        assert!(
-            start == next_vertex && end >= start,
-            "prepared draw vertex ranges must be contiguous and non-decreasing"
-        );
-        let vertices = frame
-            .geometry
-            .vertices
-            .get(start..end)
-            .expect("prepared vertex range must be in bounds");
-        projected.extend(vertices.iter().map(|vertex| PreparedVertexV1 {
-            position: vertex.position,
-            premultiplied_linear_color: material.premultiplied_linear_color,
-        }));
-        next_vertex = end;
-    }
-    assert_eq!(
-        projected.len(),
-        vertex_count,
-        "prepared draw ranges must cover every geometry vertex exactly once"
-    );
-    projected
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1309,7 +1183,6 @@ pub fn tessellate_validated_frame_v1(
     }
 
     Ok(PreparedFrameV1 {
-        compatibility_vertices: OnceLock::new(),
         geometry: PreparedGeometryPlanV1 {
             indices,
             tessellation_calls,
@@ -1327,43 +1200,6 @@ pub fn tessellate_validated_frame_v1(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn legacy_vertex_view_has_a_checked_layout_derived_ceiling() {
-        assert_eq!(size_of::<PreparedVertexV1>(), 24);
-        assert_eq!(MAX_COMPATIBILITY_VERTEX_BYTES_V1, 24_000_000);
-
-        let frame = PreparedFrameV1::triangle_for_upload_test();
-        let projected_bytes = frame
-            .vertices()
-            .len()
-            .checked_mul(size_of::<PreparedVertexV1>())
-            .expect("test projection byte count must fit usize");
-        assert!(projected_bytes <= MAX_COMPATIBILITY_VERTEX_BYTES_V1);
-    }
-
-    #[test]
-    fn prepared_frame_debug_is_stable_and_does_not_observe_the_lazy_compatibility_cache() {
-        let frame = PreparedFrameV1::triangle_for_upload_test();
-        assert!(frame.compatibility_vertices.get().is_none());
-
-        let before_projection = format!("{frame:?}");
-        assert!(frame.compatibility_vertices.get().is_none());
-        assert!(!before_projection.contains("compatibility_vertices"));
-        for semantic_evidence in [
-            "geometry: PreparedGeometryPlanV1",
-            "materials: PreparedMaterialPlanV1",
-            "ordered_draws: OrderedDrawPlanV1",
-            "draw:test",
-            "viewport: [160, 90]",
-        ] {
-            assert!(before_projection.contains(semantic_evidence));
-        }
-
-        assert_eq!(frame.vertices().len(), 3);
-        assert!(frame.compatibility_vertices.get().is_some());
-        assert_eq!(format!("{frame:?}"), before_projection);
-    }
 
     #[test]
     fn canonical_line_accepts_real_fast_manim_single_ulp_controls() {
