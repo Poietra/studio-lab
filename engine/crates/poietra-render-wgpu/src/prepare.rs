@@ -1271,7 +1271,7 @@ fn fill_output_limits(
             maximum_vertices: MAX_PREPARED_VERTICES_V1,
         });
     };
-    if remaining_vertices == 0 {
+    if remaining_vertices < 3 {
         return Err(PrepareFrameErrorV1::TessellationVertexLimit {
             draw_id: draw_id.to_owned(),
             maximum_vertices: MAX_PREPARED_VERTICES_V1,
@@ -1565,7 +1565,7 @@ mod tests {
     }
 
     #[test]
-    fn fill_flattening_stops_at_the_existing_prepared_vertex_limit() {
+    fn fill_flattening_reports_the_supplied_point_limit() {
         let start = poietra_scene_ir::PointV1 { x: 0.0, y: 0.0 };
         let middle = poietra_scene_ir::PointV1 { x: 1.0, y: 0.0 };
         let end = poietra_scene_ir::PointV1 { x: 2.0, y: 0.0 };
@@ -1630,6 +1630,80 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn bounded_fill_builder_aborts_without_partial_output() {
+        assert_eq!(MAX_FILL_OUTPUT_VERTICES_PER_DRAW_V1, 65_536);
+        let retained_vertex = lyon_point(9.0, 9.0);
+        let retained_indices = [0, 0, 0];
+        let mut output = BoundedFillGeometryV1::new(5);
+        output.vertices.push(retained_vertex);
+        output.indices.extend_from_slice(&retained_indices);
+        output.index_limit_exceeded = true;
+        let mut tessellator = FillTessellator::new();
+        let options = FillOptions::even_odd().with_tolerance(f32::EPSILON);
+        let mut builder = tessellator.builder(&options, &mut output);
+        builder.begin(lyon_point(-1.0, -1.0));
+        builder.line_to(lyon_point(1.0, 1.0));
+        builder.line_to(lyon_point(-1.0, 1.0));
+        builder.line_to(lyon_point(1.0, -1.0));
+        builder.end(true);
+
+        let build_error = builder
+            .build()
+            .expect_err("fixture must hit the output cap");
+        assert!(matches!(
+            &build_error,
+            TessellationError::GeometryBuilder(GeometryBuilderError::TooManyVertices)
+        ));
+        assert!(matches!(
+            fill_tessellation_error(
+                &build_error,
+                "draw:output-limit",
+                MAX_FILL_OUTPUT_VERTICES_PER_DRAW_V1,
+            ),
+            PrepareFrameErrorV1::TessellationVertexLimit {
+                draw_id,
+                maximum_vertices: MAX_FILL_OUTPUT_VERTICES_PER_DRAW_V1,
+            } if draw_id == "draw:output-limit"
+        ));
+        assert_eq!(output.vertices, [retained_vertex]);
+        assert_eq!(output.indices, retained_indices);
+        assert!(!output.index_limit_exceeded);
+
+        output.maximum_vertices = 8;
+        let mut retry = tessellator.builder(&options, &mut output);
+        retry.begin(lyon_point(0.0, 0.0));
+        retry.line_to(lyon_point(1.0, 0.0));
+        retry.line_to(lyon_point(0.0, 1.0));
+        retry.end(true);
+        retry.build().expect("builder must be reusable after abort");
+        assert_eq!(output.vertices.len(), 4);
+        assert_eq!(output.indices.len(), 6);
+    }
+
+    #[test]
+    fn fill_output_limit_preserves_one_triangle_or_reports_the_global_cap() {
+        assert_eq!(
+            fill_output_limits(MAX_PREPARED_VERTICES_V1 - 3, "draw:limit")
+                .expect("one triangle must fit"),
+            (3, MAX_PREPARED_VERTICES_V1),
+        );
+        for prepared_vertices in [
+            MAX_PREPARED_VERTICES_V1 - 2,
+            MAX_PREPARED_VERTICES_V1 - 1,
+            MAX_PREPARED_VERTICES_V1,
+            MAX_PREPARED_VERTICES_V1 + 1,
+        ] {
+            assert!(matches!(
+                fill_output_limits(prepared_vertices, "draw:limit"),
+                Err(PrepareFrameErrorV1::TessellationVertexLimit {
+                    maximum_vertices: MAX_PREPARED_VERTICES_V1,
+                    ..
+                })
+            ));
+        }
     }
 
     #[test]
