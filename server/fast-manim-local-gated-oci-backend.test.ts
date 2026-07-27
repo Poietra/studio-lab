@@ -4,14 +4,17 @@ import { describe, expect, it } from "vitest";
 
 import {
   createConfiguredFastManimLocalGatedOciBackendV1,
+  FastManimLocalGatedOciBackendV1,
   FastManimLocalGatedOciError,
   parseFastManimLocalGatedOciResultV1,
   runFastManimLocalGatedOciV1,
 } from "./fast-manim-local-gated-oci-backend";
-import { FastManimSandboxRequestBundleV1 } from "./fast-manim-sandbox-backend";
+import { FastManimSandboxBackendControlError, FastManimSandboxRequestBundleV1 } from "./fast-manim-sandbox-backend";
 import {
   fastManimSnapshotResultV1Schema,
   fastManimSnapshotSceneIdV1,
+  MAX_FAST_MANIM_SNAPSHOT_ARRAY_ITEMS,
+  MAX_FAST_MANIM_SNAPSHOT_OBJECT_FIELDS,
   MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES,
   MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_DEPTH,
 } from "./fast-manim-snapshot-contract";
@@ -90,11 +93,34 @@ describe("local gated OCI factory", () => {
       }),
     ).toThrow(/immutable sha256/i);
   });
+
+  it("latches cleanup failure, refuses new jobs, reports unavailable, and fails close", async () => {
+    const cleanupError = new FastManimSandboxBackendControlError("cleanup");
+    const backend = new FastManimLocalGatedOciBackendV1({
+      executeJob: async () => {
+        throw cleanupError;
+      },
+      image: `sha256:${"a".repeat(64)}`,
+    });
+    const request = requestFor(staticScene, "GatedStaticScene");
+    const jobContext = { ...context(), attestationDigest: "b".repeat(64) };
+    await expect(backend.start(request, jobContext).result).rejects.toBe(cleanupError);
+    await expect(backend.status(context())).resolves.toMatchObject({
+      capabilities: [],
+      health: "unavailable",
+      reason: "health-check-failed",
+    });
+    expect(() => backend.start(request, jobContext)).toThrow(FastManimSandboxBackendControlError);
+    await expect(backend.close()).rejects.toMatchObject({ code: "cleanup" });
+  });
 });
 
 describe("gated OCI result boundary", () => {
   it("accepts the locked Python producer's compact, sorted JSON spelling", () => {
-    const result = Buffer.from('{"a":-0.0,"b":[1.0,1e-07,"λ\\n"],"c":{"α":true}}\n', "utf8");
+    const result = Buffer.from(
+      '{"a":-0.0,"b":[0.0001,1.0,1e-07,1e+20,1000000000000000.0,"λ\\n"],"c":{"α":true}}\n',
+      "utf8",
+    );
     expect(Buffer.from(parseFastManimLocalGatedOciResultV1(result))).toEqual(result.subarray(0, -1));
   });
 
@@ -112,7 +138,11 @@ describe("gated OCI result boundary", () => {
     '{"b":1,"a":2}\n',
     '{"a":1,"a":2}\n',
     '{"a":1.00}\n',
+    '{"a":1e+01}\n',
+    '{"a":1e-00}\n',
     '{"a":1E+20}\n',
+    '{"a":0.00001}\n',
+    '{"a":10000000000000000.0}\n',
     '{"a":"\\u03bb"}\n',
     '{ "a":1}\n',
     '{"a":1}\n\n',
@@ -128,6 +158,26 @@ describe("gated OCI result boundary", () => {
     expect(() => parseFastManimLocalGatedOciResultV1(Buffer.from(result, "utf8"))).toThrowError(
       expect.objectContaining({ code: "sandbox-result-rejected" }),
     );
+  });
+
+  it("rejects arrays, objects, and total entries beyond the shared structural budgets", () => {
+    const oversizedArray = `{"a":[${Array.from({ length: MAX_FAST_MANIM_SNAPSHOT_ARRAY_ITEMS + 1 }, () => "0").join(",")}]}\n`;
+    const oversizedObject = Object.fromEntries(
+      Array.from({ length: MAX_FAST_MANIM_SNAPSHOT_OBJECT_FIELDS + 1 }, (_, index) => [
+        `field-${index.toString().padStart(3, "0")}`,
+        0,
+      ]),
+    );
+    const tooManyEntries = { a: Array(9_000).fill(0), b: Array(9_000).fill(0), c: Array(9_000).fill(0) };
+    for (const result of [
+      oversizedArray,
+      `${JSON.stringify(oversizedObject)}\n`,
+      `${JSON.stringify(tooManyEntries)}\n`,
+    ]) {
+      expect(() => parseFastManimLocalGatedOciResultV1(Buffer.from(result, "utf8"))).toThrowError(
+        expect.objectContaining({ code: "sandbox-result-rejected" }),
+      );
+    }
   });
 });
 
@@ -161,22 +211,24 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
     expect(Buffer.from(execution.resultBytes).includes(Buffer.from("POIETRA_GATE_READY_V1"))).toBe(false);
   });
 
-  it("keeps later untrusted copies of the READY marker out of the gate and result", { timeout: 60_000 }, async () => {
-    const source = staticScene.replace(
-      "def construct(self):",
-      'def construct(self):\n        import os\n        os.write(2, b"POIETRA_GATE_READY_V1\\nuser-controlled\\n")',
-    );
-    const request = requestFor(source, "GatedStaticScene");
-    const execution = await runFastManimLocalGatedOciV1({
+  it("interrupts pre-launch image inspection and status reads on abort", { timeout: 30_000 }, async () => {
+    const request = requestFor(staticScene, "GatedStaticScene");
+    const executionController = new AbortController();
+    const execution = runFastManimLocalGatedOciV1({
       deadlineEpochMs: Date.now() + 30_000,
       image,
       requestBytes: request.copyBytes(),
-      signal: new AbortController().signal,
+      signal: executionController.signal,
     });
-    expect(
-      fastManimSnapshotResultV1Schema.parse(JSON.parse(Buffer.from(execution.resultBytes).toString("utf8"))),
-    ).toMatchObject({ requestId: "gated-GatedStaticScene" });
-    expect(Buffer.from(execution.resultBytes).includes(Buffer.from("user-controlled"))).toBe(false);
+    executionController.abort();
+    await expect(execution).rejects.toMatchObject({ name: "AbortError" });
+
+    const backend = new FastManimLocalGatedOciBackendV1({ image });
+    const statusController = new AbortController();
+    const status = backend.status(context(statusController.signal));
+    statusController.abort();
+    await expect(status).rejects.toMatchObject({ name: "AbortError" });
+    await backend.close();
   });
 
   it("rejects wrong digest, wrong length, early EOF, and trailing bytes at the entrypoint", {

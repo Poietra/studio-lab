@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -9,6 +9,7 @@ import {
   FAST_MANIM_SANDBOX_STATUS_SCHEMA_V1,
   FAST_MANIM_SANDBOX_STATUS_VERSION_V1,
   FastManimSandboxBackendControlError,
+  fastManimSandboxBackendControlErrorCode,
   type FastManimSandboxBackendFailureCodeV1,
   type FastManimSandboxBackendResultV1,
   type FastManimSandboxBackendStatusV1,
@@ -24,8 +25,12 @@ import {
   verifyFastManimSandboxRequestBundleV1,
 } from "./fast-manim-sandbox-backend";
 import {
+  MAX_FAST_MANIM_SNAPSHOT_ARRAY_ITEMS,
+  MAX_FAST_MANIM_SNAPSHOT_OBJECT_FIELDS,
   MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES,
   MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_DEPTH,
+  MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_ENTRIES,
+  MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_VALUES,
 } from "./fast-manim-snapshot-contract";
 import { abortError } from "./fast-manim-snapshot-producer-process";
 
@@ -33,6 +38,7 @@ const DOCKER = "/usr/bin/docker";
 const DOCKER_ENVIRONMENT = Object.freeze({ PATH: "/usr/bin:/bin" });
 const IMAGE_ID = /^sha256:[a-f0-9]{64}$/;
 const CONTAINER_ID = /^[a-f0-9]{64}$/;
+const CONTAINER_NAME = /^poietra-gated-[a-f0-9]{32}$/;
 const GATE_READY = Buffer.from("POIETRA_GATE_READY_V1\n", "ascii");
 const GATE_MAGIC = Buffer.from("POIETR1\0", "ascii");
 const GATE_HEADER_BYTES = 48;
@@ -125,6 +131,7 @@ type ContainerInspection = Readonly<{
   Id?: unknown;
   Image?: unknown;
   Mounts?: unknown;
+  Name?: unknown;
   State?: { Pid?: unknown; Running?: unknown };
 }>;
 
@@ -226,7 +233,9 @@ function pythonCanonicalJsonString(value: string) {
 
 class PythonCanonicalJsonReader {
   readonly #text: string;
+  #entries = 0;
   #offset = 0;
+  #values = 0;
 
   constructor(text: string) {
     this.#text = text;
@@ -234,13 +243,17 @@ class PythonCanonicalJsonReader {
 
   readObjectDocument() {
     if (this.#text[0] !== "{") rejectResult("The gated OCI result is not a JSON object.");
-    this.#readObject(1);
+    this.#readObject(0);
     if (this.#offset !== this.#text.length) rejectResult("The gated OCI result has trailing JSON bytes.");
   }
 
   #readValue(depth: number) {
     if (depth > MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_DEPTH) {
       rejectResult("The gated OCI result exceeds its JSON nesting budget.");
+    }
+    this.#values += 1;
+    if (this.#values > MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_VALUES) {
+      rejectResult("The gated OCI result exceeds its JSON value budget.");
     }
     const character = this.#text[this.#offset];
     if (character === "{") this.#readObject(depth);
@@ -259,8 +272,14 @@ class PythonCanonicalJsonReader {
       return;
     }
     let previousKey: string | undefined;
+    let fields = 0;
     while (true) {
       const key = this.#readString();
+      fields += 1;
+      if (fields > MAX_FAST_MANIM_SNAPSHOT_OBJECT_FIELDS) {
+        rejectResult("The gated OCI result object exceeds its field budget.");
+      }
+      this.#addEntry();
       if (previousKey !== undefined && compareUnicodeCodePoints(previousKey, key) >= 0) {
         rejectResult("The gated OCI result object keys are not unique and sorted.");
       }
@@ -281,7 +300,13 @@ class PythonCanonicalJsonReader {
       this.#offset += 1;
       return;
     }
+    let items = 0;
     while (true) {
+      items += 1;
+      if (items > MAX_FAST_MANIM_SNAPSHOT_ARRAY_ITEMS) {
+        rejectResult("The gated OCI result array exceeds its item budget.");
+      }
+      this.#addEntry();
       this.#readValue(depth + 1);
       if (this.#text[this.#offset] === "]") {
         this.#offset += 1;
@@ -333,9 +358,42 @@ class PythonCanonicalJsonReader {
     const start = this.#offset;
     while (/[+\-.0-9Ee]/.test(this.#text[this.#offset] ?? "")) this.#offset += 1;
     const raw = this.#text.slice(start, this.#offset);
-    const canonicalNumber = /^-?(?:0|[1-9]\d*)(?:\.(?:0|\d*[1-9]))?(?:e[+-](?:0\d|[1-9]\d+))?$/;
-    if (!canonicalNumber.test(raw) || raw === "-0") {
+    const jsonNumber = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:e[+-]\d+)?$/;
+    let expected: string | undefined;
+    if (jsonNumber.test(raw) && !raw.includes(".") && !raw.includes("e")) {
+      try {
+        expected = BigInt(raw).toString(10);
+      } catch {
+        expected = undefined;
+      }
+    } else if (jsonNumber.test(raw)) {
+      const value = Number(raw);
+      const magnitude = Math.abs(value);
+      const scientific = magnitude !== 0 && (magnitude < 1e-4 || magnitude >= 1e16);
+      if (Number.isFinite(value) && scientific && raw.includes("e")) {
+        const [mantissa, exponent = ""] = value.toExponential().split("e");
+        const sign = exponent[0];
+        const digits = exponent.slice(1);
+        if ((sign === "+" || sign === "-") && /^\d+$/.test(digits)) {
+          expected = `${mantissa}e${sign}${digits.padStart(2, "0")}`;
+        }
+      } else if (Number.isFinite(value) && !scientific && !raw.includes("e")) {
+        if (Object.is(value, -0)) expected = "-0.0";
+        else {
+          const shortest = value.toString();
+          if (!shortest.includes("e")) expected = shortest.includes(".") ? shortest : `${shortest}.0`;
+        }
+      }
+    }
+    if (raw !== expected) {
       rejectResult("The gated OCI result contains a non-canonical JSON number.");
+    }
+  }
+
+  #addEntry() {
+    this.#entries += 1;
+    if (this.#entries > MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_ENTRIES) {
+      rejectResult("The gated OCI result exceeds its JSON container-entry budget.");
     }
   }
 
@@ -373,14 +431,21 @@ export function parseFastManimLocalGatedOciResultV1(bytes: Uint8Array) {
   return Uint8Array.from(body);
 }
 
-function docker(arguments_: readonly string[], timeoutMs = DOCKER_CONTROL_TIMEOUT_MS): Promise<DockerResult> {
+function docker(
+  arguments_: readonly string[],
+  timeoutMs = DOCKER_CONTROL_TIMEOUT_MS,
+  signal?: AbortSignal,
+): Promise<DockerResult> {
+  signal?.throwIfAborted();
   return new Promise((resolveRun, rejectRun) => {
     const child = spawn(DOCKER, arguments_, { env: DOCKER_ENVIRONMENT, stdio: ["ignore", "pipe", "pipe"] });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let bytes = 0;
     let settled = false;
-    const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
+    const onAbort = () => child.kill("SIGKILL");
+    signal?.addEventListener("abort", onAbort, { once: true });
+    const timer = setTimeout(() => child.kill("SIGKILL"), Math.max(1, timeoutMs));
     timer.unref();
     const capture = (target: Buffer[]) => (chunk: Buffer) => {
       bytes += chunk.byteLength;
@@ -393,13 +458,16 @@ function docker(arguments_: readonly string[], timeoutMs = DOCKER_CONTROL_TIMEOU
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      rejectRun(error);
+      signal?.removeEventListener("abort", onAbort);
+      rejectRun(signal?.aborted ? abortError() : error);
     });
     child.once("close", (code) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolveRun({ code: code ?? 1, stderr: Buffer.concat(stderr), stdout: Buffer.concat(stdout) });
+      signal?.removeEventListener("abort", onAbort);
+      if (signal?.aborted) rejectRun(abortError());
+      else resolveRun({ code: code ?? 1, stderr: Buffer.concat(stderr), stdout: Buffer.concat(stdout) });
     });
   });
 }
@@ -420,7 +488,13 @@ function parseSingleInspection(raw: Buffer): ContainerInspection {
   return parsed[0] as ContainerInspection;
 }
 
-function assertFixedContainer(inspection: ContainerInspection, image: string, containerId: string, running: boolean) {
+function assertFixedContainer(
+  inspection: ContainerInspection,
+  image: string,
+  containerId: string,
+  containerName: string,
+  running: boolean,
+) {
   const config = inspection.Config;
   const host = inspection.HostConfig;
   const environment = exactStringMap(config?.Env);
@@ -430,6 +504,7 @@ function assertFixedContainer(inspection: ContainerInspection, image: string, co
   const valid =
     inspection.Id === containerId &&
     inspection.Image === image &&
+    inspection.Name === `/${containerName}` &&
     config?.Image === image &&
     sameArray(config?.Entrypoint, FIXED_ENTRYPOINT) &&
     sameArray(config?.Cmd, FIXED_TARGET) &&
@@ -486,16 +561,16 @@ function assertFixedContainer(inspection: ContainerInspection, image: string, co
   if (!valid) throw new FastManimLocalGatedOciError("sandbox-execution-failed", "The OCI job configuration drifted.");
 }
 
-async function inspectContainer(containerId: string) {
-  const inspected = await docker(["container", "inspect", containerId]);
+async function inspectContainer(containerId: string, timeoutMs = DOCKER_CONTROL_TIMEOUT_MS, signal?: AbortSignal) {
+  const inspected = await docker(["container", "inspect", containerId], timeoutMs, signal);
   if (inspected.code !== 0) {
     throw new FastManimLocalGatedOciError("sandbox-execution-failed", "Docker could not inspect the OCI job.");
   }
   return parseSingleInspection(inspected.stdout);
 }
 
-async function assertTrustedImage(image: string) {
-  const inspected = await docker(["image", "inspect", image]);
+async function assertTrustedImage(image: string, timeoutMs = DOCKER_CONTROL_TIMEOUT_MS, signal?: AbortSignal) {
+  const inspected = await docker(["image", "inspect", image], timeoutMs, signal);
   if (inspected.code !== 0) throw new Error("The immutable local OCI image is unavailable.");
   const imageInspection = parseSingleInspection(inspected.stdout);
   const labels = imageInspection.Config?.Labels;
@@ -522,14 +597,56 @@ function encodeRequestWire(requestBytes: Uint8Array) {
   return Buffer.concat([header, Buffer.from(requestBytes)]);
 }
 
-async function inspectRunningEvidence(containerId: string, image: string) {
-  const inspection = await inspectContainer(containerId);
-  assertFixedContainer(inspection, image, containerId, true);
+type FastManimLocalGatedOciCleanupEvidenceV1 = Readonly<{
+  cgroup?: string;
+  pid: number;
+  startTime?: string;
+}>;
+type FastManimLocalGatedOciRunningIdentityV1 = FastManimLocalGatedOciCleanupEvidenceV1 &
+  Readonly<{ cgroup: string; cgroupPath: string; containerId: string; startTime: string }>;
+
+async function inspectRunningProcess(
+  containerId: string,
+  containerName: string,
+  image: string,
+  timeoutMs: number,
+  signal: AbortSignal,
+): Promise<number> {
+  const inspection = await inspectContainer(containerId, timeoutMs, signal);
+  assertFixedContainer(inspection, image, containerId, containerName, true);
   const pid = inspection.State?.Pid;
   if (!Number.isSafeInteger(pid) || (pid as number) <= 1) {
     throw new FastManimLocalGatedOciError("sandbox-execution-failed", "Docker did not expose a running container PID.");
   }
+  return pid as number;
+}
+
+async function readProcessStartTime(pid: number) {
+  const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+  const commandEnd = stat.lastIndexOf(")");
+  const fieldsAfterCommand =
+    commandEnd < 0
+      ? []
+      : stat
+          .slice(commandEnd + 1)
+          .trim()
+          .split(/\s+/);
+  const startTime = fieldsAfterCommand[19];
+  if (!startTime || !/^\d+$/.test(startTime)) {
+    throw new FastManimLocalGatedOciError("sandbox-execution-failed", "The OCI PID start time is unavailable.");
+  }
+  return startTime;
+}
+
+async function inspectRunningCgroup(
+  containerId: string,
+  pid: number,
+  startTime: string,
+): Promise<FastManimLocalGatedOciRunningIdentityV1> {
   const cgroup = await readFile(`/proc/${pid}/cgroup`, "utf8");
+  if ((await readProcessStartTime(pid)) !== startTime) {
+    throw new FastManimLocalGatedOciError("sandbox-execution-failed", "The OCI PID changed during inspection.");
+  }
   const lines = cgroup.trimEnd().split("\n");
   if (lines.length !== 1 || !lines[0]?.startsWith("0::/") || !lines[0].includes(containerId)) {
     throw new FastManimLocalGatedOciError("sandbox-execution-failed", "The OCI PID is outside its expected cgroup v2.");
@@ -538,11 +655,17 @@ async function inspectRunningEvidence(containerId: string, image: string) {
   if (!cgroupPath.startsWith("/sys/fs/cgroup/")) {
     throw new FastManimLocalGatedOciError("sandbox-execution-failed", "The OCI cgroup path is not canonical.");
   }
-  const [cpuMax, memoryMax, memorySwapMax, pidsMax, limits] = await Promise.all([
+  return { cgroup, cgroupPath, containerId, pid, startTime };
+}
+
+async function inspectRunningResources(identity: FastManimLocalGatedOciRunningIdentityV1) {
+  const { cgroup, cgroupPath, containerId, pid } = identity;
+  const [cpuMax, memoryMax, memorySwapMax, pidsMax, limits, currentStartTime] = await Promise.all([
     ...["cpu.max", "memory.max", "memory.swap.max", "pids.max"].map((name) =>
       readFile(resolve(cgroupPath, name), "utf8"),
     ),
     readFile(`/proc/${pid}/limits`, "utf8"),
+    readProcessStartTime(pid),
   ]);
   const resources = {
     cpuMax: cpuMax.trim(),
@@ -558,33 +681,62 @@ async function inspectRunningEvidence(containerId: string, image: string) {
     !Number.isSafeInteger(quota) ||
     !Number.isSafeInteger(period) ||
     quota !== period ||
+    currentStartTime !== identity.startTime ||
     !/^Max open files\s+256\s+256\s+files\s*$/m.test(limits) ||
     !/^Max core file size\s+0\s+0\s+bytes\s*$/m.test(limits)
   ) {
     throw new FastManimLocalGatedOciError("sandbox-execution-failed", "The OCI cgroup resources drifted.");
   }
-  return { cgroup, containerId, pid: pid as number, resources } satisfies FastManimLocalGatedOciEvidenceV1;
+  return { cgroup, containerId, pid, resources } satisfies FastManimLocalGatedOciEvidenceV1;
 }
 
-async function waitForPidCleanup(pid: number, cgroup: string) {
+async function waitForPidCleanup(evidence: FastManimLocalGatedOciCleanupEvidenceV1) {
   const deadline = Date.now() + CLEANUP_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    const current = await readFile(`/proc/${pid}/cgroup`, "utf8").catch(() => null);
-    if (current === null || current !== cgroup) return;
+    try {
+      if (evidence.cgroup !== undefined) {
+        const current = await readFile(`/proc/${evidence.pid}/cgroup`, "utf8");
+        if (current !== evidence.cgroup) return;
+      } else {
+        const currentStartTime = await readProcessStartTime(evidence.pid);
+        if (evidence.startTime !== undefined && currentStartTime !== evidence.startTime) return;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw new FastManimSandboxBackendControlError("cleanup");
+    }
     await new Promise((resolveWaiter) => setTimeout(resolveWaiter, 25));
   }
-  throw new Error("The original OCI PID remained alive after container removal.");
+  throw new FastManimSandboxBackendControlError("cleanup");
 }
 
-async function cleanupContainer(containerId: string, evidence?: FastManimLocalGatedOciEvidenceV1) {
+async function assertContainerAbsent(containerId: string) {
+  const listed = await docker(
+    ["container", "ls", "--all", "--quiet", "--no-trunc", "--filter", `id=${containerId}`],
+    CLEANUP_TIMEOUT_MS,
+  );
+  if (listed.code !== 0 || listed.stdout.toString("ascii").trim() !== "") {
+    throw new FastManimSandboxBackendControlError("cleanup");
+  }
+}
+
+async function cleanupContainer(containerId: string, evidence?: FastManimLocalGatedOciCleanupEvidenceV1) {
   await docker(["container", "kill", containerId], CLEANUP_TIMEOUT_MS).catch(() => undefined);
-  const removed = await docker(["container", "rm", "--force", containerId], CLEANUP_TIMEOUT_MS);
-  if (removed.code !== 0) throw new FastManimSandboxBackendControlError("cleanup");
-  const [inspection] = await Promise.all([
-    docker(["container", "inspect", containerId], CLEANUP_TIMEOUT_MS),
-    evidence ? waitForPidCleanup(evidence.pid, evidence.cgroup) : Promise.resolve(),
-  ]);
-  if (inspection.code === 0) throw new FastManimSandboxBackendControlError("cleanup");
+  await docker(["container", "rm", "--force", containerId], CLEANUP_TIMEOUT_MS).catch(() => undefined);
+  await Promise.all([assertContainerAbsent(containerId), evidence ? waitForPidCleanup(evidence) : Promise.resolve()]);
+}
+
+async function cleanupContainerByName(containerName: string) {
+  if (!CONTAINER_NAME.test(containerName)) throw new FastManimSandboxBackendControlError("cleanup");
+  const listed = await docker(
+    ["container", "ls", "--all", "--quiet", "--no-trunc", "--filter", `name=^/${containerName}$`],
+    CLEANUP_TIMEOUT_MS,
+  );
+  const matches = listed.stdout.toString("ascii").trim().split("\n").filter(Boolean);
+  if (listed.code !== 0 || matches.some((value) => !CONTAINER_ID.test(value)) || matches.length > 1) {
+    throw new FastManimSandboxBackendControlError("cleanup");
+  }
+  if (matches[0]) await cleanupContainer(matches[0]);
 }
 
 type LocalConformanceWireV1 = Readonly<{ bytes: Uint8Array; close: boolean }>;
@@ -612,6 +764,10 @@ export async function runFastManimLocalGatedOciV1(
     throw new TypeError("The local conformance wire exceeds its bounded request size.");
   }
 
+  const containerName = `poietra-gated-${randomBytes(16).toString("hex")}`;
+  const operationController = new AbortController();
+  let cleanupEvidence: FastManimLocalGatedOciCleanupEvidenceV1 | undefined;
+  let containerCreationAttempted = false;
   let containerId: string | undefined;
   let evidence: FastManimLocalGatedOciEvidenceV1 | undefined;
   let attached: ChildProcessWithoutNullStreams | undefined;
@@ -624,10 +780,17 @@ export async function runFastManimLocalGatedOciV1(
   const halt = (code: FastManimSandboxBackendFailureCodeV1, message: string) => {
     if (halted) return;
     halted = new FastManimLocalGatedOciError(code, message);
+    operationController.abort();
     rejectHalt(halted);
   };
+  const throwIfHalted = () => {
+    const current = halted as FastManimLocalGatedOciError | undefined;
+    if (current) throw current;
+  };
+  const controlTimeoutMs = () => Math.min(DOCKER_CONTROL_TIMEOUT_MS, Math.max(1, options.deadlineEpochMs - Date.now()));
   const onAbort = () => halt("sandbox-execution-failed", "The local OCI job was aborted.");
   options.signal.addEventListener("abort", onAbort, { once: true });
+  if (options.signal.aborted) onAbort();
   const timer = setTimeout(
     () => halt("producer-timeout", "The local OCI job exceeded its deadline."),
     options.deadlineEpochMs - Date.now(),
@@ -635,36 +798,46 @@ export async function runFastManimLocalGatedOciV1(
   timer.unref();
 
   try {
-    await assertTrustedImage(options.image);
-    const created = await docker([
-      "container",
-      "create",
-      "--interactive",
-      "--read-only",
-      "--network=none",
-      "--user=65532:65532",
-      "--cap-drop=ALL",
-      "--security-opt=no-new-privileges=true",
-      "--log-driver=none",
-      `--pids-limit=${PIDS_LIMIT}`,
-      `--memory=${MEMORY_BYTES}`,
-      `--memory-swap=${MEMORY_BYTES}`,
-      "--cpus=1",
-      "--ipc=none",
-      "--cgroupns=private",
-      "--ulimit=core=0:0",
-      "--ulimit=nofile=256:256",
-      `--tmpfs=/run/poietra:rw,noexec,nosuid,nodev,size=${TMPFS_BYTES},mode=0700,uid=65532,gid=65532`,
-      "--stop-timeout=1",
-      "--label=io.poietra.local-gated-job=v1",
-      options.image,
-    ]);
-    containerId = created.stdout.toString("utf8").trim();
-    if (created.code !== 0 || !CONTAINER_ID.test(containerId)) {
+    await assertTrustedImage(options.image, controlTimeoutMs(), operationController.signal);
+    throwIfHalted();
+    containerCreationAttempted = true;
+    const created = await docker(
+      [
+        "container",
+        "create",
+        `--name=${containerName}`,
+        "--interactive",
+        "--read-only",
+        "--network=none",
+        "--user=65532:65532",
+        "--cap-drop=ALL",
+        "--security-opt=no-new-privileges=true",
+        "--log-driver=none",
+        `--pids-limit=${PIDS_LIMIT}`,
+        `--memory=${MEMORY_BYTES}`,
+        `--memory-swap=${MEMORY_BYTES}`,
+        "--cpus=1",
+        "--ipc=none",
+        "--cgroupns=private",
+        "--ulimit=core=0:0",
+        "--ulimit=nofile=256:256",
+        `--tmpfs=/run/poietra:rw,noexec,nosuid,nodev,size=${TMPFS_BYTES},mode=0700,uid=65532,gid=65532`,
+        "--stop-timeout=1",
+        "--label=io.poietra.local-gated-job=v1",
+        options.image,
+      ],
+      controlTimeoutMs(),
+      operationController.signal,
+    );
+    const createdId = created.stdout.toString("utf8").trim();
+    if (CONTAINER_ID.test(createdId)) containerId = createdId;
+    throwIfHalted();
+    if (created.code !== 0 || !containerId) {
       throw new FastManimLocalGatedOciError("producer-spawn-failed", "Docker could not create the gated OCI job.");
     }
-    const preStart = await inspectContainer(containerId);
-    assertFixedContainer(preStart, options.image, containerId, false);
+    const preStart = await inspectContainer(containerId, controlTimeoutMs(), operationController.signal);
+    throwIfHalted();
+    assertFixedContainer(preStart, options.image, containerId, containerName, false);
 
     attached = spawn(DOCKER, ["container", "start", "--attach", "--interactive", containerId], {
       env: DOCKER_ENVIRONMENT,
@@ -713,7 +886,16 @@ export async function runFastManimLocalGatedOciV1(
       }),
       haltPromise,
     ]);
-    evidence = await Promise.race([inspectRunningEvidence(containerId, options.image), haltPromise]);
+    const pid = await Promise.race([
+      inspectRunningProcess(containerId, containerName, options.image, controlTimeoutMs(), operationController.signal),
+      haltPromise,
+    ]);
+    cleanupEvidence = { pid };
+    const startTime = await Promise.race([readProcessStartTime(pid), haltPromise]);
+    cleanupEvidence = { pid, startTime };
+    const runningIdentity = await Promise.race([inspectRunningCgroup(containerId, pid, startTime), haltPromise]);
+    cleanupEvidence = runningIdentity;
+    evidence = await Promise.race([inspectRunningResources(runningIdentity), haltPromise]);
     attached.stdin.once("error", () => undefined);
     attached.stdin.write(wire.bytes);
     if (wire.close) attached.stdin.end();
@@ -722,17 +904,22 @@ export async function runFastManimLocalGatedOciV1(
       throw new FastManimLocalGatedOciError("producer-exit", "The gated OCI producer did not exit cleanly.");
     }
     const body = parseFastManimLocalGatedOciResultV1(Buffer.concat(stdoutChunks, stdoutBytes));
-    await cleanupContainer(containerId, evidence);
+    await cleanupContainer(containerId, cleanupEvidence);
     containerId = undefined;
+    const lateHalt = halted as FastManimLocalGatedOciError | undefined;
+    if (lateHalt) {
+      lateHalt.cleanupVerified = true;
+      throw lateHalt;
+    }
     return { cleanupVerified: true, evidence, resultBytes: Uint8Array.from(body) };
   } catch (error) {
     if (error instanceof FastManimLocalGatedOciError) {
       error.containerId = containerId;
-      error.pid = evidence?.pid;
+      error.pid = cleanupEvidence?.pid;
     }
     if (containerId) {
       try {
-        await cleanupContainer(containerId, evidence);
+        await cleanupContainer(containerId, cleanupEvidence);
         if (error instanceof FastManimLocalGatedOciError) error.cleanupVerified = true;
         containerId = undefined;
       } catch (cleanupError) {
@@ -740,28 +927,48 @@ export async function runFastManimLocalGatedOciV1(
           ? cleanupError
           : new FastManimSandboxBackendControlError("cleanup");
       }
+    } else if (containerCreationAttempted) {
+      try {
+        await cleanupContainerByName(containerName);
+      } catch {
+        throw new FastManimSandboxBackendControlError("cleanup");
+      }
     }
+    if (fastManimSandboxBackendControlErrorCode(error) === "cleanup") throw error;
     if (options.signal.aborted) throw abortError();
+    const currentHalt = halted as FastManimLocalGatedOciError | undefined;
+    if (currentHalt) {
+      currentHalt.cleanupVerified = true;
+      throw currentHalt;
+    }
     throw error;
   } finally {
     clearTimeout(timer);
     options.signal.removeEventListener("abort", onAbort);
+    operationController.abort();
     attached?.stdin.destroy();
     if (attached && attached.exitCode === null && attached.signalCode === null) attached.kill("SIGKILL");
   }
 }
 
-export type FastManimLocalGatedOciBackendOptionsV1 = Readonly<{ image: string }>;
+export type FastManimLocalGatedOciBackendOptionsV1 = Readonly<{
+  /** Test-only execution seam; the configured factory never supplies it. */
+  executeJob?: typeof runFastManimLocalGatedOciV1;
+  image: string;
+}>;
 
 /** This local Docker backend is conformance/development evidence, never production readiness. */
 export class FastManimLocalGatedOciBackendV1 implements FastManimSandboxBackendV1 {
   readonly #active = new Set<Readonly<{ abort: () => void; result: Promise<unknown> }>>();
+  readonly #executeJob: typeof runFastManimLocalGatedOciV1;
   readonly #image: string;
+  #cleanupFailed = false;
   #closing = false;
 
   constructor(options: FastManimLocalGatedOciBackendOptionsV1) {
     if (!IMAGE_ID.test(options.image))
       throw new TypeError("The local OCI backend requires an immutable sha256 image ID.");
+    this.#executeJob = options.executeJob ?? runFastManimLocalGatedOciV1;
     this.#image = options.image;
   }
 
@@ -771,13 +978,21 @@ export class FastManimLocalGatedOciBackendV1 implements FastManimSandboxBackendV
       throw new TypeError("Sandbox status deadline must be a future epoch millisecond integer.");
     }
     context.signal.throwIfAborted();
-    if (this.#closing) return this.#unavailable("disabled");
+    if (this.#closing || this.#cleanupFailed) {
+      return this.#unavailable(this.#cleanupFailed ? "health-check-failed" : "disabled");
+    }
     try {
-      await assertTrustedImage(this.#image);
+      await assertTrustedImage(
+        this.#image,
+        Math.min(DOCKER_CONTROL_TIMEOUT_MS, Math.max(1, context.deadlineEpochMs - Date.now())),
+        context.signal,
+      );
       context.signal.throwIfAborted();
-    } catch {
+    } catch (error) {
+      if (context.signal.aborted) throw error;
       return this.#unavailable("health-check-failed");
     }
+    if (Date.now() >= context.deadlineEpochMs || this.#cleanupFailed) return this.#unavailable("health-check-failed");
     return {
       attestation: { profileDigest: PROFILE_DIGEST, runtimeDigest: this.#image.slice(7), trust: "development-only" },
       backendId: "local-docker-gated-rootful",
@@ -793,9 +1008,11 @@ export class FastManimLocalGatedOciBackendV1 implements FastManimSandboxBackendV
     parseFastManimSandboxJobIdentityV1(context.identity);
     if (!verifyFastManimSandboxRequestBundleV1(request)) throw new TypeError("Sandbox request bytes are not sealed.");
     context.signal.throwIfAborted();
+    if (this.#cleanupFailed) throw new FastManimSandboxBackendControlError("cleanup");
     const controller = new AbortController();
     const onAbort = () => controller.abort();
     context.signal.addEventListener("abort", onAbort, { once: true });
+    if (context.signal.aborted) controller.abort();
     let job!: Readonly<{ abort: () => void; result: Promise<FastManimSandboxBackendResultV1> }>;
     const result = this.#execute(request, context, controller.signal).finally(() => {
       context.signal.removeEventListener("abort", onAbort);
@@ -812,8 +1029,9 @@ export class FastManimLocalGatedOciBackendV1 implements FastManimSandboxBackendV
     signal: AbortSignal,
   ): Promise<FastManimSandboxBackendResultV1> {
     if (this.#closing) throw abortError();
+    if (this.#cleanupFailed) throw new FastManimSandboxBackendControlError("cleanup");
     try {
-      const execution = await runFastManimLocalGatedOciV1({
+      const execution = await this.#executeJob({
         deadlineEpochMs: context.deadlineEpochMs,
         image: this.#image,
         requestBytes: request.copyBytes(),
@@ -826,6 +1044,10 @@ export class FastManimLocalGatedOciBackendV1 implements FastManimSandboxBackendV
         resultBytes: execution.resultBytes,
       };
     } catch (error) {
+      if (fastManimSandboxBackendControlErrorCode(error) === "cleanup") {
+        this.#latchCleanupFailure();
+        throw error;
+      }
       if (signal.aborted || this.#closing) throw abortError();
       const code = error instanceof FastManimLocalGatedOciError ? error.code : "sandbox-execution-failed";
       return {
@@ -849,11 +1071,17 @@ export class FastManimLocalGatedOciBackendV1 implements FastManimSandboxBackendV
     };
   }
 
+  #latchCleanupFailure() {
+    this.#cleanupFailed = true;
+    for (const job of this.#active) job.abort();
+  }
+
   async close() {
     this.#closing = true;
     const active = [...this.#active];
     for (const job of active) job.abort();
     await Promise.allSettled(active.map((job) => job.result));
+    if (this.#cleanupFailed) throw new FastManimSandboxBackendControlError("cleanup");
   }
 }
 

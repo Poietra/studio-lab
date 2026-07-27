@@ -134,8 +134,8 @@ POIETRA_FAST_MANIM_GATED_OCI_IMAGE=sha256:<local-image-id> \
 pnpm exec vitest run server/fast-manim-local-gated-oci-backend.test.ts
 ```
 
-The local driver creates one non-restarting container per request with no
-mounts, no network, a read-only root filesystem, all capabilities dropped,
+The local driver creates one non-restarting container per request with no host
+bind mounts, no network, a read-only root filesystem, all capabilities dropped,
 `no-new-privileges`, private PID/cgroup namespaces, a private 16 MiB tmpfs,
 fixed CPU/memory/pid/fd/core limits, and Docker logging disabled. A trusted PID
 1 entrypoint checks the effective runtime confinement before emitting READY.
@@ -144,8 +144,11 @@ and `/proc/<pid>/limits` before releasing a length- and SHA-256-bound request.
 The request becomes sealed memfd stdin for the fixed producer. Result and
 diagnostic streams are independently capped; accepted result bytes must be one
 LF-terminated, canonical UTF-8, compact and recursively key-sorted JSON object.
-Every path force-removes the container and verifies that its original PID is no
-longer in that cgroup.
+Every path attempts force-removal and verifies absence through a successful
+Docker listing. Once the actual PID/cgroup pair has been observed, cleanup also
+verifies that PID no longer belongs to the original cgroup. Any inconclusive
+Docker or `/proc` check is a cleanup control failure: the backend is permanently
+unavailable, refuses new jobs, and fails close instead of claiming cleanup.
 
 This slice deliberately does **not** claim #82 complete. It uses the host's
 rootful Docker daemon and an operator-supplied local image ID; it has no
