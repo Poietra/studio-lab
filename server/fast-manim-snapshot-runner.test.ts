@@ -455,8 +455,11 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     // The leader exits after emitting the descendant, which then floods the
     // inherited stdout. The overflow guard stops accumulating and the run
     // settles via the pipe-close grace; the flooding descendant is the #80
-    // residual, reaped by the test.
+    // residual, reaped by the test. Keep the production pipe-close grace for
+    // this scheduling-sensitive case: the general 150ms test grace can expire
+    // before the newly spawned descendant runs on a contended host.
     const runner = createRunner(root, producerCommand("--mode=orphan-flood", `--orphan-pid-file=${orphanPidFile}`), {
+      producerProcessTimings: { killGraceMs: TEST_PRODUCER_PROCESS_TIMINGS.killGraceMs },
       timeoutMs: 5_000,
     });
     expectFailure(await runner.run(runRequest()), "producer-output-overflow");
