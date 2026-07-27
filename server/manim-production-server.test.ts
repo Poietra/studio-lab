@@ -179,6 +179,23 @@ describe("standalone production Manim HTTP adapter", () => {
     ).rejects.toThrow(/absolute storage roots/i);
   });
 
+  it.each(["studio-local", "local-000000000000000000000000"])(
+    "rejects the reserved production runtime tenant %s before listening",
+    async (tenantId) => {
+      const runtime = createRuntime();
+      await expect(
+        startProductionManimServer({
+          admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
+          config: await startConfig(),
+          runtime: {
+            ...runtime,
+            api: { ...runtime.api, tenantId } as unknown as ManimApi,
+          },
+        }),
+      ).rejects.toThrow(/reserved local identity/i);
+    },
+  );
+
   it("keeps liveness public while readiness and API fail closed on either required dependency", async () => {
     let admissionReady = false;
     let runtimeReady = true;
@@ -265,10 +282,34 @@ describe("standalone production Manim HTTP adapter", () => {
     expect(JSON.stringify(admissionContext)).not.toContain("203.0.113.5");
   });
 
+  it.each([
+    [403, "Tenant access is not available."],
+    [503, "Tenant access is temporarily unavailable."],
+  ] as const)("normalizes an authenticator %i without exposing adapter details", async (status, message) => {
+    const server = await startProductionManimServer({
+      admission: {
+        authenticate: async () => {
+          throw new HttpError("trusted adapter detail must remain private", status);
+        },
+        ready: async () => true,
+      },
+      config: await startConfig(),
+      runtime: createRuntime(),
+    });
+    servers.push(server);
+
+    const response = await send(server, "/api/manim/projects");
+    expect(response.status).toBe(status);
+    expect(JSON.parse(response.body)).toEqual({ error: message });
+    expect(response.body).not.toContain("trusted adapter detail");
+  });
+
   it("derives tenant access from verified claims and keeps local or foreign tenants outside the runtime", async () => {
     let createExistingCalls = 0;
     let projectCalls = 0;
     let runtimeReadyCalls = 0;
+    const records: StructuredLogRecord[] = [];
+    const logger = createStructuredLogger({ sinks: [{ write: (record) => records.push(record) }] });
     const baseRuntime = createRuntime(
       () => {
         runtimeReadyCalls += 1;
@@ -293,6 +334,7 @@ describe("standalone production Manim HTTP adapter", () => {
         ready: async () => true,
       },
       config: await startConfig(),
+      logger,
       runtime: {
         ...baseRuntime,
         api: {
@@ -313,6 +355,10 @@ describe("standalone production Manim HTTP adapter", () => {
     expect(await send(server, "/api/manim/projects", { headers: { authorization: "Bearer tenant-b" } })).toMatchObject({
       status: 403,
     });
+    expect(records.filter(({ event }) => event === "production.authentication_rejected")).toHaveLength(2);
+    expect(records.filter(({ event }) => event === "production.foreign_tenant_rejected")).toHaveLength(1);
+    expect(JSON.stringify(records)).not.toContain("Bearer local");
+    expect(JSON.stringify(records)).not.toContain("Bearer tenant-b");
     expect(projectCalls).toBe(0);
     expect(runtimeReadyCalls).toBe(0);
 

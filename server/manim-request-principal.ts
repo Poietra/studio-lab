@@ -39,8 +39,8 @@ function verifiedPrincipal(claims: ManimPrincipalClaims): VerifiedManimPrincipal
   return Object.freeze({ ...claims, [principalBrand]: true as const });
 }
 
-function isReservedLocalTenantId(tenantId: string) {
-  return tenantId === "studio-local" || tenantId.startsWith("local-");
+export function isReservedLocalManimTenantId(tenantId: unknown): tenantId is string {
+  return tenantId === "studio-local" || (typeof tenantId === "string" && tenantId.startsWith("local-"));
 }
 
 export function isVerifiedManimPrincipal(value: unknown): value is VerifiedManimPrincipal {
@@ -63,7 +63,7 @@ export async function authenticateManimPrincipal<Input>(
   signal.throwIfAborted();
   const parsed = manimPrincipalClaimsSchema.safeParse(await authenticator.authenticate(input, signal));
   signal.throwIfAborted();
-  if (!parsed.success || isReservedLocalTenantId(parsed.data.tenantId)) {
+  if (!parsed.success || isReservedLocalManimTenantId(parsed.data.tenantId)) {
     throw new HttpError("Authentication is required.", 401);
   }
   return verifiedPrincipal(parsed.data);

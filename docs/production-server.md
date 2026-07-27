@@ -24,12 +24,16 @@ Each server instance remains a single-tenant cell: its runtime API declares one
 server-owned tenant ID and at least one bounded absolute storage root. A
 verified principal must resolve to that same tenant. Foreign tenants receive a
 generic 403, and the development-only `studio-local` and `local-*` identities
-are rejected by the production authenticator path. Existing-folder workspace
-registration is disabled in production so a request cannot attach another
-tenant's host path. Authentication readiness and principal verification run
-before runtime readiness, preventing unauthenticated traffic from probing the
-render/storage adapter. Issue #118 still owns replacing these process-local
-stores with durable tenant-scoped state before horizontal scaling.
+are rejected by both production authentication and runtime startup. Existing-
+folder workspace registration is disabled in production so a request cannot
+attach another tenant's host path. Authentication readiness and principal
+verification run
+before runtime readiness, preventing unauthenticated API traffic from probing
+the render/storage adapter; the public `/readyz` probe still checks both
+dependencies. Storage roots are trusted adapter declarations in this
+single-tenant cell, so #118 must define canonical, symlink-safe boundaries for
+durable storage. Issue #118 also owns replacing these process-local stores with
+durable tenant-scoped state before horizontal scaling.
 
 The transport configuration is strict and production-only. It requires one
 public origin, an IP literal to bind, and bounded connection, header, body,

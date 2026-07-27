@@ -7,7 +7,7 @@ import { z } from "zod";
 import { HttpError, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import { authenticateManimRequestContext, handleManimRequest, type ManimApi } from "./manim-render-http";
-import type { ManimPrincipalAuthenticator } from "./manim-request-principal";
+import { isReservedLocalManimTenantId, type ManimPrincipalAuthenticator } from "./manim-request-principal";
 import { ManimTenantRegistry } from "./manim-tenant-registry";
 
 const DEFAULT_LIMITS = {
@@ -22,6 +22,12 @@ const DEFAULT_LIMITS = {
   requestDrainTimeoutMs: 10_000,
   requestTimeoutMs: 30_000,
   runtimeCloseTimeoutMs: 10_000,
+} as const;
+
+const PRODUCTION_AUTH_ERROR_MESSAGES = {
+  401: "Authentication is required.",
+  403: "Tenant access is not available.",
+  503: "Tenant access is temporarily unavailable.",
 } as const;
 
 const limitsSchema = z
@@ -325,6 +331,9 @@ export async function startProductionManimServer(
   ) {
     throw new TypeError("Production request admission adapter is incomplete.");
   }
+  if (isReservedLocalManimTenantId((options.runtime.api as Readonly<{ tenantId?: unknown }>).tenantId)) {
+    throw new TypeError("Production runtime tenant ID must not use a reserved local identity.");
+  }
   const logger = options.logger ?? nullLogger;
   const tenants = new ManimTenantRegistry<ManimApi>([options.runtime.api]);
   const trustedProxyAddresses = new Set(config.trustedProxyAddresses);
@@ -399,6 +408,7 @@ export async function startProductionManimServer(
       sendJson(response, 504, { error: "Request deadline exceeded." });
     }, config.limits.handlerTimeoutMs);
     handlerTimeout.unref();
+    let accessBoundary: "authentication" | "tenant" | null = null;
 
     try {
       const transport = validateTransportRequest(request, config, trustedProxyAddresses);
@@ -424,6 +434,7 @@ export async function startProductionManimServer(
       }
       if (controller.signal.aborted) return;
       if (lifecycle !== "accepting") throw new TransportError("Production service is draining.", 503);
+      accessBoundary = "authentication";
       const context = await raceWithSignal(
         () =>
           authenticateManimRequestContext(
@@ -450,7 +461,9 @@ export async function startProductionManimServer(
       );
       if (context === ABORTED || controller.signal.aborted) return;
       if (lifecycle !== "accepting") throw new TransportError("Production service is draining.", 503);
+      accessBoundary = "tenant";
       context.tenants.forPrincipal(context.principal);
+      accessBoundary = null;
       if (!(await runtimeIsReady(controller.signal))) {
         throw new TransportError("Production runtime is not ready.", 503);
       }
@@ -477,10 +490,15 @@ export async function startProductionManimServer(
         return;
       }
       if (error instanceof HttpError && [401, 403, 503].includes(error.status)) {
+        if (accessBoundary === "authentication" && [401, 403].includes(error.status)) {
+          logger.warn("production.authentication_rejected");
+        } else if (accessBoundary === "tenant" && error.status === 403) {
+          logger.warn("production.foreign_tenant_rejected");
+        }
         request.resume();
         response.setHeader("connection", "close");
         sendJson(response, error.status, {
-          error: error.status === 401 ? "Authentication is required." : error.message,
+          error: PRODUCTION_AUTH_ERROR_MESSAGES[error.status as keyof typeof PRODUCTION_AUTH_ERROR_MESSAGES],
         });
         return;
       }
