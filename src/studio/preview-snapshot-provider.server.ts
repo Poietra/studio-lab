@@ -7,6 +7,7 @@ import {
 } from "../engine/contracts";
 import { digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
+import { verifiedSourceRuntimeIdentityMapV1Schema } from "../engine/source-runtime-identity";
 import {
   PRISTINE_WORKING_REVISION,
   type StudioPreviewSceneIdentityV1,
@@ -15,7 +16,7 @@ import {
 
 const SNAPSHOT_RUN_SCHEMA = "poietra.fast-manim-snapshot-run";
 const SNAPSHOT_RESULT_SCHEMA = "poietra.fast-manim-snapshot-result";
-const MAX_RESPONSE_BYTES = 5 * 1024 * 1024 + 32 * 1024;
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024 + 64 * 1024;
 const ZERO_SHA256 = "0".repeat(64);
 
 const projectIdSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
@@ -72,6 +73,7 @@ const verifiedRunViewSchema = z
     sceneName: sceneNameSchema,
     schema: z.literal(SNAPSHOT_RUN_SCHEMA),
     snapshot: compiledSnapshotSchema,
+    sourceRuntimeIdentity: verifiedSourceRuntimeIdentityMapV1Schema.optional(),
     sourcePath: sourcePathSchema,
     status: z.literal("verified"),
     version: z.literal(1),
@@ -183,7 +185,41 @@ async function validateVerifiedRun(value: unknown, identity: StudioPreviewSceneI
   const engineRevisionHash = sceneIrSourceRevisionHash(bundle.scene);
   assertEqual("engine revision", engineRevisionHash, envelope.snapshotHash);
   assertEqual("asset manifest", bundle.scene.assetManifest.manifestDigest, bundle.assets.manifestDigest);
-  return { bundle, engineRevisionHash, run };
+  const sourceRuntimeIdentity = (() => {
+    const verified = run.sourceRuntimeIdentity;
+    if (!verified) return null;
+    assertEqual("identity source hash", verified.sourceHash, identity.sourceHash);
+    assertEqual("identity Scene ID", verified.sceneId, canonicalSceneId);
+    assertEqual("identity runtime configuration", verified.runtimeConfigHash, run.runtimeConfigHash);
+    assertEqual("identity snapshot seal", verified.snapshotHash, envelope.snapshotHash);
+    const entities = new Map(bundle.scene.entities.map((entity) => [entity.id, entity]));
+    const bySourceName = new Map<string, Readonly<{ bindingId: string; entityId: string; sourceName: string }>>();
+    const bindingIds = new Set<string>();
+    const runtimeEntityIds = new Set<string>();
+    for (const mapping of verified.mappings) {
+      const entity = entities.get(mapping.entityId);
+      if (!entity || entity.provenanceId !== mapping.provenanceId || mapping.familyPath.length !== 0) {
+        throw providerError("The verified source/runtime mapping does not name one exact Scene IR entity.");
+      }
+      if (
+        bySourceName.has(mapping.binding.name) ||
+        bindingIds.has(mapping.binding.id) ||
+        runtimeEntityIds.has(mapping.entityId)
+      ) {
+        throw providerError("The verified source/runtime mapping is not one-to-one.");
+      }
+      const browserMapping = {
+        bindingId: mapping.binding.id,
+        entityId: mapping.entityId,
+        sourceName: mapping.binding.name,
+      } as const;
+      bySourceName.set(mapping.binding.name, browserMapping);
+      bindingIds.add(mapping.binding.id);
+      runtimeEntityIds.add(mapping.entityId);
+    }
+    return bySourceName;
+  })();
+  return { bundle, engineRevisionHash, run, sourceRuntimeIdentity };
 }
 
 /**
@@ -217,7 +253,11 @@ export function createServerPreviewSnapshotProviderV1(
       if (!response.ok) throw providerError(`The Scene snapshot endpoint failed with HTTP ${response.status}.`);
       const value = await readBoundedJson(response);
       signal?.throwIfAborted();
-      const { bundle, engineRevisionHash, run } = await validateVerifiedRun(value, identity, requestId);
+      const { bundle, engineRevisionHash, run, sourceRuntimeIdentity } = await validateVerifiedRun(
+        value,
+        identity,
+        requestId,
+      );
       signal?.throwIfAborted();
       return {
         correlation: {
@@ -236,6 +276,7 @@ export function createServerPreviewSnapshotProviderV1(
         sceneId: bundle.scene.sceneId,
         snapshot: bundle,
         sourceLabel: `verified server snapshot r${run.revision}`,
+        sourceRuntimeIdentity,
       };
     },
   };

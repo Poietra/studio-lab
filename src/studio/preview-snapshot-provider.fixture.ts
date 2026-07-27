@@ -80,6 +80,7 @@ export function createFixturePreviewSnapshotProviderV1(): StudioPreviewSnapshotP
         sceneId: snapshot.scene.sceneId,
         snapshot,
         sourceLabel: "verified fixture",
+        sourceRuntimeIdentity: null,
       };
     },
   };
