@@ -695,8 +695,11 @@ async function waitForPidCleanup(evidence: FastManimLocalGatedOciCleanupEvidence
   while (Date.now() < deadline) {
     try {
       if (evidence.cgroup !== undefined) {
-        const current = await readFile(`/proc/${evidence.pid}/cgroup`, "utf8");
-        if (current !== evidence.cgroup) return;
+        const [current, currentStartTime] = await Promise.all([
+          readFile(`/proc/${evidence.pid}/cgroup`, "utf8"),
+          readProcessStartTime(evidence.pid),
+        ]);
+        if (current !== evidence.cgroup || currentStartTime !== evidence.startTime) return;
       } else {
         const currentStartTime = await readProcessStartTime(evidence.pid);
         if (evidence.startTime !== undefined && currentStartTime !== evidence.startTime) return;
