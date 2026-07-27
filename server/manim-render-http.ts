@@ -1,10 +1,11 @@
-import { createReadStream } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import {
   createManimProjectRequestSchema,
+  type ManimSourceExport,
   manimThumbnailGenerateRequestSchema,
   originalManimSourceExportRequestSchema,
   programRenderRequestSchema,
@@ -13,14 +14,13 @@ import {
   renderCommitRequestSchema,
   renderSourceActionCancellationRequestSchema,
   renderSourceActionRequestSchema,
-  type ManimSourceExport,
 } from "../src/render-pipeline/contracts";
 import { AmbiguousSourceSceneError } from "../src/render-pipeline/source-import";
 import { fastManimSnapshotQueryV1Schema, fastManimSnapshotRunRequestV1Schema } from "./fast-manim-snapshot-contract";
 import { HttpError, readJsonBody, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
-import type { ManimRenderManager } from "./manim-render-manager";
 import type { ManimProjectRegistry } from "./manim-project-registry";
+import type { ManimRenderManager } from "./manim-render-manager";
 import { EMPTY_MANIM_THUMBNAIL_SVG } from "./manim-thumbnail";
 import type { ThumbnailAsset } from "./manim-thumbnail-cache";
 
@@ -30,16 +30,19 @@ const PROJECT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/(worksp
 const PROJECT_THUMBNAIL_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/thumbnail(?:\/(status|generate))?$/;
 const PROJECT_SCENE_SNAPSHOT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/scene-snapshots$/;
 const PROJECT_ITEM_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})$/;
-type ManimApi = ManimRenderManager | ManimProjectRegistry;
+export type ManimApi = ManimRenderManager | ManimProjectRegistry;
 export type ManimRequestPolicy = Readonly<{
   allowExistingProjectRegistration: boolean;
+  expectedMutationOrigin?: string;
+  maxJsonBodyBytes?: number;
+  requestSignal?: AbortSignal;
 }>;
 
 const DEFAULT_MANIM_REQUEST_POLICY: ManimRequestPolicy = {
   allowExistingProjectRegistration: true,
 };
 
-function requireSameOriginJsonMutation(request: IncomingMessage) {
+function requireSameOriginJsonMutation(request: IncomingMessage, expectedOrigin?: string) {
   const mediaType = request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
   if (mediaType !== "application/json") {
     request.resume();
@@ -51,6 +54,28 @@ function requireSameOriginJsonMutation(request: IncomingMessage) {
     throw new HttpError("Cross-origin mutation requests are not allowed.", 403);
   }
   const origin = request.headers.origin;
+  if (expectedOrigin) {
+    let actualOrigin: string | null = null;
+    try {
+      const parsedOrigin = origin ? new URL(origin) : null;
+      actualOrigin =
+        parsedOrigin &&
+        parsedOrigin.pathname === "/" &&
+        !parsedOrigin.search &&
+        !parsedOrigin.hash &&
+        !parsedOrigin.username &&
+        !parsedOrigin.password
+          ? parsedOrigin.origin
+          : null;
+    } catch {
+      // The generic rejection below intentionally does not echo the value.
+    }
+    if (actualOrigin !== expectedOrigin) {
+      request.resume();
+      throw new HttpError("Mutation requests require the configured public Origin.", 403);
+    }
+    return;
+  }
   if (!origin) return;
   const host = request.headers.host;
   try {
@@ -68,6 +93,26 @@ function requireSameOriginJsonMutation(request: IncomingMessage) {
     request.resume();
     throw new HttpError("Mutation requests require a same-origin request.", 403);
   }
+}
+
+function readBoundedJsonBody(request: IncomingMessage, policy: ManimRequestPolicy, routeLimit = 64 * 1024) {
+  return readJsonBody(request, Math.min(routeLimit, policy.maxJsonBodyBytes ?? routeLimit));
+}
+
+function requestRouteTemplate(rawUrl: string | undefined) {
+  let pathname: string;
+  try {
+    pathname = new URL(rawUrl ?? "/", "http://127.0.0.1").pathname;
+  } catch {
+    return "invalid";
+  }
+  if (pathname === "/api/manim/projects" || pathname === "/api/manim/workspace") return pathname;
+  if (PROJECT_SCENE_SNAPSHOT_ROUTE.test(pathname)) return "/api/manim/projects/:projectId/scene-snapshots";
+  if (PROJECT_THUMBNAIL_ROUTE.test(pathname)) return "/api/manim/projects/:projectId/thumbnail/:action?";
+  if (PROJECT_ROUTE.test(pathname)) return "/api/manim/projects/:projectId/:action";
+  if (PROJECT_ITEM_ROUTE.test(pathname)) return "/api/manim/projects/:projectId";
+  if (RENDER_ROUTE.test(pathname)) return "/api/manim/renders/:renderId/:action?";
+  return "unmatched";
 }
 
 function mutableProjectRegistry(manager: ManimApi) {
@@ -266,7 +311,7 @@ async function routeManimRequest(
 ) {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
   if (request.method === "POST" || request.method === "PATCH" || request.method === "DELETE") {
-    requireSameOriginJsonMutation(request);
+    requireSameOriginJsonMutation(request, policy.expectedMutationOrigin);
   }
   if (url.pathname === "/api/manim/projects") {
     if (request.method === "GET") {
@@ -274,7 +319,7 @@ async function routeManimRequest(
       return;
     }
     if (request.method !== "POST") throw new HttpError("Method not allowed.", 405);
-    const parsed = createManimProjectRequestSchema.safeParse(await readJsonBody(request));
+    const parsed = createManimProjectRequestSchema.safeParse(await readBoundedJsonBody(request, policy));
     if (!parsed.success) throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid workspace registration.", 400);
     if (parsed.data.kind === "existing" && !policy.allowExistingProjectRegistration) {
       throw new HttpError("Existing-folder registration requires the native folder picker.", 403);
@@ -295,7 +340,7 @@ async function routeManimRequest(
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/manim/renders") {
-    const parsed = programRenderRequestSchema.safeParse(await readJsonBody(request, 512 * 1024));
+    const parsed = programRenderRequestSchema.safeParse(await readBoundedJsonBody(request, policy, 512 * 1024));
     if (!parsed.success) {
       throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid canonical EditProgram render request.", 400);
     }
@@ -313,7 +358,7 @@ async function routeManimRequest(
     const projectId = projectItemMatch[1]!;
     const registry = mutableProjectRegistry(manager);
     if (request.method === "PATCH") {
-      const parsed = renameManimProjectRequestSchema.safeParse(await readJsonBody(request));
+      const parsed = renameManimProjectRequestSchema.safeParse(await readBoundedJsonBody(request, policy));
       if (!parsed.success) throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid workspace name.", 400);
       signal.throwIfAborted();
       sendJson(response, 200, registry.renameProject(projectId, parsed.data.name));
@@ -341,7 +386,7 @@ async function routeManimRequest(
       return;
     }
     if (request.method !== "POST") throw new HttpError("Method not allowed.", 405);
-    const parsed = fastManimSnapshotRunRequestV1Schema.safeParse(await readJsonBody(request, 16 * 1024));
+    const parsed = fastManimSnapshotRunRequestV1Schema.safeParse(await readBoundedJsonBody(request, policy, 16 * 1024));
     if (!parsed.success) throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid Scene snapshot request.", 400);
     if (parsed.data.projectId !== projectId) {
       throw new HttpError("The request project does not match the project endpoint.", 409);
@@ -372,7 +417,7 @@ async function routeManimRequest(
       return;
     }
     if (action === "generate" && request.method === "POST") {
-      const parsed = manimThumbnailGenerateRequestSchema.safeParse(await readJsonBody(request, 1_024));
+      const parsed = manimThumbnailGenerateRequestSchema.safeParse(await readBoundedJsonBody(request, policy, 1_024));
       if (!parsed.success) throw new HttpError("Thumbnail generation requires an empty JSON object.", 400);
       signal.throwIfAborted();
       sendJson(response, 202, await manager.generateThumbnail(projectId));
@@ -391,7 +436,7 @@ async function routeManimRequest(
       throw new HttpError("Method not allowed.", 405);
     }
     if (endpoint === "export") {
-      const body = await readJsonBody(request, 512 * 1024);
+      const body = await readBoundedJsonBody(request, policy, 512 * 1024);
       const programRequest = programRenderRequestSchema.safeParse(body);
       const originalRequest = originalManimSourceExportRequestSchema.safeParse(body);
       let exported: ManimSourceExport;
@@ -412,7 +457,7 @@ async function routeManimRequest(
       sendPythonAttachment(response, exported);
       return;
     }
-    const parsed = programRenderRequestSchema.safeParse(await readJsonBody(request, 512 * 1024));
+    const parsed = programRenderRequestSchema.safeParse(await readBoundedJsonBody(request, policy, 512 * 1024));
     if (!parsed.success) {
       throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid canonical EditProgram request.", 400);
     }
@@ -440,7 +485,7 @@ async function routeManimRequest(
     return;
   }
   if (request.method !== "POST") throw new HttpError("Method not allowed.", 405);
-  const body = await readJsonBody(request, 4 * 1024);
+  const body = await readBoundedJsonBody(request, policy, 4 * 1024);
   sendJson(response, 200, await runRenderAction(manager, id, action, body, signal));
 }
 
@@ -455,10 +500,11 @@ export async function handleManimRequest(
   const logger = baseLogger.child({
     method: request.method,
     requestId,
-    route: request.url,
+    route: requestRouteTemplate(request.url),
   });
   response.setHeader("x-poietra-request-id", requestId);
   const requestAbort = new AbortController();
+  const abortFromPolicy = () => requestAbort.abort(policy.requestSignal?.reason);
   let responseFinished = false;
   const abortRequest = () => requestAbort.abort();
   const markResponseFinished = () => {
@@ -468,6 +514,8 @@ export async function handleManimRequest(
     if (!responseFinished) abortRequest();
   };
   request.once("aborted", abortRequest);
+  if (policy.requestSignal?.aborted) abortFromPolicy();
+  else policy.requestSignal?.addEventListener("abort", abortFromPolicy, { once: true });
   response.once("close", abortOnClosedResponse);
   response.once("finish", markResponseFinished);
   logger.info("request.started");
@@ -480,7 +528,7 @@ export async function handleManimRequest(
         error === requestAbort.signal.reason ||
         (error instanceof Error && error.name === "AbortError") ||
         (error instanceof HttpError && error.message === "Request body was interrupted.");
-      const details = error instanceof Error ? { message: error.message, name: error.name } : { error };
+      const details = { kind: error instanceof Error ? error.name : "UnknownError" };
       if (expectedAbort) logger.info("request.aborted", details);
       else logger.error("request.abort_cleanup_failed", details);
       return;
@@ -489,8 +537,7 @@ export async function handleManimRequest(
     const expected = error instanceof HttpError || ambiguousScene;
     const status = error instanceof HttpError ? error.status : ambiguousScene ? 409 : 500;
     const message = expected && error instanceof Error ? error.message : "Manim render pipeline failed.";
-    const details =
-      error instanceof Error ? { error, message: error.message, name: error.name, status } : { error, status };
+    const details = { kind: error instanceof Error ? error.name : "UnknownError", status };
     if (expected) logger.warn("request.rejected", details);
     else logger.error("request.failed", details);
     if (!sendJson(response, status, { error: message })) {
@@ -498,6 +545,7 @@ export async function handleManimRequest(
     }
   } finally {
     request.removeListener("aborted", abortRequest);
+    policy.requestSignal?.removeEventListener("abort", abortFromPolicy);
     response.removeListener("close", abortOnClosedResponse);
     response.removeListener("finish", markResponseFinished);
   }
