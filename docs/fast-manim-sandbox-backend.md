@@ -48,8 +48,10 @@ JavaScript timers cannot preempt a same-thread adapter that blocks
 synchronously. The settlement recheck rejects an operation after such a block,
 but cannot make the blocked interval disappear. A production adapter must not
 perform IPC, process waits, or cleanup synchronously in any lifecycle method.
-Actual isolation and independent scheduling that enforce this requirement are
-part of #82; the in-process contract alone is not that isolation boundary.
+The digest-pinned local OCI conformance profile for this boundary is documented
+in [fast-manim-oci-sandbox.md](./fast-manim-oci-sandbox.md). The in-process
+contract alone is still not an isolation boundary, and production remains
+disabled until the remaining gates below are complete.
 
 Every backend is untrusted for output correctness. Before publication, Studio
 requires the backend result to repeat the exact request and attestation digests,
@@ -114,8 +116,9 @@ child environment and therefore must not be treated as a credential transport.
 Production remains disabled until all of the following provide conformance
 evidence through this interface:
 
-1. #82: digest-pinned rootless OCI/microVM isolation and machine-readable
-   profile/runtime attestation;
+1. #82: the digest-pinned rootless OCI profile, machine-readable runtime
+   attestation, closed broker descriptor, and local adversarial conformance are
+   implemented; this evidence does not itself enable production;
 2. #83: hard CPU, memory, pid, fd, disk/output limits and whole-job descendant
    reaping;
 3. #84: tenant-owned artifacts plus adversarial isolation and leak tests;
