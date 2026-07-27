@@ -271,7 +271,7 @@ export type FastManimSandboxResourceRegistrySnapshotV1 = Readonly<{
 
 export type FastManimSandboxResourceAdmissionLeaseV1 = Readonly<{
   descriptor: FastManimSandboxResourceJobDescriptorV1;
-  /** Records why termination began; idempotent for the first server-owned reason. */
+  /** Records the final server-owned reason after cleanup is proven. */
   terminate: (reason: FastManimSandboxResourceTerminationReasonV1) => void;
   /** Returns reservations only after both the cgroup and every output pipe are closed. */
   reap: (evidence: Readonly<{ cgroupEmpty: true; outputClosed: true }>) => void;
@@ -544,6 +544,8 @@ export class FastManimSandboxResourceRegistryV1 {
     const reap = (evidence: Readonly<{ cgroupEmpty: true; outputClosed: true }>) => {
       if (settled) return;
       if (evidence?.cgroupEmpty !== true || evidence.outputClosed !== true) {
+        recordTermination("cleanup-failed", true);
+        settled = true;
         this.quarantine();
         throw new FastManimSandboxResourceControlError("cleanup");
       }

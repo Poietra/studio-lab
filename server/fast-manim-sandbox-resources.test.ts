@@ -218,6 +218,7 @@ describe("fast-manim sandbox resource registry", () => {
       FastManimSandboxResourceControlError,
     );
     expect(registry.snapshot()).toMatchObject({ activeJobs: 1, state: "quarantined" });
+    expect(registry.snapshot().terminated).toEqual([{ count: 1, reason: "cleanup-failed" }]);
     expect(() => registry.admit(limits())).toThrowError(FastManimSandboxResourceControlError);
   });
 
