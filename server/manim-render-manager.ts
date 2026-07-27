@@ -33,6 +33,12 @@ import {
   waitForRenderProcessStop,
 } from "./manim-render-process";
 import { lowerManimRenderRequest } from "./manim-render-request-lowering";
+import {
+  renderCommitCorrelationKey,
+  renderCommitMatchesPreview,
+  renderSessionCapabilities,
+  renderSessionStatusPolicy,
+} from "./manim-render-session-policy";
 import { type ManimSourceReadHooks, ManimSourceStore, sourceHash } from "./manim-source-store";
 import { ManimThumbnailCache } from "./manim-thumbnail-cache";
 import { discoverPythonSources } from "./manim-workspace";
@@ -144,23 +150,8 @@ function commandIsAvailable(command: readonly string[], signal?: AbortSignal) {
   });
 }
 
-function sessionWasStopped(session: RenderSession) {
-  return session.status === "cancelled" || session.status === "discarded";
-}
-
 function throwIfAborted(signal: AbortSignal | undefined) {
   signal?.throwIfAborted();
-}
-
-function commitExpectationKey(expected: RenderCommitRequest) {
-  return JSON.stringify([
-    expected.programBatchId,
-    expected.projectId,
-    expected.renderRequestId,
-    expected.sceneName,
-    expected.sourceHash,
-    expected.sourcePath,
-  ]);
 }
 
 function sourceActionView(action: SourceActionRecord): RenderSourceActionView {
@@ -314,8 +305,7 @@ export class ManimRenderManager {
   async cleanupExpiredSessions(now = Date.now()) {
     const expired = [...this.sessions.values()].filter(
       (session) =>
-        session.status !== "preparing" &&
-        session.status !== "rendering" &&
+        !renderSessionStatusPolicy(session.status).active &&
         !session.actionInProgress &&
         now - Date.parse(session.updatedAt) >= this.sessionRetentionMs,
     );
@@ -471,7 +461,7 @@ export class ManimRenderManager {
       );
     }
     const activeRenders = [...this.sessions.values()].filter(
-      (session) => session.status === "preparing" || session.status === "rendering",
+      (session) => renderSessionStatusPolicy(session.status).active,
     ).length;
     if (activeRenders + this.pendingStarts >= this.maxConcurrentRenders) {
       throw new HttpError(`Studio permits at most ${this.maxConcurrentRenders} concurrent Manim renders.`, 429);
@@ -497,7 +487,7 @@ export class ManimRenderManager {
 
   private reserveThumbnailSlot() {
     const activeRenders = [...this.sessions.values()].filter(
-      (session) => session.status === "preparing" || session.status === "rendering",
+      (session) => renderSessionStatusPolicy(session.status).active,
     ).length;
     if (activeRenders + this.pendingStarts >= this.maxConcurrentRenders) {
       throw new HttpError(`Studio permits at most ${this.maxConcurrentRenders} concurrent Manim renders.`, 429);
@@ -560,13 +550,10 @@ export class ManimRenderManager {
   }
 
   private toView(session: RenderSession): RenderSessionView {
-    const canDiscard = ["cancelled", "failed", "ready", "undone"].includes(session.status);
+    const capabilities = renderSessionCapabilities(session.status, session.actionInProgress);
     return {
       actionInProgress: session.actionInProgress,
-      canCancel: !session.actionInProgress && (session.status === "preparing" || session.status === "rendering"),
-      canCommit: !session.actionInProgress && session.status === "ready",
-      canDiscard: !session.actionInProgress && canDiscard,
-      canUndo: !session.actionInProgress && session.status === "committed",
+      ...capabilities,
       createdAt: session.createdAt,
       error: session.error,
       id: session.id,
@@ -786,7 +773,7 @@ export class ManimRenderManager {
     if (session.requestId !== expectedRenderRequestId) {
       throw new HttpError("The abandoned render no longer matches the Studio request.", 409);
     }
-    if (!["preparing", "rendering", "ready", "failed", "cancelled"].includes(session.status)) {
+    if (!renderSessionStatusPolicy(session.status).abandonable) {
       throw new HttpError("A source-changing render session cannot be abandoned.", 409);
     }
     await this.abandonStart(id);
@@ -819,7 +806,7 @@ export class ManimRenderManager {
       child.stderr?.on("data", (chunk: Buffer) => appendRenderLog(session, chunk));
       const exit = await waitForRenderExit(child, this.renderTimeoutMs);
       session.child = null;
-      if (sessionWasStopped(session)) return;
+      if (renderSessionStatusPolicy(session.status).stopped) return;
       if (exit.code !== 0) {
         throw new Error(
           `Manim exited with ${exit.code === null ? `signal ${exit.signal ?? "unknown"}` : `code ${exit.code}`}.`,
@@ -833,7 +820,7 @@ export class ManimRenderManager {
       session.updatedAt = new Date().toISOString();
     } catch (error) {
       session.child = null;
-      if (sessionWasStopped(session)) return;
+      if (renderSessionStatusPolicy(session.status).stopped) return;
       session.error = error instanceof Error ? error.message : "Manim render failed.";
       session.status = "failed";
       session.updatedAt = new Date().toISOString();
@@ -844,7 +831,7 @@ export class ManimRenderManager {
     let targetSession: RenderSession | null = null;
     await this.withSessionAction(id, async (session) => {
       targetSession = session;
-      if (session.status !== "preparing" && session.status !== "rendering") {
+      if (!renderSessionStatusPolicy(session.status).cancelable) {
         throw new HttpError("Only an active render can be cancelled.", 409);
       }
       session.status = "cancelled";
@@ -938,7 +925,7 @@ export class ManimRenderManager {
   commit(id: string, expected: RenderCommitRequest, signal?: AbortSignal) {
     return this.runSourceAction(id, {
       actionId: expected.actionId,
-      expectedKey: commitExpectationKey(expected),
+      expectedKey: renderCommitCorrelationKey(expected),
       kind: "commit",
       mutate: async (session, actionSignal) => {
         await this.sourceStore.writeIfUnchanged(
@@ -954,14 +941,18 @@ export class ManimRenderManager {
         return "committed";
       },
       preflight: (session) => {
-        if (session.status !== "ready") throw new HttpError("Only a successful preview can be committed.", 409);
+        if (!renderSessionStatusPolicy(session.status).committable) {
+          throw new HttpError("Only a successful preview can be committed.", 409);
+        }
         if (
-          expected.projectId !== this.projectId ||
-          expected.programBatchId !== session.batchId ||
-          expected.sceneName !== session.request.sceneName ||
-          expected.renderRequestId !== session.requestId ||
-          expected.sourceHash !== session.originalHash ||
-          expected.sourcePath !== session.request.sourcePath
+          !renderCommitMatchesPreview(expected, {
+            programBatchId: session.batchId,
+            projectId: this.projectId,
+            renderRequestId: session.requestId,
+            sceneName: session.request.sceneName,
+            sourceHash: session.originalHash,
+            sourcePath: session.request.sourcePath,
+          })
         ) {
           throw new HttpError("The rendered preview no longer matches the active Studio candidate.", 409);
         }
@@ -989,7 +980,7 @@ export class ManimRenderManager {
         return "undone";
       },
       preflight: (session) => {
-        if (session.status !== "committed") {
+        if (!renderSessionStatusPolicy(session.status).undoable) {
           throw new HttpError("Only a committed source change can be undone.", 409);
         }
       },
@@ -1013,7 +1004,8 @@ export class ManimRenderManager {
       }
     } else {
       const expectedStatus = request.kind === "commit" ? "ready" : "committed";
-      if (session.status !== expectedStatus) {
+      const policy = renderSessionStatusPolicy(session.status);
+      if (request.kind === "commit" ? !policy.committable : !policy.undoable) {
         throw new HttpError(`Only a ${expectedStatus} render session can register this cancellation.`, 409);
       }
       if (session.sourceActions.size >= MAX_SOURCE_ACTION_RECORDS) {
@@ -1046,7 +1038,7 @@ export class ManimRenderManager {
     let targetSession: RenderSession | null = null;
     await this.withSessionAction(id, async (session) => {
       targetSession = session;
-      if (!["cancelled", "failed", "ready", "undone"].includes(session.status)) {
+      if (!renderSessionStatusPolicy(session.status).discardable) {
         throw new HttpError("Cancel an active render or Undo a committed change before discarding it.", 409);
       }
       const child = session.child;
