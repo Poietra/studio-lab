@@ -5,13 +5,16 @@ import type { Plugin } from "vite";
 
 import { sendJson } from "./http/json";
 import { createConsoleJsonSink, createStructuredLogger } from "./logging/structured-logger";
+import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
 import { PersistentManimProjectCatalog } from "./manim-project-catalog";
 import { ManimProjectRegistry } from "./manim-project-registry";
 import { type ManimRenderPipelineOptions, parseManimCommand } from "./manim-render-config";
-import { handleManimRequest } from "./manim-render-http";
+import { handleManimRequest, type ManimRequestContext } from "./manim-render-http";
+import { localManimTenantId } from "./manim-request-principal";
 
 export function manimRenderPipeline(options: ManimRenderPipelineOptions = {}): Plugin {
   let manager: ManimProjectRegistry | null = null;
+  let requestContext: ManimRequestContext | null = null;
   const logger = createStructuredLogger({
     context: { component: "manim-render-api" },
     sinks: [createConsoleJsonSink({ includeData: false, prefix: "poietra-manim" })],
@@ -28,8 +31,10 @@ export function manimRenderPipeline(options: ManimRenderPipelineOptions = {}): P
         dataRoot,
         seedProjects,
       });
+      const tenantId = localManimTenantId(realpathSync(dataRoot));
       manager = new ManimProjectRegistry({
         catalog,
+        catalogStorageRoot: realpathSync(dataRoot),
         command: parseManimCommand(options.command),
         frame: {
           height: options.frameHeight ?? 8,
@@ -43,9 +48,10 @@ export function manimRenderPipeline(options: ManimRenderPipelineOptions = {}): P
         snapshotSandboxDeployment: options.snapshotSandboxDeployment ?? "production",
         snapshotProducerCommand: options.snapshotProducerCommand,
         snapshotProducerDevOptIn: options.snapshotProducerDevOptIn ?? false,
-        snapshotTenantId: "studio-local",
+        tenantId,
         thumbnailCacheRoot: join(realpathSync(dataRoot), "thumbnails"),
       });
+      requestContext = createTrustedLocalManimRequestContext(manager, "development");
     },
     configureServer(server) {
       server.middlewares.use(async (request, response, next) => {
@@ -53,11 +59,11 @@ export function manimRenderPipeline(options: ManimRenderPipelineOptions = {}): P
           next();
           return;
         }
-        if (!manager) {
+        if (!manager || !requestContext) {
           sendJson(response, 503, { error: "Manim render pipeline is not configured." });
           return;
         }
-        await handleManimRequest(manager, request, response, logger);
+        await handleManimRequest(requestContext, request, response, logger);
       });
     },
     async closeBundle() {

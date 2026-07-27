@@ -21,6 +21,12 @@ import { HttpError, readJsonBody, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import type { ManimProjectRegistry } from "./manim-project-registry";
 import type { ManimRenderManager } from "./manim-render-manager";
+import {
+  authenticateManimPrincipal,
+  type ManimPrincipalAuthenticator,
+  type VerifiedManimPrincipal,
+} from "./manim-request-principal";
+import type { ManimTenantRegistry } from "./manim-tenant-registry";
 import { EMPTY_MANIM_THUMBNAIL_SVG } from "./manim-thumbnail";
 import type { ThumbnailAsset } from "./manim-thumbnail-cache";
 
@@ -31,6 +37,22 @@ const PROJECT_THUMBNAIL_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63}
 const PROJECT_SCENE_SNAPSHOT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/scene-snapshots$/;
 const PROJECT_ITEM_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})$/;
 export type ManimApi = ManimRenderManager | ManimProjectRegistry;
+export type ManimRequestContext = Readonly<{
+  principal: VerifiedManimPrincipal;
+  tenants: ManimTenantRegistry<ManimApi>;
+}>;
+
+export async function authenticateManimRequestContext<Input>(
+  authenticator: ManimPrincipalAuthenticator<Input>,
+  input: Input,
+  tenants: ManimTenantRegistry<ManimApi>,
+  signal: AbortSignal,
+): Promise<ManimRequestContext> {
+  return {
+    principal: await authenticateManimPrincipal(authenticator, input, signal),
+    tenants,
+  };
+}
 export type ManimRequestPolicy = Readonly<{
   allowExistingProjectRegistration: boolean;
   expectedMutationOrigin?: string;
@@ -490,14 +512,14 @@ async function routeManimRequest(
 }
 
 export async function handleManimRequest(
-  manager: ManimApi,
+  context: ManimRequestContext,
   request: IncomingMessage,
   response: ServerResponse,
   baseLogger: StructuredLogger = nullLogger,
   policy: ManimRequestPolicy = DEFAULT_MANIM_REQUEST_POLICY,
 ) {
   const requestId = randomUUID();
-  const logger = baseLogger.child({
+  let logger = baseLogger.child({
     method: request.method,
     requestId,
     route: requestRouteTemplate(request.url),
@@ -518,8 +540,10 @@ export async function handleManimRequest(
   else policy.requestSignal?.addEventListener("abort", abortFromPolicy, { once: true });
   response.once("close", abortOnClosedResponse);
   response.once("finish", markResponseFinished);
-  logger.info("request.started");
   try {
+    const manager = context.tenants.forPrincipal(context.principal);
+    logger = logger.child({ tenantId: manager.tenantId });
+    logger.info("request.started");
     await routeManimRequest(manager, request, response, requestAbort.signal, policy);
     logger.info("response.sent", { status: response.statusCode });
   } catch (error) {

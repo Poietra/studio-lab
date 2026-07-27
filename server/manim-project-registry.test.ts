@@ -7,6 +7,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 import { PersistentManimProjectCatalog } from "./manim-project-catalog";
+import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
 import { handleManimRequest } from "./manim-render-http";
 import {
   cleanupManimRenderPipelineFixtures,
@@ -367,7 +368,7 @@ describe("Manim project registry", () => {
     const started = await registry.start({ ...request(), projectId: "project-a" });
     await waitForTerminal(registry, started.id);
     const server = createServer((incoming, response) => {
-      void handleManimRequest(registry, incoming, response);
+      void handleManimRequest(createTrustedLocalManimRequestContext(registry, "test"), incoming, response);
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {
@@ -445,7 +446,7 @@ describe("Manim project registry", () => {
     const privateCommandArgument = "--private-adapter-path";
     const { registry } = await registryFixture([privateCommandPath, privateCommandArgument]);
     const server = createServer((incoming, response) => {
-      void handleManimRequest(registry, incoming, response);
+      void handleManimRequest(createTrustedLocalManimRequestContext(registry, "test"), incoming, response);
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {
@@ -505,7 +506,7 @@ describe("Manim project registry", () => {
     temporaryRoots.push(addedRoot);
     await writeFile(join(addedRoot, "scene.py"), sceneSource, "utf8");
     const server = createServer((incoming, response) => {
-      void handleManimRequest(registry, incoming, response);
+      void handleManimRequest(createTrustedLocalManimRequestContext(registry, "test"), incoming, response);
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {

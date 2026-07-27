@@ -6,8 +6,10 @@ import type { AddressInfo } from "node:net";
 
 import { sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
+import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
 import { PersistentManimProjectCatalog } from "./manim-project-catalog";
 import { handleManimRequest } from "./manim-render-http";
+import { localManimTenantId } from "./manim-request-principal";
 import { ManimProjectRegistry, type ManimProjectConfig } from "./manim-render-pipeline";
 
 const CONTENT_SECURITY_POLICY = [
@@ -91,13 +93,17 @@ export async function startElectronShellServer(
     dataRoot: options.dataRoot,
     seedProjects: projects,
   });
+  const tenantId = localManimTenantId(await realpath(options.dataRoot));
   const registry = new ManimProjectRegistry({
     catalog,
+    catalogStorageRoot: await realpath(options.dataRoot),
     command: options.command,
     frame: options.frame ?? { height: 8, width: 14.222 },
     logger: options.logger ?? nullLogger,
     projects,
+    tenantId,
   });
+  const requestContext = createTrustedLocalManimRequestContext(registry, "desktop");
   const capability = randomBytes(32).toString("base64url");
   let expectedHost = "";
   let closing = false;
@@ -120,7 +126,7 @@ export async function startElectronShellServer(
     }
     const url = new URL(request.url ?? "/", `http://${expectedHost}`);
     if (url.pathname.startsWith("/api/manim/")) {
-      void handleManimRequest(registry, request, response, options.logger ?? nullLogger, {
+      void handleManimRequest(requestContext, request, response, options.logger ?? nullLogger, {
         allowExistingProjectRegistration: false,
       });
       return;

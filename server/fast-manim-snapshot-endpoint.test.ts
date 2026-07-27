@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { describe, expect, it } from "vitest";
 
 import { fastManimSnapshotRunViewV1Schema } from "./fast-manim-snapshot-contract";
+import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
 import { handleManimRequest } from "./manim-render-http";
 import { ManimRenderManager } from "./manim-render-manager";
 import {
@@ -20,7 +21,7 @@ const { managers, projectRoot, servers } = installFastManimSnapshotRunnerFixture
 describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot endpoint", () => {
   async function startServer(manager: ManimRenderManager) {
     const server = createServer((request, response) => {
-      void handleManimRequest(manager, request, response);
+      void handleManimRequest(createTrustedLocalManimRequestContext(manager, "test"), request, response);
     });
     servers.push(server);
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -36,6 +37,7 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot endpoint", () => {
       snapshotSandboxDeployment: "test",
       snapshotProducerCommand: producerCommand(),
       snapshotProducerDevOptIn: true,
+      tenantId: "test-tenant",
     });
     managers.push(manager);
     const baseUrl = await startServer(manager);
@@ -92,6 +94,7 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot endpoint", () => {
       snapshotSandboxDeployment: "test",
       snapshotProducerCommand: producerCommand(),
       snapshotProducerDevOptIn: true,
+      tenantId: "test-tenant",
     });
     managers.push(manager);
     const baseUrl = await startServer(manager);
@@ -128,6 +131,7 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot endpoint", () => {
       command: ["node", fakeManim],
       frame: { height: 8, width: 14.222222222222221 },
       projectRoot: root,
+      tenantId: "test-tenant",
     });
     managers.push(manager);
     const baseUrl = await startServer(manager);

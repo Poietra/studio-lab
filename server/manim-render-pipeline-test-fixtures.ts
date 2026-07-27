@@ -193,6 +193,7 @@ export async function fixture(
     frame: { height: 8, width: 14.222 },
     ...options,
     projectRoot,
+    tenantId: "test-tenant",
   });
   managers.push(manager);
   return { manager, projectRoot };
@@ -239,9 +240,11 @@ export async function registryFixture(command: readonly string[] = [process.exec
   const catalog = dataRoot ? new PersistentManimProjectCatalog({ dataRoot, seedProjects }) : null;
   const registry = new ManimProjectRegistry({
     ...(catalog ? { catalog } : {}),
+    ...(dataRoot ? { catalogStorageRoot: dataRoot } : {}),
     command,
     frame: { height: 8, width: 14.222 },
     projects: seedProjects,
+    tenantId: "test-tenant",
   });
   registries.push(registry);
   return { dataRoot, firstRoot, registry, secondRoot };
