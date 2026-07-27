@@ -1,13 +1,31 @@
-import { request as createRequest, createServer } from "node:http";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { type IncomingMessage, request as createRequest, createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import type { ResolvedConfig, ViteDevServer } from "vite";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ModelSuggestion } from "../../src/ai/edit-suggestion-schema";
 import type { EditSuggestionRequest } from "../../src/ai/edit-suggestions";
 import { createStructuredLogger, type StructuredLogRecord } from "../logging/structured-logger";
 import { openAiEditSuggestions } from "../openai-edit-suggestions";
 import { createEditSuggestionHandler } from "./handler";
 import { EditSuggestionGenerationError, type EditSuggestionGenerator } from "./service";
+
+const openAiParse = vi.hoisted(() => vi.fn());
+
+vi.mock("openai", () => ({
+  default: class MockOpenAI {
+    static APIError = class extends Error {};
+    readonly responses = { parse: openAiParse };
+  },
+}));
+
+afterEach(() => {
+  openAiParse.mockReset();
+  vi.unstubAllEnvs();
+});
 
 const choices = [
   { description: "Add the next Scene first.", id: "option-1", label: "Add Scene" },
@@ -37,18 +55,10 @@ function requestBody(): EditSuggestionRequest {
   };
 }
 
-async function callHandler(generator: EditSuggestionGenerator, body: unknown) {
-  const records: StructuredLogRecord[] = [];
-  const logger = createStructuredLogger({
-    sinks: [{ write: (record) => records.push(record) }],
-  });
-  const server = createServer(
-    createEditSuggestionHandler({
-      generator: () => generator,
-      logger,
-      requestId: () => "request-1",
-    }),
-  );
+type HttpHandler = (request: IncomingMessage, response: ServerResponse) => Promise<void> | void;
+
+async function callHttpHandler(handler: HttpHandler, body: unknown) {
+  const server = createServer(handler);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     const address = server.address() as AddressInfo;
@@ -57,10 +67,26 @@ async function callHandler(generator: EditSuggestionGenerator, body: unknown) {
       headers: { "content-type": "application/json" },
       method: "POST",
     });
-    return { records, response, result: (await response.json()) as unknown };
+    return { response, result: (await response.json()) as unknown };
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
+}
+
+async function callHandler(generator: EditSuggestionGenerator, body: unknown) {
+  const records: StructuredLogRecord[] = [];
+  const logger = createStructuredLogger({
+    sinks: [{ write: (record) => records.push(record) }],
+  });
+  const result = await callHttpHandler(
+    createEditSuggestionHandler({
+      generator: () => generator,
+      logger,
+      requestId: () => "request-1",
+    }),
+    body,
+  );
+  return { records, ...result };
 }
 
 describe("edit suggestion API handler", () => {
@@ -115,6 +141,27 @@ describe("edit suggestion API handler", () => {
     expect(records.find((record) => record.event === "request.failed")?.data).toEqual({
       failure: "generation",
       status: 401,
+    });
+  });
+
+  it("preserves only the bounded capacity classification for provider rate limits", async () => {
+    const sentinel = "SECRET_RATE_LIMIT_PROVIDER_BODY";
+    const generator: EditSuggestionGenerator = {
+      async generate(): Promise<ModelSuggestion> {
+        throw new EditSuggestionGenerationError(sentinel, 429, {
+          cause: new Error(`${sentinel}: nested traceback`),
+        });
+      },
+    };
+
+    const { records, response, result } = await callHandler(generator, requestBody());
+
+    expect(response.status).toBe(429);
+    expect(result).toEqual({ error: "Edit suggestion capacity is temporarily exhausted." });
+    expect(JSON.stringify(records)).not.toContain(sentinel);
+    expect(records.find((record) => record.event === "request.failed")?.data).toEqual({
+      failure: "generation",
+      status: 429,
     });
   });
 
@@ -221,5 +268,35 @@ describe("edit suggestion API handler", () => {
 
   it("is exposed by a serve-only Vite plugin", () => {
     expect(openAiEditSuggestions({ logPath: false }).apply).toBe("serve");
+  });
+
+  it("never reads a repository-root .openai-key file", async () => {
+    const root = mkdtempSync(join(tmpdir(), "poietra-ai-key-boundary-"));
+    try {
+      writeFileSync(join(root, ".openai-key"), "OPENAI_API_KEY=SECRET_REPOSITORY_KEY\n", { mode: 0o600 });
+      vi.stubEnv("OPENAI_API_KEY", "");
+      const plugin = openAiEditSuggestions({ logPath: false });
+      const configResolved = plugin.configResolved as (config: ResolvedConfig) => void;
+      configResolved({ root } as ResolvedConfig);
+      let handler: HttpHandler | null = null;
+      const configureServer = plugin.configureServer as (server: ViteDevServer) => void;
+      configureServer({
+        middlewares: {
+          use(route: string, candidate: HttpHandler) {
+            expect(route).toBe("/api/ai/edit-suggestions");
+            handler = candidate;
+          },
+        },
+      } as unknown as ViteDevServer);
+      if (!handler) throw new Error("The edit-suggestion middleware was not installed.");
+
+      const { response, result } = await callHttpHandler(handler, requestBody());
+
+      expect(response.status).toBe(503);
+      expect(result).toEqual({ error: "The OpenAI credential is not configured." });
+      expect(openAiParse).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
   });
 });

@@ -29,10 +29,12 @@ function usageTelemetry(
     | undefined,
 ) {
   if (!usage) return undefined;
+  const boundedCounter = (value: unknown) =>
+    typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
   return {
-    inputTokens: usage.input_tokens,
-    outputTokens: usage.output_tokens,
-    totalTokens: usage.total_tokens,
+    inputTokens: boundedCounter(usage.input_tokens),
+    outputTokens: boundedCounter(usage.output_tokens),
+    totalTokens: boundedCounter(usage.total_tokens),
   };
 }
 
@@ -122,7 +124,8 @@ export function createOpenAiEditSuggestionGenerator(options: OpenAiGeneratorOpti
             { cause: error },
           );
         }
-        throw new EditSuggestionGenerationError("The AI provider request failed.", 502, { cause: error });
+        const status = error instanceof OpenAI.APIError && error.status === 429 ? 429 : 502;
+        throw new EditSuggestionGenerationError("The AI provider request failed.", status, { cause: error });
       }
     },
   };
