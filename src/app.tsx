@@ -63,15 +63,8 @@ import {
   projectVerifiedSourceDuration,
   resolveVerifiedSourceDurationBasis,
 } from "./studio/imported-workspace";
-import {
-  PRISTINE_WORKING_REVISION,
-  createUnavailableStudioPreviewSnapshotProviderV1,
-  resolveStudioPreviewSnapshotProviderV1,
-  type StudioPreviewEditingContextV1,
-  type StudioPreviewSnapshotProviderV1,
-} from "./studio/preview-snapshot-provider";
 import { projectRuntimeSceneToSourceTimeline } from "./studio/source-timeline";
-import { useStudioPreviewRenderer } from "./studio/use-preview-renderer";
+import { useStudioPreviewAuthorityController } from "./studio/use-preview-authority-controller";
 import { useSourceReimportController } from "./studio/use-source-reimport-controller";
 import { MagicEditPanel } from "./studio/magic-edit-panel";
 import {
@@ -354,6 +347,10 @@ export function App() {
   const currentDraftProgram = useRef<ProgramRecord | null>(null);
   currentDraftProgram.current = draftProgram;
   const appliedCanonicalPrograms = appliedPrograms.map((record) => record.program);
+  const appliedProgramTransactionIds = useMemo(
+    () => appliedPrograms.map((record) => record.program.transactionId),
+    [appliedPrograms],
+  );
   const sourceCurrentTime = workingTimeToSourceTime(appliedCanonicalPrograms, currentTime);
   const timelineAnchors =
     activeScene?.anchors.map((sourceTime) => ({
@@ -451,66 +448,11 @@ export function App() {
     setInspectorReturnFocus(null);
   }, [activeScene?.sceneId, activeScene?.sourceHash, activeProjectId]);
 
-  // The server provider is an explicit production opt-in. The checked-in
-  // fixture remains behind a DEV-only dynamic import and is never bundled as
-  // production preview authority.
-  const [previewSnapshotProvider, setPreviewSnapshotProvider] = useState<StudioPreviewSnapshotProviderV1 | null>(null);
-  const [previewRendererRequestSearch] = useState<string | null>(() => {
-    if (typeof location === "undefined") return null;
-    const requested = new URLSearchParams(location.search).get("previewRenderer");
-    return requested === "server" || (import.meta.env.DEV && requested === "fixture") ? location.search : null;
-  });
-  const [previewRendererActivated, setPreviewRendererActivated] = useState(false);
-  const [previewProviderPending, setPreviewProviderPending] = useState(false);
-  const previewActivationAllowed = typeof window === "undefined" || window.top === window.self;
-  useEffect(() => {
-    if (!previewRendererActivated || previewRendererRequestSearch === null) return;
-    let cancelled = false;
-    void resolveStudioPreviewSnapshotProviderV1(previewRendererRequestSearch)
-      .then((provider) => {
-        if (!cancelled) {
-          setPreviewSnapshotProvider(provider);
-          setPreviewProviderPending(false);
-        }
-      })
-      .catch((cause: unknown) => {
-        if (!cancelled) {
-          setPreviewSnapshotProvider(createUnavailableStudioPreviewSnapshotProviderV1(cause));
-          setPreviewProviderPending(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [previewRendererActivated, previewRendererRequestSearch]);
-
-  function activatePreviewRenderer() {
-    if (!previewActivationAllowed || previewRendererRequestSearch === null || previewRendererActivated) return;
-    previewActivationDialog.current?.close();
-    cancelSuggestionRequest();
-    setIsPlaying(false);
-    sourceDurationBasisBlockMessageRef.current = SOURCE_TIMING_LOADING_BLOCKER;
-    setPreviewProviderPending(true);
-    setPreviewRendererActivated(true);
-  }
   const editorPristine =
     appliedPrograms.length === 0 &&
     draftProgram === null &&
     editingAppliedProgram === null &&
     redoPrograms.length === 0;
-  const previewEditingContext = useMemo<StudioPreviewEditingContextV1 | null>(() => {
-    if (!activeScene || !workspace) return null;
-    return {
-      projectId: workspace.projectId,
-      sceneName: activeScene.name,
-      sourceDuration: activeScene.runtimeSceneState.duration,
-      sourceHash: activeScene.sourceHash,
-      sourcePath: activeScene.sourcePath,
-      workingRevision: editorPristine
-        ? PRISTINE_WORKING_REVISION
-        : `programs:${appliedPrograms.map((record) => record.program.transactionId).join(",")}${draftProgram ? "+draft" : ""}`,
-    };
-  }, [activeScene, appliedPrograms, draftProgram, editorPristine, workspace]);
   const importedSceneBoundaryActive =
     activeScene?.runtimeSceneState.eventTrack.events.some(
       (event) => event.kind === "scene-boundary" && event.at !== undefined && event.at <= currentTime,
@@ -529,15 +471,33 @@ export function App() {
     sourceDurationSessionKey !== null && verifiedSourceDurationBasis?.sessionKey === sourceDurationSessionKey
       ? verifiedSourceDurationBasis.duration
       : null;
-  const previewRenderer = useStudioPreviewRenderer({
-    context: previewEditingContext,
+  const {
+    activate: activatePreviewAuthority,
+    activationAllowed: previewActivationAllowed,
+    activationRequested: previewRendererRequested,
+    activated: previewRendererActivated,
+    providerPending: previewProviderPending,
+    renderer: previewRenderer,
+  } = useStudioPreviewAuthorityController({
+    appliedTransactionIds: appliedProgramTransactionIds,
+    draftActive: draftProgram !== null,
+    editingAppliedProgram: editingAppliedProgram !== null,
     frame: workspace?.frame ?? { height: 8, width: 14.222 },
-    provider: previewSnapshotProvider,
+    projectId: workspace?.projectId ?? null,
+    redoProgramCount: redoPrograms.length,
     retainedSourceDuration: retainedVerifiedSourceDuration,
     sampleTime: currentTime,
+    scene: activeScene,
     transientEdit:
       dragPreview !== null || geometryPreview !== null || scalePreview !== null || importedSceneBoundaryActive,
   });
+  function activatePreviewRenderer() {
+    if (!activatePreviewAuthority()) return;
+    previewActivationDialog.current?.close();
+    cancelSuggestionRequest();
+    setIsPlaying(false);
+    sourceDurationBasisBlockMessageRef.current = SOURCE_TIMING_LOADING_BLOCKER;
+  }
   const sourceDurationBasis = resolveVerifiedSourceDurationBasis({
     candidate: previewRenderer?.verifiedSourceDuration ?? null,
     editorPristine,
@@ -683,7 +643,7 @@ export function App() {
           tracks: projection.timeline.objectTracks,
         })
       : {};
-  const appliedTransactionIds = new Set(appliedPrograms.map((record) => record.program.transactionId));
+  const appliedTransactionIds = new Set(appliedProgramTransactionIds);
   const boundary = workspaceProjection?.boundary ?? null;
   const visibleEntities = workspaceProjection?.visibleEntities ?? [];
   const editableEntities = workspaceProjection?.editableEntities ?? [];
@@ -2483,7 +2443,7 @@ export function App() {
           </div>
         ) : null}
 
-        {previewRendererRequestSearch !== null && !previewRendererActivated ? (
+        {previewRendererRequested && !previewRendererActivated ? (
           <section
             aria-labelledby="preview-activation-title"
             className="flex shrink-0 items-center justify-between gap-3 border-b border-sky-950 bg-sky-950/30 px-3 py-2"
