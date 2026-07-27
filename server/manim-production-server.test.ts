@@ -1,7 +1,5 @@
 import { createServer as createHttpServer, request as createRequest } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 import { HttpError } from "./http/json";
@@ -56,7 +54,7 @@ function createRuntime(ready: () => boolean = () => true, onProjects: () => void
       onProjects();
       return { defaultProjectId: null, projects: [] };
     },
-    storageRoots: [join(tmpdir(), "poietra-production-runtime-tenant-a")],
+    storageBoundary: { kind: "shared-durable", namespace: "production-test" },
     tenantId: "tenant-a",
   } as unknown as ManimApi;
   return {
@@ -67,7 +65,8 @@ function createRuntime(ready: () => boolean = () => true, onProjects: () => void
         ? ({
             executionBoundary: "adapter-attests-external-sandbox",
             ready: true,
-            tenantBoundary: "single-tenant-deployment",
+            storageBoundary: "shared-durable",
+            tenantBoundary: "server-owned-tenant-key",
           } as const)
         : ({ ready: false } as const),
   } as const;
@@ -165,7 +164,7 @@ describe("standalone production Manim HTTP adapter", () => {
     ).rejects.toThrow(/runtime adapter is incomplete/i);
   });
 
-  it("rejects an untyped runtime without a bounded absolute tenant storage namespace", async () => {
+  it("rejects a runtime without a tenant-keyed durable storage namespace", async () => {
     const runtime = createRuntime();
     await expect(
       startProductionManimServer({
@@ -173,10 +172,10 @@ describe("standalone production Manim HTTP adapter", () => {
         config: await startConfig(),
         runtime: {
           ...runtime,
-          api: { ...runtime.api, storageRoots: undefined } as unknown as ManimApi,
+          api: { ...runtime.api, storageBoundary: undefined } as unknown as ManimApi,
         },
       }),
-    ).rejects.toThrow(/absolute storage roots/i);
+    ).rejects.toThrow(/shared durable boundary/i);
   });
 
   it.each(["studio-local", "local-000000000000000000000000"])(

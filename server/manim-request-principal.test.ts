@@ -8,8 +8,9 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { HttpError, sendJson } from "./http/json";
 import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
-import { authenticateManimRequestContext, handleManimRequest, type ManimRequestContext } from "./manim-render-http";
 import { ManimProjectRegistry } from "./manim-project-registry";
+import { authenticateManimRequestContext, handleManimRequest, type ManimRequestContext } from "./manim-render-http";
+import { fakeRenderer, request, sceneSource } from "./manim-render-pipeline-test-fixtures";
 import {
   authenticateManimPrincipal,
   createTrustedLocalManimPrincipal,
@@ -17,7 +18,6 @@ import {
   localManimTenantId,
   type ManimPrincipalAuthenticator,
 } from "./manim-request-principal";
-import { fakeRenderer, request, sceneSource } from "./manim-render-pipeline-test-fixtures";
 import { ManimTenantRegistry } from "./manim-tenant-registry";
 
 const roots: string[] = [];
@@ -203,6 +203,22 @@ describe("Manim request principals", () => {
     });
     registries.push(first, second);
     expect(() => new ManimTenantRegistry([first, second])).toThrow(/storage roots must not overlap/i);
+  });
+
+  it("allows tenants to share one durable namespace because every durable key is tenant-owned", () => {
+    expect(
+      () =>
+        new ManimTenantRegistry([
+          {
+            storageBoundary: { kind: "shared-durable", namespace: "production-primary" } as const,
+            tenantId: "tenant-a",
+          },
+          {
+            storageBoundary: { kind: "shared-durable", namespace: "production-primary" } as const,
+            tenantId: "tenant-b",
+          },
+        ]),
+    ).not.toThrow();
   });
 
   it.each([undefined, [], ["relative/root"], [1], Array.from({ length: 129 }, () => "/tmp/root")])(

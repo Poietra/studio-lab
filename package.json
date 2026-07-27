@@ -43,11 +43,13 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1095.0",
     "@tauri-apps/api": "2.11.1",
     "clsx": "2.1.1",
     "katex": "0.18.1",
     "motion": "^12.42.2",
     "openai": "^6.48.0",
+    "pg": "8.22.0",
     "react": "19.2.7",
     "react-dom": "19.2.7",
     "tailwind-merge": "3.6.0",
@@ -59,6 +61,7 @@
     "@tailwindcss/vite": "4.3.3",
     "@tauri-apps/cli": "2.11.4",
     "@types/node": "^26.1.1",
+    "@types/pg": "8.20.0",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.3",

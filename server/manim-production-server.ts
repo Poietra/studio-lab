@@ -10,6 +10,12 @@ import { authenticateManimRequestContext, handleManimRequest, type ManimApi } fr
 import { isReservedLocalManimTenantId, type ManimPrincipalAuthenticator } from "./manim-request-principal";
 import { ManimTenantRegistry } from "./manim-tenant-registry";
 
+export {
+  createDurableManimRuntimeV1,
+  createDurableProductionManimRuntimeAdapterV1,
+  DurableManimRuntimeV1,
+} from "./durable-manim-runtime";
+
 const DEFAULT_LIMITS = {
   handlerTimeoutMs: 30_000,
   headersTimeoutMs: 10_000,
@@ -115,7 +121,8 @@ export type ProductionRuntimeReadinessV1 =
   | Readonly<{
       executionBoundary: "adapter-attests-external-sandbox";
       ready: true;
-      tenantBoundary: "single-tenant-deployment";
+      storageBoundary: "shared-durable";
+      tenantBoundary: "server-owned-tenant-key";
     }>;
 
 /**
@@ -127,7 +134,7 @@ export type ProductionRuntimeReadinessV1 =
 export type ProductionManimRuntimeAdapterV1 = Readonly<{
   api: ManimApi;
   close: () => Promise<void>;
-  /** Covers fresh sandbox attestation and single-tenant backing stores. */
+  /** Covers fresh sandbox attestation plus PostgreSQL/S3 durable probes. */
   ready: (signal: AbortSignal) => Promise<ProductionRuntimeReadinessV1>;
 }>;
 
@@ -334,6 +341,9 @@ export async function startProductionManimServer(
   if (isReservedLocalManimTenantId((options.runtime.api as Readonly<{ tenantId?: unknown }>).tenantId)) {
     throw new TypeError("Production runtime tenant ID must not use a reserved local identity.");
   }
+  if (options.runtime.api.storageBoundary?.kind !== "shared-durable") {
+    throw new TypeError("Production runtime storage must use a tenant-keyed shared durable boundary.");
+  }
   const logger = options.logger ?? nullLogger;
   const tenants = new ManimTenantRegistry<ManimApi>([options.runtime.api]);
   const trustedProxyAddresses = new Set(config.trustedProxyAddresses);
@@ -383,7 +393,8 @@ export async function startProductionManimServer(
         runtimeReady !== ABORTED &&
         runtimeReady.ready === true &&
         runtimeReady.executionBoundary === "adapter-attests-external-sandbox" &&
-        runtimeReady.tenantBoundary === "single-tenant-deployment"
+        runtimeReady.storageBoundary === "shared-durable" &&
+        runtimeReady.tenantBoundary === "server-owned-tenant-key"
       );
     } catch {
       logger.warn("production.runtime_readiness_probe_failed");
