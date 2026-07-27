@@ -1,0 +1,63 @@
+{
+  "baseRuntime": {
+    "python": {
+      "platformManifestDigest": "sha256:c00fc7b44d844b6da22861ec24af43968a5200eac4ec607b4725d585165d6b49",
+      "reference": "docker.io/library/python@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7",
+      "version": "3.12.11"
+    },
+    "uv": {
+      "platformManifestDigest": "sha256:08a7428e3daeb4ff634fe06d3d9aec278579e88f770b5d141e5a408cb998f40a",
+      "reference": "ghcr.io/astral-sh/uv@sha256:9a23023be68b2ed09750ae636228e903a54a05ea56ed03a934d00fe9fbeded4b",
+      "version": "0.9.26"
+    }
+  },
+  "buildContext": {
+    "files": {
+      "Containerfile": "72dc7a66953216b9fb667b1a3e201e7890a386460f2cd3d1bbebbd0deb717a81",
+      "apt-snapshot.sources": "7793bdd79c44356cc81c16090e4ead4cdf6af41bf5aff7317868ad8f36c52443",
+      "asset-installer.py": "af218259d23d52a1c06ccd67dd58f5474cd00a559b109884bf14c3f019485f09",
+      "build-requirements.txt": "a29a8dca69ead5a6f657db881660e086b0164c0670384d3a4746e447a714b2f0",
+      "compiler-wrapper.sh": "05ba9053b2638c3e77bae09cf558d28a81c6304f22ef4f45e12271c95e6c1155",
+      "entrypoint.py": "0d245b6c2e05c93eecb62bb94fb33fe9bf0745d7783452e76bd798a4c15f83af",
+      "profile.v1.json": "28f3fe700adc4bbc681cb3eb95b1c3567a685320ce031fe304ba78b4043a273f",
+      "runtime-inventory.py": "49452903c5ff3163dd25a07dcd66234d92e248b1e471172d8839203e869847d0",
+      "seccomp.v1.json": "4f5593a468d748cf2801f5a63c8ee88f6d955d9a5375a2f0bd4c2846ad0dd2ca"
+    },
+    "sourceArchiveFile": "fast-manim.tar.gz"
+  },
+  "fastManim": {
+    "archive": {
+      "format": "git-archive-tar-gzip-v1",
+      "prefix": "fast-manim/",
+      "sha256": "46f66b6698650988c18327732d1d3c30cccd53b38de91e1059c61187d92c2b61"
+    },
+    "commit": "ac143dc46ebe314095ae7864a32efa289a0afe96",
+    "pyprojectSha256": "f791e3ab6ef3e12457e3f36f5d7d7d4c249ae97678d23607781556556a5d6012",
+    "repository": "Poietra/fast-manim",
+    "sourceDateEpoch": 1785159109,
+    "tree": "b86e2ec81f257cae20669e3c5c33080facfbd610",
+    "uvLockSha256": "3244a21383800a8a1049438f24c54121c483b1a4ab24ae8523d8c852b7431753"
+  },
+  "operatingSystem": {
+    "builderPackages": {
+      "build-essential": "12.9",
+      "libcairo2-dev": "1.16.0-7",
+      "libffi-dev": "3.4.4-1",
+      "libpango1.0-dev": "1.50.12+ds-1",
+      "pkg-config": "1.8.1-1"
+    },
+    "runtimePackages": {
+      "libcairo2": "1.16.0-7",
+      "libegl1": "1.6.0-1",
+      "libffi8": "3.4.4-1",
+      "libgl1": "1.6.0-1",
+      "libpango-1.0-0": "1.50.12+ds-1",
+      "libpangocairo-1.0-0": "1.50.12+ds-1",
+      "libpangoft2-1.0-0": "1.50.12+ds-1"
+    },
+    "snapshot": "20250929T000000Z"
+  },
+  "platform": "linux/amd64",
+  "schema": "poietra.fast-manim-oci-build-lock",
+  "version": 1
+}
