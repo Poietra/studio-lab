@@ -1,5 +1,8 @@
 use std::cmp::Ordering;
+use std::fmt;
+use std::mem::size_of;
 use std::ops::Range;
+use std::sync::OnceLock;
 
 use poietra_scene_ir::{
     AffineTransformV1, CubicSegmentV1, CubicSubpathV1, RenderCameraV1, RenderDrawV1,
@@ -64,13 +67,28 @@ pub enum PrepareFrameErrorV1 {
     TessellationDepthLimit { draw_id: String, maximum_depth: u8 },
 }
 
-/// One GPU-ready vertex. Values are exposed read-only; construction remains inside
-/// [`prepare_frame_v1`] so uploads cannot bypass the f64 boundary checks.
+/// Existing V1 interleaved vertex view retained for API compatibility.
+///
+/// The renderer-neutral geometry source is [`PreparedGeometryVertexV1`]; this
+/// view is projected lazily and is never part of a geometry cache key.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PreparedVertexV1 {
     position: [f32; 2],
     premultiplied_linear_color: [f32; 4],
 }
+
+/// Maximum element-byte payload requested by the lazy V1 interleaved
+/// compatibility view (allocator bookkeeping is outside this ceiling).
+///
+/// The source geometry ceiling is expressed as a vertex count. Deriving this
+/// byte ceiling with checked arithmetic keeps the compatibility allocation
+/// bounded even if the vertex layout changes in a future revision.
+pub const MAX_COMPATIBILITY_VERTEX_BYTES_V1: usize =
+    match MAX_PREPARED_VERTICES_V1.checked_mul(size_of::<PreparedVertexV1>()) {
+        Some(bytes) => bytes,
+        None => panic!("compatibility vertex byte ceiling overflowed usize"),
+    };
+const _: () = assert!(MAX_COMPATIBILITY_VERTEX_BYTES_V1 <= 24 * 1024 * 1024);
 
 impl PreparedVertexV1 {
     #[must_use]
@@ -84,11 +102,40 @@ impl PreparedVertexV1 {
     }
 }
 
+/// Position-only prepared geometry. Material interleaving is deferred to the
+/// upload plan, so material-only changes do not change this value.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PreparedGeometryVertexV1 {
+    position: [f32; 2],
+}
+
+impl PreparedGeometryVertexV1 {
+    #[must_use]
+    pub const fn position(&self) -> [f32; 2] {
+        self.position
+    }
+}
+
+/// Premultiplied linear-light solid paint for one source draw.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PreparedMaterialV1 {
+    premultiplied_linear_color: [f32; 4],
+}
+
+impl PreparedMaterialV1 {
+    #[must_use]
+    pub const fn premultiplied_linear_color(&self) -> [f32; 4] {
+        self.premultiplied_linear_color
+    }
+}
+
 /// Indexed triangle range for one source draw, kept in packet paint order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedDrawV1 {
     draw_id: String,
     index_range: Range<u32>,
+    material_index: u32,
+    vertex_range: Range<u32>,
 }
 
 impl PreparedDrawV1 {
@@ -101,33 +148,109 @@ impl PreparedDrawV1 {
     pub const fn index_range(&self) -> &Range<u32> {
         &self.index_range
     }
+
+    #[must_use]
+    pub const fn material_index(&self) -> u32 {
+        self.material_index
+    }
+
+    #[must_use]
+    pub const fn vertex_range(&self) -> &Range<u32> {
+        &self.vertex_range
+    }
+}
+
+/// World/clip-space geometry derived for one sampled frame.
+#[derive(Debug, PartialEq)]
+pub struct PreparedGeometryPlanV1 {
+    indices: Vec<u32>,
+    tessellation_calls: u64,
+    vertices: Vec<PreparedGeometryVertexV1>,
+}
+
+/// Material values kept separate from geometry until upload encoding.
+#[derive(Debug, PartialEq)]
+pub struct PreparedMaterialPlanV1 {
+    clear_color: [f64; 4],
+    materials: Vec<PreparedMaterialV1>,
+}
+
+/// Indexed draw ranges in the packet's stable translucent paint order.
+#[derive(Debug, PartialEq)]
+pub struct OrderedDrawPlanV1 {
+    draws: Vec<PreparedDrawV1>,
 }
 
 /// Complete, fail-closed CPU output consumed by [`crate::WgpuPaintRendererV1`].
-#[derive(Debug, PartialEq)]
 pub struct PreparedFrameV1 {
-    clear_color: [f64; 4],
-    draws: Vec<PreparedDrawV1>,
-    indices: Vec<u32>,
-    tessellation_calls: u64,
-    vertices: Vec<PreparedVertexV1>,
+    compatibility_vertices: OnceLock<Vec<PreparedVertexV1>>,
+    geometry: PreparedGeometryPlanV1,
+    materials: PreparedMaterialPlanV1,
+    ordered_draws: OrderedDrawPlanV1,
     viewport: [u32; 2],
+}
+
+#[allow(
+    clippy::missing_fields_in_debug,
+    reason = "the lazy compatibility cache is intentionally not observable"
+)]
+impl fmt::Debug for PreparedFrameV1 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PreparedFrameV1")
+            .field("geometry", &self.geometry)
+            .field("materials", &self.materials)
+            .field("ordered_draws", &self.ordered_draws)
+            .field("viewport", &self.viewport)
+            .finish()
+    }
+}
+
+impl PartialEq for PreparedFrameV1 {
+    fn eq(&self, other: &Self) -> bool {
+        self.geometry == other.geometry
+            && self.materials == other.materials
+            && self.ordered_draws == other.ordered_draws
+            && self.viewport == other.viewport
+    }
 }
 
 impl PreparedFrameV1 {
     #[must_use]
     pub const fn clear_color(&self) -> [f64; 4] {
-        self.clear_color
+        self.materials.clear_color
     }
 
     #[must_use]
     pub fn draws(&self) -> &[PreparedDrawV1] {
-        &self.draws
+        &self.ordered_draws.draws
     }
 
     #[must_use]
     pub fn indices(&self) -> &[u32] {
-        &self.indices
+        &self.geometry.indices
+    }
+
+    #[must_use]
+    pub const fn geometry_plan(&self) -> &PreparedGeometryPlanV1 {
+        &self.geometry
+    }
+
+    #[must_use]
+    pub(crate) fn material_for_draw(&self, draw: &PreparedDrawV1) -> Option<&PreparedMaterialV1> {
+        usize::try_from(draw.material_index)
+            .ok()
+            .and_then(|index| self.materials.materials.get(index))
+    }
+
+    #[must_use]
+    pub const fn material_plan(&self) -> &PreparedMaterialPlanV1 {
+        &self.materials
+    }
+
+    #[must_use]
+    pub const fn ordered_draw_plan(&self) -> &OrderedDrawPlanV1 {
+        &self.ordered_draws
     }
 
     /// Number of per-draw tessellation operations that actually ran while
@@ -136,18 +259,148 @@ impl PreparedFrameV1 {
     /// vertex or index totals.
     #[must_use]
     pub const fn tessellation_calls(&self) -> u64 {
-        self.tessellation_calls
+        self.geometry.tessellation_calls
     }
 
+    /// Returns the legacy position-and-material vertex view.
+    ///
+    /// This view is projected only on first access, retained for the lifetime
+    /// of this prepared frame, and discarded with the frame. Render uploads use
+    /// the position-only geometry and material plans directly.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the bounded compatibility allocation cannot be reserved or
+    /// if private prepared-plan invariants have been violated.
     #[must_use]
     pub fn vertices(&self) -> &[PreparedVertexV1] {
-        &self.vertices
+        self.compatibility_vertices
+            .get_or_init(|| project_compatibility_vertices(self))
     }
 
     #[must_use]
     pub const fn viewport(&self) -> [u32; 2] {
         self.viewport
     }
+
+    #[cfg(test)]
+    pub(crate) fn triangle_for_upload_test() -> Self {
+        Self {
+            compatibility_vertices: OnceLock::new(),
+            geometry: PreparedGeometryPlanV1 {
+                indices: vec![0, 1, 2],
+                tessellation_calls: 1,
+                vertices: vec![
+                    PreparedGeometryVertexV1 {
+                        position: [-1.0, -1.0],
+                    },
+                    PreparedGeometryVertexV1 {
+                        position: [1.0, -1.0],
+                    },
+                    PreparedGeometryVertexV1 {
+                        position: [0.0, 1.0],
+                    },
+                ],
+            },
+            materials: PreparedMaterialPlanV1 {
+                clear_color: [0.0, 0.0, 0.0, 1.0],
+                materials: vec![PreparedMaterialV1 {
+                    premultiplied_linear_color: [0.5, 0.25, 0.0, 0.5],
+                }],
+            },
+            ordered_draws: OrderedDrawPlanV1 {
+                draws: vec![PreparedDrawV1 {
+                    draw_id: "draw:test".to_owned(),
+                    index_range: 0..3,
+                    material_index: 0,
+                    vertex_range: 0..3,
+                }],
+            },
+            viewport: [160, 90],
+        }
+    }
+}
+
+impl PreparedGeometryPlanV1 {
+    #[must_use]
+    pub fn indices(&self) -> &[u32] {
+        &self.indices
+    }
+
+    #[must_use]
+    pub const fn tessellation_calls(&self) -> u64 {
+        self.tessellation_calls
+    }
+
+    #[must_use]
+    pub fn vertices(&self) -> &[PreparedGeometryVertexV1] {
+        &self.vertices
+    }
+}
+
+impl PreparedMaterialPlanV1 {
+    #[must_use]
+    pub const fn clear_color(&self) -> [f64; 4] {
+        self.clear_color
+    }
+
+    #[must_use]
+    pub fn materials(&self) -> &[PreparedMaterialV1] {
+        &self.materials
+    }
+}
+
+impl OrderedDrawPlanV1 {
+    #[must_use]
+    pub fn draws(&self) -> &[PreparedDrawV1] {
+        &self.draws
+    }
+}
+
+fn project_compatibility_vertices(frame: &PreparedFrameV1) -> Vec<PreparedVertexV1> {
+    let vertex_count = frame.geometry.vertices.len();
+    let Some(projected_bytes) = vertex_count.checked_mul(size_of::<PreparedVertexV1>()) else {
+        panic!("compatibility vertex byte accounting overflowed usize");
+    };
+    assert!(
+        projected_bytes <= MAX_COMPATIBILITY_VERTEX_BYTES_V1,
+        "compatibility vertex projection exceeded its byte ceiling"
+    );
+
+    let mut projected = Vec::new();
+    projected
+        .try_reserve_exact(vertex_count)
+        .unwrap_or_else(|_| panic!("could not reserve the bounded compatibility vertex view"));
+    let mut next_vertex = 0usize;
+    for draw in &frame.ordered_draws.draws {
+        let material = frame
+            .material_for_draw(draw)
+            .expect("prepared draw must reference a material");
+        let start =
+            usize::try_from(draw.vertex_range.start).expect("prepared vertex start must fit usize");
+        let end =
+            usize::try_from(draw.vertex_range.end).expect("prepared vertex end must fit usize");
+        assert!(
+            start == next_vertex && end >= start,
+            "prepared draw vertex ranges must be contiguous and non-decreasing"
+        );
+        let vertices = frame
+            .geometry
+            .vertices
+            .get(start..end)
+            .expect("prepared vertex range must be in bounds");
+        projected.extend(vertices.iter().map(|vertex| PreparedVertexV1 {
+            position: vertex.position,
+            premultiplied_linear_color: material.premultiplied_linear_color,
+        }));
+        next_vertex = end;
+    }
+    assert_eq!(
+        projected.len(),
+        vertex_count,
+        "prepared draw ranges must cover every geometry vertex exactly once"
+    );
+    projected
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -510,9 +763,8 @@ fn is_canonical_line_cubic(start: &poietra_scene_ir::PointV1, segment: &CubicSeg
 }
 
 fn append_prepared_vertex(
-    vertices: &mut Vec<PreparedVertexV1>,
+    vertices: &mut Vec<PreparedGeometryVertexV1>,
     world: PointF64,
-    color: [f32; 4],
     camera: &RenderCameraV1,
     draw_id: &str,
 ) -> Result<u32, PrepareFrameErrorV1> {
@@ -524,29 +776,27 @@ fn append_prepared_vertex(
     }
     let clip = world_to_clip(world, camera, draw_id)?;
     let index = u32::try_from(vertices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
-    vertices.push(PreparedVertexV1 {
+    vertices.push(PreparedGeometryVertexV1 {
         position: [
             checked_f32(clip.x, Some(draw_id), "clip x")?,
             checked_f32(clip.y, Some(draw_id), "clip y")?,
         ],
-        premultiplied_linear_color: color,
     });
     Ok(index)
 }
 
 fn append_stroke_quad(
-    vertices: &mut Vec<PreparedVertexV1>,
+    vertices: &mut Vec<PreparedGeometryVertexV1>,
     indices: &mut Vec<u32>,
     corners: [PointF64; 4],
-    color: [f32; 4],
     camera: &RenderCameraV1,
     draw_id: &str,
 ) -> Result<(), PrepareFrameErrorV1> {
     let [start_left, start_right, end_left, end_right] = corners;
-    let start_left = append_prepared_vertex(vertices, start_left, color, camera, draw_id)?;
-    let start_right = append_prepared_vertex(vertices, start_right, color, camera, draw_id)?;
-    let end_left = append_prepared_vertex(vertices, end_left, color, camera, draw_id)?;
-    let end_right = append_prepared_vertex(vertices, end_right, color, camera, draw_id)?;
+    let start_left = append_prepared_vertex(vertices, start_left, camera, draw_id)?;
+    let start_right = append_prepared_vertex(vertices, start_right, camera, draw_id)?;
+    let end_left = append_prepared_vertex(vertices, end_left, camera, draw_id)?;
+    let end_right = append_prepared_vertex(vertices, end_right, camera, draw_id)?;
     indices.extend_from_slice(&[
         start_left,
         start_right,
@@ -587,7 +837,7 @@ fn round_cap_segments(
 
 #[allow(clippy::too_many_arguments)]
 fn append_round_cap(
-    vertices: &mut Vec<PreparedVertexV1>,
+    vertices: &mut Vec<PreparedGeometryVertexV1>,
     indices: &mut Vec<u32>,
     center: PointF64,
     first: PointF64,
@@ -595,12 +845,11 @@ fn append_round_cap(
     last: PointF64,
     radius: f64,
     segments: u32,
-    color: [f32; 4],
     camera: &RenderCameraV1,
     draw_id: &str,
 ) -> Result<(), PrepareFrameErrorV1> {
-    let center_index = append_prepared_vertex(vertices, center, color, camera, draw_id)?;
-    let mut previous = append_prepared_vertex(vertices, first, color, camera, draw_id)?;
+    let center_index = append_prepared_vertex(vertices, center, camera, draw_id)?;
+    let mut previous = append_prepared_vertex(vertices, first, camera, draw_id)?;
     for step in 1..=segments {
         let progress = f64::from(step) / f64::from(segments);
         let angle = first_angle + std::f64::consts::PI * progress;
@@ -612,7 +861,7 @@ fn append_round_cap(
                 y: center.y + radius * angle.sin(),
             }
         };
-        let next = append_prepared_vertex(vertices, point, color, camera, draw_id)?;
+        let next = append_prepared_vertex(vertices, point, camera, draw_id)?;
         indices.extend_from_slice(&[center_index, previous, next]);
         previous = next;
     }
@@ -621,12 +870,11 @@ fn append_round_cap(
 
 #[allow(clippy::too_many_arguments)]
 fn append_straight_stroke(
-    vertices: &mut Vec<PreparedVertexV1>,
+    vertices: &mut Vec<PreparedGeometryVertexV1>,
     indices: &mut Vec<u32>,
     start: PointF64,
     end: PointF64,
     stroke: &StrokeStyleV1,
-    opacity: f64,
     camera: &RenderCameraV1,
     viewport: &ViewportV1,
     draw_id: &str,
@@ -689,8 +937,7 @@ fn append_straight_stroke(
             y: end_center.y - offset.y,
         },
     ];
-    let color = premultiplied_linear_color(&stroke.color, opacity, Some(draw_id))?;
-    append_stroke_quad(vertices, indices, corners, color, camera, draw_id)?;
+    append_stroke_quad(vertices, indices, corners, camera, draw_id)?;
 
     if stroke.cap == StrokeCapV1::Round {
         let segments =
@@ -705,7 +952,6 @@ fn append_straight_stroke(
             corners[1],
             radius,
             segments,
-            color,
             camera,
             draw_id,
         )?;
@@ -718,7 +964,6 @@ fn append_straight_stroke(
             corners[2],
             radius,
             segments,
-            color,
             camera,
             draw_id,
         )?;
@@ -809,6 +1054,211 @@ pub fn prepare_frame_v1(packet: &RenderPacketV1) -> Result<PreparedFrameV1, Prep
     tessellate_validated_frame_v1(validate_frame_packet_v1(packet)?)
 }
 
+fn prepare_draw_material(draw: &RenderDrawV1) -> Result<PreparedMaterialV1, PrepareFrameErrorV1> {
+    let RenderDrawV1::Path {
+        draw_id,
+        fill,
+        opacity,
+        stroke,
+        ..
+    } = draw
+    else {
+        return Err(PrepareFrameErrorV1::Unsupported {
+            draw_id: draw.draw_id().to_owned(),
+            reason: UnsupportedDrawReasonV1::Image,
+        });
+    };
+    let color = match (fill, stroke) {
+        (Some(fill), None) => &fill.color,
+        (None, Some(stroke)) => &stroke.color,
+        (Some(_), Some(_)) => {
+            return Err(PrepareFrameErrorV1::Unsupported {
+                draw_id: draw_id.clone(),
+                reason: UnsupportedDrawReasonV1::FillAndStroke,
+            });
+        }
+        (None, None) => {
+            return Err(PrepareFrameErrorV1::Unsupported {
+                draw_id: draw_id.clone(),
+                reason: UnsupportedDrawReasonV1::MissingFill,
+            });
+        }
+    };
+    Ok(PreparedMaterialV1 {
+        premultiplied_linear_color: premultiplied_linear_color(color, *opacity, Some(draw_id))?,
+    })
+}
+
+fn prepare_image_geometry(draw_id: &str) -> Result<(), PrepareFrameErrorV1> {
+    Err(PrepareFrameErrorV1::Unsupported {
+        draw_id: draw_id.to_owned(),
+        reason: UnsupportedDrawReasonV1::Image,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct GeometryContextV1<'a> {
+    camera: &'a RenderCameraV1,
+    draw_id: &'a str,
+    viewport: &'a ViewportV1,
+}
+
+fn prepare_stroke_geometry(
+    vertices: &mut Vec<PreparedGeometryVertexV1>,
+    indices: &mut Vec<u32>,
+    path: &poietra_scene_ir::CubicPathV1,
+    transform: &AffineTransformV1,
+    stroke: &StrokeStyleV1,
+    context: GeometryContextV1<'_>,
+) -> Result<(), PrepareFrameErrorV1> {
+    let draw_id = context.draw_id;
+    if path.subpaths.len() != 1 {
+        return Err(PrepareFrameErrorV1::Unsupported {
+            draw_id: draw_id.to_owned(),
+            reason: UnsupportedDrawReasonV1::MultipleSubpaths,
+        });
+    }
+    let subpath = &path.subpaths[0];
+    if subpath.closed {
+        return Err(PrepareFrameErrorV1::Unsupported {
+            draw_id: draw_id.to_owned(),
+            reason: UnsupportedDrawReasonV1::ClosedStrokeSubpath,
+        });
+    }
+    if subpath.segments.len() != 1 {
+        return Err(PrepareFrameErrorV1::Unsupported {
+            draw_id: draw_id.to_owned(),
+            reason: UnsupportedDrawReasonV1::StrokeSegmentCount,
+        });
+    }
+    let segment = &subpath.segments[0];
+    if !is_canonical_line_cubic(&subpath.start, segment) {
+        return Err(PrepareFrameErrorV1::Unsupported {
+            draw_id: draw_id.to_owned(),
+            reason: UnsupportedDrawReasonV1::CurvedStroke,
+        });
+    }
+    append_straight_stroke(
+        vertices,
+        indices,
+        transform_to_world(&subpath.start, transform, draw_id)?,
+        transform_to_world(&segment.end, transform, draw_id)?,
+        stroke,
+        context.camera,
+        context.viewport,
+        draw_id,
+    )
+}
+
+fn prepare_fill_geometry(
+    vertices: &mut Vec<PreparedGeometryVertexV1>,
+    indices: &mut Vec<u32>,
+    path: &poietra_scene_ir::CubicPathV1,
+    transform: &AffineTransformV1,
+    context: GeometryContextV1<'_>,
+) -> Result<(), PrepareFrameErrorV1> {
+    let draw_id = context.draw_id;
+    if path.subpaths.len() != 1 {
+        return Err(PrepareFrameErrorV1::Unsupported {
+            draw_id: draw_id.to_owned(),
+            reason: UnsupportedDrawReasonV1::MultipleSubpaths,
+        });
+    }
+    let subpath = &path.subpaths[0];
+    if !subpath.closed {
+        return Err(PrepareFrameErrorV1::Unsupported {
+            draw_id: draw_id.to_owned(),
+            reason: UnsupportedDrawReasonV1::OpenSubpath,
+        });
+    }
+    let remaining_vertices = MAX_PREPARED_VERTICES_V1
+        .checked_sub(vertices.len())
+        .ok_or_else(|| PrepareFrameErrorV1::TessellationVertexLimit {
+            draw_id: draw_id.to_owned(),
+            maximum_vertices: MAX_PREPARED_VERTICES_V1,
+        })?;
+    let world_points = flatten_subpath_world(
+        subpath,
+        transform,
+        context.camera,
+        context.viewport,
+        draw_id,
+        remaining_vertices,
+    )?;
+    if !is_non_degenerate_convex(&world_points) {
+        return Err(PrepareFrameErrorV1::Unsupported {
+            draw_id: draw_id.to_owned(),
+            reason: UnsupportedDrawReasonV1::NonConvexOrDegenerate,
+        });
+    }
+    let points = world_points
+        .into_iter()
+        .map(|point| world_to_clip(point, context.camera, draw_id))
+        .collect::<Result<Vec<_>, _>>()?;
+    let base_vertex = u32::try_from(vertices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+    for point in &points {
+        vertices.push(PreparedGeometryVertexV1 {
+            position: [
+                checked_f32(point.x, Some(draw_id), "clip x")?,
+                checked_f32(point.y, Some(draw_id), "clip y")?,
+            ],
+        });
+    }
+    for offset in 1..(points.len() - 1) {
+        let middle = u32::try_from(offset).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+        let end = u32::try_from(offset + 1).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+        indices.extend_from_slice(&[
+            base_vertex,
+            base_vertex
+                .checked_add(middle)
+                .ok_or(PrepareFrameErrorV1::IndexRange)?,
+            base_vertex
+                .checked_add(end)
+                .ok_or(PrepareFrameErrorV1::IndexRange)?,
+        ]);
+    }
+    Ok(())
+}
+
+fn prepare_draw_geometry(
+    draw: &RenderDrawV1,
+    vertices: &mut Vec<PreparedGeometryVertexV1>,
+    indices: &mut Vec<u32>,
+    camera: &RenderCameraV1,
+    viewport: &ViewportV1,
+) -> Result<(), PrepareFrameErrorV1> {
+    let RenderDrawV1::Path {
+        draw_id,
+        fill,
+        path,
+        stroke,
+        transform,
+        ..
+    } = draw
+    else {
+        return prepare_image_geometry(draw.draw_id());
+    };
+    let context = GeometryContextV1 {
+        camera,
+        draw_id,
+        viewport,
+    };
+    match (fill, stroke) {
+        (Some(_), None) => prepare_fill_geometry(vertices, indices, path, transform, context),
+        (None, Some(stroke)) => {
+            prepare_stroke_geometry(vertices, indices, path, transform, stroke, context)
+        }
+        (Some(_), Some(_)) => Err(PrepareFrameErrorV1::Unsupported {
+            draw_id: draw_id.clone(),
+            reason: UnsupportedDrawReasonV1::FillAndStroke,
+        }),
+        (None, None) => Err(PrepareFrameErrorV1::Unsupported {
+            draw_id: draw_id.clone(),
+            reason: UnsupportedDrawReasonV1::MissingFill,
+        }),
+    }
+}
+
 /// Tessellates a packet that [`validate_frame_packet_v1`] has already accepted.
 ///
 /// This is the tessellation half of [`prepare_frame_v1`]. The
@@ -820,7 +1270,6 @@ pub fn prepare_frame_v1(packet: &RenderPacketV1) -> Result<PreparedFrameV1, Prep
 ///
 /// Returns a structured unsupported-feature, numeric, tessellation, or index
 /// error.
-#[allow(clippy::too_many_lines)]
 pub fn tessellate_validated_frame_v1(
     validated: ValidatedRenderPacketV1<'_>,
 ) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
@@ -828,157 +1277,49 @@ pub fn tessellate_validated_frame_v1(
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     let mut draws = Vec::with_capacity(packet.draws.len());
+    let mut materials = Vec::with_capacity(packet.draws.len());
     let mut tessellation_calls: u64 = 0;
     for draw in &packet.draws {
-        let RenderDrawV1::Path {
-            draw_id,
-            fill,
-            opacity,
-            path,
-            stroke,
-            transform,
-            ..
-        } = draw
-        else {
-            return Err(PrepareFrameErrorV1::Unsupported {
-                draw_id: draw.draw_id().to_owned(),
-                reason: UnsupportedDrawReasonV1::Image,
-            });
-        };
-        if fill.is_some() && stroke.is_some() {
-            return Err(PrepareFrameErrorV1::Unsupported {
-                draw_id: draw_id.clone(),
-                reason: UnsupportedDrawReasonV1::FillAndStroke,
-            });
-        }
         let index_start =
             u32::try_from(indices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
-        if let Some(stroke) = stroke {
-            if path.subpaths.len() != 1 {
-                return Err(PrepareFrameErrorV1::Unsupported {
-                    draw_id: draw_id.clone(),
-                    reason: UnsupportedDrawReasonV1::MultipleSubpaths,
-                });
-            }
-            let subpath = &path.subpaths[0];
-            if subpath.closed {
-                return Err(PrepareFrameErrorV1::Unsupported {
-                    draw_id: draw_id.clone(),
-                    reason: UnsupportedDrawReasonV1::ClosedStrokeSubpath,
-                });
-            }
-            if subpath.segments.len() != 1 {
-                return Err(PrepareFrameErrorV1::Unsupported {
-                    draw_id: draw_id.clone(),
-                    reason: UnsupportedDrawReasonV1::StrokeSegmentCount,
-                });
-            }
-            let segment = &subpath.segments[0];
-            if !is_canonical_line_cubic(&subpath.start, segment) {
-                return Err(PrepareFrameErrorV1::Unsupported {
-                    draw_id: draw_id.clone(),
-                    reason: UnsupportedDrawReasonV1::CurvedStroke,
-                });
-            }
-            append_straight_stroke(
-                &mut vertices,
-                &mut indices,
-                transform_to_world(&subpath.start, transform, draw_id)?,
-                transform_to_world(&segment.end, transform, draw_id)?,
-                stroke,
-                *opacity,
-                &packet.camera,
-                &packet.viewport,
-                draw_id,
-            )?;
-            tessellation_calls += 1;
-        } else {
-            let Some(fill) = fill else {
-                return Err(PrepareFrameErrorV1::Unsupported {
-                    draw_id: draw_id.clone(),
-                    reason: UnsupportedDrawReasonV1::MissingFill,
-                });
-            };
-            if path.subpaths.len() != 1 {
-                return Err(PrepareFrameErrorV1::Unsupported {
-                    draw_id: draw_id.clone(),
-                    reason: UnsupportedDrawReasonV1::MultipleSubpaths,
-                });
-            }
-            let subpath = &path.subpaths[0];
-            if !subpath.closed {
-                return Err(PrepareFrameErrorV1::Unsupported {
-                    draw_id: draw_id.clone(),
-                    reason: UnsupportedDrawReasonV1::OpenSubpath,
-                });
-            }
-            let remaining_vertices = MAX_PREPARED_VERTICES_V1
-                .checked_sub(vertices.len())
-                .ok_or_else(|| PrepareFrameErrorV1::TessellationVertexLimit {
-                    draw_id: draw_id.clone(),
-                    maximum_vertices: MAX_PREPARED_VERTICES_V1,
-                })?;
-            let world_points = flatten_subpath_world(
-                subpath,
-                transform,
-                &packet.camera,
-                &packet.viewport,
-                draw_id,
-                remaining_vertices,
-            )?;
-            if !is_non_degenerate_convex(&world_points) {
-                return Err(PrepareFrameErrorV1::Unsupported {
-                    draw_id: draw_id.clone(),
-                    reason: UnsupportedDrawReasonV1::NonConvexOrDegenerate,
-                });
-            }
-            let points = world_points
-                .into_iter()
-                .map(|point| world_to_clip(point, &packet.camera, draw_id))
-                .collect::<Result<Vec<_>, _>>()?;
-
-            let color = premultiplied_linear_color(&fill.color, *opacity, Some(draw_id))?;
-            let base_vertex =
-                u32::try_from(vertices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
-            for point in &points {
-                vertices.push(PreparedVertexV1 {
-                    position: [
-                        checked_f32(point.x, Some(draw_id), "clip x")?,
-                        checked_f32(point.y, Some(draw_id), "clip y")?,
-                    ],
-                    premultiplied_linear_color: color,
-                });
-            }
-
-            for offset in 1..(points.len() - 1) {
-                let middle = u32::try_from(offset).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
-                let end = u32::try_from(offset + 1).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
-                indices.extend_from_slice(&[
-                    base_vertex,
-                    base_vertex
-                        .checked_add(middle)
-                        .ok_or(PrepareFrameErrorV1::IndexRange)?,
-                    base_vertex
-                        .checked_add(end)
-                        .ok_or(PrepareFrameErrorV1::IndexRange)?,
-                ]);
-            }
-            tessellation_calls += 1;
-        }
+        let vertex_start =
+            u32::try_from(vertices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+        prepare_draw_geometry(
+            draw,
+            &mut vertices,
+            &mut indices,
+            &packet.camera,
+            &packet.viewport,
+        )?;
+        tessellation_calls += 1;
+        let material = prepare_draw_material(draw)?;
+        let material_index =
+            u32::try_from(materials.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+        materials.push(material);
         let index_end =
             u32::try_from(indices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+        let vertex_end =
+            u32::try_from(vertices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
         draws.push(PreparedDrawV1 {
-            draw_id: draw_id.clone(),
+            draw_id: draw.draw_id().to_owned(),
             index_range: index_start..index_end,
+            material_index,
+            vertex_range: vertex_start..vertex_end,
         });
     }
 
     Ok(PreparedFrameV1 {
-        clear_color: prepared_clear_color(&packet.camera.clear_color)?,
-        draws,
-        indices,
-        tessellation_calls,
-        vertices,
+        compatibility_vertices: OnceLock::new(),
+        geometry: PreparedGeometryPlanV1 {
+            indices,
+            tessellation_calls,
+            vertices,
+        },
+        materials: PreparedMaterialPlanV1 {
+            clear_color: prepared_clear_color(&packet.camera.clear_color)?,
+            materials,
+        },
+        ordered_draws: OrderedDrawPlanV1 { draws },
         viewport: [packet.viewport.width_px, packet.viewport.height_px],
     })
 }
@@ -986,6 +1327,20 @@ pub fn tessellate_validated_frame_v1(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_vertex_view_has_a_checked_layout_derived_ceiling() {
+        assert_eq!(size_of::<PreparedVertexV1>(), 24);
+        assert_eq!(MAX_COMPATIBILITY_VERTEX_BYTES_V1, 24_000_000);
+
+        let frame = PreparedFrameV1::triangle_for_upload_test();
+        let projected_bytes = frame
+            .vertices()
+            .len()
+            .checked_mul(size_of::<PreparedVertexV1>())
+            .expect("test projection byte count must fit usize");
+        assert!(projected_bytes <= MAX_COMPATIBILITY_VERTEX_BYTES_V1);
+    }
 
     #[test]
     fn canonical_line_accepts_real_fast_manim_single_ulp_controls() {

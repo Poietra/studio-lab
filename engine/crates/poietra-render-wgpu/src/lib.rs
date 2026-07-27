@@ -7,15 +7,21 @@
 
 mod gpu;
 mod prepare;
+mod upload;
 
 pub use gpu::{
     CreateRendererErrorV1, RenderFrameErrorV1, RenderStageEvidenceV1, WgpuFillRendererV1,
     WgpuRenderTargetV1,
 };
 pub use prepare::{
-    FLATTEN_TOLERANCE_PIXELS_V1, MAX_PREPARED_VERTICES_V1, PrepareFrameErrorV1, PreparedDrawV1,
-    PreparedFrameV1, PreparedVertexV1, UnsupportedDrawReasonV1, ValidatedRenderPacketV1,
-    prepare_frame_v1, tessellate_validated_frame_v1, validate_frame_packet_v1,
+    FLATTEN_TOLERANCE_PIXELS_V1, MAX_COMPATIBILITY_VERTEX_BYTES_V1, MAX_PREPARED_VERTICES_V1,
+    OrderedDrawPlanV1, PrepareFrameErrorV1, PreparedDrawV1, PreparedFrameV1,
+    PreparedGeometryPlanV1, PreparedGeometryVertexV1, PreparedMaterialPlanV1, PreparedMaterialV1,
+    PreparedVertexV1, UnsupportedDrawReasonV1, ValidatedRenderPacketV1, prepare_frame_v1,
+    tessellate_validated_frame_v1, validate_frame_packet_v1,
+};
+pub use upload::{
+    GpuUploadPlanErrorV1, GpuUploadPlanV1, MAX_GPU_UPLOAD_PLAN_BYTES_V1, build_gpu_upload_plan_v1,
 };
 
 /// Preferred name for the shared solid fill/stroke triangle renderer.
