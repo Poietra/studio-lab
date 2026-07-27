@@ -168,7 +168,11 @@ describe("Electron shell HTTP adapter", () => {
     });
     expect(exported.status).toBe(200);
     expect(await exported.text()).toContain('poietra:transaction "shell"');
-    await shellFetch(shell, `/api/manim/renders/${started.id}/discard`, { method: "POST" });
+    await shellFetch(shell, `/api/manim/renders/${started.id}/discard`, {
+      body: "{}",
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
 
     const managed = (await (
       await shellFetch(shell, "/api/manim/projects", {
@@ -183,9 +187,14 @@ describe("Electron shell HTTP adapter", () => {
       method: "PATCH",
     });
     expect(await renamed.json()).toMatchObject({ project: { name: "Renamed" } });
-    expect((await shellFetch(shell, `/api/manim/projects/${managed.project.id}`, { method: "DELETE" })).status).toBe(
-      200,
-    );
+    expect(
+      (
+        await shellFetch(shell, `/api/manim/projects/${managed.project.id}`, {
+          headers: { "content-type": "application/json" },
+          method: "DELETE",
+        })
+      ).status,
+    ).toBe(200);
 
     expect(
       createHash("sha256")

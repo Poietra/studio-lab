@@ -11,12 +11,14 @@ import {
   evaluateStudioPreviewEligibilityV1,
   projectStudioPreviewStaticInteractionGeometryV1,
   resolveStudioPreviewViewStateV1,
-  snapStudioPreviewViewportV1,
   type StudioPreviewHostBindingV1,
   type StudioPreviewInteractionGeometryV1,
+  snapStudioPreviewViewportV1,
   studioPreviewHostBindingCurrentV1,
+  studioPreviewVerifiedSourceDurationV1,
 } from "./preview-renderer-policy";
 import {
+  loadStudioPreviewSnapshotMetadataV1,
   type StudioPreviewEditingContextV1,
   type StudioPreviewSnapshotProviderV1,
   type StudioVerifiedPreviewSnapshotV1,
@@ -32,13 +34,18 @@ export type StudioPreviewRendererViewV1 = Readonly<{
    */
   interactionGeometry: StudioPreviewInteractionGeometryV1 | null;
   sourceLabel: string | null;
+  /** Lifecycle of verified source metadata for the current provider/Scene. */
+  sourceMetadataPhase: "failed" | "inactive" | "loading" | "ready";
   state: PreviewRendererHostStateV1;
+  /** Verified fast-manim base duration for the current source identity. */
+  verifiedSourceDuration: number | null;
 }>;
 
 export type UseStudioPreviewRendererInputV1 = Readonly<{
   context: StudioPreviewEditingContextV1 | null;
   frame: Readonly<{ height: number; width: number }>;
   provider: StudioPreviewSnapshotProviderV1 | null;
+  retainedSourceDuration: number | null;
   sampleTime: number;
   transientEdit: boolean;
 }>;
@@ -64,15 +71,52 @@ type BoundHostStateV1 = Readonly<{
   state: PreviewRendererHostStateV1;
 }>;
 
+export type StudioPreviewSnapshotMetadataStateV1 =
+  | Readonly<{ phase: "inactive"; provider: null; snapshot: null; workspaceKey: null }>
+  | Readonly<{ phase: "loading"; provider: StudioPreviewSnapshotProviderV1; snapshot: null; workspaceKey: string }>
+  | Readonly<{
+      phase: "ready";
+      provider: StudioPreviewSnapshotProviderV1;
+      snapshot: StudioVerifiedPreviewSnapshotV1;
+      workspaceKey: string;
+    }>
+  | Readonly<{
+      error: string;
+      phase: "failed";
+      provider: StudioPreviewSnapshotProviderV1;
+      snapshot: null;
+      workspaceKey: string;
+    }>;
+
+const INACTIVE_METADATA: StudioPreviewSnapshotMetadataStateV1 = {
+  phase: "inactive",
+  provider: null,
+  snapshot: null,
+  workspaceKey: null,
+};
+
+/**
+ * Resolves metadata synchronously for this render. A result retained from a
+ * previous workspace/provider is represented as loading, never as current
+ * duration evidence, while the replacement request starts in a passive effect.
+ */
+export function studioPreviewSnapshotMetadataForWorkspaceV1(
+  state: StudioPreviewSnapshotMetadataStateV1,
+  input: Readonly<{ provider: StudioPreviewSnapshotProviderV1 | null; workspaceKey: string | null }>,
+): StudioPreviewSnapshotMetadataStateV1 {
+  if (!input.provider || input.workspaceKey === null) return INACTIVE_METADATA;
+  if (state.provider === input.provider && state.workspaceKey === input.workspaceKey) return state;
+  return { phase: "loading", provider: input.provider, snapshot: null, workspaceKey: input.workspaceKey };
+}
+
 const INSTALLING_STATE: PreviewRendererHostStateV1 = { detail: null, phase: "fallback", reason: "installing" };
 
 export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1): StudioPreviewRendererViewV1 | null {
-  const { context, frame, provider, sampleTime, transientEdit } = input;
+  const { context, frame, provider, retainedSourceDuration, sampleTime, transientEdit } = input;
   const [bound, setBound] = useState<BoundHostStateV1 | null>(null);
   const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
   const [epoch, setEpoch] = useState(0);
-  const [snapshot, setSnapshot] = useState<StudioVerifiedPreviewSnapshotV1 | null>(null);
-  const [snapshotError, setSnapshotError] = useState<string | null>(null);
+  const [metadata, setMetadata] = useState<StudioPreviewSnapshotMetadataStateV1>(INACTIVE_METADATA);
   const [viewport, setViewport] = useState<PreviewViewportV1 | null>(null);
 
   const eligibility = useMemo(
@@ -89,34 +133,37 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
   // switch always changes the key, even onto a Scene with an identical source
   // hash and name.
   const workspaceKey = context ? studioPreviewWorkspaceKeyV1(context) : null;
+  const currentMetadata = studioPreviewSnapshotMetadataForWorkspaceV1(metadata, { provider, workspaceKey });
+  const snapshot = currentMetadata.phase === "ready" ? currentMetadata.snapshot : null;
+  const snapshotError = currentMetadata.phase === "failed" ? currentMetadata.error : null;
 
   const attachCanvas = useCallback((canvas: HTMLCanvasElement | null) => setCanvasEl(canvas), []);
 
   useEffect(() => {
-    if (!provider || !eligibility.eligible || !context || workspaceKey === null) return;
+    if (!provider || !context || workspaceKey === null) return;
     const controller = new AbortController();
-    setSnapshot(null);
-    setSnapshotError(null);
-    provider
-      .loadVerifiedSnapshot({
-        identity: {
-          projectId: context.projectId,
-          sceneName: context.sceneName,
-          sourceHash: context.sourceHash,
-          sourcePath: context.sourcePath,
-        },
-        signal: controller.signal,
-      })
+    setMetadata({ phase: "loading", provider, snapshot: null, workspaceKey });
+    loadStudioPreviewSnapshotMetadataV1({ context, provider, signal: controller.signal })
       .then((loaded) => {
-        if (!controller.signal.aborted) setSnapshot(loaded);
+        if (!controller.signal.aborted && loaded) {
+          setMetadata({ phase: "ready", provider, snapshot: loaded, workspaceKey });
+        }
       })
       .catch((error: unknown) => {
-        if (!controller.signal.aborted) setSnapshotError(error instanceof Error ? error.message : String(error));
+        if (!controller.signal.aborted) {
+          setMetadata({
+            error: error instanceof Error ? error.message : String(error),
+            phase: "failed",
+            provider,
+            snapshot: null,
+            workspaceKey,
+          });
+        }
       });
     return () => controller.abort();
     // Keyed by Scene identity, not the full context: the working revision must
     // not re-trigger loads, only gate presentation.
-  }, [eligibility.eligible, workspaceKey, provider]);
+  }, [workspaceKey, provider]);
 
   // The engine rejects frames whose viewport aspect deviates from the camera,
   // so the measured box is snapped to the snapshot camera's exact aspect.
@@ -208,21 +255,42 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
   // frame match against this render's own playhead and viewport — is applied
   // synchronously here, so the first paint after a scrub, resize, drag start,
   // canvas remount, or host teardown never trusts a stale presented emission.
-  const state = useMemo<PreviewRendererHostStateV1>(
-    () =>
-      resolveStudioPreviewViewStateV1({
-        context,
-        eligibility,
-        hostActive: bindingCurrent,
-        hostState: bound !== null && bindingCurrent ? bound.state : INSTALLING_STATE,
-        sampleTime,
-        snapshot,
-        snapshotError,
-        transientEdit,
-        viewport,
-      }),
-    [bindingCurrent, bound, context, eligibility, sampleTime, snapshot, snapshotError, transientEdit, viewport],
-  );
+  const verifiedSourceDuration = studioPreviewVerifiedSourceDurationV1(snapshot, context);
+  const sourceDurationMismatch =
+    retainedSourceDuration !== null &&
+    verifiedSourceDuration !== null &&
+    Math.abs(retainedSourceDuration - verifiedSourceDuration) >= 0.0005;
+  const state = useMemo<PreviewRendererHostStateV1>(() => {
+    if (sourceDurationMismatch) {
+      return {
+        detail: "The verified Scene timing changed after this editor session adopted its source basis.",
+        phase: "fallback",
+        reason: "snapshot-uncorrelated",
+      };
+    }
+    return resolveStudioPreviewViewStateV1({
+      context,
+      eligibility,
+      hostActive: bindingCurrent,
+      hostState: bound !== null && bindingCurrent ? bound.state : INSTALLING_STATE,
+      sampleTime,
+      snapshot,
+      snapshotError,
+      transientEdit,
+      viewport,
+    });
+  }, [
+    bindingCurrent,
+    bound,
+    context,
+    eligibility,
+    sampleTime,
+    snapshot,
+    snapshotError,
+    sourceDurationMismatch,
+    transientEdit,
+    viewport,
+  ]);
 
   // Geometry is projected for the exact presented sample time and only under
   // the static-Scene guarantee; outside it the map is empty and the semantic
@@ -234,7 +302,14 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
         : null,
     [frame, snapshot, state],
   );
-
   if (!provider) return null;
-  return { attachCanvas, epoch, interactionGeometry, sourceLabel: snapshot?.sourceLabel ?? null, state };
+  return {
+    attachCanvas,
+    epoch,
+    interactionGeometry,
+    sourceLabel: snapshot?.sourceLabel ?? null,
+    sourceMetadataPhase: currentMetadata.phase,
+    state,
+    verifiedSourceDuration,
+  };
 }

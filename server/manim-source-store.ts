@@ -19,6 +19,7 @@ export type ManimSourceReadHooks = Readonly<{
   afterChunk?: (absolutePath: string, chunkIndex: number) => Promise<void> | void;
   afterOpen?: (absolutePath: string) => Promise<void> | void;
   beforeOpen?: (absolutePath: string) => Promise<void> | void;
+  beforeWriteCommit?: (absolutePath: string) => Promise<void> | void;
 }>;
 
 class SourceConflict extends Error {}
@@ -85,19 +86,31 @@ async function inspectCurrentSource(path: string) {
   }
 }
 
-async function writeWithCompareAndSwap(path: string, expectedHash: string, source: string, conflictMessage: string) {
+async function writeWithCompareAndSwap(
+  path: string,
+  expectedHash: string,
+  source: string,
+  conflictMessage: string,
+  signal?: AbortSignal,
+  beforeCommit?: (absolutePath: string) => Promise<void> | void,
+) {
   const candidatePath = privateSiblingPath(path, "tmp");
   let candidateExists = false;
   try {
+    signal?.throwIfAborted();
     await writeFile(candidatePath, source, { encoding: "utf8", flag: "wx" });
     candidateExists = true;
+    signal?.throwIfAborted();
     const current = await inspectCurrentSource(path).catch((error: unknown) => {
       if (isFileSystemError(error, "ELOOP") || isFileSystemError(error, "ENOENT")) return null;
       throw error;
     });
     if (current?.hash !== expectedHash) throw new SourceConflict();
 
+    signal?.throwIfAborted();
     await chmod(candidatePath, current.mode);
+    await beforeCommit?.(path);
+    signal?.throwIfAborted();
     const finalMetadata = await lstat(path, { bigint: true }).catch((error: unknown) => {
       if (isFileSystemError(error, "ENOENT")) return null;
       throw error;
@@ -110,6 +123,7 @@ async function writeWithCompareAndSwap(path: string, expectedHash: string, sourc
       throw new SourceConflict();
     }
 
+    signal?.throwIfAborted();
     await rename(candidatePath, path);
     candidateExists = false;
   } catch (error) {
@@ -331,15 +345,30 @@ export class ManimSourceStore {
     }
   }
 
-  async writeIfUnchanged(relativePath: string, expectedHash: string, source: string, conflictMessage: string) {
+  async writeIfUnchanged(
+    relativePath: string,
+    expectedHash: string,
+    source: string,
+    conflictMessage: string,
+    signal?: AbortSignal,
+  ) {
     if (Buffer.byteLength(source) > MAX_SOURCE_BYTES) {
       throw new HttpError("The rendered Python source is too large to commit safely.", 413);
     }
+    signal?.throwIfAborted();
     const lockPath = await this.resolvePath(relativePath);
     await this.serializeWrite(lockPath, async () => {
+      signal?.throwIfAborted();
       const currentPath = await this.resolvePath(relativePath);
       if (currentPath !== lockPath) throw new HttpError(conflictMessage, 409);
-      await writeWithCompareAndSwap(currentPath, expectedHash, source, conflictMessage);
+      await writeWithCompareAndSwap(
+        currentPath,
+        expectedHash,
+        source,
+        conflictMessage,
+        signal,
+        this.hooks.beforeWriteCommit,
+      );
     });
   }
 }

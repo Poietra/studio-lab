@@ -5,10 +5,11 @@ import type {
   PreviewViewportV1,
 } from "../engine/preview-renderer";
 import type { EntityDimensions, Point } from "./model";
-import type {
-  StudioPreviewEditingContextV1,
-  StudioPreviewSnapshotCorrelationV1,
-  StudioVerifiedPreviewSnapshotV1,
+import {
+  PRISTINE_WORKING_REVISION,
+  type StudioPreviewEditingContextV1,
+  type StudioPreviewSnapshotCorrelationV1,
+  type StudioVerifiedPreviewSnapshotV1,
 } from "./preview-snapshot-provider";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 
@@ -75,11 +76,11 @@ export function evaluateStudioPreviewEligibilityV1(input: StudioPreviewEligibili
 
 /**
  * A verified snapshot may only be presented while it correlates with the live
- * editing context on every axis: project, source path, Scene name, source
- * hash, source duration, and the working revision of applied Studio edits.
- * The Scene IR's own duration must additionally match the source duration, so
- * an unrelated Scene IR can never be treated as correlated. Any mismatch
- * (workspace switch, source change, applied program, draft) is a whole-Scene
+ * editing context by project, source path, Scene name, source hash, and the
+ * working revision of applied Studio edits. The snapshot's duration must be
+ * internally self-correlated, but it need not equal Studio's conservative
+ * static-import duration: for imported Python Scenes the verified fast-manim
+ * execution is authoritative. Any identity/edit mismatch is a whole-Scene
  * fallback regardless of what the renderer has already presented.
  */
 export function studioPreviewSnapshotCorrelatesV1(
@@ -87,14 +88,51 @@ export function studioPreviewSnapshotCorrelatesV1(
   context: StudioPreviewEditingContextV1,
 ): boolean {
   return (
+    studioPreviewSnapshotMatchesSourceV1(correlation, context) &&
+    correlation.context.workingRevision === context.workingRevision &&
+    correlation.sceneDuration === correlation.context.sourceDuration
+  );
+}
+
+function studioPreviewSnapshotMatchesSourceV1(
+  correlation: StudioPreviewSnapshotCorrelationV1,
+  context: StudioPreviewEditingContextV1,
+) {
+  return (
     correlation.context.projectId === context.projectId &&
     correlation.context.sceneName === context.sceneName &&
     correlation.context.sourceHash === context.sourceHash &&
-    correlation.context.sourcePath === context.sourcePath &&
-    correlation.context.sourceDuration === context.sourceDuration &&
-    correlation.context.workingRevision === context.workingRevision &&
-    correlation.sceneDuration === context.sourceDuration
+    correlation.context.sourcePath === context.sourcePath
   );
+}
+
+/**
+ * Returns fast-manim's authoritative imported-Scene duration independently of
+ * Studio's working revision. Applied Programs invalidate snapshot pixels, but
+ * they are still evaluated on top of the same verified source execution.
+ * Every source-identity and internal Scene-IR seam is checked synchronously so
+ * a result retained across a workspace switch can never project stale time.
+ */
+export function studioPreviewVerifiedSourceDurationV1(
+  snapshot: StudioVerifiedPreviewSnapshotV1 | null,
+  context: StudioPreviewEditingContextV1 | null,
+): number | null {
+  if (!snapshot || !context) return null;
+  const correlation = snapshot.correlation;
+  const duration = correlation.sceneDuration;
+  if (
+    !studioPreviewSnapshotMatchesSourceV1(correlation, context) ||
+    correlation.context.workingRevision !== PRISTINE_WORKING_REVISION ||
+    !Number.isFinite(duration) ||
+    duration < 0.1 ||
+    correlation.context.sourceDuration !== duration ||
+    snapshot.duration !== duration ||
+    snapshot.snapshot.scene.duration !== duration ||
+    snapshot.sceneId !== correlation.sceneId ||
+    snapshot.snapshot.scene.sceneId !== correlation.sceneId
+  )
+    return null;
+  return duration;
 }
 
 const FALLBACK_LABELS: Readonly<Record<PreviewFallbackReasonV1, string>> = {
@@ -189,10 +227,15 @@ export type StudioPreviewViewStateInputV1 = Readonly<{
  */
 export function resolveStudioPreviewViewStateV1(input: StudioPreviewViewStateInputV1): PreviewRendererHostStateV1 {
   const { eligibility } = input;
-  if (!eligibility.eligible) return { detail: eligibility.detail, phase: "fallback", reason: eligibility.reason };
+  // Snapshot metadata is loaded independently from renderer capabilities
+  // because verified runtime duration also drives the semantic editor. Report
+  // that failure first even when this browser cannot create the WebGPU host;
+  // otherwise a producer/runtime failure is silently misreported as only a
+  // client capability limitation.
   if (input.snapshotError !== null) {
     return { detail: input.snapshotError, phase: "fallback", reason: "snapshot-unavailable" };
   }
+  if (!eligibility.eligible) return { detail: eligibility.detail, phase: "fallback", reason: eligibility.reason };
   if (!input.snapshot) return { detail: "Loading the verified snapshot.", phase: "fallback", reason: "installing" };
   if (input.transientEdit) {
     return {

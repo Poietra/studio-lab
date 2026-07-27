@@ -11,6 +11,7 @@ import {
   sha256V1Schema,
   sourceIdentityV1Schema,
 } from "../src/engine/contracts";
+import { canonicalFastManimSnapshotBundleJsonV1, canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import { manimProjectIdSchema, manimSourcePathSchema } from "../src/render-pipeline/contracts";
 
 export const FAST_MANIM_SNAPSHOT_SCHEMA_V1 = "poietra.fast-manim-snapshot-result" as const;
@@ -166,22 +167,6 @@ export class FastManimSnapshotContractError extends Error {
   }
 }
 
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
-  if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new TypeError("Snapshot canonicalization requires finite numbers.");
-    return JSON.stringify(Object.is(value, -0) ? 0 : value);
-  }
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (typeof value === "object") {
-    return `{${Object.entries(value)
-      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-      .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`)
-      .join(",")}}`;
-  }
-  throw new TypeError("Snapshot canonicalization received a non-JSON value.");
-}
-
 /**
  * Server-owned snapshot sealing. Producers send the zero digest sentinel and do
  * not need to reproduce JavaScript number serialization.
@@ -193,14 +178,7 @@ export function digestFastManimSnapshotBundleV1(bundle: SceneIrBundleV1) {
       "A fast-manim snapshot must use imported-manim-server-snapshot source evidence.",
     );
   }
-  const digestInput = {
-    ...bundle,
-    scene: {
-      ...bundle.scene,
-      source: { ...bundle.scene.source, snapshotHash: ZERO_SHA256 },
-    },
-  };
-  return createHash("sha256").update(canonicalJson(digestInput)).digest("hex");
+  return createHash("sha256").update(canonicalFastManimSnapshotBundleJsonV1(bundle)).digest("hex");
 }
 
 function assertCorrelation(result: ParsedFastManimSnapshotResultV1, expected: ExpectedFastManimSnapshotCorrelationV1) {
@@ -407,21 +385,42 @@ type StaticProfileSegment = Readonly<{
 
 const MAX_STATIC_PROFILE_CLOSED_SEGMENTS = 16;
 const STATIC_PROFILE_RELATIVE_TOLERANCE = 1e-9;
+const MAX_CANONICAL_LINE_CONTROL_ULPS_V1 = 1n;
+const F64_SIGN_MASK = 1n << 63n;
+const F64_BIT_MASK = (1n << 64n) - 1n;
 
-function isStraightSegment(start: StaticProfilePoint, segment: StaticProfileSegment) {
-  const dx = segment.end.x - start.x;
-  const dy = segment.end.y - start.y;
-  const lengthSquared = dx * dx + dy * dy;
-  if (lengthSquared === 0) return false;
-  for (const control of [segment.control1, segment.control2]) {
-    const px = control.x - start.x;
-    const py = control.y - start.y;
-    if (Math.abs(dx * py - dy * px) > STATIC_PROFILE_RELATIVE_TOLERANCE * lengthSquared) return false;
-    const along = dx * px + dy * py;
-    if (along < -STATIC_PROFILE_RELATIVE_TOLERANCE * lengthSquared) return false;
-    if (along > lengthSquared * (1 + STATIC_PROFILE_RELATIVE_TOLERANCE)) return false;
-  }
-  return true;
+function canonicalLineControl(start: StaticProfilePoint, end: StaticProfilePoint, factor: number) {
+  return { x: start.x + (end.x - start.x) * factor, y: start.y + (end.y - start.y) * factor };
+}
+
+function orderedFiniteF64Bits(value: number) {
+  const bits = BigInt(`0x${canonicalF64HexV1(value).slice(4)}`);
+  return (bits & F64_SIGN_MASK) === 0n ? bits | F64_SIGN_MASK : F64_BIT_MASK ^ bits;
+}
+
+function finiteF64sWithinOneUlp(left: number, right: number) {
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
+  const leftBits = orderedFiniteF64Bits(left);
+  const rightBits = orderedFiniteF64Bits(right);
+  const distance = leftBits >= rightBits ? leftBits - rightBits : rightBits - leftBits;
+  return distance <= MAX_CANONICAL_LINE_CONTROL_ULPS_V1;
+}
+
+/** Mirrors the Rust WGPU stroke slice's finite canonical-Line predicate. */
+export function isCanonicalFastManimLineSegmentV1(start: StaticProfilePoint, segment: StaticProfileSegment) {
+  if (
+    ![start.x, start.y, segment.end.x, segment.end.y].every(Number.isFinite) ||
+    (start.x === segment.end.x && start.y === segment.end.y)
+  )
+    return false;
+  const control1 = canonicalLineControl(start, segment.end, 1 / 3);
+  const control2 = canonicalLineControl(start, segment.end, 2 / 3);
+  return (
+    finiteF64sWithinOneUlp(segment.control1.x, control1.x) &&
+    finiteF64sWithinOneUlp(segment.control1.y, control1.y) &&
+    finiteF64sWithinOneUlp(segment.control2.x, control2.x) &&
+    finiteF64sWithinOneUlp(segment.control2.y, control2.y)
+  );
 }
 
 function isConvexControlPolygon(pointsInput: readonly StaticProfilePoint[]) {
@@ -500,15 +499,16 @@ function assertStaticProfileEntity(entity: StaticProfileEntity) {
   if (stroke.color.alpha <= 0) {
     profileViolation("Static profile strokes must be visible (non-zero alpha).");
   }
-  if (subpath.segments.length !== 1 || !isStraightSegment(subpath.start, subpath.segments[0]!)) {
-    profileViolation("Static profile open cubic paths must be a single straight segment.");
+  if (subpath.segments.length !== 1 || !isCanonicalFastManimLineSegmentV1(subpath.start, subpath.segments[0]!)) {
+    profileViolation("Static profile open paths must be one finite canonical 1/3–2/3 Line cubic (±1 f64 ULP).");
   }
 }
 
 /**
  * The v1 static snapshot profile: the only Scene shape the renderer provably
  * supports end to end (static filled convex closed paths lowered from Circle
- * and Rectangle, stroked straight Lines, no animation channels, exact
+ * and Rectangle, stroked Lines with canonical 1/3–2/3 cubic controls (±1
+ * ordered-f64 ULP), no animation channels, exact
  * fidelity, no assets). Every identifier must be the exact deterministic ID
  * derived from the Scene identity and sceneOrder, so no producer-chosen string
  * (including unreferenced provenance suffixes) can carry host details or
@@ -817,7 +817,7 @@ export function digestFastManimSnapshotRuntimeConfigV1(config: FastManimSnapshot
       width: canonicalF64HexV1(parsed.frame.width),
     },
   };
-  return createHash("sha256").update(canonicalJson(digestInput)).digest("hex");
+  return createHash("sha256").update(canonicalJsonV1(digestInput)).digest("hex");
 }
 
 export const fastManimSnapshotRunRequestV1Schema = z

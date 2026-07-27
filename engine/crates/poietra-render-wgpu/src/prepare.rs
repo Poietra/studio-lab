@@ -11,6 +11,8 @@ pub const FLATTEN_TOLERANCE_PIXELS_V1: f64 = 0.25;
 /// Whole-frame vertex ceiling for the initial CPU tessellation slice.
 pub const MAX_PREPARED_VERTICES_V1: usize = 1_000_000;
 const MAX_FLATTEN_DEPTH_V1: u8 = 20;
+// Python/NumPy and Rust may round equivalent control arithmetic one representable f64 apart.
+const MAX_CANONICAL_LINE_CONTROL_ULPS_V1: u64 = 1;
 
 /// A valid v1 draw feature not implemented by the bounded WGPU paint slice.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -471,21 +473,40 @@ fn canonical_line_control(
     start: &poietra_scene_ir::PointV1,
     end: &poietra_scene_ir::PointV1,
     factor: f64,
-) -> PointF64 {
-    PointF64 {
+) -> poietra_scene_ir::PointV1 {
+    poietra_scene_ir::PointV1 {
         x: start.x + (end.x - start.x) * factor,
         y: start.y + (end.y - start.y) * factor,
     }
 }
 
-#[allow(clippy::float_cmp)] // Exact producer recognition; a tolerance could silently accept curves.
+fn finite_f64s_within_one_ulp(left: f64, right: f64) -> bool {
+    if !left.is_finite() || !right.is_finite() {
+        return false;
+    }
+    let sign_mask = 1_u64 << 63;
+    let ordered_bits = |value: f64| {
+        let bits = value.to_bits();
+        if bits & sign_mask == 0 {
+            bits | sign_mask
+        } else {
+            !bits
+        }
+    };
+    ordered_bits(left).abs_diff(ordered_bits(right)) <= MAX_CANONICAL_LINE_CONTROL_ULPS_V1
+}
+
 fn is_canonical_line_cubic(start: &poietra_scene_ir::PointV1, segment: &CubicSegmentV1) -> bool {
     let control1 = canonical_line_control(start, &segment.end, 1.0 / 3.0);
     let control2 = canonical_line_control(start, &segment.end, 2.0 / 3.0);
-    segment.control1.x == control1.x
-        && segment.control1.y == control1.y
-        && segment.control2.x == control2.x
-        && segment.control2.y == control2.y
+    [
+        (segment.control1.x, control1.x),
+        (segment.control1.y, control1.y),
+        (segment.control2.x, control2.x),
+        (segment.control2.y, control2.y),
+    ]
+    .into_iter()
+    .all(|(actual, expected)| finite_f64s_within_one_ulp(actual, expected))
 }
 
 fn append_prepared_vertex(
@@ -965,6 +986,45 @@ pub fn tessellate_validated_frame_v1(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_line_accepts_real_fast_manim_single_ulp_controls() {
+        let start = poietra_scene_ir::PointV1 { x: -4.0, y: 2.0 };
+        let segment = CubicSegmentV1 {
+            control1: poietra_scene_ir::PointV1 {
+                x: -1.333_333_333_333_333_7,
+                y: 2.0,
+            },
+            control2: poietra_scene_ir::PointV1 {
+                x: 1.333_333_333_333_333,
+                y: 2.0,
+            },
+            end: poietra_scene_ir::PointV1 { x: 4.0, y: 2.0 },
+        };
+
+        assert!(is_canonical_line_cubic(&start, &segment));
+    }
+
+    #[test]
+    fn canonical_line_rejects_two_ulp_near_curves_and_non_finite_controls() {
+        let start = poietra_scene_ir::PointV1 { x: -2.0, y: -1.0 };
+        let end = poietra_scene_ir::PointV1 { x: 2.0, y: 1.5 };
+        let mut segment = CubicSegmentV1 {
+            control1: canonical_line_control(&start, &end, 1.0 / 3.0),
+            control2: canonical_line_control(&start, &end, 2.0 / 3.0),
+            end,
+        };
+        segment.control1.x = f64::from_bits(segment.control1.x.to_bits() + 2);
+        assert!(!is_canonical_line_cubic(&start, &segment));
+
+        segment.control1 = canonical_line_control(&start, &segment.end, 1.0 / 3.0);
+        segment.control2.y = f64::from_bits(segment.control2.y.to_bits() + 2);
+        assert!(!is_canonical_line_cubic(&start, &segment));
+
+        segment.control2 = canonical_line_control(&start, &segment.end, 2.0 / 3.0);
+        segment.control1.x = f64::NAN;
+        assert!(!is_canonical_line_cubic(&start, &segment));
+    }
 
     #[test]
     fn collinear_control_overshoot_is_not_flattened_to_the_endpoint_chord() {

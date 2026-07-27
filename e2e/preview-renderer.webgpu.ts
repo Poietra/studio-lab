@@ -29,6 +29,9 @@ async function openHarnessWorkspace(page: Page) {
   await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
   await expect(page.getByLabel("Current workspace")).toHaveText("Preview Harness");
   await expect(page.locator("[data-studio-canvas]")).toBeVisible();
+  await page.getByRole("button", { name: "Enable preview…" }).click();
+  await expect(page.getByRole("alertdialog", { name: "Run Manim Scenes for GPU preview?" })).toBeVisible();
+  await page.getByRole("button", { name: "Run Scene preview" }).click();
 }
 
 async function expectPresented(page: Page) {

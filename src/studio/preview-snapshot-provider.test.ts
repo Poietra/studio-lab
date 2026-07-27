@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import harnessManifest from "../../fixtures/engine-v1/shared-circle-opacity.harness.json";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import {
   PRISTINE_WORKING_REVISION,
+  createUnavailableStudioPreviewSnapshotProviderV1,
+  loadStudioPreviewSnapshotMetadataV1,
   resolveStudioPreviewSnapshotProviderV1,
   type StudioPreviewSceneIdentityV1,
   studioPreviewWorkspaceKeyV1,
@@ -15,7 +17,12 @@ describe("resolveStudioPreviewSnapshotProviderV1", () => {
   it("keeps the existing semantic preview as the default", async () => {
     await expect(resolveStudioPreviewSnapshotProviderV1("")).resolves.toBeNull();
     await expect(resolveStudioPreviewSnapshotProviderV1("?other=1")).resolves.toBeNull();
-    await expect(resolveStudioPreviewSnapshotProviderV1("?previewRenderer=server")).resolves.toBeNull();
+  });
+
+  it("resolves the production server provider only on explicit opt-in", async () => {
+    const provider = await resolveStudioPreviewSnapshotProviderV1("?previewRenderer=server");
+    expect(provider?.id).toBe("server-scene-snapshot");
+    expect(provider?.evidence).toBeUndefined();
   });
 
   it("resolves the fixture provider only on explicit opt-in in a dev/test build", async () => {
@@ -40,6 +47,46 @@ describe("studioPreviewWorkspaceKeyV1", () => {
     // incremental snapshot replacement is issue #67's boundary.
     expect(studioPreviewWorkspaceKeyV1({ ...context, workingRevision: "programs:tx-1" })).toBe(key);
     expect(studioPreviewWorkspaceKeyV1({ ...context })).toBe(key);
+  });
+});
+
+describe("loadStudioPreviewSnapshotMetadataV1", () => {
+  const context = { ...HARNESS_IDENTITY, sourceDuration: 0.1, workingRevision: "programs:tx-1" };
+
+  it("does not execute without both an explicit provider and Scene context", async () => {
+    const loadVerifiedSnapshot = vi.fn(async () => {
+      throw new Error("must not execute");
+    });
+    const provider = { id: "test", loadVerifiedSnapshot };
+    await expect(loadStudioPreviewSnapshotMetadataV1({ context, provider: null })).resolves.toBeNull();
+    await expect(loadStudioPreviewSnapshotMetadataV1({ context: null, provider })).resolves.toBeNull();
+    expect(loadVerifiedSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("forwards identity and abort ownership while propagating provider failure", async () => {
+    const failure = new Error("snapshot producer unavailable");
+    const loadVerifiedSnapshot = vi.fn().mockRejectedValue(failure);
+    const controller = new AbortController();
+    await expect(
+      loadStudioPreviewSnapshotMetadataV1({
+        context,
+        provider: { id: "test", loadVerifiedSnapshot },
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(failure);
+    expect(loadVerifiedSnapshot).toHaveBeenCalledWith({ identity: HARNESS_IDENTITY, signal: controller.signal });
+  });
+});
+
+describe("createUnavailableStudioPreviewSnapshotProviderV1", () => {
+  it("turns a provider chunk failure into the regular snapshot-unavailable path", async () => {
+    const cause = new Error("dynamic import failed");
+    const provider = createUnavailableStudioPreviewSnapshotProviderV1(cause);
+
+    await expect(provider.loadVerifiedSnapshot({ identity: HARNESS_IDENTITY })).rejects.toMatchObject({
+      cause,
+      message: "The requested Scene preview provider could not be loaded.",
+    });
   });
 });
 

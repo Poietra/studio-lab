@@ -35,8 +35,13 @@ to the CPU, check stable interior pixels, and emit machine-readable adapter evid
 Both evaluators consume the JSON fixtures under `fixtures/engine-v1`; categorical
 results are exact and floating-point results use the fixture's explicit combined
 absolute/relative tolerance. The TypeScript evaluator remains Studio's current
-implementation while the Rust path is experimental. `poietra-wasm` exposes a
-worker-oriented boundary, but Studio does not yet use it as its visible renderer.
+implementation while the Rust path is experimental. Studio can explicitly opt into
+the retained worker through `?previewRenderer=server`: it loads a same-origin,
+server-verified fast-manim snapshot and reveals the WebGPU canvas only after an
+exactly correlated frame is presented. The semantic editor stays mounted as the
+interactive overlay and whole-Scene fallback; it remains the default without that
+query. Server-backed final video rendering and `.py` export remain separate,
+authoritative workflows.
 
 `poietra-render-wgpu` is a deliberately narrow GPU slice. Its pure CPU
 stage validates the complete `RenderPacketV1`, maps each local cubic's controls to
@@ -124,6 +129,22 @@ pnpm build:engine:wasm
 
 Generated bindings are written to `public/engine-wasm` and intentionally remain
 untracked build artifacts.
+
+After that build, exercise the real fast-manim-to-Studio path with an explicit
+producer interpreter:
+
+```sh
+POIETRA_FAST_MANIM_SNAPSHOT_COMMAND='["/path/to/fast-manim/.venv/bin/python","-m","manim.renderer.scene_snapshot"]' \
+  pnpm test:e2e:preview:real
+```
+
+This lane uses a checked-in Python Scene with a filled Circle, filled Rectangle,
+and stroked Line. It verifies the retained host correlation and exact GPU texture
+readback. It is not a browser-compositor golden, reference-image comparison, or
+decision-grade real-GPU performance report; those remain tracked separately. It
+also proves that Studio projects the static producer profile's verified 1-second
+duration instead of its 0.1-second source-import estimate; arbitrary Manim Scene
+duration and source-to-runtime hit-target identity remain follow-up work.
 
 ## Canonical WebGPU benchmark lane
 

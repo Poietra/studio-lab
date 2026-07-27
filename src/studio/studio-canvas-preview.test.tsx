@@ -59,13 +59,22 @@ function previewView(
   state: StudioPreviewRendererViewV1["state"],
   interactionGeometry: StudioPreviewRendererViewV1["interactionGeometry"] = null,
 ): StudioPreviewRendererViewV1 {
-  return { attachCanvas: vi.fn(), epoch: 0, interactionGeometry, sourceLabel: "verified fixture", state };
+  return {
+    attachCanvas: vi.fn(),
+    epoch: 0,
+    interactionGeometry,
+    sourceLabel: "verified fixture",
+    sourceMetadataPhase: "ready",
+    state,
+    verifiedSourceDuration: 2,
+  };
 }
 
 describe("StudioCanvas retained preview layer", () => {
   it("renders no canvas layer by default so the semantic preview stays authoritative", () => {
     const markup = renderToStaticMarkup(<StudioCanvas {...baseProps()} />);
     expect(markup).toContain('data-preview-renderer="off"');
+    expect(markup).not.toContain("data-preview-revision");
     expect(markup).not.toContain("data-studio-preview-canvas");
     expect(markup).not.toContain("data-studio-preview-status");
   });
@@ -79,6 +88,7 @@ describe("StudioCanvas retained preview layer", () => {
     );
     expect(markup).toContain('data-preview-renderer="fallback"');
     expect(markup).toContain('data-preview-fallback-reason="install-failed"');
+    expect(markup).not.toContain("data-preview-revision");
     expect(markup).toContain("Canvas preview fallback · snapshot install failed");
     expect(markup).toMatch(/<canvas[^>]*invisible/);
     expect(markup).toContain("data-studio-transform-layer");
@@ -106,6 +116,7 @@ describe("StudioCanvas retained preview layer", () => {
     // The exact presented packet is exposed so E2E can bind pixel evidence to
     // this frame and no other.
     expect(markup).toContain('data-preview-packet-id="canvas:2"');
+    expect(markup).toContain(`data-preview-revision="${"a".repeat(64)}"`);
     expect(markup).not.toContain("data-preview-fallback-reason");
     expect(markup).toContain("Canvas preview · verified fixture · editing preview only");
     expect(markup).not.toMatch(/<canvas[^>]*invisible/);

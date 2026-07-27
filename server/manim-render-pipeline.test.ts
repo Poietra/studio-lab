@@ -9,13 +9,19 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ResolvedConfig, ViteDevServer } from "vite";
 
-import { renderProgramBatchId, type ProgramRenderRequest } from "../src/render-pipeline/contracts";
+import {
+  renderProgramBatchId,
+  type ProgramRenderRequest,
+  type RenderCommitRequest,
+  type RenderSessionView,
+} from "../src/render-pipeline/contracts";
 import { importManimScene } from "../src/render-pipeline/source-import";
 import { createSceneDurationProgram } from "../src/studio/authoring-commands";
 import type { CanonicalEditOperation, CanonicalEditProgram } from "../src/studio/operations";
 import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import { handleManimRequest } from "./manim-render-http";
 import { PersistentManimProjectCatalog } from "./manim-project-catalog";
+import type { ManimSourceReadHooks } from "./manim-source-store";
 import {
   ManimProjectRegistry,
   ManimRenderManager,
@@ -196,6 +202,7 @@ async function fixture(
     maxConcurrentRenders?: number;
     maxRetainedSessions?: number;
     renderTimeoutMs?: number;
+    sourceStoreHooks?: ManimSourceReadHooks;
   }> = {},
 ) {
   const projectRoot = await mkdtemp(join(tmpdir(), "poietra-render-test-"));
@@ -218,6 +225,21 @@ async function waitForTerminal(manager: Pick<ManimRenderManager, "view">, id: st
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error("Render session did not finish.");
+}
+
+function commitRequest(
+  session: RenderSessionView,
+  actionId = "00000000-0000-4000-8000-000000000001",
+): RenderCommitRequest {
+  return {
+    actionId,
+    programBatchId: session.programBatchId,
+    projectId: session.projectId,
+    renderRequestId: session.renderRequestId,
+    sceneName: session.sceneName,
+    sourceHash: session.patch.sourceHash,
+    sourcePath: session.sourcePath,
+  };
 }
 
 async function registryFixture(command: readonly string[] = [process.execPath, fakeRenderer], mutable = false) {
@@ -253,6 +275,14 @@ async function waitUntil(predicate: () => boolean | Promise<boolean>, message: s
   throw new Error(message);
 }
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 afterEach(async () => {
   await Promise.all(managers.splice(0).map((manager) => manager.close()));
   await Promise.all(registries.splice(0).map((registry) => registry.close()));
@@ -286,11 +316,11 @@ describe("Manim render manager", () => {
     expect(rendered.videoUrl).toContain(started.id);
     expect(await readFile(join(projectRoot, "scene.py"), "utf8")).toBe(sceneSource);
 
-    const committed = await manager.commit(started.id);
+    const committed = await manager.commit(started.id, commitRequest(started));
     expect(committed.status).toBe("committed");
     expect(await readFile(join(projectRoot, "scene.py"), "utf8")).toContain('poietra:transaction "render-integration"');
 
-    const undone = await manager.undo(started.id);
+    const undone = await manager.undo(started.id, "00000000-0000-4000-8000-000000000002");
     expect(undone.status).toBe("undone");
     expect(await readFile(join(projectRoot, "scene.py"), "utf8")).toBe(sceneSource);
     await waitUntil(
@@ -302,6 +332,21 @@ describe("Manim render manager", () => {
       sourceHash: request().sourceHash,
       state: "current",
     });
+  });
+
+  it("rejects a Commit that is not correlated with the rendered candidate", async () => {
+    const { manager, projectRoot } = await fixture();
+    const started = await manager.start(request());
+    await waitForTerminal(manager, started.id);
+
+    await expect(
+      manager.commit(started.id, {
+        ...commitRequest(started),
+        sourceHash: "b".repeat(64),
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(manager.view(started.id).status).toBe("ready");
+    expect(await readFile(join(projectRoot, "scene.py"), "utf8")).toBe(sceneSource);
   });
 
   it("coalesces concurrent workspace inspections", async () => {
@@ -332,7 +377,7 @@ describe("Manim render manager", () => {
     });
     const started = await manager.start(request());
     await waitForTerminal(manager, started.id);
-    await manager.commit(started.id);
+    await manager.commit(started.id, commitRequest(started));
     await waitUntil(
       async () =>
         access(marker).then(
@@ -361,7 +406,7 @@ describe("Manim render manager", () => {
     expect(rendered.status).toBe("ready");
     await writeFile(join(projectRoot, "scene.py"), `${sceneSource}\n# external change\n`, "utf8");
 
-    await expect(manager.commit(started.id)).rejects.toThrow(/source changed after preview/i);
+    await expect(manager.commit(started.id, commitRequest(started))).rejects.toThrow(/source changed after preview/i);
   });
 
   it("refuses to render a draft created from a stale imported source snapshot", async () => {
@@ -452,9 +497,9 @@ class GroupedEquation(Scene):
 
     const started = await manager.start(renderRequest);
     expect((await waitForTerminal(manager, started.id)).status).toBe("ready");
-    expect((await manager.commit(started.id)).status).toBe("committed");
+    expect((await manager.commit(started.id, commitRequest(started))).status).toBe("committed");
     expect(await readFile(join(projectRoot, "scene.py"), "utf8")).toBe(exported.source);
-    expect((await manager.undo(started.id)).status).toBe("undone");
+    expect((await manager.undo(started.id, "00000000-0000-4000-8000-000000000002")).status).toBe("undone");
     expect(await readFile(join(projectRoot, "scene.py"), "utf8")).toBe(temporalMetadataSource);
   });
 
@@ -776,6 +821,32 @@ class Independent(Scene):
     await manager.discard(replacement.id);
   });
 
+  it("atomically abandons active and ready stale renders with request correlation", async () => {
+    const { manager } = await fixture();
+    const active = await manager.start(request());
+
+    await expect(manager.abandon(active.id, "wrong-render-request")).rejects.toThrow(/no longer matches/i);
+    await expect(manager.abandon(active.id, active.renderRequestId)).resolves.toEqual({ abandoned: true });
+    expect(() => manager.view(active.id)).toThrow(/session not found/i);
+
+    const ready = await manager.start(request());
+    await waitForTerminal(manager, ready.id);
+    await expect(manager.abandon(ready.id, ready.renderRequestId)).resolves.toEqual({ abandoned: true });
+    expect(() => manager.view(ready.id)).toThrow(/session not found/i);
+    await expect(manager.abandon(ready.id, ready.renderRequestId)).resolves.toEqual({ abandoned: true });
+  });
+
+  it("never abandons a source-changing render session", async () => {
+    const { manager, projectRoot } = await fixture();
+    const started = await manager.start(request());
+    await waitForTerminal(manager, started.id);
+    await manager.commit(started.id, commitRequest(started));
+
+    await expect(manager.abandon(started.id, started.renderRequestId)).rejects.toThrow(/source-changing/i);
+    expect(manager.view(started.id).status).toBe("committed");
+    expect(await readFile(join(projectRoot, "scene.py"), "utf8")).toContain('poietra:transaction "render-integration"');
+  });
+
   it("fails a renderer that exceeds its execution deadline", async () => {
     const { manager } = await fixture({ renderTimeoutMs: 10 });
     const started = await manager.start(request());
@@ -791,11 +862,217 @@ class Independent(Scene):
     const rendered = await waitForTerminal(manager, started.id);
     expect(rendered.status).toBe("ready");
 
-    const commit = manager.commit(started.id);
+    const commit = manager.commit(started.id, commitRequest(started));
     await manager.cleanupExpiredSessions(Date.now() + 60 * 60 * 1_000);
     expect(manager.view(started.id).status).toBe("ready");
     await expect(manager.discard(started.id)).rejects.toThrow(/another action is already running/i);
     expect((await commit).status).toBe("committed");
+  });
+
+  it("registers a cancellation tombstone before a delayed Commit can start", async () => {
+    const { manager, projectRoot } = await fixture();
+    const started = await manager.start(request());
+    await waitForTerminal(manager, started.id);
+    const actionId = "00000000-0000-4000-8000-000000000011";
+
+    const cancelled = await manager.cancelSourceAction(started.id, { actionId, kind: "commit" });
+
+    expect(cancelled.action).toEqual({ id: actionId, kind: "commit", outcome: null, state: "cancelled" });
+    expect(cancelled.session).toMatchObject({ canCommit: true, status: "ready" });
+    await expect(manager.commit(started.id, commitRequest(started, actionId))).rejects.toThrow(/cancelled/i);
+    expect(await readFile(join(projectRoot, "scene.py"), "utf8")).toBe(sceneSource);
+  });
+
+  it("cancels Commit at the final CAS boundary without changing the source", async () => {
+    const entered = deferred();
+    const release = deferred();
+    const { manager, projectRoot } = await fixture({
+      sourceStoreHooks: {
+        beforeWriteCommit: async () => {
+          entered.resolve();
+          await release.promise;
+        },
+      },
+    });
+    const started = await manager.start(request());
+    await waitForTerminal(manager, started.id);
+    const actionId = "00000000-0000-4000-8000-000000000012";
+    const commit = manager.commit(started.id, commitRequest(started, actionId));
+    const commitRejected = expect(commit).rejects.toMatchObject({ name: "AbortError" });
+    await entered.promise;
+
+    await expect(
+      manager.commit(started.id, commitRequest(started, "00000000-0000-4000-8000-000000000018")),
+    ).rejects.toThrow(/another action is already running/i);
+
+    const cancellation = manager.cancelSourceAction(started.id, { actionId, kind: "commit" });
+    release.resolve();
+
+    await commitRejected;
+    await expect(cancellation).resolves.toMatchObject({
+      action: { id: actionId, kind: "commit", outcome: null, state: "cancelled" },
+      session: { status: "ready" },
+    });
+    expect(await readFile(join(projectRoot, "scene.py"), "utf8")).toBe(sceneSource);
+  });
+
+  it("reports Commit as succeeded when its atomic rename wins cancellation", async () => {
+    const { manager, projectRoot } = await fixture();
+    const started = await manager.start(request());
+    await waitForTerminal(manager, started.id);
+    const actionId = "00000000-0000-4000-8000-000000000013";
+    const commit = manager.commit(started.id, commitRequest(started, actionId));
+    await waitUntil(
+      async () => (await readFile(join(projectRoot, "scene.py"), "utf8")) !== sceneSource,
+      "Commit did not reach its atomic source update.",
+    );
+
+    const cancellation = await manager.cancelSourceAction(started.id, { actionId, kind: "commit" });
+
+    await expect(commit).resolves.toMatchObject({ status: "committed" });
+    expect(cancellation).toMatchObject({
+      action: { id: actionId, kind: "commit", outcome: "committed", state: "succeeded" },
+      session: { status: "committed" },
+    });
+  });
+
+  it("makes a successful source action idempotent for the same action ID", async () => {
+    const { manager, projectRoot } = await fixture();
+    const started = await manager.start(request());
+    await waitForTerminal(manager, started.id);
+    const expected = commitRequest(started, "00000000-0000-4000-8000-000000000014");
+
+    await manager.commit(started.id, expected);
+    await expect(manager.commit(started.id, expected)).resolves.toMatchObject({ status: "committed" });
+
+    const source = await readFile(join(projectRoot, "scene.py"), "utf8");
+    expect(source.match(/poietra:transaction "render-integration"/g)).toHaveLength(1);
+  });
+
+  it("does not let a delayed cancellation rewind the latest source-action view", async () => {
+    const { manager } = await fixture();
+    const started = await manager.start(request());
+    await waitForTerminal(manager, started.id);
+    const commitActionId = "00000000-0000-4000-8000-000000000022";
+    const undoActionId = "00000000-0000-4000-8000-000000000023";
+    await manager.commit(started.id, commitRequest(started, commitActionId));
+    await manager.undo(started.id, undoActionId);
+
+    const delayedCancellation = await manager.cancelSourceAction(started.id, {
+      actionId: commitActionId,
+      kind: "commit",
+    });
+
+    expect(delayedCancellation.action).toEqual({
+      id: commitActionId,
+      kind: "commit",
+      outcome: "committed",
+      state: "succeeded",
+    });
+    expect(delayedCancellation.session).toMatchObject({
+      sourceAction: { id: undoActionId, kind: "undo", outcome: "undone", state: "succeeded" },
+      status: "undone",
+    });
+  });
+
+  it("rejects replaying a completed action after the render session advances", async () => {
+    const { manager } = await fixture();
+    const started = await manager.start(request());
+    await waitForTerminal(manager, started.id);
+    const commitActionId = "00000000-0000-4000-8000-000000000024";
+    const expectedCommit = commitRequest(started, commitActionId);
+    await manager.commit(started.id, expectedCommit);
+    await manager.undo(started.id, "00000000-0000-4000-8000-000000000025");
+
+    await expect(manager.commit(started.id, expectedCommit)).rejects.toThrow(/session has since advanced/i);
+    expect(manager.view(started.id)).toMatchObject({
+      sourceAction: { kind: "undo", outcome: "undone", state: "succeeded" },
+      status: "undone",
+    });
+  });
+
+  it("cancels Undo at the CAS boundary and permits a new correlated Undo", async () => {
+    let blockUndo = false;
+    const entered = deferred();
+    const release = deferred();
+    const { manager, projectRoot } = await fixture({
+      sourceStoreHooks: {
+        beforeWriteCommit: async () => {
+          if (!blockUndo) return;
+          entered.resolve();
+          await release.promise;
+        },
+      },
+    });
+    const started = await manager.start(request());
+    await waitForTerminal(manager, started.id);
+    await manager.commit(started.id, commitRequest(started));
+    const committedSource = await readFile(join(projectRoot, "scene.py"), "utf8");
+    blockUndo = true;
+    const actionId = "00000000-0000-4000-8000-000000000015";
+    const undo = manager.undo(started.id, actionId);
+    const undoRejected = expect(undo).rejects.toMatchObject({ name: "AbortError" });
+    await entered.promise;
+
+    const cancellation = manager.cancelSourceAction(started.id, { actionId, kind: "undo" });
+    release.resolve();
+
+    await undoRejected;
+    await expect(cancellation).resolves.toMatchObject({
+      action: { id: actionId, kind: "undo", outcome: null, state: "cancelled" },
+      session: { canUndo: true, status: "committed" },
+    });
+    expect(await readFile(join(projectRoot, "scene.py"), "utf8")).toBe(committedSource);
+    blockUndo = false;
+    await expect(manager.undo(started.id, "00000000-0000-4000-8000-000000000016")).resolves.toMatchObject({
+      status: "undone",
+    });
+  });
+
+  it("reports Undo as succeeded when its atomic rename wins cancellation", async () => {
+    const { manager, projectRoot } = await fixture();
+    const started = await manager.start(request());
+    await waitForTerminal(manager, started.id);
+    await manager.commit(started.id, commitRequest(started));
+    const actionId = "00000000-0000-4000-8000-000000000019";
+    const undo = manager.undo(started.id, actionId);
+    await waitUntil(
+      async () => (await readFile(join(projectRoot, "scene.py"), "utf8")) === sceneSource,
+      "Undo did not reach its atomic source update.",
+    );
+
+    const cancellation = await manager.cancelSourceAction(started.id, { actionId, kind: "undo" });
+
+    await expect(undo).resolves.toMatchObject({ status: "undone" });
+    expect(cancellation).toMatchObject({
+      action: { id: actionId, kind: "undo", outcome: "undone", state: "succeeded" },
+      session: { status: "undone" },
+    });
+  });
+
+  it("aborts and waits for a running source action before close completes", async () => {
+    const entered = deferred();
+    const release = deferred();
+    const { manager, projectRoot } = await fixture({
+      sourceStoreHooks: {
+        beforeWriteCommit: async () => {
+          entered.resolve();
+          await release.promise;
+        },
+      },
+    });
+    const started = await manager.start(request());
+    await waitForTerminal(manager, started.id);
+    const commit = manager.commit(started.id, commitRequest(started, "00000000-0000-4000-8000-000000000017"));
+    const commitRejected = expect(commit).rejects.toMatchObject({ name: "AbortError" });
+    await entered.promise;
+
+    const close = manager.close();
+    release.resolve();
+
+    await commitRejected;
+    await close;
+    expect(await readFile(join(projectRoot, "scene.py"), "utf8")).toBe(sceneSource);
   });
 
   it("prevents concurrent sessions from overwriting the same source snapshot", async () => {
@@ -803,7 +1080,9 @@ class Independent(Scene):
     const sessions = await Promise.all([manager.start(request()), manager.start(request())]);
     await Promise.all(sessions.map((session) => waitForTerminal(manager, session.id)));
 
-    const commits = await Promise.allSettled(sessions.map((session) => manager.commit(session.id)));
+    const commits = await Promise.allSettled(
+      sessions.map((session) => manager.commit(session.id, commitRequest(session))),
+    );
 
     expect(commits.map((result) => result.status).sort()).toEqual(["fulfilled", "rejected"]);
     const rejected = commits.find((result) => result.status === "rejected");
@@ -1205,12 +1484,12 @@ describe("Manim project registry", () => {
     await registry.workspace("project-b");
     expect((await waitForTerminal(registry, started.id)).status).toBe("ready");
 
-    const committed = await registry.commit(started.id);
+    const committed = await registry.commit(started.id, commitRequest(started));
     expect(committed).toMatchObject({ projectId: "project-a", status: "committed" });
     expect(await readFile(join(firstRoot, "scene.py"), "utf8")).toContain('poietra:transaction "render-integration"');
     expect(await readFile(join(secondRoot, "scene.py"), "utf8")).toBe(sceneSource);
 
-    await registry.undo(started.id);
+    await registry.undo(started.id, "00000000-0000-4000-8000-000000000002");
     expect(await readFile(join(firstRoot, "scene.py"), "utf8")).toBe(sceneSource);
   });
 
@@ -1225,6 +1504,82 @@ describe("Manim project registry", () => {
 
     expect(internals.sessionProjects.has(started.id)).toBe(false);
     expect(() => registry.view(started.id)).toThrow(/session not found/i);
+  });
+
+  it("rejects cross-origin JSON mutations before they can execute or change project source", async () => {
+    const { firstRoot, registry } = await registryFixture();
+    const started = await registry.start({ ...request(), projectId: "project-a" });
+    await waitForTerminal(registry, started.id);
+    const server = createServer((incoming, response) => {
+      void handleManimRequest(registry, incoming, response);
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address() as AddressInfo;
+      const origin = `http://127.0.0.1:${address.port}`;
+      for (const endpoint of ["/api/manim/projects/project-a/renders", "/api/manim/renders"]) {
+        const rejected = await fetch(`${origin}${endpoint}`, {
+          body: JSON.stringify({ ...request(), projectId: "project-a" }),
+          headers: {
+            "content-type": "application/json",
+            origin: "https://attacker.example",
+          },
+          method: "POST",
+        });
+        expect(rejected.status).toBe(403);
+      }
+      const simpleRequest = await fetch(`${origin}/api/manim/projects/project-a/renders`, {
+        body: JSON.stringify({ ...request(), projectId: "project-a" }),
+        headers: { "content-type": "text/plain" },
+        method: "POST",
+      });
+      expect(simpleRequest.status).toBe(415);
+
+      for (const [endpoint, method, body] of [
+        ["/api/manim/projects", "POST", { kind: "managed", name: "Cross-origin" }],
+        ["/api/manim/projects/project-a", "PATCH", { name: "Cross-origin" }],
+        ["/api/manim/projects/project-b", "DELETE", {}],
+      ] as const) {
+        const rejected = await fetch(`${origin}${endpoint}`, {
+          body: JSON.stringify(body),
+          headers: {
+            "content-type": "application/json",
+            origin: "https://attacker.example",
+          },
+          method,
+        });
+        expect(rejected.status).toBe(403);
+      }
+
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/manim/renders/${started.id}/commit`, {
+        body: JSON.stringify(commitRequest(started)),
+        headers: {
+          "content-type": "application/json",
+          origin: "https://attacker.example",
+        },
+        method: "POST",
+      });
+
+      expect(response.status).toBe(403);
+      for (const [action, body] of [
+        ["abandon", { renderRequestId: started.renderRequestId }],
+        ["cancel-source-action", { actionId: "00000000-0000-4000-8000-000000000021", kind: "commit" }],
+      ] as const) {
+        const rejected = await fetch(`http://127.0.0.1:${address.port}/api/manim/renders/${started.id}/${action}`, {
+          body: JSON.stringify(body),
+          headers: {
+            "content-type": "application/json",
+            origin: "https://attacker.example",
+          },
+          method: "POST",
+        });
+        expect(rejected.status).toBe(403);
+      }
+      expect(registry.view(started.id).status).toBe("ready");
+      expect(await readFile(join(firstRoot, "scene.py"), "utf8")).toBe(sceneSource);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
   });
 
   it("serves project discovery and a safe Python attachment over HTTP", async () => {
@@ -1352,6 +1707,7 @@ describe("Manim project registry", () => {
       });
 
       const deleteResponse = await fetch(`${origin}/api/manim/projects/${created.project.id}`, {
+        headers: { "content-type": "application/json" },
         method: "DELETE",
       });
       expect(deleteResponse.status).toBe(200);
@@ -1367,6 +1723,7 @@ describe("Manim project registry", () => {
       expect(invalidResponse.status).toBe(400);
       expect(JSON.stringify(await invalidResponse.json())).not.toContain(missingRoot);
       const deleteManagedResponse = await fetch(`${origin}/api/manim/projects/${managed.project.id}`, {
+        headers: { "content-type": "application/json" },
         method: "DELETE",
       });
       expect(deleteManagedResponse.status).toBe(200);

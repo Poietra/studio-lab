@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import sceneBundleFixture from "../../fixtures/engine-v1/shared-circle-opacity.json";
 import type { SceneIrBundleV1 } from "../engine/contracts";
 import {
   describeStudioPreviewFallbackV1,
@@ -11,11 +12,13 @@ import {
   snapStudioPreviewViewportV1,
   studioPreviewHostBindingCurrentV1,
   studioPreviewSnapshotCorrelatesV1,
+  studioPreviewVerifiedSourceDurationV1,
 } from "./preview-renderer-policy";
-import type {
-  StudioPreviewEditingContextV1,
-  StudioPreviewSnapshotCorrelationV1,
-  StudioVerifiedPreviewSnapshotV1,
+import {
+  loadStudioPreviewSnapshotMetadataV1,
+  type StudioPreviewEditingContextV1,
+  type StudioPreviewSnapshotCorrelationV1,
+  type StudioVerifiedPreviewSnapshotV1,
 } from "./preview-snapshot-provider";
 
 const CAPABLE: StudioPreviewEligibilityInputV1 = {
@@ -98,15 +101,24 @@ describe("studioPreviewSnapshotCorrelatesV1", () => {
     ["sceneName", { sceneName: "FieldSummary" }],
     ["sourceHash", { sourceHash: "c".repeat(64) }],
     ["sourcePath", { sourcePath: "other.py" }],
-    ["sourceDuration", { sourceDuration: 12 }],
     ["workingRevision", { workingRevision: "programs:tx-1" }],
   ] as const)("breaks correlation when %s changes (workspace switch or Studio edit)", (_axis, change) => {
     expect(studioPreviewSnapshotCorrelatesV1(CORRELATION, { ...CONTEXT, ...change })).toBe(false);
   });
 
-  it("never treats a Scene IR whose duration differs from the source as correlated", () => {
+  it("uses the verified runtime duration instead of Studio's conservative static-import estimate", () => {
+    expect(studioPreviewSnapshotCorrelatesV1(CORRELATION, { ...CONTEXT, sourceDuration: 0.1 })).toBe(true);
+  });
+
+  it("never treats an internally inconsistent Scene IR duration as correlated", () => {
     const unrelatedIr: StudioPreviewSnapshotCorrelationV1 = { ...CORRELATION, sceneDuration: 7 };
     expect(studioPreviewSnapshotCorrelatesV1(unrelatedIr, CONTEXT)).toBe(false);
+    expect(
+      studioPreviewSnapshotCorrelatesV1(
+        { ...CORRELATION, context: { ...CORRELATION.context, sourceDuration: 7 } },
+        CONTEXT,
+      ),
+    ).toBe(false);
   });
 
   it("never adopts a snapshot loaded for a previously active workspace", () => {
@@ -138,9 +150,54 @@ const VIEW_SNAPSHOT = {
   correlation: CORRELATION,
   duration: 2,
   sceneId: "shared:circle-opacity",
-  snapshot: {} as SceneIrBundleV1,
+  snapshot: sceneBundleFixture as unknown as SceneIrBundleV1,
   sourceLabel: "verified fixture",
 } satisfies StudioVerifiedPreviewSnapshotV1;
+
+describe("studioPreviewVerifiedSourceDurationV1", () => {
+  it("keeps verified source time authoritative after Studio edits", () => {
+    expect(
+      studioPreviewVerifiedSourceDurationV1(VIEW_SNAPSHOT, {
+        ...CONTEXT,
+        sourceDuration: 0.1,
+        workingRevision: "programs:tx-1",
+      }),
+    ).toBe(2);
+  });
+
+  it.each([
+    ["project", { projectId: "previous-project" }],
+    ["path", { sourcePath: "other.py" }],
+    ["Scene", { sceneName: "FieldSummary" }],
+    ["source hash", { sourceHash: "c".repeat(64) }],
+  ] as const)("rejects a retained snapshot with stale %s identity", (_axis, change) => {
+    expect(studioPreviewVerifiedSourceDurationV1(VIEW_SNAPSHOT, { ...CONTEXT, ...change })).toBeNull();
+  });
+
+  it("fails closed when the provider has no result or any duration seam disagrees", () => {
+    expect(studioPreviewVerifiedSourceDurationV1(null, CONTEXT)).toBeNull();
+    expect(studioPreviewVerifiedSourceDurationV1({ ...VIEW_SNAPSHOT, duration: 3 }, CONTEXT)).toBeNull();
+    const tooShort = {
+      ...VIEW_SNAPSHOT,
+      correlation: { ...CORRELATION, context: { ...CONTEXT, sourceDuration: 0.05 }, sceneDuration: 0.05 },
+      duration: 0.05,
+      snapshot: { ...VIEW_SNAPSHOT.snapshot, scene: { ...VIEW_SNAPSHOT.snapshot.scene, duration: 0.05 } },
+    };
+    expect(studioPreviewVerifiedSourceDurationV1(tooShort, CONTEXT)).toBeNull();
+    expect(
+      studioPreviewVerifiedSourceDurationV1(
+        {
+          ...VIEW_SNAPSHOT,
+          snapshot: {
+            ...VIEW_SNAPSHOT.snapshot,
+            scene: { ...VIEW_SNAPSHOT.snapshot.scene, duration: 3 },
+          },
+        },
+        CONTEXT,
+      ),
+    ).toBeNull();
+  });
+});
 
 const PRESENTED_VIEW_INPUT: StudioPreviewViewStateInputV1 = {
   context: CONTEXT,
@@ -163,6 +220,50 @@ const PRESENTED_VIEW_INPUT: StudioPreviewViewStateInputV1 = {
 };
 
 describe("resolveStudioPreviewViewStateV1", () => {
+  it("loads verified source time while an ineligible renderer stays on semantic fallback", async () => {
+    const editedContext = { ...CONTEXT, sourceDuration: 0.1, workingRevision: "programs:tx-1" };
+    const loaded = await loadStudioPreviewSnapshotMetadataV1({
+      context: editedContext,
+      provider: { id: "metadata-only", loadVerifiedSnapshot: async () => VIEW_SNAPSHOT },
+    });
+    const eligibility = evaluateStudioPreviewEligibilityV1({ ...CAPABLE, webgpuAvailable: false });
+
+    expect(studioPreviewVerifiedSourceDurationV1(loaded, editedContext)).toBe(2);
+    expect(
+      resolveStudioPreviewViewStateV1({
+        ...PRESENTED_VIEW_INPUT,
+        context: editedContext,
+        eligibility,
+        snapshot: loaded,
+      }),
+    ).toMatchObject({ phase: "fallback", reason: "capability-unsupported" });
+  });
+
+  it("fails closed when snapshot metadata loading reports a provider error", () => {
+    expect(
+      resolveStudioPreviewViewStateV1({
+        ...PRESENTED_VIEW_INPUT,
+        snapshot: null,
+        snapshotError: "snapshot producer unavailable",
+      }),
+    ).toMatchObject({ phase: "fallback", reason: "snapshot-unavailable" });
+  });
+
+  it("reports a metadata failure even when WebGPU is unavailable", () => {
+    expect(
+      resolveStudioPreviewViewStateV1({
+        ...PRESENTED_VIEW_INPUT,
+        eligibility: evaluateStudioPreviewEligibilityV1({ ...CAPABLE, webgpuAvailable: false }),
+        snapshot: null,
+        snapshotError: "snapshot producer unavailable",
+      }),
+    ).toEqual({
+      detail: "snapshot producer unavailable",
+      phase: "fallback",
+      reason: "snapshot-unavailable",
+    });
+  });
+
   it("presents only when the host frame matches this render exactly", () => {
     expect(resolveStudioPreviewViewStateV1(PRESENTED_VIEW_INPUT)).toBe(PRESENTED_VIEW_INPUT.hostState);
   });
