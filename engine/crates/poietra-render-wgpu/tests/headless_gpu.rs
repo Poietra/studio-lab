@@ -8,7 +8,10 @@ use std::time::Duration;
 use poietra_render_wgpu::{WgpuPaintRendererV1, WgpuRenderTargetV1, prepare_frame_v1};
 use poietra_scene_ir::{RenderPacketV1, StrokeCapV1};
 use serde::Serialize;
-use support::{generic_fill_fixture, sampled_packet, straight_stroke_packet};
+use support::{
+    PixelReferenceSet, generic_fill_fixture, generic_stroke_fixture, sampled_packet,
+    straight_stroke_packet,
+};
 
 const BYTES_PER_PIXEL: u32 = 4;
 const GPU_TIMEOUT: Duration = Duration::from_secs(10);
@@ -367,9 +370,11 @@ fn renders_shared_fixture_with_fallback_adapter() {
     );
 }
 
-#[test]
-#[ignore = "requires a native software WGPU adapter; the dedicated CI step runs this proof"]
-fn renders_shared_generic_fill_fixture_with_fallback_adapter() {
+fn render_and_assert_shared_reference(
+    packet: &RenderPacketV1,
+    reference: PixelReferenceSet,
+    evidence_name: &str,
+) {
     let instance =
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
     let adapter = request_fallback_adapter(&instance);
@@ -380,8 +385,7 @@ fn renders_shared_generic_fill_fixture_with_fallback_adapter() {
     let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
     let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
 
-    let (packet, reference) = generic_fill_fixture();
-    let (texture, extent) = render_packet(&device, &queue, &packet);
+    let (texture, extent) = render_packet(&device, &queue, packet);
     let (_, rgba) = readback_texture(&device, &queue, &texture, extent);
 
     assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
@@ -395,15 +399,33 @@ fn renders_shared_generic_fill_fixture_with_fallback_adapter() {
             .lock()
             .expect("device-loss evidence mutex must not be poisoned")
             .is_none(),
-        "device must remain available through generic fill readback"
+        "device must remain available through {evidence_name} readback"
     );
 
-    println!("poietra-generic-fill-reference={}", reference.reason);
+    println!("poietra-{evidence_name}-reference={}", reference.reason);
+    for (name, sample) in &reference.samples {
+        let actual = pixel(&rgba, extent.width, sample.at[0], sample.at[1]);
+        println!("poietra-{evidence_name}-pixel={name}:{actual:?}");
+    }
     for (name, sample) in reference.samples {
         let actual = pixel(&rgba, extent.width, sample.at[0], sample.at[1]);
         assert_pixel_close(actual, sample.rgba, [sample.tolerance; 4]);
-        println!("poietra-generic-fill-pixel={name}:{actual:?}");
+        println!("poietra-{evidence_name}-asserted={name}");
     }
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the dedicated CI step runs this proof"]
+fn renders_shared_generic_fill_fixture_with_fallback_adapter() {
+    let (packet, reference) = generic_fill_fixture();
+    render_and_assert_shared_reference(&packet, reference, "generic-fill");
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the dedicated CI step runs this proof"]
+fn renders_shared_generic_stroke_fixture_with_fallback_adapter() {
+    let (packet, reference) = generic_stroke_fixture();
+    render_and_assert_shared_reference(&packet, reference, "generic-stroke");
 }
 
 #[test]

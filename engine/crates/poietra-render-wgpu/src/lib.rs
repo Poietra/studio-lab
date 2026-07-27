@@ -1,10 +1,11 @@
 //! Minimal browser/native WGPU renderer for validated Poietra `RenderPacketV1` frames.
 //!
 //! CPU preparation supports non-convex solid fills across closed cubic subpaths,
-//! including holes and both v1 fill rules, plus stroke-only canonical Line cubics
-//! whose cross-runtime control roundoff remains safe for the 0.25 px centerline
-//! and stroke-normal error budgets. It is independent of a GPU device and rejects
-//! the complete frame when any draw falls outside that bounded subset.
+//! including holes and both v1 fill rules, plus bounded cubic-path strokes across
+//! open, closed, and multiple subpaths with v1 caps, joins, and miter limits. A
+//! path's fill and stroke become consecutive paint phases with distinct materials.
+//! Preparation is independent of a GPU device and rejects the complete frame when
+//! any phase falls outside the bounded subset.
 
 mod gpu;
 mod prepare;

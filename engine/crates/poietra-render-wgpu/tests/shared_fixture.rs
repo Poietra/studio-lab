@@ -54,9 +54,9 @@ fn prepares_shared_fixture_as_ordered_solid_paint_triangles() {
     assert_eq!(prepared.draws()[2].draw_id(), "draw:2");
     assert_eq!(
         prepared.draws()[2].index_range(),
-        &(second_index_end..second_index_end + 54)
+        &(second_index_end..second_index_end + 48)
     );
-    let stroke_vertices = 24;
+    let stroke_vertices = 18;
     assert_eq!(prepared.material_plan().materials().len(), 3);
     assert_eq!(
         prepared.geometry_plan().vertices().len(),
@@ -73,7 +73,7 @@ fn prepares_shared_fixture_as_ordered_solid_paint_triangles() {
     assert_color_close(draw_color(&prepared, 0), [0.5, 0.0, 0.0, 0.5]);
     assert_color_close(draw_color(&prepared, 1), [0.0, 0.0, 1.0, 1.0]);
     let stroke = prepared.geometry_plan().vertices()[usize::try_from(second_vertex_end).unwrap()];
-    assert_close(stroke.position()[0], -0.5);
+    assert_close(stroke.position()[0], -0.25);
     assert_close(stroke.position()[1], 5.0 / 9.0);
     assert_color_close(draw_color(&prepared, 2), [0.0, 0.5, 0.0, 0.5]);
 }
@@ -107,11 +107,11 @@ fn upload_bytes_pin_the_lyon_fill_and_stroke_layout() {
 
     assert_eq!(
         sha256(upload.vertex_bytes()),
-        "68de8fdf9f8d91f92e012359bd264caaf7bb0f5e28912d7db91eccd35caf3dd2"
+        "ba828fe7f9d318922b4d01335606fb7b854ea25b4e8cb5e97674435f4918803f"
     );
     assert_eq!(
         sha256(upload.index_bytes()),
-        "1745c9cfdd25491fd83d31cbea4ad922963bc603bb2a504d83861c56f6cc1cb7"
+        "e3c20a1d80aca6fd3bad57d5a124681a7fc2029980b938ed22f38c4c17d532f5"
     );
 }
 
@@ -130,7 +130,7 @@ fn empty_frames_keep_all_plans_empty_and_need_no_upload() {
 }
 
 #[test]
-fn unsupported_topology_keeps_precedence_over_later_numeric_conversion() {
+fn combined_paint_phases_do_not_hide_numeric_failure() {
     let mut packet = sampled_packet();
     let RenderDrawV1::Path {
         fill,
@@ -157,24 +157,24 @@ fn unsupported_topology_keeps_precedence_over_later_numeric_conversion() {
 
     assert!(matches!(
         prepare_frame_v1(&packet),
-        Err(PrepareFrameErrorV1::Unsupported {
-            reason: UnsupportedDrawReasonV1::FillAndStroke,
-            ..
-        })
+        Err(PrepareFrameErrorV1::NumericRange { .. })
     ));
 }
 
 #[test]
-fn one_unsupported_draw_rejects_the_complete_packet() {
+fn fill_and_stroke_are_distinct_ordered_paint_phases() {
     let mut packet = sampled_packet();
     let RenderDrawV1::Path { fill, stroke, .. } = &mut packet.draws[1] else {
         panic!("fixture draw must be a path");
     };
-    let color = fill
+    let mut color = fill
         .as_ref()
         .expect("fixture path must have a fill")
         .color
         .clone();
+    color.red = 0.0;
+    color.green = 1.0;
+    color.blue = 0.0;
     *stroke = Some(poietra_scene_ir::StrokeStyleV1 {
         cap: poietra_scene_ir::StrokeCapV1::Butt,
         color,
@@ -187,13 +187,23 @@ fn one_unsupported_draw_rejects_the_complete_packet() {
         poietra_scene_ir::RenderCapabilityV1::CubicPathStroke,
     ];
 
-    assert!(matches!(
-        prepare_frame_v1(&packet),
-        Err(PrepareFrameErrorV1::Unsupported {
-            reason: UnsupportedDrawReasonV1::FillAndStroke,
-            ..
-        })
-    ));
+    let prepared = prepare_frame_v1(&packet).expect("combined paint must prepare");
+    assert_eq!(prepared.draws().len(), 4);
+    assert_eq!(prepared.tessellation_calls(), 4);
+    assert_eq!(prepared.draws()[0].draw_id(), "draw:0");
+    assert_eq!(prepared.draws()[1].draw_id(), "draw:1");
+    assert_eq!(prepared.draws()[2].draw_id(), "draw:1");
+    assert_eq!(prepared.draws()[3].draw_id(), "draw:2");
+    assert_eq!(
+        prepared.draws()[2].index_range().start,
+        prepared.draws()[1].index_range().end
+    );
+    assert_eq!(
+        prepared.draws()[3].index_range().start,
+        prepared.draws()[2].index_range().end
+    );
+    assert_color_close(draw_color(&prepared, 1), [0.0, 0.0, 1.0, 1.0]);
+    assert_color_close(draw_color(&prepared, 2), [0.0, 1.0, 0.0, 1.0]);
 }
 
 #[test]
@@ -209,15 +219,10 @@ fn prepares_world_space_butt_and_square_line_caps() {
         .iter()
         .map(poietra_render_wgpu::PreparedGeometryVertexV1::position)
         .collect::<Vec<_>>();
-    assert_eq!(
-        butt_positions,
-        vec![
-            [-0.25, 1.0 / 9.0],
-            [-0.25, -1.0 / 9.0],
-            [0.25, 1.0 / 9.0],
-            [0.25, -1.0 / 9.0],
-        ]
-    );
+    assert!(butt_positions.contains(&[-0.25, 1.0 / 9.0]));
+    assert!(butt_positions.contains(&[-0.25, -1.0 / 9.0]));
+    assert!(butt_positions.contains(&[0.25, 1.0 / 9.0]));
+    assert!(butt_positions.contains(&[0.25, -1.0 / 9.0]));
 
     let square = prepare_frame_v1(&straight_stroke_packet(StrokeCapV1::Square)).unwrap();
     assert_eq!(square.geometry_plan().vertices().len(), 4);
@@ -255,27 +260,10 @@ fn prepares_world_space_butt_and_square_line_caps() {
 }
 
 #[test]
-#[allow(clippy::float_cmp)] // Shared cap/body edges must be bit-identical after clip conversion.
 fn prepares_round_caps_to_the_shared_pixel_tolerance() {
     let round = prepare_frame_v1(&straight_stroke_packet(StrokeCapV1::Round)).unwrap();
-    assert_eq!(round.geometry_plan().vertices().len(), 24);
-    assert_eq!(round.indices().len(), 54);
-    assert_eq!(
-        round.geometry_plan().vertices()[0].position(),
-        round.geometry_plan().vertices()[5].position()
-    );
-    assert_eq!(
-        round.geometry_plan().vertices()[1].position(),
-        round.geometry_plan().vertices()[13].position()
-    );
-    assert_eq!(
-        round.geometry_plan().vertices()[3].position(),
-        round.geometry_plan().vertices()[15].position()
-    );
-    assert_eq!(
-        round.geometry_plan().vertices()[2].position(),
-        round.geometry_plan().vertices()[23].position()
-    );
+    assert_eq!(round.geometry_plan().vertices().len(), 18);
+    assert_eq!(round.indices().len(), 48);
     let x_extents = round
         .geometry_plan()
         .vertices()
@@ -312,7 +300,7 @@ fn a_single_segment_has_no_join_or_miter_pixels() {
 }
 
 #[test]
-fn unsupported_stroke_topologies_fail_closed_with_specific_reasons() {
+fn general_stroke_accepts_closed_multi_segment_multi_subpath_and_curved_paths() {
     let cases = [
         {
             let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
@@ -320,16 +308,25 @@ fn unsupported_stroke_topologies_fail_closed_with_specific_reasons() {
                 unreachable!()
             };
             path.subpaths[0].closed = true;
-            (packet, UnsupportedDrawReasonV1::ClosedStrokeSubpath)
+            packet
         },
         {
             let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
             let RenderDrawV1::Path { path, .. } = &mut packet.draws[0] else {
                 unreachable!()
             };
-            let second_segment = path.subpaths[0].segments[0].clone();
-            path.subpaths[0].segments.push(second_segment);
-            (packet, UnsupportedDrawReasonV1::StrokeSegmentCount)
+            path.subpaths[0].segments.push(CubicSegmentV1 {
+                control1: PointV1 {
+                    x: 8.0 / 3.0,
+                    y: 0.5,
+                },
+                control2: PointV1 {
+                    x: 10.0 / 3.0,
+                    y: 0.5,
+                },
+                end: PointV1 { x: 4.0, y: 0.0 },
+            });
+            packet
         },
         {
             let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
@@ -337,7 +334,7 @@ fn unsupported_stroke_topologies_fail_closed_with_specific_reasons() {
                 unreachable!()
             };
             path.subpaths.push(path.subpaths[0].clone());
-            (packet, UnsupportedDrawReasonV1::MultipleSubpaths)
+            packet
         },
         {
             let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
@@ -347,7 +344,7 @@ fn unsupported_stroke_topologies_fail_closed_with_specific_reasons() {
             // The centerline stays within 0.25 px, but this vertical endpoint
             // tangent would rotate a width-1 butt cap by 90 degrees.
             path.subpaths[0].segments[0].control1 = PointV1 { x: -2.0, y: 0.02 };
-            (packet, UnsupportedDrawReasonV1::CurvedStroke)
+            packet
         },
         {
             let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
@@ -355,32 +352,41 @@ fn unsupported_stroke_topologies_fail_closed_with_specific_reasons() {
                 unreachable!()
             };
             path.subpaths[0].segments[0].control1.x = -2.25;
-            (packet, UnsupportedDrawReasonV1::CurvedStroke)
-        },
-        {
-            let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
-            let RenderDrawV1::Path { path, .. } = &mut packet.draws[0] else {
-                unreachable!()
-            };
-            let start = path.subpaths[0].start.clone();
-            let segment = &mut path.subpaths[0].segments[0];
-            segment.control1 = start.clone();
-            segment.control2 = start.clone();
-            segment.end = start;
-            (packet, UnsupportedDrawReasonV1::DegenerateStroke)
+            packet
         },
     ];
 
-    for (packet, expected_reason) in cases {
-        assert!(matches!(
-            prepare_frame_v1(&packet),
-            Err(PrepareFrameErrorV1::Unsupported { reason, .. }) if reason == expected_reason
-        ));
+    for (case_index, packet) in cases.into_iter().enumerate() {
+        let prepared = prepare_frame_v1(&packet)
+            .unwrap_or_else(|error| panic!("general stroke topology case {case_index}: {error}"));
+        assert_eq!(prepared.draws().len(), 1);
+        assert!(!prepared.indices().is_empty());
     }
 }
 
 #[test]
-fn component_wise_morphed_line_is_prepared_by_shape_safe_tolerance() {
+fn a_fully_collapsed_stroke_segment_fails_closed() {
+    let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
+    let RenderDrawV1::Path { path, .. } = &mut packet.draws[0] else {
+        unreachable!()
+    };
+    let start = path.subpaths[0].start.clone();
+    let segment = &mut path.subpaths[0].segments[0];
+    segment.control1 = start.clone();
+    segment.control2 = start.clone();
+    segment.end = start;
+
+    assert!(matches!(
+        prepare_frame_v1(&packet),
+        Err(PrepareFrameErrorV1::Unsupported {
+            reason: UnsupportedDrawReasonV1::DegenerateStroke,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn component_wise_morphed_line_is_prepared_by_general_stroke_tessellation() {
     let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
     let RenderDrawV1::Path { path, .. } = &mut packet.draws[0] else {
         unreachable!()
@@ -441,7 +447,7 @@ fn non_degenerate_trimmed_line_is_prepared_but_zero_trim_stays_degenerate() {
 }
 
 #[test]
-fn line_roundoff_is_clamped_by_affine_camera_and_stroke_width() {
+fn large_world_coordinates_are_rebased_before_f32_stroke_tessellation() {
     let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
     {
         let RenderDrawV1::Path { path, .. } = &mut packet.draws[0] else {
@@ -468,57 +474,23 @@ fn line_roundoff_is_clamped_by_affine_camera_and_stroke_width() {
             end,
         };
     }
-    assert!(prepare_frame_v1(&packet).is_ok());
+    packet.camera.left = 999_999_984.0;
+    packet.camera.right = 1_000_000_000.0;
+    let prepared = prepare_frame_v1(&packet).expect("camera-relative stroke must preserve detail");
+    assert_eq!(prepared.draws().len(), 1);
+    assert!(!prepared.indices().is_empty());
 
-    let RenderDrawV1::Path { transform, .. } = &mut packet.draws[0] else {
-        unreachable!()
-    };
-    transform.m22 = 2.0;
-    assert!(matches!(
-        prepare_frame_v1(&packet),
-        Err(PrepareFrameErrorV1::Unsupported {
-            reason: UnsupportedDrawReasonV1::CurvedStroke,
-            ..
-        })
-    ));
-    let RenderDrawV1::Path { transform, .. } = &mut packet.draws[0] else {
-        unreachable!()
-    };
-    transform.m22 = 1.0;
-
-    packet.camera.bottom = -0.001_125;
-    packet.camera.left = -0.002;
-    packet.camera.right = 0.002;
-    packet.camera.top = 0.001_125;
-    assert!(matches!(
-        prepare_frame_v1(&packet),
-        Err(PrepareFrameErrorV1::Unsupported {
-            reason: UnsupportedDrawReasonV1::CurvedStroke,
-            ..
-        })
-    ));
-
-    packet.camera.bottom = -4.5;
     packet.camera.left = -8.0;
     packet.camera.right = 8.0;
-    packet.camera.top = 4.5;
-    let RenderDrawV1::Path { stroke, .. } = &mut packet.draws[0] else {
-        unreachable!()
-    };
-    stroke.as_mut().unwrap().width_world = 1_000_000.0;
     assert!(matches!(
         prepare_frame_v1(&packet),
-        Err(PrepareFrameErrorV1::Unsupported {
-            reason: UnsupportedDrawReasonV1::CurvedStroke,
-            ..
-        })
+        Err(PrepareFrameErrorV1::StrokePrecisionLoss { .. })
     ));
 }
 
 #[test]
-fn tessellation_calls_count_actual_per_draw_operations() {
-    // The shared fixture holds three accepted draws (two fills, one stroke):
-    // exactly three tessellation operations run, counted at the call sites.
+fn tessellation_calls_count_actual_paint_phase_operations() {
+    // The shared fixture holds three single-phase draws (two fills, one stroke).
     let prepared = prepare_frame_v1(&sampled_packet()).unwrap();
     assert_eq!(prepared.tessellation_calls(), 3);
     assert_eq!(prepared.tessellation_calls(), prepared.draws().len() as u64);

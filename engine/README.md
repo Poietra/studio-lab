@@ -51,39 +51,40 @@ and clip mapping in f64. Conversion to the final f32 upload domain rejects more 
 0.25 pixels of error or any distinct-point collapse; Lyon triangulates those exact
 upload coordinates without a second quantization. Fill draws support closed concave
 and disjoint subpaths, holes, self-intersections, and explicit nonzero/even-odd rules.
-Stroke-only draws support one open, non-degenerate
-canonical Line cubic whose transformed controls differ only by shape-safe numeric
-roundoff, including non-degenerate morph/trim samples, with butt, square, or
-tolerance-tessellated round caps. The acceptance bound accounts for world-space
-stroke width, affine transform, camera, and viewport before replacing the cubic with
-its chord. Trim progress zero remains an explicit degenerate-stroke fallback.
-Combined fill/stroke, open fill, curved/closed/multi-segment/multi-subpath stroke,
+Strokes preserve cubic curves and support open, closed, multi-segment, and
+multi-subpath paths with butt/square/round caps, bevel/miter/round joins, and the
+packet miter limit. Stroke inputs are transformed and camera-rebased in f64 before
+checked f32 Lyon tessellation at the target-derived 0.25-pixel tolerance;
+world-space width is not multiplied by the object transform. Combined paths emit
+adjacent fill-then-stroke paint phases with distinct materials, before the next
+source draw. Nonzero morph/trim/motion samples use this same path; trim progress
+zero remains an explicit degenerate-stroke fallback tracked by #75. Open fill,
 image, degenerate, numeric, precision-collapse, and tessellation-limit cases reject
-the complete frame with a structured error. Each fill draw is bounded before and
-during tessellation to 2,048 source cubics, 32,768 flattened input points, and
-65,536 Lyon output vertices. The independent frame-wide preparation ceiling remains
-1,000,000 vertices for aggregate geometry.
+the complete frame with a structured error. Each fill is bounded to 2,048 source
+cubics, 32,768 flattened input points, and 65,536 Lyon output vertices; each stroke
+is bounded to 2,048 source cubics, a preflighted 32,768 flattened segments, 65,536
+Lyon output vertices, and 15 recursive round-cap/join subdivisions. The preflight
+also rejects pixel-domain inputs whose f32 ULP cannot preserve the visible
+quantization budget. The independent frame-wide preparation ceiling remains
+1,000,000 vertices. The 0.25-pixel bound covers input/scalar conversion and curve
+flattening; Lyon's discrete miter-limit branch remains an f32 renderer decision.
 
 Preparation keeps four ownership boundaries explicit: position-only geometry,
-per-draw material, stable ordered draw ranges, and the transient GPU upload plan.
+per-phase material, stable ordered draw ranges, and the transient GPU upload plan.
 Changing only paint therefore leaves geometry and ordering unchanged. The upload
 plan interleaves positions and materials into the existing 24-byte shader layout
-under a checked 64 MiB hard limit, then is discarded after buffer staging. The
-public V1 `PreparedFrameV1::vertices()` API remains available as a lazy compatibility
-view; it is created only when called, requests at most a 24,000,000-byte element
-payload (below 24 MiB, excluding allocator bookkeeping), and is discarded with its
-prepared frame. No prepared-geometry cache exists yet, so telemetry continues to
-report `preparedGeometry: "absent"` rather than treating either transient
-representation as a cache.
+under a checked 64 MiB hard limit, then is discarded after buffer staging. No
+prepared-geometry cache exists yet, so telemetry continues to report
+`preparedGeometry: "absent"` rather than treating transient upload data as a cache.
 
 The shared browser/native WGPU 30 pipeline accepts caller-owned `Device`, `Queue`,
 and `TextureView` values, clears an extent-checked target, and draws premultiplied
 linear-light indexed solid-paint triangles in packet paint order. It accepts only
 `Rgba8UnormSrgb` and `Bgra8UnormSrgb` single-sample render targets. Device creation,
-browser fallback policy, broader stroke/image support, and general path tessellation
-remain outside this slice. Native software-adapter smoke tests prove both the shared
-fill/Line fixture and a focused round-capped stroke through actual GPU submission
-and readback.
+browser fallback policy, image support, antialiasing, and clipping remain outside
+this slice. Native software-adapter and Chromium Worker readbacks share fixtures for
+generic fill topology and for animated curved/joined strokes, fill/stroke
+composition, and later translucent source order.
 
 On `wasm32`, `PoietraCanvasEngineV1` owns an `OffscreenCanvas` WebGPU surface,
 device, queue, and the solid-paint renderer. Its asynchronous `create` method

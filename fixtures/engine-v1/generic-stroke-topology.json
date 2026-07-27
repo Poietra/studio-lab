@@ -1,0 +1,387 @@
+{
+  "id": "eng-v1-generic-stroke-topology",
+  "assets": {
+    "assets": [],
+    "manifestDigest": "e675cb4bad3da6b425e5a6bbe88d7da7a986e3cac61dab06139ef63950dcc181",
+    "manifestId": "manifest",
+    "schema": "poietra.asset-manifest",
+    "version": 1
+  },
+  "scene": {
+    "animationChannels": [
+      {
+        "entityId": "curve",
+        "id": "motion:curve",
+        "keyframes": [
+          { "at": 0, "easingToNext": { "kind": "linear" }, "value": 0 },
+          { "at": 1, "easingToNext": null, "value": 1 }
+        ],
+        "kind": "motion-path",
+        "orientToPath": false,
+        "path": {
+          "subpaths": [
+            {
+              "closed": false,
+              "segments": [
+                {
+                  "control1": { "x": 0.16666666666666666, "y": 0 },
+                  "control2": { "x": 0.3333333333333333, "y": 0 },
+                  "end": { "x": 0.5, "y": 0 }
+                }
+              ],
+              "start": { "x": 0, "y": 0 }
+            }
+          ]
+        },
+        "provenanceId": "fixture"
+      },
+      {
+        "entityId": "curve",
+        "id": "morph:curve",
+        "keyframes": [
+          {
+            "at": 0,
+            "easingToNext": { "kind": "linear" },
+            "value": {
+              "subpaths": [
+                {
+                  "closed": false,
+                  "segments": [
+                    {
+                      "control1": { "x": -6, "y": 2 },
+                      "control2": { "x": -2, "y": 2 },
+                      "end": { "x": -2, "y": -2 }
+                    }
+                  ],
+                  "start": { "x": -6, "y": -2 }
+                }
+              ]
+            }
+          },
+          {
+            "at": 1,
+            "easingToNext": null,
+            "value": {
+              "subpaths": [
+                {
+                  "closed": false,
+                  "segments": [
+                    {
+                      "control1": { "x": -5.5, "y": 3 },
+                      "control2": { "x": -2.5, "y": 3 },
+                      "end": { "x": -2, "y": -2 }
+                    }
+                  ],
+                  "start": { "x": -6, "y": -2 }
+                }
+              ]
+            }
+          }
+        ],
+        "kind": "path-morph",
+        "provenanceId": "fixture"
+      },
+      {
+        "entityId": "curve",
+        "id": "trim:curve",
+        "keyframes": [
+          { "at": 0, "easingToNext": { "kind": "linear" }, "value": 0.25 },
+          { "at": 1, "easingToNext": null, "value": 1 }
+        ],
+        "kind": "path-trim",
+        "provenanceId": "fixture"
+      }
+    ],
+    "assetManifest": {
+      "manifestDigest": "e675cb4bad3da6b425e5a6bbe88d7da7a986e3cac61dab06139ef63950dcc181",
+      "manifestId": "manifest"
+    },
+    "camera": {
+      "background": { "alpha": 1, "blue": 0, "green": 0, "red": 0 },
+      "view": {
+        "center": { "x": 0, "y": 0 },
+        "frameHeight": 9,
+        "frameWidth": 16
+      }
+    },
+    "coordinateSpace": {
+      "cpuPrecision": "f64",
+      "kind": "cartesian-2d",
+      "origin": "center",
+      "unit": "scene-unit",
+      "xAxis": "right",
+      "yAxis": "up"
+    },
+    "duration": 1,
+    "entities": [
+      {
+        "appearance": {
+          "fill": null,
+          "kind": "vector",
+          "opacity": 1,
+          "stroke": {
+            "cap": "round",
+            "color": { "alpha": 1, "blue": 0, "green": 1, "red": 0 },
+            "join": "round",
+            "miterLimit": 4,
+            "widthWorld": 0.8
+          }
+        },
+        "geometry": {
+          "kind": "cubic-path",
+          "path": {
+            "subpaths": [
+              {
+                "closed": false,
+                "segments": [
+                  {
+                    "control1": { "x": -6, "y": 2 },
+                    "control2": { "x": -2, "y": 2 },
+                    "end": { "x": -2, "y": -2 }
+                  }
+                ],
+                "start": { "x": -6, "y": -2 }
+              }
+            ]
+          }
+        },
+        "id": "curve",
+        "lifetimes": [{ "end": 1, "start": 0 }],
+        "parentId": null,
+        "provenanceId": "fixture",
+        "sceneOrder": 0,
+        "sourceZIndex": 0,
+        "transform": { "m11": 1, "m12": 0, "m21": 0, "m22": 1, "tx": 0, "ty": 0 }
+      },
+      {
+        "appearance": {
+          "fill": null,
+          "kind": "vector",
+          "opacity": 1,
+          "stroke": {
+            "cap": "square",
+            "color": { "alpha": 1, "blue": 1, "green": 0, "red": 0 },
+            "join": "miter",
+            "miterLimit": 8,
+            "widthWorld": 0.8
+          }
+        },
+        "geometry": {
+          "kind": "cubic-path",
+          "path": {
+            "subpaths": [
+              {
+                "closed": false,
+                "segments": [
+                  {
+                    "control1": { "x": -0.6666666666666666, "y": -0.6666666666666667 },
+                    "control2": { "x": -0.3333333333333333, "y": 0.6666666666666665 },
+                    "end": { "x": 0, "y": 2 }
+                  },
+                  {
+                    "control1": { "x": 0.3333333333333333, "y": 0.6666666666666667 },
+                    "control2": { "x": 0.6666666666666666, "y": -0.6666666666666665 },
+                    "end": { "x": 1, "y": -2 }
+                  }
+                ],
+                "start": { "x": -1, "y": -2 }
+              }
+            ]
+          }
+        },
+        "id": "joined",
+        "lifetimes": [{ "end": 1, "start": 0 }],
+        "parentId": null,
+        "provenanceId": "fixture",
+        "sceneOrder": 1,
+        "sourceZIndex": 1,
+        "transform": { "m11": 1, "m12": 0, "m21": 0, "m22": 1, "tx": 0, "ty": 0 }
+      },
+      {
+        "appearance": {
+          "fill": {
+            "color": { "alpha": 0.5, "blue": 0, "green": 0, "red": 1 },
+            "rule": "nonzero"
+          },
+          "kind": "vector",
+          "opacity": 1,
+          "stroke": {
+            "cap": "butt",
+            "color": { "alpha": 0.5, "blue": 0, "green": 1, "red": 1 },
+            "join": "bevel",
+            "miterLimit": 4,
+            "widthWorld": 0.6
+          }
+        },
+        "geometry": {
+          "kind": "cubic-path",
+          "path": {
+            "subpaths": [
+              {
+                "closed": true,
+                "segments": [
+                  {
+                    "control1": { "x": 4.333333333333333, "y": -2 },
+                    "control2": { "x": 5.666666666666666, "y": -2 },
+                    "end": { "x": 7, "y": -2 }
+                  },
+                  {
+                    "control1": { "x": 7, "y": -0.6666666666666667 },
+                    "control2": { "x": 7, "y": 0.6666666666666665 },
+                    "end": { "x": 7, "y": 2 }
+                  },
+                  {
+                    "control1": { "x": 5.666666666666667, "y": 2 },
+                    "control2": { "x": 4.333333333333334, "y": 2 },
+                    "end": { "x": 3, "y": 2 }
+                  }
+                ],
+                "start": { "x": 3, "y": -2 }
+              }
+            ]
+          }
+        },
+        "id": "combined",
+        "lifetimes": [{ "end": 1, "start": 0 }],
+        "parentId": null,
+        "provenanceId": "fixture",
+        "sceneOrder": 2,
+        "sourceZIndex": 2,
+        "transform": { "m11": 1, "m12": 0, "m21": 0, "m22": 1, "tx": 0, "ty": 0 }
+      },
+      {
+        "appearance": {
+          "fill": {
+            "color": { "alpha": 0.5, "blue": 1, "green": 0, "red": 0 },
+            "rule": "nonzero"
+          },
+          "kind": "vector",
+          "opacity": 1,
+          "stroke": null
+        },
+        "geometry": {
+          "kind": "cubic-path",
+          "path": {
+            "subpaths": [
+              {
+                "closed": true,
+                "segments": [
+                  {
+                    "control1": { "x": 4.833333333333333, "y": -0.5 },
+                    "control2": { "x": 5.166666666666667, "y": -0.5 },
+                    "end": { "x": 5.5, "y": -0.5 }
+                  },
+                  {
+                    "control1": { "x": 5.5, "y": -0.16666666666666669 },
+                    "control2": { "x": 5.5, "y": 0.16666666666666663 },
+                    "end": { "x": 5.5, "y": 0.5 }
+                  },
+                  {
+                    "control1": { "x": 5.166666666666667, "y": 0.5 },
+                    "control2": { "x": 4.833333333333333, "y": 0.5 },
+                    "end": { "x": 4.5, "y": 0.5 }
+                  }
+                ],
+                "start": { "x": 4.5, "y": -0.5 }
+              }
+            ]
+          }
+        },
+        "id": "overlay",
+        "lifetimes": [{ "end": 1, "start": 0 }],
+        "parentId": null,
+        "provenanceId": "fixture",
+        "sceneOrder": 3,
+        "sourceZIndex": 3,
+        "transform": { "m11": 1, "m12": 0, "m21": 0, "m22": 1, "tx": 0, "ty": 0 }
+      },
+      {
+        "appearance": {
+          "fill": null,
+          "kind": "vector",
+          "opacity": 1,
+          "stroke": {
+            "cap": "round",
+            "color": { "alpha": 1, "blue": 1, "green": 1, "red": 0 },
+            "join": "round",
+            "miterLimit": 4,
+            "widthWorld": 0.8
+          }
+        },
+        "geometry": {
+          "kind": "cubic-path",
+          "path": {
+            "subpaths": [
+              {
+                "closed": false,
+                "segments": [
+                  {
+                    "control1": { "x": -4.666666666666667, "y": 2.8333333333333335 },
+                    "control2": { "x": -4.333333333333333, "y": 3.1666666666666665 },
+                    "end": { "x": -4, "y": 3.5 }
+                  },
+                  {
+                    "control1": { "x": -3.6666666666666665, "y": 3.1666666666666665 },
+                    "control2": { "x": -3.3333333333333335, "y": 2.8333333333333335 },
+                    "end": { "x": -3, "y": 2.5 }
+                  }
+                ],
+                "start": { "x": -5, "y": 2.5 }
+              }
+            ]
+          }
+        },
+        "id": "round-joined",
+        "lifetimes": [{ "end": 1, "start": 0 }],
+        "parentId": null,
+        "provenanceId": "fixture",
+        "sceneOrder": 4,
+        "sourceZIndex": 4,
+        "transform": { "m11": 1, "m12": 0, "m21": 0, "m22": 1, "tx": 0, "ty": 0 }
+      }
+    ],
+    "fidelity": { "kind": "exact" },
+    "provenance": [
+      {
+        "evidence": ["Shared native/browser generic stroke and composition fixture"],
+        "id": "fixture",
+        "origin": "fixture"
+      }
+    ],
+    "requiredCapabilities": [
+      "cubic-path-geometry",
+      "motion-path-animation",
+      "path-morph-animation",
+      "path-trim-animation"
+    ],
+    "sceneId": "shared:generic-stroke-topology",
+    "schema": "poietra.scene-ir",
+    "source": {
+      "editProgramVersion": 1,
+      "kind": "studio-edit-program",
+      "revisionHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "version": 1
+  },
+  "sample": {
+    "evidence": ["Poietra shared generic stroke fixture v1"],
+    "packetId": "shared:generic-stroke-topology:sample",
+    "sampleTime": 0.5,
+    "viewport": { "heightPx": 90, "widthPx": 160 }
+  },
+  "reference": {
+    "reason": "Interior and topology-discriminating probes cover round and square caps, miter, bevel and round joins, and fill-before-translucent-stroke composition; tolerance is reserved for linear-light blending because edge antialiasing is outside the v1 renderer profile.",
+    "samples": {
+      "background": { "at": [5, 5], "rgba": [0, 0, 0, 255], "tolerance": 0 },
+      "animatedCurve": { "at": [40, 35], "rgba": [0, 255, 0, 255], "tolerance": 0 },
+      "roundCapExterior": { "at": [54, 37], "rgba": [0, 255, 0, 255], "tolerance": 0 },
+      "squareCapCorner": { "at": [72, 69], "rgba": [0, 0, 255, 255], "tolerance": 0 },
+      "miterJoin": { "at": [80, 15], "rgba": [0, 0, 255, 255], "tolerance": 0 },
+      "roundJoinArc": { "at": [40, 6], "rgba": [0, 255, 255, 255], "tolerance": 0 },
+      "combinedFill": { "at": [120, 35], "rgba": [188, 0, 0, 255], "tolerance": 1 },
+      "bevelCornerCutout": { "at": [108, 67], "rgba": [0, 0, 0, 255], "tolerance": 0 },
+      "combinedStrokeOverFill": { "at": [110, 45], "rgba": [225, 188, 0, 255], "tolerance": 2 },
+      "laterTranslucentOverlay": { "at": [130, 45], "rgba": [137, 0, 188, 255], "tolerance": 2 }
+    }
+  }
+}

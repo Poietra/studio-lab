@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 
 import type { SceneIrBundleV1 } from "../src/engine/contracts";
 import {
@@ -25,7 +25,7 @@ type SharedFixture = Readonly<{
   scene: SceneIrBundleV1["scene"];
 }>;
 
-type GenericFillFixture = SharedFixture &
+type PixelReferenceFixture = SharedFixture &
   Readonly<{
     reference: Readonly<{
       reason: string;
@@ -88,6 +88,86 @@ type ErrorScopeProofV1 = Readonly<{
 function expectPixelNear(actual: RgbaPixel, expected: RgbaPixel, tolerance = 3) {
   for (const [index, component] of actual.entries()) {
     expect(Math.abs(component - expected[index])).toBeLessThanOrEqual(tolerance);
+  }
+}
+
+async function expectSharedPixelReference(page: Page, fixturePath: string, packetId: string, evidence: string) {
+  const fixture = JSON.parse(await readFile(fixturePath, "utf8")) as PixelReferenceFixture;
+  await page.goto("/");
+
+  const proof = await page.evaluate(
+    async ({ assets, sample, samplePoints, scene, requestEvidence, requestPacketId }) => {
+      const worker = new Worker("/e2e/engine-canvas-readback.worker.ts", { type: "module" });
+      const response = new Promise<ReadbackProofV1>((resolve, reject) => {
+        worker.addEventListener(
+          "error",
+          (event) => reject(new Error(event.message || "The readback worker crashed.")),
+          { once: true },
+        );
+        worker.addEventListener(
+          "message",
+          (event: MessageEvent<ReadbackProofV1 | Readonly<{ kind: "error"; message: string }>>) => {
+            if (event.data.kind === "error") {
+              reject(new Error(event.data.message));
+              return;
+            }
+            resolve(event.data);
+          },
+          { once: true },
+        );
+      });
+      const snapshotJson = new TextEncoder().encode(JSON.stringify({ assets, scene })).buffer;
+      const requestJson = new TextEncoder().encode(
+        JSON.stringify({
+          evidence: [requestEvidence],
+          packetId: requestPacketId,
+          sampleTime: sample.sampleTime,
+          schema: "poietra.engine-sample-request",
+          version: 1,
+          viewport: sample.viewport,
+        }),
+      ).buffer;
+      worker.postMessage(
+        {
+          kind: "prove-frame",
+          requestJson,
+          samplePoints,
+          snapshotJson,
+          viewport: sample.viewport,
+          wasmModuleUrl: new URL("/engine-wasm/poietra_wasm.js", location.href).href,
+        },
+        [requestJson, snapshotJson],
+      );
+      try {
+        return await response;
+      } finally {
+        worker.terminate();
+      }
+    },
+    {
+      assets: fixture.assets,
+      requestEvidence: evidence,
+      requestPacketId: packetId,
+      sample: fixture.sample,
+      samplePoints: Object.fromEntries(
+        Object.entries(fixture.reference.samples).map(([name, reference]) => [name, reference.at]),
+      ),
+      scene: fixture.scene,
+    },
+  );
+
+  expect(proof.response).toMatchObject({
+    result: {
+      kind: "presented",
+      packetId,
+      sampleTime: fixture.sample.sampleTime,
+      viewport: fixture.sample.viewport,
+    },
+  });
+  expect(proof.pixels.surfaceFormat).toMatch(/^(bgra|rgba)8unorm$/);
+  expect(fixture.reference.reason).toContain("edge antialiasing is outside");
+  for (const [name, reference] of Object.entries(fixture.reference.samples)) {
+    expectPixelNear(proof.pixels.samples[name] ?? [0, 0, 0, 0], reference.rgba, reference.tolerance);
   }
 }
 
@@ -237,85 +317,21 @@ test("samples and presents the shared Scene entirely inside a real WASM WebGPU W
 });
 
 test("matches the shared generic fill reference in a real WASM WebGPU Worker", async ({ page }) => {
-  const fixture = JSON.parse(
-    await readFile("fixtures/engine-v1/generic-fill-topology.json", "utf8"),
-  ) as GenericFillFixture;
-  await page.goto("/");
-
-  const proof = await page.evaluate(
-    async ({ assets, sample, samplePoints, scene }) => {
-      const worker = new Worker("/e2e/engine-canvas-readback.worker.ts", { type: "module" });
-      const response = new Promise<ReadbackProofV1>((resolve, reject) => {
-        worker.addEventListener(
-          "error",
-          (event) => reject(new Error(event.message || "The readback worker crashed.")),
-          {
-            once: true,
-          },
-        );
-        worker.addEventListener(
-          "message",
-          (event: MessageEvent<ReadbackProofV1 | Readonly<{ kind: "error"; message: string }>>) => {
-            if (event.data.kind === "error") {
-              reject(new Error(event.data.message));
-              return;
-            }
-            resolve(event.data);
-          },
-          { once: true },
-        );
-      });
-      const snapshotJson = new TextEncoder().encode(JSON.stringify({ assets, scene })).buffer;
-      const requestJson = new TextEncoder().encode(
-        JSON.stringify({
-          evidence: ["Chromium generic fill readback proof v1"],
-          packetId: "canvas:e2e-generic-fill-readback",
-          sampleTime: sample.sampleTime,
-          schema: "poietra.engine-sample-request",
-          version: 1,
-          viewport: sample.viewport,
-        }),
-      ).buffer;
-      worker.postMessage(
-        {
-          kind: "prove-frame",
-          requestJson,
-          samplePoints,
-          snapshotJson,
-          viewport: sample.viewport,
-          wasmModuleUrl: new URL("/engine-wasm/poietra_wasm.js", location.href).href,
-        },
-        [requestJson, snapshotJson],
-      );
-      try {
-        return await response;
-      } finally {
-        worker.terminate();
-      }
-    },
-    {
-      assets: fixture.assets,
-      sample: fixture.sample,
-      samplePoints: Object.fromEntries(
-        Object.entries(fixture.reference.samples).map(([name, reference]) => [name, reference.at]),
-      ),
-      scene: fixture.scene,
-    },
+  await expectSharedPixelReference(
+    page,
+    "fixtures/engine-v1/generic-fill-topology.json",
+    "canvas:e2e-generic-fill-readback",
+    "Chromium generic fill readback proof v1",
   );
+});
 
-  expect(proof.response).toMatchObject({
-    result: {
-      kind: "presented",
-      packetId: "canvas:e2e-generic-fill-readback",
-      sampleTime: fixture.sample.sampleTime,
-      viewport: fixture.sample.viewport,
-    },
-  });
-  expect(proof.pixels.surfaceFormat).toMatch(/^(bgra|rgba)8unorm$/);
-  expect(fixture.reference.reason).toContain("edge antialiasing is outside");
-  for (const [name, reference] of Object.entries(fixture.reference.samples)) {
-    expectPixelNear(proof.pixels.samples[name] ?? [0, 0, 0, 0], reference.rgba, reference.tolerance);
-  }
+test("matches the shared generic stroke reference in a real WASM WebGPU Worker", async ({ page }) => {
+  await expectSharedPixelReference(
+    page,
+    "fixtures/engine-v1/generic-stroke-topology.json",
+    "canvas:e2e-generic-stroke-readback",
+    "Chromium generic stroke readback proof v1",
+  );
 });
 
 test("bounds rolling WebGPU scopes and fails closed on nested scope API faults", async ({ page }) => {

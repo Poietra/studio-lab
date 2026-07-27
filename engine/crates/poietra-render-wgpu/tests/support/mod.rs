@@ -15,7 +15,7 @@ struct SharedFixture {
     assets: AssetManifestV1,
     #[allow(dead_code)]
     #[serde(default)]
-    reference: Option<GenericFillReference>,
+    reference: Option<PixelReferenceSet>,
     sample: EvaluationRequest,
     scene: SceneIrV1,
 }
@@ -23,7 +23,7 @@ struct SharedFixture {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 #[allow(dead_code)]
-pub struct GenericFillReference {
+pub struct PixelReferenceSet {
     pub reason: String,
     pub samples: BTreeMap<String, PixelReference>,
 }
@@ -78,12 +78,22 @@ pub fn sampled_packet() -> poietra_scene_ir::RenderPacketV1 {
 }
 
 #[allow(dead_code)]
-pub fn generic_fill_fixture() -> (poietra_scene_ir::RenderPacketV1, GenericFillReference) {
+pub fn generic_fill_fixture() -> (poietra_scene_ir::RenderPacketV1, PixelReferenceSet) {
     let mut fixture = read_fixture("generic-fill-topology.json");
     let reference = fixture
         .reference
         .take()
         .expect("generic fill fixture must carry its pixel reference");
+    (compile_fixture(&fixture), reference)
+}
+
+#[allow(dead_code)]
+pub fn generic_stroke_fixture() -> (poietra_scene_ir::RenderPacketV1, PixelReferenceSet) {
+    let mut fixture = read_fixture("generic-stroke-topology.json");
+    let reference = fixture
+        .reference
+        .take()
+        .expect("generic stroke fixture must carry its pixel reference");
     (compile_fixture(&fixture), reference)
 }
 
