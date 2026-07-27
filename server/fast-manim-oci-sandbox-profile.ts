@@ -284,6 +284,8 @@ export type FastManimOciBrokerAssetCopyV1 = Readonly<{
   descriptor: z.infer<typeof assetDescriptorSchema>;
 }>;
 
+const brokerDispatchFactoryCapability = Object.freeze({ kind: "fast-manim-oci-dispatch-factory" as const });
+
 function digestBytes(bytes: Uint8Array) {
   return createHash("sha256").update(bytes).digest("hex");
 }
@@ -364,11 +366,15 @@ export class FastManimOciBrokerDispatchV1 {
   readonly #requestBytes: Uint8Array;
 
   constructor(
+    capability: typeof brokerDispatchFactoryCapability,
     context: FastManimSandboxJobContextV1,
     descriptorValue: unknown,
     requestBytes: Uint8Array,
     assets: FastManimOciAssetBundleV1,
   ) {
+    if (capability !== brokerDispatchFactoryCapability) {
+      throw new TypeError("OCI broker dispatches must be created by the verified factory.");
+    }
     const descriptor = fastManimOciJobDescriptorV1Schema.parse(descriptorValue);
     if (
       !sha256Schema.safeParse(context.attestationDigest).success ||
@@ -472,5 +478,11 @@ export function createFastManimOciBrokerDispatchV1(
     seccompDigest: attestation.seccompDigest,
     version: 1,
   });
-  return new FastManimOciBrokerDispatchV1(options.context, descriptor, requestBytes, assets);
+  return new FastManimOciBrokerDispatchV1(
+    brokerDispatchFactoryCapability,
+    options.context,
+    descriptor,
+    requestBytes,
+    assets,
+  );
 }

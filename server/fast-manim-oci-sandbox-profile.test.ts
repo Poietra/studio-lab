@@ -153,30 +153,22 @@ describe("fast-manim OCI profile and broker descriptor", () => {
     ).toThrow();
   });
 
-  it("owns, validates, and deeply freezes every production descriptor layer", () => {
+  it("allows only the verified factory to create a deeply frozen production dispatch", () => {
     const request = new FastManimSandboxRequestBundleV1(sandboxProducerRequest());
-    const requestBytes = request.copyBytes();
     const assetBytes = Uint8Array.of(1, 2, 3);
-    const assets = prepareFastManimOciAssetsV1(profile, [{ bytes: assetBytes, sha256: digest(assetBytes) }]);
-    const mutableDescriptor = {
-      assets: assets.descriptors.map((asset) => ({ ...asset })),
-      imageDigest: `sha256:${"1".repeat(64)}`,
-      profileDigest: digestFastManimOciProfileV1(profile),
-      request: { byteLength: requestBytes.byteLength, sha256: request.requestDigest, transport: "stdin" as const },
-      runtimeDigest: "2".repeat(64),
-      sbomDigest: "3".repeat(64),
-      schema: "poietra.fast-manim-oci-job" as const,
-      seccompDigest: "4".repeat(64),
-      version: 1 as const,
-    };
     const mutableContext = context();
-    const dispatch = new FastManimOciBrokerDispatchV1(mutableContext, mutableDescriptor, requestBytes, assets);
+    const mutableAttestation = attestation();
+    const dispatch = createFastManimOciBrokerDispatchV1({
+      assets: [{ bytes: assetBytes, sha256: digest(assetBytes) }],
+      attestation: mutableAttestation,
+      context: mutableContext,
+      profile,
+      request,
+    });
     const before = JSON.stringify(dispatch.descriptor);
-    mutableDescriptor.assets[0]!.byteLength = 0;
-    mutableDescriptor.request.sha256 = "f".repeat(64);
-    mutableDescriptor.imageDigest = `sha256:${"e".repeat(64)}`;
+    mutableAttestation.imageDigest = `sha256:${"e".repeat(64)}`;
     mutableContext.identity.projectId = "mutated";
-    requestBytes.fill(0);
+    assetBytes.fill(0);
     expect(JSON.stringify(dispatch.descriptor)).toBe(before);
     expect(dispatch.context.identity.projectId).toBe("default");
     expect(digest(dispatch.copyRequestBytes())).toBe(request.requestDigest);
@@ -189,13 +181,14 @@ describe("fast-manim OCI profile and broker descriptor", () => {
     }).toThrow(TypeError);
     expect(
       () =>
-        new FastManimOciBrokerDispatchV1(
+        new (FastManimOciBrokerDispatchV1 as unknown as new (...arguments_: unknown[]) => FastManimOciBrokerDispatchV1)(
+          {},
           context(),
-          { ...mutableDescriptor, request: { ...mutableDescriptor.request, sha256: "0".repeat(64) } },
+          dispatch.descriptor,
           request.copyBytes(),
-          assets,
+          prepareFastManimOciAssetsV1(profile, []),
         ),
-    ).toThrow(/bytes\/assets/i);
+    ).toThrow(/verified factory/i);
   });
 
   it("owns asset bytes privately, enforces individual/cumulative caps, and derives root-owned digest paths", () => {
