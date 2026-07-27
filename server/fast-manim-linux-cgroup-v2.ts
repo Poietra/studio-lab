@@ -816,7 +816,11 @@ export class LinuxCgroupV2ResourceControllerV1 {
 }
 
 /** Production factory: every controller shares one process-global admission ledger. */
-let processLinuxCgroupV2ResourceControllerV1: LinuxCgroupV2ResourceControllerV1 | null = null;
+export type ProcessLinuxCgroupV2ResourceControllerV1 = Readonly<
+  Pick<LinuxCgroupV2ResourceControllerV1, "admit" | "initialize" | "shutdown" | "snapshot">
+>;
+
+let processLinuxCgroupV2ResourceControllerV1: ProcessLinuxCgroupV2ResourceControllerV1 | null = null;
 
 const processLinuxCgroupV2ResourceControllerOptionsV1Schema = z
   .object({
@@ -854,13 +858,19 @@ export function createProcessLinuxCgroupV2ResourceControllerV1(
     throw new FastManimSandboxResourceControlError("unavailable");
   }
   const parsed = processLinuxCgroupV2ResourceControllerOptionsV1Schema.parse(options);
-  processLinuxCgroupV2ResourceControllerV1 = new LinuxCgroupV2ResourceControllerV1({
+  const controller = new LinuxCgroupV2ResourceControllerV1({
     cleanupTimeoutMs: parsed.cleanupTimeoutMs,
     controlOperationTimeoutMs: parsed.controlOperationTimeoutMs,
     cgroupsPath: deriveLinuxCgroupV2OrchestratorPathV1(parsed.root),
     pollIntervalMs: parsed.pollIntervalMs,
     registry: processFastManimSandboxResourceRegistryV1,
     root: parsed.root,
+  });
+  processLinuxCgroupV2ResourceControllerV1 = Object.freeze({
+    admit: controller.admit.bind(controller),
+    initialize: controller.initialize.bind(controller),
+    shutdown: controller.shutdown.bind(controller),
+    snapshot: controller.snapshot.bind(controller),
   });
   return processLinuxCgroupV2ResourceControllerV1;
 }

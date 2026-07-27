@@ -207,6 +207,10 @@ describe("Linux cgroup v2 sandbox resource controller", () => {
         store: new FakeCgroupV2Store(),
       } as never),
     ).toThrow();
+    const production = createProcessLinuxCgroupV2ResourceControllerV1({
+      root: "/sys/fs/cgroup/system.slice/poietra-studio.service/poietra-sandbox-v1",
+    });
+    expect(production).not.toHaveProperty("admitForLocalConformance");
   });
 
   it("reconciles owned orphans before admission and writes every cgroup hard limit", async () => {
