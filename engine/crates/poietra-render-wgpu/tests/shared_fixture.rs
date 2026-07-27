@@ -40,22 +40,16 @@ fn prepares_shared_fixture_as_ordered_solid_paint_triangles() {
         assert!((actual - expected).abs() <= f64::EPSILON);
     }
     assert_eq!(prepared.draws()[0].draw_id(), "draw:0");
+    assert_eq!(prepared.draws()[0].vertex_range().start, 0);
+    assert!(!prepared.draws()[0].index_range().is_empty());
+    assert_eq!(prepared.draws()[0].index_range().len() % 3, 0);
     let first_index_end = prepared.draws()[0].index_range().end;
-    let first_vertices =
-        usize::try_from(first_index_end / 3 + 2).expect("fixture vertices must fit usize");
-    let first_vertex_end = u32::try_from(first_vertices).expect("fixture vertices must fit u32");
-    assert_eq!(prepared.draws()[0].vertex_range(), &(0..first_vertex_end));
-    assert_eq!(prepared.draws()[0].index_range(), &(0..first_index_end));
+    let first_vertex_end = prepared.draws()[0].vertex_range().end;
     assert_eq!(prepared.draws()[1].draw_id(), "draw:1");
     assert_eq!(prepared.draws()[1].index_range().start, first_index_end);
-    let second_indices = prepared.draws()[1].index_range().len();
-    let second_vertices = second_indices / 3 + 2;
-    let second_vertex_end =
-        u32::try_from(first_vertices + second_vertices).expect("fixture vertices must fit u32");
-    assert_eq!(
-        prepared.draws()[1].vertex_range(),
-        &(first_vertex_end..second_vertex_end)
-    );
+    assert_eq!(prepared.draws()[1].index_range().len() % 3, 0);
+    assert_eq!(prepared.draws()[1].vertex_range().start, first_vertex_end);
+    let second_vertex_end = prepared.draws()[1].vertex_range().end;
     let second_index_end = prepared.draws()[1].index_range().end;
     assert_eq!(prepared.draws()[2].draw_id(), "draw:2");
     assert_eq!(
@@ -66,21 +60,19 @@ fn prepares_shared_fixture_as_ordered_solid_paint_triangles() {
     assert_eq!(prepared.material_plan().materials().len(), 3);
     assert_eq!(
         prepared.geometry_plan().vertices().len(),
-        first_vertices + second_vertices + stroke_vertices
+        usize::try_from(second_vertex_end).unwrap() + stroke_vertices
     );
     assert_eq!(
         prepared.indices().len(),
         usize::try_from(prepared.draws()[2].index_range().end).unwrap()
     );
-    let first = prepared.geometry_plan().vertices()[0];
-    assert_close(first.position()[0], 0.0);
-    assert_close(first.position()[1], 0.0);
+    assert!(prepared.geometry_plan().vertices().iter().all(|vertex| {
+        let [x, y] = vertex.position();
+        x.is_finite() && y.is_finite()
+    }));
     assert_color_close(draw_color(&prepared, 0), [0.5, 0.0, 0.0, 0.5]);
-    let later = prepared.geometry_plan().vertices()[first_vertices];
-    assert_close(later.position()[0], 0.1875);
-    assert_close(later.position()[1], 0.0);
     assert_color_close(draw_color(&prepared, 1), [0.0, 0.0, 1.0, 1.0]);
-    let stroke = prepared.geometry_plan().vertices()[first_vertices + second_vertices];
+    let stroke = prepared.geometry_plan().vertices()[usize::try_from(second_vertex_end).unwrap()];
     assert_close(stroke.position()[0], -0.5);
     assert_close(stroke.position()[1], 5.0 / 9.0);
     assert_color_close(draw_color(&prepared, 2), [0.0, 0.5, 0.0, 0.5]);
@@ -109,17 +101,17 @@ fn material_only_changes_leave_geometry_and_order_plans_unchanged() {
 }
 
 #[test]
-fn upload_bytes_match_the_pre_refactor_v1_layout_golden() {
+fn upload_bytes_pin_the_lyon_fill_and_stroke_layout() {
     let frame = prepare_frame_v1(&sampled_packet()).unwrap();
     let upload = build_gpu_upload_plan_v1(&frame).unwrap();
 
     assert_eq!(
         sha256(upload.vertex_bytes()),
-        "863f3bb2be473b900ec098d788cf2e2c1e43ea1cdf52327175b88cff84c3e25a"
+        "68de8fdf9f8d91f92e012359bd264caaf7bb0f5e28912d7db91eccd35caf3dd2"
     );
     assert_eq!(
         sha256(upload.index_bytes()),
-        "2c25168c48e905bf8746253dae6834ee3de5ab90db33fd7d153f984d923b8114"
+        "1745c9cfdd25491fd83d31cbea4ad922963bc603bb2a504d83861c56f6cc1cb7"
     );
 }
 

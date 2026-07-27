@@ -6,6 +6,7 @@ license.workspace = true
 rust-version = "1.92"
 
 [dependencies]
+lyon_tessellation.workspace = true
 poietra-scene-ir.workspace = true
 thiserror.workspace = true
 
