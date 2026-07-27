@@ -1,8 +1,9 @@
 //! Minimal browser/native WGPU renderer for validated Poietra `RenderPacketV1` frames.
 //!
 //! CPU preparation currently supports solid fills of one closed convex cubic
-//! subpath, plus stroke-only static, untrimmed canonical Line cubics with butt,
-//! square, or round caps. It is independent of a GPU device and rejects the
+//! subpath, plus stroke-only single cubics whose transformed control hull is
+//! screen-flat within the 0.25 px tessellation tolerance, with butt, square, or
+//! round caps. It is independent of a GPU device and rejects the
 //! complete frame when any draw falls outside that bounded subset.
 
 mod gpu;

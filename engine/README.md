@@ -48,10 +48,10 @@ stage validates the complete `RenderPacketV1`, maps each local cubic's controls 
 world space in f64, then adaptively flattens there with a conservative target-derived
 0.25-pixel control-hull tolerance. Camera subtraction and clip mapping happen only
 after tessellation, before the finite f32 upload check. Fill draws support one closed,
-non-degenerate convex subpath. Stroke-only draws support one open, non-degenerate,
-static and untrimmed canonical Line cubic with butt, square, or
-tolerance-tessellated round caps; the width is applied in world space after the
-affine transform. Combined fill/stroke, trimmed or morphed Line, curved, closed,
+non-degenerate convex subpath. Stroke-only draws support one open, non-degenerate
+single cubic that is screen-flat within the same tolerance, including trimmed Line
+output, with butt, square, or tolerance-tessellated round caps; the width is applied
+in world space after the affine transform. Combined fill/stroke, visibly curved, closed,
 multi-segment, multi-subpath, image, non-convex, numeric, and tessellation-limit
 cases reject the complete frame with a structured error. The frame-wide preparation
 ceiling is 1,000,000 vertices.

@@ -4,7 +4,7 @@ use poietra_render_wgpu::{
     PrepareFrameErrorV1, UnsupportedDrawReasonV1, build_gpu_upload_plan_v1, prepare_frame_v1,
     tessellate_validated_frame_v1, validate_frame_packet_v1,
 };
-use poietra_scene_ir::{RenderDrawV1, StrokeCapV1, StrokeJoinV1};
+use poietra_scene_ir::{CubicSegmentV1, PointV1, RenderDrawV1, StrokeCapV1, StrokeJoinV1};
 use sha2::{Digest, Sha256};
 
 use support::{sampled_packet, straight_stroke_packet};
@@ -360,6 +360,14 @@ fn unsupported_stroke_topologies_fail_closed_with_specific_reasons() {
             let RenderDrawV1::Path { path, .. } = &mut packet.draws[0] else {
                 unreachable!()
             };
+            path.subpaths[0].segments[0].control1.x = -2.25;
+            (packet, UnsupportedDrawReasonV1::CurvedStroke)
+        },
+        {
+            let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
+            let RenderDrawV1::Path { path, .. } = &mut packet.draws[0] else {
+                unreachable!()
+            };
             let start = path.subpaths[0].start.clone();
             let segment = &mut path.subpaths[0].segments[0];
             segment.control1 = start.clone();
@@ -375,6 +383,61 @@ fn unsupported_stroke_topologies_fail_closed_with_specific_reasons() {
             Err(PrepareFrameErrorV1::Unsupported { reason, .. }) if reason == expected_reason
         ));
     }
+}
+
+#[test]
+fn component_wise_morphed_line_is_prepared_by_screen_flatness() {
+    let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
+    let RenderDrawV1::Path { path, .. } = &mut packet.draws[0] else {
+        unreachable!()
+    };
+    path.subpaths[0].start = PointV1 {
+        x: -1.199_999_999_999_999_7,
+        y: 0.0,
+    };
+    path.subpaths[0].segments[0] = CubicSegmentV1 {
+        control1: PointV1 {
+            x: -4.440_892_098_500_626e-16,
+            y: 0.0,
+        },
+        control2: PointV1 {
+            x: 1.199_999_999_999_999_7,
+            y: 0.0,
+        },
+        end: PointV1 {
+            x: 2.400_000_000_000_000_4,
+            y: 0.0,
+        },
+    };
+
+    let prepared = prepare_frame_v1(&packet).unwrap();
+    assert_eq!(prepared.draws().len(), 1);
+    assert_eq!(prepared.indices().len(), 6);
+}
+
+#[test]
+fn stroke_flatness_is_measured_after_world_transform() {
+    let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
+    {
+        let RenderDrawV1::Path { path, .. } = &mut packet.draws[0] else {
+            unreachable!()
+        };
+        path.subpaths[0].segments[0].control1.y = 0.02;
+        path.subpaths[0].segments[0].control2.y = 0.02;
+    }
+    assert!(prepare_frame_v1(&packet).is_ok());
+
+    let RenderDrawV1::Path { transform, .. } = &mut packet.draws[0] else {
+        unreachable!()
+    };
+    transform.m22 = 2.0;
+    assert!(matches!(
+        prepare_frame_v1(&packet),
+        Err(PrepareFrameErrorV1::Unsupported {
+            reason: UnsupportedDrawReasonV1::CurvedStroke,
+            ..
+        })
+    ));
 }
 
 #[test]

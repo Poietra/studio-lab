@@ -11,8 +11,6 @@ pub const FLATTEN_TOLERANCE_PIXELS_V1: f64 = 0.25;
 /// Whole-frame vertex ceiling for the initial CPU tessellation slice.
 pub const MAX_PREPARED_VERTICES_V1: usize = 1_000_000;
 const MAX_FLATTEN_DEPTH_V1: u8 = 20;
-// Python/NumPy and Rust may round equivalent control arithmetic one representable f64 apart.
-const MAX_CANONICAL_LINE_CONTROL_ULPS_V1: u64 = 1;
 
 /// A valid v1 draw feature not implemented by the bounded WGPU paint slice.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -33,7 +31,7 @@ pub enum UnsupportedDrawReasonV1 {
     ClosedStrokeSubpath,
     #[error("the stroke slice requires exactly one cubic segment")]
     StrokeSegmentCount,
-    #[error("the stroke slice accepts only a static, untrimmed canonical Line cubic")]
+    #[error("the stroke slice accepts only a single cubic that is screen-flat within tolerance")]
     CurvedStroke,
     #[error("the transformed stroke line is degenerate")]
     DegenerateStroke,
@@ -596,46 +594,6 @@ fn flatten_subpath_world(
     Ok(points)
 }
 
-fn canonical_line_control(
-    start: &poietra_scene_ir::PointV1,
-    end: &poietra_scene_ir::PointV1,
-    factor: f64,
-) -> poietra_scene_ir::PointV1 {
-    poietra_scene_ir::PointV1 {
-        x: start.x + (end.x - start.x) * factor,
-        y: start.y + (end.y - start.y) * factor,
-    }
-}
-
-fn finite_f64s_within_one_ulp(left: f64, right: f64) -> bool {
-    if !left.is_finite() || !right.is_finite() {
-        return false;
-    }
-    let sign_mask = 1_u64 << 63;
-    let ordered_bits = |value: f64| {
-        let bits = value.to_bits();
-        if bits & sign_mask == 0 {
-            bits | sign_mask
-        } else {
-            !bits
-        }
-    };
-    ordered_bits(left).abs_diff(ordered_bits(right)) <= MAX_CANONICAL_LINE_CONTROL_ULPS_V1
-}
-
-fn is_canonical_line_cubic(start: &poietra_scene_ir::PointV1, segment: &CubicSegmentV1) -> bool {
-    let control1 = canonical_line_control(start, &segment.end, 1.0 / 3.0);
-    let control2 = canonical_line_control(start, &segment.end, 2.0 / 3.0);
-    [
-        (segment.control1.x, control1.x),
-        (segment.control1.y, control1.y),
-        (segment.control2.x, control2.x),
-        (segment.control2.y, control2.y),
-    ]
-    .into_iter()
-    .all(|(actual, expected)| finite_f64s_within_one_ulp(actual, expected))
-}
-
 fn append_prepared_vertex(
     vertices: &mut Vec<PreparedGeometryVertexV1>,
     world: PointF64,
@@ -1006,7 +964,12 @@ fn prepare_stroke_geometry(
         });
     }
     let segment = &subpath.segments[0];
-    if !is_canonical_line_cubic(&subpath.start, segment) {
+    let world_curve = world_curve(&subpath.start, segment, transform, draw_id)?;
+    if !cubic_is_flat(
+        world_curve,
+        world_flatten_tolerance(context.camera, context.viewport),
+        draw_id,
+    )? {
         return Err(PrepareFrameErrorV1::Unsupported {
             draw_id: draw_id.to_owned(),
             reason: UnsupportedDrawReasonV1::CurvedStroke,
@@ -1015,8 +978,8 @@ fn prepare_stroke_geometry(
     append_straight_stroke(
         vertices,
         indices,
-        transform_to_world(&subpath.start, transform, draw_id)?,
-        transform_to_world(&segment.end, transform, draw_id)?,
+        world_curve.start,
+        world_curve.end,
         stroke,
         context.camera,
         context.viewport,
@@ -1202,42 +1165,62 @@ mod tests {
     use super::*;
 
     #[test]
-    fn canonical_line_accepts_real_fast_manim_single_ulp_controls() {
-        let start = poietra_scene_ir::PointV1 { x: -4.0, y: 2.0 };
-        let segment = CubicSegmentV1 {
-            control1: poietra_scene_ir::PointV1 {
-                x: -1.333_333_333_333_333_7,
-                y: 2.0,
+    fn screen_flatness_accepts_interpolated_line_controls_farther_than_one_ulp() {
+        // At t=0.2, component-wise morphing from Line[-4, -2] to Line[10, 20]
+        // places the first control at -4.44e-16. Recomputing the canonical
+        // control from the interpolated endpoints instead yields +2.22e-16.
+        // Bit identity rejects the result although it remains geometrically straight.
+        let curve = CubicF64 {
+            control1: PointF64 {
+                x: -4.440_892_098_500_626e-16,
+                y: 0.0,
             },
-            control2: poietra_scene_ir::PointV1 {
-                x: 1.333_333_333_333_333,
-                y: 2.0,
+            control2: PointF64 {
+                x: 1.199_999_999_999_999_7,
+                y: 0.0,
             },
-            end: poietra_scene_ir::PointV1 { x: 4.0, y: 2.0 },
+            depth: 0,
+            end: PointF64 {
+                x: 2.400_000_000_000_000_4,
+                y: 0.0,
+            },
+            start: PointF64 {
+                x: -1.199_999_999_999_999_7,
+                y: 0.0,
+            },
         };
+        let recomputed_control1 = curve.start.x + (curve.end.x - curve.start.x) * (1.0 / 3.0);
 
-        assert!(is_canonical_line_cubic(&start, &segment));
+        assert!(
+            curve
+                .control1
+                .x
+                .to_bits()
+                .abs_diff(recomputed_control1.to_bits())
+                > 1
+        );
+        assert!(cubic_is_flat(curve, 0.025, "draw:interpolated-line").unwrap());
     }
 
     #[test]
-    fn canonical_line_rejects_two_ulp_near_curves_and_non_finite_controls() {
-        let start = poietra_scene_ir::PointV1 { x: -2.0, y: -1.0 };
-        let end = poietra_scene_ir::PointV1 { x: 2.0, y: 1.5 };
-        let mut segment = CubicSegmentV1 {
-            control1: canonical_line_control(&start, &end, 1.0 / 3.0),
-            control2: canonical_line_control(&start, &end, 2.0 / 3.0),
-            end,
+    fn screen_flatness_rejects_visible_curves_and_collinear_overshoot() {
+        let visibly_curved = CubicF64 {
+            control1: PointF64 { x: 1.0, y: 0.03 },
+            control2: PointF64 { x: 2.0, y: 0.03 },
+            depth: 0,
+            end: PointF64 { x: 3.0, y: 0.0 },
+            start: PointF64 { x: 0.0, y: 0.0 },
         };
-        segment.control1.x = f64::from_bits(segment.control1.x.to_bits() + 2);
-        assert!(!is_canonical_line_cubic(&start, &segment));
+        let overshoot = CubicF64 {
+            control1: PointF64 { x: -0.03, y: 0.0 },
+            control2: PointF64 { x: 2.0, y: 0.0 },
+            depth: 0,
+            end: PointF64 { x: 3.0, y: 0.0 },
+            start: PointF64 { x: 0.0, y: 0.0 },
+        };
 
-        segment.control1 = canonical_line_control(&start, &segment.end, 1.0 / 3.0);
-        segment.control2.y = f64::from_bits(segment.control2.y.to_bits() + 2);
-        assert!(!is_canonical_line_cubic(&start, &segment));
-
-        segment.control2 = canonical_line_control(&start, &segment.end, 2.0 / 3.0);
-        segment.control1.x = f64::NAN;
-        assert!(!is_canonical_line_cubic(&start, &segment));
+        assert!(!cubic_is_flat(visibly_curved, 0.025, "draw:curve").unwrap());
+        assert!(!cubic_is_flat(overshoot, 0.025, "draw:overshoot").unwrap());
     }
 
     #[test]
