@@ -108,6 +108,67 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     expect(second.snapshot.snapshotHash).toBe(first.snapshot.snapshotHash);
   });
 
+  it("verifies and republishes the same-run source/runtime identity map", async () => {
+    const runner = createRunner(await projectRoot(), producerCommand("--mode=combined-identity"));
+    const first = await runner.run(runRequest());
+    expect(first.status).toBe("verified");
+    if (first.status !== "verified") throw new Error("Expected a verified combined snapshot run.");
+    expect(first.sourceRuntimeIdentity).toMatchObject({
+      mappings: [
+        {
+          binding: {
+            id: expect.stringMatching(/^source-binding:[0-9a-f]{64}$/),
+            name: "circle",
+            ordinal: 1,
+            span: { endColumn: 14, endLine: 5, startColumn: 8, startLine: 5 },
+          },
+          entityId: `${first.snapshot.sceneId}/entity:0`,
+          familyPath: [],
+          provenanceId: `${first.snapshot.sceneId}/provenance:entity:0`,
+        },
+      ],
+      runtimeConfigHash: first.runtimeConfigHash,
+      sceneId: first.snapshot.sceneId,
+      snapshotDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+      snapshotHash: first.snapshot.snapshotHash,
+      sourceHash: first.snapshot.sourceHash,
+    });
+    const identityMap = first.sourceRuntimeIdentity;
+    if (!identityMap) throw new Error("Expected a source/runtime identity map.");
+    expect(Object.isFrozen(identityMap)).toBe(true);
+    expect(Object.isFrozen(identityMap.mappings)).toBe(true);
+    expect(Object.isFrozen(identityMap.mappings[0]?.binding.span)).toBe(true);
+    expect(() => {
+      (identityMap.mappings[0]!.binding as { name: string }).name = "response-side-mutation";
+    }).toThrow();
+
+    const fetched = await runner.snapshot({ sceneName: "ExampleScene", sourcePath: "scene.py" });
+    expect(fetched.status).toBe("verified");
+    if (fetched.status !== "verified") throw new Error("Expected a verified published snapshot.");
+    expect(fetched.sourceRuntimeIdentity).toEqual(first.sourceRuntimeIdentity);
+  });
+
+  it("omits claims that point at a source usage instead of a Studio-provable assignment", async () => {
+    const runner = createRunner(await projectRoot(), producerCommand("--mode=combined-identity-usage-span"));
+    const view = await runner.run(runRequest());
+    expect(view.status).toBe("verified");
+    if (view.status !== "verified") throw new Error("Expected valid evidence with a conservative browser fallback.");
+    expect(view.sourceRuntimeIdentity?.mappings).toEqual([]);
+  });
+
+  it.each([
+    "combined-identity-stale-source",
+    "combined-identity-digest-tamper",
+    "combined-identity-binding-id-tamper",
+    "combined-identity-missing-record",
+    "combined-identity-duplicate-sequence",
+    "combined-identity-noncanonical",
+  ])("rejects tampered combined identity evidence (%s)", async (mode) => {
+    const runner = createRunner(await projectRoot(), producerCommand(`--mode=${mode}`));
+    expectFailure(await runner.run(runRequest()), "result-rejected", "identity-evidence-invalid");
+    await expectNoSnapshot(runner);
+  });
+
   it("rejects stale request source correlation before spawning", async () => {
     const runner = createRunner(await projectRoot(), producerCommand());
     expectFailure(await runner.run(runRequest({ sourceHash: "c".repeat(64) })), "source-correlation-stale");

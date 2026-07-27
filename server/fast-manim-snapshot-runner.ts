@@ -36,14 +36,21 @@ import {
   fastManimSnapshotRunRequestV1Schema,
   fastManimSnapshotRunViewV1Schema,
   fastManimSnapshotSceneIdV1,
-  MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES,
+  MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
   parseAndSealFastManimSnapshotProducerJsonV1,
   parseVerifiedFastManimSnapshotResultV1,
   type VerifiedCompiledFastManimSnapshotResultV1,
   type VerifiedFastManimSnapshotResultV1,
+  type VerifiedSourceRuntimeIdentityMapV1,
 } from "./fast-manim-snapshot-contract";
 import { abortError } from "./fast-manim-snapshot-producer-process";
 import { type FastManimSnapshotPublicationStore, processPublicationStore } from "./fast-manim-snapshot-publication";
+import {
+  parseFastManimProducerDocumentV1,
+  parseServerOwnedSourceRuntimeIdentityMapV1,
+  parseVerifiedSourceRuntimeIdentityMapV1,
+  verifyFastManimSourceRuntimeIdentityV1,
+} from "./fast-manim-source-runtime-identity";
 import { HttpError } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import { type ManimSourceReadHooks, ManimSourceStore } from "./manim-source-store";
@@ -70,6 +77,18 @@ const MAX_SANDBOX_CLOSE_GRACE_MS = 10_000;
 const fastManimSandboxOperationDeadlineErrors = new WeakSet<object>();
 const fastManimSandboxJobHandleRejectedErrors = new WeakSet<object>();
 const nativePromiseThen = Promise.prototype.then;
+
+function parseServerOwnedFastManimRunView(value: unknown): FastManimSnapshotRunViewV1 {
+  const parsed = fastManimSnapshotRunViewV1Schema.parse(value);
+  if (parsed.status !== "verified" || parsed.sourceRuntimeIdentity === undefined) return parsed;
+  return {
+    ...parsed,
+    // Zod intentionally clones its output. Revalidate that clone and replace
+    // it with a deep-frozen server-owned map before any API caller receives a
+    // reference; the publication store retains a separate frozen copy.
+    sourceRuntimeIdentity: parseServerOwnedSourceRuntimeIdentityMapV1(parsed.sourceRuntimeIdentity),
+  };
+}
 
 class FastManimSandboxOperationDeadlineError extends Error {
   constructor() {
@@ -592,7 +611,7 @@ export class FastManimSnapshotRunner {
     this.activeRuns.add(pending);
     pending.catch(() => undefined);
     try {
-      return fastManimSnapshotRunViewV1Schema.parse(await pending);
+      return parseServerOwnedFastManimRunView(await pending);
     } finally {
       this.activeKeys.delete(key);
       this.activeRuns.delete(pending);
@@ -702,14 +721,26 @@ export class FastManimSnapshotRunner {
     if (produced.kind !== "ok") return failed(produced.code);
 
     let sealed: VerifiedFastManimSnapshotResultV1;
+    let sourceRuntimeIdentity = null;
     try {
-      sealed = await parseAndSealFastManimSnapshotProducerJsonV1(produced.resultBytes, expected);
+      // The combined envelope is only split here. Its embedded snapshot first
+      // passes the unchanged strict Snapshot/Scene IR verifier and server seal;
+      // only then may the paired identity evidence be interpreted.
+      const producerDocument = parseFastManimProducerDocumentV1(produced.resultBytes);
+      sealed = await parseAndSealFastManimSnapshotProducerJsonV1(producerDocument.snapshotJson, expected);
       // Defense in depth behind the structural static-profile normalization.
       assertFastManimSnapshotDiagnosticsSafeV1(sealed, {
         projectRoot: this.sourceStore.projectRoot,
         sourceAbsolutePath: before.absolutePath,
         sourceText: before.source,
       });
+      sourceRuntimeIdentity = producerDocument.combined
+        ? verifyFastManimSourceRuntimeIdentityV1(producerDocument.combined, {
+            expected,
+            snapshot: sealed,
+            sourceText: before.source,
+          })
+        : null;
     } catch (cause) {
       throwIfHalted();
       if (cause instanceof FastManimSnapshotContractError) return failed("result-rejected", cause.code);
@@ -751,16 +782,29 @@ export class FastManimSnapshotRunner {
       return failed("capability-unsupported");
     }
 
-    const encodedBytes = Buffer.byteLength(JSON.stringify(sealed), "utf8");
+    const encodedBytes = Buffer.byteLength(JSON.stringify({ snapshot: sealed, sourceRuntimeIdentity }), "utf8");
     if (encodedBytes > this.maxPublishedBytes || !this.publicationStore.fitsSingleEntry(encodedBytes)) {
       return failed("snapshot-too-large");
     }
 
     throwIfHalted();
     const key = sceneKey(request.sourcePath, request.sceneName);
-    const { publishedAt, revision } = this.publish(key, expected, sealed, encodedBytes);
+    const { publishedAt, revision } = this.publish(
+      key,
+      expected,
+      sealed,
+      sourceRuntimeIdentity,
+      encodedBytes,
+    );
     this.logger.info("snapshot.published", { requestId: request.requestId, revision });
-    return { ...base, publishedAt, revision, snapshot: sealed, status: "verified" };
+    return {
+      ...base,
+      publishedAt,
+      revision,
+      snapshot: sealed,
+      ...(sourceRuntimeIdentity === null ? {} : { sourceRuntimeIdentity }),
+      status: "verified",
+    };
   }
 
   private evictExpired(now: number) {
@@ -773,6 +817,7 @@ export class FastManimSnapshotRunner {
     key: string,
     expected: ExpectedFastManimSnapshotCorrelationV1,
     result: VerifiedCompiledFastManimSnapshotResultV1,
+    sourceRuntimeIdentity: VerifiedSourceRuntimeIdentityMapV1 | null,
     encodedBytes: number,
   ) {
     const now = Date.now();
@@ -785,7 +830,7 @@ export class FastManimSnapshotRunner {
     const evicted = this.publicationStore.publish(
       this.ownerId,
       key,
-      { encodedBytes, expected, publishedAt, publishedAtEpochMs: now, result, revision },
+      { encodedBytes, expected, publishedAt, publishedAtEpochMs: now, result, revision, sourceRuntimeIdentity },
       { maxBytes: this.maxPublishedBytes, maxEntries: this.maxPublishedSnapshots },
     );
     if (evicted > 0) this.logger.info("snapshot.evicted", { evicted });
@@ -880,7 +925,7 @@ export class FastManimSnapshotRunner {
         try {
           resultBytes = copyFastManimSandboxUint8ArrayV1(
             parsed.data.resultBytes,
-            MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES,
+            MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
           );
         } catch {
           this.backendLifecycleRejected = true;
@@ -1033,6 +1078,7 @@ export class FastManimSnapshotRunner {
       throw new HttpError("No verified Scene snapshot has been published for this Scene.", 404);
     }
     let revalidated: VerifiedCompiledFastManimSnapshotResultV1;
+    let sourceRuntimeIdentity = null;
     try {
       const parsed = await parseVerifiedFastManimSnapshotResultV1(entry.result, entry.expected);
       if (parsed.kind !== "compiled") {
@@ -1042,6 +1088,10 @@ export class FastManimSnapshotRunner {
         );
       }
       revalidated = parsed;
+      sourceRuntimeIdentity =
+        entry.sourceRuntimeIdentity === null
+          ? null
+          : parseVerifiedSourceRuntimeIdentityMapV1(entry.sourceRuntimeIdentity, revalidated);
     } catch {
       throwIfClosing();
       if (!entryIsCurrent()) return null;
@@ -1095,11 +1145,12 @@ export class FastManimSnapshotRunner {
     throwIfClosing();
     // Never serve a revision that a concurrent republish already superseded.
     if (!entryIsCurrent()) return null;
-    return fastManimSnapshotRunViewV1Schema.parse({
+    return parseServerOwnedFastManimRunView({
       ...base,
       publishedAt: entry.publishedAt,
       revision: entry.revision,
       snapshot: revalidated,
+      ...(sourceRuntimeIdentity === null ? {} : { sourceRuntimeIdentity }),
       status: "verified",
     });
   }
