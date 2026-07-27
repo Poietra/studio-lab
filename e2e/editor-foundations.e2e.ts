@@ -1,10 +1,10 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { openWorkspace } from "./workspace";
+import { cleanupFixtureWorkspace, openWorkspace } from "./workspace";
 
 async function dragBy(page: Page, locator: Locator, delta: Readonly<{ x: number; y: number }>) {
   const box = await locator.boundingBox();
@@ -460,7 +460,7 @@ test("creates, persists, renames, and deletes a browser-managed workspace", asyn
     await deleteResponse;
     await expect(page.getByRole("button", { name: "Open Renamed Fixture workspace" })).toHaveCount(0);
   } finally {
-    if (projectId) await page.request.delete(`/api/manim/projects/${projectId}`).catch(() => undefined);
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }
 });
 
@@ -530,8 +530,7 @@ class DeleteRaceScene(Scene):
     await page.getByRole("button", { name: "Back to workspaces" }).click();
   } finally {
     await page.unrouteAll({ behavior: "ignoreErrors" });
-    await page.request.delete(`/api/manim/projects/${projectId}`).catch(() => undefined);
-    await rm(projectRoot, { force: true, recursive: true });
+    await cleanupFixtureWorkspace(page.request, { projectId, temporaryRoot: projectRoot });
   }
 });
 
@@ -742,8 +741,7 @@ class LifetimeScene(Scene):
     await expect(lifetime).toHaveAttribute("title", "Present 2.00–4.40s");
     await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
   } finally {
-    await page.request.delete(`/api/manim/projects/${projectId}`).catch(() => undefined);
-    await rm(projectRoot, { force: true, recursive: true });
+    await cleanupFixtureWorkspace(page.request, { projectId, temporaryRoot: projectRoot });
   }
 });
 
