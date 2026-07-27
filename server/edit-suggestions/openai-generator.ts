@@ -1,17 +1,10 @@
 import OpenAI from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
 import { ZodError } from "zod";
-
+import { type ModelSuggestion, modelSuggestionSchema } from "../../src/ai/edit-suggestion-schema";
 import type { EditSuggestionRequest } from "../../src/ai/edit-suggestions";
-import {
-  modelSuggestionSchema,
-  type ModelSuggestion,
-} from "../../src/ai/edit-suggestion-schema";
 import type { StructuredLogger } from "../logging/structured-logger";
-import {
-  EditSuggestionGenerationError,
-  type EditSuggestionGenerator,
-} from "./service";
+import { EditSuggestionGenerationError, type EditSuggestionGenerator } from "./service";
 
 type OpenAiGeneratorOptions = Readonly<{
   apiKey: string;
@@ -24,6 +17,33 @@ type CandidateAttempt = Readonly<{
   repairFeedback?: string;
   signal?: AbortSignal;
 }>;
+
+const NOOP_OPENAI_LOGGER = Object.freeze({
+  debug(_message: string, ..._rest: unknown[]) {},
+  error(_message: string, ..._rest: unknown[]) {},
+  info(_message: string, ..._rest: unknown[]) {},
+  warn(_message: string, ..._rest: unknown[]) {},
+});
+
+function usageTelemetry(
+  usage:
+    | Readonly<{
+        input_tokens?: number;
+        output_tokens?: number;
+        total_tokens?: number;
+      }>
+    | null
+    | undefined,
+) {
+  if (!usage) return undefined;
+  const boundedCounter = (value: unknown) =>
+    typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+  return {
+    inputTokens: boundedCounter(usage.input_tokens),
+    outputTokens: boundedCounter(usage.output_tokens),
+    totalTokens: boundedCounter(usage.total_tokens),
+  };
+}
 
 function validationFeedback(error: ZodError) {
   return error.issues
@@ -42,10 +62,14 @@ function requireCandidate(candidate: ModelSuggestion | null, repaired = false) {
   );
 }
 
-export function createOpenAiEditSuggestionGenerator(
-  options: OpenAiGeneratorOptions,
-): EditSuggestionGenerator {
-  const client = new OpenAI({ apiKey: options.apiKey, maxRetries: 0, timeout: 30_000 });
+export function createOpenAiEditSuggestionGenerator(options: OpenAiGeneratorOptions): EditSuggestionGenerator {
+  const client = new OpenAI({
+    apiKey: options.apiKey,
+    logLevel: "off",
+    logger: NOOP_OPENAI_LOGGER,
+    maxRetries: 0,
+    timeout: 30_000,
+  });
 
   const requestCandidate = async (
     request: EditSuggestionRequest,
@@ -57,10 +81,7 @@ export function createOpenAiEditSuggestionGenerator(
       : options.instructions;
     logger.info("model.requested", {
       attempt: attempt.kind,
-      instructions,
       model: options.model,
-      repairFeedback: attempt.repairFeedback,
-      request,
     });
     const completion = await client.responses.parse(
       {
@@ -76,18 +97,12 @@ export function createOpenAiEditSuggestionGenerator(
     );
     logger.info("model.responded", {
       attempt: attempt.kind,
-      responseId: completion.id,
-      result: completion.output_parsed,
-      usage: completion.usage,
+      usage: usageTelemetry(completion.usage),
     });
     return completion.output_parsed;
   };
 
-  const generateWithRepair = async (
-    request: EditSuggestionRequest,
-    logger: StructuredLogger,
-    signal?: AbortSignal,
-  ) => {
+  const generateWithRepair = async (request: EditSuggestionRequest, logger: StructuredLogger, signal?: AbortSignal) => {
     try {
       return requireCandidate(await requestCandidate(request, logger, { kind: "initial", signal }));
     } catch (error) {
@@ -95,8 +110,8 @@ export function createOpenAiEditSuggestionGenerator(
       const feedback = validationFeedback(error);
       logger.warn("model.validation_failed", {
         attempt: "initial",
-        feedback,
-        issues: error.issues,
+        issueCodes: [...new Set(error.issues.map((issue) => issue.code))].sort(),
+        issueCount: error.issues.length,
       });
       return requireCandidate(
         await requestCandidate(request, logger, {
@@ -122,16 +137,8 @@ export function createOpenAiEditSuggestionGenerator(
             { cause: error },
           );
         }
-        const status = error instanceof OpenAI.APIError
-          && error.status >= 400
-          && error.status < 500
-          ? error.status
-          : 502;
-        throw new EditSuggestionGenerationError(
-          error instanceof Error ? error.message : "OpenAI request failed.",
-          status,
-          { cause: error },
-        );
+        const status = error instanceof OpenAI.APIError && error.status === 429 ? 429 : 502;
+        throw new EditSuggestionGenerationError("The AI provider request failed.", status, { cause: error });
       }
     },
   };

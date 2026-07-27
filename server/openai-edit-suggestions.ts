@@ -1,5 +1,6 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
 
 import type { Plugin } from "vite";
 
@@ -21,15 +22,17 @@ type PluginOptions = Readonly<{
   model?: string;
 }>;
 
-function readApiKey(root: string) {
-  const raw = readFileSync(resolve(root, ".openai-key"), "utf8").trim();
-  if (!raw.includes("=")) return raw;
-  const line = raw.split(/\r?\n/).find((candidate) => candidate.trim().startsWith("OPENAI_API_KEY="));
-  return line?.slice(line.indexOf("=") + 1).trim() ?? "";
+export function resolveAiEditSuggestionLogPath(logPath: false | string | undefined, root: string): false | string {
+  if (logPath === false || logPath?.trim() === "off") return false;
+  const configured = logPath?.trim();
+  if (configured?.includes("\0")) throw new TypeError("The AI debug log path is invalid.");
+  if (configured) return isAbsolute(configured) ? resolve(configured) : resolve(root, configured);
+  const workspaceId = createHash("sha256").update(resolve(root), "utf8").digest("hex").slice(0, 16);
+  return join(tmpdir(), "poietra-studio-logs", workspaceId, "ai-edit-suggestions.jsonl");
 }
 
 export function openAiEditSuggestions(options: PluginOptions = {}): Plugin {
-  let apiKey = options.apiKey?.trim() || process.env.OPENAI_API_KEY?.trim() || "";
+  const apiKey = options.apiKey?.trim() || process.env.OPENAI_API_KEY?.trim() || "";
   let generator: EditSuggestionGenerator | null = null;
   let logger: StructuredLogger = nullLogger;
   let root = process.cwd();
@@ -40,23 +43,26 @@ export function openAiEditSuggestions(options: PluginOptions = {}): Plugin {
     name: "poietra-openai-edit-suggestions",
     configResolved(config) {
       root = config.root;
-      if (!apiKey) {
+      const logPath = resolveAiEditSuggestionLogPath(options.logPath, root);
+      if (logPath !== false) {
+        const consoleSink = createConsoleJsonSink({ includeData: false, prefix: "poietra-ai" });
         try {
-          apiKey = readApiKey(root);
+          const fileSink = createRotatingJsonlSink({
+            logPath,
+            root,
+          });
+          logger = createStructuredLogger({
+            context: { component: "edit-suggestions-api" },
+            sinks: [consoleSink, fileSink],
+          });
+          logger.info("logging.configured", { sink: "rotating-jsonl" });
         } catch {
-          apiKey = "";
+          logger = createStructuredLogger({
+            context: { component: "edit-suggestions-api" },
+            sinks: [consoleSink],
+          });
+          logger.warn("logging.file_sink_unavailable");
         }
-      }
-      if (options.logPath !== false) {
-        const fileSink = createRotatingJsonlSink({
-          logPath: options.logPath ?? ".studio-logs/ai-edit-suggestions.jsonl",
-          root,
-        });
-        logger = createStructuredLogger({
-          context: { component: "edit-suggestions-api" },
-          sinks: [createConsoleJsonSink({ includeData: false, prefix: "poietra-ai" }), fileSink],
-        });
-        logger.info("logging.configured", { path: fileSink.path });
       }
       generator = apiKey
         ? createOpenAiEditSuggestionGenerator({
@@ -68,10 +74,13 @@ export function openAiEditSuggestions(options: PluginOptions = {}): Plugin {
       logger.info("generator.configured", { credentialConfigured: Boolean(apiKey), model });
     },
     configureServer(server) {
-      server.middlewares.use("/api/ai/edit-suggestions", createEditSuggestionHandler({
-        generator: () => generator,
-        logger,
-      }));
+      server.middlewares.use(
+        "/api/ai/edit-suggestions",
+        createEditSuggestionHandler({
+          generator: () => generator,
+          logger,
+        }),
+      );
     },
   };
 }

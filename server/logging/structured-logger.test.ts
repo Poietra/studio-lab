@@ -2,13 +2,9 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import {
-  createRotatingJsonlSink,
-  createStructuredLogger,
-  type StructuredLogRecord,
-} from "./structured-logger";
+import { createRotatingJsonlSink, createStructuredLogger, type StructuredLogRecord } from "./structured-logger";
 
 describe("structured logger", () => {
   it("binds request context and redacts sensitive fields", () => {
@@ -26,19 +22,21 @@ describe("structured logger", () => {
       "x-api-key": "key-secret",
     });
 
-    expect(records).toEqual([{
-      context: { requestId: "request-1", route: "/api/example" },
-      data: {
-        accessToken: "[REDACTED]",
-        authorization: "[REDACTED]",
-        clarification: { answer: { kind: "text", text: "はい" } },
-        password: "[REDACTED]",
-        "x-api-key": "[REDACTED]",
+    expect(records).toEqual([
+      {
+        context: { requestId: "request-1", route: "/api/example" },
+        data: {
+          accessToken: "[REDACTED]",
+          authorization: "[REDACTED]",
+          clarification: { answer: { kind: "text", text: "はい" } },
+          password: "[REDACTED]",
+          "x-api-key": "[REDACTED]",
+        },
+        event: "request.received",
+        level: "info",
+        timestamp: "2026-07-21T00:00:00.000Z",
       },
-      event: "request.received",
-      level: "info",
-      timestamp: "2026-07-21T00:00:00.000Z",
-    }]);
+    ]);
   });
 
   it("rotates JSONL output at the configured size", () => {
@@ -54,5 +52,26 @@ describe("structured logger", () => {
     } finally {
       rmSync(root, { force: true, recursive: true });
     }
+  });
+
+  it("reports sink failures without forwarding the error, path, or stack", () => {
+    const sentinel = "/private/SECRET_LOG_PATH/api.jsonl";
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const logger = createStructuredLogger({
+      sinks: [
+        {
+          write() {
+            throw new Error(`EACCES: ${sentinel}\nSECRET_TRACEBACK`);
+          },
+        },
+      ],
+    });
+
+    logger.error("request.failed", { failure: "internal" });
+
+    expect(warn).toHaveBeenCalledExactlyOnceWith("[poietra] structured-log-sink.failed");
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(sentinel);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("SECRET_TRACEBACK");
+    warn.mockRestore();
   });
 });

@@ -1,11 +1,4 @@
-import {
-  appendFileSync,
-  existsSync,
-  mkdirSync,
-  renameSync,
-  statSync,
-  unlinkSync,
-} from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -49,7 +42,8 @@ type ConsoleSinkOptions = Readonly<{
   prefix?: string;
 }>;
 
-const SENSITIVE_FIELD = /^(?:(?:x[-_])?api[-_]?key|(?:proxy[-_])?authorization|cookie|set[-_]?cookie|password|passwd|secret|client[-_]?secret|token|(?:access|refresh|id)[-_]?token)$/i;
+const SENSITIVE_FIELD =
+  /^(?:(?:x[-_])?api[-_]?key|(?:proxy[-_])?authorization|cookie|set[-_]?cookie|password|passwd|secret|client[-_]?secret|token|(?:access|refresh|id)[-_]?token)$/i;
 
 function sanitize(value: unknown, key = "", seen = new WeakSet<object>()): unknown {
   if (SENSITIVE_FIELD.test(key)) return "[REDACTED]";
@@ -63,10 +57,7 @@ function sanitize(value: unknown, key = "", seen = new WeakSet<object>()): unkno
   const sanitized = Array.isArray(value)
     ? value.map((item) => sanitize(item, "", seen))
     : Object.fromEntries(
-        Object.entries(value).map(([entryKey, entryValue]) => [
-          entryKey,
-          sanitize(entryValue, entryKey, seen),
-        ]),
+        Object.entries(value).map(([entryKey, entryValue]) => [entryKey, sanitize(entryValue, entryKey, seen)]),
       );
   seen.delete(value);
   return sanitized;
@@ -85,8 +76,8 @@ export function createStructuredLogger(options: LoggerOptions): StructuredLogger
     for (const sink of options.sinks) {
       try {
         sink.write(record);
-      } catch (error) {
-        console.warn("[poietra] A structured log sink failed.", error);
+      } catch {
+        console.warn("[poietra] structured-log-sink.failed");
       }
     }
   };
@@ -108,9 +99,7 @@ export function createStructuredLogger(options: LoggerOptions): StructuredLogger
 export function createConsoleJsonSink(options: ConsoleSinkOptions = {}): LogSink {
   return {
     write(record) {
-      const consoleRecord = options.includeData === false
-        ? { ...record, data: undefined }
-        : record;
+      const consoleRecord = options.includeData === false ? { ...record, data: undefined } : record;
       const line = `[${options.prefix ?? "poietra"}] ${JSON.stringify(consoleRecord)}`;
       if (record.level === "error") console.error(line);
       else if (record.level === "warn") console.warn(line);
@@ -120,9 +109,7 @@ export function createConsoleJsonSink(options: ConsoleSinkOptions = {}): LogSink
 }
 
 export function createRotatingJsonlSink(options: JsonlSinkOptions): RotatingJsonlSink {
-  const path = isAbsolute(options.logPath)
-    ? options.logPath
-    : resolve(options.root, options.logPath);
+  const path = isAbsolute(options.logPath) ? options.logPath : resolve(options.root, options.logPath);
   const previousPath = `${path}.previous`;
   const maxBytes = options.maxBytes ?? 2 * 1024 * 1024;
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {

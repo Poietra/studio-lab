@@ -106,10 +106,20 @@ The suite boundaries and the rule for adding regression coverage are documented 
 
 Magic Edit requires an explicit model endpoint; it never falls back to keyword or
 fixture behavior at runtime. Set `VITE_POIETRA_AI_ENDPOINT` to
-`/api/ai/edit-suggestions`, provide `OPENAI_API_KEY` in the server environment or
-the ignored `.openai-key` file, and optionally select the server-side model with
-`POIETRA_OPENAI_MODEL`. The Vite development server uses the Responses API and
-returns the same closed `CreateMotion | CreateTransform | CreateExplanation | CreateCameraFocus | CreateEquation | CreateExplainedEquation | CreateTextTransform | CreateSceneTransition | ScaleObjects | DeleteObjects | EditProgram`
+`/api/ai/edit-suggestions`, inject `OPENAI_API_KEY` into the actual server process
+environment, and optionally select the server-side model with
+`POIETRA_OPENAI_MODEL`. Vite may parse dotenv files while loading public settings,
+but a dotenv `OPENAI_API_KEY` is never adopted as API configuration or exposed in
+diagnostics or the browser bundle; only the actual server process environment supplies
+that credential. Server-only `POIETRA_` settings are also read from an explicit
+non-secret process-environment allowlist; ordinary `VITE_` browser settings retain
+Vite's dotenv behavior. This remains an explicit local-development opt-in: without
+both the endpoint and injected credential, Magic Edit does not call the provider.
+Studio no longer reads the repository-root `.openai-key` file. Existing users should
+migrate that credential to their process environment or secret provider and then
+delete the plaintext file. The Vite development server uses the
+Responses API and returns the same closed
+`CreateMotion | CreateTransform | CreateExplanation | CreateCameraFocus | CreateEquation | CreateExplainedEquation | CreateTextTransform | CreateSceneTransition | ScaleObjects | DeleteObjects | EditProgram`
 suggestion result documented in
 `src/ai/edit-suggestions.ts`. Provider credentials never use a `VITE_` variable and
 are not included in the browser bundle.
@@ -119,15 +129,22 @@ pending question. A choice click, a relative answer such as `前者`, or a short
 answer such as `はい` therefore reaches the model with the decisions that preceded
 it instead of becoming an isolated prompt.
 
-The development API writes correlated lifecycle events to stdout and full structured
-events to the ignored `.studio-logs/ai-edit-suggestions.jsonl` file. Each request
-receives an `x-poietra-request-id`, and the file records the validated model input,
-instructions, parsed model output, usage, and final HTTP response under that ID. It rotates
-to `.previous` at 2 MiB, is created with user-only permissions, and can contain
-editor content; do not publish it. Set `POIETRA_AI_DEBUG_LOG` to another local path
-or to `off` to disable this debug logging. Provider credentials are never supplied
-to the logger, and common credential-shaped fields are redacted by the logging
-layer.
+By default, the development API writes privacy-safe lifecycle events to stdout and
+to a per-workspace file below the operating system's temporary directory, outside
+the Vite project root. Each request receives an
+`x-poietra-request-id`; telemetry is limited to bounded outcomes and HTTP status,
+attempt/model labels, validation code counts, and numeric token counters when available.
+Prompts, source/object context, clarification content, model instructions and output,
+provider response IDs, response bodies, error messages, tracebacks, and absolute log paths
+are not recorded. The file rotates to `.previous` at 2 MiB and is created with
+user-only permissions. Set `POIETRA_AI_DEBUG_LOG` in the process environment to use
+another local path. Setting it to `off` disables both the file sink and the bounded
+stdout telemetry.
+
+Logs created by an older Studio version may still contain editor or provider payloads.
+Treat both the active JSONL file and `.previous` as sensitive historical data: do not
+publish them, and explicitly archive or delete them according to the workspace owner's
+retention policy before relying on the new telemetry boundary.
 
 The rendered-validation experiment lowers a complete canonical `EditProgram` at an
 explicit safe source marker. Straight or quadratic Bézier motion, position,

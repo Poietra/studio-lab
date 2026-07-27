@@ -1,17 +1,31 @@
-import { createServer, request as createRequest } from "node:http";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { request as createRequest, createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
-
-import type { EditSuggestionRequest } from "../../src/ai/edit-suggestions";
+import type { ResolvedConfig, ViteDevServer } from "vite";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ModelSuggestion } from "../../src/ai/edit-suggestion-schema";
-import {
-  createStructuredLogger,
-  type StructuredLogRecord,
-} from "../logging/structured-logger";
+import type { EditSuggestionRequest } from "../../src/ai/edit-suggestions";
+import { createStructuredLogger, type StructuredLogRecord } from "../logging/structured-logger";
 import { openAiEditSuggestions } from "../openai-edit-suggestions";
 import { createEditSuggestionHandler } from "./handler";
-import type { EditSuggestionGenerator } from "./service";
+import { EditSuggestionGenerationError, type EditSuggestionGenerator } from "./service";
+
+const openAiParse = vi.hoisted(() => vi.fn());
+
+vi.mock("openai", () => ({
+  default: class MockOpenAI {
+    static APIError = class extends Error {};
+    readonly responses = { parse: openAiParse };
+  },
+}));
+
+afterEach(() => {
+  openAiParse.mockReset();
+  vi.unstubAllEnvs();
+});
 
 const choices = [
   { description: "Add the next Scene first.", id: "option-1", label: "Add Scene" },
@@ -22,11 +36,13 @@ function requestBody(): EditSuggestionRequest {
   return {
     clarification: {
       answer: { kind: "text", text: "はい" },
-      history: [{
-        answer: { kind: "option", optionId: "option-1" },
-        options: choices,
-        question: "Should Studio add the next Scene first?",
-      }],
+      history: [
+        {
+          answer: { kind: "option", optionId: "option-1" },
+          options: choices,
+          question: "Should Studio add the next Scene first?",
+        },
+      ],
       options: [],
       question: "Should Studio preview the explanation after adding that Scene?",
     },
@@ -39,16 +55,10 @@ function requestBody(): EditSuggestionRequest {
   };
 }
 
-async function callHandler(generator: EditSuggestionGenerator, body: unknown) {
-  const records: StructuredLogRecord[] = [];
-  const logger = createStructuredLogger({
-    sinks: [{ write: (record) => records.push(record) }],
-  });
-  const server = createServer(createEditSuggestionHandler({
-    generator: () => generator,
-    logger,
-    requestId: () => "request-1",
-  }));
+type HttpHandler = (request: IncomingMessage, response: ServerResponse) => Promise<void> | void;
+
+async function callHttpHandler(handler: HttpHandler, body: unknown) {
+  const server = createServer(handler);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     const address = server.address() as AddressInfo;
@@ -57,10 +67,26 @@ async function callHandler(generator: EditSuggestionGenerator, body: unknown) {
       headers: { "content-type": "application/json" },
       method: "POST",
     });
-    return { records, response, result: await response.json() as unknown };
+    return { response, result: (await response.json()) as unknown };
   } finally {
-    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
+}
+
+async function callHandler(generator: EditSuggestionGenerator, body: unknown) {
+  const records: StructuredLogRecord[] = [];
+  const logger = createStructuredLogger({
+    sinks: [{ write: (record) => records.push(record) }],
+  });
+  const result = await callHttpHandler(
+    createEditSuggestionHandler({
+      generator: () => generator,
+      logger,
+      requestId: () => "request-1",
+    }),
+    body,
+  );
+  return { records, ...result };
 }
 
 describe("edit suggestion API handler", () => {
@@ -85,12 +111,58 @@ describe("edit suggestion API handler", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("x-poietra-request-id")).toBe("request-1");
     expect(received[0]?.clarification?.history).toHaveLength(1);
-    expect(records.map((record) => record.event)).toEqual([
-      "request.started",
-      "request.received",
-      "response.sent",
-    ]);
+    expect(records.map((record) => record.event)).toEqual(["request.started", "request.received", "response.sent"]);
     expect(records.every((record) => record.context.requestId === "request-1")).toBe(true);
+    const persistedLogs = JSON.stringify(records);
+    expect(persistedLogs).not.toContain("Maxwell equations");
+    expect(persistedLogs).not.toContain("Should Studio add the next Scene first?");
+    expect(persistedLogs).not.toContain("One more question");
+    expect(records.find((record) => record.event === "response.sent")?.data).toEqual({
+      outcome: "clarification",
+      status: 200,
+    });
+  });
+
+  it("never exposes generator errors through HTTP or structured logs", async () => {
+    const sentinel = "SECRET_SOURCE_PATH_AND_PROVIDER_BODY";
+    const generator: EditSuggestionGenerator = {
+      async generate(): Promise<ModelSuggestion> {
+        throw new EditSuggestionGenerationError(sentinel, 401, {
+          cause: new Error(`${sentinel}: nested traceback`),
+        });
+      },
+    };
+
+    const { records, response, result } = await callHandler(generator, requestBody());
+
+    expect(response.status).toBe(502);
+    expect(result).toEqual({ error: "Edit suggestion generation failed." });
+    expect(JSON.stringify(records)).not.toContain(sentinel);
+    expect(records.find((record) => record.event === "request.failed")?.data).toEqual({
+      failure: "generation",
+      status: 401,
+    });
+  });
+
+  it("preserves only the bounded capacity classification for provider rate limits", async () => {
+    const sentinel = "SECRET_RATE_LIMIT_PROVIDER_BODY";
+    const generator: EditSuggestionGenerator = {
+      async generate(): Promise<ModelSuggestion> {
+        throw new EditSuggestionGenerationError(sentinel, 429, {
+          cause: new Error(`${sentinel}: nested traceback`),
+        });
+      },
+    };
+
+    const { records, response, result } = await callHandler(generator, requestBody());
+
+    expect(response.status).toBe(429);
+    expect(result).toEqual({ error: "Edit suggestion capacity is temporarily exhausted." });
+    expect(JSON.stringify(records)).not.toContain(sentinel);
+    expect(records.find((record) => record.event === "request.failed")?.data).toEqual({
+      failure: "generation",
+      status: 429,
+    });
   });
 
   it("rejects an option answer that does not belong to its historical turn", async () => {
@@ -106,10 +178,12 @@ describe("edit suggestion API handler", () => {
       ...body,
       clarification: {
         ...body.clarification,
-        history: [{
-          ...body.clarification!.history[0],
-          answer: { kind: "option", optionId: "missing-option" },
-        }],
+        history: [
+          {
+            ...body.clarification!.history[0],
+            answer: { kind: "option", optionId: "missing-option" },
+          },
+        ],
       },
     };
 
@@ -118,6 +192,26 @@ describe("edit suggestion API handler", () => {
     expect(response.status).toBe(400);
     expect(result).toEqual({ error: "A clarification option is no longer available." });
     expect(calls).toBe(0);
+  });
+
+  it("logs only bounded validation classifications for invalid bodies", async () => {
+    const sentinel = "SECRET_INVALID_REQUEST_BODY";
+    const generator: EditSuggestionGenerator = {
+      async generate(): Promise<ModelSuggestion> {
+        throw new Error("must not run");
+      },
+    };
+
+    const { records, response } = await callHandler(generator, {
+      ...requestBody(),
+      sceneDuration: sentinel,
+    });
+
+    expect(response.status).toBe(400);
+    expect(JSON.stringify(records)).not.toContain(sentinel);
+    expect(records.find((record) => record.event === "request.validation_failed")?.data).toMatchObject({
+      issueCount: expect.any(Number),
+    });
   });
 
   it("propagates a disconnected client to an in-flight generator", async () => {
@@ -134,17 +228,23 @@ describe("edit suggestion API handler", () => {
         resolveStarted();
         return new Promise((_resolve, reject) => {
           expect(signal).toBeDefined();
-          signal?.addEventListener("abort", () => {
-            resolveAborted();
-            reject(signal.reason);
-          }, { once: true });
+          signal?.addEventListener(
+            "abort",
+            () => {
+              resolveAborted();
+              reject(signal.reason);
+            },
+            { once: true },
+          );
         });
       },
     };
-    const server = createServer(createEditSuggestionHandler({
-      generator: () => generator,
-      logger: createStructuredLogger({ sinks: [] }),
-    }));
+    const server = createServer(
+      createEditSuggestionHandler({
+        generator: () => generator,
+        logger: createStructuredLogger({ sinks: [] }),
+      }),
+    );
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {
       const address = server.address() as AddressInfo;
@@ -162,11 +262,60 @@ describe("edit suggestion API handler", () => {
 
       await aborted;
     } finally {
-      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
   });
 
   it("is exposed by a serve-only Vite plugin", () => {
     expect(openAiEditSuggestions({ logPath: false }).apply).toBe("serve");
+  });
+
+  it("never reads a repository-root .openai-key file", async () => {
+    const root = mkdtempSync(join(tmpdir(), "poietra-ai-key-boundary-"));
+    try {
+      writeFileSync(join(root, ".openai-key"), "OPENAI_API_KEY=SECRET_REPOSITORY_KEY\n", { mode: 0o600 });
+      vi.stubEnv("OPENAI_API_KEY", "");
+      const plugin = openAiEditSuggestions({ logPath: false });
+      const configResolved = plugin.configResolved as (config: ResolvedConfig) => void;
+      configResolved({ root } as ResolvedConfig);
+      let handler: HttpHandler | null = null;
+      const configureServer = plugin.configureServer as (server: ViteDevServer) => void;
+      configureServer({
+        middlewares: {
+          use(route: string, candidate: HttpHandler) {
+            expect(route).toBe("/api/ai/edit-suggestions");
+            handler = candidate;
+          },
+        },
+      } as unknown as ViteDevServer);
+      if (!handler) throw new Error("The edit-suggestion middleware was not installed.");
+
+      const { response, result } = await callHttpHandler(handler, requestBody());
+
+      expect(response.status).toBe(503);
+      expect(result).toEqual({ error: "The OpenAI credential is not configured." });
+      expect(openAiParse).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
+  it("falls back to bounded console telemetry when the file sink cannot initialize", () => {
+    const root = mkdtempSync(join(tmpdir(), "poietra-ai-log-boundary-"));
+    const sentinel = join(root, "SECRET_LOG_PARENT");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      writeFileSync(sentinel, "not a directory", "utf8");
+      const plugin = openAiEditSuggestions({ logPath: "SECRET_LOG_PARENT/api.jsonl" });
+      const configResolved = plugin.configResolved as (config: ResolvedConfig) => void;
+
+      expect(() => configResolved({ root } as ResolvedConfig)).not.toThrow();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain("logging.file_sink_unavailable");
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(sentinel);
+    } finally {
+      warn.mockRestore();
+      rmSync(root, { force: true, recursive: true });
+    }
   });
 });
