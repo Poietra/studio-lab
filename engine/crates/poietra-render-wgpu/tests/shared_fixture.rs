@@ -65,36 +65,22 @@ fn prepares_shared_fixture_as_ordered_solid_paint_triangles() {
     let stroke_vertices = 24;
     assert_eq!(prepared.material_plan().materials().len(), 3);
     assert_eq!(
-        prepared.vertices().len(),
+        prepared.geometry_plan().vertices().len(),
         first_vertices + second_vertices + stroke_vertices
     );
     assert_eq!(
         prepared.indices().len(),
         usize::try_from(prepared.draws()[2].index_range().end).unwrap()
     );
-    assert_eq!(
-        prepared
-            .geometry_plan()
-            .vertices()
-            .iter()
-            .map(poietra_render_wgpu::PreparedGeometryVertexV1::position)
-            .collect::<Vec<_>>(),
-        prepared
-            .vertices()
-            .iter()
-            .map(poietra_render_wgpu::PreparedVertexV1::position)
-            .collect::<Vec<_>>()
-    );
-
-    let first = prepared.vertices()[0];
+    let first = prepared.geometry_plan().vertices()[0];
     assert_close(first.position()[0], 0.0);
     assert_close(first.position()[1], 0.0);
     assert_color_close(draw_color(&prepared, 0), [0.5, 0.0, 0.0, 0.5]);
-    let later = prepared.vertices()[first_vertices];
+    let later = prepared.geometry_plan().vertices()[first_vertices];
     assert_close(later.position()[0], 0.1875);
     assert_close(later.position()[1], 0.0);
     assert_color_close(draw_color(&prepared, 1), [0.0, 0.0, 1.0, 1.0]);
-    let stroke = prepared.vertices()[first_vertices + second_vertices];
+    let stroke = prepared.geometry_plan().vertices()[first_vertices + second_vertices];
     assert_close(stroke.position()[0], -0.5);
     assert_close(stroke.position()[1], 5.0 / 9.0);
     assert_color_close(draw_color(&prepared, 2), [0.0, 0.5, 0.0, 0.5]);
@@ -120,7 +106,6 @@ fn material_only_changes_leave_geometry_and_order_plans_unchanged() {
     assert_eq!(baseline.geometry_plan(), recolored.geometry_plan());
     assert_eq!(baseline.ordered_draw_plan(), recolored.ordered_draw_plan());
     assert_ne!(baseline.material_plan(), recolored.material_plan());
-    assert_ne!(baseline.vertices(), recolored.vertices());
 }
 
 #[test]
@@ -149,7 +134,6 @@ fn empty_frames_keep_all_plans_empty_and_need_no_upload() {
     assert!(frame.geometry_plan().indices().is_empty());
     assert!(frame.material_plan().materials().is_empty());
     assert!(frame.ordered_draw_plan().draws().is_empty());
-    assert!(frame.vertices().is_empty());
     assert!(build_gpu_upload_plan_v1(&frame).unwrap().is_empty());
 }
 
@@ -223,14 +207,15 @@ fn one_unsupported_draw_rejects_the_complete_packet() {
 #[test]
 fn prepares_world_space_butt_and_square_line_caps() {
     let butt = prepare_frame_v1(&straight_stroke_packet(StrokeCapV1::Butt)).unwrap();
-    assert_eq!(butt.vertices().len(), 4);
+    assert_eq!(butt.geometry_plan().vertices().len(), 4);
     assert_eq!(butt.indices().len(), 6);
     assert_eq!(butt.draws()[0].index_range(), &(0..6));
     assert_color_close(draw_color(&butt, 0), [0.0, 0.5, 0.0, 0.5]);
     let butt_positions = butt
+        .geometry_plan()
         .vertices()
         .iter()
-        .map(poietra_render_wgpu::PreparedVertexV1::position)
+        .map(poietra_render_wgpu::PreparedGeometryVertexV1::position)
         .collect::<Vec<_>>();
     assert_eq!(
         butt_positions,
@@ -243,9 +228,10 @@ fn prepares_world_space_butt_and_square_line_caps() {
     );
 
     let square = prepare_frame_v1(&straight_stroke_packet(StrokeCapV1::Square)).unwrap();
-    assert_eq!(square.vertices().len(), 4);
+    assert_eq!(square.geometry_plan().vertices().len(), 4);
     assert_eq!(square.indices().len(), 6);
     let x_extents = square
+        .geometry_plan()
         .vertices()
         .iter()
         .map(|vertex| vertex.position()[0])
@@ -264,6 +250,7 @@ fn prepares_world_space_butt_and_square_line_caps() {
     transform.m22 = 50.0;
     let transformed = prepare_frame_v1(&transformed_packet).unwrap();
     let y_extents = transformed
+        .geometry_plan()
         .vertices()
         .iter()
         .map(|vertex| vertex.position()[1])
@@ -279,25 +266,26 @@ fn prepares_world_space_butt_and_square_line_caps() {
 #[allow(clippy::float_cmp)] // Shared cap/body edges must be bit-identical after clip conversion.
 fn prepares_round_caps_to_the_shared_pixel_tolerance() {
     let round = prepare_frame_v1(&straight_stroke_packet(StrokeCapV1::Round)).unwrap();
-    assert_eq!(round.vertices().len(), 24);
+    assert_eq!(round.geometry_plan().vertices().len(), 24);
     assert_eq!(round.indices().len(), 54);
     assert_eq!(
-        round.vertices()[0].position(),
-        round.vertices()[5].position()
+        round.geometry_plan().vertices()[0].position(),
+        round.geometry_plan().vertices()[5].position()
     );
     assert_eq!(
-        round.vertices()[1].position(),
-        round.vertices()[13].position()
+        round.geometry_plan().vertices()[1].position(),
+        round.geometry_plan().vertices()[13].position()
     );
     assert_eq!(
-        round.vertices()[3].position(),
-        round.vertices()[15].position()
+        round.geometry_plan().vertices()[3].position(),
+        round.geometry_plan().vertices()[15].position()
     );
     assert_eq!(
-        round.vertices()[2].position(),
-        round.vertices()[23].position()
+        round.geometry_plan().vertices()[2].position(),
+        round.geometry_plan().vertices()[23].position()
     );
     let x_extents = round
+        .geometry_plan()
         .vertices()
         .iter()
         .map(|vertex| vertex.position()[0])
