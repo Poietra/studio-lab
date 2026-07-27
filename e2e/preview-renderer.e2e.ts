@@ -117,6 +117,35 @@ test("a server preview URL requires explicit confirmation before Scene execution
   expect(snapshotPosts).toBe(1);
 });
 
+test("same-document preview query changes revoke authority and require fresh consent", async ({ page }) => {
+  let snapshotPosts = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname.endsWith("/scene-snapshots")) snapshotPosts += 1;
+  });
+  await page.goto(`/${SERVER_QUERY}`);
+  await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+  await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
+  const canvasRoot = page.locator("[data-studio-canvas]");
+  await expect(canvasRoot).toBeVisible();
+  await activateRequestedPreview(page);
+  await expect.poll(() => snapshotPosts).toBe(1);
+  await expect(canvasRoot).not.toHaveAttribute("data-preview-renderer", "off");
+
+  await page.evaluate(() => history.pushState(null, "", "/"));
+  await expect(canvasRoot).toHaveAttribute("data-preview-renderer", "off");
+  await expect(page.locator("[data-studio-preview-status]")).toHaveCount(0);
+  expect(snapshotPosts).toBe(1);
+
+  await page.goBack({ waitUntil: "commit" });
+  await expect(page).toHaveURL(new RegExp(`${SERVER_QUERY.replace("?", "\\?")}$`));
+  await expect(page.getByRole("button", { name: "Enable preview…" })).toBeVisible();
+  await expect(canvasRoot).toHaveAttribute("data-preview-renderer", "off");
+  expect(snapshotPosts).toBe(1);
+
+  await activateRequestedPreview(page);
+  await expect.poll(() => snapshotPosts).toBe(2);
+});
+
 test("an embedded server preview URL cannot grant Scene execution", async ({ baseURL, page }) => {
   if (!baseURL) throw new Error("The preview E2E base URL is unavailable.");
   let snapshotPosts = 0;
