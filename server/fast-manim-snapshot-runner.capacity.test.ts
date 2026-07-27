@@ -1,4 +1,4 @@
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -21,7 +21,7 @@ import {
   supportsVerifiedRead,
 } from "./test-fixtures/fast-manim-snapshot-runner-fixture";
 
-const { projectRoot } = installFastManimSnapshotRunnerFixture();
+const { projectRoot, temporaryRoots } = installFastManimSnapshotRunnerFixture();
 
 describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
   it("bounds the published store by count and bytes with a globally monotonic revision sequence", async () => {
@@ -165,21 +165,27 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
   it("releases the admission slot and runtime dir when spawn throws synchronously", async () => {
     const controller = new FastManimSnapshotAdmissionController({ maxConcurrent: 1 });
     const root = await projectRoot();
-    const producerDirs = async () => (await readdir(tmpdir())).filter((name) => name.startsWith("poietra-producer-"));
-    const dirsBefore = await producerDirs();
-    const broken = createRunner(root, producerCommand(), {
-      admissionController: controller,
-      // A NUL byte in a server-controlled env value makes Node's spawn throw
-      // synchronously before any child exists.
-      producerEnv: { POIETRA_BROKEN: `nul${String.fromCharCode(0)}value` },
-    });
-    await expect(broken.run(runRequest())).rejects.toThrow();
-    expect(controller.activeCount).toBe(0);
-    const leakedDirs = (await producerDirs()).filter((name) => !dirsBefore.includes(name));
-    expect(leakedDirs).toEqual([]);
-    // The slot is free again: a subsequent run under the same controller is admitted.
-    const good = createRunner(root, producerCommand(), { admissionController: controller });
-    expect((await good.run(runRequest({ requestId: "snapshot-request-2" }))).status).toBe("verified");
+    const runtimeTmpRoot = await mkdtemp(join(tmpdir(), "poietra-runtime-spawn-test-"));
+    temporaryRoots.push(runtimeTmpRoot);
+    const originalTmpDir = process.env.TMPDIR;
+    process.env.TMPDIR = runtimeTmpRoot;
+    try {
+      const broken = createRunner(root, producerCommand(), {
+        admissionController: controller,
+        // A NUL byte in a server-controlled env value makes Node's spawn throw
+        // synchronously before any child exists.
+        producerEnv: { POIETRA_BROKEN: `nul${String.fromCharCode(0)}value` },
+      });
+      await expect(broken.run(runRequest())).rejects.toThrow();
+      expect(controller.activeCount).toBe(0);
+      expect(await readdir(runtimeTmpRoot)).toEqual([]);
+      // The slot is free again: a subsequent run under the same controller is admitted.
+      const good = createRunner(root, producerCommand(), { admissionController: controller });
+      expect((await good.run(runRequest({ requestId: "snapshot-request-2" }))).status).toBe("verified");
+    } finally {
+      if (originalTmpDir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = originalTmpDir;
+    }
   });
 
   it("fails closed before spawning when the source is rewritten in place during the verified read", async () => {
