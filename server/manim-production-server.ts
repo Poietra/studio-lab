@@ -1,4 +1,4 @@
-import { createServer, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { isIP } from "node:net";
 
@@ -7,8 +7,6 @@ import { z } from "zod";
 import { sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import { handleManimRequest, type ManimApi } from "./manim-render-http";
-
-export const ISOLATED_MANIM_RUNTIME_CAPABILITY_V1 = "poietra.isolated-manim-runtime.v1" as const;
 
 const DEFAULT_LIMITS = {
   handlerTimeoutMs: 30_000,
@@ -19,8 +17,9 @@ const DEFAULT_LIMITS = {
   maxHeaderBytes: 16 * 1024,
   maxRequestsPerSocket: 100,
   readinessTimeoutMs: 2_000,
+  requestDrainTimeoutMs: 10_000,
   requestTimeoutMs: 30_000,
-  shutdownGraceMs: 10_000,
+  runtimeCloseTimeoutMs: 10_000,
 } as const;
 
 const limitsSchema = z
@@ -43,8 +42,9 @@ const limitsSchema = z
       .default(DEFAULT_LIMITS.maxHeaderBytes),
     maxRequestsPerSocket: z.number().int().min(1).max(1_000).default(DEFAULT_LIMITS.maxRequestsPerSocket),
     readinessTimeoutMs: z.number().int().min(100).max(10_000).default(DEFAULT_LIMITS.readinessTimeoutMs),
+    requestDrainTimeoutMs: z.number().int().min(100).max(60_000).default(DEFAULT_LIMITS.requestDrainTimeoutMs),
     requestTimeoutMs: z.number().int().min(1_000).max(120_000).default(DEFAULT_LIMITS.requestTimeoutMs),
-    shutdownGraceMs: z.number().int().min(100).max(60_000).default(DEFAULT_LIMITS.shutdownGraceMs),
+    runtimeCloseTimeoutMs: z.number().int().min(100).max(60_000).default(DEFAULT_LIMITS.runtimeCloseTimeoutMs),
   })
   .strict()
   .refine(({ headersTimeoutMs, requestTimeoutMs }) => headersTimeoutMs <= requestTimeoutMs, {
@@ -56,7 +56,7 @@ const productionServerConfigSchema = z
     deployment: z.literal("production"),
     host: z.string().min(1).max(64),
     limits: limitsSchema.default(DEFAULT_LIMITS),
-    port: z.number().int().min(0).max(65_535),
+    port: z.number().int().min(1).max(65_535),
     publicOrigin: z.string().min(1).max(2_048),
     trustedProxyAddresses: z.array(z.string().min(1).max(64)).max(64).default([]),
   })
@@ -74,8 +74,9 @@ export type ProductionManimServerConfig = Readonly<{
     maxHeaderBytes: number;
     maxRequestsPerSocket: number;
     readinessTimeoutMs: number;
+    requestDrainTimeoutMs: number;
     requestTimeoutMs: number;
-    shutdownGraceMs: number;
+    runtimeCloseTimeoutMs: number;
   }>;
   port: number;
   publicOrigin: string;
@@ -83,10 +84,17 @@ export type ProductionManimServerConfig = Readonly<{
 }>;
 
 export type ProductionAdmissionRequest = Readonly<{
-  headers: Readonly<IncomingHttpHeaders>;
+  credentials: Readonly<{
+    authorization?: string;
+    cookie?: string;
+  }>;
+  directPeerAddress: string | null;
+  forwardedHeaders: Readonly<{
+    immediatePeerTrusted: boolean;
+    present: boolean;
+  }>;
   method: string;
   pathname: string;
-  remoteAddress: string | null;
 }>;
 
 export type ProductionRequestAdmission = Readonly<{
@@ -94,17 +102,25 @@ export type ProductionRequestAdmission = Readonly<{
   ready: (signal: AbortSignal) => Promise<boolean>;
 }>;
 
+export type ProductionRuntimeReadinessV1 =
+  | Readonly<{ ready: false }>
+  | Readonly<{
+      executionBoundary: "adapter-attests-external-sandbox";
+      ready: true;
+      tenantBoundary: "single-tenant-deployment";
+    }>;
+
 /**
- * Implementations must route every Python execution through an isolation
- * boundary. The current host-spawn ManimProjectRegistry is not a production
- * implementation of this contract; #117 owns that migration.
+ * This in-process adapter is trusted code. Its readiness result is an
+ * operational assertion made after the adapter verifies its external sandbox;
+ * it is not proof created or verified by this HTTP server. The current
+ * host-spawn ManimProjectRegistry must not implement this contract (#117).
  */
-export type IsolatedManimRuntimeV1 = Readonly<{
+export type ProductionManimRuntimeAdapterV1 = Readonly<{
   api: ManimApi;
-  capability: typeof ISOLATED_MANIM_RUNTIME_CAPABILITY_V1;
   close: () => Promise<void>;
-  /** Covers the runtime's sandbox and backing-store dependencies. */
-  ready: (signal: AbortSignal) => Promise<boolean>;
+  /** Covers fresh sandbox attestation and single-tenant backing stores. */
+  ready: (signal: AbortSignal) => Promise<ProductionRuntimeReadinessV1>;
 }>;
 
 export type ProductionManimServer = Readonly<{
@@ -212,24 +228,57 @@ function validateTransportRequest(
     request.resume();
     throw new TransportError("This request method does not accept a body.", 400);
   }
+  return {
+    forwardedHeadersPresent: hasForwardedHeaders,
+    immediatePeerTrusted: remoteIsTrusted,
+  } as const;
 }
 
-function waitForProbe(probe: (signal: AbortSignal) => Promise<boolean>, parentSignal: AbortSignal, timeoutMs: number) {
+const ABORTED = Symbol("aborted");
+
+async function raceWithSignal<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T | typeof ABORTED> {
+  if (signal.aborted) return ABORTED;
+  let abortListener: (() => void) | null = null;
+  const aborted = new Promise<typeof ABORTED>((resolveAbort) => {
+    abortListener = () => resolveAbort(ABORTED);
+    signal.addEventListener("abort", abortListener, { once: true });
+  });
+  try {
+    return await Promise.race([Promise.resolve().then(operation), aborted]);
+  } finally {
+    if (abortListener) signal.removeEventListener("abort", abortListener);
+  }
+}
+
+async function waitForProbe<T>(
+  probe: (signal: AbortSignal) => Promise<T>,
+  parentSignal: AbortSignal,
+  timeoutMs: number,
+) {
   const controller = new AbortController();
   const abortFromParent = () => controller.abort(parentSignal.reason);
   if (parentSignal.aborted) abortFromParent();
   else parentSignal.addEventListener("abort", abortFromParent, { once: true });
   const timeout = setTimeout(() => controller.abort(new Error("Readiness probe timed out.")), timeoutMs);
   timeout.unref();
-  const aborted = controller.signal.aborted
-    ? Promise.resolve(false as const)
-    : new Promise<false>((resolveTimeout) =>
-        controller.signal.addEventListener("abort", () => resolveTimeout(false), { once: true }),
-      );
-  return Promise.race([probe(controller.signal), aborted]).finally(() => {
+  return raceWithSignal(() => probe(controller.signal), controller.signal).finally(() => {
     clearTimeout(timeout);
     parentSignal.removeEventListener("abort", abortFromParent);
   });
+}
+
+async function settleWithin<T>(promise: Promise<T>, timeoutMs: number) {
+  let timeout: NodeJS.Timeout;
+  const deadline = new Promise<Readonly<{ kind: "timeout" }>>((resolveDeadline) => {
+    timeout = setTimeout(() => resolveDeadline({ kind: "timeout" }), timeoutMs);
+  });
+  const settled = promise.then(
+    (value) => ({ kind: "fulfilled", value }) as const,
+    (reason: unknown) => ({ kind: "rejected", reason }) as const,
+  );
+  const result = await Promise.race([settled, deadline]);
+  clearTimeout(timeout!);
+  return result;
 }
 
 export async function startProductionManimServer(
@@ -237,18 +286,13 @@ export async function startProductionManimServer(
     admission: ProductionRequestAdmission;
     config: unknown;
     logger?: StructuredLogger;
-    runtime: IsolatedManimRuntimeV1;
+    runtime: ProductionManimRuntimeAdapterV1;
   }>,
 ): Promise<ProductionManimServer> {
   const config = parseProductionManimServerConfig(options.config);
   if (
     typeof options.runtime !== "object" ||
     options.runtime === null ||
-    options.runtime.capability !== ISOLATED_MANIM_RUNTIME_CAPABILITY_V1
-  ) {
-    throw new TypeError("Production Manim API requires an isolated runtime capability.");
-  }
-  if (
     typeof options.runtime.api !== "object" ||
     options.runtime.api === null ||
     typeof options.runtime.ready !== "function" ||
@@ -267,6 +311,7 @@ export async function startProductionManimServer(
   const logger = options.logger ?? nullLogger;
   const trustedProxyAddresses = new Set(config.trustedProxyAddresses);
   const activeRequests = new Set<AbortController>();
+  const activeTasks = new Set<Promise<void>>();
   let lifecycle: "accepting" | "draining" | "closed" = "accepting";
 
   const dependenciesReady = async (signal: AbortSignal) => {
@@ -275,7 +320,13 @@ export async function startProductionManimServer(
         waitForProbe((probeSignal) => options.admission.ready(probeSignal), signal, config.limits.readinessTimeoutMs),
         waitForProbe((probeSignal) => options.runtime.ready(probeSignal), signal, config.limits.readinessTimeoutMs),
       ]);
-      return admissionReady === true && runtimeReady === true;
+      return (
+        admissionReady === true &&
+        runtimeReady !== ABORTED &&
+        runtimeReady.ready === true &&
+        runtimeReady.executionBoundary === "adapter-attests-external-sandbox" &&
+        runtimeReady.tenantBoundary === "single-tenant-deployment"
+      );
     } catch {
       logger.warn("production.readiness_probe_failed");
       return false;
@@ -296,7 +347,7 @@ export async function startProductionManimServer(
     handlerTimeout.unref();
 
     try {
-      validateTransportRequest(request, config, trustedProxyAddresses);
+      const transport = validateTransportRequest(request, config, trustedProxyAddresses);
       const pathname = new URL(request.url!, config.publicOrigin).pathname;
       if (pathname === "/healthz") {
         if (request.method !== "GET") throw new TransportError("Method not allowed.", 405);
@@ -307,7 +358,8 @@ export async function startProductionManimServer(
       }
       if (pathname === "/readyz") {
         if (request.method !== "GET") throw new TransportError("Method not allowed.", 405);
-        const ready = lifecycle === "accepting" && (await dependenciesReady(controller.signal));
+        const ready =
+          lifecycle === "accepting" && (await dependenciesReady(controller.signal)) && lifecycle === "accepting";
         sendJson(response, ready ? 200 : 503, { status: ready ? "ready" : "unavailable" });
         return;
       }
@@ -316,23 +368,43 @@ export async function startProductionManimServer(
       if (!(await dependenciesReady(controller.signal))) {
         throw new TransportError("Production dependencies are not ready.", 503);
       }
-      const admitted = await options.admission.admit(
-        {
-          headers: request.headers,
-          method: request.method ?? "UNKNOWN",
-          pathname,
-          remoteAddress: request.socket.remoteAddress ?? null,
-        },
+      if (controller.signal.aborted) return;
+      if (lifecycle !== "accepting") throw new TransportError("Production service is draining.", 503);
+      const admitted = await raceWithSignal(
+        () =>
+          options.admission.admit(
+            {
+              credentials: {
+                ...(typeof request.headers.authorization === "string"
+                  ? { authorization: request.headers.authorization }
+                  : {}),
+                ...(typeof request.headers.cookie === "string" ? { cookie: request.headers.cookie } : {}),
+              },
+              directPeerAddress: request.socket.remoteAddress ?? null,
+              forwardedHeaders: {
+                immediatePeerTrusted: transport.immediatePeerTrusted,
+                present: transport.forwardedHeadersPresent,
+              },
+              method: request.method ?? "UNKNOWN",
+              pathname,
+            },
+            controller.signal,
+          ),
         controller.signal,
       );
-      if (controller.signal.aborted) return;
+      if (admitted === ABORTED || controller.signal.aborted) return;
+      if (lifecycle !== "accepting") throw new TransportError("Production service is draining.", 503);
       if (admitted !== true) throw new TransportError("Authentication is required.", 401);
-      await handleManimRequest(options.runtime.api, request, response, logger, {
-        allowExistingProjectRegistration: false,
-        expectedMutationOrigin: config.publicOrigin,
-        maxJsonBodyBytes: config.limits.maxBodyBytes,
-        requestSignal: controller.signal,
-      });
+      await raceWithSignal(
+        () =>
+          handleManimRequest(options.runtime.api, request, response, logger, {
+            allowExistingProjectRegistration: false,
+            expectedMutationOrigin: config.publicOrigin,
+            maxJsonBodyBytes: config.limits.maxBodyBytes,
+            requestSignal: controller.signal,
+          }),
+        controller.signal,
+      );
     } catch (error) {
       if (controller.signal.aborted || response.destroyed || response.writableEnded) return;
       if (error instanceof TransportError) {
@@ -363,7 +435,12 @@ export async function startProductionManimServer(
     },
     (request, response) => {
       response.setHeader("x-content-type-options", "nosniff");
-      void serve(request, response);
+      const task = serve(request, response);
+      activeTasks.add(task);
+      void task.then(
+        () => activeTasks.delete(task),
+        () => activeTasks.delete(task),
+      );
     },
   );
   server.maxConnections = config.limits.maxConnections;
@@ -383,39 +460,63 @@ export async function startProductionManimServer(
     });
   } catch (error) {
     server.closeAllConnections();
-    throw error;
+    const runtimeClose = await settleWithin(
+      Promise.resolve().then(() => options.runtime.close()),
+      config.limits.runtimeCloseTimeoutMs,
+    );
+    if (runtimeClose.kind === "fulfilled") throw error;
+    const closeError =
+      runtimeClose.kind === "rejected"
+        ? runtimeClose.reason
+        : new Error("Production runtime cleanup timed out after listener startup failed.");
+    throw new AggregateError([error, closeError], "Production listener and runtime cleanup both failed.");
   }
 
   const address = server.address() as AddressInfo;
+  const waitForActiveTasks = async () => {
+    while (activeTasks.size > 0) {
+      const batch = [...activeTasks];
+      await Promise.allSettled(batch);
+      for (const task of batch) activeTasks.delete(task);
+    }
+  };
   let closeRequest: Promise<void> | null = null;
   return {
     address: { address: address.address, family: address.family, port: address.port },
     close() {
       closeRequest ??= (async () => {
         lifecycle = "draining";
+        const errors: unknown[] = [];
         const networkClosed = new Promise<void>((resolveClose, rejectClose) => {
           server.close((error) => (error ? rejectClose(error) : resolveClose()));
           server.closeIdleConnections();
         });
-        const resourcesClosed = Promise.allSettled([
-          networkClosed,
-          Promise.resolve().then(() => options.runtime.close()),
-        ]);
-        let deadlineTimeout: NodeJS.Timeout;
-        const deadline = new Promise<null>((resolveDeadline) => {
-          deadlineTimeout = setTimeout(() => resolveDeadline(null), config.limits.shutdownGraceMs);
-          deadlineTimeout.unref();
-        });
-        const results = await Promise.race([resourcesClosed, deadline]);
-        clearTimeout(deadlineTimeout!);
-        if (results === null) {
+        const drain = await settleWithin(
+          Promise.allSettled([networkClosed, waitForActiveTasks()]),
+          config.limits.requestDrainTimeoutMs,
+        );
+        if (drain.kind === "timeout") {
+          errors.push(new Error("Production request drain exceeded its configured deadline."));
           for (const controller of activeRequests) controller.abort(new Error("Production service is shutting down."));
           server.closeAllConnections();
-          lifecycle = "closed";
-          throw new Error("Production server shutdown exceeded its configured grace period.");
+          const forced = await Promise.allSettled([networkClosed, waitForActiveTasks()]);
+          errors.push(...forced.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])));
+        } else if (drain.kind === "rejected") {
+          errors.push(drain.reason);
+        } else {
+          errors.push(...drain.value.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])));
+        }
+
+        const runtimeClose = await settleWithin(
+          Promise.resolve().then(() => options.runtime.close()),
+          config.limits.runtimeCloseTimeoutMs,
+        );
+        if (runtimeClose.kind === "timeout") {
+          errors.push(new Error("Production runtime close exceeded its configured deadline."));
+        } else if (runtimeClose.kind === "rejected") {
+          errors.push(runtimeClose.reason);
         }
         lifecycle = "closed";
-        const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
         if (errors.length > 0) throw new AggregateError(errors, "Could not fully close the production Manim service.");
       })();
       return closeRequest;

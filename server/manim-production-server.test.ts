@@ -1,15 +1,15 @@
-import { request as createRequest } from "node:http";
+import { createServer as createHttpServer, request as createRequest } from "node:http";
+import type { AddressInfo } from "node:net";
 
 import { afterEach, describe, expect, it } from "vitest";
-
+import { HttpError } from "./http/json";
 import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import {
-  ISOLATED_MANIM_RUNTIME_CAPABILITY_V1,
   type ProductionManimServer,
   parseProductionManimServerConfig,
   startProductionManimServer,
 } from "./manim-production-server";
-import { ManimProjectRegistry } from "./manim-project-registry";
+import type { ManimApi } from "./manim-render-http";
 
 const servers: ProductionManimServer[] = [];
 
@@ -21,23 +21,50 @@ function config(overrides: Readonly<Record<string, unknown>> = {}) {
   return {
     deployment: "production",
     host: "127.0.0.1",
-    port: 0,
+    port: 4_175,
     publicOrigin: "https://studio.example",
     ...overrides,
   };
 }
 
-function createRuntime(ready: () => boolean = () => true) {
-  const api = new ManimProjectRegistry({
-    command: ["unused"],
-    frame: { height: 8, width: 14.222222222222221 },
-    projects: [],
+async function availablePort() {
+  const server = createHttpServer();
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen(0, "127.0.0.1", () => resolveListen());
   });
+  const port = (server.address() as AddressInfo).port;
+  await new Promise<void>((resolveClose, rejectClose) =>
+    server.close((error) => (error ? rejectClose(error) : resolveClose())),
+  );
+  return port;
+}
+
+async function startConfig(overrides: Readonly<Record<string, unknown>> = {}) {
+  return config({ port: await availablePort(), ...overrides });
+}
+
+function createRuntime(ready: () => boolean = () => true, onProjects: () => void = () => {}) {
+  const api = {
+    cancel() {
+      throw new HttpError("Render session not found.", 404);
+    },
+    projects() {
+      onProjects();
+      return { defaultProjectId: null, projects: [] };
+    },
+  } as unknown as ManimApi;
   return {
     api,
-    capability: ISOLATED_MANIM_RUNTIME_CAPABILITY_V1,
-    close: () => api.close(),
-    ready: async () => ready(),
+    close: async () => {},
+    ready: async () =>
+      ready()
+        ? ({
+            executionBoundary: "adapter-attests-external-sandbox",
+            ready: true,
+            tenantBoundary: "single-tenant-deployment",
+          } as const)
+        : ({ ready: false } as const),
   } as const;
 }
 
@@ -94,13 +121,15 @@ describe("production Manim server configuration", () => {
       maxBodyBytes: 512 * 1024,
       maxConnections: 256,
       maxHeaderBytes: 16 * 1024,
-      shutdownGraceMs: 10_000,
+      requestDrainTimeoutMs: 10_000,
+      runtimeCloseTimeoutMs: 10_000,
     });
   });
 
   it.each([
     [{ ...config(), deployment: "development" }, /production/i],
     [{ ...config(), host: "localhost" }, /explicit IP/i],
+    [{ ...config(), port: 0 }, />=1/],
     [{ ...config(), publicOrigin: "http://studio.example" }, /HTTPS/i],
     [{ ...config(), publicOrigin: "http://127.evil.example" }, /HTTPS/i],
     [{ ...config(), publicOrigin: "https://studio.example/api" }, /scheme, host/i],
@@ -119,14 +148,14 @@ describe("production Manim server configuration", () => {
 });
 
 describe("standalone production Manim HTTP adapter", () => {
-  it("rejects a runtime without the isolated production capability before listening", async () => {
+  it("rejects an incomplete production runtime adapter before listening", async () => {
     await expect(
       startProductionManimServer({
         admission: { admit: async () => true, ready: async () => true },
-        config: config(),
-        runtime: { ...createRuntime(), capability: "legacy-host-spawn" } as never,
+        config: await startConfig(),
+        runtime: { ...createRuntime(), ready: undefined } as never,
       }),
-    ).rejects.toThrow(/isolated runtime capability/i);
+    ).rejects.toThrow(/runtime adapter is incomplete/i);
   });
 
   it("keeps liveness public while readiness and API fail closed on either required dependency", async () => {
@@ -141,7 +170,7 @@ describe("standalone production Manim HTTP adapter", () => {
         },
         ready: async () => admissionReady,
       },
-      config: config(),
+      config: await startConfig(),
       runtime: createRuntime(() => runtimeReady),
     });
     servers.push(server);
@@ -167,7 +196,7 @@ describe("standalone production Manim HTTP adapter", () => {
         admit: async () => admitted,
         ready: async () => true,
       },
-      config: config(),
+      config: await startConfig(),
       runtime: createRuntime(),
     });
     servers.push(server);
@@ -184,21 +213,41 @@ describe("standalone production Manim HTTP adapter", () => {
       status: 400,
     });
 
+    let admissionContext: unknown;
     const trustedServer = await startProductionManimServer({
-      admission: { admit: async () => true, ready: async () => true },
-      config: config({ trustedProxyAddresses: ["127.0.0.1"] }),
+      admission: {
+        admit: async (request) => {
+          admissionContext = request;
+          return true;
+        },
+        ready: async () => true,
+      },
+      config: await startConfig({ trustedProxyAddresses: ["127.0.0.1"] }),
       runtime: createRuntime(),
     });
     servers.push(trustedServer);
     expect(
-      await send(trustedServer, "/api/manim/projects", { headers: { "x-forwarded-for": "203.0.113.5" } }),
+      await send(trustedServer, "/api/manim/projects", {
+        headers: {
+          authorization: "Bearer credential",
+          cookie: "session=credential",
+          "x-forwarded-for": "203.0.113.5",
+        },
+      }),
     ).toMatchObject({ status: 200 });
+    expect(admissionContext).toMatchObject({
+      credentials: { authorization: "Bearer credential", cookie: "session=credential" },
+      directPeerAddress: "127.0.0.1",
+      forwardedHeaders: { immediatePeerTrusted: true, present: true },
+    });
+    expect(admissionContext).not.toHaveProperty("headers");
+    expect(JSON.stringify(admissionContext)).not.toContain("203.0.113.5");
   });
 
   it("uses configured HTTPS origin behind a proxy and applies the global body ceiling", async () => {
     const server = await startProductionManimServer({
       admission: { admit: async () => true, ready: async () => true },
-      config: config({
+      config: await startConfig({
         limits: { maxBodyBytes: 1_024 },
       }),
       runtime: createRuntime(),
@@ -241,7 +290,7 @@ describe("standalone production Manim HTTP adapter", () => {
     const logger = createStructuredLogger({ sinks: [{ write: (record) => records.push(record) }] });
     const server = await startProductionManimServer({
       admission: { admit: async () => true, ready: async () => true },
-      config: config(),
+      config: await startConfig(),
       logger,
       runtime: createRuntime(),
     });
@@ -252,12 +301,91 @@ describe("standalone production Manim HTTP adapter", () => {
     expect(JSON.stringify(records)).not.toContain("private");
   });
 
-  it("closes the listener and its isolated runtime exactly once", async () => {
+  it("does not enter the runtime after shutdown starts while admission is pending", async () => {
+    let releaseAdmission!: (admitted: boolean) => void;
+    let markAdmissionEntered!: () => void;
+    const admissionEntered = new Promise<void>((resolveEntered) => {
+      markAdmissionEntered = resolveEntered;
+    });
+    const admission = new Promise<boolean>((resolveAdmission) => {
+      releaseAdmission = resolveAdmission;
+    });
+    let projectCalls = 0;
+    let runtimeClosed = false;
+    const runtime = createRuntime(
+      () => true,
+      () => {
+        projectCalls += 1;
+      },
+    );
+    const server = await startProductionManimServer({
+      admission: {
+        admit: async () => {
+          markAdmissionEntered();
+          return admission;
+        },
+        ready: async () => true,
+      },
+      config: await startConfig(),
+      runtime: {
+        ...runtime,
+        close: async () => {
+          runtimeClosed = true;
+        },
+      },
+    });
+    servers.push(server);
+
+    const response = send(server, "/api/manim/projects");
+    await admissionEntered;
+    const shutdown = server.close();
+    releaseAdmission(true);
+
+    expect(await response).toMatchObject({ status: 503 });
+    await shutdown;
+    expect(projectCalls).toBe(0);
+    expect(runtimeClosed).toBe(true);
+  });
+
+  it("aborts and joins an admission adapter that ignores its signal before closing the runtime", async () => {
+    let markAdmissionEntered!: () => void;
+    const admissionEntered = new Promise<void>((resolveEntered) => {
+      markAdmissionEntered = resolveEntered;
+    });
+    const order: string[] = [];
+    const runtime = createRuntime();
+    const server = await startProductionManimServer({
+      admission: {
+        admit: async (_request, signal) => {
+          markAdmissionEntered();
+          signal.addEventListener("abort", () => order.push("admission-aborted"), { once: true });
+          return new Promise<boolean>(() => {});
+        },
+        ready: async () => true,
+      },
+      config: await startConfig({ limits: { requestDrainTimeoutMs: 100 } }),
+      runtime: {
+        ...runtime,
+        close: async () => {
+          order.push("runtime-closed");
+        },
+      },
+    });
+    servers.push(server);
+
+    const request = send(server, "/api/manim/projects").catch(() => null);
+    await admissionEntered;
+    await expect(server.close()).rejects.toThrow(/fully close/i);
+    await request;
+    expect(order).toEqual(["admission-aborted", "runtime-closed"]);
+  });
+
+  it("closes the listener and its runtime adapter exactly once", async () => {
     const runtime = createRuntime();
     let closes = 0;
     const server = await startProductionManimServer({
       admission: { admit: async () => true, ready: async () => true },
-      config: config(),
+      config: await startConfig(),
       runtime: {
         ...runtime,
         close: async () => {
@@ -278,7 +406,7 @@ describe("standalone production Manim HTTP adapter", () => {
     const runtime = createRuntime();
     const server = await startProductionManimServer({
       admission: { admit: async () => true, ready: async () => new Promise<boolean>(() => {}) },
-      config: config({ limits: { readinessTimeoutMs: 100, shutdownGraceMs: 100 } }),
+      config: await startConfig({ limits: { readinessTimeoutMs: 100, runtimeCloseTimeoutMs: 100 } }),
       runtime: { ...runtime, close: () => new Promise<void>(() => {}) },
     });
     servers.push(server);
@@ -286,6 +414,34 @@ describe("standalone production Manim HTTP adapter", () => {
     const readinessStarted = performance.now();
     expect(await send(server, "/readyz")).toMatchObject({ status: 503 });
     expect(performance.now() - readinessStarted).toBeLessThan(1_000);
-    await expect(server.close()).rejects.toThrow(/grace period/i);
+    await expect(server.close()).rejects.toThrow(/fully close/i);
+  });
+
+  it("closes the owned runtime when listener startup fails", async () => {
+    const occupied = createHttpServer();
+    await new Promise<void>((resolveListen, rejectListen) => {
+      occupied.once("error", rejectListen);
+      occupied.listen(0, "127.0.0.1", () => resolveListen());
+    });
+    const port = (occupied.address() as AddressInfo).port;
+    let runtimeCloses = 0;
+    try {
+      const runtime = createRuntime();
+      await expect(
+        startProductionManimServer({
+          admission: { admit: async () => true, ready: async () => true },
+          config: config({ port }),
+          runtime: {
+            ...runtime,
+            close: async () => {
+              runtimeCloses += 1;
+            },
+          },
+        }),
+      ).rejects.toMatchObject({ code: "EADDRINUSE" });
+      expect(runtimeCloses).toBe(1);
+    } finally {
+      await new Promise<void>((resolveClose) => occupied.close(() => resolveClose()));
+    }
   });
 });
