@@ -22,7 +22,6 @@ import {
   MAX_CANVAS_TELEMETRY_RESPONSE_JSON_BYTES,
   MAX_CANVAS_WASM_MODULE_URL_LENGTH,
 } from "./canvas-worker-protocol";
-import { MAX_PREVIEW_SAMPLE_JSON_BYTES, MAX_PREVIEW_SNAPSHOT_JSON_BYTES } from "./preview-worker-protocol";
 
 const REVISION = "a".repeat(64);
 
@@ -73,9 +72,9 @@ describe("canvas worker v1 protocol", () => {
     expect(canvasWorkerRequestV1Schema.safeParse({ ...render, evidence: ["caller-owned"] }).success).toBe(false);
   });
 
-  it("reuses the established snapshot and sample byte envelopes", () => {
-    expect(MAX_CANVAS_SNAPSHOT_JSON_BYTES).toBe(MAX_PREVIEW_SNAPSHOT_JSON_BYTES);
-    expect(MAX_CANVAS_SAMPLE_JSON_BYTES).toBe(MAX_PREVIEW_SAMPLE_JSON_BYTES);
+  it("bounds snapshot and sample byte envelopes", () => {
+    expect(MAX_CANVAS_SNAPSHOT_JSON_BYTES).toBe(8 * 1024 * 1024);
+    expect(MAX_CANVAS_SAMPLE_JSON_BYTES).toBe(256 * 1024);
     expect(MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES).toBe(16 * 1024);
     expect(MAX_CANVAS_WASM_MODULE_URL_LENGTH).toBe(2_048);
   });

@@ -1,23 +1,20 @@
 import { z } from "zod";
-import {
-  engineSampleRequestV1Schema,
-  MAX_PREVIEW_SAMPLE_JSON_BYTES,
-  MAX_PREVIEW_SNAPSHOT_JSON_BYTES,
-  previewUrlsShareOrigin,
-} from "./preview-worker-protocol";
-import { finiteNumberV1Schema, opaqueIdV1Schema, sha256V1Schema } from "./primitives";
+import { evidenceV1Schema, finiteNumberV1Schema, opaqueIdV1Schema, sha256V1Schema } from "./primitives";
 import { renderViewportV1Schema } from "./render-packet";
 
 export const POIETRA_CANVAS_WORKER_VERSION = 1 as const;
 export const POIETRA_CANVAS_TELEMETRY_ABI_VERSION = 1 as const;
-export const MAX_CANVAS_SNAPSHOT_JSON_BYTES = MAX_PREVIEW_SNAPSHOT_JSON_BYTES;
-export const MAX_CANVAS_SAMPLE_JSON_BYTES = MAX_PREVIEW_SAMPLE_JSON_BYTES;
+export const MAX_CANVAS_SNAPSHOT_JSON_BYTES = 8 * 1024 * 1024;
+export const MAX_CANVAS_SAMPLE_JSON_BYTES = 256 * 1024;
 export const MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES = 16 * 1024;
 export const MAX_CANVAS_TELEMETRY_RESPONSE_JSON_BYTES = 32 * 1024;
 export const MAX_CANVAS_ADAPTER_EVIDENCE_JSON_BYTES = 8 * 1024;
 export const MAX_CANVAS_WASM_MODULE_URL_LENGTH = 2_048;
 
-export const canvasUrlsShareOrigin = previewUrlsShareOrigin;
+export function canvasUrlsShareOrigin(left: URL, right: URL) {
+  if (left.origin !== "null" || right.origin !== "null") return left.origin === right.origin;
+  return left.protocol !== "file:" && left.protocol === right.protocol && left.host === right.host;
+}
 
 function isOffscreenCanvas(value: unknown): value is OffscreenCanvas {
   return typeof OffscreenCanvas !== "undefined" && value instanceof OffscreenCanvas;
@@ -99,7 +96,16 @@ export const canvasWorkerRequestV1Schema = z.discriminatedUnion("kind", [
   collectAdapterEvidenceRequestV1Schema,
 ]);
 
-export const canvasEngineSampleRequestV1Schema = engineSampleRequestV1Schema;
+export const canvasEngineSampleRequestV1Schema = z
+  .object({
+    evidence: z.array(evidenceV1Schema).max(64),
+    packetId: opaqueIdV1Schema,
+    sampleTime: finiteNumberV1Schema.nonnegative(),
+    schema: z.literal("poietra.engine-sample-request"),
+    version: z.literal(POIETRA_CANVAS_WORKER_VERSION),
+    viewport: renderViewportV1Schema,
+  })
+  .strict();
 
 export const canvasRenderErrorCodeV1Schema = z.enum([
   "invalid-request",
