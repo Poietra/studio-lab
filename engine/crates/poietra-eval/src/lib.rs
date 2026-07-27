@@ -6,8 +6,12 @@
 //! native and WASM consumers.
 
 mod evaluator;
+mod retained_index;
 
 pub use evaluator::{
     CompileEngineFrameOptionsV1, EngineSessionV1, EvaluationError, SampleEngineSessionOptionsV1,
     compile_engine_frame_v1, compile_render_packet_v1,
+};
+pub use retained_index::{
+    MAX_RETAINED_SCENE_INDEX_BYTES_V1, RetainedSceneIndexErrorV1, RetainedSceneIndexStatsV1,
 };

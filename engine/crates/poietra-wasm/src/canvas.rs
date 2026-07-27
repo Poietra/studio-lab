@@ -565,7 +565,7 @@ impl PoietraCanvasEngineV1 {
             clock.elapsed_ms(tessellate_started),
             CLOCK_UNAVAILABLE_REASON_V1,
         );
-        telemetry.counts.tessellated_vertices = Some(frame.vertices().len() as u64);
+        telemetry.counts.tessellated_vertices = Some(frame.geometry_plan().vertices().len() as u64);
         telemetry.counts.tessellated_indices = Some(frame.indices().len() as u64);
         // Counted at the tessellation call sites inside the renderer crate,
         // never inferred from vertex or index totals.

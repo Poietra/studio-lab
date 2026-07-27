@@ -41,10 +41,14 @@ if (!baseRef) {
   } else {
     const executable = process.platform === "win32" ? "biome.cmd" : "biome";
     const write = process.argv.includes("--write") ? ["--write"] : [];
-    const result = spawnSync(executable, ["format", "--files-ignore-unknown=true", ...write, "--", ...files], {
-      cwd: projectRoot,
-      stdio: "inherit",
-    });
+    const result = spawnSync(
+      executable,
+      ["format", "--files-ignore-unknown=true", "--no-errors-on-unmatched", ...write, "--", ...files],
+      {
+        cwd: projectRoot,
+        stdio: "inherit",
+      },
+    );
 
     if (result.error) console.error(result.error.message);
     process.exitCode = result.status ?? 1;

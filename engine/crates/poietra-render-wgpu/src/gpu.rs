@@ -1,9 +1,9 @@
 use wgpu::util::DeviceExt;
 
-use crate::PreparedFrameV1;
+use crate::upload::VERTEX_ENCODED_SIZE_V1;
+use crate::{GpuUploadPlanErrorV1, PreparedFrameV1, build_gpu_upload_plan_v1};
 
-const VERTEX_STRIDE: wgpu::BufferAddress = 24;
-const VERTEX_ENCODED_SIZE: usize = 24;
+const VERTEX_STRIDE: wgpu::BufferAddress = VERTEX_ENCODED_SIZE_V1 as wgpu::BufferAddress;
 const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
     wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x2,
@@ -44,6 +44,8 @@ pub struct WgpuRenderTargetV1<'a> {
 /// A prepared frame cannot be submitted truthfully to the supplied target.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum RenderFrameErrorV1 {
+    #[error(transparent)]
+    UploadPlan(#[from] GpuUploadPlanErrorV1),
     #[error("target format {actual:?} does not match renderer format {expected:?}")]
     TargetFormatMismatch {
         actual: wgpu::TextureFormat,
@@ -218,7 +220,9 @@ impl WgpuFillRendererV1 {
     ///
     /// # Errors
     ///
-    /// Returns a format or extent mismatch before allocating or uploading frame buffers.
+    /// Returns a format or extent mismatch before allocating or uploading frame buffers, or
+    /// [`RenderFrameErrorV1::UploadPlan`] when the bounded vertex/index encoding overflows,
+    /// exceeds its byte limit, cannot be allocated, or finds inconsistent prepared plans.
     pub fn render(
         &self,
         device: &wgpu::Device,
@@ -238,7 +242,8 @@ impl WgpuFillRendererV1 {
     ///
     /// # Errors
     ///
-    /// Returns the same format or extent mismatch errors as [`Self::render`].
+    /// Returns the same format, extent, or bounded [`RenderFrameErrorV1::UploadPlan`] errors as
+    /// [`Self::render`].
     pub fn render_with_stage_evidence(
         &self,
         device: &wgpu::Device,
@@ -269,21 +274,20 @@ impl WgpuFillRendererV1 {
         } else {
             evidence.geometry_stages_executed = true;
             let vertex_index_encode_started = stage_started(clock);
-            let vertex_bytes = encode_vertices(frame);
-            let index_bytes = encode_indices(frame);
+            let upload_plan = build_gpu_upload_plan_v1(frame)?;
             evidence.vertex_index_encode_ms = stage_elapsed(clock, vertex_index_encode_started);
             evidence.buffer_creations = 2;
-            evidence.upload_bytes = vertex_bytes.len() as u64 + index_bytes.len() as u64;
+            evidence.upload_bytes = upload_plan.upload_bytes() as u64;
             let buffer_create_started = stage_started(clock);
             let created = (
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("poietra solid paint vertices v1"),
-                    contents: &vertex_bytes,
+                    contents: upload_plan.vertex_bytes(),
                     usage: wgpu::BufferUsages::VERTEX,
                 }),
                 device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: Some("poietra solid paint indices v1"),
-                    contents: &index_bytes,
+                    contents: upload_plan.index_bytes(),
                     usage: wgpu::BufferUsages::INDEX,
                 }),
             );
@@ -341,26 +345,4 @@ impl WgpuFillRendererV1 {
         evidence.submit_ms = stage_elapsed(clock, submit_started);
         Ok((submission, evidence))
     }
-}
-
-fn encode_vertices(frame: &PreparedFrameV1) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(frame.vertices().len() * VERTEX_ENCODED_SIZE);
-    for vertex in frame.vertices() {
-        for value in vertex
-            .position()
-            .into_iter()
-            .chain(vertex.premultiplied_linear_color())
-        {
-            bytes.extend_from_slice(&value.to_le_bytes());
-        }
-    }
-    bytes
-}
-
-fn encode_indices(frame: &PreparedFrameV1) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(std::mem::size_of_val(frame.indices()));
-    for index in frame.indices() {
-        bytes.extend_from_slice(&index.to_le_bytes());
-    }
-    bytes
 }

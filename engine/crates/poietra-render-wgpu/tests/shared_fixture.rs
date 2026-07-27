@@ -1,10 +1,11 @@
 mod support;
 
 use poietra_render_wgpu::{
-    PrepareFrameErrorV1, UnsupportedDrawReasonV1, prepare_frame_v1, tessellate_validated_frame_v1,
-    validate_frame_packet_v1,
+    PrepareFrameErrorV1, UnsupportedDrawReasonV1, build_gpu_upload_plan_v1, prepare_frame_v1,
+    tessellate_validated_frame_v1, validate_frame_packet_v1,
 };
 use poietra_scene_ir::{RenderDrawV1, StrokeCapV1, StrokeJoinV1};
+use sha2::{Digest, Sha256};
 
 use support::{sampled_packet, straight_stroke_packet};
 
@@ -21,6 +22,16 @@ fn assert_color_close(actual: [f32; 4], expected: [f32; 4]) {
     }
 }
 
+fn draw_color(frame: &poietra_render_wgpu::PreparedFrameV1, draw_index: usize) -> [f32; 4] {
+    let material_index = usize::try_from(frame.draws()[draw_index].material_index())
+        .expect("material index must fit usize");
+    frame.material_plan().materials()[material_index].premultiplied_linear_color()
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
 #[test]
 fn prepares_shared_fixture_as_ordered_solid_paint_triangles() {
     let prepared = prepare_frame_v1(&sampled_packet()).expect("shared fixture must prepare");
@@ -32,11 +43,19 @@ fn prepares_shared_fixture_as_ordered_solid_paint_triangles() {
     let first_index_end = prepared.draws()[0].index_range().end;
     let first_vertices =
         usize::try_from(first_index_end / 3 + 2).expect("fixture vertices must fit usize");
+    let first_vertex_end = u32::try_from(first_vertices).expect("fixture vertices must fit u32");
+    assert_eq!(prepared.draws()[0].vertex_range(), &(0..first_vertex_end));
     assert_eq!(prepared.draws()[0].index_range(), &(0..first_index_end));
     assert_eq!(prepared.draws()[1].draw_id(), "draw:1");
     assert_eq!(prepared.draws()[1].index_range().start, first_index_end);
     let second_indices = prepared.draws()[1].index_range().len();
     let second_vertices = second_indices / 3 + 2;
+    let second_vertex_end =
+        u32::try_from(first_vertices + second_vertices).expect("fixture vertices must fit u32");
+    assert_eq!(
+        prepared.draws()[1].vertex_range(),
+        &(first_vertex_end..second_vertex_end)
+    );
     let second_index_end = prepared.draws()[1].index_range().end;
     assert_eq!(prepared.draws()[2].draw_id(), "draw:2");
     assert_eq!(
@@ -44,6 +63,7 @@ fn prepares_shared_fixture_as_ordered_solid_paint_triangles() {
         &(second_index_end..second_index_end + 54)
     );
     let stroke_vertices = 24;
+    assert_eq!(prepared.material_plan().materials().len(), 3);
     assert_eq!(
         prepared.vertices().len(),
         first_vertices + second_vertices + stroke_vertices
@@ -52,19 +72,120 @@ fn prepares_shared_fixture_as_ordered_solid_paint_triangles() {
         prepared.indices().len(),
         usize::try_from(prepared.draws()[2].index_range().end).unwrap()
     );
+    assert_eq!(
+        prepared
+            .geometry_plan()
+            .vertices()
+            .iter()
+            .map(poietra_render_wgpu::PreparedGeometryVertexV1::position)
+            .collect::<Vec<_>>(),
+        prepared
+            .vertices()
+            .iter()
+            .map(poietra_render_wgpu::PreparedVertexV1::position)
+            .collect::<Vec<_>>()
+    );
 
     let first = prepared.vertices()[0];
     assert_close(first.position()[0], 0.0);
     assert_close(first.position()[1], 0.0);
-    assert_color_close(first.premultiplied_linear_color(), [0.5, 0.0, 0.0, 0.5]);
+    assert_color_close(draw_color(&prepared, 0), [0.5, 0.0, 0.0, 0.5]);
     let later = prepared.vertices()[first_vertices];
     assert_close(later.position()[0], 0.1875);
     assert_close(later.position()[1], 0.0);
-    assert_color_close(later.premultiplied_linear_color(), [0.0, 0.0, 1.0, 1.0]);
+    assert_color_close(draw_color(&prepared, 1), [0.0, 0.0, 1.0, 1.0]);
     let stroke = prepared.vertices()[first_vertices + second_vertices];
     assert_close(stroke.position()[0], -0.5);
     assert_close(stroke.position()[1], 5.0 / 9.0);
-    assert_color_close(stroke.premultiplied_linear_color(), [0.0, 0.5, 0.0, 0.5]);
+    assert_color_close(draw_color(&prepared, 2), [0.0, 0.5, 0.0, 0.5]);
+}
+
+#[test]
+fn material_only_changes_leave_geometry_and_order_plans_unchanged() {
+    let packet = sampled_packet();
+    let baseline = prepare_frame_v1(&packet).unwrap();
+    let mut recolored_packet = packet;
+    let RenderDrawV1::Path {
+        fill: Some(fill),
+        opacity,
+        ..
+    } = &mut recolored_packet.draws[0]
+    else {
+        panic!("fixture first draw must be filled");
+    };
+    fill.color.green = 0.75;
+    *opacity = 0.25;
+    let recolored = prepare_frame_v1(&recolored_packet).unwrap();
+
+    assert_eq!(baseline.geometry_plan(), recolored.geometry_plan());
+    assert_eq!(baseline.ordered_draw_plan(), recolored.ordered_draw_plan());
+    assert_ne!(baseline.material_plan(), recolored.material_plan());
+    assert_ne!(baseline.vertices(), recolored.vertices());
+}
+
+#[test]
+fn upload_bytes_match_the_pre_refactor_v1_layout_golden() {
+    let frame = prepare_frame_v1(&sampled_packet()).unwrap();
+    let upload = build_gpu_upload_plan_v1(&frame).unwrap();
+
+    assert_eq!(
+        sha256(upload.vertex_bytes()),
+        "863f3bb2be473b900ec098d788cf2e2c1e43ea1cdf52327175b88cff84c3e25a"
+    );
+    assert_eq!(
+        sha256(upload.index_bytes()),
+        "2c25168c48e905bf8746253dae6834ee3de5ab90db33fd7d153f984d923b8114"
+    );
+}
+
+#[test]
+fn empty_frames_keep_all_plans_empty_and_need_no_upload() {
+    let mut packet = sampled_packet();
+    packet.draws.clear();
+    packet.required_capabilities.clear();
+    let frame = prepare_frame_v1(&packet).unwrap();
+
+    assert!(frame.geometry_plan().vertices().is_empty());
+    assert!(frame.geometry_plan().indices().is_empty());
+    assert!(frame.material_plan().materials().is_empty());
+    assert!(frame.ordered_draw_plan().draws().is_empty());
+    assert!(frame.vertices().is_empty());
+    assert!(build_gpu_upload_plan_v1(&frame).unwrap().is_empty());
+}
+
+#[test]
+fn unsupported_topology_keeps_precedence_over_later_numeric_conversion() {
+    let mut packet = sampled_packet();
+    let RenderDrawV1::Path {
+        fill,
+        stroke,
+        transform,
+        ..
+    } = &mut packet.draws[1]
+    else {
+        panic!("fixture draw must be a path");
+    };
+    let color = fill.as_ref().unwrap().color.clone();
+    *stroke = Some(poietra_scene_ir::StrokeStyleV1 {
+        cap: StrokeCapV1::Butt,
+        color,
+        join: StrokeJoinV1::Miter,
+        miter_limit: 4.0,
+        width_world: 0.1,
+    });
+    transform.m11 = f64::MAX;
+    packet.required_capabilities = vec![
+        poietra_scene_ir::RenderCapabilityV1::CubicPathFill,
+        poietra_scene_ir::RenderCapabilityV1::CubicPathStroke,
+    ];
+
+    assert!(matches!(
+        prepare_frame_v1(&packet),
+        Err(PrepareFrameErrorV1::Unsupported {
+            reason: UnsupportedDrawReasonV1::FillAndStroke,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -105,10 +226,7 @@ fn prepares_world_space_butt_and_square_line_caps() {
     assert_eq!(butt.vertices().len(), 4);
     assert_eq!(butt.indices().len(), 6);
     assert_eq!(butt.draws()[0].index_range(), &(0..6));
-    assert_color_close(
-        butt.vertices()[0].premultiplied_linear_color(),
-        [0.0, 0.5, 0.0, 0.5],
-    );
+    assert_color_close(draw_color(&butt, 0), [0.0, 0.5, 0.0, 0.5]);
     let butt_positions = butt
         .vertices()
         .iter()
