@@ -16,8 +16,8 @@ import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import type {
   FastManimSandboxBoundedOutputLifecycleV1,
+  LocalLinuxCgroupV2ResourceJobV1,
   LinuxCgroupV2ResourceControllerV1,
-  LinuxCgroupV2ResourceJobV1,
 } from "./fast-manim-linux-cgroup-v2";
 import { deriveLinuxCgroupV2OrchestratorPathV1 } from "./fast-manim-linux-cgroup-v2";
 import {
@@ -247,6 +247,7 @@ export class LocalLinuxCgroupV2ConformanceHarnessV1 {
     if (input.signal?.aborted) return failedResult("aborted");
     const runtimeDirectory = await mkdtemp(join(tmpdir(), "poietra-cgroup-conformance-"));
     let child: ChildProcess | null = null;
+    let childAttached = false;
     let childClosed = false;
     let closeOutputPromise: Promise<void> | null = null;
     let settleChildClose!: (exit: Readonly<{ code: number | null; signal: NodeJS.Signals | null }>) => void;
@@ -267,11 +268,11 @@ export class LocalLinuxCgroupV2ConformanceHarnessV1 {
           child?.stdin?.destroy();
           child?.stdout?.destroy();
           child?.stderr?.destroy();
-          if (child?.pid && child.exitCode === null && child.signalCode === null) {
+          if (!childAttached && child?.pid && child.exitCode === null && child.signalCode === null) {
             try {
               process.kill(-child.pid, "SIGKILL");
             } catch {
-              // The kernel may already have reaped the local wrapper through cgroup.kill.
+              // Before attachment, the observably live leader still owns this local-only PGID.
             }
           }
           if (child) await childClose;
@@ -299,9 +300,9 @@ export class LocalLinuxCgroupV2ConformanceHarnessV1 {
       },
     };
 
-    let job: LinuxCgroupV2ResourceJobV1;
+    let job: LocalLinuxCgroupV2ResourceJobV1;
     try {
-      job = await this.#controller.admit(limits, output);
+      job = await this.#controller.admitForLocalConformance(limits, output);
     } catch (error) {
       await output.close("launch-failed").catch(() => undefined);
       const code = fastManimSandboxResourceControlErrorCode(error);
@@ -400,10 +401,8 @@ export class LocalLinuxCgroupV2ConformanceHarnessV1 {
         requestFinish("launch-failed");
       } else {
         await this.#waitForStopped(pid, child);
-        await job.attachStoppedPidForLocalConformance(pid, {
-          processState: "stopped",
-          trust: "local-conformance-only",
-        });
+        await job.attachStoppedPidForLocalConformance(pid);
+        childAttached = true;
         process.kill(pid, "SIGCONT");
       }
 

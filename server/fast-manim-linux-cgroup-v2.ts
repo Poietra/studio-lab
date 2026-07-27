@@ -193,6 +193,11 @@ export type LinuxCgroupV2LaunchEnvelopeV1 = Readonly<{
   cgroupsPath: string;
   deadlineEpochMs: number;
   mustStartInCgroup: true;
+  /** #127 must replace this gate with server-owned direct-start membership evidence. */
+  productionMembership: Readonly<{
+    state: "not-connected";
+    trackingIssue: 127;
+  }>;
   rlimits: Readonly<{
     cpuTimeSeconds: number;
     fileBytes: number;
@@ -207,20 +212,20 @@ export type LinuxCgroupV2LaunchEnvelopeV1 = Readonly<{
 export type LinuxCgroupV2ResourceJobV1 = Readonly<{
   /** Settles only after cgroup empty, bounded output close, and cgroup removal. */
   completion: Promise<FastManimSandboxResourceTerminationReasonV1>;
-  /**
-   * Local conformance only. The trusted harness must self-stop the wrapper
-   * before calling this method. Production must use launch.cgroupsPath so the
-   * orchestrator creates the process in the cgroup before untrusted code runs.
-   */
-  attachStoppedPidForLocalConformance: (
-    pid: number,
-    proof: Readonly<{ processState: "stopped"; trust: "local-conformance-only" }>,
-  ) => Promise<void>;
   descriptor: FastManimSandboxResourceJobDescriptorV1;
-  finish: (reason: FastManimSandboxResourceTerminationReasonV1) => Promise<void>;
+  /** Production cannot report success until #127 installs direct-start membership proof. */
+  finish: (reason: Exclude<FastManimSandboxResourceTerminationReasonV1, "completed">) => Promise<void>;
   inspect: () => Promise<LinuxCgroupV2ResourceEvidenceV1>;
   launch: LinuxCgroupV2LaunchEnvelopeV1;
 }>;
+
+export type LocalLinuxCgroupV2ResourceJobV1 = Readonly<
+  Omit<LinuxCgroupV2ResourceJobV1, "finish"> & {
+    /** Local trusted harness only; verifies /proc reports a stopped wrapper before attachment. */
+    attachStoppedPidForLocalConformance: (pid: number) => Promise<void>;
+    finish: (reason: FastManimSandboxResourceTerminationReasonV1) => Promise<void>;
+  }
+>;
 
 type ResourceBaseline = Readonly<{
   cpu: Map<string, number>;
@@ -232,7 +237,8 @@ type ActiveLinuxJob = {
   baseline: ResourceBaseline | null;
   completion: Promise<FastManimSandboxResourceTerminationReasonV1>;
   created: boolean;
-  finishing: Promise<void> | null;
+  finishing: Promise<FastManimSandboxResourceTerminationReasonV1> | null;
+  inspections: Set<Promise<LinuxCgroupV2ResourceEvidenceV1>>;
   lease: ReturnType<FastManimSandboxResourceRegistryV1["admit"]>;
   monotonicDeadline: number;
   output: FastManimSandboxBoundedOutputLifecycleV1;
@@ -240,6 +246,9 @@ type ActiveLinuxJob = {
   resolveCompletion: (reason: FastManimSandboxResourceTerminationReasonV1) => void;
   setup: Promise<void>;
   watchdog: Promise<void> | null;
+  watchdogCancellation: Promise<void>;
+  watchdogCancelled: boolean;
+  wakeWatchdog: () => void;
 };
 
 export type LinuxCgroupV2ResourceControllerOptionsV1 = Readonly<{
@@ -254,9 +263,16 @@ export type LinuxCgroupV2ResourceControllerOptionsV1 = Readonly<{
   store?: LinuxCgroupV2StoreV1;
 }>;
 
-const localAttachProofSchema = z
-  .object({ processState: z.literal("stopped"), trust: z.literal("local-conformance-only") })
-  .strict();
+function isCanonicalCgroupsPath(value: string) {
+  if (isAbsolute(value) || Buffer.byteLength(value, "utf8") > 512) return false;
+  const segments = value.split("/");
+  return (
+    segments.at(-1) === DELEGATED_ROOT_NAME &&
+    segments.every(
+      (segment) => segment !== "." && segment !== ".." && /^[A-Za-z0-9_@:-][A-Za-z0-9_.@:-]*$/u.test(segment),
+    )
+  );
+}
 
 /**
  * cgroup v2 lifecycle owner for the outer #81 backend resource envelope.
@@ -285,12 +301,7 @@ export class LinuxCgroupV2ResourceControllerV1 {
     if (!(options.registry instanceof FastManimSandboxResourceRegistryV1)) {
       throw new TypeError("A process-global sandbox resource registry is required.");
     }
-    if (
-      isAbsolute(options.cgroupsPath) ||
-      options.cgroupsPath.split("/").at(-1) !== DELEGATED_ROOT_NAME ||
-      !/^[A-Za-z0-9_.@:-]+(?:\/[A-Za-z0-9_.@:-]+)*$/u.test(options.cgroupsPath) ||
-      Buffer.byteLength(options.cgroupsPath, "utf8") > 512
-    ) {
+    if (!isCanonicalCgroupsPath(options.cgroupsPath)) {
       throw new TypeError(`The orchestrator cgroupsPath must identify a relative ${DELEGATED_ROOT_NAME} subtree.`);
     }
     this.#cleanupTimeoutMs = boundedTiming(
@@ -365,7 +376,23 @@ export class LinuxCgroupV2ResourceControllerV1 {
     }
   }
 
-  async admit(limits: unknown, output: FastManimSandboxBoundedOutputLifecycleV1): Promise<LinuxCgroupV2ResourceJobV1> {
+  admit(limits: unknown, output: FastManimSandboxBoundedOutputLifecycleV1): Promise<LinuxCgroupV2ResourceJobV1> {
+    return this.#admit(limits, output, false) as Promise<LinuxCgroupV2ResourceJobV1>;
+  }
+
+  /** Explicitly separate test harness path; never expose this job shape to production callers. */
+  admitForLocalConformance(
+    limits: unknown,
+    output: FastManimSandboxBoundedOutputLifecycleV1,
+  ): Promise<LocalLinuxCgroupV2ResourceJobV1> {
+    return this.#admit(limits, output, true) as Promise<LocalLinuxCgroupV2ResourceJobV1>;
+  }
+
+  async #admit(
+    limits: unknown,
+    output: FastManimSandboxBoundedOutputLifecycleV1,
+    localConformance: boolean,
+  ): Promise<LinuxCgroupV2ResourceJobV1 | LocalLinuxCgroupV2ResourceJobV1> {
     if (
       !this.#initialized ||
       this.#closing ||
@@ -388,11 +415,16 @@ export class LinuxCgroupV2ResourceControllerV1 {
       rejectCompletion = rejectPromise;
     });
     completion.catch(() => undefined);
+    let wakeWatchdog!: () => void;
+    const watchdogCancellation = new Promise<void>((resolvePromise) => {
+      wakeWatchdog = resolvePromise;
+    });
     const active: ActiveLinuxJob = {
       baseline: null,
       completion,
       created: false,
       finishing: null,
+      inspections: new Set(),
       lease,
       monotonicDeadline,
       output,
@@ -400,6 +432,9 @@ export class LinuxCgroupV2ResourceControllerV1 {
       resolveCompletion,
       setup: Promise.resolve(),
       watchdog: null,
+      watchdogCancellation,
+      watchdogCancelled: false,
+      wakeWatchdog,
     };
     this.#jobs.set(lease.descriptor.jobId, active);
     active.setup = this.#prepare(active);
@@ -416,13 +451,23 @@ export class LinuxCgroupV2ResourceControllerV1 {
     }
     active.watchdog = this.#watchdog(active);
     active.watchdog.catch(() => undefined);
-    return Object.freeze({
-      attachStoppedPidForLocalConformance: (pid, proof) => this.#attachStopped(active, pid, proof),
+    const base = {
       completion,
       descriptor: lease.descriptor,
-      finish: (reason) => this.#finish(active, reason),
       inspect: () => this.#inspect(active),
       launch: this.#launchEnvelope(lease.descriptor),
+    };
+    if (localConformance) {
+      return Object.freeze({
+        ...base,
+        attachStoppedPidForLocalConformance: (pid: number) => this.#attachStopped(active, pid),
+        finish: (reason: FastManimSandboxResourceTerminationReasonV1) =>
+          this.#finish(active, reason).then(() => undefined),
+      });
+    }
+    return Object.freeze({
+      ...base,
+      finish: (reason: unknown) => this.#finishProduction(active, reason),
     });
   }
 
@@ -441,10 +486,13 @@ export class LinuxCgroupV2ResourceControllerV1 {
       });
     } catch (error) {
       timedOut = error instanceof CgroupOperationDeadlineError;
-      active.lease.terminate("launch-failed");
-      const cleaned = await this.#cleanup(active, "launch-failed", this.#cleanupDeadline());
-      if (cleaned && !timedOut) this.#reap(active);
-      else this.#failClosed(active);
+      const cleaned = await this.#cleanup(active, "launch-failed", this.#cleanupDeadline(), null);
+      if (cleaned && !timedOut) {
+        active.lease.terminate(cleaned);
+        this.#reap(active);
+      } else {
+        this.#failClosed(active);
+      }
       active.rejectCompletion(
         new FastManimSandboxResourceControlError(cleaned && !timedOut ? "unavailable" : "cleanup"),
       );
@@ -469,6 +517,7 @@ export class LinuxCgroupV2ResourceControllerV1 {
       cgroupsPath: `${this.#cgroupsPath}/${descriptor.cgroupName}`,
       deadlineEpochMs: descriptor.deadlineEpochMs,
       mustStartInCgroup: true,
+      productionMembership: Object.freeze({ state: "not-connected" as const, trackingIssue: 127 as const }),
       rlimits: Object.freeze({
         cpuTimeSeconds: Math.ceil(limits.maxCpuTimeMicros / 1_000_000),
         fileBytes: limits.maxFileBytes,
@@ -487,31 +536,46 @@ export class LinuxCgroupV2ResourceControllerV1 {
     });
   }
 
-  async #attachStopped(active: ActiveLinuxJob, pid: number, proof: unknown) {
-    localAttachProofSchema.parse(proof);
+  async #attachStopped(active: ActiveLinuxJob, pid: number) {
     if (!Number.isSafeInteger(pid) || pid <= 0) throw new TypeError("A cgroup PID must be a positive safe integer.");
     if (active.finishing || this.#jobs.get(active.lease.descriptor.jobId) !== active) {
       throw new FastManimSandboxResourceControlError("unavailable");
     }
     try {
+      const status = await this.#within(
+        readFile(`/proc/${pid}/status`, "utf8"),
+        this.#controlDeadline(active.monotonicDeadline),
+      );
+      if (!/^State:\s+[Tt]\b/mu.test(status)) {
+        throw new FastManimSandboxResourceControlError("unavailable");
+      }
       await this.#within(
         this.#store.write(active.lease.descriptor.cgroupName, "cgroup.procs", `${pid}\n`),
         this.#controlDeadline(active.monotonicDeadline),
       );
     } catch {
-      await this.#finish(active, "cleanup-failed").catch(() => undefined);
-      this.#registry.quarantine();
-      throw new FastManimSandboxResourceControlError("cleanup");
+      await this.#finish(active, "launch-failed").catch(() => undefined);
+      throw new FastManimSandboxResourceControlError("unavailable");
     }
   }
 
+  #finishProduction(active: ActiveLinuxJob, value: unknown) {
+    const reason = fastManimSandboxResourceTerminationReasonV1Schema.parse(value);
+    // Until #127 supplies server-owned direct-start membership evidence, the
+    // production-shaped interface has no successful completion transition.
+    return this.#finish(active, reason === "completed" ? "launch-failed" : reason).then(() => undefined);
+  }
+
   async #inspect(active: ActiveLinuxJob): Promise<LinuxCgroupV2ResourceEvidenceV1> {
-    if (this.#jobs.get(active.lease.descriptor.jobId) !== active || !active.baseline) {
+    if (active.finishing || this.#jobs.get(active.lease.descriptor.jobId) !== active || !active.baseline) {
       throw new FastManimSandboxResourceControlError("unavailable");
     }
     try {
-      return await this.#inspectWithin(active, this.#controlDeadline(active.monotonicDeadline));
+      return await this.#trackedInspection(active, this.#controlDeadline(active.monotonicDeadline));
     } catch {
+      if (active.finishing || this.#jobs.get(active.lease.descriptor.jobId) !== active) {
+        throw new FastManimSandboxResourceControlError("unavailable");
+      }
       await this.#finish(active, "cleanup-failed").catch(() => undefined);
       this.#registry.quarantine();
       throw new FastManimSandboxResourceControlError("cleanup");
@@ -550,55 +614,99 @@ export class LinuxCgroupV2ResourceControllerV1 {
     });
   }
 
+  async #trackedInspection(active: ActiveLinuxJob, deadline: number) {
+    const inspection = this.#inspectWithin(active, deadline);
+    active.inspections.add(inspection);
+    try {
+      return await inspection;
+    } finally {
+      active.inspections.delete(inspection);
+    }
+  }
+
   async #watchdog(active: ActiveLinuxJob) {
-    while (!active.finishing && this.#jobs.get(active.lease.descriptor.jobId) === active) {
+    while (!active.watchdogCancelled && this.#jobs.get(active.lease.descriptor.jobId) === active) {
       const remaining = active.monotonicDeadline - this.#monotonicNow();
       if (remaining <= 0) {
         await this.#finish(active, "deadline");
         return;
       }
       try {
-        const evidence = await this.#inspectWithin(active, this.#controlDeadline(active.monotonicDeadline));
+        const evidence = await this.#trackedInspection(active, this.#controlDeadline(active.monotonicDeadline));
+        if (active.watchdogCancelled) return;
         if (evidence.reason) {
           await this.#finish(active, evidence.reason);
           return;
         }
       } catch {
+        if (active.watchdogCancelled || this.#jobs.get(active.lease.descriptor.jobId) !== active) return;
         await this.#finish(active, "cleanup-failed").catch(() => undefined);
         this.#registry.quarantine();
         return;
       }
-      await this.#sleep(Math.min(this.#pollIntervalMs, remaining));
+      try {
+        await Promise.race([this.#sleep(Math.min(this.#pollIntervalMs, remaining)), active.watchdogCancellation]);
+      } catch {
+        if (active.watchdogCancelled || this.#jobs.get(active.lease.descriptor.jobId) !== active) return;
+        await this.#finish(active, "cleanup-failed").catch(() => undefined);
+        this.#registry.quarantine();
+        return;
+      }
     }
   }
 
   #finish(active: ActiveLinuxJob, reason: FastManimSandboxResourceTerminationReasonV1) {
     if (active.finishing) return active.finishing;
     const parsedReason = fastManimSandboxResourceTerminationReasonV1Schema.parse(reason);
-    if (this.#jobs.get(active.lease.descriptor.jobId) !== active) return active.completion.then(() => undefined);
-    active.lease.terminate(parsedReason);
-    active.finishing = this.#finishOnce(active, parsedReason);
-    active.finishing.then(() => active.resolveCompletion(parsedReason), active.rejectCompletion);
+    if (this.#jobs.get(active.lease.descriptor.jobId) !== active) return active.completion;
+    const requestedAt = this.#monotonicNow();
+    const cleanupDeadline = requestedAt + this.#cleanupTimeoutMs;
+    active.watchdogCancelled = true;
+    active.wakeWatchdog();
+    active.finishing = Promise.resolve().then(() =>
+      this.#finishOnce(active, parsedReason, requestedAt, cleanupDeadline),
+    );
+    active.finishing.then(active.resolveCompletion, active.rejectCompletion);
     return active.finishing;
   }
 
-  async #finishOnce(active: ActiveLinuxJob, reason: FastManimSandboxResourceTerminationReasonV1) {
-    const deadline = this.#cleanupDeadline();
+  async #finishOnce(
+    active: ActiveLinuxJob,
+    reason: FastManimSandboxResourceTerminationReasonV1,
+    requestedAt: number,
+    deadline: number,
+  ) {
+    if (!Number.isFinite(deadline) || deadline <= requestedAt) {
+      this.#failClosed(active);
+      throw new FastManimSandboxResourceControlError("cleanup");
+    }
     try {
       await this.#within(active.setup, deadline);
+      await this.#within(
+        Promise.allSettled([...active.inspections]).then(() => undefined),
+        deadline,
+      );
     } catch {
-      if (this.#jobs.get(active.lease.descriptor.jobId) !== active) return;
+      if (this.#jobs.get(active.lease.descriptor.jobId) !== active) return active.completion;
       this.#failClosed(active);
       throw new FastManimSandboxResourceControlError("cleanup");
     }
-    if (!(await this.#cleanup(active, reason, deadline))) {
+    const finalReason = await this.#cleanup(active, reason, deadline, requestedAt);
+    if (!finalReason) {
       this.#failClosed(active);
       throw new FastManimSandboxResourceControlError("cleanup");
     }
+    active.lease.terminate(finalReason);
     this.#reap(active);
+    return finalReason;
   }
 
-  async #cleanup(active: ActiveLinuxJob, reason: FastManimSandboxResourceTerminationReasonV1, deadline: number) {
+  async #cleanup(
+    active: ActiveLinuxJob,
+    reason: FastManimSandboxResourceTerminationReasonV1,
+    deadline: number,
+    requestedAt: number | null,
+  ): Promise<FastManimSandboxResourceTerminationReasonV1 | null> {
     try {
       if (active.created) {
         // cgroup.kill is the first termination operation. It reaches forked,
@@ -606,15 +714,25 @@ export class LinuxCgroupV2ResourceControllerV1 {
         await this.#within(this.#store.write(active.lease.descriptor.cgroupName, "cgroup.kill", "1\n"), deadline);
       }
       await this.#within(active.output.close(reason), deadline);
+      let finalReason = reason;
       if (active.created) {
         await this.#waitUntilEmpty(active.lease.descriptor.cgroupName, deadline);
+        if (requestedAt !== null) {
+          const evidence = await this.#inspectWithin(active, deadline);
+          if (reason === "completed") {
+            if (evidence.reason) finalReason = evidence.reason;
+            else if (requestedAt >= active.monotonicDeadline) finalReason = "deadline";
+          }
+        }
+        fastManimSandboxOutputClosedEvidenceV1Schema.parse(active.output.closureEvidence());
         await this.#within(this.#store.remove(active.lease.descriptor.cgroupName), deadline);
         active.created = false;
+      } else {
+        fastManimSandboxOutputClosedEvidenceV1Schema.parse(active.output.closureEvidence());
       }
-      fastManimSandboxOutputClosedEvidenceV1Schema.parse(active.output.closureEvidence());
-      return true;
+      return finalReason;
     } catch {
-      return false;
+      return null;
     }
   }
 
@@ -682,13 +800,13 @@ export class LinuxCgroupV2ResourceControllerV1 {
   async shutdown() {
     this.#closing = true;
     this.#registry.beginClose();
-    const results = await Promise.allSettled(
-      [...this.#jobs.values()].map((active) => this.#finish(active, "shutdown")),
-    );
+    const activeJobs = [...this.#jobs.values()];
+    const results = await Promise.allSettled(activeJobs.map((active) => this.#finish(active, "shutdown")));
     if (results.some((result) => result.status === "rejected")) {
       this.#registry.quarantine();
       throw new FastManimSandboxResourceControlError("cleanup");
     }
+    await Promise.allSettled(activeJobs.flatMap((active) => (active.watchdog ? [active.watchdog] : [])));
     this.#registry.finishClose();
   }
 
@@ -717,12 +835,13 @@ export type ProcessLinuxCgroupV2ResourceControllerOptionsV1 = Readonly<
 export function deriveLinuxCgroupV2OrchestratorPathV1(root: string) {
   if (!isAbsolute(root)) throw new TypeError("The production cgroup root must be absolute.");
   const resolvedRoot = resolve(root);
+  if (root !== resolvedRoot) throw new TypeError("The production cgroup root must use canonical path segments.");
   const prefix = `${CGROUP2_FILESYSTEM_ROOT}${sep}`;
   if (!resolvedRoot.startsWith(prefix) || basename(resolvedRoot) !== DELEGATED_ROOT_NAME) {
     throw new TypeError(`The production root must be a ${DELEGATED_ROOT_NAME} subtree under cgroup v2.`);
   }
   const cgroupsPath = relative(CGROUP2_FILESYSTEM_ROOT, resolvedRoot).split(sep).join("/");
-  if (cgroupsPath.startsWith("../") || cgroupsPath.length === 0) {
+  if (!isCanonicalCgroupsPath(cgroupsPath)) {
     throw new TypeError("The production cgroup root is outside cgroup v2.");
   }
   return cgroupsPath;

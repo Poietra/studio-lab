@@ -1,13 +1,14 @@
 # Fast-manim sandbox resource and reap runbook
 
-Status: outer resource controller implemented; production composition remains gated by #82, #84, and #85
+Status: outer resource controller implemented; production direct-start membership remains gated by #127
 
 ## Security outcome
 
 `FastManimSandboxResourceRegistryV1` is the process-global admission ledger and
 `LinuxCgroupV2ResourceControllerV1` owns one Linux cgroup v2 directory per job.
-Admission reserves active-job, memory-plus-swap, output, and tmpfs budgets
-atomically. A job succeeds only after the controller has issued `cgroup.kill`,
+Admission reserves active-job, memory-plus-swap, output, tmpfs, and worst-case
+`maxProcesses × maxOpenFiles` descriptor budgets atomically. A job succeeds only
+after the controller has issued `cgroup.kill`,
 observed `cgroup.events` report `populated 0`, closed all bounded output
 producers, removed the job cgroup, and released the reservation. Leader exit is
 only a cleanup trigger; it is never proof that a forked or daemonized descendant
@@ -63,6 +64,15 @@ orchestrator-relative path, and uses the one process-global registry. The lower
 level class accepts fake stores and clocks for deterministic tests; production
 composition must not expose those injection points.
 
+The direct-start membership seam is deliberately not connected on this branch;
+that work belongs to #127. `job.launch.productionMembership` is therefore fixed
+to `not-connected`, the production job type excludes `completed`, and the
+runtime maps an attempted production `completed` transition to `launch-failed`.
+The stopped-PID method exists only on `admitForLocalConformance`, verifies the
+wrapper's current `/proc/<pid>/status`, and is absent from production job values.
+This controller cannot be used as evidence of a successful production render
+until #127 replaces that gate with server-owned direct-start membership proof.
+
 ## Enforced lifecycle
 
 Startup first validates the root, enables all required controllers, and lists
@@ -83,18 +93,25 @@ Abort, deadline, output overflow, launch failure, and shutdown all enter one
 idempotent termination path. `cgroup.kill` is deliberately first so it reaches
 forked, setsid, daemonized, and inherited-pipe descendants. One absolute cleanup
 deadline covers kill, output close, the `populated 0` wait, and removal.
+Finish cancels the watchdog and joins any in-flight counter reads before cleanup.
+For a proposed `completed` result, the controller reads final CPU, memory, and
+pids counters after kill and empty proof but before removal, and combines them
+with the monotonic time captured when finish was received. It records the final
+reason only after output proof and cgroup removal succeed; any cleanup uncertainty
+is recorded as `cleanup-failed` instead of the provisional caller reason.
 
 ## Evidence split
 
 The default fake-controller tests prove contract and orchestration properties:
 
 - strict safe-integer schemas and atomic process-global admission;
-- memory-plus-swap/output/tmpfs reservation accounting;
+- memory-plus-swap/output/tmpfs and multi-process file-descriptor reservation accounting;
 - startup orphan reconciliation and unknown-child fail-closed behavior;
 - exact cgroup writes, baseline deltas, automatic watchdog behavior, and
   monotonic deadlines;
 - shutdown joining pending and active jobs;
 - no reservation release before both cgroup-empty and output-closed evidence;
+- watchdog/inspection cancellation and join races, plus post-kill final reason evidence;
 - bounded cleanup timeout, quarantine, production-factory closure, and exact
   relative `cgroupsPath` correlation.
 

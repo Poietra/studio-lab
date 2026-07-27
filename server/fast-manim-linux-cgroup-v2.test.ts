@@ -24,6 +24,12 @@ class FakeCgroupV2Store implements LinuxCgroupV2StoreV1 {
   createGate: Promise<void> | null = null;
   createStarted: (() => void) | null = null;
   killLeavesPopulated = false;
+  onKill: ((job: FakeJob) => void) | null = null;
+  readGate: Readonly<{
+    file: string;
+    markStarted: () => void;
+    wait: Promise<void>;
+  }> | null = null;
   rejectKill = false;
 
   async assertExclusiveCgroupV2Root() {}
@@ -40,6 +46,12 @@ class FakeCgroupV2Store implements LinuxCgroupV2StoreV1 {
   }
 
   async read(name: string, file: string) {
+    const gate = this.readGate;
+    if (gate?.file === file) {
+      this.readGate = null;
+      gate.markStarted();
+      await gate.wait;
+    }
     const value = this.jobs.get(name)?.files.get(file);
     if (value === undefined) throw new Error("missing cgroup file");
     return value;
@@ -64,6 +76,7 @@ class FakeCgroupV2Store implements LinuxCgroupV2StoreV1 {
     if (file === "cgroup.kill") {
       if (this.rejectKill) throw new Error("kill denied");
       if (this.killLeavesPopulated) return;
+      this.onKill?.(job);
       job.files.set("cgroup.events", "populated 0\nfrozen 0\n");
       job.files.set("cgroup.procs", "");
       return;
@@ -87,6 +100,19 @@ class FakeCgroupV2Store implements LinuxCgroupV2StoreV1 {
     const job = this.jobs.get(name);
     if (!job) throw new Error("missing job");
     job.files.set(file, value);
+  }
+
+  gateNextRead(file: string) {
+    let markStarted!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolvePromise) => {
+      markStarted = resolvePromise;
+    });
+    const wait = new Promise<void>((resolvePromise) => {
+      release = resolvePromise;
+    });
+    this.readGate = { file, markStarted, wait };
+    return { release, started };
   }
 
   private newJob(): FakeJob {
@@ -166,6 +192,14 @@ describe("Linux cgroup v2 sandbox resource controller", () => {
       deriveLinuxCgroupV2OrchestratorPathV1("/sys/fs/cgroup/system.slice/poietra-studio.service/poietra-sandbox-v1"),
     ).toBe("system.slice/poietra-studio.service/poietra-sandbox-v1");
     expect(() => deriveLinuxCgroupV2OrchestratorPathV1("/tmp/poietra-sandbox-v1")).toThrow(/cgroup v2/i);
+    for (const cgroupsPath of ["../poietra-sandbox-v1", "system.slice/../poietra-sandbox-v1", "./poietra-sandbox-v1"]) {
+      expect(() => controller(new FakeCgroupV2Store(), { cgroupsPath })).toThrow(/relative/i);
+    }
+    expect(() =>
+      deriveLinuxCgroupV2OrchestratorPathV1(
+        "/sys/fs/cgroup/system.slice/../system.slice/poietra-studio.service/poietra-sandbox-v1",
+      ),
+    ).toThrow(/canonical/i);
     expect(() =>
       createProcessLinuxCgroupV2ResourceControllerV1({
         monotonicNow: () => 0,
@@ -184,7 +218,7 @@ describe("Linux cgroup v2 sandbox resource controller", () => {
     expect(store.jobs.size).toBe(0);
 
     const output = outputLifecycle();
-    const job = await resources.admit(DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1, output.output);
+    const job = await resources.admitForLocalConformance(DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1, output.output);
     const configured = store.jobs.get(job.descriptor.cgroupName)?.files;
     expect(configured?.get("memory.oom.group")).toBe("1\n");
     expect(configured?.get("memory.max")).toBe(`${job.descriptor.limits.maxMemoryBytes}\n`);
@@ -208,6 +242,27 @@ describe("Linux cgroup v2 sandbox resource controller", () => {
     await job.finish("completed");
     expect(output.isClosed()).toBe(true);
     expect(resources.snapshot()).toMatchObject({ activeJobs: 0, reapedJobs: 1 });
+  });
+
+  it("keeps local stopped-PID attachment out of production and blocks success until #127", async () => {
+    const store = new FakeCgroupV2Store();
+    const resources = controller(store, { sleep: async () => new Promise<void>(() => undefined) });
+    await resources.initialize();
+    const output = outputLifecycle();
+    const job = await resources.admit(DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1, output.output);
+    expect(job).not.toHaveProperty("attachStoppedPidForLocalConformance");
+    expect(job.launch.productionMembership).toEqual({ state: "not-connected", trackingIssue: 127 });
+    await (job.finish as (reason: string) => Promise<void>)("completed");
+    await expect(job.completion).resolves.toBe("launch-failed");
+    expect(resources.snapshot()).toMatchObject({ activeJobs: 0, state: "ready" });
+
+    const localOutput = outputLifecycle();
+    const local = await resources.admitForLocalConformance(
+      DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1,
+      localOutput.output,
+    );
+    await expect(local.attachStoppedPidForLocalConformance(process.pid)).rejects.toThrow(/unavailable/i);
+    await expect(local.completion).resolves.toBe("launch-failed");
   });
 
   it("uses baseline deltas for OOM, pids, and cumulative CPU-time reasons", async () => {
@@ -240,11 +295,8 @@ describe("Linux cgroup v2 sandbox resource controller", () => {
     const resources = controller(store);
     await resources.initialize();
     const output = outputLifecycle();
-    const job = await resources.admit(DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1, output.output);
-    await job.attachStoppedPidForLocalConformance(1234, {
-      processState: "stopped",
-      trust: "local-conformance-only",
-    });
+    const job = await resources.admitForLocalConformance(DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1, output.output);
+    store.set(job.descriptor.cgroupName, "cgroup.events", "populated 1\nfrozen 0\n");
     expect(resources.snapshot().activeJobs).toBe(1);
     await job.finish("completed");
     expect(store.writes).toContainEqual([job.descriptor.cgroupName, "cgroup.kill", "1\n"]);
@@ -262,13 +314,15 @@ describe("Linux cgroup v2 sandbox resource controller", () => {
     await resources.initialize();
     const output = outputLifecycle();
     const job = await resources.admit(DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1, output.output);
-    await job.attachStoppedPidForLocalConformance(1234, {
-      processState: "stopped",
-      trust: "local-conformance-only",
-    });
+    store.set(job.descriptor.cgroupName, "cgroup.events", "populated 1\nfrozen 0\n");
     store.rejectKill = true;
     await expect(job.finish("aborted")).rejects.toThrowError(FastManimSandboxResourceControlError);
-    expect(resources.snapshot()).toMatchObject({ activeJobs: 1, reapedJobs: 0, state: "quarantined" });
+    expect(resources.snapshot()).toMatchObject({
+      activeJobs: 1,
+      reapedJobs: 0,
+      state: "quarantined",
+      terminated: [{ count: 1, reason: "cleanup-failed" }],
+    });
     await expect(
       resources.admit(DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1, outputLifecycle().output),
     ).rejects.toThrowError(FastManimSandboxResourceControlError);
@@ -291,14 +345,8 @@ describe("Linux cgroup v2 sandbox resource controller", () => {
     const secondOutput = outputLifecycle();
     const first = await resources.admit(DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1, firstOutput.output);
     const second = await resources.admit(DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1, secondOutput.output);
-    await first.attachStoppedPidForLocalConformance(1001, {
-      processState: "stopped",
-      trust: "local-conformance-only",
-    });
-    await second.attachStoppedPidForLocalConformance(1002, {
-      processState: "stopped",
-      trust: "local-conformance-only",
-    });
+    store.set(first.descriptor.cgroupName, "cgroup.events", "populated 1\nfrozen 0\n");
+    store.set(second.descriptor.cgroupName, "cgroup.events", "populated 1\nfrozen 0\n");
     await resources.shutdown();
     expect(firstOutput.isClosed()).toBe(true);
     expect(secondOutput.isClosed()).toBe(true);
@@ -344,6 +392,86 @@ describe("Linux cgroup v2 sandbox resource controller", () => {
       }),
     ]);
     expect(deadlineResources.snapshot().terminated).toContainEqual({ count: 1, reason: "deadline" });
+  });
+
+  it("joins a public inspection before normal removal instead of quarantining its read failure", async () => {
+    const store = new FakeCgroupV2Store();
+    const resources = controller(store, { sleep: async () => new Promise<void>(() => undefined) });
+    await resources.initialize();
+    const output = outputLifecycle();
+    const job = await resources.admitForLocalConformance(DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1, output.output);
+    await delay(0);
+    const gate = store.gateNextRead("cpu.stat");
+    const inspection = job.inspect();
+    await gate.started;
+    const finishing = job.finish("completed");
+    await delay(0);
+    expect(store.jobs.has(job.descriptor.cgroupName)).toBe(true);
+    gate.release();
+    await expect(inspection).resolves.toMatchObject({ reason: null });
+    await expect(finishing).resolves.toBeUndefined();
+    expect(resources.snapshot()).toMatchObject({ activeJobs: 0, state: "ready" });
+  });
+
+  it("cancels and joins an in-flight watchdog inspection during shutdown", async () => {
+    const store = new FakeCgroupV2Store();
+    let releasePoll!: () => void;
+    let markPollStarted!: () => void;
+    const pollStarted = new Promise<void>((resolvePromise) => {
+      markPollStarted = resolvePromise;
+    });
+    const pollGate = new Promise<void>((resolvePromise) => {
+      releasePoll = resolvePromise;
+    });
+    const resources = controller(store, {
+      sleep: async () => {
+        markPollStarted();
+        await pollGate;
+      },
+    });
+    await resources.initialize();
+    const output = outputLifecycle();
+    const job = await resources.admitForLocalConformance(DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1, output.output);
+    await pollStarted;
+    const readGate = store.gateNextRead("cpu.stat");
+    releasePoll();
+    await readGate.started;
+    const shuttingDown = resources.shutdown();
+    await delay(0);
+    expect(store.jobs.has(job.descriptor.cgroupName)).toBe(true);
+    readGate.release();
+    await expect(shuttingDown).resolves.toBeUndefined();
+    expect(resources.snapshot()).toMatchObject({ activeJobs: 0, state: "closed" });
+  });
+
+  it("finalizes completed from post-kill counters and the monotonic finish-receipt time", async () => {
+    const counterStore = new FakeCgroupV2Store();
+    counterStore.onKill = (job) => job.files.set("memory.events", "max 1\noom 0\noom_kill 0\n");
+    const counterResources = controller(counterStore, { sleep: async () => new Promise<void>(() => undefined) });
+    await counterResources.initialize();
+    const counterOutput = outputLifecycle();
+    const counterJob = await counterResources.admitForLocalConformance(
+      DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1,
+      counterOutput.output,
+    );
+    await counterJob.finish("completed");
+    await expect(counterJob.completion).resolves.toBe("memory-limit");
+    expect(counterResources.snapshot().terminated).toEqual([{ count: 1, reason: "memory-limit" }]);
+
+    let now = 1_000;
+    const deadlineStore = new FakeCgroupV2Store();
+    const deadlineResources = controller(deadlineStore, {
+      monotonicNow: () => now,
+      sleep: async () => new Promise<void>(() => undefined),
+    });
+    await deadlineResources.initialize();
+    const limits = { ...DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1, wallTimeMs: 10 };
+    const deadlineOutput = outputLifecycle(limits);
+    const deadlineJob = await deadlineResources.admitForLocalConformance(limits, deadlineOutput.output);
+    now = 1_010;
+    await deadlineJob.finish("completed");
+    await expect(deadlineJob.completion).resolves.toBe("deadline");
+    expect(deadlineResources.snapshot().terminated).toEqual([{ count: 1, reason: "deadline" }]);
   });
 
   it("uses a monotonic deadline even when the epoch clock rolls backwards", async () => {
@@ -403,10 +531,7 @@ describe("Linux cgroup v2 sandbox resource controller", () => {
       DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1,
       populatedOutput.output,
     );
-    await populatedJob.attachStoppedPidForLocalConformance(2222, {
-      processState: "stopped",
-      trust: "local-conformance-only",
-    });
+    populatedStore.set(populatedJob.descriptor.cgroupName, "cgroup.events", "populated 1\nfrozen 0\n");
     populatedStore.killLeavesPopulated = true;
     await expect(populatedJob.finish("shutdown")).rejects.toThrowError(FastManimSandboxResourceControlError);
     expect(populatedResources.snapshot()).toMatchObject({ activeJobs: 1, state: "quarantined" });
@@ -445,14 +570,20 @@ describe("Linux cgroup v2 sandbox resource controller", () => {
     await firstResources.initialize();
     await secondResources.initialize();
     const firstOutput = outputLifecycle();
-    const first = await firstResources.admit(DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1, firstOutput.output);
+    const first = await firstResources.admitForLocalConformance(
+      DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1,
+      firstOutput.output,
+    );
     await expect(
       secondResources.admit(DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1, outputLifecycle().output),
     ).rejects.toThrowError(FastManimSandboxResourceControlError);
     expect(sharedRegistry.snapshot()).toMatchObject({ activeJobs: 1, queuedJobs: 0 });
     await first.finish("completed");
     const secondOutput = outputLifecycle();
-    const second = await secondResources.admit(DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1, secondOutput.output);
+    const second = await secondResources.admitForLocalConformance(
+      DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1,
+      secondOutput.output,
+    );
     await second.finish("completed");
     expect(sharedRegistry.snapshot()).toMatchObject({ activeJobs: 0, reapedJobs: 2 });
   });
