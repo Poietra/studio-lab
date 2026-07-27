@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
+import { resolveVerifiedSourceDurationBasis } from "./editor-revision-policy";
 import {
   EDITOR_SESSION_STALE_SOURCE_MESSAGE,
   EDITOR_SESSION_STORAGE_VERSION,
@@ -22,7 +23,6 @@ import {
   snapshotEditorSession,
   undoEditorProgram,
 } from "./use-editor-controller";
-import { resolveVerifiedSourceDurationBasis } from "./imported-workspace";
 
 class MemoryAdapter implements EditorSessionStorageAdapter {
   value: string | null;

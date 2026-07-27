@@ -653,6 +653,7 @@ export function useEditorController() {
   );
 
   return {
+    activeSessionIdentity: activeSession.current,
     applyDraft,
     beginSuggestionRequest,
     cancelSuggestionRequest,
@@ -662,14 +663,10 @@ export function useEditorController() {
     },
     clearSession: (identity: EditorSessionIdentity) => {
       sessionStore.current?.clear(identity);
-      const current = activeSession.current;
-      if (
-        current &&
-        current.projectId === identity.projectId &&
-        current.sceneId === identity.sceneId &&
-        current.sourceHash === identity.sourceHash
-      )
-        activeSession.current = null;
+      // Clearing persisted history does not unload the in-memory session.
+      // Source reconciliation resets its programs separately; retaining the
+      // identity lets a same-hash refresh remain aligned, while a changed hash
+      // still fails closed until App opens the replacement session.
     },
     discardDraft,
     editAppliedProgram,

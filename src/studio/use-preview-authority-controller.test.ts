@@ -3,12 +3,10 @@ import { describe, expect, it } from "vitest";
 import type { StudioPreviewSnapshotProviderV1 } from "./preview-snapshot-provider";
 import {
   createStudioPreviewAuthorityStateV1,
-  createStudioPreviewEditingContextV1,
   reduceStudioPreviewAuthorityV1,
   requestedStudioPreviewRendererSearchV1,
   studioPreviewLocationSearchSnapshotV1,
   subscribeStudioPreviewLocationSearchChangesV1,
-  type StudioPreviewAuthoritySceneV1,
 } from "./use-preview-authority-controller";
 
 const SERVER_SEARCH = "?previewRenderer=server";
@@ -19,15 +17,6 @@ const provider: StudioPreviewSnapshotProviderV1 = {
     throw new Error("not used by authority transition tests");
   },
 };
-
-function scene(): StudioPreviewAuthoritySceneV1 {
-  return {
-    name: "SceneOne",
-    runtimeSceneState: { duration: 2 },
-    sourceHash: "a".repeat(64),
-    sourcePath: "scene.py",
-  };
-}
 
 describe("requestedStudioPreviewRendererSearchV1", () => {
   it("keeps semantic preview as the default and ignores unknown requests", () => {
@@ -133,59 +122,5 @@ describe("reduceStudioPreviewAuthorityV1", () => {
         type: "provider-resolved",
       }),
     ).toBe(reconfigured);
-  });
-});
-
-describe("createStudioPreviewEditingContextV1", () => {
-  it("uses the pristine revision only when no editor history can affect authority", () => {
-    expect(
-      createStudioPreviewEditingContextV1({
-        appliedTransactionIds: [],
-        draftActive: false,
-        editingAppliedProgram: false,
-        projectId: "project-a",
-        redoProgramCount: 0,
-        scene: scene(),
-      }),
-    ).toEqual({
-      projectId: "project-a",
-      sceneName: "SceneOne",
-      sourceDuration: 2,
-      sourceHash: "a".repeat(64),
-      sourcePath: "scene.py",
-      workingRevision: "pristine",
-    });
-  });
-
-  it.each([
-    ["applied program", { appliedTransactionIds: ["tx-1"] }],
-    ["draft", { draftActive: true }],
-    ["applied-program edit", { editingAppliedProgram: true }],
-    ["redo history", { redoProgramCount: 1 }],
-  ] as const)("invalidates snapshot correlation for an %s", (_label, change) => {
-    const context = createStudioPreviewEditingContextV1({
-      appliedTransactionIds: [],
-      draftActive: false,
-      editingAppliedProgram: false,
-      projectId: "project-a",
-      redoProgramCount: 0,
-      scene: scene(),
-      ...change,
-    });
-
-    expect(context?.workingRevision).not.toBe("pristine");
-  });
-
-  it("does not create preview authority without both project and Scene identity", () => {
-    const input = {
-      appliedTransactionIds: [],
-      draftActive: false,
-      editingAppliedProgram: false,
-      projectId: "project-a",
-      redoProgramCount: 0,
-      scene: scene(),
-    };
-    expect(createStudioPreviewEditingContextV1({ ...input, projectId: null })).toBeNull();
-    expect(createStudioPreviewEditingContextV1({ ...input, scene: null })).toBeNull();
   });
 });

@@ -1,21 +1,13 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useReducer, useSyncExternalStore } from "react";
 
 import {
-  PRISTINE_WORKING_REVISION,
-  STUDIO_PREVIEW_RENDERER_QUERY_PARAM,
   createUnavailableStudioPreviewSnapshotProviderV1,
   resolveStudioPreviewSnapshotProviderV1,
+  STUDIO_PREVIEW_RENDERER_QUERY_PARAM,
   type StudioPreviewEditingContextV1,
   type StudioPreviewSnapshotProviderV1,
 } from "./preview-snapshot-provider";
-import { useStudioPreviewRenderer, type StudioPreviewRendererViewV1 } from "./use-preview-renderer";
-
-export type StudioPreviewAuthoritySceneV1 = Readonly<{
-  name: string;
-  runtimeSceneState: Readonly<{ duration: number }>;
-  sourceHash: string;
-  sourcePath: string;
-}>;
+import { type StudioPreviewRendererViewV1, useStudioPreviewRenderer } from "./use-preview-renderer";
 
 export type StudioPreviewAuthorityStateV1 =
   | Readonly<{
@@ -47,15 +39,10 @@ export type StudioPreviewAuthorityActionV1 =
     }>;
 
 type UseStudioPreviewAuthorityControllerInput = Readonly<{
-  appliedTransactionIds: readonly string[];
-  draftActive: boolean;
-  editingAppliedProgram: boolean;
+  context: StudioPreviewEditingContextV1 | null;
   frame: Readonly<{ height: number; width: number }>;
-  projectId: string | null;
-  redoProgramCount: number;
   retainedSourceDuration: number | null;
   sampleTime: number;
-  scene: StudioPreviewAuthoritySceneV1 | null;
   transientEdit: boolean;
 }>;
 
@@ -110,38 +97,6 @@ export function requestedStudioPreviewRendererSearchV1(search: string | null, fi
   if (search === null) return null;
   const requested = new URLSearchParams(search).get(STUDIO_PREVIEW_RENDERER_QUERY_PARAM);
   return requested === "server" || (fixtureAllowed && requested === "fixture") ? search : null;
-}
-
-type StudioPreviewEditingContextInputV1 = Readonly<{
-  appliedTransactionIds: readonly string[];
-  draftActive: boolean;
-  editingAppliedProgram: boolean;
-  projectId: string | null;
-  redoProgramCount: number;
-  scene: StudioPreviewAuthoritySceneV1 | null;
-}>;
-
-export function createStudioPreviewEditingContextV1({
-  appliedTransactionIds,
-  draftActive,
-  editingAppliedProgram,
-  projectId,
-  redoProgramCount,
-  scene,
-}: StudioPreviewEditingContextInputV1): StudioPreviewEditingContextV1 | null {
-  if (!projectId || !scene) return null;
-  const editorPristine =
-    appliedTransactionIds.length === 0 && !draftActive && !editingAppliedProgram && redoProgramCount === 0;
-  return {
-    projectId,
-    sceneName: scene.name,
-    sourceDuration: scene.runtimeSceneState.duration,
-    sourceHash: scene.sourceHash,
-    sourcePath: scene.sourcePath,
-    workingRevision: editorPristine
-      ? PRISTINE_WORKING_REVISION
-      : `programs:${appliedTransactionIds.join(",")}${draftActive ? "+draft" : ""}`,
-  };
 }
 
 type StudioPreviewLocationSearchSourcesV1 = Readonly<{
@@ -204,19 +159,15 @@ function activationIsAllowed() {
 
 /**
  * Composes App's preview request, consent, provider and renderer authority.
+ * The editor revision controller supplies its already fail-closed context.
  * The lower renderer hook continues to own snapshot/worker/canvas resources;
  * this controller decides whether it may receive any provider authority.
  */
 export function useStudioPreviewAuthorityController({
-  appliedTransactionIds,
-  draftActive,
-  editingAppliedProgram,
+  context,
   frame,
-  projectId,
-  redoProgramCount,
   retainedSourceDuration,
   sampleTime,
-  scene,
   transientEdit,
 }: UseStudioPreviewAuthorityControllerInput): StudioPreviewAuthorityControllerViewV1 {
   const browserSearch = useSyncExternalStore(subscribeBrowserSearch, currentBrowserSearch, serverBrowserSearch);
@@ -255,18 +206,6 @@ export function useStudioPreviewAuthorityController({
     };
   }, [currentAuthority]);
 
-  const context = useMemo(
-    () =>
-      createStudioPreviewEditingContextV1({
-        appliedTransactionIds,
-        draftActive,
-        editingAppliedProgram,
-        projectId,
-        redoProgramCount,
-        scene,
-      }),
-    [appliedTransactionIds, draftActive, editingAppliedProgram, projectId, redoProgramCount, scene],
-  );
   const provider = currentAuthority.phase === "active" ? currentAuthority.provider : null;
   const renderer = useStudioPreviewRenderer({
     context,

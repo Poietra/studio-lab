@@ -4,15 +4,13 @@ import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import { importManimScene } from "../render-pipeline/source-import";
 import { createSceneDurationProgram } from "./authoring-commands";
 import { validateSuggestionDraft } from "./draft-validation";
-import { evaluateWorkingState, programRecord } from "./evaluator";
 import {
   canResolveSourceDurationMismatch,
   clampPlayheadToResolvedSourceDuration,
-  importedWorkingState,
-  type ManimWorkspaceScene,
-  projectVerifiedSourceDuration,
   resolveVerifiedSourceDurationBasis,
-} from "./imported-workspace";
+} from "./editor-revision-policy";
+import { evaluateWorkingState, programRecord } from "./evaluator";
+import { importedWorkingState, type ManimWorkspaceScene, projectVerifiedSourceDuration } from "./imported-workspace";
 import type { Interval } from "./model";
 import { projectStudioWorkspace } from "./workspace-projection";
 
