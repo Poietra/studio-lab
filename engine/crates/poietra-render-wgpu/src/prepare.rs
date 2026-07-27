@@ -1,14 +1,18 @@
 use std::collections::HashMap;
 use std::ops::Range;
 
-use lyon_tessellation::geometry_builder::{FillGeometryBuilder, GeometryBuilder};
+use lyon_tessellation::geometry_builder::{
+    FillGeometryBuilder, GeometryBuilder, StrokeGeometryBuilder,
+};
 use lyon_tessellation::math::{Point as LyonPoint, point as lyon_point};
 use lyon_tessellation::{
-    FillOptions, FillTessellator, FillVertex, GeometryBuilderError, TessellationError, VertexId,
+    FillOptions, FillTessellator, FillVertex, GeometryBuilderError, LineCap, LineJoin,
+    StrokeOptions, StrokeTessellator, StrokeVertex, TessellationError, VertexId,
 };
 use poietra_scene_ir::{
     AffineTransformV1, CubicSegmentV1, CubicSubpathV1, FillRuleV1, RenderCameraV1, RenderDrawV1,
-    RenderPacketV1, RgbaColorV1, StrokeCapV1, StrokeStyleV1, ViewportV1, validate_render_packet_v1,
+    RenderPacketV1, RgbaColorV1, StrokeCapV1, StrokeJoinV1, StrokeStyleV1, ViewportV1,
+    validate_render_packet_v1,
 };
 
 /// Maximum deviation between a cubic control hull and its emitted chord.
@@ -18,35 +22,25 @@ pub const MAX_PREPARED_VERTICES_V1: usize = 1_000_000;
 const MAX_FILL_SOURCE_CUBICS_PER_DRAW_V1: usize = 2_048;
 const MAX_FILL_FLATTENED_POINTS_PER_DRAW_V1: usize = 32_768;
 const MAX_FILL_OUTPUT_VERTICES_PER_DRAW_V1: usize = 65_536;
+const MAX_STROKE_SOURCE_CUBICS_PER_DRAW_V1: usize = 2_048;
+const MAX_STROKE_FLATTENED_SEGMENTS_PER_DRAW_V1: usize = 32_768;
+const MAX_STROKE_OUTPUT_VERTICES_PER_DRAW_V1: usize = 65_536;
+const MAX_STROKE_ARC_RECURSION_DEPTH_V1: u32 = 15;
+const STROKE_INPUT_ULP_SAFETY_FACTOR_V1: f64 = 16.0;
 const MAX_FLATTEN_DEPTH_V1: u8 = 20;
-// Cross-runtime affine and morph arithmetic can move an otherwise canonical
-// Line control by several representable values. Keep that tolerance tied to
-// f64 roundoff, then clamp it again by the visible stroke-shape error budget.
-const CANONICAL_LINE_ROUNDOFF_MULTIPLIER_V1: f64 = 64.0;
-const STROKE_SHAPE_ERROR_SAFETY_FACTOR_V1: f64 = 8.0;
 
 /// A valid v1 draw feature not implemented by the bounded WGPU paint slice.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum UnsupportedDrawReasonV1 {
     #[error("image draws are not implemented")]
     Image,
-    #[error("combined fill and stroke draws are not implemented")]
-    FillAndStroke,
-    #[error("path draws must contain a solid fill")]
-    MissingFill,
-    #[error("multiple stroke subpaths are not implemented")]
-    MultipleSubpaths,
+    #[error("path draws must contain a solid fill or stroke")]
+    MissingPaint,
     #[error("open subpaths are not implemented")]
     OpenSubpath,
     #[error("the filled path is degenerate after bounded screen-space conversion")]
     DegenerateFill,
-    #[error("closed stroke subpaths are not implemented")]
-    ClosedStrokeSubpath,
-    #[error("the stroke slice requires exactly one cubic segment")]
-    StrokeSegmentCount,
-    #[error("the stroke slice accepts only a shape-safe canonical Line cubic")]
-    CurvedStroke,
-    #[error("the transformed stroke line is degenerate")]
+    #[error("the stroked path contains a degenerate cubic segment")]
     DegenerateStroke,
 }
 
@@ -76,6 +70,29 @@ pub enum PrepareFrameErrorV1 {
         draw_id: String,
         maximum_cubics: usize,
     },
+    #[error(
+        "draw {draw_id} stroke cannot preserve the {maximum_error_pixels} px precision budget or collapses in the bounded f32 tessellation domain"
+    )]
+    StrokePrecisionLoss {
+        draw_id: String,
+        maximum_error_pixels: f64,
+    },
+    #[error("draw {draw_id} stroke tessellation failed: {reason}")]
+    StrokeTessellation { draw_id: String, reason: String },
+    #[error("draw {draw_id} exceeded the stroked-path source limit of {maximum_cubics} cubics")]
+    StrokeSourceCubicLimit {
+        draw_id: String,
+        maximum_cubics: usize,
+    },
+    #[error(
+        "draw {draw_id} exceeded the stroke flattening limit of {maximum_segments} line segments"
+    )]
+    StrokeFlatteningLimit {
+        draw_id: String,
+        maximum_segments: usize,
+    },
+    #[error("draw {draw_id} exceeded the round stroke arc recursion limit of {maximum_depth}")]
+    StrokeArcComplexityLimit { draw_id: String, maximum_depth: u32 },
     #[error("prepared geometry exceeds the u32 indexed-draw range")]
     IndexRange,
     #[error("draw {draw_id} exceeded the adaptive tessellation vertex limit of {maximum_vertices}")]
@@ -103,7 +120,7 @@ impl PreparedGeometryVertexV1 {
     }
 }
 
-/// Premultiplied linear-light solid paint for one source draw.
+/// Premultiplied linear-light solid paint for one prepared paint phase.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PreparedMaterialV1 {
     premultiplied_linear_color: [f32; 4],
@@ -116,7 +133,7 @@ impl PreparedMaterialV1 {
     }
 }
 
-/// Indexed triangle range for one source draw, kept in packet paint order.
+/// Indexed triangle range for one paint phase, kept in packet paint order.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedDrawV1 {
     draw_id: String,
@@ -215,9 +232,9 @@ impl PreparedFrameV1 {
         &self.ordered_draws
     }
 
-    /// Number of per-draw tessellation operations that actually ran while
-    /// preparing this frame, counted at the tessellation call sites (one
-    /// stroke or fill tessellation per accepted draw) — never inferred from
+    /// Number of paint-phase tessellation operations that actually ran while
+    /// preparing this frame. A path with both fill and stroke contributes two
+    /// calls in fill-then-stroke order; the value is never inferred from
     /// vertex or index totals.
     #[must_use]
     pub const fn tessellation_calls(&self) -> u64 {
@@ -457,91 +474,6 @@ fn cubic_is_flat(
     Ok(maximum_distance <= tolerance_world)
 }
 
-fn canonical_line_control(start: PointF64, end: PointF64, factor: f64) -> PointF64 {
-    PointF64 {
-        x: start.x + (end.x - start.x) * factor,
-        y: start.y + (end.y - start.y) * factor,
-    }
-}
-
-fn point_distance(left: PointF64, right: PointF64) -> f64 {
-    (left.x - right.x).hypot(left.y - right.y)
-}
-
-fn projection_onto_chord(
-    point: PointF64,
-    start: PointF64,
-    delta: PointF64,
-    length_squared: f64,
-) -> f64 {
-    ((point.x - start.x) * delta.x + (point.y - start.y) * delta.y) / length_squared
-}
-
-fn is_shape_safe_canonical_line(
-    curve: CubicF64,
-    tolerance_world: f64,
-    stroke_radius: f64,
-    draw_id: &str,
-) -> Result<bool, PrepareFrameErrorV1> {
-    let chord = PointF64 {
-        x: curve.end.x - curve.start.x,
-        y: curve.end.y - curve.start.y,
-    };
-    let chord_length = chord.x.hypot(chord.y);
-    if !chord_length.is_finite() {
-        return Err(numeric_error(Some(draw_id), "stroke length"));
-    }
-    if chord_length == 0.0 {
-        return Ok(
-            same_point(curve.control1, curve.start) && same_point(curve.control2, curve.start)
-        );
-    }
-
-    let length_squared = chord_length * chord_length;
-    let first_projection =
-        projection_onto_chord(curve.control1, curve.start, chord, length_squared);
-    let second_projection =
-        projection_onto_chord(curve.control2, curve.start, chord, length_squared);
-    if !first_projection.is_finite()
-        || !second_projection.is_finite()
-        || !(0.0..=1.0).contains(&first_projection)
-        || !(0.0..=1.0).contains(&second_projection)
-        || first_projection > second_projection
-    {
-        return Ok(false);
-    }
-
-    let expected_control1 = canonical_line_control(curve.start, curve.end, 1.0 / 3.0);
-    let expected_control2 = canonical_line_control(curve.start, curve.end, 2.0 / 3.0);
-    let maximum_control_error = point_distance(curve.control1, expected_control1)
-        .max(point_distance(curve.control2, expected_control2));
-    let coordinate_scale = [
-        curve.start.x,
-        curve.start.y,
-        curve.control1.x,
-        curve.control1.y,
-        curve.control2.x,
-        curve.control2.y,
-        curve.end.x,
-        curve.end.y,
-    ]
-    .into_iter()
-    .map(f64::abs)
-    .fold(1.0, f64::max);
-    let numeric_roundoff = coordinate_scale * f64::EPSILON * CANONICAL_LINE_ROUNDOFF_MULTIPLIER_V1;
-    // Replacing the cubic with its chord changes both its centerline and the
-    // normals used for joins/caps. The second term keeps the worst derivative
-    // perturbation, magnified by stroke radius, below the same pixel budget.
-    let shape_error = tolerance_world.min(
-        tolerance_world * chord_length / (STROKE_SHAPE_ERROR_SAFETY_FACTOR_V1 * stroke_radius),
-    );
-    let accepted_error = numeric_roundoff.min(shape_error);
-    if !maximum_control_error.is_finite() || !accepted_error.is_finite() {
-        return Err(numeric_error(Some(draw_id), "stroke Line verification"));
-    }
-    Ok(maximum_control_error <= accepted_error)
-}
-
 fn append_point(
     points: &mut Vec<PointF64>,
     point: PointF64,
@@ -700,7 +632,7 @@ impl FillContourTopologyV1 {
 }
 
 #[derive(Debug)]
-struct BoundedFillGeometryV1 {
+struct BoundedGeometryV1 {
     first_index: usize,
     first_vertex: usize,
     index_limit_exceeded: bool,
@@ -710,7 +642,7 @@ struct BoundedFillGeometryV1 {
     vertices: Vec<LyonPoint>,
 }
 
-impl BoundedFillGeometryV1 {
+impl BoundedGeometryV1 {
     fn new(maximum_vertices: usize) -> Self {
         Self {
             first_index: 0,
@@ -724,7 +656,7 @@ impl BoundedFillGeometryV1 {
     }
 }
 
-impl GeometryBuilder for BoundedFillGeometryV1 {
+impl GeometryBuilder for BoundedGeometryV1 {
     fn begin_geometry(&mut self) {
         self.first_index = self.indices.len();
         self.first_vertex = self.vertices.len();
@@ -751,10 +683,29 @@ impl GeometryBuilder for BoundedFillGeometryV1 {
     }
 }
 
-impl FillGeometryBuilder for BoundedFillGeometryV1 {
+impl FillGeometryBuilder for BoundedGeometryV1 {
     fn add_fill_vertex(
         &mut self,
         vertex: FillVertex<'_>,
+    ) -> Result<VertexId, GeometryBuilderError> {
+        if self.vertices.len() >= self.maximum_vertices {
+            return Err(GeometryBuilderError::TooManyVertices);
+        }
+        let position = vertex.position();
+        if !position.x.is_finite() || !position.y.is_finite() {
+            return Err(GeometryBuilderError::InvalidVertex);
+        }
+        let index = u32::try_from(self.vertices.len())
+            .map_err(|_| GeometryBuilderError::TooManyVertices)?;
+        self.vertices.push(position);
+        Ok(VertexId(index))
+    }
+}
+
+impl StrokeGeometryBuilder for BoundedGeometryV1 {
+    fn add_stroke_vertex(
+        &mut self,
+        vertex: StrokeVertex<'_, '_>,
     ) -> Result<VertexId, GeometryBuilderError> {
         if self.vertices.len() >= self.maximum_vertices {
             return Err(GeometryBuilderError::TooManyVertices);
@@ -790,27 +741,50 @@ fn fill_tessellation_error(
     }
 }
 
-fn validate_fill_output(
-    output: &BoundedFillGeometryV1,
+#[derive(Clone, Copy)]
+enum GeometryPhaseV1 {
+    Fill,
+    Stroke,
+}
+
+impl GeometryPhaseV1 {
+    fn error(self, draw_id: &str, reason: String) -> PrepareFrameErrorV1 {
+        match self {
+            Self::Fill => PrepareFrameErrorV1::FillTessellation {
+                draw_id: draw_id.to_owned(),
+                reason,
+            },
+            Self::Stroke => PrepareFrameErrorV1::StrokeTessellation {
+                draw_id: draw_id.to_owned(),
+                reason,
+            },
+        }
+    }
+}
+
+fn validate_geometry_output(
+    output: &BoundedGeometryV1,
     draw_id: &str,
+    degenerate_reason: UnsupportedDrawReasonV1,
+    phase: GeometryPhaseV1,
 ) -> Result<(), PrepareFrameErrorV1> {
     if output.index_limit_exceeded {
-        return Err(PrepareFrameErrorV1::FillTessellation {
-            draw_id: draw_id.to_owned(),
-            reason: "triangle index output exceeded the bounded planar-mesh limit".to_owned(),
-        });
+        return Err(phase.error(
+            draw_id,
+            "triangle index output exceeded the bounded planar-mesh limit".to_owned(),
+        ));
     }
     if output.vertices.is_empty() || output.indices.is_empty() {
         return Err(PrepareFrameErrorV1::Unsupported {
             draw_id: draw_id.to_owned(),
-            reason: UnsupportedDrawReasonV1::DegenerateFill,
+            reason: degenerate_reason,
         });
     }
     if !output.indices.len().is_multiple_of(3) {
-        return Err(PrepareFrameErrorV1::FillTessellation {
-            draw_id: draw_id.to_owned(),
-            reason: "triangle index output is not divisible by three".to_owned(),
-        });
+        return Err(phase.error(
+            draw_id,
+            "triangle index output is not divisible by three".to_owned(),
+        ));
     }
     for triangle in output.indices.chunks_exact(3) {
         let [first, second, third] = [
@@ -825,10 +799,7 @@ fn validate_fill_output(
             .zip(output.vertices.get(third))
             .map(|((first, second), third)| (first, second, third))
         else {
-            return Err(PrepareFrameErrorV1::FillTessellation {
-                draw_id: draw_id.to_owned(),
-                reason: "triangle references an unknown vertex".to_owned(),
-            });
+            return Err(phase.error(draw_id, "triangle references an unknown vertex".to_owned()));
         };
         let doubled_area = (f64::from(second.x) - f64::from(first.x))
             * (f64::from(third.y) - f64::from(first.y))
@@ -837,220 +808,130 @@ fn validate_fill_output(
         if doubled_area == 0.0 || !doubled_area.is_finite() {
             return Err(PrepareFrameErrorV1::Unsupported {
                 draw_id: draw_id.to_owned(),
-                reason: UnsupportedDrawReasonV1::DegenerateFill,
+                reason: degenerate_reason,
             });
         }
     }
     Ok(())
 }
 
-fn append_prepared_vertex(
-    vertices: &mut Vec<PreparedGeometryVertexV1>,
+fn world_to_camera_relative(
     world: PointF64,
     camera: &RenderCameraV1,
     draw_id: &str,
-) -> Result<u32, PrepareFrameErrorV1> {
-    if vertices.len() >= MAX_PREPARED_VERTICES_V1 {
-        return Err(PrepareFrameErrorV1::TessellationVertexLimit {
-            draw_id: draw_id.to_owned(),
-            maximum_vertices: MAX_PREPARED_VERTICES_V1,
-        });
+) -> Result<PointF64, PrepareFrameErrorV1> {
+    let camera_center_x = camera.left + (camera.right - camera.left) * 0.5;
+    let camera_center_y = camera.bottom + (camera.top - camera.bottom) * 0.5;
+    let relative = PointF64 {
+        x: world.x - camera_center_x,
+        y: world.y - camera_center_y,
+    };
+    if !relative.x.is_finite() || !relative.y.is_finite() {
+        return Err(numeric_error(
+            Some(draw_id),
+            "camera-relative stroke position",
+        ));
     }
-    let clip = world_to_clip(world, camera, draw_id)?;
-    let index = u32::try_from(vertices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
-    vertices.push(PreparedGeometryVertexV1 {
-        position: [
-            checked_f32(clip.x, Some(draw_id), "clip x")?,
-            checked_f32(clip.y, Some(draw_id), "clip y")?,
-        ],
-    });
-    Ok(index)
+    Ok(relative)
 }
 
-fn append_stroke_quad(
-    vertices: &mut Vec<PreparedGeometryVertexV1>,
-    indices: &mut Vec<u32>,
-    corners: [PointF64; 4],
-    camera: &RenderCameraV1,
-    draw_id: &str,
-) -> Result<(), PrepareFrameErrorV1> {
-    let [start_left, start_right, end_left, end_right] = corners;
-    let start_left = append_prepared_vertex(vertices, start_left, camera, draw_id)?;
-    let start_right = append_prepared_vertex(vertices, start_right, camera, draw_id)?;
-    let end_left = append_prepared_vertex(vertices, end_left, camera, draw_id)?;
-    let end_right = append_prepared_vertex(vertices, end_right, camera, draw_id)?;
-    indices.extend_from_slice(&[
-        start_left,
-        start_right,
-        end_left,
-        end_left,
-        start_right,
-        end_right,
-    ]);
-    Ok(())
-}
-
-fn round_cap_segments(
-    radius: f64,
-    tolerance_world: f64,
-    draw_id: &str,
-) -> Result<u32, PrepareFrameErrorV1> {
-    let mut segments = 1u32;
-    let mut depth = 0u8;
-    while radius * (1.0 - (std::f64::consts::PI / (2.0 * f64::from(segments))).cos())
-        > tolerance_world
-    {
-        if depth >= MAX_FLATTEN_DEPTH_V1 {
-            return Err(PrepareFrameErrorV1::TessellationDepthLimit {
-                draw_id: draw_id.to_owned(),
-                maximum_depth: MAX_FLATTEN_DEPTH_V1,
-            });
-        }
-        segments = segments.checked_mul(2).ok_or_else(|| {
-            PrepareFrameErrorV1::TessellationVertexLimit {
-                draw_id: draw_id.to_owned(),
-                maximum_vertices: MAX_PREPARED_VERTICES_V1,
-            }
-        })?;
-        depth += 1;
+fn stroke_precision_error(draw_id: &str) -> PrepareFrameErrorV1 {
+    PrepareFrameErrorV1::StrokePrecisionLoss {
+        draw_id: draw_id.to_owned(),
+        maximum_error_pixels: FLATTEN_TOLERANCE_PIXELS_V1,
     }
-    Ok(segments)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn append_round_cap(
-    vertices: &mut Vec<PreparedGeometryVertexV1>,
-    indices: &mut Vec<u32>,
-    center: PointF64,
-    first: PointF64,
-    first_angle: f64,
-    last: PointF64,
-    radius: f64,
-    segments: u32,
-    camera: &RenderCameraV1,
-    draw_id: &str,
-) -> Result<(), PrepareFrameErrorV1> {
-    let center_index = append_prepared_vertex(vertices, center, camera, draw_id)?;
-    let mut previous = append_prepared_vertex(vertices, first, camera, draw_id)?;
-    for step in 1..=segments {
-        let progress = f64::from(step) / f64::from(segments);
-        let angle = first_angle + std::f64::consts::PI * progress;
-        let point = if step == segments {
-            last
-        } else {
-            PointF64 {
-                x: center.x + radius * angle.cos(),
-                y: center.y + radius * angle.sin(),
-            }
-        };
-        let next = append_prepared_vertex(vertices, point, camera, draw_id)?;
-        indices.extend_from_slice(&[center_index, previous, next]);
-        previous = next;
-    }
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn append_straight_stroke(
-    vertices: &mut Vec<PreparedGeometryVertexV1>,
-    indices: &mut Vec<u32>,
-    start: PointF64,
-    end: PointF64,
-    stroke: &StrokeStyleV1,
+fn stroke_pixels_per_world(
     camera: &RenderCameraV1,
     viewport: &ViewportV1,
     draw_id: &str,
-) -> Result<(), PrepareFrameErrorV1> {
-    let delta_x = end.x - start.x;
-    let delta_y = end.y - start.y;
-    let length = delta_x.hypot(delta_y);
-    if !length.is_finite() {
-        return Err(numeric_error(Some(draw_id), "stroke length"));
+) -> Result<f64, PrepareFrameErrorV1> {
+    let pixels_per_world_x = f64::from(viewport.width_px) / (camera.right - camera.left);
+    let pixels_per_world_y = f64::from(viewport.height_px) / (camera.top - camera.bottom);
+    // Use the denser axis so a 0.25-unit Lyon deviation cannot exceed 0.25
+    // physical pixels when camera and viewport aspect ratios differ.
+    let scale = pixels_per_world_x.max(pixels_per_world_y);
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err(numeric_error(Some(draw_id), "stroke pixel scale"));
     }
-    if length == 0.0 {
-        return Err(PrepareFrameErrorV1::Unsupported {
-            draw_id: draw_id.to_owned(),
-            reason: UnsupportedDrawReasonV1::DegenerateStroke,
-        });
-    }
+    Ok(scale)
+}
 
-    let direction = PointF64 {
-        x: delta_x / length,
-        y: delta_y / length,
+fn world_to_stroke_point(
+    world: PointF64,
+    camera: &RenderCameraV1,
+    pixels_per_world: f64,
+    maximum_ulp_pixels: f64,
+    draw_id: &str,
+) -> Result<(LyonPoint, PointF64), PrepareFrameErrorV1> {
+    let relative = world_to_camera_relative(world, camera, draw_id)?;
+    let pixel = PointF64 {
+        x: relative.x * pixels_per_world,
+        y: relative.y * pixels_per_world,
     };
-    let normal = PointF64 {
-        x: -direction.y,
-        y: direction.x,
-    };
-    let radius = stroke.width_world * 0.5;
-    let (start_center, end_center) = if stroke.cap == StrokeCapV1::Square {
-        (
-            PointF64 {
-                x: start.x - direction.x * radius,
-                y: start.y - direction.y * radius,
-            },
-            PointF64 {
-                x: end.x + direction.x * radius,
-                y: end.y + direction.y * radius,
-            },
-        )
-    } else {
-        (start, end)
-    };
-    let offset = PointF64 {
-        x: normal.x * radius,
-        y: normal.y * radius,
-    };
-    let corners = [
-        PointF64 {
-            x: start_center.x + offset.x,
-            y: start_center.y + offset.y,
-        },
-        PointF64 {
-            x: start_center.x - offset.x,
-            y: start_center.y - offset.y,
-        },
-        PointF64 {
-            x: end_center.x + offset.x,
-            y: end_center.y + offset.y,
-        },
-        PointF64 {
-            x: end_center.x - offset.x,
-            y: end_center.y - offset.y,
-        },
-    ];
-    append_stroke_quad(vertices, indices, corners, camera, draw_id)?;
-
-    if stroke.cap == StrokeCapV1::Round {
-        let segments =
-            round_cap_segments(radius, world_flatten_tolerance(camera, viewport), draw_id)?;
-        let direction_angle = direction.y.atan2(direction.x);
-        append_round_cap(
-            vertices,
-            indices,
-            start,
-            corners[0],
-            direction_angle + std::f64::consts::FRAC_PI_2,
-            corners[1],
-            radius,
-            segments,
-            camera,
-            draw_id,
-        )?;
-        append_round_cap(
-            vertices,
-            indices,
-            end,
-            corners[3],
-            direction_angle - std::f64::consts::FRAC_PI_2,
-            corners[2],
-            radius,
-            segments,
-            camera,
-            draw_id,
-        )?;
+    let converted_x = checked_f32(pixel.x, Some(draw_id), "camera-relative stroke pixel x")?;
+    let converted_y = checked_f32(pixel.y, Some(draw_id), "camera-relative stroke pixel y")?;
+    let error_pixels_x = (pixel.x - f64::from(converted_x)).abs();
+    let error_pixels_y = (pixel.y - f64::from(converted_y)).abs();
+    if error_pixels_x.hypot(error_pixels_y) > FLATTEN_TOLERANCE_PIXELS_V1
+        || f32_ulp(converted_x) > maximum_ulp_pixels
+        || f32_ulp(converted_y) > maximum_ulp_pixels
+    {
+        return Err(stroke_precision_error(draw_id));
     }
-    Ok(())
+    Ok((lyon_point(converted_x, converted_y), pixel))
+}
+
+fn f32_ulp(value: f32) -> f64 {
+    let magnitude = value.abs();
+    if magnitude == 0.0 {
+        return f64::from(f32::from_bits(1));
+    }
+    let next = f32::from_bits(magnitude.to_bits().saturating_add(1));
+    f64::from(next) - f64::from(magnitude)
+}
+
+fn stroke_scalar_to_f32(
+    value: f64,
+    visible_scale: f64,
+    draw_id: &str,
+    component: &str,
+) -> Result<f32, PrepareFrameErrorV1> {
+    let converted = checked_f32(value, Some(draw_id), component)?;
+    let error_pixels = (value - f64::from(converted)).abs() * visible_scale;
+    if converted <= 0.0 || !error_pixels.is_finite() || error_pixels > FLATTEN_TOLERANCE_PIXELS_V1 {
+        return Err(stroke_precision_error(draw_id));
+    }
+    Ok(converted)
+}
+
+fn stroke_output_position(
+    point: LyonPoint,
+    camera: &RenderCameraV1,
+    pixels_per_world: f64,
+    viewport: &ViewportV1,
+    draw_id: &str,
+) -> Result<[f32; 2], PrepareFrameErrorV1> {
+    let clip = PointF64 {
+        x: f64::from(point.x) * 2.0 / ((camera.right - camera.left) * pixels_per_world),
+        y: f64::from(point.y) * 2.0 / ((camera.top - camera.bottom) * pixels_per_world),
+    };
+    let converted_x = checked_f32(clip.x, Some(draw_id), "stroke clip x")?;
+    let converted_y = checked_f32(clip.y, Some(draw_id), "stroke clip y")?;
+    let error_pixels_x =
+        (clip.x - f64::from(converted_x)).abs() * f64::from(viewport.width_px) * 0.5;
+    let error_pixels_y =
+        (clip.y - f64::from(converted_y)).abs() * f64::from(viewport.height_px) * 0.5;
+    let ulp_pixels_x = f32_ulp(converted_x) * f64::from(viewport.width_px) * 0.5;
+    let ulp_pixels_y = f32_ulp(converted_y) * f64::from(viewport.height_px) * 0.5;
+    if error_pixels_x.hypot(error_pixels_y) > FLATTEN_TOLERANCE_PIXELS_V1
+        || ulp_pixels_x > FLATTEN_TOLERANCE_PIXELS_V1
+        || ulp_pixels_y > FLATTEN_TOLERANCE_PIXELS_V1
+    {
+        return Err(stroke_precision_error(draw_id));
+    }
+    Ok([converted_x, converted_y])
 }
 
 fn srgb_to_linear(value: f64) -> f64 {
@@ -1136,45 +1017,13 @@ pub fn prepare_frame_v1(packet: &RenderPacketV1) -> Result<PreparedFrameV1, Prep
     tessellate_validated_frame_v1(validate_frame_packet_v1(packet)?)
 }
 
-fn prepare_draw_material(draw: &RenderDrawV1) -> Result<PreparedMaterialV1, PrepareFrameErrorV1> {
-    let RenderDrawV1::Path {
-        draw_id,
-        fill,
-        opacity,
-        stroke,
-        ..
-    } = draw
-    else {
-        return Err(PrepareFrameErrorV1::Unsupported {
-            draw_id: draw.draw_id().to_owned(),
-            reason: UnsupportedDrawReasonV1::Image,
-        });
-    };
-    let color = match (fill, stroke) {
-        (Some(fill), None) => &fill.color,
-        (None, Some(stroke)) => &stroke.color,
-        (Some(_), Some(_)) => {
-            return Err(PrepareFrameErrorV1::Unsupported {
-                draw_id: draw_id.clone(),
-                reason: UnsupportedDrawReasonV1::FillAndStroke,
-            });
-        }
-        (None, None) => {
-            return Err(PrepareFrameErrorV1::Unsupported {
-                draw_id: draw_id.clone(),
-                reason: UnsupportedDrawReasonV1::MissingFill,
-            });
-        }
-    };
+fn prepare_material(
+    color: &RgbaColorV1,
+    opacity: f64,
+    draw_id: &str,
+) -> Result<PreparedMaterialV1, PrepareFrameErrorV1> {
     Ok(PreparedMaterialV1 {
-        premultiplied_linear_color: premultiplied_linear_color(color, *opacity, Some(draw_id))?,
-    })
-}
-
-fn prepare_image_geometry(draw_id: &str) -> Result<(), PrepareFrameErrorV1> {
-    Err(PrepareFrameErrorV1::Unsupported {
-        draw_id: draw_id.to_owned(),
-        reason: UnsupportedDrawReasonV1::Image,
+        premultiplied_linear_color: premultiplied_linear_color(color, opacity, Some(draw_id))?,
     })
 }
 
@@ -1185,6 +1034,370 @@ struct GeometryContextV1<'a> {
     viewport: &'a ViewportV1,
 }
 
+fn validate_stroke_source_limits(
+    path: &poietra_scene_ir::CubicPathV1,
+    draw_id: &str,
+) -> Result<(), PrepareFrameErrorV1> {
+    let mut source_cubics = 0usize;
+    for subpath in &path.subpaths {
+        source_cubics = source_cubics.saturating_add(subpath.segments.len());
+        if source_cubics > MAX_STROKE_SOURCE_CUBICS_PER_DRAW_V1 {
+            return Err(PrepareFrameErrorV1::StrokeSourceCubicLimit {
+                draw_id: draw_id.to_owned(),
+                maximum_cubics: MAX_STROKE_SOURCE_CUBICS_PER_DRAW_V1,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn stroke_options(
+    stroke: &StrokeStyleV1,
+    pixels_per_world: f64,
+    context: GeometryContextV1<'_>,
+) -> Result<StrokeOptions, PrepareFrameErrorV1> {
+    let line_width_pixels = stroke.width_world * pixels_per_world;
+    let width_error_scale = if matches!(stroke.join, StrokeJoinV1::Miter) {
+        stroke.miter_limit * 0.5
+    } else {
+        0.5
+    };
+    let line_width = stroke_scalar_to_f32(
+        line_width_pixels,
+        width_error_scale,
+        context.draw_id,
+        "stroke width in pixel-normalized space",
+    )?;
+    let miter_limit = stroke_scalar_to_f32(
+        stroke.miter_limit,
+        line_width_pixels * 0.5,
+        context.draw_id,
+        "stroke miter limit",
+    )?;
+    let tolerance = stroke_scalar_to_f32(
+        FLATTEN_TOLERANCE_PIXELS_V1,
+        1.0,
+        context.draw_id,
+        "stroke tessellation tolerance",
+    )?;
+    let line_cap = match stroke.cap {
+        StrokeCapV1::Butt => LineCap::Butt,
+        StrokeCapV1::Round => LineCap::Round,
+        StrokeCapV1::Square => LineCap::Square,
+    };
+    let line_join = match stroke.join {
+        StrokeJoinV1::Bevel => LineJoin::Bevel,
+        StrokeJoinV1::Miter => LineJoin::Miter,
+        StrokeJoinV1::Round => LineJoin::Round,
+    };
+    Ok(StrokeOptions::default()
+        .with_line_width(line_width)
+        .with_line_cap(line_cap)
+        .with_line_join(line_join)
+        .with_miter_limit(miter_limit)
+        .with_tolerance(tolerance))
+}
+
+#[derive(Clone, Copy)]
+struct PreparedStrokeCubicV1 {
+    control1: LyonPoint,
+    control2: LyonPoint,
+    end: LyonPoint,
+}
+
+struct PreparedStrokeSubpathV1 {
+    closed: bool,
+    segments: Vec<PreparedStrokeCubicV1>,
+    start: LyonPoint,
+}
+
+fn maximum_stroke_input_ulp(stroke: &StrokeStyleV1) -> f64 {
+    let amplification = if matches!(stroke.join, StrokeJoinV1::Miter) {
+        stroke.miter_limit
+    } else {
+        1.0
+    };
+    FLATTEN_TOLERANCE_PIXELS_V1 / (STROKE_INPUT_ULP_SAFETY_FACTOR_V1 * amplification)
+}
+
+fn stroke_input_point(
+    world: PointF64,
+    context: GeometryContextV1<'_>,
+    pixels_per_world: f64,
+    maximum_ulp_pixels: f64,
+    input_points: &mut HashMap<(u32, u32), (u64, u64)>,
+) -> Result<LyonPoint, PrepareFrameErrorV1> {
+    let (point, pixel) = world_to_stroke_point(
+        world,
+        context.camera,
+        pixels_per_world,
+        maximum_ulp_pixels,
+        context.draw_id,
+    )?;
+    if input_points
+        .insert(fill_point_key(point), point_key(pixel))
+        .is_some_and(|previous| previous != point_key(pixel))
+    {
+        return Err(stroke_precision_error(context.draw_id));
+    }
+    Ok(point)
+}
+
+fn stroke_cubic_flattened_segments(
+    start: LyonPoint,
+    curve: PreparedStrokeCubicV1,
+    tolerance: f32,
+    draw_id: &str,
+) -> Result<usize, PrepareFrameErrorV1> {
+    // This mirrors lyon_geom's f32 Wang bound, but rounds upward and validates
+    // it before Lyon enters its callback-only flattening loop.
+    let first_x = (start.x - curve.control1.x * 2.0 + curve.control2.x) * 6.0;
+    let first_y = (start.y - curve.control1.y * 2.0 + curve.control2.y) * 6.0;
+    let second_x = (curve.control1.x - curve.control2.x * 2.0 + curve.end.x) * 6.0;
+    let second_y = (curve.control1.y - curve.control2.y * 2.0 + curve.end.y) * 6.0;
+    let length_squared =
+        (first_x * first_x + first_y * first_y).max(second_x * second_x + second_y * second_y);
+    let denominator = 8.0 * tolerance;
+    let error_to_fourth = length_squared / (denominator * denominator);
+    let Some(segments) = stroke_wang_segment_count(error_to_fourth) else {
+        return Err(PrepareFrameErrorV1::StrokeFlatteningLimit {
+            draw_id: draw_id.to_owned(),
+            maximum_segments: MAX_STROKE_FLATTENED_SEGMENTS_PER_DRAW_V1,
+        });
+    };
+    Ok(segments)
+}
+
+fn stroke_wang_segment_count(error_to_fourth: f32) -> Option<usize> {
+    // lyon_geom uses this LUT before its square-root fallback. Repeating the
+    // exact comparisons matters at a rounded i^4 boundary: sqrt(sqrt(x)) can
+    // round back to i even when Lyon advances to i + 1.
+    const FOURTH_POWERS: [f32; 24] = [
+        1.0, 16.0, 81.0, 256.0, 625.0, 1_296.0, 2_401.0, 4_096.0, 6_561.0, 10_000.0, 14_641.0,
+        20_736.0, 28_561.0, 38_416.0, 50_625.0, 65_536.0, 83_521.0, 104_976.0, 130_321.0,
+        160_000.0, 194_481.0, 234_256.0, 279_841.0, 331_776.0,
+    ];
+    if !error_to_fourth.is_finite() {
+        return None;
+    }
+    if let Some(index) = FOURTH_POWERS
+        .iter()
+        .position(|maximum| error_to_fourth <= *maximum)
+    {
+        return Some(index + 1);
+    }
+    let segments = error_to_fourth.sqrt().sqrt().ceil().max(1.0);
+    if !segments.is_finite() || segments > 32_768.0 {
+        return None;
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    Some(segments as usize)
+}
+
+fn validate_round_stroke_complexity(
+    options: &StrokeOptions,
+    draw_id: &str,
+) -> Result<(), PrepareFrameErrorV1> {
+    let round_cap =
+        matches!(options.start_cap, LineCap::Round) || matches!(options.end_cap, LineCap::Round);
+    let round_join = matches!(options.line_join, LineJoin::Round);
+    if !round_cap && !round_join {
+        return Ok(());
+    }
+
+    let radius = options.line_width * 0.5;
+    let tolerance = options.tolerance.min(radius);
+    let step = 2.0 * ((radius - tolerance) / radius).acos();
+    let maximum_angle = if round_join {
+        std::f32::consts::TAU
+    } else {
+        std::f32::consts::PI
+    };
+    let segments = (maximum_angle / step).ceil();
+    let recursion_depth = segments.log2().round();
+    if !step.is_finite() || step <= 0.0 || !recursion_depth.is_finite() || recursion_depth > 15.0 {
+        return Err(PrepareFrameErrorV1::StrokeArcComplexityLimit {
+            draw_id: draw_id.to_owned(),
+            maximum_depth: MAX_STROKE_ARC_RECURSION_DEPTH_V1,
+        });
+    }
+    Ok(())
+}
+
+fn prepare_stroke_path_input(
+    path: &poietra_scene_ir::CubicPathV1,
+    transform: &AffineTransformV1,
+    stroke: &StrokeStyleV1,
+    options: &StrokeOptions,
+    pixels_per_world: f64,
+    context: GeometryContextV1<'_>,
+) -> Result<Vec<PreparedStrokeSubpathV1>, PrepareFrameErrorV1> {
+    let maximum_ulp_pixels = maximum_stroke_input_ulp(stroke);
+    let mut input_points = HashMap::new();
+    let mut flattened_segments = 0usize;
+    let mut prepared_subpaths = Vec::with_capacity(path.subpaths.len());
+
+    for subpath in &path.subpaths {
+        let start_world = transform_to_world(&subpath.start, transform, context.draw_id)?;
+        let start = stroke_input_point(
+            start_world,
+            context,
+            pixels_per_world,
+            maximum_ulp_pixels,
+            &mut input_points,
+        )?;
+        let mut prepared_segments = Vec::with_capacity(subpath.segments.len());
+        let mut local_start = &subpath.start;
+        let mut prepared_start = start;
+        for segment in &subpath.segments {
+            let curve = world_curve(local_start, segment, transform, context.draw_id)?;
+            if same_point(curve.start, curve.control1)
+                && same_point(curve.start, curve.control2)
+                && same_point(curve.start, curve.end)
+            {
+                return Err(PrepareFrameErrorV1::Unsupported {
+                    draw_id: context.draw_id.to_owned(),
+                    reason: UnsupportedDrawReasonV1::DegenerateStroke,
+                });
+            }
+            let prepared_curve = PreparedStrokeCubicV1 {
+                control1: stroke_input_point(
+                    curve.control1,
+                    context,
+                    pixels_per_world,
+                    maximum_ulp_pixels,
+                    &mut input_points,
+                )?,
+                control2: stroke_input_point(
+                    curve.control2,
+                    context,
+                    pixels_per_world,
+                    maximum_ulp_pixels,
+                    &mut input_points,
+                )?,
+                end: stroke_input_point(
+                    curve.end,
+                    context,
+                    pixels_per_world,
+                    maximum_ulp_pixels,
+                    &mut input_points,
+                )?,
+            };
+            let curve_segments = stroke_cubic_flattened_segments(
+                prepared_start,
+                prepared_curve,
+                options.tolerance,
+                context.draw_id,
+            )?;
+            flattened_segments =
+                flattened_segments
+                    .checked_add(curve_segments)
+                    .ok_or_else(|| PrepareFrameErrorV1::StrokeFlatteningLimit {
+                        draw_id: context.draw_id.to_owned(),
+                        maximum_segments: MAX_STROKE_FLATTENED_SEGMENTS_PER_DRAW_V1,
+                    })?;
+            if flattened_segments > MAX_STROKE_FLATTENED_SEGMENTS_PER_DRAW_V1 {
+                return Err(PrepareFrameErrorV1::StrokeFlatteningLimit {
+                    draw_id: context.draw_id.to_owned(),
+                    maximum_segments: MAX_STROKE_FLATTENED_SEGMENTS_PER_DRAW_V1,
+                });
+            }
+            prepared_start = prepared_curve.end;
+            prepared_segments.push(prepared_curve);
+            local_start = &segment.end;
+        }
+        prepared_subpaths.push(PreparedStrokeSubpathV1 {
+            closed: subpath.closed,
+            segments: prepared_segments,
+            start,
+        });
+    }
+    Ok(prepared_subpaths)
+}
+
+fn stroke_tessellation_error(
+    error: &TessellationError,
+    draw_id: &str,
+    maximum_vertices: usize,
+) -> PrepareFrameErrorV1 {
+    if matches!(
+        error,
+        TessellationError::GeometryBuilder(GeometryBuilderError::TooManyVertices)
+    ) {
+        PrepareFrameErrorV1::TessellationVertexLimit {
+            draw_id: draw_id.to_owned(),
+            maximum_vertices,
+        }
+    } else {
+        PrepareFrameErrorV1::StrokeTessellation {
+            draw_id: draw_id.to_owned(),
+            reason: error.to_string(),
+        }
+    }
+}
+
+fn tessellate_stroke_path(
+    path: &[PreparedStrokeSubpathV1],
+    options: &StrokeOptions,
+    maximum_output_vertices: usize,
+    reported_output_limit: usize,
+    draw_id: &str,
+) -> Result<BoundedGeometryV1, PrepareFrameErrorV1> {
+    let mut output = BoundedGeometryV1::new(maximum_output_vertices);
+    let mut tessellator = StrokeTessellator::new();
+    let mut builder = tessellator.builder(options, &mut output);
+    for subpath in path {
+        builder.begin(subpath.start);
+        for curve in &subpath.segments {
+            builder.cubic_bezier_to(curve.control1, curve.control2, curve.end);
+        }
+        builder.end(subpath.closed);
+    }
+    builder
+        .build()
+        .map_err(|error| stroke_tessellation_error(&error, draw_id, reported_output_limit))?;
+    Ok(output)
+}
+
+fn append_stroke_output(
+    output: BoundedGeometryV1,
+    vertices: &mut Vec<PreparedGeometryVertexV1>,
+    indices: &mut Vec<u32>,
+    camera: &RenderCameraV1,
+    pixels_per_world: f64,
+    viewport: &ViewportV1,
+    draw_id: &str,
+) -> Result<(), PrepareFrameErrorV1> {
+    let prepared_vertices = output
+        .vertices
+        .into_iter()
+        .map(|point| {
+            Ok(PreparedGeometryVertexV1 {
+                position: stroke_output_position(
+                    point,
+                    camera,
+                    pixels_per_world,
+                    viewport,
+                    draw_id,
+                )?,
+            })
+        })
+        .collect::<Result<Vec<_>, PrepareFrameErrorV1>>()?;
+    let base_vertex = u32::try_from(vertices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+    let prepared_indices = output
+        .indices
+        .into_iter()
+        .map(|index| {
+            base_vertex
+                .checked_add(index)
+                .ok_or(PrepareFrameErrorV1::IndexRange)
+        })
+        .collect::<Result<Vec<_>, PrepareFrameErrorV1>>()?;
+    vertices.extend(prepared_vertices);
+    indices.extend(prepared_indices);
+    Ok(())
+}
+
 fn prepare_stroke_geometry(
     vertices: &mut Vec<PreparedGeometryVertexV1>,
     indices: &mut Vec<u32>,
@@ -1193,48 +1406,36 @@ fn prepare_stroke_geometry(
     stroke: &StrokeStyleV1,
     context: GeometryContextV1<'_>,
 ) -> Result<(), PrepareFrameErrorV1> {
-    let draw_id = context.draw_id;
-    if path.subpaths.len() != 1 {
-        return Err(PrepareFrameErrorV1::Unsupported {
-            draw_id: draw_id.to_owned(),
-            reason: UnsupportedDrawReasonV1::MultipleSubpaths,
-        });
-    }
-    let subpath = &path.subpaths[0];
-    if subpath.closed {
-        return Err(PrepareFrameErrorV1::Unsupported {
-            draw_id: draw_id.to_owned(),
-            reason: UnsupportedDrawReasonV1::ClosedStrokeSubpath,
-        });
-    }
-    if subpath.segments.len() != 1 {
-        return Err(PrepareFrameErrorV1::Unsupported {
-            draw_id: draw_id.to_owned(),
-            reason: UnsupportedDrawReasonV1::StrokeSegmentCount,
-        });
-    }
-    let segment = &subpath.segments[0];
-    let world_curve = world_curve(&subpath.start, segment, transform, draw_id)?;
-    if !is_shape_safe_canonical_line(
-        world_curve,
-        world_flatten_tolerance(context.camera, context.viewport),
-        stroke.width_world * 0.5,
-        draw_id,
-    )? {
-        return Err(PrepareFrameErrorV1::Unsupported {
-            draw_id: draw_id.to_owned(),
-            reason: UnsupportedDrawReasonV1::CurvedStroke,
-        });
-    }
-    append_straight_stroke(
+    validate_stroke_source_limits(path, context.draw_id)?;
+    let (maximum_output_vertices, reported_output_limit) =
+        stroke_output_limits(vertices.len(), context.draw_id)?;
+    let pixels_per_world =
+        stroke_pixels_per_world(context.camera, context.viewport, context.draw_id)?;
+    let options = stroke_options(stroke, pixels_per_world, context)?;
+    validate_round_stroke_complexity(&options, context.draw_id)?;
+    let prepared_path =
+        prepare_stroke_path_input(path, transform, stroke, &options, pixels_per_world, context)?;
+    let output = tessellate_stroke_path(
+        &prepared_path,
+        &options,
+        maximum_output_vertices,
+        reported_output_limit,
+        context.draw_id,
+    )?;
+    validate_geometry_output(
+        &output,
+        context.draw_id,
+        UnsupportedDrawReasonV1::DegenerateStroke,
+        GeometryPhaseV1::Stroke,
+    )?;
+    append_stroke_output(
+        output,
         vertices,
         indices,
-        world_curve.start,
-        world_curve.end,
-        stroke,
         context.camera,
+        pixels_per_world,
         context.viewport,
-        draw_id,
+        context.draw_id,
     )
 }
 
@@ -1265,6 +1466,29 @@ fn fill_output_limits(
     prepared_vertices: usize,
     draw_id: &str,
 ) -> Result<(usize, usize), PrepareFrameErrorV1> {
+    geometry_output_limits(
+        prepared_vertices,
+        MAX_FILL_OUTPUT_VERTICES_PER_DRAW_V1,
+        draw_id,
+    )
+}
+
+fn stroke_output_limits(
+    prepared_vertices: usize,
+    draw_id: &str,
+) -> Result<(usize, usize), PrepareFrameErrorV1> {
+    geometry_output_limits(
+        prepared_vertices,
+        MAX_STROKE_OUTPUT_VERTICES_PER_DRAW_V1,
+        draw_id,
+    )
+}
+
+fn geometry_output_limits(
+    prepared_vertices: usize,
+    per_draw_limit: usize,
+    draw_id: &str,
+) -> Result<(usize, usize), PrepareFrameErrorV1> {
     let Some(remaining_vertices) = MAX_PREPARED_VERTICES_V1.checked_sub(prepared_vertices) else {
         return Err(PrepareFrameErrorV1::TessellationVertexLimit {
             draw_id: draw_id.to_owned(),
@@ -1277,11 +1501,11 @@ fn fill_output_limits(
             maximum_vertices: MAX_PREPARED_VERTICES_V1,
         });
     }
-    let maximum_output_vertices = remaining_vertices.min(MAX_FILL_OUTPUT_VERTICES_PER_DRAW_V1);
-    let reported_output_limit = if remaining_vertices < MAX_FILL_OUTPUT_VERTICES_PER_DRAW_V1 {
+    let maximum_output_vertices = remaining_vertices.min(per_draw_limit);
+    let reported_output_limit = if remaining_vertices < per_draw_limit {
         MAX_PREPARED_VERTICES_V1
     } else {
-        MAX_FILL_OUTPUT_VERTICES_PER_DRAW_V1
+        per_draw_limit
     };
     Ok((maximum_output_vertices, reported_output_limit))
 }
@@ -1310,7 +1534,7 @@ fn prepare_fill_geometry(
     let options = FillOptions::default()
         .with_fill_rule(lyon_fill_rule)
         .with_tolerance(f32::EPSILON);
-    let mut output = BoundedFillGeometryV1::new(maximum_output_vertices);
+    let mut output = BoundedGeometryV1::new(maximum_output_vertices);
     let mut tessellator = FillTessellator::new();
     let mut builder = tessellator.builder(&options, &mut output);
     for subpath in &path.subpaths {
@@ -1366,7 +1590,12 @@ fn prepare_fill_geometry(
     builder
         .build()
         .map_err(|error| fill_tessellation_error(&error, draw_id, reported_output_limit))?;
-    validate_fill_output(&output, draw_id)?;
+    validate_geometry_output(
+        &output,
+        draw_id,
+        UnsupportedDrawReasonV1::DegenerateFill,
+        GeometryPhaseV1::Fill,
+    )?;
 
     let base_vertex = u32::try_from(vertices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
     for point in output.vertices {
@@ -1384,44 +1613,65 @@ fn prepare_fill_geometry(
     Ok(())
 }
 
-fn prepare_draw_geometry(
-    draw: &RenderDrawV1,
-    vertices: &mut Vec<PreparedGeometryVertexV1>,
-    indices: &mut Vec<u32>,
-    camera: &RenderCameraV1,
-    viewport: &ViewportV1,
-) -> Result<(), PrepareFrameErrorV1> {
-    let RenderDrawV1::Path {
-        draw_id,
-        fill,
-        path,
-        stroke,
-        transform,
-        ..
-    } = draw
-    else {
-        return prepare_image_geometry(draw.draw_id());
-    };
-    let context = GeometryContextV1 {
-        camera,
-        draw_id,
-        viewport,
-    };
-    match (fill, stroke) {
-        (Some(fill), None) => {
-            prepare_fill_geometry(vertices, indices, path, transform, fill.rule, context)
+struct PreparedFrameAccumulatorV1 {
+    draws: Vec<PreparedDrawV1>,
+    indices: Vec<u32>,
+    materials: Vec<PreparedMaterialV1>,
+    tessellation_calls: u64,
+    vertices: Vec<PreparedGeometryVertexV1>,
+}
+
+impl PreparedFrameAccumulatorV1 {
+    fn with_phase_capacity(phase_capacity: usize) -> Self {
+        Self {
+            draws: Vec::with_capacity(phase_capacity),
+            indices: Vec::new(),
+            materials: Vec::with_capacity(phase_capacity),
+            tessellation_calls: 0,
+            vertices: Vec::new(),
         }
-        (None, Some(stroke)) => {
-            prepare_stroke_geometry(vertices, indices, path, transform, stroke, context)
+    }
+
+    fn append_phase(
+        &mut self,
+        draw_id: &str,
+        color: &RgbaColorV1,
+        opacity: f64,
+        prepare_geometry: impl FnOnce(
+            &mut Vec<PreparedGeometryVertexV1>,
+            &mut Vec<u32>,
+        ) -> Result<(), PrepareFrameErrorV1>,
+    ) -> Result<(), PrepareFrameErrorV1> {
+        let material = prepare_material(color, opacity, draw_id)?;
+        let index_start_len = self.indices.len();
+        let vertex_start_len = self.vertices.len();
+        let index_start =
+            u32::try_from(index_start_len).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+        let vertex_start =
+            u32::try_from(vertex_start_len).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+        if let Err(error) = prepare_geometry(&mut self.vertices, &mut self.indices) {
+            self.vertices.truncate(vertex_start_len);
+            self.indices.truncate(index_start_len);
+            return Err(error);
         }
-        (Some(_), Some(_)) => Err(PrepareFrameErrorV1::Unsupported {
-            draw_id: draw_id.clone(),
-            reason: UnsupportedDrawReasonV1::FillAndStroke,
-        }),
-        (None, None) => Err(PrepareFrameErrorV1::Unsupported {
-            draw_id: draw_id.clone(),
-            reason: UnsupportedDrawReasonV1::MissingFill,
-        }),
+        let material_index =
+            u32::try_from(self.materials.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+        self.materials.push(material);
+        let index_end =
+            u32::try_from(self.indices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+        let vertex_end =
+            u32::try_from(self.vertices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+        self.draws.push(PreparedDrawV1 {
+            draw_id: draw_id.to_owned(),
+            index_range: index_start..index_end,
+            material_index,
+            vertex_range: vertex_start..vertex_end,
+        });
+        self.tessellation_calls = self
+            .tessellation_calls
+            .checked_add(1)
+            .ok_or(PrepareFrameErrorV1::IndexRange)?;
+        Ok(())
     }
 }
 
@@ -1440,51 +1690,60 @@ pub fn tessellate_validated_frame_v1(
     validated: ValidatedRenderPacketV1<'_>,
 ) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
     let packet = validated.packet;
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
-    let mut draws = Vec::with_capacity(packet.draws.len());
-    let mut materials = Vec::with_capacity(packet.draws.len());
-    let mut tessellation_calls: u64 = 0;
+    let phase_capacity = packet.draws.len().saturating_mul(2);
+    let mut prepared = PreparedFrameAccumulatorV1::with_phase_capacity(phase_capacity);
     for draw in &packet.draws {
-        let index_start =
-            u32::try_from(indices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
-        let vertex_start =
-            u32::try_from(vertices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
-        prepare_draw_geometry(
-            draw,
-            &mut vertices,
-            &mut indices,
-            &packet.camera,
-            &packet.viewport,
-        )?;
-        tessellation_calls += 1;
-        let material = prepare_draw_material(draw)?;
-        let material_index =
-            u32::try_from(materials.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
-        materials.push(material);
-        let index_end =
-            u32::try_from(indices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
-        let vertex_end =
-            u32::try_from(vertices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
-        draws.push(PreparedDrawV1 {
-            draw_id: draw.draw_id().to_owned(),
-            index_range: index_start..index_end,
-            material_index,
-            vertex_range: vertex_start..vertex_end,
-        });
+        let RenderDrawV1::Path {
+            draw_id,
+            fill,
+            opacity,
+            path,
+            stroke,
+            transform,
+            ..
+        } = draw
+        else {
+            return Err(PrepareFrameErrorV1::Unsupported {
+                draw_id: draw.draw_id().to_owned(),
+                reason: UnsupportedDrawReasonV1::Image,
+            });
+        };
+        if fill.is_none() && stroke.is_none() {
+            return Err(PrepareFrameErrorV1::Unsupported {
+                draw_id: draw_id.clone(),
+                reason: UnsupportedDrawReasonV1::MissingPaint,
+            });
+        }
+        let context = GeometryContextV1 {
+            camera: &packet.camera,
+            draw_id,
+            viewport: &packet.viewport,
+        };
+        if let Some(fill) = fill {
+            prepared.append_phase(draw_id, &fill.color, *opacity, |vertices, indices| {
+                prepare_fill_geometry(vertices, indices, path, transform, fill.rule, context)
+            })?;
+        }
+        if let Some(stroke) = stroke {
+            prepared.append_phase(draw_id, &stroke.color, *opacity, |vertices, indices| {
+                prepare_stroke_geometry(vertices, indices, path, transform, stroke, context)
+            })?;
+        }
     }
 
     Ok(PreparedFrameV1 {
         geometry: PreparedGeometryPlanV1 {
-            indices,
-            tessellation_calls,
-            vertices,
+            indices: prepared.indices,
+            tessellation_calls: prepared.tessellation_calls,
+            vertices: prepared.vertices,
         },
         materials: PreparedMaterialPlanV1 {
             clear_color: prepared_clear_color(&packet.camera.clear_color)?,
-            materials,
+            materials: prepared.materials,
         },
-        ordered_draws: OrderedDrawPlanV1 { draws },
+        ordered_draws: OrderedDrawPlanV1 {
+            draws: prepared.draws,
+        },
         viewport: [packet.viewport.width_px, packet.viewport.height_px],
     })
 }
@@ -1492,65 +1751,6 @@ pub fn tessellate_validated_frame_v1(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn shape_safe_line_accepts_interpolated_controls_farther_than_one_ulp() {
-        // At t=0.2, component-wise morphing from Line[-4, -2] to Line[10, 20]
-        // places the first control at -4.44e-16. Recomputing the canonical
-        // control from the interpolated endpoints instead yields +2.22e-16.
-        // Bit identity rejects the result although it remains geometrically straight.
-        let curve = CubicF64 {
-            control1: PointF64 {
-                x: -4.440_892_098_500_626e-16,
-                y: 0.0,
-            },
-            control2: PointF64 {
-                x: 1.199_999_999_999_999_7,
-                y: 0.0,
-            },
-            depth: 0,
-            end: PointF64 {
-                x: 2.400_000_000_000_000_4,
-                y: 0.0,
-            },
-            start: PointF64 {
-                x: -1.199_999_999_999_999_7,
-                y: 0.0,
-            },
-        };
-        let recomputed_control1 = curve.start.x + (curve.end.x - curve.start.x) * (1.0 / 3.0);
-
-        assert!(
-            curve
-                .control1
-                .x
-                .to_bits()
-                .abs_diff(recomputed_control1.to_bits())
-                > 1
-        );
-        assert!(is_shape_safe_canonical_line(curve, 0.025, 0.5, "draw:interpolated-line").unwrap());
-    }
-
-    #[test]
-    fn shape_safe_line_rejects_visible_curves_and_collinear_overshoot() {
-        let visibly_curved = CubicF64 {
-            control1: PointF64 { x: 1.0, y: 0.03 },
-            control2: PointF64 { x: 2.0, y: 0.03 },
-            depth: 0,
-            end: PointF64 { x: 3.0, y: 0.0 },
-            start: PointF64 { x: 0.0, y: 0.0 },
-        };
-        let overshoot = CubicF64 {
-            control1: PointF64 { x: -0.03, y: 0.0 },
-            control2: PointF64 { x: 2.0, y: 0.0 },
-            depth: 0,
-            end: PointF64 { x: 3.0, y: 0.0 },
-            start: PointF64 { x: 0.0, y: 0.0 },
-        };
-
-        assert!(!is_shape_safe_canonical_line(visibly_curved, 0.025, 0.5, "draw:curve").unwrap());
-        assert!(!is_shape_safe_canonical_line(overshoot, 0.025, 0.5, "draw:overshoot").unwrap());
-    }
 
     #[test]
     fn collinear_control_overshoot_is_not_flattened_to_the_endpoint_chord() {
@@ -1562,6 +1762,53 @@ mod tests {
             start: PointF64 { x: 0.0, y: 0.0 },
         };
         assert!(!cubic_is_flat(curve, 0.005, "draw:test").unwrap());
+    }
+
+    #[test]
+    fn pathological_cubic_is_rejected_by_constant_time_wang_preflight() {
+        let curve = PreparedStrokeCubicV1 {
+            control1: lyon_point(1.0e30, -1.0e30),
+            control2: lyon_point(-1.0e30, 1.0e30),
+            end: lyon_point(1.0, 0.0),
+        };
+        assert!(matches!(
+            stroke_cubic_flattened_segments(lyon_point(0.0, 0.0), curve, 0.25, "draw:pathological",),
+            Err(PrepareFrameErrorV1::StrokeFlatteningLimit {
+                maximum_segments: MAX_STROKE_FLATTENED_SEGMENTS_PER_DRAW_V1,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn wang_preflight_matches_lyons_lookup_table_boundary() {
+        let exact_tenth_boundary = 10_000.0_f32;
+        let immediately_after = f32::from_bits(exact_tenth_boundary.to_bits() + 1);
+        assert_eq!(stroke_wang_segment_count(exact_tenth_boundary), Some(10));
+        assert_eq!(stroke_wang_segment_count(immediately_after), Some(11));
+    }
+
+    #[test]
+    fn stroke_pixel_domain_uses_the_denser_viewport_axis() {
+        let camera = RenderCameraV1 {
+            bottom: -8.0,
+            clear_color: RgbaColorV1 {
+                alpha: 1.0,
+                blue: 0.0,
+                green: 0.0,
+                red: 0.0,
+            },
+            kind: poietra_scene_ir::RenderCameraKindV1::Orthographic2d,
+            left: -8.0,
+            right: 8.0,
+            top: 8.0,
+        };
+        let viewport = ViewportV1 {
+            height_px: 90,
+            width_px: 160,
+        };
+        let scale = stroke_pixels_per_world(&camera, &viewport, "draw:aspect").unwrap();
+        assert!((scale - 10.0).abs() <= f64::EPSILON);
     }
 
     #[test]
@@ -1637,7 +1884,7 @@ mod tests {
         assert_eq!(MAX_FILL_OUTPUT_VERTICES_PER_DRAW_V1, 65_536);
         let retained_vertex = lyon_point(9.0, 9.0);
         let retained_indices = [0, 0, 0];
-        let mut output = BoundedFillGeometryV1::new(5);
+        let mut output = BoundedGeometryV1::new(5);
         output.vertices.push(retained_vertex);
         output.indices.extend_from_slice(&retained_indices);
         output.index_limit_exceeded = true;
@@ -1684,10 +1931,90 @@ mod tests {
     }
 
     #[test]
-    fn fill_output_limit_preserves_one_triangle_or_reports_the_global_cap() {
+    fn bounded_stroke_builder_aborts_without_partial_output() {
+        assert_eq!(MAX_STROKE_OUTPUT_VERTICES_PER_DRAW_V1, 65_536);
+        let retained_vertex = lyon_point(9.0, 9.0);
+        let retained_indices = [0, 0, 0];
+        let mut output = BoundedGeometryV1::new(4);
+        output.vertices.push(retained_vertex);
+        output.indices.extend_from_slice(&retained_indices);
+        output.index_limit_exceeded = true;
+        let mut tessellator = StrokeTessellator::new();
+        let options = StrokeOptions::default()
+            .with_line_width(1.0)
+            .with_line_cap(LineCap::Butt);
+        let mut builder = tessellator.builder(&options, &mut output);
+        builder.begin(lyon_point(-1.0, 0.0));
+        builder.line_to(lyon_point(1.0, 0.0));
+        builder.end(false);
+
+        let build_error = builder
+            .build()
+            .expect_err("fixture must hit the stroke output cap");
+        assert!(matches!(
+            &build_error,
+            TessellationError::GeometryBuilder(GeometryBuilderError::TooManyVertices)
+        ));
+        assert_eq!(output.vertices, [retained_vertex]);
+        assert_eq!(output.indices, retained_indices);
+        assert!(!output.index_limit_exceeded);
+
+        output.maximum_vertices = 5;
+        let mut retry = tessellator.builder(&options, &mut output);
+        retry.begin(lyon_point(-1.0, 0.0));
+        retry.line_to(lyon_point(1.0, 0.0));
+        retry.end(false);
+        retry
+            .build()
+            .expect("stroke builder must be reusable after abort");
+        assert_eq!(output.vertices.len(), 5);
+        assert_eq!(output.indices.len(), 9);
+    }
+
+    #[test]
+    fn prepared_phase_rolls_back_geometry_when_tessellation_fails() {
+        let mut prepared = PreparedFrameAccumulatorV1::with_phase_capacity(1);
+        let error = prepared.append_phase(
+            "draw:rollback",
+            &RgbaColorV1 {
+                alpha: 1.0,
+                blue: 0.0,
+                green: 0.0,
+                red: 1.0,
+            },
+            1.0,
+            |vertices, indices| {
+                vertices.push(PreparedGeometryVertexV1 {
+                    position: [0.0, 0.0],
+                });
+                indices.push(0);
+                Err(PrepareFrameErrorV1::NumericRange {
+                    context: "injected phase failure".to_owned(),
+                })
+            },
+        );
+
+        assert!(matches!(
+            error,
+            Err(PrepareFrameErrorV1::NumericRange { .. })
+        ));
+        assert!(prepared.vertices.is_empty());
+        assert!(prepared.indices.is_empty());
+        assert!(prepared.materials.is_empty());
+        assert!(prepared.draws.is_empty());
+        assert_eq!(prepared.tessellation_calls, 0);
+    }
+
+    #[test]
+    fn phase_output_limits_preserve_one_triangle_or_report_the_global_cap() {
         assert_eq!(
             fill_output_limits(MAX_PREPARED_VERTICES_V1 - 3, "draw:limit")
                 .expect("one triangle must fit"),
+            (3, MAX_PREPARED_VERTICES_V1),
+        );
+        assert_eq!(
+            stroke_output_limits(MAX_PREPARED_VERTICES_V1 - 3, "draw:limit")
+                .expect("one stroke triangle must fit"),
             (3, MAX_PREPARED_VERTICES_V1),
         );
         for prepared_vertices in [
@@ -1698,6 +2025,13 @@ mod tests {
         ] {
             assert!(matches!(
                 fill_output_limits(prepared_vertices, "draw:limit"),
+                Err(PrepareFrameErrorV1::TessellationVertexLimit {
+                    maximum_vertices: MAX_PREPARED_VERTICES_V1,
+                    ..
+                })
+            ));
+            assert!(matches!(
+                stroke_output_limits(prepared_vertices, "draw:limit"),
                 Err(PrepareFrameErrorV1::TessellationVertexLimit {
                     maximum_vertices: MAX_PREPARED_VERTICES_V1,
                     ..

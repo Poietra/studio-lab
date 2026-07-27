@@ -33,7 +33,7 @@ pub enum GpuUploadPlanErrorV1 {
 
 /// Transient, bounded bytes consumed by the WGPU buffer-staging boundary.
 ///
-/// Geometry positions and per-draw materials remain separate until this plan
+/// Geometry positions and per-phase materials remain separate until this plan
 /// interleaves the current shader's vertex layout. The plan is rebuilt for each
 /// sampled frame and discarded after buffer staging; it is not a cache.
 #[derive(Debug, Eq, PartialEq)]
