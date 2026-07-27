@@ -1,5 +1,4 @@
-use std::cmp::Ordering;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
 use poietra_geometry::{
     GeometryError, apply_easing_v1, apply_motion_path_v1, compose_affine_transforms_v1,
@@ -14,6 +13,10 @@ use poietra_scene_ir::{
     validate_render_packet_for_validated_scene_v1, validate_scene_ir_with_assets_v1,
 };
 
+use crate::retained_index::{
+    RetainedSceneIndexErrorV1, RetainedSceneIndexStatsV1, RetainedSceneIndexV1,
+};
+
 /// A scene cannot be sampled into a truthful v1 frame.
 #[derive(Debug, thiserror::Error)]
 pub enum EvaluationError {
@@ -23,6 +26,8 @@ pub enum EvaluationError {
     InvalidOutput(String),
     #[error(transparent)]
     Geometry(#[from] GeometryError),
+    #[error(transparent)]
+    RetainedIndex(#[from] RetainedSceneIndexErrorV1),
     #[error("malformed scene reached evaluator: {0}")]
     MalformedScene(&'static str),
 }
@@ -52,6 +57,8 @@ pub struct SampleEngineSessionOptionsV1<'a> {
 #[derive(Debug)]
 pub struct EngineSessionV1 {
     assets: AssetManifestV1,
+    index: RetainedSceneIndexV1,
+    index_build_count: u64,
     scene: SceneIrV1,
 }
 
@@ -64,8 +71,11 @@ impl EngineSessionV1 {
     pub fn new(bundle: SceneIrBundleV1) -> Result<Self, EvaluationError> {
         validate_scene_ir_with_assets_v1(&bundle.scene, &bundle.assets)
             .map_err(|error| EvaluationError::InvalidInput(error.to_string()))?;
+        let index = RetainedSceneIndexV1::build(&bundle.scene)?;
         Ok(Self {
             assets: bundle.assets,
+            index,
+            index_build_count: 1,
             scene: bundle.scene,
         })
     }
@@ -77,7 +87,13 @@ impl EngineSessionV1 {
     /// Returns [`EvaluationError::InvalidInput`] and preserves the current snapshot
     /// when the candidate violates the v1 contract.
     pub fn replace_snapshot(&mut self, bundle: SceneIrBundleV1) -> Result<(), EvaluationError> {
-        let replacement = Self::new(bundle)?;
+        let mut replacement = Self::new(bundle)?;
+        replacement.index_build_count =
+            self.index_build_count
+                .checked_add(1)
+                .ok_or(EvaluationError::MalformedScene(
+                    "retained index build count overflowed",
+                ))?;
         *self = replacement;
         Ok(())
     }
@@ -92,6 +108,21 @@ impl EngineSessionV1 {
         &self.scene
     }
 
+    /// Returns immutable install-time evidence for the snapshot-derived index.
+    /// Sampling never changes this value; only a successful complete snapshot
+    /// replacement advances its build count.
+    #[must_use]
+    pub fn retained_index_stats(&self) -> RetainedSceneIndexStatsV1 {
+        RetainedSceneIndexStatsV1 {
+            accounted_bytes: self.index.accounted_bytes(),
+            build_count: self.index_build_count,
+            channel_entries: self.index.channel_entries(),
+            entity_entries: self.index.entity_entries(),
+            hierarchy_entries: self.index.hierarchy_order().len(),
+            paint_order_entries: self.index.stable_paint_order().len(),
+        }
+    }
+
     /// Samples only a `RenderPacket`; the retained Scene and manifest do not cross
     /// the worker boundary again.
     ///
@@ -102,79 +133,17 @@ impl EngineSessionV1 {
         &self,
         options: SampleEngineSessionOptionsV1<'_>,
     ) -> Result<RenderPacketV1, EvaluationError> {
-        compile_render_packet_from_validated_v1(CompileEngineFrameOptionsV1 {
-            assets: &self.assets,
-            evidence: options.evidence,
-            packet_id: options.packet_id,
-            sample_time: options.sample_time,
-            scene: &self.scene,
-            viewport: options.viewport,
-        })
-    }
-}
-
-type MotionChannel<'a> = (&'a [KeyframeV1<f64>], &'a CubicPathV1, bool);
-
-#[derive(Debug, Default)]
-struct ChannelIndex<'a> {
-    affine: HashMap<&'a str, &'a [KeyframeV1<AffineTransformV1>]>,
-    camera: Option<&'a [KeyframeV1<SceneCameraViewV1>]>,
-    motion: HashMap<&'a str, MotionChannel<'a>>,
-    opacity: HashMap<&'a str, &'a [KeyframeV1<f64>]>,
-    path_morph: HashMap<&'a str, &'a [KeyframeV1<CubicPathV1>]>,
-    path_trim: HashMap<&'a str, &'a [KeyframeV1<f64>]>,
-}
-
-impl<'a> ChannelIndex<'a> {
-    fn new(scene: &'a SceneIrV1) -> Self {
-        let mut output = Self::default();
-        for channel in &scene.animation_channels {
-            match channel {
-                AnimationChannelV1::AffineTransform {
-                    entity_id,
-                    keyframes,
-                    ..
-                } => {
-                    output.affine.insert(entity_id, keyframes);
-                }
-                AnimationChannelV1::Camera { keyframes, .. } => {
-                    output.camera = Some(keyframes);
-                }
-                AnimationChannelV1::MotionPath {
-                    entity_id,
-                    keyframes,
-                    orient_to_path,
-                    path,
-                    ..
-                } => {
-                    output
-                        .motion
-                        .insert(entity_id, (keyframes, path, *orient_to_path));
-                }
-                AnimationChannelV1::Opacity {
-                    entity_id,
-                    keyframes,
-                    ..
-                } => {
-                    output.opacity.insert(entity_id, keyframes);
-                }
-                AnimationChannelV1::PathMorph {
-                    entity_id,
-                    keyframes,
-                    ..
-                } => {
-                    output.path_morph.insert(entity_id, keyframes);
-                }
-                AnimationChannelV1::PathTrim {
-                    entity_id,
-                    keyframes,
-                    ..
-                } => {
-                    output.path_trim.insert(entity_id, keyframes);
-                }
-            }
-        }
-        output
+        compile_render_packet_from_validated_v1(
+            CompileEngineFrameOptionsV1 {
+                assets: &self.assets,
+                evidence: options.evidence,
+                packet_id: options.packet_id,
+                sample_time: options.sample_time,
+                scene: &self.scene,
+                viewport: options.viewport,
+            },
+            &self.index,
+        )
     }
 }
 
@@ -264,18 +233,34 @@ fn appearance_opacity(appearance: &SceneAppearanceV1) -> f64 {
 }
 
 fn sample_local_entity(
-    channels: &ChannelIndex<'_>,
+    index: &RetainedSceneIndexV1,
+    scene: &SceneIrV1,
+    entity_index: usize,
     entity: &SceneEntityV1,
     time: f64,
 ) -> Result<LocalSample, EvaluationError> {
     let base_opacity = appearance_opacity(&entity.appearance);
-    let opacity = if let Some(keyframes) = channels.opacity.get(entity.id.as_str()) {
+    let opacity = if let Some(channel_index) = index.opacity_channel(entity_index) {
+        let Some(AnimationChannelV1::Opacity { keyframes, .. }) =
+            scene.animation_channels.get(channel_index)
+        else {
+            return Err(EvaluationError::MalformedScene(
+                "retained opacity channel index has the wrong kind",
+            ));
+        };
         sample_keyframes(&base_opacity, keyframes, time, interpolate_number)?.0
     } else {
         base_opacity
     };
 
-    let mut transform = if let Some(keyframes) = channels.affine.get(entity.id.as_str()) {
+    let mut transform = if let Some(channel_index) = index.affine_channel(entity_index) {
+        let Some(AnimationChannelV1::AffineTransform { keyframes, .. }) =
+            scene.animation_channels.get(channel_index)
+        else {
+            return Err(EvaluationError::MalformedScene(
+                "retained affine channel index has the wrong kind",
+            ));
+        };
         sample_keyframes(
             &entity.transform,
             keyframes,
@@ -286,7 +271,18 @@ fn sample_local_entity(
     } else {
         entity.transform.clone()
     };
-    if let Some((keyframes, path, orient_to_path)) = channels.motion.get(entity.id.as_str()) {
+    if let Some(channel_index) = index.motion_channel(entity_index) {
+        let Some(AnimationChannelV1::MotionPath {
+            keyframes,
+            path,
+            orient_to_path,
+            ..
+        }) = scene.animation_channels.get(channel_index)
+        else {
+            return Err(EvaluationError::MalformedScene(
+                "retained motion channel index has the wrong kind",
+            ));
+        };
         let (progress, active) = sample_keyframes(&0.0, keyframes, time, interpolate_number)?;
         if active {
             transform = apply_motion_path_v1(&transform, path, progress, *orient_to_path)?;
@@ -301,10 +297,24 @@ fn sample_local_entity(
         });
     }
     let mut path = scene_geometry_as_cubic_path_v1(&entity.geometry)?;
-    if let Some(keyframes) = channels.path_morph.get(entity.id.as_str()) {
+    if let Some(channel_index) = index.path_morph_channel(entity_index) {
+        let Some(AnimationChannelV1::PathMorph { keyframes, .. }) =
+            scene.animation_channels.get(channel_index)
+        else {
+            return Err(EvaluationError::MalformedScene(
+                "retained path-morph channel index has the wrong kind",
+            ));
+        };
         path = sample_keyframes(&path, keyframes, time, interpolate_cubic_path_v1)?.0;
     }
-    if let Some(keyframes) = channels.path_trim.get(entity.id.as_str()) {
+    if let Some(channel_index) = index.path_trim_channel(entity_index) {
+        let Some(AnimationChannelV1::PathTrim { keyframes, .. }) =
+            scene.animation_channels.get(channel_index)
+        else {
+            return Err(EvaluationError::MalformedScene(
+                "retained path-trim channel index has the wrong kind",
+            ));
+        };
         let progress = sample_keyframes(&1.0, keyframes, time, interpolate_number)?.0;
         path = trim_cubic_path_v1(&path, progress)?;
     }
@@ -323,71 +333,48 @@ struct WorldSample {
 
 fn world_samples(
     scene: &SceneIrV1,
-    active: &[&SceneEntityV1],
-    local: &HashMap<&str, LocalSample>,
-) -> Result<HashMap<String, WorldSample>, EvaluationError> {
-    let by_id: HashMap<_, _> = scene
-        .entities
-        .iter()
-        .map(|entity| (entity.id.as_str(), entity))
-        .collect();
-    let mut output = HashMap::<String, WorldSample>::new();
-    for &entity in active {
-        if output.contains_key(&entity.id) {
+    index: &RetainedSceneIndexV1,
+    local: &[Option<LocalSample>],
+) -> Result<Vec<Option<WorldSample>>, EvaluationError> {
+    let mut output: Vec<Option<WorldSample>> = vec![None; scene.entities.len()];
+    for &entity_index in index.hierarchy_order() {
+        let Some(local_sample) = local.get(entity_index).and_then(Option::as_ref) else {
             continue;
-        }
-        let mut chain = Vec::new();
-        let mut current = Some(entity);
-        while let Some(member) = current {
-            if output.contains_key(&member.id) {
-                break;
-            }
-            chain.push(member);
-            current = match &member.parent_id {
-                Some(parent_id) => Some(*by_id.get(parent_id.as_str()).ok_or(
-                    EvaluationError::MalformedScene("entity has an unknown parent"),
-                )?),
-                None => None,
-            };
-            if chain.len() > scene.entities.len() {
-                return Err(EvaluationError::MalformedScene(
-                    "entity hierarchy contains a cycle",
-                ));
-            }
-        }
-        let mut parent_sample = current.and_then(|member| output.get(&member.id)).cloned();
-        for member in chain.into_iter().rev() {
-            let local_sample =
-                local
-                    .get(member.id.as_str())
-                    .ok_or(EvaluationError::MalformedScene(
-                        "entity has no local sample",
-                    ))?;
-            let sample = WorldSample {
-                opacity: parent_sample.as_ref().map_or(1.0, |parent| parent.opacity)
-                    * local_sample.opacity,
-                transform: parent_sample.as_ref().map_or_else(
-                    || local_sample.transform.clone(),
-                    |parent| {
-                        compose_affine_transforms_v1(&parent.transform, &local_sample.transform)
-                    },
-                ),
-            };
-            output.insert(member.id.clone(), sample.clone());
-            parent_sample = Some(sample);
-        }
+        };
+        let parent_sample = index
+            .parent(entity_index)
+            .map(|parent_index| {
+                output.get(parent_index).and_then(Option::as_ref).ok_or(
+                    EvaluationError::MalformedScene("active entity has no sampled parent"),
+                )
+            })
+            .transpose()?;
+        output[entity_index] = Some(WorldSample {
+            opacity: parent_sample.map_or(1.0, |parent| parent.opacity) * local_sample.opacity,
+            transform: parent_sample.map_or_else(
+                || local_sample.transform.clone(),
+                |parent| compose_affine_transforms_v1(&parent.transform, &local_sample.transform),
+            ),
+        });
     }
     Ok(output)
 }
 
 fn sample_camera(
     scene: &SceneIrV1,
-    channels: &ChannelIndex<'_>,
+    index: &RetainedSceneIndexV1,
     time: f64,
 ) -> Result<SceneCameraViewV1, EvaluationError> {
-    channels.camera.map_or_else(
+    index.camera_channel().map_or_else(
         || Ok(scene.camera.view.clone()),
-        |keyframes| {
+        |channel_index| {
+            let Some(AnimationChannelV1::Camera { keyframes, .. }) =
+                scene.animation_channels.get(channel_index)
+            else {
+                return Err(EvaluationError::MalformedScene(
+                    "retained camera channel index has the wrong kind",
+                ));
+            };
             sample_keyframes(&scene.camera.view, keyframes, time, interpolate_camera)
                 .map(|sample| sample.0)
         },
@@ -427,6 +414,7 @@ fn entity_is_active(entity: &SceneEntityV1, time: f64) -> bool {
 )]
 fn compile_render_packet_from_validated_v1(
     options: CompileEngineFrameOptionsV1<'_>,
+    index: &RetainedSceneIndexV1,
 ) -> Result<RenderPacketV1, EvaluationError> {
     if !options.sample_time.is_finite()
         || options.sample_time < 0.0
@@ -437,46 +425,40 @@ fn compile_render_packet_from_validated_v1(
         ));
     }
 
-    let channels = ChannelIndex::new(options.scene);
-    let mut active: Vec<_> = options
-        .scene
-        .entities
-        .iter()
-        .filter(|entity| entity_is_active(entity, options.sample_time))
-        .collect();
-    active.sort_by(|left, right| {
-        left.source_z_index
-            .partial_cmp(&right.source_z_index)
-            .unwrap_or(Ordering::Equal)
-            .then(left.scene_order.cmp(&right.scene_order))
-    });
-    let local: HashMap<_, _> = active
+    let active: Vec<_> = index
+        .stable_paint_order()
         .iter()
         .copied()
-        .map(|entity| {
-            sample_local_entity(&channels, entity, options.sample_time)
-                .map(|sample| (entity.id.as_str(), sample))
+        .filter(|entity_index| {
+            entity_is_active(&options.scene.entities[*entity_index], options.sample_time)
         })
-        .collect::<Result<_, _>>()?;
-    let world = world_samples(options.scene, &active, &local)?;
+        .collect();
+    let mut local = vec![None; options.scene.entities.len()];
+    for &entity_index in &active {
+        let entity = &options.scene.entities[entity_index];
+        local[entity_index] = Some(sample_local_entity(
+            index,
+            options.scene,
+            entity_index,
+            entity,
+            options.sample_time,
+        )?);
+    }
+    let world = world_samples(options.scene, index, &local)?;
 
     let draws = active
         .into_iter()
         .enumerate()
-        .map(|(paint_order, entity)| {
+        .map(|(paint_order, entity_index)| {
             let paint_order = u32::try_from(paint_order)
                 .map_err(|_| EvaluationError::MalformedScene("draw count exceeds u32"))?;
-            let local_sample =
-                local
-                    .get(entity.id.as_str())
-                    .ok_or(EvaluationError::MalformedScene(
-                        "entity has no local sample",
-                    ))?;
-            let world_sample = world
-                .get(&entity.id)
-                .ok_or(EvaluationError::MalformedScene(
-                    "entity has no world sample",
-                ))?;
+            let entity = &options.scene.entities[entity_index];
+            let local_sample = local.get(entity_index).and_then(Option::as_ref).ok_or(
+                EvaluationError::MalformedScene("entity has no local sample"),
+            )?;
+            let world_sample = world.get(entity_index).and_then(Option::as_ref).ok_or(
+                EvaluationError::MalformedScene("entity has no world sample"),
+            )?;
             let draw_id = format!("draw:{}", entity.scene_order);
             match (&entity.geometry, &entity.appearance) {
                 (
@@ -521,7 +503,7 @@ fn compile_render_packet_from_validated_v1(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    let camera = sample_camera(options.scene, &channels, options.sample_time)?;
+    let camera = sample_camera(options.scene, index, options.sample_time)?;
     let packet = RenderPacketV1 {
         asset_manifest: options.scene.asset_manifest.clone(),
         camera: RenderCameraV1 {
@@ -570,7 +552,8 @@ pub fn compile_render_packet_v1(
 ) -> Result<RenderPacketV1, EvaluationError> {
     validate_scene_ir_with_assets_v1(options.scene, options.assets)
         .map_err(|error| EvaluationError::InvalidInput(error.to_string()))?;
-    compile_render_packet_from_validated_v1(options)
+    let index = RetainedSceneIndexV1::build(options.scene)?;
+    compile_render_packet_from_validated_v1(options, &index)
 }
 
 /// Compiles a Scene IR and immutable asset manifest into one self-contained frame.
