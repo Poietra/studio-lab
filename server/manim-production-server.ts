@@ -199,7 +199,13 @@ function validateTransportRequest(
   config: ProductionManimServerConfig,
   trustedProxyAddresses: ReadonlySet<string>,
 ) {
-  if (!request.url?.startsWith("/") || request.url.startsWith("//")) {
+  if (
+    !request.url?.startsWith("/") ||
+    request.url.startsWith("//") ||
+    request.url.includes("\\") ||
+    request.url.includes("#") ||
+    /[\u0000-\u0020\u007f]/.test(request.url)
+  ) {
     throw new TransportError("Absolute request targets are not accepted.", 400);
   }
   const expectedHost = new URL(config.publicOrigin).host.toLowerCase();
@@ -213,18 +219,27 @@ function validateTransportRequest(
   if (hasForwardedHeaders && !remoteIsTrusted) {
     throw new TransportError("Forwarded headers require an explicitly trusted immediate proxy.", 400);
   }
+  if (request.headers["transfer-encoding"] !== undefined) {
+    request.resume();
+    throw new TransportError("Transfer-encoded request bodies are not accepted.", 400);
+  }
   const contentLength = request.headers["content-length"];
+  const parsedContentLength = contentLength === undefined ? 0 : Number(contentLength);
   if (
     contentLength !== undefined &&
-    (!/^\d+$/.test(contentLength) || Number(contentLength) > config.limits.maxBodyBytes)
+    (!/^\d+$/.test(contentLength) ||
+      !Number.isSafeInteger(parsedContentLength) ||
+      parsedContentLength > config.limits.maxBodyBytes)
   ) {
     request.resume();
     throw new TransportError("Request body is too large.", 413);
   }
-  if (
-    (request.method === "GET" || request.method === "HEAD") &&
-    (request.headers["transfer-encoding"] !== undefined || Number(contentLength ?? 0) > 0)
-  ) {
+  const bodyMethod = request.method === "POST" || request.method === "PATCH";
+  if (bodyMethod && contentLength === undefined) {
+    request.resume();
+    throw new TransportError("A bounded Content-Length header is required.", 411);
+  }
+  if (!bodyMethod && parsedContentLength > 0) {
     request.resume();
     throw new TransportError("This request method does not accept a body.", 400);
   }
@@ -312,13 +327,33 @@ export async function startProductionManimServer(
   const trustedProxyAddresses = new Set(config.trustedProxyAddresses);
   const activeRequests = new Set<AbortController>();
   const activeTasks = new Set<Promise<void>>();
+  const activeRuntimeTasks = new Set<Promise<unknown>>();
   let lifecycle: "accepting" | "draining" | "closed" = "accepting";
+  let runtimeCloseRequest: Promise<void> | null = null;
+
+  const trackRuntimeTask = <T>(operation: () => Promise<T>) => {
+    const task = Promise.resolve().then(operation);
+    activeRuntimeTasks.add(task);
+    void task.then(
+      () => activeRuntimeTasks.delete(task),
+      () => activeRuntimeTasks.delete(task),
+    );
+    return task;
+  };
+  const closeRuntime = () => {
+    runtimeCloseRequest ??= Promise.resolve().then(() => options.runtime.close());
+    return runtimeCloseRequest;
+  };
 
   const dependenciesReady = async (signal: AbortSignal) => {
     try {
       const [admissionReady, runtimeReady] = await Promise.all([
         waitForProbe((probeSignal) => options.admission.ready(probeSignal), signal, config.limits.readinessTimeoutMs),
-        waitForProbe((probeSignal) => options.runtime.ready(probeSignal), signal, config.limits.readinessTimeoutMs),
+        waitForProbe(
+          (probeSignal) => trackRuntimeTask(() => options.runtime.ready(probeSignal)),
+          signal,
+          config.limits.readinessTimeoutMs,
+        ),
       ]);
       return (
         admissionReady === true &&
@@ -397,12 +432,14 @@ export async function startProductionManimServer(
       if (admitted !== true) throw new TransportError("Authentication is required.", 401);
       await raceWithSignal(
         () =>
-          handleManimRequest(options.runtime.api, request, response, logger, {
-            allowExistingProjectRegistration: false,
-            expectedMutationOrigin: config.publicOrigin,
-            maxJsonBodyBytes: config.limits.maxBodyBytes,
-            requestSignal: controller.signal,
-          }),
+          trackRuntimeTask(() =>
+            handleManimRequest(options.runtime.api, request, response, logger, {
+              allowExistingProjectRegistration: false,
+              expectedMutationOrigin: config.publicOrigin,
+              maxJsonBodyBytes: config.limits.maxBodyBytes,
+              requestSignal: controller.signal,
+            }),
+          ),
         controller.signal,
       );
     } catch (error) {
@@ -460,10 +497,7 @@ export async function startProductionManimServer(
     });
   } catch (error) {
     server.closeAllConnections();
-    const runtimeClose = await settleWithin(
-      Promise.resolve().then(() => options.runtime.close()),
-      config.limits.runtimeCloseTimeoutMs,
-    );
+    const runtimeClose = await settleWithin(closeRuntime(), config.limits.runtimeCloseTimeoutMs);
     if (runtimeClose.kind === "fulfilled") throw error;
     const closeError =
       runtimeClose.kind === "rejected"
@@ -480,6 +514,13 @@ export async function startProductionManimServer(
       for (const task of batch) activeTasks.delete(task);
     }
   };
+  const waitForRuntimeTasks = async () => {
+    while (activeRuntimeTasks.size > 0) {
+      const batch = [...activeRuntimeTasks];
+      await Promise.allSettled(batch);
+      for (const task of batch) activeRuntimeTasks.delete(task);
+    }
+  };
   let closeRequest: Promise<void> | null = null;
   return {
     address: { address: address.address, family: address.family, port: address.port },
@@ -491,30 +532,51 @@ export async function startProductionManimServer(
           server.close((error) => (error ? rejectClose(error) : resolveClose()));
           server.closeIdleConnections();
         });
-        const drain = await settleWithin(
-          Promise.allSettled([networkClosed, waitForActiveTasks()]),
-          config.limits.requestDrainTimeoutMs,
-        );
+        const quiesce = async () => {
+          const network = await Promise.allSettled([networkClosed]);
+          await waitForActiveTasks();
+          // Runtime operations can be created by an already accepted handler,
+          // so they are joined only after every handler wrapper has stopped.
+          await waitForRuntimeTasks();
+          return network;
+        };
+        const drain = await settleWithin(quiesce(), config.limits.requestDrainTimeoutMs);
+        let runtimeCanClose = drain.kind === "fulfilled";
         if (drain.kind === "timeout") {
           errors.push(new Error("Production request drain exceeded its configured deadline."));
           for (const controller of activeRequests) controller.abort(new Error("Production service is shutting down."));
           server.closeAllConnections();
-          const forced = await Promise.allSettled([networkClosed, waitForActiveTasks()]);
-          errors.push(...forced.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])));
+          const forced = await settleWithin(quiesce(), config.limits.requestDrainTimeoutMs);
+          runtimeCanClose = forced.kind === "fulfilled";
+          if (forced.kind === "timeout") {
+            errors.push(new Error("Production runtime operations did not stop after forced request cancellation."));
+          } else if (forced.kind === "rejected") {
+            errors.push(forced.reason);
+          } else {
+            errors.push(...forced.value.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])));
+          }
         } else if (drain.kind === "rejected") {
           errors.push(drain.reason);
         } else {
           errors.push(...drain.value.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])));
         }
 
-        const runtimeClose = await settleWithin(
-          Promise.resolve().then(() => options.runtime.close()),
-          config.limits.runtimeCloseTimeoutMs,
-        );
-        if (runtimeClose.kind === "timeout") {
-          errors.push(new Error("Production runtime close exceeded its configured deadline."));
-        } else if (runtimeClose.kind === "rejected") {
-          errors.push(runtimeClose.reason);
+        if (runtimeCanClose) {
+          const runtimeClose = await settleWithin(closeRuntime(), config.limits.runtimeCloseTimeoutMs);
+          if (runtimeClose.kind === "timeout") {
+            errors.push(new Error("Production runtime close exceeded its configured deadline."));
+          } else if (runtimeClose.kind === "rejected") {
+            errors.push(runtimeClose.reason);
+          }
+        } else {
+          // Calling close while an uncooperative runtime operation is still
+          // executing can resume that operation against torn-down stores. The
+          // HTTP boundary is already closed; defer teardown until quiescence
+          // and let the process supervisor reclaim a permanently stuck adapter.
+          void quiesce().then(
+            () => closeRuntime().catch(() => logger.error("production.deferred_runtime_close_failed")),
+            () => logger.error("production.deferred_runtime_quiescence_failed"),
+          );
         }
         lifecycle = "closed";
         if (errors.length > 0) throw new AggregateError(errors, "Could not fully close the production Manim service.");

@@ -73,6 +73,7 @@ function send(
   path: string,
   options: Readonly<{
     body?: string;
+    chunked?: boolean;
     headers?: Readonly<Record<string, string>>;
     method?: string;
   }> = {},
@@ -85,7 +86,8 @@ function send(
           headers: {
             connection: "close",
             host: new URL(server.config.publicOrigin).host,
-            ...(body ? { "content-length": Buffer.byteLength(body) } : {}),
+            ...(body && !options.chunked ? { "content-length": Buffer.byteLength(body) } : {}),
+            ...(options.chunked ? { "transfer-encoding": "chunked" } : {}),
             ...options.headers,
           },
           host: server.address.address,
@@ -244,6 +246,52 @@ describe("standalone production Manim HTTP adapter", () => {
     expect(JSON.stringify(admissionContext)).not.toContain("203.0.113.5");
   });
 
+  it("rejects non-origin-form targets and every unbounded or bodyless-method payload before routing", async () => {
+    let projectCalls = 0;
+    let unregisterCalls = 0;
+    const baseRuntime = createRuntime(
+      () => true,
+      () => {
+        projectCalls += 1;
+      },
+    );
+    const server = await startProductionManimServer({
+      admission: { admit: async () => true, ready: async () => true },
+      config: await startConfig(),
+      runtime: {
+        ...baseRuntime,
+        api: {
+          ...baseRuntime.api,
+          createProject() {},
+          unregisterProject: async () => {
+            unregisterCalls += 1;
+            return {};
+          },
+        } as unknown as ManimApi,
+      },
+    });
+    servers.push(server);
+
+    expect(await send(server, "/\\evil.example/api/manim/projects")).toMatchObject({ status: 400 });
+    expect(
+      await send(server, "/api/manim/projects/example", {
+        body: "{}",
+        headers: { "content-type": "application/json", origin: "https://studio.example" },
+        method: "DELETE",
+      }),
+    ).toMatchObject({ status: 400 });
+    expect(
+      await send(server, "/api/manim/projects/example", {
+        body: "x".repeat(2_048),
+        chunked: true,
+        headers: { "content-type": "application/json", origin: "https://studio.example" },
+        method: "DELETE",
+      }),
+    ).toMatchObject({ status: 400 });
+    expect(projectCalls).toBe(0);
+    expect(unregisterCalls).toBe(0);
+  });
+
   it("uses configured HTTPS origin behind a proxy and applies the global body ceiling", async () => {
     const server = await startProductionManimServer({
       admission: { admit: async () => true, ready: async () => true },
@@ -347,7 +395,7 @@ describe("standalone production Manim HTTP adapter", () => {
     expect(runtimeClosed).toBe(true);
   });
 
-  it("aborts and joins an admission adapter that ignores its signal before closing the runtime", async () => {
+  it("abandons an admission wait that ignores its signal before closing the runtime", async () => {
     let markAdmissionEntered!: () => void;
     const admissionEntered = new Promise<void>((resolveEntered) => {
       markAdmissionEntered = resolveEntered;
@@ -378,6 +426,55 @@ describe("standalone production Manim HTTP adapter", () => {
     await expect(server.close()).rejects.toThrow(/fully close/i);
     await request;
     expect(order).toEqual(["admission-aborted", "runtime-closed"]);
+  });
+
+  it("never tears down the runtime underneath an API operation that ignores cancellation", async () => {
+    let enterOperation!: () => void;
+    const operationEntered = new Promise<void>((resolveEntered) => {
+      enterOperation = resolveEntered;
+    });
+    let releaseOperation!: () => void;
+    const operation = new Promise<void>((resolveOperation) => {
+      releaseOperation = resolveOperation;
+    });
+    let markRuntimeClosed!: () => void;
+    const runtimeClosed = new Promise<void>((resolveClosed) => {
+      markRuntimeClosed = resolveClosed;
+    });
+    let closed = false;
+    let resumedAfterClose = false;
+    const baseRuntime = createRuntime();
+    const server = await startProductionManimServer({
+      admission: { admit: async () => true, ready: async () => true },
+      config: await startConfig({ limits: { requestDrainTimeoutMs: 100, runtimeCloseTimeoutMs: 100 } }),
+      runtime: {
+        ...baseRuntime,
+        api: {
+          ...baseRuntime.api,
+          workspace: async () => {
+            enterOperation();
+            await operation;
+            resumedAfterClose = closed;
+            return {};
+          },
+        } as unknown as ManimApi,
+        close: async () => {
+          closed = true;
+          markRuntimeClosed();
+        },
+      },
+    });
+    servers.push(server);
+
+    const response = send(server, "/api/manim/workspace").catch(() => null);
+    await operationEntered;
+    await expect(server.close()).rejects.toThrow(/fully close/i);
+    expect(closed).toBe(false);
+
+    releaseOperation();
+    await runtimeClosed;
+    await response;
+    expect(resumedAfterClose).toBe(false);
   });
 
   it("closes the listener and its runtime adapter exactly once", async () => {
