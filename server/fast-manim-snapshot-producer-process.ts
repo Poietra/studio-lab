@@ -12,6 +12,26 @@ const MAX_PRODUCER_STDERR_BYTES = 256 * 1024;
 const PRODUCER_KILL_GRACE_MS = 2_000;
 const PRODUCER_CLOSE_GRACE_MS = 5_000;
 const SPAWN_FAILURE_CLOSE_FALLBACK_MS = 100;
+const MAX_PRODUCER_GRACE_MS = 60_000;
+
+export type ProducerProcessTimings = Readonly<{
+  closeGraceMs: number;
+  killGraceMs: number;
+}>;
+
+function producerGrace(value: number, name: string) {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > MAX_PRODUCER_GRACE_MS) {
+    throw new TypeError(`${name} must be a positive integer of at most ${MAX_PRODUCER_GRACE_MS}ms.`);
+  }
+  return value;
+}
+
+export function resolveProducerProcessTimings(overrides: Partial<ProducerProcessTimings> = {}): ProducerProcessTimings {
+  return Object.freeze({
+    closeGraceMs: producerGrace(overrides.closeGraceMs ?? PRODUCER_CLOSE_GRACE_MS, "Producer close grace"),
+    killGraceMs: producerGrace(overrides.killGraceMs ?? PRODUCER_KILL_GRACE_MS, "Producer kill grace"),
+  });
+}
 
 export type ProducerGroupKill = (pid: number, signalName: NodeJS.Signals) => void;
 
@@ -43,6 +63,7 @@ export type SuperviseProducerOptions = Readonly<{
   requestId: string;
   requestJson: string;
   signal?: AbortSignal;
+  timings: ProducerProcessTimings;
   timeoutMs: number;
 }>;
 
@@ -131,7 +152,7 @@ export async function superviseProducerProcess(options: SuperviseProducerOptions
         child.stdout?.destroy();
         child.stderr?.destroy();
         settleExit({ code: child.exitCode, signal: child.signalCode });
-      }, PRODUCER_CLOSE_GRACE_MS);
+      }, options.timings.closeGraceMs);
       graceTimer.unref();
     };
     const requestStop = () => {
@@ -140,7 +161,7 @@ export async function superviseProducerProcess(options: SuperviseProducerOptions
       signalProducer("SIGTERM");
       killTimer = setTimeout(() => {
         if (!terminationFinished) signalProducer("SIGKILL");
-      }, PRODUCER_KILL_GRACE_MS);
+      }, options.timings.killGraceMs);
       killTimer.unref();
       // The grace starts from the stop request (abort, overflow, timeout, or
       // manager close), never from the full run timeout.

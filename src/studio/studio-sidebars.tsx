@@ -5,7 +5,8 @@ import type {
   OriginalManimSourceExportRequest,
   RenderSessionView,
 } from "../render-pipeline/contracts";
-import { RenderPipelinePanel, type RenderProgramCandidate } from "../render-pipeline/render-pipeline-panel";
+import { RenderPipelinePanel } from "../render-pipeline/render-pipeline-panel";
+import type { RenderProgramCandidate } from "../render-pipeline/render-pipeline-policy";
 import type { RenderSourceRefreshTarget } from "../render-pipeline/render-pipeline-policy";
 import { DraftInspector } from "./draft-inspector";
 import { EntityInspectorEditor, entityInspectorKey } from "./entity-inspector";

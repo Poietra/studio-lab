@@ -39,6 +39,8 @@ import {
   abortError,
   defaultKillProcessGroup,
   type ProducerGroupKill,
+  type ProducerProcessTimings,
+  resolveProducerProcessTimings,
   superviseProducerProcess,
 } from "./fast-manim-snapshot-producer-process";
 import { HttpError } from "./http/json";
@@ -107,6 +109,7 @@ export class FastManimSnapshotRunner {
   private readonly ownerId: number;
   private readonly producerEnv: Readonly<Record<string, string>>;
   private readonly projectId: string;
+  private readonly producerProcessTimings: ProducerProcessTimings;
   private readonly publicationStore: FastManimSnapshotPublicationStore;
   private readonly publishRetentionMs: number;
   private readonly runtimeDirectoryRemover: (runtimeDir: string) => Promise<void>;
@@ -133,6 +136,8 @@ export class FastManimSnapshotRunner {
       maxPublishedBytes?: number;
       maxPublishedSnapshots?: number;
       producerEnv?: Readonly<Record<string, string>>;
+      /** Test/embedding seam; production keeps the hardened default grace windows. */
+      producerProcessTimings?: Partial<ProducerProcessTimings>;
       projectId: string;
       projectRoot: string;
       publicationStore?: FastManimSnapshotPublicationStore;
@@ -198,6 +203,7 @@ export class FastManimSnapshotRunner {
     this.maxPublishedBytes = maxPublishedBytes;
     this.maxPublishedSnapshots = maxPublishedSnapshots;
     this.producerEnv = Object.freeze({ ...options.producerEnv });
+    this.producerProcessTimings = resolveProducerProcessTimings(options.producerProcessTimings);
     this.projectId = options.projectId;
     this.admissionController = options.admissionController ?? processAdmissionController;
     this.publicationStore = options.publicationStore ?? processPublicationStore;
@@ -529,6 +535,7 @@ export class FastManimSnapshotRunner {
         requestId: producerRequest.requestId,
         requestJson: JSON.stringify(producerRequest),
         signal,
+        timings: this.producerProcessTimings,
         timeoutMs: this.timeoutMs,
       });
     } finally {

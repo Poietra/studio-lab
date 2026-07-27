@@ -17,7 +17,7 @@ import {
   type EditSuggestionOperation,
   suggestEdit,
 } from "./ai/edit-suggestions";
-import type { RenderProgramCandidate } from "./render-pipeline/render-pipeline-panel";
+import type { RenderProgramCandidate } from "./render-pipeline/render-pipeline-policy";
 import type { RenderSessionView } from "./render-pipeline/contracts";
 import { exportManimSource } from "./render-pipeline/client";
 import {
