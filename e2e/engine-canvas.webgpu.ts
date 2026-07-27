@@ -42,6 +42,38 @@ type ReadbackProofV1 = Readonly<{
   response: unknown;
 }>;
 
+type ErrorScopeProofV1 = Readonly<{
+  kind: "error-scope-proof";
+  value: Readonly<{
+    fallbackResponse: Record<string, unknown>;
+    normalResponse: Record<string, unknown>;
+    normalResponseKeys: readonly string[];
+    normalSettledBeforeRelease: boolean;
+    normalInitialRotationScopeCalls: Readonly<{ pops: number; pushes: number }>;
+    normalScopeCallsWhilePending: Readonly<{ pops: number; pushes: number }>;
+    popRejectionFallbackResponse: Record<string, unknown>;
+    popRejectionNativeScopeCalls: Readonly<{ pops: number; pushes: number }>;
+    popRejectionResponse: Record<string, unknown>;
+    popRejectionScopeCalls: Readonly<{ pops: number; pushes: number }>;
+    popRejectionSettledBeforeRelease: boolean;
+    popRejectionTerminalScopeCalls: Readonly<{ pops: number; pushes: number }>;
+    pushFailureFallbackResponse: Record<string, unknown>;
+    pushFailureNativeScopeCalls: Readonly<{ pops: number; pushes: number }>;
+    pushFailureResponse: Record<string, unknown>;
+    pushFailureScopeCalls: Readonly<{ pops: number; pushes: number }>;
+    pushFailureTerminalScopeCalls: Readonly<{ pops: number; pushes: number }>;
+    scopePopCounts: Readonly<{ normal: number; telemetry: number; validation: number }>;
+    stalledPlaybackPacketIds: readonly string[];
+    telemetryElapsedMs: number;
+    telemetryResponse: Record<string, unknown>;
+    telemetryScopeCalls: Readonly<{ pops: number; pushes: number }>;
+    telemetrySettledBeforeRelease: boolean;
+    validationResponse: Record<string, unknown>;
+    validationRotationScopeCalls: Readonly<{ pops: number; pushes: number }>;
+    validationSettledBeforeRelease: boolean;
+  }>;
+}>;
+
 function expectPixelNear(actual: RgbaPixel, expected: RgbaPixel, tolerance = 3) {
   for (const [index, component] of actual.entries()) {
     expect(Math.abs(component - expected[index])).toBeLessThanOrEqual(tolerance);
@@ -190,6 +222,173 @@ test("samples and presents the shared Scene entirely inside a real WASM WebGPU W
     const holder = globalThis as unknown as { poietraCanvasProofClient?: { dispose: () => void } };
     holder.poietraCanvasProofClient?.dispose();
     delete holder.poietraCanvasProofClient;
+  });
+});
+
+test("bounds rolling WebGPU scopes and fails closed on nested scope API faults", async ({ page }) => {
+  const fixture = JSON.parse(await readFile("fixtures/engine-v1/shared-circle-opacity.json", "utf8")) as SharedFixture;
+  await page.goto("/");
+
+  const proof = await page.evaluate(async ({ assets, sample, scene }) => {
+    const worker = new Worker("/e2e/engine-canvas-readback.worker.ts", { type: "module" });
+    const response = new Promise<ErrorScopeProofV1>((resolve, reject) => {
+      worker.addEventListener(
+        "error",
+        (event) => reject(new Error(event.message || "The scope probe worker crashed.")),
+        {
+          once: true,
+        },
+      );
+      worker.addEventListener(
+        "message",
+        (event: MessageEvent<ErrorScopeProofV1 | Readonly<{ kind: "error"; message: string }>>) => {
+          if (event.data.kind === "error") {
+            reject(new Error(event.data.message));
+            return;
+          }
+          resolve(event.data);
+        },
+        { once: true },
+      );
+    });
+    const encodeSample = (packetId: string, sampleTime: number) =>
+      new TextEncoder().encode(
+        JSON.stringify({
+          evidence: ["WebGPU delayed error-scope probe v1"],
+          packetId,
+          sampleTime,
+          schema: "poietra.engine-sample-request",
+          version: 1,
+          viewport: sample.viewport,
+        }),
+      ).buffer;
+    const snapshotJson = new TextEncoder().encode(JSON.stringify({ assets, scene })).buffer;
+    const telemetryRequestJson = encodeSample("canvas:scope-telemetry", sample.sampleTime);
+    const normalRequestJson = encodeSample("canvas:scope-normal", Math.min(scene.duration, sample.sampleTime + 0.125));
+    const fallbackRequestJson = encodeSample("canvas:scope-fallback", Math.max(0, sample.sampleTime - 0.125));
+    worker.postMessage(
+      {
+        fallbackRequestJson,
+        kind: "probe-error-scopes",
+        normalRequestJson,
+        snapshotJson,
+        telemetryRequestJson,
+        viewport: sample.viewport,
+        wasmModuleUrl: new URL("/engine-wasm/poietra_wasm.js", location.href).href,
+      },
+      [fallbackRequestJson, normalRequestJson, snapshotJson, telemetryRequestJson],
+    );
+    try {
+      return await response;
+    } finally {
+      worker.terminate();
+    }
+  }, fixture);
+
+  expect(proof.value.scopePopCounts).toEqual({ normal: 3, telemetry: 3, validation: 3 });
+  expect(proof.value.normalInitialRotationScopeCalls).toEqual({ pops: 3, pushes: 6 });
+  expect(proof.value.normalScopeCallsWhilePending).toEqual({ pops: 3, pushes: 6 });
+  expect(proof.value.telemetryScopeCalls).toEqual({ pops: 3, pushes: 3 });
+  expect(proof.value.validationRotationScopeCalls).toEqual({ pops: 3, pushes: 3 });
+  expect(proof.value.stalledPlaybackPacketIds).toEqual(
+    Array.from({ length: 64 }, (_, frame) => `canvas:scope-playback-${frame}`),
+  );
+  expect(proof.value.normalSettledBeforeRelease).toBe(true);
+  expect(proof.value.telemetrySettledBeforeRelease).toBe(false);
+  expect(proof.value.validationSettledBeforeRelease).toBe(true);
+  expect(proof.value.telemetryElapsedMs).toBeGreaterThanOrEqual(75);
+  expect(proof.value.normalResponseKeys).toEqual(["result", "schema", "version"]);
+  expect(proof.value.normalResponse).toEqual({
+    result: {
+      kind: "presented",
+      packetId: "canvas:scope-normal",
+      sampleTime: Math.min(fixture.scene.duration, fixture.sample.sampleTime + 0.125),
+      suboptimal: false,
+      viewport: fixture.sample.viewport,
+    },
+    schema: "poietra.canvas-render-response",
+    version: 1,
+  });
+  expect(proof.value.telemetryResponse).toMatchObject({
+    result: { kind: "presented", packetId: "canvas:scope-telemetry" },
+    schema: "poietra.canvas-render-telemetry-response",
+    telemetry: {
+      phases: {
+        gpuErrorScopeResolution: { kind: "measured" },
+      },
+    },
+    version: 1,
+  });
+  expect(
+    (
+      proof.value.telemetryResponse as {
+        telemetry: { phases: { gpuErrorScopeResolution: { ms: number } } };
+      }
+    ).telemetry.phases.gpuErrorScopeResolution.ms,
+  ).toBeGreaterThanOrEqual(75);
+  expect(proof.value.validationResponse).toMatchObject({
+    result: { kind: "presented", packetId: "canvas:scope-validation-rotation" },
+    schema: "poietra.canvas-render-response",
+    version: 1,
+  });
+  expect(proof.value.fallbackResponse).toMatchObject({
+    result: {
+      code: "gpu-validation",
+      kind: "error",
+      message: "GPUValidationError: injected delayed validation failure",
+      packetId: "canvas:scope-fallback",
+      sampleTime: Math.max(0, fixture.sample.sampleTime - 0.125),
+      viewport: fixture.sample.viewport,
+    },
+    schema: "poietra.canvas-render-response",
+    version: 1,
+  });
+  expect(proof.value.pushFailureScopeCalls).toEqual({ pops: 1, pushes: 2 });
+  expect(proof.value.pushFailureNativeScopeCalls).toEqual({ pops: 1, pushes: 1 });
+  expect(proof.value.pushFailureTerminalScopeCalls).toEqual({ pops: 0, pushes: 0 });
+  expect(proof.value.pushFailureResponse).toMatchObject({
+    result: {
+      code: "gpu-internal",
+      kind: "error",
+      message: "could not push out-of-memory WebGPU error scope: OperationError: injected synchronous push failure",
+      packetId: "canvas:scope-push-failure",
+    },
+    schema: "poietra.canvas-render-telemetry-response",
+    version: 1,
+  });
+  expect(proof.value.pushFailureFallbackResponse).toMatchObject({
+    result: {
+      code: "gpu-internal",
+      kind: "error",
+      message: "could not push out-of-memory WebGPU error scope: OperationError: injected synchronous push failure",
+      packetId: "canvas:scope-push-failure-fallback",
+    },
+    schema: "poietra.canvas-render-response",
+    version: 1,
+  });
+  expect(proof.value.popRejectionScopeCalls).toEqual({ pops: 3, pushes: 3 });
+  expect(proof.value.popRejectionNativeScopeCalls).toEqual({ pops: 3, pushes: 3 });
+  expect(proof.value.popRejectionSettledBeforeRelease).toBe(false);
+  expect(proof.value.popRejectionTerminalScopeCalls).toEqual({ pops: 0, pushes: 0 });
+  expect(proof.value.popRejectionResponse).toMatchObject({
+    result: {
+      code: "gpu-internal",
+      kind: "error",
+      message: "WebGPU error scope promise rejected: OperationError: injected native pop rejection",
+      packetId: "canvas:scope-pop-rejection",
+    },
+    schema: "poietra.canvas-render-telemetry-response",
+    version: 1,
+  });
+  expect(proof.value.popRejectionFallbackResponse).toMatchObject({
+    result: {
+      code: "gpu-internal",
+      kind: "error",
+      message: "WebGPU error scope promise rejected: OperationError: injected native pop rejection",
+      packetId: "canvas:scope-pop-rejection-fallback",
+    },
+    schema: "poietra.canvas-render-response",
+    version: 1,
   });
 });
 
