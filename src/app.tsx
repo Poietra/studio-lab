@@ -1,14 +1,5 @@
-import {
-  type KeyboardEvent,
-  type PointerEvent,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
 import { LazyMotion } from "motion/react";
+import { type KeyboardEvent, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { createClarificationContextFingerprint, MAX_CLARIFICATION_HISTORY } from "./ai/clarification";
 import {
@@ -17,10 +8,10 @@ import {
   type EditSuggestionOperation,
   suggestEdit,
 } from "./ai/edit-suggestions";
-import type { RenderProgramCandidate } from "./render-pipeline/render-pipeline-policy";
-import type { RenderSessionView } from "./render-pipeline/contracts";
-import { exportManimSource } from "./render-pipeline/client";
 import { cn } from "./lib/cn";
+import { exportManimSource } from "./render-pipeline/client";
+import type { RenderSessionView } from "./render-pipeline/contracts";
+import type { RenderProgramCandidate } from "./render-pipeline/render-pipeline-policy";
 import {
   createImportedEntityLifetimeProgram,
   createInspectorEntityEditProgram,
@@ -30,19 +21,22 @@ import {
   defaultEntityContent,
   duplicateEntityInput,
   replaceStudioEntityLifetimeProgram,
-  sceneDurationTrimAvailability,
   type StudioEntityInput,
+  sceneDurationTrimAvailability,
 } from "./studio/authoring-commands";
 import { commandForShortcut, isEditableShortcutTarget, type StudioCommandId } from "./studio/commands";
-import { projectedPositions, validateSuggestionDraft, validatedProgramRecord } from "./studio/draft-validation";
-import type { Point, ProgramRecord, ProposedState, RuntimeSceneState } from "./studio/model";
-import { magicEditCapabilities, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./studio/magic-edit-capabilities";
-import type { InspectorEditField, ValidatedInspectorEdits } from "./studio/inspector-edit";
+import { projectedPositions, validatedProgramRecord, validateSuggestionDraft } from "./studio/draft-validation";
 import {
-  adjustAppliedMotionClipControl,
-  appliedMotionClipReadOnlyReason,
-  retimeAppliedMotionClip,
-} from "./studio/motion-clip-edit";
+  canResolveSourceDurationMismatch,
+  clampPlayheadToResolvedSourceDuration,
+  EDITOR_SESSION_LOADING_BLOCKER,
+  resolveEditorRevision,
+  resolveEditorSourceLifecycle,
+  SOURCE_TIMING_LOADING_BLOCKER,
+  WORKSPACE_REIMPORT_BLOCKER,
+} from "./studio/editor-revision-policy";
+import { projectVerifiedSourceDuration } from "./studio/imported-workspace";
+import type { InspectorEditField, ValidatedInspectorEdits } from "./studio/inspector-edit";
 import {
   buildLifetimeEditControls,
   findCompetingImportedLifetimeOwner,
@@ -51,6 +45,14 @@ import {
   findStudioLifetimeOwner,
   programSourceAnchorBounds,
 } from "./studio/lifetime-editing";
+import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE, magicEditCapabilities } from "./studio/magic-edit-capabilities";
+import { MagicEditPanel } from "./studio/magic-edit-panel";
+import type { Point, ProgramRecord, ProposedState, RuntimeSceneState } from "./studio/model";
+import {
+  adjustAppliedMotionClipControl,
+  appliedMotionClipReadOnlyReason,
+  retimeAppliedMotionClip,
+} from "./studio/motion-clip-edit";
 import { projectMotionPaths, type StudioMotionPath } from "./studio/motion-paths";
 import type { AppliedMotionClip, AppliedMotionClipChange } from "./studio/motion-timeline-clip";
 import { programExecutionCapabilities } from "./studio/operation-registry";
@@ -58,30 +60,18 @@ import type { OperationOrigin } from "./studio/operations";
 import { latestSafeSourceAnchor, sourceTimeToWorkingTime, workingTimeToSourceTime } from "./studio/program-composition";
 import { samplePropertyValue } from "./studio/property-sampling";
 import {
-  canResolveSourceDurationMismatch,
-  clampPlayheadToResolvedSourceDuration,
-  projectVerifiedSourceDuration,
-  resolveVerifiedSourceDurationBasis,
-} from "./studio/imported-workspace";
-import { projectRuntimeSceneToSourceTimeline } from "./studio/source-timeline";
-import { useStudioPreviewAuthorityController } from "./studio/use-preview-authority-controller";
-import { useSourceReimportController } from "./studio/use-source-reimport-controller";
-import { MagicEditPanel } from "./studio/magic-edit-panel";
-import {
-  createDirectManipulationResizeProgram,
-  createDirectManipulationPositionProgram,
-  createDirectManipulationScaleProgram,
-} from "./studio/suggestion-program";
-import {
   hasShapeDimensions,
-  resizeKindForType,
-  resizeHandleUsesDelta,
-  resizeShapeByViewportDelta,
-  sameShapeGeometry,
   type ResizeHandleDirection,
+  resizeHandleUsesDelta,
+  resizeKindForType,
+  resizeShapeByViewportDelta,
   type ShapeGeometry,
   type ShapeResizeKind,
+  sameShapeGeometry,
 } from "./studio/shape-resize";
+import { projectRuntimeSceneToSourceTimeline } from "./studio/source-timeline";
+import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
+import type { StudioTool } from "./studio/studio-toolbar";
 import {
   type EntityDragPreview,
   type EntityGeometryPreview,
@@ -90,27 +80,28 @@ import {
   STUDIO_VIEWPORT,
   StudioViewport,
 } from "./studio/studio-viewport";
-import type { StudioTool } from "./studio/studio-toolbar";
-import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
-import { editorSessionIdentityKey } from "./studio/editor-session-store";
+import {
+  createDirectManipulationPositionProgram,
+  createDirectManipulationResizeProgram,
+  createDirectManipulationScaleProgram,
+} from "./studio/suggestion-program";
+import { replaceAppliedProgram } from "./studio/transactions";
 import {
   type AppliedProgramEdit,
-  editorProgramRecord,
   type EditorProgramRecord,
   type EditorSessionIdentity,
+  editorProgramRecord,
   useEditorController,
 } from "./studio/use-editor-controller";
+import { useEditorRevisionController } from "./studio/use-editor-revision-controller";
 import { useManimWorkspace } from "./studio/use-manim-workspace";
+import { useStudioPreviewAuthorityController } from "./studio/use-preview-authority-controller";
+import { useSourceReimportController } from "./studio/use-source-reimport-controller";
 import { WorkspaceLauncher } from "./studio/workspace-launcher";
 import { isTransitionOverlay, projectStudioWorkspace } from "./studio/workspace-projection";
-import { replaceAppliedProgram } from "./studio/transactions";
 
 type Shell = "Browser" | "Electron" | "Tauri";
 const loadMotionFeatures = () => import("./lib/motion-features").then((module) => module.default);
-const SOURCE_TIMING_LOADING_BLOCKER = "Wait for verified Scene timing before continuing.";
-const SOURCE_TIMING_MISMATCH_BLOCKER =
-  "Verified Scene timing conflicts with this Studio edit history. Waiting will not resolve it; use Resolve timing to discard the Studio edit history and adopt the verified duration.";
-const WORKSPACE_REIMPORT_BLOCKER = "Wait for the updated Python source to finish reimporting before editing.";
 const NUDGE_DELTAS: Readonly<Record<string, Readonly<{ x: number; y: number }>>> = {
   ArrowDown: { x: 0, y: 2 },
   ArrowLeft: { x: -2, y: 0 },
@@ -248,6 +239,7 @@ export function App() {
     workspace,
   } = useManimWorkspace();
   const {
+    activeSessionIdentity,
     applyDraft: applyEditorDraft,
     beginSuggestionRequest,
     cancelSuggestionRequest,
@@ -340,12 +332,9 @@ export function App() {
   const pasteCount = useRef(0);
   const commandHandler = useRef<(command: StudioCommandId) => boolean>(() => false);
   const previewActivationDialog = useRef<HTMLDialogElement | null>(null);
-  const sourceDurationBasisBlockMessageRef = useRef<string | null>(null);
   const sourceTimingResolutionDialog = useRef<HTMLDialogElement | null>(null);
   const sourceTimingResolutionTarget = useRef<string | null>(null);
   const workspaceBounds = useRef<HTMLElement | null>(null);
-  const currentDraftProgram = useRef<ProgramRecord | null>(null);
-  currentDraftProgram.current = draftProgram;
   const appliedCanonicalPrograms = appliedPrograms.map((record) => record.program);
   const appliedProgramTransactionIds = useMemo(
     () => appliedPrograms.map((record) => record.program.transactionId),
@@ -448,29 +437,46 @@ export function App() {
     setInspectorReturnFocus(null);
   }, [activeScene?.sceneId, activeScene?.sourceHash, activeProjectId]);
 
-  const editorPristine =
-    appliedPrograms.length === 0 &&
-    draftProgram === null &&
-    editingAppliedProgram === null &&
-    redoPrograms.length === 0;
   const importedSceneBoundaryActive =
     activeScene?.runtimeSceneState.eventTrack.events.some(
       (event) => event.kind === "scene-boundary" && event.at !== undefined && event.at <= currentTime,
     ) ?? false;
   // Imported boundaries still gate the canvas directly. Studio-authored
   // boundaries are already fail-closed by their non-pristine revision.
-  const sourceDurationSessionKey =
-    activeProjectId && activeScene
-      ? editorSessionIdentityKey({
-          projectId: activeProjectId,
-          sceneId: activeScene.sceneId,
-          sourceHash: activeScene.sourceHash,
-        })
-      : null;
-  const retainedVerifiedSourceDuration =
-    sourceDurationSessionKey !== null && verifiedSourceDurationBasis?.sessionKey === sourceDurationSessionKey
-      ? verifiedSourceDurationBasis.duration
-      : null;
+  const sourceLifecycle = resolveEditorSourceLifecycle({
+    activeProjectId,
+    renderActionInProgress: activeProjectId !== null && renderSessions[activeProjectId]?.actionInProgress === true,
+    sourceMutationPendingProjectId,
+    sourceReimportTargetProjectId: sourceReimportTarget?.projectId ?? null,
+    workspaceRefreshing: workspaceIsRefreshing,
+  });
+  const editorRevision = useMemo(
+    () =>
+      resolveEditorRevision({
+        activeProjectId,
+        appliedPrograms,
+        draftProgram,
+        editingAppliedProgram,
+        invalidated: sourceLifecycle.invalidated,
+        loadedSessionIdentity: activeSessionIdentity,
+        redoPrograms,
+        retainedSourceDurationBasis: verifiedSourceDurationBasis,
+        scene: activeScene,
+        workspaceProjectId: workspace?.projectId ?? null,
+      }),
+    [
+      activeProjectId,
+      activeScene,
+      activeSessionIdentity,
+      appliedPrograms,
+      draftProgram,
+      editingAppliedProgram,
+      redoPrograms,
+      sourceLifecycle.invalidated,
+      verifiedSourceDurationBasis,
+      workspace?.projectId,
+    ],
+  );
   const {
     activate: activatePreviewAuthority,
     activationAllowed: previewActivationAllowed,
@@ -479,58 +485,43 @@ export function App() {
     providerPending: previewProviderPending,
     renderer: previewRenderer,
   } = useStudioPreviewAuthorityController({
-    appliedTransactionIds: appliedProgramTransactionIds,
-    draftActive: draftProgram !== null,
-    editingAppliedProgram: editingAppliedProgram !== null,
+    context: editorRevision.previewContext,
     frame: workspace?.frame ?? { height: 8, width: 14.222 },
-    projectId: workspace?.projectId ?? null,
-    redoProgramCount: redoPrograms.length,
-    retainedSourceDuration: retainedVerifiedSourceDuration,
+    retainedSourceDuration: editorRevision.retainedSourceDuration,
     sampleTime: currentTime,
-    scene: activeScene,
     transientEdit:
       dragPreview !== null || geometryPreview !== null || scalePreview !== null || importedSceneBoundaryActive,
   });
+  const {
+    beginRequest: beginEditorRevisionRequest,
+    blockDurationAuthority,
+    durationBlocked: sourceDurationBasisBlocked,
+    finishRequest: finishEditorRevisionRequest,
+    isRequestCurrent: isEditorRevisionRequestCurrent,
+    mismatch: sourceDurationBasisMismatch,
+    readDurationBlocker,
+    renderPipelineLifecycleBlocker,
+    resolvedVerifiedSourceDuration,
+  } = useEditorRevisionController({
+    candidate: previewRenderer?.verifiedSourceDuration ?? null,
+    lifecycle: sourceLifecycle,
+    metadataPhase: previewRenderer?.sourceMetadataPhase ?? null,
+    providerPending: previewProviderPending,
+    retained: verifiedSourceDurationBasis,
+    revision: editorRevision,
+    setVerifiedSourceDurationBasis,
+  });
+  const { sourceLifecyclePending } = sourceLifecycle;
+  const studioAuthoringLocked =
+    sourceLifecycle.studioAuthoringLocked || (editorRevision.selectionAligned && !editorRevision.sessionReady);
+  const sourceDurationSessionKey = editorRevision.sessionKey;
   function activatePreviewRenderer() {
     if (!activatePreviewAuthority()) return;
     previewActivationDialog.current?.close();
     cancelSuggestionRequest();
     setIsPlaying(false);
-    sourceDurationBasisBlockMessageRef.current = SOURCE_TIMING_LOADING_BLOCKER;
+    blockDurationAuthority(SOURCE_TIMING_LOADING_BLOCKER);
   }
-  const sourceDurationBasis = resolveVerifiedSourceDurationBasis({
-    candidate: previewRenderer?.verifiedSourceDuration ?? null,
-    editorPristine,
-    retained: verifiedSourceDurationBasis,
-    sessionKey: sourceDurationSessionKey,
-  });
-  const resolvedVerifiedSourceDuration = sourceDurationBasis.duration;
-  useLayoutEffect(() => {
-    if (sourceDurationBasis.adoption) setVerifiedSourceDurationBasis(sourceDurationBasis.adoption);
-  }, [setVerifiedSourceDurationBasis, sourceDurationBasis.adoption]);
-  const sourceDurationBasisLoading = previewProviderPending || previewRenderer?.sourceMetadataPhase === "loading";
-  const sourceDurationBasisMismatch = sourceDurationBasis.mismatch;
-  const sourceMutationPending =
-    activeProjectId !== null &&
-    (sourceMutationPendingProjectId === activeProjectId || renderSessions[activeProjectId]?.actionInProgress === true);
-  const sourceReimportPending = activeProjectId !== null && sourceReimportTarget?.projectId === activeProjectId;
-  const sourceLifecyclePending = sourceMutationPending || sourceReimportPending;
-  const studioAuthoringLocked = sourceLifecyclePending || workspaceIsRefreshing;
-  const renderPipelineLifecycleBlocker =
-    sourceReimportPending || workspaceIsRefreshing
-      ? WORKSPACE_REIMPORT_BLOCKER
-      : sourceDurationBasisMismatch
-        ? SOURCE_TIMING_MISMATCH_BLOCKER
-        : sourceDurationBasisLoading
-          ? SOURCE_TIMING_LOADING_BLOCKER
-          : null;
-  const sourceDurationBasisBlockMessage = sourceMutationPending
-    ? WORKSPACE_REIMPORT_BLOCKER
-    : renderPipelineLifecycleBlocker;
-  useLayoutEffect(() => {
-    sourceDurationBasisBlockMessageRef.current = sourceDurationBasisBlockMessage;
-  }, [sourceDurationBasisBlockMessage]);
-  const sourceDurationBasisBlocked = sourceDurationBasisBlockMessage !== null;
   useEffect(() => {
     const targetSessionKey = sourceTimingResolutionTarget.current;
     if (
@@ -551,7 +542,7 @@ export function App() {
   );
 
   function stageDraft(input: Parameters<typeof stageEditorDraft>[0]) {
-    const lifecycleBlocker = sourceDurationBasisBlockMessageRef.current;
+    const lifecycleBlocker = readDurationBlocker();
     if (lifecycleBlocker) {
       setDraftError(lifecycleBlocker);
       setIsPlaying(false);
@@ -561,7 +552,7 @@ export function App() {
   }
 
   function redoProgram() {
-    return redoEditorProgram(sourceDurationBasisBlockMessageRef.current);
+    return redoEditorProgram(readDurationBlocker());
   }
 
   function openSourceTimingResolution() {
@@ -856,7 +847,7 @@ export function App() {
 
   async function requestEditSuggestion(selectedOption?: ClarificationOption) {
     if (!activeScene || !draftBaseState) return;
-    const initialLifecycleBlocker = sourceDurationBasisBlockMessageRef.current;
+    const initialLifecycleBlocker = readDurationBlocker();
     if (initialLifecycleBlocker) {
       setSuggestionMessage(initialLifecycleBlocker);
       setSuggestionStatus("error");
@@ -936,7 +927,7 @@ export function App() {
         { signal: controller.signal },
       );
       if (!isSuggestionRequestCurrent(controller)) return;
-      const resolvedLifecycleBlocker = sourceDurationBasisBlockMessageRef.current;
+      const resolvedLifecycleBlocker = readDurationBlocker();
       if (resolvedLifecycleBlocker) {
         setSuggestion(null);
         setSuggestionMessage(resolvedLifecycleBlocker);
@@ -1014,7 +1005,7 @@ export function App() {
     operation: EditSuggestionOperation,
     focusSourceTime = editorRecord.program.anchor.resolvedSeconds,
   ) {
-    const lifecycleBlocker = sourceDurationBasisBlockMessageRef.current;
+    const lifecycleBlocker = readDurationBlocker();
     if (lifecycleBlocker) {
       setDraftError(lifecycleBlocker);
       return false;
@@ -1126,43 +1117,49 @@ export function App() {
 
   async function applyDraft() {
     if (!draftProgram || !renderCandidate || draftApplyPending) return;
-    const initialLifecycleBlocker = sourceDurationBasisBlockMessageRef.current;
+    const initialLifecycleBlocker = readDurationBlocker();
     if (initialLifecycleBlocker) {
       setDraftError(initialLifecycleBlocker);
       return;
     }
-    const applyingDraft = draftProgram;
+    const revisionRequest = beginEditorRevisionRequest();
+    if (revisionRequest === null) {
+      setDraftError(readDurationBlocker() ?? WORKSPACE_REIMPORT_BLOCKER);
+      return;
+    }
     setDraftApplyPending(true);
     setDraftError(null);
     try {
-      await exportManimSource({
-        destination: renderCandidate.destination,
-        program: renderCandidate.program,
-        programs: renderCandidate.programs,
-        projectId: renderCandidate.projectId,
-        sceneName: renderCandidate.sceneName,
-        sourceBindings: renderCandidate.sourceBindings,
-        sourceHash: renderCandidate.sourceHash,
-        sourcePath: renderCandidate.sourcePath,
-        viewport: renderCandidate.viewport,
-      });
-      if (currentDraftProgram.current !== applyingDraft) return;
-      const resolvedLifecycleBlocker = sourceDurationBasisBlockMessageRef.current;
+      await exportManimSource(
+        {
+          destination: renderCandidate.destination,
+          program: renderCandidate.program,
+          programs: renderCandidate.programs,
+          projectId: renderCandidate.projectId,
+          sceneName: renderCandidate.sceneName,
+          sourceBindings: renderCandidate.sourceBindings,
+          sourceHash: renderCandidate.sourceHash,
+          sourcePath: renderCandidate.sourcePath,
+          viewport: renderCandidate.viewport,
+        },
+        revisionRequest.controller.signal,
+      );
+      if (!isEditorRevisionRequestCurrent(revisionRequest)) return;
+      const resolvedLifecycleBlocker = readDurationBlocker();
       if (resolvedLifecycleBlocker) {
         setDraftError(resolvedLifecycleBlocker);
         return;
       }
       applyEditorDraft();
     } catch (error) {
-      if (currentDraftProgram.current === applyingDraft) {
-        setDraftError(
-          error instanceof Error
-            ? `Apply preflight failed: ${error.message}`
-            : "Apply preflight failed because Studio could not lower the draft safely.",
-        );
-      }
+      if (!isEditorRevisionRequestCurrent(revisionRequest)) return;
+      setDraftError(
+        error instanceof Error
+          ? `Apply preflight failed: ${error.message}`
+          : "Apply preflight failed because Studio could not lower the draft safely.",
+      );
     } finally {
-      setDraftApplyPending(false);
+      if (finishEditorRevisionRequest(revisionRequest)) setDraftApplyPending(false);
     }
   }
 
@@ -2194,7 +2191,7 @@ export function App() {
 
   function handleStudioCommand(command: StudioCommandId) {
     if (studioAuthoringLocked) {
-      setDraftError(WORKSPACE_REIMPORT_BLOCKER);
+      setDraftError(readDurationBlocker() ?? EDITOR_SESSION_LOADING_BLOCKER);
       return false;
     }
     const toolByCommand: Partial<Record<StudioCommandId, StudioTool>> = {
@@ -2235,7 +2232,7 @@ export function App() {
     }
     if (command === "play-pause") {
       if (!activeScene) return false;
-      const lifecycleBlocker = sourceDurationBasisBlockMessageRef.current;
+      const lifecycleBlocker = readDurationBlocker();
       if (lifecycleBlocker) {
         setDraftError(lifecycleBlocker);
         return false;
@@ -2613,7 +2610,7 @@ export function App() {
                 setCurrentTime(time);
               }}
               onTogglePlayback={() => {
-                const lifecycleBlocker = sourceDurationBasisBlockMessageRef.current;
+                const lifecycleBlocker = readDurationBlocker();
                 if (lifecycleBlocker) {
                   setDraftError(lifecycleBlocker);
                   return;

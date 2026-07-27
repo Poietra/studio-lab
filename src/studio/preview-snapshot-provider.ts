@@ -20,8 +20,8 @@ export type StudioPreviewEditingContextV1 = StudioPreviewSceneIdentityV1 &
      */
     sourceDuration: number;
     /**
-     * Identity of the applied Studio Edit Programs and draft state on top of
-     * the imported source. `PRISTINE_WORKING_REVISION` means no Studio edits.
+     * Canonical identity of applied, draft, edit, and redo state on top of the
+     * imported source. `PRISTINE_WORKING_REVISION` means no Studio edit history.
      */
     workingRevision: string;
   }>;
