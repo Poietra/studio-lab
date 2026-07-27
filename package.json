@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:unit": "vitest run src/ai src/engine src/studio --exclude src/studio/workspace-projection.test.ts",
     "test:integration": "vitest run server src/render-pipeline src/studio/workspace-projection.test.ts",
+    "test:sandbox:cgroup": "vitest run server/fast-manim-local-cgroup-conformance.real.test.ts --reporter=verbose",
     "test:engine:wasm-smoke": "node scripts/smoke-engine-wasm.mjs",
     "test:manim-smoke": "node scripts/run-manim-smoke.mjs",
     "test:e2e": "playwright test",

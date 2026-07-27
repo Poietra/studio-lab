@@ -61,6 +61,9 @@ The first real Manim round trip is documented in the
 The default-off fast-manim execution boundary and its remaining production
 dependencies are documented in the
 [sandbox backend runbook](docs/fast-manim-sandbox-backend.md).
+The Linux cgroup v2 hard-limit, descendant-reap, and real-kernel conformance
+requirements are documented in the
+[sandbox resource runbook](docs/fast-manim-sandbox-resources.md).
 The ownership boundary between Studio source analysis, Runtime Trace, Studio
 markers, and the independent `manim-lint` project is recorded in
 [ADR 0001](docs/adr/0001-studio-owned-source-analysis.md).
