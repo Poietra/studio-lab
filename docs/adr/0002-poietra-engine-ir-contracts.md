@@ -253,6 +253,11 @@ GPU preparation has one operation order:
    quantization, while straight strokes continue to expand in f64 world space;
 6. upload IEEE-754 round-to-nearest, ties-to-even f32 positions.
 
+A single fill draw fails closed before or during tessellation above 2,048 source
+cubics, 32,768 flattened input points, or 65,536 Lyon output vertices. These
+per-draw limits bound browser-worker latency and transient memory independently of
+the 1,000,000-vertex whole-frame ceiling.
+
 Canonical hashing normalizes negative zero to positive zero before serialization.
 The schemas bound each value and also bound document-wide entity, channel,
 keyframe, draw, cubic-segment, asset-byte, decoded-pixel, and viewport-pixel totals.

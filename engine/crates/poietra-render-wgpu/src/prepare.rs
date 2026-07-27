@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ops::Range;
 
 use lyon_tessellation::geometry_builder::{FillGeometryBuilder, GeometryBuilder};
@@ -15,6 +15,9 @@ use poietra_scene_ir::{
 pub const FLATTEN_TOLERANCE_PIXELS_V1: f64 = 0.25;
 /// Whole-frame vertex ceiling for the initial CPU tessellation slice.
 pub const MAX_PREPARED_VERTICES_V1: usize = 1_000_000;
+const MAX_FILL_SOURCE_CUBICS_PER_DRAW_V1: usize = 2_048;
+const MAX_FILL_FLATTENED_POINTS_PER_DRAW_V1: usize = 32_768;
+const MAX_FILL_OUTPUT_VERTICES_PER_DRAW_V1: usize = 65_536;
 const MAX_FLATTEN_DEPTH_V1: u8 = 20;
 // Cross-runtime affine and morph arithmetic can move an otherwise canonical
 // Line control by several representable values. Keep that tolerance tied to
@@ -68,6 +71,11 @@ pub enum PrepareFrameErrorV1 {
     },
     #[error("draw {draw_id} fill tessellation failed: {reason}")]
     FillTessellation { draw_id: String, reason: String },
+    #[error("draw {draw_id} exceeded the filled-path source limit of {maximum_cubics} cubics")]
+    FillSourceCubicLimit {
+        draw_id: String,
+        maximum_cubics: usize,
+    },
     #[error("prepared geometry exceeds the u32 indexed-draw range")]
     IndexRange,
     #[error("draw {draw_id} exceeded the adaptive tessellation vertex limit of {maximum_vertices}")]
@@ -538,6 +546,7 @@ fn append_point(
     points: &mut Vec<PointF64>,
     point: PointF64,
     maximum_vertices: usize,
+    reported_maximum_vertices: usize,
     draw_id: &str,
 ) -> Result<(), PrepareFrameErrorV1> {
     if points
@@ -549,7 +558,7 @@ fn append_point(
     if points.len() >= maximum_vertices {
         return Err(PrepareFrameErrorV1::TessellationVertexLimit {
             draw_id: draw_id.to_owned(),
-            maximum_vertices: MAX_PREPARED_VERTICES_V1,
+            maximum_vertices: reported_maximum_vertices,
         });
     }
     points.push(point);
@@ -578,6 +587,7 @@ fn flatten_subpath_world(
     viewport: &ViewportV1,
     draw_id: &str,
     maximum_vertices: usize,
+    reported_maximum_vertices: usize,
 ) -> Result<Vec<PointF64>, PrepareFrameErrorV1> {
     let initial_capacity = subpath
         .segments
@@ -589,6 +599,7 @@ fn flatten_subpath_world(
         &mut points,
         transform_to_world(&subpath.start, transform, draw_id)?,
         maximum_vertices,
+        reported_maximum_vertices,
         draw_id,
     )?;
     let tolerance_world = world_flatten_tolerance(camera, viewport);
@@ -597,7 +608,13 @@ fn flatten_subpath_world(
         let mut stack = vec![world_curve(start, segment, transform, draw_id)?];
         while let Some(curve) = stack.pop() {
             if cubic_is_flat(curve, tolerance_world, draw_id)? {
-                append_point(&mut points, curve.end, maximum_vertices, draw_id)?;
+                append_point(
+                    &mut points,
+                    curve.end,
+                    maximum_vertices,
+                    reported_maximum_vertices,
+                    draw_id,
+                )?;
                 continue;
             }
             if curve.depth >= MAX_FLATTEN_DEPTH_V1 {
@@ -650,26 +667,42 @@ fn world_to_fill_point(
     Ok((lyon_point(clip_x, clip_y), clip))
 }
 
-fn fill_contour_is_collinear(points: &[LyonPoint]) -> bool {
-    let Some(second) = points
-        .iter()
-        .copied()
-        .skip(1)
-        .find(|point| fill_point_key(*point) != fill_point_key(points[0]))
-    else {
-        return true;
-    };
-    points.iter().copied().skip(2).all(|point| {
-        let cross = (f64::from(second.x) - f64::from(points[0].x))
-            * (f64::from(point.y) - f64::from(points[0].y))
-            - (f64::from(second.y) - f64::from(points[0].y))
-                * (f64::from(point.x) - f64::from(points[0].x));
-        cross == 0.0
-    })
+#[derive(Debug, Default)]
+struct FillContourTopologyV1 {
+    first: Option<LyonPoint>,
+    has_non_collinear_point: bool,
+    second_distinct: Option<LyonPoint>,
+}
+
+impl FillContourTopologyV1 {
+    fn observe(&mut self, point: LyonPoint) -> bool {
+        let Some(first) = self.first else {
+            self.first = Some(point);
+            return true;
+        };
+        let Some(second) = self.second_distinct else {
+            if fill_point_key(point) != fill_point_key(first) {
+                self.second_distinct = Some(point);
+            }
+            return false;
+        };
+        let cross = (f64::from(second.x) - f64::from(first.x))
+            * (f64::from(point.y) - f64::from(first.y))
+            - (f64::from(second.y) - f64::from(first.y))
+                * (f64::from(point.x) - f64::from(first.x));
+        self.has_non_collinear_point |= cross != 0.0;
+        false
+    }
+
+    const fn is_degenerate(&self) -> bool {
+        !self.has_non_collinear_point
+    }
 }
 
 #[derive(Debug)]
 struct BoundedFillGeometryV1 {
+    first_index: usize,
+    first_vertex: usize,
     index_limit_exceeded: bool,
     indices: Vec<u32>,
     maximum_indices: usize,
@@ -680,6 +713,8 @@ struct BoundedFillGeometryV1 {
 impl BoundedFillGeometryV1 {
     fn new(maximum_vertices: usize) -> Self {
         Self {
+            first_index: 0,
+            first_vertex: 0,
             index_limit_exceeded: false,
             indices: Vec::new(),
             maximum_indices: maximum_vertices.saturating_mul(6),
@@ -690,6 +725,12 @@ impl BoundedFillGeometryV1 {
 }
 
 impl GeometryBuilder for BoundedFillGeometryV1 {
+    fn begin_geometry(&mut self) {
+        self.first_index = self.indices.len();
+        self.first_vertex = self.vertices.len();
+        self.index_limit_exceeded = false;
+    }
+
     fn add_triangle(&mut self, first: VertexId, second: VertexId, third: VertexId) {
         let Some(next_len) = self.indices.len().checked_add(3) else {
             self.index_limit_exceeded = true;
@@ -704,8 +745,9 @@ impl GeometryBuilder for BoundedFillGeometryV1 {
     }
 
     fn abort_geometry(&mut self) {
-        self.vertices.clear();
-        self.indices.clear();
+        self.vertices.truncate(self.first_vertex);
+        self.indices.truncate(self.first_index);
+        self.index_limit_exceeded = false;
     }
 }
 
@@ -728,14 +770,18 @@ impl FillGeometryBuilder for BoundedFillGeometryV1 {
     }
 }
 
-fn fill_tessellation_error(error: &TessellationError, draw_id: &str) -> PrepareFrameErrorV1 {
+fn fill_tessellation_error(
+    error: &TessellationError,
+    draw_id: &str,
+    maximum_vertices: usize,
+) -> PrepareFrameErrorV1 {
     if matches!(
         error,
         TessellationError::GeometryBuilder(GeometryBuilderError::TooManyVertices)
     ) {
         return PrepareFrameErrorV1::TessellationVertexLimit {
             draw_id: draw_id.to_owned(),
-            maximum_vertices: MAX_PREPARED_VERTICES_V1,
+            maximum_vertices,
         };
     }
     PrepareFrameErrorV1::FillTessellation {
@@ -1192,6 +1238,54 @@ fn prepare_stroke_geometry(
     )
 }
 
+fn validate_fill_source_limits(
+    path: &poietra_scene_ir::CubicPathV1,
+    draw_id: &str,
+) -> Result<(), PrepareFrameErrorV1> {
+    let mut source_cubics = 0usize;
+    for subpath in &path.subpaths {
+        if !subpath.closed {
+            return Err(PrepareFrameErrorV1::Unsupported {
+                draw_id: draw_id.to_owned(),
+                reason: UnsupportedDrawReasonV1::OpenSubpath,
+            });
+        }
+        source_cubics = source_cubics.saturating_add(subpath.segments.len());
+        if source_cubics > MAX_FILL_SOURCE_CUBICS_PER_DRAW_V1 {
+            return Err(PrepareFrameErrorV1::FillSourceCubicLimit {
+                draw_id: draw_id.to_owned(),
+                maximum_cubics: MAX_FILL_SOURCE_CUBICS_PER_DRAW_V1,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn fill_output_limits(
+    prepared_vertices: usize,
+    draw_id: &str,
+) -> Result<(usize, usize), PrepareFrameErrorV1> {
+    let Some(remaining_vertices) = MAX_PREPARED_VERTICES_V1.checked_sub(prepared_vertices) else {
+        return Err(PrepareFrameErrorV1::TessellationVertexLimit {
+            draw_id: draw_id.to_owned(),
+            maximum_vertices: MAX_PREPARED_VERTICES_V1,
+        });
+    };
+    if remaining_vertices == 0 {
+        return Err(PrepareFrameErrorV1::TessellationVertexLimit {
+            draw_id: draw_id.to_owned(),
+            maximum_vertices: MAX_PREPARED_VERTICES_V1,
+        });
+    }
+    let maximum_output_vertices = remaining_vertices.min(MAX_FILL_OUTPUT_VERTICES_PER_DRAW_V1);
+    let reported_output_limit = if remaining_vertices < MAX_FILL_OUTPUT_VERTICES_PER_DRAW_V1 {
+        MAX_PREPARED_VERTICES_V1
+    } else {
+        MAX_FILL_OUTPUT_VERTICES_PER_DRAW_V1
+    };
+    Ok((maximum_output_vertices, reported_output_limit))
+}
+
 fn prepare_fill_geometry(
     vertices: &mut Vec<PreparedGeometryVertexV1>,
     indices: &mut Vec<u32>,
@@ -1201,27 +1295,30 @@ fn prepare_fill_geometry(
     context: GeometryContextV1<'_>,
 ) -> Result<(), PrepareFrameErrorV1> {
     let draw_id = context.draw_id;
-    let remaining_vertices = MAX_PREPARED_VERTICES_V1
-        .checked_sub(vertices.len())
-        .ok_or_else(|| PrepareFrameErrorV1::TessellationVertexLimit {
-            draw_id: draw_id.to_owned(),
-            maximum_vertices: MAX_PREPARED_VERTICES_V1,
-        })?;
-    let mut contours = Vec::with_capacity(path.subpaths.len());
+    validate_fill_source_limits(path, draw_id)?;
+    let (maximum_output_vertices, reported_output_limit) =
+        fill_output_limits(vertices.len(), draw_id)?;
     let mut flattened_vertices = 0usize;
     let mut upload_points = HashMap::new();
+    let lyon_fill_rule = match fill_rule {
+        FillRuleV1::EvenOdd => lyon_tessellation::FillRule::EvenOdd,
+        FillRuleV1::NonZero => lyon_tessellation::FillRule::NonZero,
+    };
+    // Cubics have already been flattened in f64 world space. The smallest
+    // positive tolerance keeps Lyon from adding another visible approximation
+    // while retaining its intersection-safe fill sweep.
+    let options = FillOptions::default()
+        .with_fill_rule(lyon_fill_rule)
+        .with_tolerance(f32::EPSILON);
+    let mut output = BoundedFillGeometryV1::new(maximum_output_vertices);
+    let mut tessellator = FillTessellator::new();
+    let mut builder = tessellator.builder(&options, &mut output);
     for subpath in &path.subpaths {
-        if !subpath.closed {
-            return Err(PrepareFrameErrorV1::Unsupported {
-                draw_id: draw_id.to_owned(),
-                reason: UnsupportedDrawReasonV1::OpenSubpath,
-            });
-        }
-        let available_for_subpath = remaining_vertices
+        let available_for_subpath = MAX_FILL_FLATTENED_POINTS_PER_DRAW_V1
             .checked_sub(flattened_vertices)
             .ok_or_else(|| PrepareFrameErrorV1::TessellationVertexLimit {
                 draw_id: draw_id.to_owned(),
-                maximum_vertices: MAX_PREPARED_VERTICES_V1,
+                maximum_vertices: MAX_FILL_FLATTENED_POINTS_PER_DRAW_V1,
             })?;
         let world_points = flatten_subpath_world(
             subpath,
@@ -1230,15 +1327,15 @@ fn prepare_fill_geometry(
             context.viewport,
             draw_id,
             available_for_subpath,
+            MAX_FILL_FLATTENED_POINTS_PER_DRAW_V1,
         )?;
         flattened_vertices = flattened_vertices
             .checked_add(world_points.len())
             .ok_or_else(|| PrepareFrameErrorV1::TessellationVertexLimit {
                 draw_id: draw_id.to_owned(),
-                maximum_vertices: MAX_PREPARED_VERTICES_V1,
+                maximum_vertices: MAX_FILL_FLATTENED_POINTS_PER_DRAW_V1,
             })?;
-        let mut contour = Vec::with_capacity(world_points.len());
-        let mut distinct_points = HashSet::with_capacity(world_points.len());
+        let mut topology = FillContourTopologyV1::default();
         for world_point in world_points {
             let (fill_point, clip_point) =
                 world_to_fill_point(world_point, context.camera, context.viewport, draw_id)?;
@@ -1252,43 +1349,23 @@ fn prepare_fill_geometry(
                     maximum_error_pixels: FLATTEN_TOLERANCE_PIXELS_V1,
                 });
             }
-            distinct_points.insert(fill_key);
-            contour.push(fill_point);
+            if topology.observe(fill_point) {
+                builder.begin(fill_point);
+            } else {
+                builder.line_to(fill_point);
+            }
         }
-        if distinct_points.len() < 3 || fill_contour_is_collinear(&contour) {
+        if topology.is_degenerate() {
             return Err(PrepareFrameErrorV1::Unsupported {
                 draw_id: draw_id.to_owned(),
                 reason: UnsupportedDrawReasonV1::DegenerateFill,
             });
         }
-        contours.push(contour);
+        builder.end(true);
     }
-
-    let lyon_fill_rule = match fill_rule {
-        FillRuleV1::EvenOdd => lyon_tessellation::FillRule::EvenOdd,
-        FillRuleV1::NonZero => lyon_tessellation::FillRule::NonZero,
-    };
-    // Cubics have already been flattened in f64 world space. The smallest
-    // positive tolerance keeps Lyon from adding another visible approximation
-    // while retaining its intersection-safe fill sweep.
-    let options = FillOptions::default()
-        .with_fill_rule(lyon_fill_rule)
-        .with_tolerance(f32::EPSILON);
-    let mut output = BoundedFillGeometryV1::new(remaining_vertices);
-    let mut tessellator = FillTessellator::new();
-    {
-        let mut builder = tessellator.builder(&options, &mut output);
-        for contour in &contours {
-            builder.begin(contour[0]);
-            for point in contour.iter().copied().skip(1) {
-                builder.line_to(point);
-            }
-            builder.end(true);
-        }
-        builder
-            .build()
-            .map_err(|error| fill_tessellation_error(&error, draw_id))?;
-    }
+    builder
+        .build()
+        .map_err(|error| fill_tessellation_error(&error, draw_id, reported_output_limit))?;
     validate_fill_output(&output, draw_id)?;
 
     let base_vertex = u32::try_from(vertices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
@@ -1546,9 +1623,10 @@ mod tests {
                 &viewport,
                 "draw:limit",
                 2,
+                2,
             ),
             Err(PrepareFrameErrorV1::TessellationVertexLimit {
-                maximum_vertices: MAX_PREPARED_VERTICES_V1,
+                maximum_vertices: 2,
                 ..
             })
         ));

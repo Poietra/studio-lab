@@ -59,8 +59,10 @@ stroke width, affine transform, camera, and viewport before replacing the cubic 
 its chord. Trim progress zero remains an explicit degenerate-stroke fallback.
 Combined fill/stroke, open fill, curved/closed/multi-segment/multi-subpath stroke,
 image, degenerate, numeric, precision-collapse, and tessellation-limit cases reject
-the complete frame with a structured error. The frame-wide preparation ceiling is
-1,000,000 vertices.
+the complete frame with a structured error. Each fill draw is bounded before and
+during tessellation to 2,048 source cubics, 32,768 flattened input points, and
+65,536 Lyon output vertices. The independent frame-wide preparation ceiling remains
+1,000,000 vertices for aggregate geometry.
 
 Preparation keeps four ownership boundaries explicit: position-only geometry,
 per-draw material, stable ordered draw ranges, and the transient GPU upload plan.
