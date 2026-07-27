@@ -352,7 +352,9 @@ fn unsupported_stroke_topologies_fail_closed_with_specific_reasons() {
             let RenderDrawV1::Path { path, .. } = &mut packet.draws[0] else {
                 unreachable!()
             };
-            path.subpaths[0].segments[0].control1.y = 0.25;
+            // The centerline stays within 0.25 px, but this vertical endpoint
+            // tangent would rotate a width-1 butt cap by 90 degrees.
+            path.subpaths[0].segments[0].control1 = PointV1 { x: -2.0, y: 0.02 };
             (packet, UnsupportedDrawReasonV1::CurvedStroke)
         },
         {
@@ -386,7 +388,7 @@ fn unsupported_stroke_topologies_fail_closed_with_specific_reasons() {
 }
 
 #[test]
-fn component_wise_morphed_line_is_prepared_by_screen_flatness() {
+fn component_wise_morphed_line_is_prepared_by_shape_safe_tolerance() {
     let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
     let RenderDrawV1::Path { path, .. } = &mut packet.draws[0] else {
         unreachable!()
@@ -416,14 +418,63 @@ fn component_wise_morphed_line_is_prepared_by_screen_flatness() {
 }
 
 #[test]
-fn stroke_flatness_is_measured_after_world_transform() {
+fn non_degenerate_trimmed_line_is_prepared_but_zero_trim_stays_degenerate() {
     let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
     {
         let RenderDrawV1::Path { path, .. } = &mut packet.draws[0] else {
             unreachable!()
         };
-        path.subpaths[0].segments[0].control1.y = 0.02;
-        path.subpaths[0].segments[0].control2.y = 0.02;
+        path.subpaths[0].start = PointV1 { x: -4.0, y: 0.0 };
+        path.subpaths[0].segments[0] = CubicSegmentV1 {
+            control1: PointV1 { x: -2.0, y: 0.0 },
+            control2: PointV1 { x: 0.0, y: 0.0 },
+            end: PointV1 { x: 2.0, y: 0.0 },
+        };
+    }
+    assert!(prepare_frame_v1(&packet).is_ok());
+
+    let RenderDrawV1::Path { path, .. } = &mut packet.draws[0] else {
+        unreachable!()
+    };
+    path.subpaths[0].segments[0].control1 = path.subpaths[0].start.clone();
+    path.subpaths[0].segments[0].control2 = path.subpaths[0].start.clone();
+    path.subpaths[0].segments[0].end = path.subpaths[0].start.clone();
+    assert!(matches!(
+        prepare_frame_v1(&packet),
+        Err(PrepareFrameErrorV1::Unsupported {
+            reason: UnsupportedDrawReasonV1::DegenerateStroke,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn line_roundoff_is_clamped_by_affine_camera_and_stroke_width() {
+    let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
+    {
+        let RenderDrawV1::Path { path, .. } = &mut packet.draws[0] else {
+            unreachable!()
+        };
+        let start = PointV1 {
+            x: 999_999_990.0,
+            y: 0.0,
+        };
+        let end = PointV1 {
+            x: 999_999_994.0,
+            y: 0.0,
+        };
+        path.subpaths[0].start = start.clone();
+        path.subpaths[0].segments[0] = CubicSegmentV1 {
+            control1: PointV1 {
+                x: start.x + (end.x - start.x) / 3.0,
+                y: 0.000_01,
+            },
+            control2: PointV1 {
+                x: start.x + (end.x - start.x) * (2.0 / 3.0),
+                y: 0.000_01,
+            },
+            end,
+        };
     }
     assert!(prepare_frame_v1(&packet).is_ok());
 
@@ -431,6 +482,38 @@ fn stroke_flatness_is_measured_after_world_transform() {
         unreachable!()
     };
     transform.m22 = 2.0;
+    assert!(matches!(
+        prepare_frame_v1(&packet),
+        Err(PrepareFrameErrorV1::Unsupported {
+            reason: UnsupportedDrawReasonV1::CurvedStroke,
+            ..
+        })
+    ));
+    let RenderDrawV1::Path { transform, .. } = &mut packet.draws[0] else {
+        unreachable!()
+    };
+    transform.m22 = 1.0;
+
+    packet.camera.bottom = -0.001_125;
+    packet.camera.left = -0.002;
+    packet.camera.right = 0.002;
+    packet.camera.top = 0.001_125;
+    assert!(matches!(
+        prepare_frame_v1(&packet),
+        Err(PrepareFrameErrorV1::Unsupported {
+            reason: UnsupportedDrawReasonV1::CurvedStroke,
+            ..
+        })
+    ));
+
+    packet.camera.bottom = -4.5;
+    packet.camera.left = -8.0;
+    packet.camera.right = 8.0;
+    packet.camera.top = 4.5;
+    let RenderDrawV1::Path { stroke, .. } = &mut packet.draws[0] else {
+        unreachable!()
+    };
+    stroke.as_mut().unwrap().width_world = 1_000_000.0;
     assert!(matches!(
         prepare_frame_v1(&packet),
         Err(PrepareFrameErrorV1::Unsupported {

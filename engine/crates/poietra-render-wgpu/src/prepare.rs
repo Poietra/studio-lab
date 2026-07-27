@@ -11,6 +11,11 @@ pub const FLATTEN_TOLERANCE_PIXELS_V1: f64 = 0.25;
 /// Whole-frame vertex ceiling for the initial CPU tessellation slice.
 pub const MAX_PREPARED_VERTICES_V1: usize = 1_000_000;
 const MAX_FLATTEN_DEPTH_V1: u8 = 20;
+// Cross-runtime affine and morph arithmetic can move an otherwise canonical
+// Line control by several representable values. Keep that tolerance tied to
+// f64 roundoff, then clamp it again by the visible stroke-shape error budget.
+const CANONICAL_LINE_ROUNDOFF_MULTIPLIER_V1: f64 = 64.0;
+const STROKE_SHAPE_ERROR_SAFETY_FACTOR_V1: f64 = 8.0;
 
 /// A valid v1 draw feature not implemented by the bounded WGPU paint slice.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -31,7 +36,7 @@ pub enum UnsupportedDrawReasonV1 {
     ClosedStrokeSubpath,
     #[error("the stroke slice requires exactly one cubic segment")]
     StrokeSegmentCount,
-    #[error("the stroke slice accepts only a single cubic that is screen-flat within tolerance")]
+    #[error("the stroke slice accepts only a shape-safe canonical Line cubic")]
     CurvedStroke,
     #[error("the transformed stroke line is degenerate")]
     DegenerateStroke,
@@ -510,6 +515,91 @@ fn cubic_is_flat(
     Ok(maximum_distance <= tolerance_world)
 }
 
+fn canonical_line_control(start: PointF64, end: PointF64, factor: f64) -> PointF64 {
+    PointF64 {
+        x: start.x + (end.x - start.x) * factor,
+        y: start.y + (end.y - start.y) * factor,
+    }
+}
+
+fn point_distance(left: PointF64, right: PointF64) -> f64 {
+    (left.x - right.x).hypot(left.y - right.y)
+}
+
+fn projection_onto_chord(
+    point: PointF64,
+    start: PointF64,
+    delta: PointF64,
+    length_squared: f64,
+) -> f64 {
+    ((point.x - start.x) * delta.x + (point.y - start.y) * delta.y) / length_squared
+}
+
+fn is_shape_safe_canonical_line(
+    curve: CubicF64,
+    tolerance_world: f64,
+    stroke_radius: f64,
+    draw_id: &str,
+) -> Result<bool, PrepareFrameErrorV1> {
+    let chord = PointF64 {
+        x: curve.end.x - curve.start.x,
+        y: curve.end.y - curve.start.y,
+    };
+    let chord_length = chord.x.hypot(chord.y);
+    if !chord_length.is_finite() {
+        return Err(numeric_error(Some(draw_id), "stroke length"));
+    }
+    if chord_length == 0.0 {
+        return Ok(
+            same_point(curve.control1, curve.start) && same_point(curve.control2, curve.start)
+        );
+    }
+
+    let length_squared = chord_length * chord_length;
+    let first_projection =
+        projection_onto_chord(curve.control1, curve.start, chord, length_squared);
+    let second_projection =
+        projection_onto_chord(curve.control2, curve.start, chord, length_squared);
+    if !first_projection.is_finite()
+        || !second_projection.is_finite()
+        || !(0.0..=1.0).contains(&first_projection)
+        || !(0.0..=1.0).contains(&second_projection)
+        || first_projection > second_projection
+    {
+        return Ok(false);
+    }
+
+    let expected_control1 = canonical_line_control(curve.start, curve.end, 1.0 / 3.0);
+    let expected_control2 = canonical_line_control(curve.start, curve.end, 2.0 / 3.0);
+    let maximum_control_error = point_distance(curve.control1, expected_control1)
+        .max(point_distance(curve.control2, expected_control2));
+    let coordinate_scale = [
+        curve.start.x,
+        curve.start.y,
+        curve.control1.x,
+        curve.control1.y,
+        curve.control2.x,
+        curve.control2.y,
+        curve.end.x,
+        curve.end.y,
+    ]
+    .into_iter()
+    .map(f64::abs)
+    .fold(1.0, f64::max);
+    let numeric_roundoff = coordinate_scale * f64::EPSILON * CANONICAL_LINE_ROUNDOFF_MULTIPLIER_V1;
+    // Replacing the cubic with its chord changes both its centerline and the
+    // normals used for joins/caps. The second term keeps the worst derivative
+    // perturbation, magnified by stroke radius, below the same pixel budget.
+    let shape_error = tolerance_world.min(
+        tolerance_world * chord_length / (STROKE_SHAPE_ERROR_SAFETY_FACTOR_V1 * stroke_radius),
+    );
+    let accepted_error = numeric_roundoff.min(shape_error);
+    if !maximum_control_error.is_finite() || !accepted_error.is_finite() {
+        return Err(numeric_error(Some(draw_id), "stroke Line verification"));
+    }
+    Ok(maximum_control_error <= accepted_error)
+}
+
 fn append_point(
     points: &mut Vec<PointF64>,
     point: PointF64,
@@ -965,9 +1055,10 @@ fn prepare_stroke_geometry(
     }
     let segment = &subpath.segments[0];
     let world_curve = world_curve(&subpath.start, segment, transform, draw_id)?;
-    if !cubic_is_flat(
+    if !is_shape_safe_canonical_line(
         world_curve,
         world_flatten_tolerance(context.camera, context.viewport),
+        stroke.width_world * 0.5,
         draw_id,
     )? {
         return Err(PrepareFrameErrorV1::Unsupported {
@@ -1165,7 +1256,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn screen_flatness_accepts_interpolated_line_controls_farther_than_one_ulp() {
+    fn shape_safe_line_accepts_interpolated_controls_farther_than_one_ulp() {
         // At t=0.2, component-wise morphing from Line[-4, -2] to Line[10, 20]
         // places the first control at -4.44e-16. Recomputing the canonical
         // control from the interpolated endpoints instead yields +2.22e-16.
@@ -1199,11 +1290,11 @@ mod tests {
                 .abs_diff(recomputed_control1.to_bits())
                 > 1
         );
-        assert!(cubic_is_flat(curve, 0.025, "draw:interpolated-line").unwrap());
+        assert!(is_shape_safe_canonical_line(curve, 0.025, 0.5, "draw:interpolated-line").unwrap());
     }
 
     #[test]
-    fn screen_flatness_rejects_visible_curves_and_collinear_overshoot() {
+    fn shape_safe_line_rejects_visible_curves_and_collinear_overshoot() {
         let visibly_curved = CubicF64 {
             control1: PointF64 { x: 1.0, y: 0.03 },
             control2: PointF64 { x: 2.0, y: 0.03 },
@@ -1219,8 +1310,8 @@ mod tests {
             start: PointF64 { x: 0.0, y: 0.0 },
         };
 
-        assert!(!cubic_is_flat(visibly_curved, 0.025, "draw:curve").unwrap());
-        assert!(!cubic_is_flat(overshoot, 0.025, "draw:overshoot").unwrap());
+        assert!(!is_shape_safe_canonical_line(visibly_curved, 0.025, 0.5, "draw:curve").unwrap());
+        assert!(!is_shape_safe_canonical_line(overshoot, 0.025, 0.5, "draw:overshoot").unwrap());
     }
 
     #[test]
