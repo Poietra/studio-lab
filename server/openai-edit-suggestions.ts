@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-
 import type { Plugin } from "vite";
 
 import { createEditSuggestionHandler } from "./edit-suggestions/handler";
@@ -21,15 +18,8 @@ type PluginOptions = Readonly<{
   model?: string;
 }>;
 
-function readApiKey(root: string) {
-  const raw = readFileSync(resolve(root, ".openai-key"), "utf8").trim();
-  if (!raw.includes("=")) return raw;
-  const line = raw.split(/\r?\n/).find((candidate) => candidate.trim().startsWith("OPENAI_API_KEY="));
-  return line?.slice(line.indexOf("=") + 1).trim() ?? "";
-}
-
 export function openAiEditSuggestions(options: PluginOptions = {}): Plugin {
-  let apiKey = options.apiKey?.trim() || process.env.OPENAI_API_KEY?.trim() || "";
+  const apiKey = options.apiKey?.trim() || process.env.OPENAI_API_KEY?.trim() || "";
   let generator: EditSuggestionGenerator | null = null;
   let logger: StructuredLogger = nullLogger;
   let root = process.cwd();
@@ -40,13 +30,6 @@ export function openAiEditSuggestions(options: PluginOptions = {}): Plugin {
     name: "poietra-openai-edit-suggestions",
     configResolved(config) {
       root = config.root;
-      if (!apiKey) {
-        try {
-          apiKey = readApiKey(root);
-        } catch {
-          apiKey = "";
-        }
-      }
       if (options.logPath !== false) {
         const fileSink = createRotatingJsonlSink({
           logPath: options.logPath ?? ".studio-logs/ai-edit-suggestions.jsonl",
@@ -56,7 +39,7 @@ export function openAiEditSuggestions(options: PluginOptions = {}): Plugin {
           context: { component: "edit-suggestions-api" },
           sinks: [createConsoleJsonSink({ includeData: false, prefix: "poietra-ai" }), fileSink],
         });
-        logger.info("logging.configured", { path: fileSink.path });
+        logger.info("logging.configured", { sink: "rotating-jsonl" });
       }
       generator = apiKey
         ? createOpenAiEditSuggestionGenerator({
@@ -68,10 +51,13 @@ export function openAiEditSuggestions(options: PluginOptions = {}): Plugin {
       logger.info("generator.configured", { credentialConfigured: Boolean(apiKey), model });
     },
     configureServer(server) {
-      server.middlewares.use("/api/ai/edit-suggestions", createEditSuggestionHandler({
-        generator: () => generator,
-        logger,
-      }));
+      server.middlewares.use(
+        "/api/ai/edit-suggestions",
+        createEditSuggestionHandler({
+          generator: () => generator,
+          logger,
+        }),
+      );
     },
   };
 }
