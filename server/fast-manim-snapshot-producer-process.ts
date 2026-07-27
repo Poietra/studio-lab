@@ -1,10 +1,7 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 
-import {
-  type FastManimSnapshotRunFailureCodeV1,
-  MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES,
-} from "./fast-manim-snapshot-contract";
+import { MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES } from "./fast-manim-snapshot-contract";
 import type { StructuredLogger } from "./logging/structured-logger";
 
 const MAX_PRODUCER_STDOUT_BYTES = MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES;
@@ -46,7 +43,10 @@ export function abortError() {
 }
 
 export type ProducerProcessResult =
-  | Readonly<{ code: FastManimSnapshotRunFailureCodeV1; kind: "failed" }>
+  | Readonly<{
+      code: "producer-exit" | "producer-output-overflow" | "producer-spawn-failed" | "producer-timeout";
+      kind: "failed";
+    }>
   | Readonly<{ kind: "ok"; stdout: Uint8Array }>;
 
 export type SuperviseProducerOptions = Readonly<{
@@ -239,10 +239,10 @@ export async function superviseProducerProcess(options: SuperviseProducerOptions
     setupComplete = true;
     try {
       const exit = await exitPromise;
-      if (options.isHalted()) throw abortError();
       if (spawnFailure) return { code: "producer-spawn-failed", kind: "failed" };
       if (overflowed) return { code: "producer-output-overflow", kind: "failed" };
       if (timedOut || !closed) return { code: "producer-timeout", kind: "failed" };
+      if (options.isHalted()) throw abortError();
       if (exit.code !== 0) {
         options.logger.warn("snapshot.producer_exit", {
           exitCode: exit.code,
