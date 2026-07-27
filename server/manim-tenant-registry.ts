@@ -1,6 +1,6 @@
 import { HttpError } from "./http/json";
 import { isVerifiedManimPrincipal, manimTenantIdSchema, type VerifiedManimPrincipal } from "./manim-request-principal";
-import { manimStorageRootsOverlap } from "./manim-tenant-storage";
+import { manimStorageRootsOverlap, validateManimStorageRoots } from "./manim-tenant-storage";
 
 type TenantApi = Readonly<{ storageRoots: readonly string[]; tenantId: string }>;
 
@@ -12,11 +12,17 @@ type TenantApi = Readonly<{ storageRoots: readonly string[]; tenantId: string }>
 export class ManimTenantRegistry<Api extends TenantApi> {
   private readonly tenants = new Map<string, Api>();
 
+  private storageRoots(api: Api) {
+    return validateManimStorageRoots((api as Readonly<{ storageRoots?: unknown }>).storageRoots);
+  }
+
   private assertStorageIsolation() {
     const entries = [...this.tenants.values()];
     for (let firstIndex = 0; firstIndex < entries.length; firstIndex += 1) {
       for (let secondIndex = firstIndex + 1; secondIndex < entries.length; secondIndex += 1) {
-        if (manimStorageRootsOverlap(entries[firstIndex]!.storageRoots, entries[secondIndex]!.storageRoots)) {
+        if (
+          manimStorageRootsOverlap(this.storageRoots(entries[firstIndex]!), this.storageRoots(entries[secondIndex]!))
+        ) {
           throw new TypeError("Tenant storage roots must not overlap.");
         }
       }
@@ -25,7 +31,7 @@ export class ManimTenantRegistry<Api extends TenantApi> {
 
   private assertSelectedStorageIsolation(selected: Api) {
     for (const api of this.tenants.values()) {
-      if (api !== selected && manimStorageRootsOverlap(selected.storageRoots, api.storageRoots)) {
+      if (api !== selected && manimStorageRootsOverlap(this.storageRoots(selected), this.storageRoots(api))) {
         throw new TypeError("Tenant storage roots must not overlap.");
       }
     }
@@ -36,6 +42,7 @@ export class ManimTenantRegistry<Api extends TenantApi> {
     for (const api of apis) {
       const parsedTenantId = manimTenantIdSchema.safeParse(api.tenantId);
       if (!parsedTenantId.success) throw new TypeError("The tenant registry received an invalid tenant ID.");
+      this.storageRoots(api);
       if (this.tenants.has(parsedTenantId.data)) throw new TypeError("Duplicate tenant registry entry.");
       this.tenants.set(parsedTenantId.data, api);
     }

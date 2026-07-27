@@ -204,4 +204,19 @@ describe("Manim request principals", () => {
     registries.push(first, second);
     expect(() => new ManimTenantRegistry([first, second])).toThrow(/storage roots must not overlap/i);
   });
+
+  it.each([undefined, [], ["relative/root"], [1], Array.from({ length: 129 }, () => "/tmp/root")])(
+    "rejects an invalid runtime storage namespace %#",
+    (storageRoots) => {
+      expect(
+        () =>
+          new ManimTenantRegistry([
+            { storageRoots, tenantId: "tenant-a" } as unknown as {
+              storageRoots: readonly string[];
+              tenantId: string;
+            },
+          ]),
+      ).toThrow(/absolute storage roots/i);
+    },
+  );
 });
