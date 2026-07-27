@@ -1,0 +1,419 @@
+import { createServer, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
+import { isIP } from "node:net";
+
+import { z } from "zod";
+
+import { sendJson } from "./http/json";
+import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
+import { handleManimRequest, type ManimApi } from "./manim-render-http";
+
+export const ISOLATED_MANIM_RUNTIME_CAPABILITY_V1 = "poietra.isolated-manim-runtime.v1" as const;
+
+const DEFAULT_LIMITS = {
+  handlerTimeoutMs: 30_000,
+  headersTimeoutMs: 10_000,
+  keepAliveTimeoutMs: 5_000,
+  maxBodyBytes: 512 * 1024,
+  maxConnections: 256,
+  maxHeaderBytes: 16 * 1024,
+  maxRequestsPerSocket: 100,
+  readinessTimeoutMs: 2_000,
+  requestTimeoutMs: 30_000,
+  shutdownGraceMs: 10_000,
+} as const;
+
+const limitsSchema = z
+  .object({
+    handlerTimeoutMs: z.number().int().min(1_000).max(120_000).default(DEFAULT_LIMITS.handlerTimeoutMs),
+    headersTimeoutMs: z.number().int().min(1_000).max(60_000).default(DEFAULT_LIMITS.headersTimeoutMs),
+    keepAliveTimeoutMs: z.number().int().min(250).max(30_000).default(DEFAULT_LIMITS.keepAliveTimeoutMs),
+    maxBodyBytes: z
+      .number()
+      .int()
+      .min(1_024)
+      .max(512 * 1024)
+      .default(DEFAULT_LIMITS.maxBodyBytes),
+    maxConnections: z.number().int().min(1).max(10_000).default(DEFAULT_LIMITS.maxConnections),
+    maxHeaderBytes: z
+      .number()
+      .int()
+      .min(4 * 1024)
+      .max(64 * 1024)
+      .default(DEFAULT_LIMITS.maxHeaderBytes),
+    maxRequestsPerSocket: z.number().int().min(1).max(1_000).default(DEFAULT_LIMITS.maxRequestsPerSocket),
+    readinessTimeoutMs: z.number().int().min(100).max(10_000).default(DEFAULT_LIMITS.readinessTimeoutMs),
+    requestTimeoutMs: z.number().int().min(1_000).max(120_000).default(DEFAULT_LIMITS.requestTimeoutMs),
+    shutdownGraceMs: z.number().int().min(100).max(60_000).default(DEFAULT_LIMITS.shutdownGraceMs),
+  })
+  .strict()
+  .refine(({ headersTimeoutMs, requestTimeoutMs }) => headersTimeoutMs <= requestTimeoutMs, {
+    message: "headersTimeoutMs cannot exceed requestTimeoutMs.",
+  });
+
+const productionServerConfigSchema = z
+  .object({
+    deployment: z.literal("production"),
+    host: z.string().min(1).max(64),
+    limits: limitsSchema.default(DEFAULT_LIMITS),
+    port: z.number().int().min(0).max(65_535),
+    publicOrigin: z.string().min(1).max(2_048),
+    trustedProxyAddresses: z.array(z.string().min(1).max(64)).max(64).default([]),
+  })
+  .strict();
+
+export type ProductionManimServerConfig = Readonly<{
+  deployment: "production";
+  host: string;
+  limits: Readonly<{
+    handlerTimeoutMs: number;
+    headersTimeoutMs: number;
+    keepAliveTimeoutMs: number;
+    maxBodyBytes: number;
+    maxConnections: number;
+    maxHeaderBytes: number;
+    maxRequestsPerSocket: number;
+    readinessTimeoutMs: number;
+    requestTimeoutMs: number;
+    shutdownGraceMs: number;
+  }>;
+  port: number;
+  publicOrigin: string;
+  trustedProxyAddresses: readonly string[];
+}>;
+
+export type ProductionAdmissionRequest = Readonly<{
+  headers: Readonly<IncomingHttpHeaders>;
+  method: string;
+  pathname: string;
+  remoteAddress: string | null;
+}>;
+
+export type ProductionRequestAdmission = Readonly<{
+  admit: (request: ProductionAdmissionRequest, signal: AbortSignal) => Promise<boolean>;
+  ready: (signal: AbortSignal) => Promise<boolean>;
+}>;
+
+/**
+ * Implementations must route every Python execution through an isolation
+ * boundary. The current host-spawn ManimProjectRegistry is not a production
+ * implementation of this contract; #117 owns that migration.
+ */
+export type IsolatedManimRuntimeV1 = Readonly<{
+  api: ManimApi;
+  capability: typeof ISOLATED_MANIM_RUNTIME_CAPABILITY_V1;
+  close: () => Promise<void>;
+  /** Covers the runtime's sandbox and backing-store dependencies. */
+  ready: (signal: AbortSignal) => Promise<boolean>;
+}>;
+
+export type ProductionManimServer = Readonly<{
+  address: Readonly<{ address: string; family: string; port: number }>;
+  close: () => Promise<void>;
+  config: ProductionManimServerConfig;
+}>;
+
+class TransportError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "TransportError";
+    this.status = status;
+  }
+}
+
+function isLoopback(hostname: string) {
+  const unwrapped = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+  return unwrapped === "localhost" || unwrapped === "::1" || unwrapped.startsWith("127.");
+}
+
+export function parseProductionManimServerConfig(input: unknown): ProductionManimServerConfig {
+  const parsed = productionServerConfigSchema.parse(input);
+  if (isIP(parsed.host) === 0) throw new TypeError("Production server host must be an explicit IP address.");
+  for (const address of parsed.trustedProxyAddresses) {
+    if (isIP(address) === 0) throw new TypeError("Trusted proxy entries must be explicit IP addresses.");
+  }
+
+  let publicUrl: URL;
+  try {
+    publicUrl = new URL(parsed.publicOrigin);
+  } catch {
+    throw new TypeError("Production publicOrigin must be an absolute HTTP(S) origin.");
+  }
+  if (
+    !["http:", "https:"].includes(publicUrl.protocol) ||
+    publicUrl.origin === "null" ||
+    publicUrl.username ||
+    publicUrl.password ||
+    publicUrl.pathname !== "/" ||
+    publicUrl.search ||
+    publicUrl.hash
+  ) {
+    throw new TypeError("Production publicOrigin must contain only an HTTP(S) scheme, host, and optional port.");
+  }
+  if (publicUrl.protocol !== "https:" && !isLoopback(publicUrl.hostname)) {
+    throw new TypeError("A non-loopback production publicOrigin must use HTTPS.");
+  }
+
+  return {
+    ...parsed,
+    limits: { ...parsed.limits },
+    publicOrigin: publicUrl.origin,
+    trustedProxyAddresses: [...new Set(parsed.trustedProxyAddresses)],
+  };
+}
+
+const FORWARDED_HEADERS = [
+  "forwarded",
+  "x-forwarded-for",
+  "x-forwarded-host",
+  "x-forwarded-port",
+  "x-forwarded-proto",
+  "x-real-ip",
+] as const;
+
+function remoteAddressCandidates(address: string | undefined) {
+  if (!address) return [];
+  return address.startsWith("::ffff:") ? [address, address.slice("::ffff:".length)] : [address];
+}
+
+function validateTransportRequest(
+  request: IncomingMessage,
+  config: ProductionManimServerConfig,
+  trustedProxyAddresses: ReadonlySet<string>,
+) {
+  if (!request.url?.startsWith("/") || request.url.startsWith("//")) {
+    throw new TransportError("Absolute request targets are not accepted.", 400);
+  }
+  const expectedHost = new URL(config.publicOrigin).host.toLowerCase();
+  if (request.headers.host?.toLowerCase() !== expectedHost) {
+    throw new TransportError("The request Host does not match the configured public origin.", 421);
+  }
+  const hasForwardedHeaders = FORWARDED_HEADERS.some((name) => request.headers[name] !== undefined);
+  const remoteIsTrusted = remoteAddressCandidates(request.socket.remoteAddress).some((address) =>
+    trustedProxyAddresses.has(address),
+  );
+  if (hasForwardedHeaders && !remoteIsTrusted) {
+    throw new TransportError("Forwarded headers require an explicitly trusted immediate proxy.", 400);
+  }
+  const contentLength = request.headers["content-length"];
+  if (
+    contentLength !== undefined &&
+    (!/^\d+$/.test(contentLength) || Number(contentLength) > config.limits.maxBodyBytes)
+  ) {
+    request.resume();
+    throw new TransportError("Request body is too large.", 413);
+  }
+  if (
+    (request.method === "GET" || request.method === "HEAD") &&
+    (request.headers["transfer-encoding"] !== undefined || Number(contentLength ?? 0) > 0)
+  ) {
+    request.resume();
+    throw new TransportError("This request method does not accept a body.", 400);
+  }
+}
+
+function waitForProbe(probe: (signal: AbortSignal) => Promise<boolean>, parentSignal: AbortSignal, timeoutMs: number) {
+  const controller = new AbortController();
+  const abortFromParent = () => controller.abort(parentSignal.reason);
+  if (parentSignal.aborted) abortFromParent();
+  else parentSignal.addEventListener("abort", abortFromParent, { once: true });
+  const timeout = setTimeout(() => controller.abort(new Error("Readiness probe timed out.")), timeoutMs);
+  timeout.unref();
+  const aborted = controller.signal.aborted
+    ? Promise.resolve(false as const)
+    : new Promise<false>((resolveTimeout) =>
+        controller.signal.addEventListener("abort", () => resolveTimeout(false), { once: true }),
+      );
+  return Promise.race([probe(controller.signal), aborted]).finally(() => {
+    clearTimeout(timeout);
+    parentSignal.removeEventListener("abort", abortFromParent);
+  });
+}
+
+export async function startProductionManimServer(
+  options: Readonly<{
+    admission: ProductionRequestAdmission;
+    config: unknown;
+    logger?: StructuredLogger;
+    runtime: IsolatedManimRuntimeV1;
+  }>,
+): Promise<ProductionManimServer> {
+  const config = parseProductionManimServerConfig(options.config);
+  if (
+    typeof options.runtime !== "object" ||
+    options.runtime === null ||
+    options.runtime.capability !== ISOLATED_MANIM_RUNTIME_CAPABILITY_V1
+  ) {
+    throw new TypeError("Production Manim API requires an isolated runtime capability.");
+  }
+  if (
+    typeof options.runtime.api !== "object" ||
+    options.runtime.api === null ||
+    typeof options.runtime.ready !== "function" ||
+    typeof options.runtime.close !== "function"
+  ) {
+    throw new TypeError("Production Manim runtime adapter is incomplete.");
+  }
+  if (
+    typeof options.admission !== "object" ||
+    options.admission === null ||
+    typeof options.admission.admit !== "function" ||
+    typeof options.admission.ready !== "function"
+  ) {
+    throw new TypeError("Production request admission adapter is incomplete.");
+  }
+  const logger = options.logger ?? nullLogger;
+  const trustedProxyAddresses = new Set(config.trustedProxyAddresses);
+  const activeRequests = new Set<AbortController>();
+  let lifecycle: "accepting" | "draining" | "closed" = "accepting";
+
+  const dependenciesReady = async (signal: AbortSignal) => {
+    try {
+      const [admissionReady, runtimeReady] = await Promise.all([
+        waitForProbe((probeSignal) => options.admission.ready(probeSignal), signal, config.limits.readinessTimeoutMs),
+        waitForProbe((probeSignal) => options.runtime.ready(probeSignal), signal, config.limits.readinessTimeoutMs),
+      ]);
+      return admissionReady === true && runtimeReady === true;
+    } catch {
+      logger.warn("production.readiness_probe_failed");
+      return false;
+    }
+  };
+
+  const serve = async (request: IncomingMessage, response: ServerResponse) => {
+    const controller = new AbortController();
+    activeRequests.add(controller);
+    const abortOnClose = () => controller.abort(new Error("Client connection closed."));
+    response.once("close", abortOnClose);
+    const handlerTimeout = setTimeout(() => {
+      controller.abort(new Error("Production request deadline exceeded."));
+      sendJson(response, 504, { error: "Request deadline exceeded." });
+    }, config.limits.handlerTimeoutMs);
+    handlerTimeout.unref();
+
+    try {
+      validateTransportRequest(request, config, trustedProxyAddresses);
+      const pathname = new URL(request.url!, config.publicOrigin).pathname;
+      if (pathname === "/healthz") {
+        if (request.method !== "GET") throw new TransportError("Method not allowed.", 405);
+        sendJson(response, lifecycle === "accepting" ? 200 : 503, {
+          status: lifecycle === "accepting" ? "ok" : "draining",
+        });
+        return;
+      }
+      if (pathname === "/readyz") {
+        if (request.method !== "GET") throw new TransportError("Method not allowed.", 405);
+        const ready = lifecycle === "accepting" && (await dependenciesReady(controller.signal));
+        sendJson(response, ready ? 200 : 503, { status: ready ? "ready" : "unavailable" });
+        return;
+      }
+      if (!pathname.startsWith("/api/manim/")) throw new TransportError("Endpoint not found.", 404);
+      if (lifecycle !== "accepting") throw new TransportError("Production service is draining.", 503);
+      if (!(await dependenciesReady(controller.signal))) {
+        throw new TransportError("Production dependencies are not ready.", 503);
+      }
+      const admitted = await options.admission.admit(
+        {
+          headers: request.headers,
+          method: request.method ?? "UNKNOWN",
+          pathname,
+          remoteAddress: request.socket.remoteAddress ?? null,
+        },
+        controller.signal,
+      );
+      if (controller.signal.aborted) return;
+      if (admitted !== true) throw new TransportError("Authentication is required.", 401);
+      await handleManimRequest(options.runtime.api, request, response, logger, {
+        allowExistingProjectRegistration: false,
+        expectedMutationOrigin: config.publicOrigin,
+        maxJsonBodyBytes: config.limits.maxBodyBytes,
+        requestSignal: controller.signal,
+      });
+    } catch (error) {
+      if (controller.signal.aborted || response.destroyed || response.writableEnded) return;
+      if (error instanceof TransportError) {
+        sendJson(response, error.status, { error: error.message });
+        return;
+      }
+      logger.error("production.request_failed", {
+        kind: error instanceof Error ? error.name : "UnknownError",
+      });
+      sendJson(response, 500, { error: "Production request failed." });
+    } finally {
+      clearTimeout(handlerTimeout);
+      response.removeListener("close", abortOnClose);
+      activeRequests.delete(controller);
+    }
+  };
+
+  const server = createServer(
+    {
+      headersTimeout: config.limits.headersTimeoutMs,
+      keepAliveTimeout: config.limits.keepAliveTimeoutMs,
+      maxHeaderSize: config.limits.maxHeaderBytes,
+      requestTimeout: config.limits.requestTimeoutMs,
+    },
+    (request, response) => {
+      response.setHeader("x-content-type-options", "nosniff");
+      void serve(request, response);
+    },
+  );
+  server.maxConnections = config.limits.maxConnections;
+  server.maxRequestsPerSocket = config.limits.maxRequestsPerSocket;
+  server.on("clientError", (_error, socket) => {
+    if (socket.writable) socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+  });
+  server.on("error", (error) => logger.error("production.server_error", { kind: error.name }));
+
+  try {
+    await new Promise<void>((resolveListen, rejectListen) => {
+      server.once("error", rejectListen);
+      server.listen(config.port, config.host, () => {
+        server.removeListener("error", rejectListen);
+        resolveListen();
+      });
+    });
+  } catch (error) {
+    server.closeAllConnections();
+    throw error;
+  }
+
+  const address = server.address() as AddressInfo;
+  let closeRequest: Promise<void> | null = null;
+  return {
+    address: { address: address.address, family: address.family, port: address.port },
+    close() {
+      closeRequest ??= (async () => {
+        lifecycle = "draining";
+        const networkClosed = new Promise<void>((resolveClose, rejectClose) => {
+          server.close((error) => (error ? rejectClose(error) : resolveClose()));
+          server.closeIdleConnections();
+        });
+        const resourcesClosed = Promise.allSettled([
+          networkClosed,
+          Promise.resolve().then(() => options.runtime.close()),
+        ]);
+        let deadlineTimeout: NodeJS.Timeout;
+        const deadline = new Promise<null>((resolveDeadline) => {
+          deadlineTimeout = setTimeout(() => resolveDeadline(null), config.limits.shutdownGraceMs);
+          deadlineTimeout.unref();
+        });
+        const results = await Promise.race([resourcesClosed, deadline]);
+        clearTimeout(deadlineTimeout!);
+        if (results === null) {
+          for (const controller of activeRequests) controller.abort(new Error("Production service is shutting down."));
+          server.closeAllConnections();
+          lifecycle = "closed";
+          throw new Error("Production server shutdown exceeded its configured grace period.");
+        }
+        lifecycle = "closed";
+        const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+        if (errors.length > 0) throw new AggregateError(errors, "Could not fully close the production Manim service.");
+      })();
+      return closeRequest;
+    },
+    config,
+  };
+}

@@ -37,6 +37,7 @@
     "build:web": "tsc --noEmit && vite build",
     "build:electron:main": "vite build --config vite.electron.config.ts",
     "build:electron": "pnpm build:web && pnpm build:electron:main",
+    "build:server": "vite build --config vite.server.config.ts",
     "package:electron": "pnpm electron:install && pnpm build:electron && node scripts/package-electron.mjs",
     "check:web": "pnpm build:web",
     "tauri": "tauri"
