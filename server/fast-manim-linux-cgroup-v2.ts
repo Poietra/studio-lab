@@ -211,7 +211,7 @@ export type LinuxCgroupV2LaunchEnvelopeV1 = Readonly<{
 
 export type LinuxCgroupV2ResourceJobV1 = Readonly<{
   /** Settles only after cgroup empty, bounded output close, and cgroup removal. */
-  completion: Promise<FastManimSandboxResourceTerminationReasonV1>;
+  completion: Promise<Exclude<FastManimSandboxResourceTerminationReasonV1, "completed">>;
   descriptor: FastManimSandboxResourceJobDescriptorV1;
   /** Production cannot report success until #127 installs direct-start membership proof. */
   finish: (reason: Exclude<FastManimSandboxResourceTerminationReasonV1, "completed">) => Promise<void>;
@@ -220,9 +220,10 @@ export type LinuxCgroupV2ResourceJobV1 = Readonly<{
 }>;
 
 export type LocalLinuxCgroupV2ResourceJobV1 = Readonly<
-  Omit<LinuxCgroupV2ResourceJobV1, "finish"> & {
+  Omit<LinuxCgroupV2ResourceJobV1, "completion" | "finish"> & {
     /** Local trusted harness only; verifies /proc reports a stopped wrapper before attachment. */
     attachStoppedPidForLocalConformance: (pid: number) => Promise<void>;
+    completion: Promise<FastManimSandboxResourceTerminationReasonV1>;
     finish: (reason: FastManimSandboxResourceTerminationReasonV1) => Promise<void>;
   }
 >;
@@ -452,7 +453,6 @@ export class LinuxCgroupV2ResourceControllerV1 {
     active.watchdog = this.#watchdog(active);
     active.watchdog.catch(() => undefined);
     const base = {
-      completion,
       descriptor: lease.descriptor,
       inspect: () => this.#inspect(active),
       launch: this.#launchEnvelope(lease.descriptor),
@@ -461,12 +461,14 @@ export class LinuxCgroupV2ResourceControllerV1 {
       return Object.freeze({
         ...base,
         attachStoppedPidForLocalConformance: (pid: number) => this.#attachStopped(active, pid),
+        completion,
         finish: (reason: FastManimSandboxResourceTerminationReasonV1) =>
           this.#finish(active, reason).then(() => undefined),
       });
     }
     return Object.freeze({
       ...base,
+      completion: completion as Promise<Exclude<FastManimSandboxResourceTerminationReasonV1, "completed">>,
       finish: (reason: unknown) => this.#finishProduction(active, reason),
     });
   }
@@ -687,7 +689,7 @@ export class LinuxCgroupV2ResourceControllerV1 {
         deadline,
       );
     } catch {
-      if (this.#jobs.get(active.lease.descriptor.jobId) !== active) return active.completion;
+      if (this.#jobs.get(active.lease.descriptor.jobId) !== active) return "launch-failed" as const;
       this.#failClosed(active);
       throw new FastManimSandboxResourceControlError("cleanup");
     }

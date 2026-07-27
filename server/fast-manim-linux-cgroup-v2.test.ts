@@ -31,6 +31,7 @@ class FakeCgroupV2Store implements LinuxCgroupV2StoreV1 {
     wait: Promise<void>;
   }> | null = null;
   rejectKill = false;
+  rejectWriteFile: string | null = null;
 
   async assertExclusiveCgroupV2Root() {}
 
@@ -71,6 +72,7 @@ class FakeCgroupV2Store implements LinuxCgroupV2StoreV1 {
 
   async write(name: string, file: string, value: string) {
     this.writes.push([name, file, value]);
+    if (file === this.rejectWriteFile) throw new Error("write denied");
     const job = this.jobs.get(name);
     if (!job) throw new Error("missing job");
     if (file === "cgroup.kill") {
@@ -565,6 +567,36 @@ describe("Linux cgroup v2 sandbox resource controller", () => {
     expect(store.jobs.size).toBe(0);
     expect(output.isClosed()).toBe(true);
     expect(resources.snapshot()).toMatchObject({ activeJobs: 0, state: "closed" });
+  });
+
+  it("does not quarantine shutdown when a concurrent setup failure is cleaned and reaped", async () => {
+    const store = new FakeCgroupV2Store();
+    let releaseCreate!: () => void;
+    let reportCreateStarted!: () => void;
+    store.createGate = new Promise<void>((resolvePromise) => {
+      releaseCreate = resolvePromise;
+    });
+    const createStarted = new Promise<void>((resolvePromise) => {
+      reportCreateStarted = resolvePromise;
+    });
+    store.createStarted = reportCreateStarted;
+    store.rejectWriteFile = "memory.max";
+    const resources = controller(store);
+    await resources.initialize();
+    const output = outputLifecycle();
+    const admission = resources.admit(DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1, output.output);
+    admission.catch(() => undefined);
+    await createStarted;
+    const shutdown = resources.shutdown();
+    releaseCreate();
+    await expect(admission).rejects.toThrow(/unavailable/i);
+    await expect(shutdown).resolves.toBeUndefined();
+    expect(store.jobs.size).toBe(0);
+    expect(resources.snapshot()).toMatchObject({
+      activeJobs: 0,
+      state: "closed",
+      terminated: [{ count: 1, reason: "launch-failed" }],
+    });
   });
 
   it("shares one atomic budget across independently composed controllers", async () => {
