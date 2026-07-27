@@ -108,8 +108,10 @@ Magic Edit requires an explicit model endpoint; it never falls back to keyword o
 fixture behavior at runtime. Set `VITE_POIETRA_AI_ENDPOINT` to
 `/api/ai/edit-suggestions`, inject `OPENAI_API_KEY` into the actual server process
 environment, and optionally select the server-side model with
-`POIETRA_OPENAI_MODEL`. The credential is never loaded from Vite dotenv files or a
-`VITE_` variable. Server-only `POIETRA_` settings are also read from an explicit
+`POIETRA_OPENAI_MODEL`. Vite may parse dotenv files while loading public settings,
+but a dotenv `OPENAI_API_KEY` is never adopted as API configuration or exposed in
+diagnostics or the browser bundle; only the actual server process environment supplies
+that credential. Server-only `POIETRA_` settings are also read from an explicit
 non-secret process-environment allowlist; ordinary `VITE_` browser settings retain
 Vite's dotenv behavior. This remains an explicit local-development opt-in: without
 both the endpoint and injected credential, Magic Edit does not call the provider.

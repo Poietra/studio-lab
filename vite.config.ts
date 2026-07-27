@@ -7,7 +7,11 @@ import {
   parseManimProjects,
 } from "./server/manim-render-pipeline";
 import { openAiEditSuggestions, resolveAiEditSuggestionLogPath } from "./server/openai-edit-suggestions";
-import { createStudioViteFsDeny, loadStudioNonSecretEnvironment } from "./server/vite-privacy-boundary";
+import {
+  createStudioViteFsDeny,
+  loadStudioNonSecretEnvironment,
+  studioSensitiveFileBoundary,
+} from "./server/vite-privacy-boundary";
 
 export function createStudioViteConfig(
   mode: string,
@@ -50,6 +54,7 @@ export function createStudioViteConfig(
       },
     },
     plugins: [
+      studioSensitiveFileBoundary({ logPath, root }),
       react(),
       tailwindcss(),
       openAiEditSuggestions({

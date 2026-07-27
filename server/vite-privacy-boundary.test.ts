@@ -1,16 +1,49 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { request as createRequest } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createServer, normalizePath, type ViteDevServer } from "vite";
+import { createLogger, createServer, normalizePath, type ViteDevServer } from "vite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createStudioViteConfig } from "../vite.config";
-import { createStudioViteFsDeny, loadStudioNonSecretEnvironment, VITE_DEFAULT_FS_DENY } from "./vite-privacy-boundary";
+import {
+  createStudioViteFsDeny,
+  loadStudioNonSecretEnvironment,
+  shouldDenyStudioSensitiveFileRequest,
+  studioSensitiveFileBoundary,
+  VITE_DEFAULT_FS_DENY,
+} from "./vite-privacy-boundary";
 
 const servers: ViteDevServer[] = [];
 const roots: string[] = [];
+
+function request(server: ViteDevServer, path: string) {
+  const address = server.httpServer?.address() as AddressInfo;
+  return new Promise<Readonly<{ body: string; status: number }>>((resolveResponse, rejectResponse) => {
+    const outgoing = createRequest(
+      {
+        headers: { connection: "close", host: `127.0.0.1:${address.port}` },
+        host: "127.0.0.1",
+        path,
+        port: address.port,
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: Buffer) => chunks.push(chunk));
+        response.once("end", () => {
+          resolveResponse({
+            body: Buffer.concat(chunks).toString("utf8"),
+            status: response.statusCode ?? 0,
+          });
+        });
+      },
+    );
+    outgoing.once("error", rejectResponse);
+    outgoing.end();
+  });
+}
 
 afterEach(async () => {
   await Promise.allSettled(servers.splice(0).map((server) => server.close()));
@@ -19,6 +52,21 @@ afterEach(async () => {
 });
 
 describe("Vite privacy boundary", () => {
+  it("classifies POSIX and drive-absolute /@fs paths without treating relative paths as absolute", () => {
+    const windows = { logPath: "C:/Studio/private/active.jsonl", root: "C:/Studio" } as const;
+    expect(shouldDenyStudioSensitiveFileRequest("/@fs/C:/Studio/private/active.jsonl", windows)).toBe(true);
+    expect(shouldDenyStudioSensitiveFileRequest("/@fs/c%3A/Studio/private/active.jsonl.previous?raw", windows)).toBe(
+      true,
+    );
+    expect(shouldDenyStudioSensitiveFileRequest("/@fs/C:/Studio/public.txt", windows)).toBe(false);
+    expect(shouldDenyStudioSensitiveFileRequest("/@fs/relative/path", windows)).toBe(true);
+
+    const posix = { logPath: "/srv/studio/private/active.jsonl", root: "/srv/studio" } as const;
+    expect(shouldDenyStudioSensitiveFileRequest("/@fs//srv/studio/private/active.jsonl", posix)).toBe(true);
+    expect(shouldDenyStudioSensitiveFileRequest("/@fs/srv/studio/private/active.jsonl", posix)).toBe(true);
+    expect(shouldDenyStudioSensitiveFileRequest("/@fs//srv/studio/public.txt", posix)).toBe(false);
+  });
+
   it("ignores dotenv credentials and returns only public or explicitly allowed non-secret settings", () => {
     const root = mkdtempSync(join(tmpdir(), "poietra-vite-env-"));
     roots.push(root);
@@ -66,13 +114,29 @@ describe("Vite privacy boundary", () => {
     }
     const deny = createStudioViteFsDeny(activeLog);
     expect(deny).toEqual(expect.arrayContaining([...VITE_DEFAULT_FS_DENY]));
+    const allowListSentinel = join(root, "SECRET_VITE_ALLOW_LIST");
+    const viteOutput: string[] = [];
+    const viteLogger = createLogger("info");
+    vi.spyOn(viteLogger, "error").mockImplementation((message) => {
+      viteOutput.push(String(message));
+    });
+    vi.spyOn(viteLogger, "info").mockImplementation((message) => {
+      viteOutput.push(String(message));
+    });
+    vi.spyOn(viteLogger, "warn").mockImplementation((message) => {
+      viteOutput.push(String(message));
+    });
+    vi.spyOn(viteLogger, "warnOnce").mockImplementation((message) => {
+      viteOutput.push(String(message));
+    });
 
     const server = await createServer({
       configFile: false,
-      logLevel: "silent",
+      customLogger: viteLogger,
+      plugins: [studioSensitiveFileBoundary({ logPath: activeLog, root })],
       root,
       server: {
-        fs: { deny },
+        fs: { allow: [allowListSentinel], deny },
         host: "127.0.0.1",
         port: 0,
         strictPort: false,
@@ -80,14 +144,15 @@ describe("Vite privacy boundary", () => {
     });
     servers.push(server);
     await server.listen();
-    const address = server.httpServer?.address() as AddressInfo;
-    const origin = `http://127.0.0.1:${address.port}`;
+    expect((await request(server, "/.env")).status).not.toBe(200);
+    viteOutput.length = 0;
     const routes = [
-      "/.env",
       "/.openai-key",
+      "/nested/.openai-key",
       "/.openai-key?raw",
       "/.openai-key?import",
       "/%2Eopenai-key",
+      "/%252Eopenai-key",
       "/.studio-logs/ai-edit-suggestions.jsonl",
       "/%2Estudio-logs/ai-edit-suggestions.jsonl?raw",
       "/custom-logs/active.jsonl",
@@ -95,13 +160,20 @@ describe("Vite privacy boundary", () => {
       "/custom-logs/active.jsonl.previous?import",
       `/@fs/${normalizePath(activeLog)}?raw`,
       `/@fs/${normalizePath(`${activeLog}.previous`)}?import`,
+      "/invalid/%E0%A4%A",
+      "/invalid/%00path",
+      "/safe/%2e%2e/ambiguous",
     ];
 
     for (const route of routes) {
-      const response = await fetch(`${origin}${route}`);
-      const body = await response.text();
-      expect(response.status, route).not.toBe(200);
-      expect(body, route).not.toContain("SECRET_VITE_FILE_SENTINEL");
+      const response = await request(server, route);
+      expect(response.status, route).toBe(404);
+      expect(response.body, route).toBe('{"error":"Not found."}');
     }
+    const persistedOutput = JSON.stringify(viteOutput);
+    expect(persistedOutput).not.toContain(root);
+    expect(persistedOutput).not.toContain(activeLog);
+    expect(persistedOutput).not.toContain(allowListSentinel);
+    expect(persistedOutput).not.toContain("SECRET_VITE_FILE_SENTINEL");
   });
 });

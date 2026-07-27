@@ -1,6 +1,6 @@
-import { resolve } from "node:path";
+import { posix, resolve, win32 } from "node:path";
 
-import { loadEnv, normalizePath } from "vite";
+import { loadEnv, normalizePath, type Plugin } from "vite";
 
 const NON_SECRET_POIETRA_ENV_KEYS = [
   "POIETRA_AI_DEBUG_LOG",
@@ -51,4 +51,90 @@ export function createStudioViteFsDeny(logPath: false | string) {
     "**/.studio-logs/**",
     ...(logPath === false ? [] : [escapeDenyPath(logPath), escapeDenyPath(`${logPath}.previous`)]),
   ];
+}
+
+function decodeRequestPath(rawPath: string) {
+  let decoded = rawPath;
+  for (let pass = 0; pass < 3 && decoded.includes("%"); pass += 1) {
+    try {
+      decoded = decodeURIComponent(decoded);
+    } catch {
+      return null;
+    }
+  }
+  if (decoded.includes("%") || decoded.includes("\0") || decoded.includes("\\")) return null;
+  return decoded;
+}
+
+const WINDOWS_DRIVE_ABSOLUTE = /^[A-Za-z]:[\\/]/;
+
+function normalizedAbsolutePath(path: string) {
+  if (WINDOWS_DRIVE_ABSOLUTE.test(path)) return win32.resolve(path).replaceAll("\\", "/").toLowerCase();
+  if (path.startsWith("/")) return posix.resolve(path).toLowerCase();
+  return null;
+}
+
+function normalizedConfiguredPath(path: string, root: string) {
+  const absolute = normalizedAbsolutePath(path);
+  if (absolute) return absolute;
+  if (WINDOWS_DRIVE_ABSOLUTE.test(root)) {
+    return win32.resolve(root, path).replaceAll("\\", "/").toLowerCase();
+  }
+  return normalizePath(resolve(root, path)).toLowerCase();
+}
+
+function normalizedRequestFile(rawUrl: string, root: string) {
+  const rawPath = rawUrl.split(/[?#]/, 1)[0] ?? "";
+  const decodedPath = decodeRequestPath(rawPath);
+  if (!decodedPath?.startsWith("/")) return null;
+  const segments = decodedPath.split("/").filter((segment) => segment !== "" && segment !== ".");
+  if (segments.includes("..")) return null;
+  const lowerSegments = segments.map((segment) => segment.toLowerCase());
+  if (lowerSegments.includes(".openai-key") || lowerSegments.includes(".studio-logs")) return "sensitive" as const;
+
+  if (decodedPath.startsWith("/@fs/")) {
+    const fsPath = decodedPath.slice("/@fs/".length);
+    return normalizedAbsolutePath(fsPath);
+  }
+  if (WINDOWS_DRIVE_ABSOLUTE.test(root)) {
+    return win32.resolve(root, decodedPath.slice(1)).replaceAll("\\", "/").toLowerCase();
+  }
+  return normalizePath(resolve(root, `.${decodedPath}`)).toLowerCase();
+}
+
+type StudioSensitiveFileBoundaryOptions = Readonly<{ logPath: false | string; root: string }>;
+
+export function shouldDenyStudioSensitiveFileRequest(rawUrl: string, options: StudioSensitiveFileBoundaryOptions) {
+  const configuredLogs = new Set(
+    options.logPath === false
+      ? []
+      : [
+          normalizedConfiguredPath(options.logPath, options.root),
+          normalizedConfiguredPath(`${options.logPath}.previous`, options.root),
+        ],
+  );
+  const target = normalizedRequestFile(rawUrl, options.root);
+  return target === null || target === "sensitive" || configuredLogs.has(target);
+}
+
+export function studioSensitiveFileBoundary(options: StudioSensitiveFileBoundaryOptions): Plugin {
+  return {
+    apply: "serve",
+    enforce: "pre",
+    name: "poietra-sensitive-file-boundary",
+    configureServer(server) {
+      server.middlewares.use((request, response, next) => {
+        if (request.url && !shouldDenyStudioSensitiveFileRequest(request.url, options)) {
+          next();
+          return;
+        }
+        request.resume();
+        response.statusCode = 404;
+        response.setHeader("cache-control", "no-store");
+        response.setHeader("content-type", "application/json; charset=utf-8");
+        response.setHeader("x-content-type-options", "nosniff");
+        response.end('{"error":"Not found."}');
+      });
+    },
+  };
 }
