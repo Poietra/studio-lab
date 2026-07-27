@@ -19,8 +19,7 @@ import { AmbiguousSourceSceneError } from "../src/render-pipeline/source-import"
 import { fastManimSnapshotQueryV1Schema, fastManimSnapshotRunRequestV1Schema } from "./fast-manim-snapshot-contract";
 import { HttpError, readJsonBody, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
-import type { ManimProjectRegistry } from "./manim-project-registry";
-import type { ManimRenderManager } from "./manim-render-manager";
+import type { ManimApi, MutableManimProjectApi } from "./manim-api";
 import {
   authenticateManimPrincipal,
   type ManimPrincipalAuthenticator,
@@ -36,7 +35,8 @@ const PROJECT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/(worksp
 const PROJECT_THUMBNAIL_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/thumbnail(?:\/(status|generate))?$/;
 const PROJECT_SCENE_SNAPSHOT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/scene-snapshots$/;
 const PROJECT_ITEM_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})$/;
-export type ManimApi = ManimRenderManager | ManimProjectRegistry;
+
+export type { ManimApi } from "./manim-api";
 export type ManimRequestContext = Readonly<{
   principal: VerifiedManimPrincipal;
   tenants: ManimTenantRegistry<ManimApi>;
@@ -138,10 +138,16 @@ function requestRouteTemplate(rawUrl: string | undefined) {
 }
 
 function mutableProjectRegistry(manager: ManimApi) {
-  if (!("createProject" in manager)) {
+  const candidate = manager as Partial<MutableManimProjectApi>;
+  if (
+    typeof candidate.createManagedProject !== "function" ||
+    typeof candidate.createProject !== "function" ||
+    typeof candidate.renameProject !== "function" ||
+    typeof candidate.unregisterProject !== "function"
+  ) {
     throw new HttpError("Workspace registry mutations are not configured.", 405);
   }
-  return manager;
+  return candidate as MutableManimProjectApi;
 }
 
 function pipeVideo(response: ServerResponse, path: string, range?: Readonly<{ end: number; start: number }>) {
@@ -337,7 +343,7 @@ async function routeManimRequest(
   }
   if (url.pathname === "/api/manim/projects") {
     if (request.method === "GET") {
-      sendJson(response, 200, manager.projects());
+      sendJson(response, 200, await manager.projects(signal));
       return;
     }
     if (request.method !== "POST") throw new HttpError("Method not allowed.", 405);
@@ -352,13 +358,13 @@ async function routeManimRequest(
       response,
       201,
       parsed.data.kind === "managed"
-        ? registry.createManagedProject(parsed.data.name)
-        : registry.createProject(parsed.data.name, parsed.data.root),
+        ? await registry.createManagedProject(parsed.data.name, signal)
+        : await registry.createProject(parsed.data.name, parsed.data.root, signal),
     );
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/manim/workspace") {
-    sendJson(response, 200, await manager.workspace());
+    sendJson(response, 200, await manager.workspace(undefined, signal));
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/manim/renders") {
@@ -383,12 +389,12 @@ async function routeManimRequest(
       const parsed = renameManimProjectRequestSchema.safeParse(await readBoundedJsonBody(request, policy));
       if (!parsed.success) throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid workspace name.", 400);
       signal.throwIfAborted();
-      sendJson(response, 200, registry.renameProject(projectId, parsed.data.name));
+      sendJson(response, 200, await registry.renameProject(projectId, parsed.data.name, signal));
       return;
     }
     if (request.method === "DELETE") {
       signal.throwIfAborted();
-      sendJson(response, 200, await registry.unregisterProject(projectId));
+      sendJson(response, 200, await registry.unregisterProject(projectId, signal));
       return;
     }
     throw new HttpError("Method not allowed.", 405);
@@ -451,7 +457,7 @@ async function routeManimRequest(
   if (projectMatch) {
     const [, projectId, endpoint] = projectMatch;
     if (request.method === "GET" && endpoint === "workspace") {
-      sendJson(response, 200, await manager.workspace(projectId));
+      sendJson(response, 200, await manager.workspace(projectId, signal));
       return;
     }
     if (request.method !== "POST" || endpoint === "workspace") {
@@ -499,11 +505,11 @@ async function routeManimRequest(
   if (!match) throw new HttpError("Manim endpoint not found.", 404);
   const [, id, action] = match;
   if (request.method === "GET" && !action) {
-    sendJson(response, 200, manager.view(id));
+    sendJson(response, 200, await manager.view(id));
     return;
   }
   if (request.method === "GET" && action === "video") {
-    await streamVideo(request, response, manager.videoPath(id));
+    await streamVideo(request, response, await manager.videoPath(id));
     return;
   }
   if (request.method !== "POST") throw new HttpError("Method not allowed.", 405);
