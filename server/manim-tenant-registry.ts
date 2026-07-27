@@ -23,6 +23,14 @@ export class ManimTenantRegistry<Api extends TenantApi> {
     }
   }
 
+  private assertSelectedStorageIsolation(selected: Api) {
+    for (const api of this.tenants.values()) {
+      if (api !== selected && manimStorageRootsOverlap(selected.storageRoots, api.storageRoots)) {
+        throw new TypeError("Tenant storage roots must not overlap.");
+      }
+    }
+  }
+
   constructor(apis: readonly Api[]) {
     if (apis.length > 1_024) throw new TypeError("The tenant registry accepts at most 1024 tenants.");
     for (const api of apis) {
@@ -36,13 +44,13 @@ export class ManimTenantRegistry<Api extends TenantApi> {
 
   forPrincipal(principal: VerifiedManimPrincipal): Api {
     if (!isVerifiedManimPrincipal(principal)) throw new HttpError("Authentication is required.", 401);
+    const api = this.tenants.get(principal.tenantId);
+    if (!api) throw new HttpError("Tenant access is not available.", 403);
     try {
-      this.assertStorageIsolation();
+      this.assertSelectedStorageIsolation(api);
     } catch {
       throw new HttpError("Tenant storage isolation is unavailable.", 503);
     }
-    const api = this.tenants.get(principal.tenantId);
-    if (!api) throw new HttpError("Tenant access is not available.", 403);
     return api;
   }
 }

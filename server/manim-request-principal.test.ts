@@ -47,6 +47,8 @@ describe("Manim request principals", () => {
       { subjectId: "user-1", tenantId: "tenant-a", untrustedRole: "admin" },
       { subjectId: "user 1", tenantId: "tenant-a" },
       { subjectId: "user-1", tenantId: "../tenant-a" },
+      { subjectId: "user-1", tenantId: "studio-local" },
+      { subjectId: "user-1", tenantId: localManimTenantId("/private/a") },
     ]) {
       const rejected = await authenticateManimPrincipal({ authenticate: async () => claims }, null, signal).catch(
         (error: unknown) => error,
