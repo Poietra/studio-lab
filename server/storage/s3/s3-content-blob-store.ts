@@ -4,6 +4,7 @@ import { isIP } from "node:net";
 import {
   DeleteObjectCommand,
   GetBucketAclCommand,
+  GetBucketLifecycleConfigurationCommand,
   GetBucketPolicyStatusCommand,
   GetBucketVersioningCommand,
   GetObjectCommand,
@@ -110,6 +111,26 @@ function isNoBucketPolicy(error: unknown) {
   );
 }
 
+function isNoLifecycleConfiguration(error: unknown) {
+  return (
+    error instanceof Error &&
+    (error.name === "NoSuchLifecycleConfiguration" ||
+      ("Code" in error && error.Code === "NoSuchLifecycleConfiguration"))
+  );
+}
+
+function isPreconditionFailed(error: unknown) {
+  return (
+    error instanceof Error &&
+    (error.name === "PreconditionFailed" ||
+      ("$metadata" in error &&
+        typeof error.$metadata === "object" &&
+        error.$metadata !== null &&
+        "httpStatusCode" in error.$metadata &&
+        error.$metadata.httpStatusCode === 412))
+  );
+}
+
 async function boundedBody(body: unknown, signal?: AbortSignal) {
   if (!body || typeof body !== "object" || !(Symbol.asyncIterator in body)) {
     throw new Error("S3 returned an unreadable object body.");
@@ -138,6 +159,10 @@ async function boundedBody(body: unknown, signal?: AbortSignal) {
   return bytes;
 }
 
+function destroyBody(body: unknown) {
+  if (body && typeof body === "object" && "destroy" in body && typeof body.destroy === "function") body.destroy();
+}
+
 export type S3ContentBlobStoreOptionsV1 = Readonly<{
   bucket: string;
   client?: S3Client;
@@ -149,6 +174,7 @@ export type S3ContentBlobStoreOptionsV1 = Readonly<{
 export class S3ContentBlobStoreV1 implements SourceContentBlobStoreV1 {
   readonly #bucket: string;
   readonly #client: S3Client;
+  readonly #deployment: "production" | "test";
   readonly #ownsClient: boolean;
 
   constructor(options: S3ContentBlobStoreOptionsV1) {
@@ -173,6 +199,7 @@ export class S3ContentBlobStoreV1 implements SourceContentBlobStoreV1 {
     }
     this.#bucket = options.bucket;
     this.#client = options.client ?? new S3Client(options.clientConfig!);
+    this.#deployment = options.deployment;
     this.#ownsClient = options.client === undefined;
   }
 
@@ -185,18 +212,35 @@ export class S3ContentBlobStoreV1 implements SourceContentBlobStoreV1 {
           if (isNoBucketPolicy(error)) return null;
           throw error;
         });
-      const [, versioning, acl, policy] = await Promise.all([
+      const lifecycle = this.#client
+        .send(new GetBucketLifecycleConfigurationCommand({ Bucket: this.#bucket }), { abortSignal: signal })
+        .catch((error: unknown) => {
+          if (isNoLifecycleConfiguration(error)) return null;
+          throw error;
+        });
+      const [, versioning, acl, policy, lifecycleConfiguration] = await Promise.all([
         this.#client.send(new HeadBucketCommand({ Bucket: this.#bucket }), { abortSignal: signal }),
         this.#client.send(new GetBucketVersioningCommand({ Bucket: this.#bucket }), { abortSignal: signal }),
         this.#client.send(new GetBucketAclCommand({ Bucket: this.#bucket }), { abortSignal: signal }),
         policyStatus,
+        lifecycle,
       ]);
       throwIfAborted(signal);
-      const publicGrant = acl.Grants?.some((grant) => {
-        const uri = grant.Grantee?.URI ?? "";
-        return uri.endsWith("/AllUsers") || uri.endsWith("/AuthenticatedUsers");
-      });
-      return versioning.Status === "Enabled" && publicGrant !== true && policy?.PolicyStatus?.IsPublic !== true;
+      const ownerId = acl.Owner?.ID;
+      const ownerOnlyAcl =
+        typeof ownerId === "string" &&
+        (this.#deployment === "test" || ownerId.length > 0) &&
+        Array.isArray(acl.Grants) &&
+        acl.Grants.length > 0 &&
+        acl.Grants.every(
+          (grant) =>
+            grant.Grantee?.Type === "CanonicalUser" &&
+            (grant.Grantee.ID === ownerId ||
+              (this.#deployment === "test" && ownerId === "" && grant.Grantee.ID === undefined)) &&
+            grant.Permission === "FULL_CONTROL",
+        );
+      const privatePolicy = policy === null || policy.PolicyStatus?.IsPublic === false;
+      return versioning.Status === "Enabled" && ownerOnlyAcl && privatePolicy && lifecycleConfiguration === null;
     } catch {
       throwIfAborted(signal);
       return false;
@@ -215,6 +259,7 @@ export class S3ContentBlobStoreV1 implements SourceContentBlobStoreV1 {
       response.ContentLength !== expected.byteSize ||
       normalizeEtag(response.ETag) !== expected.etag
     ) {
+      destroyBody(response.Body);
       throw new Error("The versioned S3 source metadata does not match its published receipt.");
     }
     const bytes = await boundedBody(response.Body, signal);
@@ -224,23 +269,56 @@ export class S3ContentBlobStoreV1 implements SourceContentBlobStoreV1 {
     return bytes;
   }
 
+  async #readCurrentReceipt(tenant: string, digest: string, byteSize: number, signal?: AbortSignal) {
+    const objectKey = sourceKey(tenant, digest);
+    const response = await this.#client.send(new GetObjectCommand({ Bucket: this.#bucket, Key: objectKey }), {
+      abortSignal: signal,
+    });
+    let receipt: SourceBlobReceiptV1;
+    try {
+      receipt = validateReceipt(tenant, {
+        byteSize,
+        digest,
+        etag: normalizeEtag(response.ETag),
+        objectKey,
+        versionId: response.VersionId ?? "",
+      });
+      if (response.ContentLength !== byteSize) throw new Error("The current S3 source size is invalid.");
+    } catch (error) {
+      destroyBody(response.Body);
+      throw error;
+    }
+    const bytes = await boundedBody(response.Body, signal);
+    if (bytes.byteLength !== byteSize || sourceDigest(bytes) !== digest) {
+      throw new Error("The current S3 source bytes do not match their content-addressed key.");
+    }
+    return receipt;
+  }
+
   async putSource(tenantValue: string, source: string, signal?: AbortSignal) {
     const tenant = tenantId(tenantValue);
     const bytes = exactSourceBytes(source);
     const digest = sourceDigest(bytes);
     const objectKey = sourceKey(tenant, digest);
     throwIfAborted(signal);
-    const response = await this.#client.send(
-      new PutObjectCommand({
-        Body: bytes,
-        Bucket: this.#bucket,
-        ChecksumSHA256: Buffer.from(digest, "hex").toString("base64"),
-        ContentLength: bytes.byteLength,
-        ContentType: "text/x-python; charset=utf-8",
-        Key: objectKey,
-      }),
-      { abortSignal: signal },
-    );
+    let response;
+    try {
+      response = await this.#client.send(
+        new PutObjectCommand({
+          Body: bytes,
+          Bucket: this.#bucket,
+          ChecksumSHA256: Buffer.from(digest, "hex").toString("base64"),
+          ContentLength: bytes.byteLength,
+          ContentType: "text/x-python; charset=utf-8",
+          IfNoneMatch: "*",
+          Key: objectKey,
+        }),
+        { abortSignal: signal },
+      );
+    } catch (error) {
+      if (isPreconditionFailed(error)) return this.#readCurrentReceipt(tenant, digest, bytes.byteLength, signal);
+      throw error;
+    }
     const receipt = validateReceipt(tenant, {
       byteSize: bytes.byteLength,
       digest,
@@ -263,21 +341,30 @@ export class S3ContentBlobStoreV1 implements SourceContentBlobStoreV1 {
     let keyMarker: string | undefined;
     let versionIdMarker: string | undefined;
     let examined = 0;
-    while (versions.length < maximumValue && examined < 1_024) {
+    let pages = 0;
+    const seenCursors = new Set<string>();
+    while (versions.length < maximumValue && examined < 1_024 && pages < 16) {
       throwIfAborted(signal);
+      pages += 1;
+      const pageBudget = Math.min(256, 1_024 - examined);
       const page = await this.#client.send(
         new ListObjectVersionsCommand({
           Bucket: this.#bucket,
           KeyMarker: keyMarker,
-          MaxKeys: Math.min(256, maximumValue - versions.length),
+          MaxKeys: pageBudget,
           Prefix: prefix,
           VersionIdMarker: versionIdMarker,
         }),
         { abortSignal: signal },
       );
+      const pageEntries = (page.Versions?.length ?? 0) + (page.DeleteMarkers?.length ?? 0);
+      if (pageEntries > pageBudget) throw new Error("S3 exceeded the bounded source-version page size.");
+      if (page.IsTruncated && pageEntries === 0) {
+        throw new Error("S3 returned an empty truncated source-version page.");
+      }
+      examined += pageEntries;
       for (const version of page.Versions ?? []) {
-        examined += 1;
-        if (versions.length >= maximumValue || examined > 1_024) break;
+        if (versions.length >= maximumValue) break;
         const key = version.Key ?? "";
         const digest = key.startsWith(prefix) ? key.slice(prefix.length) : "";
         if (
@@ -307,6 +394,9 @@ export class S3ContentBlobStoreV1 implements SourceContentBlobStoreV1 {
       if (!page.NextKeyMarker || !page.NextVersionIdMarker) {
         throw new Error("S3 returned an incomplete version-list cursor.");
       }
+      const nextCursor = JSON.stringify([page.NextKeyMarker, page.NextVersionIdMarker]);
+      if (seenCursors.has(nextCursor)) throw new Error("S3 returned a cycling version-list cursor.");
+      seenCursors.add(nextCursor);
       keyMarker = page.NextKeyMarker;
       versionIdMarker = page.NextVersionIdMarker;
     }

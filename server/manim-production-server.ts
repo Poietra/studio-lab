@@ -15,6 +15,21 @@ export {
   createDurableProductionManimRuntimeAdapterV1,
   DurableManimRuntimeV1,
 } from "./durable-manim-runtime";
+export {
+  createDurablePostgresS3ProductionRuntimeV1,
+  type DurablePostgresS3ProductionRuntimeOptionsV1,
+} from "./durable-manim-production-composition";
+export {
+  applyBundledWorkspaceSourceMigrationV1,
+  WORKSPACE_SOURCE_MIGRATION_V1_SOURCE,
+} from "./storage/postgres/migrate";
+export { PostgresWorkspaceSourceRepositoryV1 } from "./storage/postgres/postgres-workspace-source-repository";
+export { S3ContentBlobStoreV1 } from "./storage/s3/s3-content-blob-store";
+export {
+  createDurableSourceBlobGcWorkerV1,
+  DurableSourceBlobGcWorkerV1,
+  runSourceBlobGcV1,
+} from "./storage/source-blob-gc";
 
 const DEFAULT_LIMITS = {
   handlerTimeoutMs: 30_000,

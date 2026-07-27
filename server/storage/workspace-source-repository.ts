@@ -63,12 +63,11 @@ export interface WorkspaceSourceRepositoryV1 {
     }>,
     signal?: AbortSignal,
   ): Promise<WorkspaceSourceProjectV1>;
-  enqueueOrphanBlobDeletions(cutoff: Date, maximum: number, signal?: AbortSignal): Promise<readonly BlobDeletionV1[]>;
   ensureTenant(tenantId: string, signal?: AbortSignal): Promise<void>;
   isBlobVersionPublished(tenantId: string, blob: SourceBlobReceiptV1, signal?: AbortSignal): Promise<boolean>;
   listProjects(tenantId: string, signal?: AbortSignal): Promise<ManimProjectListView>;
   listSourceHeads(tenantId: string, projectId: string, signal?: AbortSignal): Promise<readonly WorkspaceSourceHeadV1[]>;
-  pendingBlobDeletions(maximum: number, signal?: AbortSignal): Promise<readonly BlobDeletionV1[]>;
+  pendingBlobDeletions(tenantId: string, maximum: number, signal?: AbortSignal): Promise<readonly BlobDeletionV1[]>;
   readProject(tenantId: string, projectId: string, signal?: AbortSignal): Promise<WorkspaceSourceProjectV1>;
   readSourceHead(
     tenantId: string,

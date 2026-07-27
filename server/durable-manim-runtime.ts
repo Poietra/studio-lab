@@ -18,6 +18,7 @@ import type { ProductionManimRuntimeAdapterV1 } from "./manim-production-server"
 import { lowerManimRenderRequest } from "./manim-render-request-lowering";
 import { manimTenantIdSchema } from "./manim-request-principal";
 import type { ThumbnailAsset } from "./manim-thumbnail-cache";
+import type { DurableSourceBlobGcWorkerV1 } from "./storage/source-blob-gc";
 import { importSourceSnapshot } from "./manim-workspace";
 import type {
   SourceContentBlobStoreV1,
@@ -344,18 +345,30 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
 }
 
 export async function createDurableManimRuntimeV1(options: DurableManimRuntimeOptionsV1, signal?: AbortSignal) {
-  return new DurableManimRuntimeV1(options).initialize(signal);
+  const runtime = new DurableManimRuntimeV1(options);
+  try {
+    return await runtime.initialize(signal);
+  } catch (error) {
+    await runtime.close().catch(() => undefined);
+    throw error;
+  }
 }
 
 /** Production composition: readiness is true only when DB, S3, and the external executor all pass. */
 export function createDurableProductionManimRuntimeAdapterV1(
   runtime: DurableManimRuntimeV1,
+  maintenance: DurableSourceBlobGcWorkerV1,
 ): ProductionManimRuntimeAdapterV1 {
   return {
     api: runtime,
-    close: () => runtime.close(),
+    async close() {
+      const errors: unknown[] = [];
+      await maintenance.close().catch((error: unknown) => errors.push(error));
+      await runtime.close().catch((error: unknown) => errors.push(error));
+      if (errors.length > 0) throw new AggregateError(errors, "Could not fully close the durable production runtime.");
+    },
     async ready(signal) {
-      if (!(await runtime.ready(signal))) return { ready: false };
+      if (!maintenance.ready() || !(await runtime.ready(signal))) return { ready: false };
       return {
         executionBoundary: "adapter-attests-external-sandbox",
         ready: true,

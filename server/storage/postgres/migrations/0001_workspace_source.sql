@@ -84,7 +84,12 @@ CREATE TABLE source_blob_deletions (
   etag text NOT NULL CHECK (char_length(etag) BETWEEN 1 AND 512),
   byte_size integer NOT NULL CHECK (byte_size BETWEEN 0 AND 2097152),
   queued_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  deleted_at timestamptz,
   UNIQUE (tenant_id, object_key, version_id),
   FOREIGN KEY (tenant_id) REFERENCES workspace_tenants (tenant_id) ON DELETE RESTRICT,
   CHECK (object_key = 'tenants/' || tenant_id || '/sources/' || digest)
 );
+
+CREATE INDEX source_blob_deletions_tenant_queue
+  ON source_blob_deletions (tenant_id, queued_at, deletion_id)
+  WHERE deleted_at IS NULL;

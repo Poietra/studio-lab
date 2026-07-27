@@ -21,7 +21,7 @@ import {
 } from "../workspace-source-repository";
 
 export const WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM =
-  "9acc9ceff72b9e1e822b210a08bba0fe27d6d8571d33060252a24634ff36bc30";
+  "e7abafd947215a159f10831b8fe68a11da09f850def9b9dd4022461e632f0e03";
 
 type ProjectRow = QueryResultRow & {
   created_at: Date;
@@ -52,7 +52,7 @@ type BlobRow = QueryResultRow & {
   version_id: string;
 };
 
-type DeletionRow = BlobRow & { deletion_id: string };
+type DeletionRow = BlobRow & { deleted_at: Date | null; deletion_id: string };
 
 const SOURCE_HEAD_COLUMNS = `
   h.tenant_id,
@@ -81,6 +81,15 @@ function boundedPositiveInteger(value: number, name: string, maximum: number) {
 function configuredPoolTimeout(value: false | number | undefined, fallback: number, name: string) {
   if (value === undefined || value === false || value === 0) return fallback;
   return Math.min(boundedPositiveInteger(value, name, 30_000), fallback);
+}
+
+function assertBoundedInjectedPool(pool: Pool, maximumTimeoutMs: number) {
+  for (const name of ["connectionTimeoutMillis", "query_timeout", "statement_timeout"] as const) {
+    const value = pool.options[name];
+    if (!Number.isSafeInteger(value) || (value as number) <= 0 || (value as number) > maximumTimeoutMs) {
+      throw new TypeError(`An injected PostgreSQL pool requires a positive bounded ${name}.`);
+    }
+  }
 }
 
 function tenantId(value: string) {
@@ -187,6 +196,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
       "statementTimeoutMs",
       30_000,
     );
+    if (options.pool) assertBoundedInjectedPool(options.pool, this.#statementTimeoutMs);
     this.#pool =
       options.pool ??
       new Pool({
@@ -249,6 +259,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
   ) {
     const client = await this.#connect(signal);
     try {
+      throwIfAborted(signal);
       const result = await client.query<Row>(text, [...values]);
       throwIfAborted(signal);
       return result;
@@ -370,7 +381,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (tenant_id, object_key, version_id) DO UPDATE
            SET object_key = EXCLUDED.object_key
-         RETURNING deletion_id, tenant_id, digest, object_key, version_id, etag, byte_size`,
+         RETURNING deletion_id, tenant_id, digest, object_key, version_id, etag, byte_size, deleted_at`,
         [deletionId, tenant, blob.digest, blob.objectKey, blob.versionId, blob.etag, blob.byteSize],
       );
       const deletion = deletionFromRow(queued.rows[0]!);
@@ -381,6 +392,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
       ) {
         throw new TypeError("The queued source deletion metadata conflicts with its object version.");
       }
+      if (queued.rows[0]!.deleted_at !== null) return null;
       return deletion;
     }, signal);
   }
@@ -596,58 +608,17 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     }, signal);
   }
 
-  async enqueueOrphanBlobDeletions(cutoff: Date, maximumValue: number, signal?: AbortSignal) {
-    if (!(cutoff instanceof Date) || !Number.isFinite(cutoff.getTime())) throw new TypeError("GC cutoff is invalid.");
-    const maximum = boundedPositiveInteger(maximumValue, "maximum", 256);
-    return this.#transaction(async (client) => {
-      const candidates = await client.query<BlobRow>(
-        `SELECT b.tenant_id, b.digest, b.object_key, b.version_id, b.etag, b.byte_size
-           FROM source_blob_objects b
-          WHERE b.created_at < $1
-            AND NOT EXISTS (
-              SELECT 1 FROM workspace_source_heads h
-               WHERE h.tenant_id = b.tenant_id AND h.digest = b.digest
-            )
-          ORDER BY b.created_at, b.tenant_id, b.digest
-          FOR UPDATE SKIP LOCKED
-          LIMIT $2`,
-        [cutoff, maximum],
-      );
-      const queued: BlobDeletionV1[] = [];
-      for (const row of candidates.rows) {
-        const removed = await client.query(
-          `DELETE FROM source_blob_objects b
-            WHERE b.tenant_id = $1 AND b.digest = $2
-              AND NOT EXISTS (
-                SELECT 1 FROM workspace_source_heads h
-                 WHERE h.tenant_id = b.tenant_id AND h.digest = b.digest
-              )`,
-          [row.tenant_id, row.digest],
-        );
-        if (removed.rowCount !== 1) continue;
-        const deletionId = randomUUID();
-        const inserted = await client.query<DeletionRow>(
-          `INSERT INTO source_blob_deletions
-             (deletion_id, tenant_id, digest, object_key, version_id, etag, byte_size)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
-           RETURNING deletion_id, tenant_id, digest, object_key, version_id, etag, byte_size`,
-          [deletionId, row.tenant_id, row.digest, row.object_key, row.version_id, row.etag, row.byte_size],
-        );
-        queued.push(deletionFromRow(inserted.rows[0]!));
-      }
-      return queued;
-    }, signal);
-  }
-
-  async pendingBlobDeletions(maximumValue: number, signal?: AbortSignal) {
+  async pendingBlobDeletions(tenantValue: string, maximumValue: number, signal?: AbortSignal) {
+    const tenant = tenantId(tenantValue);
     const maximum = boundedPositiveInteger(maximumValue, "maximum", 256);
     throwIfAborted(signal);
     const result = await this.#query<DeletionRow>(
-      `SELECT deletion_id, tenant_id, digest, object_key, version_id, etag, byte_size
+      `SELECT deletion_id, tenant_id, digest, object_key, version_id, etag, byte_size, deleted_at
          FROM source_blob_deletions
+        WHERE tenant_id = $1 AND deleted_at IS NULL
         ORDER BY queued_at, deletion_id
-        LIMIT $1`,
-      [maximum],
+        LIMIT $2`,
+      [tenant, maximum],
       signal,
     );
     throwIfAborted(signal);
@@ -659,7 +630,9 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     if (!/^[0-9a-f-]{36}$/.test(deletionId)) throw new TypeError("Blob deletion ID is invalid.");
     throwIfAborted(signal);
     await this.#query(
-      "DELETE FROM source_blob_deletions WHERE tenant_id = $1 AND deletion_id = $2",
+      `UPDATE source_blob_deletions
+          SET deleted_at = COALESCE(deleted_at, clock_timestamp())
+        WHERE tenant_id = $1 AND deletion_id = $2`,
       [tenant, deletionId],
       signal,
     );

@@ -3,11 +3,18 @@ import { createHash } from "node:crypto";
 import type { Pool } from "pg";
 
 import { WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM } from "./postgres-workspace-source-repository";
+import workspaceSourceMigrationV1 from "./migrations/0001_workspace_source.sql?raw";
 
 const WORKSPACE_SOURCE_MIGRATION_LOCK_V1 = "5784133447825795121";
 
 export function workspaceSourceMigrationChecksumV1(source: string) {
   return createHash("sha256").update(source, "utf8").digest("hex");
+}
+
+export const WORKSPACE_SOURCE_MIGRATION_V1_SOURCE = workspaceSourceMigrationV1;
+
+export function applyBundledWorkspaceSourceMigrationV1(pool: Pool) {
+  return applyWorkspaceSourceMigrationV1(pool, WORKSPACE_SOURCE_MIGRATION_V1_SOURCE);
 }
 
 /** Apply v1 under one transaction-scoped advisory lock using a DDL credential. */

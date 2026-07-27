@@ -280,7 +280,13 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
       clientConfig: s3Config(environment),
       deployment: "test",
     });
+    const duplicateSource = "# content-addressed duplicate\n";
+    const firstDuplicate = await gcBlobs.putSource("tenant-a", duplicateSource);
+    const secondDuplicate = await gcBlobs.putSource("tenant-a", duplicateSource);
+    expect(secondDuplicate).toEqual(firstDuplicate);
     const rawOrphan = await gcBlobs.putSource("tenant-a", "# uploaded but never published\n");
+    const tenantBOrphan = await gcBlobs.putSource("tenant-b", "# tenant B queued orphan\n");
+    expect(await gcRepository.queueBlobDeletion("tenant-b", tenantBOrphan)).not.toBeNull();
     const gc = await runSourceBlobGcV1({
       blobs: gcBlobs,
       cutoff: new Date(Date.now() + 1_000),
@@ -288,10 +294,31 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
       repository: gcRepository,
       tenantId: "tenant-a",
     });
-    expect(gc.deleted).toBeGreaterThanOrEqual(2);
+    expect(gc.deleted).toBeGreaterThanOrEqual(1);
     await expect(gcBlobs.readSource("tenant-a", rawOrphan)).rejects.toBeDefined();
-    await expect(gcBlobs.readSource("tenant-a", publishedHead.blob)).rejects.toBeDefined();
+    expect(await gcBlobs.readSource("tenant-a", publishedHead.blob)).toContain("class MainScene(Scene)");
     expect(await gcBlobs.readSource("tenant-a", reopenedHead.blob)).toBe(winnerSource);
+    await expect(
+      gcRepository.compareAndSwapSource({
+        candidate: rawOrphan,
+        expectedDigest: reopenedHead.blob.digest,
+        expectedGeneration: reopenedHead.generation,
+        projectId,
+        sourcePath: "main.py",
+        tenantId: "tenant-a",
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(await gcBlobs.readSource("tenant-b", tenantBOrphan)).toContain("tenant B queued orphan");
+    expect(await gcRepository.pendingBlobDeletions("tenant-b", 256)).toHaveLength(1);
+    const tenantBGc = await runSourceBlobGcV1({
+      blobs: gcBlobs,
+      cutoff: new Date(Date.now() + 1_000),
+      maximum: 256,
+      repository: gcRepository,
+      tenantId: "tenant-b",
+    });
+    expect(tenantBGc.deleted).toBeGreaterThanOrEqual(1);
+    await expect(gcBlobs.readSource("tenant-b", tenantBOrphan)).rejects.toBeDefined();
     await gcBlobs.close();
     await gcRepository.close();
     await processC.close();
