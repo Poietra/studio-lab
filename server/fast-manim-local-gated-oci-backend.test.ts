@@ -256,6 +256,33 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
     expect(Buffer.from(execution.resultBytes).includes(Buffer.from("POIETRA_GATE_READY_V1"))).toBe(false);
   });
 
+  it("does not quarantine an abort observed after known-ID cleanup was verified", { timeout: 60_000 }, async () => {
+    const executionController = new AbortController();
+    let verifiedCleanupReached = false;
+    const backend = new FastManimLocalGatedOciBackendV1({
+      executeJob: (options) =>
+        runFastManimLocalGatedOciV1({
+          ...options,
+          afterVerifiedCleanupForTesting: () => {
+            verifiedCleanupReached = true;
+            executionController.abort();
+          },
+        }),
+      image,
+    });
+    const request = requestFor(staticScene, "GatedStaticScene");
+
+    await expect(
+      backend.start(request, {
+        ...context(executionController.signal),
+        attestationDigest: "b".repeat(64),
+      }).result,
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(verifiedCleanupReached).toBe(true);
+    await expect(backend.status(context())).resolves.toMatchObject({ health: "ready" });
+    await expect(backend.close()).resolves.toBeUndefined();
+  });
+
   it("interrupts pre-launch image inspection and status reads on abort", { timeout: 30_000 }, async () => {
     const request = requestFor(staticScene, "GatedStaticScene");
     const executionController = new AbortController();

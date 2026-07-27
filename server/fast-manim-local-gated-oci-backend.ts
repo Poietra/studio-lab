@@ -752,6 +752,8 @@ type FastManimLocalGatedOciCreateUncertainTestSeamV1 = Readonly<{
 /** Rootful, local-Docker-only driver. `conformanceWire` is deliberately unavailable through the backend class. */
 export async function runFastManimLocalGatedOciV1(
   options: Readonly<{
+    /** Deterministic late-halt seam for real OCI conformance tests; the configured backend never supplies it. */
+    afterVerifiedCleanupForTesting?: () => void;
     conformanceWire?: LocalConformanceWireV1;
     /** Deterministic unresolved-create seam for unit tests; the configured backend never supplies it. */
     createUncertainTestSeam?: FastManimLocalGatedOciCreateUncertainTestSeamV1;
@@ -781,6 +783,7 @@ export async function runFastManimLocalGatedOciV1(
   const operationController = new AbortController();
   let cleanupEvidence: FastManimLocalGatedOciCleanupEvidenceV1 | undefined;
   let containerCreationAttempted = false;
+  let immutableContainerIdObserved = false;
   let containerId: string | undefined;
   let evidence: FastManimLocalGatedOciEvidenceV1 | undefined;
   let attached: ChildProcessWithoutNullStreams | undefined;
@@ -843,7 +846,10 @@ export async function runFastManimLocalGatedOciV1(
       operationController.signal,
     );
     const createdId = created.stdout.toString("utf8").trim();
-    if (CONTAINER_ID.test(createdId)) containerId = createdId;
+    if (CONTAINER_ID.test(createdId)) {
+      containerId = createdId;
+      immutableContainerIdObserved = true;
+    }
     throwIfHalted();
     if (created.code !== 0 || !containerId) {
       throw new FastManimLocalGatedOciError("producer-spawn-failed", "Docker could not create the gated OCI job.");
@@ -918,6 +924,7 @@ export async function runFastManimLocalGatedOciV1(
     }
     const body = parseFastManimLocalGatedOciResultV1(Buffer.concat(stdoutChunks, stdoutBytes));
     await cleanupContainer(containerId, cleanupEvidence);
+    options.afterVerifiedCleanupForTesting?.();
     containerId = undefined;
     const lateHalt = halted as FastManimLocalGatedOciError | undefined;
     if (lateHalt) {
@@ -940,7 +947,7 @@ export async function runFastManimLocalGatedOciV1(
           ? cleanupError
           : new FastManimSandboxBackendControlError("cleanup");
       }
-    } else if (containerCreationAttempted) {
+    } else if (containerCreationAttempted && !immutableContainerIdObserved) {
       try {
         await recoverContainerByName(containerName);
       } catch {
