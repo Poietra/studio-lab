@@ -15,7 +15,6 @@ import {
   type RenderSessionStatus,
   type RenderSessionView,
   type RenderSourceActionCancellationRequest,
-  type RenderSourceActionView,
   renderProgramBatchId,
   renderRequestId,
   renderRequestPrograms,
@@ -34,6 +33,14 @@ import {
 } from "./manim-render-process";
 import { lowerManimRenderRequest } from "./manim-render-request-lowering";
 import {
+  beginRenderSessionAction,
+  createRenderMutationTransactionState,
+  type RenderMutationTransactionState,
+  RenderMutationTransactionCoordinator,
+  renderSourceActionView,
+  runningRenderSourceActions,
+} from "./manim-render-mutation-transaction";
+import {
   renderCommitCorrelationKey,
   renderCommitMatchesPreview,
   renderSessionCapabilities,
@@ -44,14 +51,13 @@ import { ManimThumbnailCache } from "./manim-thumbnail-cache";
 import { discoverPythonSources } from "./manim-workspace";
 
 type RenderSession = {
-  actionInProgress: boolean;
   batchId: string;
   child: ChildProcess | null;
   createdAt: string;
   error: string | null;
   id: string;
   logTail: string;
-  latestSourceActionId: string | null;
+  mutation: RenderMutationTransactionState;
   originalHash: string;
   originalSource: string;
   patch: {
@@ -64,21 +70,10 @@ type RenderSession = {
   progress: number;
   request: ProgramRenderRequest;
   requestId: string;
-  sourceActions: Map<string, SourceActionRecord>;
   status: RenderSessionStatus;
   tempRoot: string;
   updatedAt: string;
   videoPath: string | null;
-};
-
-type SourceActionRecord = {
-  abortController: AbortController;
-  completion: Promise<void>;
-  expectedKey: string | null;
-  id: string;
-  kind: "commit" | "undo";
-  outcome: "committed" | "undone" | null;
-  state: "cancelled" | "failed" | "running" | "succeeded";
 };
 
 type RenderStartReservation = Readonly<{
@@ -90,7 +85,6 @@ const DEFAULT_MAX_CONCURRENT_RENDERS = 2;
 const DEFAULT_MAX_RETAINED_SESSIONS = 32;
 const DEFAULT_RENDER_TIMEOUT_MS = 2 * 60 * 1_000;
 const DEFAULT_SESSION_RETENTION_MS = 30 * 60 * 1_000;
-const MAX_SOURCE_ACTION_RECORDS = 64;
 const COMMAND_AVAILABILITY_TTL_MS = 30_000;
 const COMMAND_AVAILABILITY_TIMEOUT_MS = 15_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
@@ -154,15 +148,6 @@ function throwIfAborted(signal: AbortSignal | undefined) {
   signal?.throwIfAborted();
 }
 
-function sourceActionView(action: SourceActionRecord): RenderSourceActionView {
-  return {
-    id: action.id,
-    kind: action.kind,
-    outcome: action.outcome,
-    state: action.state,
-  };
-}
-
 export class ManimRenderManager {
   readonly command: readonly string[];
   readonly defaultProjectId: string;
@@ -182,6 +167,7 @@ export class ManimRenderManager {
   private readonly logger: StructuredLogger;
   private readonly maxConcurrentRenders: number;
   private readonly maxRetainedSessions: number;
+  private readonly mutationTransactions: RenderMutationTransactionCoordinator;
   private readonly onSessionRemoved: (id: string) => void;
   private pendingStarts = 0;
   private pendingRetainedSessions = 0;
@@ -234,6 +220,7 @@ export class ManimRenderManager {
       options.maxRetainedSessions ?? DEFAULT_MAX_RETAINED_SESSIONS,
       "Maximum retained sessions",
     );
+    this.mutationTransactions = new RenderMutationTransactionCoordinator({ isClosing: () => this.closing });
     this.onSessionRemoved = options.onSessionRemoved ?? (() => undefined);
     this.sourceStore = new ManimSourceStore(options.projectRoot, options.sourceStoreHooks);
     this.projectId = options.projectId ?? "default";
@@ -306,18 +293,18 @@ export class ManimRenderManager {
     const expired = [...this.sessions.values()].filter(
       (session) =>
         !renderSessionStatusPolicy(session.status).active &&
-        !session.actionInProgress &&
+        !session.mutation.actionInProgress &&
         now - Date.parse(session.updatedAt) >= this.sessionRetentionMs,
     );
     await Promise.all(
       expired.map(async (session) => {
-        if (session.actionInProgress) return;
-        session.actionInProgress = true;
+        if (session.mutation.actionInProgress) return;
+        session.mutation.actionInProgress = true;
         try {
           await rm(session.tempRoot, { force: true, recursive: true });
           this.removeSession(session.id);
         } finally {
-          session.actionInProgress = false;
+          session.mutation.actionInProgress = false;
         }
       }),
     );
@@ -502,15 +489,7 @@ export class ManimRenderManager {
   }
 
   private beginSessionAction(session: RenderSession, allowWhileClosing = false) {
-    if (this.closing && !allowWhileClosing) {
-      throw new HttpError("The Manim render pipeline is shutting down.", 503);
-    }
-    if (session.actionInProgress)
-      throw new HttpError("Another action is already running for this render session.", 409);
-    session.actionInProgress = true;
-    return () => {
-      session.actionInProgress = false;
-    };
+    return beginRenderSessionAction(session.mutation, { allowWhileClosing, closing: this.closing });
   }
 
   private async withSessionAction<T>(id: string, action: (session: RenderSession) => Promise<T> | T) {
@@ -550,9 +529,9 @@ export class ManimRenderManager {
   }
 
   private toView(session: RenderSession): RenderSessionView {
-    const capabilities = renderSessionCapabilities(session.status, session.actionInProgress);
+    const capabilities = renderSessionCapabilities(session.status, session.mutation.actionInProgress);
     return {
-      actionInProgress: session.actionInProgress,
+      actionInProgress: session.mutation.actionInProgress,
       ...capabilities,
       createdAt: session.createdAt,
       error: session.error,
@@ -574,8 +553,8 @@ export class ManimRenderManager {
       renderRequestId: session.requestId,
       progress: session.progress,
       sceneName: session.request.sceneName,
-      sourceAction: session.latestSourceActionId
-        ? sourceActionView(session.sourceActions.get(session.latestSourceActionId)!)
+      sourceAction: session.mutation.latestActionId
+        ? renderSourceActionView(session.mutation.actions.get(session.mutation.latestActionId)!)
         : null,
       sourcePath: session.request.sourcePath,
       status: session.status,
@@ -701,14 +680,13 @@ export class ManimRenderManager {
 
       const now = new Date().toISOString();
       session = {
-        actionInProgress: false,
         batchId: renderProgramBatchId(renderRequestPrograms(request)),
         child: null,
         createdAt: now,
         error: null,
         id: randomUUID(),
         logTail: "",
-        latestSourceActionId: null,
+        mutation: createRenderMutationTransactionState(),
         originalHash: sourceSnapshot.hash,
         originalSource,
         patch: {
@@ -721,7 +699,6 @@ export class ManimRenderManager {
         progress: 0.1,
         request: renderRequest,
         requestId: renderRequestId(request),
-        sourceActions: new Map(),
         status: "preparing",
         tempRoot,
         updatedAt: now,
@@ -851,74 +828,14 @@ export class ManimRenderManager {
       actionId: string;
       expectedKey: string;
       kind: "commit" | "undo";
-      mutate: (session: RenderSession, signal: AbortSignal) => Promise<"committed" | "undone">;
-      preflight: (session: RenderSession) => void;
+      preflight?: (session: RenderSession) => void;
+      publishSource: (session: RenderSession, signal: AbortSignal) => Promise<void>;
       signal?: AbortSignal;
     }>,
   ) {
     if (this.closing) throw new HttpError("The Manim render pipeline is shutting down.", 503);
     const session = this.session(id);
-    const existing = session.sourceActions.get(input.actionId);
-    if (existing) {
-      if (
-        existing.kind !== input.kind ||
-        (existing.expectedKey !== null && existing.expectedKey !== input.expectedKey)
-      ) {
-        throw new HttpError("The source action ID is already bound to a different mutation.", 409);
-      }
-      if (existing.state === "running") await existing.completion;
-      if (existing.state === "succeeded") {
-        if (session.latestSourceActionId !== existing.id) {
-          throw new HttpError("The source action completed, but this render session has since advanced.", 409);
-        }
-        return this.toView(session);
-      }
-      throw new HttpError(
-        existing.state === "cancelled"
-          ? `The ${input.kind === "commit" ? "Commit" : "Undo"} action was cancelled before it changed the source.`
-          : `The previous ${input.kind === "commit" ? "Commit" : "Undo"} action failed. Start a new action to retry.`,
-        409,
-      );
-    }
-    if (session.sourceActions.size >= MAX_SOURCE_ACTION_RECORDS) {
-      throw new HttpError("This render session has too many retained source-action outcomes.", 429);
-    }
-    input.preflight(session);
-
-    const finishAction = this.beginSessionAction(session);
-    const abortController = new AbortController();
-    const abortAction = () => abortController.abort(input.signal?.reason);
-    if (input.signal?.aborted) abortAction();
-    else input.signal?.addEventListener("abort", abortAction, { once: true });
-    let resolveCompletion!: () => void;
-    const completion = new Promise<void>((resolveAction) => {
-      resolveCompletion = resolveAction;
-    });
-    const action: SourceActionRecord = {
-      abortController,
-      completion,
-      expectedKey: input.expectedKey,
-      id: input.actionId,
-      kind: input.kind,
-      outcome: null,
-      state: "running",
-    };
-    session.sourceActions.set(action.id, action);
-    session.latestSourceActionId = action.id;
-    let actionError: unknown = null;
-    try {
-      throwIfAborted(abortController.signal);
-      action.outcome = await input.mutate(session, abortController.signal);
-      action.state = "succeeded";
-    } catch (error) {
-      action.state = abortController.signal.aborted ? "cancelled" : "failed";
-      actionError = error;
-    } finally {
-      input.signal?.removeEventListener("abort", abortAction);
-      finishAction();
-      resolveCompletion();
-    }
-    if (actionError) throw actionError;
+    await this.mutationTransactions.run(session, { ...input, afterTransition: () => this.refreshThumbnail() });
     return this.toView(session);
   }
 
@@ -927,7 +844,7 @@ export class ManimRenderManager {
       actionId: expected.actionId,
       expectedKey: renderCommitCorrelationKey(expected),
       kind: "commit",
-      mutate: async (session, actionSignal) => {
+      publishSource: async (session, actionSignal) => {
         await this.sourceStore.writeIfUnchanged(
           session.request.sourcePath,
           session.originalHash,
@@ -935,15 +852,8 @@ export class ManimRenderManager {
           "The source changed after preview. Render again before committing.",
           actionSignal,
         );
-        session.status = "committed";
-        session.updatedAt = new Date().toISOString();
-        this.refreshThumbnail();
-        return "committed";
       },
       preflight: (session) => {
-        if (!renderSessionStatusPolicy(session.status).committable) {
-          throw new HttpError("Only a successful preview can be committed.", 409);
-        }
         if (
           !renderCommitMatchesPreview(expected, {
             programBatchId: session.batchId,
@@ -966,7 +876,7 @@ export class ManimRenderManager {
       actionId,
       expectedKey: "undo",
       kind: "undo",
-      mutate: async (session, actionSignal) => {
+      publishSource: async (session, actionSignal) => {
         await this.sourceStore.writeIfUnchanged(
           session.request.sourcePath,
           session.patchedHash,
@@ -974,15 +884,6 @@ export class ManimRenderManager {
           "The committed source changed again, so Studio will not overwrite it during Undo.",
           actionSignal,
         );
-        session.status = "undone";
-        session.updatedAt = new Date().toISOString();
-        this.refreshThumbnail();
-        return "undone";
-      },
-      preflight: (session) => {
-        if (!renderSessionStatusPolicy(session.status).undoable) {
-          throw new HttpError("Only a committed source change can be undone.", 409);
-        }
       },
       signal,
     });
@@ -991,45 +892,9 @@ export class ManimRenderManager {
   async cancelSourceAction(id: string, request: RenderSourceActionCancellationRequest) {
     if (this.closing) throw new HttpError("The Manim render pipeline is shutting down.", 503);
     const session = this.session(id);
-    let action = session.sourceActions.get(request.actionId);
-    if (action) {
-      if (action.kind !== request.kind) {
-        throw new HttpError("The source-action cancellation kind does not match its registered action.", 409);
-      }
-      if (action.state === "running") {
-        action.abortController.abort();
-        await action.completion;
-      } else if (session.actionInProgress) {
-        throw new HttpError("Another action is already running for this render session.", 409);
-      }
-    } else {
-      const expectedStatus = request.kind === "commit" ? "ready" : "committed";
-      const policy = renderSessionStatusPolicy(session.status);
-      if (request.kind === "commit" ? !policy.committable : !policy.undoable) {
-        throw new HttpError(`Only a ${expectedStatus} render session can register this cancellation.`, 409);
-      }
-      if (session.sourceActions.size >= MAX_SOURCE_ACTION_RECORDS) {
-        throw new HttpError("This render session has too many retained source-action outcomes.", 429);
-      }
-      const finishAction = this.beginSessionAction(session);
-      try {
-        action = {
-          abortController: new AbortController(),
-          completion: Promise.resolve(),
-          expectedKey: null,
-          id: request.actionId,
-          kind: request.kind,
-          outcome: null,
-          state: "cancelled",
-        };
-        session.sourceActions.set(action.id, action);
-        session.latestSourceActionId = action.id;
-      } finally {
-        finishAction();
-      }
-    }
+    const action = await this.mutationTransactions.cancel(session, request);
     return {
-      action: sourceActionView(action),
+      action,
       session: this.toView(session),
     };
   }
@@ -1077,7 +942,7 @@ export class ManimRenderManager {
     const pendingWorkspace = this.workspaceRequest;
     const thumbnailClose = this.thumbnailCache.close();
     const runningSourceActions = [...this.sessions.values()].flatMap((session) =>
-      [...session.sourceActions.values()].filter((action) => action.state === "running"),
+      runningRenderSourceActions(session.mutation),
     );
     for (const action of runningSourceActions) action.abortController.abort();
     await Promise.all(runningSourceActions.map((action) => action.completion));
