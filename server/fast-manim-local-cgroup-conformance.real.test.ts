@@ -77,6 +77,13 @@ const RESOURCE_FLOOD_CASES: readonly Readonly<{
       'const fs=require("node:fs"); const held=[]; try { for (;;) held.push(fs.openSync("/dev/null", "r")); } catch (error) { process.exit(error.code === "EMFILE" ? 73 : 70); }',
   },
   {
+    expected: "fd-limit",
+    limits: { maxOpenFiles: 32, maxProcesses: 16 },
+    name: "multi-process open-file descriptor flood",
+    source:
+      'const {spawn}=require("node:child_process"); const worker=\'const fs=require("node:fs"); const held=[]; try { for (;;) held.push(fs.openSync("/dev/null", "r")); } catch (error) { process.exit(error.code === "EMFILE" ? 73 : 70); }\'; for (let index=0; index<3; index+=1) spawn(process.execPath, ["-e", worker], {stdio:"ignore"}).once("exit", (code) => { if (code === 73) process.exit(73); }); setTimeout(() => process.exit(70), 2000);',
+  },
+  {
     expected: "file-limit",
     limits: { maxFileBytes: 64 * KIB },
     name: "single-file size flood",
@@ -159,6 +166,7 @@ describe("local cgroup v2 conformance gate", () => {
       { expected: "cpu-limit", name: "cumulative CPU-time flood" },
       { expected: "pids-limit", name: "pids cgroup fork flood" },
       { expected: "fd-limit", name: "open-file descriptor flood" },
+      { expected: "fd-limit", name: "multi-process open-file descriptor flood" },
       { expected: "file-limit", name: "single-file size flood" },
       { expected: "tmpfs-limit", name: "runtime tmpfs byte flood" },
       { expected: "tmpfs-limit", name: "runtime tmpfs inode flood" },

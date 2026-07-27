@@ -22,6 +22,9 @@ const MAX_RESOURCE_PROCESSES = 4096;
 const MAX_RESOURCE_OPEN_FILES = 65_536;
 const MAX_RESOURCE_TMPFS_INODES = 1_000_000;
 const MAX_GLOBAL_ACTIVE_JOBS = 4096;
+const MAX_JOB_FILE_DESCRIPTORS = MAX_RESOURCE_PROCESSES * MAX_RESOURCE_OPEN_FILES;
+const MAX_GLOBAL_FILE_DESCRIPTORS = MAX_JOB_FILE_DESCRIPTORS * MAX_GLOBAL_ACTIVE_JOBS;
+const DEFAULT_GLOBAL_FILE_DESCRIPTORS = 4 * 64 * 256;
 
 function boundedSafeInteger(name: string, minimum: number, maximum: number) {
   return z
@@ -246,6 +249,7 @@ export type FastManimSandboxResourceJobDescriptorV1 = Readonly<{
   deadlineEpochMs: number;
   jobId: string;
   limits: FastManimSandboxResourceLimitsV1;
+  reservedFileDescriptors: number;
   reservedMemoryBytes: number;
   reservedOutputBytes: number;
   reservedTmpfsBytes: number;
@@ -257,6 +261,7 @@ export type FastManimSandboxResourceRegistrySnapshotV1 = Readonly<{
   activeJobs: number;
   queuedJobs: 0;
   reapedJobs: number;
+  reservedFileDescriptors: number;
   reservedMemoryBytes: number;
   reservedOutputBytes: number;
   reservedTmpfsBytes: number;
@@ -276,6 +281,7 @@ export type FastManimSandboxResourceAdmissionLeaseV1 = Readonly<{
 
 export type FastManimSandboxResourceRegistryOptionsV1 = Readonly<{
   maxActiveJobs?: number;
+  maxReservedFileDescriptors?: number;
   maxReservedMemoryBytes?: number;
   maxReservedOutputBytes?: number;
   maxReservedTmpfsBytes?: number;
@@ -286,6 +292,7 @@ export type FastManimSandboxResourceRegistryOptionsV1 = Readonly<{
 const registryOptionsSchema = z
   .object({
     maxActiveJobs: boundedSafeInteger("Global active jobs", 1, MAX_GLOBAL_ACTIVE_JOBS),
+    maxReservedFileDescriptors: boundedSafeInteger("Global reserved file descriptors", 1, MAX_GLOBAL_FILE_DESCRIPTORS),
     maxReservedMemoryBytes: boundedSafeInteger("Global reserved memory", MIB, MAX_GLOBAL_RESOURCE_BYTES),
     maxReservedOutputBytes: boundedSafeInteger("Global reserved output", 1, MAX_GLOBAL_RESOURCE_BYTES),
     maxReservedTmpfsBytes: boundedSafeInteger("Global reserved tmpfs", MIB, MAX_GLOBAL_RESOURCE_BYTES),
@@ -338,6 +345,14 @@ function checkedMemoryReservation(limits: FastManimSandboxResourceLimitsV1) {
   return total;
 }
 
+function checkedFileDescriptorReservation(limits: FastManimSandboxResourceLimitsV1) {
+  const total = limits.maxProcesses * limits.maxOpenFiles;
+  if (!Number.isSafeInteger(total) || total < 1 || total > MAX_JOB_FILE_DESCRIPTORS) {
+    throw new FastManimSandboxResourceControlError("configuration");
+  }
+  return total;
+}
+
 function checkedTmpfsReservation(limits: FastManimSandboxResourceLimitsV1) {
   const total = limits.maxRuntimeTmpfsBytes + limits.maxSharedMemoryBytes;
   if (!Number.isSafeInteger(total)) throw new FastManimSandboxResourceControlError("configuration");
@@ -361,6 +376,7 @@ export const fastManimSandboxResourceJobDescriptorV1Schema = z
     deadlineEpochMs: boundedSafeInteger("Resource job deadline", 1, Number.MAX_SAFE_INTEGER),
     jobId: z.string().regex(RESOURCE_JOB_ID_PATTERN),
     limits: fastManimSandboxResourceLimitsV1Schema,
+    reservedFileDescriptors: boundedSafeInteger("Reserved file descriptors", 1, MAX_JOB_FILE_DESCRIPTORS),
     reservedMemoryBytes: boundedSafeInteger("Reserved memory", MIB, 2 * MAX_RESOURCE_BYTES),
     reservedOutputBytes: boundedSafeInteger("Reserved output", 1, 3 * MAX_RESOURCE_BYTES),
     reservedTmpfsBytes: boundedSafeInteger("Reserved tmpfs", 2 * MIB, 2 * MAX_RESOURCE_BYTES),
@@ -371,6 +387,12 @@ export const fastManimSandboxResourceJobDescriptorV1Schema = z
   .superRefine((descriptor, context) => {
     if (descriptor.cgroupName !== `poietra-job-v1-${descriptor.jobId}`) {
       context.addIssue({ code: "custom", message: "Resource job and cgroup identities do not match." });
+    }
+    if (descriptor.reservedFileDescriptors !== checkedFileDescriptorReservation(descriptor.limits)) {
+      context.addIssue({
+        code: "custom",
+        message: "Resource job file-descriptor reservation does not match its limits.",
+      });
     }
     if (descriptor.reservedMemoryBytes !== checkedMemoryReservation(descriptor.limits)) {
       context.addIssue({ code: "custom", message: "Resource job memory reservation does not match its limits." });
@@ -400,6 +422,7 @@ export class FastManimSandboxResourceRegistryV1 {
   readonly #active = new Map<string, ActiveReservation>();
   readonly #bootId = randomBytes(16).toString("hex");
   readonly #maxActiveJobs: number;
+  readonly #maxReservedFileDescriptors: number;
   readonly #maxReservedMemoryBytes: number;
   readonly #maxReservedOutputBytes: number;
   readonly #maxReservedTmpfsBytes: number;
@@ -407,6 +430,7 @@ export class FastManimSandboxResourceRegistryV1 {
   readonly #terminated = new Map<FastManimSandboxResourceTerminationReasonV1, number>();
   #nextJobSequence = 1;
   #reapedJobs = 0;
+  #reservedFileDescriptors = 0;
   #reservedMemoryBytes = 0;
   #reservedOutputBytes = 0;
   #reservedTmpfsBytes = 0;
@@ -415,11 +439,13 @@ export class FastManimSandboxResourceRegistryV1 {
   constructor(options: FastManimSandboxResourceRegistryOptionsV1 = {}) {
     const parsed = registryOptionsSchema.parse({
       maxActiveJobs: options.maxActiveJobs ?? 4,
+      maxReservedFileDescriptors: options.maxReservedFileDescriptors ?? DEFAULT_GLOBAL_FILE_DESCRIPTORS,
       maxReservedMemoryBytes: options.maxReservedMemoryBytes ?? 4 * GIB,
       maxReservedOutputBytes: options.maxReservedOutputBytes ?? 64 * MIB,
       maxReservedTmpfsBytes: options.maxReservedTmpfsBytes ?? GIB,
     });
     this.#maxActiveJobs = parsed.maxActiveJobs;
+    this.#maxReservedFileDescriptors = parsed.maxReservedFileDescriptors;
     this.#maxReservedMemoryBytes = parsed.maxReservedMemoryBytes;
     this.#maxReservedOutputBytes = parsed.maxReservedOutputBytes;
     this.#maxReservedTmpfsBytes = parsed.maxReservedTmpfsBytes;
@@ -457,11 +483,13 @@ export class FastManimSandboxResourceRegistryV1 {
   admit(value: unknown): FastManimSandboxResourceAdmissionLeaseV1 {
     if (this.#state !== "ready") throw new FastManimSandboxResourceControlError("unavailable");
     const limits = parseFastManimSandboxResourceLimitsV1(value);
+    const fileDescriptors = checkedFileDescriptorReservation(limits);
     const memoryBytes = checkedMemoryReservation(limits);
     const outputBytes = checkedOutputReservation(limits);
     const tmpfsBytes = checkedTmpfsReservation(limits);
     if (
       this.#active.size >= this.#maxActiveJobs ||
+      exceedsReservation(this.#reservedFileDescriptors, fileDescriptors, this.#maxReservedFileDescriptors) ||
       exceedsReservation(this.#reservedMemoryBytes, memoryBytes, this.#maxReservedMemoryBytes) ||
       exceedsReservation(this.#reservedOutputBytes, outputBytes, this.#maxReservedOutputBytes) ||
       exceedsReservation(this.#reservedTmpfsBytes, tmpfsBytes, this.#maxReservedTmpfsBytes)
@@ -484,6 +512,7 @@ export class FastManimSandboxResourceRegistryV1 {
       deadlineEpochMs,
       jobId,
       limits,
+      reservedFileDescriptors: fileDescriptors,
       reservedMemoryBytes: memoryBytes,
       reservedOutputBytes: outputBytes,
       reservedTmpfsBytes: tmpfsBytes,
@@ -492,17 +521,26 @@ export class FastManimSandboxResourceRegistryV1 {
     });
     const reservation: ActiveReservation = { descriptor, state: "active" };
     this.#active.set(jobId, reservation);
+    this.#reservedFileDescriptors += fileDescriptors;
     this.#reservedMemoryBytes += memoryBytes;
     this.#reservedOutputBytes += outputBytes;
     this.#reservedTmpfsBytes += tmpfsBytes;
 
     let settled = false;
-    const terminate = (reason: FastManimSandboxResourceTerminationReasonV1) => {
+    let terminationReason: FastManimSandboxResourceTerminationReasonV1 | null = null;
+    const recordTermination = (reason: FastManimSandboxResourceTerminationReasonV1, replace = false) => {
       const parsedReason = fastManimSandboxResourceTerminationReasonV1Schema.parse(reason);
-      if (settled || reservation.state === "terminated") return;
+      if (settled || (reservation.state === "terminated" && !replace)) return;
+      if (terminationReason) {
+        const previousCount = this.#terminated.get(terminationReason)!;
+        if (previousCount === 1) this.#terminated.delete(terminationReason);
+        else this.#terminated.set(terminationReason, previousCount - 1);
+      }
       reservation.state = "terminated";
+      terminationReason = parsedReason;
       this.#terminated.set(parsedReason, (this.#terminated.get(parsedReason) ?? 0) + 1);
     };
+    const terminate = (reason: FastManimSandboxResourceTerminationReasonV1) => recordTermination(reason);
     const reap = (evidence: Readonly<{ cgroupEmpty: true; outputClosed: true }>) => {
       if (settled) return;
       if (evidence?.cgroupEmpty !== true || evidence.outputClosed !== true) {
@@ -512,6 +550,7 @@ export class FastManimSandboxResourceRegistryV1 {
       terminate("completed");
       settled = true;
       this.#active.delete(jobId);
+      this.#reservedFileDescriptors -= fileDescriptors;
       this.#reservedMemoryBytes -= memoryBytes;
       this.#reservedOutputBytes -= outputBytes;
       this.#reservedTmpfsBytes -= tmpfsBytes;
@@ -519,7 +558,7 @@ export class FastManimSandboxResourceRegistryV1 {
     };
     const failClosed = () => {
       if (settled) return;
-      terminate("cleanup-failed");
+      recordTermination("cleanup-failed", true);
       settled = true;
       this.quarantine();
     };
@@ -531,6 +570,7 @@ export class FastManimSandboxResourceRegistryV1 {
       activeJobs: this.#active.size,
       queuedJobs: 0,
       reapedJobs: this.#reapedJobs,
+      reservedFileDescriptors: this.#reservedFileDescriptors,
       reservedMemoryBytes: this.#reservedMemoryBytes,
       reservedOutputBytes: this.#reservedOutputBytes,
       reservedTmpfsBytes: this.#reservedTmpfsBytes,

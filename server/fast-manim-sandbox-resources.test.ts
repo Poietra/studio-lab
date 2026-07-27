@@ -123,7 +123,7 @@ describe("fast-manim sandbox resource contract", () => {
 });
 
 describe("fast-manim sandbox resource registry", () => {
-  it("atomically reserves active, memory, output, and tmpfs budgets", () => {
+  it("atomically reserves active, process-wide fd, memory, output, and tmpfs budgets", () => {
     const registry = new FastManimSandboxResourceRegistryV1({
       maxActiveJobs: 2,
       maxReservedMemoryBytes: 3 * MIB,
@@ -144,6 +144,7 @@ describe("fast-manim sandbox resource registry", () => {
     );
     expect(first.descriptor.deadlineEpochMs).toBe(1_500);
     expect(first.descriptor.reservedOutputBytes).toBe(200);
+    expect(first.descriptor.reservedFileDescriptors).toBe(64 * 256);
     expect(first.descriptor.reservedMemoryBytes).toBe(2 * MIB);
     expect(first.descriptor.reservedTmpfsBytes).toBe(2 * MIB);
     expect(isFastManimSandboxResourceCgroupNameV1(first.descriptor.cgroupName)).toBe(true);
@@ -189,6 +190,7 @@ describe("fast-manim sandbox resource registry", () => {
       reservedMemoryBytes: 0,
       reservedOutputBytes: 0,
       reservedTmpfsBytes: 0,
+      reservedFileDescriptors: 0,
       state: "ready",
     });
   });
@@ -229,6 +231,32 @@ describe("fast-manim sandbox resource registry", () => {
     );
     lease.terminate("completed");
     lease.reap({ cgroupEmpty: true, outputClosed: true });
+  });
+
+  it("reserves maxProcesses times maxOpenFiles against one global fd budget", () => {
+    const registry = new FastManimSandboxResourceRegistryV1({
+      maxActiveJobs: 2,
+      maxReservedFileDescriptors: 100,
+    });
+    const first = registry.admit(limits({ maxOpenFiles: 20, maxProcesses: 4 }));
+    expect(first.descriptor.reservedFileDescriptors).toBe(80);
+    expect(registry.snapshot().reservedFileDescriptors).toBe(80);
+    expect(() => registry.admit(limits({ maxOpenFiles: 10, maxProcesses: 3 }))).toThrowError(
+      FastManimSandboxResourceControlError,
+    );
+    first.terminate("completed");
+    first.reap({ cgroupEmpty: true, outputClosed: true });
+    const second = registry.admit(limits({ maxOpenFiles: 10, maxProcesses: 3 }));
+    second.terminate("completed");
+    second.reap({ cgroupEmpty: true, outputClosed: true });
+  });
+
+  it("records cleanup-failed when fail-closed supersedes an earlier provisional reason", () => {
+    const registry = new FastManimSandboxResourceRegistryV1();
+    const lease = registry.admit(limits());
+    lease.terminate("aborted");
+    lease.failClosed();
+    expect(registry.snapshot().terminated).toEqual([{ count: 1, reason: "cleanup-failed" }]);
   });
 
   it("cannot close cleanly before startup reconciliation is proven", () => {
