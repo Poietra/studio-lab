@@ -1343,6 +1343,29 @@ mod tests {
     }
 
     #[test]
+    fn prepared_frame_debug_is_stable_and_does_not_observe_the_lazy_compatibility_cache() {
+        let frame = PreparedFrameV1::triangle_for_upload_test();
+        assert!(frame.compatibility_vertices.get().is_none());
+
+        let before_projection = format!("{frame:?}");
+        assert!(frame.compatibility_vertices.get().is_none());
+        assert!(!before_projection.contains("compatibility_vertices"));
+        for semantic_evidence in [
+            "geometry: PreparedGeometryPlanV1",
+            "materials: PreparedMaterialPlanV1",
+            "ordered_draws: OrderedDrawPlanV1",
+            "draw:test",
+            "viewport: [160, 90]",
+        ] {
+            assert!(before_projection.contains(semantic_evidence));
+        }
+
+        assert_eq!(frame.vertices().len(), 3);
+        assert!(frame.compatibility_vertices.get().is_some());
+        assert_eq!(format!("{frame:?}"), before_projection);
+    }
+
+    #[test]
     fn canonical_line_accepts_real_fast_manim_single_ulp_controls() {
         let start = poietra_scene_ir::PointV1 { x: -4.0, y: 2.0 };
         let segment = CubicSegmentV1 {

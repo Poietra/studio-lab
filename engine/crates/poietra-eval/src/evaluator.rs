@@ -67,7 +67,9 @@ impl EngineSessionV1 {
     ///
     /// # Errors
     ///
-    /// Returns [`EvaluationError::InvalidInput`] when the snapshot violates the v1 contract.
+    /// Returns [`EvaluationError::InvalidInput`] when the snapshot violates the v1 contract, or
+    /// [`EvaluationError::RetainedIndex`] when its derived index exceeds the bounded byte policy,
+    /// overflows byte accounting, or cannot be allocated consistently.
     pub fn new(bundle: SceneIrBundleV1) -> Result<Self, EvaluationError> {
         validate_scene_ir_with_assets_v1(&bundle.scene, &bundle.assets)
             .map_err(|error| EvaluationError::InvalidInput(error.to_string()))?;
@@ -84,8 +86,10 @@ impl EngineSessionV1 {
     ///
     /// # Errors
     ///
-    /// Returns [`EvaluationError::InvalidInput`] and preserves the current snapshot
-    /// when the candidate violates the v1 contract.
+    /// Returns [`EvaluationError::InvalidInput`] when the candidate violates the v1 contract,
+    /// [`EvaluationError::RetainedIndex`] when its bounded derived index cannot be accounted or
+    /// allocated, or [`EvaluationError::MalformedScene`] if the retained build counter overflows.
+    /// Every failure preserves the current snapshot and index.
     pub fn replace_snapshot(&mut self, bundle: SceneIrBundleV1) -> Result<(), EvaluationError> {
         let mut replacement = Self::new(bundle)?;
         replacement.index_build_count =
@@ -545,8 +549,10 @@ fn compile_render_packet_from_validated_v1(
 /// # Errors
 ///
 /// Returns [`EvaluationError::InvalidInput`] for a contract violation,
-/// [`EvaluationError::Geometry`] for undefined geometry semantics, or
-/// [`EvaluationError::InvalidOutput`] if the sampled packet fails its integrity check.
+/// [`EvaluationError::RetainedIndex`] when the bounded derived index cannot be accounted or
+/// allocated, [`EvaluationError::Geometry`] for undefined geometry semantics,
+/// [`EvaluationError::InvalidOutput`] if the sampled packet fails its integrity check, or
+/// [`EvaluationError::MalformedScene`] if a validated Scene cannot satisfy evaluator invariants.
 pub fn compile_render_packet_v1(
     options: CompileEngineFrameOptionsV1<'_>,
 ) -> Result<RenderPacketV1, EvaluationError> {

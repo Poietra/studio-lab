@@ -56,6 +56,18 @@ multi-segment, multi-subpath, image, non-convex, numeric, and tessellation-limit
 cases reject the complete frame with a structured error. The frame-wide preparation
 ceiling is 1,000,000 vertices.
 
+Preparation keeps four ownership boundaries explicit: position-only geometry,
+per-draw material, stable ordered draw ranges, and the transient GPU upload plan.
+Changing only paint therefore leaves geometry and ordering unchanged. The upload
+plan interleaves positions and materials into the existing 24-byte shader layout
+under a checked 64 MiB hard limit, then is discarded after buffer staging. The
+public V1 `PreparedFrameV1::vertices()` API remains available as a lazy compatibility
+view; it is created only when called, requests at most a 24,000,000-byte element
+payload (below 24 MiB, excluding allocator bookkeeping), and is discarded with its
+prepared frame. No prepared-geometry cache exists yet, so telemetry continues to
+report `preparedGeometry: "absent"` rather than treating either transient
+representation as a cache.
+
 The shared browser/native WGPU 30 pipeline accepts caller-owned `Device`, `Queue`,
 and `TextureView` values, clears an extent-checked target, and draws premultiplied
 linear-light indexed solid-paint triangles in packet paint order. It accepts only
@@ -118,9 +130,15 @@ outcomes are recorded at their actual call sites; the absent prepared-geometry
 cache reports `absent` rather than a fabricated miss.
 
 The WASM session validates and retains a complete Scene bundle on installation.
-Subsequent playhead requests are bounded JSON messages and return only the sampled
-`RenderPacket`; immutable Scene and manifest data are not cloned across the worker
-boundary on every frame. Build the web-target package with the repository script:
+It also builds one immutable evaluator index containing entity/channel lookup,
+hierarchy order, and stable translucent paint order. Index construction uses
+checked accounting under an 8 MiB hard limit. A replacement first validates and
+indexes a complete candidate, then atomically swaps it in; failure preserves the
+previous Scene, assets, index, and sampling evidence, while successful replacement
+drops the old retained state. Subsequent playhead requests are bounded JSON messages
+and return only the sampled `RenderPacket`; immutable Scene and manifest data are
+not cloned across the worker boundary on every frame. Build the web-target package
+with the repository script:
 
 ```sh
 cargo install wasm-pack --locked --version 0.15.0

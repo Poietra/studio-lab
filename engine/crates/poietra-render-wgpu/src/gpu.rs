@@ -220,7 +220,9 @@ impl WgpuFillRendererV1 {
     ///
     /// # Errors
     ///
-    /// Returns a format or extent mismatch before allocating or uploading frame buffers.
+    /// Returns a format or extent mismatch before allocating or uploading frame buffers, or
+    /// [`RenderFrameErrorV1::UploadPlan`] when the bounded vertex/index encoding overflows,
+    /// exceeds its byte limit, cannot be allocated, or finds inconsistent prepared plans.
     pub fn render(
         &self,
         device: &wgpu::Device,
@@ -240,7 +242,8 @@ impl WgpuFillRendererV1 {
     ///
     /// # Errors
     ///
-    /// Returns the same format or extent mismatch errors as [`Self::render`].
+    /// Returns the same format, extent, or bounded [`RenderFrameErrorV1::UploadPlan`] errors as
+    /// [`Self::render`].
     pub fn render_with_stage_evidence(
         &self,
         device: &wgpu::Device,
