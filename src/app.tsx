@@ -20,12 +20,6 @@ import {
 import type { RenderProgramCandidate } from "./render-pipeline/render-pipeline-policy";
 import type { RenderSessionView } from "./render-pipeline/contracts";
 import { exportManimSource } from "./render-pipeline/client";
-import {
-  renderSourceRefreshMatches,
-  renderSourceRefreshResolved,
-  type RenderSourceIdentity,
-  type RenderSourceRefreshTarget,
-} from "./render-pipeline/render-pipeline-policy";
 import { cn } from "./lib/cn";
 import {
   createImportedEntityLifetimeProgram,
@@ -78,6 +72,7 @@ import {
 } from "./studio/preview-snapshot-provider";
 import { projectRuntimeSceneToSourceTimeline } from "./studio/source-timeline";
 import { useStudioPreviewRenderer } from "./studio/use-preview-renderer";
+import { useSourceReimportController } from "./studio/use-source-reimport-controller";
 import { MagicEditPanel } from "./studio/magic-edit-panel";
 import {
   createDirectManipulationResizeProgram,
@@ -315,9 +310,29 @@ export function App() {
     suspend: suspendEditor,
     undoProgram,
   } = useEditorController();
+  const {
+    reconcileRenderedSource,
+    reimportWorkspace,
+    setSourceMutationPending,
+    sourceMutationPendingProjectId,
+    sourceReimportTarget,
+  } = useSourceReimportController({
+    activeProjectId,
+    activeSource:
+      activeProjectId && activeScene
+        ? {
+            projectId: activeProjectId,
+            sceneId: activeScene.sceneId,
+            sceneName: activeScene.name,
+            sourceHash: activeScene.sourceHash,
+            sourcePath: activeScene.sourcePath,
+          }
+        : null,
+    clearSession,
+    refreshWorkspace,
+    resetPrograms,
+  });
   const [renderSessions, setRenderSessions] = useState<Readonly<Record<string, RenderSessionView>>>({});
-  const [sourceMutationPendingProjectId, setSourceMutationPendingProjectId] = useState<string | null>(null);
-  const [sourceReimportTarget, setSourceReimportTarget] = useState<RenderSourceRefreshTarget | null>(null);
   const [draftApplyPending, setDraftApplyPending] = useState(false);
   const [lifetimeEditMessage, setLifetimeEditMessage] = useState<string | null>(null);
   const [isMagicEditVisible, setIsMagicEditVisible] = useState(() => window.matchMedia("(min-width: 640px)").matches);
@@ -335,22 +350,8 @@ export function App() {
   const sourceDurationBasisBlockMessageRef = useRef<string | null>(null);
   const sourceTimingResolutionDialog = useRef<HTMLDialogElement | null>(null);
   const sourceTimingResolutionTarget = useRef<string | null>(null);
-  const activeProjectIdRef = useRef(activeProjectId);
-  const activeSourceIdentityRef = useRef<(RenderSourceIdentity & Readonly<{ sceneId: string }>) | null>(null);
-  const sourceReimportRevision = useRef(0);
   const workspaceBounds = useRef<HTMLElement | null>(null);
   const currentDraftProgram = useRef<ProgramRecord | null>(null);
-  activeProjectIdRef.current = activeProjectId;
-  activeSourceIdentityRef.current =
-    activeProjectId && activeScene
-      ? {
-          projectId: activeProjectId,
-          sceneId: activeScene.sceneId,
-          sceneName: activeScene.name,
-          sourceHash: activeScene.sourceHash,
-          sourcePath: activeScene.sourcePath,
-        }
-      : null;
   currentDraftProgram.current = draftProgram;
   const appliedCanonicalPrograms = appliedPrograms.map((record) => record.program);
   const sourceCurrentTime = workingTimeToSourceTime(appliedCanonicalPrograms, currentTime);
@@ -765,59 +766,6 @@ export function App() {
       return next;
     });
   }, []);
-
-  const setSourceMutationPending = useCallback((projectId: string, pending: boolean) => {
-    if (pending && activeProjectIdRef.current !== projectId) return;
-    setSourceMutationPendingProjectId((current) => (pending ? projectId : current === projectId ? null : current));
-  }, []);
-
-  const reconcileRenderedSource = useCallback(
-    async (target: RenderSourceRefreshTarget) => {
-      if (activeProjectIdRef.current !== target.projectId) return;
-      const revision = sourceReimportRevision.current + 1;
-      sourceReimportRevision.current = revision;
-      setSourceReimportTarget(target);
-      const activeSource = activeSourceIdentityRef.current;
-      if (renderSourceRefreshMatches(target, activeSource) && activeSource) {
-        clearSession({
-          projectId: activeSource.projectId,
-          sceneId: activeSource.sceneId,
-          sourceHash: activeSource.sourceHash,
-        });
-        resetPrograms();
-      }
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        const refreshed = await refreshWorkspace();
-        if (revision !== sourceReimportRevision.current || activeProjectIdRef.current !== target.projectId) return;
-        if (refreshed && renderSourceRefreshResolved(target, refreshed)) {
-          setSourceReimportTarget((current) => (current === target ? null : current));
-          return;
-        }
-      }
-      throw new Error("The reimported workspace did not contain the expected Python source revision.");
-    },
-    [clearSession, refreshWorkspace, resetPrograms],
-  );
-
-  const reimportWorkspace = useCallback(async () => {
-    try {
-      if (sourceReimportTarget) await reconcileRenderedSource(sourceReimportTarget);
-      else await refreshWorkspace();
-    } catch {
-      // The workspace hook and render panel retain the actionable error while
-      // the source lifecycle blocker stays active.
-    }
-  }, [reconcileRenderedSource, refreshWorkspace, sourceReimportTarget]);
-
-  useEffect(() => {
-    if (sourceMutationPendingProjectId && sourceMutationPendingProjectId !== activeProjectId) {
-      setSourceMutationPendingProjectId(null);
-    }
-    if (sourceReimportTarget && sourceReimportTarget.projectId !== activeProjectId) {
-      sourceReimportRevision.current += 1;
-      setSourceReimportTarget(null);
-    }
-  }, [activeProjectId, sourceMutationPendingProjectId, sourceReimportTarget]);
 
   useEffect(() => {
     setCurrentTime((time) => clampPlayheadToResolvedSourceDuration(time, activeDuration, sourceDurationBasisBlocked));
