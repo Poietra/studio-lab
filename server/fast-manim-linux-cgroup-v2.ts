@@ -682,10 +682,12 @@ export class LinuxCgroupV2ResourceControllerV1 {
       this.#failClosed(active);
       throw new FastManimSandboxResourceControlError("cleanup");
     }
+    let termination: readonly [Promise<void>, Promise<void>];
     try {
       await this.#within(active.setup, deadline);
+      termination = this.#startTermination(active, reason);
       await this.#within(
-        Promise.allSettled([...active.inspections]).then(() => undefined),
+        Promise.all([...termination, Promise.allSettled([...active.inspections])]).then(() => undefined),
         deadline,
       );
     } catch {
@@ -693,7 +695,7 @@ export class LinuxCgroupV2ResourceControllerV1 {
       this.#failClosed(active);
       throw new FastManimSandboxResourceControlError("cleanup");
     }
-    const finalReason = await this.#cleanup(active, reason, deadline, requestedAt);
+    const finalReason = await this.#completeCleanup(active, reason, deadline, requestedAt);
     if (!finalReason) {
       this.#failClosed(active);
       throw new FastManimSandboxResourceControlError("cleanup");
@@ -710,12 +712,35 @@ export class LinuxCgroupV2ResourceControllerV1 {
     requestedAt: number | null,
   ): Promise<FastManimSandboxResourceTerminationReasonV1 | null> {
     try {
-      if (active.created) {
-        // cgroup.kill is the first termination operation. It reaches forked,
-        // setsid, daemonized, and inherited-pipe descendants recursively.
-        await this.#within(this.#store.write(active.lease.descriptor.cgroupName, "cgroup.kill", "1\n"), deadline);
-      }
-      await this.#within(active.output.close(reason), deadline);
+      await this.#within(
+        Promise.all(this.#startTermination(active, reason)).then(() => undefined),
+        deadline,
+      );
+      return await this.#completeCleanup(active, reason, deadline, requestedAt);
+    } catch {
+      return null;
+    }
+  }
+
+  #startTermination(active: ActiveLinuxJob, reason: FastManimSandboxResourceTerminationReasonV1) {
+    // Invoke cgroup.kill first. Both operations are then awaited together so a
+    // stuck counter read cannot keep descendants or producer pipes alive.
+    const kill = active.created
+      ? this.#store.write(active.lease.descriptor.cgroupName, "cgroup.kill", "1\n")
+      : Promise.resolve();
+    const close = active.output.close(reason);
+    kill.catch(() => undefined);
+    close.catch(() => undefined);
+    return [kill, close] as const;
+  }
+
+  async #completeCleanup(
+    active: ActiveLinuxJob,
+    reason: FastManimSandboxResourceTerminationReasonV1,
+    deadline: number,
+    requestedAt: number | null,
+  ): Promise<FastManimSandboxResourceTerminationReasonV1 | null> {
+    try {
       let finalReason = reason;
       if (active.created) {
         await this.#waitUntilEmpty(active.lease.descriptor.cgroupName, deadline);

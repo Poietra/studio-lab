@@ -419,6 +419,32 @@ describe("Linux cgroup v2 sandbox resource controller", () => {
     expect(resources.snapshot()).toMatchObject({ activeJobs: 0, state: "ready" });
   });
 
+  it("kills descendants and closes output before a stuck inspection join can time out", async () => {
+    const store = new FakeCgroupV2Store();
+    const resources = controller(store, {
+      cleanupTimeoutMs: 5,
+      controlOperationTimeoutMs: 1_000,
+      sleep: async () => new Promise<void>(() => undefined),
+    });
+    await resources.initialize();
+    const output = outputLifecycle();
+    const job = await resources.admitForLocalConformance(DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1, output.output);
+    await delay(0);
+    const gate = store.gateNextRead("cpu.stat");
+    const inspection = job.inspect();
+    await gate.started;
+    await expect(job.finish("aborted")).rejects.toThrowError(FastManimSandboxResourceControlError);
+    expect(store.writes).toContainEqual([job.descriptor.cgroupName, "cgroup.kill", "1\n"]);
+    expect(output.isClosed()).toBe(true);
+    expect(resources.snapshot()).toMatchObject({
+      activeJobs: 1,
+      state: "quarantined",
+      terminated: [{ count: 1, reason: "cleanup-failed" }],
+    });
+    gate.release();
+    await expect(inspection).resolves.toMatchObject({ reason: null });
+  });
+
   it("cancels and joins an in-flight watchdog inspection during shutdown", async () => {
     const store = new FakeCgroupV2Store();
     let releasePoll!: () => void;
