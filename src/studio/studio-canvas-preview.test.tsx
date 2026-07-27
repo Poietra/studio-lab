@@ -145,7 +145,9 @@ describe("StudioCanvas retained preview layer", () => {
             },
             phase: "presented",
           },
-          new Map([["scene:runtime/entity:0", { dimensions: { radius: 8 / 9 }, position: { x: 0.4375 * 640, y: 180 } }]]),
+          new Map([
+            ["scene:runtime/entity:0", { dimensions: { radius: 8 / 9 }, position: { x: 0.4375 * 640, y: 180 } }],
+          ]),
           new Map([
             [
               "circle_1",
@@ -167,11 +169,33 @@ describe("StudioCanvas retained preview layer", () => {
     const fallbackMarkup = renderToStaticMarkup(
       <StudioCanvas
         {...baseProps()}
-        preview={previewView({ detail: null, phase: "fallback", reason: "frame-stale" })}
+        preview={previewView(
+          {
+            detail: "An Edit Program changed the working revision.",
+            phase: "fallback",
+            reason: "snapshot-uncorrelated",
+          },
+          new Map([
+            ["scene:runtime/entity:0", { dimensions: { radius: 8 / 9 }, position: { x: 0.4375 * 640, y: 180 } }],
+          ]),
+          new Map([
+            [
+              "circle_1",
+              {
+                bindingId: `source-binding:${"b".repeat(64)}`,
+                entityId: "scene:runtime/entity:0",
+                sourceName: "circle_1",
+              },
+            ],
+          ]),
+        )}
       />,
     );
-    // On fallback the hit target returns to the semantic projection position.
+    // An Edit Program makes snapshot pixels and their map uncorrelated in the
+    // same render; hit targets return to semantic geometry even if the stale
+    // map and runtime geometry are still retained in React state.
     expect(fallbackMarkup).toContain("left:50%");
+    expect(fallbackMarkup).not.toContain("data-studio-runtime-entity");
   });
 
   it("never guesses a runtime entity from geometry or a duplicated current source name", () => {

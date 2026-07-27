@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { StudioPreviewSnapshotProviderV1, StudioVerifiedPreviewSnapshotV1 } from "./preview-snapshot-provider";
+import {
+  type StudioPreviewSnapshotProviderV1,
+  type StudioVerifiedPreviewSnapshotV1,
+  studioPreviewWorkspaceKeyV1,
+} from "./preview-snapshot-provider";
 import {
   claimStudioPreviewCanvasV1,
   type StudioPreviewSnapshotMetadataStateV1,
@@ -40,6 +44,40 @@ describe("studioPreviewSnapshotMetadataForWorkspaceV1", () => {
       snapshot: null,
       workspaceKey: "workspace-b",
     });
+  });
+
+  it.each([
+    ["workspace/project", { projectId: "project-b" }],
+    ["Scene", { sceneName: "OtherScene" }],
+    ["source path", { sourcePath: "other.py" }],
+    ["source revision", { sourceHash: "b".repeat(64) }],
+  ])("drops a retained snapshot and identity map synchronously on a %s switch", (_axis, change) => {
+    const context = {
+      projectId: "project-a",
+      sceneName: "ExampleScene",
+      sourceDuration: 1,
+      sourceHash: "a".repeat(64),
+      sourcePath: "scene.py",
+      workingRevision: "pristine",
+    };
+    const previousSnapshot = {
+      ...snapshot,
+      sourceRuntimeIdentity: new Map([
+        ["circle", { bindingId: "binding:old", entityId: "runtime:old", sourceName: "circle" }],
+      ]),
+    } as StudioVerifiedPreviewSnapshotV1;
+    const nextContext = { ...context, ...change };
+    const next = studioPreviewSnapshotMetadataForWorkspaceV1(
+      {
+        phase: "ready",
+        provider,
+        snapshot: previousSnapshot,
+        workspaceKey: studioPreviewWorkspaceKeyV1(context),
+      },
+      { provider, workspaceKey: studioPreviewWorkspaceKeyV1(nextContext) },
+    );
+    expect(next.phase).toBe("loading");
+    expect(next.snapshot).toBeNull();
   });
 
   it("retains only the exact provider/workspace lifecycle state while a delayed load settles", () => {

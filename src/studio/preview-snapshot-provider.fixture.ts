@@ -80,7 +80,32 @@ export function createFixturePreviewSnapshotProviderV1(): StudioPreviewSnapshotP
         sceneId: snapshot.scene.sceneId,
         snapshot,
         sourceLabel: "verified fixture",
-        sourceRuntimeIdentity: null,
+        sourceRuntimeIdentity: new Map([
+          [
+            "earlier",
+            {
+              bindingId: `source-binding:${"b".repeat(64)}`,
+              entityId: "earlier",
+              sourceName: "earlier",
+            },
+          ],
+          [
+            "later",
+            {
+              bindingId: `source-binding:${"c".repeat(64)}`,
+              entityId: "later",
+              sourceName: "later",
+            },
+          ],
+          [
+            "stroke",
+            {
+              bindingId: `source-binding:${"d".repeat(64)}`,
+              entityId: "stroke",
+              sourceName: "stroke",
+            },
+          ],
+        ]),
       };
     },
   };
