@@ -31,15 +31,24 @@ export function openAiEditSuggestions(options: PluginOptions = {}): Plugin {
     configResolved(config) {
       root = config.root;
       if (options.logPath !== false) {
-        const fileSink = createRotatingJsonlSink({
-          logPath: options.logPath ?? ".studio-logs/ai-edit-suggestions.jsonl",
-          root,
-        });
-        logger = createStructuredLogger({
-          context: { component: "edit-suggestions-api" },
-          sinks: [createConsoleJsonSink({ includeData: false, prefix: "poietra-ai" }), fileSink],
-        });
-        logger.info("logging.configured", { sink: "rotating-jsonl" });
+        const consoleSink = createConsoleJsonSink({ includeData: false, prefix: "poietra-ai" });
+        try {
+          const fileSink = createRotatingJsonlSink({
+            logPath: options.logPath ?? ".studio-logs/ai-edit-suggestions.jsonl",
+            root,
+          });
+          logger = createStructuredLogger({
+            context: { component: "edit-suggestions-api" },
+            sinks: [consoleSink, fileSink],
+          });
+          logger.info("logging.configured", { sink: "rotating-jsonl" });
+        } catch {
+          logger = createStructuredLogger({
+            context: { component: "edit-suggestions-api" },
+            sinks: [consoleSink],
+          });
+          logger.warn("logging.file_sink_unavailable");
+        }
       }
       generator = apiKey
         ? createOpenAiEditSuggestionGenerator({

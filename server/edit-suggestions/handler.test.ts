@@ -1,5 +1,5 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { type IncomingMessage, request as createRequest, createServer, type ServerResponse } from "node:http";
+import { request as createRequest, createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -296,6 +296,25 @@ describe("edit suggestion API handler", () => {
       expect(result).toEqual({ error: "The OpenAI credential is not configured." });
       expect(openAiParse).not.toHaveBeenCalled();
     } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
+  it("falls back to bounded console telemetry when the file sink cannot initialize", () => {
+    const root = mkdtempSync(join(tmpdir(), "poietra-ai-log-boundary-"));
+    const sentinel = join(root, "SECRET_LOG_PARENT");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      writeFileSync(sentinel, "not a directory", "utf8");
+      const plugin = openAiEditSuggestions({ logPath: "SECRET_LOG_PARENT/api.jsonl" });
+      const configResolved = plugin.configResolved as (config: ResolvedConfig) => void;
+
+      expect(() => configResolved({ root } as ResolvedConfig)).not.toThrow();
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain("logging.file_sink_unavailable");
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(sentinel);
+    } finally {
+      warn.mockRestore();
       rmSync(root, { force: true, recursive: true });
     }
   });
