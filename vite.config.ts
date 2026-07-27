@@ -1,15 +1,24 @@
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
-import { defineConfig, loadEnv } from "vite";
+import { defineConfig } from "vite";
 import {
   manimRenderPipeline,
   parseFastManimSnapshotProducerCommand,
   parseManimProjects,
 } from "./server/manim-render-pipeline";
-import { openAiEditSuggestions } from "./server/openai-edit-suggestions";
+import { openAiEditSuggestions, resolveAiEditSuggestionLogPath } from "./server/openai-edit-suggestions";
+import { createStudioViteFsDeny, loadStudioNonSecretEnvironment } from "./server/vite-privacy-boundary";
 
-export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, process.cwd(), "");
+export function createStudioViteConfig(
+  mode: string,
+  root = process.cwd(),
+  processEnvironment: Readonly<NodeJS.ProcessEnv> = process.env,
+) {
+  const env = loadStudioNonSecretEnvironment(mode, root, processEnvironment);
+  const logPath = resolveAiEditSuggestionLogPath(
+    mode === "test" || env.POIETRA_AI_DEBUG_LOG === "off" ? false : env.POIETRA_AI_DEBUG_LOG,
+    root,
+  );
   return {
     base: "./",
     build: {
@@ -44,8 +53,8 @@ export default defineConfig(({ mode }) => {
       react(),
       tailwindcss(),
       openAiEditSuggestions({
-        apiKey: env.OPENAI_API_KEY,
-        logPath: mode === "test" || env.POIETRA_AI_DEBUG_LOG === "off" ? false : env.POIETRA_AI_DEBUG_LOG || undefined,
+        apiKey: processEnvironment.OPENAI_API_KEY,
+        logPath,
         model: env.POIETRA_OPENAI_MODEL,
       }),
       manimRenderPipeline({
@@ -62,6 +71,9 @@ export default defineConfig(({ mode }) => {
     ],
     clearScreen: false,
     server: {
+      fs: {
+        deny: createStudioViteFsDeny(logPath),
+      },
       host: "127.0.0.1",
       port: 5173,
       strictPort: true,
@@ -70,4 +82,8 @@ export default defineConfig(({ mode }) => {
       },
     },
   };
+}
+
+export default defineConfig(({ mode }) => {
+  return createStudioViteConfig(mode);
 });

@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
+
 import type { Plugin } from "vite";
 
 import { createEditSuggestionHandler } from "./edit-suggestions/handler";
@@ -18,6 +22,15 @@ type PluginOptions = Readonly<{
   model?: string;
 }>;
 
+export function resolveAiEditSuggestionLogPath(logPath: false | string | undefined, root: string): false | string {
+  if (logPath === false || logPath?.trim() === "off") return false;
+  const configured = logPath?.trim();
+  if (configured?.includes("\0")) throw new TypeError("The AI debug log path is invalid.");
+  if (configured) return isAbsolute(configured) ? resolve(configured) : resolve(root, configured);
+  const workspaceId = createHash("sha256").update(resolve(root), "utf8").digest("hex").slice(0, 16);
+  return join(tmpdir(), "poietra-studio-logs", workspaceId, "ai-edit-suggestions.jsonl");
+}
+
 export function openAiEditSuggestions(options: PluginOptions = {}): Plugin {
   const apiKey = options.apiKey?.trim() || process.env.OPENAI_API_KEY?.trim() || "";
   let generator: EditSuggestionGenerator | null = null;
@@ -30,11 +43,12 @@ export function openAiEditSuggestions(options: PluginOptions = {}): Plugin {
     name: "poietra-openai-edit-suggestions",
     configResolved(config) {
       root = config.root;
-      if (options.logPath !== false) {
+      const logPath = resolveAiEditSuggestionLogPath(options.logPath, root);
+      if (logPath !== false) {
         const consoleSink = createConsoleJsonSink({ includeData: false, prefix: "poietra-ai" });
         try {
           const fileSink = createRotatingJsonlSink({
-            logPath: options.logPath ?? ".studio-logs/ai-edit-suggestions.jsonl",
+            logPath,
             root,
           });
           logger = createStructuredLogger({

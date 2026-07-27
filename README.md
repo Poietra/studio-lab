@@ -106,12 +106,16 @@ The suite boundaries and the rule for adding regression coverage are documented 
 
 Magic Edit requires an explicit model endpoint; it never falls back to keyword or
 fixture behavior at runtime. Set `VITE_POIETRA_AI_ENDPOINT` to
-`/api/ai/edit-suggestions`, inject `OPENAI_API_KEY` into the server process environment,
-and optionally select the server-side model with `POIETRA_OPENAI_MODEL`. This remains
-an explicit local-development opt-in: without both the endpoint and injected credential,
-Magic Edit does not call the provider. Studio no longer reads the repository-root
-`.openai-key` file. Existing users should migrate that credential to their environment or
-secret provider and then delete the plaintext file. The Vite development server uses the
+`/api/ai/edit-suggestions`, inject `OPENAI_API_KEY` into the actual server process
+environment, and optionally select the server-side model with
+`POIETRA_OPENAI_MODEL`. The credential is never loaded from Vite dotenv files or a
+`VITE_` variable. Server-only `POIETRA_` settings are also read from an explicit
+non-secret process-environment allowlist; ordinary `VITE_` browser settings retain
+Vite's dotenv behavior. This remains an explicit local-development opt-in: without
+both the endpoint and injected credential, Magic Edit does not call the provider.
+Studio no longer reads the repository-root `.openai-key` file. Existing users should
+migrate that credential to their process environment or secret provider and then
+delete the plaintext file. The Vite development server uses the
 Responses API and returns the same closed
 `CreateMotion | CreateTransform | CreateExplanation | CreateCameraFocus | CreateEquation | CreateExplainedEquation | CreateTextTransform | CreateSceneTransition | ScaleObjects | DeleteObjects | EditProgram`
 suggestion result documented in
@@ -123,15 +127,17 @@ pending question. A choice click, a relative answer such as `前者`, or a short
 answer such as `はい` therefore reaches the model with the decisions that preceded
 it instead of becoming an isolated prompt.
 
-The development API writes privacy-safe lifecycle events to stdout and to the ignored
-`.studio-logs/ai-edit-suggestions.jsonl` file. Each request receives an
+By default, the development API writes privacy-safe lifecycle events to stdout and
+to a per-workspace file below the operating system's temporary directory, outside
+the Vite project root. Each request receives an
 `x-poietra-request-id`; telemetry is limited to bounded outcomes and HTTP status,
 attempt/model labels, validation code counts, and numeric token counters when available.
 Prompts, source/object context, clarification content, model instructions and output,
 provider response IDs, response bodies, error messages, tracebacks, and absolute log paths
-are not recorded. The file rotates to `.previous` at 2 MiB and is created with user-only
-permissions. Set `POIETRA_AI_DEBUG_LOG` to another local path or to `off` to disable file
-logging.
+are not recorded. The file rotates to `.previous` at 2 MiB and is created with
+user-only permissions. Set `POIETRA_AI_DEBUG_LOG` in the process environment to use
+another local path. Setting it to `off` disables both the file sink and the bounded
+stdout telemetry.
 
 Logs created by an older Studio version may still contain editor or provider payloads.
 Treat both the active JSONL file and `.previous` as sensitive historical data: do not

@@ -18,6 +18,13 @@ type CandidateAttempt = Readonly<{
   signal?: AbortSignal;
 }>;
 
+const NOOP_OPENAI_LOGGER = Object.freeze({
+  debug(_message: string, ..._rest: unknown[]) {},
+  error(_message: string, ..._rest: unknown[]) {},
+  info(_message: string, ..._rest: unknown[]) {},
+  warn(_message: string, ..._rest: unknown[]) {},
+});
+
 function usageTelemetry(
   usage:
     | Readonly<{
@@ -56,7 +63,13 @@ function requireCandidate(candidate: ModelSuggestion | null, repaired = false) {
 }
 
 export function createOpenAiEditSuggestionGenerator(options: OpenAiGeneratorOptions): EditSuggestionGenerator {
-  const client = new OpenAI({ apiKey: options.apiKey, maxRetries: 0, timeout: 30_000 });
+  const client = new OpenAI({
+    apiKey: options.apiKey,
+    logLevel: "off",
+    logger: NOOP_OPENAI_LOGGER,
+    maxRetries: 0,
+    timeout: 30_000,
+  });
 
   const requestCandidate = async (
     request: EditSuggestionRequest,
