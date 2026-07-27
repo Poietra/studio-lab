@@ -1,6 +1,6 @@
 # Fast-manim sandbox backend boundary
 
-Status: contract implemented; production backend unavailable
+Status: contract implemented; local rootful OCI conformance slice available; production backend unavailable
 
 ## Safety outcome
 
@@ -108,6 +108,61 @@ the immutable request or copied to structured logs, but they do enter the local
 child environment and therefore must not be treated as a credential transport.
 `HOME`, `TEMP`, `TMP`, and `TMPDIR` are rejected as reserved, and
 `PYTHONHASHSEED` remains pinned; the private per-job directory always wins.
+
+## Rootful gated OCI conformance slice
+
+`FastManimLocalGatedOciBackendV1` is a separate, opt-in development evidence
+driver. It is not connected to the Studio server composition, reports
+`development-only` attestation with a `local-process` backend kind, and its
+factory returns an unavailable backend for every production deployment.
+
+Build the immutable local image from the pinned fast-manim commit already
+present in a local checkout:
+
+```sh
+POIETRA_FAST_MANIM_SOURCE_REPO=/path/to/fast-manim \
+pnpm sandbox:oci:gated:build
+```
+
+The build is network-independent (`--pull=false`), verifies the source commit,
+tree, archive SHA-256, lockfile and project metadata, pins the base image by
+digest, and prints the resulting immutable image ID. The real conformance lane
+is explicit:
+
+```sh
+POIETRA_FAST_MANIM_GATED_OCI_IMAGE=sha256:<local-image-id> \
+pnpm exec vitest run server/fast-manim-local-gated-oci-backend.test.ts
+```
+
+The local driver creates one non-restarting container per request with no host
+bind mounts, no network, a read-only root filesystem, all capabilities dropped,
+`no-new-privileges`, private PID/cgroup namespaces, a private 16 MiB tmpfs,
+fixed CPU/memory/pid/fd/core limits, and Docker logging disabled. A trusted PID
+1 entrypoint checks the effective runtime confinement before emitting READY.
+Studio then inspects the actual container configuration, PID, cgroup v2 files,
+and `/proc/<pid>/limits` before releasing a length- and SHA-256-bound request.
+The request becomes sealed memfd stdin for the fixed producer. Result and
+diagnostic streams are independently capped; accepted result bytes must be one
+LF-terminated, canonical UTF-8, compact and recursively key-sorted JSON object.
+Every path attempts force-removal and verifies absence through a successful
+Docker listing. Once the actual PID/cgroup pair has been observed, cleanup also
+verifies that PID no longer belongs to the original cgroup. Any inconclusive
+Docker or `/proc` check is a cleanup control failure: the backend is permanently
+unavailable, refuses new jobs, and fails close instead of claiming cleanup.
+If container creation was dispatched but no immutable ID was observed, recovery
+by name remains best-effort and the backend is always quarantined because a late
+daemon-side create completion cannot be ruled out.
+
+This slice deliberately does **not** claim #82 complete. It uses the host's
+rootful Docker daemon and an operator-supplied local image ID; it has no
+separate broker identity or Unix-socket protocol, rootless host configuration,
+custom seccomp profile, signed image allowlist/attestation, production adapter,
+asset transport, or cross-tenant adversarial evidence. The static fast-manim
+snapshot profile also refuses reflective host APIs before Scene execution; the
+OCI boundary remains defense in depth, not permission to broaden that source
+profile. #83 must prove resource ownership and descendant lifecycle against
+the eventual broker/runtime instead of treating this development driver as
+production isolation.
 
 ## Production enablement dependencies
 

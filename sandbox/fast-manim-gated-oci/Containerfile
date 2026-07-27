@@ -1,0 +1,51 @@
+FROM manimcommunity/manim@sha256:f18f53f2e4eaf2ea41713437d34363fb3f5cc6008b03fd798676ac0359396c3b
+
+ARG FAST_MANIM_ARCHIVE_SHA256
+ARG FAST_MANIM_COMMIT
+ARG FAST_MANIM_TREE
+
+USER root
+COPY fast-manim.tar.gz /opt/poietra-build/fast-manim.tar.gz
+COPY gated-entrypoint.py /opt/poietra/gated-entrypoint.py
+
+RUN test "$FAST_MANIM_ARCHIVE_SHA256" = "46f66b6698650988c18327732d1d3c30cccd53b38de91e1059c61187d92c2b61" \
+    && test "$FAST_MANIM_COMMIT" = "ac143dc46ebe314095ae7864a32efa289a0afe96" \
+    && test "$FAST_MANIM_TREE" = "b86e2ec81f257cae20669e3c5c33080facfbd610" \
+    && printf '%s  %s\n' "$FAST_MANIM_ARCHIVE_SHA256" /opt/poietra-build/fast-manim.tar.gz \
+      | sha256sum --check --strict - \
+    && mkdir --parents /opt/fast-manim /run/poietra \
+    && tar --extract --gzip --file=/opt/poietra-build/fast-manim.tar.gz \
+      --directory=/opt/fast-manim --strip-components=1 --no-same-owner \
+    && test "$(sha256sum /opt/fast-manim/pyproject.toml | cut -d ' ' -f 1)" \
+      = "f791e3ab6ef3e12457e3f36f5d7d7d4c249ae97678d23607781556556a5d6012" \
+    && test "$(sha256sum /opt/fast-manim/uv.lock | cut -d ' ' -f 1)" \
+      = "3244a21383800a8a1049438f24c54121c483b1a4ab24ae8523d8c852b7431753" \
+    && rm --force /opt/poietra-build/fast-manim.tar.gz \
+    && chmod 0555 /opt/poietra /opt/poietra/gated-entrypoint.py /run/poietra \
+    && chmod --recursive go-w /opt/fast-manim \
+    && PYTHONHASHSEED=0 PYTHONPATH=/opt/fast-manim \
+      /opt/venv/bin/python -c 'from manim.renderer.scene_snapshot import export_scene_snapshot; assert callable(export_scene_snapshot)'
+
+LABEL io.poietra.fast-manim.commit="ac143dc46ebe314095ae7864a32efa289a0afe96" \
+      io.poietra.fast-manim.tree="b86e2ec81f257cae20669e3c5c33080facfbd610" \
+      io.poietra.fast-manim.archive-sha256="46f66b6698650988c18327732d1d3c30cccd53b38de91e1059c61187d92c2b61" \
+      io.poietra.sandbox-slice="gated-rootful-development-v1"
+
+ENV HOME=/run/poietra/home \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    PATH=/opt/venv/bin:/usr/local/bin:/usr/bin:/bin \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONHASHSEED=0 \
+    PYTHONNOUSERSITE=1 \
+    PYTHONPATH=/opt/fast-manim \
+    TMPDIR=/run/poietra/tmp \
+    TZ=UTC \
+    XDG_CACHE_HOME=/run/poietra/cache \
+    XDG_CONFIG_HOME=/run/poietra/config \
+    XDG_DATA_HOME=/run/poietra/data
+
+USER 65532:65532
+WORKDIR /run/poietra
+ENTRYPOINT ["/opt/venv/bin/python", "/opt/poietra/gated-entrypoint.py"]
+CMD ["/opt/venv/bin/python", "-m", "manim.renderer.scene_snapshot"]
