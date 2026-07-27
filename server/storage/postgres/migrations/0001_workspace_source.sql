@@ -45,7 +45,12 @@ CREATE TABLE workspace_source_heads (
   tenant_id text NOT NULL,
   project_id text NOT NULL,
   source_path text NOT NULL CHECK (
-    source_path ~ '^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*[.]py$'
+    right(source_path, 3) = '.py'
+    AND source_path !~ '[[:cntrl:]]'
+    AND strpos(source_path, chr(92)) = 0
+    AND source_path !~ '^[A-Za-z]:'
+    AND source_path NOT LIKE '/%'
+    AND source_path NOT LIKE '%//%'
     AND source_path !~ '(^|/)[.]{1,2}(/|$)'
     AND char_length(source_path) <= 500
   ),

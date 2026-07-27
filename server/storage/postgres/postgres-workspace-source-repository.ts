@@ -21,7 +21,7 @@ import {
 } from "../workspace-source-repository";
 
 export const WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM =
-  "37de2a61d4de468f5d090d5c3adcb17f7366cba70ea1ebb2fb9c680ee4e6aa94";
+  "9acc9ceff72b9e1e822b210a08bba0fe27d6d8571d33060252a24634ff36bc30";
 
 type ProjectRow = QueryResultRow & {
   created_at: Date;
@@ -76,6 +76,11 @@ function boundedPositiveInteger(value: number, name: string, maximum: number) {
     throw new RangeError(`${name} must be an integer between 1 and ${maximum}.`);
   }
   return value;
+}
+
+function configuredPoolTimeout(value: false | number | undefined, fallback: number, name: string) {
+  if (value === undefined || value === false || value === 0) return fallback;
+  return Math.min(boundedPositiveInteger(value, name, 30_000), fallback);
 }
 
 function tenantId(value: string) {
@@ -177,18 +182,84 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     if ((options.pool === undefined) === (options.poolConfig === undefined)) {
       throw new TypeError("Provide exactly one PostgreSQL pool or pool configuration.");
     }
-    this.#pool = options.pool ?? new Pool(options.poolConfig);
-    this.#ownsPool = options.pool === undefined;
     this.#statementTimeoutMs = boundedPositiveInteger(
       options.statementTimeoutMs ?? 5_000,
       "statementTimeoutMs",
       30_000,
     );
+    this.#pool =
+      options.pool ??
+      new Pool({
+        ...options.poolConfig,
+        connectionTimeoutMillis: configuredPoolTimeout(
+          options.poolConfig?.connectionTimeoutMillis,
+          this.#statementTimeoutMs,
+          "connectionTimeoutMillis",
+        ),
+        query_timeout: configuredPoolTimeout(
+          options.poolConfig?.query_timeout,
+          this.#statementTimeoutMs,
+          "query_timeout",
+        ),
+        statement_timeout: configuredPoolTimeout(
+          options.poolConfig?.statement_timeout,
+          this.#statementTimeoutMs,
+          "statement_timeout",
+        ),
+      });
+    this.#ownsPool = options.pool === undefined;
+  }
+
+  async #connect(signal?: AbortSignal) {
+    throwIfAborted(signal);
+    const request = this.#pool.connect();
+    let settled = false;
+    let timeout: NodeJS.Timeout | undefined;
+    let abortListener: (() => void) | undefined;
+    const interrupted = new Promise<never>((_, reject) => {
+      timeout = setTimeout(
+        () => reject(new Error("PostgreSQL connection acquisition timed out.")),
+        this.#statementTimeoutMs,
+      );
+      timeout.unref();
+      if (signal) {
+        abortListener = () => reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+        signal.addEventListener("abort", abortListener, { once: true });
+      }
+    });
+    try {
+      const client = await Promise.race([request, interrupted]);
+      settled = true;
+      return client;
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      if (abortListener) signal?.removeEventListener("abort", abortListener);
+      if (!settled)
+        void request.then(
+          (client) => client.release(true),
+          () => undefined,
+        );
+    }
+  }
+
+  async #query<Row extends QueryResultRow = QueryResultRow>(
+    text: string,
+    values: readonly unknown[] = [],
+    signal?: AbortSignal,
+  ) {
+    const client = await this.#connect(signal);
+    try {
+      const result = await client.query<Row>(text, [...values]);
+      throwIfAborted(signal);
+      return result;
+    } finally {
+      client.release();
+    }
   }
 
   async #transaction<T>(operation: (client: PoolClient) => Promise<T>, signal?: AbortSignal) {
     throwIfAborted(signal);
-    const client = await this.#pool.connect();
+    const client = await this.#connect(signal);
     let began = false;
     try {
       throwIfAborted(signal);
@@ -247,8 +318,10 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
   async ready(signal?: AbortSignal) {
     try {
       throwIfAborted(signal);
-      const result = await this.#pool.query<{ checksum: string }>(
+      const result = await this.#query<{ checksum: string }>(
         "SELECT checksum FROM poietra_schema_migrations WHERE version = 1",
+        [],
+        signal,
       );
       throwIfAborted(signal);
       return result.rowCount === 1 && result.rows[0]?.checksum === WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM;
@@ -261,7 +334,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
   async ensureTenant(tenantValue: string, signal?: AbortSignal) {
     const tenant = tenantId(tenantValue);
     throwIfAborted(signal);
-    await this.#pool.query("INSERT INTO workspace_tenants (tenant_id) VALUES ($1) ON CONFLICT DO NOTHING", [tenant]);
+    await this.#query("INSERT INTO workspace_tenants (tenant_id) VALUES ($1) ON CONFLICT DO NOTHING", [tenant], signal);
     throwIfAborted(signal);
   }
 
@@ -269,10 +342,11 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     const tenant = tenantId(tenantValue);
     const blob = blobReceipt(tenant, blobValue);
     throwIfAborted(signal);
-    const result = await this.#pool.query(
+    const result = await this.#query(
       `SELECT 1 FROM source_blob_objects
         WHERE tenant_id = $1 AND digest = $2 AND object_key = $3 AND version_id = $4`,
       [tenant, blob.digest, blob.objectKey, blob.versionId],
+      signal,
     );
     throwIfAborted(signal);
     return result.rowCount === 1;
@@ -314,13 +388,14 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
   async listProjects(tenantValue: string, signal?: AbortSignal): Promise<ManimProjectListView> {
     const tenant = tenantId(tenantValue);
     throwIfAborted(signal);
-    const result = await this.#pool.query<ProjectRow>(
+    const result = await this.#query<ProjectRow>(
       `SELECT tenant_id, project_id, display_name, created_at, updated_at
          FROM workspace_projects
         WHERE tenant_id = $1 AND deleted_at IS NULL
         ORDER BY created_at, project_id
         LIMIT $2`,
       [tenant, MAX_MANAGED_PROJECTS_PER_TENANT_V1],
+      signal,
     );
     throwIfAborted(signal);
     const projects = result.rows.map((row) => ({
@@ -376,11 +451,12 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     const tenant = tenantId(tenantValue);
     const id = projectId(projectValue);
     throwIfAborted(signal);
-    const result = await this.#pool.query<ProjectRow>(
+    const result = await this.#query<ProjectRow>(
       `SELECT tenant_id, project_id, display_name, created_at, updated_at
          FROM workspace_projects
         WHERE tenant_id = $1 AND project_id = $2 AND deleted_at IS NULL`,
       [tenant, id],
+      signal,
     );
     throwIfAborted(signal);
     if (result.rowCount !== 1) throw new HttpError("Configured Manim project not found.", 404);
@@ -392,12 +468,13 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     const id = projectId(projectValue);
     const name = projectName(nameValue);
     throwIfAborted(signal);
-    const result = await this.#pool.query<ProjectRow>(
+    const result = await this.#query<ProjectRow>(
       `UPDATE workspace_projects
           SET display_name = $3, updated_at = clock_timestamp()
         WHERE tenant_id = $1 AND project_id = $2 AND deleted_at IS NULL
         RETURNING tenant_id, project_id, display_name, created_at, updated_at`,
       [tenant, id, name],
+      signal,
     );
     throwIfAborted(signal);
     if (result.rowCount !== 1) throw new HttpError("Configured Manim project not found.", 404);
@@ -438,7 +515,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     const id = projectId(projectValue);
     const path = sourcePath(pathValue);
     throwIfAborted(signal);
-    const result = await this.#pool.query<SourceHeadRow>(
+    const result = await this.#query<SourceHeadRow>(
       `SELECT ${SOURCE_HEAD_COLUMNS}
          FROM workspace_source_heads h
          JOIN workspace_projects p
@@ -446,6 +523,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
          JOIN source_blob_objects b ON b.tenant_id = h.tenant_id AND b.digest = h.digest
         WHERE h.tenant_id = $1 AND h.project_id = $2 AND h.source_path = $3`,
       [tenant, id, path],
+      signal,
     );
     throwIfAborted(signal);
     if (result.rowCount !== 1) throw new HttpError("Configured Manim source not found.", 404);
@@ -456,7 +534,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     const tenant = tenantId(tenantValue);
     const id = projectId(projectValue);
     throwIfAborted(signal);
-    const result = await this.#pool.query<SourceHeadRow>(
+    const result = await this.#query<SourceHeadRow>(
       `SELECT ${SOURCE_HEAD_COLUMNS}
          FROM workspace_source_heads h
          JOIN workspace_projects p
@@ -466,6 +544,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
         ORDER BY h.source_path
         LIMIT 512`,
       [tenant, id],
+      signal,
     );
     throwIfAborted(signal);
     if (result.rows.length === 0) await this.readProject(tenant, id, signal);
@@ -563,12 +642,13 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
   async pendingBlobDeletions(maximumValue: number, signal?: AbortSignal) {
     const maximum = boundedPositiveInteger(maximumValue, "maximum", 256);
     throwIfAborted(signal);
-    const result = await this.#pool.query<DeletionRow>(
+    const result = await this.#query<DeletionRow>(
       `SELECT deletion_id, tenant_id, digest, object_key, version_id, etag, byte_size
          FROM source_blob_deletions
         ORDER BY queued_at, deletion_id
         LIMIT $1`,
       [maximum],
+      signal,
     );
     throwIfAborted(signal);
     return result.rows.map(deletionFromRow);
@@ -578,10 +658,11 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     const tenant = tenantId(tenantValue);
     if (!/^[0-9a-f-]{36}$/.test(deletionId)) throw new TypeError("Blob deletion ID is invalid.");
     throwIfAborted(signal);
-    await this.#pool.query("DELETE FROM source_blob_deletions WHERE tenant_id = $1 AND deletion_id = $2", [
-      tenant,
-      deletionId,
-    ]);
+    await this.#query(
+      "DELETE FROM source_blob_deletions WHERE tenant_id = $1 AND deletion_id = $2",
+      [tenant, deletionId],
+      signal,
+    );
     throwIfAborted(signal);
   }
 

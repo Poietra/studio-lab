@@ -4,6 +4,7 @@ import { isIP } from "node:net";
 import {
   DeleteObjectCommand,
   GetBucketAclCommand,
+  GetBucketPolicyStatusCommand,
   GetBucketVersioningCommand,
   GetObjectCommand,
   HeadBucketCommand,
@@ -102,6 +103,13 @@ function validateEndpoint(endpoint: string | undefined, deployment: "production"
   }
 }
 
+function isNoBucketPolicy(error: unknown) {
+  return (
+    error instanceof Error &&
+    (error.name === "NoSuchBucketPolicy" || ("Code" in error && error.Code === "NoSuchBucketPolicy"))
+  );
+}
+
 async function boundedBody(body: unknown, signal?: AbortSignal) {
   if (!body || typeof body !== "object" || !(Symbol.asyncIterator in body)) {
     throw new Error("S3 returned an unreadable object body.");
@@ -150,6 +158,9 @@ export class S3ContentBlobStoreV1 implements SourceContentBlobStoreV1 {
     if ((options.client === undefined) === (options.clientConfig === undefined)) {
       throw new TypeError("Provide exactly one S3 client or client configuration.");
     }
+    if (options.deployment === "production" && options.client !== undefined) {
+      throw new TypeError("Production S3 requires an inspectable client configuration, not an injected client.");
+    }
     if (options.clientConfig?.endpoint !== undefined && typeof options.clientConfig.endpoint !== "string") {
       throw new TypeError("The S3 endpoint must be a statically validated URL string.");
     }
@@ -168,17 +179,24 @@ export class S3ContentBlobStoreV1 implements SourceContentBlobStoreV1 {
   async ready(signal?: AbortSignal) {
     try {
       throwIfAborted(signal);
-      const [, versioning, acl] = await Promise.all([
+      const policyStatus = this.#client
+        .send(new GetBucketPolicyStatusCommand({ Bucket: this.#bucket }), { abortSignal: signal })
+        .catch((error: unknown) => {
+          if (isNoBucketPolicy(error)) return null;
+          throw error;
+        });
+      const [, versioning, acl, policy] = await Promise.all([
         this.#client.send(new HeadBucketCommand({ Bucket: this.#bucket }), { abortSignal: signal }),
         this.#client.send(new GetBucketVersioningCommand({ Bucket: this.#bucket }), { abortSignal: signal }),
         this.#client.send(new GetBucketAclCommand({ Bucket: this.#bucket }), { abortSignal: signal }),
+        policyStatus,
       ]);
       throwIfAborted(signal);
       const publicGrant = acl.Grants?.some((grant) => {
         const uri = grant.Grantee?.URI ?? "";
         return uri.endsWith("/AllUsers") || uri.endsWith("/AuthenticatedUsers");
       });
-      return versioning.Status === "Enabled" && publicGrant !== true;
+      return versioning.Status === "Enabled" && publicGrant !== true && policy?.PolicyStatus?.IsPublic !== true;
     } catch {
       throwIfAborted(signal);
       return false;

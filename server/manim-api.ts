@@ -46,9 +46,9 @@ export type ManimApiStorage =
 /**
  * Transport-independent API consumed by the HTTP router.
  *
- * This port deliberately contains no host paths or concrete registry classes.
- * Local Vite/Electron adapters and the durable production runtime implement the
- * same tenant-explicit operations without being combined into one backend.
+ * This port contains no concrete registry classes. Local Vite/Electron
+ * adapters retain their explicitly discriminated host roots, while the
+ * production runtime exposes only a tenant-keyed durable namespace.
  */
 export interface ManimApiOperations {
   readonly tenantId: string;
