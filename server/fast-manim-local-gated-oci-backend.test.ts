@@ -113,6 +113,51 @@ describe("local gated OCI factory", () => {
     expect(() => backend.start(request, jobContext)).toThrow(FastManimSandboxBackendControlError);
     await expect(backend.close()).rejects.toMatchObject({ code: "cleanup" });
   });
+
+  it("permanently taints after create dispatch is aborted before an immutable ID is observed", async () => {
+    const image = `sha256:${"a".repeat(64)}`;
+    const executionController = new AbortController();
+    let createDispatched = false;
+    let recoveryAttempted = false;
+    const backend = new FastManimLocalGatedOciBackendV1({
+      executeJob: (options) =>
+        runFastManimLocalGatedOciV1({
+          ...options,
+          createUncertainTestSeam: {
+            assertTrustedImage: async () => undefined,
+            createContainer: (_arguments, _timeoutMs, signal) => {
+              createDispatched = true;
+              executionController.abort();
+              return new Promise((_resolve, reject) => {
+                const rejectAbort = () =>
+                  reject(new DOMException("The create control process was aborted.", "AbortError"));
+                if (signal?.aborted) rejectAbort();
+                else signal?.addEventListener("abort", rejectAbort, { once: true });
+              });
+            },
+            recoverContainerByName: async (containerName) => {
+              recoveryAttempted = true;
+              expect(containerName).toMatch(/^poietra-gated-[a-f0-9]{32}$/);
+            },
+          },
+        }),
+      image,
+    });
+    const request = requestFor(staticScene, "GatedStaticScene");
+    const jobContext = { ...context(executionController.signal), attestationDigest: "b".repeat(64) };
+
+    await expect(backend.start(request, jobContext).result).rejects.toMatchObject({ code: "cleanup" });
+    expect({ createDispatched, recoveryAttempted }).toEqual({ createDispatched: true, recoveryAttempted: true });
+    await expect(backend.status(context())).resolves.toMatchObject({
+      capabilities: [],
+      health: "unavailable",
+      reason: "health-check-failed",
+    });
+    expect(() => backend.start(request, { ...context(), attestationDigest: "c".repeat(64) })).toThrowError(
+      expect.objectContaining({ code: "cleanup" }),
+    );
+    await expect(backend.close()).rejects.toMatchObject({ code: "cleanup" });
+  });
 });
 
 describe("gated OCI result boundary", () => {

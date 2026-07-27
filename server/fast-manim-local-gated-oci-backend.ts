@@ -743,11 +743,18 @@ async function cleanupContainerByName(containerName: string) {
 }
 
 type LocalConformanceWireV1 = Readonly<{ bytes: Uint8Array; close: boolean }>;
+type FastManimLocalGatedOciCreateUncertainTestSeamV1 = Readonly<{
+  assertTrustedImage: typeof assertTrustedImage;
+  createContainer: typeof docker;
+  recoverContainerByName: typeof cleanupContainerByName;
+}>;
 
 /** Rootful, local-Docker-only driver. `conformanceWire` is deliberately unavailable through the backend class. */
 export async function runFastManimLocalGatedOciV1(
   options: Readonly<{
     conformanceWire?: LocalConformanceWireV1;
+    /** Deterministic unresolved-create seam for unit tests; the configured backend never supplies it. */
+    createUncertainTestSeam?: FastManimLocalGatedOciCreateUncertainTestSeamV1;
     deadlineEpochMs: number;
     image: string;
     requestBytes: Uint8Array;
@@ -768,6 +775,9 @@ export async function runFastManimLocalGatedOciV1(
   }
 
   const containerName = `poietra-gated-${randomBytes(16).toString("hex")}`;
+  const trustedImageCheck = options.createUncertainTestSeam?.assertTrustedImage ?? assertTrustedImage;
+  const createContainer = options.createUncertainTestSeam?.createContainer ?? docker;
+  const recoverContainerByName = options.createUncertainTestSeam?.recoverContainerByName ?? cleanupContainerByName;
   const operationController = new AbortController();
   let cleanupEvidence: FastManimLocalGatedOciCleanupEvidenceV1 | undefined;
   let containerCreationAttempted = false;
@@ -801,10 +811,10 @@ export async function runFastManimLocalGatedOciV1(
   timer.unref();
 
   try {
-    await assertTrustedImage(options.image, controlTimeoutMs(), operationController.signal);
+    await trustedImageCheck(options.image, controlTimeoutMs(), operationController.signal);
     throwIfHalted();
     containerCreationAttempted = true;
-    const created = await docker(
+    const created = await createContainer(
       [
         "container",
         "create",
@@ -932,10 +942,13 @@ export async function runFastManimLocalGatedOciV1(
       }
     } else if (containerCreationAttempted) {
       try {
-        await cleanupContainerByName(containerName);
+        await recoverContainerByName(containerName);
       } catch {
         throw new FastManimSandboxBackendControlError("cleanup");
       }
+      // The daemon may finish the create RPC after an interrupted client-side
+      // name lookup. Without an immutable ID, absence cannot be proven.
+      throw new FastManimSandboxBackendControlError("cleanup");
     }
     if (fastManimSandboxBackendControlErrorCode(error) === "cleanup") throw error;
     if (options.signal.aborted) throw abortError();

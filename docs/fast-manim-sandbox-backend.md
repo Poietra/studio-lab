@@ -149,6 +149,9 @@ Docker listing. Once the actual PID/cgroup pair has been observed, cleanup also
 verifies that PID no longer belongs to the original cgroup. Any inconclusive
 Docker or `/proc` check is a cleanup control failure: the backend is permanently
 unavailable, refuses new jobs, and fails close instead of claiming cleanup.
+If container creation was dispatched but no immutable ID was observed, recovery
+by name remains best-effort and the backend is always quarantined because a late
+daemon-side create completion cannot be ruled out.
 
 This slice deliberately does **not** claim #82 complete. It uses the host's
 rootful Docker daemon and an operator-supplied local image ID; it has no
