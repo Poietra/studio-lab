@@ -58,6 +58,7 @@ function baseProps(): StudioCanvasProps {
 function previewView(
   state: StudioPreviewRendererViewV1["state"],
   interactionGeometry: StudioPreviewRendererViewV1["interactionGeometry"] = null,
+  sourceRuntimeIdentity: StudioPreviewRendererViewV1["sourceRuntimeIdentity"] = null,
 ): StudioPreviewRendererViewV1 {
   return {
     attachCanvas: vi.fn(),
@@ -65,6 +66,7 @@ function previewView(
     interactionGeometry,
     sourceLabel: "verified fixture",
     sourceMetadataPhase: "ready",
+    sourceRuntimeIdentity,
     state,
     verifiedSourceDuration: 2,
   };
@@ -143,13 +145,25 @@ describe("StudioCanvas retained preview layer", () => {
             },
             phase: "presented",
           },
-          new Map([["circle_1", { dimensions: { radius: 8 / 9 }, position: { x: 0.4375 * 640, y: 180 } }]]),
+          new Map([["scene:runtime/entity:0", { dimensions: { radius: 8 / 9 }, position: { x: 0.4375 * 640, y: 180 } }]]),
+          new Map([
+            [
+              "circle_1",
+              {
+                bindingId: `source-binding:${"b".repeat(64)}`,
+                entityId: "scene:runtime/entity:0",
+                sourceName: "circle_1",
+              },
+            ],
+          ]),
         )}
       />,
     );
     // 0.4375 of the 640-wide Studio viewport = 43.75% — the IR position, not
     // the semantic projection's 50% center.
     expect(markup).toContain("left:43.75%");
+    expect(markup).toContain('data-studio-runtime-entity="scene:runtime/entity:0"');
+    expect(markup).toContain(`data-studio-runtime-binding="source-binding:${"b".repeat(64)}"`);
     const fallbackMarkup = renderToStaticMarkup(
       <StudioCanvas
         {...baseProps()}
@@ -158,5 +172,46 @@ describe("StudioCanvas retained preview layer", () => {
     );
     // On fallback the hit target returns to the semantic projection position.
     expect(fallbackMarkup).toContain("left:50%");
+  });
+
+  it("never guesses a runtime entity from geometry or a duplicated current source name", () => {
+    const state = {
+      frame: {
+        packetId: "canvas:2",
+        revision: "a".repeat(64),
+        sampleTime: 1,
+        viewport: { heightPx: 90, widthPx: 160 },
+      },
+      phase: "presented" as const,
+    };
+    const runtimeGeometry = new Map([
+      ["scene:runtime/entity:0", { dimensions: { radius: 1 }, position: { x: 100, y: 100 } }],
+    ]);
+    const verifiedIdentity = new Map([
+      [
+        "circle_1",
+        {
+          bindingId: `source-binding:${"b".repeat(64)}`,
+          entityId: "scene:runtime/entity:0",
+          sourceName: "circle_1",
+        },
+      ],
+    ]);
+    const missingMap = renderToStaticMarkup(
+      <StudioCanvas {...baseProps()} preview={previewView(state, runtimeGeometry)} />,
+    );
+    expect(missingMap).toContain("left:50%");
+    expect(missingMap).not.toContain("data-studio-runtime-entity");
+
+    const duplicate = { ...CIRCLE_ENTITY, id: "entity:circle_2" };
+    const duplicateSource = renderToStaticMarkup(
+      <StudioCanvas
+        {...baseProps()}
+        entities={[CIRCLE_ENTITY, duplicate]}
+        preview={previewView(state, runtimeGeometry, verifiedIdentity)}
+      />,
+    );
+    expect(duplicateSource).not.toContain("left:15.625%");
+    expect(duplicateSource).not.toContain("data-studio-runtime-entity");
   });
 });

@@ -152,6 +152,7 @@ const VIEW_SNAPSHOT = {
   sceneId: "shared:circle-opacity",
   snapshot: sceneBundleFixture as unknown as SceneIrBundleV1,
   sourceLabel: "verified fixture",
+  sourceRuntimeIdentity: null,
 } satisfies StudioVerifiedPreviewSnapshotV1;
 
 describe("studioPreviewVerifiedSourceDurationV1", () => {
