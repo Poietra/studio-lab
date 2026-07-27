@@ -2,23 +2,23 @@ import { type SetStateAction, useCallback, useEffect, useReducer, useRef } from 
 
 import type { PendingClarification } from "../ai/clarification";
 import type { EditSuggestion, EditSuggestionOperation } from "../ai/edit-suggestions";
-import type { ProgramRecord } from "./model";
-import { programExecutionCapabilities } from "./operation-registry";
-import { sourceTimeToWorkingTime } from "./program-composition";
 import {
   type AppliedProgramEdit,
   type AppliedProgramMutation,
   browserEditorSessionStorageAdapter,
   EDITOR_SESSION_STALE_SOURCE_MESSAGE,
   type EditorProgramRecord,
-  EditorSessionStore,
   type EditorSessionIdentity,
   type EditorSessionSnapshot,
+  EditorSessionStore,
   type RedoProgramEntry,
 } from "./editor-session-store";
 import type { SuggestionStatus } from "./magic-edit-panel";
-import type { InteractionMode } from "./studio-viewport";
+import type { ProgramRecord } from "./model";
+import { programExecutionCapabilities } from "./operation-registry";
+import { sourceTimeToWorkingTime } from "./program-composition";
 import type { StudioTool } from "./studio-toolbar";
+import type { InteractionMode } from "./studio-viewport";
 import { appendAppliedProgram, replaceAppliedProgram } from "./transactions";
 
 export type {
@@ -98,6 +98,7 @@ export function createInitialEditorState(): EditorControllerState {
     suggestion: null,
     suggestionMessage: null,
     suggestionStatus: "idle",
+    verifiedSourceDurationBasis: null,
   };
 }
 
@@ -132,6 +133,7 @@ export function snapshotEditorSession(state: EditorControllerState): EditorSessi
     programUndoEntries: state.programUndoEntries,
     redoPrograms: state.redoPrograms,
     selectedObjectIds: state.selectedObjectIds,
+    verifiedSourceDurationBasis: state.verifiedSourceDurationBasis,
   };
 }
 
@@ -356,10 +358,14 @@ export function undoEditorProgram(state: EditorControllerState): EditorControlle
   };
 }
 
-export function redoEditorProgram(state: EditorControllerState): EditorControllerState {
+export function redoEditorProgram(
+  state: EditorControllerState,
+  blockedReason: string | null = null,
+): EditorControllerState {
   if (state.draftProgram) return state;
   const entry = state.redoPrograms.at(-1);
   if (!entry) return state;
+  if (blockedReason) return { ...state, draftError: blockedReason };
   if (entry.kind === "draft") {
     const precedingPrograms = entry.edit
       ? state.appliedPrograms.slice(0, entry.edit.index).map((record) => record.program)
@@ -605,11 +611,14 @@ export function useEditorController() {
     return true;
   }, [state.draftProgram, state.programUndoEntries.length, update]);
 
-  const redoProgram = useCallback(() => {
-    if (state.draftProgram || state.redoPrograms.length === 0) return false;
-    update(redoEditorProgram);
-    return true;
-  }, [state.draftProgram, state.redoPrograms.length, update]);
+  const redoProgram = useCallback(
+    (blockedReason: string | null = null) => {
+      if (state.draftProgram || state.redoPrograms.length === 0) return false;
+      update((current) => redoEditorProgram(current, blockedReason));
+      return blockedReason === null;
+    },
+    [state.draftProgram, state.redoPrograms.length, update],
+  );
 
   const editAppliedProgram = useCallback(
     (record: ProgramRecord, index: number, input?: AppliedProgramEditInput) => {
@@ -690,6 +699,8 @@ export function useEditorController() {
     setSuggestion: (value: SetStateAction<EditSuggestion | null>) => setField("suggestion", value),
     setSuggestionMessage: (value: SetStateAction<string | null>) => setField("suggestionMessage", value),
     setSuggestionStatus: (value: SetStateAction<SuggestionStatus>) => setField("suggestionStatus", value),
+    setVerifiedSourceDurationBasis: (value: SetStateAction<EditorSessionSnapshot["verifiedSourceDurationBasis"]>) =>
+      setField("verifiedSourceDurationBasis", value),
     stageDraft,
     state,
     suspend,

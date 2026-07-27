@@ -5,7 +5,14 @@ import { importManimScene } from "../render-pipeline/source-import";
 import { createSceneDurationProgram } from "./authoring-commands";
 import { validateSuggestionDraft } from "./draft-validation";
 import { evaluateWorkingState, programRecord } from "./evaluator";
-import { importedWorkingState, type ManimWorkspaceScene, projectVerifiedSourceDuration } from "./imported-workspace";
+import {
+  canResolveSourceDurationMismatch,
+  clampPlayheadToResolvedSourceDuration,
+  importedWorkingState,
+  type ManimWorkspaceScene,
+  projectVerifiedSourceDuration,
+  resolveVerifiedSourceDurationBasis,
+} from "./imported-workspace";
 import type { Interval } from "./model";
 import { projectStudioWorkspace } from "./workspace-projection";
 
@@ -60,6 +67,111 @@ function withOnlyEntityLifetimes(scene: ManimWorkspaceScene, lifetime: readonly 
 }
 
 describe("Studio workspace projection", () => {
+  it("adopts verified duration only while pristine and retains it across delayed provider reloads", () => {
+    const unresolved = resolveVerifiedSourceDurationBasis({
+      candidate: null,
+      editorPristine: true,
+      retained: null,
+      sessionKey: "source-a",
+    });
+    expect(unresolved).toEqual({ adoption: null, duration: null, mismatch: false });
+
+    const editedWhileUnresolved = resolveVerifiedSourceDurationBasis({
+      candidate: null,
+      editorPristine: false,
+      retained: null,
+      sessionKey: "source-a",
+    });
+    expect(editedWhileUnresolved).toEqual({ adoption: null, duration: null, mismatch: false });
+
+    const verifiedWithoutAnAdoptedBasis = resolveVerifiedSourceDurationBasis({
+      candidate: 1,
+      editorPristine: false,
+      retained: null,
+      sessionKey: "source-a",
+    });
+    expect(verifiedWithoutAnAdoptedBasis).toEqual({ adoption: null, duration: null, mismatch: true });
+
+    const pristineResolution = resolveVerifiedSourceDurationBasis({
+      candidate: 1,
+      editorPristine: true,
+      retained: null,
+      sessionKey: "source-a",
+    });
+    expect(pristineResolution).toEqual({
+      adoption: { duration: 1, sessionKey: "source-a" },
+      duration: 1,
+      mismatch: false,
+    });
+    expect(
+      resolveVerifiedSourceDurationBasis({
+        candidate: null,
+        editorPristine: false,
+        retained: pristineResolution.adoption,
+        sessionKey: "source-a",
+      }),
+    ).toEqual({ adoption: null, duration: 1, mismatch: false });
+    expect(
+      resolveVerifiedSourceDurationBasis({
+        candidate: null,
+        editorPristine: true,
+        retained: pristineResolution.adoption,
+        sessionKey: "source-b",
+      }),
+    ).toEqual({ adoption: null, duration: null, mismatch: false });
+
+    expect(
+      resolveVerifiedSourceDurationBasis({
+        candidate: 2,
+        editorPristine: false,
+        retained: pristineResolution.adoption,
+        sessionKey: "source-a",
+      }),
+    ).toEqual({ adoption: null, duration: 1, mismatch: true });
+    expect(
+      resolveVerifiedSourceDurationBasis({
+        candidate: 2,
+        editorPristine: true,
+        retained: pristineResolution.adoption,
+        sessionKey: "source-a",
+      }),
+    ).toEqual({
+      adoption: { duration: 2, sessionKey: "source-a" },
+      duration: 2,
+      mismatch: false,
+    });
+  });
+
+  it("does not clamp a restored playhead while explicit source metadata is pending", () => {
+    expect(clampPlayheadToResolvedSourceDuration(0.8, 0.1, true)).toBe(0.8);
+    expect(clampPlayheadToResolvedSourceDuration(0.8, 1, false)).toBe(0.8);
+    expect(clampPlayheadToResolvedSourceDuration(0.8, 0.1, false)).toBe(0.1);
+  });
+
+  it("allows destructive timing recovery only for the still-mismatched source session that opened it", () => {
+    expect(
+      canResolveSourceDurationMismatch({
+        currentSessionKey: "source-a",
+        mismatch: true,
+        targetSessionKey: "source-a",
+      }),
+    ).toBe(true);
+    expect(
+      canResolveSourceDurationMismatch({
+        currentSessionKey: "source-b",
+        mismatch: true,
+        targetSessionKey: "source-a",
+      }),
+    ).toBe(false);
+    expect(
+      canResolveSourceDurationMismatch({
+        currentSessionKey: "source-a",
+        mismatch: false,
+        targetSessionKey: "source-a",
+      }),
+    ).toBe(false);
+  });
+
   it("projects verified source duration through playback and only extends terminal imported lifetimes", () => {
     const imported = withOnlyEntityLifetimes(workspaceScene("Static", null), [
       { end: 0.05, start: 0 },

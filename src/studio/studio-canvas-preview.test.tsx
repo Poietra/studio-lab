@@ -64,6 +64,7 @@ function previewView(
     epoch: 0,
     interactionGeometry,
     sourceLabel: "verified fixture",
+    sourceMetadataPhase: "ready",
     state,
     verifiedSourceDuration: 2,
   };

@@ -30,7 +30,7 @@ function mutationOutcomeMayBeUnknown(error: unknown) {
   return !(error instanceof ManimApiRequestError) || error.status >= 500;
 }
 
-export function scheduleWorkspaceRefresh(refresh: () => void | Promise<void>) {
+export function scheduleWorkspaceRefresh(refresh: () => unknown | Promise<unknown>) {
   let active = true;
   queueMicrotask(() => {
     if (active) void refresh();
@@ -103,7 +103,7 @@ export function useManimWorkspace() {
     setError(null);
     try {
       const nextWorkspace = await loadManimWorkspace(projectId, controller.signal);
-      if (request.current !== controller) return;
+      if (request.current !== controller) return null;
       const scenes = workspaceScenes(nextWorkspace);
       activeProjectIdRef.current = projectId;
       setActiveProjectIdState(projectId);
@@ -123,10 +123,12 @@ export function useManimWorkspace() {
         return nextSceneId;
       });
       setStatus("ready");
+      return nextWorkspace;
     } catch (nextError) {
-      if (controller.signal.aborted || request.current !== controller) return;
+      if (controller.signal.aborted || request.current !== controller) return null;
       setStatus(workspaceRef.current ? "ready" : "error");
       setError(nextError instanceof Error ? nextError.message : "Could not import the Manim workspace.");
+      return null;
     } finally {
       if (request.current === controller) {
         request.current = null;
@@ -137,7 +139,7 @@ export function useManimWorkspace() {
 
   const refresh = useCallback(() => {
     const projectId = activeProjectIdRef.current;
-    return projectId ? loadProject(projectId) : loadProjectList();
+    return projectId ? loadProject(projectId) : loadProjectList().then(() => null);
   }, [loadProject, loadProjectList]);
 
   const setActiveProjectId = useCallback(

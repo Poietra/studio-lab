@@ -227,10 +227,15 @@ export type StudioPreviewViewStateInputV1 = Readonly<{
  */
 export function resolveStudioPreviewViewStateV1(input: StudioPreviewViewStateInputV1): PreviewRendererHostStateV1 {
   const { eligibility } = input;
-  if (!eligibility.eligible) return { detail: eligibility.detail, phase: "fallback", reason: eligibility.reason };
+  // Snapshot metadata is loaded independently from renderer capabilities
+  // because verified runtime duration also drives the semantic editor. Report
+  // that failure first even when this browser cannot create the WebGPU host;
+  // otherwise a producer/runtime failure is silently misreported as only a
+  // client capability limitation.
   if (input.snapshotError !== null) {
     return { detail: input.snapshotError, phase: "fallback", reason: "snapshot-unavailable" };
   }
+  if (!eligibility.eligible) return { detail: eligibility.detail, phase: "fallback", reason: eligibility.reason };
   if (!input.snapshot) return { detail: "Loading the verified snapshot.", phase: "fallback", reason: "installing" };
   if (input.transientEdit) {
     return {

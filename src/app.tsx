@@ -1,4 +1,13 @@
-import { type KeyboardEvent, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  type PointerEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { LazyMotion } from "motion/react";
 
 import { createClarificationContextFingerprint, MAX_CLARIFICATION_HISTORY } from "./ai/clarification";
@@ -11,6 +20,12 @@ import {
 import type { RenderProgramCandidate } from "./render-pipeline/render-pipeline-panel";
 import type { RenderSessionView } from "./render-pipeline/contracts";
 import { exportManimSource } from "./render-pipeline/client";
+import {
+  renderSourceRefreshMatches,
+  renderSourceRefreshResolved,
+  type RenderSourceIdentity,
+  type RenderSourceRefreshTarget,
+} from "./render-pipeline/render-pipeline-policy";
 import { cn } from "./lib/cn";
 import {
   createImportedEntityLifetimeProgram,
@@ -48,7 +63,12 @@ import { programExecutionCapabilities } from "./studio/operation-registry";
 import type { OperationOrigin } from "./studio/operations";
 import { latestSafeSourceAnchor, sourceTimeToWorkingTime, workingTimeToSourceTime } from "./studio/program-composition";
 import { samplePropertyValue } from "./studio/property-sampling";
-import { projectVerifiedSourceDuration } from "./studio/imported-workspace";
+import {
+  canResolveSourceDurationMismatch,
+  clampPlayheadToResolvedSourceDuration,
+  projectVerifiedSourceDuration,
+  resolveVerifiedSourceDurationBasis,
+} from "./studio/imported-workspace";
 import {
   PRISTINE_WORKING_REVISION,
   createUnavailableStudioPreviewSnapshotProviderV1,
@@ -84,6 +104,7 @@ import {
 } from "./studio/studio-viewport";
 import type { StudioTool } from "./studio/studio-toolbar";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
+import { editorSessionIdentityKey } from "./studio/editor-session-store";
 import {
   type AppliedProgramEdit,
   editorProgramRecord,
@@ -98,6 +119,10 @@ import { replaceAppliedProgram } from "./studio/transactions";
 
 type Shell = "Browser" | "Electron" | "Tauri";
 const loadMotionFeatures = () => import("./lib/motion-features").then((module) => module.default);
+const SOURCE_TIMING_LOADING_BLOCKER = "Wait for verified Scene timing before continuing.";
+const SOURCE_TIMING_MISMATCH_BLOCKER =
+  "Verified Scene timing conflicts with this Studio edit history. Waiting will not resolve it; use Resolve timing to discard the Studio edit history and adopt the verified duration.";
+const WORKSPACE_REIMPORT_BLOCKER = "Wait for the updated Python source to finish reimporting before editing.";
 const NUDGE_DELTAS: Readonly<Record<string, Readonly<{ x: number; y: number }>>> = {
   ArrowDown: { x: 0, y: 2 },
   ArrowLeft: { x: -2, y: 0 },
@@ -246,7 +271,7 @@ export function App() {
     isSuggestionRequestCurrent,
     openSession,
     pruneSessions,
-    redoProgram,
+    redoProgram: redoEditorProgram,
     resetPrograms,
     saveSession,
     setCurrentTime,
@@ -263,7 +288,7 @@ export function App() {
     setSuggestion,
     setSuggestionMessage,
     setSuggestionStatus,
-    stageDraft,
+    stageDraft: stageEditorDraft,
     state: {
       appliedPrograms,
       currentTime,
@@ -284,11 +309,15 @@ export function App() {
       suggestion,
       suggestionMessage,
       suggestionStatus,
+      verifiedSourceDurationBasis,
     },
+    setVerifiedSourceDurationBasis,
     suspend: suspendEditor,
     undoProgram,
   } = useEditorController();
   const [renderSessions, setRenderSessions] = useState<Readonly<Record<string, RenderSessionView>>>({});
+  const [sourceMutationPendingProjectId, setSourceMutationPendingProjectId] = useState<string | null>(null);
+  const [sourceReimportTarget, setSourceReimportTarget] = useState<RenderSourceRefreshTarget | null>(null);
   const [draftApplyPending, setDraftApplyPending] = useState(false);
   const [lifetimeEditMessage, setLifetimeEditMessage] = useState<string | null>(null);
   const [isMagicEditVisible, setIsMagicEditVisible] = useState(() => window.matchMedia("(min-width: 640px)").matches);
@@ -302,8 +331,26 @@ export function App() {
   const studioClipboard = useRef<readonly StudioEntityInput[]>([]);
   const pasteCount = useRef(0);
   const commandHandler = useRef<(command: StudioCommandId) => boolean>(() => false);
+  const previewActivationDialog = useRef<HTMLDialogElement | null>(null);
+  const sourceDurationBasisBlockMessageRef = useRef<string | null>(null);
+  const sourceTimingResolutionDialog = useRef<HTMLDialogElement | null>(null);
+  const sourceTimingResolutionTarget = useRef<string | null>(null);
+  const activeProjectIdRef = useRef(activeProjectId);
+  const activeSourceIdentityRef = useRef<(RenderSourceIdentity & Readonly<{ sceneId: string }>) | null>(null);
+  const sourceReimportRevision = useRef(0);
   const workspaceBounds = useRef<HTMLElement | null>(null);
   const currentDraftProgram = useRef<ProgramRecord | null>(null);
+  activeProjectIdRef.current = activeProjectId;
+  activeSourceIdentityRef.current =
+    activeProjectId && activeScene
+      ? {
+          projectId: activeProjectId,
+          sceneId: activeScene.sceneId,
+          sceneName: activeScene.name,
+          sourceHash: activeScene.sourceHash,
+          sourcePath: activeScene.sourcePath,
+        }
+      : null;
   currentDraftProgram.current = draftProgram;
   const appliedCanonicalPrograms = appliedPrograms.map((record) => record.program);
   const sourceCurrentTime = workingTimeToSourceTime(appliedCanonicalPrograms, currentTime);
@@ -407,53 +454,183 @@ export function App() {
   // fixture remains behind a DEV-only dynamic import and is never bundled as
   // production preview authority.
   const [previewSnapshotProvider, setPreviewSnapshotProvider] = useState<StudioPreviewSnapshotProviderV1 | null>(null);
+  const [previewRendererRequestSearch] = useState<string | null>(() => {
+    if (typeof location === "undefined") return null;
+    const requested = new URLSearchParams(location.search).get("previewRenderer");
+    return requested === "server" || (import.meta.env.DEV && requested === "fixture") ? location.search : null;
+  });
+  const [previewRendererActivated, setPreviewRendererActivated] = useState(false);
+  const [previewProviderPending, setPreviewProviderPending] = useState(false);
+  const previewActivationAllowed = typeof window === "undefined" || window.top === window.self;
   useEffect(() => {
-    if (typeof location === "undefined") return;
+    if (!previewRendererActivated || previewRendererRequestSearch === null) return;
     let cancelled = false;
-    void resolveStudioPreviewSnapshotProviderV1(location.search)
+    void resolveStudioPreviewSnapshotProviderV1(previewRendererRequestSearch)
       .then((provider) => {
-        if (!cancelled) setPreviewSnapshotProvider(provider);
+        if (!cancelled) {
+          setPreviewSnapshotProvider(provider);
+          setPreviewProviderPending(false);
+        }
       })
       .catch((cause: unknown) => {
-        if (!cancelled) setPreviewSnapshotProvider(createUnavailableStudioPreviewSnapshotProviderV1(cause));
+        if (!cancelled) {
+          setPreviewSnapshotProvider(createUnavailableStudioPreviewSnapshotProviderV1(cause));
+          setPreviewProviderPending(false);
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [previewRendererActivated, previewRendererRequestSearch]);
+
+  function activatePreviewRenderer() {
+    if (!previewActivationAllowed || previewRendererRequestSearch === null || previewRendererActivated) return;
+    previewActivationDialog.current?.close();
+    cancelSuggestionRequest();
+    setIsPlaying(false);
+    sourceDurationBasisBlockMessageRef.current = SOURCE_TIMING_LOADING_BLOCKER;
+    setPreviewProviderPending(true);
+    setPreviewRendererActivated(true);
+  }
+  const editorPristine =
+    appliedPrograms.length === 0 &&
+    draftProgram === null &&
+    editingAppliedProgram === null &&
+    redoPrograms.length === 0;
   const previewEditingContext = useMemo<StudioPreviewEditingContextV1 | null>(() => {
     if (!activeScene || !workspace) return null;
-    const pristine = appliedPrograms.length === 0 && draftProgram === null && editingAppliedProgram === null;
     return {
       projectId: workspace.projectId,
       sceneName: activeScene.name,
       sourceDuration: activeScene.runtimeSceneState.duration,
       sourceHash: activeScene.sourceHash,
       sourcePath: activeScene.sourcePath,
-      workingRevision: pristine
+      workingRevision: editorPristine
         ? PRISTINE_WORKING_REVISION
         : `programs:${appliedPrograms.map((record) => record.program.transactionId).join(",")}${draftProgram ? "+draft" : ""}`,
     };
-  }, [activeScene, appliedPrograms, draftProgram, editingAppliedProgram, workspace]);
+  }, [activeScene, appliedPrograms, draftProgram, editorPristine, workspace]);
   const importedSceneBoundaryActive =
     activeScene?.runtimeSceneState.eventTrack.events.some(
       (event) => event.kind === "scene-boundary" && event.at !== undefined && event.at <= currentTime,
     ) ?? false;
   // Imported boundaries still gate the canvas directly. Studio-authored
   // boundaries are already fail-closed by their non-pristine revision.
+  const sourceDurationSessionKey =
+    activeProjectId && activeScene
+      ? editorSessionIdentityKey({
+          projectId: activeProjectId,
+          sceneId: activeScene.sceneId,
+          sourceHash: activeScene.sourceHash,
+        })
+      : null;
+  const retainedVerifiedSourceDuration =
+    sourceDurationSessionKey !== null && verifiedSourceDurationBasis?.sessionKey === sourceDurationSessionKey
+      ? verifiedSourceDurationBasis.duration
+      : null;
   const previewRenderer = useStudioPreviewRenderer({
     context: previewEditingContext,
     frame: workspace?.frame ?? { height: 8, width: 14.222 },
     provider: previewSnapshotProvider,
+    retainedSourceDuration: retainedVerifiedSourceDuration,
     sampleTime: currentTime,
     transientEdit:
       dragPreview !== null || geometryPreview !== null || scalePreview !== null || importedSceneBoundaryActive,
   });
+  const sourceDurationBasis = resolveVerifiedSourceDurationBasis({
+    candidate: previewRenderer?.verifiedSourceDuration ?? null,
+    editorPristine,
+    retained: verifiedSourceDurationBasis,
+    sessionKey: sourceDurationSessionKey,
+  });
+  const resolvedVerifiedSourceDuration = sourceDurationBasis.duration;
+  useLayoutEffect(() => {
+    if (sourceDurationBasis.adoption) setVerifiedSourceDurationBasis(sourceDurationBasis.adoption);
+  }, [setVerifiedSourceDurationBasis, sourceDurationBasis.adoption]);
+  const sourceDurationBasisLoading = previewProviderPending || previewRenderer?.sourceMetadataPhase === "loading";
+  const sourceDurationBasisMismatch = sourceDurationBasis.mismatch;
+  const sourceMutationPending =
+    activeProjectId !== null &&
+    (sourceMutationPendingProjectId === activeProjectId || renderSessions[activeProjectId]?.actionInProgress === true);
+  const sourceReimportPending = activeProjectId !== null && sourceReimportTarget?.projectId === activeProjectId;
+  const sourceLifecyclePending = sourceMutationPending || sourceReimportPending;
+  const studioAuthoringLocked = sourceLifecyclePending || workspaceIsRefreshing;
+  const renderPipelineLifecycleBlocker =
+    sourceReimportPending || workspaceIsRefreshing
+      ? WORKSPACE_REIMPORT_BLOCKER
+      : sourceDurationBasisMismatch
+        ? SOURCE_TIMING_MISMATCH_BLOCKER
+        : sourceDurationBasisLoading
+          ? SOURCE_TIMING_LOADING_BLOCKER
+          : null;
+  const sourceDurationBasisBlockMessage = sourceMutationPending
+    ? WORKSPACE_REIMPORT_BLOCKER
+    : renderPipelineLifecycleBlocker;
+  useLayoutEffect(() => {
+    sourceDurationBasisBlockMessageRef.current = sourceDurationBasisBlockMessage;
+  }, [sourceDurationBasisBlockMessage]);
+  const sourceDurationBasisBlocked = sourceDurationBasisBlockMessage !== null;
+  useEffect(() => {
+    const targetSessionKey = sourceTimingResolutionTarget.current;
+    if (
+      targetSessionKey !== null &&
+      !canResolveSourceDurationMismatch({
+        currentSessionKey: sourceDurationSessionKey,
+        mismatch: sourceDurationBasisMismatch,
+        targetSessionKey,
+      })
+    ) {
+      sourceTimingResolutionTarget.current = null;
+      sourceTimingResolutionDialog.current?.close();
+    }
+  }, [sourceDurationBasisMismatch, sourceDurationSessionKey]);
   const projectedActiveScene = useMemo(
-    () =>
-      activeScene ? projectVerifiedSourceDuration(activeScene, previewRenderer?.verifiedSourceDuration ?? null) : null,
-    [activeScene, previewRenderer?.verifiedSourceDuration],
+    () => (activeScene ? projectVerifiedSourceDuration(activeScene, resolvedVerifiedSourceDuration) : null),
+    [activeScene, resolvedVerifiedSourceDuration],
   );
+
+  function stageDraft(input: Parameters<typeof stageEditorDraft>[0]) {
+    const lifecycleBlocker = sourceDurationBasisBlockMessageRef.current;
+    if (lifecycleBlocker) {
+      setDraftError(lifecycleBlocker);
+      setIsPlaying(false);
+      return false;
+    }
+    return stageEditorDraft(input);
+  }
+
+  function redoProgram() {
+    return redoEditorProgram(sourceDurationBasisBlockMessageRef.current);
+  }
+
+  function openSourceTimingResolution() {
+    const targetSessionKey = sourceDurationSessionKey;
+    if (
+      !canResolveSourceDurationMismatch({
+        currentSessionKey: sourceDurationSessionKey,
+        mismatch: sourceDurationBasisMismatch,
+        targetSessionKey,
+      })
+    )
+      return;
+    sourceTimingResolutionTarget.current = targetSessionKey;
+    sourceTimingResolutionDialog.current?.showModal();
+  }
+
+  function resolveSourceTimingMismatch() {
+    const targetSessionKey = sourceTimingResolutionTarget.current;
+    sourceTimingResolutionTarget.current = null;
+    sourceTimingResolutionDialog.current?.close();
+    if (
+      !canResolveSourceDurationMismatch({
+        currentSessionKey: sourceDurationSessionKey,
+        mismatch: sourceDurationBasisMismatch,
+        targetSessionKey,
+      })
+    )
+      return;
+    resetPrograms();
+  }
 
   const previewReplacement =
     editingAppliedProgram && draftProgram
@@ -589,12 +766,69 @@ export function App() {
     });
   }, []);
 
-  useEffect(() => {
-    setCurrentTime((time) => Math.min(time, activeDuration));
-  }, [activeDuration]);
+  const setSourceMutationPending = useCallback((projectId: string, pending: boolean) => {
+    if (pending && activeProjectIdRef.current !== projectId) return;
+    setSourceMutationPendingProjectId((current) => (pending ? projectId : current === projectId ? null : current));
+  }, []);
+
+  const reconcileRenderedSource = useCallback(
+    async (target: RenderSourceRefreshTarget) => {
+      if (activeProjectIdRef.current !== target.projectId) return;
+      const revision = sourceReimportRevision.current + 1;
+      sourceReimportRevision.current = revision;
+      setSourceReimportTarget(target);
+      const activeSource = activeSourceIdentityRef.current;
+      if (renderSourceRefreshMatches(target, activeSource) && activeSource) {
+        clearSession({
+          projectId: activeSource.projectId,
+          sceneId: activeSource.sceneId,
+          sourceHash: activeSource.sourceHash,
+        });
+        resetPrograms();
+      }
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const refreshed = await refreshWorkspace();
+        if (revision !== sourceReimportRevision.current || activeProjectIdRef.current !== target.projectId) return;
+        if (refreshed && renderSourceRefreshResolved(target, refreshed)) {
+          setSourceReimportTarget((current) => (current === target ? null : current));
+          return;
+        }
+      }
+      throw new Error("The reimported workspace did not contain the expected Python source revision.");
+    },
+    [clearSession, refreshWorkspace, resetPrograms],
+  );
+
+  const reimportWorkspace = useCallback(async () => {
+    try {
+      if (sourceReimportTarget) await reconcileRenderedSource(sourceReimportTarget);
+      else await refreshWorkspace();
+    } catch {
+      // The workspace hook and render panel retain the actionable error while
+      // the source lifecycle blocker stays active.
+    }
+  }, [reconcileRenderedSource, refreshWorkspace, sourceReimportTarget]);
 
   useEffect(() => {
-    if (!isPlaying || !activeScene) return;
+    if (sourceMutationPendingProjectId && sourceMutationPendingProjectId !== activeProjectId) {
+      setSourceMutationPendingProjectId(null);
+    }
+    if (sourceReimportTarget && sourceReimportTarget.projectId !== activeProjectId) {
+      sourceReimportRevision.current += 1;
+      setSourceReimportTarget(null);
+    }
+  }, [activeProjectId, sourceMutationPendingProjectId, sourceReimportTarget]);
+
+  useEffect(() => {
+    setCurrentTime((time) => clampPlayheadToResolvedSourceDuration(time, activeDuration, sourceDurationBasisBlocked));
+  }, [activeDuration, sourceDurationBasisBlocked]);
+
+  useEffect(() => {
+    if (sourceDurationBasisBlocked && isPlaying) setIsPlaying(false);
+  }, [isPlaying, sourceDurationBasisBlocked, setIsPlaying]);
+
+  useEffect(() => {
+    if (!isPlaying || !activeScene || sourceDurationBasisBlocked) return;
     let animationFrame = 0;
     let previous = performance.now();
     const tick = (now: number) => {
@@ -612,7 +846,7 @@ export function App() {
     };
     animationFrame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animationFrame);
-  }, [activeDuration, activeScene, isPlaying]);
+  }, [activeDuration, activeScene, isPlaying, sourceDurationBasisBlocked]);
   const contextFingerprint = draftBaseState
     ? createClarificationContextFingerprint({
         entities: Object.values(draftBaseState.evaluatedScene.objectGraph.entities),
@@ -714,6 +948,12 @@ export function App() {
 
   async function requestEditSuggestion(selectedOption?: ClarificationOption) {
     if (!activeScene || !draftBaseState) return;
+    const initialLifecycleBlocker = sourceDurationBasisBlockMessageRef.current;
+    if (initialLifecycleBlocker) {
+      setSuggestionMessage(initialLifecycleBlocker);
+      setSuggestionStatus("error");
+      return;
+    }
     if (editingAppliedProgram) {
       setSuggestionMessage("Apply or discard the Applied Program edit before starting another Magic Edit.");
       setSuggestionStatus("error");
@@ -788,6 +1028,13 @@ export function App() {
         { signal: controller.signal },
       );
       if (!isSuggestionRequestCurrent(controller)) return;
+      const resolvedLifecycleBlocker = sourceDurationBasisBlockMessageRef.current;
+      if (resolvedLifecycleBlocker) {
+        setSuggestion(null);
+        setSuggestionMessage(resolvedLifecycleBlocker);
+        setSuggestionStatus("error");
+        return;
+      }
       if (suggestionContext.current !== requestedContext) {
         setSuggestion(null);
         setSuggestionMessage(
@@ -859,6 +1106,11 @@ export function App() {
     operation: EditSuggestionOperation,
     focusSourceTime = editorRecord.program.anchor.resolvedSeconds,
   ) {
+    const lifecycleBlocker = sourceDurationBasisBlockMessageRef.current;
+    if (lifecycleBlocker) {
+      setDraftError(lifecycleBlocker);
+      return false;
+    }
     const transactionId = editorRecord.program.transactionId;
     const activeEdit =
       editingAppliedProgram?.original.program.transactionId === transactionId ? editingAppliedProgram : null;
@@ -966,6 +1218,11 @@ export function App() {
 
   async function applyDraft() {
     if (!draftProgram || !renderCandidate || draftApplyPending) return;
+    const initialLifecycleBlocker = sourceDurationBasisBlockMessageRef.current;
+    if (initialLifecycleBlocker) {
+      setDraftError(initialLifecycleBlocker);
+      return;
+    }
     const applyingDraft = draftProgram;
     setDraftApplyPending(true);
     setDraftError(null);
@@ -982,6 +1239,11 @@ export function App() {
         viewport: renderCandidate.viewport,
       });
       if (currentDraftProgram.current !== applyingDraft) return;
+      const resolvedLifecycleBlocker = sourceDurationBasisBlockMessageRef.current;
+      if (resolvedLifecycleBlocker) {
+        setDraftError(resolvedLifecycleBlocker);
+        return;
+      }
       applyEditorDraft();
     } catch (error) {
       if (currentDraftProgram.current === applyingDraft) {
@@ -2023,6 +2285,10 @@ export function App() {
   }
 
   function handleStudioCommand(command: StudioCommandId) {
+    if (studioAuthoringLocked) {
+      setDraftError(WORKSPACE_REIMPORT_BLOCKER);
+      return false;
+    }
     const toolByCommand: Partial<Record<StudioCommandId, StudioTool>> = {
       "insert-arrow": "Arrow",
       "insert-circle": "Circle",
@@ -2061,6 +2327,11 @@ export function App() {
     }
     if (command === "play-pause") {
       if (!activeScene) return false;
+      const lifecycleBlocker = sourceDurationBasisBlockMessageRef.current;
+      if (lifecycleBlocker) {
+        setDraftError(lifecycleBlocker);
+        return false;
+      }
       if (currentTime >= activeDuration) setCurrentTime(0);
       setIsPlaying((playing) => !playing);
       return true;
@@ -2185,7 +2456,8 @@ export function App() {
             <h1 className="hidden shrink-0 text-balance text-sm font-semibold md:block">Poietra Studio Lab</h1>
             <button
               aria-label="Back to workspaces"
-              className="shrink-0 border border-zinc-700 px-2 py-1 text-xs font-medium text-zinc-300 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500"
+              className="shrink-0 border border-zinc-700 px-2 py-1 text-xs font-medium text-zinc-300 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-wait disabled:text-zinc-600"
+              disabled={sourceLifecyclePending}
               onClick={returnToWorkspaceLauncher}
               type="button"
             >
@@ -2202,6 +2474,7 @@ export function App() {
               <select
                 aria-label="Active imported Scene"
                 className="h-8 min-w-0 w-full max-w-sm border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-300 outline-none focus:border-sky-500"
+                disabled={studioAuthoringLocked}
                 onChange={(event) => {
                   saveEditorSession();
                   setActiveSceneId(event.currentTarget.value);
@@ -2219,8 +2492,8 @@ export function App() {
           <div className="flex shrink-0 items-center gap-2 text-xs">
             <button
               className="border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-wait disabled:text-zinc-600"
-              disabled={workspaceIsRefreshing}
-              onClick={() => void refreshWorkspace()}
+              disabled={workspaceIsRefreshing || sourceMutationPendingProjectId === activeProjectId}
+              onClick={() => void reimportWorkspace()}
               type="button"
             >
               {workspaceIsRefreshing ? "Reimporting…" : "Reimport"}
@@ -2236,7 +2509,7 @@ export function App() {
                     ? "border-sky-800 bg-sky-950 text-sky-300 hover:bg-sky-900"
                     : "border-zinc-700 text-zinc-300 hover:bg-zinc-800",
               )}
-              disabled={!activeScene}
+              disabled={!activeScene || studioAuthoringLocked}
               onClick={() => setIsMagicEditVisible((visible) => !visible)}
               type="button"
             >
@@ -2254,12 +2527,68 @@ export function App() {
             <span className="min-w-0 truncate">Reimport failed: {workspaceError}</span>
             <button
               className="shrink-0 underline underline-offset-2 hover:text-white"
-              onClick={() => void refreshWorkspace()}
+              onClick={() => void reimportWorkspace()}
               type="button"
             >
               Retry
             </button>
           </div>
+        ) : null}
+
+        {previewRendererRequestSearch !== null && !previewRendererActivated ? (
+          <section
+            aria-labelledby="preview-activation-title"
+            className="flex shrink-0 items-center justify-between gap-3 border-b border-sky-950 bg-sky-950/30 px-3 py-2"
+          >
+            <div className="min-w-0">
+              <h2 className="text-balance text-xs font-medium text-sky-200" id="preview-activation-title">
+                GPU Scene preview is off
+              </h2>
+              <p className="mt-0.5 text-pretty text-[10px] leading-4 text-sky-200/70">
+                Enabling preview runs selected Manim Scenes through the configured producer while this tab stays open.
+              </p>
+            </div>
+            {previewActivationAllowed ? (
+              <button
+                aria-haspopup="dialog"
+                className="shrink-0 border border-sky-800 px-3 py-1.5 text-xs font-medium text-sky-100 hover:bg-sky-900/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500"
+                onClick={() => previewActivationDialog.current?.showModal()}
+                type="button"
+              >
+                Enable preview…
+              </button>
+            ) : (
+              <p className="shrink-0 text-pretty text-xs text-sky-200" role="status">
+                Open Studio in a top-level tab to enable it.
+              </p>
+            )}
+          </section>
+        ) : null}
+
+        {sourceDurationBasisMismatch ? (
+          <section
+            aria-labelledby="source-timing-conflict-title"
+            className="flex shrink-0 items-center justify-between gap-3 border-b border-amber-900 bg-amber-950/30 px-3 py-2"
+            role="alert"
+          >
+            <div className="min-w-0">
+              <h2 className="text-balance text-xs font-medium text-amber-200" id="source-timing-conflict-title">
+                Scene timing needs resolution
+              </h2>
+              <p className="mt-0.5 text-pretty text-[10px] leading-4 text-amber-200/70">
+                Waiting will not resolve this conflict. Discard the current Studio edit history to adopt the verified
+                Scene duration; the Python source will not change.
+              </p>
+            </div>
+            <button
+              aria-haspopup="dialog"
+              className="shrink-0 border border-amber-800 px-3 py-1.5 text-xs font-medium text-amber-100 hover:bg-amber-900/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-500"
+              onClick={openSourceTimingResolution}
+              type="button"
+            >
+              Resolve timing
+            </button>
+          </section>
         ) : null}
 
         {workspaceStatus === "loading" ? (
@@ -2283,7 +2612,7 @@ export function App() {
               </p>
               <button
                 className="mt-4 bg-sky-500 px-3 py-1.5 text-xs font-medium text-sky-950"
-                onClick={() => void refreshWorkspace()}
+                onClick={() => void reimportWorkspace()}
                 type="button"
               >
                 Inspect workspace again
@@ -2291,7 +2620,12 @@ export function App() {
             </div>
           </div>
         ) : (
-          <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(30rem,1fr)_auto_auto] gap-px overflow-y-auto bg-zinc-800 md:grid-cols-[14rem_minmax(0,1fr)] md:grid-rows-[minmax(32rem,1fr)_auto] xl:grid-cols-[14rem_minmax(0,1fr)_21rem] xl:grid-rows-1 xl:overflow-hidden">
+          <div
+            aria-busy={studioAuthoringLocked}
+            className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(30rem,1fr)_auto_auto] gap-px overflow-y-auto bg-zinc-800 md:grid-cols-[14rem_minmax(0,1fr)] md:grid-rows-[minmax(32rem,1fr)_auto] xl:grid-cols-[14rem_minmax(0,1fr)_21rem] xl:grid-rows-1 xl:overflow-hidden"
+            data-studio-editor
+            inert={studioAuthoringLocked}
+          >
             <WorkspaceSidebar
               activeScene={activeScene}
               appliedProgramReadOnlyReasons={appliedProgramReadOnlyReasons}
@@ -2371,12 +2705,17 @@ export function App() {
                 setCurrentTime(time);
               }}
               onTogglePlayback={() => {
+                const lifecycleBlocker = sourceDurationBasisBlockMessageRef.current;
+                if (lifecycleBlocker) {
+                  setDraftError(lifecycleBlocker);
+                  return;
+                }
                 if (currentTime >= activeDuration) setCurrentTime(0);
                 setIsPlaying((playing) => !playing);
               }}
               preview={previewRenderer}
               projection={projection}
-              readOnly={boundary !== null}
+              readOnly={boundary !== null || studioAuthoringLocked}
               scalePreview={scalePreview}
               selectedIds={selectedSet}
             />
@@ -2396,13 +2735,10 @@ export function App() {
               onEntityScaleChange={(entityId, scale) => void resizeEntityFromInspector(entityId, scale)}
               onInspectorFocusRestored={() => setInspectorReturnFocus(null)}
               onRenderSessionChange={retainRenderSession}
-              onSourceChanged={async () => {
-                const identity = activeEditorSessionIdentity();
-                if (identity) clearSession(identity);
-                resetPrograms();
-                await refreshWorkspace();
-              }}
+              onSourceChanged={reconcileRenderedSource}
+              onSourceMutationPendingChange={setSourceMutationPending}
               renderCandidate={renderCandidate}
+              renderCandidateLifecycleBlocker={renderPipelineLifecycleBlocker}
               renderCandidateUnavailableReason={renderCandidateUnavailableReason}
               renderSession={activeProjectId ? (renderSessions[activeProjectId] ?? null) : null}
               replacingAppliedProgram={editingAppliedProgram !== null}
@@ -2421,6 +2757,82 @@ export function App() {
             />
           </div>
         )}
+
+        <dialog
+          aria-describedby="enable-preview-description"
+          aria-labelledby="enable-preview-title"
+          className="m-auto w-full max-w-md border border-zinc-700 bg-zinc-950 p-0 text-zinc-100 shadow-xl backdrop:bg-black/70"
+          ref={previewActivationDialog}
+          role="alertdialog"
+        >
+          <form className="p-4" method="dialog">
+            <h2 className="text-balance text-sm font-medium" id="enable-preview-title">
+              Run Manim Scenes for GPU preview?
+            </h2>
+            <p className="mt-2 text-pretty text-xs leading-5 text-zinc-400" id="enable-preview-description">
+              Studio will execute the selected Scene, and any Scene you switch to, through the configured fast-manim
+              producer. Enable this only for workspace source you trust. Permission ends when this tab reloads or
+              closes.
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                className="border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+                value="cancel"
+              >
+                Cancel
+              </button>
+              <button
+                className="bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500"
+                onClick={(event) => {
+                  event.preventDefault();
+                  activatePreviewRenderer();
+                }}
+                value="confirm"
+              >
+                Run Scene preview
+              </button>
+            </div>
+          </form>
+        </dialog>
+
+        <dialog
+          aria-describedby="resolve-source-timing-description"
+          aria-labelledby="resolve-source-timing-title"
+          className="m-auto w-full max-w-md border border-zinc-700 bg-zinc-950 p-0 text-zinc-100 shadow-xl backdrop:bg-black/70"
+          onClose={() => {
+            sourceTimingResolutionTarget.current = null;
+          }}
+          ref={sourceTimingResolutionDialog}
+          role="alertdialog"
+        >
+          <form className="p-4" method="dialog">
+            <h2 className="text-balance text-sm font-medium" id="resolve-source-timing-title">
+              Discard Studio edit history?
+            </h2>
+            <p className="mt-2 text-pretty text-xs leading-5 text-zinc-400" id="resolve-source-timing-description">
+              Resolve timing removes every Studio edit, draft, undo, and redo entry for this Scene, then adopts the
+              verified duration. This cannot be undone in Studio. Your Python source remains unchanged.
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                className="border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+                value="cancel"
+              >
+                Cancel
+              </button>
+              <button
+                className="bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500"
+                onClick={(event) => {
+                  event.preventDefault();
+                  resolveSourceTimingMismatch();
+                }}
+                value="confirm"
+              >
+                Discard and resolve
+              </button>
+            </div>
+          </form>
+        </dialog>
 
         {isMagicEditVisible && activeScene ? (
           <MagicEditPanel

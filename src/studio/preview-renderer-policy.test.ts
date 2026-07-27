@@ -249,6 +249,21 @@ describe("resolveStudioPreviewViewStateV1", () => {
     ).toMatchObject({ phase: "fallback", reason: "snapshot-unavailable" });
   });
 
+  it("reports a metadata failure even when WebGPU is unavailable", () => {
+    expect(
+      resolveStudioPreviewViewStateV1({
+        ...PRESENTED_VIEW_INPUT,
+        eligibility: evaluateStudioPreviewEligibilityV1({ ...CAPABLE, webgpuAvailable: false }),
+        snapshot: null,
+        snapshotError: "snapshot producer unavailable",
+      }),
+    ).toEqual({
+      detail: "snapshot producer unavailable",
+      phase: "fallback",
+      reason: "snapshot-unavailable",
+    });
+  });
+
   it("presents only when the host frame matches this render exactly", () => {
     expect(resolveStudioPreviewViewStateV1(PRESENTED_VIEW_INPUT)).toBe(PRESENTED_VIEW_INPUT.hostState);
   });

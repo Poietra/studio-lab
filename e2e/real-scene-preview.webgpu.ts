@@ -24,9 +24,12 @@ function snapshotResponse(page: Page) {
 async function openRealWorkspace(page: Page) {
   await page.goto(`/${SERVER_QUERY}`);
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
-  const response = snapshotResponse(page);
   await page.getByRole("button", { name: "Open Real Preview Harness workspace" }).click();
   await expect(page.getByLabel("Current workspace")).toHaveText("Real Preview Harness");
+  await page.getByRole("button", { name: "Enable preview…" }).click();
+  await expect(page.getByRole("alertdialog", { name: "Run Manim Scenes for GPU preview?" })).toBeVisible();
+  const response = snapshotResponse(page);
+  await page.getByRole("button", { name: "Run Scene preview" }).click();
   return response;
 }
 

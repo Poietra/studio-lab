@@ -1,26 +1,28 @@
 import { describe, expect, it } from "vitest";
 
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
-import type { ProgramRecord } from "./model";
 import {
   EDITOR_SESSION_STALE_SOURCE_MESSAGE,
   EDITOR_SESSION_STORAGE_VERSION,
-  EditorSessionStore,
-  MAX_EDITOR_SESSION_STORAGE_BYTES,
-  MAX_STORED_EDITOR_SESSIONS,
   type EditorSessionIdentity,
   type EditorSessionSnapshot,
   type EditorSessionStorageAdapter,
+  EditorSessionStore,
+  MAX_EDITOR_SESSION_STORAGE_BYTES,
+  MAX_STORED_EDITOR_SESSIONS,
 } from "./editor-session-store";
+import type { ProgramRecord } from "./model";
 import {
   applyEditorDraft,
   createInitialEditorState,
   editorProgramRecord,
   redoEditorProgram,
+  resetEditorPrograms,
   restoreEditorSession,
   snapshotEditorSession,
   undoEditorProgram,
 } from "./use-editor-controller";
+import { resolveVerifiedSourceDurationBasis } from "./imported-workspace";
 
 class MemoryAdapter implements EditorSessionStorageAdapter {
   value: string | null;
@@ -110,6 +112,7 @@ function snapshot(): EditorSessionSnapshot {
       },
     ],
     selectedObjectIds: ["equation"],
+    verifiedSourceDurationBasis: { duration: 1, sessionKey: "session-a" },
   });
 }
 
@@ -177,6 +180,77 @@ describe("durable editor session storage", () => {
     const undone = undoEditorProgram(state);
     expect(undone.appliedPrograms).toEqual([original]);
     expect(redoEditorProgram(undone).appliedPrograms).toEqual([replacement]);
+  });
+
+  it("does not apply redo history while an external lifecycle blocker is active", () => {
+    const value = editorProgramRecord(record("redo-blocked"), null, ["equation"]);
+    const state = {
+      ...createInitialEditorState(),
+      redoPrograms: [
+        {
+          kind: "mutation" as const,
+          mutation: { index: 0, kind: "append" as const, value },
+        },
+      ],
+    };
+
+    const blocked = redoEditorProgram(state, "Wait for verified Scene timing.");
+
+    expect(blocked.appliedPrograms).toEqual([]);
+    expect(blocked.redoPrograms).toEqual(state.redoPrograms);
+    expect(blocked.draftError).toBe("Wait for verified Scene timing.");
+  });
+
+  it.each([
+    ["an older session without a basis", null, 1],
+    ["a retained duration that changed", { duration: 1, sessionKey: "source-a" }, 2],
+  ] as const)("resets %s and can adopt the current verified timing", (_label, retained, candidate) => {
+    const applied = editorProgramRecord(record("applied-before-timing-reset"), null, ["equation"]);
+    const redo = editorProgramRecord(record("redo-before-timing-reset"), null, ["equation"]);
+    const edited = {
+      ...createInitialEditorState(),
+      appliedPrograms: [applied],
+      draftOperation: motionOperation,
+      draftProgram: record("draft-before-timing-reset"),
+      programUndoEntries: [{ index: 0, kind: "append" as const, value: applied }],
+      redoPrograms: [
+        {
+          kind: "mutation" as const,
+          mutation: { index: 1, kind: "append" as const, value: redo },
+        },
+      ],
+      verifiedSourceDurationBasis: retained,
+    };
+    expect(
+      resolveVerifiedSourceDurationBasis({
+        candidate,
+        editorPristine: false,
+        retained,
+        sessionKey: "source-a",
+      }).mismatch,
+    ).toBe(true);
+
+    const reset = resetEditorPrograms(edited);
+
+    expect(reset.appliedPrograms).toEqual([]);
+    expect(reset.draftOperation).toBeNull();
+    expect(reset.draftProgram).toBeNull();
+    expect(reset.editingAppliedProgram).toBeNull();
+    expect(reset.programUndoEntries).toEqual([]);
+    expect(reset.redoPrograms).toEqual([]);
+    expect(reset.verifiedSourceDurationBasis).toEqual(retained);
+    expect(
+      resolveVerifiedSourceDurationBasis({
+        candidate,
+        editorPristine: true,
+        retained: reset.verifiedSourceDurationBasis,
+        sessionKey: "source-a",
+      }),
+    ).toEqual({
+      adoption: { duration: candidate, sessionKey: "source-a" },
+      duration: candidate,
+      mismatch: false,
+    });
   });
 
   it("restores preview-only replacement drafts but still blocks applying them", () => {
