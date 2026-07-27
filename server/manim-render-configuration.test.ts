@@ -40,6 +40,7 @@ describe("Manim render plugin configuration", () => {
           command: [process.execPath],
           frame,
           projectRoot: process.cwd(),
+          tenantId: "test-tenant",
         }),
     ).toThrow(message);
   });

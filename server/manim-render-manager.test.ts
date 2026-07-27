@@ -11,6 +11,7 @@ import { type ProgramRenderRequest, renderProgramBatchId } from "../src/render-p
 import { importManimScene } from "../src/render-pipeline/source-import";
 import { createSceneDurationProgram } from "../src/studio/authoring-commands";
 import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
+import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
 import { handleManimRequest } from "./manim-render-http";
 import type { ManimRenderManager } from "./manim-render-pipeline";
 import {
@@ -174,7 +175,7 @@ class GroupedEquation(Scene):
       sourceHash: createHash("sha256").update(duplicateSource).digest("hex"),
     };
     const server = createServer((incoming, response) => {
-      void handleManimRequest(manager, incoming, response);
+      void handleManimRequest(createTrustedLocalManimRequestContext(manager, "test"), incoming, response);
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {
@@ -447,7 +448,7 @@ class Independent(Scene):
     const records: StructuredLogRecord[] = [];
     const logger = createStructuredLogger({ sinks: [{ write: (record) => records.push(record) }] });
     const server = createServer((incoming, response) => {
-      void handleManimRequest(manager, incoming, response, logger);
+      void handleManimRequest(createTrustedLocalManimRequestContext(manager, "test"), incoming, response, logger);
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {
@@ -509,7 +510,7 @@ class Independent(Scene):
         client?.destroy();
         return response;
       }) as typeof response.end;
-      void handleManimRequest(manager, incoming, response, logger);
+      void handleManimRequest(createTrustedLocalManimRequestContext(manager, "test"), incoming, response, logger);
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {

@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { importManimScene } from "../src/render-pipeline/source-import";
 import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
+import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
 import { handleManimRequest } from "./manim-render-http";
 import { ManimProjectRegistry, ManimRenderManager } from "./manim-render-pipeline";
 import { renderManimSceneThumbnailSvg, representativeManimSceneTime } from "./manim-thumbnail";
@@ -132,6 +133,7 @@ describe("Manim thumbnail manager and HTTP boundary", () => {
       command: [process.execPath, command],
       frame,
       projectRoot,
+      tenantId: "test-tenant",
     });
     managers.push(manager);
 
@@ -159,10 +161,11 @@ describe("Manim thumbnail manager and HTTP boundary", () => {
         { id: "project-thumbnail", name: "Thumbnail", root: projectRoot },
         { id: "project-empty", name: "Empty", root: emptyRoot },
       ],
+      tenantId: "test-tenant",
     });
     registries.push(registry);
     const server = createServer((request, response) => {
-      void handleManimRequest(registry, request, response);
+      void handleManimRequest(createTrustedLocalManimRequestContext(registry, "test"), request, response);
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {
@@ -217,11 +220,12 @@ describe("Manim thumbnail manager and HTTP boundary", () => {
       frame,
       projects: [{ id: "project-thumbnail", name: "Thumbnail", root: projectRoot }],
       renderTimeoutMs: 5_000,
+      tenantId: "test-tenant",
       thumbnailCacheRoot: cacheRoot,
     });
     registries.push(registry);
     const server = createServer((request, response) => {
-      void handleManimRequest(registry, request, response);
+      void handleManimRequest(createTrustedLocalManimRequestContext(registry, "test"), request, response);
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {
@@ -299,11 +303,12 @@ describe("Manim thumbnail manager and HTTP boundary", () => {
       frame,
       logger,
       projects: [{ id: "project-thumbnail", name: "Thumbnail", root: projectRoot }],
+      tenantId: "test-tenant",
       thumbnailCacheRoot: cacheRoot,
     });
     registries.push(registry);
     const server = createServer((request, response) => {
-      void handleManimRequest(registry, request, response, logger);
+      void handleManimRequest(createTrustedLocalManimRequestContext(registry, "test"), request, response, logger);
     });
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {

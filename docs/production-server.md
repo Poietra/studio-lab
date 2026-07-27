@@ -5,7 +5,8 @@ exports `startProductionManimServer`; it does not start a listener when imported
 The deploying service must supply both of these adapters:
 
 - `ProductionRequestAdmission`, whose `ready` probe covers the authentication
-  provider and whose `admit` method denies unauthenticated API requests.
+  provider and whose `authenticate` method returns server-verified principal
+  claims for authenticated API requests.
 - `ProductionManimRuntimeAdapterV1`, whose `ready` probe covers its backing
   stores and a fresh external-sandbox attestation.
 
@@ -18,6 +19,21 @@ current contract is limited to one deployment-isolated tenant. Issue #117 owns
 the isolated render adapter, #120 owns principal-to-tenant selection, and #118
 owns durable shared state. Until those adapters exist, liveness can be served
 but readiness and the Manim API must remain unavailable.
+
+Each server instance remains a single-tenant cell: its runtime API declares one
+server-owned tenant ID and at least one bounded absolute storage root. A
+verified principal must resolve to that same tenant. Foreign tenants receive a
+generic 403, and the development-only `studio-local` and `local-*` identities
+are rejected by both production authentication and runtime startup. Existing-
+folder workspace registration is disabled in production so a request cannot
+attach another tenant's host path. Authentication readiness and principal
+verification run
+before runtime readiness, preventing unauthenticated API traffic from probing
+the render/storage adapter; the public `/readyz` probe still checks both
+dependencies. Storage roots are trusted adapter declarations in this
+single-tenant cell, so #118 must define canonical, symlink-safe boundaries for
+durable storage. Issue #118 also owns replacing these process-local stores with
+durable tenant-scoped state before horizontal scaling.
 
 The transport configuration is strict and production-only. It requires one
 public origin, an IP literal to bind, and bounded connection, header, body,

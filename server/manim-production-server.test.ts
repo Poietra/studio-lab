@@ -1,5 +1,7 @@
 import { createServer as createHttpServer, request as createRequest } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 import { HttpError } from "./http/json";
@@ -12,6 +14,7 @@ import {
 import type { ManimApi } from "./manim-render-http";
 
 const servers: ProductionManimServer[] = [];
+const TEST_PRINCIPAL = Object.freeze({ subjectId: "production-user", tenantId: "tenant-a" });
 
 afterEach(async () => {
   await Promise.allSettled(servers.splice(0).map((server) => server.close()));
@@ -53,6 +56,8 @@ function createRuntime(ready: () => boolean = () => true, onProjects: () => void
       onProjects();
       return { defaultProjectId: null, projects: [] };
     },
+    storageRoots: [join(tmpdir(), "poietra-production-runtime-tenant-a")],
+    tenantId: "tenant-a",
   } as unknown as ManimApi;
   return {
     api,
@@ -153,22 +158,53 @@ describe("standalone production Manim HTTP adapter", () => {
   it("rejects an incomplete production runtime adapter before listening", async () => {
     await expect(
       startProductionManimServer({
-        admission: { admit: async () => true, ready: async () => true },
+        admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
         config: await startConfig(),
         runtime: { ...createRuntime(), ready: undefined } as never,
       }),
     ).rejects.toThrow(/runtime adapter is incomplete/i);
   });
 
+  it("rejects an untyped runtime without a bounded absolute tenant storage namespace", async () => {
+    const runtime = createRuntime();
+    await expect(
+      startProductionManimServer({
+        admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
+        config: await startConfig(),
+        runtime: {
+          ...runtime,
+          api: { ...runtime.api, storageRoots: undefined } as unknown as ManimApi,
+        },
+      }),
+    ).rejects.toThrow(/absolute storage roots/i);
+  });
+
+  it.each(["studio-local", "local-000000000000000000000000"])(
+    "rejects the reserved production runtime tenant %s before listening",
+    async (tenantId) => {
+      const runtime = createRuntime();
+      await expect(
+        startProductionManimServer({
+          admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
+          config: await startConfig(),
+          runtime: {
+            ...runtime,
+            api: { ...runtime.api, tenantId } as unknown as ManimApi,
+          },
+        }),
+      ).rejects.toThrow(/reserved local identity/i);
+    },
+  );
+
   it("keeps liveness public while readiness and API fail closed on either required dependency", async () => {
     let admissionReady = false;
     let runtimeReady = true;
-    let admitCalls = 0;
+    let authenticateCalls = 0;
     const server = await startProductionManimServer({
       admission: {
-        admit: async () => {
-          admitCalls += 1;
-          return true;
+        authenticate: async () => {
+          authenticateCalls += 1;
+          return TEST_PRINCIPAL;
         },
         ready: async () => admissionReady,
       },
@@ -180,7 +216,7 @@ describe("standalone production Manim HTTP adapter", () => {
     expect(await send(server, "/healthz")).toMatchObject({ status: 200 });
     expect(JSON.parse((await send(server, "/readyz")).body)).toEqual({ status: "unavailable" });
     expect(await send(server, "/api/manim/projects")).toMatchObject({ status: 503 });
-    expect(admitCalls).toBe(0);
+    expect(authenticateCalls).toBe(0);
 
     admissionReady = true;
     runtimeReady = false;
@@ -188,14 +224,14 @@ describe("standalone production Manim HTTP adapter", () => {
     runtimeReady = true;
     expect(await send(server, "/readyz")).toMatchObject({ status: 200 });
     expect(await send(server, "/api/manim/projects")).toMatchObject({ status: 200 });
-    expect(admitCalls).toBe(1);
+    expect(authenticateCalls).toBe(1);
   });
 
   it("requires admission and validates Host plus the immediate proxy before API routing", async () => {
-    let admitted = false;
+    let principal: unknown = null;
     const server = await startProductionManimServer({
       admission: {
-        admit: async () => admitted,
+        authenticate: async () => principal,
         ready: async () => true,
       },
       config: await startConfig(),
@@ -207,7 +243,7 @@ describe("standalone production Manim HTTP adapter", () => {
       headers: { connection: "close" },
       status: 401,
     });
-    admitted = true;
+    principal = TEST_PRINCIPAL;
     expect(await send(server, "/api/manim/projects", { headers: { host: "attacker.example" } })).toMatchObject({
       status: 421,
     });
@@ -218,9 +254,9 @@ describe("standalone production Manim HTTP adapter", () => {
     let admissionContext: unknown;
     const trustedServer = await startProductionManimServer({
       admission: {
-        admit: async (request) => {
+        authenticate: async (request) => {
           admissionContext = request;
-          return true;
+          return TEST_PRINCIPAL;
         },
         ready: async () => true,
       },
@@ -246,6 +282,105 @@ describe("standalone production Manim HTTP adapter", () => {
     expect(JSON.stringify(admissionContext)).not.toContain("203.0.113.5");
   });
 
+  it.each([
+    [403, "Tenant access is not available."],
+    [503, "Tenant access is temporarily unavailable."],
+  ] as const)("normalizes an authenticator %i without exposing adapter details", async (status, message) => {
+    const server = await startProductionManimServer({
+      admission: {
+        authenticate: async () => {
+          throw new HttpError("trusted adapter detail must remain private", status);
+        },
+        ready: async () => true,
+      },
+      config: await startConfig(),
+      runtime: createRuntime(),
+    });
+    servers.push(server);
+
+    const response = await send(server, "/api/manim/projects");
+    expect(response.status).toBe(status);
+    expect(JSON.parse(response.body)).toEqual({ error: message });
+    expect(response.body).not.toContain("trusted adapter detail");
+  });
+
+  it("derives tenant access from verified claims and keeps local or foreign tenants outside the runtime", async () => {
+    let createExistingCalls = 0;
+    let projectCalls = 0;
+    let runtimeReadyCalls = 0;
+    const records: StructuredLogRecord[] = [];
+    const logger = createStructuredLogger({ sinks: [{ write: (record) => records.push(record) }] });
+    const baseRuntime = createRuntime(
+      () => {
+        runtimeReadyCalls += 1;
+        return true;
+      },
+      () => {
+        projectCalls += 1;
+      },
+    );
+    const server = await startProductionManimServer({
+      admission: {
+        authenticate: async ({ credentials }) => {
+          if (credentials.authorization === "Bearer tenant-a") return TEST_PRINCIPAL;
+          if (credentials.authorization === "Bearer tenant-b") {
+            return { subjectId: "foreign-user", tenantId: "tenant-b" };
+          }
+          if (credentials.authorization === "Bearer local") {
+            return { subjectId: "local-user", tenantId: "local-000000000000000000000000" };
+          }
+          return null;
+        },
+        ready: async () => true,
+      },
+      config: await startConfig(),
+      logger,
+      runtime: {
+        ...baseRuntime,
+        api: {
+          ...baseRuntime.api,
+          createProject: () => {
+            createExistingCalls += 1;
+            return {};
+          },
+        } as unknown as ManimApi,
+      },
+    });
+    servers.push(server);
+
+    expect(await send(server, "/api/manim/projects")).toMatchObject({ status: 401 });
+    expect(await send(server, "/api/manim/projects", { headers: { authorization: "Bearer local" } })).toMatchObject({
+      status: 401,
+    });
+    expect(await send(server, "/api/manim/projects", { headers: { authorization: "Bearer tenant-b" } })).toMatchObject({
+      status: 403,
+    });
+    expect(records.filter(({ event }) => event === "production.authentication_rejected")).toHaveLength(2);
+    expect(records.filter(({ event }) => event === "production.foreign_tenant_rejected")).toHaveLength(1);
+    expect(JSON.stringify(records)).not.toContain("Bearer local");
+    expect(JSON.stringify(records)).not.toContain("Bearer tenant-b");
+    expect(projectCalls).toBe(0);
+    expect(runtimeReadyCalls).toBe(0);
+
+    expect(await send(server, "/api/manim/projects", { headers: { authorization: "Bearer tenant-a" } })).toMatchObject({
+      status: 200,
+    });
+    expect(projectCalls).toBe(1);
+    expect(runtimeReadyCalls).toBe(1);
+
+    const existingRegistration = await send(server, "/api/manim/projects", {
+      body: JSON.stringify({ kind: "existing", name: "Foreign root", root: "/tenant-b/private" }),
+      headers: {
+        authorization: "Bearer tenant-a",
+        "content-type": "application/json",
+        origin: "https://studio.example",
+      },
+      method: "POST",
+    });
+    expect(existingRegistration).toMatchObject({ status: 403 });
+    expect(createExistingCalls).toBe(0);
+  });
+
   it("rejects non-origin-form targets and every unbounded or bodyless-method payload before routing", async () => {
     let projectCalls = 0;
     let unregisterCalls = 0;
@@ -256,7 +391,7 @@ describe("standalone production Manim HTTP adapter", () => {
       },
     );
     const server = await startProductionManimServer({
-      admission: { admit: async () => true, ready: async () => true },
+      admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
       config: await startConfig(),
       runtime: {
         ...baseRuntime,
@@ -294,7 +429,7 @@ describe("standalone production Manim HTTP adapter", () => {
 
   it("uses configured HTTPS origin behind a proxy and applies the global body ceiling", async () => {
     const server = await startProductionManimServer({
-      admission: { admit: async () => true, ready: async () => true },
+      admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
       config: await startConfig({
         limits: { maxBodyBytes: 1_024 },
       }),
@@ -337,7 +472,7 @@ describe("standalone production Manim HTTP adapter", () => {
     const records: StructuredLogRecord[] = [];
     const logger = createStructuredLogger({ sinks: [{ write: (record) => records.push(record) }] });
     const server = await startProductionManimServer({
-      admission: { admit: async () => true, ready: async () => true },
+      admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
       config: await startConfig(),
       logger,
       runtime: createRuntime(),
@@ -350,12 +485,12 @@ describe("standalone production Manim HTTP adapter", () => {
   });
 
   it("does not enter the runtime after shutdown starts while admission is pending", async () => {
-    let releaseAdmission!: (admitted: boolean) => void;
+    let releaseAdmission!: (principal: unknown) => void;
     let markAdmissionEntered!: () => void;
     const admissionEntered = new Promise<void>((resolveEntered) => {
       markAdmissionEntered = resolveEntered;
     });
-    const admission = new Promise<boolean>((resolveAdmission) => {
+    const admission = new Promise<unknown>((resolveAdmission) => {
       releaseAdmission = resolveAdmission;
     });
     let projectCalls = 0;
@@ -368,7 +503,7 @@ describe("standalone production Manim HTTP adapter", () => {
     );
     const server = await startProductionManimServer({
       admission: {
-        admit: async () => {
+        authenticate: async () => {
           markAdmissionEntered();
           return admission;
         },
@@ -387,7 +522,7 @@ describe("standalone production Manim HTTP adapter", () => {
     const response = send(server, "/api/manim/projects");
     await admissionEntered;
     const shutdown = server.close();
-    releaseAdmission(true);
+    releaseAdmission(TEST_PRINCIPAL);
 
     expect(await response).toMatchObject({ status: 503 });
     await shutdown;
@@ -404,7 +539,7 @@ describe("standalone production Manim HTTP adapter", () => {
     const runtime = createRuntime();
     const server = await startProductionManimServer({
       admission: {
-        admit: async (_request, signal) => {
+        authenticate: async (_request, signal) => {
           markAdmissionEntered();
           signal.addEventListener("abort", () => order.push("admission-aborted"), { once: true });
           return new Promise<boolean>(() => {});
@@ -445,7 +580,7 @@ describe("standalone production Manim HTTP adapter", () => {
     let resumedAfterClose = false;
     const baseRuntime = createRuntime();
     const server = await startProductionManimServer({
-      admission: { admit: async () => true, ready: async () => true },
+      admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
       config: await startConfig({ limits: { requestDrainTimeoutMs: 100, runtimeCloseTimeoutMs: 100 } }),
       runtime: {
         ...baseRuntime,
@@ -481,7 +616,7 @@ describe("standalone production Manim HTTP adapter", () => {
     const runtime = createRuntime();
     let closes = 0;
     const server = await startProductionManimServer({
-      admission: { admit: async () => true, ready: async () => true },
+      admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
       config: await startConfig(),
       runtime: {
         ...runtime,
@@ -502,7 +637,7 @@ describe("standalone production Manim HTTP adapter", () => {
   it("bounds readiness probes and shutdown even when an adapter does not settle", async () => {
     const runtime = createRuntime();
     const server = await startProductionManimServer({
-      admission: { admit: async () => true, ready: async () => new Promise<boolean>(() => {}) },
+      admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => new Promise<boolean>(() => {}) },
       config: await startConfig({ limits: { readinessTimeoutMs: 100, runtimeCloseTimeoutMs: 100 } }),
       runtime: { ...runtime, close: () => new Promise<void>(() => {}) },
     });
@@ -526,7 +661,7 @@ describe("standalone production Manim HTTP adapter", () => {
       const runtime = createRuntime();
       await expect(
         startProductionManimServer({
-          admission: { admit: async () => true, ready: async () => true },
+          admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
           config: config({ port }),
           runtime: {
             ...runtime,

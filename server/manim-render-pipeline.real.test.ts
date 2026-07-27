@@ -225,6 +225,7 @@ describe.skipIf(process.env.POIETRA_REAL_MANIM_SMOKE !== "1")("real Manim render
       projectId: "real-manim-smoke",
       projectRoot,
       renderTimeoutMs: 120_000,
+      tenantId: "test-tenant",
     });
     const diagnostic: SmokeDiagnostic = {
       cleanup: { projectRootRemoved: false, renderRootRemoved: null },

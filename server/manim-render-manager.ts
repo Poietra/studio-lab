@@ -30,6 +30,7 @@ import { FastManimSnapshotRunner } from "./fast-manim-snapshot-runner";
 import { HttpError } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import type { ManimProjectKind } from "./manim-project-catalog";
+import { manimTenantIdSchema } from "./manim-request-principal";
 import {
   beginRenderSessionAction,
   createRenderMutationTransactionState,
@@ -54,6 +55,7 @@ import {
 } from "./manim-render-session-policy";
 import { type ManimSourceReadHooks, ManimSourceStore, sourceHash } from "./manim-source-store";
 import { ManimThumbnailCache } from "./manim-thumbnail-cache";
+import { normalizeManimStorageRoots } from "./manim-tenant-storage";
 import { discoverPythonSources } from "./manim-workspace";
 
 type RenderSession = {
@@ -162,6 +164,8 @@ export class ManimRenderManager {
   readonly projectKind: ManimProjectKind;
   projectName: string;
   readonly projectRoot: string;
+  readonly storageRoots: readonly string[];
+  readonly tenantId: string;
   private commandAvailability: Readonly<{ checkedAt: number; value: boolean }> | null = null;
   private readonly commandAvailabilityAbort = new AbortController();
   private commandAvailabilityRequest: Promise<boolean> | null = null;
@@ -207,9 +211,9 @@ export class ManimRenderManager {
       snapshotSandboxDeployment?: FastManimSandboxDeployment;
       snapshotProducerCommand?: readonly string[];
       snapshotProducerDevOptIn?: boolean;
-      snapshotTenantId?: string;
       snapshotTimeoutMs?: number;
       sourceStoreHooks?: ManimSourceReadHooks;
+      tenantId: string;
       thumbnailCacheRoot?: string;
     }>,
   ) {
@@ -221,7 +225,6 @@ export class ManimRenderManager {
       height: requirePositiveFinite(options.frame.height, "Manim frame height"),
       width: requirePositiveFinite(options.frame.width, "Manim frame width"),
     });
-    this.logger = options.logger ?? nullLogger;
     this.maxConcurrentRenders = requirePositiveInteger(
       options.maxConcurrentRenders ?? DEFAULT_MAX_CONCURRENT_RENDERS,
       "Maximum concurrent renders",
@@ -242,6 +245,10 @@ export class ManimRenderManager {
     this.projectName = options.projectName?.trim() || basename(this.sourceStore.projectRoot) || "Manim Project";
     if (this.projectName.length > 120) throw new TypeError("Manim project name must be at most 120 characters.");
     this.projectRoot = this.sourceStore.projectRoot;
+    const parsedTenantId = manimTenantIdSchema.safeParse(options.tenantId);
+    if (!parsedTenantId.success) throw new TypeError("Manim tenant ID must be an opaque lower-case identifier.");
+    this.tenantId = parsedTenantId.data;
+    this.logger = (options.logger ?? nullLogger).child({ tenantId: this.tenantId });
     this.renderTimeoutMs = requireTimerDelay(options.renderTimeoutMs ?? DEFAULT_RENDER_TIMEOUT_MS, "Render timeout");
     this.sessionRetentionMs = requireTimerDelay(
       options.sessionRetentionMs ?? DEFAULT_SESSION_RETENTION_MS,
@@ -274,11 +281,13 @@ export class ManimRenderManager {
       logger: this.logger,
       projectId: this.projectId,
       projectRoot: this.projectRoot,
-      tenantId: options.snapshotTenantId ?? "studio-local",
+      tenantId: this.tenantId,
       timeoutMs: options.snapshotTimeoutMs,
     });
+    const thumbnailCacheRoot = options.thumbnailCacheRoot ?? join(this.projectRoot, ".poietra", "thumbnails");
+    this.storageRoots = normalizeManimStorageRoots([this.projectRoot, thumbnailCacheRoot]);
     this.thumbnailCache = new ManimThumbnailCache({
-      cacheRoot: options.thumbnailCacheRoot ?? join(this.projectRoot, ".poietra", "thumbnails"),
+      cacheRoot: thumbnailCacheRoot,
       command: this.command,
       frame: this.frame,
       logger: this.logger,
@@ -700,7 +709,7 @@ export class ManimRenderManager {
       const sourcePath = sourceSnapshot.absolutePath;
       const originalSource = sourceSnapshot.source;
       throwIfAborted(signal);
-      tempRoot = await mkdtemp(join(tmpdir(), "poietra-manim-render-"));
+      tempRoot = await mkdtemp(join(tmpdir(), `poietra-manim-render-${this.tenantId}-`));
       throwIfAborted(signal);
       const previewSourcePath = join(tempRoot, basename(sourcePath));
       const mediaRoot = join(tempRoot, "media");

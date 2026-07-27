@@ -21,9 +21,12 @@ import {
 } from "./manim-project-catalog";
 import type { ManimProjectConfig } from "./manim-render-config";
 import { ManimRenderManager } from "./manim-render-manager";
+import { manimTenantIdSchema } from "./manim-request-principal";
+import { normalizeManimStorageRoots } from "./manim-tenant-storage";
 
 export class ManimProjectRegistry {
   private readonly catalog: PersistentManimProjectCatalog | null;
+  private readonly catalogStorageRoot: string | null;
   private readonly command: readonly string[];
   private readonly frame: Readonly<{ height: number; width: number }>;
   private readonly logger: StructuredLogger;
@@ -40,13 +43,14 @@ export class ManimProjectRegistry {
   private readonly snapshotSandboxDeployment: FastManimSandboxDeployment;
   private readonly snapshotProducerCommand: readonly string[] | undefined;
   private readonly snapshotProducerDevOptIn: boolean | undefined;
-  private readonly snapshotTenantId: string | undefined;
   private readonly snapshotTimeoutMs: number | undefined;
+  readonly tenantId: string;
   private readonly thumbnailCacheRoot: string | undefined;
 
   constructor(
     options: Readonly<{
       catalog?: PersistentManimProjectCatalog;
+      catalogStorageRoot?: string;
       command: readonly string[];
       frame: Readonly<{ height: number; width: number }>;
       logger?: StructuredLogger;
@@ -62,16 +66,19 @@ export class ManimProjectRegistry {
       snapshotSandboxDeployment?: FastManimSandboxDeployment;
       snapshotProducerCommand?: readonly string[];
       snapshotProducerDevOptIn?: boolean;
-      snapshotTenantId?: string;
       snapshotTimeoutMs?: number;
+      tenantId: string;
       thumbnailCacheRoot?: string;
     }>,
   ) {
     if (options.projects.length > 64) throw new TypeError("The Manim project registry accepts at most 64 projects.");
     this.catalog = options.catalog ?? null;
+    if (this.catalog && !options.catalogStorageRoot?.trim()) {
+      throw new TypeError("A persistent project catalog requires an explicit tenant storage root.");
+    }
+    this.catalogStorageRoot = options.catalogStorageRoot?.trim() || null;
     this.command = options.command;
     this.frame = options.frame;
-    this.logger = options.logger ?? nullLogger;
     this.maxConcurrentRenders = options.maxConcurrentRenders;
     this.maxRetainedSessions = options.maxRetainedSessions;
     this.renderTimeoutMs = options.renderTimeoutMs;
@@ -81,15 +88,25 @@ export class ManimProjectRegistry {
     this.snapshotSandboxDeployment = options.snapshotSandboxDeployment ?? "production";
     this.snapshotProducerCommand = options.snapshotProducerCommand;
     this.snapshotProducerDevOptIn = options.snapshotProducerDevOptIn;
-    this.snapshotTenantId = options.snapshotTenantId;
     this.snapshotTimeoutMs = options.snapshotTimeoutMs;
     this.thumbnailCacheRoot = options.thumbnailCacheRoot;
+    const parsedTenantId = manimTenantIdSchema.safeParse(options.tenantId);
+    if (!parsedTenantId.success) throw new TypeError("Manim tenant ID must be an opaque lower-case identifier.");
+    this.tenantId = parsedTenantId.data;
+    this.logger = (options.logger ?? nullLogger).child({ tenantId: this.tenantId });
     const configuredProjects = this.catalog?.projects() ?? resolveManimProjects(options.projects);
     for (const project of configuredProjects) this.addManager(project);
   }
 
   get defaultProjectId() {
     return this.managers.keys().next().value ?? null;
+  }
+
+  get storageRoots() {
+    return normalizeManimStorageRoots([
+      ...(this.catalogStorageRoot ? [this.catalogStorageRoot] : []),
+      ...[...this.managers.values()].flatMap((manager) => manager.storageRoots),
+    ]);
   }
 
   private addManager({ canonicalRoot, kind, projectId, projectName }: ResolvedManimProject) {
@@ -117,8 +134,8 @@ export class ManimProjectRegistry {
         snapshotSandboxDeployment: this.snapshotSandboxDeployment,
         snapshotProducerCommand: this.snapshotProducerCommand,
         snapshotProducerDevOptIn: this.snapshotProducerDevOptIn,
-        snapshotTenantId: this.snapshotTenantId,
         snapshotTimeoutMs: this.snapshotTimeoutMs,
+        tenantId: this.tenantId,
         thumbnailCacheRoot: this.thumbnailCacheRoot,
       }),
     );

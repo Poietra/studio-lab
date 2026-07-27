@@ -131,6 +131,7 @@ describe("fast-manim sandbox runner boundary", () => {
           projectRoot: root,
           snapshotProducerCommand: [process.execPath],
           snapshotProducerDevOptIn: true,
+          tenantId: "test-tenant",
         }),
     ).toThrow(/forbidden in production/i);
   });

@@ -4,9 +4,11 @@ import { isIP } from "node:net";
 
 import { z } from "zod";
 
-import { sendJson } from "./http/json";
+import { HttpError, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
-import { handleManimRequest, type ManimApi } from "./manim-render-http";
+import { authenticateManimRequestContext, handleManimRequest, type ManimApi } from "./manim-render-http";
+import { isReservedLocalManimTenantId, type ManimPrincipalAuthenticator } from "./manim-request-principal";
+import { ManimTenantRegistry } from "./manim-tenant-registry";
 
 const DEFAULT_LIMITS = {
   handlerTimeoutMs: 30_000,
@@ -20,6 +22,12 @@ const DEFAULT_LIMITS = {
   requestDrainTimeoutMs: 10_000,
   requestTimeoutMs: 30_000,
   runtimeCloseTimeoutMs: 10_000,
+} as const;
+
+const PRODUCTION_AUTH_ERROR_MESSAGES = {
+  401: "Authentication is required.",
+  403: "Tenant access is not available.",
+  503: "Tenant access is temporarily unavailable.",
 } as const;
 
 const limitsSchema = z
@@ -97,10 +105,10 @@ export type ProductionAdmissionRequest = Readonly<{
   pathname: string;
 }>;
 
-export type ProductionRequestAdmission = Readonly<{
-  admit: (request: ProductionAdmissionRequest, signal: AbortSignal) => Promise<boolean>;
-  ready: (signal: AbortSignal) => Promise<boolean>;
-}>;
+export type ProductionRequestAdmission = ManimPrincipalAuthenticator<ProductionAdmissionRequest> &
+  Readonly<{
+    ready: (signal: AbortSignal) => Promise<boolean>;
+  }>;
 
 export type ProductionRuntimeReadinessV1 =
   | Readonly<{ ready: false }>
@@ -318,12 +326,16 @@ export async function startProductionManimServer(
   if (
     typeof options.admission !== "object" ||
     options.admission === null ||
-    typeof options.admission.admit !== "function" ||
+    typeof options.admission.authenticate !== "function" ||
     typeof options.admission.ready !== "function"
   ) {
     throw new TypeError("Production request admission adapter is incomplete.");
   }
+  if (isReservedLocalManimTenantId((options.runtime.api as Readonly<{ tenantId?: unknown }>).tenantId)) {
+    throw new TypeError("Production runtime tenant ID must not use a reserved local identity.");
+  }
   const logger = options.logger ?? nullLogger;
+  const tenants = new ManimTenantRegistry<ManimApi>([options.runtime.api]);
   const trustedProxyAddresses = new Set(config.trustedProxyAddresses);
   const activeRequests = new Set<AbortController>();
   const activeTasks = new Set<Promise<void>>();
@@ -345,27 +357,43 @@ export async function startProductionManimServer(
     return runtimeCloseRequest;
   };
 
-  const dependenciesReady = async (signal: AbortSignal) => {
+  const admissionIsReady = async (signal: AbortSignal) => {
     try {
-      const [admissionReady, runtimeReady] = await Promise.all([
-        waitForProbe((probeSignal) => options.admission.ready(probeSignal), signal, config.limits.readinessTimeoutMs),
-        waitForProbe(
-          (probeSignal) => trackRuntimeTask(() => options.runtime.ready(probeSignal)),
+      return (
+        (await waitForProbe(
+          (probeSignal) => options.admission.ready(probeSignal),
           signal,
           config.limits.readinessTimeoutMs,
-        ),
-      ]);
+        )) === true
+      );
+    } catch {
+      logger.warn("production.admission_readiness_probe_failed");
+      return false;
+    }
+  };
+
+  const runtimeIsReady = async (signal: AbortSignal) => {
+    try {
+      const runtimeReady = await waitForProbe(
+        (probeSignal) => trackRuntimeTask(() => options.runtime.ready(probeSignal)),
+        signal,
+        config.limits.readinessTimeoutMs,
+      );
       return (
-        admissionReady === true &&
         runtimeReady !== ABORTED &&
         runtimeReady.ready === true &&
         runtimeReady.executionBoundary === "adapter-attests-external-sandbox" &&
         runtimeReady.tenantBoundary === "single-tenant-deployment"
       );
     } catch {
-      logger.warn("production.readiness_probe_failed");
+      logger.warn("production.runtime_readiness_probe_failed");
       return false;
     }
+  };
+
+  const dependenciesReady = async (signal: AbortSignal) => {
+    const [admissionReady, runtimeReady] = await Promise.all([admissionIsReady(signal), runtimeIsReady(signal)]);
+    return admissionReady && runtimeReady;
   };
 
   const serve = async (request: IncomingMessage, response: ServerResponse) => {
@@ -380,6 +408,7 @@ export async function startProductionManimServer(
       sendJson(response, 504, { error: "Request deadline exceeded." });
     }, config.limits.handlerTimeoutMs);
     handlerTimeout.unref();
+    let accessBoundary: "authentication" | "tenant" | null = null;
 
     try {
       const transport = validateTransportRequest(request, config, trustedProxyAddresses);
@@ -400,14 +429,16 @@ export async function startProductionManimServer(
       }
       if (!pathname.startsWith("/api/manim/")) throw new TransportError("Endpoint not found.", 404);
       if (lifecycle !== "accepting") throw new TransportError("Production service is draining.", 503);
-      if (!(await dependenciesReady(controller.signal))) {
-        throw new TransportError("Production dependencies are not ready.", 503);
+      if (!(await admissionIsReady(controller.signal))) {
+        throw new TransportError("Production authentication is not ready.", 503);
       }
       if (controller.signal.aborted) return;
       if (lifecycle !== "accepting") throw new TransportError("Production service is draining.", 503);
-      const admitted = await raceWithSignal(
+      accessBoundary = "authentication";
+      const context = await raceWithSignal(
         () =>
-          options.admission.admit(
+          authenticateManimRequestContext(
+            options.admission,
             {
               credentials: {
                 ...(typeof request.headers.authorization === "string"
@@ -423,17 +454,25 @@ export async function startProductionManimServer(
               method: request.method ?? "UNKNOWN",
               pathname,
             },
+            tenants,
             controller.signal,
           ),
         controller.signal,
       );
-      if (admitted === ABORTED || controller.signal.aborted) return;
+      if (context === ABORTED || controller.signal.aborted) return;
       if (lifecycle !== "accepting") throw new TransportError("Production service is draining.", 503);
-      if (admitted !== true) throw new TransportError("Authentication is required.", 401);
+      accessBoundary = "tenant";
+      context.tenants.forPrincipal(context.principal);
+      accessBoundary = null;
+      if (!(await runtimeIsReady(controller.signal))) {
+        throw new TransportError("Production runtime is not ready.", 503);
+      }
+      if (controller.signal.aborted) return;
+      if (lifecycle !== "accepting") throw new TransportError("Production service is draining.", 503);
       await raceWithSignal(
         () =>
           trackRuntimeTask(() =>
-            handleManimRequest(options.runtime.api, request, response, logger, {
+            handleManimRequest(context, request, response, logger, {
               allowExistingProjectRegistration: false,
               expectedMutationOrigin: config.publicOrigin,
               maxJsonBodyBytes: config.limits.maxBodyBytes,
@@ -448,6 +487,19 @@ export async function startProductionManimServer(
         request.resume();
         response.setHeader("connection", "close");
         sendJson(response, error.status, { error: error.message });
+        return;
+      }
+      if (error instanceof HttpError && [401, 403, 503].includes(error.status)) {
+        if (accessBoundary === "authentication" && [401, 403].includes(error.status)) {
+          logger.warn("production.authentication_rejected");
+        } else if (accessBoundary === "tenant" && error.status === 403) {
+          logger.warn("production.foreign_tenant_rejected");
+        }
+        request.resume();
+        response.setHeader("connection", "close");
+        sendJson(response, error.status, {
+          error: PRODUCTION_AUTH_ERROR_MESSAGES[error.status as keyof typeof PRODUCTION_AUTH_ERROR_MESSAGES],
+        });
         return;
       }
       logger.error("production.request_failed", {
