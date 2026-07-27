@@ -16,4 +16,6 @@ shell-evaluation/fixture.mp4
 src-tauri/target/
 public/engine-wasm/
 *.log
+__pycache__/
+*.py[cod]
 .DS_Store
