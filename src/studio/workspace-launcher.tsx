@@ -28,6 +28,8 @@ const secondaryButtonClassName =
   "border border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-wait disabled:text-zinc-600";
 const primaryButtonClassName =
   "bg-sky-500 px-3 py-1.5 text-xs font-medium text-sky-950 hover:bg-sky-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400 disabled:cursor-wait disabled:bg-zinc-700 disabled:text-zinc-500";
+const addWorkspaceButtonClassName =
+  "inline-flex min-h-11 min-w-40 shrink-0 items-center justify-center gap-2 px-5 py-2 text-sm";
 const dialogClassName =
   "m-auto w-full max-w-md border border-zinc-700 bg-zinc-950 p-0 text-zinc-100 shadow-xl backdrop:bg-black/70";
 const cardActionButtonClassName =
@@ -36,7 +38,7 @@ const MAX_THUMBNAIL_STATUS_ATTEMPTS = 3;
 
 function PlusIcon() {
   return (
-    <svg aria-hidden="true" className="size-4 shrink-0" fill="none" focusable="false" viewBox="0 0 24 24">
+    <svg aria-hidden="true" className="size-5 shrink-0" fill="none" focusable="false" viewBox="0 0 24 24">
       <path d="M12 5v14M5 12h14" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
     </svg>
   );
@@ -429,7 +431,7 @@ export function WorkspaceLauncher({
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <section className="mx-auto w-full max-w-3xl px-6 py-12 sm:py-16">
+        <section className="mx-auto w-full max-w-7xl px-6 py-12 sm:py-16">
           <div className="flex items-start justify-between gap-6">
             <div>
               <p className="text-xs font-medium text-sky-400">Workspaces</p>
@@ -442,7 +444,7 @@ export function WorkspaceLauncher({
             </div>
             {projects.length > 0 && !isLoading ? (
               <button
-                className={cn(primaryButtonClassName, "inline-flex shrink-0 items-center gap-1.5")}
+                className={cn(primaryButtonClassName, addWorkspaceButtonClassName)}
                 disabled={mutationPending}
                 onClick={showAddDialog}
                 type="button"
@@ -470,10 +472,11 @@ export function WorkspaceLauncher({
             <div
               aria-busy="true"
               aria-label="Loading workspaces"
-              className="mt-8 grid gap-3 sm:grid-cols-2"
+              className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
+              data-workspace-grid
               role="status"
             >
-              {[0, 1].map((index) => (
+              {[0, 1, 2, 3].map((index) => (
                 <div className="overflow-hidden border border-zinc-800 bg-zinc-950" key={index}>
                   <div className="aspect-video bg-zinc-900" />
                   <div className="p-4">
@@ -485,7 +488,7 @@ export function WorkspaceLauncher({
               ))}
             </div>
           ) : projects.length > 0 ? (
-            <ul className="mt-8 grid gap-3 sm:grid-cols-2">
+            <ul className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4" data-workspace-grid>
               {projects.map((project) => (
                 <WorkspaceCard
                   key={project.id}
@@ -506,7 +509,7 @@ export function WorkspaceLauncher({
                   : "Create a workspace to start with an editable Manim Scene."}
               </p>
               <button
-                className={cn(primaryButtonClassName, "mt-4 inline-flex items-center gap-1.5")}
+                className={cn(primaryButtonClassName, addWorkspaceButtonClassName, "mt-4")}
                 onClick={showAddDialog}
                 type="button"
               >
