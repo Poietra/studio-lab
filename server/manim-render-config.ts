@@ -9,6 +9,7 @@ export type ManimRenderPipelineOptions = Readonly<{
   frameWidth?: number;
   projects?: readonly ManimProjectConfig[];
   projectRoot?: string;
+  snapshotSandboxDeployment?: "development" | "production" | "test";
   snapshotProducerCommand?: readonly string[];
   snapshotProducerDevOptIn?: boolean;
   workspaceDataRoot?: string;

@@ -126,6 +126,7 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     const publicationStore = new FastManimSnapshotPublicationStore();
     let runtimeDir = "";
     let removalCount = 0;
+    let rejectionPropertyReads = 0;
     const runner = createRunner(await projectRoot(), producerCommand(), {
       admissionController,
       logger,
@@ -135,7 +136,23 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
         await rm(path, { force: true, recursive: true });
         removalCount += 1;
         if (removalCount === 1) return;
-        throw Object.assign(new Error(`private path: ${path}`), { code: "ECLEANUP" });
+        throw Object.defineProperties(
+          {},
+          {
+            code: {
+              get() {
+                rejectionPropertyReads += 1;
+                throw new Error(`secret cleanup code: ${path}`);
+              },
+            },
+            name: {
+              get() {
+                rejectionPropertyReads += 1;
+                throw new Error(`secret cleanup name: ${path}`);
+              },
+            },
+          },
+        );
       },
     });
     const expected = { message: "The Scene snapshot runtime directory could not be cleaned up.", status: 500 };
@@ -149,9 +166,10 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     // close releases the prior entry even though it must also surface cleanup failure.
     expect(publicationStore.entriesOf(1)).toEqual([]);
     expect(runtimeDir).toContain("poietra-producer-");
+    expect(rejectionPropertyReads).toBe(0);
     const serializedLogs = JSON.stringify(records);
     expect(serializedLogs).not.toContain(runtimeDir);
-    expect(serializedLogs).toContain('"code":"ECLEANUP"');
+    expect(serializedLogs).toContain('"failure":"runtime-directory-removal-rejected"');
   });
 
   it.each([

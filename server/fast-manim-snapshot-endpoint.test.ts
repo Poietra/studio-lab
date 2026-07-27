@@ -33,8 +33,9 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot endpoint", () => {
       command: ["node", fakeManim],
       frame: { height: 8, width: 14.222222222222221 },
       projectRoot: root,
+      snapshotSandboxDeployment: "test",
       snapshotProducerCommand: producerCommand(),
-      snapshotProducerEnabled: true,
+      snapshotProducerDevOptIn: true,
     });
     managers.push(manager);
     const baseUrl = await startServer(manager);
@@ -88,8 +89,9 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot endpoint", () => {
       command: ["node", fakeManim],
       frame: { height: 8, width: 14.222222222222221 },
       projectRoot: root,
+      snapshotSandboxDeployment: "test",
       snapshotProducerCommand: producerCommand(),
-      snapshotProducerEnabled: true,
+      snapshotProducerDevOptIn: true,
     });
     managers.push(manager);
     const baseUrl = await startServer(manager);
@@ -136,6 +138,6 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot endpoint", () => {
     });
     expect(posted.status).toBe(200);
     const view = fastManimSnapshotRunViewV1Schema.parse(await posted.json());
-    expectFailure(view, "producer-unconfigured");
+    expectFailure(view, "sandbox-unavailable");
   });
 });

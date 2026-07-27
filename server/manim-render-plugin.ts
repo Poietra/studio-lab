@@ -5,10 +5,10 @@ import type { Plugin } from "vite";
 
 import { sendJson } from "./http/json";
 import { createConsoleJsonSink, createStructuredLogger } from "./logging/structured-logger";
-import { parseManimCommand, type ManimRenderPipelineOptions } from "./manim-render-config";
-import { handleManimRequest } from "./manim-render-http";
 import { PersistentManimProjectCatalog } from "./manim-project-catalog";
 import { ManimProjectRegistry } from "./manim-project-registry";
+import { type ManimRenderPipelineOptions, parseManimCommand } from "./manim-render-config";
+import { handleManimRequest } from "./manim-render-http";
 
 export function manimRenderPipeline(options: ManimRenderPipelineOptions = {}): Plugin {
   let manager: ManimProjectRegistry | null = null;
@@ -40,8 +40,10 @@ export function manimRenderPipeline(options: ManimRenderPipelineOptions = {}): P
         },
         logger,
         projects: seedProjects,
+        snapshotSandboxDeployment: options.snapshotSandboxDeployment ?? "production",
         snapshotProducerCommand: options.snapshotProducerCommand,
-        snapshotProducerEnabled: options.snapshotProducerDevOptIn ?? false,
+        snapshotProducerDevOptIn: options.snapshotProducerDevOptIn ?? false,
+        snapshotTenantId: "studio-local",
         thumbnailCacheRoot: join(realpathSync(dataRoot), "thumbnails"),
       });
     },

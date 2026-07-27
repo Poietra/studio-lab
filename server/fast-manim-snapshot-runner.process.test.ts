@@ -12,7 +12,6 @@ import {
   fastManimSnapshotSceneIdV1,
   ZERO_SHA256,
 } from "./fast-manim-snapshot-contract";
-import { FastManimSnapshotRunner } from "./fast-manim-snapshot-runner";
 import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import {
   createRunner,
@@ -34,12 +33,12 @@ const { projectRoot, reapAfterTest } = installFastManimSnapshotRunnerFixture();
 describe("fast-manim snapshot runner portability", () => {
   it("fails closed when no producer is configured or the dev opt-in is missing", async () => {
     const root = await projectRoot();
-    expectFailure(await createRunner(root, null).run(runRequest()), "producer-unconfigured");
+    expectFailure(await createRunner(root, null).run(runRequest()), "sandbox-unavailable");
     // A configured command without the explicit dev opt-in stays fail-closed
     // until OS/network sandboxing (#80) lands.
     const pidFile = join(root, "opt-out.pid");
     const gated = createRunner(root, producerCommand(`--pid-file=${pidFile}`), { enabled: false });
-    expectFailure(await gated.run(runRequest()), "producer-unconfigured");
+    expectFailure(await gated.run(runRequest()), "sandbox-unavailable");
     await expect(readFile(pidFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -189,7 +188,9 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
       producerProcessTimings: { killGraceMs: TEST_PRODUCER_PROCESS_TIMINGS.killGraceMs },
       timeoutMs: 5_000,
     });
-    expectFailure(await runner.run(runRequest()), "producer-output-overflow");
+    // The descendant is bounded, but its terminal overflow result arrives only
+    // after the runner deadline; deadline authority therefore wins.
+    expectFailure(await runner.run(runRequest()), "producer-timeout");
     await expectNoSnapshot(runner);
     const orphanPid = Number(await readFile(orphanPidFile, "utf8"));
     reapAfterTest(orphanPid);
@@ -257,14 +258,7 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
   it("never lets producer stderr bytes reach the structured logs or the HTTP result", async () => {
     const records: StructuredLogRecord[] = [];
     const logger = createStructuredLogger({ sinks: [{ write: (record) => records.push(record) }] });
-    const runner = new FastManimSnapshotRunner({
-      command: producerCommand("--mode=exit-2"),
-      enabled: true,
-      frame: { height: 8, width: 14.222222222222221 },
-      logger,
-      projectId: "default",
-      projectRoot: await projectRoot(),
-    });
+    const runner = createRunner(await projectRoot(), producerCommand("--mode=exit-2"), { logger });
     const view = await runner.run(runRequest());
     expectFailure(view, "producer-exit");
     // Serialize every log record and the returned envelope: producer stderr
@@ -327,6 +321,14 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
 
   it("refuses producerEnv values that reintroduce the project root", async () => {
     const root = await projectRoot();
+    for (const key of ["HOME", "TEMP", "TMP", "TMPDIR"] as const) {
+      expect(() => createRunner(root, producerCommand(), { producerEnv: { [key]: "/host/runtime" } })).toThrow(
+        /private runtime directory/i,
+      );
+    }
+    expect(() => createRunner(root, producerCommand(), { producerEnv: { home: "/host/runtime" } })).toThrow(
+      /private runtime directory/i,
+    );
     expect(() => createRunner(root, producerCommand(), { producerEnv: { PYTHONPATH: root } })).toThrow(/project root/i);
     expect(() =>
       createRunner(root, producerCommand(), {

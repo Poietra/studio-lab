@@ -176,7 +176,7 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
         // synchronously before any child exists.
         producerEnv: { POIETRA_BROKEN: `nul${String.fromCharCode(0)}value` },
       });
-      await expect(broken.run(runRequest())).rejects.toThrow();
+      expectFailure(await broken.run(runRequest()), "sandbox-execution-failed");
       expect(controller.activeCount).toBe(0);
       expect(await readdir(runtimeTmpRoot)).toEqual([]);
       // The slot is free again: a subsequent run under the same controller is admitted.

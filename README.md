@@ -58,6 +58,9 @@ DAG, pure ProposedState evaluator, transaction rules, and verification boundary 
 documented in the [Studio state and operation model](docs/studio-state-operation-model.md).
 The first real Manim round trip is documented in the
 [rendered validation pipeline](docs/rendered-validation-pipeline.md).
+The default-off fast-manim execution boundary and its remaining production
+dependencies are documented in the
+[sandbox backend runbook](docs/fast-manim-sandbox-backend.md).
 The ownership boundary between Studio source analysis, Runtime Trace, Studio
 markers, and the independent `manim-lint` project is recorded in
 [ADR 0001](docs/adr/0001-studio-owned-source-analysis.md).

@@ -6,16 +6,21 @@ import type {
   RenderCommitRequest,
   RenderSourceActionCancellationRequest,
 } from "../src/render-pipeline/contracts";
+import type {
+  FastManimSandboxAttestationVerifierV1,
+  FastManimSandboxBackendV1,
+  FastManimSandboxDeployment,
+} from "./fast-manim-sandbox-backend";
 import type { FastManimSnapshotQueryV1, FastManimSnapshotRunRequestV1 } from "./fast-manim-snapshot-contract";
 import { HttpError } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
-import type { ManimProjectConfig } from "./manim-render-config";
-import { ManimRenderManager } from "./manim-render-manager";
 import {
   type PersistentManimProjectCatalog,
   type ResolvedManimProject,
   resolveManimProjects,
 } from "./manim-project-catalog";
+import type { ManimProjectConfig } from "./manim-render-config";
+import { ManimRenderManager } from "./manim-render-manager";
 
 export class ManimProjectRegistry {
   private readonly catalog: PersistentManimProjectCatalog | null;
@@ -28,8 +33,14 @@ export class ManimProjectRegistry {
   private readonly renderTimeoutMs: number | undefined;
   private readonly sessionProjects = new Map<string, string>();
   private readonly sessionRetentionMs: number | undefined;
+  private readonly snapshotSandboxAttestationVerifier: FastManimSandboxAttestationVerifierV1 | undefined;
+  private readonly snapshotSandboxBackendFactory:
+    | ((project: Readonly<{ projectId: string; projectRoot: string }>) => FastManimSandboxBackendV1)
+    | undefined;
+  private readonly snapshotSandboxDeployment: FastManimSandboxDeployment;
   private readonly snapshotProducerCommand: readonly string[] | undefined;
-  private readonly snapshotProducerEnabled: boolean | undefined;
+  private readonly snapshotProducerDevOptIn: boolean | undefined;
+  private readonly snapshotTenantId: string | undefined;
   private readonly snapshotTimeoutMs: number | undefined;
   private readonly thumbnailCacheRoot: string | undefined;
 
@@ -44,8 +55,14 @@ export class ManimProjectRegistry {
       projects: readonly ManimProjectConfig[];
       renderTimeoutMs?: number;
       sessionRetentionMs?: number;
+      snapshotSandboxAttestationVerifier?: FastManimSandboxAttestationVerifierV1;
+      snapshotSandboxBackendFactory?: (
+        project: Readonly<{ projectId: string; projectRoot: string }>,
+      ) => FastManimSandboxBackendV1;
+      snapshotSandboxDeployment?: FastManimSandboxDeployment;
       snapshotProducerCommand?: readonly string[];
-      snapshotProducerEnabled?: boolean;
+      snapshotProducerDevOptIn?: boolean;
+      snapshotTenantId?: string;
       snapshotTimeoutMs?: number;
       thumbnailCacheRoot?: string;
     }>,
@@ -59,8 +76,12 @@ export class ManimProjectRegistry {
     this.maxRetainedSessions = options.maxRetainedSessions;
     this.renderTimeoutMs = options.renderTimeoutMs;
     this.sessionRetentionMs = options.sessionRetentionMs;
+    this.snapshotSandboxAttestationVerifier = options.snapshotSandboxAttestationVerifier;
+    this.snapshotSandboxBackendFactory = options.snapshotSandboxBackendFactory;
+    this.snapshotSandboxDeployment = options.snapshotSandboxDeployment ?? "production";
     this.snapshotProducerCommand = options.snapshotProducerCommand;
-    this.snapshotProducerEnabled = options.snapshotProducerEnabled;
+    this.snapshotProducerDevOptIn = options.snapshotProducerDevOptIn;
+    this.snapshotTenantId = options.snapshotTenantId;
     this.snapshotTimeoutMs = options.snapshotTimeoutMs;
     this.thumbnailCacheRoot = options.thumbnailCacheRoot;
     const configuredProjects = this.catalog?.projects() ?? resolveManimProjects(options.projects);
@@ -88,8 +109,15 @@ export class ManimProjectRegistry {
         projectRoot: canonicalRoot,
         renderTimeoutMs: this.renderTimeoutMs,
         sessionRetentionMs: this.sessionRetentionMs,
+        snapshotSandboxAttestationVerifier: this.snapshotSandboxAttestationVerifier,
+        snapshotSandboxBackend: this.snapshotSandboxBackendFactory?.({
+          projectId,
+          projectRoot: canonicalRoot,
+        }),
+        snapshotSandboxDeployment: this.snapshotSandboxDeployment,
         snapshotProducerCommand: this.snapshotProducerCommand,
-        snapshotProducerEnabled: this.snapshotProducerEnabled,
+        snapshotProducerDevOptIn: this.snapshotProducerDevOptIn,
+        snapshotTenantId: this.snapshotTenantId,
         snapshotTimeoutMs: this.snapshotTimeoutMs,
         thumbnailCacheRoot: this.thumbnailCacheRoot,
       }),
