@@ -9,7 +9,7 @@ use poietra_render_wgpu::{
 use poietra_scene_ir::{RenderDrawV1, ViewportV1};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen_futures::JsFuture;
+use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::OffscreenCanvas;
 
 use crate::canvas_protocol::{
@@ -45,6 +45,14 @@ struct SurfaceSelectionV1 {
 }
 
 type SharedFailureV1 = Arc<Mutex<Option<RuntimeFailureV1>>>;
+
+#[derive(Debug, Default)]
+struct DeferredGpuScopeStateV1 {
+    failure: Option<RuntimeFailureV1>,
+    pending: bool,
+}
+
+type SharedDeferredGpuScopeStateV1 = Arc<Mutex<DeferredGpuScopeStateV1>>;
 
 /// Captured `performance.now` handle from the worker global scope.
 ///
@@ -93,6 +101,17 @@ impl WorkerClockV1 {
 
 struct GpuErrorScopesV1 {
     raw_device: JsValue,
+}
+
+struct PendingGpuErrorScopesV1 {
+    internal: PendingRawErrorScopeV1,
+    out_of_memory: PendingRawErrorScopeV1,
+    validation: PendingRawErrorScopeV1,
+}
+
+enum PendingRawErrorScopeV1 {
+    Promise(js_sys::Promise),
+    Rejected(RuntimeFailureV1),
 }
 
 struct RawUncapturedErrorListenerV1 {
@@ -156,26 +175,107 @@ impl GpuErrorScopesV1 {
         // wgpu 30's browser `pop_error_scope` converter panics on GPUInternalError.
         // Use the same WebGPU scopes directly so every variant fails closed instead.
         let raw_device = raw_webgpu_device(device)?;
-        for filter in ["internal", "out-of-memory", "validation"] {
-            call_js_method_one(&raw_device, "pushErrorScope", &JsValue::from_str(filter)).map_err(
-                |error| RuntimeFailureV1 {
+        for (pushed_scope_count, filter) in ["internal", "out-of-memory", "validation"]
+            .into_iter()
+            .enumerate()
+        {
+            if let Err(error) =
+                call_js_method_one(&raw_device, "pushErrorScope", &JsValue::from_str(filter))
+            {
+                // `pushErrorScope()` is not transactional. Roll back every
+                // scope that this call already pushed before returning the
+                // failure, otherwise a partial diagnostic batch could sit
+                // above the rolling normal batch and corrupt its next pop.
+                rollback_pushed_error_scopes(&raw_device, pushed_scope_count);
+                return Err(RuntimeFailureV1 {
                     code: CanvasRenderErrorCodeV1::GpuInternal,
                     message: format!(
                         "could not push {filter} WebGPU error scope: {}",
                         js_error_message(&error)
                     ),
-                },
-            )?;
+                });
+            }
         }
         Ok(Self { raw_device })
     }
 
+    fn pop(self) -> PendingGpuErrorScopesV1 {
+        // `popErrorScope()` removes a scope from the device stack immediately,
+        // before its returned Promise settles. Pop all three synchronously so
+        // later frames cannot become nested inside an earlier frame's scopes.
+        // The normal path may then drain these already-started Promises in the
+        // background, while the diagnostic path retains ownership and awaits
+        // them for error attribution and timing.
+        PendingGpuErrorScopesV1 {
+            validation: begin_pop_raw_error_scope(&self.raw_device),
+            out_of_memory: begin_pop_raw_error_scope(&self.raw_device),
+            internal: begin_pop_raw_error_scope(&self.raw_device),
+        }
+    }
+}
+
+impl PendingGpuErrorScopesV1 {
+    fn immediate_failure(&self) -> Option<RuntimeFailureV1> {
+        self.out_of_memory
+            .immediate_failure()
+            .or_else(|| self.validation.immediate_failure())
+            .or_else(|| self.internal.immediate_failure())
+    }
+
     async fn finish(self) -> Option<RuntimeFailureV1> {
-        let validation = pop_raw_error_scope(&self.raw_device).await;
-        let out_of_memory = pop_raw_error_scope(&self.raw_device).await;
-        let internal = pop_raw_error_scope(&self.raw_device).await;
+        // Every Promise is already in flight, so these awaits do not serialize
+        // the three WebGPU pop operations. Preserve the established failure
+        // priority: OOM, validation, then internal.
+        let validation = self.validation.finish().await;
+        let out_of_memory = self.out_of_memory.finish().await;
+        let internal = self.internal.finish().await;
         out_of_memory.or(validation).or(internal)
     }
+}
+
+impl PendingRawErrorScopeV1 {
+    fn immediate_failure(&self) -> Option<RuntimeFailureV1> {
+        match self {
+            Self::Promise(_) => None,
+            Self::Rejected(failure) => Some(failure.clone()),
+        }
+    }
+
+    async fn finish(self) -> Option<RuntimeFailureV1> {
+        let promise = match self {
+            Self::Promise(promise) => promise,
+            Self::Rejected(failure) => return Some(failure),
+        };
+        match JsFuture::from(promise).await {
+            Ok(value) if value.is_null() || value.is_undefined() => None,
+            Ok(error) => Some(runtime_failure_from_js_gpu_error(&error)),
+            Err(error) => Some(RuntimeFailureV1 {
+                code: CanvasRenderErrorCodeV1::GpuInternal,
+                message: format!(
+                    "WebGPU error scope promise rejected: {}",
+                    js_error_message(&error)
+                ),
+            }),
+        }
+    }
+}
+
+fn rollback_pushed_error_scopes(raw_device: &JsValue, pushed_scope_count: usize) {
+    if pushed_scope_count == 0 {
+        return;
+    }
+
+    // All successful pushes are synchronously matched with a pop before the
+    // caller can continue. Promise settlement is drained by exactly one task;
+    // the fixed filter set bounds this vector at two entries on push failure.
+    let pending_scopes: Vec<_> = (0..pushed_scope_count)
+        .map(|_| begin_pop_raw_error_scope(raw_device))
+        .collect();
+    spawn_local(async move {
+        for pending_scope in pending_scopes {
+            let _failure = pending_scope.finish().await;
+        }
+    });
 }
 
 /// Retained Scene evaluator and WebGPU surface owned by one browser worker.
@@ -190,7 +290,9 @@ pub struct PoietraCanvasEngineV1 {
     // Kept before `device` so Drop unregisters the JS callback first.
     _uncaptured_error_listener: RawUncapturedErrorListenerV1,
     device: wgpu::Device,
+    deferred_scope_state: SharedDeferredGpuScopeStateV1,
     device_lost: SharedFailureV1,
+    normal_active_error_scopes: Option<GpuErrorScopesV1>,
     queue: wgpu::Queue,
     renderer: WgpuPaintRendererV1,
     session: EngineWorkerSessionV1,
@@ -277,7 +379,7 @@ impl PoietraCanvasEngineV1 {
         let renderer = WgpuPaintRendererV1::new(&device, selection.view_format).map_err(|error| {
             renderer_unavailable(&format!("could not create paint renderer: {error}"))
         });
-        let scoped_failure = scopes.finish().await;
+        let scoped_failure = scopes.pop().finish().await;
         if let Some(failure) = scoped_failure {
             return Err(renderer_unavailable(&failure.message));
         }
@@ -295,7 +397,9 @@ impl PoietraCanvasEngineV1 {
             frame_surface_configurations: Some(0),
             _uncaptured_error_listener: uncaptured_error_listener,
             device,
+            deferred_scope_state: Arc::new(Mutex::new(DeferredGpuScopeStateV1::default())),
             device_lost,
+            normal_active_error_scopes: None,
             queue,
             renderer,
             session,
@@ -334,6 +438,7 @@ impl PoietraCanvasEngineV1 {
     /// The returned JSON contains only presentation correlation or a structured
     /// error. A `RenderPacket` never crosses this ABI.
     #[must_use]
+    #[allow(clippy::unused_async)] // Preserve the Promise-returning wasm-bindgen ABI without awaiting GPU progress.
     pub async fn render(&mut self, request_json: &[u8]) -> Vec<u8> {
         let sampled = match self.session.sample_packet_json(request_json) {
             Ok(sampled) => sampled,
@@ -354,7 +459,7 @@ impl PoietraCanvasEngineV1 {
             }
         };
 
-        match self.render_prepared_frame(&frame).await {
+        match self.render_prepared_frame(&frame) {
             Ok(suboptimal) => presented_response(correlation, suboptimal),
             Err(failure) => error_response(failure.code, &failure.message, Some(correlation)),
         }
@@ -467,7 +572,7 @@ impl PoietraCanvasEngineV1 {
         telemetry.counts.tessellation_calls = Some(frame.tessellation_calls());
 
         match self
-            .render_prepared_frame_instrumented(&frame, Some((&clock, &mut telemetry)))
+            .render_prepared_frame_instrumented(&frame, &clock, &mut telemetry)
             .await
         {
             Ok(suboptimal) => {
@@ -535,52 +640,112 @@ impl PoietraCanvasEngineV1 {
 }
 
 impl PoietraCanvasEngineV1 {
-    async fn render_prepared_frame(
-        &mut self,
-        frame: &PreparedFrameV1,
-    ) -> Result<bool, RuntimeFailureV1> {
-        self.render_prepared_frame_instrumented(frame, None).await
+    fn render_prepared_frame(&mut self, frame: &PreparedFrameV1) -> Result<bool, RuntimeFailureV1> {
+        if let Some(failure) = self.current_terminal_failure() {
+            return Err(failure);
+        }
+
+        // One engine-owned rolling batch always covers normal GPU operations.
+        // It may span many frames while the previous popped batch waits for
+        // GPU progress, but normal rendering is never allowed to run unscoped.
+        if self.normal_active_error_scopes.is_none() {
+            match GpuErrorScopesV1::push(&self.device) {
+                Ok(scopes) => self.normal_active_error_scopes = Some(scopes),
+                Err(failure) => {
+                    retain_deferred_gpu_scope_failure(&self.deferred_scope_state, failure.clone());
+                    return Err(failure);
+                }
+            }
+        }
+
+        let operation = self.render_frame_operation(frame, None);
+        if let Some(failure) = self.current_terminal_failure() {
+            return Err(failure);
+        }
+
+        // Only rotate at a frame boundary when the single deferred slot is
+        // free. While it is occupied, the active batch remains on the device
+        // stack and covers every subsequent normal frame without creating new
+        // tasks or Promises.
+        if !begin_deferred_gpu_scope_batch(&self.deferred_scope_state) {
+            return operation;
+        }
+        let Some(active_scopes) = self.normal_active_error_scopes.take() else {
+            let failure = RuntimeFailureV1 {
+                code: CanvasRenderErrorCodeV1::GpuInternal,
+                message: "normal rendering lost its active WebGPU error scopes".to_owned(),
+            };
+            complete_deferred_gpu_scope_batch(&self.deferred_scope_state, Some(failure.clone()));
+            return Err(failure);
+        };
+        let pending_scopes = active_scopes.pop();
+        let immediate_failure = pending_scopes.immediate_failure();
+        let replacement_failure = match GpuErrorScopesV1::push(&self.device) {
+            Ok(scopes) => {
+                self.normal_active_error_scopes = Some(scopes);
+                None
+            }
+            Err(failure) => Some(failure),
+        };
+        let deferred_scope_state = Arc::clone(&self.deferred_scope_state);
+        // Scope Promises can wait for GPU progress. The replacement batch is
+        // already active before this detached drain is scheduled, so coverage
+        // is continuous while ownership stays bounded at one active batch plus
+        // one pending batch/task.
+        spawn_local(async move {
+            let failure = pending_scopes.finish().await;
+            complete_deferred_gpu_scope_batch(&deferred_scope_state, failure);
+        });
+
+        if let Some(failure) = immediate_failure.or(replacement_failure) {
+            retain_deferred_gpu_scope_failure(&self.deferred_scope_state, failure.clone());
+            return Err(failure);
+        }
+        operation
     }
 
     async fn render_prepared_frame_instrumented(
         &mut self,
         frame: &PreparedFrameV1,
-        mut telemetry: Option<(&WorkerClockV1, &mut FrameTelemetryV1)>,
+        clock: &WorkerClockV1,
+        telemetry: &mut FrameTelemetryV1,
     ) -> Result<bool, RuntimeFailureV1> {
         if let Some(failure) = self.current_terminal_failure() {
             return Err(failure);
         }
 
-        let scopes = GpuErrorScopesV1::push(&self.device)?;
-        let operation = self.render_with_active_scopes(
-            frame,
-            telemetry
-                .as_mut()
-                .map(|(clock, recorder)| (*clock, &mut **recorder)),
-        );
+        let scopes = match GpuErrorScopesV1::push(&self.device) {
+            Ok(scopes) => scopes,
+            Err(failure) => {
+                retain_deferred_gpu_scope_failure(&self.deferred_scope_state, failure.clone());
+                return Err(failure);
+            }
+        };
+        let operation = self.render_frame_operation(frame, Some((clock, telemetry)));
         // Popping the three WebGPU error scopes awaits their promises, which
         // can block on GPU progress; measure it as its own additive phase so
         // the wait is attributed instead of vanishing into totalMs.
-        let scope_resolution_started = telemetry.as_ref().and_then(|(clock, _)| clock.now_ms());
-        let scoped_failure = scopes.finish().await;
-        if let Some((clock, recorder)) = telemetry.as_mut() {
-            recorder.phases.gpu_error_scope_resolution = PhaseSampleV1::from_optional_ms(
-                clock.elapsed_ms(scope_resolution_started),
-                CLOCK_UNAVAILABLE_REASON_V1,
-            );
-        }
+        let scope_resolution_started = clock.now_ms();
+        let scoped_failure = scopes.pop().finish().await;
+        telemetry.phases.gpu_error_scope_resolution = PhaseSampleV1::from_optional_ms(
+            clock.elapsed_ms(scope_resolution_started),
+            CLOCK_UNAVAILABLE_REASON_V1,
+        );
 
-        if let Some(failure) = self.current_terminal_failure() {
-            return Err(failure);
-        }
         if let Some(failure) = scoped_failure {
+            // A pop API failure, rejected Promise, or scoped GPU error means
+            // the scope stack can no longer be trusted for later frames. Keep
+            // it terminal even though this diagnostic call already reports it.
+            retain_deferred_gpu_scope_failure(&self.deferred_scope_state, failure.clone());
+        }
+        if let Some(failure) = self.current_terminal_failure() {
             return Err(failure);
         }
         operation
     }
 
     #[allow(clippy::too_many_lines)] // Every exit path finalizes evidence in place; splitting would hide that.
-    fn render_with_active_scopes(
+    fn render_frame_operation(
         &mut self,
         frame: &PreparedFrameV1,
         telemetry: Option<(&WorkerClockV1, &mut FrameTelemetryV1)>,
@@ -859,6 +1024,7 @@ impl PoietraCanvasEngineV1 {
         read_shared_failure(&self.device_lost)
             .or_else(|| read_shared_failure(&self.uncaptured_gpu_failure))
             .or_else(|| self.terminal_surface_failure.clone())
+            .or_else(|| read_deferred_gpu_scope_failure(&self.deferred_scope_state))
     }
 
     fn record_terminal_surface_failure(
@@ -912,28 +1078,15 @@ fn raw_webgpu_device(device: &wgpu::Device) -> Result<JsValue, RuntimeFailureV1>
         .map(|device| device.clone().into())
 }
 
-async fn pop_raw_error_scope(raw_device: &JsValue) -> Option<RuntimeFailureV1> {
-    let promise = match call_js_method_zero(raw_device, "popErrorScope")
+fn begin_pop_raw_error_scope(raw_device: &JsValue) -> PendingRawErrorScopeV1 {
+    match call_js_method_zero(raw_device, "popErrorScope")
         .and_then(wasm_bindgen::JsCast::dyn_into::<js_sys::Promise>)
     {
-        Ok(promise) => promise,
-        Err(error) => {
-            return Some(RuntimeFailureV1 {
-                code: CanvasRenderErrorCodeV1::GpuInternal,
-                message: format!(
-                    "could not pop WebGPU error scope: {}",
-                    js_error_message(&error)
-                ),
-            });
-        }
-    };
-    match JsFuture::from(promise).await {
-        Ok(value) if value.is_null() || value.is_undefined() => None,
-        Ok(error) => Some(runtime_failure_from_js_gpu_error(&error)),
-        Err(error) => Some(RuntimeFailureV1 {
+        Ok(promise) => PendingRawErrorScopeV1::Promise(promise),
+        Err(error) => PendingRawErrorScopeV1::Rejected(RuntimeFailureV1 {
             code: CanvasRenderErrorCodeV1::GpuInternal,
             message: format!(
-                "WebGPU error scope promise rejected: {}",
+                "could not pop WebGPU error scope: {}",
                 js_error_message(&error)
             ),
         }),
@@ -1059,6 +1212,55 @@ fn read_shared_failure(shared: &SharedFailureV1) -> Option<RuntimeFailureV1> {
     shared
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+fn begin_deferred_gpu_scope_batch(shared: &SharedDeferredGpuScopeStateV1) -> bool {
+    let mut state = shared
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if state.pending {
+        return false;
+    }
+    state.pending = true;
+    true
+}
+
+fn complete_deferred_gpu_scope_batch(
+    shared: &SharedDeferredGpuScopeStateV1,
+    failure: Option<RuntimeFailureV1>,
+) {
+    let mut state = shared
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if state.failure.is_none() {
+        state.failure = failure;
+    }
+    // Publish the failure before reopening the slot. A later render therefore
+    // observes either the terminal error or an available batch, never a gap in
+    // which another detached scope task could be created first.
+    state.pending = false;
+}
+
+fn retain_deferred_gpu_scope_failure(
+    shared: &SharedDeferredGpuScopeStateV1,
+    failure: RuntimeFailureV1,
+) {
+    let mut state = shared
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if state.failure.is_none() {
+        state.failure = Some(failure);
+    }
+}
+
+fn read_deferred_gpu_scope_failure(
+    shared: &SharedDeferredGpuScopeStateV1,
+) -> Option<RuntimeFailureV1> {
+    shared
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .failure
         .clone()
 }
 
