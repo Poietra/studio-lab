@@ -464,7 +464,7 @@ The following evidence is reproducible in this repository:
 | renderer capability coverage | partial | solid convex cubic fills and static untrimmed canonical Line strokes work; broader stroke, image, multiple subpaths, other open paths, and non-convex fill remain truthful fallbacks |
 | Studio preview integration | partial for the opt-in static profile | `?previewRenderer=server` selects a real project source and Scene, installs its verified server snapshot once, and accepts only exactly correlated retained frame acknowledgements while the semantic editor stays mounted; exact GPU texture readback is covered, but a visible browser-compositor golden on a named real-GPU host remains #78 evidence and verified source-to-runtime hit geometry remains #91 |
 | incremental edit transfer | partial | a Studio-only, 256 KiB, stale-revision-safe atomic delta contract is verified in TypeScript; Worker/WASM still receives complete replacement snapshots |
-| fast-manim bridge | met for the bounded static profile | the real exporter emits complete camera, paint-order, appearance, and geometry evidence for a filled Circle, filled Rectangle, and canonical stroked Line; the server executes it with bounded local controls, verifies and seals it, and unsupported or failed results fall back as a whole Scene; this profile still fixes duration at one second, while variable runtime timing remains #75 and Poietra/fast-manim#7 |
+| fast-manim bridge | met for the bounded static profile; production execution blocked | the real exporter emits complete camera, paint-order, appearance, and geometry evidence for a filled Circle, filled Rectangle, and canonical stroked Line; Studio now hands canonical immutable request bytes only to the explicit [sandbox backend boundary](../fast-manim-sandbox-backend.md), rechecks backend attestation and result correlation, then verifies and seals the result. Runner-owned status/job/close bounds quarantine adapters that miss lifecycle promises, omitted deployment defaults to production, and the local-process adapter remains explicit dev/test-only. The profile still fixes duration at one second, while variable runtime timing remains #75 and Poietra/fast-manim#7 |
 | frame, scrub, and cold-start latency | instrumented, decision evidence not met | an opt-in browser harness records 20 cold starts and warm/scrub acknowledgement p95, but no reference-host report for evaluate-plus-submit or input-to-present is checked in |
 | browser memory budget | unmeasured | no loaded-baseline/peak-memory report has been checked in |
 
@@ -487,6 +487,12 @@ Production migration remains blocked until independent follow-up work provides:
 4. a production fail-closed OS sandbox for arbitrary Python execution, with
    immutable request inputs, network/credential/host isolation, hard resource
    limits, descendant reaping, and multi-tenant adversarial evidence (#80–#85).
+
+The Studio-side backend/job contract, runner-owned lifecycle bounds, production-
+safe deployment default, and default-off local adapter are defined by #81 and
+documented in the sandbox runbook. They establish the fail-closed handoff but do
+not satisfy the OS isolation, hard-limit, multi-tenant, or rollout evidence
+required from #82–#85.
 
 The previously listed `PreviewRenderer` host and explicit server-side fast-manim
 snapshot exporter are implemented for the narrow static profile. The host's visible
