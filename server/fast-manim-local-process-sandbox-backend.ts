@@ -287,11 +287,10 @@ export class LocalProcessFastManimSandboxBackendV1 implements FastManimSandboxBa
   async #removeRuntimeDir(runtimeDir: string) {
     try {
       await this.#runtimeDirectoryRemover(runtimeDir);
-    } catch (error) {
+    } catch {
       this.#cleanupFailed = true;
       this.#logger.error("snapshot.sandbox_runtime_cleanup_failed", {
-        code: error instanceof Error && "code" in error ? String((error as NodeJS.ErrnoException).code) : null,
-        name: error instanceof Error ? error.name : typeof error,
+        failure: "runtime-directory-removal-rejected",
       });
       throw new FastManimSandboxBackendControlError("cleanup");
     }

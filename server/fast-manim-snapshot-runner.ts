@@ -1,8 +1,20 @@
-import type { ChildProcess } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { delimiter, isAbsolute, join, resolve, sep } from "node:path";
+import { performance } from "node:perf_hooks";
 
+import {
+  copyFastManimSandboxUint8ArrayV1,
+  type FastManimSandboxAttestationVerifierV1,
+  FastManimSandboxBackendControlError,
+  type FastManimSandboxBackendResultV1,
+  type FastManimSandboxBackendV1,
+  type FastManimSandboxDeployment,
+  FastManimSandboxRequestBundleV1,
+  fastManimSandboxBackendControlErrorCode,
+  fastManimSandboxBackendResultV1Schema,
+  parseFastManimSandboxDeployment,
+  parseFastManimSandboxJobIdentityV1,
+  resolveFastManimSandboxReadiness,
+  UnavailableFastManimSandboxBackendV1,
+} from "./fast-manim-sandbox-backend";
 import {
   assertFastManimSnapshotDiagnosticsSafeV1,
   digestFastManimSnapshotRuntimeConfigV1,
@@ -13,39 +25,28 @@ import {
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
   FastManimSnapshotContractError,
-  fastManimSnapshotProducerRequestV1Schema,
   type FastManimSnapshotProducerRequestV1,
   type FastManimSnapshotQueryV1,
   type FastManimSnapshotRunFailureCodeV1,
-  fastManimSnapshotRunRequestV1Schema,
   type FastManimSnapshotRunRequestV1,
-  fastManimSnapshotRunViewV1Schema,
-  type FastManimSnapshotRunViewV1,
-  fastManimSnapshotSceneIdV1,
   type FastManimSnapshotRuntimeCapabilityV1,
   type FastManimSnapshotRuntimeConfigV1,
+  type FastManimSnapshotRunViewV1,
+  fastManimSnapshotProducerRequestV1Schema,
+  fastManimSnapshotRunRequestV1Schema,
+  fastManimSnapshotRunViewV1Schema,
+  fastManimSnapshotSceneIdV1,
+  MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES,
   parseAndSealFastManimSnapshotProducerJsonV1,
   parseVerifiedFastManimSnapshotResultV1,
   type VerifiedCompiledFastManimSnapshotResultV1,
   type VerifiedFastManimSnapshotResultV1,
 } from "./fast-manim-snapshot-contract";
-import {
-  type FastManimSnapshotAdmissionController,
-  type FastManimSnapshotPublicationStore,
-  processAdmissionController,
-  processPublicationStore,
-} from "./fast-manim-snapshot-publication";
-import {
-  abortError,
-  defaultKillProcessGroup,
-  type ProducerGroupKill,
-  type ProducerProcessTimings,
-  resolveProducerProcessTimings,
-  superviseProducerProcess,
-} from "./fast-manim-snapshot-producer-process";
+import { abortError } from "./fast-manim-snapshot-producer-process";
+import { type FastManimSnapshotPublicationStore, processPublicationStore } from "./fast-manim-snapshot-publication";
 import { HttpError } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
-import { ManimSourceStore, type ManimSourceReadHooks } from "./manim-source-store";
+import { type ManimSourceReadHooks, ManimSourceStore } from "./manim-source-store";
 
 // Publication accounting and admission control live in
 // ./fast-manim-snapshot-publication; the subprocess supervision state machine
@@ -55,7 +56,6 @@ export {
   FastManimSnapshotAdmissionController,
   FastManimSnapshotPublicationStore,
 } from "./fast-manim-snapshot-publication";
-export type { ProducerGroupKill } from "./fast-manim-snapshot-producer-process";
 
 const DEFAULT_SNAPSHOT_TIMEOUT_MS = 20_000;
 const MAX_SNAPSHOT_TIMEOUT_MS = 300_000;
@@ -63,12 +63,93 @@ const DEFAULT_MAX_CONCURRENT_SNAPSHOT_RUNS = 2;
 const DEFAULT_MAX_PUBLISHED_SNAPSHOTS = 16;
 const DEFAULT_MAX_PUBLISHED_BYTES = 16 * 1024 * 1024;
 const DEFAULT_PUBLISH_RETENTION_MS = 30 * 60_000;
+const SANDBOX_STATUS_SETTLE_GRACE_MS = 100;
+const MAX_SANDBOX_OPERATION_SETTLE_GRACE_MS = 10_000;
+const MAX_SANDBOX_STATUS_TIMEOUT_MS = 2_000;
+const MAX_SANDBOX_CLOSE_GRACE_MS = 10_000;
+const fastManimSandboxOperationDeadlineErrors = new WeakSet<object>();
+const fastManimSandboxJobHandleRejectedErrors = new WeakSet<object>();
+const nativePromiseThen = Promise.prototype.then;
 
-const runtimeDirectoryCleanupError = () =>
-  new HttpError("The Scene snapshot runtime directory could not be cleaned up.", 500);
+class FastManimSandboxOperationDeadlineError extends Error {
+  constructor() {
+    super("The sandbox backend operation exceeded its server-owned deadline.");
+    this.name = "FastManimSandboxOperationDeadlineError";
+    fastManimSandboxOperationDeadlineErrors.add(this);
+  }
+}
 
-/** Environment variables a producer may inherit from the server process. */
-const PRODUCER_ENV_ALLOWLIST = ["LANG", "LC_ALL", "LC_CTYPE", "PATH", "TZ", "VIRTUAL_ENV"] as const;
+class FastManimSandboxJobHandleRejectedError extends Error {
+  constructor() {
+    super("The sandbox backend returned an invalid job handle.");
+    this.name = "FastManimSandboxJobHandleRejectedError";
+    fastManimSandboxJobHandleRejectedErrors.add(this);
+  }
+}
+
+type FastManimSandboxDeadline = Readonly<{
+  epochMs: number;
+  monotonicMs: number;
+}>;
+
+type FastManimSandboxSettlement<T> =
+  | Readonly<{ kind: "fulfilled"; value: T }>
+  | Readonly<{ kind: "rejected"; reason: unknown }>;
+
+type ObservedFastManimSandboxPromise<T> = Promise<FastManimSandboxSettlement<T>>;
+
+function fulfilledFastManimSandboxSettlement<T>(value: T): FastManimSandboxSettlement<T> {
+  return Object.freeze(
+    Object.create(null, {
+      kind: { enumerable: true, value: "fulfilled" },
+      value: { enumerable: true, value },
+    }) as FastManimSandboxSettlement<T>,
+  );
+}
+
+function rejectedFastManimSandboxSettlement<T>(reason: unknown): FastManimSandboxSettlement<T> {
+  return Object.freeze(
+    Object.create(null, {
+      kind: { enumerable: true, value: "rejected" },
+      reason: { enumerable: true, value: reason },
+    }) as FastManimSandboxSettlement<T>,
+  );
+}
+
+function isServerOwnedErrorIdentity(registry: WeakSet<object>, value: unknown) {
+  if ((typeof value !== "object" && typeof value !== "function") || value === null) return false;
+  return registry.has(value);
+}
+
+function observeNativeFastManimSandboxPromise<T>(
+  value: unknown,
+  onInvalid: () => void,
+  invalidReason: () => unknown,
+): ObservedFastManimSandboxPromise<T> {
+  return new Promise((resolve) => {
+    try {
+      Reflect.apply(nativePromiseThen, value, [
+        (result: T) => resolve(fulfilledFastManimSandboxSettlement(result)),
+        (reason: unknown) => resolve(rejectedFastManimSandboxSettlement(reason)),
+      ]);
+    } catch {
+      onInvalid();
+      resolve(rejectedFastManimSandboxSettlement(invalidReason()));
+    }
+  });
+}
+
+type TrackedFastManimSandboxJob = {
+  abandoned: boolean;
+  abort: () => void;
+  result: ObservedFastManimSandboxPromise<unknown>;
+  requestId: string;
+};
+
+type TrackedFastManimSandboxStatus = {
+  abandoned: boolean;
+  promise: ObservedFastManimSandboxPromise<unknown>;
+};
 
 const FAILURE_MESSAGES: Readonly<Record<FastManimSnapshotRunFailureCodeV1, string>> = {
   "capability-unsupported": "The compiled Scene requires capabilities outside the server runtime allowlist.",
@@ -80,6 +161,10 @@ const FAILURE_MESSAGES: Readonly<Record<FastManimSnapshotRunFailureCodeV1, strin
     "No fast-manim snapshot producer is configured; use the server-authoritative render pipeline.",
   "result-rejected": "The fast-manim snapshot result failed server verification.",
   "runtime-config-changed": "The server runtime capability configuration changed during the snapshot run.",
+  "sandbox-attestation-rejected": "The configured sandbox backend did not provide a current verified attestation.",
+  "sandbox-execution-failed": "The sandbox backend could not complete the Scene snapshot job.",
+  "sandbox-result-rejected": "The sandbox backend returned a result for a different request or runtime profile.",
+  "sandbox-unavailable": "No verified sandbox backend is available for Scene snapshot execution.",
   "snapshot-too-large": "The verified snapshot exceeds the server publication byte budget.",
   "source-changed": "The Python source changed while the snapshot producer was running.",
   "source-correlation-stale": "The request source hash no longer matches the Python source on disk.",
@@ -90,67 +175,52 @@ function sceneKey(sourcePath: string, sceneName: string) {
 }
 
 export class FastManimSnapshotRunner {
-  private readonly activeChildren = new Map<ChildProcess, () => void>();
+  private readonly activeJobs = new Set<TrackedFastManimSandboxJob>();
   private readonly activeKeys = new Set<string>();
   private readonly activeLookups = new Set<Promise<unknown>>();
   private readonly activeRuns = new Set<Promise<unknown>>();
-  private readonly admissionController: FastManimSnapshotAdmissionController;
+  private readonly activeStatuses = new Set<TrackedFastManimSandboxStatus>();
+  private readonly attestationVerifier: FastManimSandboxAttestationVerifierV1 | undefined;
+  private readonly backend: FastManimSandboxBackendV1;
+  private backendLifecycleRejected = false;
   private readonly capabilities: readonly FastManimSnapshotRuntimeCapabilityV1[];
-  private cleanupFailed = false;
   private closing = false;
-  private readonly command: readonly string[] | null;
-  private readonly enabled: boolean;
+  private closeRequest: Promise<void> | null = null;
+  private readonly deployment: FastManimSandboxDeployment;
   private readonly frame: Readonly<{ height: number; width: number }>;
-  private readonly killProcessGroup: ProducerGroupKill;
   private readonly logger: StructuredLogger;
   private readonly maxConcurrentRuns: number;
   private readonly maxPublishedBytes: number;
   private readonly maxPublishedSnapshots: number;
   private readonly ownerId: number;
-  private readonly producerEnv: Readonly<Record<string, string>>;
   private readonly projectId: string;
-  private readonly producerProcessTimings: ProducerProcessTimings;
   private readonly publicationStore: FastManimSnapshotPublicationStore;
   private readonly publishRetentionMs: number;
-  private readonly runtimeDirectoryRemover: (runtimeDir: string) => Promise<void>;
   private readonly sourceStore: ManimSourceStore;
+  private readonly shutdownController = new AbortController();
+  private readonly tenantId: string;
   private readonly timeoutMs: number;
 
   constructor(
     options: Readonly<{
-      admissionController?: FastManimSnapshotAdmissionController;
+      attestationVerifier?: FastManimSandboxAttestationVerifierV1;
+      backend?: FastManimSandboxBackendV1;
       capabilities?: readonly FastManimSnapshotRuntimeCapabilityV1[];
-      command?: readonly string[] | null;
-      /**
-       * Explicit dev/test opt-in. Until the OS/network sandbox hardening issue
-       * (Poietra/studio-lab#80) lands, running workspace Python via the
-       * snapshot producer is restricted to development: with this flag off
-       * (the default) the runner fails closed as producer-unconfigured even
-       * when a command is configured.
-       */
-      enabled?: boolean;
+      deployment: FastManimSandboxDeployment;
       frame: Readonly<{ height: number; width: number }>;
-      killProcessGroup?: ProducerGroupKill;
       logger?: StructuredLogger;
       maxConcurrentRuns?: number;
       maxPublishedBytes?: number;
       maxPublishedSnapshots?: number;
-      producerEnv?: Readonly<Record<string, string>>;
-      /** Test/embedding seam; production keeps the hardened default grace windows. */
-      producerProcessTimings?: Partial<ProducerProcessTimings>;
       projectId: string;
       projectRoot: string;
       publicationStore?: FastManimSnapshotPublicationStore;
       publishRetentionMs?: number;
-      /** Test seam for proving cleanup-failure behavior without leaking a real directory. */
-      runtimeDirectoryRemover?: (runtimeDir: string) => Promise<void>;
       sourceReadHooks?: ManimSourceReadHooks;
+      tenantId: string;
       timeoutMs?: number;
     }>,
   ) {
-    if (options.command && (options.command.length === 0 || options.command.some((entry) => entry.length === 0))) {
-      throw new TypeError("The fast-manim snapshot command must contain a non-empty executable and arguments.");
-    }
     const timeoutMs = options.timeoutMs ?? DEFAULT_SNAPSHOT_TIMEOUT_MS;
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_SNAPSHOT_TIMEOUT_MS) {
       throw new TypeError(`Snapshot timeout must be a positive integer of at most ${MAX_SNAPSHOT_TIMEOUT_MS}ms.`);
@@ -171,48 +241,26 @@ export class FastManimSnapshotRunner {
     if (!Number.isSafeInteger(publishRetentionMs) || publishRetentionMs <= 0) {
       throw new TypeError("Published snapshot retention must be a positive integer of milliseconds.");
     }
-    // The producer executes with a private runtime directory as its working
-    // directory and no PYTHONPATH, so only the immutable request sourceText
-    // plus installed/trusted runtime modules are importable. Server-controlled
-    // producerEnv must not be able to reintroduce the project root onto any
-    // search path (relative entries resolve against the private cwd, so only
-    // absolute entries can reach it).
-    const canonicalProjectRoot = resolve(options.projectRoot);
-    for (const [key, value] of Object.entries(options.producerEnv ?? {})) {
-      // Mutual determinism contract: the producer always runs under
-      // PYTHONHASHSEED=0 (matching the pinned runtimeConfig randomSeed) and
-      // producerEnv cannot override it.
-      if (key === "PYTHONHASHSEED" && value !== "0") {
-        throw new TypeError('The producerEnv PYTHONHASHSEED value is pinned to "0" and cannot be overridden.');
-      }
-      for (const segment of value.split(delimiter)) {
-        if (!isAbsolute(segment)) continue;
-        const resolved = resolve(segment);
-        if (resolved === canonicalProjectRoot || resolved.startsWith(`${canonicalProjectRoot}${sep}`)) {
-          throw new TypeError(`The producerEnv value for ${key} must not point into the Manim project root.`);
-        }
-      }
-    }
+    this.attestationVerifier = options.attestationVerifier;
+    this.backend = options.backend ?? new UnavailableFastManimSandboxBackendV1();
     this.capabilities = Object.freeze([...(options.capabilities ?? FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1)]);
-    this.command = options.command?.length ? Object.freeze([...options.command]) : null;
-    this.enabled = options.enabled ?? false;
+    this.deployment = parseFastManimSandboxDeployment(options.deployment);
     this.frame = Object.freeze({ height: options.frame.height, width: options.frame.width });
-    this.killProcessGroup = options.killProcessGroup ?? defaultKillProcessGroup;
     this.logger = options.logger ?? nullLogger;
     this.maxConcurrentRuns = maxConcurrentRuns;
     this.maxPublishedBytes = maxPublishedBytes;
     this.maxPublishedSnapshots = maxPublishedSnapshots;
-    this.producerEnv = Object.freeze({ ...options.producerEnv });
-    this.producerProcessTimings = resolveProducerProcessTimings(options.producerProcessTimings);
-    this.projectId = options.projectId;
-    this.admissionController = options.admissionController ?? processAdmissionController;
+    const configuredIdentity = parseFastManimSandboxJobIdentityV1({
+      projectId: options.projectId,
+      requestId: "runner-configuration",
+      tenantId: options.tenantId,
+    });
+    this.projectId = configuredIdentity.projectId;
     this.publicationStore = options.publicationStore ?? processPublicationStore;
     this.ownerId = this.publicationStore.registerOwner();
     this.publishRetentionMs = publishRetentionMs;
-    this.runtimeDirectoryRemover =
-      options.runtimeDirectoryRemover ??
-      ((runtimeDir) => rm(runtimeDir, { force: true, maxRetries: 5, recursive: true, retryDelay: 50 }));
     this.sourceStore = new ManimSourceStore(options.projectRoot, options.sourceReadHooks);
+    this.tenantId = configuredIdentity.tenantId;
     this.timeoutMs = timeoutMs;
     // Fail fast on an invalid capability allowlist or frame instead of at run time.
     digestFastManimSnapshotRuntimeConfigV1(this.runtimeConfig());
@@ -221,7 +269,299 @@ export class FastManimSnapshotRunner {
   get busy() {
     // Publication lookups revalidate asynchronously, so they hold the runner
     // busy too: unregister/close must never race a held GET.
-    return this.activeKeys.size > 0 || this.activeLookups.size > 0;
+    return (
+      this.activeJobs.size > 0 ||
+      this.activeKeys.size > 0 ||
+      this.activeLookups.size > 0 ||
+      this.activeStatuses.size > 0
+    );
+  }
+
+  private sandboxIdentity(requestId: string) {
+    return parseFastManimSandboxJobIdentityV1({
+      projectId: this.projectId,
+      requestId,
+      tenantId: this.tenantId,
+    });
+  }
+
+  private backendIsQuarantined() {
+    return (
+      this.backendLifecycleRejected ||
+      [...this.activeJobs].some((job) => job.abandoned) ||
+      [...this.activeStatuses].some((status) => status.abandoned)
+    );
+  }
+
+  private sandboxDeadline(durationMs: number): FastManimSandboxDeadline {
+    return Object.freeze({
+      epochMs: Date.now() + durationMs,
+      monotonicMs: performance.now() + durationMs,
+    });
+  }
+
+  private sandboxStatusDeadline() {
+    return this.sandboxDeadline(Math.min(this.timeoutMs, MAX_SANDBOX_STATUS_TIMEOUT_MS));
+  }
+
+  /**
+   * The adapter is not trusted to honor its advertised deadline/abort
+   * capability. Every asynchronous adapter operation is therefore raced by a
+   * runner-owned monotonic deadline plus caller and shutdown signals. Timers
+   * cannot preempt a synchronous same-thread backend block; the settlement
+   * path therefore rechecks the monotonic deadline before accepting either a
+   * fulfillment or rejection. Enforced process isolation belongs to #82.
+   */
+  private awaitBackendOperation<T>(
+    operation: (signal: AbortSignal) => ObservedFastManimSandboxPromise<T>,
+    deadline: FastManimSandboxDeadline,
+    callerSignal?: AbortSignal,
+    onHalt?: (reason: "abort" | "deadline") => void,
+    settleGraceMs = 0,
+    onUnsettled?: (reason: "abort" | "deadline") => void,
+    observeShutdown = true,
+  ): Promise<FastManimSandboxSettlement<T>> {
+    const abortWasRequested = () =>
+      callerSignal?.aborted === true || (observeShutdown && this.shutdownController.signal.aborted);
+    if (abortWasRequested()) return Promise.reject(abortError());
+    if (
+      !Number.isSafeInteger(deadline.epochMs) ||
+      !Number.isFinite(deadline.monotonicMs) ||
+      performance.now() >= deadline.monotonicMs
+    ) {
+      return Promise.reject(new FastManimSandboxOperationDeadlineError());
+    }
+
+    const controller = new AbortController();
+    return new Promise<FastManimSandboxSettlement<T>>((resolve, reject) => {
+      let backendSettled = false;
+      let finished = false;
+      let haltStarted = false;
+      let deadlineTimer: NodeJS.Timeout | undefined;
+      let settleTimer: NodeJS.Timeout | undefined;
+      const currentHaltReason = (): "abort" | "deadline" | null => {
+        if (abortWasRequested()) return "abort";
+        if (performance.now() >= deadline.monotonicMs) return "deadline";
+        return null;
+      };
+      const cleanup = () => {
+        if (deadlineTimer) clearTimeout(deadlineTimer);
+        if (settleTimer) clearTimeout(settleTimer);
+        callerSignal?.removeEventListener("abort", onAbort);
+        if (observeShutdown) this.shutdownController.signal.removeEventListener("abort", onAbort);
+      };
+      const finish = (complete: () => void) => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        complete();
+      };
+      const rejectHalted = () => {
+        const reason = currentHaltReason() ?? "deadline";
+        if (!backendSettled) {
+          try {
+            onUnsettled?.(reason);
+          } catch {
+            this.backendLifecycleRejected = true;
+            this.logger.warn("snapshot.sandbox_unsettled_callback_failed", { failure: "callback-threw" });
+          }
+        }
+        finish(() => reject(reason === "deadline" ? new FastManimSandboxOperationDeadlineError() : abortError()));
+      };
+      const halt = (requestedReason: "abort" | "deadline") => {
+        if (finished) return;
+        const reason = currentHaltReason() ?? requestedReason;
+        if (reason === "deadline" && performance.now() < deadline.monotonicMs) {
+          scheduleDeadline();
+          return;
+        }
+        if (!haltStarted) {
+          haltStarted = true;
+          controller.abort();
+          try {
+            onHalt?.(reason);
+          } catch {
+            this.backendLifecycleRejected = true;
+            this.logger.warn("snapshot.sandbox_abort_callback_failed", { failure: "callback-threw" });
+          }
+        }
+        if (settleGraceMs <= 0) {
+          rejectHalted();
+          return;
+        }
+        if (!settleTimer) {
+          settleTimer = setTimeout(rejectHalted, settleGraceMs);
+          settleTimer.unref();
+        }
+      };
+      const onAbort = () => halt("abort");
+      const scheduleDeadline = () => {
+        if (finished) return;
+        if (deadlineTimer) clearTimeout(deadlineTimer);
+        const remainingMs = deadline.monotonicMs - performance.now();
+        deadlineTimer = setTimeout(() => halt("deadline"), Math.max(0, Math.ceil(remainingMs)));
+        deadlineTimer.unref();
+      };
+      const settleBackend = (settlement: FastManimSandboxSettlement<T>) => {
+        backendSettled = true;
+        const reason = currentHaltReason();
+        if (reason !== null) {
+          halt(reason);
+          finish(() => reject(reason === "deadline" ? new FastManimSandboxOperationDeadlineError() : abortError()));
+          return;
+        }
+        // The null-prototype frozen box is the only fulfillment value allowed
+        // through Promise resolution. The foreign raw value stays nested until
+        // its synchronous status/result consumer validates or discards it.
+        finish(() => resolve(settlement));
+      };
+
+      callerSignal?.addEventListener("abort", onAbort, { once: true });
+      if (observeShutdown) this.shutdownController.signal.addEventListener("abort", onAbort, { once: true });
+      scheduleDeadline();
+
+      let observed: ObservedFastManimSandboxPromise<T>;
+      try {
+        observed = operation(controller.signal);
+      } catch (reason) {
+        settleBackend(rejectedFastManimSandboxSettlement(reason));
+        return;
+      }
+      const reasonAfterSynchronousOperation = currentHaltReason();
+      if (reasonAfterSynchronousOperation !== null) halt(reasonAfterSynchronousOperation);
+      try {
+        Reflect.apply(nativePromiseThen, observed, [
+          settleBackend,
+          () => {
+            this.backendLifecycleRejected = true;
+            settleBackend(rejectedFastManimSandboxSettlement(new FastManimSandboxJobHandleRejectedError()));
+          },
+        ]);
+      } catch {
+        this.backendLifecycleRejected = true;
+        settleBackend(rejectedFastManimSandboxSettlement(new FastManimSandboxJobHandleRejectedError()));
+      }
+    });
+  }
+
+  private trackStatus(promise: ObservedFastManimSandboxPromise<unknown>) {
+    const tracked: TrackedFastManimSandboxStatus = { abandoned: false, promise };
+    this.activeStatuses.add(tracked);
+    Reflect.apply(nativePromiseThen, promise, [
+      () => this.activeStatuses.delete(tracked),
+      () => this.activeStatuses.delete(tracked),
+    ]);
+    return tracked;
+  }
+
+  private async sandboxReadiness(
+    requestId: string,
+    deadline: FastManimSandboxDeadline,
+    signal?: AbortSignal,
+  ): Promise<ReturnType<typeof resolveFastManimSandboxReadiness>> {
+    if (this.backendIsQuarantined()) return { code: "sandbox-unavailable", kind: "failed" };
+    let trackedStatus: TrackedFastManimSandboxStatus | undefined;
+    const statusSettlement = await this.awaitBackendOperation(
+      (operationSignal) => {
+        const pending = this.backend.status({
+          deadlineEpochMs: deadline.epochMs,
+          identity: this.sandboxIdentity(requestId),
+          signal: operationSignal,
+        });
+        const observed = observeNativeFastManimSandboxPromise<unknown>(
+          pending,
+          () => {
+            this.backendLifecycleRejected = true;
+          },
+          () => new FastManimSandboxJobHandleRejectedError(),
+        );
+        trackedStatus = this.trackStatus(observed);
+        return observed;
+      },
+      deadline,
+      signal,
+      () => {
+        if (trackedStatus) trackedStatus.abandoned = true;
+      },
+      SANDBOX_STATUS_SETTLE_GRACE_MS,
+      () => {
+        this.backendLifecycleRejected = true;
+      },
+    );
+    if (statusSettlement.kind === "rejected") throw statusSettlement.reason;
+    return resolveFastManimSandboxReadiness(
+      statusSettlement.value,
+      this.deployment,
+      Date.now(),
+      this.attestationVerifier,
+    );
+  }
+
+  private captureJobHandle(
+    value: unknown,
+    onAbortCaptured: (abort: () => void) => void,
+  ): Readonly<{ abort: () => void; result: ObservedFastManimSandboxPromise<unknown> }> {
+    if ((typeof value !== "object" && typeof value !== "function") || value === null) {
+      this.backendLifecycleRejected = true;
+      throw new FastManimSandboxJobHandleRejectedError();
+    }
+    let abortMember: unknown;
+    try {
+      abortMember = Reflect.get(value, "abort");
+    } catch {
+      this.backendLifecycleRejected = true;
+      throw new FastManimSandboxJobHandleRejectedError();
+    }
+    if (typeof abortMember !== "function") {
+      this.backendLifecycleRejected = true;
+      throw new FastManimSandboxJobHandleRejectedError();
+    }
+    let abortRequested = false;
+    const abort = () => {
+      if (abortRequested) return;
+      abortRequested = true;
+      Reflect.apply(abortMember, value, []);
+    };
+    onAbortCaptured(abort);
+
+    let resultMember: unknown;
+    try {
+      resultMember = Reflect.get(value, "result");
+    } catch {
+      this.backendLifecycleRejected = true;
+      throw new FastManimSandboxJobHandleRejectedError();
+    }
+    const result = observeNativeFastManimSandboxPromise<unknown>(
+      resultMember,
+      () => {
+        this.backendLifecycleRejected = true;
+      },
+      () => new FastManimSandboxJobHandleRejectedError(),
+    );
+    return { abort, result };
+  }
+
+  private trackJob(abort: () => void, result: ObservedFastManimSandboxPromise<unknown>, requestId: string) {
+    const tracked: TrackedFastManimSandboxJob = { abandoned: false, abort, requestId, result };
+    this.activeJobs.add(tracked);
+    Reflect.apply(nativePromiseThen, result, [
+      () => this.activeJobs.delete(tracked),
+      () => this.activeJobs.delete(tracked),
+    ]);
+    return tracked;
+  }
+
+  private abortJob(job: TrackedFastManimSandboxJob) {
+    job.abandoned = true;
+    try {
+      job.abort();
+    } catch {
+      this.backendLifecycleRejected = true;
+      this.logger.warn("snapshot.sandbox_job_abort_failed", {
+        failure: "abort-threw",
+        requestId: job.requestId,
+      });
+    }
   }
 
   private runtimeConfig(): FastManimSnapshotRuntimeConfigV1 {
@@ -233,37 +573,6 @@ export class FastManimSnapshotRunner {
       snapshotVersion: 1,
       version: 1,
     };
-  }
-
-  /**
-   * Explicit allowlist only: the producer never inherits the server's full
-   * environment (no credential leak), HOME/temp point at the private per-run
-   * directory, and no PYTHONPATH is set. Combined with the private runtime
-   * directory as cwd (see produce()), only the immutable request sourceText
-   * plus installed/trusted runtime modules are importable — project-local
-   * helpers cannot silently feed a snapshot correlated solely by sourceHash.
-   * Extra variables come only via producerEnv, which the constructor refuses
-   * when it points back into the project root.
-   *
-   * Trusted-runtime residual (#80): the resolved command, the interpreter on
-   * PATH, and its site-packages are operator-trusted and NOT hashed. sourceHash
-   * covers only the selected source text, never the producer binary or its
-   * runtime modules; that deployment-trust boundary is closed by the OS
-   * sandbox and a pinned runtime, not by runtime hashing here.
-   */
-  private producerEnvironment(runtimeDir: string): Record<string, string> {
-    const environment: Record<string, string> = {};
-    for (const key of PRODUCER_ENV_ALLOWLIST) {
-      const value = process.env[key];
-      if (value !== undefined) environment[key] = value;
-    }
-    environment.HOME = runtimeDir;
-    environment.TEMP = runtimeDir;
-    environment.TMP = runtimeDir;
-    environment.TMPDIR = runtimeDir;
-    // Applied after the producerEnv spread: the deterministic hash seed that
-    // pairs with the pinned runtimeConfig randomSeed can never be overridden.
-    return { ...environment, ...this.producerEnv, PYTHONHASHSEED: "0" };
   }
 
   async run(requestValue: FastManimSnapshotRunRequestV1, signal?: AbortSignal): Promise<FastManimSnapshotRunViewV1> {
@@ -324,11 +633,24 @@ export class FastManimSnapshotRunner {
       };
     };
 
-    if (!this.command) return failed("producer-unconfigured");
-    if (!this.enabled) {
-      // Fail closed pending OS/network sandboxing (Poietra/studio-lab#80).
-      this.logger.warn("snapshot.producer_disabled", { requestId: request.requestId });
-      return failed("producer-unconfigured");
+    let readiness: ReturnType<typeof resolveFastManimSandboxReadiness>;
+    try {
+      readiness = await this.sandboxReadiness(request.requestId, this.sandboxStatusDeadline(), signal);
+    } catch {
+      throwIfHalted();
+      this.logger.warn("snapshot.sandbox_health_check_failed", {
+        failure: "backend-operation-rejected",
+        requestId: request.requestId,
+      });
+      return failed("sandbox-unavailable");
+    }
+    throwIfHalted();
+    if (readiness.kind !== "ready") {
+      this.logger.warn("snapshot.sandbox_not_ready", {
+        code: readiness.code,
+        requestId: request.requestId,
+      });
+      return failed(readiness.code);
     }
 
     // Verified read: the bytes handed to the producer come from a single
@@ -374,13 +696,14 @@ export class FastManimSnapshotRunner {
       version: 1,
     } satisfies FastManimSnapshotProducerRequestV1);
 
-    const produced = await this.produce(producerRequest, signal);
+    const sandboxRequest = new FastManimSandboxRequestBundleV1(producerRequest);
+    const produced = await this.produce(sandboxRequest, readiness.attestationDigest, request, signal);
     throwIfHalted();
     if (produced.kind !== "ok") return failed(produced.code);
 
     let sealed: VerifiedFastManimSnapshotResultV1;
     try {
-      sealed = await parseAndSealFastManimSnapshotProducerJsonV1(produced.stdout, expected);
+      sealed = await parseAndSealFastManimSnapshotProducerJsonV1(produced.resultBytes, expected);
       // Defense in depth behind the structural static-profile normalization.
       assertFastManimSnapshotDiagnosticsSafeV1(sealed, {
         projectRoot: this.sourceStore.projectRoot,
@@ -390,10 +713,7 @@ export class FastManimSnapshotRunner {
     } catch (cause) {
       throwIfHalted();
       if (cause instanceof FastManimSnapshotContractError) return failed("result-rejected", cause.code);
-      this.logger.warn("snapshot.result_rejected", {
-        name: cause instanceof Error ? cause.name : typeof cause,
-        requestId: request.requestId,
-      });
+      this.logger.warn("snapshot.result_rejected", { failure: "verification-rejected", requestId: request.requestId });
       return failed("result-rejected");
     }
     throwIfHalted();
@@ -472,76 +792,200 @@ export class FastManimSnapshotRunner {
     return { publishedAt, revision };
   }
 
-  /**
-   * Awaited on every path (success, failure, abort, timeout, close, spawn
-   * errors) so neither run() nor close() resolves before the private HOME/TMP
-   * directory is gone. A failure is surfaced as a sanitized error and log
-   * record — error class and errno code only, never the path or contents.
-   */
-  private async removeRuntimeDir(runtimeDir: string) {
-    try {
-      await this.runtimeDirectoryRemover(runtimeDir);
-    } catch (error) {
-      this.cleanupFailed = true;
-      this.logger.error("snapshot.runtime_dir_cleanup_failed", {
-        code: error instanceof Error && "code" in error ? String((error as NodeJS.ErrnoException).code) : null,
-        name: error instanceof Error ? error.name : typeof error,
-      });
-      throw runtimeDirectoryCleanupError();
-    }
-  }
-
   private async produce(
-    producerRequest: FastManimSnapshotProducerRequestV1,
+    request: FastManimSandboxRequestBundleV1,
+    attestationDigest: string,
+    runRequest: FastManimSnapshotRunRequestV1,
     signal?: AbortSignal,
-  ): Promise<
-    Readonly<{ code: FastManimSnapshotRunFailureCodeV1; kind: "failed" }> | Readonly<{ kind: "ok"; stdout: Uint8Array }>
-  > {
-    const command = this.command;
-    if (!command) return { code: "producer-unconfigured", kind: "failed" };
+  ): Promise<FastManimSandboxBackendResultV1> {
     if (signal?.aborted || this.closing) throw abortError();
-    // Server-wide admission control: no producer spawns above the shared cap,
-    // regardless of how many runners and projects are configured.
-    const releaseAdmission = this.admissionController.tryAcquire();
-    if (!releaseAdmission) {
-      throw new HttpError("Too many concurrent Scene snapshot runs on this server.", 429);
-    }
-    let runtimeDir: string;
+    let startReadiness: ReturnType<typeof resolveFastManimSandboxReadiness>;
     try {
-      runtimeDir = await mkdtemp(join(tmpdir(), "poietra-producer-"));
-      if (signal?.aborted || this.closing) {
-        await this.removeRuntimeDir(runtimeDir);
-        throw abortError();
+      startReadiness = await this.sandboxReadiness(runRequest.requestId, this.sandboxStatusDeadline(), signal);
+    } catch {
+      if (signal?.aborted || this.closing) throw abortError();
+      this.logger.warn("snapshot.sandbox_start_health_check_failed", {
+        failure: "backend-operation-rejected",
+        requestId: runRequest.requestId,
+      });
+      startReadiness = { code: "sandbox-unavailable", kind: "failed" };
+    }
+    if (startReadiness.kind !== "ready") {
+      this.logger.warn("snapshot.sandbox_start_attestation_rejected", { requestId: runRequest.requestId });
+      return {
+        attestationDigest,
+        code: startReadiness.code,
+        kind: "failed",
+        requestDigest: request.requestDigest,
+      };
+    }
+    if (startReadiness.attestationDigest !== attestationDigest) {
+      this.logger.warn("snapshot.sandbox_start_attestation_rejected", { requestId: runRequest.requestId });
+      return {
+        attestationDigest,
+        code: "sandbox-attestation-rejected",
+        kind: "failed",
+        requestDigest: request.requestDigest,
+      };
+    }
+    const deadline = this.sandboxDeadline(this.timeoutMs);
+    let capturedAbort: (() => void) | undefined;
+    let trackedJob: TrackedFastManimSandboxJob | undefined;
+    let result: FastManimSandboxBackendResultV1;
+    try {
+      const resultSettlement = await this.awaitBackendOperation(
+        (operationSignal) => {
+          // start() is a synchronous, non-blocking handle allocation seam;
+          // all remote work belongs to result and must observe this signal.
+          const candidate: unknown = this.backend.start(request, {
+            attestationDigest,
+            deadlineEpochMs: deadline.epochMs,
+            identity: this.sandboxIdentity(runRequest.requestId),
+            signal: operationSignal,
+          });
+          const captured = this.captureJobHandle(candidate, (abort) => {
+            capturedAbort = abort;
+          });
+          trackedJob = this.trackJob(captured.abort, captured.result, runRequest.requestId);
+          // A caller/shutdown abort may have fired while the synchronous
+          // start() portion was blocking, before this handle was available.
+          if (operationSignal.aborted) this.abortJob(trackedJob);
+          return captured.result;
+        },
+        deadline,
+        signal,
+        () => {
+          if (trackedJob) this.abortJob(trackedJob);
+          else capturedAbort?.();
+        },
+        Math.min(MAX_SANDBOX_OPERATION_SETTLE_GRACE_MS, this.timeoutMs),
+        () => {
+          this.backendLifecycleRejected = true;
+        },
+      );
+      if (resultSettlement.kind === "rejected") throw resultSettlement.reason;
+      const rawResult = resultSettlement.value;
+      const parsed = fastManimSandboxBackendResultV1Schema.safeParse(rawResult);
+      if (!parsed.success) {
+        this.logger.warn("snapshot.sandbox_result_shape_rejected", { requestId: runRequest.requestId });
+        return {
+          attestationDigest,
+          code: "sandbox-result-rejected",
+          kind: "failed",
+          requestDigest: request.requestDigest,
+        };
+      }
+      if (parsed.data.kind === "ok") {
+        let resultBytes: Uint8Array;
+        try {
+          resultBytes = copyFastManimSandboxUint8ArrayV1(
+            parsed.data.resultBytes,
+            MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES,
+          );
+        } catch {
+          this.backendLifecycleRejected = true;
+          this.logger.warn("snapshot.sandbox_result_shape_rejected", { requestId: runRequest.requestId });
+          return {
+            attestationDigest,
+            code: "sandbox-result-rejected",
+            kind: "failed",
+            requestDigest: request.requestDigest,
+          };
+        }
+        result = { ...parsed.data, resultBytes };
+      } else {
+        result = parsed.data;
       }
     } catch (error) {
-      releaseAdmission();
-      throw error;
-    }
-    // Admission and the private runtime directory are this orchestrator's
-    // resources; the subprocess supervision state machine owns everything from
-    // spawn to settlement. Both are reclaimed here on every path (return or
-    // throw) so run()/close() never resolve before the private HOME/TMP is
-    // gone or before the admission slot is returned.
-    try {
-      return await superviseProducerProcess({
-        command,
-        cwd: runtimeDir,
-        env: this.producerEnvironment(runtimeDir),
-        isHalted: () => Boolean(signal?.aborted) || this.closing,
-        killProcessGroup: this.killProcessGroup,
-        logger: this.logger,
-        onSettled: (child) => this.activeChildren.delete(child),
-        onSpawned: (child, requestStop) => this.activeChildren.set(child, requestStop),
-        requestId: producerRequest.requestId,
-        requestJson: JSON.stringify(producerRequest),
-        signal,
-        timings: this.producerProcessTimings,
-        timeoutMs: this.timeoutMs,
+      if (signal?.aborted || this.closing) throw abortError();
+      if (isServerOwnedErrorIdentity(fastManimSandboxOperationDeadlineErrors, error)) {
+        return {
+          attestationDigest,
+          code: "producer-timeout",
+          kind: "failed",
+          requestDigest: request.requestDigest,
+        };
+      }
+      if (isServerOwnedErrorIdentity(fastManimSandboxJobHandleRejectedErrors, error)) {
+        if (capturedAbort) {
+          try {
+            capturedAbort();
+          } catch {
+            this.backendLifecycleRejected = true;
+            this.logger.warn("snapshot.sandbox_job_abort_failed", {
+              failure: "abort-threw",
+              requestId: runRequest.requestId,
+            });
+          }
+        }
+        this.logger.warn("snapshot.sandbox_job_handle_rejected", { requestId: runRequest.requestId });
+        return {
+          attestationDigest,
+          code: "sandbox-result-rejected",
+          kind: "failed",
+          requestDigest: request.requestDigest,
+        };
+      }
+      const controlErrorCode = fastManimSandboxBackendControlErrorCode(error);
+      if (controlErrorCode !== undefined) {
+        if (controlErrorCode === "capacity") {
+          throw new HttpError("Too many concurrent Scene snapshot runs on this server.", 429);
+        }
+        throw new HttpError("The Scene snapshot runtime directory could not be cleaned up.", 500);
+      }
+      this.logger.warn("snapshot.sandbox_execution_failed", {
+        failure: "backend-operation-rejected",
+        requestId: runRequest.requestId,
       });
-    } finally {
-      releaseAdmission();
-      await this.removeRuntimeDir(runtimeDir);
+      return {
+        attestationDigest,
+        code: "sandbox-execution-failed",
+        kind: "failed",
+        requestDigest: request.requestDigest,
+      };
     }
+    if (signal?.aborted || this.closing) throw abortError();
+    if (result.requestDigest !== request.requestDigest || result.attestationDigest !== attestationDigest) {
+      this.logger.warn("snapshot.sandbox_result_correlation_rejected", { requestId: runRequest.requestId });
+      return {
+        attestationDigest,
+        code: "sandbox-result-rejected",
+        kind: "failed",
+        requestDigest: request.requestDigest,
+      };
+    }
+    let completionReadiness: ReturnType<typeof resolveFastManimSandboxReadiness>;
+    try {
+      completionReadiness = await this.sandboxReadiness(runRequest.requestId, this.sandboxStatusDeadline(), signal);
+    } catch {
+      this.logger.warn("snapshot.sandbox_completion_health_check_failed", {
+        failure: "backend-operation-rejected",
+        requestId: runRequest.requestId,
+      });
+      completionReadiness = { code: "sandbox-unavailable", kind: "failed" };
+    }
+    if (completionReadiness.kind !== "ready") {
+      this.logger.warn("snapshot.sandbox_completion_attestation_rejected", { requestId: runRequest.requestId });
+      return {
+        attestationDigest,
+        code: completionReadiness.code,
+        kind: "failed",
+        requestDigest: request.requestDigest,
+      };
+    }
+    if (completionReadiness.attestationDigest !== attestationDigest) {
+      this.logger.warn("snapshot.sandbox_completion_attestation_rejected", { requestId: runRequest.requestId });
+      return {
+        attestationDigest,
+        code: "sandbox-attestation-rejected",
+        kind: "failed",
+        requestDigest: request.requestDigest,
+      };
+    }
+    // A completed result removes itself in trackJob(). A timed-out or aborted
+    // promise remains tracked and quarantines the backend until it actually
+    // settles or close() reaches its hard bound.
+    return result;
   }
 
   async snapshot(query: FastManimSnapshotQueryV1): Promise<FastManimSnapshotRunViewV1> {
@@ -598,11 +1042,11 @@ export class FastManimSnapshotRunner {
         );
       }
       revalidated = parsed;
-    } catch (error) {
+    } catch {
       throwIfClosing();
       if (!entryIsCurrent()) return null;
       deleteIfCurrent();
-      this.logger.error("snapshot.reverification_failed", { error });
+      this.logger.error("snapshot.reverification_failed", { failure: "verification-rejected" });
       throw new HttpError("The published Scene snapshot failed re-verification.", 500);
     }
     throwIfClosing();
@@ -660,14 +1104,73 @@ export class FastManimSnapshotRunner {
     });
   }
 
-  async close() {
+  close() {
+    this.closeRequest ??= this.closeLocked();
+    return this.closeRequest;
+  }
+
+  private async closeBackendWithinDeadline() {
+    const closeGraceMs = Math.min(this.timeoutMs, MAX_SANDBOX_CLOSE_GRACE_MS);
+    const deadline = this.sandboxDeadline(closeGraceMs);
+    const closeSettlement = await this.awaitBackendOperation(
+      () => {
+        const pending = this.backend.close();
+        return observeNativeFastManimSandboxPromise<void>(
+          pending,
+          () => {
+            this.backendLifecycleRejected = true;
+          },
+          () => new FastManimSandboxJobHandleRejectedError(),
+        );
+      },
+      deadline,
+      undefined,
+      undefined,
+      0,
+      () => {
+        this.backendLifecycleRejected = true;
+      },
+      false,
+    );
+    if (closeSettlement.kind === "rejected") throw closeSettlement.reason;
+  }
+
+  private async closeLocked() {
     this.closing = true;
-    for (const requestStop of this.activeChildren.values()) requestStop();
+    for (const job of this.activeJobs) this.abortJob(job);
+    this.shutdownController.abort();
     // Wait for every in-flight run and publication lookup to settle so
     // nothing publishes or serves after close, then return this runner's
     // publication accounting to the shared budget.
     await Promise.allSettled([...this.activeRuns, ...this.activeLookups]);
-    this.publicationStore.releaseOwner(this.ownerId);
-    if (this.cleanupFailed) throw runtimeDirectoryCleanupError();
+    try {
+      try {
+        await this.closeBackendWithinDeadline();
+        // close() is part of the backend contract: success while a raw result
+        // is still pending would lose the only server-side record of that job.
+        await Promise.resolve();
+        if (this.activeJobs.size > 0 || this.activeStatuses.size > 0) {
+          this.backendLifecycleRejected = true;
+          this.logger.error("snapshot.sandbox_close_left_active_operations", {
+            jobs: this.activeJobs.size,
+            statuses: this.activeStatuses.size,
+          });
+          throw new FastManimSandboxBackendControlError("cleanup");
+        }
+      } catch (error) {
+        if (fastManimSandboxBackendControlErrorCode(error) === "cleanup") {
+          throw new HttpError("The Scene snapshot runtime directory could not be cleaned up.", 500);
+        }
+        this.logger.error("snapshot.sandbox_close_failed", { failure: "backend-close-rejected" });
+        throw new HttpError("The sandbox backend could not be closed safely.", 500);
+      }
+    } finally {
+      // Once the runner is permanently closed and bounded backend cleanup has
+      // completed or failed, retaining never-settling foreign promises would
+      // itself become an unbounded memory leak.
+      this.activeJobs.clear();
+      this.activeStatuses.clear();
+      this.publicationStore.releaseOwner(this.ownerId);
+    }
   }
 }

@@ -19,11 +19,25 @@ import {
   renderRequestId,
   renderRequestPrograms,
 } from "../src/render-pipeline/contracts";
+import { createConfiguredFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
+import type {
+  FastManimSandboxAttestationVerifierV1,
+  FastManimSandboxBackendV1,
+  FastManimSandboxDeployment,
+} from "./fast-manim-sandbox-backend";
 import type { FastManimSnapshotQueryV1, FastManimSnapshotRunRequestV1 } from "./fast-manim-snapshot-contract";
 import { FastManimSnapshotRunner } from "./fast-manim-snapshot-runner";
 import { HttpError } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import type { ManimProjectKind } from "./manim-project-catalog";
+import {
+  beginRenderSessionAction,
+  createRenderMutationTransactionState,
+  RenderMutationTransactionCoordinator,
+  type RenderMutationTransactionState,
+  renderSourceActionView,
+  runningRenderSourceActions,
+} from "./manim-render-mutation-transaction";
 import {
   appendRenderLog,
   findRenderedVideo,
@@ -32,14 +46,6 @@ import {
   waitForRenderProcessStop,
 } from "./manim-render-process";
 import { lowerManimRenderRequest } from "./manim-render-request-lowering";
-import {
-  beginRenderSessionAction,
-  createRenderMutationTransactionState,
-  type RenderMutationTransactionState,
-  RenderMutationTransactionCoordinator,
-  renderSourceActionView,
-  runningRenderSourceActions,
-} from "./manim-render-mutation-transaction";
 import {
   renderCommitCorrelationKey,
   renderCommitMatchesPreview,
@@ -196,8 +202,12 @@ export class ManimRenderManager {
       projectRoot: string;
       renderTimeoutMs?: number;
       sessionRetentionMs?: number;
+      snapshotSandboxAttestationVerifier?: FastManimSandboxAttestationVerifierV1;
+      snapshotSandboxBackend?: FastManimSandboxBackendV1;
+      snapshotSandboxDeployment?: FastManimSandboxDeployment;
       snapshotProducerCommand?: readonly string[];
-      snapshotProducerEnabled?: boolean;
+      snapshotProducerDevOptIn?: boolean;
+      snapshotTenantId?: string;
       snapshotTimeoutMs?: number;
       sourceStoreHooks?: ManimSourceReadHooks;
       thumbnailCacheRoot?: string;
@@ -237,13 +247,34 @@ export class ManimRenderManager {
       options.sessionRetentionMs ?? DEFAULT_SESSION_RETENTION_MS,
       "Session retention",
     );
+    if (
+      options.snapshotSandboxBackend &&
+      (options.snapshotProducerCommand !== undefined || options.snapshotProducerDevOptIn === true)
+    ) {
+      throw new TypeError("Configure either a sandbox backend or the local-process development adapter, not both.");
+    }
+    // Embedders must opt into a weaker environment explicitly. A missing
+    // deployment is production, so local-process execution can never become a
+    // fail-open consequence of an omitted option.
+    const snapshotDeployment = options.snapshotSandboxDeployment ?? "production";
+    const snapshotBackend =
+      options.snapshotSandboxBackend ??
+      createConfiguredFastManimSandboxBackendV1({
+        command: options.snapshotProducerCommand,
+        deployment: snapshotDeployment,
+        localProcessDevOptIn: options.snapshotProducerDevOptIn ?? false,
+        logger: this.logger,
+        projectRoot: this.projectRoot,
+      });
     this.snapshotRunner = new FastManimSnapshotRunner({
-      command: options.snapshotProducerCommand ?? null,
-      enabled: options.snapshotProducerEnabled ?? false,
+      attestationVerifier: options.snapshotSandboxAttestationVerifier,
+      backend: snapshotBackend,
+      deployment: snapshotDeployment,
       frame: this.frame,
       logger: this.logger,
       projectId: this.projectId,
       projectRoot: this.projectRoot,
+      tenantId: options.snapshotTenantId ?? "studio-local",
       timeoutMs: options.snapshotTimeoutMs,
     });
     this.thumbnailCache = new ManimThumbnailCache({

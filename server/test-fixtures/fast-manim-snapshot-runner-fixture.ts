@@ -8,7 +8,12 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { afterEach, expect } from "vitest";
-
+import { LocalProcessFastManimSandboxBackendV1 } from "../fast-manim-local-process-sandbox-backend";
+import type {
+  FastManimSandboxAttestationVerifierV1,
+  FastManimSandboxBackendV1,
+  FastManimSandboxDeployment,
+} from "../fast-manim-sandbox-backend";
 import {
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
@@ -16,12 +21,11 @@ import {
   type FastManimSnapshotRuntimeConfigV1,
   type FastManimSnapshotRunViewV1,
 } from "../fast-manim-snapshot-contract";
-import type { ProducerProcessTimings } from "../fast-manim-snapshot-producer-process";
+import type { ProducerGroupKill, ProducerProcessTimings } from "../fast-manim-snapshot-producer-process";
 import {
   FastManimSnapshotAdmissionController,
   FastManimSnapshotPublicationStore,
   FastManimSnapshotRunner,
-  type ProducerGroupKill,
 } from "../fast-manim-snapshot-runner";
 import type { StructuredLogger } from "../logging/structured-logger";
 import type { ManimRenderManager } from "../manim-render-manager";
@@ -95,7 +99,10 @@ export function createRunner(
   command: readonly string[] | null,
   options: Readonly<{
     admissionController?: FastManimSnapshotAdmissionController;
+    attestationVerifier?: FastManimSandboxAttestationVerifierV1;
+    backend?: FastManimSandboxBackendV1;
     capabilities?: readonly FastManimSnapshotRuntimeCapabilityV1[];
+    deployment?: FastManimSandboxDeployment;
     enabled?: boolean;
     killProcessGroup?: ProducerGroupKill;
     logger?: StructuredLogger;
@@ -111,18 +118,39 @@ export function createRunner(
     timeoutMs?: number;
   }> = {},
 ) {
+  const backend =
+    options.backend ??
+    (command && options.enabled !== false
+      ? new LocalProcessFastManimSandboxBackendV1({
+          admissionController: options.admissionController ?? new FastManimSnapshotAdmissionController(),
+          command,
+          killProcessGroup: options.killProcessGroup,
+          logger: options.logger,
+          producerEnv: options.producerEnv,
+          producerProcessTimings: options.producerProcessTimings ?? TEST_PRODUCER_PROCESS_TIMINGS,
+          projectRoot: root,
+          runtimeDirectoryRemover: options.runtimeDirectoryRemover,
+        })
+      : undefined);
   return new FastManimSnapshotRunner({
     // Tests isolate admission and publication state by default; shared-cap
     // and shared-budget tests inject one instance across runners explicitly.
-    admissionController: new FastManimSnapshotAdmissionController(),
-    command,
-    enabled: true,
+    attestationVerifier: options.attestationVerifier,
+    backend,
+    capabilities: options.capabilities,
+    deployment: options.deployment ?? "test",
     frame: { height: 8, width: 14.222222222222221 },
-    producerProcessTimings: options.producerProcessTimings ?? TEST_PRODUCER_PROCESS_TIMINGS,
+    logger: options.logger,
+    maxConcurrentRuns: options.maxConcurrentRuns,
+    maxPublishedBytes: options.maxPublishedBytes,
+    maxPublishedSnapshots: options.maxPublishedSnapshots,
     projectId: "default",
     projectRoot: root,
-    publicationStore: new FastManimSnapshotPublicationStore(),
-    ...options,
+    publicationStore: options.publicationStore ?? new FastManimSnapshotPublicationStore(),
+    publishRetentionMs: options.publishRetentionMs,
+    sourceReadHooks: options.sourceReadHooks,
+    tenantId: "test-tenant",
+    timeoutMs: options.timeoutMs,
   });
 }
 

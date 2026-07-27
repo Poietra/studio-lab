@@ -1,13 +1,12 @@
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv } from "vite";
-
-import { openAiEditSuggestions } from "./server/openai-edit-suggestions";
 import {
   manimRenderPipeline,
   parseFastManimSnapshotProducerCommand,
   parseManimProjects,
 } from "./server/manim-render-pipeline";
+import { openAiEditSuggestions } from "./server/openai-edit-suggestions";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
@@ -55,6 +54,7 @@ export default defineConfig(({ mode }) => {
         frameWidth: env.POIETRA_MANIM_FRAME_WIDTH ? Number(env.POIETRA_MANIM_FRAME_WIDTH) : undefined,
         projects: parseManimProjects(env.POIETRA_MANIM_PROJECTS),
         projectRoot: env.POIETRA_MANIM_PROJECT_ROOT,
+        snapshotSandboxDeployment: mode === "production" ? "production" : "development",
         snapshotProducerCommand: parseFastManimSnapshotProducerCommand(env.POIETRA_FAST_MANIM_SNAPSHOT_COMMAND),
         snapshotProducerDevOptIn: env.POIETRA_FAST_MANIM_SNAPSHOT_DEV_OPT_IN === "1",
         workspaceDataRoot: env.POIETRA_STUDIO_DATA_ROOT,

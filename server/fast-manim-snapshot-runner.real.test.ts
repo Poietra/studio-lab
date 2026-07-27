@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
-
+import { LocalProcessFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
 import {
   digestFastManimSnapshotBundleV1,
   digestFastManimSnapshotRuntimeConfigV1,
@@ -84,16 +84,21 @@ async function temporaryProject(fileName: string, source: string) {
 
 function createRealRunner(projectRoot: string) {
   if (!producerCommand) throw new Error("Unreachable: the real producer command gate failed.");
+  const backend = new LocalProcessFastManimSandboxBackendV1({
+    admissionController: new FastManimSnapshotAdmissionController(),
+    command: producerCommand,
+    projectRoot,
+  });
   const runner = new FastManimSnapshotRunner({
     // Fresh per-runner admission and publication state: the real seam must
     // not consume or observe the process-global budgets of other tests.
-    admissionController: new FastManimSnapshotAdmissionController(),
-    command: producerCommand,
-    enabled: true,
+    backend,
+    deployment: "test",
     frame: REAL_FRAME,
     projectId: "default",
     projectRoot,
     publicationStore: new FastManimSnapshotPublicationStore(),
+    tenantId: "test-tenant",
     timeoutMs: 120_000,
   });
   realRunners.push(runner);
