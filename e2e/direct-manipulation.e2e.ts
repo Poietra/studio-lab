@@ -1,10 +1,10 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { openWorkspace } from "./workspace";
+import { cleanupFixtureWorkspace, openWorkspace } from "./workspace";
 
 async function position(locator: Locator) {
   const box = await locator.boundingBox();
@@ -283,8 +283,10 @@ class MotionOrderScene(Scene):
       exported.indexOf(`# poietra:transaction ${JSON.stringify(transactionIds[1])}`),
     );
   } finally {
-    await page.request.delete(`/api/manim/projects/${created.project.id}`).catch(() => undefined);
-    await rm(projectRoot, { force: true, recursive: true });
+    await cleanupFixtureWorkspace(page.request, {
+      projectId: created.project.id,
+      temporaryRoot: projectRoot,
+    });
   }
 });
 
