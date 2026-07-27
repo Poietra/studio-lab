@@ -3,6 +3,8 @@ import type {
   ManimProjectMutationView,
   OriginalManimSourceExportRequest,
   ProgramRenderRequest,
+  RenderCommitRequest,
+  RenderSourceActionCancellationRequest,
 } from "../src/render-pipeline/contracts";
 import type { FastManimSnapshotQueryV1, FastManimSnapshotRunRequestV1 } from "./fast-manim-snapshot-contract";
 import { HttpError } from "./http/json";
@@ -230,12 +232,16 @@ export class ManimProjectRegistry {
     return this.sessionProject(id).cancel(id);
   }
 
-  commit(id: string) {
-    return this.sessionProject(id).commit(id);
+  commit(id: string, expected: RenderCommitRequest, signal?: AbortSignal) {
+    return this.sessionProject(id).commit(id, expected, signal);
   }
 
-  undo(id: string) {
-    return this.sessionProject(id).undo(id);
+  cancelSourceAction(id: string, request: RenderSourceActionCancellationRequest) {
+    return this.sessionProject(id).cancelSourceAction(id, request);
+  }
+
+  undo(id: string, actionId: string, signal?: AbortSignal) {
+    return this.sessionProject(id).undo(id, actionId, signal);
   }
 
   async discard(id: string) {
@@ -249,6 +255,14 @@ export class ManimProjectRegistry {
     if (!projectId) return;
     await this.project(projectId).abandonStart(id);
     this.sessionProjects.delete(id);
+  }
+
+  async abandon(id: string, expectedRenderRequestId: string) {
+    const projectId = this.sessionProjects.get(id);
+    if (!projectId) return { abandoned: true } as const;
+    const result = await this.project(projectId).abandon(id, expectedRenderRequestId);
+    this.sessionProjects.delete(id);
+    return result;
   }
 
   videoPath(id: string) {

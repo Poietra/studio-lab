@@ -1317,7 +1317,7 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot endpoint", () => {
     const baseUrl = await startServer(manager);
     const posted = await fetch(`${baseUrl}/api/manim/projects/default/scene-snapshots`, {
       body: JSON.stringify(runRequest()),
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", origin: baseUrl, "sec-fetch-site": "same-origin" },
       method: "POST",
     });
     expect(posted.status).toBe(200);
@@ -1357,6 +1357,44 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot endpoint", () => {
       method: "POST",
     });
     expect(unknownProject.status).toBe(404);
+  });
+
+  it("rejects cross-origin snapshot mutations before executing project Python", async () => {
+    const root = await projectRoot();
+    const manager = new ManimRenderManager({
+      command: ["node", fakeManim],
+      frame: { height: 8, width: 14.222222222222221 },
+      projectRoot: root,
+      snapshotProducerCommand: producerCommand(),
+      snapshotProducerEnabled: true,
+    });
+    managers.push(manager);
+    const baseUrl = await startServer(manager);
+    const endpoint = `${baseUrl}/api/manim/projects/default/scene-snapshots`;
+
+    const crossSite = await fetch(endpoint, {
+      body: JSON.stringify(runRequest()),
+      headers: {
+        "content-type": "application/json",
+        origin: baseUrl,
+        "sec-fetch-site": "cross-site",
+      },
+      method: "POST",
+    });
+    expect(crossSite.status).toBe(403);
+    await expect(crossSite.json()).resolves.toEqual({ error: "Cross-origin mutation requests are not allowed." });
+
+    const foreignOrigin = await fetch(endpoint, {
+      body: JSON.stringify(runRequest()),
+      headers: { "content-type": "application/json", origin: "https://attacker.example" },
+      method: "POST",
+    });
+    expect(foreignOrigin.status).toBe(403);
+    await expect(foreignOrigin.json()).resolves.toEqual({ error: "Mutation requests require a same-origin request." });
+
+    await expect(
+      manager.sceneSnapshot("default", { sceneName: "ExampleScene", sourcePath: "scene.py" }),
+    ).rejects.toMatchObject({ status: 404 });
   });
 
   it("returns a structured failure envelope over HTTP when the producer is not configured", async () => {

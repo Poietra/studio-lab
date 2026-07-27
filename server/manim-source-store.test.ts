@@ -100,6 +100,54 @@ describe("ManimSourceStore", () => {
     expect((await stat(sourcePath)).mode & 0o777).toBe(0o640);
   });
 
+  it("does not publish a prepared write after its request is aborted", async () => {
+    const { projectRoot, source, sourcePath } = await fixture();
+    let allowCommit!: () => void;
+    let reportPrepared!: () => void;
+    const prepared = new Promise<void>((resolve) => {
+      reportPrepared = resolve;
+    });
+    const commitAllowed = new Promise<void>((resolve) => {
+      allowCommit = resolve;
+    });
+    const store = new ManimSourceStore(projectRoot, {
+      beforeWriteCommit: async () => {
+        reportPrepared();
+        await commitAllowed;
+      },
+    });
+    const controller = new AbortController();
+    const write = store.writeIfUnchanged(
+      "scene.py",
+      sourceHash(source),
+      "# stale rendered edit\n",
+      "Conflict.",
+      controller.signal,
+    );
+
+    await prepared;
+    controller.abort();
+    allowCommit();
+
+    await expect(write).rejects.toMatchObject({ name: "AbortError" });
+    expect(await readFile(sourcePath, "utf8")).toBe(source);
+  });
+
+  it("does not overwrite an external edit made at the prepared-write boundary", async () => {
+    const { projectRoot, source, sourcePath } = await fixture();
+    const externalSource = "# changed while the rendered write was prepared\n";
+    const store = new ManimSourceStore(projectRoot, {
+      beforeWriteCommit: async () => {
+        await writeFile(sourcePath, externalSource, "utf8");
+      },
+    });
+
+    await expect(
+      store.writeIfUnchanged("scene.py", sourceHash(source), "# stale rendered edit\n", "Conflict."),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(await readFile(sourcePath, "utf8")).toBe(externalSource);
+  });
+
   it("continues to reject symbolic-link sources", async () => {
     const { projectRoot, sourcePath, store } = await fixture();
     const linkedPath = join(projectRoot, "linked.py");

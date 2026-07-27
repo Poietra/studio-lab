@@ -197,9 +197,9 @@ export function renderRequestPrograms(request: ProgramRenderRequest): readonly C
   return request.programs ?? [request.program];
 }
 
-function batchHash(programs: readonly CanonicalEditProgram[], seed: number) {
+function contentHash(value: unknown, seed: number) {
   let hash = seed;
-  for (const character of JSON.stringify(programs)) {
+  for (const character of JSON.stringify(value)) {
     hash ^= character.codePointAt(0) ?? 0;
     hash = Math.imul(hash, 16_777_619);
   }
@@ -207,9 +207,64 @@ function batchHash(programs: readonly CanonicalEditProgram[], seed: number) {
 }
 
 export function renderProgramBatchId(programs: readonly CanonicalEditProgram[]) {
-  if (programs.length === 1) return programs[0].transactionId;
-  return `batch-${programs.length}-${batchHash(programs, 2_166_136_261)}-${batchHash(programs, 2_654_435_761)}`;
+  const canonicalPrograms = programs.map((program) => programSchema.parse(program));
+  return `batch-${canonicalPrograms.length}-${contentHash(canonicalPrograms, 2_166_136_261)}-${contentHash(canonicalPrograms, 2_654_435_761)}`;
 }
+
+export function renderRequestId(request: ProgramRenderRequest) {
+  const canonicalRequest = programRenderRequestSchema.parse(request);
+  return `render-${contentHash(canonicalRequest, 2_166_136_261)}-${contentHash(canonicalRequest, 2_654_435_761)}`;
+}
+
+export const renderSourceActionIdSchema = z
+  .string()
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+
+export const renderSourceActionRequestSchema = z
+  .object({
+    actionId: renderSourceActionIdSchema,
+  })
+  .strict();
+
+export type RenderSourceActionRequest = z.infer<typeof renderSourceActionRequestSchema>;
+
+export const renderAbandonRequestSchema = z
+  .object({
+    renderRequestId: z.string().min(1).max(240),
+  })
+  .strict();
+
+export const renderAbandonViewSchema = z.object({ abandoned: z.literal(true) }).strict();
+
+export const renderCommitRequestSchema = z
+  .object({
+    actionId: renderSourceActionIdSchema,
+    programBatchId: z.string().min(1).max(240),
+    projectId: manimProjectIdSchema,
+    renderRequestId: z.string().min(1).max(240),
+    sceneName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+    sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
+    sourcePath: manimSourcePathSchema,
+  })
+  .strict();
+
+export type RenderCommitRequest = z.infer<typeof renderCommitRequestSchema>;
+
+export const renderSourceActionCancellationRequestSchema = z
+  .object({
+    actionId: renderSourceActionIdSchema,
+    kind: z.enum(["commit", "undo"]),
+  })
+  .strict();
+
+export type RenderSourceActionCancellationRequest = z.infer<typeof renderSourceActionCancellationRequestSchema>;
+
+export type RenderSourceActionView = Readonly<{
+  id: string;
+  kind: "commit" | "undo";
+  outcome: "committed" | "undone" | null;
+  state: "cancelled" | "failed" | "running" | "succeeded";
+}>;
 
 export type RenderSessionStatus =
   | "cancelled"
@@ -222,6 +277,7 @@ export type RenderSessionStatus =
   | "undone";
 
 export type RenderSessionView = Readonly<{
+  actionInProgress: boolean;
   canCancel: boolean;
   canCommit: boolean;
   canDiscard: boolean;
@@ -234,17 +290,25 @@ export type RenderSessionView = Readonly<{
     anchorLine: number;
     anchorLines: readonly number[];
     insertedCode: string;
+    patchedSourceHash: string;
     sourceHash: string;
   }>;
   projectId: string;
   programBatchId: string;
   programTransactionId: string;
+  renderRequestId: string;
   progress: number;
   sceneName: string;
+  sourceAction: RenderSourceActionView | null;
   sourcePath: string;
   status: RenderSessionStatus;
   updatedAt: string;
   videoUrl: string | null;
+}>;
+
+export type RenderSourceActionCancellationView = Readonly<{
+  action: RenderSourceActionView;
+  session: RenderSessionView;
 }>;
 
 export type ManimWorkspaceSource = Readonly<{
@@ -334,8 +398,27 @@ export const renderSessionStatusSchema: z.ZodType<RenderSessionStatus> = z.enum(
   "undone",
 ]);
 
+export const renderSourceActionViewSchema: z.ZodType<RenderSourceActionView> = z
+  .object({
+    id: renderSourceActionIdSchema,
+    kind: z.enum(["commit", "undo"]),
+    outcome: z.enum(["committed", "undone"]).nullable(),
+    state: z.enum(["cancelled", "failed", "running", "succeeded"]),
+  })
+  .strict()
+  .superRefine((action, context) => {
+    const expectedOutcome = action.kind === "commit" ? "committed" : "undone";
+    if (action.state === "succeeded" && action.outcome !== expectedOutcome) {
+      context.addIssue({ code: "custom", message: `A succeeded ${action.kind} action requires ${expectedOutcome}.` });
+    }
+    if (action.state !== "succeeded" && action.outcome !== null) {
+      context.addIssue({ code: "custom", message: "Only a succeeded source action may expose an outcome." });
+    }
+  });
+
 export const renderSessionViewSchema: z.ZodType<RenderSessionView> = z
   .object({
+    actionInProgress: z.boolean(),
     canCancel: z.boolean(),
     canCommit: z.boolean(),
     canDiscard: z.boolean(),
@@ -349,18 +432,28 @@ export const renderSessionViewSchema: z.ZodType<RenderSessionView> = z
         anchorLine: z.number().int().positive(),
         anchorLines: z.array(z.number().int().positive()).min(1).max(128),
         insertedCode: z.string(),
+        patchedSourceHash: z.string().regex(/^[0-9a-f]{64}$/),
         sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
       })
       .strict(),
     projectId: manimProjectIdSchema,
     programBatchId: z.string(),
     programTransactionId: z.string(),
+    renderRequestId: z.string(),
     progress: finiteNumber.min(0).max(1),
     sceneName: z.string(),
+    sourceAction: renderSourceActionViewSchema.nullable(),
     sourcePath: manimSourcePathSchema,
     status: renderSessionStatusSchema,
     updatedAt: z.string(),
     videoUrl: z.string().nullable(),
+  })
+  .strict();
+
+export const renderSourceActionCancellationViewSchema: z.ZodType<RenderSourceActionCancellationView> = z
+  .object({
+    action: renderSourceActionViewSchema,
+    session: renderSessionViewSchema,
   })
   .strict();
 

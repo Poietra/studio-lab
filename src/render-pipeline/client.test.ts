@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ProgramRenderRequest } from "./contracts";
 import {
+  abandonManimRender,
+  cancelManimRenderSourceAction,
   createManimProject,
   exportManimSource,
   exportOriginalManimSource,
@@ -22,6 +24,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 function session(overrides: Readonly<Record<string, unknown>> = {}) {
   return {
+    actionInProgress: false,
     canCancel: false,
     canCommit: true,
     canDiscard: true,
@@ -30,13 +33,21 @@ function session(overrides: Readonly<Record<string, unknown>> = {}) {
     error: null,
     id: "render-id",
     logTail: "done",
-    patch: { anchorLine: 4, anchorLines: [4], insertedCode: "self.wait(1)", sourceHash: "a".repeat(64) },
+    patch: {
+      anchorLine: 4,
+      anchorLines: [4],
+      insertedCode: "self.wait(1)",
+      patchedSourceHash: "b".repeat(64),
+      sourceHash: "a".repeat(64),
+    },
     projectId: "default",
     programBatchId: "tx",
     programTransactionId: "tx",
     progress: 1,
     sceneName: "SceneOne",
+    sourceAction: null,
     sourcePath: "scene.py",
+    renderRequestId: "render-abc-def",
     status: "ready",
     updatedAt: "2026-01-01T00:00:01.000Z",
     videoUrl: "/api/manim/renders/render-id/video",
@@ -192,6 +203,7 @@ describe("Manim API client contracts", () => {
       signal: undefined,
     });
     expect(fetch).toHaveBeenNthCalledWith(4, "/api/manim/projects/project-a", {
+      headers: { "content-type": "application/json" },
       method: "DELETE",
       signal: undefined,
     });
@@ -512,6 +524,8 @@ describe("Manim API client contracts", () => {
     const controller = new AbortController();
     const fetch = vi.fn(async (url: string, init: RequestInit) => {
       expect(url).toBe("/api/manim/renders/render%2Fid/cancel");
+      expect(init.body).toBe("{}");
+      expect(init.headers).toEqual({ "content-type": "application/json" });
       expect(init.signal).toBe(controller.signal);
       return new Response(JSON.stringify(session()), { status: 200 });
     });
@@ -520,5 +534,148 @@ describe("Manim API client contracts", () => {
     await expect(runManimRenderAction("render/id", "cancel", controller.signal)).resolves.toMatchObject({
       status: "ready",
     });
+  });
+
+  it("sends a correlated Undo action instead of an ambiguous empty mutation", async () => {
+    const actionId = "00000000-0000-4000-8000-000000000002";
+    const fetch = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe("/api/manim/renders/render-id/undo");
+      expect(JSON.parse(String(init.body))).toEqual({ actionId });
+      return new Response(
+        JSON.stringify(
+          session({
+            canCommit: false,
+            canDiscard: true,
+            canUndo: false,
+            sourceAction: { id: actionId, kind: "undo", outcome: "undone", state: "succeeded" },
+            status: "undone",
+          }),
+        ),
+        { status: 200 },
+      );
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(runManimRenderAction("render-id", "undo", undefined, { actionId })).resolves.toMatchObject({
+      sourceAction: { id: actionId, outcome: "undone" },
+      status: "undone",
+    });
+  });
+
+  it("cancels and waits for the exact source action", async () => {
+    const actionId = "00000000-0000-4000-8000-000000000003";
+    const response = {
+      action: { id: actionId, kind: "commit", outcome: null, state: "cancelled" },
+      session: session({
+        sourceAction: { id: actionId, kind: "commit", outcome: null, state: "cancelled" },
+      }),
+    };
+    const fetch = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe("/api/manim/renders/render-id/cancel-source-action");
+      expect(JSON.parse(String(init.body))).toEqual({ actionId, kind: "commit" });
+      return new Response(JSON.stringify(response), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(cancelManimRenderSourceAction("render-id", actionId, "commit")).resolves.toEqual(response);
+  });
+
+  it("abandons only the exact stale render request", async () => {
+    const fetch = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe("/api/manim/renders/render-id/abandon");
+      expect(JSON.parse(String(init.body))).toEqual({ renderRequestId: "render-request-abc-def" });
+      return new Response(JSON.stringify({ abandoned: true }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(abandonManimRender("render-id", "render-request-abc-def")).resolves.toEqual({ abandoned: true });
+  });
+
+  it("correlates Commit with the exact rendered candidate", async () => {
+    const expected = {
+      actionId: "00000000-0000-4000-8000-000000000001",
+      programBatchId: "batch-1-abc-def",
+      projectId: "project-a",
+      renderRequestId: "render-request-abc-def",
+      sceneName: "SceneOne",
+      sourceHash: "a".repeat(64),
+      sourcePath: "scene.py",
+    };
+    const fetch = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(JSON.parse(String(init.body))).toEqual(expected);
+      return new Response(
+        JSON.stringify(
+          session({
+            canCommit: false,
+            canDiscard: false,
+            canUndo: true,
+            programBatchId: expected.programBatchId,
+            projectId: expected.projectId,
+            sourceAction: {
+              id: expected.actionId,
+              kind: "commit",
+              outcome: "committed",
+              state: "succeeded",
+            },
+            status: "committed",
+          }),
+        ),
+        { status: 200 },
+      );
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(runManimRenderAction("render-id", "commit", undefined, expected)).resolves.toMatchObject({
+      programBatchId: expected.programBatchId,
+      projectId: expected.projectId,
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/manim/renders/render-id/commit",
+      expect.objectContaining({
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }),
+    );
+  });
+
+  it("rejects a source-action response without the exact terminal action outcome", async () => {
+    const expected = {
+      actionId: "00000000-0000-4000-8000-000000000004",
+      programBatchId: "batch-1-abc-def",
+      projectId: "project-a",
+      renderRequestId: "render-request-abc-def",
+      sceneName: "SceneOne",
+      sourceHash: "a".repeat(64),
+      sourcePath: "scene.py",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(session({ projectId: expected.projectId })), { status: 200 })),
+    );
+
+    await expect(runManimRenderAction("render-id", "commit", undefined, expected)).rejects.toThrow(
+      /did not confirm the exact source action/i,
+    );
+  });
+
+  it("rejects a cancellation with a semantically invalid action outcome", async () => {
+    const actionId = "00000000-0000-4000-8000-000000000005";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              action: { id: actionId, kind: "commit", outcome: null, state: "succeeded" },
+              session: session({ sourceAction: null }),
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    await expect(cancelManimRenderSourceAction("render-id", actionId, "commit")).rejects.toThrow(
+      /does not match the API contract/i,
+    );
   });
 });
