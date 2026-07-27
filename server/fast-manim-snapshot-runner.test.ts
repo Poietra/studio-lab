@@ -31,6 +31,7 @@ import {
   FastManimSnapshotRunner,
   type ProducerGroupKill,
 } from "./fast-manim-snapshot-runner";
+import type { ProducerProcessTimings } from "./fast-manim-snapshot-producer-process";
 import { createStructuredLogger, type StructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import { handleManimRequest } from "./manim-render-http";
 import { ManimRenderManager } from "./manim-render-manager";
@@ -39,6 +40,11 @@ import { ManimSourceStore, type ManimSourceReadHooks, sourceHash } from "./manim
 const fakeProducer = fileURLToPath(new URL("./test-fixtures/fake-fast-manim-producer.mjs", import.meta.url));
 const fakeManim = fileURLToPath(new URL("./test-fixtures/fake-manim.mjs", import.meta.url));
 const bundleFixture = fileURLToPath(new URL("./test-fixtures/fast-manim-static-bundle.json", import.meta.url));
+const TEST_PRODUCER_PROCESS_TIMINGS = Object.freeze({
+  closeGraceMs: 150,
+  killGraceMs: 75,
+}) satisfies ProducerProcessTimings;
+const TEST_PRODUCER_TIMER_SETTLE_MS = 250;
 
 const sceneSource = `from manim import *
 
@@ -91,6 +97,7 @@ function createRunner(
     maxPublishedBytes?: number;
     maxPublishedSnapshots?: number;
     producerEnv?: Readonly<Record<string, string>>;
+    producerProcessTimings?: Partial<ProducerProcessTimings>;
     publicationStore?: FastManimSnapshotPublicationStore;
     publishRetentionMs?: number;
     runtimeDirectoryRemover?: (runtimeDir: string) => Promise<void>;
@@ -105,6 +112,7 @@ function createRunner(
     command,
     enabled: true,
     frame: { height: 8, width: 14.222222222222221 },
+    producerProcessTimings: options.producerProcessTimings ?? TEST_PRODUCER_PROCESS_TIMINGS,
     projectId: "default",
     projectRoot: root,
     publicationStore: new FastManimSnapshotPublicationStore(),
@@ -427,8 +435,8 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     const orphanPidFile = join(root, "orphan-parent-hang.pid");
     const pidFile = join(root, "leader.pid");
     // The leader ignores SIGTERM and hangs, so it is observably alive when the
-    // +2s SIGKILL lands on the whole group: that uncatchable signal reaps both
-    // the leader and its same-group SIGTERM-ignoring descendant.
+    // SIGKILL lands on the whole group after the configured grace period: that
+    // uncatchable signal reaps both the leader and its same-group descendant.
     const runner = createRunner(
       root,
       producerCommand("--mode=orphan-parent-hang", `--pid-file=${pidFile}`, `--orphan-pid-file=${orphanPidFile}`),
@@ -479,7 +487,7 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     const view = await runner.run(runRequest());
     expect(view.status).toBe("verified");
     expect(signals).toEqual([]);
-    await delay(2_600);
+    await delay(TEST_PRODUCER_TIMER_SETTLE_MS);
     // No delayed escalation ever fires against the escaped group.
     expect(signals).toEqual([]);
     const orphanPid = Number(await readFile(orphanPidFile, "utf8"));
@@ -498,7 +506,7 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     });
     const view = await runner.run(runRequest());
     expect(view.status).toBe("verified");
-    await delay(2_600);
+    await delay(TEST_PRODUCER_TIMER_SETTLE_MS);
     expect(signals).toEqual([]);
   });
 
@@ -885,7 +893,7 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     // The leader exited before any stop was requested, so no group signal was
     // ever sent, and none fires after the run resolved either.
     expect(signals).toEqual([]);
-    await delay(2_600);
+    await delay(TEST_PRODUCER_TIMER_SETTLE_MS);
     expect(signals).toEqual([]);
   });
 
