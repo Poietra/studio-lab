@@ -157,6 +157,56 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
   });
 
   it.each([
+    [
+      "AugAssign",
+      `from manim import *\n\nclass ExampleScene(Scene):\n    def construct(self):\n        value = Circle()\n        value += Circle()\n        circle = Circle()\n        self.add(circle)\n`,
+      3,
+      7,
+      "circle",
+    ],
+    [
+      "AnnAssign",
+      `from manim import *\n\nclass ExampleScene(Scene):\n    def construct(self):\n        value: object = Circle()\n        circle = Circle()\n        self.add(circle)\n`,
+      2,
+      6,
+      "circle",
+    ],
+    [
+      "Delete",
+      `from manim import *\n\nclass ExampleScene(Scene):\n    def construct(self):\n        value = Circle()\n        del value\n        circle = Circle()\n        self.add(circle)\n`,
+      3,
+      7,
+      "circle",
+    ],
+    [
+      "a UTF-8 Name",
+      `from manim import *\n\nclass ExampleScene(Scene):\n    def construct(self):\n        円 = Circle()\n        self.add(円)\n`,
+      1,
+      5,
+      "円",
+    ],
+  ])(
+    "validates byte-exact %s evidence but conservatively omits it from the Studio map",
+    async (_case, source, ordinal, line, name) => {
+      const root = await projectRoot();
+      await writeFile(join(root, "scene.py"), source, "utf8");
+      const runner = createRunner(
+        root,
+        producerCommand(
+          "--mode=combined-identity",
+          `--identity-name=${name}`,
+          `--identity-ordinal=${ordinal}`,
+          `--identity-line=${line}`,
+        ),
+      );
+      const view = await runner.run(runRequest());
+      expect(view.status).toBe("verified");
+      if (view.status !== "verified") throw new Error("Expected valid evidence with a conservative browser fallback.");
+      expect(view.sourceRuntimeIdentity?.mappings).toEqual([]);
+    },
+  );
+
+  it.each([
     "combined-identity-stale-source",
     "combined-identity-digest-tamper",
     "combined-identity-binding-id-tamper",

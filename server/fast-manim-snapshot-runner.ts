@@ -45,8 +45,8 @@ import {
 } from "./fast-manim-snapshot-contract";
 import { abortError } from "./fast-manim-snapshot-producer-process";
 import { type FastManimSnapshotPublicationStore, processPublicationStore } from "./fast-manim-snapshot-publication";
+import { parseFastManimProducerDocumentV1 } from "./fast-manim-source-runtime-document";
 import {
-  parseFastManimProducerDocumentV1,
   parseServerOwnedSourceRuntimeIdentityMapV1,
   parseVerifiedSourceRuntimeIdentityMapV1,
   verifyFastManimSourceRuntimeIdentityV1,
@@ -789,13 +789,7 @@ export class FastManimSnapshotRunner {
 
     throwIfHalted();
     const key = sceneKey(request.sourcePath, request.sceneName);
-    const { publishedAt, revision } = this.publish(
-      key,
-      expected,
-      sealed,
-      sourceRuntimeIdentity,
-      encodedBytes,
-    );
+    const { publishedAt, revision } = this.publish(key, expected, sealed, sourceRuntimeIdentity, encodedBytes);
     this.logger.info("snapshot.published", { requestId: request.requestId, revision });
     return {
       ...base,

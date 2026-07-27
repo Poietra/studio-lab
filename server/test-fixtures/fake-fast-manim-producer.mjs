@@ -417,14 +417,35 @@ if (mode.startsWith("combined-identity")) {
   const snapshotDigest = createHash("sha256").update(snapshotJson, "utf8").digest("hex");
   const assignmentSpan = { endColumn: 14, endLine: 5, startColumn: 8, startLine: 5 };
   const usageSpan = { endColumn: 23, endLine: 6, startColumn: 17, startLine: 6 };
-  const span = mode === "combined-identity-usage-span" ? usageSpan : assignmentSpan;
+  const identityName = argumentValue("identity-name") ?? "circle";
+  const identityOrdinal = Number(argumentValue("identity-ordinal") ?? "1");
+  const identityLine = Number(argumentValue("identity-line") ?? "0");
+  let span = mode === "combined-identity-usage-span" ? usageSpan : assignmentSpan;
+  if (identityLine > 0) {
+    const rawLine = request.sourceText.split(/\r?\n/)[identityLine - 1] ?? "";
+    const characterColumn =
+      argumentValue("identity-occurrence") === "last"
+        ? rawLine.lastIndexOf(identityName)
+        : rawLine.indexOf(identityName);
+    if (characterColumn < 0) {
+      process.stderr.write("Configured identity token is missing from its source line.\n");
+      process.exit(4);
+    }
+    const startColumn = Buffer.byteLength(rawLine.slice(0, characterColumn), "utf8");
+    span = {
+      endColumn: startColumn + Buffer.byteLength(identityName, "utf8"),
+      endLine: identityLine,
+      startColumn,
+      startLine: identityLine,
+    };
+  }
   const bindingPayload = [
     "poietra.fast-manim-source-runtime-identity",
     "1",
     recomputedSourceHash,
     recomputedSceneId,
-    "circle",
-    "1",
+    identityName,
+    String(identityOrdinal),
     String(span.startLine),
     String(span.startColumn),
     String(span.endLine),
@@ -432,8 +453,8 @@ if (mode.startsWith("combined-identity")) {
   ].join("\u0000");
   const binding = {
     id: `source-binding:${createHash("sha256").update(bindingPayload, "utf8").digest("hex")}`,
-    name: "circle",
-    ordinal: 1,
+    name: identityName,
+    ordinal: identityOrdinal,
     span,
   };
   if (mode === "combined-identity-binding-id-tamper") binding.id = `source-binding:${"f".repeat(64)}`;
