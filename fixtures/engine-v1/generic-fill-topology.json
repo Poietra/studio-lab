@@ -127,6 +127,27 @@
                   }
                 ],
                 "start": { "x": -0.5, "y": -0.5 }
+              },
+              {
+                "closed": true,
+                "segments": [
+                  {
+                    "control1": { "x": -0.8, "y": 1.2 },
+                    "control2": { "x": 0.8, "y": 2.8 },
+                    "end": { "x": 0.8, "y": 2.8 }
+                  },
+                  {
+                    "control1": { "x": 0.8, "y": 2.8 },
+                    "control2": { "x": -0.8, "y": 2.8 },
+                    "end": { "x": -0.8, "y": 2.8 }
+                  },
+                  {
+                    "control1": { "x": -0.8, "y": 2.8 },
+                    "control2": { "x": 0.8, "y": 1.2 },
+                    "end": { "x": 0.8, "y": 1.2 }
+                  }
+                ],
+                "start": { "x": -0.8, "y": 1.2 }
               }
             ]
           }
@@ -179,18 +200,18 @@
                 "segments": [
                   {
                     "control1": { "x": 3, "y": -1 },
-                    "control2": { "x": 3, "y": 1 },
-                    "end": { "x": 3, "y": 1 }
+                    "control2": { "x": 5, "y": -1 },
+                    "end": { "x": 5, "y": -1 }
                   },
                   {
-                    "control1": { "x": 3, "y": 1 },
+                    "control1": { "x": 5, "y": -1 },
                     "control2": { "x": 5, "y": 1 },
                     "end": { "x": 5, "y": 1 }
                   },
                   {
                     "control1": { "x": 5, "y": 1 },
-                    "control2": { "x": 5, "y": -1 },
-                    "end": { "x": 5, "y": -1 }
+                    "control2": { "x": 3, "y": 1 },
+                    "end": { "x": 3, "y": 1 }
                   }
                 ],
                 "start": { "x": 3, "y": -1 }
@@ -239,8 +260,9 @@
       "concaveNotch": { "at": [40, 25], "rgba": [0, 0, 0, 255], "tolerance": 0 },
       "disjointInterior": { "at": [80, 45], "rgba": [255, 0, 0, 255], "tolerance": 0 },
       "evenOddHole": { "at": [40, 45], "rgba": [0, 0, 0, 255], "tolerance": 0 },
-      "nonzeroHole": { "at": [120, 45], "rgba": [0, 0, 0, 255], "tolerance": 0 },
-      "nonzeroInterior": { "at": [105, 45], "rgba": [0, 0, 255, 255], "tolerance": 0 }
+      "nonzeroInterior": { "at": [105, 45], "rgba": [0, 0, 255, 255], "tolerance": 0 },
+      "nonzeroSameWindingInterior": { "at": [120, 45], "rgba": [0, 0, 255, 255], "tolerance": 0 },
+      "selfIntersectionLobe": { "at": [80, 20], "rgba": [255, 0, 0, 255], "tolerance": 0 }
     }
   }
 }

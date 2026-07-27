@@ -76,6 +76,54 @@ fn fill_packet(contours: &[&[(f64, f64)]], rule: FillRuleV1) -> poietra_scene_ir
     packet
 }
 
+fn scalloped_subpath(source_cubics: usize) -> CubicSubpathV1 {
+    let source_cubics_u32 = u32::try_from(source_cubics).expect("fixture count must fit u32");
+    let angle_step = std::f64::consts::TAU / f64::from(source_cubics_u32);
+    let radial_point = |radius: f64, angle: f64| point(radius * angle.cos(), radius * angle.sin());
+    CubicSubpathV1 {
+        closed: true,
+        segments: (0..source_cubics)
+            .map(|index| {
+                let index = u32::try_from(index).expect("fixture index must fit u32");
+                let start_angle = f64::from(index) * angle_step;
+                CubicSegmentV1 {
+                    control1: radial_point(1_000.0, start_angle + angle_step / 3.0),
+                    control2: radial_point(1_000.0, start_angle + angle_step * (2.0 / 3.0)),
+                    end: radial_point(0.5, start_angle + angle_step),
+                }
+            })
+            .collect(),
+        start: radial_point(0.5, 0.0),
+    }
+}
+
+fn scalloped_packet(source_cubics: usize) -> poietra_scene_ir::RenderPacketV1 {
+    let mut packet = sampled_packet();
+    packet.draws.truncate(2);
+    let RenderDrawV1::Path {
+        path,
+        stroke,
+        transform,
+        ..
+    } = &mut packet.draws[1]
+    else {
+        unreachable!()
+    };
+    *path = CubicPathV1 {
+        subpaths: vec![scalloped_subpath(source_cubics)],
+    };
+    *stroke = None;
+    *transform = AffineTransformV1::identity();
+    packet.camera.bottom = -1.0;
+    packet.camera.left = -1.0;
+    packet.camera.right = 1.0;
+    packet.camera.top = 1.0;
+    packet.viewport.height_px = 4_096;
+    packet.viewport.width_px = 4_096;
+    packet.required_capabilities = vec![RenderCapabilityV1::CubicPathFill];
+    packet
+}
+
 fn use_square_view(packet: &mut poietra_scene_ir::RenderPacketV1, extent: f64) {
     packet.camera.bottom = -extent;
     packet.camera.left = -extent;
@@ -124,8 +172,8 @@ fn shared_generic_fixture_preserves_topology_and_packet_paint_order() {
         frame.draws()[0].index_range().end,
         frame.draws()[1].index_range().start
     );
-    assert_close(draw_area(&frame, 0), 0.71);
-    assert_close(draw_area(&frame, 1), 1.0 / 3.0);
+    assert_close(draw_area(&frame, 0), 671.0 / 900.0);
+    assert_close(draw_area(&frame, 1), 4.0 / 9.0);
 }
 
 #[test]
@@ -214,4 +262,26 @@ fn camera_relative_f64_math_prevents_large_world_coordinate_collapse() {
         .collect::<HashSet<_>>();
     assert!(x_positions.len() >= 2);
     assert_close(draw_area(&frame, 0), 4.0 / 9.0);
+}
+
+#[test]
+fn ten_thousand_scalloped_cubics_fail_at_the_source_cap_without_a_partial_frame() {
+    assert!(matches!(
+        prepare_frame_v1(&scalloped_packet(10_000)),
+        Err(PrepareFrameErrorV1::FillSourceCubicLimit {
+            maximum_cubics: 2_048,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn two_thousand_scalloped_cubics_fail_at_the_flatten_cap_without_a_partial_frame() {
+    assert!(matches!(
+        prepare_frame_v1(&scalloped_packet(2_000)),
+        Err(PrepareFrameErrorV1::TessellationVertexLimit {
+            maximum_vertices: 32_768,
+            ..
+        })
+    ));
 }
