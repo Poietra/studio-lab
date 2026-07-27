@@ -289,6 +289,8 @@ export async function startProductionManimServer(
     response.once("close", abortOnClose);
     const handlerTimeout = setTimeout(() => {
       controller.abort(new Error("Production request deadline exceeded."));
+      request.resume();
+      if (!response.headersSent) response.setHeader("connection", "close");
       sendJson(response, 504, { error: "Request deadline exceeded." });
     }, config.limits.handlerTimeoutMs);
     handlerTimeout.unref();
@@ -334,12 +336,16 @@ export async function startProductionManimServer(
     } catch (error) {
       if (controller.signal.aborted || response.destroyed || response.writableEnded) return;
       if (error instanceof TransportError) {
+        request.resume();
+        response.setHeader("connection", "close");
         sendJson(response, error.status, { error: error.message });
         return;
       }
       logger.error("production.request_failed", {
         kind: error instanceof Error ? error.name : "UnknownError",
       });
+      request.resume();
+      response.setHeader("connection", "close");
       sendJson(response, 500, { error: "Production request failed." });
     } finally {
       clearTimeout(handlerTimeout);

@@ -172,7 +172,10 @@ describe("standalone production Manim HTTP adapter", () => {
     });
     servers.push(server);
 
-    expect(await send(server, "/api/manim/projects")).toMatchObject({ status: 401 });
+    expect(await send(server, "/api/manim/projects")).toMatchObject({
+      headers: { connection: "close" },
+      status: 401,
+    });
     admitted = true;
     expect(await send(server, "/api/manim/projects", { headers: { host: "attacker.example" } })).toMatchObject({
       status: 421,
