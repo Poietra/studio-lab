@@ -67,8 +67,10 @@ function decodeRequestPath(rawPath: string) {
 }
 
 const WINDOWS_DRIVE_ABSOLUTE = /^[A-Za-z]:[\\/]/;
+const WINDOWS_UNC_ABSOLUTE = /^(?:\\\\|\/\/)[^\\/]+[\\/][^\\/]+(?:[\\/].*)?$/;
 
 function normalizedAbsolutePath(path: string) {
+  if (WINDOWS_UNC_ABSOLUTE.test(path)) return win32.resolve(path).replaceAll("\\", "/").toLowerCase();
   if (WINDOWS_DRIVE_ABSOLUTE.test(path)) return win32.resolve(path).replaceAll("\\", "/").toLowerCase();
   if (path.startsWith("/")) return posix.resolve(path).toLowerCase();
   return null;
@@ -93,13 +95,20 @@ function normalizedRequestFile(rawUrl: string, root: string) {
   if (lowerSegments.includes(".openai-key") || lowerSegments.includes(".studio-logs")) return "sensitive" as const;
 
   if (decodedPath.startsWith("/@fs/")) {
+    if (decodedPath.startsWith("/@fs///")) return null;
     const fsPath = decodedPath.slice("/@fs/".length);
-    return normalizedAbsolutePath(fsPath);
+    if (decodedPath.startsWith("/@fs//")) {
+      const posixPath = normalizedAbsolutePath(fsPath);
+      const uncPath = normalizedAbsolutePath(`/${fsPath}`);
+      return posixPath && uncPath ? [posixPath, uncPath] : null;
+    }
+    const absolutePath = normalizedAbsolutePath(fsPath);
+    return absolutePath ? [absolutePath] : null;
   }
   if (WINDOWS_DRIVE_ABSOLUTE.test(root)) {
-    return win32.resolve(root, decodedPath.slice(1)).replaceAll("\\", "/").toLowerCase();
+    return [win32.resolve(root, decodedPath.slice(1)).replaceAll("\\", "/").toLowerCase()];
   }
-  return normalizePath(resolve(root, `.${decodedPath}`)).toLowerCase();
+  return [normalizePath(resolve(root, `.${decodedPath}`)).toLowerCase()];
 }
 
 type StudioSensitiveFileBoundaryOptions = Readonly<{ logPath: false | string; root: string }>;
@@ -114,7 +123,7 @@ export function shouldDenyStudioSensitiveFileRequest(rawUrl: string, options: St
         ],
   );
   const target = normalizedRequestFile(rawUrl, options.root);
-  return target === null || target === "sensitive" || configuredLogs.has(target);
+  return target === null || target === "sensitive" || target.some((path) => configuredLogs.has(path));
 }
 
 export function studioSensitiveFileBoundary(options: StudioSensitiveFileBoundaryOptions): Plugin {

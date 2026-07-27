@@ -65,6 +65,18 @@ describe("Vite privacy boundary", () => {
     expect(shouldDenyStudioSensitiveFileRequest("/@fs//srv/studio/private/active.jsonl", posix)).toBe(true);
     expect(shouldDenyStudioSensitiveFileRequest("/@fs/srv/studio/private/active.jsonl", posix)).toBe(true);
     expect(shouldDenyStudioSensitiveFileRequest("/@fs//srv/studio/public.txt", posix)).toBe(false);
+
+    const unc = {
+      logPath: String.raw`\\server\share\private\active.jsonl`,
+      root: "C:/Studio",
+    } as const;
+    expect(shouldDenyStudioSensitiveFileRequest("/@fs//server/share/private/active.jsonl", unc)).toBe(true);
+    expect(shouldDenyStudioSensitiveFileRequest("/@fs/%2Fserver/share/private/active.jsonl.previous?import", unc)).toBe(
+      true,
+    );
+    expect(shouldDenyStudioSensitiveFileRequest("/@fs//SERVER/share/public.txt", unc)).toBe(false);
+    expect(shouldDenyStudioSensitiveFileRequest("/@fs///server/share/public.txt", unc)).toBe(true);
+    expect(shouldDenyStudioSensitiveFileRequest("/@fs////server/share/public.txt", unc)).toBe(true);
   });
 
   it("ignores dotenv credentials and returns only public or explicitly allowed non-secret settings", () => {
@@ -160,6 +172,7 @@ describe("Vite privacy boundary", () => {
       "/custom-logs/active.jsonl.previous?import",
       `/@fs/${normalizePath(activeLog)}?raw`,
       `/@fs/${normalizePath(`${activeLog}.previous`)}?import`,
+      "/@fs///ambiguous/path",
       "/invalid/%E0%A4%A",
       "/invalid/%00path",
       "/safe/%2e%2e/ambiguous",
