@@ -125,7 +125,7 @@ class TransportError extends Error {
 
 function isLoopback(hostname: string) {
   const unwrapped = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
-  return unwrapped === "localhost" || unwrapped === "::1" || unwrapped.startsWith("127.");
+  return unwrapped === "localhost" || unwrapped === "::1" || (isIP(unwrapped) === 4 && unwrapped.startsWith("127."));
 }
 
 export function parseProductionManimServerConfig(input: unknown): ProductionManimServerConfig {

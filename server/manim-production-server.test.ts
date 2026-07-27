@@ -102,6 +102,7 @@ describe("production Manim server configuration", () => {
     [{ ...config(), deployment: "development" }, /production/i],
     [{ ...config(), host: "localhost" }, /explicit IP/i],
     [{ ...config(), publicOrigin: "http://studio.example" }, /HTTPS/i],
+    [{ ...config(), publicOrigin: "http://127.evil.example" }, /HTTPS/i],
     [{ ...config(), publicOrigin: "https://studio.example/api" }, /scheme, host/i],
     [{ ...config(), trustedProxyAddresses: ["10.0.0.0/8"] }, /explicit IP/i],
     [{ ...config(), unknown: true }, /unrecognized/i],
