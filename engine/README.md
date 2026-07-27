@@ -46,18 +46,23 @@ authoritative workflows.
 `poietra-render-wgpu` is a deliberately narrow GPU slice. Its pure CPU
 stage validates the complete `RenderPacketV1`, maps each local cubic's controls to
 world space in f64, then adaptively flattens there with a conservative target-derived
-0.25-pixel control-hull tolerance. Camera subtraction and clip mapping happen only
-after tessellation, before the finite f32 upload check. Fill draws support one closed,
-non-degenerate convex subpath. Stroke-only draws support one open, non-degenerate
+0.25-pixel control-hull tolerance. Filled contours then undergo camera subtraction
+and clip mapping in f64. Conversion to the final f32 upload domain rejects more than
+0.25 pixels of error or any distinct-point collapse; Lyon triangulates those exact
+upload coordinates without a second quantization. Fill draws support closed concave
+and disjoint subpaths, holes, self-intersections, and explicit nonzero/even-odd rules.
+Stroke-only draws support one open, non-degenerate
 canonical Line cubic whose transformed controls differ only by shape-safe numeric
 roundoff, including non-degenerate morph/trim samples, with butt, square, or
 tolerance-tessellated round caps. The acceptance bound accounts for world-space
 stroke width, affine transform, camera, and viewport before replacing the cubic with
 its chord. Trim progress zero remains an explicit degenerate-stroke fallback.
-Combined fill/stroke, curved, closed,
-multi-segment, multi-subpath, image, non-convex, numeric, and tessellation-limit
-cases reject the complete frame with a structured error. The frame-wide preparation
-ceiling is 1,000,000 vertices.
+Combined fill/stroke, open fill, curved/closed/multi-segment/multi-subpath stroke,
+image, degenerate, numeric, precision-collapse, and tessellation-limit cases reject
+the complete frame with a structured error. Each fill draw is bounded before and
+during tessellation to 2,048 source cubics, 32,768 flattened input points, and
+65,536 Lyon output vertices. The independent frame-wide preparation ceiling remains
+1,000,000 vertices for aggregate geometry.
 
 Preparation keeps four ownership boundaries explicit: position-only geometry,
 per-draw material, stable ordered draw ranges, and the transient GPU upload plan.

@@ -245,11 +245,18 @@ Scene evaluation, path geometry, camera math, transforms, and time use finite f6
 GPU preparation has one operation order:
 
 1. compose parent/local affine transforms and transform local geometry in f64;
-2. tessellate fill/stroke in f64 world space;
-3. subtract the sampled camera center from positions in f64;
-4. map camera-relative values to clip space in f64;
-5. reject non-finite values and values outside finite f32 range;
-6. convert with IEEE-754 round-to-nearest, ties-to-even f32 at upload.
+2. flatten cubic geometry in f64 world space at the target-derived 0.25 px bound;
+3. subtract the sampled camera center and map fill positions to clip space in f64;
+4. reject non-finite values, finite-f32 overflow, more than 0.25 px of conversion
+   error, and distinct fill points that collapse in the f32 upload domain;
+5. triangulate fills in that exact f32 upload domain, with no later coordinate
+   quantization, while straight strokes continue to expand in f64 world space;
+6. upload IEEE-754 round-to-nearest, ties-to-even f32 positions.
+
+A single fill draw fails closed before or during tessellation above 2,048 source
+cubics, 32,768 flattened input points, or 65,536 Lyon output vertices. These
+per-draw limits bound browser-worker latency and transient memory independently of
+the 1,000,000-vertex whole-frame ceiling.
 
 Canonical hashing normalizes negative zero to positive zero before serialization.
 The schemas bound each value and also bound document-wide entity, channel,
@@ -460,8 +467,8 @@ The following evidence is reproducible in this repository:
 | whole-Scene failure policy | met at contract, renderer, Worker, and client boundaries | unsupported draws, malformed responses, stale correlation, surface/device failures, and protocol divergence never produce a partial success |
 | generated payload | mechanically enforced; clean evidence pending | the WASM smoke gate rejects compressed payloads above the 3 MiB budget, while the canonical benchmark records the exact served release-WASM byte and gzip sizes; adoption evidence must come from a clean-commit report rather than a mutable working-tree measurement |
 | initial shared snapshot | met for the fixture | 2,414 encoded bytes, below the 5 MiB budget |
-| fixture breadth and visual parity | partial | the catalog fixes 15 workload IDs, but only one fixture currently executes through both GPU backends; SSIM and pixel-difference corpus reports do not yet exist |
-| renderer capability coverage | partial | solid convex cubic fills and shape-safe canonical Line strokes, including non-degenerate morph/trim samples within the engine, work; trim zero, broader stroke, image, multiple subpaths, other open paths, and non-convex fill remain truthful fallbacks. The fast-manim static bridge still excludes animation channels. |
+| fixture breadth and visual parity | partial | the catalog fixes 15 workload IDs; the original opacity/stroke fixture and a generic-fill topology fixture execute through both GPU backends with shared interior-pixel references, while SSIM and pixel-difference corpus reports do not yet exist |
+| renderer capability coverage | partial | non-convex closed cubic fills, multiple subpaths, holes, self-intersections, nonzero/even-odd rules, and shape-safe canonical Line strokes work; trim zero, broader stroke, image, open fill paths, and combined fill/stroke remain truthful fallbacks. The fast-manim static bridge still excludes animation channels. |
 | Studio preview integration | partial for the opt-in static profile | `?previewRenderer=server` selects a real project source and Scene, installs its verified server snapshot once, and accepts only exactly correlated retained frame acknowledgements while the semantic editor stays mounted; exact GPU texture readback is covered, but a visible browser-compositor golden on a named real-GPU host remains #78 evidence and verified source-to-runtime hit geometry remains #91 |
 | incremental edit transfer | partial | a Studio-only, 256 KiB, stale-revision-safe atomic delta contract is verified in TypeScript; Worker/WASM still receives complete replacement snapshots |
 | fast-manim bridge | met for the bounded static profile; production execution blocked | the real exporter emits complete camera, paint-order, appearance, and geometry evidence for a filled Circle, filled Rectangle, and canonical stroked Line; Studio now hands canonical immutable request bytes only to the explicit [sandbox backend boundary](../fast-manim-sandbox-backend.md), rechecks backend attestation and result correlation, then verifies and seals the result. Runner-owned status/job/close bounds quarantine adapters that miss lifecycle promises, omitted deployment defaults to production, and the local-process adapter remains explicit dev/test-only. The profile still fixes duration at one second, while variable runtime timing remains #75 and Poietra/fast-manim#7 |

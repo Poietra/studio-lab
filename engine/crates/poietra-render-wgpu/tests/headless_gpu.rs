@@ -8,7 +8,7 @@ use std::time::Duration;
 use poietra_render_wgpu::{WgpuPaintRendererV1, WgpuRenderTargetV1, prepare_frame_v1};
 use poietra_scene_ir::{RenderPacketV1, StrokeCapV1};
 use serde::Serialize;
-use support::{sampled_packet, straight_stroke_packet};
+use support::{generic_fill_fixture, sampled_packet, straight_stroke_packet};
 
 const BYTES_PER_PIXEL: u32 = 4;
 const GPU_TIMEOUT: Duration = Duration::from_secs(10);
@@ -365,6 +365,45 @@ fn renders_shared_fixture_with_fallback_adapter() {
         &rgba,
         [extent.width, extent.height],
     );
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the dedicated CI step runs this proof"]
+fn renders_shared_generic_fill_fixture_with_fallback_adapter() {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = request_fallback_adapter(&instance);
+    assert_target_format_support(&adapter);
+    let (device, queue) = request_device(&adapter);
+    let device_loss = track_device_loss(&device);
+    let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+    let (packet, reference) = generic_fill_fixture();
+    let (texture, extent) = render_packet(&device, &queue, &packet);
+    let (_, rgba) = readback_texture(&device, &queue, &texture, extent);
+
+    assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
+    assert_no_gpu_error("internal", pollster::block_on(internal_scope.pop()));
+    assert_no_gpu_error(
+        "out-of-memory",
+        pollster::block_on(out_of_memory_scope.pop()),
+    );
+    assert!(
+        device_loss
+            .lock()
+            .expect("device-loss evidence mutex must not be poisoned")
+            .is_none(),
+        "device must remain available through generic fill readback"
+    );
+
+    println!("poietra-generic-fill-reference={}", reference.reason);
+    for (name, sample) in reference.samples {
+        let actual = pixel(&rgba, extent.width, sample.at[0], sample.at[1]);
+        assert_pixel_close(actual, sample.rgba, [sample.tolerance; 4]);
+        println!("poietra-generic-fill-pixel={name}:{actual:?}");
+    }
 }
 
 #[test]

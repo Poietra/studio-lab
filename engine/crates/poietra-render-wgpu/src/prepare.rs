@@ -1,8 +1,13 @@
-use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::ops::Range;
 
+use lyon_tessellation::geometry_builder::{FillGeometryBuilder, GeometryBuilder};
+use lyon_tessellation::math::{Point as LyonPoint, point as lyon_point};
+use lyon_tessellation::{
+    FillOptions, FillTessellator, FillVertex, GeometryBuilderError, TessellationError, VertexId,
+};
 use poietra_scene_ir::{
-    AffineTransformV1, CubicSegmentV1, CubicSubpathV1, RenderCameraV1, RenderDrawV1,
+    AffineTransformV1, CubicSegmentV1, CubicSubpathV1, FillRuleV1, RenderCameraV1, RenderDrawV1,
     RenderPacketV1, RgbaColorV1, StrokeCapV1, StrokeStyleV1, ViewportV1, validate_render_packet_v1,
 };
 
@@ -10,6 +15,9 @@ use poietra_scene_ir::{
 pub const FLATTEN_TOLERANCE_PIXELS_V1: f64 = 0.25;
 /// Whole-frame vertex ceiling for the initial CPU tessellation slice.
 pub const MAX_PREPARED_VERTICES_V1: usize = 1_000_000;
+const MAX_FILL_SOURCE_CUBICS_PER_DRAW_V1: usize = 2_048;
+const MAX_FILL_FLATTENED_POINTS_PER_DRAW_V1: usize = 32_768;
+const MAX_FILL_OUTPUT_VERTICES_PER_DRAW_V1: usize = 65_536;
 const MAX_FLATTEN_DEPTH_V1: u8 = 20;
 // Cross-runtime affine and morph arithmetic can move an otherwise canonical
 // Line control by several representable values. Keep that tolerance tied to
@@ -26,12 +34,12 @@ pub enum UnsupportedDrawReasonV1 {
     FillAndStroke,
     #[error("path draws must contain a solid fill")]
     MissingFill,
-    #[error("multiple subpaths are not implemented")]
+    #[error("multiple stroke subpaths are not implemented")]
     MultipleSubpaths,
     #[error("open subpaths are not implemented")]
     OpenSubpath,
-    #[error("only non-degenerate convex subpaths are implemented")]
-    NonConvexOrDegenerate,
+    #[error("the filled path is degenerate after bounded screen-space conversion")]
+    DegenerateFill,
     #[error("closed stroke subpaths are not implemented")]
     ClosedStrokeSubpath,
     #[error("the stroke slice requires exactly one cubic segment")]
@@ -54,6 +62,20 @@ pub enum PrepareFrameErrorV1 {
     },
     #[error("{context} is non-finite or outside the finite f32 range")]
     NumericRange { context: String },
+    #[error(
+        "draw {draw_id} loses more than {maximum_error_pixels} px or collapses when entering the f32 upload domain"
+    )]
+    FillPrecisionLoss {
+        draw_id: String,
+        maximum_error_pixels: f64,
+    },
+    #[error("draw {draw_id} fill tessellation failed: {reason}")]
+    FillTessellation { draw_id: String, reason: String },
+    #[error("draw {draw_id} exceeded the filled-path source limit of {maximum_cubics} cubics")]
+    FillSourceCubicLimit {
+        draw_id: String,
+        maximum_cubics: usize,
+    },
     #[error("prepared geometry exceeds the u32 indexed-draw range")]
     IndexRange,
     #[error("draw {draw_id} exceeded the adaptive tessellation vertex limit of {maximum_vertices}")]
@@ -365,86 +387,6 @@ fn same_point(left: PointF64, right: PointF64) -> bool {
     point_key(left) == point_key(right)
 }
 
-fn compare_points(left: &PointF64, right: &PointF64) -> Ordering {
-    let left_x = if left.x == 0.0 { 0.0 } else { left.x };
-    let right_x = if right.x == 0.0 { 0.0 } else { right.x };
-    let left_y = if left.y == 0.0 { 0.0 } else { left.y };
-    let right_y = if right.y == 0.0 { 0.0 } else { right.y };
-    left_x
-        .total_cmp(&right_x)
-        .then_with(|| left_y.total_cmp(&right_y))
-}
-
-fn turn(first: PointF64, second: PointF64, third: PointF64) -> Option<f64> {
-    let cross =
-        (second.x - first.x) * (third.y - first.y) - (second.y - first.y) * (third.x - first.x);
-    cross.is_finite().then_some(cross)
-}
-
-/// Returns every point in counter-clockwise convex-boundary order. Keeping
-/// collinear boundary points makes the subsequent order comparison exact while
-/// retaining O(n log n) complexity for contract-sized packets.
-fn convex_boundary(points: &[PointF64]) -> Option<Vec<PointF64>> {
-    let mut sorted = points.to_vec();
-    sorted.sort_by(compare_points);
-    if sorted.windows(2).any(|pair| same_point(pair[0], pair[1])) {
-        return None;
-    }
-
-    let mut lower = Vec::with_capacity(sorted.len());
-    for point in sorted.iter().copied() {
-        while lower.len() >= 2 {
-            let cross = turn(lower[lower.len() - 2], lower[lower.len() - 1], point)?;
-            if cross >= 0.0 {
-                break;
-            }
-            lower.pop();
-        }
-        lower.push(point);
-    }
-
-    let mut upper = Vec::with_capacity(sorted.len());
-    for point in sorted.iter().rev().copied() {
-        while upper.len() >= 2 {
-            let cross = turn(upper[upper.len() - 2], upper[upper.len() - 1], point)?;
-            if cross >= 0.0 {
-                break;
-            }
-            upper.pop();
-        }
-        upper.push(point);
-    }
-
-    lower.pop();
-    upper.pop();
-    lower.extend(upper);
-    Some(lower)
-}
-
-fn is_non_degenerate_convex(points: &[PointF64]) -> bool {
-    if points.len() < 3 {
-        return false;
-    }
-    let Some(hull) = convex_boundary(points) else {
-        return false;
-    };
-    if hull.len() != points.len() {
-        return false;
-    }
-
-    let Some(start) = hull.iter().position(|point| same_point(*point, points[0])) else {
-        return false;
-    };
-    let forward = points
-        .iter()
-        .enumerate()
-        .all(|(offset, point)| same_point(*point, hull[(start + offset) % hull.len()]));
-    let reverse = points.iter().enumerate().all(|(offset, point)| {
-        same_point(*point, hull[(start + hull.len() - offset) % hull.len()])
-    });
-    forward || reverse
-}
-
 fn midpoint(left: PointF64, right: PointF64) -> PointF64 {
     PointF64 {
         x: left.x + (right.x - left.x) * 0.5,
@@ -604,6 +546,7 @@ fn append_point(
     points: &mut Vec<PointF64>,
     point: PointF64,
     maximum_vertices: usize,
+    reported_maximum_vertices: usize,
     draw_id: &str,
 ) -> Result<(), PrepareFrameErrorV1> {
     if points
@@ -615,7 +558,7 @@ fn append_point(
     if points.len() >= maximum_vertices {
         return Err(PrepareFrameErrorV1::TessellationVertexLimit {
             draw_id: draw_id.to_owned(),
-            maximum_vertices: MAX_PREPARED_VERTICES_V1,
+            maximum_vertices: reported_maximum_vertices,
         });
     }
     points.push(point);
@@ -644,6 +587,7 @@ fn flatten_subpath_world(
     viewport: &ViewportV1,
     draw_id: &str,
     maximum_vertices: usize,
+    reported_maximum_vertices: usize,
 ) -> Result<Vec<PointF64>, PrepareFrameErrorV1> {
     let initial_capacity = subpath
         .segments
@@ -655,6 +599,7 @@ fn flatten_subpath_world(
         &mut points,
         transform_to_world(&subpath.start, transform, draw_id)?,
         maximum_vertices,
+        reported_maximum_vertices,
         draw_id,
     )?;
     let tolerance_world = world_flatten_tolerance(camera, viewport);
@@ -663,7 +608,13 @@ fn flatten_subpath_world(
         let mut stack = vec![world_curve(start, segment, transform, draw_id)?];
         while let Some(curve) = stack.pop() {
             if cubic_is_flat(curve, tolerance_world, draw_id)? {
-                append_point(&mut points, curve.end, maximum_vertices, draw_id)?;
+                append_point(
+                    &mut points,
+                    curve.end,
+                    maximum_vertices,
+                    reported_maximum_vertices,
+                    draw_id,
+                )?;
                 continue;
             }
             if curve.depth >= MAX_FLATTEN_DEPTH_V1 {
@@ -682,6 +633,215 @@ fn flatten_subpath_world(
         points.pop();
     }
     Ok(points)
+}
+
+fn normalized_f32_bits(value: f32) -> u32 {
+    if value == 0.0 {
+        0.0f32.to_bits()
+    } else {
+        value.to_bits()
+    }
+}
+
+fn fill_point_key(point: LyonPoint) -> (u32, u32) {
+    (normalized_f32_bits(point.x), normalized_f32_bits(point.y))
+}
+
+fn world_to_fill_point(
+    world: PointF64,
+    camera: &RenderCameraV1,
+    viewport: &ViewportV1,
+    draw_id: &str,
+) -> Result<(LyonPoint, PointF64), PrepareFrameErrorV1> {
+    let clip = world_to_clip(world, camera, draw_id)?;
+    let clip_x = checked_f32(clip.x, Some(draw_id), "clip x")?;
+    let clip_y = checked_f32(clip.y, Some(draw_id), "clip y")?;
+    let error_pixels_x = (clip.x - f64::from(clip_x)).abs() * f64::from(viewport.width_px) * 0.5;
+    let error_pixels_y = (clip.y - f64::from(clip_y)).abs() * f64::from(viewport.height_px) * 0.5;
+    if error_pixels_x.hypot(error_pixels_y) > FLATTEN_TOLERANCE_PIXELS_V1 {
+        return Err(PrepareFrameErrorV1::FillPrecisionLoss {
+            draw_id: draw_id.to_owned(),
+            maximum_error_pixels: FLATTEN_TOLERANCE_PIXELS_V1,
+        });
+    }
+    Ok((lyon_point(clip_x, clip_y), clip))
+}
+
+#[derive(Debug, Default)]
+struct FillContourTopologyV1 {
+    first: Option<LyonPoint>,
+    has_non_collinear_point: bool,
+    second_distinct: Option<LyonPoint>,
+}
+
+impl FillContourTopologyV1 {
+    fn observe(&mut self, point: LyonPoint) -> bool {
+        let Some(first) = self.first else {
+            self.first = Some(point);
+            return true;
+        };
+        let Some(second) = self.second_distinct else {
+            if fill_point_key(point) != fill_point_key(first) {
+                self.second_distinct = Some(point);
+            }
+            return false;
+        };
+        let cross = (f64::from(second.x) - f64::from(first.x))
+            * (f64::from(point.y) - f64::from(first.y))
+            - (f64::from(second.y) - f64::from(first.y))
+                * (f64::from(point.x) - f64::from(first.x));
+        self.has_non_collinear_point |= cross != 0.0;
+        false
+    }
+
+    const fn is_degenerate(&self) -> bool {
+        !self.has_non_collinear_point
+    }
+}
+
+#[derive(Debug)]
+struct BoundedFillGeometryV1 {
+    first_index: usize,
+    first_vertex: usize,
+    index_limit_exceeded: bool,
+    indices: Vec<u32>,
+    maximum_indices: usize,
+    maximum_vertices: usize,
+    vertices: Vec<LyonPoint>,
+}
+
+impl BoundedFillGeometryV1 {
+    fn new(maximum_vertices: usize) -> Self {
+        Self {
+            first_index: 0,
+            first_vertex: 0,
+            index_limit_exceeded: false,
+            indices: Vec::new(),
+            maximum_indices: maximum_vertices.saturating_mul(6),
+            maximum_vertices,
+            vertices: Vec::new(),
+        }
+    }
+}
+
+impl GeometryBuilder for BoundedFillGeometryV1 {
+    fn begin_geometry(&mut self) {
+        self.first_index = self.indices.len();
+        self.first_vertex = self.vertices.len();
+        self.index_limit_exceeded = false;
+    }
+
+    fn add_triangle(&mut self, first: VertexId, second: VertexId, third: VertexId) {
+        let Some(next_len) = self.indices.len().checked_add(3) else {
+            self.index_limit_exceeded = true;
+            return;
+        };
+        if next_len > self.maximum_indices {
+            self.index_limit_exceeded = true;
+            return;
+        }
+        self.indices
+            .extend_from_slice(&[u32::from(first), u32::from(second), u32::from(third)]);
+    }
+
+    fn abort_geometry(&mut self) {
+        self.vertices.truncate(self.first_vertex);
+        self.indices.truncate(self.first_index);
+        self.index_limit_exceeded = false;
+    }
+}
+
+impl FillGeometryBuilder for BoundedFillGeometryV1 {
+    fn add_fill_vertex(
+        &mut self,
+        vertex: FillVertex<'_>,
+    ) -> Result<VertexId, GeometryBuilderError> {
+        if self.vertices.len() >= self.maximum_vertices {
+            return Err(GeometryBuilderError::TooManyVertices);
+        }
+        let position = vertex.position();
+        if !position.x.is_finite() || !position.y.is_finite() {
+            return Err(GeometryBuilderError::InvalidVertex);
+        }
+        let index = u32::try_from(self.vertices.len())
+            .map_err(|_| GeometryBuilderError::TooManyVertices)?;
+        self.vertices.push(position);
+        Ok(VertexId(index))
+    }
+}
+
+fn fill_tessellation_error(
+    error: &TessellationError,
+    draw_id: &str,
+    maximum_vertices: usize,
+) -> PrepareFrameErrorV1 {
+    if matches!(
+        error,
+        TessellationError::GeometryBuilder(GeometryBuilderError::TooManyVertices)
+    ) {
+        return PrepareFrameErrorV1::TessellationVertexLimit {
+            draw_id: draw_id.to_owned(),
+            maximum_vertices,
+        };
+    }
+    PrepareFrameErrorV1::FillTessellation {
+        draw_id: draw_id.to_owned(),
+        reason: error.to_string(),
+    }
+}
+
+fn validate_fill_output(
+    output: &BoundedFillGeometryV1,
+    draw_id: &str,
+) -> Result<(), PrepareFrameErrorV1> {
+    if output.index_limit_exceeded {
+        return Err(PrepareFrameErrorV1::FillTessellation {
+            draw_id: draw_id.to_owned(),
+            reason: "triangle index output exceeded the bounded planar-mesh limit".to_owned(),
+        });
+    }
+    if output.vertices.is_empty() || output.indices.is_empty() {
+        return Err(PrepareFrameErrorV1::Unsupported {
+            draw_id: draw_id.to_owned(),
+            reason: UnsupportedDrawReasonV1::DegenerateFill,
+        });
+    }
+    if !output.indices.len().is_multiple_of(3) {
+        return Err(PrepareFrameErrorV1::FillTessellation {
+            draw_id: draw_id.to_owned(),
+            reason: "triangle index output is not divisible by three".to_owned(),
+        });
+    }
+    for triangle in output.indices.chunks_exact(3) {
+        let [first, second, third] = [
+            usize::try_from(triangle[0]).map_err(|_| PrepareFrameErrorV1::IndexRange)?,
+            usize::try_from(triangle[1]).map_err(|_| PrepareFrameErrorV1::IndexRange)?,
+            usize::try_from(triangle[2]).map_err(|_| PrepareFrameErrorV1::IndexRange)?,
+        ];
+        let Some((&first, &second, &third)) = output
+            .vertices
+            .get(first)
+            .zip(output.vertices.get(second))
+            .zip(output.vertices.get(third))
+            .map(|((first, second), third)| (first, second, third))
+        else {
+            return Err(PrepareFrameErrorV1::FillTessellation {
+                draw_id: draw_id.to_owned(),
+                reason: "triangle references an unknown vertex".to_owned(),
+            });
+        };
+        let doubled_area = (f64::from(second.x) - f64::from(first.x))
+            * (f64::from(third.y) - f64::from(first.y))
+            - (f64::from(second.y) - f64::from(first.y))
+                * (f64::from(third.x) - f64::from(first.x));
+        if doubled_area == 0.0 || !doubled_area.is_finite() {
+            return Err(PrepareFrameErrorV1::Unsupported {
+                draw_id: draw_id.to_owned(),
+                reason: UnsupportedDrawReasonV1::DegenerateFill,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn append_prepared_vertex(
@@ -1078,72 +1238,148 @@ fn prepare_stroke_geometry(
     )
 }
 
+fn validate_fill_source_limits(
+    path: &poietra_scene_ir::CubicPathV1,
+    draw_id: &str,
+) -> Result<(), PrepareFrameErrorV1> {
+    let mut source_cubics = 0usize;
+    for subpath in &path.subpaths {
+        if !subpath.closed {
+            return Err(PrepareFrameErrorV1::Unsupported {
+                draw_id: draw_id.to_owned(),
+                reason: UnsupportedDrawReasonV1::OpenSubpath,
+            });
+        }
+        source_cubics = source_cubics.saturating_add(subpath.segments.len());
+        if source_cubics > MAX_FILL_SOURCE_CUBICS_PER_DRAW_V1 {
+            return Err(PrepareFrameErrorV1::FillSourceCubicLimit {
+                draw_id: draw_id.to_owned(),
+                maximum_cubics: MAX_FILL_SOURCE_CUBICS_PER_DRAW_V1,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn fill_output_limits(
+    prepared_vertices: usize,
+    draw_id: &str,
+) -> Result<(usize, usize), PrepareFrameErrorV1> {
+    let Some(remaining_vertices) = MAX_PREPARED_VERTICES_V1.checked_sub(prepared_vertices) else {
+        return Err(PrepareFrameErrorV1::TessellationVertexLimit {
+            draw_id: draw_id.to_owned(),
+            maximum_vertices: MAX_PREPARED_VERTICES_V1,
+        });
+    };
+    if remaining_vertices < 3 {
+        return Err(PrepareFrameErrorV1::TessellationVertexLimit {
+            draw_id: draw_id.to_owned(),
+            maximum_vertices: MAX_PREPARED_VERTICES_V1,
+        });
+    }
+    let maximum_output_vertices = remaining_vertices.min(MAX_FILL_OUTPUT_VERTICES_PER_DRAW_V1);
+    let reported_output_limit = if remaining_vertices < MAX_FILL_OUTPUT_VERTICES_PER_DRAW_V1 {
+        MAX_PREPARED_VERTICES_V1
+    } else {
+        MAX_FILL_OUTPUT_VERTICES_PER_DRAW_V1
+    };
+    Ok((maximum_output_vertices, reported_output_limit))
+}
+
 fn prepare_fill_geometry(
     vertices: &mut Vec<PreparedGeometryVertexV1>,
     indices: &mut Vec<u32>,
     path: &poietra_scene_ir::CubicPathV1,
     transform: &AffineTransformV1,
+    fill_rule: FillRuleV1,
     context: GeometryContextV1<'_>,
 ) -> Result<(), PrepareFrameErrorV1> {
     let draw_id = context.draw_id;
-    if path.subpaths.len() != 1 {
-        return Err(PrepareFrameErrorV1::Unsupported {
-            draw_id: draw_id.to_owned(),
-            reason: UnsupportedDrawReasonV1::MultipleSubpaths,
-        });
+    validate_fill_source_limits(path, draw_id)?;
+    let (maximum_output_vertices, reported_output_limit) =
+        fill_output_limits(vertices.len(), draw_id)?;
+    let mut flattened_vertices = 0usize;
+    let mut upload_points = HashMap::new();
+    let lyon_fill_rule = match fill_rule {
+        FillRuleV1::EvenOdd => lyon_tessellation::FillRule::EvenOdd,
+        FillRuleV1::NonZero => lyon_tessellation::FillRule::NonZero,
+    };
+    // Cubics have already been flattened in f64 world space. The smallest
+    // positive tolerance keeps Lyon from adding another visible approximation
+    // while retaining its intersection-safe fill sweep.
+    let options = FillOptions::default()
+        .with_fill_rule(lyon_fill_rule)
+        .with_tolerance(f32::EPSILON);
+    let mut output = BoundedFillGeometryV1::new(maximum_output_vertices);
+    let mut tessellator = FillTessellator::new();
+    let mut builder = tessellator.builder(&options, &mut output);
+    for subpath in &path.subpaths {
+        let available_for_subpath = MAX_FILL_FLATTENED_POINTS_PER_DRAW_V1
+            .checked_sub(flattened_vertices)
+            .ok_or_else(|| PrepareFrameErrorV1::TessellationVertexLimit {
+                draw_id: draw_id.to_owned(),
+                maximum_vertices: MAX_FILL_FLATTENED_POINTS_PER_DRAW_V1,
+            })?;
+        let world_points = flatten_subpath_world(
+            subpath,
+            transform,
+            context.camera,
+            context.viewport,
+            draw_id,
+            available_for_subpath,
+            MAX_FILL_FLATTENED_POINTS_PER_DRAW_V1,
+        )?;
+        flattened_vertices = flattened_vertices
+            .checked_add(world_points.len())
+            .ok_or_else(|| PrepareFrameErrorV1::TessellationVertexLimit {
+                draw_id: draw_id.to_owned(),
+                maximum_vertices: MAX_FILL_FLATTENED_POINTS_PER_DRAW_V1,
+            })?;
+        let mut topology = FillContourTopologyV1::default();
+        for world_point in world_points {
+            let (fill_point, clip_point) =
+                world_to_fill_point(world_point, context.camera, context.viewport, draw_id)?;
+            let fill_key = fill_point_key(fill_point);
+            if upload_points
+                .insert(fill_key, point_key(clip_point))
+                .is_some_and(|previous| previous != point_key(clip_point))
+            {
+                return Err(PrepareFrameErrorV1::FillPrecisionLoss {
+                    draw_id: draw_id.to_owned(),
+                    maximum_error_pixels: FLATTEN_TOLERANCE_PIXELS_V1,
+                });
+            }
+            if topology.observe(fill_point) {
+                builder.begin(fill_point);
+            } else {
+                builder.line_to(fill_point);
+            }
+        }
+        if topology.is_degenerate() {
+            return Err(PrepareFrameErrorV1::Unsupported {
+                draw_id: draw_id.to_owned(),
+                reason: UnsupportedDrawReasonV1::DegenerateFill,
+            });
+        }
+        builder.end(true);
     }
-    let subpath = &path.subpaths[0];
-    if !subpath.closed {
-        return Err(PrepareFrameErrorV1::Unsupported {
-            draw_id: draw_id.to_owned(),
-            reason: UnsupportedDrawReasonV1::OpenSubpath,
-        });
-    }
-    let remaining_vertices = MAX_PREPARED_VERTICES_V1
-        .checked_sub(vertices.len())
-        .ok_or_else(|| PrepareFrameErrorV1::TessellationVertexLimit {
-            draw_id: draw_id.to_owned(),
-            maximum_vertices: MAX_PREPARED_VERTICES_V1,
-        })?;
-    let world_points = flatten_subpath_world(
-        subpath,
-        transform,
-        context.camera,
-        context.viewport,
-        draw_id,
-        remaining_vertices,
-    )?;
-    if !is_non_degenerate_convex(&world_points) {
-        return Err(PrepareFrameErrorV1::Unsupported {
-            draw_id: draw_id.to_owned(),
-            reason: UnsupportedDrawReasonV1::NonConvexOrDegenerate,
-        });
-    }
-    let points = world_points
-        .into_iter()
-        .map(|point| world_to_clip(point, context.camera, draw_id))
-        .collect::<Result<Vec<_>, _>>()?;
+    builder
+        .build()
+        .map_err(|error| fill_tessellation_error(&error, draw_id, reported_output_limit))?;
+    validate_fill_output(&output, draw_id)?;
+
     let base_vertex = u32::try_from(vertices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
-    for point in &points {
+    for point in output.vertices {
         vertices.push(PreparedGeometryVertexV1 {
-            position: [
-                checked_f32(point.x, Some(draw_id), "clip x")?,
-                checked_f32(point.y, Some(draw_id), "clip y")?,
-            ],
+            position: [point.x, point.y],
         });
     }
-    for offset in 1..(points.len() - 1) {
-        let middle = u32::try_from(offset).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
-        let end = u32::try_from(offset + 1).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
-        indices.extend_from_slice(&[
-            base_vertex,
+    for index in output.indices {
+        indices.push(
             base_vertex
-                .checked_add(middle)
+                .checked_add(index)
                 .ok_or(PrepareFrameErrorV1::IndexRange)?,
-            base_vertex
-                .checked_add(end)
-                .ok_or(PrepareFrameErrorV1::IndexRange)?,
-        ]);
+        );
     }
     Ok(())
 }
@@ -1172,7 +1408,9 @@ fn prepare_draw_geometry(
         viewport,
     };
     match (fill, stroke) {
-        (Some(_), None) => prepare_fill_geometry(vertices, indices, path, transform, context),
+        (Some(fill), None) => {
+            prepare_fill_geometry(vertices, indices, path, transform, fill.rule, context)
+        }
         (None, Some(stroke)) => {
             prepare_stroke_geometry(vertices, indices, path, transform, stroke, context)
         }
@@ -1327,54 +1565,145 @@ mod tests {
     }
 
     #[test]
-    fn self_intersecting_pentagram_is_not_accepted_as_convex() {
-        let outer = (0..5)
-            .map(|index| {
-                let angle =
-                    std::f64::consts::FRAC_PI_2 + f64::from(index) * std::f64::consts::TAU / 5.0;
-                PointF64 {
-                    x: angle.cos(),
-                    y: angle.sin(),
-                }
-            })
-            .collect::<Vec<_>>();
-        let pentagram = [outer[0], outer[2], outer[4], outer[1], outer[3]];
+    fn fill_flattening_reports_the_supplied_point_limit() {
+        let start = poietra_scene_ir::PointV1 { x: 0.0, y: 0.0 };
+        let middle = poietra_scene_ir::PointV1 { x: 1.0, y: 0.0 };
+        let end = poietra_scene_ir::PointV1 { x: 2.0, y: 0.0 };
+        let subpath = CubicSubpathV1 {
+            closed: true,
+            segments: vec![
+                CubicSegmentV1 {
+                    control1: poietra_scene_ir::PointV1 {
+                        x: 1.0 / 3.0,
+                        y: 0.0,
+                    },
+                    control2: poietra_scene_ir::PointV1 {
+                        x: 2.0 / 3.0,
+                        y: 0.0,
+                    },
+                    end: middle,
+                },
+                CubicSegmentV1 {
+                    control1: poietra_scene_ir::PointV1 {
+                        x: 4.0 / 3.0,
+                        y: 0.0,
+                    },
+                    control2: poietra_scene_ir::PointV1 {
+                        x: 5.0 / 3.0,
+                        y: 0.0,
+                    },
+                    end,
+                },
+            ],
+            start,
+        };
+        let camera = RenderCameraV1 {
+            bottom: -4.5,
+            clear_color: RgbaColorV1 {
+                alpha: 1.0,
+                blue: 0.0,
+                green: 0.0,
+                red: 0.0,
+            },
+            kind: poietra_scene_ir::RenderCameraKindV1::Orthographic2d,
+            left: -8.0,
+            right: 8.0,
+            top: 4.5,
+        };
+        let viewport = ViewportV1 {
+            height_px: 90,
+            width_px: 160,
+        };
 
-        assert!(!is_non_degenerate_convex(&pentagram));
+        assert!(matches!(
+            flatten_subpath_world(
+                &subpath,
+                &AffineTransformV1::identity(),
+                &camera,
+                &viewport,
+                "draw:limit",
+                2,
+                2,
+            ),
+            Err(PrepareFrameErrorV1::TessellationVertexLimit {
+                maximum_vertices: 2,
+                ..
+            })
+        ));
     }
 
     #[test]
-    fn convex_boundary_order_accepts_edge_points_and_rejects_concavity() {
-        let convex_with_edge_point = [
-            PointF64 { x: 0.0, y: 0.0 },
-            PointF64 { x: 1.0, y: 0.0 },
-            PointF64 { x: 2.0, y: 0.0 },
-            PointF64 { x: 2.0, y: 1.0 },
-            PointF64 { x: 0.0, y: 1.0 },
-        ];
-        let concave = [
-            PointF64 { x: 0.0, y: 0.0 },
-            PointF64 { x: 2.0, y: 0.0 },
-            PointF64 { x: 1.0, y: 0.5 },
-            PointF64 { x: 2.0, y: 1.0 },
-            PointF64 { x: 0.0, y: 1.0 },
-        ];
-        let duplicate = [
-            PointF64 { x: 0.0, y: 0.0 },
-            PointF64 { x: 1.0, y: 0.0 },
-            PointF64 { x: 1.0, y: 1.0 },
-            PointF64 { x: 0.0, y: 0.0 },
-        ];
-        let all_collinear = [
-            PointF64 { x: 0.0, y: 0.0 },
-            PointF64 { x: 1.0, y: 0.0 },
-            PointF64 { x: 2.0, y: 0.0 },
-        ];
+    fn bounded_fill_builder_aborts_without_partial_output() {
+        assert_eq!(MAX_FILL_OUTPUT_VERTICES_PER_DRAW_V1, 65_536);
+        let retained_vertex = lyon_point(9.0, 9.0);
+        let retained_indices = [0, 0, 0];
+        let mut output = BoundedFillGeometryV1::new(5);
+        output.vertices.push(retained_vertex);
+        output.indices.extend_from_slice(&retained_indices);
+        output.index_limit_exceeded = true;
+        let mut tessellator = FillTessellator::new();
+        let options = FillOptions::even_odd().with_tolerance(f32::EPSILON);
+        let mut builder = tessellator.builder(&options, &mut output);
+        builder.begin(lyon_point(-1.0, -1.0));
+        builder.line_to(lyon_point(1.0, 1.0));
+        builder.line_to(lyon_point(-1.0, 1.0));
+        builder.line_to(lyon_point(1.0, -1.0));
+        builder.end(true);
 
-        assert!(is_non_degenerate_convex(&convex_with_edge_point));
-        assert!(!is_non_degenerate_convex(&concave));
-        assert!(!is_non_degenerate_convex(&duplicate));
-        assert!(!is_non_degenerate_convex(&all_collinear));
+        let build_error = builder
+            .build()
+            .expect_err("fixture must hit the output cap");
+        assert!(matches!(
+            &build_error,
+            TessellationError::GeometryBuilder(GeometryBuilderError::TooManyVertices)
+        ));
+        assert!(matches!(
+            fill_tessellation_error(
+                &build_error,
+                "draw:output-limit",
+                MAX_FILL_OUTPUT_VERTICES_PER_DRAW_V1,
+            ),
+            PrepareFrameErrorV1::TessellationVertexLimit {
+                draw_id,
+                maximum_vertices: MAX_FILL_OUTPUT_VERTICES_PER_DRAW_V1,
+            } if draw_id == "draw:output-limit"
+        ));
+        assert_eq!(output.vertices, [retained_vertex]);
+        assert_eq!(output.indices, retained_indices);
+        assert!(!output.index_limit_exceeded);
+
+        output.maximum_vertices = 8;
+        let mut retry = tessellator.builder(&options, &mut output);
+        retry.begin(lyon_point(0.0, 0.0));
+        retry.line_to(lyon_point(1.0, 0.0));
+        retry.line_to(lyon_point(0.0, 1.0));
+        retry.end(true);
+        retry.build().expect("builder must be reusable after abort");
+        assert_eq!(output.vertices.len(), 4);
+        assert_eq!(output.indices.len(), 6);
+    }
+
+    #[test]
+    fn fill_output_limit_preserves_one_triangle_or_reports_the_global_cap() {
+        assert_eq!(
+            fill_output_limits(MAX_PREPARED_VERTICES_V1 - 3, "draw:limit")
+                .expect("one triangle must fit"),
+            (3, MAX_PREPARED_VERTICES_V1),
+        );
+        for prepared_vertices in [
+            MAX_PREPARED_VERTICES_V1 - 2,
+            MAX_PREPARED_VERTICES_V1 - 1,
+            MAX_PREPARED_VERTICES_V1,
+            MAX_PREPARED_VERTICES_V1 + 1,
+        ] {
+            assert!(matches!(
+                fill_output_limits(prepared_vertices, "draw:limit"),
+                Err(PrepareFrameErrorV1::TessellationVertexLimit {
+                    maximum_vertices: MAX_PREPARED_VERTICES_V1,
+                    ..
+                })
+            ));
+        }
     }
 
     #[test]

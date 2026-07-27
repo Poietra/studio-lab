@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -12,8 +13,28 @@ use serde::Deserialize;
 #[serde(rename_all = "camelCase")]
 struct SharedFixture {
     assets: AssetManifestV1,
+    #[allow(dead_code)]
+    #[serde(default)]
+    reference: Option<GenericFillReference>,
     sample: EvaluationRequest,
     scene: SceneIrV1,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+pub struct GenericFillReference {
+    pub reason: String,
+    pub samples: BTreeMap<String, PixelReference>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+pub struct PixelReference {
+    pub at: [u32; 2],
+    pub rgba: [u8; 4],
+    pub tolerance: u8,
 }
 
 #[derive(Debug, Deserialize)]
@@ -25,25 +46,45 @@ struct EvaluationRequest {
     viewport: ViewportV1,
 }
 
-fn fixture_path() -> PathBuf {
+fn fixture_path(file_name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../fixtures/engine-v1/shared-circle-opacity.json")
+        .join("../../../fixtures/engine-v1")
+        .join(file_name)
 }
 
-pub fn sampled_packet() -> poietra_scene_ir::RenderPacketV1 {
-    let fixture: SharedFixture =
-        serde_json::from_slice(&fs::read(fixture_path()).expect("shared fixture must be readable"))
-            .expect("shared fixture must match its envelope");
+fn read_fixture(file_name: &str) -> SharedFixture {
+    let fixture: SharedFixture = serde_json::from_slice(
+        &fs::read(fixture_path(file_name)).expect("shared fixture must be readable"),
+    )
+    .expect("shared fixture must match its envelope");
+    fixture
+}
+
+fn compile_fixture(fixture: &SharedFixture) -> poietra_scene_ir::RenderPacketV1 {
     compile_engine_frame_v1(CompileEngineFrameOptionsV1 {
         assets: &fixture.assets,
         evidence: &fixture.sample.evidence,
         packet_id: &fixture.sample.packet_id,
         sample_time: fixture.sample.sample_time,
         scene: &fixture.scene,
-        viewport: fixture.sample.viewport,
+        viewport: fixture.sample.viewport.clone(),
     })
     .expect("shared fixture must evaluate")
     .packet
+}
+
+pub fn sampled_packet() -> poietra_scene_ir::RenderPacketV1 {
+    compile_fixture(&read_fixture("shared-circle-opacity.json"))
+}
+
+#[allow(dead_code)]
+pub fn generic_fill_fixture() -> (poietra_scene_ir::RenderPacketV1, GenericFillReference) {
+    let mut fixture = read_fixture("generic-fill-topology.json");
+    let reference = fixture
+        .reference
+        .take()
+        .expect("generic fill fixture must carry its pixel reference");
+    (compile_fixture(&fixture), reference)
 }
 
 fn line_control(start: &PointV1, end: &PointV1, factor: f64) -> PointV1 {

@@ -1,0 +1,268 @@
+{
+  "id": "eng-v1-generic-fill-topology",
+  "assets": {
+    "assets": [],
+    "manifestDigest": "e675cb4bad3da6b425e5a6bbe88d7da7a986e3cac61dab06139ef63950dcc181",
+    "manifestId": "manifest",
+    "schema": "poietra.asset-manifest",
+    "version": 1
+  },
+  "scene": {
+    "animationChannels": [],
+    "assetManifest": {
+      "manifestDigest": "e675cb4bad3da6b425e5a6bbe88d7da7a986e3cac61dab06139ef63950dcc181",
+      "manifestId": "manifest"
+    },
+    "camera": {
+      "background": { "alpha": 1, "blue": 0, "green": 0, "red": 0 },
+      "view": {
+        "center": { "x": 0, "y": 0 },
+        "frameHeight": 9,
+        "frameWidth": 16
+      }
+    },
+    "coordinateSpace": {
+      "cpuPrecision": "f64",
+      "kind": "cartesian-2d",
+      "origin": "center",
+      "unit": "scene-unit",
+      "xAxis": "right",
+      "yAxis": "up"
+    },
+    "duration": 1,
+    "entities": [
+      {
+        "appearance": {
+          "fill": {
+            "color": { "alpha": 1, "blue": 0, "green": 0, "red": 1 },
+            "rule": "evenodd"
+          },
+          "kind": "vector",
+          "opacity": 1,
+          "stroke": null
+        },
+        "geometry": {
+          "kind": "cubic-path",
+          "path": {
+            "subpaths": [
+              {
+                "closed": true,
+                "segments": [
+                  {
+                    "control1": { "x": -6, "y": -3 },
+                    "control2": { "x": -1, "y": -3 },
+                    "end": { "x": -1, "y": -3 }
+                  },
+                  {
+                    "control1": { "x": -1, "y": -3 },
+                    "control2": { "x": -1, "y": 3 },
+                    "end": { "x": -1, "y": 3 }
+                  },
+                  {
+                    "control1": { "x": -1, "y": 3 },
+                    "control2": { "x": -3, "y": 3 },
+                    "end": { "x": -3, "y": 3 }
+                  },
+                  {
+                    "control1": { "x": -3, "y": 3 },
+                    "control2": { "x": -3, "y": 1 },
+                    "end": { "x": -3, "y": 1 }
+                  },
+                  {
+                    "control1": { "x": -3, "y": 1 },
+                    "control2": { "x": -5, "y": 1 },
+                    "end": { "x": -5, "y": 1 }
+                  },
+                  {
+                    "control1": { "x": -5, "y": 1 },
+                    "control2": { "x": -5, "y": 3 },
+                    "end": { "x": -5, "y": 3 }
+                  },
+                  {
+                    "control1": { "x": -5, "y": 3 },
+                    "control2": { "x": -6, "y": 3 },
+                    "end": { "x": -6, "y": 3 }
+                  }
+                ],
+                "start": { "x": -6, "y": -3 }
+              },
+              {
+                "closed": true,
+                "segments": [
+                  {
+                    "control1": { "x": -4.6, "y": -0.6 },
+                    "control2": { "x": -3.4, "y": -0.6 },
+                    "end": { "x": -3.4, "y": -0.6 }
+                  },
+                  {
+                    "control1": { "x": -3.4, "y": -0.6 },
+                    "control2": { "x": -3.4, "y": 0.6 },
+                    "end": { "x": -3.4, "y": 0.6 }
+                  },
+                  {
+                    "control1": { "x": -3.4, "y": 0.6 },
+                    "control2": { "x": -4.6, "y": 0.6 },
+                    "end": { "x": -4.6, "y": 0.6 }
+                  }
+                ],
+                "start": { "x": -4.6, "y": -0.6 }
+              },
+              {
+                "closed": true,
+                "segments": [
+                  {
+                    "control1": { "x": -0.5, "y": -0.5 },
+                    "control2": { "x": 0.5, "y": -0.5 },
+                    "end": { "x": 0.5, "y": -0.5 }
+                  },
+                  {
+                    "control1": { "x": 0.5, "y": -0.5 },
+                    "control2": { "x": 0.5, "y": 0.5 },
+                    "end": { "x": 0.5, "y": 0.5 }
+                  },
+                  {
+                    "control1": { "x": 0.5, "y": 0.5 },
+                    "control2": { "x": -0.5, "y": 0.5 },
+                    "end": { "x": -0.5, "y": 0.5 }
+                  }
+                ],
+                "start": { "x": -0.5, "y": -0.5 }
+              },
+              {
+                "closed": true,
+                "segments": [
+                  {
+                    "control1": { "x": -0.8, "y": 1.2 },
+                    "control2": { "x": 0.8, "y": 2.8 },
+                    "end": { "x": 0.8, "y": 2.8 }
+                  },
+                  {
+                    "control1": { "x": 0.8, "y": 2.8 },
+                    "control2": { "x": -0.8, "y": 2.8 },
+                    "end": { "x": -0.8, "y": 2.8 }
+                  },
+                  {
+                    "control1": { "x": -0.8, "y": 2.8 },
+                    "control2": { "x": 0.8, "y": 1.2 },
+                    "end": { "x": 0.8, "y": 1.2 }
+                  }
+                ],
+                "start": { "x": -0.8, "y": 1.2 }
+              }
+            ]
+          }
+        },
+        "id": "evenodd",
+        "lifetimes": [{ "end": 1, "start": 0 }],
+        "parentId": null,
+        "provenanceId": "fixture",
+        "sceneOrder": 0,
+        "sourceZIndex": 0,
+        "transform": { "m11": 1, "m12": 0, "m21": 0, "m22": 1, "tx": 0, "ty": 0 }
+      },
+      {
+        "appearance": {
+          "fill": {
+            "color": { "alpha": 1, "blue": 1, "green": 0, "red": 0 },
+            "rule": "nonzero"
+          },
+          "kind": "vector",
+          "opacity": 1,
+          "stroke": null
+        },
+        "geometry": {
+          "kind": "cubic-path",
+          "path": {
+            "subpaths": [
+              {
+                "closed": true,
+                "segments": [
+                  {
+                    "control1": { "x": 2, "y": -2 },
+                    "control2": { "x": 6, "y": -2 },
+                    "end": { "x": 6, "y": -2 }
+                  },
+                  {
+                    "control1": { "x": 6, "y": -2 },
+                    "control2": { "x": 6, "y": 2 },
+                    "end": { "x": 6, "y": 2 }
+                  },
+                  {
+                    "control1": { "x": 6, "y": 2 },
+                    "control2": { "x": 2, "y": 2 },
+                    "end": { "x": 2, "y": 2 }
+                  }
+                ],
+                "start": { "x": 2, "y": -2 }
+              },
+              {
+                "closed": true,
+                "segments": [
+                  {
+                    "control1": { "x": 3, "y": -1 },
+                    "control2": { "x": 5, "y": -1 },
+                    "end": { "x": 5, "y": -1 }
+                  },
+                  {
+                    "control1": { "x": 5, "y": -1 },
+                    "control2": { "x": 5, "y": 1 },
+                    "end": { "x": 5, "y": 1 }
+                  },
+                  {
+                    "control1": { "x": 5, "y": 1 },
+                    "control2": { "x": 3, "y": 1 },
+                    "end": { "x": 3, "y": 1 }
+                  }
+                ],
+                "start": { "x": 3, "y": -1 }
+              }
+            ]
+          }
+        },
+        "id": "nonzero",
+        "lifetimes": [{ "end": 1, "start": 0 }],
+        "parentId": null,
+        "provenanceId": "fixture",
+        "sceneOrder": 1,
+        "sourceZIndex": 1,
+        "transform": { "m11": 1, "m12": 0, "m21": 0, "m22": 1, "tx": 0, "ty": 0 }
+      }
+    ],
+    "fidelity": { "kind": "exact" },
+    "provenance": [
+      {
+        "evidence": ["Shared native/browser generic fill topology fixture"],
+        "id": "fixture",
+        "origin": "fixture"
+      }
+    ],
+    "requiredCapabilities": ["cubic-path-geometry"],
+    "sceneId": "shared:generic-fill-topology",
+    "schema": "poietra.scene-ir",
+    "source": {
+      "editProgramVersion": 1,
+      "kind": "studio-edit-program",
+      "revisionHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "version": 1
+  },
+  "sample": {
+    "evidence": ["Poietra shared generic fill fixture v1"],
+    "packetId": "shared:generic-fill-topology:sample",
+    "sampleTime": 0.5,
+    "viewport": { "heightPx": 90, "widthPx": 160 }
+  },
+  "reference": {
+    "reason": "Opaque interior probes are at least five pixels from topology edges; exact RGBA is required because edge antialiasing is outside the v1 renderer profile.",
+    "samples": {
+      "background": { "at": [5, 5], "rgba": [0, 0, 0, 255], "tolerance": 0 },
+      "concaveInterior": { "at": [25, 45], "rgba": [255, 0, 0, 255], "tolerance": 0 },
+      "concaveNotch": { "at": [40, 25], "rgba": [0, 0, 0, 255], "tolerance": 0 },
+      "disjointInterior": { "at": [80, 45], "rgba": [255, 0, 0, 255], "tolerance": 0 },
+      "evenOddHole": { "at": [40, 45], "rgba": [0, 0, 0, 255], "tolerance": 0 },
+      "nonzeroInterior": { "at": [105, 45], "rgba": [0, 0, 255, 255], "tolerance": 0 },
+      "nonzeroSameWindingInterior": { "at": [120, 45], "rgba": [0, 0, 255, 255], "tolerance": 0 },
+      "selfIntersectionLobe": { "at": [80, 20], "rgba": [255, 0, 0, 255], "tolerance": 0 }
+    }
+  }
+}
