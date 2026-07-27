@@ -38,7 +38,11 @@ describe("durable storage configuration", () => {
       () =>
         new S3ContentBlobStoreV1({
           bucket: "poietra-private-sources",
-          clientConfig: { endpoint: "http://127.0.0.1:9000", region: "us-east-1" },
+          clientConfig: {
+            endpoint: "http://127.0.0.1:9000",
+            ignoreConfiguredEndpointUrls: true,
+            region: "us-east-1",
+          },
           deployment: "production",
         }),
     ).toThrow(/only loopback tests/i);
@@ -58,17 +62,43 @@ describe("durable storage configuration", () => {
       },
       execution: { ready: async () => true },
       namespace: "production-primary",
-      objectStorage: { bucket: "poietra-private-sources", clientConfig: { region: "us-east-1" } },
+      objectStorage: {
+        bucket: "poietra-private-sources",
+        clientConfig: { ignoreConfiguredEndpointUrls: true, region: "us-east-1" },
+      },
       sourceGc: {
         batchSize: 64,
         graceMs: 60_000,
         intervalMs: 60_000,
         onFailure: () => undefined,
+        sweepTimeoutMs: 30_000,
       },
       tenantId: "tenant-a",
     });
 
     await expect(runtime).rejects.toThrow(/verified TLS/i);
+  });
+
+  it("rejects production S3 transport and configured-endpoint escape hatches", () => {
+    const escapeHatches = [
+      { ignoreConfiguredEndpointUrls: true, requestHandler: {} },
+      { endpointProvider: async () => ({}), ignoreConfiguredEndpointUrls: true },
+      { ignoreConfiguredEndpointUrls: true, urlParser: () => ({}) },
+      { ignoreConfiguredEndpointUrls: true, tls: false },
+      { forcePathStyle: async () => true, ignoreConfiguredEndpointUrls: true },
+      { ignoreConfiguredEndpointUrls: false },
+      {},
+    ];
+    for (const config of escapeHatches) {
+      expect(
+        () =>
+          new S3ContentBlobStoreV1({
+            bucket: "poietra-private-sources",
+            clientConfig: { region: "us-east-1", ...config } as never,
+            deployment: "production",
+          }),
+      ).toThrow(/verified-HTTPS transport|path-style/i);
+    }
   });
 
   it("rejects an injected PostgreSQL pool that can bypass repository query bounds", async () => {
@@ -80,17 +110,31 @@ describe("durable storage configuration", () => {
     }
   });
 
+  it("rejects an injected PostgreSQL pool with a caller-controlled search path", async () => {
+    const pool = new Pool({
+      connectionTimeoutMillis: 5_000,
+      options: "-c search_path=poietra,public",
+      query_timeout: 5_000,
+      statement_timeout: 5_000,
+    });
+    try {
+      expect(() => new PostgresWorkspaceSourceRepositoryV1({ pool })).toThrow(/fixed.*search_path/i);
+    } finally {
+      await pool.end();
+    }
+  });
+
   it("bounds S3 version scans even when every page contains only delete markers", async () => {
     let requests = 0;
     const client = {
       destroy() {},
       async send(command: Readonly<{ input: Readonly<{ MaxKeys?: number }> }>) {
         requests += 1;
-        expect(command.input.MaxKeys).toBe(256);
+        expect(command.input.MaxKeys).toBe(1);
         return {
-          DeleteMarkers: Array.from({ length: 256 }, () => ({})),
+          DeleteMarkers: [{}],
           IsTruncated: true,
-          NextKeyMarker: `key-${requests}`,
+          NextKeyMarker: `tenants/tenant-a/sources/${String(requests).padStart(64, "0")}`,
           NextVersionIdMarker: `version-${requests}`,
           Versions: [],
         };
@@ -102,8 +146,11 @@ describe("durable storage configuration", () => {
       deployment: "test",
     });
 
-    expect(await store.listSourceVersions("tenant-a", new Date(), 1)).toEqual([]);
-    expect(requests).toBe(4);
+    expect(await store.listSourceVersions("tenant-a", new Date(), 1)).toEqual({
+      nextCursor: JSON.stringify([`tenants/tenant-a/sources/${"16".padStart(64, "0")}`, "version-16"]),
+      versions: [],
+    });
+    expect(requests).toBe(16);
   });
 
   it("rejects incomplete privacy evidence and lifecycle configuration", async () => {
@@ -189,7 +236,7 @@ describe("durable storage configuration", () => {
         return {
           DeleteMarkers: [{}],
           IsTruncated: true,
-          NextKeyMarker: "same-key",
+          NextKeyMarker: `tenants/tenant-a/sources/${"a".repeat(64)}`,
           NextVersionIdMarker: "same-version",
           Versions: [],
         };
@@ -203,5 +250,24 @@ describe("durable storage configuration", () => {
 
     await expect(store.listSourceVersions("tenant-a", new Date(), 1)).rejects.toThrow(/cycling/i);
     expect(requests).toBe(2);
+  });
+
+  it("rejects a source-version cursor from another tenant before listing", async () => {
+    const send = vi.fn();
+    const store = new S3ContentBlobStoreV1({
+      bucket: "poietra-private-sources",
+      client: { destroy() {}, send } as unknown as S3Client,
+      deployment: "test",
+    });
+
+    await expect(
+      store.listSourceVersions(
+        "tenant-a",
+        new Date(),
+        1,
+        JSON.stringify([`tenants/tenant-b/sources/${"a".repeat(64)}`, "version-a"]),
+      ),
+    ).rejects.toThrow(/cursor is invalid/i);
+    expect(send).not.toHaveBeenCalled();
   });
 });

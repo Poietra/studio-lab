@@ -19,12 +19,20 @@ import { manimTenantIdSchema } from "../../manim-request-principal";
 import {
   MAX_MANIM_SOURCE_BYTES_V1,
   type SourceBlobReceiptV1,
+  type SourceBlobVersionCursorV1,
   type SourceBlobVersionV1,
   type SourceContentBlobStoreV1,
 } from "../workspace-source-repository";
 
+const S3_OPERATION_TIMEOUT_MS_V1 = 30_000;
+
 function throwIfAborted(signal?: AbortSignal) {
   signal?.throwIfAborted();
+}
+
+function boundedOperationSignal(signal?: AbortSignal) {
+  const timeout = AbortSignal.timeout(S3_OPERATION_TIMEOUT_MS_V1);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
 function tenantId(value: string) {
@@ -52,6 +60,42 @@ function sourceDigest(bytes: Uint8Array) {
 
 function sourceKey(tenant: string, digest: string) {
   return `tenants/${tenant}/sources/${digest}`;
+}
+
+function sourceVersionCursor(
+  value: SourceBlobVersionCursorV1 | null | undefined,
+  prefix: string,
+): Readonly<{ keyMarker?: string; versionIdMarker?: string }> {
+  if (value === null || value === undefined) return {};
+  if (typeof value !== "string" || value.length === 0 || value.length > 4_096) {
+    throw new TypeError("The source-version cursor is invalid.");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new TypeError("The source-version cursor is invalid.");
+  }
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length !== 2 ||
+    typeof parsed[0] !== "string" ||
+    !parsed[0].startsWith(prefix) ||
+    !/^[0-9a-f]{64}$/.test(parsed[0].slice(prefix.length)) ||
+    parsed[0].length > 1_024 ||
+    typeof parsed[1] !== "string" ||
+    parsed[1].length === 0 ||
+    parsed[1].length > 1_024
+  ) {
+    throw new TypeError("The source-version cursor is invalid.");
+  }
+  return { keyMarker: parsed[0], versionIdMarker: parsed[1] };
+}
+
+function encodeSourceVersionCursor(keyMarker: string, versionIdMarker: string, prefix: string) {
+  const encoded = JSON.stringify([keyMarker, versionIdMarker]);
+  sourceVersionCursor(encoded, prefix);
+  return encoded;
 }
 
 function normalizeEtag(value: string | undefined) {
@@ -187,6 +231,18 @@ export class S3ContentBlobStoreV1 implements SourceContentBlobStoreV1 {
     if (options.deployment === "production" && options.client !== undefined) {
       throw new TypeError("Production S3 requires an inspectable client configuration, not an injected client.");
     }
+    if (
+      options.deployment === "production" &&
+      (options.clientConfig?.requestHandler !== undefined ||
+        options.clientConfig?.endpointProvider !== undefined ||
+        options.clientConfig?.urlParser !== undefined ||
+        options.clientConfig?.tls !== undefined ||
+        options.clientConfig?.ignoreConfiguredEndpointUrls !== true)
+    ) {
+      throw new TypeError(
+        "Production S3 requires the SDK verified-HTTPS transport and must ignore environment/shared-config endpoint overrides.",
+      );
+    }
     if (options.clientConfig?.endpoint !== undefined && typeof options.clientConfig.endpoint !== "string") {
       throw new TypeError("The S3 endpoint must be a statically validated URL string.");
     }
@@ -194,7 +250,11 @@ export class S3ContentBlobStoreV1 implements SourceContentBlobStoreV1 {
       typeof options.clientConfig?.endpoint === "string" ? options.clientConfig.endpoint : undefined,
       options.deployment,
     );
-    if (options.deployment === "production" && options.clientConfig?.forcePathStyle === true) {
+    if (
+      options.deployment === "production" &&
+      options.clientConfig?.forcePathStyle !== undefined &&
+      options.clientConfig.forcePathStyle !== false
+    ) {
       throw new TypeError("Production S3 must not use path-style addressing.");
     }
     this.#bucket = options.bucket;
@@ -204,6 +264,7 @@ export class S3ContentBlobStoreV1 implements SourceContentBlobStoreV1 {
   }
 
   async ready(signal?: AbortSignal) {
+    signal = boundedOperationSignal(signal);
     try {
       throwIfAborted(signal);
       const policyStatus = this.#client
@@ -296,6 +357,7 @@ export class S3ContentBlobStoreV1 implements SourceContentBlobStoreV1 {
   }
 
   async putSource(tenantValue: string, source: string, signal?: AbortSignal) {
+    signal = boundedOperationSignal(signal);
     const tenant = tenantId(tenantValue);
     const bytes = exactSourceBytes(source);
     const digest = sourceDigest(bytes);
@@ -330,23 +392,38 @@ export class S3ContentBlobStoreV1 implements SourceContentBlobStoreV1 {
     return receipt;
   }
 
-  async listSourceVersions(tenantValue: string, cutoff: Date, maximumValue: number, signal?: AbortSignal) {
+  async listSourceVersions(
+    tenantValue: string,
+    cutoff: Date,
+    maximumValue: number,
+    cursorValue?: SourceBlobVersionCursorV1 | null,
+    signal?: AbortSignal,
+  ) {
+    signal = boundedOperationSignal(signal);
     const tenant = tenantId(tenantValue);
     if (!(cutoff instanceof Date) || !Number.isFinite(cutoff.getTime())) throw new TypeError("GC cutoff is invalid.");
     if (!Number.isSafeInteger(maximumValue) || maximumValue <= 0 || maximumValue > 256) {
       throw new RangeError("maximum must be an integer between 1 and 256.");
     }
     const prefix = `tenants/${tenant}/sources/`;
+    const cursor = sourceVersionCursor(cursorValue, prefix);
     const versions: SourceBlobVersionV1[] = [];
-    let keyMarker: string | undefined;
-    let versionIdMarker: string | undefined;
+    let keyMarker = cursor.keyMarker;
+    let versionIdMarker = cursor.versionIdMarker;
+    let nextCursor: SourceBlobVersionCursorV1 | null = null;
     let examined = 0;
     let pages = 0;
     const seenCursors = new Set<string>();
+    if (keyMarker && versionIdMarker) {
+      seenCursors.add(encodeSourceVersionCursor(keyMarker, versionIdMarker, prefix));
+    }
     while (versions.length < maximumValue && examined < 1_024 && pages < 16) {
       throwIfAborted(signal);
       pages += 1;
-      const pageBudget = Math.min(256, 1_024 - examined);
+      // Process each response in full. Capping total response entries by the
+      // remaining result capacity lets the page-level cursor advance without
+      // skipping eligible versions in the final response.
+      const pageBudget = Math.min(256, 1_024 - examined, maximumValue - versions.length);
       const page = await this.#client.send(
         new ListObjectVersionsCommand({
           Bucket: this.#bucket,
@@ -390,20 +467,24 @@ export class S3ContentBlobStoreV1 implements SourceContentBlobStoreV1 {
           lastModified: version.LastModified,
         });
       }
-      if (!page.IsTruncated) break;
+      if (!page.IsTruncated) {
+        nextCursor = null;
+        break;
+      }
       if (!page.NextKeyMarker || !page.NextVersionIdMarker) {
         throw new Error("S3 returned an incomplete version-list cursor.");
       }
-      const nextCursor = JSON.stringify([page.NextKeyMarker, page.NextVersionIdMarker]);
+      nextCursor = encodeSourceVersionCursor(page.NextKeyMarker, page.NextVersionIdMarker, prefix);
       if (seenCursors.has(nextCursor)) throw new Error("S3 returned a cycling version-list cursor.");
       seenCursors.add(nextCursor);
       keyMarker = page.NextKeyMarker;
       versionIdMarker = page.NextVersionIdMarker;
     }
-    return versions;
+    return { nextCursor, versions };
   }
 
   async readSource(tenantValue: string, blob: SourceBlobReceiptV1, signal?: AbortSignal) {
+    signal = boundedOperationSignal(signal);
     const bytes = await this.#readBytes(tenantId(tenantValue), blob, signal);
     try {
       return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -413,6 +494,7 @@ export class S3ContentBlobStoreV1 implements SourceContentBlobStoreV1 {
   }
 
   async deleteVersion(tenantValue: string, blob: SourceBlobReceiptV1, signal?: AbortSignal) {
+    signal = boundedOperationSignal(signal);
     const tenant = tenantId(tenantValue);
     const receipt = validateReceipt(tenant, blob);
     throwIfAborted(signal);

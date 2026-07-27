@@ -7,7 +7,10 @@ import {
   type DurableManimExecutionReadinessV1,
 } from "./durable-manim-runtime";
 import { applyBundledWorkspaceSourceMigrationV1 } from "./storage/postgres/migrate";
-import { PostgresWorkspaceSourceRepositoryV1 } from "./storage/postgres/postgres-workspace-source-repository";
+import {
+  PostgresWorkspaceSourceRepositoryV1,
+  WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1,
+} from "./storage/postgres/postgres-workspace-source-repository";
 import { S3ContentBlobStoreV1 } from "./storage/s3/s3-content-blob-store";
 import { createDurableSourceBlobGcWorkerV1 } from "./storage/source-blob-gc";
 
@@ -30,6 +33,7 @@ export type DurablePostgresS3ProductionRuntimeOptionsV1 = Readonly<{
     graceMs: number;
     intervalMs: number;
     onFailure: (error: unknown) => void;
+    sweepTimeoutMs: number;
   }>;
   tenantId: string;
 }>;
@@ -46,6 +50,7 @@ function assertProductionPoolConfig(config: PoolConfig, label: string) {
   const ssl = config.ssl;
   if (
     config.connectionString !== undefined ||
+    config.options !== undefined ||
     typeof config.host !== "string" ||
     config.host.length === 0 ||
     config.host.startsWith("/") ||
@@ -70,6 +75,7 @@ async function migrate(options: DurablePostgresS3ProductionRuntimeOptionsV1["dat
     idle_in_transaction_session_timeout: timeout,
     lock_timeout: timeout,
     max: 1,
+    options: WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1,
     query_timeout: timeout,
     statement_timeout: timeout,
   });

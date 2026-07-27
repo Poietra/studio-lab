@@ -178,12 +178,20 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
     const setupPool = new Pool({ connectionString: environment.databaseUrl, max: 2 });
     const setupS3 = new S3Client(s3Config(environment));
     try {
+      // PostgreSQL's common "$user", public search_path must not redirect any
+      // migration or runtime table into a role-named schema.
+      await setupPool.query("CREATE SCHEMA poietra");
       const migration = await readFile(
         new URL("./postgres/migrations/0001_workspace_source.sql", import.meta.url),
         "utf8",
       );
       expect(await applyWorkspaceSourceMigrationV1(setupPool, migration)).toEqual({ applied: true, version: 1 });
       expect(await applyWorkspaceSourceMigrationV1(setupPool, migration)).toEqual({ applied: false, version: 1 });
+      const schemaPlacement = await setupPool.query<{ misplaced: string | null; installed: string | null }>(
+        `SELECT to_regclass('poietra.workspace_projects')::text AS misplaced,
+                to_regclass('public.workspace_projects')::text AS installed`,
+      );
+      expect(schemaPlacement.rows[0]).toEqual({ installed: "workspace_projects", misplaced: null });
       await setupS3.send(new CreateBucketCommand({ Bucket: environment.bucket }));
       await setupS3.send(
         new PutBucketVersioningCommand({

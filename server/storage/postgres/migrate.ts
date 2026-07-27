@@ -33,7 +33,7 @@ export async function applyWorkspaceSourceMigrationV1(pool: Pool, source: string
     );
     if (table.rows[0]?.relation !== null) {
       const applied = await client.query<{ checksum: string }>(
-        "SELECT checksum FROM poietra_schema_migrations WHERE version = 1",
+        "SELECT checksum FROM public.poietra_schema_migrations WHERE version = 1",
       );
       if (applied.rowCount !== 1 || applied.rows[0]?.checksum !== WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM) {
         throw new Error("The installed workspace/source schema does not match migration v1.");
@@ -43,7 +43,7 @@ export async function applyWorkspaceSourceMigrationV1(pool: Pool, source: string
       return { applied: false, version: 1 } as const;
     }
     await client.query(source);
-    await client.query("INSERT INTO poietra_schema_migrations (version, checksum) VALUES (1, $1)", [
+    await client.query("INSERT INTO public.poietra_schema_migrations (version, checksum) VALUES (1, $1)", [
       WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
     ]);
     await client.query("COMMIT");

@@ -21,7 +21,8 @@ import {
 } from "../workspace-source-repository";
 
 export const WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM =
-  "e7abafd947215a159f10831b8fe68a11da09f850def9b9dd4022461e632f0e03";
+  "6300896079234275dcaac03f1f71c0263b18a3414835cbfb0be90e964ac88ccb";
+export const WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1 = "-c search_path=pg_catalog,public";
 
 type ProjectRow = QueryResultRow & {
   created_at: Date;
@@ -89,6 +90,9 @@ function assertBoundedInjectedPool(pool: Pool, maximumTimeoutMs: number) {
     if (!Number.isSafeInteger(value) || (value as number) <= 0 || (value as number) > maximumTimeoutMs) {
       throw new TypeError(`An injected PostgreSQL pool requires a positive bounded ${name}.`);
     }
+  }
+  if (pool.options.options !== WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1) {
+    throw new TypeError("An injected PostgreSQL pool requires the fixed workspace/source search_path.");
   }
 }
 
@@ -216,6 +220,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
           this.#statementTimeoutMs,
           "statement_timeout",
         ),
+        options: WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1,
       });
     this.#ownsPool = options.pool === undefined;
   }
@@ -298,13 +303,13 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     const candidate = blobReceipt(tenant, candidateValue);
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`${tenant}:${candidate.digest}`]);
     const deleting = await client.query(
-      `SELECT 1 FROM source_blob_deletions
+      `SELECT 1 FROM public.source_blob_deletions
         WHERE tenant_id = $1 AND object_key = $2 AND version_id = $3`,
       [tenant, candidate.objectKey, candidate.versionId],
     );
     if (deleting.rowCount !== 0) throw new HttpError("The source candidate is no longer available.", 409);
     const inserted = await client.query<BlobRow>(
-      `INSERT INTO source_blob_objects
+      `INSERT INTO public.source_blob_objects
          (tenant_id, digest, object_key, version_id, etag, byte_size)
        VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (tenant_id, digest) DO NOTHING
@@ -314,7 +319,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     if (inserted.rowCount === 1) return candidate;
     const existing = await client.query<BlobRow>(
       `SELECT tenant_id, digest, object_key, version_id, etag, byte_size
-         FROM source_blob_objects
+         FROM public.source_blob_objects
         WHERE tenant_id = $1 AND digest = $2
         FOR KEY SHARE`,
       [tenant, candidate.digest],
@@ -330,7 +335,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     try {
       throwIfAborted(signal);
       const result = await this.#query<{ checksum: string }>(
-        "SELECT checksum FROM poietra_schema_migrations WHERE version = 1",
+        "SELECT checksum FROM public.poietra_schema_migrations WHERE version = 1",
         [],
         signal,
       );
@@ -345,7 +350,11 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
   async ensureTenant(tenantValue: string, signal?: AbortSignal) {
     const tenant = tenantId(tenantValue);
     throwIfAborted(signal);
-    await this.#query("INSERT INTO workspace_tenants (tenant_id) VALUES ($1) ON CONFLICT DO NOTHING", [tenant], signal);
+    await this.#query(
+      "INSERT INTO public.workspace_tenants (tenant_id) VALUES ($1) ON CONFLICT DO NOTHING",
+      [tenant],
+      signal,
+    );
     throwIfAborted(signal);
   }
 
@@ -354,7 +363,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     const blob = blobReceipt(tenant, blobValue);
     throwIfAborted(signal);
     const result = await this.#query(
-      `SELECT 1 FROM source_blob_objects
+      `SELECT 1 FROM public.source_blob_objects
         WHERE tenant_id = $1 AND digest = $2 AND object_key = $3 AND version_id = $4`,
       [tenant, blob.digest, blob.objectKey, blob.versionId],
       signal,
@@ -369,14 +378,14 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     return this.#transaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`${tenant}:${blob.digest}`]);
       const published = await client.query(
-        `SELECT 1 FROM source_blob_objects
+        `SELECT 1 FROM public.source_blob_objects
           WHERE tenant_id = $1 AND digest = $2 AND object_key = $3 AND version_id = $4`,
         [tenant, blob.digest, blob.objectKey, blob.versionId],
       );
       if (published.rowCount !== 0) return null;
       const deletionId = randomUUID();
       const queued = await client.query<DeletionRow>(
-        `INSERT INTO source_blob_deletions
+        `INSERT INTO public.source_blob_deletions
            (deletion_id, tenant_id, digest, object_key, version_id, etag, byte_size)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (tenant_id, object_key, version_id) DO UPDATE
@@ -402,7 +411,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     throwIfAborted(signal);
     const result = await this.#query<ProjectRow>(
       `SELECT tenant_id, project_id, display_name, created_at, updated_at
-         FROM workspace_projects
+         FROM public.workspace_projects
         WHERE tenant_id = $1 AND deleted_at IS NULL
         ORDER BY created_at, project_id
         LIMIT $2`,
@@ -429,10 +438,12 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     const candidate = blobReceipt(tenant, input.source.blob);
     try {
       return await this.#transaction(async (client) => {
-        await client.query("INSERT INTO workspace_tenants (tenant_id) VALUES ($1) ON CONFLICT DO NOTHING", [tenant]);
-        await client.query("SELECT tenant_id FROM workspace_tenants WHERE tenant_id = $1 FOR UPDATE", [tenant]);
+        await client.query("INSERT INTO public.workspace_tenants (tenant_id) VALUES ($1) ON CONFLICT DO NOTHING", [
+          tenant,
+        ]);
+        await client.query("SELECT tenant_id FROM public.workspace_tenants WHERE tenant_id = $1 FOR UPDATE", [tenant]);
         const count = await client.query<{ count: string }>(
-          "SELECT count(*)::text AS count FROM workspace_projects WHERE tenant_id = $1 AND deleted_at IS NULL",
+          "SELECT count(*)::text AS count FROM public.workspace_projects WHERE tenant_id = $1 AND deleted_at IS NULL",
           [tenant],
         );
         if (BigInt(count.rows[0]?.count ?? "0") >= BigInt(MAX_MANAGED_PROJECTS_PER_TENANT_V1)) {
@@ -440,13 +451,13 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
         }
         await this.#registerBlob(client, tenant, candidate);
         const created = await client.query<ProjectRow>(
-          `INSERT INTO workspace_projects (tenant_id, project_id, display_name)
+          `INSERT INTO public.workspace_projects (tenant_id, project_id, display_name)
            VALUES ($1, $2, $3)
            RETURNING tenant_id, project_id, display_name, created_at, updated_at`,
           [tenant, id, name],
         );
         await client.query(
-          `INSERT INTO workspace_source_heads
+          `INSERT INTO public.workspace_source_heads
              (tenant_id, project_id, source_path, generation, digest)
            VALUES ($1, $2, $3, 1, $4)`,
           [tenant, id, path, candidate.digest],
@@ -465,7 +476,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     throwIfAborted(signal);
     const result = await this.#query<ProjectRow>(
       `SELECT tenant_id, project_id, display_name, created_at, updated_at
-         FROM workspace_projects
+         FROM public.workspace_projects
         WHERE tenant_id = $1 AND project_id = $2 AND deleted_at IS NULL`,
       [tenant, id],
       signal,
@@ -481,7 +492,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     const name = projectName(nameValue);
     throwIfAborted(signal);
     const result = await this.#query<ProjectRow>(
-      `UPDATE workspace_projects
+      `UPDATE public.workspace_projects
           SET display_name = $3, updated_at = clock_timestamp()
         WHERE tenant_id = $1 AND project_id = $2 AND deleted_at IS NULL
         RETURNING tenant_id, project_id, display_name, created_at, updated_at`,
@@ -498,14 +509,14 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     const id = projectId(projectValue);
     await this.#transaction(async (client) => {
       const project = await client.query(
-        `SELECT project_id FROM workspace_projects
+        `SELECT project_id FROM public.workspace_projects
           WHERE tenant_id = $1 AND project_id = $2 AND deleted_at IS NULL
           FOR UPDATE`,
         [tenant, id],
       );
       if (project.rowCount !== 1) throw new HttpError("Configured Manim project not found.", 404);
       const references = await client.query(
-        `SELECT 1 FROM workspace_project_references
+        `SELECT 1 FROM public.workspace_project_references
           WHERE tenant_id = $1 AND project_id = $2
           LIMIT 1`,
         [tenant, id],
@@ -514,7 +525,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
         throw new HttpError("Wait for active workspace work before removing it from Studio.", 409);
       }
       await client.query(
-        `UPDATE workspace_projects
+        `UPDATE public.workspace_projects
             SET deleted_at = clock_timestamp(), updated_at = clock_timestamp()
           WHERE tenant_id = $1 AND project_id = $2`,
         [tenant, id],
@@ -529,10 +540,10 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     throwIfAborted(signal);
     const result = await this.#query<SourceHeadRow>(
       `SELECT ${SOURCE_HEAD_COLUMNS}
-         FROM workspace_source_heads h
-         JOIN workspace_projects p
+         FROM public.workspace_source_heads h
+         JOIN public.workspace_projects p
            ON p.tenant_id = h.tenant_id AND p.project_id = h.project_id AND p.deleted_at IS NULL
-         JOIN source_blob_objects b ON b.tenant_id = h.tenant_id AND b.digest = h.digest
+         JOIN public.source_blob_objects b ON b.tenant_id = h.tenant_id AND b.digest = h.digest
         WHERE h.tenant_id = $1 AND h.project_id = $2 AND h.source_path = $3`,
       [tenant, id, path],
       signal,
@@ -548,10 +559,10 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     throwIfAborted(signal);
     const result = await this.#query<SourceHeadRow>(
       `SELECT ${SOURCE_HEAD_COLUMNS}
-         FROM workspace_source_heads h
-         JOIN workspace_projects p
+         FROM public.workspace_source_heads h
+         JOIN public.workspace_projects p
            ON p.tenant_id = h.tenant_id AND p.project_id = h.project_id AND p.deleted_at IS NULL
-         JOIN source_blob_objects b ON b.tenant_id = h.tenant_id AND b.digest = h.digest
+         JOIN public.source_blob_objects b ON b.tenant_id = h.tenant_id AND b.digest = h.digest
         WHERE h.tenant_id = $1 AND h.project_id = $2
         ORDER BY h.source_path
         LIMIT 512`,
@@ -578,11 +589,11 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     return this.#transaction(async (client) => {
       await this.#registerBlob(client, tenant, candidate);
       const updated = await client.query<{ generation: string }>(
-        `UPDATE workspace_source_heads h
+        `UPDATE public.workspace_source_heads h
             SET generation = h.generation + 1,
                 digest = $6,
                 updated_at = clock_timestamp()
-           FROM workspace_projects p
+           FROM public.workspace_projects p
           WHERE h.tenant_id = $1
             AND h.project_id = $2
             AND h.source_path = $3
@@ -599,8 +610,8 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
       }
       const stored = await client.query<SourceHeadRow>(
         `SELECT ${SOURCE_HEAD_COLUMNS}
-           FROM workspace_source_heads h
-           JOIN source_blob_objects b ON b.tenant_id = h.tenant_id AND b.digest = h.digest
+           FROM public.workspace_source_heads h
+           JOIN public.source_blob_objects b ON b.tenant_id = h.tenant_id AND b.digest = h.digest
           WHERE h.tenant_id = $1 AND h.project_id = $2 AND h.source_path = $3`,
         [tenant, id, path],
       );
@@ -614,7 +625,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     throwIfAborted(signal);
     const result = await this.#query<DeletionRow>(
       `SELECT deletion_id, tenant_id, digest, object_key, version_id, etag, byte_size, deleted_at
-         FROM source_blob_deletions
+         FROM public.source_blob_deletions
         WHERE tenant_id = $1 AND deleted_at IS NULL
         ORDER BY queued_at, deletion_id
         LIMIT $2`,
@@ -630,7 +641,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     if (!/^[0-9a-f-]{36}$/.test(deletionId)) throw new TypeError("Blob deletion ID is invalid.");
     throwIfAborted(signal);
     await this.#query(
-      `UPDATE source_blob_deletions
+      `UPDATE public.source_blob_deletions
           SET deleted_at = COALESCE(deleted_at, clock_timestamp())
         WHERE tenant_id = $1 AND deletion_id = $2`,
       [tenant, deletionId],

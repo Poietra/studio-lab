@@ -40,6 +40,14 @@ export type SourceBlobVersionV1 = Readonly<{
   lastModified: Date;
 }>;
 
+/** Opaque, store-owned position for a bounded source-version scan. */
+export type SourceBlobVersionCursorV1 = string;
+
+export type SourceBlobVersionPageV1 = Readonly<{
+  nextCursor: SourceBlobVersionCursorV1 | null;
+  versions: readonly SourceBlobVersionV1[];
+}>;
+
 export interface WorkspaceSourceRepositoryV1 {
   acknowledgeBlobDeletion(tenantId: string, deletionId: string, signal?: AbortSignal): Promise<void>;
   close(): Promise<void>;
@@ -93,8 +101,9 @@ export interface SourceContentBlobStoreV1 {
     tenantId: string,
     cutoff: Date,
     maximum: number,
+    cursor?: SourceBlobVersionCursorV1 | null,
     signal?: AbortSignal,
-  ): Promise<readonly SourceBlobVersionV1[]>;
+  ): Promise<SourceBlobVersionPageV1>;
   putSource(tenantId: string, source: string, signal?: AbortSignal): Promise<SourceBlobReceiptV1>;
   readSource(tenantId: string, blob: SourceBlobReceiptV1, signal?: AbortSignal): Promise<string>;
   ready(signal?: AbortSignal): Promise<boolean>;
