@@ -1,0 +1,190 @@
+import { execFile } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import type { Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+
+import { afterEach, expect } from "vitest";
+
+import {
+  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
+  FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
+  type FastManimSnapshotRuntimeCapabilityV1,
+  type FastManimSnapshotRuntimeConfigV1,
+  type FastManimSnapshotRunViewV1,
+} from "../fast-manim-snapshot-contract";
+import type { ProducerProcessTimings } from "../fast-manim-snapshot-producer-process";
+import {
+  FastManimSnapshotAdmissionController,
+  FastManimSnapshotPublicationStore,
+  FastManimSnapshotRunner,
+  type ProducerGroupKill,
+} from "../fast-manim-snapshot-runner";
+import type { StructuredLogger } from "../logging/structured-logger";
+import type { ManimRenderManager } from "../manim-render-manager";
+import { type ManimSourceReadHooks, ManimSourceStore } from "../manim-source-store";
+
+export const fakeManim = fileURLToPath(new URL("./fake-manim.mjs", import.meta.url));
+const fakeProducer = fileURLToPath(new URL("./fake-fast-manim-producer.mjs", import.meta.url));
+const bundleFixture = fileURLToPath(new URL("./fast-manim-static-bundle.json", import.meta.url));
+
+export const TEST_PRODUCER_PROCESS_TIMINGS = Object.freeze({
+  closeGraceMs: 150,
+  killGraceMs: 75,
+}) satisfies ProducerProcessTimings;
+export const TEST_PRODUCER_TIMER_SETTLE_MS = 250;
+
+export const sceneSource = `from manim import *
+
+class ExampleScene(Scene):
+    def construct(self):
+        circle = Circle()
+        self.add(circle)
+        self.wait(1)
+`;
+
+export const supportsVerifiedRead = ManimSourceStore.supportsVerifiedRead;
+
+export function installFastManimSnapshotRunnerFixture() {
+  const temporaryRoots: string[] = [];
+  const managers: ManimRenderManager[] = [];
+  const servers: Server[] = [];
+
+  // Best-effort reaper for the residual descendants (leader-exits-first pipe
+  // holders, setsid escapees) the server deliberately does NOT signal before
+  // #80: the test owns their cleanup so no fixture process leaks past the run.
+  const survivingOrphans: number[] = [];
+
+  afterEach(async () => {
+    delete process.env.POIETRA_TEST_SENTINEL_SECRET;
+    for (const pid of survivingOrphans.splice(0)) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    }
+    await Promise.all(managers.splice(0).map((manager) => manager.close()));
+    await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
+    await Promise.all(temporaryRoots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
+  });
+
+  async function projectRoot() {
+    const root = await mkdtemp(join(tmpdir(), "poietra-snapshot-"));
+    temporaryRoots.push(root);
+    await writeFile(join(root, "scene.py"), sceneSource, "utf8");
+    return root;
+  }
+
+  function reapAfterTest(pid: number) {
+    survivingOrphans.push(pid);
+  }
+
+  return { managers, projectRoot, reapAfterTest, servers, temporaryRoots };
+}
+
+export function producerCommand(...extra: string[]) {
+  return ["node", fakeProducer, `--bundle=${bundleFixture}`, ...extra] as const;
+}
+
+export function createRunner(
+  root: string,
+  command: readonly string[] | null,
+  options: Readonly<{
+    admissionController?: FastManimSnapshotAdmissionController;
+    capabilities?: readonly FastManimSnapshotRuntimeCapabilityV1[];
+    enabled?: boolean;
+    killProcessGroup?: ProducerGroupKill;
+    logger?: StructuredLogger;
+    maxConcurrentRuns?: number;
+    maxPublishedBytes?: number;
+    maxPublishedSnapshots?: number;
+    producerEnv?: Readonly<Record<string, string>>;
+    producerProcessTimings?: Partial<ProducerProcessTimings>;
+    publicationStore?: FastManimSnapshotPublicationStore;
+    publishRetentionMs?: number;
+    runtimeDirectoryRemover?: (runtimeDir: string) => Promise<void>;
+    sourceReadHooks?: ManimSourceReadHooks;
+    timeoutMs?: number;
+  }> = {},
+) {
+  return new FastManimSnapshotRunner({
+    // Tests isolate admission and publication state by default; shared-cap
+    // and shared-budget tests inject one instance across runners explicitly.
+    admissionController: new FastManimSnapshotAdmissionController(),
+    command,
+    enabled: true,
+    frame: { height: 8, width: 14.222222222222221 },
+    producerProcessTimings: options.producerProcessTimings ?? TEST_PRODUCER_PROCESS_TIMINGS,
+    projectId: "default",
+    projectRoot: root,
+    publicationStore: new FastManimSnapshotPublicationStore(),
+    ...options,
+  });
+}
+
+export function runRequest(overrides: Readonly<Record<string, unknown>> = {}) {
+  return {
+    projectId: "default",
+    requestId: "snapshot-request-1",
+    sceneName: "ExampleScene",
+    sourcePath: "scene.py",
+    ...overrides,
+  };
+}
+
+export function expectFailure(view: FastManimSnapshotRunViewV1, code: string, contractCode?: string) {
+  expect(view.status).toBe("failed");
+  if (view.status !== "failed") throw new Error("Expected a failed snapshot run.");
+  expect(view.failure.code).toBe(code);
+  if (contractCode !== undefined) expect(view.failure.contractCode).toBe(contractCode);
+  expect(view.fallback).toEqual({ kind: "server-authoritative-render" });
+}
+
+export const exampleQuery = { sceneName: "ExampleScene", sourcePath: "scene.py" } as const;
+
+/** Asserts the Scene has no published snapshot (GET returns 404). */
+export async function expectNoSnapshot(runner: FastManimSnapshotRunner, query = exampleQuery) {
+  await expect(runner.snapshot(query)).rejects.toMatchObject({ status: 404 });
+}
+
+export async function processGone(pid: number) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true;
+    }
+    await delay(50);
+  }
+  return false;
+}
+
+export const mkfifo = async (path: string) => {
+  await promisify(execFile)("mkfifo", [path]);
+};
+
+export async function withFakePlatform<T>(platform: string, run: () => Promise<T>) {
+  const original = Object.getOwnPropertyDescriptor(process, "platform");
+  if (!original) throw new Error("process.platform descriptor is missing.");
+  Object.defineProperty(process, "platform", { ...original, value: platform });
+  try {
+    return await run();
+  } finally {
+    Object.defineProperty(process, "platform", original);
+  }
+}
+
+export function runtimeConfig(): FastManimSnapshotRuntimeConfigV1 {
+  return {
+    capabilities: [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1],
+    frame: { height: 8, width: 14.222222222222221 },
+    randomSeed: 0,
+    schema: FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
+    snapshotVersion: 1,
+    version: 1,
+  };
+}
