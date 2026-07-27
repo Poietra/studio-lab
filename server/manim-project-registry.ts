@@ -3,7 +3,10 @@ import type {
   ManimProjectMutationView,
   OriginalManimSourceExportRequest,
   ProgramRenderRequest,
+  RenderCommitRequest,
+  RenderSourceActionCancellationRequest,
 } from "../src/render-pipeline/contracts";
+import type { FastManimSnapshotQueryV1, FastManimSnapshotRunRequestV1 } from "./fast-manim-snapshot-contract";
 import { HttpError } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import type { ManimProjectConfig } from "./manim-render-config";
@@ -25,6 +28,9 @@ export class ManimProjectRegistry {
   private readonly renderTimeoutMs: number | undefined;
   private readonly sessionProjects = new Map<string, string>();
   private readonly sessionRetentionMs: number | undefined;
+  private readonly snapshotProducerCommand: readonly string[] | undefined;
+  private readonly snapshotProducerEnabled: boolean | undefined;
+  private readonly snapshotTimeoutMs: number | undefined;
   private readonly thumbnailCacheRoot: string | undefined;
 
   constructor(
@@ -38,6 +44,9 @@ export class ManimProjectRegistry {
       projects: readonly ManimProjectConfig[];
       renderTimeoutMs?: number;
       sessionRetentionMs?: number;
+      snapshotProducerCommand?: readonly string[];
+      snapshotProducerEnabled?: boolean;
+      snapshotTimeoutMs?: number;
       thumbnailCacheRoot?: string;
     }>,
   ) {
@@ -50,6 +59,9 @@ export class ManimProjectRegistry {
     this.maxRetainedSessions = options.maxRetainedSessions;
     this.renderTimeoutMs = options.renderTimeoutMs;
     this.sessionRetentionMs = options.sessionRetentionMs;
+    this.snapshotProducerCommand = options.snapshotProducerCommand;
+    this.snapshotProducerEnabled = options.snapshotProducerEnabled;
+    this.snapshotTimeoutMs = options.snapshotTimeoutMs;
     this.thumbnailCacheRoot = options.thumbnailCacheRoot;
     const configuredProjects = this.catalog?.projects() ?? resolveManimProjects(options.projects);
     for (const project of configuredProjects) this.addManager(project);
@@ -76,6 +88,9 @@ export class ManimProjectRegistry {
         projectRoot: canonicalRoot,
         renderTimeoutMs: this.renderTimeoutMs,
         sessionRetentionMs: this.sessionRetentionMs,
+        snapshotProducerCommand: this.snapshotProducerCommand,
+        snapshotProducerEnabled: this.snapshotProducerEnabled,
+        snapshotTimeoutMs: this.snapshotTimeoutMs,
         thumbnailCacheRoot: this.thumbnailCacheRoot,
       }),
     );
@@ -193,6 +208,14 @@ export class ManimProjectRegistry {
     return session;
   }
 
+  runSceneSnapshot(request: FastManimSnapshotRunRequestV1, signal?: AbortSignal) {
+    return this.project(request.projectId).runSceneSnapshot(request, signal);
+  }
+
+  sceneSnapshot(projectId: string, query: FastManimSnapshotQueryV1) {
+    return this.project(projectId).sceneSnapshot(projectId, query);
+  }
+
   exportSource(request: ProgramRenderRequest, signal?: AbortSignal) {
     return this.project(request.projectId).exportSource(request, signal);
   }
@@ -209,12 +232,16 @@ export class ManimProjectRegistry {
     return this.sessionProject(id).cancel(id);
   }
 
-  commit(id: string) {
-    return this.sessionProject(id).commit(id);
+  commit(id: string, expected: RenderCommitRequest, signal?: AbortSignal) {
+    return this.sessionProject(id).commit(id, expected, signal);
   }
 
-  undo(id: string) {
-    return this.sessionProject(id).undo(id);
+  cancelSourceAction(id: string, request: RenderSourceActionCancellationRequest) {
+    return this.sessionProject(id).cancelSourceAction(id, request);
+  }
+
+  undo(id: string, actionId: string, signal?: AbortSignal) {
+    return this.sessionProject(id).undo(id, actionId, signal);
   }
 
   async discard(id: string) {
@@ -228,6 +255,14 @@ export class ManimProjectRegistry {
     if (!projectId) return;
     await this.project(projectId).abandonStart(id);
     this.sessionProjects.delete(id);
+  }
+
+  async abandon(id: string, expectedRenderRequestId: string) {
+    const projectId = this.sessionProjects.get(id);
+    if (!projectId) return { abandoned: true } as const;
+    const result = await this.project(projectId).abandon(id, expectedRenderRequestId);
+    this.sessionProjects.delete(id);
+    return result;
   }
 
   videoPath(id: string) {

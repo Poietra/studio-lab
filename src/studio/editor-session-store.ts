@@ -4,8 +4,8 @@ import { editProgramSuggestionSchema, editSuggestionLeafOperationSchema } from "
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import type { ProgramRecord } from "./model";
 import { canonicalOperationSchema, programExecutionCapabilities } from "./operation-registry";
-import type { InteractionMode } from "./studio-viewport";
 import type { StudioTool } from "./studio-toolbar";
+import type { InteractionMode } from "./studio-viewport";
 
 export const EDITOR_SESSION_STORAGE_KEY = "poietra.studio.editor-sessions";
 export const EDITOR_SESSION_STORAGE_VERSION = 1 as const;
@@ -71,6 +71,12 @@ export type EditorSessionSnapshot = Readonly<{
   programUndoEntries: readonly AppliedProgramMutation[];
   redoPrograms: readonly RedoProgramEntry[];
   selectedObjectIds: readonly string[];
+  /**
+   * Runtime duration adopted while this exact source session was pristine.
+   * The identity key prevents the previous Scene's basis from leaking through
+   * the render before `openSession` restores the next Scene.
+   */
+  verifiedSourceDurationBasis: Readonly<{ duration: number; sessionKey: string }> | null;
 }>;
 
 export type EditorSessionIdentity = Readonly<{
@@ -279,6 +285,15 @@ const durableEditorSessionSnapshotSchema = z
     programUndoEntries: z.array(appliedProgramMutationSchema).max(32),
     redoPrograms: z.array(redoProgramEntrySchema).max(32),
     selectedObjectIds: selectionSchema,
+    verifiedSourceDurationBasis: z
+      .object({
+        duration: finiteNumber.min(0.1).max(86_400),
+        sessionKey: z.string().min(1).max(512),
+      })
+      .strict()
+      .nullable()
+      .optional()
+      .default(null),
   })
   .strict()
   .superRefine((snapshot, context) => {
@@ -391,6 +406,15 @@ function sessionKey(identity: StoredIdentity) {
   return JSON.stringify([identity.projectId, identity.sceneKey, identity.sourceHash]);
 }
 
+/**
+ * Opaque, storage-safe identity for state that must be ignored during the
+ * render between an active Scene switch and its `openSession` effect.
+ */
+export function editorSessionIdentityKey(identity: EditorSessionIdentity) {
+  const parsed = identitySchema.safeParse(identity);
+  return parsed.success ? sessionKey(storedIdentity(parsed.data)) : null;
+}
+
 function sameScene(left: StoredIdentity, right: StoredIdentity) {
   return left.projectId === right.projectId && left.sceneKey === right.sceneKey;
 }
@@ -408,6 +432,7 @@ function durableSnapshot(snapshot: EditorSessionSnapshot) {
     programUndoEntries: snapshot.programUndoEntries,
     redoPrograms: snapshot.redoPrograms,
     selectedObjectIds: snapshot.selectedObjectIds,
+    verifiedSourceDurationBasis: snapshot.verifiedSourceDurationBasis,
   });
 }
 

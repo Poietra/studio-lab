@@ -5,7 +5,9 @@ import type {
   OriginalManimSourceExportRequest,
   RenderSessionView,
 } from "../render-pipeline/contracts";
-import { RenderPipelinePanel, type RenderProgramCandidate } from "../render-pipeline/render-pipeline-panel";
+import { RenderPipelinePanel } from "../render-pipeline/render-pipeline-panel";
+import type { RenderProgramCandidate } from "../render-pipeline/render-pipeline-policy";
+import type { RenderSourceRefreshTarget } from "../render-pipeline/render-pipeline-policy";
 import { DraftInspector } from "./draft-inspector";
 import { EntityInspectorEditor, entityInspectorKey } from "./entity-inspector";
 import type { ManimWorkspaceScene } from "./imported-workspace";
@@ -298,7 +300,9 @@ export function StudioInspector({
   onInspectorFocusRestored,
   onRenderSessionChange,
   onSourceChanged,
+  onSourceMutationPendingChange,
   renderCandidate,
+  renderCandidateLifecycleBlocker,
   renderCandidateUnavailableReason,
   renderSession,
   replacingAppliedProgram,
@@ -321,8 +325,10 @@ export function StudioInspector({
   onEntityScaleChange: (entityId: string, scale: number) => void;
   onInspectorFocusRestored: () => void;
   onRenderSessionChange: (session: RenderSessionView | null, projectId?: string) => void;
-  onSourceChanged: () => void | Promise<void>;
+  onSourceChanged: (target: RenderSourceRefreshTarget) => void | Promise<void>;
+  onSourceMutationPendingChange: (projectId: string, pending: boolean) => void;
   renderCandidate: RenderProgramCandidate | null;
+  renderCandidateLifecycleBlocker: string | null;
   renderCandidateUnavailableReason: string;
   renderSession: RenderSessionView | null;
   replacingAppliedProgram: boolean;
@@ -478,9 +484,11 @@ export function StudioInspector({
 
       <RenderPipelinePanel
         candidate={renderCandidate}
+        candidateLifecycleBlocker={renderCandidateLifecycleBlocker}
         candidateUnavailableReason={renderCandidateUnavailableReason}
         onSessionChange={onRenderSessionChange}
         onSourceChanged={onSourceChanged}
+        onSourceMutationPendingChange={onSourceMutationPendingChange}
         session={renderSession}
         sourceExport={sourceExport}
         workspace={workspace}

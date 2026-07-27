@@ -70,7 +70,10 @@ try {
     };
     const unregisterWhenIdle = async (projectId) => {
       for (let attempt = 0; attempt < 200; attempt += 1) {
-        const response = await fetch(`/api/manim/projects/${projectId}`, { method: "DELETE" });
+        const response = await fetch(`/api/manim/projects/${projectId}`, {
+          headers: { "content-type": "application/json" },
+          method: "DELETE",
+        });
         if (response.ok) return readJson(response);
         const body = await response.json();
         if (response.status !== 409) {
@@ -175,11 +178,28 @@ try {
     const saved = await bridge.savePythonSource("packaged-smoke.py", exportedSource);
     if (saved.cancelled) throw new Error("Packaged Save dialog was unexpectedly cancelled.");
 
-    const action = async (name) =>
-      readJson(await fetch(`/api/manim/renders/${started.id}/${name}`, { method: "POST" }));
-    if ((await action("commit")).status !== "committed") throw new Error("Packaged commit failed.");
-    if ((await action("undo")).status !== "undone") throw new Error("Packaged Undo failed.");
-    if ((await action("discard")).status !== "discarded") throw new Error("Packaged discard failed.");
+    const action = async (name, body) =>
+      readJson(
+        await fetch(`/api/manim/renders/${started.id}/${name}`, {
+          body: JSON.stringify(body),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        }),
+      );
+    const committed = await action("commit", {
+      actionId: "00000000-0000-4000-8000-000000000101",
+      programBatchId: started.programBatchId,
+      projectId: project.id,
+      renderRequestId: started.renderRequestId,
+      sceneName: scene.name,
+      sourceHash: scene.sourceHash,
+      sourcePath: importedSource.path,
+    });
+    if (committed.status !== "committed") throw new Error("Packaged commit failed.");
+    if ((await action("undo", { actionId: "00000000-0000-4000-8000-000000000102" })).status !== "undone") {
+      throw new Error("Packaged Undo failed.");
+    }
+    if ((await action("discard", {})).status !== "discarded") throw new Error("Packaged discard failed.");
 
     const renamed = await readJson(
       await fetch(`/api/manim/projects/${project.id}`, {

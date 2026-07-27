@@ -5,11 +5,14 @@ release/
 .vite/
 playwright-report/
 test-results/
+test-results-benchmark/
+dist-benchmark/
 .env.local
 .openai-key
 .studio-logs/
 .poietra/
 shell-evaluation/fixture.mp4
 src-tauri/target/
+public/engine-wasm/
 *.log
 .DS_Store

@@ -277,14 +277,22 @@ describe.skipIf(process.env.POIETRA_REAL_MANIM_SMOKE !== "1")("real Manim render
       diagnostic.render.videoBytes = video.size;
       await copyFile(videoPath, join(artifactRoot, "preview.mp4"));
 
-      const committed = await manager.commit(started.id);
+      const committed = await manager.commit(started.id, {
+        actionId: "00000000-0000-4000-8000-000000000001",
+        programBatchId: rendered.programBatchId,
+        projectId: rendered.projectId,
+        renderRequestId: rendered.renderRequestId,
+        sceneName: rendered.sceneName,
+        sourceHash: rendered.patch.sourceHash,
+        sourcePath: rendered.sourcePath,
+      });
       expect(committed.status).toBe("committed");
       const committedSource = await readFile(sourcePath, "utf8");
       diagnostic.hashes.committed = sourceHash(committedSource);
       expect(diagnostic.hashes.committed).not.toBe(originalHash);
       expect(committedSource).toContain('poietra:transaction "real-manim-smoke"');
 
-      const undone = await manager.undo(started.id);
+      const undone = await manager.undo(started.id, "00000000-0000-4000-8000-000000000002");
       expect(undone.status).toBe("undone");
       const undoneSource = await readFile(sourcePath, "utf8");
       diagnostic.hashes.undone = sourceHash(undoneSource);

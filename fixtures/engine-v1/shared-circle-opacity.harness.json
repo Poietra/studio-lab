@@ -1,0 +1,11 @@
+{
+  "expectedDuration": 2,
+  "expectedIdentity": {
+    "projectId": "preview-harness",
+    "sceneName": "SharedCircleOpacity",
+    "sourceHash": "584595e9e0446d50dec5127ff1be03d206b981c48005b9b50274df47517b57ef",
+    "sourcePath": "shared_circle_opacity.py"
+  },
+  "fixtureId": "eng-v1-shared-circle-opacity",
+  "sceneId": "shared:circle-opacity"
+}

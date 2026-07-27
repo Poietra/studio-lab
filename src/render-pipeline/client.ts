@@ -6,6 +6,9 @@ import type {
   ManimSourceExport,
   OriginalManimSourceExportRequest,
   ProgramRenderRequest,
+  RenderCommitRequest,
+  RenderSourceActionCancellationView,
+  RenderSourceActionRequest,
 } from "./contracts";
 import {
   createManimProjectRequestSchema,
@@ -19,6 +22,12 @@ import {
   originalManimSourceExportRequestSchema,
   programRenderRequestSchema,
   renameManimProjectRequestSchema,
+  renderAbandonRequestSchema,
+  renderAbandonViewSchema,
+  renderCommitRequestSchema,
+  renderSourceActionCancellationRequestSchema,
+  renderSourceActionCancellationViewSchema,
+  renderSourceActionRequestSchema,
   renderSessionViewSchema,
 } from "./contracts";
 import { desktopBridge } from "../shell/desktop-bridge";
@@ -152,6 +161,7 @@ export async function unregisterManimProject(projectId: string, signal?: AbortSi
   }
   return readJson(
     await fetch(`/api/manim/projects/${encodeURIComponent(projectId)}`, {
+      headers: { "content-type": "application/json" },
       method: "DELETE",
       signal,
     }),
@@ -288,16 +298,78 @@ export async function loadManimRender(id: string, signal?: AbortSignal) {
   return readJson(await fetch(`/api/manim/renders/${encodeURIComponent(id)}`, { signal }), renderSessionViewSchema);
 }
 
+export async function abandonManimRender(id: string, renderRequestId: string, signal?: AbortSignal) {
+  const body = renderAbandonRequestSchema.safeParse({ renderRequestId });
+  if (!body.success) throw new Error("The abandoned render identity does not match the API contract.");
+  return readJson(
+    await fetch(`/api/manim/renders/${encodeURIComponent(id)}/abandon`, {
+      body: JSON.stringify(body.data),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+      signal,
+    }),
+    renderAbandonViewSchema,
+  );
+}
+
 export async function runManimRenderAction(
   id: string,
   action: "cancel" | "commit" | "discard" | "undo",
   signal?: AbortSignal,
+  sourceActionRequest?: RenderCommitRequest | RenderSourceActionRequest,
 ) {
-  return readJson(
+  let body: RenderCommitRequest | RenderSourceActionRequest | Readonly<Record<string, never>> = {};
+  let expectedSourceAction: Readonly<{ actionId: string; kind: "commit" | "undo" }> | null = null;
+  if (action === "commit") {
+    const parsed = renderCommitRequestSchema.safeParse(sourceActionRequest);
+    if (!parsed.success) throw new Error("The render commit no longer matches the active Studio candidate.");
+    body = parsed.data;
+    expectedSourceAction = { actionId: parsed.data.actionId, kind: "commit" };
+  } else if (action === "undo") {
+    const parsed = renderSourceActionRequestSchema.safeParse(sourceActionRequest);
+    if (!parsed.success) throw new Error("The Undo action ID does not match the API contract.");
+    body = parsed.data;
+    expectedSourceAction = { actionId: parsed.data.actionId, kind: "undo" };
+  }
+  const session = await readJson(
     await fetch(`/api/manim/renders/${encodeURIComponent(id)}/${action}`, {
+      body: JSON.stringify(body),
+      headers: { "content-type": "application/json" },
       method: "POST",
       signal,
     }),
     renderSessionViewSchema,
+  );
+  if (expectedSourceAction) {
+    const expectedOutcome = expectedSourceAction.kind === "commit" ? "committed" : "undone";
+    if (
+      !session.sourceAction ||
+      session.sourceAction.id !== expectedSourceAction.actionId ||
+      session.sourceAction.kind !== expectedSourceAction.kind ||
+      session.sourceAction.state !== "succeeded" ||
+      session.sourceAction.outcome !== expectedOutcome
+    ) {
+      throw new Error("The server did not confirm the exact source action.");
+    }
+  }
+  return session;
+}
+
+export async function cancelManimRenderSourceAction(
+  id: string,
+  actionId: string,
+  kind: "commit" | "undo",
+  signal?: AbortSignal,
+): Promise<RenderSourceActionCancellationView> {
+  const body = renderSourceActionCancellationRequestSchema.safeParse({ actionId, kind });
+  if (!body.success) throw new Error("The source-action cancellation does not match the API contract.");
+  return readJson(
+    await fetch(`/api/manim/renders/${encodeURIComponent(id)}/cancel-source-action`, {
+      body: JSON.stringify(body.data),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+      signal,
+    }),
+    renderSourceActionCancellationViewSchema,
   );
 }

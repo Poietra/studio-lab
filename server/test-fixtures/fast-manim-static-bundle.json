@@ -1,0 +1,361 @@
+{
+  "assets": {
+    "assets": [],
+    "manifestDigest": "e675cb4bad3da6b425e5a6bbe88d7da7a986e3cac61dab06139ef63950dcc181",
+    "manifestId": "manifest",
+    "schema": "poietra.asset-manifest",
+    "version": 1
+  },
+  "scene": {
+    "animationChannels": [],
+    "assetManifest": {
+      "manifestDigest": "e675cb4bad3da6b425e5a6bbe88d7da7a986e3cac61dab06139ef63950dcc181",
+      "manifestId": "manifest"
+    },
+    "camera": {
+      "background": {
+        "alpha": 1,
+        "blue": 0,
+        "green": 0,
+        "red": 0
+      },
+      "view": {
+        "center": {
+          "x": 0,
+          "y": 0
+        },
+        "frameHeight": 8,
+        "frameWidth": 14.222222222222221
+      }
+    },
+    "coordinateSpace": {
+      "cpuPrecision": "f64",
+      "kind": "cartesian-2d",
+      "origin": "center",
+      "unit": "scene-unit",
+      "xAxis": "right",
+      "yAxis": "up"
+    },
+    "duration": 1,
+    "entities": [
+      {
+        "appearance": {
+          "fill": {
+            "color": {
+              "alpha": 1,
+              "blue": 0.9,
+              "green": 0.3,
+              "red": 0.1
+            },
+            "rule": "nonzero"
+          },
+          "kind": "vector",
+          "opacity": 1,
+          "stroke": null
+        },
+        "geometry": {
+          "kind": "cubic-path",
+          "path": {
+            "subpaths": [
+              {
+                "closed": true,
+                "segments": [
+                  {
+                    "control1": {
+                      "x": -2,
+                      "y": -1
+                    },
+                    "control2": {
+                      "x": 0,
+                      "y": -1
+                    },
+                    "end": {
+                      "x": 0,
+                      "y": -1
+                    }
+                  },
+                  {
+                    "control1": {
+                      "x": 0,
+                      "y": -1
+                    },
+                    "control2": {
+                      "x": 0,
+                      "y": 1
+                    },
+                    "end": {
+                      "x": 0,
+                      "y": 1
+                    }
+                  },
+                  {
+                    "control1": {
+                      "x": 0,
+                      "y": 1
+                    },
+                    "control2": {
+                      "x": -2,
+                      "y": 1
+                    },
+                    "end": {
+                      "x": -2,
+                      "y": 1
+                    }
+                  },
+                  {
+                    "control1": {
+                      "x": -2,
+                      "y": 1
+                    },
+                    "control2": {
+                      "x": -2,
+                      "y": -1
+                    },
+                    "end": {
+                      "x": -2,
+                      "y": -1
+                    }
+                  }
+                ],
+                "start": {
+                  "x": -2,
+                  "y": -1
+                }
+              }
+            ]
+          }
+        },
+        "id": "entity:0",
+        "lifetimes": [
+          {
+            "end": 1,
+            "start": 0
+          }
+        ],
+        "parentId": null,
+        "provenanceId": "provenance:entity:0",
+        "sceneOrder": 0,
+        "sourceZIndex": 0,
+        "transform": {
+          "m11": 1,
+          "m12": 0,
+          "m21": 0,
+          "m22": 1,
+          "tx": 0,
+          "ty": 0
+        }
+      },
+      {
+        "appearance": {
+          "fill": {
+            "color": {
+              "alpha": 1,
+              "blue": 0.2,
+              "green": 0.8,
+              "red": 0.1
+            },
+            "rule": "nonzero"
+          },
+          "kind": "vector",
+          "opacity": 1,
+          "stroke": null
+        },
+        "geometry": {
+          "kind": "cubic-path",
+          "path": {
+            "subpaths": [
+              {
+                "closed": true,
+                "segments": [
+                  {
+                    "control1": {
+                      "x": 1,
+                      "y": -0.5
+                    },
+                    "control2": {
+                      "x": 3,
+                      "y": -0.5
+                    },
+                    "end": {
+                      "x": 3,
+                      "y": -0.5
+                    }
+                  },
+                  {
+                    "control1": {
+                      "x": 3,
+                      "y": -0.5
+                    },
+                    "control2": {
+                      "x": 3,
+                      "y": 0.5
+                    },
+                    "end": {
+                      "x": 3,
+                      "y": 0.5
+                    }
+                  },
+                  {
+                    "control1": {
+                      "x": 3,
+                      "y": 0.5
+                    },
+                    "control2": {
+                      "x": 1,
+                      "y": 0.5
+                    },
+                    "end": {
+                      "x": 1,
+                      "y": 0.5
+                    }
+                  },
+                  {
+                    "control1": {
+                      "x": 1,
+                      "y": 0.5
+                    },
+                    "control2": {
+                      "x": 1,
+                      "y": -0.5
+                    },
+                    "end": {
+                      "x": 1,
+                      "y": -0.5
+                    }
+                  }
+                ],
+                "start": {
+                  "x": 1,
+                  "y": -0.5
+                }
+              }
+            ]
+          }
+        },
+        "id": "entity:1",
+        "lifetimes": [
+          {
+            "end": 1,
+            "start": 0
+          }
+        ],
+        "parentId": null,
+        "provenanceId": "provenance:entity:1",
+        "sceneOrder": 1,
+        "sourceZIndex": 0,
+        "transform": {
+          "m11": 1,
+          "m12": 0,
+          "m21": 0,
+          "m22": 1,
+          "tx": 0,
+          "ty": 0
+        }
+      },
+      {
+        "appearance": {
+          "fill": null,
+          "kind": "vector",
+          "opacity": 1,
+          "stroke": {
+            "cap": "butt",
+            "color": {
+              "alpha": 1,
+              "blue": 1,
+              "green": 1,
+              "red": 1
+            },
+            "join": "miter",
+            "miterLimit": 10,
+            "widthWorld": 0.05
+          }
+        },
+        "geometry": {
+          "kind": "cubic-path",
+          "path": {
+            "subpaths": [
+              {
+                "closed": false,
+                "segments": [
+                  {
+                    "control1": {
+                      "x": -0.33333333333333337,
+                      "y": -2
+                    },
+                    "control2": {
+                      "x": 0.33333333333333326,
+                      "y": -2
+                    },
+                    "end": {
+                      "x": 1,
+                      "y": -2
+                    }
+                  }
+                ],
+                "start": {
+                  "x": -1,
+                  "y": -2
+                }
+              }
+            ]
+          }
+        },
+        "id": "entity:2",
+        "lifetimes": [
+          {
+            "end": 1,
+            "start": 0
+          }
+        ],
+        "parentId": null,
+        "provenanceId": "provenance:entity:2",
+        "sceneOrder": 2,
+        "sourceZIndex": 0,
+        "transform": {
+          "m11": 1,
+          "m12": 0,
+          "m21": 0,
+          "m22": 1,
+          "tx": 0,
+          "ty": 0
+        }
+      }
+    ],
+    "fidelity": {
+      "kind": "exact"
+    },
+    "provenance": [
+      {
+        "evidence": ["fast-manim static fixture"],
+        "id": "provenance:scene",
+        "origin": "fast-manim-server-snapshot"
+      },
+      {
+        "evidence": ["fast-manim static fixture"],
+        "id": "provenance:entity:0",
+        "origin": "fast-manim-server-snapshot"
+      },
+      {
+        "evidence": ["fast-manim static fixture"],
+        "id": "provenance:entity:1",
+        "origin": "fast-manim-server-snapshot"
+      },
+      {
+        "evidence": ["fast-manim static fixture"],
+        "id": "provenance:entity:2",
+        "origin": "fast-manim-server-snapshot"
+      }
+    ],
+    "requiredCapabilities": ["cubic-path-geometry"],
+    "sceneId": "scene:fixture-placeholder",
+    "schema": "poietra.scene-ir",
+    "source": {
+      "kind": "imported-manim-server-snapshot",
+      "runtimeConfigHash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "snapshotHash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "snapshotVersion": 1,
+      "sourceHash": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "version": 1
+  }
+}

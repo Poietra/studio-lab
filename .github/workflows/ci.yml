@@ -80,8 +80,53 @@ jobs:
       - name: Run boundary and integration tests
         run: pnpm test:integration
 
+  engine-rust:
+    name: Poietra Engine Rust core
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Select pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component clippy,rustfmt
+          rustup target add wasm32-unknown-unknown --toolchain 1.92.0
+          rustup default 1.92.0
+      - name: Check formatting
+        run: cargo fmt --all --manifest-path engine/Cargo.toml -- --check
+      - name: Run Engine tests
+        run: cargo test --locked --workspace --manifest-path engine/Cargo.toml
+      - name: Install software Vulkan adapter when absent
+        run: |
+          if ! dpkg-query --show --showformat='${Status}' mesa-vulkan-drivers 2>/dev/null | grep --quiet 'install ok installed'; then
+            sudo apt-get update
+            sudo apt-get install --yes --no-install-recommends mesa-vulkan-drivers
+          fi
+      - name: Prove headless WGPU rendering with Lavapipe
+        env:
+          WGPU_BACKEND: vulkan
+        run: cargo test --locked --package poietra-render-wgpu --test headless_gpu --manifest-path engine/Cargo.toml -- --ignored --nocapture
+      - name: Run Clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features --manifest-path engine/Cargo.toml -- -D warnings
+      - name: Check the browser WASM target
+        run: cargo check --locked --package poietra-wasm --package poietra-render-wgpu --target wasm32-unknown-unknown --manifest-path engine/Cargo.toml
+      - name: Install pinned wasm-pack
+        run: cargo install wasm-pack --locked --version 0.15.0
+      - name: Build browser WASM bindings
+        run: node scripts/build-engine-wasm.mjs
+      - name: Smoke-test generated WASM bindings
+        run: node scripts/smoke-engine-wasm.mjs
+      - name: Upload browser WASM bindings
+        uses: actions/upload-artifact@v6
+        with:
+          name: poietra-engine-wasm
+          path: public/engine-wasm/
+          if-no-files-found: error
+          retention-days: 1
+
   browser-e2e:
     name: Browser E2E
+    needs: engine-rust
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -96,6 +141,11 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Download browser WASM bindings
+        uses: actions/download-artifact@v6
+        with:
+          name: poietra-engine-wasm
+          path: public/engine-wasm/
       - name: Install browser engines and system dependencies
         run: pnpm exec playwright install --with-deps chromium webkit
       - name: Run browser tests

@@ -31,6 +31,7 @@ const CONTENT_TYPES: Readonly<Record<string, string>> = {
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml; charset=utf-8",
   ".ttf": "font/ttf",
+  ".wasm": "application/wasm",
   ".woff": "font/woff",
   ".woff2": "font/woff2",
 };

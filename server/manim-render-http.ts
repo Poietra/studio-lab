@@ -9,9 +9,14 @@ import {
   originalManimSourceExportRequestSchema,
   programRenderRequestSchema,
   renameManimProjectRequestSchema,
+  renderAbandonRequestSchema,
+  renderCommitRequestSchema,
+  renderSourceActionCancellationRequestSchema,
+  renderSourceActionRequestSchema,
   type ManimSourceExport,
 } from "../src/render-pipeline/contracts";
 import { AmbiguousSourceSceneError } from "../src/render-pipeline/source-import";
+import { fastManimSnapshotQueryV1Schema, fastManimSnapshotRunRequestV1Schema } from "./fast-manim-snapshot-contract";
 import { HttpError, readJsonBody, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import type { ManimRenderManager } from "./manim-render-manager";
@@ -19,9 +24,11 @@ import type { ManimProjectRegistry } from "./manim-project-registry";
 import { EMPTY_MANIM_THUMBNAIL_SVG } from "./manim-thumbnail";
 import type { ThumbnailAsset } from "./manim-thumbnail-cache";
 
-const RENDER_ROUTE = /^\/api\/manim\/renders\/([0-9a-f-]+)(?:\/(cancel|commit|discard|undo|video))?$/;
+const RENDER_ROUTE =
+  /^\/api\/manim\/renders\/([0-9a-f-]+)(?:\/(abandon|cancel|cancel-source-action|commit|discard|undo|video))?$/;
 const PROJECT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/(workspace|renders|export)$/;
 const PROJECT_THUMBNAIL_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/thumbnail(?:\/(status|generate))?$/;
+const PROJECT_SCENE_SNAPSHOT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/scene-snapshots$/;
 const PROJECT_ITEM_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})$/;
 type ManimApi = ManimRenderManager | ManimProjectRegistry;
 export type ManimRequestPolicy = Readonly<{
@@ -41,7 +48,7 @@ function requireSameOriginJsonMutation(request: IncomingMessage) {
   const fetchSite = request.headers["sec-fetch-site"]?.toLowerCase();
   if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
     request.resume();
-    throw new HttpError("Cross-origin thumbnail generation is not allowed.", 403);
+    throw new HttpError("Cross-origin mutation requests are not allowed.", 403);
   }
   const origin = request.headers.origin;
   if (!origin) return;
@@ -59,7 +66,7 @@ function requireSameOriginJsonMutation(request: IncomingMessage) {
       throw new Error("Origin does not match Host.");
   } catch {
     request.resume();
-    throw new HttpError("Thumbnail generation requires a same-origin request.", 403);
+    throw new HttpError("Mutation requests require a same-origin request.", 403);
   }
 }
 
@@ -139,16 +146,48 @@ async function streamVideo(request: IncomingMessage, response: ServerResponse, p
   pipeVideo(response, path, { end: range.end, start: range.start });
 }
 
-async function runRenderAction(manager: ManimApi, id: string, action: string | undefined) {
+function requireEmptyRenderActionBody(body: unknown) {
+  if (typeof body !== "object" || body === null || Array.isArray(body) || Object.keys(body).length !== 0) {
+    throw new HttpError("This render action requires an empty JSON object.", 400);
+  }
+}
+
+async function runRenderAction(
+  manager: ManimApi,
+  id: string,
+  action: string | undefined,
+  body: unknown,
+  signal: AbortSignal,
+) {
   switch (action) {
-    case "cancel":
+    case "abandon": {
+      const parsed = renderAbandonRequestSchema.safeParse(body);
+      if (!parsed.success) throw new HttpError("The render abandonment request is invalid.", 400);
+      return manager.abandon(id, parsed.data.renderRequestId);
+    }
+    case "cancel": {
+      requireEmptyRenderActionBody(body);
       return manager.cancel(id);
-    case "commit":
-      return manager.commit(id);
-    case "discard":
+    }
+    case "commit": {
+      const parsed = renderCommitRequestSchema.safeParse(body);
+      if (!parsed.success) throw new HttpError("The render commit request is invalid or stale.", 400);
+      return manager.commit(id, parsed.data, signal);
+    }
+    case "cancel-source-action": {
+      const parsed = renderSourceActionCancellationRequestSchema.safeParse(body);
+      if (!parsed.success) throw new HttpError("The source-action cancellation request is invalid.", 400);
+      return manager.cancelSourceAction(id, parsed.data);
+    }
+    case "discard": {
+      requireEmptyRenderActionBody(body);
       return manager.discard(id);
-    case "undo":
-      return manager.undo(id);
+    }
+    case "undo": {
+      const parsed = renderSourceActionRequestSchema.safeParse(body);
+      if (!parsed.success) throw new HttpError("The Undo action request is invalid.", 400);
+      return manager.undo(id, parsed.data.actionId, signal);
+    }
     default:
       throw new HttpError("Method not allowed.", 405);
   }
@@ -226,6 +265,9 @@ async function routeManimRequest(
   policy: ManimRequestPolicy,
 ) {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
+  if (request.method === "POST" || request.method === "PATCH" || request.method === "DELETE") {
+    requireSameOriginJsonMutation(request);
+  }
   if (url.pathname === "/api/manim/projects") {
     if (request.method === "GET") {
       sendJson(response, 200, manager.projects());
@@ -284,6 +326,29 @@ async function routeManimRequest(
     }
     throw new HttpError("Method not allowed.", 405);
   }
+  const sceneSnapshotMatch = url.pathname.match(PROJECT_SCENE_SNAPSHOT_ROUTE);
+  if (sceneSnapshotMatch) {
+    const projectId = sceneSnapshotMatch[1]!;
+    if (request.method === "GET") {
+      const parsedQuery = fastManimSnapshotQueryV1Schema.safeParse({
+        sceneName: url.searchParams.get("sceneName"),
+        sourcePath: url.searchParams.get("sourcePath"),
+      });
+      if (!parsedQuery.success) {
+        throw new HttpError("Scene snapshot lookup requires sourcePath and sceneName query parameters.", 400);
+      }
+      sendJson(response, 200, await manager.sceneSnapshot(projectId, parsedQuery.data));
+      return;
+    }
+    if (request.method !== "POST") throw new HttpError("Method not allowed.", 405);
+    const parsed = fastManimSnapshotRunRequestV1Schema.safeParse(await readJsonBody(request, 16 * 1024));
+    if (!parsed.success) throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid Scene snapshot request.", 400);
+    if (parsed.data.projectId !== projectId) {
+      throw new HttpError("The request project does not match the project endpoint.", 409);
+    }
+    sendJson(response, 200, await manager.runSceneSnapshot(parsed.data, signal));
+    return;
+  }
   const thumbnailMatch = url.pathname.match(PROJECT_THUMBNAIL_ROUTE);
   if (thumbnailMatch) {
     const [, projectId, action] = thumbnailMatch;
@@ -307,7 +372,6 @@ async function routeManimRequest(
       return;
     }
     if (action === "generate" && request.method === "POST") {
-      requireSameOriginJsonMutation(request);
       const parsed = manimThumbnailGenerateRequestSchema.safeParse(await readJsonBody(request, 1_024));
       if (!parsed.success) throw new HttpError("Thumbnail generation requires an empty JSON object.", 400);
       signal.throwIfAborted();
@@ -376,7 +440,8 @@ async function routeManimRequest(
     return;
   }
   if (request.method !== "POST") throw new HttpError("Method not allowed.", 405);
-  sendJson(response, 200, await runRenderAction(manager, id, action));
+  const body = await readJsonBody(request, 4 * 1024);
+  sendJson(response, 200, await runRenderAction(manager, id, action, body, signal));
 }
 
 export async function handleManimRequest(

@@ -2,6 +2,8 @@ import { join } from "node:path";
 
 import { defineConfig } from "@playwright/test";
 
+import { WEBGPU_CHROMIUM_CHANNEL, WEBGPU_CHROMIUM_LAUNCH_ARGS } from "./e2e/webgpu-launch";
+
 const workspaceDataRoot = join(process.cwd(), "test-results", `workspace-store-${process.pid}`);
 
 export default defineConfig({
@@ -10,8 +12,23 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
+      // The retained-preview tests run on their own server via
+      // playwright.preview.config.ts (pnpm test:e2e:preview).
+      testIgnore: ["**/*.webgpu.ts", "**/preview-renderer.e2e.ts"],
       testMatch: "**/*.e2e.ts",
       use: { browserName: "chromium" },
+    },
+    {
+      name: "chromium-webgpu",
+      testIgnore: ["**/preview-renderer.webgpu.ts", "**/real-scene-preview.webgpu.ts"],
+      testMatch: "**/*.webgpu.ts",
+      use: {
+        browserName: "chromium",
+        channel: WEBGPU_CHROMIUM_CHANNEL,
+        launchOptions: {
+          args: [...WEBGPU_CHROMIUM_LAUNCH_ARGS],
+        },
+      },
     },
     {
       name: "webkit-minimum",
