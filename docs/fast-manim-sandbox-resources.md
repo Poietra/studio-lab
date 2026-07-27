@@ -93,7 +93,9 @@ Abort, deadline, output overflow, launch failure, and shutdown all enter one
 idempotent termination path. `cgroup.kill` is deliberately first so it reaches
 forked, setsid, daemonized, and inherited-pipe descendants. One absolute cleanup
 deadline covers kill, output close, the `populated 0` wait, and removal.
-Finish cancels the watchdog and joins any in-flight counter reads before cleanup.
+Finish cancels the watchdog, invokes kill and output close, then joins any
+in-flight counter reads before final evidence and removal. A stuck read can
+quarantine reap, but cannot delay the initial containment operations.
 For a proposed `completed` result, the controller reads final CPU, memory, and
 pids counters after kill and empty proof but before removal, and combines them
 with the monotonic time captured when finish was received. It records the final
