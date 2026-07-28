@@ -1,9 +1,9 @@
 # Durable workspace/source storage
 
 Status: production composition is available for durable workspace/source and
-render-session storage. Durable snapshot publication remains #134, verified
-video/thumbnail publication remains #136, and the real isolated Manim executor
-adapter remains #117.
+render-session storage, snapshot publication, and source-only isolated Manim
+execution. Verified video/thumbnail publication remains #136, and
+digest-bounded render assets remain follow-up work.
 
 The built `manim-production-server.mjs` entry exports
 `createDurablePostgresS3ProductionRuntimeV1`. The factory applies the embedded,
@@ -16,12 +16,12 @@ and returns the adapter consumed by
 Render sessions store immutable original/patched source receipts, a DB-clock
 execution deadline, monotonically increasing lease fences, and an idempotent
 Commit/Undo action ledger. The worker uses the stable `(tenantId, sessionId)` job
-identity to submit or reattach through the injected executor. PostgreSQL rejects
+identity to submit or reattach through the concrete UDS sandbox executor. PostgreSQL rejects
 stale lease publication, expires timed-out work even while the executor is
 unavailable, and preserves terminal interrupted sessions for inspection. The
 production readiness attestation is false unless the render repository and
-executor both pass their probes. #117 must supply the real sandbox-backed
-executor; an in-process host-spawn fallback is not part of this composition.
+executor both pass their probes. An injected or in-process host-spawn fallback
+is not part of the production composition.
 
 The migration and runtime database configurations are deliberately separate so
 the runtime credential does not need DDL authority. Both require an explicit TCP
@@ -64,6 +64,7 @@ and patched receipts cannot be collected while the session is retained. Terminal
 session retention, reference detachment, and the DB-clock `orphaned_at` boundary
 remain #144; object creation time is not a safe substitute for detachment time.
 
-The composition intentionally cannot publish Scene snapshots or browser video
-assets yet. Those routes fail explicitly until #134/#136 add durable artifact
-publication and #117 supplies the isolated execution backend.
+The composition intentionally does not publish browser video or thumbnail
+assets yet. Isolated completion stores only a private opaque staging locator;
+those delivery routes fail explicitly until #136 adds durable media
+publication.
