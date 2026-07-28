@@ -237,7 +237,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
         renderWorker ?? options.execution,
         renders ?? renderRepository,
         snapshots ?? publisher ?? artifacts,
-        ...(snapshots || !publisher ? [snapshotFactory] : []),
+        ...(snapshots ? [] : [snapshotFactory]),
         ...(publisher ? [] : [snapshotRepository]),
         blobs,
         repository,
