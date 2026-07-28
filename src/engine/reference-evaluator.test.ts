@@ -204,6 +204,37 @@ describe("Poietra TypeScript reference evaluator v1", () => {
     expect(child?.transform).toMatchObject({ tx: 12, ty: 8 });
   });
 
+  it("fails closed when finite hierarchy inputs overflow during affine composition", async () => {
+    const assets = await emptyManifest();
+    const scene = createScene(assets, {
+      entities: [
+        vectorEntity(
+          "parent",
+          0,
+          { center: { x: 0, y: 0 }, kind: "circle", radius: 1 },
+          { transform: { ...identity, m11: Number.MAX_VALUE } },
+        ),
+        vectorEntity(
+          "child",
+          1,
+          { center: { x: 0, y: 0 }, kind: "circle", radius: 1 },
+          { parentId: "parent", transform: { ...identity, m11: 2 } },
+        ),
+      ],
+      requiredCapabilities: ["shape-primitives"],
+    });
+
+    await expect(
+      compileEngineFrameV1({
+        assets,
+        packetId: "overflowed-hierarchy",
+        sampleTime: 0.5,
+        scene,
+        viewport: { heightPx: 1_080, widthPx: 1_920 },
+      }),
+    ).resolves.toMatchObject({ code: "invalid-output", kind: "error" });
+  });
+
   it("sorts draws by source z-index and scene order, then preserves image evidence", async () => {
     const assets = await pngManifest();
     const scene = createScene(assets, {

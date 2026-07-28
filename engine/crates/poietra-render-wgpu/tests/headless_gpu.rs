@@ -2,14 +2,19 @@
 
 mod support;
 
+use std::fs;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
+use poietra_eval::{EngineSessionV1, SampleEngineSessionOptionsV1};
 use poietra_render_wgpu::{
     WgpuPaintRendererV1, WgpuRenderTargetV1, build_gpu_upload_plan_v1, prepare_frame_v1,
 };
-use poietra_scene_ir::{RenderCapabilityV1, RenderDrawV1, RenderPacketV1, StrokeCapV1};
-use serde::Serialize;
+use poietra_scene_ir::{
+    RenderCapabilityV1, RenderDrawV1, RenderPacketV1, SceneIrBundleV1, StrokeCapV1, ViewportV1,
+};
+use serde::{Deserialize, Serialize};
 use support::{
     PixelReferenceSet, generic_fill_fixture, generic_stroke_fixture, sampled_packet,
     straight_stroke_packet,
@@ -52,6 +57,32 @@ struct SmokeEvidence {
     pixels: PixelEvidence,
     status: &'static str,
     viewport: [u32; 2],
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DynamicFixture {
+    assets: serde_json::Value,
+    id: String,
+    pixel_references: std::collections::BTreeMap<String, PixelReferenceSet>,
+    samples: Vec<DynamicSample>,
+    scene: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DynamicSample {
+    expected: DynamicExpected,
+    id: String,
+    packet_id: String,
+    sample_time: f64,
+    viewport: ViewportV1,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DynamicExpected {
+    pixel_reference_id: String,
 }
 
 fn padded_bytes_per_row(width_px: u32) -> (u32, u32) {
@@ -151,6 +182,7 @@ fn track_device_loss(
 fn render_packet(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
+    renderer: &mut WgpuPaintRendererV1,
     packet: &RenderPacketV1,
 ) -> (wgpu::Texture, wgpu::Extent3d) {
     let prepared = prepare_frame_v1(packet).expect("packet must prepare");
@@ -171,8 +203,6 @@ fn render_packet(
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let mut renderer = WgpuPaintRendererV1::new(device, TARGET_FORMAT)
-        .expect("proof target format must be supported by the renderer");
     renderer
         .render(
             device,
@@ -348,7 +378,9 @@ fn renders_shared_fixture_with_fallback_adapter() {
     let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
     let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
 
-    let (texture, extent) = render_packet(&device, &queue, &sampled_packet());
+    let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT)
+        .expect("proof target format must be supported by the renderer");
+    let (texture, extent) = render_packet(&device, &queue, &mut renderer, &sampled_packet());
     let (padded_bytes_per_row, rgba) = readback_texture(&device, &queue, &texture, extent);
 
     assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
@@ -369,6 +401,124 @@ fn renders_shared_fixture_with_fallback_adapter() {
         padded_bytes_per_row,
         &rgba,
         [extent.width, extent.height],
+    );
+}
+
+fn dynamic_fixture() -> (DynamicFixture, SceneIrBundleV1) {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../fixtures/engine-v1/dynamic-affine-camera.json");
+    let fixture: DynamicFixture =
+        serde_json::from_slice(&fs::read(path).expect("shared dynamic fixture must be readable"))
+            .expect("shared dynamic fixture envelope must deserialize");
+    let bundle = serde_json::from_value(serde_json::json!({
+        "assets": fixture.assets,
+        "scene": fixture.scene,
+    }))
+    .expect("shared dynamic fixture must contain a valid Scene bundle");
+    (fixture, bundle)
+}
+
+fn non_background_bounds(rgba: &[u8], width_px: u32, height_px: u32) -> Option<[u32; 4]> {
+    let background = pixel(rgba, width_px, 0, 0);
+    let mut bounds: Option<[u32; 4]> = None;
+    for y in 0..height_px {
+        for x in 0..width_px {
+            if pixel(rgba, width_px, x, y) == background {
+                continue;
+            }
+            bounds = Some(bounds.map_or([x, y, x, y], |[left, top, right, bottom]| {
+                [left.min(x), top.min(y), right.max(x), bottom.max(y)]
+            }));
+        }
+    }
+    bounds
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the dedicated CI step runs this proof"]
+fn renders_dynamic_affine_camera_samples_with_fallback_adapter() {
+    let (fixture, bundle) = dynamic_fixture();
+    let session = EngineSessionV1::new(bundle).expect("dynamic fixture must install");
+    let DynamicFixture {
+        id,
+        pixel_references,
+        samples,
+        ..
+    } = fixture;
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = request_fallback_adapter(&instance);
+    let adapter_info = adapter.get_info();
+    assert_eq!(adapter_info.device_type, wgpu::DeviceType::Cpu);
+    assert_target_format_support(&adapter);
+    let (device, queue) = request_device(&adapter);
+    let device_loss = track_device_loss(&device);
+    let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT)
+        .expect("proof target format must be supported by the renderer");
+
+    let mut frames_by_sample = std::collections::BTreeMap::new();
+    for sample in samples {
+        let reference = pixel_references
+            .get(&sample.expected.pixel_reference_id)
+            .unwrap_or_else(|| panic!("{} must select a pixel reference", sample.id));
+        let packet = session
+            .sample_render_packet(SampleEngineSessionOptionsV1 {
+                evidence: &[id.clone(), sample.id.clone()],
+                packet_id: &sample.packet_id,
+                sample_time: sample.sample_time,
+                viewport: sample.viewport,
+            })
+            .unwrap_or_else(|error| panic!("{} must sample: {error}", sample.id));
+        let (texture, extent) = render_packet(&device, &queue, &mut renderer, &packet);
+        let (_, rgba) = readback_texture(&device, &queue, &texture, extent);
+        let bounds = non_background_bounds(&rgba, extent.width, extent.height);
+        assert_eq!(
+            bounds.is_none(),
+            reference.clear_only,
+            "{}: {}",
+            sample.id,
+            reference.reason
+        );
+        for (name, expected) in &reference.samples {
+            let [x, y] = expected.at;
+            assert!(
+                x < extent.width && y < extent.height,
+                "{name} must be in range"
+            );
+            assert_pixel_close(
+                pixel(&rgba, extent.width, x, y),
+                expected.rgba,
+                [expected.tolerance; 4],
+            );
+        }
+        println!(
+            "poietra-dynamic-pixel-evidence={}:adapter={}:viewport={}x{}:bounds={bounds:?}:probes={}",
+            sample.id,
+            adapter_info.name,
+            extent.width,
+            extent.height,
+            reference.samples.len(),
+        );
+        frames_by_sample.insert(sample.id, (bounds, rgba));
+    }
+
+    assert_eq!(frames_by_sample["a-repeat"], frames_by_sample["a-first"]);
+    assert_eq!(frames_by_sample["a-after-end"], frames_by_sample["a-first"]);
+    assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
+    assert_no_gpu_error("internal", pollster::block_on(internal_scope.pop()));
+    assert_no_gpu_error(
+        "out-of-memory",
+        pollster::block_on(out_of_memory_scope.pop()),
+    );
+    assert!(
+        device_loss
+            .lock()
+            .expect("device-loss evidence mutex must not be poisoned")
+            .is_none(),
+        "device must remain available through dynamic readback"
     );
 }
 
@@ -505,7 +655,9 @@ fn render_and_assert_shared_reference(
     let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
     let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
 
-    let (texture, extent) = render_packet(&device, &queue, packet);
+    let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT)
+        .expect("proof target format must be supported by the renderer");
+    let (texture, extent) = render_packet(&device, &queue, &mut renderer, packet);
     let (_, rgba) = readback_texture(&device, &queue, &texture, extent);
 
     assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
@@ -562,7 +714,9 @@ fn renders_round_capped_stroke_with_fallback_adapter() {
     let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
 
     let packet = straight_stroke_packet(StrokeCapV1::Round);
-    let (texture, extent) = render_packet(&device, &queue, &packet);
+    let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT)
+        .expect("proof target format must be supported by the renderer");
+    let (texture, extent) = render_packet(&device, &queue, &mut renderer, &packet);
     let (_, rgba) = readback_texture(&device, &queue, &texture, extent);
 
     assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
