@@ -101,6 +101,8 @@ function parseMappings(value: unknown, allowedValue: unknown, label: string) {
  * Trusted host user-namespace contract. It is configured once by the
  * orchestrator; no job, request, tenant, or source value can alter it.
  */
+const rootlessIdentityMaps = new WeakSet<object>();
+
 export class FastManimRuncRootlessIdentityMapV1 {
   readonly #gidMappings: readonly FastManimRuncLinuxIdMappingV1[];
   readonly #uidMappings: readonly FastManimRuncLinuxIdMappingV1[];
@@ -108,6 +110,7 @@ export class FastManimRuncRootlessIdentityMapV1 {
   constructor(options: FastManimRuncRootlessIdentityMapOptionsV1) {
     this.#uidMappings = parseMappings(options?.uidMappings, options?.allowedUidRanges, "Uid");
     this.#gidMappings = parseMappings(options?.gidMappings, options?.allowedGidRanges, "Gid");
+    rootlessIdentityMaps.add(this);
     Object.freeze(this);
   }
 
@@ -126,6 +129,7 @@ export class FastManimRuncRootlessIdentityMapV1 {
 export function isFastManimRuncRootlessIdentityMapV1(value: unknown): value is FastManimRuncRootlessIdentityMapV1 {
   return (
     value instanceof FastManimRuncRootlessIdentityMapV1 &&
-    Object.getPrototypeOf(value) === FastManimRuncRootlessIdentityMapV1.prototype
+    Object.getPrototypeOf(value) === FastManimRuncRootlessIdentityMapV1.prototype &&
+    rootlessIdentityMaps.has(value)
   );
 }

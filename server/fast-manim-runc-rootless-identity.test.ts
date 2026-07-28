@@ -43,6 +43,7 @@ describe("FastManimRuncRootlessIdentityMapV1", () => {
     });
     expect(Object.isFrozen(contract.ociMappings().uidMappings)).toBe(true);
     expect(isFastManimRuncRootlessIdentityMapV1(contract)).toBe(true);
+    expect(isFastManimRuncRootlessIdentityMapV1(new Proxy(contract, {}))).toBe(false);
     class OverriddenIdentity extends FastManimRuncRootlessIdentityMapV1 {}
     expect(
       isFastManimRuncRootlessIdentityMapV1(
