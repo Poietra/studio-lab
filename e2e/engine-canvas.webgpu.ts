@@ -25,15 +25,36 @@ type SharedFixture = Readonly<{
   scene: SceneIrBundleV1["scene"];
 }>;
 
+type PixelSampleReference = Readonly<{ at: readonly [number, number]; rgba: RgbaPixel; tolerance: number }>;
+
+type PixelReferenceSet = Readonly<{
+  clearOnly?: boolean;
+  reason: string;
+  samples: Readonly<Record<string, PixelSampleReference>>;
+}>;
+
 type PixelReferenceFixture = SharedFixture &
   Readonly<{
-    reference: Readonly<{
-      reason: string;
-      samples: Readonly<
-        Record<string, Readonly<{ at: readonly [number, number]; rgba: RgbaPixel; tolerance: number }>>
-      >;
-    }>;
+    reference: PixelReferenceSet;
   }>;
+
+type DynamicPixelReferenceFixture = Readonly<{
+  assets: SceneIrBundleV1["assets"];
+  id: string;
+  pixelReferences: Readonly<Record<string, PixelReferenceSet>>;
+  samples: readonly Readonly<{
+    expected: Readonly<{
+      drawEntityIds: readonly string[];
+      pixelReferenceId: string;
+      preparedClipBounds: Readonly<Record<string, readonly [number, number, number, number] | null>>;
+    }>;
+    id: string;
+    packetId: string;
+    sampleTime: number;
+    viewport: Readonly<{ heightPx: number; widthPx: number }>;
+  }>[];
+  scene: SceneIrBundleV1["scene"];
+}>;
 
 type RgbaPixel = readonly [number, number, number, number];
 
@@ -91,12 +112,19 @@ function expectPixelNear(actual: RgbaPixel, expected: RgbaPixel, tolerance = 3) 
   }
 }
 
-async function expectSharedPixelReference(page: Page, fixturePath: string, packetId: string, evidence: string) {
-  const fixture = JSON.parse(await readFile(fixturePath, "utf8")) as PixelReferenceFixture;
-  await page.goto("/");
+type ReadbackFrameInput = Readonly<{
+  assets: SceneIrBundleV1["assets"];
+  interactionEntityIds: readonly string[];
+  requestEvidence: string;
+  requestPacketId: string;
+  sample: Readonly<{ sampleTime: number; viewport: Readonly<{ heightPx: number; widthPx: number }> }>;
+  samplePoints: Readonly<Record<string, readonly [number, number]>>;
+  scene: SceneIrBundleV1["scene"];
+}>;
 
-  const proof = await page.evaluate(
-    async ({ assets, sample, samplePoints, scene, requestEvidence, requestPacketId }) => {
+async function readbackFrame(page: Page, input: ReadbackFrameInput) {
+  return page.evaluate(
+    async ({ assets, interactionEntityIds, sample, samplePoints, scene, requestEvidence, requestPacketId }) => {
       const worker = new Worker("/e2e/engine-canvas-readback.worker.ts", { type: "module" });
       const response = new Promise<ReadbackProofV1>((resolve, reject) => {
         worker.addEventListener(
@@ -120,6 +148,7 @@ async function expectSharedPixelReference(page: Page, fixturePath: string, packe
       const requestJson = new TextEncoder().encode(
         JSON.stringify({
           evidence: [requestEvidence],
+          ...(interactionEntityIds.length === 0 ? {} : { interactionEntityIds }),
           packetId: requestPacketId,
           sampleTime: sample.sampleTime,
           schema: "poietra.engine-sample-request",
@@ -144,17 +173,25 @@ async function expectSharedPixelReference(page: Page, fixturePath: string, packe
         worker.terminate();
       }
     },
-    {
-      assets: fixture.assets,
-      requestEvidence: evidence,
-      requestPacketId: packetId,
-      sample: fixture.sample,
-      samplePoints: Object.fromEntries(
-        Object.entries(fixture.reference.samples).map(([name, reference]) => [name, reference.at]),
-      ),
-      scene: fixture.scene,
-    },
+    input,
   );
+}
+
+async function expectSharedPixelReference(page: Page, fixturePath: string, packetId: string, evidence: string) {
+  const fixture = JSON.parse(await readFile(fixturePath, "utf8")) as PixelReferenceFixture;
+  await page.goto("/");
+
+  const proof = await readbackFrame(page, {
+    assets: fixture.assets,
+    interactionEntityIds: [],
+    requestEvidence: evidence,
+    requestPacketId: packetId,
+    sample: fixture.sample,
+    samplePoints: Object.fromEntries(
+      Object.entries(fixture.reference.samples).map(([name, reference]) => [name, reference.at]),
+    ),
+    scene: fixture.scene,
+  });
 
   expect(proof.response).toMatchObject({
     result: {
@@ -332,6 +369,84 @@ test("matches the shared generic stroke reference in a real WASM WebGPU Worker",
     "canvas:e2e-generic-stroke-readback",
     "Chromium generic stroke readback proof v1",
   );
+});
+
+test("presents shared dynamic affine, hierarchy, camera, and bounds samples through WASM WebGPU", async ({ page }) => {
+  const fixture = JSON.parse(
+    await readFile("fixtures/engine-v1/dynamic-affine-camera.json", "utf8"),
+  ) as DynamicPixelReferenceFixture;
+  const interactionEntityIds = ["dynamic-parent", "asymmetric-child", "trim-motion-child"] as const;
+  const repeated = new Map<string, unknown>();
+  await page.goto("/");
+
+  for (const sample of fixture.samples) {
+    const reference = fixture.pixelReferences[sample.expected.pixelReferenceId];
+    expect(reference, `${sample.id} must select a shared pixel reference`).toBeDefined();
+    if (!reference) continue;
+    const proof = await readbackFrame(page, {
+      assets: fixture.assets,
+      interactionEntityIds,
+      requestEvidence: `${fixture.id}:${sample.id}:WASM WebGPU readback`,
+      requestPacketId: sample.packetId,
+      sample,
+      samplePoints: Object.fromEntries(
+        Object.entries(reference.samples).map(([name, expected]) => [name, expected.at]),
+      ),
+      scene: fixture.scene,
+    });
+
+    expect(proof.response).toMatchObject({
+      result: {
+        interaction: { space: "clip-v1", status: "available" },
+        kind: "presented",
+        packetId: sample.packetId,
+        sampleTime: sample.sampleTime,
+        viewport: sample.viewport,
+      },
+    });
+    expect(proof.pixels.surfaceFormat).toMatch(/^(bgra|rgba)8unorm$/);
+    for (const [name, expected] of Object.entries(reference.samples)) {
+      expectPixelNear(proof.pixels.samples[name] ?? [0, 0, 0, 0], expected.rgba, expected.tolerance);
+    }
+
+    const result = (
+      proof.response as Readonly<{
+        result: Readonly<{
+          interaction: Readonly<{
+            entries: readonly Readonly<{ bounds?: readonly number[]; status: string }>[];
+          }>;
+        }>;
+      }>
+    ).result;
+    expect(result.interaction.entries).toHaveLength(interactionEntityIds.length);
+    interactionEntityIds.forEach((entityId, index) => {
+      const entry = result.interaction.entries[index];
+      expect(entry).toBeDefined();
+      const bounds = sample.expected.preparedClipBounds[entityId];
+      if (!sample.expected.drawEntityIds.includes(entityId)) {
+        expect(entry?.status).toBe("inactive");
+        return;
+      }
+      if (bounds === null || bounds === undefined) {
+        expect(entry?.status).toBe("empty");
+        return;
+      }
+      expect(entry?.status).toBe("present");
+      expect(entry?.bounds).toHaveLength(4);
+      entry?.bounds?.forEach((value, component) => expect(value).toBeCloseTo(bounds[component]!, 6));
+    });
+
+    const visualEvidence = {
+      interaction: result.interaction.entries,
+      pixels: proof.pixels.samples,
+      viewport: sample.viewport,
+    };
+    const prior = repeated.get(sample.expected.pixelReferenceId);
+    if (prior === undefined) repeated.set(sample.expected.pixelReferenceId, visualEvidence);
+    else expect(visualEvidence).toEqual(prior);
+  }
+
+  expect(repeated.get("a")).toBeDefined();
 });
 
 test("bounds rolling WebGPU scopes and fails closed on nested scope API faults", async ({ page }) => {

@@ -7,6 +7,54 @@
     "schema": "poietra.asset-manifest",
     "version": 1
   },
+  "pixelReferences": {
+    "a": {
+      "clearOnly": false,
+      "reason": "Interior probes avoid raster edges while pinning child-only fill, parent-child overlap, child stroke, and motion-path stroke pixels.",
+      "samples": {
+        "background": { "at": [0, 0], "rgba": [0, 3, 5, 255], "tolerance": 4 },
+        "parent-child-overlap": { "at": [110, 12], "rgba": [149, 122, 152, 255], "tolerance": 4 },
+        "child-stroke": { "at": [120, 22], "rgba": [37, 176, 18, 255], "tolerance": 4 },
+        "motion-stroke": { "at": [126, 18], "rgba": [194, 69, 193, 255], "tolerance": 4 },
+        "child-only-fill": { "at": [100, 8], "rgba": [25, 111, 149, 255], "tolerance": 4 }
+      }
+    },
+    "b-start": {
+      "clearOnly": false,
+      "reason": "Start-frame probes pin the reflected parent-child composition before the lifetime-gated motion child appears.",
+      "samples": {
+        "background": { "at": [0, 0], "rgba": [0, 3, 5, 255], "tolerance": 4 },
+        "parent-child-overlap": { "at": [155, 10], "rgba": [133, 96, 116, 255], "tolerance": 4 },
+        "child-only-fill": { "at": [145, 8], "rgba": [16, 83, 113, 255], "tolerance": 4 }
+      }
+    },
+    "duration-end": {
+      "clearOnly": true,
+      "reason": "The lifetime end is exclusive, so the submitted target must contain only the camera clear color.",
+      "samples": {
+        "background": { "at": [0, 0], "rgba": [0, 3, 5, 255], "tolerance": 4 }
+      }
+    },
+    "mid-resized": {
+      "clearOnly": false,
+      "reason": "Interior probes pin the animated camera and hierarchy after a 2x viewport resize without relying on edge antialiasing.",
+      "samples": {
+        "background": { "at": [0, 0], "rgba": [0, 3, 5, 255], "tolerance": 4 },
+        "parent-child-overlap": { "at": [255, 15], "rgba": [146, 113, 139, 255], "tolerance": 4 },
+        "motion-stroke": { "at": [305, 40], "rgba": [145, 47, 174, 255], "tolerance": 4 },
+        "child-only-fill": { "at": [230, 10], "rgba": [22, 101, 136, 255], "tolerance": 4 }
+      }
+    },
+    "quarter": {
+      "clearOnly": false,
+      "reason": "Quarter-frame probes distinguish camera and affine interpolation from both neighboring samples.",
+      "samples": {
+        "background": { "at": [0, 0], "rgba": [0, 3, 5, 255], "tolerance": 4 },
+        "parent-child-overlap": { "at": [140, 10], "rgba": [138, 102, 123, 255], "tolerance": 4 },
+        "child-only-fill": { "at": [135, 8], "rgba": [18, 89, 120, 255], "tolerance": 4 }
+      }
+    }
+  },
   "scene": {
     "animationChannels": [
       {
@@ -373,6 +421,7 @@
         "drawDigest": "a9dd96cf7f90a007beb3133089ce246566309223c3aa69b52451657b8957012f",
         "drawEntityIds": ["dynamic-parent", "asymmetric-child", "trim-motion-child"],
         "opacities": [0.7375, 0.5531250000000001, 0.6637500000000001],
+        "pixelReferenceId": "a",
         "preparedClipBounds": {
           "asymmetric-child": [0.10210419, 0.49531707, 0.5784079, 1.3903173],
           "dynamic-parent": [0.26, 0.45333335, 0.635, 1.3702222],
@@ -408,6 +457,7 @@
         "drawDigest": "381cea0cff45e37e2f000caddfc5a74ad6a3c39297d7fd712b3d76c78662b0a2",
         "drawEntityIds": ["dynamic-parent", "asymmetric-child"],
         "opacities": [0.4, 0.30000000000000004],
+        "pixelReferenceId": "b-start",
         "preparedClipBounds": {
           "asymmetric-child": [0.7319103, 0.58676565, 1.1567014, 0.9142888],
           "dynamic-parent": [0.8375, 0.5833333, 1.2125, 0.9388889],
@@ -433,6 +483,7 @@
         "drawDigest": "d65ec505bf80bbadef194a177975a9378a19e1bd3dae087efce9551b3400156d",
         "drawEntityIds": ["dynamic-parent", "asymmetric-child", "trim-motion-child"],
         "opacities": [0.6000000000000001, 0.45000000000000007, 0.5400000000000001],
+        "pixelReferenceId": "mid-resized",
         "preparedClipBounds": {
           "asymmetric-child": [0.38547567, 0.53790873, 0.8355559, 1.1768839],
           "dynamic-parent": [0.51666665, 0.51111114, 0.89166665, 1.1785185],
@@ -465,6 +516,7 @@
         "drawDigest": "17dc0f7ac9fcae06e69fdd78fbe246cea21a592a596772d361e9d589f7accdc6",
         "drawEntityIds": ["dynamic-parent", "asymmetric-child", "trim-motion-child"],
         "opacities": [0.4625, 0.34687500000000004, 0.41625],
+        "pixelReferenceId": "quarter",
         "preparedClipBounds": {
           "asymmetric-child": [0.5850776, 0.566491, 1.0190581, 1.0255748],
           "dynamic-parent": [0.7, 0.552381, 1.075, 1.0415874],
@@ -500,6 +552,7 @@
         "drawDigest": "a9dd96cf7f90a007beb3133089ce246566309223c3aa69b52451657b8957012f",
         "drawEntityIds": ["dynamic-parent", "asymmetric-child", "trim-motion-child"],
         "opacities": [0.7375, 0.5531250000000001, 0.6637500000000001],
+        "pixelReferenceId": "a",
         "preparedClipBounds": {
           "asymmetric-child": [0.10210419, 0.49531707, 0.5784079, 1.3903173],
           "dynamic-parent": [0.26, 0.45333335, 0.635, 1.3702222],
@@ -535,6 +588,7 @@
         "drawDigest": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         "drawEntityIds": [],
         "opacities": [],
+        "pixelReferenceId": "duration-end",
         "preparedClipBounds": {
           "asymmetric-child": null,
           "dynamic-parent": null,
@@ -554,6 +608,7 @@
         "drawDigest": "a9dd96cf7f90a007beb3133089ce246566309223c3aa69b52451657b8957012f",
         "drawEntityIds": ["dynamic-parent", "asymmetric-child", "trim-motion-child"],
         "opacities": [0.7375, 0.5531250000000001, 0.6637500000000001],
+        "pixelReferenceId": "a",
         "preparedClipBounds": {
           "asymmetric-child": [0.10210419, 0.49531707, 0.5784079, 1.3903173],
           "dynamic-parent": [0.26, 0.45333335, 0.635, 1.3702222],

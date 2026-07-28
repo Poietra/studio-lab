@@ -22,9 +22,11 @@ struct SharedFixture {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[allow(dead_code)]
 pub struct PixelReferenceSet {
+    #[serde(default)]
+    pub clear_only: bool,
     pub reason: String,
     pub samples: BTreeMap<String, PixelReference>,
 }
