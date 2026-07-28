@@ -63,15 +63,15 @@ function transitionTargets(
 export function renderSessionTransitionSources(
   operation: RenderSessionTransitionOperation,
 ): readonly RenderSessionStatus[] {
-  return transitionDefinition(operation).sources;
+  return [...transitionDefinition(operation).sources];
 }
 
 export function renderSessionTransitionTargets(
   operation: RenderSessionTransitionOperation,
 ): readonly RenderSessionStatus[] {
   const definition = transitionDefinition(operation);
-  if (definition.target === "same") return definition.sources;
-  return typeof definition.target === "string" ? [definition.target] : definition.target;
+  if (definition.target === "same") return [...definition.sources];
+  return typeof definition.target === "string" ? [definition.target] : [...definition.target];
 }
 
 export function renderSessionTransitionAllowed(

@@ -3,6 +3,7 @@ import { Pool, type PoolClient, type PoolConfig, type QueryResultRow } from "pg"
 import {
   manimProjectIdSchema,
   manimSourcePathSchema,
+  type RenderSessionStatus,
   renderSessionStatusSchema,
   renderSourceActionIdSchema,
 } from "../../../src/render-pipeline/contracts";
@@ -42,6 +43,17 @@ const MAX_SOURCE_ACTION_RECORDS_V1 = 64;
 const MAX_RECOVERABLE_SESSION_PAGE_V1 = 256;
 const MAX_CORRELATION_KEY_BYTES_V1 = 2_048;
 const MAX_RENDER_IDENTIFIER_BYTES_V1 = 240;
+
+const SQL_STATUS_LITERALS = {
+  cancelled: "'cancelled'",
+  committed: "'committed'",
+  discarded: "'discarded'",
+  failed: "'failed'",
+  preparing: "'preparing'",
+  ready: "'ready'",
+  rendering: "'rendering'",
+  undone: "'undone'",
+} as const satisfies Record<RenderSessionStatus, string>;
 
 type SessionRow = QueryResultRow & {
   action_created_at: Date | null;
@@ -357,10 +369,19 @@ function actionLabel(kind: "commit" | "undo") {
   return kind === "commit" ? "Commit" : "Undo";
 }
 
+async function updateTransition(client: PoolClient, text: string, values: unknown[]) {
+  const result = await client.query(text, values);
+  if (result.rowCount !== 1) throw new HttpError("The render session transition was rejected.", 409);
+}
+
 function transitionSourceSql(operation: RenderSessionTransitionOperation) {
   // Closed policy literals stay visible to PostgreSQL's partial-index planner.
   return renderSessionTransitionSources(operation)
-    .map((status) => `'${status}'`)
+    .map((value) => {
+      const status = renderSessionStatusSchema.safeParse(value);
+      if (!status.success) throw new TypeError("The render session transition contains an invalid status.");
+      return SQL_STATUS_LITERALS[status.data];
+    })
     .join(", ");
 }
 
@@ -942,7 +963,8 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
                    kind, expected_key, state, outcome, created_at, updated_at`,
         [tenant, actionId, session, input.kind, expectedKey, outcome],
       );
-      await client.query(
+      await updateTransition(
+        client,
         `UPDATE public.render_sessions
             SET status = $3,
                 version = version + 1,
@@ -1055,7 +1077,8 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
         );
       }
       const nextStatus = renderSessionTransitionTarget(operation, current.status);
-      await client.query(
+      await updateTransition(
+        client,
         `UPDATE public.render_sessions
             SET status = $3,
                 version = version + 1,
@@ -1113,7 +1136,8 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
         throw new HttpError("A source-changing render session cannot be abandoned.", 409);
       }
       const nextStatus = renderSessionTransitionTarget("abandon", status);
-      await client.query(
+      await updateTransition(
+        client,
         `UPDATE public.render_sessions
             SET status = $3,
                 version = version + 1,

@@ -89,6 +89,16 @@ describe("Manim render session policy", () => {
     expect(() => renderSessionTransitionTarget("complete-lease", "preparing")).toThrow(/one target/i);
   });
 
+  it("does not expose mutable transition-table storage", () => {
+    const sources = renderSessionTransitionSources("claim-lease") as RenderSessionStatus[];
+    const targets = renderSessionTransitionTargets("complete-lease") as RenderSessionStatus[];
+    sources.splice(0, sources.length, "discarded");
+    targets.splice(0, targets.length, "undone");
+
+    expect(renderSessionTransitionSources("claim-lease")).toEqual(["preparing", "rendering"]);
+    expect(renderSessionTransitionTargets("complete-lease")).toEqual(["cancelled", "failed", "ready"]);
+  });
+
   it("defines every status transition capability in one exhaustive matrix", () => {
     expect(statusesWith("abandonable")).toEqual(["cancelled", "failed", "preparing", "ready", "rendering"]);
     expect(statusesWith("active")).toEqual(["preparing", "rendering"]);
