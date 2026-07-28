@@ -6,17 +6,15 @@ import { describe, expect, it } from "vitest";
 
 import fastManimGatedOciSeccompV1 from "../sandbox/fast-manim-gated-oci/seccomp.v1.json";
 import {
+  assertFastManimGatedOciImageV1,
   FAST_MANIM_GATED_OCI_PROFILE_V1,
   FastManimGatedOciDockerClientV1,
+  FastManimGatedOciError,
+  FastManimGatedOciJobRunnerV1,
+  parseFastManimGatedOciResultV1,
   reconcileFastManimGatedOciDockerOrphansV1,
+  runFastManimGatedOciJobV1,
 } from "./fast-manim-gated-oci-job-runner";
-import {
-  createConfiguredFastManimLocalGatedOciBackendV1,
-  FastManimLocalGatedOciBackendV1,
-  FastManimLocalGatedOciError,
-  parseFastManimLocalGatedOciResultV1,
-  runFastManimLocalGatedOciV1,
-} from "./fast-manim-local-gated-oci-backend";
 import { FastManimSandboxBackendControlError, FastManimSandboxRequestBundleV1 } from "./fast-manim-sandbox-backend";
 import {
   fastManimSnapshotResultV1Schema,
@@ -329,40 +327,23 @@ else:
   });
 });
 
-describe("local gated OCI factory", () => {
-  it("is unconditionally unavailable in production, even when the Docker opt-in and image are supplied", async () => {
-    const backend = createConfiguredFastManimLocalGatedOciBackendV1({
-      deployment: "production",
-      image: `sha256:${"a".repeat(64)}`,
-      localDockerDevOptIn: true,
-    });
-    await expect(backend.status(context())).resolves.toMatchObject({
-      backendKind: "disabled",
-      capabilities: [],
-      health: "unavailable",
-      reason: "not-configured",
-    });
-  });
-
-  it("requires the explicit development opt-in and an immutable image ID", async () => {
-    const disabled = createConfiguredFastManimLocalGatedOciBackendV1({
-      deployment: "development",
-      image: `sha256:${"a".repeat(64)}`,
-      localDockerDevOptIn: false,
-    });
-    await expect(disabled.status(context())).resolves.toMatchObject({ health: "unavailable" });
-    expect(() =>
-      createConfiguredFastManimLocalGatedOciBackendV1({
-        deployment: "development",
-        image: "poietra-fast-manim-gated:latest",
-        localDockerDevOptIn: true,
-      }),
+describe("gated OCI job runner lifecycle", () => {
+  it("requires an immutable image ID", () => {
+    expect(
+      () =>
+        new FastManimGatedOciJobRunnerV1({
+          cgroupKillPolicy: "best-effort",
+          dockerClient: new FastManimGatedOciDockerClientV1(),
+          image: "poietra-fast-manim-gated:latest",
+        }),
     ).toThrow(/immutable sha256/i);
   });
 
-  it("latches cleanup failure, refuses new jobs, reports unavailable, and fails close", async () => {
+  it("latches cleanup failure, refuses new jobs, and fails close", async () => {
     const cleanupError = new FastManimSandboxBackendControlError("cleanup");
-    const backend = new FastManimLocalGatedOciBackendV1({
+    const jobs = new FastManimGatedOciJobRunnerV1({
+      cgroupKillPolicy: "best-effort",
+      dockerClient: new FastManimGatedOciDockerClientV1(),
       executeJob: async () => {
         throw cleanupError;
       },
@@ -370,14 +351,10 @@ describe("local gated OCI factory", () => {
     });
     const request = requestFor(staticScene, "GatedStaticScene");
     const jobContext = { ...context(), attestationDigest: "b".repeat(64) };
-    await expect(backend.start(request, jobContext).result).rejects.toBe(cleanupError);
-    await expect(backend.status(context())).resolves.toMatchObject({
-      capabilities: [],
-      health: "unavailable",
-      reason: "health-check-failed",
-    });
-    expect(() => backend.start(request, jobContext)).toThrow(FastManimSandboxBackendControlError);
-    await expect(backend.close()).rejects.toMatchObject({ code: "cleanup" });
+    await expect(jobs.start(request, jobContext).result).rejects.toBe(cleanupError);
+    expect(jobs.health()).toBe("cleanup-failed");
+    expect(() => jobs.start(request, jobContext)).toThrow(FastManimSandboxBackendControlError);
+    await expect(jobs.close()).rejects.toMatchObject({ code: "cleanup" });
   });
 
   it("permanently taints after create dispatch is aborted before an immutable ID is observed", async () => {
@@ -385,9 +362,11 @@ describe("local gated OCI factory", () => {
     const executionController = new AbortController();
     let createDispatched = false;
     let recoveryAttempted = false;
-    const backend = new FastManimLocalGatedOciBackendV1({
+    const jobs = new FastManimGatedOciJobRunnerV1({
+      cgroupKillPolicy: "best-effort",
+      dockerClient: new FastManimGatedOciDockerClientV1(),
       executeJob: (options) =>
-        runFastManimLocalGatedOciV1({
+        runFastManimGatedOciJobV1({
           ...options,
           createUncertainTestSeam: {
             assertTrustedImage: async () => undefined,
@@ -412,17 +391,13 @@ describe("local gated OCI factory", () => {
     const request = requestFor(staticScene, "GatedStaticScene");
     const jobContext = { ...context(executionController.signal), attestationDigest: "b".repeat(64) };
 
-    await expect(backend.start(request, jobContext).result).rejects.toMatchObject({ code: "cleanup" });
+    await expect(jobs.start(request, jobContext).result).rejects.toMatchObject({ code: "cleanup" });
     expect({ createDispatched, recoveryAttempted }).toEqual({ createDispatched: true, recoveryAttempted: true });
-    await expect(backend.status(context())).resolves.toMatchObject({
-      capabilities: [],
-      health: "unavailable",
-      reason: "health-check-failed",
-    });
-    expect(() => backend.start(request, { ...context(), attestationDigest: "c".repeat(64) })).toThrowError(
+    expect(jobs.health()).toBe("cleanup-failed");
+    expect(() => jobs.start(request, { ...context(), attestationDigest: "c".repeat(64) })).toThrowError(
       expect.objectContaining({ code: "cleanup" }),
     );
-    await expect(backend.close()).rejects.toMatchObject({ code: "cleanup" });
+    await expect(jobs.close()).rejects.toMatchObject({ code: "cleanup" });
   });
 });
 
@@ -432,16 +407,16 @@ describe("gated OCI result boundary", () => {
       '{"a":-0.0,"b":[0.0001,1.0,1e-07,1e+20,1000000000000000.0,"λ\\n"],"c":{"α":true}}\n',
       "utf8",
     );
-    expect(Buffer.from(parseFastManimLocalGatedOciResultV1(result))).toEqual(result.subarray(0, -1));
+    expect(Buffer.from(parseFastManimGatedOciResultV1(result))).toEqual(result.subarray(0, -1));
   });
 
   it("rejects invalid UTF-8 and output beyond the exact result-plus-LF budget", () => {
     const invalidUtf8 = Buffer.concat([Buffer.from('{"a":"'), Buffer.from([0xff]), Buffer.from('"}\n')]);
-    expect(() => parseFastManimLocalGatedOciResultV1(invalidUtf8)).toThrowError(
+    expect(() => parseFastManimGatedOciResultV1(invalidUtf8)).toThrowError(
       expect.objectContaining({ code: "sandbox-result-rejected" }),
     );
     expect(() =>
-      parseFastManimLocalGatedOciResultV1(Buffer.alloc(MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES + 2, 0x78)),
+      parseFastManimGatedOciResultV1(Buffer.alloc(MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES + 2, 0x78)),
     ).toThrowError(expect.objectContaining({ code: "producer-output-overflow" }));
   });
 
@@ -458,7 +433,7 @@ describe("gated OCI result boundary", () => {
     '{ "a":1}\n',
     '{"a":1}\n\n',
   ])("rejects non-canonical result bytes: %s", (result) => {
-    expect(() => parseFastManimLocalGatedOciResultV1(Buffer.from(result, "utf8"))).toThrowError(
+    expect(() => parseFastManimGatedOciResultV1(Buffer.from(result, "utf8"))).toThrowError(
       expect.objectContaining({ code: "sandbox-result-rejected" }),
     );
   });
@@ -466,7 +441,7 @@ describe("gated OCI result boundary", () => {
   it("rejects JSON nesting beyond the shared snapshot depth budget", () => {
     const nesting = MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_DEPTH + 1;
     const result = `{"a":${"[".repeat(nesting)}0${"]".repeat(nesting)}}\n`;
-    expect(() => parseFastManimLocalGatedOciResultV1(Buffer.from(result, "utf8"))).toThrowError(
+    expect(() => parseFastManimGatedOciResultV1(Buffer.from(result, "utf8"))).toThrowError(
       expect.objectContaining({ code: "sandbox-result-rejected" }),
     );
   });
@@ -485,7 +460,7 @@ describe("gated OCI result boundary", () => {
       `${JSON.stringify(oversizedObject)}\n`,
       `${JSON.stringify(tooManyEntries)}\n`,
     ]) {
-      expect(() => parseFastManimLocalGatedOciResultV1(Buffer.from(result, "utf8"))).toThrowError(
+      expect(() => parseFastManimGatedOciResultV1(Buffer.from(result, "utf8"))).toThrowError(
         expect.objectContaining({ code: "sandbox-result-rejected" }),
       );
     }
@@ -499,7 +474,7 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
     timeout: 60_000,
   }, async () => {
     const request = requestFor(staticScene, "GatedStaticScene");
-    const execution = await runFastManimLocalGatedOciV1({
+    const execution = await runFastManimGatedOciJobV1({
       deadlineEpochMs: Date.now() + 30_000,
       image,
       requestBytes: request.copyBytes(),
@@ -525,9 +500,11 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
   it("does not quarantine an abort observed after known-ID cleanup was verified", { timeout: 60_000 }, async () => {
     const executionController = new AbortController();
     let verifiedCleanupReached = false;
-    const backend = new FastManimLocalGatedOciBackendV1({
+    const jobs = new FastManimGatedOciJobRunnerV1({
+      cgroupKillPolicy: "best-effort",
+      dockerClient: new FastManimGatedOciDockerClientV1(),
       executeJob: (options) =>
-        runFastManimLocalGatedOciV1({
+        runFastManimGatedOciJobV1({
           ...options,
           afterVerifiedCleanupForTesting: () => {
             verifiedCleanupReached = true;
@@ -539,20 +516,20 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
     const request = requestFor(staticScene, "GatedStaticScene");
 
     await expect(
-      backend.start(request, {
+      jobs.start(request, {
         ...context(executionController.signal),
         attestationDigest: "b".repeat(64),
       }).result,
     ).rejects.toMatchObject({ name: "AbortError" });
     expect(verifiedCleanupReached).toBe(true);
-    await expect(backend.status(context())).resolves.toMatchObject({ health: "ready" });
-    await expect(backend.close()).resolves.toBeUndefined();
+    expect(jobs.health()).toBe("open");
+    await expect(jobs.close()).resolves.toBeUndefined();
   });
 
-  it("interrupts pre-launch image inspection and status reads on abort", { timeout: 30_000 }, async () => {
+  it("interrupts pre-launch execution and image inspection on abort", { timeout: 30_000 }, async () => {
     const request = requestFor(staticScene, "GatedStaticScene");
     const executionController = new AbortController();
-    const execution = runFastManimLocalGatedOciV1({
+    const execution = runFastManimGatedOciJobV1({
       deadlineEpochMs: Date.now() + 30_000,
       image,
       requestBytes: request.copyBytes(),
@@ -561,12 +538,15 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
     executionController.abort();
     await expect(execution).rejects.toMatchObject({ name: "AbortError" });
 
-    const backend = new FastManimLocalGatedOciBackendV1({ image });
-    const statusController = new AbortController();
-    const status = backend.status(context(statusController.signal));
-    statusController.abort();
-    await expect(status).rejects.toMatchObject({ name: "AbortError" });
-    await backend.close();
+    const inspectionController = new AbortController();
+    const inspection = assertFastManimGatedOciImageV1(
+      image,
+      new FastManimGatedOciDockerClientV1(),
+      Date.now() + 30_000,
+      inspectionController.signal,
+    );
+    inspectionController.abort();
+    await expect(inspection).rejects.toMatchObject({ name: "AbortError" });
   });
 
   it("rejects wrong digest, wrong length, early EOF, and trailing bytes at the entrypoint", {
@@ -580,14 +560,14 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
       Buffer.concat([wire(body), Buffer.from("x")]),
     ];
     for (const bytes of cases) {
-      const error = await runFastManimLocalGatedOciV1({
+      const error = await runFastManimGatedOciJobV1({
         conformanceWire: { bytes, close: true },
         deadlineEpochMs: Date.now() + 15_000,
         image,
         requestBytes: body,
         signal: new AbortController().signal,
       }).catch((reason: unknown) => reason);
-      expect(error).toBeInstanceOf(FastManimLocalGatedOciError);
+      expect(error).toBeInstanceOf(FastManimGatedOciError);
       expect(error).toMatchObject({ cleanupVerified: true, code: "producer-exit" });
     }
   });
@@ -596,21 +576,21 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
     timeout: 30_000,
   }, async () => {
     const body = requestFor(staticScene, "GatedStaticScene").copyBytes();
-    const error = await runFastManimLocalGatedOciV1({
+    const error = await runFastManimGatedOciJobV1({
       conformanceWire: { bytes: wire(body), close: false },
       deadlineEpochMs: Date.now() + 1_200,
       image,
       requestBytes: body,
       signal: new AbortController().signal,
     }).catch((reason: unknown) => reason);
-    expect(error).toBeInstanceOf(FastManimLocalGatedOciError);
+    expect(error).toBeInstanceOf(FastManimGatedOciError);
     expect(error).toMatchObject({ cleanupVerified: true, code: "producer-timeout" });
   });
 
   it("aborts a gated body waiting for EOF and proves cleanup", { timeout: 30_000 }, async () => {
     const body = requestFor(staticScene, "GatedStaticScene").copyBytes();
     const controller = new AbortController();
-    const running = runFastManimLocalGatedOciV1({
+    const running = runFastManimGatedOciJobV1({
       conformanceWire: { bytes: wire(body), close: false },
       deadlineEpochMs: Date.now() + 20_000,
       image,
@@ -627,7 +607,7 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
       'def construct(self):\n        import os\n        os.write(3, b"\\xff")',
     );
     const request = requestFor(reflectiveScene, "GatedStaticScene");
-    const execution = await runFastManimLocalGatedOciV1({
+    const execution = await runFastManimGatedOciJobV1({
       deadlineEpochMs: Date.now() + 30_000,
       image,
       requestBytes: request.copyBytes(),
