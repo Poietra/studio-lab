@@ -6,6 +6,7 @@ import {
   type SceneIrBundleV1,
   sceneIrBundleV1Schema,
 } from "../src/engine/contracts";
+import { MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES } from "../src/engine/canvas-worker-protocol";
 
 /**
  * Shared 1920x1080 stress workload generators.
@@ -73,6 +74,15 @@ export type TimingSummary = Readonly<{
   samplesMs: readonly number[];
 }>;
 
+export type ByteLengthSummary = Readonly<{
+  maximumBytes: number;
+  minimumBytes: number;
+  p50Bytes: number;
+  p95Bytes: number;
+  p99Bytes: number;
+  samplesBytes: readonly number[];
+}>;
+
 type TimingSignPolicy = "nonnegative" | "signed";
 
 function summarizeTimingWithPolicy(
@@ -123,6 +133,31 @@ export function summarizeTiming(samples: readonly number[], expectedCount: numbe
  */
 export function summarizeSignedTiming(samples: readonly number[], expectedCount: number): TimingSummary {
   return summarizeTimingWithPolicy(samples, expectedCount, "signed");
+}
+
+/** Exact-count, nearest-rank summary for bounded logical response sizes. */
+export function summarizeByteLengths(samples: readonly number[], expectedCount: number): ByteLengthSummary {
+  if (!Number.isInteger(expectedCount) || expectedCount < 1) {
+    throw new Error(`expectedCount must be a positive integer, received ${expectedCount}`);
+  }
+  if (samples.length !== expectedCount) {
+    throw new Error(`expected exactly ${expectedCount} byte-length samples, received ${samples.length}`);
+  }
+  for (const [index, sample] of samples.entries()) {
+    if (!Number.isSafeInteger(sample) || sample < 1 || sample > MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES) {
+      throw new Error(`logical response byte-length sample ${index} is outside the canvas response budget: ${sample}`);
+    }
+  }
+  const sorted = [...samples].sort((left, right) => left - right);
+  const nearestRank = (fraction: number) => sorted[Math.max(0, Math.ceil(sorted.length * fraction) - 1)]!;
+  return {
+    maximumBytes: sorted.at(-1)!,
+    minimumBytes: sorted[0]!,
+    p50Bytes: nearestRank(0.5),
+    p95Bytes: nearestRank(0.95),
+    p99Bytes: nearestRank(0.99),
+    samplesBytes: [...samples],
+  };
 }
 
 const IDENTITY: EngineAffineTransformV1 = { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 };

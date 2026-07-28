@@ -2,10 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 
 import { expect, test } from "@playwright/test";
 
-import {
-  MAX_CANVAS_INTERACTION_ENTITY_IDS,
-  MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES,
-} from "../src/engine/canvas-worker-protocol";
+import { MAX_CANVAS_INTERACTION_ENTITY_IDS } from "../src/engine/canvas-worker-protocol";
 import { type SceneIrBundleV1, sceneIrBundleV1Schema } from "../src/engine/contracts";
 import {
   assessDecisionEligibility,
@@ -23,6 +20,7 @@ import {
   STRESS_DEFINITIONS,
   STRESS_VIEWPORT,
   stressBundle,
+  summarizeByteLengths,
   summarizeTiming,
 } from "./engine-stress-workloads";
 import { WEBGPU_CHROMIUM_CHANNEL, WEBGPU_CHROMIUM_LAUNCH_ARGS } from "./webgpu-launch";
@@ -34,27 +32,6 @@ const WARMUP_FRAMES = 30;
 const MEASURED_FRAMES = 300;
 const PACED_FRAMES = 301;
 const CONTINUOUS_SCRUB_FRAMES = 120;
-
-function summarizeByteLengths(samples: readonly number[], expectedCount: number) {
-  if (samples.length !== expectedCount) {
-    throw new Error(`expected exactly ${expectedCount} byte-length samples, received ${samples.length}`);
-  }
-  for (const [index, sample] of samples.entries()) {
-    if (!Number.isSafeInteger(sample) || sample < 1 || sample > MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES) {
-      throw new Error(`logical response byte-length sample ${index} is outside the canvas response budget: ${sample}`);
-    }
-  }
-  const sorted = [...samples].sort((left, right) => left - right);
-  const nearestRank = (fraction: number) => sorted[Math.max(0, Math.ceil(sorted.length * fraction) - 1)]!;
-  return {
-    maximumBytes: sorted.at(-1)!,
-    minimumBytes: sorted[0]!,
-    p50Bytes: nearestRank(0.5),
-    p95Bytes: nearestRank(0.95),
-    p99Bytes: nearestRank(0.99),
-    samplesBytes: [...samples],
-  };
-}
 
 type BrowserStressResult = Readonly<{
   browser: Readonly<{ hardwareConcurrency: number; platform: string; userAgent: string }>;
