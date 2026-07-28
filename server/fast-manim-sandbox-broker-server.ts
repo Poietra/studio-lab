@@ -426,6 +426,7 @@ function createBrokerSession(
         else socket.destroy();
       } else {
         socket.destroy();
+        if (!settled) onCleanupFailure();
       }
     });
   };

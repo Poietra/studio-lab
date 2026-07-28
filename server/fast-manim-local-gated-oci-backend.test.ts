@@ -145,6 +145,29 @@ describe("gated OCI Docker ownership", () => {
       expect(dockerClient.calls).toContainEqual(["container", "rm", "--force", containerId]);
     }
   });
+
+  it("cleans owned orphans even when image trust has drifted", async () => {
+    const image = `sha256:${"a".repeat(64)}`;
+    const containerId = "b".repeat(64);
+    const dockerClient = new RecordingDockerClient();
+    dockerClient.responses.push(
+      { code: 1, stderr: Buffer.from("untrusted"), stdout: Buffer.alloc(0) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.from(`${containerId}\n`) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.from(JSON.stringify([{ Id: containerId }])) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.alloc(0) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.alloc(0) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.alloc(0) },
+    );
+
+    await expect(
+      reconcileFastManimGatedOciDockerOrphansV1({
+        dockerClient,
+        image,
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toMatchObject({ code: "cleanup" });
+    expect(dockerClient.calls).toContainEqual(["container", "rm", "--force", containerId]);
+  });
 });
 
 describe("local gated OCI factory", () => {

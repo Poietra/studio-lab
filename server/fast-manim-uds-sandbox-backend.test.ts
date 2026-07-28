@@ -360,4 +360,32 @@ describe("FastManimUdsSandboxBackendV1", () => {
       },
     );
   });
+
+  it("rejects every broker error returned for session close", async () => {
+    const status = productionSandboxReadyStatus();
+    await withBroker(
+      (message, socket) => {
+        if (message.kind === "status") {
+          send(socket, serverMessage(message.correlationId, { kind: "status-result", status }));
+          return true;
+        }
+        if (message.kind === "close") {
+          send(
+            socket,
+            serverMessage(message.correlationId, {
+              code: "unavailable",
+              kind: "error",
+              operation: "close",
+            }),
+          );
+          return true;
+        }
+      },
+      async (broker) => {
+        const backend = new FastManimUdsSandboxBackendV1({ socketPath: broker.path });
+        await expect(backend.status(statusContext())).resolves.toEqual(status);
+        await expect(backend.close()).rejects.toMatchObject({ code: "cleanup" });
+      },
+    );
+  });
 });

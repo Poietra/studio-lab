@@ -419,7 +419,7 @@ export class FastManimUdsSandboxBackendV1 implements FastManimSandboxBackendV1 {
       const job = this.#jobs.get(pending.jobId);
       if (job) this.#deletePending(job);
     }
-    if (pending.kind === "close") this.#finishClose(code === "cleanup" ? error : undefined);
+    if (pending.kind === "close") this.#finishClose(new FastManimSandboxBackendControlError("cleanup"));
     else if (code === "cleanup") this.#fail(error);
   }
 

@@ -810,7 +810,14 @@ export async function reconcileFastManimGatedOciDockerOrphansV1(
 ) {
   if (!IMAGE_ID.test(options.image)) throw new TypeError("Orphan reconciliation requires an immutable image ID.");
   options.signal.throwIfAborted();
-  await assertTrustedImage(options.image, DOCKER_CONTROL_TIMEOUT_MS, options.signal, options.dockerClient);
+  let cleanupFailed = false;
+  try {
+    await assertTrustedImage(options.image, DOCKER_CONTROL_TIMEOUT_MS, options.signal, options.dockerClient);
+  } catch {
+    // Image trust drift must fail readiness, but it must not prevent cleanup
+    // of containers already selected through the broker-owned label.
+    cleanupFailed = true;
+  }
   const listed = await options.dockerClient.run(
     ["container", "ls", "--all", "--quiet", "--no-trunc", "--filter", `label=${JOB_LABEL}`],
     DOCKER_CONTROL_TIMEOUT_MS,
@@ -825,7 +832,6 @@ export async function reconcileFastManimGatedOciDockerOrphansV1(
   ) {
     throw new FastManimSandboxBackendControlError("cleanup");
   }
-  let cleanupFailed = false;
   for (const containerId of containerIds) {
     let inspectionValid = false;
     try {
