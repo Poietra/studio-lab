@@ -17,6 +17,7 @@ import {
   installFastManimSnapshotRunnerFixture,
   mkfifo,
   producerCommand,
+  producerGate,
   runRequest,
   sceneSource,
   supportsVerifiedRead,
@@ -100,16 +101,18 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
       expect(await readdir(runtimeTmpRoot)).toEqual([]);
       // Abort.
       const abortController = new AbortController();
-      const slow = createRunner(root, producerCommand("--delay-ms=5000"));
+      const abortGate = await producerGate(root, "cleanup-abort");
+      const slow = createRunner(root, producerCommand(...abortGate.arguments));
       const aborted = slow.run(runRequest({ requestId: "snapshot-request-3" }), abortController.signal);
-      await delay(150);
+      await abortGate.ready;
       abortController.abort();
       await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
       expect(await readdir(runtimeTmpRoot)).toEqual([]);
       // Close: close() itself must not resolve before the deletion completed.
-      const closing = createRunner(root, producerCommand("--delay-ms=5000"));
+      const closeGate = await producerGate(root, "cleanup-close");
+      const closing = createRunner(root, producerCommand(...closeGate.arguments));
       const closingRun = closing.run(runRequest({ requestId: "snapshot-request-4" }));
-      await delay(150);
+      await closeGate.ready;
       await closing.close();
       await expect(closingRun).rejects.toMatchObject({ name: "AbortError" });
       expect(await readdir(runtimeTmpRoot)).toEqual([]);
@@ -262,10 +265,17 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     const root = await projectRoot();
     let holdLookup: Promise<void> | null = null;
     let releaseLookup!: () => void;
+    let reachLookup!: () => void;
+    const lookupReached = new Promise<void>((resolve) => {
+      reachLookup = resolve;
+    });
     const runner = createRunner(root, producerCommand(), {
       sourceReadHooks: {
         beforeOpen: async () => {
-          if (holdLookup) await holdLookup;
+          if (holdLookup) {
+            reachLookup();
+            await holdLookup;
+          }
         },
       },
     });
@@ -275,13 +285,13 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     });
     const lookup = runner.snapshot({ sceneName: "ExampleScene", sourcePath: "scene.py" });
     lookup.catch(() => undefined);
-    await delay(100);
+    await lookupReached;
     expect(runner.busy).toBe(true);
     let closeSettled = false;
     const closing = runner.close().then(() => {
       closeSettled = true;
     });
-    await delay(150);
+    await new Promise<void>((resolve) => setImmediate(resolve));
     // close() waits for the held lookup instead of releasing the owner under it.
     expect(closeSettled).toBe(false);
     releaseLookup();
@@ -298,6 +308,10 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     const scenePath = join(root, "scene.py");
     let holdLookup: Promise<void> | null = null;
     let releaseLookup!: () => void;
+    let reachLookup!: () => void;
+    const lookupReached = new Promise<void>((resolve) => {
+      reachLookup = resolve;
+    });
     // The freshness read is paused mid-flight; while it is held, close()
     // begins and the source is swapped so the read will fail. On release the
     // lookup must observe shutdown and fail 503, not unpublish + return stale.
@@ -307,6 +321,7 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
           if (holdLookup) {
             const gate = holdLookup;
             holdLookup = null;
+            reachLookup();
             await gate;
           }
         },
@@ -318,9 +333,8 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     });
     const lookup = runner.snapshot({ sceneName: "ExampleScene", sourcePath: "scene.py" });
     lookup.catch(() => undefined);
-    await delay(100);
+    await lookupReached;
     const closing = runner.close();
-    await delay(50);
     // Make the held freshness read fail: swap the source to a FIFO so
     // readVerified rejects and the lookup would otherwise reach staleView.
     await rm(scenePath, { force: true });
@@ -339,6 +353,10 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     const root = await projectRoot();
     let holdFirstLookup: Promise<void> | null = null;
     let releaseFirstLookup!: () => void;
+    let reachFirstLookup!: () => void;
+    const firstLookupReached = new Promise<void>((resolve) => {
+      reachFirstLookup = resolve;
+    });
     // The freshness read of the first lookup is paused mid-flight; while it
     // holds revision 1, the source changes and revision 2 is published. On
     // release the lookup must neither delete the fresh entry nor return the
@@ -349,6 +367,7 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
           if (holdFirstLookup) {
             const gate = holdFirstLookup;
             holdFirstLookup = null;
+            reachFirstLookup();
             await gate;
           }
         },
@@ -363,7 +382,7 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     });
     const lookup = runner.snapshot({ sceneName: "ExampleScene", sourcePath: "scene.py" });
     lookup.catch(() => undefined);
-    await delay(100);
+    await firstLookupReached;
     // Change the source and republish revision 2 for the same key.
     await writeFile(join(root, "scene.py"), `${sceneSource}\n# revision two\n`, "utf8");
     const second = await runner.run(runRequest({ requestId: "snapshot-request-2", sourcePath: "scene.py" }));
@@ -415,12 +434,13 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
 
   it("survives a change-and-restore ABA swap because the producer compiles the immutable request text", async () => {
     const root = await projectRoot();
-    const runner = createRunner(root, producerCommand("--delay-ms=800"));
+    const gate = await producerGate(root, "aba-swap");
+    const runner = createRunner(root, producerCommand(...gate.arguments));
     const running = runner.run(runRequest());
-    await delay(150);
+    await gate.ready;
     await writeFile(join(root, "scene.py"), `${sceneSource}\n# swapped mid-run\n`, "utf8");
-    await delay(150);
     await writeFile(join(root, "scene.py"), sceneSource, "utf8");
+    await gate.release();
     const view = await running;
     expect(view.status).toBe("verified");
     if (view.status !== "verified") throw new Error("Expected the restored source to verify.");
@@ -430,10 +450,12 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
 
   it("refuses to publish when the source changes during the run", async () => {
     const root = await projectRoot();
-    const runner = createRunner(root, producerCommand("--delay-ms=600"));
+    const gate = await producerGate(root, "source-change");
+    const runner = createRunner(root, producerCommand(...gate.arguments));
     const running = runner.run(runRequest());
-    await delay(200);
+    await gate.ready;
     await writeFile(join(root, "scene.py"), `${sceneSource}\n# edited mid-run\n`, "utf8");
+    await gate.release();
     expectFailure(await running, "source-changed");
     await expectNoSnapshot(runner);
   });

@@ -82,9 +82,6 @@ const chunks = [];
 for await (const chunk of process.stdin) chunks.push(chunk);
 const requestJson = Buffer.concat(chunks).toString("utf8");
 
-if (mode === "hang") {
-  await new Promise(() => setInterval(() => undefined, 1_000));
-}
 if (mode === "exit-2") {
   // Simulates workspace Python printing secrets, host paths, and tracebacks:
   // none of these bytes may ever appear in server logs or HTTP responses.
@@ -158,6 +155,13 @@ const recomputedSceneId = `scene:${createHash("sha256")
 if (recomputedSceneId !== request.sceneId) {
   process.stderr.write("Producer request sceneId does not match its canonical derivation.\n");
   process.exit(4);
+}
+const readyFifo = argumentValue("ready-fifo");
+if (readyFifo) await writeFile(readyFifo, "ready", "utf8");
+const releaseFifo = argumentValue("release-fifo");
+if (releaseFifo) await readFile(releaseFifo, "utf8");
+if (mode === "hang") {
+  await new Promise(() => setInterval(() => undefined, 1_000));
 }
 const runtimeConfigHash =
   mode === "config-drift"
@@ -424,6 +428,7 @@ if (orphanModes.has(mode)) {
   const orphanBody =
     mode === "orphan-flood"
       ? `${selfExpiry}
+         process.once("disconnect", () => setImmediate(write));
          const filler = "x".repeat(65536); let sent = 0;
          const write = () => {
            while (sent < 100) {
@@ -432,7 +437,7 @@ if (orphanModes.has(mode)) {
            }
            setInterval(() => undefined, 1000);
          };
-         write();`
+         process.send?.("ready");`
       : // A same-group descendant that ignores catchable termination signals
         // and does not exit on its own before the self-expiry backstop.
         `${selfExpiry} process.on("SIGTERM", () => undefined); process.on("SIGHUP", () => undefined); setInterval(() => undefined, 1000);`;
@@ -443,11 +448,32 @@ if (orphanModes.has(mode)) {
   // in the leader's group with inherited stdio.
   const orphan = spawn(process.execPath, ["-e", orphanBody], {
     detached: mode === "orphan-setsid",
-    stdio: mode === "orphan-setsid" ? "ignore" : "inherit",
+    stdio:
+      mode === "orphan-setsid"
+        ? "ignore"
+        : mode === "orphan-flood"
+          ? ["inherit", "inherit", "inherit", "ipc"]
+          : "inherit",
   });
   // The parent records the descendant PID synchronously so the test never
   // races the detached child's own startup before reading the file.
   if (orphanPidFile) await writeFile(orphanPidFile, String(orphan.pid), "utf8");
+  if (mode === "orphan-flood") {
+    await new Promise((resolve, reject) => {
+      const onError = (error) => {
+        orphan.off("message", onMessage);
+        reject(error);
+      };
+      const onMessage = (message) => {
+        if (message !== "ready") return;
+        orphan.off("error", onError);
+        resolve();
+      };
+      orphan.once("error", onError);
+      orphan.on("message", onMessage);
+    });
+    orphan.disconnect();
+  }
   if (mode === "orphan-parent-hang") {
     // The leader itself ignores SIGTERM and never exits on its own, so it is
     // observably alive when the +2s SIGKILL lands on the whole group: that

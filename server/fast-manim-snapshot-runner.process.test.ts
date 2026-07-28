@@ -179,14 +179,13 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     const root = await projectRoot();
     const orphanPidFile = join(root, "orphan-flood.pid");
     // The leader exits after emitting the descendant, which then floods the
-    // inherited stdout. The overflow guard stops accumulating and the run
-    // settles via the pipe-close grace; the flooding descendant is the #80
-    // residual, reaped by the test. Keep the production pipe-close grace for
-    // this scheduling-sensitive case: the general 150ms test grace can expire
-    // before the newly spawned descendant runs on a contended host.
+    // inherited stdout. The fixture leader waits for an IPC-ready message
+    // before it exits, so the test can use a bounded sub-second grace without
+    // guessing how long the descendant needs to start under CI load. The
+    // flooding descendant remains the #80 residual and is reaped here.
     const runner = createRunner(root, producerCommand("--mode=orphan-flood", `--orphan-pid-file=${orphanPidFile}`), {
-      producerProcessTimings: { killGraceMs: TEST_PRODUCER_PROCESS_TIMINGS.killGraceMs },
-      timeoutMs: 5_000,
+      producerProcessTimings: { closeGraceMs: 500, killGraceMs: TEST_PRODUCER_PROCESS_TIMINGS.killGraceMs },
+      timeoutMs: 400,
     });
     // The descendant is bounded, but its terminal overflow result arrives only
     // after the runner deadline; deadline authority therefore wins.

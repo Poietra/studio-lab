@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -194,6 +194,22 @@ export async function processGone(pid: number) {
 export const mkfifo = async (path: string) => {
   await promisify(execFile)("mkfifo", [path]);
 };
+
+/**
+ * Creates a pair of FIFOs that lets a subprocess test wait for the producer
+ * to finish parsing its immutable request, then release it without sleeping.
+ */
+export async function producerGate(root: string, name: string) {
+  const readyPath = join(root, `${name}.ready.fifo`);
+  const releasePath = join(root, `${name}.release.fifo`);
+  await Promise.all([mkfifo(readyPath), mkfifo(releasePath)]);
+  const ready = readFile(readyPath, "utf8").then(() => undefined);
+  return {
+    arguments: [`--ready-fifo=${readyPath}`, `--release-fifo=${releasePath}`] as const,
+    ready,
+    release: () => writeFile(releasePath, "continue", "utf8"),
+  };
+}
 
 export async function withFakePlatform<T>(platform: string, run: () => Promise<T>) {
   const original = Object.getOwnPropertyDescriptor(process, "platform");

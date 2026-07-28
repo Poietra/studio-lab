@@ -69,7 +69,7 @@ if (process.argv.includes("-s") && thumbnailStartMarkerIndex >= 0 && process.arg
 process.stdout.write("Rendering 50%\n");
 const slowRender =
   process.argv.includes("--slow-render") || (process.argv.includes("--slow-thumbnail") && process.argv.includes("-s"));
-await new Promise((resolve) => setTimeout(resolve, slowRender ? 10_000 : 80));
+if (slowRender) await new Promise((resolve) => setTimeout(resolve, 10_000));
 if (process.argv.includes("-s")) {
   const sceneName = process.argv.at(-1);
   const outputFileIndex = process.argv.indexOf("--output_file");
