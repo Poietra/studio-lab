@@ -134,6 +134,10 @@ export async function createStudioPreviewDeltaOrReplacementV1(
   }
 }
 
+export function studioPreviewHostReadyForSceneUpdateV1(state: PreviewRendererHostStateV1) {
+  return !(state.phase === "fallback" && state.reason === "installing");
+}
+
 export async function digestStudioPreviewSceneRevisionV1(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
@@ -500,22 +504,24 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     };
   }, [canvasEl, currentInstallation, eligibility.eligible, evidenceAdapter, provider, workspaceKey, snapshot]);
 
+  const updateBinding = bound?.binding ?? null;
+  const updateHost = bound?.host ?? null;
+  const hostReadyForSceneUpdate = bound ? studioPreviewHostReadyForSceneUpdateV1(bound.state) : false;
   useEffect(() => {
-    if (!bound || !currentCompiledScene) return;
+    if (!updateBinding || !updateHost || !hostReadyForSceneUpdate || !currentCompiledScene) return;
     const queued = queuedScene.current;
     if (
       !queued ||
-      queued.binding !== bound.binding ||
+      queued.binding !== updateBinding ||
       queued.scene.engineRevisionHash === currentCompiledScene.engineRevisionHash
     )
       return;
-    if (bound.state.phase === "fallback" && bound.state.reason === "installing") return;
     let cancelled = false;
     const base = queued.scene;
     const dispatchUpdate = (delta: SceneIrDeltaV1 | null) => {
       if (cancelled || latestCompiledScene.current !== currentCompiledScene || queuedScene.current !== queued) return;
-      queuedScene.current = { binding: bound.binding, scene: currentCompiledScene };
-      void bound.host
+      queuedScene.current = { binding: updateBinding, scene: currentCompiledScene };
+      void updateHost
         .update({
           delta,
           interactionEntityIds: currentCompiledScene.interactionEntityIds,
@@ -530,7 +536,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     return () => {
       cancelled = true;
     };
-  }, [bound, currentCompiledScene]);
+  }, [currentCompiledScene, hostReadyForSceneUpdate, updateBinding, updateHost]);
 
   const host = bound?.host ?? null;
   useEffect(() => {

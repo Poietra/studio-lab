@@ -25,6 +25,7 @@ import {
   compileStudioPreviewSceneV1,
   createStudioPreviewDeltaOrReplacementV1,
   digestStudioPreviewSceneRevisionV1,
+  studioPreviewHostReadyForSceneUpdateV1,
   type StudioPreviewSnapshotMetadataStateV1,
   studioPreviewSnapshotMetadataForWorkspaceV1,
 } from "./use-preview-renderer";
@@ -521,6 +522,26 @@ describe("compileStudioPreviewSceneV1", () => {
       workspaceKey: "project-a/scene.py/CircleScene",
     });
     expect(result).toMatchObject({ kind: "unsupported" });
+  });
+});
+
+describe("studioPreviewHostReadyForSceneUpdateV1", () => {
+  it("changes only for installation readiness, not volatile presented-frame state", () => {
+    expect(studioPreviewHostReadyForSceneUpdateV1({ detail: null, phase: "fallback", reason: "installing" })).toBe(
+      false,
+    );
+    expect(
+      studioPreviewHostReadyForSceneUpdateV1({
+        frame: { packetId: "frame-a", revision: HASH_A, sampleTime: 0, viewport: { heightPx: 360, widthPx: 640 } },
+        phase: "presented",
+      }),
+    ).toBe(true);
+    expect(
+      studioPreviewHostReadyForSceneUpdateV1({
+        frame: { packetId: "frame-b", revision: HASH_B, sampleTime: 1, viewport: { heightPx: 360, widthPx: 640 } },
+        phase: "presented",
+      }),
+    ).toBe(true);
   });
 });
 
