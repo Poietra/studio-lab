@@ -14,6 +14,7 @@
     "test:integration": "vitest run server src/render-pipeline src/studio/workspace-projection.test.ts",
     "test:storage:e2e": "node scripts/run-workspace-source-storage-e2e.mjs",
     "test:fast-manim-oci:real": "POIETRA_RUN_FAST_MANIM_OCI_REAL=1 vitest run server/fast-manim-oci-conformance.real.test.ts",
+    "test:fast-manim-runc:real": "POIETRA_RUN_FAST_MANIM_RUNC_REAL=1 vitest run server/fast-manim-runc-production-composition.real.test.ts",
     "test:sandbox:cgroup": "vitest run server/fast-manim-local-cgroup-conformance.real.test.ts --reporter=verbose",
     "test:engine:wasm-smoke": "node scripts/smoke-engine-wasm.mjs",
     "test:manim-smoke": "node scripts/run-manim-smoke.mjs",
