@@ -8,26 +8,31 @@ import { WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM } from "./postgres-workspace-sou
 
 const DURABLE_STORAGE_MIGRATION_LOCK = "5784133447825795121";
 
-type DurableStorageMigration = Readonly<{
+type DurableStorageMigration<Version extends number = number> = Readonly<{
   checksum: string;
   checksumMismatch: string;
   installedMismatch: string;
   missingPrerequisite?: string;
   prerequisiteMismatch?: string;
   source: string;
-  version: number;
+  version: Version;
 }>;
 
 export function durableStorageMigrationChecksum(source: string) {
   return createHash("sha256").update(source, "utf8").digest("hex");
 }
 
-export const workspaceSourceMigrationChecksumV1 = durableStorageMigrationChecksum;
-export const renderSessionMigrationChecksumV2 = durableStorageMigrationChecksum;
+export function workspaceSourceMigrationChecksumV1(source: string) {
+  return durableStorageMigrationChecksum(source);
+}
+
+export function renderSessionMigrationChecksumV2(source: string) {
+  return durableStorageMigrationChecksum(source);
+}
 export const WORKSPACE_SOURCE_MIGRATION_V1_SOURCE = workspaceSourceSqlV1;
 export const RENDER_SESSION_MIGRATION_V2_SOURCE = renderSessionSqlV2;
 
-const workspaceSourceMigrationV1: DurableStorageMigration = Object.freeze({
+const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
   checksumMismatch: "The workspace/source migration checksum is invalid.",
   installedMismatch: "The installed workspace/source schema does not match migration v1.",
@@ -35,7 +40,7 @@ const workspaceSourceMigrationV1: DurableStorageMigration = Object.freeze({
   version: 1,
 });
 
-const renderSessionMigrationV2: DurableStorageMigration = Object.freeze({
+const renderSessionMigrationV2: DurableStorageMigration<2> = Object.freeze({
   checksum: RENDER_SESSION_MIGRATION_V2_CHECKSUM,
   checksumMismatch: "The render-session migration checksum is invalid.",
   installedMismatch: "The installed render-session schema does not match migration v2.",
@@ -53,9 +58,9 @@ function validateSource(migration: DurableStorageMigration) {
   }
 }
 
-async function applyMigration(
+async function applyMigration<Version extends number>(
   pool: Pool,
-  migration: DurableStorageMigration,
+  migration: DurableStorageMigration<Version>,
   prerequisites: readonly DurableStorageMigration[],
 ) {
   validateSource(migration);
@@ -132,4 +137,7 @@ export async function applyBundledDurableStorageMigrations(pool: Pool) {
 }
 
 /** @deprecated Use applyBundledDurableStorageMigrations. */
-export const applyBundledDurableStorageMigrationsV2 = applyBundledDurableStorageMigrations;
+export async function applyBundledDurableStorageMigrationsV2(pool: Pool) {
+  await applyMigration(pool, workspaceSourceMigrationV1, []);
+  return applyMigration(pool, renderSessionMigrationV2, [workspaceSourceMigrationV1]);
+}

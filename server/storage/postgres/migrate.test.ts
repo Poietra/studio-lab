@@ -1,8 +1,10 @@
 import type { Pool } from "pg";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import {
   applyBundledDurableStorageMigrations,
+  type applyBundledDurableStorageMigrationsV2,
+  type applyBundledWorkspaceSourceMigrationV1,
   applyRenderSessionMigrationV2,
   applyWorkspaceSourceMigrationV1,
   RENDER_SESSION_MIGRATION_V2_SOURCE,
@@ -39,6 +41,15 @@ function database(initial: ReadonlyMap<number, string> = new Map()) {
 }
 
 describe("durable storage migrations", () => {
+  it("preserves the public literal versions of compatibility helpers", () => {
+    expectTypeOf<Awaited<ReturnType<typeof applyBundledWorkspaceSourceMigrationV1>>>().toEqualTypeOf<
+      Readonly<{ applied: false; version: 1 }> | Readonly<{ applied: true; version: 1 }>
+    >();
+    expectTypeOf<Awaited<ReturnType<typeof applyBundledDurableStorageMigrationsV2>>>().toEqualTypeOf<
+      Readonly<{ applied: false; version: 2 }> | Readonly<{ applied: true; version: 2 }>
+    >();
+  });
+
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
     await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 2 });
