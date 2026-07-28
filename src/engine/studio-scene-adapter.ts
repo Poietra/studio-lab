@@ -1,13 +1,11 @@
-import { parseVerifiedAssetManifestV1, type AssetManifestV1 } from "./asset-manifest";
-import type { EnginePointV1 } from "./primitives";
-import { type SceneIrV1, sceneIrV1Schema } from "./scene-ir";
 import type {
   EntityDimensions,
   Knowledge,
   Point,
-  ProposedState,
   PropertyChannel,
+  PropertyChannelSample,
   PropertyValue,
+  ProposedState,
   RuntimeEntity,
 } from "../studio/model";
 import {
@@ -17,15 +15,26 @@ import {
   samplePropertyValue,
 } from "../studio/property-sampling";
 import { STUDIO_VIEWPORT } from "../studio/studio-viewport-geometry";
+import { type AssetManifestV1, parseVerifiedAssetManifestV1 } from "./asset-manifest";
+import type { SceneIrBundleV1 } from "./contracts";
+import type { EnginePointV1 } from "./primitives";
+import { type SceneIrV1, sceneIrV1Schema } from "./scene-ir";
 
 type VectorAppearanceV1 = Extract<SceneIrV1["entities"][number]["appearance"], { kind: "vector" }>;
 
 export type StudioSceneIrAdapterEvidenceV1 = Readonly<{
   appearances: Readonly<Record<string, VectorAppearanceV1>>;
   camera: SceneIrV1["camera"];
+  entityIds?: Readonly<Record<string, string>>;
+  fidelity?: SceneIrV1["fidelity"];
   paintOrder: readonly Readonly<{ entityId: string; sourceZIndex: number }>[];
   provenance: readonly string[];
 }>;
+
+export type StudioSceneIrAdapterRuntimeIdentityV1 = ReadonlyMap<
+  string,
+  Readonly<{ bindingId: string; entityId: string; sourceName: string }>
+>;
 
 export type StudioSceneIrAdapterInputV1 = Readonly<{
   assets: AssetManifestV1;
@@ -62,7 +71,13 @@ export type StudioSceneIrAdapterResultV1 =
   | Readonly<{ kind: "compiled"; scene: SceneIrV1 }>
   | Readonly<{ issues: readonly StudioSceneIrAdapterIssueV1[]; kind: "unsupported" }>;
 
-const STATIC_PROPERTY_KEYS = new Set<PropertyChannel["key"]>(["dimensions", "position", "presence", "scale"]);
+const STATIC_PROPERTY_KEYS = new Set<PropertyChannel["key"]>([
+  "appearance",
+  "dimensions",
+  "position",
+  "presence",
+  "scale",
+]);
 
 function issue(
   code: StudioSceneIrAdapterIssueCodeV1,
@@ -71,6 +86,144 @@ function issue(
 ): StudioSceneIrAdapterIssueV1 {
   const { evidence = [], ...context } = options;
   return { code, evidence, message, ...context };
+}
+
+const MANIM_WHITE = { alpha: 1, blue: 1, green: 1, red: 1 } as const;
+const MANIM_DEFAULT_SHAPE_APPEARANCE: VectorAppearanceV1 = {
+  fill: null,
+  kind: "vector",
+  opacity: 1,
+  stroke: {
+    cap: "butt",
+    color: MANIM_WHITE,
+    join: "miter",
+    miterLimit: 10,
+    widthWorld: 0.04,
+  },
+};
+
+export type BuildStudioSceneIrAdapterEvidenceResultV1 =
+  | Readonly<{ evidence: StudioSceneIrAdapterEvidenceV1; kind: "resolved" }>
+  | Readonly<{ issues: readonly StudioSceneIrAdapterIssueV1[]; kind: "unsupported" }>;
+
+/**
+ * Resolves only evidence that the Studio adapter is allowed to claim. Imported
+ * objects inherit camera, paint, appearance, and runtime identity from the
+ * server-verified snapshot map. Studio-created Circle/Rectangle objects use
+ * Manim's fixed vector defaults only while Studio carries known empty style
+ * evidence; custom or unknown style stays on the semantic fallback path.
+ */
+export function buildStudioSceneIrAdapterEvidenceV1(
+  input: Readonly<{
+    proposedState: Pick<ProposedState, "evaluatedScene" | "programs">;
+    snapshot: SceneIrBundleV1;
+    sourceRuntimeIdentity: StudioSceneIrAdapterRuntimeIdentityV1 | null;
+  }>,
+): BuildStudioSceneIrAdapterEvidenceResultV1 {
+  const issues: StudioSceneIrAdapterIssueV1[] = [];
+  const appearances: Record<string, VectorAppearanceV1> = {};
+  const entityIds: Record<string, string> = {};
+  const paintOrder: { entityId: string; sourceZIndex: number }[] = [];
+  const snapshotEntities = new Map(input.snapshot.scene.entities.map((entity) => [entity.id, entity]));
+  const mappedRuntimeIds = new Set<string>();
+  const created: RuntimeEntity[] = [];
+
+  for (const entity of Object.values(input.proposedState.evaluatedScene.objectGraph.entities)) {
+    const imported = !entity.provisional && entity.transactionId === undefined;
+    if (!imported) {
+      created.push(entity);
+      continue;
+    }
+    if (entity.sourceIdentity.kind !== "known" || !input.sourceRuntimeIdentity) {
+      issues.push(
+        issue("unknown-evidence", `Imported entity ${entity.id} has no verified source/runtime identity.`, {
+          entityId: entity.id,
+        }),
+      );
+      continue;
+    }
+    const mapping = input.sourceRuntimeIdentity.get(entity.sourceIdentity.value);
+    const runtimeEntity = mapping ? snapshotEntities.get(mapping.entityId) : undefined;
+    if (!mapping || !runtimeEntity || mapping.sourceName !== entity.sourceIdentity.value) {
+      issues.push(
+        issue("unknown-evidence", `Imported entity ${entity.id} does not match one verified runtime entity.`, {
+          entityId: entity.id,
+        }),
+      );
+      continue;
+    }
+    if (mappedRuntimeIds.has(runtimeEntity.id) || runtimeEntity.appearance.kind !== "vector") {
+      issues.push(
+        issue("render-style-unresolved", `Imported entity ${entity.id} has ambiguous or non-vector runtime paint.`, {
+          entityId: entity.id,
+        }),
+      );
+      continue;
+    }
+    mappedRuntimeIds.add(runtimeEntity.id);
+    appearances[entity.id] = runtimeEntity.appearance;
+    entityIds[entity.id] = runtimeEntity.id;
+    paintOrder.push({ entityId: entity.id, sourceZIndex: runtimeEntity.sourceZIndex });
+  }
+
+  if ([...snapshotEntities.keys()].some((entityId) => !mappedRuntimeIds.has(entityId))) {
+    issues.push(
+      issue(
+        "unknown-evidence",
+        "The verified snapshot contains runtime entities that the Studio source identity map does not cover.",
+      ),
+    );
+  }
+
+  paintOrder.sort((left, right) => {
+    const leftRuntime = snapshotEntities.get(entityIds[left.entityId]);
+    const rightRuntime = snapshotEntities.get(entityIds[right.entityId]);
+    return left.sourceZIndex - right.sourceZIndex || (leftRuntime?.sceneOrder ?? 0) - (rightRuntime?.sceneOrder ?? 0);
+  });
+  let nextZ = paintOrder.reduce((maximum, entry) => Math.max(maximum, entry.sourceZIndex), -1);
+  for (const entity of created) {
+    const style = entity.geometry?.style;
+    if (
+      !entity.provisional ||
+      entity.transactionId === undefined ||
+      entity.sourceIdentity.kind !== "unknown" ||
+      (entity.type !== "Circle" && entity.type !== "Rectangle") ||
+      style?.kind !== "known" ||
+      Object.values(style.value).some((value) => value !== undefined)
+    ) {
+      issues.push(
+        issue(
+          "render-style-unresolved",
+          `Studio-created entity ${entity.id} has no supported, known Manim vector style.`,
+          { entityId: entity.id },
+        ),
+      );
+      continue;
+    }
+    nextZ += 1;
+    appearances[entity.id] = MANIM_DEFAULT_SHAPE_APPEARANCE;
+    entityIds[entity.id] = entity.id;
+    paintOrder.push({ entityId: entity.id, sourceZIndex: nextZ });
+  }
+
+  if (issues.length > 0) return { issues, kind: "unsupported" };
+  return {
+    evidence: {
+      appearances,
+      camera: input.snapshot.scene.camera,
+      entityIds,
+      fidelity: {
+        evidence: ["Studio shape geometry reconstructed from server-correlated static/runtime evidence"],
+        kind: "approximate",
+      },
+      paintOrder,
+      provenance: [
+        "server-verified imported snapshot and source/runtime identity",
+        "known Studio Circle/Rectangle defaults",
+      ],
+    },
+    kind: "resolved",
+  };
 }
 
 function samePoint(left: Point, right: Point) {
@@ -222,6 +375,22 @@ function validateGlobalEvidence(input: StudioSceneIrAdapterInputV1, issues: Stud
       issues.push(
         issue("render-style-unresolved", `Appearance evidence references unknown entity ${id}.`, { entityId: id }),
       );
+    }
+  }
+  if (input.evidence.entityIds) {
+    const outputIds = new Set<string>();
+    for (const [entityId, outputId] of Object.entries(input.evidence.entityIds)) {
+      if (!entityIds.has(entityId) || outputIds.has(outputId)) {
+        issues.push(
+          issue("unknown-evidence", "Runtime entity identity evidence must be complete and one-to-one.", {
+            entityId,
+          }),
+        );
+      }
+      outputIds.add(outputId);
+    }
+    if (Object.keys(input.evidence.entityIds).length !== entityIds.size) {
+      issues.push(issue("unknown-evidence", "Runtime entity identity evidence must cover the complete Scene."));
     }
   }
   if (
@@ -380,13 +549,119 @@ function compileEntities(input: StudioSceneIrAdapterInputV1, issues: StudioScene
       {
         appearance,
         geometry,
-        id: entity.id,
+        id: input.evidence.entityIds?.[entity.id] ?? entity.id,
         lifetimes: entity.lifetime,
         parentId: null,
         provenanceId: "studio-adapter",
         sceneOrder,
         sourceZIndex: order.sourceZIndex,
         transform: { m11: scale, m12: 0, m21: 0, m22: scale, tx: translation.x, ty: translation.y },
+      },
+    ];
+  });
+}
+
+function normalizedOpacity(value: PropertyValue | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1;
+}
+
+function appearanceSampleIsCompatible(
+  sample: PropertyChannelSample,
+  animated: PropertyChannelSample,
+  issues: StudioSceneIrAdapterIssueV1[],
+  entityId: string,
+) {
+  if (sample.kind !== "exact" || !normalizedOpacity(sample.value)) {
+    issues.push(
+      issue("property-animation-unsupported", `Entity ${entityId} has non-numeric opacity evidence.`, {
+        entityId,
+      }),
+    );
+    return false;
+  }
+  const expected = sample.interval.end <= animated.interval.start ? animated.from : animated.value;
+  if (
+    !normalizedOpacity(expected) ||
+    (sample.interval.start < animated.interval.end && sample.interval.end > animated.interval.start) ||
+    sample.value !== expected
+  ) {
+    issues.push(
+      issue("property-discontinuity-unsupported", `Entity ${entityId} has unsupported opacity continuity.`, {
+        entityId,
+      }),
+    );
+    return false;
+  }
+  return true;
+}
+
+function compileOpacityChannels(input: StudioSceneIrAdapterInputV1, issues: StudioSceneIrAdapterIssueV1[]) {
+  const scene = input.proposedState.evaluatedScene;
+  return input.evidence.paintOrder.flatMap((order, sceneOrder) => {
+    const entity = scene.objectGraph.entities[order.entityId];
+    const channel = channelFor(scene, order.entityId, "appearance");
+    if (!entity || !channel || channel.samples.length === 0) return [];
+    const animated = channel.samples.filter((sample) => sample.kind === "animated");
+    if (!entity.provisional || entity.transactionId === undefined || animated.length !== 1) {
+      issues.push(
+        issue("property-animation-unsupported", "Only one Studio-created shape opacity transition is supported.", {
+          entityId: order.entityId,
+        }),
+      );
+      return [];
+    }
+    const transition = animated[0];
+    const lifetime = entity.lifetime.length === 1 ? entity.lifetime[0] : undefined;
+    if (
+      !transition ||
+      !lifetime ||
+      !normalizedOpacity(transition.from) ||
+      !normalizedOpacity(transition.value) ||
+      transition.from !== 0 ||
+      transition.value !== 1 ||
+      (transition.easing !== "linear" && transition.easing !== "smooth") ||
+      transition.interval.end <= transition.interval.start ||
+      transition.interval.start !== lifetime.start ||
+      transition.interval.end > lifetime.end
+    ) {
+      issues.push(
+        issue("property-animation-unsupported", "Studio opacity transition evidence is incomplete.", {
+          entityId: order.entityId,
+        }),
+      );
+      return [];
+    }
+    const exactSamples = channel.samples.filter((sample) => sample !== transition);
+    if (exactSamples.some((sample) => !appearanceSampleIsCompatible(sample, transition, issues, order.entityId))) {
+      return [];
+    }
+    if (
+      transition.interval.end < lifetime.end &&
+      !exactSamples.some(
+        (sample) => sample.interval.start === transition.interval.end && sample.interval.end >= lifetime.end,
+      )
+    ) {
+      issues.push(
+        issue("property-discontinuity-unsupported", "Studio fade-in evidence does not cover the object lifetime.", {
+          entityId: order.entityId,
+        }),
+      );
+      return [];
+    }
+    return [
+      {
+        entityId: input.evidence.entityIds?.[order.entityId] ?? order.entityId,
+        id: `studio-opacity-${sceneOrder}`,
+        keyframes: [
+          {
+            at: transition.interval.start,
+            easingToNext: { kind: transition.easing },
+            value: transition.from,
+          },
+          { at: transition.interval.end, easingToNext: null, value: transition.value },
+        ],
+        kind: "opacity" as const,
+        provenanceId: "studio-adapter",
       },
     ];
   });
@@ -418,10 +693,11 @@ export async function compileStudioSceneIrV1(
   validateGlobalEvidence(stableInput, issues);
   validateProgramsAndChannels(stableInput, issues);
   const entities = compileEntities(stableInput, issues);
+  const animationChannels = compileOpacityChannels(stableInput, issues);
   if (issues.length > 0) return { issues, kind: "unsupported" };
 
   const candidate = {
-    animationChannels: [],
+    animationChannels,
     assetManifest: { manifestDigest: assets.manifestDigest, manifestId: assets.manifestId },
     camera: stableInput.evidence.camera,
     coordinateSpace: {
@@ -434,7 +710,7 @@ export async function compileStudioSceneIrV1(
     },
     duration: stableInput.proposedState.evaluatedScene.duration,
     entities,
-    fidelity: { kind: "exact" },
+    fidelity: stableInput.evidence.fidelity ?? { kind: "exact" },
     provenance: [
       {
         evidence: [...stableInput.evidence.provenance],
@@ -442,7 +718,10 @@ export async function compileStudioSceneIrV1(
         origin: "studio-edit-program",
       },
     ],
-    requiredCapabilities: entities.length === 0 ? [] : ["shape-primitives"],
+    requiredCapabilities: [
+      ...(animationChannels.length > 0 ? (["opacity-animation"] as const) : []),
+      ...(entities.length > 0 ? (["shape-primitives"] as const) : []),
+    ],
     sceneId: stableInput.proposedState.evaluatedScene.sceneId,
     schema: "poietra.scene-ir",
     source: { editProgramVersion: 1, kind: "studio-edit-program", revisionHash: stableInput.sourceRevisionHash },

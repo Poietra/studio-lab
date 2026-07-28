@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
-
+import { type ProposedState, type RuntimeSceneState, STUDIO_STATE_VERSION } from "../studio/model";
 import { type AssetManifestV1, assetManifestV1Schema, digestAssetManifestV1 } from "./asset-manifest";
 import { compileEngineFrameV1 } from "./reference-evaluator";
 import {
+  buildStudioSceneIrAdapterEvidenceV1,
   compileStudioSceneIrV1,
   type StudioSceneIrAdapterInputV1,
   studioPointToScenePointV1,
 } from "./studio-scene-adapter";
-import { STUDIO_STATE_VERSION, type ProposedState, type RuntimeSceneState } from "../studio/model";
 
 const ZERO_HASH = "0".repeat(64);
 const REVISION_HASH = "a".repeat(64);
@@ -164,6 +164,140 @@ describe("Studio to SceneIrV1 truthful adapter", () => {
       x: 12,
       y: -1,
     });
+  });
+
+  it("derives imported paint only through the verified runtime identity map", async () => {
+    const adapterInput = await input();
+    const compiled = await compileStudioSceneIrV1(adapterInput);
+    if (compiled.kind !== "compiled") throw new Error("fixture adapter did not compile");
+    const resolved = buildStudioSceneIrAdapterEvidenceV1({
+      proposedState: adapterInput.proposedState,
+      snapshot: { assets: adapterInput.assets, scene: compiled.scene },
+      sourceRuntimeIdentity: new Map([
+        ["circle", { bindingId: "binding:circle", entityId: CIRCLE_ID, sourceName: "circle" }],
+        ["rectangle", { bindingId: "binding:rectangle", entityId: RECTANGLE_ID, sourceName: "rectangle" }],
+      ]),
+    });
+    expect(resolved.kind).toBe("resolved");
+    if (resolved.kind !== "resolved") throw new Error("runtime evidence did not resolve");
+    expect(resolved.evidence).toMatchObject({
+      appearances: {
+        [CIRCLE_ID]: adapterInput.evidence.appearances[CIRCLE_ID],
+        [RECTANGLE_ID]: adapterInput.evidence.appearances[RECTANGLE_ID],
+      },
+      entityIds: { [CIRCLE_ID]: CIRCLE_ID, [RECTANGLE_ID]: RECTANGLE_ID },
+      fidelity: { kind: "approximate" },
+    });
+
+    const missing = buildStudioSceneIrAdapterEvidenceV1({
+      proposedState: adapterInput.proposedState,
+      snapshot: { assets: adapterInput.assets, scene: compiled.scene },
+      sourceRuntimeIdentity: new Map(),
+    });
+    expect(missing.kind).toBe("unsupported");
+  });
+
+  it("compiles a known Studio-created Circle/Rectangle default and its single opacity transition", async () => {
+    const adapterInput = await input();
+    const importedOnly = await compileStudioSceneIrV1({
+      ...adapterInput,
+      evidence: {
+        ...adapterInput.evidence,
+        appearances: { [CIRCLE_ID]: adapterInput.evidence.appearances[CIRCLE_ID] },
+        paintOrder: [{ entityId: CIRCLE_ID, sourceZIndex: 0 }],
+      },
+      proposedState: {
+        ...adapterInput.proposedState,
+        evaluatedScene: {
+          ...adapterInput.proposedState.evaluatedScene,
+          objectGraph: {
+            ...adapterInput.proposedState.evaluatedScene.objectGraph,
+            entities: { [CIRCLE_ID]: adapterInput.proposedState.evaluatedScene.objectGraph.entities[CIRCLE_ID] },
+          },
+          propertyChannels: Object.fromEntries(
+            Object.entries(adapterInput.proposedState.evaluatedScene.propertyChannels).filter(
+              ([, channel]) => channel.entityId === CIRCLE_ID,
+            ),
+          ),
+        },
+      },
+    });
+    if (importedOnly.kind !== "compiled") throw new Error("imported fixture did not compile");
+    const createdScene = scene();
+    const createdRectangle = {
+      ...createdScene.objectGraph.entities[RECTANGLE_ID],
+      lifetime: [{ end: 2, start: 0.5 }],
+      provisional: true,
+      sourceIdentity: { evidence: ["create"], kind: "unknown" as const, reason: "Studio-created" },
+      transactionId: "create-shape",
+    };
+    const proposedState = {
+      ...adapterInput.proposedState,
+      evaluatedScene: {
+        ...createdScene,
+        objectGraph: {
+          ...createdScene.objectGraph,
+          entities: { ...createdScene.objectGraph.entities, [RECTANGLE_ID]: createdRectangle },
+        },
+        propertyChannels: {
+          ...createdScene.propertyChannels,
+          [`${RECTANGLE_ID}/appearance`]: {
+            entityId: RECTANGLE_ID,
+            key: "appearance" as const,
+            samples: [
+              {
+                easing: "smooth" as const,
+                from: 0,
+                interval: { end: 0.9, start: 0.5 },
+                kind: "animated" as const,
+                provenanceId: "studio:create-fade",
+                value: 1,
+              },
+              {
+                interval: { end: 2, start: 0.9 },
+                kind: "exact" as const,
+                provenanceId: "studio:create-fade",
+                value: 1,
+              },
+            ],
+          },
+        },
+      },
+    };
+    const evidence = buildStudioSceneIrAdapterEvidenceV1({
+      proposedState,
+      snapshot: { assets: adapterInput.assets, scene: importedOnly.scene },
+      sourceRuntimeIdentity: new Map([
+        ["circle", { bindingId: "binding:circle", entityId: CIRCLE_ID, sourceName: "circle" }],
+      ]),
+    });
+    expect(evidence.kind).toBe("resolved");
+    if (evidence.kind !== "resolved") throw new Error("created shape evidence did not resolve");
+    const result = await compileStudioSceneIrV1({
+      ...adapterInput,
+      evidence: evidence.evidence,
+      proposedState,
+    });
+    expect(result.kind).toBe("compiled");
+    if (result.kind !== "compiled") throw new Error(result.issues.map(({ message }) => message).join("\n"));
+    expect(result.scene.entities.find(({ id }) => id === RECTANGLE_ID)?.appearance).toEqual(
+      expect.objectContaining({
+        fill: null,
+        opacity: 1,
+        stroke: expect.objectContaining({ cap: "butt", miterLimit: 10, widthWorld: 0.04 }),
+      }),
+    );
+    expect(result.scene.animationChannels).toEqual([
+      expect.objectContaining({
+        entityId: RECTANGLE_ID,
+        keyframes: [
+          { at: 0.5, easingToNext: { kind: "smooth" }, value: 0 },
+          { at: 0.9, easingToNext: null, value: 1 },
+        ],
+        kind: "opacity",
+      }),
+    ]);
+    expect(result.scene.requiredCapabilities).toEqual(["opacity-animation", "shape-primitives"]);
   });
 
   it("rejects unknown, animated, and discontinuous properties instead of inventing preview defaults", async () => {
