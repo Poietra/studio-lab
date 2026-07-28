@@ -477,6 +477,40 @@ export function App() {
       workspace?.projectId,
     ],
   );
+  // The retained duration adopted by the revision policy is the only value
+  // allowed to reshape Studio's imported base. The provider candidate is
+  // committed in a layout effect, so adapter compilation may lag metadata by
+  // one render but can never compile against unadopted runtime timing.
+  const projectedActiveScene = useMemo(
+    () => (activeScene ? projectVerifiedSourceDuration(activeScene, editorRevision.retainedSourceDuration) : null),
+    [activeScene, editorRevision.retainedSourceDuration],
+  );
+  const previewReplacement =
+    editingAppliedProgram && draftProgram
+      ? replaceAppliedProgram(
+          appliedPrograms,
+          editingAppliedProgram.original.program.transactionId,
+          editorProgramRecord(draftProgram, draftOperation, selectedObjectIds),
+        )
+      : null;
+  const previewAppliedPrograms =
+    previewReplacement?.kind === "replaced" ? previewReplacement.programs : appliedPrograms;
+  const draftPrecedingPrograms = editingAppliedProgram
+    ? appliedPrograms.slice(0, editingAppliedProgram.index)
+    : appliedPrograms;
+  const draftPrecedingCanonicalPrograms = draftPrecedingPrograms.map((record) => record.program);
+  const workspaceProjection = projectedActiveScene
+    ? projectStudioWorkspace({
+        activeScene: projectedActiveScene,
+        appliedPrograms: previewAppliedPrograms,
+        currentTime,
+        draftProgram: editingAppliedProgram ? null : draftProgram,
+        nextScene,
+        selectedObjectIds,
+      })
+    : null;
+  const committedPreviewState =
+    draftProgram === null && editingAppliedProgram === null ? (workspaceProjection?.proposedState ?? null) : null;
   const {
     activate: activatePreviewAuthority,
     activationAllowed: previewActivationAllowed,
@@ -485,6 +519,7 @@ export function App() {
     providerPending: previewProviderPending,
     renderer: previewRenderer,
   } = useStudioPreviewAuthorityController({
+    committedProposedState: committedPreviewState,
     context: editorRevision.previewContext,
     frame: workspace?.frame ?? { height: 8, width: 14.222 },
     retainedSourceDuration: editorRevision.retainedSourceDuration,
@@ -501,7 +536,6 @@ export function App() {
     mismatch: sourceDurationBasisMismatch,
     readDurationBlocker,
     renderPipelineLifecycleBlocker,
-    resolvedVerifiedSourceDuration,
   } = useEditorRevisionController({
     candidate: previewRenderer?.verifiedSourceDuration ?? null,
     lifecycle: sourceLifecycle,
@@ -536,11 +570,6 @@ export function App() {
       sourceTimingResolutionDialog.current?.close();
     }
   }, [sourceDurationBasisMismatch, sourceDurationSessionKey]);
-  const projectedActiveScene = useMemo(
-    () => (activeScene ? projectVerifiedSourceDuration(activeScene, resolvedVerifiedSourceDuration) : null),
-    [activeScene, resolvedVerifiedSourceDuration],
-  );
-
   function stageDraft(input: Parameters<typeof stageEditorDraft>[0]) {
     const lifecycleBlocker = readDurationBlocker();
     if (lifecycleBlocker) {
@@ -584,30 +613,6 @@ export function App() {
     resetPrograms();
   }
 
-  const previewReplacement =
-    editingAppliedProgram && draftProgram
-      ? replaceAppliedProgram(
-          appliedPrograms,
-          editingAppliedProgram.original.program.transactionId,
-          editorProgramRecord(draftProgram, draftOperation, selectedObjectIds),
-        )
-      : null;
-  const previewAppliedPrograms =
-    previewReplacement?.kind === "replaced" ? previewReplacement.programs : appliedPrograms;
-  const draftPrecedingPrograms = editingAppliedProgram
-    ? appliedPrograms.slice(0, editingAppliedProgram.index)
-    : appliedPrograms;
-  const draftPrecedingCanonicalPrograms = draftPrecedingPrograms.map((record) => record.program);
-  const workspaceProjection = projectedActiveScene
-    ? projectStudioWorkspace({
-        activeScene: projectedActiveScene,
-        appliedPrograms: previewAppliedPrograms,
-        currentTime,
-        draftProgram: editingAppliedProgram ? null : draftProgram,
-        nextScene,
-        selectedObjectIds,
-      })
-    : null;
   const draftBaseProjection =
     projectedActiveScene && draftProgram
       ? projectStudioWorkspace({
