@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
 use crate::bounded_writer::BoundedWriter;
+#[cfg(target_arch = "wasm32")]
 use crate::scene_delta::{SceneDeltaErrorV1, apply_scene_delta_json};
 
 /// Playhead requests should remain small compared with the retained snapshot.
@@ -418,6 +419,7 @@ impl EngineWorkerSessionV1 {
     /// # Errors
     ///
     /// Returns an error and preserves the retained Scene and index on failure.
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn apply_scene_delta_json(
         &mut self,
         delta_json: &[u8],

@@ -12,6 +12,7 @@ assert.equal(engine.poietraEngineAbiVersion(), 1);
 assert.equal(engine.poietraCanvasAbiVersion(), 3);
 assert.equal(typeof engine.PoietraCanvasEngineV1, "function");
 assert.equal(typeof engine.PoietraCanvasEngineV1.create, "function");
+assert.equal(typeof engine.PoietraCanvasEngineV1.prototype.applySceneDelta, "function");
 assert.equal(typeof engine.PoietraCanvasEngineV1.prototype.replaceSnapshot, "function");
 assert.equal(typeof engine.PoietraCanvasEngineV1.prototype.render, "function");
 
