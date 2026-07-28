@@ -23,6 +23,11 @@ export {
   DurableManimRuntimeV1,
 } from "./durable-manim-runtime";
 export {
+  createFastManimRuncProductionCompositionV1,
+  type FastManimRuncProductionCompositionOptionsV1,
+  type FastManimRuncProductionRootfsOptionsV1,
+} from "./fast-manim-runc-production-composition";
+export {
   applyBundledWorkspaceSourceMigrationV1,
   WORKSPACE_SOURCE_MIGRATION_V1_SOURCE,
 } from "./storage/postgres/migrate";
