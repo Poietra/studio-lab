@@ -1,4 +1,8 @@
+import { manimTenantIdSchema } from "../manim-request-principal";
+
 export const MAX_SNAPSHOT_ARTIFACT_BYTES_V1 = 16 * 1024 * 1024;
+
+const SNAPSHOT_SHA256_PATTERN_V1 = /^[0-9a-f]{64}$/;
 
 export class SnapshotArtifactReadErrorV1 extends Error {
   readonly code: "corrupt" | "missing";
@@ -20,6 +24,58 @@ export type SnapshotArtifactReceiptV1 = Readonly<{
   sourceDigest: string;
   versionId: string;
 }>;
+
+type SnapshotArtifactIdentityV1 = Pick<
+  SnapshotArtifactReceiptV1,
+  "profileDigest" | "resultDigest" | "runtimeConfigHash" | "sourceDigest"
+>;
+
+const SNAPSHOT_ARTIFACT_RECEIPT_FIELDS_V1 =
+  "byteSize etag objectKey profileDigest resultDigest runtimeConfigHash sourceDigest versionId".split(
+    " ",
+  ) as readonly (keyof SnapshotArtifactReceiptV1)[];
+
+function snapshotDigestV1(value: unknown, name: string) {
+  if (typeof value !== "string" || !SNAPSHOT_SHA256_PATTERN_V1.test(value)) throw new TypeError(`${name} is invalid.`);
+  return value;
+}
+
+export function snapshotArtifactObjectKeyV1(tenantValue: string, identity: SnapshotArtifactIdentityV1) {
+  const tenant = manimTenantIdSchema.safeParse(tenantValue);
+  if (!tenant.success) throw new TypeError("Tenant ID is invalid.");
+  const source = snapshotDigestV1(identity?.sourceDigest, "Snapshot source digest");
+  const runtime = snapshotDigestV1(identity?.runtimeConfigHash, "Snapshot runtime-config hash");
+  const profile = snapshotDigestV1(identity?.profileDigest, "Snapshot profile digest");
+  const result = snapshotDigestV1(identity?.resultDigest, "Snapshot result digest");
+  return `tenants/${tenant.data}/snapshots/${source}/${runtime}/${profile}/${result}`;
+}
+
+export function parseSnapshotArtifactReceiptV1(tenantId: string, value: unknown): SnapshotArtifactReceiptV1 {
+  if (!value || typeof value !== "object") throw new TypeError("Snapshot artifact receipt is invalid.");
+  const candidate = value as Record<string, unknown>;
+  const receipt = Object.fromEntries(
+    SNAPSHOT_ARTIFACT_RECEIPT_FIELDS_V1.map((field) => [field, candidate[field]]),
+  ) as SnapshotArtifactReceiptV1;
+  if (
+    receipt.objectKey !== snapshotArtifactObjectKeyV1(tenantId, receipt) ||
+    !Number.isSafeInteger(receipt.byteSize) ||
+    receipt.byteSize < 1 ||
+    receipt.byteSize > MAX_SNAPSHOT_ARTIFACT_BYTES_V1 ||
+    typeof receipt.versionId !== "string" ||
+    receipt.versionId.length < 1 ||
+    receipt.versionId.length > 1_024 ||
+    typeof receipt.etag !== "string" ||
+    receipt.etag.length < 1 ||
+    receipt.etag.length > 512
+  ) {
+    throw new TypeError("Snapshot artifact receipt is invalid.");
+  }
+  return receipt;
+}
+
+export function sameSnapshotArtifactReceiptV1(left: SnapshotArtifactReceiptV1, right: SnapshotArtifactReceiptV1) {
+  return SNAPSHOT_ARTIFACT_RECEIPT_FIELDS_V1.every((field) => left[field] === right[field]);
+}
 
 export type SnapshotPublicationIdentityV1 = Readonly<{
   projectId: string;

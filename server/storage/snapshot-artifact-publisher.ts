@@ -11,6 +11,8 @@ import {
 import { parseVerifiedSourceRuntimeIdentityMapV1 } from "../fast-manim-source-runtime-identity";
 import {
   MAX_SNAPSHOT_ARTIFACT_BYTES_V1,
+  parseSnapshotArtifactReceiptV1,
+  sameSnapshotArtifactReceiptV1,
   SnapshotArtifactReadErrorV1,
   type SnapshotArtifactReceiptV1,
   type SnapshotArtifactStoreV1,
@@ -86,19 +88,6 @@ function exactBytes(left: Uint8Array, right: Uint8Array) {
   return left.byteLength === right.byteLength && Buffer.from(left).equals(Buffer.from(right));
 }
 
-function sameArtifact(left: SnapshotArtifactReceiptV1, right: SnapshotArtifactReceiptV1) {
-  return (
-    left.byteSize === right.byteSize &&
-    left.etag === right.etag &&
-    left.objectKey === right.objectKey &&
-    left.profileDigest === right.profileDigest &&
-    left.resultDigest === right.resultDigest &&
-    left.runtimeConfigHash === right.runtimeConfigHash &&
-    left.sourceDigest === right.sourceDigest &&
-    left.versionId === right.versionId
-  );
-}
-
 function sameIdentity(left: SnapshotPublicationIdentityV1, right: SnapshotPublicationIdentityV1) {
   return (
     left.tenantId === right.tenantId &&
@@ -121,27 +110,6 @@ function assertExpectedIdentity(
   }
 }
 
-function assertReceipt(
-  receipt: SnapshotArtifactReceiptV1,
-  input: Readonly<{
-    byteSize: number;
-    profileDigest: string;
-    resultDigest: string;
-    runtimeConfigHash: string;
-    sourceDigest: string;
-  }>,
-) {
-  if (
-    receipt.byteSize !== input.byteSize ||
-    receipt.profileDigest !== input.profileDigest ||
-    receipt.resultDigest !== input.resultDigest ||
-    receipt.runtimeConfigHash !== input.runtimeConfigHash ||
-    receipt.sourceDigest !== input.sourceDigest
-  ) {
-    throw new Error("The snapshot artifact store returned a receipt for different bytes or correlation.");
-  }
-}
-
 function assertPublication(
   publication: SnapshotPublicationV1,
   input: Readonly<{
@@ -154,7 +122,7 @@ function assertPublication(
 ) {
   if (
     !sameIdentity(publication, input.identity) ||
-    !sameArtifact(publication.artifact, input.artifact) ||
+    !sameSnapshotArtifactReceiptV1(publication.artifact, input.artifact) ||
     publication.sourceGeneration !== input.expectedSourceGeneration ||
     publication.requestId !== input.requestId ||
     publication.snapshotHash !== input.snapshotHash
@@ -295,23 +263,28 @@ export class SnapshotArtifactPublisherV1 {
     assertExpectedIdentity(document.expected, identity);
     const bytes = canonicalBytes(document);
     signal?.throwIfAborted();
-    const artifact = await this.#artifacts.put(
+    const artifact = parseSnapshotArtifactReceiptV1(
       identity.tenantId,
-      {
-        bytes,
-        profileDigest: document.profileDigest,
-        runtimeConfigHash: document.expected.runtimeConfigHash,
-        sourceDigest: document.expected.sourceHash,
-      },
-      signal,
+      await this.#artifacts.put(
+        identity.tenantId,
+        {
+          bytes,
+          profileDigest: document.profileDigest,
+          runtimeConfigHash: document.expected.runtimeConfigHash,
+          sourceDigest: document.expected.sourceHash,
+        },
+        signal,
+      ),
     );
-    assertReceipt(artifact, {
-      byteSize: bytes.byteLength,
-      profileDigest: document.profileDigest,
-      resultDigest: digest(bytes),
-      runtimeConfigHash: document.expected.runtimeConfigHash,
-      sourceDigest: document.expected.sourceHash,
-    });
+    if (
+      artifact.byteSize !== bytes.byteLength ||
+      artifact.profileDigest !== document.profileDigest ||
+      artifact.resultDigest !== digest(bytes) ||
+      artifact.runtimeConfigHash !== document.expected.runtimeConfigHash ||
+      artifact.sourceDigest !== document.expected.sourceHash
+    ) {
+      throw new Error("The snapshot artifact store returned a receipt for different bytes or correlation.");
+    }
     signal?.throwIfAborted();
     const result = await this.#publications.publish(
       {

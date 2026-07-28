@@ -5,7 +5,8 @@ import type { Pool, PoolClient, PoolConfig, QueryResultRow } from "pg";
 import { manimProjectIdSchema, manimSourcePathSchema } from "../../../src/render-pipeline/contracts";
 import { manimTenantIdSchema } from "../../manim-request-principal";
 import {
-  MAX_SNAPSHOT_ARTIFACT_BYTES_V1,
+  parseSnapshotArtifactReceiptV1 as artifactReceipt,
+  sameSnapshotArtifactReceiptV1 as exactArtifact,
   type SnapshotArtifactDeletionV1,
   type SnapshotArtifactReceiptV1,
   type SnapshotPublicationIdentityV1,
@@ -189,39 +190,6 @@ function publicationIdentity(value: SnapshotPublicationIdentityV1): SnapshotPubl
   };
 }
 
-function artifactReceipt(tenant: string, value: SnapshotArtifactReceiptV1): SnapshotArtifactReceiptV1 {
-  if (!value || typeof value !== "object") throw new TypeError("Snapshot artifact receipt is invalid.");
-  const sourceDigest = sha256(value.sourceDigest, "Snapshot source digest");
-  const runtimeConfigHash = sha256(value.runtimeConfigHash, "Snapshot runtime-config hash");
-  const profileDigest = sha256(value.profileDigest, "Snapshot profile digest");
-  const resultDigest = sha256(value.resultDigest, "Snapshot result digest");
-  const objectKey = `tenants/${tenant}/snapshots/${sourceDigest}/${runtimeConfigHash}/${profileDigest}/${resultDigest}`;
-  if (
-    value.objectKey !== objectKey ||
-    !Number.isSafeInteger(value.byteSize) ||
-    value.byteSize < 1 ||
-    value.byteSize > MAX_SNAPSHOT_ARTIFACT_BYTES_V1 ||
-    typeof value.versionId !== "string" ||
-    value.versionId.length < 1 ||
-    value.versionId.length > 1_024 ||
-    typeof value.etag !== "string" ||
-    value.etag.length < 1 ||
-    value.etag.length > 512
-  ) {
-    throw new TypeError("Snapshot artifact receipt is invalid.");
-  }
-  return {
-    byteSize: value.byteSize,
-    etag: value.etag,
-    objectKey,
-    profileDigest,
-    resultDigest,
-    runtimeConfigHash,
-    sourceDigest,
-    versionId: value.versionId,
-  };
-}
-
 function artifactFromRow(row: ArtifactRow): SnapshotArtifactReceiptV1 {
   const tenant = tenantId(row.artifact_tenant_id);
   return artifactReceipt(tenant, {
@@ -234,19 +202,6 @@ function artifactFromRow(row: ArtifactRow): SnapshotArtifactReceiptV1 {
     sourceDigest: row.artifact_source_digest,
     versionId: row.artifact_version_id,
   });
-}
-
-function exactArtifact(left: SnapshotArtifactReceiptV1, right: SnapshotArtifactReceiptV1) {
-  return (
-    left.byteSize === right.byteSize &&
-    left.etag === right.etag &&
-    left.objectKey === right.objectKey &&
-    left.profileDigest === right.profileDigest &&
-    left.resultDigest === right.resultDigest &&
-    left.runtimeConfigHash === right.runtimeConfigHash &&
-    left.sourceDigest === right.sourceDigest &&
-    left.versionId === right.versionId
-  );
 }
 
 function deletionFromRow(row: DeletionRow, expectedTenant?: string): SnapshotArtifactDeletionV1 {

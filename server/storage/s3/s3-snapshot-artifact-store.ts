@@ -18,7 +18,9 @@ import {
 import { manimTenantIdSchema } from "../../manim-request-principal";
 import {
   MAX_SNAPSHOT_ARTIFACT_BYTES_V1,
+  parseSnapshotArtifactReceiptV1,
   SnapshotArtifactReadErrorV1,
+  snapshotArtifactObjectKeyV1,
   type SnapshotArtifactReceiptV1,
   type SnapshotArtifactStoreV1,
   type SnapshotArtifactVersionV1,
@@ -45,23 +47,8 @@ function tenantId(value: string) {
   return parsed.data;
 }
 
-function digest(value: string, name: string) {
-  if (typeof value !== "string" || !SHA256.test(value)) throw new TypeError(`${name} is invalid.`);
-  return value;
-}
-
 function resultDigest(bytes: Uint8Array) {
   return createHash("sha256").update(bytes).digest("hex");
-}
-
-function artifactKey(
-  tenant: string,
-  sourceDigest: string,
-  runtimeConfigHash: string,
-  profileDigest: string,
-  artifactDigest: string,
-) {
-  return `tenants/${tenant}/snapshots/${sourceDigest}/${runtimeConfigHash}/${profileDigest}/${artifactDigest}`;
 }
 
 function snapshotPrefix(tenant: string) {
@@ -81,38 +68,6 @@ function parseArtifactKey(key: string, prefix: string) {
     resultDigest: parts[3]!,
     runtimeConfigHash: parts[1]!,
     sourceDigest: parts[0]!,
-  };
-}
-
-function validateReceipt(tenant: string, value: SnapshotArtifactReceiptV1) {
-  if (!value || typeof value !== "object") throw new TypeError("Snapshot artifact receipt is invalid.");
-  const source = digest(value.sourceDigest, "Snapshot source digest");
-  const runtime = digest(value.runtimeConfigHash, "Snapshot runtime-config hash");
-  const profile = digest(value.profileDigest, "Snapshot profile digest");
-  const result = digest(value.resultDigest, "Snapshot result digest");
-  if (
-    value.objectKey !== artifactKey(tenant, source, runtime, profile, result) ||
-    !Number.isSafeInteger(value.byteSize) ||
-    value.byteSize < 1 ||
-    value.byteSize > MAX_SNAPSHOT_ARTIFACT_BYTES_V1 ||
-    typeof value.versionId !== "string" ||
-    value.versionId.length < 1 ||
-    value.versionId.length > 1_024 ||
-    typeof value.etag !== "string" ||
-    value.etag.length < 1 ||
-    value.etag.length > 512
-  ) {
-    throw new TypeError("Snapshot artifact receipt is invalid.");
-  }
-  return {
-    byteSize: value.byteSize,
-    etag: value.etag,
-    objectKey: value.objectKey,
-    profileDigest: profile,
-    resultDigest: result,
-    runtimeConfigHash: runtime,
-    sourceDigest: source,
-    versionId: value.versionId,
   };
 }
 
@@ -374,7 +329,7 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
   }
 
   async #readBytes(tenant: string, receiptValue: SnapshotArtifactReceiptV1, signal?: AbortSignal) {
-    const receipt = validateReceipt(tenant, receiptValue);
+    const receipt = parseSnapshotArtifactReceiptV1(tenant, receiptValue);
     throwIfAborted(signal);
     let response;
     try {
@@ -417,13 +372,7 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
     }>,
     signal?: AbortSignal,
   ) {
-    const objectKey = artifactKey(
-      tenant,
-      identity.sourceDigest,
-      identity.runtimeConfigHash,
-      identity.profileDigest,
-      identity.resultDigest,
-    );
+    const objectKey = snapshotArtifactObjectKeyV1(tenant, identity);
     let response;
     try {
       response = await this.#client.send(new GetObjectCommand({ Bucket: this.#bucket, Key: objectKey }), {
@@ -435,7 +384,7 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
     }
     let receipt: SnapshotArtifactReceiptV1;
     try {
-      receipt = validateReceipt(tenant, {
+      receipt = parseSnapshotArtifactReceiptV1(tenant, {
         ...identity,
         etag: normalizeEtag(response.ETag),
         objectKey,
@@ -475,18 +424,14 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
       throw new RangeError("Snapshot artifacts must contain between 1 byte and 16 MiB.");
     }
     const bytes = Uint8Array.from(input.bytes);
-    const source = digest(input.sourceDigest, "Snapshot source digest");
-    const runtime = digest(input.runtimeConfigHash, "Snapshot runtime-config hash");
-    const profile = digest(input.profileDigest, "Snapshot profile digest");
-    const result = resultDigest(bytes);
-    const objectKey = artifactKey(tenant, source, runtime, profile, result);
     const identity = {
       byteSize: bytes.byteLength,
-      profileDigest: profile,
-      resultDigest: result,
-      runtimeConfigHash: runtime,
-      sourceDigest: source,
+      profileDigest: input.profileDigest,
+      resultDigest: resultDigest(bytes),
+      runtimeConfigHash: input.runtimeConfigHash,
+      sourceDigest: input.sourceDigest,
     };
+    const objectKey = snapshotArtifactObjectKeyV1(tenant, identity);
     throwIfAborted(signal);
     let response;
     try {
@@ -494,7 +439,7 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
         new PutObjectCommand({
           Body: bytes,
           Bucket: this.#bucket,
-          ChecksumSHA256: Buffer.from(result, "hex").toString("base64"),
+          ChecksumSHA256: Buffer.from(identity.resultDigest, "hex").toString("base64"),
           ContentLength: bytes.byteLength,
           ContentType: "application/octet-stream",
           IfNoneMatch: "*",
@@ -506,7 +451,7 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
       if (isPreconditionFailed(error)) return this.#readCurrentReceipt(tenant, identity, signal);
       throw error;
     }
-    const receipt = validateReceipt(tenant, {
+    const receipt = parseSnapshotArtifactReceiptV1(tenant, {
       ...identity,
       etag: normalizeEtag(response.ETag),
       objectKey,
@@ -578,7 +523,7 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
         ) {
           throw new Error("S3 returned invalid snapshot-version metadata.");
         }
-        const artifact = validateReceipt(tenant, {
+        const artifact = parseSnapshotArtifactReceiptV1(tenant, {
           ...identity,
           byteSize: version.Size!,
           etag: normalizeEtag(version.ETag),
@@ -605,7 +550,7 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
 
   async deleteVersion(tenantValue: string, artifactValue: SnapshotArtifactReceiptV1, signal?: AbortSignal) {
     signal = operationSignal(signal);
-    const artifact = validateReceipt(tenantId(tenantValue), artifactValue);
+    const artifact = parseSnapshotArtifactReceiptV1(tenantId(tenantValue), artifactValue);
     throwIfAborted(signal);
     await this.#client.send(
       new DeleteObjectCommand({ Bucket: this.#bucket, Key: artifact.objectKey, VersionId: artifact.versionId }),
