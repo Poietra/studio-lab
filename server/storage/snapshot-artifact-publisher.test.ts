@@ -219,6 +219,7 @@ class MemoryPublicationRepository implements SnapshotPublicationRepositoryV1 {
   async ready() {
     return true;
   }
+  async softDeleteProject() {}
 }
 
 describe("SnapshotArtifactPublisherV1", () => {
@@ -264,6 +265,16 @@ describe("SnapshotArtifactPublisherV1", () => {
     expect(publicationReady).toHaveBeenCalledOnce();
     expect(artifactClose).toHaveBeenCalledOnce();
     expect(publicationClose).toHaveBeenCalledOnce();
+  });
+
+  it("delegates atomic project deletion without touching the artifact store", async () => {
+    const deletion = vi.spyOn(publications, "softDeleteProject");
+    const artifactDelete = vi.spyOn(artifacts, "deleteVersion");
+
+    await expect(publisher.softDeleteProject(TENANT, identity.projectId)).resolves.toBeUndefined();
+
+    expect(deletion).toHaveBeenCalledWith(TENANT, identity.projectId, undefined);
+    expect(artifactDelete).not.toHaveBeenCalled();
   });
 
   it("uploads canonical bytes before publishing metadata", async () => {

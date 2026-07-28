@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient, PoolConfig, QueryResultRow } from "pg";
 
 import { manimProjectIdSchema, manimSourcePathSchema } from "../../../src/render-pipeline/contracts";
+import { HttpError } from "../../http/json";
 import { manimTenantIdSchema } from "../../manim-request-principal";
 import {
   parseSnapshotArtifactReceiptV1 as artifactReceipt,
@@ -761,6 +762,55 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
       const head = await this.#sceneHead(client, identity);
       if (!head?.publication || head.generation !== expectedGeneration) return false;
       return this.#tombstone(client, identity, expectedGeneration, head.publication.publicationId);
+    }, signal);
+  }
+
+  async softDeleteProject(tenantValue: string, projectValue: string, signal?: AbortSignal) {
+    const tenant = tenantId(tenantValue);
+    const project = projectId(projectValue);
+    await this.#connection.transaction(async (client) => {
+      const locked = await client.query<{ project_id: string }>(
+        `SELECT project_id
+           FROM public.workspace_projects
+          WHERE tenant_id = $1 AND project_id = $2 AND deleted_at IS NULL
+          FOR UPDATE`,
+        [tenant, project],
+      );
+      if (locked.rows.length > 1) throw new TypeError("PostgreSQL returned duplicate workspace projects.");
+      if (locked.rows.length === 0) throw new HttpError("Configured Manim project not found.", 404);
+      if (locked.rows[0]?.project_id !== project) {
+        throw new TypeError("PostgreSQL returned a workspace project with another identity.");
+      }
+      const retained = await client.query(
+        `SELECT 1
+           FROM public.workspace_project_references
+          WHERE tenant_id = $1 AND project_id = $2
+            AND reference_kind <> 'snapshot-publication'
+          LIMIT 1`,
+        [tenant, project],
+      );
+      if (retained.rows.length !== 0) {
+        throw new HttpError("Wait for active workspace work before removing it from Studio.", 409);
+      }
+      await client.query(
+        `UPDATE public.snapshot_scene_heads
+            SET publication_id = NULL, updated_at = clock_timestamp()
+          WHERE tenant_id = $1 AND project_id = $2 AND publication_id IS NOT NULL`,
+        [tenant, project],
+      );
+      await client.query(
+        `DELETE FROM public.workspace_project_references
+          WHERE tenant_id = $1 AND project_id = $2
+            AND reference_kind = 'snapshot-publication'`,
+        [tenant, project],
+      );
+      const deleted = await client.query(
+        `UPDATE public.workspace_projects
+            SET deleted_at = clock_timestamp(), updated_at = clock_timestamp()
+          WHERE tenant_id = $1 AND project_id = $2 AND deleted_at IS NULL`,
+        [tenant, project],
+      );
+      if (deleted.rowCount !== 1) throw new Error("The locked workspace project changed unexpectedly.");
     }, signal);
   }
 

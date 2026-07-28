@@ -183,8 +183,11 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
   }
 
   async unregisterProject(projectId: string, signal?: AbortSignal) {
-    await this.#repository.softDeleteProject(this.tenantId, projectId, signal);
-    await this.#snapshots?.releaseProject(projectId);
+    if (this.#snapshots) {
+      await this.#snapshots.releaseProject(projectId, signal);
+    } else {
+      await this.#repository.softDeleteProject(this.tenantId, projectId, signal);
+    }
     return this.#mutationView(null, signal);
   }
 

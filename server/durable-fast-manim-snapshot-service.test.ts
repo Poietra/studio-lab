@@ -157,11 +157,13 @@ function harness(runView: FastManimUnpublishedSnapshotRunViewV1 = verifiedView) 
     publication: publication(),
   }));
   const readCurrent = vi.fn<SnapshotArtifactPublisherV1["readCurrent"]>(async () => ({ kind: "missing" as const }));
+  const softDeleteProject = vi.fn<SnapshotArtifactPublisherV1["softDeleteProject"]>(async () => undefined);
   const publisher = {
     close: vi.fn(async () => undefined),
     publish,
     readCurrent,
     ready: vi.fn(async () => true),
+    softDeleteProject,
   } as unknown as SnapshotArtifactPublisherV1;
   const service = new DurableFastManimSnapshotServiceV1({
     blobs,
@@ -182,6 +184,7 @@ function harness(runView: FastManimUnpublishedSnapshotRunViewV1 = verifiedView) 
     runnerClose,
     runnerRun,
     service,
+    softDeleteProject,
     sourceRepository,
   };
 }
@@ -321,7 +324,7 @@ describe("DurableFastManimSnapshotServiceV1", () => {
     ).rejects.toMatchObject({ message: expect.stringMatching(/retry/i), status: 503 });
   });
 
-  it("fences a release while source validation is pending before runner creation", async () => {
+  it("deletes durable state before releasing a source-validation-only project entry", async () => {
     const fixture = harness();
     const validation = deferred<WorkspaceSourceHeadV1>();
     fixture.readSourceHead.mockReturnValueOnce(validation.promise);
@@ -333,12 +336,20 @@ describe("DurableFastManimSnapshotServiceV1", () => {
     validation.resolve(sourceHead());
 
     await expect(run).rejects.toMatchObject({ status: 503 });
+    expect(fixture.softDeleteProject).toHaveBeenCalledWith(TENANT, PROJECT, undefined);
     expect(fixture.factory.create).not.toHaveBeenCalled();
     expect(fixture.runnerRun).not.toHaveBeenCalled();
   });
 
-  it("fences a release while a project runner is active before publication", async () => {
+  it("releases an active runner only after durable project deletion commits", async () => {
     const fixture = harness();
+    const order: string[] = [];
+    fixture.softDeleteProject.mockImplementationOnce(async () => {
+      order.push("durable-delete");
+    });
+    fixture.runnerClose.mockImplementationOnce(async () => {
+      order.push("runner-close");
+    });
     const running = deferred<FastManimUnpublishedSnapshotRunViewV1>();
     fixture.runnerRun.mockReturnValueOnce(running.promise);
     const run = fixture.service.run(request);
@@ -350,6 +361,39 @@ describe("DurableFastManimSnapshotServiceV1", () => {
     await expect(run).rejects.toMatchObject({ status: 503 });
     expect(fixture.runnerClose).toHaveBeenCalledTimes(1);
     expect(fixture.publish).not.toHaveBeenCalled();
+    expect(order).toEqual(["durable-delete", "runner-close"]);
+  });
+
+  it("preserves its runner when durable deletion fails", async () => {
+    const fixture = harness();
+    await fixture.service.run(request);
+    const deletion = deferred<void>();
+    fixture.softDeleteProject.mockReturnValueOnce(deletion.promise);
+    const failure = new HttpError("retained render session", 409);
+    const release = fixture.service.releaseProject(PROJECT);
+    const rejected = expect(release).rejects.toBe(failure);
+
+    deletion.reject(failure);
+    await rejected;
+
+    await expect(fixture.service.run(request)).resolves.toMatchObject({ status: "verified" });
+    expect(fixture.factory.create).toHaveBeenCalledTimes(1);
+    expect(fixture.runnerClose).not.toHaveBeenCalled();
+  });
+
+  it("returns an in-flight publication that committed while project deletion completed", async () => {
+    const fixture = harness();
+    const commit = deferred<Readonly<{ kind: "published"; publication: SnapshotPublicationV1 }>>();
+    fixture.publish.mockReturnValueOnce(commit.promise);
+    const run = fixture.service.run(request);
+    await vi.waitFor(() => expect(fixture.publish).toHaveBeenCalledTimes(1));
+
+    const release = fixture.service.releaseProject(PROJECT);
+    await vi.waitFor(() => expect(fixture.runnerClose).toHaveBeenCalledTimes(1));
+    await expect(release).resolves.toBeUndefined();
+    commit.resolve({ kind: "published", publication: publication(14n) });
+
+    await expect(run).resolves.toMatchObject({ revision: 14, status: "verified" });
   });
 
   it("returns a committed publication when service close races with the publish response", async () => {
@@ -387,10 +431,23 @@ describe("DurableFastManimSnapshotServiceV1", () => {
     const release = fixture.service.releaseProject(PROJECT);
     creation.resolve({ profileDigest: PROFILE_DIGEST, runner: fixture.runner });
 
-    await release;
     await expect(run).rejects.toBeInstanceOf(HttpError);
+    await expect(release).resolves.toBeUndefined();
     expect(fixture.runnerClose).toHaveBeenCalledTimes(1);
     expect(fixture.runnerRun).not.toHaveBeenCalled();
+  });
+
+  it("does not overturn a committed deletion when runner cleanup fails", async () => {
+    const fixture = harness();
+    await fixture.service.run(request);
+    fixture.runnerClose.mockRejectedValueOnce(new Error("released runner cleanup failed"));
+
+    await expect(fixture.service.releaseProject(PROJECT)).resolves.toBeUndefined();
+    await expect(fixture.service.close()).rejects.toThrow(AggregateError);
+
+    expect(fixture.softDeleteProject).toHaveBeenCalledTimes(1);
+    expect(fixture.factory.close).toHaveBeenCalledTimes(1);
+    expect(fixture.publisher.close).toHaveBeenCalledTimes(1);
   });
 
   it("owns factory and publisher lifecycle but leaves shared source storage open", async () => {

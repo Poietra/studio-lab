@@ -104,6 +104,7 @@ function revision(generation: bigint) {
  */
 export class DurableFastManimSnapshotServiceV1 {
   readonly #blobs: SourceContentBlobStoreV1;
+  readonly #cleanupFailures = new Set<unknown>();
   readonly #factory: DurableFastManimSnapshotRunnerFactoryV1;
   readonly #operations = new Set<Promise<unknown>>();
   readonly #projects = new Map<string, ProjectRunnerEntry>();
@@ -347,12 +348,19 @@ export class DurableFastManimSnapshotServiceV1 {
     };
   }
 
-  async releaseProject(projectIdValue: string) {
+  releaseProject(projectIdValue: string, signal?: AbortSignal) {
     const projectId = manimProjectIdSchema.parse(projectIdValue);
+    this.#assertOpen();
+    return this.#track(this.#releaseProject(projectId, signal));
+  }
+
+  async #releaseProject(projectId: string, signal?: AbortSignal) {
+    await this.#publisher.softDeleteProject(this.#tenantId, projectId, signal);
     const entry = this.#projects.get(projectId);
     if (!entry) return;
     this.#projects.delete(projectId);
-    await this.#dispose(entry);
+    const cleanup = await Promise.allSettled([this.#dispose(entry)]);
+    if (cleanup[0]?.status === "rejected") this.#cleanupFailures.add(cleanup[0].reason);
   }
 
   close() {
@@ -366,10 +374,13 @@ export class DurableFastManimSnapshotServiceV1 {
     this.#projects.clear();
     const runnerResults = await Promise.allSettled(entries.map((entry) => this.#dispose(entry)));
     await Promise.allSettled([...this.#operations]);
+    const cleanupFailures = [...this.#cleanupFailures];
+    this.#cleanupFailures.clear();
     const ownerResults = await Promise.allSettled([this.#factory.close(), this.#publisher.close()]);
-    const errors = [...runnerResults, ...ownerResults].flatMap((result) =>
-      result.status === "rejected" ? [result.reason] : [],
-    );
+    const errors = [
+      ...cleanupFailures,
+      ...[...runnerResults, ...ownerResults].flatMap((result) => (result.status === "rejected" ? [result.reason] : [])),
+    ];
     if (errors.length > 0)
       throw new AggregateError(errors, "Could not fully close the durable Scene snapshot service.");
   }

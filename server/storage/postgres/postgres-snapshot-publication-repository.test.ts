@@ -153,6 +153,69 @@ function publishInput(sourceDigest = SOURCE_A, sourceGeneration = 4n) {
 }
 
 describe("PostgresSnapshotPublicationRepositoryV1", () => {
+  it("rolls back project deletion without mutations when non-snapshot work is retained", async () => {
+    const fixture = fakePool((text, values) => {
+      if (text.includes("FROM public.workspace_projects") && text.includes("FOR UPDATE")) {
+        expect(values).toEqual([TENANT, PROJECT]);
+        return { rowCount: 1, rows: [{ project_id: PROJECT }] };
+      }
+      if (text.startsWith("SELECT 1") && text.includes("FROM public.workspace_project_references")) {
+        expect(text).toContain("reference_kind <> 'snapshot-publication'");
+        expect(values).toEqual([TENANT, PROJECT]);
+        return { rowCount: 1, rows: [{ retained: true }] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresSnapshotPublicationRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.softDeleteProject(TENANT, PROJECT)).rejects.toMatchObject({ status: 409 });
+
+    const sql = fixture.query.mock.calls.map(([text]) => text).join("\n");
+    expect(sql).not.toContain("UPDATE public.snapshot_scene_heads");
+    expect(sql).not.toContain("DELETE FROM public.workspace_project_references");
+    expect(sql).not.toContain("UPDATE public.workspace_projects");
+    expect(fixture.query.mock.calls.at(-1)).toEqual(["ROLLBACK"]);
+  });
+
+  it("atomically tombstones snapshot heads, releases their references, and deletes the project", async () => {
+    const fixture = fakePool((text, values) => {
+      if (text.includes("FROM public.workspace_projects") && text.includes("FOR UPDATE")) {
+        return { rowCount: 1, rows: [{ project_id: PROJECT }] };
+      }
+      if (text.startsWith("SELECT 1") && text.includes("FROM public.workspace_project_references")) {
+        expect(text).toContain("reference_kind <> 'snapshot-publication'");
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.startsWith("UPDATE public.snapshot_scene_heads")) {
+        expect(values).toEqual([TENANT, PROJECT]);
+        return { rowCount: 2, rows: [] };
+      }
+      if (text.startsWith("DELETE FROM public.workspace_project_references")) {
+        expect(text).toContain("reference_kind = 'snapshot-publication'");
+        expect(values).toEqual([TENANT, PROJECT]);
+        return { rowCount: 2, rows: [] };
+      }
+      if (text.startsWith("UPDATE public.workspace_projects")) {
+        expect(values).toEqual([TENANT, PROJECT]);
+        return { rowCount: 1, rows: [] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresSnapshotPublicationRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.softDeleteProject(TENANT, PROJECT)).resolves.toBeUndefined();
+
+    const sql = fixture.query.mock.calls.map(([text]) => text);
+    const mutationOrder = [
+      "UPDATE public.snapshot_scene_heads",
+      "DELETE FROM public.workspace_project_references",
+      "UPDATE public.workspace_projects",
+    ].map((prefix) => sql.findIndex((text) => text.startsWith(prefix)));
+    expect(mutationOrder).toEqual([...mutationOrder].sort((left, right) => left - right));
+    expect(mutationOrder.every((index) => index >= 0)).toBe(true);
+    expect(fixture.query.mock.calls.at(-1)).toEqual(["COMMIT"]);
+  });
+
   it("rejects a stale locked source before registering an artifact or publication", async () => {
     const fixture = fakePool((text) => {
       if (text.includes("FROM public.workspace_source_heads h")) {

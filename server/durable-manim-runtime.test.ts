@@ -49,6 +49,7 @@ describe("DurableManimRuntimeV1 production readiness", () => {
     const runSceneSnapshot = vi.fn(async () => ({ kind: "run" }));
     const sceneSnapshot = vi.fn(async () => ({ kind: "read" }));
     const releaseProject = vi.fn(async () => undefined);
+    const softDeleteProject = vi.fn(async () => undefined);
     const snapshotsClose = vi.fn(async () => {
       closeOrder.push("snapshots");
     });
@@ -69,7 +70,7 @@ describe("DurableManimRuntimeV1 production readiness", () => {
       },
       listProjects: async () => ({ defaultProjectId: null, projects: [] }),
       ready: async () => true,
-      softDeleteProject: async () => undefined,
+      softDeleteProject,
     });
     const runtime = new DurableManimRuntimeV1({
       blobs: partial<SourceContentBlobStoreV1>({
@@ -101,9 +102,31 @@ describe("DurableManimRuntimeV1 production readiness", () => {
 
     expect(runSceneSnapshot).toHaveBeenCalledWith(request, undefined);
     expect(sceneSnapshot).toHaveBeenCalledWith("project-a", query);
-    expect(releaseProject).toHaveBeenCalledWith("project-a");
+    expect(releaseProject).toHaveBeenCalledWith("project-a", undefined);
+    expect(softDeleteProject).not.toHaveBeenCalled();
     expect(snapshotsClose).toHaveBeenCalledOnce();
     expect(closeOrder.indexOf("snapshots")).toBeLessThan(closeOrder.indexOf("repository"));
     expect(closeOrder.indexOf("snapshots")).toBeLessThan(closeOrder.indexOf("blobs"));
+  });
+
+  it("falls back to the workspace repository when durable snapshots are not configured", async () => {
+    const softDeleteProject = vi.fn(async () => undefined);
+    const runtime = new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({ close: async () => undefined, ready: async () => true }),
+      execution: { ready: async () => true },
+      namespace: "workspace-delete-fallback-test",
+      repository: partial<WorkspaceSourceRepositoryV1>({
+        close: async () => undefined,
+        listProjects: async () => ({ defaultProjectId: null, projects: [] }),
+        ready: async () => true,
+        softDeleteProject,
+      }),
+      tenantId: "tenant-a",
+    });
+
+    await expect(runtime.unregisterProject("project-a")).resolves.toMatchObject({ project: null });
+
+    expect(softDeleteProject).toHaveBeenCalledWith("tenant-a", "project-a", undefined);
+    await runtime.close();
   });
 });

@@ -12,13 +12,13 @@ import { parseVerifiedSourceRuntimeIdentityMapV1 } from "../fast-manim-source-ru
 import {
   MAX_SNAPSHOT_ARTIFACT_BYTES_V1,
   parseSnapshotArtifactReceiptV1,
-  sameSnapshotArtifactReceiptV1,
   SnapshotArtifactReadErrorV1,
   type SnapshotArtifactReceiptV1,
   type SnapshotArtifactStoreV1,
   type SnapshotPublicationIdentityV1,
   type SnapshotPublicationRepositoryV1,
   type SnapshotPublicationV1,
+  sameSnapshotArtifactReceiptV1,
 } from "./snapshot-publication-repository";
 
 export const SNAPSHOT_ARTIFACT_DOCUMENT_SCHEMA_V1 = "poietra.studio-snapshot-artifact" as const;
@@ -244,6 +244,11 @@ export class SnapshotArtifactPublisherV1 {
       if (errors.length > 0) throw new AggregateError(errors, "Could not fully close snapshot artifact storage.");
     })();
     return this.#closeRequest;
+  }
+
+  async softDeleteProject(tenantId: string, projectId: string, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    await this.#publications.softDeleteProject(tenantId, projectId, signal);
   }
 
   async publish(input: PublishSnapshotArtifactInputV1, signal?: AbortSignal) {

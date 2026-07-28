@@ -145,6 +145,7 @@ export interface SnapshotPublicationRepositoryV1 {
   ): Promise<Readonly<{ kind: "source-stale" }> | Readonly<{ kind: "published"; publication: SnapshotPublicationV1 }>>;
   readCurrent(identity: SnapshotPublicationIdentityV1, signal?: AbortSignal): Promise<SnapshotPublicationReadV1>;
   ready(signal?: AbortSignal): Promise<boolean>;
+  softDeleteProject(tenantId: string, projectId: string, signal?: AbortSignal): Promise<void>;
   queueArtifactDeletion(
     tenantId: string,
     artifact: SnapshotArtifactReceiptV1,

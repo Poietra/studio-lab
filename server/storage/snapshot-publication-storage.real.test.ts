@@ -505,6 +505,99 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
         await closeSnapshotStorage(conditionalReader);
       }
 
+      const retainedReference = `render-session-${suffix}`;
+      const deletionInspection = new Pool({ connectionString: environment.databaseUrl, max: 1 });
+      const deletionStorage = snapshotStorage();
+      try {
+        await deletionInspection.query(
+          `INSERT INTO public.workspace_project_references
+             (tenant_id, project_id, reference_kind, reference_id)
+           VALUES ($1, $2, 'render-session', $3)`,
+          [tenantA, projectId, retainedReference],
+        );
+        await expect(deletionStorage.publications.softDeleteProject(tenantA, projectId)).rejects.toMatchObject({
+          status: 409,
+        });
+        await expect(runtimeA.workspace(projectId)).resolves.toMatchObject({ projectId });
+        const rejectedState = await deletionInspection.query<{
+          current_heads: number;
+          deleted_at: Date | null;
+          render_references: number;
+          snapshot_references: number;
+        }>(
+          `SELECT project.deleted_at,
+                  (SELECT count(*)::integer FROM public.workspace_project_references reference
+                    WHERE reference.tenant_id = project.tenant_id
+                      AND reference.project_id = project.project_id
+                      AND reference.reference_kind = 'render-session') AS render_references,
+                  (SELECT count(*)::integer FROM public.workspace_project_references reference
+                    WHERE reference.tenant_id = project.tenant_id
+                      AND reference.project_id = project.project_id
+                      AND reference.reference_kind = 'snapshot-publication') AS snapshot_references,
+                  (SELECT count(*)::integer FROM public.snapshot_scene_heads head
+                    WHERE head.tenant_id = project.tenant_id
+                      AND head.project_id = project.project_id
+                      AND head.publication_id IS NOT NULL) AS current_heads
+             FROM public.workspace_projects project
+            WHERE project.tenant_id = $1 AND project.project_id = $2`,
+          [tenantA, projectId],
+        );
+        expect(rejectedState.rows[0]).toMatchObject({
+          current_heads: 1,
+          deleted_at: null,
+          render_references: 1,
+          snapshot_references: 1,
+        });
+
+        await deletionInspection.query(
+          `DELETE FROM public.workspace_project_references
+            WHERE tenant_id = $1 AND project_id = $2
+              AND reference_kind = 'render-session' AND reference_id = $3`,
+          [tenantA, projectId, retainedReference],
+        );
+        await expect(deletionStorage.publications.softDeleteProject(tenantA, projectId)).resolves.toBeUndefined();
+        await expect(runtimeA.projects()).resolves.toEqual({ defaultProjectId: null, projects: [] });
+        await expect(runtimeB.workspace(projectId)).resolves.toMatchObject({ projectId });
+        const deletedState = await deletionInspection.query<{
+          current_heads: number;
+          deleted_at: Date | null;
+          snapshot_references: number;
+        }>(
+          `SELECT project.deleted_at,
+                  (SELECT count(*)::integer FROM public.workspace_project_references reference
+                    WHERE reference.tenant_id = project.tenant_id
+                      AND reference.project_id = project.project_id
+                      AND reference.reference_kind = 'snapshot-publication') AS snapshot_references,
+                  (SELECT count(*)::integer FROM public.snapshot_scene_heads head
+                    WHERE head.tenant_id = project.tenant_id
+                      AND head.project_id = project.project_id
+                      AND head.publication_id IS NOT NULL) AS current_heads
+             FROM public.workspace_projects project
+            WHERE project.tenant_id = $1 AND project.project_id = $2`,
+          [tenantA, projectId],
+        );
+        expect(deletedState.rows[0]?.deleted_at).toBeInstanceOf(Date);
+        expect(deletedState.rows[0]).toMatchObject({ current_heads: 0, snapshot_references: 0 });
+
+        await expect(
+          deletionStorage.publications.publish({
+            ...identity,
+            artifact: replacement.artifact,
+            expectedSourceDigest: updatedHead.blob.digest,
+            expectedSourceGeneration: updatedHead.generation,
+            publicationId: randomUUID(),
+            requestId: `late-${requestId}`,
+            snapshotHash: createHash("sha256").update(`late-snapshot-${suffix}`).digest("hex"),
+          }),
+        ).resolves.toEqual({ kind: "source-stale" });
+        await expect(deletionStorage.publications.readCurrent(identity)).resolves.toEqual({
+          generation: BigInt(replacement.generation),
+          kind: "stale",
+        });
+      } finally {
+        await Promise.all([deletionInspection.end(), closeSnapshotStorage(deletionStorage)]);
+      }
+
       const orphan = await runOrphanWriterChild({
         nonce: suffix,
         sourceDigest: updatedHead.blob.digest,
