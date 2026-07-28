@@ -262,6 +262,8 @@ class FakeRuncRuntime implements FastManimRuncRuntimeV1 {
     this.output = output;
   }
 
+  async assertReady() {}
+
   create(options: Readonly<{ bundlePath: string; containerId: string; deadlineEpochMs: number }>) {
     this.events.push("create");
     this.createCalls += 1;

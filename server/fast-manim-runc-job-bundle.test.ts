@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
-import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -173,6 +173,14 @@ describe("FastManimRuncJobBundleStoreV1", () => {
     expect(isProductionFastManimRuncJobBundleStoreV1({ root })).toBe(false);
     class OverriddenStore extends FastManimRuncJobBundleStoreV1 {}
     expect(isProductionFastManimRuncJobBundleStoreV1(new OverriddenStore({ identityMap, root }))).toBe(false);
+  });
+
+  it("checks the real bundle root through its no-follow metadata handle", async () => {
+    const bundles = new FastManimRuncJobBundleStoreV1({ identityMap, root });
+    await expect(bundles.assertReady()).resolves.toBeUndefined();
+
+    await chmod(root, 0o770);
+    await expect(bundles.assertReady()).rejects.toThrow(/writable by another identity/u);
   });
 
   it("locks production bundle entries to mapped container root", async () => {

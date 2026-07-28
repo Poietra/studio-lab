@@ -1,4 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { Readable, Writable } from "node:stream";
 
@@ -33,6 +34,7 @@ export type FastManimRuncCreatedProcessV1 = Readonly<{
 }>;
 
 export interface FastManimRuncRuntimeV1 {
+  assertReady(deadlineEpochMs: number, signal: AbortSignal): Promise<void>;
   create(
     options: Readonly<{ bundlePath: string; containerId: string; deadlineEpochMs: number }>,
   ): FastManimRuncCreatedProcessV1;
@@ -106,6 +108,28 @@ export class FastManimRuncCliRuntimeV1 implements FastManimRuncRuntimeV1 {
     }
     this.#spawn = options.spawnProcess ?? spawn;
     if (options.spawnProcess === undefined) productionRuncRuntimes.add(this);
+  }
+
+  async assertReady(deadlineEpochMs: number, signal: AbortSignal) {
+    signal.throwIfAborted();
+    const [canonicalStateRoot, metadata] = await Promise.all([realpath(this.#stateRoot), lstat(this.#stateRoot)]);
+    signal.throwIfAborted();
+    if (typeof process.getuid !== "function" || typeof process.getgid !== "function" || process.getuid() === 0) {
+      throw new Error("The fixed runc runtime requires a non-root POSIX process identity.");
+    }
+    if (
+      canonicalStateRoot !== this.#stateRoot ||
+      !metadata.isDirectory() ||
+      metadata.isSymbolicLink() ||
+      metadata.uid !== process.getuid() ||
+      metadata.gid !== process.getgid() ||
+      (metadata.mode & 0o7777) !== 0o700
+    ) {
+      throw new Error("The fixed runc state root does not satisfy its ownership and mode contract.");
+    }
+    signal.throwIfAborted();
+    await this.#control(["--version"], deadlineEpochMs, true, signal);
+    signal.throwIfAborted();
   }
 
   create(options: Readonly<{ bundlePath: string; containerId: string; deadlineEpochMs: number }>) {

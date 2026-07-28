@@ -225,6 +225,13 @@ export class FastManimRuncJobBundleStoreV1 {
     if (options.metadataPolicy === undefined) productionBundleStores.add(this);
   }
 
+  async assertReady() {
+    if ((await realpath(this.#root)) !== this.#root) {
+      throw new Error("The runc bundle root is not its canonical filesystem path.");
+    }
+    await withDirectoryHandle(this.#root, (root) => this.#metadataPolicy.verifyRoot(root));
+  }
+
   plan(containerId: string): FastManimRuncJobBundleHandleV1 {
     if (!isFastManimSandboxResourceCgroupNameV1(containerId) || this.#active.has(containerId)) {
       throw new TypeError("The runc container identity is invalid or already planned.");

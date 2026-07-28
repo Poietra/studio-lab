@@ -413,6 +413,34 @@ export class LinuxCgroupV2ResourceControllerV1 {
     }
   }
 
+  async assertReady(signal: AbortSignal) {
+    signal.throwIfAborted();
+    if (!this.#initialized || this.#closing || this.#registry.snapshot().state !== "ready") {
+      throw new FastManimSandboxResourceControlError("unavailable");
+    }
+    const deadline = this.#controlDeadline(Number.POSITIVE_INFINITY);
+    try {
+      await this.#within(this.#store.assertExclusiveCgroupV2Root(), deadline);
+      const [availableValue, enabledValue] = await Promise.all([
+        this.#within(this.#store.readRoot("cgroup.controllers"), deadline),
+        this.#within(this.#store.readRoot("cgroup.subtree_control"), deadline),
+      ]);
+      signal.throwIfAborted();
+      const available = parseControllerSet(availableValue);
+      const enabled = parseControllerSet(enabledValue);
+      if (
+        REQUIRED_CONTROLLERS.some((controller) => !available.has(controller) || !enabled.has(controller)) ||
+        this.#closing ||
+        this.#registry.snapshot().state !== "ready"
+      ) {
+        throw new FastManimSandboxResourceControlError("unavailable");
+      }
+    } catch {
+      signal.throwIfAborted();
+      throw new FastManimSandboxResourceControlError("unavailable");
+    }
+  }
+
   async #reconcileOrphans(deadline: number) {
     const children = [...(await this.#within(this.#store.listChildDirectories(), deadline))].sort();
     if (children.some((name) => !isFastManimSandboxResourceCgroupNameV1(name))) {
@@ -937,7 +965,7 @@ export class LinuxCgroupV2ResourceControllerV1 {
 
 /** Production factory: every controller shares one process-global admission ledger. */
 export type ProcessLinuxCgroupV2ResourceControllerV1 = Readonly<
-  Pick<LinuxCgroupV2ResourceControllerV1, "admit" | "initialize" | "shutdown" | "snapshot">
+  Pick<LinuxCgroupV2ResourceControllerV1, "admit" | "assertReady" | "initialize" | "shutdown" | "snapshot">
 >;
 
 let processLinuxCgroupV2ResourceControllerV1: ProcessLinuxCgroupV2ResourceControllerV1 | null = null;
@@ -988,6 +1016,7 @@ export function createProcessLinuxCgroupV2ResourceControllerV1(
   });
   processLinuxCgroupV2ResourceControllerV1 = Object.freeze({
     admit: controller.admit.bind(controller),
+    assertReady: controller.assertReady.bind(controller),
     initialize: controller.initialize.bind(controller),
     shutdown: controller.shutdown.bind(controller),
     snapshot: controller.snapshot.bind(controller),

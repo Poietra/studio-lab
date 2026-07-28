@@ -32,9 +32,12 @@ class FakeCgroupV2Store implements LinuxCgroupV2StoreV1 {
     wait: Promise<void>;
   }> | null = null;
   rejectKill = false;
+  rejectRootProbe = false;
   rejectWriteFile: string | null = null;
 
-  async assertExclusiveCgroupV2Root() {}
+  async assertExclusiveCgroupV2Root() {
+    if (this.rejectRootProbe) throw new Error("delegated root drift");
+  }
 
   async create(name: string) {
     this.createStarted?.();
@@ -266,6 +269,31 @@ describe("Linux cgroup v2 sandbox resource controller", () => {
     await job.finish("completed");
     expect(output.isClosed()).toBe(true);
     expect(resources.snapshot()).toMatchObject({ activeJobs: 0, reapedJobs: 1 });
+  });
+
+  it("checks delegated-root and controller drift without mutating cgroup state", async () => {
+    const store = new FakeCgroupV2Store();
+    const resources = controller(store);
+    const signal = new AbortController().signal;
+    await expect(resources.assertReady(signal)).rejects.toThrow(/unavailable/i);
+
+    await resources.initialize();
+    const writesAfterInitialize = [...store.writes];
+    await expect(resources.assertReady(signal)).resolves.toBeUndefined();
+    expect(store.writes).toEqual(writesAfterInitialize);
+
+    store.controllers = "cpu memory\n";
+    await expect(resources.assertReady(signal)).rejects.toThrow(/unavailable/i);
+    store.controllers = "cpu io memory pids\n";
+    store.subtreeControl = "cpu memory\n";
+    await expect(resources.assertReady(signal)).rejects.toThrow(/unavailable/i);
+    store.subtreeControl = "cpu memory pids\n";
+    store.rejectRootProbe = true;
+    await expect(resources.assertReady(signal)).rejects.toThrow(/unavailable/i);
+
+    const aborted = new AbortController();
+    aborted.abort();
+    await expect(resources.assertReady(aborted.signal)).rejects.toMatchObject({ name: "AbortError" });
   });
 
   it("keeps local stopped-PID attachment out of production and rejects unproved success", async () => {

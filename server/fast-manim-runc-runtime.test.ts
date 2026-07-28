@@ -1,4 +1,7 @@
 import { EventEmitter } from "node:events";
+import { chmod, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
@@ -32,11 +35,12 @@ function runtimeWith(
     arguments_: readonly string[],
     options: Readonly<Record<string, unknown>>,
   ) => FakeChild,
+  stateRoot = "/run/poietra/runc-state",
 ) {
   return new FastManimRuncCliRuntimeV1({
     bundleRoot,
     spawnProcess: implementation as never,
-    stateRoot: "/run/poietra/runc-state",
+    stateRoot,
   });
 }
 
@@ -52,6 +56,54 @@ describe("FastManimRuncCliRuntimeV1", () => {
     expect(
       isProductionFastManimRuncRuntimeV1(new OverriddenRuntime({ bundleRoot, stateRoot: "/run/poietra/runc-state" })),
     ).toBe(false);
+  });
+
+  it("probes the fixed runc binary only from a private runner-owned state root", async () => {
+    const stateRoot = await realpath(await mkdtemp(join(tmpdir(), "poietra-runc-state-")));
+    const stateRootLink = `${stateRoot}-link`;
+    const spawnProcess = vi.fn(() => {
+      const child = fakeChild();
+      queueMicrotask(() => {
+        child.stdout.end("runc version 1.3.4\n");
+        child.stderr.end();
+        child.emit("close", 0, null);
+      });
+      return child;
+    });
+    const runtime = runtimeWith(spawnProcess, stateRoot);
+    try {
+      await expect(runtime.assertReady(deadlineEpochMs(), new AbortController().signal)).resolves.toBeUndefined();
+      expect(spawnProcess).toHaveBeenCalledWith(
+        "/usr/bin/runc",
+        ["--rootless=true", "--root", stateRoot, "--version"],
+        {
+          cwd: "/",
+          env: { LANG: "C.UTF-8", LC_ALL: "C.UTF-8", PATH: "/usr/sbin:/usr/bin:/sbin:/bin" },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+
+      await chmod(stateRoot, 0o750);
+      await expect(runtime.assertReady(deadlineEpochMs(), new AbortController().signal)).rejects.toThrow(/mode/u);
+      expect(spawnProcess).toHaveBeenCalledOnce();
+
+      const aborted = new AbortController();
+      aborted.abort();
+      await expect(runtime.assertReady(deadlineEpochMs(), aborted.signal)).rejects.toMatchObject({
+        name: "AbortError",
+      });
+      expect(spawnProcess).toHaveBeenCalledOnce();
+
+      await chmod(stateRoot, 0o700);
+      await symlink(stateRoot, stateRootLink, "dir");
+      await expect(
+        runtimeWith(spawnProcess, stateRootLink).assertReady(deadlineEpochMs(), new AbortController().signal),
+      ).rejects.toThrow(/state root/u);
+      expect(spawnProcess).toHaveBeenCalledOnce();
+    } finally {
+      await rm(stateRootLink, { force: true });
+      await rm(stateRoot, { force: true, recursive: true });
+    }
   });
 
   it("runs only the fixed create operation and resolves at CLI exit without consuming OCI stdio", async () => {
