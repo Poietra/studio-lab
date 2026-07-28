@@ -8,6 +8,7 @@ const { Client } = pg;
 const POSTGRES_IMAGE = "postgres@sha256:23e88eb049fd5d54894d70100df61d38a49ed97909263f79d4ff4c30a5d5fca2";
 const MINIO_IMAGE = "minio/minio@sha256:6f23072e3e222e64fe6f86b31a7f7aca971e5129e55cbccef649b109b8e651a1";
 const STORAGE_SUITE_CONCURRENCY = 2;
+const TEST_OUTPUT_TAIL_CHARACTERS = 256 * 1024;
 const runId = randomBytes(6).toString("hex");
 const postgresContainer = `poietra-storage-e2e-${runId}-postgres`;
 const minioContainer = `poietra-storage-e2e-${runId}-minio`;
@@ -114,6 +115,10 @@ function writeFailureOutput(stdout, stderr) {
   if (stderr.length > 0) process.stderr.write(`${stderr}\n`);
 }
 
+function appendOutputTail(current, chunk) {
+  return `${current}${chunk.toString("utf8")}`.slice(-TEST_OUTPUT_TAIL_CHARACTERS);
+}
+
 async function runTestFile(environment, suite) {
   throwIfInterrupted();
   return new Promise((resolve, reject) => {
@@ -127,10 +132,10 @@ async function runTestFile(environment, suite) {
     let stderr = "";
     let spawnError = null;
     child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString("utf8");
+      stdout = appendOutputTail(stdout, chunk);
     });
     child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString("utf8");
+      stderr = appendOutputTail(stderr, chunk);
     });
     child.once("error", (error) => {
       spawnError = error;
