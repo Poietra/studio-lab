@@ -6,6 +6,7 @@ import { z } from "zod";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import type { LinuxCgroupV2LaunchEnvelopeV1 } from "./fast-manim-linux-cgroup-v2";
 import { type FastManimOciProfileV1, fastManimOciProfileV1Schema } from "./fast-manim-oci-sandbox-profile";
+import { isFastManimSandboxResourceCgroupNameV1 } from "./fast-manim-sandbox-resources";
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 const CGROUPS_PATH_SEGMENT_PATTERN = /^[A-Za-z0-9_@:-][A-Za-z0-9_.@:-]*$/u;
@@ -133,7 +134,9 @@ function canonicalCgroupsPath(value: unknown) {
   if (
     posix.isAbsolute(value) ||
     posix.normalize(value) !== value ||
-    !segments.every((segment) => CGROUPS_PATH_SEGMENT_PATTERN.test(segment))
+    !segments.every((segment) => CGROUPS_PATH_SEGMENT_PATTERN.test(segment)) ||
+    segments.at(-2) !== "poietra-sandbox-v1" ||
+    !isFastManimSandboxResourceCgroupNameV1(segments.at(-1) ?? "")
   ) {
     throw new TypeError("The runc cgroupsPath must be a bounded canonical relative path.");
   }

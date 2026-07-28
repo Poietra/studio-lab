@@ -10,10 +10,11 @@ import { FastManimRuncOciSpecGeneratorV1 } from "./fast-manim-runc-oci-spec";
 const profile = JSON.parse(readFileSync(new URL("../sandbox/fast-manim-oci/profile.v1.json", import.meta.url), "utf8"));
 const seccomp = JSON.parse(readFileSync(new URL("../sandbox/fast-manim-oci/seccomp.v1.json", import.meta.url), "utf8"));
 const seccompDigest = createHash("sha256").update(canonicalJsonV1(seccomp), "utf8").digest("hex");
+const cgroupsPath = `poietra-sandbox-v1/poietra-job-v1-${"a".repeat(32)}-1`;
 
 function launch(overrides: Record<string, unknown> = {}) {
   return {
-    cgroupsPath: "poietra-sandbox-v1/poietra-job-v1-aabbccdd-1",
+    cgroupsPath,
     deadlineEpochMs: Date.now() + 60_000,
     mustStartInCgroup: true,
     productionMembership: { state: "requires-direct-start-verification" },
@@ -50,7 +51,7 @@ describe("FastManimRuncOciSpecGeneratorV1", () => {
     expect(spec).toMatchObject({
       hostname: "poietra-sandbox",
       linux: {
-        cgroupsPath: "poietra-sandbox-v1/poietra-job-v1-aabbccdd-1",
+        cgroupsPath,
         devices: [
           { fileMode: 0o666, gid: 0, major: 1, minor: 3, path: "/dev/null", type: "c", uid: 0 },
           { fileMode: 0o666, gid: 0, major: 1, minor: 5, path: "/dev/zero", type: "c", uid: 0 },
@@ -173,6 +174,7 @@ describe("FastManimRuncOciSpecGeneratorV1", () => {
   it("rejects a non-canonical cgroupsPath and tmpfs limits beyond the locked profile", () => {
     expect(() => generator().generate(launch({ cgroupsPath: "/poietra-sandbox-v1/job" }))).toThrow(/cgroupsPath/i);
     expect(() => generator().generate(launch({ cgroupsPath: "poietra-sandbox-v1/../job" }))).toThrow(/cgroupsPath/i);
+    expect(() => generator().generate(launch({ cgroupsPath: "some-other-delegation/job" }))).toThrow(/cgroupsPath/i);
     expect(() =>
       generator().generate(
         launch({
