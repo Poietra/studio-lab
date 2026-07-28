@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 
 import { z } from "zod";
 
-import { MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES } from "./fast-manim-snapshot-contract";
+import { MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES } from "./fast-manim-snapshot-contract";
 
 export const FAST_MANIM_SANDBOX_RESOURCE_JOB_SCHEMA_V1 = "poietra.fast-manim-sandbox-resource-job" as const;
 export const FAST_MANIM_SANDBOX_RESOURCE_JOB_VERSION_V1 = 1 as const;
@@ -24,7 +24,11 @@ const MAX_RESOURCE_TMPFS_INODES = 1_000_000;
 const MAX_GLOBAL_ACTIVE_JOBS = 4096;
 const MAX_JOB_FILE_DESCRIPTORS = MAX_RESOURCE_PROCESSES * MAX_RESOURCE_OPEN_FILES;
 const MAX_GLOBAL_FILE_DESCRIPTORS = MAX_JOB_FILE_DESCRIPTORS * MAX_GLOBAL_ACTIVE_JOBS;
-const DEFAULT_GLOBAL_FILE_DESCRIPTORS = 4 * 64 * 256;
+const DEFAULT_ACTIVE_JOBS = 4;
+const DEFAULT_STDERR_BYTES = 256 * KIB;
+const DEFAULT_GLOBAL_FILE_DESCRIPTORS = DEFAULT_ACTIVE_JOBS * 64 * 256;
+const DEFAULT_GLOBAL_OUTPUT_BYTES =
+  DEFAULT_ACTIVE_JOBS * (2 * MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES + DEFAULT_STDERR_BYTES);
 
 function boundedSafeInteger(name: string, minimum: number, maximum: number) {
   return z
@@ -43,9 +47,9 @@ export const fastManimSandboxResourceLimitsV1Schema = z
     maxMemoryBytes: boundedSafeInteger("Memory bytes", MIB, MAX_RESOURCE_BYTES),
     maxOpenFiles: boundedSafeInteger("Open files", 3, MAX_RESOURCE_OPEN_FILES),
     maxProcesses: boundedSafeInteger("Processes", 1, MAX_RESOURCE_PROCESSES),
-    maxResultBytes: boundedSafeInteger("Result bytes", 1, MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES),
+    maxResultBytes: boundedSafeInteger("Result bytes", 1, MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES),
     maxStderrBytes: boundedSafeInteger("Stderr bytes", 1, MAX_RESOURCE_BYTES),
-    maxStdoutBytes: boundedSafeInteger("Stdout bytes", 1, MAX_RESOURCE_BYTES),
+    maxStdoutBytes: boundedSafeInteger("Stdout bytes", 1, MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES),
     maxSwapBytes: boundedSafeInteger("Swap bytes", 0, MAX_RESOURCE_BYTES),
     maxRuntimeTmpfsBytes: boundedSafeInteger("Runtime tmpfs bytes", MIB, MAX_RESOURCE_BYTES),
     maxRuntimeTmpfsInodes: boundedSafeInteger("Runtime tmpfs inodes", 1, MAX_RESOURCE_TMPFS_INODES),
@@ -73,9 +77,9 @@ export const DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1: FastManimSandboxReso
   maxMemoryBytes: GIB,
   maxOpenFiles: 256,
   maxProcesses: 64,
-  maxResultBytes: MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES,
-  maxStderrBytes: 256 * KIB,
-  maxStdoutBytes: MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES,
+  maxResultBytes: MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
+  maxStderrBytes: DEFAULT_STDERR_BYTES,
+  maxStdoutBytes: MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
   maxSwapBytes: 0,
   maxRuntimeTmpfsBytes: 16 * MIB,
   maxRuntimeTmpfsInodes: 4096,
@@ -90,9 +94,17 @@ export function parseFastManimSandboxResourceLimitsV1(value: unknown): FastManim
 
 export const fastManimSandboxBoundedOutputDescriptorV1Schema = z
   .object({
-    maxResultBytes: boundedSafeInteger("Bounded result bytes", 1, MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES),
+    maxResultBytes: boundedSafeInteger(
+      "Bounded result bytes",
+      1,
+      MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
+    ),
     maxStderrBytes: boundedSafeInteger("Bounded stderr bytes", 1, MAX_RESOURCE_BYTES),
-    maxStdoutBytes: boundedSafeInteger("Bounded stdout bytes", 1, MAX_RESOURCE_BYTES),
+    maxStdoutBytes: boundedSafeInteger(
+      "Bounded stdout bytes",
+      1,
+      MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
+    ),
     schema: z.literal(FAST_MANIM_SANDBOX_BOUNDED_OUTPUT_SCHEMA_V1),
     version: z.literal(1),
   })
@@ -123,8 +135,14 @@ export function parseFastManimSandboxBoundedOutputDescriptorV1(
 }
 
 export function assertFastManimSandboxBoundedOutputMatchesLimitsV1(descriptorValue: unknown, limitsValue: unknown) {
-  const descriptor = parseFastManimSandboxBoundedOutputDescriptorV1(descriptorValue);
-  const limits = parseFastManimSandboxResourceLimitsV1(limitsValue);
+  let descriptor: FastManimSandboxBoundedOutputDescriptorV1;
+  let limits: FastManimSandboxResourceLimitsV1;
+  try {
+    descriptor = parseFastManimSandboxBoundedOutputDescriptorV1(descriptorValue);
+    limits = parseFastManimSandboxResourceLimitsV1(limitsValue);
+  } catch {
+    throw new FastManimSandboxResourceControlError("configuration");
+  }
   if (
     descriptor.maxResultBytes !== limits.maxResultBytes ||
     descriptor.maxStderrBytes !== limits.maxStderrBytes ||
@@ -438,10 +456,10 @@ export class FastManimSandboxResourceRegistryV1 {
 
   constructor(options: FastManimSandboxResourceRegistryOptionsV1 = {}) {
     const parsed = registryOptionsSchema.parse({
-      maxActiveJobs: options.maxActiveJobs ?? 4,
+      maxActiveJobs: options.maxActiveJobs ?? DEFAULT_ACTIVE_JOBS,
       maxReservedFileDescriptors: options.maxReservedFileDescriptors ?? DEFAULT_GLOBAL_FILE_DESCRIPTORS,
       maxReservedMemoryBytes: options.maxReservedMemoryBytes ?? 4 * GIB,
-      maxReservedOutputBytes: options.maxReservedOutputBytes ?? 64 * MIB,
+      maxReservedOutputBytes: options.maxReservedOutputBytes ?? DEFAULT_GLOBAL_OUTPUT_BYTES,
       maxReservedTmpfsBytes: options.maxReservedTmpfsBytes ?? GIB,
     });
     this.#maxActiveJobs = parsed.maxActiveJobs;

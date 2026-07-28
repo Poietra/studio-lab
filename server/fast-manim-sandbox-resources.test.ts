@@ -12,8 +12,10 @@ import {
   parseFastManimSandboxResourceJobDescriptorV1,
   parseFastManimSandboxResourceLimitsV1,
 } from "./fast-manim-sandbox-resources";
+import { MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES } from "./fast-manim-snapshot-contract";
 
 const MIB = 1024 * 1024;
+const GIB = 1024 * MIB;
 
 function limits(overrides: Partial<typeof DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1> = {}) {
   return { ...DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1, ...overrides };
@@ -22,13 +24,26 @@ function limits(overrides: Partial<typeof DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LI
 describe("fast-manim sandbox resource contract", () => {
   it("accepts only a closed, bounded, safe-integer limit object", () => {
     expect(parseFastManimSandboxResourceLimitsV1(limits())).toEqual(DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1);
+    expect(DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1).toMatchObject({
+      maxResultBytes: MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
+      maxStdoutBytes: MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
+    });
+    expect(() =>
+      parseFastManimSandboxResourceLimitsV1(
+        limits({
+          maxResultBytes: MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
+          maxStdoutBytes: MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
+        }),
+      ),
+    ).not.toThrow();
     for (const candidate of [
       limits({ maxMemoryBytes: Number.MAX_SAFE_INTEGER }),
       limits({ maxOpenFiles: 2.5 }),
       limits({ wallTimeMs: Number.NaN }),
       limits({ cpuQuotaMicros: 6_400_001, cpuPeriodMicros: 100_000 }),
       limits({ maxResultBytes: 2, maxStdoutBytes: 1 }),
-      limits({ maxResultBytes: 64 * MIB }),
+      limits({ maxResultBytes: MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES + 1 }),
+      limits({ maxStdoutBytes: MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES + 1 }),
       { ...limits(), tenantId: "tenant-secret" },
       { ...limits(), sourcePath: "/host/private/scene.py" },
     ]) {
@@ -91,6 +106,32 @@ describe("fast-manim sandbox resource contract", () => {
     ).toThrow();
   });
 
+  it("admits the producer's exact combined-document boundary without weakening either output cap", () => {
+    const boundary = MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES;
+    const envelope = limits({ maxResultBytes: boundary, maxStdoutBytes: boundary });
+    const descriptor = {
+      maxResultBytes: boundary,
+      maxStderrBytes: envelope.maxStderrBytes,
+      maxStdoutBytes: boundary,
+      schema: "poietra.fast-manim-sandbox-bounded-output",
+      version: 1,
+    };
+
+    expect(() => assertFastManimSandboxBoundedOutputMatchesLimitsV1(descriptor, envelope)).not.toThrow();
+    expect(() =>
+      assertFastManimSandboxBoundedOutputMatchesLimitsV1(
+        { ...descriptor, maxResultBytes: boundary + 1 },
+        { ...envelope, maxResultBytes: boundary + 1 },
+      ),
+    ).toThrow();
+    expect(() =>
+      assertFastManimSandboxBoundedOutputMatchesLimitsV1(
+        { ...descriptor, maxStdoutBytes: boundary + 1 },
+        { ...envelope, maxStdoutBytes: boundary + 1 },
+      ),
+    ).toThrow();
+  });
+
   it.each([
     [{ shutdownRequested: true }, "shutdown"],
     [{ abortRequested: true }, "aborted"],
@@ -123,6 +164,50 @@ describe("fast-manim sandbox resource contract", () => {
 });
 
 describe("fast-manim sandbox resource registry", () => {
+  it("preserves four default admissions after the combined output budget increase", () => {
+    const registry = new FastManimSandboxResourceRegistryV1();
+    const leases = Array.from({ length: 4 }, () => registry.admit(limits()));
+    const expectedPerJob =
+      2 * MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES +
+      DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1.maxStderrBytes;
+
+    expect(registry.snapshot()).toMatchObject({
+      activeJobs: 4,
+      reservedOutputBytes: 4 * expectedPerJob,
+    });
+    expect(() => registry.admit(limits())).toThrowError(FastManimSandboxResourceControlError);
+
+    for (const lease of leases) {
+      lease.terminate("completed");
+      lease.reap({ cgroupEmpty: true, outputClosed: true });
+    }
+    expect(registry.snapshot().reservedOutputBytes).toBe(0);
+  });
+
+  it("uses safe subtraction when reserving the maximum stderr and combined result caps", () => {
+    const maximum = limits({
+      maxResultBytes: MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
+      maxStderrBytes: 64 * GIB,
+      maxStdoutBytes: MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
+    });
+    const expected = maximum.maxResultBytes + maximum.maxStderrBytes + maximum.maxStdoutBytes;
+    const registry = new FastManimSandboxResourceRegistryV1({
+      maxActiveJobs: 2,
+      maxReservedOutputBytes: expected,
+    });
+    const first = registry.admit(maximum);
+    const before = registry.snapshot();
+
+    expect(Number.isSafeInteger(expected)).toBe(true);
+    expect(first.descriptor.reservedOutputBytes).toBe(expected);
+    expect(() => registry.admit(maximum)).toThrowError(FastManimSandboxResourceControlError);
+    expect(registry.snapshot()).toEqual(before);
+
+    first.terminate("completed");
+    first.reap({ cgroupEmpty: true, outputClosed: true });
+    expect(registry.snapshot().reservedOutputBytes).toBe(0);
+  });
+
   it("atomically reserves active, process-wide fd, memory, output, and tmpfs budgets", () => {
     const registry = new FastManimSandboxResourceRegistryV1({
       maxActiveJobs: 2,
