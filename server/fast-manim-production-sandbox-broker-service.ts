@@ -5,6 +5,10 @@ import {
 } from "./fast-manim-gated-oci-release";
 import { createFastManimProductionGatedOciBackendV1 } from "./fast-manim-production-gated-oci-backend";
 import {
+  assertFastManimProductionBrokerSocketDirectoryV1,
+  FAST_MANIM_PRODUCTION_BROKER_CLOSE_TIMEOUT_MS_V1,
+} from "./fast-manim-production-sandbox-transport";
+import {
   type FastManimSandboxBrokerServerV1,
   startFastManimSandboxBrokerServerV1,
 } from "./fast-manim-sandbox-broker-server";
@@ -43,6 +47,12 @@ export async function startFastManimProductionSandboxBrokerServiceV1(
   if (!options) throw new TypeError("Production broker configuration is required.");
   brokerIdentity(options.brokerUserId);
   options.signal?.throwIfAborted();
+  await assertFastManimProductionBrokerSocketDirectoryV1(
+    options.socketPath,
+    options.brokerUserId,
+    options.socketGroupId,
+  );
+  options.signal?.throwIfAborted();
   const verifiedRelease = verifyFastManimGatedOciReleaseV1(options.signedRelease, options.publicKeys);
   const backend = await createFastManimProductionGatedOciBackendV1({
     dockerSocketPath: options.dockerSocketPath,
@@ -56,6 +66,7 @@ export async function startFastManimProductionSandboxBrokerServiceV1(
   try {
     const broker = await startFastManimSandboxBrokerServerV1({
       backend,
+      closeTimeoutMs: FAST_MANIM_PRODUCTION_BROKER_CLOSE_TIMEOUT_MS_V1,
       onFatalClose: reportFatal,
       reconcileOrphans: (signal) => backend.reconcileOrphans(signal),
       ...(options.signal ? { signal: options.signal } : {}),

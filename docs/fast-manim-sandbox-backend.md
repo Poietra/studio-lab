@@ -1,6 +1,6 @@
 # Fast-manim sandbox backend boundary
 
-Status: contract implemented; local rootful OCI conformance slice available; production backend unavailable
+Status: contract and production broker infrastructure implemented; durable Studio wiring remains #134
 
 ## Safety outcome
 
@@ -153,9 +153,9 @@ If container creation was dispatched but no immutable ID was observed, recovery
 by name remains best-effort and the backend is always quarantined because a late
 daemon-side create completion cannot be ruled out.
 
-This slice deliberately does **not** claim #82 complete. It uses the host's
-rootful Docker daemon and an operator-supplied local image ID; it has no
-separate broker identity or Unix-socket protocol, rootless host configuration,
+The rootful conformance driver deliberately does **not** claim #82 complete. It
+uses the host's rootful Docker daemon and an operator-supplied local image ID;
+it has no separate broker identity or Unix-socket protocol, rootless host configuration,
 custom seccomp profile, signed image allowlist/attestation, production adapter,
 asset transport, or cross-tenant adversarial evidence. The static fast-manim
 snapshot profile also refuses reflective host APIs before Scene execution; the
@@ -164,10 +164,19 @@ profile. #83 must prove resource ownership and descendant lifecycle against
 the eventual broker/runtime instead of treating this development driver as
 production isolation.
 
-## Production enablement dependencies
+## Production broker infrastructure and remaining enablement
 
-Production remains disabled until all of the following provide conformance
-evidence through this interface:
+The separately supervised production broker now connects a signed, fixed
+rootless OCI profile to a bounded UDS backend. Its closed factory cannot select
+the rootful/local execution seams. See
+`docs/fast-manim-production-sandbox-broker.md` for its host and principal
+contract.
+
+This is infrastructure rather than end-to-end Studio enablement. The durable
+production runtime does not yet construct the UDS client and its snapshot
+methods intentionally return `503`; #134 owns durable source/result publication
+and the final runtime connection. #127 therefore remains open. Production
+traffic additionally remains gated on the broader conformance and rollout work:
 
 1. #82: digest-pinned rootless OCI/microVM isolation and machine-readable
    profile/runtime attestation;

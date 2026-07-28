@@ -169,6 +169,7 @@ class ProductionGatedOciBackendV1 implements FastManimProductionGatedOciBackendV
     this.#dockerClient = new FastManimGatedOciDockerClientV1({ socketPath: options.dockerSocketPath });
     if (!this.#dockerClient.socketPath) throw new TypeError("Production requires an explicit Docker socket.");
     this.#jobs = new FastManimGatedOciJobRunnerV1({
+      cgroupKillPolicy: "required",
       dockerClient: this.#dockerClient,
       image: descriptor.imageDigest,
       seccompPath: options.seccompPath,
@@ -284,6 +285,7 @@ class ProductionGatedOciBackendV1 implements FastManimProductionGatedOciBackendV
   reconcileOrphans(signal: AbortSignal) {
     const release = this.#release.descriptor();
     return reconcileFastManimGatedOciDockerOrphansV1({
+      cgroupKillPolicy: "required",
       dockerClient: this.#dockerClient,
       image: release.imageDigest,
       seccompPath: this.#seccompPath,

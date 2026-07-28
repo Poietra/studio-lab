@@ -1,7 +1,11 @@
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { once } from "node:events";
+import { chmod, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import {
@@ -23,6 +27,35 @@ import { createFastManimProductionSandboxClientV1 } from "./fast-manim-productio
 import { FastManimUdsSandboxBackendV1 } from "./fast-manim-uds-sandbox-backend";
 
 const SERVER_VERSION = "28.3.3";
+
+function productionRelease(keyId = "studio-release-key") {
+  const keys = generateKeyPairSync("ed25519");
+  const issuedAt = Date.now() - 1_000;
+  const material = {
+    dockerServerVersion: SERVER_VERSION,
+    imageDigest: `sha256:${"a".repeat(64)}`,
+    profileDigest: FAST_MANIM_GATED_OCI_PROFILE_DIGEST_V1,
+    seccompDigest: FAST_MANIM_GATED_OCI_SECCOMP_DIGEST_V1,
+  };
+  const payload = {
+    ...material,
+    expiresAt: issuedAt + 10 * 60_000,
+    issuedAt,
+    keyId,
+    runtimeDigest: digestFastManimGatedOciRuntimeV1(material),
+    schema: FAST_MANIM_GATED_OCI_RELEASE_SCHEMA_V1,
+    version: 1 as const,
+  };
+  return {
+    publicKeys: [
+      { keyId: payload.keyId, publicKeyPem: keys.publicKey.export({ format: "pem", type: "spki" }).toString() },
+    ],
+    signedRelease: {
+      payload,
+      signature: sign(null, Buffer.from(canonicalJsonV1(payload), "utf8"), keys.privateKey).toString("base64url"),
+    },
+  };
+}
 
 function dockerInfo(overrides: Record<string, unknown> = {}) {
   return Buffer.from(
@@ -119,37 +152,65 @@ describe("production gated OCI host contract", () => {
     ).rejects.toThrow(/configuration/i);
   });
 
-  it("composes the Studio UDS adapter and verifier from one signed release", () => {
-    const keys = generateKeyPairSync("ed25519");
-    const issuedAt = Date.now() - 1_000;
-    const material = {
-      dockerServerVersion: SERVER_VERSION,
-      imageDigest: `sha256:${"a".repeat(64)}`,
-      profileDigest: FAST_MANIM_GATED_OCI_PROFILE_DIGEST_V1,
-      seccompDigest: FAST_MANIM_GATED_OCI_SECCOMP_DIGEST_V1,
+  it("rejects a Studio principal that is the broker or is outside the socket group", async () => {
+    const brokerUserId = process.geteuid!();
+    const socketGroupId = process.getegid!();
+    const release = productionRelease();
+    const options = {
+      brokerUserId,
+      ...release,
+      socketGroupId,
+      socketPath: "/missing/production-broker.sock",
     };
-    const payload = {
-      ...material,
-      expiresAt: issuedAt + 60_000,
-      issuedAt,
-      keyId: "studio-release-key",
-      runtimeDigest: digestFastManimGatedOciRuntimeV1(material),
-      schema: FAST_MANIM_GATED_OCI_RELEASE_SCHEMA_V1,
-      version: 1 as const,
-    };
-    const signedRelease = {
-      payload,
-      signature: sign(null, Buffer.from(canonicalJsonV1(payload), "utf8"), keys.privateKey).toString("base64url"),
-    };
-    const client = createFastManimProductionSandboxClientV1({
-      publicKeys: [
-        { keyId: payload.keyId, publicKeyPem: keys.publicKey.export({ format: "pem", type: "spki" }).toString() },
-      ],
-      signedRelease,
-      socketPath: "/run/poietra/sandbox-broker.sock",
-    });
+    try {
+      vi.spyOn(process, "geteuid").mockReturnValue(brokerUserId);
+      await expect(createFastManimProductionSandboxClientV1(options)).rejects.toThrow(/distinct effective user/i);
+      vi.restoreAllMocks();
 
-    expect(client.backend).toBeInstanceOf(FastManimUdsSandboxBackendV1);
-    expect(client.attestationVerifier).toBeTypeOf("function");
+      vi.spyOn(process, "geteuid").mockReturnValue(brokerUserId + 1);
+      vi.spyOn(process, "getegid").mockReturnValue(socketGroupId + 1);
+      vi.spyOn(process, "getgroups").mockReturnValue([]);
+      await expect(createFastManimProductionSandboxClientV1(options)).rejects.toThrow(/member/i);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("verifies the broker-owned directory and socket before composing the Studio client", async () => {
+    const brokerUserId = process.geteuid!();
+    const socketGroupId = process.getegid!();
+    const root = await mkdtemp(join(tmpdir(), "poietra-production-client-"));
+    const directory = join(root, "broker");
+    await mkdir(directory, { mode: 0o750 });
+    const socketPath = join(directory, "broker.sock");
+    const server = createServer((socket) => socket.destroy());
+    let client: Awaited<ReturnType<typeof createFastManimProductionSandboxClientV1>> | undefined;
+    try {
+      server.listen(socketPath);
+      await once(server, "listening");
+      await chmod(socketPath, 0o660);
+      vi.spyOn(process, "geteuid").mockReturnValue(brokerUserId + 1);
+      vi.spyOn(process, "getgroups").mockReturnValue([socketGroupId]);
+      const options = { brokerUserId, ...productionRelease(), socketGroupId, socketPath };
+
+      await chmod(root, 0o777);
+      await expect(createFastManimProductionSandboxClientV1(options)).rejects.toThrow(/ancestor/i);
+      await chmod(root, 0o750);
+      await chmod(directory, 0o700);
+      await expect(createFastManimProductionSandboxClientV1(options)).rejects.toThrow(/0750/i);
+      await chmod(directory, 0o750);
+      await chmod(socketPath, 0o600);
+      await expect(createFastManimProductionSandboxClientV1(options)).rejects.toThrow(/0660/i);
+      await chmod(socketPath, 0o660);
+      client = await createFastManimProductionSandboxClientV1(options);
+
+      expect(client.backend).toBeInstanceOf(FastManimUdsSandboxBackendV1);
+      expect(client.attestationVerifier).toBeTypeOf("function");
+    } finally {
+      vi.restoreAllMocks();
+      await client?.backend.close();
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+      await rm(root, { force: true, recursive: true });
+    }
   });
 });
