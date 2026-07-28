@@ -1,12 +1,18 @@
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
-
-import { FastManimGatedOciDockerClientV1 } from "./fast-manim-gated-oci-job-runner";
+import { beforeAll, describe, expect, it } from "vitest";
+import {
+  type FastManimGatedOciCgroupKillPolicyV1,
+  FastManimGatedOciDockerClientV1,
+  inspectFastManimGatedOciRunningCgroupV1,
+  parseFastManimGatedOciSingleInspectionV1,
+  readFastManimGatedOciProcessStartTimeV1,
+} from "./fast-manim-gated-oci-job-runner";
+import { parseFastManimRootlessDockerInfoV1 } from "./fast-manim-production-gated-oci-backend";
 import { ManimRenderGatedOciJobRunnerV1 } from "./manim-render-gated-oci-job-runner";
 import {
   MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
@@ -16,6 +22,10 @@ import {
 
 const image = process.env.POIETRA_MANIM_RENDER_GATED_OCI_IMAGE;
 const enabled = /^sha256:[a-f0-9]{64}$/u.test(image ?? "");
+const productionDockerSocket = process.env.POIETRA_FAST_MANIM_PRODUCTION_DOCKER_SOCKET?.trim();
+const productionDockerVersion = process.env.POIETRA_FAST_MANIM_PRODUCTION_DOCKER_VERSION?.trim();
+const productionEvidence = productionDockerSocket !== undefined || productionDockerVersion !== undefined;
+const cgroupKillPolicy: FastManimGatedOciCgroupKillPolicyV1 = productionEvidence ? "required" : "best-effort";
 const seccompPath = fileURLToPath(new URL("../sandbox/fast-manim-gated-oci/seccomp.v1.json", import.meta.url));
 const source = `from pathlib import Path
 import os
@@ -52,11 +62,82 @@ class ForgedMediaScene(Scene):
         target.write_bytes(bytes.fromhex("000000186674797000000000"))
 `;
 const slowSource = `from manim import Scene
+import time
 
 class SlowScene(Scene):
     def construct(self):
-        self.wait(30)
+        time.sleep(30)
 `;
+const memoryPressureSource = `import time
+
+from manim import Scene
+
+class MemoryPressureScene(Scene):
+    def construct(self):
+        blocks = []
+        while True:
+            blocks.append(bytearray(32 * 1024 * 1024))
+            time.sleep(0.02)
+`;
+const forkPressureSource = `import os
+import time
+
+from manim import Scene
+
+class ForkPressureScene(Scene):
+    def construct(self):
+        children = 0
+        while True:
+            try:
+                child = os.fork()
+            except OSError:
+                break
+            if child == 0:
+                time.sleep(30)
+                os._exit(0)
+            children += 1
+        if children < 16:
+            raise RuntimeError("fork pressure did not reach the bounded process envelope")
+        time.sleep(30)
+`;
+const detachedPipeHolderSource = `import os
+import time
+
+from manim import Scene
+
+class DetachedPipeHolderScene(Scene):
+    def construct(self):
+        read_descriptor, write_descriptor = os.pipe()
+        child = os.fork()
+        if child == 0:
+            os.close(read_descriptor)
+            try:
+                os.setsid()
+            except OSError:
+                pass
+            time.sleep(30)
+            os.close(write_descriptor)
+            os._exit(0)
+        os.close(write_descriptor)
+        while os.read(read_descriptor, 1):
+            pass
+`;
+
+function dockerClient() {
+  return new FastManimGatedOciDockerClientV1(
+    productionDockerSocket === undefined ? {} : { socketPath: productionDockerSocket },
+  );
+}
+
+function createRunner(stagingRoot: string, docker = dockerClient()) {
+  return new ManimRenderGatedOciJobRunnerV1({
+    cgroupKillPolicy,
+    dockerClient: docker,
+    image: image!,
+    seccompPath,
+    stagingRoot,
+  });
+}
 
 async function ownedContainerIds(
   docker: FastManimGatedOciDockerClientV1,
@@ -89,17 +170,79 @@ async function waitForOwnedContainer(docker: FastManimGatedOciDockerClientV1, ru
   throw new Error("The owned render container did not start before the test deadline.");
 }
 
-describe.skipIf(!enabled)("render gated OCI real media lane", () => {
+async function waitForContainerProcessCount(
+  docker: FastManimGatedOciDockerClientV1,
+  containerId: string,
+  minimum: number,
+) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const result = await docker.run(["container", "top", containerId, "-eo", "pid,comm"]);
+    if (result.code === 0) {
+      const rows = result.stdout.toString("utf8").trim().split("\n");
+      if (rows.length - 1 >= minimum) return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("The hostile render did not populate its cgroup before cleanup.");
+}
+
+async function waitForRunningCgroupPath(docker: FastManimGatedOciDockerClientV1, containerId: string) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const result = await docker.run(["container", "inspect", containerId]);
+    if (result.code === 0) {
+      const inspection = parseFastManimGatedOciSingleInspectionV1(result.stdout);
+      const pid = inspection.State?.Pid;
+      if (Number.isSafeInteger(pid) && (pid as number) > 1) {
+        const startTime = await readFastManimGatedOciProcessStartTimeV1(pid as number);
+        return (await inspectFastManimGatedOciRunningCgroupV1(containerId, pid as number, startTime)).cgroupPath;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("The hostile render cgroup identity was not observable.");
+}
+
+async function waitForCgroupEvent(cgroupPath: string, event: string) {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    try {
+      const counters = Object.fromEntries(
+        (await readFile(join(cgroupPath, "memory.events"), "utf8"))
+          .trim()
+          .split("\n")
+          .map((line) => line.split(" ", 2)),
+      );
+      if (Number(counters[event] ?? 0) > 0) return;
+    } catch {
+      // Cleanup may race the final observation; the bounded deadline below
+      // turns a missed kernel event into a failed evidence run.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`The hostile render did not produce the expected cgroup ${event} event.`);
+}
+
+describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media lane", () => {
+  beforeAll(async () => {
+    if (!productionEvidence) return;
+    if (!enabled) throw new TypeError("The rootless render evidence lane requires an immutable render image.");
+    if (!productionDockerSocket || !productionDockerVersion) {
+      throw new TypeError("The rootless render evidence lane requires both production Docker settings.");
+    }
+    if (process.geteuid?.() === undefined || process.geteuid() === 0) {
+      throw new TypeError("The rootless render evidence lane must run as its non-root broker principal.");
+    }
+    const info = await dockerClient().run(["info", "--format", "{{json .}}"]);
+    if (info.code !== 0) throw new TypeError("The rootless render evidence Docker runtime is unavailable.");
+    parseFastManimRootlessDockerInfoV1(info.stdout, productionDockerVersion);
+  });
+
   it("renders a multi-animation MP4 and PNG without a host project mount", async () => {
     const stagingRoot = await mkdtemp(join(tmpdir(), "poietra-real-render-staging-"));
     await chmod(stagingRoot, 0o700);
-    const runner = new ManimRenderGatedOciJobRunnerV1({
-      cgroupKillPolicy: "best-effort",
-      dockerClient: new FastManimGatedOciDockerClientV1(),
-      image: image!,
-      seccompPath,
-      stagingRoot,
-    });
+    const runner = createRunner(stagingRoot);
     const deadlineEpochMs = Date.now() + 120_000;
     const base = {
       deadlineEpochMs,
@@ -212,14 +355,8 @@ describe.skipIf(!enabled)("render gated OCI real media lane", () => {
   it("cancels an active render and proves container and staging cleanup", async () => {
     const stagingRoot = await mkdtemp(join(tmpdir(), "poietra-real-render-cancel-"));
     await chmod(stagingRoot, 0o700);
-    const docker = new FastManimGatedOciDockerClientV1();
-    const runner = new ManimRenderGatedOciJobRunnerV1({
-      cgroupKillPolicy: "best-effort",
-      dockerClient: docker,
-      image: image!,
-      seccompPath,
-      stagingRoot,
-    });
+    const docker = dockerClient();
+    const runner = createRunner(stagingRoot, docker);
     const deadlineEpochMs = Date.now() + 60_000;
     const request = new SealedManimRenderSandboxRequestV1({
       deadlineEpochMs,
@@ -272,18 +409,10 @@ describe.skipIf(!enabled)("render gated OCI real media lane", () => {
     const unrelatedStagingRoot = await mkdtemp(join(tmpdir(), "poietra-real-render-unrelated-"));
     await chmod(stagingRoot, 0o700);
     await chmod(unrelatedStagingRoot, 0o700);
-    const docker = new FastManimGatedOciDockerClientV1();
-    const createRunner = (root: string) =>
-      new ManimRenderGatedOciJobRunnerV1({
-        cgroupKillPolicy: "best-effort",
-        dockerClient: docker,
-        image: image!,
-        seccompPath,
-        stagingRoot: root,
-      });
-    const original = createRunner(stagingRoot);
-    const restarted = createRunner(stagingRoot);
-    const unrelated = createRunner(unrelatedStagingRoot);
+    const docker = dockerClient();
+    const original = createRunner(stagingRoot, docker);
+    const restarted = createRunner(stagingRoot, docker);
+    const unrelated = createRunner(unrelatedStagingRoot, docker);
     const deadlineEpochMs = Date.now() + 60_000;
     const request = new SealedManimRenderSandboxRequestV1({
       deadlineEpochMs,
@@ -350,4 +479,110 @@ describe.skipIf(!enabled)("render gated OCI real media lane", () => {
     ];
     if (errors.length > 0) throw new AggregateError(errors, "The render restart lane did not remove its orphan.");
   }, 90_000);
+
+  it("bounds hostile resource and descendant workloads without publishing partial media", async () => {
+    const stagingRoot = await mkdtemp(join(tmpdir(), "poietra-real-render-adversarial-"));
+    await chmod(stagingRoot, 0o700);
+    const docker = dockerClient();
+    const runner = createRunner(stagingRoot, docker);
+    const signal = new AbortController().signal;
+    const cases = [
+      {
+        expected: { code: "deadline-exceeded", kind: "failed" },
+        maximumElapsedMs: 20_000,
+        name: "deadline",
+        observeLiveDescendants: true,
+        sceneName: "SlowScene",
+        source: slowSource,
+        timeoutMs: 8_000,
+      },
+      {
+        cgroupEvent: "oom_kill",
+        expected: { code: "render-failed", diagnostic: "manim-exit", kind: "failed" },
+        maximumElapsedMs: 30_000,
+        name: "memory",
+        sceneName: "MemoryPressureScene",
+        source: memoryPressureSource,
+        timeoutMs: 25_000,
+      },
+      {
+        expected: { code: "deadline-exceeded", kind: "failed" },
+        maximumElapsedMs: 20_000,
+        minimumProcesses: 16,
+        name: "fork-pressure",
+        sceneName: "ForkPressureScene",
+        source: forkPressureSource,
+        timeoutMs: 8_000,
+      },
+      {
+        expected: { code: "deadline-exceeded", kind: "failed" },
+        maximumElapsedMs: 20_000,
+        minimumProcesses: 3,
+        name: "setsid-pipe-holder",
+        sceneName: "DetachedPipeHolderScene",
+        source: detachedPipeHolderSource,
+        timeoutMs: 8_000,
+      },
+    ] as const;
+    let operationError: unknown;
+    try {
+      await expect(runner.ready(signal)).resolves.toBe(true);
+      await runner.reconcileOrphans();
+      for (const attack of cases) {
+        const deadlineEpochMs = Date.now() + attack.timeoutMs;
+        const request = new SealedManimRenderSandboxRequestV1({
+          deadlineEpochMs,
+          fenceToken: "1",
+          jobId: `real-render/adversarial-${attack.name}`,
+          output: {
+            frameRate: 15,
+            kind: "video",
+            mediaType: "video/mp4",
+            pixelHeight: 480,
+            pixelWidth: 854,
+          },
+          profileDigest: runner.profileDigest,
+          projectId: "project-a",
+          runtimeDigest: runner.runtimeDigest,
+          sceneFrame: MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
+          sceneName: attack.sceneName,
+          schema: MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V1,
+          sessionId: `adversarial-${attack.name}`,
+          source: attack.source,
+          sourceDigest: createHash("sha256").update(attack.source, "utf8").digest("hex"),
+          sourcePath: "main.py",
+          tenantId: "real-render",
+          version: 1,
+        });
+        const startedAt = performance.now();
+        const pending = runner.submitOrReattach(request, deadlineEpochMs, signal);
+        if ("observeLiveDescendants" in attack || "minimumProcesses" in attack || "cgroupEvent" in attack) {
+          const containerId = await waitForOwnedContainer(docker, runner);
+          if ("observeLiveDescendants" in attack) await waitForContainerProcessCount(docker, containerId, 2);
+          if ("minimumProcesses" in attack) {
+            await waitForContainerProcessCount(docker, containerId, attack.minimumProcesses);
+          }
+          if ("cgroupEvent" in attack) {
+            await waitForCgroupEvent(await waitForRunningCgroupPath(docker, containerId), attack.cgroupEvent);
+          }
+        }
+        const result = await pending;
+        expect(result, attack.name).toEqual(attack.expected);
+        expect(performance.now() - startedAt, attack.name).toBeLessThan(attack.maximumElapsedMs);
+        expect(await readdir(stagingRoot), attack.name).toEqual([]);
+        expect(await ownedContainerIds(docker, runner, true), attack.name).toEqual([]);
+      }
+    } catch (error) {
+      operationError = error;
+    }
+    const cleanup = await Promise.allSettled([runner.close()]);
+    await rm(stagingRoot, { force: true, recursive: true });
+    const errors = [
+      ...(operationError === undefined ? [] : [operationError]),
+      ...cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])),
+    ];
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "The adversarial render OCI lane failed or did not clean up.");
+    }
+  }, 120_000);
 });

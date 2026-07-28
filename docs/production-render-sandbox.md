@@ -40,6 +40,13 @@ seccomp path, private staging root, and UDS path. `pnpm
 sandbox:oci:render:build` builds the pinned image when
 `POIETRA_FAST_MANIM_SOURCE_REPO` points at the exact Fast Manim checkout. The
 opt-in real lane uses `POIETRA_MANIM_RENDER_GATED_OCI_IMAGE=<sha256:image-id>`.
+When `POIETRA_FAST_MANIM_PRODUCTION_DOCKER_SOCKET` and the matching
+`POIETRA_FAST_MANIM_PRODUCTION_DOCKER_VERSION` are also set, that same lane
+requires a rootless/systemd/cgroup-v2 host and `cgroup.kill` cleanup;
+without them it remains an explicitly local `best-effort` conformance run.
+This direct-runner lane is evidence for the required cleanup policy; broker
+identity, UDS permissions, and signed release admission remain covered by the
+production service boundary and its own deployment checks.
 At startup the broker first acquires a host-kernel singleton keyed by the
 staging-root digest, then its socket lease. Only while holding both does it
 remove prior containers in that owner namespace, including one with a future
