@@ -9,6 +9,11 @@ const RUNC_CONTAINER_ID_PATTERN = /^poietra-job-v1-[0-9a-f]{32}-[1-9a-z][0-9a-z]
 const MAX_RUNC_CONTROL_STDOUT_BYTES = 8 * 1024;
 const MAX_RUNC_CONTROL_STDERR_BYTES = 32 * 1024;
 const MAX_RUNC_CONTROL_TIMEOUT_MS = 30_000;
+const RUNC_CONTROL_ENV_V1 = Object.freeze({
+  LANG: "C.UTF-8",
+  LC_ALL: "C.UTF-8",
+  PATH: "/usr/bin:/usr/sbin:/bin:/sbin",
+});
 
 const runcStateBaseV1 = {
   bundle: z.string(),
@@ -144,7 +149,7 @@ export class FastManimRuncCliRuntimeV1 implements FastManimRuncRuntimeV1 {
       ["--rootless=true", "--root", this.#stateRoot, "create", "--bundle", bundlePath, containerId],
       {
         cwd: "/",
-        env: { LANG: "C.UTF-8", LC_ALL: "C.UTF-8", PATH: "/usr/sbin:/usr/bin:/sbin:/bin" },
+        env: RUNC_CONTROL_ENV_V1,
         stdio: ["pipe", "pipe", "pipe"],
       },
     ) as ChildProcessWithoutNullStreams;
@@ -229,7 +234,7 @@ export class FastManimRuncCliRuntimeV1 implements FastManimRuncRuntimeV1 {
     return new Promise<Readonly<{ stderr: Buffer; stdout: Buffer }>>((resolveRun, rejectRun) => {
       const child = this.#spawn("/usr/bin/runc", ["--rootless=true", "--root", this.#stateRoot, ...arguments_], {
         cwd: "/",
-        env: { LANG: "C.UTF-8", LC_ALL: "C.UTF-8", PATH: "/usr/sbin:/usr/bin:/sbin:/bin" },
+        env: RUNC_CONTROL_ENV_V1,
         stdio: ["ignore", "pipe", "pipe"],
       });
       const stdout: Buffer[] = [];

@@ -75,27 +75,27 @@ export class FastManimRuncSandboxBackendV1 implements FastManimSandboxBackendV1 
   #closing = false;
 
   constructor(options: FastManimRuncSandboxBackendOptionsV1, testCapability?: typeof testBackendCapabilityV1) {
+    const broker = options?.broker;
     if (
-      typeof options?.broker?.dispatch !== "function" ||
-      typeof options.broker.close !== "function" ||
-      typeof options.broker.ready !== "function" ||
-      typeof options.broker.releaseAttestation !== "function"
+      typeof broker?.dispatch !== "function" ||
+      typeof broker.close !== "function" ||
+      typeof broker.ready !== "function" ||
+      typeof broker.releaseAttestation !== "function"
     ) {
       throw new TypeError("The production runc backend requires one complete broker.");
     }
     if (
-      (!isProductionFastManimRuncJobBrokerV1(options.broker) ||
-        !(options.broker instanceof FastManimRuncJobBrokerV1)) &&
+      (!isProductionFastManimRuncJobBrokerV1(broker) || !(broker instanceof FastManimRuncJobBrokerV1)) &&
       testCapability !== testBackendCapabilityV1
     ) {
       throw new TypeError("The production runc backend requires its closed broker implementation.");
     }
-    const profile = fastManimOciProfileV1Schema.parse(options.profile);
-    const attestation = fastManimOciBuildAttestationV1Schema.parse(options.attestation);
+    const profile = fastManimOciProfileV1Schema.parse(options?.profile);
+    const attestation = fastManimOciBuildAttestationV1Schema.parse(options?.attestation);
     if (attestation.profileDigest !== digestFastManimOciProfileV1(profile)) {
       throw new TypeError("The production runc backend profile does not match its build attestation.");
     }
-    const releaseAttestation = options.broker.releaseAttestation();
+    const releaseAttestation = broker.releaseAttestation();
     if (
       releaseAttestation.profileDigest !== attestation.profileDigest ||
       releaseAttestation.runtimeDigest !== attestation.runtimeDigest
@@ -103,7 +103,7 @@ export class FastManimRuncSandboxBackendV1 implements FastManimSandboxBackendV1 
       throw new TypeError("The signed runc release does not match its build attestation.");
     }
     this.#attestation = attestation;
-    this.#broker = options.broker;
+    this.#broker = broker;
     this.#profile = profile;
   }
 

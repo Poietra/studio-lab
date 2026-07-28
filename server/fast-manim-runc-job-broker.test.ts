@@ -118,7 +118,13 @@ function dispatch(options: Readonly<{ build?: FastManimOciBuildAttestationV1; si
   });
 }
 
-function verifiedRelease(job: FastManimOciBrokerDispatchV1, rootfsPath: string, events: string[]) {
+function verifiedRelease(
+  job: FastManimOciBrokerDispatchV1,
+  rootfsPath: string,
+  events: string[],
+  now: () => number = () => NOW,
+  rootfsCloseError?: Error,
+) {
   const payload = {
     expiresAt: NOW + 60_000,
     imageDigest: job.descriptor.imageDigest,
@@ -134,14 +140,17 @@ function verifiedRelease(job: FastManimOciBrokerDispatchV1, rootfsPath: string, 
   } as const;
   const signature = sign(null, Buffer.from(canonicalJsonV1(payload), "utf8"), keyPair.privateKey).toString("base64url");
   return new FastManimRuncReleaseTrustV1({
-    now: () => NOW,
+    now,
     publicKeys: [
       {
         keyId: "release-key-1",
         publicKeyPem: keyPair.publicKey.export({ format: "pem", type: "spki" }).toString(),
       },
     ],
-    rootfsRegistry: createFastManimRuncRootfsFixtureV1(rootfsPath, { onEvent: (event) => events.push(event) }),
+    rootfsRegistry: createFastManimRuncRootfsFixtureV1(rootfsPath, {
+      closeError: rootfsCloseError,
+      onEvent: (event) => events.push(event),
+    }),
   }).verify({ payload, signature });
 }
 
@@ -342,6 +351,8 @@ async function fixture(
     admissionGate?: Deferred<void>;
     limits?: FastManimSandboxResourceLimitsV1;
     output?: "bounded" | "overflow";
+    releaseNow?: () => number;
+    rootfsCloseError?: Error;
   }> = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "poietra-runc-broker-test-"));
@@ -364,7 +375,7 @@ async function fixture(
     now: () => NOW,
     pollIntervalMs: 1,
     profile,
-    release: verifiedRelease(job, rootfsPath, events),
+    release: verifiedRelease(job, rootfsPath, events, options.releaseNow, options.rootfsCloseError),
     resourceController: controller,
     runtime,
     seccomp,
@@ -502,6 +513,21 @@ describe("production runc job broker", () => {
     expect(test.runtime.createCalls).toBe(0);
   });
 
+  it("rechecks release validity after bundle staging and before runtime creation", async () => {
+    let checks = 0;
+    const test = await fixture({
+      releaseNow: () => (++checks < 5 ? NOW : NOW + 60_000),
+    });
+
+    await expect(test.broker.dispatch(test.dispatch).result).resolves.toMatchObject({
+      code: "sandbox-attestation-rejected",
+      kind: "failed",
+    });
+    expect(test.runtime.createCalls).toBe(0);
+    expect(test.controller.activeJobs).toBe(0);
+    expect(await readdir(test.bundleRoot)).toEqual([]);
+  });
+
   it("latches delete cleanup failure across subsequent dispatch and broker close", async () => {
     const test = await fixture();
     test.runtime.deleteFails = true;
@@ -519,6 +545,27 @@ describe("production runc job broker", () => {
     expect(test.events).not.toContain("rootfs:image-close");
     expect(test.events).not.toContain("rootfs:mount-close");
     expect(await readdir(test.bundleRoot)).toHaveLength(1);
+    expect(() => test.broker.dispatch(test.dispatch)).toThrow();
+    await expect(test.broker.close()).rejects.toSatisfy(
+      (error: unknown) => fastManimSandboxBackendControlErrorCode(error) === "cleanup",
+    );
+  });
+
+  it("latches a rootfs lease close failure after deleting the runtime", async () => {
+    const test = await fixture({ rootfsCloseError: new Error("simulated rootfs close failure") });
+
+    let failure: unknown;
+    try {
+      await test.broker.dispatch(test.dispatch).result;
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(fastManimSandboxBackendControlErrorCode(failure)).toBe("cleanup");
+    expect(test.runtime.deleteCalls).toBe(1);
+    expect(test.runtime.deleted).toBe(true);
+    expect(test.controller.activeJobs).toBe(0);
+    expect(await readdir(test.bundleRoot)).toEqual([]);
     expect(() => test.broker.dispatch(test.dispatch)).toThrow();
     await expect(test.broker.close()).rejects.toSatisfy(
       (error: unknown) => fastManimSandboxBackendControlErrorCode(error) === "cleanup",

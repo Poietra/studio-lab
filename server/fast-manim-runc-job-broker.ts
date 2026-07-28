@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { access, lstat, realpath } from "node:fs/promises";
+import { access, lstat, readFile, realpath } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
@@ -22,9 +22,13 @@ import {
   type FastManimRuncJobBundleV1,
   isProductionFastManimRuncJobBundleStoreV1,
 } from "./fast-manim-runc-job-bundle";
-import type { FastManimRuncMountedRootfsLeaseV1 } from "./fast-manim-runc-mounted-rootfs";
+import {
+  FastManimRuncMountedRootfsError,
+  type FastManimRuncMountedRootfsLeaseV1,
+} from "./fast-manim-runc-mounted-rootfs";
 import { FastManimRuncOciSpecGeneratorV1 } from "./fast-manim-runc-oci-spec";
 import {
+  FastManimRuncReleaseTrustError,
   FastManimRuncVerifiedReleaseV1,
   isProductionFastManimRuncVerifiedReleaseV1,
 } from "./fast-manim-runc-release-trust";
@@ -147,64 +151,77 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
   #closing = false;
 
   constructor(options: FastManimRuncJobBrokerOptionsV1, testCapability?: typeof testBrokerCapabilityV1) {
+    const bundleStore = options?.bundleStore;
+    const identityMap = options?.identityMap;
+    const limits = options?.limits;
+    const now = options?.now;
+    const pollIntervalMs = options?.pollIntervalMs;
+    const profileValue = options?.profile;
+    const release = options?.release;
+    const resourceController = options?.resourceController;
+    const runtime = options?.runtime;
+    const seccompValue = options?.seccomp;
+    const sleep = options?.sleep;
     if (
-      !(options.bundleStore instanceof FastManimRuncJobBundleStoreV1) ||
-      (!isProductionFastManimRuncJobBundleStoreV1(options.bundleStore) && testCapability !== testBrokerCapabilityV1)
+      !(bundleStore instanceof FastManimRuncJobBundleStoreV1) ||
+      (!isProductionFastManimRuncJobBundleStoreV1(bundleStore) && testCapability !== testBrokerCapabilityV1)
     ) {
       throw new TypeError("The production runc broker requires its closed bundle store.");
     }
-    if (!(options.release instanceof FastManimRuncVerifiedReleaseV1)) {
+    if (!(release instanceof FastManimRuncVerifiedReleaseV1)) {
       throw new TypeError("The production runc broker requires one verified signed release.");
     }
-    if (!isProductionFastManimRuncVerifiedReleaseV1(options.release) && testCapability !== testBrokerCapabilityV1) {
+    if (!isProductionFastManimRuncVerifiedReleaseV1(release) && testCapability !== testBrokerCapabilityV1) {
       throw new TypeError("The production runc broker requires a measured rootfs release.");
     }
-    if (!isFastManimRuncRootlessIdentityMapV1(options.identityMap)) {
+    if (!isFastManimRuncRootlessIdentityMapV1(identityMap)) {
       throw new TypeError("The production runc broker requires one rootless identity map.");
     }
     if (
-      typeof options.resourceController?.admit !== "function" ||
-      typeof options.resourceController?.assertReady !== "function" ||
-      typeof options.resourceController?.shutdown !== "function" ||
-      typeof options.runtime?.create !== "function" ||
-      typeof options.runtime?.state !== "function" ||
-      typeof options.runtime?.start !== "function" ||
-      typeof options.runtime?.kill !== "function" ||
-      typeof options.runtime?.delete !== "function"
+      typeof resourceController?.admit !== "function" ||
+      typeof resourceController?.assertReady !== "function" ||
+      typeof resourceController?.shutdown !== "function" ||
+      typeof runtime?.create !== "function" ||
+      typeof runtime?.state !== "function" ||
+      typeof runtime?.start !== "function" ||
+      typeof runtime?.kill !== "function" ||
+      typeof runtime?.delete !== "function"
     ) {
       throw new TypeError("The production runc broker runtime boundary is incomplete.");
     }
-    if (!isProductionFastManimRuncRuntimeV1(options.runtime) && testCapability !== testBrokerCapabilityV1) {
+    if (!isProductionFastManimRuncRuntimeV1(runtime) && testCapability !== testBrokerCapabilityV1) {
       throw new TypeError("The production runc broker requires its closed runc runtime.");
     }
     if (
-      !isProductionLinuxCgroupV2ResourceControllerV1(options.resourceController) &&
+      !isProductionLinuxCgroupV2ResourceControllerV1(resourceController) &&
       testCapability !== testBrokerCapabilityV1
     ) {
       throw new TypeError("The production runc broker requires its closed cgroup controller.");
     }
-    if (options.now !== undefined && typeof options.now !== "function") {
+    if (now !== undefined && typeof now !== "function") {
       throw new TypeError("The production runc broker clock is malformed.");
     }
-    if (options.sleep !== undefined && typeof options.sleep !== "function") {
+    if (sleep !== undefined && typeof sleep !== "function") {
       throw new TypeError("The production runc broker sleep boundary is malformed.");
     }
-    const profile = fastManimOciProfileV1Schema.parse(copyCanonicalJson(options.profile));
-    const seccomp = copyCanonicalJson(options.seccomp);
-    this.#bundleStore = options.bundleStore;
-    this.#identityMap = options.identityMap;
-    this.#limits = parseFastManimSandboxResourceLimitsV1(options.limits);
-    this.#now = options.now ?? Date.now;
-    this.#pollIntervalMs = checkedPollInterval(options.pollIntervalMs);
+    if (testCapability !== testBrokerCapabilityV1 && (now !== undefined || sleep !== undefined)) {
+      throw new TypeError("The production runc broker requires system clock and timer boundaries.");
+    }
+    const profile = fastManimOciProfileV1Schema.parse(copyCanonicalJson(profileValue));
+    const seccomp = copyCanonicalJson(seccompValue);
+    this.#bundleStore = bundleStore;
+    this.#identityMap = identityMap;
+    this.#limits = parseFastManimSandboxResourceLimitsV1(limits);
+    this.#now = now ?? Date.now;
+    this.#pollIntervalMs = checkedPollInterval(pollIntervalMs);
     this.#profile = profile;
     this.#profileDigest = digestFastManimOciProfileV1(profile);
-    this.#release = options.release;
-    this.#resourceController = options.resourceController;
-    this.#runtime = options.runtime;
+    this.#release = release;
+    this.#resourceController = resourceController;
+    this.#runtime = runtime;
     this.#seccomp = seccomp;
     this.#seccompDigest = createHash("sha256").update(canonicalJsonV1(seccomp), "utf8").digest("hex");
-    this.#sleep =
-      options.sleep ?? ((milliseconds, signal) => delay(milliseconds, undefined, { signal }).then(() => undefined));
+    this.#sleep = sleep ?? ((milliseconds, signal) => delay(milliseconds, undefined, { signal }).then(() => undefined));
     this.#testOnly = testCapability === testBrokerCapabilityV1;
     if (!this.#testOnly) productionRuncJobBrokersV1.add(this);
   }
@@ -220,19 +237,34 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
     }
     context.signal.throwIfAborted();
     if (this.#closing || this.#cleanupFailed) return false;
+    const probe = new AbortController();
+    const abortFromContext = () => probe.abort(context.signal.reason);
+    context.signal.addEventListener("abort", abortFromContext, { once: true });
+    if (context.signal.aborted) abortFromContext();
+    const deadlineTimer = setTimeout(
+      () => probe.abort(new Error("The runc readiness probe exceeded its deadline.")),
+      Math.min(context.deadlineEpochMs - this.#now(), 2_147_483_647),
+    );
+    deadlineTimer.unref();
     try {
-      if (!this.#testOnly) await assertRootlessHostHelpersV1();
+      if (!this.#testOnly) await assertRootlessHostHelpersV1(probe.signal);
       await Promise.all([
-        this.#release.assertReady(context.signal),
-        this.#runtime.assertReady(context.deadlineEpochMs, context.signal),
+        this.#release.assertReady(probe.signal),
+        this.#runtime.assertReady(context.deadlineEpochMs, probe.signal),
         this.#bundleStore.assertReady(),
-        this.#resourceController.assertReady(context.signal),
+        this.#resourceController.assertReady(probe.signal),
       ]);
-      context.signal.throwIfAborted();
+      probe.signal.throwIfAborted();
       return !this.#closing && !this.#cleanupFailed && this.#now() < context.deadlineEpochMs;
     } catch (error) {
-      if (context.signal.aborted) throw error;
+      if (error instanceof FastManimRuncMountedRootfsError && error.code === "cleanup") {
+        this.#latchCleanupFailure();
+      }
+      context.signal.throwIfAborted();
       return false;
+    } finally {
+      clearTimeout(deadlineTimer);
+      context.signal.removeEventListener("abort", abortFromContext);
     }
   }
 
@@ -364,6 +396,9 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
         seccomp: this.#seccomp,
       }).generate(job.launch);
       bundle = await control(this.#bundleStore.stage({ dispatch, plan: bundlePlan, spec }));
+      // Staging fsyncs the bundle and may outlive a short release window. Do
+      // not hand an expired authorization to the runtime after that I/O.
+      this.#release.authorize(dispatch);
       runtimeCreationAttempted = true;
       createProcess = this.#runtime.create({
         bundlePath: bundle.bundlePath,
@@ -409,6 +444,9 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
       });
     } catch (error) {
       if (haltReason === null && error instanceof FastManimRuncHaltV1) haltReason = error.reason;
+      if (error instanceof FastManimRuncMountedRootfsError && error.code === "cleanup") {
+        cleanupFailure ??= error;
+      }
       const resourceError = fastManimSandboxResourceControlErrorCode(error);
       if (resourceError === "capacity") {
         cleanupFailure = cleanupFailure ?? (await this.#cleanupWithoutJob(io, bundlePlan));
@@ -471,6 +509,9 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
         throw new FastManimSandboxBackendControlError("cleanup");
       }
       if (reason === "aborted" || reason === "shutdown") throw abortError();
+      if (error instanceof FastManimRuncReleaseTrustError) {
+        return failureResult(dispatch, "sandbox-attestation-rejected");
+      }
       if (resultBytesFailure(error)) return failureResult(dispatch, "producer-exit");
       return failureResult(dispatch, failureCode(reason));
     } finally {
@@ -545,11 +586,17 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
   }
 }
 
-async function assertRootlessHostHelpersV1() {
+async function assertRootlessHostHelpersV1(signal: AbortSignal) {
+  signal.throwIfAborted();
   if (process.platform !== "linux" || process.getuid?.() === 0 || process.getgid?.() === 0) {
     throw new Error("The runc broker must run as an unprivileged Linux identity.");
   }
+  const processStatus = await readFile("/proc/self/status", "utf8");
+  if (!/^NoNewPrivs:\s+0$/mu.test(processStatus)) {
+    throw new Error("The rootless user-namespace helpers cannot elevate in this process.");
+  }
   for (const path of ["/usr/bin/newuidmap", "/usr/bin/newgidmap"] as const) {
+    signal.throwIfAborted();
     const [canonical, status] = await Promise.all([realpath(path), lstat(path), access(path, constants.X_OK)]).then(
       ([resolved, stat]) => [resolved, stat] as const,
     );
@@ -559,11 +606,13 @@ async function assertRootlessHostHelpersV1() {
       status.isSymbolicLink() ||
       status.uid !== 0 ||
       status.gid !== 0 ||
-      (status.mode & 0o022) !== 0
+      (status.mode & 0o022) !== 0 ||
+      (status.mode & 0o4000) === 0
     ) {
       throw new Error("The rootless user-namespace helper is not trusted.");
     }
   }
+  signal.throwIfAborted();
 }
 
 /** Unit-test seam only; production code cannot obtain the identity capability. */

@@ -78,7 +78,7 @@ describe("FastManimRuncCliRuntimeV1", () => {
         ["--rootless=true", "--root", stateRoot, "--version"],
         {
           cwd: "/",
-          env: { LANG: "C.UTF-8", LC_ALL: "C.UTF-8", PATH: "/usr/sbin:/usr/bin:/sbin:/bin" },
+          env: { LANG: "C.UTF-8", LC_ALL: "C.UTF-8", PATH: "/usr/bin:/usr/sbin:/bin:/sbin" },
           stdio: ["ignore", "pipe", "pipe"],
         },
       );
@@ -117,7 +117,7 @@ describe("FastManimRuncCliRuntimeV1", () => {
       ["--rootless=true", "--root", "/run/poietra/runc-state", "create", "--bundle", bundlePath, containerId],
       {
         cwd: "/",
-        env: { LANG: "C.UTF-8", LC_ALL: "C.UTF-8", PATH: "/usr/sbin:/usr/bin:/sbin:/bin" },
+        env: { LANG: "C.UTF-8", LC_ALL: "C.UTF-8", PATH: "/usr/bin:/usr/sbin:/bin:/sbin" },
         stdio: ["pipe", "pipe", "pipe"],
       },
     );
