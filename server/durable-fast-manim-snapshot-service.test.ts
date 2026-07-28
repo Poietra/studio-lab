@@ -8,7 +8,7 @@ import type {
   FastManimSnapshotRunViewV1,
   VerifiedCompiledFastManimSnapshotResultV1,
 } from "./fast-manim-snapshot-contract";
-import type { FastManimSnapshotRunner } from "./fast-manim-snapshot-runner";
+import type { FastManimSnapshotRunner, FastManimUnpublishedSnapshotRunViewV1 } from "./fast-manim-snapshot-runner";
 import { DurableFastManimSnapshotSourceProviderV1 } from "./fast-manim-snapshot-source-provider";
 import { HttpError } from "./http/json";
 import type { SnapshotArtifactPublisherV1 } from "./storage/snapshot-artifact-publisher";
@@ -67,9 +67,7 @@ const compiledSnapshot = {
 
 const verifiedView = {
   projectId: PROJECT,
-  publishedAt: "2026-07-28T00:00:00.000Z",
   requestId: request.requestId,
-  revision: 1,
   runtimeConfigHash: RUNTIME_DIGEST,
   sceneName: SCENE_NAME,
   schema: "poietra.fast-manim-snapshot-run",
@@ -77,7 +75,7 @@ const verifiedView = {
   sourcePath: SOURCE_PATH,
   status: "verified",
   version: 1,
-} as const satisfies FastManimSnapshotRunViewV1;
+} as const satisfies FastManimUnpublishedSnapshotRunViewV1;
 
 const artifact = {
   byteSize: 256,
@@ -129,12 +127,12 @@ function deferred<T>() {
   return { promise, reject, resolve };
 }
 
-function harness(runView: FastManimSnapshotRunViewV1 = verifiedView) {
+function harness(runView: FastManimUnpublishedSnapshotRunViewV1 = verifiedView) {
   const runnerClose = vi.fn(async () => undefined);
-  const runnerRun = vi.fn<FastManimSnapshotRunner["run"]>(async () => runView);
+  const runnerRun = vi.fn<FastManimSnapshotRunner["runUnpublished"]>(async () => runView);
   const runner = {
     close: runnerClose,
-    run: runnerRun,
+    runUnpublished: runnerRun,
   } as unknown as FastManimSnapshotRunner;
   const create = vi.fn<DurableFastManimSnapshotRunnerFactoryV1["create"]>(async () => ({
     profileDigest: PROFILE_DIGEST,

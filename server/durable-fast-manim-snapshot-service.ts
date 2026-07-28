@@ -12,7 +12,7 @@ import {
   fastManimSnapshotRunRequestV1Schema,
   type VerifiedCompiledFastManimSnapshotResultV1,
 } from "./fast-manim-snapshot-contract";
-import type { FastManimSnapshotRunner } from "./fast-manim-snapshot-runner";
+import type { FastManimSnapshotRunner, FastManimUnpublishedSnapshotRunViewV1 } from "./fast-manim-snapshot-runner";
 import {
   DurableFastManimSnapshotSourceProviderV1,
   type FastManimSnapshotSourceProviderV1,
@@ -70,7 +70,7 @@ function sameSourceHead(left: WorkspaceSourceHeadV1, right: WorkspaceSourceHeadV
   );
 }
 
-function sourceChanged(view: Extract<FastManimSnapshotRunViewV1, { status: "verified" }>) {
+function sourceChanged(view: Extract<FastManimUnpublishedSnapshotRunViewV1, { status: "verified" }>) {
   return {
     failure: {
       code: "source-changed",
@@ -210,7 +210,7 @@ export class DurableFastManimSnapshotServiceV1 {
       request.sourcePath,
       signal,
     );
-    const view = await handle.runner.run(request, signal);
+    const view = await handle.runner.runUnpublished(request, signal);
     this.#assertOpen();
     if (view.status !== "verified") return view;
     signal?.throwIfAborted();

@@ -97,6 +97,10 @@ function parseServerOwnedFastManimRunView(value: unknown): FastManimSnapshotRunV
   };
 }
 
+export type FastManimUnpublishedSnapshotRunViewV1 =
+  | Exclude<FastManimSnapshotRunViewV1, { status: "verified" }>
+  | Omit<Extract<FastManimSnapshotRunViewV1, { status: "verified" }>, "publishedAt" | "revision">;
+
 class FastManimSandboxOperationDeadlineError extends Error {
   constructor() {
     super("The sandbox backend operation exceeded its server-owned deadline.");
@@ -218,7 +222,7 @@ export class FastManimSnapshotRunner {
   private readonly maxConcurrentRuns: number;
   private readonly maxPublishedBytes: number;
   private readonly maxPublishedSnapshots: number;
-  private readonly ownerId: number;
+  private ownerId: number | null = null;
   private readonly projectId: string;
   private readonly publicationStore: FastManimSnapshotPublicationStore;
   private readonly publishRetentionMs: number;
@@ -305,7 +309,6 @@ export class FastManimSnapshotRunner {
     });
     this.projectId = configuredIdentity.projectId;
     this.publicationStore = options.publicationStore ?? processPublicationStore;
-    this.ownerId = this.publicationStore.registerOwner();
     this.publishRetentionMs = publishRetentionMs;
     this.sandboxCloseGraceMs = sandboxCloseGraceMs;
     this.sourceProvider =
@@ -639,6 +642,22 @@ export class FastManimSnapshotRunner {
   }
 
   async run(requestValue: FastManimSnapshotRunRequestV1, signal?: AbortSignal): Promise<FastManimSnapshotRunViewV1> {
+    return parseServerOwnedFastManimRunView(await this.runRequest(requestValue, true, signal));
+  }
+
+  /** Verify one sandbox result without assigning process-local publication state. */
+  async runUnpublished(
+    requestValue: FastManimSnapshotRunRequestV1,
+    signal?: AbortSignal,
+  ): Promise<FastManimUnpublishedSnapshotRunViewV1> {
+    return this.runRequest(requestValue, false, signal) as Promise<FastManimUnpublishedSnapshotRunViewV1>;
+  }
+
+  private async runRequest(
+    requestValue: FastManimSnapshotRunRequestV1,
+    publishLocally: boolean,
+    signal?: AbortSignal,
+  ): Promise<FastManimSnapshotRunViewV1 | FastManimUnpublishedSnapshotRunViewV1> {
     const request = fastManimSnapshotRunRequestV1Schema.parse(requestValue);
     signal?.throwIfAborted();
     if (this.closing) throw new HttpError("The Manim render pipeline is shutting down.", 503);
@@ -651,11 +670,11 @@ export class FastManimSnapshotRunner {
       throw new HttpError("Too many concurrent Scene snapshot runs.", 429);
     }
     this.activeKeys.add(key);
-    const pending = this.runLocked(request, signal);
+    const pending = this.runLocked(request, publishLocally, signal);
     this.activeRuns.add(pending);
     pending.catch(() => undefined);
     try {
-      return parseServerOwnedFastManimRunView(await pending);
+      return await pending;
     } finally {
       this.activeKeys.delete(key);
       this.activeRuns.delete(pending);
@@ -664,8 +683,9 @@ export class FastManimSnapshotRunner {
 
   private async runLocked(
     request: FastManimSnapshotRunRequestV1,
+    publishLocally: boolean,
     signal?: AbortSignal,
-  ): Promise<FastManimSnapshotRunViewV1> {
+  ): Promise<FastManimSnapshotRunViewV1 | FastManimUnpublishedSnapshotRunViewV1> {
     const throwIfHalted = () => {
       if (signal?.aborted || this.closing) throw abortError();
     };
@@ -830,27 +850,42 @@ export class FastManimSnapshotRunner {
     }
 
     const encodedBytes = Buffer.byteLength(JSON.stringify({ snapshot: sealed, sourceRuntimeIdentity }), "utf8");
-    if (encodedBytes > this.maxPublishedBytes || !this.publicationStore.fitsSingleEntry(encodedBytes)) {
+    if (
+      encodedBytes > this.maxPublishedBytes ||
+      (publishLocally && !this.publicationStore.fitsSingleEntry(encodedBytes))
+    ) {
       return failed("snapshot-too-large");
     }
 
     throwIfHalted();
+    const verified = {
+      ...base,
+      snapshot: sealed,
+      ...(sourceRuntimeIdentity === null ? {} : { sourceRuntimeIdentity }),
+      status: "verified",
+    } as const satisfies FastManimUnpublishedSnapshotRunViewV1;
+    if (!publishLocally) {
+      this.logger.info("snapshot.verified", { requestId: request.requestId });
+      return verified;
+    }
     const key = sceneKey(request.sourcePath, request.sceneName);
     const { publishedAt, revision } = this.publish(key, expected, sealed, sourceRuntimeIdentity, encodedBytes);
     this.logger.info("snapshot.published", { requestId: request.requestId, revision });
     return {
-      ...base,
+      ...verified,
       publishedAt,
       revision,
-      snapshot: sealed,
-      ...(sourceRuntimeIdentity === null ? {} : { sourceRuntimeIdentity }),
-      status: "verified",
     };
   }
 
-  private evictExpired(now: number) {
-    for (const [key, entry] of this.publicationStore.entriesOf(this.ownerId)) {
-      if (now - entry.publishedAtEpochMs > this.publishRetentionMs) this.publicationStore.delete(this.ownerId, key);
+  private localOwnerId() {
+    this.ownerId ??= this.publicationStore.registerOwner();
+    return this.ownerId;
+  }
+
+  private evictExpired(ownerId: number, now: number) {
+    for (const [key, entry] of this.publicationStore.entriesOf(ownerId)) {
+      if (now - entry.publishedAtEpochMs > this.publishRetentionMs) this.publicationStore.delete(ownerId, key);
     }
   }
 
@@ -862,14 +897,15 @@ export class FastManimSnapshotRunner {
     encodedBytes: number,
   ) {
     const now = Date.now();
-    this.evictExpired(now);
+    const ownerId = this.localOwnerId();
+    this.evictExpired(ownerId, now);
     // Revisions come from the shared store's single monotonic sequence, so
     // neither eviction, TTL expiry, nor another tenant's publications can
     // ever make a republished Scene appear older than a cached copy.
     const revision = this.publicationStore.nextRevision();
     const publishedAt = new Date(now).toISOString();
     const evicted = this.publicationStore.publish(
-      this.ownerId,
+      ownerId,
       key,
       { encodedBytes, expected, publishedAt, publishedAtEpochMs: now, result, revision, sourceRuntimeIdentity },
       { maxBytes: this.maxPublishedBytes, maxEntries: this.maxPublishedSnapshots },
@@ -1107,11 +1143,13 @@ export class FastManimSnapshotRunner {
       if (this.closing) throw new HttpError("The Manim render pipeline is shutting down.", 503);
     };
     const key = sceneKey(query.sourcePath, query.sceneName);
-    const entry = this.publicationStore.get(this.ownerId, key);
+    const ownerId = this.ownerId;
+    if (ownerId === null) throw new HttpError("No verified Scene snapshot has been published for this Scene.", 404);
+    const entry = this.publicationStore.get(ownerId, key);
     if (!entry) throw new HttpError("No verified Scene snapshot has been published for this Scene.", 404);
-    const entryIsCurrent = () => this.publicationStore.peek(this.ownerId, key) === entry;
+    const entryIsCurrent = () => this.publicationStore.peek(ownerId, key) === entry;
     const deleteIfCurrent = () => {
-      if (entryIsCurrent()) this.publicationStore.delete(this.ownerId, key);
+      if (entryIsCurrent()) this.publicationStore.delete(ownerId, key);
     };
     if (Date.now() - entry.publishedAtEpochMs > this.publishRetentionMs) {
       if (!entryIsCurrent()) return null;
@@ -1159,7 +1197,7 @@ export class FastManimSnapshotRunner {
       // republish superseded it, the fresh entry must survive and the lookup
       // retries instead of reporting the dead revision.
       if (!entryIsCurrent()) return null;
-      this.publicationStore.delete(this.ownerId, key);
+      this.publicationStore.delete(ownerId, key);
       return fastManimSnapshotRunViewV1Schema.parse({
         ...base,
         fallback: FAST_MANIM_SNAPSHOT_FALLBACK_V1,
@@ -1261,7 +1299,7 @@ export class FastManimSnapshotRunner {
       // itself become an unbounded memory leak.
       this.activeJobs.clear();
       this.activeStatuses.clear();
-      this.publicationStore.releaseOwner(this.ownerId);
+      if (this.ownerId !== null) this.publicationStore.releaseOwner(this.ownerId);
     }
   }
 }
