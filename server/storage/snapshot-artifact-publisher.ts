@@ -132,7 +132,15 @@ function assertPublication(
 }
 
 function canonicalBytes(document: SnapshotArtifactDocumentV1) {
-  const bytes = Buffer.from(canonicalJsonV1(document), "utf8");
+  // Keep V1 artifact bytes readable by pre-V2 readers during rolling deploys:
+  // snapshotVersion=1 was historically absent from the stored expected
+  // correlation. V2 must carry its explicit independent expectation.
+  const { snapshotVersion, ...legacyExpected } = document.expected;
+  const wireDocument = {
+    ...document,
+    expected: snapshotVersion === 1 ? legacyExpected : document.expected,
+  };
+  const bytes = Buffer.from(canonicalJsonV1(wireDocument), "utf8");
   if (bytes.byteLength < 1 || bytes.byteLength > MAX_SNAPSHOT_ARTIFACT_BYTES_V1) {
     throw new RangeError("The canonical snapshot artifact exceeds 16 MiB.");
   }

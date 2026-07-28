@@ -149,6 +149,40 @@ fn serde_rejects_non_v1_versions_and_unknown_tags() {
 }
 
 #[test]
+fn imported_snapshot_source_accepts_profiles_one_and_two_only() {
+    for snapshot_version in [SnapshotProfileVersionV1::V1, SnapshotProfileVersionV1::V2] {
+        let mut scene = empty_scene();
+        scene.source = SceneSourceV1::ImportedManimServerSnapshot {
+            runtime_config_hash: REVISION.to_owned(),
+            snapshot_hash: REVISION.to_owned(),
+            snapshot_version,
+            source_hash: REVISION.to_owned(),
+        };
+        validate_scene_ir_v1(&scene).unwrap();
+        assert_eq!(
+            parse_scene_ir_json_v1(&serde_json::to_vec(&scene).unwrap()).unwrap(),
+            scene
+        );
+        if snapshot_version == SnapshotProfileVersionV1::V2 {
+            let json = serde_json::to_string(&scene)
+                .unwrap()
+                .replace(r#""snapshotVersion":2"#, r#""snapshotVersion":2.0"#);
+            assert_eq!(parse_scene_ir_json_v1(json.as_bytes()).unwrap(), scene);
+        }
+    }
+
+    let mut invalid = serde_json::to_value(empty_scene()).unwrap();
+    invalid["source"] = json!({
+        "kind": "imported-manim-server-snapshot",
+        "runtimeConfigHash": REVISION,
+        "snapshotHash": REVISION,
+        "snapshotVersion": 3.0,
+        "sourceHash": REVISION,
+    });
+    assert!(serde_json::from_value::<SceneIrV1>(invalid).is_err());
+}
+
+#[test]
 fn representative_scene_semantics_are_fail_closed() {
     let scene = empty_scene();
     validate_scene_ir_v1(&scene).unwrap();

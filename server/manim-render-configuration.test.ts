@@ -9,6 +9,7 @@ import {
   manimRenderPipeline,
   parseManimCommand,
   parseManimProjects,
+  parseFastManimSnapshotVersion,
 } from "./manim-render-pipeline";
 import { cleanupManimRenderPipelineFixtures, temporaryRoots } from "./manim-render-pipeline-test-fixtures";
 
@@ -26,6 +27,12 @@ describe("Manim command parsing", () => {
       { root: "/tmp/b" },
     ]);
     expect(() => parseManimProjects('[{"root":"/tmp/a","path":"/private"}]')).toThrow(/unsupported field/i);
+  });
+
+  it("keeps snapshot profile V1 as the default and accepts an explicit V2 opt-in", () => {
+    expect(parseFastManimSnapshotVersion(undefined)).toBe(1);
+    expect(parseFastManimSnapshotVersion("2")).toBe(2);
+    expect(() => parseFastManimSnapshotVersion("3")).toThrow(/must be 1 or 2/i);
   });
 });
 

@@ -11,7 +11,11 @@ import type {
   FastManimSandboxBackendV1,
   FastManimSandboxDeployment,
 } from "./fast-manim-sandbox-backend";
-import type { FastManimSnapshotQueryV1, FastManimSnapshotRunRequestV1 } from "./fast-manim-snapshot-contract";
+import type {
+  FastManimSnapshotProfileVersionV1,
+  FastManimSnapshotQueryV1,
+  FastManimSnapshotRunRequestV1,
+} from "./fast-manim-snapshot-contract";
 import { HttpError } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import {
@@ -43,6 +47,7 @@ export class ManimProjectRegistry {
   private readonly snapshotSandboxDeployment: FastManimSandboxDeployment;
   private readonly snapshotProducerCommand: readonly string[] | undefined;
   private readonly snapshotProducerDevOptIn: boolean | undefined;
+  private readonly snapshotVersion: FastManimSnapshotProfileVersionV1 | undefined;
   private readonly snapshotTimeoutMs: number | undefined;
   readonly tenantId: string;
   private readonly thumbnailCacheRoot: string | undefined;
@@ -66,6 +71,7 @@ export class ManimProjectRegistry {
       snapshotSandboxDeployment?: FastManimSandboxDeployment;
       snapshotProducerCommand?: readonly string[];
       snapshotProducerDevOptIn?: boolean;
+      snapshotVersion?: FastManimSnapshotProfileVersionV1;
       snapshotTimeoutMs?: number;
       tenantId: string;
       thumbnailCacheRoot?: string;
@@ -88,6 +94,7 @@ export class ManimProjectRegistry {
     this.snapshotSandboxDeployment = options.snapshotSandboxDeployment ?? "production";
     this.snapshotProducerCommand = options.snapshotProducerCommand;
     this.snapshotProducerDevOptIn = options.snapshotProducerDevOptIn;
+    this.snapshotVersion = options.snapshotVersion;
     this.snapshotTimeoutMs = options.snapshotTimeoutMs;
     this.thumbnailCacheRoot = options.thumbnailCacheRoot;
     const parsedTenantId = manimTenantIdSchema.safeParse(options.tenantId);
@@ -134,6 +141,7 @@ export class ManimProjectRegistry {
         snapshotSandboxDeployment: this.snapshotSandboxDeployment,
         snapshotProducerCommand: this.snapshotProducerCommand,
         snapshotProducerDevOptIn: this.snapshotProducerDevOptIn,
+        snapshotVersion: this.snapshotVersion,
         snapshotTimeoutMs: this.snapshotTimeoutMs,
         tenantId: this.tenantId,
         thumbnailCacheRoot: this.thumbnailCacheRoot,

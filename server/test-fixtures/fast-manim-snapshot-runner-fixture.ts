@@ -114,6 +114,7 @@ export function createRunner(
     publicationStore?: FastManimSnapshotPublicationStore;
     publishRetentionMs?: number;
     runtimeDirectoryRemover?: (runtimeDir: string) => Promise<void>;
+    snapshotVersion?: 1 | 2;
     sourceReadHooks?: ManimSourceReadHooks;
     timeoutMs?: number;
   }> = {},
@@ -149,6 +150,7 @@ export function createRunner(
     publicationStore: options.publicationStore ?? new FastManimSnapshotPublicationStore(),
     publishRetentionMs: options.publishRetentionMs,
     sourceReadHooks: options.sourceReadHooks,
+    snapshotVersion: options.snapshotVersion,
     tenantId: "test-tenant",
     timeoutMs: options.timeoutMs,
   });
@@ -302,13 +304,13 @@ export async function withFakePlatform<T>(platform: string, run: () => Promise<T
   }
 }
 
-export function runtimeConfig(): FastManimSnapshotRuntimeConfigV1 {
+export function runtimeConfig(snapshotVersion: 1 | 2 = 1): FastManimSnapshotRuntimeConfigV1 {
   return {
     capabilities: [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1],
     frame: { height: 8, width: 14.222222222222221 },
     randomSeed: 0,
     schema: FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
-    snapshotVersion: 1,
+    snapshotVersion,
     version: 1,
   };
 }

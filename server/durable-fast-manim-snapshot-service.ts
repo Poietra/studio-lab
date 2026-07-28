@@ -269,6 +269,9 @@ export class DurableFastManimSnapshotServiceV1 {
     // bundle unknown because Zod cannot express that async refinement.
     const snapshot = view.snapshot as VerifiedCompiledFastManimSnapshotResultV1;
     const scene = snapshot.bundle.scene;
+    if (scene.source.kind !== "imported-manim-server-snapshot") {
+      throw new Error("A verified fast-manim snapshot must retain imported source evidence.");
+    }
     if (!sameSourceHead(before, after) || before.blob.digest !== snapshot.sourceHash) {
       return sourceChanged(view);
     }
@@ -277,6 +280,7 @@ export class DurableFastManimSnapshotServiceV1 {
       projectId: view.projectId,
       requestId: view.requestId,
       runtimeConfigHash: view.runtimeConfigHash,
+      snapshotVersion: scene.source.snapshotVersion,
       sceneId: scene.sceneId,
       sceneName: view.sceneName,
       sourceHash: snapshot.sourceHash,
