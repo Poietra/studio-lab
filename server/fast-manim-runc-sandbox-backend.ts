@@ -6,7 +6,7 @@ import {
   fastManimOciBuildAttestationV1Schema,
   fastManimOciProfileV1Schema,
 } from "./fast-manim-oci-sandbox-profile";
-import type { FastManimRuncVerifiedReleaseV1 } from "./fast-manim-runc-release-trust";
+import { FastManimRuncJobBrokerV1, isProductionFastManimRuncJobBrokerV1 } from "./fast-manim-runc-job-broker";
 import {
   FAST_MANIM_SANDBOX_REQUIRED_CAPABILITIES_V1,
   FAST_MANIM_SANDBOX_STATUS_SCHEMA_V1,
@@ -22,17 +22,23 @@ import {
 } from "./fast-manim-sandbox-backend";
 
 const BACKEND_ID = "runc-rootless-v1";
+const testBackendCapabilityV1 = Object.freeze({ kind: "fast-manim-runc-test-backend" as const });
 
 export interface FastManimRuncProductionBrokerV1 extends FastManimOciJobBrokerV1 {
   /** Probe the real runtime, immutable rootfs, and resource controller. */
   ready(context: FastManimSandboxStatusContextV1): Promise<boolean>;
+  releaseAttestation(): Readonly<{
+    expiresAt: number;
+    issuedAt: number;
+    profileDigest: string;
+    runtimeDigest: string;
+  }>;
 }
 
 export type FastManimRuncSandboxBackendOptionsV1 = Readonly<{
   attestation: unknown;
   broker: FastManimRuncProductionBrokerV1;
   profile: unknown;
-  release: FastManimRuncVerifiedReleaseV1;
 }>;
 
 function unavailable(reason: "disabled" | "health-check-failed"): FastManimSandboxBackendStatusV1 {
@@ -65,24 +71,31 @@ export class FastManimRuncSandboxBackendV1 implements FastManimSandboxBackendV1 
   readonly #attestation: FastManimOciBuildAttestationV1;
   readonly #broker: FastManimRuncProductionBrokerV1;
   readonly #profile: unknown;
-  readonly #release: FastManimRuncVerifiedReleaseV1;
   #closeRequest: Promise<void> | null = null;
   #closing = false;
 
-  constructor(options: FastManimRuncSandboxBackendOptionsV1) {
+  constructor(options: FastManimRuncSandboxBackendOptionsV1, testCapability?: typeof testBackendCapabilityV1) {
     if (
       typeof options?.broker?.dispatch !== "function" ||
       typeof options.broker.close !== "function" ||
-      typeof options.broker.ready !== "function"
+      typeof options.broker.ready !== "function" ||
+      typeof options.broker.releaseAttestation !== "function"
     ) {
       throw new TypeError("The production runc backend requires one complete broker.");
+    }
+    if (
+      (!isProductionFastManimRuncJobBrokerV1(options.broker) ||
+        !(options.broker instanceof FastManimRuncJobBrokerV1)) &&
+      testCapability !== testBackendCapabilityV1
+    ) {
+      throw new TypeError("The production runc backend requires its closed broker implementation.");
     }
     const profile = fastManimOciProfileV1Schema.parse(options.profile);
     const attestation = fastManimOciBuildAttestationV1Schema.parse(options.attestation);
     if (attestation.profileDigest !== digestFastManimOciProfileV1(profile)) {
       throw new TypeError("The production runc backend profile does not match its build attestation.");
     }
-    const releaseAttestation = options.release.attestation();
+    const releaseAttestation = options.broker.releaseAttestation();
     if (
       releaseAttestation.profileDigest !== attestation.profileDigest ||
       releaseAttestation.runtimeDigest !== attestation.runtimeDigest
@@ -92,7 +105,6 @@ export class FastManimRuncSandboxBackendV1 implements FastManimSandboxBackendV1 
     this.#attestation = attestation;
     this.#broker = options.broker;
     this.#profile = profile;
-    this.#release = options.release;
   }
 
   readonly attestationVerifier: FastManimSandboxAttestationVerifierV1 = (status) => {
@@ -105,7 +117,7 @@ export class FastManimRuncSandboxBackendV1 implements FastManimSandboxBackendV1 
       ) {
         return false;
       }
-      const release = this.#release.attestation();
+      const release = this.#broker.releaseAttestation();
       return (
         status.attestation.issuedAt === new Date(release.issuedAt).toISOString() &&
         status.attestation.expiresAt === new Date(release.expiresAt).toISOString() &&
@@ -124,7 +136,7 @@ export class FastManimRuncSandboxBackendV1 implements FastManimSandboxBackendV1 
       if ((await this.#broker.ready(context)) !== true) return unavailable("health-check-failed");
       context.signal.throwIfAborted();
       if (this.#closing || Date.now() >= context.deadlineEpochMs) return unavailable("health-check-failed");
-      const release = this.#release.attestation();
+      const release = this.#broker.releaseAttestation();
       return {
         attestation: {
           expiresAt: new Date(release.expiresAt).toISOString(),
@@ -181,4 +193,12 @@ export class FastManimRuncSandboxBackendV1 implements FastManimSandboxBackendV1 
     this.#closeRequest ??= this.#broker.close();
     return this.#closeRequest;
   }
+}
+
+/** Unit-test seam only; production cannot certify a structural broker double. */
+export function createFastManimRuncSandboxBackendForTestingV1(options: FastManimRuncSandboxBackendOptionsV1) {
+  if (process.env.NODE_ENV !== "test") {
+    throw new TypeError("The runc test backend factory is unavailable outside the test runtime.");
+  }
+  return new FastManimRuncSandboxBackendV1(options, testBackendCapabilityV1);
 }

@@ -10,7 +10,11 @@ import {
   type FastManimOciBuildAttestationV1,
 } from "./fast-manim-oci-sandbox-profile";
 import { FAST_MANIM_RUNC_RELEASE_SCHEMA_V1, FastManimRuncReleaseTrustV1 } from "./fast-manim-runc-release-trust";
-import { type FastManimRuncProductionBrokerV1, FastManimRuncSandboxBackendV1 } from "./fast-manim-runc-sandbox-backend";
+import {
+  createFastManimRuncSandboxBackendForTestingV1,
+  type FastManimRuncProductionBrokerV1,
+  FastManimRuncSandboxBackendV1,
+} from "./fast-manim-runc-sandbox-backend";
 import { FastManimSandboxRequestBundleV1, fastManimSandboxBackendStatusV1Schema } from "./fast-manim-sandbox-backend";
 import {
   createFastManimRuncRootfsFixtureV1,
@@ -94,6 +98,7 @@ function context() {
 
 function fixture(ready = true) {
   const attestation = buildAttestation();
+  const release = verifiedRelease(attestation);
   const dispatches: FastManimOciBrokerDispatchV1[] = [];
   const broker = {
     close: vi.fn(async () => {}),
@@ -110,17 +115,29 @@ function fixture(ready = true) {
       };
     }),
     ready: vi.fn(async () => ready),
+    releaseAttestation: vi.fn(() => release.attestation()),
   } satisfies FastManimRuncProductionBrokerV1;
-  const backend = new FastManimRuncSandboxBackendV1({
+  const backend = createFastManimRuncSandboxBackendForTestingV1({
     attestation,
     broker,
     profile,
-    release: verifiedRelease(attestation),
   });
   return { backend, broker, dispatches };
 }
 
 describe("FastManimRuncSandboxBackendV1", () => {
+  it("does not let a structural broker double claim production readiness", () => {
+    const test = fixture();
+    expect(
+      () =>
+        new FastManimRuncSandboxBackendV1({
+          attestation: buildAttestation(),
+          broker: test.broker,
+          profile,
+        }),
+    ).toThrow(/closed broker/u);
+  });
+
   it("reports readiness only after the concrete broker probe and verifies its signed release", async () => {
     const { backend, broker } = fixture();
     const status = fastManimSandboxBackendStatusV1Schema.parse(await backend.status(context()));

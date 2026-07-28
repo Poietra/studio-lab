@@ -161,12 +161,17 @@ class FakeResourceController {
   admitCalls = 0;
   admissionGate: Deferred<void> | null = null;
   readonly admissionStarted = deferred<void>();
+  shutdownCalls = 0;
 
   constructor(events: string[]) {
     this.events = events;
   }
 
   async assertReady() {}
+
+  async shutdown() {
+    this.shutdownCalls += 1;
+  }
 
   async admit(limitsValue: unknown, output: FastManimSandboxBoundedOutputLifecycleV1) {
     this.admitCalls += 1;
@@ -386,7 +391,8 @@ describe("production runc job broker", () => {
     };
 
     await expect(test.broker.ready(statusContext)).resolves.toBe(true);
-    await test.broker.close();
+    await Promise.all([test.broker.close(), test.broker.close()]);
+    expect(test.controller.shutdownCalls).toBe(1);
     await expect(test.broker.ready(statusContext)).resolves.toBe(false);
   });
 

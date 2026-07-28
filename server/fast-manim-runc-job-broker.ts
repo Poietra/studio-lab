@@ -55,9 +55,10 @@ import {
 const DEFAULT_STATE_POLL_INTERVAL_MS = 25;
 const MAX_STATE_POLL_INTERVAL_MS = 1_000;
 
-type RuncResourceController = Readonly<Pick<LinuxCgroupV2ResourceControllerV1, "admit" | "assertReady">>;
+type RuncResourceController = Readonly<Pick<LinuxCgroupV2ResourceControllerV1, "admit" | "assertReady" | "shutdown">>;
 type BrokerActiveJob = Readonly<{ abort: () => void; result: Promise<unknown> }>;
 const testBrokerCapabilityV1 = Object.freeze({ kind: "fast-manim-runc-test-broker" as const });
+const productionRuncJobBrokersV1 = new WeakSet<object>();
 
 class FastManimRuncHaltV1 extends Error {
   readonly reason: FastManimSandboxResourceTerminationReasonV1;
@@ -142,6 +143,7 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
   readonly #sleep: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   readonly #testOnly: boolean;
   #cleanupFailed = false;
+  #closeRequest: Promise<void> | null = null;
   #closing = false;
 
   constructor(options: FastManimRuncJobBrokerOptionsV1, testCapability?: typeof testBrokerCapabilityV1) {
@@ -163,6 +165,7 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
     if (
       typeof options.resourceController?.admit !== "function" ||
       typeof options.resourceController?.assertReady !== "function" ||
+      typeof options.resourceController?.shutdown !== "function" ||
       typeof options.runtime?.create !== "function" ||
       typeof options.runtime?.state !== "function" ||
       typeof options.runtime?.start !== "function" ||
@@ -203,6 +206,11 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
     this.#sleep =
       options.sleep ?? ((milliseconds, signal) => delay(milliseconds, undefined, { signal }).then(() => undefined));
     this.#testOnly = testCapability === testBrokerCapabilityV1;
+    if (!this.#testOnly) productionRuncJobBrokersV1.add(this);
+  }
+
+  releaseAttestation() {
+    return this.#release.attestation();
   }
 
   async ready(context: FastManimSandboxStatusContextV1) {
@@ -249,11 +257,21 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
     return Object.freeze({ abort: active.abort, result });
   }
 
-  async close() {
+  close() {
     this.#closing = true;
+    this.#closeRequest ??= this.#closeOnce();
+    return this.#closeRequest;
+  }
+
+  async #closeOnce() {
     const active = [...this.#active];
     for (const job of active) job.abort();
     await Promise.allSettled(active.map((job) => job.result));
+    try {
+      await this.#resourceController.shutdown();
+    } catch {
+      this.#latchCleanupFailure();
+    }
     if (this.#cleanupFailed) throw new FastManimSandboxBackendControlError("cleanup");
   }
 
@@ -554,6 +572,14 @@ export function createFastManimRuncJobBrokerForTestingV1(options: FastManimRuncJ
     throw new TypeError("The runc test broker factory is unavailable outside the test runtime.");
   }
   return new FastManimRuncJobBrokerV1(options, testBrokerCapabilityV1);
+}
+
+export function isProductionFastManimRuncJobBrokerV1(value: unknown): value is FastManimRuncJobBrokerV1 {
+  return (
+    value instanceof FastManimRuncJobBrokerV1 &&
+    Object.getPrototypeOf(value) === FastManimRuncJobBrokerV1.prototype &&
+    productionRuncJobBrokersV1.has(value)
+  );
 }
 
 function resultBytesFailure(error: unknown) {
