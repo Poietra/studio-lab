@@ -3,12 +3,14 @@ import { randomBytes } from "node:crypto";
 import { promisify } from "node:util";
 import pg from "pg";
 
+import { assertStorageE2eNotInterrupted, BoundedUtf8OutputTail } from "./storage-e2e-runner-support.mjs";
+
 const execFile = promisify(execFileCallback);
 const { Client } = pg;
 const POSTGRES_IMAGE = "postgres@sha256:23e88eb049fd5d54894d70100df61d38a49ed97909263f79d4ff4c30a5d5fca2";
 const MINIO_IMAGE = "minio/minio@sha256:6f23072e3e222e64fe6f86b31a7f7aca971e5129e55cbccef649b109b8e651a1";
 const STORAGE_SUITE_CONCURRENCY = 2;
-const TEST_OUTPUT_TAIL_CHARACTERS = 256 * 1024;
+const TEST_OUTPUT_TAIL_BYTES = 256 * 1024;
 const runId = randomBytes(6).toString("hex");
 const postgresContainer = `poietra-storage-e2e-${runId}-postgres`;
 const minioContainer = `poietra-storage-e2e-${runId}-minio`;
@@ -17,7 +19,7 @@ const testProcesses = new Set();
 let interruptedSignal = null;
 
 function throwIfInterrupted() {
-  if (interruptedSignal) throw new Error(`Interrupted by ${interruptedSignal}.`);
+  assertStorageE2eNotInterrupted(interruptedSignal);
 }
 
 function validateContainerName(name) {
@@ -115,10 +117,6 @@ function writeFailureOutput(stdout, stderr) {
   if (stderr.length > 0) process.stderr.write(`${stderr}\n`);
 }
 
-function appendOutputTail(current, chunk) {
-  return `${current}${chunk.toString("utf8")}`.slice(-TEST_OUTPUT_TAIL_CHARACTERS);
-}
-
 async function runTestFile(environment, suite) {
   throwIfInterrupted();
   return new Promise((resolve, reject) => {
@@ -128,34 +126,41 @@ async function runTestFile(environment, suite) {
       stdio: ["ignore", "pipe", "pipe"],
     });
     testProcesses.add(child);
-    let stdout = "";
-    let stderr = "";
+    const stdout = new BoundedUtf8OutputTail(TEST_OUTPUT_TAIL_BYTES);
+    const stderr = new BoundedUtf8OutputTail(TEST_OUTPUT_TAIL_BYTES);
     let spawnError = null;
     child.stdout.on("data", (chunk) => {
-      stdout = appendOutputTail(stdout, chunk);
+      stdout.append(chunk);
     });
     child.stderr.on("data", (chunk) => {
-      stderr = appendOutputTail(stderr, chunk);
+      stderr.append(chunk);
     });
     child.once("error", (error) => {
       spawnError = error;
     });
     child.once("close", (code, signal) => {
       testProcesses.delete(child);
+      const stdoutText = stdout.text();
+      const stderrText = stderr.text();
       if (spawnError) {
         reject(new Error(`Storage E2E could not start: ${suite.file}.`, { cause: spawnError }));
         return;
       }
       if (code !== 0) {
-        writeFailureOutput(stdout, stderr);
+        writeFailureOutput(stdoutText, stderrText);
         reject(new Error(`Storage E2E failed with ${code ?? signal}: ${suite.file}.`));
+        return;
+      }
+      if (stdout.truncated) {
+        writeFailureOutput(stdoutText, stderrText);
+        reject(new Error(`Storage E2E exceeded its bounded JSON report: ${suite.file}.`));
         return;
       }
       let report;
       try {
-        report = JSON.parse(stdout);
+        report = JSON.parse(stdoutText);
       } catch (error) {
-        writeFailureOutput(stdout, stderr);
+        writeFailureOutput(stdoutText, stderrText);
         reject(new Error(`Storage E2E returned an invalid Vitest report: ${suite.file}.`, { cause: error }));
         return;
       }
@@ -173,7 +178,7 @@ async function runTestFile(environment, suite) {
         report.numFailedTests !== 0 ||
         !requiredTestPassed
       ) {
-        writeFailureOutput(stdout, stderr);
+        writeFailureOutput(stdoutText, stderrText);
         reject(new Error(`Storage E2E must execute its required parent test: ${suite.file}.`));
         return;
       }
