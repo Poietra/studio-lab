@@ -229,6 +229,10 @@ describe("fast-manim snapshot result v1", () => {
     expect(sealed.bundle.scene.source.snapshotVersion).toBe(2);
     expect(sealed.bundle.scene.provenance[0]?.evidence).toEqual([FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V2]);
     await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV2)).resolves.toEqual(sealed);
+    const floatLexeme = JSON.stringify(compiled(v2)).replace('"snapshotVersion":2', '"snapshotVersion":2.0');
+    await expect(parseAndSealFastManimSnapshotProducerJsonV1(floatLexeme, expectedV2)).resolves.toMatchObject({
+      kind: "compiled",
+    });
     await expect(parseProducer(compiled(v2), expected)).rejects.toMatchObject({ code: "snapshot-source-mismatch" });
     await expect(parseProducer(compiled(v1), expectedV2)).rejects.toMatchObject({ code: "snapshot-source-mismatch" });
 

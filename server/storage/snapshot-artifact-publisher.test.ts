@@ -45,7 +45,7 @@ const expected = {
 
 type FixtureEntity = Record<string, unknown> & { id: string };
 
-async function sealedSnapshot(expectedValue = expected) {
+async function sealedSnapshot(expectedValue: ExpectedFastManimSnapshotCorrelationV1 = expected) {
   const fixtureUrl = new URL("../test-fixtures/fast-manim-static-bundle.json", import.meta.url);
   const fixture = JSON.parse(await readFile(fixtureUrl, "utf8")) as {
     scene: Record<string, unknown> & { entities: FixtureEntity[] };
@@ -88,7 +88,7 @@ async function sealedSnapshot(expectedValue = expected) {
         kind: "imported-manim-server-snapshot",
         runtimeConfigHash: expectedValue.runtimeConfigHash,
         snapshotHash: ZERO_SHA256,
-        snapshotVersion: 1,
+        snapshotVersion: expectedValue.snapshotVersion,
         sourceHash: expectedValue.sourceHash,
       },
     },
@@ -285,8 +285,25 @@ describe("SnapshotArtifactPublisherV1", () => {
     expect(events).toEqual(["put", "publish"]);
     if (result.kind === "published") {
       const bytes = artifacts.bytes.get(result.publication.artifact.versionId)!;
-      expect(Buffer.from(bytes).toString("utf8")).toContain('"schema":"poietra.studio-snapshot-artifact"');
+      const wire = JSON.parse(Buffer.from(bytes).toString("utf8")) as { expected: Record<string, unknown> };
+      expect(wire).toMatchObject({ schema: "poietra.studio-snapshot-artifact" });
+      expect(wire.expected).not.toHaveProperty("snapshotVersion");
+      const read = await publisher.readCurrent(identity);
+      expect(read.kind).toBe("published");
+      if (read.kind === "published") expect(read.document.expected.snapshotVersion).toBe(1);
     }
+  });
+
+  it("stores and revalidates an explicit V2 profile expectation", async () => {
+    const expectedV2 = { ...expected, requestId: "snapshot-request-v2", snapshotVersion: 2 } as const;
+    const result = await publish({ expected: expectedV2, snapshot: await sealedSnapshot(expectedV2) });
+    if (result.kind !== "published") throw new Error("Expected V2 publication.");
+    const bytes = artifacts.bytes.get(result.publication.artifact.versionId)!;
+    const wire = JSON.parse(Buffer.from(bytes).toString("utf8")) as { expected: Record<string, unknown> };
+    expect(wire.expected.snapshotVersion).toBe(2);
+    const read = await publisher.readCurrent(identity);
+    expect(read.kind).toBe("published");
+    if (read.kind === "published") expect(read.document.expected.snapshotVersion).toBe(2);
   });
 
   it("keeps a stale-source upload orphan invisible to the caller", async () => {

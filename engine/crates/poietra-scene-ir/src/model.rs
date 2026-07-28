@@ -63,6 +63,41 @@ impl<'de> Deserialize<'de> for ContractVersionV1 {
     }
 }
 
+/// The fast-manim snapshot profile carried inside the Scene IR v1 envelope.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SnapshotProfileVersionV1 {
+    #[default]
+    V1,
+    V2,
+}
+
+impl Serialize for SnapshotProfileVersionV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u8(match self {
+            Self::V1 => 1,
+            Self::V2 => 2,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for SnapshotProfileVersionV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match deserialize_js_safe_u64(deserializer)? {
+            1 => Ok(Self::V1),
+            2 => Ok(Self::V2),
+            version => Err(de::Error::custom(format!(
+                "unsupported fast-manim snapshot profile version {version}; expected 1 or 2"
+            ))),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PointV1 {
@@ -486,7 +521,7 @@ pub enum SceneSourceV1 {
         #[serde(rename = "snapshotHash")]
         snapshot_hash: String,
         #[serde(rename = "snapshotVersion")]
-        snapshot_version: u8,
+        snapshot_version: SnapshotProfileVersionV1,
         #[serde(rename = "sourceHash")]
         source_hash: String,
     },
@@ -807,6 +842,19 @@ mod integer_wire_tests {
     fn rejects_fractional_and_javascript_unsafe_integer_values() {
         assert!(serde_json::from_str::<U32Probe>(r#"{"value":1.5}"#).is_err());
         assert!(serde_json::from_str::<ContractVersionV1>("9007199254740992").is_err());
+    }
+
+    #[test]
+    fn snapshot_profile_versions_match_javascript_number_semantics() {
+        assert_eq!(
+            serde_json::from_str::<SnapshotProfileVersionV1>("1.0").unwrap(),
+            SnapshotProfileVersionV1::V1
+        );
+        assert_eq!(
+            serde_json::from_str::<SnapshotProfileVersionV1>("2.0").unwrap(),
+            SnapshotProfileVersionV1::V2
+        );
+        assert!(serde_json::from_str::<SnapshotProfileVersionV1>("3.0").is_err());
     }
 }
 

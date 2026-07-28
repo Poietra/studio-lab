@@ -555,8 +555,8 @@ fn validate_scene_source(source: &SceneSourceV1, path: &str, validator: &mut Val
         SceneSourceV1::ImportedManimServerSnapshot {
             runtime_config_hash,
             snapshot_hash,
-            snapshot_version,
             source_hash,
+            ..
         } => {
             validate_sha256(
                 runtime_config_hash,
@@ -564,12 +564,6 @@ fn validate_scene_source(source: &SceneSourceV1, path: &str, validator: &mut Val
                 validator,
             );
             validate_sha256(snapshot_hash, &format!("{path}.snapshotHash"), validator);
-            if !matches!(snapshot_version, 1 | 2) {
-                validator.issue(
-                    format!("{path}.snapshotVersion"),
-                    "must be a supported fast-manim snapshot profile version (1 or 2)",
-                );
-            }
             validate_sha256(source_hash, &format!("{path}.sourceHash"), validator);
         }
     }
