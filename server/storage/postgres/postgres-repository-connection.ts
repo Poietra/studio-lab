@@ -92,6 +92,9 @@ export class PostgresRepositoryConnectionV1 {
       if (signal) {
         abortListener = () => reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
         signal.addEventListener("abort", abortListener, { once: true });
+        // `pool.connect()` is injectable and may synchronously abort before
+        // this listener is installed while leaving acquisition pending.
+        if (signal.aborted) abortListener();
       }
     });
     try {
@@ -104,11 +107,7 @@ export class PostgresRepositoryConnectionV1 {
     } finally {
       if (timeout) clearTimeout(timeout);
       if (abortListener) signal?.removeEventListener("abort", abortListener);
-      if (!settled)
-        void request.then(
-          (client) => client.release(true),
-          () => undefined,
-        );
+      if (!settled) void request.then((client) => client.release(true)).catch(() => undefined);
     }
   }
 

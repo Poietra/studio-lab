@@ -87,6 +87,42 @@ describe("PostgresRepositoryConnectionV1", () => {
     expect(operation).not.toHaveBeenCalled();
   });
 
+  it("rejects immediately when pool acquisition synchronously aborts and remains pending", async () => {
+    const fixture = fakePool(50);
+    const connection = new PostgresRepositoryConnectionV1({ pool: fixture.pool, statementTimeoutMs: 50 });
+    const controller = new AbortController();
+    const reason = new Error("cancelled before the acquisition listener was installed");
+    fixture.connect.mockImplementation(() => {
+      controller.abort(reason);
+      return new Promise<PoolClient>(() => undefined);
+    });
+
+    await expect(connection.query("SELECT 1", [], controller.signal)).rejects.toBe(reason);
+    expect(fixture.query).not.toHaveBeenCalled();
+  });
+
+  it("contains a synchronous failure while destroying a late client", async () => {
+    const fixture = fakePool();
+    let resolveClient: ((client: PoolClient) => void) | undefined;
+    fixture.connect.mockImplementation(
+      () =>
+        new Promise<PoolClient>((resolve) => {
+          resolveClient = resolve;
+        }),
+    );
+    fixture.release.mockImplementation(() => {
+      throw new Error("late client release failed");
+    });
+    const connection = new PostgresRepositoryConnectionV1({ pool: fixture.pool });
+    const controller = new AbortController();
+    const result = connection.query("SELECT 1", [], controller.signal);
+    controller.abort();
+
+    await expect(result).rejects.toMatchObject({ name: "AbortError" });
+    resolveClient?.(fixture.client);
+    await vi.waitFor(() => expect(fixture.release).toHaveBeenCalledWith(true));
+  });
+
   it("preserves transaction timeout setup and commit ordering", async () => {
     const fixture = fakePool(4_000);
     const connection = new PostgresRepositoryConnectionV1({ pool: fixture.pool, statementTimeoutMs: 4_000 });
