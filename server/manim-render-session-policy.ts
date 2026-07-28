@@ -21,83 +21,89 @@ export type RenderedPreviewIdentity = Readonly<
   >
 >;
 
-const STATUS_POLICIES = {
-  cancelled: {
-    abandonable: true,
-    active: false,
-    cancelable: false,
-    committable: false,
-    discardable: true,
-    stopped: true,
-    undoable: false,
+type RenderSessionTransitionDefinition = Readonly<{
+  sources: readonly RenderSessionStatus[];
+  target: RenderSessionStatus | readonly RenderSessionStatus[] | "same";
+}>;
+
+const ACTIVE_SESSION_STATUSES = ["preparing", "rendering"] as const;
+const RENDER_SESSION_TRANSITIONS = {
+  abandon: {
+    sources: ["cancelled", "failed", "preparing", "ready", "rendering"],
+    target: "discarded",
   },
-  committed: {
-    abandonable: false,
-    active: false,
-    cancelable: false,
-    committable: false,
-    discardable: false,
-    stopped: false,
-    undoable: true,
-  },
-  discarded: {
-    abandonable: false,
-    active: false,
-    cancelable: false,
-    committable: false,
-    discardable: false,
-    stopped: true,
-    undoable: false,
-  },
-  failed: {
-    abandonable: true,
-    active: false,
-    cancelable: false,
-    committable: false,
-    discardable: true,
-    stopped: false,
-    undoable: false,
-  },
-  preparing: {
-    abandonable: true,
-    active: true,
-    cancelable: true,
-    committable: false,
-    discardable: false,
-    stopped: false,
-    undoable: false,
-  },
-  ready: {
-    abandonable: true,
-    active: false,
-    cancelable: false,
-    committable: true,
-    discardable: true,
-    stopped: false,
-    undoable: false,
-  },
-  rendering: {
-    abandonable: true,
-    active: true,
-    cancelable: true,
-    committable: false,
-    discardable: false,
-    stopped: false,
-    undoable: false,
-  },
-  undone: {
-    abandonable: false,
-    active: false,
-    cancelable: false,
-    committable: false,
-    discardable: true,
-    stopped: false,
-    undoable: false,
-  },
-} as const satisfies Record<RenderSessionStatus, RenderSessionStatusPolicy>;
+  cancel: { sources: ACTIVE_SESSION_STATUSES, target: "cancelled" },
+  "claim-lease": { sources: ACTIVE_SESSION_STATUSES, target: "rendering" },
+  commit: { sources: ["ready"], target: "committed" },
+  "complete-lease": { sources: ACTIVE_SESSION_STATUSES, target: ["cancelled", "failed", "ready"] },
+  discard: { sources: ["cancelled", "failed", "ready", "undone"], target: "discarded" },
+  expire: { sources: ACTIVE_SESSION_STATUSES, target: "failed" },
+  "renew-lease": { sources: ACTIVE_SESSION_STATUSES, target: "same" },
+  undo: { sources: ["committed"], target: "undone" },
+} as const satisfies Record<string, RenderSessionTransitionDefinition>;
+
+export type RenderSessionTransitionOperation = keyof typeof RENDER_SESSION_TRANSITIONS;
+
+const STOPPED_SESSION_STATUSES: readonly RenderSessionStatus[] = ["cancelled", "discarded"];
+
+function transitionDefinition(operation: RenderSessionTransitionOperation): RenderSessionTransitionDefinition {
+  return RENDER_SESSION_TRANSITIONS[operation];
+}
+
+function transitionTargets(
+  operation: RenderSessionTransitionOperation,
+  status: RenderSessionStatus,
+): readonly RenderSessionStatus[] {
+  const definition = transitionDefinition(operation);
+  if (!definition.sources.includes(status)) return [];
+  if (definition.target === "same") return [status];
+  return typeof definition.target === "string" ? [definition.target] : definition.target;
+}
+
+export function renderSessionTransitionSources(
+  operation: RenderSessionTransitionOperation,
+): readonly RenderSessionStatus[] {
+  return [...transitionDefinition(operation).sources];
+}
+
+export function renderSessionTransitionTargets(
+  operation: RenderSessionTransitionOperation,
+): readonly RenderSessionStatus[] {
+  const definition = transitionDefinition(operation);
+  if (definition.target === "same") return [...definition.sources];
+  return typeof definition.target === "string" ? [definition.target] : [...definition.target];
+}
+
+export function renderSessionTransitionAllowed(
+  operation: RenderSessionTransitionOperation,
+  status: RenderSessionStatus,
+  target?: RenderSessionStatus,
+) {
+  const targets = transitionTargets(operation, status);
+  return target === undefined ? targets.length > 0 : targets.includes(target);
+}
+
+export function renderSessionTransitionTarget(
+  operation: RenderSessionTransitionOperation,
+  status: RenderSessionStatus,
+): RenderSessionStatus {
+  const targets = transitionTargets(operation, status);
+  if (targets.length !== 1) {
+    throw new Error(`Render session ${operation} from ${status} does not have one target.`);
+  }
+  return targets[0]!;
+}
 
 export function renderSessionStatusPolicy(status: RenderSessionStatus): RenderSessionStatusPolicy {
-  return STATUS_POLICIES[status];
+  return {
+    abandonable: renderSessionTransitionAllowed("abandon", status),
+    active: renderSessionTransitionAllowed("claim-lease", status),
+    cancelable: renderSessionTransitionAllowed("cancel", status),
+    committable: renderSessionTransitionAllowed("commit", status),
+    discardable: renderSessionTransitionAllowed("discard", status),
+    stopped: STOPPED_SESSION_STATUSES.includes(status),
+    undoable: renderSessionTransitionAllowed("undo", status),
+  };
 }
 
 // The Manager owns the action lock; policy only decides which status would
