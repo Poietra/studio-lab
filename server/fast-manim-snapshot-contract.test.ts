@@ -10,6 +10,8 @@ import {
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V1,
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V2,
   FAST_MANIM_SNAPSHOT_UNSUPPORTED_MESSAGES_V1,
+  fastManimSnapshotOpacityChannelIdV2,
+  fastManimSnapshotOpacityChannelProvenanceIdV2,
   fastManimSnapshotRunViewV1Schema,
   fastManimSnapshotSceneIdV1,
   isCanonicalFastManimLineSegmentV1,
@@ -104,6 +106,46 @@ async function importedBundle(): Promise<SceneIrBundleV1> {
     },
   });
   return draft;
+}
+
+async function dynamicOpacityBundle(): Promise<SceneIrBundleV1> {
+  const base = await importedBundle();
+  const duration = 6;
+  const entity = { ...base.scene.entities[0]!, lifetimes: [{ end: duration, start: 1 }] };
+  const channelProvenanceId = fastManimSnapshotOpacityChannelProvenanceIdV2(expected.sceneId, 0);
+  return sceneIrBundleV1Schema.parse({
+    ...base,
+    scene: {
+      ...base.scene,
+      animationChannels: [
+        {
+          entityId: entity.id,
+          id: fastManimSnapshotOpacityChannelIdV2(expected.sceneId, 0),
+          keyframes: [
+            { at: 1, easingToNext: { kind: "linear" }, value: 0 },
+            { at: 3, easingToNext: { kind: "linear" }, value: 1 },
+            { at: 4, easingToNext: { kind: "linear" }, value: 1 },
+            { at: 6, easingToNext: null, value: 0 },
+          ],
+          kind: "opacity",
+          provenanceId: channelProvenanceId,
+        },
+      ],
+      duration,
+      entities: [entity],
+      provenance: [
+        base.scene.provenance[0],
+        base.scene.provenance[1],
+        {
+          evidence: ["producer-authored opacity evidence must be normalized"],
+          id: channelProvenanceId,
+          origin: "fast-manim-server-snapshot",
+        },
+      ],
+      requiredCapabilities: ["cubic-path-geometry", "opacity-animation"],
+      source: { ...base.scene.source, snapshotVersion: 2 },
+    },
+  });
 }
 
 function compiled(bundle: SceneIrBundleV1) {
@@ -236,6 +278,20 @@ describe("fast-manim snapshot result v1", () => {
     await expect(parseProducer(compiled(v2), expected)).rejects.toMatchObject({ code: "snapshot-source-mismatch" });
     await expect(parseProducer(compiled(v1), expectedV2)).rejects.toMatchObject({ code: "snapshot-source-mismatch" });
 
+    const legacyDuration = 0.51;
+    const legacyFrozenWait = sceneIrBundleV1Schema.parse({
+      ...v2,
+      scene: {
+        ...v2.scene,
+        duration: legacyDuration,
+        entities: v2.scene.entities.map((entity) => ({
+          ...entity,
+          lifetimes: [{ end: legacyDuration, start: 0 }],
+        })),
+      },
+    });
+    await expect(parseProducer(compiled(legacyFrozenWait), expectedV2)).resolves.toMatchObject({ kind: "compiled" });
+
     const tooLong = {
       ...v2,
       scene: {
@@ -245,6 +301,124 @@ describe("fast-manim snapshot result v1", () => {
       },
     } as SceneIrBundleV1;
     await expect(parseProducer(compiled(tooLong), expectedV2)).rejects.toMatchObject({ code: "profile-violation" });
+  });
+
+  it("seals producer-shaped V2 membership and linear opacity evidence", async () => {
+    const bundle = await dynamicOpacityBundle();
+    const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
+    const sealed = await parseProducer(compiled(bundle), expectedV2);
+    if (sealed.kind !== "compiled") throw new Error("Expected a compiled dynamic V2 snapshot.");
+
+    expect(sealed.bundle.scene.duration).toBe(6);
+    expect(sealed.bundle.scene.entities[0]?.lifetimes).toEqual([{ end: 6, start: 1 }]);
+    expect(sealed.bundle.scene.animationChannels).toEqual(bundle.scene.animationChannels);
+    expect(sealed.bundle.scene.provenance.every((record) => record.evidence.length === 1)).toBe(true);
+    expect(
+      sealed.bundle.scene.provenance.every(
+        (record) => record.evidence[0] === FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V2,
+      ),
+    ).toBe(true);
+    await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV2)).resolves.toEqual(sealed);
+
+    const membershipOnly = sceneIrBundleV1Schema.parse({
+      ...bundle,
+      scene: {
+        ...bundle.scene,
+        animationChannels: [],
+        duration: 3,
+        entities: bundle.scene.entities.map((entity) => ({ ...entity, lifetimes: [{ end: 3, start: 1 }] })),
+        provenance: bundle.scene.provenance.slice(0, 2),
+        requiredCapabilities: ["cubic-path-geometry"],
+      },
+    });
+    await expect(parseProducer(compiled(membershipOnly), expectedV2)).resolves.toMatchObject({ kind: "compiled" });
+
+    const cumulativeDuration = 23 / 60;
+    const cumulativeGrid = sceneIrBundleV1Schema.parse({
+      ...bundle,
+      scene: {
+        ...bundle.scene,
+        animationChannels: bundle.scene.animationChannels.map((channel) => ({
+          ...channel,
+          keyframes: [
+            { at: 0, easingToNext: { kind: "linear" }, value: 0 },
+            { at: 22 / 60, easingToNext: null, value: 1 },
+          ],
+        })),
+        duration: cumulativeDuration,
+        entities: bundle.scene.entities.map((entity) => ({
+          ...entity,
+          lifetimes: [{ end: cumulativeDuration, start: 0 }],
+        })),
+      },
+    });
+    await expect(parseProducer(compiled(cumulativeGrid), expectedV2)).resolves.toMatchObject({ kind: "compiled" });
+  });
+
+  it("rejects schema-valid opacity/lifetime evidence outside the exact producer profile", async () => {
+    const bundle = await dynamicOpacityBundle();
+    const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
+    const scene = bundle.scene;
+    const channel = scene.animationChannels[0]!;
+    if (channel.kind !== "opacity") throw new Error("Expected the opacity fixture channel.");
+    const mutate = (patch: Partial<typeof scene>) => ({ ...bundle, scene: { ...scene, ...patch } }) as SceneIrBundleV1;
+    const mutateChannel = (patch: Partial<typeof channel>) =>
+      mutate({ animationChannels: [{ ...channel, ...patch }] } as Partial<typeof scene>);
+
+    await expect(
+      parseProducer(
+        compiled(mutate({ provenance: [scene.provenance[0]!, scene.provenance[2]!, scene.provenance[1]!] })),
+        expectedV2,
+      ),
+    ).rejects.toMatchObject({
+      code: "profile-violation",
+      message:
+        "Dynamic profile V2 provenance must be exactly the derived scene, per-entity, and per-opacity-channel records in order.",
+    });
+
+    const profileViolations = [
+      mutate({ duration: 6.01 } as Partial<typeof scene>),
+      mutate({
+        entities: scene.entities.map((entity) => ({ ...entity, lifetimes: [{ end: 6, start: 1.01 }] })),
+      } as Partial<typeof scene>),
+      mutateChannel({ id: `${expected.sceneId}/channel:opacity:999` }),
+      mutateChannel({
+        keyframes: channel.keyframes.map((keyframe, index) => (index === 1 ? { ...keyframe, value: 0.5 } : keyframe)),
+      }),
+      mutateChannel({
+        keyframes: channel.keyframes.map((keyframe, index) =>
+          index === 0 ? { ...keyframe, easingToNext: { kind: "smooth" as const } } : keyframe,
+        ),
+      }),
+      mutateChannel({
+        keyframes: channel.keyframes.map((keyframe, index) => (index === 1 ? { ...keyframe, at: 3.01 } : keyframe)),
+      }),
+      mutateChannel({
+        keyframes: [
+          { at: 1, easingToNext: { kind: "linear" }, value: 0 },
+          { at: 2, easingToNext: { kind: "linear" }, value: 1 },
+          { at: 3, easingToNext: { kind: "linear" }, value: 0 },
+          { at: 4, easingToNext: { kind: "linear" }, value: 1 },
+          { at: 6, easingToNext: null, value: 0 },
+        ],
+      }),
+      mutateChannel({
+        keyframes: channel.keyframes.map((keyframe, index) =>
+          index === channel.keyframes.length - 1 ? { ...keyframe, at: 5 } : keyframe,
+        ),
+      }),
+      mutateChannel({
+        keyframes: [
+          { at: 1, easingToNext: { kind: "linear" }, value: 0 },
+          { at: 83 / 60, easingToNext: { kind: "linear" }, value: 1 },
+          { at: 4, easingToNext: { kind: "linear" }, value: 1 },
+          { at: 6, easingToNext: null, value: 0 },
+        ],
+      }),
+    ];
+    for (const invalid of profileViolations) {
+      await expect(parseProducer(compiled(invalid), expectedV2)).rejects.toMatchObject({ code: "profile-violation" });
+    }
   });
 
   it("defaults legacy persisted correlation metadata to profile V1 only", () => {

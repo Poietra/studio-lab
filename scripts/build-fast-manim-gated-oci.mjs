@@ -5,25 +5,29 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const commit = "ac143dc46ebe314095ae7864a32efa289a0afe96";
-const tree = "b86e2ec81f257cae20669e3c5c33080facfbd610";
-const archiveSha256 = "46f66b6698650988c18327732d1d3c30cccd53b38de91e1059c61187d92c2b61";
 const target = process.argv[2] ?? "snapshot";
 const profiles = {
   render: {
+    archiveSha256: "46f66b6698650988c18327732d1d3c30cccd53b38de91e1059c61187d92c2b61",
     assetDirectory: "manim-render-gated-oci",
+    commit: "ac143dc46ebe314095ae7864a32efa289a0afe96",
     entrypoint: "render-entrypoint.py",
     tag: "poietra-manim-render-gated:ac143dc",
+    tree: "b86e2ec81f257cae20669e3c5c33080facfbd610",
   },
   snapshot: {
+    archiveSha256: "090d8ce99568d427636ba00274b08f689518f411cd96d7280e50b48e2e54fee5",
     assetDirectory: "fast-manim-gated-oci",
+    commit: "d0799e39eed36565ed65afa18079fb0e06be9014",
     entrypoint: "gated-entrypoint.py",
-    tag: "poietra-fast-manim-gated:ac143dc",
+    tag: "poietra-fast-manim-gated:d0799e3",
+    tree: "78e777a7660adaa4b6609bb12b7158ba97902721",
   },
 };
 const profile = profiles[target];
 const sourceRepository = process.env.POIETRA_FAST_MANIM_SOURCE_REPO;
 if (!profile) throw new Error("The OCI build target must be snapshot or render.");
+const { archiveSha256, commit, tree } = profile;
 const assetRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../sandbox", profile.assetDirectory);
 
 function run(command, arguments_, options = {}) {

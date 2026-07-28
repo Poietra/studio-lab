@@ -39,6 +39,7 @@ export const MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_ENTRIES = 25_000;
 export const MAX_FAST_MANIM_SNAPSHOT_OBJECT_FIELDS = 64;
 export const MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_VALUES = 50_000;
 export const MAX_FAST_MANIM_SNAPSHOT_DURATION_SECONDS_V2 = 3_600;
+export const FAST_MANIM_SNAPSHOT_FRAME_RATE_V2 = 60;
 
 export const fastManimSnapshotProfileVersionV1Schema = z.union([z.literal(1), z.literal(2)]);
 export type FastManimSnapshotProfileVersionV1 = z.infer<typeof fastManimSnapshotProfileVersionV1Schema>;
@@ -395,6 +396,20 @@ export function fastManimSnapshotEntityIdV1(sceneId: string, sceneOrder: number)
   return `${sceneId}/entity:${sceneOrder}`;
 }
 
+export function fastManimSnapshotOpacityChannelIdV2(sceneId: string, sceneOrder: number) {
+  if (!Number.isSafeInteger(sceneOrder) || sceneOrder < 0) {
+    throw new TypeError("Opacity channel identifiers derive from a non-negative integer sceneOrder.");
+  }
+  return `${sceneId}/channel:opacity:${sceneOrder}`;
+}
+
+export function fastManimSnapshotOpacityChannelProvenanceIdV2(sceneId: string, sceneOrder: number) {
+  if (!Number.isSafeInteger(sceneOrder) || sceneOrder < 0) {
+    throw new TypeError("Opacity channel provenance identifiers derive from a non-negative integer sceneOrder.");
+  }
+  return `${sceneId}/provenance:channel:opacity:${sceneOrder}`;
+}
+
 /** The exact static Scene duration the v1 exporter emits. */
 export const FAST_MANIM_SNAPSHOT_STATIC_DURATION_SECONDS_V1 = 1;
 
@@ -527,6 +542,111 @@ function assertStaticProfileEntity(entity: StaticProfileEntity) {
   }
 }
 
+function canonicalSnapshotFrameIndexV2(value: number) {
+  if (!Number.isFinite(value) || value < 0 || value > MAX_FAST_MANIM_SNAPSHOT_DURATION_SECONDS_V2) return null;
+  const frames = Math.round(value * FAST_MANIM_SNAPSHOT_FRAME_RATE_V2);
+  return Number.isSafeInteger(frames) && frames / FAST_MANIM_SNAPSHOT_FRAME_RATE_V2 === value ? frames : null;
+}
+
+function isCanonicalSnapshotFrameTimeV2(value: number) {
+  return canonicalSnapshotFrameIndexV2(value) !== null;
+}
+
+function isCanonicalDynamicTimedStepV2(start: number, end: number) {
+  const startFrame = canonicalSnapshotFrameIndexV2(start);
+  const endFrame = canonicalSnapshotFrameIndexV2(end);
+  if (startFrame === null || endFrame === null || endFrame <= startFrame) return false;
+  const duration = (endFrame - startFrame) / FAST_MANIM_SNAPSHOT_FRAME_RATE_V2;
+  const producerFrames = duration / (1 / FAST_MANIM_SNAPSHOT_FRAME_RATE_V2);
+  return Number.isInteger(producerFrames) && producerFrames / FAST_MANIM_SNAPSHOT_FRAME_RATE_V2 === duration;
+}
+
+function assertDynamicOpacityProfileV2(scene: SceneIrBundleV1["scene"]) {
+  if (scene.duration > MAX_FAST_MANIM_SNAPSHOT_DURATION_SECONDS_V2) {
+    profileViolation(`Variable-duration snapshots accept at most ${MAX_FAST_MANIM_SNAPSHOT_DURATION_SECONDS_V2}s.`);
+  }
+  const hasDynamicEvidence =
+    scene.animationChannels.length > 0 ||
+    scene.entities.some(
+      (entity) =>
+        entity.lifetimes.length !== 1 ||
+        entity.lifetimes[0]?.start !== 0 ||
+        entity.lifetimes[0]?.end !== scene.duration,
+    );
+  // Frozen-wait V2 snapshots were sealed before the producer adopted the
+  // exact frame-grid contract. Continue to verify those immutable stills;
+  // every newly admitted membership/Fade timeline must use the 60fps grid.
+  if (hasDynamicEvidence && (!isCanonicalSnapshotFrameTimeV2(scene.duration) || scene.duration === 0)) {
+    profileViolation(
+      `Variable-duration snapshots must end on the canonical ${FAST_MANIM_SNAPSHOT_FRAME_RATE_V2}fps grid.`,
+    );
+  }
+
+  const entityIndexes = new Map(scene.entities.map((entity, index) => [entity.id, index]));
+  let previousEntityIndex = -1;
+  for (const channel of scene.animationChannels) {
+    if (channel.kind !== "opacity") {
+      profileViolation("Dynamic profile V2 accepts only opacity animation channels.");
+    }
+    const entityIndex = entityIndexes.get(channel.entityId);
+    if (entityIndex === undefined || entityIndex <= previousEntityIndex) {
+      profileViolation("Dynamic opacity channels must follow entity sceneOrder without duplicates.");
+    }
+    previousEntityIndex = entityIndex;
+    const entity = scene.entities[entityIndex]!;
+    if (
+      channel.id !== fastManimSnapshotOpacityChannelIdV2(scene.sceneId, entityIndex) ||
+      channel.provenanceId !== fastManimSnapshotOpacityChannelProvenanceIdV2(scene.sceneId, entityIndex)
+    ) {
+      profileViolation("Dynamic opacity channel identifiers must derive from Scene identity and sceneOrder.");
+    }
+    const lifetime = entity.lifetimes[0]!;
+    const values = channel.keyframes.map((keyframe) => keyframe.value);
+    const producerFadeShape =
+      (values.length === 2 && ((values[0] === 0 && values[1] === 1) || (values[0] === 1 && values[1] === 0))) ||
+      (values.length === 3 && values[0] === 0 && values[1] === 1 && values[2] === 0) ||
+      (values.length === 4 && values[0] === 0 && values[1] === 1 && values[2] === 1 && values[3] === 0);
+    if (!producerFadeShape) {
+      profileViolation("Dynamic opacity channels must encode one FadeIn, one FadeOut, or one ordered pair.");
+    }
+    for (const [keyframeIndex, keyframe] of channel.keyframes.entries()) {
+      if (!isCanonicalSnapshotFrameTimeV2(keyframe.at) || keyframe.at < lifetime.start || keyframe.at > lifetime.end) {
+        profileViolation("Dynamic opacity keyframes must lie within the entity lifetime on the canonical 60fps grid.");
+      }
+      if (keyframe.value !== 0 && keyframe.value !== 1) {
+        profileViolation("Dynamic opacity keyframes must use the producer's exact zero/one Fade endpoints.");
+      }
+      const final = keyframeIndex === channel.keyframes.length - 1;
+      if ((!final && keyframe.easingToNext?.kind !== "linear") || (final && keyframe.easingToNext !== null)) {
+        profileViolation("Dynamic opacity keyframes must use explicit linear easing and a null final easing.");
+      }
+    }
+    if (values[0] === 0 && channel.keyframes[0]!.at !== lifetime.start) {
+      profileViolation("A verified FadeIn must begin exactly when its entity lifetime starts.");
+    }
+    if (values.at(-1) === 0 && channel.keyframes.at(-1)!.at !== lifetime.end) {
+      profileViolation("A verified FadeOut must end exactly when its entity lifetime ends.");
+    }
+    const fadeSegments =
+      values.length === 2
+        ? [[0, 1]]
+        : values.length === 3
+          ? [
+              [0, 1],
+              [1, 2],
+            ]
+          : [
+              [0, 1],
+              [2, 3],
+            ];
+    for (const [startIndex, endIndex] of fadeSegments) {
+      if (!isCanonicalDynamicTimedStepV2(channel.keyframes[startIndex]!.at, channel.keyframes[endIndex]!.at)) {
+        profileViolation("Each verified Fade must span one exact producer-supported 60fps timed step.");
+      }
+    }
+  }
+}
+
 /**
  * The v1 static snapshot profile: the only Scene shape the renderer provably
  * supports end to end (static filled convex closed paths lowered from Circle
@@ -562,24 +682,29 @@ function assertFastManimSnapshotProfileV1(
   if (scene.camera.view.frameHeight !== expectedFrame.height || scene.camera.view.frameWidth !== expectedFrame.width) {
     profileViolation("Static profile cameras must use exactly the requested runtime frame.");
   }
-  // V1 remains the exact one-second still contract. V2 adds only a bounded
-  // frozen final wait; animation channels and mutable geometry remain out of
-  // profile until their runtime evidence is independently proven.
+  // V1 remains the exact one-second still contract. V2 adds a bounded 60fps
+  // timeline with observed membership lifetimes and exact linear Fade
+  // opacity channels. Geometry and transforms remain immutable.
   if (snapshotVersion === 1 && scene.duration !== FAST_MANIM_SNAPSHOT_STATIC_DURATION_SECONDS_V1) {
     profileViolation("Static profile Scenes must report exactly the canonical 1-second static duration.");
   }
-  if (snapshotVersion === 2 && scene.duration > MAX_FAST_MANIM_SNAPSHOT_DURATION_SECONDS_V2) {
-    profileViolation(`Variable-duration snapshots accept at most ${MAX_FAST_MANIM_SNAPSHOT_DURATION_SECONDS_V2}s.`);
-  }
-  if (scene.animationChannels.length > 0) {
+  if (snapshotVersion === 2) assertDynamicOpacityProfileV2(scene);
+  if (snapshotVersion === 1 && scene.animationChannels.length > 0) {
     profileViolation("Static profile Scenes must not carry animation channels.");
   }
-  const expectedCapabilities = scene.entities.length > 0 ? ["cubic-path-geometry"] : [];
+  const expectedCapabilities = [
+    ...(scene.entities.length > 0 ? (["cubic-path-geometry"] as const) : []),
+    ...(scene.animationChannels.length > 0 ? (["opacity-animation"] as const) : []),
+  ];
   if (
     scene.requiredCapabilities.length !== expectedCapabilities.length ||
     scene.requiredCapabilities.some((capability, index) => capability !== expectedCapabilities[index])
   ) {
-    profileViolation("Static profile Scenes must require exactly cubic-path-geometry, or nothing when empty.");
+    profileViolation(
+      snapshotVersion === 1
+        ? "Static profile Scenes must require exactly cubic-path-geometry, or nothing when empty."
+        : "Dynamic profile V2 Scenes must require cubic-path-geometry for entities, followed by opacity-animation exactly when opacity channels are present.",
+    );
   }
   // Entities are the exporter's enumerate order: each sceneOrder must equal
   // its array index, contiguous from 0 — duplicates, gaps, and reordering are
@@ -599,8 +724,18 @@ function assertFastManimSnapshotProfileV1(
       profileViolation("Static profile entities must not declare parent entities.");
     }
     const lifetime = entity.lifetimes[0];
-    if (entity.lifetimes.length !== 1 || lifetime?.start !== 0 || lifetime.end !== scene.duration) {
-      profileViolation("Static profile entities must live for exactly the full static duration.");
+    const fullSceneLifetime = lifetime?.start === 0 && lifetime.end === scene.duration;
+    if (
+      entity.lifetimes.length !== 1 ||
+      !lifetime ||
+      (snapshotVersion === 1 && (lifetime.start !== 0 || lifetime.end !== scene.duration)) ||
+      (snapshotVersion === 2 &&
+        ((!fullSceneLifetime &&
+          (!isCanonicalSnapshotFrameTimeV2(lifetime.start) || !isCanonicalSnapshotFrameTimeV2(lifetime.end))) ||
+          lifetime.start >= lifetime.end ||
+          lifetime.end > scene.duration))
+    ) {
+      profileViolation("Entity lifetimes must match the negotiated snapshot timeline profile.");
     }
     const { m11, m12, m21, m22, tx, ty } = entity.transform;
     if (m11 !== 1 || m12 !== 0 || m21 !== 0 || m22 !== 1 || tx !== 0 || ty !== 0) {
@@ -615,12 +750,25 @@ function assertFastManimSnapshotProfileV1(
   const expectedProvenanceIds = [
     fastManimSnapshotSceneProvenanceIdV1(sceneId),
     ...scene.entities.map((_, index) => fastManimSnapshotEntityProvenanceIdV1(sceneId, index)),
+    ...(snapshotVersion === 2
+      ? scene.animationChannels.map((channel) => {
+          if (channel.kind !== "opacity") {
+            profileViolation("Dynamic profile V2 accepts only opacity animation channels.");
+          }
+          const entityIndex = scene.entities.findIndex((entity) => entity.id === channel.entityId);
+          return fastManimSnapshotOpacityChannelProvenanceIdV2(sceneId, entityIndex);
+        })
+      : []),
   ];
   if (
     scene.provenance.length !== expectedProvenanceIds.length ||
     scene.provenance.some((record, index) => record.id !== expectedProvenanceIds[index])
   ) {
-    profileViolation("Static profile provenance must be exactly the derived scene and per-entity records in order.");
+    profileViolation(
+      snapshotVersion === 1
+        ? "Static profile provenance must be exactly the derived scene and per-entity records in order."
+        : "Dynamic profile V2 provenance must be exactly the derived scene, per-entity, and per-opacity-channel records in order.",
+    );
   }
 }
 
