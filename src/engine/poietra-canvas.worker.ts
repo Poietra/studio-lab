@@ -1,3 +1,4 @@
+import { POIETRA_CANVAS_ABI_VERSION } from "./canvas-abi";
 import {
   type CanvasRenderResponseV1,
   type CanvasRenderTelemetryResponseV1,
@@ -112,8 +113,11 @@ export async function initializePoietraCanvasBindingsV1(module: unknown): Promis
     throw new Error("The Poietra WASM module does not export its initializer.");
   }
   await module.default();
-  if (typeof module.poietraCanvasAbiVersion !== "function" || module.poietraCanvasAbiVersion() !== 1) {
-    throw new Error("The Poietra WASM module does not implement canvas ABI version 1.");
+  if (
+    typeof module.poietraCanvasAbiVersion !== "function" ||
+    module.poietraCanvasAbiVersion() !== POIETRA_CANVAS_ABI_VERSION
+  ) {
+    throw new Error(`The Poietra WASM module does not implement canvas ABI version ${POIETRA_CANVAS_ABI_VERSION}.`);
   }
   const Engine: unknown = module.PoietraCanvasEngineV1;
   const EngineClass = Engine as PoietraWasmCanvasEngineClassV1;

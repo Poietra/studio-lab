@@ -1,3 +1,5 @@
+import { POIETRA_CANVAS_ABI_VERSION } from "../src/engine/canvas-abi";
+
 type CanvasConfigurationV1 = Readonly<{
   device: unknown;
   format: string;
@@ -352,7 +354,9 @@ async function probeErrorScopes(request: ErrorScopeProbeRequestV1) {
   const hooks = installReadbackHooks(canvas, request.viewport);
   const bindings = (await import(/* @vite-ignore */ request.wasmModuleUrl)) as WasmBindingsV1;
   await bindings.default();
-  if (bindings.poietraCanvasAbiVersion() !== 1) throw new Error("Unexpected canvas ABI version.");
+  if (bindings.poietraCanvasAbiVersion() !== POIETRA_CANVAS_ABI_VERSION) {
+    throw new Error("Unexpected canvas ABI version.");
+  }
   const createEngine = (targetCanvas: OffscreenCanvas) =>
     bindings.PoietraCanvasEngineV1.create(new Uint8Array(request.snapshotJson), targetCanvas);
   const engine = await createEngine(canvas);
@@ -537,7 +541,9 @@ self.addEventListener("message", (event: MessageEvent<WorkerRequestV1>) => {
     const hooks = installReadbackHooks(canvas, request.viewport);
     const bindings = (await import(/* @vite-ignore */ request.wasmModuleUrl)) as WasmBindingsV1;
     await bindings.default();
-    if (bindings.poietraCanvasAbiVersion() !== 1) throw new Error("Unexpected canvas ABI version.");
+    if (bindings.poietraCanvasAbiVersion() !== POIETRA_CANVAS_ABI_VERSION) {
+      throw new Error("Unexpected canvas ABI version.");
+    }
     const engine = await bindings.PoietraCanvasEngineV1.create(new Uint8Array(request.snapshotJson), canvas);
     hooks.arm();
     const responseJson = await engine.render(new Uint8Array(request.requestJson));

@@ -30,7 +30,7 @@ pub use canvas::PoietraCanvasEngineV1;
 /// JavaScript/WASM module handshake version, independent of Scene IR revisions.
 pub const POIETRA_ENGINE_ABI_VERSION_V1: u32 = 1;
 /// `OffscreenCanvas` render ABI version, independent of worker packet sampling.
-pub const POIETRA_CANVAS_ABI_VERSION_V1: u32 = 1;
+pub const POIETRA_CANVAS_ABI_VERSION_V2: u32 = 2;
 
 /// Returns the worker ABI version before a session is constructed.
 #[must_use]
@@ -43,7 +43,7 @@ pub fn poietra_engine_abi_version() -> u32 {
 #[must_use]
 #[wasm_bindgen(js_name = poietraCanvasAbiVersion)]
 pub fn poietra_canvas_abi_version() -> u32 {
-    POIETRA_CANVAS_ABI_VERSION_V1
+    POIETRA_CANVAS_ABI_VERSION_V2
 }
 
 /// Returns the opt-in stage telemetry ABI version, independent of the base
@@ -99,9 +99,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exported_abi_version_is_v1() {
+    fn exported_abi_versions_are_explicit() {
         assert_eq!(poietra_engine_abi_version(), 1);
-        assert_eq!(poietra_canvas_abi_version(), 1);
+        assert_eq!(poietra_canvas_abi_version(), 2);
         assert_eq!(poietra_canvas_telemetry_abi_version(), 1);
     }
 }
