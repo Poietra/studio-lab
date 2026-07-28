@@ -20,7 +20,7 @@ export const SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM =
 const MAX_SCENE_GENERATION_V1 = 9_007_199_254_740_991n;
 const MAX_POSTGRES_GENERATION_V1 = 9_223_372_036_854_775_807n;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
-const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 type ArtifactRow = QueryResultRow & {
   artifact_byte_size: number;
@@ -142,8 +142,8 @@ function sha256(value: string, name: string) {
   return value;
 }
 
-function uuidV4(value: string, name: string) {
-  if (typeof value !== "string" || !UUID_V4_PATTERN.test(value)) throw new TypeError(`${name} is invalid.`);
+function uuid(value: string, name: string) {
+  if (typeof value !== "string" || !UUID_PATTERN.test(value)) throw new TypeError(`${name} is invalid.`);
   return value;
 }
 
@@ -259,7 +259,7 @@ function deletionFromRow(row: DeletionRow, expectedTenant?: string): SnapshotArt
   }
   return {
     artifact: artifactFromRow(row),
-    deletionId: uuidV4(row.deletion_id, "Stored snapshot artifact deletion ID"),
+    deletionId: uuid(row.deletion_id, "Stored snapshot artifact deletion ID"),
     tenantId: tenant,
   };
 }
@@ -288,7 +288,7 @@ function publicationFromRow(row: PublicationRow): SnapshotPublicationV1 {
     ...identity,
     artifact,
     generation: generationFromRow(row.publication_generation, "snapshot generation", MAX_SCENE_GENERATION_V1),
-    publicationId: uuidV4(row.publication_id, "Stored publication ID"),
+    publicationId: uuid(row.publication_id, "Stored publication ID"),
     publishedAt: row.published_at,
     requestId: boundedText(row.request_id, "Stored snapshot request ID", 2_048),
     snapshotHash: sha256(row.snapshot_hash, "Stored snapshot hash"),
@@ -305,7 +305,7 @@ function checkedPublication(value: SnapshotPublicationV1): SnapshotPublicationV1
     ...identity,
     artifact: artifactReceipt(identity.tenantId, value.artifact),
     generation: generation(value.generation, "Snapshot generation", MAX_SCENE_GENERATION_V1),
-    publicationId: uuidV4(value.publicationId, "Snapshot publication ID"),
+    publicationId: uuid(value.publicationId, "Snapshot publication ID"),
     publishedAt: value.publishedAt,
     requestId: boundedText(value.requestId, "Snapshot request ID", 2_048),
     snapshotHash: sha256(value.snapshotHash, "Snapshot hash"),
@@ -366,7 +366,7 @@ function headFromRow(row: SceneHeadRow, expected: SnapshotPublicationIdentityV1)
     publication.sourcePath !== identity.sourcePath ||
     publication.sceneName !== identity.sceneName ||
     publication.generation !== headGeneration ||
-    publication.publicationId !== uuidV4(row.head_publication_id, "Stored snapshot head publication ID")
+    publication.publicationId !== uuid(row.head_publication_id, "Stored snapshot head publication ID")
   ) {
     throw new TypeError("PostgreSQL returned an invalid snapshot Scene head publication.");
   }
@@ -627,7 +627,7 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
     if (artifact.sourceDigest !== expectedSourceDigest) {
       throw new TypeError("The snapshot artifact does not belong to the expected source.");
     }
-    const publicationId = uuidV4(input.publicationId, "Snapshot publication ID");
+    const publicationId = uuid(input.publicationId, "Snapshot publication ID");
     const requestId = boundedText(input.requestId, "Snapshot request ID", 2_048);
     const snapshotHash = sha256(input.snapshotHash, "Snapshot hash");
 
@@ -946,7 +946,7 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
 
   async acknowledgeArtifactDeletion(tenantValue: string, deletionIdValue: string, signal?: AbortSignal) {
     const tenant = tenantId(tenantValue);
-    const deletionId = uuidV4(deletionIdValue, "Snapshot artifact deletion ID");
+    const deletionId = uuid(deletionIdValue, "Snapshot artifact deletion ID");
     await this.#connection.query(
       `UPDATE public.snapshot_artifact_deletions
           SET deleted_at = COALESCE(deleted_at, clock_timestamp())
