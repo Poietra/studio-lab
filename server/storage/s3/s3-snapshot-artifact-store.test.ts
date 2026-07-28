@@ -137,6 +137,39 @@ describe("S3SnapshotArtifactStoreV1", () => {
     ).rejects.toMatchObject({ code: "corrupt", name: "SnapshotArtifactReadErrorV1" });
   });
 
+  it("retries a bounded conditional-write conflict before verifying the uploaded version", async () => {
+    let putAttempts = 0;
+    const { send, store } = testStore(async (command) => {
+      if (command.constructor.name === "PutObjectCommand") {
+        putAttempts += 1;
+        if (putAttempts < 3) {
+          throw Object.assign(new Error("conditional request conflict"), {
+            $metadata: { httpStatusCode: 409 },
+            name: "ConditionalRequestConflict",
+          });
+        }
+        return { ETag: '"etag-a"', VersionId: "version-a" };
+      }
+      return {
+        Body: body(),
+        ContentLength: BYTES.byteLength,
+        ETag: '"etag-a"',
+        VersionId: "version-a",
+      };
+    });
+
+    await expect(
+      store.put(TENANT, {
+        bytes: BYTES,
+        profileDigest: PROFILE,
+        runtimeConfigHash: RUNTIME,
+        sourceDigest: SOURCE,
+      }),
+    ).resolves.toEqual(receipt());
+    expect(putAttempts).toBe(3);
+    expect(send).toHaveBeenCalledTimes(4);
+  });
+
   it("rejects invalid identities and oversized or empty artifacts before contacting S3", async () => {
     const { send, store } = testStore(async () => {
       throw new Error("unexpected S3 request");

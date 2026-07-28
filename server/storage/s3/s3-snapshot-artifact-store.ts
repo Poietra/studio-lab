@@ -20,16 +20,17 @@ import {
   MAX_SNAPSHOT_ARTIFACT_BYTES_V1,
   parseSnapshotArtifactReceiptV1,
   SnapshotArtifactReadErrorV1,
-  snapshotArtifactObjectKeyV1,
   type SnapshotArtifactReceiptV1,
   type SnapshotArtifactStoreV1,
   type SnapshotArtifactVersionV1,
+  snapshotArtifactObjectKeyV1,
 } from "../snapshot-publication-repository";
 
 const OPERATION_TIMEOUT_MS = 30_000;
 const MAX_LIST_RESULTS = 256;
 const MAX_LIST_ENTRIES = 1_024;
 const MAX_LIST_PAGES = 16;
+const MAX_CONDITIONAL_PUT_ATTEMPTS = 3;
 const SHA256 = /^[0-9a-f]{64}$/;
 
 function throwIfAborted(signal?: AbortSignal) {
@@ -199,6 +200,18 @@ function isPreconditionFailed(error: unknown) {
       error.$metadata !== null &&
       "httpStatusCode" in error.$metadata &&
       error.$metadata.httpStatusCode === 412)
+  );
+}
+
+function isConditionalRequestConflict(error: unknown) {
+  return (
+    isNamedError(error, "ConditionalRequestConflict") ||
+    (error instanceof Error &&
+      "$metadata" in error &&
+      typeof error.$metadata === "object" &&
+      error.$metadata !== null &&
+      "httpStatusCode" in error.$metadata &&
+      error.$metadata.httpStatusCode === 409)
   );
 }
 
@@ -434,23 +447,28 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
     const objectKey = snapshotArtifactObjectKeyV1(tenant, identity);
     throwIfAborted(signal);
     let response;
-    try {
-      response = await this.#client.send(
-        new PutObjectCommand({
-          Body: bytes,
-          Bucket: this.#bucket,
-          ChecksumSHA256: Buffer.from(identity.resultDigest, "hex").toString("base64"),
-          ContentLength: bytes.byteLength,
-          ContentType: "application/octet-stream",
-          IfNoneMatch: "*",
-          Key: objectKey,
-        }),
-        { abortSignal: signal },
-      );
-    } catch (error) {
-      if (isPreconditionFailed(error)) return this.#readCurrentReceipt(tenant, identity, signal);
-      throw error;
+    for (let attempt = 1; attempt <= MAX_CONDITIONAL_PUT_ATTEMPTS; attempt += 1) {
+      try {
+        response = await this.#client.send(
+          new PutObjectCommand({
+            Body: bytes,
+            Bucket: this.#bucket,
+            ChecksumSHA256: Buffer.from(identity.resultDigest, "hex").toString("base64"),
+            ContentLength: bytes.byteLength,
+            ContentType: "application/octet-stream",
+            IfNoneMatch: "*",
+            Key: objectKey,
+          }),
+          { abortSignal: signal },
+        );
+        break;
+      } catch (error) {
+        if (isPreconditionFailed(error)) return this.#readCurrentReceipt(tenant, identity, signal);
+        if (!isConditionalRequestConflict(error) || attempt === MAX_CONDITIONAL_PUT_ATTEMPTS) throw error;
+        throwIfAborted(signal);
+      }
     }
+    if (!response) throw new Error("S3 did not settle the bounded conditional snapshot upload.");
     const receipt = parseSnapshotArtifactReceiptV1(tenant, {
       ...identity,
       etag: normalizeEtag(response.ETag),
