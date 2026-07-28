@@ -3,8 +3,9 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use poietra_render_wgpu::{
-    PreparedFrameV1, WgpuPaintRendererV1, WgpuRenderTargetV1, prepare_frame_v1,
-    tessellate_validated_frame_v1, validate_frame_packet_v1,
+    PreparedFrameV1, PreparedGeometryCacheFrameStatsV1, PreparedGeometryCacheV1,
+    WgpuPaintRendererV1, WgpuRenderTargetV1, prepare_frame_with_cache_v1,
+    tessellate_validated_frame_with_cache_v1, validate_frame_packet_v1,
 };
 use poietra_scene_ir::{RenderDrawV1, ViewportV1};
 use wasm_bindgen::JsCast;
@@ -18,7 +19,7 @@ use crate::canvas_protocol::{
     sample_error_response, surface_configuration_required,
 };
 use crate::canvas_telemetry::{
-    AdapterEvidenceSourceV1, AdapterEvidenceV1, CLOCK_UNAVAILABLE_REASON_V1,
+    AdapterEvidenceSourceV1, AdapterEvidenceV1, CLOCK_UNAVAILABLE_REASON_V1, CacheOutcomeV1,
     CanvasAdapterEvidenceV1, DeviceEvidenceV1, FenceFailurePolicyV1, FenceObservationFailureV1,
     FenceObservationStepV1, FrameTelemetryV1, PhaseSampleV1, SurfaceEvidenceV1,
     TelemetryClockSourceV1, adapter_evidence_response, bounded_evidence_dump,
@@ -31,6 +32,16 @@ use crate::protocol::EngineWorkerSessionV1;
 const SNAPSHOT_REJECTED_ERROR_NAME: &str = "PoietraCanvasSnapshotRejected";
 const DELTA_REJECTED_ERROR_NAME: &str = "PoietraCanvasDeltaRejected";
 const RENDERER_UNAVAILABLE_ERROR_NAME: &str = "PoietraCanvasRendererUnavailable";
+
+fn prepared_geometry_cache_outcome(stats: PreparedGeometryCacheFrameStatsV1) -> CacheOutcomeV1 {
+    if stats.misses() > 0 {
+        CacheOutcomeV1::Miss
+    } else if stats.hits() > 0 {
+        CacheOutcomeV1::Hit
+    } else {
+        CacheOutcomeV1::Skipped
+    }
+}
 
 #[derive(Clone, Debug)]
 struct RuntimeFailureV1 {
@@ -294,6 +305,7 @@ pub struct PoietraCanvasEngineV1 {
     deferred_scope_state: SharedDeferredGpuScopeStateV1,
     device_lost: SharedFailureV1,
     normal_active_error_scopes: Option<GpuErrorScopesV1>,
+    prepared_geometry_cache: PreparedGeometryCacheV1,
     queue: wgpu::Queue,
     renderer: WgpuPaintRendererV1,
     session: EngineWorkerSessionV1,
@@ -401,6 +413,7 @@ impl PoietraCanvasEngineV1 {
             deferred_scope_state: Arc::new(Mutex::new(DeferredGpuScopeStateV1::default())),
             device_lost,
             normal_active_error_scopes: None,
+            prepared_geometry_cache: PreparedGeometryCacheV1::default(),
             queue,
             renderer,
             session,
@@ -431,7 +444,9 @@ impl PoietraCanvasEngineV1 {
     pub fn replace_snapshot(&mut self, snapshot_json: &[u8]) -> Result<(), JsValue> {
         self.session
             .replace_snapshot_json(snapshot_json)
-            .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))
+            .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
+        self.prepared_geometry_cache.clear();
+        Ok(())
     }
 
     /// Atomically applies one bounded Studio Scene delta.
@@ -466,16 +481,17 @@ impl PoietraCanvasEngineV1 {
         if let Some(failure) = self.current_terminal_failure() {
             return error_response(failure.code, &failure.message, Some(correlation));
         }
-        let frame = match prepare_frame_v1(&sampled.packet) {
-            Ok(frame) => frame,
-            Err(error) => {
-                return error_response(
-                    CanvasRenderErrorCodeV1::UnsupportedFrame,
-                    &error.to_string(),
-                    Some(correlation),
-                );
-            }
-        };
+        let frame =
+            match prepare_frame_with_cache_v1(&sampled.packet, &mut self.prepared_geometry_cache) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    return error_response(
+                        CanvasRenderErrorCodeV1::UnsupportedFrame,
+                        &error.to_string(),
+                        Some(correlation),
+                    );
+                }
+            };
 
         match self.render_prepared_frame(&frame) {
             Ok(suboptimal) => {
@@ -566,9 +582,14 @@ impl PoietraCanvasEngineV1 {
         );
 
         let tessellate_started = clock.now_ms();
-        let frame = match tessellate_validated_frame_v1(validated) {
+        let frame = match tessellate_validated_frame_with_cache_v1(
+            validated,
+            &mut self.prepared_geometry_cache,
+        ) {
             Ok(frame) => frame,
             Err(error) => {
+                telemetry.caches.prepared_geometry =
+                    prepared_geometry_cache_outcome(self.prepared_geometry_cache.frame_stats());
                 telemetry.phases.tessellate = PhaseSampleV1::from_optional_ms(
                     clock.elapsed_ms(tessellate_started),
                     CLOCK_UNAVAILABLE_REASON_V1,
@@ -584,6 +605,8 @@ impl PoietraCanvasEngineV1 {
                 );
             }
         };
+        telemetry.caches.prepared_geometry =
+            prepared_geometry_cache_outcome(self.prepared_geometry_cache.frame_stats());
         telemetry.phases.tessellate = PhaseSampleV1::from_optional_ms(
             clock.elapsed_ms(tessellate_started),
             CLOCK_UNAVAILABLE_REASON_V1,
@@ -1043,11 +1066,15 @@ impl PoietraCanvasEngineV1 {
         self.configured_viewport = Some(viewport.clone());
     }
 
-    fn current_terminal_failure(&self) -> Option<RuntimeFailureV1> {
-        read_shared_failure(&self.device_lost)
+    fn current_terminal_failure(&mut self) -> Option<RuntimeFailureV1> {
+        let failure = read_shared_failure(&self.device_lost)
             .or_else(|| read_shared_failure(&self.uncaptured_gpu_failure))
             .or_else(|| self.terminal_surface_failure.clone())
-            .or_else(|| read_deferred_gpu_scope_failure(&self.deferred_scope_state))
+            .or_else(|| read_deferred_gpu_scope_failure(&self.deferred_scope_state));
+        if failure.is_some() {
+            self.prepared_geometry_cache.clear();
+        }
+        failure
     }
 
     fn record_terminal_surface_failure(

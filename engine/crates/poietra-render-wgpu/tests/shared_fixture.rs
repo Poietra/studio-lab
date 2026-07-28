@@ -1,7 +1,8 @@
 mod support;
 
 use poietra_render_wgpu::{
-    PrepareFrameErrorV1, UnsupportedDrawReasonV1, build_gpu_upload_plan_v1, prepare_frame_v1,
+    PrepareFrameErrorV1, PreparedGeometryCacheV1, UnsupportedDrawReasonV1,
+    build_gpu_upload_plan_v1, prepare_frame_v1, prepare_frame_with_cache_v1,
     tessellate_validated_frame_v1, validate_frame_packet_v1,
 };
 use poietra_scene_ir::{
@@ -48,6 +49,38 @@ fn phase_bounds(frame: &poietra_render_wgpu::PreparedFrameV1, draw_index: usize)
                 [min_x.min(x), min_y.min(y), max_x.max(x), max_y.max(y)]
             },
         )
+}
+
+fn assert_visual_frame_eq(
+    actual: &poietra_render_wgpu::PreparedFrameV1,
+    expected: &poietra_render_wgpu::PreparedFrameV1,
+) {
+    assert_eq!(actual.viewport(), expected.viewport());
+    assert_eq!(actual.clear_color(), expected.clear_color());
+    assert_eq!(actual.draws(), expected.draws());
+    assert_eq!(actual.indices(), expected.indices());
+    assert_eq!(
+        actual.geometry_plan().vertices(),
+        expected.geometry_plan().vertices()
+    );
+    assert_eq!(actual.material_plan(), expected.material_plan());
+}
+
+fn assert_cache_invalidation(
+    baseline: &poietra_scene_ir::RenderPacketV1,
+    changed: &poietra_scene_ir::RenderPacketV1,
+    expected_misses: u64,
+) {
+    let mut cache = PreparedGeometryCacheV1::default();
+    let cold = prepare_frame_with_cache_v1(baseline, &mut cache).unwrap();
+    let phase_count = u64::try_from(cold.draws().len()).unwrap();
+    assert_eq!(cold.tessellation_calls(), phase_count);
+
+    let cached = prepare_frame_with_cache_v1(changed, &mut cache).unwrap();
+    assert_eq!(cached.tessellation_calls(), expected_misses);
+    assert_eq!(cache.frame_stats().misses(), expected_misses);
+    assert_eq!(cache.frame_stats().hits(), phase_count - expected_misses);
+    assert_visual_frame_eq(&cached, &prepare_frame_v1(changed).unwrap());
 }
 
 fn sha256(bytes: &[u8]) -> String {
@@ -124,6 +157,225 @@ fn material_only_changes_leave_geometry_and_order_plans_unchanged() {
     assert_eq!(baseline.geometry_plan(), recolored.geometry_plan());
     assert_eq!(baseline.ordered_draw_plan(), recolored.ordered_draw_plan());
     assert_ne!(baseline.material_plan(), recolored.material_plan());
+}
+
+#[test]
+fn retained_geometry_cache_reuses_exact_phases_and_rejects_stale_draw_identity() {
+    let packet = sampled_packet();
+    let mut cache = PreparedGeometryCacheV1::default();
+
+    let cold = prepare_frame_with_cache_v1(&packet, &mut cache).unwrap();
+    assert_eq!(cold.tessellation_calls(), 3);
+    assert_eq!(cache.frame_stats().hits(), 0);
+    assert_eq!(cache.frame_stats().misses(), 3);
+    assert_eq!(cache.entry_count(), 3);
+
+    let warm = prepare_frame_with_cache_v1(&packet, &mut cache).unwrap();
+    assert_eq!(warm.tessellation_calls(), 0);
+    assert_eq!(cache.frame_stats().hits(), 3);
+    assert_eq!(cache.frame_stats().misses(), 0);
+    assert_visual_frame_eq(&warm, &prepare_frame_v1(&packet).unwrap());
+
+    let mut material_only = packet.clone();
+    let RenderDrawV1::Path {
+        fill: Some(fill),
+        opacity,
+        ..
+    } = &mut material_only.draws[0]
+    else {
+        panic!("fixture first draw must be filled");
+    };
+    fill.color.green = 0.75;
+    *opacity = 0.25;
+    let recolored = prepare_frame_with_cache_v1(&material_only, &mut cache).unwrap();
+    assert_eq!(recolored.tessellation_calls(), 0);
+    assert_eq!(cache.frame_stats().hits(), 3);
+    assert_visual_frame_eq(&recolored, &prepare_frame_v1(&material_only).unwrap());
+
+    let mut clear_color_only = material_only;
+    clear_color_only.camera.clear_color.red = 0.125;
+    let cleared = prepare_frame_with_cache_v1(&clear_color_only, &mut cache).unwrap();
+    assert_eq!(cleared.tessellation_calls(), 0);
+    assert_eq!(cache.frame_stats().hits(), 3);
+    assert_visual_frame_eq(&cleared, &prepare_frame_v1(&clear_color_only).unwrap());
+
+    let mut moved = clear_color_only;
+    let RenderDrawV1::Path { transform, .. } = &mut moved.draws[0] else {
+        panic!("fixture first draw must be a path");
+    };
+    transform.tx += 0.5;
+    let stale_before = cache.stale_rejections();
+    let moved_cached = prepare_frame_with_cache_v1(&moved, &mut cache).unwrap();
+    assert_eq!(moved_cached.tessellation_calls(), 1);
+    assert_eq!(cache.frame_stats().hits(), 2);
+    assert_eq!(cache.frame_stats().misses(), 1);
+    assert_eq!(cache.stale_rejections(), stale_before + 1);
+    assert_visual_frame_eq(&moved_cached, &prepare_frame_v1(&moved).unwrap());
+
+    let mut invalid = moved;
+    invalid.viewport.width_px += 1;
+    assert!(prepare_frame_with_cache_v1(&invalid, &mut cache).is_err());
+    assert_eq!(cache.frame_stats().hits(), 0);
+    assert_eq!(cache.frame_stats().misses(), 0);
+}
+
+#[test]
+fn retained_geometry_cache_invalidates_only_geometry_affecting_phases() {
+    let baseline = sampled_packet();
+
+    let mut camera = baseline.clone();
+    camera.camera.left -= 0.25;
+    camera.camera.right -= 0.25;
+    assert_cache_invalidation(&baseline, &camera, 3);
+
+    let mut viewport = baseline.clone();
+    viewport.viewport.width_px += 16;
+    viewport.viewport.height_px += 9;
+    assert_cache_invalidation(&baseline, &viewport, 3);
+
+    let mut morphed = baseline.clone();
+    let RenderDrawV1::Path { path, .. } = &mut morphed.draws[0] else {
+        panic!("fixture first draw must be a path");
+    };
+    path.subpaths[0].segments[0].control1.x += 0.125;
+    assert_cache_invalidation(&baseline, &morphed, 1);
+
+    let mut hierarchy_transform = baseline.clone();
+    let RenderDrawV1::Path { transform, .. } = &mut hierarchy_transform.draws[1] else {
+        panic!("fixture second draw must be a path");
+    };
+    // Parent transforms are composed into this world transform by the evaluator.
+    transform.ty += 0.25;
+    assert_cache_invalidation(&baseline, &hierarchy_transform, 1);
+
+    let stroke = straight_stroke_packet(StrokeCapV1::Round);
+    let mut wider_stroke = stroke.clone();
+    let RenderDrawV1::Path {
+        stroke: Some(style),
+        ..
+    } = &mut wider_stroke.draws[0]
+    else {
+        panic!("stroke fixture must contain a stroke");
+    };
+    style.width_world *= 1.25;
+    assert_cache_invalidation(&stroke, &wider_stroke, 1);
+
+    let trim_start = generic_stroke_packet_with_initial_trim(0.25);
+    let trim_end = generic_stroke_packet_with_initial_trim(0.75);
+    assert_cache_invalidation(&trim_start, &trim_end, 1);
+}
+
+#[test]
+fn one_thousand_static_shapes_have_zero_warm_retessellation() {
+    let mut packet = sampled_packet();
+    let template = packet.draws[0].clone();
+    packet.draws = (0..1_000)
+        .map(|index| {
+            let mut draw = template.clone();
+            let RenderDrawV1::Path {
+                draw_id,
+                entity_id,
+                paint_order,
+                source_z_index,
+                ..
+            } = &mut draw
+            else {
+                panic!("fixture first draw must be a path");
+            };
+            *draw_id = format!("draw:static:{index}");
+            *entity_id = format!("entity:static:{index}");
+            *paint_order = index;
+            *source_z_index = f64::from(index);
+            draw
+        })
+        .collect();
+    packet.required_capabilities = vec![poietra_scene_ir::RenderCapabilityV1::CubicPathFill];
+    let mut cache = PreparedGeometryCacheV1::default();
+
+    let cold = prepare_frame_with_cache_v1(&packet, &mut cache).unwrap();
+    assert_eq!(cold.tessellation_calls(), 1_000);
+    assert_eq!(cache.frame_stats().misses(), 1_000);
+    let warm = prepare_frame_with_cache_v1(&packet, &mut cache).unwrap();
+    assert_eq!(warm.tessellation_calls(), 0);
+    assert_eq!(cache.frame_stats().hits(), 1_000);
+    assert_eq!(cache.frame_stats().misses(), 0);
+    assert_visual_frame_eq(&warm, &prepare_frame_v1(&packet).unwrap());
+}
+
+#[test]
+fn retained_geometry_cache_is_bounded_evictable_and_clearable() {
+    let packet = sampled_packet();
+    let mut cache = PreparedGeometryCacheV1::with_limits(usize::MAX, 2);
+    prepare_frame_with_cache_v1(&packet, &mut cache).unwrap();
+    assert_eq!(cache.entry_count(), 2);
+    assert_eq!(cache.evictions(), 1);
+    assert!(cache.accounted_bytes() > 0);
+
+    cache.clear();
+    assert_eq!(cache.entry_count(), 0);
+    assert_eq!(cache.accounted_bytes(), 0);
+    assert_eq!(cache.frame_stats().hits(), 0);
+    assert_eq!(cache.frame_stats().misses(), 0);
+
+    let mut disabled = PreparedGeometryCacheV1::with_limits(1, 2);
+    prepare_frame_with_cache_v1(&packet, &mut disabled).unwrap();
+    assert_eq!(disabled.entry_count(), 0);
+    assert!(disabled.accounted_bytes() <= 1);
+
+    let mut first = sampled_packet();
+    first.draws.truncate(1);
+    first.required_capabilities = vec![poietra_scene_ir::RenderCapabilityV1::CubicPathFill];
+    let mut sizing = PreparedGeometryCacheV1::with_limits(usize::MAX, usize::MAX);
+    prepare_frame_with_cache_v1(&first, &mut sizing).unwrap();
+    let one_phase_bytes = sizing.accounted_bytes();
+
+    let mut byte_bounded = PreparedGeometryCacheV1::with_limits(one_phase_bytes, usize::MAX);
+    prepare_frame_with_cache_v1(&first, &mut byte_bounded).unwrap();
+    let mut second = first;
+    let RenderDrawV1::Path { draw_id, .. } = &mut second.draws[0] else {
+        unreachable!()
+    };
+    *draw_id = "draw:x".to_owned();
+    prepare_frame_with_cache_v1(&second, &mut byte_bounded).unwrap();
+    assert_eq!(byte_bounded.entry_count(), 1);
+    assert_eq!(byte_bounded.evictions(), 1);
+    assert!(byte_bounded.accounted_bytes() <= one_phase_bytes);
+}
+
+#[test]
+fn retained_geometry_cache_evicts_the_least_recently_used_phase() {
+    let packet_for = |suffix: &str| {
+        let mut packet = sampled_packet();
+        packet.draws.truncate(1);
+        let RenderDrawV1::Path {
+            draw_id, entity_id, ..
+        } = &mut packet.draws[0]
+        else {
+            unreachable!()
+        };
+        *draw_id = format!("draw:lru:{suffix}");
+        *entity_id = format!("entity:lru:{suffix}");
+        packet.required_capabilities = vec![poietra_scene_ir::RenderCapabilityV1::CubicPathFill];
+        packet
+    };
+    let [first, second, third] = [
+        packet_for("first"),
+        packet_for("second"),
+        packet_for("third"),
+    ];
+    let mut cache = PreparedGeometryCacheV1::with_limits(usize::MAX, 2);
+
+    prepare_frame_with_cache_v1(&first, &mut cache).unwrap();
+    prepare_frame_with_cache_v1(&second, &mut cache).unwrap();
+    prepare_frame_with_cache_v1(&first, &mut cache).unwrap();
+    assert_eq!(cache.frame_stats().hits(), 1);
+    prepare_frame_with_cache_v1(&third, &mut cache).unwrap();
+    assert_eq!(cache.evictions(), 1);
+
+    prepare_frame_with_cache_v1(&first, &mut cache).unwrap();
+    assert_eq!(cache.frame_stats().hits(), 1);
+    prepare_frame_with_cache_v1(&second, &mut cache).unwrap();
+    assert_eq!(cache.frame_stats().misses(), 1);
 }
 
 #[test]

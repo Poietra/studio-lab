@@ -10,10 +10,12 @@ use lyon_tessellation::{
     StrokeOptions, StrokeTessellator, StrokeVertex, TessellationError, VertexId,
 };
 use poietra_scene_ir::{
-    AffineTransformV1, CubicSegmentV1, CubicSubpathV1, FillRuleV1, RenderCameraV1, RenderDrawV1,
-    RenderPacketV1, RgbaColorV1, StrokeCapV1, StrokeJoinV1, StrokeStyleV1, ViewportV1,
-    validate_render_packet_v1,
+    AffineTransformV1, CubicSegmentV1, CubicSubpathV1, FillRuleV1, FillStyleV1, RenderCameraV1,
+    RenderDrawV1, RenderPacketV1, RgbaColorV1, StrokeCapV1, StrokeJoinV1, StrokeStyleV1,
+    ViewportV1, validate_render_packet_v1,
 };
+
+use crate::cache::{CachedPhaseGeometryV1, PreparedGeometryCacheInputV1, PreparedGeometryCacheV1};
 
 /// Maximum deviation between a cubic control hull and its emitted chord.
 pub const FLATTEN_TOLERANCE_PIXELS_V1: f64 = 0.25;
@@ -1056,6 +1058,21 @@ pub fn prepare_frame_v1(packet: &RenderPacketV1) -> Result<PreparedFrameV1, Prep
     tessellate_validated_frame_v1(validate_frame_packet_v1(packet)?)
 }
 
+/// Validates and prepares a complete packet through one bounded retained cache.
+///
+/// # Errors
+///
+/// Returns the same fail-closed errors as [`prepare_frame_v1`]. Cache misses
+/// never weaken packet validation, and a cache entry is installed only after a
+/// complete paint phase tessellates successfully.
+pub fn prepare_frame_with_cache_v1(
+    packet: &RenderPacketV1,
+    cache: &mut PreparedGeometryCacheV1,
+) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
+    cache.begin_frame();
+    tessellate_validated_frame_inner_v1(validate_frame_packet_v1(packet)?, Some(cache))
+}
+
 fn prepare_material(
     color: &RgbaColorV1,
     opacity: f64,
@@ -1681,7 +1698,7 @@ impl PreparedFrameAccumulatorV1 {
             &mut Vec<PreparedGeometryVertexV1>,
             &mut Vec<u32>,
         ) -> Result<(), PrepareFrameErrorV1>,
-    ) -> Result<(), PrepareFrameErrorV1> {
+    ) -> Result<(usize, usize), PrepareFrameErrorV1> {
         let material = prepare_material(color, opacity, draw_id)?;
         let index_start_len = self.indices.len();
         let vertex_start_len = self.vertices.len();
@@ -1712,8 +1729,191 @@ impl PreparedFrameAccumulatorV1 {
             .tessellation_calls
             .checked_add(1)
             .ok_or(PrepareFrameErrorV1::IndexRange)?;
+        Ok((index_start_len, vertex_start_len))
+    }
+
+    fn cached_phase(
+        &self,
+        index_start: usize,
+        vertex_start: usize,
+    ) -> Result<CachedPhaseGeometryV1, PrepareFrameErrorV1> {
+        let vertex_start_u32 =
+            u32::try_from(vertex_start).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+        let indices = self.indices[index_start..]
+            .iter()
+            .map(|index| {
+                index
+                    .checked_sub(vertex_start_u32)
+                    .ok_or(PrepareFrameErrorV1::IndexRange)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(CachedPhaseGeometryV1::new(
+            indices,
+            self.vertices[vertex_start..].to_vec(),
+        ))
+    }
+
+    fn append_cached_phase(
+        &mut self,
+        draw_id: &str,
+        entity_id: &str,
+        color: &RgbaColorV1,
+        opacity: f64,
+        geometry: &CachedPhaseGeometryV1,
+    ) -> Result<(), PrepareFrameErrorV1> {
+        let vertex_start_len = self.vertices.len();
+        let Some(vertex_end_len) = vertex_start_len.checked_add(geometry.vertices().len()) else {
+            return Err(PrepareFrameErrorV1::IndexRange);
+        };
+        if vertex_end_len > MAX_PREPARED_VERTICES_V1 {
+            return Err(PrepareFrameErrorV1::TessellationVertexLimit {
+                draw_id: draw_id.to_owned(),
+                maximum_vertices: MAX_PREPARED_VERTICES_V1,
+            });
+        }
+        let material = prepare_material(color, opacity, draw_id)?;
+        let index_start =
+            u32::try_from(self.indices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+        let vertex_start =
+            u32::try_from(vertex_start_len).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+        let local_vertex_count = u32::try_from(geometry.vertices().len())
+            .map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+        for index in geometry.indices() {
+            if *index >= local_vertex_count {
+                return Err(PrepareFrameErrorV1::IndexRange);
+            }
+            self.indices.push(
+                vertex_start
+                    .checked_add(*index)
+                    .ok_or(PrepareFrameErrorV1::IndexRange)?,
+            );
+        }
+        self.vertices.extend_from_slice(geometry.vertices());
+        let material_index =
+            u32::try_from(self.materials.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+        self.materials.push(material);
+        self.draws.push(PreparedDrawV1 {
+            draw_id: draw_id.to_owned(),
+            entity_id: entity_id.to_owned(),
+            index_range: index_start
+                ..u32::try_from(self.indices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?,
+            material_index,
+            vertex_range: vertex_start
+                ..u32::try_from(vertex_end_len).map_err(|_| PrepareFrameErrorV1::IndexRange)?,
+        });
         Ok(())
     }
+}
+
+#[derive(Clone, Copy)]
+struct PreparedPathDrawInputV1<'a> {
+    cache: PreparedGeometryCacheInputV1<'a>,
+    entity_id: &'a str,
+    fill: Option<&'a FillStyleV1>,
+    opacity: f64,
+    stroke: Option<&'a StrokeStyleV1>,
+}
+
+impl PreparedPathDrawInputV1<'_> {
+    fn geometry_context(&self) -> GeometryContextV1<'_> {
+        GeometryContextV1 {
+            camera: self.cache.camera,
+            draw_id: self.cache.draw_id,
+            viewport: self.cache.viewport,
+        }
+    }
+}
+
+fn append_fill_phase_v1(
+    prepared: &mut PreparedFrameAccumulatorV1,
+    cache: &mut Option<&mut PreparedGeometryCacheV1>,
+    input: PreparedPathDrawInputV1<'_>,
+) -> Result<(), PrepareFrameErrorV1> {
+    let Some(fill) = input.fill else {
+        return Ok(());
+    };
+    if let Some(cached) = cache
+        .as_deref_mut()
+        .and_then(|cache| cache.lookup_fill(input.cache, fill.rule))
+    {
+        return prepared.append_cached_phase(
+            input.cache.draw_id,
+            input.entity_id,
+            &fill.color,
+            input.opacity,
+            cached,
+        );
+    }
+    let (index_start, vertex_start) = prepared.append_phase(
+        input.cache.draw_id,
+        input.entity_id,
+        &fill.color,
+        input.opacity,
+        |vertices, indices| {
+            prepare_fill_geometry(
+                vertices,
+                indices,
+                input.cache.path,
+                input.cache.transform,
+                fill.rule,
+                input.geometry_context(),
+            )
+        },
+    )?;
+    if let Some(cache) = cache.as_deref_mut() {
+        cache.insert_fill(
+            input.cache,
+            fill.rule,
+            prepared.cached_phase(index_start, vertex_start)?,
+        );
+    }
+    Ok(())
+}
+
+fn append_stroke_phase_v1(
+    prepared: &mut PreparedFrameAccumulatorV1,
+    cache: &mut Option<&mut PreparedGeometryCacheV1>,
+    input: PreparedPathDrawInputV1<'_>,
+) -> Result<(), PrepareFrameErrorV1> {
+    let Some(stroke) = input.stroke else {
+        return Ok(());
+    };
+    if let Some(cached) = cache
+        .as_deref_mut()
+        .and_then(|cache| cache.lookup_stroke(input.cache, stroke))
+    {
+        return prepared.append_cached_phase(
+            input.cache.draw_id,
+            input.entity_id,
+            &stroke.color,
+            input.opacity,
+            cached,
+        );
+    }
+    let (index_start, vertex_start) = prepared.append_phase(
+        input.cache.draw_id,
+        input.entity_id,
+        &stroke.color,
+        input.opacity,
+        |vertices, indices| {
+            prepare_stroke_geometry(
+                vertices,
+                indices,
+                input.cache.path,
+                input.cache.transform,
+                stroke,
+                input.geometry_context(),
+            )
+        },
+    )?;
+    if let Some(cache) = cache.as_deref_mut() {
+        cache.insert_stroke(
+            input.cache,
+            stroke,
+            prepared.cached_phase(index_start, vertex_start)?,
+        );
+    }
+    Ok(())
 }
 
 /// Tessellates a packet that [`validate_frame_packet_v1`] has already accepted.
@@ -1729,6 +1929,26 @@ impl PreparedFrameAccumulatorV1 {
 /// error.
 pub fn tessellate_validated_frame_v1(
     validated: ValidatedRenderPacketV1<'_>,
+) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
+    tessellate_validated_frame_inner_v1(validated, None)
+}
+
+/// Tessellates a validated packet through a bounded exact-signature cache.
+///
+/// # Errors
+///
+/// Returns the same fail-closed errors as [`tessellate_validated_frame_v1`].
+pub fn tessellate_validated_frame_with_cache_v1(
+    validated: ValidatedRenderPacketV1<'_>,
+    cache: &mut PreparedGeometryCacheV1,
+) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
+    cache.begin_frame();
+    tessellate_validated_frame_inner_v1(validated, Some(cache))
+}
+
+fn tessellate_validated_frame_inner_v1(
+    validated: ValidatedRenderPacketV1<'_>,
+    mut cache: Option<&mut PreparedGeometryCacheV1>,
 ) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
     let packet = validated.packet;
     let phase_capacity = packet.draws.len().saturating_mul(2);
@@ -1759,33 +1979,21 @@ pub fn tessellate_validated_frame_v1(
                 reason: UnsupportedDrawReasonV1::MissingPaint,
             });
         }
-        let context = GeometryContextV1 {
-            camera: &packet.camera,
-            draw_id,
-            viewport: &packet.viewport,
+        let input = PreparedPathDrawInputV1 {
+            cache: PreparedGeometryCacheInputV1 {
+                camera: &packet.camera,
+                draw_id,
+                path,
+                transform,
+                viewport: &packet.viewport,
+            },
+            entity_id,
+            fill: fill.as_ref(),
+            opacity: *opacity,
+            stroke: stroke.as_ref(),
         };
-        if let Some(fill) = fill {
-            prepared.append_phase(
-                draw_id,
-                entity_id,
-                &fill.color,
-                *opacity,
-                |vertices, indices| {
-                    prepare_fill_geometry(vertices, indices, path, transform, fill.rule, context)
-                },
-            )?;
-        }
-        if let Some(stroke) = stroke {
-            prepared.append_phase(
-                draw_id,
-                entity_id,
-                &stroke.color,
-                *opacity,
-                |vertices, indices| {
-                    prepare_stroke_geometry(vertices, indices, path, transform, stroke, context)
-                },
-            )?;
-        }
+        append_fill_phase_v1(&mut prepared, &mut cache, input)?;
+        append_stroke_phase_v1(&mut prepared, &mut cache, input)?;
     }
 
     Ok(PreparedFrameV1 {

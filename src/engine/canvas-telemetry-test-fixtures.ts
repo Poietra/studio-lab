@@ -7,7 +7,7 @@ import type { CanvasAdapterEvidenceV1, CanvasFrameTelemetryV1 } from "./canvas-w
 /// against totalMs 5.5ms, so it passes attribution validation as-is.
 export function measuredTelemetryFixtureV1(): CanvasFrameTelemetryV1 {
   return {
-    caches: { pipeline: "retained", preparedGeometry: "absent", surfaceConfiguration: "hit" },
+    caches: { pipeline: "retained", preparedGeometry: "miss", surfaceConfiguration: "hit" },
     clock: "worker-performance-now",
     counts: {
       bufferCreations: 2,
@@ -62,7 +62,7 @@ export function nullTelemetryCountsV1(): CanvasFrameTelemetryV1["counts"] {
 export function unavailableTelemetryFixtureV1(reason = "no clock"): CanvasFrameTelemetryV1 {
   const unavailable = { kind: "unavailable", reason } as const;
   return {
-    caches: { pipeline: "retained", preparedGeometry: "absent", surfaceConfiguration: "miss" },
+    caches: { pipeline: "retained", preparedGeometry: "skipped", surfaceConfiguration: "miss" },
     clock: "unavailable",
     counts: nullTelemetryCountsV1(),
     phases: {
