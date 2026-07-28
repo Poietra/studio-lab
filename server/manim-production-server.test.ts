@@ -145,7 +145,7 @@ describe("production Manim server configuration", () => {
       maxConnections: 256,
       maxHeaderBytes: 16 * 1024,
       requestDrainTimeoutMs: 10_000,
-      runtimeCloseTimeoutMs: 10_000,
+      runtimeCloseTimeoutMs: 45_000,
     });
   });
 

@@ -45,10 +45,13 @@ describe("DurableManimRuntimeV1 production readiness", () => {
   });
 
   it("requires and delegates durable snapshots in the production runtime", async () => {
+    const closeOrder: string[] = [];
     const runSceneSnapshot = vi.fn(async () => ({ kind: "run" }));
     const sceneSnapshot = vi.fn(async () => ({ kind: "read" }));
     const releaseProject = vi.fn(async () => undefined);
-    const snapshotsClose = vi.fn(async () => undefined);
+    const snapshotsClose = vi.fn(async () => {
+      closeOrder.push("snapshots");
+    });
     const snapshots = partial<DurableFastManimSnapshotServiceV1>({
       close: snapshotsClose,
       ready: async () => true,
@@ -61,13 +64,20 @@ describe("DurableManimRuntimeV1 production readiness", () => {
       ready: async () => true,
     });
     const repository = partial<WorkspaceSourceRepositoryV1>({
-      close: async () => undefined,
+      close: async () => {
+        closeOrder.push("repository");
+      },
       listProjects: async () => ({ defaultProjectId: null, projects: [] }),
       ready: async () => true,
       softDeleteProject: async () => undefined,
     });
     const runtime = new DurableManimRuntimeV1({
-      blobs: partial<SourceContentBlobStoreV1>({ close: async () => undefined, ready: async () => true }),
+      blobs: partial<SourceContentBlobStoreV1>({
+        close: async () => {
+          closeOrder.push("blobs");
+        },
+        ready: async () => true,
+      }),
       execution: { ready: async () => true },
       namespace: "production-snapshot-test",
       renders,
@@ -93,5 +103,7 @@ describe("DurableManimRuntimeV1 production readiness", () => {
     expect(sceneSnapshot).toHaveBeenCalledWith("project-a", query);
     expect(releaseProject).toHaveBeenCalledWith("project-a");
     expect(snapshotsClose).toHaveBeenCalledOnce();
+    expect(closeOrder.indexOf("snapshots")).toBeLessThan(closeOrder.indexOf("repository"));
+    expect(closeOrder.indexOf("snapshots")).toBeLessThan(closeOrder.indexOf("blobs"));
   });
 });

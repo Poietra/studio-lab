@@ -365,9 +365,9 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
   close() {
     this.#closeRequest ??= (async () => {
       const errors: unknown[] = [];
+      await (this.#snapshots?.close() ?? Promise.resolve()).catch((error: unknown) => errors.push(error));
       await (this.#execution?.close?.() ?? Promise.resolve()).catch((error: unknown) => errors.push(error));
       const results = await Promise.allSettled([
-        this.#snapshots?.close() ?? Promise.resolve(),
         this.#renders?.close() ?? Promise.resolve(),
         this.#blobs.close(),
         this.#repository.close(),
