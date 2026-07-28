@@ -12,7 +12,11 @@ import { PostgresSnapshotPublicationRepositoryV1 } from "./postgres/postgres-sna
 import { PostgresWorkspaceSourceRepositoryV1 } from "./postgres/postgres-workspace-source-repository";
 import { S3ContentBlobStoreV1 } from "./s3/s3-content-blob-store";
 import { S3SnapshotArtifactStoreV1 } from "./s3/s3-snapshot-artifact-store";
-import { SnapshotArtifactReadErrorV1, type SnapshotPublicationIdentityV1 } from "./snapshot-publication-repository";
+import {
+  SnapshotArtifactReadErrorV1,
+  type SnapshotArtifactReceiptV1,
+  type SnapshotPublicationIdentityV1,
+} from "./snapshot-publication-repository";
 
 const PROCESS_ROLE = process.env.POIETRA_SNAPSHOT_STORAGE_E2E_PROCESS_ROLE;
 const PROCESS_MARKER = "POIETRA_SNAPSHOT_STORAGE_E2E_RESULT=";
@@ -34,12 +38,25 @@ type StorageEnvironment = Readonly<{
   secretAccessKey: string;
 }>;
 
-type ChildResult = Readonly<{
-  event: "published";
-  generation: string;
-  requestId: string;
-  resultDigest: string;
-  snapshotHash: string;
+type ChildResult =
+  | Readonly<{
+      event: "orphan-uploaded";
+      artifact: SnapshotArtifactReceiptV1;
+    }>
+  | Readonly<{
+      event: "published";
+      generation: string;
+      requestId: string;
+      resultDigest: string;
+      snapshotHash: string;
+    }>;
+
+type ChildRole = "orphan-writer" | "reader";
+
+type OrphanWriterInput = Readonly<{
+  nonce: string;
+  sourceDigest: string;
+  tenantId: string;
 }>;
 
 function storageEnvironment(): StorageEnvironment {
@@ -65,13 +82,18 @@ function s3Config(environment: StorageEnvironment) {
   } as const;
 }
 
-function snapshotStorage() {
+function snapshotArtifactStore() {
   const environment = storageEnvironment();
-  const artifacts = new S3SnapshotArtifactStoreV1({
+  return new S3SnapshotArtifactStoreV1({
     bucket: environment.bucket,
     clientConfig: s3Config(environment),
     deployment: "test",
   });
+}
+
+function snapshotStorage() {
+  const environment = storageEnvironment();
+  const artifacts = snapshotArtifactStore();
   const publications = new PostgresSnapshotPublicationRepositoryV1({
     poolConfig: { connectionString: environment.databaseUrl, max: 2 },
   });
@@ -111,6 +133,12 @@ function identityFromEnvironment(): SnapshotPublicationIdentityV1 {
   return JSON.parse(serialized) as SnapshotPublicationIdentityV1;
 }
 
+function orphanWriterInputFromEnvironment(): OrphanWriterInput {
+  const serialized = process.env.POIETRA_SNAPSHOT_STORAGE_E2E_ORPHAN_INPUT;
+  if (!serialized) throw new Error("The snapshot orphan writer is missing its input.");
+  return JSON.parse(serialized) as OrphanWriterInput;
+}
+
 function emitProcessResult(result: ChildResult) {
   process.stdout.write(`${PROCESS_MARKER}${JSON.stringify(result)}\n`);
 }
@@ -138,7 +166,35 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== "reader")("durable snapshot 
   }, 30_000);
 });
 
-async function runReaderChild(identity: SnapshotPublicationIdentityV1): Promise<ChildResult> {
+describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== "orphan-writer")(
+  "durable snapshot orphan writer child fixture",
+  () => {
+    it("uploads an artifact and waits without publishing metadata", async () => {
+      const input = orphanWriterInputFromEnvironment();
+      const artifacts = snapshotArtifactStore();
+      try {
+        expect(await artifacts.ready()).toBe(true);
+        const artifact = await artifacts.put(input.tenantId, {
+          bytes: Buffer.from(`orphan-${input.nonce}`, "utf8"),
+          profileDigest: PROFILE_DIGEST,
+          runtimeConfigHash: RUNTIME_CONFIG_HASH,
+          sourceDigest: input.sourceDigest,
+        });
+        emitProcessResult({ artifact, event: "orphan-uploaded" });
+        await new Promise<never>(() => undefined);
+      } finally {
+        await artifacts.close();
+      }
+    }, 30_000);
+  },
+);
+
+async function runChild(options: {
+  environment: Readonly<Record<string, string>>;
+  killAfterResult: boolean;
+  role: ChildRole;
+  title: string;
+}): Promise<ChildResult> {
   const vitestEntry = fileURLToPath(new URL("../vitest.mjs", import.meta.resolve("vitest")));
   const child = spawn(
     process.execPath,
@@ -147,7 +203,7 @@ async function runReaderChild(identity: SnapshotPublicationIdentityV1): Promise<
       "run",
       fileURLToPath(import.meta.url),
       "-t",
-      "reads one published snapshot through fresh process-local adapters",
+      options.title,
       "--pool=threads",
       "--maxWorkers=1",
       "--reporter=dot",
@@ -155,8 +211,8 @@ async function runReaderChild(identity: SnapshotPublicationIdentityV1): Promise<
     {
       env: {
         ...process.env,
-        POIETRA_SNAPSHOT_STORAGE_E2E_IDENTITY: JSON.stringify(identity),
-        POIETRA_SNAPSHOT_STORAGE_E2E_PROCESS_ROLE: "reader",
+        ...options.environment,
+        POIETRA_SNAPSHOT_STORAGE_E2E_PROCESS_ROLE: options.role,
       },
       stdio: ["ignore", "pipe", "pipe"],
     },
@@ -164,36 +220,91 @@ async function runReaderChild(identity: SnapshotPublicationIdentityV1): Promise<
   let errors = "";
   let output = "";
   let result: ChildResult | null = null;
+  let parseError: unknown = null;
+  let spawnError: unknown = null;
+  let timedOut = false;
+  let killAttempted = false;
+  const boundOutput = (current: string, chunk: Buffer) => `${current}${chunk.toString("utf8")}`.slice(-4_000);
   const inspectOutput = () => {
     const markerIndex = output.indexOf(PROCESS_MARKER);
     const lineEnd = markerIndex < 0 ? -1 : output.indexOf("\n", markerIndex);
     if (markerIndex < 0 || lineEnd < 0 || result) return;
-    result = JSON.parse(output.slice(markerIndex + PROCESS_MARKER.length, lineEnd)) as ChildResult;
+    try {
+      result = JSON.parse(output.slice(markerIndex + PROCESS_MARKER.length, lineEnd)) as ChildResult;
+      if (options.killAfterResult) {
+        killAttempted = true;
+        child.kill("SIGKILL");
+      }
+    } catch (error) {
+      parseError = error;
+      killAttempted = true;
+      child.kill("SIGKILL");
+    }
   };
   child.stdout.on("data", (chunk: Buffer) => {
-    output += chunk.toString("utf8");
+    output = boundOutput(output, chunk);
     inspectOutput();
   });
   child.stderr.on("data", (chunk: Buffer) => {
-    errors = `${errors}${chunk.toString("utf8")}`.slice(-4_000);
+    errors = boundOutput(errors, chunk);
   });
-  const exit = new Promise<Readonly<{ code: number | null; signal: NodeJS.Signals | null }>>((resolve, reject) => {
-    child.once("error", reject);
+  const exit = new Promise<Readonly<{ code: number | null; signal: NodeJS.Signals | null }>>((resolve) => {
+    child.once("error", (error) => {
+      spawnError = error;
+      resolve({ code: null, signal: null });
+    });
     child.once("exit", (code, signal) => resolve({ code, signal }));
   });
-  const timeout = setTimeout(() => child.kill("SIGKILL"), 25_000);
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    killAttempted = true;
+    child.kill("SIGKILL");
+  }, 25_000);
   try {
     const status = await exit;
     inspectOutput();
-    if (!result) throw new Error(`Snapshot reader child produced no result: ${errors || output.slice(-4_000)}`);
-    if (status.code !== 0) {
-      throw new Error(`Snapshot reader child failed with ${status.code}/${status.signal}: ${errors}`);
+    if (spawnError) throw new Error(`Snapshot ${options.role} child could not start.`, { cause: spawnError });
+    if (timedOut) throw new Error(`Snapshot ${options.role} child timed out: ${errors || output}`);
+    if (parseError)
+      throw new Error(`Snapshot ${options.role} child returned an invalid marker.`, { cause: parseError });
+    if (!result) throw new Error(`Snapshot ${options.role} child produced no result: ${errors || output}`);
+    if (options.killAfterResult) {
+      if (!killAttempted || status.signal !== "SIGKILL") {
+        throw new Error(`Snapshot ${options.role} child was not terminated after its result marker.`);
+      }
+    } else if (status.code !== 0) {
+      throw new Error(`Snapshot ${options.role} child failed with ${status.code}/${status.signal}: ${errors}`);
     }
     return result;
   } finally {
     clearTimeout(timeout);
-    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    if (child.exitCode === null && child.signalCode === null && spawnError === null) {
+      child.kill("SIGKILL");
+      await exit;
+    }
   }
+}
+
+async function runReaderChild(identity: SnapshotPublicationIdentityV1) {
+  const result = await runChild({
+    environment: { POIETRA_SNAPSHOT_STORAGE_E2E_IDENTITY: JSON.stringify(identity) },
+    killAfterResult: false,
+    role: "reader",
+    title: "reads one published snapshot through fresh process-local adapters",
+  });
+  if (result.event !== "published") throw new Error("The snapshot reader child returned the wrong event.");
+  return result;
+}
+
+async function runOrphanWriterChild(input: OrphanWriterInput) {
+  const result = await runChild({
+    environment: { POIETRA_SNAPSHOT_STORAGE_E2E_ORPHAN_INPUT: JSON.stringify(input) },
+    killAfterResult: true,
+    role: "orphan-writer",
+    title: "uploads an artifact and waits without publishing metadata",
+  });
+  if (result.event !== "orphan-uploaded") throw new Error("The snapshot orphan writer returned the wrong event.");
+  return result.artifact;
 }
 
 function isMissingBucket(error: unknown) {
@@ -326,14 +437,23 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
         await closeSnapshotStorage(staleReader);
       }
 
+      const orphan = await runOrphanWriterChild({
+        nonce: suffix,
+        sourceDigest: updatedHead.blob.digest,
+        tenantId: tenantA,
+      });
       const orphanStorage = snapshotStorage();
+      const orphanInspection = new Pool({ connectionString: environment.databaseUrl, max: 1 });
       try {
-        const orphan = await orphanStorage.artifacts.put(tenantA, {
-          bytes: Buffer.from(`orphan-${suffix}`, "utf8"),
-          profileDigest: PROFILE_DIGEST,
-          runtimeConfigHash: RUNTIME_CONFIG_HASH,
-          sourceDigest: updatedHead.blob.digest,
-        });
+        const registered = await orphanInspection.query<{ registered: boolean }>(
+          `SELECT EXISTS (
+             SELECT 1 FROM public.snapshot_artifact_objects
+              WHERE tenant_id = $1 AND result_digest = $2
+                AND object_key = $3 AND version_id = $4
+           ) AS registered`,
+          [tenantA, orphan.resultDigest, orphan.objectKey, orphan.versionId],
+        );
+        expect(registered.rows[0]?.registered).toBe(false);
         expect(await orphanStorage.publications.isArtifactPublished(tenantA, orphan)).toBe(false);
         const queued = await orphanStorage.publications.queueArtifactDeletion(tenantA, orphan);
         expect(queued).toMatchObject({ artifact: orphan, tenantId: tenantA });
@@ -347,7 +467,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
           name: SnapshotArtifactReadErrorV1.name,
         });
       } finally {
-        await closeSnapshotStorage(orphanStorage);
+        await Promise.all([orphanInspection.end(), closeSnapshotStorage(orphanStorage)]);
       }
     } finally {
       await Promise.all([runtimeB.close(), runtimeA.close()]);
