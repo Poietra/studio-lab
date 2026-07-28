@@ -97,8 +97,8 @@ pub struct RenderStageEvidenceV1 {
     pub command_encode_total_ms: Option<f64>,
     /// Indexed draw calls recorded into the render pass.
     pub draw_calls: u64,
-    /// Wall time recording the per-draw `draw_indexed` loop; nested inside
-    /// `command_encode_total_ms`.
+    /// Wall time recording ordered compatible `draw_indexed` batches; nested
+    /// inside `command_encode_total_ms`.
     pub draw_record_ms: Option<f64>,
     /// Whether the geometry stages (`vertex_index_encode`,
     /// `buffer_create_and_stage`, `draw_record`) executed for this frame.
@@ -224,9 +224,10 @@ impl WgpuFillRendererV1 {
     ///
     /// # Errors
     ///
-    /// Returns a format or extent mismatch before allocating or uploading frame buffers, or
-    /// [`RenderFrameErrorV1::UploadPlan`] when the bounded vertex/index encoding overflows,
-    /// exceeds its byte limit, cannot be allocated, or finds inconsistent prepared plans.
+    /// Returns a format or extent mismatch before uploading, an
+    /// [`RenderFrameErrorV1::UploadPlan`] when bounded vertex/index encoding
+    /// fails, or [`RenderFrameErrorV1::BufferArena`] when retained capacity
+    /// overflows or exceeds the renderer/device limit.
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -246,8 +247,8 @@ impl WgpuFillRendererV1 {
     ///
     /// # Errors
     ///
-    /// Returns the same format, extent, or bounded [`RenderFrameErrorV1::UploadPlan`] errors as
-    /// [`Self::render`].
+    /// Returns the same format, extent, upload-plan, or retained-buffer errors
+    /// as [`Self::render`].
     pub fn render_with_stage_evidence(
         &mut self,
         device: &wgpu::Device,
