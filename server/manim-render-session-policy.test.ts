@@ -4,10 +4,15 @@ import type { RenderCommitRequest, RenderSessionStatus } from "../src/render-pip
 import {
   type RenderedPreviewIdentity,
   type RenderSessionStatusPolicy,
+  type RenderSessionTransitionOperation,
   renderCommitCorrelationKey,
   renderCommitMatchesPreview,
   renderSessionCapabilities,
   renderSessionStatusPolicy,
+  renderSessionTransitionAllowed,
+  renderSessionTransitionSources,
+  renderSessionTransitionTarget,
+  renderSessionTransitionTargets,
 } from "./manim-render-session-policy";
 
 const statusCoverage = {
@@ -22,6 +27,24 @@ const statusCoverage = {
 } as const satisfies Record<RenderSessionStatus, true>;
 
 const statuses = Object.keys(statusCoverage) as RenderSessionStatus[];
+
+const transitionCoverage = {
+  abandon: { sources: ["cancelled", "failed", "preparing", "ready", "rendering"], targets: ["discarded"] },
+  cancel: { sources: ["preparing", "rendering"], targets: ["cancelled"] },
+  "claim-lease": { sources: ["preparing", "rendering"], targets: ["rendering"] },
+  commit: { sources: ["ready"], targets: ["committed"] },
+  "complete-lease": {
+    sources: ["preparing", "rendering"],
+    targets: ["cancelled", "failed", "ready"],
+  },
+  discard: { sources: ["cancelled", "failed", "ready", "undone"], targets: ["discarded"] },
+  expire: { sources: ["preparing", "rendering"], targets: ["failed"] },
+  "renew-lease": { sources: ["preparing", "rendering"], targets: ["preparing", "rendering"] },
+  undo: { sources: ["committed"], targets: ["undone"] },
+} as const satisfies Record<
+  RenderSessionTransitionOperation,
+  Readonly<{ sources: readonly RenderSessionStatus[]; targets: readonly RenderSessionStatus[] }>
+>;
 
 function statusesWith(capability: keyof RenderSessionStatusPolicy) {
   return statuses.filter((status) => renderSessionStatusPolicy(status)[capability]);
@@ -42,6 +65,30 @@ const commit: RenderCommitRequest = {
 };
 
 describe("Manim render session policy", () => {
+  it("locks application and persistence transitions to one exhaustive state machine", () => {
+    for (const [operation, expected] of Object.entries(transitionCoverage) as [
+      RenderSessionTransitionOperation,
+      (typeof transitionCoverage)[RenderSessionTransitionOperation],
+    ][]) {
+      expect(renderSessionTransitionSources(operation)).toEqual(expected.sources);
+      expect(renderSessionTransitionTargets(operation)).toEqual(expected.targets);
+      for (const status of statuses) {
+        expect(renderSessionTransitionAllowed(operation, status)).toBe(
+          (expected.sources as readonly RenderSessionStatus[]).includes(status),
+        );
+      }
+    }
+
+    for (const source of ["preparing", "rendering"] as const) {
+      expect(renderSessionTransitionAllowed("complete-lease", source, "cancelled")).toBe(true);
+      expect(renderSessionTransitionAllowed("complete-lease", source, "failed")).toBe(true);
+      expect(renderSessionTransitionAllowed("complete-lease", source, "ready")).toBe(true);
+      expect(renderSessionTransitionTarget("claim-lease", source)).toBe("rendering");
+      expect(renderSessionTransitionTarget("renew-lease", source)).toBe(source);
+    }
+    expect(() => renderSessionTransitionTarget("complete-lease", "preparing")).toThrow(/one target/i);
+  });
+
   it("defines every status transition capability in one exhaustive matrix", () => {
     expect(statusesWith("abandonable")).toEqual(["cancelled", "failed", "preparing", "ready", "rendering"]);
     expect(statusesWith("active")).toEqual(["preparing", "rendering"]);

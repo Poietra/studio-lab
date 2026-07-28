@@ -7,6 +7,13 @@ import {
   renderSourceActionIdSchema,
 } from "../../../src/render-pipeline/contracts";
 import { HttpError } from "../../http/json";
+import {
+  type RenderSessionTransitionOperation,
+  renderSessionTransitionAllowed,
+  renderSessionTransitionSources,
+  renderSessionTransitionTarget,
+  renderSessionTransitionTargets,
+} from "../../manim-render-session-policy";
 import { manimTenantIdSchema } from "../../manim-request-principal";
 import {
   type CreateDurableRenderSessionInputV1,
@@ -350,6 +357,13 @@ function actionLabel(kind: "commit" | "undo") {
   return kind === "commit" ? "Commit" : "Undo";
 }
 
+function transitionSourceSql(operation: RenderSessionTransitionOperation) {
+  // Closed policy literals stay visible to PostgreSQL's partial-index planner.
+  return renderSessionTransitionSources(operation)
+    .map((status) => `'${status}'`)
+    .join(", ");
+}
+
 export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositoryV1 {
   readonly #ownsPool: boolean;
   readonly #pool: Pool;
@@ -650,10 +664,8 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
          FROM public.render_sessions s
          ${SESSION_JOINS}
         WHERE s.tenant_id = $1
-          AND (
-            s.status = 'preparing'
-            OR (s.status = 'rendering' AND (s.lease_expires_at IS NULL OR s.lease_expires_at <= clock_timestamp()))
-          )
+          AND s.status IN (${transitionSourceSql("claim-lease")})
+          AND (s.status <> 'rendering' OR s.lease_expires_at IS NULL OR s.lease_expires_at <= clock_timestamp())
         ORDER BY s.updated_at, s.session_id
         LIMIT $2`,
       [tenant, limit],
@@ -670,7 +682,7 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
          SELECT tenant_id, session_id
            FROM public.render_sessions
           WHERE tenant_id = $1
-            AND status IN ('preparing', 'rendering')
+            AND status IN (${transitionSourceSql("expire")})
             AND execution_deadline <= clock_timestamp()
           ORDER BY execution_deadline, session_id
           LIMIT $2
@@ -700,7 +712,7 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
     const duration = boundedPositiveInteger(input.leaseDurationMs, "leaseDurationMs", MAX_DURABLE_RENDER_LEASE_MS_V1);
     return this.#transaction(async (client) => {
       const current = await this.#selectSession(client, tenant, session, true);
-      if (!(current.status === "preparing" || current.status === "rendering")) {
+      if (!renderSessionTransitionAllowed("claim-lease", current.status)) {
         throw new HttpError("Only an active render session can be leased.", 409);
       }
       if (current.version > MAX_INCREMENTABLE_BIGINT_V1 || current.fenceToken > MAX_INCREMENTABLE_BIGINT_V1) {
@@ -722,7 +734,8 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
               lease_owner IS NULL
               OR lease_owner = $3
               OR lease_expires_at <= clock_timestamp()
-            )`,
+            )
+            AND status IN (${transitionSourceSql("claim-lease")})`,
         [tenant, session, owner, duration],
       );
       if (claimed.rowCount !== 1) throw new HttpError("The render session is leased by another worker.", 409);
@@ -745,7 +758,7 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
           AND version = $4::bigint
           AND fence_token = $5::bigint
           AND lease_expires_at > clock_timestamp()
-          AND status IN ('preparing', 'rendering')`,
+          AND status IN (${transitionSourceSql("renew-lease")})`,
       [tenant, session, owner, input.expectedVersion.toString(), input.fenceToken.toString(), duration],
       signal,
     );
@@ -757,7 +770,7 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
     const tenant = tenantId(input.tenantId);
     const session = existingSessionId(input.sessionId);
     const owner = boundedText(input.ownerId, "Lease owner", MAX_RENDER_IDENTIFIER_BYTES_V1);
-    if (!(input.status === "cancelled" || input.status === "failed" || input.status === "ready")) {
+    if (!renderSessionTransitionTargets("complete-lease").includes(input.status)) {
       throw new TypeError("Render completion status is invalid.");
     }
     if (!Number.isFinite(input.progress) || input.progress < 0 || input.progress > 1) {
@@ -787,7 +800,7 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
           AND fence_token = $5::bigint
           AND lease_expires_at > clock_timestamp()
           AND ($6 <> 'ready' OR execution_deadline > clock_timestamp())
-          AND status IN ('preparing', 'rendering')`,
+          AND status IN (${transitionSourceSql("complete-lease")})`,
       [
         tenant,
         session,
@@ -842,15 +855,20 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
         throw new HttpError("The render session changed before this source action could be applied.", 409);
       }
 
+      const transition = input.kind;
+      if (!renderSessionTransitionAllowed(transition, current.status)) {
+        throw new HttpError(
+          input.kind === "commit"
+            ? "Only a successful preview can be committed."
+            : "Only a committed source change can be undone.",
+          409,
+        );
+      }
       if (input.kind === "commit") {
-        if (current.status !== "ready") throw new HttpError("Only a successful preview can be committed.", 409);
         if (expectedKey !== current.commitCorrelationKey) {
           throw new HttpError("The rendered preview no longer matches the active Studio candidate.", 409);
         }
       } else {
-        if (current.status !== "committed") {
-          throw new HttpError("Only a committed source change can be undone.", 409);
-        }
         if (expectedKey !== "undo") throw new HttpError("The Undo action key is invalid.", 409);
       }
       const count = await client.query<{ count: string }>(
@@ -914,7 +932,7 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
           } satisfies DurableRenderSourceActionResultV1,
         };
       }
-      const status = input.kind === "commit" ? "committed" : "undone";
+      const status = renderSessionTransitionTarget(transition, current.status);
       const outcome = status;
       const inserted = await client.query<ActionRow>(
         `INSERT INTO public.render_source_actions
@@ -930,7 +948,7 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
                 version = version + 1,
                 latest_action_id = $4::uuid,
                 updated_at = clock_timestamp()
-          WHERE tenant_id = $1 AND session_id = $2::uuid`,
+          WHERE tenant_id = $1 AND session_id = $2::uuid AND status IN (${transitionSourceSql(transition)})`,
         [tenant, session, status, actionId],
       );
       return {
@@ -973,8 +991,7 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
         }
         return { action, executed: false, session: current };
       }
-      const allowed = input.kind === "commit" ? current.status === "ready" : current.status === "committed";
-      if (!allowed) {
+      if (!renderSessionTransitionAllowed(input.kind, current.status)) {
         throw new HttpError(
           `Only a ${input.kind === "commit" ? "ready" : "committed"} render session can register this cancellation.`,
           409,
@@ -1029,14 +1046,7 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
     const session = existingSessionId(sessionValue);
     return this.#transaction(async (client) => {
       const current = await this.#selectSession(client, tenant, session, true);
-      const allowed =
-        operation === "cancel"
-          ? current.status === "preparing" || current.status === "rendering"
-          : current.status === "cancelled" ||
-            current.status === "failed" ||
-            current.status === "ready" ||
-            current.status === "undone";
-      if (!allowed) {
+      if (!renderSessionTransitionAllowed(operation, current.status)) {
         throw new HttpError(
           operation === "cancel"
             ? "Only an active render can be cancelled."
@@ -1044,6 +1054,7 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
           409,
         );
       }
+      const nextStatus = renderSessionTransitionTarget(operation, current.status);
       await client.query(
         `UPDATE public.render_sessions
             SET status = $3,
@@ -1053,8 +1064,8 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
                 error = CASE WHEN $3 = 'cancelled' THEN NULL ELSE error END,
                 artifact_locator = CASE WHEN $3 = 'discarded' THEN NULL ELSE artifact_locator END,
                 updated_at = clock_timestamp()
-          WHERE tenant_id = $1 AND session_id = $2::uuid`,
-        [tenant, session, operation === "cancel" ? "cancelled" : "discarded"],
+          WHERE tenant_id = $1 AND session_id = $2::uuid AND status IN (${transitionSourceSql(operation)})`,
+        [tenant, session, nextStatus],
       );
       if (operation === "discard") {
         await client.query(
@@ -1094,28 +1105,24 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
       if (current.render_request_id !== expectedRenderRequestId) {
         throw new HttpError("The abandoned render no longer matches the Studio request.", 409);
       }
-      if (current.status === "discarded") return true;
-      if (
-        !(
-          current.status === "cancelled" ||
-          current.status === "failed" ||
-          current.status === "preparing" ||
-          current.status === "ready" ||
-          current.status === "rendering"
-        )
-      ) {
+      const parsedStatus = renderSessionStatusSchema.safeParse(current.status);
+      if (!parsedStatus.success) throw new TypeError("PostgreSQL returned an invalid durable render session.");
+      const status = parsedStatus.data;
+      if (status === "discarded") return true;
+      if (!renderSessionTransitionAllowed("abandon", status)) {
         throw new HttpError("A source-changing render session cannot be abandoned.", 409);
       }
+      const nextStatus = renderSessionTransitionTarget("abandon", status);
       await client.query(
         `UPDATE public.render_sessions
-            SET status = 'discarded',
+            SET status = $3,
                 version = version + 1,
                 lease_owner = NULL,
                 lease_expires_at = NULL,
                 artifact_locator = NULL,
                 updated_at = clock_timestamp()
-          WHERE tenant_id = $1 AND session_id = $2::uuid`,
-        [tenant, session],
+          WHERE tenant_id = $1 AND session_id = $2::uuid AND status IN (${transitionSourceSql("abandon")})`,
+        [tenant, session, nextStatus],
       );
       await client.query(
         `DELETE FROM public.workspace_project_references
