@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
 use crate::bounded_writer::BoundedWriter;
+use crate::scene_delta::{SceneDeltaErrorV1, apply_scene_delta_json};
 
 /// Playhead requests should remain small compared with the retained snapshot.
 /// The envelope still accommodates every contract-valid evidence array.
@@ -410,6 +411,25 @@ impl EngineWorkerSessionV1 {
         let bundle = parse_scene_ir_bundle_json_v1(snapshot_json)?;
         self.session.replace_snapshot(bundle)?;
         Ok(())
+    }
+
+    /// Atomically applies one bounded Studio-only Scene delta.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error and preserves the retained Scene and index on failure.
+    pub(crate) fn apply_scene_delta_json(
+        &mut self,
+        delta_json: &[u8],
+        expected_base_revision: &str,
+        expected_next_revision: &str,
+    ) -> Result<Vec<u8>, SceneDeltaErrorV1> {
+        apply_scene_delta_json(
+            &mut self.session,
+            delta_json,
+            expected_base_revision,
+            expected_next_revision,
+        )
     }
 
     /// Parses, validates, and evaluates one bounded request into a typed packet.

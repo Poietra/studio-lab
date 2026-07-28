@@ -23,5 +23,8 @@ wasm-bindgen-futures = "=0.4.76"
 web-sys = { version = "=0.3.103", features = ["OffscreenCanvas"] }
 wgpu = { workspace = true, features = ["std", "webgpu", "wgsl"] }
 
+[dev-dependencies]
+sha2.workspace = true
+
 [lints]
 workspace = true
