@@ -1,4 +1,4 @@
-import { Pool, type PoolClient, type PoolConfig, type QueryResultRow } from "pg";
+import type { Pool, PoolClient, PoolConfig, QueryResultRow } from "pg";
 
 import {
   manimProjectIdSchema,
@@ -26,7 +26,7 @@ import {
   type RenderSessionRepositoryV1,
 } from "../render-session-repository";
 import { MAX_MANIM_SOURCE_BYTES_V1, type SourceBlobReceiptV1 } from "../workspace-source-repository";
-import { WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1 } from "./postgres-workspace-source-repository";
+import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 
 export const RENDER_SESSION_MIGRATION_V2_CHECKSUM = "f67255ae5d05b2951975a700974a9748c848c6a39b9bb51b3189c3e8ed2664e9";
 
@@ -168,23 +168,6 @@ function boundedPositiveInteger(value: number, name: string, maximum: number) {
     throw new RangeError(`${name} must be an integer between 1 and ${maximum}.`);
   }
   return value;
-}
-
-function configuredPoolTimeout(value: false | number | undefined, fallback: number, name: string) {
-  if (value === undefined || value === false || value === 0) return fallback;
-  return Math.min(boundedPositiveInteger(value, name, 30_000), fallback);
-}
-
-function assertBoundedInjectedPool(pool: Pool, maximumTimeoutMs: number) {
-  for (const name of ["connectionTimeoutMillis", "query_timeout", "statement_timeout"] as const) {
-    const value = pool.options[name];
-    if (!Number.isSafeInteger(value) || (value as number) <= 0 || (value as number) > maximumTimeoutMs) {
-      throw new TypeError(`An injected PostgreSQL pool requires a positive bounded ${name}.`);
-    }
-  }
-  if (pool.options.options !== WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1) {
-    throw new TypeError("An injected PostgreSQL pool requires the fixed workspace/source search_path.");
-  }
 }
 
 function boundedText(value: string, name: string, maximum: number, allowEmpty = false) {
@@ -351,115 +334,10 @@ function actionLabel(kind: "commit" | "undo") {
 }
 
 export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositoryV1 {
-  readonly #ownsPool: boolean;
-  readonly #pool: Pool;
-  readonly #statementTimeoutMs: number;
+  readonly #connection: PostgresRepositoryConnectionV1;
 
   constructor(options: Readonly<{ pool?: Pool; poolConfig?: PoolConfig; statementTimeoutMs?: number }>) {
-    if ((options.pool === undefined) === (options.poolConfig === undefined)) {
-      throw new TypeError("Provide exactly one PostgreSQL pool or pool configuration.");
-    }
-    this.#statementTimeoutMs = boundedPositiveInteger(
-      options.statementTimeoutMs ?? 5_000,
-      "statementTimeoutMs",
-      30_000,
-    );
-    if (options.pool) assertBoundedInjectedPool(options.pool, this.#statementTimeoutMs);
-    this.#pool =
-      options.pool ??
-      new Pool({
-        ...options.poolConfig,
-        connectionTimeoutMillis: configuredPoolTimeout(
-          options.poolConfig?.connectionTimeoutMillis,
-          this.#statementTimeoutMs,
-          "connectionTimeoutMillis",
-        ),
-        query_timeout: configuredPoolTimeout(
-          options.poolConfig?.query_timeout,
-          this.#statementTimeoutMs,
-          "query_timeout",
-        ),
-        statement_timeout: configuredPoolTimeout(
-          options.poolConfig?.statement_timeout,
-          this.#statementTimeoutMs,
-          "statement_timeout",
-        ),
-        options: WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1,
-      });
-    this.#ownsPool = options.pool === undefined;
-  }
-
-  async #connect(signal?: AbortSignal) {
-    throwIfAborted(signal);
-    const request = this.#pool.connect();
-    let settled = false;
-    let timeout: NodeJS.Timeout | undefined;
-    let abortListener: (() => void) | undefined;
-    const interrupted = new Promise<never>((_, reject) => {
-      timeout = setTimeout(
-        () => reject(new Error("PostgreSQL connection acquisition timed out.")),
-        this.#statementTimeoutMs,
-      );
-      timeout.unref();
-      if (signal) {
-        abortListener = () => reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
-        signal.addEventListener("abort", abortListener, { once: true });
-      }
-    });
-    try {
-      const client = await Promise.race([request, interrupted]);
-      settled = true;
-      return client;
-    } finally {
-      if (timeout) clearTimeout(timeout);
-      if (abortListener) signal?.removeEventListener("abort", abortListener);
-      if (!settled)
-        void request.then(
-          (client) => client.release(true),
-          () => undefined,
-        );
-    }
-  }
-
-  async #query<Row extends QueryResultRow = QueryResultRow>(
-    text: string,
-    values: readonly unknown[] = [],
-    signal?: AbortSignal,
-  ) {
-    const client = await this.#connect(signal);
-    try {
-      throwIfAborted(signal);
-      const result = await client.query<Row>(text, [...values]);
-      throwIfAborted(signal);
-      return result;
-    } finally {
-      client.release();
-    }
-  }
-
-  async #transaction<T>(operation: (client: PoolClient) => Promise<T>, signal?: AbortSignal) {
-    const client = await this.#connect(signal);
-    let began = false;
-    try {
-      throwIfAborted(signal);
-      await client.query("BEGIN");
-      began = true;
-      await client.query("SELECT set_config('statement_timeout', $1, true)", [String(this.#statementTimeoutMs)]);
-      await client.query("SELECT set_config('lock_timeout', $1, true)", [String(this.#statementTimeoutMs)]);
-      await client.query("SELECT set_config('idle_in_transaction_session_timeout', $1, true)", [
-        String(this.#statementTimeoutMs),
-      ]);
-      const result = await operation(client);
-      throwIfAborted(signal);
-      await client.query("COMMIT");
-      began = false;
-      return result;
-    } catch (error) {
-      if (began) await client.query("ROLLBACK").catch(() => undefined);
-      throw error;
-    } finally {
-      client.release();
-    }
+    this.#connection = new PostgresRepositoryConnectionV1(options);
   }
 
   async #registerBlob(client: PoolClient, tenant: string, candidateValue: SourceBlobReceiptV1) {
@@ -509,7 +387,7 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
 
   async ready(signal?: AbortSignal) {
     try {
-      const result = await this.#query<{ checksum: string }>(
+      const result = await this.#connection.query<{ checksum: string }>(
         "SELECT checksum FROM public.poietra_schema_migrations WHERE version = 2",
         [],
         signal,
@@ -562,7 +440,7 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
     boundedText(input.patch.insertedCode, "Inserted render source", MAX_MANIM_SOURCE_BYTES_V1, true);
 
     try {
-      return await this.#transaction(async (client) => {
+      return await this.#connection.transaction(async (client) => {
         const head = await client.query<BlobRow & { generation: string }>(
           `SELECT h.generation::text AS generation, b.digest, b.object_key, b.version_id, b.etag, b.byte_size
              FROM public.workspace_source_heads h
@@ -634,18 +512,13 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
   async readSession(tenantValue: string, sessionValue: string, signal?: AbortSignal) {
     const tenant = tenantId(tenantValue);
     const session = existingSessionId(sessionValue);
-    const client = await this.#connect(signal);
-    try {
-      return await this.#selectSession(client, tenant, session);
-    } finally {
-      client.release();
-    }
+    return this.#connection.withClient((client) => this.#selectSession(client, tenant, session), signal);
   }
 
   async findRecoverableSessions(tenantValue: string, limitValue: number, signal?: AbortSignal) {
     const tenant = tenantId(tenantValue);
     const limit = boundedPositiveInteger(limitValue, "limit", MAX_RECOVERABLE_SESSION_PAGE_V1);
-    const result = await this.#query<SessionRow>(
+    const result = await this.#connection.query<SessionRow>(
       `SELECT ${SESSION_COLUMNS}
          FROM public.render_sessions s
          ${SESSION_JOINS}
@@ -665,7 +538,7 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
   async expireTimedOutSessions(tenantValue: string, limitValue: number, signal?: AbortSignal) {
     const tenant = tenantId(tenantValue);
     const limit = boundedPositiveInteger(limitValue, "limit", MAX_RECOVERABLE_SESSION_PAGE_V1);
-    const result = await this.#query(
+    const result = await this.#connection.query(
       `WITH expired AS (
          SELECT tenant_id, session_id
            FROM public.render_sessions
@@ -698,7 +571,7 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
     const session = existingSessionId(input.sessionId);
     const owner = boundedText(input.ownerId, "Lease owner", MAX_RENDER_IDENTIFIER_BYTES_V1);
     const duration = boundedPositiveInteger(input.leaseDurationMs, "leaseDurationMs", MAX_DURABLE_RENDER_LEASE_MS_V1);
-    return this.#transaction(async (client) => {
+    return this.#connection.transaction(async (client) => {
       const current = await this.#selectSession(client, tenant, session, true);
       if (!(current.status === "preparing" || current.status === "rendering")) {
         throw new HttpError("Only an active render session can be leased.", 409);
@@ -735,7 +608,7 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
     const session = existingSessionId(input.sessionId);
     const owner = boundedText(input.ownerId, "Lease owner", MAX_RENDER_IDENTIFIER_BYTES_V1);
     const duration = boundedPositiveInteger(input.leaseDurationMs, "leaseDurationMs", MAX_DURABLE_RENDER_LEASE_MS_V1);
-    const updated = await this.#query(
+    const updated = await this.#connection.query(
       `UPDATE public.render_sessions
           SET lease_expires_at = clock_timestamp() + ($6::integer * interval '1 millisecond'),
               updated_at = clock_timestamp()
@@ -769,7 +642,7 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
     if (artifact !== null) {
       boundedText(artifact, "Render artifact locator", MAX_DURABLE_RENDER_ARTIFACT_LOCATOR_BYTES_V1);
     }
-    const result = await this.#query(
+    const result = await this.#connection.query(
       `UPDATE public.render_sessions
           SET status = $6,
               progress = $7,
@@ -811,7 +684,7 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
     const session = existingSessionId(input.sessionId);
     const actionId = uuidV4(input.actionId, "Source action ID");
     const expectedKey = boundedText(input.expectedKey, "Source action key", MAX_CORRELATION_KEY_BYTES_V1);
-    const transaction = await this.#transaction(async (client) => {
+    const transaction = await this.#connection.transaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
         `${tenant}:render-source-action:${actionId}`,
       ]);
@@ -953,7 +826,7 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
     const tenant = tenantId(input.tenantId);
     const session = existingSessionId(input.sessionId);
     const actionId = uuidV4(input.actionId, "Source action ID");
-    return this.#transaction(async (client): Promise<DurableRenderSourceActionResultV1> => {
+    return this.#connection.transaction(async (client): Promise<DurableRenderSourceActionResultV1> => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
         `${tenant}:render-source-action:${actionId}`,
       ]);
@@ -1027,7 +900,7 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
   ) {
     const tenant = tenantId(tenantValue);
     const session = existingSessionId(sessionValue);
-    return this.#transaction(async (client) => {
+    return this.#connection.transaction(async (client) => {
       const current = await this.#selectSession(client, tenant, session, true);
       const allowed =
         operation === "cancel"
@@ -1081,7 +954,7 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
       "Render request ID",
       MAX_RENDER_IDENTIFIER_BYTES_V1,
     );
-    return this.#transaction(async (client) => {
+    return this.#connection.transaction(async (client) => {
       const found = await client.query<{ project_id: string; render_request_id: string; status: string }>(
         `SELECT project_id, render_request_id, status
            FROM public.render_sessions
@@ -1128,6 +1001,6 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
   }
 
   async close() {
-    if (this.#ownsPool) await this.#pool.end();
+    await this.#connection.close();
   }
 }

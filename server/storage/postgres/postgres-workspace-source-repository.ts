@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { Pool, type PoolClient, type PoolConfig, type QueryResultRow } from "pg";
+import type { Pool, PoolClient, PoolConfig, QueryResultRow } from "pg";
 
 import {
   type ManimProjectListView,
@@ -19,10 +19,11 @@ import {
   type WorkspaceSourceProjectV1,
   type WorkspaceSourceRepositoryV1,
 } from "../workspace-source-repository";
+import { POSTGRES_REPOSITORY_OPTIONS_V1, PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 
 export const WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM =
   "6300896079234275dcaac03f1f71c0263b18a3414835cbfb0be90e964ac88ccb";
-export const WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1 = "-c search_path=pg_catalog,public";
+export const WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1 = POSTGRES_REPOSITORY_OPTIONS_V1;
 
 type ProjectRow = QueryResultRow & {
   created_at: Date;
@@ -77,23 +78,6 @@ function boundedPositiveInteger(value: number, name: string, maximum: number) {
     throw new RangeError(`${name} must be an integer between 1 and ${maximum}.`);
   }
   return value;
-}
-
-function configuredPoolTimeout(value: false | number | undefined, fallback: number, name: string) {
-  if (value === undefined || value === false || value === 0) return fallback;
-  return Math.min(boundedPositiveInteger(value, name, 30_000), fallback);
-}
-
-function assertBoundedInjectedPool(pool: Pool, maximumTimeoutMs: number) {
-  for (const name of ["connectionTimeoutMillis", "query_timeout", "statement_timeout"] as const) {
-    const value = pool.options[name];
-    if (!Number.isSafeInteger(value) || (value as number) <= 0 || (value as number) > maximumTimeoutMs) {
-      throw new TypeError(`An injected PostgreSQL pool requires a positive bounded ${name}.`);
-    }
-  }
-  if (pool.options.options !== WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1) {
-    throw new TypeError("An injected PostgreSQL pool requires the fixed workspace/source search_path.");
-  }
 }
 
 function tenantId(value: string) {
@@ -187,116 +171,10 @@ function isPostgresError(error: unknown, code: string): error is Error & { code:
 }
 
 export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepositoryV1 {
-  readonly #ownsPool: boolean;
-  readonly #pool: Pool;
-  readonly #statementTimeoutMs: number;
+  readonly #connection: PostgresRepositoryConnectionV1;
 
   constructor(options: Readonly<{ pool?: Pool; poolConfig?: PoolConfig; statementTimeoutMs?: number }>) {
-    if ((options.pool === undefined) === (options.poolConfig === undefined)) {
-      throw new TypeError("Provide exactly one PostgreSQL pool or pool configuration.");
-    }
-    this.#statementTimeoutMs = boundedPositiveInteger(
-      options.statementTimeoutMs ?? 5_000,
-      "statementTimeoutMs",
-      30_000,
-    );
-    if (options.pool) assertBoundedInjectedPool(options.pool, this.#statementTimeoutMs);
-    this.#pool =
-      options.pool ??
-      new Pool({
-        ...options.poolConfig,
-        connectionTimeoutMillis: configuredPoolTimeout(
-          options.poolConfig?.connectionTimeoutMillis,
-          this.#statementTimeoutMs,
-          "connectionTimeoutMillis",
-        ),
-        query_timeout: configuredPoolTimeout(
-          options.poolConfig?.query_timeout,
-          this.#statementTimeoutMs,
-          "query_timeout",
-        ),
-        statement_timeout: configuredPoolTimeout(
-          options.poolConfig?.statement_timeout,
-          this.#statementTimeoutMs,
-          "statement_timeout",
-        ),
-        options: WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1,
-      });
-    this.#ownsPool = options.pool === undefined;
-  }
-
-  async #connect(signal?: AbortSignal) {
-    throwIfAborted(signal);
-    const request = this.#pool.connect();
-    let settled = false;
-    let timeout: NodeJS.Timeout | undefined;
-    let abortListener: (() => void) | undefined;
-    const interrupted = new Promise<never>((_, reject) => {
-      timeout = setTimeout(
-        () => reject(new Error("PostgreSQL connection acquisition timed out.")),
-        this.#statementTimeoutMs,
-      );
-      timeout.unref();
-      if (signal) {
-        abortListener = () => reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
-        signal.addEventListener("abort", abortListener, { once: true });
-      }
-    });
-    try {
-      const client = await Promise.race([request, interrupted]);
-      settled = true;
-      return client;
-    } finally {
-      if (timeout) clearTimeout(timeout);
-      if (abortListener) signal?.removeEventListener("abort", abortListener);
-      if (!settled)
-        void request.then(
-          (client) => client.release(true),
-          () => undefined,
-        );
-    }
-  }
-
-  async #query<Row extends QueryResultRow = QueryResultRow>(
-    text: string,
-    values: readonly unknown[] = [],
-    signal?: AbortSignal,
-  ) {
-    const client = await this.#connect(signal);
-    try {
-      throwIfAborted(signal);
-      const result = await client.query<Row>(text, [...values]);
-      throwIfAborted(signal);
-      return result;
-    } finally {
-      client.release();
-    }
-  }
-
-  async #transaction<T>(operation: (client: PoolClient) => Promise<T>, signal?: AbortSignal) {
-    throwIfAborted(signal);
-    const client = await this.#connect(signal);
-    let began = false;
-    try {
-      throwIfAborted(signal);
-      await client.query("BEGIN");
-      began = true;
-      await client.query("SELECT set_config('statement_timeout', $1, true)", [String(this.#statementTimeoutMs)]);
-      await client.query("SELECT set_config('lock_timeout', $1, true)", [String(this.#statementTimeoutMs)]);
-      await client.query("SELECT set_config('idle_in_transaction_session_timeout', $1, true)", [
-        String(this.#statementTimeoutMs),
-      ]);
-      const result = await operation(client);
-      throwIfAborted(signal);
-      await client.query("COMMIT");
-      began = false;
-      return result;
-    } catch (error) {
-      if (began) await client.query("ROLLBACK").catch(() => undefined);
-      throw error;
-    } finally {
-      client.release();
-    }
+    this.#connection = new PostgresRepositoryConnectionV1(options);
   }
 
   async #registerBlob(client: PoolClient, tenant: string, candidateValue: SourceBlobReceiptV1) {
@@ -334,7 +212,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
   async ready(signal?: AbortSignal) {
     try {
       throwIfAborted(signal);
-      const result = await this.#query<{ checksum: string }>(
+      const result = await this.#connection.query<{ checksum: string }>(
         "SELECT checksum FROM public.poietra_schema_migrations WHERE version = 1",
         [],
         signal,
@@ -350,7 +228,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
   async ensureTenant(tenantValue: string, signal?: AbortSignal) {
     const tenant = tenantId(tenantValue);
     throwIfAborted(signal);
-    await this.#query(
+    await this.#connection.query(
       "INSERT INTO public.workspace_tenants (tenant_id) VALUES ($1) ON CONFLICT DO NOTHING",
       [tenant],
       signal,
@@ -362,7 +240,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     const tenant = tenantId(tenantValue);
     const blob = blobReceipt(tenant, blobValue);
     throwIfAborted(signal);
-    const result = await this.#query(
+    const result = await this.#connection.query(
       `SELECT 1 FROM public.source_blob_objects
         WHERE tenant_id = $1 AND digest = $2 AND object_key = $3 AND version_id = $4`,
       [tenant, blob.digest, blob.objectKey, blob.versionId],
@@ -375,7 +253,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
   async queueBlobDeletion(tenantValue: string, blobValue: SourceBlobReceiptV1, signal?: AbortSignal) {
     const tenant = tenantId(tenantValue);
     const blob = blobReceipt(tenant, blobValue);
-    return this.#transaction(async (client) => {
+    return this.#connection.transaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`${tenant}:${blob.digest}`]);
       const published = await client.query(
         `SELECT 1 FROM public.source_blob_objects
@@ -409,7 +287,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
   async listProjects(tenantValue: string, signal?: AbortSignal): Promise<ManimProjectListView> {
     const tenant = tenantId(tenantValue);
     throwIfAborted(signal);
-    const result = await this.#query<ProjectRow>(
+    const result = await this.#connection.query<ProjectRow>(
       `SELECT tenant_id, project_id, display_name, created_at, updated_at
          FROM public.workspace_projects
         WHERE tenant_id = $1 AND deleted_at IS NULL
@@ -437,7 +315,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     const path = sourcePath(input.source.path);
     const candidate = blobReceipt(tenant, input.source.blob);
     try {
-      return await this.#transaction(async (client) => {
+      return await this.#connection.transaction(async (client) => {
         await client.query("INSERT INTO public.workspace_tenants (tenant_id) VALUES ($1) ON CONFLICT DO NOTHING", [
           tenant,
         ]);
@@ -474,7 +352,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     const tenant = tenantId(tenantValue);
     const id = projectId(projectValue);
     throwIfAborted(signal);
-    const result = await this.#query<ProjectRow>(
+    const result = await this.#connection.query<ProjectRow>(
       `SELECT tenant_id, project_id, display_name, created_at, updated_at
          FROM public.workspace_projects
         WHERE tenant_id = $1 AND project_id = $2 AND deleted_at IS NULL`,
@@ -491,7 +369,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     const id = projectId(projectValue);
     const name = projectName(nameValue);
     throwIfAborted(signal);
-    const result = await this.#query<ProjectRow>(
+    const result = await this.#connection.query<ProjectRow>(
       `UPDATE public.workspace_projects
           SET display_name = $3, updated_at = clock_timestamp()
         WHERE tenant_id = $1 AND project_id = $2 AND deleted_at IS NULL
@@ -507,7 +385,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
   async softDeleteProject(tenantValue: string, projectValue: string, signal?: AbortSignal) {
     const tenant = tenantId(tenantValue);
     const id = projectId(projectValue);
-    await this.#transaction(async (client) => {
+    await this.#connection.transaction(async (client) => {
       const project = await client.query(
         `SELECT project_id FROM public.workspace_projects
           WHERE tenant_id = $1 AND project_id = $2 AND deleted_at IS NULL
@@ -538,7 +416,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     const id = projectId(projectValue);
     const path = sourcePath(pathValue);
     throwIfAborted(signal);
-    const result = await this.#query<SourceHeadRow>(
+    const result = await this.#connection.query<SourceHeadRow>(
       `SELECT ${SOURCE_HEAD_COLUMNS}
          FROM public.workspace_source_heads h
          JOIN public.workspace_projects p
@@ -557,7 +435,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     const tenant = tenantId(tenantValue);
     const id = projectId(projectValue);
     throwIfAborted(signal);
-    const result = await this.#query<SourceHeadRow>(
+    const result = await this.#connection.query<SourceHeadRow>(
       `SELECT ${SOURCE_HEAD_COLUMNS}
          FROM public.workspace_source_heads h
          JOIN public.workspace_projects p
@@ -586,7 +464,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
       throw new TypeError("Expected source generation is outside the supported PostgreSQL range.");
     }
     const candidate = blobReceipt(tenant, input.candidate);
-    return this.#transaction(async (client) => {
+    return this.#connection.transaction(async (client) => {
       await this.#registerBlob(client, tenant, candidate);
       const updated = await client.query<{ generation: string }>(
         `UPDATE public.workspace_source_heads h
@@ -623,7 +501,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     const tenant = tenantId(tenantValue);
     const maximum = boundedPositiveInteger(maximumValue, "maximum", 256);
     throwIfAborted(signal);
-    const result = await this.#query<DeletionRow>(
+    const result = await this.#connection.query<DeletionRow>(
       `SELECT deletion_id, tenant_id, digest, object_key, version_id, etag, byte_size, deleted_at
          FROM public.source_blob_deletions
         WHERE tenant_id = $1 AND deleted_at IS NULL
@@ -640,7 +518,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     const tenant = tenantId(tenantValue);
     if (!/^[0-9a-f-]{36}$/.test(deletionId)) throw new TypeError("Blob deletion ID is invalid.");
     throwIfAborted(signal);
-    await this.#query(
+    await this.#connection.query(
       `UPDATE public.source_blob_deletions
           SET deleted_at = COALESCE(deleted_at, clock_timestamp())
         WHERE tenant_id = $1 AND deletion_id = $2`,
@@ -651,6 +529,6 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
   }
 
   async close() {
-    if (this.#ownsPool) await this.#pool.end();
+    await this.#connection.close();
   }
 }
