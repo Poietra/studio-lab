@@ -4,8 +4,11 @@ use crate::MAX_GPU_UPLOAD_PLAN_BYTES_V1;
 
 const COPY_ALIGNMENT_BYTES: usize = 4;
 
-/// The retained vertex and index capacities may each round up, but their
-/// combined high-water mark may never exceed twice one bounded upload plan.
+/// Logical GPU capacity budget for the retained vertex and index buffers.
+///
+/// The two exact CPU byte mirrors are independently bounded by the 64 MiB
+/// upload-plan limit. Backend allocations can outlive Rust handle replacement
+/// while submitted work is in flight, so this is not a process-RSS claim.
 pub const MAX_GPU_BUFFER_ARENA_BYTES_V1: u64 =
     (MAX_GPU_UPLOAD_PLAN_BYTES_V1 as u64).saturating_mul(2);
 
