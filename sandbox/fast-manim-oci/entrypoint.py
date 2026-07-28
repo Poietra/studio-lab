@@ -1,13 +1,16 @@
-"""Create only the fixed request tmpfs directories, then exec the fixed tool."""
+"""Validate the fixed runtime contract and supervise its single trusted tool."""
 
 from __future__ import annotations
 
-import json
+import ctypes
 import hashlib
+import json
 import os
 import re
+import shutil
 import stat
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -19,6 +22,7 @@ ASSET_CONTROL_FILE = ".poietra-assets.v1.json"
 ASSET_MANIFEST_SCHEMA = "poietra.fast-manim-oci-asset-manifest"
 MAXIMUM_MANIFEST_BYTES = 32 * 1024
 SHA256_NAME = re.compile(r"^[a-f0-9]{64}$")
+PR_SET_DUMPABLE = 4
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -161,6 +165,38 @@ def _verify_assets(contract: dict[str, object]) -> None:
             raise RuntimeError("Immutable asset bytes do not match their digest filename.")
 
 
+def _supervise_target(target: list[str], environment: dict[str, str]) -> int:
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number))
+
+    temporary_root = RUNTIME_ROOT / "tmp"
+    with (
+        tempfile.TemporaryFile(dir=temporary_root) as stdout_capture,
+        tempfile.TemporaryFile(dir=temporary_root) as stderr_capture,
+    ):
+        child_pid = os.posix_spawn(
+            target[0],
+            target,
+            environment,
+            file_actions=(
+                (os.POSIX_SPAWN_DUP2, stdout_capture.fileno(), sys.stdout.fileno()),
+                (os.POSIX_SPAWN_DUP2, stderr_capture.fileno(), sys.stderr.fileno()),
+            ),
+        )
+        _, wait_status = os.waitpid(child_pid, 0)
+        return_code = os.waitstatus_to_exitcode(wait_status)
+        stderr_capture.seek(0)
+        shutil.copyfileobj(stderr_capture, sys.stderr.buffer)
+        sys.stderr.buffer.flush()
+        if return_code == 0:
+            stdout_capture.seek(0)
+            shutil.copyfileobj(stdout_capture, sys.stdout.buffer)
+            sys.stdout.buffer.flush()
+        return return_code
+
+
 def main() -> None:
     target, environment, assets = _runtime_contract()
     if sys.argv[1:] != target:
@@ -173,7 +209,7 @@ def main() -> None:
         if directory.is_symlink() or directory.stat().st_uid != os.getuid():
             raise RuntimeError("The request runtime directory is not privately owned.")
     _verify_assets(assets)
-    os.execve(target[0], target, environment)
+    raise SystemExit(_supervise_target(target, environment))
 
 
 if __name__ == "__main__":

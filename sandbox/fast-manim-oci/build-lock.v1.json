@@ -18,7 +18,7 @@
       "asset-installer.py": "af218259d23d52a1c06ccd67dd58f5474cd00a559b109884bf14c3f019485f09",
       "build-requirements.txt": "a29a8dca69ead5a6f657db881660e086b0164c0670384d3a4746e447a714b2f0",
       "compiler-wrapper.sh": "05ba9053b2638c3e77bae09cf558d28a81c6304f22ef4f45e12271c95e6c1155",
-      "entrypoint.py": "0d245b6c2e05c93eecb62bb94fb33fe9bf0745d7783452e76bd798a4c15f83af",
+      "entrypoint.py": "300cca1bfe6b3f7c8f196673db1e68abccf4e3f05a9d17efe82d82641ac87171",
       "profile.v1.json": "28f3fe700adc4bbc681cb3eb95b1c3567a685320ce031fe304ba78b4043a273f",
       "runtime-inventory.py": "49452903c5ff3163dd25a07dcd66234d92e248b1e471172d8839203e869847d0",
       "seccomp.v1.json": "4f5593a468d748cf2801f5a63c8ee88f6d955d9a5375a2f0bd4c2846ad0dd2ca"
