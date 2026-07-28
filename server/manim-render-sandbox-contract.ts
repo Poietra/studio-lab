@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isAbsolute, resolve } from "node:path";
 
 import { z } from "zod";
 
@@ -15,7 +16,23 @@ export const MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V1 = MAX_MANIM_RENDER_SANDBO
 export const MAX_MANIM_RENDER_SANDBOX_ARTIFACT_BYTES_V1 = 128 * 1024 * 1024;
 export const MAX_MANIM_RENDER_SANDBOX_LOG_BYTES_V1 = 4 * 1024;
 export const MAX_MANIM_RENDER_SANDBOX_FRAME_BYTES_V1 = 3 * 1024 * 1024;
-export const MANIM_RENDER_CANONICAL_SCENE_FRAME_V1 = Object.freeze({ height: 8 as const, width: 128 / 9 });
+export const MANIM_RENDER_CANONICAL_SCENE_FRAME_V1 = Object.freeze({
+  height: 8 as const,
+  width: 128 / 9,
+});
+
+export function digestManimRenderStagingRootV1(stagingRoot: string) {
+  if (
+    typeof stagingRoot !== "string" ||
+    !isAbsolute(stagingRoot) ||
+    resolve(stagingRoot) !== stagingRoot ||
+    stagingRoot.includes("\0") ||
+    Buffer.byteLength(stagingRoot, "utf8") > 4_096
+  ) {
+    throw new TypeError("Render staging root must be canonical and absolute.");
+  }
+  return createHash("sha256").update(`poietra.render-staging-root.v1\0${stagingRoot}`, "utf8").digest("hex");
+}
 
 const sceneNameSchema = z
   .string()
@@ -86,10 +103,16 @@ export const manimRenderSandboxDescriptorV1Schema = z
   .strict()
   .superRefine((value, context) => {
     if (value.jobId !== `${value.tenantId}/${value.sessionId}`) {
-      context.addIssue({ code: "custom", message: "Render job identity does not match its tenant and session." });
+      context.addIssue({
+        code: "custom",
+        message: "Render job identity does not match its tenant and session.",
+      });
     }
     if (createHash("sha256").update(value.source, "utf8").digest("hex") !== value.sourceDigest) {
-      context.addIssue({ code: "custom", message: "Render source does not match its declared digest." });
+      context.addIssue({
+        code: "custom",
+        message: "Render source does not match its declared digest.",
+      });
     }
   });
 
@@ -186,6 +209,7 @@ export const manimRenderSandboxStatusV1Schema = z
     health: z.enum(["ready", "unavailable"]),
     profileDigest: sha256V1Schema,
     runtimeDigest: sha256V1Schema,
+    stagingRootDigest: sha256V1Schema,
     schema: z.literal(MANIM_RENDER_SANDBOX_STATUS_SCHEMA_V1),
     version: z.literal(1),
   })

@@ -16,11 +16,12 @@ production runtime adapter. The injected in-process adapter is trusted code:
 its structured readiness result is an operational assertion after it verifies
 the external sandbox, not an isolation proof verified by this HTTP layer. The
 current contract is limited to one deployment-isolated tenant. The shipped
-source-only render adapter uses the separate broker described in
+source-only render adapter and its trusted durable-media publisher use the
+separate broker described in
 [production-render-sandbox.md](./production-render-sandbox.md). Issue #120 owns
-principal-to-tenant selection, while digest-bounded render assets and durable
-media publication remain follow-up work. Readiness stays unavailable unless the
-durable stores and both external sandbox brokers pass their probes.
+principal-to-tenant selection, while digest-bounded input assets remain
+follow-up work. Readiness stays unavailable unless the durable stores, the
+staging-root correlation, and both external sandbox brokers pass their probes.
 
 Each server instance remains a single-tenant cell: its runtime API declares one
 server-owned tenant ID and at least one bounded absolute storage root. A

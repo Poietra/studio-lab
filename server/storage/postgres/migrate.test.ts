@@ -5,9 +5,11 @@ import {
   applyBundledDurableStorageMigrations,
   type applyBundledDurableStorageMigrationsV2,
   type applyBundledWorkspaceSourceMigrationV1,
+  applyRenderArtifactMigrationV4,
   applyRenderSessionMigrationV2,
   applySnapshotPublicationMigrationV3,
   applyWorkspaceSourceMigrationV1,
+  RENDER_ARTIFACT_MIGRATION_V4_SOURCE,
   RENDER_SESSION_MIGRATION_V2_SOURCE,
   SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE,
   WORKSPACE_SOURCE_MIGRATION_V1_SOURCE,
@@ -54,14 +56,15 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 3 });
-    expect([...db.installed.keys()]).toEqual([1, 2, 3]);
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 4 });
+    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 3 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 4 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(6);
+    expect(db.queries.filter(({ text }) => text === RENDER_ARTIFACT_MIGRATION_V4_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(8);
   });
 
   it("rejects a missing prerequisite under the same advisory lock", async () => {
@@ -86,6 +89,14 @@ describe("durable storage migrations", () => {
     await expect(
       applySnapshotPublicationMigrationV3(db.pool, SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE),
     ).rejects.toThrow(/requires durable storage migrations v1 and v2/i);
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("requires all three durable-storage prerequisites before applying render artifacts v4", async () => {
+    const db = database();
+    await expect(applyRenderArtifactMigrationV4(db.pool, RENDER_ARTIFACT_MIGRATION_V4_SOURCE)).rejects.toThrow(
+      /requires durable storage migrations v1 through v3/i,
+    );
     expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
   });
 });

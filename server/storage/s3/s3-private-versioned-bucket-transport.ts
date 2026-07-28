@@ -189,35 +189,48 @@ class PrivateVersionedS3BucketOperation implements PrivateVersionedS3BucketOpera
     this.signal = signal;
   }
 
-  async #send<T>(request: () => Promise<T>, checkAfter = true) {
+  async #send<T>(request: (signal: AbortSignal) => Promise<T>) {
     this.#assertOpen();
     this.signal.throwIfAborted();
-    const result = await request();
-    if (checkAfter) {
-      this.#assertOpen();
-      this.signal.throwIfAborted();
-    }
+    const bounded = operationSignal(this.signal);
+    const result = await request(bounded);
+    this.#assertOpen();
+    this.signal.throwIfAborted();
     return result;
   }
 
-  getObject(input: WithoutBucket<GetObjectCommandInput>) {
-    return this.#send(
-      () => this.#client.send(new GetObjectCommand({ ...input, Bucket: this.#bucket }), { abortSignal: this.signal }),
-      false,
+  async getObject(input: WithoutBucket<GetObjectCommandInput>) {
+    this.#assertOpen();
+    this.signal.throwIfAborted();
+    const headerAbort = new AbortController();
+    const timeout = setTimeout(
+      () => headerAbort.abort(new Error("S3 response headers timed out.")),
+      S3_OPERATION_TIMEOUT_MS_V1,
     );
+    timeout.unref();
+    try {
+      const response = await this.#client.send(new GetObjectCommand({ ...input, Bucket: this.#bucket }), {
+        abortSignal: AbortSignal.any([this.signal, headerAbort.signal]),
+      });
+      this.#assertOpen();
+      this.signal.throwIfAborted();
+      return response;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   headObject(input: WithoutBucket<HeadObjectCommandInput>) {
-    return this.#send(() =>
-      this.#client.send(new HeadObjectCommand({ ...input, Bucket: this.#bucket }), { abortSignal: this.signal }),
+    return this.#send((signal) =>
+      this.#client.send(new HeadObjectCommand({ ...input, Bucket: this.#bucket }), { abortSignal: signal }),
     );
   }
 
   async listObjectVersionsPage(input: WithoutBucket<ListObjectVersionsCommandInput>) {
     validateVersionPageInput(input);
-    const page = await this.#send(() =>
+    const page = await this.#send((signal) =>
       this.#client.send(new ListObjectVersionsCommand({ ...input, Bucket: this.#bucket }), {
-        abortSignal: this.signal,
+        abortSignal: signal,
       }),
     );
     validateVersionPageOutput(page, input.MaxKeys!);
@@ -225,8 +238,8 @@ class PrivateVersionedS3BucketOperation implements PrivateVersionedS3BucketOpera
   }
 
   putObject(input: WithoutBucket<PutObjectCommandInput>) {
-    return this.#send(() =>
-      this.#client.send(new PutObjectCommand({ ...input, Bucket: this.#bucket }), { abortSignal: this.signal }),
+    return this.#send((signal) =>
+      this.#client.send(new PutObjectCommand({ ...input, Bucket: this.#bucket }), { abortSignal: signal }),
     );
   }
 
@@ -237,8 +250,8 @@ class PrivateVersionedS3BucketOperation implements PrivateVersionedS3BucketOpera
     ) {
       throw new TypeError("The S3 object-version deletion target is invalid.");
     }
-    return this.#send(() =>
-      this.#client.send(new DeleteObjectCommand({ ...input, Bucket: this.#bucket }), { abortSignal: this.signal }),
+    return this.#send((signal) =>
+      this.#client.send(new DeleteObjectCommand({ ...input, Bucket: this.#bucket }), { abortSignal: signal }),
     );
   }
 }
@@ -278,9 +291,9 @@ export class PrivateVersionedS3BucketTransportV1 {
       },
       operation: (signal) => {
         assertOpen();
-        const bounded = operationSignal(signal);
-        bounded.throwIfAborted();
-        return new PrivateVersionedS3BucketOperation(this.#client, this.#bucket, bounded, assertOpen);
+        const requestSignal = signal ?? new AbortController().signal;
+        requestSignal.throwIfAborted();
+        return new PrivateVersionedS3BucketOperation(this.#client, this.#bucket, requestSignal, assertOpen);
       },
       ready: (signal) => this.#ready(assertOpen, signal),
     };

@@ -243,12 +243,12 @@ export class ManimProjectRegistry {
     return this.project(projectId).workspace(projectId);
   }
 
-  thumbnail(projectId: string) {
-    return this.project(projectId).thumbnail(projectId);
+  thumbnail(projectId: string, signal?: AbortSignal) {
+    return this.project(projectId).thumbnail(projectId, signal);
   }
 
-  thumbnailStatus(projectId: string) {
-    return this.project(projectId).thumbnailStatus(projectId);
+  thumbnailStatus(projectId: string, signal?: AbortSignal) {
+    return this.project(projectId).thumbnailStatus(projectId, signal);
   }
 
   generateThumbnail(projectId: string) {
@@ -320,6 +320,10 @@ export class ManimProjectRegistry {
 
   videoPath(id: string) {
     return this.sessionProject(id).videoPath(id);
+  }
+
+  video(id: string, signal?: AbortSignal) {
+    return this.sessionProject(id).video(id, signal);
   }
 
   async close() {

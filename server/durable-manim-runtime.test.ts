@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { DurableFastManimSnapshotServiceV1 } from "./durable-fast-manim-snapshot-service";
 import type { DurableManimRenderServiceV1 } from "./durable-manim-render-service";
 import { createDurableProductionManimRuntimeAdapterV1, DurableManimRuntimeV1 } from "./durable-manim-runtime";
+import type { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
 import type { DurableSourceBlobGcWorkerV1 } from "./storage/source-blob-gc";
 import type { SourceContentBlobStoreV1, WorkspaceSourceRepositoryV1 } from "./storage/workspace-source-repository";
 
@@ -80,13 +81,24 @@ describe("DurableManimRuntimeV1 production readiness", () => {
       softDeleteProject,
     });
     const runtime = new DurableManimRuntimeV1({
+      artifactReader: partial<AuthorizedArtifactReaderV1>({
+        close: async () => {
+          closeOrder.push("artifact-reader");
+        },
+        ready: async () => true,
+      }),
       blobs: partial<SourceContentBlobStoreV1>({
         close: async () => {
           closeOrder.push("blobs");
         },
         ready: async () => true,
       }),
-      execution: { ready: async () => true },
+      execution: {
+        close: async () => {
+          closeOrder.push("execution");
+        },
+        ready: async () => true,
+      },
       namespace: "production-snapshot-test",
       renders,
       repository,
@@ -117,6 +129,7 @@ describe("DurableManimRuntimeV1 production readiness", () => {
     expect(snapshotsClose).toHaveBeenCalledOnce();
     expect(closeOrder.indexOf("snapshots")).toBeLessThan(closeOrder.indexOf("repository"));
     expect(closeOrder.indexOf("snapshots")).toBeLessThan(closeOrder.indexOf("blobs"));
+    expect(closeOrder.indexOf("execution")).toBeLessThan(closeOrder.indexOf("artifact-reader"));
   });
 
   it("falls back to the workspace repository when durable snapshots are not configured", async () => {

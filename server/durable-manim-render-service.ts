@@ -19,6 +19,7 @@ import {
   renderSessionCapabilities,
 } from "./manim-render-session-policy";
 import { manimTenantIdSchema } from "./manim-request-principal";
+import type { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
 import {
   type CreateDurableRenderSessionInputV1,
   type DurableRenderSessionV1,
@@ -29,6 +30,7 @@ import {
 import type { SourceContentBlobStoreV1, WorkspaceSourceRepositoryV1 } from "./storage/workspace-source-repository";
 
 export type DurableManimRenderServiceOptionsV1 = Readonly<{
+  artifactReader?: Pick<AuthorizedArtifactReaderV1, "ready" | "sessionVideo">;
   blobs: SourceContentBlobStoreV1;
   execution?: Pick<DurableManimRenderWorkerV1, "cancel" | "wake">;
   executionTimeoutMs?: number;
@@ -73,9 +75,10 @@ function sessionView(
     sourcePath: session.sourcePath,
     status: session.status,
     updatedAt: session.updatedAt.toISOString(),
-    // Durable video publication is owned by #136. An S3 locator is never
-    // exposed directly to the browser from this session service.
-    videoUrl: null,
+    videoUrl:
+      session.artifactLocator && ["committed", "ready", "undone"].includes(session.status)
+        ? `/api/manim/renders/${session.id}/video`
+        : null,
   };
 }
 
@@ -84,6 +87,7 @@ function sessionView(
  * `start` only enqueues a preparing session; an external worker will claim it.
  */
 export class DurableManimRenderServiceV1 {
+  readonly #artifactReader: Pick<AuthorizedArtifactReaderV1, "ready" | "sessionVideo"> | undefined;
   readonly #blobs: SourceContentBlobStoreV1;
   readonly #execution: Pick<DurableManimRenderWorkerV1, "cancel" | "wake"> | undefined;
   readonly #executionTimeoutMs: number;
@@ -102,6 +106,7 @@ export class DurableManimRenderServiceV1 {
       throw new TypeError("The durable render frame must have finite positive dimensions.");
     }
     this.#tenantId = tenant.data;
+    this.#artifactReader = options.artifactReader;
     const executionTimeoutMs = options.executionTimeoutMs ?? 2 * 60 * 1_000;
     if (
       !Number.isSafeInteger(executionTimeoutMs) ||
@@ -119,8 +124,12 @@ export class DurableManimRenderServiceV1 {
     this.#sessionIdFactory = options.sessionIdFactory ?? randomUUID;
   }
 
-  ready(signal?: AbortSignal) {
-    return this.#repository.ready(signal);
+  async ready(signal?: AbortSignal) {
+    const [repositoryReady, artifactReaderReady] = await Promise.all([
+      this.#repository.ready(signal),
+      this.#artifactReader?.ready(signal) ?? Promise.resolve(true),
+    ]);
+    return repositoryReady && artifactReaderReady;
   }
 
   async start(request: ProgramRenderRequest, signal?: AbortSignal): Promise<RenderSessionView> {
@@ -291,8 +300,9 @@ export class DurableManimRenderServiceV1 {
     return { abandoned: true } as const;
   }
 
-  async videoPath(_id: string): Promise<never> {
-    throw new HttpError("Rendered video publication is not available yet.", 404);
+  async video(id: string, signal?: AbortSignal) {
+    if (!this.#artifactReader) throw new HttpError("Rendered video not found.", 404);
+    return this.#artifactReader.sessionVideo(id, signal);
   }
 
   close() {

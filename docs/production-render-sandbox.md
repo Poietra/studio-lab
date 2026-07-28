@@ -27,7 +27,9 @@ exclusive file descriptor. Both stdout and stderr are bounded, deadlines and
 abort signals kill and reap the Docker CLI child, and the host independently validates
 media size, signature, and SHA-256 through a separately reopened `O_NOFOLLOW`
 descriptor under the pinned private staging-root identity. Raw media
-never crosses the Studio UDS protocol. This stream is intentional: Docker's
+never crosses the Studio UDS protocol. The broker reports a digest of the
+canonical staging root, and Studio refuses readiness unless it exactly matches
+the root configured for trusted publication. This stream is intentional: Docker's
 `container cp` cannot read container tmpfs on supported containerd image-store
 configurations.
 
@@ -38,20 +40,42 @@ seccomp path, private staging root, and UDS path. `pnpm
 sandbox:oci:render:build` builds the pinned image when
 `POIETRA_FAST_MANIM_SOURCE_REPO` points at the exact Fast Manim checkout. The
 opt-in real lane uses `POIETRA_MANIM_RENDER_GATED_OCI_IMAGE=<sha256:image-id>`.
-At startup the broker removes every prior running container, including one with
-a future deadline, and lets the durable worker resubmit it; no untracked job is
-retained across broker restart. Private staging pins its directory identity,
+At startup the broker first acquires a host-kernel singleton keyed by the
+staging-root digest, then its socket lease. Only while holding both does it
+remove prior containers in that owner namespace, including one with a future
+deadline, and let the durable worker resubmit it; another staging root on the
+same Docker daemon is never reconciled. Broker processes that share a host must
+therefore share its network namespace so the abstract-socket ownership lease is
+effective. Private staging pins its directory identity,
 checks trusted ancestors, reserves worst-case bytes for active jobs, enforces
-count and byte caps, and schedules expiry from each artifact deadline. The real
-lane proves multi-animation MP4/PNG output, semantic rejection of forged MP4,
-denial of Scene access to `/proc/1/mem`, hostile early output replacement,
-refenced reattachment, restart cleanup, active cancellation, and cleanup.
+count and byte caps, and schedules expiry from each artifact deadline. In
+production the root is owned by `broker:Studio-group` with mode `0750`, and
+published media files are broker-owned with mode `0640`; Studio has read but not
+write authority. The real lane proves multi-animation MP4/PNG output, semantic
+rejection of forged MP4, denial of Scene access to `/proc/1/mem`, hostile early
+output replacement, refenced reattachment, owner-isolated concurrent brokers,
+restart cleanup, active cancellation, and cleanup.
 
-This source-only slice deliberately accepts no project asset bundle and mounts no host
-project directory. Digest-bounded asset ingestion is follow-up work. Completed
-media remains in private broker staging and the render session stores only an
-opaque locator; durable S3 video/thumbnail publication and delivery URLs remain
-Issue #136. Until then the production API can retain an isolated render result
-but does not expose a final `videoUrl` or durable thumbnail. It references, but
-does not close, Issue #117: digest-bounded assets and required rootless
-`cgroup.kill` deployment evidence remain acceptance work.
+Before upgrading from a build that predates owner-scoped container names and
+labels, stop every old broker and drain its `poietra-render-<staging-id>`
+containers. The new broker deliberately refuses to claim or delete those
+unattributed containers; only containers bearing its exact staging-owner digest
+are eligible for automatic reconciliation.
+
+This source-only slice deliberately accepts no project asset bundle and mounts
+no host project directory. Digest-bounded asset ingestion remains follow-up
+work. Completed staging locators are consumed only by the trusted Studio
+publisher: it verifies broker ownership, mode, inode stability, locator
+correlation, size, signature, and digest; uploads the exact video and thumbnail
+versions to private S3; and atomically commits both receipts in PostgreSQL under
+the current render lease fence. Only then does the durable session expose its
+`videoUrl` and the project expose its durable thumbnail. Authenticated video
+HEAD/range streams hold renewable PostgreSQL read claims, and expiry plus the
+artifact GC remove logical visibility before version-pinned physical deletion.
+
+The real storage lane can be combined with
+`POIETRA_MANIM_RENDER_GATED_OCI_IMAGE=<sha256:image-id>` to exercise the complete
+fixed-image render → broker staging → trusted publisher → MinIO/PostgreSQL → HTTP
+HEAD/range path. It also proves that process loss after publication does not
+lose either artifact. Required rootless `cgroup.kill` deployment evidence and
+digest-bounded input assets remain separate Issue #117 acceptance work.

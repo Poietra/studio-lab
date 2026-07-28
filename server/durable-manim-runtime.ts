@@ -21,6 +21,7 @@ import { lowerManimRenderRequest } from "./manim-render-request-lowering";
 import { manimTenantIdSchema } from "./manim-request-principal";
 import type { ThumbnailAsset } from "./manim-thumbnail-cache";
 import { importSourceSnapshot } from "./manim-workspace";
+import type { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
 import type { DurableSourceBlobGcWorkerV1 } from "./storage/source-blob-gc";
 import type {
   SourceContentBlobStoreV1,
@@ -44,6 +45,7 @@ export type DurableManimExecutionReadinessV1 = Readonly<{
 }>;
 
 export type DurableManimRuntimeOptionsV1 = Readonly<{
+  artifactReader?: Pick<AuthorizedArtifactReaderV1, "close" | "projectThumbnail" | "projectThumbnailBytes" | "ready">;
   blobs: SourceContentBlobStoreV1;
   execution?: DurableManimExecutionReadinessV1;
   frame?: Readonly<{ height: number; width: number }>;
@@ -93,6 +95,9 @@ function unavailableThumbnail(projectId: string): ManimThumbnailStatus {
  * version-addressed S3 objects. It never constructs a host project root.
  */
 export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
+  readonly #artifactReader:
+    | Pick<AuthorizedArtifactReaderV1, "close" | "projectThumbnail" | "projectThumbnailBytes" | "ready">
+    | undefined;
   readonly #blobs: SourceContentBlobStoreV1;
   readonly #execution: DurableManimExecutionReadinessV1 | undefined;
   readonly #frame: Readonly<{ height: number; width: number }>;
@@ -113,6 +118,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     this.tenantId = parsedTenant.data;
     this.storageBoundary = Object.freeze({ kind: "shared-durable", namespace: options.namespace });
     this.#repository = options.repository;
+    this.#artifactReader = options.artifactReader;
     this.#blobs = options.blobs;
     this.#execution = options.execution;
     this.#renders = options.renders;
@@ -130,20 +136,22 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
 
   async ready(signal?: AbortSignal) {
     signal?.throwIfAborted();
-    const [repositoryReady, blobsReady, executionReady, rendersReady, snapshotsReady] = await Promise.all([
-      this.#repository.ready(signal),
-      this.#blobs.ready(signal),
-      this.#execution?.ready(signal) ?? Promise.resolve(false),
-      this.#renders?.ready(signal) ?? Promise.resolve(true),
-      this.#snapshots?.ready(signal) ?? Promise.resolve(true),
-    ]);
+    const [repositoryReady, blobsReady, artifactReaderReady, executionReady, rendersReady, snapshotsReady] =
+      await Promise.all([
+        this.#repository.ready(signal),
+        this.#blobs.ready(signal),
+        this.#artifactReader?.ready(signal) ?? Promise.resolve(true),
+        this.#execution?.ready(signal) ?? Promise.resolve(false),
+        this.#renders?.ready(signal) ?? Promise.resolve(true),
+        this.#snapshots?.ready(signal) ?? Promise.resolve(true),
+      ]);
     signal?.throwIfAborted();
-    return repositoryReady && blobsReady && executionReady && rendersReady && snapshotsReady;
+    return repositoryReady && blobsReady && artifactReaderReady && executionReady && rendersReady && snapshotsReady;
   }
 
   /** Production attestation additionally requires the durable render service. */
   async productionReady(signal?: AbortSignal) {
-    if (!this.#renders || !this.#snapshots) return false;
+    if (!this.#artifactReader || !this.#renders || !this.#snapshots) return false;
     return this.ready(signal);
   }
 
@@ -288,18 +296,43 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     );
   }
 
-  async thumbnailStatus(projectId: string) {
-    await this.#repository.readProject(this.tenantId, projectId);
-    return unavailableThumbnail(projectId);
+  async thumbnailStatus(projectId: string, signal?: AbortSignal) {
+    await this.#repository.readProject(this.tenantId, projectId, signal);
+    if (!this.#artifactReader) return unavailableThumbnail(projectId);
+    try {
+      const asset = await this.#artifactReader.projectThumbnail(projectId, signal);
+      await asset.close();
+      return {
+        cachedSourceHash: null,
+        error: null,
+        generatedAt: null,
+        imageKind: "rendered" as const,
+        projectId,
+        sceneName: null,
+        sourceHash: null,
+        sourcePath: null,
+        state: "current" as const,
+      };
+    } catch (error) {
+      if (!(error instanceof HttpError) || error.status !== 404) throw error;
+      return { ...unavailableThumbnail(projectId), error: null, state: "missing" as const };
+    }
   }
 
   generateThumbnail(projectId: string) {
     return this.thumbnailStatus(projectId);
   }
 
-  async thumbnail(projectId: string): Promise<ThumbnailAsset> {
-    await this.#repository.readProject(this.tenantId, projectId);
-    throw new HttpError("A durable thumbnail has not been generated.", 404);
+  async thumbnail(projectId: string, signal?: AbortSignal): Promise<ThumbnailAsset> {
+    await this.#repository.readProject(this.tenantId, projectId, signal);
+    if (!this.#artifactReader) throw new HttpError("A durable thumbnail has not been generated.", 404);
+    return {
+      body: await this.#artifactReader.projectThumbnailBytes(projectId, signal),
+      kind: "rendered",
+      mediaType: "image/png",
+      state: "current",
+      status: 200,
+    };
   }
 
   async runSceneSnapshot(request: FastManimSnapshotRunRequestV1, signal?: AbortSignal) {
@@ -327,9 +360,9 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     return this.#renders.view(id);
   }
 
-  async videoPath(id: string) {
+  async video(id: string, signal?: AbortSignal) {
     if (!this.#renders) throw new HttpError("Render session not found.", 404);
-    return this.#renders.videoPath(id);
+    return this.#renders.video(id, signal);
   }
 
   async cancel(id: string) {
@@ -374,6 +407,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
       await (this.#execution?.close?.() ?? Promise.resolve()).catch((error: unknown) => errors.push(error));
       const results = await Promise.allSettled([
         this.#renders?.close() ?? Promise.resolve(),
+        this.#artifactReader?.close() ?? Promise.resolve(),
         this.#blobs.close(),
         this.#repository.close(),
       ]);

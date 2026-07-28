@@ -77,20 +77,13 @@ export type FastManimSandboxBrokerLeaseV1 = Readonly<{
   close: () => Promise<void>;
 }>;
 
-/**
- * Acquires a kernel-owned singleton before touching a stale filesystem socket.
- * Linux abstract UDS names disappear with the process, so crash recovery needs
- * neither a stale PID heuristic nor a racy lock-file replacement protocol.
- * All broker instances for one filesystem socket must share the host network
- * namespace; the production service topology must not containerize this lease.
- */
-export async function acquireFastManimSandboxBrokerLeaseV1(socketPath: string): Promise<FastManimSandboxBrokerLeaseV1> {
+async function acquireKernelLease(scope: "broker" | "owner", identity: string): Promise<FastManimSandboxBrokerLeaseV1> {
   const effectiveUid = process.geteuid?.();
   if (effectiveUid === undefined || process.platform !== "linux") {
     throw new FastManimSandboxBrokerLeaseErrorV1("unsafe");
   }
-  const digest = createHash("sha256").update(socketPath, "utf8").digest("hex");
-  const leaseAddress = `\0poietra-fm-broker-v1-${effectiveUid}-${digest}`;
+  const digest = createHash("sha256").update(identity, "utf8").digest("hex");
+  const leaseAddress = `\0poietra-fm-${scope}-v1-${effectiveUid}-${digest}`;
   const server = createServer((socket) => socket.destroy());
   try {
     await listen(server, leaseAddress);
@@ -101,6 +94,34 @@ export async function acquireFastManimSandboxBrokerLeaseV1(socketPath: string): 
     }
     throw new FastManimSandboxBrokerLeaseErrorV1("unsafe");
   }
+  let closeRequest: Promise<void> | null = null;
+  return {
+    close() {
+      closeRequest ??= closeServer(server);
+      return closeRequest;
+    },
+  };
+}
+
+/** Elects one process for a shared immutable owner namespace without touching the filesystem. */
+export function acquireFastManimSandboxOwnerLeaseV1(ownerDigest: string) {
+  if (!/^[a-f0-9]{64}$/u.test(ownerDigest)) {
+    return Promise.reject(new FastManimSandboxBrokerLeaseErrorV1("unsafe"));
+  }
+  return acquireKernelLease("owner", ownerDigest);
+}
+
+/**
+ * Acquires a kernel-owned singleton before touching a stale filesystem socket.
+ * Linux abstract UDS names disappear with the process, so crash recovery needs
+ * neither a stale PID heuristic nor a racy lock-file replacement protocol.
+ * All broker instances for one filesystem socket must share the host network
+ * namespace; the production service topology must not containerize this lease.
+ */
+export async function acquireFastManimSandboxBrokerLeaseV1(socketPath: string): Promise<FastManimSandboxBrokerLeaseV1> {
+  const effectiveUid = process.geteuid?.();
+  if (effectiveUid === undefined) throw new FastManimSandboxBrokerLeaseErrorV1("unsafe");
+  const lease = await acquireKernelLease("broker", socketPath);
 
   try {
     const socketState = await probeSocket(socketPath);
@@ -113,15 +134,8 @@ export async function acquireFastManimSandboxBrokerLeaseV1(socketPath: string): 
       await unlink(socketPath);
     }
   } catch (error) {
-    await closeServer(server).catch(() => undefined);
+    await lease.close().catch(() => undefined);
     throw error;
   }
-
-  let closeRequest: Promise<void> | null = null;
-  return {
-    close() {
-      closeRequest ??= closeServer(server);
-      return closeRequest;
-    },
-  };
+  return lease;
 }

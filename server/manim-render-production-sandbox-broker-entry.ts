@@ -6,7 +6,17 @@ import {
   type ManimRenderProductionSandboxBrokerServiceOptionsV1,
   startManimRenderProductionSandboxBrokerServiceV1,
 } from "./manim-render-production-sandbox-broker-service";
+import { digestManimRenderStagingRootV1 } from "./manim-render-sandbox-contract";
 import { readRootOwnedProductionConfigV1 } from "./root-owned-production-config";
+
+function validStagingRoot(value: string) {
+  try {
+    digestManimRenderStagingRootV1(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export const manimRenderProductionSandboxBrokerConfigV1Schema = z
   .object({
@@ -16,7 +26,7 @@ export const manimRenderProductionSandboxBrokerConfigV1Schema = z
     seccompPath: z.string().min(1).max(4_096),
     socketGroupId: z.number().int().nonnegative().max(0xffff_ffff),
     socketPath: z.string().min(1).max(4_096),
-    stagingRoot: z.string().min(1).max(4_096),
+    stagingRoot: z.string().refine(validStagingRoot, "Render staging root must be canonical and absolute."),
   })
   .strict();
 

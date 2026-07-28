@@ -1,16 +1,16 @@
 # Durable workspace/source storage
 
 Status: production composition is available for durable workspace/source and
-render-session storage, snapshot publication, and source-only isolated Manim
-execution. Verified video/thumbnail publication remains #136, and
-digest-bounded render assets remain follow-up work.
+render-session storage, snapshot publication, isolated Manim execution, and
+verified video/thumbnail publication. Digest-bounded input assets remain
+follow-up work.
 
 The built `manim-production-server.mjs` entry exports
 `createDurablePostgresS3ProductionRuntimeV1`. The factory applies the embedded,
 checksummed migrations with a one-connection DDL pool, creates bounded workspace
-and render-session PostgreSQL repositories plus the private S3 store, initializes
-the tenant, starts one render queue consumer and one explicit tenant GC worker,
-and returns the adapter consumed by
+and render-session PostgreSQL repositories plus the private versioned S3 stores,
+initializes the tenant, and starts the render queue consumer and the source,
+snapshot, and render-artifact GC workers. It returns the adapter consumed by
 `startProductionManimServer`.
 
 Render sessions store immutable original/patched source receipts, a DB-clock
@@ -43,15 +43,17 @@ The source bucket must satisfy every readiness probe:
 Production S3 configuration must set `ignoreConfiguredEndpointUrls: true` so an
 environment variable or shared AWS config cannot replace the inspected endpoint.
 Custom request handlers, endpoint providers, URL parsers, TLS hooks, and dynamic
-path-style providers are rejected. Each complete S3 operation, including streamed
-body validation and bounded pagination, has a 30-second deadline.
+path-style providers are rejected. Each bounded S3 request has a 30-second
+header deadline. Authorized media body streams retain their caller cancellation
+signal and are additionally bounded by the production server's idle and
+absolute media deadlines.
 
 Source writes use `If-None-Match: *` at the content-addressed key. An existing
 object is read back and digest/size/UTF-8 checked, so normal duplicate writes reuse
 one immutable version. Every published receipt fixes the key, version ID, ETag,
 size, and SHA-256 digest, and every read revalidates all of them.
 
-The GC worker probes PostgreSQL and bucket privacy before every sweep, runs one
+Each GC worker probes PostgreSQL and bucket privacy before every sweep, runs one
 bounded batch at a time, and schedules the next sweep only after the previous one
 settles. Each sweep also has an explicit deployment-configured deadline. Its opaque
 listing cursor advances across sweeps and wraps at the end, so retained published
@@ -64,7 +66,34 @@ and patched receipts cannot be collected while the session is retained. Terminal
 session retention, reference detachment, and the DB-clock `orphaned_at` boundary
 remain #144; object creation time is not a safe substitute for detachment time.
 
-The composition intentionally does not publish browser video or thumbnail
-assets yet. Isolated completion stores only a private opaque staging locator;
-those delivery routes fail explicitly until #136 adds durable media
-publication.
+Render media uses a separate trusted-publication transaction. The broker writes
+only to one canonical capability directory owned by `broker:Studio-group` with
+mode `0750`; staged media is broker-owned mode `0640`. The Studio publisher
+reopens each file with `O_NOFOLLOW`, pins the directory and file identities, and
+checks the tenant, session, lease fence, source/runtime/profile/request digests,
+size, signature, and SHA-256 from the opaque locator. Video and thumbnail bytes
+are uploaded serially to content-addressed tenant keys in private versioned S3.
+PostgreSQL then makes both receipts, the session video link, the current project
+thumbnail, and the ready session visible in one fenced transaction. A partial
+upload, stale fence, or publication crash therefore exposes neither half of a
+bundle; an unregistered version remains eligible for GC.
+
+The durable session view exposes `/api/manim/renders/:sessionId/video` only after
+that transaction commits. The route supports authenticated `GET`, `HEAD`, and a
+single byte range, returns `416` for an unsatisfiable range, and always opens the
+exact S3 version from PostgreSQL. Project thumbnails are read through the same
+tenant-fixed repository. PostgreSQL read claims cover HEAD and the full stream
+lifetime, renew during slow reads, and block GC; expiry removes API visibility
+immediately even if physical deletion has not run yet. Advisory locks and
+durable deletion tombstones order claim renewal, publication, and deletion so a
+late writer cannot resurrect an exact object version.
+
+`renderArtifacts.stagingRoot` is the single Studio-side staging setting. The
+production client hashes that canonical path, and readiness remains unavailable
+unless the broker status attests the same digest as well as the pinned image
+runtime and media profile. Operators must also configure artifact retention,
+read-claim duration, and the bounded render-artifact GC schedule. A successful
+worker publication removes its staging pair; a retryable publication failure
+leaves the broker-owned pair available for reattachment. PostgreSQL and S3
+remain authoritative across Studio process loss, while startup reconciliation
+removes untracked broker containers and expired staging.

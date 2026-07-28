@@ -5,7 +5,10 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { acquireFastManimSandboxBrokerLeaseV1 } from "./fast-manim-sandbox-broker-lease";
+import {
+  acquireFastManimSandboxBrokerLeaseV1,
+  acquireFastManimSandboxOwnerLeaseV1,
+} from "./fast-manim-sandbox-broker-lease";
 
 const roots: string[] = [];
 const listeners: Server[] = [];
@@ -29,6 +32,13 @@ async function path() {
 }
 
 describe("fast-manim sandbox broker lease", () => {
+  it("elects one process per owner digest while allowing unrelated owners", async () => {
+    const first = await acquireFastManimSandboxOwnerLeaseV1("a".repeat(64));
+    const unrelated = await acquireFastManimSandboxOwnerLeaseV1("b".repeat(64));
+    await expect(acquireFastManimSandboxOwnerLeaseV1("a".repeat(64))).rejects.toMatchObject({ code: "busy" });
+    await Promise.all([first.close(), unrelated.close()]);
+  });
+
   it("admits one live broker and releases ownership cleanly", async () => {
     const socketPath = await path();
     const first = await acquireFastManimSandboxBrokerLeaseV1(socketPath);

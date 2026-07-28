@@ -21,6 +21,16 @@ import type { ThumbnailAsset } from "./manim-thumbnail-cache";
 /** A local adapter may return synchronously; durable adapters always await I/O. */
 export type ManimApiResult<T> = T | Promise<T>;
 
+export type ManimMediaAssetV1 = Readonly<{
+  byteSize: number;
+  close: () => Promise<void>;
+  mediaType: "image/png" | "video/mp4";
+  open: (
+    range: Readonly<{ end: number; start: number }> | null,
+    signal?: AbortSignal,
+  ) => Promise<AsyncIterable<Uint8Array>>;
+}>;
+
 export type ManimTenantStorageBoundary =
   | Readonly<{
       kind: "host-paths";
@@ -75,10 +85,10 @@ export interface ManimApiOperations {
   ): ManimApiResult<FastManimSnapshotRunViewV1>;
   sceneSnapshot(projectId: string, query: FastManimSnapshotQueryV1): ManimApiResult<FastManimSnapshotRunViewV1>;
   start(request: ProgramRenderRequest, signal?: AbortSignal): ManimApiResult<RenderSessionView>;
-  thumbnail(projectId: string): ManimApiResult<ThumbnailAsset>;
-  thumbnailStatus(projectId: string): ManimApiResult<ManimThumbnailStatus>;
+  thumbnail(projectId: string, signal?: AbortSignal): ManimApiResult<ThumbnailAsset>;
+  thumbnailStatus(projectId: string, signal?: AbortSignal): ManimApiResult<ManimThumbnailStatus>;
   undo(id: string, actionId: string, signal?: AbortSignal): ManimApiResult<RenderSessionView>;
-  videoPath(id: string): ManimApiResult<string>;
+  video(id: string, signal?: AbortSignal): ManimApiResult<ManimMediaAssetV1>;
   view(id: string): ManimApiResult<RenderSessionView>;
   workspace(projectId?: string, signal?: AbortSignal): ManimApiResult<ManimWorkspaceView>;
 }

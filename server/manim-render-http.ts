@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 import {
   createManimProjectRequestSchema,
@@ -35,6 +35,8 @@ const PROJECT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/(worksp
 const PROJECT_THUMBNAIL_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/thumbnail(?:\/(status|generate))?$/;
 const PROJECT_SCENE_SNAPSHOT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/scene-snapshots$/;
 const PROJECT_ITEM_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})$/;
+const DEFAULT_MEDIA_STREAM_IDLE_TIMEOUT_MS = 30_000;
+const MAX_MEDIA_STREAM_IDLE_TIMEOUT_MS = 120_000;
 
 export type { ManimApi } from "./manim-api";
 export type ManimRequestContext = Readonly<{
@@ -57,12 +59,26 @@ export type ManimRequestPolicy = Readonly<{
   allowExistingProjectRegistration: boolean;
   expectedMutationOrigin?: string;
   maxJsonBodyBytes?: number;
+  mediaStreamIdleTimeoutMs?: number;
   requestSignal?: AbortSignal;
 }>;
 
 const DEFAULT_MANIM_REQUEST_POLICY: ManimRequestPolicy = {
   allowExistingProjectRegistration: true,
 };
+
+export function isManimVideoRequest(method: string | undefined, pathname: string) {
+  const match = pathname.match(RENDER_ROUTE);
+  return (method === "GET" || method === "HEAD") && match?.[2] === "video";
+}
+
+function mediaStreamIdleTimeout(value: number | undefined) {
+  const timeout = value ?? DEFAULT_MEDIA_STREAM_IDLE_TIMEOUT_MS;
+  if (!Number.isSafeInteger(timeout) || timeout < 1_000 || timeout > MAX_MEDIA_STREAM_IDLE_TIMEOUT_MS) {
+    throw new RangeError("Media stream idle timeout must be between one and 120 seconds.");
+  }
+  return timeout;
+}
 
 function requireSameOriginJsonMutation(request: IncomingMessage, expectedOrigin?: string) {
   const mediaType = request.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
@@ -150,20 +166,6 @@ function mutableProjectRegistry(manager: ManimApi) {
   return candidate as MutableManimProjectApi;
 }
 
-function pipeVideo(response: ServerResponse, path: string, range?: Readonly<{ end: number; start: number }>) {
-  const stream = createReadStream(path, range);
-  const closeStream = () => stream.destroy();
-  response.once("close", closeStream);
-  stream.once("close", () => response.removeListener("close", closeStream));
-  stream.once("error", () => {
-    if (!response.headersSent) {
-      response.removeHeader("content-length");
-      sendJson(response, 500, { error: "Could not read the rendered video." });
-    } else response.destroy();
-  });
-  stream.pipe(response);
-}
-
 export function resolveByteRange(
   header: string | undefined,
   size: number,
@@ -189,34 +191,58 @@ export function resolveByteRange(
   return { end, kind: "partial", start };
 }
 
-async function streamVideo(request: IncomingMessage, response: ServerResponse, path: string) {
-  let metadata;
+async function streamVideo(
+  request: IncomingMessage,
+  response: ServerResponse,
+  asset: Awaited<ReturnType<ManimApi["video"]>>,
+  signal: AbortSignal,
+  idleTimeoutMs: number,
+) {
+  const idleAbort = new AbortController();
+  const streamSignal = AbortSignal.any([signal, idleAbort.signal]);
+  let idleTimer: NodeJS.Timeout | null = null;
+  const armIdleTimeout = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(
+      () => idleAbort.abort(new Error("Media stream stalled beyond its idle deadline.")),
+      idleTimeoutMs,
+    );
+    idleTimer.unref();
+  };
   try {
-    metadata = await stat(path);
-  } catch {
-    throw new HttpError("Rendered video not found.", 404);
+    const range = resolveByteRange(request.headers.range, asset.byteSize);
+    response.setHeader("accept-ranges", "bytes");
+    response.setHeader("cache-control", "no-store");
+    response.setHeader("content-type", asset.mediaType);
+    response.setHeader("x-content-type-options", "nosniff");
+    if (range.kind === "invalid") {
+      response.statusCode = 416;
+      response.setHeader("content-range", `bytes */${asset.byteSize}`);
+      response.end();
+      return;
+    }
+    const selected = range.kind === "partial" ? { end: range.end, start: range.start } : null;
+    response.statusCode = selected ? 206 : 200;
+    response.setHeader("content-length", selected ? selected.end - selected.start + 1 : asset.byteSize);
+    if (selected) response.setHeader("content-range", `bytes ${selected.start}-${selected.end}/${asset.byteSize}`);
+    if (request.method === "HEAD") {
+      response.end();
+      return;
+    }
+    armIdleTimeout();
+    const body = await asset.open(selected, streamSignal);
+    const boundedBody = (async function* () {
+      for await (const chunk of body) {
+        streamSignal.throwIfAborted();
+        armIdleTimeout();
+        yield chunk;
+      }
+    })();
+    await pipeline(Readable.from(boundedBody), response, { signal: streamSignal });
+  } finally {
+    if (idleTimer) clearTimeout(idleTimer);
+    await asset.close();
   }
-  if (!metadata.isFile()) throw new HttpError("Rendered video not found.", 404);
-  const range = resolveByteRange(request.headers.range, metadata.size);
-  response.setHeader("accept-ranges", "bytes");
-  response.setHeader("cache-control", "no-store");
-  response.setHeader("content-type", "video/mp4");
-  if (range.kind === "full") {
-    response.statusCode = 200;
-    response.setHeader("content-length", metadata.size);
-    pipeVideo(response, path);
-    return;
-  }
-  if (range.kind === "invalid") {
-    response.statusCode = 416;
-    response.setHeader("content-range", `bytes */${metadata.size}`);
-    response.end();
-    return;
-  }
-  response.statusCode = 206;
-  response.setHeader("content-length", range.end - range.start + 1);
-  response.setHeader("content-range", `bytes ${range.start}-${range.end}/${metadata.size}`);
-  pipeVideo(response, path, { end: range.end, start: range.start });
 }
 
 function requireEmptyRenderActionBody(body: unknown) {
@@ -427,7 +453,7 @@ async function routeManimRequest(
     const [, projectId, action] = thumbnailMatch;
     if (!action && request.method === "GET") {
       try {
-        sendThumbnailAsset(response, await manager.thumbnail(projectId));
+        sendThumbnailAsset(response, await manager.thumbnail(projectId, signal));
       } catch (error) {
         if (!(error instanceof HttpError) || error.status !== 404) throw error;
         sendThumbnailAsset(response, {
@@ -441,7 +467,7 @@ async function routeManimRequest(
       return;
     }
     if (action === "status" && request.method === "GET") {
-      sendJson(response, 200, await manager.thumbnailStatus(projectId));
+      sendJson(response, 200, await manager.thumbnailStatus(projectId, signal));
       return;
     }
     if (action === "generate" && request.method === "POST") {
@@ -508,8 +534,9 @@ async function routeManimRequest(
     sendJson(response, 200, await manager.view(id));
     return;
   }
-  if (request.method === "GET" && action === "video") {
-    await streamVideo(request, response, await manager.videoPath(id));
+  if ((request.method === "GET" || request.method === "HEAD") && action === "video") {
+    const idleTimeoutMs = mediaStreamIdleTimeout(policy.mediaStreamIdleTimeoutMs);
+    await streamVideo(request, response, await manager.video(id, signal), signal, idleTimeoutMs);
     return;
   }
   if (request.method !== "POST") throw new HttpError("Method not allowed.", 405);

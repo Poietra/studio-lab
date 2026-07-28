@@ -9,7 +9,12 @@ import { createEditSuggestionRequestHandler, EDIT_SUGGESTION_ROUTE } from "./edi
 import type { EditSuggestionGenerator } from "./edit-suggestions/service";
 import { HttpError, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
-import { authenticateManimRequestContext, handleManimRequest, type ManimApi } from "./manim-render-http";
+import {
+  authenticateManimRequestContext,
+  handleManimRequest,
+  isManimVideoRequest,
+  type ManimApi,
+} from "./manim-render-http";
 import { isReservedLocalManimTenantId, type ManimPrincipalAuthenticator } from "./manim-request-principal";
 import { ManimTenantRegistry } from "./manim-tenant-registry";
 
@@ -42,6 +47,8 @@ const DEFAULT_LIMITS = {
   maxConnections: 256,
   maxHeaderBytes: 16 * 1024,
   maxRequestsPerSocket: 100,
+  mediaStreamIdleTimeoutMs: 30_000,
+  mediaStreamTimeoutMs: 15 * 60_000,
   readinessTimeoutMs: 2_000,
   requestDrainTimeoutMs: 10_000,
   requestTimeoutMs: 30_000,
@@ -73,6 +80,13 @@ const limitsSchema = z
       .max(64 * 1024)
       .default(DEFAULT_LIMITS.maxHeaderBytes),
     maxRequestsPerSocket: z.number().int().min(1).max(1_000).default(DEFAULT_LIMITS.maxRequestsPerSocket),
+    mediaStreamIdleTimeoutMs: z.number().int().min(1_000).max(120_000).default(DEFAULT_LIMITS.mediaStreamIdleTimeoutMs),
+    mediaStreamTimeoutMs: z
+      .number()
+      .int()
+      .min(30_000)
+      .max(15 * 60_000)
+      .default(DEFAULT_LIMITS.mediaStreamTimeoutMs),
     readinessTimeoutMs: z.number().int().min(100).max(10_000).default(DEFAULT_LIMITS.readinessTimeoutMs),
     requestDrainTimeoutMs: z.number().int().min(100).max(60_000).default(DEFAULT_LIMITS.requestDrainTimeoutMs),
     requestTimeoutMs: z.number().int().min(1_000).max(120_000).default(DEFAULT_LIMITS.requestTimeoutMs),
@@ -81,6 +95,9 @@ const limitsSchema = z
   .strict()
   .refine(({ headersTimeoutMs, requestTimeoutMs }) => headersTimeoutMs <= requestTimeoutMs, {
     message: "headersTimeoutMs cannot exceed requestTimeoutMs.",
+  })
+  .refine(({ mediaStreamIdleTimeoutMs, mediaStreamTimeoutMs }) => mediaStreamIdleTimeoutMs < mediaStreamTimeoutMs, {
+    message: "mediaStreamIdleTimeoutMs must be shorter than mediaStreamTimeoutMs.",
   });
 
 const productionServerConfigSchema = z
@@ -105,6 +122,8 @@ export type ProductionManimServerConfig = Readonly<{
     maxConnections: number;
     maxHeaderBytes: number;
     maxRequestsPerSocket: number;
+    mediaStreamIdleTimeoutMs: number;
+    mediaStreamTimeoutMs: number;
     readinessTimeoutMs: number;
     requestDrainTimeoutMs: number;
     requestTimeoutMs: number;
@@ -457,18 +476,28 @@ export async function startProductionManimServer(
     activeRequests.add(controller);
     const abortOnClose = () => controller.abort(new Error("Client connection closed."));
     response.once("close", abortOnClose);
-    const handlerTimeout = setTimeout(() => {
-      controller.abort(new Error("Production request deadline exceeded."));
-      request.resume();
-      if (!response.headersSent) response.setHeader("connection", "close");
-      sendJson(response, 504, { error: "Request deadline exceeded." });
-    }, config.limits.handlerTimeoutMs);
-    handlerTimeout.unref();
+    let handlerTimeout: NodeJS.Timeout | null = null;
+    const armHandlerTimeout = (timeoutMs: number) => {
+      if (handlerTimeout) clearTimeout(handlerTimeout);
+      handlerTimeout = setTimeout(() => {
+        const error = new Error("Production request deadline exceeded.");
+        controller.abort(error);
+        request.resume();
+        if (response.headersSent) response.destroy(error);
+        else {
+          response.setHeader("connection", "close");
+          sendJson(response, 504, { error: "Request deadline exceeded." });
+        }
+      }, timeoutMs);
+      handlerTimeout.unref();
+    };
+    armHandlerTimeout(config.limits.handlerTimeoutMs);
     let accessBoundary: "authentication" | "tenant" | null = null;
 
     try {
       const transport = validateTransportRequest(request, config, trustedProxyAddresses);
       const pathname = new URL(request.url!, config.publicOrigin).pathname;
+      const isMediaStream = request.method === "GET" && isManimVideoRequest(request.method, pathname);
       if (pathname === "/healthz") {
         if (request.method !== "GET") throw new TransportError("Method not allowed.", 405);
         sendJson(response, lifecycle === "accepting" ? 200 : 503, {
@@ -537,6 +566,7 @@ export async function startProductionManimServer(
       }
       if (controller.signal.aborted) return;
       if (lifecycle !== "accepting") throw new TransportError("Production service is draining.", 503);
+      if (isMediaStream) armHandlerTimeout(config.limits.mediaStreamTimeoutMs);
       await raceWithSignal(
         () =>
           trackRuntimeTask(() =>
@@ -544,6 +574,7 @@ export async function startProductionManimServer(
               allowExistingProjectRegistration: false,
               expectedMutationOrigin: config.publicOrigin,
               maxJsonBodyBytes: config.limits.maxBodyBytes,
+              mediaStreamIdleTimeoutMs: config.limits.mediaStreamIdleTimeoutMs,
               requestSignal: controller.signal,
             }),
           ),
@@ -577,7 +608,7 @@ export async function startProductionManimServer(
       response.setHeader("connection", "close");
       sendJson(response, 500, { error: "Production request failed." });
     } finally {
-      clearTimeout(handlerTimeout);
+      if (handlerTimeout) clearTimeout(handlerTimeout);
       response.removeListener("close", abortOnClose);
       activeRequests.delete(controller);
     }

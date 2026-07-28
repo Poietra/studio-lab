@@ -27,6 +27,7 @@ function testTransport(
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -189,6 +190,25 @@ describe("PrivateVersionedS3BucketTransportV1", () => {
     ).rejects.toThrow(/safely bounded/i);
     expect(() => operation.deleteObjectVersion({ Key: key, VersionId: "" })).toThrow(/deletion target/i);
     expect(send).not.toHaveBeenCalled();
+    await lease.close();
+  });
+
+  it("clears the 30-second header deadline after opening a long-lived object body", async () => {
+    vi.useFakeTimers();
+    let sdkSignal: AbortSignal | undefined;
+    const { transport } = testTransport(async (_command, options) => {
+      sdkSignal = options?.abortSignal;
+      return { Body: {}, ContentLength: 1 };
+    });
+    const caller = new AbortController();
+    const lease = transport.acquire();
+
+    await lease.operation(caller.signal).getObject({ Key: "tenants/tenant-a/videos/video-a" });
+    expect(sdkSignal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(30_001);
+    expect(sdkSignal?.aborted).toBe(false);
+    caller.abort(new Error("client disconnected"));
+    expect(sdkSignal?.aborted).toBe(true);
     await lease.close();
   });
 

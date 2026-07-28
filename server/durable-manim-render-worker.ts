@@ -7,6 +7,7 @@ import {
   MAX_DURABLE_RENDER_LEASE_MS_V1,
   type RenderSessionRepositoryV1,
 } from "./storage/render-session-repository";
+import type { RenderStagingLocatorsV1, VerifiedArtifactPublisherV1 } from "./storage/verified-artifact-publisher";
 
 const DEFAULT_LEASE_DURATION_MS = 30_000;
 const DEFAULT_MAX_CONCURRENT_JOBS = 2;
@@ -18,6 +19,7 @@ const MAX_POLL_INTERVAL_MS = 60_000;
 export type DurableManimRenderExecutionResultV1 =
   | Readonly<{
       artifactLocator?: string | null;
+      stagingLocators?: RenderStagingLocatorsV1;
       kind: "ready";
       logTail: string;
     }>
@@ -47,6 +49,7 @@ export type DurableManimRenderWorkerOptionsV1 = Readonly<{
   maxConcurrentJobs?: number;
   onFailure: (error: unknown) => void;
   pollIntervalMs?: number;
+  publisher?: Pick<VerifiedArtifactPublisherV1, "publish" | "ready">;
   repository: RenderSessionRepositoryV1;
   tenantId: string;
   workerId?: string;
@@ -121,6 +124,7 @@ export class DurableManimRenderWorkerV1 {
   readonly #maxConcurrentJobs: number;
   readonly #onFailure: (error: unknown) => void;
   readonly #pollIntervalMs: number;
+  readonly #publisher: Pick<VerifiedArtifactPublisherV1, "publish" | "ready"> | undefined;
   readonly #repository: RenderSessionRepositoryV1;
   readonly #tenantId: string;
   readonly #workerId: string;
@@ -155,18 +159,20 @@ export class DurableManimRenderWorkerV1 {
       16,
     );
     this.#repository = options.repository;
+    this.#publisher = options.publisher;
     this.#executor = options.executor;
     this.#onFailure = options.onFailure;
   }
 
   async ready(signal?: AbortSignal) {
     signal?.throwIfAborted();
-    const [repositoryReady, executorReady] = await Promise.all([
+    const [repositoryReady, executorReady, publisherReady] = await Promise.all([
       this.#repository.ready(signal),
       this.#executor.ready(signal),
+      this.#publisher?.ready(signal) ?? true,
     ]);
     signal?.throwIfAborted();
-    return repositoryReady && executorReady;
+    return repositoryReady && executorReady && publisherReady;
   }
 
   start() {
@@ -213,6 +219,7 @@ export class DurableManimRenderWorkerV1 {
     if (!(await this.#repository.ready(signal))) return;
     await this.#repository.expireTimedOutSessions(this.#tenantId, this.#maxConcurrentJobs, signal);
     if (!(await this.#executor.ready(signal))) return;
+    if (this.#publisher && !(await this.#publisher.ready(signal))) return;
     const recoverable = await this.#repository.findRecoverableSessions(this.#tenantId, this.#maxConcurrentJobs, signal);
     const settlements = await Promise.allSettled(recoverable.map((session) => this.#claimAndExecute(session, signal)));
     const failures = settlements.flatMap((settlement) => (settlement.status === "rejected" ? [settlement.reason] : []));
@@ -299,15 +306,47 @@ export class DurableManimRenderWorkerV1 {
         ])
       : ({ kind: "aborted" } as const);
 
+    let published = false;
+    let publicationError: unknown;
+    if (outcome.kind === "result" && outcome.result.kind === "ready" && this.#publisher && !jobAbort.signal.aborted) {
+      try {
+        if (!outcome.result.stagingLocators) {
+          throw new Error("The production render executor returned no staged media bundle.");
+        }
+        await this.#publisher.publish(
+          {
+            locators: outcome.result.stagingLocators,
+            logTail: outcome.result.logTail,
+            ownerId: this.#workerId,
+            session: claimed,
+          },
+          jobAbort.signal,
+        );
+        published = true;
+      } catch (error) {
+        publicationError = error;
+      }
+    }
     if (!jobAbort.signal.aborted) jobAbort.abort();
     if (deadlineTimer) clearTimeout(deadlineTimer);
     parentSignal.removeEventListener("abort", abortFromParent);
     await heartbeat;
+    if (published) {
+      await this.#cleanupStaging(claimed.id);
+      return;
+    }
     if (parentSignal.aborted || this.#closeAbort.signal.aborted || leaseLost) return;
-
-    const failed = outcome.kind !== "result" || outcome.result.kind === "failed";
+    if (publicationError !== undefined) {
+      if (expectedConflict(publicationError)) return;
+      throw publicationError;
+    }
+    const failed = outcome.kind !== "result" || outcome.result.kind === "failed" || publicationError !== undefined;
     const failureCode =
-      outcome.kind === "result" && outcome.result.kind === "failed" ? outcome.result.code : "interrupted";
+      publicationError !== undefined
+        ? "render-failed"
+        : outcome.kind === "result" && outcome.result.kind === "failed"
+          ? outcome.result.code
+          : "interrupted";
     try {
       await this.#repository.completeLease({
         ...(outcome.kind === "result" && outcome.result.kind === "ready"
@@ -323,8 +362,21 @@ export class DurableManimRenderWorkerV1 {
         status: failed ? "failed" : "ready",
         tenantId: this.#tenantId,
       });
+      if (failed) await this.#cleanupStaging(claimed.id);
     } catch (error) {
       if (!expectedConflict(error)) throw error;
+    }
+  }
+
+  async #cleanupStaging(sessionId: string) {
+    try {
+      await this.#executor.cancel?.({
+        jobId: durableManimRenderJobIdV1(this.#tenantId, sessionId),
+        sessionId,
+        tenantId: this.#tenantId,
+      });
+    } catch (error) {
+      this.#reportFailure(error);
     }
   }
 

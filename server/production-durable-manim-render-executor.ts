@@ -15,13 +15,20 @@ import { manimTenantIdSchema } from "./manim-request-principal";
 import type { SourceContentBlobStoreV1 } from "./storage/workspace-source-repository";
 
 const READINESS_TIMEOUT_MS = 10_000;
+const MAX_CONCURRENT_RENDER_SESSIONS = 4;
+
+function validConcurrentRenderSessions(value: number | undefined) {
+  return value === undefined || (Number.isSafeInteger(value) && value >= 1 && value <= MAX_CONCURRENT_RENDER_SESSIONS);
+}
 
 export type ProductionDurableManimRenderExecutorOptionsV1 = Readonly<{
   backend: ManimRenderSandboxBackendV1;
   blobs: SourceContentBlobStoreV1;
   frame: Readonly<{ height: number; width: number }>;
+  maxConcurrentJobs?: number;
   profileDigest: string;
   runtimeDigest: string;
+  stagingRootDigest: string;
   tenantId: string;
 }>;
 
@@ -32,12 +39,14 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
   readonly #frame: typeof MANIM_RENDER_CANONICAL_SCENE_FRAME_V1;
   readonly #profileDigest: string;
   readonly #runtimeDigest: string;
+  readonly #stagingRootDigest: string;
   readonly #tenantId: string;
 
   constructor(options: ProductionDurableManimRenderExecutorOptionsV1) {
     const tenant = manimTenantIdSchema.safeParse(options.tenantId);
     if (
       !tenant.success ||
+      !validConcurrentRenderSessions(options.maxConcurrentJobs) ||
       options.frame.height !== MANIM_RENDER_CANONICAL_SCENE_FRAME_V1.height ||
       options.frame.width !== MANIM_RENDER_CANONICAL_SCENE_FRAME_V1.width
     ) {
@@ -48,7 +57,16 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
     this.#frame = MANIM_RENDER_CANONICAL_SCENE_FRAME_V1;
     this.#profileDigest = options.profileDigest;
     this.#runtimeDigest = options.runtimeDigest;
+    this.#stagingRootDigest = options.stagingRootDigest;
     this.#tenantId = tenant.data;
+  }
+
+  get profileDigest() {
+    return this.#profileDigest;
+  }
+
+  get runtimeDigest() {
+    return this.#runtimeDigest;
   }
 
   async ready(signal?: AbortSignal) {
@@ -69,7 +87,8 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
       return (
         status.health === "ready" &&
         status.profileDigest === this.#profileDigest &&
-        status.runtimeDigest === this.#runtimeDigest
+        status.runtimeDigest === this.#runtimeDigest &&
+        status.stagingRootDigest === this.#stagingRootDigest
       );
     } catch {
       return false;
@@ -91,41 +110,47 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
     }
     const source = await this.#blobs.readSource(this.#tenantId, session.patched.blob, request.signal);
     request.signal.throwIfAborted();
-    const sealed = new SealedManimRenderSandboxRequestV1({
-      deadlineEpochMs: session.deadline.getTime(),
-      fenceToken: canonicalManimRenderFenceTokenV1(session.fenceToken),
-      jobId: request.jobId,
-      output: {
-        frameRate: 15,
-        kind: "video",
-        mediaType: "video/mp4",
-        pixelHeight: 480,
-        pixelWidth: 854,
-      },
-      profileDigest: this.#profileDigest,
-      projectId: session.projectId,
-      runtimeDigest: this.#runtimeDigest,
-      sceneFrame: this.#frame,
-      sceneName: session.sceneName,
-      schema: MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V1,
-      sessionId: session.id,
-      source,
-      sourceDigest: session.patched.blob.digest,
-      sourcePath: session.sourcePath,
-      tenantId: this.#tenantId,
-      version: 1,
-    });
-    const terminal = await this.#backend.submitOrReattach(sealed, {
-      deadlineEpochMs: session.deadline.getTime(),
-      signal: request.signal,
-    });
-    if (terminal.kind === "ready") {
+    const submit = (kind: "thumbnail" | "video") => {
+      const sealed = new SealedManimRenderSandboxRequestV1({
+        deadlineEpochMs: session.deadline.getTime(),
+        fenceToken: canonicalManimRenderFenceTokenV1(session.fenceToken),
+        jobId: request.jobId,
+        output:
+          kind === "video"
+            ? { frameRate: 15, kind: "video", mediaType: "video/mp4", pixelHeight: 480, pixelWidth: 854 }
+            : { frameRate: 15, kind: "thumbnail", mediaType: "image/png", pixelHeight: 480, pixelWidth: 854 },
+        profileDigest: this.#profileDigest,
+        projectId: session.projectId,
+        runtimeDigest: this.#runtimeDigest,
+        sceneFrame: this.#frame,
+        sceneName: session.sceneName,
+        schema: MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V1,
+        sessionId: session.id,
+        source,
+        sourceDigest: session.patched.blob.digest,
+        sourcePath: session.sourcePath,
+        tenantId: this.#tenantId,
+        version: 1,
+      });
+      return this.#backend.submitOrReattach(sealed, {
+        deadlineEpochMs: session.deadline.getTime(),
+        signal: request.signal,
+      });
+    };
+    const [video, thumbnail] = await Promise.all([submit("video"), submit("thumbnail")]);
+    if (video.kind === "ready" && thumbnail.kind === "ready") {
       return {
-        artifactLocator: encodeManimRenderStagingLocatorV1(terminal),
+        artifactLocator: encodeManimRenderStagingLocatorV1(video),
         kind: "ready",
         logTail: "",
+        stagingLocators: {
+          thumbnail: encodeManimRenderStagingLocatorV1(thumbnail),
+          video: encodeManimRenderStagingLocatorV1(video),
+        },
       } as const;
     }
+    const terminal = video.kind === "failed" ? video : thumbnail.kind === "failed" ? thumbnail : null;
+    if (!terminal) throw new Error("The render sandbox returned an invalid media bundle.");
     return {
       code: terminal.code === "cancelled" || terminal.code === "deadline-exceeded" ? "interrupted" : "render-failed",
       kind: "failed",
@@ -153,16 +178,22 @@ export async function createProductionDurableManimRenderExecutorV1(
     blobs: SourceContentBlobStoreV1;
     client: ManimRenderProductionSandboxClientOptionsV1;
     frame: Readonly<{ height: number; width: number }>;
+    maxConcurrentJobs?: number;
     tenantId: string;
   }>,
 ) {
+  if (!validConcurrentRenderSessions(options.maxConcurrentJobs)) {
+    throw new TypeError("The production durable render executor configuration is invalid.");
+  }
   const client = await createManimRenderProductionSandboxClientV1(options.client);
   return new ProductionDurableManimRenderExecutorV1({
     backend: client.backend,
     blobs: options.blobs,
     frame: options.frame,
+    ...(options.maxConcurrentJobs === undefined ? {} : { maxConcurrentJobs: options.maxConcurrentJobs }),
     profileDigest: client.profileDigest,
     runtimeDigest: client.runtimeDigest,
+    stagingRootDigest: client.stagingRootDigest,
     tenantId: options.tenantId,
   });
 }
