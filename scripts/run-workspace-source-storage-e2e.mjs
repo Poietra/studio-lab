@@ -52,13 +52,12 @@ async function retry(label, operation, attempts = 150) {
   throw new Error(`${label} did not become ready.`, { cause: lastError });
 }
 
-async function runTests(environment) {
+async function runTestFile(environment, testFile) {
   return new Promise((resolve, reject) => {
-    testProcess = spawn(
-      "pnpm",
-      ["exec", "vitest", "run", "server/storage/workspace-source-storage.real.test.ts", "--reporter=verbose"],
-      { env: { ...process.env, ...environment }, stdio: "inherit" },
-    );
+    testProcess = spawn("pnpm", ["exec", "vitest", "run", testFile, "--reporter=verbose"], {
+      env: { ...process.env, ...environment },
+      stdio: "inherit",
+    });
     testProcess.once("error", reject);
     testProcess.once("exit", (code, signal) => {
       testProcess = null;
@@ -66,6 +65,15 @@ async function runTests(environment) {
       else reject(new Error(`Storage E2E failed with ${code ?? signal}.`));
     });
   });
+}
+
+async function runTests(environment) {
+  for (const testFile of [
+    "server/storage/workspace-source-storage.real.test.ts",
+    "server/storage/render-session-storage.real.test.ts",
+  ]) {
+    await runTestFile(environment, testFile);
+  }
 }
 
 async function cleanup() {
