@@ -17,12 +17,14 @@ import {
 } from "./fast-manim-gated-oci-job-runner";
 import { FastManimSandboxBackendControlError, FastManimSandboxRequestBundleV1 } from "./fast-manim-sandbox-backend";
 import {
+  digestFastManimSnapshotRuntimeConfigV1,
   fastManimSnapshotResultV1Schema,
   fastManimSnapshotSceneIdV1,
   MAX_FAST_MANIM_SNAPSHOT_ARRAY_ITEMS,
   MAX_FAST_MANIM_SNAPSHOT_OBJECT_FIELDS,
   MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES,
   MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_DEPTH,
+  parseAndSealFastManimSnapshotProducerJsonV1,
 } from "./fast-manim-snapshot-contract";
 import { sandboxProducerRequest } from "./test-fixtures/fast-manim-sandbox-backend-fixture";
 
@@ -39,16 +41,24 @@ function context(signal = new AbortController().signal, deadlineMs = 30_000) {
   };
 }
 
-function requestFor(sourceText: string, sceneName: string) {
+function producerRequestFor(sourceText: string, sceneName: string, snapshotVersion: 1 | 2 = 1) {
   const request = sandboxProducerRequest();
-  return new FastManimSandboxRequestBundleV1({
+  const runtimeConfig = { ...request.runtimeConfig, snapshotVersion };
+  return {
     ...request,
     requestId: `gated-${sceneName}`,
+    runtimeConfig,
+    runtimeConfigHash: digestFastManimSnapshotRuntimeConfigV1(runtimeConfig),
     sceneId: fastManimSnapshotSceneIdV1("scene.py", sceneName),
     sceneName,
+    snapshotVersion,
     sourceHash: createHash("sha256").update(sourceText, "utf8").digest("hex"),
     sourceText,
-  });
+  };
+}
+
+function requestFor(sourceText: string, sceneName: string, snapshotVersion: 1 | 2 = 1) {
+  return new FastManimSandboxRequestBundleV1(producerRequestFor(sourceText, sceneName, snapshotVersion));
 }
 
 function wire(body: Uint8Array, overrides: Readonly<{ digest?: Buffer; length?: number; magic?: Buffer }> = {}) {
@@ -70,6 +80,17 @@ class GatedStaticScene(Scene):
         self.add(circle, rectangle, line)
 `;
 
+const opacityLifetimeScene = `from manim import Circle, FadeIn, FadeOut, Scene, linear
+
+class GatedOpacityLifetimeScene(Scene):
+    def construct(self):
+        circle = Circle().set_fill("#ef4444", opacity=0.35).set_stroke(width=0)
+        self.wait(1, frozen_frame=True)
+        self.play(FadeIn(circle, rate_func=linear), run_time=2)
+        self.wait(1, frozen_frame=True)
+        self.play(FadeOut(circle, rate_func=linear), run_time=2)
+`;
+
 class RecordingDockerClient extends FastManimGatedOciDockerClientV1 {
   readonly calls: string[][] = [];
   readonly responses: Array<Readonly<{ code: number; stderr: Buffer; stdout: Buffer }>> = [];
@@ -88,9 +109,9 @@ function trustedImageInspection(image: string) {
           Cmd: ["/opt/venv/bin/python", "-m", "manim.renderer.scene_snapshot"],
           Entrypoint: ["/opt/venv/bin/python", "/opt/poietra/gated-entrypoint.py"],
           Labels: {
-            "io.poietra.fast-manim.archive-sha256": "46f66b6698650988c18327732d1d3c30cccd53b38de91e1059c61187d92c2b61",
-            "io.poietra.fast-manim.commit": "ac143dc46ebe314095ae7864a32efa289a0afe96",
-            "io.poietra.fast-manim.tree": "b86e2ec81f257cae20669e3c5c33080facfbd610",
+            "io.poietra.fast-manim.archive-sha256": "090d8ce99568d427636ba00274b08f689518f411cd96d7280e50b48e2e54fee5",
+            "io.poietra.fast-manim.commit": "d0799e39eed36565ed65afa18079fb0e06be9014",
+            "io.poietra.fast-manim.tree": "78e777a7660adaa4b6609bb12b7158ba97902721",
             "io.poietra.sandbox-slice": "gated-oci-v1",
           },
         },
@@ -495,6 +516,45 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
     if (result.kind !== "compiled") throw new Error("Expected a compiled static Scene.");
     expect((result.bundle as { scene: { entities: unknown[] } }).scene.entities).toHaveLength(3);
     expect(Buffer.from(execution.resultBytes).includes(Buffer.from("POIETRA_GATE_READY_V1"))).toBe(false);
+  });
+
+  it("isolates, seals, and correlates real V2 opacity/lifetime evidence", { timeout: 60_000 }, async () => {
+    const source = producerRequestFor(opacityLifetimeScene, "GatedOpacityLifetimeScene", 2);
+    const request = new FastManimSandboxRequestBundleV1(source);
+    const execution = await runFastManimGatedOciJobV1({
+      deadlineEpochMs: Date.now() + 30_000,
+      image,
+      requestBytes: request.copyBytes(),
+      signal: new AbortController().signal,
+    });
+    expect(execution.cleanupVerified).toBe(true);
+    const sealed = await parseAndSealFastManimSnapshotProducerJsonV1(execution.resultBytes, {
+      frame: source.runtimeConfig.frame,
+      projectId: source.projectId,
+      requestId: source.requestId,
+      runtimeConfigHash: source.runtimeConfigHash,
+      sceneId: source.sceneId,
+      sceneName: source.sceneName,
+      snapshotVersion: 2,
+      sourceHash: source.sourceHash,
+      sourcePath: source.sourcePath,
+    });
+    if (sealed.kind !== "compiled") throw new Error("Expected compiled opacity/lifetime evidence.");
+    expect(sealed.bundle.scene).toMatchObject({
+      duration: 6,
+      requiredCapabilities: ["cubic-path-geometry", "opacity-animation"],
+    });
+    expect(sealed.bundle.scene.entities[0]?.lifetimes).toEqual([{ end: 6, start: 1 }]);
+    expect(sealed.bundle.scene.animationChannels[0]).toMatchObject({
+      entityId: `${source.sceneId}/entity:0`,
+      keyframes: [
+        { at: 1, value: 0 },
+        { at: 3, value: 1 },
+        { at: 4, value: 1 },
+        { at: 6, value: 0 },
+      ],
+      kind: "opacity",
+    });
   });
 
   it("does not quarantine an abort observed after known-ID cleanup was verified", { timeout: 60_000 }, async () => {
