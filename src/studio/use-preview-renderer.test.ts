@@ -311,6 +311,25 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(result.scene.interactionEntityIds).toEqual(["runtime-line"]);
   });
 
+  it("restores the exact verified snapshot after undo returns to zero applied Programs", async () => {
+    const { proposedState, snapshot } = await linePreviewInput();
+    const result = await compileStudioPreviewSceneV1({
+      frame: { height: 9, width: 16 },
+      proposedState,
+      snapshot,
+      // The redo stack remains editor authority after Undo, so the revision is
+      // intentionally not pristine even though no Program affects the Scene.
+      workingRevision: "studio-working-v1:undo-with-redo-history",
+      workspaceKey: "project-a/scene.py/LineScene",
+    });
+    expect(result.kind).toBe("compiled");
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(result.scene.bundle).toBe(snapshot.snapshot);
+    expect(result.scene.workingRevision).toBe("studio-working-v1:undo-with-redo-history");
+    expect(result.scene.bundle.scene.entities[0]?.geometry.kind).toBe("line");
+    expect(result.scene.bundle.scene.animationChannels).toBe(snapshot.snapshot.scene.animationChannels);
+  });
+
   it("replaces the pristine source on the first applied edit, then emits exact bounded deltas", async () => {
     const { proposedState, snapshot } = await compilablePreviewInput();
     const pristine = await compileStudioPreviewSceneV1({
@@ -378,6 +397,42 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(result.scene.bundle.scene.entities.map(({ id }) => id)).toContain(creation.entityIds[0]);
   });
 
+  it("fails closed instead of dropping verified base animation channels on edit", async () => {
+    const { proposedState, snapshot } = await compilablePreviewInput();
+    const animatedSnapshot: StudioVerifiedPreviewSnapshotV1 = {
+      ...snapshot,
+      snapshot: {
+        ...snapshot.snapshot,
+        scene: {
+          ...snapshot.snapshot.scene,
+          animationChannels: [
+            {
+              entityId: "earlier",
+              id: "opacity:earlier",
+              keyframes: [
+                { at: 0, easingToNext: { kind: "smooth" }, value: 0 },
+                { at: 2, easingToNext: null, value: 1 },
+              ],
+              kind: "opacity",
+              provenanceId: "verified-source-fade",
+            },
+          ],
+        },
+      },
+    };
+    const result = await compileStudioPreviewSceneV1({
+      frame: { height: 9, width: 16 },
+      proposedState: withAppliedRectangle(proposedState),
+      snapshot: animatedSnapshot,
+      workingRevision: "studio-working-v1:edit-animated-source",
+      workspaceKey: "project-a/scene.py/CircleScene",
+    });
+    expect(result).toEqual({
+      error: "Editing a verified Scene with imported animation channels requires temporal rebasing support.",
+      kind: "unsupported",
+    });
+  });
+
   it("downgrades an unexpected delta producer rejection to the correlated full snapshot path", async () => {
     const { snapshot } = await compilablePreviewInput();
     const result = await createStudioPreviewDeltaOrReplacementV1(snapshot.snapshot, snapshot.snapshot, async () => {
@@ -388,9 +443,10 @@ describe("compileStudioPreviewSceneV1", () => {
 
   it("correlates the canonical Studio state to verified imported runtime evidence", async () => {
     const { proposedState, snapshot } = await compilablePreviewInput();
+    const edited = withAppliedRectangle(proposedState);
     const first = await compileStudioPreviewSceneV1({
       frame: { height: 9, width: 16 },
-      proposedState,
+      proposedState: edited,
       snapshot,
       workingRevision: "studio-working-v1:circle",
       workspaceKey: "project-a/scene.py/CircleScene",
@@ -399,20 +455,17 @@ describe("compileStudioPreviewSceneV1", () => {
     if (first.kind !== "compiled") throw new Error(first.error);
     expect(first.scene.bundle.scene).toMatchObject({
       duration: 2,
-      entities: [
-        {
-          appearance: snapshot.snapshot.scene.entities[0]?.appearance,
-          id: "earlier",
-        },
-      ],
       fidelity: { kind: "approximate" },
       sceneId: "studio:circle-scene",
       source: { kind: "studio-edit-program", revisionHash: first.scene.engineRevisionHash },
     });
-    expect(first.scene.interactionEntityIds).toEqual(["earlier"]);
+    expect(first.scene.bundle.scene.entities.find(({ id }) => id === "earlier")?.appearance).toEqual(
+      snapshot.snapshot.scene.entities[0]?.appearance,
+    );
+    expect(first.scene.interactionEntityIds).toEqual(["earlier", "tx:create-rectangle/entity:rectangle"]);
     const repeated = await compileStudioPreviewSceneV1({
       frame: { height: 9, width: 16 },
-      proposedState,
+      proposedState: edited,
       snapshot,
       workingRevision: "studio-working-v1:circle",
       workspaceKey: "project-a/scene.py/CircleScene",

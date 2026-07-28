@@ -188,10 +188,10 @@ export async function compileStudioPreviewSceneV1(
       kind: "unsupported",
     };
   }
-  if (input.workingRevision === PRISTINE_WORKING_REVISION) {
-    if (input.proposedState.programs.length > 0) {
-      return { error: "A pristine Studio revision cannot contain evaluated edit Programs.", kind: "unsupported" };
-    }
+  if (input.workingRevision === PRISTINE_WORKING_REVISION && input.proposedState.programs.length > 0) {
+    return { error: "A pristine Studio revision cannot contain evaluated edit Programs.", kind: "unsupported" };
+  }
+  if (input.proposedState.programs.length === 0) {
     const { correlation, snapshot } = input.snapshot;
     if (
       snapshot.scene.source.kind !== "imported-manim-server-snapshot" ||
@@ -205,7 +205,7 @@ export async function compileStudioPreviewSceneV1(
       correlation.sceneDuration !== correlation.context.sourceDuration ||
       correlation.context.workingRevision !== PRISTINE_WORKING_REVISION
     ) {
-      return { error: "The pristine server snapshot has inconsistent revision evidence.", kind: "unsupported" };
+      return { error: "The base server snapshot has inconsistent revision evidence.", kind: "unsupported" };
     }
     return {
       kind: "compiled",
@@ -218,6 +218,12 @@ export async function compileStudioPreviewSceneV1(
         workingRevision: input.workingRevision,
         workspaceKey: input.workspaceKey,
       },
+    };
+  }
+  if (input.snapshot.snapshot.scene.animationChannels.length > 0) {
+    return {
+      error: "Editing a verified Scene with imported animation channels requires temporal rebasing support.",
+      kind: "unsupported",
     };
   }
   const evidence = buildStudioSceneIrAdapterEvidenceV1({
