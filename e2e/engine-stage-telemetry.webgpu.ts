@@ -330,6 +330,10 @@ test("records the 1080p WebGPU stage telemetry matrix", async ({ page, request }
     for (const outcomes of Object.values(caches.summary)) {
       expect(Object.values(outcomes).reduce((total, count) => total + count, 0)).toBe(TELEMETRY_FRAMES);
     }
+    if (definition.profile === "shape-primitives") {
+      expect(caches.summary.preparedGeometry).toEqual({ hit: TELEMETRY_FRAMES });
+      expect(counts.tessellationCalls).toMatchObject({ maximum: 0, minimum: 0 });
+    }
 
     const attributionViolations: {
       frameIndex: number;
