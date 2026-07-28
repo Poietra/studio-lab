@@ -251,6 +251,21 @@ describe("SnapshotArtifactPublisherV1", () => {
     });
   }
 
+  it("probes and closes both durable stores exactly once", async () => {
+    const artifactReady = vi.spyOn(artifacts, "ready");
+    const publicationReady = vi.spyOn(publications, "ready");
+    const artifactClose = vi.spyOn(artifacts, "close");
+    const publicationClose = vi.spyOn(publications, "close");
+
+    await expect(publisher.ready()).resolves.toBe(true);
+    await Promise.all([publisher.close(), publisher.close()]);
+
+    expect(artifactReady).toHaveBeenCalledOnce();
+    expect(publicationReady).toHaveBeenCalledOnce();
+    expect(artifactClose).toHaveBeenCalledOnce();
+    expect(publicationClose).toHaveBeenCalledOnce();
+  });
+
   it("uploads canonical bytes before publishing metadata", async () => {
     const result = await publish();
 

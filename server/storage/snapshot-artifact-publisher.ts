@@ -250,12 +250,32 @@ async function parseDocument(bytes: Uint8Array, publication: SnapshotPublication
 export class SnapshotArtifactPublisherV1 {
   readonly #artifacts: SnapshotArtifactStoreV1;
   readonly #publications: SnapshotPublicationRepositoryV1;
+  #closeRequest: Promise<void> | null = null;
 
   constructor(
     options: Readonly<{ artifacts: SnapshotArtifactStoreV1; publications: SnapshotPublicationRepositoryV1 }>,
   ) {
     this.#artifacts = options.artifacts;
     this.#publications = options.publications;
+  }
+
+  async ready(signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    const [artifactsReady, publicationsReady] = await Promise.all([
+      this.#artifacts.ready(signal),
+      this.#publications.ready(signal),
+    ]);
+    signal?.throwIfAborted();
+    return artifactsReady && publicationsReady;
+  }
+
+  close() {
+    this.#closeRequest ??= (async () => {
+      const results = await Promise.allSettled([this.#artifacts.close(), this.#publications.close()]);
+      const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+      if (errors.length > 0) throw new AggregateError(errors, "Could not fully close snapshot artifact storage.");
+    })();
+    return this.#closeRequest;
   }
 
   async publish(input: PublishSnapshotArtifactInputV1, signal?: AbortSignal) {
