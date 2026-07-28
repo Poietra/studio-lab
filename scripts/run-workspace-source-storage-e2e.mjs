@@ -7,12 +7,17 @@ const execFile = promisify(execFileCallback);
 const { Client } = pg;
 const POSTGRES_IMAGE = "postgres@sha256:23e88eb049fd5d54894d70100df61d38a49ed97909263f79d4ff4c30a5d5fca2";
 const MINIO_IMAGE = "minio/minio@sha256:6f23072e3e222e64fe6f86b31a7f7aca971e5129e55cbccef649b109b8e651a1";
+const STORAGE_SUITE_CONCURRENCY = 2;
 const runId = randomBytes(6).toString("hex");
 const postgresContainer = `poietra-storage-e2e-${runId}-postgres`;
 const minioContainer = `poietra-storage-e2e-${runId}-minio`;
 const createdContainers = [];
 const testProcesses = new Set();
 let interruptedSignal = null;
+
+function throwIfInterrupted() {
+  if (interruptedSignal) throw new Error(`Interrupted by ${interruptedSignal}.`);
+}
 
 function validateContainerName(name) {
   if (!new RegExp(`^poietra-storage-e2e-${runId}-(?:postgres|minio)$`).test(name)) {
@@ -41,7 +46,7 @@ async function publishedPort(name, internalPort) {
 async function retry(label, operation, attempts = 150) {
   let lastError;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    if (interruptedSignal) throw new Error(`Interrupted by ${interruptedSignal}.`);
+    throwIfInterrupted();
     try {
       if (await operation()) return;
     } catch (error) {
@@ -79,15 +84,19 @@ function postgresIdentifier(value) {
 }
 
 async function createSuiteDatabases(adminUrl) {
+  throwIfInterrupted();
   const client = new Client({ connectionString: adminUrl });
   try {
     await client.connect();
+    throwIfInterrupted();
     for (const suite of STORAGE_SUITES) {
       await client.query(`CREATE DATABASE ${postgresIdentifier(suite.database)}`);
+      throwIfInterrupted();
     }
   } finally {
     await client.end().catch(() => undefined);
   }
+  throwIfInterrupted();
 }
 
 function suiteEnvironment(commonEnvironment, postgresAdminUrl, suite) {
@@ -106,7 +115,9 @@ function writeFailureOutput(stdout, stderr) {
 }
 
 async function runTestFile(environment, suite) {
+  throwIfInterrupted();
   return new Promise((resolve, reject) => {
+    process.stdout.write(`[storage-e2e] starting ${suite.file}\n`);
     const child = spawn("pnpm", ["exec", "vitest", "run", suite.file, "-t", suite.title, "--reporter=json"], {
       env: { ...process.env, ...environment },
       stdio: ["ignore", "pipe", "pipe"],
@@ -168,12 +179,22 @@ async function runTestFile(environment, suite) {
 }
 
 async function runTests(environment) {
-  const results = await Promise.allSettled(
-    STORAGE_SUITES.map((suite) =>
-      runTestFile(suiteEnvironment(environment.common, environment.postgresAdminUrl, suite), suite),
-    ),
-  );
-  const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+  throwIfInterrupted();
+  const pending = [...STORAGE_SUITES];
+  const failures = [];
+  const workers = Array.from({ length: Math.min(STORAGE_SUITE_CONCURRENCY, pending.length) }, async () => {
+    while (pending.length > 0) {
+      throwIfInterrupted();
+      const suite = pending.shift();
+      try {
+        await runTestFile(suiteEnvironment(environment.common, environment.postgresAdminUrl, suite), suite);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+  });
+  const workerResults = await Promise.allSettled(workers);
+  failures.push(...workerResults.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])));
   if (failures.length > 0) {
     throw new AggregateError(failures, `${failures.length} durable storage E2E suite(s) failed.`);
   }
@@ -245,6 +266,7 @@ try {
   });
   await retry("MinIO", async () => (await fetch(`http://127.0.0.1:${minioPort}/minio/health/ready`)).ok);
   await createSuiteDatabases(postgresAdminUrl);
+  throwIfInterrupted();
 
   await runTests({
     common: {
