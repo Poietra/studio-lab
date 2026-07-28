@@ -10,6 +10,7 @@ import {
   type FastManimSandboxJobContextV1,
   type FastManimSandboxRequestBundleV1,
   type FastManimSandboxStatusContextV1,
+  fastManimSandboxBackendControlErrorCode,
   fastManimSandboxBackendResultV1Schema,
   fastManimSandboxBackendStatusV1Schema,
   parseFastManimSandboxJobIdentityV1,
@@ -117,6 +118,7 @@ export class FastManimUdsSandboxBackendV1 implements FastManimSandboxBackendV1 {
   readonly #pending = new Map<string, Pending>();
   readonly #socketPath: string;
   #closePromise: Promise<void> | undefined;
+  #closeReject: ((reason: unknown) => void) | undefined;
   #closeResolve: (() => void) | undefined;
   #closeTimer: NodeJS.Timeout | undefined;
   #connection: Promise<Socket> | undefined;
@@ -232,7 +234,8 @@ export class FastManimUdsSandboxBackendV1 implements FastManimSandboxBackendV1 {
     if (this.#closePromise) return this.#closePromise;
     if (this.#closed || this.#failed) return Promise.resolve();
     this.#closing = true;
-    this.#closePromise = new Promise<void>((resolve) => {
+    this.#closePromise = new Promise<void>((resolve, reject) => {
+      this.#closeReject = reject;
       this.#closeResolve = resolve;
     });
     for (const job of [...this.#jobs.values()]) this.#abortJob(job);
@@ -249,7 +252,10 @@ export class FastManimUdsSandboxBackendV1 implements FastManimSandboxBackendV1 {
       protocol: FAST_MANIM_SANDBOX_BROKER_PROTOCOL_V1,
       version: FAST_MANIM_SANDBOX_BROKER_VERSION_V1,
     });
-    this.#closeTimer = setTimeout(() => this.#finishClose(), this.#closeTimeoutMs);
+    this.#closeTimer = setTimeout(
+      () => this.#finishClose(new FastManimSandboxBackendControlError("cleanup")),
+      this.#closeTimeoutMs,
+    );
     this.#closeTimer.unref();
     return this.#closePromise;
   }
@@ -368,7 +374,6 @@ export class FastManimUdsSandboxBackendV1 implements FastManimSandboxBackendV1 {
       if (pending.kind !== "start" || pending.jobId !== message.jobId) {
         throw new Error("Mismatched sandbox broker response.");
       }
-      this.#deletePending(pending);
       const result = fastManimSandboxBackendResultV1Schema.parse(
         message.result.kind === "ok"
           ? {
@@ -379,6 +384,10 @@ export class FastManimUdsSandboxBackendV1 implements FastManimSandboxBackendV1 {
             }
           : message.result,
       );
+      if (result.requestDigest !== pending.requestDigest || result.attestationDigest !== pending.attestationDigest) {
+        throw new Error("Mismatched sandbox broker result identity.");
+      }
+      this.#deletePending(pending);
       if (!pending.aborted) pending.resolve(result);
       return;
     }
@@ -395,7 +404,7 @@ export class FastManimUdsSandboxBackendV1 implements FastManimSandboxBackendV1 {
       throw new Error("Mismatched sandbox broker response.");
     }
     this.#deletePending(pending);
-    this.#socket?.end();
+    this.#finishClose();
   }
 
   #onBrokerError(pending: Pending, operation: "abort" | "close" | "start" | "status", code: string) {
@@ -409,9 +418,9 @@ export class FastManimUdsSandboxBackendV1 implements FastManimSandboxBackendV1 {
     if (pending.kind === "abort") {
       const job = this.#jobs.get(pending.jobId);
       if (job) this.#deletePending(job);
-      if (code === "cleanup") this.#fail(error);
     }
-    if (pending.kind === "close") this.#finishClose();
+    if (pending.kind === "close") this.#finishClose(code === "cleanup" ? error : undefined);
+    else if (code === "cleanup") this.#fail(error);
   }
 
   #deletePending(pending: Pending) {
@@ -425,14 +434,18 @@ export class FastManimUdsSandboxBackendV1 implements FastManimSandboxBackendV1 {
 
   #onTransportClosed() {
     if (this.#closed || this.#failed) return;
-    if (this.#closing) this.#finishClose();
+    if (this.#closing) this.#finishClose(new FastManimSandboxBackendControlError("cleanup"));
     else this.#fail(transportError());
   }
 
   #fail(error: Error) {
     if (this.#closed || this.#failed) return;
     if (this.#closing) {
-      this.#finishClose();
+      this.#finishClose(
+        fastManimSandboxBackendControlErrorCode(error) === "cleanup"
+          ? error
+          : new FastManimSandboxBackendControlError("cleanup"),
+      );
       return;
     }
     this.#failed = true;
@@ -444,16 +457,17 @@ export class FastManimUdsSandboxBackendV1 implements FastManimSandboxBackendV1 {
     }
   }
 
-  #finishClose() {
+  #finishClose(error?: unknown) {
     if (this.#closed) return;
     this.#closed = true;
     if (this.#closeTimer) clearTimeout(this.#closeTimer);
     this.#socket?.destroy();
-    const error = abortError();
+    const pendingError = abortError();
     for (const pending of this.#pending.values()) {
-      if (pending.kind === "status" || pending.kind === "start") pending.reject(error);
+      if (pending.kind === "status" || pending.kind === "start") pending.reject(pendingError);
       this.#deletePending(pending);
     }
-    this.#closeResolve?.();
+    if (error === undefined) this.#closeResolve?.();
+    else this.#closeReject?.(error);
   }
 }

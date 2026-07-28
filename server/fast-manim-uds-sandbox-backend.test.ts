@@ -219,6 +219,26 @@ describe("FastManimUdsSandboxBackendV1", () => {
     );
   });
 
+  it("fails closed when a broker result changes the request identity", async () => {
+    await withBroker(
+      (message, socket) => {
+        if (message.kind !== "start") return;
+        const response = okResultMessage(message, Uint8Array.of(1));
+        if (response.kind !== "job-result") throw new Error("Expected a job result fixture.");
+        send(socket, {
+          ...response,
+          result: { ...response.result, requestDigest: "d".repeat(64) },
+        });
+        return true;
+      },
+      async (broker) => {
+        const backend = new FastManimUdsSandboxBackendV1({ socketPath: broker.path });
+        await expect(backend.start(request(), jobContext()).result).rejects.toThrow(/failed closed/i);
+        await backend.close();
+      },
+    );
+  });
+
   it("sends a wire abort for the matching active job", async () => {
     let startedJobId: string | undefined;
     let resolveStart!: () => void;
@@ -319,6 +339,24 @@ describe("FastManimUdsSandboxBackendV1", () => {
         await backend.close();
         await expect(result).resolves.toMatchObject({ name: "AbortError" });
         expect(seen).toEqual(["start", "abort", "close"]);
+      },
+    );
+  });
+
+  it("rejects close when the broker does not acknowledge cleanup", async () => {
+    const status = productionSandboxReadyStatus();
+    await withBroker(
+      (message, socket) => {
+        if (message.kind === "status") {
+          send(socket, serverMessage(message.correlationId, { kind: "status-result", status }));
+          return true;
+        }
+        return message.kind === "close";
+      },
+      async (broker) => {
+        const backend = new FastManimUdsSandboxBackendV1({ closeTimeoutMs: 20, socketPath: broker.path });
+        await expect(backend.status(statusContext())).resolves.toEqual(status);
+        await expect(backend.close()).rejects.toMatchObject({ code: "cleanup" });
       },
     );
   });
