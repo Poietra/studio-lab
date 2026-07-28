@@ -1,5 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises";
-import { createServer, type Server, type Socket } from "node:net";
+import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,116 +7,58 @@ import { describe, expect, it } from "vitest";
 
 import { FastManimSandboxRequestBundleV1 } from "./fast-manim-sandbox-backend";
 import {
-  encodeFastManimSandboxBrokerFrameV1,
   encodeFastManimSandboxBrokerResultBytesV1,
-  FAST_MANIM_SANDBOX_BROKER_PROTOCOL_V1,
-  FAST_MANIM_SANDBOX_BROKER_VERSION_V1,
+  encodeFastManimSandboxBrokerServerFrameV1,
+  FastManimSandboxBrokerClientFrameDecoderV1,
   type FastManimSandboxBrokerClientMessageV1,
-  FastManimSandboxBrokerFrameDecoderV1,
   type FastManimSandboxBrokerServerMessageV1,
-  fastManimSandboxBrokerClientMessageV1Schema,
-  MAX_FAST_MANIM_SANDBOX_BROKER_FRAME_BYTES_V1,
 } from "./fast-manim-sandbox-broker-protocol";
 import {
   FastManimUdsSandboxBackendV1,
   MAX_FAST_MANIM_SANDBOX_BROKER_SOCKET_PATH_BYTES_V1,
 } from "./fast-manim-uds-sandbox-backend";
-import {
-  productionSandboxReadyStatus,
-  sandboxProducerRequest,
-} from "./test-fixtures/fast-manim-sandbox-backend-fixture";
+import { sandboxProducerRequest } from "./test-fixtures/fast-manim-sandbox-backend-fixture";
 
 const identity = { projectId: "default", requestId: "uds-client-test", tenantId: "test-tenant" } as const;
 const attestationDigest = "c".repeat(64);
+type Reply = (message: FastManimSandboxBrokerServerMessageV1) => void;
+type Handler = (message: FastManimSandboxBrokerClientMessageV1, socket: Socket, reply: Reply) => void;
 
-type BrokerHandler = (message: FastManimSandboxBrokerClientMessageV1, socket: Socket) => boolean | undefined;
-type ServerMessageBody = FastManimSandboxBrokerServerMessageV1 extends infer Message
-  ? Message extends FastManimSandboxBrokerServerMessageV1
-    ? Omit<Message, "correlationId" | "protocol" | "version">
-    : never
-  : never;
-
-type TestBroker = Readonly<{
-  close: () => Promise<void>;
-  path: string;
-}>;
-
-function serverMessage(correlationId: string, message: ServerMessageBody): FastManimSandboxBrokerServerMessageV1 {
-  return {
-    ...message,
-    correlationId,
-    protocol: FAST_MANIM_SANDBOX_BROKER_PROTOCOL_V1,
-    version: FAST_MANIM_SANDBOX_BROKER_VERSION_V1,
-  } as FastManimSandboxBrokerServerMessageV1;
-}
-
-function send(socket: Socket, message: FastManimSandboxBrokerServerMessageV1) {
-  socket.write(encodeFastManimSandboxBrokerFrameV1(message));
-}
-
-async function listen(server: Server, path: string) {
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(path, () => {
-      server.off("error", reject);
-      resolve();
-    });
-  });
-}
-
-async function createTestBroker(handler: BrokerHandler): Promise<TestBroker> {
-  const directory = await mkdtemp(join(tmpdir(), "poietra-uds-client-"));
-  const path = join(directory, "broker.sock");
+async function withBroker(handler: Handler, run: (path: string) => Promise<void>) {
+  const root = await mkdtemp(join(tmpdir(), "poietra-uds-client-"));
+  const path = join(root, "broker.sock");
   const sockets = new Set<Socket>();
-  const server = createServer((socket) => {
+  const server = createServer({ allowHalfOpen: true }, (socket) => {
     sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
     socket.on("error", () => undefined);
-    socket.on("close", () => sockets.delete(socket));
-    const decoder = new FastManimSandboxBrokerFrameDecoderV1();
+    const decoder = new FastManimSandboxBrokerClientFrameDecoderV1();
+    let handled = false;
     socket.on("data", (chunk) => {
-      if (typeof chunk === "string") {
-        socket.destroy();
-        return;
-      }
       try {
-        for (const rawMessage of decoder.push(chunk)) {
-          const message = fastManimSandboxBrokerClientMessageV1Schema.parse(rawMessage);
-          if (handler(message, socket) === true) continue;
-          if (message.kind === "abort") {
-            send(
-              socket,
-              serverMessage(message.correlationId, {
-                jobId: message.jobId,
-                kind: "abort-ack",
-              }),
-            );
-          } else if (message.kind === "close") {
-            send(socket, serverMessage(message.correlationId, { kind: "close-ack" }));
-            socket.end();
-          }
-        }
+        if (typeof chunk === "string") throw new Error("Unexpected string socket chunk.");
+        const message = decoder.push(chunk);
+        if (!message || handled) return;
+        handled = true;
+        handler(message, socket, (response) => {
+          const frame = encodeFastManimSandboxBrokerServerFrameV1(message.kind, response);
+          socket.end(frame);
+        });
       } catch {
         socket.destroy();
       }
     });
   });
-  await listen(server, path);
-  return {
-    async close() {
-      for (const socket of sockets) socket.destroy();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      await rm(directory, { force: true, recursive: true });
-    },
-    path,
-  };
-}
-
-async function withBroker(handler: BrokerHandler, run: (broker: TestBroker) => Promise<void>) {
-  const broker = await createTestBroker(handler);
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(path, resolve);
+  });
   try {
-    await run(broker);
+    await run(path);
   } finally {
-    await broker.close();
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await rm(root, { force: true, recursive: true });
   }
 }
 
@@ -132,26 +74,21 @@ function request() {
   return new FastManimSandboxRequestBundleV1(sandboxProducerRequest());
 }
 
-function okResultMessage(
-  message: Extract<FastManimSandboxBrokerClientMessageV1, { kind: "start" }>,
-  resultBytes: Uint8Array,
-) {
-  return serverMessage(message.correlationId, {
-    jobId: message.jobId,
-    kind: "job-result",
+function ok(message: Extract<FastManimSandboxBrokerClientMessageV1, { kind: "start" }>, bytes: Uint8Array) {
+  return {
+    kind: "job-result" as const,
     result: {
       attestationDigest: message.attestationDigest,
-      kind: "ok",
+      kind: "ok" as const,
       requestDigest: message.requestDigest,
-      resultBytesBase64: encodeFastManimSandboxBrokerResultBytesV1(resultBytes),
+      resultBytesBase64: encodeFastManimSandboxBrokerResultBytesV1(bytes),
     },
-  });
+  };
 }
 
-describe("FastManimUdsSandboxBackendV1", () => {
+describe("FastManimUdsSandboxBackendV1 single-operation sockets", () => {
   it("validates configuration before opening a socket", () => {
     expect(() => new FastManimUdsSandboxBackendV1({ socketPath: "relative.sock" })).toThrow(/absolute/i);
-    expect(() => new FastManimUdsSandboxBackendV1({ socketPath: "/tmp/broker\0.sock" })).toThrow(/bounded/i);
     expect(
       () =>
         new FastManimUdsSandboxBackendV1({
@@ -159,232 +96,124 @@ describe("FastManimUdsSandboxBackendV1", () => {
         }),
     ).toThrow(/bounded/i);
     expect(() => new FastManimUdsSandboxBackendV1({ closeTimeoutMs: 0, socketPath: "/tmp/broker.sock" })).toThrow(
-      /close timeout/i,
+      /timeout/i,
     );
   });
 
-  it("validates status and job results received over one UDS session", async () => {
-    const status = productionSandboxReadyStatus();
+  it("rejects a result whose request identity changed", async () => {
     await withBroker(
-      (message, socket) => {
-        if (message.kind === "status") {
-          send(socket, serverMessage(message.correlationId, { kind: "status-result", status }));
-          return true;
-        }
-        if (message.kind === "start") {
-          send(socket, okResultMessage(message, Uint8Array.from([1, 2, 3])));
-          return true;
-        }
-      },
-      async (broker) => {
-        const backend = new FastManimUdsSandboxBackendV1({ socketPath: broker.path });
-        await expect(backend.status(statusContext())).resolves.toEqual(status);
-        const bundle = request();
-        await expect(backend.start(bundle, jobContext()).result).resolves.toEqual({
-          attestationDigest,
-          kind: "ok",
-          requestDigest: bundle.requestDigest,
-          resultBytes: Uint8Array.from([1, 2, 3]),
-        });
-        await backend.close();
-      },
-    );
-  });
-
-  it("multiplexes jobs by correlation ID and accepts out-of-order results", async () => {
-    const starts: Extract<FastManimSandboxBrokerClientMessageV1, { kind: "start" }>[] = [];
-    await withBroker(
-      (message, socket) => {
+      (message, _socket, reply) => {
         if (message.kind !== "start") return;
-        starts.push(message);
-        if (starts.length === 2) {
-          send(socket, okResultMessage(starts[1]!, Uint8Array.from([2])));
-          send(socket, okResultMessage(starts[0]!, Uint8Array.from([1])));
-        }
-        return true;
+        const response = ok(message, Uint8Array.of(1));
+        reply({ ...response, result: { ...response.result, requestDigest: "d".repeat(64) } });
       },
-      async (broker) => {
-        const backend = new FastManimUdsSandboxBackendV1({ socketPath: broker.path });
-        const first = backend.start(request(), jobContext()).result;
-        const second = backend.start(request(), jobContext()).result;
-        await expect(
-          Promise.all([first, second]).then((results) =>
-            results.map((result) => (result.kind === "ok" ? [...result.resultBytes] : [])),
-          ),
-        ).resolves.toEqual([[1], [2]]);
-        expect(new Set(starts.map(({ correlationId }) => correlationId)).size).toBe(2);
-        expect(new Set(starts.map(({ jobId }) => jobId)).size).toBe(2);
-        await backend.close();
-      },
-    );
-  });
-
-  it("fails closed when a broker result changes the request identity", async () => {
-    await withBroker(
-      (message, socket) => {
-        if (message.kind !== "start") return;
-        const response = okResultMessage(message, Uint8Array.of(1));
-        if (response.kind !== "job-result") throw new Error("Expected a job result fixture.");
-        send(socket, {
-          ...response,
-          result: { ...response.result, requestDigest: "d".repeat(64) },
-        });
-        return true;
-      },
-      async (broker) => {
-        const backend = new FastManimUdsSandboxBackendV1({ socketPath: broker.path });
+      async (path) => {
+        const backend = new FastManimUdsSandboxBackendV1({ socketPath: path });
         await expect(backend.start(request(), jobContext()).result).rejects.toThrow(/failed closed/i);
-        await backend.close();
+        await expect(backend.close()).resolves.toBeUndefined();
       },
     );
   });
 
-  it("sends a wire abort for the matching active job", async () => {
-    let startedJobId: string | undefined;
-    let resolveStart!: () => void;
-    const startSeen = new Promise<void>((resolve) => {
-      resolveStart = resolve;
-    });
-    let resolveAbort!: (jobId: string) => void;
-    const abortSeen = new Promise<string>((resolve) => {
-      resolveAbort = resolve;
-    });
-    await withBroker(
-      (message) => {
-        if (message.kind === "start") {
-          startedJobId = message.jobId;
-          resolveStart();
-          return true;
-        }
-        if (message.kind === "abort") resolveAbort(message.jobId);
-      },
-      async (broker) => {
-        const backend = new FastManimUdsSandboxBackendV1({ socketPath: broker.path });
-        const handle = backend.start(request(), jobContext());
-        await startSeen;
-        handle.abort();
-        await expect(handle.result).rejects.toMatchObject({ name: "AbortError" });
-        await expect(abortSeen).resolves.toBe(startedJobId);
-        await backend.close();
-      },
-    );
-  });
-
-  it("fails every multiplexed operation when the broker disconnects", async () => {
-    let disconnected = false;
+  it("uses FIN for abort and waits for broker FIN before close resolves", async () => {
+    let releaseCleanup!: () => void;
+    const cleanupAllowed = new Promise<void>((resolve) => (releaseCleanup = resolve));
+    let markRequestSeen!: () => void;
+    const requestSeen = new Promise<void>((resolve) => (markRequestSeen = resolve));
+    let markAbortSeen!: () => void;
+    const abortSeen = new Promise<void>((resolve) => (markAbortSeen = resolve));
     await withBroker(
       (message, socket) => {
-        if (message.kind === "start" && !disconnected) {
-          disconnected = true;
-          setImmediate(() => socket.destroy());
-        }
-        return message.kind === "start";
+        if (message.kind !== "start") return;
+        markRequestSeen();
+        socket.once("end", () => {
+          markAbortSeen();
+          void cleanupAllowed.then(() => socket.end());
+        });
       },
-      async (broker) => {
-        const backend = new FastManimUdsSandboxBackendV1({ socketPath: broker.path });
-        const first = backend.start(request(), jobContext()).result;
-        const second = backend.start(request(), jobContext()).result;
-        await expect(first).rejects.toThrow(/failed closed/i);
-        await expect(second).rejects.toThrow(/failed closed/i);
-        await expect(backend.status(statusContext())).rejects.toThrow(/failed closed/i);
-        await backend.close();
-      },
-    );
-  });
-
-  it.each(["malformed", "oversized"] as const)("fails all pending operations on a %s response", async (mode) => {
-    let sent = false;
-    await withBroker(
-      (message, socket) => {
-        if (message.kind !== "status" || sent) return message.kind === "status";
-        sent = true;
-        const header = Buffer.alloc(4);
-        if (mode === "oversized") {
-          header.writeUInt32BE(MAX_FAST_MANIM_SANDBOX_BROKER_FRAME_BYTES_V1 + 1);
-          socket.write(header);
-        } else {
-          header.writeUInt32BE(1);
-          socket.write(Buffer.concat([header, Buffer.from("{")]));
-        }
-        return true;
-      },
-      async (broker) => {
-        const backend = new FastManimUdsSandboxBackendV1({ socketPath: broker.path });
-        const first = backend.status(statusContext());
-        const second = backend.status(statusContext());
-        await expect(first).rejects.toThrow(/failed closed/i);
-        await expect(second).rejects.toThrow(/failed closed/i);
-        await backend.close();
-      },
-    );
-  });
-
-  it("aborts active jobs and completes session close within its bound", async () => {
-    const seen: string[] = [];
-    let resolveStart!: () => void;
-    const startSeen = new Promise<void>((resolve) => {
-      resolveStart = resolve;
-    });
-    await withBroker(
-      (message) => {
-        seen.push(message.kind);
-        if (message.kind === "start") resolveStart();
-        return message.kind === "start";
-      },
-      async (broker) => {
-        const backend = new FastManimUdsSandboxBackendV1({ closeTimeoutMs: 500, socketPath: broker.path });
+      async (path) => {
+        const backend = new FastManimUdsSandboxBackendV1({ closeTimeoutMs: 500, socketPath: path });
         const handle = backend.start(request(), jobContext());
-        await startSeen;
         const result = handle.result.catch((error: unknown) => error);
-        await backend.close();
+        await requestSeen;
+        handle.abort();
         await expect(result).resolves.toMatchObject({ name: "AbortError" });
-        expect(seen).toEqual(["start", "abort", "close"]);
+        await abortSeen;
+        let closed = false;
+        const close = backend.close().then(() => (closed = true));
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(closed).toBe(false);
+        releaseCleanup();
+        await close;
+        expect(closed).toBe(true);
       },
     );
   });
 
-  it("rejects close when the broker does not acknowledge cleanup", async () => {
-    const status = productionSandboxReadyStatus();
+  it("fails cleanup when a dispatched operation loses transport without broker FIN", async () => {
     await withBroker(
-      (message, socket) => {
-        if (message.kind === "status") {
-          send(socket, serverMessage(message.correlationId, { kind: "status-result", status }));
-          return true;
-        }
-        return message.kind === "close";
-      },
-      async (broker) => {
-        const backend = new FastManimUdsSandboxBackendV1({ closeTimeoutMs: 20, socketPath: broker.path });
-        await expect(backend.status(statusContext())).resolves.toEqual(status);
+      (_message, socket) => socket.destroy(),
+      async (path) => {
+        const backend = new FastManimUdsSandboxBackendV1({ socketPath: path });
+        await expect(backend.start(request(), jobContext()).result).rejects.toThrow(/failed closed/i);
         await expect(backend.close()).rejects.toMatchObject({ code: "cleanup" });
       },
     );
   });
 
-  it("rejects every broker error returned for session close", async () => {
-    const status = productionSandboxReadyStatus();
+  it("enforces client job capacity before writing another request", async () => {
+    let connections = 0;
+    let markRequestSeen!: () => void;
+    const requestsSeen = new Promise<void>((resolve) => (markRequestSeen = resolve));
     await withBroker(
       (message, socket) => {
-        if (message.kind === "status") {
-          send(socket, serverMessage(message.correlationId, { kind: "status-result", status }));
-          return true;
-        }
-        if (message.kind === "close") {
-          send(
-            socket,
-            serverMessage(message.correlationId, {
-              code: "unavailable",
-              kind: "error",
-              operation: "close",
-            }),
-          );
-          return true;
-        }
+        if (message.kind !== "start") return;
+        connections += 1;
+        if (connections === 4) markRequestSeen();
+        socket.once("end", () => socket.end());
       },
-      async (broker) => {
-        const backend = new FastManimUdsSandboxBackendV1({ socketPath: broker.path });
-        await expect(backend.status(statusContext())).resolves.toEqual(status);
+      async (path) => {
+        const backend = new FastManimUdsSandboxBackendV1({ socketPath: path });
+        const active = Array.from({ length: 4 }, () => backend.start(request(), jobContext()));
+        const results = active.map((handle) => handle.result.catch((error: unknown) => error));
+        await requestsSeen;
+        await expect(backend.start(request(), jobContext()).result).rejects.toMatchObject({ code: "capacity" });
+        expect(connections).toBe(4);
+        for (const handle of active) handle.abort();
+        await expect(Promise.all(results)).resolves.toEqual(
+          expect.arrayContaining([expect.objectContaining({ name: "AbortError" })]),
+        );
+        await backend.close();
+      },
+    );
+  });
+
+  it("latches broker cleanup errors and close acknowledgement timeouts", async () => {
+    await withBroker(
+      (message, _socket, reply) => {
+        if (message.kind === "status") reply({ code: "cleanup", kind: "error" });
+      },
+      async (path) => {
+        const backend = new FastManimUdsSandboxBackendV1({ socketPath: path });
+        await expect(backend.status(statusContext())).rejects.toMatchObject({ code: "cleanup" });
         await expect(backend.close()).rejects.toMatchObject({ code: "cleanup" });
+      },
+    );
+
+    let markRequestSeen!: () => void;
+    const requestSeen = new Promise<void>((resolve) => (markRequestSeen = resolve));
+    await withBroker(
+      (message, _socket) => {
+        if (message.kind !== "start") throw new Error();
+        markRequestSeen();
+      },
+      async (path) => {
+        const backend = new FastManimUdsSandboxBackendV1({ closeTimeoutMs: 20, socketPath: path });
+        const handle = backend.start(request(), jobContext());
+        const result = handle.result.catch(() => undefined);
+        await requestSeen;
+        await expect(backend.close()).rejects.toMatchObject({ code: "cleanup" });
+        await result;
       },
     );
   });

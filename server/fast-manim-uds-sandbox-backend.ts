@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { Socket } from "node:net";
 import { isAbsolute, resolve } from "node:path";
 
@@ -10,7 +9,6 @@ import {
   type FastManimSandboxJobContextV1,
   type FastManimSandboxRequestBundleV1,
   type FastManimSandboxStatusContextV1,
-  fastManimSandboxBackendControlErrorCode,
   fastManimSandboxBackendResultV1Schema,
   fastManimSandboxBackendStatusV1Schema,
   parseFastManimSandboxJobIdentityV1,
@@ -18,19 +16,18 @@ import {
 } from "./fast-manim-sandbox-backend";
 import {
   decodeFastManimSandboxBrokerResultBytesV1,
-  encodeFastManimSandboxBrokerFrameV1,
+  encodeFastManimSandboxBrokerClientFrameV1,
   encodeFastManimSandboxBrokerRequestBytesV1,
-  FAST_MANIM_SANDBOX_BROKER_PROTOCOL_V1,
-  FAST_MANIM_SANDBOX_BROKER_VERSION_V1,
   type FastManimSandboxBrokerClientMessageV1,
-  FastManimSandboxBrokerFrameDecoderV1,
+  type FastManimSandboxBrokerOperationV1,
+  FastManimSandboxBrokerServerFrameDecoderV1,
   type FastManimSandboxBrokerServerMessageV1,
-  fastManimSandboxBrokerServerMessageV1Schema,
 } from "./fast-manim-sandbox-broker-protocol";
 
 const DEFAULT_CLOSE_TIMEOUT_MS = 2_000;
 const MAX_CLOSE_TIMEOUT_MS = 60_000;
-/** Conservative bound shared with the broker's Unix-socket listener. */
+const MAX_CONCURRENT_JOBS = 4;
+const MAX_CONCURRENT_STATUSES = 8;
 export const MAX_FAST_MANIM_SANDBOX_BROKER_SOCKET_PATH_BYTES_V1 = 96;
 
 export type FastManimUdsSandboxBackendOptionsV1 = Readonly<{
@@ -38,35 +35,10 @@ export type FastManimUdsSandboxBackendOptionsV1 = Readonly<{
   socketPath: string;
 }>;
 
-type StatusPending = Readonly<{
-  correlationId: string;
-  kind: "status";
-  reject: (reason: unknown) => void;
-  resolve: (status: FastManimSandboxBackendStatusV1) => void;
-}> & { aborted: boolean; cleanup: () => void };
-
-type JobPending = Readonly<{
-  attestationDigest: string;
-  correlationId: string;
-  jobId: string;
-  kind: "start";
-  reject: (reason: unknown) => void;
-  requestDigest: string;
-  resolve: (result: FastManimSandboxBackendResultV1) => void;
-}> & { aborted: boolean; abortSent: boolean; cleanup: () => void; dispatched: boolean };
-
-type AbortPending = Readonly<{
-  correlationId: string;
-  jobId: string;
-  kind: "abort";
+type ClientOperation = Readonly<{
+  abort: () => void;
+  cleanup: Promise<void>;
 }>;
-
-type ClosePending = Readonly<{
-  correlationId: string;
-  kind: "close";
-}>;
-
-type Pending = AbortPending | ClosePending | JobPending | StatusPending;
 
 function validateSocketPath(socketPath: string) {
   if (
@@ -81,17 +53,22 @@ function validateSocketPath(socketPath: string) {
   return socketPath;
 }
 
-function validateCloseTimeoutMs(value: number) {
-  if (!Number.isSafeInteger(value) || value <= 0 || value > MAX_CLOSE_TIMEOUT_MS) {
-    throw new TypeError(`The sandbox broker close timeout must be an integer from 1 to ${MAX_CLOSE_TIMEOUT_MS}ms.`);
+function closeTimeout(value: number | undefined) {
+  const parsed = value ?? DEFAULT_CLOSE_TIMEOUT_MS;
+  if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > MAX_CLOSE_TIMEOUT_MS) {
+    throw new TypeError(`Close timeout must be an integer from 1 to ${MAX_CLOSE_TIMEOUT_MS}.`);
   }
-  return value;
+  return parsed;
 }
 
 function validateDeadline(deadlineEpochMs: number, label: string) {
-  if (!Number.isSafeInteger(deadlineEpochMs) || deadlineEpochMs <= 0) {
-    throw new TypeError(`${label} must be a positive epoch millisecond integer.`);
+  if (!Number.isSafeInteger(deadlineEpochMs) || deadlineEpochMs <= Date.now()) {
+    throw new TypeError(`${label} must be a future epoch millisecond integer.`);
   }
+}
+
+function abortError() {
+  return new DOMException("The sandbox broker operation was aborted.", "AbortError");
 }
 
 function transportError() {
@@ -100,75 +77,52 @@ function transportError() {
   return error;
 }
 
-function abortError() {
-  const error = new Error("The sandbox broker operation was aborted.");
-  error.name = "AbortError";
-  return error;
+function brokerError(code: "capacity" | "cleanup" | "internal" | "unavailable") {
+  return code === "capacity" || code === "cleanup"
+    ? new FastManimSandboxBackendControlError(code)
+    : new Error("The sandbox broker rejected the operation.");
 }
 
-/**
- * Studio-side production boundary for a separately managed sandbox broker.
- * The connection itself is the broker session: operations multiplex by
- * correlationId, while jobId is stable across start and abort.
- */
+/** Studio-side adapter. Each UDS connection owns exactly one backend operation. */
 export class FastManimUdsSandboxBackendV1 implements FastManimSandboxBackendV1 {
   readonly #closeTimeoutMs: number;
-  readonly #decoder = new FastManimSandboxBrokerFrameDecoderV1();
-  readonly #jobs = new Map<string, JobPending>();
-  readonly #pending = new Map<string, Pending>();
+  readonly #operations = new Set<ClientOperation>();
   readonly #socketPath: string;
+  #activeJobs = 0;
+  #activeStatuses = 0;
+  #cleanupFailed = false;
   #closePromise: Promise<void> | undefined;
-  #closeReject: ((reason: unknown) => void) | undefined;
-  #closeResolve: (() => void) | undefined;
-  #closeTimer: NodeJS.Timeout | undefined;
-  #connection: Promise<Socket> | undefined;
-  #failed = false;
   #closing = false;
-  #closed = false;
-  #socket: Socket | undefined;
-  #terminalError: Error | undefined;
 
   constructor(options: FastManimUdsSandboxBackendOptionsV1) {
     this.#socketPath = validateSocketPath(options.socketPath);
-    this.#closeTimeoutMs = validateCloseTimeoutMs(options.closeTimeoutMs ?? DEFAULT_CLOSE_TIMEOUT_MS);
+    this.#closeTimeoutMs = closeTimeout(options.closeTimeoutMs);
   }
 
   async status(context: FastManimSandboxStatusContextV1): Promise<FastManimSandboxBackendStatusV1> {
     const identity = parseFastManimSandboxJobIdentityV1(context.identity);
     validateDeadline(context.deadlineEpochMs, "Sandbox broker status deadline");
     context.signal.throwIfAborted();
-    if (this.#closing || this.#closed) throw abortError();
-    if (this.#failed) throw this.#terminalError ?? transportError();
-
-    return await new Promise<FastManimSandboxBackendStatusV1>((resolve, reject) => {
-      const correlationId = this.#nextId("status");
-      const pending: StatusPending = {
-        aborted: false,
-        cleanup: () => undefined,
-        correlationId,
-        kind: "status",
-        reject,
-        resolve,
-      };
-      const onAbort = () => {
-        if (pending.aborted) return;
-        pending.aborted = true;
-        pending.cleanup();
-        reject(abortError());
-      };
-      pending.cleanup = () => context.signal.removeEventListener("abort", onAbort);
-      this.#pending.set(correlationId, pending);
-      context.signal.addEventListener("abort", onAbort, { once: true });
-      if (context.signal.aborted) onAbort();
-      this.#queue({
-        correlationId,
+    this.#assertOpen();
+    if (this.#activeStatuses >= MAX_CONCURRENT_STATUSES) throw new FastManimSandboxBackendControlError("capacity");
+    this.#activeStatuses += 1;
+    const operation = this.#open<FastManimSandboxBackendStatusV1>(
+      "status",
+      {
         deadlineEpochMs: context.deadlineEpochMs,
         identity,
         kind: "status",
-        protocol: FAST_MANIM_SANDBOX_BROKER_PROTOCOL_V1,
-        version: FAST_MANIM_SANDBOX_BROKER_VERSION_V1,
-      });
-    });
+      },
+      context.signal,
+      (message) => {
+        if (message.kind !== "status-result") throw transportError();
+        return fastManimSandboxBackendStatusV1Schema.parse(message.status);
+      },
+      () => {
+        this.#activeStatuses -= 1;
+      },
+    );
+    return await operation.result;
   }
 
   start(request: FastManimSandboxRequestBundleV1, context: FastManimSandboxJobContextV1) {
@@ -178,296 +132,207 @@ export class FastManimUdsSandboxBackendV1 implements FastManimSandboxBackendV1 {
       throw new TypeError("Sandbox request bytes do not match their canonical digest.");
     }
     context.signal.throwIfAborted();
-
-    let abort: () => void = () => undefined;
-    const result = new Promise<FastManimSandboxBackendResultV1>((resolve, reject) => {
-      if (this.#closing || this.#closed) {
-        reject(abortError());
-        return;
-      }
-      if (this.#failed) {
-        reject(this.#terminalError ?? transportError());
-        return;
-      }
-
-      const correlationId = this.#nextId("start");
-      const jobId = this.#nextId("job");
-      const pending: JobPending = {
-        aborted: false,
-        abortSent: false,
-        attestationDigest: context.attestationDigest,
-        cleanup: () => undefined,
-        correlationId,
-        dispatched: false,
-        jobId,
-        kind: "start",
-        reject,
-        requestDigest: request.requestDigest,
-        resolve,
+    try {
+      this.#assertOpen();
+    } catch (error) {
+      return { abort() {}, result: Promise.reject(error) };
+    }
+    if (this.#activeJobs >= MAX_CONCURRENT_JOBS) {
+      return {
+        abort() {},
+        result: Promise.reject(new FastManimSandboxBackendControlError("capacity")),
       };
-      abort = () => this.#abortJob(pending);
-      const onAbort = () => abort();
-      pending.cleanup = () => context.signal.removeEventListener("abort", onAbort);
-      this.#jobs.set(jobId, pending);
-      this.#pending.set(correlationId, pending);
-      context.signal.addEventListener("abort", onAbort, { once: true });
-      if (context.signal.aborted) onAbort();
-      this.#queue({
+    }
+    this.#activeJobs += 1;
+    const operation = this.#open<FastManimSandboxBackendResultV1>(
+      "start",
+      {
         attestationDigest: context.attestationDigest,
-        correlationId,
         deadlineEpochMs: context.deadlineEpochMs,
         identity,
-        jobId,
         kind: "start",
-        protocol: FAST_MANIM_SANDBOX_BROKER_PROTOCOL_V1,
         requestBytesBase64: encodeFastManimSandboxBrokerRequestBytesV1(request.copyBytes()),
         requestDigest: request.requestDigest,
-        version: FAST_MANIM_SANDBOX_BROKER_VERSION_V1,
-      });
-      pending.dispatched = true;
-      if (pending.aborted) this.#sendAbort(pending);
-    });
-    return { abort: () => abort(), result };
+      },
+      context.signal,
+      (message) => {
+        if (message.kind !== "job-result") throw transportError();
+        const result = fastManimSandboxBackendResultV1Schema.parse(
+          message.result.kind === "ok"
+            ? {
+                attestationDigest: message.result.attestationDigest,
+                kind: "ok",
+                requestDigest: message.result.requestDigest,
+                resultBytes: decodeFastManimSandboxBrokerResultBytesV1(message.result.resultBytesBase64),
+              }
+            : message.result,
+        );
+        if (result.requestDigest !== request.requestDigest || result.attestationDigest !== context.attestationDigest) {
+          throw transportError();
+        }
+        return result;
+      },
+      () => {
+        this.#activeJobs -= 1;
+      },
+    );
+    return { abort: operation.abort, result: operation.result };
   }
 
-  close(): Promise<void> {
+  close() {
     if (this.#closePromise) return this.#closePromise;
-    if (this.#closed || this.#failed) return Promise.resolve();
     this.#closing = true;
-    this.#closePromise = new Promise<void>((resolve, reject) => {
-      this.#closeReject = reject;
-      this.#closeResolve = resolve;
-    });
-    for (const job of [...this.#jobs.values()]) this.#abortJob(job);
-    if (!this.#socket) {
-      this.#finishClose();
-      return this.#closePromise;
-    }
-
-    const correlationId = this.#nextId("close");
-    this.#pending.set(correlationId, { correlationId, kind: "close" });
-    this.#queue({
-      correlationId,
-      kind: "close",
-      protocol: FAST_MANIM_SANDBOX_BROKER_PROTOCOL_V1,
-      version: FAST_MANIM_SANDBOX_BROKER_VERSION_V1,
-    });
-    this.#closeTimer = setTimeout(
-      () => this.#finishClose(new FastManimSandboxBackendControlError("cleanup")),
-      this.#closeTimeoutMs,
+    for (const operation of this.#operations) operation.abort();
+    this.#closePromise = Promise.allSettled([...this.#operations].map((operation) => operation.cleanup)).then(
+      (settled) => {
+        if (this.#cleanupFailed || settled.some((result) => result.status === "rejected")) {
+          throw new FastManimSandboxBackendControlError("cleanup");
+        }
+      },
     );
-    this.#closeTimer.unref();
     return this.#closePromise;
   }
 
-  #abortJob(job: JobPending) {
-    if (job.aborted || this.#jobs.get(job.jobId) !== job) return;
-    job.aborted = true;
-    job.cleanup();
-    job.reject(abortError());
-    if (job.dispatched) this.#sendAbort(job);
+  #assertOpen() {
+    if (this.#cleanupFailed) throw new FastManimSandboxBackendControlError("cleanup");
+    if (this.#closing) throw abortError();
   }
 
-  #sendAbort(job: JobPending) {
-    if (job.abortSent) return;
-    job.abortSent = true;
-    const correlationId = this.#nextId("abort");
-    this.#pending.set(correlationId, { correlationId, jobId: job.jobId, kind: "abort" });
-    this.#queue({
-      correlationId,
-      jobId: job.jobId,
-      kind: "abort",
-      protocol: FAST_MANIM_SANDBOX_BROKER_PROTOCOL_V1,
-      version: FAST_MANIM_SANDBOX_BROKER_VERSION_V1,
+  #open<T>(
+    kind: FastManimSandboxBrokerOperationV1,
+    message: FastManimSandboxBrokerClientMessageV1,
+    signal: AbortSignal,
+    decode: (response: FastManimSandboxBrokerServerMessageV1) => T,
+    release: () => void,
+  ) {
+    const decoder = new FastManimSandboxBrokerServerFrameDecoderV1(kind);
+    const frame = encodeFastManimSandboxBrokerClientFrameV1(message);
+    const socket = new Socket({ allowHalfOpen: true });
+    let aborted = false;
+    let connected = false;
+    let dispatched = false;
+    let remoteEnded = false;
+    let remoteEndedWithoutResponse = false;
+    let responseSeen = false;
+    let resultSettled = false;
+    let cleanupSettled = false;
+    let cleanupTimer: NodeJS.Timeout | undefined;
+    let resolveResult!: (value: T) => void;
+    let rejectResult!: (reason: unknown) => void;
+    let resolveCleanup!: () => void;
+    let rejectCleanup!: (reason: unknown) => void;
+    const result = new Promise<T>((resolve, reject) => {
+      resolveResult = resolve;
+      rejectResult = reject;
     });
-  }
-
-  #nextId(prefix: string) {
-    let candidate: string;
-    do candidate = `${prefix}-${randomUUID()}`;
-    while (this.#pending.has(candidate) || this.#jobs.has(candidate));
-    return candidate;
-  }
-
-  #queue(message: FastManimSandboxBrokerClientMessageV1) {
-    let frame: Uint8Array;
-    try {
-      frame = encodeFastManimSandboxBrokerFrameV1(message);
-    } catch {
-      this.#fail(transportError());
-      return;
-    }
-    void this.#connect()
-      .then((socket) => {
-        if (this.#failed || this.#closed) return;
-        socket.write(frame, (error) => {
-          if (error) this.#fail(transportError());
-        });
-      })
-      .catch(() => undefined);
-  }
-
-  #connect() {
-    if (this.#connection) return this.#connection;
-    const socket = new Socket();
-    this.#socket = socket;
-    this.#connection = new Promise<Socket>((resolve, reject) => {
-      let connected = false;
-      socket.once("connect", () => {
-        connected = true;
-        resolve(socket);
-      });
-      socket.once("error", () => {
-        if (!connected) reject(transportError());
-      });
-      socket.once("close", () => {
-        if (!connected) reject(transportError());
-      });
+    const cleanup = new Promise<void>((resolve, reject) => {
+      resolveCleanup = resolve;
+      rejectCleanup = reject;
     });
-    this.#connection.catch(() => this.#fail(transportError()));
-    socket.on("data", (chunk) => {
-      if (typeof chunk === "string") this.#fail(transportError());
-      else this.#onData(chunk);
-    });
-    socket.on("end", () => {
-      try {
-        this.#decoder.finish();
-      } catch {
-        this.#fail(transportError());
+
+    const settleResult = (error: unknown, value?: T) => {
+      if (resultSettled) return;
+      resultSettled = true;
+      if (error === undefined) resolveResult(value as T);
+      else rejectResult(error);
+    };
+    const settleCleanup = (error?: unknown) => {
+      if (cleanupSettled) return;
+      cleanupSettled = true;
+      if (cleanupTimer) clearTimeout(cleanupTimer);
+      signal.removeEventListener("abort", abort);
+      this.#operations.delete(operation);
+      release();
+      if (error === undefined) resolveCleanup();
+      else {
+        this.#cleanupFailed = true;
+        rejectCleanup(error);
+      }
+    };
+    const startCleanupTimer = () => {
+      cleanupTimer ??= setTimeout(() => {
+        socket.destroy();
+        settleCleanup(new FastManimSandboxBackendControlError("cleanup"));
+      }, this.#closeTimeoutMs);
+      cleanupTimer.unref();
+    };
+    const abort = () => {
+      if (aborted) return;
+      aborted = true;
+      settleResult(abortError());
+      if (!connected || !dispatched) {
+        socket.destroy();
+        settleCleanup();
         return;
       }
-      this.#onTransportClosed();
+      startCleanupTimer();
+      socket.end();
+    };
+    const operation: ClientOperation & Readonly<{ result: Promise<T> }> = { abort, cleanup, result };
+    this.#operations.add(operation);
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+
+    socket.once("connect", () => {
+      connected = true;
+      if (aborted || this.#closing) {
+        abort();
+        if (!socket.destroyed) socket.destroy();
+        settleCleanup();
+        return;
+      }
+      dispatched = true;
+      socket.write(frame, (error) => {
+        if (error) socket.destroy();
+      });
     });
-    socket.on("error", () => this.#fail(transportError()));
-    socket.on("close", () => this.#onTransportClosed());
+    socket.on("data", (chunk) => {
+      if (aborted) return;
+      let response: FastManimSandboxBrokerServerMessageV1 | undefined;
+      try {
+        if (typeof chunk === "string") throw transportError();
+        response = decoder.push(chunk);
+      } catch {
+        settleResult(transportError());
+        socket.destroy();
+        return;
+      }
+      if (!response) return;
+      responseSeen = true;
+      if (response.kind === "error") {
+        const error = brokerError(response.code);
+        if (response.code === "cleanup") this.#cleanupFailed = true;
+        settleResult(error);
+      } else {
+        try {
+          settleResult(undefined, decode(response));
+        } catch {
+          settleResult(transportError());
+        }
+      }
+    });
+    socket.once("end", () => {
+      remoteEnded = true;
+      if (!aborted) {
+        remoteEndedWithoutResponse = !responseSeen;
+        try {
+          decoder.finish();
+          if (!responseSeen) throw transportError();
+        } catch {
+          settleResult(transportError());
+        }
+      }
+      socket.end();
+    });
+    socket.once("error", () => {
+      settleResult(transportError());
+    });
+    socket.once("close", () => {
+      if (!resultSettled) settleResult(transportError());
+      if (!dispatched || (remoteEnded && !remoteEndedWithoutResponse && (aborted || responseSeen))) settleCleanup();
+      else settleCleanup(new FastManimSandboxBackendControlError("cleanup"));
+    });
     socket.connect(this.#socketPath);
-    return this.#connection;
-  }
-
-  #onData(chunk: Uint8Array) {
-    if (this.#failed || this.#closed) return;
-    try {
-      for (const rawMessage of this.#decoder.push(chunk)) {
-        const message = fastManimSandboxBrokerServerMessageV1Schema.parse(rawMessage);
-        this.#onMessage(message);
-      }
-    } catch {
-      this.#fail(transportError());
-    }
-  }
-
-  #onMessage(message: FastManimSandboxBrokerServerMessageV1) {
-    const pending = this.#pending.get(message.correlationId);
-    if (!pending) throw new Error("Unexpected sandbox broker correlation.");
-    if (message.kind === "error") {
-      this.#onBrokerError(pending, message.operation, message.code);
-      return;
-    }
-    if (message.kind === "status-result") {
-      if (pending.kind !== "status") throw new Error("Mismatched sandbox broker response.");
-      this.#deletePending(pending);
-      const status = fastManimSandboxBackendStatusV1Schema.parse(message.status);
-      if (!pending.aborted) pending.resolve(status);
-      return;
-    }
-    if (message.kind === "job-result") {
-      if (pending.kind !== "start" || pending.jobId !== message.jobId) {
-        throw new Error("Mismatched sandbox broker response.");
-      }
-      const result = fastManimSandboxBackendResultV1Schema.parse(
-        message.result.kind === "ok"
-          ? {
-              attestationDigest: message.result.attestationDigest,
-              kind: "ok",
-              requestDigest: message.result.requestDigest,
-              resultBytes: decodeFastManimSandboxBrokerResultBytesV1(message.result.resultBytesBase64),
-            }
-          : message.result,
-      );
-      if (result.requestDigest !== pending.requestDigest || result.attestationDigest !== pending.attestationDigest) {
-        throw new Error("Mismatched sandbox broker result identity.");
-      }
-      this.#deletePending(pending);
-      if (!pending.aborted) pending.resolve(result);
-      return;
-    }
-    if (message.kind === "abort-ack") {
-      if (pending.kind !== "abort" || pending.jobId !== message.jobId) {
-        throw new Error("Mismatched sandbox broker response.");
-      }
-      this.#deletePending(pending);
-      const job = this.#jobs.get(message.jobId);
-      if (job?.aborted) this.#deletePending(job);
-      return;
-    }
-    if (pending.kind !== "close" || message.kind !== "close-ack") {
-      throw new Error("Mismatched sandbox broker response.");
-    }
-    this.#deletePending(pending);
-    this.#finishClose();
-  }
-
-  #onBrokerError(pending: Pending, operation: "abort" | "close" | "start" | "status", code: string) {
-    if (pending.kind !== operation) throw new Error("Mismatched sandbox broker error.");
-    const error =
-      code === "capacity" || code === "cleanup"
-        ? new FastManimSandboxBackendControlError(code)
-        : new Error("The sandbox broker rejected the operation.");
-    this.#deletePending(pending);
-    if (pending.kind === "status" || pending.kind === "start") pending.reject(error);
-    if (pending.kind === "abort") {
-      const job = this.#jobs.get(pending.jobId);
-      if (job) this.#deletePending(job);
-    }
-    if (pending.kind === "close") this.#finishClose(new FastManimSandboxBackendControlError("cleanup"));
-    else if (code === "cleanup") this.#fail(error);
-  }
-
-  #deletePending(pending: Pending) {
-    this.#pending.delete(pending.correlationId);
-    if (pending.kind === "status") pending.cleanup();
-    if (pending.kind === "start") {
-      pending.cleanup();
-      this.#jobs.delete(pending.jobId);
-    }
-  }
-
-  #onTransportClosed() {
-    if (this.#closed || this.#failed) return;
-    if (this.#closing) this.#finishClose(new FastManimSandboxBackendControlError("cleanup"));
-    else this.#fail(transportError());
-  }
-
-  #fail(error: Error) {
-    if (this.#closed || this.#failed) return;
-    if (this.#closing) {
-      this.#finishClose(
-        fastManimSandboxBackendControlErrorCode(error) === "cleanup"
-          ? error
-          : new FastManimSandboxBackendControlError("cleanup"),
-      );
-      return;
-    }
-    this.#failed = true;
-    this.#terminalError = error;
-    this.#socket?.destroy();
-    for (const pending of this.#pending.values()) {
-      if (pending.kind === "status" || pending.kind === "start") pending.reject(error);
-      this.#deletePending(pending);
-    }
-  }
-
-  #finishClose(error?: unknown) {
-    if (this.#closed) return;
-    this.#closed = true;
-    if (this.#closeTimer) clearTimeout(this.#closeTimer);
-    this.#socket?.destroy();
-    const pendingError = abortError();
-    for (const pending of this.#pending.values()) {
-      if (pending.kind === "status" || pending.kind === "start") pending.reject(pendingError);
-      this.#deletePending(pending);
-    }
-    if (error === undefined) this.#closeResolve?.();
-    else this.#closeReject?.(error);
+    return operation;
   }
 }

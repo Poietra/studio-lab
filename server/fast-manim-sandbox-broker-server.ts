@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmod, lstat, realpath } from "node:fs/promises";
+import { chmod, chown, lstat, realpath } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
 import { dirname, isAbsolute, resolve } from "node:path";
 
@@ -15,14 +15,11 @@ import {
 import { acquireFastManimSandboxBrokerLeaseV1 } from "./fast-manim-sandbox-broker-lease";
 import {
   decodeFastManimSandboxBrokerRequestBytesV1,
-  encodeFastManimSandboxBrokerFrameV1,
   encodeFastManimSandboxBrokerResultBytesV1,
-  FAST_MANIM_SANDBOX_BROKER_PROTOCOL_V1,
-  FAST_MANIM_SANDBOX_BROKER_VERSION_V1,
+  encodeFastManimSandboxBrokerServerFrameV1,
+  FastManimSandboxBrokerClientFrameDecoderV1,
   type FastManimSandboxBrokerClientMessageV1,
-  FastManimSandboxBrokerFrameDecoderV1,
   type FastManimSandboxBrokerServerMessageV1,
-  MAX_FAST_MANIM_SANDBOX_BROKER_FRAME_BYTES_V1,
 } from "./fast-manim-sandbox-broker-protocol";
 import {
   fastManimSnapshotProducerRequestV1Schema,
@@ -32,32 +29,13 @@ import {
 const DEFAULT_CLOSE_TIMEOUT_MS = 10_000;
 const MAX_CLOSE_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_MAX_CONNECTIONS = 64;
-const DEFAULT_MAX_JOBS_PER_CONNECTION = 4;
+const DEFAULT_MAX_JOBS = 16;
+const DEFAULT_MAX_STATUSES = 16;
 const MAX_BROKER_DEADLINE_HORIZON_MS = 5 * 60_000;
-const MAX_STATUS_OPERATIONS_PER_CONNECTION = 8;
-const MAX_MESSAGES_PER_CONNECTION = 4_096;
 const MAX_UNIX_SOCKET_PATH_BYTES = 96;
-const MAX_WRITE_BUFFER_BYTES = 2 * (MAX_FAST_MANIM_SANDBOX_BROKER_FRAME_BYTES_V1 + 4);
 
-type BrokerSession = Readonly<{
-  close: () => Promise<void>;
-}>;
-
-type BrokerJob = Readonly<{
-  abort: () => void;
-  result: Promise<void>;
-}>;
-
-type BrokerOperation = Readonly<{
-  abort: () => void;
-  result: Promise<void>;
-}>;
-
-type BrokerServerMessageBody = FastManimSandboxBrokerServerMessageV1 extends infer Message
-  ? Message extends FastManimSandboxBrokerServerMessageV1
-    ? Omit<Message, "protocol" | "version">
-    : never
-  : never;
+type BrokerConnection = Readonly<{ close: () => Promise<void> }>;
+type CapacityKind = "start" | "status";
 
 export type FastManimSandboxBrokerServerV1 = Readonly<{
   close: () => Promise<void>;
@@ -67,12 +45,13 @@ export type FastManimSandboxBrokerServerV1 = Readonly<{
 export type FastManimSandboxBrokerServerOptionsV1 = Readonly<{
   backend: FastManimSandboxBackendV1;
   closeTimeoutMs?: number;
-  /** Numeric GID of the only local Studio principal group admitted by the UDS. */
-  socketGroupId: number;
+  maxConcurrentJobs?: number;
+  maxConcurrentStatuses?: number;
   maxConnections?: number;
-  maxJobsPerConnection?: number;
   reconcileOrphans?: (signal: AbortSignal) => Promise<void>;
   signal?: AbortSignal;
+  /** Numeric GID of the only local Studio principal group admitted by the UDS. */
+  socketGroupId: number;
   socketPath: string;
 }>;
 
@@ -87,6 +66,11 @@ function unixGroupId(value: number) {
     throw new TypeError("Broker socket group ID must be an unsigned 32-bit integer.");
   }
   return value;
+}
+
+function deadlineAccepted(deadlineEpochMs: number) {
+  const remainingMs = deadlineEpochMs - Date.now();
+  return remainingMs > 0 && remainingMs <= MAX_BROKER_DEADLINE_HORIZON_MS;
 }
 
 async function validateSocketPath(socketPath: string) {
@@ -108,18 +92,11 @@ async function validateSocketPath(socketPath: string) {
     canonicalParent !== parent ||
     (metadata.uid !== 0 && metadata.uid !== effectiveUid) ||
     (metadata.mode & 0o022) !== 0 ||
-    (process.umask() & 0o002) === 0
+    (process.umask() & 0o022) !== 0o022
   ) {
     throw new TypeError("The sandbox broker socket parent or process umask is not privately owned.");
   }
-}
-
-function brokerMessage(message: BrokerServerMessageBody): FastManimSandboxBrokerServerMessageV1 {
-  return {
-    ...message,
-    protocol: FAST_MANIM_SANDBOX_BROKER_PROTOCOL_V1,
-    version: FAST_MANIM_SANDBOX_BROKER_VERSION_V1,
-  } as FastManimSandboxBrokerServerMessageV1;
+  return effectiveUid;
 }
 
 function settleWithin(promise: Promise<unknown>, timeoutMs: number) {
@@ -155,161 +132,119 @@ function listen(server: Server, socketPath: string) {
 
 function closeListener(server: Server) {
   return new Promise<void>((resolveClose, rejectClose) => {
-    if (!server.listening) {
-      resolveClose();
-      return;
-    }
+    if (!server.listening) return resolveClose();
     server.close((error) => (error ? rejectClose(error) : resolveClose()));
   });
 }
 
-function createBrokerSession(
+function createBrokerConnection(
   socket: Socket,
   backend: FastManimSandboxBackendV1,
-  options: Readonly<{ closeTimeoutMs: number; maxJobs: number }>,
-  onClosed: (session: BrokerSession) => void,
+  options: Readonly<{
+    acquire: (kind: CapacityKind) => (() => void) | undefined;
+    closeTimeoutMs: number;
+  }>,
+  onClosed: (connection: BrokerConnection) => void,
   onCleanupFailure: () => void,
-): BrokerSession {
-  const decoder = new FastManimSandboxBrokerFrameDecoderV1();
-  const correlations = new Set<string>();
-  const jobs = new Map<string, BrokerJob>();
-  const operations = new Map<string, BrokerOperation>();
-  const seenJobIds = new Set<string>();
-  const shutdownController = new AbortController();
-  let closing = false;
-  let messageCount = 0;
+): BrokerConnection {
+  const decoder = new FastManimSandboxBrokerClientFrameDecoderV1();
+  const controller = new AbortController();
+  let abortBackend: (() => void) | undefined;
   let closeRequest: Promise<void> | null = null;
+  let operation: Promise<void> | undefined;
+  let operationFinished = false;
+  let peerAborted = false;
+  let requestSeen = false;
 
-  const send = (message: FastManimSandboxBrokerServerMessageV1) => {
-    if (closing || !socket.writable) return;
-    const frame = encodeFastManimSandboxBrokerFrameV1(message);
-    if (socket.writableLength + frame.byteLength > MAX_WRITE_BUFFER_BYTES) {
-      socket.destroy();
-      return;
-    }
-    socket.write(frame);
-  };
-  const sendError = (
-    request: FastManimSandboxBrokerClientMessageV1,
-    code: "capacity" | "cleanup" | "internal" | "unavailable",
-  ) => {
-    send(
-      brokerMessage({
-        code,
-        correlationId: request.correlationId,
-        kind: "error",
-        operation: request.kind,
-      }),
-    );
-  };
-  const abortJob = (job: BrokerJob | undefined) => {
-    if (!job) return;
+  const abort = () => {
+    if (controller.signal.aborted) return;
+    controller.abort();
     try {
-      job.abort();
+      abortBackend?.();
     } catch {
-      socket.destroy();
+      onCleanupFailure();
     }
   };
 
-  const finish = () => {
-    closeRequest ??= (async () => {
-      closing = true;
-      shutdownController.abort();
-      for (const operation of operations.values()) operation.abort();
-      for (const job of jobs.values()) abortJob(job);
-      const settled = await settleWithin(
-        Promise.allSettled([
-          ...[...operations.values()].map((operation) => operation.result),
-          ...[...jobs.values()].map((job) => job.result),
-        ]),
-        options.closeTimeoutMs,
-      );
-      socket.destroy();
-      if (!settled) throw new FastManimSandboxBackendControlError("cleanup");
-    })().finally(() => onClosed(session));
-    return closeRequest;
+  const finishSocket = (frame?: Uint8Array) => {
+    if (socket.destroyed || socket.writableEnded) return;
+    const destroy = () => socket.destroy();
+    if (frame) socket.end(frame, destroy);
+    else socket.end(destroy);
   };
 
-  const handleStatus = (request: Extract<FastManimSandboxBrokerClientMessageV1, { kind: "status" }>) => {
-    if (operations.size >= MAX_STATUS_OPERATIONS_PER_CONNECTION) {
-      sendError(request, "capacity");
+  const send = (kind: CapacityKind, message: FastManimSandboxBrokerServerMessageV1) => {
+    if (peerAborted || socket.destroyed || !socket.writable) return;
+    finishSocket(encodeFastManimSandboxBrokerServerFrameV1(kind, message));
+  };
+
+  const sendError = (kind: CapacityKind, code: "capacity" | "cleanup" | "internal" | "unavailable") => {
+    send(kind, { code, kind: "error" });
+  };
+
+  const runStatus = async (request: Extract<FastManimSandboxBrokerClientMessageV1, { kind: "status" }>) => {
+    if (!deadlineAccepted(request.deadlineEpochMs)) {
+      sendError("status", "unavailable");
       return;
     }
-    if (
-      operations.has(request.correlationId) ||
-      request.deadlineEpochMs <= Date.now() ||
-      request.deadlineEpochMs - Date.now() > MAX_BROKER_DEADLINE_HORIZON_MS
-    ) {
-      sendError(request, "unavailable");
+    const release = options.acquire("status");
+    if (!release) {
+      sendError("status", "capacity");
       return;
     }
-    const controller = new AbortController();
-    const stop = () => controller.abort();
-    shutdownController.signal.addEventListener("abort", stop, { once: true });
-    const timer = setTimeout(stop, Math.max(1, request.deadlineEpochMs - Date.now()));
+    const timer = setTimeout(abort, Math.max(1, request.deadlineEpochMs - Date.now()));
     timer.unref();
-    const result = Promise.resolve()
-      .then(() =>
-        backend.status({
-          deadlineEpochMs: request.deadlineEpochMs,
-          identity: request.identity,
-          signal: controller.signal,
-        }),
-      )
-      .then((status) => {
-        const parsed = fastManimSandboxBackendStatusV1Schema.parse(status);
-        send(brokerMessage({ correlationId: request.correlationId, kind: "status-result", status: parsed }));
-      })
-      .catch(() => {
-        if (!closing) sendError(request, "unavailable");
-      })
-      .finally(() => {
-        clearTimeout(timer);
-        shutdownController.signal.removeEventListener("abort", stop);
-        operations.delete(request.correlationId);
+    try {
+      const status = await backend.status({
+        deadlineEpochMs: request.deadlineEpochMs,
+        identity: request.identity,
+        signal: controller.signal,
       });
-    operations.set(request.correlationId, { abort: stop, result });
+      if (!controller.signal.aborted) {
+        send("status", { kind: "status-result", status: fastManimSandboxBackendStatusV1Schema.parse(status) });
+      }
+    } catch {
+      if (!controller.signal.aborted) sendError("status", "unavailable");
+    } finally {
+      clearTimeout(timer);
+      release();
+    }
   };
 
-  const handleStart = (request: Extract<FastManimSandboxBrokerClientMessageV1, { kind: "start" }>) => {
-    if (seenJobIds.has(request.jobId) || jobs.size >= options.maxJobs) {
-      sendError(request, "capacity");
+  const runStart = async (request: Extract<FastManimSandboxBrokerClientMessageV1, { kind: "start" }>) => {
+    if (!deadlineAccepted(request.deadlineEpochMs)) {
+      sendError("start", "unavailable");
       return;
     }
-    seenJobIds.add(request.jobId);
-    if (
-      request.deadlineEpochMs <= Date.now() ||
-      request.deadlineEpochMs - Date.now() > MAX_BROKER_DEADLINE_HORIZON_MS
-    ) {
-      sendError(request, "unavailable");
+    const release = options.acquire("start");
+    if (!release) {
+      sendError("start", "capacity");
       return;
     }
-    let requestBundle: FastManimSandboxRequestBundleV1;
+    let bundle: FastManimSandboxRequestBundleV1;
     try {
-      const requestBytes = decodeFastManimSandboxBrokerRequestBytesV1(request.requestBytesBase64);
-      if (createHash("sha256").update(requestBytes).digest("hex") !== request.requestDigest) throw new Error();
-      const source = new TextDecoder("utf-8", { fatal: true }).decode(requestBytes);
-      const parsed = fastManimSnapshotProducerRequestV1Schema.parse(JSON.parse(source));
-      if (parsed.projectId !== request.identity.projectId || parsed.requestId !== request.identity.requestId) {
+      const bytes = decodeFastManimSandboxBrokerRequestBytesV1(request.requestBytesBase64);
+      if (createHash("sha256").update(bytes).digest("hex") !== request.requestDigest) throw new Error();
+      const producer = fastManimSnapshotProducerRequestV1Schema.parse(
+        JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
+      );
+      if (producer.projectId !== request.identity.projectId || producer.requestId !== request.identity.requestId) {
         throw new Error();
       }
-      requestBundle = new FastManimSandboxRequestBundleV1(parsed);
-      if (!Buffer.from(requestBundle.copyBytes()).equals(Buffer.from(requestBytes))) throw new Error();
+      bundle = new FastManimSandboxRequestBundleV1(producer);
+      if (!Buffer.from(bundle.copyBytes()).equals(Buffer.from(bytes))) throw new Error();
     } catch {
-      sendError(request, "internal");
+      release();
+      sendError("start", "internal");
       return;
     }
 
-    const controller = new AbortController();
-    const stop = () => controller.abort();
-    shutdownController.signal.addEventListener("abort", stop, { once: true });
-    const timer = setTimeout(stop, Math.max(1, request.deadlineEpochMs - Date.now()));
+    const timer = setTimeout(abort, Math.max(1, request.deadlineEpochMs - Date.now()));
     timer.unref();
-    let capturedAbort: (() => void) | undefined;
-    let backendAbort!: () => void;
     let backendResult: Promise<unknown>;
+    let capturedAbort: (() => void) | undefined;
     try {
-      const handle = backend.start(requestBundle, {
+      const handle = backend.start(bundle, {
         attestationDigest: request.attestationDigest,
         deadlineEpochMs: request.deadlineEpochMs,
         identity: request.identity,
@@ -319,243 +254,195 @@ function createBrokerSession(
       const resultMember = handle?.result;
       if (typeof abortMember === "function") capturedAbort = () => Reflect.apply(abortMember, handle, []);
       if (!capturedAbort || !(resultMember instanceof Promise)) throw new Error();
-      backendAbort = capturedAbort;
+      abortBackend = capturedAbort;
       backendResult = resultMember;
     } catch (error) {
-      controller.abort();
+      abort();
       try {
         capturedAbort?.();
       } catch {
-        // A malformed handle cannot be trusted to clean itself up. The broker
-        // is latched unavailable below regardless of this best-effort abort.
+        // Cleanup uncertainty is latched below.
       }
       clearTimeout(timer);
-      shutdownController.signal.removeEventListener("abort", stop);
+      release();
       const control = fastManimSandboxBackendControlErrorCode(error);
-      sendError(request, control ?? "cleanup");
+      sendError("start", control ?? "cleanup");
       if (control !== "capacity") onCleanupFailure();
       return;
     }
-    let aborted = false;
-    const abort = () => {
-      if (aborted) return;
-      aborted = true;
-      controller.abort();
-      backendAbort();
-    };
-    const result = backendResult
-      .then((value) => {
-        // `abort-ack` is terminal for this session-owned job. A backend may
-        // race and fulfill after abort, but forwarding that stale result would
-        // reuse a correlation the Studio client has already released.
-        if (closing || controller.signal.aborted) return;
-        const parsed = fastManimSandboxBackendResultV1Schema.parse(value);
-        if (parsed.requestDigest !== request.requestDigest || parsed.attestationDigest !== request.attestationDigest) {
-          throw new Error();
-        }
-        const wireResult = (() => {
-          if (parsed.kind !== "ok") return parsed;
-          const { resultBytes, ...correlation } = parsed;
-          return {
+
+    try {
+      const parsed = fastManimSandboxBackendResultV1Schema.parse(await backendResult);
+      if (controller.signal.aborted) return;
+      if (parsed.requestDigest !== request.requestDigest || parsed.attestationDigest !== request.attestationDigest) {
+        throw new Error();
+      }
+      if (parsed.kind === "ok") {
+        const { resultBytes, ...correlation } = parsed;
+        send("start", {
+          kind: "job-result",
+          result: {
             ...correlation,
             resultBytesBase64: encodeFastManimSandboxBrokerResultBytesV1(
               copyFastManimSandboxUint8ArrayV1(resultBytes, MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES),
             ),
-          };
-        })();
-        send(
-          brokerMessage({
-            correlationId: request.correlationId,
-            jobId: request.jobId,
-            kind: "job-result",
-            result: wireResult,
-          }),
-        );
-      })
-      .catch((error: unknown) => {
-        if (closing || controller.signal.aborted) return;
-        const control = fastManimSandboxBackendControlErrorCode(error);
-        sendError(request, control ?? "internal");
-        if (control !== "capacity") onCleanupFailure();
-      })
+          },
+        });
+      } else send("start", { kind: "job-result", result: parsed });
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      const control = fastManimSandboxBackendControlErrorCode(error);
+      sendError("start", control ?? "internal");
+      if (control !== "capacity") onCleanupFailure();
+    } finally {
+      clearTimeout(timer);
+      release();
+    }
+  };
+
+  const begin = (request: FastManimSandboxBrokerClientMessageV1) => {
+    requestSeen = true;
+    operation = (request.kind === "status" ? runStatus(request) : runStart(request))
+      .catch(() => onCleanupFailure())
       .finally(() => {
-        clearTimeout(timer);
-        shutdownController.signal.removeEventListener("abort", stop);
-        jobs.delete(request.jobId);
+        operationFinished = true;
+        if (peerAborted) finishSocket();
       });
-    jobs.set(request.jobId, { abort, result });
   };
 
-  const handle = (request: FastManimSandboxBrokerClientMessageV1) => {
-    if (closing) return;
-    messageCount += 1;
-    if (messageCount > MAX_MESSAGES_PER_CONNECTION || correlations.has(request.correlationId)) {
-      socket.destroy();
-      return;
-    }
-    correlations.add(request.correlationId);
-    if (request.kind === "status") {
-      handleStatus(request);
-      return;
-    }
-    if (request.kind === "start") {
-      handleStart(request);
-      return;
-    }
-    if (request.kind === "abort") {
-      abortJob(jobs.get(request.jobId));
-      send(brokerMessage({ correlationId: request.correlationId, jobId: request.jobId, kind: "abort-ack" }));
-      return;
-    }
-    closing = true;
-    shutdownController.abort();
-    for (const operation of operations.values()) operation.abort();
-    for (const job of jobs.values()) abortJob(job);
-    void settleWithin(
-      Promise.allSettled([
-        ...[...operations.values()].map((operation) => operation.result),
-        ...[...jobs.values()].map((job) => job.result),
-      ]),
-      options.closeTimeoutMs,
-    ).then((settled) => {
-      if (settled && socket.writable) {
-        const frame = encodeFastManimSandboxBrokerFrameV1(
-          brokerMessage({ correlationId: request.correlationId, kind: "close-ack" }),
-        );
-        if (socket.writableLength + frame.byteLength <= MAX_WRITE_BUFFER_BYTES) socket.end(frame);
-        else socket.destroy();
-      } else {
+  const connection: BrokerConnection = {
+    close() {
+      closeRequest ??= (async () => {
+        peerAborted = true;
+        if (!operationFinished) abort();
+        const settled = await settleWithin(operation ?? Promise.resolve(), options.closeTimeoutMs);
         socket.destroy();
-        if (!settled) onCleanupFailure();
-      }
-    });
+        if (!settled) {
+          onCleanupFailure();
+          throw new FastManimSandboxBackendControlError("cleanup");
+        }
+      })().finally(() => onClosed(connection));
+      return closeRequest;
+    },
   };
 
-  const session: BrokerSession = { close: finish };
   socket.on("data", (chunk: Buffer) => {
     try {
-      for (const message of decoder.push(chunk)) {
-        if (["status", "start", "abort", "close"].includes(message.kind)) {
-          handle(message as FastManimSandboxBrokerClientMessageV1);
-        } else {
-          socket.destroy();
-        }
-      }
+      const request = decoder.push(chunk);
+      if (request) begin(request);
     } catch {
       socket.destroy();
     }
   });
-  const closeAfterTransport = () => {
-    void finish().catch(() => onCleanupFailure());
-  };
-  socket.once("error", closeAfterTransport);
   socket.once("end", () => {
     try {
       decoder.finish();
     } catch {
       socket.destroy();
+      return;
     }
+    peerAborted = true;
+    if (!operationFinished) abort();
+    else finishSocket();
   });
-  socket.once("close", closeAfterTransport);
-  return session;
+  socket.once("error", () => undefined);
+  socket.once("close", () => {
+    peerAborted = true;
+    if (requestSeen && !operationFinished) abort();
+    void connection.close().catch(() => undefined);
+  });
+  return connection;
 }
 
-/**
- * Starts the separately supervised broker boundary. Filesystem permissions are
- * the connection admission mechanism; the Docker/runtime socket stays owned by
- * this process and is never exposed through the protocol.
- */
+/** Starts the separately supervised, filesystem-permission-gated broker. */
 export async function startFastManimSandboxBrokerServerV1(
   options: FastManimSandboxBrokerServerOptionsV1,
 ): Promise<FastManimSandboxBrokerServerV1> {
-  if (!options?.backend || typeof options.backend.start !== "function") {
-    throw new TypeError("The sandbox broker requires a backend.");
-  }
+  if (!options?.backend || typeof options.backend.start !== "function") throw new TypeError("A backend is required.");
   const closeTimeoutMs = positiveInteger(options.closeTimeoutMs, DEFAULT_CLOSE_TIMEOUT_MS, "Broker close timeout");
-  if (closeTimeoutMs > MAX_CLOSE_TIMEOUT_MS) {
-    throw new TypeError(`Broker close timeout must not exceed ${MAX_CLOSE_TIMEOUT_MS}ms.`);
-  }
-  const socketGroupId = unixGroupId(options.socketGroupId);
+  if (closeTimeoutMs > MAX_CLOSE_TIMEOUT_MS) throw new TypeError("Broker close timeout exceeds its maximum.");
   const maxConnections = positiveInteger(options.maxConnections, DEFAULT_MAX_CONNECTIONS, "Broker connection limit");
-  const maxJobs = positiveInteger(
-    options.maxJobsPerConnection,
-    DEFAULT_MAX_JOBS_PER_CONNECTION,
-    "Broker per-connection job limit",
-  );
-  await validateSocketPath(options.socketPath);
+  const maxJobs = positiveInteger(options.maxConcurrentJobs, DEFAULT_MAX_JOBS, "Broker job limit");
+  const maxStatuses = positiveInteger(options.maxConcurrentStatuses, DEFAULT_MAX_STATUSES, "Broker status limit");
+  const socketGroupId = unixGroupId(options.socketGroupId);
+  const effectiveUid = await validateSocketPath(options.socketPath);
   options.signal?.throwIfAborted();
+
   let lease: Awaited<ReturnType<typeof acquireFastManimSandboxBrokerLeaseV1>>;
   try {
     lease = await acquireFastManimSandboxBrokerLeaseV1(options.socketPath);
   } catch (error) {
-    const backendClosed = await settleWithin(
+    const closed = await settleWithin(
       Promise.resolve().then(() => options.backend.close()),
       closeTimeoutMs,
     );
-    if (!backendClosed) {
-      throw new AggregateError([error, new FastManimSandboxBackendControlError("cleanup")]);
-    }
+    if (!closed) throw new AggregateError([error, new FastManimSandboxBackendControlError("cleanup")]);
     throw error;
   }
 
-  const sessions = new Set<BrokerSession>();
+  const connections = new Set<BrokerConnection>();
+  let activeJobs = 0;
+  let activeStatuses = 0;
   let accepting = false;
   let closeRequest: Promise<void> | null = null;
   let closeBroker!: () => Promise<void>;
-  const server = createServer((socket) => {
-    if (!accepting) {
-      socket.destroy();
-      return;
+  const acquire = (kind: CapacityKind) => {
+    if (kind === "start") {
+      if (activeJobs >= maxJobs) return undefined;
+      activeJobs += 1;
+      return () => {
+        activeJobs -= 1;
+      };
     }
-    const session = createBrokerSession(
+    if (activeStatuses >= maxStatuses) return undefined;
+    activeStatuses += 1;
+    return () => {
+      activeStatuses -= 1;
+    };
+  };
+  const server = createServer({ allowHalfOpen: true }, (socket) => {
+    if (!accepting) return socket.destroy();
+    const connection = createBrokerConnection(
       socket,
       options.backend,
-      { closeTimeoutMs, maxJobs },
-      (closed) => sessions.delete(closed),
+      { acquire, closeTimeoutMs },
+      (closed) => connections.delete(closed),
       () => {
         accepting = false;
         void closeBroker().catch(() => undefined);
       },
     );
-    sessions.add(session);
+    connections.add(connection);
   });
   server.maxConnections = maxConnections;
+
   try {
     await listen(server, options.socketPath);
+    await chown(options.socketPath, effectiveUid, socketGroupId);
     await chmod(options.socketPath, 0o660);
-    const socketMetadata = await lstat(options.socketPath);
-    const effectiveUid = process.geteuid?.();
+    const metadata = await lstat(options.socketPath);
     if (
-      effectiveUid === undefined ||
-      !socketMetadata.isSocket() ||
-      socketMetadata.uid !== effectiveUid ||
-      socketMetadata.gid !== socketGroupId ||
-      (socketMetadata.mode & 0o777) !== 0o660
+      !metadata.isSocket() ||
+      metadata.uid !== effectiveUid ||
+      metadata.gid !== socketGroupId ||
+      (metadata.mode & 0o777) !== 0o660
     ) {
       throw new Error("The sandbox broker socket permissions are not closed.");
     }
     if (options.reconcileOrphans) await options.reconcileOrphans(options.signal ?? new AbortController().signal);
     options.signal?.throwIfAborted();
   } catch (error) {
-    const resourceCleanup = Promise.allSettled([
+    const resources = Promise.allSettled([
       closeListener(server),
       Promise.resolve().then(() => options.backend.close()),
     ]);
-    if (!(await settleWithin(resourceCleanup, closeTimeoutMs))) {
-      // Keep the kernel lease alive. Releasing it while the listener or
-      // backend might still own work would let a replacement broker overlap.
+    if (!(await settleWithin(resources, closeTimeoutMs))) {
       throw new AggregateError([error, new FastManimSandboxBackendControlError("cleanup")]);
     }
-    const cleanup = await resourceCleanup;
+    const cleanup = await resources;
     const cleanupErrors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
-    if (cleanupErrors.length > 0) {
-      throw new AggregateError([error, ...cleanupErrors], "Sandbox broker startup and cleanup both failed.");
-    }
-    try {
-      await lease.close();
-    } catch (leaseError) {
-      throw new AggregateError([error, leaseError], "Sandbox broker startup and lease cleanup both failed.");
-    }
+    if (cleanupErrors.length > 0) throw new AggregateError([error, ...cleanupErrors]);
+    await lease.close();
     throw error;
   }
   accepting = true;
@@ -566,23 +453,22 @@ export async function startFastManimSandboxBrokerServerV1(
       accepting = false;
       options.signal?.removeEventListener("abort", abortFromSignal);
       const errors: unknown[] = [];
-      // Stop accepting first, but do not await Node's close callback before
-      // terminating accepted sockets: that callback waits for them.
       const listenerClosed = closeListener(server);
-      const sessionCleanup = Promise.all([...sessions].map((session) => session.close()));
-      if (!(await settleWithin(sessionCleanup, closeTimeoutMs))) {
+      const connectionCleanup = Promise.all([...connections].map((connection) => connection.close()));
+      if (!(await settleWithin(connectionCleanup, closeTimeoutMs))) {
         errors.push(new FastManimSandboxBackendControlError("cleanup"));
       }
       if (!(await settleWithin(listenerClosed, closeTimeoutMs))) {
         errors.push(new FastManimSandboxBackendControlError("cleanup"));
       }
-      const backendClosed = await settleWithin(
-        Promise.resolve().then(() => options.backend.close()),
-        closeTimeoutMs,
-      );
-      if (!backendClosed) errors.push(new FastManimSandboxBackendControlError("cleanup"));
-      // A replacement broker may start only after every owned resource has
-      // stopped. On any uncertainty, retain the kernel lease until process exit.
+      if (
+        !(await settleWithin(
+          Promise.resolve().then(() => options.backend.close()),
+          closeTimeoutMs,
+        ))
+      ) {
+        errors.push(new FastManimSandboxBackendControlError("cleanup"));
+      }
       if (errors.length === 0) await lease.close().catch((error: unknown) => errors.push(error));
       if (errors.length > 0) throw new AggregateError(errors, "The sandbox broker could not close safely.");
     })();
@@ -594,9 +480,5 @@ export async function startFastManimSandboxBrokerServerV1(
     accepting = false;
     void closeBroker().catch(() => undefined);
   });
-
-  return {
-    close: closeBroker,
-    socketPath: options.socketPath,
-  };
+  return { close: closeBroker, socketPath: options.socketPath };
 }

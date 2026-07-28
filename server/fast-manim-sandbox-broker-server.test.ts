@@ -1,4 +1,5 @@
-import { chmod, mkdtemp, rm } from "node:fs/promises";
+import { once } from "node:events";
+import { chmod, lstat, mkdtemp, rm } from "node:fs/promises";
 import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -7,7 +8,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type {
   FastManimSandboxBackendResultV1,
-  FastManimSandboxBackendStatusV1,
   FastManimSandboxBackendV1,
   FastManimSandboxJobContextV1,
   FastManimSandboxRequestBundleV1,
@@ -15,18 +15,18 @@ import type {
 } from "./fast-manim-sandbox-backend";
 import { FastManimSandboxRequestBundleV1 as RequestBundle } from "./fast-manim-sandbox-backend";
 import {
-  encodeFastManimSandboxBrokerFrameV1,
+  encodeFastManimSandboxBrokerClientFrameV1,
   encodeFastManimSandboxBrokerRequestBytesV1,
-  FAST_MANIM_SANDBOX_BROKER_PROTOCOL_V1,
   type FastManimSandboxBrokerClientMessageV1,
-  FastManimSandboxBrokerFrameDecoderV1,
-  type FastManimSandboxBrokerServerMessageV1,
+  type FastManimSandboxBrokerOperationV1,
+  FastManimSandboxBrokerServerFrameDecoderV1,
 } from "./fast-manim-sandbox-broker-protocol";
 import {
   type FastManimSandboxBrokerServerOptionsV1,
   type FastManimSandboxBrokerServerV1,
-  startFastManimSandboxBrokerServerV1 as startBrokerServer,
+  startFastManimSandboxBrokerServerV1 as startBroker,
 } from "./fast-manim-sandbox-broker-server";
+import { FastManimUdsSandboxBackendV1 } from "./fast-manim-uds-sandbox-backend";
 import {
   localSandboxReadyStatus,
   SANDBOX_TEST_SHA_A,
@@ -35,13 +35,13 @@ import {
 
 const roots: string[] = [];
 const servers: FastManimSandboxBrokerServerV1[] = [];
+const sockets: Socket[] = [];
 const socketGroupId = process.getegid?.() ?? -1;
-
-function startFastManimSandboxBrokerServerV1(options: Omit<FastManimSandboxBrokerServerOptionsV1, "socketGroupId">) {
-  return startBrokerServer({ ...options, socketGroupId });
-}
+const identity = { projectId: "default", requestId: "snapshot-request-1", tenantId: "tenant-1" };
+type StartRequest = Extract<FastManimSandboxBrokerClientMessageV1, { kind: "start" }>;
 
 afterEach(async () => {
+  for (const socket of sockets.splice(0)) socket.destroy();
   await Promise.allSettled(servers.splice(0).map((server) => server.close()));
   await Promise.all(roots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
 });
@@ -75,56 +75,15 @@ async function socketPath() {
   return join(root, "broker.sock");
 }
 
-function connect(path: string) {
-  return new Promise<Socket>((resolveConnect, rejectConnect) => {
-    const socket = createConnection(path);
-    socket.once("connect", () => resolveConnect(socket));
-    socket.once("error", rejectConnect);
-  });
+function start(options: Omit<FastManimSandboxBrokerServerOptionsV1, "socketGroupId">) {
+  return startBroker({ ...options, socketGroupId });
 }
 
-function testClient(socket: Socket) {
-  const decoder = new FastManimSandboxBrokerFrameDecoderV1();
-  const queued: FastManimSandboxBrokerServerMessageV1[] = [];
-  const waiters: Array<(message: FastManimSandboxBrokerServerMessageV1) => void> = [];
-  socket.on("data", (chunk: Buffer) => {
-    for (const decoded of decoder.push(chunk)) {
-      if (!["status-result", "job-result", "abort-ack", "close-ack", "error"].includes(decoded.kind)) continue;
-      const message = decoded as FastManimSandboxBrokerServerMessageV1;
-      const waiter = waiters.shift();
-      if (waiter) waiter(message);
-      else queued.push(message);
-    }
-  });
+function startMessage(bundle: FastManimSandboxRequestBundleV1, overrides: Partial<StartRequest> = {}): StartRequest {
   return {
-    next() {
-      const message = queued.shift();
-      if (message) return Promise.resolve(message);
-      return new Promise<FastManimSandboxBrokerServerMessageV1>((resolveMessage) => waiters.push(resolveMessage));
-    },
-    send(message: FastManimSandboxBrokerClientMessageV1) {
-      socket.write(encodeFastManimSandboxBrokerFrameV1(message));
-    },
-  };
-}
-
-const identity = { projectId: "default", requestId: "snapshot-request-1", tenantId: "tenant-1" };
-const common = {
-  protocol: FAST_MANIM_SANDBOX_BROKER_PROTOCOL_V1,
-  version: 1 as const,
-};
-
-function startMessage(
-  bundle: FastManimSandboxRequestBundleV1,
-  overrides: Partial<Extract<FastManimSandboxBrokerClientMessageV1, { kind: "start" }>> = {},
-): Extract<FastManimSandboxBrokerClientMessageV1, { kind: "start" }> {
-  return {
-    ...common,
     attestationDigest: SANDBOX_TEST_SHA_A,
-    correlationId: "start-1",
     deadlineEpochMs: Date.now() + 10_000,
     identity,
-    jobId: "job-1",
     kind: "start",
     requestBytesBase64: encodeFastManimSandboxBrokerRequestBytesV1(bundle.copyBytes()),
     requestDigest: bundle.requestDigest,
@@ -132,286 +91,137 @@ function startMessage(
   };
 }
 
-describe("fast-manim sandbox broker server", () => {
-  it("multiplexes status and jobs without exposing a runtime socket", async () => {
+async function operation(
+  path: string,
+  kind: FastManimSandboxBrokerOperationV1,
+  request: FastManimSandboxBrokerClientMessageV1,
+) {
+  const socket = createConnection({ allowHalfOpen: true, path });
+  sockets.push(socket);
+  await once(socket, "connect");
+  const decoder = new FastManimSandboxBrokerServerFrameDecoderV1(kind);
+  let resolveResponse!: (value: unknown) => void;
+  let resolveEnded!: () => void;
+  const response = new Promise<unknown>((resolve) => (resolveResponse = resolve));
+  const ended = new Promise<void>((resolve) => (resolveEnded = resolve));
+  socket.on("data", (chunk) => {
+    if (typeof chunk === "string") throw new Error("Unexpected string socket chunk.");
+    const decoded = decoder.push(chunk);
+    if (decoded) resolveResponse(decoded);
+  });
+  socket.once("end", () => {
+    socket.end();
+    resolveEnded();
+  });
+  socket.write(encodeFastManimSandboxBrokerClientFrameV1(request));
+  return {
+    abort() {
+      socket.end();
+    },
+    ended,
+    response,
+    socket,
+  };
+}
+
+describe("fast-manim single-operation broker server", () => {
+  it("serves status and a digest-bound job on separate sockets", async () => {
     const path = await socketPath();
     const backend = new TestBackend();
-    const server = await startFastManimSandboxBrokerServerV1({ backend, socketPath: path });
+    const server = await start({ backend, socketPath: path });
     servers.push(server);
-    const socket = await connect(path);
-    const client = testClient(socket);
     const bundle = new RequestBundle(sandboxProducerRequest());
-
-    client.send({
-      ...common,
-      correlationId: "status-1",
-      deadlineEpochMs: Date.now() + 10_000,
-      identity,
-      kind: "status",
-    });
-    client.send(startMessage(bundle));
-
-    const responses = [await client.next(), await client.next()];
-    expect(responses).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ correlationId: "status-1", kind: "status-result" }),
-        expect.objectContaining({
-          correlationId: "start-1",
-          jobId: "job-1",
-          kind: "job-result",
-          result: expect.objectContaining({ kind: "ok", requestDigest: bundle.requestDigest }),
-        }),
-      ]),
+    const drift = await operation(
+      path,
+      "start",
+      startMessage(bundle, { identity: { ...identity, requestId: "other" } }),
     );
-    expect(backend.starts).toHaveLength(1);
+    await expect(drift.response).resolves.toMatchObject({ code: "internal", kind: "error" });
+    expect(backend.starts).toHaveLength(0);
+    const client = new FastManimUdsSandboxBackendV1({ socketPath: path });
+    await expect(
+      client.status({ deadlineEpochMs: Date.now() + 10_000, identity, signal: new AbortController().signal }),
+    ).resolves.toMatchObject({ health: "ready" });
+    await expect(
+      client.start(bundle, {
+        attestationDigest: SANDBOX_TEST_SHA_A,
+        deadlineEpochMs: Date.now() + 10_000,
+        identity,
+        signal: new AbortController().signal,
+      }).result,
+    ).resolves.toMatchObject({ kind: "ok", requestDigest: bundle.requestDigest });
+    await client.close();
     expect(backend.starts[0]?.request.copyBytes()).toEqual(bundle.copyBytes());
-
-    client.send({ ...common, correlationId: "close-1", kind: "close" });
-    await expect(client.next()).resolves.toMatchObject({ correlationId: "close-1", kind: "close-ack" });
-    await new Promise<void>((resolveClose) => socket.once("close", () => resolveClose()));
   });
 
-  it("aborts every connection-owned job when Studio disconnects", async () => {
+  it("bounds jobs and acknowledges FIN abort only after backend settlement", async () => {
     const path = await socketPath();
     const backend = new TestBackend();
     let settle!: (result: FastManimSandboxBackendResultV1) => void;
-    backend.resultFactory = (request, context) =>
-      new Promise((resolveResult) => {
-        settle = resolveResult;
-        context.signal.addEventListener(
-          "abort",
-          () =>
-            resolveResult({
-              attestationDigest: context.attestationDigest,
-              code: "sandbox-execution-failed",
-              kind: "failed",
-              requestDigest: request.requestDigest,
-            }),
-          { once: true },
-        );
-      });
-    const server = await startFastManimSandboxBrokerServerV1({ backend, socketPath: path });
+    backend.resultFactory = () => new Promise((resolve) => (settle = resolve));
+    const server = await start({ backend, maxConcurrentJobs: 1, socketPath: path });
     servers.push(server);
-    const socket = await connect(path);
-    const client = testClient(socket);
-    client.send(startMessage(new RequestBundle(sandboxProducerRequest())));
+    const bundle = new RequestBundle(sandboxProducerRequest());
+    const job = await operation(path, "start", startMessage(bundle));
     await vi.waitFor(() => expect(backend.starts).toHaveLength(1));
+    const second = await operation(path, "start", startMessage(bundle));
+    await expect(second.response).resolves.toMatchObject({ code: "capacity", kind: "error" });
 
-    socket.destroy();
+    let acknowledged = false;
+    void job.ended.then(() => (acknowledged = true));
+    job.abort();
     await vi.waitFor(() => expect(backend.abort).toHaveBeenCalledOnce());
     expect(backend.starts[0]?.context.signal.aborted).toBe(true);
+    expect(acknowledged).toBe(false);
     settle({
       attestationDigest: SANDBOX_TEST_SHA_A,
       code: "sandbox-execution-failed",
       kind: "failed",
-      requestDigest: backend.starts[0]!.request.requestDigest,
-    });
-  });
-
-  it("enforces the per-connection job limit and keeps abort idempotent", async () => {
-    const path = await socketPath();
-    const backend = new TestBackend();
-    let resolveLateResult!: (result: FastManimSandboxBackendResultV1) => void;
-    backend.resultFactory = () =>
-      new Promise((resolveResult) => {
-        resolveLateResult = resolveResult;
-      });
-    const server = await startFastManimSandboxBrokerServerV1({
-      backend,
-      closeTimeoutMs: 50,
-      maxJobsPerConnection: 1,
-      socketPath: path,
-    });
-    servers.push(server);
-    const socket = await connect(path);
-    const client = testClient(socket);
-    const bundle = new RequestBundle(sandboxProducerRequest());
-    client.send(startMessage(bundle));
-    await vi.waitFor(() => expect(backend.starts).toHaveLength(1));
-    client.send(startMessage(bundle, { correlationId: "start-2", jobId: "job-2" }));
-    await expect(client.next()).resolves.toMatchObject({ code: "capacity", correlationId: "start-2", kind: "error" });
-
-    client.send({ ...common, correlationId: "abort-1", jobId: "job-1", kind: "abort" });
-    client.send({ ...common, correlationId: "abort-2", jobId: "missing-job", kind: "abort" });
-    await expect(client.next()).resolves.toMatchObject({ correlationId: "abort-1", kind: "abort-ack" });
-    await expect(client.next()).resolves.toMatchObject({ correlationId: "abort-2", kind: "abort-ack" });
-    expect(backend.abort).toHaveBeenCalledOnce();
-    resolveLateResult({
-      attestationDigest: SANDBOX_TEST_SHA_A,
-      kind: "ok",
       requestDigest: bundle.requestDigest,
-      resultBytes: Uint8Array.of(1),
     });
-    await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
-    client.send({ ...common, correlationId: "close-after-abort", kind: "close" });
-    await expect(client.next()).resolves.toMatchObject({ correlationId: "close-after-abort", kind: "close-ack" });
+    await job.ended;
+    expect(acknowledged).toBe(true);
   });
 
-  it("best-effort aborts a malformed backend handle and shuts the broker down", async () => {
+  it("applies the configured GID and reconciles once", async () => {
     const path = await socketPath();
-    const backend = new TestBackend();
-    const malformedAbort = vi.fn();
-    backend.start = vi.fn(() => ({ abort: malformedAbort, result: {} as Promise<FastManimSandboxBackendResultV1> }));
-    const server = await startFastManimSandboxBrokerServerV1({ backend, socketPath: path });
-    servers.push(server);
-    const socket = await connect(path);
-    testClient(socket).send(startMessage(new RequestBundle(sandboxProducerRequest())));
-
-    await vi.waitFor(() => expect(malformedAbort).toHaveBeenCalledOnce());
-    await vi.waitFor(() => expect(socket.destroyed).toBe(true));
-    expect(backend.close).toHaveBeenCalledOnce();
-  });
-
-  it("stops accepted sessions before awaiting listener shutdown", async () => {
-    const path = await socketPath();
-    const backend = new TestBackend();
-    backend.resultFactory = (request, context) =>
-      new Promise((resolveResult) => {
-        context.signal.addEventListener(
-          "abort",
-          () =>
-            resolveResult({
-              attestationDigest: context.attestationDigest,
-              code: "sandbox-execution-failed",
-              kind: "failed",
-              requestDigest: request.requestDigest,
-            }),
-          { once: true },
-        );
-      });
-    const server = await startFastManimSandboxBrokerServerV1({
-      backend,
-      closeTimeoutMs: 500,
-      socketPath: path,
-    });
-    const socket = await connect(path);
-    testClient(socket).send(startMessage(new RequestBundle(sandboxProducerRequest())));
-    await vi.waitFor(() => expect(backend.starts).toHaveLength(1));
-
-    await expect(server.close()).resolves.toBeUndefined();
-    expect(backend.abort).toHaveBeenCalledOnce();
-    expect(backend.close).toHaveBeenCalledOnce();
-    await vi.waitFor(() => expect(socket.destroyed).toBe(true));
-  });
-
-  it("reconciles orphans before listening and rejects unsafe socket parents", async () => {
-    const path = await socketPath();
-    const backend = new TestBackend();
     const reconcileOrphans = vi.fn(async () => undefined);
-    const server = await startFastManimSandboxBrokerServerV1({ backend, reconcileOrphans, socketPath: path });
-    servers.push(server);
-    expect(reconcileOrphans).toHaveBeenCalledOnce();
-
-    await expect(
-      startFastManimSandboxBrokerServerV1({ backend: new TestBackend(), socketPath: join(tmpdir(), "unsafe.sock") }),
-    ).rejects.toThrow(/privately owned/i);
-  });
-
-  it("owns the listener before reconciliation and rejects a second broker", async () => {
-    const path = await socketPath();
-    const firstReconcile = vi.fn(async () => undefined);
-    const first = await startFastManimSandboxBrokerServerV1({
-      backend: new TestBackend(),
-      reconcileOrphans: firstReconcile,
-      socketPath: path,
-    });
+    const first = await start({ backend: new TestBackend(), reconcileOrphans, socketPath: path });
     servers.push(first);
-    const secondBackend = new TestBackend();
-    const secondReconcile = vi.fn(async () => undefined);
-
-    await expect(
-      startFastManimSandboxBrokerServerV1({
-        backend: secondBackend,
-        reconcileOrphans: secondReconcile,
-        socketPath: path,
-      }),
-    ).rejects.toMatchObject({ code: "busy" });
-    expect(firstReconcile).toHaveBeenCalledOnce();
-    expect(secondReconcile).not.toHaveBeenCalled();
-    expect(secondBackend.close).toHaveBeenCalledOnce();
+    expect(await lstat(path)).toMatchObject({ gid: socketGroupId });
+    expect((await lstat(path)).mode & 0o777).toBe(0o660);
+    expect(reconcileOrphans).toHaveBeenCalledOnce();
   });
 
-  it("rejects a group-writable socket parent", async () => {
-    const path = await socketPath();
-    await chmod(dirname(path), 0o770);
-    await expect(startFastManimSandboxBrokerServerV1({ backend: new TestBackend(), socketPath: path })).rejects.toThrow(
-      /privately owned/i,
-    );
-  });
+  it("rejects writable parents and an umask that exposes the bind window", async () => {
+    const writablePath = await socketPath();
+    await chmod(dirname(writablePath), 0o770);
+    await expect(start({ backend: new TestBackend(), socketPath: writablePath })).rejects.toThrow(/privately owned/i);
 
-  it("bounds concurrent status work and aborts it on session close", async () => {
-    const path = await socketPath();
-    const backend = new TestBackend();
-    const statusSignals: AbortSignal[] = [];
-    backend.status.mockImplementation(
-      (context: FastManimSandboxStatusContextV1) =>
-        new Promise<FastManimSandboxBackendStatusV1>((resolve) => {
-          statusSignals.push(context.signal);
-          context.signal.addEventListener("abort", () => resolve(localSandboxReadyStatus()), { once: true });
-        }),
-    );
-    const server = await startFastManimSandboxBrokerServerV1({ backend, socketPath: path });
-    servers.push(server);
-    const socket = await connect(path);
-    const client = testClient(socket);
-    for (let index = 0; index < 9; index += 1) {
-      client.send({
-        ...common,
-        correlationId: `status-${index}`,
-        deadlineEpochMs: Date.now() + 10_000,
-        identity,
-        kind: "status",
-      });
+    const maskedPath = await socketPath();
+    const previous = process.umask(0o002);
+    try {
+      await expect(start({ backend: new TestBackend(), socketPath: maskedPath })).rejects.toThrow(/umask/i);
+    } finally {
+      process.umask(previous);
     }
-    await expect(client.next()).resolves.toMatchObject({ code: "capacity", correlationId: "status-8", kind: "error" });
-    client.send({ ...common, correlationId: "close-statuses", kind: "close" });
-    await expect(client.next()).resolves.toMatchObject({ correlationId: "close-statuses", kind: "close-ack" });
-    expect(statusSignals).toHaveLength(8);
-    expect(statusSignals.every((signal) => signal.aborted)).toBe(true);
   });
 
-  it("rejects outer/inner identity drift before dispatch", async () => {
-    const path = await socketPath();
-    const backend = new TestBackend();
-    const server = await startFastManimSandboxBrokerServerV1({ backend, socketPath: path });
-    servers.push(server);
-    const socket = await connect(path);
-    const client = testClient(socket);
-    const bundle = new RequestBundle(sandboxProducerRequest());
-    client.send(startMessage(bundle, { identity: { ...identity, requestId: "different-request" } }));
-    await expect(client.next()).resolves.toMatchObject({ code: "internal", correlationId: "start-1", kind: "error" });
-    expect(backend.starts).toHaveLength(0);
-  });
-
-  it("closes when the supervisor signal aborts", async () => {
-    const path = await socketPath();
-    const backend = new TestBackend();
-    const controller = new AbortController();
-    const server = await startFastManimSandboxBrokerServerV1({
-      backend,
-      signal: controller.signal,
-      socketPath: path,
-    });
-    controller.abort();
-    await expect(server.close()).resolves.toBeUndefined();
-    expect(backend.close).toHaveBeenCalledOnce();
-  });
-
-  it("retains singleton ownership when job cleanup cannot be proven", async () => {
+  it("closes on supervisor abort and latches unprovable cleanup", async () => {
     const path = await socketPath();
     const backend = new TestBackend();
     backend.resultFactory = () => new Promise(() => undefined);
-    const server = await startFastManimSandboxBrokerServerV1({ backend, closeTimeoutMs: 20, socketPath: path });
+    const controller = new AbortController();
+    const server = await start({ backend, closeTimeoutMs: 20, signal: controller.signal, socketPath: path });
     servers.push(server);
-    const socket = await connect(path);
-    testClient(socket).send(startMessage(new RequestBundle(sandboxProducerRequest())));
+    const job = await operation(path, "start", startMessage(new RequestBundle(sandboxProducerRequest())));
     await vi.waitFor(() => expect(backend.starts).toHaveLength(1));
-
+    controller.abort();
     await expect(server.close()).rejects.toBeInstanceOf(AggregateError);
+    job.socket.destroy();
+
     const replacementBackend = new TestBackend();
-    await expect(
-      startFastManimSandboxBrokerServerV1({ backend: replacementBackend, socketPath: path }),
-    ).rejects.toMatchObject({ code: "busy" });
+    await expect(start({ backend: replacementBackend, socketPath: path })).rejects.toMatchObject({ code: "busy" });
     expect(replacementBackend.close).toHaveBeenCalledOnce();
   });
 });
