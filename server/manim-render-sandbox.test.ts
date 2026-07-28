@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { chmod, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,6 +31,7 @@ import {
   decodeManimRenderStagingLocatorV1,
   digestManimRenderSandboxExecutionV1,
   encodeManimRenderStagingLocatorV1,
+  MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
   MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V1,
   MANIM_RENDER_SANDBOX_RESULT_SCHEMA_V1,
   MANIM_RENDER_SANDBOX_STATUS_SCHEMA_V1,
@@ -62,7 +63,7 @@ function descriptor(overrides: Partial<ConstructorParameters<typeof SealedManimR
     profileDigest: MANIM_RENDER_GATED_OCI_PROFILE_DIGEST_V1,
     projectId: "project-a",
     runtimeDigest: digestManimRenderGatedOciRuntimeV1(image),
-    sceneFrame: { height: 8, width: 14.222 },
+    sceneFrame: MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
     sceneName: "MainScene",
     schema: MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V1,
     sessionId: "session-a",
@@ -87,6 +88,37 @@ class ScriptedDockerClient extends FastManimGatedOciDockerClientV1 {
   }
 }
 
+class BlockingDockerClient extends FastManimGatedOciDockerClientV1 {
+  readonly entered: Promise<void>;
+  readonly #release: Promise<void>;
+  #markEntered!: () => void;
+  #releaseFirst!: () => void;
+  #runs = 0;
+
+  constructor() {
+    super();
+    this.entered = new Promise((resolve) => {
+      this.#markEntered = resolve;
+    });
+    this.#release = new Promise((resolve) => {
+      this.#releaseFirst = resolve;
+    });
+  }
+
+  release() {
+    this.#releaseFirst();
+  }
+
+  override async run() {
+    this.#runs += 1;
+    if (this.#runs === 1) {
+      this.#markEntered();
+      await this.#release;
+    }
+    return { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.alloc(0) };
+  }
+}
+
 function partial<T>(value: Partial<T>): T {
   return value as T;
 }
@@ -104,6 +136,36 @@ function healthyStatus() {
     schema: MANIM_RENDER_SANDBOX_STATUS_SCHEMA_V1,
     version: 1 as const,
   };
+}
+
+async function writeStagedVideo(
+  root: string,
+  value: ReturnType<typeof descriptor>,
+  artifact = Buffer.from("000000186674797000000000", "hex"),
+) {
+  const stagingId = manimRenderStagingIdV1(value.jobId, "video");
+  const artifactDigest = createHash("sha256").update(artifact).digest("hex");
+  const artifactPath = join(root, `${stagingId}.mp4`);
+  const manifestPath = join(root, `${stagingId}.json`);
+  await writeFile(artifactPath, artifact, { mode: 0o600 });
+  await writeFile(
+    manifestPath,
+    canonicalJsonV1({
+      artifactDigest,
+      artifactSize: artifact.byteLength,
+      deadlineEpochMs: value.deadlineEpochMs,
+      executionDigest: digestManimRenderSandboxExecutionV1(value),
+      jobId: value.jobId,
+      mediaType: "video/mp4",
+      profileDigest: MANIM_RENDER_GATED_OCI_PROFILE_DIGEST_V1,
+      runtimeDigest: value.runtimeDigest,
+      sourceDigest: value.sourceDigest,
+      stagingId,
+      version: 1,
+    }),
+    { mode: 0o600 },
+  );
+  return { artifactPath, manifestPath, stagingId };
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -126,6 +188,9 @@ describe("render sandbox contracts", () => {
       digestManimRenderSandboxExecutionV1(sealed.parseDescriptor()),
     );
     expect(manimRenderStagingIdV1(mutable.jobId, "thumbnail")).not.toBe(manimRenderStagingIdV1(mutable.jobId, "video"));
+    expect(
+      () => new SealedManimRenderSandboxRequestV1(descriptor({ sceneFrame: { height: 8, width: 14.222 } })),
+    ).toThrow();
   });
 
   it("encodes only bounded correlation metadata in opaque staging locators", () => {
@@ -235,6 +300,46 @@ describe("render sandbox contracts", () => {
 });
 
 describe("render OCI lifecycle", () => {
+  it("rejects writable staging ancestors and a replacement root inode", async () => {
+    const writableParent = await mkdtemp(join(tmpdir(), "poietra-render-writable-parent-"));
+    const writableRoot = join(writableParent, "staging");
+    await mkdir(writableRoot, { mode: 0o700 });
+    await chmod(writableParent, 0o777);
+    const writableDocker = new ScriptedDockerClient();
+    const writableRunner = new ManimRenderGatedOciJobRunnerV1({
+      dockerClient: writableDocker,
+      image,
+      seccompPath: "/missing/seccomp.json",
+      stagingRoot: writableRoot,
+    });
+    try {
+      await expect(writableRunner.reconcileOrphans()).rejects.toThrow(/ancestor/i);
+      expect(writableDocker.calls).toEqual([]);
+    } finally {
+      await writableRunner.close();
+      await rm(writableParent, { force: true, recursive: true });
+    }
+
+    const privateParent = await mkdtemp(join(tmpdir(), "poietra-render-root-swap-"));
+    const stagingRoot = join(privateParent, "staging");
+    await mkdir(stagingRoot, { mode: 0o700 });
+    const runner = new ManimRenderGatedOciJobRunnerV1({
+      dockerClient: new ScriptedDockerClient(),
+      image,
+      seccompPath: "/missing/seccomp.json",
+      stagingRoot,
+    });
+    try {
+      await expect(runner.reconcileOrphans()).resolves.toBeUndefined();
+      await rename(stagingRoot, join(privateParent, "original"));
+      await mkdir(stagingRoot, { mode: 0o700 });
+      await expect(runner.reconcileOrphans()).rejects.toThrow(/replaced/i);
+    } finally {
+      await runner.close();
+      await rm(privateParent, { force: true, recursive: true });
+    }
+  });
+
   it.each([
     { label: "early exit", program: "process.exit(17);", timeoutMs: 2_000 },
     { label: "readiness timeout", program: "setInterval(() => undefined, 1000);", timeoutMs: 25 },
@@ -396,6 +501,150 @@ describe("render OCI lifecycle", () => {
       await rm(root, { force: true, recursive: true });
     }
   });
+
+  it.each([
+    { label: "artifact count", maxStagedArtifacts: 1, maxStagedBytes: undefined },
+    { label: "reserved bytes", maxStagedArtifacts: 2, maxStagedBytes: 128 * 1024 * 1024 + 8 * 1024 },
+  ])("rejects a different job before staging exceeds its $label cap", async (limits) => {
+    const root = await mkdtemp(join(tmpdir(), "poietra-render-capacity-"));
+    await chmod(root, 0o700);
+    const existing = descriptor({ jobId: "tenant-a/session-existing", sessionId: "session-existing" });
+    await writeStagedVideo(root, existing);
+    const runner = new ManimRenderGatedOciJobRunnerV1({
+      dockerClient: new ScriptedDockerClient(),
+      image,
+      maxStagedArtifacts: limits.maxStagedArtifacts,
+      ...(limits.maxStagedBytes === undefined ? {} : { maxStagedBytes: limits.maxStagedBytes }),
+      seccompPath: "/missing/seccomp.json",
+      stagingRoot: root,
+    });
+    try {
+      const next = new SealedManimRenderSandboxRequestV1(
+        descriptor({ jobId: "tenant-a/session-next", sessionId: "session-next" }),
+      );
+      await expect(
+        runner.submitOrReattach(next, next.parseDescriptor().deadlineEpochMs, new AbortController().signal),
+      ).resolves.toEqual({ code: "capacity", kind: "failed" });
+    } finally {
+      await runner.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("counts active maximum-size reservations against staging capacity", async () => {
+    const root = await mkdtemp(join(tmpdir(), "poietra-render-active-reservation-"));
+    await chmod(root, 0o700);
+    const docker = new BlockingDockerClient();
+    const runner = new ManimRenderGatedOciJobRunnerV1({
+      dockerClient: docker,
+      image,
+      maxStagedArtifacts: 1,
+      seccompPath: "/missing/seccomp.json",
+      stagingRoot: root,
+    });
+    const first = new SealedManimRenderSandboxRequestV1(
+      descriptor({ jobId: "tenant-a/session-active", sessionId: "session-active" }),
+    );
+    const running = runner.submitOrReattach(
+      first,
+      first.parseDescriptor().deadlineEpochMs,
+      new AbortController().signal,
+    );
+    try {
+      await docker.entered;
+      const second = new SealedManimRenderSandboxRequestV1(
+        descriptor({ jobId: "tenant-a/session-blocked", sessionId: "session-blocked" }),
+      );
+      await expect(
+        runner.submitOrReattach(second, second.parseDescriptor().deadlineEpochMs, new AbortController().signal),
+      ).resolves.toEqual({ code: "capacity", kind: "failed" });
+    } finally {
+      docker.release();
+      await running;
+      await Promise.allSettled([runner.close()]);
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("fails startup closed when unexpired staging already exceeds its hard cap", async () => {
+    const root = await mkdtemp(join(tmpdir(), "poietra-render-startup-capacity-"));
+    await chmod(root, 0o700);
+    await writeStagedVideo(root, descriptor({ jobId: "tenant-a/session-one", sessionId: "session-one" }));
+    await writeStagedVideo(root, descriptor({ jobId: "tenant-a/session-two", sessionId: "session-two" }));
+    const runner = new ManimRenderGatedOciJobRunnerV1({
+      dockerClient: new ScriptedDockerClient(),
+      image,
+      maxStagedArtifacts: 1,
+      seccompPath: "/missing/seccomp.json",
+      stagingRoot: root,
+    });
+    try {
+      await expect(runner.reconcileOrphans()).rejects.toThrow(/hard capacity/i);
+    } finally {
+      await runner.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("sweeps a successful staging pair when its runtime deadline expires", async () => {
+    const root = await mkdtemp(join(tmpdir(), "poietra-render-runtime-sweep-"));
+    await chmod(root, 0o700);
+    const current = descriptor({
+      deadlineEpochMs: Date.now() + 100,
+      jobId: "tenant-a/session-timer",
+      sessionId: "session-timer",
+    });
+    const paths = await writeStagedVideo(root, current);
+    const runner = new ManimRenderGatedOciJobRunnerV1({
+      dockerClient: new ScriptedDockerClient(),
+      image,
+      seccompPath: "/missing/seccomp.json",
+      stagingRoot: root,
+    });
+    try {
+      const request = new SealedManimRenderSandboxRequestV1(current);
+      await expect(
+        runner.submitOrReattach(request, current.deadlineEpochMs, new AbortController().signal),
+      ).resolves.toMatchObject({ kind: "ready" });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await expect(readFile(paths.artifactPath)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(paths.manifestPath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await runner.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("reclaims an expired different job before admitting a staged reattach", async () => {
+    const root = await mkdtemp(join(tmpdir(), "poietra-render-reclaim-"));
+    await chmod(root, 0o700);
+    const expired = descriptor({
+      deadlineEpochMs: Date.now() - 1_000,
+      jobId: "tenant-a/session-expired",
+      sessionId: "session-expired",
+    });
+    const current = descriptor({ jobId: "tenant-a/session-current", sessionId: "session-current" });
+    const expiredPaths = await writeStagedVideo(root, expired);
+    const currentPaths = await writeStagedVideo(root, current);
+    const runner = new ManimRenderGatedOciJobRunnerV1({
+      dockerClient: new ScriptedDockerClient(),
+      image,
+      maxStagedArtifacts: 1,
+      seccompPath: "/missing/seccomp.json",
+      stagingRoot: root,
+    });
+    try {
+      const request = new SealedManimRenderSandboxRequestV1(current);
+      await expect(
+        runner.submitOrReattach(request, current.deadlineEpochMs, new AbortController().signal),
+      ).resolves.toMatchObject({ kind: "ready", stagingId: currentPaths.stagingId });
+      await expect(readFile(expiredPaths.artifactPath)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(expiredPaths.manifestPath)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      await runner.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
 });
 
 describe("production durable render execution", () => {
@@ -453,7 +702,7 @@ describe("production durable render execution", () => {
     const executor = new ProductionDurableManimRenderExecutorV1({
       backend,
       blobs,
-      frame: { height: 8, width: 14.222 },
+      frame: MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
       profileDigest: MANIM_RENDER_GATED_OCI_PROFILE_DIGEST_V1,
       runtimeDigest: digestManimRenderGatedOciRuntimeV1(image),
       tenantId: "tenant-a",
@@ -574,6 +823,62 @@ describe("render broker bounded shutdown", () => {
     }
   });
 
+  it("does not dispatch or retain clients that withhold their write EOF", async () => {
+    const root = await mkdtemp(join(tmpdir(), "poietra-render-broker-half-open-"));
+    await chmod(root, 0o700);
+    const socketPath = join(root, "render.sock");
+    let statusCalls = 0;
+    const backend = partial<ManimRenderSandboxBackendV1>({
+      cancel: async () => undefined,
+      close: async () => undefined,
+      status: async () => {
+        statusCalls += 1;
+        return healthyStatus();
+      },
+      submitOrReattach: () => never(),
+    });
+    const broker = await startManimRenderSandboxBrokerServerV1({
+      backend,
+      maxConnections: 4,
+      socketGroupId: process.getegid!(),
+      socketPath,
+    });
+    const peers = Array.from({ length: 4 }, () => new Socket());
+    try {
+      await Promise.all(
+        peers.map(
+          (peer) =>
+            new Promise<void>((resolve, reject) => {
+              peer.once("error", reject);
+              peer.connect(socketPath, resolve);
+            }),
+        ),
+      );
+      const closed = peers.map((peer) => new Promise<void>((resolve) => peer.once("close", () => resolve())));
+      const frame = encodeManimRenderSandboxBrokerClientFrameV1({
+        deadlineEpochMs: Date.now() + 5_000,
+        kind: "status",
+      });
+      for (const peer of peers) peer.write(frame);
+      await Promise.all(closed);
+      expect(statusCalls).toBe(0);
+
+      const client = new ManimRenderUdsSandboxBackendV1({ socketPath });
+      try {
+        await expect(
+          client.status({ deadlineEpochMs: Date.now() + 5_000, signal: new AbortController().signal }),
+        ).resolves.toEqual(healthyStatus());
+        expect(statusCalls).toBe(1);
+      } finally {
+        await client.close();
+      }
+    } finally {
+      for (const peer of peers) peer.destroy();
+      await Promise.allSettled([broker.close()]);
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 10_000);
+
   it("never emits a success frame after the operation deadline aborts", async () => {
     const root = await mkdtemp(join(tmpdir(), "poietra-render-broker-late-success-"));
     await chmod(root, 0o700);
@@ -683,7 +988,7 @@ describe("render broker bounded shutdown", () => {
         peer.once("error", reject);
         peer.connect(socketPath, resolve);
       });
-      peer.write(
+      peer.end(
         encodeManimRenderSandboxBrokerClientFrameV1({
           deadlineEpochMs: Date.now() + 1_000,
           kind: "status",
