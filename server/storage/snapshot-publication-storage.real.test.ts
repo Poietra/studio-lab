@@ -44,19 +44,29 @@ type ChildResult =
       artifact: SnapshotArtifactReceiptV1;
     }>
   | Readonly<{
+      artifact: SnapshotArtifactReceiptV1;
       event: "published";
       generation: string;
       requestId: string;
-      resultDigest: string;
       snapshotHash: string;
     }>;
 
-type ChildRole = "orphan-writer" | "reader";
+type ChildRole = "orphan-writer" | "publisher" | "reader";
 
 type OrphanWriterInput = Readonly<{
   nonce: string;
   sourceDigest: string;
   tenantId: string;
+}>;
+
+type PublisherInput = Readonly<{
+  artifactBytes: string;
+  expectedSourceDigest: string;
+  expectedSourceGeneration: string;
+  identity: SnapshotPublicationIdentityV1;
+  publicationId: string;
+  requestId: string;
+  snapshotHash: string;
 }>;
 
 function storageEnvironment(): StorageEnvironment {
@@ -139,6 +149,12 @@ function orphanWriterInputFromEnvironment(): OrphanWriterInput {
   return JSON.parse(serialized) as OrphanWriterInput;
 }
 
+function publisherInputFromEnvironment(): PublisherInput {
+  const serialized = process.env.POIETRA_SNAPSHOT_STORAGE_E2E_PUBLISHER_INPUT;
+  if (!serialized) throw new Error("The snapshot publisher child is missing its input.");
+  return JSON.parse(serialized) as PublisherInput;
+}
+
 function emitProcessResult(result: ChildResult) {
   process.stdout.write(`${PROCESS_MARKER}${JSON.stringify(result)}\n`);
 }
@@ -154,10 +170,10 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== "reader")("durable snapshot 
       const bytes = await storage.artifacts.read(result.publication.tenantId, result.publication.artifact);
       expect(createHash("sha256").update(bytes).digest("hex")).toBe(result.publication.artifact.resultDigest);
       emitProcessResult({
+        artifact: result.publication.artifact,
         event: "published",
         generation: result.publication.generation.toString(),
         requestId: result.publication.requestId,
-        resultDigest: result.publication.artifact.resultDigest,
         snapshotHash: result.publication.snapshotHash,
       });
     } finally {
@@ -188,6 +204,43 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== "orphan-writer")(
     }, 30_000);
   },
 );
+
+describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== "publisher")("durable snapshot publisher child fixture", () => {
+  it("publishes one snapshot and waits for a process crash", async () => {
+    const input = publisherInputFromEnvironment();
+    const storage = snapshotStorage();
+    try {
+      expect(await storage.publications.ready()).toBe(true);
+      expect(await storage.artifacts.ready()).toBe(true);
+      const artifact = await storage.artifacts.put(input.identity.tenantId, {
+        bytes: Buffer.from(input.artifactBytes, "utf8"),
+        profileDigest: PROFILE_DIGEST,
+        runtimeConfigHash: RUNTIME_CONFIG_HASH,
+        sourceDigest: input.expectedSourceDigest,
+      });
+      const result = await storage.publications.publish({
+        ...input.identity,
+        artifact,
+        expectedSourceDigest: input.expectedSourceDigest,
+        expectedSourceGeneration: BigInt(input.expectedSourceGeneration),
+        publicationId: input.publicationId,
+        requestId: input.requestId,
+        snapshotHash: input.snapshotHash,
+      });
+      if (result.kind !== "published") throw new Error("The publisher child observed stale source metadata.");
+      emitProcessResult({
+        artifact: result.publication.artifact,
+        event: "published",
+        generation: result.publication.generation.toString(),
+        requestId: result.publication.requestId,
+        snapshotHash: result.publication.snapshotHash,
+      });
+      await new Promise<never>(() => undefined);
+    } finally {
+      await closeSnapshotStorage(storage);
+    }
+  }, 30_000);
+});
 
 async function runChild(options: {
   environment: Readonly<Record<string, string>>;
@@ -307,6 +360,17 @@ async function runOrphanWriterChild(input: OrphanWriterInput) {
   return result.artifact;
 }
 
+async function runPublisherChild(input: PublisherInput) {
+  const result = await runChild({
+    environment: { POIETRA_SNAPSHOT_STORAGE_E2E_PUBLISHER_INPUT: JSON.stringify(input) },
+    killAfterResult: true,
+    role: "publisher",
+    title: "publishes one snapshot and waits for a process crash",
+  });
+  if (result.event !== "published") throw new Error("The snapshot publisher child returned the wrong event.");
+  return result;
+}
+
 function isMissingBucket(error: unknown) {
   return (
     error instanceof Error &&
@@ -372,47 +436,25 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
       const requestId = `snapshot-request-${suffix}`;
       const snapshotHash = createHash("sha256").update(`snapshot-${suffix}`).digest("hex");
 
-      const writer = snapshotStorage();
-      let publication: Awaited<ReturnType<PostgresSnapshotPublicationRepositoryV1["publish"]>>;
-      try {
-        expect(await writer.publications.ready()).toBe(true);
-        expect(await writer.artifacts.ready()).toBe(true);
-        const artifact = await writer.artifacts.put(tenantA, {
-          bytes: Buffer.from(`snapshot-artifact-${suffix}`, "utf8"),
-          profileDigest: PROFILE_DIGEST,
-          runtimeConfigHash: RUNTIME_CONFIG_HASH,
-          sourceDigest: sourceHead.blob.digest,
-        });
-        publication = await writer.publications.publish({
-          ...identity,
-          artifact,
-          expectedSourceDigest: sourceHead.blob.digest,
-          expectedSourceGeneration: sourceHead.generation,
-          publicationId: randomUUID(),
-          requestId,
-          snapshotHash,
-        });
-      } finally {
-        await closeSnapshotStorage(writer);
-      }
-      expect(publication.kind).toBe("published");
-      if (publication.kind !== "published") throw new Error("The source unexpectedly became stale.");
-
-      const childRead = await runReaderChild(identity);
-      expect(childRead).toEqual({
-        event: "published",
-        generation: publication.publication.generation.toString(),
+      const publication = await runPublisherChild({
+        artifactBytes: `snapshot-artifact-${suffix}`,
+        expectedSourceDigest: sourceHead.blob.digest,
+        expectedSourceGeneration: sourceHead.generation.toString(),
+        identity,
+        publicationId: randomUUID(),
         requestId,
-        resultDigest: publication.publication.artifact.resultDigest,
         snapshotHash,
       });
+
+      const childRead = await runReaderChild(identity);
+      expect(childRead).toEqual(publication);
 
       const tenantBReader = snapshotStorage();
       try {
         await expect(tenantBReader.publications.readCurrent({ ...identity, tenantId: tenantB })).resolves.toEqual({
           kind: "missing",
         });
-        await expect(tenantBReader.artifacts.read(tenantB, publication.publication.artifact)).rejects.toThrow(
+        await expect(tenantBReader.artifacts.read(tenantB, publication.artifact)).rejects.toThrow(
           "Snapshot artifact receipt is invalid",
         );
       } finally {
@@ -430,7 +472,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
       const staleReader = snapshotStorage();
       try {
         await expect(staleReader.publications.readCurrent(identity)).resolves.toEqual({
-          generation: publication.publication.generation,
+          generation: BigInt(publication.generation),
           kind: "stale",
         });
       } finally {
