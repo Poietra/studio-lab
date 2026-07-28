@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { constants } from "node:fs";
-import { lstat, mkdtemp, open, readFile, readdir, realpath, rename, rm } from "node:fs/promises";
+import { chmod, chown, lstat, mkdtemp, open, readFile, readdir, realpath, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 import { z } from "zod";
@@ -711,6 +711,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
   readonly #maxStagedBytes: number;
   readonly #runtimeDigest: string;
   readonly #seccompPath: string;
+  readonly #stagingGroupId: number | undefined;
   readonly #stagingRoot: string;
   #closed = false;
   #cleanupFailure: unknown = undefined;
@@ -726,6 +727,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
       maxStagedArtifacts?: number;
       maxStagedBytes?: number;
       seccompPath: string;
+      stagingGroupId?: number;
       stagingRoot: string;
     }>,
   ) {
@@ -760,6 +762,15 @@ export class ManimRenderGatedOciJobRunnerV1 {
     this.#maxStagedBytes = maxStagedBytes;
     this.#runtimeDigest = digestManimRenderGatedOciRuntimeV1(options.image);
     this.#seccompPath = options.seccompPath;
+    if (
+      options.stagingGroupId !== undefined &&
+      (!Number.isSafeInteger(options.stagingGroupId) ||
+        options.stagingGroupId < 0 ||
+        options.stagingGroupId > 0xffff_ffff)
+    ) {
+      throw new TypeError("The render OCI staging group is invalid.");
+    }
+    this.#stagingGroupId = options.stagingGroupId;
     this.#stagingRoot = options.stagingRoot;
   }
 
@@ -783,7 +794,9 @@ export class ManimRenderGatedOciJobRunnerV1 {
       !metadata.isDirectory() ||
       metadata.isSymbolicLink() ||
       metadata.uid !== BigInt(userId) ||
-      (metadata.mode & 0o777n) !== 0o700n
+      (this.#stagingGroupId === undefined
+        ? (metadata.mode & 0o777n) !== 0o700n
+        : metadata.gid !== BigInt(this.#stagingGroupId) || (metadata.mode & 0o777n) !== 0o750n)
     ) {
       throw new Error("The private render staging root identity is invalid.");
     }
@@ -1686,6 +1699,12 @@ export class ManimRenderGatedOciJobRunnerV1 {
       await this.#assertStagingRootIdentity();
       throwIfDeadlineElapsed(deadlineEpochMs, signal);
       await rename(copied.temporaryArtifact, finalArtifact);
+      if (this.#stagingGroupId !== undefined) {
+        const userId = process.geteuid?.();
+        if (userId === undefined) throw new Error("The render broker user identity is unavailable.");
+        await chown(finalArtifact, userId, this.#stagingGroupId);
+        await chmod(finalArtifact, 0o640);
+      }
       throwIfDeadlineElapsed(deadlineEpochMs, signal);
       await rm(temporaryManifest, { force: true });
       const manifestHandle = await open(temporaryManifest, "wx", 0o600);

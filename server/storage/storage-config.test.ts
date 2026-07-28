@@ -76,6 +76,17 @@ describe("durable storage configuration", () => {
       },
       renderWorker: { onFailure: () => undefined },
       renderSandbox: {} as never,
+      renderArtifacts: {
+        artifactExpirationMs: 60_000,
+        gc: {
+          batchSize: 64,
+          graceMs: 60_000,
+          intervalMs: 60_000,
+          onFailure: () => undefined,
+          sweepTimeoutMs: 30_000,
+        },
+        stagingRoot: "/var/lib/poietra/render-staging",
+      },
       snapshot: {
         artifactGc: {
           batchSize: 64,

@@ -1,6 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -387,12 +388,14 @@ export class ManimRenderManager {
     }
   }
 
-  thumbnail(projectId = this.projectId) {
+  thumbnail(projectId = this.projectId, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     if (projectId !== this.projectId) throw new HttpError("Configured Manim project not found.", 404);
     return this.thumbnailCache.asset();
   }
 
-  thumbnailStatus(projectId = this.projectId) {
+  thumbnailStatus(projectId = this.projectId, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     if (projectId !== this.projectId) throw new HttpError("Configured Manim project not found.", 404);
     return this.thumbnailCache.status();
   }
@@ -969,6 +972,28 @@ export class ManimRenderManager {
     const session = this.session(id);
     if (!session.videoPath || session.status === "discarded") throw new HttpError("Rendered video not found.", 404);
     return session.videoPath;
+  }
+
+  async video(id: string, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    const path = this.videoPath(id);
+    let metadata;
+    try {
+      metadata = await stat(path);
+    } catch {
+      throw new HttpError("Rendered video not found.", 404);
+    }
+    if (!metadata.isFile()) throw new HttpError("Rendered video not found.", 404);
+    return {
+      byteSize: metadata.size,
+      close: async () => undefined,
+      mediaType: "video/mp4" as const,
+      open: async (range: Readonly<{ end: number; start: number }> | null, streamSignal?: AbortSignal) =>
+        createReadStream(path, {
+          ...(range ?? {}),
+          ...(streamSignal ? { signal: streamSignal } : {}),
+        }),
+    };
   }
 
   runSceneSnapshot(request: FastManimSnapshotRunRequestV1, signal?: AbortSignal) {

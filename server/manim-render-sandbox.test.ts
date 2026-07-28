@@ -648,7 +648,7 @@ describe("render OCI lifecycle", () => {
 });
 
 describe("production durable render execution", () => {
-  it("loads sealed source, submits fixed video output, and returns only an opaque locator", async () => {
+  it("loads sealed source, submits fixed video and thumbnail outputs, and returns only opaque locators", async () => {
     const deadline = new Date(Date.now() + 60_000);
     const patchedDigest = createHash("sha256").update(source, "utf8").digest("hex");
     const session = partial<DurableRenderSessionV1>({
@@ -670,13 +670,13 @@ describe("production durable render execution", () => {
       tenantId: "tenant-a",
     });
     const blobs = partial<SourceContentBlobStoreV1>({ readSource: vi.fn(async () => source) });
-    let submitted: SealedManimRenderSandboxRequestV1 | undefined;
+    const submitted: SealedManimRenderSandboxRequestV1[] = [];
     const backend = partial<ManimRenderSandboxBackendV1>({
       cancel: vi.fn(async () => undefined),
       close: vi.fn(async () => undefined),
       status: vi.fn(async () => healthyStatus()),
       submitOrReattach: vi.fn<ManimRenderSandboxBackendV1["submitOrReattach"]>(async (request) => {
-        submitted = request;
+        submitted.push(request);
         const value = request.parseDescriptor();
         return {
           artifactDigest: "b".repeat(64),
@@ -717,15 +717,34 @@ describe("production durable render execution", () => {
       expect(result).toMatchObject({ kind: "ready", logTail: "" });
       if (result.kind !== "ready" || !result.artifactLocator) throw new Error("The executor did not return a locator.");
       expect(result.artifactLocator).not.toContain("/tmp");
+      expect(result.stagingLocators).toBeDefined();
       expect(decodeManimRenderStagingLocatorV1(result.artifactLocator)).toMatchObject({
         fenceToken: "7",
         jobId: "tenant-a/session-a",
         sourceDigest: patchedDigest,
       });
-      expect(submitted?.parseDescriptor()).toMatchObject({
-        output: { kind: "video", mediaType: "video/mp4", pixelHeight: 480, pixelWidth: 854 },
-        source,
-      });
+      expect(submitted.map((request) => request.parseDescriptor())).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            output: expect.objectContaining({
+              kind: "video",
+              mediaType: "video/mp4",
+              pixelHeight: 480,
+              pixelWidth: 854,
+            }),
+            source,
+          }),
+          expect.objectContaining({
+            output: expect.objectContaining({
+              kind: "thumbnail",
+              mediaType: "image/png",
+              pixelHeight: 480,
+              pixelWidth: 854,
+            }),
+            source,
+          }),
+        ]),
+      );
     } finally {
       await executor.close();
     }

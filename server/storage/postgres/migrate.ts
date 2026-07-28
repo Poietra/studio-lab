@@ -4,6 +4,8 @@ import type { Pool } from "pg";
 import workspaceSourceSqlV1 from "./migrations/0001_workspace_source.sql?raw";
 import renderSessionSqlV2 from "./migrations/0002_render_sessions.sql?raw";
 import snapshotPublicationSqlV3 from "./migrations/0003_snapshot_publications.sql?raw";
+import renderArtifactSqlV4 from "./migrations/0004_render_artifacts.sql?raw";
+import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { RENDER_SESSION_MIGRATION_V2_CHECKSUM } from "./postgres-render-session-repository";
 import { SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM } from "./postgres-snapshot-publication-repository";
 import { WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM } from "./postgres-workspace-source-repository";
@@ -36,6 +38,7 @@ export function renderSessionMigrationChecksumV2(source: string) {
 export const WORKSPACE_SOURCE_MIGRATION_V1_SOURCE = workspaceSourceSqlV1;
 export const RENDER_SESSION_MIGRATION_V2_SOURCE = renderSessionSqlV2;
 export const SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE = snapshotPublicationSqlV3;
+export const RENDER_ARTIFACT_MIGRATION_V4_SOURCE = renderArtifactSqlV4;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -65,10 +68,21 @@ const snapshotPublicationMigrationV3: DurableStorageMigration<3> = Object.freeze
   version: 3,
 });
 
+const renderArtifactMigrationV4: DurableStorageMigration<4> = Object.freeze({
+  checksum: RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM,
+  checksumMismatch: "The render-artifact migration checksum is invalid.",
+  installedMismatch: "The installed render-artifact schema does not match migration v4.",
+  missingPrerequisite: "Render-artifact migration v4 requires durable storage migrations v1 through v3.",
+  prerequisiteMismatch: "Render-artifact migration v4 requires exact durable storage migrations v1 through v3.",
+  source: RENDER_ARTIFACT_MIGRATION_V4_SOURCE,
+  version: 4,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
   snapshotPublicationMigrationV3,
+  renderArtifactMigrationV4,
 ]);
 
 function validateSource(migration: DurableStorageMigration) {
@@ -149,6 +163,14 @@ export function applySnapshotPublicationMigrationV3(pool: Pool, source: string) 
   return applyMigration(pool, { ...snapshotPublicationMigrationV3, source }, [
     workspaceSourceMigrationV1,
     renderSessionMigrationV2,
+  ]);
+}
+
+export function applyRenderArtifactMigrationV4(pool: Pool, source: string) {
+  return applyMigration(pool, { ...renderArtifactMigrationV4, source }, [
+    workspaceSourceMigrationV1,
+    renderSessionMigrationV2,
+    snapshotPublicationMigrationV3,
   ]);
 }
 

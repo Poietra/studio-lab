@@ -51,6 +51,14 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
     this.#tenantId = tenant.data;
   }
 
+  get profileDigest() {
+    return this.#profileDigest;
+  }
+
+  get runtimeDigest() {
+    return this.#runtimeDigest;
+  }
+
   async ready(signal?: AbortSignal) {
     signal?.throwIfAborted();
     const controller = new AbortController();
@@ -91,41 +99,47 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
     }
     const source = await this.#blobs.readSource(this.#tenantId, session.patched.blob, request.signal);
     request.signal.throwIfAborted();
-    const sealed = new SealedManimRenderSandboxRequestV1({
-      deadlineEpochMs: session.deadline.getTime(),
-      fenceToken: canonicalManimRenderFenceTokenV1(session.fenceToken),
-      jobId: request.jobId,
-      output: {
-        frameRate: 15,
-        kind: "video",
-        mediaType: "video/mp4",
-        pixelHeight: 480,
-        pixelWidth: 854,
-      },
-      profileDigest: this.#profileDigest,
-      projectId: session.projectId,
-      runtimeDigest: this.#runtimeDigest,
-      sceneFrame: this.#frame,
-      sceneName: session.sceneName,
-      schema: MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V1,
-      sessionId: session.id,
-      source,
-      sourceDigest: session.patched.blob.digest,
-      sourcePath: session.sourcePath,
-      tenantId: this.#tenantId,
-      version: 1,
-    });
-    const terminal = await this.#backend.submitOrReattach(sealed, {
-      deadlineEpochMs: session.deadline.getTime(),
-      signal: request.signal,
-    });
-    if (terminal.kind === "ready") {
+    const submit = (kind: "thumbnail" | "video") => {
+      const sealed = new SealedManimRenderSandboxRequestV1({
+        deadlineEpochMs: session.deadline.getTime(),
+        fenceToken: canonicalManimRenderFenceTokenV1(session.fenceToken),
+        jobId: request.jobId,
+        output:
+          kind === "video"
+            ? { frameRate: 15, kind: "video", mediaType: "video/mp4", pixelHeight: 480, pixelWidth: 854 }
+            : { frameRate: 15, kind: "thumbnail", mediaType: "image/png", pixelHeight: 480, pixelWidth: 854 },
+        profileDigest: this.#profileDigest,
+        projectId: session.projectId,
+        runtimeDigest: this.#runtimeDigest,
+        sceneFrame: this.#frame,
+        sceneName: session.sceneName,
+        schema: MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V1,
+        sessionId: session.id,
+        source,
+        sourceDigest: session.patched.blob.digest,
+        sourcePath: session.sourcePath,
+        tenantId: this.#tenantId,
+        version: 1,
+      });
+      return this.#backend.submitOrReattach(sealed, {
+        deadlineEpochMs: session.deadline.getTime(),
+        signal: request.signal,
+      });
+    };
+    const [video, thumbnail] = await Promise.all([submit("video"), submit("thumbnail")]);
+    if (video.kind === "ready" && thumbnail.kind === "ready") {
       return {
-        artifactLocator: encodeManimRenderStagingLocatorV1(terminal),
+        artifactLocator: encodeManimRenderStagingLocatorV1(video),
         kind: "ready",
         logTail: "",
+        stagingLocators: {
+          thumbnail: encodeManimRenderStagingLocatorV1(thumbnail),
+          video: encodeManimRenderStagingLocatorV1(video),
+        },
       } as const;
     }
+    const terminal = video.kind === "failed" ? video : thumbnail.kind === "failed" ? thumbnail : null;
+    if (!terminal) throw new Error("The render sandbox returned an invalid media bundle.");
     return {
       code: terminal.code === "cancelled" || terminal.code === "deadline-exceeded" ? "interrupted" : "render-failed",
       kind: "failed",

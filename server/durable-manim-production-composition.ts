@@ -15,7 +15,9 @@ import {
   createProductionDurableManimRenderExecutorV1,
   type ProductionDurableManimRenderExecutorV1,
 } from "./production-durable-manim-render-executor";
+import { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
 import { applyBundledDurableStorageMigrations } from "./storage/postgres/migrate";
+import { PostgresArtifactRepositoryV1 } from "./storage/postgres/postgres-artifact-repository";
 import { PostgresRenderSessionRepositoryV1 } from "./storage/postgres/postgres-render-session-repository";
 import { PostgresSnapshotPublicationRepositoryV1 } from "./storage/postgres/postgres-snapshot-publication-repository";
 import {
@@ -23,11 +25,14 @@ import {
   WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1,
 } from "./storage/postgres/postgres-workspace-source-repository";
 import { S3ContentBlobStoreV1 } from "./storage/s3/s3-content-blob-store";
+import { S3ArtifactReaderV1 } from "./storage/s3/s3-artifact-reader";
 import { PrivateVersionedS3BucketTransportV1 } from "./storage/s3/s3-private-versioned-bucket-transport";
 import { S3SnapshotArtifactStoreV1 } from "./storage/s3/s3-snapshot-artifact-store";
 import { createDurableSnapshotArtifactGcWorkerV1 } from "./storage/snapshot-artifact-gc";
+import { createDurableRenderArtifactGcWorkerV1 } from "./storage/render-artifact-gc";
 import { SnapshotArtifactPublisherV1 } from "./storage/snapshot-artifact-publisher";
 import { createDurableSourceBlobGcWorkerV1 } from "./storage/source-blob-gc";
+import { VerifiedArtifactPublisherV1 } from "./storage/verified-artifact-publisher";
 
 export type DurablePostgresS3ProductionRuntimeOptionsV1 = Readonly<{
   database: Readonly<{
@@ -51,6 +56,18 @@ export type DurablePostgresS3ProductionRuntimeOptionsV1 = Readonly<{
     workerId?: string;
   }>;
   renderSandbox: ManimRenderProductionSandboxClientOptionsV1;
+  renderArtifacts: Readonly<{
+    artifactExpirationMs: number;
+    claimDurationMs?: number;
+    gc: Readonly<{
+      batchSize: number;
+      graceMs: number;
+      intervalMs: number;
+      onFailure: (error: unknown) => void;
+      sweepTimeoutMs: number;
+    }>;
+    stagingRoot: string;
+  }>;
   snapshot: Readonly<{
     artifactGc: Readonly<{
       batchSize: number;
@@ -164,16 +181,22 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
 
   let repository: PostgresWorkspaceSourceRepositoryV1 | undefined;
   let renderRepository: PostgresRenderSessionRepositoryV1 | undefined;
+  let mediaRepository: PostgresArtifactRepositoryV1 | undefined;
   let snapshotRepository: PostgresSnapshotPublicationRepositoryV1 | undefined;
   let objectTransport: PrivateVersionedS3BucketTransportV1 | undefined;
   let blobs: S3ContentBlobStoreV1 | undefined;
   let artifacts: S3SnapshotArtifactStoreV1 | undefined;
+  let mediaArtifacts: S3ArtifactReaderV1 | undefined;
   try {
     repository = new PostgresWorkspaceSourceRepositoryV1({
       poolConfig: options.database.runtimePoolConfig,
       statementTimeoutMs: options.database.statementTimeoutMs,
     });
     renderRepository = new PostgresRenderSessionRepositoryV1({
+      poolConfig: options.database.runtimePoolConfig,
+      statementTimeoutMs: options.database.statementTimeoutMs,
+    });
+    mediaRepository = new PostgresArtifactRepositoryV1({
       poolConfig: options.database.runtimePoolConfig,
       statementTimeoutMs: options.database.statementTimeoutMs,
     });
@@ -188,16 +211,28 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
     });
     blobs = new S3ContentBlobStoreV1({ transport: objectTransport });
     artifacts = new S3SnapshotArtifactStoreV1({ transport: objectTransport });
+    mediaArtifacts = new S3ArtifactReaderV1({ transport: objectTransport });
   } catch (error) {
     return cleanupAndThrow(
       error,
-      [artifacts, blobs, objectTransport, snapshotRepository, renderRepository, repository],
+      [
+        mediaArtifacts,
+        artifacts,
+        blobs,
+        objectTransport,
+        mediaRepository,
+        snapshotRepository,
+        renderRepository,
+        repository,
+      ],
       "Production storage composition and cleanup failed.",
     );
   }
 
   let renderWorker: DurableManimRenderWorkerV1 | undefined;
   let renderExecutor: ProductionDurableManimRenderExecutorV1 | undefined;
+  let artifactReader: AuthorizedArtifactReaderV1 | undefined;
+  let renderPublisher: VerifiedArtifactPublisherV1 | undefined;
   let renders: DurableManimRenderServiceV1 | undefined;
   let snapshotFactory: FastManimProductionSnapshotRunnerFactoryV1 | undefined;
   let publisher: SnapshotArtifactPublisherV1 | undefined;
@@ -207,6 +242,25 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       blobs,
       client: options.renderSandbox,
       frame,
+      tenantId: options.tenantId,
+    });
+    artifactReader = new AuthorizedArtifactReaderV1({
+      ...(options.renderArtifacts.claimDurationMs === undefined
+        ? {}
+        : { claimDurationMs: options.renderArtifacts.claimDurationMs }),
+      repository: mediaRepository,
+      store: mediaArtifacts,
+      tenantId: options.tenantId,
+    });
+    renderPublisher = new VerifiedArtifactPublisherV1({
+      artifactExpirationMs: options.renderArtifacts.artifactExpirationMs,
+      artifacts: mediaArtifacts,
+      brokerUserId: options.renderSandbox.brokerUserId,
+      profileDigest: renderExecutor.profileDigest,
+      publications: mediaRepository,
+      runtimeDigest: renderExecutor.runtimeDigest,
+      stagingGroupId: options.renderSandbox.socketGroupId,
+      stagingRoot: options.renderArtifacts.stagingRoot,
       tenantId: options.tenantId,
     });
     renderWorker = new DurableManimRenderWorkerV1({
@@ -221,11 +275,13 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       ...(options.renderWorker.pollIntervalMs === undefined
         ? {}
         : { pollIntervalMs: options.renderWorker.pollIntervalMs }),
+      publisher: renderPublisher,
       repository: renderRepository,
       tenantId: options.tenantId,
       ...(options.renderWorker.workerId === undefined ? {} : { workerId: options.renderWorker.workerId }),
     });
     renders = new DurableManimRenderServiceV1({
+      artifactReader,
       blobs,
       ...(options.renderWorker.executionTimeoutMs === undefined
         ? {}
@@ -260,6 +316,8 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
         snapshots ?? publisher ?? artifacts,
         ...(snapshots ? [] : [snapshotFactory]),
         ...(publisher ? [] : [snapshotRepository]),
+        mediaArtifacts,
+        mediaRepository,
         blobs,
         repository,
       ],
@@ -271,6 +329,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   try {
     runtime = await createDurableManimRuntimeV1(
       {
+        artifactReader,
         blobs,
         execution: renderWorker,
         frame,
@@ -286,13 +345,14 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   } catch (error) {
     return cleanupAndThrow(
       error,
-      runtime ? [runtime] : [renderWorker, renders, snapshots, blobs, repository],
+      runtime ? [runtime] : [renderWorker, renders, snapshots, mediaArtifacts, mediaRepository, blobs, repository],
       "Production durable runtime construction and cleanup failed.",
     );
   }
 
   let sourceMaintenance: Awaited<ReturnType<typeof createDurableSourceBlobGcWorkerV1>> | undefined;
-  let artifactMaintenance: Awaited<ReturnType<typeof createDurableSnapshotArtifactGcWorkerV1>> | undefined;
+  let snapshotMaintenance: Awaited<ReturnType<typeof createDurableSnapshotArtifactGcWorkerV1>> | undefined;
+  let mediaMaintenance: Awaited<ReturnType<typeof createDurableRenderArtifactGcWorkerV1>> | undefined;
   try {
     const sourceGc = await createDurableSourceBlobGcWorkerV1(
       {
@@ -313,16 +373,26 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       },
       signal,
     );
-    artifactMaintenance = artifactGc;
+    snapshotMaintenance = artifactGc;
+    const mediaGc = await createDurableRenderArtifactGcWorkerV1(
+      {
+        ...options.renderArtifacts.gc,
+        artifacts: mediaArtifacts,
+        repository: mediaRepository,
+        tenantId: options.tenantId,
+      },
+      signal,
+    );
+    mediaMaintenance = mediaGc;
     const maintenance = {
-      close: () => closeAll([artifactGc, sourceGc], "Could not fully close durable storage maintenance."),
-      ready: () => sourceGc.ready() && artifactGc.ready(),
+      close: () => closeAll([mediaGc, artifactGc, sourceGc], "Could not fully close durable storage maintenance."),
+      ready: () => sourceGc.ready() && artifactGc.ready() && mediaGc.ready(),
     };
     return createDurableProductionManimRuntimeAdapterV1(runtime, maintenance);
   } catch (error) {
     return cleanupAndThrow(
       error,
-      [artifactMaintenance, sourceMaintenance, runtime],
+      [mediaMaintenance, snapshotMaintenance, sourceMaintenance, runtime],
       "Production runtime maintenance composition and cleanup failed.",
     );
   }

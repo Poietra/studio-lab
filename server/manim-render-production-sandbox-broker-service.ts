@@ -67,6 +67,7 @@ export async function startManimRenderProductionSandboxBrokerServiceV1(
     dockerClient,
     image: options.imageDigest,
     seccompPath: options.seccompPath,
+    stagingGroupId: options.socketGroupId,
     stagingRoot: options.stagingRoot,
   });
   if (!(await runner.ready())) throw new TypeError("The fixed render OCI runtime is not ready.");
