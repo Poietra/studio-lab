@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 
 // @ts-expect-error - plain .mjs module with a sibling .d.ts; vitest resolves it at runtime.
 import { makeBenchmarkBuildManifest } from "../scripts/benchmark-build-manifest.mjs";
+import { adapterEvidenceFixtureV1 } from "../src/engine/canvas-telemetry-test-fixtures";
+import { MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES } from "../src/engine/canvas-worker-protocol";
 import {
   assessDecisionEligibility,
   collectCommitIdentity,
@@ -20,7 +22,8 @@ import {
   sha256Hex,
   verifyServedBuildManifest,
 } from "./benchmark-manifest";
-import { summarizeSignedTiming, summarizeTiming } from "./engine-stress-workloads";
+import { engineWebgpuStressReportSchema } from "./benchmark-report-schemas";
+import { summarizeByteLengths, summarizeSignedTiming, summarizeTiming } from "./engine-stress-workloads";
 
 const COMMIT_A = "a".repeat(40);
 const COMMIT_B = "b".repeat(40);
@@ -30,6 +33,102 @@ function fakeGit(headCommit: string, porcelain: string) {
     if (args[0] === "rev-parse") return `${headCommit}\n`;
     if (args[0] === "status") return porcelain;
     throw new Error(`unexpected git invocation: ${args.join(" ")}`);
+  };
+}
+
+function timingSummary(sample = 1) {
+  return { maximumMs: sample, p50Ms: sample, p95Ms: sample, p99Ms: sample, samplesMs: [sample] };
+}
+
+function stressWorkloadFixture(sceneEntityCount: 100 | 1_000, requestedEntityCount: number, responseBytes = 1_000) {
+  const timing = timingSummary();
+  return {
+    budgets: {
+      interactionBoundsAcknowledgement: { limitMs: 33.3, met: true },
+      randomSeekAcknowledgement: { limitMs: 50, met: true },
+      stressRenderAcknowledgement: { limitMs: 33.3, met: true },
+    },
+    continuousScrub: {
+      burstDurationMs: 1,
+      finalSampleTime: 0,
+      fulfilledRequests: 1,
+      latestFulfilledSampleTime: 0,
+      otherErrors: [],
+      requestedRequests: 1,
+      settleDurationMs: 0,
+      supersededRequests: 0,
+    },
+    definition: {
+      entityCount: sceneEntityCount,
+      id: `shape-primitives-${sceneEntityCount}`,
+      profile: "shape-primitives",
+      revision: "1".repeat(64),
+    },
+    interactionBounds: {
+      acknowledgement: timing,
+      entries: {
+        observedTotal: requestedEntityCount,
+        statuses: { empty: 0, inactive: 0, present: requestedEntityCount, unavailable: 0 },
+      },
+      logicalResponseJsonBytes: {
+        maximumBytes: responseBytes,
+        minimumBytes: responseBytes,
+        p50Bytes: responseBytes,
+        p95Bytes: responseBytes,
+        p99Bytes: responseBytes,
+        samplesBytes: [responseBytes],
+      },
+      requestedEntityCount,
+      responses: { available: 1, missing: 0, unavailable: 0 },
+      sceneEntityCount,
+    },
+    installMs: 1,
+    pacedPresentation: {
+      acknowledgement: timing,
+      effectivePresentationAckFps: 60,
+      estimatedMissed60HzSlotsProxy: 0,
+      longPresentationAckIntervalsOver25Ms: 0,
+      presentationAckInterval: timing,
+    },
+    randomSeekAck: timing,
+    snapshotBytes: 1,
+    snapshotSha256: "2".repeat(64),
+    workerDeviceAdapter: { evidence: adapterEvidenceFixtureV1(), kind: "available" },
+  };
+}
+
+function stressReportFixture(workloads: readonly unknown[]) {
+  const unavailable = { reason: "not observable in this harness", status: "unavailable" } as const;
+  const commitIdentity = { headCommit: COMMIT_A, treeState: "clean", uncommittedPathCount: 0 } as const;
+  return {
+    baseFixtureId: "eng-v1-shared-circle-opacity",
+    capturedAt: "2026-07-28T00:00:00.000Z",
+    configuration: { lane: "production-build-static-server", retries: { projectRetries: 0, testRetry: 0 } },
+    contracts: {
+      canvasWorkerProtocolVersion: 1,
+      engineContractVersion: 1,
+      reportSchema: "poietra.engine-webgpu-stress-benchmark",
+      reportVersion: 3,
+      telemetryAbiVersion: 1,
+    },
+    decisionEligibility: { eligible: false, reasons: ["reference host is not pinned"] },
+    environment: {
+      browserLaunch: { args: [], channel: "chromium" },
+      host: {
+        commitIdentity,
+        cpu: { logicalCores: 1, model: "fixture CPU" },
+        gpuDriver: unavailable,
+        osKernel: { platform: "linux", release: "fixture", version: "fixture" },
+        powerMode: unavailable,
+      },
+      wasm: { byteLength: 1, gzipByteLength: 1, path: "fixture.wasm", sha256: "3".repeat(64) },
+    },
+    evidenceLevel: "exploratory",
+    provenance: { commitIdentity, grade: "clean-commit" },
+    provenanceStableThroughRun: true,
+    schema: "poietra.engine-webgpu-stress-benchmark",
+    version: 3,
+    workloads,
   };
 }
 
@@ -216,5 +315,44 @@ describe("report summaries", () => {
     const signed = summarizeSignedTiming([-0.4, 0.2, 0.1], 3);
     expect(signed.p50Ms).toBe(0.1);
     expect(Math.min(...signed.samplesMs)).toBe(-0.4);
+  });
+
+  it("fails closed on invalid response byte samples and uses nearest-rank percentiles", () => {
+    expect(() => summarizeByteLengths([100, 200], 3)).toThrow(/exactly 3/);
+    for (const invalid of [Number.NaN, Number.POSITIVE_INFINITY, 1.5, 0, MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES + 1]) {
+      expect(() => summarizeByteLengths([invalid], 1)).toThrow(/outside the canvas response budget/);
+    }
+    expect(summarizeByteLengths([MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES], 1).maximumBytes).toBe(
+      MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES,
+    );
+
+    expect(summarizeByteLengths([400, 100, 300, 200], 4)).toEqual({
+      maximumBytes: 400,
+      minimumBytes: 100,
+      p50Bytes: 200,
+      p95Bytes: 400,
+      p99Bytes: 400,
+      samplesBytes: [400, 100, 300, 200],
+    });
+  });
+
+  it("executes the stress report v3 schema for 100/128 IDs and rejects oversized evidence", () => {
+    const report = stressReportFixture([
+      stressWorkloadFixture(100, 100),
+      stressWorkloadFixture(1_000, 128, MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES),
+    ]);
+    const parsed = engineWebgpuStressReportSchema.parse(report);
+    expect(parsed.version).toBe(3);
+    expect(parsed.workloads.map((workload) => workload.interactionBounds.requestedEntityCount)).toEqual([100, 128]);
+
+    expect(engineWebgpuStressReportSchema.safeParse({ ...report, version: 2 }).success).toBe(false);
+    expect(
+      engineWebgpuStressReportSchema.safeParse(
+        stressReportFixture([stressWorkloadFixture(1_000, 128, MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES + 1)]),
+      ).success,
+    ).toBe(false);
+    expect(
+      engineWebgpuStressReportSchema.safeParse(stressReportFixture([stressWorkloadFixture(1_000, 129)])).success,
+    ).toBe(false);
   });
 });
