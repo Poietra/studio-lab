@@ -85,10 +85,10 @@ function createFixture() {
       if (!render) throw new Error(`No render request at index ${index}.`);
       render.deferred.resolve(frameFor({ ...render.input, ...mismatch }, index + 1));
     },
-    presentRender: (index: number) => {
+    presentRender: (index: number, overrides: Partial<PresentedCanvasFrameV1> = {}) => {
       const render = renders.at(index);
       if (!render) throw new Error(`No render request at index ${index}.`);
-      render.deferred.resolve(frameFor(render.input, index + 1));
+      render.deferred.resolve({ ...frameFor(render.input, index + 1), ...overrides });
     },
     rejectRender: (index: number, error: unknown) => {
       const render = renders.at(index);
@@ -131,8 +131,13 @@ function evidenceFor(
   };
 }
 
-function installInput(duration = 2) {
-  return { canvas: CANVAS, revision: REVISION, snapshot: { scene: { duration } } as unknown as SceneIrBundleV1 };
+function installInput(duration = 2, interactionEntityIds: readonly string[] = []) {
+  return {
+    canvas: CANVAS,
+    ...(interactionEntityIds.length > 0 ? { interactionEntityIds } : {}),
+    revision: REVISION,
+    snapshot: { scene: { duration } } as unknown as SceneIrBundleV1,
+  };
 }
 
 async function flush() {
@@ -181,6 +186,39 @@ describe("StudioPreviewRendererHost", () => {
     await settlePresented(fixture, 0);
     expect(fixture.host.state).toEqual({
       frame: { packetId: "canvas:1", revision: REVISION, sampleTime: 1, viewport: VIEWPORT },
+      phase: "presented",
+    });
+  });
+
+  it("binds requested runtime IDs and prepared bounds to the exact presented frame", async () => {
+    const fixture = createFixture();
+    const interactionEntityIds = ["runtime#0"];
+    const pending = fixture.host.install(installInput(2, interactionEntityIds));
+    fixture.install.resolve();
+    await pending;
+    fixture.host.requestFrame({ sampleTime: 1, viewport: VIEWPORT });
+    expect(fixture.renders[0]?.input).toEqual({
+      interactionEntityIds,
+      revision: REVISION,
+      sampleTime: 1,
+      viewport: VIEWPORT,
+    });
+    fixture.presentRender(0, {
+      interaction: {
+        entries: [{ bounds: [-0.5, -0.25, 0.5, 0.25], status: "present" }],
+        space: "clip-v1",
+        status: "available",
+      },
+    });
+    await flush();
+    expect(fixture.host.state).toMatchObject({
+      frame: {
+        interaction: {
+          entries: [{ bounds: [-0.5, -0.25, 0.5, 0.25], status: "present" }],
+          status: "available",
+        },
+        sampleTime: 1,
+      },
       phase: "presented",
     });
   });

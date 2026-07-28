@@ -14,6 +14,7 @@ import {
   MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES,
   MAX_CANVAS_SAMPLE_JSON_BYTES,
   MAX_CANVAS_TELEMETRY_RESPONSE_JSON_BYTES,
+  normalizeCanvasInteractionEntityIdsV1,
   POIETRA_CANVAS_TELEMETRY_ABI_VERSION,
   POIETRA_CANVAS_WORKER_VERSION,
 } from "./canvas-worker-protocol";
@@ -366,14 +367,19 @@ export class PoietraCanvasWorkerRuntimeV1 {
   private encodeSampleRequest(
     correlation: CorrelationV1,
     request: Readonly<{
+      interactionEntityIds?: unknown;
       requestId: number;
       sampleTime: number;
       viewport: Readonly<{ heightPx: number; widthPx: number }>;
     }>,
   ) {
     const packetId = `canvas:${request.requestId}`;
+    const normalizedInteraction = normalizeCanvasInteractionEntityIdsV1(request.interactionEntityIds);
+    const interactionEntityIds =
+      Array.isArray(normalizedInteraction) && normalizedInteraction.length === 0 ? undefined : normalizedInteraction;
     const sample = canvasEngineSampleRequestV1Schema.parse({
       evidence: ["Poietra WASM canvas worker v1"],
+      ...(interactionEntityIds === undefined ? {} : { interactionEntityIds }),
       packetId,
       sampleTime: request.sampleTime,
       schema: "poietra.engine-sample-request",
@@ -385,7 +391,16 @@ export class PoietraCanvasWorkerRuntimeV1 {
       this.postMessage(errorResponse(correlation, "invalid-request", null, "The encoded render request is too large."));
       return null;
     }
-    return { packetId, requestJson };
+    return {
+      interactionExpectedEntries:
+        interactionEntityIds === undefined
+          ? undefined
+          : Array.isArray(interactionEntityIds)
+            ? interactionEntityIds.length
+            : null,
+      packetId,
+      requestJson,
+    };
   }
 
   private correlatePresentedResult(
@@ -461,6 +476,14 @@ export class PoietraCanvasWorkerRuntimeV1 {
       }
       const result = this.correlatePresentedResult(correlation, response.result, encoded.packetId, request);
       if (!result) return;
+      const interaction =
+        encoded.interactionExpectedEntries === undefined
+          ? undefined
+          : encoded.interactionExpectedEntries !== null &&
+              result.interaction?.status === "available" &&
+              result.interaction.entries.length === encoded.interactionExpectedEntries
+            ? result.interaction
+            : ({ status: "unavailable" } as const);
       // Only a fully verified, correlated response commits the staged copy.
       // A non-"committed" outcome (zero submissions) already cleared the
       // committed evidence inside the capture, so a later evidence request
@@ -473,6 +496,7 @@ export class PoietraCanvasWorkerRuntimeV1 {
       });
       committedEvidence = true;
       this.postMessage({
+        ...(interaction ? { interaction } : {}),
         kind: "frame-presented",
         packetId: result.packetId,
         requestId: request.requestId,

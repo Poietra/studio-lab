@@ -238,6 +238,54 @@ describe("Poietra canvas worker client", () => {
     client.dispose();
   });
 
+  it("requests verified runtime bounds and preserves their correlated response", async () => {
+    const bundle = await fixtureBundle();
+    const worker = new FakeWorker();
+    const client = createClient(worker);
+    await install(client, worker, bundle);
+    const interactionEntityIds = ["scene:runtime/entity#0", "scene:runtime/entity#1"];
+
+    const rendered = client.render({
+      interactionEntityIds,
+      revision: REVISION_A,
+      sampleTime: 1,
+      viewport: { heightPx: 90, widthPx: 160 },
+    });
+    const request = requestAt(worker, 1);
+    expect(request).toMatchObject({ interactionEntityIds, kind: "render-frame" });
+    if (request.kind !== "render-frame") throw new Error("missing render request");
+    worker.emitMessage(
+      presentedResponse(request, {
+        interaction: {
+          entries: [{ bounds: [-0.5, -0.25, 0.5, 0.25], status: "present" }, { status: "inactive" }],
+          space: "clip-v1",
+          status: "available",
+        },
+      }),
+    );
+    await expect(rendered).resolves.toMatchObject({
+      interaction: { entries: [{ status: "present" }, { status: "inactive" }], status: "available" },
+      kind: "frame-presented",
+    });
+
+    const renderedWithDuplicateMetadata = client.render({
+      interactionEntityIds: ["duplicate", "duplicate"],
+      revision: REVISION_A,
+      sampleTime: 1,
+      viewport: { heightPx: 90, widthPx: 160 },
+    });
+    const duplicateRequest = requestAt(worker, 2);
+    expect(duplicateRequest).toMatchObject({ interactionEntityIds: ["duplicate", "duplicate"] });
+    if (duplicateRequest.kind !== "render-frame") throw new Error("missing duplicate render request");
+    worker.emitMessage(presentedResponse(duplicateRequest, { interaction: { status: "unavailable" } }));
+    await expect(renderedWithDuplicateMetadata).resolves.toMatchObject({
+      interaction: { status: "unavailable" },
+      kind: "frame-presented",
+    });
+    expect(worker.posted).toHaveLength(3);
+    client.dispose();
+  });
+
   it("keeps one render in flight and coalesces queued playheads to the latest", async () => {
     const bundle = await fixtureBundle();
     const worker = new FakeWorker();
