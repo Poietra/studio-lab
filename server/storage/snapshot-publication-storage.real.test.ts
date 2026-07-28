@@ -454,6 +454,9 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
         await expect(tenantBReader.publications.readCurrent({ ...identity, tenantId: tenantB })).resolves.toEqual({
           kind: "missing",
         });
+        await expect(tenantBReader.artifacts.listVersions(tenantB, new Date(Date.now() + 60_000), 10)).resolves.toEqual(
+          { nextCursor: null, versions: [] },
+        );
         await expect(tenantBReader.artifacts.read(tenantB, publication.artifact)).rejects.toThrow(
           "Snapshot artifact receipt is invalid",
         );
