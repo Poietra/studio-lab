@@ -8,8 +8,8 @@ use poietra_geometry::{
 use poietra_scene_ir::{
     AffineTransformV1, AnimationChannelV1, AssetManifestV1, ContractVersionV1, CubicPathV1,
     EngineFrameV1, KeyframeV1, RenderCameraKindV1, RenderCameraV1, RenderCapabilityV1,
-    RenderDrawV1, RenderPacketSchemaV1, RenderPacketV1, SceneAppearanceV1, SceneCameraViewV1,
-    SceneEntityV1, SceneGeometryV1, SceneIrBundleV1, SceneIrV1, ViewportV1,
+    RenderDrawV1, RenderEmptyReasonV1, RenderPacketSchemaV1, RenderPacketV1, SceneAppearanceV1,
+    SceneCameraViewV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1, SceneIrV1, ViewportV1,
     validate_render_packet_for_validated_scene_v1, validate_scene_ir_with_assets_v1,
 };
 
@@ -223,6 +223,7 @@ fn interpolate_camera(
 
 #[derive(Clone, Debug)]
 struct LocalSample {
+    empty_reason: Option<RenderEmptyReasonV1>,
     opacity: f64,
     path: Option<CubicPathV1>,
     transform: AffineTransformV1,
@@ -295,6 +296,7 @@ fn sample_local_entity(
 
     if matches!(&entity.geometry, SceneGeometryV1::Image { .. }) {
         return Ok(LocalSample {
+            empty_reason: None,
             opacity,
             path: None,
             transform,
@@ -311,6 +313,7 @@ fn sample_local_entity(
         };
         path = sample_keyframes(&path, keyframes, time, interpolate_cubic_path_v1)?.0;
     }
+    let mut empty_reason = None;
     if let Some(channel_index) = index.path_trim_channel(entity_index) {
         let Some(AnimationChannelV1::PathTrim { keyframes, .. }) =
             scene.animation_channels.get(channel_index)
@@ -320,9 +323,14 @@ fn sample_local_entity(
             ));
         };
         let progress = sample_keyframes(&1.0, keyframes, time, interpolate_number)?.0;
-        path = trim_cubic_path_v1(&path, progress)?;
+        if progress == 0.0 {
+            empty_reason = Some(RenderEmptyReasonV1::PathTrimZero);
+        } else {
+            path = trim_cubic_path_v1(&path, progress)?;
+        }
     }
     Ok(LocalSample {
+        empty_reason,
         opacity,
         path: Some(path),
         transform,
@@ -389,6 +397,7 @@ fn render_capabilities(draws: &[RenderDrawV1]) -> Vec<RenderCapabilityV1> {
     let mut capabilities = BTreeSet::new();
     for draw in draws {
         match draw {
+            RenderDrawV1::Empty { .. } => {}
             RenderDrawV1::Image { .. } => {
                 capabilities.insert(RenderCapabilityV1::PngImage);
             }
@@ -464,6 +473,25 @@ fn compile_render_packet_from_validated_v1(
                 EvaluationError::MalformedScene("entity has no world sample"),
             )?;
             let draw_id = format!("draw:{}", entity.scene_order);
+            if let Some(reason) = local_sample.empty_reason {
+                return match (&entity.geometry, &entity.appearance) {
+                    (SceneGeometryV1::Image { .. }, _) => Err(EvaluationError::MalformedScene(
+                        "image entity sampled an empty vector visual",
+                    )),
+                    (_, SceneAppearanceV1::Vector { .. }) => Ok(RenderDrawV1::Empty {
+                        draw_id,
+                        entity_id: entity.id.clone(),
+                        opacity: world_sample.opacity,
+                        paint_order,
+                        reason,
+                        source_z_index: entity.source_z_index,
+                        transform: world_sample.transform.clone(),
+                    }),
+                    (_, SceneAppearanceV1::Image { .. }) => Err(EvaluationError::MalformedScene(
+                        "vector geometry has image appearance",
+                    )),
+                };
+            }
             match (&entity.geometry, &entity.appearance) {
                 (
                     SceneGeometryV1::Image {
@@ -589,7 +617,8 @@ mod tests {
     use poietra_scene_ir::{
         AssetManifestReferenceV1, AssetManifestSchemaV1, CoordinateSpaceV1, FidelityV1, FillRuleV1,
         FillStyleV1, IntervalV1, ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1,
-        SceneCameraV1, SceneCapabilityV1, SceneIrSchemaV1, SceneSourceV1,
+        SceneCameraV1, SceneCapabilityV1, SceneIrSchemaV1, SceneSourceV1, StrokeCapV1,
+        StrokeJoinV1, StrokeStyleV1,
     };
 
     const EMPTY_MANIFEST_DIGEST: &str =
@@ -738,6 +767,79 @@ mod tests {
         })
         .unwrap();
         assert!(frame.packet.draws.is_empty());
+    }
+
+    #[test]
+    fn zero_trim_is_an_explicit_empty_visual_while_positive_trim_is_a_path() {
+        let (assets, mut scene) = fixture();
+        scene.entities[0].appearance = SceneAppearanceV1::Vector {
+            fill: None,
+            opacity: 1.0,
+            stroke: Some(StrokeStyleV1 {
+                cap: StrokeCapV1::Round,
+                color: color(1.0, 0.0, 0.0, 1.0),
+                join: StrokeJoinV1::Round,
+                miter_limit: 4.0,
+                width_world: 0.1,
+            }),
+        };
+        scene.animation_channels.push(AnimationChannelV1::PathTrim {
+            entity_id: "circle".to_owned(),
+            id: "trim:circle".to_owned(),
+            keyframes: vec![
+                KeyframeV1 {
+                    at: 0.0,
+                    easing_to_next: Some(poietra_scene_ir::EasingV1::Linear {}),
+                    value: 0.0,
+                },
+                KeyframeV1 {
+                    at: 2.0,
+                    easing_to_next: None,
+                    value: 1.0,
+                },
+            ],
+            provenance_id: "fixture".to_owned(),
+        });
+        scene.required_capabilities = vec![
+            SceneCapabilityV1::OpacityAnimation,
+            SceneCapabilityV1::PathTrimAnimation,
+            SceneCapabilityV1::ShapePrimitives,
+        ];
+
+        let compile = |sample_time| {
+            compile_engine_frame_v1(CompileEngineFrameOptionsV1 {
+                assets: &assets,
+                evidence: &[],
+                packet_id: "packet:trim",
+                sample_time,
+                scene: &scene,
+                viewport: ViewportV1 {
+                    height_px: 900,
+                    width_px: 1600,
+                },
+            })
+            .unwrap()
+        };
+
+        let empty = compile(0.0);
+        assert!(matches!(
+            empty.packet.draws.as_slice(),
+            [RenderDrawV1::Empty {
+                reason: RenderEmptyReasonV1::PathTrimZero,
+                ..
+            }]
+        ));
+        assert!(empty.packet.required_capabilities.is_empty());
+
+        let positive = compile(0.001);
+        assert!(matches!(
+            positive.packet.draws.as_slice(),
+            [RenderDrawV1::Path { .. }]
+        ));
+        assert_eq!(
+            positive.packet.required_capabilities,
+            vec![RenderCapabilityV1::CubicPathStroke]
+        );
     }
 
     #[test]

@@ -91,6 +91,7 @@ function entityChannel<K extends EntityChannelKindV1>(
 }
 
 type SampledLocalEntity = Readonly<{
+  emptyReason?: "path-trim-zero";
   entity: SceneIrV1["entities"][number];
   opacity: number;
   path?: CubicPathV1;
@@ -128,6 +129,7 @@ function sampleLocalEntity(
   const pathTrimChannel = entityChannel(channels, entity.id, "path-trim");
   if (pathTrimChannel) {
     const trim = sampleKeyframes(1, pathTrimChannel.keyframes, time, interpolateNumber).value;
+    if (trim === 0) return { emptyReason: "path-trim-zero", entity, opacity, path, transform };
     path = trimCubicPathV1(path, trim);
   }
   return { entity, opacity, path, transform };
@@ -174,7 +176,9 @@ function sampleCamera(scene: SceneIrV1, time: number) {
     : scene.camera.view;
 }
 
-function renderCapabilities(draws: readonly Readonly<{ fill?: unknown; kind: "image" | "path"; stroke?: unknown }>[]) {
+function renderCapabilities(
+  draws: readonly Readonly<{ fill?: unknown; kind: "empty" | "image" | "path"; stroke?: unknown }>[],
+) {
   const capabilities = new Set<"cubic-path-fill" | "cubic-path-stroke" | "png-image">();
   for (const draw of draws) {
     if (draw.kind === "image") capabilities.add("png-image");
@@ -231,6 +235,18 @@ export async function compileEngineFrameV1(options: CompileEngineFrameV1Options)
     const draws = active.map((entity, paintOrder) => {
       const localSample = local.get(entity.id)!;
       const worldSample = world.get(entity.id)!;
+      if (localSample.emptyReason) {
+        return {
+          drawId: `draw:${entity.sceneOrder}`,
+          entityId: entity.id,
+          kind: "empty" as const,
+          opacity: worldSample.opacity,
+          paintOrder,
+          reason: localSample.emptyReason,
+          sourceZIndex: entity.sourceZIndex,
+          transform: worldSample.transform,
+        };
+      }
       if (entity.geometry.kind === "image") {
         return {
           asset: entity.geometry.asset,

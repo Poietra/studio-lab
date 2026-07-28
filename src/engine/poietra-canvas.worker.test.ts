@@ -180,7 +180,11 @@ describe("Poietra canvas worker runtime", () => {
             interaction: {
               entries:
                 renderCount === 1
-                  ? [{ bounds: [-0.5, -0.25, 0.5, 0.25], status: "present" as const }, { status: "inactive" as const }]
+                  ? [
+                      { bounds: [-0.5, -0.25, 0.5, 0.25], status: "present" as const },
+                      { status: "empty" as const },
+                      { status: "inactive" as const },
+                    ]
                   : [{ bounds: [-0.5, -0.25, 0.5, 0.25], status: "present" as const }],
               space: "clip-v1",
               status: "available",
@@ -195,13 +199,13 @@ describe("Poietra canvas worker runtime", () => {
       postMessage: (response) => posted.push(response),
       scopeUrl: "https://studio.test/worker.js",
     });
-    const interactionEntityIds = ["runtime#0", "runtime#1"];
+    const interactionEntityIds = ["runtime#0", "runtime#1", "runtime#2"];
 
     await runtime.accept(installRequest());
     await runtime.accept(renderRequest({ interactionEntityIds }));
     expect(posted.at(-1)).toMatchObject({
       interaction: {
-        entries: [{ bounds: [-0.5, -0.25, 0.5, 0.25], status: "present" }, { status: "inactive" }],
+        entries: [{ bounds: [-0.5, -0.25, 0.5, 0.25], status: "present" }, { status: "empty" }, { status: "inactive" }],
         space: "clip-v1",
         status: "available",
       },

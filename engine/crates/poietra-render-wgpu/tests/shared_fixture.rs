@@ -4,10 +4,12 @@ use poietra_render_wgpu::{
     PrepareFrameErrorV1, UnsupportedDrawReasonV1, build_gpu_upload_plan_v1, prepare_frame_v1,
     tessellate_validated_frame_v1, validate_frame_packet_v1,
 };
-use poietra_scene_ir::{CubicSegmentV1, PointV1, RenderDrawV1, StrokeCapV1, StrokeJoinV1};
+use poietra_scene_ir::{
+    CubicSegmentV1, PointV1, RenderDrawV1, RenderEmptyReasonV1, StrokeCapV1, StrokeJoinV1,
+};
 use sha2::{Digest, Sha256};
 
-use support::{sampled_packet, straight_stroke_packet};
+use support::{generic_stroke_packet_with_initial_trim, sampled_packet, straight_stroke_packet};
 
 fn assert_close(actual: f32, expected: f32) {
     assert!(
@@ -462,7 +464,7 @@ fn component_wise_morphed_line_is_prepared_by_general_stroke_tessellation() {
 }
 
 #[test]
-fn non_degenerate_trimmed_line_is_prepared_but_zero_trim_stays_degenerate() {
+fn non_degenerate_line_is_prepared_but_an_unmarked_collapsed_path_fails_closed() {
     let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
     {
         let RenderDrawV1::Path { path, .. } = &mut packet.draws[0] else {
@@ -490,6 +492,31 @@ fn non_degenerate_trimmed_line_is_prepared_but_zero_trim_stays_degenerate() {
             ..
         })
     ));
+}
+
+#[test]
+fn explicit_zero_trim_keeps_other_draws_and_positive_trim_restores_geometry() {
+    let empty_packet = generic_stroke_packet_with_initial_trim(0.0);
+    assert!(matches!(
+        empty_packet.draws.first(),
+        Some(RenderDrawV1::Empty {
+            reason: RenderEmptyReasonV1::PathTrimZero,
+            ..
+        })
+    ));
+    let empty_frame = prepare_frame_v1(&empty_packet).expect("explicit empty visual must prepare");
+    assert!(empty_frame.clip_bounds_for_entity("curve").is_none());
+    assert!(empty_frame.clip_bounds_for_entity("joined").is_some());
+    assert!(!empty_frame.draws().is_empty());
+
+    let positive_packet = generic_stroke_packet_with_initial_trim(0.001);
+    assert!(matches!(
+        positive_packet.draws.first(),
+        Some(RenderDrawV1::Path { .. })
+    ));
+    let positive_frame =
+        prepare_frame_v1(&positive_packet).expect("positive trim must produce renderable geometry");
+    assert!(positive_frame.clip_bounds_for_entity("curve").is_some());
 }
 
 #[test]
