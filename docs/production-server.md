@@ -33,10 +33,10 @@ attach another tenant's host path. Authentication readiness and principal
 verification run
 before runtime readiness, preventing unauthenticated API traffic from probing
 the render/storage adapter; the public `/readyz` probe still checks both
-dependencies. Storage roots are trusted adapter declarations in this
-single-tenant cell, so #118 must define canonical, symlink-safe boundaries for
-durable storage. Issue #118 also owns replacing these process-local stores with
-durable tenant-scoped state before horizontal scaling.
+dependencies. The shipped production composition stores tenant-scoped source,
+session, snapshot, video, and thumbnail state in PostgreSQL plus a private,
+versioned S3-compatible bucket. Filesystem-backed catalogs and process-local
+publication stores remain confined to the Vite/Electron development paths.
 
 The transport configuration is strict and production-only. It requires one
 public origin, an IP literal to bind, and bounded connection, header, body,
