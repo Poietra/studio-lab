@@ -1,5 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import type { Readable, Writable } from "node:stream";
 
 import { z } from "zod";
 
@@ -8,23 +9,26 @@ const MAX_RUNC_CONTROL_STDOUT_BYTES = 8 * 1024;
 const MAX_RUNC_CONTROL_STDERR_BYTES = 32 * 1024;
 const MAX_RUNC_CONTROL_TIMEOUT_MS = 30_000;
 
-const runcStateV1Schema = z
-  .object({
-    bundle: z.string(),
-    id: z.string().regex(RUNC_CONTAINER_ID_PATTERN),
-    pid: z.number().int().positive(),
-    status: z.enum(["created", "running", "stopped"]),
-  })
-  .passthrough();
+const runcStateBaseV1 = {
+  bundle: z.string(),
+  id: z.string().regex(RUNC_CONTAINER_ID_PATTERN),
+};
+const runcStateV1Schema = z.discriminatedUnion("status", [
+  z.object({ ...runcStateBaseV1, pid: z.number().int().positive(), status: z.literal("created") }).passthrough(),
+  z.object({ ...runcStateBaseV1, pid: z.number().int().positive(), status: z.literal("running") }).passthrough(),
+  // OCI does not require an init PID after exit; runc may report zero for a
+  // retained stopped container while its immutable ID and bundle remain.
+  z.object({ ...runcStateBaseV1, pid: z.number().int().nonnegative(), status: z.literal("stopped") }).passthrough(),
+]);
 
 export type FastManimRuncStateV1 = Readonly<z.infer<typeof runcStateV1Schema>>;
 
 export type FastManimRuncCreatedProcessV1 = Readonly<{
   /** Resolves when the runc create client exits successfully; OCI init remains stopped in `created`. */
   created: Promise<void>;
-  stderr: NodeJS.ReadableStream;
-  stdin: NodeJS.WritableStream;
-  stdout: NodeJS.ReadableStream;
+  stderr: Readable;
+  stdin: Writable;
+  stdout: Readable;
   terminateCreateClient: () => void;
 }>;
 

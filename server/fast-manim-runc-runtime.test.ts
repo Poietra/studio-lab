@@ -108,6 +108,20 @@ describe("FastManimRuncCliRuntimeV1", () => {
     await expect(runtime.state(containerId, deadlineEpochMs())).rejects.toThrowError(/untrusted bundle path/u);
   });
 
+  it("accepts an OCI stopped state without a live init PID", async () => {
+    const child = fakeChild();
+    const runtime = runtimeWith(() => {
+      queueMicrotask(() => {
+        child.stdout.end(JSON.stringify({ bundle: bundlePath, id: containerId, pid: 0, status: "stopped" }));
+        child.stderr.end();
+        child.emit("close", 0, null);
+      });
+      return child;
+    });
+
+    await expect(runtime.state(containerId, deadlineEpochMs())).resolves.toMatchObject({ pid: 0, status: "stopped" });
+  });
+
   it("uses a closed command set and rejects unexpected control stdout", async () => {
     const calls: readonly string[][] = [];
     const mutableCalls = calls as string[][];
