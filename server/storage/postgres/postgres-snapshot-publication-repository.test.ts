@@ -442,6 +442,32 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
     await expect(repository.queueArtifactDeletion(TENANT, artifact())).resolves.toBeNull();
   });
 
+  it("does not let an acknowledged older version block a re-upload of the same digest", async () => {
+    const replacement = { ...artifact(), versionId: "version-2" };
+    const fixture = fakePool((text, values) => {
+      if (text.includes("FROM public.snapshot_artifact_objects a")) return { rowCount: 0, rows: [] };
+      if (text.includes("FROM public.snapshot_artifact_deletions d")) {
+        expect(values).toEqual([TENANT, replacement.objectKey, replacement.versionId]);
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.includes("JOIN public.snapshot_publications p")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("UPDATE public.snapshot_scene_heads")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("DELETE FROM public.workspace_project_references")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("DELETE FROM public.snapshot_publications")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("DELETE FROM public.snapshot_artifact_objects")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("INSERT INTO public.snapshot_artifact_deletions")) {
+        return { rowCount: 1, rows: [deletionRow(replacement)] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresSnapshotPublicationRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.queueArtifactDeletion(TENANT, replacement)).resolves.toMatchObject({
+      artifact: replacement,
+      tenantId: TENANT,
+    });
+  });
+
   it("lists a bounded tenant queue and acknowledges one deletion idempotently", async () => {
     const fixture = fakePool((text, values) => {
       if (text.includes("FROM public.snapshot_artifact_deletions d")) {

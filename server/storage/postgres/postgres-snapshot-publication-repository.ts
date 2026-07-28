@@ -530,8 +530,8 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
     ];
     const deleting = await client.query(
       `SELECT 1 FROM public.snapshot_artifact_deletions
-        WHERE tenant_id = $1 AND object_key = $6 AND version_id = $7`,
-      values,
+        WHERE tenant_id = $1 AND object_key = $2 AND version_id = $3`,
+      [tenant, candidate.objectKey, candidate.versionId],
     );
     if (deleting.rows.length !== 0) {
       throw new TypeError("The snapshot artifact candidate is no longer available.");
@@ -832,9 +832,10 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
         `SELECT d.deletion_id::text AS deletion_id, d.deleted_at, ${artifactColumns("d")}
            FROM public.snapshot_artifact_deletions d
           WHERE d.tenant_id = $1
-            AND (d.result_digest = $2 OR (d.object_key = $6 AND d.version_id = $7))
+            AND d.object_key = $2
+            AND d.version_id = $3
           FOR UPDATE`,
-        values,
+        [tenant, artifact.objectKey, artifact.versionId],
       );
       if (queued.rows.length > 1) {
         throw new TypeError("The queued snapshot artifact deletion conflicts with its immutable identity.");
@@ -861,7 +862,7 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
             AND p.source_digest = $3
             AND p.runtime_config_hash = $4
             AND p.profile_digest = $5`,
-        values,
+        values.slice(0, 5),
       );
       await client.query(
         `DELETE FROM public.workspace_project_references reference
@@ -875,7 +876,7 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
             AND p.source_digest = $3
             AND p.runtime_config_hash = $4
             AND p.profile_digest = $5`,
-        values,
+        values.slice(0, 5),
       );
       await client.query(
         `DELETE FROM public.snapshot_publications
@@ -884,7 +885,7 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
             AND source_digest = $3
             AND runtime_config_hash = $4
             AND profile_digest = $5`,
-        values,
+        values.slice(0, 5),
       );
       const removed = await client.query(
         `DELETE FROM public.snapshot_artifact_objects
