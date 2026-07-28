@@ -4,7 +4,7 @@ import { Pool, type PoolConfig } from "pg";
 import { DurableManimRenderServiceV1 } from "./durable-manim-render-service";
 import { type DurableManimRenderExecutorV1, DurableManimRenderWorkerV1 } from "./durable-manim-render-worker";
 import { createDurableManimRuntimeV1, createDurableProductionManimRuntimeAdapterV1 } from "./durable-manim-runtime";
-import { applyBundledDurableStorageMigrationsV2 } from "./storage/postgres/migrate";
+import { applyBundledDurableStorageMigrations } from "./storage/postgres/migrate";
 import { PostgresRenderSessionRepositoryV1 } from "./storage/postgres/postgres-render-session-repository";
 import {
   PostgresWorkspaceSourceRepositoryV1,
@@ -87,7 +87,7 @@ async function migrate(options: DurablePostgresS3ProductionRuntimeOptionsV1["dat
     statement_timeout: timeout,
   });
   try {
-    await applyBundledDurableStorageMigrationsV2(pool);
+    await applyBundledDurableStorageMigrations(pool);
   } finally {
     await pool.end();
   }
