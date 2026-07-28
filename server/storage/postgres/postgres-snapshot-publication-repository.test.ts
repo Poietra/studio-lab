@@ -13,6 +13,7 @@ const PROJECT = "project-a";
 const SOURCE_PATH = "scenes/main.py";
 const SCENE = "MainScene";
 const PUBLICATION_ID = "018f57e2-4c8b-7d31-a91e-4ae5e5c6c8a1";
+const RETRY_PUBLICATION_ID = "018f57e2-4c8b-7d31-a91e-4ae5e5c6c8a2";
 const DELETION_ID = "87654321-4321-4321-8321-cba987654321";
 const SOURCE_A = "a".repeat(64);
 const SOURCE_B = "b".repeat(64);
@@ -206,6 +207,40 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
     expect(fixture.query.mock.calls.map(([text]) => text).join("\n")).not.toContain(
       "DELETE FROM public.workspace_project_references",
     );
+  });
+
+  it("returns an exact locked publication retry without consuming a generation or publication ID", async () => {
+    const fixture = fakePool((text) => {
+      if (text.includes("FROM public.workspace_source_heads h")) {
+        return { rowCount: 1, rows: [sourceRow()] };
+      }
+      if (text.includes("SELECT 1 FROM public.snapshot_artifact_deletions")) {
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.startsWith("INSERT INTO public.snapshot_artifact_objects")) {
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.includes("FROM public.snapshot_artifact_objects a")) {
+        return { rowCount: 1, rows: [artifactRow()] };
+      }
+      if (text.includes("FROM public.snapshot_scene_heads h")) {
+        return { rowCount: 1, rows: [sceneHeadRow()] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresSnapshotPublicationRepositoryV1({ pool: fixture.pool });
+
+    const result = await repository.publish({ ...publishInput(), publicationId: RETRY_PUBLICATION_ID });
+
+    expect(result).toMatchObject({
+      kind: "published",
+      publication: { generation: 2n, publicationId: PUBLICATION_ID, publishedAt: new Date("2026-07-28T00:00:00Z") },
+    });
+    const sql = fixture.query.mock.calls.map(([text]) => text).join("\n");
+    expect(sql).not.toContain("INSERT INTO public.snapshot_publications");
+    expect(sql).not.toContain("UPDATE public.snapshot_scene_heads");
+    expect(sql).not.toContain("INSERT INTO public.workspace_project_references");
+    expect(sql).not.toContain("DELETE FROM public.workspace_project_references");
   });
 
   it("rolls back when an immutable artifact identity resolves to different metadata", async () => {

@@ -602,6 +602,15 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
 
       const storedArtifact = await this.#registerArtifact(client, identity.tenantId, artifact, true);
       const currentHead = await this.#sceneHead(client, identity);
+      if (
+        currentHead?.publication &&
+        currentHead.publication.sourceGeneration === expectedSourceGeneration &&
+        currentHead.publication.requestId === requestId &&
+        currentHead.publication.snapshotHash === snapshotHash &&
+        exactArtifact(currentHead.publication.artifact, storedArtifact)
+      ) {
+        return { kind: "published" as const, publication: currentHead.publication };
+      }
       if (currentHead?.generation === MAX_SCENE_GENERATION_V1) {
         throw new RangeError("The snapshot Scene generation cannot be incremented.");
       }
