@@ -4,9 +4,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   createConfiguredFastManimLocalGatedOciBackendV1,
+  FastManimGatedOciDockerClientV1,
   FastManimLocalGatedOciBackendV1,
   FastManimLocalGatedOciError,
   parseFastManimLocalGatedOciResultV1,
+  reconcileFastManimGatedOciDockerOrphansV1,
   runFastManimLocalGatedOciV1,
 } from "./fast-manim-local-gated-oci-backend";
 import { FastManimSandboxBackendControlError, FastManimSandboxRequestBundleV1 } from "./fast-manim-sandbox-backend";
@@ -62,6 +64,88 @@ class GatedStaticScene(Scene):
         line = Line([-2.0, -1.0, 0.0], [2.0, 1.0, 0.0]).set_stroke("#3b82f6", width=4)
         self.add(circle, rectangle, line)
 `;
+
+class RecordingDockerClient extends FastManimGatedOciDockerClientV1 {
+  readonly calls: string[][] = [];
+  readonly responses: Array<Readonly<{ code: number; stderr: Buffer; stdout: Buffer }>> = [];
+
+  override async run(arguments_: readonly string[]) {
+    this.calls.push([...arguments_]);
+    return this.responses.shift() ?? { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.alloc(0) };
+  }
+}
+
+function trustedImageInspection(image: string) {
+  return Buffer.from(
+    JSON.stringify([
+      {
+        Config: {
+          Cmd: ["/opt/venv/bin/python", "-m", "manim.renderer.scene_snapshot"],
+          Entrypoint: ["/opt/venv/bin/python", "/opt/poietra/gated-entrypoint.py"],
+          Labels: {
+            "io.poietra.fast-manim.archive-sha256": "46f66b6698650988c18327732d1d3c30cccd53b38de91e1059c61187d92c2b61",
+            "io.poietra.fast-manim.commit": "ac143dc46ebe314095ae7864a32efa289a0afe96",
+            "io.poietra.fast-manim.tree": "b86e2ec81f257cae20669e3c5c33080facfbd610",
+            "io.poietra.sandbox-slice": "gated-rootful-development-v1",
+          },
+        },
+        Id: image,
+      },
+    ]),
+  );
+}
+
+describe("gated OCI Docker ownership", () => {
+  it("requires a canonical fixed Unix socket and reconciles before readiness", async () => {
+    expect(() => new FastManimGatedOciDockerClientV1({ socketPath: "relative.sock" })).toThrow(/canonical/i);
+    const image = `sha256:${"a".repeat(64)}`;
+    const dockerClient = new RecordingDockerClient({ socketPath: "/run/user/1000/docker.sock" });
+    dockerClient.responses.push(
+      { code: 0, stderr: Buffer.alloc(0), stdout: trustedImageInspection(image) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.alloc(0) },
+    );
+
+    await reconcileFastManimGatedOciDockerOrphansV1({
+      dockerClient,
+      image,
+      signal: new AbortController().signal,
+    });
+    expect(dockerClient.calls).toEqual([
+      ["image", "inspect", image],
+      ["container", "ls", "--all", "--quiet", "--no-trunc", "--filter", "label=io.poietra.local-gated-job=v1"],
+    ]);
+  });
+
+  it("removes every owned orphan and keeps broker readiness failed on drift", async () => {
+    const image = `sha256:${"a".repeat(64)}`;
+    const containerIds = ["b".repeat(64), "c".repeat(64)];
+    const dockerClient = new RecordingDockerClient();
+    dockerClient.responses.push(
+      { code: 0, stderr: Buffer.alloc(0), stdout: trustedImageInspection(image) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.from(`${containerIds.join("\n")}\n`) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.from(JSON.stringify([{ Id: containerIds[0] }])) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.alloc(0) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.alloc(0) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.alloc(0) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.from(JSON.stringify([{ Id: containerIds[1] }])) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.alloc(0) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.alloc(0) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.alloc(0) },
+    );
+
+    await expect(
+      reconcileFastManimGatedOciDockerOrphansV1({
+        dockerClient,
+        image,
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toMatchObject({ code: "cleanup" });
+    for (const containerId of containerIds) {
+      expect(dockerClient.calls).toContainEqual(["container", "kill", containerId]);
+      expect(dockerClient.calls).toContainEqual(["container", "rm", "--force", containerId]);
+    }
+  });
+});
 
 describe("local gated OCI factory", () => {
   it("is unconditionally unavailable in production, even when the Docker opt-in and image are supplied", async () => {
