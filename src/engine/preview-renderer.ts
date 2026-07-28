@@ -13,8 +13,9 @@ import {
   type UpdateCanvasSceneResultV1,
 } from "./canvas-worker-client";
 import type { CanvasInteractionResultV1 } from "./canvas-worker-protocol";
-import type { SceneIrBundleV1 } from "./contracts";
-import type { SceneIrDeltaV1 } from "./scene-delta";
+import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "./contracts";
+import { applySceneIrDeltaV1, type SceneIrDeltaV1 } from "./scene-delta";
+import { sceneIrSourceRevisionHash } from "./scene-ir";
 
 /**
  * Bounded surface the Studio preview host may use. It is the retained
@@ -139,6 +140,7 @@ export class StudioPreviewRendererHost {
   }> | null = null;
   private phase: "disposed" | "failed" | "idle" | "installing" | "ready" | "updating" = "idle";
   private interactionEntityIds: readonly string[] = [];
+  private installedSnapshot: SceneIrBundleV1 | null = null;
   private presented: Readonly<{
     interaction: CanvasInteractionResultV1 | null;
     packetId: string;
@@ -178,8 +180,10 @@ export class StudioPreviewRendererHost {
     this.duration = input.snapshot.scene.duration;
     this.publish();
     try {
+      const snapshot = structuredClone(input.snapshot);
       this.renderer = this.createRenderer();
-      await this.renderer.installScene({ canvas: input.canvas, revision: input.revision, snapshot: input.snapshot });
+      await this.renderer.installScene({ canvas: input.canvas, revision: input.revision, snapshot });
+      this.installedSnapshot = snapshot;
     } catch (error) {
       if (!this.isDisposed()) {
         this.phase = "failed";
@@ -217,7 +221,15 @@ export class StudioPreviewRendererHost {
       );
     }
 
-    this.queuedRevision = input.revision;
+    let stableInput: UpdatePreviewSnapshotInputV1;
+    try {
+      stableInput = structuredClone(input);
+    } catch (cause) {
+      return Promise.reject(
+        new CanvasWorkerClientError("invalid-input", "The preview Scene update is not cloneable.", { cause }),
+      );
+    }
+    this.queuedRevision = stableInput.revision;
     this.updateGeneration += 1;
     const generation = this.updateGeneration;
     // Scene mutation and rendering share the worker. Withdraw every visible
@@ -229,7 +241,7 @@ export class StudioPreviewRendererHost {
     this.phase = "updating";
     this.publish();
 
-    const pending = this.updateTail.then(() => this.performUpdate(input, baseRevision, generation));
+    const pending = this.updateTail.then(() => this.performUpdate(stableInput, baseRevision, generation));
     // Keep the serialization tail alive so every caller receives its own
     // rejection while later queued work observes the failed host explicitly.
     this.updateTail = pending.catch(() => undefined);
@@ -319,20 +331,44 @@ export class StudioPreviewRendererHost {
     if (this.phase === "disposed") {
       throw new CanvasWorkerClientError("disposed", "The preview renderer host was disposed.");
     }
-    if (this.phase === "failed" || !renderer || this.revision !== baseRevision) {
+    if (this.phase === "failed" || !renderer || this.revision !== baseRevision || !this.installedSnapshot) {
       throw new CanvasWorkerClientError("invalid-state", "A prior preview Scene update did not commit.");
     }
     try {
+      const [base, next] = await Promise.all([
+        parseVerifiedSceneIrBundleV1(this.installedSnapshot),
+        parseVerifiedSceneIrBundleV1(input.snapshot),
+      ]);
+      if (
+        sceneIrSourceRevisionHash(base.scene) !== baseRevision ||
+        sceneIrSourceRevisionHash(next.scene) !== input.revision
+      ) {
+        throw new CanvasWorkerClientError(
+          "invalid-input",
+          "The preview Scene update snapshot revisions do not match the retained host.",
+        );
+      }
+      if (input.delta !== null) {
+        const applied = await applySceneIrDeltaV1(base, input.delta);
+        if (JSON.stringify(applied) !== JSON.stringify(next)) {
+          throw new CanvasWorkerClientError(
+            "invalid-input",
+            "The preview Scene delta does not exactly reconstruct its fallback snapshot.",
+          );
+        }
+      }
+      if (this.isDisposed() || this.renderer !== renderer) return;
       if (input.delta === null) {
-        await renderer.replaceScene({ baseRevision, revision: input.revision, snapshot: input.snapshot });
+        await renderer.replaceScene({ baseRevision, revision: input.revision, snapshot: next });
       } else {
         await renderer.updateScene({
           baseRevision,
           delta: input.delta,
           revision: input.revision,
-          snapshot: input.snapshot,
+          snapshot: next,
         });
       }
+      this.installedSnapshot = next;
     } catch (error) {
       if (!this.isDisposed() && this.renderer === renderer) {
         const normalized =
