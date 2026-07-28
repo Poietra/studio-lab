@@ -1,117 +1,135 @@
 import { createHash } from "node:crypto";
 
 import type { Pool } from "pg";
-import workspaceSourceMigrationV1 from "./migrations/0001_workspace_source.sql?raw";
-import renderSessionMigrationV2 from "./migrations/0002_render_sessions.sql?raw";
+import workspaceSourceSqlV1 from "./migrations/0001_workspace_source.sql?raw";
+import renderSessionSqlV2 from "./migrations/0002_render_sessions.sql?raw";
 import { RENDER_SESSION_MIGRATION_V2_CHECKSUM } from "./postgres-render-session-repository";
 import { WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM } from "./postgres-workspace-source-repository";
 
-const WORKSPACE_SOURCE_MIGRATION_LOCK_V1 = "5784133447825795121";
+const DURABLE_STORAGE_MIGRATION_LOCK = "5784133447825795121";
 
-export function workspaceSourceMigrationChecksumV1(source: string) {
+type DurableStorageMigration = Readonly<{
+  checksum: string;
+  checksumMismatch: string;
+  installedMismatch: string;
+  missingPrerequisite?: string;
+  prerequisiteMismatch?: string;
+  source: string;
+  version: number;
+}>;
+
+export function durableStorageMigrationChecksum(source: string) {
   return createHash("sha256").update(source, "utf8").digest("hex");
 }
 
-export const WORKSPACE_SOURCE_MIGRATION_V1_SOURCE = workspaceSourceMigrationV1;
-export const RENDER_SESSION_MIGRATION_V2_SOURCE = renderSessionMigrationV2;
+export const workspaceSourceMigrationChecksumV1 = durableStorageMigrationChecksum;
+export const renderSessionMigrationChecksumV2 = durableStorageMigrationChecksum;
+export const WORKSPACE_SOURCE_MIGRATION_V1_SOURCE = workspaceSourceSqlV1;
+export const RENDER_SESSION_MIGRATION_V2_SOURCE = renderSessionSqlV2;
+
+const workspaceSourceMigrationV1: DurableStorageMigration = Object.freeze({
+  checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
+  checksumMismatch: "The workspace/source migration checksum is invalid.",
+  installedMismatch: "The installed workspace/source schema does not match migration v1.",
+  source: WORKSPACE_SOURCE_MIGRATION_V1_SOURCE,
+  version: 1,
+});
+
+const renderSessionMigrationV2: DurableStorageMigration = Object.freeze({
+  checksum: RENDER_SESSION_MIGRATION_V2_CHECKSUM,
+  checksumMismatch: "The render-session migration checksum is invalid.",
+  installedMismatch: "The installed render-session schema does not match migration v2.",
+  missingPrerequisite: "Render-session migration v2 requires workspace/source migration v1.",
+  prerequisiteMismatch: "Render-session migration v2 requires an exact workspace/source migration v1.",
+  source: RENDER_SESSION_MIGRATION_V2_SOURCE,
+  version: 2,
+});
+
+const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([workspaceSourceMigrationV1, renderSessionMigrationV2]);
+
+function validateSource(migration: DurableStorageMigration) {
+  if (durableStorageMigrationChecksum(migration.source) !== migration.checksum) {
+    throw new TypeError(migration.checksumMismatch);
+  }
+}
+
+async function applyMigration(
+  pool: Pool,
+  migration: DurableStorageMigration,
+  prerequisites: readonly DurableStorageMigration[],
+) {
+  validateSource(migration);
+  const client = await pool.connect();
+  let began = false;
+  try {
+    await client.query("BEGIN");
+    began = true;
+    await client.query("SELECT pg_advisory_xact_lock($1::bigint)", [DURABLE_STORAGE_MIGRATION_LOCK]);
+    const table = await client.query<{ relation: string | null }>(
+      "SELECT to_regclass('public.poietra_schema_migrations')::text AS relation",
+    );
+    const relation = table.rows[0]?.relation;
+    if (relation === undefined) throw new Error(migration.installedMismatch);
+    if (relation === null && migration.version !== 1) {
+      throw new Error(migration.missingPrerequisite);
+    }
+
+    if (relation !== null) {
+      const installed = await client.query<{ checksum: string; version: number }>(
+        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version <= $1 ORDER BY version",
+        [migration.version],
+      );
+      for (const prerequisite of prerequisites) {
+        const row = installed.rows.find(({ version }) => version === prerequisite.version);
+        if (row?.checksum !== prerequisite.checksum) throw new Error(migration.prerequisiteMismatch);
+      }
+      const current = installed.rows.find(({ version }) => version === migration.version);
+      if (current) {
+        if (current.checksum !== migration.checksum) throw new Error(migration.installedMismatch);
+        await client.query("COMMIT");
+        began = false;
+        return { applied: false, version: migration.version } as const;
+      }
+      if (migration.version === 1) throw new Error(migration.installedMismatch);
+    }
+
+    await client.query(migration.source);
+    await client.query("INSERT INTO public.poietra_schema_migrations (version, checksum) VALUES ($1, $2)", [
+      migration.version,
+      migration.checksum,
+    ]);
+    await client.query("COMMIT");
+    began = false;
+    return { applied: true, version: migration.version } as const;
+  } catch (error) {
+    if (began) await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
 export function applyBundledWorkspaceSourceMigrationV1(pool: Pool) {
-  return applyWorkspaceSourceMigrationV1(pool, WORKSPACE_SOURCE_MIGRATION_V1_SOURCE);
+  return applyMigration(pool, workspaceSourceMigrationV1, []);
 }
 
-export function renderSessionMigrationChecksumV2(source: string) {
-  return createHash("sha256").update(source, "utf8").digest("hex");
+export function applyWorkspaceSourceMigrationV1(pool: Pool, source: string) {
+  return applyMigration(pool, { ...workspaceSourceMigrationV1, source }, []);
 }
 
-export async function applyBundledDurableStorageMigrationsV2(pool: Pool) {
-  await applyBundledWorkspaceSourceMigrationV1(pool);
-  return applyRenderSessionMigrationV2(pool, RENDER_SESSION_MIGRATION_V2_SOURCE);
+export function applyRenderSessionMigrationV2(pool: Pool, source: string) {
+  return applyMigration(pool, { ...renderSessionMigrationV2, source }, [workspaceSourceMigrationV1]);
 }
 
-/** Apply v1 under one transaction-scoped advisory lock using a DDL credential. */
-export async function applyWorkspaceSourceMigrationV1(pool: Pool, source: string) {
-  if (workspaceSourceMigrationChecksumV1(source) !== WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM) {
-    throw new TypeError("The workspace/source migration checksum is invalid.");
+/** Apply every bundled migration in version order without encoding the count in the public API. */
+export async function applyBundledDurableStorageMigrations(pool: Pool) {
+  let result: Readonly<{ applied: boolean; version: number }> | undefined;
+  for (const [index, migration] of BUNDLED_DURABLE_STORAGE_MIGRATIONS.entries()) {
+    result = await applyMigration(pool, migration, BUNDLED_DURABLE_STORAGE_MIGRATIONS.slice(0, index));
   }
-  const client = await pool.connect();
-  let began = false;
-  try {
-    await client.query("BEGIN");
-    began = true;
-    await client.query("SELECT pg_advisory_xact_lock($1::bigint)", [WORKSPACE_SOURCE_MIGRATION_LOCK_V1]);
-    const table = await client.query<{ relation: string | null }>(
-      "SELECT to_regclass('public.poietra_schema_migrations')::text AS relation",
-    );
-    if (table.rows[0]?.relation !== null) {
-      const applied = await client.query<{ checksum: string }>(
-        "SELECT checksum FROM public.poietra_schema_migrations WHERE version = 1",
-      );
-      if (applied.rowCount !== 1 || applied.rows[0]?.checksum !== WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM) {
-        throw new Error("The installed workspace/source schema does not match migration v1.");
-      }
-      await client.query("COMMIT");
-      began = false;
-      return { applied: false, version: 1 } as const;
-    }
-    await client.query(source);
-    await client.query("INSERT INTO public.poietra_schema_migrations (version, checksum) VALUES (1, $1)", [
-      WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
-    ]);
-    await client.query("COMMIT");
-    began = false;
-    return { applied: true, version: 1 } as const;
-  } catch (error) {
-    if (began) await client.query("ROLLBACK").catch(() => undefined);
-    throw error;
-  } finally {
-    client.release();
-  }
+  if (!result) throw new Error("No durable storage migrations are bundled.");
+  return result;
 }
 
-/** Apply v2 only after an exact v1 installation has been verified. */
-export async function applyRenderSessionMigrationV2(pool: Pool, source: string) {
-  if (renderSessionMigrationChecksumV2(source) !== RENDER_SESSION_MIGRATION_V2_CHECKSUM) {
-    throw new TypeError("The render-session migration checksum is invalid.");
-  }
-  const client = await pool.connect();
-  let began = false;
-  try {
-    await client.query("BEGIN");
-    began = true;
-    await client.query("SELECT pg_advisory_xact_lock($1::bigint)", [WORKSPACE_SOURCE_MIGRATION_LOCK_V1]);
-    const table = await client.query<{ relation: string | null }>(
-      "SELECT to_regclass('public.poietra_schema_migrations')::text AS relation",
-    );
-    if (table.rows[0]?.relation === null) {
-      throw new Error("Render-session migration v2 requires workspace/source migration v1.");
-    }
-    const installed = await client.query<{ checksum: string; version: number }>(
-      "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (1, 2) ORDER BY version",
-    );
-    const v1 = installed.rows.find((row) => row.version === 1);
-    if (v1?.checksum !== WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM) {
-      throw new Error("Render-session migration v2 requires an exact workspace/source migration v1.");
-    }
-    const v2 = installed.rows.find((row) => row.version === 2);
-    if (v2) {
-      if (v2.checksum !== RENDER_SESSION_MIGRATION_V2_CHECKSUM) {
-        throw new Error("The installed render-session schema does not match migration v2.");
-      }
-      await client.query("COMMIT");
-      began = false;
-      return { applied: false, version: 2 } as const;
-    }
-    await client.query(source);
-    await client.query("INSERT INTO public.poietra_schema_migrations (version, checksum) VALUES (2, $1)", [
-      RENDER_SESSION_MIGRATION_V2_CHECKSUM,
-    ]);
-    await client.query("COMMIT");
-    began = false;
-    return { applied: true, version: 2 } as const;
-  } catch (error) {
-    if (began) await client.query("ROLLBACK").catch(() => undefined);
-    throw error;
-  } finally {
-    client.release();
-  }
-}
+/** @deprecated Use applyBundledDurableStorageMigrations. */
+export const applyBundledDurableStorageMigrationsV2 = applyBundledDurableStorageMigrations;
