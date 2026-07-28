@@ -752,6 +752,36 @@ mod tests {
     }
 
     #[test]
+    fn finite_hierarchy_inputs_fail_closed_when_affine_composition_overflows() {
+        let (assets, mut scene) = fixture();
+        scene.entities[0].transform.m11 = f64::MAX;
+        let mut child = scene.entities[0].clone();
+        child.id = "child".to_owned();
+        child.parent_id = Some("circle".to_owned());
+        child.scene_order = 1;
+        child.transform = AffineTransformV1 {
+            m11: 2.0,
+            ..AffineTransformV1::identity()
+        };
+        scene.entities.push(child);
+
+        let error = compile_engine_frame_v1(CompileEngineFrameOptionsV1 {
+            assets: &assets,
+            evidence: &[],
+            packet_id: "packet:hierarchy-overflow",
+            sample_time: 1.0,
+            scene: &scene,
+            viewport: ViewportV1 {
+                height_px: 900,
+                width_px: 1600,
+            },
+        })
+        .unwrap_err();
+
+        assert!(matches!(error, EvaluationError::InvalidOutput(_)));
+    }
+
+    #[test]
     fn lifetime_end_is_exclusive() {
         let (assets, scene) = fixture();
         let frame = compile_engine_frame_v1(CompileEngineFrameOptionsV1 {
