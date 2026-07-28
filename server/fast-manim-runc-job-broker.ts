@@ -42,6 +42,7 @@ import type {
   FastManimRuncStateV1,
 } from "./fast-manim-runc-runtime";
 import { isProductionFastManimRuncRuntimeV1 } from "./fast-manim-runc-runtime";
+import { assertFastManimRuncSubordinateIdsReadyV1 } from "./fast-manim-runc-subordinate-ids";
 import {
   FastManimSandboxBackendControlError,
   type FastManimSandboxBackendResultV1,
@@ -247,7 +248,10 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
     );
     deadlineTimer.unref();
     try {
-      if (!this.#testOnly) await assertRootlessHostHelpersV1(probe.signal);
+      if (!this.#testOnly) {
+        await assertRootlessHostHelpersV1(probe.signal);
+        await assertFastManimRuncSubordinateIdsReadyV1(this.#identityMap, probe.signal);
+      }
       await Promise.all([
         this.#release.assertReady(probe.signal),
         this.#runtime.assertReady(context.deadlineEpochMs, probe.signal),
