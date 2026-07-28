@@ -62,6 +62,15 @@ class AnimatedScene(Scene):
         self.wait(1)
 `;
 
+const variableWaitSceneSource = `from manim import *
+
+class VariableWaitScene(Scene):
+    def construct(self):
+        circle = Circle().set_fill(BLUE, opacity=1).set_stroke(width=0)
+        self.add(circle)
+        self.wait(2.5, frozen_frame=True)
+`;
+
 const REAL_FRAME = { height: 8, width: 14.222222222222221 } as const;
 
 const temporaryRoots: string[] = [];
@@ -82,7 +91,7 @@ async function temporaryProject(fileName: string, source: string) {
   return projectRoot;
 }
 
-function createRealRunner(projectRoot: string) {
+function createRealRunner(projectRoot: string, snapshotVersion: 1 | 2 = 1) {
   if (!producerCommand) throw new Error("Unreachable: the real producer command gate failed.");
   const backend = new LocalProcessFastManimSandboxBackendV1({
     admissionController: new FastManimSnapshotAdmissionController(),
@@ -98,6 +107,7 @@ function createRealRunner(projectRoot: string) {
     projectId: "default",
     projectRoot,
     publicationStore: new FastManimSnapshotPublicationStore(),
+    snapshotVersion,
     tenantId: "test-tenant",
     timeoutMs: 120_000,
   });
@@ -215,5 +225,28 @@ describe.skipIf(!realSeamEnabled)("real fast-manim snapshot producer integration
     expect(view.issues.length).toBeGreaterThan(0);
     for (const issue of view.issues) expect(issue.evidence).toEqual([]);
     expect(view.fallback).toEqual({ kind: "server-authoritative-render" });
+  });
+
+  it("seals the upstream V2 frozen-wait duration and full entity lifetime", { timeout: 300_000 }, async () => {
+    const projectRoot = await temporaryProject("variable-wait.py", variableWaitSceneSource);
+    const runner = createRealRunner(projectRoot, 2);
+    const view = fastManimSnapshotRunViewV1Schema.parse(
+      await runner.run({
+        projectId: "default",
+        requestId: "real-snapshot-request-v2",
+        sceneName: "VariableWaitScene",
+        sourcePath: "variable-wait.py",
+      }),
+    );
+    if (view.status !== "verified" || view.snapshot.kind !== "compiled") {
+      throw new Error(`Expected a verified V2 snapshot, got ${JSON.stringify(view)}`);
+    }
+    const bundle = view.snapshot.bundle as Parameters<typeof digestFastManimSnapshotBundleV1>[0];
+    expect(bundle.scene.duration).toBe(2.5);
+    expect(bundle.scene.entities.every((entity) => entity.lifetimes[0]?.end === 2.5)).toBe(true);
+    expect(bundle.scene.source).toMatchObject({
+      kind: "imported-manim-server-snapshot",
+      snapshotVersion: 2,
+    });
   });
 });
