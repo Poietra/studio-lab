@@ -71,6 +71,7 @@ async function runTests(environment) {
   for (const testFile of [
     "server/storage/workspace-source-storage.real.test.ts",
     "server/storage/render-session-storage.real.test.ts",
+    "server/storage/snapshot-publication-storage.real.test.ts",
   ]) {
     await runTestFile(environment, testFile);
   }
