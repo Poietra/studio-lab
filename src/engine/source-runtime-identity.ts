@@ -2,8 +2,7 @@ import { z } from "zod";
 
 import { sha256V1Schema, sourceIdentityV1Schema } from "./contracts";
 
-export const FAST_MANIM_SOURCE_RUNTIME_IDENTITY_SCHEMA_V1 =
-  "poietra.fast-manim-source-runtime-identity" as const;
+export const FAST_MANIM_SOURCE_RUNTIME_IDENTITY_SCHEMA_V1 = "poietra.fast-manim-source-runtime-identity" as const;
 export const FAST_MANIM_SOURCE_RUNTIME_IDENTITY_VERSION_V1 = 1 as const;
 export const STUDIO_VERIFIED_SOURCE_RUNTIME_IDENTITY_MAP_SCHEMA_V1 =
   "poietra.studio-verified-source-runtime-identity-map" as const;
