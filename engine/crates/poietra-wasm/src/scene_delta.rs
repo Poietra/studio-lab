@@ -1,15 +1,16 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use poietra_eval::{EngineSessionV1, EvaluationError};
 use poietra_scene_ir::{
     AnimationChannelV1, AssetManifestV1, FidelityV1, ProvenanceRecordV1, SceneCameraV1,
-    SceneCapabilityV1, SceneEntityV1, SceneIrBundleV1, SceneSourceV1,
+    SceneCapabilityV1, SceneEntityV1, SceneIrBundleV1, SceneIrV1, SceneSourceV1,
 };
 use serde::{Deserialize, Serialize};
 
 pub(crate) const MAX_SCENE_DELTA_JSON_BYTES_V1: usize = 256 * 1024;
 pub(crate) const MAX_SCENE_DELTA_ACK_JSON_BYTES_V1: usize = 128 * 1024;
 const MAX_SCENE_DELTA_OPERATIONS_V1: usize = 256;
+const MAX_SCENE_DELTA_DIRTY_IDS_V1: usize = 256;
 const MAX_SCENE_PROVENANCE_RECORDS_V1: usize = 20_000;
 
 #[derive(Debug, thiserror::Error)]
@@ -63,8 +64,8 @@ impl SceneDeltaErrorV1 {
 pub(crate) struct SceneDeltaDirtySetV1 {
     assets: bool,
     camera: bool,
-    channel_ids: Vec<String>,
-    entity_ids: Vec<String>,
+    channel_ids: BTreeSet<String>,
+    entity_ids: BTreeSet<String>,
     scene_metadata: bool,
 }
 
@@ -73,10 +74,38 @@ impl SceneDeltaDirtySetV1 {
         Self {
             assets: false,
             camera: false,
-            channel_ids: Vec::new(),
-            entity_ids: Vec::new(),
+            channel_ids: BTreeSet::new(),
+            entity_ids: BTreeSet::new(),
             scene_metadata: false,
         }
+    }
+
+    fn mark_entity(&mut self, entity_id: &str) -> Result<(), SceneDeltaErrorV1> {
+        Self::insert_bounded(&mut self.entity_ids, entity_id)
+    }
+
+    fn mark_channel(&mut self, channel_id: &str) -> Result<(), SceneDeltaErrorV1> {
+        Self::insert_bounded(&mut self.channel_ids, channel_id)
+    }
+
+    fn mark_channel_dependency(
+        &mut self,
+        channel: &AnimationChannelV1,
+    ) -> Result<(), SceneDeltaErrorV1> {
+        if let Some(entity_id) = channel.entity_id() {
+            self.mark_entity(entity_id)?;
+        } else {
+            self.camera = true;
+        }
+        Ok(())
+    }
+
+    fn insert_bounded(ids: &mut BTreeSet<String>, id: &str) -> Result<(), SceneDeltaErrorV1> {
+        if ids.len() >= MAX_SCENE_DELTA_DIRTY_IDS_V1 && !ids.contains(id) {
+            return Err(SceneDeltaErrorV1::DirtyTooLarge);
+        }
+        ids.insert(id.to_owned());
+        Ok(())
     }
 }
 
@@ -189,6 +218,35 @@ fn operation_target(operation: &SceneDeltaOperationV1) -> String {
     }
 }
 
+fn operation_source_identities_are_valid(operation: &SceneDeltaOperationV1) -> bool {
+    match operation {
+        SceneDeltaOperationV1::PutEntity { entity, .. } => {
+            valid_source_identity(&entity.id)
+                && valid_source_identity(&entity.provenance_id)
+                && entity
+                    .parent_id
+                    .as_deref()
+                    .is_none_or(valid_source_identity)
+        }
+        SceneDeltaOperationV1::RemoveEntity { entity_id } => valid_source_identity(entity_id),
+        SceneDeltaOperationV1::PutAnimationChannel { channel, .. } => {
+            valid_source_identity(channel.id())
+                && valid_source_identity(channel.provenance_id())
+                && channel.entity_id().is_none_or(valid_source_identity)
+        }
+        SceneDeltaOperationV1::RemoveAnimationChannel { channel_id } => {
+            valid_source_identity(channel_id)
+        }
+        SceneDeltaOperationV1::UpdateScene { provenance, .. } => {
+            provenance.as_ref().is_none_or(|records| {
+                records
+                    .iter()
+                    .all(|record| valid_source_identity(&record.id))
+            })
+        }
+    }
+}
+
 fn parse_scene_delta(json: &[u8]) -> Result<SceneDeltaV1, SceneDeltaErrorV1> {
     if json.len() > MAX_SCENE_DELTA_JSON_BYTES_V1 {
         return Err(SceneDeltaErrorV1::InputTooLarge {
@@ -218,6 +276,11 @@ fn parse_scene_delta(json: &[u8]) -> Result<SceneDeltaV1, SceneDeltaErrorV1> {
     }
     let mut targets = BTreeSet::new();
     for operation in &delta.operations {
+        if !operation_source_identities_are_valid(operation) {
+            return Err(SceneDeltaErrorV1::Invalid(
+                "operation identifiers must use the bounded portable source-identity subset",
+            ));
+        }
         let target = operation_target(operation);
         if !targets.insert(target) {
             return Err(SceneDeltaErrorV1::Invalid(
@@ -302,6 +365,57 @@ fn remove_by_id<T>(
     Ok(())
 }
 
+fn put_animation_channel(
+    candidate: &mut SceneIrBundleV1,
+    channel: AnimationChannelV1,
+    expected: ExpectedPresenceV1,
+    dirty: &mut SceneDeltaDirtySetV1,
+) -> Result<(), SceneDeltaErrorV1> {
+    let id = channel.id().to_owned();
+    if let Some(previous) = candidate
+        .scene
+        .animation_channels
+        .iter()
+        .find(|entry| entry.id() == id)
+    {
+        dirty.mark_channel_dependency(previous)?;
+    }
+    dirty.mark_channel_dependency(&channel)?;
+    put_by_id(
+        &mut candidate.scene.animation_channels,
+        channel,
+        &id,
+        expected,
+        AnimationChannelV1::id,
+        "Animation channel",
+    )?;
+    dirty.mark_channel(&id)?;
+    Ok(())
+}
+
+fn remove_animation_channel(
+    candidate: &mut SceneIrBundleV1,
+    channel_id: &str,
+    dirty: &mut SceneDeltaDirtySetV1,
+) -> Result<(), SceneDeltaErrorV1> {
+    if let Some(previous) = candidate
+        .scene
+        .animation_channels
+        .iter()
+        .find(|entry| entry.id() == channel_id)
+    {
+        dirty.mark_channel_dependency(previous)?;
+    }
+    remove_by_id(
+        &mut candidate.scene.animation_channels,
+        channel_id,
+        AnimationChannelV1::id,
+        "Animation channel",
+    )?;
+    dirty.mark_channel(channel_id)?;
+    Ok(())
+}
+
 fn apply_operation(
     candidate: &mut SceneIrBundleV1,
     operation: SceneDeltaOperationV1,
@@ -318,7 +432,7 @@ fn apply_operation(
                 |entry| entry.id.as_str(),
                 "Entity",
             )?;
-            dirty.entity_ids.push(id);
+            dirty.mark_entity(&id)?;
             Ok(())
         }
         SceneDeltaOperationV1::RemoveEntity { entity_id } => {
@@ -328,31 +442,14 @@ fn apply_operation(
                 |entry| entry.id.as_str(),
                 "Entity",
             )?;
-            dirty.entity_ids.push(entity_id);
+            dirty.mark_entity(&entity_id)?;
             Ok(())
         }
         SceneDeltaOperationV1::PutAnimationChannel { channel, expected } => {
-            let id = channel.id().to_owned();
-            put_by_id(
-                &mut candidate.scene.animation_channels,
-                channel,
-                &id,
-                expected,
-                AnimationChannelV1::id,
-                "Animation channel",
-            )?;
-            dirty.channel_ids.push(id);
-            Ok(())
+            put_animation_channel(candidate, channel, expected, dirty)
         }
         SceneDeltaOperationV1::RemoveAnimationChannel { channel_id } => {
-            remove_by_id(
-                &mut candidate.scene.animation_channels,
-                &channel_id,
-                AnimationChannelV1::id,
-                "Animation channel",
-            )?;
-            dirty.channel_ids.push(channel_id);
-            Ok(())
+            remove_animation_channel(candidate, &channel_id, dirty)
         }
         SceneDeltaOperationV1::UpdateScene {
             assets,
@@ -391,6 +488,46 @@ fn apply_operation(
             Ok(())
         }
     }
+}
+
+fn extend_descendants(
+    scene: &SceneIrV1,
+    roots: &BTreeSet<String>,
+    dirty: &mut SceneDeltaDirtySetV1,
+) -> Result<(), SceneDeltaErrorV1> {
+    let mut children_by_parent = BTreeMap::<&str, Vec<&str>>::new();
+    for entity in &scene.entities {
+        if let Some(parent_id) = entity.parent_id.as_deref() {
+            children_by_parent
+                .entry(parent_id)
+                .or_default()
+                .push(entity.id.as_str());
+        }
+    }
+
+    let mut visited = roots.clone();
+    let mut pending: Vec<&str> = roots.iter().map(String::as_str).collect();
+    while let Some(parent_id) = pending.pop() {
+        if let Some(children) = children_by_parent.get(parent_id) {
+            for child_id in children {
+                dirty.mark_entity(child_id)?;
+                if visited.insert((*child_id).to_owned()) {
+                    pending.push(child_id);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn extend_entity_dependency_closure(
+    dirty: &mut SceneDeltaDirtySetV1,
+    base: &SceneIrV1,
+    candidate: &SceneIrV1,
+) -> Result<(), SceneDeltaErrorV1> {
+    let roots = dirty.entity_ids.clone();
+    extend_descendants(base, &roots, dirty)?;
+    extend_descendants(candidate, &roots, dirty)
 }
 
 pub(crate) fn apply_scene_delta_json(
@@ -436,6 +573,7 @@ pub(crate) fn apply_scene_delta_json(
         apply_operation(&mut candidate, operation, &mut dirty)?;
     }
     candidate.scene.source = delta.next_source;
+    extend_entity_dependency_closure(&mut dirty, session.scene(), &candidate.scene)?;
 
     // Serialize and bound the exact ACK before committing the candidate. This
     // keeps Scene/index revision and Worker revision in one transaction: no
@@ -457,7 +595,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use poietra_scene_ir::{SceneIrBundleV1, parse_scene_ir_bundle_json_v1};
+    use poietra_scene_ir::{EasingV1, KeyframeV1, SceneIrBundleV1, parse_scene_ir_bundle_json_v1};
     use serde_json::{Value, json};
     use sha2::{Digest, Sha256};
 
@@ -540,7 +678,7 @@ mod tests {
         assert!(dirty_json.len() <= MAX_SCENE_DELTA_ACK_JSON_BYTES_V1);
         let dirty: SceneDeltaDirtySetV1 = serde_json::from_slice(&dirty_json).unwrap();
 
-        assert_eq!(dirty.entity_ids, ["earlier"]);
+        assert_eq!(dirty.entity_ids, BTreeSet::from(["earlier".to_owned()]));
         assert!(dirty.channel_ids.is_empty());
         assert!(!dirty.assets);
         assert!(!dirty.camera);
@@ -609,6 +747,99 @@ mod tests {
     }
 
     #[test]
+    fn omitted_required_nullable_entity_fields_are_invalid_delta_and_atomic() {
+        let shared = fixture("shared-single-entity-delta.json");
+        for field in ["parentId", "fill", "stroke"] {
+            let mut delta = shared["delta"].clone();
+            let entity = delta["operations"][0]["entity"].as_object_mut().unwrap();
+            if field == "parentId" {
+                entity.remove(field);
+            } else {
+                entity["appearance"].as_object_mut().unwrap().remove(field);
+            }
+
+            let mut session = EngineSessionV1::new(base_bundle()).unwrap();
+            let before_hash = semantic_hash(&session);
+            let before_revision = session.scene().source.revision_hash().to_owned();
+            let before_stats = session.retained_index_stats();
+            let error = apply_scene_delta_json(
+                &mut session,
+                &serde_json::to_vec(&delta).unwrap(),
+                delta["baseRevision"].as_str().unwrap(),
+                delta["nextRevision"].as_str().unwrap(),
+            )
+            .unwrap_err();
+
+            assert_eq!(error.code(), "invalid-delta", "omitted {field}");
+            assert_eq!(semantic_hash(&session), before_hash, "omitted {field}");
+            assert_eq!(
+                session.scene().source.revision_hash(),
+                before_revision,
+                "omitted {field}"
+            );
+            assert_eq!(
+                session.retained_index_stats(),
+                before_stats,
+                "omitted {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn operation_source_identities_are_rejected_before_candidate_mutation() {
+        let shared = fixture("shared-single-entity-delta.json");
+        let base = base_bundle();
+        let entity = shared["delta"]["operations"][0]["entity"].clone();
+        let channel = serde_json::to_value(&base.scene.animation_channels[0]).unwrap();
+        let provenance = serde_json::to_value(&base.scene.provenance).unwrap();
+
+        let mut invalid_entity_id = entity.clone();
+        invalid_entity_id["id"] = json!("bad entity");
+        let mut invalid_entity_provenance = entity.clone();
+        invalid_entity_provenance["provenanceId"] = json!("bad provenance");
+        let mut invalid_parent = entity.clone();
+        invalid_parent["parentId"] = json!("bad parent");
+        let mut invalid_channel_id = channel.clone();
+        invalid_channel_id["id"] = json!("bad channel");
+        let mut invalid_channel_provenance = channel.clone();
+        invalid_channel_provenance["provenanceId"] = json!("bad provenance");
+        let mut invalid_channel_target = channel;
+        invalid_channel_target["entityId"] = json!("bad target");
+        let mut invalid_provenance = provenance;
+        invalid_provenance[0]["id"] = json!("bad provenance");
+
+        let cases = [
+            json!({ "entityId": "bad entity", "kind": "remove-entity" }),
+            json!({ "channelId": "bad channel", "kind": "remove-animation-channel" }),
+            json!({ "entity": invalid_entity_id, "expected": "present", "kind": "put-entity" }),
+            json!({ "entity": invalid_entity_provenance, "expected": "present", "kind": "put-entity" }),
+            json!({ "entity": invalid_parent, "expected": "present", "kind": "put-entity" }),
+            json!({ "channel": invalid_channel_id, "expected": "present", "kind": "put-animation-channel" }),
+            json!({ "channel": invalid_channel_provenance, "expected": "present", "kind": "put-animation-channel" }),
+            json!({ "channel": invalid_channel_target, "expected": "present", "kind": "put-animation-channel" }),
+            json!({ "kind": "update-scene", "provenance": invalid_provenance }),
+        ];
+
+        for operation in cases {
+            let mut delta = shared["delta"].clone();
+            delta["operations"] = json!([operation]);
+            let mut session = EngineSessionV1::new(base.clone()).unwrap();
+            let before_hash = semantic_hash(&session);
+            let before_stats = session.retained_index_stats();
+            let error = apply_scene_delta_json(
+                &mut session,
+                &serde_json::to_vec(&delta).unwrap(),
+                delta["baseRevision"].as_str().unwrap(),
+                delta["nextRevision"].as_str().unwrap(),
+            )
+            .unwrap_err();
+            assert_eq!(error.code(), "invalid-delta");
+            assert_eq!(semantic_hash(&session), before_hash);
+            assert_eq!(session.retained_index_stats(), before_stats);
+        }
+    }
+
+    #[test]
     fn dirty_set_covers_channel_camera_asset_and_metadata_targets() {
         let shared = fixture("shared-single-entity-delta.json");
         let base = base_bundle();
@@ -642,6 +873,230 @@ mod tests {
         assert!(dirty.camera);
         assert!(dirty.scene_metadata);
         assert_eq!(dirty.channel_ids.len(), 1);
+        assert_eq!(dirty.entity_ids, BTreeSet::from(["earlier".to_owned()]));
+    }
+
+    #[test]
+    fn dirty_set_covers_old_and_new_channel_dependencies() {
+        let shared = fixture("shared-single-entity-delta.json");
+        let base = base_bundle();
+        let mut retargeted = base.scene.animation_channels[0].clone();
+        let Some(entity_id) = retargeted.entity_id().map(ToOwned::to_owned) else {
+            panic!("fixture channel must target an entity");
+        };
+        match &mut retargeted {
+            AnimationChannelV1::AffineTransform {
+                entity_id: target, ..
+            }
+            | AnimationChannelV1::Opacity {
+                entity_id: target, ..
+            }
+            | AnimationChannelV1::PathTrim {
+                entity_id: target, ..
+            }
+            | AnimationChannelV1::PathMorph {
+                entity_id: target, ..
+            }
+            | AnimationChannelV1::MotionPath {
+                entity_id: target, ..
+            } => *target = "later".to_owned(),
+            AnimationChannelV1::Camera { .. } => panic!("fixture channel must target an entity"),
+        }
+
+        let mut retarget_delta = shared["delta"].clone();
+        retarget_delta["operations"] = json!([{
+            "channel": retargeted,
+            "expected": "present",
+            "kind": "put-animation-channel",
+        }]);
+        let mut retarget_session = EngineSessionV1::new(base.clone()).unwrap();
+        let dirty_json = apply_scene_delta_json(
+            &mut retarget_session,
+            &serde_json::to_vec(&retarget_delta).unwrap(),
+            retarget_delta["baseRevision"].as_str().unwrap(),
+            retarget_delta["nextRevision"].as_str().unwrap(),
+        )
+        .unwrap();
+        let dirty: SceneDeltaDirtySetV1 = serde_json::from_slice(&dirty_json).unwrap();
+        assert_eq!(
+            dirty.entity_ids,
+            BTreeSet::from([entity_id.clone(), "later".to_owned()])
+        );
+        assert_eq!(
+            dirty.channel_ids,
+            BTreeSet::from(["opacity:earlier".to_owned()])
+        );
+
+        let mut removal_delta = shared["delta"].clone();
+        removal_delta["operations"] = json!([
+            { "channelId": "opacity:earlier", "kind": "remove-animation-channel" },
+            { "kind": "update-scene", "requiredCapabilities": ["shape-primitives"] },
+        ]);
+        let mut removal_session = EngineSessionV1::new(base).unwrap();
+        let dirty_json = apply_scene_delta_json(
+            &mut removal_session,
+            &serde_json::to_vec(&removal_delta).unwrap(),
+            removal_delta["baseRevision"].as_str().unwrap(),
+            removal_delta["nextRevision"].as_str().unwrap(),
+        )
+        .unwrap();
+        let dirty: SceneDeltaDirtySetV1 = serde_json::from_slice(&dirty_json).unwrap();
+        assert_eq!(dirty.entity_ids, BTreeSet::from([entity_id]));
+        assert_eq!(
+            dirty.channel_ids,
+            BTreeSet::from(["opacity:earlier".to_owned()])
+        );
+    }
+
+    #[test]
+    fn dirty_set_marks_camera_channel_dependencies() {
+        let shared = fixture("shared-single-entity-delta.json");
+        let base = base_bundle();
+        let camera_channel = AnimationChannelV1::Camera {
+            id: "camera:main".to_owned(),
+            keyframes: vec![
+                KeyframeV1 {
+                    at: 0.0,
+                    easing_to_next: Some(EasingV1::Linear {}),
+                    value: base.scene.camera.view.clone(),
+                },
+                KeyframeV1 {
+                    at: base.scene.duration,
+                    easing_to_next: None,
+                    value: base.scene.camera.view.clone(),
+                },
+            ],
+            provenance_id: "fixture".to_owned(),
+        };
+        let mut capabilities = base.scene.required_capabilities.clone();
+        capabilities.push(SceneCapabilityV1::CameraAnimation);
+        capabilities.sort_unstable();
+        let mut delta = shared["delta"].clone();
+        delta["operations"] = json!([
+            {
+                "channel": camera_channel,
+                "expected": "absent",
+                "kind": "put-animation-channel",
+            },
+            {
+                "kind": "update-scene",
+                "requiredCapabilities": capabilities,
+            }
+        ]);
+        let mut session = EngineSessionV1::new(base).unwrap();
+        let dirty_json = apply_scene_delta_json(
+            &mut session,
+            &serde_json::to_vec(&delta).unwrap(),
+            delta["baseRevision"].as_str().unwrap(),
+            delta["nextRevision"].as_str().unwrap(),
+        )
+        .unwrap();
+        let dirty: SceneDeltaDirtySetV1 = serde_json::from_slice(&dirty_json).unwrap();
+        assert!(dirty.camera);
         assert!(dirty.entity_ids.is_empty());
+        assert_eq!(
+            dirty.channel_ids,
+            BTreeSet::from(["camera:main".to_owned()])
+        );
+    }
+
+    #[test]
+    fn dirty_set_includes_entity_descendants() {
+        let shared = fixture("shared-single-entity-delta.json");
+        let mut base = base_bundle();
+        base.scene
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == "later")
+            .unwrap()
+            .parent_id = Some("earlier".to_owned());
+        base.scene
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == "stroke")
+            .unwrap()
+            .parent_id = Some("later".to_owned());
+        let mut changed_parent = base
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "earlier")
+            .unwrap()
+            .clone();
+        changed_parent.transform.tx = 4.0;
+        let mut delta = shared["delta"].clone();
+        delta["operations"] = json!([{
+            "entity": changed_parent,
+            "expected": "present",
+            "kind": "put-entity",
+        }]);
+        let mut session = EngineSessionV1::new(base).unwrap();
+        let dirty_json = apply_scene_delta_json(
+            &mut session,
+            &serde_json::to_vec(&delta).unwrap(),
+            delta["baseRevision"].as_str().unwrap(),
+            delta["nextRevision"].as_str().unwrap(),
+        )
+        .unwrap();
+        let dirty: SceneDeltaDirtySetV1 = serde_json::from_slice(&dirty_json).unwrap();
+        assert_eq!(
+            dirty.entity_ids,
+            BTreeSet::from([
+                "earlier".to_owned(),
+                "later".to_owned(),
+                "stroke".to_owned(),
+            ])
+        );
+    }
+
+    #[test]
+    fn dependency_closure_unions_base_and_candidate_parent_graphs() {
+        let mut base = base_bundle().scene;
+        base.entities
+            .iter_mut()
+            .find(|entity| entity.id == "later")
+            .unwrap()
+            .parent_id = Some("earlier".to_owned());
+        let mut candidate = base.clone();
+        candidate
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == "later")
+            .unwrap()
+            .parent_id = None;
+        candidate
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == "stroke")
+            .unwrap()
+            .parent_id = Some("earlier".to_owned());
+
+        let mut dirty = SceneDeltaDirtySetV1::new();
+        dirty.mark_entity("earlier").unwrap();
+        extend_entity_dependency_closure(&mut dirty, &base, &candidate).unwrap();
+        assert_eq!(
+            dirty.entity_ids,
+            BTreeSet::from([
+                "earlier".to_owned(),
+                "later".to_owned(),
+                "stroke".to_owned(),
+            ])
+        );
+    }
+
+    #[test]
+    fn dirty_identifier_sets_are_sorted_deduplicated_and_hard_bounded() {
+        let mut dirty = SceneDeltaDirtySetV1::new();
+        for index in (0..MAX_SCENE_DELTA_DIRTY_IDS_V1).rev() {
+            dirty.mark_entity(&format!("entity:{index:03}")).unwrap();
+        }
+        dirty.mark_entity("entity:000").unwrap();
+        assert_eq!(dirty.entity_ids.len(), MAX_SCENE_DELTA_DIRTY_IDS_V1);
+        assert_eq!(dirty.entity_ids.first().unwrap(), "entity:000");
+        assert_eq!(dirty.entity_ids.last().unwrap(), "entity:255");
+        assert!(matches!(
+            dirty.mark_entity("entity:overflow"),
+            Err(SceneDeltaErrorV1::DirtyTooLarge)
+        ));
     }
 }

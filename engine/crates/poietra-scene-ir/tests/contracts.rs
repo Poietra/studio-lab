@@ -137,6 +137,76 @@ fn serde_rejects_unknown_fields_at_root_and_inside_tagged_values() {
     assert!(easing_error.to_string().contains("unknown field"));
 }
 
+fn assert_required_nullable_field<T>(value: &serde_json::Value, field: &str)
+where
+    T: serde::de::DeserializeOwned + std::fmt::Debug,
+{
+    serde_json::from_value::<T>(value.clone()).expect("an explicit null must remain valid");
+    let mut omitted = value.clone();
+    omitted
+        .as_object_mut()
+        .expect("required-nullable fixture must be an object")
+        .remove(field);
+    let error = serde_json::from_value::<T>(omitted).unwrap_err();
+    assert!(
+        error.to_string().contains("missing field"),
+        "omitted {field} was not rejected as missing: {error}"
+    );
+}
+
+#[test]
+fn serde_requires_nullable_fields_while_accepting_explicit_null() {
+    let appearance = json!({
+        "fill": null,
+        "kind": "vector",
+        "opacity": 1,
+        "stroke": null,
+    });
+    assert_required_nullable_field::<SceneAppearanceV1>(&appearance, "fill");
+    assert_required_nullable_field::<SceneAppearanceV1>(&appearance, "stroke");
+
+    let entity = json!({
+        "appearance": appearance,
+        "geometry": { "center": { "x": 0, "y": 0 }, "kind": "circle", "radius": 1 },
+        "id": "entity",
+        "lifetimes": [{ "end": 1, "start": 0 }],
+        "parentId": null,
+        "provenanceId": "fixture",
+        "sceneOrder": 0,
+        "sourceZIndex": 0,
+        "transform": AffineTransformV1::identity(),
+    });
+    assert_required_nullable_field::<SceneEntityV1>(&entity, "parentId");
+
+    let keyframe = json!({ "at": 1, "easingToNext": null, "value": 1 });
+    assert_required_nullable_field::<KeyframeV1<f64>>(&keyframe, "easingToNext");
+
+    let draw = json!({
+        "drawId": "draw:entity",
+        "entityId": "entity",
+        "fill": null,
+        "kind": "path",
+        "opacity": 1,
+        "paintOrder": 0,
+        "path": {
+            "subpaths": [{
+                "closed": false,
+                "segments": [{
+                    "control1": { "x": 0, "y": 0 },
+                    "control2": { "x": 1, "y": 1 },
+                    "end": { "x": 1, "y": 1 },
+                }],
+                "start": { "x": 0, "y": 0 },
+            }],
+        },
+        "sourceZIndex": 0,
+        "stroke": null,
+        "transform": AffineTransformV1::identity(),
+    });
+    assert_required_nullable_field::<RenderDrawV1>(&draw, "fill");
+    assert_required_nullable_field::<RenderDrawV1>(&draw, "stroke");
+}
+
 #[test]
 fn serde_rejects_non_v1_versions_and_unknown_tags() {
     let mut scene = serde_json::to_value(empty_scene()).unwrap();
