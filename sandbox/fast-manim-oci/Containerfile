@@ -1,0 +1,153 @@
+# syntax=docker/dockerfile:1.7
+
+ARG LOCKED_SOURCE_DATE_EPOCH=1785159109
+ARG SOURCE_DATE_EPOCH=1785159109
+
+FROM --platform=$TARGETPLATFORM ghcr.io/astral-sh/uv@sha256:9a23023be68b2ed09750ae636228e903a54a05ea56ed03a934d00fe9fbeded4b AS uv
+
+FROM --platform=$TARGETPLATFORM docker.io/library/python@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7 AS builder
+
+ARG LOCKED_SOURCE_DATE_EPOCH
+ARG SOURCE_DATE_EPOCH
+
+COPY apt-snapshot.sources /etc/apt/sources.list.d/debian.sources
+RUN test "$SOURCE_DATE_EPOCH" = "$LOCKED_SOURCE_DATE_EPOCH" \
+    && apt-get -qq update \
+    && apt-get install --yes --no-install-recommends \
+      build-essential=12.9 \
+      libcairo2-dev=1.16.0-7 \
+      libffi-dev=3.4.4-1 \
+      libpango1.0-dev=1.50.12+ds-1 \
+      pkg-config=1.8.1-1 \
+    && rm -rf /var/lib/apt/lists/* /var/log/apt/* \
+    && rm -f /var/log/alternatives.log /var/log/dpkg.log
+
+COPY --from=uv /uv /usr/local/bin/uv
+COPY build-requirements.txt /opt/poietra-build/build-requirements.txt
+COPY compiler-wrapper.sh /opt/poietra-build/bin/cc
+COPY fast-manim.tar.gz /opt/poietra-build/fast-manim.tar.gz
+
+RUN chmod 0555 /opt/poietra-build/bin/cc \
+    && ln --symbolic /opt/poietra-build/bin/cc /opt/poietra-build/bin/c++
+
+ENV CC=/opt/poietra-build/bin/cc \
+    CXX=/opt/poietra-build/bin/c++ \
+    MANIM_REQUIRE_NATIVE=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONHASHSEED=0 \
+    SOURCE_DATE_EPOCH=$LOCKED_SOURCE_DATE_EPOCH \
+    UV_COMPILE_BYTECODE=0 \
+    UV_HTTP_TIMEOUT=600 \
+    UV_LINK_MODE=copy \
+    UV_NO_CACHE=1 \
+    UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_PYTHON_DOWNLOADS=never
+
+RUN printf '%s  %s\n' \
+      '46f66b6698650988c18327732d1d3c30cccd53b38de91e1059c61187d92c2b61' \
+      '/opt/poietra-build/fast-manim.tar.gz' \
+      | sha256sum --check --strict - \
+    && mkdir /opt/poietra-build/source \
+    && tar --extract --gzip \
+      --file=/opt/poietra-build/fast-manim.tar.gz \
+      --directory=/opt/poietra-build/source \
+      --no-same-owner \
+    && test "$(sha256sum /opt/poietra-build/source/fast-manim/uv.lock | cut -d ' ' -f 1)" \
+      = '3244a21383800a8a1049438f24c54121c483b1a4ab24ae8523d8c852b7431753' \
+    && test "$(sha256sum /opt/poietra-build/source/fast-manim/pyproject.toml | cut -d ' ' -f 1)" \
+      = 'f791e3ab6ef3e12457e3f36f5d7d7d4c249ae97678d23607781556556a5d6012'
+
+WORKDIR /opt/poietra-build/source/fast-manim
+RUN uv sync --frozen --no-dev --no-editable --no-install-project \
+    && python -m venv /opt/poietra-build/build-venv \
+    && uv pip install \
+      --python /opt/poietra-build/build-venv/bin/python \
+      --require-hashes \
+      --no-deps \
+      --requirement /opt/poietra-build/build-requirements.txt \
+    && /opt/poietra-build/build-venv/bin/python -m hatchling build --target wheel \
+    && uv pip install --python /opt/venv/bin/python --no-deps dist/fast_manim-*.whl \
+    && /opt/venv/bin/python -c \
+      'import _manim_native_cairo, _manim_native_snapshot, manim; print(manim.__version__)'
+
+FROM --platform=$TARGETPLATFORM docker.io/library/python@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7 AS runtime
+
+ARG LOCKED_SOURCE_DATE_EPOCH
+ARG SOURCE_DATE_EPOCH
+
+COPY apt-snapshot.sources /etc/apt/sources.list.d/debian.sources
+RUN test "$SOURCE_DATE_EPOCH" = "$LOCKED_SOURCE_DATE_EPOCH" \
+    && apt-get -qq update \
+    && apt-get install --yes --no-install-recommends \
+      libcairo2=1.16.0-7 \
+      libegl1=1.6.0-1 \
+      libffi8=3.4.4-1 \
+      libgl1=1.6.0-1 \
+      libpango-1.0-0=1.50.12+ds-1 \
+      libpangocairo-1.0-0=1.50.12+ds-1 \
+      libpangoft2-1.0-0=1.50.12+ds-1 \
+    && rm -rf /var/lib/apt/lists/* /var/log/apt/* \
+    && rm -f /var/log/alternatives.log /var/log/dpkg.log
+
+COPY --from=builder /opt/venv /opt/venv
+COPY asset-installer.py /opt/poietra/asset-installer.py
+COPY entrypoint.py /opt/poietra/entrypoint.py
+COPY profile.v1.json /opt/poietra/profile.v1.json
+COPY runtime-inventory.py /opt/poietra/runtime-inventory.py
+
+RUN groupadd --gid 65532 poietra-sandbox \
+    && useradd \
+      --home-dir /run/poietra/home \
+      --no-create-home \
+      --no-log-init \
+      --no-user-group \
+      --shell /usr/sbin/nologin \
+      --uid 65532 \
+      --gid 65532 \
+      poietra-sandbox \
+    && chage --lastday 0 poietra-sandbox \
+    && mkdir --parents /opt/poietra/assets /run/poietra \
+    && chmod 0555 /opt/poietra /opt/poietra/assets /run/poietra \
+    && rm -rf /tmp \
+    && ln -s /run/poietra/tmp /tmp \
+    && POIETRA_FAST_MANIM_ARCHIVE_SHA256=46f66b6698650988c18327732d1d3c30cccd53b38de91e1059c61187d92c2b61 \
+      POIETRA_FAST_MANIM_COMMIT=ac143dc46ebe314095ae7864a32efa289a0afe96 \
+      POIETRA_FAST_MANIM_TREE=b86e2ec81f257cae20669e3c5c33080facfbd610 \
+      POIETRA_FAST_MANIM_UV_LOCK_SHA256=3244a21383800a8a1049438f24c54121c483b1a4ab24ae8523d8c852b7431753 \
+      POIETRA_BUILD_REQUIREMENTS_SHA256=a29a8dca69ead5a6f657db881660e086b0164c0670384d3a4746e447a714b2f0 \
+      POIETRA_DEBIAN_SNAPSHOT=20250929T000000Z \
+      POIETRA_PYTHON_IMAGE=docker.io/library/python@sha256:519591d6871b7bc437060736b9f7456b8731f1499a57e22e6c285135ae657bf7 \
+      POIETRA_PYTHON_PLATFORM_MANIFEST_DIGEST=sha256:c00fc7b44d844b6da22861ec24af43968a5200eac4ec607b4725d585165d6b49 \
+      POIETRA_UV_IMAGE=ghcr.io/astral-sh/uv@sha256:9a23023be68b2ed09750ae636228e903a54a05ea56ed03a934d00fe9fbeded4b \
+      POIETRA_UV_PLATFORM_MANIFEST_DIGEST=sha256:08a7428e3daeb4ff634fe06d3d9aec278579e88f770b5d141e5a408cb998f40a \
+      SOURCE_DATE_EPOCH=$LOCKED_SOURCE_DATE_EPOCH \
+      /opt/venv/bin/python /opt/poietra/runtime-inventory.py \
+    && rm /opt/poietra/runtime-inventory.py \
+    && chmod 0444 \
+      /opt/poietra/asset-installer.py \
+      /opt/poietra/sbom.v1.json \
+      /opt/poietra/entrypoint.py \
+      /opt/poietra/profile.v1.json
+
+ENV HOME=/run/poietra/home \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8 \
+    MKL_NUM_THREADS=1 \
+    NUMEXPR_NUM_THREADS=1 \
+    OMP_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    PATH=/opt/venv/bin:/usr/local/bin:/usr/bin:/bin \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONHASHSEED=0 \
+    PYTHONNOUSERSITE=1 \
+    TMPDIR=/run/poietra/tmp \
+    TZ=UTC \
+    VECLIB_MAXIMUM_THREADS=1 \
+    XDG_CACHE_HOME=/run/poietra/cache \
+    XDG_CONFIG_HOME=/run/poietra/config \
+    XDG_DATA_HOME=/run/poietra/data
+
+USER 65532:65532
+WORKDIR /run/poietra
+ENTRYPOINT ["/opt/venv/bin/python", "/opt/poietra/entrypoint.py"]
+CMD ["/opt/venv/bin/python", "-m", "manim.renderer.source_runtime_identity"]

@@ -75,6 +75,8 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Verify locked fast-manim OCI inputs and base-image platforms
+        run: pnpm verify:fast-manim-oci
       - name: Run unit tests
         run: pnpm test:unit
       - name: Run boundary and integration tests

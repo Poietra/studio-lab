@@ -1,0 +1,118 @@
+{
+  "assets": {
+    "controlFile": ".poietra-assets.v1.json",
+    "destinationRoot": "/opt/poietra/assets",
+    "injection": "digest-verified-read-only-request-volume",
+    "manifestSchema": "poietra.fast-manim-oci-asset-manifest",
+    "maximumAssetBytes": 16777216,
+    "maximumAssets": 64,
+    "maximumTotalAssetBytes": 16777216,
+    "readOnlyAtExecution": true
+  },
+  "capabilities": {
+    "ambient": [],
+    "bounding": [],
+    "effective": [],
+    "inheritable": [],
+    "permitted": []
+  },
+  "environment": {
+    "HOME": "/run/poietra/home",
+    "LANG": "C.UTF-8",
+    "LC_ALL": "C.UTF-8",
+    "MKL_NUM_THREADS": "1",
+    "NUMEXPR_NUM_THREADS": "1",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "PATH": "/opt/venv/bin:/usr/local/bin:/usr/bin:/bin",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONHASHSEED": "0",
+    "PYTHONNOUSERSITE": "1",
+    "TMPDIR": "/run/poietra/tmp",
+    "TZ": "UTC",
+    "VECLIB_MAXIMUM_THREADS": "1",
+    "XDG_CACHE_HOME": "/run/poietra/cache",
+    "XDG_CONFIG_HOME": "/run/poietra/config",
+    "XDG_DATA_HOME": "/run/poietra/data"
+  },
+  "hostExposure": {
+    "credentialForwarding": false,
+    "environmentInheritance": false,
+    "genericMounts": false,
+    "projectRootMount": false,
+    "runtimeSocketMount": false
+  },
+  "identity": {
+    "gid": 65532,
+    "groups": [],
+    "uid": 65532,
+    "username": "poietra-sandbox"
+  },
+  "namespaces": {
+    "cgroup": "private",
+    "ipc": "private",
+    "network": "isolated-none",
+    "pid": "private",
+    "uts": "private"
+  },
+  "network": {
+    "dns": false,
+    "loopback": false,
+    "metadata": false,
+    "mode": "none",
+    "socketSyscalls": false,
+    "unixSockets": false
+  },
+  "noNewPrivileges": true,
+  "platform": "linux/amd64",
+  "proc": {
+    "maskedPaths": [
+      "/proc/acpi",
+      "/proc/asound",
+      "/proc/interrupts",
+      "/proc/kcore",
+      "/proc/keys",
+      "/proc/latency_stats",
+      "/proc/sched_debug",
+      "/proc/scsi",
+      "/proc/timer_list",
+      "/proc/timer_stats",
+      "/sys/devices/virtual/powercap",
+      "/sys/firmware"
+    ],
+    "readOnlyPaths": ["/proc/bus", "/proc/fs", "/proc/irq", "/proc/sys", "/proc/sysrq-trigger"]
+  },
+  "process": {
+    "launcher": ["/opt/venv/bin/python", "/opt/poietra/entrypoint.py"],
+    "requestTransport": "stdin",
+    "target": ["/opt/venv/bin/python", "-m", "manim.renderer.source_runtime_identity"],
+    "workingDirectory": "/run/poietra"
+  },
+  "rootFilesystem": {
+    "readOnly": true
+  },
+  "schema": "poietra.fast-manim-oci-profile",
+  "seccomp": {
+    "profile": "seccomp.v1.json",
+    "required": true
+  },
+  "version": 1,
+  "writableFilesystems": [
+    {
+      "destination": "/run/poietra",
+      "maximumInodes": 4096,
+      "mode": 1023,
+      "options": ["nodev", "noexec", "nosuid"],
+      "sizeBytes": 16777216,
+      "type": "tmpfs"
+    },
+    {
+      "destination": "/dev/shm",
+      "maximumInodes": 1024,
+      "mode": 1023,
+      "options": ["nodev", "noexec", "nosuid"],
+      "sizeBytes": 4194304,
+      "type": "tmpfs"
+    }
+  ]
+}
