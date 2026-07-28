@@ -53,7 +53,8 @@ export type DurableFastManimSnapshotServiceOptionsV1 = Readonly<{
 type ProjectRunnerEntry = {
   closeRequest: Promise<void> | null;
   disposed: boolean;
-  handle: Promise<DurableFastManimSnapshotRunnerHandleV1>;
+  handle: Promise<DurableFastManimSnapshotRunnerHandleV1> | null;
+  references: number;
 };
 
 function sameSourceHead(left: WorkspaceSourceHeadV1, right: WorkspaceSourceHeadV1) {
@@ -145,49 +146,79 @@ export class DurableFastManimSnapshotServiceV1 {
     if (this.#closing) throw new HttpError("The durable Scene snapshot service is shutting down.", 503);
   }
 
-  #projectEntry(projectId: string) {
+  #acquireProject(projectId: string) {
     this.#assertOpen();
     const existing = this.#projects.get(projectId);
-    if (existing) return existing;
-    const sourceProvider = new DurableFastManimSnapshotSourceProviderV1({
-      blobs: this.#blobs,
-      projectId,
-      repository: this.#sourceRepository,
-      tenantId: this.#tenantId,
-    });
-    const pending = this.#factory.create({ projectId, sourceProvider }).then(async (handle) => {
-      if (!SHA256.test(handle.profileDigest)) {
-        const invalid = new TypeError("The durable snapshot runner profile digest is invalid.");
-        try {
-          await handle.runner.close();
-        } catch (cleanupError) {
-          throw new AggregateError([invalid, cleanupError], "The invalid durable snapshot runner could not be closed.");
-        }
-        throw invalid;
-      }
-      return handle;
-    });
-    const entry: ProjectRunnerEntry = { closeRequest: null, disposed: false, handle: pending };
+    if (existing) {
+      existing.references += 1;
+      return existing;
+    }
+    const entry: ProjectRunnerEntry = { closeRequest: null, disposed: false, handle: null, references: 1 };
     this.#projects.set(projectId, entry);
-    void entry.handle.catch(() => {
-      if (this.#projects.get(projectId) === entry) this.#projects.delete(projectId);
-    });
     return entry;
+  }
+
+  #releaseProjectReference(projectId: string, entry: ProjectRunnerEntry) {
+    entry.references -= 1;
+    if (entry.references === 0 && entry.handle === null && this.#projects.get(projectId) === entry) {
+      this.#projects.delete(projectId);
+    }
+  }
+
+  #assertProjectActive(projectId: string, entry: ProjectRunnerEntry) {
+    this.#assertOpen();
+    if (entry.disposed || this.#projects.get(projectId) !== entry) {
+      throw new HttpError("The durable Scene snapshot runner was released.", 503);
+    }
   }
 
   #dispose(entry: ProjectRunnerEntry) {
     entry.disposed = true;
-    entry.closeRequest ??= entry.handle.then(
-      (handle) => handle.runner.close(),
-      () => undefined,
-    );
+    entry.closeRequest ??=
+      entry.handle === null
+        ? Promise.resolve()
+        : entry.handle.then(
+            (handle) => handle.runner.close(),
+            () => undefined,
+          );
     return entry.closeRequest;
   }
 
-  async #runner(projectId: string) {
-    const entry = this.#projectEntry(projectId);
-    const handle = await entry.handle;
-    if (entry.disposed || this.#closing) {
+  async #runner(projectId: string, entry: ProjectRunnerEntry) {
+    this.#assertProjectActive(projectId, entry);
+    let pending = entry.handle;
+    if (pending === null) {
+      const sourceProvider = new DurableFastManimSnapshotSourceProviderV1({
+        blobs: this.#blobs,
+        projectId,
+        repository: this.#sourceRepository,
+        tenantId: this.#tenantId,
+      });
+      pending = Promise.resolve()
+        .then(() => this.#factory.create({ projectId, sourceProvider }))
+        .then(async (handle) => {
+          if (!SHA256.test(handle.profileDigest)) {
+            const invalid = new TypeError("The durable snapshot runner profile digest is invalid.");
+            try {
+              await handle.runner.close();
+            } catch (cleanupError) {
+              throw new AggregateError(
+                [invalid, cleanupError],
+                "The invalid durable snapshot runner could not be closed.",
+              );
+            }
+            throw invalid;
+          }
+          return handle;
+        });
+      entry.handle = pending;
+      void pending.catch(() => {
+        entry.disposed = true;
+        if (this.#projects.get(projectId) === entry) this.#projects.delete(projectId);
+      });
+    }
+    const handle = await pending;
+    if (entry.disposed || this.#closing || this.#projects.get(projectId) !== entry) {
       await this.#dispose(entry);
       throw new HttpError("The durable Scene snapshot runner was released.", 503);
     }
@@ -197,12 +228,18 @@ export class DurableFastManimSnapshotServiceV1 {
   run(requestValue: FastManimSnapshotRunRequestV1, signal?: AbortSignal) {
     const request = fastManimSnapshotRunRequestV1Schema.parse(requestValue);
     this.#assertOpen();
-    return this.#track(this.#run(request, signal));
+    const entry = this.#acquireProject(request.projectId);
+    const operation = this.#run(request, entry, signal).finally(() =>
+      this.#releaseProjectReference(request.projectId, entry),
+    );
+    return this.#track(operation);
   }
 
-  async #run(request: FastManimSnapshotRunRequestV1, signal?: AbortSignal): Promise<FastManimSnapshotRunViewV1> {
-    signal?.throwIfAborted();
-    const handle = await this.#runner(request.projectId);
+  async #run(
+    request: FastManimSnapshotRunRequestV1,
+    entry: ProjectRunnerEntry,
+    signal?: AbortSignal,
+  ): Promise<FastManimSnapshotRunViewV1> {
     signal?.throwIfAborted();
     const before = await this.#sourceRepository.readSourceHead(
       this.#tenantId,
@@ -210,8 +247,13 @@ export class DurableFastManimSnapshotServiceV1 {
       request.sourcePath,
       signal,
     );
+    this.#assertProjectActive(request.projectId, entry);
+    signal?.throwIfAborted();
+    const handle = await this.#runner(request.projectId, entry);
+    this.#assertProjectActive(request.projectId, entry);
+    signal?.throwIfAborted();
     const view = await handle.runner.runUnpublished(request, signal);
-    this.#assertOpen();
+    this.#assertProjectActive(request.projectId, entry);
     if (view.status !== "verified") return view;
     signal?.throwIfAborted();
     const after = await this.#sourceRepository.readSourceHead(
@@ -220,7 +262,7 @@ export class DurableFastManimSnapshotServiceV1 {
       request.sourcePath,
       signal,
     );
-    this.#assertOpen();
+    this.#assertProjectActive(request.projectId, entry);
     // A concrete runner only emits `verified` after the asynchronous bundle
     // digest verifier and server seal succeed. The public wire type keeps the
     // bundle unknown because Zod cannot express that async refinement.
@@ -239,7 +281,7 @@ export class DurableFastManimSnapshotServiceV1 {
       sourceHash: snapshot.sourceHash,
       sourcePath: view.sourcePath,
     };
-    this.#assertOpen();
+    this.#assertProjectActive(request.projectId, entry);
     signal?.throwIfAborted();
     const published = await this.#publisher.publish(
       {
@@ -256,7 +298,6 @@ export class DurableFastManimSnapshotServiceV1 {
       },
       signal,
     );
-    this.#assertOpen();
     if (published.kind === "source-stale") return sourceChanged(view);
     return {
       ...view,
@@ -283,6 +324,9 @@ export class DurableFastManimSnapshotServiceV1 {
       signal,
     );
     this.#assertOpen();
+    if (result.kind === "stale" && result.reason === "concurrently-superseded") {
+      throw new HttpError("The published Scene snapshot kept changing during the lookup; retry the request.", 503);
+    }
     if (result.kind !== "published") {
       throw new HttpError("No verified Scene snapshot has been published for this Scene.", 404);
     }

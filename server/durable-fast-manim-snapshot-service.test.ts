@@ -211,6 +211,25 @@ describe("DurableFastManimSnapshotServiceV1", () => {
     });
   });
 
+  it("does not allocate runners for valid project IDs whose durable source does not exist", async () => {
+    const fixture = harness();
+    fixture.readSourceHead.mockRejectedValue(new HttpError("No managed workspace exists.", 404));
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 32 }, (_, index) =>
+        fixture.service.run({ ...request, projectId: `missing-workspace-${index}` }),
+      ),
+    );
+
+    expect(
+      results.every(
+        (result) => result.status === "rejected" && result.reason instanceof HttpError && result.reason.status === 404,
+      ),
+    ).toBe(true);
+    expect(fixture.factory.create).not.toHaveBeenCalled();
+    expect(fixture.runnerClose).not.toHaveBeenCalled();
+  });
+
   it("does not publish runner failures or unsupported results", async () => {
     const unsupported = {
       fallback: { kind: "server-authoritative-render" },
@@ -275,17 +294,78 @@ describe("DurableFastManimSnapshotServiceV1", () => {
     expect(fixture.factory.create).not.toHaveBeenCalled();
   });
 
-  it.each([{ kind: "missing" as const }, { generation: 13n, kind: "stale" as const, reason: "source-stale" as const }])(
-    "returns 404 when no complete durable correlation can be served ($kind)",
-    async (result) => {
-      const fixture = harness();
-      fixture.readCurrent.mockResolvedValueOnce(result as never);
+  it.each([
+    ["missing", { kind: "missing" as const }],
+    ["source-stale", { generation: 13n, kind: "stale" as const, reason: "source-stale" as const }],
+    ["artifact-missing", { generation: 13n, kind: "stale" as const, reason: "artifact-missing" as const }],
+    ["artifact-corrupt", { generation: 13n, kind: "stale" as const, reason: "artifact-corrupt" as const }],
+  ])("returns 404 when no complete durable correlation can be served (%s)", async (_reason, result) => {
+    const fixture = harness();
+    fixture.readCurrent.mockResolvedValueOnce(result as never);
 
-      await expect(
-        fixture.service.snapshot(PROJECT, { sceneName: SCENE_NAME, sourcePath: SOURCE_PATH }),
-      ).rejects.toMatchObject({ status: 404 });
-    },
-  );
+    await expect(
+      fixture.service.snapshot(PROJECT, { sceneName: SCENE_NAME, sourcePath: SOURCE_PATH }),
+    ).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("returns a retryable 503 when the durable publication is continuously superseded", async () => {
+    const fixture = harness();
+    fixture.readCurrent.mockResolvedValueOnce({
+      generation: 13n,
+      kind: "stale",
+      reason: "concurrently-superseded",
+    });
+
+    await expect(
+      fixture.service.snapshot(PROJECT, { sceneName: SCENE_NAME, sourcePath: SOURCE_PATH }),
+    ).rejects.toMatchObject({ message: expect.stringMatching(/retry/i), status: 503 });
+  });
+
+  it("fences a release while source validation is pending before runner creation", async () => {
+    const fixture = harness();
+    const validation = deferred<WorkspaceSourceHeadV1>();
+    fixture.readSourceHead.mockReturnValueOnce(validation.promise);
+    const run = fixture.service.run(request);
+    await vi.waitFor(() => expect(fixture.readSourceHead).toHaveBeenCalledTimes(1));
+    expect(fixture.factory.create).not.toHaveBeenCalled();
+
+    await fixture.service.releaseProject(PROJECT);
+    validation.resolve(sourceHead());
+
+    await expect(run).rejects.toMatchObject({ status: 503 });
+    expect(fixture.factory.create).not.toHaveBeenCalled();
+    expect(fixture.runnerRun).not.toHaveBeenCalled();
+  });
+
+  it("fences a release while a project runner is active before publication", async () => {
+    const fixture = harness();
+    const running = deferred<FastManimUnpublishedSnapshotRunViewV1>();
+    fixture.runnerRun.mockReturnValueOnce(running.promise);
+    const run = fixture.service.run(request);
+    await vi.waitFor(() => expect(fixture.runnerRun).toHaveBeenCalledTimes(1));
+
+    await fixture.service.releaseProject(PROJECT);
+    running.resolve(verifiedView);
+
+    await expect(run).rejects.toMatchObject({ status: 503 });
+    expect(fixture.runnerClose).toHaveBeenCalledTimes(1);
+    expect(fixture.publish).not.toHaveBeenCalled();
+  });
+
+  it("returns a committed publication when service close races with the publish response", async () => {
+    const fixture = harness();
+    const commit = deferred<Readonly<{ kind: "published"; publication: SnapshotPublicationV1 }>>();
+    fixture.publish.mockReturnValueOnce(commit.promise);
+    const run = fixture.service.run(request);
+    await vi.waitFor(() => expect(fixture.publish).toHaveBeenCalledTimes(1));
+
+    const closing = fixture.service.close();
+    await vi.waitFor(() => expect(fixture.runnerClose).toHaveBeenCalledTimes(1));
+    commit.resolve({ kind: "published", publication: publication(14n) });
+
+    await expect(run).resolves.toMatchObject({ revision: 14, status: "verified" });
+    await expect(closing).resolves.toBeUndefined();
+  });
 
   it("evicts a failed lazy creation so the next request can retry", async () => {
     const fixture = harness();
@@ -310,6 +390,7 @@ describe("DurableFastManimSnapshotServiceV1", () => {
     await release;
     await expect(run).rejects.toBeInstanceOf(HttpError);
     expect(fixture.runnerClose).toHaveBeenCalledTimes(1);
+    expect(fixture.runnerRun).not.toHaveBeenCalled();
   });
 
   it("owns factory and publisher lifecycle but leaves shared source storage open", async () => {
