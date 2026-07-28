@@ -23,36 +23,60 @@ function canonicalJson(value: unknown): string {
   throw new TypeError("Non-JSON fixture value.");
 }
 
-function combinedDocument(snapshot: unknown = {}) {
+function combinedDocument(snapshotJson = "{}") {
   return {
     evidence: {},
     schema: FAST_MANIM_SOURCE_RUNTIME_IDENTITY_SCHEMA_V1,
-    snapshot,
-    snapshotDigest: "d".repeat(64),
+    snapshotDigest: createHash("sha256").update(snapshotJson, "utf8").digest("hex"),
+    snapshotJson,
     version: FAST_MANIM_SOURCE_RUNTIME_IDENTITY_VERSION_V1,
   };
 }
 
 describe("parseFastManimProducerDocumentV1", () => {
-  it("keeps the legacy result compatible and extracts exact canonical snapshot bytes from the opt-in schema", () => {
+  it("keeps legacy snapshot-only producers compatible", () => {
     const legacy = '{"schema":"poietra.fast-manim-snapshot-result","version":1}';
     expect(parseFastManimProducerDocumentV1(legacy)).toEqual({ combined: null, snapshotJson: legacy });
+  });
 
-    const wire = `${canonicalJson(combinedDocument())}\n`;
+  it("matches the current fast-manim snapshotJson envelope and raw byte budget", () => {
+    // Python's canonical exponent spelling stays opaque inside snapshotJson;
+    // JavaScript must never parse and reserialize these paired bytes.
+    const currentSnapshotJson = '{"label":"円","value":1e-07}';
+    const wire = `${canonicalJson(combinedDocument(currentSnapshotJson))}\n`;
     const parsed = parseFastManimProducerDocumentV1(wire);
-    expect(parsed.snapshotJson).toBe("{}");
-    expect(parsed.combined?.snapshotDigest).toBe(createHash("sha256").update("{}").digest("hex"));
+    expect(MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES).toBe(12_681_216 + 1);
+    expect(parsed.snapshotJson).toBe(currentSnapshotJson);
+    expect(parsed.combined?.snapshotDigest).toBe(createHash("sha256").update(currentSnapshotJson).digest("hex"));
+    expect(Object.keys(parsed.combined?.document ?? {})).toEqual([
+      "evidence",
+      "schema",
+      "snapshotDigest",
+      "snapshotJson",
+      "version",
+    ]);
+
+    const removedWire = canonicalJson({
+      evidence: {},
+      schema: FAST_MANIM_SOURCE_RUNTIME_IDENTITY_SCHEMA_V1,
+      snapshot: {},
+      snapshotDigest: createHash("sha256").update("{}", "utf8").digest("hex"),
+      version: FAST_MANIM_SOURCE_RUNTIME_IDENTITY_VERSION_V1,
+    });
+    expect(() => parseFastManimProducerDocumentV1(removedWire)).toThrowError(
+      expect.objectContaining({ code: "identity-evidence-invalid" }),
+    );
   });
 
   it.each([
     [
       "nested duplicate keys",
-      `{"evidence":{"a":1,"a":2},"schema":"${FAST_MANIM_SOURCE_RUNTIME_IDENTITY_SCHEMA_V1}","snapshot":{},"snapshotDigest":"${"d".repeat(64)}","version":1}`,
+      `{"evidence":{"a":1,"a":2},"schema":"${FAST_MANIM_SOURCE_RUNTIME_IDENTITY_SCHEMA_V1}","snapshotDigest":"${createHash("sha256").update("{}").digest("hex")}","snapshotJson":"{}","version":1}`,
     ],
     ["separator whitespace", canonicalJson(combinedDocument()).replace('"evidence":', '"evidence": ')],
     [
       "unsorted keys",
-      `{"schema":"${FAST_MANIM_SOURCE_RUNTIME_IDENTITY_SCHEMA_V1}","evidence":{},"snapshot":{},"snapshotDigest":"${"d".repeat(64)}","version":1}`,
+      `{"schema":"${FAST_MANIM_SOURCE_RUNTIME_IDENTITY_SCHEMA_V1}","evidence":{},"snapshotDigest":"${createHash("sha256").update("{}").digest("hex")}","snapshotJson":"{}","version":1}`,
     ],
     ["more than one trailing LF", `${canonicalJson(combinedDocument())}\n\n`],
   ])("rejects noncanonical combined JSON with %s", (_case, wire) => {
@@ -146,7 +170,6 @@ describe("verifyFastManimSourceRuntimeIdentityV1 complexity", () => {
     const result = verifyFastManimSourceRuntimeIdentityV1(
       {
         document: { evidence, snapshotDigest },
-        evidenceEncodedBytes: 0,
         snapshotDigest,
       },
       {

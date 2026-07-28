@@ -103,7 +103,7 @@ if (mode === "garbage") {
 }
 if (mode === "huge") {
   const filler = "x".repeat(64 * 1024);
-  for (let written = 0; written < 9 * 1024 * 1024; written += filler.length) {
+  for (let written = 0; written < 13 * 1024 * 1024; written += filler.length) {
     if (!process.stdout.write(filler)) {
       await new Promise((resolve) => process.stdout.once("drain", resolve));
     }
@@ -503,11 +503,15 @@ if (mode.startsWith("combined-identity")) {
   const combined = {
     evidence,
     schema: "poietra.fast-manim-source-runtime-identity",
-    snapshot: snapshotResult,
     snapshotDigest: mode === "combined-identity-digest-tamper" ? "f".repeat(64) : snapshotDigest,
+    snapshotJson,
     version: 1,
   };
-  resultJson = mode === "combined-identity-noncanonical" ? JSON.stringify(combined) : canonicalJson(combined);
+  const canonicalCombined = canonicalJson(combined);
+  resultJson =
+    mode === "combined-identity-noncanonical"
+      ? canonicalCombined.replace('"evidence":', '"evidence": ')
+      : canonicalCombined;
 }
 
 const orphanModes = new Set(["orphan-hang", "orphan-flood", "orphan-setsid", "orphan-parent-hang"]);
@@ -525,13 +529,17 @@ if (orphanModes.has(mode)) {
       ? `${selfExpiry}
          const filler = "x".repeat(65536); let sent = 0;
          const write = () => {
-           while (sent < 100) {
+           while (sent < 208) {
              sent += 1;
              if (!process.stdout.write(filler)) { process.stdout.once("drain", write); return; }
            }
            setInterval(() => undefined, 1000);
          };
-         write();`
+         process.stdout.write(filler, () => {
+           sent = 1;
+           process.once("disconnect", () => setImmediate(write));
+           process.send?.("stdout-started");
+         });`
       : // A same-group descendant that ignores catchable termination signals
         // and does not exit on its own before the self-expiry backstop.
         `${selfExpiry} process.on("SIGTERM", () => undefined); process.on("SIGHUP", () => undefined); setInterval(() => undefined, 1000);`;
@@ -542,11 +550,45 @@ if (orphanModes.has(mode)) {
   // in the leader's group with inherited stdio.
   const orphan = spawn(process.execPath, ["-e", orphanBody], {
     detached: mode === "orphan-setsid",
-    stdio: mode === "orphan-setsid" ? "ignore" : "inherit",
+    stdio:
+      mode === "orphan-setsid"
+        ? "ignore"
+        : mode === "orphan-flood"
+          ? ["inherit", "inherit", "inherit", "ipc"]
+          : "inherit",
   });
   // The parent records the descendant PID synchronously so the test never
   // races the detached child's own startup before reading the file.
   if (orphanPidFile) await writeFile(orphanPidFile, String(orphan.pid), "utf8");
+  if (mode === "orphan-flood") {
+    await new Promise((resolve, reject) => {
+      const cleanup = () => {
+        orphan.off("disconnect", onDisconnect);
+        orphan.off("error", onError);
+        orphan.off("exit", onExit);
+        orphan.off("message", onMessage);
+      };
+      const fail = (error) => {
+        cleanup();
+        reject(error);
+      };
+      const onDisconnect = () => fail(new Error("Flood descendant disconnected before writing stdout."));
+      const onError = (error) => {
+        fail(error);
+      };
+      const onExit = (code, signal) =>
+        fail(new Error(`Flood descendant exited before writing stdout (code=${code}, signal=${signal}).`));
+      const onMessage = (message) => {
+        if (message !== "stdout-started") return;
+        cleanup();
+        resolve();
+      };
+      orphan.once("disconnect", onDisconnect);
+      orphan.once("error", onError);
+      orphan.once("exit", onExit);
+      orphan.on("message", onMessage);
+    });
+  }
   if (mode === "orphan-parent-hang") {
     // The leader itself ignores SIGTERM and never exits on its own, so it is
     // observably alive when the +2s SIGKILL lands on the whole group: that

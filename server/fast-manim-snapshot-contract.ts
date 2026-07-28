@@ -26,8 +26,12 @@ export const ZERO_SHA256 = "0".repeat(64);
 export const MAX_FAST_MANIM_SNAPSHOT_BUNDLE_JSON_BYTES = 5 * 1024 * 1024;
 export const MAX_FAST_MANIM_SNAPSHOT_ISSUES_JSON_BYTES = 256 * 1024;
 export const MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES = MAX_FAST_MANIM_SNAPSHOT_BUNDLE_JSON_BYTES + 16 * 1024;
-/** Upstream's canonical combined document cap plus its one trailing CLI newline. */
-export const MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES = 8 * 1024 * 1024 + 1;
+/**
+ * Current fast-manim combined-document cap: a quoted canonical snapshot may
+ * double in size, plus 2 MiB of evidence, 64 KiB of envelope, and one CLI LF.
+ */
+export const MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES =
+  MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES * 2 + 2 * 1024 * 1024 + 64 * 1024 + 1;
 export const MAX_FAST_MANIM_SNAPSHOT_ARRAY_ITEMS = 10_000;
 export const MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_DEPTH = 64;
 export const MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_ENTRIES = 25_000;
