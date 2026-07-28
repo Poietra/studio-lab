@@ -1120,6 +1120,7 @@ fn required_render_capabilities(packet: &RenderPacketV1) -> Vec<RenderCapability
     let mut capabilities = BTreeSet::new();
     for draw in &packet.draws {
         match draw {
+            RenderDrawV1::Empty { .. } => {}
             RenderDrawV1::Path { fill, stroke, .. } => {
                 if fill.is_some() {
                     capabilities.insert(RenderCapabilityV1::CubicPathFill);
@@ -1237,6 +1238,9 @@ pub fn validate_render_packet_v1(packet: &RenderPacketV1) -> Result<(), Validati
             );
         }
         match draw {
+            RenderDrawV1::Empty { transform, .. } => {
+                validate_transform(transform, &format!("{path}.transform"), &mut validator);
+            }
             RenderDrawV1::Path {
                 fill,
                 path: cubic_path,

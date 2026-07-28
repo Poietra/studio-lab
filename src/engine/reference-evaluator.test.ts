@@ -291,6 +291,13 @@ describe("Poietra TypeScript reference evaluator v1", () => {
       ],
       requiredCapabilities: ["motion-path-animation", "path-trim-animation", "shape-primitives"],
     });
+    const emptyFrame = await compile(scene, assets, 0);
+    expect(emptyFrame.packet.draws.find((draw) => draw.entityId === "line")).toMatchObject({
+      kind: "empty",
+      reason: "path-trim-zero",
+    });
+    expect(emptyFrame.packet.draws.find((draw) => draw.entityId === "mover")?.kind).toBe("path");
+
     const frame = await compile(scene, assets, 0.5);
     const line = frame.packet.draws.find((draw) => draw.entityId === "line");
     const mover = frame.packet.draws.find((draw) => draw.entityId === "mover");

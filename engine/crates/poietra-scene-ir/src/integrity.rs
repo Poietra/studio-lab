@@ -2,9 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::digest::validate_asset_manifest_digest_v1;
 use crate::model::{
-    AssetManifestReferenceV1, AssetManifestV1, AssetReferenceV1, EngineFrameV1, PngAssetV1,
-    RenderDrawV1, RenderPacketBundleV1, RenderPacketV1, SceneAppearanceV1, SceneEntityV1,
-    SceneGeometryV1, SceneIrBundleV1, SceneIrV1,
+    AnimationChannelV1, AssetManifestReferenceV1, AssetManifestV1, AssetReferenceV1, EngineFrameV1,
+    PngAssetV1, RenderDrawV1, RenderEmptyReasonV1, RenderPacketBundleV1, RenderPacketV1,
+    SceneAppearanceV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1, SceneIrV1,
 };
 use crate::validate::{
     ValidationErrors, ValidationIssue, push_validation_issue, validate_asset_manifest_v1,
@@ -285,12 +285,40 @@ fn validate_render_packet_for_scene(
 
         match (draw, &entity.geometry, &entity.appearance) {
             (RenderDrawV1::Path { .. }, SceneGeometryV1::Image { .. }, _)
-            | (RenderDrawV1::Image { .. }, _, SceneAppearanceV1::Vector { .. }) => {
+            | (RenderDrawV1::Image { .. }, _, SceneAppearanceV1::Vector { .. })
+            | (RenderDrawV1::Empty { .. }, SceneGeometryV1::Image { .. }, _)
+            | (RenderDrawV1::Empty { .. }, _, SceneAppearanceV1::Image { .. }) => {
                 issue(
                     &mut issues,
                     format!("{path}.kind"),
                     format!("draw kind does not match entity {}", draw.entity_id()),
                 );
+            }
+            (
+                RenderDrawV1::Empty {
+                    reason: RenderEmptyReasonV1::PathTrimZero,
+                    ..
+                },
+                _,
+                SceneAppearanceV1::Vector { .. },
+            ) => {
+                let has_path_trim = scene.animation_channels.iter().any(|channel| {
+                    matches!(
+                        channel,
+                        AnimationChannelV1::PathTrim { entity_id, .. }
+                            if entity_id == draw.entity_id()
+                    )
+                });
+                if !has_path_trim {
+                    issue(
+                        &mut issues,
+                        format!("{path}.reason"),
+                        format!(
+                            "empty draw entity {} has no path-trim channel",
+                            draw.entity_id()
+                        ),
+                    );
+                }
             }
             (
                 RenderDrawV1::Path { fill, stroke, .. },

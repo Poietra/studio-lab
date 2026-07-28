@@ -1734,21 +1734,24 @@ pub fn tessellate_validated_frame_v1(
     let phase_capacity = packet.draws.len().saturating_mul(2);
     let mut prepared = PreparedFrameAccumulatorV1::with_phase_capacity(phase_capacity);
     for draw in &packet.draws {
-        let RenderDrawV1::Path {
-            draw_id,
-            entity_id,
-            fill,
-            opacity,
-            path,
-            stroke,
-            transform,
-            ..
-        } = draw
-        else {
-            return Err(PrepareFrameErrorV1::Unsupported {
-                draw_id: draw.draw_id().to_owned(),
-                reason: UnsupportedDrawReasonV1::Image,
-            });
+        let (draw_id, entity_id, fill, opacity, path, stroke, transform) = match draw {
+            RenderDrawV1::Empty { .. } => continue,
+            RenderDrawV1::Path {
+                draw_id,
+                entity_id,
+                fill,
+                opacity,
+                path,
+                stroke,
+                transform,
+                ..
+            } => (draw_id, entity_id, fill, opacity, path, stroke, transform),
+            RenderDrawV1::Image { .. } => {
+                return Err(PrepareFrameErrorV1::Unsupported {
+                    draw_id: draw.draw_id().to_owned(),
+                    reason: UnsupportedDrawReasonV1::Image,
+                });
+            }
         };
         if fill.is_none() && stroke.is_none() {
             return Err(PrepareFrameErrorV1::Unsupported {

@@ -4,8 +4,9 @@ use std::path::PathBuf;
 
 use poietra_eval::{CompileEngineFrameOptionsV1, compile_engine_frame_v1};
 use poietra_scene_ir::{
-    AssetManifestV1, CubicPathV1, CubicSegmentV1, CubicSubpathV1, PointV1, RenderCapabilityV1,
-    RenderDrawV1, RgbaColorV1, SceneIrV1, StrokeCapV1, StrokeJoinV1, StrokeStyleV1, ViewportV1,
+    AnimationChannelV1, AssetManifestV1, CubicPathV1, CubicSegmentV1, CubicSubpathV1, PointV1,
+    RenderCapabilityV1, RenderDrawV1, RgbaColorV1, SceneIrV1, StrokeCapV1, StrokeJoinV1,
+    StrokeStyleV1, ViewportV1,
 };
 use serde::Deserialize;
 
@@ -95,6 +96,29 @@ pub fn generic_stroke_fixture() -> (poietra_scene_ir::RenderPacketV1, PixelRefer
         .take()
         .expect("generic stroke fixture must carry its pixel reference");
     (compile_fixture(&fixture), reference)
+}
+
+#[allow(dead_code)]
+pub fn generic_stroke_packet_with_initial_trim(
+    initial_trim: f64,
+) -> poietra_scene_ir::RenderPacketV1 {
+    let mut fixture = read_fixture("generic-stroke-topology.json");
+    fixture.sample.sample_time = 0.0;
+    let trim = fixture
+        .scene
+        .animation_channels
+        .iter_mut()
+        .find_map(|channel| match channel {
+            AnimationChannelV1::PathTrim {
+                entity_id,
+                keyframes,
+                ..
+            } if entity_id == "curve" => Some(keyframes),
+            _ => None,
+        })
+        .expect("generic stroke fixture must contain the curve trim channel");
+    trim[0].value = initial_trim;
+    compile_fixture(&fixture)
 }
 
 fn line_control(start: &PointV1, end: &PointV1, factor: f64) -> PointV1 {
