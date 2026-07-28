@@ -5,7 +5,10 @@ import { describe, expect, it } from "vitest";
 import { digestAssetManifestV1, type SceneIrBundleV1, sceneIrBundleV1Schema } from "../src/engine/contracts";
 import {
   digestFastManimSnapshotBundleV1,
+  expectedFastManimSnapshotCorrelationV1Schema,
   type ExpectedFastManimSnapshotCorrelationV1,
+  FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V1,
+  FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V2,
   FAST_MANIM_SNAPSHOT_UNSUPPORTED_MESSAGES_V1,
   fastManimSnapshotRunViewV1Schema,
   fastManimSnapshotSceneIdV1,
@@ -23,6 +26,7 @@ const expected = {
   projectId: "workspace-a",
   requestId: "snapshot-request-a",
   runtimeConfigHash: "b".repeat(64),
+  snapshotVersion: 1,
   sceneId: fastManimSnapshotSceneIdV1("examples/scene.py", "ExampleScene"),
   sceneName: "ExampleScene",
   sourceHash: "a".repeat(64),
@@ -31,7 +35,7 @@ const expected = {
 
 // The wire correlation fields a producer result envelope carries: the frame
 // is server-side expected state only and never appears on the wire.
-const { frame: _serverOnlyFrame, ...wireCorrelation } = expected;
+const { frame: _serverOnlyFrame, snapshotVersion: _serverOnlySnapshotVersion, ...wireCorrelation } = expected;
 
 type FixtureIdRecord = Record<string, unknown> & {
   entityId?: string;
@@ -178,6 +182,7 @@ describe("fast-manim snapshot result v1", () => {
     expect(sealed.snapshotHash).not.toBe(ZERO_SHA256);
     expect(sealed.bundle.scene.source.snapshotHash).toBe(sealed.snapshotHash);
     expect(digestFastManimSnapshotBundleV1(sealed.bundle)).toBe(sealed.snapshotHash);
+    expect(sealed.bundle.scene.provenance[0]?.evidence).toEqual([FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V1]);
     await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expected)).resolves.toEqual(sealed);
     await expect(parseProducer(sealed, expected)).rejects.toMatchObject({
       code: "snapshot-not-unsealed",
@@ -202,6 +207,48 @@ describe("fast-manim snapshot result v1", () => {
     ).resolves.toMatchObject({ kind: "unsupported" });
   });
 
+  it("seals a bounded variable-duration V2 still while keeping versions correlated", async () => {
+    const v1 = await importedBundle();
+    const duration = 2.5;
+    const v2 = sceneIrBundleV1Schema.parse({
+      ...v1,
+      scene: {
+        ...v1.scene,
+        duration,
+        entities: v1.scene.entities.map((entity) => ({ ...entity, lifetimes: [{ start: 0, end: duration }] })),
+        source: { ...v1.scene.source, snapshotVersion: 2 },
+      },
+    });
+    const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
+    const sealed = await parseProducer(compiled(v2), expectedV2);
+    if (sealed.kind !== "compiled" || sealed.bundle.scene.source.kind !== "imported-manim-server-snapshot") {
+      throw new Error("Expected a compiled V2 snapshot.");
+    }
+    expect(sealed.bundle.scene.duration).toBe(duration);
+    expect(sealed.bundle.scene.entities.every((entity) => entity.lifetimes[0]?.end === duration)).toBe(true);
+    expect(sealed.bundle.scene.source.snapshotVersion).toBe(2);
+    expect(sealed.bundle.scene.provenance[0]?.evidence).toEqual([FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V2]);
+    await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV2)).resolves.toEqual(sealed);
+    await expect(parseProducer(compiled(v2), expected)).rejects.toMatchObject({ code: "snapshot-source-mismatch" });
+    await expect(parseProducer(compiled(v1), expectedV2)).rejects.toMatchObject({ code: "snapshot-source-mismatch" });
+
+    const tooLong = {
+      ...v2,
+      scene: {
+        ...v2.scene,
+        duration: 3_600.001,
+        entities: v2.scene.entities.map((entity) => ({ ...entity, lifetimes: [{ start: 0, end: 3_600.001 }] })),
+      },
+    } as SceneIrBundleV1;
+    await expect(parseProducer(compiled(tooLong), expectedV2)).rejects.toMatchObject({ code: "profile-violation" });
+  });
+
+  it("defaults legacy persisted correlation metadata to profile V1 only", () => {
+    const { snapshotVersion: _snapshotVersion, ...legacy } = expected;
+    expect(expectedFastManimSnapshotCorrelationV1Schema.parse(legacy).snapshotVersion).toBe(1);
+    expect(() => expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 3 })).toThrow();
+  });
+
   it("rejects unknown fields and newer envelope versions", async () => {
     const value = compiled(await importedBundle());
     await expect(parseProducer({ ...value, unexpected: true }, expected)).rejects.toThrow();
@@ -221,7 +268,7 @@ describe("fast-manim snapshot result v1", () => {
           ...value,
           bundle: {
             ...value.bundle,
-            scene: { ...value.bundle.scene, source: { ...value.bundle.scene.source, snapshotVersion: 2 } },
+            scene: { ...value.bundle.scene, source: { ...value.bundle.scene.source, snapshotVersion: 3 } },
           },
         },
         expected,

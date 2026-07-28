@@ -129,6 +129,10 @@ if (request.runtimeConfig.randomSeed !== 0) {
   process.stderr.write("Producer request runtime config must pin randomSeed to 0.\n");
   process.exit(4);
 }
+if (request.snapshotVersion !== request.runtimeConfig.snapshotVersion) {
+  process.stderr.write("Producer request snapshotVersion must match its runtime config.\n");
+  process.exit(4);
+}
 if (process.env.PYTHONHASHSEED !== "0") {
   process.stderr.write("The fast-manim producer requires PYTHONHASHSEED=0.\n");
   process.exit(4);
@@ -257,6 +261,7 @@ if (!bundlePath) {
 }
 const fixture = JSON.parse(await readFile(bundlePath, "utf8"));
 const snapshotHash = mode === "sealed" ? "1".repeat(64) : "0".repeat(64);
+const snapshotDuration = Number(argumentValue("duration") ?? fixture.scene.duration);
 
 // Remap every identifier onto the mutual exporter/server v1 convention: the
 // manifest at `${sceneId}/manifest`, entities at
@@ -281,6 +286,7 @@ let entities = fixture.scene.entities.map((entity) => ({
   id: entityId(entity.id),
   parentId: entity.parentId === null ? null : entityId(entity.parentId),
   provenanceId: entityProvenanceId(entity.sceneOrder),
+  lifetimes: entity.lifetimes.map((lifetime) => ({ ...lifetime, end: snapshotDuration })),
 }));
 let animationChannels = fixture.scene.animationChannels.map((channel) => ({
   ...channel,
@@ -408,13 +414,14 @@ const bundle = {
     assetManifest: { manifestDigest, manifestId },
     entities,
     provenance,
+    duration: snapshotDuration,
     requiredCapabilities,
     sceneId: recomputedSceneId,
     source: {
       kind: "imported-manim-server-snapshot",
       runtimeConfigHash,
       snapshotHash,
-      snapshotVersion: 1,
+      snapshotVersion: request.snapshotVersion,
       sourceHash,
     },
   },

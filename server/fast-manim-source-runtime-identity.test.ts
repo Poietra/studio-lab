@@ -149,6 +149,7 @@ describe("verifyFastManimSourceRuntimeIdentityV1 complexity", () => {
       projectId: "default",
       requestId: "identity-complexity",
       runtimeConfigHash,
+      snapshotVersion: 1 as const,
       sceneId,
       sceneName: "ExampleScene",
       sourceHash,

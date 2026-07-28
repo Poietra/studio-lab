@@ -56,6 +56,7 @@ describe("fast-manim snapshot runtime config", () => {
     expect(
       digestFastManimSnapshotRuntimeConfigV1({ ...config, frame: { ...config.frame, width: 14.2220000001 } }),
     ).not.toBe(digest);
+    expect(digestFastManimSnapshotRuntimeConfigV1({ ...config, snapshotVersion: 2 })).not.toBe(digest);
     expect(() =>
       digestFastManimSnapshotRuntimeConfigV1({
         ...config,
@@ -95,6 +96,17 @@ describe("fast-manim snapshot runtime config", () => {
     expect(producerRequest.sceneId).toMatch(/^scene:[0-9a-f]{64}$/);
     expect(fastManimSnapshotSceneIdV1("scene.py", "OtherScene")).not.toBe(producerRequest.sceneId);
     expect(fastManimSnapshotProducerRequestV1Schema.parse(producerRequest)).toEqual(producerRequest);
+    const v2Config = { ...config, snapshotVersion: 2 } as const;
+    const v2Request = {
+      ...producerRequest,
+      runtimeConfig: v2Config,
+      runtimeConfigHash: digestFastManimSnapshotRuntimeConfigV1(v2Config),
+      snapshotVersion: 2,
+    } as const;
+    expect(fastManimSnapshotProducerRequestV1Schema.parse(v2Request)).toEqual(v2Request);
+    expect(() => fastManimSnapshotProducerRequestV1Schema.parse({ ...v2Request, snapshotVersion: 1 })).toThrow(
+      /different snapshot version/i,
+    );
     expect(() =>
       fastManimSnapshotProducerRequestV1Schema.parse({ ...producerRequest, runtimeConfigHash: "b".repeat(64) }),
     ).toThrow(/canonical digest/i);

@@ -108,6 +108,26 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     expect(second.snapshot.snapshotHash).toBe(first.snapshot.snapshotHash);
   });
 
+  it("negotiates and publishes an opt-in variable-duration V2 still", async () => {
+    const runner = createRunner(await projectRoot(), producerCommand("--duration=2.5"), { snapshotVersion: 2 });
+    const result = await runner.run(runRequest());
+    expect(result.status).toBe("verified");
+    if (result.status !== "verified" || result.snapshot.kind !== "compiled") {
+      throw new Error("Expected a verified V2 snapshot run.");
+    }
+    const bundle = result.snapshot.bundle as {
+      scene: {
+        duration: number;
+        entities: readonly { lifetimes: readonly { end: number; start: number }[] }[];
+        source: { snapshotVersion: number };
+      };
+    };
+    expect(result.runtimeConfigHash).toBe(digestFastManimSnapshotRuntimeConfigV1(runtimeConfig(2)));
+    expect(bundle.scene.duration).toBe(2.5);
+    expect(bundle.scene.source.snapshotVersion).toBe(2);
+    expect(bundle.scene.entities.every((entity) => entity.lifetimes[0]?.end === 2.5)).toBe(true);
+  });
+
   it("verifies and republishes the current snapshotJson source/runtime identity map", async () => {
     const runner = createRunner(await projectRoot(), producerCommand("--mode=combined-identity"));
     const first = await runner.run(runRequest());

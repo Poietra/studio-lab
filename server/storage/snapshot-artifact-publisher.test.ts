@@ -36,6 +36,7 @@ const expected = {
   projectId: identity.projectId,
   requestId: "snapshot-request-a",
   runtimeConfigHash: "b".repeat(64),
+  snapshotVersion: 1,
   sceneId: fastManimSnapshotSceneIdV1(identity.sourcePath, identity.sceneName),
   sceneName: identity.sceneName,
   sourceHash: "a".repeat(64),
@@ -92,7 +93,7 @@ async function sealedSnapshot(expectedValue = expected) {
       },
     },
   });
-  const { frame: _frame, ...wire } = expectedValue;
+  const { frame: _frame, snapshotVersion: _snapshotVersion, ...wire } = expectedValue;
   const sealed = await parseAndSealFastManimSnapshotProducerJsonV1(
     JSON.stringify({
       ...wire,

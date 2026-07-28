@@ -149,6 +149,37 @@ fn serde_rejects_non_v1_versions_and_unknown_tags() {
 }
 
 #[test]
+fn imported_snapshot_source_accepts_profiles_one_and_two_only() {
+    for snapshot_version in [1, 2] {
+        let mut scene = empty_scene();
+        scene.source = SceneSourceV1::ImportedManimServerSnapshot {
+            runtime_config_hash: REVISION.to_owned(),
+            snapshot_hash: REVISION.to_owned(),
+            snapshot_version,
+            source_hash: REVISION.to_owned(),
+        };
+        validate_scene_ir_v1(&scene).unwrap();
+        assert_eq!(
+            parse_scene_ir_json_v1(&serde_json::to_vec(&scene).unwrap()).unwrap(),
+            scene
+        );
+    }
+
+    let mut invalid = empty_scene();
+    invalid.source = SceneSourceV1::ImportedManimServerSnapshot {
+        runtime_config_hash: REVISION.to_owned(),
+        snapshot_hash: REVISION.to_owned(),
+        snapshot_version: 3,
+        source_hash: REVISION.to_owned(),
+    };
+    assert!(
+        validate_scene_ir_v1(&invalid)
+            .unwrap_err()
+            .contains_message("snapshot profile version")
+    );
+}
+
+#[test]
 fn representative_scene_semantics_are_fail_closed() {
     let scene = empty_scene();
     validate_scene_ir_v1(&scene).unwrap();

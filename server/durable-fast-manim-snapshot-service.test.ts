@@ -57,7 +57,7 @@ const compiledSnapshot = {
     scene: {
       camera: { view: { frameHeight: 8, frameWidth: 14.222222222222221 } },
       sceneId: `scene:${"1".repeat(64)}`,
-      source: { sourceHash: SOURCE_DIGEST },
+      source: { kind: "imported-manim-server-snapshot", snapshotVersion: 1, sourceHash: SOURCE_DIGEST },
     },
   },
   kind: "compiled",
@@ -110,6 +110,7 @@ function expected(): ExpectedFastManimSnapshotCorrelationV1 {
     projectId: PROJECT,
     requestId: request.requestId,
     runtimeConfigHash: RUNTIME_DIGEST,
+    snapshotVersion: 1,
     sceneId: compiledSnapshot.bundle.scene.sceneId,
     sceneName: SCENE_NAME,
     sourceHash: SOURCE_DIGEST,
