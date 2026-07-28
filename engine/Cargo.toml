@@ -35,3 +35,12 @@ all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
+
+# Full debug info across the dependency tree (wgpu, naga, lyon) grew
+# `engine/target` past 11 GB. Line tables keep backtraces and panic
+# locations, which is what the test suite and the wasm smoke need.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
