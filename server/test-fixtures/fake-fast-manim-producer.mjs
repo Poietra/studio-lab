@@ -100,7 +100,7 @@ if (mode === "garbage") {
 }
 if (mode === "huge") {
   const filler = "x".repeat(64 * 1024);
-  for (let written = 0; written < 6 * 1024 * 1024; written += filler.length) {
+  for (let written = 0; written < 9 * 1024 * 1024; written += filler.length) {
     if (!process.stdout.write(filler)) {
       await new Promise((resolve) => process.stdout.once("drain", resolve));
     }
@@ -420,7 +420,106 @@ const bundle = {
   },
 };
 
-const resultJson = JSON.stringify({ ...envelope, bundle, kind: "compiled", snapshotHash });
+const snapshotResult = { ...envelope, bundle, kind: "compiled", snapshotHash };
+let resultJson = JSON.stringify(snapshotResult);
+
+if (mode.startsWith("combined-identity")) {
+  const snapshotJson = canonicalJson(snapshotResult);
+  const snapshotDigest = createHash("sha256").update(snapshotJson, "utf8").digest("hex");
+  const assignmentSpan = { endColumn: 14, endLine: 5, startColumn: 8, startLine: 5 };
+  const usageSpan = { endColumn: 23, endLine: 6, startColumn: 17, startLine: 6 };
+  const identityName = argumentValue("identity-name") ?? "circle";
+  const identityOrdinal = Number(argumentValue("identity-ordinal") ?? "1");
+  const identityLine = Number(argumentValue("identity-line") ?? "0");
+  let span = mode === "combined-identity-usage-span" ? usageSpan : assignmentSpan;
+  if (identityLine > 0) {
+    const rawLine = request.sourceText.split(/\r?\n/)[identityLine - 1] ?? "";
+    const characterColumn =
+      argumentValue("identity-occurrence") === "last"
+        ? rawLine.lastIndexOf(identityName)
+        : rawLine.indexOf(identityName);
+    if (characterColumn < 0) {
+      process.stderr.write("Configured identity token is missing from its source line.\n");
+      process.exit(4);
+    }
+    const startColumn = Buffer.byteLength(rawLine.slice(0, characterColumn), "utf8");
+    span = {
+      endColumn: startColumn + Buffer.byteLength(identityName, "utf8"),
+      endLine: identityLine,
+      startColumn,
+      startLine: identityLine,
+    };
+  }
+  const bindingPayload = [
+    "poietra.fast-manim-source-runtime-identity",
+    "1",
+    recomputedSourceHash,
+    recomputedSceneId,
+    identityName,
+    String(identityOrdinal),
+    String(span.startLine),
+    String(span.startColumn),
+    String(span.endLine),
+    String(span.endColumn),
+  ].join("\u0000");
+  const binding = {
+    id: `source-binding:${createHash("sha256").update(bindingPayload, "utf8").digest("hex")}`,
+    name: identityName,
+    ordinal: identityOrdinal,
+    span,
+  };
+  if (mode === "combined-identity-binding-id-tamper") binding.id = `source-binding:${"f".repeat(64)}`;
+  const mappedRecord = {
+    bindings: [{ binding, boundSequence: 1, releasedSequence: null }],
+    entityId: entities[0].id,
+    familyPath: [],
+    lifecycle: [{ action: "add", sequence: 1 }],
+    provenanceId: entities[0].provenanceId,
+    reasons: [],
+    runtimeType: "manim.mobject.geometry.arc.Circle",
+    sceneOrder: 0,
+    status: "mapped",
+  };
+  const unmatchedRecords = entities.slice(1).map((entity) => ({
+    bindings: [],
+    entityId: entity.id,
+    familyPath: [],
+    lifecycle: [],
+    provenanceId: entity.provenanceId,
+    reasons: ["no-active-source-binding"],
+    runtimeType: "manim.mobject.mobject.Mobject",
+    sceneOrder: entity.sceneOrder,
+    status: "unmatched",
+  }));
+  if (mode === "combined-identity-duplicate-sequence") {
+    unmatchedRecords[0].bindings = [{ binding, boundSequence: 1, releasedSequence: null }];
+    unmatchedRecords[0].reasons = [];
+    unmatchedRecords[0].status = "mapped";
+  }
+  const records = [mappedRecord, ...unmatchedRecords];
+  if (mode === "combined-identity-missing-record") records.pop();
+  const evidence = {
+    issues: [],
+    kind: "complete",
+    projectId: request.projectId,
+    records,
+    requestId: request.requestId,
+    runtimeConfigHash: recomputedRuntimeConfigHash,
+    sceneId: recomputedSceneId,
+    sceneName: request.sceneName,
+    snapshotDigest,
+    sourceHash: mode === "combined-identity-stale-source" ? "f".repeat(64) : recomputedSourceHash,
+    sourcePath: request.sourcePath,
+  };
+  const combined = {
+    evidence,
+    schema: "poietra.fast-manim-source-runtime-identity",
+    snapshot: snapshotResult,
+    snapshotDigest: mode === "combined-identity-digest-tamper" ? "f".repeat(64) : snapshotDigest,
+    version: 1,
+  };
+  resultJson = mode === "combined-identity-noncanonical" ? JSON.stringify(combined) : canonicalJson(combined);
+}
 
 const orphanModes = new Set(["orphan-hang", "orphan-flood", "orphan-setsid", "orphan-parent-hang"]);
 if (orphanModes.has(mode)) {

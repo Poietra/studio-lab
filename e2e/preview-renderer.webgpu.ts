@@ -114,7 +114,15 @@ test("presents exactly correlated retained WebGPU frames while the semantic edit
   const earlierBox = await earlier.boundingBox();
   if (!canvasBox || !earlierBox) throw new Error("The Studio canvas or the earlier circle is not visible.");
   const centerFraction = (earlierBox.x + earlierBox.width / 2 - canvasBox.x) / canvasBox.width;
+  // The source invokes shift dynamically through getattr, which the static
+  // importer deliberately does not project. Only the verified identity map
+  // can move this hit target onto the runtime pixels at world x=-1 (43.75%).
   expect(Math.abs(centerFraction - 0.4375)).toBeLessThan(0.01);
+  const earlierStudioId = await earlier.getAttribute("data-studio-entity");
+  expect(earlierStudioId).toBeTruthy();
+  const earlierWrapper = page.locator(`[data-studio-entity-wrapper="${earlierStudioId}"]`);
+  await expect(earlierWrapper).toHaveAttribute("data-studio-runtime-entity", "earlier");
+  await expect(earlierWrapper).toHaveAttribute("data-studio-runtime-binding", `source-binding:${"b".repeat(64)}`);
   const stroke = page.getByRole("button", { name: "Move stroke", exact: true });
   const strokeBox = await stroke.boundingBox();
   if (!strokeBox) throw new Error("The stroke line is not visible in the Studio canvas.");
@@ -173,6 +181,7 @@ test("a workspace switch away from the harness and back never carries preview au
   const harnessEvidence = (await captureHostEvidence(page, [{ fractionX: 5 / 160, fractionY: 5 / 90 }])) ?? null;
   if (!harnessEvidence) throw new Error("The harness workspace did not expose frame evidence.");
   expect(harnessEvidence.packetId).toBe(await canvasRoot.getAttribute("data-preview-packet-id"));
+  await expect(page.locator("[data-studio-runtime-entity]")).toHaveCount(3);
 
   await page.getByRole("button", { name: "Back to workspaces" }).click();
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
@@ -185,6 +194,7 @@ test("a workspace switch away from the harness and back never carries preview au
   );
   await expect(canvasRoot).not.toHaveAttribute("data-preview-packet-id", /.+/);
   await expect(page.locator("[data-studio-semantic-paint='deferred-to-canvas']")).toHaveCount(0);
+  await expect(page.locator("[data-studio-runtime-entity]")).toHaveCount(0);
   expect(await captureHostEvidence(page, [{ fractionX: 0.5, fractionY: 0.5 }])).toBeNull();
 
   await page.getByRole("button", { name: "Back to workspaces" }).click();
@@ -199,6 +209,7 @@ test("a workspace switch away from the harness and back never carries preview au
   expect(returnedEvidence.revision).toBe(FIXTURE_ENGINE_REVISION);
   expect(returnedEvidence.packetId).toBe(returnedPacketId);
   expectPixelNear(returnedEvidence.samples[0], [0, 0, 0, 255]);
+  await expect(page.locator("[data-studio-runtime-entity]")).toHaveCount(3);
 });
 
 test("keeps presenting only matching frames across rapid scrubs", async ({ page }) => {
@@ -225,8 +236,12 @@ test("falls back to the whole Scene during a transient drag and after the result
   await expectPresented(page);
 
   const earlier = page.getByRole("button", { name: "Move earlier", exact: true });
+  const studioEntityId = await earlier.getAttribute("data-studio-entity");
+  expect(studioEntityId).toBeTruthy();
   await earlier.click();
   await expect(earlier).toHaveAttribute("aria-pressed", "true");
+  const wrapper = page.locator(`[data-studio-entity-wrapper="${studioEntityId}"]`);
+  await expect(wrapper).toHaveAttribute("data-studio-runtime-entity", "earlier");
   await expectPresented(page);
   const box = await earlier.boundingBox();
   if (!box) throw new Error("The earlier circle is not visible in the Studio canvas.");
@@ -236,10 +251,26 @@ test("falls back to the whole Scene during a transient drag and after the result
   await expect(page.locator("[data-studio-canvas]")).toHaveAttribute("data-preview-fallback-reason", "transient-edit");
   await expectSemanticPaintRestored(page);
   await page.mouse.up();
+  await expect(page.getByRole("checkbox", { name: "Select earlier" })).toBeChecked();
   await expect(page.locator("[data-studio-canvas]")).toHaveAttribute(
     "data-preview-fallback-reason",
     "snapshot-uncorrelated",
   );
   await page.getByRole("button", { name: "Discard" }).click();
   await expectPresented(page);
+
+  const restoredEarlier = page.locator(`[data-studio-entity="${studioEntityId}"]`);
+  await expect(restoredEarlier).toHaveAttribute("aria-pressed", "true");
+  const resize = page.getByRole("button", { name: "Resize earlier from bottom-right corner" });
+  await expect(resize).toHaveAttribute("data-studio-resize-handle", studioEntityId ?? "");
+  const resizeBox = await resize.boundingBox();
+  if (!resizeBox) throw new Error("The earlier Circle resize handle is not visible.");
+  const resizeOrigin = { x: resizeBox.x + resizeBox.width / 2, y: resizeBox.y + resizeBox.height / 2 };
+  await page.mouse.move(resizeOrigin.x, resizeOrigin.y);
+  await page.mouse.down();
+  await page.mouse.move(resizeOrigin.x + 30, resizeOrigin.y + 20, { steps: 4 });
+  await expect(page.locator("[data-studio-canvas]")).toHaveAttribute("data-preview-fallback-reason", "transient-edit");
+  await page.mouse.up();
+  await expect(page.getByRole("checkbox", { name: "Select earlier" })).toBeChecked();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
 });

@@ -8,7 +8,7 @@ import { manimProjectIdSchema } from "../src/render-pipeline/contracts";
 import {
   type FastManimSnapshotProducerRequestV1,
   fastManimSnapshotProducerRequestV1Schema,
-  MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES,
+  MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
   MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES,
 } from "./fast-manim-snapshot-contract";
 
@@ -298,7 +298,7 @@ export function copyFastManimSandboxUint8ArrayV1(value: unknown, maximumByteLeng
 
 const fastManimSandboxResultBytesV1Schema = z.custom<Uint8Array>((value) => {
   const byteLength = inspectedFastManimSandboxUint8ArrayByteLengthV1(value);
-  return byteLength !== null && byteLength <= MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES;
+  return byteLength !== null && byteLength <= MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES;
 }, "Sandbox results must be fixed Uint8Array bytes within the raw result byte budget.");
 
 export const fastManimSandboxBackendResultV1Schema = z.discriminatedUnion("kind", [
