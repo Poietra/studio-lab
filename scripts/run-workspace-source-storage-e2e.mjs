@@ -11,7 +11,7 @@ const runId = randomBytes(6).toString("hex");
 const postgresContainer = `poietra-storage-e2e-${runId}-postgres`;
 const minioContainer = `poietra-storage-e2e-${runId}-minio`;
 const createdContainers = [];
-let testProcess = null;
+const testProcesses = new Set();
 let interruptedSignal = null;
 
 function validateContainerName(name) {
@@ -54,18 +54,51 @@ async function retry(label, operation, attempts = 150) {
 
 const STORAGE_SUITES = [
   {
+    database: "poietra_workspace_source",
     file: "server/storage/workspace-source-storage.real.test.ts",
+    id: "workspace-source",
     title: "survives SIGKILL, resolves cross-process CAS exactly once, isolates tenants, and collects orphans",
   },
   {
+    database: "poietra_render_session",
     file: "server/storage/render-session-storage.real.test.ts",
+    id: "render-session",
     title: "survives SIGKILL and fences recovery, source actions, CAS, and tenant routing",
   },
   {
+    database: "poietra_snapshot_publication",
     file: "server/storage/snapshot-publication-storage.real.test.ts",
+    id: "snapshot-publication",
     title: "publishes across processes, isolates tenants, rejects stale source CAS, and deletes an upload orphan",
   },
 ];
+
+function postgresIdentifier(value) {
+  if (!/^[a-z][a-z0-9_]{0,62}$/.test(value)) throw new Error("Refusing to create an invalid E2E database name.");
+  return `"${value}"`;
+}
+
+async function createSuiteDatabases(adminUrl) {
+  const client = new Client({ connectionString: adminUrl });
+  try {
+    await client.connect();
+    for (const suite of STORAGE_SUITES) {
+      await client.query(`CREATE DATABASE ${postgresIdentifier(suite.database)}`);
+    }
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+}
+
+function suiteEnvironment(commonEnvironment, postgresAdminUrl, suite) {
+  const databaseUrl = new URL(postgresAdminUrl);
+  databaseUrl.pathname = `/${suite.database}`;
+  return {
+    ...commonEnvironment,
+    POIETRA_STORAGE_E2E_DATABASE_URL: databaseUrl.href,
+    POIETRA_STORAGE_E2E_S3_BUCKET: `poietra-storage-e2e-${runId}-${suite.id}`,
+  };
+}
 
 function writeFailureOutput(stdout, stderr) {
   if (stdout.length > 0) process.stderr.write(`${stdout}\n`);
@@ -78,7 +111,7 @@ async function runTestFile(environment, suite) {
       env: { ...process.env, ...environment },
       stdio: ["ignore", "pipe", "pipe"],
     });
-    testProcess = child;
+    testProcesses.add(child);
     let stdout = "";
     let stderr = "";
     let spawnError = null;
@@ -92,7 +125,7 @@ async function runTestFile(environment, suite) {
       spawnError = error;
     });
     child.once("close", (code, signal) => {
-      if (testProcess === child) testProcess = null;
+      testProcesses.delete(child);
       if (spawnError) {
         reject(new Error(`Storage E2E could not start: ${suite.file}.`, { cause: spawnError }));
         return;
@@ -135,8 +168,14 @@ async function runTestFile(environment, suite) {
 }
 
 async function runTests(environment) {
-  for (const suite of STORAGE_SUITES) {
-    await runTestFile(environment, suite);
+  const results = await Promise.allSettled(
+    STORAGE_SUITES.map((suite) =>
+      runTestFile(suiteEnvironment(environment.common, environment.postgresAdminUrl, suite), suite),
+    ),
+  );
+  const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+  if (failures.length > 0) {
+    throw new AggregateError(failures, `${failures.length} durable storage E2E suite(s) failed.`);
   }
 }
 
@@ -157,7 +196,7 @@ async function cleanup() {
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.once(signal, () => {
     interruptedSignal = signal;
-    testProcess?.kill(signal);
+    for (const child of testProcesses) child.kill(signal);
   });
 }
 
@@ -193,9 +232,9 @@ try {
 
   const postgresPort = await publishedPort(postgresContainer, 5432);
   const minioPort = await publishedPort(minioContainer, 9000);
-  const databaseUrl = `postgresql://poietra:${postgresPassword}@127.0.0.1:${postgresPort}/poietra`;
+  const postgresAdminUrl = `postgresql://poietra:${postgresPassword}@127.0.0.1:${postgresPort}/postgres`;
   await retry("PostgreSQL", async () => {
-    const client = new Client({ connectionString: databaseUrl });
+    const client = new Client({ connectionString: postgresAdminUrl });
     try {
       await client.connect();
       await client.query("SELECT 1");
@@ -205,13 +244,15 @@ try {
     }
   });
   await retry("MinIO", async () => (await fetch(`http://127.0.0.1:${minioPort}/minio/health/ready`)).ok);
+  await createSuiteDatabases(postgresAdminUrl);
 
   await runTests({
-    POIETRA_STORAGE_E2E_DATABASE_URL: databaseUrl,
-    POIETRA_STORAGE_E2E_S3_ACCESS_KEY: minioAccessKey,
-    POIETRA_STORAGE_E2E_S3_BUCKET: `poietra-storage-e2e-${runId}`,
-    POIETRA_STORAGE_E2E_S3_ENDPOINT: `http://127.0.0.1:${minioPort}`,
-    POIETRA_STORAGE_E2E_S3_SECRET_KEY: minioSecretKey,
+    common: {
+      POIETRA_STORAGE_E2E_S3_ACCESS_KEY: minioAccessKey,
+      POIETRA_STORAGE_E2E_S3_ENDPOINT: `http://127.0.0.1:${minioPort}`,
+      POIETRA_STORAGE_E2E_S3_SECRET_KEY: minioSecretKey,
+    },
+    postgresAdminUrl,
   });
 } catch (error) {
   failure = error;
