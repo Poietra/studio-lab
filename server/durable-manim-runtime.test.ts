@@ -46,10 +46,17 @@ describe("DurableManimRuntimeV1 production readiness", () => {
 
   it("requires and delegates durable snapshots in the production runtime", async () => {
     const closeOrder: string[] = [];
+    const deleteController = new AbortController();
     const runSceneSnapshot = vi.fn(async () => ({ kind: "run" }));
     const sceneSnapshot = vi.fn(async () => ({ kind: "read" }));
-    const releaseProject = vi.fn(async () => undefined);
+    const releaseProject = vi.fn(async () => {
+      deleteController.abort();
+    });
     const softDeleteProject = vi.fn(async () => undefined);
+    const listProjects = vi.fn(async (_tenantId: string, signal?: AbortSignal) => {
+      signal?.throwIfAborted();
+      return { defaultProjectId: null, projects: [] };
+    });
     const snapshotsClose = vi.fn(async () => {
       closeOrder.push("snapshots");
     });
@@ -68,7 +75,7 @@ describe("DurableManimRuntimeV1 production readiness", () => {
       close: async () => {
         closeOrder.push("repository");
       },
-      listProjects: async () => ({ defaultProjectId: null, projects: [] }),
+      listProjects,
       ready: async () => true,
       softDeleteProject,
     });
@@ -97,12 +104,15 @@ describe("DurableManimRuntimeV1 production readiness", () => {
     await expect(runtime.productionReady()).resolves.toBe(true);
     await expect(runtime.runSceneSnapshot(request)).resolves.toEqual({ kind: "run" });
     await expect(runtime.sceneSnapshot("project-a", query)).resolves.toEqual({ kind: "read" });
-    await runtime.unregisterProject("project-a");
+    await expect(runtime.unregisterProject("project-a", deleteController.signal)).resolves.toMatchObject({
+      project: null,
+    });
     await runtime.close();
 
     expect(runSceneSnapshot).toHaveBeenCalledWith(request, undefined);
     expect(sceneSnapshot).toHaveBeenCalledWith("project-a", query);
-    expect(releaseProject).toHaveBeenCalledWith("project-a", undefined);
+    expect(releaseProject).toHaveBeenCalledWith("project-a", deleteController.signal);
+    expect(listProjects).toHaveBeenCalledWith("tenant-a", undefined);
     expect(softDeleteProject).not.toHaveBeenCalled();
     expect(snapshotsClose).toHaveBeenCalledOnce();
     expect(closeOrder.indexOf("snapshots")).toBeLessThan(closeOrder.indexOf("repository"));

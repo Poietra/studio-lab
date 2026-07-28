@@ -188,7 +188,9 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     } else {
       await this.#repository.softDeleteProject(this.tenantId, projectId, signal);
     }
-    return this.#mutationView(null, signal);
+    // Deletion is already committed. Caller cancellation must not turn that
+    // durable success into a failed API response during the catalog refresh.
+    return this.#mutationView(null);
   }
 
   async #projectAndHeads(projectId?: string, signal?: AbortSignal) {
