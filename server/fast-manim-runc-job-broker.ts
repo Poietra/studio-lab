@@ -1,9 +1,14 @@
 import { createHash } from "node:crypto";
-import { lstat, realpath } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, lstat, realpath } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
-import type { LinuxCgroupV2ResourceControllerV1, LinuxCgroupV2ResourceJobV1 } from "./fast-manim-linux-cgroup-v2";
+import {
+  isProductionLinuxCgroupV2ResourceControllerV1,
+  type LinuxCgroupV2ResourceControllerV1,
+  type LinuxCgroupV2ResourceJobV1,
+} from "./fast-manim-linux-cgroup-v2";
 import {
   digestFastManimOciProfileV1,
   FastManimOciBrokerDispatchV1,
@@ -17,8 +22,12 @@ import {
   type FastManimRuncJobBundleV1,
   isProductionFastManimRuncJobBundleStoreV1,
 } from "./fast-manim-runc-job-bundle";
+import type { FastManimRuncMountedRootfsLeaseV1 } from "./fast-manim-runc-mounted-rootfs";
 import { FastManimRuncOciSpecGeneratorV1 } from "./fast-manim-runc-oci-spec";
-import { FastManimRuncVerifiedReleaseV1 } from "./fast-manim-runc-release-trust";
+import {
+  FastManimRuncVerifiedReleaseV1,
+  isProductionFastManimRuncVerifiedReleaseV1,
+} from "./fast-manim-runc-release-trust";
 import {
   type FastManimRuncRootlessIdentityMapV1,
   isFastManimRuncRootlessIdentityMapV1,
@@ -33,6 +42,8 @@ import {
   FastManimSandboxBackendControlError,
   type FastManimSandboxBackendResultV1,
   type FastManimSandboxJobHandleV1,
+  type FastManimSandboxStatusContextV1,
+  parseFastManimSandboxJobIdentityV1,
 } from "./fast-manim-sandbox-backend";
 import {
   type FastManimSandboxResourceLimitsV1,
@@ -44,7 +55,7 @@ import {
 const DEFAULT_STATE_POLL_INTERVAL_MS = 25;
 const MAX_STATE_POLL_INTERVAL_MS = 1_000;
 
-type RuncResourceController = Readonly<Pick<LinuxCgroupV2ResourceControllerV1, "admit">>;
+type RuncResourceController = Readonly<Pick<LinuxCgroupV2ResourceControllerV1, "admit" | "assertReady">>;
 type BrokerActiveJob = Readonly<{ abort: () => void; result: Promise<unknown> }>;
 const testBrokerCapabilityV1 = Object.freeze({ kind: "fast-manim-runc-test-broker" as const });
 
@@ -129,6 +140,7 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
   readonly #seccomp: unknown;
   readonly #seccompDigest: string;
   readonly #sleep: (milliseconds: number, signal: AbortSignal) => Promise<void>;
+  readonly #testOnly: boolean;
   #cleanupFailed = false;
   #closing = false;
 
@@ -142,11 +154,15 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
     if (!(options.release instanceof FastManimRuncVerifiedReleaseV1)) {
       throw new TypeError("The production runc broker requires one verified signed release.");
     }
+    if (!isProductionFastManimRuncVerifiedReleaseV1(options.release) && testCapability !== testBrokerCapabilityV1) {
+      throw new TypeError("The production runc broker requires a measured rootfs release.");
+    }
     if (!isFastManimRuncRootlessIdentityMapV1(options.identityMap)) {
       throw new TypeError("The production runc broker requires one rootless identity map.");
     }
     if (
       typeof options.resourceController?.admit !== "function" ||
+      typeof options.resourceController?.assertReady !== "function" ||
       typeof options.runtime?.create !== "function" ||
       typeof options.runtime?.state !== "function" ||
       typeof options.runtime?.start !== "function" ||
@@ -157,6 +173,12 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
     }
     if (!isProductionFastManimRuncRuntimeV1(options.runtime) && testCapability !== testBrokerCapabilityV1) {
       throw new TypeError("The production runc broker requires its closed runc runtime.");
+    }
+    if (
+      !isProductionLinuxCgroupV2ResourceControllerV1(options.resourceController) &&
+      testCapability !== testBrokerCapabilityV1
+    ) {
+      throw new TypeError("The production runc broker requires its closed cgroup controller.");
     }
     if (options.now !== undefined && typeof options.now !== "function") {
       throw new TypeError("The production runc broker clock is malformed.");
@@ -180,6 +202,30 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
     this.#seccompDigest = createHash("sha256").update(canonicalJsonV1(seccomp), "utf8").digest("hex");
     this.#sleep =
       options.sleep ?? ((milliseconds, signal) => delay(milliseconds, undefined, { signal }).then(() => undefined));
+    this.#testOnly = testCapability === testBrokerCapabilityV1;
+  }
+
+  async ready(context: FastManimSandboxStatusContextV1) {
+    parseFastManimSandboxJobIdentityV1(context.identity);
+    if (!Number.isSafeInteger(context.deadlineEpochMs) || context.deadlineEpochMs <= this.#now()) {
+      throw new TypeError("The runc readiness deadline is invalid.");
+    }
+    context.signal.throwIfAborted();
+    if (this.#closing || this.#cleanupFailed) return false;
+    try {
+      if (!this.#testOnly) await assertRootlessHostHelpersV1();
+      await Promise.all([
+        this.#release.assertReady(context.signal),
+        this.#runtime.assertReady(context.deadlineEpochMs, context.signal),
+        this.#bundleStore.assertReady(),
+        this.#resourceController.assertReady(context.signal),
+      ]);
+      context.signal.throwIfAborted();
+      return !this.#closing && !this.#cleanupFailed && this.#now() < context.deadlineEpochMs;
+    } catch (error) {
+      if (context.signal.aborted) throw error;
+      return false;
+    }
   }
 
   dispatch(dispatch: FastManimOciBrokerDispatchV1): FastManimSandboxJobHandleV1 {
@@ -215,17 +261,12 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
     dispatch: FastManimOciBrokerDispatchV1,
     signal: AbortSignal,
   ): Promise<FastManimSandboxBackendResultV1> {
-    let rootfsPath: string;
     try {
-      rootfsPath = this.#release.resolveRootfsPath(dispatch);
+      this.#release.authorize(dispatch);
       if (
         dispatch.descriptor.profileDigest !== this.#profileDigest ||
         dispatch.descriptor.seccompDigest !== this.#seccompDigest
       ) {
-        return failureResult(dispatch, "sandbox-attestation-rejected");
-      }
-      const [canonicalRootfs, rootfsStatus] = await Promise.all([realpath(rootfsPath), lstat(rootfsPath)]);
-      if (canonicalRootfs !== rootfsPath || !rootfsStatus.isDirectory() || rootfsStatus.isSymbolicLink()) {
         return failureResult(dispatch, "sandbox-attestation-rejected");
       }
     } catch {
@@ -249,6 +290,7 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
     let finalizing = false;
     let haltReason: FastManimSandboxResourceTerminationReasonV1 | null = null;
     let job: LinuxCgroupV2ResourceJobV1 | null = null;
+    let rootfsLease: FastManimRuncMountedRootfsLeaseV1 | null = null;
     let runtimeCreationAttempted = false;
     let runtimeDeleted = false;
     let stopHalt!: (reason: FastManimRuncHaltV1) => void;
@@ -291,13 +333,16 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
         },
       );
       if (haltReason !== null) throw new FastManimRuncHaltV1(haltReason);
+      rootfsLease = await control(
+        this.#release.acquireRootfs(dispatch, job.descriptor.cgroupName, operationController.signal),
+      );
       bundlePlan = this.#bundleStore.plan(job.descriptor.cgroupName);
       const spec = new FastManimRuncOciSpecGeneratorV1({
         assetsSourcePath: bundlePlan.assetsPath,
         expectedSeccompDigest: dispatch.descriptor.seccompDigest,
         identityMap: this.#identityMap,
         profile: this.#profile,
-        rootfsPath,
+        rootfsPath: rootfsLease.rootfsPath,
         seccomp: this.#seccomp,
       }).generate(job.launch);
       bundle = await control(this.#bundleStore.stage({ dispatch, plan: bundlePlan, spec }));
@@ -329,6 +374,8 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
       if (resultBytes.byteLength === 0) throw new Error("The runc producer returned no result bytes.");
       await this.#runtime.delete(job.descriptor.cgroupName, dispatch.context.deadlineEpochMs);
       runtimeDeleted = true;
+      await rootfsLease.close();
+      rootfsLease = null;
       finalizing = true;
       await job.finish("completed", directStartProof);
       const completion = await job.completion;
@@ -382,7 +429,19 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
       } catch (cleanupError) {
         cleanupFailure ??= cleanupError;
       }
-      if (bundlePlan) {
+      const mayReleaseRuntimeArtifacts = !runtimeCreationAttempted || runtimeDeleted;
+      if (!mayReleaseRuntimeArtifacts) {
+        cleanupFailure ??= new Error("The runc container ownership could not be released.");
+      }
+      if (mayReleaseRuntimeArtifacts && rootfsLease) {
+        try {
+          await rootfsLease.close();
+          rootfsLease = null;
+        } catch (cleanupError) {
+          cleanupFailure ??= cleanupError;
+        }
+      }
+      if (mayReleaseRuntimeArtifacts && bundlePlan) {
         try {
           await this.#bundleStore.cleanup(bundle ?? bundlePlan);
         } catch (cleanupError) {
@@ -465,6 +524,27 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
   #latchCleanupFailure() {
     this.#cleanupFailed = true;
     for (const job of this.#active) job.abort();
+  }
+}
+
+async function assertRootlessHostHelpersV1() {
+  if (process.platform !== "linux" || process.getuid?.() === 0 || process.getgid?.() === 0) {
+    throw new Error("The runc broker must run as an unprivileged Linux identity.");
+  }
+  for (const path of ["/usr/bin/newuidmap", "/usr/bin/newgidmap"] as const) {
+    const [canonical, status] = await Promise.all([realpath(path), lstat(path), access(path, constants.X_OK)]).then(
+      ([resolved, stat]) => [resolved, stat] as const,
+    );
+    if (
+      canonical !== path ||
+      !status.isFile() ||
+      status.isSymbolicLink() ||
+      status.uid !== 0 ||
+      status.gid !== 0 ||
+      (status.mode & 0o022) !== 0
+    ) {
+      throw new Error("The rootless user-namespace helper is not trusted.");
+    }
   }
 }
 

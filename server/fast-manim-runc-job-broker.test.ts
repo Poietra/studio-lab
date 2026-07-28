@@ -38,11 +38,15 @@ import {
   type FastManimSandboxResourceLimitsV1,
   type FastManimSandboxResourceTerminationReasonV1,
 } from "./fast-manim-sandbox-resources";
+import {
+  createFastManimRuncRootfsFixtureV1,
+  FAST_MANIM_TEST_ROOTFS_DIGEST_V1,
+} from "./test-fixtures/fast-manim-runc-rootfs-fixture";
 import { sandboxProducerRequest } from "./test-fixtures/fast-manim-sandbox-backend-fixture";
 
 const NOW = 2_000_000_000_000;
 const PID = 4242;
-const ROOTFS_DIGEST = "f".repeat(64);
+const ROOTFS_DIGEST = FAST_MANIM_TEST_ROOTFS_DIGEST_V1;
 const profile = JSON.parse(readFileSync(new URL("../sandbox/fast-manim-oci/profile.v1.json", import.meta.url), "utf8"));
 const seccomp = JSON.parse(readFileSync(new URL("../sandbox/fast-manim-oci/seccomp.v1.json", import.meta.url), "utf8"));
 const seccompDigest = createHash("sha256").update(canonicalJsonV1(seccomp), "utf8").digest("hex");
@@ -114,7 +118,7 @@ function dispatch(options: Readonly<{ build?: FastManimOciBuildAttestationV1; si
   });
 }
 
-function verifiedRelease(job: FastManimOciBrokerDispatchV1, rootfsPath: string) {
+function verifiedRelease(job: FastManimOciBrokerDispatchV1, rootfsPath: string, events: string[]) {
   const payload = {
     expiresAt: NOW + 60_000,
     imageDigest: job.descriptor.imageDigest,
@@ -137,7 +141,7 @@ function verifiedRelease(job: FastManimOciBrokerDispatchV1, rootfsPath: string) 
         publicKeyPem: keyPair.publicKey.export({ format: "pem", type: "spki" }).toString(),
       },
     ],
-    rootFilesystems: [{ rootfsDigest: ROOTFS_DIGEST, rootfsPath }],
+    rootfsRegistry: createFastManimRuncRootfsFixtureV1(rootfsPath, { onEvent: (event) => events.push(event) }),
   }).verify({ payload, signature });
 }
 
@@ -161,6 +165,8 @@ class FakeResourceController {
   constructor(events: string[]) {
     this.events = events;
   }
+
+  async assertReady() {}
 
   async admit(limitsValue: unknown, output: FastManimSandboxBoundedOutputLifecycleV1) {
     this.admitCalls += 1;
@@ -353,7 +359,7 @@ async function fixture(
     now: () => NOW,
     pollIntervalMs: 1,
     profile,
-    release: verifiedRelease(job, rootfsPath),
+    release: verifiedRelease(job, rootfsPath, events),
     resourceController: controller,
     runtime,
     seccomp,
@@ -371,6 +377,19 @@ afterEach(async () => {
 });
 
 describe("production runc job broker", () => {
+  it("reports ready only while every concrete dependency remains healthy", async () => {
+    const test = await fixture();
+    const statusContext = {
+      deadlineEpochMs: NOW + 30_000,
+      identity: test.dispatch.context.identity,
+      signal: new AbortController().signal,
+    };
+
+    await expect(test.broker.ready(statusContext)).resolves.toBe(true);
+    await test.broker.close();
+    await expect(test.broker.ready(statusContext)).resolves.toBe(false);
+  });
+
   it("orders create, two state/proof gates, start, stdin EOF, stopped, delete, and completed cleanup", async () => {
     const test = await fixture();
 
@@ -380,6 +399,8 @@ describe("production runc job broker", () => {
     if (result.kind !== "ok") throw new Error("Expected an accepted runc result.");
     expect(Buffer.from(result.resultBytes).toString("utf8")).toBe('{"ok":true}');
     expect(test.events.filter((event) => !event.startsWith("admit"))).toEqual([
+      "rootfs:image-open",
+      "rootfs:mount-open",
       "create",
       `state:created`,
       `proof:${PID}`,
@@ -389,6 +410,8 @@ describe("production runc job broker", () => {
       "stdin-eof",
       "state:stopped",
       "delete",
+      "rootfs:image-close",
+      "rootfs:mount-close",
       "finish:completed",
     ]);
     expect(test.runtime.requestBytes).toEqual(Buffer.from(test.dispatch.copyRequestBytes()));
@@ -487,6 +510,9 @@ describe("production runc job broker", () => {
     expect(fastManimSandboxBackendControlErrorCode(failure)).toBe("cleanup");
     expect(test.runtime.deleteCalls).toBe(2);
     expect(test.controller.activeJobs).toBe(0);
+    expect(test.events).not.toContain("rootfs:image-close");
+    expect(test.events).not.toContain("rootfs:mount-close");
+    expect(await readdir(test.bundleRoot)).toHaveLength(1);
     expect(() => test.broker.dispatch(test.dispatch)).toThrow();
     await expect(test.broker.close()).rejects.toSatisfy(
       (error: unknown) => fastManimSandboxBackendControlErrorCode(error) === "cleanup",
