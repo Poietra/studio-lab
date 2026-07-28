@@ -13,11 +13,15 @@ import {
   FastManimRuncVerifiedReleaseV1,
 } from "./fast-manim-runc-release-trust";
 import { FastManimSandboxRequestBundleV1 } from "./fast-manim-sandbox-backend";
+import {
+  createFastManimRuncRootfsFixtureV1,
+  FAST_MANIM_TEST_ROOTFS_DIGEST_V1,
+} from "./test-fixtures/fast-manim-runc-rootfs-fixture";
 import { sandboxProducerRequest } from "./test-fixtures/fast-manim-sandbox-backend-fixture";
 
 const profile = JSON.parse(readFileSync(resolve("sandbox/fast-manim-oci/profile.v1.json"), "utf8"));
 const NOW = 1_800_000_000_000;
-const ROOTFS_DIGEST = "f".repeat(64);
+const ROOTFS_DIGEST = FAST_MANIM_TEST_ROOTFS_DIGEST_V1;
 const ROOTFS_PATH = "/srv/poietra/rootfs/by-digest/ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
 
 function buildAttestation() {
@@ -100,12 +104,12 @@ function trust(publicKey: ReturnType<typeof keys>["publicKey"], now: () => numbe
         publicKeyPem: publicKey.export({ format: "pem", type: "spki" }).toString(),
       },
     ],
-    rootFilesystems: [{ rootfsDigest: ROOTFS_DIGEST, rootfsPath: ROOTFS_PATH }],
+    rootfsRegistry: createFastManimRuncRootfsFixtureV1(ROOTFS_PATH),
   });
 }
 
 describe("fast-manim runc signed release trust", () => {
-  it("verifies canonical Ed25519 bytes and resolves only the constructor-owned rootfs path", () => {
+  it("verifies canonical Ed25519 bytes and leases only the registry-owned rootfs path", async () => {
     const job = dispatch();
     const keyPair = keys();
     const verifier = trust(keyPair.publicKey);
@@ -125,7 +129,15 @@ describe("fast-manim runc signed release trust", () => {
     });
     expect(Object.isFrozen(verified.attestation())).toBe(true);
     expect(verified.attestation()).not.toHaveProperty("rootfsPath");
-    expect(verified.resolveRootfsPath(job)).toBe(ROOTFS_PATH);
+    await expect(verified.assertReady(new AbortController().signal)).resolves.toBeUndefined();
+    verified.authorize(job);
+    const lease = await verified.acquireRootfs(
+      job,
+      "poietra-job-v1-0123456789abcdef0123456789abcdef-1",
+      new AbortController().signal,
+    );
+    expect(lease.rootfsPath).toBe(ROOTFS_PATH);
+    await lease.close();
   });
 
   it("rejects stale, future, unknown-key, malformed, and non-canonical signatures", () => {
@@ -164,7 +176,7 @@ describe("fast-manim runc signed release trust", () => {
       const verified = trust(keyPair.publicKey).verify(
         signedRelease(payload(job, { [field]: mismatchedValue }), keyPair.privateKey),
       );
-      expect(() => verified.resolveRootfsPath(job)).toThrow(FastManimRuncReleaseTrustError);
+      expect(() => verified.authorize(job)).toThrow(FastManimRuncReleaseTrustError);
     },
   );
 
@@ -176,13 +188,11 @@ describe("fast-manim runc signed release trust", () => {
     const releasePayload = payload(job);
     const verified = verifier.verify(signedRelease(releasePayload, keyPair.privateKey));
     now = releasePayload.issuedAt - 1;
-    expect(() => verified.resolveRootfsPath(job)).toThrow(FastManimRuncReleaseTrustError);
+    expect(() => verified.authorize(job)).toThrow(FastManimRuncReleaseTrustError);
     expect(() => verified.attestation()).toThrow(FastManimRuncReleaseTrustError);
     now = releasePayload.expiresAt;
-    expect(() => verified.resolveRootfsPath(job)).toThrow(FastManimRuncReleaseTrustError);
-    expect(() => verified.resolveRootfsPath({ descriptor: job.descriptor } as never)).toThrow(
-      FastManimRuncReleaseTrustError,
-    );
+    expect(() => verified.authorize(job)).toThrow(FastManimRuncReleaseTrustError);
+    expect(() => verified.authorize({ descriptor: job.descriptor } as never)).toThrow(FastManimRuncReleaseTrustError);
     expect(() =>
       verifier.verify(
         signedRelease(
@@ -196,20 +206,21 @@ describe("fast-manim runc signed release trust", () => {
         new (FastManimRuncVerifiedReleaseV1 as unknown as new (...values: unknown[]) => FastManimRuncVerifiedReleaseV1)(
           {},
           releasePayload,
-          "/request-controlled",
+          {},
+          {},
           () => NOW,
         ),
     ).toThrow(FastManimRuncReleaseTrustError);
   });
 
-  it("rejects non-canonical rootfs paths, unknown rootfs digests, duplicate config, and non-Ed25519 keys", () => {
+  it("rejects a forged rootfs registry, unknown rootfs digests, duplicate keys, and non-Ed25519 keys", () => {
     const keyPair = keys();
     const publicKeyPem = keyPair.publicKey.export({ format: "pem", type: "spki" }).toString();
     expect(
       () =>
         new FastManimRuncReleaseTrustV1({
           publicKeys: [{ keyId: "release-key-1", publicKeyPem }],
-          rootFilesystems: [{ rootfsDigest: ROOTFS_DIGEST, rootfsPath: "/srv/poietra/../escaped" }],
+          rootfsRegistry: {} as never,
         }),
     ).toThrow(FastManimRuncReleaseTrustError);
     expect(
@@ -219,7 +230,7 @@ describe("fast-manim runc signed release trust", () => {
             { keyId: "release-key-1", publicKeyPem },
             { keyId: "release-key-1", publicKeyPem },
           ],
-          rootFilesystems: [{ rootfsDigest: ROOTFS_DIGEST, rootfsPath: ROOTFS_PATH }],
+          rootfsRegistry: createFastManimRuncRootfsFixtureV1(ROOTFS_PATH),
         }),
     ).toThrow(FastManimRuncReleaseTrustError);
     const rsa = generateKeyPairSync("rsa", { modulusLength: 2048 });

@@ -1,15 +1,19 @@
 import { createPublicKey, type KeyObject, verify as verifySignature } from "node:crypto";
-import { isAbsolute, parse as parsePath, resolve } from "node:path";
 
 import { z } from "zod";
 
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import { FastManimOciBrokerDispatchV1, fastManimOciJobDescriptorV1Schema } from "./fast-manim-oci-sandbox-profile";
+import {
+  FastManimRuncMountedRootfsHandleV1,
+  type FastManimRuncMountedRootfsLeaseV1,
+  FastManimRuncMountedRootfsRegistryV1,
+  isProductionFastManimRuncMountedRootfsRegistryV1,
+} from "./fast-manim-runc-mounted-rootfs";
 
 export const FAST_MANIM_RUNC_RELEASE_SCHEMA_V1 = "poietra.fast-manim-runc-release" as const;
 
 const MAX_TRUSTED_KEYS_V1 = 32;
-const MAX_ROOT_FILESYSTEMS_V1 = 64;
 const keyIdV1Schema = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/u);
 const sha256V1Schema = z.string().regex(/^[a-f0-9]{64}$/u);
 const imageDigestV1Schema = z.string().regex(/^sha256:[a-f0-9]{64}$/u);
@@ -55,7 +59,7 @@ export type FastManimRuncReleaseAttestationV1 = Readonly<{
 export type FastManimRuncReleaseTrustOptionsV1 = Readonly<{
   now?: () => number;
   publicKeys: readonly Readonly<{ keyId: string; publicKeyPem: string }>[];
-  rootFilesystems: readonly Readonly<{ rootfsDigest: string; rootfsPath: string }>[];
+  rootfsRegistry: FastManimRuncMountedRootfsRegistryV1;
 }>;
 
 export class FastManimRuncReleaseTrustError extends Error {
@@ -66,6 +70,7 @@ export class FastManimRuncReleaseTrustError extends Error {
 }
 
 const verifiedReleaseCapabilityV1 = Object.freeze({ kind: "fast-manim-runc-verified-release" as const });
+const verifiedReleaseRegistriesV1 = new WeakMap<FastManimRuncVerifiedReleaseV1, FastManimRuncMountedRootfsRegistryV1>();
 const RELEASE_DESCRIPTOR_DIGESTS = Object.freeze([
   "imageDigest",
   "profileDigest",
@@ -76,21 +81,6 @@ const RELEASE_DESCRIPTOR_DIGESTS = Object.freeze([
 
 function trustFailure(): never {
   throw new FastManimRuncReleaseTrustError();
-}
-
-function canonicalRootfsPath(value: string) {
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    Buffer.byteLength(value, "utf8") > 4096 ||
-    value.includes("\0") ||
-    !isAbsolute(value)
-  ) {
-    trustFailure();
-  }
-  const canonical = resolve(value);
-  if (canonical !== value || canonical === parsePath(canonical).root) trustFailure();
-  return canonical;
 }
 
 function currentEpochMs(now: () => number) {
@@ -114,20 +104,30 @@ export class FastManimRuncVerifiedReleaseV1 {
   readonly #issuedAt: number;
   readonly #now: () => number;
   readonly #payload: FastManimRuncReleasePayloadV1;
-  readonly #rootfsPath: string;
+  readonly #rootfs: FastManimRuncMountedRootfsHandleV1;
+  readonly #rootfsRegistry: FastManimRuncMountedRootfsRegistryV1;
 
   constructor(
     capability: typeof verifiedReleaseCapabilityV1,
     payload: FastManimRuncReleasePayloadV1,
-    rootfsPath: string,
+    rootfs: FastManimRuncMountedRootfsHandleV1,
+    rootfsRegistry: FastManimRuncMountedRootfsRegistryV1,
     now: () => number,
   ) {
-    if (capability !== verifiedReleaseCapabilityV1) trustFailure();
+    if (
+      capability !== verifiedReleaseCapabilityV1 ||
+      !(rootfs instanceof FastManimRuncMountedRootfsHandleV1) ||
+      !(rootfsRegistry instanceof FastManimRuncMountedRootfsRegistryV1)
+    ) {
+      trustFailure();
+    }
     this.#expiresAt = payload.expiresAt;
     this.#issuedAt = payload.issuedAt;
     this.#now = now;
     this.#payload = Object.freeze({ ...payload });
-    this.#rootfsPath = rootfsPath;
+    this.#rootfs = rootfs;
+    this.#rootfsRegistry = rootfsRegistry;
+    verifiedReleaseRegistriesV1.set(this, rootfsRegistry);
     Object.freeze(this);
   }
 
@@ -145,14 +145,42 @@ export class FastManimRuncVerifiedReleaseV1 {
     }
   }
 
-  resolveRootfsPath(dispatch: FastManimOciBrokerDispatchV1) {
+  authorize(dispatch: FastManimOciBrokerDispatchV1) {
     try {
       if (!(dispatch instanceof FastManimOciBrokerDispatchV1)) trustFailure();
       this.#assertCurrent();
       const descriptor = fastManimOciJobDescriptorV1Schema.parse(dispatch.descriptor);
       if (RELEASE_DESCRIPTOR_DIGESTS.some((name) => descriptor[name] !== this.#payload[name])) trustFailure();
-      return this.#rootfsPath;
     } catch {
+      return trustFailure();
+    }
+  }
+
+  async assertReady(signal: AbortSignal) {
+    try {
+      this.#assertCurrent();
+      await this.#rootfsRegistry.assertReady(signal);
+      this.#assertCurrent();
+    } catch {
+      if (signal.aborted) signal.throwIfAborted();
+      return trustFailure();
+    }
+  }
+
+  async acquireRootfs(
+    dispatch: FastManimOciBrokerDispatchV1,
+    jobId: string,
+    signal: AbortSignal,
+  ): Promise<FastManimRuncMountedRootfsLeaseV1> {
+    this.authorize(dispatch);
+    const lease = await this.#rootfs.acquireForJob(jobId, signal);
+    try {
+      signal.throwIfAborted();
+      this.#assertCurrent();
+      return lease;
+    } catch {
+      await lease.close();
+      if (signal.aborted) signal.throwIfAborted();
       return trustFailure();
     }
   }
@@ -167,7 +195,7 @@ export class FastManimRuncVerifiedReleaseV1 {
 export class FastManimRuncReleaseTrustV1 {
   readonly #now: () => number;
   readonly #publicKeys = new Map<string, KeyObject>();
-  readonly #rootFilesystems = new Map<string, string>();
+  readonly #rootfsRegistry: FastManimRuncMountedRootfsRegistryV1;
 
   constructor(options: FastManimRuncReleaseTrustOptionsV1) {
     try {
@@ -175,9 +203,7 @@ export class FastManimRuncReleaseTrustV1 {
         !Array.isArray(options?.publicKeys) ||
         options.publicKeys.length === 0 ||
         options.publicKeys.length > MAX_TRUSTED_KEYS_V1 ||
-        !Array.isArray(options.rootFilesystems) ||
-        options.rootFilesystems.length === 0 ||
-        options.rootFilesystems.length > MAX_ROOT_FILESYSTEMS_V1 ||
+        !(options.rootfsRegistry instanceof FastManimRuncMountedRootfsRegistryV1) ||
         (options.now !== undefined && typeof options.now !== "function")
       ) {
         trustFailure();
@@ -193,11 +219,7 @@ export class FastManimRuncReleaseTrustV1 {
         if (publicKey.asymmetricKeyType !== "ed25519") trustFailure();
         this.#publicKeys.set(parsed.keyId, publicKey);
       }
-      for (const configured of options.rootFilesystems) {
-        const parsed = z.object({ rootfsDigest: sha256V1Schema, rootfsPath: z.string() }).strict().parse(configured);
-        if (this.#rootFilesystems.has(parsed.rootfsDigest)) trustFailure();
-        this.#rootFilesystems.set(parsed.rootfsDigest, canonicalRootfsPath(parsed.rootfsPath));
-      }
+      this.#rootfsRegistry = options.rootfsRegistry;
     } catch {
       trustFailure();
     }
@@ -213,11 +235,22 @@ export class FastManimRuncReleaseTrustV1 {
       const signature = decodeEd25519Signature(release.signature);
       const signedBytes = Buffer.from(canonicalJsonV1(release.payload), "utf8");
       if (!verifySignature(null, signedBytes, publicKey, signature)) trustFailure();
-      const rootfsPath = this.#rootFilesystems.get(release.payload.rootfsDigest);
-      if (!rootfsPath) trustFailure();
-      return new FastManimRuncVerifiedReleaseV1(verifiedReleaseCapabilityV1, release.payload, rootfsPath, this.#now);
+      const rootfs = this.#rootfsRegistry.resolve(release.payload.rootfsDigest);
+      return new FastManimRuncVerifiedReleaseV1(
+        verifiedReleaseCapabilityV1,
+        release.payload,
+        rootfs,
+        this.#rootfsRegistry,
+        this.#now,
+      );
     } catch {
       return trustFailure();
     }
   }
+}
+
+export function isProductionFastManimRuncVerifiedReleaseV1(value: unknown): value is FastManimRuncVerifiedReleaseV1 {
+  if (!(value instanceof FastManimRuncVerifiedReleaseV1)) return false;
+  const registry = verifiedReleaseRegistriesV1.get(value);
+  return registry !== undefined && isProductionFastManimRuncMountedRootfsRegistryV1(registry);
 }
