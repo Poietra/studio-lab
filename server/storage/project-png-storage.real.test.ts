@@ -162,6 +162,14 @@ describe.skipIf(!E2E_CONFIGURED)("PostgreSQL + MinIO project image.png storage",
       ).rejects.toMatchObject({ status: 409 });
 
       const orphan = await pngStore.put(tenant, project, png(48));
+      await expect(
+        pngRepository.compareAndSwapHead({
+          candidate: orphan,
+          expected: { digest: firstHead.receipt.digest, generation: firstHead.generation },
+          projectId: project,
+          tenantId: tenant,
+        }),
+      ).rejects.toMatchObject({ status: 409 });
       const gc = await runProjectPngGcV1({
         cutoff: new Date(Date.now() + 2_000),
         maximum: 32,

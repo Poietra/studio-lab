@@ -124,6 +124,9 @@ describe("PostgresProjectPngRepositoryV1", () => {
 
   it("queues an unreferenced upload orphan while refusing cross-project receipts", async () => {
     const fixture = fakePool((text) => {
+      if (text.includes("FROM public.project_png_objects") && text.includes("FOR UPDATE")) {
+        return { rowCount: 0, rows: [] };
+      }
       if (text.startsWith("SELECT 1") && text.includes("FROM public.project_png_objects o")) {
         expect(text).toContain("FROM public.render_sessions");
         return { rowCount: 0, rows: [] };

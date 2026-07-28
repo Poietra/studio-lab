@@ -63,4 +63,3 @@ ALTER TABLE public.render_sessions
     FOREIGN KEY (tenant_id, project_id, project_png_generation, project_png_digest)
     REFERENCES public.project_png_objects (tenant_id, project_id, generation, digest)
     ON DELETE RESTRICT;
-

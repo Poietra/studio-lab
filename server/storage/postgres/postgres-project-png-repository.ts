@@ -12,7 +12,7 @@ import {
 } from "../project-png-storage";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 
-export const PROJECT_PNG_MIGRATION_V5_CHECKSUM = "30f8b52ead1cc5b23e318db37562e6eb671e44da831121997dca0e50ca62e26a";
+export const PROJECT_PNG_MIGRATION_V5_CHECKSUM = "8e0c02f355a0a88a50e89e2075e5d1fdade76c83eeb494aee41f32facb04beb2";
 
 const MAX_GENERATION = 9_223_372_036_854_775_807n;
 
@@ -180,6 +180,9 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
         throw new HttpError("Project image.png changed before replacement.", 409);
       }
       if (current && sameReceipt(current.receipt, candidate)) return current;
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+        `project-png-object:${tenant}:${candidate.objectKey}:${candidate.versionId}`,
+      ]);
       const deleting = await client.query(
         `SELECT 1 FROM public.project_png_deletions
           WHERE tenant_id = $1 AND object_key = $2 AND version_id = $3`,
@@ -269,6 +272,17 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
         `project-png-object:${tenant}:${receipt.objectKey}:${receipt.versionId}`,
       ]);
+      const storedObject = await client.query<ReceiptRow>(
+        `SELECT ${RECEIPT_COLUMNS}
+           FROM public.project_png_objects
+          WHERE tenant_id = $1 AND project_id = $2 AND object_key = $3 AND version_id = $4
+          FOR UPDATE`,
+        [tenant, project, receipt.objectKey, receipt.versionId],
+      );
+      const registered = storedObject.rows[0];
+      if (registered && !sameReceipt(receiptFromRow(tenant, project, registered), receipt)) {
+        throw new Error("The registered image.png object version is bound to different metadata.");
+      }
       const retained = await client.query(
         `SELECT 1
            FROM public.project_png_objects o
