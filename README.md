@@ -105,20 +105,26 @@ The suite boundaries and the rule for adding regression coverage are documented 
 [the testing strategy](docs/testing-strategy.md).
 
 Magic Edit requires an explicit model endpoint; it never falls back to keyword or
-fixture behavior at runtime. Set `VITE_POIETRA_AI_ENDPOINT` to
-`/api/ai/edit-suggestions`, inject `OPENAI_API_KEY` into the actual server process
+fixture behavior at runtime. For loopback development, set `VITE_POIETRA_AI_ENDPOINT`
+to `/api/ai/edit-suggestions`, inject `OPENAI_API_KEY` into the actual server process
 environment, and optionally select the server-side model with
 `POIETRA_OPENAI_MODEL`. Vite may parse dotenv files while loading public settings,
 but a dotenv `OPENAI_API_KEY` is never adopted as API configuration or exposed in
 diagnostics or the browser bundle; only the actual server process environment supplies
 that credential. Server-only `POIETRA_` settings are also read from an explicit
 non-secret process-environment allowlist; ordinary `VITE_` browser settings retain
-Vite's dotenv behavior. This remains an explicit local-development opt-in: without
-both the endpoint and injected credential, Magic Edit does not call the provider.
-Studio no longer reads the repository-root `.openai-key` file. Existing users should
-migrate that credential to their process environment or secret provider and then
-delete the plaintext file. The Vite development server uses the
-Responses API and returns the same closed
+Vite's dotenv behavior. Without both the endpoint and injected credential, Magic Edit
+does not call the provider. Enabling it prints a fixed warning that editor context is
+sent to the configured remote model.
+
+The legacy repository-root `.openai-key` fallback is disabled by default. It can be
+used only by the loopback development server when both the endpoint above and the
+process-environment flag `POIETRA_AI_LOCAL_KEY_FILE_OPT_IN=1` are present; this path
+prints an explicit fallback warning. Test, staging, and production modes never
+read that file even if the flag is set. Production injects an already-constructed AI
+adapter from its secret provider or process environment, then routes requests through
+the same authenticated principal and tenant registry used by the Manim API. The Vite
+development server uses the Responses API and returns the same closed
 `CreateMotion | CreateTransform | CreateExplanation | CreateCameraFocus | CreateEquation | CreateExplainedEquation | CreateTextTransform | CreateSceneTransition | ScaleObjects | DeleteObjects | EditProgram`
 suggestion result documented in
 `src/ai/edit-suggestions.ts`. Provider credentials never use a `VITE_` variable and
@@ -132,14 +138,17 @@ it instead of becoming an isolated prompt.
 By default, the development API writes privacy-safe lifecycle events to stdout and
 to a per-workspace file below the operating system's temporary directory, outside
 the Vite project root. Each request receives an
-`x-poietra-request-id`; telemetry is limited to bounded outcomes and HTTP status,
-attempt/model labels, validation code counts, and numeric token counters when available.
+`x-poietra-request-id`; telemetry is limited to a bounded request ID, keyed opaque
+tenant/principal correlations, latency and HTTP status, fixed lifecycle event names,
+and numeric token counters when available.
 Prompts, source/object context, clarification content, model instructions and output,
 provider response IDs, response bodies, error messages, tracebacks, and absolute log paths
-are not recorded. The file rotates to `.previous` at 2 MiB and is created with
-user-only permissions. Set `POIETRA_AI_DEBUG_LOG` in the process environment to use
-another local path. Setting it to `off` disables both the file sink and the bounded
-stdout telemetry.
+are not recorded. Authenticated tenant and principal scopes each have bounded rate and
+concurrency admission. Client disconnects and generation deadlines abort the provider
+request and release its reservation. The file rotates to `.previous` at 2 MiB and is
+created with user-only permissions. Set `POIETRA_AI_DEBUG_LOG` in the process
+environment to use another local path. Setting it to `off` disables both the file sink
+and the bounded stdout telemetry.
 
 Logs created by an older Studio version may still contain editor or provider payloads.
 Treat both the active JSONL file and `.previous` as sensitive historical data: do not

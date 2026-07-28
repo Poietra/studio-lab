@@ -4,6 +4,9 @@ import { isIP } from "node:net";
 
 import { z } from "zod";
 
+import { EditSuggestionAdmissionController } from "./edit-suggestions/admission";
+import { createEditSuggestionRequestHandler, EDIT_SUGGESTION_ROUTE } from "./edit-suggestions/handler";
+import type { EditSuggestionGenerator } from "./edit-suggestions/service";
 import { HttpError, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import { authenticateManimRequestContext, handleManimRequest, type ManimApi } from "./manim-render-http";
@@ -11,14 +14,14 @@ import { isReservedLocalManimTenantId, type ManimPrincipalAuthenticator } from "
 import { ManimTenantRegistry } from "./manim-tenant-registry";
 
 export {
+  createDurablePostgresS3ProductionRuntimeV1,
+  type DurablePostgresS3ProductionRuntimeOptionsV1,
+} from "./durable-manim-production-composition";
+export {
   createDurableManimRuntimeV1,
   createDurableProductionManimRuntimeAdapterV1,
   DurableManimRuntimeV1,
 } from "./durable-manim-runtime";
-export {
-  createDurablePostgresS3ProductionRuntimeV1,
-  type DurablePostgresS3ProductionRuntimeOptionsV1,
-} from "./durable-manim-production-composition";
 export {
   applyBundledWorkspaceSourceMigrationV1,
   WORKSPACE_SOURCE_MIGRATION_V1_SOURCE,
@@ -130,6 +133,12 @@ export type ProductionRequestAdmission = ManimPrincipalAuthenticator<ProductionA
   Readonly<{
     ready: (signal: AbortSignal) => Promise<boolean>;
   }>;
+
+export type ProductionEditSuggestionAdapterV1 = Readonly<{
+  admission?: EditSuggestionAdmissionController;
+  generationTimeoutMs?: number;
+  generator: EditSuggestionGenerator;
+}>;
 
 export type ProductionRuntimeReadinessV1 =
   | Readonly<{ ready: false }>
@@ -330,6 +339,7 @@ export async function startProductionManimServer(
   options: Readonly<{
     admission: ProductionRequestAdmission;
     config: unknown;
+    editSuggestions?: ProductionEditSuggestionAdapterV1;
     logger?: StructuredLogger;
     runtime: ProductionManimRuntimeAdapterV1;
   }>,
@@ -353,6 +363,18 @@ export async function startProductionManimServer(
   ) {
     throw new TypeError("Production request admission adapter is incomplete.");
   }
+  if (
+    options.editSuggestions !== undefined &&
+    (typeof options.editSuggestions !== "object" ||
+      options.editSuggestions === null ||
+      typeof options.editSuggestions.generator !== "object" ||
+      options.editSuggestions.generator === null ||
+      typeof options.editSuggestions.generator.generate !== "function" ||
+      (options.editSuggestions.admission !== undefined &&
+        !(options.editSuggestions.admission instanceof EditSuggestionAdmissionController)))
+  ) {
+    throw new TypeError("Production edit-suggestion adapter is incomplete.");
+  }
   if (isReservedLocalManimTenantId((options.runtime.api as Readonly<{ tenantId?: unknown }>).tenantId)) {
     throw new TypeError("Production runtime tenant ID must not use a reserved local identity.");
   }
@@ -360,6 +382,14 @@ export async function startProductionManimServer(
     throw new TypeError("Production runtime storage must use a tenant-keyed shared durable boundary.");
   }
   const logger = options.logger ?? nullLogger;
+  const editSuggestionHandler = options.editSuggestions
+    ? createEditSuggestionRequestHandler({
+        admission: options.editSuggestions.admission,
+        generationTimeoutMs: options.editSuggestions.generationTimeoutMs,
+        generator: () => options.editSuggestions!.generator,
+        logger: logger.child({ component: "edit-suggestions-api" }),
+      })
+    : null;
   const tenants = new ManimTenantRegistry<ManimApi>([options.runtime.api]);
   const trustedProxyAddresses = new Set(config.trustedProxyAddresses);
   const activeRequests = new Set<AbortController>();
@@ -453,7 +483,10 @@ export async function startProductionManimServer(
         sendJson(response, ready ? 200 : 503, { status: ready ? "ready" : "unavailable" });
         return;
       }
-      if (!pathname.startsWith("/api/manim/")) throw new TransportError("Endpoint not found.", 404);
+      const isEditSuggestionRequest = pathname === EDIT_SUGGESTION_ROUTE;
+      if ((!isEditSuggestionRequest || !editSuggestionHandler) && !pathname.startsWith("/api/manim/")) {
+        throw new TransportError("Endpoint not found.", 404);
+      }
       if (lifecycle !== "accepting") throw new TransportError("Production service is draining.", 503);
       if (!(await admissionIsReady(controller.signal))) {
         throw new TransportError("Production authentication is not ready.", 503);
@@ -490,6 +523,15 @@ export async function startProductionManimServer(
       accessBoundary = "tenant";
       context.tenants.forPrincipal(context.principal);
       accessBoundary = null;
+      if (isEditSuggestionRequest && editSuggestionHandler) {
+        await editSuggestionHandler(request, response, {
+          expectedOrigin: config.publicOrigin,
+          maxJsonBodyBytes: config.limits.maxBodyBytes,
+          principal: context.principal,
+          requestSignal: controller.signal,
+        });
+        return;
+      }
       if (!(await runtimeIsReady(controller.signal))) {
         throw new TransportError("Production runtime is not ready.", 503);
       }

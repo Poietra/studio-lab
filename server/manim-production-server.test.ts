@@ -14,6 +14,23 @@ import type { ManimApi } from "./manim-render-http";
 const servers: ProductionManimServer[] = [];
 const TEST_PRINCIPAL = Object.freeze({ subjectId: "production-user", tenantId: "tenant-a" });
 
+function editSuggestionBody() {
+  return {
+    clarification: {
+      answer: { kind: "text", text: "SECRET_CLARIFICATION" },
+      history: [],
+      options: [],
+      question: "SECRET_CLARIFICATION_QUESTION",
+    },
+    objects: [],
+    playhead: 0,
+    prompt: "SECRET_PROMPT_SOURCE_ENV_API_KEY_TRACEBACK",
+    scene: { id: "SECRET_SOURCE_PATH.py#Scene", name: "Scene", nextSceneId: null },
+    sceneDuration: 1,
+    selectedObjectIds: [],
+  };
+}
+
 afterEach(async () => {
   await Promise.allSettled(servers.splice(0).map((server) => server.close()));
 });
@@ -378,6 +395,116 @@ describe("standalone production Manim HTTP adapter", () => {
     });
     expect(existingRegistration).toMatchObject({ status: 403 });
     expect(createExistingCalls).toBe(0);
+  });
+
+  it("routes the injected AI adapter only after existing principal and tenant authorization", async () => {
+    const records: StructuredLogRecord[] = [];
+    const logger = createStructuredLogger({ sinks: [{ write: (record) => records.push(record) }] });
+    let generatorCalls = 0;
+    let runtimeReadyCalls = 0;
+    const server = await startProductionManimServer({
+      admission: {
+        authenticate: async ({ credentials }) => {
+          if (credentials.authorization === "Bearer tenant-a") return TEST_PRINCIPAL;
+          if (credentials.authorization === "Bearer tenant-b") {
+            return { subjectId: "foreign-user", tenantId: "tenant-b" };
+          }
+          return null;
+        },
+        ready: async () => true,
+      },
+      config: await startConfig(),
+      editSuggestions: {
+        generator: {
+          async generate(request) {
+            generatorCalls += 1;
+            expect(request.prompt).toBe("SECRET_PROMPT_SOURCE_ENV_API_KEY_TRACEBACK");
+            return {
+              assumptions: [],
+              kind: "clarification",
+              message: "SECRET_MODEL_OUTPUT",
+              operation: null,
+              options: [],
+              summary: "",
+            };
+          },
+        },
+      },
+      logger,
+      runtime: createRuntime(() => {
+        runtimeReadyCalls += 1;
+        return true;
+      }),
+    });
+    servers.push(server);
+    const request = {
+      body: JSON.stringify(editSuggestionBody()),
+      headers: {
+        authorization: "Bearer tenant-a",
+        "content-type": "application/json",
+        origin: "https://studio.example",
+      },
+      method: "POST",
+    } as const;
+
+    expect(
+      await send(server, "/api/ai/edit-suggestions", {
+        ...request,
+        headers: { ...request.headers, authorization: "" },
+      }),
+    ).toMatchObject({
+      status: 401,
+    });
+    expect(
+      await send(server, "/api/ai/edit-suggestions", {
+        ...request,
+        headers: { ...request.headers, authorization: "Bearer tenant-b" },
+      }),
+    ).toMatchObject({ status: 403 });
+    expect(generatorCalls).toBe(0);
+
+    const response = await send(server, "/api/ai/edit-suggestions", request);
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body)).toMatchObject({ kind: "clarification", message: "SECRET_MODEL_OUTPUT" });
+    expect(generatorCalls).toBe(1);
+    expect(runtimeReadyCalls).toBe(0);
+
+    const aiRecords = records.filter((record) => record.context.component === "edit-suggestions-api");
+    expect(aiRecords.some((record) => record.event === "response.sent")).toBe(true);
+    expect(aiRecords.find((record) => record.event === "response.sent")?.data).toMatchObject({
+      latencyMs: expect.any(Number),
+      status: 200,
+    });
+    expect(JSON.stringify(aiRecords)).not.toMatch(
+      /SECRET_(?:CLARIFICATION|MODEL_OUTPUT|PROMPT|SOURCE|ENV|API_KEY|TRACEBACK)|production-user|tenant-a/,
+    );
+    expect(aiRecords.every((record) => /^[0-9a-f]{24}$/.test(String(record.context.tenantCorrelation)))).toBe(true);
+  });
+
+  it("requires the configured production Origin before calling the AI provider", async () => {
+    let calls = 0;
+    const server = await startProductionManimServer({
+      admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
+      config: await startConfig(),
+      editSuggestions: {
+        generator: {
+          async generate() {
+            calls += 1;
+            throw new Error("must not run");
+          },
+        },
+      },
+      runtime: createRuntime(),
+    });
+    servers.push(server);
+
+    const response = await send(server, "/api/ai/edit-suggestions", {
+      body: JSON.stringify(editSuggestionBody()),
+      headers: { "content-type": "application/json", origin: "https://attacker.example" },
+      method: "POST",
+    });
+    expect(response.status).toBe(403);
+    expect(calls).toBe(0);
   });
 
   it("rejects non-origin-form targets and every unbounded or bodyless-method payload before routing", async () => {

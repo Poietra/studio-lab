@@ -79,10 +79,7 @@ export function createOpenAiEditSuggestionGenerator(options: OpenAiGeneratorOpti
     const instructions = attempt.repairFeedback
       ? `${options.instructions}\n\nThe previous candidate failed closed-schema validation: ${attempt.repairFeedback}. Return a fresh candidate that satisfies every schema invariant. Do not repeat an operation kind. Parallel steps must have identical start and end values. If the complete request cannot be represented, return one focused clarification.`
       : options.instructions;
-    logger.info("model.requested", {
-      attempt: attempt.kind,
-      model: options.model,
-    });
+    logger.info("model.requested");
     const completion = await client.responses.parse(
       {
         input: [{ content: JSON.stringify(request), role: "user" }],
@@ -96,7 +93,6 @@ export function createOpenAiEditSuggestionGenerator(options: OpenAiGeneratorOpti
       { signal: attempt.signal },
     );
     logger.info("model.responded", {
-      attempt: attempt.kind,
       usage: usageTelemetry(completion.usage),
     });
     return completion.output_parsed;
@@ -108,11 +104,7 @@ export function createOpenAiEditSuggestionGenerator(options: OpenAiGeneratorOpti
     } catch (error) {
       if (!(error instanceof ZodError)) throw error;
       const feedback = validationFeedback(error);
-      logger.warn("model.validation_failed", {
-        attempt: "initial",
-        issueCodes: [...new Set(error.issues.map((issue) => issue.code))].sort(),
-        issueCount: error.issues.length,
-      });
+      logger.warn("model.validation_failed");
       return requireCandidate(
         await requestCandidate(request, logger, {
           kind: "repair",

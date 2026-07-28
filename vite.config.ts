@@ -59,6 +59,8 @@ export function createStudioViteConfig(
       tailwindcss(),
       openAiEditSuggestions({
         apiKey: processEnvironment.OPENAI_API_KEY,
+        localDevelopmentOptIn: env.VITE_POIETRA_AI_ENDPOINT === "/api/ai/edit-suggestions",
+        localKeyFileOptIn: env.POIETRA_AI_LOCAL_KEY_FILE_OPT_IN === "1",
         logPath,
         model: env.POIETRA_OPENAI_MODEL,
       }),

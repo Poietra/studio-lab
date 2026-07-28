@@ -1,5 +1,5 @@
-import { ZodError } from "zod";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ZodError } from "zod";
 
 import type { EditSuggestionRequest } from "../../src/ai/edit-suggestions";
 import { createStructuredLogger, type StructuredLogRecord } from "../logging/structured-logger";
@@ -63,7 +63,7 @@ beforeEach(() => {
 });
 
 describe("OpenAI edit suggestion generator privacy boundary", () => {
-  it("logs only bounded attempt and token telemetry around a real Responses API call", async () => {
+  it("logs only lifecycle and token telemetry around a real Responses API call", async () => {
     openAiMock.parse.mockResolvedValue({
       id: "SECRET_PROVIDER_RESPONSE_ID",
       output_parsed: clarification,
@@ -81,16 +81,15 @@ describe("OpenAI edit suggestion generator privacy boundary", () => {
     const providerRequest = openAiMock.parse.mock.calls[0]?.[0];
     expect(providerRequest).toMatchObject({ model: "gpt-test", store: false });
     expect(providerRequest.input[0].content).toContain("SECRET_SOURCE_AND_PROMPT");
-    expect(records).toEqual([
-      expect.objectContaining({ data: { attempt: "initial", model: "gpt-test" }, event: "model.requested" }),
-      expect.objectContaining({
-        data: {
-          attempt: "initial",
-          usage: { inputTokens: undefined, outputTokens: 7, totalTokens: 11 },
-        },
-        event: "model.responded",
-      }),
-    ]);
+    expect(records).toHaveLength(2);
+    expect(records[0]).toMatchObject({ event: "model.requested" });
+    expect(records[0]).not.toHaveProperty("data");
+    expect(records[1]).toMatchObject({
+      data: {
+        usage: { inputTokens: undefined, outputTokens: 7, totalTokens: 11 },
+      },
+      event: "model.responded",
+    });
     const persisted = JSON.stringify(records);
     for (const sentinel of [
       "SECRET_API_KEY",
@@ -118,11 +117,7 @@ describe("OpenAI edit suggestion generator privacy boundary", () => {
 
     expect(openAiMock.parse).toHaveBeenCalledTimes(2);
     expect(openAiMock.parse.mock.calls[1]?.[0].instructions).toContain("SECRET_VALIDATION_MESSAGE");
-    expect(records.find((record) => record.event === "model.validation_failed")?.data).toEqual({
-      attempt: "initial",
-      issueCodes: ["custom"],
-      issueCount: 1,
-    });
+    expect(records.find((record) => record.event === "model.validation_failed")?.data).toBeUndefined();
     expect(JSON.stringify(records)).not.toContain("SECRET_VALIDATION_MESSAGE");
     expect(JSON.stringify(records)).not.toContain("SECRET_VALIDATION_PATH");
   });
