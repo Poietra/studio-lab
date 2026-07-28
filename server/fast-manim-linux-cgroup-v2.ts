@@ -189,14 +189,45 @@ export type LinuxCgroupV2ResourceEvidenceV1 = Readonly<{
   reason: "cpu-limit" | "memory-limit" | "pids-limit" | null;
 }>;
 
+declare const linuxCgroupV2DirectStartProofBrandV1: unique symbol;
+
+/** Opaque, runtime-checked evidence bound to exactly one admitted production job. */
+export type LinuxCgroupV2DirectStartProofV1 = Readonly<{
+  readonly [linuxCgroupV2DirectStartProofBrandV1]: true;
+}>;
+
+export interface LinuxCgroupV2ProcessMembershipReaderV1 {
+  readCgroup(pid: number): Promise<string>;
+  readStat(pid: number): Promise<string>;
+}
+
+const fileSystemLinuxCgroupV2ProcessMembershipReaderV1: LinuxCgroupV2ProcessMembershipReaderV1 = Object.freeze({
+  readCgroup: (pid: number) => readFile(`/proc/${pid}/cgroup`, "utf8"),
+  readStat: (pid: number) => readFile(`/proc/${pid}/stat`, "utf8"),
+});
+
+function parseLinuxProcStatStartTimeV1(value: string, expectedPid: number) {
+  const commandEnd = value.lastIndexOf(")");
+  if (!value.startsWith(`${expectedPid} (`) || commandEnd < `${expectedPid} (`.length) {
+    throw new FastManimSandboxResourceControlError("unavailable");
+  }
+  const fieldsAfterCommand = value
+    .slice(commandEnd + 1)
+    .trim()
+    .split(/\s+/u);
+  const startTime = fieldsAfterCommand[19];
+  if (!startTime || !/^[1-9]\d*$/u.test(startTime)) {
+    throw new FastManimSandboxResourceControlError("unavailable");
+  }
+  return startTime;
+}
+
 export type LinuxCgroupV2LaunchEnvelopeV1 = Readonly<{
   cgroupsPath: string;
   deadlineEpochMs: number;
   mustStartInCgroup: true;
-  /** #127 must replace this gate with server-owned direct-start membership evidence. */
   productionMembership: Readonly<{
-    state: "not-connected";
-    trackingIssue: 127;
+    state: "requires-direct-start-verification";
   }>;
   rlimits: Readonly<{
     cpuTimeSeconds: number;
@@ -209,18 +240,25 @@ export type LinuxCgroupV2LaunchEnvelopeV1 = Readonly<{
   }>;
 }>;
 
+type LinuxCgroupV2ProductionFinishV1 = {
+  (reason: Exclude<FastManimSandboxResourceTerminationReasonV1, "completed">): Promise<void>;
+  (reason: "completed", proof: LinuxCgroupV2DirectStartProofV1): Promise<void>;
+};
+
 export type LinuxCgroupV2ResourceJobV1 = Readonly<{
   /** Settles only after cgroup empty, bounded output close, and cgroup removal. */
-  completion: Promise<Exclude<FastManimSandboxResourceTerminationReasonV1, "completed">>;
+  completion: Promise<FastManimSandboxResourceTerminationReasonV1>;
   descriptor: FastManimSandboxResourceJobDescriptorV1;
-  /** Production cannot report success until #127 installs direct-start membership proof. */
-  finish: (reason: Exclude<FastManimSandboxResourceTerminationReasonV1, "completed">) => Promise<void>;
+  /** `completed` requires the exact opaque proof returned for this job. */
+  finish: LinuxCgroupV2ProductionFinishV1;
   inspect: () => Promise<LinuxCgroupV2ResourceEvidenceV1>;
   launch: LinuxCgroupV2LaunchEnvelopeV1;
+  /** Verifies that the runtime-created PID started directly in this job's cgroup. */
+  verifyDirectStart: (pid: number) => Promise<LinuxCgroupV2DirectStartProofV1>;
 }>;
 
 export type LocalLinuxCgroupV2ResourceJobV1 = Readonly<
-  Omit<LinuxCgroupV2ResourceJobV1, "completion" | "finish"> & {
+  Omit<LinuxCgroupV2ResourceJobV1, "completion" | "finish" | "verifyDirectStart"> & {
     /** Local trusted harness only; verifies /proc reports a stopped wrapper before attachment. */
     attachStoppedPidForLocalConformance: (pid: number) => Promise<void>;
     completion: Promise<FastManimSandboxResourceTerminationReasonV1>;
@@ -243,6 +281,7 @@ type ActiveLinuxJob = {
   lease: ReturnType<FastManimSandboxResourceRegistryV1["admit"]>;
   monotonicDeadline: number;
   output: FastManimSandboxBoundedOutputLifecycleV1;
+  productionMembershipProof: LinuxCgroupV2DirectStartProofV1 | null;
   rejectCompletion: (reason: unknown) => void;
   resolveCompletion: (reason: FastManimSandboxResourceTerminationReasonV1) => void;
   setup: Promise<void>;
@@ -258,6 +297,7 @@ export type LinuxCgroupV2ResourceControllerOptionsV1 = Readonly<{
   cgroupsPath: string;
   monotonicNow?: () => number;
   pollIntervalMs?: number;
+  processMembershipReader?: LinuxCgroupV2ProcessMembershipReaderV1;
   registry: FastManimSandboxResourceRegistryV1;
   root?: string;
   sleep?: (milliseconds: number) => Promise<void>;
@@ -287,6 +327,7 @@ export class LinuxCgroupV2ResourceControllerV1 {
   readonly #jobs = new Map<string, ActiveLinuxJob>();
   readonly #monotonicNow: () => number;
   readonly #pollIntervalMs: number;
+  readonly #processMembershipReader: LinuxCgroupV2ProcessMembershipReaderV1;
   readonly #registry: FastManimSandboxResourceRegistryV1;
   readonly #sleep: (milliseconds: number) => Promise<void>;
   readonly #store: LinuxCgroupV2StoreV1;
@@ -323,10 +364,18 @@ export class LinuxCgroupV2ResourceControllerV1 {
       1,
       MAX_POLL_INTERVAL_MS,
     );
+    if (
+      options.processMembershipReader !== undefined &&
+      (typeof options.processMembershipReader.readCgroup !== "function" ||
+        typeof options.processMembershipReader.readStat !== "function")
+    ) {
+      throw new TypeError("A Linux process membership reader must provide cgroup and stat reads.");
+    }
     this.#cgroupsPath = options.cgroupsPath;
     this.#monotonicNow = options.monotonicNow ?? performance.now.bind(performance);
     this.#sleep = options.sleep ?? ((milliseconds) => delay(milliseconds));
     this.#store = options.store ?? new FileSystemLinuxCgroupV2StoreV1(options.root!);
+    this.#processMembershipReader = options.processMembershipReader ?? fileSystemLinuxCgroupV2ProcessMembershipReaderV1;
     this.#registry = options.registry;
   }
 
@@ -429,6 +478,7 @@ export class LinuxCgroupV2ResourceControllerV1 {
       lease,
       monotonicDeadline,
       output,
+      productionMembershipProof: null,
       rejectCompletion,
       resolveCompletion,
       setup: Promise.resolve(),
@@ -468,8 +518,9 @@ export class LinuxCgroupV2ResourceControllerV1 {
     }
     return Object.freeze({
       ...base,
-      completion: completion as Promise<Exclude<FastManimSandboxResourceTerminationReasonV1, "completed">>,
-      finish: (reason: unknown) => this.#finishProduction(active, reason),
+      completion,
+      finish: (reason: unknown, proof?: unknown) => this.#finishProduction(active, reason, proof),
+      verifyDirectStart: (pid: number) => this.#verifyDirectStart(active, pid),
     });
   }
 
@@ -519,7 +570,7 @@ export class LinuxCgroupV2ResourceControllerV1 {
       cgroupsPath: `${this.#cgroupsPath}/${descriptor.cgroupName}`,
       deadlineEpochMs: descriptor.deadlineEpochMs,
       mustStartInCgroup: true,
-      productionMembership: Object.freeze({ state: "not-connected" as const, trackingIssue: 127 as const }),
+      productionMembership: Object.freeze({ state: "requires-direct-start-verification" as const }),
       rlimits: Object.freeze({
         cpuTimeSeconds: Math.ceil(limits.maxCpuTimeMicros / 1_000_000),
         fileBytes: limits.maxFileBytes,
@@ -561,11 +612,52 @@ export class LinuxCgroupV2ResourceControllerV1 {
     }
   }
 
-  #finishProduction(active: ActiveLinuxJob, value: unknown) {
+  async #verifyDirectStart(active: ActiveLinuxJob, pid: number): Promise<LinuxCgroupV2DirectStartProofV1> {
+    if (active.finishing || this.#jobs.get(active.lease.descriptor.jobId) !== active) {
+      throw new FastManimSandboxResourceControlError("unavailable");
+    }
+    active.productionMembershipProof = null;
+    try {
+      if (!Number.isSafeInteger(pid) || pid <= 0) {
+        throw new TypeError("A cgroup PID must be a positive safe integer.");
+      }
+      const deadline = this.#controlDeadline(active.monotonicDeadline);
+      const firstStat = await this.#within(this.#processMembershipReader.readStat(pid), deadline);
+      const processCgroup = await this.#within(this.#processMembershipReader.readCgroup(pid), deadline);
+      const cgroupProcesses = await this.#within(
+        this.#store.read(active.lease.descriptor.cgroupName, "cgroup.procs"),
+        deadline,
+      );
+      const secondStat = await this.#within(this.#processMembershipReader.readStat(pid), deadline);
+      const firstStartTime = parseLinuxProcStatStartTimeV1(firstStat, pid);
+      const secondStartTime = parseLinuxProcStatStartTimeV1(secondStat, pid);
+      const expectedCgroup = `0::/${this.#cgroupsPath}/${active.lease.descriptor.cgroupName}\n`;
+      if (
+        firstStartTime !== secondStartTime ||
+        processCgroup !== expectedCgroup ||
+        cgroupProcesses !== `${pid}\n` ||
+        active.finishing ||
+        this.#jobs.get(active.lease.descriptor.jobId) !== active
+      ) {
+        throw new FastManimSandboxResourceControlError("unavailable");
+      }
+      const proof = Object.freeze({}) as LinuxCgroupV2DirectStartProofV1;
+      active.productionMembershipProof = proof;
+      return proof;
+    } catch {
+      await this.#finish(active, "launch-failed").catch(() => undefined);
+      throw new FastManimSandboxResourceControlError("unavailable");
+    }
+  }
+
+  #finishProduction(active: ActiveLinuxJob, value: unknown, proof?: unknown) {
     const reason = fastManimSandboxResourceTerminationReasonV1Schema.parse(value);
-    // Until #127 supplies server-owned direct-start membership evidence, the
-    // production-shaped interface has no successful completion transition.
-    return this.#finish(active, reason === "completed" ? "launch-failed" : reason).then(() => undefined);
+    const acceptedReason =
+      reason === "completed" &&
+      (active.productionMembershipProof === null || proof !== active.productionMembershipProof)
+        ? "launch-failed"
+        : reason;
+    return this.#finish(active, acceptedReason).then(() => undefined);
   }
 
   async #inspect(active: ActiveLinuxJob): Promise<LinuxCgroupV2ResourceEvidenceV1> {
@@ -764,6 +856,7 @@ export class LinuxCgroupV2ResourceControllerV1 {
   }
 
   #reap(active: ActiveLinuxJob) {
+    active.productionMembershipProof = null;
     active.lease.reap({ cgroupEmpty: true, outputClosed: true });
     this.#jobs.delete(active.lease.descriptor.jobId);
   }

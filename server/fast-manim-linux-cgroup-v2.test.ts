@@ -5,6 +5,7 @@ import {
   createProcessLinuxCgroupV2ResourceControllerV1,
   deriveLinuxCgroupV2OrchestratorPathV1,
   FileSystemLinuxCgroupV2StoreV1,
+  type LinuxCgroupV2ProcessMembershipReaderV1,
   LinuxCgroupV2ResourceControllerV1,
   type LinuxCgroupV2StoreV1,
 } from "./fast-manim-linux-cgroup-v2";
@@ -130,6 +131,23 @@ class FakeCgroupV2Store implements LinuxCgroupV2StoreV1 {
   }
 }
 
+function processStat(pid: number, startTime: string) {
+  return `${pid} (poietra sandbox) ${["R", ...Array.from({ length: 18 }, () => "0"), startTime].join(" ")}\n`;
+}
+
+class FakeProcessMembershipReader implements LinuxCgroupV2ProcessMembershipReaderV1 {
+  cgroup = "";
+  stats: string[] = [];
+
+  async readCgroup() {
+    return this.cgroup;
+  }
+
+  async readStat(pid: number) {
+    return this.stats.shift() ?? processStat(pid, "12345");
+  }
+}
+
 function outputLifecycle(limits = DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1) {
   let closed = false;
   return {
@@ -250,14 +268,14 @@ describe("Linux cgroup v2 sandbox resource controller", () => {
     expect(resources.snapshot()).toMatchObject({ activeJobs: 0, reapedJobs: 1 });
   });
 
-  it("keeps local stopped-PID attachment out of production and blocks success until #127", async () => {
+  it("keeps local stopped-PID attachment out of production and rejects unproved success", async () => {
     const store = new FakeCgroupV2Store();
     const resources = controller(store, { sleep: async () => new Promise<void>(() => undefined) });
     await resources.initialize();
     const output = outputLifecycle();
     const job = await resources.admit(DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1, output.output);
     expect(job).not.toHaveProperty("attachStoppedPidForLocalConformance");
-    expect(job.launch.productionMembership).toEqual({ state: "not-connected", trackingIssue: 127 });
+    expect(job.launch.productionMembership).toEqual({ state: "requires-direct-start-verification" });
     await (job.finish as (reason: string) => Promise<void>)("completed");
     await expect(job.completion).resolves.toBe("launch-failed");
     expect(resources.snapshot()).toMatchObject({ activeJobs: 0, state: "ready" });
@@ -269,6 +287,90 @@ describe("Linux cgroup v2 sandbox resource controller", () => {
     );
     await expect(local.attachStoppedPidForLocalConformance(process.pid)).rejects.toThrow(/unavailable/i);
     await expect(local.completion).resolves.toBe("launch-failed");
+  });
+
+  it("accepts completed only with exact stable direct-start membership and never moves the PID", async () => {
+    const pid = 321;
+    const store = new FakeCgroupV2Store();
+    const membership = new FakeProcessMembershipReader();
+    const resources = controller(store, {
+      processMembershipReader: membership,
+      sleep: async () => new Promise<void>(() => undefined),
+    });
+    await resources.initialize();
+    const output = outputLifecycle();
+    const job = await resources.admit(DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1, output.output);
+    membership.cgroup = `0::/${job.launch.cgroupsPath}\n`;
+    membership.stats = [processStat(pid, "987654"), processStat(pid, "987654")];
+    store.set(job.descriptor.cgroupName, "cgroup.procs", `${pid}\n`);
+
+    const proof = await job.verifyDirectStart(pid);
+    expect(store.writes.some(([, file]) => file === "cgroup.procs")).toBe(false);
+    await job.finish("completed", proof);
+
+    await expect(job.completion).resolves.toBe("completed");
+    expect(resources.snapshot()).toMatchObject({ activeJobs: 0, reapedJobs: 1, state: "ready" });
+  });
+
+  it.each([
+    {
+      name: "a different unified cgroup path",
+      prepare(store: FakeCgroupV2Store, membership: FakeProcessMembershipReader, pid: number, cgroupName: string) {
+        membership.cgroup = "0::/poietra-sandbox-v1/different-job\n";
+        store.set(cgroupName, "cgroup.procs", `${pid}\n`);
+      },
+    },
+    {
+      name: "another PID in the job cgroup",
+      prepare(store: FakeCgroupV2Store, membership: FakeProcessMembershipReader, pid: number, cgroupName: string) {
+        membership.cgroup = `0::/poietra-sandbox-v1/${cgroupName}\n`;
+        store.set(cgroupName, "cgroup.procs", `${pid}\n999\n`);
+      },
+    },
+    {
+      name: "a reused PID with a changed start time",
+      prepare(store: FakeCgroupV2Store, membership: FakeProcessMembershipReader, pid: number, cgroupName: string) {
+        membership.cgroup = `0::/poietra-sandbox-v1/${cgroupName}\n`;
+        membership.stats = [processStat(pid, "12345"), processStat(pid, "12346")];
+        store.set(cgroupName, "cgroup.procs", `${pid}\n`);
+      },
+    },
+  ])("fails the job when direct-start evidence reports $name", async ({ prepare }) => {
+    const pid = 654;
+    const store = new FakeCgroupV2Store();
+    const membership = new FakeProcessMembershipReader();
+    const resources = controller(store, {
+      processMembershipReader: membership,
+      sleep: async () => new Promise<void>(() => undefined),
+    });
+    await resources.initialize();
+    const output = outputLifecycle();
+    const job = await resources.admit(DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1, output.output);
+    prepare(store, membership, pid, job.descriptor.cgroupName);
+
+    await expect(job.verifyDirectStart(pid)).rejects.toThrow(/unavailable/i);
+    await expect(job.completion).resolves.toBe("launch-failed");
+    expect(store.writes.some(([, file]) => file === "cgroup.procs")).toBe(false);
+  });
+
+  it("binds opaque direct-start proof to one job and rejects forged or cross-job proof", async () => {
+    const store = new FakeCgroupV2Store();
+    const membership = new FakeProcessMembershipReader();
+    const resources = controller(store, {
+      processMembershipReader: membership,
+      sleep: async () => new Promise<void>(() => undefined),
+    });
+    await resources.initialize();
+    const first = await resources.admit(DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1, outputLifecycle().output);
+    const second = await resources.admit(DEFAULT_FAST_MANIM_SANDBOX_RESOURCE_LIMITS_V1, outputLifecycle().output);
+    membership.cgroup = `0::/${first.launch.cgroupsPath}\n`;
+    store.set(first.descriptor.cgroupName, "cgroup.procs", "777\n");
+    const firstProof = await first.verifyDirectStart(777);
+
+    await (second.finish as (reason: string, proof: unknown) => Promise<void>)("completed", firstProof);
+    await expect(second.completion).resolves.toBe("launch-failed");
+    await (first.finish as (reason: string, proof: unknown) => Promise<void>)("completed", Object.freeze({}));
+    await expect(first.completion).resolves.toBe("launch-failed");
   });
 
   it("uses baseline deltas for OOM, pids, and cumulative CPU-time reasons", async () => {
