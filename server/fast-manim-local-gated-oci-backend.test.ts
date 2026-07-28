@@ -1,9 +1,12 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import fastManimGatedOciSeccompV1 from "../sandbox/fast-manim-gated-oci/seccomp.v1.json";
 import {
+  FAST_MANIM_GATED_OCI_PROFILE_V1,
   FastManimGatedOciDockerClientV1,
   reconcileFastManimGatedOciDockerOrphansV1,
 } from "./fast-manim-gated-oci-job-runner";
@@ -99,6 +102,62 @@ function trustedImageInspection(image: string) {
   );
 }
 
+function stoppedFixedContainerInspection(image: string, containerId: string) {
+  const profile = FAST_MANIM_GATED_OCI_PROFILE_V1;
+  return Buffer.from(
+    JSON.stringify([
+      {
+        Config: {
+          Cmd: profile.target,
+          Entrypoint: profile.entrypoint,
+          Env: Object.entries(profile.environment).map(([key, value]) => `${key}=${value}`),
+          Image: image,
+          Labels: profile.requiredContainerLabels,
+          OpenStdin: profile.openStdin,
+          StdinOnce: profile.stdinOnce,
+          StopTimeout: profile.stopTimeoutSeconds,
+          Tty: profile.tty,
+          User: profile.user,
+          WorkingDir: profile.workingDirectory,
+        },
+        HostConfig: {
+          AutoRemove: profile.autoRemove,
+          Binds: null,
+          CapAdd: null,
+          CapDrop: profile.capabilitiesDropped,
+          CgroupnsMode: profile.cgroupNamespace,
+          Devices: profile.devices,
+          IpcMode: profile.ipc,
+          LogConfig: { Config: profile.logDriver.config, Type: profile.logDriver.type },
+          MaskedPaths: profile.requiredMaskedSystemPaths,
+          Memory: profile.memoryBytes,
+          MemorySwap: profile.memorySwapBytes,
+          NanoCpus: profile.cpuNanoSeconds,
+          NetworkMode: profile.network,
+          PidMode: "",
+          PidsLimit: profile.pidsLimit,
+          Privileged: profile.privileged,
+          ReadonlyPaths: profile.requiredReadOnlySystemPaths,
+          ReadonlyRootfs: profile.readOnlyRootfs,
+          SecurityOpt: ["no-new-privileges=true", `seccomp=${JSON.stringify(fastManimGatedOciSeccompV1)}`],
+          ShmSize: profile.shmBytes,
+          Tmpfs: { [profile.tmpfs.path]: profile.tmpfs.options.join(",") },
+          Ulimits: profile.ulimits.map((limit) => ({
+            Hard: limit.hard,
+            Name: limit.name,
+            Soft: limit.soft,
+          })),
+        },
+        Id: containerId,
+        Image: image,
+        Mounts: profile.mounts,
+        Name: "/poietra-gated-00000000000000000000000000000000",
+        State: { Pid: 0, Running: false },
+      },
+    ]),
+  );
+}
+
 describe("gated OCI Docker ownership", () => {
   it("targets a canonical fixed socket and reconciles only broker-owned jobs", async () => {
     expect(() => new FastManimGatedOciDockerClientV1({ socketPath: "relative.sock" })).toThrow(/canonical/i);
@@ -110,6 +169,7 @@ describe("gated OCI Docker ownership", () => {
     );
 
     await reconcileFastManimGatedOciDockerOrphansV1({
+      cgroupKillPolicy: "best-effort",
       dockerClient: client,
       image,
       seccompPath,
@@ -136,6 +196,7 @@ describe("gated OCI Docker ownership", () => {
 
     await expect(
       reconcileFastManimGatedOciDockerOrphansV1({
+        cgroupKillPolicy: "best-effort",
         dockerClient: client,
         image,
         seccompPath,
@@ -144,6 +205,127 @@ describe("gated OCI Docker ownership", () => {
     ).rejects.toMatchObject({ code: "cleanup" });
     expect(client.calls).toContainEqual(["container", "kill", containerId]);
     expect(client.calls).toContainEqual(["container", "rm", "--force", containerId]);
+  });
+
+  it("removes a stopped orphan but requires a clean restart instead of treating leader exit as reap proof", async () => {
+    const image = `sha256:${"a".repeat(64)}`;
+    const containerId = "b".repeat(64);
+    const client = new RecordingDockerClient({ socketPath: "/run/user/1000/poietra-docker.sock" });
+    client.responses.push(
+      { code: 0, stderr: Buffer.alloc(0), stdout: trustedImageInspection(image) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.from(`${containerId}\n`) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: stoppedFixedContainerInspection(image, containerId) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.alloc(0) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.alloc(0) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.alloc(0) },
+    );
+
+    await expect(
+      reconcileFastManimGatedOciDockerOrphansV1({
+        cgroupKillPolicy: "best-effort",
+        dockerClient: client,
+        image,
+        seccompPath,
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toMatchObject({ code: "cleanup" });
+    expect(client.calls).toContainEqual(["container", "rm", "--force", containerId]);
+
+    const retry = new RecordingDockerClient({ socketPath: "/run/user/1000/poietra-docker.sock" });
+    retry.responses.push(
+      { code: 0, stderr: Buffer.alloc(0), stdout: trustedImageInspection(image) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.alloc(0) },
+    );
+    await expect(
+      reconcileFastManimGatedOciDockerOrphansV1({
+        cgroupKillPolicy: "best-effort",
+        dockerClient: retry,
+        image,
+        seccompPath,
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("still removes owned orphans before failing closed on seccomp drift", async () => {
+    const image = `sha256:${"a".repeat(64)}`;
+    const containerId = "b".repeat(64);
+    const client = new RecordingDockerClient({ socketPath: "/run/user/1000/poietra-docker.sock" });
+    client.responses.push(
+      { code: 0, stderr: Buffer.alloc(0), stdout: trustedImageInspection(image) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.from(`${containerId}\n`) },
+      {
+        code: 0,
+        stderr: Buffer.alloc(0),
+        stdout: Buffer.from(
+          JSON.stringify([
+            {
+              Config: { Labels: { "io.poietra.gated-job": "v1" } },
+              Id: containerId,
+              Name: "/poietra-gated-00000000000000000000000000000000",
+              State: { Pid: 0, Running: false },
+            },
+          ]),
+        ),
+      },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.alloc(0) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.alloc(0) },
+      { code: 0, stderr: Buffer.alloc(0), stdout: Buffer.alloc(0) },
+    );
+
+    await expect(
+      reconcileFastManimGatedOciDockerOrphansV1({
+        cgroupKillPolicy: "best-effort",
+        dockerClient: client,
+        image,
+        seccompPath: "/definitely-missing/poietra-seccomp.json",
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toMatchObject({ code: "cleanup" });
+    expect(client.calls).toEqual(
+      expect.arrayContaining([
+        ["container", "ls", "--all", "--quiet", "--no-trunc", "--filter", "label=io.poietra.gated-job=v1"],
+        ["container", "kill", containerId],
+        ["container", "rm", "--force", containerId],
+      ]),
+    );
+  });
+});
+
+describe("gated OCI fixed profile", () => {
+  it("treats seccomp EPERM/EACCES at stream socket creation as proof that outbound networking is blocked", () => {
+    const entrypointPath = fileURLToPath(
+      new URL("../sandbox/fast-manim-gated-oci/gated-entrypoint.py", import.meta.url),
+    );
+    const probe = String.raw`
+import errno
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("poietra_gate", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+class DeniedSocket:
+    def __init__(self, code):
+        self.code = code
+    def __call__(self, *_args, **_kwargs):
+        raise OSError(self.code, "blocked by seccomp")
+
+for code in (errno.EPERM, errno.EACCES):
+    module.socket.socket = DeniedSocket(code)
+    module._assert_outbound_network_blocked()
+
+module.socket.socket = DeniedSocket(errno.EINVAL)
+try:
+    module._assert_outbound_network_blocked()
+except RuntimeError:
+    pass
+else:
+    raise AssertionError("unexpected socket errors must remain fail-closed")
+`;
+    const result = spawnSync("/usr/bin/python3", ["-c", probe, entrypointPath], { encoding: "utf8" });
+    expect({ stderr: result.stderr, status: result.status }).toEqual({ stderr: "", status: 0 });
   });
 });
 
@@ -313,7 +495,7 @@ describe("gated OCI result boundary", () => {
 describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
   const image = realImage!;
 
-  it("verifies confinement, then renders a real Circle, Rectangle, and Line after the trusted gate", {
+  it("reaches READY under the custom seccomp profile, then renders a real Circle, Rectangle, and Line", {
     timeout: 60_000,
   }, async () => {
     const request = requestFor(staticScene, "GatedStaticScene");

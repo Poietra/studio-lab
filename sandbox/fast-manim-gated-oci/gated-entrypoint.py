@@ -71,6 +71,24 @@ def _private_runtime() -> None:
             raise RuntimeError("A runtime directory is not private.")
 
 
+def _assert_outbound_network_blocked() -> None:
+    try:
+        outbound = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    except OSError as error:
+        if error.errno in (errno.EACCES, errno.EPERM):
+            return
+        raise RuntimeError("The outbound network check was inconclusive.") from error
+    try:
+        outbound.settimeout(0.2)
+        outbound.connect(("1.1.1.1", 80))
+    except OSError:
+        pass
+    else:
+        raise RuntimeError("The OCI process has outbound network access.")
+    finally:
+        outbound.close()
+
+
 def _runtime_confinement() -> None:
     """Verify the kernel-enforced development profile before opening the gate."""
     if os.getuid() != 65532 or os.getgid() != 65532 or os.getpid() != 1:
@@ -101,16 +119,7 @@ def _runtime_confinement() -> None:
         raw_socket.close()
         raise RuntimeError("The OCI process can open raw sockets.")
 
-    outbound = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        outbound.settimeout(0.2)
-        outbound.connect(("1.1.1.1", 80))
-    except OSError:
-        pass
-    else:
-        raise RuntimeError("The OCI process has outbound network access.")
-    finally:
-        outbound.close()
+    _assert_outbound_network_blocked()
 
     mount_target = RUNTIME_ROOT / "tmp" / "mount-target"
     mount_target.mkdir(mode=0o700)
@@ -120,7 +129,8 @@ def _runtime_confinement() -> None:
     mount.restype = ctypes.c_int
     if mount(b"none", os.fsencode(mount_target), b"tmpfs", 0, None) != -1 or ctypes.get_errno() != errno.EPERM:
         raise RuntimeError("The OCI process can create mounts.")
-    mount_target.rmdir()
+    # rmdir is intentionally absent from the seccomp profile. The empty probe
+    # directory stays inside the bounded private tmpfs handed to the producer.
 
 
 def _sealed_stdin(body: bytes) -> None:

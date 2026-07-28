@@ -44,6 +44,7 @@ export class FastManimLocalGatedOciBackendV1 implements FastManimSandboxBackendV
     this.#dockerClient = options.dockerClient ?? new FastManimGatedOciDockerClientV1();
     this.#image = options.image;
     this.#jobs = new FastManimGatedOciJobRunnerV1({
+      cgroupKillPolicy: "best-effort",
       dockerClient: this.#dockerClient,
       ...(options.executeJob ? { executeJob: options.executeJob } : {}),
       image: options.image,
