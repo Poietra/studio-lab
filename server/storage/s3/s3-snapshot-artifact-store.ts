@@ -1,19 +1,4 @@
 import { createHash } from "node:crypto";
-import { isIP } from "node:net";
-
-import {
-  DeleteObjectCommand,
-  GetBucketAclCommand,
-  GetBucketLifecycleConfigurationCommand,
-  GetBucketPolicyStatusCommand,
-  GetBucketVersioningCommand,
-  GetObjectCommand,
-  HeadBucketCommand,
-  ListObjectVersionsCommand,
-  PutObjectCommand,
-  S3Client,
-  type S3ClientConfig,
-} from "@aws-sdk/client-s3";
 
 import { manimTenantIdSchema } from "../../manim-request-principal";
 import {
@@ -25,8 +10,13 @@ import {
   type SnapshotArtifactVersionV1,
   snapshotArtifactObjectKeyV1,
 } from "../snapshot-publication-repository";
+import {
+  acquirePrivateVersionedS3BucketTransportV1,
+  type PrivateVersionedS3BucketConsumerOptionsV1,
+  type PrivateVersionedS3BucketOperationV1,
+  type PrivateVersionedS3BucketTransportLeaseV1,
+} from "./s3-private-versioned-bucket-transport";
 
-const OPERATION_TIMEOUT_MS = 30_000;
 const MAX_LIST_RESULTS = 256;
 const MAX_LIST_ENTRIES = 1_024;
 const MAX_LIST_PAGES = 16;
@@ -35,11 +25,6 @@ const SHA256 = /^[0-9a-f]{64}$/;
 
 function throwIfAborted(signal?: AbortSignal) {
   signal?.throwIfAborted();
-}
-
-function operationSignal(signal?: AbortSignal) {
-  const timeout = AbortSignal.timeout(OPERATION_TIMEOUT_MS);
-  return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
 function tenantId(value: string) {
@@ -159,34 +144,6 @@ function encodeCursor(keyMarker: string, versionIdMarker: string, prefix: string
   return cursor;
 }
 
-function isLoopback(hostname: string) {
-  const host = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
-  return host === "localhost" || host === "::1" || (isIP(host) === 4 && host.startsWith("127."));
-}
-
-function validateEndpoint(endpoint: string | undefined, deployment: "production" | "test") {
-  if (!endpoint) return;
-  let parsed: URL;
-  try {
-    parsed = new URL(endpoint);
-  } catch {
-    throw new TypeError("The S3 endpoint must be an absolute HTTP(S) URL.");
-  }
-  if (
-    !["http:", "https:"].includes(parsed.protocol) ||
-    parsed.username ||
-    parsed.password ||
-    parsed.pathname !== "/" ||
-    parsed.search ||
-    parsed.hash
-  ) {
-    throw new TypeError("The S3 endpoint must contain only an HTTP(S) origin.");
-  }
-  if (parsed.protocol !== "https:" && (deployment !== "test" || !isLoopback(parsed.hostname))) {
-    throw new TypeError("Only loopback tests may use an unencrypted S3 endpoint.");
-  }
-}
-
 function isNamedError(error: unknown, name: string) {
   return error instanceof Error && (error.name === name || ("Code" in error && error.Code === name));
 }
@@ -233,123 +190,30 @@ function corruptArtifact(): never {
   throw new SnapshotArtifactReadErrorV1("corrupt");
 }
 
-export type S3SnapshotArtifactStoreOptionsV1 = Readonly<{
-  bucket: string;
-  client?: S3Client;
-  clientConfig?: S3ClientConfig;
-  deployment: "production" | "test";
-}>;
+export type S3SnapshotArtifactStoreOptionsV1 = PrivateVersionedS3BucketConsumerOptionsV1;
 
 /** Immutable, version-pinned S3 storage for verified snapshot bytes. */
 export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
-  readonly #bucket: string;
-  readonly #client: S3Client;
-  readonly #deployment: "production" | "test";
-  readonly #ownsClient: boolean;
+  readonly #transport: PrivateVersionedS3BucketTransportLeaseV1;
 
   constructor(options: S3SnapshotArtifactStoreOptionsV1) {
-    if (options.deployment !== "production" && options.deployment !== "test") {
-      throw new TypeError("The S3 deployment mode is invalid.");
-    }
-    if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(options.bucket)) {
-      throw new TypeError("The private S3 bucket name is invalid.");
-    }
-    if ((options.client === undefined) === (options.clientConfig === undefined)) {
-      throw new TypeError("Provide exactly one S3 client or client configuration.");
-    }
-    if (options.deployment === "production" && options.client !== undefined) {
-      throw new TypeError("Production S3 requires an inspectable client configuration, not an injected client.");
-    }
-    if (
-      options.deployment === "production" &&
-      (options.clientConfig?.requestHandler !== undefined ||
-        options.clientConfig?.endpointProvider !== undefined ||
-        options.clientConfig?.urlParser !== undefined ||
-        options.clientConfig?.tls !== undefined ||
-        options.clientConfig?.ignoreConfiguredEndpointUrls !== true)
-    ) {
-      throw new TypeError(
-        "Production S3 requires the SDK verified-HTTPS transport and must ignore environment/shared-config endpoint overrides.",
-      );
-    }
-    if (options.clientConfig?.endpoint !== undefined && typeof options.clientConfig.endpoint !== "string") {
-      throw new TypeError("The S3 endpoint must be a statically validated URL string.");
-    }
-    validateEndpoint(
-      typeof options.clientConfig?.endpoint === "string" ? options.clientConfig.endpoint : undefined,
-      options.deployment,
-    );
-    if (
-      options.deployment === "production" &&
-      options.clientConfig?.forcePathStyle !== undefined &&
-      options.clientConfig.forcePathStyle !== false
-    ) {
-      throw new TypeError("Production S3 must not use path-style addressing.");
-    }
-    this.#bucket = options.bucket;
-    this.#client = options.client ?? new S3Client(options.clientConfig!);
-    this.#deployment = options.deployment;
-    this.#ownsClient = options.client === undefined;
+    this.#transport = acquirePrivateVersionedS3BucketTransportV1(options);
   }
 
-  async ready(signal?: AbortSignal) {
-    signal = operationSignal(signal);
-    try {
-      throwIfAborted(signal);
-      const policy = this.#client
-        .send(new GetBucketPolicyStatusCommand({ Bucket: this.#bucket }), { abortSignal: signal })
-        .catch((error: unknown) => {
-          if (isNamedError(error, "NoSuchBucketPolicy")) return null;
-          throw error;
-        });
-      const lifecycle = this.#client
-        .send(new GetBucketLifecycleConfigurationCommand({ Bucket: this.#bucket }), { abortSignal: signal })
-        .catch((error: unknown) => {
-          if (isNamedError(error, "NoSuchLifecycleConfiguration")) return null;
-          throw error;
-        });
-      const [, versioning, acl, policyStatus, lifecycleConfiguration] = await Promise.all([
-        this.#client.send(new HeadBucketCommand({ Bucket: this.#bucket }), { abortSignal: signal }),
-        this.#client.send(new GetBucketVersioningCommand({ Bucket: this.#bucket }), { abortSignal: signal }),
-        this.#client.send(new GetBucketAclCommand({ Bucket: this.#bucket }), { abortSignal: signal }),
-        policy,
-        lifecycle,
-      ]);
-      throwIfAborted(signal);
-      const ownerId = acl.Owner?.ID;
-      const ownerOnlyAcl =
-        typeof ownerId === "string" &&
-        (this.#deployment === "test" || ownerId.length > 0) &&
-        Array.isArray(acl.Grants) &&
-        acl.Grants.length > 0 &&
-        acl.Grants.every(
-          (grant) =>
-            grant.Grantee?.Type === "CanonicalUser" &&
-            (grant.Grantee.ID === ownerId ||
-              (this.#deployment === "test" && ownerId === "" && grant.Grantee.ID === undefined)) &&
-            grant.Permission === "FULL_CONTROL",
-        );
-      return (
-        versioning.Status === "Enabled" &&
-        ownerOnlyAcl &&
-        (policyStatus === null || policyStatus.PolicyStatus?.IsPublic === false) &&
-        lifecycleConfiguration === null
-      );
-    } catch {
-      throwIfAborted(signal);
-      return false;
-    }
+  ready(signal?: AbortSignal) {
+    return this.#transport.ready(signal);
   }
 
-  async #readBytes(tenant: string, receiptValue: SnapshotArtifactReceiptV1, signal?: AbortSignal) {
+  async #readBytes(
+    tenant: string,
+    receiptValue: SnapshotArtifactReceiptV1,
+    operation: PrivateVersionedS3BucketOperationV1,
+  ) {
     const receipt = parseSnapshotArtifactReceiptV1(tenant, receiptValue);
-    throwIfAborted(signal);
+    operation.signal.throwIfAborted();
     let response;
     try {
-      response = await this.#client.send(
-        new GetObjectCommand({ Bucket: this.#bucket, Key: receipt.objectKey, VersionId: receipt.versionId }),
-        { abortSignal: signal },
-      );
+      response = await operation.getObject({ Key: receipt.objectKey, VersionId: receipt.versionId });
     } catch (error) {
       if (isMissingObjectVersion(error)) throw new SnapshotArtifactReadErrorV1("missing");
       throw error;
@@ -367,7 +231,7 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
       if (error instanceof SnapshotArtifactReadErrorV1) throw error;
       corruptArtifact();
     }
-    const bytes = await boundedBody(response.Body, signal);
+    const bytes = await boundedBody(response.Body, operation.signal);
     if (bytes.byteLength !== receipt.byteSize || resultDigest(bytes) !== receipt.resultDigest) {
       corruptArtifact();
     }
@@ -383,14 +247,12 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
       runtimeConfigHash: string;
       sourceDigest: string;
     }>,
-    signal?: AbortSignal,
+    operation: PrivateVersionedS3BucketOperationV1,
   ) {
     const objectKey = snapshotArtifactObjectKeyV1(tenant, identity);
     let response;
     try {
-      response = await this.#client.send(new GetObjectCommand({ Bucket: this.#bucket, Key: objectKey }), {
-        abortSignal: signal,
-      });
+      response = await operation.getObject({ Key: objectKey });
     } catch (error) {
       if (isMissingObjectVersion(error)) throw new SnapshotArtifactReadErrorV1("missing");
       throw error;
@@ -411,7 +273,7 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
       if (error instanceof SnapshotArtifactReadErrorV1) throw error;
       corruptArtifact();
     }
-    const bytes = await boundedBody(response.Body, signal);
+    const bytes = await boundedBody(response.Body, operation.signal);
     if (bytes.byteLength !== identity.byteSize || resultDigest(bytes) !== identity.resultDigest) {
       corruptArtifact();
     }
@@ -428,7 +290,6 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
     }>,
     signal?: AbortSignal,
   ) {
-    signal = operationSignal(signal);
     const tenant = tenantId(tenantValue);
     if (!input || typeof input !== "object" || !(input.bytes instanceof Uint8Array)) {
       throw new TypeError("Snapshot artifact input is invalid.");
@@ -445,27 +306,24 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
       sourceDigest: input.sourceDigest,
     };
     const objectKey = snapshotArtifactObjectKeyV1(tenant, identity);
-    throwIfAborted(signal);
+    const operation = this.#transport.operation(signal);
+    operation.signal.throwIfAborted();
     let response;
     for (let attempt = 1; attempt <= MAX_CONDITIONAL_PUT_ATTEMPTS; attempt += 1) {
       try {
-        response = await this.#client.send(
-          new PutObjectCommand({
-            Body: bytes,
-            Bucket: this.#bucket,
-            ChecksumSHA256: Buffer.from(identity.resultDigest, "hex").toString("base64"),
-            ContentLength: bytes.byteLength,
-            ContentType: "application/octet-stream",
-            IfNoneMatch: "*",
-            Key: objectKey,
-          }),
-          { abortSignal: signal },
-        );
+        response = await operation.putObject({
+          Body: bytes,
+          ChecksumSHA256: Buffer.from(identity.resultDigest, "hex").toString("base64"),
+          ContentLength: bytes.byteLength,
+          ContentType: "application/octet-stream",
+          IfNoneMatch: "*",
+          Key: objectKey,
+        });
         break;
       } catch (error) {
         if (isPreconditionFailed(error)) {
           try {
-            return await this.#readCurrentReceipt(tenant, identity, signal);
+            return await this.#readCurrentReceipt(tenant, identity, operation);
           } catch (readError) {
             if (
               !(readError instanceof SnapshotArtifactReadErrorV1) ||
@@ -474,12 +332,12 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
             ) {
               throw readError;
             }
-            throwIfAborted(signal);
+            operation.signal.throwIfAborted();
             continue;
           }
         }
         if (!isConditionalRequestConflict(error) || attempt === MAX_CONDITIONAL_PUT_ATTEMPTS) throw error;
-        throwIfAborted(signal);
+        operation.signal.throwIfAborted();
       }
     }
     if (!response) throw new Error("S3 did not settle the bounded conditional snapshot upload.");
@@ -489,13 +347,14 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
       objectKey,
       versionId: response.VersionId ?? "",
     });
-    await this.#readBytes(tenant, receipt, signal);
+    await this.#readBytes(tenant, receipt, operation);
     return receipt;
   }
 
   async read(tenantValue: string, artifact: SnapshotArtifactReceiptV1, signal?: AbortSignal) {
-    signal = operationSignal(signal);
-    return this.#readBytes(tenantId(tenantValue), artifact, signal);
+    const tenant = tenantId(tenantValue);
+    parseSnapshotArtifactReceiptV1(tenant, artifact);
+    return this.#readBytes(tenant, artifact, this.#transport.operation(signal));
   }
 
   async listVersions(
@@ -505,7 +364,6 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
     cursorValue?: string | null,
     signal?: AbortSignal,
   ) {
-    signal = operationSignal(signal);
     const tenant = tenantId(tenantValue);
     if (!(cutoff instanceof Date) || !Number.isFinite(cutoff.getTime())) throw new TypeError("GC cutoff is invalid.");
     if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > MAX_LIST_RESULTS) {
@@ -513,6 +371,7 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
     }
     const prefix = snapshotPrefix(tenant);
     const cursor = decodeCursor(cursorValue, prefix);
+    const operation = this.#transport.operation(signal);
     const versions: SnapshotArtifactVersionV1[] = [];
     let keyMarker = cursor.keyMarker;
     let versionIdMarker = cursor.versionIdMarker;
@@ -522,24 +381,16 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
     const seen = new Set<string>();
     if (keyMarker && versionIdMarker) seen.add(encodeCursor(keyMarker, versionIdMarker, prefix));
     while (versions.length < maximum && examined < MAX_LIST_ENTRIES && pages < MAX_LIST_PAGES) {
-      throwIfAborted(signal);
+      operation.signal.throwIfAborted();
       pages += 1;
       const pageBudget = Math.min(MAX_LIST_RESULTS, MAX_LIST_ENTRIES - examined, maximum - versions.length);
-      const page = await this.#client.send(
-        new ListObjectVersionsCommand({
-          Bucket: this.#bucket,
-          KeyMarker: keyMarker,
-          MaxKeys: pageBudget,
-          Prefix: prefix,
-          VersionIdMarker: versionIdMarker,
-        }),
-        { abortSignal: signal },
-      );
+      const page = await operation.listObjectVersionsPage({
+        KeyMarker: keyMarker,
+        MaxKeys: pageBudget,
+        Prefix: prefix,
+        VersionIdMarker: versionIdMarker,
+      });
       const pageEntries = (page.Versions?.length ?? 0) + (page.DeleteMarkers?.length ?? 0);
-      if (pageEntries > pageBudget) throw new Error("S3 exceeded the bounded snapshot-version page size.");
-      if (page.IsTruncated && pageEntries === 0) {
-        throw new Error("S3 returned an empty truncated snapshot-version page.");
-      }
       examined += pageEntries;
       for (const version of page.Versions ?? []) {
         const key = version.Key ?? "";
@@ -568,10 +419,7 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
         nextCursor = null;
         break;
       }
-      if (!page.NextKeyMarker || !page.NextVersionIdMarker) {
-        throw new Error("S3 returned an incomplete version-list cursor.");
-      }
-      nextCursor = encodeCursor(page.NextKeyMarker, page.NextVersionIdMarker, prefix);
+      nextCursor = encodeCursor(page.NextKeyMarker!, page.NextVersionIdMarker!, prefix);
       if (seen.has(nextCursor)) throw new Error("S3 returned a cycling version-list cursor.");
       seen.add(nextCursor);
       keyMarker = page.NextKeyMarker;
@@ -581,17 +429,14 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
   }
 
   async deleteVersion(tenantValue: string, artifactValue: SnapshotArtifactReceiptV1, signal?: AbortSignal) {
-    signal = operationSignal(signal);
     const artifact = parseSnapshotArtifactReceiptV1(tenantId(tenantValue), artifactValue);
-    throwIfAborted(signal);
-    await this.#client.send(
-      new DeleteObjectCommand({ Bucket: this.#bucket, Key: artifact.objectKey, VersionId: artifact.versionId }),
-      { abortSignal: signal },
-    );
-    throwIfAborted(signal);
+    const operation = this.#transport.operation(signal);
+    operation.signal.throwIfAborted();
+    await operation.deleteObjectVersion({ Key: artifact.objectKey, VersionId: artifact.versionId });
+    operation.signal.throwIfAborted();
   }
 
-  async close() {
-    if (this.#ownsClient) this.#client.destroy();
+  close() {
+    return this.#transport.close();
   }
 }

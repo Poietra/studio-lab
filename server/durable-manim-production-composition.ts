@@ -17,6 +17,7 @@ import {
   WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1,
 } from "./storage/postgres/postgres-workspace-source-repository";
 import { S3ContentBlobStoreV1 } from "./storage/s3/s3-content-blob-store";
+import { PrivateVersionedS3BucketTransportV1 } from "./storage/s3/s3-private-versioned-bucket-transport";
 import { S3SnapshotArtifactStoreV1 } from "./storage/s3/s3-snapshot-artifact-store";
 import { createDurableSnapshotArtifactGcWorkerV1 } from "./storage/snapshot-artifact-gc";
 import { SnapshotArtifactPublisherV1 } from "./storage/snapshot-artifact-publisher";
@@ -150,6 +151,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   let repository: PostgresWorkspaceSourceRepositoryV1 | undefined;
   let renderRepository: PostgresRenderSessionRepositoryV1 | undefined;
   let snapshotRepository: PostgresSnapshotPublicationRepositoryV1 | undefined;
+  let objectTransport: PrivateVersionedS3BucketTransportV1 | undefined;
   let blobs: S3ContentBlobStoreV1 | undefined;
   let artifacts: S3SnapshotArtifactStoreV1 | undefined;
   try {
@@ -165,20 +167,17 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       poolConfig: options.database.runtimePoolConfig,
       statementTimeoutMs: options.database.statementTimeoutMs,
     });
-    blobs = new S3ContentBlobStoreV1({
+    objectTransport = new PrivateVersionedS3BucketTransportV1({
       bucket: options.objectStorage.bucket,
       clientConfig: options.objectStorage.clientConfig,
       deployment: "production",
     });
-    artifacts = new S3SnapshotArtifactStoreV1({
-      bucket: options.objectStorage.bucket,
-      clientConfig: options.objectStorage.clientConfig,
-      deployment: "production",
-    });
+    blobs = new S3ContentBlobStoreV1({ transport: objectTransport });
+    artifacts = new S3SnapshotArtifactStoreV1({ transport: objectTransport });
   } catch (error) {
     return cleanupAndThrow(
       error,
-      [options.execution, artifacts, blobs, snapshotRepository, renderRepository, repository],
+      [options.execution, artifacts, blobs, objectTransport, snapshotRepository, renderRepository, repository],
       "Production storage composition and cleanup failed.",
     );
   }
