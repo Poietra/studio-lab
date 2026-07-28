@@ -15,9 +15,20 @@ export type FastManimProductionSnapshotRunnerFactoryOptionsV1 = Readonly<{
   timeoutMs?: number;
 }>;
 
+class SnapshotRunnerCreationCleanupErrorV1 extends AggregateError {
+  readonly cleanupErrors: readonly unknown[];
+
+  constructor(error: unknown, cleanupErrors: readonly unknown[]) {
+    super([error, ...cleanupErrors], "Snapshot runner construction and cleanup failed.");
+    this.name = "SnapshotRunnerCreationCleanupErrorV1";
+    this.cleanupErrors = cleanupErrors;
+  }
+}
+
 /** Creates one independently owned production broker client per durable project runner. */
 export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastManimSnapshotRunnerFactoryV1 {
   readonly #activeReadiness = new Set<Promise<SnapshotRunnerReadinessOutcomeV1>>();
+  readonly #cleanupFailures: unknown[] = [];
   readonly #options: FastManimProductionSnapshotRunnerFactoryOptionsV1;
   #closeRequest: Promise<void> | null = null;
   #closed = false;
@@ -32,8 +43,13 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
     if (this.#closed) throw new Error("The production snapshot runner factory is closed.");
     const client = await createFastManimProductionSandboxClientV1(this.#options.client);
     if (this.#closed) {
-      await client.backend.close();
-      throw new Error("The production snapshot runner factory is closed.");
+      const closed = new Error("The production snapshot runner factory is closed.");
+      try {
+        await client.backend.close();
+      } catch (cleanupError) {
+        throw new SnapshotRunnerCreationCleanupErrorV1(closed, [cleanupError]);
+      }
+      throw closed;
     }
     try {
       return {
@@ -55,7 +71,7 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
         (cleanupError: unknown) => [cleanupError],
       );
       if (cleanup.length > 0) {
-        throw new AggregateError([error, ...cleanup], "Snapshot runner construction and cleanup failed.");
+        throw new SnapshotRunnerCreationCleanupErrorV1(error, cleanup);
       }
       throw error;
     }
@@ -73,7 +89,12 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
         },
       });
     } catch (error) {
-      return { healthy: false, readinessError: error };
+      const cleanupError =
+        error instanceof SnapshotRunnerCreationCleanupErrorV1
+          ? new AggregateError(error.cleanupErrors, "Snapshot runner construction cleanup failed.")
+          : undefined;
+      if (cleanupError !== undefined) this.#cleanupFailures.push(cleanupError);
+      return { ...(cleanupError === undefined ? {} : { cleanupError }), healthy: false, readinessError: error };
     }
     let healthy = false;
     let readinessError: unknown;
@@ -87,6 +108,7 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
       await handle.runner.close();
     } catch (error) {
       cleanupError = error;
+      this.#cleanupFailures.push(error);
     }
     return {
       ...(cleanupError === undefined ? {} : { cleanupError }),
@@ -120,8 +142,8 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
   close() {
     this.#closed = true;
     this.#closeRequest ??= (async () => {
-      const outcomes = await Promise.all([...this.#activeReadiness]);
-      const errors = outcomes.flatMap(({ cleanupError }) => (cleanupError === undefined ? [] : [cleanupError]));
+      await Promise.all([...this.#activeReadiness]);
+      const errors = [...this.#cleanupFailures];
       if (errors.length > 0) {
         throw new AggregateError(errors, "Could not close all active snapshot readiness runners.");
       }

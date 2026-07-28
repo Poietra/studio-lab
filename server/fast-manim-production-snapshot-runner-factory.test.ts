@@ -95,6 +95,29 @@ describe("FastManimProductionSnapshotRunnerFactoryV1", () => {
     expect(created.backend.close).toHaveBeenCalledOnce();
   });
 
+  it("reports client cleanup that fails when factory close races readiness creation", async () => {
+    const created = client();
+    const cleanupFailure = new Error("broker cleanup failed");
+    created.backend.close = vi.fn(async () => Promise.reject(cleanupFailure));
+    let resolveClient!: (value: ReturnType<typeof client>) => void;
+    createClient.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveClient = resolve;
+      }) as never,
+    );
+    const runners = factory();
+    const readiness = runners.ready();
+    const closing = runners.close();
+
+    resolveClient(created);
+
+    await expect(readiness).resolves.toBe(false);
+    const closeError = await closing.catch((error: unknown) => error);
+    expect(closeError).toBeInstanceOf(AggregateError);
+    expect((closeError as AggregateError).errors).toEqual([expect.objectContaining({ errors: [cleanupFailure] })]);
+    expect(created.backend.close).toHaveBeenCalledOnce();
+  });
+
   it("returns a project-owned runner and refuses creation after close", async () => {
     const created = client();
     createClient.mockResolvedValue(created as never);
