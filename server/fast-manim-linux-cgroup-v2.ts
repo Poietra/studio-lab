@@ -969,6 +969,17 @@ export type ProcessLinuxCgroupV2ResourceControllerV1 = Readonly<
 >;
 
 let processLinuxCgroupV2ResourceControllerV1: ProcessLinuxCgroupV2ResourceControllerV1 | null = null;
+const productionLinuxCgroupV2ResourceControllersV1 = new WeakSet<object>();
+
+export function isProductionLinuxCgroupV2ResourceControllerV1(
+  value: unknown,
+): value is ProcessLinuxCgroupV2ResourceControllerV1 {
+  return (
+    (typeof value === "object" || typeof value === "function") &&
+    value !== null &&
+    productionLinuxCgroupV2ResourceControllersV1.has(value)
+  );
+}
 
 const processLinuxCgroupV2ResourceControllerOptionsV1Schema = z
   .object({
@@ -1021,5 +1032,6 @@ export function createProcessLinuxCgroupV2ResourceControllerV1(
     shutdown: controller.shutdown.bind(controller),
     snapshot: controller.snapshot.bind(controller),
   });
+  productionLinuxCgroupV2ResourceControllersV1.add(processLinuxCgroupV2ResourceControllerV1);
   return processLinuxCgroupV2ResourceControllerV1;
 }

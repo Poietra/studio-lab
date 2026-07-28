@@ -5,6 +5,7 @@ import {
   createProcessLinuxCgroupV2ResourceControllerV1,
   deriveLinuxCgroupV2OrchestratorPathV1,
   FileSystemLinuxCgroupV2StoreV1,
+  isProductionLinuxCgroupV2ResourceControllerV1,
   type LinuxCgroupV2ProcessMembershipReaderV1,
   LinuxCgroupV2ResourceControllerV1,
   type LinuxCgroupV2StoreV1,
@@ -234,6 +235,8 @@ describe("Linux cgroup v2 sandbox resource controller", () => {
       root: "/sys/fs/cgroup/system.slice/poietra-studio.service/poietra-sandbox-v1",
     });
     expect(production).not.toHaveProperty("admitForLocalConformance");
+    expect(isProductionLinuxCgroupV2ResourceControllerV1(production)).toBe(true);
+    expect(isProductionLinuxCgroupV2ResourceControllerV1(new Proxy(production, {}))).toBe(false);
   });
 
   it("reconciles owned orphans before admission and writes every cgroup hard limit", async () => {
