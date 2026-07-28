@@ -96,6 +96,9 @@ export class PostgresRepositoryConnectionV1 {
     });
     try {
       const client = await Promise.race([request, interrupted]);
+      // `pool.connect()` may resolve while cancellation wins before its abort
+      // listener is installed. Recheck before transferring client ownership.
+      throwIfAborted(signal);
       settled = true;
       return client;
     } finally {

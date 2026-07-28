@@ -71,6 +71,22 @@ describe("PostgresRepositoryConnectionV1", () => {
     expect(fixture.query).not.toHaveBeenCalled();
   });
 
+  it("destroys a client when cancellation races synchronous pool acquisition", async () => {
+    const fixture = fakePool();
+    const connection = new PostgresRepositoryConnectionV1({ pool: fixture.pool });
+    const controller = new AbortController();
+    const reason = new Error("cancelled as PostgreSQL acquisition resolved");
+    fixture.connect.mockImplementation(() => {
+      controller.abort(reason);
+      return Promise.resolve(fixture.client);
+    });
+    const operation = vi.fn(async () => undefined);
+
+    await expect(connection.withClient(operation, controller.signal)).rejects.toBe(reason);
+    await vi.waitFor(() => expect(fixture.release).toHaveBeenCalledWith(true));
+    expect(operation).not.toHaveBeenCalled();
+  });
+
   it("preserves transaction timeout setup and commit ordering", async () => {
     const fixture = fakePool(4_000);
     const connection = new PostgresRepositoryConnectionV1({ pool: fixture.pool, statementTimeoutMs: 4_000 });
