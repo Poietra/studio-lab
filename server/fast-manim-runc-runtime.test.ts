@@ -152,10 +152,39 @@ describe("FastManimRuncCliRuntimeV1", () => {
     const runtime = runtimeWith(() => child);
     const controller = new AbortController();
     const state = runtime.state(containerId, deadlineEpochMs(), controller.signal);
+    let settled = false;
+    state
+      .finally(() => {
+        settled = true;
+      })
+      .catch(() => undefined);
 
     controller.abort();
+    await new Promise<void>((resolvePromise) => setImmediate(resolvePromise));
 
-    await expect(state).rejects.toThrowError(/aborted/u);
     expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+    expect(settled).toBe(false);
+    child.emit("close", null, "SIGKILL");
+    await expect(state).rejects.toThrowError(/aborted/u);
+  });
+
+  it("does not report a terminated create client reaped before its real exit", async () => {
+    const child = fakeChild();
+    const runtime = runtimeWith(() => child);
+    const created = runtime.create({ bundlePath, containerId, deadlineEpochMs: deadlineEpochMs() });
+    let settled = false;
+    created.created
+      .finally(() => {
+        settled = true;
+      })
+      .catch(() => undefined);
+
+    created.terminateCreateClient();
+    await new Promise<void>((resolvePromise) => setImmediate(resolvePromise));
+
+    expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+    expect(settled).toBe(false);
+    child.emit("exit", null, "SIGKILL");
+    await expect(created.created).rejects.toThrowError(/terminated/u);
   });
 });

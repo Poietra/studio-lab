@@ -18,7 +18,7 @@ const runcStateV1Schema = z.discriminatedUnion("status", [
   z.object({ ...runcStateBaseV1, pid: z.number().int().positive(), status: z.literal("running") }).passthrough(),
   // OCI does not require an init PID after exit; runc may report zero for a
   // retained stopped container while its immutable ID and bundle remain.
-  z.object({ ...runcStateBaseV1, pid: z.number().int().nonnegative(), status: z.literal("stopped") }).passthrough(),
+  z.object({ ...runcStateBaseV1, pid: z.literal(0), status: z.literal("stopped") }).passthrough(),
 ]);
 
 export type FastManimRuncStateV1 = Readonly<z.infer<typeof runcStateV1Schema>>;
@@ -122,6 +122,7 @@ export class FastManimRuncCliRuntimeV1 implements FastManimRuncRuntimeV1 {
         stdio: ["pipe", "pipe", "pipe"],
       },
     ) as ChildProcessWithoutNullStreams;
+    let forcedError: Error | undefined;
     let settled = false;
     let rejectCreated!: (error: Error) => void;
     let resolveCreated!: () => void;
@@ -141,12 +142,13 @@ export class FastManimRuncCliRuntimeV1 implements FastManimRuncRuntimeV1 {
     };
     const onError = () => settle(new Error("The fixed runc create client could not start."));
     const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
-      if (code === 0 && signal === null) settle();
+      if (forcedError) settle(forcedError);
+      else if (code === 0 && signal === null) settle();
       else settle(new Error("The fixed runc create operation failed."));
     };
     const timer = setTimeout(() => {
+      forcedError ??= new Error("The fixed runc create operation exceeded its deadline.");
       child.kill("SIGKILL");
-      settle(new Error("The fixed runc create operation exceeded its deadline."));
     }, timeoutMs);
     timer.unref();
     child.once("error", onError);
@@ -160,8 +162,8 @@ export class FastManimRuncCliRuntimeV1 implements FastManimRuncRuntimeV1 {
       stdout: child.stdout,
       terminateCreateClient: () => {
         if (settled) return;
+        forcedError ??= new Error("The fixed runc create operation was terminated.");
         child.kill("SIGKILL");
-        settle(new Error("The fixed runc create operation was terminated."));
       },
     });
   }
@@ -209,6 +211,7 @@ export class FastManimRuncCliRuntimeV1 implements FastManimRuncRuntimeV1 {
       let stdoutBytes = 0;
       let stderrBytes = 0;
       let outputFailure: Error | undefined;
+      let terminationError: Error | undefined;
       let settled = false;
       const settle = (error?: Error) => {
         if (settled) return;
@@ -219,8 +222,8 @@ export class FastManimRuncCliRuntimeV1 implements FastManimRuncRuntimeV1 {
         else resolveRun(Object.freeze({ stderr: Buffer.concat(stderr), stdout: Buffer.concat(stdout) }));
       };
       const onAbort = () => {
+        terminationError ??= new Error("The fixed runc control operation was aborted.");
         child.kill("SIGKILL");
-        settle(new Error("The fixed runc control operation was aborted."));
       };
       const capture = (target: Buffer[], maximum: number, current: number, chunk: unknown) => {
         if (outputFailure) return current;
@@ -241,12 +244,13 @@ export class FastManimRuncCliRuntimeV1 implements FastManimRuncRuntimeV1 {
       child.once("error", () => settle(new Error("The fixed runc control client could not start.")));
       child.once("close", (code, signal) => {
         if (outputFailure) settle(outputFailure);
+        else if (terminationError) settle(terminationError);
         else if (code !== 0 || signal !== null) settle(new Error("The fixed runc control operation failed."));
         else settle();
       });
       const timer = setTimeout(() => {
+        terminationError ??= new Error("The fixed runc control operation exceeded its deadline.");
         child.kill("SIGKILL");
-        settle(new Error("The fixed runc control operation exceeded its deadline."));
       }, timeoutMs);
       timer.unref();
       signal?.addEventListener("abort", onAbort, { once: true });
