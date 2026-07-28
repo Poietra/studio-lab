@@ -40,17 +40,27 @@ seccomp path, private staging root, and UDS path. `pnpm
 sandbox:oci:render:build` builds the pinned image when
 `POIETRA_FAST_MANIM_SOURCE_REPO` points at the exact Fast Manim checkout. The
 opt-in real lane uses `POIETRA_MANIM_RENDER_GATED_OCI_IMAGE=<sha256:image-id>`.
-At startup the broker removes every prior running container, including one with
-a future deadline, and lets the durable worker resubmit it; no untracked job is
-retained across broker restart. Private staging pins its directory identity,
+At startup the broker first acquires a host-kernel singleton keyed by the
+staging-root digest, then its socket lease. Only while holding both does it
+remove prior containers in that owner namespace, including one with a future
+deadline, and let the durable worker resubmit it; another staging root on the
+same Docker daemon is never reconciled. Broker processes that share a host must
+therefore share its network namespace so the abstract-socket ownership lease is
+effective. Private staging pins its directory identity,
 checks trusted ancestors, reserves worst-case bytes for active jobs, enforces
 count and byte caps, and schedules expiry from each artifact deadline. In
 production the root is owned by `broker:Studio-group` with mode `0750`, and
 published media files are broker-owned with mode `0640`; Studio has read but not
 write authority. The real lane proves multi-animation MP4/PNG output, semantic
 rejection of forged MP4, denial of Scene access to `/proc/1/mem`, hostile early
-output replacement, refenced reattachment, restart cleanup, active
-cancellation, and cleanup.
+output replacement, refenced reattachment, owner-isolated concurrent brokers,
+restart cleanup, active cancellation, and cleanup.
+
+Before upgrading from a build that predates owner-scoped container names and
+labels, stop every old broker and drain its `poietra-render-<staging-id>`
+containers. The new broker deliberately refuses to claim or delete those
+unattributed containers; only containers bearing its exact staging-owner digest
+are eligible for automatic reconciliation.
 
 This source-only slice deliberately accepts no project asset bundle and mounts
 no host project directory. Digest-bounded asset ingestion remains follow-up

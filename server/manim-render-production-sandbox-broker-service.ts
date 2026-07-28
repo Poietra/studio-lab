@@ -70,12 +70,15 @@ export async function startManimRenderProductionSandboxBrokerServiceV1(
     stagingGroupId: options.socketGroupId,
     stagingRoot: options.stagingRoot,
   });
-  if (!(await runner.ready())) throw new TypeError("The fixed render OCI runtime is not ready.");
-  await runner.reconcileOrphans();
   const backend = new ManimRenderGatedOciBackendV1(runner);
   try {
     return await startManimRenderSandboxBrokerServerV1({
       backend,
+      ownerDigest: runner.stagingRootDigest,
+      reconcileOrphans: async () => {
+        if (!(await runner.ready())) throw new TypeError("The fixed render OCI runtime is not ready.");
+        await runner.reconcileOrphans();
+      },
       socketGroupId: options.socketGroupId,
       socketPath: options.socketPath,
     });

@@ -58,6 +58,37 @@ class SlowScene(Scene):
         self.wait(30)
 `;
 
+async function ownedContainerIds(
+  docker: FastManimGatedOciDockerClientV1,
+  runner: ManimRenderGatedOciJobRunnerV1,
+  includeStopped = false,
+) {
+  const result = await docker.run([
+    "container",
+    "ls",
+    ...(includeStopped ? ["--all"] : []),
+    "--quiet",
+    "--no-trunc",
+    "--filter",
+    "label=io.poietra.render-job=v1",
+    "--filter",
+    `label=io.poietra.render-owner-sha256=${runner.stagingRootDigest}`,
+  ]);
+  if (result.code !== 0) throw new Error("Docker could not list owned render containers.");
+  return result.stdout.toString("ascii").trim().split("\n").filter(Boolean);
+}
+
+async function waitForOwnedContainer(docker: FastManimGatedOciDockerClientV1, runner: ManimRenderGatedOciJobRunnerV1) {
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    const containers = await ownedContainerIds(docker, runner);
+    if (containers.length === 1) return containers[0]!;
+    if (containers.length > 1) throw new Error("The render runner owns multiple active test containers.");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("The owned render container did not start before the test deadline.");
+}
+
 describe.skipIf(!enabled)("render gated OCI real media lane", () => {
   it("renders a multi-animation MP4 and PNG without a host project mount", async () => {
     const stagingRoot = await mkdtemp(join(tmpdir(), "poietra-real-render-staging-"));
@@ -223,16 +254,7 @@ describe.skipIf(!enabled)("render gated OCI real media lane", () => {
       await runner.cancel(request.parseDescriptor().jobId, Date.now() + 30_000, signal);
       await expect(result).resolves.toEqual({ code: "cancelled", kind: "failed" });
       expect(await readdir(stagingRoot)).toEqual([]);
-      const containers = await docker.run([
-        "container",
-        "ls",
-        "--all",
-        "--quiet",
-        "--filter",
-        "label=io.poietra.render-job=v1",
-      ]);
-      expect(containers.code).toBe(0);
-      expect(containers.stdout.toString("ascii").trim()).toBe("");
+      expect(await ownedContainerIds(docker, runner, true)).toEqual([]);
     } catch (error) {
       operationError = error;
     }
@@ -245,20 +267,23 @@ describe.skipIf(!enabled)("render gated OCI real media lane", () => {
     if (errors.length > 0) throw new AggregateError(errors, "The real render cancellation lane did not clean up.");
   }, 60_000);
 
-  it("removes a future-deadline running orphan before accepting work after restart", async () => {
+  it("removes only its own future-deadline orphan when another broker shares the Docker daemon", async () => {
     const stagingRoot = await mkdtemp(join(tmpdir(), "poietra-real-render-restart-"));
+    const unrelatedStagingRoot = await mkdtemp(join(tmpdir(), "poietra-real-render-unrelated-"));
     await chmod(stagingRoot, 0o700);
+    await chmod(unrelatedStagingRoot, 0o700);
     const docker = new FastManimGatedOciDockerClientV1();
-    const createRunner = () =>
+    const createRunner = (root: string) =>
       new ManimRenderGatedOciJobRunnerV1({
         cgroupKillPolicy: "best-effort",
         dockerClient: docker,
         image: image!,
         seccompPath,
-        stagingRoot,
+        stagingRoot: root,
       });
-    const original = createRunner();
-    const restarted = createRunner();
+    const original = createRunner(stagingRoot);
+    const restarted = createRunner(stagingRoot);
+    const unrelated = createRunner(unrelatedStagingRoot);
     const deadlineEpochMs = Date.now() + 60_000;
     const request = new SealedManimRenderSandboxRequestV1({
       deadlineEpochMs,
@@ -287,44 +312,42 @@ describe.skipIf(!enabled)("render gated OCI real media lane", () => {
     const signal = new AbortController().signal;
     let operationError: unknown;
     try {
-      await original.reconcileOrphans();
+      await Promise.all([original.reconcileOrphans(), unrelated.reconcileOrphans()]);
       const result = original.submitOrReattach(request, deadlineEpochMs, signal);
-      let runningContainer = "";
-      const observationDeadline = Date.now() + 5_000;
-      while (!runningContainer && Date.now() < observationDeadline) {
-        const listed = await docker.run([
-          "container",
-          "ls",
-          "--quiet",
-          "--no-trunc",
-          "--filter",
-          "label=io.poietra.render-job=v1",
-        ]);
-        runningContainer = listed.stdout.toString("ascii").trim();
-        if (!runningContainer) await new Promise((resolve) => setTimeout(resolve, 50));
-      }
+      const unrelatedResult = unrelated.submitOrReattach(request, deadlineEpochMs, signal);
+      const [runningContainer, unrelatedContainer] = await Promise.all([
+        waitForOwnedContainer(docker, original),
+        waitForOwnedContainer(docker, unrelated),
+      ]);
       expect(runningContainer).toMatch(/^[a-f0-9]{64}$/u);
+      expect(unrelatedContainer).toMatch(/^[a-f0-9]{64}$/u);
+      expect(unrelatedContainer).not.toBe(runningContainer);
       await restarted.reconcileOrphans();
       await expect(result).resolves.toMatchObject({ kind: "failed" });
-      const remaining = await docker.run([
-        "container",
-        "ls",
-        "--all",
-        "--quiet",
-        "--filter",
-        "label=io.poietra.render-job=v1",
-      ]);
-      expect(remaining.stdout.toString("ascii").trim()).toBe("");
+      expect(await ownedContainerIds(docker, restarted, true)).toEqual([]);
+      expect(await ownedContainerIds(docker, unrelated)).toEqual([unrelatedContainer]);
+      await unrelated.cancel(request.parseDescriptor().jobId, Date.now() + 30_000, signal);
+      await expect(unrelatedResult).resolves.toEqual({ code: "cancelled", kind: "failed" });
+      expect(await ownedContainerIds(docker, unrelated, true)).toEqual([]);
       expect(await readdir(stagingRoot)).toEqual([]);
+      expect(await readdir(unrelatedStagingRoot)).toEqual([]);
     } catch (error) {
       operationError = error;
     }
-    const [, restartedCleanup] = await Promise.allSettled([original.close(), restarted.close()]);
-    await rm(stagingRoot, { force: true, recursive: true });
+    const [, restartedCleanup, unrelatedCleanup] = await Promise.allSettled([
+      original.close(),
+      restarted.close(),
+      unrelated.close(),
+    ]);
+    await Promise.all([
+      rm(stagingRoot, { force: true, recursive: true }),
+      rm(unrelatedStagingRoot, { force: true, recursive: true }),
+    ]);
     const errors = [
       ...(operationError === undefined ? [] : [operationError]),
       ...(restartedCleanup.status === "rejected" ? [restartedCleanup.reason] : []),
+      ...(unrelatedCleanup.status === "rejected" ? [unrelatedCleanup.reason] : []),
     ];
     if (errors.length > 0) throw new AggregateError(errors, "The render restart lane did not remove its orphan.");
-  }, 60_000);
+  }, 90_000);
 });

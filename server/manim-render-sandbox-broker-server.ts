@@ -3,7 +3,10 @@ import { chmod, chown, lstat, realpath } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
 import { dirname, isAbsolute, resolve } from "node:path";
 
-import { acquireFastManimSandboxBrokerLeaseV1 } from "./fast-manim-sandbox-broker-lease";
+import {
+  acquireFastManimSandboxBrokerLeaseV1,
+  acquireFastManimSandboxOwnerLeaseV1,
+} from "./fast-manim-sandbox-broker-lease";
 import {
   ManimRenderSandboxBrokerClientFrameDecoderV1,
   type ManimRenderSandboxBrokerClientMessageV1,
@@ -26,6 +29,10 @@ const RECEIVE_TIMEOUT_MS = 2_000;
 
 type Connection = Readonly<{ close: () => Promise<void> }>;
 
+type ManimRenderSandboxBrokerOwnershipV1 =
+  | Readonly<{ ownerDigest: string; reconcileOrphans: () => Promise<void> }>
+  | Readonly<{ ownerDigest?: never; reconcileOrphans?: never }>;
+
 export type ManimRenderSandboxBrokerServerOptionsV1 = Readonly<{
   backend: ManimRenderSandboxBackendV1;
   closeTimeoutMs?: number;
@@ -33,7 +40,8 @@ export type ManimRenderSandboxBrokerServerOptionsV1 = Readonly<{
   maxConnections?: number;
   socketGroupId: number;
   socketPath: string;
-}>;
+}> &
+  ManimRenderSandboxBrokerOwnershipV1;
 
 function positiveInteger(value: number | undefined, fallback: number) {
   const selected = value ?? fallback;
@@ -239,6 +247,9 @@ function createConnection(
 }
 
 export async function startManimRenderSandboxBrokerServerV1(options: ManimRenderSandboxBrokerServerOptionsV1) {
+  if ((options.ownerDigest === undefined) !== (options.reconcileOrphans === undefined)) {
+    throw new TypeError("Render orphan reconciliation requires its staging-owner lease.");
+  }
   const userId = await validateSocketPath(options.socketPath);
   if (!Number.isSafeInteger(options.socketGroupId) || options.socketGroupId < 0) {
     throw new TypeError("The render broker socket group is invalid.");
@@ -247,15 +258,23 @@ export async function startManimRenderSandboxBrokerServerV1(options: ManimRender
   const maxConnections = positiveInteger(options.maxConnections, DEFAULT_MAX_CONNECTIONS);
   const closeTimeoutMs = positiveInteger(options.closeTimeoutMs, DEFAULT_CLOSE_TIMEOUT_MS);
   if (closeTimeoutMs > MAX_CLOSE_TIMEOUT_MS) throw new TypeError("The render broker close timeout is too large.");
+  let ownerLease: Awaited<ReturnType<typeof acquireFastManimSandboxOwnerLeaseV1>> | undefined;
   let lease: Awaited<ReturnType<typeof acquireFastManimSandboxBrokerLeaseV1>>;
   try {
+    if (options.ownerDigest !== undefined) {
+      ownerLease = await acquireFastManimSandboxOwnerLeaseV1(options.ownerDigest);
+    }
     lease = await acquireFastManimSandboxBrokerLeaseV1(options.socketPath);
   } catch (error) {
-    const backendClosed = await settleWithin(
+    const cleanup = Promise.allSettled([
       Promise.resolve().then(() => options.backend.close()),
-      closeTimeoutMs,
-    );
-    if (!backendClosed) throw new AggregateError([error, new Error("The render backend cleanup timed out.")]);
+      ...(ownerLease ? [ownerLease.close()] : []),
+    ]);
+    if (!(await settleWithin(cleanup, closeTimeoutMs))) {
+      throw new AggregateError([error, new Error("The render broker lease cleanup timed out.")]);
+    }
+    const failures = (await cleanup).flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (failures.length > 0) throw new AggregateError([error, ...failures]);
     throw error;
   }
   const connections = new Set<Connection>();
@@ -307,13 +326,33 @@ export async function startManimRenderSandboxBrokerServerV1(options: ManimRender
     if (!(await settleWithin(transport, closeTimeoutMs)))
       failures.push(new Error("Render broker transport cleanup timed out."));
     else failures.push(...(await transport).flatMap((result) => (result.status === "rejected" ? [result.reason] : [])));
-    const backend = Promise.resolve().then(() => options.backend.close());
-    if (!(await settleWithin(backend, closeTimeoutMs))) failures.push(new Error("Render backend cleanup timed out."));
-    else await backend.catch((error: unknown) => failures.push(error));
+    const backendOutcome = Promise.resolve()
+      .then(() => options.backend.close())
+      .then(
+        () => ({ kind: "fulfilled" as const }),
+        (reason: unknown) => ({ kind: "rejected" as const, reason }),
+      );
+    const backendFinished = await settleWithin(backendOutcome, closeTimeoutMs);
+    if (!backendFinished) {
+      failures.push(new Error("Render backend cleanup timed out."));
+    } else {
+      const outcome = await backendOutcome;
+      if (outcome.kind === "rejected") failures.push(outcome.reason);
+    }
     const leaseClose = lease.close();
     if (!(await settleWithin(leaseClose, closeTimeoutMs)))
       failures.push(new Error("Render broker lease cleanup timed out."));
     else await leaseClose.catch((error: unknown) => failures.push(error));
+    if (ownerLease && backendFinished) {
+      const ownerLeaseClose = ownerLease.close();
+      if (!(await settleWithin(ownerLeaseClose, closeTimeoutMs))) {
+        failures.push(new Error("Render broker owner lease cleanup timed out."));
+      } else {
+        await ownerLeaseClose.catch((error: unknown) => failures.push(error));
+      }
+    } else if (ownerLease) {
+      void backendOutcome.then(() => ownerLease.close()).catch(() => reportFatalClose());
+    }
     if (failures.length > 0) {
       reportFatalClose();
       throw new AggregateError(failures, "The render broker did not close safely.");
@@ -328,6 +367,7 @@ export async function startManimRenderSandboxBrokerServerV1(options: ManimRender
     void closeBroker().catch(() => undefined);
   };
   try {
+    await options.reconcileOrphans?.();
     await listen(server, options.socketPath);
     server.on("error", onFatalServerError);
     await chown(options.socketPath, userId, options.socketGroupId);

@@ -35,7 +35,8 @@ import {
 
 const IMAGE_ID = /^sha256:[a-f0-9]{64}$/u;
 const CONTAINER_ID = /^[a-f0-9]{64}$/u;
-const CONTAINER_NAME = /^poietra-render-[a-f0-9]{32}$/u;
+const CONTAINER_NAME = /^poietra-render-[a-f0-9]{64}-[a-f0-9]{32}$/u;
+const CONTAINER_OWNER_LABEL = "io.poietra.render-owner-sha256";
 const READY = Buffer.from("POIETRA_RENDER_GATE_READY_V1\n", "ascii");
 const REQUEST_WIRE_BYTES = 80;
 const BROKER_READABLE_PROCESS_NAME = "poietra-ready";
@@ -714,6 +715,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
   readonly #seccompPath: string;
   readonly #stagingGroupId: number | undefined;
   readonly #stagingRoot: string;
+  readonly #stagingRootDigest: string;
   #closed = false;
   #cleanupFailure: unknown = undefined;
   #stagingIdentity: StagingRootIdentityV1 | undefined;
@@ -754,8 +756,9 @@ export class ManimRenderGatedOciJobRunnerV1 {
       throw new TypeError("The render OCI staging limits are invalid.");
     }
     this.#cgroupKillPolicy = options.cgroupKillPolicy ?? "required";
+    let stagingRootDigest: string;
     try {
-      digestManimRenderStagingRootV1(options.stagingRoot);
+      stagingRootDigest = digestManimRenderStagingRootV1(options.stagingRoot);
     } catch {
       throw new TypeError("The broker staging root must be canonical and absolute.");
     }
@@ -775,6 +778,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
     }
     this.#stagingGroupId = options.stagingGroupId;
     this.#stagingRoot = options.stagingRoot;
+    this.#stagingRootDigest = stagingRootDigest;
   }
 
   get profileDigest() {
@@ -786,7 +790,13 @@ export class ManimRenderGatedOciJobRunnerV1 {
   }
 
   get stagingRootDigest() {
-    return digestManimRenderStagingRootV1(this.#stagingRoot);
+    return this.#stagingRootDigest;
+  }
+
+  #containerName(stagingId: string) {
+    const name = `poietra-render-${this.#stagingRootDigest}-${stagingId}`;
+    if (!CONTAINER_NAME.test(name)) throw new TypeError("The stable render container name is invalid.");
+    return name;
   }
 
   async #assertStagingRootIdentity() {
@@ -1002,6 +1012,8 @@ export class ManimRenderGatedOciJobRunnerV1 {
       "--no-trunc",
       "--filter",
       "label=io.poietra.render-job=v1",
+      "--filter",
+      `label=${CONTAINER_OWNER_LABEL}=${this.#stagingRootDigest}`,
     ]);
     const containerIds = listed.stdout.toString("ascii").trim().split("\n").filter(Boolean);
     if (listed.code !== 0 || containerIds.length > 128 || containerIds.some((id) => !CONTAINER_ID.test(id))) {
@@ -1025,7 +1037,8 @@ export class ManimRenderGatedOciJobRunnerV1 {
           !CONTAINER_NAME.test(name) ||
           typeof executionDigest !== "string" ||
           !/^[a-f0-9]{64}$/u.test(executionDigest) ||
-          labels?.["io.poietra.render-job"] !== "v1"
+          labels?.["io.poietra.render-job"] !== "v1" ||
+          labels?.[CONTAINER_OWNER_LABEL] !== this.#stagingRootDigest
         ) {
           throw new Error("A label-owned render orphan has an invalid identity.");
         }
@@ -1203,7 +1216,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
     let immutableContainerIdObserved = false;
     let runningIdentity: FastManimGatedOciRunningIdentityV1 | undefined;
     let copied: CopiedArtifact | undefined;
-    const containerName = `poietra-render-${stagingId}`;
+    const containerName = this.#containerName(stagingId);
     const execute = async (): Promise<ManimRenderGatedOciBaseResultV1> => {
       try {
         const staged = await this.#readStaged(descriptor, executionDigest, stagingId, deadlineEpochMs, signal);
@@ -1377,6 +1390,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
         `--tmpfs=/run/poietra:${TMPFS_OPTIONS.join(",")}`,
         "--stop-timeout=1",
         "--label=io.poietra.render-job=v1",
+        `--label=${CONTAINER_OWNER_LABEL}=${this.#stagingRootDigest}`,
         `--label=io.poietra.render-execution-sha256=${executionDigest}`,
         `--label=io.poietra.render-deadline-epoch-ms=${deadlineEpochMs}`,
         this.#image,
@@ -1496,6 +1510,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
       environment === null ||
       !exactMap(environment, FIXED_ENVIRONMENT) ||
       labels?.["io.poietra.render-job"] !== "v1" ||
+      labels?.[CONTAINER_OWNER_LABEL] !== this.#stagingRootDigest ||
       labels?.["io.poietra.render-execution-sha256"] !== executionDigest ||
       labels?.["io.poietra.render-deadline-epoch-ms"] !== String(deadlineEpochMs) ||
       host?.ReadonlyRootfs !== true ||
@@ -1787,8 +1802,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
   }
 
   async #cleanupByStableId(stagingId: string) {
-    const containerName = `poietra-render-${stagingId}`;
-    if (!CONTAINER_NAME.test(containerName)) throw new TypeError("The stable render container name is invalid.");
+    const containerName = this.#containerName(stagingId);
     const listed = await this.#docker.run([
       "container",
       "ls",
