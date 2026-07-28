@@ -23,7 +23,7 @@ async function sceneId() {
   return `scene:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-async function verifiedRun() {
+async function verifiedRun(options: Readonly<{ identityMap?: boolean }> = {}) {
   const id = await sceneId();
   const unsealedBundle = {
     ...bundleFixture,
@@ -48,6 +48,7 @@ async function verifiedRun() {
       source: { ...unsealedBundle.scene.source, snapshotHash },
     },
   });
+  const firstEntity = bundle.scene.entities[0]!;
   return {
     projectId: identity.projectId,
     publishedAt: "2026-07-27T00:00:00.000Z",
@@ -70,6 +71,32 @@ async function verifiedRun() {
       sourcePath: identity.sourcePath,
       version: 1,
     },
+    ...(options.identityMap === false
+      ? {}
+      : {
+          sourceRuntimeIdentity: {
+            mappings: [
+              {
+                binding: {
+                  id: `source-binding:${"c".repeat(64)}`,
+                  name: "circle",
+                  ordinal: 1,
+                  span: { endColumn: 14, endLine: 5, startColumn: 8, startLine: 5 },
+                },
+                entityId: firstEntity.id,
+                familyPath: [],
+                provenanceId: firstEntity.provenanceId,
+              },
+            ],
+            runtimeConfigHash: RUNTIME_HASH,
+            sceneId: id,
+            schema: "poietra.studio-verified-source-runtime-identity-map",
+            snapshotDigest: "d".repeat(64),
+            snapshotHash,
+            sourceHash: SOURCE_HASH,
+            version: 1,
+          },
+        }),
     sourcePath: identity.sourcePath,
     status: "verified",
     version: 1,
@@ -114,7 +141,18 @@ describe("createServerPreviewSnapshotProviderV1", () => {
       sourceLabel: "verified server snapshot r7",
     });
     expect(loaded.correlation.engineRevisionHash).not.toBe(String(loaded.correlation.serverPublicationRevision));
+    expect(loaded.sourceRuntimeIdentity?.get("circle")).toEqual({
+      bindingId: `source-binding:${"c".repeat(64)}`,
+      entityId: run.snapshot.bundle.scene.entities[0]?.id,
+      sourceName: "circle",
+    });
     expect(provider.evidence).toBeUndefined();
+  });
+
+  it("keeps legacy verified runs without identity evidence on semantic interaction fallback", async () => {
+    const run = await verifiedRun({ identityMap: false });
+    const loaded = await providerReturning(run).provider.loadVerifiedSnapshot({ identity });
+    expect(loaded.sourceRuntimeIdentity).toBeNull();
   });
 
   it.each(["failed", "stale", "unsupported"] as const)("fails closed for a %s run", async (status) => {
@@ -185,6 +223,47 @@ describe("createServerPreviewSnapshotProviderV1", () => {
     }
   });
 
+  it("rejects stale, ambiguous, and non-entity source/runtime maps", async () => {
+    const base = await verifiedRun();
+    const identityMap = base.sourceRuntimeIdentity;
+    if (!identityMap) throw new Error("Expected the verified fixture identity map.");
+    const mapping = identityMap.mappings[0]!;
+    const variants = [
+      { ...base, sourceRuntimeIdentity: { ...identityMap, sourceHash: "e".repeat(64) } },
+      { ...base, sourceRuntimeIdentity: { ...identityMap, sceneId: "scene:stale" } },
+      { ...base, sourceRuntimeIdentity: { ...identityMap, runtimeConfigHash: "e".repeat(64) } },
+      { ...base, sourceRuntimeIdentity: { ...identityMap, snapshotHash: "e".repeat(64) } },
+      {
+        ...base,
+        sourceRuntimeIdentity: {
+          ...identityMap,
+          mappings: [{ ...mapping, entityId: "missing-runtime-entity" }],
+        },
+      },
+      {
+        ...base,
+        sourceRuntimeIdentity: {
+          ...identityMap,
+          mappings: [{ ...mapping, provenanceId: "wrong-provenance" }],
+        },
+      },
+      {
+        ...base,
+        sourceRuntimeIdentity: { ...identityMap, mappings: [{ ...mapping, familyPath: [0] }] },
+      },
+      {
+        ...base,
+        sourceRuntimeIdentity: {
+          ...identityMap,
+          mappings: [mapping, { ...mapping, binding: { ...mapping.binding, id: `source-binding:${"e".repeat(64)}` } }],
+        },
+      },
+    ];
+    for (const value of variants) {
+      await expect(providerReturning(value).provider.loadVerifiedSnapshot({ identity })).rejects.toThrow();
+    }
+  });
+
   it("rejects invalid transport data and HTTP failures without adopting a snapshot", async () => {
     const invalidJson = createServerPreviewSnapshotProviderV1({
       fetcher: async () => new Response("not json", { headers: { "content-type": "application/json" } }),
@@ -206,7 +285,7 @@ describe("createServerPreviewSnapshotProviderV1", () => {
 
     const streamedOversize = createServerPreviewSnapshotProviderV1({
       fetcher: async () =>
-        new Response(new Uint8Array(5 * 1024 * 1024 + 32 * 1024 + 1), {
+        new Response(new Uint8Array(8 * 1024 * 1024 + 64 * 1024 + 1), {
           headers: { "content-type": "application/json" },
         }),
       requestIdFactory: () => REQUEST_ID,

@@ -1,6 +1,7 @@
 import type {
   ExpectedFastManimSnapshotCorrelationV1,
   VerifiedCompiledFastManimSnapshotResultV1,
+  VerifiedSourceRuntimeIdentityMapV1,
 } from "./fast-manim-snapshot-contract";
 
 /**
@@ -17,6 +18,7 @@ export type PublishedSnapshot = Readonly<{
   publishedAtEpochMs: number;
   result: VerifiedCompiledFastManimSnapshotResultV1;
   revision: number;
+  sourceRuntimeIdentity: VerifiedSourceRuntimeIdentityMapV1 | null;
 }>;
 
 const DEFAULT_GLOBAL_MAX_PUBLISHED_SNAPSHOTS = 64;

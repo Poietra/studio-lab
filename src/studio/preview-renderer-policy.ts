@@ -291,6 +291,81 @@ function worldCenter(entity: SceneIrBundleV1["scene"]["entities"][number]) {
   };
 }
 
+function transformedPoint(
+  entity: SceneIrBundleV1["scene"]["entities"][number],
+  point: Readonly<{ x: number; y: number }>,
+) {
+  const transform = entity.transform;
+  return {
+    x: transform.m11 * point.x + transform.m12 * point.y + transform.tx,
+    y: transform.m21 * point.x + transform.m22 * point.y + transform.ty,
+  };
+}
+
+function cubicCoordinate(from: number, control1: number, control2: number, to: number, time: number) {
+  const inverse = 1 - time;
+  return (
+    inverse * inverse * inverse * from +
+    3 * inverse * inverse * time * control1 +
+    3 * inverse * time * time * control2 +
+    time * time * time * to
+  );
+}
+
+function cubicExtrema(from: number, control1: number, control2: number, to: number) {
+  const quadratic = -from + 3 * control1 - 3 * control2 + to;
+  const linear = 2 * (from - 2 * control1 + control2);
+  const constant = control1 - from;
+  if (Math.abs(quadratic) <= Number.EPSILON) {
+    return Math.abs(linear) <= Number.EPSILON ? [] : [-constant / linear].filter((time) => time > 0 && time < 1);
+  }
+  const discriminant = linear * linear - 4 * quadratic * constant;
+  if (discriminant < 0) return [];
+  const root = Math.sqrt(discriminant);
+  return [(-linear - root) / (2 * quadratic), (-linear + root) / (2 * quadratic)].filter(
+    (time) => time > 0 && time < 1,
+  );
+}
+
+function cubicPathWorldBounds(entity: SceneIrBundleV1["scene"]["entities"][number]) {
+  if (entity.geometry.kind !== "cubic-path") return null;
+  let minimumX = Number.POSITIVE_INFINITY;
+  let maximumX = Number.NEGATIVE_INFINITY;
+  let minimumY = Number.POSITIVE_INFINITY;
+  let maximumY = Number.NEGATIVE_INFINITY;
+  const includeX = (value: number) => {
+    minimumX = Math.min(minimumX, value);
+    maximumX = Math.max(maximumX, value);
+  };
+  const includeY = (value: number) => {
+    minimumY = Math.min(minimumY, value);
+    maximumY = Math.max(maximumY, value);
+  };
+  const includePoint = (point: Readonly<{ x: number; y: number }>) => {
+    includeX(point.x);
+    includeY(point.y);
+  };
+  for (const subpath of entity.geometry.path.subpaths) {
+    let from = transformedPoint(entity, subpath.start);
+    includePoint(from);
+    for (const segment of subpath.segments) {
+      const control1 = transformedPoint(entity, segment.control1);
+      const control2 = transformedPoint(entity, segment.control2);
+      const to = transformedPoint(entity, segment.end);
+      includePoint(to);
+      for (const time of cubicExtrema(from.x, control1.x, control2.x, to.x)) {
+        includeX(cubicCoordinate(from.x, control1.x, control2.x, to.x, time));
+      }
+      for (const time of cubicExtrema(from.y, control1.y, control2.y, to.y)) {
+        includeY(cubicCoordinate(from.y, control1.y, control2.y, to.y, time));
+      }
+      from = to;
+    }
+  }
+  if (![minimumX, maximumX, minimumY, maximumY].every(Number.isFinite)) return null;
+  return { maximumX, maximumY, minimumX, minimumY };
+}
+
 // Two affine row norms are treated as one uniform scale only within this
 // tolerance (and only with orthogonal rows); anything wider is projected as an
 // axis-aligned box so a circle never claims a radius the pixels do not draw.
@@ -342,7 +417,13 @@ export function projectStudioPreviewStaticInteractionGeometryV1(
   for (const entity of scene.entities) {
     // Same active-lifetime convention as the engine: start <= t < end.
     if (!entity.lifetimes.some((lifetime) => sampleTime >= lifetime.start && sampleTime < lifetime.end)) continue;
-    const world = worldCenter(entity);
+    const cubicBounds = cubicPathWorldBounds(entity);
+    const world = cubicBounds
+      ? {
+          x: (cubicBounds.minimumX + cubicBounds.maximumX) / 2,
+          y: (cubicBounds.minimumY + cubicBounds.maximumY) / 2,
+        }
+      : worldCenter(entity);
     if (!world) continue;
     const position = {
       x: (0.5 + (world.x - view.center.x) / view.frameWidth) * STUDIO_VIEWPORT.width,
@@ -352,7 +433,12 @@ export function projectStudioPreviewStaticInteractionGeometryV1(
     const rowNormX = Math.hypot(m11, m12);
     const rowNormY = Math.hypot(m21, m22);
     let dimensions: EntityDimensions | null = null;
-    if (entity.geometry.kind === "circle") {
+    if (cubicBounds) {
+      dimensions = {
+        height: (cubicBounds.maximumY - cubicBounds.minimumY) * heightRatio,
+        width: (cubicBounds.maximumX - cubicBounds.minimumX) * widthRatio,
+      };
+    } else if (entity.geometry.kind === "circle") {
       const similarity =
         Math.abs(rowNormX - rowNormY) <= UNIFORM_ROW_NORM_TOLERANCE * Math.max(rowNormX, rowNormY, 1) &&
         Math.abs(m11 * m21 + m12 * m22) <= UNIFORM_ROW_NORM_TOLERANCE * Math.max(rowNormX * rowNormY, 1);
