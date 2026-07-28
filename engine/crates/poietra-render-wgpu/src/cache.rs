@@ -2,18 +2,18 @@ use std::collections::HashMap;
 use std::mem::size_of;
 
 use poietra_scene_ir::{
-    AffineTransformV1, CubicPathV1, CubicSubpathV1, FillRuleV1, RenderCameraV1, StrokeCapV1,
-    StrokeJoinV1, StrokeStyleV1, ViewportV1,
+    AffineTransformV1, CubicPathV1, CubicSubpathV1, FillRuleV1, RenderCameraKindV1, RenderCameraV1,
+    StrokeCapV1, StrokeJoinV1, StrokeStyleV1, ViewportV1,
 };
 
-use crate::prepare::PreparedGeometryVertexV1;
+use crate::prepare::{FLATTEN_TOLERANCE_PIXELS_V1, PreparedGeometryVertexV1};
 
 /// Maximum logical bytes retained by one browser renderer for prepared geometry.
 pub const MAX_PREPARED_GEOMETRY_CACHE_BYTES_V1: usize = 64 * 1024 * 1024;
 /// Maximum fill/stroke phase entries retained by one browser renderer.
 pub const MAX_PREPARED_GEOMETRY_CACHE_ENTRIES_V1: usize = 4_096;
 
-const DRAW_ENTRY_OVERHEAD_BYTES: usize = 128;
+const HASH_MAP_BUCKET_OVERHEAD_BYTES: usize = 16;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PreparedGeometryCacheFrameStatsV1 {
@@ -48,18 +48,41 @@ pub(crate) struct PreparedGeometryCacheInputV1<'a> {
     pub(crate) viewport: &'a ViewportV1,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PreparedCameraSignatureV1 {
+    bottom: f64,
+    kind: RenderCameraKindV1,
+    left: f64,
+    right: f64,
+    top: f64,
+}
+
+impl From<&RenderCameraV1> for PreparedCameraSignatureV1 {
+    fn from(camera: &RenderCameraV1) -> Self {
+        Self {
+            bottom: camera.bottom,
+            kind: camera.kind,
+            left: camera.left,
+            right: camera.right,
+            top: camera.top,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum PreparedGeometrySignatureV1 {
     Fill {
-        camera: RenderCameraV1,
+        camera: PreparedCameraSignatureV1,
+        flatten_tolerance_bits: u64,
         path: CubicPathV1,
         rule: FillRuleV1,
         transform: AffineTransformV1,
         viewport: ViewportV1,
     },
     Stroke {
-        camera: RenderCameraV1,
+        camera: PreparedCameraSignatureV1,
         cap: StrokeCapV1,
+        flatten_tolerance_bits: u64,
         join: StrokeJoinV1,
         miter_limit: f64,
         path: CubicPathV1,
@@ -88,9 +111,10 @@ impl CachedPhaseGeometryV1 {
         &self.vertices
     }
 
-    fn accounted_bytes(&self) -> usize {
-        size_of::<Self>()
-            .saturating_add(self.indices.capacity().saturating_mul(size_of::<u32>()))
+    fn owned_bytes(&self) -> usize {
+        self.indices
+            .capacity()
+            .saturating_mul(size_of::<u32>())
             .saturating_add(
                 self.vertices
                     .capacity()
@@ -119,6 +143,10 @@ struct PreparedDrawGeometryV1 {
 /// geometry signature before reuse. Hash collisions therefore cannot produce
 /// stale pixels; path, transform, camera, viewport, and geometry-affecting
 /// paint changes all become misses.
+///
+/// The byte budget accounts for retained inline values, owned vector
+/// capacities, draw IDs, and a fixed hash-bucket allowance. It is a portable
+/// logical bound, not a claim about allocator or browser-process RSS.
 #[derive(Debug)]
 pub struct PreparedGeometryCacheV1 {
     accounted_bytes: usize,
@@ -163,7 +191,7 @@ impl PreparedGeometryCacheV1 {
     }
 
     pub fn clear(&mut self) {
-        self.draws.clear();
+        self.draws = HashMap::new();
         self.accounted_bytes = 0;
         self.entry_count = 0;
         self.frame_stats = PreparedGeometryCacheFrameStatsV1::default();
@@ -212,11 +240,13 @@ impl PreparedGeometryCacheV1 {
             &entry.signature,
             PreparedGeometrySignatureV1::Fill {
                 camera: cached_camera,
+                flatten_tolerance_bits,
                 path: cached_path,
                 rule: cached_rule,
                 transform: cached_transform,
                 viewport: cached_viewport,
-            } if cached_camera == input.camera
+            } if *cached_camera == PreparedCameraSignatureV1::from(input.camera)
+                && *flatten_tolerance_bits == FLATTEN_TOLERANCE_PIXELS_V1.to_bits()
                 && cached_path == input.path
                 && *cached_rule == rule
                 && cached_transform == input.transform
@@ -251,14 +281,16 @@ impl PreparedGeometryCacheV1 {
             PreparedGeometrySignatureV1::Stroke {
                 camera: cached_camera,
                 cap,
+                flatten_tolerance_bits,
                 join,
                 miter_limit,
                 path: cached_path,
                 transform: cached_transform,
                 viewport: cached_viewport,
                 width_world,
-            } if cached_camera == input.camera
+            } if *cached_camera == PreparedCameraSignatureV1::from(input.camera)
                 && *cap == stroke.cap
+                && *flatten_tolerance_bits == FLATTEN_TOLERANCE_PIXELS_V1.to_bits()
                 && *join == stroke.join
                 && miter_limit.to_bits() == stroke.miter_limit.to_bits()
                 && cached_path == input.path
@@ -286,7 +318,8 @@ impl PreparedGeometryCacheV1 {
             input.draw_id,
             PreparedGeometryPhaseV1::Fill,
             PreparedGeometrySignatureV1::Fill {
-                camera: input.camera.clone(),
+                camera: PreparedCameraSignatureV1::from(input.camera),
+                flatten_tolerance_bits: FLATTEN_TOLERANCE_PIXELS_V1.to_bits(),
                 path: input.path.clone(),
                 rule,
                 transform: input.transform.clone(),
@@ -306,8 +339,9 @@ impl PreparedGeometryCacheV1 {
             input.draw_id,
             PreparedGeometryPhaseV1::Stroke,
             PreparedGeometrySignatureV1::Stroke {
-                camera: input.camera.clone(),
+                camera: PreparedCameraSignatureV1::from(input.camera),
                 cap: stroke.cap,
+                flatten_tolerance_bits: FLATTEN_TOLERANCE_PIXELS_V1.to_bits(),
                 join: stroke.join,
                 miter_limit: stroke.miter_limit,
                 path: input.path.clone(),
@@ -326,9 +360,7 @@ impl PreparedGeometryCacheV1 {
         signature: PreparedGeometrySignatureV1,
         geometry: CachedPhaseGeometryV1,
     ) {
-        let entry_bytes = size_of::<PreparedGeometryCacheEntryV1>()
-            .saturating_add(signature_owned_bytes(&signature))
-            .saturating_add(geometry.accounted_bytes());
+        let entry_bytes = signature_owned_bytes(&signature).saturating_add(geometry.owned_bytes());
         if entry_bytes > self.maximum_bytes || self.maximum_entries == 0 {
             self.remove_phase(draw_id, phase);
             return;
@@ -426,7 +458,9 @@ impl PreparedGeometryCacheV1 {
 }
 
 fn draw_accounted_bytes(draw_id: &str) -> usize {
-    DRAW_ENTRY_OVERHEAD_BYTES.saturating_add(draw_id.len())
+    size_of::<(String, PreparedDrawGeometryV1)>()
+        .saturating_add(HASH_MAP_BUCKET_OVERHEAD_BYTES)
+        .saturating_add(draw_id.len())
 }
 
 fn signature_owned_bytes(signature: &PreparedGeometrySignatureV1) -> usize {

@@ -1066,11 +1066,15 @@ impl PoietraCanvasEngineV1 {
         self.configured_viewport = Some(viewport.clone());
     }
 
-    fn current_terminal_failure(&self) -> Option<RuntimeFailureV1> {
-        read_shared_failure(&self.device_lost)
+    fn current_terminal_failure(&mut self) -> Option<RuntimeFailureV1> {
+        let failure = read_shared_failure(&self.device_lost)
             .or_else(|| read_shared_failure(&self.uncaptured_gpu_failure))
             .or_else(|| self.terminal_surface_failure.clone())
-            .or_else(|| read_deferred_gpu_scope_failure(&self.deferred_scope_state))
+            .or_else(|| read_deferred_gpu_scope_failure(&self.deferred_scope_state));
+        if failure.is_some() {
+            self.prepared_geometry_cache.clear();
+        }
+        failure
     }
 
     fn record_terminal_surface_failure(

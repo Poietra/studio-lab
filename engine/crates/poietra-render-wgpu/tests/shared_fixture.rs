@@ -192,7 +192,14 @@ fn retained_geometry_cache_reuses_exact_phases_and_rejects_stale_draw_identity()
     assert_eq!(cache.frame_stats().hits(), 3);
     assert_visual_frame_eq(&recolored, &prepare_frame_v1(&material_only).unwrap());
 
-    let mut moved = material_only;
+    let mut clear_color_only = material_only;
+    clear_color_only.camera.clear_color.red = 0.125;
+    let cleared = prepare_frame_with_cache_v1(&clear_color_only, &mut cache).unwrap();
+    assert_eq!(cleared.tessellation_calls(), 0);
+    assert_eq!(cache.frame_stats().hits(), 3);
+    assert_visual_frame_eq(&cleared, &prepare_frame_v1(&clear_color_only).unwrap());
+
+    let mut moved = clear_color_only;
     let RenderDrawV1::Path { transform, .. } = &mut moved.draws[0] else {
         panic!("fixture first draw must be a path");
     };
@@ -204,6 +211,12 @@ fn retained_geometry_cache_reuses_exact_phases_and_rejects_stale_draw_identity()
     assert_eq!(cache.frame_stats().misses(), 1);
     assert_eq!(cache.stale_rejections(), stale_before + 1);
     assert_visual_frame_eq(&moved_cached, &prepare_frame_v1(&moved).unwrap());
+
+    let mut invalid = moved;
+    invalid.viewport.width_px += 1;
+    assert!(prepare_frame_with_cache_v1(&invalid, &mut cache).is_err());
+    assert_eq!(cache.frame_stats().hits(), 0);
+    assert_eq!(cache.frame_stats().misses(), 0);
 }
 
 #[test]
@@ -308,6 +321,25 @@ fn retained_geometry_cache_is_bounded_evictable_and_clearable() {
     prepare_frame_with_cache_v1(&packet, &mut disabled).unwrap();
     assert_eq!(disabled.entry_count(), 0);
     assert!(disabled.accounted_bytes() <= 1);
+
+    let mut first = sampled_packet();
+    first.draws.truncate(1);
+    first.required_capabilities = vec![poietra_scene_ir::RenderCapabilityV1::CubicPathFill];
+    let mut sizing = PreparedGeometryCacheV1::with_limits(usize::MAX, usize::MAX);
+    prepare_frame_with_cache_v1(&first, &mut sizing).unwrap();
+    let one_phase_bytes = sizing.accounted_bytes();
+
+    let mut byte_bounded = PreparedGeometryCacheV1::with_limits(one_phase_bytes, usize::MAX);
+    prepare_frame_with_cache_v1(&first, &mut byte_bounded).unwrap();
+    let mut second = first;
+    let RenderDrawV1::Path { draw_id, .. } = &mut second.draws[0] else {
+        unreachable!()
+    };
+    *draw_id = "draw:x".to_owned();
+    prepare_frame_with_cache_v1(&second, &mut byte_bounded).unwrap();
+    assert_eq!(byte_bounded.entry_count(), 1);
+    assert_eq!(byte_bounded.evictions(), 1);
+    assert!(byte_bounded.accounted_bytes() <= one_phase_bytes);
 }
 
 #[test]

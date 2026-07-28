@@ -1069,7 +1069,8 @@ pub fn prepare_frame_with_cache_v1(
     packet: &RenderPacketV1,
     cache: &mut PreparedGeometryCacheV1,
 ) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
-    tessellate_validated_frame_with_cache_v1(validate_frame_packet_v1(packet)?, cache)
+    cache.begin_frame();
+    tessellate_validated_frame_inner_v1(validate_frame_packet_v1(packet)?, Some(cache))
 }
 
 fn prepare_material(
