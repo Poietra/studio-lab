@@ -26,6 +26,7 @@ import {
   FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
   FastManimSnapshotContractError,
   type FastManimSnapshotProducerRequestV1,
+  type FastManimSnapshotProfileVersionV1,
   type FastManimSnapshotQueryV1,
   type FastManimSnapshotRunFailureCodeV1,
   type FastManimSnapshotRunRequestV1,
@@ -227,6 +228,7 @@ export class FastManimSnapshotRunner {
   private readonly publicationStore: FastManimSnapshotPublicationStore;
   private readonly publishRetentionMs: number;
   private readonly sandboxCloseGraceMs: number;
+  private readonly snapshotVersion: FastManimSnapshotProfileVersionV1;
   private readonly sourceProvider: FastManimSnapshotSourceProviderV1;
   private readonly shutdownController = new AbortController();
   private readonly tenantId: string;
@@ -248,6 +250,7 @@ export class FastManimSnapshotRunner {
       publicationStore?: FastManimSnapshotPublicationStore;
       publishRetentionMs?: number;
       sandboxCloseGraceMs?: number;
+      snapshotVersion?: FastManimSnapshotProfileVersionV1;
       sourceReadHooks?: ManimSourceReadHooks;
       sourceProvider?: FastManimSnapshotSourceProviderV1;
       tenantId: string;
@@ -311,6 +314,7 @@ export class FastManimSnapshotRunner {
     this.publicationStore = options.publicationStore ?? processPublicationStore;
     this.publishRetentionMs = publishRetentionMs;
     this.sandboxCloseGraceMs = sandboxCloseGraceMs;
+    this.snapshotVersion = options.snapshotVersion ?? 1;
     this.sourceProvider =
       options.sourceProvider ??
       new FileSystemFastManimSnapshotSourceProviderV1(options.projectRoot!, options.sourceReadHooks);
@@ -636,7 +640,7 @@ export class FastManimSnapshotRunner {
       frame: { height: this.frame.height, width: this.frame.width },
       randomSeed: 0,
       schema: FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
-      snapshotVersion: 1,
+      snapshotVersion: this.snapshotVersion,
       version: 1,
     };
   }
@@ -757,6 +761,7 @@ export class FastManimSnapshotRunner {
       projectId: request.projectId,
       requestId: request.requestId,
       runtimeConfigHash,
+      snapshotVersion: this.snapshotVersion,
       sceneId: fastManimSnapshotSceneIdV1(request.sourcePath, request.sceneName),
       sceneName: request.sceneName,
       sourceHash: before.hash,
@@ -769,12 +774,12 @@ export class FastManimSnapshotRunner {
     // and sourceHash instead of echoing them and never re-opens sourcePath.
     // The expected frame is server-side verification state only; the wire
     // request carries the frame inside the canonical runtimeConfig object.
-    const { frame: _serverFrame, ...wireCorrelation } = expected;
+    const { frame: _serverFrame, snapshotVersion, ...wireCorrelation } = expected;
     const producerRequest = fastManimSnapshotProducerRequestV1Schema.parse({
       ...wireCorrelation,
       runtimeConfig: this.runtimeConfig(),
       schema: FAST_MANIM_SNAPSHOT_PRODUCER_REQUEST_SCHEMA_V1,
-      snapshotVersion: 1,
+      snapshotVersion,
       sourceText: before.source,
       version: 1,
     } satisfies FastManimSnapshotProducerRequestV1);

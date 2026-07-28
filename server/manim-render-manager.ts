@@ -25,7 +25,11 @@ import type {
   FastManimSandboxBackendV1,
   FastManimSandboxDeployment,
 } from "./fast-manim-sandbox-backend";
-import type { FastManimSnapshotQueryV1, FastManimSnapshotRunRequestV1 } from "./fast-manim-snapshot-contract";
+import type {
+  FastManimSnapshotProfileVersionV1,
+  FastManimSnapshotQueryV1,
+  FastManimSnapshotRunRequestV1,
+} from "./fast-manim-snapshot-contract";
 import { FastManimSnapshotRunner } from "./fast-manim-snapshot-runner";
 import { HttpError } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
@@ -211,6 +215,7 @@ export class ManimRenderManager {
       snapshotSandboxDeployment?: FastManimSandboxDeployment;
       snapshotProducerCommand?: readonly string[];
       snapshotProducerDevOptIn?: boolean;
+      snapshotVersion?: FastManimSnapshotProfileVersionV1;
       snapshotTimeoutMs?: number;
       sourceStoreHooks?: ManimSourceReadHooks;
       tenantId: string;
@@ -281,6 +286,7 @@ export class ManimRenderManager {
       logger: this.logger,
       projectId: this.projectId,
       projectRoot: this.projectRoot,
+      snapshotVersion: options.snapshotVersion,
       tenantId: this.tenantId,
       timeoutMs: options.snapshotTimeoutMs,
     });

@@ -7,10 +7,12 @@ import {
   type FastManimProductionSandboxClientOptionsV1,
 } from "./fast-manim-production-sandbox-client";
 import { FastManimSnapshotRunner } from "./fast-manim-snapshot-runner";
+import type { FastManimSnapshotProfileVersionV1 } from "./fast-manim-snapshot-contract";
 
 export type FastManimProductionSnapshotRunnerFactoryOptionsV1 = Readonly<{
   client: FastManimProductionSandboxClientOptionsV1;
   frame: Readonly<{ height: number; width: number }>;
+  snapshotVersion?: FastManimSnapshotProfileVersionV1;
   tenantId: string;
   timeoutMs?: number;
 }>;
@@ -61,6 +63,7 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
           frame: this.#options.frame,
           projectId: input.projectId,
           sourceProvider: input.sourceProvider,
+          ...(this.#options.snapshotVersion === undefined ? {} : { snapshotVersion: this.#options.snapshotVersion }),
           tenantId: this.#options.tenantId,
           ...(this.#options.timeoutMs === undefined ? {} : { timeoutMs: this.#options.timeoutMs }),
         }),

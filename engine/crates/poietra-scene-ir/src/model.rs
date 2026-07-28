@@ -486,7 +486,7 @@ pub enum SceneSourceV1 {
         #[serde(rename = "snapshotHash")]
         snapshot_hash: String,
         #[serde(rename = "snapshotVersion")]
-        snapshot_version: ContractVersionV1,
+        snapshot_version: u8,
         #[serde(rename = "sourceHash")]
         source_hash: String,
     },

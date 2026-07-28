@@ -4,6 +4,7 @@ import { defineConfig } from "vite";
 import {
   manimRenderPipeline,
   parseFastManimSnapshotProducerCommand,
+  parseFastManimSnapshotVersion,
   parseManimProjects,
 } from "./server/manim-render-pipeline";
 import { openAiEditSuggestions, resolveAiEditSuggestionLogPath } from "./server/openai-edit-suggestions";
@@ -73,6 +74,7 @@ export function createStudioViteConfig(
         snapshotSandboxDeployment: mode === "production" ? "production" : "development",
         snapshotProducerCommand: parseFastManimSnapshotProducerCommand(env.POIETRA_FAST_MANIM_SNAPSHOT_COMMAND),
         snapshotProducerDevOptIn: env.POIETRA_FAST_MANIM_SNAPSHOT_DEV_OPT_IN === "1",
+        snapshotVersion: parseFastManimSnapshotVersion(env.POIETRA_FAST_MANIM_SNAPSHOT_VERSION),
         workspaceDataRoot: env.POIETRA_STUDIO_DATA_ROOT,
       }),
     ],

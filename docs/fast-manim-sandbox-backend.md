@@ -95,8 +95,12 @@ For local exporter development only:
 ```sh
 POIETRA_FAST_MANIM_SNAPSHOT_DEV_OPT_IN=1 \
 POIETRA_FAST_MANIM_SNAPSHOT_COMMAND='["/path/to/python","-m","manim.renderer.scene_snapshot"]' \
+POIETRA_FAST_MANIM_SNAPSHOT_VERSION=2 \
 pnpm dev:web
 ```
+
+Profile V1 remains the default. Set version 2 only with a producer that
+supports the bounded variable frozen-wait snapshot contract.
 
 This is not a production enablement recipe. The child-process adapter filters
 environment and uses a private runtime directory, but it is not an OS isolation

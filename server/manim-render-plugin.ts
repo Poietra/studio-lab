@@ -48,6 +48,7 @@ export function manimRenderPipeline(options: ManimRenderPipelineOptions = {}): P
         snapshotSandboxDeployment: options.snapshotSandboxDeployment ?? "production",
         snapshotProducerCommand: options.snapshotProducerCommand,
         snapshotProducerDevOptIn: options.snapshotProducerDevOptIn ?? false,
+        snapshotVersion: options.snapshotVersion,
         tenantId,
         thumbnailCacheRoot: join(realpathSync(dataRoot), "thumbnails"),
       });

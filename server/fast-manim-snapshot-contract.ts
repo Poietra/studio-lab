@@ -38,6 +38,10 @@ export const MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_ENTRIES = 25_000;
 
 export const MAX_FAST_MANIM_SNAPSHOT_OBJECT_FIELDS = 64;
 export const MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_VALUES = 50_000;
+export const MAX_FAST_MANIM_SNAPSHOT_DURATION_SECONDS_V2 = 3_600;
+
+export const fastManimSnapshotProfileVersionV1Schema = z.union([z.literal(1), z.literal(2)]);
+export type FastManimSnapshotProfileVersionV1 = z.infer<typeof fastManimSnapshotProfileVersionV1Schema>;
 
 const sceneNameSchema = z
   .string()
@@ -68,7 +72,13 @@ const snapshotFrameSchema = z
  * state, never echoed through the producer envelope.
  */
 export const expectedFastManimSnapshotCorrelationV1Schema = z
-  .object({ ...correlationShape, frame: snapshotFrameSchema })
+  .object({
+    ...correlationShape,
+    frame: snapshotFrameSchema,
+    // Durable V1 publications predate this correlation field. Treat only an
+    // omitted stored value as V1; an explicit unsupported value still fails.
+    snapshotVersion: fastManimSnapshotProfileVersionV1Schema.default(1),
+  })
   .strict();
 
 export const fastManimSnapshotIssueCodeV1Schema = z.enum([
@@ -300,6 +310,8 @@ function assertBoundedPlainJson(value: unknown) {
  * reach the browser through provenance records.
  */
 export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V1 = "fast-manim server snapshot static profile v1" as const;
+export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V2 =
+  "fast-manim server snapshot variable-duration static profile v2" as const;
 
 export const FAST_MANIM_SNAPSHOT_UNSUPPORTED_MESSAGES_V1: Readonly<Record<FastManimSnapshotIssueCodeV1, string>> = {
   "animation-evidence-incomplete": "The Scene animates in ways the static snapshot profile cannot capture.",
@@ -527,9 +539,10 @@ function assertStaticProfileEntity(entity: StaticProfileEntity) {
  * cubic construction is rejected toward the server render fallback rather than
  * advertised as verified.
  */
-function assertFastManimSnapshotStaticProfileV1(
+function assertFastManimSnapshotProfileV1(
   bundle: SceneIrBundleV1,
   expectedFrame: Readonly<{ height: number; width: number }>,
+  snapshotVersion: FastManimSnapshotProfileVersionV1,
 ) {
   const { scene } = bundle;
   const sceneId = scene.sceneId;
@@ -549,10 +562,14 @@ function assertFastManimSnapshotStaticProfileV1(
   if (scene.camera.view.frameHeight !== expectedFrame.height || scene.camera.view.frameWidth !== expectedFrame.width) {
     profileViolation("Static profile cameras must use exactly the requested runtime frame.");
   }
-  // The exporter's static v1 output is exactly this narrow: a 1-second
-  // still frame with no animation channels at all.
-  if (scene.duration !== FAST_MANIM_SNAPSHOT_STATIC_DURATION_SECONDS_V1) {
+  // V1 remains the exact one-second still contract. V2 adds only a bounded
+  // frozen final wait; animation channels and mutable geometry remain out of
+  // profile until their runtime evidence is independently proven.
+  if (snapshotVersion === 1 && scene.duration !== FAST_MANIM_SNAPSHOT_STATIC_DURATION_SECONDS_V1) {
     profileViolation("Static profile Scenes must report exactly the canonical 1-second static duration.");
+  }
+  if (snapshotVersion === 2 && scene.duration > MAX_FAST_MANIM_SNAPSHOT_DURATION_SECONDS_V2) {
+    profileViolation(`Variable-duration snapshots accept at most ${MAX_FAST_MANIM_SNAPSHOT_DURATION_SECONDS_V2}s.`);
   }
   if (scene.animationChannels.length > 0) {
     profileViolation("Static profile Scenes must not carry animation channels.");
@@ -582,11 +599,7 @@ function assertFastManimSnapshotStaticProfileV1(
       profileViolation("Static profile entities must not declare parent entities.");
     }
     const lifetime = entity.lifetimes[0];
-    if (
-      entity.lifetimes.length !== 1 ||
-      lifetime?.start !== 0 ||
-      lifetime.end !== FAST_MANIM_SNAPSHOT_STATIC_DURATION_SECONDS_V1
-    ) {
+    if (entity.lifetimes.length !== 1 || lifetime?.start !== 0 || lifetime.end !== scene.duration) {
       profileViolation("Static profile entities must live for exactly the full static duration.");
     }
     const { m11, m12, m21, m22, tx, ty } = entity.transform;
@@ -648,6 +661,7 @@ async function parseFastManimSnapshotResultV1(
     bundle.scene.sceneId !== result.sceneId ||
     source.sourceHash !== result.sourceHash ||
     source.runtimeConfigHash !== result.runtimeConfigHash ||
+    source.snapshotVersion !== expected.snapshotVersion ||
     source.snapshotHash !== result.snapshotHash
   ) {
     throw new FastManimSnapshotContractError(
@@ -661,7 +675,7 @@ async function parseFastManimSnapshotResultV1(
       "Every provenance record in a compiled fast-manim Scene must originate from its server snapshot.",
     );
   }
-  assertFastManimSnapshotStaticProfileV1(bundle, expected.frame);
+  assertFastManimSnapshotProfileV1(bundle, expected.frame, expected.snapshotVersion);
   // Structural normalization before sealing: provenance evidence is replaced
   // with server-owned text, so the sealed digest never covers producer free
   // text. Re-normalizing an already-normalized stored bundle is a no-op, which
@@ -671,7 +685,11 @@ async function parseFastManimSnapshotResultV1(
     scene: {
       ...bundle.scene,
       provenance: bundle.scene.provenance.map((record) => ({
-        evidence: [FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V1],
+        evidence: [
+          expected.snapshotVersion === 1
+            ? FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V1
+            : FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V2,
+        ],
         id: record.id,
         origin: record.origin,
       })),
@@ -788,7 +806,7 @@ export const fastManimSnapshotRuntimeConfigV1Schema = z
     // violation, not a configuration choice.
     randomSeed: z.literal(0),
     schema: z.literal(FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1),
-    snapshotVersion: z.literal(1),
+    snapshotVersion: fastManimSnapshotProfileVersionV1Schema,
     version: z.literal(1),
   })
   .strict();
@@ -865,7 +883,7 @@ export const fastManimSnapshotProducerRequestV1Schema = z
     ...correlationShape,
     runtimeConfig: fastManimSnapshotRuntimeConfigV1Schema,
     schema: z.literal(FAST_MANIM_SNAPSHOT_PRODUCER_REQUEST_SCHEMA_V1),
-    snapshotVersion: z.literal(1),
+    snapshotVersion: fastManimSnapshotProfileVersionV1Schema,
     sourceText: z
       .string()
       .refine((sourceText) => Buffer.byteLength(sourceText, "utf8") <= MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES, {

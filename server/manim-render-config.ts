@@ -1,4 +1,5 @@
 import { MANIM_PROJECT_ID_PATTERN } from "../src/render-pipeline/contracts";
+import type { FastManimSnapshotProfileVersionV1 } from "./fast-manim-snapshot-contract";
 import type { ManimProjectSeed } from "./manim-project-catalog";
 
 export type ManimProjectConfig = ManimProjectSeed;
@@ -12,6 +13,7 @@ export type ManimRenderPipelineOptions = Readonly<{
   snapshotSandboxDeployment?: "development" | "production" | "test";
   snapshotProducerCommand?: readonly string[];
   snapshotProducerDevOptIn?: boolean;
+  snapshotVersion?: FastManimSnapshotProfileVersionV1;
   workspaceDataRoot?: string;
 }>;
 
@@ -41,6 +43,13 @@ export function parseFastManimSnapshotProducerCommand(value: string | undefined)
   const normalized = value?.trim();
   if (!normalized) return undefined;
   return parseManimCommand(normalized);
+}
+
+export function parseFastManimSnapshotVersion(value: string | undefined): FastManimSnapshotProfileVersionV1 {
+  const normalized = value?.trim();
+  if (!normalized || normalized === "1") return 1;
+  if (normalized === "2") return 2;
+  throw new TypeError("POIETRA_FAST_MANIM_SNAPSHOT_VERSION must be 1 or 2.");
 }
 
 export function parseManimProjects(value: string | undefined): readonly ManimProjectConfig[] | undefined {

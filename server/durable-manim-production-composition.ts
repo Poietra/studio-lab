@@ -54,6 +54,7 @@ export type DurablePostgresS3ProductionRuntimeOptionsV1 = Readonly<{
       sweepTimeoutMs: number;
     }>;
     sandbox: FastManimProductionSnapshotRunnerFactoryOptionsV1["client"];
+    snapshotVersion?: FastManimProductionSnapshotRunnerFactoryOptionsV1["snapshotVersion"];
     timeoutMs?: number;
   }>;
   sourceGc: Readonly<{
@@ -218,6 +219,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
     snapshotFactory = new FastManimProductionSnapshotRunnerFactoryV1({
       client: options.snapshot.sandbox,
       frame: options.frame ?? { height: 8, width: 14.222 },
+      ...(options.snapshot.snapshotVersion === undefined ? {} : { snapshotVersion: options.snapshot.snapshotVersion }),
       tenantId: options.tenantId,
       ...(options.snapshot.timeoutMs === undefined ? {} : { timeoutMs: options.snapshot.timeoutMs }),
     });
