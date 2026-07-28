@@ -34,8 +34,8 @@ export interface FastManimRuncRuntimeV1 {
   ): FastManimRuncCreatedProcessV1;
   delete(containerId: string, deadlineEpochMs: number): Promise<void>;
   kill(containerId: string, deadlineEpochMs: number): Promise<void>;
-  start(containerId: string, deadlineEpochMs: number): Promise<void>;
-  state(containerId: string, deadlineEpochMs: number): Promise<FastManimRuncStateV1>;
+  start(containerId: string, deadlineEpochMs: number, signal?: AbortSignal): Promise<void>;
+  state(containerId: string, deadlineEpochMs: number, signal?: AbortSignal): Promise<FastManimRuncStateV1>;
 }
 
 type SpawnRuncV1 = typeof spawn;
@@ -162,8 +162,8 @@ export class FastManimRuncCliRuntimeV1 implements FastManimRuncRuntimeV1 {
     });
   }
 
-  async state(containerId: string, deadlineEpochMs: number) {
-    const result = await this.#control(["state", parseContainerId(containerId)], deadlineEpochMs, true);
+  async state(containerId: string, deadlineEpochMs: number, signal?: AbortSignal) {
+    const result = await this.#control(["state", parseContainerId(containerId)], deadlineEpochMs, true, signal);
     let value: unknown;
     try {
       value = JSON.parse(result.stdout.toString("utf8"));
@@ -179,8 +179,8 @@ export class FastManimRuncCliRuntimeV1 implements FastManimRuncRuntimeV1 {
     return Object.freeze({ ...state, bundle });
   }
 
-  async start(containerId: string, deadlineEpochMs: number) {
-    await this.#control(["start", parseContainerId(containerId)], deadlineEpochMs, false);
+  async start(containerId: string, deadlineEpochMs: number, signal?: AbortSignal) {
+    await this.#control(["start", parseContainerId(containerId)], deadlineEpochMs, false, signal);
   }
 
   async kill(containerId: string, deadlineEpochMs: number) {
@@ -191,8 +191,9 @@ export class FastManimRuncCliRuntimeV1 implements FastManimRuncRuntimeV1 {
     await this.#control(["delete", "--force", parseContainerId(containerId)], deadlineEpochMs, false);
   }
 
-  #control(arguments_: readonly string[], deadlineEpochMs: number, allowStdout: boolean) {
+  #control(arguments_: readonly string[], deadlineEpochMs: number, allowStdout: boolean, signal?: AbortSignal) {
     const timeoutMs = boundedDeadline(deadlineEpochMs);
+    signal?.throwIfAborted();
     return new Promise<Readonly<{ stderr: Buffer; stdout: Buffer }>>((resolveRun, rejectRun) => {
       const child = this.#spawn("/usr/bin/runc", ["--root", this.#stateRoot, ...arguments_], {
         cwd: "/",
@@ -209,8 +210,13 @@ export class FastManimRuncCliRuntimeV1 implements FastManimRuncRuntimeV1 {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
         if (error) rejectRun(error);
         else resolveRun(Object.freeze({ stderr: Buffer.concat(stderr), stdout: Buffer.concat(stdout) }));
+      };
+      const onAbort = () => {
+        child.kill("SIGKILL");
+        settle(new Error("The fixed runc control operation was aborted."));
       };
       const capture = (target: Buffer[], maximum: number, current: number, chunk: unknown) => {
         if (outputFailure) return current;
@@ -239,6 +245,8 @@ export class FastManimRuncCliRuntimeV1 implements FastManimRuncRuntimeV1 {
         settle(new Error("The fixed runc control operation exceeded its deadline."));
       }, timeoutMs);
       timer.unref();
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
     });
   }
 }

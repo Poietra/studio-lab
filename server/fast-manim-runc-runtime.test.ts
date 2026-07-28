@@ -132,4 +132,16 @@ describe("FastManimRuncCliRuntimeV1", () => {
       ["--root", "/run/poietra/runc-state", "delete", "--force", containerId],
     ]);
   });
+
+  it("terminates ordinary control commands on abort without coupling cleanup commands to that signal", async () => {
+    const child = fakeChild();
+    const runtime = runtimeWith(() => child);
+    const controller = new AbortController();
+    const state = runtime.state(containerId, deadlineEpochMs(), controller.signal);
+
+    controller.abort();
+
+    await expect(state).rejects.toThrowError(/aborted/u);
+    expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+  });
 });
