@@ -1,18 +1,18 @@
 import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
-
-import { EngineContractIntegrityError, parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "./contracts";
-import { sceneIrSourceRevisionHash } from "./scene-ir";
 import { MAX_CANVAS_SCENE_DELTA_ACK_JSON_BYTES } from "./canvas-worker-protocol";
+import { EngineContractIntegrityError, parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "./contracts";
 import {
   applySceneIrDeltaV1,
+  createSceneIrDeltaV1,
   MAX_SCENE_DELTA_JSON_BYTES,
   MAX_SCENE_DELTA_OPERATIONS,
   parseSceneIrDeltaV1,
   SceneIrDeltaError,
   type SceneIrDeltaV1,
 } from "./scene-delta";
+import { sceneIrSourceRevisionHash } from "./scene-ir";
 
 const REVISION_A = "a".repeat(64);
 const REVISION_B = "b".repeat(64);
@@ -59,6 +59,106 @@ function expectDeltaError(error: unknown, code: SceneIrDeltaError["code"]) {
 }
 
 describe("Scene IR delta v1", () => {
+  it("deterministically produces only changed records and exactly reconstructs the next bundle", async () => {
+    const base = await fixtureBundle();
+    const earlier = base.scene.entities.find(({ id }) => id === "earlier");
+    const later = base.scene.entities.find(({ id }) => id === "later");
+    const channel = base.scene.animationChannels[0];
+    if (!earlier || !later || !channel || channel.kind !== "opacity") throw new Error("fixture is incomplete");
+    const added = {
+      ...later,
+      id: "added",
+      sceneOrder: 3,
+      sourceZIndex: 0,
+      transform: { ...later.transform, tx: 4 },
+    };
+    const replacementChannel = { ...channel, entityId: "later", id: "opacity:later" };
+    const next: SceneIrBundleV1 = {
+      ...base,
+      scene: {
+        ...base.scene,
+        animationChannels: [replacementChannel],
+        duration: 3,
+        entities: [later, { ...earlier, transform: { ...earlier.transform, tx: -2 } }, added],
+        source: { editProgramVersion: 1, kind: "studio-edit-program", revisionHash: REVISION_B },
+      },
+    };
+
+    const produced = await createSceneIrDeltaV1(base, next);
+    expect(produced?.operations.map((operation) => operation.kind)).toEqual([
+      "remove-animation-channel",
+      "remove-entity",
+      "put-entity",
+      "put-entity",
+      "put-animation-channel",
+      "update-scene",
+    ]);
+    expect(produced?.operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ entity: expect.objectContaining({ id: "added" }), expected: "absent" }),
+        expect.objectContaining({ entity: expect.objectContaining({ id: "earlier" }), expected: "present" }),
+        expect.objectContaining({ duration: 3, kind: "update-scene" }),
+      ]),
+    );
+    expect(await createSceneIrDeltaV1(base, next)).toEqual(produced);
+    if (!produced) throw new Error("expected a bounded delta");
+    expect(await applySceneIrDeltaV1(base, produced)).toEqual(next);
+  });
+
+  it("selects full replacement for source-only, operation-overflow, and byte-overflow revisions", async () => {
+    const base = await fixtureBundle();
+    const sourceOnly = {
+      ...base,
+      scene: {
+        ...base.scene,
+        source: { editProgramVersion: 1 as const, kind: "studio-edit-program" as const, revisionHash: REVISION_B },
+      },
+    };
+    await expect(createSceneIrDeltaV1(base, sourceOnly)).resolves.toBeNull();
+
+    const template = base.scene.entities[0];
+    if (!template) throw new Error("fixture entity is missing");
+    const operationOverflow = {
+      ...sourceOnly,
+      scene: {
+        ...sourceOnly.scene,
+        entities: [
+          ...base.scene.entities,
+          ...Array.from({ length: MAX_SCENE_DELTA_OPERATIONS + 1 }, (_, index) => ({
+            ...template,
+            id: `added-${index}`,
+            sceneOrder: base.scene.entities.length + index,
+          })),
+        ],
+      },
+    };
+    await expect(createSceneIrDeltaV1(base, operationOverflow)).resolves.toBeNull();
+
+    const byteOverflow = {
+      ...sourceOnly,
+      scene: {
+        ...sourceOnly.scene,
+        entities: [
+          ...base.scene.entities,
+          ...Array.from({ length: 250 }, (_, index) => ({
+            ...template,
+            id: `byte-added-${index}`,
+            sceneOrder: base.scene.entities.length + index,
+          })),
+        ],
+        provenance: [
+          ...base.scene.provenance,
+          ...Array.from({ length: 10 }, (_, index) => ({
+            evidence: Array.from({ length: 64 }, () => "x".repeat(500)),
+            id: `large-provenance-${index}`,
+            origin: "studio-edit-program" as const,
+          })),
+        ],
+      },
+    };
+    await expect(createSceneIrDeltaV1(base, byteOverflow)).resolves.toBeNull();
+  });
+
   it("matches the shared Rust success and rejection corpus without mutating rejected bases", async () => {
     const shared = await sharedDeltaFixture();
     expect(shared.limits).toEqual({

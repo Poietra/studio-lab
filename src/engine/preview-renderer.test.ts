@@ -1,15 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { readFile } from "node:fs/promises";
+
+import { describe, expect, it, vi } from "vitest";
 import {
   type CanvasFrameEvidenceResponseV1,
   CanvasWorkerClientError,
   type PresentedCanvasFrameV1,
   type RenderCanvasFrameInputV1,
+  type ReplaceCanvasSceneInputV1,
+  type UpdateCanvasSceneInputV1,
+  type UpdateCanvasSceneResultV1,
 } from "./canvas-worker-client";
-import type { SceneIrBundleV1 } from "./contracts";
+import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "./contracts";
 import { type PreviewRendererHostStateV1, type PreviewRendererV1, StudioPreviewRendererHost } from "./preview-renderer";
+import { createSceneIrDeltaV1 } from "./scene-delta";
 
 const REVISION = "a".repeat(64);
 const OTHER_REVISION = "b".repeat(64);
+const THIRD_REVISION = "c".repeat(64);
 const VIEWPORT = { heightPx: 90, widthPx: 160 } as const;
 const OTHER_VIEWPORT = { heightPx: 180, widthPx: 320 } as const;
 const CANVAS = {} as HTMLCanvasElement;
@@ -42,7 +49,9 @@ function frameFor(input: RenderCanvasFrameInputV1, requestId: number): Presented
 
 function createFixture() {
   const install = deferred<void>();
+  const replacements: { deferred: Deferred<void>; input: ReplaceCanvasSceneInputV1 }[] = [];
   const renders: { deferred: Deferred<PresentedCanvasFrameV1>; input: RenderCanvasFrameInputV1 }[] = [];
+  const updates: { deferred: Deferred<UpdateCanvasSceneResultV1>; input: UpdateCanvasSceneInputV1 }[] = [];
   let disposeCount = 0;
   let evidence: CanvasFrameEvidenceResponseV1 | null = null;
   let deferredEvidence: Deferred<CanvasFrameEvidenceResponseV1> | null = null;
@@ -63,6 +72,16 @@ function createFixture() {
     render: (input) => {
       const pending = deferred<PresentedCanvasFrameV1>();
       renders.push({ deferred: pending, input });
+      return pending.promise;
+    },
+    replaceScene: (input) => {
+      const pending = deferred<void>();
+      replacements.push({ deferred: pending, input });
+      return pending.promise;
+    },
+    updateScene: (input) => {
+      const pending = deferred<UpdateCanvasSceneResultV1>();
+      updates.push({ deferred: pending, input });
       return pending.promise;
     },
   };
@@ -100,10 +119,12 @@ function createFixture() {
       return deferredEvidence;
     },
     renders,
+    replacements,
     setEvidence: (value: CanvasFrameEvidenceResponseV1 | null) => {
       evidence = value;
     },
     states,
+    updates,
   };
 }
 
@@ -140,6 +161,43 @@ function installInput(duration = 2, interactionEntityIds: readonly string[] = []
   };
 }
 
+async function fixtureBundle() {
+  const url = new URL("../../fixtures/engine-v1/shared-circle-opacity.json", import.meta.url);
+  const fixture = JSON.parse(await readFile(url, "utf8")) as Readonly<{ assets: unknown; scene: unknown }>;
+  return parseVerifiedSceneIrBundleV1({ assets: fixture.assets, scene: fixture.scene });
+}
+
+async function updateInput(
+  base: SceneIrBundleV1,
+  revision: string,
+  duration: number,
+  interactionEntityIds: readonly string[],
+  withDelta = true,
+) {
+  const snapshot: SceneIrBundleV1 = {
+    ...base,
+    scene: {
+      ...base.scene,
+      duration,
+      source: { editProgramVersion: 1, kind: "studio-edit-program", revisionHash: revision },
+    },
+  };
+  const delta = withDelta ? await createSceneIrDeltaV1(base, snapshot) : null;
+  if (withDelta && !delta) throw new Error("expected a test delta");
+  return {
+    input: { delta, interactionEntityIds, revision, snapshot },
+    snapshot,
+  };
+}
+
+const DIRTY = {
+  assets: false,
+  camera: false,
+  channelIds: [] as string[],
+  entityIds: [] as string[],
+  sceneMetadata: true,
+};
+
 async function flush() {
   await Promise.resolve();
   await Promise.resolve();
@@ -152,6 +210,15 @@ async function readyFixture() {
   fixture.install.resolve();
   await pending;
   return fixture;
+}
+
+async function readyUpdateFixture() {
+  const fixture = createFixture();
+  const snapshot = await fixtureBundle();
+  const pending = fixture.host.install({ canvas: CANVAS, revision: REVISION, snapshot });
+  fixture.install.resolve();
+  await pending;
+  return { fixture, snapshot };
 }
 
 type Fixture = Awaited<ReturnType<typeof readyFixture>>;
@@ -401,6 +468,121 @@ describe("StudioPreviewRendererHost", () => {
     await expect(fixture.host.install(installInput())).rejects.toMatchObject({ code: "invalid-state" });
     fixture.install.resolve();
     await pending;
+  });
+
+  it("serializes rapid A→B→C updates and presents only the final acknowledged revision", async () => {
+    const { fixture, snapshot } = await readyUpdateFixture();
+    await requestAndPresent(fixture, 0, 1);
+    expect(fixture.host.state.phase).toBe("presented");
+
+    const revisionB = await updateInput(snapshot, OTHER_REVISION, 3, ["runtime:b"]);
+    const revisionC = await updateInput(revisionB.snapshot, THIRD_REVISION, 5, ["runtime:c"]);
+    const updateB = fixture.host.update(revisionB.input);
+    const updateC = fixture.host.update(revisionC.input);
+    expect(fixture.host.state).toEqual({ detail: null, phase: "fallback", reason: "frame-stale" });
+    await vi.waitFor(() => expect(fixture.updates).toHaveLength(1));
+    expect(fixture.updates).toHaveLength(1);
+    expect(fixture.updates[0]?.input.baseRevision).toBe(REVISION);
+
+    fixture.updates[0]?.deferred.resolve({ dirty: DIRTY, operation: "delta" });
+    await vi.waitFor(() => expect(fixture.updates).toHaveLength(2));
+    expect(fixture.updates).toHaveLength(2);
+    expect(fixture.updates[1]?.input.baseRevision).toBe(OTHER_REVISION);
+    // The intermediate ACK advances the serialization base but can never
+    // schedule or present a superseded B frame.
+    expect(fixture.renders).toHaveLength(1);
+    expect(fixture.host.state.phase).toBe("fallback");
+
+    fixture.updates[1]?.deferred.resolve({ operation: "replace" });
+    await Promise.all([updateB, updateC]);
+    expect(fixture.renders).toHaveLength(2);
+    expect(fixture.renders[1]?.input).toEqual({
+      interactionEntityIds: ["runtime:c"],
+      revision: THIRD_REVISION,
+      sampleTime: 1,
+      viewport: VIEWPORT,
+    });
+    expect(fixture.host.state).toEqual({ detail: null, phase: "fallback", reason: "frame-stale" });
+
+    await settlePresented(fixture, 1);
+    expect(fixture.host.state).toEqual({
+      frame: { packetId: "canvas:2", revision: THIRD_REVISION, sampleTime: 1, viewport: VIEWPORT },
+      phase: "presented",
+    });
+    fixture.host.requestFrame({ sampleTime: 4, viewport: VIEWPORT });
+    expect(fixture.renders[2]?.input.revision).toBe(THIRD_REVISION);
+  });
+
+  it("accepts the client's delta-reject replacement result before advancing host authority", async () => {
+    const { fixture, snapshot } = await readyUpdateFixture();
+    fixture.host.requestFrame({ sampleTime: 1, viewport: VIEWPORT });
+    const revisionB = await updateInput(snapshot, OTHER_REVISION, 4, ["runtime:replacement"]);
+    const updating = fixture.host.update(revisionB.input);
+    await vi.waitFor(() => expect(fixture.updates).toHaveLength(1));
+    expect(fixture.updates).toHaveLength(1);
+    expect(fixture.host.state.phase).toBe("fallback");
+
+    // PoietraCanvasWorkerClient.updateScene returns this only after a rejected
+    // delta has completed its correlated full-snapshot replacement.
+    fixture.updates[0]?.deferred.resolve({ operation: "replace" });
+    await updating;
+    expect(fixture.renders).toHaveLength(2);
+    expect(fixture.renders[1]?.input).toMatchObject({
+      interactionEntityIds: ["runtime:replacement"],
+      revision: OTHER_REVISION,
+    });
+    // The pre-update A completion cannot resurrect A after B committed.
+    await settlePresented(fixture, 0);
+    expect(fixture.host.state.phase).toBe("fallback");
+    await settlePresented(fixture, 1);
+    expect(fixture.host.state).toMatchObject({ frame: { revision: OTHER_REVISION }, phase: "presented" });
+  });
+
+  it("uses a direct full replacement when the bounded producer returns null", async () => {
+    const { fixture, snapshot } = await readyUpdateFixture();
+    fixture.host.requestFrame({ sampleTime: 1, viewport: VIEWPORT });
+    const revisionB = await updateInput(snapshot, OTHER_REVISION, 3, [], false);
+    const updating = fixture.host.update(revisionB.input);
+    await vi.waitFor(() => expect(fixture.replacements).toHaveLength(1));
+    expect(fixture.updates).toHaveLength(0);
+    expect(fixture.replacements[0]?.input).toMatchObject({
+      baseRevision: REVISION,
+      revision: OTHER_REVISION,
+    });
+    fixture.replacements[0]?.deferred.resolve();
+    await updating;
+    expect(fixture.renders[1]?.input.revision).toBe(OTHER_REVISION);
+  });
+
+  it("rejects a delta whose fallback snapshot would split host and worker authority", async () => {
+    const { fixture, snapshot } = await readyUpdateFixture();
+    const revisionB = await updateInput(snapshot, OTHER_REVISION, 3, []);
+    const updating = fixture.host.update({
+      ...revisionB.input,
+      snapshot: {
+        ...revisionB.snapshot,
+        scene: { ...revisionB.snapshot.scene, duration: 4 },
+      },
+    });
+    await expect(updating).rejects.toMatchObject({ code: "invalid-input" });
+    expect(fixture.updates).toHaveLength(0);
+    expect(fixture.replacements).toHaveLength(0);
+    expect(fixture.disposeCount).toBe(1);
+    expect(fixture.host.state).toMatchObject({ phase: "fallback", reason: "renderer-failed" });
+  });
+
+  it("treats an acknowledged update after disposal as inert lifecycle completion", async () => {
+    const { fixture, snapshot } = await readyUpdateFixture();
+    const revisionB = await updateInput(snapshot, OTHER_REVISION, 3, []);
+    const updating = fixture.host.update(revisionB.input);
+    await vi.waitFor(() => expect(fixture.updates).toHaveLength(1));
+    const emitted = fixture.states.length;
+    fixture.host.dispose();
+    fixture.updates[0]?.deferred.resolve({ dirty: DIRTY, operation: "delta" });
+    await expect(updating).resolves.toBeUndefined();
+    expect(fixture.states).toHaveLength(emitted);
+    expect(fixture.disposeCount).toBe(1);
+    expect(fixture.host.state).toEqual({ detail: null, phase: "fallback", reason: "disposed" });
   });
 
   it("forces whole-Scene fallback during transient edits and restores afterwards", async () => {

@@ -214,6 +214,7 @@ export type StudioPreviewViewStateInputV1 = Readonly<{
   snapshotError: string | null;
   transientEdit: boolean;
   viewport: PreviewViewportV1 | null;
+  workingScene?: Readonly<{ engineRevisionHash: string; workingRevision: string }> | null;
 }>;
 
 /**
@@ -245,11 +246,15 @@ export function resolveStudioPreviewViewStateV1(input: StudioPreviewViewStateInp
     };
   }
   if (input.hostState.phase !== "presented") return input.hostState;
-  if (
-    !input.context ||
-    !studioPreviewSnapshotCorrelatesV1(input.snapshot.correlation, input.context) ||
-    input.hostState.frame.revision !== input.snapshot.correlation.engineRevisionHash
-  ) {
+  const revisionCorrelates = input.workingScene
+    ? input.context !== null &&
+      studioPreviewSnapshotMatchesSourceV1(input.snapshot.correlation, input.context) &&
+      input.workingScene.workingRevision === input.context.workingRevision &&
+      input.hostState.frame.revision === input.workingScene.engineRevisionHash
+    : input.context !== null &&
+      studioPreviewSnapshotCorrelatesV1(input.snapshot.correlation, input.context) &&
+      input.hostState.frame.revision === input.snapshot.correlation.engineRevisionHash;
+  if (!revisionCorrelates) {
     return {
       detail: "The verified snapshot does not correlate with the current editing context.",
       phase: "fallback",

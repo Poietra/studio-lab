@@ -105,6 +105,114 @@ export const sceneIrDeltaV1Schema = z
 export type SceneIrDeltaV1 = z.infer<typeof sceneIrDeltaV1Schema>;
 export type SceneDeltaOperationV1 = z.infer<typeof sceneDeltaOperationV1Schema>;
 
+function sameJsonValue(left: unknown, right: unknown) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function byId<T extends Readonly<{ id: string }>>(values: readonly T[]) {
+  return new Map(values.map((value) => [value.id, value]));
+}
+
+/**
+ * Produces the bounded v1 transport delta between two complete, verified
+ * Studio-owned bundles. `null` deliberately means "use the complete next
+ * snapshot": it covers source-only/no-op revisions, unsupported structural
+ * changes, operation/byte overflow, and any candidate whose exact application
+ * would not reproduce the requested bundle.
+ *
+ * Operations are ordered by kind and stable source identity rather than input
+ * iteration order. The final apply-and-compare guard is important because the
+ * v1 operation vocabulary cannot express arbitrary entity/channel array
+ * reordering; those revisions must use the existing full replacement path.
+ */
+export async function createSceneIrDeltaV1(
+  baseValue: SceneIrBundleV1,
+  nextValue: SceneIrBundleV1,
+): Promise<SceneIrDeltaV1 | null> {
+  let base: SceneIrBundleV1;
+  let next: SceneIrBundleV1;
+  try {
+    [base, next] = await Promise.all([
+      parseVerifiedSceneIrBundleV1(baseValue),
+      parseVerifiedSceneIrBundleV1(nextValue),
+    ]);
+  } catch {
+    return null;
+  }
+
+  const baseRevision = sceneIrSourceRevisionHash(base.scene);
+  const nextRevision = sceneIrSourceRevisionHash(next.scene);
+  if (
+    base.scene.sceneId !== next.scene.sceneId ||
+    baseRevision === nextRevision ||
+    base.scene.source.kind !== "studio-edit-program" ||
+    next.scene.source.kind !== "studio-edit-program" ||
+    !sameJsonValue(base.scene.coordinateSpace, next.scene.coordinateSpace) ||
+    base.scene.schema !== next.scene.schema ||
+    base.scene.version !== next.scene.version
+  ) {
+    return null;
+  }
+
+  const operations: SceneDeltaOperationV1[] = [];
+  const baseEntities = byId(base.scene.entities);
+  const nextEntities = byId(next.scene.entities);
+  const baseChannels = byId(base.scene.animationChannels);
+  const nextChannels = byId(next.scene.animationChannels);
+
+  for (const channelId of [...baseChannels.keys()].filter((id) => !nextChannels.has(id)).sort()) {
+    operations.push({ channelId, kind: "remove-animation-channel" });
+  }
+  for (const entityId of [...baseEntities.keys()].filter((id) => !nextEntities.has(id)).sort()) {
+    operations.push({ entityId, kind: "remove-entity" });
+  }
+  for (const entityId of [...nextEntities.keys()].sort()) {
+    const entity = nextEntities.get(entityId)!;
+    const previous = baseEntities.get(entityId);
+    if (!previous || !sameJsonValue(previous, entity)) {
+      operations.push({ entity, expected: previous ? "present" : "absent", kind: "put-entity" });
+    }
+  }
+  for (const channelId of [...nextChannels.keys()].sort()) {
+    const channel = nextChannels.get(channelId)!;
+    const previous = baseChannels.get(channelId);
+    if (!previous || !sameJsonValue(previous, channel)) {
+      operations.push({ channel, expected: previous ? "present" : "absent", kind: "put-animation-channel" });
+    }
+  }
+
+  const metadata: Omit<Extract<SceneDeltaOperationV1, Readonly<{ kind: "update-scene" }>>, "kind"> = {};
+  if (!sameJsonValue(base.assets, next.assets)) metadata.assets = next.assets;
+  if (!sameJsonValue(base.scene.camera, next.scene.camera)) metadata.camera = next.scene.camera;
+  if (base.scene.duration !== next.scene.duration) metadata.duration = next.scene.duration;
+  if (!sameJsonValue(base.scene.fidelity, next.scene.fidelity)) metadata.fidelity = next.scene.fidelity;
+  if (!sameJsonValue(base.scene.provenance, next.scene.provenance)) metadata.provenance = next.scene.provenance;
+  if (!sameJsonValue(base.scene.requiredCapabilities, next.scene.requiredCapabilities)) {
+    metadata.requiredCapabilities = next.scene.requiredCapabilities;
+  }
+  if (Object.keys(metadata).length > 0) operations.push({ kind: "update-scene", ...metadata });
+  if (operations.length === 0 || operations.length > MAX_SCENE_DELTA_OPERATIONS) return null;
+
+  const candidate = {
+    baseRevision,
+    nextRevision,
+    nextSource: next.scene.source,
+    operations,
+    sceneId: next.scene.sceneId,
+    schema: "poietra.scene-delta",
+    version: POIETRA_SCENE_DELTA_VERSION,
+  } as const;
+  let delta: SceneIrDeltaV1;
+  try {
+    delta = parseSceneIrDeltaV1(candidate);
+    const applied = await applySceneIrDeltaV1(base, delta);
+    if (!sameJsonValue(applied, next)) return null;
+  } catch {
+    return null;
+  }
+  return delta;
+}
+
 export type SceneIrDeltaErrorCodeV1 =
   | "base-invalid"
   | "delta-too-large"

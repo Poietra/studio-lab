@@ -8,9 +8,14 @@ import {
   PoietraCanvasWorkerClient,
   type PresentedCanvasFrameV1,
   type RenderCanvasFrameInputV1,
+  type ReplaceCanvasSceneInputV1,
+  type UpdateCanvasSceneInputV1,
+  type UpdateCanvasSceneResultV1,
 } from "./canvas-worker-client";
-import type { SceneIrBundleV1 } from "./contracts";
 import type { CanvasInteractionResultV1 } from "./canvas-worker-protocol";
+import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "./contracts";
+import { applySceneIrDeltaV1, type SceneIrDeltaV1 } from "./scene-delta";
+import { sceneIrSourceRevisionHash } from "./scene-ir";
 
 /**
  * Bounded surface the Studio preview host may use. It is the retained
@@ -25,6 +30,8 @@ export type PreviewRendererV1 = Readonly<{
   dispose: () => void;
   installScene: (input: InstallCanvasSceneInputV1) => Promise<void>;
   render: (input: RenderCanvasFrameInputV1) => Promise<PresentedCanvasFrameV1>;
+  replaceScene: (input: ReplaceCanvasSceneInputV1) => Promise<void>;
+  updateScene: (input: UpdateCanvasSceneInputV1) => Promise<UpdateCanvasSceneResultV1>;
 }>;
 
 export function createCanvasPreviewRendererV1(options: CanvasWorkerClientOptions = {}): PreviewRendererV1 {
@@ -79,6 +86,13 @@ export type InstallPreviewSnapshotInputV1 = Readonly<{
   snapshot: SceneIrBundleV1;
 }>;
 
+export type UpdatePreviewSnapshotInputV1 = Readonly<{
+  delta: SceneIrDeltaV1 | null;
+  interactionEntityIds?: readonly string[];
+  revision: string;
+  snapshot: SceneIrBundleV1;
+}>;
+
 function sameViewport(left: PreviewViewportV1, right: PreviewViewportV1) {
   return left.heightPx === right.heightPx && left.widthPx === right.widthPx;
 }
@@ -124,8 +138,9 @@ export class StudioPreviewRendererHost {
     sampleTime: number;
     viewport: PreviewViewportV1;
   }> | null = null;
-  private phase: "disposed" | "failed" | "idle" | "installing" | "ready" = "idle";
+  private phase: "disposed" | "failed" | "idle" | "installing" | "ready" | "updating" = "idle";
   private interactionEntityIds: readonly string[] = [];
+  private installedSnapshot: SceneIrBundleV1 | null = null;
   private presented: Readonly<{
     interaction: CanvasInteractionResultV1 | null;
     packetId: string;
@@ -140,6 +155,9 @@ export class StudioPreviewRendererHost {
   private renderer: PreviewRendererV1 | null = null;
   private revision: string | null = null;
   private transientEdit = false;
+  private updateGeneration = 0;
+  private updateTail: Promise<void> = Promise.resolve();
+  private queuedRevision: string | null = null;
 
   constructor(options: StudioPreviewRendererHostOptionsV1) {
     this.createRenderer = options.createRenderer;
@@ -162,8 +180,10 @@ export class StudioPreviewRendererHost {
     this.duration = input.snapshot.scene.duration;
     this.publish();
     try {
+      const snapshot = structuredClone(input.snapshot);
       this.renderer = this.createRenderer();
-      await this.renderer.installScene({ canvas: input.canvas, revision: input.revision, snapshot: input.snapshot });
+      await this.renderer.installScene({ canvas: input.canvas, revision: input.revision, snapshot });
+      this.installedSnapshot = snapshot;
     } catch (error) {
       if (!this.isDisposed()) {
         this.phase = "failed";
@@ -179,8 +199,53 @@ export class StudioPreviewRendererHost {
     }
     if (this.phase !== "installing") return;
     this.phase = "ready";
+    this.queuedRevision = input.revision;
     this.publish();
     if (this.desired) this.renderDesired(this.desired, this.renderGeneration);
+  }
+
+  update(input: UpdatePreviewSnapshotInputV1): Promise<void> {
+    if ((this.phase !== "ready" && this.phase !== "updating") || !this.renderer || this.revision === null) {
+      return Promise.reject(
+        new CanvasWorkerClientError("invalid-state", "The preview renderer host has no updatable Scene."),
+      );
+    }
+    const baseRevision = this.queuedRevision ?? this.revision;
+    if (
+      input.revision === baseRevision ||
+      (input.delta !== null &&
+        (input.delta.baseRevision !== baseRevision || input.delta.nextRevision !== input.revision))
+    ) {
+      return Promise.reject(
+        new CanvasWorkerClientError("invalid-input", "The preview Scene update revisions are not sequential."),
+      );
+    }
+
+    let stableInput: UpdatePreviewSnapshotInputV1;
+    try {
+      stableInput = structuredClone(input);
+    } catch (cause) {
+      return Promise.reject(
+        new CanvasWorkerClientError("invalid-input", "The preview Scene update is not cloneable.", { cause }),
+      );
+    }
+    this.queuedRevision = stableInput.revision;
+    this.updateGeneration += 1;
+    const generation = this.updateGeneration;
+    // Scene mutation and rendering share the worker. Withdraw every visible
+    // correlation before either operation can touch the retained surface.
+    this.renderGeneration += 1;
+    if (this.presented) this.staleSurface = true;
+    this.presented = null;
+    this.lastRenderError = null;
+    this.phase = "updating";
+    this.publish();
+
+    const pending = this.updateTail.then(() => this.performUpdate(stableInput, baseRevision, generation));
+    // Keep the serialization tail alive so every caller receives its own
+    // rejection while later queued work observes the failed host explicitly.
+    this.updateTail = pending.catch(() => undefined);
+    return pending;
   }
 
   requestFrame(request: PreviewFrameRequestV1) {
@@ -259,6 +324,77 @@ export class StudioPreviewRendererHost {
 
   private isDisposed() {
     return this.phase === "disposed";
+  }
+
+  private async performUpdate(input: UpdatePreviewSnapshotInputV1, baseRevision: string, generation: number) {
+    const renderer = this.renderer;
+    if (this.phase === "disposed") {
+      throw new CanvasWorkerClientError("disposed", "The preview renderer host was disposed.");
+    }
+    if (this.phase === "failed" || !renderer || this.revision !== baseRevision || !this.installedSnapshot) {
+      throw new CanvasWorkerClientError("invalid-state", "A prior preview Scene update did not commit.");
+    }
+    try {
+      const [base, next] = await Promise.all([
+        parseVerifiedSceneIrBundleV1(this.installedSnapshot),
+        parseVerifiedSceneIrBundleV1(input.snapshot),
+      ]);
+      if (
+        sceneIrSourceRevisionHash(base.scene) !== baseRevision ||
+        sceneIrSourceRevisionHash(next.scene) !== input.revision
+      ) {
+        throw new CanvasWorkerClientError(
+          "invalid-input",
+          "The preview Scene update snapshot revisions do not match the retained host.",
+        );
+      }
+      if (input.delta !== null) {
+        const applied = await applySceneIrDeltaV1(base, input.delta);
+        if (JSON.stringify(applied) !== JSON.stringify(next)) {
+          throw new CanvasWorkerClientError(
+            "invalid-input",
+            "The preview Scene delta does not exactly reconstruct its fallback snapshot.",
+          );
+        }
+      }
+      if (this.isDisposed() || this.renderer !== renderer) return;
+      if (input.delta === null) {
+        await renderer.replaceScene({ baseRevision, revision: input.revision, snapshot: next });
+      } else {
+        await renderer.updateScene({
+          baseRevision,
+          delta: input.delta,
+          revision: input.revision,
+          snapshot: next,
+        });
+      }
+      this.installedSnapshot = next;
+    } catch (error) {
+      if (!this.isDisposed() && this.renderer === renderer) {
+        const normalized =
+          error instanceof CanvasWorkerClientError
+            ? error
+            : new CanvasWorkerClientError("internal-error", "The preview Scene update failed.", { cause: error });
+        this.phase = "failed";
+        this.failure = { detail: errorDetail(normalized), reason: "renderer-failed" };
+        renderer.dispose();
+        this.renderer = null;
+        this.publish();
+      }
+      throw error;
+    }
+    if (this.isDisposed() || this.renderer !== renderer) return;
+
+    // These authorities advance only after the worker ACK (or its correlated
+    // full-replacement recovery) has committed the matching revision.
+    this.revision = input.revision;
+    this.duration = input.snapshot.scene.duration;
+    this.interactionEntityIds = input.interactionEntityIds ?? [];
+    if (generation !== this.updateGeneration) return;
+
+    this.phase = "ready";
+    if (this.desired) this.renderDesired(this.desired, this.renderGeneration);
+    this.publish();
   }
 
   private validationFallback(request: PreviewFrameRequestV1) {
@@ -401,6 +537,13 @@ export class StudioPreviewRendererHost {
         detail: this.failure?.detail ?? null,
         phase: "fallback",
         reason: this.failure?.reason ?? "renderer-failed",
+      };
+    }
+    if (this.phase === "updating") {
+      return {
+        detail: null,
+        phase: "fallback",
+        reason: this.staleSurface ? "frame-stale" : "frame-pending",
       };
     }
     if (this.phase !== "ready") {

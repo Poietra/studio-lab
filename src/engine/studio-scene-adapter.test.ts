@@ -1,18 +1,20 @@
 import { describe, expect, it } from "vitest";
-
+import { type ProgramRecord, type ProposedState, type RuntimeSceneState, STUDIO_STATE_VERSION } from "../studio/model";
+import { EDIT_OPERATION_VERSION } from "../studio/operations";
 import { type AssetManifestV1, assetManifestV1Schema, digestAssetManifestV1 } from "./asset-manifest";
 import { compileEngineFrameV1 } from "./reference-evaluator";
 import {
+  buildStudioSceneIrAdapterEvidenceV1,
   compileStudioSceneIrV1,
   type StudioSceneIrAdapterInputV1,
   studioPointToScenePointV1,
 } from "./studio-scene-adapter";
-import { STUDIO_STATE_VERSION, type ProposedState, type RuntimeSceneState } from "../studio/model";
 
 const ZERO_HASH = "0".repeat(64);
 const REVISION_HASH = "a".repeat(64);
 const CIRCLE_ID = "source:scene.py#Scene:circle";
 const RECTANGLE_ID = "rectangle";
+const CREATED_RECTANGLE_ID = "tx:create-shape/entity:rectangle";
 const white = { alpha: 1, blue: 1, green: 1, red: 1 };
 
 async function emptyManifest(): Promise<AssetManifestV1> {
@@ -84,6 +86,41 @@ function scene(): RuntimeSceneState {
     provenanceGraph: { records: [] },
     sceneId: "scene.py#Scene",
     version: STUDIO_STATE_VERSION,
+  };
+}
+
+function createdRectangleProgram(): ProgramRecord {
+  const operation = {
+    dependsOn: [],
+    entity: {
+      dimensions: { height: 2, width: 4 },
+      id: CREATED_RECTANGLE_ID,
+      lifetime: { end: null, start: 0.5 },
+      type: "Rectangle",
+    },
+    id: "tx:create-shape/operation:create",
+    interval: { end: 0.5, start: 0.5 },
+    kind: "CreateEntity",
+    provenance: { evidence: ["test CreateEntity authority"], origin: "fixture" },
+  } as const;
+  return {
+    program: {
+      anchor: {
+        capturedPlayhead: 0.5,
+        evidence: ["captured-playhead:0.500"],
+        resolvedSeconds: 0.5,
+        source: { kind: "playhead", referenceSeconds: 0.5 },
+      },
+      intentCount: 1,
+      loweringStatus: "illustrative",
+      operations: [operation],
+      provenance: { evidence: ["test CreateEntity authority"], origin: "fixture" },
+      requestedExecution: "sequence",
+      schedule: { edges: [], mode: "sequence", order: [operation.id] },
+      transactionId: "create-shape",
+      version: EDIT_OPERATION_VERSION,
+    },
+    validation: { issues: [], status: "valid" },
   };
 }
 
@@ -165,6 +202,199 @@ describe("Studio to SceneIrV1 truthful adapter", () => {
       y: -1,
     });
   });
+
+  it("accepts the legacy rounded 14.222-wide runtime frame", async () => {
+    const adapterInput = await input();
+    const frame = { height: 8, width: 14.222 } as const;
+    const result = await compileStudioSceneIrV1({
+      ...adapterInput,
+      evidence: {
+        ...adapterInput.evidence,
+        camera: {
+          ...adapterInput.evidence.camera,
+          view: { ...adapterInput.evidence.camera.view, frameHeight: 8, frameWidth: 14.222 },
+        },
+      },
+      frame,
+    });
+    expect(result.kind).toBe("compiled");
+  });
+
+  it("rejects camera aspects that the fixed 16:9 Studio canvas would stretch", async () => {
+    const adapterInput = await input();
+    const result = await compileStudioSceneIrV1({
+      ...adapterInput,
+      evidence: {
+        ...adapterInput.evidence,
+        camera: {
+          ...adapterInput.evidence.camera,
+          view: { ...adapterInput.evidence.camera.view, frameHeight: 9, frameWidth: 12 },
+        },
+      },
+      frame: { height: 9, width: 12 },
+    });
+    expectIssue(result, "camera-evidence-invalid");
+  });
+
+  it("derives imported paint only through the verified runtime identity map", async () => {
+    const adapterInput = await input();
+    const compiled = await compileStudioSceneIrV1(adapterInput);
+    if (compiled.kind !== "compiled") throw new Error("fixture adapter did not compile");
+    const resolved = buildStudioSceneIrAdapterEvidenceV1({
+      proposedState: adapterInput.proposedState,
+      snapshot: { assets: adapterInput.assets, scene: compiled.scene },
+      sourceRuntimeIdentity: new Map([
+        ["circle", { bindingId: "binding:circle", entityId: CIRCLE_ID, sourceName: "circle" }],
+        ["rectangle", { bindingId: "binding:rectangle", entityId: RECTANGLE_ID, sourceName: "rectangle" }],
+      ]),
+    });
+    expect(resolved.kind).toBe("resolved");
+    if (resolved.kind !== "resolved") throw new Error("runtime evidence did not resolve");
+    expect(resolved.evidence).toMatchObject({
+      appearances: {
+        [CIRCLE_ID]: adapterInput.evidence.appearances[CIRCLE_ID],
+        [RECTANGLE_ID]: adapterInput.evidence.appearances[RECTANGLE_ID],
+      },
+      entityIds: { [CIRCLE_ID]: CIRCLE_ID, [RECTANGLE_ID]: RECTANGLE_ID },
+      fidelity: { kind: "approximate" },
+    });
+
+    const missing = buildStudioSceneIrAdapterEvidenceV1({
+      proposedState: adapterInput.proposedState,
+      snapshot: { assets: adapterInput.assets, scene: compiled.scene },
+      sourceRuntimeIdentity: new Map(),
+    });
+    expect(missing.kind).toBe("unsupported");
+  });
+
+  it.each([
+    ["staged", true],
+    ["applied", false],
+  ] as const)(
+    "compiles a known %s Studio-created shape and its single opacity transition",
+    async (_phase, provisional) => {
+      const adapterInput = await input();
+      const importedOnly = await compileStudioSceneIrV1({
+        ...adapterInput,
+        evidence: {
+          ...adapterInput.evidence,
+          appearances: { [CIRCLE_ID]: adapterInput.evidence.appearances[CIRCLE_ID] },
+          paintOrder: [{ entityId: CIRCLE_ID, sourceZIndex: 0 }],
+        },
+        proposedState: {
+          ...adapterInput.proposedState,
+          evaluatedScene: {
+            ...adapterInput.proposedState.evaluatedScene,
+            objectGraph: {
+              ...adapterInput.proposedState.evaluatedScene.objectGraph,
+              entities: { [CIRCLE_ID]: adapterInput.proposedState.evaluatedScene.objectGraph.entities[CIRCLE_ID] },
+            },
+            propertyChannels: Object.fromEntries(
+              Object.entries(adapterInput.proposedState.evaluatedScene.propertyChannels).filter(
+                ([, channel]) => channel.entityId === CIRCLE_ID,
+              ),
+            ),
+          },
+        },
+      });
+      if (importedOnly.kind !== "compiled") throw new Error("imported fixture did not compile");
+      const createdScene = scene();
+      const createdRectangle = {
+        ...createdScene.objectGraph.entities[RECTANGLE_ID],
+        id: CREATED_RECTANGLE_ID,
+        lifetime: [{ end: 2, start: 0.5 }],
+        provisional,
+        sourceIdentity: { evidence: ["create"], kind: "unknown" as const, reason: "Studio-created" },
+        transactionId: "create-shape",
+      };
+      const proposedState = {
+        ...adapterInput.proposedState,
+        evaluatedScene: {
+          ...createdScene,
+          objectGraph: {
+            ...createdScene.objectGraph,
+            entities: {
+              [CIRCLE_ID]: createdScene.objectGraph.entities[CIRCLE_ID],
+              [CREATED_RECTANGLE_ID]: createdRectangle,
+            },
+          },
+          propertyChannels: {
+            ...createdScene.propertyChannels,
+            [`${CREATED_RECTANGLE_ID}/appearance`]: {
+              entityId: CREATED_RECTANGLE_ID,
+              key: "appearance" as const,
+              samples: [
+                {
+                  easing: "smooth" as const,
+                  from: 0,
+                  interval: { end: 0.9, start: 0.5 },
+                  kind: "animated" as const,
+                  provenanceId: "studio:create-fade",
+                  value: 1,
+                },
+                {
+                  interval: { end: 2, start: 0.9 },
+                  kind: "exact" as const,
+                  provenanceId: "studio:create-fade",
+                  value: 1,
+                },
+              ],
+            },
+          },
+        },
+        programs: [createdRectangleProgram()],
+      };
+      const unowned = buildStudioSceneIrAdapterEvidenceV1({
+        proposedState: { ...proposedState, programs: [] },
+        snapshot: { assets: adapterInput.assets, scene: importedOnly.scene },
+        sourceRuntimeIdentity: new Map([
+          ["circle", { bindingId: "binding:circle", entityId: CIRCLE_ID, sourceName: "circle" }],
+        ]),
+      });
+      expect(unowned.kind).toBe("unsupported");
+      if (unowned.kind === "unsupported") {
+        expect(unowned.issues).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ code: "unknown-evidence", entityId: CREATED_RECTANGLE_ID }),
+          ]),
+        );
+      }
+      const evidence = buildStudioSceneIrAdapterEvidenceV1({
+        proposedState,
+        snapshot: { assets: adapterInput.assets, scene: importedOnly.scene },
+        sourceRuntimeIdentity: new Map([
+          ["circle", { bindingId: "binding:circle", entityId: CIRCLE_ID, sourceName: "circle" }],
+        ]),
+      });
+      expect(evidence.kind).toBe("resolved");
+      if (evidence.kind !== "resolved") throw new Error("created shape evidence did not resolve");
+      const result = await compileStudioSceneIrV1({
+        ...adapterInput,
+        evidence: evidence.evidence,
+        proposedState,
+      });
+      expect(result.kind).toBe("compiled");
+      if (result.kind !== "compiled") throw new Error(result.issues.map(({ message }) => message).join("\n"));
+      expect(result.scene.entities.find(({ id }) => id === CREATED_RECTANGLE_ID)?.appearance).toEqual(
+        expect.objectContaining({
+          fill: null,
+          opacity: 1,
+          stroke: expect.objectContaining({ cap: "butt", miterLimit: 10, widthWorld: 0.04 }),
+        }),
+      );
+      expect(result.scene.animationChannels).toEqual([
+        expect.objectContaining({
+          entityId: CREATED_RECTANGLE_ID,
+          keyframes: [
+            { at: 0.5, easingToNext: { kind: "smooth" }, value: 0 },
+            { at: 0.9, easingToNext: null, value: 1 },
+          ],
+          kind: "opacity",
+        }),
+      ]);
+      expect(result.scene.requiredCapabilities).toEqual(["opacity-animation", "shape-primitives"]);
+    },
+  );
 
   it("rejects unknown, animated, and discontinuous properties instead of inventing preview defaults", async () => {
     const unknownInput = await input();

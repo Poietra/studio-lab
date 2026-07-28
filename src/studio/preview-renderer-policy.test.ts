@@ -221,6 +221,37 @@ const PRESENTED_VIEW_INPUT: StudioPreviewViewStateInputV1 = {
 };
 
 describe("resolveStudioPreviewViewStateV1", () => {
+  it("presents a correlated Studio-owned revision while retaining the imported snapshot as source evidence", () => {
+    const workingRevision = "programs:tx-1";
+    const engineRevisionHash = "f".repeat(64);
+    expect(
+      resolveStudioPreviewViewStateV1({
+        ...PRESENTED_VIEW_INPUT,
+        context: { ...CONTEXT, workingRevision },
+        hostState: {
+          frame: {
+            packetId: "canvas:studio",
+            revision: engineRevisionHash,
+            sampleTime: 1,
+            viewport: { heightPx: 90, widthPx: 160 },
+          },
+          phase: "presented",
+        },
+        workingScene: { engineRevisionHash, workingRevision },
+      }),
+    ).toMatchObject({ frame: { revision: engineRevisionHash }, phase: "presented" });
+  });
+
+  it("rejects a stale Studio-owned frame even while its imported source evidence still matches", () => {
+    expect(
+      resolveStudioPreviewViewStateV1({
+        ...PRESENTED_VIEW_INPUT,
+        context: { ...CONTEXT, workingRevision: "programs:tx-2" },
+        workingScene: { engineRevisionHash: CORRELATION.engineRevisionHash, workingRevision: "programs:tx-1" },
+      }),
+    ).toMatchObject({ phase: "fallback", reason: "snapshot-uncorrelated" });
+  });
+
   it("loads verified source time while an ineligible renderer stays on semantic fallback", async () => {
     const editedContext = { ...CONTEXT, sourceDuration: 0.1, workingRevision: "programs:tx-1" };
     const loaded = await loadStudioPreviewSnapshotMetadataV1({

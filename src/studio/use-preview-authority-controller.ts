@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useReducer, useSyncExternalStore } from "react";
-
+import type { ProposedState } from "./model";
 import {
   createUnavailableStudioPreviewSnapshotProviderV1,
   resolveStudioPreviewSnapshotProviderV1,
@@ -39,6 +39,7 @@ export type StudioPreviewAuthorityActionV1 =
     }>;
 
 type UseStudioPreviewAuthorityControllerInput = Readonly<{
+  committedProposedState: ProposedState | null;
   context: StudioPreviewEditingContextV1 | null;
   frame: Readonly<{ height: number; width: number }>;
   retainedSourceDuration: number | null;
@@ -164,6 +165,7 @@ function activationIsAllowed() {
  * this controller decides whether it may receive any provider authority.
  */
 export function useStudioPreviewAuthorityController({
+  committedProposedState,
   context,
   frame,
   retainedSourceDuration,
@@ -208,6 +210,7 @@ export function useStudioPreviewAuthorityController({
 
   const provider = currentAuthority.phase === "active" ? currentAuthority.provider : null;
   const renderer = useStudioPreviewRenderer({
+    committedProposedState,
     context,
     frame,
     provider,
