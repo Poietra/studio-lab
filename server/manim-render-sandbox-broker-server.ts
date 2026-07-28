@@ -115,6 +115,7 @@ function createConnection(
   let closeRequest: Promise<void> | undefined;
   let operation: Promise<void> | undefined;
   let operationFinished = false;
+  let pendingRequest: ManimRenderSandboxBrokerClientMessageV1 | undefined;
   let requestSeen = false;
   const receiveTimer = setTimeout(() => socket.destroy(), RECEIVE_TIMEOUT_MS);
   receiveTimer.unref();
@@ -210,10 +211,7 @@ function createConnection(
       const request = decoder.push(chunk);
       if (request) {
         requestSeen = true;
-        clearTimeout(receiveTimer);
-        operation = run(request).finally(() => {
-          operationFinished = true;
-        });
+        pendingRequest = request;
       }
     } catch {
       socket.destroy();
@@ -222,6 +220,11 @@ function createConnection(
   socket.once("end", () => {
     try {
       decoder.finish();
+      if (!pendingRequest) throw new Error("The render broker request ended before one complete frame.");
+      clearTimeout(receiveTimer);
+      operation = run(pendingRequest).finally(() => {
+        operationFinished = true;
+      });
     } catch {
       socket.destroy();
     }

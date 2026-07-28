@@ -10,6 +10,7 @@ import {
   FastManimProductionSnapshotRunnerFactoryV1,
 } from "./fast-manim-production-snapshot-runner-factory";
 import type { ManimRenderProductionSandboxClientOptionsV1 } from "./manim-render-production-sandbox-client";
+import { MANIM_RENDER_CANONICAL_SCENE_FRAME_V1 } from "./manim-render-sandbox-contract";
 import {
   createProductionDurableManimRenderExecutorV1,
   type ProductionDurableManimRenderExecutorV1,
@@ -149,6 +150,13 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   signal?: AbortSignal,
 ) {
   signal?.throwIfAborted();
+  const frame = options.frame ?? MANIM_RENDER_CANONICAL_SCENE_FRAME_V1;
+  if (
+    frame.height !== MANIM_RENDER_CANONICAL_SCENE_FRAME_V1.height ||
+    frame.width !== MANIM_RENDER_CANONICAL_SCENE_FRAME_V1.width
+  ) {
+    throw new TypeError("Production rendering currently requires the canonical 16:9 scene frame.");
+  }
   assertProductionPoolConfig(options.database.migrationPoolConfig, "Migration");
   assertProductionPoolConfig(options.database.runtimePoolConfig, "Runtime");
   await migrate(options.database);
@@ -198,7 +206,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
     renderExecutor = await createProductionDurableManimRenderExecutorV1({
       blobs,
       client: options.renderSandbox,
-      frame: options.frame ?? { height: 8, width: 14.222 },
+      frame,
       tenantId: options.tenantId,
     });
     renderWorker = new DurableManimRenderWorkerV1({
@@ -223,14 +231,14 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
         ? {}
         : { executionTimeoutMs: options.renderWorker.executionTimeoutMs }),
       execution: renderWorker,
-      ...(options.frame ? { frame: options.frame } : {}),
+      frame,
       repository: renderRepository,
       sourceRepository: repository,
       tenantId: options.tenantId,
     });
     snapshotFactory = new FastManimProductionSnapshotRunnerFactoryV1({
       client: options.snapshot.sandbox,
-      frame: options.frame ?? { height: 8, width: 14.222 },
+      frame,
       ...(options.snapshot.snapshotVersion === undefined ? {} : { snapshotVersion: options.snapshot.snapshotVersion }),
       tenantId: options.tenantId,
       ...(options.snapshot.timeoutMs === undefined ? {} : { timeoutMs: options.snapshot.timeoutMs }),
@@ -265,7 +273,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       {
         blobs,
         execution: renderWorker,
-        frame: options.frame,
+        frame,
         namespace: options.namespace,
         renders,
         repository,

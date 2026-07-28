@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, mkdtemp, open, readFile, readdir, realpath, rename, rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import { z } from "zod";
 
@@ -23,6 +23,7 @@ import {
 } from "./fast-manim-gated-oci-job-runner";
 import {
   digestManimRenderSandboxExecutionV1,
+  MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
   type ManimRenderSandboxDescriptorV1,
   type ManimRenderSandboxTerminalV1,
   manimRenderStagingIdV1,
@@ -47,6 +48,10 @@ const MAX_CONTROL_BYTES = 64 * 1024;
 const CONTROL_TIMEOUT_MS = 10_000;
 const POLL_INTERVAL_MS = 50;
 const MAX_ACTIVE_JOBS = 8;
+const MAX_STAGED_ARTIFACTS = 64;
+const MAX_STAGED_MANIFEST_BYTES = 8 * 1024;
+const STAGING_RESERVATION_BYTES = MAX_MANIM_RENDER_SANDBOX_ARTIFACT_BYTES_V1 + MAX_STAGED_MANIFEST_BYTES;
+const MAX_STAGED_BYTES = 16 * STAGING_RESERVATION_BYTES;
 const TMPFS_BYTES = 256 * 1024 * 1024;
 const MEMORY_BYTES = 512 * 1024 * 1024;
 const PIDS_LIMIT = 64;
@@ -132,6 +137,19 @@ export const MANIM_RENDER_GATED_OCI_PROFILE_V1 = Object.freeze({
   logDriver: Object.freeze({ config: Object.freeze({}), type: "none" }),
   memoryBytes: MEMORY_BYTES,
   memorySwapBytes: MEMORY_BYTES,
+  mediaValidation: Object.freeze({
+    thumbnail: Object.freeze({ decode: "pillow", format: "PNG", height: 480, images: 1, width: 854 }),
+    video: Object.freeze({
+      codec: "h264",
+      decode: "pyav",
+      format: "mp4",
+      frameRate: 15,
+      height: 480,
+      pixelFormat: "yuv420p",
+      streams: 1,
+      width: 854,
+    }),
+  }),
   network: "none",
   noNewPrivileges: true,
   openStdin: true,
@@ -148,6 +166,7 @@ export const MANIM_RENDER_GATED_OCI_PROFILE_V1 = Object.freeze({
   requiredReadOnlySystemPaths: REQUIRED_READ_ONLY_SYSTEM_PATHS,
   restartPolicy: "no",
   schema: "poietra.manim-render-gated-oci-profile",
+  sceneFrame: MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
   seccompDigest: FAST_MANIM_GATED_OCI_SECCOMP_DIGEST_V1,
   shmBytes: SHM_BYTES,
   stdinOnce: true,
@@ -233,6 +252,14 @@ type CopiedArtifact = Readonly<{
   result: Extract<ManimRenderGatedOciBaseResultV1, { kind: "ready" }>;
   temporaryArtifact: string;
 }>;
+
+type StagingUsageV1 = Readonly<{
+  artifactBytes: number;
+  artifactCount: number;
+  earliestDeadlineEpochMs?: number;
+}>;
+
+type StagingRootIdentityV1 = Readonly<{ dev: bigint; ino: bigint }>;
 
 function exactStringMap(entries: unknown) {
   if (!Array.isArray(entries) || entries.some((entry) => typeof entry !== "string" || !entry.includes("="))) {
@@ -646,7 +673,7 @@ async function readStagedManifest(path: string) {
     !pathMetadata.isFile() ||
     pathMetadata.isSymbolicLink() ||
     pathMetadata.size <= 0 ||
-    pathMetadata.size > 8 * 1024
+    pathMetadata.size > MAX_STAGED_MANIFEST_BYTES
   ) {
     throw new TypeError("The staged render manifest is not a bounded regular file.");
   }
@@ -680,17 +707,24 @@ export class ManimRenderGatedOciJobRunnerV1 {
   readonly #docker: FastManimGatedOciDockerClientV1;
   readonly #cgroupKillPolicy: FastManimGatedOciCgroupKillPolicyV1;
   readonly #image: string;
+  readonly #maxStagedArtifacts: number;
+  readonly #maxStagedBytes: number;
   readonly #runtimeDigest: string;
   readonly #seccompPath: string;
   readonly #stagingRoot: string;
   #closed = false;
   #cleanupFailure: unknown = undefined;
+  #stagingIdentity: StagingRootIdentityV1 | undefined;
+  #stagingMaintenance = Promise.resolve();
+  #stagingSweepTimer: NodeJS.Timeout | undefined;
 
   constructor(
     options: Readonly<{
       cgroupKillPolicy?: FastManimGatedOciCgroupKillPolicyV1;
       dockerClient: FastManimGatedOciDockerClientV1;
       image: string;
+      maxStagedArtifacts?: number;
+      maxStagedBytes?: number;
       seccompPath: string;
       stagingRoot: string;
     }>,
@@ -704,12 +738,26 @@ export class ManimRenderGatedOciJobRunnerV1 {
     ) {
       throw new TypeError("The render OCI runner configuration is invalid.");
     }
+    const maxStagedArtifacts = options.maxStagedArtifacts ?? MAX_STAGED_ARTIFACTS;
+    const maxStagedBytes = options.maxStagedBytes ?? MAX_STAGED_BYTES;
+    if (
+      !Number.isSafeInteger(maxStagedArtifacts) ||
+      maxStagedArtifacts < 1 ||
+      maxStagedArtifacts > MAX_STAGED_ARTIFACTS ||
+      !Number.isSafeInteger(maxStagedBytes) ||
+      maxStagedBytes < STAGING_RESERVATION_BYTES ||
+      maxStagedBytes > MAX_STAGED_BYTES
+    ) {
+      throw new TypeError("The render OCI staging limits are invalid.");
+    }
     this.#cgroupKillPolicy = options.cgroupKillPolicy ?? "required";
     if (!options.stagingRoot.startsWith("/") || resolve(options.stagingRoot) !== options.stagingRoot) {
       throw new TypeError("The broker staging root must be canonical and absolute.");
     }
     this.#docker = options.dockerClient;
     this.#image = options.image;
+    this.#maxStagedArtifacts = maxStagedArtifacts;
+    this.#maxStagedBytes = maxStagedBytes;
     this.#runtimeDigest = digestManimRenderGatedOciRuntimeV1(options.image);
     this.#seccompPath = options.seccompPath;
     this.#stagingRoot = options.stagingRoot;
@@ -723,16 +771,54 @@ export class ManimRenderGatedOciJobRunnerV1 {
     return this.#runtimeDigest;
   }
 
-  async ready(signal?: AbortSignal) {
-    signal?.throwIfAborted();
-    if (this.#closed || this.#cleanupFailure !== undefined) return false;
-    const [metadata, canonical] = await Promise.all([lstat(this.#stagingRoot), realpath(this.#stagingRoot)]);
+  async #assertStagingRootIdentity() {
+    const userId = process.geteuid?.();
+    if (userId === undefined) throw new Error("The render broker user identity is unavailable.");
+    const [metadata, canonical] = await Promise.all([
+      lstat(this.#stagingRoot, { bigint: true }),
+      realpath(this.#stagingRoot),
+    ]);
     if (
       canonical !== this.#stagingRoot ||
       !metadata.isDirectory() ||
-      metadata.uid !== process.geteuid?.() ||
-      (metadata.mode & 0o777) !== 0o700
+      metadata.isSymbolicLink() ||
+      metadata.uid !== BigInt(userId) ||
+      (metadata.mode & 0o777n) !== 0o700n
     ) {
+      throw new Error("The private render staging root identity is invalid.");
+    }
+    let ancestor = dirname(this.#stagingRoot);
+    while (true) {
+      const status = await lstat(ancestor, { bigint: true });
+      const writableByUntrustedPrincipal = (status.mode & 0o022n) !== 0n;
+      const rootOwnedStickyDirectory = status.uid === 0n && (status.mode & 0o1000n) !== 0n;
+      if (
+        !status.isDirectory() ||
+        status.isSymbolicLink() ||
+        (status.uid !== 0n && status.uid !== BigInt(userId)) ||
+        (writableByUntrustedPrincipal && !rootOwnedStickyDirectory)
+      ) {
+        throw new Error("A render staging ancestor is not a trusted non-replaceable directory.");
+      }
+      if (ancestor === "/") break;
+      ancestor = dirname(ancestor);
+    }
+    const identity = { dev: metadata.dev, ino: metadata.ino };
+    if (
+      this.#stagingIdentity &&
+      (this.#stagingIdentity.dev !== identity.dev || this.#stagingIdentity.ino !== identity.ino)
+    ) {
+      throw new Error("The private render staging root was replaced after verification.");
+    }
+    this.#stagingIdentity ??= identity;
+  }
+
+  async ready(signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    if (this.#closed || this.#cleanupFailure !== undefined) return false;
+    try {
+      await this.#assertStagingRootIdentity();
+    } catch {
       return false;
     }
     await assertFastManimGatedOciSeccompV1(this.#seccompPath);
@@ -754,8 +840,106 @@ export class ManimRenderGatedOciJobRunnerV1 {
     );
   }
 
+  #withStagingMaintenance<T>(operation: () => Promise<T>) {
+    const result = this.#stagingMaintenance.then(operation, operation);
+    this.#stagingMaintenance = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  #scheduleStagingSweep(deadlineEpochMs: number | undefined) {
+    if (this.#stagingSweepTimer) clearTimeout(this.#stagingSweepTimer);
+    this.#stagingSweepTimer = undefined;
+    if (this.#closed || deadlineEpochMs === undefined) return;
+    this.#stagingSweepTimer = setTimeout(
+      () => {
+        this.#stagingSweepTimer = undefined;
+        void this.#withStagingMaintenance(async () => {
+          const usage = await this.#sweepExpiredStaging(Date.now());
+          this.#scheduleStagingSweep(usage.earliestDeadlineEpochMs);
+        }).catch((error: unknown) => this.#latchCleanupFailure(error));
+      },
+      Math.min(0x7fffffff, Math.max(1, deadlineEpochMs - Date.now())),
+    );
+    this.#stagingSweepTimer.unref();
+  }
+
+  async #sweepExpiredStaging(now: number): Promise<StagingUsageV1> {
+    await this.#assertStagingRootIdentity();
+    const entries = await readdir(this.#stagingRoot, { withFileTypes: true });
+    const activeIds = new Set(this.#active.keys());
+    const handled = new Set<string>();
+    let artifactBytes = 0;
+    let artifactCount = 0;
+    let earliestDeadlineEpochMs: number | undefined;
+
+    for (const entry of entries) {
+      const match = entry.name.match(/^([a-f0-9]{32})[.]json$/u);
+      if (!match) continue;
+      handled.add(entry.name);
+      const stagingId = match[1]!;
+      if (activeIds.has(stagingId)) continue;
+      const manifestPath = join(this.#stagingRoot, entry.name);
+      const manifest = await readStagedManifest(manifestPath);
+      if (manifest.stagingId !== stagingId) {
+        throw new Error("The staged render manifest filename does not match its identity.");
+      }
+      const artifactName = `${stagingId}.${artifactExtension(manifest.mediaType)}`;
+      const artifactPath = join(this.#stagingRoot, artifactName);
+      handled.add(artifactName);
+      if (manifest.deadlineEpochMs <= now) {
+        await Promise.all([rm(artifactPath, { force: true }), rm(manifestPath, { force: true })]);
+        continue;
+      }
+      const [artifact, manifestMetadata] = await Promise.all([lstat(artifactPath), lstat(manifestPath)]);
+      if (
+        !artifact.isFile() ||
+        artifact.isSymbolicLink() ||
+        artifact.size !== manifest.artifactSize ||
+        !manifestMetadata.isFile() ||
+        manifestMetadata.isSymbolicLink()
+      ) {
+        throw new Error("The staged render pair is not a bounded regular artifact and manifest.");
+      }
+      artifactCount += 1;
+      artifactBytes += artifact.size + manifestMetadata.size;
+      earliestDeadlineEpochMs = Math.min(earliestDeadlineEpochMs ?? Number.POSITIVE_INFINITY, manifest.deadlineEpochMs);
+    }
+
+    for (const entry of entries) {
+      const match = entry.name.match(/^([a-f0-9]{32})[.](?:mp4|png)$/u);
+      if (!match || handled.has(entry.name)) continue;
+      handled.add(entry.name);
+      if (!activeIds.has(match[1]!)) await rm(join(this.#stagingRoot, entry.name), { force: true });
+    }
+
+    for (const entry of entries) {
+      if (handled.has(entry.name)) continue;
+      const temporaryManifest = entry.name.match(/^[.]([a-f0-9]{32})[.]json[.]tmp$/u);
+      if (temporaryManifest && activeIds.has(temporaryManifest[1]!)) continue;
+      if (
+        (entry.name.startsWith(".artifact-") && activeIds.size > 0) ||
+        (entry.name.startsWith(".terminal-") && activeIds.size > 0)
+      ) {
+        continue;
+      }
+      if (entry.name.startsWith(".artifact-") || entry.name.startsWith(".terminal-") || temporaryManifest) {
+        await rm(join(this.#stagingRoot, entry.name), { force: true, recursive: true });
+        continue;
+      }
+      throw new Error("The private render staging root contains an unknown entry.");
+    }
+
+    await this.#assertStagingRootIdentity();
+    if (!Number.isSafeInteger(artifactBytes)) throw new Error("The render staging byte usage is not bounded.");
+    return { artifactBytes, artifactCount, earliestDeadlineEpochMs };
+  }
+
   /** Startup-only reconciliation. It never runs concurrently with accepted jobs. */
-  async reconcileOrphans(options: Readonly<{ removeRunning?: boolean }> = {}) {
+  async reconcileOrphans() {
+    await this.#assertStagingRootIdentity();
     const entries = await readdir(this.#stagingRoot, { withFileTypes: true });
     for (const entry of entries) {
       if (
@@ -815,7 +999,6 @@ export class ManimRenderGatedOciJobRunnerV1 {
       const executionDigest = labels?.["io.poietra.render-execution-sha256"];
       let deadlineEpochMs: number;
       const running = container.State?.Running === true;
-      const paused = container.State?.Paused === true;
       let identity: FastManimGatedOciRunningIdentityV1 | undefined;
       try {
         if (
@@ -837,7 +1020,6 @@ export class ManimRenderGatedOciJobRunnerV1 {
         if (identity) {
           await inspectFastManimGatedOciRunningResourcesV1(identity);
         }
-        if (running && !paused && deadlineEpochMs > Date.now() && options.removeRunning !== true) continue;
         await cleanupFastManimGatedOciContainerV1(containerId, identity, this.#docker, this.#cgroupKillPolicy);
       } catch (error) {
         try {
@@ -850,9 +1032,14 @@ export class ManimRenderGatedOciJobRunnerV1 {
         throw error;
       }
     }
+    const usage = await this.#withStagingMaintenance(() => this.#sweepExpiredStaging(Date.now()));
+    if (usage.artifactCount > this.#maxStagedArtifacts || usage.artifactBytes > this.#maxStagedBytes) {
+      throw new Error("Existing render staging exceeds the configured hard capacity.");
+    }
+    this.#scheduleStagingSweep(usage.earliestDeadlineEpochMs);
   }
 
-  submitOrReattach(request: SealedManimRenderSandboxRequestV1, deadlineEpochMs: number, signal: AbortSignal) {
+  async submitOrReattach(request: SealedManimRenderSandboxRequestV1, deadlineEpochMs: number, signal: AbortSignal) {
     if (this.#closed) return Promise.reject(abortError());
     if (this.#cleanupFailure !== undefined) {
       return Promise.resolve({ code: "cleanup-failed", kind: "failed" } as const);
@@ -873,34 +1060,76 @@ export class ManimRenderGatedOciJobRunnerV1 {
     }
     const stagingId = manimRenderStagingIdV1(descriptor.jobId, descriptor.output.kind);
     const executionDigest = digestManimRenderSandboxExecutionV1(descriptor);
-    const active = this.#active.get(stagingId);
-    if (active) {
-      return active.executionDigest === executionDigest
-        ? observeJob(active.result, signal)
-        : Promise.resolve({ code: "request-mismatch", kind: "failed" } as const);
-    }
-    if (this.#active.size >= MAX_ACTIVE_JOBS) {
-      return Promise.resolve({ code: "capacity", kind: "failed" } as const);
-    }
-    const controller = new AbortController();
-    const deadlineTimer = setTimeout(
-      () => controller.abort(new Error("The render sandbox deadline elapsed.")),
-      Math.max(1, deadlineEpochMs - Date.now()),
-    );
-    deadlineTimer.unref();
-    let job!: ActiveJob;
-    const result = this.#run(request, descriptor, executionDigest, stagingId, deadlineEpochMs, controller.signal)
-      .catch((error: unknown) => {
-        if (this.#cleanupFailure !== undefined) return { code: "cleanup-failed", kind: "failed" } as const;
-        throw error;
-      })
-      .finally(() => {
-        clearTimeout(deadlineTimer);
-        if (this.#active.get(stagingId) === job) this.#active.delete(stagingId);
+    try {
+      const admission = await this.#withStagingMaintenance(async () => {
+        if (this.#closed) throw abortError();
+        if (this.#cleanupFailure !== undefined) {
+          return { result: Promise.resolve({ code: "cleanup-failed", kind: "failed" } as const) };
+        }
+        if (deadlineEpochMs <= Date.now()) {
+          return { result: Promise.resolve({ code: "deadline-exceeded", kind: "failed" } as const) };
+        }
+        const active = this.#active.get(stagingId);
+        if (active) {
+          return {
+            result:
+              active.executionDigest === executionDigest
+                ? observeJob(active.result, signal)
+                : Promise.resolve({ code: "request-mismatch", kind: "failed" } as const),
+          };
+        }
+        const usage = await this.#sweepExpiredStaging(Date.now());
+        this.#scheduleStagingSweep(usage.earliestDeadlineEpochMs);
+        try {
+          const staged = await this.#readStaged(descriptor, executionDigest, stagingId, deadlineEpochMs, signal);
+          if (staged) return { result: Promise.resolve(staged) };
+        } catch {
+          signal.throwIfAborted();
+          await this.#assertStagingRootIdentity();
+          return { result: Promise.resolve({ code: "request-mismatch", kind: "failed" } as const) };
+        }
+        if (
+          this.#active.size >= MAX_ACTIVE_JOBS ||
+          usage.artifactCount + this.#active.size + 1 > this.#maxStagedArtifacts ||
+          usage.artifactBytes + (this.#active.size + 1) * STAGING_RESERVATION_BYTES > this.#maxStagedBytes
+        ) {
+          return { result: Promise.resolve({ code: "capacity", kind: "failed" } as const) };
+        }
+        const controller = new AbortController();
+        const deadlineTimer = setTimeout(
+          () => controller.abort(new Error("The render sandbox deadline elapsed.")),
+          Math.max(1, deadlineEpochMs - Date.now()),
+        );
+        deadlineTimer.unref();
+        let job!: ActiveJob;
+        const result = this.#run(request, descriptor, executionDigest, stagingId, deadlineEpochMs, controller.signal)
+          .catch((error: unknown) => {
+            if (this.#cleanupFailure !== undefined) return { code: "cleanup-failed", kind: "failed" } as const;
+            throw error;
+          })
+          .finally(async () => {
+            clearTimeout(deadlineTimer);
+            try {
+              await this.#withStagingMaintenance(async () => {
+                if (this.#active.get(stagingId) === job) this.#active.delete(stagingId);
+                const finalUsage = await this.#sweepExpiredStaging(Date.now());
+                this.#scheduleStagingSweep(finalUsage.earliestDeadlineEpochMs);
+              });
+            } catch (error) {
+              this.#latchCleanupFailure(error);
+              throw error;
+            }
+          });
+        job = { abort: controller, executionDigest, result };
+        this.#active.set(stagingId, job);
+        return { result: observeJob(result, signal) };
       });
-    job = { abort: controller, executionDigest, result };
-    this.#active.set(stagingId, job);
-    return observeJob(result, signal);
+      return await admission.result;
+    } catch (error) {
+      if (this.#closed || signal.aborted) throw error;
+      this.#latchCleanupFailure(error);
+      return { code: "cleanup-failed", kind: "failed" } as const;
+    }
   }
 
   async cancel(jobId: string, deadlineEpochMs: number, signal: AbortSignal) {
@@ -919,14 +1148,21 @@ export class ManimRenderGatedOciJobRunnerV1 {
         this.#latchCleanupFailure(error);
         throw error;
       }
-      await this.#deleteStaged(stagingId);
+      await this.#withStagingMaintenance(async () => {
+        await this.#deleteStaged(stagingId);
+        const usage = await this.#sweepExpiredStaging(Date.now());
+        this.#scheduleStagingSweep(usage.earliestDeadlineEpochMs);
+      });
     }
   }
 
   async close() {
     this.#closed = true;
+    if (this.#stagingSweepTimer) clearTimeout(this.#stagingSweepTimer);
+    this.#stagingSweepTimer = undefined;
     for (const job of this.#active.values()) job.abort.abort(abortError());
     await Promise.allSettled([...this.#active.values()].map((job) => job.result));
+    await this.#stagingMaintenance;
     if (this.#cleanupFailure !== undefined) {
       throw new AggregateError([this.#cleanupFailure], "The render OCI runner observed uncertain cleanup.");
     }
@@ -1386,6 +1622,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
   ): Promise<CopiedArtifact> {
     const mediaType = descriptor.output.mediaType;
     const extension = artifactExtension(mediaType);
+    await this.#assertStagingRootIdentity();
     const incoming = await mkdtemp(join(this.#stagingRoot, ".artifact-"));
     const temporaryArtifact = join(incoming, `artifact.${extension}`);
     try {
@@ -1423,6 +1660,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
         version: 1,
       });
       throwIfDeadlineElapsed(deadlineEpochMs, signal);
+      await this.#assertStagingRootIdentity();
       return {
         incoming,
         manifest,
@@ -1445,6 +1683,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
     const finalArtifact = join(this.#stagingRoot, `${stagingId}.${extension}`);
     const temporaryManifest = join(this.#stagingRoot, `.${stagingId}.json.tmp`);
     try {
+      await this.#assertStagingRootIdentity();
       throwIfDeadlineElapsed(deadlineEpochMs, signal);
       await rename(copied.temporaryArtifact, finalArtifact);
       throwIfDeadlineElapsed(deadlineEpochMs, signal);
@@ -1465,6 +1704,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
         await stagingDirectory.close();
       }
       throwIfDeadlineElapsed(deadlineEpochMs, signal);
+      await this.#assertStagingRootIdentity();
       return copied.result;
     } catch (error) {
       await Promise.all([
@@ -1483,6 +1723,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
     deadlineEpochMs: number,
     signal: AbortSignal,
   ): Promise<Extract<ManimRenderGatedOciBaseResultV1, { kind: "ready" }> | null> {
+    await this.#assertStagingRootIdentity();
     try {
       const manifest = await readStagedManifest(join(this.#stagingRoot, `${stagingId}.json`));
       if (
@@ -1502,6 +1743,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
       if (verified.digest !== manifest.artifactDigest || verified.size !== manifest.artifactSize) {
         throw new Error("The broker staging artifact no longer matches its manifest.");
       }
+      await this.#assertStagingRootIdentity();
       return {
         artifactDigest: manifest.artifactDigest,
         artifactSize: manifest.artifactSize,
@@ -1510,7 +1752,10 @@ export class ManimRenderGatedOciJobRunnerV1 {
         stagingId,
       };
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        await this.#assertStagingRootIdentity();
+        return null;
+      }
       throw error;
     }
   }
@@ -1567,10 +1812,12 @@ export class ManimRenderGatedOciJobRunnerV1 {
   }
 
   async #deleteStaged(stagingId: string) {
+    await this.#assertStagingRootIdentity();
     await Promise.all(
       ["json", "mp4", "png"].map((extension) =>
         rm(join(this.#stagingRoot, `${stagingId}.${extension}`), { force: true }),
       ),
     );
+    await this.#assertStagingRootIdentity();
   }
 }

@@ -15,6 +15,7 @@ export const MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V1 = MAX_MANIM_RENDER_SANDBO
 export const MAX_MANIM_RENDER_SANDBOX_ARTIFACT_BYTES_V1 = 128 * 1024 * 1024;
 export const MAX_MANIM_RENDER_SANDBOX_LOG_BYTES_V1 = 4 * 1024;
 export const MAX_MANIM_RENDER_SANDBOX_FRAME_BYTES_V1 = 3 * 1024 * 1024;
+export const MANIM_RENDER_CANONICAL_SCENE_FRAME_V1 = Object.freeze({ height: 8 as const, width: 128 / 9 });
 
 const sceneNameSchema = z
   .string()
@@ -67,7 +68,12 @@ export const manimRenderSandboxDescriptorV1Schema = z
     profileDigest: sha256V1Schema,
     projectId: manimProjectIdSchema,
     runtimeDigest: sha256V1Schema,
-    sceneFrame: z.object({ height: z.number().finite().positive(), width: z.number().finite().positive() }).strict(),
+    sceneFrame: z
+      .object({
+        height: z.literal(MANIM_RENDER_CANONICAL_SCENE_FRAME_V1.height),
+        width: z.literal(MANIM_RENDER_CANONICAL_SCENE_FRAME_V1.width),
+      })
+      .strict(),
     sceneName: sceneNameSchema,
     schema: z.literal(MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V1),
     sessionId: opaqueIdV1Schema,

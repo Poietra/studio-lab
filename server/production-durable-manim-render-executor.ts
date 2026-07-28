@@ -7,6 +7,7 @@ import type { ManimRenderSandboxBackendV1 } from "./manim-render-sandbox-backend
 import {
   canonicalManimRenderFenceTokenV1,
   encodeManimRenderStagingLocatorV1,
+  MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
   MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V1,
   SealedManimRenderSandboxRequestV1,
 } from "./manim-render-sandbox-contract";
@@ -28,7 +29,7 @@ export type ProductionDurableManimRenderExecutorOptionsV1 = Readonly<{
 export class ProductionDurableManimRenderExecutorV1 implements DurableManimRenderExecutorV1 {
   readonly #backend: ManimRenderSandboxBackendV1;
   readonly #blobs: SourceContentBlobStoreV1;
-  readonly #frame: Readonly<{ height: number; width: number }>;
+  readonly #frame: typeof MANIM_RENDER_CANONICAL_SCENE_FRAME_V1;
   readonly #profileDigest: string;
   readonly #runtimeDigest: string;
   readonly #tenantId: string;
@@ -37,16 +38,14 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
     const tenant = manimTenantIdSchema.safeParse(options.tenantId);
     if (
       !tenant.success ||
-      !Number.isFinite(options.frame.height) ||
-      options.frame.height <= 0 ||
-      !Number.isFinite(options.frame.width) ||
-      options.frame.width <= 0
+      options.frame.height !== MANIM_RENDER_CANONICAL_SCENE_FRAME_V1.height ||
+      options.frame.width !== MANIM_RENDER_CANONICAL_SCENE_FRAME_V1.width
     ) {
       throw new TypeError("The production durable render executor configuration is invalid.");
     }
     this.#backend = options.backend;
     this.#blobs = options.blobs;
-    this.#frame = Object.freeze({ height: options.frame.height, width: options.frame.width });
+    this.#frame = MANIM_RENDER_CANONICAL_SCENE_FRAME_V1;
     this.#profileDigest = options.profileDigest;
     this.#runtimeDigest = options.runtimeDigest;
     this.#tenantId = tenant.data;

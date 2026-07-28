@@ -17,10 +17,12 @@ import resource
 import shutil
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
 import time
+from fractions import Fraction
 from pathlib import Path
 
 MAGIC = b"POIETR1\x00"
@@ -28,6 +30,7 @@ VERSION = 1
 HEADER_BYTES = 80
 MAX_REQUEST_BYTES = 2 * 1024 * 1024 + 32 * 1024
 MAX_ARTIFACT_BYTES = 128 * 1024 * 1024
+MAX_VIDEO_DURATION_SECONDS = 15 * 60
 READY = b"POIETRA_RENDER_GATE_READY_V1\n"
 TARGET = ("/opt/venv/bin/python", "/opt/poietra/render-entrypoint.py")
 READY_PROCESS_NAME = b"poietra-ready"
@@ -124,6 +127,19 @@ def _runtime_confinement() -> None:
         raise RuntimeError("The OCI core limit drifted.")
     resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_ARTIFACT_BYTES, MAX_ARTIFACT_BYTES))
 
+    libc = ctypes.CDLL(None, use_errno=True)
+    prctl = libc.prctl
+    prctl.argtypes = (
+        ctypes.c_int,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+        ctypes.c_ulong,
+    )
+    prctl.restype = ctypes.c_int
+    if prctl(4, 0, 0, 0, 0) != 0 or prctl(3, 0, 0, 0, 0) != 0:
+        raise RuntimeError("PID 1 could not become non-dumpable before untrusted execution.")
+
     try:
         descriptor = os.open("/opt/poietra/render-entrypoint.py", os.O_WRONLY | os.O_APPEND)
     except OSError as error:
@@ -136,7 +152,6 @@ def _runtime_confinement() -> None:
 
     mount_target = RUNTIME_ROOT / "tmp" / "mount-target"
     mount_target.mkdir(mode=0o700)
-    libc = ctypes.CDLL(None, use_errno=True)
     mount = libc.mount
     mount.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_ulong, ctypes.c_void_p)
     mount.restype = ctypes.c_int
@@ -189,6 +204,7 @@ def _validated_request(request: dict[str, object]) -> tuple[str, str, str]:
     scene_name = request.get("sceneName")
     source_digest = request.get("sourceDigest")
     output = request.get("output")
+    scene_frame = request.get("sceneFrame")
     if (
         not isinstance(source, str)
         or len(source.encode("utf-8")) > 2 * 1024 * 1024
@@ -199,6 +215,10 @@ def _validated_request(request: dict[str, object]) -> tuple[str, str, str]:
         or hashlib.sha256(source.encode("utf-8")).hexdigest() != source_digest
         or not isinstance(output, dict)
         or set(output) != {"frameRate", "kind", "mediaType", "pixelHeight", "pixelWidth"}
+        or not isinstance(scene_frame, dict)
+        or set(scene_frame) != {"height", "width"}
+        or scene_frame.get("height") != 8
+        or scene_frame.get("width") != 128 / 9
     ):
         raise RuntimeError("The render request correlation is invalid.")
     kind = output.get("kind")
@@ -233,11 +253,110 @@ def _one_rendered_file(file_name: str) -> Path:
     return candidates[0]
 
 
+def _open_trusted_artifact(path: Path) -> object:
+    try:
+        media_root = MEDIA_ROOT.resolve(strict=True)
+        candidate = path.resolve(strict=True)
+    except OSError as error:
+        raise RenderFailure("media-invalid") from error
+    if media_root != MEDIA_ROOT or candidate != path or not candidate.is_relative_to(media_root):
+        raise RenderFailure("media-invalid")
+    try:
+        descriptor = os.open(candidate, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode) or status.st_size <= 0 or status.st_size > MAX_ARTIFACT_BYTES:
+            raise RenderFailure("media-invalid")
+        return os.fdopen(descriptor, "rb", closefd=True)
+    except Exception:
+        if "descriptor" in locals():
+            os.close(descriptor)
+        raise
+
+
+def _validate_png(path: Path) -> None:
+    from PIL import Image
+
+    try:
+        with _open_trusted_artifact(path) as stream, Image.open(stream) as image:
+            if image.format != "PNG" or image.size != (854, 480) or getattr(image, "n_frames", 1) != 1:
+                raise RenderFailure("media-invalid")
+            image.verify()
+        with _open_trusted_artifact(path) as stream, Image.open(stream) as image:
+            image.load()
+            if image.size != (854, 480):
+                raise RenderFailure("media-invalid")
+    except RenderFailure:
+        raise
+    except Exception as error:
+        raise RenderFailure("media-invalid") from error
+
+
+def _validate_mp4(path: Path) -> None:
+    import av
+
+    try:
+        with _open_trusted_artifact(path) as stream, av.open(stream, mode="r", format="mp4") as container:
+            streams = list(container.streams)
+            if (
+                "mp4" not in container.format.name.split(",")
+                or len(streams) != 1
+                or streams[0].type != "video"
+                or streams[0].codec_context.name != "h264"
+                or streams[0].codec_context.format is None
+                or streams[0].codec_context.format.name != "yuv420p"
+                or streams[0].width != 854
+                or streams[0].height != 480
+                or streams[0].average_rate != Fraction(15, 1)
+                or streams[0].duration is None
+                or streams[0].time_base is None
+                or streams[0].duration * streams[0].time_base <= 0
+                or streams[0].duration * streams[0].time_base > MAX_VIDEO_DURATION_SECONDS
+                or container.duration is None
+                or container.duration <= 0
+                or container.duration > MAX_VIDEO_DURATION_SECONDS * av.time_base
+            ):
+                raise RenderFailure("media-invalid")
+            frame_count = 0
+            previous_pts: int | None = None
+            for frame in container.decode(video=0):
+                if (
+                    frame.width != 854
+                    or frame.height != 480
+                    or frame.format.name != "yuv420p"
+                    or frame.pts is None
+                    or (previous_pts is not None and frame.pts <= previous_pts)
+                ):
+                    raise RenderFailure("media-invalid")
+                previous_pts = frame.pts
+                frame_count += 1
+                if frame_count > 15 * MAX_VIDEO_DURATION_SECONDS:
+                    raise RenderFailure("media-invalid")
+            if frame_count == 0:
+                raise RenderFailure("media-invalid")
+    except RenderFailure:
+        raise
+    except Exception as error:
+        raise RenderFailure("media-invalid") from error
+
+
+def _validate_artifact(path: Path, media_type: str) -> None:
+    if media_type == "image/png":
+        _validate_png(path)
+    elif media_type == "video/mp4":
+        _validate_mp4(path)
+    else:
+        raise RenderFailure("media-invalid")
+
+
 def _render(source: str, scene_name: str, kind: str) -> tuple[Path, str]:
     SOURCE_PATH.write_text(source, encoding="utf-8")
     arguments = [
         "/opt/venv/bin/manim",
         "-ql",
+        "--resolution",
+        "854,480",
+        "--fps",
+        "15",
         "--disable_caching",
         "--media_dir",
         str(MEDIA_ROOT),
@@ -368,6 +487,12 @@ def main() -> None:
     except Exception:  # noqa: BLE001 - the untrusted renderer has a fixed public failure code
         terminal = {"code": "render-failed", "kind": "failed", "reason": "internal"}
     _quiesce_untrusted_descendants()
+    if rendered is not None:
+        try:
+            _validate_artifact(*rendered)
+        except RenderFailure as error:
+            rendered = None
+            terminal = {"code": "render-failed", "kind": "failed", "reason": error.reason}
     _reset_output_root()
     if rendered is not None:
         try:
