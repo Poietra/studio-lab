@@ -46,12 +46,21 @@ export type StudioPreviewSnapshotCorrelationV1 = Readonly<{
   serverPublicationRevision: number | null;
 }>;
 
+export type StudioPreviewSourceRuntimeMappingV1 = Readonly<{
+  bindingId: string;
+  entityId: string;
+  sourceName: string;
+}>;
+
+export type StudioPreviewSourceRuntimeIdentityV1 = ReadonlyMap<string, StudioPreviewSourceRuntimeMappingV1>;
+
 export type StudioVerifiedPreviewSnapshotV1 = Readonly<{
   correlation: StudioPreviewSnapshotCorrelationV1;
   duration: number;
   sceneId: string;
   snapshot: SceneIrBundleV1;
   sourceLabel: string;
+  sourceRuntimeIdentity: StudioPreviewSourceRuntimeIdentityV1 | null;
 }>;
 
 export type StudioPreviewSnapshotRequestV1 = Readonly<{

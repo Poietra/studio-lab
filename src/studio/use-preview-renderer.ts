@@ -21,6 +21,7 @@ import {
   loadStudioPreviewSnapshotMetadataV1,
   type StudioPreviewEditingContextV1,
   type StudioPreviewSnapshotProviderV1,
+  type StudioPreviewSourceRuntimeIdentityV1,
   type StudioVerifiedPreviewSnapshotV1,
   studioPreviewWorkspaceKeyV1,
 } from "./preview-snapshot-provider";
@@ -36,6 +37,8 @@ export type StudioPreviewRendererViewV1 = Readonly<{
   sourceLabel: string | null;
   /** Lifecycle of verified source metadata for the current provider/Scene. */
   sourceMetadataPhase: "failed" | "inactive" | "loading" | "ready";
+  /** Server-verified source name to runtime entity mapping for this snapshot. */
+  sourceRuntimeIdentity: StudioPreviewSourceRuntimeIdentityV1 | null;
   state: PreviewRendererHostStateV1;
   /** Verified fast-manim base duration for the current source identity. */
   verifiedSourceDuration: number | null;
@@ -309,6 +312,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     interactionGeometry,
     sourceLabel: snapshot?.sourceLabel ?? null,
     sourceMetadataPhase: currentMetadata.phase,
+    sourceRuntimeIdentity: snapshot?.sourceRuntimeIdentity ?? null,
     state,
     verifiedSourceDuration,
   };

@@ -152,6 +152,7 @@ const VIEW_SNAPSHOT = {
   sceneId: "shared:circle-opacity",
   snapshot: sceneBundleFixture as unknown as SceneIrBundleV1,
   sourceLabel: "verified fixture",
+  sourceRuntimeIdentity: null,
 } satisfies StudioVerifiedPreviewSnapshotV1;
 
 describe("studioPreviewVerifiedSourceDurationV1", () => {
@@ -438,6 +439,65 @@ describe("projectStudioPreviewStaticInteractionGeometryV1", () => {
     expect(geometry.get("quarter-turn")?.dimensions).toEqual({ height: 4, width: 2 });
     // Horizontal shear widens the AABB: 1·4 + 0.5·2 = 5 wide, 2 tall.
     expect(geometry.get("sheared")?.dimensions).toEqual({ height: 2, width: 5 });
+  });
+
+  it("uses exact transformed cubic extrema without pulling positive-only bounds toward zero", () => {
+    const geometry = projectStudioPreviewStaticInteractionGeometryV1(
+      sceneWith([
+        entityWith({
+          geometry: {
+            kind: "cubic-path",
+            path: {
+              subpaths: [
+                {
+                  closed: false,
+                  segments: [
+                    {
+                      control1: { x: 1, y: 3 },
+                      control2: { x: 3, y: 3 },
+                      end: { x: 3, y: 1 },
+                    },
+                  ],
+                  start: { x: 1, y: 1 },
+                },
+              ],
+            },
+          },
+          id: "runtime-cubic",
+          transform: { m11: 1, m12: 0, m21: 0, m22: 1, tx: 10, ty: 20 },
+        }),
+      ]),
+      UNIT_FRAME,
+      1,
+    );
+    // The curve spans x=[11,13], y=[21,22.5]. A sentinel zero in either axis
+    // would move both its hit center and dimensions dramatically.
+    expect(geometry.get("runtime-cubic")?.dimensions).toEqual({ height: 1.5, width: 2 });
+    expect(geometry.get("runtime-cubic")?.position.x).toBeCloseTo((0.5 + 12 / 16) * 640, 10);
+    expect(geometry.get("runtime-cubic")?.position.y).toBeCloseTo((0.5 - 21.75 / 9) * 360, 10);
+  });
+
+  it("streams the schema-maximum cubic segment count without spread-argument or retained-candidate growth", () => {
+    const segmentCount = 100_000;
+    const segments = Array.from({ length: segmentCount }, (_, index) => ({
+      control1: { x: index, y: 2 },
+      control2: { x: index + 1, y: 2 },
+      end: { x: index + 1, y: 2 },
+    }));
+    const geometry = projectStudioPreviewStaticInteractionGeometryV1(
+      sceneWith([
+        entityWith({
+          geometry: {
+            kind: "cubic-path",
+            path: { subpaths: [{ closed: false, segments, start: { x: 0, y: 2 } }] },
+          },
+          id: "large-runtime-path",
+        }),
+      ]),
+      UNIT_FRAME,
+      1,
+    );
+    expect(geometry.get("large-runtime-path")?.dimensions).toEqual({ height: 0, width: segmentCount });
   });
 
   it("keeps transformed line hit targets center-anchored only", () => {

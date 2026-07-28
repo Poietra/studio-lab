@@ -2,9 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 import harnessManifest from "../../fixtures/engine-v1/shared-circle-opacity.harness.json";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import {
-  PRISTINE_WORKING_REVISION,
   createUnavailableStudioPreviewSnapshotProviderV1,
   loadStudioPreviewSnapshotMetadataV1,
+  PRISTINE_WORKING_REVISION,
   resolveStudioPreviewSnapshotProviderV1,
   type StudioPreviewSceneIdentityV1,
   studioPreviewWorkspaceKeyV1,
@@ -113,6 +113,14 @@ describe("createFixturePreviewSnapshotProviderV1", () => {
     expect(snapshot.correlation.sceneId).toBe(snapshot.snapshot.scene.sceneId);
     expect(snapshot.correlation.serverPublicationRevision).toBeNull();
     expect(snapshot.snapshot.scene.entities.length).toBeGreaterThan(0);
+    expect(snapshot.snapshot.scene.entities.find((entity) => entity.id === "earlier")?.geometry).toMatchObject({
+      center: { x: -1, y: 0 },
+    });
+    expect(snapshot.sourceRuntimeIdentity?.get("earlier")).toEqual({
+      bindingId: `source-binding:${"b".repeat(64)}`,
+      entityId: "earlier",
+      sourceName: "earlier",
+    });
   });
 
   it("refuses every identity that deviates from the checked-in evidence on any axis", async () => {

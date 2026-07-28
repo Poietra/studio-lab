@@ -81,6 +81,28 @@ function entityPreviewGeometry(preview: EntityGeometryPreview | null, entity: Pr
       };
 }
 
+/**
+ * Resolves runtime hit geometry only through the server-verified identity map.
+ * A source name that currently identifies zero or several Studio objects is
+ * intentionally unusable: paint order, Scene order, type, and geometry never
+ * break the tie.
+ */
+export function verifiedPreviewGeometryForStudioEntityV1(
+  preview: StudioPreviewRendererViewV1,
+  studioEntityIdByUniqueSourceName: ReadonlyMap<string, string | null>,
+  entity: ProjectedEntity,
+) {
+  if (entity.sourceIdentity.kind !== "known" || !preview.sourceRuntimeIdentity || !preview.interactionGeometry) {
+    return null;
+  }
+  const sourceName = entity.sourceIdentity.value;
+  if (studioEntityIdByUniqueSourceName.get(sourceName) !== entity.id) return null;
+  const mapping = preview.sourceRuntimeIdentity.get(sourceName);
+  if (!mapping) return null;
+  const geometry = preview.interactionGeometry.get(mapping.entityId);
+  return geometry ? { bindingId: mapping.bindingId, geometry, runtimeEntityId: mapping.entityId } : null;
+}
+
 function transitionStyle(entity: ProjectedEntity) {
   const [, shape, color] = entity.type.split(":");
   return {
@@ -280,6 +302,17 @@ export function StudioCanvas({
   // fully interactive as a paint-free overlay, and any fallback restores the
   // semantic paint in the same render.
   const presentingCanvasPixels = preview?.state.phase === "presented";
+  const studioEntityIdByUniqueSourceName = new Map<string, string | null>();
+  if (presentingCanvasPixels && preview?.sourceRuntimeIdentity && preview.interactionGeometry) {
+    for (const entity of entities) {
+      if (entity.sourceIdentity.kind !== "known") continue;
+      const sourceName = entity.sourceIdentity.value;
+      studioEntityIdByUniqueSourceName.set(
+        sourceName,
+        studioEntityIdByUniqueSourceName.has(sourceName) ? null : entity.id,
+      );
+    }
+  }
   return (
     <div className="grid min-h-0 flex-1 place-items-center overflow-auto p-4">
       <div
@@ -354,15 +387,11 @@ export function StudioCanvas({
             const scaleUnknown = entity.geometry.scale.kind === "unknown";
             const dimensionsUnknown = entity.geometry.dimensions.kind === "unknown";
             const approximate = Object.values(entity.geometry).some((knowledge) => knowledge.kind === "unknown");
-            // A provider may share a verified IR entity ID with Studio's
-            // source identity. Only then can its hit target follow the WebGPU
-            // geometry exactly. Real fast-manim snapshots do not yet carry
-            // that source-to-runtime identity map, so a miss deliberately
-            // keeps the semantic geometry authoritative.
-            const presentedGeometry =
-              presentingCanvasPixels && entity.sourceIdentity.kind === "known"
-                ? (preview?.interactionGeometry?.get(entity.sourceIdentity.value) ?? null)
+            const presentedIdentity =
+              presentingCanvasPixels && preview
+                ? verifiedPreviewGeometryForStudioEntityV1(preview, studioEntityIdByUniqueSourceName, entity)
                 : null;
+            const presentedGeometry = presentedIdentity?.geometry ?? null;
             const moveLocked = locked || (positionUnknown && presentedGeometry === null);
             const localDelta = entityDragDelta(dragPreview, entity.id);
             const previewGeometry = presentedGeometry ?? entityPreviewGeometry(geometryPreview, entity);
@@ -390,6 +419,8 @@ export function StudioCanvas({
                 data-studio-entity-scale={displayedScale.toFixed(4)}
                 data-studio-entity-width={previewGeometry.dimensions?.width?.toFixed(4)}
                 data-studio-entity-wrapper={entity.id}
+                data-studio-runtime-binding={presentedIdentity?.bindingId}
+                data-studio-runtime-entity={presentedIdentity?.runtimeEntityId}
                 key={entity.id}
                 style={{ ...viewportPositionStyle(position), opacity, touchAction: "none" }}
               >
