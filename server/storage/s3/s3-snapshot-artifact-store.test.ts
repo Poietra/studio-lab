@@ -170,6 +170,39 @@ describe("S3SnapshotArtifactStoreV1", () => {
     expect(send).toHaveBeenCalledTimes(4);
   });
 
+  it("retries when an immutable-key conflict is deleted before its verification read", async () => {
+    let putAttempts = 0;
+    const { send, store } = testStore(async (command) => {
+      if (command.constructor.name === "PutObjectCommand") {
+        putAttempts += 1;
+        if (putAttempts === 1) {
+          throw Object.assign(new Error("already exists"), { $metadata: { httpStatusCode: 412 } });
+        }
+        return { ETag: '"etag-a"', VersionId: "version-a" };
+      }
+      if (command.input.VersionId === undefined) {
+        throw Object.assign(new Error("deleted before read"), { name: "NoSuchKey" });
+      }
+      return {
+        Body: body(),
+        ContentLength: BYTES.byteLength,
+        ETag: '"etag-a"',
+        VersionId: "version-a",
+      };
+    });
+
+    await expect(
+      store.put(TENANT, {
+        bytes: BYTES,
+        profileDigest: PROFILE,
+        runtimeConfigHash: RUNTIME,
+        sourceDigest: SOURCE,
+      }),
+    ).resolves.toEqual(receipt());
+    expect(putAttempts).toBe(2);
+    expect(send).toHaveBeenCalledTimes(4);
+  });
+
   it("rejects invalid identities and oversized or empty artifacts before contacting S3", async () => {
     const { send, store } = testStore(async () => {
       throw new Error("unexpected S3 request");

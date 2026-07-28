@@ -463,7 +463,21 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
         );
         break;
       } catch (error) {
-        if (isPreconditionFailed(error)) return this.#readCurrentReceipt(tenant, identity, signal);
+        if (isPreconditionFailed(error)) {
+          try {
+            return await this.#readCurrentReceipt(tenant, identity, signal);
+          } catch (readError) {
+            if (
+              !(readError instanceof SnapshotArtifactReadErrorV1) ||
+              readError.code !== "missing" ||
+              attempt === MAX_CONDITIONAL_PUT_ATTEMPTS
+            ) {
+              throw readError;
+            }
+            throwIfAborted(signal);
+            continue;
+          }
+        }
         if (!isConditionalRequestConflict(error) || attempt === MAX_CONDITIONAL_PUT_ATTEMPTS) throw error;
         throwIfAborted(signal);
       }
