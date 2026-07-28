@@ -80,6 +80,16 @@ describe("durable storage configuration", () => {
         clientConfig: { ignoreConfiguredEndpointUrls: true, region: "us-east-1" },
       },
       renderWorker: { onFailure: () => undefined },
+      snapshot: {
+        artifactGc: {
+          batchSize: 64,
+          graceMs: 60_000,
+          intervalMs: 60_000,
+          onFailure: () => undefined,
+          sweepTimeoutMs: 30_000,
+        },
+        sandbox: {} as never,
+      },
       sourceGc: {
         batchSize: 64,
         graceMs: 60_000,
