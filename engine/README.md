@@ -112,11 +112,11 @@ for this frame), or `unavailable` with a reason:
   fail-closed contract.
 - `tessellate`: CPU flattening and triangulation of the validated packet.
 - `vertexIndexEncode`: CPU encoding of vertices/indices into byte vectors.
-- `bufferCreateAndStage`: `create_buffer_init` calls that create the GPU
-  buffers and stage the encoded bytes; a CPU-side cost, not a GPU transfer.
+- `bufferCreateAndStage`: retained-buffer growth, exact dirty-range comparison,
+  and `queue.write_buffer` staging; a CPU-side cost, not GPU transfer time.
 - `commandEncodeTotal`: encoder creation through `finish()`; a labeled nested
   total that includes `drawRecord`.
-- `drawRecord`: CPU recording of the per-draw `draw_indexed` loop.
+- `drawRecord`: CPU recording of the ordered compatible `draw_indexed` batches.
 - `surfaceAcquire`: surface configuration, current-texture acquisition, and
   view creation as one non-overlapping interval.
 - `submit` / `present`: the CPU `queue.submit` / `queue.present` calls; their
