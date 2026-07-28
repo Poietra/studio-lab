@@ -257,6 +257,9 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       blobs,
       client: { ...options.renderSandbox, stagingRoot: options.renderArtifacts.stagingRoot },
       frame,
+      ...(options.renderWorker.maxConcurrentJobs === undefined
+        ? {}
+        : { maxConcurrentJobs: options.renderWorker.maxConcurrentJobs }),
       tenantId: options.tenantId,
     });
     artifactReader = new AuthorizedArtifactReaderV1({

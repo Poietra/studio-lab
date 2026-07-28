@@ -15,11 +15,17 @@ import { manimTenantIdSchema } from "./manim-request-principal";
 import type { SourceContentBlobStoreV1 } from "./storage/workspace-source-repository";
 
 const READINESS_TIMEOUT_MS = 10_000;
+const MAX_CONCURRENT_RENDER_SESSIONS = 4;
+
+function validConcurrentRenderSessions(value: number | undefined) {
+  return value === undefined || (Number.isSafeInteger(value) && value >= 1 && value <= MAX_CONCURRENT_RENDER_SESSIONS);
+}
 
 export type ProductionDurableManimRenderExecutorOptionsV1 = Readonly<{
   backend: ManimRenderSandboxBackendV1;
   blobs: SourceContentBlobStoreV1;
   frame: Readonly<{ height: number; width: number }>;
+  maxConcurrentJobs?: number;
   profileDigest: string;
   runtimeDigest: string;
   stagingRootDigest: string;
@@ -40,6 +46,7 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
     const tenant = manimTenantIdSchema.safeParse(options.tenantId);
     if (
       !tenant.success ||
+      !validConcurrentRenderSessions(options.maxConcurrentJobs) ||
       options.frame.height !== MANIM_RENDER_CANONICAL_SCENE_FRAME_V1.height ||
       options.frame.width !== MANIM_RENDER_CANONICAL_SCENE_FRAME_V1.width
     ) {
@@ -171,14 +178,19 @@ export async function createProductionDurableManimRenderExecutorV1(
     blobs: SourceContentBlobStoreV1;
     client: ManimRenderProductionSandboxClientOptionsV1;
     frame: Readonly<{ height: number; width: number }>;
+    maxConcurrentJobs?: number;
     tenantId: string;
   }>,
 ) {
+  if (!validConcurrentRenderSessions(options.maxConcurrentJobs)) {
+    throw new TypeError("The production durable render executor configuration is invalid.");
+  }
   const client = await createManimRenderProductionSandboxClientV1(options.client);
   return new ProductionDurableManimRenderExecutorV1({
     backend: client.backend,
     blobs: options.blobs,
     frame: options.frame,
+    ...(options.maxConcurrentJobs === undefined ? {} : { maxConcurrentJobs: options.maxConcurrentJobs }),
     profileDigest: client.profileDigest,
     runtimeDigest: client.runtimeDigest,
     stagingRootDigest: client.stagingRootDigest,

@@ -17,7 +17,8 @@ import {
   verifySealedManimRenderSandboxRequestV1,
 } from "./manim-render-sandbox-contract";
 
-const MAX_ACTIVE_OPERATIONS = 8;
+const MAX_ACTIVE_OPERATIONS = 16;
+const MAX_ACTIVE_SUBMISSIONS = 8;
 const MAX_SOCKET_PATH_BYTES = 96;
 
 function transportError() {
@@ -34,7 +35,11 @@ function validateDeadline(value: number) {
   }
 }
 
-type ActiveOperation = Readonly<{ abort: () => void; result: Promise<unknown> }>;
+type ActiveOperation = Readonly<{
+  abort: () => void;
+  kind: ManimRenderSandboxBrokerOperationV1;
+  result: Promise<unknown>;
+}>;
 
 export class ManimRenderUdsSandboxBackendV1 implements ManimRenderSandboxBackendV1 {
   readonly #active = new Set<ActiveOperation>();
@@ -124,8 +129,13 @@ export class ManimRenderUdsSandboxBackendV1 implements ManimRenderSandboxBackend
     validateDeadline(context.deadlineEpochMs);
     context.signal.throwIfAborted();
     if (this.#closed) return Promise.reject(abortError());
-    if (this.#active.size >= MAX_ACTIVE_OPERATIONS)
+    if (
+      this.#active.size >= MAX_ACTIVE_OPERATIONS ||
+      (operationKind === "submit" &&
+        [...this.#active].filter((operation) => operation.kind === "submit").length >= MAX_ACTIVE_SUBMISSIONS)
+    ) {
       return Promise.reject(new Error("Render broker capacity is exhausted."));
+    }
     const socket = new Socket({ allowHalfOpen: true });
     const decoder = new ManimRenderSandboxBrokerServerFrameDecoderV1(operationKind);
     let settled = false;
@@ -155,7 +165,7 @@ export class ManimRenderUdsSandboxBackendV1 implements ManimRenderSandboxBackend
       settle(abortError());
       socket.destroy();
     };
-    active = { abort, result };
+    active = { abort, kind: operationKind, result };
     this.#active.add(active);
     context.signal.addEventListener("abort", abort, { once: true });
     deadlineTimer = setTimeout(abort, Math.max(1, context.deadlineEpochMs - Date.now()));

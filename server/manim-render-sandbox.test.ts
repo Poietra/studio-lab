@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import { FastManimGatedOciDockerClientV1 } from "./fast-manim-gated-oci-job-runner";
+import { acquireFastManimSandboxOwnerLeaseV1 } from "./fast-manim-sandbox-broker-lease";
 import {
   digestManimRenderGatedOciRuntimeV1,
   deliverSealedManimRenderGateRequestV1,
@@ -340,14 +341,26 @@ describe("render OCI lifecycle", () => {
     const privateParent = await mkdtemp(join(tmpdir(), "poietra-render-root-swap-"));
     const stagingRoot = join(privateParent, "staging");
     await mkdir(stagingRoot, { mode: 0o700 });
+    const privateDocker = new ScriptedDockerClient();
     const runner = new ManimRenderGatedOciJobRunnerV1({
-      dockerClient: new ScriptedDockerClient(),
+      dockerClient: privateDocker,
       image,
       seccompPath: "/missing/seccomp.json",
       stagingRoot,
     });
     try {
       await expect(runner.reconcileOrphans()).resolves.toBeUndefined();
+      expect(privateDocker.calls[0]).toEqual([
+        "container",
+        "ls",
+        "--all",
+        "--quiet",
+        "--no-trunc",
+        "--filter",
+        "label=io.poietra.render-job=v1",
+        "--filter",
+        `label=io.poietra.render-owner-sha256=${digestManimRenderStagingRootV1(stagingRoot)}`,
+      ]);
       await rename(stagingRoot, join(privateParent, "original"));
       await mkdir(stagingRoot, { mode: 0o700 });
       await expect(runner.reconcileOrphans()).rejects.toThrow(/replaced/i);
@@ -768,6 +781,19 @@ describe("production durable render execution", () => {
         };
       }),
     });
+    expect(
+      () =>
+        new ProductionDurableManimRenderExecutorV1({
+          backend,
+          blobs,
+          frame: MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
+          maxConcurrentJobs: 5,
+          profileDigest: MANIM_RENDER_GATED_OCI_PROFILE_DIGEST_V1,
+          runtimeDigest: digestManimRenderGatedOciRuntimeV1(image),
+          stagingRootDigest: digestManimRenderStagingRootV1(stagingRoot),
+          tenantId: "tenant-a",
+        }),
+    ).toThrow(/configuration/i);
     const executor = new ProductionDurableManimRenderExecutorV1({
       backend,
       blobs,
@@ -827,6 +853,155 @@ describe("production durable render execution", () => {
 });
 
 describe("render broker bounded shutdown", () => {
+  it("holds the staging-owner lease before reconciling through any broker socket", async () => {
+    const root = await mkdtemp(join(tmpdir(), "poietra-render-broker-reconcile-"));
+    await chmod(root, 0o700);
+    const socketPath = join(root, "render-a.sock");
+    const competingSocketPath = join(root, "render-b.sock");
+    const ownerDigest = digestManimRenderStagingRootV1(join(root, "staging"));
+    const backend = partial<ManimRenderSandboxBackendV1>({
+      cancel: async () => undefined,
+      close: async () => undefined,
+      status: async () => healthyStatus(),
+      submitOrReattach: () => never(),
+    });
+    const firstReconcile = vi.fn(async () => undefined);
+    const broker = await startManimRenderSandboxBrokerServerV1({
+      backend,
+      ownerDigest,
+      reconcileOrphans: firstReconcile,
+      socketGroupId: process.getegid!(),
+      socketPath,
+    });
+    const secondReconcile = vi.fn(async () => undefined);
+    const secondClose = vi.fn(async () => undefined);
+    try {
+      expect(firstReconcile).toHaveBeenCalledOnce();
+      await expect(
+        startManimRenderSandboxBrokerServerV1({
+          backend: { ...backend, close: secondClose },
+          ownerDigest,
+          reconcileOrphans: secondReconcile,
+          socketGroupId: process.getegid!(),
+          socketPath: competingSocketPath,
+        }),
+      ).rejects.toThrow(/lease/i);
+      expect(secondReconcile).not.toHaveBeenCalled();
+      expect(secondClose).toHaveBeenCalledOnce();
+    } finally {
+      await broker.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("reserves UDS capacity for status and cancellation while eight media submits are active", async () => {
+    const root = await mkdtemp(join(tmpdir(), "poietra-render-broker-control-capacity-"));
+    await chmod(root, 0o700);
+    const socketPath = join(root, "render.sock");
+    const submitOrReattach = vi.fn<ManimRenderSandboxBackendV1["submitOrReattach"]>(
+      async (_request, context) =>
+        new Promise<never>((_resolve, reject) => {
+          const abort = () => reject(context.signal.reason ?? new DOMException("Aborted", "AbortError"));
+          if (context.signal.aborted) abort();
+          else context.signal.addEventListener("abort", abort, { once: true });
+        }),
+    );
+    const backend = partial<ManimRenderSandboxBackendV1>({
+      cancel: vi.fn(async () => undefined),
+      close: async () => undefined,
+      status: vi.fn(async () => healthyStatus()),
+      submitOrReattach,
+    });
+    const broker = await startManimRenderSandboxBrokerServerV1({
+      backend,
+      maxConcurrentJobs: 8,
+      socketGroupId: process.getegid!(),
+      socketPath,
+    });
+    const client = new ManimRenderUdsSandboxBackendV1({ socketPath });
+    const requests = Array.from({ length: 9 }, (_, index) => {
+      const deadlineEpochMs = Date.now() + 60_000;
+      return new SealedManimRenderSandboxRequestV1(
+        descriptor({
+          deadlineEpochMs,
+          jobId: `tenant-a/session-${index}`,
+          sessionId: `session-${index}`,
+        }),
+      );
+    });
+    const submit = (request: SealedManimRenderSandboxRequestV1) =>
+      client.submitOrReattach(request, {
+        deadlineEpochMs: request.parseDescriptor().deadlineEpochMs,
+        signal: new AbortController().signal,
+      });
+    const pending = requests.slice(0, 8).map((request) => submit(request).catch((error: unknown) => error));
+    try {
+      await vi.waitFor(() => expect(submitOrReattach).toHaveBeenCalledTimes(8), { timeout: 5_000 });
+      await expect(submit(requests[8]!)).rejects.toThrow(/capacity/i);
+      await expect(
+        Promise.all([
+          client.status({ deadlineEpochMs: Date.now() + 5_000, signal: new AbortController().signal }),
+          client.cancel("tenant-a/session-control", {
+            deadlineEpochMs: Date.now() + 5_000,
+            signal: new AbortController().signal,
+          }),
+        ]),
+      ).resolves.toEqual([healthyStatus(), undefined]);
+      expect(submitOrReattach).toHaveBeenCalledTimes(8);
+      expect(backend.cancel).toHaveBeenCalledOnce();
+    } finally {
+      await client.close();
+      await Promise.all(pending);
+      await broker.close();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("retains the staging-owner lease until timed-out backend cleanup settles", async () => {
+    const root = await mkdtemp(join(tmpdir(), "poietra-render-broker-owner-close-"));
+    await chmod(root, 0o700);
+    const ownerDigest = digestManimRenderStagingRootV1(join(root, "staging"));
+    let releaseBackend!: () => void;
+    const backendClosed = new Promise<void>((resolve) => {
+      releaseBackend = resolve;
+    });
+    const backend = partial<ManimRenderSandboxBackendV1>({
+      cancel: async () => undefined,
+      close: () => backendClosed,
+      status: async () => healthyStatus(),
+      submitOrReattach: () => never(),
+    });
+    const broker = await startManimRenderSandboxBrokerServerV1({
+      backend,
+      closeTimeoutMs: 25,
+      ownerDigest,
+      reconcileOrphans: async () => undefined,
+      socketGroupId: process.getegid!(),
+      socketPath: join(root, "render.sock"),
+    });
+    try {
+      await expect(broker.close()).rejects.toSatisfy(
+        (error: unknown) =>
+          error instanceof AggregateError &&
+          error.errors.some(
+            (failure) => failure instanceof Error && /backend cleanup timed out/iu.test(failure.message),
+          ),
+      );
+      await expect(acquireFastManimSandboxOwnerLeaseV1(ownerDigest)).rejects.toMatchObject({ code: "busy" });
+      releaseBackend();
+      await vi.waitFor(
+        async () => {
+          const replacement = await acquireFastManimSandboxOwnerLeaseV1(ownerDigest);
+          await replacement.close();
+        },
+        { timeout: 5_000 },
+      );
+    } finally {
+      releaseBackend();
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
   it("round-trips status and successful void cancellation over the real UDS protocol", async () => {
     const root = await mkdtemp(join(tmpdir(), "poietra-render-broker-roundtrip-"));
     await chmod(root, 0o700);
