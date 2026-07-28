@@ -77,18 +77,31 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
       return false;
     }
     let healthy = false;
+    let readinessError: unknown;
     try {
       healthy = await handle.runner.ready(signal);
-    } catch {
-      signal?.throwIfAborted();
+    } catch (error) {
+      readinessError = error;
     }
+    let cleanupError: unknown;
     try {
       await handle.runner.close();
-    } catch {
-      healthy = false;
+    } catch (error) {
+      cleanupError = error;
     }
-    signal?.throwIfAborted();
-    return healthy;
+    if (signal?.aborted) {
+      let abortReason: unknown;
+      try {
+        signal.throwIfAborted();
+      } catch (error) {
+        abortReason = error;
+      }
+      if (cleanupError !== undefined) {
+        throw new AggregateError([abortReason, cleanupError], "Snapshot readiness cancellation and cleanup failed.");
+      }
+      throw abortReason;
+    }
+    return !this.#closed && readinessError === undefined && cleanupError === undefined && healthy;
   }
 
   async close() {

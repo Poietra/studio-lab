@@ -46,6 +46,22 @@ describe("FastManimProductionSnapshotRunnerFactoryV1", () => {
     expect(created.backend.close).toHaveBeenCalledOnce();
   });
 
+  it("closes a fresh broker client before propagating readiness cancellation", async () => {
+    const created = client();
+    const cancellation = new Error("readiness cancelled");
+    const controller = new AbortController();
+    created.backend.status = vi.fn(async () => {
+      controller.abort(cancellation);
+      throw cancellation;
+    });
+    createClient.mockResolvedValue(created as never);
+    const runners = factory();
+
+    await expect(runners.ready(controller.signal)).rejects.toBe(cancellation);
+
+    expect(created.backend.close).toHaveBeenCalledOnce();
+  });
+
   it("returns a project-owned runner and refuses creation after close", async () => {
     const created = client();
     createClient.mockResolvedValue(created as never);
