@@ -1,9 +1,9 @@
 import { mkdtemp, rm } from "node:fs/promises";
-import { createServer, type Socket } from "node:net";
+import { createServer, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { FastManimSandboxRequestBundleV1 } from "./fast-manim-sandbox-backend";
 import {
@@ -146,6 +146,33 @@ describe("FastManimUdsSandboxBackendV1 single-operation sockets", () => {
         releaseCleanup();
         await close;
         expect(closed).toBe(true);
+      },
+    );
+  });
+
+  it("does not connect when abort wins during listener registration", async () => {
+    await withBroker(
+      () => {
+        throw new Error("The aborted operation must not reach the broker.");
+      },
+      async (path) => {
+        const controller = new AbortController();
+        const addEventListener = controller.signal.addEventListener.bind(controller.signal);
+        vi.spyOn(controller.signal, "addEventListener").mockImplementation((type, listener, options) => {
+          addEventListener(type, listener, options);
+          controller.abort();
+        });
+        const connect = vi.spyOn(Socket.prototype, "connect");
+        try {
+          const backend = new FastManimUdsSandboxBackendV1({ socketPath: path });
+          await expect(backend.start(request(), jobContext(controller.signal)).result).rejects.toMatchObject({
+            name: "AbortError",
+          });
+          expect(connect).not.toHaveBeenCalled();
+          await expect(backend.close()).resolves.toBeUndefined();
+        } finally {
+          connect.mockRestore();
+        }
       },
     );
   });

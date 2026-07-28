@@ -332,7 +332,13 @@ export class FastManimUdsSandboxBackendV1 implements FastManimSandboxBackendV1 {
       if (!dispatched || (remoteEnded && !remoteEndedWithoutResponse && (aborted || responseSeen))) settleCleanup();
       else settleCleanup(new FastManimSandboxBackendControlError("cleanup"));
     });
-    socket.connect(this.#socketPath);
+    try {
+      if (!aborted) socket.connect(this.#socketPath);
+    } catch {
+      socket.destroy();
+      settleResult(transportError());
+      settleCleanup();
+    }
     return operation;
   }
 }
