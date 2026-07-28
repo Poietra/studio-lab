@@ -79,6 +79,12 @@ const STORAGE_SUITES = [
     id: "snapshot-publication",
     title: "publishes across processes, isolates tenants, rejects stale source CAS, and deletes an upload orphan",
   },
+  {
+    database: "poietra_render_artifact",
+    file: "server/storage/render-artifact-storage.real.test.ts",
+    id: "render-artifact",
+    title: "survives SIGKILL, atomically publishes versioned media, fences races, expires reads, and collects orphans",
+  },
 ];
 
 function postgresIdentifier(value) {

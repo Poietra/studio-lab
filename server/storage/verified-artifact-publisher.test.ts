@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const filesystem = vi.hoisted(() => ({
   lstat: vi.fn(),
@@ -37,6 +37,8 @@ const THUMBNAIL = Buffer.alloc(24);
 THUMBNAIL.set(Buffer.from("89504e470d0a1a0a", "hex"));
 THUMBNAIL.writeUInt32BE(854, 16);
 THUMBNAIL.writeUInt32BE(480, 20);
+
+afterEach(() => vi.restoreAllMocks());
 
 function deferred() {
   let resolve!: () => void;
