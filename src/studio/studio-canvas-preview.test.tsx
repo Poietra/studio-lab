@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { ProjectedEntity } from "./model";
-import { StudioCanvas, type StudioCanvasProps } from "./studio-canvas";
+import { compensatePreviewGeometryForSemanticScalesV1, StudioCanvas, type StudioCanvasProps } from "./studio-canvas";
 import type { StudioPreviewRendererViewV1 } from "./use-preview-renderer";
 
 const CIRCLE_ENTITY: ProjectedEntity = {
@@ -73,6 +73,16 @@ function previewView(
 }
 
 describe("StudioCanvas retained preview layer", () => {
+  it("cancels semantic CSS scales so sampled runtime bounds are applied exactly once", () => {
+    expect(
+      compensatePreviewGeometryForSemanticScalesV1(
+        { dimensions: { height: 2, width: 4 }, position: { x: 480, y: 90 } },
+        2,
+        0.5,
+      ),
+    ).toEqual({ dimensions: { height: 2, width: 4 }, position: { x: 400, y: 135 } });
+  });
+
   it("renders no canvas layer by default so the semantic preview stays authoritative", () => {
     const markup = renderToStaticMarkup(<StudioCanvas {...baseProps()} />);
     expect(markup).toContain('data-preview-renderer="off"');
@@ -146,7 +156,10 @@ describe("StudioCanvas retained preview layer", () => {
             phase: "presented",
           },
           new Map([
-            ["scene:runtime/entity:0", { dimensions: { radius: 8 / 9 }, position: { x: 0.4375 * 640, y: 180 } }],
+            [
+              "scene:runtime/entity:0",
+              { dimensions: { height: 0.8, width: 1.4222 }, position: { x: 0.4375 * 640, y: 180 } },
+            ],
           ]),
           new Map([
             [
@@ -166,6 +179,7 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).toContain("left:43.75%");
     expect(markup).toContain('data-studio-runtime-entity="scene:runtime/entity:0"');
     expect(markup).toContain(`data-studio-runtime-binding="source-binding:${"b".repeat(64)}"`);
+    expect(markup).toContain("height:10cqh;width:10cqw");
     const fallbackMarkup = renderToStaticMarkup(
       <StudioCanvas
         {...baseProps()}
@@ -176,7 +190,10 @@ describe("StudioCanvas retained preview layer", () => {
             reason: "snapshot-uncorrelated",
           },
           new Map([
-            ["scene:runtime/entity:0", { dimensions: { radius: 8 / 9 }, position: { x: 0.4375 * 640, y: 180 } }],
+            [
+              "scene:runtime/entity:0",
+              { dimensions: { height: 0.8, width: 1.4222 }, position: { x: 0.4375 * 640, y: 180 } },
+            ],
           ]),
           new Map([
             [
@@ -198,6 +215,50 @@ describe("StudioCanvas retained preview layer", () => {
     expect(fallbackMarkup).not.toContain("data-studio-runtime-entity");
   });
 
+  it("sizes non-shape move targets from prepared visual bounds", () => {
+    const textEntity: ProjectedEntity = {
+      ...CIRCLE_ENTITY,
+      content: { displayLines: ["sample"], text: "sample" },
+      geometry: {
+        ...CIRCLE_ENTITY.geometry,
+        dimensions: { kind: "unknown", reason: "Imported text dimensions are runtime-owned." },
+      },
+      type: "Text",
+    };
+    const markup = renderToStaticMarkup(
+      <StudioCanvas
+        {...baseProps()}
+        entities={[textEntity]}
+        preview={previewView(
+          {
+            frame: {
+              packetId: "canvas:2",
+              revision: "a".repeat(64),
+              sampleTime: 1,
+              viewport: { heightPx: 90, widthPx: 160 },
+            },
+            phase: "presented",
+          },
+          new Map([
+            ["scene:runtime/entity:0", { dimensions: { height: 0.8, width: 1.4222 }, position: { x: 320, y: 180 } }],
+          ]),
+          new Map([
+            [
+              "circle_1",
+              {
+                bindingId: `source-binding:${"b".repeat(64)}`,
+                entityId: "scene:runtime/entity:0",
+                sourceName: "circle_1",
+              },
+            ],
+          ]),
+        )}
+      />,
+    );
+    expect(markup).toMatch(/<button[^>]*style="height:10cqh;width:10cqw"/);
+    expect(markup).toContain("pointer-events-none opacity-0");
+  });
+
   it("never guesses a runtime entity from geometry or a duplicated current source name", () => {
     const state = {
       frame: {
@@ -209,7 +270,7 @@ describe("StudioCanvas retained preview layer", () => {
       phase: "presented" as const,
     };
     const runtimeGeometry = new Map([
-      ["scene:runtime/entity:0", { dimensions: { radius: 1 }, position: { x: 100, y: 100 } }],
+      ["scene:runtime/entity:0", { dimensions: { height: 1, width: 1 }, position: { x: 100, y: 100 } }],
     ]);
     const verifiedIdentity = new Map([
       [

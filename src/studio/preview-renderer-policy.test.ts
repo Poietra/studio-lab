@@ -4,7 +4,7 @@ import type { SceneIrBundleV1 } from "../engine/contracts";
 import {
   describeStudioPreviewFallbackV1,
   evaluateStudioPreviewEligibilityV1,
-  projectStudioPreviewStaticInteractionGeometryV1,
+  projectStudioPreviewInteractionGeometryV1,
   resolveStudioPreviewViewStateV1,
   type StudioPreviewEligibilityInputV1,
   type StudioPreviewHostBindingV1,
@@ -338,236 +338,72 @@ describe("studioPreviewHostBindingCurrentV1", () => {
   });
 });
 
-describe("projectStudioPreviewStaticInteractionGeometryV1", () => {
-  const IDENTITY = { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 } as const;
-  const LIFETIME = [{ end: 2, start: 0 }] as const;
+describe("projectStudioPreviewInteractionGeometryV1", () => {
+  const FRAME = { height: 8, width: 16 } as const;
 
-  function entityWith(overrides: Record<string, unknown>) {
-    return { lifetimes: LIFETIME, parentId: null, transform: IDENTITY, ...overrides };
-  }
-
-  function sceneWith(entities: readonly Record<string, unknown>[], overrides: Record<string, unknown> = {}) {
-    return {
-      animationChannels: [],
-      camera: { view: { center: { x: 0, y: 0 }, frameHeight: 9, frameWidth: 16 } },
-      entities,
-      ...overrides,
-    } as unknown as SceneIrBundleV1["scene"];
-  }
-
-  const scene = sceneWith(
-    [
-      entityWith({ geometry: { center: { x: -1, y: 0 }, kind: "circle", radius: 1 }, id: "earlier" }),
-      entityWith({ geometry: { end: { x: -2, y: 2 }, kind: "line", start: { x: -4, y: 2 } }, id: "stroke" }),
-    ],
-    // Opacity-only channels keep the static-Scene guarantee intact.
-    { animationChannels: [{ entityId: "earlier", kind: "opacity" }] },
-  );
-
-  it("projects hit targets to the exact snapshot positions in Studio viewport space", () => {
-    const geometry = projectStudioPreviewStaticInteractionGeometryV1(scene, { height: 8, width: 14.222 }, 1);
-    // Scene (-1, 0) inside a 16x9 camera is the 0.4375 width fraction.
-    expect(geometry.get("earlier")?.position).toEqual({ x: 0.4375 * 640, y: 180 });
-    // The circle radius is scaled from camera units into workspace frame units.
-    expect(geometry.get("earlier")?.dimensions).toEqual({ radius: 8 / 9 });
-    // Lines anchor at their midpoint with no synthetic dimensions.
-    expect(geometry.get("stroke")?.position).toEqual({ x: (0.5 - 3 / 16) * 640, y: (0.5 - 2 / 9) * 360 });
-    expect(geometry.get("stroke")?.dimensions).toBeNull();
-  });
-
-  // The engine's affine convention (prepare.rs) is x' = m11·x + m12·y + tx
-  // and y' = m21·x + m22·y + ty. The unit frame below makes both frame ratios
-  // exactly 1 so the expectations read directly in camera units.
-  const UNIT_FRAME = { height: 9, width: 16 } as const;
-
-  it("projects rotated centers with the engine's row convention, not its transpose", () => {
-    // Rotation by 90° with uniform scale 2: m = [0 -2; 2 0].
-    const geometry = projectStudioPreviewStaticInteractionGeometryV1(
-      sceneWith([
-        entityWith({
-          geometry: { center: { x: 1, y: 0.5 }, kind: "circle", radius: 1 },
-          id: "rotated",
-          transform: { m11: 0, m12: -2, m21: 2, m22: 0, tx: 0.5, ty: -0.25 },
-        }),
-      ]),
-      UNIT_FRAME,
-      1,
+  it("maps clip-space centers and extents into Studio overlay and frame units", () => {
+    const geometry = projectStudioPreviewInteractionGeometryV1(
+      ["runtime:circle"],
+      {
+        entries: [{ bounds: [-0.5, 0, 0.5, 1], status: "present" }],
+        space: "clip-v1",
+        status: "available",
+      },
+      FRAME,
     );
-    // World center: x = 0·1 + (-2)·0.5 + 0.5 = -0.5, y = 2·1 + 0·0.5 - 0.25 = 1.75.
-    expect(geometry.get("rotated")?.position.x).toBeCloseTo((0.5 - 0.5 / 16) * 640, 10);
-    expect(geometry.get("rotated")?.position.y).toBeCloseTo((0.5 - 1.75 / 9) * 360, 10);
-    // A rotated uniform scale keeps the circle a circle: radius 1 × scale 2.
-    expect(geometry.get("rotated")?.dimensions?.radius).toBeCloseTo(2, 10);
+
+    expect(geometry.get("runtime:circle")?.position).toEqual({ x: 320, y: 90 });
+    expect(geometry.get("runtime:circle")?.dimensions).toEqual({ height: 4, width: 8 });
   });
 
-  it.each([
-    ["non-uniform scale", "ellipse", { m11: 3, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 }, 12, 4],
-    ["equal-norm shear", "shear", { m11: 1, m12: 0, m21: 0.6, m22: 0.8, tx: 0, ty: 0 }, 4, 4],
-  ] as const)(
-    "projects a circle under %s as bounds without a resizable radius",
-    (_case, id, transform, width, height) => {
-      const geometry = projectStudioPreviewStaticInteractionGeometryV1(
-        sceneWith([entityWith({ geometry: { center: { x: 0, y: 0 }, kind: "circle", radius: 2 }, id, transform })]),
-        UNIT_FRAME,
-        1,
+  it("reports visual AABB dimensions without inferring an editable radius", () => {
+    const geometry = projectStudioPreviewInteractionGeometryV1(
+      ["runtime:circle"],
+      {
+        entries: [{ bounds: [-0.25, -0.5, 0.25, 0.5], status: "present" }],
+        space: "clip-v1",
+        status: "available",
+      },
+      FRAME,
+    );
+    const dimensions = geometry.get("runtime:circle")?.dimensions;
+
+    expect(dimensions).toEqual({ height: 4, width: 4 });
+    expect(dimensions).not.toHaveProperty("radius");
+  });
+
+  it.each(["inactive", "empty", "unavailable"] as const)(
+    "retains semantic fallback for a %s runtime entry",
+    (status) => {
+      const geometry = projectStudioPreviewInteractionGeometryV1(
+        ["runtime:entity"],
+        { entries: [{ status }], space: "clip-v1", status: "available" },
+        FRAME,
       );
-      const dimensions = geometry.get(id)?.dimensions;
-      expect(dimensions?.radius).toBeUndefined();
-      expect(dimensions?.width).toBeCloseTo(width, 10);
-      expect(dimensions?.height).toBeCloseTo(height, 10);
-    },
-  );
 
-  it("projects rotated and sheared rectangles as their exact axis-aligned bounds", () => {
-    const geometry = projectStudioPreviewStaticInteractionGeometryV1(
-      sceneWith([
-        entityWith({
-          geometry: { center: { x: 0, y: 0 }, height: 2, kind: "rectangle", width: 4 },
-          id: "quarter-turn",
-          transform: { m11: 0, m12: -1, m21: 1, m22: 0, tx: 0, ty: 0 },
-        }),
-        entityWith({
-          geometry: { center: { x: 0, y: 0 }, height: 2, kind: "rectangle", width: 4 },
-          id: "sheared",
-          transform: { m11: 1, m12: 0.5, m21: 0, m22: 1, tx: 0, ty: 0 },
-        }),
-      ]),
-      UNIT_FRAME,
-      1,
-    );
-    // 90° rotation swaps the extents: |m11|w+|m12|h = 2, |m21|w+|m22|h = 4.
-    expect(geometry.get("quarter-turn")?.dimensions).toEqual({ height: 4, width: 2 });
-    // Horizontal shear widens the AABB: 1·4 + 0.5·2 = 5 wide, 2 tall.
-    expect(geometry.get("sheared")?.dimensions).toEqual({ height: 2, width: 5 });
-  });
-
-  it("uses exact transformed cubic extrema without pulling positive-only bounds toward zero", () => {
-    const geometry = projectStudioPreviewStaticInteractionGeometryV1(
-      sceneWith([
-        entityWith({
-          geometry: {
-            kind: "cubic-path",
-            path: {
-              subpaths: [
-                {
-                  closed: false,
-                  segments: [
-                    {
-                      control1: { x: 1, y: 3 },
-                      control2: { x: 3, y: 3 },
-                      end: { x: 3, y: 1 },
-                    },
-                  ],
-                  start: { x: 1, y: 1 },
-                },
-              ],
-            },
-          },
-          id: "runtime-cubic",
-          transform: { m11: 1, m12: 0, m21: 0, m22: 1, tx: 10, ty: 20 },
-        }),
-      ]),
-      UNIT_FRAME,
-      1,
-    );
-    // The curve spans x=[11,13], y=[21,22.5]. A sentinel zero in either axis
-    // would move both its hit center and dimensions dramatically.
-    expect(geometry.get("runtime-cubic")?.dimensions).toEqual({ height: 1.5, width: 2 });
-    expect(geometry.get("runtime-cubic")?.position.x).toBeCloseTo((0.5 + 12 / 16) * 640, 10);
-    expect(geometry.get("runtime-cubic")?.position.y).toBeCloseTo((0.5 - 21.75 / 9) * 360, 10);
-  });
-
-  it("streams the schema-maximum cubic segment count without spread-argument or retained-candidate growth", () => {
-    const segmentCount = 100_000;
-    const segments = Array.from({ length: segmentCount }, (_, index) => ({
-      control1: { x: index, y: 2 },
-      control2: { x: index + 1, y: 2 },
-      end: { x: index + 1, y: 2 },
-    }));
-    const geometry = projectStudioPreviewStaticInteractionGeometryV1(
-      sceneWith([
-        entityWith({
-          geometry: {
-            kind: "cubic-path",
-            path: { subpaths: [{ closed: false, segments, start: { x: 0, y: 2 } }] },
-          },
-          id: "large-runtime-path",
-        }),
-      ]),
-      UNIT_FRAME,
-      1,
-    );
-    expect(geometry.get("large-runtime-path")?.dimensions).toEqual({ height: 0, width: segmentCount });
-  });
-
-  it("keeps transformed line hit targets center-anchored only", () => {
-    const geometry = projectStudioPreviewStaticInteractionGeometryV1(
-      sceneWith([
-        entityWith({
-          geometry: { end: { x: -2, y: 2 }, kind: "line", start: { x: -4, y: 2 } },
-          id: "rotated-stroke",
-          transform: { m11: 0, m12: -1, m21: 1, m22: 0, tx: 0, ty: 0 },
-        }),
-      ]),
-      UNIT_FRAME,
-      1,
-    );
-    // Midpoint (-3, 2) rotates to (-2, -3); the stroke's extent stays the
-    // semantic placeholder's responsibility (dimensions stay null).
-    expect(geometry.get("rotated-stroke")?.position.x).toBeCloseTo((0.5 - 2 / 16) * 640, 10);
-    expect(geometry.get("rotated-stroke")?.position.y).toBeCloseTo((0.5 + 3 / 9) * 360, 10);
-    expect(geometry.get("rotated-stroke")?.dimensions).toBeNull();
-  });
-
-  const STATIC_CIRCLE = entityWith({
-    geometry: { center: { x: 0, y: 0 }, kind: "circle", radius: 1 },
-    id: "plain",
-  });
-
-  it.each([
-    [
-      "a parent-composed entity",
-      sceneWith([STATIC_CIRCLE, entityWith({ ...STATIC_CIRCLE, id: "child", parentId: "plain" })]),
-    ],
-    ["an animated camera", sceneWith([STATIC_CIRCLE], { animationChannels: [{ kind: "camera" }] })],
-    [
-      "an affine-transform channel",
-      sceneWith([STATIC_CIRCLE], { animationChannels: [{ entityId: "plain", kind: "affine-transform" }] }),
-    ],
-    [
-      "a motion-path channel",
-      sceneWith([STATIC_CIRCLE], { animationChannels: [{ entityId: "plain", kind: "motion-path" }] }),
-    ],
-    [
-      "a path-morph channel",
-      sceneWith([STATIC_CIRCLE], { animationChannels: [{ entityId: "plain", kind: "path-morph" }] }),
-    ],
-    [
-      "a path-trim channel",
-      sceneWith([STATIC_CIRCLE], { animationChannels: [{ entityId: "plain", kind: "path-trim" }] }),
-    ],
-  ] as const)(
-    "provides no projection when the Scene contains %s (the semantic geometry stays authoritative)",
-    (_shape, dynamicScene) => {
-      expect(projectStudioPreviewStaticInteractionGeometryV1(dynamicScene, UNIT_FRAME, 1).size).toBe(0);
+      expect(geometry.size).toBe(0);
     },
   );
 
   it.each([
-    ["before its lifetime starts", 0.25, false],
-    ["at its inclusive lifetime start", 0.5, true],
-    ["inside its lifetime", 1, true],
-    ["at its exclusive lifetime end", 1.5, false],
-  ] as const)("projects an entity %s: present=%s", (_when, sampleTime, present) => {
-    const bounded = sceneWith([
-      entityWith({
-        geometry: { center: { x: 0, y: 0 }, kind: "circle", radius: 1 },
-        id: "bounded",
-        lifetimes: [{ end: 1.5, start: 0.5 }],
-      }),
-    ]);
-    expect(projectStudioPreviewStaticInteractionGeometryV1(bounded, UNIT_FRAME, sampleTime).has("bounded")).toBe(
-      present,
+    ["missing metadata", undefined],
+    ["null metadata", null],
+    ["unavailable metadata", { status: "unavailable" }],
+  ] as const)("retains semantic fallback for %s", (_case, interaction) => {
+    expect(projectStudioPreviewInteractionGeometryV1(["runtime:entity"], interaction, FRAME).size).toBe(0);
+  });
+
+  it("rejects metadata whose ordered entry count does not match the requested IDs", () => {
+    const geometry = projectStudioPreviewInteractionGeometryV1(
+      ["runtime:first", "runtime:second"],
+      {
+        entries: [{ bounds: [-1, -1, 0, 0], status: "present" }],
+        space: "clip-v1",
+        status: "available",
+      },
+      FRAME,
     );
+
+    expect(geometry.size).toBe(0);
   });
 });

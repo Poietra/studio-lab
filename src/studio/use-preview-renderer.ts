@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { CaptureCanvasFrameEvidenceInputV1 } from "../engine/canvas-worker-client";
+import { MAX_CANVAS_INTERACTION_ENTITY_IDS } from "../engine/canvas-worker-protocol";
+import { sourceIdentityV1Schema } from "../engine/primitives";
 import {
   createCanvasPreviewRendererV1,
   type PreviewRendererHostStateV1,
@@ -9,7 +11,7 @@ import {
 import {
   detectStudioPreviewCapabilitiesV1,
   evaluateStudioPreviewEligibilityV1,
-  projectStudioPreviewStaticInteractionGeometryV1,
+  projectStudioPreviewInteractionGeometryV1,
   resolveStudioPreviewViewStateV1,
   type StudioPreviewHostBindingV1,
   type StudioPreviewInteractionGeometryV1,
@@ -30,8 +32,8 @@ export type StudioPreviewRendererViewV1 = Readonly<{
   attachCanvas: (canvas: HTMLCanvasElement | null) => void;
   epoch: number;
   /**
-   * Hit-target geometry projected from the verified snapshot, keyed by IR
-   * entity ID; non-null only while a correlated frame is presented.
+   * Hit-target geometry derived from that frame's prepared GPU vertices,
+   * keyed by verified runtime entity ID; non-null only while correlated.
    */
   interactionGeometry: StudioPreviewInteractionGeometryV1 | null;
   sourceLabel: string | null;
@@ -66,6 +68,25 @@ export function claimStudioPreviewCanvasV1(canvas: object): boolean {
   if (consumedCanvases.has(canvas)) return false;
   consumedCanvases.add(canvas);
   return true;
+}
+
+/**
+ * Selects only runtime IDs admitted by the server-verified source identity
+ * map. Its canonical insertion order is preserved; entries beyond the wire
+ * cap retain the semantic DOM hit target instead of being inferred from Scene
+ * order or geometry.
+ */
+export function studioPreviewInteractionEntityIdsV1(identity: StudioPreviewSourceRuntimeIdentityV1 | null) {
+  if (!identity) return [];
+  const entityIds: string[] = [];
+  const seen = new Set<string>();
+  for (const mapping of identity.values()) {
+    if (seen.has(mapping.entityId) || !sourceIdentityV1Schema.safeParse(mapping.entityId).success) continue;
+    seen.add(mapping.entityId);
+    entityIds.push(mapping.entityId);
+    if (entityIds.length === MAX_CANVAS_INTERACTION_ENTITY_IDS) break;
+  }
+  return entityIds;
 }
 
 type BoundHostStateV1 = Readonly<{
@@ -138,6 +159,10 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
   const workspaceKey = context ? studioPreviewWorkspaceKeyV1(context) : null;
   const currentMetadata = studioPreviewSnapshotMetadataForWorkspaceV1(metadata, { provider, workspaceKey });
   const snapshot = currentMetadata.phase === "ready" ? currentMetadata.snapshot : null;
+  const interactionEntityIds = useMemo(
+    () => studioPreviewInteractionEntityIdsV1(snapshot?.sourceRuntimeIdentity ?? null),
+    [snapshot],
+  );
   const snapshotError = currentMetadata.phase === "failed" ? currentMetadata.error : null;
 
   const attachCanvas = useCallback((canvas: HTMLCanvasElement | null) => setCanvasEl(canvas), []);
@@ -210,6 +235,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     setBound({ binding, host: nextHost, state: nextHost.state });
     void nextHost.install({
       canvas: canvasEl,
+      interactionEntityIds,
       revision: snapshot.correlation.engineRevisionHash,
       snapshot: snapshot.snapshot,
     });
@@ -220,7 +246,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
       setBound((current) => (current?.binding === binding ? null : current));
       setEpoch((current) => current + 1);
     };
-  }, [canvasEl, eligibility.eligible, evidenceAdapter, provider, workspaceKey, snapshot]);
+  }, [canvasEl, eligibility.eligible, evidenceAdapter, interactionEntityIds, provider, workspaceKey, snapshot]);
 
   const host = bound?.host ?? null;
   useEffect(() => {
@@ -295,15 +321,14 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     viewport,
   ]);
 
-  // Geometry is projected for the exact presented sample time and only under
-  // the static-Scene guarantee; outside it the map is empty and the semantic
-  // hit targets stay authoritative.
+  // Geometry comes from the exact prepared vertices of this correlated frame.
+  // Non-present or unavailable entries retain the semantic DOM hit targets.
   const interactionGeometry = useMemo(
     () =>
-      state.phase === "presented" && snapshot
-        ? projectStudioPreviewStaticInteractionGeometryV1(snapshot.snapshot.scene, frame, state.frame.sampleTime)
+      state.phase === "presented"
+        ? projectStudioPreviewInteractionGeometryV1(interactionEntityIds, state.frame.interaction, frame)
         : null,
-    [frame, snapshot, state],
+    [frame, interactionEntityIds, state],
   );
   if (!provider) return null;
   return {

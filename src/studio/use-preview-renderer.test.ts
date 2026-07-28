@@ -7,6 +7,7 @@ import {
 import {
   claimStudioPreviewCanvasV1,
   type StudioPreviewSnapshotMetadataStateV1,
+  studioPreviewInteractionEntityIdsV1,
   studioPreviewSnapshotMetadataForWorkspaceV1,
 } from "./use-preview-renderer";
 
@@ -19,6 +20,31 @@ describe("claimStudioPreviewCanvasV1", () => {
     // and requests a new canvas epoch instead of re-transferring the element.
     expect(claimStudioPreviewCanvasV1(canvas)).toBe(false);
     expect(claimStudioPreviewCanvasV1({})).toBe(true);
+  });
+});
+
+describe("studioPreviewInteractionEntityIdsV1", () => {
+  it("preserves verified identity order and bounds the request without inferring Scene entities", () => {
+    const identity = new Map(
+      Array.from({ length: 130 }, (_, index) => [
+        `source_${index}`,
+        { bindingId: `binding:${index}`, entityId: `runtime#${index}`, sourceName: `source_${index}` },
+      ]),
+    );
+    const entityIds = studioPreviewInteractionEntityIdsV1(identity);
+    expect(entityIds).toHaveLength(128);
+    expect(entityIds.slice(0, 2)).toEqual(["runtime#0", "runtime#1"]);
+    expect(entityIds.at(-1)).toBe("runtime#127");
+    expect(
+      studioPreviewInteractionEntityIdsV1(
+        new Map([
+          ["one", { bindingId: "binding:1", entityId: "runtime#1", sourceName: "one" }],
+          ["duplicate", { bindingId: "binding:2", entityId: "runtime#1", sourceName: "duplicate" }],
+          ["invalid", { bindingId: "binding:3", entityId: " runtime ", sourceName: "invalid" }],
+        ]),
+      ),
+    ).toEqual(["runtime#1"]);
+    expect(studioPreviewInteractionEntityIdsV1(null)).toEqual([]);
   });
 });
 
