@@ -80,6 +80,25 @@ jobs:
       - name: Run boundary and integration tests
         run: pnpm test:integration
 
+  storage-e2e:
+    name: Durable PostgreSQL and MinIO storage E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Run durable storage E2E
+        run: pnpm test:storage:e2e
+
   engine-rust:
     name: Poietra Engine Rust core
     runs-on: ubuntu-latest

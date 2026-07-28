@@ -52,28 +52,91 @@ async function retry(label, operation, attempts = 150) {
   throw new Error(`${label} did not become ready.`, { cause: lastError });
 }
 
-async function runTestFile(environment, testFile) {
+const STORAGE_SUITES = [
+  {
+    file: "server/storage/workspace-source-storage.real.test.ts",
+    title: "survives SIGKILL, resolves cross-process CAS exactly once, isolates tenants, and collects orphans",
+  },
+  {
+    file: "server/storage/render-session-storage.real.test.ts",
+    title: "survives SIGKILL and fences recovery, source actions, CAS, and tenant routing",
+  },
+  {
+    file: "server/storage/snapshot-publication-storage.real.test.ts",
+    title: "publishes across processes, isolates tenants, rejects stale source CAS, and deletes an upload orphan",
+  },
+];
+
+function writeFailureOutput(stdout, stderr) {
+  if (stdout.length > 0) process.stderr.write(`${stdout}\n`);
+  if (stderr.length > 0) process.stderr.write(`${stderr}\n`);
+}
+
+async function runTestFile(environment, suite) {
   return new Promise((resolve, reject) => {
-    testProcess = spawn("pnpm", ["exec", "vitest", "run", testFile, "--reporter=verbose"], {
+    const child = spawn("pnpm", ["exec", "vitest", "run", suite.file, "-t", suite.title, "--reporter=json"], {
       env: { ...process.env, ...environment },
-      stdio: "inherit",
+      stdio: ["ignore", "pipe", "pipe"],
     });
-    testProcess.once("error", reject);
-    testProcess.once("exit", (code, signal) => {
-      testProcess = null;
-      if (code === 0) resolve();
-      else reject(new Error(`Storage E2E failed with ${code ?? signal}.`));
+    testProcess = child;
+    let stdout = "";
+    let stderr = "";
+    let spawnError = null;
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.once("error", (error) => {
+      spawnError = error;
+    });
+    child.once("close", (code, signal) => {
+      if (testProcess === child) testProcess = null;
+      if (spawnError) {
+        reject(new Error(`Storage E2E could not start: ${suite.file}.`, { cause: spawnError }));
+        return;
+      }
+      if (code !== 0) {
+        writeFailureOutput(stdout, stderr);
+        reject(new Error(`Storage E2E failed with ${code ?? signal}: ${suite.file}.`));
+        return;
+      }
+      let report;
+      try {
+        report = JSON.parse(stdout);
+      } catch (error) {
+        writeFailureOutput(stdout, stderr);
+        reject(new Error(`Storage E2E returned an invalid Vitest report: ${suite.file}.`, { cause: error }));
+        return;
+      }
+      const assertions = Array.isArray(report.testResults)
+        ? report.testResults.flatMap((result) =>
+            Array.isArray(result?.assertionResults) ? result.assertionResults : [],
+          )
+        : [];
+      const requiredTestPassed = assertions.some(
+        (assertion) => assertion?.title === suite.title && assertion?.status === "passed",
+      );
+      if (
+        report.success !== true ||
+        report.numPassedTests !== 1 ||
+        report.numFailedTests !== 0 ||
+        !requiredTestPassed
+      ) {
+        writeFailureOutput(stdout, stderr);
+        reject(new Error(`Storage E2E must execute its required parent test: ${suite.file}.`));
+        return;
+      }
+      process.stdout.write(`[storage-e2e] passed ${suite.file}\n`);
+      resolve();
     });
   });
 }
 
 async function runTests(environment) {
-  for (const testFile of [
-    "server/storage/workspace-source-storage.real.test.ts",
-    "server/storage/render-session-storage.real.test.ts",
-    "server/storage/snapshot-publication-storage.real.test.ts",
-  ]) {
-    await runTestFile(environment, testFile);
+  for (const suite of STORAGE_SUITES) {
+    await runTestFile(environment, suite);
   }
 }
 
@@ -160,5 +223,5 @@ try {
   }
 }
 
-if (failure) throw failure;
 if (interruptedSignal) process.kill(process.pid, interruptedSignal);
+if (failure) throw failure;
