@@ -391,7 +391,7 @@ class Independent(Scene):
   });
 
   it("cancels an active render and permits discard", async () => {
-    const { manager } = await fixture();
+    const { manager } = await fixture({ command: [process.execPath, fakeRenderer, "--slow-render"] });
     const started = await manager.start(request());
     const cancelled = await manager.cancel(started.id);
     expect(cancelled.status).toBe("cancelled");
@@ -400,7 +400,10 @@ class Independent(Scene):
   });
 
   it("bounds concurrent renderer processes", async () => {
-    const { manager } = await fixture({ maxConcurrentRenders: 1 });
+    const { manager } = await fixture({
+      command: [process.execPath, fakeRenderer, "--slow-render"],
+      maxConcurrentRenders: 1,
+    });
     const started = await manager.start(request());
 
     await expect(manager.start(request())).rejects.toThrow(/at most 1 concurrent/i);
@@ -422,7 +425,11 @@ class Independent(Scene):
   });
 
   it("atomically reserves retained-session capacity across concurrent starts", async () => {
-    const { manager } = await fixture({ maxConcurrentRenders: 2, maxRetainedSessions: 1 });
+    const { manager } = await fixture({
+      command: [process.execPath, fakeRenderer, "--slow-render"],
+      maxConcurrentRenders: 2,
+      maxRetainedSessions: 1,
+    });
 
     const starts = await Promise.allSettled([manager.start(request()), manager.start(request())]);
 
@@ -442,7 +449,7 @@ class Independent(Scene):
     temporaryRoots.push(markerRoot);
     const versionMarker = join(markerRoot, "started");
     const { manager } = await fixture({
-      command: [process.execPath, fakeRenderer, "--version-marker", versionMarker, "--slow-version"],
+      command: [process.execPath, fakeRenderer, "--version-marker", versionMarker, "--slow-version", "--slow-render"],
       maxRetainedSessions: 1,
     });
     const records: StructuredLogRecord[] = [];
@@ -494,7 +501,7 @@ class Independent(Scene):
     temporaryRoots.push(markerRoot);
     const completionMarker = join(markerRoot, "render-completed");
     const { manager } = await fixture({
-      command: [process.execPath, fakeRenderer, "--completion-marker", completionMarker],
+      command: [process.execPath, fakeRenderer, "--completion-marker", completionMarker, "--slow-render"],
       maxRetainedSessions: 1,
     });
     await manager.workspace();
@@ -535,7 +542,6 @@ class Independent(Scene):
       );
       expect(responseEndCalled).toBe(true);
 
-      await new Promise((resolve) => setTimeout(resolve, 120));
       await expect(readFile(completionMarker)).rejects.toThrow();
       const replacement = await manager.start(request());
       await manager.cancel(replacement.id);
@@ -550,7 +556,7 @@ class Independent(Scene):
     temporaryRoots.push(markerRoot);
     const completionMarker = join(markerRoot, "completed");
     const { manager } = await fixture({
-      command: [process.execPath, fakeRenderer, "--completion-marker", completionMarker],
+      command: [process.execPath, fakeRenderer, "--completion-marker", completionMarker, "--slow-render"],
       maxRetainedSessions: 1,
     });
     const started = await manager.start(request());
@@ -558,7 +564,6 @@ class Independent(Scene):
     await manager.abandonStart(started.id);
 
     expect(() => manager.view(started.id)).toThrow(/session not found/i);
-    await new Promise((resolve) => setTimeout(resolve, 120));
     await expect(readFile(completionMarker)).rejects.toThrow();
     const replacement = await manager.start(request());
     await manager.cancel(replacement.id);
@@ -566,13 +571,16 @@ class Independent(Scene):
   });
 
   it("atomically abandons active and ready stale renders with request correlation", async () => {
+    const { manager: activeManager } = await fixture({
+      command: [process.execPath, fakeRenderer, "--slow-render"],
+    });
+    const active = await activeManager.start(request());
+
+    await expect(activeManager.abandon(active.id, "wrong-render-request")).rejects.toThrow(/no longer matches/i);
+    await expect(activeManager.abandon(active.id, active.renderRequestId)).resolves.toEqual({ abandoned: true });
+    expect(() => activeManager.view(active.id)).toThrow(/session not found/i);
+
     const { manager } = await fixture();
-    const active = await manager.start(request());
-
-    await expect(manager.abandon(active.id, "wrong-render-request")).rejects.toThrow(/no longer matches/i);
-    await expect(manager.abandon(active.id, active.renderRequestId)).resolves.toEqual({ abandoned: true });
-    expect(() => manager.view(active.id)).toThrow(/session not found/i);
-
     const ready = await manager.start(request());
     await waitForTerminal(manager, ready.id);
     await expect(manager.abandon(ready.id, ready.renderRequestId)).resolves.toEqual({ abandoned: true });
@@ -592,7 +600,10 @@ class Independent(Scene):
   });
 
   it("fails a renderer that exceeds its execution deadline", async () => {
-    const { manager } = await fixture({ renderTimeoutMs: 10 });
+    const { manager } = await fixture({
+      command: [process.execPath, fakeRenderer, "--slow-render"],
+      renderTimeoutMs: 10,
+    });
     const started = await manager.start(request());
     const rendered = await waitForTerminal(manager, started.id);
 

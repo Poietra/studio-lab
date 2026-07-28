@@ -179,18 +179,15 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     const root = await projectRoot();
     const orphanPidFile = join(root, "orphan-flood.pid");
     // The leader exits after emitting the descendant, which then floods the
-    // inherited stdout. The overflow guard stops accumulating and the run
-    // settles via the pipe-close grace; the flooding descendant is the #80
-    // residual, reaped by the test. Keep the production pipe-close grace for
-    // this scheduling-sensitive case: the general 150ms test grace can expire
-    // before the newly spawned descendant runs on a contended host.
+    // inherited stdout. The fixture leader waits until the descendant's first
+    // stdout write completes before it exits, so an idle pipe holder cannot
+    // satisfy this regression. The remaining writes happen after leader exit;
+    // the flooding descendant remains the #80 residual and is reaped here.
     const runner = createRunner(root, producerCommand("--mode=orphan-flood", `--orphan-pid-file=${orphanPidFile}`), {
-      producerProcessTimings: { killGraceMs: TEST_PRODUCER_PROCESS_TIMINGS.killGraceMs },
-      timeoutMs: 5_000,
+      producerProcessTimings: { closeGraceMs: 500, killGraceMs: TEST_PRODUCER_PROCESS_TIMINGS.killGraceMs },
+      timeoutMs: 2_000,
     });
-    // The descendant is bounded, but its terminal overflow result arrives only
-    // after the runner deadline; deadline authority therefore wins.
-    expectFailure(await runner.run(runRequest()), "producer-timeout");
+    expectFailure(await runner.run(runRequest()), "producer-output-overflow");
     await expectNoSnapshot(runner);
     const orphanPid = Number(await readFile(orphanPidFile, "utf8"));
     reapAfterTest(orphanPid);

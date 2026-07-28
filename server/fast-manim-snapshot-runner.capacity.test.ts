@@ -1,9 +1,8 @@
 import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   FastManimSnapshotAdmissionController,
@@ -16,6 +15,7 @@ import {
   expectNoSnapshot,
   installFastManimSnapshotRunnerFixture,
   producerCommand,
+  producerGate,
   runRequest,
   sceneSource,
   supportsVerifiedRead,
@@ -114,8 +114,12 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     const first = await runner.run(runRequest());
     if (first.status !== "verified") throw new Error("Expected the first publish to verify.");
     expect(first.revision).toBe(1);
-    await delay(250);
-    await expectNoSnapshot(runner);
+    const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse(first.publishedAt) + 101);
+    try {
+      await expectNoSnapshot(runner);
+    } finally {
+      now.mockRestore();
+    }
     const second = await runner.run(runRequest({ requestId: "snapshot-request-2" }));
     if (second.status !== "verified") throw new Error("Expected the republish to verify.");
     expect(second.revision).toBe(2);
@@ -125,19 +129,21 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     const controller = new FastManimSnapshotAdmissionController({ maxConcurrent: 1 });
     const rootA = await projectRoot();
     const rootB = await projectRoot();
-    // Wide margins: under CI load the short waits below can fire late, so the
-    // blocking producers sleep far longer than any expected scheduling jitter.
-    const runnerA = createRunner(rootA, producerCommand("--delay-ms=2500"), { admissionController: controller });
+    const firstGate = await producerGate(rootA, "capacity-first");
+    const runnerA = createRunner(rootA, producerCommand(...firstGate.arguments), {
+      admissionController: controller,
+    });
     const blockedPid = join(rootB, "blocked.pid");
     const runnerB = createRunner(rootB, producerCommand(`--pid-file=${blockedPid}`), {
       admissionController: controller,
     });
     const running = runnerA.run(runRequest());
-    await delay(150);
+    await firstGate.waitFor(running);
     expect(controller.activeCount).toBe(1);
     // Above the shared cap: deterministic server-owned 429 with no spawn.
     await expect(runnerB.run(runRequest({ requestId: "snapshot-request-2" }))).rejects.toMatchObject({ status: 429 });
     await expect(readFile(blockedPid, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await firstGate.release();
     expect((await running).status).toBe("verified");
     expect(controller.activeCount).toBe(0);
     // Capacity returns after completion.
@@ -145,17 +151,23 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
 
     // Capacity returns after an abort…
     const abortController = new AbortController();
-    const runnerC = createRunner(rootA, producerCommand("--delay-ms=5000"), { admissionController: controller });
+    const abortGate = await producerGate(rootA, "capacity-abort");
+    const runnerC = createRunner(rootA, producerCommand(...abortGate.arguments), {
+      admissionController: controller,
+    });
     const aborted = runnerC.run(runRequest({ requestId: "snapshot-request-4" }), abortController.signal);
-    await delay(150);
+    await abortGate.waitFor(aborted);
     abortController.abort();
     await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
     expect(controller.activeCount).toBe(0);
 
     // …and after close.
-    const runnerD = createRunner(rootA, producerCommand("--delay-ms=5000"), { admissionController: controller });
+    const closeGate = await producerGate(rootA, "capacity-close");
+    const runnerD = createRunner(rootA, producerCommand(...closeGate.arguments), {
+      admissionController: controller,
+    });
     const closing = runnerD.run(runRequest({ requestId: "snapshot-request-5" }));
-    await delay(150);
+    await closeGate.waitFor(closing);
     await runnerD.close();
     await expect(closing).rejects.toMatchObject({ name: "AbortError" });
     expect(controller.activeCount).toBe(0);
@@ -215,23 +227,26 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
   it("serializes runs per Scene, caps concurrency, and reports busy state", async () => {
     const root = await projectRoot();
     await writeFile(join(root, "other.py"), sceneSource, "utf8");
-    const runner = createRunner(root, producerCommand("--delay-ms=800"), { maxConcurrentRuns: 1 });
+    const gate = await producerGate(root, "serialized-run");
+    const runner = createRunner(root, producerCommand(...gate.arguments), { maxConcurrentRuns: 1 });
     const running = runner.run(runRequest());
-    await delay(100);
+    await gate.waitFor(running);
     expect(runner.busy).toBe(true);
     await expect(runner.run(runRequest({ requestId: "snapshot-request-2" }))).rejects.toMatchObject({ status: 409 });
     await expect(
       runner.run(runRequest({ requestId: "snapshot-request-3", sourcePath: "other.py" })),
     ).rejects.toMatchObject({ status: 429 });
+    await gate.release();
     expect((await running).status).toBe("verified");
     expect(runner.busy).toBe(false);
   });
 
   it("aborts in-flight runs on close and never publishes after close", async () => {
     const root = await projectRoot();
-    const runner = createRunner(root, producerCommand("--delay-ms=1500"));
+    const gate = await producerGate(root, "close-run");
+    const runner = createRunner(root, producerCommand(...gate.arguments));
     const running = runner.run(runRequest());
-    await delay(200);
+    await gate.waitFor(running);
     await runner.close();
     await expect(running).rejects.toMatchObject({ name: "AbortError" });
     // A closed runner refuses lookups outright instead of reporting 404.

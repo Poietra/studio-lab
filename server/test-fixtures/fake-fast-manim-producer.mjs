@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { open, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 function argumentValue(name) {
@@ -82,9 +82,6 @@ const chunks = [];
 for await (const chunk of process.stdin) chunks.push(chunk);
 const requestJson = Buffer.concat(chunks).toString("utf8");
 
-if (mode === "hang") {
-  await new Promise(() => setInterval(() => undefined, 1_000));
-}
 if (mode === "exit-2") {
   // Simulates workspace Python printing secrets, host paths, and tracebacks:
   // none of these bytes may ever appear in server logs or HTTP responses.
@@ -158,6 +155,20 @@ const recomputedSceneId = `scene:${createHash("sha256")
 if (recomputedSceneId !== request.sceneId) {
   process.stderr.write("Producer request sceneId does not match its canonical derivation.\n");
   process.exit(4);
+}
+const releaseFifo = argumentValue("release-fifo");
+const releaseHandle = releaseFifo ? await open(releaseFifo, "r") : null;
+const readyFifo = argumentValue("ready-fifo");
+if (readyFifo) await writeFile(readyFifo, "ready", "utf8");
+if (releaseHandle) {
+  try {
+    await releaseHandle.read(Buffer.alloc(16), 0, 16, null);
+  } finally {
+    await releaseHandle.close();
+  }
+}
+if (mode === "hang") {
+  await new Promise(() => setInterval(() => undefined, 1_000));
 }
 const runtimeConfigHash =
   mode === "config-drift"
@@ -432,7 +443,11 @@ if (orphanModes.has(mode)) {
            }
            setInterval(() => undefined, 1000);
          };
-         write();`
+         process.stdout.write(filler, () => {
+           sent = 1;
+           process.once("disconnect", () => setImmediate(write));
+           process.send?.("stdout-started");
+         });`
       : // A same-group descendant that ignores catchable termination signals
         // and does not exit on its own before the self-expiry backstop.
         `${selfExpiry} process.on("SIGTERM", () => undefined); process.on("SIGHUP", () => undefined); setInterval(() => undefined, 1000);`;
@@ -443,11 +458,45 @@ if (orphanModes.has(mode)) {
   // in the leader's group with inherited stdio.
   const orphan = spawn(process.execPath, ["-e", orphanBody], {
     detached: mode === "orphan-setsid",
-    stdio: mode === "orphan-setsid" ? "ignore" : "inherit",
+    stdio:
+      mode === "orphan-setsid"
+        ? "ignore"
+        : mode === "orphan-flood"
+          ? ["inherit", "inherit", "inherit", "ipc"]
+          : "inherit",
   });
   // The parent records the descendant PID synchronously so the test never
   // races the detached child's own startup before reading the file.
   if (orphanPidFile) await writeFile(orphanPidFile, String(orphan.pid), "utf8");
+  if (mode === "orphan-flood") {
+    await new Promise((resolve, reject) => {
+      const cleanup = () => {
+        orphan.off("disconnect", onDisconnect);
+        orphan.off("error", onError);
+        orphan.off("exit", onExit);
+        orphan.off("message", onMessage);
+      };
+      const fail = (error) => {
+        cleanup();
+        reject(error);
+      };
+      const onDisconnect = () => fail(new Error("Flood descendant disconnected before writing stdout."));
+      const onError = (error) => {
+        fail(error);
+      };
+      const onExit = (code, signal) =>
+        fail(new Error(`Flood descendant exited before writing stdout (code=${code}, signal=${signal}).`));
+      const onMessage = (message) => {
+        if (message !== "stdout-started") return;
+        cleanup();
+        resolve();
+      };
+      orphan.once("disconnect", onDisconnect);
+      orphan.once("error", onError);
+      orphan.once("exit", onExit);
+      orphan.on("message", onMessage);
+    });
+  }
   if (mode === "orphan-parent-hang") {
     // The leader itself ignores SIGTERM and never exits on its own, so it is
     // observably alive when the +2s SIGKILL lands on the whole group: that
