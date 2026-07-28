@@ -1,13 +1,27 @@
 # Durable workspace/source storage
 
-Status: production composition available for the workspace/source slice; durable snapshots and render sessions remain #134 and #135.
+Status: production composition is available for durable workspace/source and
+render-session storage. Durable snapshot publication remains #134, verified
+video/thumbnail publication remains #136, and the real isolated Manim executor
+adapter remains #117.
 
 The built `manim-production-server.mjs` entry exports
 `createDurablePostgresS3ProductionRuntimeV1`. The factory applies the embedded,
-checksummed migration with a one-connection DDL pool, creates the bounded runtime
-PostgreSQL pool and private S3 store, initializes the tenant, starts one explicit
-tenant GC worker, and returns the adapter consumed by
+checksummed migrations with a one-connection DDL pool, creates bounded workspace
+and render-session PostgreSQL repositories plus the private S3 store, initializes
+the tenant, starts one render queue consumer and one explicit tenant GC worker,
+and returns the adapter consumed by
 `startProductionManimServer`.
+
+Render sessions store immutable original/patched source receipts, a DB-clock
+execution deadline, monotonically increasing lease fences, and an idempotent
+Commit/Undo action ledger. The worker uses the stable `(tenantId, sessionId)` job
+identity to submit or reattach through the injected executor. PostgreSQL rejects
+stale lease publication, expires timed-out work even while the executor is
+unavailable, and preserves terminal interrupted sessions for inspection. The
+production readiness attestation is false unless the render repository and
+executor both pass their probes. #117 must supply the real sandbox-backed
+executor; an in-process host-spawn fallback is not part of this composition.
 
 The migration and runtime database configurations are deliberately separate so
 the runtime credential does not need DDL authority. Both require an explicit TCP
@@ -45,10 +59,11 @@ versions at the front of a large bucket cannot starve later orphan cleanup. It
 collects only S3 versions that were never published, such as uploads
 left by a failed transaction or losing CAS. Deleted version receipts remain as
 durable tombstones so a delayed publisher cannot resurrect a missing object.
-Previously published blobs are retained until #135 supplies history/reference
-semantics and an `orphaned_at` retention boundary; object creation time is not a
-safe substitute for detachment time.
+Render sessions now retain explicit project/source references, so their original
+and patched receipts cannot be collected while the session is retained. Terminal
+session retention, reference detachment, and the DB-clock `orphaned_at` boundary
+remain #144; object creation time is not a safe substitute for detachment time.
 
-The composition remains intentionally unable to render or publish Scene snapshots.
-Those routes fail explicitly until #134/#135 connect durable publications,
-sessions, leases, and the external sandbox executor.
+The composition intentionally cannot publish Scene snapshots or browser video
+assets yet. Those routes fail explicitly until #134/#136 add durable artifact
+publication and #117 supplies the isolated execution backend.

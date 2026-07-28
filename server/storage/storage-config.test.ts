@@ -3,7 +3,13 @@ import { Pool } from "pg";
 import { describe, expect, it, vi } from "vitest";
 
 import { createDurablePostgresS3ProductionRuntimeV1 } from "../durable-manim-production-composition";
-import { WORKSPACE_SOURCE_MIGRATION_V1_SOURCE, workspaceSourceMigrationChecksumV1 } from "./postgres/migrate";
+import {
+  RENDER_SESSION_MIGRATION_V2_SOURCE,
+  renderSessionMigrationChecksumV2,
+  WORKSPACE_SOURCE_MIGRATION_V1_SOURCE,
+  workspaceSourceMigrationChecksumV1,
+} from "./postgres/migrate";
+import { RENDER_SESSION_MIGRATION_V2_CHECKSUM } from "./postgres/postgres-render-session-repository";
 import {
   PostgresWorkspaceSourceRepositoryV1,
   WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -14,6 +20,9 @@ describe("durable storage configuration", () => {
   it("bundles the exact checksummed workspace/source migration", () => {
     expect(workspaceSourceMigrationChecksumV1(WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toBe(
       WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
+    );
+    expect(renderSessionMigrationChecksumV2(RENDER_SESSION_MIGRATION_V2_SOURCE)).toBe(
+      RENDER_SESSION_MIGRATION_V2_CHECKSUM,
     );
   });
 
@@ -60,12 +69,17 @@ describe("durable storage configuration", () => {
         migrationPoolConfig: { connectionString: "postgresql://database.example/poietra" },
         runtimePoolConfig: { host: "database.example", ssl: { rejectUnauthorized: false } },
       },
-      execution: { ready: async () => true },
+      execution: {
+        close: async () => undefined,
+        ready: async () => true,
+        submitOrReattach: async () => ({ code: "interrupted", kind: "failed", logTail: "" }),
+      },
       namespace: "production-primary",
       objectStorage: {
         bucket: "poietra-private-sources",
         clientConfig: { ignoreConfiguredEndpointUrls: true, region: "us-east-1" },
       },
+      renderWorker: { onFailure: () => undefined },
       sourceGc: {
         batchSize: 64,
         graceMs: 60_000,
