@@ -5,7 +5,9 @@ import workspaceSourceSqlV1 from "./migrations/0001_workspace_source.sql?raw";
 import renderSessionSqlV2 from "./migrations/0002_render_sessions.sql?raw";
 import snapshotPublicationSqlV3 from "./migrations/0003_snapshot_publications.sql?raw";
 import renderArtifactSqlV4 from "./migrations/0004_render_artifacts.sql?raw";
+import projectPngSqlV5 from "./migrations/0005_project_png.sql?raw";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
+import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
 import { RENDER_SESSION_MIGRATION_V2_CHECKSUM } from "./postgres-render-session-repository";
 import { SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM } from "./postgres-snapshot-publication-repository";
 import { WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM } from "./postgres-workspace-source-repository";
@@ -39,6 +41,7 @@ export const WORKSPACE_SOURCE_MIGRATION_V1_SOURCE = workspaceSourceSqlV1;
 export const RENDER_SESSION_MIGRATION_V2_SOURCE = renderSessionSqlV2;
 export const SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE = snapshotPublicationSqlV3;
 export const RENDER_ARTIFACT_MIGRATION_V4_SOURCE = renderArtifactSqlV4;
+export const PROJECT_PNG_MIGRATION_V5_SOURCE = projectPngSqlV5;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -78,11 +81,22 @@ const renderArtifactMigrationV4: DurableStorageMigration<4> = Object.freeze({
   version: 4,
 });
 
+const projectPngMigrationV5: DurableStorageMigration<5> = Object.freeze({
+  checksum: PROJECT_PNG_MIGRATION_V5_CHECKSUM,
+  checksumMismatch: "The project image.png migration checksum is invalid.",
+  installedMismatch: "The installed project image.png schema does not match migration v5.",
+  missingPrerequisite: "Project image.png migration v5 requires durable storage migrations v1 through v4.",
+  prerequisiteMismatch: "Project image.png migration v5 requires exact durable storage migrations v1 through v4.",
+  source: PROJECT_PNG_MIGRATION_V5_SOURCE,
+  version: 5,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
   snapshotPublicationMigrationV3,
   renderArtifactMigrationV4,
+  projectPngMigrationV5,
 ]);
 
 function validateSource(migration: DurableStorageMigration) {
@@ -171,6 +185,15 @@ export function applyRenderArtifactMigrationV4(pool: Pool, source: string) {
     workspaceSourceMigrationV1,
     renderSessionMigrationV2,
     snapshotPublicationMigrationV3,
+  ]);
+}
+
+export function applyProjectPngMigrationV5(pool: Pool, source: string) {
+  return applyMigration(pool, { ...projectPngMigrationV5, source }, [
+    workspaceSourceMigrationV1,
+    renderSessionMigrationV2,
+    snapshotPublicationMigrationV3,
+    renderArtifactMigrationV4,
   ]);
 }
 

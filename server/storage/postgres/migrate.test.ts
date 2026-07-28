@@ -5,10 +5,12 @@ import {
   applyBundledDurableStorageMigrations,
   type applyBundledDurableStorageMigrationsV2,
   type applyBundledWorkspaceSourceMigrationV1,
+  applyProjectPngMigrationV5,
   applyRenderArtifactMigrationV4,
   applyRenderSessionMigrationV2,
   applySnapshotPublicationMigrationV3,
   applyWorkspaceSourceMigrationV1,
+  PROJECT_PNG_MIGRATION_V5_SOURCE,
   RENDER_ARTIFACT_MIGRATION_V4_SOURCE,
   RENDER_SESSION_MIGRATION_V2_SOURCE,
   SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE,
@@ -56,15 +58,16 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 4 });
-    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4]);
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 5 });
+    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 4 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 5 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_ARTIFACT_MIGRATION_V4_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(8);
+    expect(db.queries.filter(({ text }) => text === PROJECT_PNG_MIGRATION_V5_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(10);
   });
 
   it("rejects a missing prerequisite under the same advisory lock", async () => {
@@ -96,6 +99,14 @@ describe("durable storage migrations", () => {
     const db = database();
     await expect(applyRenderArtifactMigrationV4(db.pool, RENDER_ARTIFACT_MIGRATION_V4_SOURCE)).rejects.toThrow(
       /requires durable storage migrations v1 through v3/i,
+    );
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("requires all four durable-storage prerequisites before applying project image.png v5", async () => {
+    const db = database();
+    await expect(applyProjectPngMigrationV5(db.pool, PROJECT_PNG_MIGRATION_V5_SOURCE)).rejects.toThrow(
+      /requires durable storage migrations v1 through v4/i,
     );
     expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
   });
