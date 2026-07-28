@@ -3,12 +3,18 @@ import { Pool, type PoolConfig } from "pg";
 
 import { DurableFastManimSnapshotServiceV1 } from "./durable-fast-manim-snapshot-service";
 import { DurableManimRenderServiceV1 } from "./durable-manim-render-service";
-import { type DurableManimRenderExecutorV1, DurableManimRenderWorkerV1 } from "./durable-manim-render-worker";
+import { DurableManimRenderWorkerV1 } from "./durable-manim-render-worker";
 import { createDurableManimRuntimeV1, createDurableProductionManimRuntimeAdapterV1 } from "./durable-manim-runtime";
 import {
   type FastManimProductionSnapshotRunnerFactoryOptionsV1,
   FastManimProductionSnapshotRunnerFactoryV1,
 } from "./fast-manim-production-snapshot-runner-factory";
+import type { ManimRenderProductionSandboxClientOptionsV1 } from "./manim-render-production-sandbox-client";
+import { MANIM_RENDER_CANONICAL_SCENE_FRAME_V1 } from "./manim-render-sandbox-contract";
+import {
+  createProductionDurableManimRenderExecutorV1,
+  type ProductionDurableManimRenderExecutorV1,
+} from "./production-durable-manim-render-executor";
 import { applyBundledDurableStorageMigrations } from "./storage/postgres/migrate";
 import { PostgresRenderSessionRepositoryV1 } from "./storage/postgres/postgres-render-session-repository";
 import { PostgresSnapshotPublicationRepositoryV1 } from "./storage/postgres/postgres-snapshot-publication-repository";
@@ -30,7 +36,6 @@ export type DurablePostgresS3ProductionRuntimeOptionsV1 = Readonly<{
     runtimePoolConfig: PoolConfig;
     statementTimeoutMs?: number;
   }>;
-  execution: DurableManimRenderExecutorV1;
   frame?: Readonly<{ height: number; width: number }>;
   namespace: string;
   objectStorage: Readonly<{
@@ -45,6 +50,7 @@ export type DurablePostgresS3ProductionRuntimeOptionsV1 = Readonly<{
     pollIntervalMs?: number;
     workerId?: string;
   }>;
+  renderSandbox: ManimRenderProductionSandboxClientOptionsV1;
   snapshot: Readonly<{
     artifactGc: Readonly<{
       batchSize: number;
@@ -144,6 +150,13 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   signal?: AbortSignal,
 ) {
   signal?.throwIfAborted();
+  const frame = options.frame ?? MANIM_RENDER_CANONICAL_SCENE_FRAME_V1;
+  if (
+    frame.height !== MANIM_RENDER_CANONICAL_SCENE_FRAME_V1.height ||
+    frame.width !== MANIM_RENDER_CANONICAL_SCENE_FRAME_V1.width
+  ) {
+    throw new TypeError("Production rendering currently requires the canonical 16:9 scene frame.");
+  }
   assertProductionPoolConfig(options.database.migrationPoolConfig, "Migration");
   assertProductionPoolConfig(options.database.runtimePoolConfig, "Runtime");
   await migrate(options.database);
@@ -178,19 +191,26 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   } catch (error) {
     return cleanupAndThrow(
       error,
-      [options.execution, artifacts, blobs, objectTransport, snapshotRepository, renderRepository, repository],
+      [artifacts, blobs, objectTransport, snapshotRepository, renderRepository, repository],
       "Production storage composition and cleanup failed.",
     );
   }
 
   let renderWorker: DurableManimRenderWorkerV1 | undefined;
+  let renderExecutor: ProductionDurableManimRenderExecutorV1 | undefined;
   let renders: DurableManimRenderServiceV1 | undefined;
   let snapshotFactory: FastManimProductionSnapshotRunnerFactoryV1 | undefined;
   let publisher: SnapshotArtifactPublisherV1 | undefined;
   let snapshots: DurableFastManimSnapshotServiceV1 | undefined;
   try {
+    renderExecutor = await createProductionDurableManimRenderExecutorV1({
+      blobs,
+      client: options.renderSandbox,
+      frame,
+      tenantId: options.tenantId,
+    });
     renderWorker = new DurableManimRenderWorkerV1({
-      executor: options.execution,
+      executor: renderExecutor,
       ...(options.renderWorker.leaseDurationMs === undefined
         ? {}
         : { leaseDurationMs: options.renderWorker.leaseDurationMs }),
@@ -211,14 +231,14 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
         ? {}
         : { executionTimeoutMs: options.renderWorker.executionTimeoutMs }),
       execution: renderWorker,
-      ...(options.frame ? { frame: options.frame } : {}),
+      frame,
       repository: renderRepository,
       sourceRepository: repository,
       tenantId: options.tenantId,
     });
     snapshotFactory = new FastManimProductionSnapshotRunnerFactoryV1({
       client: options.snapshot.sandbox,
-      frame: options.frame ?? { height: 8, width: 14.222 },
+      frame,
       ...(options.snapshot.snapshotVersion === undefined ? {} : { snapshotVersion: options.snapshot.snapshotVersion }),
       tenantId: options.tenantId,
       ...(options.snapshot.timeoutMs === undefined ? {} : { timeoutMs: options.snapshot.timeoutMs }),
@@ -235,7 +255,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
     return cleanupAndThrow(
       error,
       [
-        renderWorker ?? options.execution,
+        renderWorker ?? renderExecutor,
         renders ?? renderRepository,
         snapshots ?? publisher ?? artifacts,
         ...(snapshots ? [] : [snapshotFactory]),
@@ -253,7 +273,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       {
         blobs,
         execution: renderWorker,
-        frame: options.frame,
+        frame,
         namespace: options.namespace,
         renders,
         repository,

@@ -8,9 +8,23 @@ import { fileURLToPath } from "node:url";
 const commit = "ac143dc46ebe314095ae7864a32efa289a0afe96";
 const tree = "b86e2ec81f257cae20669e3c5c33080facfbd610";
 const archiveSha256 = "46f66b6698650988c18327732d1d3c30cccd53b38de91e1059c61187d92c2b61";
-const tag = "poietra-fast-manim-gated:ac143dc";
+const target = process.argv[2] ?? "snapshot";
+const profiles = {
+  render: {
+    assetDirectory: "manim-render-gated-oci",
+    entrypoint: "render-entrypoint.py",
+    tag: "poietra-manim-render-gated:ac143dc",
+  },
+  snapshot: {
+    assetDirectory: "fast-manim-gated-oci",
+    entrypoint: "gated-entrypoint.py",
+    tag: "poietra-fast-manim-gated:ac143dc",
+  },
+};
+const profile = profiles[target];
 const sourceRepository = process.env.POIETRA_FAST_MANIM_SOURCE_REPO;
-const assetRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../sandbox/fast-manim-gated-oci");
+if (!profile) throw new Error("The OCI build target must be snapshot or render.");
+const assetRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../sandbox", profile.assetDirectory);
 
 function run(command, arguments_, options = {}) {
   return new Promise((resolveRun, rejectRun) => {
@@ -71,7 +85,7 @@ try {
   if (digest !== archiveSha256) throw new Error("The locked fast-manim archive digest does not match.");
   await Promise.all([
     copyFile(join(assetRoot, "Containerfile"), join(context, "Containerfile")),
-    copyFile(join(assetRoot, "gated-entrypoint.py"), join(context, "gated-entrypoint.py")),
+    copyFile(join(assetRoot, profile.entrypoint), join(context, profile.entrypoint)),
   ]);
   await run(
     "docker",
@@ -81,7 +95,7 @@ try {
       "--file",
       join(context, "Containerfile"),
       "--tag",
-      tag,
+      profile.tag,
       "--build-arg",
       `FAST_MANIM_ARCHIVE_SHA256=${archiveSha256}`,
       "--build-arg",
@@ -92,7 +106,7 @@ try {
     ],
     { inheritStdout: true },
   );
-  const imageId = await run("docker", ["image", "inspect", tag, "--format", "{{.Id}}"]).then((value) =>
+  const imageId = await run("docker", ["image", "inspect", profile.tag, "--format", "{{.Id}}"]).then((value) =>
     value.replace(/^sha256:/, ""),
   );
   if (!/^[a-f0-9]{64}$/.test(imageId)) throw new Error("Docker did not return an immutable image ID.");

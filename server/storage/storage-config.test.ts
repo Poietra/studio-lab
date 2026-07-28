@@ -69,17 +69,13 @@ describe("durable storage configuration", () => {
         migrationPoolConfig: { connectionString: "postgresql://database.example/poietra" },
         runtimePoolConfig: { host: "database.example", ssl: { rejectUnauthorized: false } },
       },
-      execution: {
-        close: async () => undefined,
-        ready: async () => true,
-        submitOrReattach: async () => ({ code: "interrupted", kind: "failed", logTail: "" }),
-      },
       namespace: "production-primary",
       objectStorage: {
         bucket: "poietra-private-sources",
         clientConfig: { ignoreConfiguredEndpointUrls: true, region: "us-east-1" },
       },
       renderWorker: { onFailure: () => undefined },
+      renderSandbox: {} as never,
       snapshot: {
         artifactGc: {
           batchSize: 64,

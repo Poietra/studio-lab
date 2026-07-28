@@ -158,7 +158,7 @@ export const FAST_MANIM_GATED_OCI_PROFILE_DIGEST_V1 = createHash("sha256")
   .update(canonicalJsonV1(FAST_MANIM_GATED_OCI_PROFILE_V1), "utf8")
   .digest("hex");
 
-type DockerResult = Readonly<{ code: number; stderr: Buffer; stdout: Buffer }>;
+export type FastManimGatedOciDockerResultV1 = Readonly<{ code: number; stderr: Buffer; stdout: Buffer }>;
 
 /** Docker CLI transport. Production callers must always provide a fixed Unix socket. */
 export class FastManimGatedOciDockerClientV1 {
@@ -219,11 +219,12 @@ export async function assertFastManimGatedOciSeccompV1(path = DEFAULT_SECCOMP_PA
     await file.close();
   }
 }
-type ContainerInspection = Readonly<{
+export type FastManimGatedOciContainerInspectionV1 = Readonly<{
   Config?: {
     Cmd?: unknown;
     Entrypoint?: unknown;
     Env?: unknown;
+    ExposedPorts?: unknown;
     Image?: unknown;
     Labels?: unknown;
     OpenStdin?: unknown;
@@ -240,6 +241,11 @@ type ContainerInspection = Readonly<{
     CapDrop?: unknown;
     CgroupnsMode?: unknown;
     Devices?: unknown;
+    DeviceRequests?: unknown;
+    Dns?: unknown;
+    DnsOptions?: unknown;
+    DnsSearch?: unknown;
+    ExtraHosts?: unknown;
     IpcMode?: unknown;
     LogConfig?: unknown;
     MaskedPaths?: unknown;
@@ -247,11 +253,14 @@ type ContainerInspection = Readonly<{
     MemorySwap?: unknown;
     NanoCpus?: unknown;
     NetworkMode?: unknown;
+    PortBindings?: unknown;
     PidMode?: unknown;
     PidsLimit?: unknown;
+    PublishAllPorts?: unknown;
     Privileged?: unknown;
     ReadonlyRootfs?: unknown;
     ReadonlyPaths?: unknown;
+    RestartPolicy?: unknown;
     SecurityOpt?: unknown;
     ShmSize?: unknown;
     Tmpfs?: unknown;
@@ -261,7 +270,8 @@ type ContainerInspection = Readonly<{
   Image?: unknown;
   Mounts?: unknown;
   Name?: unknown;
-  State?: { Pid?: unknown; Running?: unknown };
+  NetworkSettings?: { Networks?: unknown; Ports?: unknown; SandboxID?: unknown; SandboxKey?: unknown };
+  State?: { Paused?: unknown; Pid?: unknown; Running?: unknown };
 }>;
 
 export type FastManimGatedOciEvidenceV1 = Readonly<{
@@ -601,7 +611,7 @@ function docker(
   arguments_: readonly string[],
   timeoutMs = DOCKER_CONTROL_TIMEOUT_MS,
   signal?: AbortSignal,
-): Promise<DockerResult> {
+): Promise<FastManimGatedOciDockerResultV1> {
   signal?.throwIfAborted();
   return new Promise((resolveRun, rejectRun) => {
     const child = spawn(DOCKER, arguments_, { env: DOCKER_ENVIRONMENT, stdio: ["ignore", "pipe", "pipe"] });
@@ -638,7 +648,7 @@ function docker(
   });
 }
 
-function parseSingleInspection(raw: Buffer): ContainerInspection {
+export function parseFastManimGatedOciSingleInspectionV1(raw: Buffer): FastManimGatedOciContainerInspectionV1 {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw.toString("utf8"));
@@ -648,11 +658,11 @@ function parseSingleInspection(raw: Buffer): ContainerInspection {
   if (!Array.isArray(parsed) || parsed.length !== 1 || typeof parsed[0] !== "object" || parsed[0] === null) {
     throw new FastManimGatedOciError("sandbox-execution-failed", "Docker returned an unexpected inspection shape.");
   }
-  return parsed[0] as ContainerInspection;
+  return parsed[0] as FastManimGatedOciContainerInspectionV1;
 }
 
 function assertFixedContainer(
-  inspection: ContainerInspection,
+  inspection: FastManimGatedOciContainerInspectionV1,
   image: string,
   containerId: string,
   containerName: string,
@@ -730,7 +740,7 @@ async function inspectContainer(
   if (inspected.code !== 0) {
     throw new FastManimGatedOciError("sandbox-execution-failed", "Docker could not inspect the OCI job.");
   }
-  return parseSingleInspection(inspected.stdout);
+  return parseFastManimGatedOciSingleInspectionV1(inspected.stdout);
 }
 
 async function assertTrustedImage(
@@ -741,7 +751,7 @@ async function assertTrustedImage(
 ) {
   const inspected = await dockerClient.run(["image", "inspect", image], timeoutMs, signal);
   if (inspected.code !== 0) throw new Error("The immutable local OCI image is unavailable.");
-  const imageInspection = parseSingleInspection(inspected.stdout);
+  const imageInspection = parseFastManimGatedOciSingleInspectionV1(inspected.stdout);
   const labels = imageInspection.Config?.Labels;
   if (
     imageInspection.Id !== image ||
@@ -785,7 +795,7 @@ function encodeRequestWire(requestBytes: Uint8Array) {
 }
 
 export type FastManimGatedOciCgroupKillPolicyV1 = "best-effort" | "required";
-type FastManimGatedOciRunningIdentityV1 = Readonly<{
+export type FastManimGatedOciRunningIdentityV1 = Readonly<{
   cgroup: string;
   cgroupPath: string;
   containerId: string;
@@ -810,7 +820,7 @@ async function inspectRunningProcess(
   return pid as number;
 }
 
-async function readProcessStartTime(pid: number) {
+export async function readFastManimGatedOciProcessStartTimeV1(pid: number) {
   const stat = await readFile(`/proc/${pid}/stat`, "utf8");
   const commandEnd = stat.lastIndexOf(")");
   const fieldsAfterCommand =
@@ -827,13 +837,13 @@ async function readProcessStartTime(pid: number) {
   return startTime;
 }
 
-async function inspectRunningCgroup(
+export async function inspectFastManimGatedOciRunningCgroupV1(
   containerId: string,
   pid: number,
   startTime: string,
 ): Promise<FastManimGatedOciRunningIdentityV1> {
   const cgroup = await readFile(`/proc/${pid}/cgroup`, "utf8");
-  if ((await readProcessStartTime(pid)) !== startTime) {
+  if ((await readFastManimGatedOciProcessStartTimeV1(pid)) !== startTime) {
     throw new FastManimGatedOciError("sandbox-execution-failed", "The OCI PID changed during inspection.");
   }
   const lines = cgroup.trimEnd().split("\n");
@@ -847,14 +857,14 @@ async function inspectRunningCgroup(
   return { cgroup, cgroupPath, containerId, pid, startTime };
 }
 
-async function inspectRunningResources(identity: FastManimGatedOciRunningIdentityV1) {
+export async function inspectFastManimGatedOciRunningResourcesV1(identity: FastManimGatedOciRunningIdentityV1) {
   const { cgroup, cgroupPath, containerId, pid } = identity;
   const [cpuMax, memoryMax, memorySwapMax, pidsMax, limits, currentStartTime] = await Promise.all([
     ...["cpu.max", "memory.max", "memory.swap.max", "pids.max"].map((name) =>
       readFile(resolve(cgroupPath, name), "utf8"),
     ),
     readFile(`/proc/${pid}/limits`, "utf8"),
-    readProcessStartTime(pid),
+    readFastManimGatedOciProcessStartTimeV1(pid),
   ]);
   const resources = {
     cpuMax: cpuMax.trim(),
@@ -946,7 +956,7 @@ async function assertContainerAbsent(containerId: string, dockerClient = default
   }
 }
 
-async function cleanupContainer(
+export async function cleanupFastManimGatedOciContainerV1(
   containerId: string,
   evidence: FastManimGatedOciRunningIdentityV1 | undefined,
   dockerClient = defaultDockerClient,
@@ -983,7 +993,7 @@ async function cleanupContainerByName(containerName: string, dockerClient = defa
   if (listed.code !== 0 || matches.some((value) => !CONTAINER_ID.test(value)) || matches.length > 1) {
     throw new FastManimSandboxBackendControlError("cleanup");
   }
-  if (matches[0]) await cleanupContainer(matches[0], undefined, dockerClient);
+  if (matches[0]) await cleanupFastManimGatedOciContainerV1(matches[0], undefined, dockerClient);
 }
 
 /** Removes every job owned by this broker profile before the UDS listener becomes ready. */
@@ -1050,8 +1060,8 @@ export async function reconcileFastManimGatedOciDockerOrphansV1(
       if (running) {
         const pid = inspection.State.Pid;
         if (!Number.isSafeInteger(pid) || (pid as number) <= 1) throw new Error();
-        const startTime = await readProcessStartTime(pid as number);
-        cleanupEvidence = await inspectRunningCgroup(containerId, pid as number, startTime);
+        const startTime = await readFastManimGatedOciProcessStartTimeV1(pid as number);
+        cleanupEvidence = await inspectFastManimGatedOciRunningCgroupV1(containerId, pid as number, startTime);
       }
       if (!seccompPath) throw new Error();
       assertFixedContainer(inspection, options.image, containerId, containerName, running);
@@ -1065,7 +1075,12 @@ export async function reconcileFastManimGatedOciDockerOrphansV1(
     // exit with proof that every descendant is gone.
     if (!cleanupEvidence) cleanupFailed = true;
     try {
-      await cleanupContainer(containerId, cleanupEvidence, options.dockerClient, options.cgroupKillPolicy);
+      await cleanupFastManimGatedOciContainerV1(
+        containerId,
+        cleanupEvidence,
+        options.dockerClient,
+        options.cgroupKillPolicy,
+      );
     } catch {
       cleanupFailed = true;
     }
@@ -1073,9 +1088,9 @@ export async function reconcileFastManimGatedOciDockerOrphansV1(
   if (cleanupFailed) throw new FastManimSandboxBackendControlError("cleanup");
 }
 
-type FastManimGatedOciAttachExitV1 = Readonly<{ code: number; signal: NodeJS.Signals | null }>;
+export type FastManimGatedOciAttachExitV1 = Readonly<{ code: number; signal: NodeJS.Signals | null }>;
 
-async function reapAttachedDockerClient(
+export async function reapFastManimGatedOciAttachedDockerClientV1(
   child: ChildProcessWithoutNullStreams,
   close: Promise<FastManimGatedOciAttachExitV1>,
 ) {
@@ -1295,10 +1310,13 @@ export async function runFastManimGatedOciJobV1(
       ),
       haltPromise,
     ]);
-    const startTime = await Promise.race([readProcessStartTime(pid), haltPromise]);
-    const runningIdentity = await Promise.race([inspectRunningCgroup(containerId, pid, startTime), haltPromise]);
+    const startTime = await Promise.race([readFastManimGatedOciProcessStartTimeV1(pid), haltPromise]);
+    const runningIdentity = await Promise.race([
+      inspectFastManimGatedOciRunningCgroupV1(containerId, pid, startTime),
+      haltPromise,
+    ]);
     cleanupEvidence = runningIdentity;
-    evidence = await Promise.race([inspectRunningResources(runningIdentity), haltPromise]);
+    evidence = await Promise.race([inspectFastManimGatedOciRunningResourcesV1(runningIdentity), haltPromise]);
     attached.stdin.once("error", () => undefined);
     attached.stdin.write(wire.bytes);
     if (wire.close) attached.stdin.end();
@@ -1307,7 +1325,7 @@ export async function runFastManimGatedOciJobV1(
       throw new FastManimGatedOciError("producer-exit", "The gated OCI producer did not exit cleanly.");
     }
     const body = parseFastManimGatedOciResultV1(Buffer.concat(stdoutChunks, stdoutBytes));
-    await cleanupContainer(containerId, cleanupEvidence, dockerClient, cgroupKillPolicy);
+    await cleanupFastManimGatedOciContainerV1(containerId, cleanupEvidence, dockerClient, cgroupKillPolicy);
     options.afterVerifiedCleanupForTesting?.();
     containerId = undefined;
     const lateHalt = halted as FastManimGatedOciError | undefined;
@@ -1324,7 +1342,7 @@ export async function runFastManimGatedOciJobV1(
     if (containerId) {
       const cleanupUncertain = containerStartAttempted && !cleanupEvidence;
       try {
-        await cleanupContainer(containerId, cleanupEvidence, dockerClient, cgroupKillPolicy);
+        await cleanupFastManimGatedOciContainerV1(containerId, cleanupEvidence, dockerClient, cgroupKillPolicy);
         if (cleanupUncertain) cleanupFailure();
         if (error instanceof FastManimGatedOciError) error.cleanupVerified = true;
         containerId = undefined;
@@ -1355,7 +1373,7 @@ export async function runFastManimGatedOciJobV1(
     clearTimeout(timer);
     options.signal.removeEventListener("abort", onAbort);
     operationController.abort();
-    if (attached && attachedExit) await reapAttachedDockerClient(attached, attachedExit);
+    if (attached && attachedExit) await reapFastManimGatedOciAttachedDockerClientV1(attached, attachedExit);
   }
 }
 

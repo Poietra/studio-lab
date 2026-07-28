@@ -1,6 +1,3 @@
-import { constants } from "node:fs";
-import { open, realpath } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { z } from "zod";
@@ -10,8 +7,8 @@ import {
   type FastManimProductionSandboxBrokerServiceOptionsV1,
   startFastManimProductionSandboxBrokerServiceV1,
 } from "./fast-manim-production-sandbox-broker-service";
+import { readRootOwnedProductionConfigV1 } from "./root-owned-production-config";
 
-const MAX_CONFIG_BYTES = 64 * 1024;
 const keyIdSchema = z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/u);
 const configSchema = z
   .object({
@@ -28,46 +25,8 @@ const configSchema = z
   })
   .strict();
 
-async function assertRootOwnedConfigAncestors(path: string) {
-  let current = dirname(path);
-  while (true) {
-    const [metadata, canonical] = await Promise.all([open(current, constants.O_RDONLY), realpath(current)]);
-    try {
-      const stat = await metadata.stat();
-      if (canonical !== current || !stat.isDirectory() || stat.uid !== 0 || (stat.mode & 0o022) !== 0) {
-        throw new TypeError("The broker config ancestor is not immutable root-owned material.");
-      }
-    } finally {
-      await metadata.close();
-    }
-    const parent = dirname(current);
-    if (parent === current) return;
-    current = parent;
-  }
-}
-
 export async function readFastManimProductionSandboxBrokerConfigV1(path: string) {
-  if (!path.startsWith("/") || resolve(path) !== path || path.includes("\0") || Buffer.byteLength(path) > 4_096) {
-    throw new TypeError("The broker config path must be canonical and absolute.");
-  }
-  await assertRootOwnedConfigAncestors(path);
-  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const [metadata, canonical] = await Promise.all([file.stat(), realpath(path)]);
-    if (
-      canonical !== path ||
-      !metadata.isFile() ||
-      metadata.uid !== 0 ||
-      (metadata.mode & 0o222) !== 0 ||
-      metadata.size <= 0 ||
-      metadata.size > MAX_CONFIG_BYTES
-    ) {
-      throw new TypeError("The broker config is not immutable bounded root-owned material.");
-    }
-    return configSchema.parse(JSON.parse(await file.readFile("utf8")));
-  } finally {
-    await file.close();
-  }
+  return readRootOwnedProductionConfigV1(path, configSchema);
 }
 
 export async function startFastManimProductionSandboxBrokerEntryV1(configPath: string) {

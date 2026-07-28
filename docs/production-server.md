@@ -15,10 +15,12 @@ There is intentionally no environment-only or unauthenticated CLI. The current
 production runtime adapter. The injected in-process adapter is trusted code:
 its structured readiness result is an operational assertion after it verifies
 the external sandbox, not an isolation proof verified by this HTTP layer. The
-current contract is limited to one deployment-isolated tenant. Issue #117 owns
-the isolated render adapter, #120 owns principal-to-tenant selection, and #118
-owns durable shared state. Until those adapters exist, liveness can be served
-but readiness and the Manim API must remain unavailable.
+current contract is limited to one deployment-isolated tenant. The shipped
+source-only render adapter uses the separate broker described in
+[production-render-sandbox.md](./production-render-sandbox.md). Issue #120 owns
+principal-to-tenant selection, while digest-bounded render assets and durable
+media publication remain follow-up work. Readiness stays unavailable unless the
+durable stores and both external sandbox brokers pass their probes.
 
 Each server instance remains a single-tenant cell: its runtime API declares one
 server-owned tenant ID and at least one bounded absolute storage root. A
