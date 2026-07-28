@@ -49,6 +49,8 @@ export type FastManimSandboxBrokerServerOptionsV1 = Readonly<{
   maxConcurrentJobs?: number;
   maxConcurrentStatuses?: number;
   maxConnections?: number;
+  /** Reports an internal listener/session failure before fail-closed shutdown begins. */
+  onFatalClose?: () => void;
   reconcileOrphans?: (signal: AbortSignal) => Promise<void>;
   signal?: AbortSignal;
   /** Numeric GID of the only local Studio principal group admitted by the UDS. */
@@ -417,7 +419,17 @@ export async function startFastManimSandboxBrokerServerV1(
   let activeStatuses = 0;
   let accepting = false;
   let closeRequest: Promise<void> | null = null;
+  let fatalCloseReported = false;
   let closeBroker!: () => Promise<void>;
+  const reportFatalClose = () => {
+    if (fatalCloseReported) return;
+    fatalCloseReported = true;
+    try {
+      options.onFatalClose?.();
+    } catch {
+      // Notification cannot prevent the broker's fail-closed shutdown.
+    }
+  };
   const acquire = (kind: CapacityKind) => {
     if (kind === "start") {
       if (activeJobs >= maxJobs) return undefined;
@@ -441,6 +453,7 @@ export async function startFastManimSandboxBrokerServerV1(
       (closed) => connections.delete(closed),
       () => {
         accepting = false;
+        reportFatalClose();
         void closeBroker().catch(() => undefined);
       },
     );
@@ -510,6 +523,7 @@ export async function startFastManimSandboxBrokerServerV1(
   if (options.signal?.aborted) abortFromSignal();
   server.on("error", () => {
     accepting = false;
+    reportFatalClose();
     void closeBroker().catch(() => undefined);
   });
   return { close: closeBroker, socketPath: options.socketPath };

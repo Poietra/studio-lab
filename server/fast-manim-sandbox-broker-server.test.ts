@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-
 import type {
   FastManimSandboxBackendResultV1,
   FastManimSandboxBackendV1,
@@ -13,7 +12,10 @@ import type {
   FastManimSandboxRequestBundleV1,
   FastManimSandboxStatusContextV1,
 } from "./fast-manim-sandbox-backend";
-import { FastManimSandboxRequestBundleV1 as RequestBundle } from "./fast-manim-sandbox-backend";
+import {
+  FastManimSandboxBackendControlError,
+  FastManimSandboxRequestBundleV1 as RequestBundle,
+} from "./fast-manim-sandbox-backend";
 import {
   encodeFastManimSandboxBrokerClientFrameV1,
   encodeFastManimSandboxBrokerRequestBytesV1,
@@ -266,5 +268,29 @@ describe("fast-manim single-operation broker server", () => {
     const replacementBackend = new TestBackend();
     await expect(start({ backend: replacementBackend, socketPath: path })).rejects.toMatchObject({ code: "busy" });
     expect(replacementBackend.close).toHaveBeenCalledOnce();
+  });
+
+  it("reports an internal cleanup failure but not a requested close", async () => {
+    const fatalPath = await socketPath();
+    const fatalBackend = new TestBackend();
+    fatalBackend.resultFactory = async () => {
+      throw new FastManimSandboxBackendControlError("cleanup");
+    };
+    const onFatalClose = vi.fn();
+    const fatalServer = await start({ backend: fatalBackend, onFatalClose, socketPath: fatalPath });
+    servers.push(fatalServer);
+    await operation(fatalPath, "start", startMessage(new RequestBundle(sandboxProducerRequest())));
+    await vi.waitFor(() => expect(onFatalClose).toHaveBeenCalledOnce());
+
+    const requestedPath = await socketPath();
+    const requestedFatal = vi.fn();
+    const requestedServer = await start({
+      backend: new TestBackend(),
+      onFatalClose: requestedFatal,
+      socketPath: requestedPath,
+    });
+    servers.push(requestedServer);
+    await requestedServer.close();
+    expect(requestedFatal).not.toHaveBeenCalled();
   });
 });
