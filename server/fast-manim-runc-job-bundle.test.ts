@@ -288,14 +288,9 @@ describe("FastManimRuncJobBundleStoreV1", () => {
     await expect(readFile(join(collision.bundlePath, "sentinel"), "utf8")).resolves.toBe("preserve");
   });
 
-  it("uses strict mapped-container-root metadata by default", async () => {
+  it("rejects a production mapping whose container root is not the server identity", () => {
     const foreignIdentity = rootlessIdentity(uid + 1, gid + 1);
-    const bundles = new FastManimRuncJobBundleStoreV1({ identityMap: foreignIdentity, root });
-    const plan = bundles.plan(containerId);
-    await expect(
-      bundles.stage({ dispatch: dispatch(), plan, spec: spec(plan.assetsPath, containerId, foreignIdentity) }),
-    ).rejects.toThrow(/mapped container root/i);
-    await bundles.cleanup(plan);
+    expect(() => new FastManimRuncJobBundleStoreV1({ identityMap: foreignIdentity, root })).toThrow(/server identity/u);
   });
 });
 

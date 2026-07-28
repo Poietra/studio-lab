@@ -222,7 +222,22 @@ export class FastManimRuncJobBundleStoreV1 {
     if (typeof this.#metadataPolicy?.prepare !== "function" || typeof this.#metadataPolicy.verifyRoot !== "function") {
       throw new TypeError("The runc bundle metadata policy is malformed.");
     }
-    if (options.metadataPolicy === undefined) productionBundleStores.add(this);
+    if (options.metadataPolicy === undefined) {
+      const currentUid = process.getuid?.();
+      const currentGid = process.getgid?.();
+      const mappedRoot = options.identityMap.hostRootIdentity();
+      if (
+        currentUid === undefined ||
+        currentGid === undefined ||
+        currentUid === 0 ||
+        currentGid === 0 ||
+        mappedRoot.uid !== currentUid ||
+        mappedRoot.gid !== currentGid
+      ) {
+        throw new TypeError("The production bundle root must map container root to the unprivileged server identity.");
+      }
+      productionBundleStores.add(this);
+    }
   }
 
   async assertReady() {
