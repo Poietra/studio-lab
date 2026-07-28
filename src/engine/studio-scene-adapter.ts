@@ -106,6 +106,27 @@ export type BuildStudioSceneIrAdapterEvidenceResultV1 =
   | Readonly<{ evidence: StudioSceneIrAdapterEvidenceV1; kind: "resolved" }>
   | Readonly<{ issues: readonly StudioSceneIrAdapterIssueV1[]; kind: "unsupported" }>;
 
+function studioCreateTransactionForEntity(
+  proposedState: Pick<ProposedState, "evaluatedScene" | "programs">,
+  entity: RuntimeEntity,
+) {
+  if (
+    entity.transactionId === undefined ||
+    entity.sourceIdentity.kind !== "unknown" ||
+    !entity.id.startsWith(`tx:${entity.transactionId}/entity:`)
+  )
+    return null;
+  const owner = proposedState.programs.find(
+    (record) =>
+      record.validation.status === "valid" &&
+      record.program.transactionId === entity.transactionId &&
+      record.program.operations.some(
+        (operation) => operation.kind === "CreateEntity" && operation.entity.id === entity.id,
+      ),
+  );
+  return owner?.program.transactionId ?? null;
+}
+
 /**
  * Resolves only evidence that the Studio adapter is allowed to claim. Imported
  * objects inherit camera, paint, appearance, and runtime identity from the
@@ -129,9 +150,18 @@ export function buildStudioSceneIrAdapterEvidenceV1(
   const created: RuntimeEntity[] = [];
 
   for (const entity of Object.values(input.proposedState.evaluatedScene.objectGraph.entities)) {
-    const imported = !entity.provisional && entity.transactionId === undefined;
-    if (!imported) {
+    const imported =
+      !entity.provisional && entity.transactionId === undefined && entity.sourceIdentity.kind === "known";
+    if (!imported && studioCreateTransactionForEntity(input.proposedState, entity) !== null) {
       created.push(entity);
+      continue;
+    }
+    if (!imported) {
+      issues.push(
+        issue("unknown-evidence", `Entity ${entity.id} has ambiguous imported/Studio creation authority.`, {
+          entityId: entity.id,
+        }),
+      );
       continue;
     }
     if (entity.sourceIdentity.kind !== "known" || !input.sourceRuntimeIdentity) {
@@ -184,9 +214,7 @@ export function buildStudioSceneIrAdapterEvidenceV1(
   for (const entity of created) {
     const style = entity.geometry?.style;
     if (
-      !entity.provisional ||
-      entity.transactionId === undefined ||
-      entity.sourceIdentity.kind !== "unknown" ||
+      studioCreateTransactionForEntity(input.proposedState, entity) === null ||
       (entity.type !== "Circle" && entity.type !== "Rectangle") ||
       style?.kind !== "known" ||
       Object.values(style.value).some((value) => value !== undefined)
@@ -602,7 +630,7 @@ function compileOpacityChannels(input: StudioSceneIrAdapterInputV1, issues: Stud
     const channel = channelFor(scene, order.entityId, "appearance");
     if (!entity || !channel || channel.samples.length === 0) return [];
     const animated = channel.samples.filter((sample) => sample.kind === "animated");
-    if (!entity.provisional || entity.transactionId === undefined || animated.length !== 1) {
+    if (studioCreateTransactionForEntity(input.proposedState, entity) === null || animated.length !== 1) {
       issues.push(
         issue("property-animation-unsupported", "Only one Studio-created shape opacity transition is supported.", {
           entityId: order.entityId,
