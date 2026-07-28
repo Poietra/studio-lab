@@ -9,7 +9,7 @@ import {
 } from "./fast-manim-production-sandbox-transport";
 import { FastManimUdsSandboxBackendV1 } from "./fast-manim-uds-sandbox-backend";
 
-type ProductionClientOptions = Readonly<{
+export type FastManimProductionSandboxClientOptionsV1 = Readonly<{
   brokerUserId: number;
   publicKeys: readonly FastManimGatedOciReleasePublicKeyV1[];
   signedRelease: FastManimGatedOciSignedReleaseV1;
@@ -36,7 +36,7 @@ function assertStudioPrincipal(brokerUserId: number, socketGroupId: number) {
 }
 
 /** Studio verifies the release independently; broker status is never self-authenticating. */
-export async function createFastManimProductionSandboxClientV1(options: ProductionClientOptions) {
+export async function createFastManimProductionSandboxClientV1(options: FastManimProductionSandboxClientOptionsV1) {
   if (
     !options ||
     Object.keys(options).sort().join(",") !== "brokerUserId,publicKeys,signedRelease,socketGroupId,socketPath"
@@ -46,11 +46,13 @@ export async function createFastManimProductionSandboxClientV1(options: Producti
   assertStudioPrincipal(options.brokerUserId, options.socketGroupId);
   await assertFastManimProductionBrokerSocketV1(options.socketPath, options.brokerUserId, options.socketGroupId);
   const release = verifyFastManimGatedOciReleaseV1(options.signedRelease, options.publicKeys);
+  const { profileDigest } = release.descriptor();
   return Object.freeze({
     attestationVerifier: release.attestationVerifier,
     backend: new FastManimUdsSandboxBackendV1({
       closeTimeoutMs: FAST_MANIM_PRODUCTION_BROKER_CLOSE_TIMEOUT_MS_V1,
       socketPath: options.socketPath,
     }),
+    profileDigest,
   });
 }

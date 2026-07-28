@@ -3,8 +3,12 @@ import { createHash } from "node:crypto";
 import type { Pool } from "pg";
 import workspaceSourceSqlV1 from "./migrations/0001_workspace_source.sql?raw";
 import renderSessionSqlV2 from "./migrations/0002_render_sessions.sql?raw";
+import snapshotPublicationSqlV3 from "./migrations/0003_snapshot_publications.sql?raw";
 import { RENDER_SESSION_MIGRATION_V2_CHECKSUM } from "./postgres-render-session-repository";
+import { SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM } from "./postgres-snapshot-publication-repository";
 import { WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM } from "./postgres-workspace-source-repository";
+
+export { SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM } from "./postgres-snapshot-publication-repository";
 
 const DURABLE_STORAGE_MIGRATION_LOCK = "5784133447825795121";
 
@@ -31,6 +35,7 @@ export function renderSessionMigrationChecksumV2(source: string) {
 }
 export const WORKSPACE_SOURCE_MIGRATION_V1_SOURCE = workspaceSourceSqlV1;
 export const RENDER_SESSION_MIGRATION_V2_SOURCE = renderSessionSqlV2;
+export const SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE = snapshotPublicationSqlV3;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -50,7 +55,21 @@ const renderSessionMigrationV2: DurableStorageMigration<2> = Object.freeze({
   version: 2,
 });
 
-const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([workspaceSourceMigrationV1, renderSessionMigrationV2]);
+const snapshotPublicationMigrationV3: DurableStorageMigration<3> = Object.freeze({
+  checksum: SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM,
+  checksumMismatch: "The snapshot-publication migration checksum is invalid.",
+  installedMismatch: "The installed snapshot-publication schema does not match migration v3.",
+  missingPrerequisite: "Snapshot-publication migration v3 requires durable storage migrations v1 and v2.",
+  prerequisiteMismatch: "Snapshot-publication migration v3 requires exact durable storage migrations v1 and v2.",
+  source: SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE,
+  version: 3,
+});
+
+const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
+  workspaceSourceMigrationV1,
+  renderSessionMigrationV2,
+  snapshotPublicationMigrationV3,
+]);
 
 function validateSource(migration: DurableStorageMigration) {
   if (durableStorageMigrationChecksum(migration.source) !== migration.checksum) {
@@ -124,6 +143,13 @@ export function applyWorkspaceSourceMigrationV1(pool: Pool, source: string) {
 
 export function applyRenderSessionMigrationV2(pool: Pool, source: string) {
   return applyMigration(pool, { ...renderSessionMigrationV2, source }, [workspaceSourceMigrationV1]);
+}
+
+export function applySnapshotPublicationMigrationV3(pool: Pool, source: string) {
+  return applyMigration(pool, { ...snapshotPublicationMigrationV3, source }, [
+    workspaceSourceMigrationV1,
+    renderSessionMigrationV2,
+  ]);
 }
 
 /** Apply every bundled migration in version order without encoding the count in the public API. */

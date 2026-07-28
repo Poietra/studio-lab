@@ -45,7 +45,7 @@ const DEFAULT_LIMITS = {
   readinessTimeoutMs: 2_000,
   requestDrainTimeoutMs: 10_000,
   requestTimeoutMs: 30_000,
-  runtimeCloseTimeoutMs: 10_000,
+  runtimeCloseTimeoutMs: 45_000,
 } as const;
 
 const PRODUCTION_AUTH_ERROR_MESSAGES = {

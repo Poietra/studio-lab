@@ -11,6 +11,7 @@ import type {
   RenderCommitRequest,
   RenderSourceActionCancellationRequest,
 } from "../src/render-pipeline/contracts";
+import type { DurableFastManimSnapshotServiceV1 } from "./durable-fast-manim-snapshot-service";
 import type { DurableManimRenderServiceV1 } from "./durable-manim-render-service";
 import type { FastManimSnapshotQueryV1, FastManimSnapshotRunRequestV1 } from "./fast-manim-snapshot-contract";
 import { HttpError } from "./http/json";
@@ -50,6 +51,7 @@ export type DurableManimRuntimeOptionsV1 = Readonly<{
   projectIdFactory?: () => string;
   renders?: DurableManimRenderServiceV1;
   repository: WorkspaceSourceRepositoryV1;
+  snapshots?: DurableFastManimSnapshotServiceV1;
   tenantId: string;
 }>;
 
@@ -97,6 +99,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
   readonly #projectIdFactory: () => string;
   readonly #renders: DurableManimRenderServiceV1 | undefined;
   readonly #repository: WorkspaceSourceRepositoryV1;
+  readonly #snapshots: DurableFastManimSnapshotServiceV1 | undefined;
   readonly storageBoundary: Readonly<{ kind: "shared-durable"; namespace: string }>;
   readonly tenantId: string;
   #closeRequest: Promise<void> | null = null;
@@ -113,6 +116,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     this.#blobs = options.blobs;
     this.#execution = options.execution;
     this.#renders = options.renders;
+    this.#snapshots = options.snapshots;
     this.#frame = validateFrame(options.frame ?? DEFAULT_FRAME);
     this.#projectIdFactory = options.projectIdFactory ?? projectIdFromUuid;
   }
@@ -126,19 +130,20 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
 
   async ready(signal?: AbortSignal) {
     signal?.throwIfAborted();
-    const [repositoryReady, blobsReady, executionReady, rendersReady] = await Promise.all([
+    const [repositoryReady, blobsReady, executionReady, rendersReady, snapshotsReady] = await Promise.all([
       this.#repository.ready(signal),
       this.#blobs.ready(signal),
       this.#execution?.ready(signal) ?? Promise.resolve(false),
       this.#renders?.ready(signal) ?? Promise.resolve(true),
+      this.#snapshots?.ready(signal) ?? Promise.resolve(true),
     ]);
     signal?.throwIfAborted();
-    return repositoryReady && blobsReady && executionReady && rendersReady;
+    return repositoryReady && blobsReady && executionReady && rendersReady && snapshotsReady;
   }
 
   /** Production attestation additionally requires the durable render service. */
   async productionReady(signal?: AbortSignal) {
-    if (!this.#renders) return false;
+    if (!this.#renders || !this.#snapshots) return false;
     return this.ready(signal);
   }
 
@@ -178,8 +183,14 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
   }
 
   async unregisterProject(projectId: string, signal?: AbortSignal) {
-    await this.#repository.softDeleteProject(this.tenantId, projectId, signal);
-    return this.#mutationView(null, signal);
+    if (this.#snapshots) {
+      await this.#snapshots.releaseProject(projectId, signal);
+    } else {
+      await this.#repository.softDeleteProject(this.tenantId, projectId, signal);
+    }
+    // Deletion is already committed. Caller cancellation must not turn that
+    // durable success into a failed API response during the catalog refresh.
+    return this.#mutationView(null);
   }
 
   async #projectAndHeads(projectId?: string, signal?: AbortSignal) {
@@ -291,13 +302,15 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     throw new HttpError("A durable thumbnail has not been generated.", 404);
   }
 
-  async runSceneSnapshot(_request: FastManimSnapshotRunRequestV1, signal?: AbortSignal): Promise<never> {
+  async runSceneSnapshot(request: FastManimSnapshotRunRequestV1, signal?: AbortSignal) {
     signal?.throwIfAborted();
-    throw new HttpError("Durable Scene snapshots require the external sandbox runtime.", 503);
+    if (!this.#snapshots) throw new HttpError("Durable Scene snapshots require the external sandbox runtime.", 503);
+    return this.#snapshots.run(request, signal);
   }
 
-  async sceneSnapshot(_projectId: string, _query: FastManimSnapshotQueryV1): Promise<never> {
-    throw new HttpError("Durable Scene snapshots require the external sandbox runtime.", 503);
+  async sceneSnapshot(projectId: string, query: FastManimSnapshotQueryV1) {
+    if (!this.#snapshots) throw new HttpError("Durable Scene snapshots require the external sandbox runtime.", 503);
+    return this.#snapshots.snapshot(projectId, query);
   }
 
   async start(request: ProgramRenderRequest, signal?: AbortSignal) {
@@ -357,6 +370,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
   close() {
     this.#closeRequest ??= (async () => {
       const errors: unknown[] = [];
+      await (this.#snapshots?.close() ?? Promise.resolve()).catch((error: unknown) => errors.push(error));
       await (this.#execution?.close?.() ?? Promise.resolve()).catch((error: unknown) => errors.push(error));
       const results = await Promise.allSettled([
         this.#renders?.close() ?? Promise.resolve(),
@@ -383,7 +397,7 @@ export async function createDurableManimRuntimeV1(options: DurableManimRuntimeOp
 /** Production composition: readiness is true only when DB, S3, and the external executor all pass. */
 export function createDurableProductionManimRuntimeAdapterV1(
   runtime: DurableManimRuntimeV1,
-  maintenance: DurableSourceBlobGcWorkerV1,
+  maintenance: Pick<DurableSourceBlobGcWorkerV1, "close" | "ready">,
 ): ProductionManimRuntimeAdapterV1 {
   return {
     api: runtime,

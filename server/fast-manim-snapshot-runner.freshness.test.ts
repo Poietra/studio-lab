@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V1, ZERO_SHA256 } from "./fast-manim-snapshot-contract";
 import { FastManimSnapshotAdmissionController, FastManimSnapshotPublicationStore } from "./fast-manim-snapshot-runner";
@@ -27,6 +27,23 @@ import {
 const { projectRoot, reapAfterTest, temporaryRoots } = installFastManimSnapshotRunnerFixture();
 
 describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
+  it("verifies an externally published result without allocating local publication state", async () => {
+    const publicationStore = new FastManimSnapshotPublicationStore();
+    const registerOwner = vi.spyOn(publicationStore, "registerOwner");
+    const runner = createRunner(await projectRoot(), producerCommand(), { publicationStore });
+
+    const view = await runner.runUnpublished(runRequest());
+
+    expect(view.status).toBe("verified");
+    if (view.status !== "verified") throw new Error("Expected the unpublished result to verify.");
+    expect(view).not.toHaveProperty("publishedAt");
+    expect(view).not.toHaveProperty("revision");
+    expect(registerOwner).not.toHaveBeenCalled();
+    await expect(runner.snapshot(exampleQuery)).rejects.toMatchObject({ status: 404 });
+    await runner.close();
+    expect(registerOwner).not.toHaveBeenCalled();
+  });
+
   it("settles a run whose source is swapped to a FIFO before open instead of hanging", {
     timeout: 10_000,
   }, async () => {
