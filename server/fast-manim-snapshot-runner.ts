@@ -328,6 +328,18 @@ export class FastManimSnapshotRunner {
     );
   }
 
+  async ready(signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    if (this.closing) return false;
+    try {
+      const readiness = await this.sandboxReadiness("runner-readiness", this.sandboxStatusDeadline(), signal);
+      return readiness.kind === "ready";
+    } catch {
+      signal?.throwIfAborted();
+      return false;
+    }
+  }
+
   private sandboxIdentity(requestId: string) {
     return parseFastManimSandboxJobIdentityV1({
       projectId: this.projectId,
