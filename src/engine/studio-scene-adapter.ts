@@ -79,6 +79,11 @@ const STATIC_PROPERTY_KEYS = new Set<PropertyChannel["key"]>([
   "scale",
 ]);
 
+// Older persisted workspaces rounded 128 / 9 to 14.222. Keep those correlated
+// frames editable without accepting camera aspects that the 16:9 Studio canvas
+// would stretch.
+const LEGACY_FRAME_ASPECT_RELATIVE_TOLERANCE = 0.00002;
+
 function issue(
   code: StudioSceneIrAdapterIssueCodeV1,
   message: string,
@@ -428,9 +433,10 @@ function validateGlobalEvidence(input: StudioSceneIrAdapterInputV1, issues: Stud
     input.frame.height <= 0 ||
     input.evidence.camera.view.frameWidth !== input.frame.width ||
     input.evidence.camera.view.frameHeight !== input.frame.height ||
-    Math.abs(input.frame.width / input.frame.height / (STUDIO_VIEWPORT.width / STUDIO_VIEWPORT.height) - 1) > 1e-9
+    Math.abs(input.frame.width / input.frame.height / (STUDIO_VIEWPORT.width / STUDIO_VIEWPORT.height) - 1) >
+      LEGACY_FRAME_ASPECT_RELATIVE_TOLERANCE
   ) {
-    issues.push(issue("camera-evidence-invalid", "Camera and Studio viewport frame evidence must match at 16:9."));
+    issues.push(issue("camera-evidence-invalid", "Camera frame evidence must be finite, positive, exact, and 16:9."));
   }
   if (input.evidence.provenance.length === 0) {
     issues.push(issue("unknown-evidence", "Adapter provenance evidence cannot be empty."));

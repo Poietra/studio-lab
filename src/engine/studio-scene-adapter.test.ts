@@ -203,6 +203,39 @@ describe("Studio to SceneIrV1 truthful adapter", () => {
     });
   });
 
+  it("accepts the legacy rounded 14.222-wide runtime frame", async () => {
+    const adapterInput = await input();
+    const frame = { height: 8, width: 14.222 } as const;
+    const result = await compileStudioSceneIrV1({
+      ...adapterInput,
+      evidence: {
+        ...adapterInput.evidence,
+        camera: {
+          ...adapterInput.evidence.camera,
+          view: { ...adapterInput.evidence.camera.view, frameHeight: 8, frameWidth: 14.222 },
+        },
+      },
+      frame,
+    });
+    expect(result.kind).toBe("compiled");
+  });
+
+  it("rejects camera aspects that the fixed 16:9 Studio canvas would stretch", async () => {
+    const adapterInput = await input();
+    const result = await compileStudioSceneIrV1({
+      ...adapterInput,
+      evidence: {
+        ...adapterInput.evidence,
+        camera: {
+          ...adapterInput.evidence.camera,
+          view: { ...adapterInput.evidence.camera.view, frameHeight: 9, frameWidth: 12 },
+        },
+      },
+      frame: { height: 9, width: 12 },
+    });
+    expectIssue(result, "camera-evidence-invalid");
+  });
+
   it("derives imported paint only through the verified runtime identity map", async () => {
     const adapterInput = await input();
     const compiled = await compileStudioSceneIrV1(adapterInput);

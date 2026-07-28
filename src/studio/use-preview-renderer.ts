@@ -182,8 +182,11 @@ export async function compileStudioPreviewSceneV1(
 ): Promise<
   Readonly<{ error: string; kind: "unsupported" }> | Readonly<{ kind: "compiled"; scene: CompiledStudioPreviewSceneV1 }>
 > {
-  if (Math.abs(input.proposedState.evaluatedScene.duration - input.snapshot.duration) >= 0.0005) {
-    return { error: "Studio state is not correlated with the verified imported Scene timing.", kind: "unsupported" };
+  if (Math.abs(input.proposedState.base.runtimeSceneState.duration - input.snapshot.duration) >= 0.0005) {
+    return {
+      error: "Studio source state is not correlated with the verified imported Scene timing.",
+      kind: "unsupported",
+    };
   }
   if (input.workingRevision === PRISTINE_WORKING_REVISION) {
     if (input.proposedState.programs.length > 0) {

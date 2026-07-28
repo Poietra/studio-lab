@@ -4,7 +4,15 @@ import { describe, expect, it } from "vitest";
 import { parseVerifiedSceneIrBundleV1 } from "../engine/contracts";
 import { digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
 import { applySceneIrDeltaV1, createSceneIrDeltaV1 } from "../engine/scene-delta";
-import type { ProgramRecord, ProposedState, RuntimeSceneState } from "./model";
+import { createStudioEntitiesProgram } from "./authoring-commands";
+import { evaluateWorkingState, programRecord } from "./evaluator";
+import {
+  STUDIO_STATE_VERSION,
+  type ProgramRecord,
+  type ProposedState,
+  type RuntimeSceneState,
+  type WorkingState,
+} from "./model";
 import { EDIT_OPERATION_VERSION } from "./operations";
 import {
   PRISTINE_WORKING_REVISION,
@@ -74,7 +82,37 @@ async function compilablePreviewInput() {
     sceneId: "studio:circle-scene",
     version: 1,
   };
-  const proposedState = { evaluatedScene, programs: [] } as unknown as ProposedState;
+  const workingState: WorkingState = {
+    appliedPrograms: [],
+    editorContext: {
+      activeSceneId: evaluatedScene.sceneId,
+      playhead: 0.5,
+      selection: ["source:circle"],
+      version: STUDIO_STATE_VERSION,
+      viewport: { height: 360, width: 640 },
+    },
+    runtimeSceneState: evaluatedScene,
+    sourceSnapshot: {
+      configId: "test",
+      hash: `sha256:${HASH_A}`,
+      sourceId: "scene.py",
+      version: STUDIO_STATE_VERSION,
+    },
+    stagedPrograms: [],
+    staticSemanticState: {
+      entities: [
+        {
+          runtimeIdentities: { kind: "known", value: ["source:circle"] },
+          sourceIdentity: "circle",
+          type: { kind: "known", value: "Circle" },
+        },
+      ],
+      unknowns: [],
+      version: STUDIO_STATE_VERSION,
+    },
+    version: STUDIO_STATE_VERSION,
+  };
+  const proposedState = evaluateWorkingState(workingState);
   const context = {
     projectId: "project-a",
     sceneName: "CircleScene",
@@ -311,6 +349,35 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(await applySceneIrDeltaV1(edited.scene.bundle, delta)).toEqual(editedAgain.scene.bundle);
   });
 
+  it("compiles the real authoring create path after its fade extends the evaluated duration", async () => {
+    const { proposedState, snapshot } = await compilablePreviewInput();
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 0.5,
+      entities: [{ dimensions: { height: 2, width: 4 }, position: { x: 400, y: 180 }, type: "Rectangle" }],
+      scene: proposedState.base.runtimeSceneState,
+      transactionId: "real-create",
+    });
+    expect(creation.validation.kind, JSON.stringify(creation.validation.issues)).toBe("valid");
+    const edited = evaluateWorkingState({
+      ...proposedState.base,
+      appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
+    });
+
+    expect(edited.base.runtimeSceneState.duration).toBe(2);
+    expect(edited.evaluatedScene.duration).toBeCloseTo(2.4, 9);
+    const result = await compileStudioPreviewSceneV1({
+      frame: { height: 9, width: 16 },
+      proposedState: edited,
+      snapshot,
+      workingRevision: "studio-working-v1:real-create",
+      workspaceKey: "project-a/scene.py/CircleScene",
+    });
+    expect(result.kind).toBe("compiled");
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(result.scene.bundle.scene.duration).toBeCloseTo(2.4, 9);
+    expect(result.scene.bundle.scene.entities.map(({ id }) => id)).toContain(creation.entityIds[0]);
+  });
+
   it("downgrades an unexpected delta producer rejection to the correlated full snapshot path", async () => {
     const { snapshot } = await compilablePreviewInput();
     const result = await createStudioPreviewDeltaOrReplacementV1(snapshot.snapshot, snapshot.snapshot, async () => {
@@ -385,13 +452,16 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(new Set(digests).size).toBe(digests.length);
   });
 
-  it("refuses Studio timing that has not adopted the verified source duration", async () => {
+  it("refuses a Studio base that has not adopted the verified source duration", async () => {
     const { proposedState, snapshot } = await compilablePreviewInput();
     const result = await compileStudioPreviewSceneV1({
       frame: { height: 9, width: 16 },
       proposedState: {
         ...proposedState,
-        evaluatedScene: { ...proposedState.evaluatedScene, duration: 3 },
+        base: {
+          ...proposedState.base,
+          runtimeSceneState: { ...proposedState.base.runtimeSceneState, duration: 3 },
+        },
       },
       snapshot,
       workingRevision: "studio-working-v1:stale-time",
