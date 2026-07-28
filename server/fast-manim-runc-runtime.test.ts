@@ -3,7 +3,7 @@ import { PassThrough } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
 
-import { FastManimRuncCliRuntimeV1 } from "./fast-manim-runc-runtime";
+import { FastManimRuncCliRuntimeV1, isProductionFastManimRuncRuntimeV1 } from "./fast-manim-runc-runtime";
 
 const bundleRoot = "/var/lib/poietra/runc/bundles";
 const bundlePath = `${bundleRoot}/job-1`;
@@ -41,6 +41,19 @@ function runtimeWith(
 }
 
 describe("FastManimRuncCliRuntimeV1", () => {
+  it("brands only the fixed production runc process boundary", () => {
+    expect(
+      isProductionFastManimRuncRuntimeV1(
+        new FastManimRuncCliRuntimeV1({ bundleRoot, stateRoot: "/run/poietra/runc-state" }),
+      ),
+    ).toBe(true);
+    expect(isProductionFastManimRuncRuntimeV1(runtimeWith(() => fakeChild()))).toBe(false);
+    class OverriddenRuntime extends FastManimRuncCliRuntimeV1 {}
+    expect(
+      isProductionFastManimRuncRuntimeV1(new OverriddenRuntime({ bundleRoot, stateRoot: "/run/poietra/runc-state" })),
+    ).toBe(false);
+  });
+
   it("runs only the fixed create operation and resolves at CLI exit without consuming OCI stdio", async () => {
     const child = fakeChild();
     const spawnProcess = vi.fn(() => child);
@@ -49,7 +62,7 @@ describe("FastManimRuncCliRuntimeV1", () => {
     const created = runtime.create({ bundlePath, containerId, deadlineEpochMs: deadlineEpochMs() });
     expect(spawnProcess).toHaveBeenCalledWith(
       "/usr/bin/runc",
-      ["--root", "/run/poietra/runc-state", "create", "--bundle", bundlePath, containerId],
+      ["--rootless=true", "--root", "/run/poietra/runc-state", "create", "--bundle", bundlePath, containerId],
       {
         cwd: "/",
         env: { LANG: "C.UTF-8", LC_ALL: "C.UTF-8", PATH: "/usr/sbin:/usr/bin:/sbin:/bin" },
@@ -141,9 +154,9 @@ describe("FastManimRuncCliRuntimeV1", () => {
     await expect(runtime.kill(containerId, deadlineEpochMs())).resolves.toBeUndefined();
     await expect(runtime.delete(containerId, deadlineEpochMs())).resolves.toBeUndefined();
     expect(calls).toEqual([
-      ["--root", "/run/poietra/runc-state", "start", containerId],
-      ["--root", "/run/poietra/runc-state", "kill", containerId, "KILL"],
-      ["--root", "/run/poietra/runc-state", "delete", "--force", containerId],
+      ["--rootless=true", "--root", "/run/poietra/runc-state", "start", containerId],
+      ["--rootless=true", "--root", "/run/poietra/runc-state", "kill", containerId, "KILL"],
+      ["--rootless=true", "--root", "/run/poietra/runc-state", "delete", "--force", containerId],
     ]);
   });
 

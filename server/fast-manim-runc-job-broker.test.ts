@@ -26,6 +26,7 @@ import {
   FastManimRuncJobBundleStoreV1,
 } from "./fast-manim-runc-job-bundle";
 import { FAST_MANIM_RUNC_RELEASE_SCHEMA_V1, FastManimRuncReleaseTrustV1 } from "./fast-manim-runc-release-trust";
+import { FastManimRuncRootlessIdentityMapV1 } from "./fast-manim-runc-rootless-identity";
 import type {
   FastManimRuncCreatedProcessV1,
   FastManimRuncRuntimeV1,
@@ -46,6 +47,12 @@ const profile = JSON.parse(readFileSync(new URL("../sandbox/fast-manim-oci/profi
 const seccomp = JSON.parse(readFileSync(new URL("../sandbox/fast-manim-oci/seccomp.v1.json", import.meta.url), "utf8"));
 const seccompDigest = createHash("sha256").update(canonicalJsonV1(seccomp), "utf8").digest("hex");
 const keyPair = generateKeyPairSync("ed25519");
+const identityMap = new FastManimRuncRootlessIdentityMapV1({
+  allowedGidRanges: [{ size: 65_533, start: 200_000 }],
+  allowedUidRanges: [{ size: 65_533, start: 100_000 }],
+  gidMappings: [{ containerID: 0, hostID: 200_000, size: 65_533 }],
+  uidMappings: [{ containerID: 0, hostID: 100_000, size: 65_533 }],
+});
 
 type Deferred<T> = Readonly<{ promise: Promise<T>; reject: (reason: unknown) => void; resolve: (value: T) => void }>;
 
@@ -335,9 +342,11 @@ async function fixture(
   const job = dispatch();
   const broker = createFastManimRuncJobBrokerForTestingV1({
     bundleStore: new FastManimRuncJobBundleStoreV1({
+      identityMap,
       metadataPolicy: testMetadataPolicy,
       root: bundleRoot,
     }),
+    identityMap,
     limits: options.limits ?? limits(),
     now: () => NOW,
     pollIntervalMs: 1,

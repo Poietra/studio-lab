@@ -6,6 +6,11 @@ import { z } from "zod";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import type { LinuxCgroupV2LaunchEnvelopeV1 } from "./fast-manim-linux-cgroup-v2";
 import { type FastManimOciProfileV1, fastManimOciProfileV1Schema } from "./fast-manim-oci-sandbox-profile";
+import {
+  type FastManimRuncLinuxIdMappingV1,
+  type FastManimRuncRootlessIdentityMapV1,
+  isFastManimRuncRootlessIdentityMapV1,
+} from "./fast-manim-runc-rootless-identity";
 import { isFastManimSandboxResourceCgroupNameV1 } from "./fast-manim-sandbox-resources";
 
 const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
@@ -94,6 +99,7 @@ type DockerSeccompV1 = z.infer<typeof dockerSeccompV1Schema>;
 export type FastManimRuncOciSpecGeneratorOptionsV1 = Readonly<{
   assetsSourcePath: string;
   expectedSeccompDigest: string;
+  identityMap: FastManimRuncRootlessIdentityMapV1;
   profile: unknown;
   rootfsPath: string;
   seccomp: unknown;
@@ -264,9 +270,11 @@ const STANDARD_DEVICE_RULES = Object.freeze([
  */
 export class FastManimRuncOciSpecGeneratorV1 {
   readonly #assetsSourcePath: string;
+  readonly #gidMappings: readonly FastManimRuncLinuxIdMappingV1[];
   readonly #profile: FastManimOciProfileV1;
   readonly #rootfsPath: string;
   readonly #seccomp: DockerSeccompV1;
+  readonly #uidMappings: readonly FastManimRuncLinuxIdMappingV1[];
 
   constructor(options: FastManimRuncOciSpecGeneratorOptionsV1) {
     this.#rootfsPath = canonicalAbsoluteHostPath(options.rootfsPath, "The runc rootfs path");
@@ -274,6 +282,12 @@ export class FastManimRuncOciSpecGeneratorV1 {
     if (this.#rootfsPath === this.#assetsSourcePath) {
       throw new TypeError("The runc rootfs and asset source paths must be distinct.");
     }
+    if (!isFastManimRuncRootlessIdentityMapV1(options.identityMap)) {
+      throw new TypeError("The runc spec requires a trusted rootless identity mapping contract.");
+    }
+    const mappings = options.identityMap.ociMappings();
+    this.#gidMappings = mappings.gidMappings;
+    this.#uidMappings = mappings.uidMappings;
     this.#profile = fastManimOciProfileV1Schema.parse(options.profile);
     this.#seccomp = verifiedSeccomp(options.seccomp, options.expectedSeccompDigest);
     Object.freeze(this);
@@ -351,9 +365,10 @@ export class FastManimRuncOciSpecGeneratorV1 {
       linux: Object.freeze({
         cgroupsPath: launch.cgroupsPath,
         devices: STANDARD_DEVICES,
+        gidMappings: this.#gidMappings,
         maskedPaths: Object.freeze([...profile.proc.maskedPaths]),
         namespaces: Object.freeze(
-          (["pid", "network", "mount", "ipc", "uts", "cgroup"] as const).map((type) => Object.freeze({ type })),
+          (["pid", "network", "mount", "ipc", "uts", "cgroup", "user"] as const).map((type) => Object.freeze({ type })),
         ),
         readonlyPaths: Object.freeze([...profile.proc.readOnlyPaths]),
         resources: Object.freeze({ devices: STANDARD_DEVICE_RULES }),
@@ -366,6 +381,7 @@ export class FastManimRuncOciSpecGeneratorV1 {
           defaultErrnoRet: this.#seccomp.defaultErrnoRet,
           syscalls: Object.freeze(this.#seccomp.syscalls.map(frozenSeccompRule)),
         }),
+        uidMappings: this.#uidMappings,
       }),
       mounts,
       ociVersion: "1.2.0",

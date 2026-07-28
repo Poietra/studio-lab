@@ -6,11 +6,18 @@ import { describe, expect, it } from "vitest";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import type { LinuxCgroupV2LaunchEnvelopeV1 } from "./fast-manim-linux-cgroup-v2";
 import { FastManimRuncOciSpecGeneratorV1 } from "./fast-manim-runc-oci-spec";
+import { FastManimRuncRootlessIdentityMapV1 } from "./fast-manim-runc-rootless-identity";
 
 const profile = JSON.parse(readFileSync(new URL("../sandbox/fast-manim-oci/profile.v1.json", import.meta.url), "utf8"));
 const seccomp = JSON.parse(readFileSync(new URL("../sandbox/fast-manim-oci/seccomp.v1.json", import.meta.url), "utf8"));
 const seccompDigest = createHash("sha256").update(canonicalJsonV1(seccomp), "utf8").digest("hex");
 const cgroupsPath = `poietra-sandbox-v1/poietra-job-v1-${"a".repeat(32)}-1`;
+const identityMap = new FastManimRuncRootlessIdentityMapV1({
+  allowedGidRanges: [{ size: 65_533, start: 200_000 }],
+  allowedUidRanges: [{ size: 65_533, start: 100_000 }],
+  gidMappings: [{ containerID: 0, hostID: 200_000, size: 65_533 }],
+  uidMappings: [{ containerID: 0, hostID: 100_000, size: 65_533 }],
+});
 
 function launch(overrides: Record<string, unknown> = {}) {
   return {
@@ -31,6 +38,7 @@ function generator(overrides: Record<string, unknown> = {}) {
   return new FastManimRuncOciSpecGeneratorV1({
     assetsSourcePath: "/srv/poietra/jobs/aabbccdd/assets",
     expectedSeccompDigest: seccompDigest,
+    identityMap,
     profile,
     rootfsPath: "/srv/poietra/images/runtime/rootfs",
     seccomp,
@@ -52,6 +60,7 @@ describe("FastManimRuncOciSpecGeneratorV1", () => {
       hostname: "poietra-sandbox",
       linux: {
         cgroupsPath,
+        gidMappings: [{ containerID: 0, hostID: 200_000, size: 65_533 }],
         devices: [
           { fileMode: 0o666, gid: 0, major: 1, minor: 3, path: "/dev/null", type: "c", uid: 0 },
           { fileMode: 0o666, gid: 0, major: 1, minor: 5, path: "/dev/zero", type: "c", uid: 0 },
@@ -67,6 +76,7 @@ describe("FastManimRuncOciSpecGeneratorV1", () => {
           { type: "ipc" },
           { type: "uts" },
           { type: "cgroup" },
+          { type: "user" },
         ],
         seccomp: {
           architectures: ["SCMP_ARCH_X86_64", "SCMP_ARCH_X86", "SCMP_ARCH_X32"],
@@ -84,6 +94,7 @@ describe("FastManimRuncOciSpecGeneratorV1", () => {
             { access: "rwm", allow: true, major: 5, minor: 0, type: "c" },
           ],
         },
+        uidMappings: [{ containerID: 0, hostID: 100_000, size: 65_533 }],
       },
       ociVersion: "1.2.0",
       process: {
@@ -169,6 +180,10 @@ describe("FastManimRuncOciSpecGeneratorV1", () => {
 
     const changedDigest = createHash("sha256").update(canonicalJsonV1(changed), "utf8").digest("hex");
     expect(() => generator({ expectedSeccompDigest: changedDigest, seccomp: changed })).toThrow(/architecture/i);
+  });
+
+  it("requires the trusted constructor-owned rootless mapping contract", () => {
+    expect(() => generator({ identityMap: { uidMappings: [] } })).toThrow(/rootless identity/i);
   });
 
   it("rejects a non-canonical cgroupsPath and tmpfs limits beyond the locked profile", () => {

@@ -43,6 +43,7 @@ export interface FastManimRuncRuntimeV1 {
 }
 
 type SpawnRuncV1 = typeof spawn;
+const productionRuncRuntimes = new WeakSet<object>();
 
 export type FastManimRuncCliRuntimeOptionsV1 = Readonly<{
   bundleRoot: string;
@@ -104,6 +105,7 @@ export class FastManimRuncCliRuntimeV1 implements FastManimRuncRuntimeV1 {
       throw new TypeError("The runc bundle and state roots must be distinct.");
     }
     this.#spawn = options.spawnProcess ?? spawn;
+    if (options.spawnProcess === undefined) productionRuncRuntimes.add(this);
   }
 
   create(options: Readonly<{ bundlePath: string; containerId: string; deadlineEpochMs: number }>) {
@@ -115,7 +117,7 @@ export class FastManimRuncCliRuntimeV1 implements FastManimRuncRuntimeV1 {
     const timeoutMs = boundedDeadline(options.deadlineEpochMs);
     const child = this.#spawn(
       "/usr/bin/runc",
-      ["--root", this.#stateRoot, "create", "--bundle", bundlePath, containerId],
+      ["--rootless=true", "--root", this.#stateRoot, "create", "--bundle", bundlePath, containerId],
       {
         cwd: "/",
         env: { LANG: "C.UTF-8", LC_ALL: "C.UTF-8", PATH: "/usr/sbin:/usr/bin:/sbin:/bin" },
@@ -201,7 +203,7 @@ export class FastManimRuncCliRuntimeV1 implements FastManimRuncRuntimeV1 {
     const timeoutMs = boundedDeadline(deadlineEpochMs);
     signal?.throwIfAborted();
     return new Promise<Readonly<{ stderr: Buffer; stdout: Buffer }>>((resolveRun, rejectRun) => {
-      const child = this.#spawn("/usr/bin/runc", ["--root", this.#stateRoot, ...arguments_], {
+      const child = this.#spawn("/usr/bin/runc", ["--rootless=true", "--root", this.#stateRoot, ...arguments_], {
         cwd: "/",
         env: { LANG: "C.UTF-8", LC_ALL: "C.UTF-8", PATH: "/usr/sbin:/usr/bin:/sbin:/bin" },
         stdio: ["ignore", "pipe", "pipe"],
@@ -257,4 +259,12 @@ export class FastManimRuncCliRuntimeV1 implements FastManimRuncRuntimeV1 {
       if (signal?.aborted) onAbort();
     });
   }
+}
+
+export function isProductionFastManimRuncRuntimeV1(value: unknown): value is FastManimRuncCliRuntimeV1 {
+  return (
+    value instanceof FastManimRuncCliRuntimeV1 &&
+    Object.getPrototypeOf(value) === FastManimRuncCliRuntimeV1.prototype &&
+    productionRuncRuntimes.has(value)
+  );
 }

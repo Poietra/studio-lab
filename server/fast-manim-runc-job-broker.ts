@@ -19,11 +19,16 @@ import {
 } from "./fast-manim-runc-job-bundle";
 import { FastManimRuncOciSpecGeneratorV1 } from "./fast-manim-runc-oci-spec";
 import { FastManimRuncVerifiedReleaseV1 } from "./fast-manim-runc-release-trust";
+import {
+  type FastManimRuncRootlessIdentityMapV1,
+  isFastManimRuncRootlessIdentityMapV1,
+} from "./fast-manim-runc-rootless-identity";
 import type {
   FastManimRuncCreatedProcessV1,
   FastManimRuncRuntimeV1,
   FastManimRuncStateV1,
 } from "./fast-manim-runc-runtime";
+import { isProductionFastManimRuncRuntimeV1 } from "./fast-manim-runc-runtime";
 import {
   FastManimSandboxBackendControlError,
   type FastManimSandboxBackendResultV1,
@@ -91,6 +96,7 @@ function copyCanonicalJson(value: unknown) {
 
 export type FastManimRuncJobBrokerOptionsV1 = Readonly<{
   bundleStore: FastManimRuncJobBundleStoreV1;
+  identityMap: FastManimRuncRootlessIdentityMapV1;
   limits: unknown;
   now?: () => number;
   pollIntervalMs?: number;
@@ -111,6 +117,7 @@ export type FastManimRuncJobBrokerOptionsV1 = Readonly<{
 export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
   readonly #active = new Set<BrokerActiveJob>();
   readonly #bundleStore: FastManimRuncJobBundleStoreV1;
+  readonly #identityMap: FastManimRuncRootlessIdentityMapV1;
   readonly #limits: FastManimSandboxResourceLimitsV1;
   readonly #now: () => number;
   readonly #pollIntervalMs: number;
@@ -135,6 +142,9 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
     if (!(options.release instanceof FastManimRuncVerifiedReleaseV1)) {
       throw new TypeError("The production runc broker requires one verified signed release.");
     }
+    if (!isFastManimRuncRootlessIdentityMapV1(options.identityMap)) {
+      throw new TypeError("The production runc broker requires one rootless identity map.");
+    }
     if (
       typeof options.resourceController?.admit !== "function" ||
       typeof options.runtime?.create !== "function" ||
@@ -145,6 +155,9 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
     ) {
       throw new TypeError("The production runc broker runtime boundary is incomplete.");
     }
+    if (!isProductionFastManimRuncRuntimeV1(options.runtime) && testCapability !== testBrokerCapabilityV1) {
+      throw new TypeError("The production runc broker requires its closed runc runtime.");
+    }
     if (options.now !== undefined && typeof options.now !== "function") {
       throw new TypeError("The production runc broker clock is malformed.");
     }
@@ -154,6 +167,7 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
     const profile = fastManimOciProfileV1Schema.parse(copyCanonicalJson(options.profile));
     const seccomp = copyCanonicalJson(options.seccomp);
     this.#bundleStore = options.bundleStore;
+    this.#identityMap = options.identityMap;
     this.#limits = parseFastManimSandboxResourceLimitsV1(options.limits);
     this.#now = options.now ?? Date.now;
     this.#pollIntervalMs = checkedPollInterval(options.pollIntervalMs);
@@ -281,6 +295,7 @@ export class FastManimRuncJobBrokerV1 implements FastManimOciJobBrokerV1 {
       const spec = new FastManimRuncOciSpecGeneratorV1({
         assetsSourcePath: bundlePlan.assetsPath,
         expectedSeccompDigest: dispatch.descriptor.seccompDigest,
+        identityMap: this.#identityMap,
         profile: this.#profile,
         rootfsPath,
         seccomp: this.#seccomp,

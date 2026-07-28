@@ -15,6 +15,7 @@ import {
   isProductionFastManimRuncJobBundleStoreV1,
 } from "./fast-manim-runc-job-bundle";
 import { FastManimRuncOciSpecGeneratorV1, type FastManimRuncOciSpecV1 } from "./fast-manim-runc-oci-spec";
+import { FastManimRuncRootlessIdentityMapV1 } from "./fast-manim-runc-rootless-identity";
 import { FastManimSandboxRequestBundleV1 } from "./fast-manim-sandbox-backend";
 import { sandboxProducerRequest } from "./test-fixtures/fast-manim-sandbox-backend-fixture";
 
@@ -105,14 +106,40 @@ function localMetadataPolicy(failMode?: number): FastManimRuncJobBundleMetadataP
   };
 }
 
-function store(metadataPolicy = localMetadataPolicy()) {
-  return new FastManimRuncJobBundleStoreV1({ metadataPolicy, root });
+function rootlessIdentity(hostUid = uid, hostGid = gid) {
+  const subordinateUid = Math.max(100_000, hostUid + 1000);
+  const subordinateGid = Math.max(200_000, hostGid + 1000);
+  return new FastManimRuncRootlessIdentityMapV1({
+    allowedGidRanges: [
+      { size: 1, start: hostGid },
+      { size: 65_532, start: subordinateGid },
+    ],
+    allowedUidRanges: [
+      { size: 1, start: hostUid },
+      { size: 65_532, start: subordinateUid },
+    ],
+    gidMappings: [
+      { containerID: 0, hostID: hostGid, size: 1 },
+      { containerID: 1, hostID: subordinateGid, size: 65_532 },
+    ],
+    uidMappings: [
+      { containerID: 0, hostID: hostUid, size: 1 },
+      { containerID: 1, hostID: subordinateUid, size: 65_532 },
+    ],
+  });
 }
 
-function spec(assetsPath: string, id = containerId) {
+const identityMap = rootlessIdentity();
+
+function store(metadataPolicy = localMetadataPolicy()) {
+  return new FastManimRuncJobBundleStoreV1({ identityMap, metadataPolicy, root });
+}
+
+function spec(assetsPath: string, id = containerId, mapping = identityMap) {
   return new FastManimRuncOciSpecGeneratorV1({
     assetsSourcePath: assetsPath,
     expectedSeccompDigest: seccompDigest,
+    identityMap: mapping,
     profile,
     rootfsPath: `/srv/poietra/rootfs/${"f".repeat(64)}`,
     seccomp,
@@ -138,12 +165,26 @@ afterEach(async () => {
 });
 
 describe("FastManimRuncJobBundleStoreV1", () => {
-  it("brands only stores using the strict root-owned production policy", () => {
-    expect(isProductionFastManimRuncJobBundleStoreV1(new FastManimRuncJobBundleStoreV1({ root }))).toBe(true);
+  it("brands only stores using the strict mapped-root production policy", () => {
+    expect(isProductionFastManimRuncJobBundleStoreV1(new FastManimRuncJobBundleStoreV1({ identityMap, root }))).toBe(
+      true,
+    );
     expect(isProductionFastManimRuncJobBundleStoreV1(store())).toBe(false);
     expect(isProductionFastManimRuncJobBundleStoreV1({ root })).toBe(false);
     class OverriddenStore extends FastManimRuncJobBundleStoreV1 {}
-    expect(isProductionFastManimRuncJobBundleStoreV1(new OverriddenStore({ root }))).toBe(false);
+    expect(isProductionFastManimRuncJobBundleStoreV1(new OverriddenStore({ identityMap, root }))).toBe(false);
+  });
+
+  it("locks production bundle entries to mapped container root", async () => {
+    const bundles = new FastManimRuncJobBundleStoreV1({ identityMap, root });
+    const plan = bundles.plan(containerId);
+    await bundles.stage({ dispatch: dispatch(), plan, spec: spec(plan.assetsPath) });
+    for (const path of [plan.bundlePath, plan.assetsPath, join(plan.bundlePath, "config.json")]) {
+      const metadata = await lstat(path);
+      expect(metadata.uid).toBe(identityMap.hostRootIdentity().uid);
+      expect(metadata.gid).toBe(identityMap.hostRootIdentity().gid);
+    }
+    await bundles.cleanup(plan);
   });
 
   it("stages an exclusive canonical config and immutable digest-addressed assets", async () => {
@@ -201,11 +242,21 @@ describe("FastManimRuncJobBundleStoreV1", () => {
     await bundles.cleanup(plan);
 
     const secondPlan = bundles.plan(containerId);
-    const inherited = Object.create(spec(secondPlan.assetsPath)) as FastManimRuncOciSpecV1;
-    await expect(bundles.stage({ dispatch: dispatch(), plan: secondPlan, spec: inherited })).rejects.toThrow(
+    await expect(
+      bundles.stage({
+        dispatch: dispatch(),
+        plan: secondPlan,
+        spec: spec(secondPlan.assetsPath, containerId, rootlessIdentity(uid + 1, gid + 1)),
+      }),
+    ).rejects.toThrow(/user namespace/i);
+    await bundles.cleanup(secondPlan);
+
+    const thirdPlan = bundles.plan(containerId);
+    const inherited = Object.create(spec(thirdPlan.assetsPath)) as FastManimRuncOciSpecV1;
+    await expect(bundles.stage({ dispatch: dispatch(), plan: thirdPlan, spec: inherited })).rejects.toThrow(
       /plain JSON/i,
     );
-    await bundles.cleanup(secondPlan);
+    await bundles.cleanup(thirdPlan);
   });
 
   it("cleans a partially staged store but never removes a pre-existing bundle", async () => {
@@ -229,12 +280,13 @@ describe("FastManimRuncJobBundleStoreV1", () => {
     await expect(readFile(join(collision.bundlePath, "sentinel"), "utf8")).resolves.toBe("preserve");
   });
 
-  it.skipIf(uid === 0)("uses strict root-owned metadata by default", async () => {
-    const bundles = new FastManimRuncJobBundleStoreV1({ root });
+  it("uses strict mapped-container-root metadata by default", async () => {
+    const foreignIdentity = rootlessIdentity(uid + 1, gid + 1);
+    const bundles = new FastManimRuncJobBundleStoreV1({ identityMap: foreignIdentity, root });
     const plan = bundles.plan(containerId);
-    await expect(bundles.stage({ dispatch: dispatch(), plan, spec: spec(plan.assetsPath) })).rejects.toThrow(
-      /root-owned/i,
-    );
+    await expect(
+      bundles.stage({ dispatch: dispatch(), plan, spec: spec(plan.assetsPath, containerId, foreignIdentity) }),
+    ).rejects.toThrow(/mapped container root/i);
     await bundles.cleanup(plan);
   });
 });

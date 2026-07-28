@@ -13,6 +13,10 @@ import {
   fastManimOciJobDescriptorV1Schema,
 } from "./fast-manim-oci-sandbox-profile";
 import type { FastManimRuncOciSpecV1 } from "./fast-manim-runc-oci-spec";
+import {
+  type FastManimRuncRootlessIdentityMapV1,
+  isFastManimRuncRootlessIdentityMapV1,
+} from "./fast-manim-runc-rootless-identity";
 import { isFastManimSandboxResourceCgroupNameV1 } from "./fast-manim-sandbox-resources";
 
 const CONFIG_FILE_NAME = "config.json";
@@ -23,13 +27,14 @@ const DIRECTORY_FLAGS = constants.O_RDONLY | constants.O_DIRECTORY | constants.O
 
 type BundleEntryExpectation = Readonly<{ kind: "directory" | "file"; mode: number }>;
 
-/** Trusted filesystem seam. Production omits it and enforces root:root. */
+/** Trusted test seam. Production omits it and enforces mapped container-root ownership. */
 export interface FastManimRuncJobBundleMetadataPolicyV1 {
   prepare(handle: FileHandle, expectation: BundleEntryExpectation): Promise<void>;
   verifyRoot(handle: FileHandle): Promise<void>;
 }
 
 export type FastManimRuncJobBundleStoreOptionsV1 = Readonly<{
+  identityMap: FastManimRuncRootlessIdentityMapV1;
   metadataPolicy?: FastManimRuncJobBundleMetadataPolicyV1;
   root: string;
 }>;
@@ -66,20 +71,23 @@ function assertEntryMetadata(metadata: Stats, expectation: BundleEntryExpectatio
   }
 }
 
-const productionMetadataPolicy: FastManimRuncJobBundleMetadataPolicyV1 = Object.freeze({
-  async prepare(handle: FileHandle, expectation: BundleEntryExpectation) {
-    await handle.chown(0, 0);
-    await handle.chmod(expectation.mode);
-    assertEntryMetadata(await handle.stat({ bigint: false }), expectation, 0, 0);
-  },
-  async verifyRoot(handle: FileHandle) {
-    const metadata = await handle.stat({ bigint: false });
-    if (!metadata.isDirectory() || metadata.isSymbolicLink() || metadata.uid !== 0 || metadata.gid !== 0) {
-      throw new Error("The runc job bundle root is not a root-owned directory.");
-    }
-    if ((metadata.mode & 0o022) !== 0) throw new Error("The runc job bundle root is writable by another identity.");
-  },
-});
+function productionMetadataPolicy(identityMap: FastManimRuncRootlessIdentityMapV1) {
+  const { gid, uid } = identityMap.hostRootIdentity();
+  return Object.freeze({
+    async prepare(handle: FileHandle, expectation: BundleEntryExpectation) {
+      await handle.chown(uid, gid);
+      await handle.chmod(expectation.mode);
+      assertEntryMetadata(await handle.stat({ bigint: false }), expectation, uid, gid);
+    },
+    async verifyRoot(handle: FileHandle) {
+      const metadata = await handle.stat({ bigint: false });
+      if (!metadata.isDirectory() || metadata.isSymbolicLink() || metadata.uid !== uid || metadata.gid !== gid) {
+        throw new Error("The runc job bundle root is not owned by mapped container root.");
+      }
+      if ((metadata.mode & 0o022) !== 0) throw new Error("The runc job bundle root is writable by another identity.");
+    },
+  }) satisfies FastManimRuncJobBundleMetadataPolicyV1;
+}
 
 const productionBundleStores = new WeakSet<object>();
 
@@ -171,7 +179,11 @@ async function createExclusiveFile(
   }
 }
 
-function assertSpecMatchesPlan(spec: FastManimRuncOciSpecV1, state: BundleState) {
+function assertSpecMatchesPlan(
+  spec: FastManimRuncOciSpecV1,
+  state: BundleState,
+  mappings: ReturnType<FastManimRuncRootlessIdentityMapV1["ociMappings"]>,
+) {
   assertPlainJson(spec);
   if (spec.linux?.cgroupsPath?.split("/").at(-1) !== state.containerId) {
     throw new TypeError("The OCI spec cgroup does not match its server bundle plan.");
@@ -185,17 +197,28 @@ function assertSpecMatchesPlan(spec: FastManimRuncOciSpecV1, state: BundleState)
   ) {
     throw new TypeError("The OCI spec asset mount does not match its server bundle plan.");
   }
+  if (
+    canonicalJsonV1(spec.linux.uidMappings) !== canonicalJsonV1(mappings.uidMappings) ||
+    canonicalJsonV1(spec.linux.gidMappings) !== canonicalJsonV1(mappings.gidMappings)
+  ) {
+    throw new TypeError("The OCI spec user namespace does not match its server bundle store.");
+  }
 }
 
 export class FastManimRuncJobBundleStoreV1 {
   readonly #active = new Map<string, BundleState>();
+  readonly #identityMappings: ReturnType<FastManimRuncRootlessIdentityMapV1["ociMappings"]>;
   readonly #metadataPolicy: FastManimRuncJobBundleMetadataPolicyV1;
   readonly #plans = new WeakMap<FastManimRuncJobBundleHandleV1, BundleState>();
   readonly #root: string;
 
   constructor(options: FastManimRuncJobBundleStoreOptionsV1) {
     this.#root = canonicalRoot(options?.root);
-    this.#metadataPolicy = options.metadataPolicy ?? productionMetadataPolicy;
+    if (!isFastManimRuncRootlessIdentityMapV1(options.identityMap)) {
+      throw new TypeError("The runc bundle store requires a trusted rootless identity mapping contract.");
+    }
+    this.#identityMappings = options.identityMap.ociMappings();
+    this.#metadataPolicy = options.metadataPolicy ?? productionMetadataPolicy(options.identityMap);
     if (typeof this.#metadataPolicy?.prepare !== "function" || typeof this.#metadataPolicy.verifyRoot !== "function") {
       throw new TypeError("The runc bundle metadata policy is malformed.");
     }
@@ -283,7 +306,7 @@ export class FastManimRuncJobBundleStoreV1 {
     if (!(dispatch instanceof FastManimOciBrokerDispatchV1)) {
       throw new TypeError("A runc bundle requires a verified OCI broker dispatch.");
     }
-    assertSpecMatchesPlan(spec, state);
+    assertSpecMatchesPlan(spec, state, this.#identityMappings);
     const descriptor = fastManimOciJobDescriptorV1Schema.parse(dispatch.descriptor);
     const assets = dispatch.copyAssets();
     if (assets.length !== descriptor.assets.length) throw new TypeError("The OCI asset copies changed before staging.");
