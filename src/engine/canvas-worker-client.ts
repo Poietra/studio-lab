@@ -8,6 +8,7 @@ import {
   canvasWorkerResponseV1Schema,
   MAX_CANVAS_SNAPSHOT_JSON_BYTES,
   MAX_CANVAS_WASM_MODULE_URL_LENGTH,
+  normalizeCanvasInteractionEntityIdsV1,
   POIETRA_CANVAS_WORKER_VERSION,
 } from "./canvas-worker-protocol";
 import type { CanvasFrameEvidenceResponseV1 } from "./canvas-worker-evidence";
@@ -101,6 +102,8 @@ export type ReplaceCanvasSceneInputV1 = Readonly<{
 }>;
 
 export type RenderCanvasFrameInputV1 = Readonly<{
+  /** Verified runtime IDs whose sampled visual hit bounds are requested. */
+  interactionEntityIds?: readonly string[];
   revision: string;
   sampleTime: number;
   viewport: Readonly<{ heightPx: number; widthPx: number }>;
@@ -408,7 +411,12 @@ export class PoietraCanvasWorkerClient {
     if (this.state !== "ready" || this.currentRevision !== input.revision) {
       throw new CanvasWorkerClientError("invalid-state", "The requested canvas Scene revision is not installed.");
     }
+    const interactionEntityIds = normalizeCanvasInteractionEntityIdsV1(input.interactionEntityIds);
     const request = parseWorkerRequest({
+      ...(interactionEntityIds === undefined ||
+      (Array.isArray(interactionEntityIds) && interactionEntityIds.length === 0)
+        ? {}
+        : { interactionEntityIds }),
       kind: "render-frame",
       requestId: this.takeRequestId(),
       revision: input.revision,

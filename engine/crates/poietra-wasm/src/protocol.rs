@@ -1,9 +1,12 @@
+use std::collections::BTreeSet;
+
 use poietra_eval::{EngineSessionV1, EvaluationError, SampleEngineSessionOptionsV1};
 use poietra_scene_ir::{
     ContractJsonError, ContractVersionV1, MAX_VIEWPORT_PIXELS_V1, RenderPacketV1, ViewportV1,
     parse_scene_ir_bundle_json_v1,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 
 use crate::bounded_writer::BoundedWriter;
 
@@ -16,6 +19,7 @@ pub const MAX_WORKER_RESPONSE_JSON_BYTES_V1: usize = poietra_scene_ir::MAX_CONTR
 const MAX_EVIDENCE_ENTRIES_V1: usize = 64;
 const MAX_EVIDENCE_UTF16_UNITS_V1: usize = 500;
 const MAX_ID_UTF16_UNITS_V1: usize = 240;
+pub(crate) const MAX_INTERACTION_ENTITY_IDS_V1: usize = 128;
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkerSessionError {
@@ -35,6 +39,8 @@ enum SampleRequestSchemaV1 {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SampleRequestV1 {
     evidence: Vec<String>,
+    #[serde(default)]
+    interaction_entity_ids: RawInteractionEntityIdsV1,
     packet_id: String,
     sample_time: f64,
     #[serde(rename = "schema")]
@@ -42,6 +48,23 @@ struct SampleRequestV1 {
     #[serde(rename = "version")]
     _version: ContractVersionV1,
     viewport: ViewportV1,
+}
+
+/// Distinguishes an omitted opt-in field from an explicitly malformed value.
+///
+/// The interaction request is advisory metadata: decoding it leniently keeps a
+/// bad hit-target request from turning an otherwise renderable pixel frame into
+/// an error. The enclosing sample request remains strict for every core field.
+#[derive(Debug, Default)]
+struct RawInteractionEntityIdsV1(Option<Box<RawValue>>);
+
+impl<'de> Deserialize<'de> for RawInteractionEntityIdsV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Box::<RawValue>::deserialize(deserializer).map(|value| Self(Some(value)))
+    }
 }
 
 /// Correlation copied from one syntactically decoded sample request.
@@ -56,7 +79,34 @@ pub(crate) struct SampleRequestCorrelationV1 {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SampledRenderPacketV1 {
     pub(crate) correlation: SampleRequestCorrelationV1,
+    pub(crate) interaction: SampledInteractionRequestV1,
     pub(crate) packet: RenderPacketV1,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SampledInteractionEntityV1 {
+    pub(crate) active: bool,
+    pub(crate) entity_id: Option<String>,
+    pub(crate) known: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum SampledInteractionRequestV1 {
+    /// No interaction metadata was requested. The response must preserve the
+    /// pre-extension wire shape by omitting the interaction field.
+    Disabled,
+    /// The metadata envelope itself was unusable (for example, not an array or
+    /// over the fixed cap). Pixel evaluation still proceeds normally.
+    Unavailable,
+    /// One entry per requested position. `entity_id: None` marks a malformed or
+    /// duplicate item without retaining an attacker-controlled oversized value.
+    Available(Vec<SampledInteractionEntityV1>),
+}
+
+enum NormalizedInteractionRequestV1 {
+    Disabled,
+    Unavailable,
+    Available(Vec<Option<String>>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -177,13 +227,23 @@ fn serialize_response(response: &WorkerResponseV1) -> Vec<u8> {
 }
 
 fn portable_id(value: &str) -> bool {
+    portable_id_with_hash_policy(value, false)
+}
+
+fn portable_source_identity(value: &str) -> bool {
+    portable_id_with_hash_policy(value, true)
+}
+
+fn portable_id_with_hash_policy(value: &str, allow_hash: bool) -> bool {
     let mut bytes = value.bytes();
     let Some(first) = bytes.next() else {
         return false;
     };
     first.is_ascii_alphanumeric()
         && bytes.all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'@' | b'/' | b'-')
+            byte.is_ascii_alphanumeric()
+                || matches!(byte, b'.' | b'_' | b':' | b'@' | b'/' | b'-')
+                || (allow_hash && byte == b'#')
         })
 }
 
@@ -223,6 +283,100 @@ fn validate_request(request: &SampleRequestV1) -> Result<(), &'static str> {
         return Err("viewport exceeds the v1 dimensions or pixel limit");
     }
     Ok(())
+}
+
+fn normalize_interaction_request(
+    raw: &RawInteractionEntityIdsV1,
+) -> NormalizedInteractionRequestV1 {
+    let Some(value) = raw.0.as_deref() else {
+        return NormalizedInteractionRequestV1::Disabled;
+    };
+    let Ok(values) = serde_json::from_str::<Vec<Box<RawValue>>>(value.get()) else {
+        return NormalizedInteractionRequestV1::Unavailable;
+    };
+    if values.len() > MAX_INTERACTION_ENTITY_IDS_V1 {
+        return NormalizedInteractionRequestV1::Unavailable;
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut duplicates = BTreeSet::new();
+    let mut entries = values
+        .iter()
+        .map(|value| {
+            let value = serde_json::from_str::<String>(value.get()).ok()?;
+            if !validate_bounded_unpadded_text(&value, MAX_ID_UTF16_UNITS_V1)
+                || !portable_source_identity(&value)
+            {
+                return None;
+            }
+            if !seen.insert(value.clone()) {
+                duplicates.insert(value.clone());
+            }
+            Some(value)
+        })
+        .collect::<Vec<_>>();
+    for entry in &mut entries {
+        if entry
+            .as_ref()
+            .is_some_and(|entity_id| duplicates.contains(entity_id))
+        {
+            *entry = None;
+        }
+    }
+    NormalizedInteractionRequestV1::Available(entries)
+}
+
+fn sample_interaction_request(
+    request: NormalizedInteractionRequestV1,
+    session: &EngineSessionV1,
+    sample_time: f64,
+) -> SampledInteractionRequestV1 {
+    let entries = match request {
+        NormalizedInteractionRequestV1::Disabled => {
+            return SampledInteractionRequestV1::Disabled;
+        }
+        NormalizedInteractionRequestV1::Unavailable => {
+            return SampledInteractionRequestV1::Unavailable;
+        }
+        NormalizedInteractionRequestV1::Available(entries) => entries,
+    };
+    let requested = entries
+        .iter()
+        .filter_map(|entity_id| entity_id.as_deref())
+        .collect::<BTreeSet<_>>();
+    let mut known = BTreeSet::new();
+    let mut active = BTreeSet::new();
+    for entity in &session.scene().entities {
+        if !requested.contains(entity.id.as_str()) {
+            continue;
+        }
+        known.insert(entity.id.as_str());
+        if entity
+            .lifetimes
+            .iter()
+            .any(|lifetime| sample_time >= lifetime.start && sample_time < lifetime.end)
+        {
+            active.insert(entity.id.as_str());
+        }
+    }
+    SampledInteractionRequestV1::Available(
+        entries
+            .iter()
+            .map(|entity_id| {
+                let is_known = entity_id
+                    .as_deref()
+                    .is_some_and(|entity_id| known.contains(entity_id));
+                let is_active = entity_id
+                    .as_deref()
+                    .is_some_and(|entity_id| active.contains(entity_id));
+                SampledInteractionEntityV1 {
+                    active: is_active,
+                    entity_id: entity_id.clone(),
+                    known: is_known,
+                }
+            })
+            .collect(),
+    )
 }
 
 /// Native core behind the exported WASM handle.
@@ -287,6 +441,7 @@ impl EngineWorkerSessionV1 {
                 message,
             ));
         }
+        let interaction_request = normalize_interaction_request(&request.interaction_entity_ids);
         let correlation = SampleRequestCorrelationV1 {
             packet_id: request.packet_id.clone(),
             sample_time: request.sample_time,
@@ -308,8 +463,11 @@ impl EngineWorkerSessionV1 {
                 };
                 SamplePacketErrorV1::with_correlation(code, error.to_string(), correlation.clone())
             })?;
+        let interaction =
+            sample_interaction_request(interaction_request, &self.session, packet.sample_time);
         Ok(SampledRenderPacketV1 {
             correlation,
+            interaction,
             packet,
         })
     }
@@ -378,6 +536,19 @@ mod tests {
         .unwrap()
     }
 
+    fn sample_request_with_interaction(interaction_entity_ids: &Value) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "evidence": ["Poietra WASM protocol fixture v1"],
+            "interactionEntityIds": interaction_entity_ids,
+            "packetId": "wasm:interaction",
+            "sampleTime": 1,
+            "schema": "poietra.engine-sample-request",
+            "version": 1,
+            "viewport": { "heightPx": 90, "widthPx": 160 },
+        }))
+        .unwrap()
+    }
+
     #[test]
     fn retained_session_returns_only_the_sampled_packet() {
         let fixture = fixture();
@@ -408,6 +579,105 @@ mod tests {
             (sampled.packet.sample_time - sampled.correlation.sample_time).abs() < f64::EPSILON
         );
         assert_eq!(sampled.packet.viewport, sampled.correlation.viewport);
+        assert_eq!(sampled.interaction, SampledInteractionRequestV1::Disabled);
+    }
+
+    #[test]
+    fn interaction_items_are_verified_without_rejecting_the_pixel_sample() {
+        let mut fixture = fixture();
+        fixture["scene"]["entities"][0]["lifetimes"][0]["end"] = json!(0.5);
+        let session = EngineWorkerSessionV1::from_snapshot_json(&snapshot(&fixture)).unwrap();
+        let request = sample_request_with_interaction(&json!([
+            "earlier",
+            "later",
+            "missing",
+            "earlier",
+            "bad id!",
+            7,
+            "source#missing"
+        ]));
+
+        let sampled = session.sample_packet_json(&request).unwrap();
+        assert_eq!(sampled.packet.draws[0].entity_id(), "earlier");
+        let SampledInteractionRequestV1::Available(entries) = sampled.interaction else {
+            panic!("bounded interaction request must remain available");
+        };
+        assert_eq!(entries.len(), 7);
+        assert_eq!(entries[0].entity_id, None);
+        assert!(!entries[0].known);
+        assert!(!entries[0].active);
+        assert_eq!(
+            entries[1],
+            SampledInteractionEntityV1 {
+                active: false,
+                entity_id: Some("later".to_owned()),
+                known: true,
+            }
+        );
+        assert_eq!(entries[2].entity_id.as_deref(), Some("missing"));
+        assert!(!entries[2].known);
+        assert_eq!(entries[3].entity_id, None);
+        assert_eq!(entries[4].entity_id, None);
+        assert_eq!(entries[5].entity_id, None);
+        assert_eq!(entries[6].entity_id.as_deref(), Some("source#missing"));
+    }
+
+    #[test]
+    fn malformed_or_oversized_interaction_envelopes_do_not_fail_pixel_sampling() {
+        let fixture = fixture();
+        let session = EngineWorkerSessionV1::from_snapshot_json(&snapshot(&fixture)).unwrap();
+        let exactly_maximum = (0..MAX_INTERACTION_ENTITY_IDS_V1)
+            .map(|index| format!("missing:{index}"))
+            .collect::<Vec<_>>();
+        let sampled = session
+            .sample_packet_json(&sample_request_with_interaction(&json!(exactly_maximum)))
+            .unwrap();
+        assert!(matches!(
+            sampled.interaction,
+            SampledInteractionRequestV1::Available(ref entries)
+                if entries.len() == MAX_INTERACTION_ENTITY_IDS_V1
+        ));
+
+        let oversized = (0..=MAX_INTERACTION_ENTITY_IDS_V1)
+            .map(|index| format!("missing:{index}"))
+            .collect::<Vec<_>>();
+        for metadata in [json!(oversized), json!({ "not": "an array" }), Value::Null] {
+            let sampled = session
+                .sample_packet_json(&sample_request_with_interaction(&metadata))
+                .unwrap();
+            assert_eq!(
+                sampled.interaction,
+                SampledInteractionRequestV1::Unavailable
+            );
+            assert!(!sampled.packet.draws.is_empty());
+        }
+    }
+
+    #[test]
+    fn out_of_range_interaction_number_degrades_only_that_entry() {
+        let fixture = fixture();
+        let session = EngineWorkerSessionV1::from_snapshot_json(&snapshot(&fixture)).unwrap();
+        let request = br#"{
+            "evidence":["Poietra WASM protocol fixture v1"],
+            "interactionEntityIds":["earlier",1e400,"later"],
+            "packetId":"wasm:interaction",
+            "sampleTime":1,
+            "schema":"poietra.engine-sample-request",
+            "version":1,
+            "viewport":{"heightPx":90,"widthPx":160}
+        }"#;
+
+        let sampled = session.sample_packet_json(request).unwrap();
+        let SampledInteractionRequestV1::Available(entries) = sampled.interaction else {
+            panic!("a malformed optional item must not reject pixel sampling");
+        };
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].entity_id.as_deref(), Some("earlier"));
+        assert!(entries[0].known && entries[0].active);
+        assert_eq!(entries[1].entity_id, None);
+        assert_eq!(entries[2].entity_id.as_deref(), Some("later"));
+        assert!(entries[2].known && entries[2].active);
+        assert!(!sampled.packet.draws.is_empty());
     }
 
     #[test]

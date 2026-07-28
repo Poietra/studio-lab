@@ -1,4 +1,4 @@
-import type { SceneIrBundleV1 } from "../engine/contracts";
+import type { CanvasInteractionResultV1 } from "../engine/canvas-worker-protocol";
 import type {
   PreviewFallbackReasonV1,
   PreviewRendererHostStateV1,
@@ -273,188 +273,45 @@ export type StudioPreviewInteractionGeometryV1 = ReadonlyMap<
   Readonly<{ dimensions: EntityDimensions | null; position: Point }>
 >;
 
-function worldCenter(entity: SceneIrBundleV1["scene"]["entities"][number]) {
-  const geometry = entity.geometry;
-  const local =
-    geometry.kind === "circle" || geometry.kind === "rectangle"
-      ? geometry.center
-      : geometry.kind === "line"
-        ? { x: (geometry.start.x + geometry.end.x) / 2, y: (geometry.start.y + geometry.end.y) / 2 }
-        : null;
-  if (!local) return null;
-  // Engine affine convention (prepare.rs): x' = m11*x + m12*y + tx and
-  // y' = m21*x + m22*y + ty — m12/m21 are row entries, not a transposed pair.
-  const transform = entity.transform;
-  return {
-    x: transform.m11 * local.x + transform.m12 * local.y + transform.tx,
-    y: transform.m21 * local.x + transform.m22 * local.y + transform.ty,
-  };
-}
-
-function transformedPoint(
-  entity: SceneIrBundleV1["scene"]["entities"][number],
-  point: Readonly<{ x: number; y: number }>,
-) {
-  const transform = entity.transform;
-  return {
-    x: transform.m11 * point.x + transform.m12 * point.y + transform.tx,
-    y: transform.m21 * point.x + transform.m22 * point.y + transform.ty,
-  };
-}
-
-function cubicCoordinate(from: number, control1: number, control2: number, to: number, time: number) {
-  const inverse = 1 - time;
-  return (
-    inverse * inverse * inverse * from +
-    3 * inverse * inverse * time * control1 +
-    3 * inverse * time * time * control2 +
-    time * time * time * to
-  );
-}
-
-function cubicExtrema(from: number, control1: number, control2: number, to: number) {
-  const quadratic = -from + 3 * control1 - 3 * control2 + to;
-  const linear = 2 * (from - 2 * control1 + control2);
-  const constant = control1 - from;
-  if (Math.abs(quadratic) <= Number.EPSILON) {
-    return Math.abs(linear) <= Number.EPSILON ? [] : [-constant / linear].filter((time) => time > 0 && time < 1);
-  }
-  const discriminant = linear * linear - 4 * quadratic * constant;
-  if (discriminant < 0) return [];
-  const root = Math.sqrt(discriminant);
-  return [(-linear - root) / (2 * quadratic), (-linear + root) / (2 * quadratic)].filter(
-    (time) => time > 0 && time < 1,
-  );
-}
-
-function cubicPathWorldBounds(entity: SceneIrBundleV1["scene"]["entities"][number]) {
-  if (entity.geometry.kind !== "cubic-path") return null;
-  let minimumX = Number.POSITIVE_INFINITY;
-  let maximumX = Number.NEGATIVE_INFINITY;
-  let minimumY = Number.POSITIVE_INFINITY;
-  let maximumY = Number.NEGATIVE_INFINITY;
-  const includeX = (value: number) => {
-    minimumX = Math.min(minimumX, value);
-    maximumX = Math.max(maximumX, value);
-  };
-  const includeY = (value: number) => {
-    minimumY = Math.min(minimumY, value);
-    maximumY = Math.max(maximumY, value);
-  };
-  const includePoint = (point: Readonly<{ x: number; y: number }>) => {
-    includeX(point.x);
-    includeY(point.y);
-  };
-  for (const subpath of entity.geometry.path.subpaths) {
-    let from = transformedPoint(entity, subpath.start);
-    includePoint(from);
-    for (const segment of subpath.segments) {
-      const control1 = transformedPoint(entity, segment.control1);
-      const control2 = transformedPoint(entity, segment.control2);
-      const to = transformedPoint(entity, segment.end);
-      includePoint(to);
-      for (const time of cubicExtrema(from.x, control1.x, control2.x, to.x)) {
-        includeX(cubicCoordinate(from.x, control1.x, control2.x, to.x, time));
-      }
-      for (const time of cubicExtrema(from.y, control1.y, control2.y, to.y)) {
-        includeY(cubicCoordinate(from.y, control1.y, control2.y, to.y, time));
-      }
-      from = to;
-    }
-  }
-  if (![minimumX, maximumX, minimumY, maximumY].every(Number.isFinite)) return null;
-  return { maximumX, maximumY, minimumX, minimumY };
-}
-
-// Two affine row norms are treated as one uniform scale only within this
-// tolerance (and only with orthogonal rows); anything wider is projected as an
-// axis-aligned box so a circle never claims a radius the pixels do not draw.
-const UNIFORM_ROW_NORM_TOLERANCE = 1e-6;
-
 /**
- * True when nothing in the Scene can move geometry over time: base entity
- * transforms and the base camera are then exact for every sample time. Any
- * parent composition or any channel other than opacity (camera,
- * affine-transform, motion-path, path-morph, path-trim, and every future
- * kind) voids that guarantee, because this projection evaluates neither
- * parent chains nor animation.
+ * Converts request-correlated clip-space AABBs produced from the exact Rust
+ * prepared vertices into Studio's overlay coordinates. Bounds are visual hit
+ * targets only: width/height never claim editable Circle radius or Rectangle
+ * source dimensions.
  */
-function sceneGeometryIsStatic(scene: SceneIrBundleV1["scene"]): boolean {
-  return (
-    scene.entities.every((entity) => entity.parentId === null) &&
-    scene.animationChannels.every((channel) => channel.kind === "opacity")
-  );
-}
-
-/**
- * Conservative interaction-geometry projection for the static-Scene slice of
- * issue #66: hit target positions and sizes come from the verified snapshot
- * itself, keyed by IR entity ID, and are exact ONLY under the narrow
- * guarantee enforced here — no parent composition, no camera or
- * geometry/transform-affecting channels (opacity-only Scenes qualify), and
- * only entities whose lifetime is active at `sampleTime`. Any Scene outside
- * that envelope gets an empty map, so the editing surface falls back to its
- * semantic geometry instead of claiming WebGPU-exact hit targets that would
- * drift over time. Extents are exact axis-aligned bounds under the full
- * affine: a rectangle's AABB is |m11|·w + |m12|·h by |m21|·w + |m22|·h, and a
- * circle uses the matrix row norms as half-extents. A circle keeps its
- * `radius` representation only for a similarity transform (equal row norms
- * AND orthogonal rows) — an equal-norm shear reports width/height bounds, so
- * circle resize stays disabled for it. Line hit targets are center-anchored
- * only (the semantic placeholder supplies the clickable extent).
- */
-export function projectStudioPreviewStaticInteractionGeometryV1(
-  scene: SceneIrBundleV1["scene"],
+export function projectStudioPreviewInteractionGeometryV1(
+  entityIds: readonly string[],
+  interaction: CanvasInteractionResultV1 | null | undefined,
   frame: Readonly<{ height: number; width: number }>,
-  sampleTime: number,
 ): StudioPreviewInteractionGeometryV1 {
-  const view = scene.camera.view;
   const geometry = new Map<string, Readonly<{ dimensions: EntityDimensions | null; position: Point }>>();
-  if (view.frameWidth <= 0 || view.frameHeight <= 0 || frame.height <= 0 || frame.width <= 0) return geometry;
-  if (!sceneGeometryIsStatic(scene)) return geometry;
-  const heightRatio = frame.height / view.frameHeight;
-  const widthRatio = frame.width / view.frameWidth;
-  for (const entity of scene.entities) {
-    // Same active-lifetime convention as the engine: start <= t < end.
-    if (!entity.lifetimes.some((lifetime) => sampleTime >= lifetime.start && sampleTime < lifetime.end)) continue;
-    const cubicBounds = cubicPathWorldBounds(entity);
-    const world = cubicBounds
-      ? {
-          x: (cubicBounds.minimumX + cubicBounds.maximumX) / 2,
-          y: (cubicBounds.minimumY + cubicBounds.maximumY) / 2,
-        }
-      : worldCenter(entity);
-    if (!world) continue;
-    const position = {
-      x: (0.5 + (world.x - view.center.x) / view.frameWidth) * STUDIO_VIEWPORT.width,
-      y: (0.5 - (world.y - view.center.y) / view.frameHeight) * STUDIO_VIEWPORT.height,
-    };
-    const { m11, m12, m21, m22 } = entity.transform;
-    const rowNormX = Math.hypot(m11, m12);
-    const rowNormY = Math.hypot(m21, m22);
-    let dimensions: EntityDimensions | null = null;
-    if (cubicBounds) {
-      dimensions = {
-        height: (cubicBounds.maximumY - cubicBounds.minimumY) * heightRatio,
-        width: (cubicBounds.maximumX - cubicBounds.minimumX) * widthRatio,
-      };
-    } else if (entity.geometry.kind === "circle") {
-      const similarity =
-        Math.abs(rowNormX - rowNormY) <= UNIFORM_ROW_NORM_TOLERANCE * Math.max(rowNormX, rowNormY, 1) &&
-        Math.abs(m11 * m21 + m12 * m22) <= UNIFORM_ROW_NORM_TOLERANCE * Math.max(rowNormX * rowNormY, 1);
-      dimensions = similarity
-        ? { radius: entity.geometry.radius * rowNormX * heightRatio }
-        : {
-            height: 2 * entity.geometry.radius * rowNormY * heightRatio,
-            width: 2 * entity.geometry.radius * rowNormX * widthRatio,
-          };
-    } else if (entity.geometry.kind === "rectangle") {
-      dimensions = {
-        height: (Math.abs(m21) * entity.geometry.width + Math.abs(m22) * entity.geometry.height) * heightRatio,
-        width: (Math.abs(m11) * entity.geometry.width + Math.abs(m12) * entity.geometry.height) * widthRatio,
-      };
-    }
-    geometry.set(entity.id, { dimensions, position });
+  if (
+    interaction?.status !== "available" ||
+    interaction.space !== "clip-v1" ||
+    interaction.entries.length !== entityIds.length ||
+    !Number.isFinite(frame.height) ||
+    !Number.isFinite(frame.width) ||
+    frame.height <= 0 ||
+    frame.width <= 0
+  ) {
+    return geometry;
   }
+  interaction.entries.forEach((entry, index) => {
+    if (entry.status !== "present") return;
+    const [minimumX, minimumY, maximumX, maximumY] = entry.bounds;
+    const centerX = (minimumX + maximumX) / 2;
+    const centerY = (minimumY + maximumY) / 2;
+    const position = {
+      x: ((centerX + 1) / 2) * STUDIO_VIEWPORT.width,
+      y: ((1 - centerY) / 2) * STUDIO_VIEWPORT.height,
+    };
+    geometry.set(entityIds[index], {
+      dimensions: {
+        height: ((maximumY - minimumY) / 2) * frame.height,
+        width: ((maximumX - minimumX) / 2) * frame.width,
+      },
+      position,
+    });
+  });
   return geometry;
 }

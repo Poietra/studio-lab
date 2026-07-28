@@ -14,8 +14,8 @@ use web_sys::OffscreenCanvas;
 
 use crate::canvas_protocol::{
     CanvasRenderErrorCodeV1, error_response, error_result, gpu_error_code_from_js_class_name,
-    presented_response, presented_result, sample_error_code, sample_error_response,
-    surface_configuration_required,
+    interaction_metadata, presented_response_with_interaction, presented_result, sample_error_code,
+    sample_error_response, surface_configuration_required,
 };
 use crate::canvas_telemetry::{
     AdapterEvidenceSourceV1, AdapterEvidenceV1, CLOCK_UNAVAILABLE_REASON_V1,
@@ -460,7 +460,12 @@ impl PoietraCanvasEngineV1 {
         };
 
         match self.render_prepared_frame(&frame) {
-            Ok(suboptimal) => presented_response(correlation, suboptimal),
+            Ok(suboptimal) => {
+                let interaction = interaction_metadata(&sampled.interaction, |entity_id| {
+                    frame.clip_bounds_for_entity(entity_id)
+                });
+                presented_response_with_interaction(correlation, suboptimal, interaction)
+            }
             Err(failure) => error_response(failure.code, &failure.message, Some(correlation)),
         }
     }

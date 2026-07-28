@@ -10,6 +10,7 @@ import {
   type RenderCanvasFrameInputV1,
 } from "./canvas-worker-client";
 import type { SceneIrBundleV1 } from "./contracts";
+import type { CanvasInteractionResultV1 } from "./canvas-worker-protocol";
 
 /**
  * Bounded surface the Studio preview host may use. It is the retained
@@ -56,7 +57,13 @@ export type PreviewFrameRequestV1 = Readonly<{
 export type PreviewRendererHostStateV1 =
   | Readonly<{ detail: string | null; phase: "fallback"; reason: PreviewFallbackReasonV1 }>
   | Readonly<{
-      frame: Readonly<{ packetId: string; revision: string; sampleTime: number; viewport: PreviewViewportV1 }>;
+      frame: Readonly<{
+        interaction?: CanvasInteractionResultV1 | null;
+        packetId: string;
+        revision: string;
+        sampleTime: number;
+        viewport: PreviewViewportV1;
+      }>;
       phase: "presented";
     }>;
 
@@ -67,6 +74,7 @@ export type StudioPreviewRendererHostOptionsV1 = Readonly<{
 
 export type InstallPreviewSnapshotInputV1 = Readonly<{
   canvas: HTMLCanvasElement;
+  interactionEntityIds?: readonly string[];
   revision: string;
   snapshot: SceneIrBundleV1;
 }>;
@@ -117,7 +125,13 @@ export class StudioPreviewRendererHost {
     viewport: PreviewViewportV1;
   }> | null = null;
   private phase: "disposed" | "failed" | "idle" | "installing" | "ready" = "idle";
-  private presented: Readonly<{ packetId: string; sampleTime: number; viewport: PreviewViewportV1 }> | null = null;
+  private interactionEntityIds: readonly string[] = [];
+  private presented: Readonly<{
+    interaction: CanvasInteractionResultV1 | null;
+    packetId: string;
+    sampleTime: number;
+    viewport: PreviewViewportV1;
+  }> | null = null;
   // True while the retained surface may still show a frame whose presented
   // claim was withdrawn by dispatching a newer render — reported as
   // "frame-stale" rather than "frame-pending" until a fresh frame presents.
@@ -142,6 +156,7 @@ export class StudioPreviewRendererHost {
     }
     this.phase = "installing";
     this.revision = input.revision;
+    this.interactionEntityIds = input.interactionEntityIds ?? [];
     // The playhead range is derived from the installed snapshot itself so no
     // caller can widen it beyond what the Scene actually contains.
     this.duration = input.snapshot.scene.duration;
@@ -273,7 +288,12 @@ export class StudioPreviewRendererHost {
     const revision = this.revision;
     if (!renderer || revision === null) return;
     if (this.validationFallback(request) !== null || request.viewport === null) return;
-    const target = { revision, sampleTime: request.sampleTime, viewport: request.viewport };
+    const target = {
+      ...(this.interactionEntityIds.length > 0 ? { interactionEntityIds: this.interactionEntityIds } : {}),
+      revision,
+      sampleTime: request.sampleTime,
+      viewport: request.viewport,
+    };
     // A valid fresh attempt supersedes any recoverable failure previously
     // recorded for the same target. Until this generation settles, report a
     // pending/stale surface rather than attributing the old failure to it.
@@ -327,7 +347,12 @@ export class StudioPreviewRendererHost {
     // A completion for a superseded request never overrides a newer one, even
     // when the underlying promises settle out of order.
     if (generation !== this.renderGeneration) return;
-    this.presented = { packetId: frame.packetId, sampleTime: frame.sampleTime, viewport: frame.viewport };
+    this.presented = {
+      interaction: frame.interaction ?? null,
+      packetId: frame.packetId,
+      sampleTime: frame.sampleTime,
+      viewport: frame.viewport,
+    };
     // The newest attempt for the current generation succeeded, so the surface
     // matches the claim again and an error recorded by an earlier attempt no
     // longer describes it.
@@ -402,6 +427,7 @@ export class StudioPreviewRendererHost {
     ) {
       return {
         frame: {
+          ...(this.presented.interaction ? { interaction: this.presented.interaction } : {}),
           packetId: this.presented.packetId,
           revision: this.revision,
           sampleTime: this.presented.sampleTime,

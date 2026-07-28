@@ -158,6 +158,68 @@ describe("Poietra canvas worker runtime", () => {
     expect(posted[1]).not.toHaveProperty("responseJson");
   });
 
+  it("forwards requested prepared bounds and degrades an entry-count mismatch without losing the pixel ack", async () => {
+    let renderCount = 0;
+    const samples: unknown[] = [];
+    class Engine implements PoietraWasmCanvasEngineV1 {
+      static async create() {
+        return new Engine();
+      }
+
+      replaceSnapshot() {}
+      async render(requestJson: Uint8Array) {
+        const request = canvasEngineSampleRequestV1Schema.parse(JSON.parse(new TextDecoder().decode(requestJson)));
+        samples.push(request);
+        renderCount += 1;
+        const response = presentedResponse(request.packetId, request.sampleTime);
+        if (response.result.kind !== "presented") throw new Error("fixture must present");
+        return encodeResponse({
+          ...response,
+          result: {
+            ...response.result,
+            interaction: {
+              entries:
+                renderCount === 1
+                  ? [{ bounds: [-0.5, -0.25, 0.5, 0.25], status: "present" as const }, { status: "inactive" as const }]
+                  : [{ bounds: [-0.5, -0.25, 0.5, 0.25], status: "present" as const }],
+              space: "clip-v1",
+              status: "available",
+            },
+          },
+        });
+      }
+    }
+    const posted: CanvasWorkerResponseV1[] = [];
+    const runtime = new PoietraCanvasWorkerRuntimeV1({
+      loadWasm: async () => Engine,
+      postMessage: (response) => posted.push(response),
+      scopeUrl: "https://studio.test/worker.js",
+    });
+    const interactionEntityIds = ["runtime#0", "runtime#1"];
+
+    await runtime.accept(installRequest());
+    await runtime.accept(renderRequest({ interactionEntityIds }));
+    expect(posted.at(-1)).toMatchObject({
+      interaction: {
+        entries: [{ bounds: [-0.5, -0.25, 0.5, 0.25], status: "present" }, { status: "inactive" }],
+        space: "clip-v1",
+        status: "available",
+      },
+      kind: "frame-presented",
+    });
+
+    await runtime.accept(renderRequest({ interactionEntityIds, requestId: 3 }));
+    expect(posted.at(-1)).toMatchObject({ interaction: { status: "unavailable" }, kind: "frame-presented" });
+
+    await runtime.accept(renderRequest({ interactionEntityIds: ["runtime#0", "bad id", 7], requestId: 4 }));
+    expect(samples.at(-1)).toMatchObject({ interactionEntityIds: ["runtime#0", null, null] });
+    expect(posted.at(-1)).toMatchObject({ interaction: { status: "unavailable" }, kind: "frame-presented" });
+
+    await runtime.accept(renderRequest({ interactionEntityIds: { entityId: "not-an-array" }, requestId: 5 }));
+    expect(samples.at(-1)).toMatchObject({ interactionEntityIds: null });
+    expect(posted.at(-1)).toMatchObject({ interaction: { status: "unavailable" }, kind: "frame-presented" });
+  });
+
   it("rejects an adjacent binary64 playhead at a semantic boundary", async () => {
     class Engine implements PoietraWasmCanvasEngineV1 {
       static async create() {
@@ -990,12 +1052,12 @@ describe("Poietra canvas WASM binding handshake", () => {
     }
   }
 
-  it("accepts only canvas ABI v1 with the complete class shape", async () => {
+  it("accepts only canvas ABI v2 with the complete class shape", async () => {
     const initialize = vi.fn(async () => undefined);
     await expect(
       initializePoietraCanvasBindingsV1({
         default: initialize,
-        poietraCanvasAbiVersion: () => 1,
+        poietraCanvasAbiVersion: () => 2,
         PoietraCanvasEngineV1: Engine,
       }),
     ).resolves.toBe(Engine);
@@ -1006,14 +1068,14 @@ describe("Poietra canvas WASM binding handshake", () => {
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 2,
+        poietraCanvasAbiVersion: () => 1,
         PoietraCanvasEngineV1: Engine,
       }),
-    ).rejects.toThrow(/ABI version 1/i);
+    ).rejects.toThrow(/ABI version 2/i);
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 1,
+        poietraCanvasAbiVersion: () => 2,
         PoietraCanvasEngineV1: class Incomplete {},
       }),
     ).rejects.toThrow(/PoietraCanvasEngineV1/i);
@@ -1032,7 +1094,7 @@ describe("Poietra canvas WASM binding handshake", () => {
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 1,
+        poietraCanvasAbiVersion: () => 2,
         poietraCanvasTelemetryAbiVersion: () => 1,
         PoietraCanvasEngineV1: TelemetryEngine,
       }),
@@ -1042,7 +1104,7 @@ describe("Poietra canvas WASM binding handshake", () => {
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 1,
+        poietraCanvasAbiVersion: () => 2,
         poietraCanvasTelemetryAbiVersion: () => 2,
         PoietraCanvasEngineV1: TelemetryEngine,
       }),
@@ -1052,7 +1114,7 @@ describe("Poietra canvas WASM binding handshake", () => {
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 1,
+        poietraCanvasAbiVersion: () => 2,
         PoietraCanvasEngineV1: TelemetryEngine,
       }),
     ).rejects.toThrow(/telemetry ABI version 1/i);
@@ -1066,7 +1128,7 @@ describe("Poietra canvas WASM binding handshake", () => {
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 1,
+        poietraCanvasAbiVersion: () => 2,
         poietraCanvasTelemetryAbiVersion: () => 1,
         PoietraCanvasEngineV1: PartialTelemetryEngine,
       }),
@@ -1076,7 +1138,7 @@ describe("Poietra canvas WASM binding handshake", () => {
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 1,
+        poietraCanvasAbiVersion: () => 2,
         PoietraCanvasEngineV1: Engine,
       }),
     ).resolves.toBe(Engine);

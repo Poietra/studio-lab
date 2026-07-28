@@ -28,6 +28,26 @@ fn draw_color(frame: &poietra_render_wgpu::PreparedFrameV1, draw_index: usize) -
     frame.material_plan().materials()[material_index].premultiplied_linear_color()
 }
 
+fn phase_bounds(frame: &poietra_render_wgpu::PreparedFrameV1, draw_index: usize) -> [f32; 4] {
+    let range = frame.draws()[draw_index].vertex_range();
+    let start = usize::try_from(range.start).unwrap();
+    let end = usize::try_from(range.end).unwrap();
+    frame.geometry_plan().vertices()[start..end]
+        .iter()
+        .map(poietra_render_wgpu::PreparedGeometryVertexV1::position)
+        .fold(
+            [
+                f32::INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+            ],
+            |[min_x, min_y, max_x, max_y], [x, y]| {
+                [min_x.min(x), min_y.min(y), max_x.max(x), max_y.max(y)]
+            },
+        )
+}
+
 fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -40,18 +60,21 @@ fn prepares_shared_fixture_as_ordered_solid_paint_triangles() {
         assert!((actual - expected).abs() <= f64::EPSILON);
     }
     assert_eq!(prepared.draws()[0].draw_id(), "draw:0");
+    assert_eq!(prepared.draws()[0].entity_id(), "earlier");
     assert_eq!(prepared.draws()[0].vertex_range().start, 0);
     assert!(!prepared.draws()[0].index_range().is_empty());
     assert_eq!(prepared.draws()[0].index_range().len() % 3, 0);
     let first_index_end = prepared.draws()[0].index_range().end;
     let first_vertex_end = prepared.draws()[0].vertex_range().end;
     assert_eq!(prepared.draws()[1].draw_id(), "draw:1");
+    assert_eq!(prepared.draws()[1].entity_id(), "later");
     assert_eq!(prepared.draws()[1].index_range().start, first_index_end);
     assert_eq!(prepared.draws()[1].index_range().len() % 3, 0);
     assert_eq!(prepared.draws()[1].vertex_range().start, first_vertex_end);
     let second_vertex_end = prepared.draws()[1].vertex_range().end;
     let second_index_end = prepared.draws()[1].index_range().end;
     assert_eq!(prepared.draws()[2].draw_id(), "draw:2");
+    assert_eq!(prepared.draws()[2].entity_id(), "stroke");
     assert_eq!(
         prepared.draws()[2].index_range(),
         &(second_index_end..second_index_end + 48)
@@ -76,6 +99,7 @@ fn prepares_shared_fixture_as_ordered_solid_paint_triangles() {
     assert_close(stroke.position()[0], -0.25);
     assert_close(stroke.position()[1], 5.0 / 9.0);
     assert_color_close(draw_color(&prepared, 2), [0.0, 0.5, 0.0, 0.5]);
+    assert!(prepared.clip_bounds_for_entity("missing").is_none());
 }
 
 #[test]
@@ -193,6 +217,8 @@ fn fill_and_stroke_are_distinct_ordered_paint_phases() {
     assert_eq!(prepared.draws()[0].draw_id(), "draw:0");
     assert_eq!(prepared.draws()[1].draw_id(), "draw:1");
     assert_eq!(prepared.draws()[2].draw_id(), "draw:1");
+    assert_eq!(prepared.draws()[1].entity_id(), "later");
+    assert_eq!(prepared.draws()[2].entity_id(), "later");
     assert_eq!(prepared.draws()[3].draw_id(), "draw:2");
     assert_eq!(
         prepared.draws()[2].index_range().start,
@@ -204,6 +230,26 @@ fn fill_and_stroke_are_distinct_ordered_paint_phases() {
     );
     assert_color_close(draw_color(&prepared, 1), [0.0, 0.0, 1.0, 1.0]);
     assert_color_close(draw_color(&prepared, 2), [0.0, 1.0, 0.0, 1.0]);
+
+    let fill_bounds = phase_bounds(&prepared, 1);
+    let stroke_bounds = phase_bounds(&prepared, 2);
+    let expected_union = [
+        fill_bounds[0].min(stroke_bounds[0]),
+        fill_bounds[1].min(stroke_bounds[1]),
+        fill_bounds[2].max(stroke_bounds[2]),
+        fill_bounds[3].max(stroke_bounds[3]),
+    ];
+    assert_eq!(
+        prepared.clip_bounds_for_entity("later"),
+        Some(expected_union)
+    );
+    assert!(
+        expected_union[0] < fill_bounds[0]
+            || expected_union[1] < fill_bounds[1]
+            || expected_union[2] > fill_bounds[2]
+            || expected_union[3] > fill_bounds[3],
+        "stroke geometry must expand the fill-only visual bounds"
+    );
 }
 
 #[test]

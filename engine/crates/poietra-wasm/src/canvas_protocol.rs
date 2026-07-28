@@ -2,7 +2,10 @@ use poietra_scene_ir::{ContractVersionV1, ViewportV1};
 use serde::Serialize;
 
 use crate::bounded_writer::BoundedWriter;
-use crate::protocol::{SamplePacketErrorCodeV1, SamplePacketErrorV1, SampleRequestCorrelationV1};
+use crate::protocol::{
+    SamplePacketErrorCodeV1, SamplePacketErrorV1, SampleRequestCorrelationV1,
+    SampledInteractionRequestV1,
+};
 
 /// Canvas acknowledgements are deliberately much smaller than `RenderPacket` responses.
 pub const MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES_V1: usize = 16 * 1024;
@@ -64,6 +67,31 @@ struct CanvasRenderResponseV1 {
     version: ContractVersionV1,
 }
 
+#[derive(Clone, Copy, Debug, Serialize)]
+pub(crate) enum CanvasInteractionSpaceV1 {
+    #[serde(rename = "clip-v1")]
+    ClipV1,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
+pub(crate) enum CanvasInteractionEntryV1 {
+    Present { bounds: [f32; 4] },
+    Inactive,
+    Empty,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "status", rename_all = "kebab-case", deny_unknown_fields)]
+pub(crate) enum CanvasInteractionMetadataV1 {
+    Available {
+        entries: Vec<CanvasInteractionEntryV1>,
+        space: CanvasInteractionSpaceV1,
+    },
+    Unavailable,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(
     tag = "kind",
@@ -80,11 +108,19 @@ pub(crate) enum CanvasRenderResultV1 {
         viewport: Option<ViewportV1>,
     },
     Presented {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        interaction: Option<CanvasInteractionMetadataV1>,
         packet_id: String,
         sample_time: f64,
         suboptimal: bool,
         viewport: ViewportV1,
     },
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ResponseSerializationFailureV1 {
+    ResponseTooLarge,
+    SerializationFailed,
 }
 
 pub(crate) fn truncate_utf16(value: &str, maximum: usize) -> String {
@@ -102,10 +138,7 @@ pub(crate) fn truncate_utf16(value: &str, maximum: usize) -> String {
         .collect()
 }
 
-fn response(
-    result: CanvasRenderResultV1,
-    fallback_correlation: Option<&SampleRequestCorrelationV1>,
-) -> Vec<u8> {
+fn try_response(result: CanvasRenderResultV1) -> Result<Vec<u8>, ResponseSerializationFailureV1> {
     let response = CanvasRenderResponseV1 {
         result,
         schema: CanvasRenderResponseSchemaV1::CanvasRenderResponse,
@@ -113,13 +146,32 @@ fn response(
     };
     let mut writer = BoundedWriter::new(MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES_V1);
     if serde_json::to_writer(&mut writer, &response).is_ok() {
-        return writer.into_bytes();
+        return Ok(writer.into_bytes());
     }
 
-    let code = if writer.overflowed() {
-        CanvasRenderErrorCodeV1::ResponseTooLarge
+    Err(if writer.overflowed() {
+        ResponseSerializationFailureV1::ResponseTooLarge
     } else {
-        CanvasRenderErrorCodeV1::SerializationFailed
+        ResponseSerializationFailureV1::SerializationFailed
+    })
+}
+
+fn response(
+    result: CanvasRenderResultV1,
+    fallback_correlation: Option<&SampleRequestCorrelationV1>,
+) -> Vec<u8> {
+    let failure = match try_response(result) {
+        Ok(response) => return response,
+        Err(failure) => failure,
+    };
+
+    let code = match failure {
+        ResponseSerializationFailureV1::ResponseTooLarge => {
+            CanvasRenderErrorCodeV1::ResponseTooLarge
+        }
+        ResponseSerializationFailureV1::SerializationFailed => {
+            CanvasRenderErrorCodeV1::SerializationFailed
+        }
     };
     let fallback = CanvasRenderResponseV1 {
         result: CanvasRenderResultV1::Error {
@@ -142,10 +194,66 @@ pub(crate) fn presented_result(
     suboptimal: bool,
 ) -> CanvasRenderResultV1 {
     CanvasRenderResultV1::Presented {
+        interaction: None,
         packet_id: correlation.packet_id.clone(),
         sample_time: correlation.sample_time,
         suboptimal,
         viewport: correlation.viewport.clone(),
+    }
+}
+
+fn presented_result_with_interaction(
+    correlation: &SampleRequestCorrelationV1,
+    suboptimal: bool,
+    interaction: CanvasInteractionMetadataV1,
+) -> CanvasRenderResultV1 {
+    CanvasRenderResultV1::Presented {
+        interaction: Some(interaction),
+        packet_id: correlation.packet_id.clone(),
+        sample_time: correlation.sample_time,
+        suboptimal,
+        viewport: correlation.viewport.clone(),
+    }
+}
+
+pub(crate) fn interaction_metadata(
+    request: &SampledInteractionRequestV1,
+    mut bounds_for_entity: impl FnMut(&str) -> Option<[f32; 4]>,
+) -> Option<CanvasInteractionMetadataV1> {
+    match request {
+        SampledInteractionRequestV1::Disabled => None,
+        SampledInteractionRequestV1::Unavailable => Some(CanvasInteractionMetadataV1::Unavailable),
+        SampledInteractionRequestV1::Available(requested) => {
+            let entries = requested
+                .iter()
+                .map(|requested| {
+                    let Some(entity_id) = requested.entity_id.as_deref() else {
+                        return CanvasInteractionEntryV1::Unavailable;
+                    };
+                    if !requested.known {
+                        return CanvasInteractionEntryV1::Unavailable;
+                    }
+                    if !requested.active {
+                        return CanvasInteractionEntryV1::Inactive;
+                    }
+                    let Some(bounds) = bounds_for_entity(entity_id) else {
+                        return CanvasInteractionEntryV1::Empty;
+                    };
+                    if bounds.iter().all(|value| value.is_finite())
+                        && bounds[0] <= bounds[2]
+                        && bounds[1] <= bounds[3]
+                    {
+                        CanvasInteractionEntryV1::Present { bounds }
+                    } else {
+                        CanvasInteractionEntryV1::Unavailable
+                    }
+                })
+                .collect();
+            Some(CanvasInteractionMetadataV1::Available {
+                entries,
+                space: CanvasInteractionSpaceV1::ClipV1,
+            })
+        }
     }
 }
 
@@ -174,6 +282,28 @@ pub(crate) fn presented_response(
     suboptimal: bool,
 ) -> Vec<u8> {
     response(presented_result(correlation, suboptimal), Some(correlation))
+}
+
+/// Serializes an opt-in interaction acknowledgement without letting advisory
+/// metadata reverse an already successful pixel presentation. If the enriched
+/// response cannot fit, the same `presented` acknowledgement is retried without
+/// the optional field.
+pub(crate) fn presented_response_with_interaction(
+    correlation: &SampleRequestCorrelationV1,
+    suboptimal: bool,
+    interaction: Option<CanvasInteractionMetadataV1>,
+) -> Vec<u8> {
+    let Some(interaction) = interaction else {
+        return presented_response(correlation, suboptimal);
+    };
+    match try_response(presented_result_with_interaction(
+        correlation,
+        suboptimal,
+        interaction,
+    )) {
+        Ok(response) => response,
+        Err(_) => presented_response(correlation, suboptimal),
+    }
 }
 
 pub(crate) fn error_response(
@@ -213,7 +343,9 @@ mod tests {
     use serde_json::Value;
     use serde_json::json;
 
-    use crate::protocol::EngineWorkerSessionV1;
+    use crate::protocol::{
+        EngineWorkerSessionV1, MAX_INTERACTION_ENTITY_IDS_V1, SampledInteractionEntityV1,
+    };
 
     fn fixture_session() -> EngineWorkerSessionV1 {
         let fixture: Value = serde_json::from_slice(
@@ -257,6 +389,131 @@ mod tests {
         assert_eq!(value["result"]["viewport"]["widthPx"], 1_280);
         assert_eq!(value["result"]["suboptimal"], true);
         assert!(value["result"].get("packet").is_none());
+        assert!(value["result"].get("interaction").is_none());
+    }
+
+    #[test]
+    fn interaction_entries_preserve_request_order_and_explicit_statuses() {
+        let request = SampledInteractionRequestV1::Available(vec![
+            SampledInteractionEntityV1 {
+                active: true,
+                entity_id: Some("present".to_owned()),
+                known: true,
+            },
+            SampledInteractionEntityV1 {
+                active: false,
+                entity_id: Some("inactive".to_owned()),
+                known: true,
+            },
+            SampledInteractionEntityV1 {
+                active: false,
+                entity_id: Some("unknown".to_owned()),
+                known: false,
+            },
+            SampledInteractionEntityV1 {
+                active: false,
+                entity_id: None,
+                known: false,
+            },
+            SampledInteractionEntityV1 {
+                active: true,
+                entity_id: Some("empty".to_owned()),
+                known: true,
+            },
+            SampledInteractionEntityV1 {
+                active: true,
+                entity_id: Some("invalid-bounds".to_owned()),
+                known: true,
+            },
+        ]);
+        let metadata = interaction_metadata(&request, |entity_id| match entity_id {
+            "present" => Some([-0.75, -0.5, 0.25, 0.5]),
+            "invalid-bounds" => Some([f32::NAN, 0.0, 1.0, 1.0]),
+            _ => None,
+        });
+        let response = presented_response_with_interaction(&correlation(), false, metadata);
+        let value: Value = serde_json::from_slice(&response).unwrap();
+        let interaction = &value["result"]["interaction"];
+
+        assert_eq!(interaction["status"], "available");
+        assert_eq!(interaction["space"], "clip-v1");
+        assert_eq!(interaction["entries"][0]["status"], "present");
+        assert_eq!(
+            interaction["entries"][0]["bounds"],
+            json!([-0.75, -0.5, 0.25, 0.5])
+        );
+        assert_eq!(interaction["entries"][1]["status"], "inactive");
+        assert_eq!(interaction["entries"][2]["status"], "unavailable");
+        assert_eq!(interaction["entries"][3]["status"], "unavailable");
+        assert_eq!(interaction["entries"][4]["status"], "empty");
+        assert_eq!(interaction["entries"][5]["status"], "unavailable");
+    }
+
+    #[test]
+    fn maximum_interaction_response_fits_the_canvas_acknowledgement_budget() {
+        let requested = (0..MAX_INTERACTION_ENTITY_IDS_V1)
+            .map(|index| SampledInteractionEntityV1 {
+                active: true,
+                entity_id: Some(format!("entity:{index}")),
+                known: true,
+            })
+            .collect();
+        let metadata =
+            interaction_metadata(&SampledInteractionRequestV1::Available(requested), |_| {
+                Some([-f32::MAX, -f32::MAX, f32::MAX, f32::MAX])
+            });
+        let maximum_correlation = SampleRequestCorrelationV1 {
+            packet_id: "p".repeat(240),
+            sample_time: f64::MAX,
+            viewport: ViewportV1 {
+                height_px: 16_384,
+                width_px: 16_384,
+            },
+        };
+        let response = presented_response_with_interaction(&maximum_correlation, false, metadata);
+        let value: Value = serde_json::from_slice(&response).unwrap();
+
+        assert!(response.len() <= MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES_V1);
+        assert_eq!(value["result"]["kind"], "presented");
+        assert_eq!(value["result"]["interaction"]["status"], "available");
+        assert_eq!(
+            value["result"]["interaction"]["entries"]
+                .as_array()
+                .unwrap()
+                .len(),
+            MAX_INTERACTION_ENTITY_IDS_V1
+        );
+        assert!(!String::from_utf8(response).unwrap().contains("entity:127"));
+    }
+
+    #[test]
+    fn oversized_optional_metadata_falls_back_to_the_presented_pixel_ack() {
+        let interaction = CanvasInteractionMetadataV1::Available {
+            entries: vec![
+                CanvasInteractionEntryV1::Present {
+                    bounds: [-1.0, -1.0, 1.0, 1.0],
+                };
+                10_000
+            ],
+            space: CanvasInteractionSpaceV1::ClipV1,
+        };
+        let response =
+            presented_response_with_interaction(&correlation(), false, Some(interaction));
+        let value: Value = serde_json::from_slice(&response).unwrap();
+
+        assert!(response.len() <= MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES_V1);
+        assert_eq!(value["result"]["kind"], "presented");
+        assert!(value["result"].get("interaction").is_none());
+    }
+
+    #[test]
+    fn unusable_interaction_envelope_is_reported_without_failing_presentation() {
+        let metadata = interaction_metadata(&SampledInteractionRequestV1::Unavailable, |_| None);
+        let response = presented_response_with_interaction(&correlation(), false, metadata);
+        let value: Value = serde_json::from_slice(&response).unwrap();
+
+        assert_eq!(value["result"]["kind"], "presented");
+        assert_eq!(value["result"]["interaction"]["status"], "unavailable");
     }
 
     #[test]

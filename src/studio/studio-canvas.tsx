@@ -22,6 +22,7 @@ import {
   entityPreviewScale,
   type InteractionMode,
   isCanvasInteractionTarget,
+  STUDIO_VIEWPORT,
   viewportPositionStyle,
 } from "./studio-viewport-geometry";
 import type { StudioPreviewRendererViewV1 } from "./use-preview-renderer";
@@ -81,6 +82,48 @@ function entityPreviewGeometry(preview: EntityGeometryPreview | null, entity: Pr
       };
 }
 
+function entityDimensionStyle(dimensions: EntityDimensions | null, frame: Readonly<{ height: number; width: number }>) {
+  if (!dimensions) return undefined;
+  return {
+    height:
+      dimensions.radius !== undefined
+        ? `${((2 * dimensions.radius) / frame.height) * 100}cqh`
+        : dimensions.height !== undefined
+          ? `${(dimensions.height / frame.height) * 100}cqh`
+          : undefined,
+    width:
+      dimensions.radius !== undefined
+        ? `${((2 * dimensions.radius) / frame.width) * 100}cqw`
+        : dimensions.width !== undefined
+          ? `${(dimensions.width / frame.width) * 100}cqw`
+          : undefined,
+  };
+}
+
+/** Cancels the semantic camera/entity CSS scales surrounding the DOM overlay
+ * so an engine-projected visual AABB lands at its sampled pixel box once. */
+export function compensatePreviewGeometryForSemanticScalesV1(
+  geometry: Readonly<{ dimensions: EntityDimensions | null; position: Point }>,
+  cameraScale: number,
+  entityScale: number,
+): Readonly<{ dimensions: EntityDimensions | null; position: Point }> {
+  const safeCameraScale = Math.max(Math.abs(cameraScale), Number.EPSILON);
+  const safeEntityScale = Math.max(Math.abs(entityScale), Number.EPSILON);
+  const scale = safeCameraScale * safeEntityScale;
+  return {
+    dimensions: geometry.dimensions
+      ? {
+          height: geometry.dimensions.height === undefined ? undefined : geometry.dimensions.height / scale,
+          width: geometry.dimensions.width === undefined ? undefined : geometry.dimensions.width / scale,
+        }
+      : null,
+    position: {
+      x: STUDIO_VIEWPORT.width / 2 + (geometry.position.x - STUDIO_VIEWPORT.width / 2) / safeCameraScale,
+      y: STUDIO_VIEWPORT.height / 2 + (geometry.position.y - STUDIO_VIEWPORT.height / 2) / safeCameraScale,
+    },
+  };
+}
+
 /**
  * Resolves runtime hit geometry only through the server-verified identity map.
  * A source name that currently identifies zero or several Studio objects is
@@ -128,22 +171,7 @@ function ObjectVisual({
   entity: ProjectedEntity;
   frame: Readonly<{ height: number; width: number }>;
 }>) {
-  const dimensionStyle = dimensions
-    ? {
-        height:
-          dimensions.radius !== undefined
-            ? `${((2 * dimensions.radius) / frame.height) * 100}cqh`
-            : dimensions.height !== undefined
-              ? `${(dimensions.height / frame.height) * 100}cqh`
-              : undefined,
-        width:
-          dimensions.radius !== undefined
-            ? `${((2 * dimensions.radius) / frame.width) * 100}cqw`
-            : dimensions.width !== undefined
-              ? `${(dimensions.width / frame.width) * 100}cqw`
-              : undefined,
-      }
-    : undefined;
+  const dimensionStyle = entityDimensionStyle(dimensions, frame);
   if (entity.type === "MathTex") {
     return (
       <EquationContent
@@ -394,18 +422,23 @@ export function StudioCanvas({
             const presentedGeometry = presentedIdentity?.geometry ?? null;
             const moveLocked = locked || (positionUnknown && presentedGeometry === null);
             const localDelta = entityDragDelta(dragPreview, entity.id);
-            const previewGeometry = presentedGeometry ?? entityPreviewGeometry(geometryPreview, entity);
+            const displayedScale = entityPreviewScale(scalePreview, entity);
+            const previewGeometry = presentedGeometry
+              ? compensatePreviewGeometryForSemanticScalesV1(presentedGeometry, cameraScale, displayedScale)
+              : entityPreviewGeometry(geometryPreview, entity);
             const position = {
               x: previewGeometry.position.x + localDelta.x,
               y: previewGeometry.position.y + localDelta.y,
             };
             const opacity = draftTransactionId === entity.transactionId && entity.opacity === 0 ? 0.35 : entity.opacity;
-            const displayedScale = entityPreviewScale(scalePreview, entity);
             const shape = resizeKindForType(entity.type);
+            // Runtime AABBs position and size the hit target, but are not
+            // authoring evidence for a Circle radius or Rectangle dimensions.
+            // Shape resizing remains gated by the semantic source projection.
             const shapeResizeAvailable =
               shape !== null &&
-              previewGeometry.dimensions !== null &&
-              hasShapeDimensions(shape, previewGeometry.dimensions) &&
+              entity.geometry.dimensions.kind === "known" &&
+              hasShapeDimensions(shape, entity.geometry.dimensions.value) &&
               !dimensionsUnknown &&
               !positionUnknown &&
               !scaleUnknown;
@@ -414,10 +447,10 @@ export function StudioCanvas({
               <div
                 className={cn("absolute -translate-x-1/2 -translate-y-1/2", selected ? "z-20" : "z-10")}
                 data-studio-geometry={approximate ? "approximate" : "known"}
-                data-studio-entity-height={previewGeometry.dimensions?.height?.toFixed(4)}
-                data-studio-entity-radius={previewGeometry.dimensions?.radius?.toFixed(4)}
+                data-studio-entity-height={(presentedGeometry ?? previewGeometry).dimensions?.height?.toFixed(4)}
+                data-studio-entity-radius={(presentedGeometry ?? previewGeometry).dimensions?.radius?.toFixed(4)}
                 data-studio-entity-scale={displayedScale.toFixed(4)}
-                data-studio-entity-width={previewGeometry.dimensions?.width?.toFixed(4)}
+                data-studio-entity-width={(presentedGeometry ?? previewGeometry).dimensions?.width?.toFixed(4)}
                 data-studio-entity-wrapper={entity.id}
                 data-studio-runtime-binding={presentedIdentity?.bindingId}
                 data-studio-runtime-entity={presentedIdentity?.runtimeEntityId}
@@ -430,7 +463,7 @@ export function StudioCanvas({
                     aria-pressed={selected}
                     className={cn(
                       "block border outline-none",
-                      shape ? "p-0" : "px-3 py-2",
+                      presentedGeometry ? "box-border p-0" : shape ? "p-0" : "px-3 py-2",
                       moveLocked
                         ? "pointer-events-none border-dashed border-sky-800 bg-zinc-950/70"
                         : "cursor-grab active:cursor-grabbing",
@@ -446,17 +479,18 @@ export function StudioCanvas({
                     onPointerDown={(event) => onEntityPointerDown(event, entity.id)}
                     onPointerMove={onEntityPointerMove}
                     onPointerUp={onEntityPointerUp}
+                    style={presentedGeometry ? entityDimensionStyle(previewGeometry.dimensions, frame) : undefined}
                     title={positionUnknown ? entity.geometry.position.reason : undefined}
                     type="button"
                   >
                     <span
-                      className={cn("block", presentingCanvasPixels && "opacity-0")}
+                      className={cn("block", presentingCanvasPixels && "pointer-events-none opacity-0")}
                       data-studio-semantic-paint={presentingCanvasPixels ? "deferred-to-canvas" : "painted"}
                     >
                       <ObjectVisual dimensions={previewGeometry.dimensions} entity={entity} frame={frame} />
                     </span>
                     {selected ? (
-                      <span className="absolute -top-6 left-0 max-w-56 truncate bg-sky-400 px-1.5 py-0.5 text-[10px] font-medium text-sky-950">
+                      <span className="pointer-events-none absolute -top-6 left-0 max-w-56 truncate bg-sky-400 px-1.5 py-0.5 text-[10px] font-medium text-sky-950">
                         {entityLabel(entity)}
                       </span>
                     ) : null}

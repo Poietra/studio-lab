@@ -16,11 +16,13 @@ import {
   canvasWorkerRequestV1Schema,
   canvasWorkerResponseV1Schema,
   MAX_CANVAS_ADAPTER_EVIDENCE_JSON_BYTES,
+  MAX_CANVAS_INTERACTION_ENTITY_IDS,
   MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES,
   MAX_CANVAS_SAMPLE_JSON_BYTES,
   MAX_CANVAS_SNAPSHOT_JSON_BYTES,
   MAX_CANVAS_TELEMETRY_RESPONSE_JSON_BYTES,
   MAX_CANVAS_WASM_MODULE_URL_LENGTH,
+  normalizeCanvasInteractionEntityIdsV1,
 } from "./canvas-worker-protocol";
 
 const REVISION = "a".repeat(64);
@@ -76,6 +78,7 @@ describe("canvas worker v1 protocol", () => {
     expect(MAX_CANVAS_SNAPSHOT_JSON_BYTES).toBe(8 * 1024 * 1024);
     expect(MAX_CANVAS_SAMPLE_JSON_BYTES).toBe(256 * 1024);
     expect(MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES).toBe(16 * 1024);
+    expect(MAX_CANVAS_INTERACTION_ENTITY_IDS).toBe(128);
     expect(MAX_CANVAS_WASM_MODULE_URL_LENGTH).toBe(2_048);
   });
 
@@ -112,6 +115,65 @@ describe("canvas worker v1 protocol", () => {
       version: 1,
     };
     expect(canvasRenderResponseV1Schema.parse(rejected)).toEqual(rejected);
+  });
+
+  it("bounds Scene entity IDs without allowing advisory metadata to reject the pixel request", () => {
+    const render = {
+      interactionEntityIds: ["scene:runtime/entity#0", "scene:runtime/entity#1"],
+      kind: "render-frame",
+      requestId: 2,
+      revision: REVISION,
+      sampleTime: 1,
+      schema: "poietra.canvas-worker-request",
+      version: 1,
+      viewport: { heightPx: 90, widthPx: 160 },
+    };
+    expect(canvasWorkerRequestV1Schema.parse(render)).toEqual(render);
+    expect(
+      canvasWorkerRequestV1Schema.safeParse({ ...render, interactionEntityIds: ["duplicate", "duplicate"] }).success,
+    ).toBe(true);
+    expect(normalizeCanvasInteractionEntityIdsV1(["duplicate", "duplicate"])).toEqual(["duplicate", "duplicate"]);
+    expect(normalizeCanvasInteractionEntityIdsV1(["valid#id", "bad id", 7])).toEqual(["valid#id", null, null]);
+    expect(
+      normalizeCanvasInteractionEntityIdsV1(
+        Array.from({ length: MAX_CANVAS_INTERACTION_ENTITY_IDS + 1 }, (_, index) => `e:${index}`),
+      ),
+    ).toBeNull();
+    expect(normalizeCanvasInteractionEntityIdsV1({ entityId: "not-an-array" })).toBeNull();
+
+    const presented = {
+      result: {
+        interaction: {
+          entries: [{ bounds: [-0.5, -0.25, 0.5, 0.25], status: "present" }, { status: "inactive" }],
+          space: "clip-v1",
+          status: "available",
+        },
+        kind: "presented",
+        packetId: "canvas:2",
+        sampleTime: 1,
+        suboptimal: false,
+        viewport: { heightPx: 90, widthPx: 160 },
+      },
+      schema: "poietra.canvas-render-response",
+      version: 1,
+    };
+    expect(canvasRenderResponseV1Schema.parse(presented)).toEqual(presented);
+    expect(
+      canvasRenderResponseV1Schema.parse({
+        ...presented,
+        result: {
+          ...presented.result,
+          interaction: {
+            entries: [{ bounds: [0.5, 0, -0.5, 1], status: "present" }],
+            space: "clip-v1",
+            status: "available",
+          },
+        },
+      }).result,
+    ).toMatchObject({
+      interaction: { entries: [{ status: "unavailable" }], space: "clip-v1", status: "available" },
+      kind: "presented",
+    });
   });
 
   it("keeps Worker responses small and signals whole-scene fallback", () => {

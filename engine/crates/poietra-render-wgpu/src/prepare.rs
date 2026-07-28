@@ -137,6 +137,7 @@ impl PreparedMaterialV1 {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedDrawV1 {
     draw_id: String,
+    entity_id: String,
     index_range: Range<u32>,
     material_index: u32,
     vertex_range: Range<u32>,
@@ -146,6 +147,11 @@ impl PreparedDrawV1 {
     #[must_use]
     pub fn draw_id(&self) -> &str {
         &self.draw_id
+    }
+
+    #[must_use]
+    pub fn entity_id(&self) -> &str {
+        &self.entity_id
     }
 
     #[must_use]
@@ -208,6 +214,38 @@ impl PreparedFrameV1 {
     #[must_use]
     pub fn indices(&self) -> &[u32] {
         &self.geometry.indices
+    }
+
+    /// Returns the visual AABB of every prepared paint phase for one runtime
+    /// entity in clip space as `[min_x, min_y, max_x, max_y]`.
+    ///
+    /// The bounds are derived only from the final `f32` vertices used for GPU
+    /// upload, so stroke width, camera projection, hierarchy, and sampled
+    /// transforms are already reflected. Missing or internally inconsistent
+    /// geometry returns `None` without exposing a panicking API.
+    #[must_use]
+    pub fn clip_bounds_for_entity(&self, entity_id: &str) -> Option<[f32; 4]> {
+        let mut bounds: Option<[f32; 4]> = None;
+        for draw in self
+            .ordered_draws
+            .draws
+            .iter()
+            .filter(|draw| draw.entity_id == entity_id)
+        {
+            let start = usize::try_from(draw.vertex_range.start).ok()?;
+            let end = usize::try_from(draw.vertex_range.end).ok()?;
+            let vertices = self.geometry.vertices.get(start..end)?;
+            for vertex in vertices {
+                let [x, y] = vertex.position;
+                if !x.is_finite() || !y.is_finite() {
+                    return None;
+                }
+                bounds = Some(bounds.map_or([x, y, x, y], |[min_x, min_y, max_x, max_y]| {
+                    [min_x.min(x), min_y.min(y), max_x.max(x), max_y.max(y)]
+                }));
+            }
+        }
+        bounds
     }
 
     #[must_use]
@@ -273,6 +311,7 @@ impl PreparedFrameV1 {
             ordered_draws: OrderedDrawPlanV1 {
                 draws: vec![PreparedDrawV1 {
                     draw_id: "draw:test".to_owned(),
+                    entity_id: "entity:test".to_owned(),
                     index_range: 0..3,
                     material_index: 0,
                     vertex_range: 0..3,
@@ -1635,6 +1674,7 @@ impl PreparedFrameAccumulatorV1 {
     fn append_phase(
         &mut self,
         draw_id: &str,
+        entity_id: &str,
         color: &RgbaColorV1,
         opacity: f64,
         prepare_geometry: impl FnOnce(
@@ -1663,6 +1703,7 @@ impl PreparedFrameAccumulatorV1 {
             u32::try_from(self.vertices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
         self.draws.push(PreparedDrawV1 {
             draw_id: draw_id.to_owned(),
+            entity_id: entity_id.to_owned(),
             index_range: index_start..index_end,
             material_index,
             vertex_range: vertex_start..vertex_end,
@@ -1695,6 +1736,7 @@ pub fn tessellate_validated_frame_v1(
     for draw in &packet.draws {
         let RenderDrawV1::Path {
             draw_id,
+            entity_id,
             fill,
             opacity,
             path,
@@ -1720,14 +1762,26 @@ pub fn tessellate_validated_frame_v1(
             viewport: &packet.viewport,
         };
         if let Some(fill) = fill {
-            prepared.append_phase(draw_id, &fill.color, *opacity, |vertices, indices| {
-                prepare_fill_geometry(vertices, indices, path, transform, fill.rule, context)
-            })?;
+            prepared.append_phase(
+                draw_id,
+                entity_id,
+                &fill.color,
+                *opacity,
+                |vertices, indices| {
+                    prepare_fill_geometry(vertices, indices, path, transform, fill.rule, context)
+                },
+            )?;
         }
         if let Some(stroke) = stroke {
-            prepared.append_phase(draw_id, &stroke.color, *opacity, |vertices, indices| {
-                prepare_stroke_geometry(vertices, indices, path, transform, stroke, context)
-            })?;
+            prepared.append_phase(
+                draw_id,
+                entity_id,
+                &stroke.color,
+                *opacity,
+                |vertices, indices| {
+                    prepare_stroke_geometry(vertices, indices, path, transform, stroke, context)
+                },
+            )?;
         }
     }
 
@@ -1976,6 +2030,7 @@ mod tests {
         let mut prepared = PreparedFrameAccumulatorV1::with_phase_capacity(1);
         let error = prepared.append_phase(
             "draw:rollback",
+            "entity:rollback",
             &RgbaColorV1 {
                 alpha: 1.0,
                 blue: 0.0,
