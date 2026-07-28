@@ -728,6 +728,7 @@ dependencies = [
  "poietra-scene-ir",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "wasm-bindgen",
  "wasm-bindgen-futures",

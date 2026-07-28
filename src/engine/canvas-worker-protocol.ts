@@ -7,6 +7,7 @@ import {
   sourceIdentityV1Schema,
 } from "./primitives";
 import { renderViewportV1Schema } from "./render-packet";
+import { MAX_SCENE_DELTA_JSON_BYTES } from "./scene-delta";
 
 export const POIETRA_CANVAS_WORKER_VERSION = 1 as const;
 export const POIETRA_CANVAS_TELEMETRY_ABI_VERSION = 1 as const;
@@ -15,6 +16,7 @@ export const MAX_CANVAS_SAMPLE_JSON_BYTES = 256 * 1024;
 export const MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES = 16 * 1024;
 export const MAX_CANVAS_TELEMETRY_RESPONSE_JSON_BYTES = 32 * 1024;
 export const MAX_CANVAS_ADAPTER_EVIDENCE_JSON_BYTES = 8 * 1024;
+export const MAX_CANVAS_SCENE_DELTA_ACK_JSON_BYTES = 128 * 1024;
 export const MAX_CANVAS_WASM_MODULE_URL_LENGTH = 2_048;
 export const MAX_CANVAS_INTERACTION_ENTITY_IDS = 128;
 
@@ -54,6 +56,11 @@ const snapshotJsonSchema = z
   .refine((bytes) => bytes.byteLength <= MAX_CANVAS_SNAPSHOT_JSON_BYTES, {
     message: `Scene snapshot JSON accepts at most ${MAX_CANVAS_SNAPSHOT_JSON_BYTES} bytes.`,
   });
+const sceneDeltaJsonSchema = z
+  .instanceof(ArrayBuffer)
+  .refine((bytes) => bytes.byteLength <= MAX_SCENE_DELTA_JSON_BYTES, {
+    message: `Scene delta JSON accepts at most ${MAX_SCENE_DELTA_JSON_BYTES} bytes.`,
+  });
 const offscreenCanvasSchema = z.custom<OffscreenCanvas>(isOffscreenCanvas, "Expected an OffscreenCanvas.");
 
 export const canvasWorkerRequestEnvelopeV1 = {
@@ -84,6 +91,16 @@ const replaceSceneRequestV1Schema = z
     kind: z.literal("replace-scene"),
     revision: revisionSchema,
     snapshotJson: snapshotJsonSchema,
+  })
+  .strict();
+
+const applySceneDeltaRequestV1Schema = z
+  .object({
+    ...requestEnvelope,
+    baseRevision: revisionSchema,
+    deltaJson: sceneDeltaJsonSchema,
+    kind: z.literal("apply-scene-delta"),
+    revision: revisionSchema,
   })
   .strict();
 
@@ -119,6 +136,7 @@ const collectAdapterEvidenceRequestV1Schema = z
 export const canvasWorkerRequestV1Schema = z.discriminatedUnion("kind", [
   installCanvasRequestV1Schema,
   replaceSceneRequestV1Schema,
+  applySceneDeltaRequestV1Schema,
   renderFrameRequestV1Schema,
   renderFrameTelemetryRequestV1Schema,
   collectAdapterEvidenceRequestV1Schema,
@@ -403,6 +421,7 @@ export const canvasWorkerErrorCodeV1Schema = z.union([
     "invalid-state",
     "protocol-violation",
     "renderer-unavailable",
+    "delta-rejected",
     "snapshot-rejected",
     "stale-revision",
     "telemetry-unavailable",
@@ -410,6 +429,16 @@ export const canvasWorkerErrorCodeV1Schema = z.union([
   ]),
   canvasRenderErrorCodeV1Schema,
 ]);
+
+export const canvasSceneDeltaDirtySetV1Schema = z
+  .object({
+    assets: z.boolean(),
+    camera: z.boolean(),
+    channelIds: z.array(sourceIdentityV1Schema).max(256),
+    entityIds: z.array(sourceIdentityV1Schema).max(256),
+    sceneMetadata: z.boolean(),
+  })
+  .strict();
 
 export const canvasWorkerResponseEnvelopeV1 = {
   requestId: requestIdSchema,
@@ -423,6 +452,14 @@ const canvasReadyResponseV1Schema = z
     ...canvasWorkerResponseEnvelopeV1,
     kind: z.literal("canvas-ready"),
     operation: z.enum(["install", "replace"]),
+  })
+  .strict();
+
+const sceneDeltaAppliedResponseV1Schema = z
+  .object({
+    ...canvasWorkerResponseEnvelopeV1,
+    dirty: canvasSceneDeltaDirtySetV1Schema,
+    kind: z.literal("scene-delta-applied"),
   })
   .strict();
 
@@ -502,12 +539,14 @@ export const canvasWorkerResponseV1Schema = z.discriminatedUnion("kind", [
   framePresentedResponseV1Schema,
   framePresentedTelemetryResponseV1Schema,
   frameTelemetryFailedResponseV1Schema,
+  sceneDeltaAppliedResponseV1Schema,
 ]);
 
 export type CanvasAdapterEvidenceV1 = z.infer<typeof canvasAdapterEvidenceV1Schema>;
 export type CanvasEngineSampleRequestV1 = z.infer<typeof canvasEngineSampleRequestV1Schema>;
 export type CanvasFrameTelemetryV1 = z.infer<typeof canvasFrameTelemetryV1Schema>;
 export type CanvasInteractionResultV1 = z.infer<typeof canvasInteractionResultV1Schema>;
+export type CanvasSceneDeltaDirtySetV1 = z.infer<typeof canvasSceneDeltaDirtySetV1Schema>;
 export type CanvasRenderErrorCodeV1 = z.infer<typeof canvasRenderErrorCodeV1Schema>;
 export type CanvasRenderResponseV1 = z.infer<typeof canvasRenderResponseV1Schema>;
 export type CanvasRenderTelemetryResponseV1 = z.infer<typeof canvasRenderTelemetryResponseV1Schema>;

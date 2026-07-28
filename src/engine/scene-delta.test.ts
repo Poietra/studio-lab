@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 import { EngineContractIntegrityError, parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "./contracts";
+import { sceneIrSourceRevisionHash } from "./scene-ir";
+import { MAX_CANVAS_SCENE_DELTA_ACK_JSON_BYTES } from "./canvas-worker-protocol";
 import {
   applySceneIrDeltaV1,
   MAX_SCENE_DELTA_JSON_BYTES,
@@ -21,6 +23,21 @@ async function fixtureBundle(): Promise<SceneIrBundleV1> {
   const url = new URL("../../fixtures/engine-v1/shared-circle-opacity.json", import.meta.url);
   const fixture = JSON.parse(await readFile(url, "utf8")) as Readonly<{ assets: unknown; scene: unknown }>;
   return parseVerifiedSceneIrBundleV1({ assets: fixture.assets, scene: fixture.scene });
+}
+
+async function sharedDeltaFixture() {
+  const url = new URL("../../fixtures/engine-v1/shared-single-entity-delta.json", import.meta.url);
+  return JSON.parse(await readFile(url, "utf8")) as Readonly<{
+    delta: SceneIrDeltaV1;
+    expected: Readonly<{ entityId: string; revision: string; tx: number }>;
+    limits: Readonly<{ deltaJsonBytes: number; dirtyAckJsonBytes: number; operations: number }>;
+    rejectCases: readonly Readonly<{
+      expectedCode: SceneIrDeltaError["code"];
+      id: string;
+      overrides?: Readonly<Record<string, unknown>>;
+      oversizedBytes?: number;
+    }>[];
+  }>;
 }
 
 function delta(operations: SceneIrDeltaV1["operations"], overrides: Readonly<Record<string, unknown>> = {}): unknown {
@@ -42,6 +59,41 @@ function expectDeltaError(error: unknown, code: SceneIrDeltaError["code"]) {
 }
 
 describe("Scene IR delta v1", () => {
+  it("matches the shared Rust success and rejection corpus without mutating rejected bases", async () => {
+    const shared = await sharedDeltaFixture();
+    expect(shared.limits).toEqual({
+      deltaJsonBytes: MAX_SCENE_DELTA_JSON_BYTES,
+      dirtyAckJsonBytes: MAX_CANVAS_SCENE_DELTA_ACK_JSON_BYTES,
+      operations: MAX_SCENE_DELTA_OPERATIONS,
+    });
+    const current = await fixtureBundle();
+    const deltaBytes = new TextEncoder().encode(JSON.stringify(shared.delta)).byteLength;
+    const snapshotBytes = new TextEncoder().encode(JSON.stringify(current)).byteLength;
+    expect(deltaBytes * 2).toBeLessThan(snapshotBytes);
+
+    const result = await applySceneIrDeltaV1(current, shared.delta);
+    expect(result.scene.source.kind).toBe("studio-edit-program");
+    expect(sceneIrSourceRevisionHash(result.scene)).toBe(shared.expected.revision);
+    expect(result.scene.entities.find(({ id }) => id === shared.expected.entityId)?.transform.tx).toBe(
+      shared.expected.tx,
+    );
+
+    for (const rejection of shared.rejectCases) {
+      const pristine = await fixtureBundle();
+      const before = structuredClone(pristine);
+      const candidate = rejection.oversizedBytes
+        ? { ...shared.delta, padding: "x".repeat(rejection.oversizedBytes) }
+        : { ...shared.delta, ...rejection.overrides };
+      try {
+        await applySceneIrDeltaV1(pristine, candidate);
+        throw new Error(`expected shared rejection ${rejection.id}`);
+      } catch (error) {
+        expectDeltaError(error, rejection.expectedCode);
+      }
+      expect(pristine).toEqual(before);
+    }
+  });
+
   it("applies multiple dependent operations atomically and advances the source revision", async () => {
     const current = await fixtureBundle();
     const before = structuredClone(current);

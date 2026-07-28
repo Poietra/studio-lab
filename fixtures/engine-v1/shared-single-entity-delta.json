@@ -1,0 +1,102 @@
+{
+  "delta": {
+    "baseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "nextRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "nextSource": {
+      "editProgramVersion": 1,
+      "kind": "studio-edit-program",
+      "revisionHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "operations": [
+      {
+        "entity": {
+          "appearance": {
+            "fill": {
+              "color": { "alpha": 1, "blue": 0, "green": 0, "red": 1 },
+              "rule": "nonzero"
+            },
+            "kind": "vector",
+            "opacity": 1,
+            "stroke": null
+          },
+          "geometry": { "center": { "x": -1, "y": 0 }, "kind": "circle", "radius": 1 },
+          "id": "earlier",
+          "lifetimes": [{ "end": 2, "start": 0 }],
+          "parentId": null,
+          "provenanceId": "fixture",
+          "sceneOrder": 0,
+          "sourceZIndex": 0,
+          "transform": { "m11": 1, "m12": 0, "m21": 0, "m22": 1, "tx": 3, "ty": 0 }
+        },
+        "expected": "present",
+        "kind": "put-entity"
+      }
+    ],
+    "sceneId": "shared:circle-opacity",
+    "schema": "poietra.scene-delta",
+    "version": 1
+  },
+  "expected": {
+    "entityId": "earlier",
+    "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "tx": 3
+  },
+  "id": "shared-single-entity-delta-v1",
+  "limits": { "deltaJsonBytes": 262144, "dirtyAckJsonBytes": 131072, "operations": 256 },
+  "rejectCases": [
+    {
+      "expectedCode": "delta-too-large",
+      "id": "oversized-envelope",
+      "oversizedBytes": 262145
+    },
+    {
+      "expectedCode": "invalid-delta",
+      "id": "unknown-field",
+      "overrides": { "debug": true }
+    },
+    {
+      "expectedCode": "next-revision-mismatch",
+      "id": "next-source-mismatch",
+      "overrides": {
+        "nextSource": {
+          "editProgramVersion": 1,
+          "kind": "studio-edit-program",
+          "revisionHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      }
+    },
+    {
+      "expectedCode": "operation-conflict",
+      "id": "missing-entity",
+      "overrides": { "operations": [{ "entityId": "missing", "kind": "remove-entity" }] }
+    },
+    {
+      "expectedCode": "result-invalid",
+      "id": "referenced-entity-removal",
+      "overrides": { "operations": [{ "entityId": "earlier", "kind": "remove-entity" }] }
+    },
+    {
+      "expectedCode": "scene-mismatch",
+      "id": "foreign-scene",
+      "overrides": { "sceneId": "foreign:scene" }
+    },
+    {
+      "expectedCode": "source-unsupported",
+      "id": "imported-next-source",
+      "overrides": {
+        "nextSource": {
+          "kind": "imported-manim-server-snapshot",
+          "runtimeConfigHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "snapshotHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "snapshotVersion": 1,
+          "sourceHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        }
+      }
+    },
+    {
+      "expectedCode": "stale-base-revision",
+      "id": "stale-base",
+      "overrides": { "baseRevision": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" }
+    }
+  ]
+}

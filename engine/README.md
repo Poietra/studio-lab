@@ -149,6 +149,24 @@ and return only the sampled `RenderPacket`; immutable Scene and manifest data ar
 not cloned across the worker boundary on every frame. Build the web-target package
 with the repository script:
 
+Canvas ABI v3 additionally accepts a Studio-only `SceneDeltaV1` (256 KiB and
+256 operations maximum) as one transferred `ArrayBuffer`. Rust checks the
+transport base/next revisions, constructs and indexes the complete candidate,
+and pre-serializes a 128 KiB-bounded entity/channel/camera/asset dirty-set ACK
+before the atomic swap. The page client advances its revision only after that
+ACK; malformed, unsupported, or stale deltas retain the base revision and may
+recover through the existing full `replace-scene` operation. The authoring
+call site that turns subsequent Studio edits into deltas remains part of #67;
+initial Studio compilation still belongs to `studio-scene-adapter`. Dirty sets
+are dependency-safe invalidation candidates, not a minimal list of changed
+records: channel edits include both their old and new entity target (or the
+camera), while entity edits include descendants from both the installed and
+candidate parent graphs. IDs are deduplicated and sorted, and a closure that
+exceeds either 256-ID bound rejects before the swap so it cannot be truncated
+into an unsafe ACK. These candidates do not yet make GPU preparation/upload
+incremental because prepared geometry is not retained; that cache/invalidation
+work remains in #70.
+
 ```sh
 cargo install wasm-pack --locked --version 0.15.0
 pnpm build:engine:wasm

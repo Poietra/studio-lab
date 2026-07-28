@@ -34,6 +34,16 @@ where
     u32::try_from(value).map_err(|_| de::Error::custom("integer exceeds the u32 range"))
 }
 
+fn deserialize_required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    // Supplying a field deserializer disables Serde's implicit missing-Option
+    // default while preserving the wire distinction between `null` and a value.
+    Option::<T>::deserialize(deserializer)
+}
+
 /// The only wire contract version accepted by this crate.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ContractVersionV1;
@@ -342,8 +352,10 @@ pub enum ImageSamplerV1 {
 pub enum SceneAppearanceV1 {
     #[serde(rename = "vector")]
     Vector {
+        #[serde(deserialize_with = "deserialize_required_nullable")]
         fill: Option<FillStyleV1>,
         opacity: f64,
+        #[serde(deserialize_with = "deserialize_required_nullable")]
         stroke: Option<StrokeStyleV1>,
     },
     #[serde(rename = "image")]
@@ -357,6 +369,7 @@ pub struct SceneEntityV1 {
     pub geometry: SceneGeometryV1,
     pub id: String,
     pub lifetimes: Vec<IntervalV1>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
     pub parent_id: Option<String>,
     pub provenance_id: String,
     #[serde(deserialize_with = "deserialize_js_safe_u32")]
@@ -380,6 +393,7 @@ pub enum EasingV1 {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct KeyframeV1<T> {
     pub at: f64,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
     pub easing_to_next: Option<EasingV1>,
     pub value: T,
 }
@@ -695,6 +709,7 @@ pub enum RenderDrawV1 {
         draw_id: String,
         #[serde(rename = "entityId")]
         entity_id: String,
+        #[serde(deserialize_with = "deserialize_required_nullable")]
         fill: Option<FillStyleV1>,
         opacity: f64,
         #[serde(rename = "paintOrder")]
@@ -703,6 +718,7 @@ pub enum RenderDrawV1 {
         path: CubicPathV1,
         #[serde(rename = "sourceZIndex")]
         source_z_index: f64,
+        #[serde(deserialize_with = "deserialize_required_nullable")]
         stroke: Option<StrokeStyleV1>,
         transform: AffineTransformV1,
     },

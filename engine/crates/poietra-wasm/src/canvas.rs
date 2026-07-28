@@ -29,6 +29,7 @@ use crate::canvas_telemetry::{
 use crate::protocol::EngineWorkerSessionV1;
 
 const SNAPSHOT_REJECTED_ERROR_NAME: &str = "PoietraCanvasSnapshotRejected";
+const DELTA_REJECTED_ERROR_NAME: &str = "PoietraCanvasDeltaRejected";
 const RENDERER_UNAVAILABLE_ERROR_NAME: &str = "PoietraCanvasRendererUnavailable";
 
 #[derive(Clone, Debug)]
@@ -431,6 +432,23 @@ impl PoietraCanvasEngineV1 {
         self.session
             .replace_snapshot_json(snapshot_json)
             .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))
+    }
+
+    /// Atomically applies one bounded Studio Scene delta.
+    ///
+    /// # Errors
+    ///
+    /// Returns a named JavaScript error and preserves Scene, index, and GPU state on failure.
+    #[wasm_bindgen(js_name = applySceneDelta)]
+    pub fn apply_scene_delta(
+        &mut self,
+        delta_json: &[u8],
+        base_revision: &str,
+        next_revision: &str,
+    ) -> Result<Vec<u8>, JsValue> {
+        self.session
+            .apply_scene_delta_json(delta_json, base_revision, next_revision)
+            .map_err(|error| named_js_error(DELTA_REJECTED_ERROR_NAME, &error.to_string()))
     }
 
     /// Evaluates and presents one bounded sample request.
