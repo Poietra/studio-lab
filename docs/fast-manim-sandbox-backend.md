@@ -177,6 +177,8 @@ evidence through this interface:
 2. #83: hard CPU, memory, pid, fd, disk/output limits and whole-job descendant
    reaping, with its implemented controller contract and operator prerequisites
    documented in the [resource and reap runbook](fast-manim-sandbox-resources.md);
+   the rootless runc host and signed-rootfs prerequisites are documented
+   separately in the [production runc runbook](fast-manim-runc-production.md);
 3. #84: tenant-owned artifacts plus adversarial isolation and leak tests;
 4. #85: attestation verification, rollout gate, kill switches, monitoring, and
    incident response.
