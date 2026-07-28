@@ -536,7 +536,7 @@ if (orphanModes.has(mode)) {
       ? `${selfExpiry}
          const filler = "x".repeat(65536); let sent = 0;
          const write = () => {
-           while (sent < 100) {
+           while (sent < 160) {
              sent += 1;
              if (!process.stdout.write(filler)) { process.stdout.once("drain", write); return; }
            }
