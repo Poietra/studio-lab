@@ -6,6 +6,7 @@ use poietra_scene_ir::{
     parse_scene_ir_bundle_json_v1,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 
 use crate::bounded_writer::BoundedWriter;
 
@@ -55,14 +56,14 @@ struct SampleRequestV1 {
 /// bad hit-target request from turning an otherwise renderable pixel frame into
 /// an error. The enclosing sample request remains strict for every core field.
 #[derive(Debug, Default)]
-struct RawInteractionEntityIdsV1(Option<serde_json::Value>);
+struct RawInteractionEntityIdsV1(Option<Box<RawValue>>);
 
 impl<'de> Deserialize<'de> for RawInteractionEntityIdsV1 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        serde_json::Value::deserialize(deserializer).map(|value| Self(Some(value)))
+        Box::<RawValue>::deserialize(deserializer).map(|value| Self(Some(value)))
     }
 }
 
@@ -287,10 +288,10 @@ fn validate_request(request: &SampleRequestV1) -> Result<(), &'static str> {
 fn normalize_interaction_request(
     raw: &RawInteractionEntityIdsV1,
 ) -> NormalizedInteractionRequestV1 {
-    let Some(value) = raw.0.as_ref() else {
+    let Some(value) = raw.0.as_deref() else {
         return NormalizedInteractionRequestV1::Disabled;
     };
-    let Some(values) = value.as_array() else {
+    let Ok(values) = serde_json::from_str::<Vec<Box<RawValue>>>(value.get()) else {
         return NormalizedInteractionRequestV1::Unavailable;
     };
     if values.len() > MAX_INTERACTION_ENTITY_IDS_V1 {
@@ -302,13 +303,12 @@ fn normalize_interaction_request(
     let mut entries = values
         .iter()
         .map(|value| {
-            let value = value.as_str()?;
-            if !validate_bounded_unpadded_text(value, MAX_ID_UTF16_UNITS_V1)
-                || !portable_source_identity(value)
+            let value = serde_json::from_str::<String>(value.get()).ok()?;
+            if !validate_bounded_unpadded_text(&value, MAX_ID_UTF16_UNITS_V1)
+                || !portable_source_identity(&value)
             {
                 return None;
             }
-            let value = value.to_owned();
             if !seen.insert(value.clone()) {
                 duplicates.insert(value.clone());
             }
@@ -651,6 +651,33 @@ mod tests {
             );
             assert!(!sampled.packet.draws.is_empty());
         }
+    }
+
+    #[test]
+    fn out_of_range_interaction_number_degrades_only_that_entry() {
+        let fixture = fixture();
+        let session = EngineWorkerSessionV1::from_snapshot_json(&snapshot(&fixture)).unwrap();
+        let request = br#"{
+            "evidence":["Poietra WASM protocol fixture v1"],
+            "interactionEntityIds":["earlier",1e400,"later"],
+            "packetId":"wasm:interaction",
+            "sampleTime":1,
+            "schema":"poietra.engine-sample-request",
+            "version":1,
+            "viewport":{"heightPx":90,"widthPx":160}
+        }"#;
+
+        let sampled = session.sample_packet_json(request).unwrap();
+        let SampledInteractionRequestV1::Available(entries) = sampled.interaction else {
+            panic!("a malformed optional item must not reject pixel sampling");
+        };
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].entity_id.as_deref(), Some("earlier"));
+        assert!(entries[0].known && entries[0].active);
+        assert_eq!(entries[1].entity_id, None);
+        assert_eq!(entries[2].entity_id.as_deref(), Some("later"));
+        assert!(entries[2].known && entries[2].active);
+        assert!(!sampled.packet.draws.is_empty());
     }
 
     #[test]
