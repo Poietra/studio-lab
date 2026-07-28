@@ -43,6 +43,10 @@ pub struct GpuUploadPlanV1 {
 }
 
 impl GpuUploadPlanV1 {
+    pub(crate) fn into_parts(self) -> (Vec<u8>, Vec<u8>) {
+        (self.vertex_bytes, self.index_bytes)
+    }
+
     #[must_use]
     pub fn index_bytes(&self) -> &[u8] {
         &self.index_bytes

@@ -5,8 +5,10 @@ mod support;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use poietra_render_wgpu::{WgpuPaintRendererV1, WgpuRenderTargetV1, prepare_frame_v1};
-use poietra_scene_ir::{RenderPacketV1, StrokeCapV1};
+use poietra_render_wgpu::{
+    WgpuPaintRendererV1, WgpuRenderTargetV1, build_gpu_upload_plan_v1, prepare_frame_v1,
+};
+use poietra_scene_ir::{RenderCapabilityV1, RenderDrawV1, RenderPacketV1, StrokeCapV1};
 use serde::Serialize;
 use support::{
     PixelReferenceSet, generic_fill_fixture, generic_stroke_fixture, sampled_packet,
@@ -169,7 +171,7 @@ fn render_packet(
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let renderer = WgpuPaintRendererV1::new(device, TARGET_FORMAT)
+    let mut renderer = WgpuPaintRendererV1::new(device, TARGET_FORMAT)
         .expect("proof target format must be supported by the renderer");
     renderer
         .render(
@@ -367,6 +369,124 @@ fn renders_shared_fixture_with_fallback_adapter() {
         padded_bytes_per_row,
         &rgba,
         [extent.width, extent.height],
+    );
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the dedicated CI step runs this proof"]
+#[allow(clippy::too_many_lines)] // One scoped GPU proof keeps setup, 303 submissions, and error-pop evidence together.
+fn retains_high_water_buffers_batches_and_writes_only_dirty_bytes() {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = request_fallback_adapter(&instance);
+    assert_target_format_support(&adapter);
+    let (device, queue) = request_device(&adapter);
+    let device_loss = track_device_loss(&device);
+    let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+    let packet = sampled_packet();
+    let prepared = prepare_frame_v1(&packet).unwrap();
+    let [width_px, height_px] = prepared.viewport();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("poietra retained arena proof target"),
+        size: wgpu::Extent3d {
+            depth_or_array_layers: 1,
+            height: height_px,
+            width: width_px,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: TARGET_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let target = WgpuRenderTargetV1 {
+        format: TARGET_FORMAT,
+        height_px,
+        view: &view,
+        width_px,
+    };
+    let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT).unwrap();
+
+    let mut small_packet = packet.clone();
+    small_packet.draws.truncate(1);
+    small_packet.required_capabilities = vec![RenderCapabilityV1::CubicPathFill];
+    let small = prepare_frame_v1(&small_packet).unwrap();
+    let (_, cold) = renderer
+        .render_with_stage_evidence(&device, &queue, target, &small, None)
+        .unwrap();
+    assert_eq!(cold.buffer_creations, 2);
+    assert_eq!(cold.draw_calls, 1);
+    assert!(cold.upload_bytes > 0);
+
+    let (_, growth) = renderer
+        .render_with_stage_evidence(&device, &queue, target, &prepared, None)
+        .unwrap();
+    assert!(growth.buffer_creations > 0);
+    assert_eq!(growth.draw_calls, 1);
+    assert!(growth.upload_bytes > 0);
+
+    for _ in 0..300 {
+        let (_, warm) = renderer
+            .render_with_stage_evidence(&device, &queue, target, &prepared, None)
+            .unwrap();
+        assert_eq!(warm.buffer_creations, 0);
+        assert_eq!(warm.draw_calls, 1);
+        assert_eq!(warm.upload_bytes, 0);
+    }
+
+    let mut material_packet = packet.clone();
+    let RenderDrawV1::Path { opacity, .. } = &mut material_packet.draws[0] else {
+        panic!("shared fixture first draw must be a path");
+    };
+    *opacity *= 0.5;
+    let material_frame = prepare_frame_v1(&material_packet).unwrap();
+    let (_, dirty) = renderer
+        .render_with_stage_evidence(&device, &queue, target, &material_frame, None)
+        .unwrap();
+    assert_eq!(dirty.buffer_creations, 0);
+    assert_eq!(dirty.draw_calls, 1);
+    assert!(dirty.upload_bytes > 0);
+    assert!(
+        dirty.upload_bytes
+            < build_gpu_upload_plan_v1(&material_frame)
+                .unwrap()
+                .upload_bytes() as u64
+    );
+
+    let mut empty_packet = packet;
+    empty_packet.draws.clear();
+    empty_packet.required_capabilities.clear();
+    let empty = prepare_frame_v1(&empty_packet).unwrap();
+    let (final_submission, empty_evidence) = renderer
+        .render_with_stage_evidence(&device, &queue, target, &empty, None)
+        .unwrap();
+    assert_eq!(empty_evidence.buffer_creations, 0);
+    assert_eq!(empty_evidence.draw_calls, 0);
+    assert_eq!(empty_evidence.upload_bytes, 0);
+    assert!(!empty_evidence.geometry_stages_executed);
+    let poll_status = device
+        .poll(wgpu::PollType::Wait {
+            submission_index: Some(final_submission),
+            timeout: Some(GPU_TIMEOUT),
+        })
+        .expect("retained arena proof submission must finish");
+    assert!(poll_status.wait_finished());
+    assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
+    assert_no_gpu_error("internal", pollster::block_on(internal_scope.pop()));
+    assert_no_gpu_error(
+        "out-of-memory",
+        pollster::block_on(out_of_memory_scope.pop()),
+    );
+    assert!(
+        device_loss
+            .lock()
+            .expect("device-loss evidence mutex must not be poisoned")
+            .is_none()
     );
 }
 

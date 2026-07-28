@@ -1,7 +1,8 @@
-use wgpu::util::DeviceExt;
-
+use crate::arena::GpuBufferArenaV1;
 use crate::upload::VERTEX_ENCODED_SIZE_V1;
-use crate::{GpuUploadPlanErrorV1, PreparedFrameV1, build_gpu_upload_plan_v1};
+use crate::{
+    GpuBufferArenaErrorV1, GpuUploadPlanErrorV1, PreparedFrameV1, build_gpu_upload_plan_v1,
+};
 
 const VERTEX_STRIDE: wgpu::BufferAddress = VERTEX_ENCODED_SIZE_V1 as wgpu::BufferAddress;
 const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
@@ -46,6 +47,8 @@ pub struct WgpuRenderTargetV1<'a> {
 pub enum RenderFrameErrorV1 {
     #[error(transparent)]
     UploadPlan(#[from] GpuUploadPlanErrorV1),
+    #[error(transparent)]
+    BufferArena(#[from] GpuBufferArenaErrorV1),
     #[error("target format {actual:?} does not match renderer format {expected:?}")]
     TargetFormatMismatch {
         actual: wgpu::TextureFormat,
@@ -83,11 +86,10 @@ pub enum CreateRendererErrorV1 {
 /// reject such intervals rather than report them as healthy timings.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RenderStageEvidenceV1 {
-    /// Wall time for the two `create_buffer_init` calls, which create the
-    /// vertex/index buffers and stage the encoded bytes into them. This is a
-    /// CPU-side create-and-stage cost, not a GPU transfer measurement.
+    /// Wall time for retained-buffer growth, dirty-range comparison, and
+    /// queue writes. This is CPU-side staging cost, not GPU transfer time.
     pub buffer_create_and_stage_ms: Option<f64>,
-    /// `create_buffer_init` calls issued for this frame (0 for empty frames).
+    /// Vertex/index buffers created by arena growth for this frame.
     pub buffer_creations: u32,
     /// Wall time from command-encoder creation through `encoder.finish()`.
     /// This is a nested total: it INCLUDES the `draw_record_ms` interval.
@@ -105,7 +107,7 @@ pub struct RenderStageEvidenceV1 {
     /// Wall time submitting the finished command buffer to the queue. Queue
     /// submission returning says nothing about GPU execution completion.
     pub submit_ms: Option<f64>,
-    /// Vertex plus index bytes encoded and staged through buffer creation.
+    /// Vertex plus index bytes passed to queue writes after dirty comparison.
     pub upload_bytes: u64,
     /// Wall time encoding vertices/indices into little-endian byte vectors on
     /// the CPU, before any buffer exists.
@@ -145,6 +147,7 @@ fn stage_started(clock: StageClock<'_>) -> Option<f64> {
 /// use the [`crate::WgpuPaintRendererV1`] alias.
 #[derive(Debug)]
 pub struct WgpuFillRendererV1 {
+    arena: GpuBufferArenaV1,
     pipeline: wgpu::RenderPipeline,
     target_format: wgpu::TextureFormat,
 }
@@ -202,6 +205,7 @@ impl WgpuFillRendererV1 {
             cache: None,
         });
         Ok(Self {
+            arena: GpuBufferArenaV1::default(),
             pipeline,
             target_format,
         })
@@ -224,7 +228,7 @@ impl WgpuFillRendererV1 {
     /// [`RenderFrameErrorV1::UploadPlan`] when the bounded vertex/index encoding overflows,
     /// exceeds its byte limit, cannot be allocated, or finds inconsistent prepared plans.
     pub fn render(
-        &self,
+        &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         target: WgpuRenderTargetV1<'_>,
@@ -245,7 +249,7 @@ impl WgpuFillRendererV1 {
     /// Returns the same format, extent, or bounded [`RenderFrameErrorV1::UploadPlan`] errors as
     /// [`Self::render`].
     pub fn render_with_stage_evidence(
-        &self,
+        &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         target: WgpuRenderTargetV1<'_>,
@@ -269,31 +273,21 @@ impl WgpuFillRendererV1 {
         }
 
         let mut evidence = RenderStageEvidenceV1::empty();
-        let buffers = if frame.indices().is_empty() {
-            None
-        } else {
+        if !frame.indices().is_empty() {
             evidence.geometry_stages_executed = true;
             let vertex_index_encode_started = stage_started(clock);
             let upload_plan = build_gpu_upload_plan_v1(frame)?;
             evidence.vertex_index_encode_ms = stage_elapsed(clock, vertex_index_encode_started);
-            evidence.buffer_creations = 2;
-            evidence.upload_bytes = upload_plan.upload_bytes() as u64;
+            let (vertex_bytes, index_bytes) = upload_plan.into_parts();
             let buffer_create_started = stage_started(clock);
-            let created = (
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("poietra solid paint vertices v1"),
-                    contents: upload_plan.vertex_bytes(),
-                    usage: wgpu::BufferUsages::VERTEX,
-                }),
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("poietra solid paint indices v1"),
-                    contents: upload_plan.index_bytes(),
-                    usage: wgpu::BufferUsages::INDEX,
-                }),
-            );
+            let arena_stats = self
+                .arena
+                .upload(device, queue, vertex_bytes, index_bytes)?;
             evidence.buffer_create_and_stage_ms = stage_elapsed(clock, buffer_create_started);
-            Some(created)
-        };
+            evidence.buffer_creations = arena_stats.buffer_creations;
+            evidence.upload_bytes = arena_stats.upload_bytes;
+            debug_assert!(arena_stats.capacity_bytes > 0);
+        }
 
         let command_encode_started = stage_started(clock);
         let mut draw_record_ms = None;
@@ -324,16 +318,29 @@ impl WgpuFillRendererV1 {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            if let Some((vertex_buffer, index_buffer)) = &buffers {
+            if !frame.indices().is_empty() {
+                let (vertex_buffer, index_buffer) =
+                    self.arena
+                        .buffers()
+                        .ok_or(GpuUploadPlanErrorV1::Inconsistent(
+                            "successful non-empty upload did not retain both GPU buffers",
+                        ))?;
                 pass.set_pipeline(&self.pipeline);
                 pass.set_vertex_buffer(0, vertex_buffer.slice(..));
                 pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 let draw_record_started = stage_started(clock);
-                for draw in frame.draws() {
-                    pass.draw_indexed(draw.index_range().clone(), 0, 0..1);
-                }
+                let index_count = u32::try_from(frame.indices().len()).map_err(|_| {
+                    GpuUploadPlanErrorV1::Inconsistent(
+                        "prepared index count does not fit the ordered GPU draw range",
+                    )
+                })?;
+                // Every current solid-paint draw uses the same pipeline and has
+                // no bind-group/scissor state. The index buffer is already in
+                // packet paint order, so one indexed draw preserves translucent
+                // primitive order. Future resource state becomes a boundary here.
+                pass.draw_indexed(0..index_count, 0, 0..1);
                 draw_record_ms = stage_elapsed(clock, draw_record_started);
-                evidence.draw_calls = frame.draws().len() as u64;
+                evidence.draw_calls = 1;
             }
         }
         let command_buffer = encoder.finish();
