@@ -11,6 +11,7 @@ import type {
   RenderCommitRequest,
   RenderSourceActionCancellationRequest,
 } from "../src/render-pipeline/contracts";
+import type { DurableManimRenderServiceV1 } from "./durable-manim-render-service";
 import type { FastManimSnapshotQueryV1, FastManimSnapshotRunRequestV1 } from "./fast-manim-snapshot-contract";
 import { HttpError } from "./http/json";
 import type { MutableManimProjectApiOperations } from "./manim-api";
@@ -18,8 +19,8 @@ import type { ProductionManimRuntimeAdapterV1 } from "./manim-production-server"
 import { lowerManimRenderRequest } from "./manim-render-request-lowering";
 import { manimTenantIdSchema } from "./manim-request-principal";
 import type { ThumbnailAsset } from "./manim-thumbnail-cache";
-import type { DurableSourceBlobGcWorkerV1 } from "./storage/source-blob-gc";
 import { importSourceSnapshot } from "./manim-workspace";
+import type { DurableSourceBlobGcWorkerV1 } from "./storage/source-blob-gc";
 import type {
   SourceContentBlobStoreV1,
   WorkspaceSourceHeadV1,
@@ -47,6 +48,7 @@ export type DurableManimRuntimeOptionsV1 = Readonly<{
   frame?: Readonly<{ height: number; width: number }>;
   namespace: string;
   projectIdFactory?: () => string;
+  renders?: DurableManimRenderServiceV1;
   repository: WorkspaceSourceRepositoryV1;
   tenantId: string;
 }>;
@@ -93,6 +95,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
   readonly #execution: DurableManimExecutionReadinessV1 | undefined;
   readonly #frame: Readonly<{ height: number; width: number }>;
   readonly #projectIdFactory: () => string;
+  readonly #renders: DurableManimRenderServiceV1 | undefined;
   readonly #repository: WorkspaceSourceRepositoryV1;
   readonly storageBoundary: Readonly<{ kind: "shared-durable"; namespace: string }>;
   readonly tenantId: string;
@@ -109,6 +112,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     this.#repository = options.repository;
     this.#blobs = options.blobs;
     this.#execution = options.execution;
+    this.#renders = options.renders;
     this.#frame = validateFrame(options.frame ?? DEFAULT_FRAME);
     this.#projectIdFactory = options.projectIdFactory ?? projectIdFromUuid;
   }
@@ -122,13 +126,20 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
 
   async ready(signal?: AbortSignal) {
     signal?.throwIfAborted();
-    const [repositoryReady, blobsReady, executionReady] = await Promise.all([
+    const [repositoryReady, blobsReady, executionReady, rendersReady] = await Promise.all([
       this.#repository.ready(signal),
       this.#blobs.ready(signal),
       this.#execution?.ready(signal) ?? Promise.resolve(false),
+      this.#renders?.ready(signal) ?? Promise.resolve(true),
     ]);
     signal?.throwIfAborted();
-    return repositoryReady && blobsReady && executionReady;
+    return repositoryReady && blobsReady && executionReady && rendersReady;
+  }
+
+  /** Production attestation additionally requires the durable render service. */
+  async productionReady(signal?: AbortSignal) {
+    if (!this.#renders) return false;
+    return this.ready(signal);
   }
 
   async projects(signal?: AbortSignal) {
@@ -289,55 +300,70 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     throw new HttpError("Durable Scene snapshots require the external sandbox runtime.", 503);
   }
 
-  async start(_request: ProgramRenderRequest, signal?: AbortSignal): Promise<never> {
+  async start(request: ProgramRenderRequest, signal?: AbortSignal) {
     signal?.throwIfAborted();
-    throw new HttpError("Durable rendering requires the external sandbox runtime.", 503);
+    if (!this.#renders) throw new HttpError("Durable rendering requires the external sandbox runtime.", 503);
+    if (!(await this.#execution?.ready(signal))) {
+      throw new HttpError("Durable rendering requires the external sandbox runtime.", 503);
+    }
+    return this.#renders.start(request, signal);
   }
 
-  async view(_id: string): Promise<never> {
-    throw new HttpError("Render session not found.", 404);
+  async view(id: string) {
+    if (!this.#renders) throw new HttpError("Render session not found.", 404);
+    return this.#renders.view(id);
   }
 
-  async videoPath(_id: string): Promise<never> {
-    throw new HttpError("Render session not found.", 404);
+  async videoPath(id: string) {
+    if (!this.#renders) throw new HttpError("Render session not found.", 404);
+    return this.#renders.videoPath(id);
   }
 
-  async cancel(_id: string): Promise<never> {
-    throw new HttpError("Render session not found.", 404);
+  async cancel(id: string) {
+    if (!this.#renders) throw new HttpError("Render session not found.", 404);
+    return this.#renders.cancel(id);
   }
 
-  async commit(_id: string, _expected: RenderCommitRequest, signal?: AbortSignal): Promise<never> {
+  async commit(id: string, expected: RenderCommitRequest, signal?: AbortSignal) {
     signal?.throwIfAborted();
-    throw new HttpError("Render session not found.", 404);
+    if (!this.#renders) throw new HttpError("Render session not found.", 404);
+    return this.#renders.commit(id, expected, signal);
   }
 
-  async undo(_id: string, _actionId: string, signal?: AbortSignal): Promise<never> {
+  async undo(id: string, actionId: string, signal?: AbortSignal) {
     signal?.throwIfAborted();
-    throw new HttpError("Render session not found.", 404);
+    if (!this.#renders) throw new HttpError("Render session not found.", 404);
+    return this.#renders.undo(id, actionId, signal);
   }
 
-  async cancelSourceAction(_id: string, _request: RenderSourceActionCancellationRequest): Promise<never> {
-    throw new HttpError("Render session not found.", 404);
+  async cancelSourceAction(id: string, request: RenderSourceActionCancellationRequest) {
+    if (!this.#renders) throw new HttpError("Render session not found.", 404);
+    return this.#renders.cancelSourceAction(id, request);
   }
 
-  async discard(_id: string): Promise<never> {
-    throw new HttpError("Render session not found.", 404);
+  async discard(id: string) {
+    if (!this.#renders) throw new HttpError("Render session not found.", 404);
+    return this.#renders.discard(id);
   }
 
-  async abandonStart(_id: string) {}
+  async abandonStart(id: string) {
+    await this.#renders?.abandonStart(id);
+  }
 
-  async abandon(_id: string, _expectedRenderRequestId: string) {
-    return { abandoned: true } as const;
+  async abandon(id: string, expectedRenderRequestId: string) {
+    return this.#renders?.abandon(id, expectedRenderRequestId) ?? ({ abandoned: true } as const);
   }
 
   close() {
     this.#closeRequest ??= (async () => {
+      const errors: unknown[] = [];
+      await (this.#execution?.close?.() ?? Promise.resolve()).catch((error: unknown) => errors.push(error));
       const results = await Promise.allSettled([
-        this.#execution?.close?.() ?? Promise.resolve(),
+        this.#renders?.close() ?? Promise.resolve(),
         this.#blobs.close(),
         this.#repository.close(),
       ]);
-      const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+      errors.push(...results.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])));
       if (errors.length > 0) throw new AggregateError(errors, "Could not fully close the durable Manim runtime.");
     })();
     return this.#closeRequest;
@@ -368,7 +394,7 @@ export function createDurableProductionManimRuntimeAdapterV1(
       if (errors.length > 0) throw new AggregateError(errors, "Could not fully close the durable production runtime.");
     },
     async ready(signal) {
-      if (!maintenance.ready() || !(await runtime.ready(signal))) return { ready: false };
+      if (!maintenance.ready() || !(await runtime.productionReady(signal))) return { ready: false };
       return {
         executionBoundary: "adapter-attests-external-sandbox",
         ready: true,

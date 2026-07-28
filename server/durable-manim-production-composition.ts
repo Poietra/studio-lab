@@ -1,12 +1,11 @@
-import { Pool, type PoolConfig } from "pg";
 import type { S3ClientConfig } from "@aws-sdk/client-s3";
+import { Pool, type PoolConfig } from "pg";
 
-import {
-  createDurableManimRuntimeV1,
-  createDurableProductionManimRuntimeAdapterV1,
-  type DurableManimExecutionReadinessV1,
-} from "./durable-manim-runtime";
-import { applyBundledWorkspaceSourceMigrationV1 } from "./storage/postgres/migrate";
+import { DurableManimRenderServiceV1 } from "./durable-manim-render-service";
+import { type DurableManimRenderExecutorV1, DurableManimRenderWorkerV1 } from "./durable-manim-render-worker";
+import { createDurableManimRuntimeV1, createDurableProductionManimRuntimeAdapterV1 } from "./durable-manim-runtime";
+import { applyBundledDurableStorageMigrationsV2 } from "./storage/postgres/migrate";
+import { PostgresRenderSessionRepositoryV1 } from "./storage/postgres/postgres-render-session-repository";
 import {
   PostgresWorkspaceSourceRepositoryV1,
   WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1,
@@ -21,12 +20,20 @@ export type DurablePostgresS3ProductionRuntimeOptionsV1 = Readonly<{
     runtimePoolConfig: PoolConfig;
     statementTimeoutMs?: number;
   }>;
-  execution: DurableManimExecutionReadinessV1;
+  execution: DurableManimRenderExecutorV1;
   frame?: Readonly<{ height: number; width: number }>;
   namespace: string;
   objectStorage: Readonly<{
     bucket: string;
     clientConfig: S3ClientConfig;
+  }>;
+  renderWorker: Readonly<{
+    executionTimeoutMs?: number;
+    leaseDurationMs?: number;
+    maxConcurrentJobs?: number;
+    onFailure: (error: unknown) => void;
+    pollIntervalMs?: number;
+    workerId?: string;
   }>;
   sourceGc: Readonly<{
     batchSize: number;
@@ -80,7 +87,7 @@ async function migrate(options: DurablePostgresS3ProductionRuntimeOptionsV1["dat
     statement_timeout: timeout,
   });
   try {
-    await applyBundledWorkspaceSourceMigrationV1(pool);
+    await applyBundledDurableStorageMigrationsV2(pool);
   } finally {
     await pool.end();
   }
@@ -101,6 +108,10 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
     poolConfig: options.database.runtimePoolConfig,
     statementTimeoutMs: options.database.statementTimeoutMs,
   });
+  const renderRepository = new PostgresRenderSessionRepositoryV1({
+    poolConfig: options.database.runtimePoolConfig,
+    statementTimeoutMs: options.database.statementTimeoutMs,
+  });
   let blobs: S3ContentBlobStoreV1;
   try {
     blobs = new S3ContentBlobStoreV1({
@@ -109,21 +120,66 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       deployment: "production",
     });
   } catch (error) {
-    await repository.close().catch(() => undefined);
+    await Promise.allSettled([options.execution.close(), renderRepository.close(), repository.close()]);
     throw error;
   }
 
+  let renderWorker: DurableManimRenderWorkerV1 | undefined;
+  let renders: DurableManimRenderServiceV1;
+  try {
+    renderWorker = new DurableManimRenderWorkerV1({
+      executor: options.execution,
+      ...(options.renderWorker.leaseDurationMs === undefined
+        ? {}
+        : { leaseDurationMs: options.renderWorker.leaseDurationMs }),
+      ...(options.renderWorker.maxConcurrentJobs === undefined
+        ? {}
+        : { maxConcurrentJobs: options.renderWorker.maxConcurrentJobs }),
+      onFailure: options.renderWorker.onFailure,
+      ...(options.renderWorker.pollIntervalMs === undefined
+        ? {}
+        : { pollIntervalMs: options.renderWorker.pollIntervalMs }),
+      repository: renderRepository,
+      tenantId: options.tenantId,
+      ...(options.renderWorker.workerId === undefined ? {} : { workerId: options.renderWorker.workerId }),
+    });
+    renders = new DurableManimRenderServiceV1({
+      blobs,
+      ...(options.renderWorker.executionTimeoutMs === undefined
+        ? {}
+        : { executionTimeoutMs: options.renderWorker.executionTimeoutMs }),
+      execution: renderWorker,
+      ...(options.frame ? { frame: options.frame } : {}),
+      repository: renderRepository,
+      sourceRepository: repository,
+      tenantId: options.tenantId,
+    });
+  } catch (error) {
+    const cleanup = await Promise.allSettled([
+      renderWorker?.close() ?? options.execution.close(),
+      blobs.close(),
+      renderRepository.close(),
+      repository.close(),
+    ]);
+    const cleanupErrors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError([error, ...cleanupErrors], "Production render composition and cleanup failed.");
+    }
+    throw error;
+  }
   const runtime = await createDurableManimRuntimeV1(
     {
       blobs,
-      execution: options.execution,
+      execution: renderWorker,
       frame: options.frame,
       namespace: options.namespace,
+      renders,
       repository,
       tenantId: options.tenantId,
     },
     signal,
   );
+  renderWorker.start();
   try {
     const maintenance = await createDurableSourceBlobGcWorkerV1(
       {
