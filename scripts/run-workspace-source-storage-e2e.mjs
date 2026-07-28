@@ -3,16 +3,24 @@ import { randomBytes } from "node:crypto";
 import { promisify } from "node:util";
 import pg from "pg";
 
+import { assertStorageE2eNotInterrupted, BoundedUtf8OutputTail } from "./storage-e2e-runner-support.mjs";
+
 const execFile = promisify(execFileCallback);
 const { Client } = pg;
 const POSTGRES_IMAGE = "postgres@sha256:23e88eb049fd5d54894d70100df61d38a49ed97909263f79d4ff4c30a5d5fca2";
 const MINIO_IMAGE = "minio/minio@sha256:6f23072e3e222e64fe6f86b31a7f7aca971e5129e55cbccef649b109b8e651a1";
+const STORAGE_SUITE_CONCURRENCY = 2;
+const TEST_OUTPUT_TAIL_BYTES = 256 * 1024;
 const runId = randomBytes(6).toString("hex");
 const postgresContainer = `poietra-storage-e2e-${runId}-postgres`;
 const minioContainer = `poietra-storage-e2e-${runId}-minio`;
 const createdContainers = [];
-let testProcess = null;
+const testProcesses = new Set();
 let interruptedSignal = null;
+
+function throwIfInterrupted() {
+  assertStorageE2eNotInterrupted(interruptedSignal);
+}
 
 function validateContainerName(name) {
   if (!new RegExp(`^poietra-storage-e2e-${runId}-(?:postgres|minio)$`).test(name)) {
@@ -41,7 +49,7 @@ async function publishedPort(name, internalPort) {
 async function retry(label, operation, attempts = 150) {
   let lastError;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
-    if (interruptedSignal) throw new Error(`Interrupted by ${interruptedSignal}.`);
+    throwIfInterrupted();
     try {
       if (await operation()) return;
     } catch (error) {
@@ -54,18 +62,55 @@ async function retry(label, operation, attempts = 150) {
 
 const STORAGE_SUITES = [
   {
+    database: "poietra_workspace_source",
     file: "server/storage/workspace-source-storage.real.test.ts",
+    id: "workspace-source",
     title: "survives SIGKILL, resolves cross-process CAS exactly once, isolates tenants, and collects orphans",
   },
   {
+    database: "poietra_render_session",
     file: "server/storage/render-session-storage.real.test.ts",
+    id: "render-session",
     title: "survives SIGKILL and fences recovery, source actions, CAS, and tenant routing",
   },
   {
+    database: "poietra_snapshot_publication",
     file: "server/storage/snapshot-publication-storage.real.test.ts",
+    id: "snapshot-publication",
     title: "publishes across processes, isolates tenants, rejects stale source CAS, and deletes an upload orphan",
   },
 ];
+
+function postgresIdentifier(value) {
+  if (!/^[a-z][a-z0-9_]{0,62}$/.test(value)) throw new Error("Refusing to create an invalid E2E database name.");
+  return `"${value}"`;
+}
+
+async function createSuiteDatabases(adminUrl) {
+  throwIfInterrupted();
+  const client = new Client({ connectionString: adminUrl });
+  try {
+    await client.connect();
+    throwIfInterrupted();
+    for (const suite of STORAGE_SUITES) {
+      await client.query(`CREATE DATABASE ${postgresIdentifier(suite.database)}`);
+      throwIfInterrupted();
+    }
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+  throwIfInterrupted();
+}
+
+function suiteEnvironment(commonEnvironment, postgresAdminUrl, suite) {
+  const databaseUrl = new URL(postgresAdminUrl);
+  databaseUrl.pathname = `/${suite.database}`;
+  return {
+    ...commonEnvironment,
+    POIETRA_STORAGE_E2E_DATABASE_URL: databaseUrl.href,
+    POIETRA_STORAGE_E2E_S3_BUCKET: `poietra-storage-e2e-${runId}-${suite.id}`,
+  };
+}
 
 function writeFailureOutput(stdout, stderr) {
   if (stdout.length > 0) process.stderr.write(`${stdout}\n`);
@@ -73,40 +118,49 @@ function writeFailureOutput(stdout, stderr) {
 }
 
 async function runTestFile(environment, suite) {
+  throwIfInterrupted();
   return new Promise((resolve, reject) => {
+    process.stdout.write(`[storage-e2e] starting ${suite.file}\n`);
     const child = spawn("pnpm", ["exec", "vitest", "run", suite.file, "-t", suite.title, "--reporter=json"], {
       env: { ...process.env, ...environment },
       stdio: ["ignore", "pipe", "pipe"],
     });
-    testProcess = child;
-    let stdout = "";
-    let stderr = "";
+    testProcesses.add(child);
+    const stdout = new BoundedUtf8OutputTail(TEST_OUTPUT_TAIL_BYTES);
+    const stderr = new BoundedUtf8OutputTail(TEST_OUTPUT_TAIL_BYTES);
     let spawnError = null;
     child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString("utf8");
+      stdout.append(chunk);
     });
     child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString("utf8");
+      stderr.append(chunk);
     });
     child.once("error", (error) => {
       spawnError = error;
     });
     child.once("close", (code, signal) => {
-      if (testProcess === child) testProcess = null;
+      testProcesses.delete(child);
+      const stdoutText = stdout.text();
+      const stderrText = stderr.text();
       if (spawnError) {
         reject(new Error(`Storage E2E could not start: ${suite.file}.`, { cause: spawnError }));
         return;
       }
       if (code !== 0) {
-        writeFailureOutput(stdout, stderr);
+        writeFailureOutput(stdoutText, stderrText);
         reject(new Error(`Storage E2E failed with ${code ?? signal}: ${suite.file}.`));
+        return;
+      }
+      if (stdout.truncated) {
+        writeFailureOutput(stdoutText, stderrText);
+        reject(new Error(`Storage E2E exceeded its bounded JSON report: ${suite.file}.`));
         return;
       }
       let report;
       try {
-        report = JSON.parse(stdout);
+        report = JSON.parse(stdoutText);
       } catch (error) {
-        writeFailureOutput(stdout, stderr);
+        writeFailureOutput(stdoutText, stderrText);
         reject(new Error(`Storage E2E returned an invalid Vitest report: ${suite.file}.`, { cause: error }));
         return;
       }
@@ -124,7 +178,7 @@ async function runTestFile(environment, suite) {
         report.numFailedTests !== 0 ||
         !requiredTestPassed
       ) {
-        writeFailureOutput(stdout, stderr);
+        writeFailureOutput(stdoutText, stderrText);
         reject(new Error(`Storage E2E must execute its required parent test: ${suite.file}.`));
         return;
       }
@@ -135,8 +189,24 @@ async function runTestFile(environment, suite) {
 }
 
 async function runTests(environment) {
-  for (const suite of STORAGE_SUITES) {
-    await runTestFile(environment, suite);
+  throwIfInterrupted();
+  const pending = [...STORAGE_SUITES];
+  const failures = [];
+  const workers = Array.from({ length: Math.min(STORAGE_SUITE_CONCURRENCY, pending.length) }, async () => {
+    while (pending.length > 0) {
+      throwIfInterrupted();
+      const suite = pending.shift();
+      try {
+        await runTestFile(suiteEnvironment(environment.common, environment.postgresAdminUrl, suite), suite);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+  });
+  const workerResults = await Promise.allSettled(workers);
+  failures.push(...workerResults.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])));
+  if (failures.length > 0) {
+    throw new AggregateError(failures, `${failures.length} durable storage E2E suite(s) failed.`);
   }
 }
 
@@ -157,7 +227,7 @@ async function cleanup() {
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.once(signal, () => {
     interruptedSignal = signal;
-    testProcess?.kill(signal);
+    for (const child of testProcesses) child.kill(signal);
   });
 }
 
@@ -193,9 +263,9 @@ try {
 
   const postgresPort = await publishedPort(postgresContainer, 5432);
   const minioPort = await publishedPort(minioContainer, 9000);
-  const databaseUrl = `postgresql://poietra:${postgresPassword}@127.0.0.1:${postgresPort}/poietra`;
+  const postgresAdminUrl = `postgresql://poietra:${postgresPassword}@127.0.0.1:${postgresPort}/postgres`;
   await retry("PostgreSQL", async () => {
-    const client = new Client({ connectionString: databaseUrl });
+    const client = new Client({ connectionString: postgresAdminUrl });
     try {
       await client.connect();
       await client.query("SELECT 1");
@@ -205,13 +275,16 @@ try {
     }
   });
   await retry("MinIO", async () => (await fetch(`http://127.0.0.1:${minioPort}/minio/health/ready`)).ok);
+  await createSuiteDatabases(postgresAdminUrl);
+  throwIfInterrupted();
 
   await runTests({
-    POIETRA_STORAGE_E2E_DATABASE_URL: databaseUrl,
-    POIETRA_STORAGE_E2E_S3_ACCESS_KEY: minioAccessKey,
-    POIETRA_STORAGE_E2E_S3_BUCKET: `poietra-storage-e2e-${runId}`,
-    POIETRA_STORAGE_E2E_S3_ENDPOINT: `http://127.0.0.1:${minioPort}`,
-    POIETRA_STORAGE_E2E_S3_SECRET_KEY: minioSecretKey,
+    common: {
+      POIETRA_STORAGE_E2E_S3_ACCESS_KEY: minioAccessKey,
+      POIETRA_STORAGE_E2E_S3_ENDPOINT: `http://127.0.0.1:${minioPort}`,
+      POIETRA_STORAGE_E2E_S3_SECRET_KEY: minioSecretKey,
+    },
+    postgresAdminUrl,
   });
 } catch (error) {
   failure = error;
