@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -195,19 +195,99 @@ export const mkfifo = async (path: string) => {
   await promisify(execFile)("mkfifo", [path]);
 };
 
+const PRODUCER_GATE_TIMEOUT_MS = 3_000;
+const PRODUCER_GATE_RELEASE_BACKSTOP_MS = 1_000;
+
+type ProducerGateOutcome =
+  | Readonly<{ kind: "operation-rejected"; reason: unknown }>
+  | Readonly<{ kind: "operation-resolved" }>
+  | Readonly<{ kind: "ready" }>
+  | Readonly<{ kind: "ready-rejected"; reason: unknown }>
+  | Readonly<{ kind: "timeout" }>;
+
+function producerGateTimeout(): Readonly<{ cancel: () => void; outcome: Promise<ProducerGateOutcome> }> {
+  let timer: NodeJS.Timeout;
+  const outcome = new Promise<ProducerGateOutcome>((resolve) => {
+    timer = setTimeout(() => resolve({ kind: "timeout" }), PRODUCER_GATE_TIMEOUT_MS);
+    timer.unref();
+  });
+  return { cancel: () => clearTimeout(timer), outcome };
+}
+
 /**
  * Creates a pair of FIFOs that lets a subprocess test wait for the producer
  * to finish parsing its immutable request, then release it without sleeping.
+ * Read/write anchors make both FIFO opens nonblocking; every wait is bounded
+ * below Vitest's watchdog and closes those anchors on every settlement path.
  */
 export async function producerGate(root: string, name: string) {
   const readyPath = join(root, `${name}.ready.fifo`);
   const releasePath = join(root, `${name}.release.fifo`);
   await Promise.all([mkfifo(readyPath), mkfifo(releasePath)]);
-  const ready = readFile(readyPath, "utf8").then(() => undefined);
+  const [readyHandle, releaseHandle] = await Promise.all([open(readyPath, "r+"), open(releasePath, "r+")]);
+  const ready = readyHandle.read(Buffer.alloc(16), 0, 16, null);
+  let releaseAction: Promise<void> | null = null;
+  let releaseBackstop: NodeJS.Timeout | null = null;
+  let releaseClosed = false;
+  const closeRelease = async () => {
+    if (releaseBackstop) clearTimeout(releaseBackstop);
+    releaseBackstop = null;
+    if (releaseClosed) return;
+    releaseClosed = true;
+    await releaseHandle.close();
+  };
   return {
     arguments: [`--ready-fifo=${readyPath}`, `--release-fifo=${releasePath}`] as const,
-    ready,
-    release: () => writeFile(releasePath, "continue", "utf8"),
+    async waitFor(operation: Promise<unknown>) {
+      const operationOutcome = operation.then<ProducerGateOutcome, ProducerGateOutcome>(
+        () => ({ kind: "operation-resolved" }),
+        (reason: unknown) => ({ kind: "operation-rejected", reason }),
+      );
+      const readyOutcome = ready.then<ProducerGateOutcome, ProducerGateOutcome>(
+        () => ({ kind: "ready" }),
+        (reason: unknown) => ({ kind: "ready-rejected", reason }),
+      );
+      const timeout = producerGateTimeout();
+      const outcome = await Promise.race([readyOutcome, operationOutcome, timeout.outcome]);
+      timeout.cancel();
+      const closeAfterOperation = () => releaseAction ?? closeRelease();
+      void operation.then(closeAfterOperation, closeAfterOperation).catch(() => undefined);
+      if (outcome.kind === "ready") {
+        await readyHandle.close();
+        releaseBackstop = setTimeout(
+          () => void closeRelease().catch(() => undefined),
+          PRODUCER_GATE_RELEASE_BACKSTOP_MS,
+        );
+        releaseBackstop.unref();
+        return;
+      }
+
+      // The r+ anchor guarantees this cleanup writer can open and unblocks the
+      // pending read even when no producer ever reached its readiness write.
+      await writeFile(readyPath, "cancel", "utf8");
+      await Promise.allSettled([ready, readyHandle.close(), closeRelease()]);
+      if (outcome.kind === "operation-rejected") throw outcome.reason;
+      if (outcome.kind === "ready-rejected") throw outcome.reason;
+      if (outcome.kind === "operation-resolved") {
+        throw new Error(`Producer operation settled before the ${name} readiness gate.`);
+      }
+      throw new Error(`Producer readiness gate ${name} timed out after ${PRODUCER_GATE_TIMEOUT_MS}ms.`);
+    },
+    async release() {
+      if (!releaseAction) {
+        releaseAction = (async () => {
+          if (releaseBackstop) clearTimeout(releaseBackstop);
+          releaseBackstop = null;
+          if (releaseClosed) return;
+          try {
+            await releaseHandle.write("continue");
+          } finally {
+            await closeRelease();
+          }
+        })();
+      }
+      await releaseAction;
+    },
   };
 }
 

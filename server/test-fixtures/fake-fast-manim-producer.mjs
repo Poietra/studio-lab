@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { open, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 function argumentValue(name) {
@@ -156,10 +156,17 @@ if (recomputedSceneId !== request.sceneId) {
   process.stderr.write("Producer request sceneId does not match its canonical derivation.\n");
   process.exit(4);
 }
+const releaseFifo = argumentValue("release-fifo");
+const releaseHandle = releaseFifo ? await open(releaseFifo, "r") : null;
 const readyFifo = argumentValue("ready-fifo");
 if (readyFifo) await writeFile(readyFifo, "ready", "utf8");
-const releaseFifo = argumentValue("release-fifo");
-if (releaseFifo) await readFile(releaseFifo, "utf8");
+if (releaseHandle) {
+  try {
+    await releaseHandle.read(Buffer.alloc(16), 0, 16, null);
+  } finally {
+    await releaseHandle.close();
+  }
+}
 if (mode === "hang") {
   await new Promise(() => setInterval(() => undefined, 1_000));
 }
@@ -428,7 +435,6 @@ if (orphanModes.has(mode)) {
   const orphanBody =
     mode === "orphan-flood"
       ? `${selfExpiry}
-         process.once("disconnect", () => setImmediate(write));
          const filler = "x".repeat(65536); let sent = 0;
          const write = () => {
            while (sent < 100) {
@@ -437,7 +443,11 @@ if (orphanModes.has(mode)) {
            }
            setInterval(() => undefined, 1000);
          };
-         process.send?.("ready");`
+         process.stdout.write(filler, () => {
+           sent = 1;
+           process.once("disconnect", () => setImmediate(write));
+           process.send?.("stdout-started");
+         });`
       : // A same-group descendant that ignores catchable termination signals
         // and does not exit on its own before the self-expiry backstop.
         `${selfExpiry} process.on("SIGTERM", () => undefined); process.on("SIGHUP", () => undefined); setInterval(() => undefined, 1000);`;
@@ -460,19 +470,32 @@ if (orphanModes.has(mode)) {
   if (orphanPidFile) await writeFile(orphanPidFile, String(orphan.pid), "utf8");
   if (mode === "orphan-flood") {
     await new Promise((resolve, reject) => {
-      const onError = (error) => {
+      const cleanup = () => {
+        orphan.off("disconnect", onDisconnect);
+        orphan.off("error", onError);
+        orphan.off("exit", onExit);
         orphan.off("message", onMessage);
+      };
+      const fail = (error) => {
+        cleanup();
         reject(error);
       };
+      const onDisconnect = () => fail(new Error("Flood descendant disconnected before writing stdout."));
+      const onError = (error) => {
+        fail(error);
+      };
+      const onExit = (code, signal) =>
+        fail(new Error(`Flood descendant exited before writing stdout (code=${code}, signal=${signal}).`));
       const onMessage = (message) => {
-        if (message !== "ready") return;
-        orphan.off("error", onError);
+        if (message !== "stdout-started") return;
+        cleanup();
         resolve();
       };
+      orphan.once("disconnect", onDisconnect);
       orphan.once("error", onError);
+      orphan.once("exit", onExit);
       orphan.on("message", onMessage);
     });
-    orphan.disconnect();
   }
   if (mode === "orphan-parent-hang") {
     // The leader itself ignores SIGTERM and never exits on its own, so it is

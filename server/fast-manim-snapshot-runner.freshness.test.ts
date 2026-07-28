@@ -104,7 +104,7 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
       const abortGate = await producerGate(root, "cleanup-abort");
       const slow = createRunner(root, producerCommand(...abortGate.arguments));
       const aborted = slow.run(runRequest({ requestId: "snapshot-request-3" }), abortController.signal);
-      await abortGate.ready;
+      await abortGate.waitFor(aborted);
       abortController.abort();
       await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
       expect(await readdir(runtimeTmpRoot)).toEqual([]);
@@ -112,7 +112,7 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
       const closeGate = await producerGate(root, "cleanup-close");
       const closing = createRunner(root, producerCommand(...closeGate.arguments));
       const closingRun = closing.run(runRequest({ requestId: "snapshot-request-4" }));
-      await closeGate.ready;
+      await closeGate.waitFor(closingRun);
       await closing.close();
       await expect(closingRun).rejects.toMatchObject({ name: "AbortError" });
       expect(await readdir(runtimeTmpRoot)).toEqual([]);
@@ -437,7 +437,7 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     const gate = await producerGate(root, "aba-swap");
     const runner = createRunner(root, producerCommand(...gate.arguments));
     const running = runner.run(runRequest());
-    await gate.ready;
+    await gate.waitFor(running);
     await writeFile(join(root, "scene.py"), `${sceneSource}\n# swapped mid-run\n`, "utf8");
     await writeFile(join(root, "scene.py"), sceneSource, "utf8");
     await gate.release();
@@ -453,7 +453,7 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     const gate = await producerGate(root, "source-change");
     const runner = createRunner(root, producerCommand(...gate.arguments));
     const running = runner.run(runRequest());
-    await gate.ready;
+    await gate.waitFor(running);
     await writeFile(join(root, "scene.py"), `${sceneSource}\n# edited mid-run\n`, "utf8");
     await gate.release();
     expectFailure(await running, "source-changed");

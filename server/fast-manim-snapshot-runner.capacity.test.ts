@@ -138,7 +138,7 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
       admissionController: controller,
     });
     const running = runnerA.run(runRequest());
-    await firstGate.ready;
+    await firstGate.waitFor(running);
     expect(controller.activeCount).toBe(1);
     // Above the shared cap: deterministic server-owned 429 with no spawn.
     await expect(runnerB.run(runRequest({ requestId: "snapshot-request-2" }))).rejects.toMatchObject({ status: 429 });
@@ -156,7 +156,7 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
       admissionController: controller,
     });
     const aborted = runnerC.run(runRequest({ requestId: "snapshot-request-4" }), abortController.signal);
-    await abortGate.ready;
+    await abortGate.waitFor(aborted);
     abortController.abort();
     await expect(aborted).rejects.toMatchObject({ name: "AbortError" });
     expect(controller.activeCount).toBe(0);
@@ -167,7 +167,7 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
       admissionController: controller,
     });
     const closing = runnerD.run(runRequest({ requestId: "snapshot-request-5" }));
-    await closeGate.ready;
+    await closeGate.waitFor(closing);
     await runnerD.close();
     await expect(closing).rejects.toMatchObject({ name: "AbortError" });
     expect(controller.activeCount).toBe(0);
@@ -230,7 +230,7 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     const gate = await producerGate(root, "serialized-run");
     const runner = createRunner(root, producerCommand(...gate.arguments), { maxConcurrentRuns: 1 });
     const running = runner.run(runRequest());
-    await gate.ready;
+    await gate.waitFor(running);
     expect(runner.busy).toBe(true);
     await expect(runner.run(runRequest({ requestId: "snapshot-request-2" }))).rejects.toMatchObject({ status: 409 });
     await expect(
@@ -246,7 +246,7 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     const gate = await producerGate(root, "close-run");
     const runner = createRunner(root, producerCommand(...gate.arguments));
     const running = runner.run(runRequest());
-    await gate.ready;
+    await gate.waitFor(running);
     await runner.close();
     await expect(running).rejects.toMatchObject({ name: "AbortError" });
     // A closed runner refuses lookups outright instead of reporting 404.
