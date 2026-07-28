@@ -74,21 +74,29 @@ function writeFailureOutput(stdout, stderr) {
 
 async function runTestFile(environment, suite) {
   return new Promise((resolve, reject) => {
-    testProcess = spawn("pnpm", ["exec", "vitest", "run", suite.file, "-t", suite.title, "--reporter=json"], {
+    const child = spawn("pnpm", ["exec", "vitest", "run", suite.file, "-t", suite.title, "--reporter=json"], {
       env: { ...process.env, ...environment },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    testProcess = child;
     let stdout = "";
     let stderr = "";
-    testProcess.stdout.on("data", (chunk) => {
+    let spawnError = null;
+    child.stdout.on("data", (chunk) => {
       stdout += chunk.toString("utf8");
     });
-    testProcess.stderr.on("data", (chunk) => {
+    child.stderr.on("data", (chunk) => {
       stderr += chunk.toString("utf8");
     });
-    testProcess.once("error", reject);
-    testProcess.once("exit", (code, signal) => {
-      testProcess = null;
+    child.once("error", (error) => {
+      spawnError = error;
+    });
+    child.once("close", (code, signal) => {
+      if (testProcess === child) testProcess = null;
+      if (spawnError) {
+        reject(new Error(`Storage E2E could not start: ${suite.file}.`, { cause: spawnError }));
+        return;
+      }
       if (code !== 0) {
         writeFailureOutput(stdout, stderr);
         reject(new Error(`Storage E2E failed with ${code ?? signal}: ${suite.file}.`));
@@ -215,5 +223,5 @@ try {
   }
 }
 
-if (failure) throw failure;
 if (interruptedSignal) process.kill(process.pid, interruptedSignal);
+if (failure) throw failure;
