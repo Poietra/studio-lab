@@ -23,7 +23,7 @@ import {
 } from "./fast-manim-sandbox-broker-protocol";
 import {
   fastManimSnapshotProducerRequestV1Schema,
-  MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES,
+  MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
 } from "./fast-manim-snapshot-contract";
 
 const DEFAULT_CLOSE_TIMEOUT_MS = 10_000;
@@ -314,7 +314,7 @@ function createBrokerConnection(
           result: {
             ...correlation,
             resultBytesBase64: encodeFastManimSandboxBrokerResultBytesV1(
-              copyFastManimSandboxUint8ArrayV1(resultBytes, MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES),
+              copyFastManimSandboxUint8ArrayV1(resultBytes, MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES),
             ),
           },
         });

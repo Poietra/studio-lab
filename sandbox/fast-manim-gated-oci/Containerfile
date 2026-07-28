@@ -8,9 +8,9 @@ USER root
 COPY fast-manim.tar.gz /opt/poietra-build/fast-manim.tar.gz
 COPY gated-entrypoint.py /opt/poietra/gated-entrypoint.py
 
-RUN test "$FAST_MANIM_ARCHIVE_SHA256" = "090d8ce99568d427636ba00274b08f689518f411cd96d7280e50b48e2e54fee5" \
-    && test "$FAST_MANIM_COMMIT" = "d0799e39eed36565ed65afa18079fb0e06be9014" \
-    && test "$FAST_MANIM_TREE" = "78e777a7660adaa4b6609bb12b7158ba97902721" \
+RUN test "$FAST_MANIM_ARCHIVE_SHA256" = "00413ce7ae00d4affa318a701831db369c70ba02f20a6babc44e7d7db8702694" \
+    && test "$FAST_MANIM_COMMIT" = "7d20dc2d6dce4e84d4c24bc9509aff4094279ee7" \
+    && test "$FAST_MANIM_TREE" = "f80a55d0764259df9f80b89dd47a18d51e0623db" \
     && printf '%s  %s\n' "$FAST_MANIM_ARCHIVE_SHA256" /opt/poietra-build/fast-manim.tar.gz \
       | sha256sum --check --strict - \
     && mkdir --parents /opt/fast-manim /run/poietra \
@@ -24,11 +24,11 @@ RUN test "$FAST_MANIM_ARCHIVE_SHA256" = "090d8ce99568d427636ba00274b08f689518f41
     && chmod 0555 /opt/poietra /opt/poietra/gated-entrypoint.py /run/poietra \
     && chmod --recursive go-w /opt/fast-manim \
     && PYTHONHASHSEED=0 PYTHONPATH=/opt/fast-manim \
-      /opt/venv/bin/python -c 'from manim.renderer.scene_snapshot import export_scene_snapshot; assert callable(export_scene_snapshot)'
+      /opt/venv/bin/python -c 'from manim.renderer.source_runtime_identity import export_source_runtime_identity; assert callable(export_source_runtime_identity)'
 
-LABEL io.poietra.fast-manim.commit="d0799e39eed36565ed65afa18079fb0e06be9014" \
-      io.poietra.fast-manim.tree="78e777a7660adaa4b6609bb12b7158ba97902721" \
-      io.poietra.fast-manim.archive-sha256="090d8ce99568d427636ba00274b08f689518f411cd96d7280e50b48e2e54fee5" \
+LABEL io.poietra.fast-manim.commit="7d20dc2d6dce4e84d4c24bc9509aff4094279ee7" \
+      io.poietra.fast-manim.tree="f80a55d0764259df9f80b89dd47a18d51e0623db" \
+      io.poietra.fast-manim.archive-sha256="00413ce7ae00d4affa318a701831db369c70ba02f20a6babc44e7d7db8702694" \
       io.poietra.sandbox-slice="gated-oci-v1"
 
 ENV HOME=/run/poietra/home \
@@ -48,4 +48,4 @@ ENV HOME=/run/poietra/home \
 USER 65532:65532
 WORKDIR /run/poietra
 ENTRYPOINT ["/opt/venv/bin/python", "/opt/poietra/gated-entrypoint.py"]
-CMD ["/opt/venv/bin/python", "-m", "manim.renderer.scene_snapshot"]
+CMD ["/opt/venv/bin/python", "-m", "manim.renderer.source_runtime_identity"]

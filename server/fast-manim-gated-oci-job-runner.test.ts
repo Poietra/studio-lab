@@ -5,6 +5,11 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import fastManimGatedOciSeccompV1 from "../sandbox/fast-manim-gated-oci/seccomp.v1.json";
+import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
+import {
+  FAST_MANIM_SOURCE_RUNTIME_IDENTITY_SCHEMA_V1,
+  FAST_MANIM_SOURCE_RUNTIME_IDENTITY_VERSION_V1,
+} from "../src/engine/source-runtime-identity";
 import {
   assertFastManimGatedOciImageV1,
   FAST_MANIM_GATED_OCI_PROFILE_V1,
@@ -18,14 +23,16 @@ import {
 import { FastManimSandboxBackendControlError, FastManimSandboxRequestBundleV1 } from "./fast-manim-sandbox-backend";
 import {
   digestFastManimSnapshotRuntimeConfigV1,
-  fastManimSnapshotResultV1Schema,
   fastManimSnapshotSceneIdV1,
   MAX_FAST_MANIM_SNAPSHOT_ARRAY_ITEMS,
   MAX_FAST_MANIM_SNAPSHOT_OBJECT_FIELDS,
   MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES,
   MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_DEPTH,
+  MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
   parseAndSealFastManimSnapshotProducerJsonV1,
 } from "./fast-manim-snapshot-contract";
+import { parseFastManimProducerDocumentV1 } from "./fast-manim-source-runtime-document";
+import { verifyFastManimSourceRuntimeIdentityV1 } from "./fast-manim-source-runtime-identity";
 import { sandboxProducerRequest } from "./test-fixtures/fast-manim-sandbox-backend-fixture";
 
 const realImage = process.env.POIETRA_FAST_MANIM_GATED_OCI_IMAGE;
@@ -59,6 +66,49 @@ function producerRequestFor(sourceText: string, sceneName: string, snapshotVersi
 
 function requestFor(sourceText: string, sceneName: string, snapshotVersion: 1 | 2 = 1) {
   return new FastManimSandboxRequestBundleV1(producerRequestFor(sourceText, sceneName, snapshotVersion));
+}
+
+type ProducerRequest = ReturnType<typeof producerRequestFor>;
+
+function expectedFor(source: ProducerRequest) {
+  return {
+    frame: source.runtimeConfig.frame,
+    projectId: source.projectId,
+    requestId: source.requestId,
+    runtimeConfigHash: source.runtimeConfigHash,
+    sceneId: source.sceneId,
+    sceneName: source.sceneName,
+    snapshotVersion: source.snapshotVersion,
+    sourceHash: source.sourceHash,
+    sourcePath: source.sourcePath,
+  };
+}
+
+async function verifyCombinedResult(resultBytes: Uint8Array, source: ProducerRequest) {
+  const producerDocument = parseFastManimProducerDocumentV1(resultBytes);
+  if (!producerDocument.combined) throw new Error("The gated OCI producer returned a legacy snapshot-only result.");
+  const expected = expectedFor(source);
+  const snapshot = await parseAndSealFastManimSnapshotProducerJsonV1(producerDocument.snapshotJson, expected);
+  const sourceRuntimeIdentity = verifyFastManimSourceRuntimeIdentityV1(producerDocument.combined, {
+    expected,
+    snapshot,
+    sourceText: source.sourceText,
+  });
+  return { snapshot, sourceRuntimeIdentity };
+}
+
+function combinedResultWire(snapshotJson: string) {
+  const snapshotDigest = createHash("sha256").update(snapshotJson, "utf8").digest("hex");
+  return Buffer.from(
+    `${canonicalJsonV1({
+      evidence: {},
+      schema: FAST_MANIM_SOURCE_RUNTIME_IDENTITY_SCHEMA_V1,
+      snapshotDigest,
+      snapshotJson,
+      version: FAST_MANIM_SOURCE_RUNTIME_IDENTITY_VERSION_V1,
+    })}\n`,
+    "utf8",
+  );
 }
 
 function wire(body: Uint8Array, overrides: Readonly<{ digest?: Buffer; length?: number; magic?: Buffer }> = {}) {
@@ -101,17 +151,17 @@ class RecordingDockerClient extends FastManimGatedOciDockerClientV1 {
   }
 }
 
-function trustedImageInspection(image: string) {
+function trustedImageInspection(image: string, target: readonly string[] = FAST_MANIM_GATED_OCI_PROFILE_V1.target) {
   return Buffer.from(
     JSON.stringify([
       {
         Config: {
-          Cmd: ["/opt/venv/bin/python", "-m", "manim.renderer.scene_snapshot"],
+          Cmd: target,
           Entrypoint: ["/opt/venv/bin/python", "/opt/poietra/gated-entrypoint.py"],
           Labels: {
-            "io.poietra.fast-manim.archive-sha256": "090d8ce99568d427636ba00274b08f689518f411cd96d7280e50b48e2e54fee5",
-            "io.poietra.fast-manim.commit": "d0799e39eed36565ed65afa18079fb0e06be9014",
-            "io.poietra.fast-manim.tree": "78e777a7660adaa4b6609bb12b7158ba97902721",
+            "io.poietra.fast-manim.archive-sha256": "00413ce7ae00d4affa318a701831db369c70ba02f20a6babc44e7d7db8702694",
+            "io.poietra.fast-manim.commit": "7d20dc2d6dce4e84d4c24bc9509aff4094279ee7",
+            "io.poietra.fast-manim.tree": "f80a55d0764259df9f80b89dd47a18d51e0623db",
             "io.poietra.sandbox-slice": "gated-oci-v1",
           },
         },
@@ -198,6 +248,20 @@ describe("gated OCI Docker ownership", () => {
       ["image", "inspect", image],
       ["container", "ls", "--all", "--quiet", "--no-trunc", "--filter", "label=io.poietra.gated-job=v1"],
     ]);
+  });
+
+  it("rejects an immutable image that still targets the legacy snapshot-only producer", async () => {
+    const image = `sha256:${"a".repeat(64)}`;
+    const client = new RecordingDockerClient({ socketPath: "/run/user/1000/poietra-docker.sock" });
+    client.responses.push({
+      code: 0,
+      stderr: Buffer.alloc(0),
+      stdout: trustedImageInspection(image, ["/opt/venv/bin/python", "-m", "manim.renderer.scene_snapshot"]),
+    });
+
+    await expect(
+      assertFastManimGatedOciImageV1(image, client, Date.now() + 10_000, new AbortController().signal),
+    ).rejects.toThrow(/does not match the gated slice/i);
   });
 
   it("removes owned orphans while keeping readiness failed after image drift", async () => {
@@ -431,13 +495,28 @@ describe("gated OCI result boundary", () => {
     expect(Buffer.from(parseFastManimGatedOciResultV1(result))).toEqual(result.subarray(0, -1));
   });
 
+  it("round-trips a combined envelope beyond the legacy snapshot-only result cap", () => {
+    const snapshotJson = JSON.stringify("x".repeat(MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES - 2));
+    expect(Buffer.byteLength(snapshotJson, "utf8")).toBe(MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES);
+    const wire = combinedResultWire(snapshotJson);
+    expect(wire.byteLength).toBeGreaterThan(MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES + 1);
+    expect(wire.byteLength).toBeLessThanOrEqual(MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES);
+
+    const body = parseFastManimGatedOciResultV1(wire);
+    const producerDocument = parseFastManimProducerDocumentV1(body);
+    expect(producerDocument.snapshotJson).toBe(snapshotJson);
+    expect(producerDocument.combined?.snapshotDigest).toBe(
+      createHash("sha256").update(snapshotJson, "utf8").digest("hex"),
+    );
+  });
+
   it("rejects invalid UTF-8 and output beyond the exact result-plus-LF budget", () => {
     const invalidUtf8 = Buffer.concat([Buffer.from('{"a":"'), Buffer.from([0xff]), Buffer.from('"}\n')]);
     expect(() => parseFastManimGatedOciResultV1(invalidUtf8)).toThrowError(
       expect.objectContaining({ code: "sandbox-result-rejected" }),
     );
     expect(() =>
-      parseFastManimGatedOciResultV1(Buffer.alloc(MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES + 2, 0x78)),
+      parseFastManimGatedOciResultV1(Buffer.alloc(MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES + 1, 0x78)),
     ).toThrowError(expect.objectContaining({ code: "producer-output-overflow" }));
   });
 
@@ -494,7 +573,8 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
   it("reaches READY under the custom seccomp profile, then renders a real Circle, Rectangle, and Line", {
     timeout: 60_000,
   }, async () => {
-    const request = requestFor(staticScene, "GatedStaticScene");
+    const source = producerRequestFor(staticScene, "GatedStaticScene");
+    const request = new FastManimSandboxRequestBundleV1(source);
     const execution = await runFastManimGatedOciJobV1({
       deadlineEpochMs: Date.now() + 30_000,
       image,
@@ -509,12 +589,15 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
         pidsMax: "64",
       },
     });
-    const result = fastManimSnapshotResultV1Schema.parse(
-      JSON.parse(Buffer.from(execution.resultBytes).toString("utf8")),
-    );
-    expect(result).toMatchObject({ kind: "compiled", requestId: "gated-GatedStaticScene" });
-    if (result.kind !== "compiled") throw new Error("Expected a compiled static Scene.");
-    expect((result.bundle as { scene: { entities: unknown[] } }).scene.entities).toHaveLength(3);
+    const { snapshot, sourceRuntimeIdentity } = await verifyCombinedResult(execution.resultBytes, source);
+    expect(snapshot).toMatchObject({ kind: "compiled", requestId: "gated-GatedStaticScene" });
+    if (snapshot.kind !== "compiled") throw new Error("Expected a compiled static Scene.");
+    expect(snapshot.bundle.scene.entities).toHaveLength(3);
+    expect(sourceRuntimeIdentity?.mappings.map((mapping) => mapping.binding.name)).toEqual([
+      "circle",
+      "rectangle",
+      "line",
+    ]);
     expect(Buffer.from(execution.resultBytes).includes(Buffer.from("POIETRA_GATE_READY_V1"))).toBe(false);
   });
 
@@ -528,24 +611,14 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
       signal: new AbortController().signal,
     });
     expect(execution.cleanupVerified).toBe(true);
-    const sealed = await parseAndSealFastManimSnapshotProducerJsonV1(execution.resultBytes, {
-      frame: source.runtimeConfig.frame,
-      projectId: source.projectId,
-      requestId: source.requestId,
-      runtimeConfigHash: source.runtimeConfigHash,
-      sceneId: source.sceneId,
-      sceneName: source.sceneName,
-      snapshotVersion: 2,
-      sourceHash: source.sourceHash,
-      sourcePath: source.sourcePath,
-    });
-    if (sealed.kind !== "compiled") throw new Error("Expected compiled opacity/lifetime evidence.");
-    expect(sealed.bundle.scene).toMatchObject({
+    const { snapshot, sourceRuntimeIdentity } = await verifyCombinedResult(execution.resultBytes, source);
+    if (snapshot.kind !== "compiled") throw new Error("Expected compiled opacity/lifetime evidence.");
+    expect(snapshot.bundle.scene).toMatchObject({
       duration: 6,
       requiredCapabilities: ["cubic-path-geometry", "opacity-animation"],
     });
-    expect(sealed.bundle.scene.entities[0]?.lifetimes).toEqual([{ end: 6, start: 1 }]);
-    expect(sealed.bundle.scene.animationChannels[0]).toMatchObject({
+    expect(snapshot.bundle.scene.entities[0]?.lifetimes).toEqual([{ end: 6, start: 1 }]);
+    expect(snapshot.bundle.scene.animationChannels[0]).toMatchObject({
       entityId: `${source.sceneId}/entity:0`,
       keyframes: [
         { at: 1, value: 0 },
@@ -555,6 +628,12 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
       ],
       kind: "opacity",
     });
+    expect(sourceRuntimeIdentity?.mappings).toMatchObject([
+      {
+        binding: { name: "circle", ordinal: 1 },
+        entityId: `${source.sceneId}/entity:0`,
+      },
+    ]);
   });
 
   it("does not quarantine an abort observed after known-ID cleanup was verified", { timeout: 60_000 }, async () => {
@@ -666,23 +745,22 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
       "def construct(self):",
       'def construct(self):\n        import os\n        os.write(3, b"\\xff")',
     );
-    const request = requestFor(reflectiveScene, "GatedStaticScene");
+    const source = producerRequestFor(reflectiveScene, "GatedStaticScene");
+    const request = new FastManimSandboxRequestBundleV1(source);
     const execution = await runFastManimGatedOciJobV1({
       deadlineEpochMs: Date.now() + 30_000,
       image,
       requestBytes: request.copyBytes(),
       signal: new AbortController().signal,
     });
-    const result = fastManimSnapshotResultV1Schema.parse(
-      JSON.parse(Buffer.from(execution.resultBytes).toString("utf8")),
-    );
-    expect(result).toMatchObject({ kind: "unsupported", requestId: "gated-GatedStaticScene" });
-    if (result.kind !== "unsupported") throw new Error("Expected the static execution profile to refuse reflection.");
-    expect(result.issues.flatMap((issue) => issue.evidence ?? [])).toEqual(
-      expect.arrayContaining([
-        expect.stringMatching(/denied import 'os'/),
-        expect.stringMatching(/unlisted attribute write/),
-      ]),
+    const { snapshot, sourceRuntimeIdentity } = await verifyCombinedResult(execution.resultBytes, source);
+    expect(snapshot).toMatchObject({ kind: "unsupported", requestId: "gated-GatedStaticScene" });
+    if (snapshot.kind !== "unsupported") {
+      throw new Error("Expected the static execution profile to refuse reflection.");
+    }
+    expect(sourceRuntimeIdentity).toBeNull();
+    expect(snapshot.issues).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "runtime-semantics-unsupported" })]),
     );
   });
 });

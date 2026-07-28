@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  decodeFastManimSandboxBrokerResultBytesV1,
   decodeFastManimSandboxBrokerRequestBytesV1,
   encodeFastManimSandboxBrokerClientFrameV1,
   encodeFastManimSandboxBrokerRequestBytesV1,
@@ -11,6 +12,10 @@ import {
   FastManimSandboxBrokerServerFrameDecoderV1,
   MAX_FAST_MANIM_SANDBOX_BROKER_STATUS_FRAME_BYTES_V1,
 } from "./fast-manim-sandbox-broker-protocol";
+import {
+  MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES,
+  MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
+} from "./fast-manim-snapshot-contract";
 import { SANDBOX_TEST_SHA_A } from "./test-fixtures/fast-manim-sandbox-backend-fixture";
 
 const identity = { projectId: "default", requestId: "request-1", tenantId: "tenant-1" };
@@ -79,6 +84,24 @@ describe("fast-manim single-operation broker wire", () => {
       ),
     ).toEqual(startResponse);
     expect([...decodeFastManimSandboxBrokerRequestBytesV1(startRequest.requestBytesBase64)]).toEqual([1, 2, 3]);
+  });
+
+  it("rejects result bytes beyond the combined identity document budget", () => {
+    const oversized = new Uint8Array(MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES + 1);
+    expect(() => encodeFastManimSandboxBrokerResultBytesV1(oversized)).toThrow(/result bytes exceed the budget/i);
+    expect(encodeFastManimSandboxBrokerResultBytesV1(oversized.subarray(0, -1))).toHaveLength(
+      4 * Math.ceil(MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES / 3),
+    );
+  });
+
+  it("round-trips result bytes beyond the legacy snapshot-only cap", () => {
+    const resultBytes = new Uint8Array(MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES + 1);
+    resultBytes[0] = 0x7b;
+    resultBytes[resultBytes.byteLength - 1] = 0x7d;
+
+    const decoded = decodeFastManimSandboxBrokerResultBytesV1(encodeFastManimSandboxBrokerResultBytesV1(resultBytes));
+    expect(decoded.byteLength).toBe(resultBytes.byteLength);
+    expect([decoded[0], decoded.at(-1)]).toEqual([0x7b, 0x7d]);
   });
 
   it("selects the operation-specific cap before allocating or parsing a body", () => {
