@@ -401,6 +401,7 @@ describe("standalone production Manim HTTP adapter", () => {
     const records: StructuredLogRecord[] = [];
     const logger = createStructuredLogger({ sinks: [{ write: (record) => records.push(record) }] });
     let generatorCalls = 0;
+    let generatorBoundary: unknown;
     let runtimeReadyCalls = 0;
     const server = await startProductionManimServer({
       admission: {
@@ -416,16 +417,30 @@ describe("standalone production Manim HTTP adapter", () => {
       config: await startConfig(),
       editSuggestions: {
         generator: {
-          async generate(request) {
+          async generate(request, signal) {
             generatorCalls += 1;
+            generatorBoundary = signal;
             expect(request.prompt).toBe("SECRET_PROMPT_SOURCE_ENV_API_KEY_TRACEBACK");
+            const possibleLogger = signal as unknown as {
+              info?: (event: string, data: unknown) => void;
+            };
+            possibleLogger.info?.("adapter.injected_payload", {
+              path: request.scene.id,
+              prompt: request.prompt,
+            });
             return {
-              assumptions: [],
-              kind: "clarification",
-              message: "SECRET_MODEL_OUTPUT",
-              operation: null,
-              options: [],
-              summary: "",
+              suggestion: {
+                assumptions: [],
+                kind: "clarification",
+                message: "SECRET_MODEL_OUTPUT",
+                operation: null,
+                options: [],
+                summary: "",
+              },
+              telemetry: {
+                repairAttempted: false,
+                usage: { inputTokens: 11, outputTokens: 7, totalTokens: 18 },
+              },
             };
           },
         },
@@ -467,6 +482,9 @@ describe("standalone production Manim HTTP adapter", () => {
     expect(response.status).toBe(200);
     expect(JSON.parse(response.body)).toMatchObject({ kind: "clarification", message: "SECRET_MODEL_OUTPUT" });
     expect(generatorCalls).toBe(1);
+    expect(generatorBoundary).toBeInstanceOf(AbortSignal);
+    expect(generatorBoundary).not.toHaveProperty("info");
+    expect(generatorBoundary).not.toHaveProperty("child");
     expect(runtimeReadyCalls).toBe(0);
 
     const aiRecords = records.filter((record) => record.context.component === "edit-suggestions-api");
@@ -474,6 +492,9 @@ describe("standalone production Manim HTTP adapter", () => {
     expect(aiRecords.find((record) => record.event === "response.sent")?.data).toMatchObject({
       latencyMs: expect.any(Number),
       status: 200,
+    });
+    expect(aiRecords.find((record) => record.event === "model.responded")?.data).toEqual({
+      usage: { inputTokens: 11, outputTokens: 7, totalTokens: 18 },
     });
     expect(JSON.stringify(aiRecords)).not.toMatch(
       /SECRET_(?:CLARIFICATION|MODEL_OUTPUT|PROMPT|SOURCE|ENV|API_KEY|TRACEBACK)|production-user|tenant-a/,

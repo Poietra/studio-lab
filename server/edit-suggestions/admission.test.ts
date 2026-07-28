@@ -51,17 +51,21 @@ describe("edit-suggestion admission", () => {
       },
     });
 
-    const firstReservation = admission.reserve(first);
+    expect(admission.consumeRequest(first)).toBe(true);
+    const firstReservation = admission.reserveGeneration(first);
     expect(firstReservation.accepted).toBe(true);
-    expect(admission.reserve(first)).toEqual({ accepted: false });
-    const secondReservation = admission.reserve(second);
+    expect(admission.consumeRequest(first)).toBe(true);
+    expect(admission.reserveGeneration(first)).toEqual({ accepted: false });
+    expect(admission.consumeRequest(second)).toBe(true);
+    const secondReservation = admission.reserveGeneration(second);
     expect(secondReservation.accepted).toBe(true);
-    expect(admission.reserve(third)).toEqual({ accepted: false });
+    expect(admission.consumeRequest(third)).toBe(true);
+    expect(admission.reserveGeneration(third)).toEqual({ accepted: false });
 
     if (!firstReservation.accepted || !secondReservation.accepted) throw new Error("Expected reservations.");
     firstReservation.reservation.release();
     firstReservation.reservation.release();
-    expect(admission.reserve(third).accepted).toBe(true);
+    expect(admission.reserveGeneration(third).accepted).toBe(true);
     secondReservation.reservation.release();
   });
 
@@ -86,18 +90,20 @@ describe("edit-suggestion admission", () => {
     });
 
     for (let request = 0; request < 2; request += 1) {
-      const admitted = admission.reserve(first);
+      expect(admission.consumeRequest(first)).toBe(true);
+      const admitted = admission.reserveGeneration(first);
       expect(admitted.accepted).toBe(true);
       if (admitted.accepted) admitted.reservation.release();
     }
-    expect(admission.reserve(first)).toEqual({ accepted: false });
-    const tenantCapacity = admission.reserve(second);
+    expect(admission.consumeRequest(first)).toBe(false);
+    expect(admission.consumeRequest(second)).toBe(true);
+    const tenantCapacity = admission.reserveGeneration(second);
     expect(tenantCapacity.accepted).toBe(true);
     if (tenantCapacity.accepted) tenantCapacity.reservation.release();
-    expect(admission.reserve(third)).toEqual({ accepted: false });
+    expect(admission.consumeRequest(third)).toBe(false);
 
     now += 1_000;
-    expect(admission.reserve(first).accepted).toBe(true);
+    expect(admission.consumeRequest(first)).toBe(true);
   });
 
   it("bounds tracked scopes and emits stable opaque correlations", async () => {
@@ -118,11 +124,12 @@ describe("edit-suggestion admission", () => {
       now: () => now,
     });
 
-    const firstReservation = admission.reserve(first);
+    expect(admission.consumeRequest(first)).toBe(true);
+    const firstReservation = admission.reserveGeneration(first);
     expect(firstReservation.accepted).toBe(true);
     if (!firstReservation.accepted) throw new Error("Expected a reservation.");
     firstReservation.reservation.release();
-    expect(admission.reserve(second)).toEqual({ accepted: false });
+    expect(admission.consumeRequest(second)).toBe(false);
 
     const correlations = admission.correlations(first);
     expect(correlations).toEqual(admission.correlations(first));
@@ -131,6 +138,6 @@ describe("edit-suggestion admission", () => {
     expect(JSON.stringify(correlations)).not.toMatch(/tenant-readable|user-readable/);
 
     now += 1_000;
-    expect(admission.reserve(second).accepted).toBe(true);
+    expect(admission.consumeRequest(second)).toBe(true);
   });
 });

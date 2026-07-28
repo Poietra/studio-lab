@@ -1,11 +1,16 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-import { editSuggestionRequestSchema } from "../../src/ai/edit-suggestion-schema";
+import { z } from "zod";
+import { editSuggestionRequestSchema, modelSuggestionSchema } from "../../src/ai/edit-suggestion-schema";
 import { HttpError, readJsonBody, sendJson } from "../http/json";
 import type { StructuredLogger } from "../logging/structured-logger";
 import { isVerifiedManimPrincipal, type VerifiedManimPrincipal } from "../manim-request-principal";
-import { createEditSuggestionAdmissionController, type EditSuggestionAdmissionController } from "./admission";
+import {
+  createEditSuggestionAdmissionController,
+  type EditSuggestionAdmissionController,
+  type EditSuggestionGenerationReservation,
+} from "./admission";
 import { EditSuggestionGenerationError, type EditSuggestionGenerator } from "./service";
 
 export const EDIT_SUGGESTION_ROUTE = "/api/ai/edit-suggestions";
@@ -32,16 +37,28 @@ export type EditSuggestionHandlerOptions = Readonly<{
   requestId?: () => string;
 }>;
 
-function failureStatus(error: unknown) {
-  if (error instanceof HttpError || error instanceof EditSuggestionGenerationError) return error.status;
+function generationFailureStatus(error: EditSuggestionGenerationError) {
+  if (error.status === 422 || error.status === 429) return error.status;
+  return 502;
+}
+
+function requestFailureStatus(error: HttpError) {
+  if ([400, 401, 403, 413, 415].includes(error.status)) return error.status;
+  return 400;
+}
+
+function failureStatus(error: unknown, generationStarted: boolean) {
+  if (error instanceof EditSuggestionGenerationError) return generationFailureStatus(error);
+  if (!generationStarted && error instanceof HttpError) return requestFailureStatus(error);
   return undefined;
 }
 
 function publicGenerationFailure(error: EditSuggestionGenerationError) {
-  if (error.status === 422) {
+  const status = generationFailureStatus(error);
+  if (status === 422) {
     return { error: "The model did not return a valid edit suggestion.", status: 422 } as const;
   }
-  if (error.status === 429) {
+  if (status === 429) {
     return { error: "Edit suggestion capacity is temporarily exhausted.", status: 429 } as const;
   }
   return { error: "Edit suggestion generation failed.", status: 502 } as const;
@@ -109,10 +126,27 @@ function requireSameOriginMutation(request: IncomingMessage, expectedOrigin?: st
 
 const GENERATION_ABORTED = Symbol("generation-aborted");
 
-async function raceWithSignal<T>(
-  operation: () => Promise<T>,
-  signal: AbortSignal,
-): Promise<T | typeof GENERATION_ABORTED> {
+const tokenUsageSchema = z
+  .object({
+    inputTokens: z.number().int().min(0).max(10_000_000).optional(),
+    outputTokens: z.number().int().min(0).max(10_000_000).optional(),
+    totalTokens: z.number().int().min(0).max(10_000_000).optional(),
+  })
+  .strict();
+
+const generationResultSchema = z
+  .object({
+    suggestion: modelSuggestionSchema,
+    telemetry: z
+      .object({
+        repairAttempted: z.boolean(),
+        usage: tokenUsageSchema.optional(),
+      })
+      .strict(),
+  })
+  .strict();
+
+async function raceWithSignal<T>(running: Promise<T>, signal: AbortSignal): Promise<T | typeof GENERATION_ABORTED> {
   if (signal.aborted) return GENERATION_ABORTED;
   let abortListener: (() => void) | undefined;
   const aborted = new Promise<typeof GENERATION_ABORTED>((resolve) => {
@@ -121,11 +155,31 @@ async function raceWithSignal<T>(
   });
   try {
     if (signal.aborted) return GENERATION_ABORTED;
-    const running = operation();
     return await Promise.race([running, aborted]);
   } finally {
     if (abortListener) signal.removeEventListener("abort", abortListener);
   }
+}
+
+function trackGeneration<T>(
+  pending: Set<Promise<unknown>>,
+  reservation: EditSuggestionGenerationReservation,
+  operation: () => Promise<T>,
+) {
+  const running = Promise.resolve().then(operation);
+  pending.add(running);
+  const settled = () => {
+    try {
+      reservation.release();
+    } finally {
+      pending.delete(running);
+    }
+  };
+  // Both branches consume the provider settlement. The trailing catch also
+  // prevents a defensive reservation implementation from creating a detached
+  // unhandled rejection during cleanup.
+  void running.then(settled, settled).catch(() => undefined);
+  return running;
 }
 
 export function createEditSuggestionRequestHandler(
@@ -137,6 +191,7 @@ export function createEditSuggestionRequestHandler(
     throw new RangeError("The edit-suggestion generation timeout must be between 1 and 120000 milliseconds.");
   }
   const now = options.now ?? Date.now;
+  const pendingGenerations = new Set<Promise<unknown>>();
 
   return async (request, response, policy) => {
     const requestId = boundedRequestId((options.requestId ?? randomUUID)());
@@ -144,6 +199,7 @@ export function createEditSuggestionRequestHandler(
     let logger = options.logger.child({ requestId });
     response.setHeader("x-poietra-request-id", requestId);
     const requestAbort = new AbortController();
+    let generationStarted = false;
     let generationTimedOut = false;
     const abortFromParent = () => requestAbort.abort(policy.requestSignal?.reason);
     const abortFromRequest = () => requestAbort.abort(new Error("The client request was interrupted."));
@@ -178,6 +234,11 @@ export function createEditSuggestionRequestHandler(
       if (!isVerifiedManimPrincipal(policy.principal)) throw new HttpError("Authentication is required.", 401);
       logger = logger.child(admission.correlations(policy.principal));
       logger.info("request.started");
+      if (!admission.consumeRequest(policy.principal)) {
+        request.resume();
+        respond(429, { error: "Edit suggestion capacity is temporarily exhausted." });
+        return;
+      }
       if (requestAbort.signal.aborted) {
         request.resume();
         logger.warn("response.abandoned", telemetry(499));
@@ -186,6 +247,7 @@ export function createEditSuggestionRequestHandler(
 
       const generator = options.generator();
       if (!generator) {
+        request.resume();
         respond(503, { error: "The OpenAI credential is not configured." });
         return;
       }
@@ -210,7 +272,7 @@ export function createEditSuggestionRequestHandler(
         return;
       }
 
-      const admitted = admission.reserve(policy.principal);
+      const admitted = admission.reserveGeneration(policy.principal);
       if (!admitted.accepted) {
         respond(429, { error: "Edit suggestion capacity is temporarily exhausted." });
         return;
@@ -223,13 +285,17 @@ export function createEditSuggestionRequestHandler(
       timeout.unref();
       let result: Awaited<ReturnType<EditSuggestionGenerator["generate"]>> | typeof GENERATION_ABORTED;
       try {
-        result = await raceWithSignal(
-          () => generator.generate(parsed.data, logger, requestAbort.signal),
-          requestAbort.signal,
-        );
+        generationStarted = true;
+        logger.info("model.requested");
+        const running = trackGeneration(pendingGenerations, admitted.reservation, () => {
+          if (requestAbort.signal.aborted) {
+            throw requestAbort.signal.reason ?? new Error("The edit-suggestion generation was aborted.");
+          }
+          return generator.generate(parsed.data, requestAbort.signal);
+        });
+        result = await raceWithSignal(running, requestAbort.signal);
       } finally {
         clearTimeout(timeout);
-        admitted.reservation.release();
       }
       if (result === GENERATION_ABORTED) {
         if (generationTimedOut && !response.destroyed) {
@@ -239,13 +305,28 @@ export function createEditSuggestionRequestHandler(
         }
         return;
       }
-      if (result.kind === "clarification" || !result.operation) {
+      const validatedGeneration = generationResultSchema.safeParse(result);
+      if (!validatedGeneration.success) {
+        logger.warn("model.result_rejected");
+        throw new EditSuggestionGenerationError("The generator returned an invalid result envelope.", 502);
+      }
+      if (validatedGeneration.data.telemetry.repairAttempted) logger.warn("model.validation_failed");
+      logger.info(
+        "model.responded",
+        validatedGeneration.data.telemetry.usage
+          ? {
+              usage: validatedGeneration.data.telemetry.usage,
+            }
+          : undefined,
+      );
+      const suggestion = validatedGeneration.data.suggestion;
+      if (suggestion.kind === "clarification" || !suggestion.operation) {
         respond(200, {
           kind: "clarification",
-          message: result.message || "Please make the desired spatial change more specific.",
+          message: suggestion.message || "Please make the desired spatial change more specific.",
           options:
-            result.options.length >= 2
-              ? result.options.map((option, index) => ({ ...option, id: `option-${index + 1}` }))
+            suggestion.options.length >= 2
+              ? suggestion.options.map((option, index) => ({ ...option, id: `option-${index + 1}` }))
               : [],
         });
         return;
@@ -254,11 +335,11 @@ export function createEditSuggestionRequestHandler(
       respond(200, {
         kind: "suggestion",
         suggestion: {
-          assumptions: result.assumptions,
+          assumptions: suggestion.assumptions,
           confidence: "medium",
-          operation: result.operation,
+          operation: suggestion.operation,
           provider: "remote",
-          summary: result.summary,
+          summary: suggestion.summary,
         },
       });
     } catch (error) {
@@ -270,17 +351,18 @@ export function createEditSuggestionRequestHandler(
         }
         return;
       }
-      const status = failureStatus(error);
+      const status = failureStatus(error, generationStarted);
       logger.error("request.failed", {
         latencyMs: boundedLatency(startedAt, now),
         ...(status === undefined ? {} : { status }),
       });
-      if (error instanceof HttpError) {
-        if (error.status === 401) {
+      if (!generationStarted && error instanceof HttpError) {
+        const requestStatus = requestFailureStatus(error);
+        if (requestStatus === 401) {
           respond(401, { error: "Authentication is required." });
           return;
         }
-        respond(error.status, { error: error.message });
+        respond(requestStatus, { error: error.message });
         return;
       }
       if (error instanceof EditSuggestionGenerationError) {

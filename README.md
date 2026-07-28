@@ -144,11 +144,16 @@ and numeric token counters when available.
 Prompts, source/object context, clarification content, model instructions and output,
 provider response IDs, response bodies, error messages, tracebacks, and absolute log paths
 are not recorded. Authenticated tenant and principal scopes each have bounded rate and
-concurrency admission. Client disconnects and generation deadlines abort the provider
-request and release its reservation. The file rotates to `.previous` at 2 MiB and is
-created with user-only permissions. Set `POIETRA_AI_DEBUG_LOG` in the process
-environment to use another local path. Setting it to `off` disables both the file sink
-and the bounded stdout telemetry.
+concurrency admission. Request quota is consumed after authentication and tenant lookup,
+before the JSON body is read; only a schema-valid request can reserve generation capacity.
+Client disconnects and generation deadlines abort the provider request, but the capacity
+reservation remains held until the provider promise actually settles, including when an
+adapter ignores cancellation. Provider adapters receive request data and an abort signal,
+never the structured logger; the handler validates their narrow result telemetry before
+emitting fixed events. The file rotates to `.previous` at 2 MiB and is created with
+user-only permissions. Set `POIETRA_AI_DEBUG_LOG` in the process environment to use
+another local path. Setting it to `off` disables both the file sink and the bounded stdout
+telemetry.
 
 Logs created by an older Studio version may still contain editor or provider payloads.
 Treat both the active JSONL file and `.previous` as sensitive historical data: do not

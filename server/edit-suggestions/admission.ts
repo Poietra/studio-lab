@@ -12,17 +12,17 @@ export type EditSuggestionAdmissionLimits = Readonly<{
   rateWindowMs: number;
 }>;
 
-export type EditSuggestionAdmissionReservation = Readonly<{
+export type EditSuggestionGenerationReservation = Readonly<{
   release: () => void;
 }>;
 
-export type EditSuggestionAdmissionResult =
+export type EditSuggestionGenerationAdmissionResult =
   | Readonly<{
       accepted: false;
     }>
   | Readonly<{
       accepted: true;
-      reservation: EditSuggestionAdmissionReservation;
+      reservation: EditSuggestionGenerationReservation;
     }>;
 
 type ScopeState = {
@@ -30,6 +30,13 @@ type ScopeState = {
   requests: number;
   windowStartedAt: number;
 };
+
+type ScopeLookup = Readonly<{
+  now: number;
+  principalKey: string;
+  principalState: ScopeState | undefined;
+  tenantState: ScopeState | undefined;
+}>;
 
 const DEFAULT_LIMITS: EditSuggestionAdmissionLimits = Object.freeze({
   maxConcurrentPerPrincipal: 2,
@@ -102,8 +109,8 @@ function principalScope(principal: VerifiedManimPrincipal) {
 /**
  * Owns the small in-process admission boundary for the edit-suggestion model.
  * Production callers still need a distributed limit at their edge, but every
- * Studio process enforces these tenant and principal ceilings before it calls
- * the provider.
+ * Studio process consumes request quota before body parsing and separately
+ * enforces generation concurrency before it calls the provider.
  */
 export class EditSuggestionAdmissionController {
   readonly #correlationSecret: Uint8Array;
@@ -156,7 +163,7 @@ export class EditSuggestionAdmissionController {
     });
   }
 
-  reserve(principal: VerifiedManimPrincipal): EditSuggestionAdmissionResult {
+  #states(principal: VerifiedManimPrincipal) {
     if (!isVerifiedManimPrincipal(principal)) throw new TypeError("A verified principal is required for admission.");
     const now = this.#now();
     if (!Number.isFinite(now)) throw new TypeError("The admission clock returned an invalid time.");
@@ -164,30 +171,53 @@ export class EditSuggestionAdmissionController {
     this.#removeExpiredInactive(this.#tenants, now);
 
     const principalKey = principalScope(principal);
-    let principalState = this.#principals.get(principalKey);
-    let tenantState = this.#tenants.get(principal.tenantId);
+    const principalState = this.#principals.get(principalKey);
+    const tenantState = this.#tenants.get(principal.tenantId);
     if (principalState) this.#refresh(principalState, now);
     if (tenantState) this.#refresh(tenantState, now);
 
+    return { now, principalKey, principalState, tenantState };
+  }
+
+  #trackStates(principal: VerifiedManimPrincipal, states: ScopeLookup) {
+    const principalState = states.principalState ?? { active: 0, requests: 0, windowStartedAt: states.now };
+    const tenantState = states.tenantState ?? { active: 0, requests: 0, windowStartedAt: states.now };
+    this.#principals.set(states.principalKey, principalState);
+    this.#tenants.set(principal.tenantId, tenantState);
+    return { principalState, tenantState };
+  }
+
+  consumeRequest(principal: VerifiedManimPrincipal) {
+    const states = this.#states(principal);
     if (
-      (!principalState && this.#principals.size >= this.#limits.maxTrackedPrincipals) ||
-      (!tenantState && this.#tenants.size >= this.#limits.maxTrackedTenants) ||
-      (principalState?.active ?? 0) >= this.#limits.maxConcurrentPerPrincipal ||
-      (tenantState?.active ?? 0) >= this.#limits.maxConcurrentPerTenant ||
-      (principalState?.requests ?? 0) >= this.#limits.maxRequestsPerPrincipalWindow ||
-      (tenantState?.requests ?? 0) >= this.#limits.maxRequestsPerTenantWindow
+      (!states.principalState && this.#principals.size >= this.#limits.maxTrackedPrincipals) ||
+      (!states.tenantState && this.#tenants.size >= this.#limits.maxTrackedTenants) ||
+      (states.principalState?.requests ?? 0) >= this.#limits.maxRequestsPerPrincipalWindow ||
+      (states.tenantState?.requests ?? 0) >= this.#limits.maxRequestsPerTenantWindow
+    ) {
+      return false;
+    }
+
+    const { principalState, tenantState } = this.#trackStates(principal, states);
+    principalState.requests += 1;
+    tenantState.requests += 1;
+    return true;
+  }
+
+  reserveGeneration(principal: VerifiedManimPrincipal): EditSuggestionGenerationAdmissionResult {
+    const states = this.#states(principal);
+    if (
+      (!states.principalState && this.#principals.size >= this.#limits.maxTrackedPrincipals) ||
+      (!states.tenantState && this.#tenants.size >= this.#limits.maxTrackedTenants) ||
+      (states.principalState?.active ?? 0) >= this.#limits.maxConcurrentPerPrincipal ||
+      (states.tenantState?.active ?? 0) >= this.#limits.maxConcurrentPerTenant
     ) {
       return { accepted: false };
     }
 
-    principalState ??= { active: 0, requests: 0, windowStartedAt: now };
-    tenantState ??= { active: 0, requests: 0, windowStartedAt: now };
-    this.#principals.set(principalKey, principalState);
-    this.#tenants.set(principal.tenantId, tenantState);
+    const { principalState, tenantState } = this.#trackStates(principal, states);
     principalState.active += 1;
-    principalState.requests += 1;
     tenantState.active += 1;
-    tenantState.requests += 1;
 
     let released = false;
     return {

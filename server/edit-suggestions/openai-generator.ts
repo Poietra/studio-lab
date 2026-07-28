@@ -3,8 +3,12 @@ import { zodTextFormat } from "openai/helpers/zod";
 import { ZodError } from "zod";
 import { type ModelSuggestion, modelSuggestionSchema } from "../../src/ai/edit-suggestion-schema";
 import type { EditSuggestionRequest } from "../../src/ai/edit-suggestions";
-import type { StructuredLogger } from "../logging/structured-logger";
-import { EditSuggestionGenerationError, type EditSuggestionGenerator } from "./service";
+import {
+  EditSuggestionGenerationError,
+  type EditSuggestionGenerationResult,
+  type EditSuggestionGenerator,
+  type EditSuggestionTokenUsage,
+} from "./service";
 
 type OpenAiGeneratorOptions = Readonly<{
   apiKey: string;
@@ -34,14 +38,18 @@ function usageTelemetry(
       }>
     | null
     | undefined,
-) {
+): EditSuggestionTokenUsage | undefined {
   if (!usage) return undefined;
   const boundedCounter = (value: unknown) =>
-    typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+    typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 10_000_000 ? value : undefined;
+  const inputTokens = boundedCounter(usage.input_tokens);
+  const outputTokens = boundedCounter(usage.output_tokens);
+  const totalTokens = boundedCounter(usage.total_tokens);
+  if (inputTokens === undefined && outputTokens === undefined && totalTokens === undefined) return undefined;
   return {
-    inputTokens: boundedCounter(usage.input_tokens),
-    outputTokens: boundedCounter(usage.output_tokens),
-    totalTokens: boundedCounter(usage.total_tokens),
+    ...(inputTokens === undefined ? {} : { inputTokens }),
+    ...(outputTokens === undefined ? {} : { outputTokens }),
+    ...(totalTokens === undefined ? {} : { totalTokens }),
   };
 }
 
@@ -73,13 +81,11 @@ export function createOpenAiEditSuggestionGenerator(options: OpenAiGeneratorOpti
 
   const requestCandidate = async (
     request: EditSuggestionRequest,
-    logger: StructuredLogger,
     attempt: CandidateAttempt,
-  ): Promise<ModelSuggestion | null> => {
+  ): Promise<Readonly<{ candidate: ModelSuggestion | null; usage?: EditSuggestionTokenUsage }>> => {
     const instructions = attempt.repairFeedback
       ? `${options.instructions}\n\nThe previous candidate failed closed-schema validation: ${attempt.repairFeedback}. Return a fresh candidate that satisfies every schema invariant. Do not repeat an operation kind. Parallel steps must have identical start and end values. If the complete request cannot be represented, return one focused clarification.`
       : options.instructions;
-    logger.info("model.requested");
     const completion = await client.responses.parse(
       {
         input: [{ content: JSON.stringify(request), role: "user" }],
@@ -92,34 +98,48 @@ export function createOpenAiEditSuggestionGenerator(options: OpenAiGeneratorOpti
       },
       { signal: attempt.signal },
     );
-    logger.info("model.responded", {
-      usage: usageTelemetry(completion.usage),
-    });
-    return completion.output_parsed;
+    const usage = usageTelemetry(completion.usage);
+    return {
+      candidate: completion.output_parsed,
+      ...(usage ? { usage } : {}),
+    };
   };
 
-  const generateWithRepair = async (request: EditSuggestionRequest, logger: StructuredLogger, signal?: AbortSignal) => {
+  const generateWithRepair = async (
+    request: EditSuggestionRequest,
+    signal?: AbortSignal,
+  ): Promise<EditSuggestionGenerationResult> => {
     try {
-      return requireCandidate(await requestCandidate(request, logger, { kind: "initial", signal }));
+      const initial = await requestCandidate(request, { kind: "initial", signal });
+      return {
+        suggestion: requireCandidate(initial.candidate),
+        telemetry: {
+          repairAttempted: false,
+          ...(initial.usage ? { usage: initial.usage } : {}),
+        },
+      };
     } catch (error) {
       if (!(error instanceof ZodError)) throw error;
       const feedback = validationFeedback(error);
-      logger.warn("model.validation_failed");
-      return requireCandidate(
-        await requestCandidate(request, logger, {
-          kind: "repair",
-          repairFeedback: feedback,
-          signal,
-        }),
-        true,
-      );
+      const repaired = await requestCandidate(request, {
+        kind: "repair",
+        repairFeedback: feedback,
+        signal,
+      });
+      return {
+        suggestion: requireCandidate(repaired.candidate, true),
+        telemetry: {
+          repairAttempted: true,
+          ...(repaired.usage ? { usage: repaired.usage } : {}),
+        },
+      };
     }
   };
 
   return {
-    async generate(request, logger, signal) {
+    async generate(request, signal) {
       try {
-        return await generateWithRepair(request, logger, signal);
+        return await generateWithRepair(request, signal);
       } catch (error) {
         if (error instanceof EditSuggestionGenerationError) throw error;
         if (error instanceof ZodError) {

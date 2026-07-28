@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { ResolvedConfig, ViteDevServer } from "vite";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import type { ModelSuggestion } from "../../src/ai/edit-suggestion-schema";
 import type { EditSuggestionRequest } from "../../src/ai/edit-suggestions";
 import {
@@ -18,7 +18,11 @@ import { createTrustedLocalManimPrincipal } from "../manim-request-principal";
 import { openAiEditSuggestions } from "../openai-edit-suggestions";
 import { createEditSuggestionAdmissionController } from "./admission";
 import { createEditSuggestionHandler, createEditSuggestionRequestHandler } from "./handler";
-import { EditSuggestionGenerationError, type EditSuggestionGenerator } from "./service";
+import {
+  EditSuggestionGenerationError,
+  type EditSuggestionGenerationResult,
+  type EditSuggestionGenerator,
+} from "./service";
 
 const openAiParse = vi.hoisted(() => vi.fn());
 const openAiConstructed = vi.hoisted(() => vi.fn());
@@ -70,6 +74,13 @@ function requestBody(): EditSuggestionRequest {
     scene: { id: "scene.py#Current", name: "Current", nextSceneId: "scene.py#Next" },
     sceneDuration: 12,
     selectedObjectIds: [],
+  };
+}
+
+function generated(suggestion: ModelSuggestion): EditSuggestionGenerationResult {
+  return {
+    suggestion,
+    telemetry: { repairAttempted: false },
   };
 }
 
@@ -165,15 +176,21 @@ describe("edit suggestion API handler", () => {
   it("passes bounded clarification history to the generator and correlates logs", async () => {
     const received: EditSuggestionRequest[] = [];
     const generator: EditSuggestionGenerator = {
-      async generate(request): Promise<ModelSuggestion> {
+      async generate(request): Promise<EditSuggestionGenerationResult> {
         received.push(request);
         return {
-          assumptions: [],
-          kind: "clarification",
-          message: "One more question",
-          operation: null,
-          options: [],
-          summary: "",
+          suggestion: {
+            assumptions: [],
+            kind: "clarification",
+            message: "One more question",
+            operation: null,
+            options: [],
+            summary: "",
+          },
+          telemetry: {
+            repairAttempted: true,
+            usage: { inputTokens: 11, outputTokens: 7, totalTokens: 18 },
+          },
         };
       },
     };
@@ -183,7 +200,14 @@ describe("edit suggestion API handler", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("x-poietra-request-id")).toBe("request-1");
     expect(received[0]?.clarification?.history).toHaveLength(1);
-    expect(records.map((record) => record.event)).toEqual(["request.started", "request.received", "response.sent"]);
+    expect(records.map((record) => record.event)).toEqual([
+      "request.started",
+      "request.received",
+      "model.requested",
+      "model.validation_failed",
+      "model.responded",
+      "response.sent",
+    ]);
     expect(records.every((record) => record.context.requestId === "request-1")).toBe(true);
     const persistedLogs = JSON.stringify(records);
     expect(persistedLogs).not.toContain("Maxwell equations");
@@ -193,12 +217,80 @@ describe("edit suggestion API handler", () => {
       latencyMs: expect.any(Number),
       status: 200,
     });
+    expect(records.find((record) => record.event === "model.responded")?.data).toEqual({
+      usage: { inputTokens: 11, outputTokens: 7, totalTokens: 18 },
+    });
+  });
+
+  it("never exposes the structured logger to an injected generator and rejects unbounded telemetry", async () => {
+    const sentinel = "SECRET_MALICIOUS_ADAPTER_PROMPT_PATH";
+    let receivedBoundary: unknown;
+    const generator: EditSuggestionGenerator = {
+      async generate(request, signal) {
+        expectTypeOf(signal).toEqualTypeOf<AbortSignal | undefined>();
+        receivedBoundary = signal;
+        return {
+          suggestion: generated({
+            assumptions: [],
+            kind: "clarification",
+            message: "safe response",
+            operation: null,
+            options: [],
+            summary: "",
+          }).suggestion,
+          telemetry: {
+            repairAttempted: false,
+            usage: { inputTokens: 1, prompt: `${sentinel}:${request.prompt}` },
+          },
+        } as never;
+      },
+    };
+
+    const { records, response, result } = await callHandler(generator, {
+      ...requestBody(),
+      prompt: sentinel,
+      scene: { ...requestBody().scene, id: `${sentinel}.py#Scene` },
+    });
+
+    expect(response.status).toBe(502);
+    expect(result).toEqual({ error: "Edit suggestion generation failed." });
+    expect(receivedBoundary).toBeInstanceOf(AbortSignal);
+    expect(receivedBoundary).not.toHaveProperty("info");
+    expect(receivedBoundary).not.toHaveProperty("child");
+    expect(JSON.stringify(records)).not.toContain(sentinel);
+    expect(records.map((record) => record.event)).toContain("model.result_rejected");
+  });
+
+  it("normalizes an injected generation error status before logging", async () => {
+    const sentinel = "SECRET_MALICIOUS_ERROR_STATUS_PROMPT_PATH";
+    const generator: EditSuggestionGenerator = {
+      async generate(): Promise<EditSuggestionGenerationResult> {
+        const error = new EditSuggestionGenerationError(sentinel, 502);
+        Object.defineProperty(error, "status", {
+          value: { path: `${sentinel}.py`, prompt: sentinel },
+        });
+        throw error;
+      },
+    };
+
+    const { records, response, result } = await callHandler(generator, {
+      ...requestBody(),
+      prompt: sentinel,
+    });
+
+    expect(response.status).toBe(502);
+    expect(result).toEqual({ error: "Edit suggestion generation failed." });
+    expect(JSON.stringify(records)).not.toContain(sentinel);
+    expect(records.find((record) => record.event === "request.failed")?.data).toEqual({
+      latencyMs: expect.any(Number),
+      status: 502,
+    });
   });
 
   it("never exposes generator errors through HTTP or structured logs", async () => {
     const sentinel = "SECRET_SOURCE_PATH_AND_PROVIDER_BODY";
     const generator: EditSuggestionGenerator = {
-      async generate(): Promise<ModelSuggestion> {
+      async generate(): Promise<EditSuggestionGenerationResult> {
         throw new EditSuggestionGenerationError(sentinel, 401, {
           cause: new Error(`${sentinel}: nested traceback`),
         });
@@ -212,7 +304,7 @@ describe("edit suggestion API handler", () => {
     expect(JSON.stringify(records)).not.toContain(sentinel);
     expect(records.find((record) => record.event === "request.failed")?.data).toEqual({
       latencyMs: expect.any(Number),
-      status: 401,
+      status: 502,
     });
   });
 
@@ -228,15 +320,15 @@ describe("edit suggestion API handler", () => {
         sinks: [createConsoleJsonSink({ prefix: "poietra-ai-test" }), createRotatingJsonlSink({ logPath, root })],
       });
       const generator: EditSuggestionGenerator = {
-        async generate(): Promise<ModelSuggestion> {
-          return {
+        async generate(): Promise<EditSuggestionGenerationResult> {
+          return generated({
             assumptions: [],
             kind: "clarification",
             message: "SECRET_MODEL_OUTPUT",
             operation: null,
             options: [],
             summary: "",
-          };
+          });
         },
       };
       const body = requestBody();
@@ -297,7 +389,7 @@ describe("edit suggestion API handler", () => {
   it("preserves only the bounded capacity classification for provider rate limits", async () => {
     const sentinel = "SECRET_RATE_LIMIT_PROVIDER_BODY";
     const generator: EditSuggestionGenerator = {
-      async generate(): Promise<ModelSuggestion> {
+      async generate(): Promise<EditSuggestionGenerationResult> {
         throw new EditSuggestionGenerationError(sentinel, 429, {
           cause: new Error(`${sentinel}: nested traceback`),
         });
@@ -318,7 +410,7 @@ describe("edit suggestion API handler", () => {
   it("rejects an option answer that does not belong to its historical turn", async () => {
     let calls = 0;
     const generator: EditSuggestionGenerator = {
-      async generate(): Promise<ModelSuggestion> {
+      async generate(): Promise<EditSuggestionGenerationResult> {
         calls += 1;
         throw new Error("must not run");
       },
@@ -347,7 +439,7 @@ describe("edit suggestion API handler", () => {
   it("logs only bounded validation classifications for invalid bodies", async () => {
     const sentinel = "SECRET_INVALID_REQUEST_BODY";
     const generator: EditSuggestionGenerator = {
-      async generate(): Promise<ModelSuggestion> {
+      async generate(): Promise<EditSuggestionGenerationResult> {
         throw new Error("must not run");
       },
     };
@@ -362,9 +454,51 @@ describe("edit suggestion API handler", () => {
     expect(records.find((record) => record.event === "request.validation_failed")?.data).toBeUndefined();
   });
 
-  it("propagates a disconnected client to an in-flight generator", async () => {
+  it("charges the request rate quota before reading a near-limit invalid body", async () => {
+    let calls = 0;
+    const admission = createEditSuggestionAdmissionController({
+      limits: {
+        maxConcurrentPerPrincipal: 1,
+        maxConcurrentPerTenant: 1,
+        maxRequestsPerPrincipalWindow: 1,
+        maxRequestsPerTenantWindow: 1,
+        maxTrackedPrincipals: 10,
+        maxTrackedTenants: 10,
+        rateWindowMs: 60_000,
+      },
+    });
+    const handler = createEditSuggestionHandler({
+      admission,
+      generator: () => ({
+        async generate() {
+          calls += 1;
+          throw new Error("must not run");
+        },
+      }),
+      logger: createStructuredLogger({ sinks: [] }),
+      principal: TEST_PRINCIPAL,
+    });
+
+    const invalidBody = { ...requestBody(), prompt: "" };
+    invalidBody.prompt = "x".repeat(64 * 1024 - Buffer.byteLength(JSON.stringify(invalidBody)));
+    expect(Buffer.byteLength(JSON.stringify(invalidBody))).toBe(64 * 1024);
+
+    const invalid = await callHttpHandler(handler, invalidBody);
+    expect(invalid.response.status).toBe(400);
+    const generationCapacity = admission.reserveGeneration(TEST_PRINCIPAL);
+    expect(generationCapacity.accepted).toBe(true);
+    if (generationCapacity.accepted) generationCapacity.reservation.release();
+
+    const retry = await callHttpHandler(handler, requestBody());
+    expect(retry.response.status).toBe(429);
+    expect(calls).toBe(0);
+  });
+
+  it("holds a disconnected generation slot until an abort-ignoring provider settles", async () => {
     let resolveStarted!: () => void;
     let resolveAborted!: () => void;
+    let settleFirst: ((result: EditSuggestionGenerationResult) => void) | undefined;
+    let firstSettled = false;
     const started = new Promise<void>((resolve) => {
       resolveStarted = resolve;
     });
@@ -373,29 +507,25 @@ describe("edit suggestion API handler", () => {
     });
     let calls = 0;
     const generator: EditSuggestionGenerator = {
-      generate(_request, _logger, signal): Promise<ModelSuggestion> {
+      generate(_request, signal): Promise<EditSuggestionGenerationResult> {
         calls += 1;
         if (calls > 1) {
-          return Promise.resolve({
-            assumptions: [],
-            kind: "clarification",
-            message: "retry",
-            operation: null,
-            options: [],
-            summary: "",
-          });
+          return Promise.resolve(
+            generated({
+              assumptions: [],
+              kind: "clarification",
+              message: "retry",
+              operation: null,
+              options: [],
+              summary: "",
+            }),
+          );
         }
         resolveStarted();
-        return new Promise((_resolve, reject) => {
+        return new Promise((resolve) => {
+          settleFirst = resolve;
           expect(signal).toBeDefined();
-          signal?.addEventListener(
-            "abort",
-            () => {
-              resolveAborted();
-              reject(signal.reason);
-            },
-            { once: true },
-          );
+          signal?.addEventListener("abort", resolveAborted, { once: true });
         });
       },
     };
@@ -434,6 +564,26 @@ describe("edit suggestion API handler", () => {
       client.destroy();
 
       await aborted;
+      const blocked = await fetch(`http://127.0.0.1:${address.port}`, {
+        body: JSON.stringify(requestBody()),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(blocked.status).toBe(429);
+      expect(calls).toBe(1);
+
+      settleFirst?.(
+        generated({
+          assumptions: [],
+          kind: "clarification",
+          message: "late result",
+          operation: null,
+          options: [],
+          summary: "",
+        }),
+      );
+      firstSettled = true;
+      await new Promise<void>((resolve) => setImmediate(resolve));
       const retry = await fetch(`http://127.0.0.1:${address.port}`, {
         body: JSON.stringify(requestBody()),
         headers: { "content-type": "application/json" },
@@ -442,27 +592,48 @@ describe("edit suggestion API handler", () => {
       expect(retry.status).toBe(200);
       expect(calls).toBe(2);
     } finally {
+      if (!firstSettled) {
+        settleFirst?.(
+          generated({
+            assumptions: [],
+            kind: "clarification",
+            message: "cleanup",
+            operation: null,
+            options: [],
+            summary: "",
+          }),
+        );
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
   });
 
-  it("aborts timed-out generation and releases its concurrency reservation", async () => {
+  it("holds a timed-out slot through a late provider rejection without an unhandled rejection", async () => {
     let calls = 0;
     let aborted = false;
+    let rejectFirst: ((reason: unknown) => void) | undefined;
+    let firstSettled = false;
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
     const generator: EditSuggestionGenerator = {
-      generate(_request, _logger, signal): Promise<ModelSuggestion> {
+      generate(_request, signal): Promise<EditSuggestionGenerationResult> {
         calls += 1;
         if (calls > 1) {
-          return Promise.resolve({
-            assumptions: [],
-            kind: "clarification",
-            message: "retry",
-            operation: null,
-            options: [],
-            summary: "",
-          });
+          return Promise.resolve(
+            generated({
+              assumptions: [],
+              kind: "clarification",
+              message: "retry",
+              operation: null,
+              options: [],
+              summary: "",
+            }),
+          );
         }
-        return new Promise(() => {
+        return new Promise((_resolve, reject) => {
+          rejectFirst = reject;
           signal?.addEventListener(
             "abort",
             () => {
@@ -491,14 +662,31 @@ describe("edit suggestion API handler", () => {
       principal: TEST_PRINCIPAL,
     });
 
-    const first = await callHttpHandler(handler, requestBody());
-    expect(first.response.status).toBe(504);
-    expect(first.result).toEqual({ error: "Edit suggestion generation timed out." });
-    expect(aborted).toBe(true);
+    try {
+      const first = await callHttpHandler(handler, requestBody());
+      expect(first.response.status).toBe(504);
+      expect(first.result).toEqual({ error: "Edit suggestion generation timed out." });
+      expect(aborted).toBe(true);
 
-    const retry = await callHttpHandler(handler, requestBody());
-    expect(retry.response.status).toBe(200);
-    expect(calls).toBe(2);
+      const blocked = await callHttpHandler(handler, requestBody());
+      expect(blocked.response.status).toBe(429);
+      expect(calls).toBe(1);
+
+      rejectFirst?.(new Error("late provider rejection"));
+      firstSettled = true;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+
+      const retry = await callHttpHandler(handler, requestBody());
+      expect(retry.response.status).toBe(200);
+      expect(calls).toBe(2);
+    } finally {
+      if (!firstSettled) {
+        rejectFirst?.(new Error("test cleanup"));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      process.removeListener("unhandledRejection", onUnhandled);
+    }
   });
 
   it("is exposed by a serve-only Vite plugin", () => {
