@@ -2,6 +2,7 @@ node_modules/
 dist/
 dist-electron/
 dist-server/
+dist-sandbox-broker/
 release/
 .vite/
 playwright-report/
