@@ -62,6 +62,39 @@ describe("FastManimProductionSnapshotRunnerFactoryV1", () => {
     expect(created.backend.close).toHaveBeenCalledOnce();
   });
 
+  it("waits for an active readiness runner to close before factory shutdown completes", async () => {
+    const created = client();
+    let releaseStatus!: () => void;
+    let reachStatus!: () => void;
+    const statusReached = new Promise<void>((resolve) => {
+      reachStatus = resolve;
+    });
+    const heldStatus = new Promise<void>((resolve) => {
+      releaseStatus = resolve;
+    });
+    created.backend.status = vi.fn(async () => {
+      reachStatus();
+      await heldStatus;
+      return productionSandboxReadyStatus(PROFILE);
+    });
+    createClient.mockResolvedValue(created as never);
+    const runners = factory();
+    const readiness = runners.ready();
+    await statusReached;
+
+    let closeSettled = false;
+    const closing = runners.close().then(() => {
+      closeSettled = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(closeSettled).toBe(false);
+
+    releaseStatus();
+    await expect(readiness).resolves.toBe(false);
+    await closing;
+    expect(created.backend.close).toHaveBeenCalledOnce();
+  });
+
   it("returns a project-owned runner and refuses creation after close", async () => {
     const created = client();
     createClient.mockResolvedValue(created as never);

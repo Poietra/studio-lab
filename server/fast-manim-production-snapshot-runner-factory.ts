@@ -17,7 +17,9 @@ export type FastManimProductionSnapshotRunnerFactoryOptionsV1 = Readonly<{
 
 /** Creates one independently owned production broker client per durable project runner. */
 export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastManimSnapshotRunnerFactoryV1 {
+  readonly #activeReadiness = new Set<Promise<SnapshotRunnerReadinessOutcomeV1>>();
   readonly #options: FastManimProductionSnapshotRunnerFactoryOptionsV1;
+  #closeRequest: Promise<void> | null = null;
   #closed = false;
 
   constructor(options: FastManimProductionSnapshotRunnerFactoryOptionsV1) {
@@ -59,9 +61,7 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
     }
   }
 
-  async ready(signal?: AbortSignal) {
-    signal?.throwIfAborted();
-    if (this.#closed) return false;
+  async #probeReadiness(signal?: AbortSignal): Promise<SnapshotRunnerReadinessOutcomeV1> {
     let handle: DurableFastManimSnapshotRunnerHandleV1;
     try {
       handle = await this.create({
@@ -72,9 +72,8 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
           },
         },
       });
-    } catch {
-      signal?.throwIfAborted();
-      return false;
+    } catch (error) {
+      return { healthy: false, readinessError: error };
     }
     let healthy = false;
     let readinessError: unknown;
@@ -89,6 +88,20 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
     } catch (error) {
       cleanupError = error;
     }
+    return {
+      ...(cleanupError === undefined ? {} : { cleanupError }),
+      healthy,
+      ...(readinessError === undefined ? {} : { readinessError }),
+    };
+  }
+
+  async ready(signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    if (this.#closed) return false;
+    const probe = this.#probeReadiness(signal);
+    this.#activeReadiness.add(probe);
+    void probe.finally(() => this.#activeReadiness.delete(probe)).catch(() => undefined);
+    const { cleanupError, healthy, readinessError } = await probe;
     if (signal?.aborted) {
       let abortReason: unknown;
       try {
@@ -104,7 +117,21 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
     return !this.#closed && readinessError === undefined && cleanupError === undefined && healthy;
   }
 
-  async close() {
+  close() {
     this.#closed = true;
+    this.#closeRequest ??= (async () => {
+      const outcomes = await Promise.all([...this.#activeReadiness]);
+      const errors = outcomes.flatMap(({ cleanupError }) => (cleanupError === undefined ? [] : [cleanupError]));
+      if (errors.length > 0) {
+        throw new AggregateError(errors, "Could not close all active snapshot readiness runners.");
+      }
+    })();
+    return this.#closeRequest;
   }
 }
+
+type SnapshotRunnerReadinessOutcomeV1 = Readonly<{
+  cleanupError?: unknown;
+  healthy: boolean;
+  readinessError?: unknown;
+}>;
