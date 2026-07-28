@@ -24,6 +24,7 @@ const canonicalFenceTokenSchema = z
   .string()
   .regex(/^(?:0|[1-9][0-9]*)$/u)
   .max(40);
+const deadlineEpochMsSchema = z.number().int().safe().positive();
 const boundedSourceSchema = z
   .string()
   .refine(
@@ -40,12 +41,33 @@ const boundedLogSchema = z
 
 export const manimRenderSandboxDescriptorV1Schema = z
   .object({
+    deadlineEpochMs: deadlineEpochMsSchema,
+    fenceToken: canonicalFenceTokenSchema,
     jobId: opaqueIdV1Schema,
-    media: z.discriminatedUnion("kind", [
-      z.object({ kind: z.literal("thumbnail"), mediaType: z.literal("image/png") }).strict(),
-      z.object({ kind: z.literal("video"), mediaType: z.literal("video/mp4") }).strict(),
+    output: z.discriminatedUnion("kind", [
+      z
+        .object({
+          frameRate: z.literal(15),
+          kind: z.literal("thumbnail"),
+          mediaType: z.literal("image/png"),
+          pixelHeight: z.literal(480),
+          pixelWidth: z.literal(854),
+        })
+        .strict(),
+      z
+        .object({
+          frameRate: z.literal(15),
+          kind: z.literal("video"),
+          mediaType: z.literal("video/mp4"),
+          pixelHeight: z.literal(480),
+          pixelWidth: z.literal(854),
+        })
+        .strict(),
     ]),
+    profileDigest: sha256V1Schema,
     projectId: manimProjectIdSchema,
+    runtimeDigest: sha256V1Schema,
+    sceneFrame: z.object({ height: z.number().finite().positive(), width: z.number().finite().positive() }).strict(),
     sceneName: sceneNameSchema,
     schema: z.literal(MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V1),
     sessionId: opaqueIdV1Schema,
@@ -69,13 +91,12 @@ export type ManimRenderSandboxDescriptorV1 = Readonly<z.infer<typeof manimRender
 
 export class SealedManimRenderSandboxRequestV1 {
   readonly byteLength: number;
-  readonly descriptor: ManimRenderSandboxDescriptorV1;
   readonly requestDigest: string;
   readonly #bytes: Uint8Array;
 
   constructor(value: ManimRenderSandboxDescriptorV1) {
-    this.descriptor = Object.freeze(manimRenderSandboxDescriptorV1Schema.parse(value));
-    const bytes = Buffer.from(canonicalJsonV1(this.descriptor), "utf8");
+    const descriptor = manimRenderSandboxDescriptorV1Schema.parse(value);
+    const bytes = Buffer.from(canonicalJsonV1(descriptor), "utf8");
     if (bytes.byteLength > MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V1) {
       throw new RangeError("Render sandbox request exceeds its byte budget.");
     }
@@ -88,6 +109,10 @@ export class SealedManimRenderSandboxRequestV1 {
   copyBytes() {
     return Uint8Array.from(this.#bytes);
   }
+
+  parseDescriptor() {
+    return manimRenderSandboxDescriptorV1Schema.parse(JSON.parse(Buffer.from(this.#bytes).toString("utf8")));
+  }
 }
 
 export function verifySealedManimRenderSandboxRequestV1(request: SealedManimRenderSandboxRequestV1) {
@@ -96,7 +121,7 @@ export function verifySealedManimRenderSandboxRequestV1(request: SealedManimRend
     bytes.byteLength === request.byteLength &&
     bytes.byteLength <= MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V1 &&
     createHash("sha256").update(bytes).digest("hex") === request.requestDigest &&
-    canonicalJsonV1(request.descriptor) === Buffer.from(bytes).toString("utf8")
+    canonicalJsonV1(request.parseDescriptor()) === Buffer.from(bytes).toString("utf8")
   );
 }
 
@@ -112,12 +137,16 @@ export const manimRenderSandboxFailureCodeV1Schema = z.enum([
 ]);
 
 const terminalCorrelation = {
+  deadlineEpochMs: deadlineEpochMsSchema,
   fenceToken: canonicalFenceTokenSchema,
   jobId: opaqueIdV1Schema,
   profileDigest: sha256V1Schema,
   requestDigest: sha256V1Schema,
   runtimeDigest: sha256V1Schema,
   schema: z.literal(MANIM_RENDER_SANDBOX_RESULT_SCHEMA_V1),
+  sessionId: opaqueIdV1Schema,
+  sourceDigest: sha256V1Schema,
+  tenantId: manimTenantIdSchema,
   version: z.literal(1),
 };
 
@@ -163,16 +192,54 @@ export function canonicalManimRenderFenceTokenV1(value: bigint) {
   return canonicalFenceTokenSchema.parse(value.toString(10));
 }
 
-export function manimRenderStagingIdV1(jobId: string) {
-  return createHash("sha256").update(opaqueIdV1Schema.parse(jobId), "utf8").digest("hex").slice(0, 32);
+export function digestManimRenderSandboxExecutionV1(descriptor: ManimRenderSandboxDescriptorV1) {
+  const { fenceToken: _fenceToken, ...stable } = manimRenderSandboxDescriptorV1Schema.parse(descriptor);
+  return createHash("sha256").update(canonicalJsonV1(stable), "utf8").digest("hex");
 }
 
-export function encodeManimRenderStagingLocatorV1(
-  value: Pick<
-    Extract<ManimRenderSandboxTerminalV1, { kind: "ready" }>,
-    "artifactDigest" | "artifactSize" | "mediaType" | "requestDigest" | "stagingId"
-  >,
-) {
-  const media = value.mediaType === "video/mp4" ? "mp4" : "png";
-  return `render-staging:v1:${value.stagingId}:${media}:${value.artifactSize}:${value.artifactDigest}:${value.requestDigest}`;
+export function manimRenderStagingIdV1(jobId: string, mediaKind: "thumbnail" | "video") {
+  return createHash("sha256")
+    .update(canonicalJsonV1({ jobId: opaqueIdV1Schema.parse(jobId), mediaKind }), "utf8")
+    .digest("hex")
+    .slice(0, 32);
+}
+
+const manimRenderStagingLocatorPayloadV1Schema = z
+  .object({
+    artifactDigest: sha256V1Schema,
+    artifactSize: z.number().int().positive().max(MAX_MANIM_RENDER_SANDBOX_ARTIFACT_BYTES_V1),
+    deadlineEpochMs: deadlineEpochMsSchema,
+    fenceToken: canonicalFenceTokenSchema,
+    jobId: opaqueIdV1Schema,
+    mediaType: z.enum(["image/png", "video/mp4"]),
+    profileDigest: sha256V1Schema,
+    requestDigest: sha256V1Schema,
+    runtimeDigest: sha256V1Schema,
+    sessionId: opaqueIdV1Schema,
+    sourceDigest: sha256V1Schema,
+    stagingId: stagingIdSchema,
+    tenantId: manimTenantIdSchema,
+    version: z.literal(1),
+  })
+  .strict();
+
+export function encodeManimRenderStagingLocatorV1(value: Extract<ManimRenderSandboxTerminalV1, { kind: "ready" }>) {
+  const { kind: _kind, logTail: _logTail, schema: _schema, ...correlation } = value;
+  return `render-staging:v1:${Buffer.from(
+    canonicalJsonV1(manimRenderStagingLocatorPayloadV1Schema.parse(correlation)),
+    "utf8",
+  ).toString("base64url")}`;
+}
+
+export function decodeManimRenderStagingLocatorV1(value: string) {
+  if (!value.startsWith("render-staging:v1:") || Buffer.byteLength(value, "utf8") > 2_048) {
+    throw new TypeError("The render staging locator is invalid.");
+  }
+  const encoded = value.slice("render-staging:v1:".length);
+  const bytes = Buffer.from(encoded, "base64url");
+  if (bytes.toString("base64url") !== encoded) throw new TypeError("The render staging locator is invalid.");
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  const parsed = manimRenderStagingLocatorPayloadV1Schema.parse(JSON.parse(text));
+  if (canonicalJsonV1(parsed) !== text) throw new TypeError("The render staging locator is invalid.");
+  return parsed;
 }
