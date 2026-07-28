@@ -1,10 +1,48 @@
 import { request as createRequest, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
 import { handleManimRequest, type ManimApi, resolveByteRange } from "./manim-render-http";
+
+async function listen(api: ManimApi) {
+  const server = createServer((request, response) => {
+    void handleManimRequest(createTrustedLocalManimRequestContext(api, "test"), request, response);
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  return server;
+}
+
+async function send(
+  port: number,
+  path: string,
+  options: Readonly<{ headers?: Record<string, string>; method?: string }> = {},
+) {
+  return new Promise<Readonly<{ body: Buffer; headers: import("node:http").IncomingHttpHeaders; status: number }>>(
+    (resolve, reject) => {
+      const request = createRequest(
+        { headers: options.headers, host: "127.0.0.1", method: options.method, path, port },
+        (incoming) => {
+          const chunks: Buffer[] = [];
+          incoming.on("data", (chunk: Buffer) => chunks.push(chunk));
+          incoming.once("end", () =>
+            resolve({
+              body: Buffer.concat(chunks),
+              headers: incoming.headers,
+              status: incoming.statusCode ?? 0,
+            }),
+          );
+        },
+      );
+      request.once("error", reject);
+      request.end();
+    },
+  );
+}
 
 describe("Manim video byte ranges", () => {
   it("supports full, bounded, open-ended, and suffix requests", () => {
@@ -59,6 +97,84 @@ describe("async Manim API port", () => {
       });
       expect(resolved).toBe(true);
       expect(response).toEqual({ body: '{"defaultProjectId":null,"projects":[]}', status: 200 });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("holds and releases one authorized media handle across HEAD and Range GET", async () => {
+    const close = vi.fn(async () => undefined);
+    const open = vi.fn(async () =>
+      (async function* () {
+        yield new Uint8Array([1, 2]);
+      })(),
+    );
+    const api = {
+      storageBoundary: { kind: "shared-durable", namespace: "http-media-test" },
+      tenantId: "tenant-media",
+      video: vi.fn(async () => ({ byteSize: 4, close, mediaType: "video/mp4", open })),
+    } as unknown as ManimApi;
+    const server = await listen(api);
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const path = "/api/manim/renders/00000000-0000-4000-8000-000000000001/video";
+      const head = await send(port, path, { method: "HEAD" });
+      expect(head).toMatchObject({ body: Buffer.alloc(0), status: 200 });
+      expect(head.headers["content-length"]).toBe("4");
+      expect(open).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledOnce();
+
+      close.mockClear();
+      const range = await send(port, path, { headers: { range: "bytes=1-2" } });
+      expect(range).toMatchObject({ body: Buffer.from([1, 2]), status: 206 });
+      expect(range.headers["content-range"]).toBe("bytes 1-2/4");
+      expect(open).toHaveBeenCalledWith({ end: 2, start: 1 }, expect.any(AbortSignal));
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("propagates a disconnected thumbnail request to durable storage", async () => {
+    let startedResolve!: () => void;
+    let abortedResolve!: () => void;
+    const started = new Promise<void>((resolve) => {
+      startedResolve = resolve;
+    });
+    const aborted = new Promise<void>((resolve) => {
+      abortedResolve = resolve;
+    });
+    const api = {
+      storageBoundary: { kind: "shared-durable", namespace: "http-thumbnail-abort-test" },
+      tenantId: "tenant-thumbnail",
+      thumbnail: vi.fn((_projectId: string, signal?: AbortSignal) => {
+        if (!signal) throw new Error("Thumbnail storage received no abort signal.");
+        startedResolve();
+        return new Promise<never>((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              abortedResolve();
+              reject(signal.reason);
+            },
+            { once: true },
+          );
+        });
+      }),
+    } as unknown as ManimApi;
+    const server = await listen(api);
+    try {
+      const request = createRequest({
+        host: "127.0.0.1",
+        path: "/api/manim/projects/project-a/thumbnail",
+        port: (server.address() as AddressInfo).port,
+      });
+      request.on("error", () => undefined);
+      request.end();
+      await started;
+      request.destroy();
+      await aborted;
+      expect(api.thumbnail).toHaveBeenCalledWith("project-a", expect.any(AbortSignal));
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }

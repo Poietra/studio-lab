@@ -22,6 +22,7 @@ import {
   reapFastManimGatedOciAttachedDockerClientV1,
 } from "./fast-manim-gated-oci-job-runner";
 import {
+  digestManimRenderStagingRootV1,
   digestManimRenderSandboxExecutionV1,
   MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
   type ManimRenderSandboxDescriptorV1,
@@ -753,7 +754,9 @@ export class ManimRenderGatedOciJobRunnerV1 {
       throw new TypeError("The render OCI staging limits are invalid.");
     }
     this.#cgroupKillPolicy = options.cgroupKillPolicy ?? "required";
-    if (!options.stagingRoot.startsWith("/") || resolve(options.stagingRoot) !== options.stagingRoot) {
+    try {
+      digestManimRenderStagingRootV1(options.stagingRoot);
+    } catch {
       throw new TypeError("The broker staging root must be canonical and absolute.");
     }
     this.#docker = options.dockerClient;
@@ -780,6 +783,10 @@ export class ManimRenderGatedOciJobRunnerV1 {
 
   get runtimeDigest() {
     return this.#runtimeDigest;
+  }
+
+  get stagingRootDigest() {
+    return digestManimRenderStagingRootV1(this.#stagingRoot);
   }
 
   async #assertStagingRootIdentity() {

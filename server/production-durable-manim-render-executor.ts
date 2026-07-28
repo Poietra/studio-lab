@@ -22,6 +22,7 @@ export type ProductionDurableManimRenderExecutorOptionsV1 = Readonly<{
   frame: Readonly<{ height: number; width: number }>;
   profileDigest: string;
   runtimeDigest: string;
+  stagingRootDigest: string;
   tenantId: string;
 }>;
 
@@ -32,6 +33,7 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
   readonly #frame: typeof MANIM_RENDER_CANONICAL_SCENE_FRAME_V1;
   readonly #profileDigest: string;
   readonly #runtimeDigest: string;
+  readonly #stagingRootDigest: string;
   readonly #tenantId: string;
 
   constructor(options: ProductionDurableManimRenderExecutorOptionsV1) {
@@ -48,6 +50,7 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
     this.#frame = MANIM_RENDER_CANONICAL_SCENE_FRAME_V1;
     this.#profileDigest = options.profileDigest;
     this.#runtimeDigest = options.runtimeDigest;
+    this.#stagingRootDigest = options.stagingRootDigest;
     this.#tenantId = tenant.data;
   }
 
@@ -77,7 +80,8 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
       return (
         status.health === "ready" &&
         status.profileDigest === this.#profileDigest &&
-        status.runtimeDigest === this.#runtimeDigest
+        status.runtimeDigest === this.#runtimeDigest &&
+        status.stagingRootDigest === this.#stagingRootDigest
       );
     } catch {
       return false;
@@ -177,6 +181,7 @@ export async function createProductionDurableManimRenderExecutorV1(
     frame: options.frame,
     profileDigest: client.profileDigest,
     runtimeDigest: client.runtimeDigest,
+    stagingRootDigest: client.stagingRootDigest,
     tenantId: options.tenantId,
   });
 }

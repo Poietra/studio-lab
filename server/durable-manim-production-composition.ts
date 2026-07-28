@@ -55,7 +55,7 @@ export type DurablePostgresS3ProductionRuntimeOptionsV1 = Readonly<{
     pollIntervalMs?: number;
     workerId?: string;
   }>;
-  renderSandbox: ManimRenderProductionSandboxClientOptionsV1;
+  renderSandbox: Omit<ManimRenderProductionSandboxClientOptionsV1, "stagingRoot">;
   renderArtifacts: Readonly<{
     artifactExpirationMs: number;
     claimDurationMs?: number;
@@ -161,6 +161,21 @@ async function cleanupAndThrow(
   throw error;
 }
 
+async function cleanupInOrderAndThrow(
+  error: unknown,
+  phases: readonly (readonly (Closeable | undefined)[])[],
+  message: string,
+): Promise<never> {
+  const cleanupErrors: unknown[] = [];
+  for (const phase of phases) {
+    await closeAll(phase, message).catch((cleanupError: unknown) => {
+      cleanupErrors.push(...(cleanupError instanceof AggregateError ? cleanupError.errors : [cleanupError]));
+    });
+  }
+  if (cleanupErrors.length > 0) throw new AggregateError([error, ...cleanupErrors], message);
+  throw error;
+}
+
 /** Build the shipped PostgreSQL + private S3 production runtime and both durable GC workers. */
 export async function createDurablePostgresS3ProductionRuntimeV1(
   options: DurablePostgresS3ProductionRuntimeOptionsV1,
@@ -240,7 +255,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   try {
     renderExecutor = await createProductionDurableManimRenderExecutorV1({
       blobs,
-      client: options.renderSandbox,
+      client: { ...options.renderSandbox, stagingRoot: options.renderArtifacts.stagingRoot },
       frame,
       tenantId: options.tenantId,
     });
@@ -390,9 +405,9 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
     };
     return createDurableProductionManimRuntimeAdapterV1(runtime, maintenance);
   } catch (error) {
-    return cleanupAndThrow(
+    return cleanupInOrderAndThrow(
       error,
-      [mediaMaintenance, snapshotMaintenance, sourceMaintenance, runtime],
+      [[mediaMaintenance, snapshotMaintenance, sourceMaintenance], [runtime]],
       "Production runtime maintenance composition and cleanup failed.",
     );
   }

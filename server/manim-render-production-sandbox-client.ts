@@ -3,6 +3,7 @@ import {
   digestManimRenderGatedOciRuntimeV1,
   MANIM_RENDER_GATED_OCI_PROFILE_DIGEST_V1,
 } from "./manim-render-gated-oci-job-runner";
+import { digestManimRenderStagingRootV1 } from "./manim-render-sandbox-contract";
 import { ManimRenderUdsSandboxBackendV1 } from "./manim-render-uds-sandbox-backend";
 
 export type ManimRenderProductionSandboxClientOptionsV1 = Readonly<{
@@ -10,6 +11,7 @@ export type ManimRenderProductionSandboxClientOptionsV1 = Readonly<{
   imageDigest: string;
   socketGroupId: number;
   socketPath: string;
+  stagingRoot: string;
 }>;
 
 function assertStudioPrincipal(brokerUserId: number, socketGroupId: number) {
@@ -31,7 +33,10 @@ function assertStudioPrincipal(brokerUserId: number, socketGroupId: number) {
 
 /** Closed Studio-side production client. Expected runtime identity comes from the immutable image digest. */
 export async function createManimRenderProductionSandboxClientV1(options: ManimRenderProductionSandboxClientOptionsV1) {
-  if (!options || Object.keys(options).sort().join(",") !== "brokerUserId,imageDigest,socketGroupId,socketPath") {
+  if (
+    !options ||
+    Object.keys(options).sort().join(",") !== "brokerUserId,imageDigest,socketGroupId,socketPath,stagingRoot"
+  ) {
     throw new TypeError("The production render sandbox client configuration is invalid.");
   }
   assertStudioPrincipal(options.brokerUserId, options.socketGroupId);
@@ -40,5 +45,6 @@ export async function createManimRenderProductionSandboxClientV1(options: ManimR
     backend: new ManimRenderUdsSandboxBackendV1({ socketPath: options.socketPath }),
     profileDigest: MANIM_RENDER_GATED_OCI_PROFILE_DIGEST_V1,
     runtimeDigest: digestManimRenderGatedOciRuntimeV1(options.imageDigest),
+    stagingRootDigest: digestManimRenderStagingRootV1(options.stagingRoot),
   });
 }

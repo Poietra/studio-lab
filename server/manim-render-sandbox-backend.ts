@@ -69,6 +69,7 @@ export class ManimRenderGatedOciBackendV1 implements ManimRenderSandboxBackendV1
       health: healthy ? "ready" : "unavailable",
       profileDigest: this.#runner.profileDigest,
       runtimeDigest: this.#runner.runtimeDigest,
+      stagingRootDigest: this.#runner.stagingRootDigest,
       schema: MANIM_RENDER_SANDBOX_STATUS_SCHEMA_V1,
       version: 1,
     };

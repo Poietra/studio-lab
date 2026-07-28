@@ -29,6 +29,7 @@ import {
 } from "./manim-render-sandbox-broker-protocol";
 import {
   decodeManimRenderStagingLocatorV1,
+  digestManimRenderStagingRootV1,
   digestManimRenderSandboxExecutionV1,
   encodeManimRenderStagingLocatorV1,
   MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
@@ -45,6 +46,7 @@ import type { DurableRenderSessionV1 } from "./storage/render-session-repository
 import type { SourceContentBlobStoreV1 } from "./storage/workspace-source-repository";
 
 const image = `sha256:${"a".repeat(64)}`;
+const stagingRoot = "/var/lib/poietra/render-staging";
 const source = `from manim import Scene\n\nclass MainScene(Scene):\n    def construct(self):\n        self.wait(0.1)\n`;
 const sourceDigest = createHash("sha256").update(source, "utf8").digest("hex");
 
@@ -133,6 +135,7 @@ function healthyStatus() {
     health: "ready" as const,
     profileDigest: MANIM_RENDER_GATED_OCI_PROFILE_DIGEST_V1,
     runtimeDigest: digestManimRenderGatedOciRuntimeV1(image),
+    stagingRootDigest: digestManimRenderStagingRootV1(stagingRoot),
     schema: MANIM_RENDER_SANDBOX_STATUS_SCHEMA_V1,
     version: 1 as const,
   };
@@ -171,6 +174,13 @@ async function writeStagedVideo(
 afterEach(() => vi.restoreAllMocks());
 
 describe("render sandbox contracts", () => {
+  it("rejects non-canonical or over-budget staging roots before identity correlation", () => {
+    expect(() => digestManimRenderStagingRootV1("/tmp/staging\0suffix")).toThrow(/staging root/i);
+    expect(() => digestManimRenderStagingRootV1(`/${"a".repeat(4_096)}`)).toThrow(/staging root/i);
+    expect(() => digestManimRenderStagingRootV1("relative/staging")).toThrow(/staging root/i);
+    expect(digestManimRenderStagingRootV1(stagingRoot)).toMatch(/^[a-f0-9]{64}$/u);
+  });
+
   it("seals private bytes and keeps execution identity stable across fencing", () => {
     const mutable = descriptor();
     const sealed = new SealedManimRenderSandboxRequestV1(mutable);
@@ -181,7 +191,10 @@ describe("render sandbox contracts", () => {
     expect(verifySealedManimRenderSandboxRequestV1(sealed)).toBe(true);
     expect(sealed.parseDescriptor().source).toBe(source);
     const refenced = new SealedManimRenderSandboxRequestV1(
-      descriptor({ deadlineEpochMs: sealed.parseDescriptor().deadlineEpochMs, fenceToken: "2" }),
+      descriptor({
+        deadlineEpochMs: sealed.parseDescriptor().deadlineEpochMs,
+        fenceToken: "2",
+      }),
     );
     expect(refenced.requestDigest).not.toBe(sealed.requestDigest);
     expect(digestManimRenderSandboxExecutionV1(refenced.parseDescriptor())).toBe(
@@ -238,7 +251,10 @@ describe("render sandbox contracts", () => {
   it("decodes every operation across one-byte fragments and checks the response operation prefix", () => {
     const request = new SealedManimRenderSandboxRequestV1(descriptor());
     const clientFrames = [
-      encodeManimRenderSandboxBrokerClientFrameV1({ deadlineEpochMs: Date.now() + 60_000, kind: "status" }),
+      encodeManimRenderSandboxBrokerClientFrameV1({
+        deadlineEpochMs: Date.now() + 60_000,
+        kind: "status",
+      }),
       encodeManimRenderSandboxBrokerClientFrameV1({
         deadlineEpochMs: request.parseDescriptor().deadlineEpochMs,
         kind: "submit",
@@ -282,6 +298,7 @@ describe("render sandbox contracts", () => {
         imageDigest: image,
         socketGroupId: process.getegid!(),
         socketPath: "/missing/render.sock",
+        stagingRoot,
       }),
     ).rejects.toThrow(/principal/i);
     expect(() =>
@@ -342,10 +359,16 @@ describe("render OCI lifecycle", () => {
 
   it.each([
     { label: "early exit", program: "process.exit(17);", timeoutMs: 2_000 },
-    { label: "readiness timeout", program: "setInterval(() => undefined, 1000);", timeoutMs: 25 },
+    {
+      label: "readiness timeout",
+      program: "setInterval(() => undefined, 1000);",
+      timeoutMs: 25,
+    },
   ])("reaps the attached Docker client after gate $label", async ({ program, timeoutMs }) => {
     const request = new SealedManimRenderSandboxRequestV1(descriptor());
-    const child = spawn(process.execPath, ["--eval", program], { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(process.execPath, ["--eval", program], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
     await expect(
       deliverSealedManimRenderGateRequestV1(
         child,
@@ -409,7 +432,9 @@ describe("render OCI lifecycle", () => {
   ])("kills and reaps a bounded export child on $label", async ({ maximumBytes, program, timeoutMs }) => {
     const root = await mkdtemp(join(tmpdir(), "poietra-render-stream-adversary-"));
     const destination = await open(join(root, "artifact.bin"), "wx", 0o600);
-    const child = spawn(process.execPath, ["--eval", program], { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(process.execPath, ["--eval", program], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
     try {
       await expect(
         writeBoundedManimRenderChildStdoutV1(
@@ -459,7 +484,11 @@ describe("render OCI lifecycle", () => {
     const root = await mkdtemp(join(tmpdir(), "poietra-render-expired-"));
     await chmod(root, 0o700);
     const docker = new ScriptedDockerClient();
-    docker.steps.push({ code: 0, stderr: Buffer.alloc(0), stdout: Buffer.alloc(0) });
+    docker.steps.push({
+      code: 0,
+      stderr: Buffer.alloc(0),
+      stdout: Buffer.alloc(0),
+    });
     const runner = new ManimRenderGatedOciJobRunnerV1({
       dockerClient: docker,
       image,
@@ -492,8 +521,12 @@ describe("render OCI lifecycle", () => {
     );
     try {
       await runner.reconcileOrphans();
-      await expect(readFile(artifactPath)).rejects.toMatchObject({ code: "ENOENT" });
-      await expect(readFile(manifestPath)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(artifactPath)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(readFile(manifestPath)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
       await writeFile(manifestPath, "{}", { mode: 0o600 });
       await expect(runner.reconcileOrphans()).rejects.toThrow();
       await runner.close();
@@ -503,12 +536,23 @@ describe("render OCI lifecycle", () => {
   });
 
   it.each([
-    { label: "artifact count", maxStagedArtifacts: 1, maxStagedBytes: undefined },
-    { label: "reserved bytes", maxStagedArtifacts: 2, maxStagedBytes: 128 * 1024 * 1024 + 8 * 1024 },
+    {
+      label: "artifact count",
+      maxStagedArtifacts: 1,
+      maxStagedBytes: undefined,
+    },
+    {
+      label: "reserved bytes",
+      maxStagedArtifacts: 2,
+      maxStagedBytes: 128 * 1024 * 1024 + 8 * 1024,
+    },
   ])("rejects a different job before staging exceeds its $label cap", async (limits) => {
     const root = await mkdtemp(join(tmpdir(), "poietra-render-capacity-"));
     await chmod(root, 0o700);
-    const existing = descriptor({ jobId: "tenant-a/session-existing", sessionId: "session-existing" });
+    const existing = descriptor({
+      jobId: "tenant-a/session-existing",
+      sessionId: "session-existing",
+    });
     await writeStagedVideo(root, existing);
     const runner = new ManimRenderGatedOciJobRunnerV1({
       dockerClient: new ScriptedDockerClient(),
@@ -520,7 +564,10 @@ describe("render OCI lifecycle", () => {
     });
     try {
       const next = new SealedManimRenderSandboxRequestV1(
-        descriptor({ jobId: "tenant-a/session-next", sessionId: "session-next" }),
+        descriptor({
+          jobId: "tenant-a/session-next",
+          sessionId: "session-next",
+        }),
       );
       await expect(
         runner.submitOrReattach(next, next.parseDescriptor().deadlineEpochMs, new AbortController().signal),
@@ -543,7 +590,10 @@ describe("render OCI lifecycle", () => {
       stagingRoot: root,
     });
     const first = new SealedManimRenderSandboxRequestV1(
-      descriptor({ jobId: "tenant-a/session-active", sessionId: "session-active" }),
+      descriptor({
+        jobId: "tenant-a/session-active",
+        sessionId: "session-active",
+      }),
     );
     const running = runner.submitOrReattach(
       first,
@@ -553,7 +603,10 @@ describe("render OCI lifecycle", () => {
     try {
       await docker.entered;
       const second = new SealedManimRenderSandboxRequestV1(
-        descriptor({ jobId: "tenant-a/session-blocked", sessionId: "session-blocked" }),
+        descriptor({
+          jobId: "tenant-a/session-blocked",
+          sessionId: "session-blocked",
+        }),
       );
       await expect(
         runner.submitOrReattach(second, second.parseDescriptor().deadlineEpochMs, new AbortController().signal),
@@ -607,8 +660,12 @@ describe("render OCI lifecycle", () => {
         runner.submitOrReattach(request, current.deadlineEpochMs, new AbortController().signal),
       ).resolves.toMatchObject({ kind: "ready" });
       await new Promise((resolve) => setTimeout(resolve, 150));
-      await expect(readFile(paths.artifactPath)).rejects.toMatchObject({ code: "ENOENT" });
-      await expect(readFile(paths.manifestPath)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(paths.artifactPath)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(readFile(paths.manifestPath)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
     } finally {
       await runner.close();
       await rm(root, { force: true, recursive: true });
@@ -623,7 +680,10 @@ describe("render OCI lifecycle", () => {
       jobId: "tenant-a/session-expired",
       sessionId: "session-expired",
     });
-    const current = descriptor({ jobId: "tenant-a/session-current", sessionId: "session-current" });
+    const current = descriptor({
+      jobId: "tenant-a/session-current",
+      sessionId: "session-current",
+    });
     const expiredPaths = await writeStagedVideo(root, expired);
     const currentPaths = await writeStagedVideo(root, current);
     const runner = new ManimRenderGatedOciJobRunnerV1({
@@ -637,9 +697,16 @@ describe("render OCI lifecycle", () => {
       const request = new SealedManimRenderSandboxRequestV1(current);
       await expect(
         runner.submitOrReattach(request, current.deadlineEpochMs, new AbortController().signal),
-      ).resolves.toMatchObject({ kind: "ready", stagingId: currentPaths.stagingId });
-      await expect(readFile(expiredPaths.artifactPath)).rejects.toMatchObject({ code: "ENOENT" });
-      await expect(readFile(expiredPaths.manifestPath)).rejects.toMatchObject({ code: "ENOENT" });
+      ).resolves.toMatchObject({
+        kind: "ready",
+        stagingId: currentPaths.stagingId,
+      });
+      await expect(readFile(expiredPaths.artifactPath)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(readFile(expiredPaths.manifestPath)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
     } finally {
       await runner.close();
       await rm(root, { force: true, recursive: true });
@@ -669,7 +736,9 @@ describe("production durable render execution", () => {
       sourcePath: "main.py",
       tenantId: "tenant-a",
     });
-    const blobs = partial<SourceContentBlobStoreV1>({ readSource: vi.fn(async () => source) });
+    const blobs = partial<SourceContentBlobStoreV1>({
+      readSource: vi.fn(async () => source),
+    });
     const submitted: SealedManimRenderSandboxRequestV1[] = [];
     const backend = partial<ManimRenderSandboxBackendV1>({
       cancel: vi.fn(async () => undefined),
@@ -705,10 +774,16 @@ describe("production durable render execution", () => {
       frame: MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
       profileDigest: MANIM_RENDER_GATED_OCI_PROFILE_DIGEST_V1,
       runtimeDigest: digestManimRenderGatedOciRuntimeV1(image),
+      stagingRootDigest: digestManimRenderStagingRootV1(stagingRoot),
       tenantId: "tenant-a",
     });
     try {
       await expect(executor.ready()).resolves.toBe(true);
+      vi.mocked(backend.status).mockResolvedValueOnce({
+        ...healthyStatus(),
+        stagingRootDigest: "f".repeat(64),
+      });
+      await expect(executor.ready()).resolves.toBe(false);
       const result = await executor.submitOrReattach({
         jobId: "tenant-a/session-a",
         session,
@@ -773,7 +848,10 @@ describe("render broker bounded shutdown", () => {
     const client = new ManimRenderUdsSandboxBackendV1({ socketPath });
     try {
       await expect(
-        client.status({ deadlineEpochMs: Date.now() + 5_000, signal: new AbortController().signal }),
+        client.status({
+          deadlineEpochMs: Date.now() + 5_000,
+          signal: new AbortController().signal,
+        }),
       ).resolves.toEqual(healthyStatus());
       await expect(
         client.cancel("tenant-a/session-a", {
@@ -789,8 +867,14 @@ describe("render broker bounded shutdown", () => {
   });
 
   it.each([
-    { mediaType: "image/png" as const, stagingId: manimRenderStagingIdV1("tenant-a/session-a", "video") },
-    { mediaType: "video/mp4" as const, stagingId: manimRenderStagingIdV1("tenant-a/session-a", "thumbnail") },
+    {
+      mediaType: "image/png" as const,
+      stagingId: manimRenderStagingIdV1("tenant-a/session-a", "video"),
+    },
+    {
+      mediaType: "video/mp4" as const,
+      stagingId: manimRenderStagingIdV1("tenant-a/session-a", "thumbnail"),
+    },
   ])("rejects forged ready correlation from the broker (%o)", async (forged) => {
     const root = await mkdtemp(join(tmpdir(), "poietra-render-broker-forged-"));
     await chmod(root, 0o700);
@@ -885,7 +969,10 @@ describe("render broker bounded shutdown", () => {
       const client = new ManimRenderUdsSandboxBackendV1({ socketPath });
       try {
         await expect(
-          client.status({ deadlineEpochMs: Date.now() + 5_000, signal: new AbortController().signal }),
+          client.status({
+            deadlineEpochMs: Date.now() + 5_000,
+            signal: new AbortController().signal,
+          }),
         ).resolves.toEqual(healthyStatus());
         expect(statusCalls).toBe(1);
       } finally {
@@ -969,7 +1056,10 @@ describe("render broker bounded shutdown", () => {
     const client = new ManimRenderUdsSandboxBackendV1({ socketPath });
     try {
       await expect(
-        client.status({ deadlineEpochMs: Date.now() + 50, signal: new AbortController().signal }),
+        client.status({
+          deadlineEpochMs: Date.now() + 50,
+          signal: new AbortController().signal,
+        }),
       ).rejects.toThrow();
       await expect(broker.fatal).resolves.toBeUndefined();
     } finally {

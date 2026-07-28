@@ -5,7 +5,9 @@ import {
   DurableManimRenderWorkerV1,
   durableManimRenderJobIdV1,
 } from "./durable-manim-render-worker";
+import { HttpError } from "./http/json";
 import type { DurableRenderSessionV1, RenderSessionRepositoryV1 } from "./storage/render-session-repository";
+import type { VerifiedArtifactPublisherV1 } from "./storage/verified-artifact-publisher";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -70,7 +72,12 @@ function session(overrides: Partial<DurableRenderSessionV1> = {}): DurableRender
   };
 }
 
-function fixture(options: Readonly<{ claimed?: DurableRenderSessionV1 }> = {}) {
+function fixture(
+  options: Readonly<{
+    claimed?: DurableRenderSessionV1;
+    publisher?: Pick<VerifiedArtifactPublisherV1, "publish" | "ready">;
+  }> = {},
+) {
   const queued = session({ executionAttempts: 0, fenceToken: 0n, lease: null, status: "preparing", version: 1n });
   const claimed = options.claimed ?? session();
   const completeLease = vi.fn<RenderSessionRepositoryV1["completeLease"]>(async () =>
@@ -86,12 +93,14 @@ function fixture(options: Readonly<{ claimed?: DurableRenderSessionV1 }> = {}) {
     renewLease,
   });
   const close = vi.fn(async () => undefined);
+  const cancel = vi.fn(async () => undefined);
   const submitOrReattach = vi.fn<DurableManimRenderExecutorV1["submitOrReattach"]>(async () => ({
     artifactLocator: "artifact:verified",
     kind: "ready",
     logTail: "ok",
   }));
   const executor = {
+    cancel,
     close,
     ready: vi.fn(async () => true),
     submitOrReattach,
@@ -103,11 +112,23 @@ function fixture(options: Readonly<{ claimed?: DurableRenderSessionV1 }> = {}) {
     maxConcurrentJobs: 1,
     onFailure: (error) => failures.push(error),
     pollIntervalMs: 1_000,
+    ...(options.publisher ? { publisher: options.publisher } : {}),
     repository,
     tenantId: "tenant-a",
     workerId: "worker-a",
   });
-  return { claimed, close, completeLease, executor, failures, renewLease, repository, submitOrReattach, worker };
+  return {
+    cancel,
+    claimed,
+    close,
+    completeLease,
+    executor,
+    failures,
+    renewLease,
+    repository,
+    submitOrReattach,
+    worker,
+  };
 }
 
 afterEach(() => {
@@ -276,6 +297,108 @@ describe("DurableManimRenderWorkerV1", () => {
     expect(expireTimedOutSessions).toHaveBeenCalledTimes(2);
     expect(findRecoverableSessions).toHaveBeenCalledOnce();
     expect(submitOrReattach).toHaveBeenCalledOnce();
+    await worker.close();
+  });
+
+  it("publishes a staged bundle atomically and cleans it after the DB terminal commit", async () => {
+    const publisher = {
+      publish: vi.fn(async () => undefined),
+      ready: vi.fn(async () => true),
+    };
+    const { cancel, claimed, completeLease, submitOrReattach, worker } = fixture({ publisher });
+    submitOrReattach.mockResolvedValueOnce({
+      artifactLocator: "legacy-video",
+      kind: "ready",
+      logTail: "published",
+      stagingLocators: { thumbnail: "thumbnail-locator", video: "video-locator" },
+    });
+
+    await worker.runOnce();
+
+    expect(publisher.publish).toHaveBeenCalledWith(
+      {
+        locators: { thumbnail: "thumbnail-locator", video: "video-locator" },
+        logTail: "published",
+        ownerId: "worker-a",
+        session: claimed,
+      },
+      expect.any(AbortSignal),
+    );
+    expect(completeLease).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledWith({
+      jobId: durableManimRenderJobIdV1("tenant-a", claimed.id),
+      sessionId: claimed.id,
+      tenantId: "tenant-a",
+    });
+    await worker.close();
+  });
+
+  it("leaves a transient publication failure recoverable without clearing staging", async () => {
+    const unavailable = new Error("S3 temporarily unavailable");
+    const publisher = {
+      publish: vi.fn(async () => Promise.reject(unavailable)),
+      ready: vi.fn(async () => true),
+    };
+    const { cancel, completeLease, submitOrReattach, worker } = fixture({ publisher });
+    submitOrReattach.mockResolvedValueOnce({
+      kind: "ready",
+      logTail: "rendered",
+      stagingLocators: { thumbnail: "thumbnail-locator", video: "video-locator" },
+    });
+
+    await expect(worker.runOnce()).rejects.toBe(unavailable);
+    expect(completeLease).not.toHaveBeenCalled();
+    expect(cancel).not.toHaveBeenCalled();
+    await worker.close();
+  });
+
+  it("cleans partial staging only after a fenced terminal failure commits", async () => {
+    const { cancel, claimed, completeLease, submitOrReattach, worker } = fixture();
+    submitOrReattach.mockResolvedValueOnce({ code: "render-failed", kind: "failed", logTail: "bounded" });
+
+    await worker.runOnce();
+
+    expect(completeLease).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedVersion: claimed.version, status: "failed" }),
+    );
+    expect(cancel).toHaveBeenCalledOnce();
+    await worker.close();
+  });
+
+  it("does not clear a new owner's staging after terminal completion loses its fence", async () => {
+    const { cancel, completeLease, submitOrReattach, worker } = fixture();
+    submitOrReattach.mockResolvedValueOnce({ code: "render-failed", kind: "failed", logTail: "bounded" });
+    completeLease.mockRejectedValueOnce(new HttpError("stale", 409));
+
+    await worker.runOnce();
+
+    expect(cancel).not.toHaveBeenCalled();
+    await worker.close();
+  });
+
+  it("cleans published staging even when the atomic DB commit makes the heartbeat stale", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T00:00:00.000Z"));
+    const publication = deferred<void>();
+    const publisher = {
+      publish: vi.fn(async () => publication.promise),
+      ready: vi.fn(async () => true),
+    };
+    const { cancel, renewLease, submitOrReattach, worker } = fixture({ publisher });
+    submitOrReattach.mockResolvedValueOnce({
+      kind: "ready",
+      logTail: "published",
+      stagingLocators: { thumbnail: "thumbnail-locator", video: "video-locator" },
+    });
+    renewLease.mockRejectedValueOnce(new HttpError("already terminal", 409));
+
+    const run = worker.runOnce();
+    await vi.waitFor(() => expect(publisher.publish).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(334);
+    publication.resolve();
+    await run;
+
+    expect(cancel).toHaveBeenCalledOnce();
     await worker.close();
   });
 });

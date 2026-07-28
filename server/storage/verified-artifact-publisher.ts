@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 
 import {
   decodeManimRenderStagingLocatorV1,
+  digestManimRenderStagingRootV1,
   manimRenderStagingIdV1,
   MAX_MANIM_RENDER_SANDBOX_ARTIFACT_BYTES_V1,
 } from "../manim-render-sandbox-contract";
@@ -102,11 +103,9 @@ export class VerifiedArtifactPublisherV1 {
     ) {
       throw new TypeError("Studio is not an authorized render staging reader.");
     }
-    if (
-      !isAbsolute(options.stagingRoot) ||
-      resolve(options.stagingRoot) !== options.stagingRoot ||
-      options.stagingRoot.includes("\0")
-    ) {
+    try {
+      digestManimRenderStagingRootV1(options.stagingRoot);
+    } catch {
       throw new TypeError("Render staging root must be a canonical absolute path.");
     }
     this.#artifactExpirationMs = expiration(options.artifactExpirationMs);

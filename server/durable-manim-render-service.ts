@@ -300,10 +300,6 @@ export class DurableManimRenderServiceV1 {
     return { abandoned: true } as const;
   }
 
-  async videoPath(_id: string): Promise<never> {
-    throw new HttpError("Rendered video publication is not available yet.", 404);
-  }
-
   async video(id: string, signal?: AbortSignal) {
     if (!this.#artifactReader) throw new HttpError("Rendered video not found.", 404);
     return this.#artifactReader.sessionVideo(id, signal);
