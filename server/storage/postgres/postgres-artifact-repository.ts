@@ -22,7 +22,7 @@ import {
 import { MAX_DURABLE_RENDER_LOG_BYTES_V1 } from "../render-session-repository";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 
-export const RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM = "d1c8b3d4b2c9e241f2e17c4f58bd01db96fc73340ee47b31beb5633ad33c93e0";
+export const RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM = "ba334dd77d8b876fdb4cde9a21ed90264eb2f00e4bfbfe64b9951fbbbf9fffbd";
 
 const MAX_CLAIM_DURATION_MS = 15 * 60_000;
 const MAX_EXPIRATION_MS = 30 * 24 * 60 * 60_000;

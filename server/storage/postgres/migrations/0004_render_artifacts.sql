@@ -63,6 +63,12 @@ CREATE TABLE public.workspace_project_thumbnail_heads (
   CHECK (expires_at > session_created_at)
 );
 
+CREATE INDEX render_session_artifacts_artifact_lookup
+  ON public.render_session_artifacts (tenant_id, artifact_id);
+
+CREATE INDEX workspace_project_thumbnail_heads_artifact_lookup
+  ON public.workspace_project_thumbnail_heads (tenant_id, artifact_id);
+
 CREATE TABLE public.render_artifact_read_claims (
   tenant_id text NOT NULL,
   claim_id uuid NOT NULL,

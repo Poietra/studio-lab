@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, chown, mkdtemp, rm } from "node:fs/promises";
+import { chmod, chown, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { request as createRequest, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -624,6 +624,35 @@ async function publishThroughRealOci(
       expect(matchingVersions(versionsAfterMismatch.versions)).toEqual([]);
 
       const publisher = createPublisher(runner.profileDigest);
+      if (!invalidateFence) {
+        const videoLocator = decodeManimRenderStagingLocatorV1(locators.video);
+        const videoPath = join(stagingRoot, `${videoLocator.stagingId}.mp4`);
+        const originalVideo = await readFile(videoPath);
+        const alteredVideo = Buffer.from(originalVideo);
+        alteredVideo[alteredVideo.byteLength - 1] ^= 0xff;
+        try {
+          await writeFile(videoPath, alteredVideo);
+          await expect(
+            publisher.publish({
+              locators,
+              logTail: "mismatched staged digest",
+              ownerId: session.lease.ownerId,
+              session,
+            }),
+          ).rejects.toThrow(/verification/i);
+          const versionsAfterDigestMismatch = await artifacts.listVersions(
+            session.tenantId,
+            new Date(Date.now() + 60_000),
+            256,
+          );
+          expect(matchingVersions(versionsAfterDigestMismatch.versions)).toEqual([]);
+          await expect(publications.acquireSessionVideo(session.tenantId, session.id, 1_000)).rejects.toMatchObject({
+            status: 404,
+          });
+        } finally {
+          await writeFile(videoPath, originalVideo);
+        }
+      }
       if (invalidateFence) await invalidateFence();
       const publication = publisher.publish({
         locators,
