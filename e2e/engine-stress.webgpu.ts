@@ -2,6 +2,10 @@ import { readFile, writeFile } from "node:fs/promises";
 
 import { expect, test } from "@playwright/test";
 
+import {
+  MAX_CANVAS_INTERACTION_ENTITY_IDS,
+  MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES,
+} from "../src/engine/canvas-worker-protocol";
 import { type SceneIrBundleV1, sceneIrBundleV1Schema } from "../src/engine/contracts";
 import {
   assessDecisionEligibility,
@@ -31,6 +35,27 @@ const MEASURED_FRAMES = 300;
 const PACED_FRAMES = 301;
 const CONTINUOUS_SCRUB_FRAMES = 120;
 
+function summarizeByteLengths(samples: readonly number[], expectedCount: number) {
+  if (samples.length !== expectedCount) {
+    throw new Error(`expected exactly ${expectedCount} byte-length samples, received ${samples.length}`);
+  }
+  for (const [index, sample] of samples.entries()) {
+    if (!Number.isSafeInteger(sample) || sample < 1 || sample > MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES) {
+      throw new Error(`logical response byte-length sample ${index} is outside the canvas response budget: ${sample}`);
+    }
+  }
+  const sorted = [...samples].sort((left, right) => left - right);
+  const nearestRank = (fraction: number) => sorted[Math.max(0, Math.ceil(sorted.length * fraction) - 1)]!;
+  return {
+    maximumBytes: sorted.at(-1)!,
+    minimumBytes: sorted[0]!,
+    p50Bytes: nearestRank(0.5),
+    p95Bytes: nearestRank(0.95),
+    p99Bytes: nearestRank(0.99),
+    samplesBytes: [...samples],
+  };
+}
+
 type BrowserStressResult = Readonly<{
   browser: Readonly<{ hardwareConcurrency: number; platform: string; userAgent: string }>;
   continuousScrub: Readonly<{
@@ -43,6 +68,17 @@ type BrowserStressResult = Readonly<{
     settleDurationMs: number;
     supersededRequests: number;
   }>;
+  interactionBounds: Readonly<{
+    acknowledgementMs: readonly number[];
+    entries: Readonly<{
+      observedTotal: number;
+      statuses: Readonly<{ empty: number; inactive: number; present: number; unavailable: number }>;
+    }>;
+    logicalResponseJsonBytes: readonly number[];
+    requestedEntityCount: number;
+    responses: Readonly<{ available: number; missing: number; unavailable: number }>;
+    sceneEntityCount: number;
+  }>;
   installMs: number;
   pacedAckMs: readonly number[];
   pacedFrameIntervalMs: readonly number[];
@@ -54,6 +90,7 @@ type BrowserStressResult = Readonly<{
 
 async function runBrowserStress(input: {
   bundle: SceneIrBundleV1;
+  interactionEntityIdCap: number;
   measuredFrames: number;
   pacedFrames: number;
   revision: string;
@@ -81,16 +118,26 @@ async function runBrowserStress(input: {
   const client = new PoietraCanvasWorkerClient({ requestTimeoutMs: 60_000 });
   const render = (sampleTime: number) =>
     client.render({ revision: input.revision, sampleTime, viewport: input.viewport });
+  const interactionEntityIds = input.bundle.scene.entities
+    .slice(0, input.interactionEntityIdCap)
+    .map((entity) => entity.id);
+  const renderInteraction = (sampleTime: number) =>
+    client.render({
+      interactionEntityIds,
+      revision: input.revision,
+      sampleTime,
+      viewport: input.viewport,
+    });
 
   const installStarted = performance.now();
   await client.installScene({ canvas, revision: input.revision, snapshot: input.bundle });
   const installMs = performance.now() - installStarted;
   const duration = input.bundle.scene.duration;
   const sampleTime = (frame: number, count: number) => (((frame * 197) % count) / count) * (duration - 0.001);
-  const renderFrame = async (phase: string, frame: number, count: number) => {
+  const renderFrame = async (phase: string, frame: number, count: number, interaction = false) => {
     const requestedSampleTime = sampleTime(frame, count);
     try {
-      await render(requestedSampleTime);
+      return await (interaction ? renderInteraction(requestedSampleTime) : render(requestedSampleTime));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`${phase} frame ${frame} at ${requestedSampleTime}: ${message}`);
@@ -99,6 +146,11 @@ async function runBrowserStress(input: {
   const randomSeekAckMs: number[] = [];
   const pacedAckMs: number[] = [];
   const pacedFrameIntervalMs: number[] = [];
+  const interactionAcknowledgementMs: number[] = [];
+  const logicalResponseJsonBytes: number[] = [];
+  const interactionResponses = { available: 0, missing: 0, unavailable: 0 };
+  const interactionEntryStatuses = { empty: 0, inactive: 0, present: 0, unavailable: 0 };
+  let observedInteractionEntries = 0;
   try {
     for (let frame = 0; frame < input.warmupFrames; frame += 1) {
       await renderFrame("warmup", frame, input.warmupFrames);
@@ -150,6 +202,29 @@ async function runBrowserStress(input: {
     await Promise.all(outcomes);
     const settleDurationMs = performance.now() - settleStarted;
 
+    for (let frame = 0; frame < input.warmupFrames; frame += 1) {
+      await renderFrame("interaction-warmup", frame, input.warmupFrames, true);
+    }
+    for (let frame = 0; frame < input.measuredFrames; frame += 1) {
+      const started = performance.now();
+      const response = await renderFrame("interaction", frame, input.measuredFrames, true);
+      interactionAcknowledgementMs.push(performance.now() - started);
+      const encoded = JSON.stringify(response);
+      if (encoded === undefined) throw new Error(`interaction frame ${frame} did not serialize to JSON`);
+      logicalResponseJsonBytes.push(new TextEncoder().encode(encoded).byteLength);
+      if (!response.interaction) {
+        interactionResponses.missing += 1;
+        continue;
+      }
+      if (response.interaction.status === "unavailable") {
+        interactionResponses.unavailable += 1;
+        continue;
+      }
+      interactionResponses.available += 1;
+      observedInteractionEntries += response.interaction.entries.length;
+      for (const entry of response.interaction.entries) interactionEntryStatuses[entry.status] += 1;
+    }
+
     let workerDeviceAdapter: { evidence: unknown; kind: "available" } | { kind: "unavailable"; reason: string };
     try {
       workerDeviceAdapter = { evidence: (await client.collectAdapterEvidence()).evidence, kind: "available" };
@@ -171,6 +246,14 @@ async function runBrowserStress(input: {
         requestedRequests: input.scrubFrames,
         settleDurationMs,
         supersededRequests,
+      },
+      interactionBounds: {
+        acknowledgementMs: interactionAcknowledgementMs,
+        entries: { observedTotal: observedInteractionEntries, statuses: interactionEntryStatuses },
+        logicalResponseJsonBytes,
+        requestedEntityCount: interactionEntityIds.length,
+        responses: interactionResponses,
+        sceneEntityCount: input.bundle.scene.entities.length,
       },
       installMs,
       pacedAckMs,
@@ -209,6 +292,7 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
     const snapshotBytes = new TextEncoder().encode(JSON.stringify(bundle)).byteLength;
     const measured = await page.evaluate(runBrowserStress, {
       bundle,
+      interactionEntityIdCap: MAX_CANVAS_INTERACTION_ENTITY_IDS,
       measuredFrames: MEASURED_FRAMES,
       pacedFrames: PACED_FRAMES,
       revision: definition.revision,
@@ -222,6 +306,8 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
       "available",
     );
     expect(measured.randomSeekAckMs).toHaveLength(MEASURED_FRAMES);
+    expect(measured.interactionBounds.acknowledgementMs).toHaveLength(MEASURED_FRAMES);
+    expect(measured.interactionBounds.logicalResponseJsonBytes).toHaveLength(MEASURED_FRAMES);
     expect(measured.pacedAckMs).toHaveLength(PACED_FRAMES);
     expect(measured.pacedFrameIntervalMs).toHaveLength(PACED_FRAMES - 1);
     expect(measured.continuousScrub.otherErrors).toEqual([]);
@@ -229,7 +315,25 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
       CONTINUOUS_SCRUB_FRAMES,
     );
     expect(measured.continuousScrub.latestFulfilledSampleTime).toBe(measured.continuousScrub.finalSampleTime);
+    const requestedInteractionEntityCount = Math.min(definition.entityCount, MAX_CANVAS_INTERACTION_ENTITY_IDS);
+    const expectedInteractionEntries = requestedInteractionEntityCount * MEASURED_FRAMES;
+    expect(measured.interactionBounds.sceneEntityCount).toBe(definition.entityCount);
+    expect(measured.interactionBounds.requestedEntityCount).toBe(requestedInteractionEntityCount);
+    expect(measured.interactionBounds.responses).toEqual({
+      available: MEASURED_FRAMES,
+      missing: 0,
+      unavailable: 0,
+    });
+    expect(measured.interactionBounds.entries).toEqual({
+      observedTotal: expectedInteractionEntries,
+      statuses: { empty: 0, inactive: 0, present: expectedInteractionEntries, unavailable: 0 },
+    });
     const randomSeekAck = summarizeTiming(measured.randomSeekAckMs, MEASURED_FRAMES);
+    const interactionBoundsAck = summarizeTiming(measured.interactionBounds.acknowledgementMs, MEASURED_FRAMES);
+    const interactionResponseBytes = summarizeByteLengths(
+      measured.interactionBounds.logicalResponseJsonBytes,
+      MEASURED_FRAMES,
+    );
     const pacedAck = summarizeTiming(measured.pacedAckMs, PACED_FRAMES);
     const pacedFrameInterval = summarizeTiming(measured.pacedFrameIntervalMs, PACED_FRAMES - 1);
     const longFrameIntervals = measured.pacedFrameIntervalMs.filter((value) => value > LONG_FRAME_MS).length;
@@ -239,11 +343,23 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
     );
     workloads.push({
       budgets: {
+        interactionBoundsAcknowledgement: {
+          limitMs: 33.3,
+          met: interactionBoundsAck.p95Ms <= 33.3,
+        },
         randomSeekAcknowledgement: { limitMs: 50, met: randomSeekAck.p95Ms <= 50 },
         stressRenderAcknowledgement: { limitMs: 33.3, met: randomSeekAck.p95Ms <= 33.3 },
       },
       continuousScrub: measured.continuousScrub,
       definition,
+      interactionBounds: {
+        acknowledgement: interactionBoundsAck,
+        entries: measured.interactionBounds.entries,
+        logicalResponseJsonBytes: interactionResponseBytes,
+        requestedEntityCount: measured.interactionBounds.requestedEntityCount,
+        responses: measured.interactionBounds.responses,
+        sceneEntityCount: measured.interactionBounds.sceneEntityCount,
+      },
       installMs: measured.installMs,
       pacedPresentation: {
         acknowledgement: pacedAck,
@@ -282,12 +398,13 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
     provenance,
     provenanceStableThroughRun: true,
     baseFixtureId: "eng-v1-shared-circle-opacity",
-    contracts: reportContracts("poietra.engine-webgpu-stress-benchmark", 2),
+    contracts: reportContracts("poietra.engine-webgpu-stress-benchmark", 3),
     configuration: {
       lane: "production-build-static-server",
       frameBudgetMs: FRAME_BUDGET_MS,
       longFrameThresholdMs: LONG_FRAME_MS,
       measuredFrames: MEASURED_FRAMES,
+      interactionEntityIdCap: MAX_CANVAS_INTERACTION_ENTITY_IDS,
       pacedFrames: PACED_FRAMES,
       retries: { projectRetries: testInfo.project.retries, testRetry: testInfo.retry },
       scrubFrames: CONTINUOUS_SCRUB_FRAMES,
@@ -304,6 +421,7 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
         "random-seek request-to-present acknowledgement",
         "rAF-paced changing playhead",
         "continuous scrub request coalescing",
+        "sampled interaction bounds for 100 IDs and the capped 128 IDs in 1,000-entity Scenes",
       ],
       notMeasured: [
         "opacity animation under stress",
@@ -345,12 +463,14 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
       "They do not wait for GPU completion or browser display compositing.",
       "Paced acknowledgement intervals provide a 60 Hz deadline-slot proxy, not compositor frame telemetry.",
       "Continuous scrub counts fulfilled and superseded client requests; it is not a count of compositor-presented frames.",
+      "Interaction acknowledgement uses the same production render path after separate warm-up; the 1,000-entity workloads request the contract cap of 128 IDs rather than claiming 1,000 returned bounds.",
+      "logicalResponseJsonBytes is the UTF-8 JSON size of the page-visible correlated Worker response, not an estimate of the browser's structured-clone transport bytes; every sample is gated by the 16 KiB canvas-response budget.",
       "Stress workloads validate successful acknowledgements, not pixel correctness; the shared small fixture owns readback proof.",
       "This exploratory host report omits the fixed reference-host CPU, OS-kernel, driver, and power-mode evidence required for an adoption decision.",
       "Budget booleans describe this recorded host only and do not fail CI.",
     ],
     schema: "poietra.engine-webgpu-stress-benchmark",
-    version: 2,
+    version: 3,
     workloads,
   } as const;
   const encoded = `${JSON.stringify(report, null, 2)}\n`;
@@ -369,6 +489,9 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
         entityCount: workload.definition.entityCount,
         fulfilledRequests: workload.continuousScrub.fulfilledRequests,
         id: workload.definition.id,
+        interactionAckP95Ms: workload.interactionBounds.acknowledgement.p95Ms,
+        interactionLogicalResponseMaximumBytes: workload.interactionBounds.logicalResponseJsonBytes.maximumBytes,
+        interactionRequestedEntityCount: workload.interactionBounds.requestedEntityCount,
         longPresentationAckIntervals: workload.pacedPresentation.longPresentationAckIntervalsOver25Ms,
         presentationAckIntervalP99Ms: workload.pacedPresentation.presentationAckInterval.p99Ms,
         randomSeekP95Ms: workload.randomSeekAck.p95Ms,

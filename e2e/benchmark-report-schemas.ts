@@ -1,6 +1,9 @@
 import { z } from "zod";
 
-import { canvasAdapterEvidenceV1Schema } from "../src/engine/canvas-worker-protocol";
+import {
+  canvasAdapterEvidenceV1Schema,
+  MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES,
+} from "../src/engine/canvas-worker-protocol";
 import { STAGE_TELEMETRY_COUNT_NAMES, STAGE_TELEMETRY_PHASE_NAMES } from "./engine-stress-workloads";
 
 /** Strict schemas for the raw measurement bodies; envelopes may add descriptive metadata. */
@@ -20,6 +23,15 @@ const timingSummary = (sample: z.ZodNumber) =>
   });
 const nonnegativeTimingSummary = timingSummary(nonnegative);
 const signedTimingSummary = timingSummary(finite);
+const byteLength = positiveCount.max(MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES);
+const byteLengthSummary = strictObject({
+  maximumBytes: byteLength,
+  minimumBytes: byteLength,
+  p50Bytes: byteLength,
+  p95Bytes: byteLength,
+  p99Bytes: byteLength,
+  samplesBytes: z.array(byteLength).min(1),
+});
 const unavailable = strictObject({ reason: z.string().min(1), status: z.literal("unavailable") });
 const commitIdentity = strictObject({
   headCommit: z.string().regex(/^[0-9a-f]{40}$/),
@@ -105,8 +117,13 @@ const stressDefinition = strictObject({
   revision: sha256,
 });
 const budget = strictObject({ limitMs: nonnegative, met: z.boolean() });
+const interactionEntityCount = z.union([z.literal(100), z.literal(128)]);
 const stressWorkload = strictObject({
-  budgets: strictObject({ randomSeekAcknowledgement: budget, stressRenderAcknowledgement: budget }),
+  budgets: strictObject({
+    interactionBoundsAcknowledgement: budget,
+    randomSeekAcknowledgement: budget,
+    stressRenderAcknowledgement: budget,
+  }),
   continuousScrub: strictObject({
     burstDurationMs: nonnegative,
     finalSampleTime: nonnegative,
@@ -118,6 +135,17 @@ const stressWorkload = strictObject({
     supersededRequests: count,
   }),
   definition: stressDefinition,
+  interactionBounds: strictObject({
+    acknowledgement: nonnegativeTimingSummary,
+    entries: strictObject({
+      observedTotal: count,
+      statuses: strictObject({ empty: count, inactive: count, present: count, unavailable: count }),
+    }),
+    logicalResponseJsonBytes: byteLengthSummary,
+    requestedEntityCount: interactionEntityCount,
+    responses: strictObject({ available: count, missing: count, unavailable: count }),
+    sceneEntityCount: z.union([z.literal(100), z.literal(1_000)]),
+  }),
   installMs: nonnegative,
   pacedPresentation: strictObject({
     acknowledgement: nonnegativeTimingSummary,
@@ -139,7 +167,7 @@ export const engineWebgpuStressReportSchema = z.looseObject({
   configuration: z.looseObject({ lane: z.literal("production-build-static-server"), retries }),
   environment: z.looseObject({ browserLaunch, host: hostEnvironment, wasm: wasmEvidence }),
   schema: z.literal("poietra.engine-webgpu-stress-benchmark"),
-  version: z.literal(2),
+  version: z.literal(3),
   workloads: z.array(stressWorkload).min(1),
 });
 

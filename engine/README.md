@@ -204,6 +204,11 @@ Evidence rules:
   evidence keep a run exploratory regardless of budget booleans.
 - The lane never retries: a Worker crash or destroyed page context fails the
   run, and the reports record the actual retry counters.
+- The stress report compares the existing no-interaction acknowledgement with
+  100 requested bounds and the capped 128 requested bounds in a 1,000-entity
+  Scene, recording page-visible logical response JSON bytes under the 16 KiB
+  acknowledgement budget. It does not claim 1,000 returned bounds or actual
+  structured-clone transport bytes.
 - The dev-server smoke tests (pixel/readback proofs against `pnpm dev:web`)
   are a separate lane and never produce benchmark evidence.
 
