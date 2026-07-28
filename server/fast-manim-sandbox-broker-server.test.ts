@@ -183,6 +183,30 @@ describe("fast-manim single-operation broker server", () => {
     expect(acknowledged).toBe(true);
   });
 
+  it("drops idle and partial requests before they can exhaust connection capacity", async () => {
+    const path = await socketPath();
+    const backend = new TestBackend();
+    const server = await start({ backend, closeTimeoutMs: 20, maxConnections: 1, socketPath: path });
+    servers.push(server);
+
+    for (const partialFrame of [undefined, Uint8Array.of(2)]) {
+      const socket = createConnection({ path });
+      sockets.push(socket);
+      socket.on("error", () => undefined);
+      await once(socket, "connect");
+      if (partialFrame) socket.write(partialFrame);
+      await once(socket, "close");
+    }
+
+    const status = await operation(path, "status", {
+      deadlineEpochMs: Date.now() + 10_000,
+      identity,
+      kind: "status",
+    });
+    await expect(status.response).resolves.toMatchObject({ kind: "status-result" });
+    expect(backend.status).toHaveBeenCalledOnce();
+  });
+
   it("applies the configured GID and reconciles once", async () => {
     const path = await socketPath();
     const reconcileOrphans = vi.fn(async () => undefined);
@@ -217,6 +241,25 @@ describe("fast-manim single-operation broker server", () => {
     const job = await operation(path, "start", startMessage(new RequestBundle(sandboxProducerRequest())));
     await vi.waitFor(() => expect(backend.starts).toHaveLength(1));
     controller.abort();
+    await expect(server.close()).rejects.toBeInstanceOf(AggregateError);
+    job.socket.destroy();
+
+    const replacementBackend = new TestBackend();
+    await expect(start({ backend: replacementBackend, socketPath: path })).rejects.toMatchObject({ code: "busy" });
+    expect(replacementBackend.close).toHaveBeenCalledOnce();
+  });
+
+  it("fails the broker closed when a backend ignores its deadline abort", async () => {
+    const path = await socketPath();
+    const backend = new TestBackend();
+    backend.resultFactory = () => new Promise(() => undefined);
+    const server = await start({ backend, closeTimeoutMs: 20, maxConcurrentJobs: 1, socketPath: path });
+    servers.push(server);
+    const bundle = new RequestBundle(sandboxProducerRequest());
+    const job = await operation(path, "start", startMessage(bundle, { deadlineEpochMs: Date.now() + 30 }));
+    await vi.waitFor(() => expect(backend.starts).toHaveLength(1));
+    await vi.waitFor(() => expect(backend.abort).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(backend.close).toHaveBeenCalledOnce());
     await expect(server.close()).rejects.toBeInstanceOf(AggregateError);
     job.socket.destroy();
 

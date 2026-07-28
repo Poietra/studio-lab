@@ -31,6 +31,7 @@ const MAX_CLOSE_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_MAX_CONNECTIONS = 64;
 const DEFAULT_MAX_JOBS = 16;
 const DEFAULT_MAX_STATUSES = 16;
+const MAX_REQUEST_RECEIVE_TIMEOUT_MS = 2_000;
 const MAX_BROKER_DEADLINE_HORIZON_MS = 5 * 60_000;
 const MAX_UNIX_SOCKET_PATH_BYTES = 96;
 
@@ -151,10 +152,17 @@ function createBrokerConnection(
   const controller = new AbortController();
   let abortBackend: (() => void) | undefined;
   let closeRequest: Promise<void> | null = null;
+  let deadlineExpired = false;
+  let deadlineGraceTimer: NodeJS.Timeout | undefined;
   let operation: Promise<void> | undefined;
   let operationFinished = false;
   let peerAborted = false;
   let requestSeen = false;
+  const receiveTimer = setTimeout(
+    () => socket.destroy(),
+    Math.min(MAX_REQUEST_RECEIVE_TIMEOUT_MS, options.closeTimeoutMs),
+  );
+  receiveTimer.unref();
 
   const abort = () => {
     if (controller.signal.aborted) return;
@@ -182,6 +190,27 @@ function createBrokerConnection(
     send(kind, { code, kind: "error" });
   };
 
+  const startDeadline = (deadlineEpochMs: number) => {
+    const deadlineTimer = setTimeout(
+      () => {
+        deadlineExpired = true;
+        abort();
+        deadlineGraceTimer = setTimeout(() => {
+          if (operationFinished) return;
+          socket.destroy();
+          onCleanupFailure();
+        }, options.closeTimeoutMs);
+        deadlineGraceTimer.unref();
+      },
+      Math.max(1, deadlineEpochMs - Date.now()),
+    );
+    deadlineTimer.unref();
+    return () => {
+      clearTimeout(deadlineTimer);
+      if (deadlineGraceTimer) clearTimeout(deadlineGraceTimer);
+    };
+  };
+
   const runStatus = async (request: Extract<FastManimSandboxBrokerClientMessageV1, { kind: "status" }>) => {
     if (!deadlineAccepted(request.deadlineEpochMs)) {
       sendError("status", "unavailable");
@@ -192,8 +221,7 @@ function createBrokerConnection(
       sendError("status", "capacity");
       return;
     }
-    const timer = setTimeout(abort, Math.max(1, request.deadlineEpochMs - Date.now()));
-    timer.unref();
+    const stopDeadline = startDeadline(request.deadlineEpochMs);
     try {
       const status = await backend.status({
         deadlineEpochMs: request.deadlineEpochMs,
@@ -206,8 +234,9 @@ function createBrokerConnection(
     } catch {
       if (!controller.signal.aborted) sendError("status", "unavailable");
     } finally {
-      clearTimeout(timer);
+      stopDeadline();
       release();
+      if (deadlineExpired && !peerAborted) sendError("status", "unavailable");
     }
   };
 
@@ -239,8 +268,7 @@ function createBrokerConnection(
       return;
     }
 
-    const timer = setTimeout(abort, Math.max(1, request.deadlineEpochMs - Date.now()));
-    timer.unref();
+    const stopDeadline = startDeadline(request.deadlineEpochMs);
     let backendResult: Promise<unknown>;
     let capturedAbort: (() => void) | undefined;
     try {
@@ -263,7 +291,7 @@ function createBrokerConnection(
       } catch {
         // Cleanup uncertainty is latched below.
       }
-      clearTimeout(timer);
+      stopDeadline();
       release();
       const control = fastManimSandboxBackendControlErrorCode(error);
       sendError("start", control ?? "cleanup");
@@ -295,12 +323,14 @@ function createBrokerConnection(
       sendError("start", control ?? "internal");
       if (control !== "capacity") onCleanupFailure();
     } finally {
-      clearTimeout(timer);
+      stopDeadline();
       release();
+      if (deadlineExpired && !peerAborted) sendError("start", "unavailable");
     }
   };
 
   const begin = (request: FastManimSandboxBrokerClientMessageV1) => {
+    clearTimeout(receiveTimer);
     requestSeen = true;
     operation = (request.kind === "status" ? runStatus(request) : runStart(request))
       .catch(() => onCleanupFailure())
@@ -313,6 +343,7 @@ function createBrokerConnection(
   const connection: BrokerConnection = {
     close() {
       closeRequest ??= (async () => {
+        clearTimeout(receiveTimer);
         peerAborted = true;
         if (!operationFinished) abort();
         const settled = await settleWithin(operation ?? Promise.resolve(), options.closeTimeoutMs);
@@ -347,6 +378,7 @@ function createBrokerConnection(
   });
   socket.once("error", () => undefined);
   socket.once("close", () => {
+    clearTimeout(receiveTimer);
     peerAborted = true;
     if (requestSeen && !operationFinished) abort();
     void connection.close().catch(() => undefined);

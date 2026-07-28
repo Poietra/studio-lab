@@ -115,6 +115,37 @@ describe("FastManimUdsSandboxBackendV1 single-operation sockets", () => {
     );
   });
 
+  it("does not expose a valid response until the broker sends FIN", async () => {
+    let releaseFin!: () => void;
+    const finAllowed = new Promise<void>((resolve) => (releaseFin = resolve));
+    let markFrameWritten!: () => void;
+    const frameWritten = new Promise<void>((resolve) => (markFrameWritten = resolve));
+    await withBroker(
+      (message, socket) => {
+        if (message.kind !== "start") return;
+        socket.write(encodeFastManimSandboxBrokerServerFrameV1("start", ok(message, Uint8Array.of(1))), () =>
+          markFrameWritten(),
+        );
+        void finAllowed.then(() => socket.end());
+      },
+      async (path) => {
+        const backend = new FastManimUdsSandboxBackendV1({ socketPath: path });
+        const result = backend.start(request(), jobContext()).result;
+        let settled = false;
+        void result.then(
+          () => (settled = true),
+          () => (settled = true),
+        );
+        await frameWritten;
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(settled).toBe(false);
+        releaseFin();
+        await expect(result).resolves.toMatchObject({ kind: "ok" });
+        await expect(backend.close()).resolves.toBeUndefined();
+      },
+    );
+  });
+
   it("uses FIN for abort and waits for broker FIN before close resolves", async () => {
     let releaseCleanup!: () => void;
     const cleanupAllowed = new Promise<void>((resolve) => (releaseCleanup = resolve));
@@ -178,14 +209,22 @@ describe("FastManimUdsSandboxBackendV1 single-operation sockets", () => {
   });
 
   it("fails cleanup when a dispatched operation loses transport without broker FIN", async () => {
-    await withBroker(
-      (_message, socket) => socket.destroy(),
-      async (path) => {
-        const backend = new FastManimUdsSandboxBackendV1({ socketPath: path });
-        await expect(backend.start(request(), jobContext()).result).rejects.toThrow(/failed closed/i);
-        await expect(backend.close()).rejects.toMatchObject({ code: "cleanup" });
-      },
-    );
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      await withBroker(
+        (_message, socket) => socket.destroy(),
+        async (path) => {
+          const backend = new FastManimUdsSandboxBackendV1({ socketPath: path });
+          await expect(backend.start(request(), jobContext()).result).rejects.toThrow(/failed closed/i);
+          await new Promise((resolve) => setImmediate(resolve));
+          expect(unhandled).not.toHaveBeenCalled();
+          await expect(backend.close()).rejects.toMatchObject({ code: "cleanup" });
+        },
+      );
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
   });
 
   it("enforces client job capacity before writing another request", async () => {
@@ -201,6 +240,9 @@ describe("FastManimUdsSandboxBackendV1 single-operation sockets", () => {
       },
       async (path) => {
         const backend = new FastManimUdsSandboxBackendV1({ socketPath: path });
+        await expect(
+          backend.start(request(), { ...jobContext(), attestationDigest: "not-a-digest" }).result,
+        ).rejects.toBeDefined();
         const active = Array.from({ length: 4 }, () => backend.start(request(), jobContext()));
         const results = active.map((handle) => handle.result.catch((error: unknown) => error));
         await requestsSeen;

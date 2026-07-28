@@ -40,6 +40,8 @@ type ClientOperation = Readonly<{
   cleanup: Promise<void>;
 }>;
 
+type ClientOperationWithResult<T> = ClientOperation & Readonly<{ result: Promise<T> }>;
+
 function validateSocketPath(socketPath: string) {
   if (
     typeof socketPath !== "string" ||
@@ -106,22 +108,24 @@ export class FastManimUdsSandboxBackendV1 implements FastManimSandboxBackendV1 {
     this.#assertOpen();
     if (this.#activeStatuses >= MAX_CONCURRENT_STATUSES) throw new FastManimSandboxBackendControlError("capacity");
     this.#activeStatuses += 1;
-    const operation = this.#open<FastManimSandboxBackendStatusV1>(
-      "status",
-      {
-        deadlineEpochMs: context.deadlineEpochMs,
-        identity,
-        kind: "status",
-      },
-      context.signal,
-      (message) => {
-        if (message.kind !== "status-result") throw transportError();
-        return fastManimSandboxBackendStatusV1Schema.parse(message.status);
-      },
-      () => {
-        this.#activeStatuses -= 1;
-      },
-    );
+    let operation: ClientOperationWithResult<FastManimSandboxBackendStatusV1>;
+    try {
+      operation = this.#open<FastManimSandboxBackendStatusV1>(
+        "status",
+        { deadlineEpochMs: context.deadlineEpochMs, identity, kind: "status" },
+        context.signal,
+        (message) => {
+          if (message.kind !== "status-result") throw transportError();
+          return fastManimSandboxBackendStatusV1Schema.parse(message.status);
+        },
+        () => {
+          this.#activeStatuses -= 1;
+        },
+      );
+    } catch (error) {
+      this.#activeStatuses -= 1;
+      throw error;
+    }
     return await operation.result;
   }
 
@@ -144,38 +148,47 @@ export class FastManimUdsSandboxBackendV1 implements FastManimSandboxBackendV1 {
       };
     }
     this.#activeJobs += 1;
-    const operation = this.#open<FastManimSandboxBackendResultV1>(
-      "start",
-      {
-        attestationDigest: context.attestationDigest,
-        deadlineEpochMs: context.deadlineEpochMs,
-        identity,
-        kind: "start",
-        requestBytesBase64: encodeFastManimSandboxBrokerRequestBytesV1(request.copyBytes()),
-        requestDigest: request.requestDigest,
-      },
-      context.signal,
-      (message) => {
-        if (message.kind !== "job-result") throw transportError();
-        const result = fastManimSandboxBackendResultV1Schema.parse(
-          message.result.kind === "ok"
-            ? {
-                attestationDigest: message.result.attestationDigest,
-                kind: "ok",
-                requestDigest: message.result.requestDigest,
-                resultBytes: decodeFastManimSandboxBrokerResultBytesV1(message.result.resultBytesBase64),
-              }
-            : message.result,
-        );
-        if (result.requestDigest !== request.requestDigest || result.attestationDigest !== context.attestationDigest) {
-          throw transportError();
-        }
-        return result;
-      },
-      () => {
-        this.#activeJobs -= 1;
-      },
-    );
+    let operation: ClientOperationWithResult<FastManimSandboxBackendResultV1>;
+    try {
+      operation = this.#open<FastManimSandboxBackendResultV1>(
+        "start",
+        {
+          attestationDigest: context.attestationDigest,
+          deadlineEpochMs: context.deadlineEpochMs,
+          identity,
+          kind: "start",
+          requestBytesBase64: encodeFastManimSandboxBrokerRequestBytesV1(request.copyBytes()),
+          requestDigest: request.requestDigest,
+        },
+        context.signal,
+        (message) => {
+          if (message.kind !== "job-result") throw transportError();
+          const result = fastManimSandboxBackendResultV1Schema.parse(
+            message.result.kind === "ok"
+              ? {
+                  attestationDigest: message.result.attestationDigest,
+                  kind: "ok",
+                  requestDigest: message.result.requestDigest,
+                  resultBytes: decodeFastManimSandboxBrokerResultBytesV1(message.result.resultBytesBase64),
+                }
+              : message.result,
+          );
+          if (
+            result.requestDigest !== request.requestDigest ||
+            result.attestationDigest !== context.attestationDigest
+          ) {
+            throw transportError();
+          }
+          return result;
+        },
+        () => {
+          this.#activeJobs -= 1;
+        },
+      );
+    } catch (error) {
+      this.#activeJobs -= 1;
+      return { abort() {}, result: Promise.reject(error) };
+    }
     return { abort: operation.abort, result: operation.result };
   }
 
@@ -212,9 +225,10 @@ export class FastManimUdsSandboxBackendV1 implements FastManimSandboxBackendV1 {
     let connected = false;
     let dispatched = false;
     let remoteEnded = false;
-    let remoteEndedWithoutResponse = false;
+    let pendingResponse: Readonly<{ error: unknown; kind: "error" }> | Readonly<{ kind: "value"; value: T }>;
     let responseSeen = false;
     let resultSettled = false;
+    let transportFailed = false;
     let cleanupSettled = false;
     let cleanupTimer: NodeJS.Timeout | undefined;
     let resolveResult!: (value: T) => void;
@@ -229,12 +243,17 @@ export class FastManimUdsSandboxBackendV1 implements FastManimSandboxBackendV1 {
       resolveCleanup = resolve;
       rejectCleanup = reject;
     });
+    void cleanup.catch(() => undefined);
 
     const settleResult = (error: unknown, value?: T) => {
       if (resultSettled) return;
       resultSettled = true;
       if (error === undefined) resolveResult(value as T);
       else rejectResult(error);
+    };
+    const failTransport = () => {
+      transportFailed = true;
+      settleResult(transportError());
     };
     const settleCleanup = (error?: unknown) => {
       if (cleanupSettled) return;
@@ -268,7 +287,7 @@ export class FastManimUdsSandboxBackendV1 implements FastManimSandboxBackendV1 {
       startCleanupTimer();
       socket.end();
     };
-    const operation: ClientOperation & Readonly<{ result: Promise<T> }> = { abort, cleanup, result };
+    const operation: ClientOperationWithResult<T> = { abort, cleanup, result };
     this.#operations.add(operation);
     signal.addEventListener("abort", abort, { once: true });
     if (signal.aborted) abort();
@@ -293,7 +312,7 @@ export class FastManimUdsSandboxBackendV1 implements FastManimSandboxBackendV1 {
         if (typeof chunk === "string") throw transportError();
         response = decoder.push(chunk);
       } catch {
-        settleResult(transportError());
+        failTransport();
         socket.destroy();
         return;
       }
@@ -302,41 +321,42 @@ export class FastManimUdsSandboxBackendV1 implements FastManimSandboxBackendV1 {
       if (response.kind === "error") {
         const error = brokerError(response.code);
         if (response.code === "cleanup") this.#cleanupFailed = true;
-        settleResult(error);
+        pendingResponse = { error, kind: "error" };
       } else {
         try {
-          settleResult(undefined, decode(response));
+          pendingResponse = { kind: "value", value: decode(response) };
         } catch {
-          settleResult(transportError());
+          pendingResponse = { error: transportError(), kind: "error" };
         }
       }
     });
     socket.once("end", () => {
       remoteEnded = true;
       if (!aborted) {
-        remoteEndedWithoutResponse = !responseSeen;
         try {
           decoder.finish();
-          if (!responseSeen) throw transportError();
+          if (!responseSeen || !pendingResponse) throw transportError();
+          if (pendingResponse.kind === "error") settleResult(pendingResponse.error);
+          else settleResult(undefined, pendingResponse.value);
         } catch {
-          settleResult(transportError());
+          failTransport();
         }
       }
       socket.end();
     });
     socket.once("error", () => {
-      settleResult(transportError());
+      failTransport();
     });
     socket.once("close", () => {
-      if (!resultSettled) settleResult(transportError());
-      if (!dispatched || (remoteEnded && !remoteEndedWithoutResponse && (aborted || responseSeen))) settleCleanup();
+      if (!resultSettled) failTransport();
+      if (!dispatched || (remoteEnded && !transportFailed && (aborted || responseSeen))) settleCleanup();
       else settleCleanup(new FastManimSandboxBackendControlError("cleanup"));
     });
     try {
       if (!aborted) socket.connect(this.#socketPath);
     } catch {
       socket.destroy();
-      settleResult(transportError());
+      failTransport();
       settleCleanup();
     }
     return operation;
