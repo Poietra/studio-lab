@@ -1,4 +1,4 @@
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -9,6 +9,7 @@ import {
   FAST_MANIM_SANDBOX_STATUS_SCHEMA_V1,
   FAST_MANIM_SANDBOX_STATUS_VERSION_V1,
   FastManimSandboxBackendControlError,
+  fastManimSandboxBackendControlErrorCode,
   type FastManimSandboxBackendFailureCodeV1,
   type FastManimSandboxBackendResultV1,
   type FastManimSandboxBackendStatusV1,
@@ -17,7 +18,6 @@ import {
   type FastManimSandboxJobContextV1,
   type FastManimSandboxRequestBundleV1,
   type FastManimSandboxStatusContextV1,
-  fastManimSandboxBackendControlErrorCode,
   MAX_FAST_MANIM_SANDBOX_REQUEST_BYTES,
   parseFastManimSandboxDeployment,
   parseFastManimSandboxJobIdentityV1,
@@ -39,9 +39,6 @@ const DOCKER_ENVIRONMENT = Object.freeze({ PATH: "/usr/bin:/bin" });
 const IMAGE_ID = /^sha256:[a-f0-9]{64}$/;
 const CONTAINER_ID = /^[a-f0-9]{64}$/;
 const CONTAINER_NAME = /^poietra-gated-[a-f0-9]{32}$/;
-const JOB_LABEL_KEY = "io.poietra.local-gated-job";
-const JOB_LABEL_VALUE = "v1";
-const JOB_LABEL = `${JOB_LABEL_KEY}=${JOB_LABEL_VALUE}`;
 const GATE_READY = Buffer.from("POIETRA_GATE_READY_V1\n", "ascii");
 const GATE_MAGIC = Buffer.from("POIETR1\0", "ascii");
 const GATE_HEADER_BYTES = 48;
@@ -97,42 +94,6 @@ const PROFILE_DIGEST = createHash("sha256")
   .digest("hex");
 
 type DockerResult = Readonly<{ code: number; stderr: Buffer; stdout: Buffer }>;
-
-/** Trusted broker-side Docker CLI transport with an optional fixed Unix socket. */
-export class FastManimGatedOciDockerClientV1 {
-  readonly #argumentsPrefix: readonly string[];
-
-  constructor(options: Readonly<{ socketPath?: string }> = {}) {
-    const socketPath = options.socketPath;
-    if (socketPath !== undefined) {
-      if (
-        !socketPath.startsWith("/") ||
-        resolve(socketPath) !== socketPath ||
-        socketPath.includes("\0") ||
-        Buffer.byteLength(socketPath, "utf8") > 4_096
-      ) {
-        throw new TypeError("The Docker socket must be a canonical absolute path.");
-      }
-      this.#argumentsPrefix = Object.freeze(["--host", `unix://${socketPath}`]);
-    } else {
-      this.#argumentsPrefix = Object.freeze([]);
-    }
-  }
-
-  run(arguments_: readonly string[], timeoutMs = DOCKER_CONTROL_TIMEOUT_MS, signal?: AbortSignal) {
-    return docker([...this.#argumentsPrefix, ...arguments_], timeoutMs, signal);
-  }
-
-  attach(arguments_: readonly string[]) {
-    return spawn(DOCKER, [...this.#argumentsPrefix, ...arguments_], {
-      env: DOCKER_ENVIRONMENT,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-  }
-}
-
-const defaultDockerClient = new FastManimGatedOciDockerClientV1();
-
 type ContainerInspection = Readonly<{
   Config?: {
     Cmd?: unknown;
@@ -556,7 +517,6 @@ function assertFixedContainer(
     exactObject(environment, FIXED_ENVIRONMENT) &&
     typeof labels === "object" &&
     labels !== null &&
-    (labels as Record<string, unknown>)[JOB_LABEL_KEY] === JOB_LABEL_VALUE &&
     Object.entries(LOCKED_LABELS).every(([key, value]) => (labels as Record<string, unknown>)[key] === value) &&
     host?.ReadonlyRootfs === true &&
     host?.Privileged === false &&
@@ -601,26 +561,16 @@ function assertFixedContainer(
   if (!valid) throw new FastManimLocalGatedOciError("sandbox-execution-failed", "The OCI job configuration drifted.");
 }
 
-async function inspectContainer(
-  containerId: string,
-  timeoutMs = DOCKER_CONTROL_TIMEOUT_MS,
-  signal?: AbortSignal,
-  dockerClient = defaultDockerClient,
-) {
-  const inspected = await dockerClient.run(["container", "inspect", containerId], timeoutMs, signal);
+async function inspectContainer(containerId: string, timeoutMs = DOCKER_CONTROL_TIMEOUT_MS, signal?: AbortSignal) {
+  const inspected = await docker(["container", "inspect", containerId], timeoutMs, signal);
   if (inspected.code !== 0) {
     throw new FastManimLocalGatedOciError("sandbox-execution-failed", "Docker could not inspect the OCI job.");
   }
   return parseSingleInspection(inspected.stdout);
 }
 
-async function assertTrustedImage(
-  image: string,
-  timeoutMs = DOCKER_CONTROL_TIMEOUT_MS,
-  signal?: AbortSignal,
-  dockerClient = defaultDockerClient,
-) {
-  const inspected = await dockerClient.run(["image", "inspect", image], timeoutMs, signal);
+async function assertTrustedImage(image: string, timeoutMs = DOCKER_CONTROL_TIMEOUT_MS, signal?: AbortSignal) {
+  const inspected = await docker(["image", "inspect", image], timeoutMs, signal);
   if (inspected.code !== 0) throw new Error("The immutable local OCI image is unavailable.");
   const imageInspection = parseSingleInspection(inspected.stdout);
   const labels = imageInspection.Config?.Labels;
@@ -661,9 +611,8 @@ async function inspectRunningProcess(
   image: string,
   timeoutMs: number,
   signal: AbortSignal,
-  dockerClient: FastManimGatedOciDockerClientV1,
 ): Promise<number> {
-  const inspection = await inspectContainer(containerId, timeoutMs, signal, dockerClient);
+  const inspection = await inspectContainer(containerId, timeoutMs, signal);
   assertFixedContainer(inspection, image, containerId, containerName, true);
   const pid = inspection.State?.Pid;
   if (!Number.isSafeInteger(pid) || (pid as number) <= 1) {
@@ -764,8 +713,8 @@ async function waitForPidCleanup(evidence: FastManimLocalGatedOciCleanupEvidence
   throw new FastManimSandboxBackendControlError("cleanup");
 }
 
-async function assertContainerAbsent(containerId: string, dockerClient = defaultDockerClient) {
-  const listed = await dockerClient.run(
+async function assertContainerAbsent(containerId: string) {
+  const listed = await docker(
     ["container", "ls", "--all", "--quiet", "--no-trunc", "--filter", `id=${containerId}`],
     CLEANUP_TIMEOUT_MS,
   );
@@ -774,22 +723,15 @@ async function assertContainerAbsent(containerId: string, dockerClient = default
   }
 }
 
-async function cleanupContainer(
-  containerId: string,
-  evidence?: FastManimLocalGatedOciCleanupEvidenceV1,
-  dockerClient = defaultDockerClient,
-) {
-  await dockerClient.run(["container", "kill", containerId], CLEANUP_TIMEOUT_MS).catch(() => undefined);
-  await dockerClient.run(["container", "rm", "--force", containerId], CLEANUP_TIMEOUT_MS).catch(() => undefined);
-  await Promise.all([
-    assertContainerAbsent(containerId, dockerClient),
-    evidence ? waitForPidCleanup(evidence) : Promise.resolve(),
-  ]);
+async function cleanupContainer(containerId: string, evidence?: FastManimLocalGatedOciCleanupEvidenceV1) {
+  await docker(["container", "kill", containerId], CLEANUP_TIMEOUT_MS).catch(() => undefined);
+  await docker(["container", "rm", "--force", containerId], CLEANUP_TIMEOUT_MS).catch(() => undefined);
+  await Promise.all([assertContainerAbsent(containerId), evidence ? waitForPidCleanup(evidence) : Promise.resolve()]);
 }
 
-async function cleanupContainerByName(containerName: string, dockerClient = defaultDockerClient) {
+async function cleanupContainerByName(containerName: string) {
   if (!CONTAINER_NAME.test(containerName)) throw new FastManimSandboxBackendControlError("cleanup");
-  const listed = await dockerClient.run(
+  const listed = await docker(
     ["container", "ls", "--all", "--quiet", "--no-trunc", "--filter", `name=^/${containerName}$`],
     CLEANUP_TIMEOUT_MS,
   );
@@ -797,69 +739,7 @@ async function cleanupContainerByName(containerName: string, dockerClient = defa
   if (listed.code !== 0 || matches.some((value) => !CONTAINER_ID.test(value)) || matches.length > 1) {
     throw new FastManimSandboxBackendControlError("cleanup");
   }
-  if (matches[0]) await cleanupContainer(matches[0], undefined, dockerClient);
-}
-
-/** Removes jobs left by a previous broker process before the UDS listener becomes ready. */
-export async function reconcileFastManimGatedOciDockerOrphansV1(
-  options: Readonly<{
-    dockerClient: FastManimGatedOciDockerClientV1;
-    image: string;
-    signal: AbortSignal;
-  }>,
-) {
-  if (!IMAGE_ID.test(options.image)) throw new TypeError("Orphan reconciliation requires an immutable image ID.");
-  options.signal.throwIfAborted();
-  let cleanupFailed = false;
-  try {
-    await assertTrustedImage(options.image, DOCKER_CONTROL_TIMEOUT_MS, options.signal, options.dockerClient);
-  } catch {
-    // Image trust drift must fail readiness, but it must not prevent cleanup
-    // of containers already selected through the broker-owned label.
-    cleanupFailed = true;
-  }
-  const listed = await options.dockerClient.run(
-    ["container", "ls", "--all", "--quiet", "--no-trunc", "--filter", `label=${JOB_LABEL}`],
-    DOCKER_CONTROL_TIMEOUT_MS,
-    options.signal,
-  );
-  const containerIds = listed.stdout.toString("ascii").trim().split("\n").filter(Boolean);
-  if (
-    listed.code !== 0 ||
-    containerIds.length > 128 ||
-    new Set(containerIds).size !== containerIds.length ||
-    containerIds.some((containerId) => !CONTAINER_ID.test(containerId))
-  ) {
-    throw new FastManimSandboxBackendControlError("cleanup");
-  }
-  for (const containerId of containerIds) {
-    let inspectionValid = false;
-    try {
-      const inspection = await inspectContainer(
-        containerId,
-        DOCKER_CONTROL_TIMEOUT_MS,
-        options.signal,
-        options.dockerClient,
-      );
-      const containerName = typeof inspection.Name === "string" ? inspection.Name.replace(/^\//, "") : "";
-      const labels = inspection.Config?.Labels as Record<string, unknown> | undefined;
-      if (!CONTAINER_NAME.test(containerName) || labels?.[JOB_LABEL_KEY] !== JOB_LABEL_VALUE) throw new Error();
-      assertFixedContainer(inspection, options.image, containerId, containerName, inspection.State?.Running === true);
-      inspectionValid = true;
-    } catch {
-      // The label belongs to this broker profile. Remove it even when its
-      // configuration drifted, but keep readiness failed for operator review.
-    }
-    if (!inspectionValid) cleanupFailed = true;
-    try {
-      await cleanupContainer(containerId, undefined, options.dockerClient);
-    } catch {
-      // Continue best-effort reconciliation so one broken orphan does not
-      // leave every later owned container running.
-      cleanupFailed = true;
-    }
-  }
-  if (cleanupFailed) throw new FastManimSandboxBackendControlError("cleanup");
+  if (matches[0]) await cleanupContainer(matches[0]);
 }
 
 type LocalConformanceWireV1 = Readonly<{ bytes: Uint8Array; close: boolean }>;
@@ -878,7 +758,6 @@ export async function runFastManimLocalGatedOciV1(
     /** Deterministic unresolved-create seam for unit tests; the configured backend never supplies it. */
     createUncertainTestSeam?: FastManimLocalGatedOciCreateUncertainTestSeamV1;
     deadlineEpochMs: number;
-    dockerClient?: FastManimGatedOciDockerClientV1;
     image: string;
     requestBytes: Uint8Array;
     signal: AbortSignal;
@@ -890,7 +769,6 @@ export async function runFastManimLocalGatedOciV1(
   }
   options.signal.throwIfAborted();
   const requestBytes = Uint8Array.from(options.requestBytes);
-  const dockerClient = options.dockerClient ?? defaultDockerClient;
   const wire = options.conformanceWire
     ? { bytes: Uint8Array.from(options.conformanceWire.bytes), close: options.conformanceWire.close }
     : { bytes: encodeRequestWire(requestBytes), close: true };
@@ -899,17 +777,9 @@ export async function runFastManimLocalGatedOciV1(
   }
 
   const containerName = `poietra-gated-${randomBytes(16).toString("hex")}`;
-  const trustedImageCheck =
-    options.createUncertainTestSeam?.assertTrustedImage ??
-    ((image: string, timeoutMs: number, signal?: AbortSignal) =>
-      assertTrustedImage(image, timeoutMs, signal, dockerClient));
-  const createContainer =
-    options.createUncertainTestSeam?.createContainer ??
-    ((arguments_: readonly string[], timeoutMs: number, signal?: AbortSignal) =>
-      dockerClient.run(arguments_, timeoutMs, signal));
-  const recoverContainerByName =
-    options.createUncertainTestSeam?.recoverContainerByName ??
-    ((containerName: string) => cleanupContainerByName(containerName, dockerClient));
+  const trustedImageCheck = options.createUncertainTestSeam?.assertTrustedImage ?? assertTrustedImage;
+  const createContainer = options.createUncertainTestSeam?.createContainer ?? docker;
+  const recoverContainerByName = options.createUncertainTestSeam?.recoverContainerByName ?? cleanupContainerByName;
   const operationController = new AbortController();
   let cleanupEvidence: FastManimLocalGatedOciCleanupEvidenceV1 | undefined;
   let containerCreationAttempted = false;
@@ -969,7 +839,7 @@ export async function runFastManimLocalGatedOciV1(
         "--ulimit=nofile=256:256",
         `--tmpfs=/run/poietra:rw,noexec,nosuid,nodev,size=${TMPFS_BYTES},mode=0700,uid=65532,gid=65532`,
         "--stop-timeout=1",
-        `--label=${JOB_LABEL}`,
+        "--label=io.poietra.local-gated-job=v1",
         options.image,
       ],
       controlTimeoutMs(),
@@ -984,11 +854,14 @@ export async function runFastManimLocalGatedOciV1(
     if (created.code !== 0 || !containerId) {
       throw new FastManimLocalGatedOciError("producer-spawn-failed", "Docker could not create the gated OCI job.");
     }
-    const preStart = await inspectContainer(containerId, controlTimeoutMs(), operationController.signal, dockerClient);
+    const preStart = await inspectContainer(containerId, controlTimeoutMs(), operationController.signal);
     throwIfHalted();
     assertFixedContainer(preStart, options.image, containerId, containerName, false);
 
-    attached = dockerClient.attach(["container", "start", "--attach", "--interactive", containerId]);
+    attached = spawn(DOCKER, ["container", "start", "--attach", "--interactive", containerId], {
+      env: DOCKER_ENVIRONMENT,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
     const stdoutChunks: Buffer[] = [];
     let stdoutBytes = 0;
     let stderr = Buffer.alloc(0);
@@ -1033,14 +906,7 @@ export async function runFastManimLocalGatedOciV1(
       haltPromise,
     ]);
     const pid = await Promise.race([
-      inspectRunningProcess(
-        containerId,
-        containerName,
-        options.image,
-        controlTimeoutMs(),
-        operationController.signal,
-        dockerClient,
-      ),
+      inspectRunningProcess(containerId, containerName, options.image, controlTimeoutMs(), operationController.signal),
       haltPromise,
     ]);
     cleanupEvidence = { pid };
@@ -1057,7 +923,7 @@ export async function runFastManimLocalGatedOciV1(
       throw new FastManimLocalGatedOciError("producer-exit", "The gated OCI producer did not exit cleanly.");
     }
     const body = parseFastManimLocalGatedOciResultV1(Buffer.concat(stdoutChunks, stdoutBytes));
-    await cleanupContainer(containerId, cleanupEvidence, dockerClient);
+    await cleanupContainer(containerId, cleanupEvidence);
     options.afterVerifiedCleanupForTesting?.();
     containerId = undefined;
     const lateHalt = halted as FastManimLocalGatedOciError | undefined;
@@ -1073,7 +939,7 @@ export async function runFastManimLocalGatedOciV1(
     }
     if (containerId) {
       try {
-        await cleanupContainer(containerId, cleanupEvidence, dockerClient);
+        await cleanupContainer(containerId, cleanupEvidence);
         if (error instanceof FastManimLocalGatedOciError) error.cleanupVerified = true;
         containerId = undefined;
       } catch (cleanupError) {
@@ -1109,7 +975,6 @@ export async function runFastManimLocalGatedOciV1(
 }
 
 export type FastManimLocalGatedOciBackendOptionsV1 = Readonly<{
-  dockerClient?: FastManimGatedOciDockerClientV1;
   /** Test-only execution seam; the configured factory never supplies it. */
   executeJob?: typeof runFastManimLocalGatedOciV1;
   image: string;
@@ -1118,7 +983,6 @@ export type FastManimLocalGatedOciBackendOptionsV1 = Readonly<{
 /** This local Docker backend is conformance/development evidence, never production readiness. */
 export class FastManimLocalGatedOciBackendV1 implements FastManimSandboxBackendV1 {
   readonly #active = new Set<Readonly<{ abort: () => void; result: Promise<unknown> }>>();
-  readonly #dockerClient: FastManimGatedOciDockerClientV1;
   readonly #executeJob: typeof runFastManimLocalGatedOciV1;
   readonly #image: string;
   #cleanupFailed = false;
@@ -1127,7 +991,6 @@ export class FastManimLocalGatedOciBackendV1 implements FastManimSandboxBackendV
   constructor(options: FastManimLocalGatedOciBackendOptionsV1) {
     if (!IMAGE_ID.test(options.image))
       throw new TypeError("The local OCI backend requires an immutable sha256 image ID.");
-    this.#dockerClient = options.dockerClient ?? defaultDockerClient;
     this.#executeJob = options.executeJob ?? runFastManimLocalGatedOciV1;
     this.#image = options.image;
   }
@@ -1146,7 +1009,6 @@ export class FastManimLocalGatedOciBackendV1 implements FastManimSandboxBackendV
         this.#image,
         Math.min(DOCKER_CONTROL_TIMEOUT_MS, Math.max(1, context.deadlineEpochMs - Date.now())),
         context.signal,
-        this.#dockerClient,
       );
       context.signal.throwIfAborted();
     } catch (error) {
@@ -1194,7 +1056,6 @@ export class FastManimLocalGatedOciBackendV1 implements FastManimSandboxBackendV
     try {
       const execution = await this.#executeJob({
         deadlineEpochMs: context.deadlineEpochMs,
-        dockerClient: this.#dockerClient,
         image: this.#image,
         requestBytes: request.copyBytes(),
         signal,
