@@ -1,4 +1,4 @@
-"""Authenticate one bounded request before the fixed snapshot producer starts."""
+"""Authenticate one bounded request before the fixed identity producer starts."""
 
 from __future__ import annotations
 
@@ -20,7 +20,11 @@ VERSION = 1
 HEADER_BYTES = 48
 MAX_REQUEST_BYTES = 2 * 1024 * 1024 + 32 * 1024
 READY = b"POIETRA_GATE_READY_V1\n"
-TARGET = ("/opt/venv/bin/python", "-m", "manim.renderer.scene_snapshot")
+TARGET = (
+    "/opt/venv/bin/python",
+    "-m",
+    "manim.renderer.source_runtime_identity",
+)
 RUNTIME_ROOT = Path("/run/poietra")
 RUNTIME_DIRECTORIES = ("cache", "config", "data", "home", "tmp")
 TARGET_ENVIRONMENT = {

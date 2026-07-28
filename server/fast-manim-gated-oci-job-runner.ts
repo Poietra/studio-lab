@@ -19,7 +19,7 @@ import {
 import {
   MAX_FAST_MANIM_SNAPSHOT_ARRAY_ITEMS,
   MAX_FAST_MANIM_SNAPSHOT_OBJECT_FIELDS,
-  MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES,
+  MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
   MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_DEPTH,
   MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_ENTRIES,
   MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_VALUES,
@@ -48,7 +48,7 @@ const CLEANUP_TIMEOUT_MS = 5_000;
 const CLEANUP_POLL_MS = 25;
 const DEFAULT_SECCOMP_PATH = fileURLToPath(new URL("../sandbox/fast-manim-gated-oci/seccomp.v1.json", import.meta.url));
 const FIXED_ENTRYPOINT = Object.freeze(["/opt/venv/bin/python", "/opt/poietra/gated-entrypoint.py"] as const);
-const FIXED_TARGET = Object.freeze(["/opt/venv/bin/python", "-m", "manim.renderer.scene_snapshot"] as const);
+const FIXED_TARGET = Object.freeze(["/opt/venv/bin/python", "-m", "manim.renderer.source_runtime_identity"] as const);
 const FIXED_TMPFS_PATH = "/run/poietra";
 const FIXED_TMPFS_OPTIONS = Object.freeze([
   "rw",
@@ -88,9 +88,9 @@ const REQUIRED_READ_ONLY_SYSTEM_PATHS = Object.freeze([
   "/proc/sysrq-trigger",
 ] as const);
 const LOCKED_LABELS = Object.freeze({
-  "io.poietra.fast-manim.archive-sha256": "090d8ce99568d427636ba00274b08f689518f411cd96d7280e50b48e2e54fee5",
-  "io.poietra.fast-manim.commit": "d0799e39eed36565ed65afa18079fb0e06be9014",
-  "io.poietra.fast-manim.tree": "78e777a7660adaa4b6609bb12b7158ba97902721",
+  "io.poietra.fast-manim.archive-sha256": "00413ce7ae00d4affa318a701831db369c70ba02f20a6babc44e7d7db8702694",
+  "io.poietra.fast-manim.commit": "7d20dc2d6dce4e84d4c24bc9509aff4094279ee7",
+  "io.poietra.fast-manim.tree": "f80a55d0764259df9f80b89dd47a18d51e0623db",
   "io.poietra.sandbox-slice": "gated-oci-v1",
 });
 const FIXED_ENVIRONMENT = Object.freeze({
@@ -581,7 +581,7 @@ class PythonCanonicalJsonReader {
 
 export function parseFastManimGatedOciResultV1(bytes: Uint8Array) {
   const stdout = Buffer.from(bytes);
-  if (stdout.byteLength > MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES + 1) {
+  if (stdout.byteLength > MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES) {
     throw new FastManimGatedOciError("producer-output-overflow", "The gated OCI result exceeded its byte budget.");
   }
   if (stdout.byteLength === 0 || stdout.at(-1) !== 0x0a) {
@@ -589,7 +589,7 @@ export function parseFastManimGatedOciResultV1(bytes: Uint8Array) {
   }
   const body = stdout.subarray(0, -1);
   if (
-    body.byteLength > MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES ||
+    body.byteLength > MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES - 1 ||
     body.at(0) !== 0x7b ||
     body.at(-1) !== 0x7d ||
     hasJsonWhitespaceOutsideStrings(body)
@@ -1270,7 +1270,7 @@ export async function runFastManimGatedOciJobV1(
     });
     attached.stdout.on("data", (chunk: Buffer) => {
       stdoutBytes += chunk.byteLength;
-      if (stdoutBytes > MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES + 1) {
+      if (stdoutBytes > MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES) {
         halt("producer-output-overflow", "The gated OCI result exceeded its byte budget.");
         return;
       }

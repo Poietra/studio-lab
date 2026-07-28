@@ -29,6 +29,7 @@ import {
   startFastManimSandboxBrokerServerV1 as startBroker,
 } from "./fast-manim-sandbox-broker-server";
 import { FastManimUdsSandboxBackendV1 } from "./fast-manim-uds-sandbox-backend";
+import { MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES } from "./fast-manim-snapshot-contract";
 import {
   localSandboxReadyStatus,
   SANDBOX_TEST_SHA_A,
@@ -154,6 +155,42 @@ describe("fast-manim single-operation broker server", () => {
     ).resolves.toMatchObject({ kind: "ok", requestDigest: bundle.requestDigest });
     await client.close();
     expect(backend.starts[0]?.request.copyBytes()).toEqual(bundle.copyBytes());
+  });
+
+  it("round-trips result bytes beyond the legacy snapshot cap across the full UDS boundary", {
+    timeout: 10_000,
+  }, async () => {
+    const path = await socketPath();
+    const backend = new TestBackend();
+    const resultBytes = new Uint8Array(MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES + 1);
+    resultBytes[0] = 0x7b;
+    resultBytes[resultBytes.byteLength - 1] = 0x7d;
+    backend.resultFactory = async (request, context) => ({
+      attestationDigest: context.attestationDigest,
+      kind: "ok",
+      requestDigest: request.requestDigest,
+      resultBytes,
+    });
+    const server = await start({ backend, socketPath: path });
+    servers.push(server);
+    const bundle = new RequestBundle(sandboxProducerRequest());
+    const client = new FastManimUdsSandboxBackendV1({ socketPath: path });
+
+    const result = await client.start(bundle, {
+      attestationDigest: SANDBOX_TEST_SHA_A,
+      deadlineEpochMs: Date.now() + 10_000,
+      identity,
+      signal: new AbortController().signal,
+    }).result;
+    await client.close();
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") throw new Error("Expected a result beyond the legacy snapshot cap.");
+    // Keep matcher failure output bounded instead of asking Vitest to deep-diff
+    // two multi-MiB typed arrays.
+    expect(result.resultBytes === resultBytes).toBe(false);
+    expect(result.resultBytes.byteLength).toBe(resultBytes.byteLength);
+    expect([result.resultBytes[0], result.resultBytes.at(-1)]).toEqual([0x7b, 0x7d]);
   });
 
   it("bounds jobs and acknowledges FIN abort only after backend settlement", async () => {
