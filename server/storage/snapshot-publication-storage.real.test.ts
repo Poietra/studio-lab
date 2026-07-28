@@ -479,6 +479,29 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
         await closeSnapshotStorage(staleReader);
       }
 
+      const replacement = await runPublisherChild({
+        artifactBytes: `replacement-snapshot-artifact-${suffix}`,
+        expectedSourceDigest: updatedHead.blob.digest,
+        expectedSourceGeneration: updatedHead.generation.toString(),
+        identity,
+        publicationId: randomUUID(),
+        requestId: `replacement-${requestId}`,
+        snapshotHash: createHash("sha256").update(`replacement-snapshot-${suffix}`).digest("hex"),
+      });
+      const conditionalReader = snapshotStorage();
+      try {
+        await expect(
+          conditionalReader.publications.clearHeadIfGeneration(identity, BigInt(publication.generation)),
+        ).resolves.toBe(false);
+        const current = await conditionalReader.publications.readCurrent(identity);
+        expect(current).toMatchObject({
+          kind: "published",
+          publication: { generation: BigInt(replacement.generation) },
+        });
+      } finally {
+        await closeSnapshotStorage(conditionalReader);
+      }
+
       const orphan = await runOrphanWriterChild({
         nonce: suffix,
         sourceDigest: updatedHead.blob.digest,
