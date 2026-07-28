@@ -96,6 +96,29 @@ export interface ProjectPngBlobStoreV1 {
   ready(signal?: AbortSignal): Promise<boolean>;
 }
 
+export function projectPngObjectKeyV1(tenantId: string, projectId: string, digest: string) {
+  return `tenants/${tenantId}/projects/${projectId}/assets/${PROJECT_PNG_LOGICAL_PATH_V1}/${digest}`;
+}
+
+export function assertProjectPngReceiptV1(tenantId: string, projectId: string, value: ProjectPngBlobReceiptV1) {
+  if (
+    !/^[0-9a-f]{64}$/.test(value.digest) ||
+    value.objectKey !== projectPngObjectKeyV1(tenantId, projectId, value.digest) ||
+    !Number.isSafeInteger(value.byteSize) ||
+    value.byteSize < 1 ||
+    value.byteSize > MAX_PROJECT_PNG_BYTES_V1 ||
+    typeof value.versionId !== "string" ||
+    value.versionId.length < 1 ||
+    value.versionId.length > 1_024 ||
+    typeof value.etag !== "string" ||
+    value.etag.length < 1 ||
+    value.etag.length > 512
+  ) {
+    throw new TypeError("Project image.png receipt is invalid.");
+  }
+  return value;
+}
+
 function readUint32(bytes: Uint8Array, offset: number) {
   return (
     bytes[offset]! * 0x1_00_00_00 + bytes[offset + 1]! * 0x1_00_00 + bytes[offset + 2]! * 0x1_00 + bytes[offset + 3]!
