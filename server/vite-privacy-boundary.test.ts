@@ -95,10 +95,12 @@ describe("Vite privacy boundary", () => {
 
     const env = loadStudioNonSecretEnvironment("development", root, {
       OPENAI_API_KEY: "SECRET_PROCESS_OPENAI_KEY",
+      POIETRA_AI_LOCAL_KEY_FILE_OPT_IN: "1",
       POIETRA_OPENAI_MODEL: "gpt-process-model",
     });
 
     expect(env).toMatchObject({
+      POIETRA_AI_LOCAL_KEY_FILE_OPT_IN: "1",
       POIETRA_OPENAI_MODEL: "gpt-process-model",
       VITE_PUBLIC_SENTINEL: "public-value",
     });

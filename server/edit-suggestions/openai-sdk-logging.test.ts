@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { EditSuggestionRequest } from "../../src/ai/edit-suggestions";
-import { nullLogger } from "../logging/structured-logger";
 import { createOpenAiEditSuggestionGenerator } from "./openai-generator";
 
 const request: EditSuggestionRequest = {
@@ -54,7 +53,7 @@ describe("OpenAI SDK logging boundary", () => {
       model: "gpt-test",
     });
 
-    await expect(generator.generate(request, nullLogger)).rejects.toMatchObject({
+    await expect(generator.generate(request)).rejects.toMatchObject({
       message: "The AI provider request failed.",
       status: 502,
     });

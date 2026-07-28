@@ -1,8 +1,7 @@
-import { ZodError } from "zod";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ZodError } from "zod";
 
 import type { EditSuggestionRequest } from "../../src/ai/edit-suggestions";
-import { createStructuredLogger, type StructuredLogRecord } from "../logging/structured-logger";
 import { createOpenAiEditSuggestionGenerator } from "./openai-generator";
 
 const openAiMock = vi.hoisted(() => {
@@ -46,15 +45,12 @@ const clarification = {
 } as const;
 
 function harness() {
-  const records: StructuredLogRecord[] = [];
   return {
     generator: createOpenAiEditSuggestionGenerator({
       apiKey: "SECRET_API_KEY",
       instructions: "SECRET_MODEL_INSTRUCTIONS",
       model: "gpt-test",
     }),
-    logger: createStructuredLogger({ sinks: [{ write: (record) => records.push(record) }] }),
-    records,
   };
 }
 
@@ -63,7 +59,7 @@ beforeEach(() => {
 });
 
 describe("OpenAI edit suggestion generator privacy boundary", () => {
-  it("logs only bounded attempt and token telemetry around a real Responses API call", async () => {
+  it("returns only bounded token telemetry with a real Responses API result", async () => {
     openAiMock.parse.mockResolvedValue({
       id: "SECRET_PROVIDER_RESPONSE_ID",
       output_parsed: clarification,
@@ -74,35 +70,31 @@ describe("OpenAI edit suggestion generator privacy boundary", () => {
         total_tokens: 11,
       },
     });
-    const { generator, logger, records } = harness();
+    const { generator } = harness();
 
-    await expect(generator.generate(request, logger)).resolves.toEqual(clarification);
+    const result = await generator.generate(request);
 
     const providerRequest = openAiMock.parse.mock.calls[0]?.[0];
     expect(providerRequest).toMatchObject({ model: "gpt-test", store: false });
     expect(providerRequest.input[0].content).toContain("SECRET_SOURCE_AND_PROMPT");
-    expect(records).toEqual([
-      expect.objectContaining({ data: { attempt: "initial", model: "gpt-test" }, event: "model.requested" }),
-      expect.objectContaining({
-        data: {
-          attempt: "initial",
-          usage: { inputTokens: undefined, outputTokens: 7, totalTokens: 11 },
-        },
-        event: "model.responded",
-      }),
-    ]);
-    const persisted = JSON.stringify(records);
+    expect(result).toEqual({
+      suggestion: clarification,
+      telemetry: {
+        repairAttempted: false,
+        usage: { outputTokens: 7, totalTokens: 11 },
+      },
+    });
+    const telemetry = JSON.stringify(result.telemetry);
     for (const sentinel of [
       "SECRET_API_KEY",
       "SECRET_MODEL_INSTRUCTIONS",
-      "SECRET_MODEL_OUTPUT",
       "SECRET_PROVIDER_RESPONSE_ID",
       "SECRET_SOURCE_AND_PROMPT",
       "SECRET_PATH",
       "SECRET_USAGE_FIELD",
       "SECRET_USAGE_DETAIL",
     ]) {
-      expect(persisted).not.toContain(sentinel);
+      expect(telemetry).not.toContain(sentinel);
     }
   });
 
@@ -112,19 +104,15 @@ describe("OpenAI edit suggestion generator privacy boundary", () => {
         new ZodError([{ code: "custom", message: "SECRET_VALIDATION_MESSAGE", path: ["SECRET_VALIDATION_PATH"] }]),
       )
       .mockResolvedValueOnce({ id: "response-2", output_parsed: clarification, usage: null });
-    const { generator, logger, records } = harness();
+    const { generator } = harness();
 
-    await expect(generator.generate(request, logger)).resolves.toEqual(clarification);
+    const result = await generator.generate(request);
 
     expect(openAiMock.parse).toHaveBeenCalledTimes(2);
     expect(openAiMock.parse.mock.calls[1]?.[0].instructions).toContain("SECRET_VALIDATION_MESSAGE");
-    expect(records.find((record) => record.event === "model.validation_failed")?.data).toEqual({
-      attempt: "initial",
-      issueCodes: ["custom"],
-      issueCount: 1,
-    });
-    expect(JSON.stringify(records)).not.toContain("SECRET_VALIDATION_MESSAGE");
-    expect(JSON.stringify(records)).not.toContain("SECRET_VALIDATION_PATH");
+    expect(result.telemetry).toEqual({ repairAttempted: true });
+    expect(JSON.stringify(result.telemetry)).not.toContain("SECRET_VALIDATION_MESSAGE");
+    expect(JSON.stringify(result.telemetry)).not.toContain("SECRET_VALIDATION_PATH");
   });
 
   it.each([
@@ -133,13 +121,12 @@ describe("OpenAI edit suggestion generator privacy boundary", () => {
     { expected: 502, provider: 500 },
   ])("normalizes provider status $provider to bounded status $expected", async ({ expected, provider }) => {
     openAiMock.parse.mockRejectedValue(new openAiMock.APIError(provider, "SECRET_PROVIDER_ERROR_AND_TRACEBACK"));
-    const { generator, logger, records } = harness();
+    const { generator } = harness();
 
-    await expect(generator.generate(request, logger)).rejects.toMatchObject({
+    await expect(generator.generate(request)).rejects.toMatchObject({
       message: "The AI provider request failed.",
       name: "EditSuggestionGenerationError",
       status: expected,
     });
-    expect(JSON.stringify(records)).not.toContain("SECRET_PROVIDER_ERROR_AND_TRACEBACK");
   });
 });
