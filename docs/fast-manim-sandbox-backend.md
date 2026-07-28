@@ -115,10 +115,10 @@ child environment and therefore must not be treated as a credential transport.
 
 ## Rootful gated OCI conformance slice
 
-`FastManimLocalGatedOciBackendV1` is a separate, opt-in development evidence
-driver. It is not connected to the Studio server composition, reports
-`development-only` attestation with a `local-process` backend kind, and its
-factory returns an unavailable backend for every production deployment.
+`FastManimGatedOciJobRunnerV1` is the fixed-profile execution core shared by the
+production backend. Its explicit real test lane can also exercise a locally
+supplied rootful image as development evidence. The runner makes no independent
+readiness or trust claim and is not composed into the Studio server by itself.
 
 Build the immutable local image from the pinned fast-manim commit already
 present in a local checkout:
@@ -135,10 +135,10 @@ is explicit:
 
 ```sh
 POIETRA_FAST_MANIM_GATED_OCI_IMAGE=sha256:<local-image-id> \
-pnpm exec vitest run server/fast-manim-local-gated-oci-backend.test.ts
+pnpm exec vitest run server/fast-manim-gated-oci-job-runner.test.ts
 ```
 
-The local driver creates one non-restarting container per request with no host
+The conformance lane creates one non-restarting container per request with no host
 bind mounts, no network, a read-only root filesystem, all capabilities dropped,
 `no-new-privileges`, private PID/cgroup namespaces, a private 16 MiB tmpfs,
 fixed CPU/memory/pid/fd/core limits, and Docker logging disabled. A trusted PID
@@ -157,7 +157,7 @@ If container creation was dispatched but no immutable ID was observed, recovery
 by name remains best-effort and the backend is always quarantined because a late
 daemon-side create completion cannot be ruled out.
 
-The rootful conformance driver deliberately does **not** claim #82 complete. It
+The rootful conformance run deliberately does **not** claim #82 complete. It
 uses the host's rootful Docker daemon and an operator-supplied local image ID;
 it has no separate broker identity or Unix-socket protocol, rootless host configuration,
 custom seccomp profile, signed image allowlist/attestation, production adapter,
