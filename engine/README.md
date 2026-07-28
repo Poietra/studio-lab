@@ -179,17 +179,16 @@ After that build, exercise the real fast-manim-to-Studio path with an explicit
 producer interpreter:
 
 ```sh
-POIETRA_FAST_MANIM_SNAPSHOT_COMMAND='["/path/to/fast-manim/.venv/bin/python","-m","manim.renderer.scene_snapshot"]' \
+POIETRA_FAST_MANIM_SNAPSHOT_COMMAND='["/path/to/fast-manim/.venv/bin/python","-m","manim.renderer.source_runtime_identity"]' \
   pnpm test:e2e:preview:real
 ```
 
 This lane uses a checked-in Python Scene with a filled Circle, filled Rectangle,
-and stroked Line. It verifies the retained host correlation and exact GPU texture
-readback. It is not a browser-compositor golden, reference-image comparison, or
-decision-grade real-GPU performance report; those remain tracked separately. It
-also proves that Studio projects the static producer profile's verified 1-second
-duration instead of its 0.1-second source-import estimate; arbitrary Manim Scene
-duration and source-to-runtime hit-target identity remain follow-up work.
+and stroked Line, plus a V2 Scene with linear FadeIn/FadeOut opacity and bounded
+lifetime intervals. It verifies retained-host correlation, non-monotonic forward/backward
+seeks, exact GPU texture readback, variable duration, and verified runtime hit
+geometry. It is not a browser-compositor golden, reference-image comparison, or
+decision-grade real-GPU performance report; those remain tracked separately.
 
 ## Canonical WebGPU benchmark lane
 

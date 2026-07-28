@@ -41,6 +41,7 @@ export default defineConfig({
       POIETRA_AI_DEBUG_LOG: "off",
       POIETRA_FAST_MANIM_SNAPSHOT_COMMAND: producerCommand,
       POIETRA_FAST_MANIM_SNAPSHOT_DEV_OPT_IN: "1",
+      POIETRA_FAST_MANIM_SNAPSHOT_VERSION: "2",
       POIETRA_MANIM_PROJECTS: JSON.stringify([
         {
           id: "real-preview-harness",
