@@ -4,11 +4,11 @@ import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 
 import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
-import { handleManimRequest, type ManimApi, resolveByteRange } from "./manim-render-http";
+import { handleManimRequest, type ManimApi, type ManimRequestPolicy, resolveByteRange } from "./manim-render-http";
 
-async function listen(api: ManimApi) {
+async function listen(api: ManimApi, policy?: ManimRequestPolicy) {
   const server = createServer((request, response) => {
-    void handleManimRequest(createTrustedLocalManimRequestContext(api, "test"), request, response);
+    void handleManimRequest(createTrustedLocalManimRequestContext(api, "test"), request, response, undefined, policy);
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -130,6 +130,29 @@ describe("async Manim API port", () => {
       expect(range.headers["content-range"]).toBe("bytes 1-2/4");
       expect(open).toHaveBeenCalledWith({ end: 2, start: 1 }, expect.any(AbortSignal));
       expect(close).toHaveBeenCalledOnce();
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("validates stream policy before acquiring an authorized media handle", async () => {
+    const video = vi.fn();
+    const api = {
+      storageBoundary: { kind: "shared-durable", namespace: "http-media-policy-test" },
+      tenantId: "tenant-media",
+      video,
+    } as unknown as ManimApi;
+    const server = await listen(api, {
+      allowExistingProjectRegistration: true,
+      mediaStreamIdleTimeoutMs: 999,
+    });
+    try {
+      const response = await send(
+        (server.address() as AddressInfo).port,
+        "/api/manim/renders/00000000-0000-4000-8000-000000000001/video",
+      );
+      expect(response.status).toBe(500);
+      expect(video).not.toHaveBeenCalled();
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }

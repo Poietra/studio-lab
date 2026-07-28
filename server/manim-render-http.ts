@@ -535,13 +535,8 @@ async function routeManimRequest(
     return;
   }
   if ((request.method === "GET" || request.method === "HEAD") && action === "video") {
-    await streamVideo(
-      request,
-      response,
-      await manager.video(id, signal),
-      signal,
-      mediaStreamIdleTimeout(policy.mediaStreamIdleTimeoutMs),
-    );
+    const idleTimeoutMs = mediaStreamIdleTimeout(policy.mediaStreamIdleTimeoutMs);
+    await streamVideo(request, response, await manager.video(id, signal), signal, idleTimeoutMs);
     return;
   }
   if (request.method !== "POST") throw new HttpError("Method not allowed.", 405);
