@@ -61,6 +61,7 @@ function session(overrides: Partial<DurableRenderSessionV1> = {}): DurableRender
     programTransactionId: "transaction-1",
     progress: 0.2,
     projectId: "project-a",
+    projectPng: null,
     renderRequestId: "render-1",
     sceneName: "MainScene",
     sourcePath: "main.py",

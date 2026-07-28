@@ -16,6 +16,7 @@ import {
   renderSessionTransitionTargets,
 } from "../../manim-render-session-policy";
 import { manimTenantIdSchema } from "../../manim-request-principal";
+import { assertProjectPngReceiptV1, type ProjectPngHeadV1 } from "../project-png-storage";
 import {
   type CreateDurableRenderSessionInputV1,
   type DurableRenderLeaseClaimV1,
@@ -34,6 +35,7 @@ import {
   type RenderSessionRepositoryV1,
 } from "../render-session-repository";
 import { MAX_MANIM_SOURCE_BYTES_V1, type SourceBlobReceiptV1 } from "../workspace-source-repository";
+import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 
 export const RENDER_SESSION_MIGRATION_V2_CHECKSUM = "f67255ae5d05b2951975a700974a9748c848c6a39b9bb51b3189c3e8ed2664e9";
@@ -91,6 +93,12 @@ type SessionRow = QueryResultRow & {
   program_transaction_id: string;
   progress: number;
   project_id: string;
+  project_png_byte_size: number | null;
+  project_png_digest: string | null;
+  project_png_etag: string | null;
+  project_png_generation: string | null;
+  project_png_object_key: string | null;
+  project_png_version_id: string | null;
   render_request_id: string;
   scene_name: string;
   session_id: string;
@@ -107,6 +115,12 @@ type BlobRow = QueryResultRow & {
   etag: string;
   object_key: string;
   version_id: string;
+};
+
+type ProjectPngRow = BlobRow & {
+  generation: string;
+  project_id: string;
+  tenant_id: string;
 };
 
 type ActionRow = QueryResultRow & {
@@ -143,6 +157,8 @@ const SESSION_COLUMNS = `
   s.lease_owner,
   s.lease_expires_at,
   s.progress,
+  s.project_png_generation::text AS project_png_generation,
+  s.project_png_digest,
   s.log_tail,
   s.error,
   s.artifact_locator,
@@ -158,6 +174,10 @@ const SESSION_COLUMNS = `
   patched.version_id AS patched_version_id,
   patched.etag AS patched_etag,
   patched.byte_size AS patched_byte_size,
+  project_png.object_key AS project_png_object_key,
+  project_png.version_id AS project_png_version_id,
+  project_png.etag AS project_png_etag,
+  project_png.byte_size AS project_png_byte_size,
   action.action_id::text AS action_id,
   action.kind AS action_kind,
   action.expected_key AS action_expected_key,
@@ -172,6 +192,11 @@ const SESSION_JOINS = `
     ON original.tenant_id = s.tenant_id AND original.digest = s.original_digest
   JOIN public.source_blob_objects patched
     ON patched.tenant_id = s.tenant_id AND patched.digest = s.patched_digest
+  LEFT JOIN public.project_png_objects project_png
+    ON project_png.tenant_id = s.tenant_id
+   AND project_png.project_id = s.project_id
+   AND project_png.generation = s.project_png_generation
+   AND project_png.digest = s.project_png_digest
   LEFT JOIN public.render_source_actions action
     ON action.tenant_id = s.tenant_id
    AND action.session_id = s.session_id
@@ -237,6 +262,13 @@ function sourceDigest(value: string) {
   return value;
 }
 
+function projectPngGeneration(value: bigint) {
+  if (value < 1n || value > 9_223_372_036_854_775_807n) {
+    throw new TypeError("Project image.png generation is invalid.");
+  }
+  return value;
+}
+
 function blobReceipt(tenant: string, value: SourceBlobReceiptV1): SourceBlobReceiptV1 {
   const digest = sourceDigest(value.digest);
   const expectedKey = `tenants/${tenant}/sources/${digest}`;
@@ -272,6 +304,37 @@ function blobFromRow(row: SessionRow, prefix: "original" | "patched"): SourceBlo
     etag: row[`${prefix}_etag`],
     objectKey: row[`${prefix}_object_key`],
     versionId: row[`${prefix}_version_id`],
+  };
+}
+
+function projectPngFromRow(row: SessionRow): ProjectPngHeadV1 | null {
+  const values = [
+    row.project_png_generation,
+    row.project_png_digest,
+    row.project_png_object_key,
+    row.project_png_version_id,
+    row.project_png_etag,
+    row.project_png_byte_size,
+  ];
+  if (values.every((value) => value === null)) return null;
+  if (values.some((value) => value === null || value === undefined)) {
+    throw new TypeError("PostgreSQL returned an incomplete project image.png render pin.");
+  }
+  const generation = BigInt(row.project_png_generation!);
+  if (generation < 1n || generation > 9_223_372_036_854_775_807n) {
+    throw new TypeError("PostgreSQL returned an invalid project image.png generation.");
+  }
+  return {
+    generation,
+    projectId: row.project_id,
+    receipt: assertProjectPngReceiptV1(row.tenant_id, row.project_id, {
+      byteSize: row.project_png_byte_size!,
+      digest: row.project_png_digest!,
+      etag: row.project_png_etag!,
+      objectKey: row.project_png_object_key!,
+      versionId: row.project_png_version_id!,
+    }),
+    tenantId: row.tenant_id,
   };
 }
 
@@ -338,6 +401,7 @@ function sessionFromRow(row: SessionRow): DurableRenderSessionV1 {
     programTransactionId: row.program_transaction_id,
     progress: row.progress,
     projectId: row.project_id,
+    projectPng: projectPngFromRow(row),
     renderRequestId: row.render_request_id,
     sceneName: row.scene_name,
     sourcePath: row.source_path,
@@ -422,12 +486,18 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
 
   async ready(signal?: AbortSignal) {
     try {
-      const result = await this.#connection.query<{ checksum: string }>(
-        "SELECT checksum FROM public.poietra_schema_migrations WHERE version = 2",
+      const result = await this.#connection.query<{ checksum: string; version: number }>(
+        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (2, 5) ORDER BY version",
         [],
         signal,
       );
-      return result.rowCount === 1 && result.rows[0]?.checksum === RENDER_SESSION_MIGRATION_V2_CHECKSUM;
+      return (
+        result.rowCount === 2 &&
+        result.rows[0]?.version === 2 &&
+        result.rows[0]?.checksum === RENDER_SESSION_MIGRATION_V2_CHECKSUM &&
+        result.rows[1]?.version === 5 &&
+        result.rows[1]?.checksum === PROJECT_PNG_MIGRATION_V5_CHECKSUM
+      );
     } catch {
       throwIfAborted(signal);
       return false;
@@ -498,16 +568,36 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
         ) {
           throw new HttpError("The source changed before this render session could be created.", 409);
         }
+        const projectPngResult = await client.query<ProjectPngRow>(
+          `SELECT h.tenant_id, h.project_id, h.generation::text AS generation,
+                  o.digest, o.object_key, o.version_id, o.etag, o.byte_size
+             FROM public.project_png_heads h
+             JOIN public.project_png_objects o
+               ON o.tenant_id = h.tenant_id AND o.project_id = h.project_id
+              AND o.generation = h.generation AND o.digest = h.digest
+            WHERE h.tenant_id = $1 AND h.project_id = $2
+            FOR KEY SHARE OF h, o`,
+          [tenant, project],
+        );
+        const pinnedPngRow = projectPngResult.rows[0];
+        const projectPng = pinnedPngRow
+          ? {
+              generation: projectPngGeneration(BigInt(pinnedPngRow.generation)),
+              receipt: assertProjectPngReceiptV1(tenant, project, receiptFromBlobRow(pinnedPngRow)),
+            }
+          : null;
         await this.#registerBlob(client, tenant, patched);
         await client.query(
           `INSERT INTO public.render_sessions
              (tenant_id, session_id, project_id, source_path, scene_name,
               program_batch_id, program_transaction_id, render_request_id, commit_correlation_key,
               original_generation, original_digest, patched_digest,
+              project_png_generation, project_png_digest,
               patch_anchor_line, patch_anchor_lines, patch_inserted_code, status, execution_deadline)
            VALUES (
-             $1, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10::bigint, $11, $12, $13, $14, $15,
-             'preparing', clock_timestamp() + ($16::integer * interval '1 millisecond')
+             $1, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10::bigint, $11, $12,
+             $13::bigint, $14, $15, $16, $17,
+             'preparing', clock_timestamp() + ($18::integer * interval '1 millisecond')
            )`,
           [
             tenant,
@@ -522,6 +612,8 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
             generation.toString(),
             original.digest,
             patched.digest,
+            projectPng?.generation ?? null,
+            projectPng?.receipt.digest ?? null,
             input.patch.anchorLine,
             [...input.patch.anchorLines],
             input.patch.insertedCode,

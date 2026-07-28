@@ -85,6 +85,12 @@ const STORAGE_SUITES = [
     id: "render-artifact",
     title: "survives SIGKILL, atomically publishes versioned media, fences races, expires reads, and collects orphans",
   },
+  {
+    database: "poietra_project_png",
+    file: "server/storage/project-png-storage.real.test.ts",
+    id: "project-png",
+    title: "replaces atomically, pins render generations, isolates tenants, and collects an upload orphan",
+  },
 ];
 
 function postgresIdentifier(value) {

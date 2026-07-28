@@ -61,6 +61,7 @@ function sessionFromCreate(input: CreateDurableRenderSessionInputV1): DurableRen
     programTransactionId: input.programTransactionId,
     progress: 0,
     projectId: input.originalHead.projectId,
+    projectPng: null,
     renderRequestId: input.renderRequestId,
     sceneName: input.sceneName,
     sourcePath: input.originalHead.sourcePath,
