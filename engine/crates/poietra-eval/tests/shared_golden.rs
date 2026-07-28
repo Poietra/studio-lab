@@ -93,6 +93,7 @@ fn parses_and_evaluates_shared_typescript_rust_fixture() {
         .draws
         .iter()
         .map(|draw| match draw {
+            RenderDrawV1::Empty { .. } => "empty",
             RenderDrawV1::Image { .. } => "image",
             RenderDrawV1::Path { .. } => "path",
         })
@@ -103,7 +104,7 @@ fn parses_and_evaluates_shared_typescript_rust_fixture() {
         .draws
         .iter()
         .map(|draw| match draw {
-            RenderDrawV1::Image { .. } => 0,
+            RenderDrawV1::Empty { .. } | RenderDrawV1::Image { .. } => 0,
             RenderDrawV1::Path { path, .. } => path
                 .subpaths
                 .iter()

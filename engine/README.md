@@ -57,9 +57,9 @@ packet miter limit. Stroke inputs are transformed and camera-rebased in f64 befo
 checked f32 Lyon tessellation at the target-derived 0.25-pixel tolerance;
 world-space width is not multiplied by the object transform. Combined paths emit
 adjacent fill-then-stroke paint phases with distinct materials, before the next
-source draw. Nonzero morph/trim/motion samples use this same path; trim progress
-zero remains an explicit degenerate-stroke fallback tracked by #75. Open fill,
-image, degenerate, numeric, precision-collapse, and tessellation-limit cases reject
+source draw. Nonzero morph/trim/motion samples use this same path; exact zero trim
+lowers to an explicit `path-trim-zero` empty visual and contributes no paint phase.
+Open fill, image, unmarked degenerate, numeric, precision-collapse, and tessellation-limit cases reject
 the complete frame with a structured error. Each fill is bounded to 2,048 source
 cubics, 32,768 flattened input points, and 65,536 Lyon output vertices; each stroke
 is bounded to 2,048 source cubics, a preflighted 32,768 flattened segments, 65,536

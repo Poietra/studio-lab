@@ -639,6 +639,21 @@ pub struct SceneIrV1 {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum RenderDrawV1 {
+    #[serde(rename = "empty")]
+    Empty {
+        #[serde(rename = "drawId")]
+        draw_id: String,
+        #[serde(rename = "entityId")]
+        entity_id: String,
+        opacity: f64,
+        #[serde(rename = "paintOrder")]
+        #[serde(deserialize_with = "deserialize_js_safe_u32")]
+        paint_order: u32,
+        reason: RenderEmptyReasonV1,
+        #[serde(rename = "sourceZIndex")]
+        source_z_index: f64,
+        transform: AffineTransformV1,
+    },
     #[serde(rename = "path")]
     Path {
         #[serde(rename = "drawId")]
@@ -680,39 +695,53 @@ impl RenderDrawV1 {
     #[must_use]
     pub fn draw_id(&self) -> &str {
         match self {
-            Self::Path { draw_id, .. } | Self::Image { draw_id, .. } => draw_id,
+            Self::Empty { draw_id, .. }
+            | Self::Path { draw_id, .. }
+            | Self::Image { draw_id, .. } => draw_id,
         }
     }
 
     #[must_use]
     pub fn entity_id(&self) -> &str {
         match self {
-            Self::Path { entity_id, .. } | Self::Image { entity_id, .. } => entity_id,
+            Self::Empty { entity_id, .. }
+            | Self::Path { entity_id, .. }
+            | Self::Image { entity_id, .. } => entity_id,
         }
     }
 
     #[must_use]
     pub const fn opacity(&self) -> f64 {
         match self {
-            Self::Path { opacity, .. } | Self::Image { opacity, .. } => *opacity,
+            Self::Empty { opacity, .. }
+            | Self::Path { opacity, .. }
+            | Self::Image { opacity, .. } => *opacity,
         }
     }
 
     #[must_use]
     pub const fn paint_order(&self) -> u32 {
         match self {
-            Self::Path { paint_order, .. } | Self::Image { paint_order, .. } => *paint_order,
+            Self::Empty { paint_order, .. }
+            | Self::Path { paint_order, .. }
+            | Self::Image { paint_order, .. } => *paint_order,
         }
     }
 
     #[must_use]
     pub const fn source_z_index(&self) -> f64 {
         match self {
-            Self::Path { source_z_index, .. } | Self::Image { source_z_index, .. } => {
-                *source_z_index
-            }
+            Self::Empty { source_z_index, .. }
+            | Self::Path { source_z_index, .. }
+            | Self::Image { source_z_index, .. } => *source_z_index,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum RenderEmptyReasonV1 {
+    #[serde(rename = "path-trim-zero")]
+    PathTrimZero,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]

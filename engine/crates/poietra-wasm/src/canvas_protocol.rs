@@ -340,6 +340,7 @@ pub(crate) fn surface_configuration_required(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use poietra_scene_ir::{RenderDrawV1, RenderEmptyReasonV1};
     use serde_json::Value;
     use serde_json::json;
 
@@ -447,6 +448,67 @@ mod tests {
         assert_eq!(interaction["entries"][3]["status"], "unavailable");
         assert_eq!(interaction["entries"][4]["status"], "empty");
         assert_eq!(interaction["entries"][5]["status"], "unavailable");
+    }
+
+    #[test]
+    fn sampled_zero_trim_reports_empty_while_lifetime_and_other_bounds_survive() {
+        let mut fixture: Value = serde_json::from_slice(
+            &std::fs::read(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../fixtures/engine-v1/generic-stroke-topology.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let channels = fixture["scene"]["animationChannels"]
+            .as_array_mut()
+            .unwrap();
+        let trim = channels
+            .iter_mut()
+            .find(|channel| channel["kind"] == "path-trim" && channel["entityId"] == "curve")
+            .unwrap();
+        trim["keyframes"][0]["value"] = json!(0);
+        let entities = fixture["scene"]["entities"].as_array_mut().unwrap();
+        let inactive = entities
+            .iter_mut()
+            .find(|entity| entity["id"] == "joined")
+            .unwrap();
+        inactive["lifetimes"] = json!([{ "end": 1, "start": 0.5 }]);
+        let snapshot = serde_json::to_vec(&json!({
+            "assets": fixture["assets"],
+            "scene": fixture["scene"],
+        }))
+        .unwrap();
+        let session = EngineWorkerSessionV1::from_snapshot_json(&snapshot).unwrap();
+        let request = serde_json::to_vec(&json!({
+            "evidence": [],
+            "interactionEntityIds": ["curve", "joined", "combined"],
+            "packetId": "canvas:zero-trim",
+            "sampleTime": 0,
+            "schema": "poietra.engine-sample-request",
+            "version": 1,
+            "viewport": { "heightPx": 900, "widthPx": 1600 },
+        }))
+        .unwrap();
+
+        let sampled = session.sample_packet_json(&request).unwrap();
+        assert!(matches!(
+            sampled.packet.draws.first(),
+            Some(RenderDrawV1::Empty {
+                reason: RenderEmptyReasonV1::PathTrimZero,
+                ..
+            })
+        ));
+        let interaction = interaction_metadata(&sampled.interaction, |entity_id| {
+            (entity_id == "combined").then_some([-0.5, -0.5, 0.5, 0.5])
+        });
+        let response =
+            presented_response_with_interaction(&sampled.correlation, false, interaction);
+        let value: Value = serde_json::from_slice(&response).unwrap();
+        let entries = &value["result"]["interaction"]["entries"];
+        assert_eq!(entries[0]["status"], "empty");
+        assert_eq!(entries[1]["status"], "inactive");
+        assert_eq!(entries[2]["status"], "present");
     }
 
     #[test]

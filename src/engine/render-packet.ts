@@ -58,6 +58,14 @@ const pathDrawV1Schema = z
   })
   .strict();
 
+const emptyDrawV1Schema = z
+  .object({
+    ...drawBase,
+    kind: z.literal("empty"),
+    reason: z.literal("path-trim-zero"),
+  })
+  .strict();
+
 const imageDrawV1Schema = z
   .object({
     ...drawBase,
@@ -68,7 +76,7 @@ const imageDrawV1Schema = z
   })
   .strict();
 
-const renderDrawV1Schema = z.discriminatedUnion("kind", [imageDrawV1Schema, pathDrawV1Schema]);
+const renderDrawV1Schema = z.discriminatedUnion("kind", [emptyDrawV1Schema, imageDrawV1Schema, pathDrawV1Schema]);
 const renderCapabilityV1Schema = z.enum(["cubic-path-fill", "cubic-path-stroke", "png-image"]);
 
 const renderCameraV1Schema = z
