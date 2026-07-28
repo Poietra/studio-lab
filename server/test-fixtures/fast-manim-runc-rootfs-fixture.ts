@@ -10,7 +10,7 @@ export const FAST_MANIM_TEST_ROOTFS_DIGEST_V1 = createHash("sha256")
 
 export function createFastManimRuncRootfsFixtureV1(
   rootfsPath: string,
-  options: Readonly<{ onEvent?: (event: string) => void }> = {},
+  options: Readonly<{ closeError?: Error; onEvent?: (event: string) => void }> = {},
 ) {
   const imagePath = `${rootfsPath}.erofs`;
   const imageStat = Object.freeze({
@@ -28,11 +28,15 @@ export function createFastManimRuncRootfsFixtureV1(
     format: "erofs",
     imagePath,
     io: {
+      async lstatPath() {
+        return { gid: 0n, mode: BigInt(constants.S_IFDIR | 0o755), uid: 0n };
+      },
       async openImage() {
         options.onEvent?.("rootfs:image-open");
         return {
           async close() {
             options.onEvent?.("rootfs:image-close");
+            if (options.closeError) throw options.closeError;
           },
           async read(position, length) {
             return FAST_MANIM_TEST_ROOTFS_BYTES_V1.subarray(position, position + length);
@@ -47,11 +51,15 @@ export function createFastManimRuncRootfsFixtureV1(
         return {
           async close() {
             options.onEvent?.("rootfs:mount-close");
+            if (options.closeError) throw options.closeError;
           },
           async stat() {
             return { dev: 0x703n, mode: BigInt(constants.S_IFDIR | 0o555) };
           },
         };
+      },
+      async realpath(path) {
+        return path;
       },
       async readText(path) {
         const values: Readonly<Record<string, string>> = {

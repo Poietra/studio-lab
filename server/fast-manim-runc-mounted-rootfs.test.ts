@@ -20,6 +20,8 @@ type FixtureOptions = Readonly<{
   closeFails?: boolean;
   content?: Uint8Array;
   mountinfo?: string;
+  pathStats?: Readonly<Record<string, Partial<{ gid: bigint; mode: bigint; uid: bigint }>>>;
+  realpaths?: Readonly<Record<string, string | readonly string[]>>;
   rootfsDev?: bigint;
   stat?: Partial<{
     dev: bigint;
@@ -61,6 +63,14 @@ function fixture(options: FixtureOptions = {}) {
   let closeCount = 0;
   let imageReadCount = 0;
   const io: FastManimRuncMountedRootfsIoV1 = {
+    async lstatPath(path) {
+      return {
+        gid: 0n,
+        mode: BigInt(constants.S_IFDIR | 0o755),
+        uid: 0n,
+        ...options.pathStats?.[path],
+      };
+    },
     async openImage(path) {
       expect(path).toBe(IMAGE_PATH);
       let closed = false;
@@ -93,6 +103,14 @@ function fixture(options: FixtureOptions = {}) {
         },
       };
     },
+    async realpath(path) {
+      const value = options.realpaths?.[path] ?? path;
+      if (typeof value === "string") return value;
+      const key = `realpath:${path}`;
+      const index = readCounts.get(key) ?? 0;
+      readCounts.set(key, index + 1);
+      return value[Math.min(index, value.length - 1)] ?? "";
+    },
     async readText(path) {
       const value = defaults[path];
       if (typeof value === "string") return value;
@@ -109,7 +127,7 @@ function fixture(options: FixtureOptions = {}) {
     rootfsDigest: DIGEST,
     rootfsPath: ROOTFS_PATH,
   });
-  return { closeCount: () => closeCount, imageReadCount: () => imageReadCount, registry };
+  return { closeCount: () => closeCount, imageReadCount: () => imageReadCount, io, registry };
 }
 
 describe("mounted rootfs verifier", () => {
@@ -143,6 +161,24 @@ describe("mounted rootfs verifier", () => {
     expect(isProductionFastManimRuncMountedRootfsRegistryV1(production)).toBe(false);
   });
 
+  it("does not brand a registry through an unstable io getter", async () => {
+    const test = fixture();
+    let reads = 0;
+    const registry = new FastManimRuncMountedRootfsRegistryV1({
+      format: "erofs",
+      imagePath: IMAGE_PATH,
+      get io() {
+        reads += 1;
+        return reads === 1 ? test.io : undefined;
+      },
+      rootfsDigest: DIGEST,
+      rootfsPath: ROOTFS_PATH,
+    });
+    await registry.assertReady(new AbortController().signal);
+    expect(reads).toBe(1);
+    expect(isProductionFastManimRuncMountedRootfsRegistryV1(registry)).toBe(false);
+  });
+
   it("classifies an fd close failure as cleanup", async () => {
     const test = fixture({ closeFails: true });
     await expect(test.registry.assertReady(new AbortController().signal)).rejects.toMatchObject({ code: "cleanup" });
@@ -164,6 +200,23 @@ describe("mounted rootfs verifier", () => {
   it("rejects a mount fd from a different device", async () => {
     await expect(
       fixture({ rootfsDev: 0x704n }).registry.assertReady(new AbortController().signal),
+    ).rejects.toBeInstanceOf(FastManimRuncMountedRootfsError);
+  });
+
+  it.each([
+    ["image symlink ancestor", "/srv/poietra/images", { mode: BigInt(constants.S_IFLNK | 0o777) }],
+    ["image writable ancestor", "/srv/poietra/images", { mode: BigInt(constants.S_IFDIR | 0o775) }],
+    ["rootfs non-root ancestor", "/srv/poietra/rootfs", { uid: 1000n }],
+    ["rootfs non-directory ancestor", "/srv/poietra/rootfs", { mode: BigInt(constants.S_IFREG | 0o755) }],
+  ])("rejects a %s", async (_label, path, pathStat) => {
+    await expect(
+      fixture({ pathStats: { [path]: pathStat } }).registry.assertReady(new AbortController().signal),
+    ).rejects.toBeInstanceOf(FastManimRuncMountedRootfsError);
+  });
+
+  it.each([IMAGE_PATH, ROOTFS_PATH])("rejects a non-canonical realpath for %s", async (path) => {
+    await expect(
+      fixture({ realpaths: { [path]: `${path}-drifted` } }).registry.assertReady(new AbortController().signal),
     ).rejects.toBeInstanceOf(FastManimRuncMountedRootfsError);
   });
 
@@ -199,7 +252,7 @@ describe("mounted rootfs verifier", () => {
     ).rejects.toBeInstanceOf(FastManimRuncMountedRootfsError);
     const aborted = new AbortController();
     aborted.abort();
-    await expect(test.registry.assertReady(aborted.signal)).rejects.toBeInstanceOf(FastManimRuncMountedRootfsError);
+    await expect(test.registry.assertReady(aborted.signal)).rejects.toMatchObject({ name: "AbortError" });
   });
 
   it("permanently taints mount drift and rejects a duplicate active job lease", async () => {
@@ -222,5 +275,39 @@ describe("mounted rootfs verifier", () => {
       FastManimRuncMountedRootfsError,
     );
     await lease.close();
+    const renewed = await handle.acquireForJob(jobId, new AbortController().signal);
+    await renewed.close();
+  });
+
+  it("keeps a failed lease cleanup quarantined", async () => {
+    const test = fixture({ closeFails: true });
+    const handle = test.registry.resolve(DIGEST);
+    const jobId = "poietra-job-v1-0123456789abcdef0123456789abcdef-1";
+    const lease = await handle.acquireForJob(jobId, new AbortController().signal);
+    await expect(lease.close()).rejects.toMatchObject({ code: "cleanup" });
+    await expect(handle.acquireForJob(jobId, new AbortController().signal)).rejects.toMatchObject({
+      code: "unavailable",
+    });
+  });
+
+  it("permanently taints realpath drift after warm-up", async () => {
+    const test = fixture({ realpaths: { [IMAGE_PATH]: [IMAGE_PATH, `${IMAGE_PATH}-drifted`, IMAGE_PATH] } });
+    await test.registry.assertReady(new AbortController().signal);
+    await expect(test.registry.assertReady(new AbortController().signal)).rejects.toBeInstanceOf(
+      FastManimRuncMountedRootfsError,
+    );
+    await expect(test.registry.assertReady(new AbortController().signal)).rejects.toBeInstanceOf(
+      FastManimRuncMountedRootfsError,
+    );
+  });
+
+  it("does not let an ordinary cancellation permanently taint a warmed registry", async () => {
+    const test = fixture();
+    await test.registry.assertReady(new AbortController().signal);
+    const aborted = new AbortController();
+    const reason = new Error("cancelled by caller");
+    aborted.abort(reason);
+    await expect(test.registry.assertReady(aborted.signal)).rejects.toBe(reason);
+    await expect(test.registry.assertReady(new AbortController().signal)).resolves.toBeUndefined();
   });
 });

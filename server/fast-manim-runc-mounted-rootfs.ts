@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { open, readFile } from "node:fs/promises";
-import { parse, resolve } from "node:path";
+import { lstat, open, readFile, realpath } from "node:fs/promises";
+import { dirname, parse, resolve } from "node:path";
 
 import { isFastManimSandboxResourceCgroupNameV1 } from "./fast-manim-sandbox-resources";
 
@@ -23,9 +23,13 @@ type DirectoryV1 = Readonly<{
   stat(): Promise<Readonly<{ dev: bigint; mode: bigint }>>;
 }>;
 
+type PathStatV1 = Readonly<{ gid: bigint; mode: bigint; uid: bigint }>;
+
 export type FastManimRuncMountedRootfsIoV1 = Readonly<{
+  lstatPath(path: string): Promise<PathStatV1>;
   openImage(path: string): Promise<ImageV1>;
   openRootfs(path: string): Promise<DirectoryV1>;
+  realpath(path: string): Promise<string>;
   readText(path: string): Promise<string>;
 }>;
 
@@ -65,7 +69,8 @@ function canonicalPath(value: unknown) {
 }
 
 function notAborted(signal: AbortSignal) {
-  if (!(signal instanceof AbortSignal) || signal.aborted) fail("unavailable");
+  if (!(signal instanceof AbortSignal)) fail("configuration");
+  signal.throwIfAborted();
 }
 
 function parseMountInfo(value: string) {
@@ -116,7 +121,27 @@ function sameImage(left: ImageStatV1, right: ImageStatV1) {
   return IMAGE_STAT_KEYS.every((key) => left[key] === right[key]);
 }
 
+async function verifyPath(io: FastManimRuncMountedRootfsIoV1, path: string, signal: AbortSignal) {
+  if ((await io.realpath(path)) !== path) fail("unavailable");
+  let ancestor = dirname(path);
+  while (true) {
+    notAborted(signal);
+    const stat = await io.lstatPath(ancestor);
+    if (
+      (stat.mode & BigInt(constants.S_IFMT)) !== BigInt(constants.S_IFDIR) ||
+      stat.uid !== 0n ||
+      stat.gid !== 0n ||
+      (stat.mode & 0o022n) !== 0n
+    ) {
+      fail("unavailable");
+    }
+    if (ancestor === parse(ancestor).root) return;
+    ancestor = dirname(ancestor);
+  }
+}
+
 const realIoV1: FastManimRuncMountedRootfsIoV1 = Object.freeze({
+  lstatPath: (path) => lstat(path, { bigint: true }),
   async openImage(path) {
     const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     return {
@@ -135,6 +160,7 @@ const realIoV1: FastManimRuncMountedRootfsIoV1 = Object.freeze({
     const handle = await open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     return { close: () => handle.close(), stat: () => handle.stat({ bigint: true }) };
   },
+  realpath,
   readText: (path) => readFile(path, "utf8"),
 });
 
@@ -245,7 +271,7 @@ export class FastManimRuncMountedRootfsHandleV1 {
 }
 
 export class FastManimRuncMountedRootfsRegistryV1 {
-  readonly #active = new Set<string>();
+  readonly #active = new Map<string, FastManimRuncMountedRootfsLeaseV1 | null>();
   readonly #format: "erofs" | "squashfs";
   readonly #imagePath: string;
   readonly #io: FastManimRuncMountedRootfsIoV1;
@@ -266,16 +292,25 @@ export class FastManimRuncMountedRootfsRegistryV1 {
     }>,
   ) {
     try {
-      if (!options || !digestV1.test(options.rootfsDigest) || !["erofs", "squashfs"].includes(options.format)) {
+      const format = options?.format;
+      const imagePath = options?.imagePath;
+      const io = options?.io;
+      const rootfsDigest = options?.rootfsDigest;
+      const rootfsPath = options?.rootfsPath;
+      if (
+        typeof rootfsDigest !== "string" ||
+        !digestV1.test(rootfsDigest) ||
+        (format !== "erofs" && format !== "squashfs")
+      ) {
         fail("configuration");
       }
-      this.#imagePath = canonicalPath(options.imagePath);
-      this.#rootfsPath = canonicalPath(options.rootfsPath);
+      this.#imagePath = canonicalPath(imagePath);
+      this.#rootfsPath = canonicalPath(rootfsPath);
       if (this.#imagePath === this.#rootfsPath) fail("configuration");
-      this.#format = options.format;
-      this.#rootfsDigest = options.rootfsDigest;
-      this.#io = options.io ?? realIoV1;
-      this.#usesRealIo = options.io === undefined;
+      this.#format = format;
+      this.#rootfsDigest = rootfsDigest;
+      this.#io = io ?? realIoV1;
+      this.#usesRealIo = io === undefined;
       Object.freeze(this);
     } catch {
       fail("configuration");
@@ -302,11 +337,11 @@ export class FastManimRuncMountedRootfsRegistryV1 {
   async acquire(jobId: string, signal: AbortSignal): Promise<FastManimRuncMountedRootfsLeaseV1> {
     if (!isFastManimSandboxResourceCgroupNameV1(jobId)) fail("configuration");
     if (this.#tainted || this.#active.has(jobId)) fail("unavailable");
-    this.#active.add(jobId);
+    this.#active.set(jobId, null);
     try {
       const verified = await this.#verify(signal);
       let closing: Promise<void> | undefined;
-      return Object.freeze({
+      const lease = Object.freeze({
         close: () =>
           (closing ??= closeVerified(verified.image, verified.rootfs).then(
             () => {
@@ -319,6 +354,8 @@ export class FastManimRuncMountedRootfsRegistryV1 {
           )),
         rootfsPath: this.#rootfsPath,
       });
+      this.#active.set(jobId, lease);
+      return lease;
     } catch (error) {
       this.#active.delete(jobId);
       throw error;
@@ -330,8 +367,10 @@ export class FastManimRuncMountedRootfsRegistryV1 {
     let image: ImageV1 | undefined;
     let rootfs: DirectoryV1 | undefined;
     try {
+      await verifyPath(this.#io, this.#imagePath, signal);
       image = await this.#io.openImage(this.#imagePath);
       const stat = await verifyImage(image, this.#rootfsDigest, this.#verifiedStat, signal);
+      await verifyPath(this.#io, this.#rootfsPath, signal);
       rootfs = await this.#io.openRootfs(this.#rootfsPath);
       const rootStat = await rootfs.stat();
       const { diskseq, mount } = await verifyMount(this.#io, this.#rootfsPath, this.#imagePath, this.#format, signal);
@@ -350,12 +389,14 @@ export class FastManimRuncMountedRootfsRegistryV1 {
       if (!sameImage(this.#verifiedStat, stat)) fail("unavailable");
       return { image, rootfs };
     } catch (error) {
-      if (this.#verifiedStat !== undefined) this.#latch();
+      const aborted = signal.aborted;
+      if (this.#verifiedStat !== undefined && !aborted) this.#latch();
       const settled = await Promise.allSettled([image?.close(), rootfs?.close()]);
       if (settled.some((result) => result.status === "rejected")) {
         this.#latch();
         fail("cleanup");
       }
+      if (aborted) signal.throwIfAborted();
       if (error instanceof FastManimRuncMountedRootfsError) throw error;
       return fail("unavailable");
     }

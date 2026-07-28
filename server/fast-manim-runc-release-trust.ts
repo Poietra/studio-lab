@@ -5,6 +5,7 @@ import { z } from "zod";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import { FastManimOciBrokerDispatchV1, fastManimOciJobDescriptorV1Schema } from "./fast-manim-oci-sandbox-profile";
 import {
+  FastManimRuncMountedRootfsError,
   FastManimRuncMountedRootfsHandleV1,
   type FastManimRuncMountedRootfsLeaseV1,
   FastManimRuncMountedRootfsRegistryV1,
@@ -70,7 +71,10 @@ export class FastManimRuncReleaseTrustError extends Error {
 }
 
 const verifiedReleaseCapabilityV1 = Object.freeze({ kind: "fast-manim-runc-verified-release" as const });
-const verifiedReleaseRegistriesV1 = new WeakMap<FastManimRuncVerifiedReleaseV1, FastManimRuncMountedRootfsRegistryV1>();
+const verifiedReleaseOriginsV1 = new WeakMap<
+  FastManimRuncVerifiedReleaseV1,
+  Readonly<{ registry: FastManimRuncMountedRootfsRegistryV1; systemClock: boolean }>
+>();
 const RELEASE_DESCRIPTOR_DIGESTS = Object.freeze([
   "imageDigest",
   "profileDigest",
@@ -113,6 +117,7 @@ export class FastManimRuncVerifiedReleaseV1 {
     rootfs: FastManimRuncMountedRootfsHandleV1,
     rootfsRegistry: FastManimRuncMountedRootfsRegistryV1,
     now: () => number,
+    systemClock: boolean,
   ) {
     if (
       capability !== verifiedReleaseCapabilityV1 ||
@@ -127,7 +132,7 @@ export class FastManimRuncVerifiedReleaseV1 {
     this.#payload = Object.freeze({ ...payload });
     this.#rootfs = rootfs;
     this.#rootfsRegistry = rootfsRegistry;
-    verifiedReleaseRegistriesV1.set(this, rootfsRegistry);
+    verifiedReleaseOriginsV1.set(this, Object.freeze({ registry: rootfsRegistry, systemClock }));
     Object.freeze(this);
   }
 
@@ -161,8 +166,9 @@ export class FastManimRuncVerifiedReleaseV1 {
       this.#assertCurrent();
       await this.#rootfsRegistry.assertReady(signal);
       this.#assertCurrent();
-    } catch {
+    } catch (error) {
       if (signal.aborted) signal.throwIfAborted();
+      if (error instanceof FastManimRuncMountedRootfsError && error.code === "cleanup") throw error;
       return trustFailure();
     }
   }
@@ -199,17 +205,20 @@ export class FastManimRuncReleaseTrustV1 {
 
   constructor(options: FastManimRuncReleaseTrustOptionsV1) {
     try {
+      const now = options?.now;
+      const publicKeys = options?.publicKeys;
+      const rootfsRegistry = options?.rootfsRegistry;
       if (
-        !Array.isArray(options?.publicKeys) ||
-        options.publicKeys.length === 0 ||
-        options.publicKeys.length > MAX_TRUSTED_KEYS_V1 ||
-        !(options.rootfsRegistry instanceof FastManimRuncMountedRootfsRegistryV1) ||
-        (options.now !== undefined && typeof options.now !== "function")
+        !Array.isArray(publicKeys) ||
+        publicKeys.length === 0 ||
+        publicKeys.length > MAX_TRUSTED_KEYS_V1 ||
+        !(rootfsRegistry instanceof FastManimRuncMountedRootfsRegistryV1) ||
+        (now !== undefined && typeof now !== "function")
       ) {
         trustFailure();
       }
-      this.#now = options.now ?? Date.now;
-      for (const configured of options.publicKeys) {
+      this.#now = now ?? Date.now;
+      for (const configured of publicKeys) {
         const parsed = z
           .object({ keyId: keyIdV1Schema, publicKeyPem: z.string().min(1).max(16_384) })
           .strict()
@@ -219,7 +228,7 @@ export class FastManimRuncReleaseTrustV1 {
         if (publicKey.asymmetricKeyType !== "ed25519") trustFailure();
         this.#publicKeys.set(parsed.keyId, publicKey);
       }
-      this.#rootfsRegistry = options.rootfsRegistry;
+      this.#rootfsRegistry = rootfsRegistry;
     } catch {
       trustFailure();
     }
@@ -242,6 +251,7 @@ export class FastManimRuncReleaseTrustV1 {
         rootfs,
         this.#rootfsRegistry,
         this.#now,
+        this.#now === Date.now,
       );
     } catch {
       return trustFailure();
@@ -251,6 +261,8 @@ export class FastManimRuncReleaseTrustV1 {
 
 export function isProductionFastManimRuncVerifiedReleaseV1(value: unknown): value is FastManimRuncVerifiedReleaseV1 {
   if (!(value instanceof FastManimRuncVerifiedReleaseV1)) return false;
-  const registry = verifiedReleaseRegistriesV1.get(value);
-  return registry !== undefined && isProductionFastManimRuncMountedRootfsRegistryV1(registry);
+  const origin = verifiedReleaseOriginsV1.get(value);
+  return (
+    origin !== undefined && origin.systemClock && isProductionFastManimRuncMountedRootfsRegistryV1(origin.registry)
+  );
 }
