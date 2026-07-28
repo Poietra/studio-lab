@@ -124,6 +124,11 @@ fn summarize(packet: &RenderPacketV1) -> ExpectedSample {
             .draws
             .iter()
             .map(|draw| match draw {
+                RenderDrawV1::Empty {
+                    entity_id, reason, ..
+                } => panic!(
+                    "dynamic fixture entity {entity_id} unexpectedly lowered to an empty draw: {reason:?}"
+                ),
                 RenderDrawV1::Path {
                     entity_id,
                     transform,
