@@ -559,6 +559,90 @@ describe("render OCI lifecycle", () => {
     expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
   });
 
+  it("accepts one exact readiness marker split across attach chunks", async () => {
+    const request = new SealedManimRenderSandboxRequestV2(descriptor());
+    const child = spawn(
+      process.execPath,
+      [
+        "--eval",
+        `process.stderr.write("POIETRA_RENDER_");
+setTimeout(() => process.stderr.write("GATE_READY_V1\\n"), 10);
+process.stdin.resume();
+process.stdin.once("end", () => setInterval(() => undefined, 1_000));`,
+      ],
+      { stdio: ["pipe", "pipe", "pipe"] },
+    );
+    const gated = await deliverSealedManimRenderGateRequestV1(
+      child,
+      request,
+      digestManimRenderSandboxExecutionV2(request.parseDescriptor()),
+      Date.now() + 2_000,
+      new AbortController().signal,
+    );
+    await gated.closeControlStream();
+    expect(gated.controlStreamViolated()).toBe(false);
+  });
+
+  it("rejects a control violation racing a backpressured request write", async () => {
+    const largeSource = `${source}\n# ${"x".repeat(1024 * 1024)}`;
+    const request = new SealedManimRenderSandboxRequestV2(
+      descriptor({
+        source: largeSource,
+        sourceDigest: createHash("sha256").update(largeSource, "utf8").digest("hex"),
+      }),
+    );
+    const child = spawn(
+      process.execPath,
+      [
+        "--eval",
+        `process.stderr.write("POIETRA_RENDER_GATE_READY_V1\\n");
+process.exit(0);`,
+      ],
+      { stdio: ["pipe", "pipe", "pipe"] },
+    );
+    await expect(
+      deliverSealedManimRenderGateRequestV1(
+        child,
+        request,
+        digestManimRenderSandboxExecutionV2(request.parseDescriptor()),
+        Date.now() + 2_000,
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow(/control stream/i);
+    expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+  });
+
+  it.each([
+    { condition: "stdout output", statement: 'process.stdout.write("unexpected");' },
+    { condition: "stderr output", statement: 'process.stderr.write("unexpected");' },
+    { condition: "early close", statement: "process.exit(0);" },
+  ])("keeps post-readiness gate $condition sticky", async ({ statement }) => {
+    const request = new SealedManimRenderSandboxRequestV2(descriptor());
+    const child = spawn(
+      process.execPath,
+      [
+        "--eval",
+        `process.stderr.write("POIETRA_RENDER_GATE_READY_V1\\n");
+process.stdin.resume();
+process.stdin.once("end", () => {
+  ${statement}
+  setTimeout(() => process.exit(0), 500);
+});`,
+      ],
+      { stdio: ["pipe", "pipe", "pipe"] },
+    );
+    const gated = await deliverSealedManimRenderGateRequestV1(
+      child,
+      request,
+      digestManimRenderSandboxExecutionV2(request.parseDescriptor()),
+      Date.now() + 2_000,
+      new AbortController().signal,
+    );
+    await gated.attachedExit;
+    expect(gated.controlStreamViolated()).toBe(true);
+    expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+  });
+
   it("writes every byte when broker staging performs short writes", async () => {
     const root = await mkdtemp(join(tmpdir(), "poietra-render-stream-short-write-"));
     const path = join(root, "artifact.bin");

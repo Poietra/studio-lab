@@ -96,6 +96,8 @@ def start_detached_pipe_holder():
 
 class MultiAnimationScene(Scene):
     def construct(self):
+        os.write(1, b"discarded-stdout" * 8192)
+        os.write(2, b"discarded-stderr" * 8192)
         if HOST_SECRET_ENVIRONMENT_KEY in os.environ:
             raise RuntimeError("untrusted Scene inherited a host secret")
         assert_host_file_is_unreachable(HOST_SECRET_PATH)
@@ -144,6 +146,17 @@ import time
 class SlowScene(Scene):
     def construct(self):
         time.sleep(30)
+`;
+const outputFloodSource = `import os
+
+from manim import Scene
+
+class OutputFloodScene(Scene):
+    def construct(self):
+        chunk = b"x" * (64 * 1024)
+        while True:
+            os.write(1, chunk)
+            os.write(2, chunk)
 `;
 const memoryPressureSource = `import time
 
@@ -693,6 +706,14 @@ describe.skipIf(!enabled && !productionEvidence && !required)("render gated OCI 
         timeoutMs: 8_000,
       },
       {
+        expected: { code: "deadline-exceeded", kind: "failed" },
+        maximumElapsedMs: 20_000,
+        name: "output-flood",
+        sceneName: "OutputFloodScene",
+        source: outputFloodSource,
+        timeoutMs: 8_000,
+      },
+      {
         expected: { code: "memory-limit", kind: "failed" },
         maximumElapsedMs: 30_000,
         name: "memory",
@@ -725,7 +746,7 @@ describe.skipIf(!enabled && !productionEvidence && !required)("render gated OCI 
         timeoutMs: 10_000,
       },
       {
-        expected: { code: "render-failed", kind: "failed" },
+        expected: { code: "result-rejected", kind: "failed" },
         maximumElapsedMs: 20_000,
         name: "tmpfs-byte-pressure",
         sceneName: "TmpfsBytePressureScene",
@@ -733,7 +754,7 @@ describe.skipIf(!enabled && !productionEvidence && !required)("render gated OCI 
         timeoutMs: 15_000,
       },
       {
-        expected: { code: "render-failed", kind: "failed" },
+        expected: { code: "result-rejected", kind: "failed" },
         maximumElapsedMs: 20_000,
         name: "tmpfs-inode-pressure",
         sceneName: "TmpfsInodePressureScene",
