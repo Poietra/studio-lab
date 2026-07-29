@@ -1,10 +1,50 @@
 import type { Pool } from "pg";
 import { describe, expect, it, vi } from "vitest";
 import { renderSessionTransitionSources } from "../../manim-render-session-policy";
-import { PostgresRenderSessionRepositoryV1 } from "./postgres-render-session-repository";
+import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
+import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
+import {
+  PostgresRenderSessionRepositoryV1,
+  RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM,
+  RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM,
+  RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM,
+  RENDER_SESSION_MIGRATION_V2_CHECKSUM,
+} from "./postgres-render-session-repository";
 import { WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1 } from "./postgres-workspace-source-repository";
 
 describe("Postgres render-session transitions", () => {
+  it("reports ready only for the exact six render-session migration checksums through v9", async () => {
+    const rows = [
+      { checksum: RENDER_SESSION_MIGRATION_V2_CHECKSUM, version: 2 },
+      { checksum: PROJECT_PNG_MIGRATION_V5_CHECKSUM, version: 5 },
+      { checksum: DURABLE_RETENTION_MIGRATION_V6_CHECKSUM, version: 6 },
+      { checksum: RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM, version: 7 },
+      { checksum: RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM, version: 8 },
+      { checksum: RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM, version: 9 },
+    ];
+    const query = vi.fn(async (text: string) => {
+      expect(text).toContain("version IN (2, 5, 6, 7, 8, 9)");
+      return { rowCount: rows.length, rows };
+    });
+    const pool = {
+      connect: vi.fn(async () => ({ query, release: vi.fn() })),
+      options: {
+        connectionTimeoutMillis: 1_000,
+        options: WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1,
+        query_timeout: 1_000,
+        statement_timeout: 1_000,
+      },
+    } as unknown as Pool;
+    const repository = new PostgresRenderSessionRepositoryV1({ pool, statementTimeoutMs: 1_000 });
+
+    await expect(repository.ready()).resolves.toBe(true);
+    for (const [index, row] of rows.entries()) {
+      rows[index] = { ...row, checksum: "0".repeat(64) };
+      await expect(repository.ready()).resolves.toBe(false);
+      rows[index] = row;
+    }
+  });
+
   it("rejects a zero-row transition, rolls back, and keeps SQL statuses closed", async () => {
     const statements: string[] = [];
     const query = vi.fn(async (text: string) => {

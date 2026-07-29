@@ -20,7 +20,7 @@ import {
 import {
   type ProgramRenderRequest,
   RENDER_SESSION_CONTRACT_VERSION_HEADER,
-  RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE,
+  RENDER_SESSION_CONTRACT_VERSION_WITH_CPU_LIMIT,
 } from "./contracts";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -405,6 +405,21 @@ describe("Manim API client contracts", () => {
       ),
     );
     await expect(loadManimRender("failed-render")).resolves.toMatchObject({ failureCode: "memory-limit" });
+    fetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify(
+          session({
+            canCommit: false,
+            error: "Render exceeded its CPU budget.",
+            failureCode: "cpu-limit",
+            status: "failed",
+            videoUrl: null,
+          }),
+        ),
+        { status: 200 },
+      ),
+    );
+    await expect(loadManimRender("cpu-limited-render")).resolves.toMatchObject({ failureCode: "cpu-limit" });
   });
 
   it("opts into failure codes while normalizing an old server omission to null", async () => {
@@ -416,7 +431,7 @@ describe("Manim API client contracts", () => {
     });
     const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
       expect(init?.headers).toEqual({
-        [RENDER_SESSION_CONTRACT_VERSION_HEADER]: RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE,
+        [RENDER_SESSION_CONTRACT_VERSION_HEADER]: RENDER_SESSION_CONTRACT_VERSION_WITH_CPU_LIMIT,
       });
       return new Response(JSON.stringify(legacySession), { status: 200 });
     });
@@ -564,7 +579,7 @@ describe("Manim API client contracts", () => {
       expect(init.body).toBe("{}");
       expect(init.headers).toEqual({
         "content-type": "application/json",
-        [RENDER_SESSION_CONTRACT_VERSION_HEADER]: RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE,
+        [RENDER_SESSION_CONTRACT_VERSION_HEADER]: RENDER_SESSION_CONTRACT_VERSION_WITH_CPU_LIMIT,
       });
       expect(init.signal).toBe(controller.signal);
       return new Response(JSON.stringify(session()), { status: 200 });
@@ -616,7 +631,7 @@ describe("Manim API client contracts", () => {
       expect(JSON.parse(String(init.body))).toEqual({ actionId, kind: "commit" });
       expect(init.headers).toEqual({
         "content-type": "application/json",
-        [RENDER_SESSION_CONTRACT_VERSION_HEADER]: RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE,
+        [RENDER_SESSION_CONTRACT_VERSION_HEADER]: RENDER_SESSION_CONTRACT_VERSION_WITH_CPU_LIMIT,
       });
       return new Response(JSON.stringify(response), { status: 200 });
     });
@@ -682,7 +697,7 @@ describe("Manim API client contracts", () => {
       expect.objectContaining({
         headers: {
           "content-type": "application/json",
-          [RENDER_SESSION_CONTRACT_VERSION_HEADER]: RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE,
+          [RENDER_SESSION_CONTRACT_VERSION_HEADER]: RENDER_SESSION_CONTRACT_VERSION_WITH_CPU_LIMIT,
         },
         method: "POST",
       }),

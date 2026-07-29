@@ -37,6 +37,7 @@ type SandboxFailureCode = Extract<ManimRenderSandboxTerminalV1, { kind: "failed"
 function durableFailureCode(code: SandboxFailureCode): RenderSessionFailureCode {
   switch (code) {
     case "cancelled":
+    case "cpu-limit":
     case "deadline-exceeded":
     case "memory-limit":
     case "pids-limit":

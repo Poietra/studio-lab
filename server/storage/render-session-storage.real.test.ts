@@ -11,7 +11,11 @@ import {
   durableManimRenderJobIdV1,
 } from "../durable-manim-render-worker";
 import { HttpError } from "../http/json";
-import { applyBundledDurableStorageMigrations } from "./postgres/migrate";
+import {
+  applyBundledDurableStorageMigrations,
+  RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_SOURCE,
+  RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE,
+} from "./postgres/migrate";
 import { PostgresRenderSessionRepositoryV1 } from "./postgres/postgres-render-session-repository";
 import { PostgresWorkspaceSourceRepositoryV1 } from "./postgres/postgres-workspace-source-repository";
 import type { RenderSessionRepositoryV1 } from "./render-session-repository";
@@ -407,6 +411,43 @@ async function capturedError(operation: Promise<unknown>) {
   }
 }
 
+async function verifyRenderCpuFailureMigration(pool: Pool) {
+  const client = await pool.connect();
+  let began = false;
+  try {
+    await client.query("BEGIN");
+    began = true;
+    await client.query("CREATE TABLE public.render_sessions (case_id text PRIMARY KEY, status text, error text)");
+    await client.query(RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE);
+    await client.query(
+      `INSERT INTO public.render_sessions (case_id, status, error) VALUES
+         ('cpu', 'failed', 'Render exceeded its CPU budget.'),
+         ('memory', 'failed', 'Render exceeded its memory limit.')`,
+    );
+    const before = await client.query<{ case_id: string; failure_code: string }>(
+      "SELECT case_id, failure_code FROM public.render_sessions ORDER BY case_id",
+    );
+    expect(before.rows).toEqual([
+      { case_id: "cpu", failure_code: "render-failed" },
+      { case_id: "memory", failure_code: "memory-limit" },
+    ]);
+
+    await client.query(RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_SOURCE);
+    const after = await client.query<{ case_id: string; failure_code: string }>(
+      "SELECT case_id, failure_code FROM public.render_sessions ORDER BY case_id",
+    );
+    expect(after.rows).toEqual([
+      { case_id: "cpu", failure_code: "cpu-limit" },
+      { case_id: "memory", failure_code: "memory-limit" },
+    ]);
+    await client.query("ROLLBACK");
+    began = false;
+  } finally {
+    if (began) await client.query("ROLLBACK").catch(() => undefined);
+    client.release();
+  }
+}
+
 describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durable render sessions", () => {
   it("survives SIGKILL and fences recovery, source actions, CAS, and tenant routing", async () => {
     const databaseUrl = configuredDatabaseUrl();
@@ -427,6 +468,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
     const commitCorrelationKey = "render-session-e2e-candidate";
 
     try {
+      await verifyRenderCpuFailureMigration(setupPool);
       await applyBundledDurableStorageMigrations(setupPool);
       await setupPool.query(
         `CREATE TABLE public.render_session_e2e_broker_jobs (

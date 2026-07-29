@@ -459,17 +459,20 @@ describe("DurableManimRenderWorkerV1", () => {
     await worker.close();
   });
 
-  it("cleans partial staging only after a fenced terminal failure commits", async () => {
+  it.each([
+    { code: "memory-limit" as const, error: "Render exceeded its memory limit." },
+    { code: "cpu-limit" as const, error: "Render exceeded its CPU budget." },
+  ])("persists $code before cleaning partial staging", async ({ code, error }) => {
     const { claimed, cleanup, completeLease, submitOrReattach, worker } = fixture();
-    submitOrReattach.mockResolvedValueOnce({ code: "memory-limit", kind: "failed", logTail: "bounded" });
+    submitOrReattach.mockResolvedValueOnce({ code, kind: "failed", logTail: "bounded" });
 
     await worker.runOnce();
 
     expect(completeLease).toHaveBeenCalledWith(
       expect.objectContaining({
-        error: "Render exceeded its memory limit.",
+        error,
         expectedVersion: claimed.version,
-        failureCode: "memory-limit",
+        failureCode: code,
         status: "failed",
       }),
     );

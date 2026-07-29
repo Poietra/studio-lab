@@ -8,6 +8,7 @@ import {
   applyProjectPngMigrationV5,
   applyRenderArtifactMigrationV4,
   applyRenderCancellationMigrationV7,
+  applyRenderSessionCpuFailureMigrationV9,
   applyRenderSessionFailureMigrationV8,
   applyRenderSessionMigrationV2,
   applyRenderSessionRetentionMigrationV6,
@@ -16,6 +17,7 @@ import {
   PROJECT_PNG_MIGRATION_V5_SOURCE,
   RENDER_ARTIFACT_MIGRATION_V4_SOURCE,
   RENDER_CANCELLATION_MIGRATION_V7_SOURCE,
+  RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_SOURCE,
   RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE,
   RENDER_SESSION_MIGRATION_V2_SOURCE,
   RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE,
@@ -64,10 +66,10 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 8 });
-    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 9 });
+    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 8 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 9 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -76,7 +78,8 @@ describe("durable storage migrations", () => {
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_CANCELLATION_MIGRATION_V7_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(16);
+    expect(db.queries.filter(({ text }) => text === RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(18);
   });
 
   it("rejects a missing prerequisite under the same advisory lock", async () => {
@@ -142,6 +145,23 @@ describe("durable storage migrations", () => {
       applyRenderSessionFailureMigrationV8(db.pool, RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE),
     ).rejects.toThrow(/requires durable storage migrations v1 through v7/i);
     expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("requires all eight durable-storage prerequisites before applying render-session CPU failures v9", async () => {
+    const db = database();
+    await expect(
+      applyRenderSessionCpuFailureMigrationV9(db.pool, RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_SOURCE),
+    ).rejects.toThrow(/requires durable storage migrations v1 through v8/i);
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("backfills CPU failures and extends the closed catalog without a second normalization trigger in v9", () => {
+    expect(RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_SOURCE).toContain("SET failure_code = 'cpu-limit'");
+    expect(RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_SOURCE).toContain(
+      "ADD CONSTRAINT render_sessions_failure_code_closed",
+    );
+    expect(RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_SOURCE).not.toContain("CREATE FUNCTION");
+    expect(RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_SOURCE).not.toContain("CREATE TRIGGER");
   });
 
   it("adds a rolling-compatible closed render-session failure code in migration v8", () => {

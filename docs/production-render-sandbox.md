@@ -15,6 +15,11 @@ reattach, and cancellation idempotent across lease-fence changes.
 The broker runs as a distinct non-root user with rootless Docker, systemd cgroup
 v2, the repository's immutable seccomp profile, no network, no capabilities, a
 read-only root filesystem, and bounded CPU, memory, PIDs, files, and tmpfs. The
+profile allows one aggregate CPU and 30,000,000 microseconds of cumulative
+`cpu.stat usage_usec` per video or thumbnail job. The broker samples that fresh
+job cgroup while waiting and once more after freezing it before publication, so
+forked or detached descendants share the same budget and a threshold race cannot
+publish media. Missing or malformed kernel counters fail closed. The
 production service requires `cgroup.kill`; `best-effort` cgroup cleanup exists
 only for local real-OCI conformance on hosts that cannot expose that control.
 
@@ -85,8 +90,8 @@ write authority. The real lane proves multi-animation MP4/PNG output, semantic
 rejection of forged MP4, denial of Scene access to `/proc/1/mem`, hostile early
 output replacement, fenced reattachment, owner-isolated concurrent brokers,
 restart cleanup, active cancellation, exact descriptor/file/tmpfs byte and inode
-limits, successful Manim-leader exit with a detached `setsid` pipe holder, and
-cleanup.
+limits, cumulative CPU exhaustion across `fork`/`setsid` descendants, successful
+Manim-leader exit with a detached `setsid` pipe holder, and cleanup.
 
 Each broker has an explicit deployment-unique `brokerShardId` in its immutable,
 root-owned configuration. Status and cancellation acknowledgements carry that
@@ -113,6 +118,15 @@ Migration v7 intentionally refuses to install while a legacy `rendering` row
 has no broker shard. Drain those rows before applying it. Once installed, the
 database rejects shardless legacy claims and unsafe legacy terminal transitions,
 so a mixed rollout fails closed until every worker uses owner-shard delivery.
+
+Migration v9 and the CPU-budget profile require an atomic, drained rollout;
+they are deliberately not rolling-compatible with v8 readers. An old API or
+worker does not recognize a persisted `cpu-limit` row and will reject it rather
+than silently reinterpret it. Stop new admission, let every active lease,
+broker job, and cancellation complete, then stop all old API and worker
+processes. Apply migration v9 only after that drain, and start only the new API,
+worker, relay, and broker generation. Never overlap v8 readers with a v9 writer.
+Resume admission only after the new generation passes readiness.
 
 Before upgrading from a build that predates owner-scoped container names and
 labels, stop every old broker and drain its `poietra-render-<staging-id>`

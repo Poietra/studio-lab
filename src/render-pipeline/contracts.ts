@@ -278,6 +278,7 @@ export type RenderSessionStatus =
 
 export const renderSessionFailureCodeSchema = z.enum([
   "cancelled",
+  "cpu-limit",
   "deadline-exceeded",
   "interrupted",
   "memory-limit",
@@ -289,6 +290,7 @@ export type RenderSessionFailureCode = z.infer<typeof renderSessionFailureCodeSc
 
 export const RENDER_SESSION_CONTRACT_VERSION_HEADER = "x-poietra-render-session-version";
 export const RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE = "2";
+export const RENDER_SESSION_CONTRACT_VERSION_WITH_CPU_LIMIT = "3";
 
 export type RenderSessionView = Readonly<{
   actionInProgress: boolean;

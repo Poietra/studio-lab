@@ -10,16 +10,19 @@ import projectPngSqlV5 from "./migrations/0005_project_png.sql?raw";
 import renderSessionRetentionSqlV6 from "./migrations/0006_render_session_retention.sql?raw";
 import renderCancellationSqlV7 from "./migrations/0007_render_cancellations.sql?raw";
 import renderSessionFailureSqlV8 from "./migrations/0008_render_failure_codes.sql?raw";
+import renderSessionCpuFailureSqlV9 from "./migrations/0009_render_cpu_limit.sql?raw";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
 import { RENDER_SESSION_MIGRATION_V2_CHECKSUM } from "./postgres-render-session-repository";
 import { SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM } from "./postgres-snapshot-publication-repository";
 import { WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM } from "./postgres-workspace-source-repository";
 import { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
+import { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-session-cpu-failure-schema";
 import { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
 
 export { SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM } from "./postgres-snapshot-publication-repository";
 export { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
+export { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-session-cpu-failure-schema";
 export { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
 
 const DURABLE_STORAGE_MIGRATION_LOCK = "5784133447825795121";
@@ -53,6 +56,7 @@ export const PROJECT_PNG_MIGRATION_V5_SOURCE = projectPngSqlV5;
 export const RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE = renderSessionRetentionSqlV6;
 export const RENDER_CANCELLATION_MIGRATION_V7_SOURCE = renderCancellationSqlV7;
 export const RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE = renderSessionFailureSqlV8;
+export const RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_SOURCE = renderSessionCpuFailureSqlV9;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -133,6 +137,17 @@ const renderSessionFailureMigrationV8: DurableStorageMigration<8> = Object.freez
   version: 8,
 });
 
+const renderSessionCpuFailureMigrationV9: DurableStorageMigration<9> = Object.freeze({
+  checksum: RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM,
+  checksumMismatch: "The render-session CPU failure migration checksum is invalid.",
+  installedMismatch: "The installed render-session CPU failure schema does not match migration v9.",
+  missingPrerequisite: "Render-session CPU failure migration v9 requires durable storage migrations v1 through v8.",
+  prerequisiteMismatch:
+    "Render-session CPU failure migration v9 requires exact durable storage migrations v1 through v8.",
+  source: RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_SOURCE,
+  version: 9,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
@@ -142,6 +157,7 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   renderSessionRetentionMigrationV6,
   renderCancellationMigrationV7,
   renderSessionFailureMigrationV8,
+  renderSessionCpuFailureMigrationV9,
 ]);
 
 function validateSource(migration: DurableStorageMigration) {
@@ -272,6 +288,19 @@ export function applyRenderSessionFailureMigrationV8(pool: Pool, source: string)
     projectPngMigrationV5,
     renderSessionRetentionMigrationV6,
     renderCancellationMigrationV7,
+  ]);
+}
+
+export function applyRenderSessionCpuFailureMigrationV9(pool: Pool, source: string) {
+  return applyMigration(pool, { ...renderSessionCpuFailureMigrationV9, source }, [
+    workspaceSourceMigrationV1,
+    renderSessionMigrationV2,
+    snapshotPublicationMigrationV3,
+    renderArtifactMigrationV4,
+    projectPngMigrationV5,
+    renderSessionRetentionMigrationV6,
+    renderCancellationMigrationV7,
+    renderSessionFailureMigrationV8,
   ]);
 }
 
