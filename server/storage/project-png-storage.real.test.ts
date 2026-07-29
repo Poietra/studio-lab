@@ -12,6 +12,7 @@ import { PostgresWorkspaceSourceRepositoryV1 } from "./postgres/postgres-workspa
 import { runProjectPngGcV1 } from "./project-png-gc";
 import { S3ContentBlobStoreV1 } from "./s3/s3-content-blob-store";
 import { S3ProjectPngStoreV1 } from "./s3/s3-project-png-store";
+import { runSourceBlobGcV1 } from "./source-blob-gc";
 
 const E2E_CONFIGURED = [
   "POIETRA_STORAGE_E2E_DATABASE_URL",
@@ -94,7 +95,9 @@ describe.skipIf(!E2E_CONFIGURED)("PostgreSQL + MinIO project image.png storage",
     const poolConfig = { connectionString: config.databaseUrl, max: 3 };
     const sourceRepository = new PostgresWorkspaceSourceRepositoryV1({ poolConfig });
     const renderRepository = new PostgresRenderSessionRepositoryV1({ poolConfig });
+    const retentionPeer = new PostgresRenderSessionRepositoryV1({ poolConfig });
     const pngRepository = new PostgresProjectPngRepositoryV1({ poolConfig });
+    const inspectionPool = new Pool(poolConfig);
     const sourceStore = new S3ContentBlobStoreV1({
       bucket: config.bucket,
       clientConfig: s3Config(config),
@@ -107,10 +110,20 @@ describe.skipIf(!E2E_CONFIGURED)("PostgreSQL + MinIO project image.png storage",
     });
     const tenant = "tenant-a";
     const project = "project-a";
+    let initialRepositoriesClosed = false;
+    let reopenedSourceRepository: PostgresWorkspaceSourceRepositoryV1 | null = null;
+    let reopenedRenderRepository: PostgresRenderSessionRepositoryV1 | null = null;
+    let reopenedPngRepository: PostgresProjectPngRepositoryV1 | null = null;
     try {
       await sourceRepository.ensureTenant(tenant);
       const source = "from manim import *\n\nclass MainScene(Scene):\n    def construct(self):\n        self.wait(1)\n";
       const sourceBlob = await sourceStore.putSource(tenant, source);
+      const livePatchedBlob = await sourceStore.putSource(tenant, `${source}\n# retained by a live session\n`);
+      const terminalPatchedBlob = await sourceStore.putSource(tenant, `${source}\n# terminal-only input\n`);
+      const committedPatchedBlob = await sourceStore.putSource(
+        tenant,
+        `${source}\n# retained by a committed session\n`,
+      );
       await sourceRepository.createManagedProject({
         name: "PNG pin proof",
         projectId: project,
@@ -128,20 +141,20 @@ describe.skipIf(!E2E_CONFIGURED)("PostgreSQL + MinIO project image.png storage",
       });
       expect(firstHead.generation).toBe(1n);
 
-      const session = await renderRepository.createSession({
-        commitCorrelationKey: "png-pin-proof",
+      const liveSession = await renderRepository.createSession({
+        commitCorrelationKey: "png-live-pin-proof",
         executionTimeoutMs: 30_000,
         id: randomUUID(),
         originalHead: sourceHead,
         patch: { anchorLine: 1, anchorLines: [1], insertedCode: "" },
-        patchedBlob: sourceBlob,
-        programBatchId: "batch-a",
-        programTransactionId: "transaction-a",
-        renderRequestId: "request-a",
+        patchedBlob: livePatchedBlob,
+        programBatchId: "batch-live",
+        programTransactionId: "transaction-live",
+        renderRequestId: "request-live",
         sceneName: "MainScene",
         tenantId: tenant,
       });
-      expect(session.projectPng).toEqual(firstHead);
+      expect(liveSession.projectPng).toEqual(firstHead);
 
       const secondReceipt = await pngStore.put(tenant, project, png(32));
       const secondHead = await pngRepository.compareAndSwapHead({
@@ -151,7 +164,7 @@ describe.skipIf(!E2E_CONFIGURED)("PostgreSQL + MinIO project image.png storage",
         tenantId: tenant,
       });
       expect(secondHead.generation).toBe(2n);
-      expect((await renderRepository.readSession(tenant, session.id)).projectPng).toEqual(firstHead);
+      expect((await renderRepository.readSession(tenant, liveSession.id)).projectPng).toEqual(firstHead);
       await expect(
         pngRepository.compareAndSwapHead({
           candidate: firstReceipt,
@@ -172,6 +185,7 @@ describe.skipIf(!E2E_CONFIGURED)("PostgreSQL + MinIO project image.png storage",
       ).rejects.toMatchObject({ status: 409 });
       const gc = await runProjectPngGcV1({
         cutoff: new Date(Date.now() + 2_000),
+        graceMs: 60_000,
         maximum: 32,
         repository: pngRepository,
         store: pngStore,
@@ -182,6 +196,22 @@ describe.skipIf(!E2E_CONFIGURED)("PostgreSQL + MinIO project image.png storage",
       await expect(pngStore.read(tenant, project, firstReceipt)).resolves.toEqual(Uint8Array.from(png(16)));
       await expect(pngStore.read(tenant, project, secondReceipt)).resolves.toEqual(Uint8Array.from(png(32)));
 
+      const terminalSession = await renderRepository.createSession({
+        commitCorrelationKey: "png-terminal-pin-proof",
+        executionTimeoutMs: 30_000,
+        id: randomUUID(),
+        originalHead: sourceHead,
+        patch: { anchorLine: 1, anchorLines: [1], insertedCode: "" },
+        patchedBlob: terminalPatchedBlob,
+        programBatchId: "batch-terminal",
+        programTransactionId: "transaction-terminal",
+        renderRequestId: "request-terminal",
+        sceneName: "MainScene",
+        tenantId: tenant,
+      });
+      expect(terminalSession.projectPng).toEqual(secondHead);
+      await renderRepository.cancelSession(tenant, terminalSession.id);
+
       const reusedFirstReceipt = await pngStore.put(tenant, project, png(16));
       expect(reusedFirstReceipt).toEqual(firstReceipt);
       const restoredHead = await pngRepository.compareAndSwapHead({
@@ -191,20 +221,194 @@ describe.skipIf(!E2E_CONFIGURED)("PostgreSQL + MinIO project image.png storage",
         tenantId: tenant,
       });
       expect(restoredHead).toEqual({ ...firstHead, generation: 3n });
-      expect((await renderRepository.readSession(tenant, session.id)).projectPng).toEqual(firstHead);
+      expect((await renderRepository.readSession(tenant, liveSession.id)).projectPng).toEqual(firstHead);
+
+      const committedSession = await renderRepository.createSession({
+        commitCorrelationKey: "png-committed-pin-proof",
+        executionTimeoutMs: 30_000,
+        id: randomUUID(),
+        originalHead: sourceHead,
+        patch: { anchorLine: 1, anchorLines: [1], insertedCode: "" },
+        patchedBlob: committedPatchedBlob,
+        programBatchId: "batch-committed",
+        programTransactionId: "transaction-committed",
+        renderRequestId: "request-committed",
+        sceneName: "MainScene",
+        tenantId: tenant,
+      });
+      expect(committedSession.projectPng).toEqual(restoredHead);
+      await inspectionPool.query(
+        `UPDATE public.render_sessions
+            SET execution_deadline = clock_timestamp() - interval '2 hours',
+                updated_at = clock_timestamp() - interval '2 hours'
+          WHERE tenant_id = $1 AND session_id = ANY($2::uuid[])`,
+        [tenant, [liveSession.id, terminalSession.id, committedSession.id]],
+      );
+      await inspectionPool.query(
+        `UPDATE public.render_sessions
+            SET status = 'committed'
+          WHERE tenant_id = $1 AND session_id = $2::uuid`,
+        [tenant, committedSession.id],
+      );
 
       const replacementGc = await runProjectPngGcV1({
         cutoff: new Date(Date.now() + 2_000),
+        graceMs: 60_000,
         maximum: 32,
         repository: pngRepository,
         store: pngStore,
         tenantId: tenant,
       });
-      expect(replacementGc).toMatchObject({ deleted: 1, queued: 1 });
+      expect(replacementGc).toMatchObject({ deleted: 0, queued: 0 });
       await expect(pngStore.read(tenant, project, firstReceipt)).resolves.toEqual(Uint8Array.from(png(16)));
-      await expect(pngStore.read(tenant, project, secondReceipt)).rejects.toThrow();
+      await expect(pngStore.read(tenant, project, secondReceipt)).resolves.toEqual(Uint8Array.from(png(32)));
 
-      await expect(pngRepository.readHead("tenant-b", project)).resolves.toBeNull();
+      const releases = await Promise.all([
+        renderRepository.releaseExpiredInputs({ maximum: 1, retentionMs: 60_000, tenantId: tenant }),
+        retentionPeer.releaseExpiredInputs({ maximum: 1, retentionMs: 60_000, tenantId: tenant }),
+      ]);
+      expect(releases.flatMap(({ releasedSessionIds }) => releasedSessionIds)).toEqual([terminalSession.id]);
+      expect(releases.reduce((total, result) => total + result.sourceBlobsOrphaned, 0)).toBe(1);
+      expect(releases.reduce((total, result) => total + result.projectPngGenerationsOrphaned, 0)).toBe(1);
+      await expect(renderRepository.readSession(tenant, terminalSession.id)).rejects.toMatchObject({ status: 404 });
+      await expect(renderRepository.readSession(tenant, liveSession.id)).resolves.toMatchObject({
+        status: "preparing",
+      });
+      await expect(renderRepository.readSession(tenant, committedSession.id)).resolves.toMatchObject({
+        status: "committed",
+      });
+
+      const releasedRow = await inspectionPool.query<{
+        original_digest: string | null;
+        patched_digest: string | null;
+        project_png_generation: string | null;
+        references_released_at: Date;
+      }>(
+        `SELECT original_digest, patched_digest, project_png_generation::text,
+                references_released_at
+           FROM public.render_sessions
+          WHERE tenant_id = $1 AND session_id = $2::uuid`,
+        [tenant, terminalSession.id],
+      );
+      expect(releasedRow.rows[0]).toMatchObject({
+        original_digest: null,
+        patched_digest: null,
+        project_png_generation: null,
+        references_released_at: expect.any(Date),
+      });
+      const releaseTimestamp = releasedRow.rows[0]?.references_released_at;
+      if (!(releaseTimestamp instanceof Date)) throw new Error("The terminal session was not released.");
+      const beforeGrace = new Date(releaseTimestamp.getTime() - 1);
+      expect(
+        await runSourceBlobGcV1({
+          blobs: sourceStore,
+          cutoff: beforeGrace,
+          graceMs: 60_000,
+          maximum: 32,
+          repository: sourceRepository,
+          tenantId: tenant,
+        }),
+      ).toMatchObject({ deleted: 0, queued: 0 });
+      expect(
+        await runProjectPngGcV1({
+          cutoff: beforeGrace,
+          graceMs: 60_000,
+          maximum: 32,
+          repository: pngRepository,
+          store: pngStore,
+          tenantId: tenant,
+        }),
+      ).toMatchObject({ deleted: 0, queued: 0 });
+      await expect(sourceStore.readSource(tenant, terminalPatchedBlob)).resolves.toContain("terminal-only input");
+      await expect(pngStore.read(tenant, project, secondReceipt)).resolves.toEqual(Uint8Array.from(png(32)));
+      await expect(
+        renderRepository.purgeReleasedSessions({ auditRetentionMs: 60_000, maximum: 32, tenantId: tenant }),
+      ).resolves.toBe(0);
+
+      await Promise.all([
+        sourceRepository.close(),
+        renderRepository.close(),
+        retentionPeer.close(),
+        pngRepository.close(),
+      ]);
+      initialRepositoriesClosed = true;
+      reopenedSourceRepository = new PostgresWorkspaceSourceRepositoryV1({ poolConfig });
+      reopenedRenderRepository = new PostgresRenderSessionRepositoryV1({ poolConfig });
+      reopenedPngRepository = new PostgresProjectPngRepositoryV1({ poolConfig });
+
+      await inspectionPool.query(
+        `UPDATE public.source_blob_objects
+            SET orphaned_at = clock_timestamp() - interval '2 hours'
+          WHERE tenant_id = $1 AND digest = $2`,
+        [tenant, terminalPatchedBlob.digest],
+      );
+      await inspectionPool.query(
+        `UPDATE public.project_png_generations
+            SET orphaned_at = clock_timestamp() - interval '2 hours'
+          WHERE tenant_id = $1 AND project_id = $2 AND generation = $3::bigint`,
+        [tenant, project, secondHead.generation.toString()],
+      );
+
+      const afterGrace = new Date(Date.now() + 60_000);
+      const sourceMarkSweep = await runSourceBlobGcV1({
+        blobs: sourceStore,
+        cutoff: afterGrace,
+        graceMs: 60_000,
+        maximum: 32,
+        repository: reopenedSourceRepository,
+        tenantId: tenant,
+      });
+      expect(sourceMarkSweep).toMatchObject({ deleted: 0, queued: 1 });
+      const sourceDeleteSweep = await runSourceBlobGcV1({
+        blobs: sourceStore,
+        cutoff: afterGrace,
+        graceMs: 60_000,
+        maximum: 32,
+        repository: reopenedSourceRepository,
+        tenantId: tenant,
+      });
+      expect(sourceDeleteSweep.deleted).toBe(1);
+      const pngDeleteSweep = await runProjectPngGcV1({
+        cutoff: afterGrace,
+        graceMs: 60_000,
+        maximum: 32,
+        repository: reopenedPngRepository,
+        store: pngStore,
+        tenantId: tenant,
+      });
+      expect(pngDeleteSweep).toMatchObject({ deleted: 1, queued: 1 });
+
+      await expect(sourceStore.readSource(tenant, terminalPatchedBlob)).rejects.toThrow();
+      await expect(pngStore.read(tenant, project, secondReceipt)).rejects.toThrow();
+      await expect(sourceStore.readSource(tenant, sourceBlob)).resolves.toBe(source);
+      await expect(sourceStore.readSource(tenant, livePatchedBlob)).resolves.toContain("live session");
+      await expect(sourceStore.readSource(tenant, committedPatchedBlob)).resolves.toContain("committed session");
+      await expect(pngStore.read(tenant, project, firstReceipt)).resolves.toEqual(Uint8Array.from(png(16)));
+      await expect(reopenedRenderRepository.readSession(tenant, liveSession.id)).resolves.toMatchObject({
+        status: "preparing",
+      });
+      await expect(reopenedRenderRepository.readSession(tenant, committedSession.id)).resolves.toMatchObject({
+        status: "committed",
+      });
+
+      await inspectionPool.query(
+        `UPDATE public.render_sessions
+            SET references_released_at = clock_timestamp() - interval '2 hours'
+          WHERE tenant_id = $1 AND session_id = $2::uuid`,
+        [tenant, terminalSession.id],
+      );
+      await expect(
+        reopenedRenderRepository.purgeReleasedSessions({ auditRetentionMs: 60_000, maximum: 32, tenantId: tenant }),
+      ).resolves.toBe(1);
+      const purged = await inspectionPool.query<{ count: number }>(
+        `SELECT count(*)::integer AS count
+           FROM public.render_sessions
+          WHERE tenant_id = $1 AND session_id = $2::uuid`,
+        [tenant, terminalSession.id],
+      );
+      expect(purged.rows[0]?.count).toBe(0);
+
+      await expect(reopenedPngRepository.readHead("tenant-b", project)).resolves.toBeNull();
       await expect(pngStore.read("tenant-b", project, firstReceipt)).rejects.toThrow(/receipt/i);
       await expect(pngStore.read(tenant, project, { ...firstReceipt, versionId: "wrong-version" })).rejects.toThrow();
       await expect(pngStore.read(tenant, project, { ...firstReceipt, digest: "f".repeat(64) })).rejects.toThrow(
@@ -212,9 +416,13 @@ describe.skipIf(!E2E_CONFIGURED)("PostgreSQL + MinIO project image.png storage",
       );
     } finally {
       await Promise.all([
-        sourceRepository.close(),
-        renderRepository.close(),
-        pngRepository.close(),
+        ...(initialRepositoriesClosed
+          ? []
+          : [sourceRepository.close(), renderRepository.close(), retentionPeer.close(), pngRepository.close()]),
+        ...(reopenedSourceRepository ? [reopenedSourceRepository.close()] : []),
+        ...(reopenedRenderRepository ? [reopenedRenderRepository.close()] : []),
+        ...(reopenedPngRepository ? [reopenedPngRepository.close()] : []),
+        inspectionPool.end(),
         sourceStore.close(),
         pngStore.close(),
       ]);

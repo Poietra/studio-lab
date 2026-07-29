@@ -21,13 +21,14 @@ export async function runSourceBlobGcV1(
     blobs: SourceContentBlobStoreV1;
     cutoff: Date;
     cursor?: SourceBlobVersionCursorV1 | null;
+    graceMs: number;
     maximum: number;
     repository: WorkspaceSourceRepositoryV1;
     signal?: AbortSignal;
     tenantId: string;
   }>,
 ) {
-  return runDurableGcSweepV1({
+  const result = await runDurableGcSweepV1({
     ...options,
     list: (cutoff, maximum, cursor, signal) =>
       options.blobs.listSourceVersions(options.tenantId, cutoff, maximum, cursor, signal),
@@ -39,6 +40,13 @@ export async function runSourceBlobGcV1(
       options.repository.acknowledgeBlobDeletion(tenantId, deletionId, signal),
     createError: (errors, result) => new SourceBlobGcSweepErrorV1(errors, result),
   });
+  const durableQueued = await options.repository.queueOrphanedBlobDeletions(
+    options.tenantId,
+    options.graceMs,
+    options.maximum,
+    options.signal,
+  );
+  return { ...result, queued: result.queued + durableQueued };
 }
 
 export type DurableSourceBlobGcWorkerOptionsV1 = Readonly<{

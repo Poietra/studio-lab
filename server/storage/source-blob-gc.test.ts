@@ -54,6 +54,9 @@ describe("durable source blob GC", () => {
         queued.push(blob.digest);
         return orphan;
       },
+      async queueOrphanedBlobDeletions() {
+        return 0;
+      },
       ready: vi.fn(async () => true),
     } as unknown as WorkspaceSourceRepositoryV1;
     const worker = new DurableSourceBlobGcWorkerV1({
@@ -100,11 +103,15 @@ describe("durable source blob GC", () => {
       async pendingBlobDeletions() {
         return [first, second];
       },
+      async queueOrphanedBlobDeletions() {
+        return 0;
+      },
     } as unknown as WorkspaceSourceRepositoryV1;
 
     const error = await runSourceBlobGcV1({
       blobs,
       cutoff: new Date(),
+      graceMs: 60_000,
       maximum: 2,
       repository,
       tenantId: "tenant-a",
@@ -147,5 +154,51 @@ describe("durable source blob GC", () => {
     expect(worker.ready()).toBe(false);
     expect(onFailure).not.toHaveBeenCalled();
     await worker.close();
+  });
+
+  it("queues mature database orphans only after the raw S3 and pending-deletion pass", async () => {
+    const raw = deletion("a", "00000000-0000-4000-8000-000000000001");
+    const calls: string[] = [];
+    const blobs = {
+      async listSourceVersions() {
+        calls.push("list-raw");
+        return { nextCursor: null, versions: [{ blob: raw.blob, lastModified: new Date(0) }] };
+      },
+    } as unknown as SourceContentBlobStoreV1;
+    const repository = {
+      async isBlobVersionPublished() {
+        calls.push("check-raw");
+        return false;
+      },
+      async pendingBlobDeletions() {
+        calls.push("read-pending");
+        return [];
+      },
+      async queueBlobDeletion() {
+        calls.push("queue-raw");
+        return raw;
+      },
+      async queueOrphanedBlobDeletions(tenantId: string, graceMs: number, maximum: number) {
+        calls.push("queue-database");
+        expect({ graceMs, maximum, tenantId }).toEqual({
+          graceMs: 60_000,
+          maximum: 4,
+          tenantId: "tenant-a",
+        });
+        return 2;
+      },
+    } as unknown as WorkspaceSourceRepositoryV1;
+
+    await expect(
+      runSourceBlobGcV1({
+        blobs,
+        cutoff: new Date(1_000),
+        graceMs: 60_000,
+        maximum: 4,
+        repository,
+        tenantId: "tenant-a",
+      }),
+    ).resolves.toEqual({ deleted: 0, examined: 1, nextCursor: null, queued: 3 });
+    expect(calls).toEqual(["list-raw", "check-raw", "queue-raw", "read-pending", "queue-database"]);
   });
 });

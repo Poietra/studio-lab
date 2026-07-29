@@ -18,19 +18,22 @@ import {
 import { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
 import { applyBundledDurableStorageMigrations } from "./storage/postgres/migrate";
 import { PostgresArtifactRepositoryV1 } from "./storage/postgres/postgres-artifact-repository";
+import { PostgresProjectPngRepositoryV1 } from "./storage/postgres/postgres-project-png-repository";
 import { PostgresRenderSessionRepositoryV1 } from "./storage/postgres/postgres-render-session-repository";
 import { PostgresSnapshotPublicationRepositoryV1 } from "./storage/postgres/postgres-snapshot-publication-repository";
 import {
   PostgresWorkspaceSourceRepositoryV1,
   WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1,
 } from "./storage/postgres/postgres-workspace-source-repository";
-import { S3ContentBlobStoreV1 } from "./storage/s3/s3-content-blob-store";
+import { createDurableProjectPngGcWorkerV1 } from "./storage/project-png-gc";
+import { createDurableRenderArtifactGcWorkerV1 } from "./storage/render-artifact-gc";
+import { createDurableRenderSessionRetentionWorkerV1 } from "./storage/render-session-retention";
 import { S3ArtifactReaderV1 } from "./storage/s3/s3-artifact-reader";
+import { S3ContentBlobStoreV1 } from "./storage/s3/s3-content-blob-store";
 import { PrivateVersionedS3BucketTransportV1 } from "./storage/s3/s3-private-versioned-bucket-transport";
 import { S3ProjectPngStoreV1 } from "./storage/s3/s3-project-png-store";
 import { S3SnapshotArtifactStoreV1 } from "./storage/s3/s3-snapshot-artifact-store";
 import { createDurableSnapshotArtifactGcWorkerV1 } from "./storage/snapshot-artifact-gc";
-import { createDurableRenderArtifactGcWorkerV1 } from "./storage/render-artifact-gc";
 import { SnapshotArtifactPublisherV1 } from "./storage/snapshot-artifact-publisher";
 import { createDurableSourceBlobGcWorkerV1 } from "./storage/source-blob-gc";
 import { VerifiedArtifactPublisherV1 } from "./storage/verified-artifact-publisher";
@@ -69,6 +72,14 @@ export type DurablePostgresS3ProductionRuntimeOptionsV1 = Readonly<{
     }>;
     stagingRoot: string;
   }>;
+  renderSessionRetention: Readonly<{
+    auditRetentionMs: number;
+    batchSize: number;
+    inputRetentionMs: number;
+    intervalMs: number;
+    onFailure: (error: unknown) => void;
+    sweepTimeoutMs: number;
+  }>;
   snapshot: Readonly<{
     artifactGc: Readonly<{
       batchSize: number;
@@ -82,6 +93,13 @@ export type DurablePostgresS3ProductionRuntimeOptionsV1 = Readonly<{
     timeoutMs?: number;
   }>;
   sourceGc: Readonly<{
+    batchSize: number;
+    graceMs: number;
+    intervalMs: number;
+    onFailure: (error: unknown) => void;
+    sweepTimeoutMs: number;
+  }>;
+  projectPngGc: Readonly<{
     batchSize: number;
     graceMs: number;
     intervalMs: number;
@@ -177,7 +195,7 @@ async function cleanupInOrderAndThrow(
   throw error;
 }
 
-/** Build the shipped PostgreSQL + private S3 production runtime and both durable GC workers. */
+/** Build the shipped PostgreSQL + private S3 runtime and its durable maintenance workers. */
 export async function createDurablePostgresS3ProductionRuntimeV1(
   options: DurablePostgresS3ProductionRuntimeOptionsV1,
   signal?: AbortSignal,
@@ -197,6 +215,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
 
   let repository: PostgresWorkspaceSourceRepositoryV1 | undefined;
   let renderRepository: PostgresRenderSessionRepositoryV1 | undefined;
+  let projectPngRepository: PostgresProjectPngRepositoryV1 | undefined;
   let mediaRepository: PostgresArtifactRepositoryV1 | undefined;
   let snapshotRepository: PostgresSnapshotPublicationRepositoryV1 | undefined;
   let objectTransport: PrivateVersionedS3BucketTransportV1 | undefined;
@@ -210,6 +229,10 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       statementTimeoutMs: options.database.statementTimeoutMs,
     });
     renderRepository = new PostgresRenderSessionRepositoryV1({
+      poolConfig: options.database.runtimePoolConfig,
+      statementTimeoutMs: options.database.statementTimeoutMs,
+    });
+    projectPngRepository = new PostgresProjectPngRepositoryV1({
       poolConfig: options.database.runtimePoolConfig,
       statementTimeoutMs: options.database.statementTimeoutMs,
     });
@@ -241,6 +264,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
         objectTransport,
         mediaRepository,
         snapshotRepository,
+        projectPngRepository,
         renderRepository,
         repository,
       ],
@@ -341,6 +365,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
         ...(publisher ? [] : [snapshotRepository]),
         mediaArtifacts,
         mediaRepository,
+        projectPngRepository,
         blobs,
         repository,
       ],
@@ -368,14 +393,18 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   } catch (error) {
     return cleanupAndThrow(
       error,
-      runtime ? [runtime] : [renderWorker, renders, snapshots, mediaArtifacts, mediaRepository, blobs, repository],
+      runtime
+        ? [projectPngRepository, runtime]
+        : [renderWorker, renders, snapshots, mediaArtifacts, mediaRepository, projectPngRepository, blobs, repository],
       "Production durable runtime construction and cleanup failed.",
     );
   }
 
   let sourceMaintenance: Awaited<ReturnType<typeof createDurableSourceBlobGcWorkerV1>> | undefined;
+  let projectPngMaintenance: Awaited<ReturnType<typeof createDurableProjectPngGcWorkerV1>> | undefined;
   let snapshotMaintenance: Awaited<ReturnType<typeof createDurableSnapshotArtifactGcWorkerV1>> | undefined;
   let mediaMaintenance: Awaited<ReturnType<typeof createDurableRenderArtifactGcWorkerV1>> | undefined;
+  let retentionMaintenance: Awaited<ReturnType<typeof createDurableRenderSessionRetentionWorkerV1>> | undefined;
   try {
     const sourceGc = await createDurableSourceBlobGcWorkerV1(
       {
@@ -387,6 +416,16 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       signal,
     );
     sourceMaintenance = sourceGc;
+    const projectPngGc = await createDurableProjectPngGcWorkerV1(
+      {
+        ...options.projectPngGc,
+        repository: projectPngRepository,
+        store: projectPngs,
+        tenantId: options.tenantId,
+      },
+      signal,
+    );
+    projectPngMaintenance = projectPngGc;
     const artifactGc = await createDurableSnapshotArtifactGcWorkerV1(
       {
         ...options.snapshot.artifactGc,
@@ -407,15 +446,39 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       signal,
     );
     mediaMaintenance = mediaGc;
+    const retention = await createDurableRenderSessionRetentionWorkerV1(
+      {
+        ...options.renderSessionRetention,
+        repository: renderRepository,
+        tenantId: options.tenantId,
+      },
+      signal,
+    );
+    retentionMaintenance = retention;
     const maintenance = {
-      close: () => closeAll([mediaGc, artifactGc, sourceGc], "Could not fully close durable storage maintenance."),
-      ready: () => sourceGc.ready() && artifactGc.ready() && mediaGc.ready(),
+      close: async () => {
+        const errors: unknown[] = [];
+        await closeAll(
+          [retention, mediaGc, artifactGc, projectPngGc, sourceGc],
+          "Could not fully close durable storage maintenance.",
+        ).catch((error: unknown) => errors.push(error));
+        await projectPngRepository.close().catch((error: unknown) => errors.push(error));
+        if (errors.length > 0) {
+          throw new AggregateError(errors, "Could not fully close durable storage maintenance.");
+        }
+      },
+      ready: () =>
+        sourceGc.ready() && projectPngGc.ready() && artifactGc.ready() && mediaGc.ready() && retention.ready(),
     };
     return createDurableProductionManimRuntimeAdapterV1(runtime, maintenance);
   } catch (error) {
     return cleanupInOrderAndThrow(
       error,
-      [[mediaMaintenance, snapshotMaintenance, sourceMaintenance], [runtime]],
+      [
+        [retentionMaintenance, mediaMaintenance, snapshotMaintenance, projectPngMaintenance, sourceMaintenance],
+        [projectPngRepository],
+        [runtime],
+      ],
       "Production runtime maintenance composition and cleanup failed.",
     );
   }

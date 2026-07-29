@@ -22,6 +22,9 @@ import {
   type DurableRenderLeaseClaimV1,
   type DurableRenderLeaseCompletionV1,
   type DurableRenderLeaseRenewalV1,
+  type DurableRenderSessionPurgeInputV1,
+  type DurableRenderSessionRetentionInputV1,
+  type DurableRenderSessionRetentionResultV1,
   type DurableRenderSessionV1,
   type DurableRenderSourceActionInputV1,
   type DurableRenderSourceActionResultV1,
@@ -31,10 +34,14 @@ import {
   MAX_DURABLE_RENDER_EXECUTION_TIMEOUT_MS_V1,
   MAX_DURABLE_RENDER_LEASE_MS_V1,
   MAX_DURABLE_RENDER_LOG_BYTES_V1,
+  MAX_DURABLE_RENDER_RETENTION_MS_V1,
   MIN_DURABLE_RENDER_EXECUTION_TIMEOUT_MS_V1,
+  MIN_DURABLE_RENDER_RETENTION_MS_V1,
   type RenderSessionRepositoryV1,
+  type RenderSessionRetentionRepositoryV1,
 } from "../render-session-repository";
 import { MAX_MANIM_SOURCE_BYTES_V1, type SourceBlobReceiptV1 } from "../workspace-source-repository";
+import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 
@@ -121,6 +128,21 @@ type ProjectPngRow = BlobRow & {
   generation: string;
   project_id: string;
   tenant_id: string;
+};
+
+type RetentionCandidateRow = QueryResultRow & {
+  original_digest: string;
+  patched_digest: string;
+  project_id: string;
+  project_png_digest: string | null;
+  project_png_generation: string | null;
+  session_id: string;
+};
+
+type RetentionProjectPngRow = QueryResultRow & {
+  digest: string;
+  generation: string;
+  project_id: string;
 };
 
 type ActionRow = QueryResultRow & {
@@ -218,6 +240,14 @@ function boundedPositiveInteger(value: number, name: string, maximum: number) {
     throw new RangeError(`${name} must be an integer between 1 and ${maximum}.`);
   }
   return value;
+}
+
+function retentionMs(value: number, name: string) {
+  const bounded = boundedPositiveInteger(value, name, MAX_DURABLE_RENDER_RETENTION_MS_V1);
+  if (bounded < MIN_DURABLE_RENDER_RETENTION_MS_V1) {
+    throw new RangeError(`${name} must be at least ${MIN_DURABLE_RENDER_RETENTION_MS_V1}.`);
+  }
+  return bounded;
 }
 
 function boundedText(value: string, name: string, maximum: number, allowEmpty = false) {
@@ -438,7 +468,9 @@ function transitionSourceSql(operation: RenderSessionTransitionOperation) {
     .join(", ");
 }
 
-export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositoryV1 {
+export class PostgresRenderSessionRepositoryV1
+  implements RenderSessionRepositoryV1, RenderSessionRetentionRepositoryV1
+{
   readonly #connection: PostgresRepositoryConnectionV1;
 
   constructor(options: Readonly<{ pool?: Pool; poolConfig?: PoolConfig; statementTimeoutMs?: number }>) {
@@ -465,15 +497,21 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
     if (inserted.rowCount === 1) return candidate;
     const existing = await client.query<BlobRow>(
       `SELECT digest, object_key, version_id, etag, byte_size
-         FROM public.source_blob_objects
+        FROM public.source_blob_objects
         WHERE tenant_id = $1 AND digest = $2
-        FOR KEY SHARE`,
+        FOR UPDATE`,
       [tenant, candidate.digest],
     );
     const row = existing.rows[0];
     if (!row || row.object_key !== candidate.objectKey || row.byte_size !== candidate.byteSize) {
       throw new TypeError("The stored source blob metadata conflicts with its digest.");
     }
+    await client.query(
+      `UPDATE public.source_blob_objects
+          SET orphaned_at = NULL
+        WHERE tenant_id = $1 AND digest = $2 AND orphaned_at IS NOT NULL`,
+      [tenant, candidate.digest],
+    );
     return receiptFromBlobRow(row);
   }
 
@@ -483,6 +521,7 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
          FROM public.render_sessions s
          ${SESSION_JOINS}
         WHERE s.tenant_id = $1 AND s.session_id = $2::uuid
+          AND s.references_released_at IS NULL
         ${lock ? "FOR UPDATE OF s" : ""}`,
       [tenant, session],
     );
@@ -493,16 +532,18 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
   async ready(signal?: AbortSignal) {
     try {
       const result = await this.#connection.query<{ checksum: string; version: number }>(
-        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (2, 5) ORDER BY version",
+        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (2, 5, 6) ORDER BY version",
         [],
         signal,
       );
       return (
-        result.rowCount === 2 &&
+        result.rowCount === 3 &&
         result.rows[0]?.version === 2 &&
         result.rows[0]?.checksum === RENDER_SESSION_MIGRATION_V2_CHECKSUM &&
         result.rows[1]?.version === 5 &&
-        result.rows[1]?.checksum === PROJECT_PNG_MIGRATION_V5_CHECKSUM
+        result.rows[1]?.checksum === PROJECT_PNG_MIGRATION_V5_CHECKSUM &&
+        result.rows[2]?.version === 6 &&
+        result.rows[2]?.checksum === DURABLE_RETENTION_MIGRATION_V6_CHECKSUM
       );
     } catch {
       throwIfAborted(signal);
@@ -659,6 +700,7 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
          FROM public.render_sessions s
          ${SESSION_JOINS}
         WHERE s.tenant_id = $1
+          AND s.references_released_at IS NULL
           AND s.status IN (${transitionSourceSql("claim-lease")})
           AND (s.status <> 'rendering' OR s.lease_expires_at IS NULL OR s.lease_expires_at <= clock_timestamp())
         ORDER BY s.updated_at, s.session_id
@@ -1094,6 +1136,7 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
         `SELECT project_id, render_request_id, status
            FROM public.render_sessions
           WHERE tenant_id = $1 AND session_id = $2::uuid
+            AND references_released_at IS NULL
           FOR UPDATE`,
         [tenant, session],
       );
@@ -1130,6 +1173,229 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
       );
       return true;
     }, signal);
+  }
+
+  async releaseExpiredInputs(
+    input: DurableRenderSessionRetentionInputV1,
+    signal?: AbortSignal,
+  ): Promise<DurableRenderSessionRetentionResultV1> {
+    const tenant = tenantId(input.tenantId);
+    const maximum = boundedPositiveInteger(input.maximum, "maximum", MAX_RECOVERABLE_SESSION_PAGE_V1);
+    const retention = retentionMs(input.retentionMs, "retentionMs");
+    return this.#connection.transaction(async (client) => {
+      const selected = await client.query<RetentionCandidateRow>(
+        `SELECT s.session_id::text AS session_id, s.project_id,
+                s.original_digest, s.patched_digest,
+                s.project_png_generation::text AS project_png_generation,
+                s.project_png_digest
+           FROM public.render_sessions s
+          WHERE s.tenant_id = $1
+            AND s.references_released_at IS NULL
+            AND s.status IN ('cancelled', 'discarded', 'failed', 'ready', 'undone')
+            AND s.lease_owner IS NULL AND s.lease_expires_at IS NULL
+            AND s.updated_at <= clock_timestamp() - ($2::double precision * interval '1 millisecond')
+            AND NOT EXISTS (
+              SELECT 1 FROM public.render_source_actions action
+               WHERE action.tenant_id = s.tenant_id AND action.session_id = s.session_id
+                 AND action.state = 'running'
+            )
+            AND (
+              s.status <> 'ready'
+              OR (
+                NOT EXISTS (
+                  SELECT 1 FROM public.render_session_artifacts artifact
+                   WHERE artifact.tenant_id = s.tenant_id AND artifact.session_id = s.session_id
+                     AND artifact.expires_at > clock_timestamp()
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM public.workspace_project_thumbnail_heads thumbnail
+                   WHERE thumbnail.tenant_id = s.tenant_id AND thumbnail.session_id = s.session_id
+                     AND thumbnail.expires_at > clock_timestamp()
+                )
+              )
+            )
+          ORDER BY s.updated_at, s.session_id
+          LIMIT $3
+          FOR UPDATE OF s SKIP LOCKED`,
+        [tenant, retention, maximum],
+      );
+      if (selected.rows.length === 0) {
+        return { projectPngGenerationsOrphaned: 0, releasedSessionIds: [], sourceBlobsOrphaned: 0 };
+      }
+
+      const sessionIds = selected.rows.map((row) => row.session_id);
+      const pinnedPngs = await client.query<RetentionProjectPngRow>(
+        `SELECT generation.project_id, generation.generation::text AS generation, generation.digest
+           FROM public.project_png_generations generation
+          WHERE generation.tenant_id = $1
+            AND EXISTS (
+              SELECT 1 FROM public.render_sessions session
+               WHERE session.tenant_id = generation.tenant_id
+                 AND session.session_id = ANY($2::uuid[])
+                 AND session.project_id = generation.project_id
+                 AND session.project_png_generation = generation.generation
+                 AND session.project_png_digest = generation.digest
+            )
+          ORDER BY generation.project_id, generation.generation
+          FOR UPDATE OF generation`,
+        [tenant, sessionIds],
+      );
+      const sourceDigests = [
+        ...new Set(selected.rows.flatMap((row) => [row.original_digest, row.patched_digest])),
+      ].sort();
+      for (const digest of sourceDigests) {
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`${tenant}:${digest}`]);
+        await client.query("SELECT 1 FROM public.source_blob_objects WHERE tenant_id = $1 AND digest = $2 FOR UPDATE", [
+          tenant,
+          digest,
+        ]);
+      }
+
+      const released = await client.query<{ session_id: string }>(
+        `UPDATE public.render_sessions
+            SET original_digest = NULL,
+                patched_digest = NULL,
+                project_png_generation = NULL,
+                project_png_digest = NULL,
+                patch_inserted_code = '',
+                log_tail = '',
+                error = NULL,
+                artifact_locator = NULL,
+                references_released_at = clock_timestamp(),
+                updated_at = clock_timestamp()
+          WHERE tenant_id = $1
+            AND session_id = ANY($2::uuid[])
+            AND references_released_at IS NULL
+        RETURNING session_id::text AS session_id`,
+        [tenant, sessionIds],
+      );
+      if (released.rowCount !== selected.rowCount) {
+        throw new Error("The render-session retention batch changed while locked.");
+      }
+      await client.query(
+        `DELETE FROM public.workspace_project_references
+          WHERE tenant_id = $1 AND reference_kind = 'render-session'
+            AND reference_id = ANY($2::text[])`,
+        [tenant, sessionIds],
+      );
+
+      let projectPngGenerationsOrphaned = 0;
+      if (pinnedPngs.rows.length > 0) {
+        const pins = JSON.stringify(
+          pinnedPngs.rows.map((row) => ({
+            digest: row.digest,
+            generation: row.generation,
+            project_id: row.project_id,
+          })),
+        );
+        const marked = await client.query(
+          `WITH pins AS (
+             SELECT pin.project_id, pin.generation, pin.digest
+               FROM jsonb_to_recordset($2::jsonb)
+                    AS pin(project_id text, generation bigint, digest text)
+           )
+           UPDATE public.project_png_generations generation
+              SET orphaned_at = clock_timestamp()
+             FROM pins
+            WHERE generation.tenant_id = $1
+              AND generation.project_id = pins.project_id
+              AND generation.generation = pins.generation
+              AND generation.digest = pins.digest
+              AND generation.orphaned_at IS NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM public.project_png_heads head
+                 WHERE head.tenant_id = generation.tenant_id
+                   AND head.project_id = generation.project_id
+                   AND head.generation = generation.generation
+                   AND head.digest = generation.digest
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM public.render_sessions session
+                 WHERE session.tenant_id = generation.tenant_id
+                   AND session.project_id = generation.project_id
+                   AND session.project_png_generation = generation.generation
+                   AND session.project_png_digest = generation.digest
+              )`,
+          [tenant, pins],
+        );
+        projectPngGenerationsOrphaned = marked.rowCount ?? 0;
+      }
+
+      const sourceMarked = await client.query(
+        `UPDATE public.source_blob_objects source
+            SET orphaned_at = clock_timestamp()
+          WHERE source.tenant_id = $1
+            AND source.digest = ANY($2::text[])
+            AND source.orphaned_at IS NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM public.workspace_source_heads head
+               WHERE head.tenant_id = source.tenant_id AND head.digest = source.digest
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM public.render_sessions session
+               WHERE session.tenant_id = source.tenant_id
+                 AND (session.original_digest = source.digest OR session.patched_digest = source.digest)
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM public.snapshot_artifact_objects artifact
+               WHERE artifact.tenant_id = source.tenant_id AND artifact.source_digest = source.digest
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM public.snapshot_publications publication
+               WHERE publication.tenant_id = source.tenant_id AND publication.source_digest = source.digest
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM public.render_artifact_objects artifact
+               WHERE artifact.tenant_id = source.tenant_id AND artifact.source_digest = source.digest
+            )`,
+        [tenant, sourceDigests],
+      );
+      const releasedSet = new Set(released.rows.map((row) => row.session_id));
+      return {
+        projectPngGenerationsOrphaned,
+        releasedSessionIds: sessionIds.filter((sessionId) => releasedSet.has(sessionId)),
+        sourceBlobsOrphaned: sourceMarked.rowCount ?? 0,
+      };
+    }, signal);
+  }
+
+  async purgeReleasedSessions(input: DurableRenderSessionPurgeInputV1, signal?: AbortSignal) {
+    const tenant = tenantId(input.tenantId);
+    const maximum = boundedPositiveInteger(input.maximum, "maximum", MAX_RECOVERABLE_SESSION_PAGE_V1);
+    const auditRetention = retentionMs(input.auditRetentionMs, "auditRetentionMs");
+    const purged = await this.#connection.query(
+      `WITH candidates AS (
+         SELECT session.tenant_id, session.session_id
+           FROM public.render_sessions session
+          WHERE session.tenant_id = $1
+            AND session.references_released_at IS NOT NULL
+            AND session.references_released_at
+                  <= clock_timestamp() - ($2::double precision * interval '1 millisecond')
+            AND NOT EXISTS (
+              SELECT 1 FROM public.render_source_actions action
+               WHERE action.tenant_id = session.tenant_id AND action.session_id = session.session_id
+                 AND action.state = 'running'
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM public.render_session_artifacts artifact
+               WHERE artifact.tenant_id = session.tenant_id AND artifact.session_id = session.session_id
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM public.workspace_project_thumbnail_heads thumbnail
+               WHERE thumbnail.tenant_id = session.tenant_id AND thumbnail.session_id = session.session_id
+            )
+          ORDER BY session.references_released_at, session.session_id
+          LIMIT $3
+          FOR UPDATE OF session SKIP LOCKED
+       )
+       DELETE FROM public.render_sessions session
+        USING candidates
+        WHERE session.tenant_id = candidates.tenant_id
+          AND session.session_id = candidates.session_id`,
+      [tenant, auditRetention, maximum],
+      signal,
+    );
+    return purged.rowCount ?? 0;
   }
 
   async close() {

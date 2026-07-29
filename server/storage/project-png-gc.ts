@@ -17,6 +17,7 @@ export async function runProjectPngGcV1(
   options: Readonly<{
     cutoff: Date;
     cursor?: ProjectPngVersionCursorV1 | null;
+    graceMs: number;
     maximum: number;
     repository: ProjectPngRepositoryV1;
     signal?: AbortSignal;
@@ -31,7 +32,7 @@ export async function runProjectPngGcV1(
     isPublished: ({ projectId, receipt }, signal) =>
       options.repository.isVersionRetained(options.tenantId, projectId, receipt, signal),
     queue: ({ projectId, receipt }, signal) =>
-      options.repository.queueDeletion(options.tenantId, projectId, receipt, signal),
+      options.repository.queueDeletion(options.tenantId, projectId, receipt, options.graceMs, signal),
     pending: (maximum, signal) => options.repository.pendingDeletions(options.tenantId, maximum, signal),
     deleteVersion: ({ projectId, receipt, tenantId }, signal) =>
       options.store.deleteVersion(tenantId, projectId, receipt, signal),
@@ -70,5 +71,18 @@ export class DurableProjectPngGcWorkerV1 extends DurableGcWorkerCoreV1<
         error instanceof ProjectPngGcSweepErrorV1 ? error.result.nextCursor : current,
       run: ({ cutoff, cursor, maximum, signal }) => runProjectPngGcV1({ ...options, cutoff, cursor, maximum, signal }),
     });
+  }
+}
+
+export async function createDurableProjectPngGcWorkerV1(
+  options: DurableProjectPngGcWorkerOptionsV1,
+  signal?: AbortSignal,
+) {
+  const worker = new DurableProjectPngGcWorkerV1(options);
+  try {
+    return await worker.start(signal);
+  } catch (error) {
+    await worker.close();
+    throw error;
   }
 }

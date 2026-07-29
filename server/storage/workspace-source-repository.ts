@@ -76,6 +76,7 @@ export interface WorkspaceSourceRepositoryV1 {
   listProjects(tenantId: string, signal?: AbortSignal): Promise<ManimProjectListView>;
   listSourceHeads(tenantId: string, projectId: string, signal?: AbortSignal): Promise<readonly WorkspaceSourceHeadV1[]>;
   pendingBlobDeletions(tenantId: string, maximum: number, signal?: AbortSignal): Promise<readonly BlobDeletionV1[]>;
+  queueOrphanedBlobDeletions(tenantId: string, graceMs: number, maximum: number, signal?: AbortSignal): Promise<number>;
   readProject(tenantId: string, projectId: string, signal?: AbortSignal): Promise<WorkspaceSourceProjectV1>;
   readSourceHead(
     tenantId: string,

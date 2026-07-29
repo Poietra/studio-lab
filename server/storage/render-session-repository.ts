@@ -8,6 +8,8 @@ export const MAX_DURABLE_RENDER_ARTIFACT_LOCATOR_BYTES_V1 = 2 * 1024;
 export const MAX_DURABLE_RENDER_LEASE_MS_V1 = 15 * 60 * 1_000;
 export const MIN_DURABLE_RENDER_EXECUTION_TIMEOUT_MS_V1 = 1_000;
 export const MAX_DURABLE_RENDER_EXECUTION_TIMEOUT_MS_V1 = 15 * 60 * 1_000;
+export const MIN_DURABLE_RENDER_RETENTION_MS_V1 = 60 * 1_000;
+export const MAX_DURABLE_RENDER_RETENTION_MS_V1 = 365 * 24 * 60 * 60 * 1_000;
 
 export type DurableRenderSourceActionV1 = RenderSourceActionView &
   Readonly<{
@@ -105,6 +107,34 @@ export type DurableRenderSourceActionResultV1 = Readonly<{
   executed: boolean;
   session: DurableRenderSessionV1;
 }>;
+
+export type DurableRenderSessionRetentionInputV1 = Readonly<{
+  maximum: number;
+  retentionMs: number;
+  tenantId: string;
+}>;
+
+export type DurableRenderSessionRetentionResultV1 = Readonly<{
+  projectPngGenerationsOrphaned: number;
+  releasedSessionIds: readonly string[];
+  sourceBlobsOrphaned: number;
+}>;
+
+export type DurableRenderSessionPurgeInputV1 = Readonly<{
+  auditRetentionMs: number;
+  maximum: number;
+  tenantId: string;
+}>;
+
+/** Maintenance-only port kept separate from the online render-session API. */
+export interface RenderSessionRetentionRepositoryV1 {
+  purgeReleasedSessions(input: DurableRenderSessionPurgeInputV1, signal?: AbortSignal): Promise<number>;
+  ready(signal?: AbortSignal): Promise<boolean>;
+  releaseExpiredInputs(
+    input: DurableRenderSessionRetentionInputV1,
+    signal?: AbortSignal,
+  ): Promise<DurableRenderSessionRetentionResultV1>;
+}
 
 export interface RenderSessionRepositoryV1 {
   abandonSession(

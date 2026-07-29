@@ -8,11 +8,13 @@ import {
   applyProjectPngMigrationV5,
   applyRenderArtifactMigrationV4,
   applyRenderSessionMigrationV2,
+  applyRenderSessionRetentionMigrationV6,
   applySnapshotPublicationMigrationV3,
   applyWorkspaceSourceMigrationV1,
   PROJECT_PNG_MIGRATION_V5_SOURCE,
   RENDER_ARTIFACT_MIGRATION_V4_SOURCE,
   RENDER_SESSION_MIGRATION_V2_SOURCE,
+  RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE,
   SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE,
   WORKSPACE_SOURCE_MIGRATION_V1_SOURCE,
 } from "./migrate";
@@ -58,16 +60,17 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 5 });
-    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5]);
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 6 });
+    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 5 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 6 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_ARTIFACT_MIGRATION_V4_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === PROJECT_PNG_MIGRATION_V5_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(10);
+    expect(db.queries.filter(({ text }) => text === RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(12);
   });
 
   it("rejects a missing prerequisite under the same advisory lock", async () => {
@@ -109,5 +112,25 @@ describe("durable storage migrations", () => {
       /requires durable storage migrations v1 through v4/i,
     );
     expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("requires all five durable-storage prerequisites before applying render-session retention v6", async () => {
+    const db = database();
+    await expect(
+      applyRenderSessionRetentionMigrationV6(db.pool, RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE),
+    ).rejects.toThrow(/requires durable storage migrations v1 through v5/i);
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("keeps reference release separate from terminal-session purge", () => {
+    expect(RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE).toContain("ALTER COLUMN original_digest DROP NOT NULL");
+    expect(RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE).toContain("ALTER COLUMN patched_digest DROP NOT NULL");
+    expect(RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE).toContain("references_released_at timestamptz");
+    expect(RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE).toContain("source_blob_objects_orphan_queue");
+    expect(RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE).toContain("project_png_generations_orphan_queue");
+    expect(RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE).toContain(
+      "status IN ('cancelled', 'discarded', 'failed', 'ready', 'undone')",
+    );
+    expect(RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE).not.toContain("delete_after");
   });
 });

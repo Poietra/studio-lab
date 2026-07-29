@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import { createDurableManimRuntimeV1, type DurableManimRuntimeV1 } from "../durable-manim-runtime";
 import { HttpError } from "../http/json";
-import { applyWorkspaceSourceMigrationV1 } from "./postgres/migrate";
+import { applyBundledDurableStorageMigrations, applyWorkspaceSourceMigrationV1 } from "./postgres/migrate";
 import { PostgresWorkspaceSourceRepositoryV1 } from "./postgres/postgres-workspace-source-repository";
 import { S3ContentBlobStoreV1 } from "./s3/s3-content-blob-store";
 import { runSourceBlobGcV1 } from "./source-blob-gc";
@@ -187,6 +187,8 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
       );
       expect(await applyWorkspaceSourceMigrationV1(setupPool, migration)).toEqual({ applied: true, version: 1 });
       expect(await applyWorkspaceSourceMigrationV1(setupPool, migration)).toEqual({ applied: false, version: 1 });
+      expect(await applyBundledDurableStorageMigrations(setupPool)).toEqual({ applied: true, version: 6 });
+      expect(await applyBundledDurableStorageMigrations(setupPool)).toEqual({ applied: false, version: 6 });
       const schemaPlacement = await setupPool.query<{ misplaced: string | null; installed: string | null }>(
         `SELECT to_regclass('poietra.workspace_projects')::text AS misplaced,
                 to_regclass('public.workspace_projects')::text AS installed`,
@@ -298,6 +300,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
     const gc = await runSourceBlobGcV1({
       blobs: gcBlobs,
       cutoff: new Date(Date.now() + 1_000),
+      graceMs: 60_000,
       maximum: 256,
       repository: gcRepository,
       tenantId: "tenant-a",
@@ -321,6 +324,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
     const tenantBGc = await runSourceBlobGcV1({
       blobs: gcBlobs,
       cutoff: new Date(Date.now() + 1_000),
+      graceMs: 60_000,
       maximum: 256,
       repository: gcRepository,
       tenantId: "tenant-b",

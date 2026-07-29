@@ -3,6 +3,7 @@ import type { Pool, PoolClient, PoolConfig, QueryResultRow } from "pg";
 import { manimProjectIdSchema } from "../../../src/render-pipeline/contracts";
 import { HttpError } from "../../http/json";
 import { manimTenantIdSchema } from "../../manim-request-principal";
+import { MAX_DURABLE_GC_GRACE_MS_V1, MIN_DURABLE_GC_GRACE_MS_V1 } from "../durable-gc-core";
 import {
   assertProjectPngReceiptV1,
   type ProjectPngBlobReceiptV1,
@@ -10,6 +11,7 @@ import {
   type ProjectPngHeadV1,
   type ProjectPngRepositoryV1,
 } from "../project-png-storage";
+import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 
 export const PROJECT_PNG_MIGRATION_V5_CHECKSUM = "5366292bd9f2ef2a575e2de9573c5d76b7e8e2f17510966265861ad673a608a0";
@@ -36,6 +38,13 @@ type DeletionRow = ReceiptRow & {
   tenant_id: string;
 };
 
+type GenerationRetentionRow = QueryResultRow & {
+  generation: string;
+  mature: boolean;
+  orphaned_at: Date | null;
+  retained: boolean;
+};
+
 const RECEIPT_COLUMNS = "digest, object_key, version_id, etag, byte_size";
 
 function tenantId(value: string) {
@@ -53,6 +62,13 @@ function projectId(value: string) {
 function boundedMaximum(value: number) {
   if (!Number.isSafeInteger(value) || value < 1 || value > 256) {
     throw new RangeError("maximum must be an integer between 1 and 256.");
+  }
+  return value;
+}
+
+function deletionGraceMs(value: number) {
+  if (!Number.isSafeInteger(value) || value < MIN_DURABLE_GC_GRACE_MS_V1 || value > MAX_DURABLE_GC_GRACE_MS_V1) {
+    throw new RangeError("Project image.png deletion graceMs must be between one minute and 30 days.");
   }
   return value;
 }
@@ -119,12 +135,18 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
   }
 
   async ready(signal?: AbortSignal) {
-    const result = await this.#connection.query<{ checksum: string }>(
-      "SELECT checksum FROM public.poietra_schema_migrations WHERE version = 5",
+    const result = await this.#connection.query<{ checksum: string; version: number }>(
+      "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (5, 6) ORDER BY version",
       [],
       signal,
     );
-    return result.rowCount === 1 && result.rows[0]?.checksum === PROJECT_PNG_MIGRATION_V5_CHECKSUM;
+    return (
+      result.rowCount === 2 &&
+      result.rows[0]?.version === 5 &&
+      result.rows[0]?.checksum === PROJECT_PNG_MIGRATION_V5_CHECKSUM &&
+      result.rows[1]?.version === 6 &&
+      result.rows[1]?.checksum === DURABLE_RETENTION_MIGRATION_V6_CHECKSUM
+    );
   }
 
   async #readHead(client: PoolClient, tenant: string, project: string, lock = false) {
@@ -222,8 +244,8 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
       }
       await client.query(
         `INSERT INTO public.project_png_generations
-           (tenant_id, project_id, generation, digest, object_key, version_id)
-         VALUES ($1, $2, $3::bigint, $4, $5, $6)`,
+           (tenant_id, project_id, generation, digest, object_key, version_id, orphaned_at)
+         VALUES ($1, $2, $3::bigint, $4, $5, $6, NULL)`,
         [tenant, project, nextGeneration.toString(), candidate.digest, candidate.objectKey, candidate.versionId],
       );
       await client.query(
@@ -233,6 +255,28 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
            SET generation = EXCLUDED.generation, digest = EXCLUDED.digest, updated_at = clock_timestamp()`,
         [tenant, project, nextGeneration.toString(), candidate.digest],
       );
+      if (current) {
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+          `project-png-object:${tenant}:${current.receipt.objectKey}:${current.receipt.versionId}`,
+        ]);
+        await client.query(
+          `UPDATE public.project_png_generations g
+              SET orphaned_at = COALESCE(g.orphaned_at, clock_timestamp())
+            WHERE g.tenant_id = $1 AND g.project_id = $2
+              AND g.generation = $3::bigint AND g.digest = $4
+              AND NOT EXISTS (
+                SELECT 1 FROM public.project_png_heads h
+                 WHERE h.tenant_id = g.tenant_id AND h.project_id = g.project_id
+                   AND h.generation = g.generation AND h.digest = g.digest
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM public.render_sessions s
+                 WHERE s.tenant_id = g.tenant_id AND s.project_id = g.project_id
+                   AND s.project_png_generation = g.generation AND s.project_png_digest = g.digest
+              )`,
+          [tenant, project, current.generation.toString(), current.receipt.digest],
+        );
+      }
       const created = await this.#readHead(client, tenant, project);
       if (!created || !sameReceipt(created.receipt, candidate)) {
         throw new Error("PostgreSQL did not retain the project image.png replacement.");
@@ -287,11 +331,13 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
     tenantValue: string,
     projectValue: string,
     receiptValue: ProjectPngBlobReceiptV1,
+    graceValue: number,
     signal?: AbortSignal,
   ) {
     const tenant = tenantId(tenantValue);
     const project = projectId(projectValue);
     const receipt = assertProjectPngReceiptV1(tenant, project, receiptValue);
+    const grace = deletionGraceMs(graceValue);
     return this.#connection.transaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
         `project-png-object:${tenant}:${receipt.objectKey}:${receipt.versionId}`,
@@ -307,42 +353,85 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
       if (registered && !sameReceipt(receiptFromRow(tenant, project, registered), receipt)) {
         throw new Error("The registered image.png object version is bound to different metadata.");
       }
-      const retained = await client.query(
-        `SELECT 1
-           FROM public.project_png_generations g
-           JOIN public.project_png_objects o
-             ON o.tenant_id = g.tenant_id AND o.project_id = g.project_id
-            AND o.digest = g.digest AND o.object_key = g.object_key AND o.version_id = g.version_id
-          WHERE g.tenant_id = $1 AND g.project_id = $2
-            AND g.object_key = $3 AND g.version_id = $4
-            AND (
-              EXISTS (
-                SELECT 1 FROM public.project_png_heads h
-                 WHERE h.tenant_id = g.tenant_id AND h.project_id = g.project_id
-                   AND h.generation = g.generation AND h.digest = g.digest
-              ) OR EXISTS (
-                SELECT 1 FROM public.render_sessions s
-                 WHERE s.tenant_id = g.tenant_id AND s.project_id = g.project_id
-                   AND s.project_png_generation = g.generation AND s.project_png_digest = g.digest
-              )
-            )
-          LIMIT 1
-          FOR KEY SHARE OF o`,
-        [tenant, project, receipt.objectKey, receipt.versionId],
-      );
-      if (retained.rowCount !== 0) return null;
-      await client.query(
-        `DELETE FROM public.project_png_generations
-          WHERE tenant_id = $1 AND project_id = $2
-            AND digest = $3 AND object_key = $4 AND version_id = $5`,
-        [tenant, project, receipt.digest, receipt.objectKey, receipt.versionId],
-      );
-      await client.query(
+      if (registered) {
+        const generations = await client.query<GenerationRetentionRow>(
+          `SELECT g.generation::text AS generation, g.orphaned_at,
+                  (
+                    g.orphaned_at IS NOT NULL
+                    AND g.orphaned_at <= clock_timestamp() - ($6::double precision * interval '1 millisecond')
+                  ) AS mature,
+                  (
+                    EXISTS (
+                      SELECT 1 FROM public.project_png_heads h
+                       WHERE h.tenant_id = g.tenant_id AND h.project_id = g.project_id
+                         AND h.generation = g.generation AND h.digest = g.digest
+                    ) OR EXISTS (
+                      SELECT 1 FROM public.render_sessions s
+                       WHERE s.tenant_id = g.tenant_id AND s.project_id = g.project_id
+                         AND s.project_png_generation = g.generation AND s.project_png_digest = g.digest
+                    )
+                  ) AS retained
+             FROM public.project_png_generations g
+            WHERE g.tenant_id = $1 AND g.project_id = $2
+              AND g.digest = $3 AND g.object_key = $4 AND g.version_id = $5
+            ORDER BY g.generation
+            FOR UPDATE OF g`,
+          [tenant, project, receipt.digest, receipt.objectKey, receipt.versionId, grace],
+        );
+        if (generations.rowCount === 0) {
+          throw new Error("The registered image.png object version has no generation evidence.");
+        }
+        if (generations.rows.some((row) => row.retained)) return null;
+        const unmarked = generations.rows.filter((row) => row.orphaned_at === null);
+        if (unmarked.length > 0) {
+          await client.query(
+            `UPDATE public.project_png_generations g
+                SET orphaned_at = COALESCE(g.orphaned_at, clock_timestamp())
+              WHERE g.tenant_id = $1 AND g.project_id = $2
+                AND g.digest = $3 AND g.object_key = $4 AND g.version_id = $5
+                AND g.orphaned_at IS NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM public.project_png_heads h
+                   WHERE h.tenant_id = g.tenant_id AND h.project_id = g.project_id
+                     AND h.generation = g.generation AND h.digest = g.digest
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM public.render_sessions s
+                   WHERE s.tenant_id = g.tenant_id AND s.project_id = g.project_id
+                     AND s.project_png_generation = g.generation AND s.project_png_digest = g.digest
+                )`,
+            [tenant, project, receipt.digest, receipt.objectKey, receipt.versionId],
+          );
+          return null;
+        }
+        if (
+          generations.rows.some(
+            (row) => !(row.orphaned_at instanceof Date) || !Number.isFinite(row.orphaned_at.getTime()) || !row.mature,
+          )
+        ) {
+          return null;
+        }
+        const removed = await client.query(
+          `DELETE FROM public.project_png_generations
+            WHERE tenant_id = $1 AND project_id = $2
+              AND digest = $3 AND object_key = $4 AND version_id = $5
+              AND orphaned_at IS NOT NULL
+              AND orphaned_at <= clock_timestamp() - ($6::double precision * interval '1 millisecond')`,
+          [tenant, project, receipt.digest, receipt.objectKey, receipt.versionId, grace],
+        );
+        if (removed.rowCount !== generations.rowCount) {
+          throw new Error("The image.png orphan generations changed before deletion was queued.");
+        }
+      }
+      const removedObject = await client.query(
         `DELETE FROM public.project_png_objects
           WHERE tenant_id = $1 AND project_id = $2
             AND digest = $3 AND object_key = $4 AND version_id = $5 AND etag = $6 AND byte_size = $7`,
         [tenant, project, receipt.digest, receipt.objectKey, receipt.versionId, receipt.etag, receipt.byteSize],
       );
+      if (registered && removedObject.rowCount !== 1) {
+        throw new Error("The image.png object changed before deletion was queued.");
+      }
       await client.query(
         `INSERT INTO public.project_png_deletions
            (tenant_id, deletion_id, project_id, digest, object_key, version_id, etag, byte_size)
