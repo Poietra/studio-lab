@@ -159,6 +159,7 @@
         "setitimer",
         "set_mempolicy",
         "setpriority",
+        "setsid",
         "sigaltstack",
         "stat",
         "statfs",

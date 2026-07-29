@@ -131,7 +131,8 @@ def _runtime_confinement() -> None:
         raise RuntimeError("The OCI descriptor limit drifted.")
     if resource.getrlimit(resource.RLIMIT_CORE) != (0, 0):
         raise RuntimeError("The OCI core limit drifted.")
-    resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_ARTIFACT_BYTES, MAX_ARTIFACT_BYTES))
+    if resource.getrlimit(resource.RLIMIT_FSIZE) != (MAX_ARTIFACT_BYTES, MAX_ARTIFACT_BYTES):
+        raise RuntimeError("The OCI file-size limit drifted.")
 
     libc = ctypes.CDLL(None, use_errno=True)
     prctl = libc.prctl

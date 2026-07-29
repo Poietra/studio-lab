@@ -10,7 +10,7 @@ import {
   FastManimGatedOciDockerClientV1,
 } from "./fast-manim-gated-oci-job-runner";
 import { parseFastManimRootlessDockerInfoV1 } from "./fast-manim-production-gated-oci-backend";
-import { ManimRenderGatedOciJobRunnerV1 } from "./manim-render-gated-oci-job-runner";
+import { MANIM_RENDER_GATED_OCI_PROFILE_V1, ManimRenderGatedOciJobRunnerV1 } from "./manim-render-gated-oci-job-runner";
 import {
   MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
   MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V2,
@@ -20,6 +20,7 @@ import { inspectProjectPngBytesV1 } from "./storage/project-png-storage";
 
 const image = process.env.POIETRA_MANIM_RENDER_GATED_OCI_IMAGE;
 const enabled = /^sha256:[a-f0-9]{64}$/u.test(image ?? "");
+const required = process.env.POIETRA_MANIM_RENDER_GATED_OCI_REQUIRED === "1";
 const productionDockerSocket = process.env.POIETRA_FAST_MANIM_PRODUCTION_DOCKER_SOCKET?.trim();
 const productionDockerVersion = process.env.POIETRA_FAST_MANIM_PRODUCTION_DOCKER_VERSION?.trim();
 const productionEvidence = productionDockerSocket !== undefined || productionDockerVersion !== undefined;
@@ -27,11 +28,28 @@ const cgroupKillPolicy: FastManimGatedOciCgroupKillPolicyV1 = productionEvidence
 const seccompPath = fileURLToPath(new URL("../sandbox/fast-manim-gated-oci/seccomp.v1.json", import.meta.url));
 const HOST_SECRET_ENVIRONMENT_KEY = "POIETRA_TEST_RENDER_HOST_SECRET";
 
+function hardUlimit(name: "fsize" | "nofile") {
+  const limit = MANIM_RENDER_GATED_OCI_PROFILE_V1.ulimits.find((candidate) => candidate.name === name)?.hard;
+  if (limit === undefined) throw new TypeError(`The render profile is missing its ${name} hard limit.`);
+  return limit;
+}
+
+const FILE_SIZE_LIMIT = hardUlimit("fsize");
+const OPEN_FILE_LIMIT = hardUlimit("nofile");
+const TMPFS_BYTE_LIMIT = Number(
+  MANIM_RENDER_GATED_OCI_PROFILE_V1.tmpfs.options.find((option) => option.startsWith("size="))?.slice(5),
+);
+const TMPFS_INODE_LIMIT = MANIM_RENDER_GATED_OCI_PROFILE_V1.tmpfs.inodeLimit;
+if (!Number.isSafeInteger(TMPFS_BYTE_LIMIT) || TMPFS_BYTE_LIMIT < 1) {
+  throw new TypeError("The render profile is missing its bounded tmpfs byte size.");
+}
+
 function boundaryCheckedSource(hostSecretPath: string) {
   return `from pathlib import Path
 import errno
 import os
 import socket
+import time
 
 from manim import Circle, Create, FadeOut, ImageMobject, LEFT, RIGHT, Scene, Square, Transform
 
@@ -56,6 +74,25 @@ def assert_socket_family_is_blocked(family):
         raise RuntimeError("sandbox socket denial was inconclusive") from error
     descriptor.close()
     raise RuntimeError("untrusted Scene opened a network or Unix socket")
+
+def start_detached_pipe_holder():
+    read_descriptor, write_descriptor = os.pipe()
+    child = os.fork()
+    if child == 0:
+        os.close(read_descriptor)
+        os.closerange(3, write_descriptor)
+        os.closerange(write_descriptor + 1, ${OPEN_FILE_LIMIT})
+        os.setsid()
+        os.write(write_descriptor, b"R")
+        time.sleep(30)
+        os.close(write_descriptor)
+        os._exit(0)
+    os.close(write_descriptor)
+    try:
+        if os.read(read_descriptor, 1) != b"R":
+            raise RuntimeError("detached child did not enter its new session")
+    finally:
+        os.close(read_descriptor)
 
 class MultiAnimationScene(Scene):
     def construct(self):
@@ -85,6 +122,10 @@ class MultiAnimationScene(Scene):
         self.play(shape.animate.shift(RIGHT), run_time=0.2)
         self.play(Transform(shape, target), run_time=0.2)
         self.play(FadeOut(shape), run_time=0.2)
+
+    def render(self, *args, **kwargs):
+        super().render(*args, **kwargs)
+        start_detached_pipe_holder()
 `;
 }
 const forgedMediaSource = `from pathlib import Path
@@ -134,6 +175,109 @@ class ForkPressureScene(Scene):
             children += 1
         if children < 16:
             raise RuntimeError("fork pressure did not reach the bounded process envelope")
+        time.sleep(30)
+`;
+const descriptorPressureSource = `import errno
+import os
+import time
+
+from manim import Scene
+
+class DescriptorPressureScene(Scene):
+    def construct(self):
+        descriptors = []
+        try:
+            for _ in range(${OPEN_FILE_LIMIT + 64}):
+                descriptors.append(os.open("/dev/null", os.O_RDONLY))
+        except OSError as error:
+            if error.errno == errno.EMFILE:
+                raise RuntimeError("descriptor limit enforced") from error
+            raise
+        time.sleep(30)
+`;
+const fileSizePressureSource = `import errno
+import os
+import signal
+import time
+
+from manim import Scene
+
+class FileSizePressureScene(Scene):
+    def construct(self):
+        signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+        descriptor = os.open("/run/poietra/tmp/file-size-pressure", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        limited = False
+        try:
+            os.lseek(descriptor, ${FILE_SIZE_LIMIT}, os.SEEK_SET)
+            try:
+                os.write(descriptor, b"x")
+            except OSError as error:
+                if error.errno != errno.EFBIG:
+                    raise
+                limited = True
+        finally:
+            os.close(descriptor)
+        if limited:
+            raise RuntimeError("file-size limit enforced")
+        time.sleep(30)
+`;
+const tmpfsBytePressureSource = `import errno
+import os
+import time
+
+from manim import Scene
+
+class TmpfsBytePressureScene(Scene):
+    def construct(self):
+        chunk = b"x" * (1024 * 1024)
+        file_size = min(${FILE_SIZE_LIMIT} // 2, 64 * 1024 * 1024)
+        total_limit = ${TMPFS_BYTE_LIMIT} + 64 * 1024 * 1024
+        written = 0
+        file_index = 0
+        try:
+            while written < total_limit:
+                descriptor = os.open(
+                    f"/run/poietra/tmp/byte-pressure-{file_index}",
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                )
+                try:
+                    in_file = 0
+                    while in_file < file_size and written < total_limit:
+                        count = os.write(descriptor, chunk)
+                        if count < 1:
+                            raise RuntimeError("tmpfs write made no progress")
+                        in_file += count
+                        written += count
+                finally:
+                    os.close(descriptor)
+                file_index += 1
+        except OSError as error:
+            if error.errno == errno.ENOSPC:
+                raise RuntimeError("tmpfs byte limit enforced") from error
+            raise
+        time.sleep(30)
+`;
+const tmpfsInodePressureSource = `import errno
+import os
+import time
+
+from manim import Scene
+
+class TmpfsInodePressureScene(Scene):
+    def construct(self):
+        try:
+            for index in range(${TMPFS_INODE_LIMIT + 1_024}):
+                descriptor = os.open(
+                    f"/run/poietra/tmp/inode-pressure-{index}",
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                )
+                os.close(descriptor)
+        except OSError as error:
+            if error.errno == errno.ENOSPC:
+                raise RuntimeError("tmpfs inode limit enforced") from error
+            raise
         time.sleep(30)
 `;
 const detachedPipeHolderSource = `import os
@@ -223,10 +367,10 @@ async function waitForContainerProcessCount(
   throw new Error("The hostile render did not populate its cgroup before cleanup.");
 }
 
-describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media lane", () => {
+describe.skipIf(!enabled && !productionEvidence && !required)("render gated OCI real media lane", () => {
   beforeAll(async () => {
+    if (!enabled) throw new TypeError("The required render evidence lane needs an immutable render image.");
     if (!productionEvidence) return;
-    if (!enabled) throw new TypeError("The rootless render evidence lane requires an immutable render image.");
     if (!productionDockerSocket || !productionDockerVersion) {
       throw new TypeError("The rootless render evidence lane requires both production Docker settings.");
     }
@@ -238,7 +382,7 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
     parseFastManimRootlessDockerInfoV1(info.stdout, productionDockerVersion);
   });
 
-  it("denies host, environment, and socket access while rendering pinned multi-animation media", async () => {
+  it("denies host access and reaps a detached pipe holder while rendering pinned multi-animation media", async () => {
     const stagingRoot = await mkdtemp(join(tmpdir(), "poietra-real-render-staging-"));
     const hostSecretRoot = await mkdtemp(join(tmpdir(), "poietra-real-render-host-secret-"));
     const hostSecretPath = join(hostSecretRoot, "secret.txt");
@@ -248,7 +392,8 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
     await writeFile(hostSecretPath, hostSecret, { encoding: "utf8", mode: 0o644 });
     const source = boundaryCheckedSource(hostSecretPath);
     await chmod(stagingRoot, 0o700);
-    const runner = createRunner(stagingRoot);
+    const docker = dockerClient();
+    const runner = createRunner(stagingRoot, docker);
     const deadlineEpochMs = Date.now() + 120_000;
     const assetBytes = await readFile(fileURLToPath(new URL("../src-tauri/icons/32x32.png", import.meta.url)));
     const asset = inspectProjectPngBytesV1(assetBytes);
@@ -365,6 +510,7 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
       }
       await runner.cleanup(base.jobId, Date.now() + 30_000, signal);
       expect(await readdir(stagingRoot)).toEqual([]);
+      expect(await ownedContainerIds(docker, runner, true)).toEqual([]);
     } catch (error) {
       operationError = error;
     }
@@ -561,6 +707,38 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
         sceneName: "ForkPressureScene",
         source: forkPressureSource,
         timeoutMs: 8_000,
+      },
+      {
+        expected: { code: "render-failed", diagnostic: "manim-exit", kind: "failed" },
+        maximumElapsedMs: 15_000,
+        name: "descriptor-pressure",
+        sceneName: "DescriptorPressureScene",
+        source: descriptorPressureSource,
+        timeoutMs: 10_000,
+      },
+      {
+        expected: { code: "render-failed", diagnostic: "manim-exit", kind: "failed" },
+        maximumElapsedMs: 15_000,
+        name: "file-size-pressure",
+        sceneName: "FileSizePressureScene",
+        source: fileSizePressureSource,
+        timeoutMs: 10_000,
+      },
+      {
+        expected: { code: "render-failed", kind: "failed" },
+        maximumElapsedMs: 20_000,
+        name: "tmpfs-byte-pressure",
+        sceneName: "TmpfsBytePressureScene",
+        source: tmpfsBytePressureSource,
+        timeoutMs: 15_000,
+      },
+      {
+        expected: { code: "render-failed", kind: "failed" },
+        maximumElapsedMs: 20_000,
+        name: "tmpfs-inode-pressure",
+        sceneName: "TmpfsInodePressureScene",
+        source: tmpfsInodePressureSource,
+        timeoutMs: 15_000,
       },
       {
         expected: { code: "deadline-exceeded", kind: "failed" },
