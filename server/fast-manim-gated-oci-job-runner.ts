@@ -88,9 +88,9 @@ const REQUIRED_READ_ONLY_SYSTEM_PATHS = Object.freeze([
   "/proc/sysrq-trigger",
 ] as const);
 const LOCKED_LABELS = Object.freeze({
-  "io.poietra.fast-manim.archive-sha256": "00413ce7ae00d4affa318a701831db369c70ba02f20a6babc44e7d7db8702694",
-  "io.poietra.fast-manim.commit": "7d20dc2d6dce4e84d4c24bc9509aff4094279ee7",
-  "io.poietra.fast-manim.tree": "f80a55d0764259df9f80b89dd47a18d51e0623db",
+  "io.poietra.fast-manim.archive-sha256": "8ac9869c7ace48715053d9392e323042921cd5f4f7f0c8d369d8a6a27d05719d",
+  "io.poietra.fast-manim.commit": "bd93f660c1bd27afefd0b7f5beb2380984d9f938",
+  "io.poietra.fast-manim.tree": "3c983435616218241359325eb00e0ad585067ddf",
   "io.poietra.sandbox-slice": "gated-oci-v1",
 });
 const FIXED_ENVIRONMENT = Object.freeze({

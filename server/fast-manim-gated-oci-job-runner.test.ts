@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -39,6 +40,10 @@ const realImage = process.env.POIETRA_FAST_MANIM_GATED_OCI_IMAGE;
 const realLane = /^sha256:[a-f0-9]{64}$/.test(realImage ?? "");
 const MAGIC = Buffer.from("POIETR1\0", "ascii");
 const seccompPath = fileURLToPath(new URL("../sandbox/fast-manim-gated-oci/seccomp.v1.json", import.meta.url));
+const affineScene = readFileSync(
+  fileURLToPath(new URL("../fixtures/real-preview-harness/scene_affine.py", import.meta.url)),
+  "utf8",
+);
 
 function context(signal = new AbortController().signal, deadlineMs = 30_000) {
   return {
@@ -159,9 +164,9 @@ function trustedImageInspection(image: string, target: readonly string[] = FAST_
           Cmd: target,
           Entrypoint: ["/opt/venv/bin/python", "/opt/poietra/gated-entrypoint.py"],
           Labels: {
-            "io.poietra.fast-manim.archive-sha256": "00413ce7ae00d4affa318a701831db369c70ba02f20a6babc44e7d7db8702694",
-            "io.poietra.fast-manim.commit": "7d20dc2d6dce4e84d4c24bc9509aff4094279ee7",
-            "io.poietra.fast-manim.tree": "f80a55d0764259df9f80b89dd47a18d51e0623db",
+            "io.poietra.fast-manim.archive-sha256": "8ac9869c7ace48715053d9392e323042921cd5f4f7f0c8d369d8a6a27d05719d",
+            "io.poietra.fast-manim.commit": "bd93f660c1bd27afefd0b7f5beb2380984d9f938",
+            "io.poietra.fast-manim.tree": "3c983435616218241359325eb00e0ad585067ddf",
             "io.poietra.sandbox-slice": "gated-oci-v1",
           },
         },
@@ -633,6 +638,46 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
         binding: { name: "circle", ordinal: 1 },
         entityId: `${source.sceneId}/entity:0`,
       },
+    ]);
+  });
+
+  it("isolates, seals, and correlates the real V2 affine fixture", { timeout: 60_000 }, async () => {
+    const source = producerRequestFor(affineScene, "DynamicAffineScene", 2);
+    const request = new FastManimSandboxRequestBundleV1(source);
+    const execution = await runFastManimGatedOciJobV1({
+      deadlineEpochMs: Date.now() + 30_000,
+      image,
+      requestBytes: request.copyBytes(),
+      signal: new AbortController().signal,
+    });
+    expect(execution.cleanupVerified).toBe(true);
+    const { snapshot, sourceRuntimeIdentity } = await verifyCombinedResult(execution.resultBytes, source);
+    if (snapshot.kind !== "compiled") throw new Error("Expected compiled affine evidence.");
+    expect(snapshot.bundle.scene).toMatchObject({
+      duration: 7,
+      requiredCapabilities: ["affine-transform-animation", "cubic-path-geometry"],
+    });
+    expect(snapshot.bundle.scene.entities).toHaveLength(7);
+    expect(snapshot.bundle.scene.animationChannels).toHaveLength(6);
+    expect(snapshot.bundle.scene.animationChannels.map((channel) => channel.kind)).toEqual(
+      Array.from({ length: 6 }, () => "affine-transform"),
+    );
+    expect(snapshot.bundle.scene.animationChannels.at(-1)).toMatchObject({
+      entityId: `${source.sceneId}/entity:6`,
+      keyframes: [
+        { at: 5, value: { m11: 1, m22: 1, tx: 0, ty: 0 } },
+        { at: 6, value: { m11: -1, m22: 1, tx: 6, ty: 0 } },
+      ],
+      kind: "affine-transform",
+    });
+    expect(sourceRuntimeIdentity?.mappings.map((mapping) => mapping.binding.name)).toEqual([
+      "sentinel",
+      "translation",
+      "rotation",
+      "scale",
+      "stretch",
+      "shear",
+      "reflection",
     ]);
   });
 
