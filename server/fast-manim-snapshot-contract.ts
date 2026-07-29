@@ -629,6 +629,10 @@ function assertDynamicProfileV2(scene: SceneIrBundleV1["scene"]) {
   let previousEntityIndex = -1;
   let previousKindOrder = -1;
   const channelKindsByEntity = new Map<number, Set<string>>();
+  const opacityChannelsByEntity = new Map<
+    number,
+    Extract<SceneIrBundleV1["scene"]["animationChannels"][number], { kind: "opacity" }>
+  >();
   for (const channel of scene.animationChannels) {
     if (channel.kind !== "affine-transform" && channel.kind !== "opacity" && channel.kind !== "path-trim") {
       profileViolation("Dynamic profile V2 accepts only affine-transform, opacity, and path-trim animation channels.");
@@ -794,6 +798,31 @@ function assertDynamicProfileV2(scene: SceneIrBundleV1["scene"]) {
           profileViolation("Each verified Create or Uncreate must span one exact producer-supported 60fps timed step.");
         }
       }
+      const opacityChannel = opacityChannelsByEntity.get(entityIndex);
+      if (opacityChannel) {
+        const opacityValues = opacityChannel.keyframes.map((keyframe) => keyframe.value);
+        const createThenFadeOut =
+          values.length === 2 &&
+          values[0] === 0 &&
+          values[1] === 1 &&
+          opacityValues.length === 2 &&
+          opacityValues[0] === 1 &&
+          opacityValues[1] === 0 &&
+          channel.keyframes[1]!.at <= opacityChannel.keyframes[0]!.at;
+        const fadeInThenUncreate =
+          opacityValues.length === 2 &&
+          opacityValues[0] === 0 &&
+          opacityValues[1] === 1 &&
+          values.length === 2 &&
+          values[0] === 1 &&
+          values[1] === 0 &&
+          opacityChannel.keyframes[1]!.at <= channel.keyframes[0]!.at;
+        if (!createThenFadeOut && !fadeInThenUncreate) {
+          profileViolation(
+            "Combined opacity and path-trim channels must encode Create then FadeOut or FadeIn then Uncreate without overlap.",
+          );
+        }
+      }
       continue;
     }
 
@@ -847,6 +876,7 @@ function assertDynamicProfileV2(scene: SceneIrBundleV1["scene"]) {
         profileViolation("Each verified Fade must span one exact producer-supported 60fps timed step.");
       }
     }
+    opacityChannelsByEntity.set(entityIndex, channel);
   }
 }
 

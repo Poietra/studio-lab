@@ -696,7 +696,7 @@ describe("fast-manim snapshot result v1", () => {
     }
   });
 
-  it("orders path-trim without colliding with opacity on the same entity or affine on the next entity", async () => {
+  it("accepts only producer-reachable opacity/path-trim pairs and orders the next entity's affine", async () => {
     const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
     const path = await dynamicPathTrimBundle([0, 1]);
     const pathChannel = path.scene.animationChannels[0]!;
@@ -730,6 +730,51 @@ describe("fast-manim snapshot result v1", () => {
       },
     });
     await expect(parseProducer(compiled(opacityAndTrim), expectedV2)).resolves.toMatchObject({ kind: "compiled" });
+
+    const pairedCandidate = (
+      mutate: (
+        opacity: Extract<(typeof opacityAndTrim.scene.animationChannels)[number], { kind: "opacity" }>,
+        pathTrim: Extract<(typeof opacityAndTrim.scene.animationChannels)[number], { kind: "path-trim" }>,
+      ) => void,
+    ) => {
+      const candidate = structuredClone(opacityAndTrim);
+      const [opacity, pathTrim] = candidate.scene.animationChannels;
+      if (opacity?.kind !== "opacity" || pathTrim?.kind !== "path-trim") throw new Error("Expected scalar channels.");
+      mutate(opacity, pathTrim);
+      return compiled(candidate);
+    };
+    const fadeInThenUncreate = pairedCandidate((opacity, pathTrim) => {
+      opacity.keyframes = [
+        { at: 0, easingToNext: { kind: "linear" }, value: 0 },
+        { at: 2, easingToNext: null, value: 1 },
+      ];
+      pathTrim.keyframes = [
+        { at: 4, easingToNext: { kind: "linear" }, value: 1 },
+        { at: 6, easingToNext: null, value: 0 },
+      ];
+    });
+    await expect(parseProducer(fadeInThenUncreate, expectedV2)).resolves.toMatchObject({ kind: "compiled" });
+
+    const unreachablePairs = [
+      pairedCandidate((opacity) => {
+        opacity.keyframes = [
+          { at: 0, easingToNext: { kind: "linear" }, value: 0 },
+          { at: 2, easingToNext: null, value: 1 },
+        ];
+      }),
+      pairedCandidate((_, pathTrim) => {
+        pathTrim.keyframes = [
+          { at: 4, easingToNext: { kind: "linear" }, value: 1 },
+          { at: 6, easingToNext: null, value: 0 },
+        ];
+      }),
+      pairedCandidate((opacity) => {
+        opacity.keyframes[0]!.at = 1;
+      }),
+    ];
+    for (const unreachable of unreachablePairs) {
+      await expect(parseProducer(unreachable, expectedV2)).rejects.toMatchObject({ code: "profile-violation" });
+    }
 
     const base = await importedBundle();
     const secondEntity = { ...base.scene.entities[1]!, lifetimes: [{ end: 6, start: 0 }] };
