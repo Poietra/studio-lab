@@ -42,7 +42,7 @@ export const MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_VALUES = 50_000;
 export const MAX_FAST_MANIM_SNAPSHOT_DURATION_SECONDS_V2 = 3_600;
 export const FAST_MANIM_SNAPSHOT_FRAME_RATE_V2 = 60;
 
-export const fastManimSnapshotProfileVersionV1Schema = z.union([z.literal(1), z.literal(2)]);
+export const fastManimSnapshotProfileVersionV1Schema = z.union([z.literal(1), z.literal(2), z.literal(3)]);
 export type FastManimSnapshotProfileVersionV1 = z.infer<typeof fastManimSnapshotProfileVersionV1Schema>;
 
 const sceneNameSchema = z
@@ -314,6 +314,8 @@ function assertBoundedPlainJson(value: unknown) {
 export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V1 = "fast-manim server snapshot static profile v1" as const;
 export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V2 =
   "fast-manim server snapshot variable-duration static profile v2" as const;
+export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V3 =
+  "fast-manim server snapshot hermetic MathTex profile v3" as const;
 
 export const FAST_MANIM_SNAPSHOT_UNSUPPORTED_MESSAGES_V1: Readonly<Record<FastManimSnapshotIssueCodeV1, string>> = {
   "animation-evidence-incomplete": "The Scene animates in ways the static snapshot profile cannot capture.",
@@ -483,6 +485,12 @@ type StaticProfileSegment = Readonly<{
 }>;
 
 const MAX_STATIC_PROFILE_CLOSED_SEGMENTS = 16;
+const MAX_MATHTEX_PROFILE_SUBPATHS_V3 = 512;
+const MAX_MATHTEX_PROFILE_CUBIC_SEGMENTS_V3 = 2_048;
+const MATHTEX_PROFILE_COORDINATE_QUANTUM_V3 = 0.000_001;
+const MATHTEX_PROFILE_FONT_DIGEST_V3 = "d66ac1cc91c55c24d3636ae2df1238076debdff51841f9893fc5419cc2df3df7";
+const MATHTEX_PROFILE_TOOLCHAIN_DIGEST_V3 = "95c98e10edff239e6ee237c9eac99dc96c06ba9fc712c30816ddc47d7db12f9e";
+const MATHTEX_PROFILE_CONTENT_DIGEST_EVIDENCE_V3 = /^MathTex content digest [0-9a-f]{64}$/;
 const STATIC_PROFILE_RELATIVE_TOLERANCE = 1e-9;
 const CANONICAL_LINE_ROUNDOFF_MULTIPLIER_V1 = 64;
 
@@ -853,6 +861,87 @@ function assertStaticProfileEntity(entity: StaticProfileEntity, pathTrimTarget: 
     profileViolation(
       "Static profile open paths must be one finite canonical 1/3–2/3 Line cubic within bounded roundoff.",
     );
+  }
+}
+
+/**
+ * The bounded inline-outline shape emitted by the hermetic MathTex producer.
+ * V3 deliberately accepts no generic producer-authored vector surface: one
+ * filled cubic entity may contain glyph contours and counters, but every
+ * contour is closed and the aggregate uses the Rust compiler's exact budgets,
+ * paint, coordinate quantum, and artifact attestation. The server cannot
+ * independently recompile a source expression that is intentionally absent
+ * from Scene IR; production therefore also depends on the digest-pinned
+ * producer image tracked by issue #240.
+ */
+function assertHermeticMathTexProfileEntityV3(entity: StaticProfileEntity) {
+  if (entity.appearance.kind !== "vector" || entity.appearance.opacity !== 1) {
+    profileViolation("Hermetic MathTex profile entities must use fully opaque vector appearance.");
+  }
+  if (entity.appearance.stroke !== null || entity.appearance.fill === null) {
+    profileViolation("Hermetic MathTex profile entities must be filled without a stroke.");
+  }
+  const { color } = entity.appearance.fill;
+  if (
+    entity.appearance.fill.rule !== "nonzero" ||
+    color.alpha !== 1 ||
+    color.red !== 1 ||
+    color.green !== 1 ||
+    color.blue !== 1
+  ) {
+    profileViolation("Hermetic MathTex profile entities must use the canonical opaque white nonzero-winding fill.");
+  }
+  if (entity.sourceZIndex !== 0) {
+    profileViolation("Hermetic MathTex profile entities must use the canonical zero source z-index.");
+  }
+  if (entity.geometry.kind !== "cubic-path") {
+    profileViolation("Hermetic MathTex profile geometry must be a cubic outline.");
+  }
+  const { subpaths } = entity.geometry.path;
+  if (subpaths.length === 0 || subpaths.length > MAX_MATHTEX_PROFILE_SUBPATHS_V3) {
+    profileViolation(`Hermetic MathTex outlines accept at most ${MAX_MATHTEX_PROFILE_SUBPATHS_V3} subpaths.`);
+  }
+  let segments = 0;
+  for (const subpath of subpaths) {
+    if (!subpath.closed) profileViolation("Every hermetic MathTex outline subpath must be closed.");
+    if (subpath.segments.length === 0) profileViolation("Hermetic MathTex outline subpaths must not be empty.");
+    segments += subpath.segments.length;
+    if (segments > MAX_MATHTEX_PROFILE_CUBIC_SEGMENTS_V3) {
+      profileViolation(
+        `Hermetic MathTex outlines accept at most ${MAX_MATHTEX_PROFILE_CUBIC_SEGMENTS_V3} cubic segments.`,
+      );
+    }
+    const points = [
+      subpath.start,
+      ...subpath.segments.flatMap(({ control1, control2, end }) => [control1, control2, end]),
+    ];
+    if (
+      points.some(({ x, y }) =>
+        [x, y].some(
+          (coordinate) =>
+            Math.abs(
+              coordinate -
+                Math.round(coordinate / MATHTEX_PROFILE_COORDINATE_QUANTUM_V3) * MATHTEX_PROFILE_COORDINATE_QUANTUM_V3,
+            ) > 1e-12,
+        ),
+      )
+    ) {
+      profileViolation("Hermetic MathTex outline coordinates must use the canonical 1e-6 quantum.");
+    }
+  }
+}
+
+function assertHermeticMathTexProfileProvenanceV3(scene: SceneIrBundleV1["scene"]) {
+  const evidence = scene.provenance[1]?.evidence;
+  const content = evidence?.at(-3);
+  if (
+    !evidence ||
+    !content ||
+    !MATHTEX_PROFILE_CONTENT_DIGEST_EVIDENCE_V3.test(content) ||
+    evidence.at(-2) !== `MathTex toolchain digest ${MATHTEX_PROFILE_TOOLCHAIN_DIGEST_V3}` ||
+    evidence.at(-1) !== `MathTex font digest ${MATHTEX_PROFILE_FONT_DIGEST_V3}`
+  ) {
+    profileViolation("Hermetic MathTex provenance must attest the pinned compiler toolchain and embedded font.");
   }
 }
 
@@ -1308,6 +1397,7 @@ function assertFastManimSnapshotProfileV1(
   bundle: SceneIrBundleV1,
   expectedFrame: Readonly<{ height: number; width: number }>,
   snapshotVersion: FastManimSnapshotProfileVersionV1,
+  mode: "producer" | "sealed",
 ) {
   const { scene } = bundle;
   const sceneId = scene.sceneId;
@@ -1330,13 +1420,17 @@ function assertFastManimSnapshotProfileV1(
   // V1 remains the exact one-second still contract. V2 adds a bounded 60fps
   // timeline with observed membership, exact linear Fade opacity, exact
   // component-linear affine channels, and exact uniform-cubic Create/Uncreate
-  // trims. Geometry and the entity's base transform stay immutable.
-  if (snapshotVersion === 1 && scene.duration !== FAST_MANIM_SNAPSHOT_STATIC_DURATION_SECONDS_V1) {
+  // trims. V3 is a separate one-second hermetic MathTex outline contract.
+  // Geometry and the entity's base transform stay immutable.
+  if (snapshotVersion !== 2 && scene.duration !== FAST_MANIM_SNAPSHOT_STATIC_DURATION_SECONDS_V1) {
     profileViolation("Static profile Scenes must report exactly the canonical 1-second static duration.");
   }
   if (snapshotVersion === 2) assertDynamicProfileV2(scene);
-  if (snapshotVersion === 1 && scene.animationChannels.length > 0) {
+  if (snapshotVersion !== 2 && scene.animationChannels.length > 0) {
     profileViolation("Static profile Scenes must not carry animation channels.");
+  }
+  if (snapshotVersion === 3 && scene.entities.length !== 1) {
+    profileViolation("Hermetic MathTex profile V3 requires exactly one outline entity.");
   }
   const expectedCapabilities = [
     ...(scene.animationChannels.some((channel) => channel.kind === "affine-transform")
@@ -1359,7 +1453,7 @@ function assertFastManimSnapshotProfileV1(
     scene.requiredCapabilities.some((capability, index) => capability !== expectedCapabilities[index])
   ) {
     profileViolation(
-      snapshotVersion === 1
+      snapshotVersion !== 2
         ? "Static profile Scenes must require exactly cubic-path-geometry, or nothing when empty."
         : "Dynamic profile V2 Scenes must derive affine-transform-animation, cubic-path-geometry, motion-path-animation, opacity-animation, path-morph-animation, and path-trim-animation exactly from their contents.",
     );
@@ -1397,7 +1491,7 @@ function assertFastManimSnapshotProfileV1(
     if (
       entity.lifetimes.length !== 1 ||
       !lifetime ||
-      (snapshotVersion === 1 && (lifetime.start !== 0 || lifetime.end !== scene.duration)) ||
+      (snapshotVersion !== 2 && (lifetime.start !== 0 || lifetime.end !== scene.duration)) ||
       (snapshotVersion === 2 &&
         ((!fullSceneLifetime &&
           (!isCanonicalSnapshotFrameTimeV2(lifetime.start) || !isCanonicalSnapshotFrameTimeV2(lifetime.end))) ||
@@ -1412,11 +1506,15 @@ function assertFastManimSnapshotProfileV1(
         "Snapshot profile entities must keep their base transform at identity; V2 affine motion belongs only in affine-transform channels.",
       );
     }
-    assertStaticProfileEntity(
-      entity,
-      pathTrimEntityIds.has(entity.id),
-      motionPathRoundoffScaleFloorByEntityId.get(entity.id),
-    );
+    if (snapshotVersion === 3) {
+      assertHermeticMathTexProfileEntityV3(entity);
+    } else {
+      assertStaticProfileEntity(
+        entity,
+        pathTrimEntityIds.has(entity.id),
+        motionPathRoundoffScaleFloorByEntityId.get(entity.id),
+      );
+    }
   });
   // The provenance array is exactly the derived scene record followed by one
   // record per entity in validated enumerate order — no extra, missing,
@@ -1467,11 +1565,12 @@ function assertFastManimSnapshotProfileV1(
     scene.provenance.some((record, index) => record.id !== expectedProvenanceIds[index])
   ) {
     profileViolation(
-      snapshotVersion === 1
+      snapshotVersion !== 2
         ? "Static profile provenance must be exactly the derived scene and per-entity records in order."
         : "Dynamic profile V2 provenance must be exactly the derived scene, per-entity, and per-animation-channel records in order.",
     );
   }
+  if (snapshotVersion === 3 && mode === "producer") assertHermeticMathTexProfileProvenanceV3(scene);
 }
 
 async function parseFastManimSnapshotResultV1(
@@ -1525,7 +1624,7 @@ async function parseFastManimSnapshotResultV1(
       "Every provenance record in a compiled fast-manim Scene must originate from its server snapshot.",
     );
   }
-  assertFastManimSnapshotProfileV1(bundle, expected.frame, expected.snapshotVersion);
+  assertFastManimSnapshotProfileV1(bundle, expected.frame, expected.snapshotVersion, mode);
   // Structural normalization before sealing: provenance evidence is replaced
   // with server-owned text, so the sealed digest never covers producer free
   // text. Re-normalizing an already-normalized stored bundle is a no-op, which
@@ -1538,7 +1637,9 @@ async function parseFastManimSnapshotResultV1(
         evidence: [
           expected.snapshotVersion === 1
             ? FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V1
-            : FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V2,
+            : expected.snapshotVersion === 2
+              ? FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V2
+              : FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V3,
         ],
         id: record.id,
         origin: record.origin,
