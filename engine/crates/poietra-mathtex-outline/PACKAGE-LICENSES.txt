@@ -1,14 +1,28 @@
-New Computer Modern Math font provenance
+Poietra MathTex outline package licenses
 ========================================
 
-This crate embeds the unmodified `NewCMMath-Regular.otf` from New Computer
-Modern version 8.1.1 by Antonis Tsolomitis. The font was obtained from the
-official CTAN package:
+This file is the Cargo `license-file` for the unpublished
+`poietra-mathtex-outline` package. It is also emitted unchanged as
+`THIRD_PARTY_NOTICES.txt` in Poietra Studio Web, Electron, and server
+distributions.
 
-https://ctan.org/pkg/newcomputermodern
+The Rust source code in this package is licensed under the MIT license declared
+by the Poietra Engine workspace. That declaration does not cover the embedded
+font described below.
 
-The upstream package states that this font is distributed under the GUST Font
-License. The font file embedded here is unmodified.
+New Computer Modern Math font provenance
+----------------------------------------
+
+Name: New Computer Modern Math
+Embedded file: NewCMMath-Regular.otf
+Upstream version: New Computer Modern 8.1.1
+Author: Antonis Tsolomitis
+Official distribution: https://ctan.org/pkg/newcomputermodern
+License: GUST Font License, version 1.0, 22 June 2009
+SHA-256: d66ac1cc91c55c24d3636ae2df1238076debdff51841f9893fc5419cc2df3df7
+
+The embedded font file is unmodified. The GUST Font License notice retained
+with the font follows.
 
 GUST Font License, version 1.0, 22 June 2009
 ------------------------------------------------
