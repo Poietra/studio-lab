@@ -427,6 +427,20 @@ export function fastManimSnapshotAffineTransformChannelProvenanceIdV2(sceneId: s
   return `${sceneId}/provenance:channel:affine-transform:${sceneOrder}`;
 }
 
+export function fastManimSnapshotMotionPathChannelIdV2(sceneId: string, sceneOrder: number) {
+  if (!Number.isSafeInteger(sceneOrder) || sceneOrder < 0) {
+    throw new TypeError("Motion-path channel identifiers derive from a non-negative integer sceneOrder.");
+  }
+  return `${sceneId}/channel:motion-path:${sceneOrder}`;
+}
+
+export function fastManimSnapshotMotionPathChannelProvenanceIdV2(sceneId: string, sceneOrder: number) {
+  if (!Number.isSafeInteger(sceneOrder) || sceneOrder < 0) {
+    throw new TypeError("Motion-path channel provenance identifiers derive from a non-negative integer sceneOrder.");
+  }
+  return `${sceneId}/provenance:channel:motion-path:${sceneOrder}`;
+}
+
 export function fastManimSnapshotPathTrimChannelIdV2(sceneId: string, sceneOrder: number) {
   if (!Number.isSafeInteger(sceneOrder) || sceneOrder < 0) {
     throw new TypeError("Path-trim channel identifiers derive from a non-negative integer sceneOrder.");
@@ -480,6 +494,12 @@ function pointDistance(left: StaticProfilePoint, right: StaticProfilePoint) {
   return Math.hypot(left.x - right.x, left.y - right.y);
 }
 
+function fastManimPointsEqual2dV2(left: StaticProfilePoint, right: StaticProfilePoint) {
+  const isClose = (leftComponent: number, rightComponent: number) =>
+    Math.abs(leftComponent - rightComponent) <= 1e-6 + 1e-5 * Math.abs(rightComponent);
+  return isClose(left.x, right.x) && isClose(left.y, right.y);
+}
+
 function projectionOntoChord(
   point: StaticProfilePoint,
   start: StaticProfilePoint,
@@ -491,7 +511,11 @@ function projectionOntoChord(
 }
 
 /** Accepts only the bounded roundoff produced by canonical Cairo Line controls. */
-export function isCanonicalFastManimLineSegmentV1(start: StaticProfilePoint, segment: StaticProfileSegment) {
+export function isCanonicalFastManimLineSegmentV1(
+  start: StaticProfilePoint,
+  segment: StaticProfileSegment,
+  roundoffScaleFloor = 1,
+) {
   const points = [start, segment.control1, segment.control2, segment.end];
   if (points.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.y))) return false;
   const dx = segment.end.x - start.x;
@@ -515,7 +539,11 @@ export function isCanonicalFastManimLineSegmentV1(start: StaticProfilePoint, seg
     pointDistance(segment.control1, control1),
     pointDistance(segment.control2, control2),
   );
-  const coordinateScale = Math.max(1, ...points.flatMap((point) => [Math.abs(point.x), Math.abs(point.y)]));
+  const coordinateScale = Math.max(
+    1,
+    roundoffScaleFloor,
+    ...points.flatMap((point) => [Math.abs(point.x), Math.abs(point.y)]),
+  );
   return maximumControlError <= coordinateScale * Number.EPSILON * CANONICAL_LINE_ROUNDOFF_MULTIPLIER_V1;
 }
 
@@ -587,6 +615,53 @@ function orientedQuadratic(coefficients: QuadraticCoefficients, orientation: num
 function staticProfileControlPoints(path: StaticProfileCubicPath) {
   const subpath = path.subpaths[0]!;
   return [subpath.start, ...subpath.segments.flatMap((segment) => [segment.control1, segment.control2, segment.end])];
+}
+
+function staticProfileBoundaryAnchors(path: StaticProfileCubicPath) {
+  const subpath = path.subpaths[0]!;
+  return [subpath.start, ...subpath.segments.map((segment) => segment.end)];
+}
+
+function staticProfileBoundaryCenter(path: StaticProfileCubicPath) {
+  const anchors = staticProfileBoundaryAnchors(path);
+  const xs = anchors.map((point) => point.x);
+  const ys = anchors.map((point) => point.y);
+  return {
+    x: (Math.min(...xs) + Math.max(...xs)) / 2,
+    y: (Math.min(...ys) + Math.max(...ys)) / 2,
+  };
+}
+
+function assertMotionPathLocalGeometry(entity: StaticProfileEntity, motionPath: StaticProfileCubicPath) {
+  if (entity.geometry.kind !== "cubic-path") {
+    profileViolation("Dynamic motion-path channels require canonical cubic-path base geometry.");
+  }
+  const center = staticProfileBoundaryCenter(entity.geometry.path);
+  const anchors = staticProfileBoundaryAnchors(entity.geometry.path);
+  const motionStart = motionPath.subpaths[0]!.start;
+  const scale = Math.max(
+    1,
+    Math.abs(motionStart.x),
+    Math.abs(motionStart.y),
+    ...anchors.flatMap((point) => [Math.abs(point.x), Math.abs(point.y)]),
+  );
+  const tolerance = scale * Number.EPSILON * CANONICAL_LINE_ROUNDOFF_MULTIPLIER_V1;
+  if (Math.abs(center.x) > tolerance || Math.abs(center.y) > tolerance) {
+    profileViolation("Dynamic motion-path base geometry must be rebased around Manim's boundary center.");
+  }
+
+  const localPoints = staticProfileControlPoints(entity.geometry.path);
+  const motionPoints = staticProfileControlPoints(motionPath);
+  for (const coordinate of ["x", "y"] as const) {
+    const local = localPoints.map((point) => point[coordinate]);
+    const motion = motionPoints.map((point) => point[coordinate]);
+    if (
+      Math.min(...local) + Math.min(...motion) < -MAX_COORDINATE ||
+      Math.max(...local) + Math.max(...motion) > MAX_COORDINATE
+    ) {
+      profileViolation("Dynamic motion-path translation can move base geometry outside the bounded coordinate range.");
+    }
+  }
 }
 
 /** Proves the component-wise path lerp stays in the bounded renderable profile for every progress value. */
@@ -716,7 +791,7 @@ function assertCanonicalStaticProfileStroke(stroke: NonNullable<StaticProfileVec
   }
 }
 
-function assertStaticProfileEntity(entity: StaticProfileEntity, pathTrimTarget: boolean) {
+function assertStaticProfileEntity(entity: StaticProfileEntity, pathTrimTarget: boolean, roundoffScaleFloor = 1) {
   if (entity.appearance.kind !== "vector") {
     profileViolation("Static profile entities must use vector appearance.");
   }
@@ -771,7 +846,10 @@ function assertStaticProfileEntity(entity: StaticProfileEntity, pathTrimTarget: 
   // The exporter's Line lowering emits exactly Cairo's default stroke shape
   // with visible paint; a fully transparent stroke is never emitted.
   assertCanonicalStaticProfileStroke(stroke);
-  if (subpath.segments.length !== 1 || !isCanonicalFastManimLineSegmentV1(subpath.start, subpath.segments[0]!)) {
+  if (
+    subpath.segments.length !== 1 ||
+    !isCanonicalFastManimLineSegmentV1(subpath.start, subpath.segments[0]!, roundoffScaleFloor)
+  ) {
     profileViolation(
       "Static profile open paths must be one finite canonical 1/3–2/3 Line cubic within bounded roundoff.",
     );
@@ -829,24 +907,33 @@ function assertDynamicProfileV2(scene: SceneIrBundleV1["scene"]) {
   for (const channel of scene.animationChannels) {
     if (
       channel.kind !== "affine-transform" &&
+      channel.kind !== "motion-path" &&
       channel.kind !== "opacity" &&
       channel.kind !== "path-morph" &&
       channel.kind !== "path-trim"
     ) {
       profileViolation(
-        "Dynamic profile V2 accepts only affine-transform, opacity, path-morph, and path-trim animation channels.",
+        "Dynamic profile V2 accepts only affine-transform, motion-path, opacity, path-morph, and path-trim animation channels.",
       );
     }
     const entityIndex = entityIndexes.get(channel.entityId);
     const kindOrder =
-      channel.kind === "affine-transform" ? 0 : channel.kind === "opacity" ? 1 : channel.kind === "path-trim" ? 2 : 3;
+      channel.kind === "affine-transform"
+        ? 0
+        : channel.kind === "opacity"
+          ? 1
+          : channel.kind === "path-trim"
+            ? 2
+            : channel.kind === "path-morph"
+              ? 3
+              : 4;
     if (
       entityIndex === undefined ||
       entityIndex < previousEntityIndex ||
       (entityIndex === previousEntityIndex && kindOrder <= previousKindOrder)
     ) {
       profileViolation(
-        "Dynamic channels must follow entity sceneOrder, with affine-transform then opacity then path-trim then path-morph, without duplicates.",
+        "Dynamic channels must follow entity sceneOrder, with affine-transform then opacity then path-trim then path-morph then motion-path, without duplicates.",
       );
     }
     previousEntityIndex = entityIndex;
@@ -859,6 +946,9 @@ function assertDynamicProfileV2(scene: SceneIrBundleV1["scene"]) {
     }
     if (entityKinds.has("path-morph") && entityKinds.size > 1) {
       profileViolation("Dynamic profile V2 does not combine path-morph with another channel on one entity.");
+    }
+    if (entityKinds.has("motion-path") && entityKinds.size > 1) {
+      profileViolation("Dynamic profile V2 does not combine motion-path with another channel on one entity.");
     }
     const entity = scene.entities[entityIndex]!;
 
@@ -938,6 +1028,58 @@ function assertDynamicProfileV2(scene: SceneIrBundleV1["scene"]) {
         ) {
           profileViolation("Dynamic affine-transform segments must span exact producer-supported 60fps timed steps.");
         }
+      }
+      continue;
+    }
+
+    if (channel.kind === "motion-path") {
+      if (
+        channel.id !== fastManimSnapshotMotionPathChannelIdV2(scene.sceneId, entityIndex) ||
+        channel.provenanceId !== fastManimSnapshotMotionPathChannelProvenanceIdV2(scene.sceneId, entityIndex)
+      ) {
+        profileViolation("Dynamic motion-path channel identifiers must derive from Scene identity and sceneOrder.");
+      }
+      if (channel.parameterization !== "manim-point-from-proportion-v1" || channel.orientToPath) {
+        profileViolation(
+          "Dynamic motion-path channels require manim-point-from-proportion-v1 without tangent orientation.",
+        );
+      }
+      if (channel.path.subpaths.length !== 1) {
+        profileViolation("Dynamic motion paths must contain exactly one serialized cubic subpath.");
+      }
+      const motionSubpath = channel.path.subpaths[0]!;
+      if (motionSubpath.segments.length === 0 || motionSubpath.segments.length > MAX_STATIC_PROFILE_CLOSED_SEGMENTS) {
+        profileViolation("Dynamic motion paths must contain between one and 16 serialized cubic segments.");
+      }
+      const motionEndpoint = motionSubpath.segments.at(-1)!.end;
+      if (motionSubpath.closed !== fastManimPointsEqual2dV2(motionSubpath.start, motionEndpoint)) {
+        profileViolation("Dynamic motion-path closure must match Manim's exact planar endpoint tolerance.");
+      }
+      assertMotionPathLocalGeometry(entity, channel.path);
+      const lifetime = entity.lifetimes[0]!;
+      if (channel.keyframes.length !== 2 || channel.keyframes[0]!.value !== 0 || channel.keyframes[1]!.value !== 1) {
+        profileViolation("Dynamic motion-path channels must encode one exact zero-to-one MoveAlongPath step.");
+      }
+      for (const [keyframeIndex, keyframe] of channel.keyframes.entries()) {
+        if (
+          !isCanonicalSnapshotFrameTimeV2(keyframe.at) ||
+          keyframe.at < lifetime.start ||
+          keyframe.at > lifetime.end
+        ) {
+          profileViolation(
+            "Dynamic motion-path keyframes must lie within the entity lifetime on the canonical 60fps grid.",
+          );
+        }
+        const final = keyframeIndex === channel.keyframes.length - 1;
+        if ((!final && keyframe.easingToNext?.kind !== "linear") || (final && keyframe.easingToNext !== null)) {
+          profileViolation("Dynamic motion-path keyframes must use explicit linear easing and a null final easing.");
+        }
+      }
+      if (channel.keyframes[0]!.at !== lifetime.start) {
+        profileViolation("A verified MoveAlongPath must begin exactly when its entity lifetime starts.");
+      }
+      if (!isCanonicalDynamicTimedStepV2(channel.keyframes[0]!.at, channel.keyframes[1]!.at)) {
+        profileViolation("A verified MoveAlongPath must span one exact producer-supported 60fps timed step.");
       }
       continue;
     }
@@ -1201,6 +1343,9 @@ function assertFastManimSnapshotProfileV1(
       ? (["affine-transform-animation"] as const)
       : []),
     ...(scene.entities.length > 0 ? (["cubic-path-geometry"] as const) : []),
+    ...(scene.animationChannels.some((channel) => channel.kind === "motion-path")
+      ? (["motion-path-animation"] as const)
+      : []),
     ...(scene.animationChannels.some((channel) => channel.kind === "opacity") ? (["opacity-animation"] as const) : []),
     ...(scene.animationChannels.some((channel) => channel.kind === "path-morph")
       ? (["path-morph-animation"] as const)
@@ -1216,7 +1361,7 @@ function assertFastManimSnapshotProfileV1(
     profileViolation(
       snapshotVersion === 1
         ? "Static profile Scenes must require exactly cubic-path-geometry, or nothing when empty."
-        : "Dynamic profile V2 Scenes must derive affine-transform-animation, cubic-path-geometry, opacity-animation, path-morph-animation, and path-trim-animation exactly from their contents.",
+        : "Dynamic profile V2 Scenes must derive affine-transform-animation, cubic-path-geometry, motion-path-animation, opacity-animation, path-morph-animation, and path-trim-animation exactly from their contents.",
     );
   }
   // Entities are the exporter's enumerate order: each sceneOrder must equal
@@ -1225,6 +1370,14 @@ function assertFastManimSnapshotProfileV1(
   // validated order, never to a producer-chosen number.
   const pathTrimEntityIds = new Set(
     scene.animationChannels.filter((channel) => channel.kind === "path-trim").map((channel) => channel.entityId),
+  );
+  const motionPathRoundoffScaleFloorByEntityId = new Map(
+    scene.animationChannels
+      .filter((channel) => channel.kind === "motion-path")
+      .map((channel) => {
+        const start = channel.path.subpaths[0]!.start;
+        return [channel.entityId, Math.max(1, Math.abs(start.x), Math.abs(start.y))] as const;
+      }),
   );
   scene.entities.forEach((entity, index) => {
     if (entity.sceneOrder !== index) {
@@ -1259,7 +1412,11 @@ function assertFastManimSnapshotProfileV1(
         "Snapshot profile entities must keep their base transform at identity; V2 affine motion belongs only in affine-transform channels.",
       );
     }
-    assertStaticProfileEntity(entity, pathTrimEntityIds.has(entity.id));
+    assertStaticProfileEntity(
+      entity,
+      pathTrimEntityIds.has(entity.id),
+      motionPathRoundoffScaleFloorByEntityId.get(entity.id),
+    );
   });
   // The provenance array is exactly the derived scene record followed by one
   // record per entity in validated enumerate order — no extra, missing,
@@ -1273,12 +1430,13 @@ function assertFastManimSnapshotProfileV1(
       ? scene.animationChannels.map((channel) => {
           if (
             channel.kind !== "affine-transform" &&
+            channel.kind !== "motion-path" &&
             channel.kind !== "opacity" &&
             channel.kind !== "path-morph" &&
             channel.kind !== "path-trim"
           ) {
             profileViolation(
-              "Dynamic profile V2 accepts only affine-transform, opacity, path-morph, and path-trim animation channels.",
+              "Dynamic profile V2 accepts only affine-transform, motion-path, opacity, path-morph, and path-trim animation channels.",
             );
           }
           const entityIndex = entityIndexById.get(channel.entityId);
@@ -1288,12 +1446,19 @@ function assertFastManimSnapshotProfileV1(
           if (channel.kind === "affine-transform") {
             return fastManimSnapshotAffineTransformChannelProvenanceIdV2(sceneId, entityIndex);
           }
+          if (channel.kind === "motion-path") {
+            return fastManimSnapshotMotionPathChannelProvenanceIdV2(sceneId, entityIndex);
+          }
           if (channel.kind === "opacity") {
             return fastManimSnapshotOpacityChannelProvenanceIdV2(sceneId, entityIndex);
           }
-          return channel.kind === "path-morph"
-            ? fastManimSnapshotPathMorphChannelProvenanceIdV2(sceneId, entityIndex)
-            : fastManimSnapshotPathTrimChannelProvenanceIdV2(sceneId, entityIndex);
+          if (channel.kind === "path-morph") {
+            return fastManimSnapshotPathMorphChannelProvenanceIdV2(sceneId, entityIndex);
+          }
+          if (channel.kind === "path-trim") {
+            return fastManimSnapshotPathTrimChannelProvenanceIdV2(sceneId, entityIndex);
+          }
+          profileViolation("Dynamic animation channel provenance requires one supported channel kind.");
         })
       : []),
   ];
@@ -1451,11 +1616,13 @@ export type FastManimSnapshotRuntimeCapabilityV1 = z.infer<typeof sceneCapabilit
  * needs proven evaluator + renderer coverage, so adding a capability to the
  * Scene IR schema must never silently claim support here. The static profile
  * lowers Circle, Rectangle, and Line to cubic paths; V2 additionally admits
- * the strictly verified affine-transform, opacity, path-morph, and path-trim slices.
+ * the strictly verified affine-transform, motion-path, opacity, path-morph,
+ * and path-trim slices.
  */
 export const FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1 = Object.freeze([
   "affine-transform-animation",
   "cubic-path-geometry",
+  "motion-path-animation",
   "opacity-animation",
   "path-morph-animation",
   "path-trim-animation",
