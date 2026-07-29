@@ -14,6 +14,8 @@ import {
   fastManimSnapshotAffineTransformChannelProvenanceIdV2,
   fastManimSnapshotOpacityChannelIdV2,
   fastManimSnapshotOpacityChannelProvenanceIdV2,
+  fastManimSnapshotPathTrimChannelIdV2,
+  fastManimSnapshotPathTrimChannelProvenanceIdV2,
   fastManimSnapshotRunViewV1Schema,
   fastManimSnapshotSceneIdV1,
   isCanonicalFastManimLineSegmentV1,
@@ -199,6 +201,63 @@ async function dynamicAffineBundle(): Promise<SceneIrBundleV1> {
         },
       ],
       requiredCapabilities: ["affine-transform-animation", "cubic-path-geometry"],
+      source: { ...base.scene.source, snapshotVersion: 2 },
+    },
+  });
+}
+
+async function dynamicPathTrimBundle(values: readonly number[] = [0, 1, 1, 0]): Promise<SceneIrBundleV1> {
+  const base = await importedBundle();
+  const duration = 6;
+  const times =
+    values.length === 2 ? (values[0] === 0 ? [0, 2] : [1, 6]) : values.length === 3 ? [0, 2, 6] : [0, 2, 4, 6];
+  const sourceEntity = base.scene.entities[0]!;
+  const entity = {
+    ...sourceEntity,
+    appearance: {
+      ...sourceEntity.appearance,
+      fill: null,
+      stroke: {
+        cap: "butt" as const,
+        color: { alpha: 1, blue: 1, green: 1, red: 1 },
+        join: "miter" as const,
+        miterLimit: 10,
+        widthWorld: 0.05,
+      },
+    },
+    lifetimes: [{ end: duration, start: 0 }],
+  };
+  const channelProvenanceId = fastManimSnapshotPathTrimChannelProvenanceIdV2(expected.sceneId, 0);
+  return sceneIrBundleV1Schema.parse({
+    ...base,
+    scene: {
+      ...base.scene,
+      animationChannels: [
+        {
+          entityId: entity.id,
+          id: fastManimSnapshotPathTrimChannelIdV2(expected.sceneId, 0),
+          keyframes: values.map((value, index) => ({
+            at: times[index],
+            easingToNext: index === values.length - 1 ? null : { kind: "linear" as const },
+            value,
+          })),
+          kind: "path-trim",
+          parameterization: "uniform-cubic-parameter-v1",
+          provenanceId: channelProvenanceId,
+        },
+      ],
+      duration,
+      entities: [entity],
+      provenance: [
+        base.scene.provenance[0],
+        base.scene.provenance[1],
+        {
+          evidence: ["producer-authored path-trim evidence must be normalized"],
+          id: channelProvenanceId,
+          origin: "fast-manim-server-snapshot",
+        },
+      ],
+      requiredCapabilities: ["cubic-path-geometry", "path-trim-animation"],
       source: { ...base.scene.source, snapshotVersion: 2 },
     },
   });
@@ -555,6 +614,167 @@ describe("fast-manim snapshot result v1", () => {
     for (const invalid of [missing, unknown, nonFinite, wrongCapabilities]) {
       await expect(parseProducer(compiled(invalid as unknown as SceneIrBundleV1), expectedV2)).rejects.toThrow();
     }
+  });
+
+  it("seals the four exact producer path-trim shapes without rewriting canonical geometry", async () => {
+    const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
+    for (const values of [
+      [0, 1],
+      [1, 0],
+      [0, 1, 0],
+      [0, 1, 1, 0],
+    ] as const) {
+      const bundle = await dynamicPathTrimBundle(values);
+      const geometry = structuredClone(bundle.scene.entities[0]!.geometry);
+      const sealed = await parseProducer(compiled(bundle), expectedV2);
+      if (sealed.kind !== "compiled") throw new Error("Expected a compiled path-trim V2 snapshot.");
+      expect(sealed.bundle.scene.entities[0]!.geometry).toEqual(geometry);
+      expect(sealed.bundle.scene.animationChannels[0]).toMatchObject({
+        id: fastManimSnapshotPathTrimChannelIdV2(expected.sceneId, 0),
+        kind: "path-trim",
+        parameterization: "uniform-cubic-parameter-v1",
+        provenanceId: fastManimSnapshotPathTrimChannelProvenanceIdV2(expected.sceneId, 0),
+      });
+      expect(sealed.bundle.scene.animationChannels[0]!.keyframes.map((keyframe) => keyframe.value)).toEqual(values);
+      await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV2)).resolves.toEqual(sealed);
+    }
+  });
+
+  it("rejects malformed path-trim evidence and does not globally admit closed stroke-only geometry", async () => {
+    const bundle = await dynamicPathTrimBundle();
+    const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
+    type MutablePathTrimCandidate = {
+      scene: {
+        animationChannels: Array<{
+          id: string;
+          keyframes: Array<{ at: number; easingToNext: { kind: string } | null; value: number }>;
+          parameterization?: string;
+        }>;
+        entities: Array<{ appearance: { stroke: { cap: string } | null } }>;
+        provenance: unknown[];
+        requiredCapabilities: string[];
+      };
+    };
+    const mutate = (change: (candidate: MutablePathTrimCandidate) => void) => {
+      const candidate = structuredClone(bundle) as unknown as MutablePathTrimCandidate;
+      change(candidate);
+      return compiled(candidate as unknown as SceneIrBundleV1);
+    };
+    const invalid = [
+      mutate((candidate) => {
+        candidate.scene.animationChannels[0].parameterization = "arc-length-v1";
+      }),
+      mutate((candidate) => {
+        delete candidate.scene.animationChannels[0].parameterization;
+      }),
+      mutate((candidate) => {
+        candidate.scene.animationChannels[0].id = fastManimSnapshotPathTrimChannelIdV2(expected.sceneId, 1);
+      }),
+      mutate((candidate) => {
+        candidate.scene.animationChannels[0].keyframes[1].value = 0.5;
+      }),
+      mutate((candidate) => {
+        candidate.scene.animationChannels[0].keyframes[1].at = 2.01;
+      }),
+      mutate((candidate) => {
+        candidate.scene.animationChannels[0].keyframes[0].easingToNext = { kind: "smooth" };
+      }),
+      mutate((candidate) => {
+        candidate.scene.entities[0]!.appearance.stroke!.cap = "round";
+      }),
+      mutate((candidate) => {
+        candidate.scene.requiredCapabilities = ["cubic-path-geometry"];
+      }),
+      mutate((candidate) => {
+        candidate.scene.animationChannels = [];
+        candidate.scene.provenance = candidate.scene.provenance.slice(0, 2);
+        candidate.scene.requiredCapabilities = ["cubic-path-geometry"];
+      }),
+    ];
+    for (const candidate of invalid) {
+      await expect(parseProducer(candidate, expectedV2)).rejects.toThrow();
+    }
+  });
+
+  it("orders path-trim without colliding with opacity on the same entity or affine on the next entity", async () => {
+    const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
+    const path = await dynamicPathTrimBundle([0, 1]);
+    const pathChannel = path.scene.animationChannels[0]!;
+    const pathProvenance = path.scene.provenance[2]!;
+    const opacityProvenanceId = fastManimSnapshotOpacityChannelProvenanceIdV2(expected.sceneId, 0);
+    const opacityChannel = {
+      entityId: path.scene.entities[0]!.id,
+      id: fastManimSnapshotOpacityChannelIdV2(expected.sceneId, 0),
+      keyframes: [
+        { at: 4, easingToNext: { kind: "linear" as const }, value: 1 },
+        { at: 6, easingToNext: null, value: 0 },
+      ],
+      kind: "opacity" as const,
+      provenanceId: opacityProvenanceId,
+    };
+    const opacityAndTrim = sceneIrBundleV1Schema.parse({
+      ...path,
+      scene: {
+        ...path.scene,
+        animationChannels: [opacityChannel, pathChannel],
+        provenance: [
+          ...path.scene.provenance.slice(0, 2),
+          {
+            evidence: ["producer-authored opacity evidence must be normalized"],
+            id: opacityProvenanceId,
+            origin: "fast-manim-server-snapshot",
+          },
+          pathProvenance,
+        ],
+        requiredCapabilities: ["cubic-path-geometry", "opacity-animation", "path-trim-animation"],
+      },
+    });
+    await expect(parseProducer(compiled(opacityAndTrim), expectedV2)).resolves.toMatchObject({ kind: "compiled" });
+
+    const base = await importedBundle();
+    const secondEntity = { ...base.scene.entities[1]!, lifetimes: [{ end: 6, start: 0 }] };
+    const affineProvenanceId = fastManimSnapshotAffineTransformChannelProvenanceIdV2(expected.sceneId, 1);
+    const affineChannel = {
+      entityId: secondEntity.id,
+      id: fastManimSnapshotAffineTransformChannelIdV2(expected.sceneId, 1),
+      keyframes: [
+        {
+          at: 0,
+          easingToNext: { kind: "linear" as const },
+          value: { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 },
+        },
+        {
+          at: 1,
+          easingToNext: null,
+          value: { m11: 1, m12: 0, m21: 0, m22: 1, tx: 1, ty: 0 },
+        },
+      ],
+      kind: "affine-transform" as const,
+      provenanceId: affineProvenanceId,
+    };
+    const trimThenNextEntityAffine = sceneIrBundleV1Schema.parse({
+      ...path,
+      scene: {
+        ...path.scene,
+        animationChannels: [pathChannel, affineChannel],
+        entities: [path.scene.entities[0], secondEntity],
+        provenance: [
+          path.scene.provenance[0],
+          path.scene.provenance[1],
+          base.scene.provenance[2],
+          pathProvenance,
+          {
+            evidence: ["producer-authored affine evidence must be normalized"],
+            id: affineProvenanceId,
+            origin: "fast-manim-server-snapshot",
+          },
+        ],
+        requiredCapabilities: ["affine-transform-animation", "cubic-path-geometry", "path-trim-animation"],
+      },
+    });
+    await expect(parseProducer(compiled(trimThenNextEntityAffine), expectedV2)).resolves.toMatchObject({
+      kind: "compiled",
+    });
   });
 
   it("rejects schema-valid opacity/lifetime evidence outside the exact producer profile", async () => {
