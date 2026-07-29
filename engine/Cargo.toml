@@ -64,3 +64,11 @@ lto = "fat"
 opt-level = "z"
 panic = "abort"
 strip = "symbols"
+
+# The production Python extension is built in a digest-pinned Linux builder.
+# Keep the native ABI optimized while omitting symbols that are not shipped.
+[profile.mathtex-python-release]
+inherits = "release"
+codegen-units = 1
+lto = "fat"
+strip = "symbols"
