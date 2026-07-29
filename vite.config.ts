@@ -1,6 +1,7 @@
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+import { thirdPartyNotices } from "./scripts/vite-third-party-notices";
 import {
   manimRenderPipeline,
   parseFastManimSnapshotProducerCommand,
@@ -55,6 +56,7 @@ export function createStudioViteConfig(
       },
     },
     plugins: [
+      thirdPartyNotices(root),
       studioSensitiveFileBoundary({ logPath, root }),
       react(),
       tailwindcss(),
