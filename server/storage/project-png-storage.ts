@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { inflateSync } from "node:zlib";
 
 export const PROJECT_PNG_LOGICAL_PATH_V1 = "image.png";
 export const MAX_PROJECT_PNG_BYTES_V1 = 512 * 1024;
@@ -147,6 +148,78 @@ function validPngColorType(bitDepth: number, colorType: number) {
   return depths[colorType]?.includes(bitDepth) === true;
 }
 
+function pngBitsPerPixel(bitDepth: number, colorType: number) {
+  const channels: Readonly<Record<number, number>> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 };
+  const value = channels[colorType];
+  if (!value) throw new TypeError("Project image.png has an unsupported color type.");
+  return bitDepth * value;
+}
+
+function passExtent(size: number, start: number, step: number) {
+  return size <= start ? 0 : Math.ceil((size - start) / step);
+}
+
+type PngScanlineLayout = Readonly<{ rowBytes: number; rows: number }>;
+
+function pngScanlineLayouts(
+  width: number,
+  height: number,
+  bitsPerPixel: number,
+  interlace: number,
+): readonly PngScanlineLayout[] {
+  if (interlace === 0) return [{ rowBytes: Math.ceil((width * bitsPerPixel) / 8), rows: height }];
+  const adam7 = [
+    [0, 0, 8, 8],
+    [4, 0, 8, 8],
+    [0, 4, 4, 8],
+    [2, 0, 4, 4],
+    [0, 2, 2, 4],
+    [1, 0, 2, 2],
+    [0, 1, 1, 2],
+  ] as const;
+  return adam7.flatMap(([startX, startY, stepX, stepY]) => {
+    const passWidth = passExtent(width, startX, stepX);
+    const rows = passExtent(height, startY, stepY);
+    return passWidth === 0 || rows === 0 ? [] : [{ rowBytes: Math.ceil((passWidth * bitsPerPixel) / 8), rows }];
+  });
+}
+
+function validatePngScanlines(
+  chunks: readonly Uint8Array[],
+  width: number,
+  height: number,
+  bitDepth: number,
+  colorType: number,
+  interlace: number,
+) {
+  const layouts = pngScanlineLayouts(width, height, pngBitsPerPixel(bitDepth, colorType), interlace);
+  const expectedBytes = layouts.reduce((total, layout) => total + layout.rows * (layout.rowBytes + 1), 0);
+  const compressed = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
+  let inflated: Uint8Array;
+  try {
+    const result = inflateSync(compressed, { info: true, maxOutputLength: expectedBytes + 1 }) as unknown as Readonly<{
+      buffer: Uint8Array;
+      engine: Readonly<{ bytesWritten: number }>;
+    }>;
+    if (result.engine.bytesWritten !== compressed.byteLength) {
+      throw new Error("The zlib stream has trailing compressed bytes.");
+    }
+    inflated = result.buffer;
+  } catch (error) {
+    throw new TypeError("Project image.png has invalid or overlong compressed pixel data.", { cause: error });
+  }
+  if (inflated.byteLength !== expectedBytes) {
+    throw new TypeError("Project image.png has an invalid decompressed scanline length.");
+  }
+  let offset = 0;
+  for (const layout of layouts) {
+    for (let row = 0; row < layout.rows; row += 1) {
+      if (inflated[offset]! > 4) throw new TypeError("Project image.png has an invalid scanline filter.");
+      offset += layout.rowBytes + 1;
+    }
+  }
+}
+
 /** Strictly validates the bounded static PNG accepted as a project's fixed image.png asset. */
 export function inspectProjectPngBytesV1(value: Uint8Array) {
   const bytes = Uint8Array.from(value);
@@ -161,8 +234,13 @@ export function inspectProjectPngBytesV1(value: Uint8Array) {
   let sawIdat = false;
   let endedIdat = false;
   let sawIend = false;
+  let sawPlte = false;
   let width = 0;
   let height = 0;
+  let bitDepth = 0;
+  let colorType = 0;
+  let interlace = 0;
+  const idatChunks: Uint8Array[] = [];
   while (offset < bytes.byteLength) {
     if (bytes.byteLength - offset < 12) throw new TypeError("Project image.png has a truncated chunk.");
     const length = readUint32(bytes, offset);
@@ -185,8 +263,9 @@ export function inspectProjectPngBytesV1(value: Uint8Array) {
       if (chunkIndex !== 0 || length !== 13) throw new TypeError("Project image.png has an invalid IHDR chunk.");
       width = readUint32(bytes, dataStart);
       height = readUint32(bytes, dataStart + 4);
-      const bitDepth = bytes[dataStart + 8]!;
-      const colorType = bytes[dataStart + 9]!;
+      bitDepth = bytes[dataStart + 8]!;
+      colorType = bytes[dataStart + 9]!;
+      interlace = bytes[dataStart + 12]!;
       if (
         width < 1 ||
         height < 1 ||
@@ -200,28 +279,46 @@ export function inspectProjectPngBytesV1(value: Uint8Array) {
         !validPngColorType(bitDepth, colorType) ||
         bytes[dataStart + 10] !== 0 ||
         bytes[dataStart + 11] !== 0 ||
-        (bytes[dataStart + 12] !== 0 && bytes[dataStart + 12] !== 1)
+        (interlace !== 0 && interlace !== 1)
       ) {
         throw new TypeError("Project image.png has an unsupported IHDR encoding.");
       }
     } else if (type === "acTL" || type === "fcTL" || type === "fdAT") {
       throw new TypeError("Animated PNG is not supported for project image.png.");
+    } else if (type === "PLTE") {
+      const entries = length / 3;
+      const maximumEntries = colorType === 3 ? 2 ** bitDepth : 256;
+      if (
+        sawPlte ||
+        sawIdat ||
+        colorType === 0 ||
+        colorType === 4 ||
+        length === 0 ||
+        length % 3 !== 0 ||
+        entries > maximumEntries
+      ) {
+        throw new TypeError("Project image.png has an invalid PLTE chunk.");
+      }
+      sawPlte = true;
     } else if (type === "IDAT") {
       if (endedIdat) throw new TypeError("Project image.png has non-consecutive IDAT chunks.");
+      if (colorType === 3 && !sawPlte) throw new TypeError("Indexed project image.png requires PLTE before IDAT.");
       sawIdat = true;
-    } else if (sawIdat && type !== "IEND") {
-      endedIdat = true;
-    }
-    if (type === "IEND") {
+      idatChunks.push(bytes.subarray(dataStart, dataEnd));
+    } else if (type === "IEND") {
       if (length !== 0 || !sawIdat || crcOffset + 4 !== bytes.byteLength) {
         throw new TypeError("Project image.png has an invalid IEND boundary.");
       }
       sawIend = true;
+    } else {
+      if ((typeBytes[0]! & 0x20) === 0) throw new TypeError(`Project image.png has an unknown critical ${type} chunk.`);
+      if (sawIdat) endedIdat = true;
     }
     offset = crcOffset + 4;
     chunkIndex += 1;
   }
   if (!sawIend) throw new TypeError("Project image.png is missing IEND.");
+  validatePngScanlines(idatChunks, width, height, bitDepth, colorType, interlace);
   return {
     byteSize: bytes.byteLength,
     bytes,
