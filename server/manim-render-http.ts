@@ -11,6 +11,7 @@ import {
   originalManimSourceExportRequestSchema,
   programRenderRequestSchema,
   RENDER_SESSION_CONTRACT_VERSION_HEADER,
+  RENDER_SESSION_CONTRACT_VERSION_WITH_CPU_LIMIT,
   RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE,
   type RenderSessionView,
   type RenderSourceActionCancellationView,
@@ -269,20 +270,29 @@ function requireEmptyRenderActionBody(body: unknown) {
   }
 }
 
-function includeRenderSessionFailureCode(request: IncomingMessage) {
-  return request.headers[RENDER_SESSION_CONTRACT_VERSION_HEADER] === RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE;
+type RenderSessionContractVersion = "legacy" | "v2" | "v3";
+
+function renderSessionContractVersion(request: IncomingMessage): RenderSessionContractVersion {
+  const version = request.headers[RENDER_SESSION_CONTRACT_VERSION_HEADER];
+  if (version === RENDER_SESSION_CONTRACT_VERSION_WITH_CPU_LIMIT) return "v3";
+  if (version === RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE) return "v2";
+  return "legacy";
 }
 
-function renderSessionHttpView(session: RenderSessionView, includeFailureCode: boolean) {
-  if (includeFailureCode) return session;
+function renderSessionHttpView(session: RenderSessionView, version: RenderSessionContractVersion) {
+  if (version === "v3" || (version === "v2" && session.failureCode !== "cpu-limit")) return session;
+  if (version === "v2") return { ...session, failureCode: "render-failed" as const };
   const { failureCode: _failureCode, ...legacySession } = session;
   return legacySession;
 }
 
-function renderSourceActionCancellationHttpView(view: RenderSourceActionCancellationView, includeFailureCode: boolean) {
+function renderSourceActionCancellationHttpView(
+  view: RenderSourceActionCancellationView,
+  version: RenderSessionContractVersion,
+) {
   return {
     ...view,
-    session: renderSessionHttpView(view.session, includeFailureCode),
+    session: renderSessionHttpView(view.session, version),
   };
 }
 
@@ -292,7 +302,7 @@ async function runRenderAction(
   action: string | undefined,
   body: unknown,
   signal: AbortSignal,
-  includeFailureCode: boolean,
+  renderSessionVersion: RenderSessionContractVersion,
 ) {
   switch (action) {
     case "abandon": {
@@ -302,29 +312,29 @@ async function runRenderAction(
     }
     case "cancel": {
       requireEmptyRenderActionBody(body);
-      return renderSessionHttpView(await manager.cancel(id), includeFailureCode);
+      return renderSessionHttpView(await manager.cancel(id), renderSessionVersion);
     }
     case "commit": {
       const parsed = renderCommitRequestSchema.safeParse(body);
       if (!parsed.success) throw new HttpError("The render commit request is invalid or stale.", 400);
-      return renderSessionHttpView(await manager.commit(id, parsed.data, signal), includeFailureCode);
+      return renderSessionHttpView(await manager.commit(id, parsed.data, signal), renderSessionVersion);
     }
     case "cancel-source-action": {
       const parsed = renderSourceActionCancellationRequestSchema.safeParse(body);
       if (!parsed.success) throw new HttpError("The source-action cancellation request is invalid.", 400);
       return renderSourceActionCancellationHttpView(
         await manager.cancelSourceAction(id, parsed.data),
-        includeFailureCode,
+        renderSessionVersion,
       );
     }
     case "discard": {
       requireEmptyRenderActionBody(body);
-      return renderSessionHttpView(await manager.discard(id), includeFailureCode);
+      return renderSessionHttpView(await manager.discard(id), renderSessionVersion);
     }
     case "undo": {
       const parsed = renderSourceActionRequestSchema.safeParse(body);
       if (!parsed.success) throw new HttpError("The Undo action request is invalid.", 400);
-      return renderSessionHttpView(await manager.undo(id, parsed.data.actionId, signal), includeFailureCode);
+      return renderSessionHttpView(await manager.undo(id, parsed.data.actionId, signal), renderSessionVersion);
     }
     default:
       throw new HttpError("Method not allowed.", 405);
@@ -403,7 +413,7 @@ async function routeManimRequest(
   policy: ManimRequestPolicy,
 ) {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
-  const includeFailureCode = includeRenderSessionFailureCode(request);
+  const renderSessionVersion = renderSessionContractVersion(request);
   if (request.method === "POST" || request.method === "PATCH" || request.method === "DELETE") {
     requireSameOriginJsonMutation(request, policy.expectedMutationOrigin);
   }
@@ -439,7 +449,7 @@ async function routeManimRequest(
       throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid canonical EditProgram render request.", 400);
     }
     const started = await manager.start(parsed.data, signal);
-    if (!(await sendJsonAndWaitForFinish(response, 202, renderSessionHttpView(started, includeFailureCode)))) {
+    if (!(await sendJsonAndWaitForFinish(response, 202, renderSessionHttpView(started, renderSessionVersion)))) {
       await manager.abandonStart(started.id);
       const error = new Error("The render request was disconnected before its response was sent.");
       error.name = "AbortError";
@@ -559,7 +569,7 @@ async function routeManimRequest(
       throw new HttpError("The request project does not match the project endpoint.", 409);
     }
     const started = await manager.start(parsed.data, signal);
-    if (!(await sendJsonAndWaitForFinish(response, 202, renderSessionHttpView(started, includeFailureCode)))) {
+    if (!(await sendJsonAndWaitForFinish(response, 202, renderSessionHttpView(started, renderSessionVersion)))) {
       await manager.abandonStart(started.id);
       const error = new Error("The render request was disconnected before its response was sent.");
       error.name = "AbortError";
@@ -571,7 +581,7 @@ async function routeManimRequest(
   if (!match) throw new HttpError("Manim endpoint not found.", 404);
   const [, id, action] = match;
   if (request.method === "GET" && !action) {
-    sendJson(response, 200, renderSessionHttpView(await manager.view(id), includeFailureCode));
+    sendJson(response, 200, renderSessionHttpView(await manager.view(id), renderSessionVersion));
     return;
   }
   if ((request.method === "GET" || request.method === "HEAD") && action === "video") {
@@ -581,7 +591,7 @@ async function routeManimRequest(
   }
   if (request.method !== "POST") throw new HttpError("Method not allowed.", 405);
   const body = await readBoundedJsonBody(request, policy, 4 * 1024);
-  sendJson(response, 200, await runRenderAction(manager, id, action, body, signal, includeFailureCode));
+  sendJson(response, 200, await runRenderAction(manager, id, action, body, signal, renderSessionVersion));
 }
 
 export async function handleManimRequest(

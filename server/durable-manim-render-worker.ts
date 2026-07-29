@@ -127,6 +127,8 @@ function executionFailureMessage(code: RenderSessionFailureCode) {
   switch (code) {
     case "cancelled":
       return null;
+    case "cpu-limit":
+      return "Render exceeded its CPU budget.";
     case "deadline-exceeded":
       return "Render execution deadline exceeded.";
     case "interrupted":

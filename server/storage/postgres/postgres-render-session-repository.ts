@@ -4,8 +4,8 @@ import { opaqueIdV1Schema, sha256V1Schema } from "../../../src/engine/primitives
 import {
   manimProjectIdSchema,
   manimSourcePathSchema,
-  renderSessionFailureCodeSchema,
   type RenderSessionStatus,
+  renderSessionFailureCodeSchema,
   renderSessionStatusSchema,
   renderSourceActionIdSchema,
 } from "../../../src/render-pipeline/contracts";
@@ -60,9 +60,11 @@ import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-sch
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 import { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
+import { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-session-cpu-failure-schema";
 import { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
 
 export { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
+export { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-session-cpu-failure-schema";
 export { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
 
 export const RENDER_SESSION_MIGRATION_V2_CHECKSUM = "f67255ae5d05b2951975a700974a9748c848c6a39b9bb51b3189c3e8ed2664e9";
@@ -713,12 +715,12 @@ export class PostgresRenderSessionRepositoryV1
   async ready(signal?: AbortSignal) {
     try {
       const result = await this.#connection.query<{ checksum: string; version: number }>(
-        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (2, 5, 6, 7, 8) ORDER BY version",
+        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (2, 5, 6, 7, 8, 9) ORDER BY version",
         [],
         signal,
       );
       return (
-        result.rowCount === 5 &&
+        result.rowCount === 6 &&
         result.rows[0]?.version === 2 &&
         result.rows[0]?.checksum === RENDER_SESSION_MIGRATION_V2_CHECKSUM &&
         result.rows[1]?.version === 5 &&
@@ -728,7 +730,9 @@ export class PostgresRenderSessionRepositoryV1
         result.rows[3]?.version === 7 &&
         result.rows[3]?.checksum === RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM &&
         result.rows[4]?.version === 8 &&
-        result.rows[4]?.checksum === RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM
+        result.rows[4]?.checksum === RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM &&
+        result.rows[5]?.version === 9 &&
+        result.rows[5]?.checksum === RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM
       );
     } catch {
       throwIfAborted(signal);

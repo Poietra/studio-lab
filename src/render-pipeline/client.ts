@@ -22,7 +22,7 @@ import {
   originalManimSourceExportRequestSchema,
   programRenderRequestSchema,
   RENDER_SESSION_CONTRACT_VERSION_HEADER,
-  RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE,
+  RENDER_SESSION_CONTRACT_VERSION_WITH_CPU_LIMIT,
   renameManimProjectRequestSchema,
   renderAbandonRequestSchema,
   renderAbandonViewSchema,
@@ -36,7 +36,7 @@ import {
 export type ManimProjectCreationInput = ManimProjectCreateRequest | Readonly<{ kind: "native-existing"; name: string }>;
 
 const renderSessionHeaders = {
-  [RENDER_SESSION_CONTRACT_VERSION_HEADER]: RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE,
+  [RENDER_SESSION_CONTRACT_VERSION_HEADER]: RENDER_SESSION_CONTRACT_VERSION_WITH_CPU_LIMIT,
 };
 
 const renderSessionJsonHeaders = {

@@ -216,17 +216,38 @@ afterEach(() => vi.restoreAllMocks());
 describe("render sandbox contracts", () => {
   it("classifies only bounded kernel cgroup resource events", () => {
     const noMemoryPressure = "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n";
-    expect(classifyManimRenderCgroupFailureV1(noMemoryPressure, "max 0\n")).toBeNull();
-    expect(classifyManimRenderCgroupFailureV1(noMemoryPressure, "max 1\n")).toBe("pids-limit");
-    expect(classifyManimRenderCgroupFailureV1("oom 1\noom_kill 0\n", "max 0\n")).toBe("memory-limit");
-    expect(() => classifyManimRenderCgroupFailureV1("oom 1\noom_kill 0\n", "max 1\n")).toThrow(/ambiguous/i);
-    expect(() => classifyManimRenderCgroupFailureV1("oom 0\n", "max 0\n")).toThrow(/incomplete/i);
-    expect(() => classifyManimRenderCgroupFailureV1("oom 0\noom_kill 0\noom 1\n", "max 0\n")).toThrow(/invalid/i);
-    expect(() => classifyManimRenderCgroupFailureV1("oom 0\noom_kill 0 \n", "max 0\n")).toThrow(/invalid/i);
+    const belowCpuBudget = "usage_usec 29999999\nuser_usec 20000000\nsystem_usec 9999999\n";
+    const exhaustedCpuBudget = "usage_usec 30000000\nuser_usec 20000000\nsystem_usec 10000000\n";
+    expect(classifyManimRenderCgroupFailureV1(noMemoryPressure, "max 0\n", belowCpuBudget)).toBeNull();
+    expect(classifyManimRenderCgroupFailureV1(noMemoryPressure, "max 0\n", exhaustedCpuBudget)).toBe("cpu-limit");
+    expect(classifyManimRenderCgroupFailureV1(noMemoryPressure, "max 1\n", exhaustedCpuBudget)).toBe("pids-limit");
+    expect(classifyManimRenderCgroupFailureV1("oom 1\noom_kill 0\n", "max 0\n", exhaustedCpuBudget)).toBe(
+      "memory-limit",
+    );
+    expect(() => classifyManimRenderCgroupFailureV1("oom 1\noom_kill 0\n", "max 1\n", exhaustedCpuBudget)).toThrow(
+      /ambiguous/i,
+    );
+    expect(() => classifyManimRenderCgroupFailureV1("oom 0\n", "max 0\n", belowCpuBudget)).toThrow(/incomplete/i);
+    expect(() => classifyManimRenderCgroupFailureV1("oom 0\noom_kill 0\noom 1\n", "max 0\n", belowCpuBudget)).toThrow(
+      /invalid/i,
+    );
+    expect(() => classifyManimRenderCgroupFailureV1("oom 0\noom_kill 0 \n", "max 0\n", belowCpuBudget)).toThrow(
+      /invalid/i,
+    );
+    expect(() => classifyManimRenderCgroupFailureV1(noMemoryPressure, "max 0\n", "user_usec 1\n")).toThrow(
+      /incomplete/i,
+    );
+    expect(() =>
+      classifyManimRenderCgroupFailureV1(noMemoryPressure, "max 0\n", "usage_usec 1\nusage_usec 2\n"),
+    ).toThrow(/invalid/i);
+    expect(() =>
+      classifyManimRenderCgroupFailureV1(noMemoryPressure, "max 0\n", "usage_usec 1\nfuture_usec 0\n"),
+    ).toThrow(/invalid/i);
   });
 
-  it("pins file and tmpfs inode limits in the digested OCI profile", () => {
+  it("pins cumulative CPU, file, and tmpfs inode limits in the digested OCI profile", () => {
     const profile = MANIM_RENDER_GATED_OCI_PROFILE_V1;
+    expect(profile.cpuTimeMicroseconds).toBe(30_000_000);
     expect(profile.ulimits).toContainEqual({
       hard: profile.artifactBytes,
       name: "fsize",
@@ -1172,7 +1193,14 @@ describe("production durable render execution", () => {
     const submitted: SealedManimRenderSandboxRequestV2[] = [];
     const sandboxResult = (
       request: SealedManimRenderSandboxRequestV2,
-      code?: "cancelled" | "cleanup-failed" | "deadline-exceeded" | "memory-limit" | "pids-limit" | "render-failed",
+      code?:
+        | "cancelled"
+        | "cleanup-failed"
+        | "cpu-limit"
+        | "deadline-exceeded"
+        | "memory-limit"
+        | "pids-limit"
+        | "render-failed",
     ) => {
       const value = request.parseDescriptor();
       const correlation = {
@@ -1401,7 +1429,7 @@ describe("production durable render execution", () => {
       await expect(assetReadExecution).rejects.toMatchObject({ name: "AbortError" });
       expect(submitted).toHaveLength(submittedBeforeCancellation);
 
-      for (const code of ["deadline-exceeded", "memory-limit", "pids-limit"] as const) {
+      for (const code of ["cpu-limit", "deadline-exceeded", "memory-limit", "pids-limit"] as const) {
         vi.mocked(backend.submitOrReattach)
           .mockImplementationOnce(async (request) => sandboxResult(request, code))
           .mockImplementationOnce(async (request) => sandboxResult(request, code));

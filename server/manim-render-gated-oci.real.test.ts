@@ -158,6 +158,28 @@ class OutputFloodScene(Scene):
             os.write(1, chunk)
             os.write(2, chunk)
 `;
+const cpuPressureSource = `import os
+
+from manim import Scene
+
+def burn_cpu():
+    value = 1
+    while True:
+        value = (value * 1103515245 + 12345) & 0x7fffffff
+
+class CpuPressureScene(Scene):
+    def construct(self):
+        for _ in range(3):
+            child = os.fork()
+            if child == 0:
+                try:
+                    os.setsid()
+                except OSError:
+                    pass
+                burn_cpu()
+                os._exit(0)
+        burn_cpu()
+`;
 const memoryPressureSource = `import time
 
 from manim import Scene
@@ -697,6 +719,15 @@ describe.skipIf(!enabled && !productionEvidence && !required)("render gated OCI 
     const signal = new AbortController().signal;
     const cases = [
       {
+        expected: { code: "cpu-limit", kind: "failed" },
+        maximumElapsedMs: 75_000,
+        minimumProcesses: 4,
+        name: "cpu-budget",
+        sceneName: "CpuPressureScene",
+        source: cpuPressureSource,
+        timeoutMs: 75_000,
+      },
+      {
         expected: { code: "deadline-exceeded", kind: "failed" },
         maximumElapsedMs: 20_000,
         name: "deadline",
@@ -812,7 +843,11 @@ describe.skipIf(!enabled && !productionEvidence && !required)("render gated OCI 
         }
         const result = await pending;
         expect(result, attack.name).toEqual(attack.expected);
-        if (attack.expected.code === "memory-limit" || attack.expected.code === "pids-limit") {
+        if (
+          attack.expected.code === "cpu-limit" ||
+          attack.expected.code === "memory-limit" ||
+          attack.expected.code === "pids-limit"
+        ) {
           expect(Date.now(), attack.name).toBeLessThan(deadlineEpochMs);
         }
         expect(performance.now() - startedAt, attack.name).toBeLessThan(attack.maximumElapsedMs);
@@ -831,5 +866,5 @@ describe.skipIf(!enabled && !productionEvidence && !required)("render gated OCI 
     if (errors.length > 0) {
       throw new AggregateError(errors, "The adversarial render OCI lane failed or did not clean up.");
     }
-  }, 120_000);
+  }, 180_000);
 });

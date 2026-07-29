@@ -69,6 +69,7 @@ const TMPFS_INODES = 4_096;
 const MEMORY_BYTES = 512 * 1024 * 1024;
 const PIDS_LIMIT = 64;
 const CPU_NANOSECONDS = 1_000_000_000;
+const CPU_TIME_MICROSECONDS = 30_000_000;
 const SHM_BYTES = 64 * 1024;
 const FIXED_ENTRYPOINT = Object.freeze(["/opt/venv/bin/python", "/opt/poietra/render-entrypoint.py"] as const);
 const FIXED_ENVIRONMENT = Object.freeze({
@@ -148,6 +149,7 @@ export const MANIM_RENDER_GATED_OCI_PROFILE_V1 = Object.freeze({
   }),
   cgroupNamespace: "private",
   cpuNanoSeconds: CPU_NANOSECONDS,
+  cpuTimeMicroseconds: CPU_TIME_MICROSECONDS,
   entrypoint: FIXED_ENTRYPOINT,
   environment: FIXED_ENVIRONMENT,
   exportProtocol: Object.freeze({
@@ -238,10 +240,23 @@ export type ManimRenderGatedOciBaseResultV1 =
 
 type ManimRenderCgroupFailureCodeV1 = Extract<
   Extract<ManimRenderSandboxTerminalV1, { kind: "failed" }>["code"],
-  "memory-limit" | "pids-limit"
+  "cpu-limit" | "memory-limit" | "pids-limit"
 >;
 
-function parseCgroupCounters(value: unknown, required: readonly string[]) {
+const CPU_STAT_COUNTERS = new Set([
+  "burst_usec",
+  "core_sched.force_idle_usec",
+  "nice_usec",
+  "nr_bursts",
+  "nr_periods",
+  "nr_throttled",
+  "system_usec",
+  "throttled_usec",
+  "usage_usec",
+  "user_usec",
+]);
+
+function parseCgroupCounters(value: unknown, required: readonly string[], allowed?: ReadonlySet<string>) {
   if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > MAX_CGROUP_COUNTER_BYTES) {
     throw new TypeError("The render cgroup counters are invalid.");
   }
@@ -251,8 +266,10 @@ function parseCgroupCounters(value: unknown, required: readonly string[]) {
   }
   const counters = new Map<string, bigint>();
   for (const line of normalized.split("\n")) {
-    const match = line.match(/^([a-z][a-z0-9_]*) ([0-9]+)$/u);
-    if (!match || counters.has(match[1]!)) throw new TypeError("The render cgroup counters are invalid.");
+    const match = line.match(/^([a-z][a-z0-9_.]*) ([0-9]+)$/u);
+    if (!match || counters.has(match[1]!) || (allowed ? !allowed.has(match[1]!) : match[1]!.includes("."))) {
+      throw new TypeError("The render cgroup counters are invalid.");
+    }
     counters.set(match[1]!, BigInt(match[2]!));
   }
   if (required.some((name) => !counters.has(name))) throw new TypeError("The render cgroup counters are incomplete.");
@@ -263,24 +280,27 @@ function parseCgroupCounters(value: unknown, required: readonly string[]) {
 export function classifyManimRenderCgroupFailureV1(
   memoryEvents: unknown,
   pidsEvents: unknown,
+  cpuStat: unknown,
 ): ManimRenderCgroupFailureCodeV1 | null {
   const memory = parseCgroupCounters(memoryEvents, ["oom", "oom_kill"]);
   const pids = parseCgroupCounters(pidsEvents, ["max"]);
   const memoryLimit = memory.get("oom")! > 0n || memory.get("oom_kill")! > 0n;
   const pidsLimit = pids.get("max")! > 0n;
   if (memoryLimit && pidsLimit) throw new TypeError("The render cgroup failure evidence is ambiguous.");
-  if (!memoryLimit && !pidsLimit) return null;
-  return memoryLimit ? "memory-limit" : "pids-limit";
+  if (memoryLimit || pidsLimit) return memoryLimit ? "memory-limit" : "pids-limit";
+  const cpu = parseCgroupCounters(cpuStat, ["usage_usec"], CPU_STAT_COUNTERS);
+  return cpu.get("usage_usec")! >= BigInt(CPU_TIME_MICROSECONDS) ? "cpu-limit" : null;
 }
 
 async function inspectManimRenderCgroupFailureV1(identity: FastManimGatedOciRunningIdentityV1) {
   // A stable render container owns one fresh cgroup for exactly one job. Its
   // absolute counters therefore remain job-local across broker reattachment.
-  const [memoryEvents, pidsEvents] = await Promise.all([
+  const [memoryEvents, pidsEvents, cpuStat] = await Promise.all([
     readFile(resolve(identity.cgroupPath, "memory.events"), "ascii"),
     readFile(resolve(identity.cgroupPath, "pids.events"), "ascii"),
+    readFile(resolve(identity.cgroupPath, "cpu.stat"), "ascii"),
   ]);
-  return classifyManimRenderCgroupFailureV1(memoryEvents, pidsEvents);
+  return classifyManimRenderCgroupFailureV1(memoryEvents, pidsEvents, cpuStat);
 }
 
 type ActiveJob = Readonly<{
@@ -1660,6 +1680,24 @@ export class ManimRenderGatedOciJobRunnerV1 {
         if (pause.code !== 0) throw new Error("Render OCI cgroup could not be frozen before publication.");
         const paused = await this.#inspectContainer(containerId, containerName, executionDigest, deadlineEpochMs, true);
         if (paused.State?.Paused !== true) throw new Error("Render OCI cgroup did not freeze before publication.");
+        const finalResourceFailure = await inspectResourceFailure();
+        if (finalResourceFailure) {
+          try {
+            await cleanupFastManimGatedOciContainerV1(
+              containerId,
+              runningIdentity,
+              this.#docker,
+              this.#cgroupKillPolicy,
+            );
+            containerId = undefined;
+          } catch (cleanupError) {
+            this.#latchCleanupFailure(cleanupError);
+            await Promise.all([rm(copied.incoming, { force: true, recursive: true }), this.#deleteStaged(stagingId)]);
+            return { code: "cleanup-failed", kind: "failed" };
+          }
+          await Promise.all([rm(copied.incoming, { force: true, recursive: true }), this.#deleteStaged(stagingId)]);
+          return { code: finalResourceFailure, kind: "failed" };
+        }
         try {
           await cleanupFastManimGatedOciContainerV1(containerId, runningIdentity, this.#docker, this.#cgroupKillPolicy);
           containerId = undefined;

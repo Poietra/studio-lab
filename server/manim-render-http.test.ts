@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   RENDER_SESSION_CONTRACT_VERSION_HEADER,
+  RENDER_SESSION_CONTRACT_VERSION_WITH_CPU_LIMIT,
   RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE,
   type RenderSessionView,
 } from "../src/render-pipeline/contracts";
@@ -85,11 +86,17 @@ function renderSession(overrides: Partial<RenderSessionView> = {}): RenderSessio
 }
 
 describe("render session contract negotiation", () => {
-  it("omits failureCode for an old client and includes it only after an exact opt-in", async () => {
+  it("omits failureCode for legacy clients, downmaps CPU for v2, and preserves it in v3", async () => {
+    const view = vi.fn(async () =>
+      renderSession({
+        error: "Render exceeded its CPU budget.",
+        failureCode: "cpu-limit",
+      }),
+    );
     const api = {
       storageBoundary: { kind: "shared-durable", namespace: "http-render-contract-test" },
       tenantId: "tenant-render-contract",
-      view: vi.fn(async () => renderSession()),
+      view,
     } as unknown as ManimApi;
     const server = await listen(api);
     try {
@@ -103,7 +110,7 @@ describe("render session contract negotiation", () => {
           })
         ).body.toString("utf8"),
       ) as Record<string, unknown>;
-      const negotiated = JSON.parse(
+      const v2 = JSON.parse(
         (
           await send(port, path, {
             headers: {
@@ -112,10 +119,29 @@ describe("render session contract negotiation", () => {
           })
         ).body.toString("utf8"),
       ) as Record<string, unknown>;
+      const v3 = JSON.parse(
+        (
+          await send(port, path, {
+            headers: {
+              [RENDER_SESSION_CONTRACT_VERSION_HEADER]: RENDER_SESSION_CONTRACT_VERSION_WITH_CPU_LIMIT,
+            },
+          })
+        ).body.toString("utf8"),
+      ) as Record<string, unknown>;
+      view.mockResolvedValueOnce(renderSession());
+      const v2ExistingCode = JSON.parse(
+        (
+          await send(port, path, {
+            headers: { [RENDER_SESSION_CONTRACT_VERSION_HEADER]: RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE },
+          })
+        ).body.toString("utf8"),
+      ) as Record<string, unknown>;
 
       expect(legacy).not.toHaveProperty("failureCode");
       expect(unsupportedVersion).not.toHaveProperty("failureCode");
-      expect(negotiated.failureCode).toBe("memory-limit");
+      expect(v2.failureCode).toBe("render-failed");
+      expect(v3.failureCode).toBe("cpu-limit");
+      expect(v2ExistingCode.failureCode).toBe("memory-limit");
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
@@ -126,7 +152,7 @@ describe("render session contract negotiation", () => {
     const api = {
       cancelSourceAction: vi.fn(async () => ({
         action: { id: actionId, kind: "commit", outcome: null, state: "cancelled" },
-        session: renderSession(),
+        session: renderSession({ error: "Render exceeded its CPU budget.", failureCode: "cpu-limit" }),
       })),
       storageBoundary: { kind: "shared-durable", namespace: "http-render-contract-test" },
       tenantId: "tenant-render-contract",
@@ -145,7 +171,7 @@ describe("render session contract negotiation", () => {
           })
         ).body.toString("utf8"),
       ) as { session: Record<string, unknown> };
-      const negotiated = JSON.parse(
+      const v2 = JSON.parse(
         (
           await send(port, path, {
             body,
@@ -157,9 +183,22 @@ describe("render session contract negotiation", () => {
           })
         ).body.toString("utf8"),
       ) as { session: Record<string, unknown> };
+      const v3 = JSON.parse(
+        (
+          await send(port, path, {
+            body,
+            headers: {
+              "content-type": "application/json",
+              [RENDER_SESSION_CONTRACT_VERSION_HEADER]: RENDER_SESSION_CONTRACT_VERSION_WITH_CPU_LIMIT,
+            },
+            method: "POST",
+          })
+        ).body.toString("utf8"),
+      ) as { session: Record<string, unknown> };
 
       expect(legacy.session).not.toHaveProperty("failureCode");
-      expect(negotiated.session.failureCode).toBe("memory-limit");
+      expect(v2.session.failureCode).toBe("render-failed");
+      expect(v3.session.failureCode).toBe("cpu-limit");
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
