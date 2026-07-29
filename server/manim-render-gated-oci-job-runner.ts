@@ -65,6 +65,7 @@ const CANCELLATION_STATE_TEMPORARY_FILE = ".render-cancellations-v1.json.tmp";
 const STAGING_RESERVATION_BYTES = MAX_MANIM_RENDER_SANDBOX_ARTIFACT_BYTES_V1 + MAX_STAGED_MANIFEST_BYTES;
 const MAX_STAGED_BYTES = 16 * STAGING_RESERVATION_BYTES;
 const TMPFS_BYTES = 256 * 1024 * 1024;
+const TMPFS_INODES = 4_096;
 const MEMORY_BYTES = 512 * 1024 * 1024;
 const PIDS_LIMIT = 64;
 const CPU_NANOSECONDS = 1_000_000_000;
@@ -125,6 +126,7 @@ const TMPFS_OPTIONS = Object.freeze([
   "nosuid",
   "nodev",
   `size=${TMPFS_BYTES}`,
+  `nr_inodes=${TMPFS_INODES}`,
   "mode=0700",
   "uid=65532",
   "gid=65532",
@@ -195,9 +197,14 @@ export const MANIM_RENDER_GATED_OCI_PROFILE_V1 = Object.freeze({
   stdinOnce: true,
   stopTimeoutSeconds: 1,
   untrustedOutputTarget: "/run/poietra/output",
-  tmpfs: Object.freeze({ options: TMPFS_OPTIONS, path: "/run/poietra" }),
+  tmpfs: Object.freeze({ inodeLimit: TMPFS_INODES, options: TMPFS_OPTIONS, path: "/run/poietra" }),
   ulimits: Object.freeze([
     Object.freeze({ hard: 0, name: "core", soft: 0 }),
+    Object.freeze({
+      hard: MAX_MANIM_RENDER_SANDBOX_ARTIFACT_BYTES_V1,
+      name: "fsize",
+      soft: MAX_MANIM_RENDER_SANDBOX_ARTIFACT_BYTES_V1,
+    }),
     Object.freeze({ hard: 256, name: "nofile", soft: 256 }),
   ]),
   user: "65532:65532",
@@ -1675,9 +1682,10 @@ export class ManimRenderGatedOciJobRunnerV1 {
         "--ipc=none",
         `--shm-size=${SHM_BYTES}`,
         "--cgroupns=private",
-        "--ulimit=core=0:0",
-        "--ulimit=nofile=256:256",
-        `--tmpfs=/run/poietra:${TMPFS_OPTIONS.join(",")}`,
+        ...MANIM_RENDER_GATED_OCI_PROFILE_V1.ulimits.map(
+          (limit) => `--ulimit=${limit.name}=${limit.soft}:${limit.hard}`,
+        ),
+        `--tmpfs=${MANIM_RENDER_GATED_OCI_PROFILE_V1.tmpfs.path}:${MANIM_RENDER_GATED_OCI_PROFILE_V1.tmpfs.options.join(",")}`,
         "--stop-timeout=1",
         "--label=io.poietra.render-job=v1",
         `--label=${CONTAINER_OWNER_LABEL}=${this.#stagingRootDigest}`,

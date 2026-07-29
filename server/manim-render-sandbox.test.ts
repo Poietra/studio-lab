@@ -225,6 +225,30 @@ describe("render sandbox contracts", () => {
     expect(() => classifyManimRenderCgroupFailureV1("oom 0\noom_kill 0 \n", "max 0\n")).toThrow(/invalid/i);
   });
 
+  it("pins file and tmpfs inode limits in the digested OCI profile", () => {
+    const profile = MANIM_RENDER_GATED_OCI_PROFILE_V1;
+    expect(profile.ulimits).toContainEqual({
+      hard: profile.artifactBytes,
+      name: "fsize",
+      soft: profile.artifactBytes,
+    });
+    expect(profile.tmpfs).toEqual({
+      inodeLimit: 4_096,
+      options: [
+        "rw",
+        "noexec",
+        "nosuid",
+        "nodev",
+        "size=268435456",
+        "nr_inodes=4096",
+        "mode=0700",
+        "uid=65532",
+        "gid=65532",
+      ],
+      path: "/run/poietra",
+    });
+  });
+
   it("rejects non-canonical or over-budget staging roots before identity correlation", () => {
     expect(() => digestManimRenderStagingRootV1("/tmp/staging\0suffix")).toThrow(/staging root/i);
     expect(() => digestManimRenderStagingRootV1(`/${"a".repeat(4_096)}`)).toThrow(/staging root/i);
@@ -642,6 +666,13 @@ describe("render OCI lifecycle", () => {
       ).rejects.toThrow(/create outcome/i);
       await expect(runner.close()).rejects.toThrow(/cleanup/i);
       expect(docker.calls.filter((call) => call[0] === "container" && call[1] === "ls")).toHaveLength(2);
+      const create = docker.calls.find((call) => call[0] === "container" && call[1] === "create");
+      expect(create).toContain(
+        `--ulimit=fsize=${MANIM_RENDER_GATED_OCI_PROFILE_V1.artifactBytes}:${MANIM_RENDER_GATED_OCI_PROFILE_V1.artifactBytes}`,
+      );
+      expect(create).toContain(
+        `--tmpfs=${MANIM_RENDER_GATED_OCI_PROFILE_V1.tmpfs.path}:${MANIM_RENDER_GATED_OCI_PROFILE_V1.tmpfs.options.join(",")}`,
+      );
     } finally {
       await rm(root, { force: true, recursive: true });
     }

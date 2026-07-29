@@ -48,6 +48,17 @@ Docker socket, pinned image digest, seccomp path, private staging root, and UDS 
 sandbox:oci:render:build` builds the pinned image when
 `POIETRA_FAST_MANIM_SOURCE_REPO` points at the exact Fast Manim checkout. The
 opt-in real lane uses `POIETRA_MANIM_RENDER_GATED_OCI_IMAGE=<sha256:image-id>`.
+Run the fail-required local lane with an image built from the current checkout:
+
+```sh
+POIETRA_MANIM_RENDER_GATED_OCI_IMAGE=sha256:<64-hex-image-id> \
+  pnpm test:render-sandbox:oci:required
+```
+
+Unlike the generic test suite, this command fails when the immutable image is
+missing or malformed. To collect production-host evidence, also set both
+`POIETRA_FAST_MANIM_PRODUCTION_DOCKER_SOCKET` and
+`POIETRA_FAST_MANIM_PRODUCTION_DOCKER_VERSION`; requesting only one is an error.
 When `POIETRA_FAST_MANIM_PRODUCTION_DOCKER_SOCKET` and the matching
 `POIETRA_FAST_MANIM_PRODUCTION_DOCKER_VERSION` are also set, that same lane
 requires a rootless/systemd/cgroup-v2 host and `cgroup.kill` cleanup;
@@ -68,8 +79,10 @@ production the root is owned by `broker:Studio-group` with mode `0750`, and
 published media files are broker-owned with mode `0640`; Studio has read but not
 write authority. The real lane proves multi-animation MP4/PNG output, semantic
 rejection of forged MP4, denial of Scene access to `/proc/1/mem`, hostile early
-output replacement, refenced reattachment, owner-isolated concurrent brokers,
-restart cleanup, active cancellation, and cleanup.
+output replacement, fenced reattachment, owner-isolated concurrent brokers,
+restart cleanup, active cancellation, exact descriptor/file/tmpfs byte and inode
+limits, successful Manim-leader exit with a detached `setsid` pipe holder, and
+cleanup.
 
 Each broker has an explicit deployment-unique `brokerShardId` in its immutable,
 root-owned configuration. Status and cancellation acknowledgements carry that
