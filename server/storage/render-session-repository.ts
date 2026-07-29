@@ -68,6 +68,7 @@ export type CreateDurableRenderSessionInputV1 = Readonly<{
 }>;
 
 export type DurableRenderLeaseClaimV1 = Readonly<{
+  brokerShardId: string;
   leaseDurationMs: number;
   ownerId: string;
   sessionId: string;
@@ -160,6 +161,7 @@ export interface RenderSessionRepositoryV1 {
   expireTimedOutSessions(tenantId: string, limit: number, signal?: AbortSignal): Promise<number>;
   findRecoverableSessions(
     tenantId: string,
+    brokerShardId: string,
     limit: number,
     signal?: AbortSignal,
   ): Promise<readonly DurableRenderSessionV1[]>;

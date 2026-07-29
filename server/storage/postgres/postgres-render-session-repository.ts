@@ -1,5 +1,6 @@
 import type { Pool, PoolClient, PoolConfig, QueryResultRow } from "pg";
 
+import { opaqueIdV1Schema, sha256V1Schema } from "../../../src/engine/primitives";
 import {
   manimProjectIdSchema,
   manimSourcePathSchema,
@@ -8,6 +9,7 @@ import {
   renderSourceActionIdSchema,
 } from "../../../src/render-pipeline/contracts";
 import { HttpError } from "../../http/json";
+import { manimRenderBrokerShardIdV1Schema } from "../../manim-render-sandbox-contract";
 import {
   type RenderSessionTransitionOperation,
   renderSessionTransitionAllowed,
@@ -17,6 +19,18 @@ import {
 } from "../../manim-render-session-policy";
 import { manimTenantIdSchema } from "../../manim-request-principal";
 import { assertProjectPngReceiptV1, type ProjectPngHeadV1 } from "../project-png-storage";
+import {
+  DURABLE_RENDER_CANCELLATION_GRACE_MS_V1,
+  type DurableRenderCancellationAcknowledgementV1,
+  type DurableRenderCancellationDeliveryClaimV1,
+  type DurableRenderCancellationDeliveryV1,
+  type DurableRenderCancellationIntentV1,
+  type DurableRenderCancellationRegistrationV1,
+  MAX_DURABLE_RENDER_CANCELLATION_DELIVERY_LEASE_MS_V1,
+  MAX_DURABLE_RENDER_CANCELLATION_INTENTS_PER_TENANT_V1,
+  MAX_DURABLE_RENDER_CANCELLATION_INTENTS_V1,
+  type RenderCancellationRepositoryV1,
+} from "../render-cancellation-repository";
 import {
   type CreateDurableRenderSessionInputV1,
   type DurableRenderLeaseClaimV1,
@@ -44,6 +58,9 @@ import { MAX_MANIM_SOURCE_BYTES_V1, type SourceBlobReceiptV1 } from "../workspac
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
+import { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
+
+export { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
 
 export const RENDER_SESSION_MIGRATION_V2_CHECKSUM = "f67255ae5d05b2951975a700974a9748c848c6a39b9bb51b3189c3e8ed2664e9";
 
@@ -52,6 +69,7 @@ const MAX_SOURCE_ACTION_RECORDS_V1 = 64;
 const MAX_RECOVERABLE_SESSION_PAGE_V1 = 256;
 const MAX_CORRELATION_KEY_BYTES_V1 = 2_048;
 const MAX_RENDER_IDENTIFIER_BYTES_V1 = 240;
+const RENDER_CANCELLATION_CAPACITY_LOCK_V1 = "render-cancellation-capacity:v1";
 
 const SQL_STATUS_LITERALS = {
   cancelled: "'cancelled'",
@@ -157,6 +175,42 @@ type ActionRow = QueryResultRow & {
   updated_at: Date;
 };
 
+type CancellationRow = QueryResultRow & {
+  acknowledged_at: Date | null;
+  broker_shard_id: string;
+  delivery_expires_at: Date | null;
+  delivery_owner: string | null;
+  delivery_token: string;
+  expires_at: Date;
+  fence_digest: string | null;
+  job_id: string;
+  reject_until: Date;
+  requested_at: Date;
+  session_id: string;
+  tenant_id: string;
+};
+
+type CancellationSessionRow = QueryResultRow & {
+  broker_shard_id: string | null;
+  cancellation_current: boolean;
+  status: string;
+};
+
+const CANCELLATION_COLUMNS = `
+  cancellation.tenant_id,
+  cancellation.session_id::text AS session_id,
+  cancellation.broker_shard_id,
+  cancellation.job_id,
+  cancellation.reject_until,
+  cancellation.requested_at,
+  cancellation.delivery_owner,
+  cancellation.delivery_token::text AS delivery_token,
+  cancellation.delivery_expires_at,
+  cancellation.acknowledged_at,
+  cancellation.fence_digest,
+  cancellation.expires_at
+`;
+
 const SESSION_COLUMNS = `
   s.tenant_id,
   s.session_id::text AS session_id,
@@ -260,6 +314,31 @@ function tenantId(value: string) {
   const parsed = manimTenantIdSchema.safeParse(value);
   if (!parsed.success) throw new TypeError("Tenant ID is invalid.");
   return parsed.data;
+}
+
+function brokerShardId(value: string) {
+  const parsed = manimRenderBrokerShardIdV1Schema.safeParse(value);
+  if (!parsed.success) throw new TypeError("Render broker shard ID is invalid.");
+  return parsed.data;
+}
+
+function cancellationOwnerId(value: string) {
+  const parsed = opaqueIdV1Schema.safeParse(value);
+  if (!parsed.success) throw new TypeError("Cancellation delivery owner ID is invalid.");
+  return parsed.data;
+}
+
+function cancellationFenceDigest(value: string) {
+  const parsed = sha256V1Schema.safeParse(value);
+  if (!parsed.success) throw new TypeError("Cancellation fence digest is invalid.");
+  return parsed.data;
+}
+
+function cancellationDeliveryToken(value: bigint) {
+  if (typeof value !== "bigint" || value < 1n || value > 9_223_372_036_854_775_807n) {
+    throw new TypeError("Cancellation delivery token is invalid.");
+  }
+  return value;
 }
 
 function projectId(value: string) {
@@ -388,6 +467,57 @@ function actionFromRow(row: ActionRow): DurableRenderSourceActionV1 {
   };
 }
 
+function cancellationFromRow(row: CancellationRow): DurableRenderCancellationIntentV1 {
+  const tenant = tenantId(row.tenant_id);
+  const session = existingSessionId(row.session_id);
+  const shard = brokerShardId(row.broker_shard_id);
+  const token = BigInt(row.delivery_token);
+  const deliveryFields = [row.delivery_owner, row.delivery_expires_at] as const;
+  if (
+    row.job_id !== `${tenant}/${session}` ||
+    !(row.reject_until instanceof Date) ||
+    !(row.requested_at instanceof Date) ||
+    !(row.expires_at instanceof Date) ||
+    Number.isNaN(row.reject_until.getTime()) ||
+    Number.isNaN(row.requested_at.getTime()) ||
+    Number.isNaN(row.expires_at.getTime()) ||
+    token < 0n ||
+    token > 9_223_372_036_854_775_807n ||
+    (deliveryFields.every((value) => value === null)
+      ? token !== 0n
+      : deliveryFields.some((value) => value === null) ||
+        token < 1n ||
+        !(row.delivery_expires_at instanceof Date) ||
+        Number.isNaN(row.delivery_expires_at.getTime())) ||
+    (row.acknowledged_at !== null &&
+      (!(row.acknowledged_at instanceof Date) || Number.isNaN(row.acknowledged_at.getTime()))) ||
+    (row.acknowledged_at === null) !== (row.fence_digest === null)
+  ) {
+    throw new TypeError("PostgreSQL returned an invalid durable render cancellation intent.");
+  }
+  if (row.fence_digest !== null) cancellationFenceDigest(row.fence_digest);
+  const delivery =
+    row.acknowledged_at === null && row.delivery_owner !== null && row.delivery_expires_at !== null
+      ? {
+          expiresAt: row.delivery_expires_at,
+          ownerId: cancellationOwnerId(row.delivery_owner),
+          token,
+        }
+      : null;
+  return {
+    acknowledgedAt: row.acknowledged_at,
+    brokerShardId: shard,
+    delivery,
+    expiresAt: row.expires_at,
+    fenceDigest: row.fence_digest,
+    jobId: row.job_id,
+    rejectUntil: row.reject_until,
+    requestedAt: row.requested_at,
+    sessionId: session,
+    tenantId: tenant,
+  };
+}
+
 function sessionFromRow(row: SessionRow): DurableRenderSessionV1 {
   const parsedStatus = renderSessionStatusSchema.safeParse(row.status);
   if (
@@ -469,7 +599,7 @@ function transitionSourceSql(operation: RenderSessionTransitionOperation) {
 }
 
 export class PostgresRenderSessionRepositoryV1
-  implements RenderSessionRepositoryV1, RenderSessionRetentionRepositoryV1
+  implements RenderCancellationRepositoryV1, RenderSessionRepositoryV1, RenderSessionRetentionRepositoryV1
 {
   readonly #connection: PostgresRepositoryConnectionV1;
 
@@ -529,21 +659,65 @@ export class PostgresRenderSessionRepositoryV1
     return sessionFromRow(result.rows[0]!);
   }
 
+  async #selectCancellationRow(client: PoolClient, tenant: string, session: string, lock = false) {
+    const result = await client.query<CancellationRow>(
+      `SELECT ${CANCELLATION_COLUMNS}
+         FROM public.render_cancellation_intents cancellation
+        WHERE cancellation.tenant_id = $1 AND cancellation.session_id = $2::uuid
+        ${lock ? "FOR UPDATE OF cancellation" : ""}`,
+      [tenant, session],
+    );
+    return result.rows[0] ?? null;
+  }
+
+  async #selectCancellationSession(client: PoolClient, tenant: string, session: string, lock = false) {
+    const result = await client.query<CancellationSessionRow>(
+      `SELECT broker_shard_id, status,
+              execution_deadline + ($3::integer * interval '1 millisecond') > clock_timestamp()
+                AS cancellation_current
+         FROM public.render_sessions
+        WHERE tenant_id = $1 AND session_id = $2::uuid
+          AND references_released_at IS NULL
+        ${lock ? "FOR UPDATE" : ""}`,
+      [tenant, session, DURABLE_RENDER_CANCELLATION_GRACE_MS_V1],
+    );
+    return result.rows[0] ?? null;
+  }
+
+  async #cancelLockedSession(client: PoolClient, tenant: string, session: string) {
+    await updateTransition(
+      client,
+      `UPDATE public.render_sessions
+          SET status = 'cancelled',
+              version = version + 1,
+              lease_owner = NULL,
+              lease_expires_at = NULL,
+              error = NULL,
+              updated_at = clock_timestamp()
+        WHERE tenant_id = $1 AND session_id = $2::uuid
+          AND status IN (${transitionSourceSql("cancel")})`,
+      [tenant, session],
+    );
+    return this.#selectSession(client, tenant, session);
+  }
+
   async ready(signal?: AbortSignal) {
     try {
       const result = await this.#connection.query<{ checksum: string; version: number }>(
-        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (2, 5, 6) ORDER BY version",
+        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (2, 5, 6, 7) ORDER BY version",
         [],
         signal,
       );
       return (
-        result.rowCount === 3 &&
+        result.rowCount === 4 &&
         result.rows[0]?.version === 2 &&
         result.rows[0]?.checksum === RENDER_SESSION_MIGRATION_V2_CHECKSUM &&
         result.rows[1]?.version === 5 &&
         result.rows[1]?.checksum === PROJECT_PNG_MIGRATION_V5_CHECKSUM &&
         result.rows[2]?.version === 6 &&
-        result.rows[2]?.checksum === DURABLE_RETENTION_MIGRATION_V6_CHECKSUM
+        result.rows[2]?.checksum === DURABLE_RETENTION_MIGRATION_V6_CHECKSUM &&
+        result.rows[3]?.version === 7 &&
+        result.rows[3]?.checksum === RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM
       );
     } catch {
       throwIfAborted(signal);
@@ -692,20 +866,296 @@ export class PostgresRenderSessionRepositoryV1
     return this.#connection.withClient((client) => this.#selectSession(client, tenant, session), signal);
   }
 
-  async findRecoverableSessions(tenantValue: string, limitValue: number, signal?: AbortSignal) {
+  async registerCancellation(
+    tenantValue: string,
+    sessionValue: string,
+    signal?: AbortSignal,
+  ): Promise<DurableRenderCancellationRegistrationV1> {
     const tenant = tenantId(tenantValue);
+    const session = existingSessionId(sessionValue);
+    return this.#connection.transaction(async (client) => {
+      const state = await this.#selectCancellationSession(client, tenant, session, true);
+      if (!state) throw new HttpError("Manim render session not found.", 404);
+      const parsedStatus = renderSessionStatusSchema.safeParse(state.status);
+      if (!parsedStatus.success) throw new TypeError("PostgreSQL returned an invalid durable render session.");
+
+      await client.query(
+        `DELETE FROM public.render_cancellation_intents
+          WHERE tenant_id = $1 AND session_id = $2::uuid
+            AND expires_at <= clock_timestamp()`,
+        [tenant, session],
+      );
+      const existingRow = await this.#selectCancellationRow(client, tenant, session, true);
+      if (existingRow) {
+        return {
+          intent: cancellationFromRow(existingRow),
+          session: await this.#selectSession(client, tenant, session),
+        };
+      }
+      if (parsedStatus.data === "cancelled" || parsedStatus.data === "discarded") {
+        return { intent: null, session: await this.#selectSession(client, tenant, session) };
+      }
+      if (!renderSessionTransitionAllowed("cancel", parsedStatus.data)) {
+        throw new HttpError("Only an active render can be cancelled.", 409);
+      }
+
+      if (state.broker_shard_id === null || !state.cancellation_current) {
+        return { intent: null, session: await this.#cancelLockedSession(client, tenant, session) };
+      }
+
+      const shard = brokerShardId(state.broker_shard_id);
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+        RENDER_CANCELLATION_CAPACITY_LOCK_V1,
+      ]);
+      const afterCapacityLock = await this.#selectCancellationSession(client, tenant, session);
+      if (!afterCapacityLock) throw new HttpError("Manim render session not found.", 404);
+      if (afterCapacityLock.status !== parsedStatus.data || afterCapacityLock.broker_shard_id !== shard) {
+        throw new HttpError("The render cancellation fence changed before registration.", 409);
+      }
+      if (!afterCapacityLock.cancellation_current) {
+        return { intent: null, session: await this.#cancelLockedSession(client, tenant, session) };
+      }
+      await client.query(
+        `WITH expired AS (
+           SELECT tenant_id, session_id
+             FROM public.render_cancellation_intents
+            WHERE expires_at <= clock_timestamp()
+            FOR UPDATE SKIP LOCKED
+         )
+         DELETE FROM public.render_cancellation_intents cancellation
+          USING expired
+          WHERE cancellation.tenant_id = expired.tenant_id
+            AND cancellation.session_id = expired.session_id`,
+      );
+      const capacity = await client.query<{ global_count: number; tenant_count: number }>(
+        `SELECT count(*)::integer AS global_count,
+                (count(*) FILTER (WHERE tenant_id = $1))::integer AS tenant_count
+           FROM public.render_cancellation_intents
+          WHERE expires_at > clock_timestamp()`,
+        [tenant],
+      );
+      const counts = capacity.rows[0];
+      if (!counts || !Number.isSafeInteger(counts.global_count) || !Number.isSafeInteger(counts.tenant_count)) {
+        throw new TypeError("PostgreSQL returned an invalid render cancellation capacity count.");
+      }
+      if (
+        counts.global_count >= MAX_DURABLE_RENDER_CANCELLATION_INTENTS_V1 ||
+        counts.tenant_count >= MAX_DURABLE_RENDER_CANCELLATION_INTENTS_PER_TENANT_V1
+      ) {
+        throw new HttpError("Durable render cancellation capacity is exhausted.", 429);
+      }
+      const inserted = await client.query<CancellationRow>(
+        `INSERT INTO public.render_cancellation_intents AS cancellation
+           (tenant_id, session_id, broker_shard_id, job_id, reject_until, expires_at)
+         SELECT tenant_id, session_id, broker_shard_id,
+                tenant_id || '/' || session_id::text,
+                execution_deadline,
+                execution_deadline + ($3::integer * interval '1 millisecond')
+           FROM public.render_sessions
+          WHERE tenant_id = $1 AND session_id = $2::uuid
+            AND broker_shard_id = $4
+            AND execution_deadline + ($3::integer * interval '1 millisecond') > clock_timestamp()
+            AND status IN (${transitionSourceSql("cancel")})
+        RETURNING ${CANCELLATION_COLUMNS}`,
+        [tenant, session, DURABLE_RENDER_CANCELLATION_GRACE_MS_V1, shard],
+      );
+      const intent = inserted.rows[0];
+      if (!intent) {
+        const afterInsert = await this.#selectCancellationSession(client, tenant, session);
+        if (
+          afterInsert?.status === parsedStatus.data &&
+          afterInsert.broker_shard_id === shard &&
+          !afterInsert.cancellation_current
+        ) {
+          return { intent: null, session: await this.#cancelLockedSession(client, tenant, session) };
+        }
+        throw new HttpError("The render cancellation fence changed before registration.", 409);
+      }
+      return { intent: cancellationFromRow(intent), session: await this.#selectSession(client, tenant, session) };
+    }, signal);
+  }
+
+  async readCancellation(tenantValue: string, sessionValue: string, signal?: AbortSignal) {
+    const tenant = tenantId(tenantValue);
+    const session = existingSessionId(sessionValue);
+    const row = await this.#connection.withClient(
+      (client) => this.#selectCancellationRow(client, tenant, session),
+      signal,
+    );
+    return row ? cancellationFromRow(row) : null;
+  }
+
+  async claimCancellationDeliveries(
+    input: DurableRenderCancellationDeliveryClaimV1,
+    signal?: AbortSignal,
+  ): Promise<readonly DurableRenderCancellationDeliveryV1[]> {
+    const tenant = tenantId(input.tenantId);
+    const shard = brokerShardId(input.brokerShardId);
+    const owner = cancellationOwnerId(input.ownerId);
+    const duration = boundedPositiveInteger(
+      input.leaseDurationMs,
+      "leaseDurationMs",
+      MAX_DURABLE_RENDER_CANCELLATION_DELIVERY_LEASE_MS_V1,
+    );
+    const maximum = boundedPositiveInteger(
+      input.maximum,
+      "maximum",
+      MAX_DURABLE_RENDER_CANCELLATION_INTENTS_PER_TENANT_V1,
+    );
+    const result = await this.#connection.query<CancellationRow>(
+      `WITH candidates AS (
+         SELECT tenant_id, session_id
+           FROM public.render_cancellation_intents
+          WHERE tenant_id = $1
+            AND broker_shard_id = $2
+            AND acknowledged_at IS NULL
+            AND expires_at > clock_timestamp()
+            AND (
+              delivery_owner IS NULL
+              OR delivery_expires_at <= clock_timestamp()
+              OR delivery_owner = $3
+            )
+            AND (
+              (delivery_owner = $3 AND delivery_expires_at > clock_timestamp())
+              OR delivery_token < 9223372036854775807
+            )
+          ORDER BY requested_at, session_id
+          LIMIT $4
+          FOR UPDATE SKIP LOCKED
+       )
+       UPDATE public.render_cancellation_intents AS cancellation
+          SET delivery_owner = $3,
+              delivery_token = CASE
+                WHEN cancellation.delivery_owner = $3
+                 AND cancellation.delivery_expires_at > clock_timestamp()
+                  THEN cancellation.delivery_token
+                ELSE cancellation.delivery_token + 1
+              END,
+              delivery_expires_at = LEAST(
+                cancellation.expires_at,
+                clock_timestamp() + ($5::integer * interval '1 millisecond')
+              )
+         FROM candidates
+        WHERE cancellation.tenant_id = candidates.tenant_id
+          AND cancellation.session_id = candidates.session_id
+      RETURNING ${CANCELLATION_COLUMNS}`,
+      [tenant, shard, owner, maximum, duration],
+      signal,
+    );
+    return result.rows.map((row) => {
+      const intent = cancellationFromRow(row);
+      if (!intent.delivery) throw new TypeError("PostgreSQL returned an unleased render cancellation delivery.");
+      return { ...intent, delivery: intent.delivery };
+    });
+  }
+
+  async acknowledgeCancellation(input: DurableRenderCancellationAcknowledgementV1, signal?: AbortSignal) {
+    const tenant = tenantId(input.tenantId);
+    const session = existingSessionId(input.sessionId);
+    const owner = cancellationOwnerId(input.ownerId);
+    const token = cancellationDeliveryToken(input.deliveryToken);
+    const digest = cancellationFenceDigest(input.fenceDigest);
+    return this.#connection.transaction(async (client) => {
+      const current = await this.#selectSession(client, tenant, session, true);
+      const row = await this.#selectCancellationRow(client, tenant, session, true);
+      if (!row) throw new HttpError("Render cancellation intent not found.", 404);
+      const intent = cancellationFromRow(row);
+      if (row.delivery_owner !== owner || BigInt(row.delivery_token) !== token) {
+        throw new HttpError("The render cancellation delivery lease is stale.", 409);
+      }
+      if (intent.acknowledgedAt !== null) {
+        if (intent.fenceDigest !== digest) {
+          throw new HttpError("The render cancellation acknowledgement conflicts with its receipt.", 409);
+        }
+        return current;
+      }
+      if (!renderSessionTransitionAllowed("cancel", current.status)) {
+        throw new HttpError("Only an active render can be cancelled.", 409);
+      }
+      const acknowledged = await client.query(
+        `UPDATE public.render_cancellation_intents
+            SET acknowledged_at = clock_timestamp(), fence_digest = $5
+          WHERE tenant_id = $1 AND session_id = $2::uuid
+            AND delivery_owner = $3 AND delivery_token = $4::bigint
+            AND delivery_expires_at > clock_timestamp()
+            AND expires_at > clock_timestamp()
+            AND acknowledged_at IS NULL`,
+        [tenant, session, owner, token.toString(), digest],
+      );
+      if (acknowledged.rowCount !== 1) {
+        throw new HttpError("The render cancellation delivery lease is stale.", 409);
+      }
+      await updateTransition(
+        client,
+        `UPDATE public.render_sessions
+            SET status = 'cancelled',
+                version = version + 1,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                error = NULL,
+                updated_at = clock_timestamp()
+          WHERE tenant_id = $1 AND session_id = $2::uuid
+            AND status IN (${transitionSourceSql("cancel")})`,
+        [tenant, session],
+      );
+      return this.#selectSession(client, tenant, session);
+    }, signal);
+  }
+
+  async purgeExpiredCancellations(tenantValue: string, maximumValue: number, signal?: AbortSignal) {
+    const tenant = tenantId(tenantValue);
+    const maximum = boundedPositiveInteger(
+      maximumValue,
+      "maximum",
+      MAX_DURABLE_RENDER_CANCELLATION_INTENTS_PER_TENANT_V1,
+    );
+    const purged = await this.#connection.query(
+      `WITH expired AS (
+         SELECT tenant_id, session_id
+           FROM public.render_cancellation_intents
+          WHERE tenant_id = $1 AND expires_at <= clock_timestamp()
+          ORDER BY expires_at, session_id
+          LIMIT $2
+          FOR UPDATE SKIP LOCKED
+       )
+       DELETE FROM public.render_cancellation_intents cancellation
+        USING expired
+        WHERE cancellation.tenant_id = expired.tenant_id
+          AND cancellation.session_id = expired.session_id`,
+      [tenant, maximum],
+      signal,
+    );
+    return purged.rowCount ?? 0;
+  }
+
+  async findRecoverableSessions(
+    tenantValue: string,
+    brokerShardValue: string,
+    limitValue: number,
+    signal?: AbortSignal,
+  ) {
+    const tenant = tenantId(tenantValue);
+    const shard = brokerShardId(brokerShardValue);
     const limit = boundedPositiveInteger(limitValue, "limit", MAX_RECOVERABLE_SESSION_PAGE_V1);
     const result = await this.#connection.query<SessionRow>(
       `SELECT ${SESSION_COLUMNS}
          FROM public.render_sessions s
          ${SESSION_JOINS}
         WHERE s.tenant_id = $1
+          AND (s.broker_shard_id IS NULL OR s.broker_shard_id = $2)
           AND s.references_released_at IS NULL
           AND s.status IN (${transitionSourceSql("claim-lease")})
           AND (s.status <> 'rendering' OR s.lease_expires_at IS NULL OR s.lease_expires_at <= clock_timestamp())
+          AND NOT EXISTS (
+            SELECT 1 FROM public.render_cancellation_intents cancellation
+             WHERE cancellation.tenant_id = s.tenant_id
+               AND cancellation.session_id = s.session_id
+               AND cancellation.acknowledged_at IS NULL
+               AND cancellation.expires_at > clock_timestamp()
+          )
         ORDER BY s.updated_at, s.session_id
-        LIMIT $2`,
-      [tenant, limit],
+        LIMIT $3`,
+      [tenant, shard, limit],
       signal,
     );
     return result.rows.map(sessionFromRow);
@@ -721,6 +1171,13 @@ export class PostgresRenderSessionRepositoryV1
           WHERE tenant_id = $1
             AND status IN (${transitionSourceSql("expire")})
             AND execution_deadline <= clock_timestamp()
+            AND NOT EXISTS (
+              SELECT 1 FROM public.render_cancellation_intents cancellation
+               WHERE cancellation.tenant_id = public.render_sessions.tenant_id
+                 AND cancellation.session_id = public.render_sessions.session_id
+                 AND cancellation.acknowledged_at IS NULL
+                 AND cancellation.expires_at > clock_timestamp()
+            )
           ORDER BY execution_deadline, session_id
           LIMIT $2
           FOR UPDATE SKIP LOCKED
@@ -745,6 +1202,7 @@ export class PostgresRenderSessionRepositoryV1
   async claimLease(input: DurableRenderLeaseClaimV1, signal?: AbortSignal) {
     const tenant = tenantId(input.tenantId);
     const session = existingSessionId(input.sessionId);
+    const shard = brokerShardId(input.brokerShardId);
     const owner = boundedText(input.ownerId, "Lease owner", MAX_RENDER_IDENTIFIER_BYTES_V1);
     const duration = boundedPositiveInteger(input.leaseDurationMs, "leaseDurationMs", MAX_DURABLE_RENDER_LEASE_MS_V1);
     return this.#connection.transaction(async (client) => {
@@ -762,6 +1220,7 @@ export class PostgresRenderSessionRepositoryV1
                 version = version + 1,
                 fence_token = fence_token + 1,
                 execution_attempts = execution_attempts + 1,
+                broker_shard_id = COALESCE(broker_shard_id, $5),
                 lease_owner = $3,
                 lease_expires_at = clock_timestamp() + ($4::integer * interval '1 millisecond'),
                 updated_at = clock_timestamp()
@@ -772,8 +1231,16 @@ export class PostgresRenderSessionRepositoryV1
               OR lease_owner = $3
               OR lease_expires_at <= clock_timestamp()
             )
+            AND (broker_shard_id IS NULL OR broker_shard_id = $5)
+            AND NOT EXISTS (
+              SELECT 1 FROM public.render_cancellation_intents cancellation
+               WHERE cancellation.tenant_id = public.render_sessions.tenant_id
+                 AND cancellation.session_id = public.render_sessions.session_id
+                 AND cancellation.acknowledged_at IS NULL
+                 AND cancellation.expires_at > clock_timestamp()
+            )
             AND status IN (${transitionSourceSql("claim-lease")})`,
-        [tenant, session, owner, duration],
+        [tenant, session, owner, duration, shard],
       );
       if (claimed.rowCount !== 1) throw new HttpError("The render session is leased by another worker.", 409);
       return this.#selectSession(client, tenant, session);
@@ -819,41 +1286,50 @@ export class PostgresRenderSessionRepositoryV1
     if (artifact !== null) {
       boundedText(artifact, "Render artifact locator", MAX_DURABLE_RENDER_ARTIFACT_LOCATOR_BYTES_V1);
     }
-    const result = await this.#connection.query(
-      `UPDATE public.render_sessions
-          SET status = $6,
-              progress = $7,
-              log_tail = $8,
-              error = $9,
-              artifact_locator = $10,
-              version = version + 1,
-              lease_owner = NULL,
-              lease_expires_at = NULL,
-              updated_at = clock_timestamp()
-        WHERE tenant_id = $1
-          AND session_id = $2::uuid
-          AND lease_owner = $3
-          AND version = $4::bigint
-          AND fence_token = $5::bigint
-          AND lease_expires_at > clock_timestamp()
-          AND ($6 <> 'ready' OR execution_deadline > clock_timestamp())
-          AND status IN (${transitionSourceSql("complete-lease")})`,
-      [
-        tenant,
-        session,
-        owner,
-        input.expectedVersion.toString(),
-        input.fenceToken.toString(),
-        input.status,
-        input.progress,
-        input.logTail,
-        input.error,
-        artifact,
-      ],
-      signal,
-    );
-    if (result.rowCount !== 1) throw new HttpError("The render completion fence is stale.", 409);
-    return this.readSession(tenant, session, signal);
+    return this.#connection.transaction(async (client) => {
+      await this.#selectSession(client, tenant, session, true);
+      const pending = await client.query(
+        `SELECT 1 FROM public.render_cancellation_intents
+          WHERE tenant_id = $1 AND session_id = $2::uuid
+            AND acknowledged_at IS NULL AND expires_at > clock_timestamp()`,
+        [tenant, session],
+      );
+      if (pending.rowCount !== 0) throw new HttpError("The render completion fence is stale.", 409);
+      const result = await client.query(
+        `UPDATE public.render_sessions
+            SET status = $6,
+                progress = $7,
+                log_tail = $8,
+                error = $9,
+                artifact_locator = $10,
+                version = version + 1,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                updated_at = clock_timestamp()
+          WHERE tenant_id = $1
+            AND session_id = $2::uuid
+            AND lease_owner = $3
+            AND version = $4::bigint
+            AND fence_token = $5::bigint
+            AND lease_expires_at > clock_timestamp()
+            AND ($6 <> 'ready' OR execution_deadline > clock_timestamp())
+            AND status IN (${transitionSourceSql("complete-lease")})`,
+        [
+          tenant,
+          session,
+          owner,
+          input.expectedVersion.toString(),
+          input.fenceToken.toString(),
+          input.status,
+          input.progress,
+          input.logTail,
+          input.error,
+          artifact,
+        ],
+      );
+      if (result.rowCount !== 1) throw new HttpError("The render completion fence is stale.", 409);
+      return this.#selectSession(client, tenant, session);
+    }, signal);
   }
 
   async applySourceAction(input: DurableRenderSourceActionInputV1, signal?: AbortSignal) {
@@ -1103,7 +1579,9 @@ export class PostgresRenderSessionRepositoryV1
                 error = CASE WHEN $3 = 'cancelled' THEN NULL ELSE error END,
                 artifact_locator = CASE WHEN $3 = 'discarded' THEN NULL ELSE artifact_locator END,
                 updated_at = clock_timestamp()
-          WHERE tenant_id = $1 AND session_id = $2::uuid AND status IN (${transitionSourceSql(operation)})`,
+          WHERE tenant_id = $1 AND session_id = $2::uuid
+            ${operation === "cancel" ? "AND broker_shard_id IS NULL" : ""}
+            AND status IN (${transitionSourceSql(operation)})`,
         [tenant, session, nextStatus],
       );
       if (operation === "discard") {
@@ -1132,8 +1610,13 @@ export class PostgresRenderSessionRepositoryV1
       MAX_RENDER_IDENTIFIER_BYTES_V1,
     );
     return this.#connection.transaction(async (client) => {
-      const found = await client.query<{ project_id: string; render_request_id: string; status: string }>(
-        `SELECT project_id, render_request_id, status
+      const found = await client.query<{
+        broker_shard_id: string | null;
+        project_id: string;
+        render_request_id: string;
+        status: string;
+      }>(
+        `SELECT broker_shard_id, project_id, render_request_id, status
            FROM public.render_sessions
           WHERE tenant_id = $1 AND session_id = $2::uuid
             AND references_released_at IS NULL
@@ -1149,6 +1632,9 @@ export class PostgresRenderSessionRepositoryV1
       if (!parsedStatus.success) throw new TypeError("PostgreSQL returned an invalid durable render session.");
       const status = parsedStatus.data;
       if (status === "discarded") return true;
+      if (current.broker_shard_id !== null && renderSessionTransitionAllowed("cancel", status)) {
+        throw new HttpError("A broker-bound render must be cancelled through its durable owner shard.", 409);
+      }
       if (!renderSessionTransitionAllowed("abandon", status)) {
         throw new HttpError("A source-changing render session cannot be abandoned.", 409);
       }
@@ -1198,6 +1684,12 @@ export class PostgresRenderSessionRepositoryV1
               SELECT 1 FROM public.render_source_actions action
                WHERE action.tenant_id = s.tenant_id AND action.session_id = s.session_id
                  AND action.state = 'running'
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM public.render_cancellation_intents cancellation
+               WHERE cancellation.tenant_id = s.tenant_id
+                 AND cancellation.session_id = s.session_id
+                 AND cancellation.expires_at > clock_timestamp()
             )
             AND (
               s.status <> 'ready'
@@ -1383,6 +1875,12 @@ export class PostgresRenderSessionRepositoryV1
             AND NOT EXISTS (
               SELECT 1 FROM public.workspace_project_thumbnail_heads thumbnail
                WHERE thumbnail.tenant_id = session.tenant_id AND thumbnail.session_id = session.session_id
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM public.render_cancellation_intents cancellation
+               WHERE cancellation.tenant_id = session.tenant_id
+                 AND cancellation.session_id = session.session_id
+                 AND cancellation.expires_at > clock_timestamp()
             )
           ORDER BY session.references_released_at, session.session_id
           LIMIT $3

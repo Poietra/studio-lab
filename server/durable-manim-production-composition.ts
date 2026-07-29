@@ -2,6 +2,11 @@ import type { S3ClientConfig } from "@aws-sdk/client-s3";
 import { Pool, type PoolConfig } from "pg";
 
 import { DurableFastManimSnapshotServiceV1 } from "./durable-fast-manim-snapshot-service";
+import {
+  createDurableManimRenderCancellationRelayV1,
+  DurableManimRenderCancellationCoordinatorV1,
+  type DurableManimRenderCancellationRelayV1,
+} from "./durable-manim-render-cancellation";
 import { DurableManimRenderServiceV1 } from "./durable-manim-render-service";
 import { DurableManimRenderWorkerV1 } from "./durable-manim-render-worker";
 import { createDurableManimRuntimeV1, createDurableProductionManimRuntimeAdapterV1 } from "./durable-manim-runtime";
@@ -71,6 +76,16 @@ export type DurablePostgresS3ProductionRuntimeOptionsV1 = Readonly<{
       sweepTimeoutMs: number;
     }>;
     stagingRoot: string;
+  }>;
+  renderCancellation: Readonly<{
+    acknowledgementPollMs?: number;
+    acknowledgementTimeoutMs?: number;
+    batchSize: number;
+    deliveryLeaseMs: number;
+    intervalMs: number;
+    onFailure: (error: unknown) => void;
+    relayId?: string;
+    sweepTimeoutMs: number;
   }>;
   renderSessionRetention: Readonly<{
     auditRetentionMs: number;
@@ -195,6 +210,28 @@ async function cleanupInOrderAndThrow(
   throw error;
 }
 
+function renderExecutionBoundary(relay: DurableManimRenderCancellationRelayV1, worker: DurableManimRenderWorkerV1) {
+  let closeRequest: Promise<void> | undefined;
+  return {
+    close() {
+      closeRequest ??= (async () => {
+        const errors: unknown[] = [];
+        await relay.close().catch((error: unknown) => errors.push(error));
+        await worker.close().catch((error: unknown) => errors.push(error));
+        if (errors.length > 0) {
+          throw new AggregateError(errors, "The durable render execution boundary did not close cleanly.");
+        }
+      })();
+      return closeRequest;
+    },
+    async ready(signal?: AbortSignal) {
+      signal?.throwIfAborted();
+      if (!relay.ready()) return false;
+      return worker.ready(signal);
+    },
+  };
+}
+
 /** Build the shipped PostgreSQL + private S3 runtime and its durable maintenance workers. */
 export async function createDurablePostgresS3ProductionRuntimeV1(
   options: DurablePostgresS3ProductionRuntimeOptionsV1,
@@ -274,6 +311,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
 
   let renderWorker: DurableManimRenderWorkerV1 | undefined;
   let renderExecutor: ProductionDurableManimRenderExecutorV1 | undefined;
+  let renderCancellationRelay: DurableManimRenderCancellationRelayV1 | undefined;
   let artifactReader: AuthorizedArtifactReaderV1 | undefined;
   let renderPublisher: VerifiedArtifactPublisherV1 | undefined;
   let renders: DurableManimRenderServiceV1 | undefined;
@@ -310,7 +348,8 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       stagingRoot: options.renderArtifacts.stagingRoot,
       tenantId: options.tenantId,
     });
-    renderWorker = new DurableManimRenderWorkerV1({
+    const worker = new DurableManimRenderWorkerV1({
+      brokerShardId: renderExecutor.brokerShardId,
       executor: renderExecutor,
       ...(options.renderWorker.leaseDurationMs === undefined
         ? {}
@@ -327,13 +366,28 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       tenantId: options.tenantId,
       ...(options.renderWorker.workerId === undefined ? {} : { workerId: options.renderWorker.workerId }),
     });
+    renderWorker = worker;
+    const cancellationCoordinator = new DurableManimRenderCancellationCoordinatorV1({
+      ...(options.renderCancellation.acknowledgementPollMs === undefined
+        ? {}
+        : { acknowledgementPollMs: options.renderCancellation.acknowledgementPollMs }),
+      ...(options.renderCancellation.acknowledgementTimeoutMs === undefined
+        ? {}
+        : { acknowledgementTimeoutMs: options.renderCancellation.acknowledgementTimeoutMs }),
+      repository: renderRepository,
+      tenantId: options.tenantId,
+      wake: () => renderCancellationRelay?.wake(),
+    });
     renders = new DurableManimRenderServiceV1({
       artifactReader,
       blobs,
       ...(options.renderWorker.executionTimeoutMs === undefined
         ? {}
         : { executionTimeoutMs: options.renderWorker.executionTimeoutMs }),
-      execution: renderWorker,
+      execution: {
+        cancel: (sessionId) => cancellationCoordinator.cancel(sessionId),
+        wake: () => worker.wake(),
+      },
       frame,
       repository: renderRepository,
       sourceRepository: repository,
@@ -373,13 +427,31 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
     );
   }
 
+  let renderExecution: ReturnType<typeof renderExecutionBoundary> | undefined;
   let runtime: Awaited<ReturnType<typeof createDurableManimRuntimeV1>> | undefined;
   try {
+    renderCancellationRelay = await createDurableManimRenderCancellationRelayV1(
+      {
+        abortActive: (sessionId) => renderWorker.abortActive(sessionId),
+        batchSize: options.renderCancellation.batchSize,
+        brokerShardId: renderExecutor.brokerShardId,
+        deliveryLeaseMs: options.renderCancellation.deliveryLeaseMs,
+        executor: renderExecutor,
+        intervalMs: options.renderCancellation.intervalMs,
+        onFailure: options.renderCancellation.onFailure,
+        ...(options.renderCancellation.relayId === undefined ? {} : { relayId: options.renderCancellation.relayId }),
+        repository: renderRepository,
+        sweepTimeoutMs: options.renderCancellation.sweepTimeoutMs,
+        tenantId: options.tenantId,
+      },
+      signal,
+    );
+    renderExecution = renderExecutionBoundary(renderCancellationRelay, renderWorker);
     runtime = await createDurableManimRuntimeV1(
       {
         artifactReader,
         blobs,
-        execution: renderWorker,
+        execution: renderExecution,
         frame,
         namespace: options.namespace,
         renders,
@@ -395,7 +467,16 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       error,
       runtime
         ? [projectPngRepository, runtime]
-        : [renderWorker, renders, snapshots, mediaArtifacts, mediaRepository, projectPngRepository, blobs, repository],
+        : [
+            renderExecution ?? renderWorker,
+            renders,
+            snapshots,
+            mediaArtifacts,
+            mediaRepository,
+            projectPngRepository,
+            blobs,
+            repository,
+          ],
       "Production durable runtime construction and cleanup failed.",
     );
   }

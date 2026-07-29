@@ -1,14 +1,17 @@
 import { opaqueIdV1Schema } from "../src/engine/primitives";
 import {
-  ManimRenderGatedOciJobRunnerV1,
   type ManimRenderGatedOciBaseResultV1,
+  ManimRenderGatedOciJobRunnerV1,
 } from "./manim-render-gated-oci-job-runner";
 import {
+  digestManimRenderSandboxCancellationFenceV1,
+  MANIM_RENDER_SANDBOX_RESULT_SCHEMA_V1,
+  MANIM_RENDER_SANDBOX_STATUS_SCHEMA_V1,
+  type ManimRenderSandboxCancellationAcknowledgementV1,
   type ManimRenderSandboxCancellationFenceV1,
   type ManimRenderSandboxStatusV1,
   type ManimRenderSandboxTerminalV1,
-  MANIM_RENDER_SANDBOX_RESULT_SCHEMA_V1,
-  MANIM_RENDER_SANDBOX_STATUS_SCHEMA_V1,
+  manimRenderBrokerShardIdV1Schema,
   type SealedManimRenderSandboxRequestV2,
 } from "./manim-render-sandbox-contract";
 
@@ -18,7 +21,10 @@ export type ManimRenderSandboxOperationContextV1 = Readonly<{
 }>;
 
 export interface ManimRenderSandboxBackendV1 {
-  cancel(fence: ManimRenderSandboxCancellationFenceV1, context: ManimRenderSandboxOperationContextV1): Promise<void>;
+  cancel(
+    fence: ManimRenderSandboxCancellationFenceV1,
+    context: ManimRenderSandboxOperationContextV1,
+  ): Promise<ManimRenderSandboxCancellationAcknowledgementV1>;
   cleanup(jobId: string, context: ManimRenderSandboxOperationContextV1): Promise<void>;
   close(): Promise<void>;
   status(context: ManimRenderSandboxOperationContextV1): Promise<ManimRenderSandboxStatusV1>;
@@ -53,12 +59,14 @@ function terminal(
 
 /** Concrete broker-side backend; the only execution target is the fixed OCI runner. */
 export class ManimRenderGatedOciBackendV1 implements ManimRenderSandboxBackendV1 {
+  readonly #brokerShardId: string;
   readonly #runner: ManimRenderGatedOciJobRunnerV1;
 
-  constructor(runner: ManimRenderGatedOciJobRunnerV1) {
+  constructor(runner: ManimRenderGatedOciJobRunnerV1, brokerShardId: string) {
     if (!(runner instanceof ManimRenderGatedOciJobRunnerV1)) {
       throw new TypeError("The render sandbox backend requires the concrete gated OCI runner.");
     }
+    this.#brokerShardId = manimRenderBrokerShardIdV1Schema.parse(brokerShardId);
     this.#runner = runner;
   }
 
@@ -68,6 +76,7 @@ export class ManimRenderGatedOciBackendV1 implements ManimRenderSandboxBackendV1
     context.signal.throwIfAborted();
     return {
       backendId: "manim-render-gated-oci-v1",
+      brokerShardId: this.#brokerShardId,
       health: healthy ? "ready" : "unavailable",
       profileDigest: this.#runner.profileDigest,
       runtimeDigest: this.#runner.runtimeDigest,
@@ -88,6 +97,10 @@ export class ManimRenderGatedOciBackendV1 implements ManimRenderSandboxBackendV1
   async cancel(fence: ManimRenderSandboxCancellationFenceV1, context: ManimRenderSandboxOperationContextV1) {
     context.signal.throwIfAborted();
     await this.#runner.cancel(fence, context.deadlineEpochMs, context.signal);
+    return {
+      brokerShardId: this.#brokerShardId,
+      fenceDigest: digestManimRenderSandboxCancellationFenceV1(fence),
+    };
   }
 
   async cleanup(jobId: string, context: ManimRenderSandboxOperationContextV1) {

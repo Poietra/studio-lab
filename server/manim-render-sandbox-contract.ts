@@ -17,6 +17,8 @@ import {
 export const MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V2 = "poietra.manim-render-sandbox-request" as const;
 export const MANIM_RENDER_SANDBOX_RESULT_SCHEMA_V1 = "poietra.manim-render-sandbox-result" as const;
 export const MANIM_RENDER_SANDBOX_STATUS_SCHEMA_V1 = "poietra.manim-render-sandbox-status" as const;
+export const manimRenderBrokerShardIdV1Schema = opaqueIdV1Schema;
+export const MANIM_RENDER_BROKER_OPERATION_BUDGET_MS_V1 = 10_000;
 export const MAX_MANIM_RENDER_SANDBOX_SOURCE_BYTES_V2 = 2 * 1024 * 1024;
 export const MAX_MANIM_RENDER_SANDBOX_ASSET_BYTES_V2 = MAX_PROJECT_PNG_BYTES_V1;
 const MAX_MANIM_RENDER_SANDBOX_ASSET_BASE64_BYTES_V2 = 4 * Math.ceil(MAX_MANIM_RENDER_SANDBOX_ASSET_BYTES_V2 / 3);
@@ -184,6 +186,17 @@ export function digestManimRenderSandboxCancellationFenceV1(value: ManimRenderSa
     .digest("hex");
 }
 
+export const manimRenderSandboxCancellationAcknowledgementV1Schema = z
+  .object({
+    brokerShardId: manimRenderBrokerShardIdV1Schema,
+    fenceDigest: sha256V1Schema,
+  })
+  .strict();
+
+export type ManimRenderSandboxCancellationAcknowledgementV1 = Readonly<
+  z.infer<typeof manimRenderSandboxCancellationAcknowledgementV1Schema>
+>;
+
 export class SealedManimRenderSandboxRequestV2 {
   readonly byteLength: number;
   readonly requestDigest: string;
@@ -272,6 +285,7 @@ export type ManimRenderSandboxTerminalV1 = Readonly<z.infer<typeof manimRenderSa
 export const manimRenderSandboxStatusV1Schema = z
   .object({
     backendId: opaqueIdV1Schema,
+    brokerShardId: manimRenderBrokerShardIdV1Schema,
     health: z.enum(["ready", "unavailable"]),
     profileDigest: sha256V1Schema,
     runtimeDigest: sha256V1Schema,

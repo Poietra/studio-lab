@@ -7,12 +7,14 @@ import {
   type applyBundledWorkspaceSourceMigrationV1,
   applyProjectPngMigrationV5,
   applyRenderArtifactMigrationV4,
+  applyRenderCancellationMigrationV7,
   applyRenderSessionMigrationV2,
   applyRenderSessionRetentionMigrationV6,
   applySnapshotPublicationMigrationV3,
   applyWorkspaceSourceMigrationV1,
   PROJECT_PNG_MIGRATION_V5_SOURCE,
   RENDER_ARTIFACT_MIGRATION_V4_SOURCE,
+  RENDER_CANCELLATION_MIGRATION_V7_SOURCE,
   RENDER_SESSION_MIGRATION_V2_SOURCE,
   RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE,
   SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE,
@@ -60,17 +62,18 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 6 });
-    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6]);
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 7 });
+    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 6 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 7 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_ARTIFACT_MIGRATION_V4_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === PROJECT_PNG_MIGRATION_V5_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(12);
+    expect(db.queries.filter(({ text }) => text === RENDER_CANCELLATION_MIGRATION_V7_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(14);
   });
 
   it("rejects a missing prerequisite under the same advisory lock", async () => {
@@ -120,6 +123,25 @@ describe("durable storage migrations", () => {
       applyRenderSessionRetentionMigrationV6(db.pool, RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE),
     ).rejects.toThrow(/requires durable storage migrations v1 through v5/i);
     expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("requires all six durable-storage prerequisites before applying render cancellation v7", async () => {
+    const db = database();
+    await expect(applyRenderCancellationMigrationV7(db.pool, RENDER_CANCELLATION_MIGRATION_V7_SOURCE)).rejects.toThrow(
+      /requires durable storage migrations v1 through v6/i,
+    );
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("pins shard ownership and bounded durable cancellation state in migration v7", () => {
+    expect(RENDER_CANCELLATION_MIGRATION_V7_SOURCE).toContain("render_sessions_rendering_broker_shard");
+    expect(RENDER_CANCELLATION_MIGRATION_V7_SOURCE).toContain("render_sessions_broker_shard_immutable");
+    expect(RENDER_CANCELLATION_MIGRATION_V7_SOURCE).toContain("render_sessions_cancellation_authority");
+    expect(RENDER_CANCELLATION_MIGRATION_V7_SOURCE).toContain("render_cancellation_intents");
+    expect(RENDER_CANCELLATION_MIGRATION_V7_SOURCE).toContain("expires_at = reject_until + interval '30 seconds'");
+    expect(RENDER_CANCELLATION_MIGRATION_V7_SOURCE).toContain("ON DELETE CASCADE");
+    expect(RENDER_CANCELLATION_MIGRATION_V7_SOURCE).toContain("render_cancellation_delivery_queue");
+    expect(RENDER_CANCELLATION_MIGRATION_V7_SOURCE).toContain("render_cancellation_expiry_queue");
   });
 
   it("keeps reference release separate from terminal-session purge", () => {

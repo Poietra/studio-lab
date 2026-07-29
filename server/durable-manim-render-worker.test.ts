@@ -95,7 +95,7 @@ function fixture(
     renewLease,
   });
   const close = vi.fn(async () => undefined);
-  const cancel = vi.fn<DurableManimRenderExecutorV1["cancel"]>(async () => undefined);
+  const cancel = vi.fn<DurableManimRenderExecutorV1["cancel"]>(async () => ({ fenceDigest: "a".repeat(64) }));
   const cleanup = vi.fn<DurableManimRenderExecutorV1["cleanup"]>(async () => undefined);
   const submitOrReattach = vi.fn<DurableManimRenderExecutorV1["submitOrReattach"]>(async () => ({
     artifactLocator: "artifact:verified",
@@ -111,6 +111,7 @@ function fixture(
   };
   const failures: unknown[] = [];
   const worker = new DurableManimRenderWorkerV1({
+    brokerShardId: "broker-a",
     executor,
     leaseDurationMs: 1_000,
     maxConcurrentJobs: 1,
@@ -142,7 +143,7 @@ afterEach(() => {
 
 describe("DurableManimRenderWorkerV1", () => {
   it("claims queued work and publishes only the fenced executor result", async () => {
-    const { claimed, close, completeLease, submitOrReattach, worker } = fixture();
+    const { claimed, close, completeLease, repository, submitOrReattach, worker } = fixture();
 
     await worker.runOnce();
 
@@ -151,6 +152,16 @@ describe("DurableManimRenderWorkerV1", () => {
       session: claimed,
       signal: expect.any(AbortSignal),
     });
+    expect(repository.claimLease).toHaveBeenCalledWith(
+      {
+        brokerShardId: "broker-a",
+        leaseDurationMs: 1_000,
+        ownerId: "worker-a",
+        sessionId: claimed.id,
+        tenantId: "tenant-a",
+      },
+      expect.any(AbortSignal),
+    );
     expect(completeLease).toHaveBeenCalledWith({
       artifactLocator: "artifact:verified",
       error: null,
@@ -167,42 +178,24 @@ describe("DurableManimRenderWorkerV1", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
-  it("cancels a session while its lease claim is still pending", async () => {
+  it("aborts a session while its lease claim is still pending without contacting the broker", async () => {
     const claim = deferred<DurableRenderSessionV1>();
     const { cancel, claimed, repository, submitOrReattach, worker } = fixture();
     vi.mocked(repository.claimLease).mockImplementationOnce(async () => claim.promise);
 
     const run = worker.runOnce();
     await vi.waitFor(() => expect(repository.claimLease).toHaveBeenCalledOnce());
-    await worker.cancel(claimed.id);
+    worker.abortActive(claimed.id);
     claim.resolve(claimed);
     await run;
 
     expect(vi.mocked(repository.claimLease).mock.calls[0]?.[1]?.aborted).toBe(true);
     expect(submitOrReattach).not.toHaveBeenCalled();
-    expect(cancel).toHaveBeenCalledOnce();
+    expect(cancel).not.toHaveBeenCalled();
     await worker.close();
   });
 
-  it("blocks a lease claim that starts while cancellation is reading the session", async () => {
-    const sessionRead = deferred<DurableRenderSessionV1>();
-    const { cancel, claimed, repository, submitOrReattach, worker } = fixture();
-    vi.mocked(repository.readSession).mockImplementationOnce(async () => sessionRead.promise);
-
-    const cancellation = worker.cancel(claimed.id);
-    await vi.waitFor(() => expect(repository.readSession).toHaveBeenCalledOnce());
-    const run = worker.runOnce();
-    await vi.waitFor(() => expect(repository.claimLease).toHaveBeenCalledOnce());
-    sessionRead.resolve(claimed);
-    await Promise.all([cancellation, run]);
-
-    expect(vi.mocked(repository.claimLease).mock.calls[0]?.[1]?.aborted).toBe(true);
-    expect(submitOrReattach).not.toHaveBeenCalled();
-    expect(cancel).toHaveBeenCalledOnce();
-    await worker.close();
-  });
-
-  it("aborts an active executor read before forwarding cancellation", async () => {
+  it("aborts an active executor read for the relay without directly cancelling the broker", async () => {
     const entered = deferred<void>();
     const { cancel, claimed, completeLease, submitOrReattach, worker } = fixture();
     let executionSignal: AbortSignal | undefined;
@@ -212,16 +205,14 @@ describe("DurableManimRenderWorkerV1", () => {
       await new Promise<void>((resolve) => request.signal.addEventListener("abort", () => resolve(), { once: true }));
       return { code: "interrupted", kind: "failed", logTail: "" };
     });
-    cancel.mockImplementationOnce(async () => expect(executionSignal?.aborted).toBe(true));
-
     const run = worker.runOnce();
     await entered.promise;
-    await worker.cancel(claimed.id);
+    worker.abortActive(claimed.id);
     await run;
 
     expect(executionSignal?.aborted).toBe(true);
     expect(completeLease).not.toHaveBeenCalled();
-    expect(cancel).toHaveBeenCalledOnce();
+    expect(cancel).not.toHaveBeenCalled();
     await worker.close();
   });
 
@@ -376,7 +367,7 @@ describe("DurableManimRenderWorkerV1", () => {
     await worker.runOnce();
 
     expect(expireTimedOutSessions).toHaveBeenCalledTimes(2);
-    expect(findRecoverableSessions).toHaveBeenCalledOnce();
+    expect(findRecoverableSessions).toHaveBeenCalledWith("tenant-a", "broker-a", 1, expect.any(AbortSignal));
     expect(submitOrReattach).toHaveBeenCalledOnce();
     await worker.close();
   });

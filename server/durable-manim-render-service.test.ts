@@ -97,14 +97,10 @@ function fixture(
       }),
   );
   const close = vi.fn(async () => undefined);
-  const cancelSession = vi.fn<RenderSessionRepositoryV1["cancelSession"]>(async () => {
-    const input = createSession.mock.calls[0]?.[0];
-    if (!input) throw new Error("A session must be created before it can be cancelled in this fixture.");
-    return { ...sessionFromCreate(input), status: "cancelled" };
-  });
+  const abandonSession = vi.fn<RenderSessionRepositoryV1["abandonSession"]>(async () => true);
   const repository = partial<RenderSessionRepositoryV1>({
+    abandonSession,
     applySourceAction: vi.fn(),
-    cancelSession,
     close,
     createSession,
     readSession,
@@ -130,8 +126,8 @@ function fixture(
     tenantId: "tenant-a",
   });
   return {
+    abandonSession,
     blobs,
-    cancelSession,
     close,
     createSession,
     executionCancel,
@@ -173,41 +169,86 @@ describe("DurableManimRenderServiceV1", () => {
     expect(wake).toHaveBeenCalledOnce();
   });
 
-  it("durably fences the broker before cancelling the PostgreSQL row", async () => {
-    const { cancelSession, executionCancel, service } = fixture();
+  it("returns the coordinator-owned terminal state without a second PostgreSQL transition", async () => {
+    const { createSession, executionCancel, readSession, service } = fixture();
     const started = await service.start(request());
+    const created = createSession.mock.calls[0]?.[0];
+    if (!created) throw new Error("The render session was not created.");
+    readSession.mockResolvedValueOnce({ ...sessionFromCreate(created), status: "cancelled" });
 
     const cancelled = await service.cancel(started.id);
 
     expect(executionCancel).toHaveBeenCalledWith(started.id);
-    expect(cancelSession).toHaveBeenCalledWith("tenant-a", started.id);
-    expect(executionCancel.mock.invocationCallOrder[0]).toBeLessThan(cancelSession.mock.invocationCallOrder[0]!);
+    expect(readSession).toHaveBeenCalledWith("tenant-a", started.id);
+    expect(executionCancel.mock.invocationCallOrder[0]).toBeLessThan(readSession.mock.invocationCallOrder[0]!);
     expect(cancelled.status).toBe("cancelled");
   });
 
   it("leaves the PostgreSQL row active when the broker fence fails", async () => {
     const failure = new Error("broker unavailable");
-    const { cancelSession, executionCancel, service } = fixture();
+    const { executionCancel, readSession, service } = fixture();
     const started = await service.start(request());
     executionCancel.mockRejectedValueOnce(failure);
 
     await expect(service.cancel(started.id)).rejects.toBe(failure);
 
-    expect(cancelSession).not.toHaveBeenCalled();
+    expect(readSession).not.toHaveBeenCalled();
   });
 
-  it("accepts a lease owner that wins the cancelled terminal transition", async () => {
-    const { cancelSession, createSession, executionCancel, readSession, service } = fixture();
+  it("fails closed when the acknowledged session still reads as active", async () => {
+    const { executionCancel, service } = fixture();
+    const started = await service.start(request());
+
+    await expect(service.cancel(started.id)).rejects.toMatchObject({ status: 503 });
+
+    expect(executionCancel).toHaveBeenCalledWith(started.id);
+  });
+
+  it("accepts an idempotent cancellation retry after the session was discarded", async () => {
+    const { createSession, readSession, service } = fixture();
     const started = await service.start(request());
     const created = createSession.mock.calls[0]?.[0];
     if (!created) throw new Error("The render session was not created.");
-    cancelSession.mockRejectedValueOnce(new HttpError("Only an active render can be cancelled.", 409));
-    readSession.mockResolvedValueOnce({ ...sessionFromCreate(created), status: "cancelled" });
+    readSession.mockResolvedValueOnce({ ...sessionFromCreate(created), status: "discarded" });
 
-    await expect(service.cancel(started.id)).resolves.toMatchObject({ status: "cancelled" });
+    await expect(service.cancel(started.id)).resolves.toMatchObject({ status: "discarded" });
+  });
+
+  it("cancels active work before an explicitly correlated abandon", async () => {
+    const { abandonSession, executionCancel, service } = fixture();
+    const started = await service.start(request());
+
+    await expect(service.abandon(started.id, started.renderRequestId)).resolves.toEqual({ abandoned: true });
 
     expect(executionCancel).toHaveBeenCalledOnce();
-    expect(readSession).toHaveBeenCalledWith("tenant-a", started.id);
+    expect(abandonSession).toHaveBeenCalledWith("tenant-a", started.id, started.renderRequestId);
+    expect(executionCancel.mock.invocationCallOrder[0]).toBeLessThan(abandonSession.mock.invocationCallOrder[0]!);
+  });
+
+  it.each(["ready", "failed"] as const)(
+    "abandons a %s render without registering a new cancellation",
+    async (status) => {
+      const { abandonSession, createSession, executionCancel, readSession, service } = fixture();
+      const started = await service.start(request());
+      const created = createSession.mock.calls[0]?.[0];
+      if (!created) throw new Error("The render session was not created.");
+      readSession.mockResolvedValueOnce({ ...sessionFromCreate(created), status });
+
+      await expect(service.abandon(started.id, started.renderRequestId)).resolves.toEqual({ abandoned: true });
+
+      expect(executionCancel).not.toHaveBeenCalled();
+      expect(abandonSession).toHaveBeenCalledWith("tenant-a", started.id, started.renderRequestId);
+    },
+  );
+
+  it("lets the repository resolve a completion race during active abandon", async () => {
+    const { abandonSession, executionCancel, service } = fixture();
+    const started = await service.start(request());
+    executionCancel.mockRejectedValueOnce(new HttpError("The render completed before cancellation registration.", 409));
+
+    await expect(service.abandon(started.id, started.renderRequestId)).resolves.toEqual({ abandoned: true });
+
+    expect(abandonSession).toHaveBeenCalledOnce();
   });
 
   it("queues the uploaded candidate as an orphan when the session transaction fails", async () => {

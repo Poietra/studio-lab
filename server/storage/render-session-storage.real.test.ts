@@ -129,6 +129,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE === undefined)("durable render-s
       const repository = renderRepository();
       await repository.createSession(childSessionInput());
       const claimed = await repository.claimLease({
+        brokerShardId: "render-session-e2e-shard",
         leaseDurationMs: 60_000,
         ownerId: "process-a-worker",
         sessionId,
@@ -164,7 +165,9 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE === undefined)("durable render-s
         },
       }) as RenderSessionRepositoryV1;
       const executor: DurableManimRenderExecutorV1 = {
-        async cancel() {},
+        async cancel() {
+          return { fenceDigest: "0".repeat(64) };
+        },
         async close() {
           await broker.end();
         },
@@ -187,6 +190,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE === undefined)("durable render-s
         },
       };
       const worker = new DurableManimRenderWorkerV1({
+        brokerShardId: "render-session-e2e-shard",
         executor,
         leaseDurationMs: 60_000,
         maxConcurrentJobs: 1,
@@ -464,8 +468,11 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
           WHERE tenant_id = $1 AND session_id = $2::uuid`,
         [tenantId, sessionId],
       );
-      expect((await renders.findRecoverableSessions(tenantId, 16)).map((session) => session.id)).toContain(sessionId);
+      expect(
+        (await renders.findRecoverableSessions(tenantId, "render-session-e2e-shard", 16)).map((session) => session.id),
+      ).toContain(sessionId);
       const secondClaim = await renders.claimLease({
+        brokerShardId: "render-session-e2e-shard",
         leaseDurationMs: 60_000,
         ownerId: "process-b-worker",
         sessionId,
@@ -530,6 +537,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
         tenantId,
       });
       const expiredClaim = await renders.claimLease({
+        brokerShardId: "render-session-e2e-shard",
         leaseDurationMs: 60_000,
         ownerId: "deadline-worker",
         sessionId: expiredSessionId,
@@ -633,7 +641,9 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
       );
       let reattachCount = 0;
       const recoveringExecutor: DurableManimRenderExecutorV1 = {
-        async cancel() {},
+        async cancel() {
+          return { fenceDigest: "0".repeat(64) };
+        },
         async close() {},
         async cleanup() {},
         async ready() {
@@ -657,6 +667,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
         },
       };
       const recoveringWorker = new DurableManimRenderWorkerV1({
+        brokerShardId: "render-session-e2e-shard",
         executor: recoveringExecutor,
         leaseDurationMs: 60_000,
         maxConcurrentJobs: 1,
@@ -766,4 +777,290 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
       await Promise.allSettled([renders.close(), sources.close(), setupPool.end()]);
     }
   }, 90_000);
+
+  it("binds one broker shard and cancels only after its durable ACK", async () => {
+    const setupPool = new Pool({ connectionString: configuredDatabaseUrl(), max: 2 });
+    const sources = sourceRepository();
+    const workerRepository = renderRepository();
+    const apiRepository = renderRepository();
+    let reopenedRepository: PostgresRenderSessionRepositoryV1 | null = null;
+    const tenantId = `cancel-${randomUUID().replaceAll("-", "")}`;
+    const projectId = `project-${randomUUID().replaceAll("-", "")}`;
+    const sessionId = randomUUID();
+    const source = "from manim import *\n\nclass MainScene(Scene):\n    def construct(self):\n        self.wait(1)\n";
+    const sourceBlob = blobReceipt(tenantId, source);
+    const shardA = "render-shard-a";
+    const shardB = "render-shard-b";
+    const relayId = "render-relay-b";
+    const fenceDigest = "a".repeat(64);
+
+    try {
+      await applyBundledDurableStorageMigrations(setupPool);
+      await sources.ensureTenant(tenantId);
+      await sources.createManagedProject({
+        name: "Cancellation authority workspace",
+        projectId,
+        source: { blob: sourceBlob, path: "main.py" },
+        tenantId,
+      });
+      const originalHead = await sources.readSourceHead(tenantId, projectId, "main.py");
+      await workerRepository.createSession({
+        commitCorrelationKey: "cancel-authority-candidate",
+        executionTimeoutMs: 120_000,
+        id: sessionId,
+        originalHead,
+        patch: { anchorLine: 4, anchorLines: [4], insertedCode: "        self.wait(2)\n" },
+        patchedBlob: sourceBlob,
+        programBatchId: "batch-cancel-authority",
+        programTransactionId: "transaction-cancel-authority",
+        renderRequestId: "request-cancel-authority",
+        sceneName: "MainScene",
+        tenantId,
+      });
+      const claimed = await workerRepository.claimLease({
+        brokerShardId: shardB,
+        leaseDurationMs: 60_000,
+        ownerId: "render-worker-b",
+        sessionId,
+        tenantId,
+      });
+      await expect(
+        setupPool.query(
+          `UPDATE public.render_sessions
+              SET broker_shard_id = $3
+            WHERE tenant_id = $1 AND session_id = $2::uuid`,
+          [tenantId, sessionId, shardA],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+
+      const registered = await apiRepository.registerCancellation(tenantId, sessionId);
+      expect(registered).toMatchObject({
+        intent: {
+          acknowledgedAt: null,
+          brokerShardId: shardB,
+          delivery: null,
+          jobId: `${tenantId}/${sessionId}`,
+        },
+        session: { status: "rendering" },
+      });
+      await expect(apiRepository.registerCancellation(tenantId, sessionId)).resolves.toMatchObject({
+        intent: { acknowledgedAt: null, brokerShardId: shardB, jobId: `${tenantId}/${sessionId}` },
+        session: { status: "rendering" },
+      });
+      await expect(
+        setupPool.query(
+          `UPDATE public.render_sessions SET status = 'ready'
+            WHERE tenant_id = $1 AND session_id = $2::uuid`,
+          [tenantId, sessionId],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+      await expect(
+        setupPool.query(
+          `UPDATE public.render_sessions SET status = 'cancelled'
+            WHERE tenant_id = $1 AND session_id = $2::uuid`,
+          [tenantId, sessionId],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+      await expect(apiRepository.cancelSession(tenantId, sessionId)).rejects.toMatchObject({ status: 409 });
+      await expect(apiRepository.abandonSession(tenantId, sessionId, "request-cancel-authority")).rejects.toMatchObject(
+        { status: 409 },
+      );
+      await expect(
+        workerRepository.completeLease({
+          artifactLocator: "artifact:must-not-publish",
+          error: null,
+          expectedVersion: claimed.version,
+          fenceToken: claimed.fenceToken,
+          logTail: "late publication",
+          ownerId: "render-worker-b",
+          progress: 1,
+          sessionId,
+          status: "ready",
+          tenantId,
+        }),
+      ).rejects.toMatchObject({ status: 409 });
+      await expect(
+        workerRepository.claimLease({
+          brokerShardId: shardA,
+          leaseDurationMs: 60_000,
+          ownerId: "render-worker-a",
+          sessionId,
+          tenantId,
+        }),
+      ).rejects.toMatchObject({ status: 409 });
+      await expect(
+        apiRepository.claimCancellationDeliveries({
+          brokerShardId: shardA,
+          leaseDurationMs: 30_000,
+          maximum: 4,
+          ownerId: "render-relay-a",
+          tenantId,
+        }),
+      ).resolves.toEqual([]);
+      const deliveries = await workerRepository.claimCancellationDeliveries({
+        brokerShardId: shardB,
+        leaseDurationMs: 30_000,
+        maximum: 4,
+        ownerId: relayId,
+        tenantId,
+      });
+      expect(deliveries).toHaveLength(1);
+      expect(deliveries[0]).toMatchObject({
+        brokerShardId: shardB,
+        delivery: { ownerId: relayId, token: 1n },
+        sessionId,
+        tenantId,
+      });
+
+      await setupPool.query(
+        `UPDATE public.render_sessions
+            SET execution_deadline = clock_timestamp() - interval '1 second'
+          WHERE tenant_id = $1 AND session_id = $2::uuid`,
+        [tenantId, sessionId],
+      );
+      await expect(apiRepository.expireTimedOutSessions(tenantId, 4)).resolves.toBe(0);
+
+      const acknowledgement = {
+        deliveryToken: deliveries[0]!.delivery.token,
+        fenceDigest,
+        ownerId: relayId,
+        sessionId,
+        tenantId,
+      } as const;
+      await expect(workerRepository.acknowledgeCancellation(acknowledgement)).resolves.toMatchObject({
+        lease: null,
+        status: "cancelled",
+      });
+      await expect(apiRepository.acknowledgeCancellation(acknowledgement)).resolves.toMatchObject({
+        status: "cancelled",
+      });
+      await setupPool.query(
+        `UPDATE public.render_sessions
+            SET updated_at = clock_timestamp() - interval '2 minutes'
+          WHERE tenant_id = $1 AND session_id = $2::uuid`,
+        [tenantId, sessionId],
+      );
+      await expect(
+        apiRepository.releaseExpiredInputs({ maximum: 4, retentionMs: 60_000, tenantId }),
+      ).resolves.toMatchObject({ releasedSessionIds: [] });
+      await expect(apiRepository.acknowledgeCancellation(acknowledgement)).resolves.toMatchObject({
+        status: "cancelled",
+      });
+      await expect(apiRepository.discardSession(tenantId, sessionId)).resolves.toMatchObject({
+        status: "discarded",
+      });
+      await apiRepository.close();
+      reopenedRepository = renderRepository();
+      await expect(reopenedRepository.readCancellation(tenantId, sessionId)).resolves.toMatchObject({
+        acknowledgedAt: expect.any(Date),
+        delivery: null,
+        fenceDigest,
+      });
+      await expect(reopenedRepository.acknowledgeCancellation(acknowledgement)).resolves.toMatchObject({
+        status: "discarded",
+      });
+      await setupPool.query(
+        `DELETE FROM public.render_cancellation_intents
+          WHERE tenant_id = $1 AND session_id = $2::uuid`,
+        [tenantId, sessionId],
+      );
+      await expect(reopenedRepository.registerCancellation(tenantId, sessionId)).resolves.toMatchObject({
+        intent: null,
+        session: { status: "discarded" },
+      });
+      await expect(
+        workerRepository.completeLease({
+          artifactLocator: "artifact:late-after-ack",
+          error: null,
+          expectedVersion: claimed.version,
+          fenceToken: claimed.fenceToken,
+          logTail: "late after ACK",
+          ownerId: "render-worker-b",
+          progress: 1,
+          sessionId,
+          status: "ready",
+          tenantId,
+        }),
+      ).rejects.toMatchObject({ status: 409 });
+
+      const boundarySessionId = randomUUID();
+      await workerRepository.createSession({
+        commitCorrelationKey: "cancel-boundary-candidate",
+        executionTimeoutMs: 120_000,
+        id: boundarySessionId,
+        originalHead,
+        patch: { anchorLine: 4, anchorLines: [4], insertedCode: "        self.wait(2)\n" },
+        patchedBlob: sourceBlob,
+        programBatchId: "batch-cancel-boundary",
+        programTransactionId: "transaction-cancel-boundary",
+        renderRequestId: "request-cancel-boundary",
+        sceneName: "MainScene",
+        tenantId,
+      });
+      await workerRepository.claimLease({
+        brokerShardId: shardB,
+        leaseDurationMs: 60_000,
+        ownerId: "render-worker-boundary",
+        sessionId: boundarySessionId,
+        tenantId,
+      });
+      await setupPool.query(
+        `UPDATE public.render_sessions
+            SET execution_deadline = clock_timestamp() - interval '27 seconds'
+          WHERE tenant_id = $1 AND session_id = $2::uuid`,
+        [tenantId, boundarySessionId],
+      );
+      const capacityGate = await setupPool.connect();
+      let gateOpen = false;
+      try {
+        await capacityGate.query("BEGIN");
+        gateOpen = true;
+        await capacityGate.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+          "render-cancellation-capacity:v1",
+        ]);
+        const boundaryRegistration = workerRepository.registerCancellation(tenantId, boundarySessionId);
+        let waitingOnCapacity = false;
+        for (let attempt = 0; attempt < 150; attempt += 1) {
+          const waiting = await setupPool.query<{ waiting: boolean }>(
+            `SELECT EXISTS (
+               SELECT 1 FROM pg_locks
+                WHERE locktype = 'advisory' AND NOT granted
+             ) AS waiting`,
+          );
+          waitingOnCapacity = waiting.rows[0]?.waiting === true;
+          if (waitingOnCapacity) break;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        expect(waitingOnCapacity).toBe(true);
+        let fenceExpired = false;
+        for (let attempt = 0; attempt < 200; attempt += 1) {
+          const expiry = await setupPool.query<{ expired: boolean }>(
+            `SELECT execution_deadline + interval '30 seconds' <= clock_timestamp() AS expired
+               FROM public.render_sessions
+              WHERE tenant_id = $1 AND session_id = $2::uuid`,
+            [tenantId, boundarySessionId],
+          );
+          fenceExpired = expiry.rows[0]?.expired === true;
+          if (fenceExpired) break;
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        expect(fenceExpired).toBe(true);
+        await capacityGate.query("COMMIT");
+        gateOpen = false;
+        await expect(boundaryRegistration).resolves.toMatchObject({ intent: null, session: { status: "cancelled" } });
+        await expect(workerRepository.readCancellation(tenantId, boundarySessionId)).resolves.toBeNull();
+      } finally {
+        if (gateOpen) await capacityGate.query("ROLLBACK").catch(() => undefined);
+        capacityGate.release();
+      }
+    } finally {
+      await Promise.allSettled([
+        reopenedRepository?.close(),
+        apiRepository.close(),
+        workerRepository.close(),
+        sources.close(),
+        setupPool.end(),
+      ]);
+    }
+  }, 30_000);
 });

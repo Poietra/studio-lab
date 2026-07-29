@@ -8,13 +8,16 @@ import snapshotPublicationSqlV3 from "./migrations/0003_snapshot_publications.sq
 import renderArtifactSqlV4 from "./migrations/0004_render_artifacts.sql?raw";
 import projectPngSqlV5 from "./migrations/0005_project_png.sql?raw";
 import renderSessionRetentionSqlV6 from "./migrations/0006_render_session_retention.sql?raw";
+import renderCancellationSqlV7 from "./migrations/0007_render_cancellations.sql?raw";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
 import { RENDER_SESSION_MIGRATION_V2_CHECKSUM } from "./postgres-render-session-repository";
 import { SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM } from "./postgres-snapshot-publication-repository";
 import { WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM } from "./postgres-workspace-source-repository";
+import { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
 
 export { SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM } from "./postgres-snapshot-publication-repository";
+export { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
 
 const DURABLE_STORAGE_MIGRATION_LOCK = "5784133447825795121";
 
@@ -45,6 +48,7 @@ export const SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE = snapshotPublicationSqlV3
 export const RENDER_ARTIFACT_MIGRATION_V4_SOURCE = renderArtifactSqlV4;
 export const PROJECT_PNG_MIGRATION_V5_SOURCE = projectPngSqlV5;
 export const RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE = renderSessionRetentionSqlV6;
+export const RENDER_CANCELLATION_MIGRATION_V7_SOURCE = renderCancellationSqlV7;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -105,6 +109,16 @@ const renderSessionRetentionMigrationV6: DurableStorageMigration<6> = Object.fre
   version: 6,
 });
 
+const renderCancellationMigrationV7: DurableStorageMigration<7> = Object.freeze({
+  checksum: RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM,
+  checksumMismatch: "The render-cancellation migration checksum is invalid.",
+  installedMismatch: "The installed render-cancellation schema does not match migration v7.",
+  missingPrerequisite: "Render-cancellation migration v7 requires durable storage migrations v1 through v6.",
+  prerequisiteMismatch: "Render-cancellation migration v7 requires exact durable storage migrations v1 through v6.",
+  source: RENDER_CANCELLATION_MIGRATION_V7_SOURCE,
+  version: 7,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
@@ -112,6 +126,7 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   renderArtifactMigrationV4,
   projectPngMigrationV5,
   renderSessionRetentionMigrationV6,
+  renderCancellationMigrationV7,
 ]);
 
 function validateSource(migration: DurableStorageMigration) {
@@ -219,6 +234,17 @@ export function applyRenderSessionRetentionMigrationV6(pool: Pool, source: strin
     snapshotPublicationMigrationV3,
     renderArtifactMigrationV4,
     projectPngMigrationV5,
+  ]);
+}
+
+export function applyRenderCancellationMigrationV7(pool: Pool, source: string) {
+  return applyMigration(pool, { ...renderCancellationMigrationV7, source }, [
+    workspaceSourceMigrationV1,
+    renderSessionMigrationV2,
+    snapshotPublicationMigrationV3,
+    renderArtifactMigrationV4,
+    projectPngMigrationV5,
+    renderSessionRetentionMigrationV6,
   ]);
 }
 

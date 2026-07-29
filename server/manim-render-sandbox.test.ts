@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { chmod, mkdir, mkdtemp, open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,11 +8,15 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
+import {
+  DurableManimRenderCancellationCoordinatorV1,
+  DurableManimRenderCancellationRelayV1,
+} from "./durable-manim-render-cancellation";
 import { FastManimGatedOciDockerClientV1 } from "./fast-manim-gated-oci-job-runner";
 import { acquireFastManimSandboxOwnerLeaseV1 } from "./fast-manim-sandbox-broker-lease";
 import {
-  digestManimRenderGatedOciRuntimeV1,
   deliverSealedManimRenderGateRequestV1,
+  digestManimRenderGatedOciRuntimeV1,
   MANIM_RENDER_GATED_OCI_PROFILE_DIGEST_V1,
   MANIM_RENDER_GATED_OCI_PROFILE_V1,
   ManimRenderGatedOciJobRunnerV1,
@@ -20,8 +24,7 @@ import {
 } from "./manim-render-gated-oci-job-runner";
 import { parseManimRenderProductionSandboxBrokerConfigV1 } from "./manim-render-production-sandbox-broker-entry";
 import { createManimRenderProductionSandboxClientV1 } from "./manim-render-production-sandbox-client";
-import type { ManimRenderSandboxBackendV1 } from "./manim-render-sandbox-backend";
-import { startManimRenderSandboxBrokerServerV1 } from "./manim-render-sandbox-broker-server";
+import { ManimRenderGatedOciBackendV1, type ManimRenderSandboxBackendV1 } from "./manim-render-sandbox-backend";
 import {
   encodeManimRenderSandboxBrokerClientFrameV1,
   encodeManimRenderSandboxBrokerServerFrameV1,
@@ -29,10 +32,12 @@ import {
   ManimRenderSandboxBrokerProtocolErrorV1,
   ManimRenderSandboxBrokerServerFrameDecoderV1,
 } from "./manim-render-sandbox-broker-protocol";
+import { startManimRenderSandboxBrokerServerV1 } from "./manim-render-sandbox-broker-server";
 import {
   decodeManimRenderStagingLocatorV1,
-  digestManimRenderStagingRootV1,
+  digestManimRenderSandboxCancellationFenceV1,
   digestManimRenderSandboxExecutionV2,
+  digestManimRenderStagingRootV1,
   encodeManimRenderStagingLocatorV1,
   MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
   MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V2,
@@ -45,10 +50,16 @@ import {
 import { ManimRenderUdsSandboxBackendV1 } from "./manim-render-uds-sandbox-backend";
 import { ProductionDurableManimRenderExecutorV1 } from "./production-durable-manim-render-executor";
 import { inspectProjectPngBytesV1, type ProjectPngBlobStoreV1 } from "./storage/project-png-storage";
+import type {
+  DurableRenderCancellationDeliveryV1,
+  DurableRenderCancellationIntentV1,
+  RenderCancellationRepositoryV1,
+} from "./storage/render-cancellation-repository";
 import type { DurableRenderSessionV1 } from "./storage/render-session-repository";
 import type { SourceContentBlobStoreV1 } from "./storage/workspace-source-repository";
 
 const image = `sha256:${"a".repeat(64)}`;
+const brokerShardId = "render-shard-a";
 const stagingRoot = "/var/lib/poietra/render-staging";
 const source = `from manim import Scene\n\nclass MainScene(Scene):\n    def construct(self):\n        self.wait(0.1)\n`;
 const sourceDigest = createHash("sha256").update(source, "utf8").digest("hex");
@@ -149,12 +160,23 @@ function deferred<T>() {
 function healthyStatus() {
   return {
     backendId: "test-render-backend",
+    brokerShardId,
     health: "ready" as const,
     profileDigest: MANIM_RENDER_GATED_OCI_PROFILE_DIGEST_V1,
     runtimeDigest: digestManimRenderGatedOciRuntimeV1(image),
     stagingRootDigest: digestManimRenderStagingRootV1(stagingRoot),
     schema: MANIM_RENDER_SANDBOX_STATUS_SCHEMA_V1,
     version: 1 as const,
+  };
+}
+
+function cancellationAcknowledgement(
+  fence: Parameters<ManimRenderSandboxBackendV1["cancel"]>[0],
+  shardId = brokerShardId,
+) {
+  return {
+    brokerShardId: shardId,
+    fenceDigest: digestManimRenderSandboxCancellationFenceV1(fence),
   };
 }
 
@@ -335,10 +357,54 @@ describe("render sandbox contracts", () => {
     }
   });
 
+  it("rejects legacy status and cancellation responses without a broker shard attestation", () => {
+    const legacyStatus = Object.fromEntries(Object.entries(healthyStatus()).filter(([key]) => key !== "brokerShardId"));
+    const statusFrame = encodeManimRenderSandboxBrokerServerFrameV1("status", {
+      kind: "status-result",
+      status: healthyStatus(),
+    });
+    const legacyStatusFrame = Buffer.concat([
+      statusFrame.subarray(0, 1),
+      Buffer.from(canonicalJsonV1({ kind: "status-result", status: legacyStatus }), "utf8"),
+      Buffer.from("\n"),
+    ]);
+    expect(() => new ManimRenderSandboxBrokerServerFrameDecoderV1("status").push(legacyStatusFrame)).toThrow(
+      ManimRenderSandboxBrokerProtocolErrorV1,
+    );
+
+    const fence = {
+      jobId: "tenant-a/session-a",
+      rejectUntilEpochMs: Date.now() + 60_000,
+      sessionId: "session-a",
+      tenantId: "tenant-a",
+    };
+    const cancelFrame = encodeManimRenderSandboxBrokerServerFrameV1("cancel", {
+      ...cancellationAcknowledgement(fence),
+      cancelled: true,
+      kind: "cancel-result",
+    });
+    const legacyCancelFrame = Buffer.concat([
+      cancelFrame.subarray(0, 1),
+      Buffer.from(
+        canonicalJsonV1({
+          cancelled: true,
+          fenceDigest: digestManimRenderSandboxCancellationFenceV1(fence),
+          kind: "cancel-result",
+        }),
+        "utf8",
+      ),
+      Buffer.from("\n"),
+    ]);
+    expect(() => new ManimRenderSandboxBrokerServerFrameDecoderV1("cancel").push(legacyCancelFrame)).toThrow(
+      ManimRenderSandboxBrokerProtocolErrorV1,
+    );
+  });
+
   it("rejects root Studio clients and unknown broker config keys", async () => {
     vi.spyOn(process, "geteuid").mockReturnValue(0);
     await expect(
       createManimRenderProductionSandboxClientV1({
+        brokerShardId,
         brokerUserId: 1001,
         imageDigest: image,
         socketGroupId: process.getegid!(),
@@ -348,6 +414,7 @@ describe("render sandbox contracts", () => {
     ).rejects.toThrow(/principal/i);
     expect(() =>
       parseManimRenderProductionSandboxBrokerConfigV1({
+        brokerShardId,
         brokerUserId: 1001,
         dockerSocketPath: "/run/user/1001/docker.sock",
         extra: true,
@@ -358,6 +425,24 @@ describe("render sandbox contracts", () => {
         stagingRoot: "/var/lib/poietra/render-staging",
       }),
     ).toThrow();
+  });
+
+  it("requires a portable opaque broker shard identity in immutable broker configuration", () => {
+    const config = {
+      brokerShardId,
+      brokerUserId: 1001,
+      dockerSocketPath: "/run/user/1001/docker.sock",
+      imageDigest: image,
+      seccompPath: "/etc/poietra/seccomp.json",
+      socketGroupId: 1002,
+      socketPath: "/run/poietra/render.sock",
+      stagingRoot: "/var/lib/poietra/render-staging",
+    };
+    expect(parseManimRenderProductionSandboxBrokerConfigV1(config)).toEqual(config);
+    const { brokerShardId: _brokerShardId, ...missingShard } = config;
+    expect(() => parseManimRenderProductionSandboxBrokerConfigV1(missingShard)).toThrow();
+    expect(() => parseManimRenderProductionSandboxBrokerConfigV1({ ...config, brokerShardId: " shard-a" })).toThrow();
+    expect(() => new ManimRenderUdsSandboxBackendV1({ socketPath: "/run/poietra/render.sock" } as never)).toThrow();
   });
 });
 
@@ -989,7 +1074,7 @@ describe("production durable render execution", () => {
           };
     };
     const backend = partial<ManimRenderSandboxBackendV1>({
-      cancel: vi.fn(async () => undefined),
+      cancel: vi.fn(async (fence) => cancellationAcknowledgement(fence)),
       close: vi.fn(async () => undefined),
       status: vi.fn(async () => healthyStatus()),
       submitOrReattach: vi.fn<ManimRenderSandboxBackendV1["submitOrReattach"]>(async (request) => {
@@ -1002,6 +1087,7 @@ describe("production durable render execution", () => {
         new ProductionDurableManimRenderExecutorV1({
           backend,
           blobs,
+          brokerShardId,
           frame: MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
           maxConcurrentJobs: 5,
           projectPngs,
@@ -1014,6 +1100,7 @@ describe("production durable render execution", () => {
     const executor = new ProductionDurableManimRenderExecutorV1({
       backend,
       blobs,
+      brokerShardId,
       frame: MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
       projectPngs,
       profileDigest: MANIM_RENDER_GATED_OCI_PROFILE_DIGEST_V1,
@@ -1023,6 +1110,11 @@ describe("production durable render execution", () => {
     });
     try {
       await expect(executor.ready()).resolves.toBe(true);
+      vi.mocked(backend.status).mockResolvedValueOnce({
+        ...healthyStatus(),
+        brokerShardId: "render-shard-b",
+      });
+      await expect(executor.ready()).resolves.toBe(false);
       vi.mocked(backend.status).mockResolvedValueOnce({
         ...healthyStatus(),
         stagingRootDigest: "f".repeat(64),
@@ -1042,6 +1134,21 @@ describe("production durable render execution", () => {
         runtimeDigest: legacyRuntimeDigest,
       });
       await expect(executor.ready()).resolves.toBe(false);
+
+      const cancellationFence = {
+        jobId: "tenant-a/session-a",
+        rejectUntilEpochMs: Date.now() + 60_000,
+        sessionId: "session-a",
+        tenantId: "tenant-a",
+      };
+      vi.mocked(backend.cancel).mockResolvedValueOnce(cancellationAcknowledgement(cancellationFence, "render-shard-b"));
+      await expect(executor.cancel(cancellationFence)).rejects.toThrow(/acknowledgement identity/i);
+      vi.mocked(backend.cancel).mockResolvedValueOnce({ brokerShardId, fenceDigest: "f".repeat(64) });
+      await expect(executor.cancel(cancellationFence)).rejects.toThrow(/acknowledgement identity/i);
+      await expect(executor.cancel(cancellationFence)).resolves.toEqual({
+        fenceDigest: digestManimRenderSandboxCancellationFenceV1(cancellationFence),
+      });
+
       const result = await executor.submitOrReattach({
         jobId: "tenant-a/session-a",
         session,
@@ -1192,7 +1299,7 @@ describe("render broker bounded shutdown", () => {
     const competingSocketPath = join(root, "render-b.sock");
     const ownerDigest = digestManimRenderStagingRootV1(join(root, "staging"));
     const backend = partial<ManimRenderSandboxBackendV1>({
-      cancel: async () => undefined,
+      cancel: async (fence) => cancellationAcknowledgement(fence),
       close: async () => undefined,
       status: async () => healthyStatus(),
       submitOrReattach: () => never(),
@@ -1239,7 +1346,7 @@ describe("render broker bounded shutdown", () => {
         }),
     );
     const backend = partial<ManimRenderSandboxBackendV1>({
-      cancel: vi.fn(async () => undefined),
+      cancel: vi.fn(async (fence) => cancellationAcknowledgement(fence)),
       close: async () => undefined,
       status: vi.fn(async () => healthyStatus()),
       submitOrReattach,
@@ -1250,7 +1357,7 @@ describe("render broker bounded shutdown", () => {
       socketGroupId: process.getegid!(),
       socketPath,
     });
-    const client = new ManimRenderUdsSandboxBackendV1({ socketPath });
+    const client = new ManimRenderUdsSandboxBackendV1({ brokerShardId, socketPath });
     const requests = Array.from({ length: 9 }, (_, index) => {
       const deadlineEpochMs = Date.now() + 60_000;
       return new SealedManimRenderSandboxRequestV2(
@@ -1267,26 +1374,24 @@ describe("render broker bounded shutdown", () => {
         signal: new AbortController().signal,
       });
     const pending = requests.slice(0, 8).map((request) => submit(request).catch((error: unknown) => error));
+    const controlFence = {
+      jobId: "tenant-a/session-control",
+      rejectUntilEpochMs: Date.now() + 60_000,
+      sessionId: "session-control",
+      tenantId: "tenant-a",
+    };
     try {
       await vi.waitFor(() => expect(submitOrReattach).toHaveBeenCalledTimes(8), { timeout: 5_000 });
       await expect(submit(requests[8]!)).rejects.toThrow(/capacity/i);
       await expect(
         Promise.all([
           client.status({ deadlineEpochMs: Date.now() + 5_000, signal: new AbortController().signal }),
-          client.cancel(
-            {
-              jobId: "tenant-a/session-control",
-              rejectUntilEpochMs: Date.now() + 60_000,
-              sessionId: "session-control",
-              tenantId: "tenant-a",
-            },
-            {
-              deadlineEpochMs: Date.now() + 5_000,
-              signal: new AbortController().signal,
-            },
-          ),
+          client.cancel(controlFence, {
+            deadlineEpochMs: Date.now() + 5_000,
+            signal: new AbortController().signal,
+          }),
         ]),
-      ).resolves.toEqual([healthyStatus(), undefined]);
+      ).resolves.toEqual([healthyStatus(), cancellationAcknowledgement(controlFence)]);
       expect(submitOrReattach).toHaveBeenCalledTimes(8);
       expect(backend.cancel).toHaveBeenCalledOnce();
     } finally {
@@ -1306,7 +1411,7 @@ describe("render broker bounded shutdown", () => {
       releaseBackend = resolve;
     });
     const backend = partial<ManimRenderSandboxBackendV1>({
-      cancel: async () => undefined,
+      cancel: async (fence) => cancellationAcknowledgement(fence),
       close: () => backendClosed,
       status: async () => healthyStatus(),
       submitOrReattach: () => never(),
@@ -1351,6 +1456,7 @@ describe("render broker bounded shutdown", () => {
     const backend = partial<ManimRenderSandboxBackendV1>({
       cancel: async (fence) => {
         cancelled.push(fence.jobId);
+        return cancellationAcknowledgement(fence);
       },
       cleanup: async (jobId) => {
         cleaned.push(jobId);
@@ -1364,7 +1470,13 @@ describe("render broker bounded shutdown", () => {
       socketGroupId: process.getegid!(),
       socketPath,
     });
-    const client = new ManimRenderUdsSandboxBackendV1({ socketPath });
+    const client = new ManimRenderUdsSandboxBackendV1({ brokerShardId, socketPath });
+    const fence = {
+      jobId: "tenant-a/session-a",
+      rejectUntilEpochMs: Date.now() + 60_000,
+      sessionId: "session-a",
+      tenantId: "tenant-a",
+    };
     try {
       await expect(
         client.status({
@@ -1373,7 +1485,258 @@ describe("render broker bounded shutdown", () => {
         }),
       ).resolves.toEqual(healthyStatus());
       await expect(
-        client.cancel(
+        client.cancel(fence, {
+          deadlineEpochMs: Date.now() + 5_000,
+          signal: new AbortController().signal,
+        }),
+      ).resolves.toEqual(cancellationAcknowledgement(fence));
+      await expect(
+        client.cleanup("tenant-a/session-a", {
+          deadlineEpochMs: Date.now() + 5_000,
+          signal: new AbortController().signal,
+        }),
+      ).resolves.toBeUndefined();
+      expect(cancelled).toEqual(["tenant-a/session-a"]);
+      expect(cleaned).toEqual(["tenant-a/session-a"]);
+    } finally {
+      await Promise.allSettled([client.close(), broker.close()]);
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("routes an API-side cancellation through only the owner relay and its independent broker root", async () => {
+    const root = await mkdtemp(join(tmpdir(), "poietra-render-owner-relay-"));
+    await chmod(root, 0o700);
+    const shardA = "render-shard-api-a";
+    const shardB = "render-shard-owner-b";
+    const stagingA = join(root, "staging-a");
+    const stagingB = join(root, "staging-b");
+    const socketsA = join(root, "sockets-a");
+    const socketsB = join(root, "sockets-b");
+    await Promise.all([stagingA, stagingB, socketsA, socketsB].map((directory) => mkdir(directory, { mode: 0o700 })));
+    const dockerA = new ScriptedDockerClient();
+    const dockerB = new ScriptedDockerClient();
+    const runnerA = new ManimRenderGatedOciJobRunnerV1({
+      cgroupKillPolicy: "best-effort",
+      dockerClient: dockerA,
+      image,
+      seccompPath: "/missing/seccomp.json",
+      stagingRoot: stagingA,
+    });
+    const runnerB = new ManimRenderGatedOciJobRunnerV1({
+      cgroupKillPolicy: "best-effort",
+      dockerClient: dockerB,
+      image,
+      seccompPath: "/missing/seccomp.json",
+      stagingRoot: stagingB,
+    });
+    const backendA = new ManimRenderGatedOciBackendV1(runnerA, shardA);
+    const backendB = new ManimRenderGatedOciBackendV1(runnerB, shardB);
+    const socketA = join(socketsA, "render.sock");
+    const socketB = join(socketsB, "render.sock");
+    let brokerA: Awaited<ReturnType<typeof startManimRenderSandboxBrokerServerV1>> | undefined;
+    let brokerB: Awaited<ReturnType<typeof startManimRenderSandboxBrokerServerV1>> | undefined;
+    let clientA: ManimRenderUdsSandboxBackendV1 | undefined;
+    let clientB: ManimRenderUdsSandboxBackendV1 | undefined;
+    let relayA: DurableManimRenderCancellationRelayV1 | undefined;
+    let relayB: DurableManimRenderCancellationRelayV1 | undefined;
+    try {
+      brokerA = await startManimRenderSandboxBrokerServerV1({
+        backend: backendA,
+        ownerDigest: runnerA.stagingRootDigest,
+        reconcileOrphans: () => runnerA.reconcileOrphans(),
+        socketGroupId: process.getegid!(),
+        socketPath: socketA,
+      });
+      brokerB = await startManimRenderSandboxBrokerServerV1({
+        backend: backendB,
+        ownerDigest: runnerB.stagingRootDigest,
+        reconcileOrphans: () => runnerB.reconcileOrphans(),
+        socketGroupId: process.getegid!(),
+        socketPath: socketB,
+      });
+      clientA = new ManimRenderUdsSandboxBackendV1({ brokerShardId: shardA, socketPath: socketA });
+      clientB = new ManimRenderUdsSandboxBackendV1({ brokerShardId: shardB, socketPath: socketB });
+
+      const current = descriptor();
+      const request = new SealedManimRenderSandboxRequestV2(current);
+      const pending: DurableRenderCancellationIntentV1 = {
+        acknowledgedAt: null,
+        brokerShardId: shardB,
+        delivery: null,
+        expiresAt: new Date(current.deadlineEpochMs + 30_000),
+        fenceDigest: null,
+        jobId: current.jobId,
+        rejectUntil: new Date(current.deadlineEpochMs),
+        requestedAt: new Date(),
+        sessionId: current.sessionId,
+        tenantId: current.tenantId,
+      };
+      const delivery: DurableRenderCancellationDeliveryV1 = {
+        ...pending,
+        delivery: { expiresAt: new Date(Date.now() + 20_000), ownerId: "relay-owner-b", token: 1n },
+      };
+      let registered = false;
+      let delivered = false;
+      let acknowledgement: Readonly<{ acknowledgedAt: Date; fenceDigest: string }> | undefined;
+      const acknowledgeCancellation = vi.fn<RenderCancellationRepositoryV1["acknowledgeCancellation"]>(
+        async (receipt) => {
+          acknowledgement = { acknowledgedAt: new Date(), fenceDigest: receipt.fenceDigest };
+          return partial<DurableRenderSessionV1>({ status: "cancelled" });
+        },
+      );
+      const claimCancellationDeliveries = vi.fn<RenderCancellationRepositoryV1["claimCancellationDeliveries"]>(
+        async (claim) => {
+          if (claim.brokerShardId !== shardB || !registered || delivered) return [];
+          delivered = true;
+          return [delivery];
+        },
+      );
+      const repository = partial<RenderCancellationRepositoryV1>({
+        acknowledgeCancellation,
+        claimCancellationDeliveries,
+        purgeExpiredCancellations: async () => 0,
+        readCancellation: async () =>
+          acknowledgement
+            ? { ...pending, acknowledgedAt: acknowledgement.acknowledgedAt, fenceDigest: acknowledgement.fenceDigest }
+            : pending,
+        ready: async () => true,
+        registerCancellation: async () => {
+          registered = true;
+          return { intent: pending, session: partial<DurableRenderSessionV1>({ status: "rendering" }) };
+        },
+      });
+      const executor = (client: ManimRenderUdsSandboxBackendV1, expectedShard: string, expectedRoot: string) => ({
+        cancel: vi.fn(async (fence) => {
+          const receipt = await client.cancel(fence, {
+            deadlineEpochMs: Date.now() + 5_000,
+            signal: new AbortController().signal,
+          });
+          expect(receipt.brokerShardId).toBe(expectedShard);
+          return { fenceDigest: receipt.fenceDigest };
+        }),
+        ready: async (signal?: AbortSignal) => {
+          const status = await client.status({
+            deadlineEpochMs: Date.now() + 5_000,
+            signal: signal ?? new AbortController().signal,
+          });
+          return status.brokerShardId === expectedShard && status.stagingRootDigest === expectedRoot;
+        },
+      });
+      const executorA = executor(clientA, shardA, runnerA.stagingRootDigest);
+      const executorB = executor(clientB, shardB, runnerB.stagingRootDigest);
+      const abortA = vi.fn();
+      const abortB = vi.fn();
+      relayA = new DurableManimRenderCancellationRelayV1({
+        abortActive: abortA,
+        batchSize: 4,
+        brokerShardId: shardA,
+        deliveryLeaseMs: 20_000,
+        executor: executorA,
+        intervalMs: 60_000,
+        onFailure: () => undefined,
+        relayId: "relay-api-a",
+        repository,
+        sweepTimeoutMs: 15_000,
+        tenantId: current.tenantId,
+      });
+      relayB = new DurableManimRenderCancellationRelayV1({
+        abortActive: abortB,
+        batchSize: 4,
+        brokerShardId: shardB,
+        deliveryLeaseMs: 20_000,
+        executor: executorB,
+        intervalMs: 60_000,
+        onFailure: () => undefined,
+        relayId: "relay-owner-b",
+        repository,
+        sweepTimeoutMs: 15_000,
+        tenantId: current.tenantId,
+      });
+      await Promise.all([relayA.start(), relayB.start()]);
+      const coordinator = new DurableManimRenderCancellationCoordinatorV1({
+        acknowledgementPollMs: 25,
+        acknowledgementTimeoutMs: 1_000,
+        repository,
+        tenantId: current.tenantId,
+        wake: () => {
+          relayA?.wake();
+          relayB?.wake();
+        },
+      });
+
+      await coordinator.cancel(current.sessionId);
+
+      expect(claimCancellationDeliveries).toHaveBeenCalledWith(
+        expect.objectContaining({ brokerShardId: shardA }),
+        expect.any(AbortSignal),
+      );
+      expect(claimCancellationDeliveries).toHaveBeenCalledWith(
+        expect.objectContaining({ brokerShardId: shardB }),
+        expect.any(AbortSignal),
+      );
+      expect(abortA).not.toHaveBeenCalled();
+      expect(executorA.cancel).not.toHaveBeenCalled();
+      expect(abortB).toHaveBeenCalledWith(current.sessionId);
+      expect(executorB.cancel).toHaveBeenCalledOnce();
+      expect(acknowledgeCancellation).toHaveBeenCalledWith(
+        expect.objectContaining({ ownerId: "relay-owner-b", sessionId: current.sessionId }),
+        expect.any(AbortSignal),
+      );
+      expect(await readdir(stagingA)).toEqual([]);
+      expect(JSON.parse(await readFile(join(stagingB, "render-cancellations-v1.json"), "utf8"))).toMatchObject({
+        entries: [
+          {
+            jobId: current.jobId,
+            rejectUntilEpochMs: current.deadlineEpochMs,
+            sessionId: current.sessionId,
+            tenantId: current.tenantId,
+          },
+        ],
+        stagingRootDigest: runnerB.stagingRootDigest,
+      });
+      await expect(
+        clientB.submitOrReattach(request, {
+          deadlineEpochMs: current.deadlineEpochMs,
+          signal: new AbortController().signal,
+        }),
+      ).resolves.toMatchObject({ code: "cancelled", kind: "failed" });
+      expect(dockerA.calls.filter((call) => call[0] === "container" && call[1] === "create")).toEqual([]);
+      expect(dockerB.calls.filter((call) => call[0] === "container" && call[1] === "create")).toEqual([]);
+    } finally {
+      await Promise.allSettled([relayA?.close(), relayB?.close(), clientA?.close(), clientB?.close()]);
+      await Promise.allSettled([brokerA?.close() ?? runnerA.close(), brokerB?.close() ?? runnerB.close()]);
+      await rm(root, { force: true, recursive: true });
+    }
+  }, 15_000);
+
+  it("fails closed when status or cancellation is attested by an unexpected broker shard", async () => {
+    const root = await mkdtemp(join(tmpdir(), "poietra-render-broker-shard-"));
+    await chmod(root, 0o700);
+    const socketPath = join(root, "render.sock");
+    const alternateShardId = "render-shard-b";
+    const backend = partial<ManimRenderSandboxBackendV1>({
+      cancel: async (fence) => cancellationAcknowledgement(fence, alternateShardId),
+      close: async () => undefined,
+      status: async () => healthyStatus(),
+      submitOrReattach: () => never(),
+    });
+    const broker = await startManimRenderSandboxBrokerServerV1({
+      backend,
+      socketGroupId: process.getegid!(),
+      socketPath,
+    });
+    const statusClient = new ManimRenderUdsSandboxBackendV1({ brokerShardId: alternateShardId, socketPath });
+    const cancellationClient = new ManimRenderUdsSandboxBackendV1({ brokerShardId, socketPath });
+    try {
+      await expect(
+        statusClient.status({
+          deadlineEpochMs: Date.now() + 5_000,
+          signal: new AbortController().signal,
+        }),
+      ).rejects.toThrow(/transport/i);
+      await expect(
+        cancellationClient.cancel(
           {
             jobId: "tenant-a/session-a",
             rejectUntilEpochMs: Date.now() + 60_000,
@@ -1385,17 +1748,9 @@ describe("render broker bounded shutdown", () => {
             signal: new AbortController().signal,
           },
         ),
-      ).resolves.toBeUndefined();
-      await expect(
-        client.cleanup("tenant-a/session-a", {
-          deadlineEpochMs: Date.now() + 5_000,
-          signal: new AbortController().signal,
-        }),
-      ).resolves.toBeUndefined();
-      expect(cancelled).toEqual(["tenant-a/session-a"]);
-      expect(cleaned).toEqual(["tenant-a/session-a"]);
+      ).rejects.toThrow(/transport/i);
     } finally {
-      await Promise.allSettled([client.close(), broker.close()]);
+      await Promise.allSettled([statusClient.close(), cancellationClient.close(), broker.close()]);
       await rm(root, { force: true, recursive: true });
     }
   });
@@ -1414,7 +1769,7 @@ describe("render broker bounded shutdown", () => {
     await chmod(root, 0o700);
     const socketPath = join(root, "render.sock");
     const backend = partial<ManimRenderSandboxBackendV1>({
-      cancel: async () => undefined,
+      cancel: async (fence) => cancellationAcknowledgement(fence),
       close: async () => undefined,
       status: async () => healthyStatus(),
       submitOrReattach: async (request) => {
@@ -1445,7 +1800,7 @@ describe("render broker bounded shutdown", () => {
       socketGroupId: process.getegid!(),
       socketPath,
     });
-    const client = new ManimRenderUdsSandboxBackendV1({ socketPath });
+    const client = new ManimRenderUdsSandboxBackendV1({ brokerShardId, socketPath });
     try {
       const request = new SealedManimRenderSandboxRequestV2(descriptor());
       await expect(
@@ -1466,7 +1821,7 @@ describe("render broker bounded shutdown", () => {
     const socketPath = join(root, "render.sock");
     let statusCalls = 0;
     const backend = partial<ManimRenderSandboxBackendV1>({
-      cancel: async () => undefined,
+      cancel: async (fence) => cancellationAcknowledgement(fence),
       close: async () => undefined,
       status: async () => {
         statusCalls += 1;
@@ -1500,7 +1855,7 @@ describe("render broker bounded shutdown", () => {
       await Promise.all(closed);
       expect(statusCalls).toBe(0);
 
-      const client = new ManimRenderUdsSandboxBackendV1({ socketPath });
+      const client = new ManimRenderUdsSandboxBackendV1({ brokerShardId, socketPath });
       try {
         await expect(
           client.status({
@@ -1528,7 +1883,7 @@ describe("render broker bounded shutdown", () => {
       backendEntered = resolve;
     });
     const backend = partial<ManimRenderSandboxBackendV1>({
-      cancel: async () => undefined,
+      cancel: async (fence) => cancellationAcknowledgement(fence),
       close: async () => undefined,
       status: async ({ signal }) => {
         backendEntered();
@@ -1576,7 +1931,7 @@ describe("render broker bounded shutdown", () => {
     await chmod(root, 0o700);
     const socketPath = join(root, "render.sock");
     const backend = partial<ManimRenderSandboxBackendV1>({
-      cancel: async () => undefined,
+      cancel: async (fence) => cancellationAcknowledgement(fence),
       close: async () => undefined,
       status: () => never(),
       submitOrReattach: () => never(),
@@ -1587,7 +1942,7 @@ describe("render broker bounded shutdown", () => {
       socketGroupId: process.getegid!(),
       socketPath,
     });
-    const client = new ManimRenderUdsSandboxBackendV1({ socketPath });
+    const client = new ManimRenderUdsSandboxBackendV1({ brokerShardId, socketPath });
     try {
       await expect(
         client.status({
@@ -1611,7 +1966,7 @@ describe("render broker bounded shutdown", () => {
       entered = resolve;
     });
     const backend = partial<ManimRenderSandboxBackendV1>({
-      cancel: async () => undefined,
+      cancel: async (fence) => cancellationAcknowledgement(fence),
       close: async () => undefined,
       status: () => {
         entered();
@@ -1651,7 +2006,7 @@ describe("render broker bounded shutdown", () => {
     const root = await mkdtemp(join(tmpdir(), "poietra-render-broker-close-"));
     await chmod(root, 0o700);
     const backend = partial<ManimRenderSandboxBackendV1>({
-      cancel: async () => undefined,
+      cancel: async (fence) => cancellationAcknowledgement(fence),
       close: () => never(),
       status: () => never(),
       submitOrReattach: () => never(),

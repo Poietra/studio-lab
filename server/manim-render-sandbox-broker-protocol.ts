@@ -3,11 +3,12 @@ import { z } from "zod";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import { opaqueIdV1Schema, sha256V1Schema } from "../src/engine/primitives";
 import {
+  MAX_MANIM_RENDER_SANDBOX_FRAME_BYTES_V2,
+  MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V2,
+  manimRenderSandboxCancellationAcknowledgementV1Schema,
   manimRenderSandboxCancellationFenceV1Schema,
   manimRenderSandboxStatusV1Schema,
   manimRenderSandboxTerminalV1Schema,
-  MAX_MANIM_RENDER_SANDBOX_FRAME_BYTES_V2,
-  MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V2,
 } from "./manim-render-sandbox-contract";
 
 const OPERATION = { cancel: 3, cleanup: 4, status: 1, submit: 2 } as const;
@@ -54,7 +55,10 @@ const brokerErrorSchema = z
 export const manimRenderSandboxBrokerServerMessageV1Schema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("status-result"), status: manimRenderSandboxStatusV1Schema }).strict(),
   z.object({ kind: z.literal("job-result"), result: manimRenderSandboxTerminalV1Schema }).strict(),
-  z.object({ cancelled: z.literal(true), fenceDigest: sha256V1Schema, kind: z.literal("cancel-result") }).strict(),
+  manimRenderSandboxCancellationAcknowledgementV1Schema.extend({
+    cancelled: z.literal(true),
+    kind: z.literal("cancel-result"),
+  }),
   z.object({ cleaned: z.literal(true), kind: z.literal("cleanup-result") }).strict(),
   brokerErrorSchema,
 ]);

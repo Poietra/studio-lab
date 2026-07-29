@@ -90,6 +90,7 @@ export class DurableMaintenanceWorkerCoreV1<Result> {
   #active: Promise<Result> | null = null;
   #closeRequest: Promise<void> | null = null;
   #timer: NodeJS.Timeout | null = null;
+  #wakeRequested = false;
 
   constructor(options: DurableMaintenanceWorkerCoreOptionsV1<Result>) {
     const prefix = options.validationPrefix;
@@ -120,7 +121,9 @@ export class DurableMaintenanceWorkerCoreV1<Result> {
   }
 
   #schedule() {
-    if (this.#state.closed) return;
+    if (this.#state.closed || this.#timer) return;
+    const delayMs = this.#wakeRequested ? 0 : this.#options.intervalMs;
+    this.#wakeRequested = false;
     this.#timer = setTimeout(() => {
       this.#timer = null;
       void this.#sweep(this.#controller.signal)
@@ -134,7 +137,7 @@ export class DurableMaintenanceWorkerCoreV1<Result> {
           }
         })
         .finally(() => this.#schedule());
-    }, this.#options.intervalMs);
+    }, delayMs);
     this.#timer.unref();
   }
 
@@ -157,11 +160,22 @@ export class DurableMaintenanceWorkerCoreV1<Result> {
     return this.#state.started && !this.#state.closed && this.#state.healthy;
   }
 
+  /** Coalesces an immediate retry without overlapping an active sweep. */
+  wake() {
+    if (!this.#state.started || this.#state.closed) return;
+    this.#wakeRequested = true;
+    if (this.#active) return;
+    if (this.#timer) clearTimeout(this.#timer);
+    this.#timer = null;
+    this.#schedule();
+  }
+
   close() {
     this.#closeRequest ??= (async () => {
       this.#state.closed = true;
       if (this.#timer) clearTimeout(this.#timer);
       this.#timer = null;
+      this.#wakeRequested = false;
       this.#controller.abort();
       await this.#active?.catch(() => undefined);
       this.#state.healthy = false;

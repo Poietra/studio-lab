@@ -10,13 +10,13 @@ import {
   renderRequestId,
   renderRequestPrograms,
 } from "../src/render-pipeline/contracts";
-import type { DurableManimRenderWorkerV1 } from "./durable-manim-render-worker";
 import { HttpError } from "./http/json";
 import { lowerManimRenderRequest } from "./manim-render-request-lowering";
 import {
   renderCommitCorrelationKey,
   renderCommitMatchesPreview,
   renderSessionCapabilities,
+  renderSessionStatusPolicy,
 } from "./manim-render-session-policy";
 import { manimTenantIdSchema } from "./manim-request-principal";
 import type { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
@@ -32,7 +32,7 @@ import type { SourceContentBlobStoreV1, WorkspaceSourceRepositoryV1 } from "./st
 export type DurableManimRenderServiceOptionsV1 = Readonly<{
   artifactReader?: Pick<AuthorizedArtifactReaderV1, "ready" | "sessionVideo">;
   blobs: SourceContentBlobStoreV1;
-  execution: Pick<DurableManimRenderWorkerV1, "cancel" | "wake">;
+  execution: Readonly<{ cancel: (sessionId: string) => Promise<void>; wake: () => void }>;
   executionTimeoutMs?: number;
   frame?: Readonly<{ height: number; width: number }>;
   repository: RenderSessionRepositoryV1;
@@ -89,7 +89,7 @@ function sessionView(
 export class DurableManimRenderServiceV1 {
   readonly #artifactReader: Pick<AuthorizedArtifactReaderV1, "ready" | "sessionVideo"> | undefined;
   readonly #blobs: SourceContentBlobStoreV1;
-  readonly #execution: Pick<DurableManimRenderWorkerV1, "cancel" | "wake">;
+  readonly #execution: DurableManimRenderServiceOptionsV1["execution"];
   readonly #executionTimeoutMs: number;
   readonly #frame: Readonly<{ height: number; width: number }>;
   readonly #repository: RenderSessionRepositoryV1;
@@ -210,14 +210,11 @@ export class DurableManimRenderServiceV1 {
 
   async cancel(id: string): Promise<RenderSessionView> {
     await this.#execution.cancel(id);
-    try {
-      return sessionView(await this.#repository.cancelSession(this.#tenantId, id));
-    } catch (error) {
-      if (!(error instanceof HttpError) || error.status !== 409) throw error;
-      const current = await this.#repository.readSession(this.#tenantId, id);
-      if (current.status !== "cancelled") throw error;
-      return sessionView(current);
+    const session = await this.#repository.readSession(this.#tenantId, id);
+    if (!renderSessionStatusPolicy(session.status).stopped) {
+      throw new HttpError("Render cancellation acknowledgement did not leave the session stopped.", 503);
     }
+    return sessionView(session);
   }
 
   async commit(id: string, expected: RenderCommitRequest, signal?: AbortSignal): Promise<RenderSessionView> {
@@ -283,10 +280,21 @@ export class DurableManimRenderServiceV1 {
     return sessionView(await this.#repository.discardSession(this.#tenantId, id));
   }
 
+  async #cancelActiveForAbandon(session: DurableRenderSessionV1) {
+    if (!renderSessionStatusPolicy(session.status).active) return;
+    try {
+      await this.#execution.cancel(session.id);
+    } catch (error) {
+      if (!(error instanceof HttpError) || error.status !== 409) throw error;
+      // Completion may win after the read. The repository still rejects an
+      // unfenced abandon if the session remains broker-bound and active.
+    }
+  }
+
   async abandonStart(id: string): Promise<void> {
     try {
       const session = await this.#repository.readSession(this.#tenantId, id);
-      await this.#execution.cancel(id);
+      await this.#cancelActiveForAbandon(session);
       await this.#repository.abandonSession(this.#tenantId, id, session.renderRequestId);
     } catch (error) {
       if (error instanceof HttpError && error.status === 404) return;
@@ -305,7 +313,7 @@ export class DurableManimRenderServiceV1 {
     if (session.renderRequestId !== expectedRenderRequestId) {
       throw new HttpError("The abandoned render no longer matches the Studio request.", 409);
     }
-    await this.#execution.cancel(id);
+    await this.#cancelActiveForAbandon(session);
     await this.#repository.abandonSession(this.#tenantId, id, expectedRenderRequestId);
     return { abandoned: true } as const;
   }

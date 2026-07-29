@@ -71,7 +71,10 @@ const STORAGE_SUITES = [
     database: "poietra_render_session",
     file: "server/storage/render-session-storage.real.test.ts",
     id: "render-session",
-    title: "survives SIGKILL and fences recovery, source actions, CAS, and tenant routing",
+    titles: [
+      "survives SIGKILL and fences recovery, source actions, CAS, and tenant routing",
+      "binds one broker shard and cancels only after its durable ACK",
+    ],
   },
   {
     database: "poietra_snapshot_publication",
@@ -133,7 +136,9 @@ async function runTestFile(environment, suite) {
   throwIfInterrupted();
   return new Promise((resolve, reject) => {
     process.stdout.write(`[storage-e2e] starting ${suite.file}\n`);
-    const child = spawn("pnpm", ["exec", "vitest", "run", suite.file, "-t", suite.title, "--reporter=json"], {
+    const requiredTitles = suite.titles ?? [suite.title];
+    const titlePattern = requiredTitles.map((title) => title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
+    const child = spawn("pnpm", ["exec", "vitest", "run", suite.file, "-t", titlePattern, "--reporter=json"], {
       env: { ...process.env, ...environment },
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -181,14 +186,14 @@ async function runTestFile(environment, suite) {
             Array.isArray(result?.assertionResults) ? result.assertionResults : [],
           )
         : [];
-      const requiredTestPassed = assertions.some(
-        (assertion) => assertion?.title === suite.title && assertion?.status === "passed",
+      const requiredTestsPassed = requiredTitles.every((title) =>
+        assertions.some((assertion) => assertion?.title === title && assertion?.status === "passed"),
       );
       if (
         report.success !== true ||
-        report.numPassedTests !== 1 ||
+        report.numPassedTests !== requiredTitles.length ||
         report.numFailedTests !== 0 ||
-        !requiredTestPassed
+        !requiredTestsPassed
       ) {
         writeFailureOutput(stdoutText, stderrText);
         reject(new Error(`Storage E2E must execute its required parent test: ${suite.file}.`));

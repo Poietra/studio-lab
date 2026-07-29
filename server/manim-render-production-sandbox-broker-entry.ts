@@ -6,7 +6,7 @@ import {
   type ManimRenderProductionSandboxBrokerServiceOptionsV1,
   startManimRenderProductionSandboxBrokerServiceV1,
 } from "./manim-render-production-sandbox-broker-service";
-import { digestManimRenderStagingRootV1 } from "./manim-render-sandbox-contract";
+import { digestManimRenderStagingRootV1, manimRenderBrokerShardIdV1Schema } from "./manim-render-sandbox-contract";
 import { readRootOwnedProductionConfigV1 } from "./root-owned-production-config";
 
 function validStagingRoot(value: string) {
@@ -20,6 +20,7 @@ function validStagingRoot(value: string) {
 
 export const manimRenderProductionSandboxBrokerConfigV1Schema = z
   .object({
+    brokerShardId: manimRenderBrokerShardIdV1Schema,
     brokerUserId: z.number().int().positive().max(0xffff_ffff),
     dockerSocketPath: z.string().min(1).max(4_096),
     imageDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/u),
