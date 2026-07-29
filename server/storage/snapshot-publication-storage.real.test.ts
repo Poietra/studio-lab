@@ -7,7 +7,21 @@ import { Pool } from "pg";
 import { describe, expect, it } from "vitest";
 
 import { createDurableManimRuntimeV1 } from "../durable-manim-runtime";
-import { applyBundledDurableStorageMigrations } from "./postgres/migrate";
+import {
+  applyBundledDurableStorageMigrations,
+  applySnapshotRuntimeDigestMigrationV10,
+  durableStorageMigrationChecksum,
+  PROJECT_PNG_MIGRATION_V5_SOURCE,
+  RENDER_ARTIFACT_MIGRATION_V4_SOURCE,
+  RENDER_CANCELLATION_MIGRATION_V7_SOURCE,
+  RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_SOURCE,
+  RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE,
+  RENDER_SESSION_MIGRATION_V2_SOURCE,
+  RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE,
+  SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE,
+  SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE,
+  WORKSPACE_SOURCE_MIGRATION_V1_SOURCE,
+} from "./postgres/migrate";
 import { PostgresSnapshotPublicationRepositoryV1 } from "./postgres/postgres-snapshot-publication-repository";
 import { PostgresWorkspaceSourceRepositoryV1 } from "./postgres/postgres-workspace-source-repository";
 import { S3ContentBlobStoreV1 } from "./s3/s3-content-blob-store";
@@ -29,6 +43,20 @@ const E2E_CONFIGURED = [
 ].every((key) => Boolean(process.env[key]));
 const PROFILE_DIGEST = "c".repeat(64);
 const RUNTIME_CONFIG_HASH = "b".repeat(64);
+const RUNTIME_DIGEST = "d".repeat(64);
+const OTHER_RUNTIME_DIGEST = "e".repeat(64);
+
+const PRE_RUNTIME_DIGEST_MIGRATIONS = [
+  WORKSPACE_SOURCE_MIGRATION_V1_SOURCE,
+  RENDER_SESSION_MIGRATION_V2_SOURCE,
+  SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE,
+  RENDER_ARTIFACT_MIGRATION_V4_SOURCE,
+  PROJECT_PNG_MIGRATION_V5_SOURCE,
+  RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE,
+  RENDER_CANCELLATION_MIGRATION_V7_SOURCE,
+  RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE,
+  RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_SOURCE,
+] as const;
 
 type StorageEnvironment = Readonly<{
   accessKeyId: string;
@@ -55,6 +83,7 @@ type ChildRole = "orphan-writer" | "publisher" | "reader";
 
 type OrphanWriterInput = Readonly<{
   nonce: string;
+  runtimeDigest: string;
   sourceDigest: string;
   tenantId: string;
 }>;
@@ -194,6 +223,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== "orphan-writer")(
           bytes: Buffer.from(`orphan-${input.nonce}`, "utf8"),
           profileDigest: PROFILE_DIGEST,
           runtimeConfigHash: RUNTIME_CONFIG_HASH,
+          runtimeDigest: input.runtimeDigest,
           sourceDigest: input.sourceDigest,
         });
         emitProcessResult({ artifact, event: "orphan-uploaded" });
@@ -216,6 +246,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== "publisher")("durable snapsh
         bytes: Buffer.from(input.artifactBytes, "utf8"),
         profileDigest: PROFILE_DIGEST,
         runtimeConfigHash: RUNTIME_CONFIG_HASH,
+        runtimeDigest: input.identity.runtimeDigest,
         sourceDigest: input.expectedSourceDigest,
       });
       const result = await storage.publications.publish({
@@ -384,11 +415,127 @@ function isMissingBucket(error: unknown) {
   );
 }
 
+async function seedLegacySnapshotPublication(pool: Pool) {
+  const tenantId = "snapshot-legacy";
+  const projectId = "legacy-project";
+  const sourceDigest = "1".repeat(64);
+  const resultDigest = "2".repeat(64);
+  const runtimeConfigHash = "3".repeat(64);
+  const profileDigest = "4".repeat(64);
+  const snapshotHash = "5".repeat(64);
+  const publicationId = "018f57e2-4c8b-7d31-a91e-4ae5e5c6c8b1";
+  const objectKey = `tenants/${tenantId}/snapshots/${sourceDigest}/${runtimeConfigHash}/${profileDigest}/${resultDigest}`;
+
+  await pool.query("INSERT INTO public.workspace_tenants (tenant_id) VALUES ($1)", [tenantId]);
+  await pool.query("INSERT INTO public.workspace_projects (tenant_id, project_id, display_name) VALUES ($1, $2, $3)", [
+    tenantId,
+    projectId,
+    "Legacy snapshot project",
+  ]);
+  await pool.query(
+    `INSERT INTO public.source_blob_objects
+       (tenant_id, digest, object_key, version_id, etag, byte_size)
+     VALUES ($1, $2, $3, 'legacy-source-version', 'legacy-source-etag', 64)`,
+    [tenantId, sourceDigest, `tenants/${tenantId}/sources/${sourceDigest}`],
+  );
+  await pool.query(
+    `INSERT INTO public.workspace_source_heads
+       (tenant_id, project_id, source_path, generation, digest)
+     VALUES ($1, $2, 'main.py', 1, $3)`,
+    [tenantId, projectId, sourceDigest],
+  );
+  await pool.query(
+    `INSERT INTO public.snapshot_artifact_objects
+       (tenant_id, result_digest, source_digest, runtime_config_hash, profile_digest,
+        object_key, version_id, etag, byte_size)
+     VALUES ($1, $2, $3, $4, $5, $6, 'legacy-artifact-version', 'legacy-artifact-etag', 128)`,
+    [tenantId, resultDigest, sourceDigest, runtimeConfigHash, profileDigest, objectKey],
+  );
+  await pool.query(
+    `INSERT INTO public.snapshot_publications
+       (tenant_id, publication_id, project_id, source_path, scene_name, generation,
+        source_generation, source_digest, runtime_config_hash, profile_digest, result_digest,
+        snapshot_hash, request_id)
+     VALUES ($1, $2::uuid, $3, 'main.py', 'MainScene', 1, 1, $4, $5, $6, $7, $8, 'legacy-request')`,
+    [tenantId, publicationId, projectId, sourceDigest, runtimeConfigHash, profileDigest, resultDigest, snapshotHash],
+  );
+  await pool.query(
+    `INSERT INTO public.snapshot_scene_heads
+       (tenant_id, project_id, source_path, scene_name, generation, publication_id)
+     VALUES ($1, $2, 'main.py', 'MainScene', 1, $3::uuid)`,
+    [tenantId, projectId, publicationId],
+  );
+  await pool.query(
+    `INSERT INTO public.workspace_project_references
+       (tenant_id, project_id, reference_kind, reference_id)
+     VALUES ($1, $2, 'snapshot-publication', $3)`,
+    [tenantId, projectId, publicationId],
+  );
+  await pool.query(
+    `INSERT INTO public.snapshot_artifact_deletions
+       (deletion_id, tenant_id, result_digest, source_digest, runtime_config_hash,
+        profile_digest, object_key, version_id, etag, byte_size)
+     VALUES ('018f57e2-4c8b-7d31-a91e-4ae5e5c6c8b2'::uuid, $1, $2, $3, $4, $5, $6,
+             'legacy-deletion-version', 'legacy-deletion-etag', 128)`,
+    [tenantId, resultDigest, sourceDigest, runtimeConfigHash, profileDigest, objectKey],
+  );
+
+  return { objectKey, tenantId };
+}
+
 async function prepareStorage(environment: StorageEnvironment) {
   const pool = new Pool({ connectionString: environment.databaseUrl, max: 2 });
   const s3 = new S3Client(s3Config(environment));
   try {
-    await applyBundledDurableStorageMigrations(pool);
+    for (const [index, source] of PRE_RUNTIME_DIGEST_MIGRATIONS.entries()) {
+      await pool.query(source);
+      await pool.query("INSERT INTO public.poietra_schema_migrations (version, checksum) VALUES ($1, $2)", [
+        index + 1,
+        durableStorageMigrationChecksum(source),
+      ]);
+    }
+    const legacy = await seedLegacySnapshotPublication(pool);
+    expect(await applySnapshotRuntimeDigestMigrationV10(pool, SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE)).toEqual({
+      applied: true,
+      version: 10,
+    });
+    expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: false, version: 10 });
+    const migratedLegacy = await pool.query<{
+      artifact_runtime_digest: string;
+      artifact_object_key: string;
+      deletion_runtime_digest: string;
+      deletion_object_key: string;
+      heads: number;
+      publications: number;
+      references: number;
+    }>(
+      `SELECT artifact.runtime_digest AS artifact_runtime_digest,
+              artifact.object_key AS artifact_object_key,
+              deletion.runtime_digest AS deletion_runtime_digest,
+              deletion.object_key AS deletion_object_key,
+              (SELECT count(*)::integer FROM public.snapshot_scene_heads
+                WHERE tenant_id = $1) AS heads,
+              (SELECT count(*)::integer FROM public.snapshot_publications
+                WHERE tenant_id = $1) AS publications,
+              (SELECT count(*)::integer FROM public.workspace_project_references
+                WHERE tenant_id = $1 AND reference_kind = 'snapshot-publication') AS references
+         FROM public.snapshot_artifact_objects artifact
+         JOIN public.snapshot_artifact_deletions deletion
+           ON deletion.tenant_id = artifact.tenant_id
+        WHERE artifact.tenant_id = $1`,
+      [legacy.tenantId],
+    );
+    expect(migratedLegacy.rows).toEqual([
+      {
+        artifact_object_key: legacy.objectKey,
+        artifact_runtime_digest: "0".repeat(64),
+        deletion_object_key: legacy.objectKey,
+        deletion_runtime_digest: "0".repeat(64),
+        heads: 0,
+        publications: 0,
+        references: 0,
+      },
+    ]);
     try {
       await s3.send(new HeadBucketCommand({ Bucket: environment.bucket }));
     } catch (error) {
@@ -418,6 +565,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
     const projectId = `project-${suffix}`;
     const identity = {
       projectId,
+      runtimeDigest: RUNTIME_DIGEST,
       sceneName: "MainScene",
       sourcePath: "main.py",
       tenantId: tenantA,
@@ -435,9 +583,10 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
         .finally(() => sourceHeads.close());
       const requestId = `snapshot-request-${suffix}`;
       const snapshotHash = createHash("sha256").update(`snapshot-${suffix}`).digest("hex");
+      const artifactBytes = `snapshot-artifact-${suffix}`;
 
       const publication = await runPublisherChild({
-        artifactBytes: `snapshot-artifact-${suffix}`,
+        artifactBytes,
         expectedSourceDigest: sourceHead.blob.digest,
         expectedSourceGeneration: sourceHead.generation.toString(),
         identity,
@@ -448,6 +597,29 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
 
       const childRead = await runReaderChild(identity);
       expect(childRead).toEqual(publication);
+
+      const otherRuntimeIdentity = { ...identity, runtimeDigest: OTHER_RUNTIME_DIGEST };
+      const otherRuntimeReader = snapshotStorage();
+      try {
+        await expect(otherRuntimeReader.publications.readCurrent(otherRuntimeIdentity)).resolves.toEqual({
+          kind: "missing",
+        });
+      } finally {
+        await closeSnapshotStorage(otherRuntimeReader);
+      }
+      const otherRuntimePublication = await runPublisherChild({
+        artifactBytes,
+        expectedSourceDigest: sourceHead.blob.digest,
+        expectedSourceGeneration: sourceHead.generation.toString(),
+        identity: otherRuntimeIdentity,
+        publicationId: randomUUID(),
+        requestId: `other-runtime-${requestId}`,
+        snapshotHash: createHash("sha256").update(`other-runtime-snapshot-${suffix}`).digest("hex"),
+      });
+      expect(otherRuntimePublication.artifact.resultDigest).toBe(publication.artifact.resultDigest);
+      expect(otherRuntimePublication.artifact.objectKey).not.toBe(publication.artifact.objectKey);
+      expect(await runReaderChild(otherRuntimeIdentity)).toEqual(otherRuntimePublication);
+      expect(await runReaderChild(identity)).toEqual(publication);
 
       const tenantBReader = snapshotStorage();
       try {
@@ -476,6 +648,10 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
       try {
         await expect(staleReader.publications.readCurrent(identity)).resolves.toEqual({
           generation: BigInt(publication.generation),
+          kind: "stale",
+        });
+        await expect(staleReader.publications.readCurrent(otherRuntimeIdentity)).resolves.toEqual({
+          generation: BigInt(otherRuntimePublication.generation),
           kind: "stale",
         });
       } finally {
@@ -600,6 +776,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
 
       const orphan = await runOrphanWriterChild({
         nonce: suffix,
+        runtimeDigest: identity.runtimeDigest,
         sourceDigest: updatedHead.blob.digest,
         tenantId: tenantA,
       });

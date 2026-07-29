@@ -4,6 +4,7 @@ import { S3Client } from "@aws-sdk/client-s3";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1,
   MAX_SNAPSHOT_ARTIFACT_BYTES_V1,
   SnapshotArtifactReadErrorV1,
   type SnapshotArtifactReceiptV1,
@@ -15,9 +16,10 @@ const TENANT = "tenant-a";
 const SOURCE = "a".repeat(64);
 const RUNTIME = "b".repeat(64);
 const PROFILE = "c".repeat(64);
+const RUNTIME_DIGEST = "e".repeat(64);
 const BYTES = new Uint8Array([0, 1, 2, 255]);
 const RESULT = createHash("sha256").update(BYTES).digest("hex");
-const KEY = `tenants/${TENANT}/snapshots/${SOURCE}/${RUNTIME}/${PROFILE}/${RESULT}`;
+const KEY = `tenants/${TENANT}/snapshots/${SOURCE}/${RUNTIME}/${PROFILE}/${RUNTIME_DIGEST}/${RESULT}`;
 
 function body(bytes = BYTES) {
   return {
@@ -49,6 +51,7 @@ function receipt(overrides: Partial<SnapshotArtifactReceiptV1> = {}): SnapshotAr
     profileDigest: PROFILE,
     resultDigest: RESULT,
     runtimeConfigHash: RUNTIME,
+    runtimeDigest: RUNTIME_DIGEST,
     sourceDigest: SOURCE,
     versionId: "version-a",
     ...overrides,
@@ -84,6 +87,7 @@ describe("S3SnapshotArtifactStoreV1", () => {
       bytes: BYTES,
       profileDigest: PROFILE,
       runtimeConfigHash: RUNTIME,
+      runtimeDigest: RUNTIME_DIGEST,
       sourceDigest: SOURCE,
     });
     expect(stored).toEqual(receipt());
@@ -111,6 +115,7 @@ describe("S3SnapshotArtifactStoreV1", () => {
         bytes: BYTES,
         profileDigest: PROFILE,
         runtimeConfigHash: RUNTIME,
+        runtimeDigest: RUNTIME_DIGEST,
         sourceDigest: SOURCE,
       }),
     ).resolves.toEqual(receipt({ etag: '"current-etag"', versionId: "current-version" }));
@@ -132,6 +137,7 @@ describe("S3SnapshotArtifactStoreV1", () => {
         bytes: BYTES,
         profileDigest: PROFILE,
         runtimeConfigHash: RUNTIME,
+        runtimeDigest: RUNTIME_DIGEST,
         sourceDigest: SOURCE,
       }),
     ).rejects.toMatchObject({ code: "corrupt", name: "SnapshotArtifactReadErrorV1" });
@@ -163,6 +169,7 @@ describe("S3SnapshotArtifactStoreV1", () => {
         bytes: BYTES,
         profileDigest: PROFILE,
         runtimeConfigHash: RUNTIME,
+        runtimeDigest: RUNTIME_DIGEST,
         sourceDigest: SOURCE,
       }),
     ).resolves.toEqual(receipt());
@@ -196,6 +203,7 @@ describe("S3SnapshotArtifactStoreV1", () => {
         bytes: BYTES,
         profileDigest: PROFILE,
         runtimeConfigHash: RUNTIME,
+        runtimeDigest: RUNTIME_DIGEST,
         sourceDigest: SOURCE,
       }),
     ).resolves.toEqual(receipt());
@@ -207,11 +215,21 @@ describe("S3SnapshotArtifactStoreV1", () => {
     const { send, store } = testStore(async () => {
       throw new Error("unexpected S3 request");
     });
-    const valid = { bytes: BYTES, profileDigest: PROFILE, runtimeConfigHash: RUNTIME, sourceDigest: SOURCE };
+    const valid = {
+      bytes: BYTES,
+      profileDigest: PROFILE,
+      runtimeConfigHash: RUNTIME,
+      runtimeDigest: RUNTIME_DIGEST,
+      sourceDigest: SOURCE,
+    };
 
     await expect(store.put("Tenant-A", valid)).rejects.toThrow(/tenant/i);
     await expect(store.put(TENANT, { ...valid, sourceDigest: "A".repeat(64) })).rejects.toThrow(/source digest/i);
     await expect(store.put(TENANT, { ...valid, runtimeConfigHash: "short" })).rejects.toThrow(/runtime-config/i);
+    await expect(store.put(TENANT, { ...valid, runtimeDigest: "short" })).rejects.toThrow(/runtime digest/i);
+    await expect(store.put(TENANT, { ...valid, runtimeDigest: LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1 })).rejects.toThrow(
+      /reserved legacy/i,
+    );
     await expect(store.put(TENANT, { ...valid, profileDigest: `${PROFILE}0` })).rejects.toThrow(/profile digest/i);
     await expect(store.put(TENANT, { ...valid, bytes: new Uint8Array() })).rejects.toThrow(/between 1 byte/i);
     await expect(
@@ -265,6 +283,7 @@ describe("S3SnapshotArtifactStoreV1", () => {
             profileDigest: PROFILE,
             resultDigest: secondResult,
             runtimeConfigHash: RUNTIME,
+            runtimeDigest: LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1,
             sourceDigest: SOURCE,
             versionId: "version-b",
           },

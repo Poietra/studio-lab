@@ -8,6 +8,7 @@ import { manimTenantIdSchema } from "../../manim-request-principal";
 import {
   parseSnapshotArtifactReceiptV1 as artifactReceipt,
   sameSnapshotArtifactReceiptV1 as exactArtifact,
+  LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1,
   type SnapshotArtifactDeletionV1,
   type SnapshotArtifactReceiptV1,
   type SnapshotPublicationIdentityV1,
@@ -15,6 +16,7 @@ import {
   type SnapshotPublicationV1,
 } from "../snapshot-publication-repository";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
+import { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
 
 export const SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM =
   "5280f234896253f37a913da5197cc2547b6cb6313a746bea07153cbc5d62db27";
@@ -31,6 +33,7 @@ type ArtifactRow = QueryResultRow & {
   artifact_profile_digest: string;
   artifact_result_digest: string;
   artifact_runtime_config_hash: string;
+  artifact_runtime_digest: string;
   artifact_source_digest: string;
   artifact_tenant_id: string;
   artifact_version_id: string;
@@ -42,6 +45,7 @@ type PublicationRow = ArtifactRow & {
   publication_profile_digest: string;
   publication_result_digest: string;
   publication_runtime_config_hash: string;
+  publication_runtime_digest: string;
   publication_source_digest: string;
   published_at: Date;
   request_id: string;
@@ -63,6 +67,7 @@ type SceneHeadRow = Partial<PublicationRow> &
     head_generation: string;
     head_project_id: string;
     head_publication_id: string | null;
+    head_runtime_digest: string;
     head_scene_name: string;
     head_source_path: string;
     head_tenant_id: string;
@@ -83,6 +88,7 @@ function artifactColumns(alias: string) {
     ${alias}.source_digest AS artifact_source_digest,
     ${alias}.runtime_config_hash AS artifact_runtime_config_hash,
     ${alias}.profile_digest AS artifact_profile_digest,
+    ${alias}.runtime_digest AS artifact_runtime_digest,
     ${alias}.object_key AS artifact_object_key,
     ${alias}.version_id AS artifact_version_id,
     ${alias}.etag AS artifact_etag,
@@ -103,6 +109,7 @@ const PUBLICATION_COLUMNS = `
   p.source_digest AS publication_source_digest,
   p.runtime_config_hash AS publication_runtime_config_hash,
   p.profile_digest AS publication_profile_digest,
+  p.runtime_digest AS publication_runtime_digest,
   p.result_digest AS publication_result_digest,
   p.snapshot_hash,
   p.request_id,
@@ -183,8 +190,13 @@ function generationFromRow(value: unknown, name: string, maximum: bigint) {
 
 function publicationIdentity(value: SnapshotPublicationIdentityV1): SnapshotPublicationIdentityV1 {
   if (!value || typeof value !== "object") throw new TypeError("Snapshot publication identity is invalid.");
+  const runtimeDigest = sha256(value.runtimeDigest, "Snapshot runtime digest");
+  if (runtimeDigest === LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1) {
+    throw new TypeError("Snapshot runtime digest is reserved for legacy artifacts.");
+  }
   return {
     projectId: projectId(value.projectId),
+    runtimeDigest,
     sceneName: sceneName(value.sceneName),
     sourcePath: sourcePath(value.sourcePath),
     tenantId: tenantId(value.tenantId),
@@ -200,6 +212,7 @@ function artifactFromRow(row: ArtifactRow): SnapshotArtifactReceiptV1 {
     profileDigest: row.artifact_profile_digest,
     resultDigest: row.artifact_result_digest,
     runtimeConfigHash: row.artifact_runtime_config_hash,
+    runtimeDigest: row.artifact_runtime_digest,
     sourceDigest: row.artifact_source_digest,
     versionId: row.artifact_version_id,
   });
@@ -223,6 +236,7 @@ function deletionFromRow(row: DeletionRow, expectedTenant?: string): SnapshotArt
 function publicationFromRow(row: PublicationRow): SnapshotPublicationV1 {
   const identity = publicationIdentity({
     projectId: row.project_id,
+    runtimeDigest: row.publication_runtime_digest,
     sceneName: row.scene_name,
     sourcePath: row.source_path,
     tenantId: row.tenant_id,
@@ -234,6 +248,7 @@ function publicationFromRow(row: PublicationRow): SnapshotPublicationV1 {
     sha256(row.publication_runtime_config_hash, "Stored publication runtime-config hash") !==
       artifact.runtimeConfigHash ||
     sha256(row.publication_profile_digest, "Stored publication profile digest") !== artifact.profileDigest ||
+    identity.runtimeDigest !== artifact.runtimeDigest ||
     sha256(row.publication_result_digest, "Stored publication result digest") !== artifact.resultDigest ||
     !(row.published_at instanceof Date) ||
     Number.isNaN(row.published_at.getTime())
@@ -254,12 +269,16 @@ function publicationFromRow(row: PublicationRow): SnapshotPublicationV1 {
 
 function checkedPublication(value: SnapshotPublicationV1): SnapshotPublicationV1 {
   const identity = publicationIdentity(value);
+  const artifact = artifactReceipt(identity.tenantId, value.artifact);
+  if (artifact.runtimeDigest !== identity.runtimeDigest) {
+    throw new TypeError("The snapshot artifact does not belong to the publication runtime.");
+  }
   if (!(value.publishedAt instanceof Date) || Number.isNaN(value.publishedAt.getTime())) {
     throw new TypeError("Snapshot publication timestamp is invalid.");
   }
   return {
     ...identity,
-    artifact: artifactReceipt(identity.tenantId, value.artifact),
+    artifact,
     generation: generation(value.generation, "Snapshot generation", MAX_SCENE_GENERATION_V1),
     publicationId: uuid(value.publicationId, "Snapshot publication ID"),
     publishedAt: value.publishedAt,
@@ -275,6 +294,7 @@ function exactPublication(left: SnapshotPublicationV1, right: SnapshotPublicatio
     left.projectId === right.projectId &&
     left.sourcePath === right.sourcePath &&
     left.sceneName === right.sceneName &&
+    left.runtimeDigest === right.runtimeDigest &&
     left.generation === right.generation &&
     left.sourceGeneration === right.sourceGeneration &&
     left.publicationId === right.publicationId &&
@@ -301,6 +321,7 @@ function sourceFromRow(row: SourceHeadRow) {
 function headFromRow(row: SceneHeadRow, expected: SnapshotPublicationIdentityV1) {
   const identity = publicationIdentity({
     projectId: row.head_project_id,
+    runtimeDigest: row.head_runtime_digest,
     sceneName: row.head_scene_name,
     sourcePath: row.head_source_path,
     tenantId: row.head_tenant_id,
@@ -309,7 +330,8 @@ function headFromRow(row: SceneHeadRow, expected: SnapshotPublicationIdentityV1)
     identity.tenantId !== expected.tenantId ||
     identity.projectId !== expected.projectId ||
     identity.sourcePath !== expected.sourcePath ||
-    identity.sceneName !== expected.sceneName
+    identity.sceneName !== expected.sceneName ||
+    identity.runtimeDigest !== expected.runtimeDigest
   ) {
     throw new TypeError("PostgreSQL returned a snapshot head for another Scene.");
   }
@@ -321,6 +343,7 @@ function headFromRow(row: SceneHeadRow, expected: SnapshotPublicationIdentityV1)
     publication.projectId !== identity.projectId ||
     publication.sourcePath !== identity.sourcePath ||
     publication.sceneName !== identity.sceneName ||
+    publication.runtimeDigest !== identity.runtimeDigest ||
     publication.generation !== headGeneration ||
     publication.publicationId !== uuid(row.head_publication_id, "Stored snapshot head publication ID")
   ) {
@@ -368,25 +391,31 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
          h.project_id AS head_project_id,
          h.source_path AS head_source_path,
          h.scene_name AS head_scene_name,
+         h.runtime_digest AS head_runtime_digest,
          h.generation::text AS head_generation,
          h.publication_id::text AS head_publication_id,
          ${PUBLICATION_COLUMNS}
          FROM public.snapshot_scene_heads h
          LEFT JOIN public.snapshot_publications p
-           ON p.tenant_id = h.tenant_id AND p.publication_id = h.publication_id
+           ON p.tenant_id = h.tenant_id
+          AND p.publication_id = h.publication_id
+          AND p.runtime_digest = h.runtime_digest
          LEFT JOIN public.snapshot_artifact_objects a
-           ON a.tenant_id = p.tenant_id AND a.result_digest = p.result_digest
+           ON a.tenant_id = p.tenant_id
+          AND a.result_digest = p.result_digest
+          AND a.runtime_digest = p.runtime_digest
         WHERE h.tenant_id = $1 AND h.project_id = $2 AND h.source_path = $3 AND h.scene_name = $4
+          AND h.runtime_digest = $5
         FOR UPDATE OF h`,
-      [identity.tenantId, identity.projectId, identity.sourcePath, identity.sceneName],
+      [identity.tenantId, identity.projectId, identity.sourcePath, identity.sceneName, identity.runtimeDigest],
     );
     if (result.rows.length > 1) throw new TypeError("PostgreSQL returned duplicate snapshot Scene heads.");
     return result.rows[0] ? headFromRow(result.rows[0], identity) : null;
   }
 
-  async #lockArtifact(client: PoolClient, tenant: string, resultDigest: string) {
+  async #lockArtifact(client: PoolClient, tenant: string, runtimeDigest: string, resultDigest: string) {
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
-      `snapshot-artifact:${tenant}:${resultDigest}`,
+      `snapshot-artifact:${tenant}:${runtimeDigest}:${resultDigest}`,
     ]);
   }
 
@@ -395,9 +424,12 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
       `SELECT ${ARTIFACT_COLUMNS}
          FROM public.snapshot_artifact_objects a
         WHERE a.tenant_id = $1
-          AND (a.result_digest = $2 OR (a.object_key = $3 AND a.version_id = $4))
+          AND (
+            (a.result_digest = $2 AND a.runtime_digest = $3)
+            OR (a.object_key = $4 AND a.version_id = $5)
+          )
         FOR UPDATE`,
-      [tenant, candidate.resultDigest, candidate.objectKey, candidate.versionId],
+      [tenant, candidate.resultDigest, candidate.runtimeDigest, candidate.objectKey, candidate.versionId],
     );
     if (existing.rows.length > 1) {
       throw new TypeError("The stored snapshot artifact metadata conflicts with its immutable identity.");
@@ -420,6 +452,7 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
           AND p.source_digest = a.source_digest
           AND p.runtime_config_hash = a.runtime_config_hash
           AND p.profile_digest = a.profile_digest
+          AND p.runtime_digest = a.runtime_digest
          JOIN public.snapshot_scene_heads h
            ON h.tenant_id = p.tenant_id
           AND h.project_id = p.project_id
@@ -427,6 +460,7 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
           AND h.scene_name = p.scene_name
           AND h.generation = p.generation
           AND h.publication_id = p.publication_id
+          AND h.runtime_digest = p.runtime_digest
          JOIN public.workspace_projects project
            ON project.tenant_id = p.tenant_id AND project.project_id = p.project_id AND project.deleted_at IS NULL
          JOIN public.workspace_source_heads source
@@ -440,10 +474,11 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
           AND a.source_digest = $3
           AND a.runtime_config_hash = $4
           AND a.profile_digest = $5
-          AND a.object_key = $6
-          AND a.version_id = $7
-          AND a.etag = $8
-          AND a.byte_size = $9
+          AND a.runtime_digest = $6
+          AND a.object_key = $7
+          AND a.version_id = $8
+          AND a.etag = $9
+          AND a.byte_size = $10
         LIMIT 1`,
       [
         tenant,
@@ -451,6 +486,7 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
         artifact.sourceDigest,
         artifact.runtimeConfigHash,
         artifact.profileDigest,
+        artifact.runtimeDigest,
         artifact.objectKey,
         artifact.versionId,
         artifact.etag,
@@ -472,13 +508,14 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
     lockHeld = false,
   ) {
     const candidate = artifactReceipt(tenant, candidateValue);
-    if (!lockHeld) await this.#lockArtifact(client, tenant, candidate.resultDigest);
+    if (!lockHeld) await this.#lockArtifact(client, tenant, candidate.runtimeDigest, candidate.resultDigest);
     const values = [
       tenant,
       candidate.resultDigest,
       candidate.sourceDigest,
       candidate.runtimeConfigHash,
       candidate.profileDigest,
+      candidate.runtimeDigest,
       candidate.objectKey,
       candidate.versionId,
       candidate.etag,
@@ -495,8 +532,8 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
     const inserted = await client.query<ArtifactRow>(
       `INSERT INTO public.snapshot_artifact_objects
          (tenant_id, result_digest, source_digest, runtime_config_hash, profile_digest,
-          object_key, version_id, etag, byte_size)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          runtime_digest, object_key, version_id, etag, byte_size)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT DO NOTHING
        RETURNING
          tenant_id AS artifact_tenant_id,
@@ -504,6 +541,7 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
          source_digest AS artifact_source_digest,
          runtime_config_hash AS artifact_runtime_config_hash,
          profile_digest AS artifact_profile_digest,
+         runtime_digest AS artifact_runtime_digest,
          object_key AS artifact_object_key,
          version_id AS artifact_version_id,
          etag AS artifact_etag,
@@ -537,12 +575,14 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
       `UPDATE public.snapshot_scene_heads
           SET publication_id = NULL, updated_at = clock_timestamp()
         WHERE tenant_id = $1 AND project_id = $2 AND source_path = $3 AND scene_name = $4
-          AND generation = $5::bigint AND publication_id = $6::uuid`,
+          AND runtime_digest = $5
+          AND generation = $6::bigint AND publication_id = $7::uuid`,
       [
         identity.tenantId,
         identity.projectId,
         identity.sourcePath,
         identity.sceneName,
+        identity.runtimeDigest,
         expectedGeneration.toString(),
         publicationId,
       ],
@@ -559,12 +599,18 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
 
   async ready(signal?: AbortSignal) {
     try {
-      const result = await this.#connection.query<{ checksum: string }>(
-        "SELECT checksum FROM public.poietra_schema_migrations WHERE version = 3",
+      const result = await this.#connection.query<{ checksum: string; version: number }>(
+        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (3, 10) ORDER BY version",
         [],
         signal,
       );
-      return result.rows.length === 1 && result.rows[0]?.checksum === SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM;
+      return (
+        result.rows.length === 2 &&
+        result.rows[0]?.version === 3 &&
+        result.rows[0]?.checksum === SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM &&
+        result.rows[1]?.version === 10 &&
+        result.rows[1]?.checksum === SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM
+      );
     } catch {
       throwIfAborted(signal);
       return false;
@@ -583,12 +629,15 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
     if (artifact.sourceDigest !== expectedSourceDigest) {
       throw new TypeError("The snapshot artifact does not belong to the expected source.");
     }
+    if (artifact.runtimeDigest !== identity.runtimeDigest) {
+      throw new TypeError("The snapshot artifact does not belong to the active runtime.");
+    }
     const publicationId = uuid(input.publicationId, "Snapshot publication ID");
     const requestId = boundedText(input.requestId, "Snapshot request ID", 2_048);
     const snapshotHash = sha256(input.snapshotHash, "Snapshot hash");
 
     return this.#connection.transaction(async (client) => {
-      await this.#lockArtifact(client, identity.tenantId, artifact.resultDigest);
+      await this.#lockArtifact(client, identity.tenantId, identity.runtimeDigest, artifact.resultDigest);
       const source = await this.#currentSource(client, identity);
       if (
         !source ||
@@ -621,8 +670,8 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
            INSERT INTO public.snapshot_publications
              (tenant_id, publication_id, project_id, source_path, scene_name, generation,
               source_generation, source_digest, runtime_config_hash, profile_digest, result_digest,
-              snapshot_hash, request_id)
-           VALUES ($1, $5::uuid, $2, $3, $4, $6::bigint, $7::bigint, $8, $9, $10, $11, $12, $13)
+              runtime_digest, snapshot_hash, request_id)
+           VALUES ($1, $6::uuid, $2, $3, $4, $7::bigint, $8::bigint, $9, $10, $11, $12, $5, $13, $14)
            RETURNING *
          )
          SELECT
@@ -636,6 +685,7 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
            p.source_digest AS publication_source_digest,
            p.runtime_config_hash AS publication_runtime_config_hash,
            p.profile_digest AS publication_profile_digest,
+           p.runtime_digest AS publication_runtime_digest,
            p.result_digest AS publication_result_digest,
            p.snapshot_hash,
            p.request_id,
@@ -643,12 +693,15 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
            ${ARTIFACT_COLUMNS}
            FROM inserted p
            JOIN public.snapshot_artifact_objects a
-             ON a.tenant_id = p.tenant_id AND a.result_digest = p.result_digest`,
+             ON a.tenant_id = p.tenant_id
+            AND a.result_digest = p.result_digest
+            AND a.runtime_digest = p.runtime_digest`,
         [
           identity.tenantId,
           identity.projectId,
           identity.sourcePath,
           identity.sceneName,
+          identity.runtimeDigest,
           publicationId,
           nextGeneration.toString(),
           expectedSourceGeneration.toString(),
@@ -669,8 +722,9 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
           `UPDATE public.snapshot_scene_heads
               SET generation = $5::bigint, publication_id = $6::uuid, updated_at = clock_timestamp()
             WHERE tenant_id = $1 AND project_id = $2 AND source_path = $3 AND scene_name = $4
-              AND generation = $7::bigint
-              AND publication_id IS NOT DISTINCT FROM $8::uuid`,
+              AND runtime_digest = $7
+              AND generation = $8::bigint
+              AND publication_id IS NOT DISTINCT FROM $9::uuid`,
           [
             identity.tenantId,
             identity.projectId,
@@ -678,6 +732,7 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
             identity.sceneName,
             nextGeneration.toString(),
             publicationId,
+            identity.runtimeDigest,
             currentHead.generation.toString(),
             currentHead.publication?.publicationId ?? null,
           ],
@@ -686,13 +741,14 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
       } else {
         await client.query(
           `INSERT INTO public.snapshot_scene_heads
-             (tenant_id, project_id, source_path, scene_name, generation, publication_id)
-           VALUES ($1, $2, $3, $4, $5::bigint, $6::uuid)`,
+             (tenant_id, project_id, source_path, scene_name, runtime_digest, generation, publication_id)
+           VALUES ($1, $2, $3, $4, $5, $6::bigint, $7::uuid)`,
           [
             identity.tenantId,
             identity.projectId,
             identity.sourcePath,
             identity.sceneName,
+            identity.runtimeDigest,
             nextGeneration.toString(),
             publicationId,
           ],
@@ -834,13 +890,14 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
       artifact.sourceDigest,
       artifact.runtimeConfigHash,
       artifact.profileDigest,
+      artifact.runtimeDigest,
       artifact.objectKey,
       artifact.versionId,
       artifact.etag,
       artifact.byteSize,
     ];
     return this.#connection.transaction(async (client) => {
-      await this.#lockArtifact(client, tenant, artifact.resultDigest);
+      await this.#lockArtifact(client, tenant, artifact.runtimeDigest, artifact.resultDigest);
       const stored = await this.#storedArtifact(client, tenant, artifact);
       const queued = await client.query<DeletionRow>(
         `SELECT d.deletion_id::text AS deletion_id, d.deleted_at, ${artifactColumns("d")}
@@ -871,12 +928,14 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
             AND h.scene_name = p.scene_name
             AND h.generation = p.generation
             AND h.publication_id = p.publication_id
+            AND h.runtime_digest = p.runtime_digest
             AND p.tenant_id = $1
             AND p.result_digest = $2
             AND p.source_digest = $3
             AND p.runtime_config_hash = $4
-            AND p.profile_digest = $5`,
-        values.slice(0, 5),
+            AND p.profile_digest = $5
+            AND p.runtime_digest = $6`,
+        values.slice(0, 6),
       );
       await client.query(
         `DELETE FROM public.workspace_project_references reference
@@ -889,8 +948,9 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
             AND p.result_digest = $2
             AND p.source_digest = $3
             AND p.runtime_config_hash = $4
-            AND p.profile_digest = $5`,
-        values.slice(0, 5),
+            AND p.profile_digest = $5
+            AND p.runtime_digest = $6`,
+        values.slice(0, 6),
       );
       await client.query(
         `DELETE FROM public.snapshot_publications
@@ -898,8 +958,9 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
             AND result_digest = $2
             AND source_digest = $3
             AND runtime_config_hash = $4
-            AND profile_digest = $5`,
-        values.slice(0, 5),
+            AND profile_digest = $5
+            AND runtime_digest = $6`,
+        values.slice(0, 6),
       );
       const removed = await client.query(
         `DELETE FROM public.snapshot_artifact_objects
@@ -908,10 +969,11 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
             AND source_digest = $3
             AND runtime_config_hash = $4
             AND profile_digest = $5
-            AND object_key = $6
-            AND version_id = $7
-            AND etag = $8
-            AND byte_size = $9`,
+            AND runtime_digest = $6
+            AND object_key = $7
+            AND version_id = $8
+            AND etag = $9
+            AND byte_size = $10`,
         values,
       );
       if (stored && removed.rowCount !== 1) {
@@ -922,8 +984,8 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
       const inserted = await client.query<DeletionRow>(
         `INSERT INTO public.snapshot_artifact_deletions
            (deletion_id, tenant_id, result_digest, source_digest, runtime_config_hash,
-            profile_digest, object_key, version_id, etag, byte_size)
-         VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            profile_digest, runtime_digest, object_key, version_id, etag, byte_size)
+         VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          ON CONFLICT (tenant_id, object_key, version_id) DO UPDATE
            SET object_key = EXCLUDED.object_key
          RETURNING deletion_id::text AS deletion_id, deleted_at, ${artifactColumns("snapshot_artifact_deletions")}`,

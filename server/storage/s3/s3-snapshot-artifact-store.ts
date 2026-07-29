@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { manimTenantIdSchema } from "../../manim-request-principal";
 import {
+  LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1,
   MAX_SNAPSHOT_ARTIFACT_BYTES_V1,
   parseSnapshotArtifactReceiptV1,
   SnapshotArtifactReadErrorV1,
@@ -46,13 +47,15 @@ function parseArtifactKey(key: string, prefix: string) {
     throw new Error("S3 returned a snapshot key outside the tenant prefix.");
   }
   const parts = key.slice(prefix.length).split("/");
-  if (parts.length !== 4 || parts.some((part) => !SHA256.test(part))) {
+  if ((parts.length !== 4 && parts.length !== 5) || parts.some((part) => !SHA256.test(part))) {
     throw new Error("S3 returned an invalid snapshot artifact key.");
   }
+  const legacy = parts.length === 4;
   return {
     profileDigest: parts[2]!,
-    resultDigest: parts[3]!,
+    resultDigest: parts[legacy ? 3 : 4]!,
     runtimeConfigHash: parts[1]!,
+    runtimeDigest: legacy ? LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1 : parts[3]!,
     sourceDigest: parts[0]!,
   };
 }
@@ -245,6 +248,7 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
       profileDigest: string;
       resultDigest: string;
       runtimeConfigHash: string;
+      runtimeDigest: string;
       sourceDigest: string;
     }>,
     operation: PrivateVersionedS3BucketOperationV1,
@@ -286,6 +290,7 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
       bytes: Uint8Array;
       profileDigest: string;
       runtimeConfigHash: string;
+      runtimeDigest: string;
       sourceDigest: string;
     }>,
     signal?: AbortSignal,
@@ -298,11 +303,15 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
       throw new RangeError("Snapshot artifacts must contain between 1 byte and 16 MiB.");
     }
     const bytes = Uint8Array.from(input.bytes);
+    if (input.runtimeDigest === LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1) {
+      throw new TypeError("The reserved legacy snapshot runtime digest cannot be uploaded.");
+    }
     const identity = {
       byteSize: bytes.byteLength,
       profileDigest: input.profileDigest,
       resultDigest: resultDigest(bytes),
       runtimeConfigHash: input.runtimeConfigHash,
+      runtimeDigest: input.runtimeDigest,
       sourceDigest: input.sourceDigest,
     };
     const objectKey = snapshotArtifactObjectKeyV1(tenant, identity);

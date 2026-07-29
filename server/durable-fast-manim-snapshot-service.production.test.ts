@@ -123,6 +123,7 @@ function durableStorage() {
       profileDigest: input.profileDigest,
       resultDigest,
       runtimeConfigHash: input.runtimeConfigHash,
+      runtimeDigest: input.runtimeDigest,
       sourceDigest: input.sourceDigest,
     };
     return {
@@ -145,6 +146,7 @@ function durableStorage() {
       publicationId: input.publicationId,
       publishedAt: PUBLISHED_AT,
       requestId: input.requestId,
+      runtimeDigest: input.runtimeDigest,
       sceneName: input.sceneName,
       snapshotHash: input.snapshotHash,
       sourceGeneration: input.expectedSourceGeneration,
@@ -257,10 +259,12 @@ describe.skipIf(!canRunProductionUdsFixture)("durable production snapshot path",
     const artifactDocument = JSON.parse(Buffer.from(storage.artifactBytes()!).toString("utf8")) as {
       expected: { projectId: string; requestId: string; sourceHash: string };
       profileDigest: string;
+      runtimeDigest: string;
     };
     expect(artifactDocument).toMatchObject({
       expected: { projectId: PROJECT, requestId: "snapshot-request-1", sourceHash: SOURCE_DIGEST },
       profileDigest: FAST_MANIM_GATED_OCI_PROFILE_DIGEST_V1,
+      runtimeDigest: release.signedRelease.payload.runtimeDigest,
     });
   }, 30_000);
 });

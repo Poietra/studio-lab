@@ -46,7 +46,7 @@ export async function createFastManimProductionSandboxClientV1(options: FastMani
   assertStudioPrincipal(options.brokerUserId, options.socketGroupId);
   await assertFastManimProductionBrokerSocketV1(options.socketPath, options.brokerUserId, options.socketGroupId);
   const release = verifyFastManimGatedOciReleaseV1(options.signedRelease, options.publicKeys);
-  const { profileDigest } = release.descriptor();
+  const { profileDigest, runtimeDigest } = release.descriptor();
   return Object.freeze({
     attestationVerifier: release.attestationVerifier,
     backend: new FastManimUdsSandboxBackendV1({
@@ -54,5 +54,6 @@ export async function createFastManimProductionSandboxClientV1(options: FastMani
       socketPath: options.socketPath,
     }),
     profileDigest,
+    runtimeDigest,
   });
 }

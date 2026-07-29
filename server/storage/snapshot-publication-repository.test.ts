@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1,
   MAX_SNAPSHOT_ARTIFACT_BYTES_V1,
   parseSnapshotArtifactReceiptV1,
+  type SnapshotArtifactReceiptV1,
   sameSnapshotArtifactReceiptV1,
   snapshotArtifactObjectKeyV1,
-  type SnapshotArtifactReceiptV1,
 } from "./snapshot-publication-repository";
 
 const TENANT = "tenant-a";
@@ -13,15 +14,17 @@ const SOURCE = "1".repeat(64);
 const RUNTIME = "2".repeat(64);
 const PROFILE = "3".repeat(64);
 const RESULT = "4".repeat(64);
+const RUNTIME_DIGEST = "5".repeat(64);
 
 function receipt(overrides: Partial<SnapshotArtifactReceiptV1> = {}): SnapshotArtifactReceiptV1 {
   return {
     byteSize: 42,
     etag: '"etag-a"',
-    objectKey: `tenants/${TENANT}/snapshots/${SOURCE}/${RUNTIME}/${PROFILE}/${RESULT}`,
+    objectKey: `tenants/${TENANT}/snapshots/${SOURCE}/${RUNTIME}/${PROFILE}/${RUNTIME_DIGEST}/${RESULT}`,
     profileDigest: PROFILE,
     resultDigest: RESULT,
     runtimeConfigHash: RUNTIME,
+    runtimeDigest: RUNTIME_DIGEST,
     sourceDigest: SOURCE,
     versionId: "version-a",
     ...overrides,
@@ -33,6 +36,11 @@ describe("snapshot artifact receipt helpers", () => {
     expect(snapshotArtifactObjectKeyV1(TENANT, receipt())).toBe(receipt().objectKey);
     expect(parseSnapshotArtifactReceiptV1(TENANT, { ...receipt(), ignored: true })).toEqual(receipt());
     expect(() => snapshotArtifactObjectKeyV1("../tenant", receipt())).toThrow(/tenant id/i);
+    const legacy = receipt({
+      objectKey: `tenants/${TENANT}/snapshots/${SOURCE}/${RUNTIME}/${PROFILE}/${RESULT}`,
+      runtimeDigest: LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1,
+    });
+    expect(parseSnapshotArtifactReceiptV1(TENANT, legacy)).toEqual(legacy);
   });
 
   it.each([
@@ -45,6 +53,7 @@ describe("snapshot artifact receipt helpers", () => {
     ["oversized version", { versionId: "v".repeat(1_025) }],
     ["source digest", { sourceDigest: "A".repeat(64) }],
     ["runtime digest", { runtimeConfigHash: "2".repeat(63) }],
+    ["sandbox runtime digest", { runtimeDigest: "5".repeat(63) }],
     ["profile digest", { profileDigest: "3".repeat(65) }],
     ["result digest", { resultDigest: "not-a-digest" }],
   ])("rejects an invalid %s", (_name, override) => {

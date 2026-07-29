@@ -7,6 +7,7 @@ import {
   PostgresSnapshotPublicationRepositoryV1,
   SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM,
 } from "./postgres-snapshot-publication-repository";
+import { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
 
 const TENANT = "tenant-a";
 const PROJECT = "project-a";
@@ -18,25 +19,29 @@ const DELETION_ID = "87654321-4321-4321-8321-cba987654321";
 const SOURCE_A = "a".repeat(64);
 const SOURCE_B = "b".repeat(64);
 const RUNTIME = "c".repeat(64);
+const RUNTIME_DIGEST = "1".repeat(64);
+const OTHER_RUNTIME_DIGEST = "2".repeat(64);
 const PROFILE = "d".repeat(64);
 const RESULT = "e".repeat(64);
 const SNAPSHOT = "f".repeat(64);
 
 const identity: SnapshotPublicationIdentityV1 = {
   projectId: PROJECT,
+  runtimeDigest: RUNTIME_DIGEST,
   sceneName: SCENE,
   sourcePath: SOURCE_PATH,
   tenantId: TENANT,
 };
 
-function artifact(sourceDigest = SOURCE_A): SnapshotArtifactReceiptV1 {
+function artifact(sourceDigest = SOURCE_A, runtimeDigest = RUNTIME_DIGEST): SnapshotArtifactReceiptV1 {
   return {
     byteSize: 128,
     etag: "artifact-etag",
-    objectKey: `tenants/${TENANT}/snapshots/${sourceDigest}/${RUNTIME}/${PROFILE}/${RESULT}`,
+    objectKey: `tenants/${TENANT}/snapshots/${sourceDigest}/${RUNTIME}/${PROFILE}/${runtimeDigest}/${RESULT}`,
     profileDigest: PROFILE,
     resultDigest: RESULT,
     runtimeConfigHash: RUNTIME,
+    runtimeDigest,
     sourceDigest,
     versionId: "artifact-version",
   };
@@ -50,6 +55,7 @@ function artifactRow(value = artifact()) {
     artifact_profile_digest: value.profileDigest,
     artifact_result_digest: value.resultDigest,
     artifact_runtime_config_hash: value.runtimeConfigHash,
+    artifact_runtime_digest: value.runtimeDigest,
     artifact_source_digest: value.sourceDigest,
     artifact_tenant_id: TENANT,
     artifact_version_id: value.versionId,
@@ -86,6 +92,7 @@ function publicationRow(
     publication_profile_digest: storedArtifact.profileDigest,
     publication_result_digest: storedArtifact.resultDigest,
     publication_runtime_config_hash: storedArtifact.runtimeConfigHash,
+    publication_runtime_digest: storedArtifact.runtimeDigest,
     publication_source_digest: storedArtifact.sourceDigest,
     published_at: new Date("2026-07-28T00:00:00.000Z"),
     request_id: "request-a",
@@ -109,6 +116,7 @@ function sceneHeadRow(
     head_generation: options.generation ?? "2",
     head_project_id: PROJECT,
     head_publication_id: publication?.publication_id ?? null,
+    head_runtime_digest: RUNTIME_DIGEST,
     head_scene_name: SCENE,
     head_source_path: SOURCE_PATH,
     head_tenant_id: TENANT,
@@ -234,6 +242,37 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
     expect(fixture.query.mock.calls.at(-1)).toEqual(["COMMIT"]);
   });
 
+  it("rejects an artifact from another runtime before opening a transaction", async () => {
+    const fixture = fakePool((text) => {
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresSnapshotPublicationRepositoryV1({ pool: fixture.pool });
+
+    await expect(
+      repository.publish({ ...publishInput(), artifact: artifact(SOURCE_A, OTHER_RUNTIME_DIGEST) }),
+    ).rejects.toThrow("does not belong to the active runtime");
+    expect(fixture.query).not.toHaveBeenCalled();
+  });
+
+  it("keys current Scene heads by the active runtime digest", async () => {
+    const fixture = fakePool((text, values) => {
+      if (text.includes("FROM public.workspace_source_heads h")) {
+        return { rowCount: 1, rows: [sourceRow()] };
+      }
+      if (text.includes("FROM public.snapshot_scene_heads h")) {
+        expect(text).toContain("h.runtime_digest = $5");
+        expect(values).toEqual([TENANT, PROJECT, SOURCE_PATH, SCENE, OTHER_RUNTIME_DIGEST]);
+        return { rowCount: 0, rows: [] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresSnapshotPublicationRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.readCurrent({ ...identity, runtimeDigest: OTHER_RUNTIME_DIGEST })).resolves.toEqual({
+      kind: "missing",
+    });
+  });
+
   it("increments a tombstoned Scene head instead of resetting its generation", async () => {
     const fixture = fakePool((text, values) => {
       if (text.includes("FROM public.workspace_source_heads h")) {
@@ -249,11 +288,11 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
         return { rowCount: 1, rows: [sceneHeadRow({ generation: "7", publication: null })] };
       }
       if (text.startsWith("WITH inserted AS")) {
-        expect(values[5]).toBe("8");
+        expect(values[6]).toBe("8");
         return { rowCount: 1, rows: [publicationRow({ generation: "8" })] };
       }
       if (text.startsWith("UPDATE public.snapshot_scene_heads")) {
-        expect(values).toEqual([TENANT, PROJECT, SOURCE_PATH, SCENE, "8", PUBLICATION_ID, "7", null]);
+        expect(values).toEqual([TENANT, PROJECT, SOURCE_PATH, SCENE, "8", PUBLICATION_ID, RUNTIME_DIGEST, "7", null]);
         return { rowCount: 1, rows: [] };
       }
       if (text.startsWith("INSERT INTO public.workspace_project_references")) {
@@ -334,6 +373,32 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
     expect(fixture.query.mock.calls.at(-1)).toEqual(["ROLLBACK"]);
   });
 
+  it("does not reuse an identical result digest registered by another runtime", async () => {
+    const otherRuntimeRow = artifactRow(artifact(SOURCE_A, OTHER_RUNTIME_DIGEST));
+    const fixture = fakePool((text, values) => {
+      if (text.includes("FROM public.workspace_source_heads h")) {
+        return { rowCount: 1, rows: [sourceRow()] };
+      }
+      if (text.includes("SELECT 1 FROM public.snapshot_artifact_deletions")) {
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.startsWith("INSERT INTO public.snapshot_artifact_objects")) {
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.includes("FROM public.snapshot_artifact_objects a")) {
+        expect(text).toContain("a.result_digest = $2 AND a.runtime_digest = $3");
+        expect(values.slice(0, 3)).toEqual([TENANT, RESULT, RUNTIME_DIGEST]);
+        return { rowCount: 1, rows: [otherRuntimeRow] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresSnapshotPublicationRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.publish(publishInput())).rejects.toThrow(
+      "stored snapshot artifact metadata conflicts with its immutable identity",
+    );
+  });
+
   it("tombstones only the stale publication generation and releases its project reference", async () => {
     const stalePublication = publicationRow({ sourceDigest: SOURCE_A, sourceGeneration: "4" });
     const fixture = fakePool((text, values) => {
@@ -344,7 +409,7 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
         return { rowCount: 1, rows: [sceneHeadRow({ generation: "2", publication: stalePublication })] };
       }
       if (text.startsWith("UPDATE public.snapshot_scene_heads")) {
-        expect(values).toEqual([TENANT, PROJECT, SOURCE_PATH, SCENE, "2", PUBLICATION_ID]);
+        expect(values).toEqual([TENANT, PROJECT, SOURCE_PATH, SCENE, RUNTIME_DIGEST, "2", PUBLICATION_ID]);
         return { rowCount: 1, rows: [] };
       }
       if (text.startsWith("DELETE FROM public.workspace_project_references")) {
@@ -404,7 +469,7 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
     ).resolves.toBe(true);
   });
 
-  it("uses only the exact current artifact lookup and verifies migration v3 readiness", async () => {
+  it("uses only the exact current artifact lookup and verifies migration v3 and v10 readiness", async () => {
     const fixture = fakePool((text, values) => {
       if (text.includes("FROM public.snapshot_artifact_objects a")) {
         expect(text).toContain("source.generation = p.source_generation");
@@ -414,6 +479,7 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
           SOURCE_A,
           RUNTIME,
           PROFILE,
+          RUNTIME_DIGEST,
           artifact().objectKey,
           "artifact-version",
           "artifact-etag",
@@ -423,7 +489,13 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
       }
       if (text.includes("poietra_schema_migrations")) {
         expect(values).toEqual([]);
-        return { rowCount: 1, rows: [{ checksum: SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM }] };
+        return {
+          rowCount: 2,
+          rows: [
+            { checksum: SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM, version: 3 },
+            { checksum: SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM, version: 10 },
+          ],
+        };
       }
       throw new Error(`Unexpected query: ${text}`);
     });
@@ -431,6 +503,21 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
 
     await expect(repository.isArtifactPublished(TENANT, artifact())).resolves.toBe(true);
     await expect(repository.ready()).resolves.toBe(true);
+  });
+
+  it("is not ready when the runtime-digest migration is missing", async () => {
+    const fixture = fakePool((text) => {
+      if (text.includes("poietra_schema_migrations")) {
+        return {
+          rowCount: 1,
+          rows: [{ checksum: SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM, version: 3 }],
+        };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresSnapshotPublicationRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.ready()).resolves.toBe(false);
   });
 
   it("uses the deletion lock during publication and refuses an already queued object version", async () => {
@@ -450,7 +537,7 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
     const domainCalls = fixture.query.mock.calls.filter(([text]) => !text.startsWith("SELECT set_config("));
     expect(domainCalls[1]).toEqual([
       "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-      [`snapshot-artifact:${TENANT}:${RESULT}`],
+      [`snapshot-artifact:${TENANT}:${RUNTIME_DIGEST}:${RESULT}`],
     ]);
     expect(fixture.query.mock.calls.map(([text]) => text).join("\n")).not.toContain(
       "INSERT INTO public.snapshot_artifact_objects",

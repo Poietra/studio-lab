@@ -206,6 +206,8 @@ describe("production gated OCI host contract", () => {
 
       expect(client.backend).toBeInstanceOf(FastManimUdsSandboxBackendV1);
       expect(client.attestationVerifier).toBeTypeOf("function");
+      expect(client.profileDigest).toBe(options.signedRelease.payload.profileDigest);
+      expect(client.runtimeDigest).toBe(options.signedRelease.payload.runtimeDigest);
     } finally {
       vi.restoreAllMocks();
       await client?.backend.close();
