@@ -130,6 +130,33 @@ describe("S3ProjectPngStoreV1", () => {
     expect(isolated.send).not.toHaveBeenCalled();
   });
 
+  it("destroys unread response bodies when exact or duplicate-discovery metadata is incomplete", async () => {
+    const exactBody = body();
+    const exact = testStore(async () => ({
+      Body: exactBody,
+      ContentLength: BYTES.byteLength,
+      VersionId: "version-a",
+    })).store;
+    await expect(exact.read(TENANT, PROJECT, receipt())).rejects.toThrow(/ETag/i);
+    expect(exactBody.destroy).toHaveBeenCalledOnce();
+
+    const discoveryBody = body();
+    const duplicate = testStore(async (command) => {
+      if (command.constructor.name === "PutObjectCommand") {
+        const error = new Error("already exists");
+        error.name = "PreconditionFailed";
+        throw error;
+      }
+      return {
+        Body: discoveryBody,
+        ContentLength: BYTES.byteLength,
+        ETag: '"etag-a"',
+      };
+    }).store;
+    await expect(duplicate.put(TENANT, PROJECT, BYTES)).rejects.toThrow(/receipt/i);
+    expect(discoveryBody.destroy).toHaveBeenCalledOnce();
+  });
+
   it("lists only bounded old tenant versions and produces a tenant-bound cursor", async () => {
     const old = new Date("2026-07-27T00:00:00.000Z");
     const cutoff = new Date("2026-07-28T00:00:00.000Z");

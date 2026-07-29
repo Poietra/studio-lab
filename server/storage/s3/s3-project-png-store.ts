@@ -52,6 +52,7 @@ function destroyBody(body: unknown) {
 
 async function boundedBody(body: unknown, signal: AbortSignal) {
   if (!body || typeof body !== "object" || !(Symbol.asyncIterator in body)) {
+    destroyBody(body);
     throw new Error("S3 returned an unreadable image.png body.");
   }
   const chunks: Uint8Array[] = [];
@@ -147,13 +148,17 @@ export class S3ProjectPngStoreV1 implements ProjectPngBlobStoreV1 {
   ) {
     const receipt = assertProjectPngReceiptV1(tenant, project, value);
     const response = await operation.getObject({ Key: receipt.objectKey, VersionId: receipt.versionId });
-    if (
-      response.VersionId !== receipt.versionId ||
-      response.ContentLength !== receipt.byteSize ||
-      normalizeEtag(response.ETag) !== receipt.etag
-    ) {
+    try {
+      if (
+        response.VersionId !== receipt.versionId ||
+        response.ContentLength !== receipt.byteSize ||
+        normalizeEtag(response.ETag) !== receipt.etag
+      ) {
+        throw new Error("The versioned S3 image.png metadata does not match its receipt.");
+      }
+    } catch (error) {
       destroyBody(response.Body);
-      throw new Error("The versioned S3 image.png metadata does not match its receipt.");
+      throw error;
     }
     const inspected = inspectProjectPngBytesV1(await boundedBody(response.Body, operation.signal));
     if (inspected.byteSize !== receipt.byteSize || inspected.digest !== receipt.digest) {
@@ -170,16 +175,21 @@ export class S3ProjectPngStoreV1 implements ProjectPngBlobStoreV1 {
   ) {
     const objectKey = projectPngObjectKeyV1(tenant, project, inspected.digest);
     const response = await operation.getObject({ Key: objectKey });
-    const receipt = assertProjectPngReceiptV1(tenant, project, {
-      byteSize: inspected.byteSize,
-      digest: inspected.digest,
-      etag: normalizeEtag(response.ETag),
-      objectKey,
-      versionId: response.VersionId ?? "",
-    });
-    if (response.ContentLength !== inspected.byteSize) {
+    let receipt: ProjectPngBlobReceiptV1;
+    try {
+      receipt = assertProjectPngReceiptV1(tenant, project, {
+        byteSize: inspected.byteSize,
+        digest: inspected.digest,
+        etag: normalizeEtag(response.ETag),
+        objectKey,
+        versionId: response.VersionId ?? "",
+      });
+      if (response.ContentLength !== inspected.byteSize) {
+        throw new Error("The current S3 image.png size is invalid.");
+      }
+    } catch (error) {
       destroyBody(response.Body);
-      throw new Error("The current S3 image.png size is invalid.");
+      throw error;
     }
     const current = inspectProjectPngBytesV1(await boundedBody(response.Body, operation.signal));
     if (current.digest !== inspected.digest) throw new Error("The current S3 image.png digest is invalid.");
