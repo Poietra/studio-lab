@@ -833,6 +833,52 @@ describe("fast-manim snapshot result v1", () => {
     await expect(parseProducer(compiled(combined), expectedV2)).rejects.toMatchObject({ code: "profile-violation" });
   });
 
+  it("rejects path morphs that collapse between otherwise valid endpoints", async () => {
+    const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
+    for (const entityIndex of [0, 2]) {
+      const bundle = await dynamicPathMorphBundle("one-transform", entityIndex);
+      const morph = bundle.scene.animationChannels[0];
+      if (morph?.kind !== "path-morph") throw new Error("Expected the path-morph fixture channel.");
+      morph.keyframes[1]!.value = mapCubicPath(morph.keyframes[0]!.value, ({ x, y }) => ({ x: -x, y: -y }));
+      await expect(parseProducer(compiled(bundle), expectedV2)).rejects.toThrow(/non-degenerate/i);
+    }
+  });
+
+  it("rejects path morphs that become concave while retaining positive area", async () => {
+    type ControlPoint = Readonly<{ x: number; y: number }>;
+    const pathFromControlPolygon = (points: readonly [ControlPoint, ControlPoint, ControlPoint, ControlPoint]) => ({
+      subpaths: [
+        {
+          closed: true,
+          segments: [{ control1: points[1], control2: points[2], end: points[3] }],
+          start: points[0],
+        },
+      ],
+    });
+    const bundle = await dynamicPathMorphBundle("one-transform");
+    const entity = bundle.scene.entities[0]!;
+    const morph = bundle.scene.animationChannels[0];
+    if (entity.geometry.kind !== "cubic-path" || morph?.kind !== "path-morph") {
+      throw new Error("Expected the path-morph fixture geometry and channel.");
+    }
+    const start = pathFromControlPolygon([
+      { x: -5, y: -2 },
+      { x: -4, y: -3 },
+      { x: 5, y: -5 },
+      { x: 3, y: 4 },
+    ]);
+    const end = pathFromControlPolygon([
+      { x: -5, y: -1 },
+      { x: 3, y: 0 },
+      { x: 4, y: 1 },
+      { x: -4, y: 4 },
+    ]);
+    entity.geometry.path = start;
+    morph.keyframes[0]!.value = start;
+    morph.keyframes[1]!.value = end;
+    await expect(parseProducer(compiled(bundle), { ...expected, snapshotVersion: 2 })).rejects.toThrow(/convex/i);
+  });
+
   it("seals the four exact producer path-trim shapes without rewriting canonical geometry", async () => {
     const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
     for (const values of [

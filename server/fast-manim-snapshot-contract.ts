@@ -542,6 +542,117 @@ function isConvexControlPolygon(pointsInput: readonly StaticProfilePoint[]) {
   return orientation !== 0;
 }
 
+type QuadraticCoefficients = Readonly<{ a: number; b: number; c: number }>;
+
+function crossProduct(left: StaticProfilePoint, right: StaticProfilePoint) {
+  return left.x * right.y - left.y * right.x;
+}
+
+function subtractPoints(left: StaticProfilePoint, right: StaticProfilePoint) {
+  return { x: left.x - right.x, y: left.y - right.y };
+}
+
+function interpolatedCrossCoefficients(
+  leftFirst: StaticProfilePoint,
+  leftSecond: StaticProfilePoint,
+  rightFirst: StaticProfilePoint,
+  rightSecond: StaticProfilePoint,
+): QuadraticCoefficients {
+  const firstDelta = subtractPoints(rightFirst, leftFirst);
+  const secondDelta = subtractPoints(rightSecond, leftSecond);
+  return {
+    a: crossProduct(firstDelta, secondDelta),
+    b: crossProduct(firstDelta, leftSecond) + crossProduct(leftFirst, secondDelta),
+    c: crossProduct(leftFirst, leftSecond),
+  };
+}
+
+function minimumQuadraticOnUnitInterval({ a, b, c }: QuadraticCoefficients) {
+  let minimum = Math.min(c, a + b + c);
+  if (a > 0) {
+    const vertex = -b / (2 * a);
+    if (vertex > 0 && vertex < 1) minimum = Math.min(minimum, (a * vertex + b) * vertex + c);
+  }
+  return minimum;
+}
+
+function orientedQuadratic(coefficients: QuadraticCoefficients, orientation: number): QuadraticCoefficients {
+  return {
+    a: coefficients.a * orientation,
+    b: coefficients.b * orientation,
+    c: coefficients.c * orientation,
+  };
+}
+
+function staticProfileControlPoints(path: StaticProfileCubicPath) {
+  const subpath = path.subpaths[0]!;
+  return [subpath.start, ...subpath.segments.flatMap((segment) => [segment.control1, segment.control2, segment.end])];
+}
+
+/** Proves the component-wise path lerp stays in the bounded renderable profile for every progress value. */
+function assertStaticProfileMorphInterval(left: StaticProfileCubicPath, right: StaticProfileCubicPath) {
+  const leftSubpath = left.subpaths[0]!;
+  const rightSubpath = right.subpaths[0]!;
+  const leftPoints = staticProfileControlPoints(left);
+  const rightPoints = staticProfileControlPoints(right);
+  const scale = Math.max(
+    1,
+    ...leftPoints.flatMap((point) => [Math.abs(point.x), Math.abs(point.y)]),
+    ...rightPoints.flatMap((point) => [Math.abs(point.x), Math.abs(point.y)]),
+  );
+  const tolerance = STATIC_PROFILE_RELATIVE_TOLERANCE * scale * scale;
+
+  if (!leftSubpath.closed) {
+    const leftChord = subtractPoints(leftSubpath.segments[0]!.end, leftSubpath.start);
+    const rightChord = subtractPoints(rightSubpath.segments[0]!.end, rightSubpath.start);
+    const chordDelta = subtractPoints(rightChord, leftChord);
+    const minimumLengthSquared = minimumQuadraticOnUnitInterval({
+      a: chordDelta.x * chordDelta.x + chordDelta.y * chordDelta.y,
+      b: 2 * (leftChord.x * chordDelta.x + leftChord.y * chordDelta.y),
+      c: leftChord.x * leftChord.x + leftChord.y * leftChord.y,
+    });
+    if (minimumLengthSquared <= tolerance) {
+      profileViolation("Dynamic Line path-morph interpolation must remain non-degenerate for the whole interval.");
+    }
+    return;
+  }
+
+  const leftAnchor = leftPoints[0]!;
+  const rightAnchor = rightPoints[0]!;
+  const area = { a: 0, b: 0, c: 0 };
+  for (let index = 0; index < leftPoints.length; index += 1) {
+    const nextIndex = (index + 1) % leftPoints.length;
+    const contribution = interpolatedCrossCoefficients(
+      subtractPoints(leftPoints[index]!, leftAnchor),
+      subtractPoints(leftPoints[nextIndex]!, leftAnchor),
+      subtractPoints(rightPoints[index]!, rightAnchor),
+      subtractPoints(rightPoints[nextIndex]!, rightAnchor),
+    );
+    area.a += contribution.a;
+    area.b += contribution.b;
+    area.c += contribution.c;
+  }
+  const orientation = Math.sign(area.c);
+  if (orientation === 0 || minimumQuadraticOnUnitInterval(orientedQuadratic(area, orientation)) <= tolerance) {
+    profileViolation("Dynamic closed path-morph interpolation must retain non-degenerate signed area.");
+  }
+
+  for (let edgeIndex = 0; edgeIndex < leftPoints.length; edgeIndex += 1) {
+    const nextIndex = (edgeIndex + 1) % leftPoints.length;
+    for (let pointIndex = 0; pointIndex < leftPoints.length; pointIndex += 1) {
+      const halfPlane = interpolatedCrossCoefficients(
+        subtractPoints(leftPoints[nextIndex]!, leftPoints[edgeIndex]!),
+        subtractPoints(leftPoints[pointIndex]!, leftPoints[edgeIndex]!),
+        subtractPoints(rightPoints[nextIndex]!, rightPoints[edgeIndex]!),
+        subtractPoints(rightPoints[pointIndex]!, rightPoints[edgeIndex]!),
+      );
+      if (minimumQuadraticOnUnitInterval(orientedQuadratic(halfPlane, orientation)) < -tolerance) {
+        profileViolation("Dynamic closed path-morph interpolation must retain a convex control polygon.");
+      }
+    }
+  }
+}
+
 function staticProfilePathsHaveMatchingTopology(left: StaticProfileCubicPath, right: StaticProfileCubicPath) {
   return (
     left.subpaths.length === right.subpaths.length &&
@@ -964,6 +1075,7 @@ function assertDynamicProfileV2(scene: SceneIrBundleV1["scene"]) {
           transitionKinds.push("hold");
         } else {
           transitionKinds.push("transform");
+          assertStaticProfileMorphInterval(previous.value, keyframe.value);
           if (!isCanonicalDynamicTimedStepV2(previous.at, keyframe.at)) {
             profileViolation("Each verified path morph must span one exact producer-supported 60fps timed step.");
           }
