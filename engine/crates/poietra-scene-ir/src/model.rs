@@ -416,6 +416,14 @@ pub enum PathTrimParameterizationV1 {
     UniformCubicParameterV1,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum MotionPathParameterizationV1 {
+    #[serde(rename = "arc-length-v1")]
+    ArcLengthV1,
+    #[serde(rename = "manim-point-from-proportion-v1")]
+    ManimPointFromProportionV1,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum AnimationChannelV1 {
@@ -465,6 +473,8 @@ pub enum AnimationChannelV1 {
         keyframes: Vec<KeyframeV1<f64>>,
         #[serde(rename = "orientToPath")]
         orient_to_path: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parameterization: Option<MotionPathParameterizationV1>,
         path: CubicPathV1,
         #[serde(rename = "provenanceId")]
         provenance_id: String,

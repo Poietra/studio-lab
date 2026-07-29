@@ -1,17 +1,17 @@
 use std::collections::BTreeSet;
 
 use poietra_geometry::{
-    GeometryError, apply_easing_v1, apply_motion_path_v1, compose_affine_transforms_v1,
-    interpolate_affine_transform_v1, interpolate_cubic_path_v1, scene_geometry_as_cubic_path_v1,
-    trim_cubic_path_uniform_parameter_v1, trim_cubic_path_v1,
+    GeometryError, apply_easing_v1, apply_manim_motion_path_v1, apply_motion_path_v1,
+    compose_affine_transforms_v1, interpolate_affine_transform_v1, interpolate_cubic_path_v1,
+    scene_geometry_as_cubic_path_v1, trim_cubic_path_uniform_parameter_v1, trim_cubic_path_v1,
 };
 use poietra_scene_ir::{
     AffineTransformV1, AnimationChannelV1, AssetManifestV1, ContractVersionV1, CubicPathV1,
-    EngineFrameV1, KeyframeV1, PathTrimParameterizationV1, RenderCameraKindV1, RenderCameraV1,
-    RenderCapabilityV1, RenderDrawV1, RenderEmptyReasonV1, RenderPacketSchemaV1, RenderPacketV1,
-    SceneAppearanceV1, SceneCameraViewV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1,
-    SceneIrV1, ViewportV1, validate_render_packet_for_validated_scene_v1,
-    validate_scene_ir_with_assets_v1,
+    EngineFrameV1, KeyframeV1, MotionPathParameterizationV1, PathTrimParameterizationV1,
+    RenderCameraKindV1, RenderCameraV1, RenderCapabilityV1, RenderDrawV1, RenderEmptyReasonV1,
+    RenderPacketSchemaV1, RenderPacketV1, SceneAppearanceV1, SceneCameraViewV1, SceneEntityV1,
+    SceneGeometryV1, SceneIrBundleV1, SceneIrV1, ViewportV1,
+    validate_render_packet_for_validated_scene_v1, validate_scene_ir_with_assets_v1,
 };
 
 use crate::retained_index::{
@@ -300,6 +300,7 @@ fn sample_local_entity(
             keyframes,
             path,
             orient_to_path,
+            parameterization,
             ..
         }) = scene.animation_channels.get(channel_index)
         else {
@@ -309,7 +310,14 @@ fn sample_local_entity(
         };
         let (progress, active) = sample_keyframes(&0.0, keyframes, time, interpolate_number)?;
         if active {
-            transform = apply_motion_path_v1(&transform, path, progress, *orient_to_path)?;
+            transform = match parameterization {
+                None | Some(MotionPathParameterizationV1::ArcLengthV1) => {
+                    apply_motion_path_v1(&transform, path, progress, *orient_to_path)?
+                }
+                Some(MotionPathParameterizationV1::ManimPointFromProportionV1) => {
+                    apply_manim_motion_path_v1(&transform, path, progress)?
+                }
+            };
         }
     }
 
@@ -1102,6 +1110,7 @@ mod tests {
                     },
                 ],
                 orient_to_path: true,
+                parameterization: None,
                 path: CubicPathV1 {
                     subpaths: vec![poietra_scene_ir::CubicSubpathV1 {
                         closed: false,

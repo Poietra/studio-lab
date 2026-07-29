@@ -177,6 +177,49 @@ fn path_trim_parameterization_is_optional_and_fail_closed() {
     assert!(serde_json::from_value::<AnimationChannelV1>(explicit).is_err());
 }
 
+#[test]
+fn motion_path_parameterization_is_optional_and_fail_closed() {
+    let mut channel = json!({
+        "entityId": "mover",
+        "id": "motion:mover",
+        "keyframes": [
+            { "at": 0, "easingToNext": { "kind": "linear" }, "value": 0 },
+            { "at": 1, "easingToNext": null, "value": 1 }
+        ],
+        "kind": "motion-path",
+        "orientToPath": false,
+        "path": {
+            "subpaths": [{
+                "closed": false,
+                "segments": [{
+                    "control1": { "x": 1, "y": 0 },
+                    "control2": { "x": 2, "y": 0 },
+                    "end": { "x": 3, "y": 0 }
+                }],
+                "start": { "x": 0, "y": 0 }
+            }]
+        },
+        "provenanceId": "fixture:root"
+    });
+    assert!(matches!(
+        serde_json::from_value::<AnimationChannelV1>(channel.clone()).unwrap(),
+        AnimationChannelV1::MotionPath {
+            parameterization: None,
+            ..
+        }
+    ));
+    channel["parameterization"] = json!("manim-point-from-proportion-v1");
+    assert!(matches!(
+        serde_json::from_value::<AnimationChannelV1>(channel.clone()).unwrap(),
+        AnimationChannelV1::MotionPath {
+            parameterization: Some(MotionPathParameterizationV1::ManimPointFromProportionV1),
+            ..
+        }
+    ));
+    channel["parameterization"] = json!("future-mode");
+    assert!(serde_json::from_value::<AnimationChannelV1>(channel).is_err());
+}
+
 fn assert_required_nullable_field<T>(value: &serde_json::Value, field: &str)
 where
     T: serde::de::DeserializeOwned + std::fmt::Debug,

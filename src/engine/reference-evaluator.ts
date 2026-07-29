@@ -2,6 +2,7 @@ import type { AssetManifestV1 } from "./asset-manifest";
 import { type EngineFrameV1, parseVerifiedEngineFrameV1, parseVerifiedSceneIrBundleV1 } from "./contracts";
 import { applyEngineEasingV1, type EngineEasingV1 } from "./easing";
 import {
+  applyManimMotionPathV1,
   applyMotionPathV1,
   composeAffineTransformsV1,
   interpolateAffineTransformV1,
@@ -122,7 +123,10 @@ function sampleLocalEntity(
   if (motionPathChannel) {
     const motion = sampleKeyframes(0, motionPathChannel.keyframes, time, interpolateNumber);
     if (motion.active) {
-      transform = applyMotionPathV1(transform, motionPathChannel.path, motion.value, motionPathChannel.orientToPath);
+      transform =
+        motionPathChannel.parameterization === "manim-point-from-proportion-v1"
+          ? applyManimMotionPathV1(transform, motionPathChannel.path, motion.value)
+          : applyMotionPathV1(transform, motionPathChannel.path, motion.value, motionPathChannel.orientToPath);
     }
   }
 

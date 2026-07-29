@@ -2,6 +2,7 @@ import type { CubicPathV1, EngineAffineTransformV1, EnginePointV1 } from "./prim
 import type { SceneEntityGeometryV1 } from "./scene-ir";
 
 export const PATH_ARC_SUBDIVISIONS_V1 = 64;
+export const MANIM_CURVE_LENGTH_SAMPLE_POINTS_V1 = 10;
 const TANGENT_EPSILON_V1 = 1e-12;
 
 export class EngineGeometryEvaluationError extends Error {
@@ -269,6 +270,37 @@ export function sampleCubicPathV1(path: CubicPathV1, progress: number) {
   return { point, tangent: tangentIsZero() ? null : tangent };
 }
 
+/** Mirrors VMobject.point_from_proportion for canonical two-dimensional cubics. */
+export function sampleCubicPathManimPointFromProportionV1(path: CubicPathV1, progress: number) {
+  const entries = serializedCubicEntriesBySubpath(path).flat();
+  if (entries.length === 0) throw new EngineGeometryEvaluationError("A motion path requires at least one cubic.");
+  if (progress >= 1) return entries.at(-1)!.segment.end;
+
+  const lengths = entries.map((entry) => {
+    let length = 0;
+    let previous = entry.start;
+    const sampleStep = 1 / (MANIM_CURVE_LENGTH_SAMPLE_POINTS_V1 - 1);
+    for (let index = 1; index < MANIM_CURVE_LENGTH_SAMPLE_POINTS_V1; index += 1) {
+      const point = pointOnCubicV1(entry.start, entry.segment, index * sampleStep);
+      length += distance(previous, point);
+      previous = point;
+    }
+    return length;
+  });
+  const target = Math.min(1, Math.max(0, progress)) * lengths.reduce((total, length) => total + length, 0);
+  let current = 0;
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    const length = lengths[index];
+    if (current + length >= target) {
+      const parameter = length === 0 ? 0 : (target - current) / length;
+      return pointOnCubicV1(entry.start, entry.segment, parameter);
+    }
+    current += length;
+  }
+  return entries.at(-1)!.segment.end;
+}
+
 export function interpolateCubicPathV1(left: CubicPathV1, right: CubicPathV1, progress: number): CubicPathV1 {
   return {
     subpaths: left.subpaths.map((subpath, subpathIndex) => ({
@@ -426,4 +458,13 @@ export function applyMotionPathV1(
     tx: sample.point.x,
     ty: sample.point.y,
   };
+}
+
+export function applyManimMotionPathV1(
+  transform: EngineAffineTransformV1,
+  path: CubicPathV1,
+  progress: number,
+): EngineAffineTransformV1 {
+  const point = sampleCubicPathManimPointFromProportionV1(path, progress);
+  return { ...transform, tx: point.x, ty: point.y };
 }

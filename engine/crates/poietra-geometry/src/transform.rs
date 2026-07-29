@@ -1,6 +1,8 @@
 use poietra_scene_ir::{AffineTransformV1, CubicPathV1};
 
-use crate::{GeometryError, sample_cubic_path_v1};
+use crate::{
+    GeometryError, sample_cubic_path_manim_point_from_proportion_v1, sample_cubic_path_v1,
+};
 
 /// Interpolates all six affine components independently.
 pub fn interpolate_affine_transform_v1(
@@ -67,6 +69,24 @@ pub fn apply_motion_path_v1(
         m22: sine * transform.m12 + cosine * transform.m22,
         tx: sample.point.x,
         ty: sample.point.y,
+    })
+}
+
+/// Applies the non-orienting pose used by Manim's `MoveAlongPath`.
+///
+/// # Errors
+///
+/// Returns a geometry error for invalid path data.
+pub fn apply_manim_motion_path_v1(
+    transform: &AffineTransformV1,
+    path: &CubicPathV1,
+    progress: f64,
+) -> Result<AffineTransformV1, GeometryError> {
+    let point = sample_cubic_path_manim_point_from_proportion_v1(path, progress)?;
+    Ok(AffineTransformV1 {
+        tx: point.x,
+        ty: point.y,
+        ..transform.clone()
     })
 }
 

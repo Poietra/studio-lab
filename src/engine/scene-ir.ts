@@ -210,6 +210,7 @@ const motionPathChannelV1Schema = z
     keyframes: z.array(keyframeV1Schema(normalizedNumberV1Schema)).min(2).max(MAX_KEYFRAMES),
     kind: z.literal("motion-path"),
     orientToPath: z.boolean(),
+    parameterization: z.enum(["arc-length-v1", "manim-point-from-proportion-v1"]).optional(),
     path: cubicPathV1Schema,
   })
   .strict();
@@ -562,12 +563,21 @@ function validateChannels(scene: SceneIrV1Input, context: z.RefinementCtx) {
         }
       });
     }
-    if (channel.kind === "motion-path" && channel.path.subpaths.length !== 1) {
-      context.addIssue({
-        code: "custom",
-        message: "motion-path v1 requires exactly one cubic subpath.",
-        path: ["animationChannels", index, "path", "subpaths"],
-      });
+    if (channel.kind === "motion-path") {
+      if (channel.path.subpaths.length !== 1) {
+        context.addIssue({
+          code: "custom",
+          message: "motion-path v1 requires exactly one cubic subpath.",
+          path: ["animationChannels", index, "path", "subpaths"],
+        });
+      }
+      if (channel.parameterization === "manim-point-from-proportion-v1" && channel.orientToPath) {
+        context.addIssue({
+          code: "custom",
+          message: "manim-point-from-proportion-v1 does not orient the moved entity.",
+          path: ["animationChannels", index, "orientToPath"],
+        });
+      }
     }
   });
   if (keyframeCount > MAX_KEYFRAMES) {

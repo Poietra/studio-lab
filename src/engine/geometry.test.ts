@@ -4,6 +4,7 @@ import {
   applyMotionPathV1,
   composeAffineTransformsV1,
   interpolateCubicPathV1,
+  sampleCubicPathManimPointFromProportionV1,
   sampleCubicPathV1,
   sceneGeometryAsCubicPathV1,
   trimCubicPathUniformParameterV1,
@@ -164,5 +165,30 @@ describe("Poietra Engine cubic geometry v1", () => {
     };
     expect(() => applyMotionPathV1(identity, degenerate, 0.5, true)).toThrow(/non-zero tangent/);
     expect(applyMotionPathV1(identity, degenerate, 0.5, false)).toMatchObject({ tx: 1, ty: 2 });
+  });
+
+  it("pins Manim zero-length and explicit-close sampling", () => {
+    const line = sceneGeometryAsCubicPathV1({ kind: "line", start: { x: 0, y: 0 }, end: { x: 2, y: 0 } });
+    const zeroThenLine = {
+      subpaths: [
+        {
+          closed: false,
+          segments: [
+            { control1: { x: 0, y: 0 }, control2: { x: 0, y: 0 }, end: { x: 0, y: 0 } },
+            line.subpaths[0].segments[0],
+          ],
+          start: { x: 0, y: 0 },
+        },
+      ],
+    };
+    expect(sampleCubicPathManimPointFromProportionV1(zeroThenLine, 0)).toEqual({ x: 0, y: 0 });
+    expect(sampleCubicPathManimPointFromProportionV1(zeroThenLine, 0.5)).toEqual({ x: 1, y: 0 });
+    const allZero = structuredClone(zeroThenLine);
+    allZero.subpaths[0].segments.length = 1;
+    expect(sampleCubicPathManimPointFromProportionV1(allZero, 0.5)).toEqual({ x: 0, y: 0 });
+
+    line.subpaths[0].closed = true;
+    expect(sampleCubicPathManimPointFromProportionV1(line, 0.75)).toEqual({ x: 1.5, y: 0 });
+    expect(sampleCubicPathManimPointFromProportionV1(line, 1)).toEqual({ x: 2, y: 0 });
   });
 });
