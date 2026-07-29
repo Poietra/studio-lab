@@ -3,12 +3,13 @@ import type { AddressInfo } from "node:net";
 
 import { describe, expect, it, vi } from "vitest";
 
+import { createStructuredLogger, type StructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
 import { handleManimRequest, type ManimApi, type ManimRequestPolicy, resolveByteRange } from "./manim-render-http";
 
-async function listen(api: ManimApi, policy?: ManimRequestPolicy) {
+async function listen(api: ManimApi, policy?: ManimRequestPolicy, logger?: StructuredLogger) {
   const server = createServer((request, response) => {
-    void handleManimRequest(createTrustedLocalManimRequestContext(api, "test"), request, response, undefined, policy);
+    void handleManimRequest(createTrustedLocalManimRequestContext(api, "test"), request, response, logger, policy);
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -159,6 +160,7 @@ describe("async Manim API port", () => {
   });
 
   it("propagates a disconnected thumbnail request to durable storage", async () => {
+    const records: StructuredLogRecord[] = [];
     let startedResolve!: () => void;
     let abortedResolve!: () => void;
     const started = new Promise<void>((resolve) => {
@@ -178,14 +180,15 @@ describe("async Manim API port", () => {
             "abort",
             () => {
               abortedResolve();
-              reject(signal.reason);
+              reject(new DOMException("Downstream request aborted.", "AbortError"));
             },
             { once: true },
           );
         });
       }),
     } as unknown as ManimApi;
-    const server = await listen(api);
+    const logger = createStructuredLogger({ sinks: [{ write: (record) => records.push(record) }] });
+    const server = await listen(api, undefined, logger);
     try {
       const request = createRequest({
         host: "127.0.0.1",
@@ -198,6 +201,9 @@ describe("async Manim API port", () => {
       request.destroy();
       await aborted;
       expect(api.thumbnail).toHaveBeenCalledWith("project-a", expect.any(AbortSignal));
+      await vi.waitFor(() =>
+        expect(records.find(({ event }) => event === "request.aborted")?.data).toEqual({ kind: "ExpectedAbort" }),
+      );
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }

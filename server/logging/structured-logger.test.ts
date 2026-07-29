@@ -54,6 +54,77 @@ describe("structured logger", () => {
     }
   });
 
+  it("removes executable and private failure details before records reach a sink", () => {
+    const root = mkdtempSync(join(tmpdir(), "poietra-error-log-"));
+    const sentinel = "/private/SECRET_ERROR_PATH/source.py\nSECRET_TRACEBACK";
+    try {
+      const error = new Error(sentinel, { cause: new Error(`nested ${sentinel}`) });
+      Object.defineProperties(error, {
+        detail: { enumerable: true, value: { source: sentinel } },
+        name: {
+          configurable: true,
+          get() {
+            throw new Error("Error.name must not be evaluated while sanitizing logs.");
+          },
+        },
+        stack: { configurable: true, value: `Error: ${sentinel}` },
+      });
+      const fail = (): never => {
+        throw new Error(`Log sanitization evaluated executable input: ${sentinel}`);
+      };
+      const proxyError = new Proxy(error, {
+        get: fail,
+        getOwnPropertyDescriptor: fail,
+        ownKeys: fail,
+      });
+      const customSerialization = { toJSON: fail };
+      const accessorValue = {};
+      Object.defineProperty(accessorValue, "privatePath", {
+        enumerable: true,
+        get: fail,
+      });
+      const records: StructuredLogRecord[] = [];
+      const sink = createRotatingJsonlSink({ logPath: "api.jsonl", root });
+      const logger = createStructuredLogger({
+        context: { failure: error },
+        now: () => new Date("2026-07-21T00:00:00.000Z"),
+        sinks: [{ write: (record) => records.push(record) }, sink],
+      }).child(accessorValue);
+
+      logger.error("request.failed", {
+        accessorValue,
+        customSerialization,
+        error,
+        executable: fail,
+        nested: [{ failure: error }],
+        proxyError,
+      });
+
+      expect(records).toEqual([
+        {
+          context: { failure: "[Error]", privatePath: "[Accessor]" },
+          data: {
+            accessorValue: { privatePath: "[Accessor]" },
+            customSerialization: { toJSON: "[Function]" },
+            error: "[Error]",
+            executable: "[Function]",
+            nested: [{ failure: "[Error]" }],
+            proxyError: "[Proxy]",
+          },
+          event: "request.failed",
+          level: "error",
+          timestamp: "2026-07-21T00:00:00.000Z",
+        },
+      ]);
+      const persisted = readFileSync(sink.path, "utf8");
+      expect(persisted).toContain('"error":"[Error]"');
+      expect(`${JSON.stringify(records)}\n${persisted}`).not.toContain(sentinel);
+      expect(persisted).not.toContain("SECRET_TRACEBACK");
+    } finally {
+      rmSync(root, { force: true, recursive: true });
+    }
+  });
+
   it("reports sink failures without forwarding the error, path, or stack", () => {
     const sentinel = "/private/SECRET_LOG_PATH/api.jsonl";
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);

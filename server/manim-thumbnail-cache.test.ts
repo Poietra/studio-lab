@@ -224,7 +224,7 @@ describe("persistent real Manim thumbnail cache", () => {
     await expect(afterClose.status()).resolves.toMatchObject({ error: null, state: "missing" });
   });
 
-  it("keeps absolute command, project, and cache paths out of public failures", async () => {
+  it("keeps absolute command, project, and cache paths out of public failures and logs", async () => {
     const { cacheRoot, projectRoot } = await fixture();
     const records: StructuredLogRecord[] = [];
     const logger = createStructuredLogger({ sinks: [{ write: (record) => records.push(record) }] });
@@ -255,8 +255,12 @@ describe("persistent real Manim thumbnail cache", () => {
       state: "failed",
     });
     const serverLogs = JSON.stringify(records);
-    expect(serverLogs).toContain(privateCommand);
-    expect(serverLogs).toContain(cacheRoot);
+    for (const privatePath of [privateCommand, projectRoot, cacheRoot]) {
+      expect(serverLogs).not.toContain(privatePath);
+    }
+    const unavailable = records.find((record) => record.event === "thumbnail.command_unavailable");
+    expect(unavailable).toMatchObject({ level: "warn" });
+    expect(unavailable).not.toHaveProperty("data");
   });
 
   it("retains the original runtime failure when its manifest cannot be published", async () => {
@@ -281,8 +285,9 @@ describe("persistent real Manim thumbnail cache", () => {
     });
     await expect(instance.status()).resolves.toMatchObject({ error: failed.error, state: "failed" });
     await expect(instance.asset()).resolves.toMatchObject({ kind: "semantic", state: "failed" });
+    expect(records.some((record) => record.event === "thumbnail.render_failed")).toBe(true);
     expect(records.some((record) => record.event === "thumbnail.failure_manifest_persist_failed")).toBe(true);
-    expect(JSON.stringify(records)).toMatch(/exited with code 9/i);
+    expect(JSON.stringify(records)).not.toMatch(/exited with code 9/i);
   });
 
   it("uses one preparation/render flight and prevents a late spawn during shutdown", async () => {

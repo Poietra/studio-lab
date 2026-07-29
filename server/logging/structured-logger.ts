@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
+import { isNativeError, isProxy } from "node:util/types";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -47,24 +48,46 @@ const SENSITIVE_FIELD =
 
 function sanitize(value: unknown, key = "", seen = new WeakSet<object>()): unknown {
   if (SENSITIVE_FIELD.test(key)) return "[REDACTED]";
-  if (value instanceof Error) {
-    return { message: value.message, name: value.name, stack: value.stack };
-  }
+  if (isProxy(value)) return "[Proxy]";
+  if (isNativeError(value)) return "[Error]";
   if (typeof value === "bigint") return value.toString();
+  if (typeof value === "function") return "[Function]";
+  if (typeof value === "symbol") return "[Symbol]";
   if (value === null || typeof value !== "object") return value;
   if (seen.has(value)) return "[Circular]";
   seen.add(value);
-  const sanitized = Array.isArray(value)
-    ? value.map((item) => sanitize(item, "", seen))
-    : Object.fromEntries(
-        Object.entries(value).map(([entryKey, entryValue]) => [entryKey, sanitize(entryValue, entryKey, seen)]),
-      );
-  seen.delete(value);
-  return sanitized;
+  try {
+    if (Array.isArray(value)) {
+      return Array.from({ length: value.length }, (_, index) => {
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        if (!descriptor) return null;
+        return "value" in descriptor ? sanitize(descriptor.value, "", seen) : "[Accessor]";
+      });
+    }
+    return Object.fromEntries(
+      Object.entries(Object.getOwnPropertyDescriptors(value))
+        .filter(([, descriptor]) => descriptor.enumerable)
+        .map(([entryKey, descriptor]) => [
+          entryKey,
+          "value" in descriptor ? sanitize(descriptor.value, entryKey, seen) : "[Accessor]",
+        ]),
+    );
+  } catch {
+    return "[Opaque]";
+  } finally {
+    seen.delete(value);
+  }
+}
+
+function sanitizeContext(value: Readonly<Record<string, unknown>>) {
+  const sanitized = sanitize(value);
+  return sanitized !== null && typeof sanitized === "object" && !Array.isArray(sanitized)
+    ? (sanitized as Readonly<Record<string, unknown>>)
+    : {};
 }
 
 export function createStructuredLogger(options: LoggerOptions): StructuredLogger {
-  const context = sanitize(options.context ?? {}) as Readonly<Record<string, unknown>>;
+  const context = sanitizeContext(options.context ?? {});
   const emit = (level: LogLevel, event: string, data?: unknown) => {
     const record: StructuredLogRecord = {
       context,
@@ -84,9 +107,10 @@ export function createStructuredLogger(options: LoggerOptions): StructuredLogger
 
   return {
     child(childContext) {
+      const sanitizedChildContext = sanitizeContext(childContext);
       return createStructuredLogger({
         ...options,
-        context: { ...context, ...childContext },
+        context: { ...context, ...sanitizedChildContext },
       });
     },
     debug: (event, data) => emit("debug", event, data),

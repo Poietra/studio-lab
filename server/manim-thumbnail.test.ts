@@ -327,9 +327,12 @@ describe("Manim thumbnail manager and HTTP boundary", () => {
       const publicPayload = `${responsePayload}\n${statusPayload}`;
       for (const privatePath of [privateCommand, projectRoot, cacheRoot]) {
         expect(publicPayload).not.toContain(privatePath);
+        expect(JSON.stringify(records)).not.toContain(privatePath);
       }
       expect(publicPayload).toMatch(/renderer is unavailable/i);
-      expect(JSON.stringify(records)).toContain(privateCommand);
+      const unavailable = records.find((record) => record.event === "thumbnail.command_unavailable");
+      expect(unavailable).toMatchObject({ level: "warn" });
+      expect(unavailable).not.toHaveProperty("data");
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }

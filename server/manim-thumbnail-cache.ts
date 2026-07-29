@@ -598,7 +598,7 @@ export class ManimThumbnailCache {
     }
     if (!(await commandAvailable())) {
       this.assertOpen();
-      this.logger.warn("thumbnail.command_unavailable", { command: this.command });
+      this.logger.warn("thumbnail.command_unavailable");
       await this.recordAttempt(target, PUBLIC_COMMAND_UNAVAILABLE_ERROR);
       throw new HttpError(PUBLIC_COMMAND_UNAVAILABLE_ERROR, 503);
     }
