@@ -35,6 +35,10 @@ import {
 import { parseFastManimProducerDocumentV1 } from "./fast-manim-source-runtime-document";
 import { verifyFastManimSourceRuntimeIdentityV1 } from "./fast-manim-source-runtime-identity";
 import { sandboxProducerRequest } from "./test-fixtures/fast-manim-sandbox-backend-fixture";
+import {
+  FAST_MANIM_SANDBOX_CONFORMANCE_CASES_V1,
+  FAST_MANIM_SANDBOX_CONFORMANCE_LEAK_SENTINELS_V1,
+} from "./test-fixtures/fast-manim-sandbox-conformance-fixture";
 
 const realImage = process.env.POIETRA_FAST_MANIM_GATED_OCI_IMAGE;
 const realLane = /^sha256:[a-f0-9]{64}$/.test(realImage ?? "");
@@ -65,7 +69,12 @@ function context(signal = new AbortController().signal, deadlineMs = 30_000) {
   };
 }
 
-function producerRequestFor(sourceText: string, sceneName: string, snapshotVersion: 1 | 2 = 1) {
+function producerRequestFor(
+  sourceText: string,
+  sceneName: string,
+  snapshotVersion: 1 | 2 = 1,
+  sourcePath = "scene.py",
+) {
   const request = sandboxProducerRequest();
   const runtimeConfig = { ...request.runtimeConfig, snapshotVersion };
   return {
@@ -73,10 +82,11 @@ function producerRequestFor(sourceText: string, sceneName: string, snapshotVersi
     requestId: `gated-${sceneName}`,
     runtimeConfig,
     runtimeConfigHash: digestFastManimSnapshotRuntimeConfigV1(runtimeConfig),
-    sceneId: fastManimSnapshotSceneIdV1("scene.py", sceneName),
+    sceneId: fastManimSnapshotSceneIdV1(sourcePath, sceneName),
     sceneName,
     snapshotVersion,
     sourceHash: createHash("sha256").update(sourceText, "utf8").digest("hex"),
+    sourcePath,
     sourceText,
   };
 }
@@ -137,15 +147,7 @@ function wire(body: Uint8Array, overrides: Readonly<{ digest?: Buffer; length?: 
   return Buffer.concat([header, body]);
 }
 
-const staticScene = `from manim import Circle, Line, Rectangle, Scene
-
-class GatedStaticScene(Scene):
-    def construct(self):
-        circle = Circle().set_fill("#ef4444", opacity=1.0).set_stroke(width=0)
-        rectangle = Rectangle().set_fill("#22c55e", opacity=1.0).set_stroke(width=0)
-        line = Line([-2.0, -1.0, 0.0], [2.0, 1.0, 0.0]).set_stroke("#3b82f6", width=4)
-        self.add(circle, rectangle, line)
-`;
+const staticScene = FAST_MANIM_SANDBOX_CONFORMANCE_CASES_V1.supported.sourceText;
 
 const opacityLifetimeScene = `from manim import Circle, FadeIn, FadeOut, Scene, linear
 
@@ -613,7 +615,8 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
   it("reaches READY under the custom seccomp profile, then renders a real Circle, Rectangle, and Line", {
     timeout: 60_000,
   }, async () => {
-    const source = producerRequestFor(staticScene, "GatedStaticScene");
+    const conformance = FAST_MANIM_SANDBOX_CONFORMANCE_CASES_V1.supported;
+    const source = producerRequestFor(conformance.sourceText, conformance.sceneName, 1, conformance.sourcePath);
     const request = new FastManimSandboxRequestBundleV1(source);
     const execution = await runFastManimGatedOciJobV1({
       deadlineEpochMs: Date.now() + 30_000,
@@ -639,6 +642,9 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
       "line",
     ]);
     expect(Buffer.from(execution.resultBytes).includes(Buffer.from("POIETRA_GATE_READY_V1"))).toBe(false);
+    for (const sentinel of FAST_MANIM_SANDBOX_CONFORMANCE_LEAK_SENTINELS_V1) {
+      expect(Buffer.from(execution.resultBytes).includes(Buffer.from(sentinel))).toBe(false);
+    }
   });
 
   it("isolates, seals, and correlates real V2 opacity/lifetime evidence", { timeout: 60_000 }, async () => {
@@ -945,12 +951,9 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
     await expect(running).rejects.toMatchObject({ name: "AbortError" });
   });
 
-  it("refuses reflective saved-descriptor source before it can execute", { timeout: 60_000 }, async () => {
-    const reflectiveScene = staticScene.replace(
-      "def construct(self):",
-      'def construct(self):\n        import os\n        os.write(3, b"\\xff")',
-    );
-    const source = producerRequestFor(reflectiveScene, "GatedStaticScene");
+  it("returns the shared unsupported Scene as bounded structured evidence", { timeout: 60_000 }, async () => {
+    const conformance = FAST_MANIM_SANDBOX_CONFORMANCE_CASES_V1.unsupported;
+    const source = producerRequestFor(conformance.sourceText, conformance.sceneName, 1, conformance.sourcePath);
     const request = new FastManimSandboxRequestBundleV1(source);
     const execution = await runFastManimGatedOciJobV1({
       deadlineEpochMs: Date.now() + 30_000,
@@ -959,13 +962,15 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
       signal: new AbortController().signal,
     });
     const { snapshot, sourceRuntimeIdentity } = await verifyCombinedResult(execution.resultBytes, source);
-    expect(snapshot).toMatchObject({ kind: "unsupported", requestId: "gated-GatedStaticScene" });
+    expect(snapshot).toMatchObject({ kind: conformance.expectedKind, requestId: `gated-${conformance.sceneName}` });
     if (snapshot.kind !== "unsupported") {
-      throw new Error("Expected the static execution profile to refuse reflection.");
+      throw new Error("Expected the shared unsupported conformance Scene to remain unsupported.");
     }
     expect(sourceRuntimeIdentity).toBeNull();
-    expect(snapshot.issues).toEqual(
-      expect.arrayContaining([expect.objectContaining({ code: "runtime-semantics-unsupported" })]),
-    );
+    expect(snapshot.issues.length).toBeGreaterThan(0);
+    expect(snapshot.issues.every((issue) => issue.evidence.length === 0)).toBe(true);
+    for (const sentinel of FAST_MANIM_SANDBOX_CONFORMANCE_LEAK_SENTINELS_V1) {
+      expect(Buffer.from(execution.resultBytes).includes(Buffer.from(sentinel))).toBe(false);
+    }
   });
 });
