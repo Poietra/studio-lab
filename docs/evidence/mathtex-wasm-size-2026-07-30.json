@@ -1,0 +1,47 @@
+{
+  "schema": "poietra.mathtex-wasm-size-evidence",
+  "version": 1,
+  "sourceCommit": "3b06ce08ae9632683049d94abc930bf4081282df",
+  "environment": {
+    "cpu": "Intel(R) Core(TM) Ultra 7 255H",
+    "node": "24.13.0",
+    "os": "Linux 6.6.87.2-microsoft-standard-WSL2 x86_64",
+    "rust": "1.92.0",
+    "wasmPack": "0.15.0",
+    "zlib": "1.3.1-470d3a2"
+  },
+  "measurement": {
+    "buildCommand": "node scripts/build-engine-wasm.mjs",
+    "candidateCommand": "node scripts/measure-mathtex-wasm.mjs",
+    "gzipLevel": 6,
+    "measuredRuns": 200,
+    "representativeTex": "E = mc^2",
+    "warmupRuns": 20
+  },
+  "baselineRelease": {
+    "gzipBytes": 10600905,
+    "initializationMs": 51.417337,
+    "rawWasmBytes": 27444906,
+    "warmCompileMedianMs": 1.44884,
+    "warmCompileP95Ms": 3.086285
+  },
+  "selectedSizeProfile": {
+    "gzipBytes": 8581046,
+    "gzipReductionPercent": 19.053647,
+    "initializationMs": 54.939141,
+    "initializationRatio": 1.068494,
+    "rawWasmBytes": 23242889,
+    "rawWasmReductionPercent": 15.310736,
+    "warmCompileMedianMs": 2.153427,
+    "warmCompileMedianRatio": 1.486311,
+    "warmCompileP95Ms": 2.718492,
+    "warmCompileP95Ratio": 0.88083
+  },
+  "rejectedOptLevelS": {
+    "gzipBytes": 9261212,
+    "gzipReductionPercent": 12.637534,
+    "rawWasmBytes": 25159692,
+    "warmCompileMedianMs": 1.48591,
+    "warmCompileP95Ms": 1.883548
+  }
+}

@@ -16,6 +16,7 @@
     "test:engine:wasm-smoke": "node scripts/smoke-engine-wasm.mjs",
     "test:mathtex:wasm-smoke": "node scripts/smoke-mathtex-wasm.mjs",
     "test:third-party-notices": "node scripts/smoke-third-party-notices.mjs",
+    "test:mathtex:wasm-size": "node scripts/measure-mathtex-wasm.mjs --check",
     "test:manim-smoke": "node scripts/run-manim-smoke.mjs",
     "test:render-sandbox:oci:required": "POIETRA_MANIM_RENDER_GATED_OCI_REQUIRED=1 vitest run server/manim-render-gated-oci.real.test.ts",
     "test:render-sandbox:production:required": "POIETRA_MANIM_RENDER_PRODUCTION_REQUIRED=1 vitest run server/manim-render-production-sandbox-broker-service.real.test.ts",
