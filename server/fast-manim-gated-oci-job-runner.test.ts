@@ -52,6 +52,10 @@ const pathMorphScene = readFileSync(
   fileURLToPath(new URL("../fixtures/real-preview-harness/scene_path_morph.py", import.meta.url)),
   "utf8",
 );
+const motionPathScene = readFileSync(
+  fileURLToPath(new URL("../fixtures/real-preview-harness/scene_motion_path.py", import.meta.url)),
+  "utf8",
+);
 
 function context(signal = new AbortController().signal, deadlineMs = 30_000) {
   return {
@@ -164,19 +168,23 @@ class RecordingDockerClient extends FastManimGatedOciDockerClientV1 {
   }
 }
 
-function trustedImageInspection(image: string, target: readonly string[] = FAST_MANIM_GATED_OCI_PROFILE_V1.target) {
+function trustedImageInspection(
+  image: string,
+  target: readonly string[] = FAST_MANIM_GATED_OCI_PROFILE_V1.target,
+  labels: Readonly<Record<string, string>> = {
+    "io.poietra.fast-manim.archive-sha256": "ff55e3893ed10f7770f8202e50f677082efa28cd5ae335195ecb40b0cdb32d04",
+    "io.poietra.fast-manim.commit": "d9ad83be1855eafb18c555d3d56fe797db61014d",
+    "io.poietra.fast-manim.tree": "13cf9649d9416cd160ffdccd21378b034549db7b",
+    "io.poietra.sandbox-slice": "gated-oci-v1",
+  },
+) {
   return Buffer.from(
     JSON.stringify([
       {
         Config: {
           Cmd: target,
           Entrypoint: ["/opt/venv/bin/python", "/opt/poietra/gated-entrypoint.py"],
-          Labels: {
-            "io.poietra.fast-manim.archive-sha256": "57dc425090dbe448a3259a86134155a0df118566868c88bd2858c8445fd22903",
-            "io.poietra.fast-manim.commit": "f505776c37ecb4147e10a54ff917fc857034b3d4",
-            "io.poietra.fast-manim.tree": "a194bb6ba80d566163e946712e441901904faac7",
-            "io.poietra.sandbox-slice": "gated-oci-v1",
-          },
+          Labels: labels,
         },
         Id: image,
       },
@@ -270,6 +278,25 @@ describe("gated OCI Docker ownership", () => {
       code: 0,
       stderr: Buffer.alloc(0),
       stdout: trustedImageInspection(image, ["/opt/venv/bin/python", "-m", "manim.renderer.scene_snapshot"]),
+    });
+
+    await expect(
+      assertFastManimGatedOciImageV1(image, client, Date.now() + 10_000, new AbortController().signal),
+    ).rejects.toThrow(/does not match the gated slice/i);
+  });
+
+  it("rejects an image pinned to the previous snapshot producer", async () => {
+    const image = `sha256:${"a".repeat(64)}`;
+    const client = new RecordingDockerClient({ socketPath: "/run/user/1000/poietra-docker.sock" });
+    client.responses.push({
+      code: 0,
+      stderr: Buffer.alloc(0),
+      stdout: trustedImageInspection(image, FAST_MANIM_GATED_OCI_PROFILE_V1.target, {
+        "io.poietra.fast-manim.archive-sha256": "57dc425090dbe448a3259a86134155a0df118566868c88bd2858c8445fd22903",
+        "io.poietra.fast-manim.commit": "f505776c37ecb4147e10a54ff917fc857034b3d4",
+        "io.poietra.fast-manim.tree": "a194bb6ba80d566163e946712e441901904faac7",
+        "io.poietra.sandbox-slice": "gated-oci-v1",
+      }),
     });
 
     await expect(
@@ -757,6 +784,60 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
       "sentinel",
       "shape",
       "line",
+    ]);
+  });
+
+  it("isolates and seals real open and closed MoveAlongPath channels", { timeout: 60_000 }, async () => {
+    const source = producerRequestFor(motionPathScene, "DynamicMotionPathScene", 2);
+    const request = new FastManimSandboxRequestBundleV1(source);
+    const execution = await runFastManimGatedOciJobV1({
+      deadlineEpochMs: Date.now() + 30_000,
+      image,
+      requestBytes: request.copyBytes(),
+      signal: new AbortController().signal,
+    });
+    expect(execution.cleanupVerified).toBe(true);
+    const { snapshot, sourceRuntimeIdentity } = await verifyCombinedResult(execution.resultBytes, source);
+    if (snapshot.kind !== "compiled") throw new Error("Expected compiled motion-path evidence.");
+
+    expect(snapshot.bundle.scene).toMatchObject({
+      duration: 3,
+      requiredCapabilities: ["cubic-path-geometry", "motion-path-animation"],
+    });
+    expect(snapshot.bundle.scene.entities).toHaveLength(3);
+    expect(snapshot.bundle.scene.entities.map((entity) => entity.lifetimes)).toEqual([
+      [{ end: 3, start: 0 }],
+      [{ end: 3, start: 0 }],
+      [{ end: 3, start: 1 }],
+    ]);
+    const channels = snapshot.bundle.scene.animationChannels;
+    expect(channels).toHaveLength(2);
+    expect(channels.map((channel) => channel.kind)).toEqual(["motion-path", "motion-path"]);
+    for (const [index, channel] of channels.entries()) {
+      if (channel.kind !== "motion-path") throw new Error("Expected only motion-path channels.");
+      expect(channel).toMatchObject({
+        entityId: `${source.sceneId}/entity:${index + 1}`,
+        id: `${source.sceneId}/channel:motion-path:${index + 1}`,
+        orientToPath: false,
+        parameterization: "manim-point-from-proportion-v1",
+        provenanceId: `${source.sceneId}/provenance:channel:motion-path:${index + 1}`,
+      });
+      expect(channel.keyframes.map(({ at, value }) => ({ at, value }))).toEqual([
+        { at: index, value: 0 },
+        { at: index + 1, value: 1 },
+      ]);
+    }
+    if (channels[0]?.kind !== "motion-path" || channels[1]?.kind !== "motion-path") {
+      throw new Error("Expected motion-path channel narrowing.");
+    }
+    expect(channels[0].path.subpaths[0]?.closed).toBe(false);
+    expect(channels[0].path.subpaths[0]?.segments).toHaveLength(1);
+    expect(channels[1].path.subpaths[0]?.closed).toBe(true);
+    expect(channels[1].path.subpaths[0]?.segments).toHaveLength(8);
+    expect(sourceRuntimeIdentity?.mappings.map((mapping) => mapping.binding.name)).toEqual([
+      "sentinel",
+      "rectangle",
+      "circle",
     ]);
   });
 

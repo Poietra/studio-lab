@@ -17,6 +17,7 @@ describe("fast-manim snapshot runtime config", () => {
     expect([...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1]).toEqual([
       "affine-transform-animation",
       "cubic-path-geometry",
+      "motion-path-animation",
       "opacity-animation",
       "path-morph-animation",
       "path-trim-animation",

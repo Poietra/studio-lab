@@ -12,6 +12,8 @@ import {
   FAST_MANIM_SNAPSHOT_UNSUPPORTED_MESSAGES_V1,
   fastManimSnapshotAffineTransformChannelIdV2,
   fastManimSnapshotAffineTransformChannelProvenanceIdV2,
+  fastManimSnapshotMotionPathChannelIdV2,
+  fastManimSnapshotMotionPathChannelProvenanceIdV2,
   fastManimSnapshotOpacityChannelIdV2,
   fastManimSnapshotOpacityChannelProvenanceIdV2,
   fastManimSnapshotPathMorphChannelIdV2,
@@ -339,6 +341,76 @@ async function dynamicPathMorphBundle(
   });
 }
 
+async function dynamicMotionPathBundle(): Promise<SceneIrBundleV1> {
+  const base = await importedBundle();
+  const duration = 4;
+  const sourceEntity = base.scene.entities[0]!;
+  if (sourceEntity.geometry.kind !== "cubic-path") throw new Error("Expected the fixture's cubic geometry.");
+  const sourceSubpath = sourceEntity.geometry.path.subpaths[0]!;
+  const anchors = [sourceSubpath.start, ...sourceSubpath.segments.map((segment) => segment.end)];
+  const center = {
+    x: (Math.min(...anchors.map((point) => point.x)) + Math.max(...anchors.map((point) => point.x))) / 2,
+    y: (Math.min(...anchors.map((point) => point.y)) + Math.max(...anchors.map((point) => point.y))) / 2,
+  };
+  const entity = {
+    ...sourceEntity,
+    geometry: {
+      kind: "cubic-path" as const,
+      path: mapCubicPath(sourceEntity.geometry.path, ({ x, y }) => ({ x: x - center.x, y: y - center.y })),
+    },
+    lifetimes: [{ end: duration, start: 0 }],
+  };
+  const channelProvenanceId = fastManimSnapshotMotionPathChannelProvenanceIdV2(expected.sceneId, 0);
+  return sceneIrBundleV1Schema.parse({
+    ...base,
+    scene: {
+      ...base.scene,
+      animationChannels: [
+        {
+          entityId: entity.id,
+          id: fastManimSnapshotMotionPathChannelIdV2(expected.sceneId, 0),
+          keyframes: [
+            { at: 0, easingToNext: { kind: "linear" }, value: 0 },
+            { at: 2, easingToNext: null, value: 1 },
+          ],
+          kind: "motion-path",
+          orientToPath: false,
+          parameterization: "manim-point-from-proportion-v1",
+          path: {
+            subpaths: [
+              {
+                closed: false,
+                segments: [
+                  {
+                    control1: { x: center.x + 0.25, y: center.y + 2.5 },
+                    control2: { x: center.x + 3.75, y: center.y - 1.5 },
+                    end: { x: center.x + 4, y: center.y + 1 },
+                  },
+                ],
+                start: center,
+              },
+            ],
+          },
+          provenanceId: channelProvenanceId,
+        },
+      ],
+      duration,
+      entities: [entity],
+      provenance: [
+        base.scene.provenance[0],
+        base.scene.provenance[1],
+        {
+          evidence: ["producer-authored MoveAlongPath evidence must be normalized"],
+          id: channelProvenanceId,
+          origin: "fast-manim-server-snapshot",
+        },
+      ],
+      requiredCapabilities: ["cubic-path-geometry", "motion-path-animation"],
+      source: { ...base.scene.source, snapshotVersion: 2 },
+    },
+  });
+}
+
 function compiled(bundle: SceneIrBundleV1) {
   if (bundle.scene.source.kind !== "imported-manim-server-snapshot") throw new Error("Expected imported source.");
   return {
@@ -382,6 +454,29 @@ describe("canonical fast-manim Line cubic", () => {
         },
       ),
     ).toBe(true);
+  });
+
+  it("uses the motion world origin as a roundoff floor after local rebasing", () => {
+    const worldStart = { x: 1_000_000, y: 0 };
+    const worldEnd = { x: 1_000_001, y: 0.25 };
+    const worldCenter = { x: 1_000_000.5, y: 0.125 };
+    const local = (point: { x: number; y: number }) => ({
+      x: point.x - worldCenter.x,
+      y: point.y - worldCenter.y,
+    });
+    const control = (factor: number) => ({
+      x: worldStart.x + (worldEnd.x - worldStart.x) * factor,
+      y: worldStart.y + (worldEnd.y - worldStart.y) * factor,
+    });
+    const start = local(worldStart);
+    const segment = {
+      control1: local(control(1 / 3)),
+      control2: local(control(2 / 3)),
+      end: local(worldEnd),
+    };
+
+    expect(isCanonicalFastManimLineSegmentV1(start, segment)).toBe(false);
+    expect(isCanonicalFastManimLineSegmentV1(start, segment, 1_000_000)).toBe(true);
   });
 
   it("rejects drift outside the numeric bound and arbitrary collinear controls", () => {
@@ -692,6 +787,71 @@ describe("fast-manim snapshot result v1", () => {
 
     for (const invalid of [missing, unknown, nonFinite, wrongCapabilities]) {
       await expect(parseProducer(compiled(invalid as unknown as SceneIrBundleV1), expectedV2)).rejects.toThrow();
+    }
+  });
+
+  it("seals one locally rebased direct MoveAlongPath channel without rewriting its path", async () => {
+    const bundle = await dynamicMotionPathBundle();
+    const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
+    const sealed = await parseProducer(compiled(bundle), expectedV2);
+    if (sealed.kind !== "compiled") throw new Error("Expected a compiled motion-path V2 snapshot.");
+
+    expect(sealed.bundle.scene.requiredCapabilities).toEqual(["cubic-path-geometry", "motion-path-animation"]);
+    expect(sealed.bundle.scene.entities).toEqual(bundle.scene.entities);
+    expect(sealed.bundle.scene.animationChannels).toEqual(bundle.scene.animationChannels);
+    expect(sealed.bundle.scene.animationChannels[0]).toMatchObject({
+      id: fastManimSnapshotMotionPathChannelIdV2(expected.sceneId, 0),
+      kind: "motion-path",
+      orientToPath: false,
+      parameterization: "manim-point-from-proportion-v1",
+      provenanceId: fastManimSnapshotMotionPathChannelProvenanceIdV2(expected.sceneId, 0),
+    });
+    await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV2)).resolves.toEqual(sealed);
+  });
+
+  it("rejects motion-path evidence outside the direct canonical MoveAlongPath profile", async () => {
+    const bundle = await dynamicMotionPathBundle();
+    const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
+    type MotionPathChannel = Extract<SceneIrBundleV1["scene"]["animationChannels"][number], { kind: "motion-path" }>;
+    const mutateChannel = (mutate: (channel: MotionPathChannel) => void) => {
+      const candidate = structuredClone(bundle);
+      const channel = candidate.scene.animationChannels[0];
+      if (channel?.kind !== "motion-path") throw new Error("Expected the motion-path fixture channel.");
+      mutate(channel);
+      return candidate;
+    };
+    const invalid = [
+      mutateChannel((channel) => {
+        channel.id = fastManimSnapshotMotionPathChannelIdV2(expected.sceneId, 1);
+      }),
+      mutateChannel((channel) => {
+        channel.parameterization = "arc-length-v1";
+      }),
+      mutateChannel((channel) => {
+        channel.orientToPath = true;
+      }),
+      mutateChannel((channel) => {
+        channel.keyframes[0]!.at = 1;
+      }),
+      mutateChannel((channel) => {
+        channel.keyframes[1]!.value = 0.5;
+      }),
+      mutateChannel((channel) => {
+        channel.path.subpaths[0]!.closed = true;
+      }),
+      mutateChannel((channel) => {
+        channel.path = mapCubicPath(channel.path, ({ y }) => ({ x: 1_000_000_000, y }));
+      }),
+      (() => {
+        const candidate = structuredClone(bundle);
+        const entity = candidate.scene.entities[0]!;
+        if (entity.geometry.kind !== "cubic-path") throw new Error("Expected cubic path geometry.");
+        entity.geometry.path = mapCubicPath(entity.geometry.path, ({ x, y }) => ({ x: x + 0.25, y }));
+        return candidate;
+      })(),
+    ];
+    for (const candidate of invalid) {
+      await expect(parseProducer(compiled(candidate), expectedV2)).rejects.toThrow();
     }
   });
 

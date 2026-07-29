@@ -94,7 +94,7 @@ For local exporter development only:
 
 ```sh
 POIETRA_FAST_MANIM_SNAPSHOT_DEV_OPT_IN=1 \
-POIETRA_FAST_MANIM_SNAPSHOT_COMMAND='["/path/to/python","-m","manim.renderer.scene_snapshot"]' \
+POIETRA_FAST_MANIM_SNAPSHOT_COMMAND='["/path/to/python","-m","manim.renderer.source_runtime_identity"]' \
 POIETRA_FAST_MANIM_SNAPSHOT_VERSION=2 \
 pnpm dev:web
 ```
