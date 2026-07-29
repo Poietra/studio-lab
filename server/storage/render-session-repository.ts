@@ -1,4 +1,8 @@
-import type { RenderSessionStatus, RenderSourceActionView } from "../../src/render-pipeline/contracts";
+import type {
+  RenderSessionFailureCode,
+  RenderSessionStatus,
+  RenderSourceActionView,
+} from "../../src/render-pipeline/contracts";
 import type { ProjectPngHeadV1 } from "./project-png-storage";
 import type { SourceBlobReceiptV1, WorkspaceSourceHeadV1 } from "./workspace-source-repository";
 
@@ -27,6 +31,7 @@ export type DurableRenderSessionV1 = Readonly<{
   deadline: Date;
   error: string | null;
   executionAttempts: number;
+  failureCode: RenderSessionFailureCode | null;
   fenceToken: bigint;
   id: string;
   latestAction: DurableRenderSourceActionV1 | null;
@@ -89,6 +94,7 @@ export type DurableRenderLeaseCompletionV1 = DurableRenderLeaseIdentityV1 &
   Readonly<{
     artifactLocator?: string | null;
     error: string | null;
+    failureCode: RenderSessionFailureCode | null;
     logTail: string;
     progress: number;
     status: Extract<RenderSessionStatus, "cancelled" | "failed" | "ready">;

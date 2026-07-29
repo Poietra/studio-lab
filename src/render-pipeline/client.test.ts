@@ -1,6 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-
-import type { ProgramRenderRequest } from "./contracts";
 import {
   abandonManimRender,
   cancelManimRenderSourceAction,
@@ -8,10 +6,10 @@ import {
   exportManimSource,
   exportOriginalManimSource,
   generateManimThumbnail,
-  isNativeWorkspacePickerCancelled,
   isMissingManimSession,
-  loadManimRender,
+  isNativeWorkspacePickerCancelled,
   loadManimProjects,
+  loadManimRender,
   loadManimThumbnailStatus,
   loadManimWorkspace,
   renameManimProject,
@@ -19,6 +17,11 @@ import {
   startManimRender,
   unregisterManimProject,
 } from "./client";
+import {
+  type ProgramRenderRequest,
+  RENDER_SESSION_CONTRACT_VERSION_HEADER,
+  RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE,
+} from "./contracts";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -31,6 +34,7 @@ function session(overrides: Readonly<Record<string, unknown>> = {}) {
     canUndo: false,
     createdAt: "2026-01-01T00:00:00.000Z",
     error: null,
+    failureCode: null,
     id: "render-id",
     logTail: "done",
     patch: {
@@ -382,21 +386,54 @@ describe("Manim API client contracts", () => {
   });
 
   it("accepts a render session matching the runtime contract", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response(JSON.stringify(session()), { status: 200 })),
-    );
+    const fetch = vi.fn(async () => new Response(JSON.stringify(session()), { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
 
     await expect(loadManimRender("render-id")).resolves.toMatchObject({ status: "ready" });
+    fetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify(
+          session({
+            canCommit: false,
+            error: "Render exceeded its memory limit.",
+            failureCode: "memory-limit",
+            status: "failed",
+            videoUrl: null,
+          }),
+        ),
+        { status: 200 },
+      ),
+    );
+    await expect(loadManimRender("failed-render")).resolves.toMatchObject({ failureCode: "memory-limit" });
+  });
+
+  it("opts into failure codes while normalizing an old server omission to null", async () => {
+    const { failureCode: _failureCode, ...legacySession } = session({
+      canCommit: false,
+      error: "Render failed.",
+      status: "failed",
+      videoUrl: null,
+    });
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(init?.headers).toEqual({
+        [RENDER_SESSION_CONTRACT_VERSION_HEADER]: RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE,
+      });
+      return new Response(JSON.stringify(legacySession), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(loadManimRender("legacy-render")).resolves.toMatchObject({ failureCode: null, status: "failed" });
   });
 
   it("rejects a successful response with an invalid runtime shape", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response(JSON.stringify(session({ progress: "done" })), { status: 200 })),
-    );
+    const fetch = vi.fn(async () => new Response(JSON.stringify(session({ progress: "done" })), { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
 
     await expect(loadManimRender("render-id")).rejects.toThrow(/does not match the API contract/i);
+    fetch.mockResolvedValueOnce(
+      new Response(JSON.stringify(session({ failureCode: "raw-kernel-message", status: "failed" })), { status: 200 }),
+    );
+    await expect(loadManimRender("invalid-failure")).rejects.toThrow(/does not match the API contract/i);
   });
 
   it("preserves a missing-session status so the editor can recover", async () => {
@@ -525,7 +562,10 @@ describe("Manim API client contracts", () => {
     const fetch = vi.fn(async (url: string, init: RequestInit) => {
       expect(url).toBe("/api/manim/renders/render%2Fid/cancel");
       expect(init.body).toBe("{}");
-      expect(init.headers).toEqual({ "content-type": "application/json" });
+      expect(init.headers).toEqual({
+        "content-type": "application/json",
+        [RENDER_SESSION_CONTRACT_VERSION_HEADER]: RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE,
+      });
       expect(init.signal).toBe(controller.signal);
       return new Response(JSON.stringify(session()), { status: 200 });
     });
@@ -564,20 +604,28 @@ describe("Manim API client contracts", () => {
 
   it("cancels and waits for the exact source action", async () => {
     const actionId = "00000000-0000-4000-8000-000000000003";
+    const { failureCode: _failureCode, ...legacySession } = session({
+      sourceAction: { id: actionId, kind: "commit", outcome: null, state: "cancelled" },
+    });
     const response = {
       action: { id: actionId, kind: "commit", outcome: null, state: "cancelled" },
-      session: session({
-        sourceAction: { id: actionId, kind: "commit", outcome: null, state: "cancelled" },
-      }),
+      session: legacySession,
     };
     const fetch = vi.fn(async (url: string, init: RequestInit) => {
       expect(url).toBe("/api/manim/renders/render-id/cancel-source-action");
       expect(JSON.parse(String(init.body))).toEqual({ actionId, kind: "commit" });
+      expect(init.headers).toEqual({
+        "content-type": "application/json",
+        [RENDER_SESSION_CONTRACT_VERSION_HEADER]: RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE,
+      });
       return new Response(JSON.stringify(response), { status: 200 });
     });
     vi.stubGlobal("fetch", fetch);
 
-    await expect(cancelManimRenderSourceAction("render-id", actionId, "commit")).resolves.toEqual(response);
+    await expect(cancelManimRenderSourceAction("render-id", actionId, "commit")).resolves.toEqual({
+      ...response,
+      session: { ...legacySession, failureCode: null },
+    });
   });
 
   it("abandons only the exact stale render request", async () => {
@@ -632,7 +680,10 @@ describe("Manim API client contracts", () => {
     expect(fetch).toHaveBeenCalledWith(
       "/api/manim/renders/render-id/commit",
       expect.objectContaining({
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          [RENDER_SESSION_CONTRACT_VERSION_HEADER]: RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE,
+        },
         method: "POST",
       }),
     );

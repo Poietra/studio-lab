@@ -1,5 +1,5 @@
 import type { z } from "zod";
-
+import { desktopBridge } from "../shell/desktop-bridge";
 import type {
   ManimApiError,
   ManimProjectCreateRequest,
@@ -13,26 +13,36 @@ import type {
 import {
   createManimProjectRequestSchema,
   manimProjectIdSchema,
-  manimProjectNameSchema,
   manimProjectListViewSchema,
   manimProjectMutationViewSchema,
+  manimProjectNameSchema,
   manimThumbnailGenerateRequestSchema,
   manimThumbnailStatusSchema,
   manimWorkspaceViewSchema,
   originalManimSourceExportRequestSchema,
   programRenderRequestSchema,
+  RENDER_SESSION_CONTRACT_VERSION_HEADER,
+  RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE,
   renameManimProjectRequestSchema,
   renderAbandonRequestSchema,
   renderAbandonViewSchema,
   renderCommitRequestSchema,
+  renderSessionViewSchema,
   renderSourceActionCancellationRequestSchema,
   renderSourceActionCancellationViewSchema,
   renderSourceActionRequestSchema,
-  renderSessionViewSchema,
 } from "./contracts";
-import { desktopBridge } from "../shell/desktop-bridge";
 
 export type ManimProjectCreationInput = ManimProjectCreateRequest | Readonly<{ kind: "native-existing"; name: string }>;
+
+const renderSessionHeaders = {
+  [RENDER_SESSION_CONTRACT_VERSION_HEADER]: RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE,
+};
+
+const renderSessionJsonHeaders = {
+  "content-type": "application/json",
+  ...renderSessionHeaders,
+};
 
 async function responseBody(response: Response) {
   const text = await response.text();
@@ -224,7 +234,7 @@ export async function startManimRender(request: ProgramRenderRequest, signal?: A
   const session = await readJson(
     await fetch(`/api/manim/projects/${encodeURIComponent(parsedRequest.data.projectId)}/renders`, {
       body: JSON.stringify(parsedRequest.data),
-      headers: { "content-type": "application/json" },
+      headers: renderSessionJsonHeaders,
       method: "POST",
       signal,
     }),
@@ -295,7 +305,10 @@ export async function exportOriginalManimSource(
 }
 
 export async function loadManimRender(id: string, signal?: AbortSignal) {
-  return readJson(await fetch(`/api/manim/renders/${encodeURIComponent(id)}`, { signal }), renderSessionViewSchema);
+  return readJson(
+    await fetch(`/api/manim/renders/${encodeURIComponent(id)}`, { headers: renderSessionHeaders, signal }),
+    renderSessionViewSchema,
+  );
 }
 
 export async function abandonManimRender(id: string, renderRequestId: string, signal?: AbortSignal) {
@@ -334,7 +347,7 @@ export async function runManimRenderAction(
   const session = await readJson(
     await fetch(`/api/manim/renders/${encodeURIComponent(id)}/${action}`, {
       body: JSON.stringify(body),
-      headers: { "content-type": "application/json" },
+      headers: renderSessionJsonHeaders,
       method: "POST",
       signal,
     }),
@@ -366,7 +379,7 @@ export async function cancelManimRenderSourceAction(
   return readJson(
     await fetch(`/api/manim/renders/${encodeURIComponent(id)}/cancel-source-action`, {
       body: JSON.stringify(body.data),
-      headers: { "content-type": "application/json" },
+      headers: renderSessionJsonHeaders,
       method: "POST",
       signal,
     }),

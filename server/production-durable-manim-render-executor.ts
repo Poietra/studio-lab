@@ -1,3 +1,4 @@
+import type { RenderSessionFailureCode } from "../src/render-pipeline/contracts";
 import type {
   DurableManimRenderCancellationRequestV1,
   DurableManimRenderCleanupRequestV1,
@@ -16,6 +17,7 @@ import {
   MANIM_RENDER_BROKER_OPERATION_BUDGET_MS_V1,
   MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
   MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V2,
+  type ManimRenderSandboxTerminalV1,
   manimRenderBrokerShardIdV1Schema,
   manimRenderSandboxCancellationFenceV1Schema,
   SealedManimRenderSandboxRequestV2,
@@ -29,6 +31,25 @@ import {
 import type { SourceContentBlobStoreV1 } from "./storage/workspace-source-repository";
 
 const MAX_CONCURRENT_RENDER_SESSIONS = 4;
+
+type SandboxFailureCode = Extract<ManimRenderSandboxTerminalV1, { kind: "failed" }>["code"];
+
+function durableFailureCode(code: SandboxFailureCode): RenderSessionFailureCode {
+  switch (code) {
+    case "cancelled":
+    case "deadline-exceeded":
+    case "memory-limit":
+    case "pids-limit":
+    case "render-failed":
+      return code;
+    case "capacity":
+    case "cleanup-failed":
+    case "request-mismatch":
+    case "result-rejected":
+    case "sandbox-unavailable":
+      return "render-failed";
+  }
+}
 
 function validConcurrentRenderSessions(value: number | undefined) {
   return value === undefined || (Number.isSafeInteger(value) && value >= 1 && value <= MAX_CONCURRENT_RENDER_SESSIONS);
@@ -132,12 +153,11 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
   async submitOrReattach(request: DurableManimRenderExecutionRequestV1) {
     request.signal.throwIfAborted();
     const { session } = request;
-    if (
-      session.tenantId !== this.#tenantId ||
-      request.jobId !== `${this.#tenantId}/${session.id}` ||
-      session.deadline.getTime() <= Date.now()
-    ) {
+    if (session.tenantId !== this.#tenantId || request.jobId !== `${this.#tenantId}/${session.id}`) {
       return { code: "interrupted", kind: "failed", logTail: "" } as const;
+    }
+    if (session.deadline.getTime() <= Date.now()) {
+      return { code: "deadline-exceeded", kind: "failed", logTail: "" } as const;
     }
     const projectPng = session.projectPng;
     const [source, assets] = await Promise.all([
@@ -208,28 +228,14 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
         },
       } as const;
     }
-    const cleanupFailed =
-      video.kind === "failed" && video.code === "cleanup-failed"
-        ? video
-        : thumbnail.kind === "failed" && thumbnail.code === "cleanup-failed"
-          ? thumbnail
-          : null;
-    const cancelled =
-      video.kind === "failed" && video.code === "cancelled"
-        ? video
-        : thumbnail.kind === "failed" && thumbnail.code === "cancelled"
-          ? thumbnail
-          : null;
-    const terminal =
-      cleanupFailed ?? cancelled ?? (video.kind === "failed" ? video : thumbnail.kind === "failed" ? thumbnail : null);
-    if (!terminal) throw new Error("The render sandbox returned an invalid media bundle.");
+    const failures = [video, thumbnail].filter(
+      (terminal): terminal is Extract<ManimRenderSandboxTerminalV1, { kind: "failed" }> => terminal.kind === "failed",
+    );
+    if (failures.length === 0) throw new Error("The render sandbox returned an invalid media bundle.");
+    const codes = failures.map(({ code }) => durableFailureCode(code));
+    const code = codes.every((candidate) => candidate === codes[0]) ? codes[0]! : "render-failed";
     return {
-      code:
-        terminal.code === "cancelled"
-          ? "cancelled"
-          : terminal.code === "deadline-exceeded"
-            ? "interrupted"
-            : "render-failed",
+      code,
       kind: "failed",
       logTail: "",
     } as const;

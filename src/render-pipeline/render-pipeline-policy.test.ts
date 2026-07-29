@@ -70,6 +70,7 @@ function session(target: RenderProgramCandidate, overrides: Partial<RenderSessio
     canUndo: false,
     createdAt: "2026-01-01T00:00:00.000Z",
     error: null,
+    failureCode: null,
     id: "render-id",
     logTail: "done",
     patch: {

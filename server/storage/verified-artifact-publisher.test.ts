@@ -92,6 +92,7 @@ function session(id: string): DurableRenderSessionV1 {
     deadline: new Date(now.getTime() + 60_000),
     error: null,
     executionAttempts: 1,
+    failureCode: null,
     fenceToken: 1n,
     id,
     latestAction: null,

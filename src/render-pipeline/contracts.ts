@@ -276,6 +276,20 @@ export type RenderSessionStatus =
   | "rendering"
   | "undone";
 
+export const renderSessionFailureCodeSchema = z.enum([
+  "cancelled",
+  "deadline-exceeded",
+  "interrupted",
+  "memory-limit",
+  "pids-limit",
+  "render-failed",
+]);
+
+export type RenderSessionFailureCode = z.infer<typeof renderSessionFailureCodeSchema>;
+
+export const RENDER_SESSION_CONTRACT_VERSION_HEADER = "x-poietra-render-session-version";
+export const RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE = "2";
+
 export type RenderSessionView = Readonly<{
   actionInProgress: boolean;
   canCancel: boolean;
@@ -284,6 +298,7 @@ export type RenderSessionView = Readonly<{
   canUndo: boolean;
   createdAt: string;
   error: string | null;
+  failureCode: RenderSessionFailureCode | null;
   id: string;
   logTail: string;
   patch: Readonly<{
@@ -425,6 +440,7 @@ export const renderSessionViewSchema: z.ZodType<RenderSessionView> = z
     canUndo: z.boolean(),
     createdAt: z.string(),
     error: z.string().nullable(),
+    failureCode: renderSessionFailureCodeSchema.nullable().default(null),
     id: z.string(),
     logTail: z.string(),
     patch: z
@@ -448,7 +464,15 @@ export const renderSessionViewSchema: z.ZodType<RenderSessionView> = z
     updatedAt: z.string(),
     videoUrl: z.string().nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine((session, context) => {
+    const valid =
+      session.failureCode === null ||
+      session.status === "discarded" ||
+      (session.status === "cancelled" && session.failureCode === "cancelled") ||
+      (session.status === "failed" && session.failureCode !== "cancelled");
+    if (!valid) context.addIssue({ code: "custom", message: "Render failure code does not match its status." });
+  });
 
 export const renderSourceActionCancellationViewSchema: z.ZodType<RenderSourceActionCancellationView> = z
   .object({

@@ -32,6 +32,7 @@ function session(overrides: Partial<DurableRenderSessionV1> = {}): DurableRender
     deadline: new Date(Date.now() + 60_000),
     error: null,
     executionAttempts: 1,
+    failureCode: null,
     fenceToken: 1n,
     id: "00000000-0000-4000-8000-000000000001",
     latestAction: null,
@@ -166,6 +167,7 @@ describe("DurableManimRenderWorkerV1", () => {
       artifactLocator: "artifact:verified",
       error: null,
       expectedVersion: claimed.version,
+      failureCode: null,
       fenceToken: claimed.fenceToken,
       logTail: "ok",
       ownerId: "worker-a",
@@ -226,6 +228,7 @@ describe("DurableManimRenderWorkerV1", () => {
       expect.objectContaining({
         error: "Render execution was interrupted.",
         expectedVersion: claimed.version,
+        failureCode: "interrupted",
         logTail: "",
         status: "failed",
       }),
@@ -244,6 +247,7 @@ describe("DurableManimRenderWorkerV1", () => {
       expect.objectContaining({
         error: null,
         expectedVersion: claimed.version,
+        failureCode: "cancelled",
         fenceToken: claimed.fenceToken,
         status: "cancelled",
       }),
@@ -252,7 +256,7 @@ describe("DurableManimRenderWorkerV1", () => {
     await worker.close();
   });
 
-  it("does not submit an expired job and durably marks it interrupted", async () => {
+  it("does not submit an expired job and durably records its deadline", async () => {
     const expired = session({ deadline: new Date("2026-07-27T23:59:59.000Z") });
     const { completeLease, submitOrReattach, worker } = fixture({ claimed: expired });
     vi.useFakeTimers();
@@ -262,7 +266,38 @@ describe("DurableManimRenderWorkerV1", () => {
 
     expect(submitOrReattach).not.toHaveBeenCalled();
     expect(completeLease).toHaveBeenCalledWith(
-      expect.objectContaining({ error: "Render execution was interrupted.", status: "failed" }),
+      expect.objectContaining({
+        error: "Render execution deadline exceeded.",
+        failureCode: "deadline-exceeded",
+        status: "failed",
+      }),
+    );
+    await worker.close();
+  });
+
+  it("keeps an in-flight deadline authoritative over an abort-aware executor result", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T00:00:00.000Z"));
+    const claimed = session({ deadline: new Date(Date.now() + 1_000) });
+    const entered = deferred<void>();
+    const { completeLease, submitOrReattach, worker } = fixture({ claimed });
+    submitOrReattach.mockImplementationOnce(async ({ signal }) => {
+      entered.resolve();
+      await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      return { code: "interrupted", kind: "failed", logTail: "" };
+    });
+
+    const running = worker.runOnce();
+    await entered.promise;
+    await vi.advanceTimersByTimeAsync(1_000);
+    await running;
+
+    expect(completeLease).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: "Render execution deadline exceeded.",
+        failureCode: "deadline-exceeded",
+        status: "failed",
+      }),
     );
     await worker.close();
   });
@@ -426,12 +461,17 @@ describe("DurableManimRenderWorkerV1", () => {
 
   it("cleans partial staging only after a fenced terminal failure commits", async () => {
     const { claimed, cleanup, completeLease, submitOrReattach, worker } = fixture();
-    submitOrReattach.mockResolvedValueOnce({ code: "render-failed", kind: "failed", logTail: "bounded" });
+    submitOrReattach.mockResolvedValueOnce({ code: "memory-limit", kind: "failed", logTail: "bounded" });
 
     await worker.runOnce();
 
     expect(completeLease).toHaveBeenCalledWith(
-      expect.objectContaining({ expectedVersion: claimed.version, status: "failed" }),
+      expect.objectContaining({
+        error: "Render exceeded its memory limit.",
+        expectedVersion: claimed.version,
+        failureCode: "memory-limit",
+        status: "failed",
+      }),
     );
     expect(cleanup).toHaveBeenCalledOnce();
     await worker.close();

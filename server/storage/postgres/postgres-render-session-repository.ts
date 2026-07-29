@@ -4,6 +4,7 @@ import { opaqueIdV1Schema, sha256V1Schema } from "../../../src/engine/primitives
 import {
   manimProjectIdSchema,
   manimSourcePathSchema,
+  renderSessionFailureCodeSchema,
   type RenderSessionStatus,
   renderSessionStatusSchema,
   renderSourceActionIdSchema,
@@ -59,8 +60,10 @@ import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-sch
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 import { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
+import { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
 
 export { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
+export { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
 
 export const RENDER_SESSION_MIGRATION_V2_CHECKSUM = "f67255ae5d05b2951975a700974a9748c848c6a39b9bb51b3189c3e8ed2664e9";
 
@@ -96,6 +99,7 @@ type SessionRow = QueryResultRow & {
   error: string | null;
   execution_attempts: number;
   execution_deadline: Date;
+  failure_code: string | null;
   fence_token: string;
   lease_expires_at: Date | null;
   lease_owner: string | null;
@@ -237,6 +241,7 @@ const SESSION_COLUMNS = `
   s.project_png_digest,
   s.log_tail,
   s.error,
+  s.failure_code,
   s.artifact_locator,
   s.created_at,
   s.updated_at,
@@ -520,8 +525,10 @@ function cancellationFromRow(row: CancellationRow): DurableRenderCancellationInt
 
 function sessionFromRow(row: SessionRow): DurableRenderSessionV1 {
   const parsedStatus = renderSessionStatusSchema.safeParse(row.status);
+  const parsedFailureCode = renderSessionFailureCodeSchema.nullable().safeParse(row.failure_code);
   if (
     !parsedStatus.success ||
+    !parsedFailureCode.success ||
     !(row.created_at instanceof Date) ||
     !(row.execution_deadline instanceof Date) ||
     !Number.isSafeInteger(row.execution_attempts) ||
@@ -550,6 +557,7 @@ function sessionFromRow(row: SessionRow): DurableRenderSessionV1 {
     deadline: row.execution_deadline,
     error: row.error,
     executionAttempts: row.execution_attempts,
+    failureCode: parsedFailureCode.data,
     fenceToken: BigInt(row.fence_token),
     id: row.session_id,
     latestAction,
@@ -693,6 +701,7 @@ export class PostgresRenderSessionRepositoryV1
               lease_owner = NULL,
               lease_expires_at = NULL,
               error = NULL,
+              failure_code = 'cancelled',
               updated_at = clock_timestamp()
         WHERE tenant_id = $1 AND session_id = $2::uuid
           AND status IN (${transitionSourceSql("cancel")})`,
@@ -704,12 +713,12 @@ export class PostgresRenderSessionRepositoryV1
   async ready(signal?: AbortSignal) {
     try {
       const result = await this.#connection.query<{ checksum: string; version: number }>(
-        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (2, 5, 6, 7) ORDER BY version",
+        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (2, 5, 6, 7, 8) ORDER BY version",
         [],
         signal,
       );
       return (
-        result.rowCount === 4 &&
+        result.rowCount === 5 &&
         result.rows[0]?.version === 2 &&
         result.rows[0]?.checksum === RENDER_SESSION_MIGRATION_V2_CHECKSUM &&
         result.rows[1]?.version === 5 &&
@@ -717,7 +726,9 @@ export class PostgresRenderSessionRepositoryV1
         result.rows[2]?.version === 6 &&
         result.rows[2]?.checksum === DURABLE_RETENTION_MIGRATION_V6_CHECKSUM &&
         result.rows[3]?.version === 7 &&
-        result.rows[3]?.checksum === RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM
+        result.rows[3]?.checksum === RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM &&
+        result.rows[4]?.version === 8 &&
+        result.rows[4]?.checksum === RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM
       );
     } catch {
       throwIfAborted(signal);
@@ -1093,6 +1104,7 @@ export class PostgresRenderSessionRepositoryV1
                 lease_owner = NULL,
                 lease_expires_at = NULL,
                 error = NULL,
+                failure_code = 'cancelled',
                 updated_at = clock_timestamp()
           WHERE tenant_id = $1 AND session_id = $2::uuid
             AND status IN (${transitionSourceSql("cancel")})`,
@@ -1187,7 +1199,8 @@ export class PostgresRenderSessionRepositoryV1
               version = version + 1,
               lease_owner = NULL,
               lease_expires_at = NULL,
-              error = 'Render execution was interrupted.',
+              error = 'Render execution deadline exceeded.',
+              failure_code = 'deadline-exceeded',
               artifact_locator = NULL,
               updated_at = clock_timestamp()
          FROM expired
@@ -1282,6 +1295,15 @@ export class PostgresRenderSessionRepositoryV1
     }
     boundedText(input.logTail, "Render log", MAX_DURABLE_RENDER_LOG_BYTES_V1, true);
     if (input.error !== null) boundedText(input.error, "Render error", MAX_DURABLE_RENDER_ERROR_BYTES_V1);
+    const failureCode = renderSessionFailureCodeSchema.nullable().safeParse(input.failureCode);
+    if (
+      !failureCode.success ||
+      (input.status === "ready" && failureCode.data !== null) ||
+      (input.status === "cancelled" && failureCode.data !== "cancelled") ||
+      (input.status === "failed" && (failureCode.data === null || failureCode.data === "cancelled"))
+    ) {
+      throw new TypeError("Render failure code is invalid for its completion status.");
+    }
     const artifact = input.artifactLocator ?? null;
     if (artifact !== null) {
       boundedText(artifact, "Render artifact locator", MAX_DURABLE_RENDER_ARTIFACT_LOCATOR_BYTES_V1);
@@ -1301,7 +1323,8 @@ export class PostgresRenderSessionRepositoryV1
                 progress = $7,
                 log_tail = $8,
                 error = $9,
-                artifact_locator = $10,
+                failure_code = $10,
+                artifact_locator = $11,
                 version = version + 1,
                 lease_owner = NULL,
                 lease_expires_at = NULL,
@@ -1324,6 +1347,7 @@ export class PostgresRenderSessionRepositoryV1
           input.progress,
           input.logTail,
           input.error,
+          failureCode.data,
           artifact,
         ],
       );
@@ -1577,6 +1601,7 @@ export class PostgresRenderSessionRepositoryV1
                 lease_owner = NULL,
                 lease_expires_at = NULL,
                 error = CASE WHEN $3 = 'cancelled' THEN NULL ELSE error END,
+                failure_code = CASE WHEN $3 = 'cancelled' THEN 'cancelled' ELSE failure_code END,
                 artifact_locator = CASE WHEN $3 = 'discarded' THEN NULL ELSE artifact_locator END,
                 updated_at = clock_timestamp()
           WHERE tenant_id = $1 AND session_id = $2::uuid

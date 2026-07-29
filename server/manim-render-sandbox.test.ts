@@ -1057,7 +1057,7 @@ describe("production durable render execution", () => {
     const submitted: SealedManimRenderSandboxRequestV2[] = [];
     const sandboxResult = (
       request: SealedManimRenderSandboxRequestV2,
-      code?: "cancelled" | "cleanup-failed" | "render-failed",
+      code?: "cancelled" | "cleanup-failed" | "deadline-exceeded" | "memory-limit" | "pids-limit" | "render-failed",
     ) => {
       const value = request.parseDescriptor();
       const correlation = {
@@ -1160,6 +1160,16 @@ describe("production durable render execution", () => {
       await expect(executor.cancel(cancellationFence)).resolves.toEqual({
         fenceDigest: digestManimRenderSandboxCancellationFenceV1(cancellationFence),
       });
+
+      const submittedBeforeExpired = submitted.length;
+      await expect(
+        executor.submitOrReattach({
+          jobId: "tenant-a/session-expired",
+          session: { ...session, deadline: new Date(Date.now() - 1), id: "session-expired" },
+          signal: new AbortController().signal,
+        }),
+      ).resolves.toEqual({ code: "deadline-exceeded", kind: "failed", logTail: "" });
+      expect(submitted).toHaveLength(submittedBeforeExpired);
 
       const result = await executor.submitOrReattach({
         jobId: "tenant-a/session-a",
@@ -1276,6 +1286,30 @@ describe("production durable render execution", () => {
       await expect(assetReadExecution).rejects.toMatchObject({ name: "AbortError" });
       expect(submitted).toHaveLength(submittedBeforeCancellation);
 
+      for (const code of ["deadline-exceeded", "memory-limit", "pids-limit"] as const) {
+        vi.mocked(backend.submitOrReattach)
+          .mockImplementationOnce(async (request) => sandboxResult(request, code))
+          .mockImplementationOnce(async (request) => sandboxResult(request, code));
+        await expect(
+          executor.submitOrReattach({
+            jobId: `tenant-a/session-${code}`,
+            session: { ...session, id: `session-${code}` },
+            signal: new AbortController().signal,
+          }),
+        ).resolves.toEqual({ code, kind: "failed", logTail: "" });
+      }
+
+      vi.mocked(backend.submitOrReattach)
+        .mockImplementationOnce(async (request) => sandboxResult(request, "memory-limit"))
+        .mockImplementationOnce(async (request) => sandboxResult(request, "pids-limit"));
+      await expect(
+        executor.submitOrReattach({
+          jobId: "tenant-a/session-mixed-resource",
+          session: { ...session, id: "session-mixed-resource" },
+          signal: new AbortController().signal,
+        }),
+      ).resolves.toEqual({ code: "render-failed", kind: "failed", logTail: "" });
+
       vi.mocked(backend.submitOrReattach)
         .mockImplementationOnce(async (request) => sandboxResult(request, "render-failed"))
         .mockImplementationOnce(async (request) => sandboxResult(request, "cancelled"));
@@ -1285,7 +1319,7 @@ describe("production durable render execution", () => {
           session: { ...session, id: "session-mixed-cancel" },
           signal: new AbortController().signal,
         }),
-      ).resolves.toEqual({ code: "cancelled", kind: "failed", logTail: "" });
+      ).resolves.toEqual({ code: "render-failed", kind: "failed", logTail: "" });
 
       vi.mocked(backend.submitOrReattach)
         .mockImplementationOnce(async (request) => sandboxResult(request, "cleanup-failed"))
