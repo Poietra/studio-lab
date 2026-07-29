@@ -121,22 +121,49 @@ supplied rootful image as development evidence. The runner makes no independent
 readiness or trust claim and is not composed into the Studio server by itself.
 
 Build the immutable local image from the pinned fast-manim commit already
-present in a local checkout:
+present in a local checkout. The Studio checkout must also retain the pinned
+engine commit recorded by the build script:
 
 ```sh
 POIETRA_FAST_MANIM_SOURCE_REPO=/path/to/fast-manim \
 pnpm sandbox:oci:gated:build
 ```
 
-The build is network-independent (`--pull=false`), verifies the source commit,
-tree, archive SHA-256, lockfile and project metadata, pins the base image by
-digest, and prints the resulting immutable image ID. The real conformance lane
-is explicit:
+The snapshot image is fixed to `linux/amd64`. Its first stage uses a
+digest-pinned Rust builder, verifies the exact Rust 1.92.0 compiler, archives
+only `engine/` from the pinned Studio commit/tree, and checks that archive
+before building `poietra-mathtex-py` with Cargo's locked
+`mathtex-python-release` profile for `x86_64-unknown-linux-gnu`. The resulting
+native extension is accepted only when its SHA-256 matches the release pin.
+The final image installs that ABI3 module into the fixed Python 3.14 platlib and
+runs an isolated import/ABI/real-`MathTex("E = mc^2")` verification during the
+build. The image labels record the Studio engine commit, tree and archive
+digest, native artifact digest, ABI version, target, font/toolchain digests,
+and notice digest in addition to the fast-manim provenance.
+
+The build is constrained to pinned inputs and rejects native byte drift, but it
+is not network-independent. `--pull=false` suppresses an explicit base refresh;
+a cold Docker builder still needs access to missing digest-pinned base images,
+and `cargo build --locked` fetches lockfile-pinned registry dependencies unless
+its cache is already populated. The repository does not vendor those Cargo
+dependencies. On a non-amd64 host, Docker must provide compatible
+`linux/amd64` emulation; the produced image and admitted runtime target remain
+amd64 rather than becoming a host-native variant.
+
+The build also verifies the canonical dependency notice and installs it at
+`/usr/share/doc/poietra-mathtex-outline/THIRD_PARTY_NOTICES.txt` in the final
+image. On success the helper prints the immutable image ID together with both
+fast-manim and Studio-engine provenance. The real conformance lane is explicit:
 
 ```sh
 POIETRA_FAST_MANIM_GATED_OCI_IMAGE=sha256:<local-image-id> \
 pnpm exec vitest run server/fast-manim-gated-oci-job-runner.test.ts
 ```
+
+That real lane includes a V3 `MathTex("E = mc^2")` request and requires the
+image-owned native provider to return a verified multi-subpath outline with its
+same-run source/runtime identity. An unavailable extension therefore fails the
+fresh-image conformance rather than falling back to regular TeX.
 
 The conformance lane creates one non-restarting container per request with no host
 bind mounts, no network, a read-only root filesystem, all capabilities dropped,

@@ -72,7 +72,7 @@ function context(signal = new AbortController().signal, deadlineMs = 30_000) {
 function producerRequestFor(
   sourceText: string,
   sceneName: string,
-  snapshotVersion: 1 | 2 = 1,
+  snapshotVersion: 1 | 2 | 3 = 1,
   sourcePath = "scene.py",
 ) {
   const request = sandboxProducerRequest();
@@ -91,7 +91,7 @@ function producerRequestFor(
   };
 }
 
-function requestFor(sourceText: string, sceneName: string, snapshotVersion: 1 | 2 = 1) {
+function requestFor(sourceText: string, sceneName: string, snapshotVersion: 1 | 2 | 3 = 1) {
   return new FastManimSandboxRequestBundleV1(producerRequestFor(sourceText, sceneName, snapshotVersion));
 }
 
@@ -160,6 +160,31 @@ class GatedOpacityLifetimeScene(Scene):
         self.play(FadeOut(circle, rate_func=linear), run_time=2)
 `;
 
+const mathTexScene = `from manim import MathTex, Scene
+
+class GatedMathTexScene(Scene):
+    def construct(self):
+        equation = MathTex("E = mc^2")
+        self.add(equation)
+`;
+
+const TRUSTED_IMAGE_LABELS = Object.freeze({
+  "io.poietra.fast-manim.archive-sha256": "bfb53a85c45965203174a0c671edc94e803e9ce6b276b67e4144ad2f97ef41ad",
+  "io.poietra.fast-manim.commit": "2b2294a4b55291b088778417c4e2714a75026147",
+  "io.poietra.fast-manim.tree": "c1505126b47b4c3ed96b582f37057a1424069b72",
+  "io.poietra.mathtex-outline.abi-version": "1",
+  "io.poietra.mathtex-outline.artifact-sha256": "fcae06b2065de2da938be484ed0bde88cd31777ef29471d63580852f28c132d4",
+  "io.poietra.mathtex-outline.engine-archive-sha256":
+    "91cfd3b1a0e19615c586bf0144b1554046280f5ef76f53099d1cc06679dee65c",
+  "io.poietra.mathtex-outline.engine-commit": "1fa7f851b1685e8e4dcc6d99f3e089f55a567513",
+  "io.poietra.mathtex-outline.engine-tree": "d110dc1c3b3b3dfce00bee15a44ab863b024aa7a",
+  "io.poietra.mathtex-outline.font-sha256": "d66ac1cc91c55c24d3636ae2df1238076debdff51841f9893fc5419cc2df3df7",
+  "io.poietra.mathtex-outline.notice-sha256": "44e67c7f539ae83b25514aa15aae51a73c90c19a45ea33bbb293da52927f6608",
+  "io.poietra.mathtex-outline.target": "linux-amd64",
+  "io.poietra.mathtex-outline.toolchain-sha256": "95c98e10edff239e6ee237c9eac99dc96c06ba9fc712c30816ddc47d7db12f9e",
+  "io.poietra.sandbox-slice": "gated-oci-v1",
+});
+
 class RecordingDockerClient extends FastManimGatedOciDockerClientV1 {
   readonly calls: string[][] = [];
   readonly responses: Array<Readonly<{ code: number; stderr: Buffer; stdout: Buffer }>> = [];
@@ -173,12 +198,7 @@ class RecordingDockerClient extends FastManimGatedOciDockerClientV1 {
 function trustedImageInspection(
   image: string,
   target: readonly string[] = FAST_MANIM_GATED_OCI_PROFILE_V1.target,
-  labels: Readonly<Record<string, string>> = {
-    "io.poietra.fast-manim.archive-sha256": "ff55e3893ed10f7770f8202e50f677082efa28cd5ae335195ecb40b0cdb32d04",
-    "io.poietra.fast-manim.commit": "d9ad83be1855eafb18c555d3d56fe797db61014d",
-    "io.poietra.fast-manim.tree": "13cf9649d9416cd160ffdccd21378b034549db7b",
-    "io.poietra.sandbox-slice": "gated-oci-v1",
-  },
+  labels: Readonly<Record<string, string>> = TRUSTED_IMAGE_LABELS,
 ) {
   return Buffer.from(
     JSON.stringify([
@@ -287,17 +307,15 @@ describe("gated OCI Docker ownership", () => {
     ).rejects.toThrow(/does not match the gated slice/i);
   });
 
-  it("rejects an image pinned to the previous snapshot producer", async () => {
+  it.each(Object.keys(TRUSTED_IMAGE_LABELS))("rejects an image whose %s label drifted", async (label) => {
     const image = `sha256:${"a".repeat(64)}`;
     const client = new RecordingDockerClient({ socketPath: "/run/user/1000/poietra-docker.sock" });
     client.responses.push({
       code: 0,
       stderr: Buffer.alloc(0),
       stdout: trustedImageInspection(image, FAST_MANIM_GATED_OCI_PROFILE_V1.target, {
-        "io.poietra.fast-manim.archive-sha256": "57dc425090dbe448a3259a86134155a0df118566868c88bd2858c8445fd22903",
-        "io.poietra.fast-manim.commit": "f505776c37ecb4147e10a54ff917fc857034b3d4",
-        "io.poietra.fast-manim.tree": "a194bb6ba80d566163e946712e441901904faac7",
-        "io.poietra.sandbox-slice": "gated-oci-v1",
+        ...TRUSTED_IMAGE_LABELS,
+        [label]: "drifted",
       }),
     });
 
@@ -645,6 +663,34 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
     for (const sentinel of FAST_MANIM_SANDBOX_CONFORMANCE_LEAK_SENTINELS_V1) {
       expect(Buffer.from(execution.resultBytes).includes(Buffer.from(sentinel))).toBe(false);
     }
+  });
+
+  it("loads the pinned native provider and returns a real V3 MathTex outline", { timeout: 60_000 }, async () => {
+    const source = producerRequestFor(mathTexScene, "GatedMathTexScene", 3, "mathtex.py");
+    const request = new FastManimSandboxRequestBundleV1(source);
+    const execution = await runFastManimGatedOciJobV1({
+      deadlineEpochMs: Date.now() + 30_000,
+      image,
+      requestBytes: request.copyBytes(),
+      signal: new AbortController().signal,
+    });
+    expect(execution.cleanupVerified).toBe(true);
+    const { snapshot, sourceRuntimeIdentity } = await verifyCombinedResult(execution.resultBytes, source);
+    if (snapshot.kind !== "compiled") throw new Error("Expected a compiled MathTex V3 snapshot.");
+    expect(snapshot.bundle.scene).toMatchObject({
+      requiredCapabilities: ["cubic-path-geometry"],
+      source: { kind: "imported-manim-server-snapshot", snapshotVersion: 3 },
+    });
+    expect(snapshot.bundle.scene.entities).toHaveLength(1);
+    const entity = snapshot.bundle.scene.entities[0]!;
+    if (entity.geometry.kind !== "cubic-path" || entity.appearance.kind !== "vector") {
+      throw new Error("Expected one vector cubic MathTex outline.");
+    }
+    expect(entity.geometry.path.subpaths.length).toBeGreaterThan(1);
+    expect(entity.geometry.path.subpaths.every((subpath) => subpath.closed && subpath.segments.length > 0)).toBe(true);
+    expect(entity.appearance.fill).not.toBeNull();
+    expect(entity.appearance.stroke).toBeNull();
+    expect(sourceRuntimeIdentity?.mappings).toMatchObject([{ binding: { name: "equation" }, entityId: entity.id }]);
   });
 
   it("isolates, seals, and correlates real V2 opacity/lifetime evidence", { timeout: 60_000 }, async () => {

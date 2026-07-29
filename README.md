@@ -210,7 +210,10 @@ Web and packaged Electron distributions expose the canonical font license notice
 `/THIRD_PARTY_NOTICES.txt`. The standalone server distribution places the same file
 beside `manim-production-server.mjs`. Its source of truth is the MathTex outline
 crate's `PACKAGE-LICENSES.txt`; the build and package smoke checks require byte-identical
-copies and verify the embedded font SHA-256.
+copies and verify the embedded font SHA-256. The gated snapshot OCI image installs
+the same byte-identical notice at
+`/usr/share/doc/poietra-mathtex-outline/THIRD_PARTY_NOTICES.txt` and binds its
+SHA-256 into the admitted image labels.
 
 Studio starts at a workspace chooser. Visible cards lazily parse only the first
 importable Scene into a bounded semantic SVG thumbnail; this does not execute
