@@ -8,9 +8,6 @@ import { beforeAll, describe, expect, it } from "vitest";
 import {
   type FastManimGatedOciCgroupKillPolicyV1,
   FastManimGatedOciDockerClientV1,
-  inspectFastManimGatedOciRunningCgroupV1,
-  parseFastManimGatedOciSingleInspectionV1,
-  readFastManimGatedOciProcessStartTimeV1,
 } from "./fast-manim-gated-oci-job-runner";
 import { parseFastManimRootlessDockerInfoV1 } from "./fast-manim-production-gated-oci-backend";
 import { ManimRenderGatedOciJobRunnerV1 } from "./manim-render-gated-oci-job-runner";
@@ -224,43 +221,6 @@ async function waitForContainerProcessCount(
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   throw new Error("The hostile render did not populate its cgroup before cleanup.");
-}
-
-async function waitForRunningCgroupPath(docker: FastManimGatedOciDockerClientV1, containerId: string) {
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    const result = await docker.run(["container", "inspect", containerId]);
-    if (result.code === 0) {
-      const inspection = parseFastManimGatedOciSingleInspectionV1(result.stdout);
-      const pid = inspection.State?.Pid;
-      if (Number.isSafeInteger(pid) && (pid as number) > 1) {
-        const startTime = await readFastManimGatedOciProcessStartTimeV1(pid as number);
-        return (await inspectFastManimGatedOciRunningCgroupV1(containerId, pid as number, startTime)).cgroupPath;
-      }
-    }
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  throw new Error("The hostile render cgroup identity was not observable.");
-}
-
-async function waitForCgroupEvent(cgroupPath: string, event: string) {
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    try {
-      const counters = Object.fromEntries(
-        (await readFile(join(cgroupPath, "memory.events"), "utf8"))
-          .trim()
-          .split("\n")
-          .map((line) => line.split(" ", 2)),
-      );
-      if (Number(counters[event] ?? 0) > 0) return;
-    } catch {
-      // Cleanup may race the final observation; the bounded deadline below
-      // turns a missed kernel event into a failed evidence run.
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(`The hostile render did not produce the expected cgroup ${event} event.`);
 }
 
 describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media lane", () => {
@@ -587,8 +547,7 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
         timeoutMs: 8_000,
       },
       {
-        cgroupEvent: "oom_kill",
-        expected: { code: "render-failed", diagnostic: "manim-exit", kind: "failed" },
+        expected: { code: "memory-limit", kind: "failed" },
         maximumElapsedMs: 30_000,
         name: "memory",
         sceneName: "MemoryPressureScene",
@@ -596,9 +555,8 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
         timeoutMs: 25_000,
       },
       {
-        expected: { code: "deadline-exceeded", kind: "failed" },
+        expected: { code: "pids-limit", kind: "failed" },
         maximumElapsedMs: 20_000,
-        minimumProcesses: 16,
         name: "fork-pressure",
         sceneName: "ForkPressureScene",
         source: forkPressureSource,
@@ -646,18 +604,18 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
         });
         const startedAt = performance.now();
         const pending = runner.submitOrReattach(request, deadlineEpochMs, signal);
-        if ("observeLiveDescendants" in attack || "minimumProcesses" in attack || "cgroupEvent" in attack) {
+        if ("observeLiveDescendants" in attack || "minimumProcesses" in attack) {
           const containerId = await waitForOwnedContainer(docker, runner);
           if ("observeLiveDescendants" in attack) await waitForContainerProcessCount(docker, containerId, 2);
           if ("minimumProcesses" in attack) {
             await waitForContainerProcessCount(docker, containerId, attack.minimumProcesses);
           }
-          if ("cgroupEvent" in attack) {
-            await waitForCgroupEvent(await waitForRunningCgroupPath(docker, containerId), attack.cgroupEvent);
-          }
         }
         const result = await pending;
         expect(result, attack.name).toEqual(attack.expected);
+        if (attack.expected.code === "memory-limit" || attack.expected.code === "pids-limit") {
+          expect(Date.now(), attack.name).toBeLessThan(deadlineEpochMs);
+        }
         expect(performance.now() - startedAt, attack.name).toBeLessThan(attack.maximumElapsedMs);
         expect(await readdir(stagingRoot), attack.name).toEqual([]);
         expect(await ownedContainerIds(docker, runner, true), attack.name).toEqual([]);

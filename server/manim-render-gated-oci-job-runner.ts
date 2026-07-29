@@ -1,36 +1,36 @@
-import { createHash } from "node:crypto";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, chown, lstat, mkdtemp, open, readFile, readdir, realpath, rename, rm } from "node:fs/promises";
+import { chmod, chown, lstat, mkdtemp, open, readdir, readFile, realpath, rename, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 import { z } from "zod";
 
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
-import { fastManimSandboxBackendControlErrorCode } from "./fast-manim-sandbox-backend";
 import {
   assertFastManimGatedOciSeccompV1,
   cleanupFastManimGatedOciContainerV1,
   FAST_MANIM_GATED_OCI_SECCOMP_DIGEST_V1,
+  type FastManimGatedOciCgroupKillPolicyV1,
   FastManimGatedOciDockerClientV1,
   type FastManimGatedOciRunningIdentityV1,
-  type FastManimGatedOciCgroupKillPolicyV1,
   inspectFastManimGatedOciRunningCgroupV1,
   inspectFastManimGatedOciRunningResourcesV1,
   parseFastManimGatedOciSingleInspectionV1,
   readFastManimGatedOciProcessStartTimeV1,
   reapFastManimGatedOciAttachedDockerClientV1,
 } from "./fast-manim-gated-oci-job-runner";
+import { fastManimSandboxBackendControlErrorCode } from "./fast-manim-sandbox-backend";
 import {
-  type ManimRenderSandboxCancellationFenceV1,
-  manimRenderSandboxCancellationFenceV1Schema,
-  digestManimRenderStagingRootV1,
   digestManimRenderSandboxExecutionV2,
+  digestManimRenderStagingRootV1,
   MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
+  MAX_MANIM_RENDER_SANDBOX_ARTIFACT_BYTES_V1,
+  type ManimRenderSandboxCancellationFenceV1,
   type ManimRenderSandboxDescriptorV2,
   type ManimRenderSandboxTerminalV1,
+  manimRenderSandboxCancellationFenceV1Schema,
   manimRenderStagingIdV1,
-  MAX_MANIM_RENDER_SANDBOX_ARTIFACT_BYTES_V1,
   type SealedManimRenderSandboxRequestV2,
   verifySealedManimRenderSandboxRequestV2,
 } from "./manim-render-sandbox-contract";
@@ -50,6 +50,7 @@ const FIXED_ARTIFACT_PATHS = Object.freeze({
   "video/mp4": "/run/poietra/output/artifact.mp4",
 } as const);
 const MAX_CONTROL_BYTES = 64 * 1024;
+const MAX_CGROUP_COUNTER_BYTES = 4 * 1024;
 const CONTROL_TIMEOUT_MS = 10_000;
 const POLL_INTERVAL_MS = 50;
 const MAX_ACTIVE_JOBS = 8;
@@ -227,6 +228,53 @@ export type ManimRenderGatedOciBaseResultV1 =
       diagnostic?: "artifact-copy" | "internal" | "manim-exit" | "media-invalid" | "media-missing";
       kind: "failed";
     }>;
+
+type ManimRenderCgroupFailureCodeV1 = Extract<
+  Extract<ManimRenderSandboxTerminalV1, { kind: "failed" }>["code"],
+  "memory-limit" | "pids-limit"
+>;
+
+function parseCgroupCounters(value: unknown, required: readonly string[]) {
+  if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > MAX_CGROUP_COUNTER_BYTES) {
+    throw new TypeError("The render cgroup counters are invalid.");
+  }
+  const normalized = value.endsWith("\n") ? value.slice(0, -1) : value;
+  if (normalized.length === 0 || normalized.includes("\r")) {
+    throw new TypeError("The render cgroup counters are invalid.");
+  }
+  const counters = new Map<string, bigint>();
+  for (const line of normalized.split("\n")) {
+    const match = line.match(/^([a-z][a-z0-9_]*) ([0-9]+)$/u);
+    if (!match || counters.has(match[1]!)) throw new TypeError("The render cgroup counters are invalid.");
+    counters.set(match[1]!, BigInt(match[2]!));
+  }
+  if (required.some((name) => !counters.has(name))) throw new TypeError("The render cgroup counters are incomplete.");
+  return counters;
+}
+
+/** Classifies only trusted kernel counters; no renderer text is accepted. */
+export function classifyManimRenderCgroupFailureV1(
+  memoryEvents: unknown,
+  pidsEvents: unknown,
+): ManimRenderCgroupFailureCodeV1 | null {
+  const memory = parseCgroupCounters(memoryEvents, ["oom", "oom_kill"]);
+  const pids = parseCgroupCounters(pidsEvents, ["max"]);
+  const memoryLimit = memory.get("oom")! > 0n || memory.get("oom_kill")! > 0n;
+  const pidsLimit = pids.get("max")! > 0n;
+  if (memoryLimit && pidsLimit) throw new TypeError("The render cgroup failure evidence is ambiguous.");
+  if (!memoryLimit && !pidsLimit) return null;
+  return memoryLimit ? "memory-limit" : "pids-limit";
+}
+
+async function inspectManimRenderCgroupFailureV1(identity: FastManimGatedOciRunningIdentityV1) {
+  // A stable render container owns one fresh cgroup for exactly one job. Its
+  // absolute counters therefore remain job-local across broker reattachment.
+  const [memoryEvents, pidsEvents] = await Promise.all([
+    readFile(resolve(identity.cgroupPath, "memory.events"), "ascii"),
+    readFile(resolve(identity.cgroupPath, "pids.events"), "ascii"),
+  ]);
+  return classifyManimRenderCgroupFailureV1(memoryEvents, pidsEvents);
+}
 
 type ActiveJob = Readonly<{
   abort: AbortController;
@@ -1450,6 +1498,8 @@ export class ManimRenderGatedOciJobRunnerV1 {
     let runningIdentity: FastManimGatedOciRunningIdentityV1 | undefined;
     let copied: CopiedArtifact | undefined;
     const containerName = this.#containerName(stagingId);
+    const inspectResourceFailure = () =>
+      runningIdentity ? inspectManimRenderCgroupFailureV1(runningIdentity) : Promise.resolve(null);
     const execute = async (): Promise<ManimRenderGatedOciBaseResultV1> => {
       try {
         const staged = await this.#readStaged(descriptor, executionDigest, stagingId, deadlineEpochMs, signal);
@@ -1494,6 +1544,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
           signal,
         );
         if (terminal.kind === "failed") {
+          const resourceFailure = await inspectResourceFailure();
           try {
             await cleanupFastManimGatedOciContainerV1(
               containerId,
@@ -1507,7 +1558,9 @@ export class ManimRenderGatedOciJobRunnerV1 {
             await this.#deleteStaged(stagingId);
             return { code: "cleanup-failed", kind: "failed" };
           }
-          return { code: "render-failed", diagnostic: terminal.reason, kind: "failed" };
+          return resourceFailure
+            ? { code: resourceFailure, kind: "failed" }
+            : { code: "render-failed", diagnostic: terminal.reason, kind: "failed" };
         }
         copied = await this.#copyArtifact(
           containerId,
@@ -1540,6 +1593,8 @@ export class ManimRenderGatedOciJobRunnerV1 {
         if (fastManimSandboxBackendControlErrorCode(error) === "cleanup") {
           this.#latchCleanupFailure(error);
         }
+        const cancelledBeforeDeadline = signal.aborted && Date.now() < deadlineEpochMs;
+        const resourceFailure = await inspectResourceFailure().catch(() => null);
         try {
           if (containerId) {
             await cleanupFastManimGatedOciContainerV1(
@@ -1566,6 +1621,8 @@ export class ManimRenderGatedOciJobRunnerV1 {
           await this.#deleteStaged(stagingId);
           return { code: "cleanup-failed", kind: "failed" };
         }
+        if (cancelledBeforeDeadline) return { code: "cancelled", kind: "failed" };
+        if (resourceFailure) return { code: resourceFailure, kind: "failed" };
         if (Date.now() >= deadlineEpochMs) return { code: "deadline-exceeded", kind: "failed" };
         if (signal.aborted) return { code: "cancelled", kind: "failed" };
         return { code: "render-failed", kind: "failed" };
@@ -1836,7 +1893,11 @@ export class ManimRenderGatedOciJobRunnerV1 {
   ) {
     while (true) {
       throwIfDeadlineElapsed(deadlineEpochMs, signal);
-      if (await this.#brokerReadableState(identity)) return;
+      const brokerReadable = await this.#brokerReadableState(identity);
+      if ((await inspectManimRenderCgroupFailureV1(identity)) !== null) {
+        throw new Error("The render OCI resource limit was reached.");
+      }
+      if (brokerReadable) return;
       await delay(POLL_INTERVAL_MS, signal);
     }
   }

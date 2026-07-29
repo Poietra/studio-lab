@@ -238,6 +238,8 @@ export const manimRenderSandboxFailureCodeV1Schema = z.enum([
   "capacity",
   "cleanup-failed",
   "deadline-exceeded",
+  "memory-limit",
+  "pids-limit",
   "render-failed",
   "request-mismatch",
   "result-rejected",
