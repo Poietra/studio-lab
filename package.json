@@ -16,6 +16,7 @@
     "test:engine:wasm-smoke": "node scripts/smoke-engine-wasm.mjs",
     "test:manim-smoke": "node scripts/run-manim-smoke.mjs",
     "test:render-sandbox:oci:required": "POIETRA_MANIM_RENDER_GATED_OCI_REQUIRED=1 vitest run server/manim-render-gated-oci.real.test.ts",
+    "test:render-sandbox:production:required": "POIETRA_MANIM_RENDER_PRODUCTION_REQUIRED=1 vitest run server/manim-render-production-sandbox-broker-service.real.test.ts",
     "test:e2e": "playwright test",
     "test:e2e:preview": "pnpm test:e2e:preview:chromium && pnpm test:e2e:preview:webgpu",
     "test:e2e:preview:chromium": "playwright test --config playwright.preview.config.ts --project preview-chromium --fully-parallel --workers 4",
