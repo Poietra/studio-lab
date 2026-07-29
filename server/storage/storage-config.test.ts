@@ -87,6 +87,13 @@ describe("durable storage configuration", () => {
         },
         stagingRoot: "/var/lib/poietra/render-staging",
       },
+      renderCancellation: {
+        batchSize: 16,
+        deliveryLeaseMs: 20_000,
+        intervalMs: 1_000,
+        onFailure: () => undefined,
+        sweepTimeoutMs: 15_000,
+      },
       renderSessionRetention: {
         auditRetentionMs: 60_000,
         batchSize: 64,

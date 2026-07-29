@@ -42,9 +42,9 @@ the root configured for trusted publication. This stream is intentional: Docker'
 configurations.
 
 `pnpm build:render-sandbox-broker` builds the standalone broker entry. It takes
-one absolute path to an immutable, root-owned JSON configuration containing the
-broker UID, Studio socket GID, rootless Docker socket, pinned image digest,
-seccomp path, private staging root, and UDS path. `pnpm
+one absolute path to an immutable, root-owned JSON configuration containing a
+deployment-unique `brokerShardId`, the broker UID, Studio socket GID, rootless
+Docker socket, pinned image digest, seccomp path, private staging root, and UDS path. `pnpm
 sandbox:oci:render:build` builds the pinned image when
 `POIETRA_FAST_MANIM_SOURCE_REPO` points at the exact Fast Manim checkout. The
 opt-in real lane uses `POIETRA_MANIM_RENDER_GATED_OCI_IMAGE=<sha256:image-id>`.
@@ -71,19 +71,31 @@ rejection of forged MP4, denial of Scene access to `/proc/1/mem`, hostile early
 output replacement, refenced reattachment, owner-isolated concurrent brokers,
 restart cleanup, active cancellation, and cleanup.
 
-User cancellation first aborts the job in its current worker, then waits for the
-broker to persist a job-wide cancellation fence in the private staging root,
-and only after the correlated broker acknowledgement changes the PostgreSQL
-session to `cancelled`. The fence rejects both video and thumbnail admission
-before active or staged reattachment and survives broker restart until the
-immutable render deadline plus a short cleanup grace period. Normal publication
-cleanup is a separate non-fencing operation. Global and per-tenant hard caps
-reject new fences without evicting a live cancellation or stopping other
-tenants. Every worker allowed to claim from one render queue must route that
-queue to the same broker/staging-root shard;
-deployments that can route the same job to independent brokers require a durable
-database cancel-intent and owner-shard relay before horizontal admission is
-enabled.
+Each broker has an explicit deployment-unique `brokerShardId` in its immutable,
+root-owned configuration. Status and cancellation acknowledgements carry that
+identity, and Studio rejects an old or mismatched broker before admission. The
+first PostgreSQL lease claim permanently binds a render job to one shard;
+recovery workers can only reclaim unowned jobs or jobs already bound to their
+own shard.
+
+User cancellation is registered as a durable PostgreSQL intent before any API
+success is returned. A credentialed relay for the owner shard aborts local
+worker I/O, asks its credential-free UDS broker to persist the job-wide fence,
+verifies the correlated `{brokerShardId, fenceDigest}` acknowledgement, and
+atomically records that acknowledgement while changing the session to
+`cancelled`. API replicas wait for that durable result, so a request received on
+another shard cannot acknowledge cancellation early. Pending intents block
+lease completion, artifact publication, and late video or thumbnail admission;
+delivery leases make replay idempotent across API, relay, worker, and broker
+restart. Intent capacity and expiry match the broker's global/per-tenant caps
+and immutable render deadline plus cleanup grace, without evicting a live
+cancellation. Normal publication cleanup remains a separate non-fencing
+operation, and PostgreSQL/S3 credentials never enter the broker.
+
+Migration v7 intentionally refuses to install while a legacy `rendering` row
+has no broker shard. Drain those rows before applying it. Once installed, the
+database rejects shardless legacy claims and unsafe legacy terminal transitions,
+so a mixed rollout fails closed until every worker uses owner-shard delivery.
 
 Before upgrading from a build that predates owner-scoped container names and
 labels, stop every old broker and drain its `poietra-render-<staging-id>`

@@ -9,18 +9,19 @@ import {
   assertRenderArtifactPublishedV1,
   boundedRenderArtifactIntegerV1,
   boundedRenderArtifactTextV1,
-  parseRenderArtifactReceiptV1,
   type PublishedRenderArtifactV1,
   type PublishRenderArtifactsInputV1,
+  parseRenderArtifactReceiptV1,
   type RenderArtifactDeletionV1,
-  renderArtifactIdV1,
   type RenderArtifactReadClaimV1,
   type RenderArtifactReceiptV1,
   type RenderArtifactRepositoryV1,
+  renderArtifactIdV1,
   sameRenderArtifactReceiptV1,
 } from "../render-artifact-repository";
 import { MAX_DURABLE_RENDER_LOG_BYTES_V1 } from "../render-session-repository";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
+import { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
 
 export const RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM = "ba334dd77d8b876fdb4cde9a21ed90264eb2f00e4bfbfe64b9951fbbbf9fffbd";
 
@@ -195,12 +196,18 @@ export class PostgresArtifactRepositoryV1 implements RenderArtifactRepositoryV1 
 
   async ready(signal?: AbortSignal) {
     signal?.throwIfAborted();
-    const result = await this.#connection.query<{ version: number }>(
-      "SELECT version FROM public.poietra_schema_migrations WHERE version = 4 AND checksum = $1",
-      [RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM],
+    const result = await this.#connection.query<{ checksum: string; version: number }>(
+      "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (4, 7) ORDER BY version",
+      [],
       signal,
     );
-    return result.rows.length === 1;
+    return (
+      result.rows.length === 2 &&
+      result.rows[0]?.version === 4 &&
+      result.rows[0]?.checksum === RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM &&
+      result.rows[1]?.version === 7 &&
+      result.rows[1]?.checksum === RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM
+    );
   }
 
   async #insertArtifact(
@@ -299,6 +306,15 @@ export class PostgresArtifactRepositoryV1 implements RenderArtifactRepositoryV1 
       ) {
         throw new HttpError("The render publication fence is stale.", 409);
       }
+      const pendingCancellation = await client.query(
+        `SELECT 1 FROM public.render_cancellation_intents
+          WHERE tenant_id = $1 AND session_id = $2::uuid
+            AND acknowledged_at IS NULL AND expires_at > clock_timestamp()`,
+        [tenant, session],
+      );
+      if (pendingCancellation.rowCount !== 0) {
+        throw new HttpError("The render publication fence is stale.", 409);
+      }
       if (row.patched_digest !== receipts[0].receipt.sourceDigest) {
         throw new TypeError("The staged media does not match the rendered source digest.");
       }
@@ -357,6 +373,13 @@ export class PostgresArtifactRepositoryV1 implements RenderArtifactRepositoryV1 
           WHERE tenant_id = $1 AND session_id = $2::uuid
             AND lease_owner = $3 AND version = $4::bigint AND fence_token = $5::bigint
             AND lease_expires_at > clock_timestamp() AND execution_deadline > clock_timestamp()
+            AND NOT EXISTS (
+              SELECT 1 FROM public.render_cancellation_intents cancellation
+               WHERE cancellation.tenant_id = public.render_sessions.tenant_id
+                 AND cancellation.session_id = public.render_sessions.session_id
+                 AND cancellation.acknowledged_at IS NULL
+                 AND cancellation.expires_at > clock_timestamp()
+            )
             AND status = 'rendering'`,
         [tenant, session, owner, expectedVersion.toString(), fenceToken.toString(), input.logTail, video.artifactId],
       );

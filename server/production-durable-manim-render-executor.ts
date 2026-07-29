@@ -11,10 +11,13 @@ import {
 import type { ManimRenderSandboxBackendV1 } from "./manim-render-sandbox-backend";
 import {
   canonicalManimRenderFenceTokenV1,
+  digestManimRenderSandboxCancellationFenceV1,
   encodeManimRenderStagingLocatorV1,
-  manimRenderSandboxCancellationFenceV1Schema,
+  MANIM_RENDER_BROKER_OPERATION_BUDGET_MS_V1,
   MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
   MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V2,
+  manimRenderBrokerShardIdV1Schema,
+  manimRenderSandboxCancellationFenceV1Schema,
   SealedManimRenderSandboxRequestV2,
 } from "./manim-render-sandbox-contract";
 import { manimTenantIdSchema } from "./manim-request-principal";
@@ -25,7 +28,6 @@ import {
 } from "./storage/project-png-storage";
 import type { SourceContentBlobStoreV1 } from "./storage/workspace-source-repository";
 
-const READINESS_TIMEOUT_MS = 10_000;
 const MAX_CONCURRENT_RENDER_SESSIONS = 4;
 
 function validConcurrentRenderSessions(value: number | undefined) {
@@ -35,6 +37,7 @@ function validConcurrentRenderSessions(value: number | undefined) {
 export type ProductionDurableManimRenderExecutorOptionsV1 = Readonly<{
   backend: ManimRenderSandboxBackendV1;
   blobs: SourceContentBlobStoreV1;
+  brokerShardId: string;
   frame: Readonly<{ height: number; width: number }>;
   maxConcurrentJobs?: number;
   projectPngs: Pick<ProjectPngBlobStoreV1, "close" | "read" | "ready">;
@@ -48,6 +51,7 @@ export type ProductionDurableManimRenderExecutorOptionsV1 = Readonly<{
 export class ProductionDurableManimRenderExecutorV1 implements DurableManimRenderExecutorV1 {
   readonly #backend: ManimRenderSandboxBackendV1;
   readonly #blobs: SourceContentBlobStoreV1;
+  readonly #brokerShardId: string;
   readonly #frame: typeof MANIM_RENDER_CANONICAL_SCENE_FRAME_V1;
   readonly #projectPngs: Pick<ProjectPngBlobStoreV1, "close" | "read" | "ready">;
   readonly #profileDigest: string;
@@ -58,8 +62,10 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
 
   constructor(options: ProductionDurableManimRenderExecutorOptionsV1) {
     const tenant = manimTenantIdSchema.safeParse(options.tenantId);
+    const brokerShard = manimRenderBrokerShardIdV1Schema.safeParse(options.brokerShardId);
     if (
       !tenant.success ||
+      !brokerShard.success ||
       !validConcurrentRenderSessions(options.maxConcurrentJobs) ||
       options.frame.height !== MANIM_RENDER_CANONICAL_SCENE_FRAME_V1.height ||
       options.frame.width !== MANIM_RENDER_CANONICAL_SCENE_FRAME_V1.width
@@ -68,6 +74,7 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
     }
     this.#backend = options.backend;
     this.#blobs = options.blobs;
+    this.#brokerShardId = brokerShard.data;
     this.#frame = MANIM_RENDER_CANONICAL_SCENE_FRAME_V1;
     this.#projectPngs = options.projectPngs;
     this.#profileDigest = options.profileDigest;
@@ -78,6 +85,10 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
 
   get profileDigest() {
     return this.#profileDigest;
+  }
+
+  get brokerShardId() {
+    return this.#brokerShardId;
   }
 
   get runtimeDigest() {
@@ -91,13 +102,13 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
     signal?.addEventListener("abort", abort, { once: true });
     const timer = setTimeout(
       () => controller.abort(new Error("Render sandbox readiness timed out.")),
-      READINESS_TIMEOUT_MS,
+      MANIM_RENDER_BROKER_OPERATION_BUDGET_MS_V1,
     );
     timer.unref();
     try {
       const [status, projectPngsReady] = await Promise.all([
         this.#backend.status({
-          deadlineEpochMs: Date.now() + READINESS_TIMEOUT_MS,
+          deadlineEpochMs: Date.now() + MANIM_RENDER_BROKER_OPERATION_BUDGET_MS_V1,
           signal: controller.signal,
         }),
         this.#projectPngs.ready(controller.signal),
@@ -105,6 +116,7 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
       return (
         projectPngsReady &&
         status.health === "ready" &&
+        status.brokerShardId === this.#brokerShardId &&
         status.profileDigest === this.#profileDigest &&
         status.runtimeDigest === this.#runtimeDigest &&
         status.stagingRootDigest === this.#stagingRootDigest
@@ -223,15 +235,20 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
     } as const;
   }
 
-  cancel(request: DurableManimRenderCancellationRequestV1) {
+  async cancel(request: DurableManimRenderCancellationRequestV1) {
     if (request.tenantId !== this.#tenantId) {
-      return Promise.reject(new TypeError("The render cancellation identity is invalid."));
+      throw new TypeError("The render cancellation identity is invalid.");
     }
     const fence = manimRenderSandboxCancellationFenceV1Schema.parse(request);
-    return this.#backend.cancel(fence, {
-      deadlineEpochMs: Date.now() + READINESS_TIMEOUT_MS,
+    const acknowledgement = await this.#backend.cancel(fence, {
+      deadlineEpochMs: Date.now() + MANIM_RENDER_BROKER_OPERATION_BUDGET_MS_V1,
       signal: new AbortController().signal,
     });
+    const fenceDigest = digestManimRenderSandboxCancellationFenceV1(fence);
+    if (acknowledgement.brokerShardId !== this.#brokerShardId || acknowledgement.fenceDigest !== fenceDigest) {
+      throw new Error("The render cancellation acknowledgement identity is invalid.");
+    }
+    return { fenceDigest };
   }
 
   cleanup(request: DurableManimRenderCleanupRequestV1) {
@@ -239,7 +256,7 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
       return Promise.reject(new TypeError("The render cleanup identity is invalid."));
     }
     return this.#backend.cleanup(request.jobId, {
-      deadlineEpochMs: Date.now() + READINESS_TIMEOUT_MS,
+      deadlineEpochMs: Date.now() + MANIM_RENDER_BROKER_OPERATION_BUDGET_MS_V1,
       signal: new AbortController().signal,
     });
   }
@@ -271,6 +288,7 @@ export async function createProductionDurableManimRenderExecutorV1(
   return new ProductionDurableManimRenderExecutorV1({
     backend: client.backend,
     blobs: options.blobs,
+    brokerShardId: client.brokerShardId,
     frame: options.frame,
     ...(options.maxConcurrentJobs === undefined ? {} : { maxConcurrentJobs: options.maxConcurrentJobs }),
     projectPngs: options.projectPngs,

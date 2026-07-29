@@ -37,13 +37,13 @@ import { applyBundledDurableStorageMigrations } from "./postgres/migrate";
 import { PostgresArtifactRepositoryV1 } from "./postgres/postgres-artifact-repository";
 import { PostgresRenderSessionRepositoryV1 } from "./postgres/postgres-render-session-repository";
 import { PostgresWorkspaceSourceRepositoryV1 } from "./postgres/postgres-workspace-source-repository";
+import { runRenderArtifactGcV1 } from "./render-artifact-gc";
 import {
   type PublishRenderArtifactsInputV1,
   RenderArtifactReadErrorV1,
   type RenderArtifactReceiptV1,
   type RenderArtifactStoreV1,
 } from "./render-artifact-repository";
-import { runRenderArtifactGcV1 } from "./render-artifact-gc";
 import type { DurableRenderSessionV1 } from "./render-session-repository";
 import { S3ArtifactReaderV1 } from "./s3/s3-artifact-reader";
 import { VerifiedArtifactPublisherV1 } from "./verified-artifact-publisher";
@@ -356,6 +356,7 @@ async function createClaimedSession(
     tenantId: originalHead.tenantId,
   });
   return repository.claimLease({
+    brokerShardId: "render-artifact-e2e-shard",
     leaseDurationMs: 60_000,
     ownerId: `worker-${label}`,
     sessionId,
@@ -548,7 +549,7 @@ async function publishThroughRealOci(
     stagingGroupId,
     stagingRoot,
   });
-  const backend = new ManimRenderGatedOciBackendV1(runner);
+  const backend = new ManimRenderGatedOciBackendV1(runner, "render-artifact-storage-real");
   const signal = new AbortController().signal;
   const context = { deadlineEpochMs: session.deadline.getTime(), signal };
   const base = {

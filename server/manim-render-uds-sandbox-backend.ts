@@ -1,6 +1,6 @@
 import { Socket } from "node:net";
 import { isAbsolute, resolve } from "node:path";
-
+import type { ManimRenderSandboxBackendV1, ManimRenderSandboxOperationContextV1 } from "./manim-render-sandbox-backend";
 import {
   encodeManimRenderSandboxBrokerClientFrameV1,
   type ManimRenderSandboxBrokerClientMessageV1,
@@ -8,10 +8,10 @@ import {
   ManimRenderSandboxBrokerServerFrameDecoderV1,
   type ManimRenderSandboxBrokerServerMessageV1,
 } from "./manim-render-sandbox-broker-protocol";
-import type { ManimRenderSandboxBackendV1, ManimRenderSandboxOperationContextV1 } from "./manim-render-sandbox-backend";
 import {
   digestManimRenderSandboxCancellationFenceV1,
   type ManimRenderSandboxCancellationFenceV1,
+  manimRenderBrokerShardIdV1Schema,
   manimRenderSandboxStatusV1Schema,
   manimRenderSandboxTerminalV1Schema,
   manimRenderStagingIdV1,
@@ -45,11 +45,14 @@ type ActiveOperation = Readonly<{
 
 export class ManimRenderUdsSandboxBackendV1 implements ManimRenderSandboxBackendV1 {
   readonly #active = new Set<ActiveOperation>();
+  readonly #brokerShardId: string;
   readonly #socketPath: string;
   #closed = false;
 
-  constructor(options: Readonly<{ socketPath: string }>) {
+  constructor(options: Readonly<{ brokerShardId: string; socketPath: string }>) {
     if (
+      !options ||
+      Object.keys(options).sort().join(",") !== "brokerShardId,socketPath" ||
       !isAbsolute(options.socketPath) ||
       resolve(options.socketPath) !== options.socketPath ||
       options.socketPath.includes("\0") ||
@@ -57,13 +60,16 @@ export class ManimRenderUdsSandboxBackendV1 implements ManimRenderSandboxBackend
     ) {
       throw new TypeError("The render broker socket path must be bounded, canonical, and absolute.");
     }
+    this.#brokerShardId = manimRenderBrokerShardIdV1Schema.parse(options.brokerShardId);
     this.#socketPath = options.socketPath;
   }
 
   status(context: ManimRenderSandboxOperationContextV1) {
     return this.#open("status", { deadlineEpochMs: context.deadlineEpochMs, kind: "status" }, context, (message) => {
       if (message.kind !== "status-result") throw transportError();
-      return manimRenderSandboxStatusV1Schema.parse(message.status);
+      const status = manimRenderSandboxStatusV1Schema.parse(message.status);
+      if (status.brokerShardId !== this.#brokerShardId) throw transportError();
+      return status;
     });
   }
 
@@ -107,7 +113,7 @@ export class ManimRenderUdsSandboxBackendV1 implements ManimRenderSandboxBackend
 
   async cancel(fence: ManimRenderSandboxCancellationFenceV1, context: ManimRenderSandboxOperationContextV1) {
     const fenceDigest = digestManimRenderSandboxCancellationFenceV1(fence);
-    await this.#open(
+    return await this.#open(
       "cancel",
       { deadlineEpochMs: context.deadlineEpochMs, fence, kind: "cancel" },
       context,
@@ -115,6 +121,8 @@ export class ManimRenderUdsSandboxBackendV1 implements ManimRenderSandboxBackend
         if (message.kind !== "cancel-result" || message.cancelled !== true || message.fenceDigest !== fenceDigest) {
           throw transportError();
         }
+        if (message.brokerShardId !== this.#brokerShardId) throw transportError();
+        return { brokerShardId: message.brokerShardId, fenceDigest: message.fenceDigest };
       },
     );
   }

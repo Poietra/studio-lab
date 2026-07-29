@@ -3,6 +3,7 @@ dist/
 dist-electron/
 dist-server/
 dist-sandbox-broker/
+dist-render-sandbox-broker/
 release/
 .vite/
 playwright-report/

@@ -3,10 +3,11 @@ import {
   digestManimRenderGatedOciRuntimeV1,
   MANIM_RENDER_GATED_OCI_PROFILE_DIGEST_V1,
 } from "./manim-render-gated-oci-job-runner";
-import { digestManimRenderStagingRootV1 } from "./manim-render-sandbox-contract";
+import { digestManimRenderStagingRootV1, manimRenderBrokerShardIdV1Schema } from "./manim-render-sandbox-contract";
 import { ManimRenderUdsSandboxBackendV1 } from "./manim-render-uds-sandbox-backend";
 
 export type ManimRenderProductionSandboxClientOptionsV1 = Readonly<{
+  brokerShardId: string;
   brokerUserId: number;
   imageDigest: string;
   socketGroupId: number;
@@ -35,14 +36,17 @@ function assertStudioPrincipal(brokerUserId: number, socketGroupId: number) {
 export async function createManimRenderProductionSandboxClientV1(options: ManimRenderProductionSandboxClientOptionsV1) {
   if (
     !options ||
-    Object.keys(options).sort().join(",") !== "brokerUserId,imageDigest,socketGroupId,socketPath,stagingRoot"
+    Object.keys(options).sort().join(",") !==
+      "brokerShardId,brokerUserId,imageDigest,socketGroupId,socketPath,stagingRoot"
   ) {
     throw new TypeError("The production render sandbox client configuration is invalid.");
   }
+  const brokerShardId = manimRenderBrokerShardIdV1Schema.parse(options.brokerShardId);
   assertStudioPrincipal(options.brokerUserId, options.socketGroupId);
   await assertFastManimProductionBrokerSocketV1(options.socketPath, options.brokerUserId, options.socketGroupId);
   return Object.freeze({
-    backend: new ManimRenderUdsSandboxBackendV1({ socketPath: options.socketPath }),
+    backend: new ManimRenderUdsSandboxBackendV1({ brokerShardId, socketPath: options.socketPath }),
+    brokerShardId,
     profileDigest: MANIM_RENDER_GATED_OCI_PROFILE_DIGEST_V1,
     runtimeDigest: digestManimRenderGatedOciRuntimeV1(options.imageDigest),
     stagingRootDigest: digestManimRenderStagingRootV1(options.stagingRoot),

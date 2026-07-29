@@ -7,16 +7,16 @@ import {
   acquireFastManimSandboxBrokerLeaseV1,
   acquireFastManimSandboxOwnerLeaseV1,
 } from "./fast-manim-sandbox-broker-lease";
-import {
-  ManimRenderSandboxBrokerClientFrameDecoderV1,
-  type ManimRenderSandboxBrokerClientMessageV1,
-  encodeManimRenderSandboxBrokerServerFrameV1,
-} from "./manim-render-sandbox-broker-protocol";
 import type { ManimRenderSandboxBackendV1 } from "./manim-render-sandbox-backend";
 import {
+  encodeManimRenderSandboxBrokerServerFrameV1,
+  ManimRenderSandboxBrokerClientFrameDecoderV1,
+  type ManimRenderSandboxBrokerClientMessageV1,
+} from "./manim-render-sandbox-broker-protocol";
+import {
   digestManimRenderSandboxCancellationFenceV1,
-  manimRenderSandboxDescriptorV2Schema,
   MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V2,
+  manimRenderSandboxDescriptorV2Schema,
   SealedManimRenderSandboxRequestV2,
 } from "./manim-render-sandbox-contract";
 
@@ -159,11 +159,18 @@ function createConnection(
         return send("status", { kind: "status-result", status });
       }
       if (request.kind === "cancel") {
-        await backend.cancel(request.fence, { deadlineEpochMs: request.deadlineEpochMs, signal: controller.signal });
+        const acknowledgement = await backend.cancel(request.fence, {
+          deadlineEpochMs: request.deadlineEpochMs,
+          signal: controller.signal,
+        });
         controller.signal.throwIfAborted();
+        if (acknowledgement.fenceDigest !== digestManimRenderSandboxCancellationFenceV1(request.fence)) {
+          throw new Error("The render cancellation acknowledgement is not correlated to its fence.");
+        }
         return send("cancel", {
+          brokerShardId: acknowledgement.brokerShardId,
           cancelled: true,
-          fenceDigest: digestManimRenderSandboxCancellationFenceV1(request.fence),
+          fenceDigest: acknowledgement.fenceDigest,
           kind: "cancel-result",
         });
       }

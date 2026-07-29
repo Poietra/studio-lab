@@ -1,11 +1,13 @@
-import { assertFastManimProductionHostMaterialsV1 } from "./fast-manim-production-gated-oci-backend";
 import { FastManimGatedOciDockerClientV1 } from "./fast-manim-gated-oci-job-runner";
-import { ManimRenderGatedOciJobRunnerV1 } from "./manim-render-gated-oci-job-runner";
-import { startManimRenderSandboxBrokerServerV1 } from "./manim-render-sandbox-broker-server";
-import { ManimRenderGatedOciBackendV1 } from "./manim-render-sandbox-backend";
+import { assertFastManimProductionHostMaterialsV1 } from "./fast-manim-production-gated-oci-backend";
 import { assertFastManimProductionBrokerSocketDirectoryV1 } from "./fast-manim-production-sandbox-transport";
+import { ManimRenderGatedOciJobRunnerV1 } from "./manim-render-gated-oci-job-runner";
+import { ManimRenderGatedOciBackendV1 } from "./manim-render-sandbox-backend";
+import { startManimRenderSandboxBrokerServerV1 } from "./manim-render-sandbox-broker-server";
+import { manimRenderBrokerShardIdV1Schema } from "./manim-render-sandbox-contract";
 
 export type ManimRenderProductionSandboxBrokerServiceOptionsV1 = Readonly<{
+  brokerShardId: string;
   brokerUserId: number;
   dockerSocketPath: string;
   imageDigest: string;
@@ -51,10 +53,11 @@ export async function startManimRenderProductionSandboxBrokerServiceV1(
   if (
     !options ||
     Object.keys(options).sort().join(",") !==
-      "brokerUserId,dockerSocketPath,imageDigest,seccompPath,socketGroupId,socketPath,stagingRoot"
+      "brokerShardId,brokerUserId,dockerSocketPath,imageDigest,seccompPath,socketGroupId,socketPath,stagingRoot"
   ) {
     throw new TypeError("The production render broker configuration is invalid.");
   }
+  const brokerShardId = manimRenderBrokerShardIdV1Schema.parse(options.brokerShardId);
   brokerIdentity(options.brokerUserId);
   await Promise.all([
     assertFastManimProductionHostMaterialsV1(options.dockerSocketPath, options.seccompPath),
@@ -70,7 +73,7 @@ export async function startManimRenderProductionSandboxBrokerServiceV1(
     stagingGroupId: options.socketGroupId,
     stagingRoot: options.stagingRoot,
   });
-  const backend = new ManimRenderGatedOciBackendV1(runner);
+  const backend = new ManimRenderGatedOciBackendV1(runner, brokerShardId);
   try {
     return await startManimRenderSandboxBrokerServerV1({
       backend,
