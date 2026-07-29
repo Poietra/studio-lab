@@ -1,14 +1,5 @@
 import { createHash } from "node:crypto";
-import {
-  access,
-  mkdir,
-  mkdtemp,
-  readFile,
-  rename,
-  rm,
-  symlink,
-  writeFile,
-} from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,11 +7,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { findRenderedImage } from "./manim-render-process";
-import {
-  createStructuredLogger,
-  type StructuredLogger,
-  type StructuredLogRecord,
-} from "./logging/structured-logger";
+import { createStructuredLogger, type StructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import { ManimThumbnailCache } from "./manim-thumbnail-cache";
 
 const fakeRenderer = fileURLToPath(new URL("./test-fixtures/fake-manim.mjs", import.meta.url));
@@ -54,12 +41,14 @@ async function fixture() {
   return { cacheRoot, projectRoot, source, sourcePath };
 }
 
-function thumbnailCache(options: Readonly<{
-  cacheRoot: string;
-  command?: readonly string[];
-  logger?: StructuredLogger;
-  projectRoot: string;
-}>) {
+function thumbnailCache(
+  options: Readonly<{
+    cacheRoot: string;
+    command?: readonly string[];
+    logger?: StructuredLogger;
+    projectRoot: string;
+  }>,
+) {
   const instance = new ManimThumbnailCache({
     cacheRoot: options.cacheRoot,
     command: options.command ?? [process.execPath, fakeRenderer],
@@ -73,10 +62,7 @@ function thumbnailCache(options: Readonly<{
   return instance;
 }
 
-async function waitForStatus(
-  instance: ManimThumbnailCache,
-  expected: "current" | "failed",
-) {
+async function waitForStatus(instance: ManimThumbnailCache, expected: "current" | "failed") {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const status = await instance.status();
     if (status.state === expected) return status;
@@ -92,14 +78,7 @@ describe("persistent real Manim thumbnail cache", () => {
     const argvMarker = join(projectRoot, "thumbnail-argv.json");
     const instance = thumbnailCache({
       cacheRoot,
-      command: [
-        process.execPath,
-        fakeRenderer,
-        "--render-start-marker",
-        renderMarker,
-        "--argv-marker",
-        argvMarker,
-      ],
+      command: [process.execPath, fakeRenderer, "--render-start-marker", renderMarker, "--argv-marker", argvMarker],
       projectRoot,
     });
 
@@ -126,8 +105,9 @@ describe("persistent real Manim thumbnail cache", () => {
     expect(current.generatedAt).not.toBeNull();
     expect(await readFile(renderMarker, "utf8")).toBe("started");
     const renderArguments = JSON.parse(await readFile(argvMarker, "utf8")) as string[];
-    expect(renderArguments.slice(renderArguments.indexOf("--output_file"), renderArguments.indexOf("--output_file") + 2))
-      .toEqual(["--output_file", "poietra-thumbnail"]);
+    expect(
+      renderArguments.slice(renderArguments.indexOf("--output_file"), renderArguments.indexOf("--output_file") + 2),
+    ).toEqual(["--output_file", "poietra-thumbnail"]);
     await expect(instance.asset()).resolves.toMatchObject({
       kind: "rendered",
       mediaType: "image/png",
@@ -321,9 +301,9 @@ describe("persistent real Manim thumbnail cache", () => {
 
     const starts = Array.from({ length: 16 }, () => instance.generate(commandAvailable));
     releaseAvailability(true);
-    await expect(Promise.all(starts)).resolves.toEqual(expect.arrayContaining([
-      expect.objectContaining({ state: "generating" }),
-    ]));
+    await expect(Promise.all(starts)).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ state: "generating" })]),
+    );
     await waitForStatus(instance, "current");
     expect(commandAvailable).toHaveBeenCalledOnce();
     expect((await readFile(renderCount, "utf8")).trim().split("\n")).toHaveLength(1);
@@ -412,19 +392,29 @@ describe("persistent real Manim thumbnail cache", () => {
     const directory = join(cacheRoot, "default");
     await mkdir(directory);
     const entries = Array.from({ length: 8 }, (_, index) => ({
-      fileName: `${String(index + 1).repeat(64).slice(0, 64)}-${String(index + 1).repeat(16).slice(0, 16)}.png`,
+      fileName: `${String(index + 1)
+        .repeat(64)
+        .slice(0, 64)}-${String(index + 1)
+        .repeat(16)
+        .slice(0, 16)}.png`,
       generatedAt: `2026-07-23T10:00:0${index}.000Z`,
       sceneName: "ThumbnailScene",
-      sourceHash: String(index + 1).repeat(64).slice(0, 64),
+      sourceHash: String(index + 1)
+        .repeat(64)
+        .slice(0, 64),
       sourcePath: "scene.py",
     }));
     await Promise.all(entries.slice(0, -1).map((entry) => writeFile(join(directory, entry.fileName), "old", "utf8")));
     await mkdir(join(directory, entries.at(-1)!.fileName));
-    await writeFile(join(directory, "manifest.json"), JSON.stringify({
-      entries,
-      lastAttempt: null,
-      version: 1,
-    }), "utf8");
+    await writeFile(
+      join(directory, "manifest.json"),
+      JSON.stringify({
+        entries,
+        lastAttempt: null,
+        version: 1,
+      }),
+      "utf8",
+    );
     const instance = thumbnailCache({ cacheRoot, projectRoot });
 
     await instance.generate(async () => true);
@@ -440,14 +430,17 @@ describe("persistent real Manim thumbnail cache", () => {
 
   it("fails closed when cache IDs, child links, or parent links could escape deletion", async () => {
     const { cacheRoot, projectRoot } = await fixture();
-    expect(() => new ManimThumbnailCache({
-      cacheRoot,
-      command: [process.execPath, fakeRenderer],
-      frame,
-      projectId: "../outside",
-      projectRoot,
-      renderTimeoutMs: 5_000,
-    })).toThrow(/project ID/i);
+    expect(
+      () =>
+        new ManimThumbnailCache({
+          cacheRoot,
+          command: [process.execPath, fakeRenderer],
+          frame,
+          projectId: "../outside",
+          projectRoot,
+          renderTimeoutMs: 5_000,
+        }),
+    ).toThrow(/project ID/i);
 
     const external = await mkdtemp(join(tmpdir(), "poietra-thumbnail-external-"));
     temporaryRoots.push(external);

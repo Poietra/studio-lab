@@ -1,17 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants, type BigIntStats } from "node:fs";
-import {
-  lstat,
-  mkdir,
-  mkdtemp,
-  open,
-  readdir,
-  realpath,
-  rename,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, open, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -32,10 +22,7 @@ import {
   waitForRenderProcessStop,
 } from "./manim-render-process";
 import { renderManimSceneThumbnailSvg } from "./manim-thumbnail";
-import {
-  discoverManimThumbnailTarget,
-  type ManimThumbnailTarget,
-} from "./manim-workspace";
+import { discoverManimThumbnailTarget, type ManimThumbnailTarget } from "./manim-workspace";
 
 const CACHE_VERSION = 1;
 const MAX_CACHE_ENTRIES = 8;
@@ -61,27 +48,33 @@ const CACHE_FILE_PATTERN = /^[0-9a-f]{64}-[0-9a-f]{16}\.png$/;
 const TEMP_FILE_PATTERN = /^\.(?:manifest|thumbnail)-[0-9a-f-]+\.tmp$/;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
-const cacheEntrySchema = z.object({
-  fileName: z.string().regex(CACHE_FILE_PATTERN),
-  generatedAt: z.string().datetime(),
-  sceneName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
-  sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
-  sourcePath: manimSourcePathSchema,
-}).strict();
+const cacheEntrySchema = z
+  .object({
+    fileName: z.string().regex(CACHE_FILE_PATTERN),
+    generatedAt: z.string().datetime(),
+    sceneName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+    sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
+    sourcePath: manimSourcePathSchema,
+  })
+  .strict();
 
-const attemptSchema = z.object({
-  error: z.string().max(MAX_ERROR_LENGTH).nullable(),
-  finishedAt: z.string().datetime(),
-  sceneName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
-  sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
-  sourcePath: manimSourcePathSchema,
-}).strict();
+const attemptSchema = z
+  .object({
+    error: z.string().max(MAX_ERROR_LENGTH).nullable(),
+    finishedAt: z.string().datetime(),
+    sceneName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+    sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
+    sourcePath: manimSourcePathSchema,
+  })
+  .strict();
 
-const cacheManifestSchema = z.object({
-  entries: z.array(cacheEntrySchema).max(MAX_CACHE_ENTRIES),
-  lastAttempt: attemptSchema.nullable(),
-  version: z.literal(CACHE_VERSION),
-}).strict();
+const cacheManifestSchema = z
+  .object({
+    entries: z.array(cacheEntrySchema).max(MAX_CACHE_ENTRIES),
+    lastAttempt: attemptSchema.nullable(),
+    version: z.literal(CACHE_VERSION),
+  })
+  .strict();
 
 type CacheEntry = z.infer<typeof cacheEntrySchema>;
 type CacheManifest = z.infer<typeof cacheManifestSchema>;
@@ -124,20 +117,19 @@ function isFileSystemError(error: unknown, code: string): error is NodeJS.ErrnoE
 }
 
 function isSameFileVersion(first: BigIntStats, second: BigIntStats) {
-  return first.dev === second.dev
-    && first.ino === second.ino
-    && first.mode === second.mode
-    && first.size === second.size
-    && first.mtimeNs === second.mtimeNs
-    && first.ctimeNs === second.ctimeNs;
+  return (
+    first.dev === second.dev &&
+    first.ino === second.ino &&
+    first.mode === second.mode &&
+    first.size === second.size &&
+    first.mtimeNs === second.mtimeNs &&
+    first.ctimeNs === second.ctimeNs
+  );
 }
 
 function pathIsInside(parent: string, candidate: string) {
   const fromParent = relative(parent, candidate);
-  return fromParent.length > 0
-    && fromParent !== ".."
-    && !fromParent.startsWith(`..${sep}`)
-    && !isAbsolute(fromParent);
+  return fromParent.length > 0 && fromParent !== ".." && !fromParent.startsWith(`..${sep}`) && !isAbsolute(fromParent);
 }
 
 function targetKey(target: ManimThumbnailTarget) {
@@ -145,23 +137,24 @@ function targetKey(target: ManimThumbnailTarget) {
 }
 
 function entryMatchesTarget(entry: CacheEntry, target: ManimThumbnailTarget) {
-  return entry.sourceHash === target.scene.sourceHash
-    && entry.sourcePath === target.sourcePath
-    && entry.sceneName === target.scene.name;
+  return (
+    entry.sourceHash === target.scene.sourceHash &&
+    entry.sourcePath === target.sourcePath &&
+    entry.sceneName === target.scene.name
+  );
 }
 
 function attemptMatchesTarget(attempt: CacheManifest["lastAttempt"], target: ManimThumbnailTarget) {
-  return Boolean(attempt
-    && attempt.sourceHash === target.scene.sourceHash
-    && attempt.sourcePath === target.sourcePath
-    && attempt.sceneName === target.scene.name);
+  return Boolean(
+    attempt &&
+      attempt.sourceHash === target.scene.sourceHash &&
+      attempt.sourcePath === target.sourcePath &&
+      attempt.sceneName === target.scene.name,
+  );
 }
 
 function cacheFileName(target: ManimThumbnailTarget) {
-  const identity = createHash("sha256")
-    .update(targetKey(target))
-    .digest("hex")
-    .slice(0, 16);
+  const identity = createHash("sha256").update(targetKey(target)).digest("hex").slice(0, 16);
   return `${target.scene.sourceHash}-${identity}.png`;
 }
 
@@ -200,15 +193,17 @@ export class ManimThumbnailCache {
   private targetCache: Readonly<{ checkedAt: number; discovery: ThumbnailDiscovery }> | null = null;
   private targetRequest: Promise<ThumbnailDiscovery> | null = null;
 
-  constructor(options: Readonly<{
-    cacheRoot: string;
-    command: readonly string[];
-    frame: Readonly<{ height: number; width: number }>;
-    logger?: StructuredLogger;
-    projectId: string;
-    projectRoot: string;
-    renderTimeoutMs: number;
-  }>) {
+  constructor(
+    options: Readonly<{
+      cacheRoot: string;
+      command: readonly string[];
+      frame: Readonly<{ height: number; width: number }>;
+      logger?: StructuredLogger;
+      projectId: string;
+      projectRoot: string;
+      renderTimeoutMs: number;
+    }>,
+  ) {
     if (!MANIM_PROJECT_ID_PATTERN.test(options.projectId)) {
       throw new TypeError("Manim thumbnail project ID must be an opaque lower-case identifier.");
     }
@@ -238,11 +233,13 @@ export class ManimThumbnailCache {
   }
 
   isBusy() {
-    return this.activeOperations.size > 0
-      || this.generationRequest !== null
-      || this.generation !== null
-      || this.targetRequest !== null
-      || this.manifestRequest !== null;
+    return (
+      this.activeOperations.size > 0 ||
+      this.generationRequest !== null ||
+      this.generation !== null ||
+      this.targetRequest !== null ||
+      this.manifestRequest !== null
+    );
   }
 
   isGenerating() {
@@ -264,10 +261,7 @@ export class ManimThumbnailCache {
   private canonicalCacheRoot() {
     this.cacheRootRequest ??= (async () => {
       await mkdir(this.cacheRoot, { mode: 0o700, recursive: true });
-      const [metadata, canonicalRoot] = await Promise.all([
-        lstat(this.cacheRoot),
-        realpath(this.cacheRoot),
-      ]);
+      const [metadata, canonicalRoot] = await Promise.all([lstat(this.cacheRoot), realpath(this.cacheRoot)]);
       if (!metadata.isDirectory() || metadata.isSymbolicLink() || canonicalRoot !== this.cacheRoot) {
         throw new TypeError("The thumbnail cache root must be a real private directory.");
       }
@@ -288,10 +282,10 @@ export class ManimThumbnailCache {
       realpath(this.cacheDirectory),
     ]);
     if (
-      !metadata.isDirectory()
-      || metadata.isSymbolicLink()
-      || canonicalDirectory !== expectedDirectory
-      || !pathIsInside(canonicalRoot, canonicalDirectory)
+      !metadata.isDirectory() ||
+      metadata.isSymbolicLink() ||
+      canonicalDirectory !== expectedDirectory ||
+      !pathIsInside(canonicalRoot, canonicalDirectory)
     ) {
       throw new TypeError("The thumbnail cache must be a real private child directory.");
     }
@@ -302,12 +296,14 @@ export class ManimThumbnailCache {
     const retainedFiles = new Set(manifest.entries.map((entry) => entry.fileName));
     try {
       const entries = await readdir(directory, { withFileTypes: true });
-      await Promise.all(entries.map(async (entry) => {
-        const isTemporary = TEMP_FILE_PATTERN.test(entry.name);
-        const isOrphan = CACHE_FILE_PATTERN.test(entry.name) && !retainedFiles.has(entry.name);
-        if ((!isTemporary && !isOrphan) || entry.isDirectory()) return;
-        await rm(join(directory, entry.name), { force: true });
-      }));
+      await Promise.all(
+        entries.map(async (entry) => {
+          const isTemporary = TEMP_FILE_PATTERN.test(entry.name);
+          const isOrphan = CACHE_FILE_PATTERN.test(entry.name) && !retainedFiles.has(entry.name);
+          if ((!isTemporary && !isOrphan) || entry.isDirectory()) return;
+          await rm(join(directory, entry.name), { force: true });
+        }),
+      );
     } catch (error) {
       this.logger.warn("thumbnail.cache_cleanup_failed", { error });
     }
@@ -408,7 +404,11 @@ export class ManimThumbnailCache {
   private async readEntry(entry: CacheEntry) {
     try {
       const body = await readStablePrivateFile(join(this.cacheDirectory, entry.fileName), MAX_IMAGE_BYTES);
-      if (!body || body.length < PNG_SIGNATURE.length || !body.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
+      if (
+        !body ||
+        body.length < PNG_SIGNATURE.length ||
+        !body.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)
+      ) {
         return null;
       }
       return body;
@@ -419,7 +419,7 @@ export class ManimThumbnailCache {
 
   private async currentEntry(manifest: CacheManifest, target: ManimThumbnailTarget) {
     const entry = manifest.entries.find((candidate) => entryMatchesTarget(candidate, target)) ?? null;
-    return entry && await this.readableEntry(entry) ? entry : null;
+    return entry && (await this.readableEntry(entry)) ? entry : null;
   }
 
   private async firstReadableEntry(manifest: CacheManifest) {
@@ -540,11 +540,7 @@ export class ManimThumbnailCache {
           body,
           kind: "rendered",
           mediaType: "image/png",
-          state: this.generation?.key === targetKey(target)
-            ? "generating"
-            : failed
-              ? "failed"
-              : "current",
+          state: this.generation?.key === targetKey(target) ? "generating" : failed ? "failed" : "current",
           status: 200,
         };
       }
@@ -555,13 +551,14 @@ export class ManimThumbnailCache {
       body: Buffer.from(renderManimSceneThumbnailSvg(target.scene.runtimeSceneState), "utf8"),
       kind: "semantic",
       mediaType: "image/svg+xml; charset=utf-8",
-      state: this.generation?.key === targetKey(target)
-        ? "generating"
-        : failed
-          ? "failed"
-          : priorEntry
-            ? "stale"
-            : "missing",
+      state:
+        this.generation?.key === targetKey(target)
+          ? "generating"
+          : failed
+            ? "failed"
+            : priorEntry
+              ? "stale"
+              : "missing",
       status: 200,
     };
   }
@@ -575,9 +572,11 @@ export class ManimThumbnailCache {
     if (this.generationRequest) return this.generationRequest;
     const request = this.trackOperation(() => this.prepareGeneration(commandAvailable));
     this.generationRequest = request;
-    void request.finally(() => {
-      if (this.generationRequest === request) this.generationRequest = null;
-    }).catch(() => undefined);
+    void request
+      .finally(() => {
+        if (this.generationRequest === request) this.generationRequest = null;
+      })
+      .catch(() => undefined);
     return request;
   }
 
@@ -597,7 +596,7 @@ export class ManimThumbnailCache {
       }
       return this.readStatus();
     }
-    if (!await commandAvailable()) {
+    if (!(await commandAvailable())) {
       this.assertOpen();
       this.logger.warn("thumbnail.command_unavailable", { command: this.command });
       await this.recordAttempt(target, PUBLIC_COMMAND_UNAVAILABLE_ERROR);
@@ -656,28 +655,32 @@ export class ManimThumbnailCache {
       await writeFile(sourcePath, target.source, { encoding: "utf8", mode: 0o600 });
       if (generation.aborted || this.closing) throw new Error("Thumbnail generation was cancelled.");
       const [executable, ...prefix] = this.command;
-      const child = spawn(executable, [
-        ...prefix,
-        "-ql",
-        "-s",
-        "--disable_caching",
-        "--output_file",
-        THUMBNAIL_OUTPUT_STEM,
-        "--media_dir",
-        mediaRoot,
-        sourcePath,
-        target.scene.name,
-      ], {
-        cwd: this.projectRoot,
-        detached: process.platform !== "win32",
-        env: {
-          ...process.env,
-          PYTHONPATH: [this.projectRoot, process.env.PYTHONPATH]
-            .filter(Boolean)
-            .join(process.platform === "win32" ? ";" : ":"),
+      const child = spawn(
+        executable,
+        [
+          ...prefix,
+          "-ql",
+          "-s",
+          "--disable_caching",
+          "--output_file",
+          THUMBNAIL_OUTPUT_STEM,
+          "--media_dir",
+          mediaRoot,
+          sourcePath,
+          target.scene.name,
+        ],
+        {
+          cwd: this.projectRoot,
+          detached: process.platform !== "win32",
+          env: {
+            ...process.env,
+            PYTHONPATH: [this.projectRoot, process.env.PYTHONPATH]
+              .filter(Boolean)
+              .join(process.platform === "win32" ? ";" : ":"),
+          },
+          stdio: ["ignore", "pipe", "pipe"],
         },
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+      );
       generation.child = child;
       if (generation.aborted || this.closing) stopRenderProcess(child);
       child.stdout?.on("data", (chunk: Buffer) => appendRenderLog(progress, chunk));
@@ -685,12 +688,18 @@ export class ManimThumbnailCache {
       const exit = await waitForRenderExit(child, this.renderTimeoutMs);
       generation.child = null;
       if (exit.code !== 0) {
-        throw new Error(`Manim exited with ${exit.code === null ? `signal ${exit.signal ?? "unknown"}` : `code ${exit.code}`}.`);
+        throw new Error(
+          `Manim exited with ${exit.code === null ? `signal ${exit.signal ?? "unknown"}` : `code ${exit.code}`}.`,
+        );
       }
       const renderedImage = await findRenderedImage(mediaRoot, THUMBNAIL_OUTPUT_FILE);
       if (!renderedImage) throw new Error(`Manim completed without producing ${THUMBNAIL_OUTPUT_FILE}.`);
       const image = await readStablePrivateFile(renderedImage, MAX_IMAGE_BYTES);
-      if (!image || image.length < PNG_SIGNATURE.length || !image.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
+      if (
+        !image ||
+        image.length < PNG_SIGNATURE.length ||
+        !image.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)
+      ) {
         throw new Error("Manim produced an invalid, oversized, or not a PNG thumbnail.");
       }
       await this.storeImage(target, image);
@@ -704,9 +713,9 @@ export class ManimThumbnailCache {
   }
 
   private async removeFilesBestEffort(fileNames: readonly string[]) {
-    const results = await Promise.allSettled(fileNames.map((fileName) => (
-      rm(join(this.cacheDirectory, fileName), { force: true })
-    )));
+    const results = await Promise.allSettled(
+      fileNames.map((fileName) => rm(join(this.cacheDirectory, fileName), { force: true })),
+    );
     if (results.some((result) => result.status === "rejected")) {
       this.logger.warn("thumbnail.cache_gc_failed");
     }
@@ -730,8 +739,10 @@ export class ManimThumbnailCache {
       sourceHash: target.scene.sourceHash,
       sourcePath: target.sourcePath,
     };
-    const entries = [entry, ...manifest.entries.filter((candidate) => candidate.fileName !== fileName)]
-      .slice(0, MAX_CACHE_ENTRIES);
+    const entries = [entry, ...manifest.entries.filter((candidate) => candidate.fileName !== fileName)].slice(
+      0,
+      MAX_CACHE_ENTRIES,
+    );
     const retainedFiles = new Set(entries.map((candidate) => candidate.fileName));
     const obsoleteFiles = manifest.entries
       .filter((candidate) => !retainedFiles.has(candidate.fileName))
@@ -801,10 +812,10 @@ export class ManimThumbnailCache {
     }
     const canonicalDirectory = await realpath(expectedDirectory);
     if (
-      !metadata.isDirectory()
-      || metadata.isSymbolicLink()
-      || canonicalDirectory !== expectedDirectory
-      || !pathIsInside(canonicalRoot, canonicalDirectory)
+      !metadata.isDirectory() ||
+      metadata.isSymbolicLink() ||
+      canonicalDirectory !== expectedDirectory ||
+      !pathIsInside(canonicalRoot, canonicalDirectory)
     ) {
       throw new TypeError("Refusing to remove a thumbnail cache outside its canonical root.");
     }
@@ -816,11 +827,11 @@ export class ManimThumbnailCache {
       realpath(quarantine),
     ]);
     if (
-      rootAfterRename !== canonicalRoot
-      || !quarantineMetadata.isDirectory()
-      || quarantineMetadata.isSymbolicLink()
-      || canonicalQuarantine !== quarantine
-      || !pathIsInside(canonicalRoot, canonicalQuarantine)
+      rootAfterRename !== canonicalRoot ||
+      !quarantineMetadata.isDirectory() ||
+      quarantineMetadata.isSymbolicLink() ||
+      canonicalQuarantine !== quarantine ||
+      !pathIsInside(canonicalRoot, canonicalQuarantine)
     ) {
       throw new TypeError("Thumbnail cache quarantine validation failed; no recursive deletion was attempted.");
     }
