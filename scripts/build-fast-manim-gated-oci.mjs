@@ -16,12 +16,12 @@ const profiles = {
     tree: "b86e2ec81f257cae20669e3c5c33080facfbd610",
   },
   snapshot: {
-    archiveSha256: "8ac9869c7ace48715053d9392e323042921cd5f4f7f0c8d369d8a6a27d05719d",
+    archiveSha256: "e85a0d72cc9f7d5ad684aa03f5a96e27e295a8dc17ba3444430a2995c279c659",
     assetDirectory: "fast-manim-gated-oci",
-    commit: "bd93f660c1bd27afefd0b7f5beb2380984d9f938",
+    commit: "badc17c365241df478b0aa5574a02d2b409ffb96",
     entrypoint: "gated-entrypoint.py",
-    tag: "poietra-fast-manim-gated:bd93f66",
-    tree: "3c983435616218241359325eb00e0ad585067ddf",
+    tag: "poietra-fast-manim-gated:badc17c",
+    tree: "0ed167648df271c1180cc8fbf07d1018ec6e8ddd",
   },
 };
 const profile = profiles[target];
