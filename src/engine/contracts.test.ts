@@ -264,6 +264,43 @@ describe("Poietra Engine v1 contracts", () => {
     ).toBe(false);
   });
 
+  it("keeps path-trim parameterization optional and rejects unknown modes", async () => {
+    const assets = await manifest();
+    const validScene = scene(assets);
+    const trimChannel = {
+      entityId: "curve",
+      id: "curve-trim",
+      keyframes: [
+        { at: 0, easingToNext: { kind: "linear" }, value: 0 },
+        { at: 1, easingToNext: null, value: 1 },
+      ],
+      kind: "path-trim",
+      provenanceId: "fixture",
+    } as const;
+    const withTrim = {
+      ...validScene,
+      animationChannels: [...validScene.animationChannels, trimChannel],
+      requiredCapabilities: [...validScene.requiredCapabilities, "path-trim-animation"].sort(),
+    };
+    const omitted = sceneIrV1Schema.parse(withTrim);
+    expect(omitted.animationChannels.at(-1)).not.toHaveProperty("parameterization");
+
+    const explicit = sceneIrV1Schema.parse({
+      ...withTrim,
+      animationChannels: [
+        ...validScene.animationChannels,
+        { ...trimChannel, parameterization: "uniform-cubic-parameter-v1" },
+      ],
+    });
+    expect(explicit.animationChannels.at(-1)).toMatchObject({ parameterization: "uniform-cubic-parameter-v1" });
+    expect(
+      sceneIrV1Schema.safeParse({
+        ...withTrim,
+        animationChannels: [...validScene.animationChannels, { ...trimChannel, parameterization: "future-mode" }],
+      }).success,
+    ).toBe(false);
+  });
+
   it("preserves imported source identities without relaxing asset IDs", async () => {
     const assets = await manifest();
     const validScene = scene(assets);

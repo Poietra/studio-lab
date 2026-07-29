@@ -137,6 +137,46 @@ fn serde_rejects_unknown_fields_at_root_and_inside_tagged_values() {
     assert!(easing_error.to_string().contains("unknown field"));
 }
 
+#[test]
+fn path_trim_parameterization_is_optional_and_fail_closed() {
+    let channel = AnimationChannelV1::PathTrim {
+        entity_id: "line".to_owned(),
+        id: "create".to_owned(),
+        keyframes: vec![
+            KeyframeV1 {
+                at: 0.0,
+                easing_to_next: Some(EasingV1::Linear {}),
+                value: 0.0,
+            },
+            KeyframeV1 {
+                at: 1.0,
+                easing_to_next: None,
+                value: 1.0,
+            },
+        ],
+        parameterization: None,
+        provenance_id: "fixture:root".to_owned(),
+    };
+    let omitted = serde_json::to_value(&channel).unwrap();
+    assert!(omitted.get("parameterization").is_none());
+    assert_eq!(
+        serde_json::from_value::<AnimationChannelV1>(omitted.clone()).unwrap(),
+        channel
+    );
+
+    let mut explicit = omitted;
+    explicit["parameterization"] = json!("uniform-cubic-parameter-v1");
+    assert!(matches!(
+        serde_json::from_value::<AnimationChannelV1>(explicit.clone()).unwrap(),
+        AnimationChannelV1::PathTrim {
+            parameterization: Some(PathTrimParameterizationV1::UniformCubicParameterV1),
+            ..
+        }
+    ));
+    explicit["parameterization"] = json!("future-mode");
+    assert!(serde_json::from_value::<AnimationChannelV1>(explicit).is_err());
+}
+
 fn assert_required_nullable_field<T>(value: &serde_json::Value, field: &str)
 where
     T: serde::de::DeserializeOwned + std::fmt::Debug,
