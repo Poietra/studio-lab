@@ -2,7 +2,8 @@
 name = "poietra-mathtex-outline"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file = "PACKAGE-LICENSES.txt"
+publish = false
 rust-version = "1.92"
 
 [dependencies]

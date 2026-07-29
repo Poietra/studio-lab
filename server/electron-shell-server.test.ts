@@ -89,10 +89,14 @@ describe("Electron shell HTTP adapter", () => {
     roots.push(root);
     const distRoot = join(root, "dist");
     const projectRoot = join(root, "project");
+    const notice = await readFile(
+      fileURLToPath(new URL("../engine/crates/poietra-mathtex-outline/PACKAGE-LICENSES.txt", import.meta.url)),
+    );
     await Promise.all([mkdir(distRoot), mkdir(projectRoot)]);
     await Promise.all([
       writeFile(join(distRoot, "index.html"), "<!doctype html><title>Shell</title>", "utf8"),
       writeFile(join(distRoot, "engine.wasm"), Uint8Array.from([0, 97, 115, 109, 1, 0, 0, 0])),
+      writeFile(join(distRoot, "THIRD_PARTY_NOTICES.txt"), notice),
       writeFile(join(projectRoot, "scene.py"), source, "utf8"),
     ]);
     const shell = await startElectronShellServer({
@@ -120,6 +124,9 @@ describe("Electron shell HTTP adapter", () => {
     const wasmResponse = await shellFetch(shell, "/engine.wasm");
     expect(wasmResponse.headers.get("content-type")).toBe("application/wasm");
     expect(new Uint8Array(await wasmResponse.arrayBuffer())).toEqual(Uint8Array.from([0, 97, 115, 109, 1, 0, 0, 0]));
+    const noticeResponse = await shellFetch(shell, "/THIRD_PARTY_NOTICES.txt");
+    expect(noticeResponse.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(Buffer.from(await noticeResponse.arrayBuffer())).toEqual(notice);
     expect((await shellFetch(shell, "/../package.json")).status).toBe(404);
 
     const projectsResponse = await shellFetch(shell, "/api/manim/projects");

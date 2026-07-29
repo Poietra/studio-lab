@@ -80,6 +80,7 @@ pnpm check:web
 pnpm check:style # zero-warning lint plus incremental format check
 pnpm test:unit
 pnpm test:integration
+pnpm test:third-party-notices
 pnpm test # all unit and boundary/integration tests
 pnpm exec playwright install chromium webkit # first E2E run only
 pnpm test:e2e
@@ -204,6 +205,12 @@ window denies new windows, cross-origin navigation, webviews, and permission req
 This output is a development package, not a signed installer. `pnpm
 test:electron-packaged` launches that exact output headlessly and covers native folder
 selection, workspace CRUD, render/video, export/save, commit/undo/discard, and shutdown.
+
+Web and packaged Electron distributions expose the canonical font license notice at
+`/THIRD_PARTY_NOTICES.txt`. The standalone server distribution places the same file
+beside `manim-production-server.mjs`. Its source of truth is the MathTex outline
+crate's `PACKAGE-LICENSES.txt`; the build and package smoke checks require byte-identical
+copies and verify the embedded font SHA-256.
 
 Studio starts at a workspace chooser. Visible cards lazily parse only the first
 importable Scene into a bounded semantic SVG thumbnail; this does not execute

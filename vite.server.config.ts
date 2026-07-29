@@ -1,4 +1,5 @@
 import { defineConfig } from "vite";
+import { thirdPartyNotices } from "./scripts/vite-third-party-notices";
 
 export default defineConfig({
   build: {
@@ -10,7 +11,9 @@ export default defineConfig({
       },
     },
     ssr: "server/manim-production-server.ts",
+    ssrEmitAssets: true,
   },
+  plugins: [thirdPartyNotices()],
   ssr: {
     noExternal: true,
   },
