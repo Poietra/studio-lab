@@ -62,7 +62,7 @@ const emptyDrawV1Schema = z
   .object({
     ...drawBase,
     kind: z.literal("empty"),
-    reason: z.literal("path-trim-zero"),
+    reason: z.enum(["path-trim-zero", "singular-affine-sample"]),
   })
   .strict();
 
@@ -197,6 +197,17 @@ export const renderPacketV1Schema = renderPacketV1BaseSchema.superRefine((packet
       if (draw.fill === null && draw.stroke === null) {
         context.addIssue({ code: "custom", message: "Path draws require a fill or stroke.", path: ["draws", index] });
       }
+    }
+    if (
+      draw.kind === "empty" &&
+      draw.reason === "singular-affine-sample" &&
+      draw.transform.m11 * draw.transform.m22 - draw.transform.m12 * draw.transform.m21 !== 0
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "singular-affine-sample requires an exactly singular transform.",
+        path: ["draws", index, "transform"],
+      });
     }
     drawIds.add(draw.drawId);
   });

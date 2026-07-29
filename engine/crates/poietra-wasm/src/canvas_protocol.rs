@@ -346,6 +346,7 @@ mod tests {
 
     use crate::protocol::{
         EngineWorkerSessionV1, MAX_INTERACTION_ENTITY_IDS_V1, SampledInteractionEntityV1,
+        SampledRenderPacketV1,
     };
 
     fn fixture_session() -> EngineWorkerSessionV1 {
@@ -374,6 +375,23 @@ mod tests {
                 width_px: 1_280,
             },
         }
+    }
+
+    fn sample_affine_session(
+        session: &EngineWorkerSessionV1,
+        sample_time: f64,
+    ) -> SampledRenderPacketV1 {
+        let request = serde_json::to_vec(&json!({
+            "evidence": [],
+            "interactionEntityIds": ["later", "earlier", "stroke"],
+            "packetId": "canvas:singular-affine",
+            "sampleTime": sample_time,
+            "schema": "poietra.engine-sample-request",
+            "version": 1,
+            "viewport": { "heightPx": 900, "widthPx": 1600 },
+        }))
+        .unwrap();
+        session.sample_packet_json(&request).unwrap()
     }
 
     #[test]
@@ -508,6 +526,104 @@ mod tests {
         let entries = &value["result"]["interaction"]["entries"];
         assert_eq!(entries[0]["status"], "empty");
         assert_eq!(entries[1]["status"], "inactive");
+        assert_eq!(entries[2]["status"], "present");
+    }
+
+    #[test]
+    fn sampled_singular_affine_reports_only_that_entity_as_empty() {
+        let mut fixture: Value = serde_json::from_slice(
+            &std::fs::read(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../fixtures/engine-v1/shared-circle-opacity.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        fixture["scene"]["animationChannels"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "entityId": "later",
+                "id": "reflect:later",
+                "keyframes": [
+                    {
+                        "at": 0,
+                        "easingToNext": { "kind": "linear" },
+                        "value": { "m11": 1, "m12": 0, "m21": 0, "m22": 1, "tx": 0, "ty": 0 }
+                    },
+                    {
+                        "at": 1,
+                        "easingToNext": null,
+                        "value": { "m11": -1, "m12": 0, "m21": 0, "m22": 1, "tx": 0, "ty": 0 }
+                    }
+                ],
+                "kind": "affine-transform",
+                "provenanceId": "fixture"
+            }));
+        fixture["scene"]["requiredCapabilities"] = json!([
+            "affine-transform-animation",
+            "opacity-animation",
+            "shape-primitives"
+        ]);
+        let snapshot = serde_json::to_vec(&json!({
+            "assets": fixture["assets"],
+            "scene": fixture["scene"],
+        }))
+        .unwrap();
+        let session = EngineWorkerSessionV1::from_snapshot_json(&snapshot).unwrap();
+        let identity = sample_affine_session(&session, 0.0);
+        let sampled = sample_affine_session(&session, 0.5);
+        let reflected = sample_affine_session(&session, 1.0);
+        let sampled_repeat = sample_affine_session(&session, 0.5);
+        let identity_repeat = sample_affine_session(&session, 0.0);
+
+        assert!(matches!(
+            identity
+                .packet
+                .draws
+                .iter()
+                .find(|draw| draw.entity_id() == "later"),
+            Some(RenderDrawV1::Path { .. })
+        ));
+        assert!(matches!(
+            sampled
+                .packet
+                .draws
+                .iter()
+                .find(|draw| draw.entity_id() == "later"),
+            Some(RenderDrawV1::Empty {
+                reason: RenderEmptyReasonV1::SingularAffineSample,
+                ..
+            })
+        ));
+        assert!(matches!(
+            sampled
+                .packet
+                .draws
+                .iter()
+                .find(|draw| draw.entity_id() == "earlier"),
+            Some(RenderDrawV1::Path { .. })
+        ));
+        assert!(matches!(
+            reflected
+                .packet
+                .draws
+                .iter()
+                .find(|draw| draw.entity_id() == "later"),
+            Some(RenderDrawV1::Path { .. })
+        ));
+        assert_eq!(sampled.packet.draws, sampled_repeat.packet.draws);
+        assert_eq!(identity.packet.draws, identity_repeat.packet.draws);
+        let interaction = interaction_metadata(&sampled.interaction, |entity_id| match entity_id {
+            "earlier" | "stroke" => Some([-0.5, -0.5, 0.5, 0.5]),
+            _ => None,
+        });
+        let response =
+            presented_response_with_interaction(&sampled.correlation, false, interaction);
+        let value: Value = serde_json::from_slice(&response).unwrap();
+        let entries = &value["result"]["interaction"]["entries"];
+        assert_eq!(entries[0]["status"], "empty");
+        assert_eq!(entries[1]["status"], "present");
         assert_eq!(entries[2]["status"], "present");
     }
 

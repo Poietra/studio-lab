@@ -5,9 +5,9 @@ use std::fmt;
 use crate::model::{
     AffineTransformV1, AnimationChannelV1, AssetManifestReferenceV1, AssetManifestV1,
     AssetReferenceV1, CubicPathV1, EasingV1, FidelityV1, FillStyleV1, ImageLocalRectV1, IntervalV1,
-    KeyframeV1, PointV1, RenderCapabilityV1, RenderDrawV1, RenderPacketV1, RgbaColorV1,
-    SceneAppearanceV1, SceneCameraViewV1, SceneCapabilityV1, SceneGeometryV1, SceneIrV1,
-    SceneSourceV1, StrokeStyleV1,
+    KeyframeV1, PointV1, RenderCapabilityV1, RenderDrawV1, RenderEmptyReasonV1, RenderPacketV1,
+    RgbaColorV1, SceneAppearanceV1, SceneCameraViewV1, SceneCapabilityV1, SceneGeometryV1,
+    SceneIrV1, SceneSourceV1, StrokeStyleV1,
 };
 
 pub const MAX_COORDINATE_V1: f64 = 1_000_000_000.0;
@@ -216,6 +216,10 @@ fn validate_transform(transform: &AffineTransformV1, path: &str, validator: &mut
     validate_finite(transform.m22, &format!("{path}.m22"), validator);
     validate_coordinate(transform.tx, &format!("{path}.tx"), validator);
     validate_coordinate(transform.ty, &format!("{path}.ty"), validator);
+}
+
+fn affine_transform_is_singular(transform: &AffineTransformV1) -> bool {
+    transform.m11 * transform.m22 - transform.m12 * transform.m21 == 0.0
 }
 
 fn validate_color(color: &RgbaColorV1, path: &str, validator: &mut Validator) {
@@ -1238,8 +1242,18 @@ pub fn validate_render_packet_v1(packet: &RenderPacketV1) -> Result<(), Validati
             );
         }
         match draw {
-            RenderDrawV1::Empty { transform, .. } => {
+            RenderDrawV1::Empty {
+                reason, transform, ..
+            } => {
                 validate_transform(transform, &format!("{path}.transform"), &mut validator);
+                if *reason == RenderEmptyReasonV1::SingularAffineSample
+                    && !affine_transform_is_singular(transform)
+                {
+                    validator.issue(
+                        format!("{path}.transform"),
+                        "singular-affine-sample requires an exactly singular transform",
+                    );
+                }
             }
             RenderDrawV1::Path {
                 fill,

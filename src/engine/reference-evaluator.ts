@@ -92,7 +92,7 @@ function entityChannel<K extends EntityChannelKindV1>(
 }
 
 type SampledLocalEntity = Readonly<{
-  emptyReason?: "path-trim-zero";
+  emptyReason?: "path-trim-zero" | "singular-affine-sample";
   entity: SceneIrV1["entities"][number];
   opacity: number;
   path?: CubicPathV1;
@@ -110,9 +110,14 @@ function sampleLocalEntity(
     : entity.appearance.opacity;
 
   const transformChannel = entityChannel(channels, entity.id, "affine-transform");
-  let transform = transformChannel
-    ? sampleKeyframes(entity.transform, transformChannel.keyframes, time, interpolateAffineTransformV1).value
-    : entity.transform;
+  const transformSample = transformChannel
+    ? sampleKeyframes(entity.transform, transformChannel.keyframes, time, interpolateAffineTransformV1)
+    : undefined;
+  let transform = transformSample?.value ?? entity.transform;
+  // V1 evidence is direct-channel only and is sampled before motion/world
+  // composition. Ancestor/motion-induced singularity remains fail-closed.
+  const singularAffineSample =
+    transformSample?.active === true && transform.m11 * transform.m22 - transform.m12 * transform.m21 === 0;
   const motionPathChannel = entityChannel(channels, entity.id, "motion-path");
   if (motionPathChannel) {
     const motion = sampleKeyframes(0, motionPathChannel.keyframes, time, interpolateNumber);
@@ -122,6 +127,7 @@ function sampleLocalEntity(
   }
 
   if (entity.geometry.kind === "image") return { entity, opacity, transform };
+  let emptyReason: SampledLocalEntity["emptyReason"] = singularAffineSample ? "singular-affine-sample" : undefined;
   let path = sceneGeometryAsCubicPathV1(entity.geometry);
   const pathMorphChannel = entityChannel(channels, entity.id, "path-morph");
   if (pathMorphChannel) {
@@ -130,13 +136,16 @@ function sampleLocalEntity(
   const pathTrimChannel = entityChannel(channels, entity.id, "path-trim");
   if (pathTrimChannel) {
     const trim = sampleKeyframes(1, pathTrimChannel.keyframes, time, interpolateNumber).value;
-    if (trim === 0) return { emptyReason: "path-trim-zero", entity, opacity, path, transform };
-    path =
-      pathTrimChannel.parameterization === "uniform-cubic-parameter-v1"
-        ? trimCubicPathUniformParameterV1(path, trim)
-        : trimCubicPathV1(path, trim);
+    if (trim === 0) {
+      emptyReason = "path-trim-zero";
+    } else {
+      path =
+        pathTrimChannel.parameterization === "uniform-cubic-parameter-v1"
+          ? trimCubicPathUniformParameterV1(path, trim)
+          : trimCubicPathV1(path, trim);
+    }
   }
-  return { entity, opacity, path, transform };
+  return { emptyReason, entity, opacity, path, transform };
 }
 
 type WorldSample = Readonly<{ opacity: number; transform: EngineAffineTransformV1 }>;

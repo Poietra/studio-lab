@@ -203,6 +203,10 @@ fn interpolate_number(left: &f64, right: &f64, progress: f64) -> Result<f64, Geo
     Ok(left + (right - left) * progress)
 }
 
+fn affine_transform_is_singular(transform: &AffineTransformV1) -> bool {
+    transform.m11 * transform.m22 - transform.m12 * transform.m21 == 0.0
+}
+
 #[allow(
     clippy::unnecessary_wraps,
     reason = "shares the generic fallible keyframe interpolation callback"
@@ -238,6 +242,36 @@ fn appearance_opacity(appearance: &SceneAppearanceV1) -> f64 {
     }
 }
 
+fn sample_affine_transform(
+    index: &RetainedSceneIndexV1,
+    scene: &SceneIrV1,
+    entity_index: usize,
+    entity: &SceneEntityV1,
+    time: f64,
+) -> Result<(AffineTransformV1, bool), EvaluationError> {
+    let Some(channel_index) = index.affine_channel(entity_index) else {
+        return Ok((entity.transform.clone(), false));
+    };
+    let Some(AnimationChannelV1::AffineTransform { keyframes, .. }) =
+        scene.animation_channels.get(channel_index)
+    else {
+        return Err(EvaluationError::MalformedScene(
+            "retained affine channel index has the wrong kind",
+        ));
+    };
+    let (transform, active) = sample_keyframes(
+        &entity.transform,
+        keyframes,
+        time,
+        |left, right, progress| Ok(interpolate_affine_transform_v1(left, right, progress)),
+    )?;
+    // V1 evidence is deliberately limited to the entity's own sampled channel
+    // before motion/world composition. Ancestor or motion-induced singularity,
+    // and any composition that loses exact singularity, remain fail-closed.
+    let singular = active && affine_transform_is_singular(&transform);
+    Ok((transform, singular))
+}
+
 fn sample_local_entity(
     index: &RetainedSceneIndexV1,
     scene: &SceneIrV1,
@@ -259,24 +293,8 @@ fn sample_local_entity(
         base_opacity
     };
 
-    let mut transform = if let Some(channel_index) = index.affine_channel(entity_index) {
-        let Some(AnimationChannelV1::AffineTransform { keyframes, .. }) =
-            scene.animation_channels.get(channel_index)
-        else {
-            return Err(EvaluationError::MalformedScene(
-                "retained affine channel index has the wrong kind",
-            ));
-        };
-        sample_keyframes(
-            &entity.transform,
-            keyframes,
-            time,
-            |left, right, progress| Ok(interpolate_affine_transform_v1(left, right, progress)),
-        )?
-        .0
-    } else {
-        entity.transform.clone()
-    };
+    let (mut transform, singular_affine_sample) =
+        sample_affine_transform(index, scene, entity_index, entity, time)?;
     if let Some(channel_index) = index.motion_channel(entity_index) {
         let Some(AnimationChannelV1::MotionPath {
             keyframes,
@@ -314,7 +332,8 @@ fn sample_local_entity(
         };
         path = sample_keyframes(&path, keyframes, time, interpolate_cubic_path_v1)?.0;
     }
-    let mut empty_reason = None;
+    let mut empty_reason =
+        singular_affine_sample.then_some(RenderEmptyReasonV1::SingularAffineSample);
     if let Some(channel_index) = index.path_trim_channel(entity_index) {
         let Some(AnimationChannelV1::PathTrim {
             keyframes,
@@ -882,6 +901,85 @@ mod tests {
             positive.packet.required_capabilities,
             vec![RenderCapabilityV1::CubicPathStroke]
         );
+    }
+
+    #[test]
+    fn retained_affine_reflection_uses_a_draw_local_empty_midpoint() {
+        let (assets, mut scene) = fixture();
+        let mut sibling = scene.entities[0].clone();
+        sibling.id = "sibling".to_owned();
+        sibling.scene_order = 1;
+        sibling.source_z_index = 1.0;
+        scene.entities.push(sibling);
+        let mut inherited = scene.entities[0].clone();
+        inherited.id = "inherited".to_owned();
+        inherited.parent_id = Some("circle".to_owned());
+        inherited.scene_order = 2;
+        inherited.source_z_index = 2.0;
+        scene.entities.push(inherited);
+        scene
+            .animation_channels
+            .push(AnimationChannelV1::AffineTransform {
+                entity_id: "circle".to_owned(),
+                id: "reflect:circle".to_owned(),
+                keyframes: vec![
+                    KeyframeV1 {
+                        at: 0.0,
+                        easing_to_next: Some(poietra_scene_ir::EasingV1::Linear {}),
+                        value: AffineTransformV1::identity(),
+                    },
+                    KeyframeV1 {
+                        at: 1.0,
+                        easing_to_next: None,
+                        value: AffineTransformV1 {
+                            m11: -1.0,
+                            ..AffineTransformV1::identity()
+                        },
+                    },
+                ],
+                provenance_id: "fixture".to_owned(),
+            });
+        scene.required_capabilities = vec![
+            SceneCapabilityV1::AffineTransformAnimation,
+            SceneCapabilityV1::OpacityAnimation,
+            SceneCapabilityV1::ShapePrimitives,
+        ];
+        let session = EngineSessionV1::new(SceneIrBundleV1 { assets, scene }).unwrap();
+        let sample = |sample_time| {
+            session
+                .sample_render_packet(SampleEngineSessionOptionsV1 {
+                    evidence: &[],
+                    packet_id: "packet:reflection-seek",
+                    sample_time,
+                    viewport: ViewportV1 {
+                        height_px: 900,
+                        width_px: 1600,
+                    },
+                })
+                .unwrap()
+        };
+
+        let identity = sample(0.0);
+        let singular = sample(0.5);
+        let reflected = sample(1.0);
+        let singular_repeat = sample(0.5);
+        let identity_repeat = sample(0.0);
+
+        assert!(matches!(identity.draws[0], RenderDrawV1::Path { .. }));
+        assert!(matches!(
+            singular.draws[0],
+            RenderDrawV1::Empty {
+                reason: RenderEmptyReasonV1::SingularAffineSample,
+                ..
+            }
+        ));
+        assert!(matches!(singular.draws[1], RenderDrawV1::Path { .. }));
+        // Parent-induced singularity has no direct-channel empty evidence in
+        // this leaf slice and therefore remains fail-closed downstream.
+        assert!(matches!(singular.draws[2], RenderDrawV1::Path { .. }));
+        assert!(matches!(reflected.draws[0], RenderDrawV1::Path { .. }));
+        assert_eq!(singular.draws, singular_repeat.draws);
+        assert_eq!(identity.draws, identity_repeat.draws);
     }
 
     #[test]

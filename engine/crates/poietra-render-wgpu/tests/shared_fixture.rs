@@ -220,6 +220,101 @@ fn retained_geometry_cache_reuses_exact_phases_and_rejects_stale_draw_identity()
 }
 
 #[test]
+fn singular_affine_empty_is_draw_local_and_does_not_touch_geometry_cache() {
+    let baseline_packet = sampled_packet();
+    let mut cache = PreparedGeometryCacheV1::default();
+    let baseline = prepare_frame_with_cache_v1(&baseline_packet, &mut cache).unwrap();
+    assert_eq!(cache.frame_stats().misses(), 3);
+
+    let mut singular_packet = baseline_packet.clone();
+    let singular_draw = match &singular_packet.draws[1] {
+        RenderDrawV1::Path {
+            draw_id,
+            entity_id,
+            opacity,
+            paint_order,
+            source_z_index,
+            transform,
+            ..
+        } => RenderDrawV1::Empty {
+            draw_id: draw_id.clone(),
+            entity_id: entity_id.clone(),
+            opacity: *opacity,
+            paint_order: *paint_order,
+            reason: RenderEmptyReasonV1::SingularAffineSample,
+            source_z_index: *source_z_index,
+            transform: poietra_scene_ir::AffineTransformV1 {
+                m11: 0.0,
+                ..transform.clone()
+            },
+        },
+        _ => panic!("fixture second draw must be a path"),
+    };
+    singular_packet.draws[1] = singular_draw;
+
+    let singular = prepare_frame_with_cache_v1(&singular_packet, &mut cache).unwrap();
+    assert_eq!(singular.tessellation_calls(), 0);
+    assert_eq!(cache.frame_stats().hits(), 2);
+    assert_eq!(cache.frame_stats().misses(), 0);
+    assert_eq!(
+        singular
+            .draws()
+            .iter()
+            .map(poietra_render_wgpu::PreparedDrawV1::draw_id)
+            .collect::<Vec<_>>(),
+        ["draw:0", "draw:2"]
+    );
+    assert!(singular.clip_bounds_for_entity("earlier").is_some());
+    assert!(singular.clip_bounds_for_entity("later").is_none());
+    assert!(singular.clip_bounds_for_entity("stroke").is_some());
+    assert_visual_frame_eq(&singular, &prepare_frame_v1(&singular_packet).unwrap());
+
+    let mut reflected_packet = baseline_packet.clone();
+    let RenderDrawV1::Path { transform, .. } = &mut reflected_packet.draws[1] else {
+        unreachable!()
+    };
+    transform.m11 = -1.0;
+    let reflected = prepare_frame_with_cache_v1(&reflected_packet, &mut cache).unwrap();
+    assert_eq!(reflected.tessellation_calls(), 1);
+    assert_eq!(cache.frame_stats().hits(), 2);
+    assert_eq!(cache.frame_stats().misses(), 1);
+    assert_eq!(
+        reflected
+            .draws()
+            .iter()
+            .map(poietra_render_wgpu::PreparedDrawV1::draw_id)
+            .collect::<Vec<_>>(),
+        ["draw:0", "draw:1", "draw:2"]
+    );
+    assert!(reflected.clip_bounds_for_entity("later").is_some());
+
+    let identity_repeat = prepare_frame_with_cache_v1(&baseline_packet, &mut cache).unwrap();
+    assert_eq!(identity_repeat.tessellation_calls(), 1);
+    assert_eq!(cache.frame_stats().hits(), 2);
+    assert_eq!(cache.frame_stats().misses(), 1);
+    assert_visual_frame_eq(&identity_repeat, &baseline);
+
+    let singular_repeat = prepare_frame_with_cache_v1(&singular_packet, &mut cache).unwrap();
+    assert_eq!(singular_repeat.tessellation_calls(), 0);
+    assert_eq!(cache.frame_stats().hits(), 2);
+    assert_eq!(cache.frame_stats().misses(), 0);
+    assert_visual_frame_eq(&singular_repeat, &singular);
+
+    let mut unmarked_degenerate = baseline_packet;
+    let RenderDrawV1::Path { transform, .. } = &mut unmarked_degenerate.draws[1] else {
+        unreachable!()
+    };
+    transform.m11 = 0.0;
+    assert!(matches!(
+        prepare_frame_v1(&unmarked_degenerate),
+        Err(PrepareFrameErrorV1::Unsupported {
+            reason: UnsupportedDrawReasonV1::DegenerateFill,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn retained_geometry_cache_invalidates_only_geometry_affecting_phases() {
     let baseline = sampled_packet();
 

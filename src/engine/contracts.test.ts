@@ -251,6 +251,56 @@ describe("Poietra Engine v1 contracts", () => {
     expect(await parseVerifiedEngineFrameV1(JSON.parse(JSON.stringify(frame)))).toEqual(frame);
   });
 
+  it("binds singular affine empty evidence to its transform and source channel", async () => {
+    const assets = await manifest();
+    const validScene = scene(assets);
+    const validPacket = packet(validScene, assets);
+    const sourceDraw = validPacket.draws[0];
+    const singularDraw = {
+      drawId: sourceDraw.drawId,
+      entityId: sourceDraw.entityId,
+      kind: "empty" as const,
+      opacity: sourceDraw.opacity,
+      paintOrder: sourceDraw.paintOrder,
+      reason: "singular-affine-sample" as const,
+      sourceZIndex: sourceDraw.sourceZIndex,
+      transform: { ...identity, m11: 0 },
+    };
+    const singularPacket = {
+      ...validPacket,
+      draws: [singularDraw, ...validPacket.draws.slice(1)],
+      requiredCapabilities: ["cubic-path-stroke", "png-image"],
+    };
+
+    expect(renderPacketV1Schema.safeParse(singularPacket).success).toBe(true);
+    expect(engineFrameV1Schema.safeParse({ assets, packet: singularPacket, scene: validScene }).success).toBe(false);
+
+    const affineScene = sceneIrV1Schema.parse({
+      ...validScene,
+      animationChannels: [
+        ...validScene.animationChannels,
+        {
+          entityId: "circle",
+          id: "circle-reflection",
+          keyframes: [
+            { at: 0, easingToNext: { kind: "linear" }, value: identity },
+            { at: 2, easingToNext: null, value: { ...identity, m11: -1 } },
+          ],
+          kind: "affine-transform",
+          provenanceId: "fixture",
+        },
+      ],
+      requiredCapabilities: [...validScene.requiredCapabilities, "affine-transform-animation"].sort(),
+    });
+    expect(engineFrameV1Schema.safeParse({ assets, packet: singularPacket, scene: affineScene }).success).toBe(true);
+    expect(
+      renderPacketV1Schema.safeParse({
+        ...singularPacket,
+        draws: [{ ...singularDraw, transform: identity }, ...validPacket.draws.slice(1)],
+      }).success,
+    ).toBe(false);
+  });
+
   it("rejects newer versions, unknown fields, and padded identities", async () => {
     const assets = await manifest();
     const validScene = scene(assets);
