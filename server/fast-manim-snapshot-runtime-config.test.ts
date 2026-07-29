@@ -18,6 +18,7 @@ describe("fast-manim snapshot runtime config", () => {
       "affine-transform-animation",
       "cubic-path-geometry",
       "opacity-animation",
+      "path-trim-animation",
       "shape-primitives",
     ]);
     const universe = sceneCapabilityV1Schema.options;

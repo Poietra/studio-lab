@@ -427,10 +427,25 @@ export function fastManimSnapshotAffineTransformChannelProvenanceIdV2(sceneId: s
   return `${sceneId}/provenance:channel:affine-transform:${sceneOrder}`;
 }
 
+export function fastManimSnapshotPathTrimChannelIdV2(sceneId: string, sceneOrder: number) {
+  if (!Number.isSafeInteger(sceneOrder) || sceneOrder < 0) {
+    throw new TypeError("Path-trim channel identifiers derive from a non-negative integer sceneOrder.");
+  }
+  return `${sceneId}/channel:path-trim:${sceneOrder}`;
+}
+
+export function fastManimSnapshotPathTrimChannelProvenanceIdV2(sceneId: string, sceneOrder: number) {
+  if (!Number.isSafeInteger(sceneOrder) || sceneOrder < 0) {
+    throw new TypeError("Path-trim channel provenance identifiers derive from a non-negative integer sceneOrder.");
+  }
+  return `${sceneId}/provenance:channel:path-trim:${sceneOrder}`;
+}
+
 /** The exact static Scene duration the v1 exporter emits. */
 export const FAST_MANIM_SNAPSHOT_STATIC_DURATION_SECONDS_V1 = 1;
 
 type StaticProfileEntity = SceneIrBundleV1["scene"]["entities"][number];
+type StaticProfileVectorAppearance = Extract<StaticProfileEntity["appearance"], { kind: "vector" }>;
 type StaticProfilePoint = Readonly<{ x: number; y: number }>;
 type StaticProfileSegment = Readonly<{
   control1: StaticProfilePoint;
@@ -501,7 +516,16 @@ function isConvexControlPolygon(pointsInput: readonly StaticProfilePoint[]) {
   return orientation !== 0;
 }
 
-function assertStaticProfileEntity(entity: StaticProfileEntity) {
+function assertCanonicalStaticProfileStroke(stroke: NonNullable<StaticProfileVectorAppearance["stroke"]>) {
+  if (stroke.cap !== "butt" || stroke.join !== "miter" || stroke.miterLimit !== 10) {
+    profileViolation("Static profile strokes must use the canonical butt/miter/10 stroke shape.");
+  }
+  if (stroke.color.alpha <= 0) {
+    profileViolation("Static profile strokes must be visible (non-zero alpha).");
+  }
+}
+
+function assertStaticProfileEntity(entity: StaticProfileEntity, pathTrimTarget: boolean) {
   if (entity.appearance.kind !== "vector") {
     profileViolation("Static profile entities must use vector appearance.");
   }
@@ -521,17 +545,24 @@ function assertStaticProfileEntity(entity: StaticProfileEntity) {
   }
   const subpath = geometry.path.subpaths[0]!;
   if (subpath.closed) {
-    if (stroke !== null || fill === null) {
-      profileViolation("Static profile closed cubic paths must be filled without stroke.");
-    }
-    // The exporter always emits nonzero-winding fills for the lowered shapes,
-    // and only ever emits visible paint (a fully transparent fill is never a
-    // static snapshot the renderer would advertise as verified).
-    if (fill.rule !== "nonzero") {
-      profileViolation("Static profile fills must use the nonzero winding rule.");
-    }
-    if (fill.color.alpha <= 0) {
-      profileViolation("Static profile fills must be visible (non-zero alpha).");
+    if (pathTrimTarget) {
+      if (fill !== null || stroke === null) {
+        profileViolation("Dynamic path-trim closed cubic paths must be stroked without fill.");
+      }
+      assertCanonicalStaticProfileStroke(stroke);
+    } else {
+      if (stroke !== null || fill === null) {
+        profileViolation("Static profile closed cubic paths must be filled without stroke.");
+      }
+      // The exporter always emits nonzero-winding fills for the lowered shapes,
+      // and only ever emits visible paint (a fully transparent fill is never a
+      // static snapshot the renderer would advertise as verified).
+      if (fill.rule !== "nonzero") {
+        profileViolation("Static profile fills must use the nonzero winding rule.");
+      }
+      if (fill.color.alpha <= 0) {
+        profileViolation("Static profile fills must be visible (non-zero alpha).");
+      }
     }
     if (subpath.segments.length > MAX_STATIC_PROFILE_CLOSED_SEGMENTS) {
       profileViolation("Static profile closed cubic paths exceed the proven segment budget.");
@@ -548,12 +579,7 @@ function assertStaticProfileEntity(entity: StaticProfileEntity) {
   }
   // The exporter's Line lowering emits exactly Cairo's default stroke shape
   // with visible paint; a fully transparent stroke is never emitted.
-  if (stroke.cap !== "butt" || stroke.join !== "miter" || stroke.miterLimit !== 10) {
-    profileViolation("Static profile strokes must use the canonical butt/miter/10 stroke shape.");
-  }
-  if (stroke.color.alpha <= 0) {
-    profileViolation("Static profile strokes must be visible (non-zero alpha).");
-  }
+  assertCanonicalStaticProfileStroke(stroke);
   if (subpath.segments.length !== 1 || !isCanonicalFastManimLineSegmentV1(subpath.start, subpath.segments[0]!)) {
     profileViolation("Static profile open paths must be one finite canonical 1/3–2/3 Line cubic (±1 f64 ULP).");
   }
@@ -600,20 +626,36 @@ function assertDynamicProfileV2(scene: SceneIrBundleV1["scene"]) {
   }
 
   const entityIndexes = new Map(scene.entities.map((entity, index) => [entity.id, index]));
-  let previousChannelOrder = -1;
+  let previousEntityIndex = -1;
+  let previousKindOrder = -1;
+  const channelKindsByEntity = new Map<number, Set<string>>();
+  const opacityChannelsByEntity = new Map<
+    number,
+    Extract<SceneIrBundleV1["scene"]["animationChannels"][number], { kind: "opacity" }>
+  >();
   for (const channel of scene.animationChannels) {
-    if (channel.kind !== "affine-transform" && channel.kind !== "opacity") {
-      profileViolation("Dynamic profile V2 accepts only affine-transform and opacity animation channels.");
+    if (channel.kind !== "affine-transform" && channel.kind !== "opacity" && channel.kind !== "path-trim") {
+      profileViolation("Dynamic profile V2 accepts only affine-transform, opacity, and path-trim animation channels.");
     }
     const entityIndex = entityIndexes.get(channel.entityId);
-    const kindOrder = channel.kind === "affine-transform" ? 0 : 1;
-    const channelOrder = entityIndex === undefined ? -1 : entityIndex * 2 + kindOrder;
-    if (entityIndex === undefined || channelOrder <= previousChannelOrder) {
+    const kindOrder = channel.kind === "affine-transform" ? 0 : channel.kind === "opacity" ? 1 : 2;
+    if (
+      entityIndex === undefined ||
+      entityIndex < previousEntityIndex ||
+      (entityIndex === previousEntityIndex && kindOrder <= previousKindOrder)
+    ) {
       profileViolation(
-        "Dynamic channels must follow entity sceneOrder, with affine-transform before opacity, without duplicates.",
+        "Dynamic channels must follow entity sceneOrder, with affine-transform then opacity then path-trim, without duplicates.",
       );
     }
-    previousChannelOrder = channelOrder;
+    previousEntityIndex = entityIndex;
+    previousKindOrder = kindOrder;
+    const entityKinds = channelKindsByEntity.get(entityIndex) ?? new Set<string>();
+    entityKinds.add(channel.kind);
+    channelKindsByEntity.set(entityIndex, entityKinds);
+    if (entityKinds.has("affine-transform") && entityKinds.has("path-trim")) {
+      profileViolation("Dynamic profile V2 does not combine affine-transform and path-trim on one entity.");
+    }
     const entity = scene.entities[entityIndex]!;
 
     if (channel.kind === "affine-transform") {
@@ -696,6 +738,94 @@ function assertDynamicProfileV2(scene: SceneIrBundleV1["scene"]) {
       continue;
     }
 
+    if (channel.kind === "path-trim") {
+      if (
+        channel.id !== fastManimSnapshotPathTrimChannelIdV2(scene.sceneId, entityIndex) ||
+        channel.provenanceId !== fastManimSnapshotPathTrimChannelProvenanceIdV2(scene.sceneId, entityIndex)
+      ) {
+        profileViolation("Dynamic path-trim channel identifiers must derive from Scene identity and sceneOrder.");
+      }
+      if (channel.parameterization !== "uniform-cubic-parameter-v1") {
+        profileViolation("Dynamic path-trim channels require uniform-cubic-parameter-v1.");
+      }
+      const lifetime = entity.lifetimes[0]!;
+      const values = channel.keyframes.map((keyframe) => keyframe.value);
+      const producerPathTrimShape =
+        (values.length === 2 && ((values[0] === 0 && values[1] === 1) || (values[0] === 1 && values[1] === 0))) ||
+        (values.length === 3 && values[0] === 0 && values[1] === 1 && values[2] === 0) ||
+        (values.length === 4 && values[0] === 0 && values[1] === 1 && values[2] === 1 && values[3] === 0);
+      if (!producerPathTrimShape) {
+        profileViolation("Dynamic path-trim channels must encode one Create, one Uncreate, or one ordered pair.");
+      }
+      for (const [keyframeIndex, keyframe] of channel.keyframes.entries()) {
+        if (
+          !isCanonicalSnapshotFrameTimeV2(keyframe.at) ||
+          keyframe.at < lifetime.start ||
+          keyframe.at > lifetime.end
+        ) {
+          profileViolation(
+            "Dynamic path-trim keyframes must lie within the entity lifetime on the canonical 60fps grid.",
+          );
+        }
+        if (keyframe.value !== 0 && keyframe.value !== 1) {
+          profileViolation("Dynamic path-trim keyframes must use the producer's exact zero/one endpoints.");
+        }
+        const final = keyframeIndex === channel.keyframes.length - 1;
+        if ((!final && keyframe.easingToNext?.kind !== "linear") || (final && keyframe.easingToNext !== null)) {
+          profileViolation("Dynamic path-trim keyframes must use explicit linear easing and a null final easing.");
+        }
+      }
+      if (values[0] === 0 && channel.keyframes[0]!.at !== lifetime.start) {
+        profileViolation("A verified Create must begin exactly when its entity lifetime starts.");
+      }
+      if (values.at(-1) === 0 && channel.keyframes.at(-1)!.at !== lifetime.end) {
+        profileViolation("A verified Uncreate must end exactly when its entity lifetime ends.");
+      }
+      const pathTrimSegments =
+        values.length === 2
+          ? [[0, 1]]
+          : values.length === 3
+            ? [
+                [0, 1],
+                [1, 2],
+              ]
+            : [
+                [0, 1],
+                [2, 3],
+              ];
+      for (const [startIndex, endIndex] of pathTrimSegments) {
+        if (!isCanonicalDynamicTimedStepV2(channel.keyframes[startIndex]!.at, channel.keyframes[endIndex]!.at)) {
+          profileViolation("Each verified Create or Uncreate must span one exact producer-supported 60fps timed step.");
+        }
+      }
+      const opacityChannel = opacityChannelsByEntity.get(entityIndex);
+      if (opacityChannel) {
+        const opacityValues = opacityChannel.keyframes.map((keyframe) => keyframe.value);
+        const createThenFadeOut =
+          values.length === 2 &&
+          values[0] === 0 &&
+          values[1] === 1 &&
+          opacityValues.length === 2 &&
+          opacityValues[0] === 1 &&
+          opacityValues[1] === 0 &&
+          channel.keyframes[1]!.at <= opacityChannel.keyframes[0]!.at;
+        const fadeInThenUncreate =
+          opacityValues.length === 2 &&
+          opacityValues[0] === 0 &&
+          opacityValues[1] === 1 &&
+          values.length === 2 &&
+          values[0] === 1 &&
+          values[1] === 0 &&
+          opacityChannel.keyframes[1]!.at <= channel.keyframes[0]!.at;
+        if (!createThenFadeOut && !fadeInThenUncreate) {
+          profileViolation(
+            "Combined opacity and path-trim channels must encode Create then FadeOut or FadeIn then Uncreate without overlap.",
+          );
+        }
+      }
+      continue;
+    }
+
     if (
       channel.id !== fastManimSnapshotOpacityChannelIdV2(scene.sceneId, entityIndex) ||
       channel.provenanceId !== fastManimSnapshotOpacityChannelProvenanceIdV2(scene.sceneId, entityIndex)
@@ -746,6 +876,7 @@ function assertDynamicProfileV2(scene: SceneIrBundleV1["scene"]) {
         profileViolation("Each verified Fade must span one exact producer-supported 60fps timed step.");
       }
     }
+    opacityChannelsByEntity.set(entityIndex, channel);
   }
 }
 
@@ -785,9 +916,9 @@ function assertFastManimSnapshotProfileV1(
     profileViolation("Static profile cameras must use exactly the requested runtime frame.");
   }
   // V1 remains the exact one-second still contract. V2 adds a bounded 60fps
-  // timeline with observed membership, exact linear Fade opacity, and exact
-  // component-linear affine channels. Geometry and the entity's base transform
-  // stay immutable; every animated local transform lives in its channel.
+  // timeline with observed membership, exact linear Fade opacity, exact
+  // component-linear affine channels, and exact uniform-cubic Create/Uncreate
+  // trims. Geometry and the entity's base transform stay immutable.
   if (snapshotVersion === 1 && scene.duration !== FAST_MANIM_SNAPSHOT_STATIC_DURATION_SECONDS_V1) {
     profileViolation("Static profile Scenes must report exactly the canonical 1-second static duration.");
   }
@@ -801,6 +932,9 @@ function assertFastManimSnapshotProfileV1(
       : []),
     ...(scene.entities.length > 0 ? (["cubic-path-geometry"] as const) : []),
     ...(scene.animationChannels.some((channel) => channel.kind === "opacity") ? (["opacity-animation"] as const) : []),
+    ...(scene.animationChannels.some((channel) => channel.kind === "path-trim")
+      ? (["path-trim-animation"] as const)
+      : []),
   ];
   if (
     scene.requiredCapabilities.length !== expectedCapabilities.length ||
@@ -809,13 +943,16 @@ function assertFastManimSnapshotProfileV1(
     profileViolation(
       snapshotVersion === 1
         ? "Static profile Scenes must require exactly cubic-path-geometry, or nothing when empty."
-        : "Dynamic profile V2 Scenes must derive affine-transform-animation, cubic-path-geometry, and opacity-animation exactly from their contents.",
+        : "Dynamic profile V2 Scenes must derive affine-transform-animation, cubic-path-geometry, opacity-animation, and path-trim-animation exactly from their contents.",
     );
   }
   // Entities are the exporter's enumerate order: each sceneOrder must equal
   // its array index, contiguous from 0 — duplicates, gaps, and reordering are
   // all rejected — and every derived identifier below is anchored to this
   // validated order, never to a producer-chosen number.
+  const pathTrimEntityIds = new Set(
+    scene.animationChannels.filter((channel) => channel.kind === "path-trim").map((channel) => channel.entityId),
+  );
   scene.entities.forEach((entity, index) => {
     if (entity.sceneOrder !== index) {
       profileViolation("Static profile entities must enumerate sceneOrder contiguously in array order.");
@@ -849,7 +986,7 @@ function assertFastManimSnapshotProfileV1(
         "Snapshot profile entities must keep their base transform at identity; V2 affine motion belongs only in affine-transform channels.",
       );
     }
-    assertStaticProfileEntity(entity);
+    assertStaticProfileEntity(entity, pathTrimEntityIds.has(entity.id));
   });
   // The provenance array is exactly the derived scene record followed by one
   // record per entity in validated enumerate order — no extra, missing,
@@ -861,16 +998,21 @@ function assertFastManimSnapshotProfileV1(
     ...scene.entities.map((_, index) => fastManimSnapshotEntityProvenanceIdV1(sceneId, index)),
     ...(snapshotVersion === 2
       ? scene.animationChannels.map((channel) => {
-          if (channel.kind !== "affine-transform" && channel.kind !== "opacity") {
-            profileViolation("Dynamic profile V2 accepts only affine-transform and opacity animation channels.");
+          if (channel.kind !== "affine-transform" && channel.kind !== "opacity" && channel.kind !== "path-trim") {
+            profileViolation(
+              "Dynamic profile V2 accepts only affine-transform, opacity, and path-trim animation channels.",
+            );
           }
           const entityIndex = entityIndexById.get(channel.entityId);
           if (entityIndex === undefined) {
             profileViolation("Dynamic animation channels must target a validated Scene entity.");
           }
-          return channel.kind === "affine-transform"
-            ? fastManimSnapshotAffineTransformChannelProvenanceIdV2(sceneId, entityIndex)
-            : fastManimSnapshotOpacityChannelProvenanceIdV2(sceneId, entityIndex);
+          if (channel.kind === "affine-transform") {
+            return fastManimSnapshotAffineTransformChannelProvenanceIdV2(sceneId, entityIndex);
+          }
+          return channel.kind === "opacity"
+            ? fastManimSnapshotOpacityChannelProvenanceIdV2(sceneId, entityIndex)
+            : fastManimSnapshotPathTrimChannelProvenanceIdV2(sceneId, entityIndex);
         })
       : []),
   ];
@@ -1028,12 +1170,13 @@ export type FastManimSnapshotRuntimeCapabilityV1 = z.infer<typeof sceneCapabilit
  * needs proven evaluator + renderer coverage, so adding a capability to the
  * Scene IR schema must never silently claim support here. The static profile
  * lowers Circle, Rectangle, and Line to cubic paths; V2 additionally admits
- * the strictly verified opacity and affine-transform channel slices.
+ * the strictly verified affine-transform, opacity, and path-trim slices.
  */
 export const FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1 = Object.freeze([
   "affine-transform-animation",
   "cubic-path-geometry",
   "opacity-animation",
+  "path-trim-animation",
   "shape-primitives",
 ] as const satisfies readonly FastManimSnapshotRuntimeCapabilityV1[]);
 

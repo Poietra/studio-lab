@@ -44,6 +44,10 @@ const affineScene = readFileSync(
   fileURLToPath(new URL("../fixtures/real-preview-harness/scene_affine.py", import.meta.url)),
   "utf8",
 );
+const pathTrimScene = readFileSync(
+  fileURLToPath(new URL("../fixtures/real-preview-harness/scene_path_trim.py", import.meta.url)),
+  "utf8",
+);
 
 function context(signal = new AbortController().signal, deadlineMs = 30_000) {
   return {
@@ -679,6 +683,39 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
       "shear",
       "reflection",
     ]);
+  });
+
+  it("isolates, seals, and correlates real V2 uniform-cubic path trims", { timeout: 60_000 }, async () => {
+    const source = producerRequestFor(pathTrimScene, "DynamicPathTrimScene", 2);
+    const request = new FastManimSandboxRequestBundleV1(source);
+    const execution = await runFastManimGatedOciJobV1({
+      deadlineEpochMs: Date.now() + 30_000,
+      image,
+      requestBytes: request.copyBytes(),
+      signal: new AbortController().signal,
+    });
+    expect(execution.cleanupVerified).toBe(true);
+    const { snapshot, sourceRuntimeIdentity } = await verifyCombinedResult(execution.resultBytes, source);
+    if (snapshot.kind !== "compiled") throw new Error("Expected compiled path-trim evidence.");
+    expect(snapshot.bundle.scene.requiredCapabilities).toEqual(["cubic-path-geometry", "path-trim-animation"]);
+    const pathTrimChannels = snapshot.bundle.scene.animationChannels.filter((channel) => channel.kind === "path-trim");
+    expect(pathTrimChannels).toHaveLength(4);
+    expect(pathTrimChannels.every((channel) => channel.parameterization === "uniform-cubic-parameter-v1")).toBe(true);
+    expect(
+      new Set(pathTrimChannels.map((channel) => channel.keyframes.map((keyframe) => keyframe.value).join(","))),
+    ).toEqual(new Set(["0,1", "1,0", "0,1,0", "0,1,1,0"]));
+    const entitiesById = new Map(snapshot.bundle.scene.entities.map((entity) => [entity.id, entity]));
+    expect(
+      pathTrimChannels.every((channel) => {
+        const entity = entitiesById.get(channel.entityId);
+        return (
+          entity?.appearance.kind === "vector" && entity.appearance.fill === null && entity.appearance.stroke !== null
+        );
+      }),
+    ).toBe(true);
+    expect(sourceRuntimeIdentity?.mappings.map((mapping) => mapping.binding.name)).toEqual(
+      expect.arrayContaining(["sentinel", "circle", "rectangle", "line"]),
+    );
   });
 
   it("does not quarantine an abort observed after known-ID cleanup was verified", { timeout: 60_000 }, async () => {

@@ -31,6 +31,17 @@ const AFFINE_BOUNDS_AT_FIVE = [
   [0.348046875, -0.5625, 0.495703125, -0.4375],
   [0.225, 0.175, 0.3375, 0.325],
 ] as const;
+const PATH_TRIM_SCENE_ID = "scene:ea184a9813e80bb4c96d33144c5b39e24985e5bb7807c38effccd9a7f66ef068";
+const PATH_TRIM_SOURCE_HASH = "1d2598220595420e633c50ecb3340208bcc1b147e9662f343fb5b2bbd2c7c8af";
+const PATH_TRIM_ENTITY_IDS = Array.from({ length: 5 }, (_, index) => `${PATH_TRIM_SCENE_ID}/entity:${index}`);
+const PATH_TRIM_BINDINGS = [
+  ["sentinel", "source-binding:879e2710e193eb6c0c2191aa0f48d926cc865fbf9ac33ef061b9c136e36b5128", 16],
+  ["circle", "source-binding:1d2fdad09d2a38c14265a16a4157e96b0cc713971be9bb04b6199a7c232b02ae", 14],
+  ["rectangle", "source-binding:c36069db9dffdab3cef103f1d8ddd00e1136fe482b8eb80bd4b1e87206445a1d", 17],
+  ["line", "source-binding:83dae5ad5f81cc8a65fd752f1d72286103d2672d9476847161e6a24ab088aa3d", 12],
+  ["immediate_circle", "source-binding:6ec5fefa194850eb55dc1e5668cc3abf66b117f0590691ed3ec68a4ad123b3b5", 24],
+] as const;
+const PATH_TRIM_VIEWPORT = "832x468";
 
 type RgbaPixel = readonly [number, number, number, number];
 
@@ -592,6 +603,189 @@ test("preserves real V2 affine methods and isolates a singular reflection sample
   for (const sample of samples) expectPixelNear(sample.evidence.samples[3] as RgbaPixel, [0, 0, 0, 255]);
 
   await expect(page.getByRole("slider", { name: "Scene playhead" })).toHaveAttribute("max", "7");
+});
+
+test("preserves real V2 Create and Uncreate trims across shuffled WebGPU seeks", async ({ page }) => {
+  await expectVerifiedRun(await openRealWorkspace(page));
+  const run = await expectVerifiedRun(await selectScene(page, "DynamicPathTrimScene", "scene_path_trim.py"));
+  const bundle = run.snapshot?.bundle;
+  const revision = run.snapshot?.snapshotHash;
+  const identity = run.sourceRuntimeIdentity;
+  if (!bundle || !revision || !identity) {
+    throw new Error("The path-trim Scene did not publish a complete verified snapshot and identity map.");
+  }
+
+  expect(bundle.scene).toMatchObject({
+    duration: 8,
+    requiredCapabilities: ["cubic-path-geometry", "path-trim-animation"],
+    sceneId: PATH_TRIM_SCENE_ID,
+    source: {
+      kind: "imported-manim-server-snapshot",
+      snapshotVersion: 2,
+      sourceHash: PATH_TRIM_SOURCE_HASH,
+    },
+  });
+  expect(bundle.scene.entities.map((entity) => entity.id)).toEqual(PATH_TRIM_ENTITY_IDS);
+  expect(bundle.scene.entities.map((entity) => entity.lifetimes)).toEqual([
+    [{ end: 8, start: 0 }],
+    [{ end: 8, start: 0 }],
+    [{ end: 2, start: 1 }],
+    [{ end: 5, start: 2 }],
+    [{ end: 7, start: 5 }],
+  ]);
+  expect(
+    bundle.scene.entities.map((entity) =>
+      entity.geometry.kind === "cubic-path" ? entity.geometry.path.subpaths[0]?.segments.length : null,
+    ),
+  ).toEqual([8, 8, 4, 1, 8]);
+  expect(bundle.scene.entities[0]?.appearance).toMatchObject({ fill: { color: { alpha: 1 } }, stroke: null });
+  for (const entity of bundle.scene.entities.slice(1)) {
+    expect(entity.appearance).toMatchObject({ fill: null, stroke: { cap: "butt", join: "miter" } });
+  }
+
+  const expectedChannels = [
+    { at: [0, 1], entityIndex: 1, values: [0, 1] },
+    { at: [1, 2], entityIndex: 2, values: [1, 0] },
+    { at: [2, 3, 4, 5], entityIndex: 3, values: [0, 1, 1, 0] },
+    { at: [5, 6, 7], entityIndex: 4, values: [0, 1, 0] },
+  ] as const;
+  expect(bundle.scene.animationChannels).toHaveLength(expectedChannels.length);
+  for (const [channelIndex, expectedChannel] of expectedChannels.entries()) {
+    const channel = bundle.scene.animationChannels[channelIndex];
+    expect(channel).toMatchObject({
+      entityId: PATH_TRIM_ENTITY_IDS[expectedChannel.entityIndex],
+      id: `${PATH_TRIM_SCENE_ID}/channel:path-trim:${expectedChannel.entityIndex}`,
+      kind: "path-trim",
+      parameterization: "uniform-cubic-parameter-v1",
+      provenanceId: `${PATH_TRIM_SCENE_ID}/provenance:channel:path-trim:${expectedChannel.entityIndex}`,
+    });
+    if (channel?.kind !== "path-trim") throw new Error("Expected only path-trim producer channels.");
+    expect(channel.keyframes.map((keyframe) => keyframe.at)).toEqual(expectedChannel.at);
+    expect(channel.keyframes.map((keyframe) => keyframe.value)).toEqual(expectedChannel.values);
+    expect(channel.keyframes.map((keyframe) => keyframe.easingToNext)).toEqual([
+      ...expectedChannel.at.slice(0, -1).map(() => ({ kind: "linear" as const })),
+      null,
+    ]);
+  }
+
+  expect(identity).toMatchObject({
+    sceneId: PATH_TRIM_SCENE_ID,
+    snapshotHash: revision,
+    sourceHash: PATH_TRIM_SOURCE_HASH,
+  });
+  expect(identity.mappings).toEqual(
+    PATH_TRIM_BINDINGS.map(([name, id, endColumn], index) => ({
+      binding: {
+        id,
+        name,
+        ordinal: index + 1,
+        span: { endColumn, endLine: index + 6, startColumn: 8, startLine: index + 6 },
+      },
+      entityId: PATH_TRIM_ENTITY_IDS[index],
+      familyPath: [],
+      provenanceId: `${PATH_TRIM_SCENE_ID}/provenance:entity:${index}`,
+    })),
+  );
+  await expectPresented(page, run.revision);
+
+  const canvasRoot = page.locator("[data-studio-canvas]");
+  const viewport = await canvasRoot.getAttribute("data-preview-viewport");
+  if (!viewport) throw new Error("The path-trim WebGPU proof did not expose a viewport.");
+  expect(viewport).toBe(PATH_TRIM_VIEWPORT);
+  const monotonicTimes = [0, 1.5, 2, 2.5, 3.5, 4.5, 5, 5.5, 6, 6.5, 7] as const;
+  const shuffledTimes = [4.5, 0, 6.5, 2, 5.5, 1.5, 7, 3.5, 5, 2.5, 6] as const;
+  const samples = await readBackDynamicRendererSamples(page, {
+    entityIds: PATH_TRIM_ENTITY_IDS,
+    evidenceSamples: [
+      { fractionX: 0.1484375, fractionY: 0.125 },
+      { fractionX: 0.341796875, fractionY: 0.5 },
+      { fractionX: 0.4296875, fractionY: 0.4375 },
+      { fractionX: 0.640625, fractionY: 0.5 },
+      { fractionX: 0.826953125, fractionY: 0.5 },
+      { fractionX: 0.03, fractionY: 0.05 },
+    ],
+    revision,
+    samples: [
+      ...monotonicTimes.map((sampleTime) => ({ id: `monotonic:${sampleTime}`, sampleTime })),
+      ...shuffledTimes.map((sampleTime) => ({ id: `shuffled:${sampleTime}`, sampleTime })),
+    ],
+    snapshot: bundle,
+    viewport,
+  });
+  const byId = new Map(samples.map((sample) => [sample.id, sample]));
+  for (const sampleTime of monotonicTimes) {
+    const monotonic = byId.get(`monotonic:${sampleTime}`);
+    const shuffled = byId.get(`shuffled:${sampleTime}`);
+    expect(monotonic?.frame).toMatchObject({ kind: "frame-presented", revision, sampleTime });
+    expect(monotonic?.evidence).toMatchObject({
+      packetId: monotonic?.frame.packetId,
+      revision,
+      sampleTime,
+      viewport: monotonic?.frame.viewport,
+    });
+    expect(shuffled?.frame.interaction).toEqual(monotonic?.frame.interaction);
+    expect(shuffled?.evidence.samples).toEqual(monotonic?.evidence.samples);
+  }
+
+  const interactionEntries = (sampleTime: (typeof monotonicTimes)[number]) =>
+    byId.get(`monotonic:${sampleTime}`)?.frame.interaction.entries;
+  const pixels = (sampleTime: (typeof monotonicTimes)[number]) =>
+    byId.get(`monotonic:${sampleTime}`)?.evidence.samples as readonly RgbaPixel[];
+  const expectBoundsNear = (actual: readonly number[] | undefined, expected: readonly number[]) => {
+    expect(actual).toHaveLength(4);
+    for (const [index, component] of (actual ?? []).entries()) {
+      expect(component).toBeCloseTo(expected[index]!, 6);
+    }
+  };
+
+  expect(interactionEntries(0)).toEqual([
+    { bounds: [-0.7523438, 0.6625, -0.6539062, 0.8375], status: "present" },
+    { status: "empty" },
+    { status: "inactive" },
+    { status: "inactive" },
+    { status: "inactive" },
+  ]);
+  expectPixelNear(pixels(0)[0]!, [255, 255, 255, 255]);
+  for (const pixel of pixels(0).slice(1)) expectPixelNear(pixel, [0, 0, 0, 255]);
+
+  const rectangleHalf = interactionEntries(1.5)?.[2];
+  expect(rectangleHalf?.status).toBe("present");
+  if (rectangleHalf?.status === "present") {
+    expectBoundsNear(rectangleHalf.bounds, [-0.27421874, -0.125, -0.03515625, 0.175]);
+  }
+  expectPixelNear(pixels(1.5)[1]!, [252, 98, 85, 255]);
+  expectPixelNear(pixels(1.5)[2]!, [88, 196, 221, 255]);
+
+  expect(interactionEntries(2)?.[2]).toEqual({ status: "inactive" });
+  expect(interactionEntries(2)?.[3]).toEqual({ status: "empty" });
+  expectPixelNear(pixels(2)[0]!, [255, 255, 255, 255]);
+  expectPixelNear(pixels(2)[1]!, [252, 98, 85, 255]);
+  expectPixelNear(pixels(2)[3]!, [0, 0, 0, 255]);
+
+  const lineCreateHalf = interactionEntries(2.5)?.[3];
+  expect(lineCreateHalf?.status).toBe("present");
+  if (lineCreateHalf?.status === "present") {
+    expectBoundsNear(lineCreateHalf.bounds, [0.12804712, -0.16972136, 0.2938279, 0.044721358]);
+  }
+  expectPixelNear(pixels(3.5)[3]!, [131, 193, 103, 255]);
+  expect(interactionEntries(4.5)?.[3]).toEqual(lineCreateHalf);
+
+  expect(interactionEntries(5)?.[3]).toEqual({ status: "inactive" });
+  expect(interactionEntries(5)?.[4]).toEqual({ status: "empty" });
+  const immediateCreateHalf = interactionEntries(5.5)?.[4];
+  expect(immediateCreateHalf?.status).toBe("present");
+  if (immediateCreateHalf?.status === "present") {
+    expectBoundsNear(immediateCreateHalf.bounds, [0.44310543, -0.0049230703, 0.6818946, 0.21274413]);
+  }
+  expectPixelNear(pixels(6)[4]!, [247, 217, 111, 255]);
+  expect(interactionEntries(6.5)?.[4]).toEqual(immediateCreateHalf);
+
+  expect(interactionEntries(7)?.[4]).toEqual({ status: "inactive" });
+  expect(interactionEntries(7)?.[0]?.status).toBe("present");
+  expectPixelNear(pixels(7)[0]!, [255, 255, 255, 255]);
+  expectPixelNear(pixels(7)[1]!, [252, 98, 85, 255]);
+  expectPixelNear(pixels(7)[4]!, [0, 0, 0, 255]);
+  await expect(page.getByRole("slider", { name: "Scene playhead" })).toHaveAttribute("max", "8");
 });
 
 test("falls back the whole Scene for real producer unsupported and exit results", async ({ page }) => {
