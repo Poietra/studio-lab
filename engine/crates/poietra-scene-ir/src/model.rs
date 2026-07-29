@@ -408,6 +408,14 @@ pub struct SceneCameraViewV1 {
     pub frame_width: f64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum PathTrimParameterizationV1 {
+    #[serde(rename = "arc-length-v1")]
+    ArcLengthV1,
+    #[serde(rename = "uniform-cubic-parameter-v1")]
+    UniformCubicParameterV1,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum AnimationChannelV1 {
@@ -435,6 +443,8 @@ pub enum AnimationChannelV1 {
         entity_id: String,
         id: String,
         keyframes: Vec<KeyframeV1<f64>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parameterization: Option<PathTrimParameterizationV1>,
         #[serde(rename = "provenanceId")]
         provenance_id: String,
     },

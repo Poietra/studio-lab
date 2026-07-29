@@ -6,6 +6,7 @@ import {
   interpolateCubicPathV1,
   sampleCubicPathV1,
   sceneGeometryAsCubicPathV1,
+  trimCubicPathUniformParameterV1,
   trimCubicPathV1,
 } from "./geometry";
 
@@ -51,6 +52,57 @@ describe("Poietra Engine cubic geometry v1", () => {
     expect(sample.tangent.y).toBe(0);
     expect(trimmed.subpaths[0].closed).toBe(false);
     expect(trimmed.subpaths[0].segments[0].end).toEqual({ x: 5, y: 0 });
+  });
+
+  it("distinguishes uniform cubic parameters from arc length on a nonuniform rectangle", () => {
+    const path = sceneGeometryAsCubicPathV1({
+      center: { x: 0, y: 0 },
+      cornerRadius: 0,
+      height: 2,
+      kind: "rectangle",
+      width: 4,
+    });
+    const arcLength = trimCubicPathV1(path, 0.25);
+    const uniformCubic = trimCubicPathUniformParameterV1(path, 0.25);
+    expect(arcLength.subpaths[0].segments.at(-1)?.end).toEqual({ x: -1, y: -1 });
+    expect(uniformCubic.subpaths[0].segments.at(-1)?.end).toEqual({ x: -2, y: -1 });
+  });
+
+  it("keeps serialized subpath order and exact cubic boundaries", () => {
+    const path = {
+      subpaths: [
+        {
+          closed: false,
+          segments: [{ control1: { x: 2 / 3, y: 0 }, control2: { x: 4 / 3, y: 0 }, end: { x: 2, y: 0 } }],
+          start: { x: 0, y: 0 },
+        },
+        {
+          closed: false,
+          segments: [{ control1: { x: 34 / 3, y: 0 }, control2: { x: 38 / 3, y: 0 }, end: { x: 14, y: 0 } }],
+          start: { x: 10, y: 0 },
+        },
+      ],
+    };
+    expect(trimCubicPathUniformParameterV1(path, 0.5).subpaths).toEqual([path.subpaths[0]]);
+    const partialSecond = trimCubicPathUniformParameterV1(path, 0.75);
+    expect(partialSecond.subpaths).toHaveLength(2);
+    expect(partialSecond.subpaths[1].segments[0].end).toEqual({ x: 12, y: 0 });
+  });
+
+  it("does not count an implicit renderer close as a serialized cubic", () => {
+    const path = {
+      subpaths: [
+        {
+          closed: true,
+          segments: [{ control1: { x: 2 / 3, y: 0 }, control2: { x: 4 / 3, y: 0 }, end: { x: 2, y: 0 } }],
+          start: { x: 0, y: 0 },
+        },
+      ],
+    };
+    const partial = trimCubicPathUniformParameterV1(path, 0.5);
+    expect(partial.subpaths[0].closed).toBe(false);
+    expect(partial.subpaths[0].segments[0].end).toEqual({ x: 1, y: 0 });
+    expect(trimCubicPathUniformParameterV1(path, 1)).toBe(path);
   });
 
   it("interpolates topology-compatible cubic control points", () => {

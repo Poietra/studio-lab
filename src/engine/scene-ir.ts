@@ -192,6 +192,7 @@ const pathTrimChannelV1Schema = z
     ...entityChannelBase,
     keyframes: z.array(keyframeV1Schema(normalizedNumberV1Schema)).min(2).max(MAX_KEYFRAMES),
     kind: z.literal("path-trim"),
+    parameterization: z.enum(["arc-length-v1", "uniform-cubic-parameter-v1"]).optional(),
   })
   .strict();
 

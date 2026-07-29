@@ -336,6 +336,50 @@ describe("Poietra TypeScript reference evaluator v1", () => {
     expect(mover?.transform).toMatchObject({ tx: 5, ty: 0 });
   });
 
+  it("samples uniform cubic path trim deterministically across non-monotonic seeks", async () => {
+    const assets = await emptyManifest();
+    const rectangle = {
+      ...vectorEntity("rectangle", 0, {
+        center: { x: 0, y: 0 },
+        cornerRadius: 0,
+        height: 2,
+        kind: "rectangle",
+        width: 4,
+      }),
+      appearance: {
+        fill: null,
+        kind: "vector",
+        opacity: 1,
+        stroke: { cap: "butt", color: white, join: "miter", miterLimit: 4, widthWorld: 0.05 },
+      },
+    };
+    const scene = createScene(assets, {
+      animationChannels: [
+        {
+          entityId: "rectangle",
+          id: "create",
+          keyframes: [
+            { at: 0, easingToNext: { kind: "linear" }, value: 0 },
+            { at: 1, easingToNext: null, value: 1 },
+          ],
+          kind: "path-trim",
+          parameterization: "uniform-cubic-parameter-v1",
+          provenanceId: "fixture",
+        },
+      ],
+      entities: [rectangle],
+      requiredCapabilities: ["path-trim-animation", "shape-primitives"],
+    });
+    const endpointAt = async (time: number) => {
+      const draw = (await compile(scene, assets, time)).packet.draws[0];
+      return draw.kind === "path" ? draw.path.subpaths.at(-1)?.segments.at(-1)?.end : null;
+    };
+    const first = await endpointAt(0.25);
+    expect(await endpointAt(0.5)).toEqual({ x: -2, y: 1 });
+    expect(await endpointAt(0.25)).toEqual(first);
+    expect(first).toEqual({ x: -2, y: -1 });
+  });
+
   it("samples affine and topology-compatible path-morph channels without replacing the base early", async () => {
     const assets = await emptyManifest();
     const pathAt = (y: number) => ({

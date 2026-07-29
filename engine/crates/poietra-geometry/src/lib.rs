@@ -11,7 +11,8 @@ mod transform;
 pub use easing::apply_easing_v1;
 pub use path::{
     PATH_ARC_SUBDIVISIONS_V1, PathSampleV1, interpolate_cubic_path_v1, point_on_cubic_v1,
-    sample_cubic_path_v1, scene_geometry_as_cubic_path_v1, trim_cubic_path_v1,
+    sample_cubic_path_v1, scene_geometry_as_cubic_path_v1, trim_cubic_path_uniform_parameter_v1,
+    trim_cubic_path_v1,
 };
 pub use transform::{
     apply_motion_path_v1, compose_affine_transforms_v1, interpolate_affine_transform_v1,

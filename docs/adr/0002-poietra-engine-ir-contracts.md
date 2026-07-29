@@ -72,6 +72,13 @@ returns a structured compilation error outside the wire document. It must not em
 a Scene with a `supported` assertion. An explicitly `approximate` Scene is allowed
 only with non-empty evidence so the preview can label its fidelity.
 
+`path-trim` defaults to the existing `arc-length-v1` interpretation when its
+optional `parameterization` is omitted. `uniform-cubic-parameter-v1` instead
+assigns equal progress to explicitly serialized cubics and applies the local
+fraction with De Casteljau splitting. The currently partial subpath stays open;
+fully consumed prior subpaths retain their closure. This matches Manim's pointwise
+partial-path semantics without changing existing bytes.
+
 Scene, entity, channel, and provenance identities preserve the portable ASCII
 source fragment separator `#` used by imported IDs such as `scene.py#Scene`.
 Generated packet/manifest IDs and asset IDs use the stricter portable subset
