@@ -75,6 +75,41 @@ without them it remains an explicitly local `best-effort` conformance run.
 This direct-runner lane is evidence for the required cleanup policy; broker
 identity, UDS permissions, and signed release admission remain covered by the
 production service boundary and its own deployment checks.
+
+The fail-required production-composition lane starts the shipped render broker
+and submits through its real UDS protocol. Supply all three host inputs
+explicitly:
+
+```sh
+POIETRA_MANIM_RENDER_PRODUCTION_IMAGE=sha256:<64-hex-image-id> \
+POIETRA_MANIM_RENDER_PRODUCTION_DOCKER_SOCKET=/run/user/<broker-uid>/docker.sock \
+POIETRA_MANIM_RENDER_PRODUCTION_SECCOMP=/absolute/path/to/seccomp.v1.json \
+  pnpm test:render-sandbox:production:required
+```
+
+Unlike an opt-in real test, this command sets
+`POIETRA_MANIM_RENDER_PRODUCTION_REQUIRED=1` and fails instead of
+skipping when an input is absent or malformed. Run it on Linux as the dedicated
+non-root broker UID. The canonical Docker socket must be owned by that UID,
+have mode `0600`, have a private direct parent, and live under canonical root-
+or broker-owned non-writable ancestors. Docker must report a Linux rootless
+runtime with systemd cgroup v2 and usable `cgroup.kill`. The image value must be
+an immutable digest whose labels match the fixed render profile. The canonical
+seccomp file must contain the repository's production profile, be root-owned
+and non-writable, and live under root-owned non-writable ancestors. The test
+creates its private UDS directory and staging root under the executing broker
+UID/GID; it does not accept a default Docker socket, mutable seccomp file,
+rootful runtime, or best-effort cgroup cleanup.
+
+This lane deliberately starts broker and client in one process and therefore
+uses the generic UDS client. It proves the production broker composition,
+rootless runtime, UDS framing, bounded results, and cleanup, but not the deployed
+cross-UID principal boundary. Production must still run Studio under a different
+UID in the configured socket group while only the broker UID can access Docker.
+The rejection of same-UID or wrong-group Studio clients and the socket ownership
+contract remain deterministic unit coverage; a deployment with separate
+principals must verify those OS identities independently.
+
 At startup the broker first acquires a host-kernel singleton keyed by the
 staging-root digest, then its socket lease. Only while holding both does it
 remove prior containers in that owner namespace, including one with a future
