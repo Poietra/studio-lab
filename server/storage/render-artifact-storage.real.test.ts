@@ -29,8 +29,8 @@ import {
   decodeManimRenderStagingLocatorV1,
   encodeManimRenderStagingLocatorV1,
   MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
-  MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V1,
-  SealedManimRenderSandboxRequestV1,
+  MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V2,
+  SealedManimRenderSandboxRequestV2,
 } from "../manim-render-sandbox-contract";
 import { AuthorizedArtifactReaderV1 } from "./authorized-artifact-reader";
 import { applyBundledDurableStorageMigrations } from "./postgres/migrate";
@@ -560,13 +560,13 @@ async function publishThroughRealOci(
     runtimeDigest: runner.runtimeDigest,
     sceneFrame: MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
     sceneName: session.sceneName,
-    schema: MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V1,
+    schema: MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V2,
     sessionId: session.id,
     source,
     sourceDigest: session.patched.blob.digest,
     sourcePath: session.sourcePath,
     tenantId: session.tenantId,
-    version: 1 as const,
+    version: 2 as const,
   };
   let operationError: unknown;
   let evidence: Readonly<{ published: boolean; requestDigests: readonly string[]; runtimeDigest: string }> | null =
@@ -574,7 +574,7 @@ async function publishThroughRealOci(
   try {
     await runner.reconcileOrphans();
     const submit = async (kind: "thumbnail" | "video") => {
-      const request = new SealedManimRenderSandboxRequestV1({
+      const request = new SealedManimRenderSandboxRequestV2({
         ...base,
         output:
           kind === "video"

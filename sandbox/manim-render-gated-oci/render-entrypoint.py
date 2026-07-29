@@ -1,16 +1,19 @@
 """Run one bounded Manim render behind the fixed OCI gate.
 
-The untrusted Scene only receives a credential-free environment and a source
-file inside container tmpfs. PID 1 kills and reaps every descendant before it
-publishes a correlated terminal marker and enters its broker-readable state.
+The untrusted Scene only receives a credential-free environment, a source file,
+and an optional digest-bound ``image.png`` inside container tmpfs. PID 1 kills
+and reaps every descendant before it publishes a correlated terminal marker
+and enters its broker-readable state.
 """
 
 from __future__ import annotations
 
+import base64
 import ctypes
 import errno
 import hashlib
 import hmac
+import io
 import json
 import os
 import resource
@@ -28,7 +31,9 @@ from pathlib import Path
 MAGIC = b"POIETR1\x00"
 VERSION = 1
 HEADER_BYTES = 80
-MAX_REQUEST_BYTES = 2 * 1024 * 1024 + 32 * 1024
+MAX_SOURCE_BYTES = 2 * 1024 * 1024
+MAX_ASSET_BYTES = 512 * 1024
+MAX_REQUEST_BYTES = MAX_SOURCE_BYTES + 4 * ((MAX_ASSET_BYTES + 2) // 3) + 64 * 1024
 MAX_ARTIFACT_BYTES = 128 * 1024 * 1024
 MAX_VIDEO_DURATION_SECONDS = 15 * 60
 READY = b"POIETRA_RENDER_GATE_READY_V1\n"
@@ -36,6 +41,7 @@ TARGET = ("/opt/venv/bin/python", "/opt/poietra/render-entrypoint.py")
 READY_PROCESS_NAME = b"poietra-ready"
 RUNTIME_ROOT = Path("/run/poietra")
 SOURCE_PATH = RUNTIME_ROOT / "tmp" / "scene.py"
+PROJECT_PNG_PATH = RUNTIME_ROOT / "tmp" / "image.png"
 MEDIA_ROOT = RUNTIME_ROOT / "tmp" / "media"
 OUTPUT_ROOT = RUNTIME_ROOT / "output"
 TERMINAL_PATH = OUTPUT_ROOT / "terminal.json"
@@ -179,8 +185,68 @@ def _sealed_request() -> tuple[dict[str, object], str]:
     return request, execution_digest.hex()
 
 
-def _validated_request(request: dict[str, object]) -> tuple[str, str, str]:
+def _validated_project_png(value: object) -> bytes:
+    expected = {"byteLength", "bytesBase64", "digest", "height", "logicalPath", "mediaType", "width"}
+    if not isinstance(value, dict) or set(value) != expected:
+        raise RuntimeError("The render asset shape is invalid.")
+    encoded = value.get("bytesBase64")
+    byte_length = value.get("byteLength")
+    digest = value.get("digest")
+    width = value.get("width")
+    height = value.get("height")
+    if (
+        not isinstance(encoded, str)
+        or len(encoded) > 4 * ((MAX_ASSET_BYTES + 2) // 3)
+        or not isinstance(byte_length, int)
+        or isinstance(byte_length, bool)
+        or byte_length < 1
+        or byte_length > MAX_ASSET_BYTES
+        or not isinstance(digest, str)
+        or value.get("logicalPath") != "image.png"
+        or value.get("mediaType") != "image/png"
+        or not isinstance(width, int)
+        or isinstance(width, bool)
+        or not isinstance(height, int)
+        or isinstance(height, bool)
+        or width < 1
+        or height < 1
+        or width > 2048
+        or height > 2048
+        or width * height > 4_194_304
+    ):
+        raise RuntimeError("The render asset metadata is invalid.")
+    try:
+        decoded = base64.b64decode(encoded, validate=True)
+    except (ValueError, TypeError) as error:
+        raise RuntimeError("The render asset encoding is invalid.") from error
+    if (
+        base64.b64encode(decoded).decode("ascii") != encoded
+        or len(decoded) != byte_length
+        or not hmac.compare_digest(hashlib.sha256(decoded).hexdigest(), digest)
+    ):
+        raise RuntimeError("The render asset correlation is invalid.")
+
+    from PIL import Image
+
+    try:
+        with Image.open(io.BytesIO(decoded)) as image:
+            if image.format != "PNG" or image.size != (width, height) or getattr(image, "n_frames", 1) != 1:
+                raise RuntimeError("The render asset PNG metadata is invalid.")
+            image.verify()
+        with Image.open(io.BytesIO(decoded)) as image:
+            image.load()
+            if image.size != (width, height):
+                raise RuntimeError("The render asset PNG dimensions changed while decoding.")
+    except RuntimeError:
+        raise
+    except Exception as error:
+        raise RuntimeError("The render asset PNG is invalid.") from error
+    return decoded
+
+
+def _validated_request(request: dict[str, object]) -> tuple[str, str, str, bytes | None]:
     expected = {
+        "assets",
         "deadlineEpochMs",
         "fenceToken",
         "jobId",
@@ -198,16 +264,17 @@ def _validated_request(request: dict[str, object]) -> tuple[str, str, str]:
         "tenantId",
         "version",
     }
-    if set(request) != expected or request.get("schema") != "poietra.manim-render-sandbox-request" or request.get("version") != 1:
+    if set(request) != expected or request.get("schema") != "poietra.manim-render-sandbox-request" or request.get("version") != 2:
         raise RuntimeError("The render request shape is invalid.")
     source = request.get("source")
     scene_name = request.get("sceneName")
     source_digest = request.get("sourceDigest")
     output = request.get("output")
     scene_frame = request.get("sceneFrame")
+    assets = request.get("assets")
     if (
         not isinstance(source, str)
-        or len(source.encode("utf-8")) > 2 * 1024 * 1024
+        or len(source.encode("utf-8")) > MAX_SOURCE_BYTES
         or not isinstance(scene_name, str)
         or not scene_name.isidentifier()
         or not scene_name.isascii()
@@ -219,6 +286,8 @@ def _validated_request(request: dict[str, object]) -> tuple[str, str, str]:
         or set(scene_frame) != {"height", "width"}
         or scene_frame.get("height") != 8
         or scene_frame.get("width") != 128 / 9
+        or not isinstance(assets, list)
+        or len(assets) > 1
     ):
         raise RuntimeError("The render request correlation is invalid.")
     kind = output.get("kind")
@@ -230,7 +299,8 @@ def _validated_request(request: dict[str, object]) -> tuple[str, str, str]:
         or output.get("pixelWidth") != 854
     ):
         raise RuntimeError("The render media profile is invalid.")
-    return source, scene_name, kind
+    project_png = _validated_project_png(assets[0]) if assets else None
+    return source, scene_name, kind, project_png
 
 
 def _write_terminal(value: dict[str, object]) -> None:
@@ -348,8 +418,29 @@ def _validate_artifact(path: Path, media_type: str) -> None:
         raise RenderFailure("media-invalid")
 
 
-def _render(source: str, scene_name: str, kind: str) -> tuple[Path, str]:
+def _write_project_png(project_png: bytes | None) -> None:
+    if project_png is None:
+        return
+    descriptor = os.open(PROJECT_PNG_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+    try:
+        stream = os.fdopen(descriptor, "wb", closefd=True)
+        descriptor = -1
+        with stream:
+            stream.write(project_png)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except Exception:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        raise
+
+
+def _render(source: str, scene_name: str, kind: str, project_png: bytes | None) -> tuple[Path, str]:
     SOURCE_PATH.write_text(source, encoding="utf-8")
+    _write_project_png(project_png)
     arguments = [
         "/opt/venv/bin/manim",
         "-ql",
@@ -476,11 +567,11 @@ def main() -> None:
     _runtime_confinement()
     os.write(2, READY)
     request, execution_digest = _sealed_request()
-    source, scene_name, kind = _validated_request(request)
+    source, scene_name, kind, project_png = _validated_request(request)
     rendered: tuple[Path, str] | None = None
     terminal: dict[str, object]
     try:
-        rendered = _render(source, scene_name, kind)
+        rendered = _render(source, scene_name, kind, project_png)
         terminal = {"kind": "ready", "mediaType": rendered[1]}
     except RenderFailure as error:
         terminal = {"code": "render-failed", "kind": "failed", "reason": error.reason}

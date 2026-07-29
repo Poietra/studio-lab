@@ -8,7 +8,7 @@ import {
   type ManimRenderSandboxTerminalV1,
   MANIM_RENDER_SANDBOX_RESULT_SCHEMA_V1,
   MANIM_RENDER_SANDBOX_STATUS_SCHEMA_V1,
-  type SealedManimRenderSandboxRequestV1,
+  type SealedManimRenderSandboxRequestV2,
 } from "./manim-render-sandbox-contract";
 
 export type ManimRenderSandboxOperationContextV1 = Readonly<{
@@ -21,13 +21,13 @@ export interface ManimRenderSandboxBackendV1 {
   close(): Promise<void>;
   status(context: ManimRenderSandboxOperationContextV1): Promise<ManimRenderSandboxStatusV1>;
   submitOrReattach(
-    request: SealedManimRenderSandboxRequestV1,
+    request: SealedManimRenderSandboxRequestV2,
     context: ManimRenderSandboxOperationContextV1,
   ): Promise<ManimRenderSandboxTerminalV1>;
 }
 
 function terminal(
-  request: SealedManimRenderSandboxRequestV1,
+  request: SealedManimRenderSandboxRequestV2,
   result: ManimRenderGatedOciBaseResultV1,
 ): ManimRenderSandboxTerminalV1 {
   const descriptor = request.parseDescriptor();
@@ -75,7 +75,7 @@ export class ManimRenderGatedOciBackendV1 implements ManimRenderSandboxBackendV1
     };
   }
 
-  async submitOrReattach(request: SealedManimRenderSandboxRequestV1, context: ManimRenderSandboxOperationContextV1) {
+  async submitOrReattach(request: SealedManimRenderSandboxRequestV2, context: ManimRenderSandboxOperationContextV1) {
     context.signal.throwIfAborted();
     if (context.deadlineEpochMs !== request.parseDescriptor().deadlineEpochMs) {
       return terminal(request, { code: "request-mismatch", kind: "failed" });

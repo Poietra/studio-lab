@@ -14,9 +14,9 @@ import {
 } from "./manim-render-sandbox-broker-protocol";
 import type { ManimRenderSandboxBackendV1 } from "./manim-render-sandbox-backend";
 import {
-  manimRenderSandboxDescriptorV1Schema,
-  MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V1,
-  SealedManimRenderSandboxRequestV1,
+  manimRenderSandboxDescriptorV2Schema,
+  MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V2,
+  SealedManimRenderSandboxRequestV2,
 } from "./manim-render-sandbox-contract";
 
 const DEFAULT_MAX_CONNECTIONS = 64;
@@ -167,15 +167,15 @@ function createConnection(
       try {
         const bytes = Buffer.from(request.requestBytesBase64, "base64");
         if (
-          bytes.byteLength > MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V1 ||
+          bytes.byteLength > MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V2 ||
           createHash("sha256").update(bytes).digest("hex") !== request.requestDigest
         ) {
           throw new Error();
         }
-        const descriptor = manimRenderSandboxDescriptorV1Schema.parse(
+        const descriptor = manimRenderSandboxDescriptorV2Schema.parse(
           JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
         );
-        const sealed = new SealedManimRenderSandboxRequestV1(descriptor);
+        const sealed = new SealedManimRenderSandboxRequestV2(descriptor);
         if (sealed.requestDigest !== request.requestDigest || !Buffer.from(sealed.copyBytes()).equals(bytes)) {
           throw new Error();
         }

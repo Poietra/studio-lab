@@ -16,9 +16,10 @@ import { parseFastManimRootlessDockerInfoV1 } from "./fast-manim-production-gate
 import { ManimRenderGatedOciJobRunnerV1 } from "./manim-render-gated-oci-job-runner";
 import {
   MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
-  MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V1,
-  SealedManimRenderSandboxRequestV1,
+  MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V2,
+  SealedManimRenderSandboxRequestV2,
 } from "./manim-render-sandbox-contract";
+import { inspectProjectPngBytesV1 } from "./storage/project-png-storage";
 
 const image = process.env.POIETRA_MANIM_RENDER_GATED_OCI_IMAGE;
 const enabled = /^sha256:[a-f0-9]{64}$/u.test(image ?? "");
@@ -30,7 +31,7 @@ const seccompPath = fileURLToPath(new URL("../sandbox/fast-manim-gated-oci/secco
 const source = `from pathlib import Path
 import os
 
-from manim import Circle, Create, FadeOut, RIGHT, Scene, Square, Transform
+from manim import Circle, Create, FadeOut, ImageMobject, LEFT, RIGHT, Scene, Square, Transform
 
 class MultiAnimationScene(Scene):
     def construct(self):
@@ -44,6 +45,7 @@ class MultiAnimationScene(Scene):
         output = Path("/run/poietra/output")
         (output / "terminal.json").write_text('{"kind":"ready","mediaType":"video/mp4","requestDigest":"' + ('0' * 64) + '"}', encoding="utf-8")
         (output / "artifact.mp4").symlink_to("/dev/zero")
+        self.add(ImageMobject("image.png").scale(0.5).shift(2 * LEFT))
         shape = Circle().set_fill("#3b82f6", opacity=1.0)
         target = Square().set_fill("#ef4444", opacity=1.0)
         self.play(Create(shape), run_time=0.2)
@@ -239,12 +241,25 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
     parseFastManimRootlessDockerInfoV1(info.stdout, productionDockerVersion);
   });
 
-  it("renders a multi-animation MP4 and PNG without a host project mount", async () => {
+  it("renders a pinned project PNG with multi-animation media and no host project mount", async () => {
     const stagingRoot = await mkdtemp(join(tmpdir(), "poietra-real-render-staging-"));
     await chmod(stagingRoot, 0o700);
     const runner = createRunner(stagingRoot);
     const deadlineEpochMs = Date.now() + 120_000;
+    const assetBytes = await readFile(fileURLToPath(new URL("../src-tauri/icons/32x32.png", import.meta.url)));
+    const asset = inspectProjectPngBytesV1(assetBytes);
     const base = {
+      assets: [
+        {
+          byteLength: asset.byteSize,
+          bytesBase64: assetBytes.toString("base64"),
+          digest: asset.digest,
+          height: asset.height,
+          logicalPath: "image.png" as const,
+          mediaType: "image/png" as const,
+          width: asset.width,
+        },
+      ],
       deadlineEpochMs,
       fenceToken: "1",
       jobId: "real-render/session-a",
@@ -253,13 +268,13 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
       runtimeDigest: runner.runtimeDigest,
       sceneFrame: MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
       sceneName: "MultiAnimationScene",
-      schema: MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V1,
+      schema: MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V2,
       sessionId: "session-a",
       source,
       sourceDigest: createHash("sha256").update(source, "utf8").digest("hex"),
       sourcePath: "main.py",
       tenantId: "real-render",
-      version: 1 as const,
+      version: 2 as const,
     };
     const signal = new AbortController().signal;
     let operationError: unknown;
@@ -267,7 +282,7 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
       await expect(runner.ready(signal)).resolves.toBe(true);
       await runner.reconcileOrphans();
       const video = await runner.submitOrReattach(
-        new SealedManimRenderSandboxRequestV1({
+        new SealedManimRenderSandboxRequestV2({
           ...base,
           output: {
             frameRate: 15,
@@ -281,7 +296,7 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
         signal,
       );
       const refencedVideo = await runner.submitOrReattach(
-        new SealedManimRenderSandboxRequestV1({
+        new SealedManimRenderSandboxRequestV2({
           ...base,
           fenceToken: "2",
           output: {
@@ -296,7 +311,7 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
         signal,
       );
       const thumbnail = await runner.submitOrReattach(
-        new SealedManimRenderSandboxRequestV1({
+        new SealedManimRenderSandboxRequestV2({
           ...base,
           output: {
             frameRate: 15,
@@ -310,7 +325,7 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
         signal,
       );
       const forgedMedia = await runner.submitOrReattach(
-        new SealedManimRenderSandboxRequestV1({
+        new SealedManimRenderSandboxRequestV2({
           ...base,
           jobId: "real-render/session-forged",
           output: {
@@ -358,7 +373,7 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
     const docker = dockerClient();
     const runner = createRunner(stagingRoot, docker);
     const deadlineEpochMs = Date.now() + 60_000;
-    const request = new SealedManimRenderSandboxRequestV1({
+    const request = new SealedManimRenderSandboxRequestV2({
       deadlineEpochMs,
       fenceToken: "1",
       jobId: "real-render/cancel-session",
@@ -374,13 +389,13 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
       runtimeDigest: runner.runtimeDigest,
       sceneFrame: MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
       sceneName: "SlowScene",
-      schema: MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V1,
+      schema: MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V2,
       sessionId: "cancel-session",
       source: slowSource,
       sourceDigest: createHash("sha256").update(slowSource, "utf8").digest("hex"),
       sourcePath: "main.py",
       tenantId: "real-render",
-      version: 1,
+      version: 2,
     });
     const signal = new AbortController().signal;
     let operationError: unknown;
@@ -414,7 +429,7 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
     const restarted = createRunner(stagingRoot, docker);
     const unrelated = createRunner(unrelatedStagingRoot, docker);
     const deadlineEpochMs = Date.now() + 60_000;
-    const request = new SealedManimRenderSandboxRequestV1({
+    const request = new SealedManimRenderSandboxRequestV2({
       deadlineEpochMs,
       fenceToken: "1",
       jobId: "real-render/restart-session",
@@ -430,13 +445,13 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
       runtimeDigest: original.runtimeDigest,
       sceneFrame: MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
       sceneName: "SlowScene",
-      schema: MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V1,
+      schema: MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V2,
       sessionId: "restart-session",
       source: slowSource,
       sourceDigest: createHash("sha256").update(slowSource, "utf8").digest("hex"),
       sourcePath: "main.py",
       tenantId: "real-render",
-      version: 1,
+      version: 2,
     });
     const signal = new AbortController().signal;
     let operationError: unknown;
@@ -530,7 +545,7 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
       await runner.reconcileOrphans();
       for (const attack of cases) {
         const deadlineEpochMs = Date.now() + attack.timeoutMs;
-        const request = new SealedManimRenderSandboxRequestV1({
+        const request = new SealedManimRenderSandboxRequestV2({
           deadlineEpochMs,
           fenceToken: "1",
           jobId: `real-render/adversarial-${attack.name}`,
@@ -546,13 +561,13 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
           runtimeDigest: runner.runtimeDigest,
           sceneFrame: MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
           sceneName: attack.sceneName,
-          schema: MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V1,
+          schema: MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V2,
           sessionId: `adversarial-${attack.name}`,
           source: attack.source,
           sourceDigest: createHash("sha256").update(attack.source, "utf8").digest("hex"),
           sourcePath: "main.py",
           tenantId: "real-render",
-          version: 1,
+          version: 2,
         });
         const startedAt = performance.now();
         const pending = runner.submitOrReattach(request, deadlineEpochMs, signal);

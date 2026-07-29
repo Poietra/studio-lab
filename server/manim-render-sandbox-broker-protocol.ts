@@ -5,8 +5,8 @@ import { opaqueIdV1Schema, sha256V1Schema } from "../src/engine/primitives";
 import {
   manimRenderSandboxStatusV1Schema,
   manimRenderSandboxTerminalV1Schema,
-  MAX_MANIM_RENDER_SANDBOX_FRAME_BYTES_V1,
-  MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V1,
+  MAX_MANIM_RENDER_SANDBOX_FRAME_BYTES_V2,
+  MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V2,
 } from "./manim-render-sandbox-contract";
 
 const OPERATION = { cancel: 3, status: 1, submit: 2 } as const;
@@ -14,10 +14,10 @@ export type ManimRenderSandboxBrokerOperationV1 = keyof typeof OPERATION;
 const deadlineSchema = z.number().int().safe().positive();
 const canonicalRequestBase64Schema = z
   .string()
-  .max(4 * Math.ceil(MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V1 / 3))
+  .max(4 * Math.ceil(MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V2 / 3))
   .refine((value) => {
     const bytes = Buffer.from(value, "base64");
-    return bytes.byteLength <= MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V1 && bytes.toString("base64") === value;
+    return bytes.byteLength <= MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V2 && bytes.toString("base64") === value;
   });
 
 export const manimRenderSandboxBrokerClientMessageV1Schema = z.discriminatedUnion("kind", [
@@ -70,7 +70,7 @@ function encode(
   schema: z.ZodType<ManimRenderSandboxBrokerClientMessageV1 | ManimRenderSandboxBrokerServerMessageV1>,
 ) {
   const body = Buffer.from(canonicalJsonV1(schema.parse(value)), "utf8");
-  if (body.byteLength < 1 || body.byteLength > MAX_MANIM_RENDER_SANDBOX_FRAME_BYTES_V1) {
+  if (body.byteLength < 1 || body.byteLength > MAX_MANIM_RENDER_SANDBOX_FRAME_BYTES_V2) {
     throw new ManimRenderSandboxBrokerProtocolErrorV1("oversized");
   }
   const frame = Buffer.allocUnsafe(body.byteLength + 2);
@@ -128,7 +128,7 @@ class Decoder<T> {
     }
     const content = newline === -1 ? bytes : bytes.subarray(0, -1);
     this.#bytes += content.byteLength;
-    if (this.#bytes > MAX_MANIM_RENDER_SANDBOX_FRAME_BYTES_V1) {
+    if (this.#bytes > MAX_MANIM_RENDER_SANDBOX_FRAME_BYTES_V2) {
       throw new ManimRenderSandboxBrokerProtocolErrorV1("oversized");
     }
     if (content.byteLength > 0) this.#body.push(Buffer.from(content));

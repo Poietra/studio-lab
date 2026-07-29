@@ -8,10 +8,15 @@ import {
   canonicalManimRenderFenceTokenV1,
   encodeManimRenderStagingLocatorV1,
   MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
-  MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V1,
-  SealedManimRenderSandboxRequestV1,
+  MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V2,
+  SealedManimRenderSandboxRequestV2,
 } from "./manim-render-sandbox-contract";
 import { manimTenantIdSchema } from "./manim-request-principal";
+import {
+  inspectProjectPngBytesV1,
+  PROJECT_PNG_LOGICAL_PATH_V1,
+  type ProjectPngBlobStoreV1,
+} from "./storage/project-png-storage";
 import type { SourceContentBlobStoreV1 } from "./storage/workspace-source-repository";
 
 const READINESS_TIMEOUT_MS = 10_000;
@@ -26,6 +31,7 @@ export type ProductionDurableManimRenderExecutorOptionsV1 = Readonly<{
   blobs: SourceContentBlobStoreV1;
   frame: Readonly<{ height: number; width: number }>;
   maxConcurrentJobs?: number;
+  projectPngs: Pick<ProjectPngBlobStoreV1, "close" | "read" | "ready">;
   profileDigest: string;
   runtimeDigest: string;
   stagingRootDigest: string;
@@ -37,10 +43,12 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
   readonly #backend: ManimRenderSandboxBackendV1;
   readonly #blobs: SourceContentBlobStoreV1;
   readonly #frame: typeof MANIM_RENDER_CANONICAL_SCENE_FRAME_V1;
+  readonly #projectPngs: Pick<ProjectPngBlobStoreV1, "close" | "read" | "ready">;
   readonly #profileDigest: string;
   readonly #runtimeDigest: string;
   readonly #stagingRootDigest: string;
   readonly #tenantId: string;
+  #closeRequest: Promise<void> | null = null;
 
   constructor(options: ProductionDurableManimRenderExecutorOptionsV1) {
     const tenant = manimTenantIdSchema.safeParse(options.tenantId);
@@ -55,6 +63,7 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
     this.#backend = options.backend;
     this.#blobs = options.blobs;
     this.#frame = MANIM_RENDER_CANONICAL_SCENE_FRAME_V1;
+    this.#projectPngs = options.projectPngs;
     this.#profileDigest = options.profileDigest;
     this.#runtimeDigest = options.runtimeDigest;
     this.#stagingRootDigest = options.stagingRootDigest;
@@ -80,11 +89,15 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
     );
     timer.unref();
     try {
-      const status = await this.#backend.status({
-        deadlineEpochMs: Date.now() + READINESS_TIMEOUT_MS,
-        signal: controller.signal,
-      });
+      const [status, projectPngsReady] = await Promise.all([
+        this.#backend.status({
+          deadlineEpochMs: Date.now() + READINESS_TIMEOUT_MS,
+          signal: controller.signal,
+        }),
+        this.#projectPngs.ready(controller.signal),
+      ]);
       return (
+        projectPngsReady &&
         status.health === "ready" &&
         status.profileDigest === this.#profileDigest &&
         status.runtimeDigest === this.#runtimeDigest &&
@@ -108,10 +121,38 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
     ) {
       return { code: "interrupted", kind: "failed", logTail: "" } as const;
     }
-    const source = await this.#blobs.readSource(this.#tenantId, session.patched.blob, request.signal);
+    const projectPng = session.projectPng;
+    const [source, assets] = await Promise.all([
+      this.#blobs.readSource(this.#tenantId, session.patched.blob, request.signal),
+      projectPng
+        ? this.#projectPngs
+            .read(this.#tenantId, session.projectId, projectPng.receipt, request.signal)
+            .then((bytes) => {
+              const inspected = inspectProjectPngBytesV1(bytes);
+              if (
+                inspected.byteSize !== projectPng.receipt.byteSize ||
+                inspected.digest !== projectPng.receipt.digest
+              ) {
+                throw new Error("The pinned project image.png bytes do not match the render session.");
+              }
+              return [
+                {
+                  byteLength: inspected.byteSize,
+                  bytesBase64: Buffer.from(inspected.bytes).toString("base64"),
+                  digest: inspected.digest,
+                  height: inspected.height,
+                  logicalPath: PROJECT_PNG_LOGICAL_PATH_V1,
+                  mediaType: "image/png" as const,
+                  width: inspected.width,
+                } as const,
+              ];
+            })
+        : Promise.resolve([]),
+    ]);
     request.signal.throwIfAborted();
     const submit = (kind: "thumbnail" | "video") => {
-      const sealed = new SealedManimRenderSandboxRequestV1({
+      const sealed = new SealedManimRenderSandboxRequestV2({
+        assets,
         deadlineEpochMs: session.deadline.getTime(),
         fenceToken: canonicalManimRenderFenceTokenV1(session.fenceToken),
         jobId: request.jobId,
@@ -124,13 +165,13 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
         runtimeDigest: this.#runtimeDigest,
         sceneFrame: this.#frame,
         sceneName: session.sceneName,
-        schema: MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V1,
+        schema: MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V2,
         sessionId: session.id,
         source,
         sourceDigest: session.patched.blob.digest,
         sourcePath: session.sourcePath,
         tenantId: this.#tenantId,
-        version: 1,
+        version: 2,
       });
       return this.#backend.submitOrReattach(sealed, {
         deadlineEpochMs: session.deadline.getTime(),
@@ -169,7 +210,12 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
   }
 
   close() {
-    return this.#backend.close();
+    this.#closeRequest ??= (async () => {
+      const results = await Promise.allSettled([this.#backend.close(), this.#projectPngs.close()]);
+      const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+      if (errors.length > 0) throw new AggregateError(errors, "The production render executor did not close cleanly.");
+    })();
+    return this.#closeRequest;
   }
 }
 
@@ -179,6 +225,7 @@ export async function createProductionDurableManimRenderExecutorV1(
     client: ManimRenderProductionSandboxClientOptionsV1;
     frame: Readonly<{ height: number; width: number }>;
     maxConcurrentJobs?: number;
+    projectPngs: Pick<ProjectPngBlobStoreV1, "close" | "read" | "ready">;
     tenantId: string;
   }>,
 ) {
@@ -191,6 +238,7 @@ export async function createProductionDurableManimRenderExecutorV1(
     blobs: options.blobs,
     frame: options.frame,
     ...(options.maxConcurrentJobs === undefined ? {} : { maxConcurrentJobs: options.maxConcurrentJobs }),
+    projectPngs: options.projectPngs,
     profileDigest: client.profileDigest,
     runtimeDigest: client.runtimeDigest,
     stagingRootDigest: client.stagingRootDigest,
