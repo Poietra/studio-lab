@@ -2,12 +2,13 @@ import type {
   DurableFastManimSnapshotRunnerFactoryV1,
   DurableFastManimSnapshotRunnerHandleV1,
 } from "./durable-fast-manim-snapshot-service";
+import { verifyFastManimGatedOciReleaseV1 } from "./fast-manim-gated-oci-release";
 import {
   createFastManimProductionSandboxClientV1,
   type FastManimProductionSandboxClientOptionsV1,
 } from "./fast-manim-production-sandbox-client";
-import { FastManimSnapshotRunner } from "./fast-manim-snapshot-runner";
 import type { FastManimSnapshotProfileVersionV1 } from "./fast-manim-snapshot-contract";
+import { FastManimSnapshotRunner } from "./fast-manim-snapshot-runner";
 
 export type FastManimProductionSnapshotRunnerFactoryOptionsV1 = Readonly<{
   client: FastManimProductionSandboxClientOptionsV1;
@@ -32,11 +33,20 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
   readonly #activeReadiness = new Set<Promise<SnapshotRunnerReadinessOutcomeV1>>();
   readonly #cleanupFailures: unknown[] = [];
   readonly #options: FastManimProductionSnapshotRunnerFactoryOptionsV1;
+  readonly #runtimeDigest: string;
   #closeRequest: Promise<void> | null = null;
   #closed = false;
 
   constructor(options: FastManimProductionSnapshotRunnerFactoryOptionsV1) {
     this.#options = options;
+    this.#runtimeDigest = verifyFastManimGatedOciReleaseV1(
+      options.client.signedRelease,
+      options.client.publicKeys,
+    ).descriptor().runtimeDigest;
+  }
+
+  get runtimeDigest() {
+    return this.#runtimeDigest;
   }
 
   async create(
@@ -44,6 +54,15 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
   ): Promise<DurableFastManimSnapshotRunnerHandleV1> {
     if (this.#closed) throw new Error("The production snapshot runner factory is closed.");
     const client = await createFastManimProductionSandboxClientV1(this.#options.client);
+    if (client.runtimeDigest !== this.#runtimeDigest) {
+      const invalid = new TypeError("The production snapshot client runtime digest does not match its factory.");
+      try {
+        await client.backend.close();
+      } catch (cleanupError) {
+        throw new SnapshotRunnerCreationCleanupErrorV1(invalid, [cleanupError]);
+      }
+      throw invalid;
+    }
     if (this.#closed) {
       const closed = new Error("The production snapshot runner factory is closed.");
       try {
@@ -67,6 +86,7 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
           tenantId: this.#options.tenantId,
           ...(this.#options.timeoutMs === undefined ? {} : { timeoutMs: this.#options.timeoutMs }),
         }),
+        runtimeDigest: client.runtimeDigest,
       };
     } catch (error) {
       const cleanup = await client.backend.close().then(

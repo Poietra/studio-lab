@@ -16,13 +16,17 @@ const TENANT = "tenant-a";
 
 function artifact(digestCharacter: string): SnapshotArtifactReceiptV1 {
   const resultDigest = digestCharacter.repeat(64);
+  const runtimeDigest = "4".repeat(64);
   return {
     byteSize: 1,
     etag: `etag-${digestCharacter}`,
-    objectKey: `tenants/${TENANT}/snapshots/${"1".repeat(64)}/${"2".repeat(64)}/${"3".repeat(64)}/${resultDigest}`,
+    objectKey:
+      `tenants/${TENANT}/snapshots/${"1".repeat(64)}/${"2".repeat(64)}/${"3".repeat(64)}` +
+      `/${runtimeDigest}/${resultDigest}`,
     profileDigest: "3".repeat(64),
     resultDigest,
     runtimeConfigHash: "2".repeat(64),
+    runtimeDigest,
     sourceDigest: "1".repeat(64),
     versionId: `version-${digestCharacter}`,
   };

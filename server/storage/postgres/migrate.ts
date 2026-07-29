@@ -11,6 +11,7 @@ import renderSessionRetentionSqlV6 from "./migrations/0006_render_session_retent
 import renderCancellationSqlV7 from "./migrations/0007_render_cancellations.sql?raw";
 import renderSessionFailureSqlV8 from "./migrations/0008_render_failure_codes.sql?raw";
 import renderSessionCpuFailureSqlV9 from "./migrations/0009_render_cpu_limit.sql?raw";
+import snapshotRuntimeDigestSqlV10 from "./migrations/0010_snapshot_runtime_digest.sql?raw";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
 import { RENDER_SESSION_MIGRATION_V2_CHECKSUM } from "./postgres-render-session-repository";
@@ -19,11 +20,13 @@ import { WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM } from "./postgres-workspace-sou
 import { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
 import { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-session-cpu-failure-schema";
 import { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
+import { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
 
 export { SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM } from "./postgres-snapshot-publication-repository";
 export { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
 export { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-session-cpu-failure-schema";
 export { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
+export { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
 
 const DURABLE_STORAGE_MIGRATION_LOCK = "5784133447825795121";
 
@@ -57,6 +60,7 @@ export const RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE = renderSessionRetenti
 export const RENDER_CANCELLATION_MIGRATION_V7_SOURCE = renderCancellationSqlV7;
 export const RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE = renderSessionFailureSqlV8;
 export const RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_SOURCE = renderSessionCpuFailureSqlV9;
+export const SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE = snapshotRuntimeDigestSqlV10;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -148,6 +152,17 @@ const renderSessionCpuFailureMigrationV9: DurableStorageMigration<9> = Object.fr
   version: 9,
 });
 
+const snapshotRuntimeDigestMigrationV10: DurableStorageMigration<10> = Object.freeze({
+  checksum: SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM,
+  checksumMismatch: "The snapshot runtime-digest migration checksum is invalid.",
+  installedMismatch: "The installed snapshot runtime-digest schema does not match migration v10.",
+  missingPrerequisite: "Snapshot runtime-digest migration v10 requires durable storage migrations v1 through v9.",
+  prerequisiteMismatch:
+    "Snapshot runtime-digest migration v10 requires exact durable storage migrations v1 through v9.",
+  source: SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE,
+  version: 10,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
@@ -158,6 +173,7 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   renderCancellationMigrationV7,
   renderSessionFailureMigrationV8,
   renderSessionCpuFailureMigrationV9,
+  snapshotRuntimeDigestMigrationV10,
 ]);
 
 function validateSource(migration: DurableStorageMigration) {
@@ -301,6 +317,20 @@ export function applyRenderSessionCpuFailureMigrationV9(pool: Pool, source: stri
     renderSessionRetentionMigrationV6,
     renderCancellationMigrationV7,
     renderSessionFailureMigrationV8,
+  ]);
+}
+
+export function applySnapshotRuntimeDigestMigrationV10(pool: Pool, source: string) {
+  return applyMigration(pool, { ...snapshotRuntimeDigestMigrationV10, source }, [
+    workspaceSourceMigrationV1,
+    renderSessionMigrationV2,
+    snapshotPublicationMigrationV3,
+    renderArtifactMigrationV4,
+    projectPngMigrationV5,
+    renderSessionRetentionMigrationV6,
+    renderCancellationMigrationV7,
+    renderSessionFailureMigrationV8,
+    renderSessionCpuFailureMigrationV9,
   ]);
 }
 

@@ -8,8 +8,14 @@ import { productionSandboxReadyStatus } from "./test-fixtures/fast-manim-sandbox
 vi.mock("./fast-manim-production-sandbox-client", () => ({
   createFastManimProductionSandboxClientV1: vi.fn(),
 }));
+vi.mock("./fast-manim-gated-oci-release", () => ({
+  verifyFastManimGatedOciReleaseV1: vi.fn(() => ({
+    descriptor: () => ({ runtimeDigest: "b".repeat(64) }),
+  })),
+}));
 
 const PROFILE = "a".repeat(64);
+const RUNTIME = "b".repeat(64);
 const createClient = vi.mocked(createFastManimProductionSandboxClientV1);
 
 function factory() {
@@ -28,7 +34,7 @@ function client() {
     },
     status: vi.fn(async () => productionSandboxReadyStatus(PROFILE)),
   } as FastManimSandboxBackendV1;
-  return { attestationVerifier: () => true, backend, profileDigest: PROFILE };
+  return { attestationVerifier: () => true, backend, profileDigest: PROFILE, runtimeDigest: RUNTIME };
 }
 
 afterEach(() => vi.clearAllMocks());
@@ -131,7 +137,9 @@ describe("FastManimProductionSnapshotRunnerFactoryV1", () => {
       },
     });
 
+    expect(runners.runtimeDigest).toBe(RUNTIME);
     expect(handle.profileDigest).toBe(PROFILE);
+    expect(handle.runtimeDigest).toBe(RUNTIME);
     await handle.runner.close();
     await runners.close();
 
@@ -141,6 +149,20 @@ describe("FastManimProductionSnapshotRunnerFactoryV1", () => {
         sourceProvider: { readVerified: async () => Promise.reject(new Error("not used")) },
       }),
     ).rejects.toThrow(/factory is closed/i);
+    expect(created.backend.close).toHaveBeenCalledOnce();
+  });
+
+  it("closes and rejects a client from a different runtime generation", async () => {
+    const created = { ...client(), runtimeDigest: "c".repeat(64) };
+    createClient.mockResolvedValue(created as never);
+    const runners = factory();
+
+    await expect(
+      runners.create({
+        projectId: "project-a",
+        sourceProvider: { readVerified: async () => Promise.reject(new Error("not used")) },
+      }),
+    ).rejects.toThrow(/runtime digest does not match/i);
     expect(created.backend.close).toHaveBeenCalledOnce();
   });
 });

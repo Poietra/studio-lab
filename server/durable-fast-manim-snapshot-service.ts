@@ -20,6 +20,7 @@ import {
 import { HttpError } from "./http/json";
 import { manimTenantIdSchema } from "./manim-request-principal";
 import type { SnapshotArtifactPublisherV1 } from "./storage/snapshot-artifact-publisher";
+import { LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1 } from "./storage/snapshot-publication-repository";
 import type {
   SourceContentBlobStoreV1,
   WorkspaceSourceHeadV1,
@@ -31,9 +32,11 @@ const SHA256 = /^[0-9a-f]{64}$/;
 export type DurableFastManimSnapshotRunnerHandleV1 = Readonly<{
   profileDigest: string;
   runner: FastManimSnapshotRunner;
+  runtimeDigest: string;
 }>;
 
 export interface DurableFastManimSnapshotRunnerFactoryV1 {
+  readonly runtimeDigest: string;
   close(): Promise<void>;
   create(
     input: Readonly<{ projectId: string; sourceProvider: FastManimSnapshotSourceProviderV1 }>,
@@ -110,6 +113,7 @@ export class DurableFastManimSnapshotServiceV1 {
   readonly #projects = new Map<string, ProjectRunnerEntry>();
   readonly #publicationIdFactory: () => string;
   readonly #publisher: SnapshotArtifactPublisherV1;
+  readonly #runtimeDigest: string;
   readonly #sourceRepository: WorkspaceSourceRepositoryV1;
   readonly #tenantId: string;
   #closeRequest: Promise<void> | null = null;
@@ -118,10 +122,15 @@ export class DurableFastManimSnapshotServiceV1 {
   constructor(options: DurableFastManimSnapshotServiceOptionsV1) {
     const tenant = manimTenantIdSchema.safeParse(options.tenantId);
     if (!tenant.success) throw new TypeError("The durable snapshot tenant ID is invalid.");
+    const runtimeDigest = options.factory.runtimeDigest;
+    if (!SHA256.test(runtimeDigest) || runtimeDigest === LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1) {
+      throw new TypeError("The durable snapshot factory runtime digest is invalid.");
+    }
     this.#tenantId = tenant.data;
     this.#blobs = options.blobs;
     this.#factory = options.factory;
     this.#publisher = options.publisher;
+    this.#runtimeDigest = runtimeDigest;
     this.#sourceRepository = options.sourceRepository;
     this.#publicationIdFactory = options.publicationIdFactory ?? randomUUID;
   }
@@ -198,8 +207,8 @@ export class DurableFastManimSnapshotServiceV1 {
       pending = Promise.resolve()
         .then(() => this.#factory.create({ projectId, sourceProvider }))
         .then(async (handle) => {
-          if (!SHA256.test(handle.profileDigest)) {
-            const invalid = new TypeError("The durable snapshot runner profile digest is invalid.");
+          if (!SHA256.test(handle.profileDigest) || handle.runtimeDigest !== this.#runtimeDigest) {
+            const invalid = new TypeError("The durable snapshot runner identity is invalid.");
             try {
               await handle.runner.close();
             } catch (cleanupError) {
@@ -299,6 +308,7 @@ export class DurableFastManimSnapshotServiceV1 {
         snapshot,
         sourcePath: view.sourcePath,
         sourceRuntimeIdentity: view.sourceRuntimeIdentity ?? null,
+        runtimeDigest: this.#runtimeDigest,
         tenantId: this.#tenantId,
       },
       signal,
@@ -325,7 +335,13 @@ export class DurableFastManimSnapshotServiceV1 {
   ): Promise<FastManimSnapshotRunViewV1> {
     signal?.throwIfAborted();
     const result = await this.#publisher.readCurrent(
-      { projectId, sceneName: query.sceneName, sourcePath: query.sourcePath, tenantId: this.#tenantId },
+      {
+        projectId,
+        runtimeDigest: this.#runtimeDigest,
+        sceneName: query.sceneName,
+        sourcePath: query.sourcePath,
+        tenantId: this.#tenantId,
+      },
       signal,
     );
     this.#assertOpen();

@@ -10,6 +10,7 @@ import {
 } from "../fast-manim-snapshot-contract";
 import { parseVerifiedSourceRuntimeIdentityMapV1 } from "../fast-manim-source-runtime-identity";
 import {
+  LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1,
   MAX_SNAPSHOT_ARTIFACT_BYTES_V1,
   parseSnapshotArtifactReceiptV1,
   SnapshotArtifactReadErrorV1,
@@ -28,19 +29,21 @@ const MAX_READ_ATTEMPTS = 3;
 const DOCUMENT_FIELDS = [
   "expected",
   "profileDigest",
+  "runtimeDigest",
   "schema",
   "snapshot",
   "sourceRuntimeIdentity",
   "version",
 ] as const;
 
-export type SnapshotArtifactDocumentV1 = Readonly<{
+export type SnapshotArtifactDocumentV2 = Readonly<{
   expected: ExpectedFastManimSnapshotCorrelationV1;
   profileDigest: string;
+  runtimeDigest: string;
   schema: typeof SNAPSHOT_ARTIFACT_DOCUMENT_SCHEMA_V1;
   snapshot: VerifiedCompiledFastManimSnapshotResultV1;
   sourceRuntimeIdentity: VerifiedSourceRuntimeIdentityMapV1 | null;
-  version: 1;
+  version: 2;
 }>;
 
 export type PublishSnapshotArtifactInputV1 = SnapshotPublicationIdentityV1 &
@@ -61,7 +64,7 @@ export type SnapshotArtifactReadResultV1 =
       reason: "artifact-corrupt" | "artifact-missing" | "concurrently-superseded" | "source-stale";
     }>
   | Readonly<{
-      document: SnapshotArtifactDocumentV1;
+      document: SnapshotArtifactDocumentV2;
       kind: "published";
       publication: SnapshotPublicationV1;
     }>;
@@ -69,6 +72,14 @@ export type SnapshotArtifactReadResultV1 =
 function sha256(value: string, name: string) {
   if (typeof value !== "string" || !SHA256.test(value)) throw new TypeError(`${name} is invalid.`);
   return value;
+}
+
+function activeRuntimeDigest(value: string) {
+  const runtimeDigest = sha256(value, "Snapshot runtime digest");
+  if (runtimeDigest === LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1) {
+    throw new TypeError("The reserved legacy snapshot runtime digest is not active.");
+  }
+  return runtimeDigest;
 }
 
 function digest(bytes: Uint8Array) {
@@ -92,6 +103,7 @@ function sameIdentity(left: SnapshotPublicationIdentityV1, right: SnapshotPublic
   return (
     left.tenantId === right.tenantId &&
     left.projectId === right.projectId &&
+    left.runtimeDigest === right.runtimeDigest &&
     left.sourcePath === right.sourcePath &&
     left.sceneName === right.sceneName
   );
@@ -131,10 +143,9 @@ function assertPublication(
   }
 }
 
-function canonicalBytes(document: SnapshotArtifactDocumentV1) {
-  // Keep V1 artifact bytes readable by pre-V2 readers during rolling deploys:
-  // snapshotVersion=1 was historically absent from the stored expected
-  // correlation. V2 must carry its explicit independent expectation.
+function canonicalBytes(document: SnapshotArtifactDocumentV2) {
+  // Preserve the snapshot-contract V1 canonical form inside the V2 artifact:
+  // snapshotVersion=1 was historically absent from the expected correlation.
   const { snapshotVersion, ...legacyExpected } = document.expected;
   const wireDocument = {
     ...document,
@@ -151,12 +162,14 @@ async function verifiedDocument(
   input: Readonly<{
     expected: ExpectedFastManimSnapshotCorrelationV1;
     profileDigest: string;
+    runtimeDigest: string;
     snapshot: unknown;
     sourceRuntimeIdentity: unknown;
   }>,
-): Promise<SnapshotArtifactDocumentV1> {
+): Promise<SnapshotArtifactDocumentV2> {
   const expected = expectedFastManimSnapshotCorrelationV1Schema.parse(input.expected);
   const profileDigest = sha256(input.profileDigest, "Snapshot profile digest");
+  const runtimeDigest = activeRuntimeDigest(input.runtimeDigest);
   const snapshot = await parseVerifiedFastManimSnapshotResultV1(input.snapshot, expected);
   if (snapshot.kind !== "compiled") throw new TypeError("Only compiled snapshots can be published as artifacts.");
   const sourceRuntimeIdentity =
@@ -166,10 +179,11 @@ async function verifiedDocument(
   return {
     expected,
     profileDigest,
+    runtimeDigest,
     schema: SNAPSHOT_ARTIFACT_DOCUMENT_SCHEMA_V1,
     snapshot,
     sourceRuntimeIdentity,
-    version: 1,
+    version: 2,
   };
 }
 
@@ -196,13 +210,14 @@ async function parseDocument(bytes: Uint8Array, publication: SnapshotPublication
     !isRecord(value) ||
     !exactFields(value, DOCUMENT_FIELDS) ||
     value.schema !== SNAPSHOT_ARTIFACT_DOCUMENT_SCHEMA_V1 ||
-    value.version !== 1
+    value.version !== 2
   ) {
-    throw new TypeError("The stored snapshot artifact document is not strict v1.");
+    throw new TypeError("The stored snapshot artifact document is not strict v2.");
   }
   const document = await verifiedDocument({
     expected: value.expected as ExpectedFastManimSnapshotCorrelationV1,
     profileDigest: value.profileDigest as string,
+    runtimeDigest: value.runtimeDigest as string,
     snapshot: value.snapshot,
     sourceRuntimeIdentity: value.sourceRuntimeIdentity,
   });
@@ -215,6 +230,8 @@ async function parseDocument(bytes: Uint8Array, publication: SnapshotPublication
     document.expected.sourceHash !== publication.artifact.sourceDigest ||
     document.expected.runtimeConfigHash !== publication.artifact.runtimeConfigHash ||
     document.profileDigest !== publication.artifact.profileDigest ||
+    document.runtimeDigest !== publication.runtimeDigest ||
+    document.runtimeDigest !== publication.artifact.runtimeDigest ||
     document.snapshot.snapshotHash !== publication.snapshotHash
   ) {
     throw new TypeError("The stored snapshot artifact is cross-correlated with its publication metadata.");
@@ -263,6 +280,7 @@ export class SnapshotArtifactPublisherV1 {
     signal?.throwIfAborted();
     const identity: SnapshotPublicationIdentityV1 = {
       projectId: input.projectId,
+      runtimeDigest: input.runtimeDigest,
       sceneName: input.sceneName,
       sourcePath: input.sourcePath,
       tenantId: input.tenantId,
@@ -270,6 +288,7 @@ export class SnapshotArtifactPublisherV1 {
     const document = await verifiedDocument({
       expected: input.expected,
       profileDigest: input.profileDigest,
+      runtimeDigest: input.runtimeDigest,
       snapshot: input.snapshot,
       sourceRuntimeIdentity: input.sourceRuntimeIdentity ?? null,
     });
@@ -284,6 +303,7 @@ export class SnapshotArtifactPublisherV1 {
           bytes,
           profileDigest: document.profileDigest,
           runtimeConfigHash: document.expected.runtimeConfigHash,
+          runtimeDigest: document.runtimeDigest,
           sourceDigest: document.expected.sourceHash,
         },
         signal,
@@ -294,6 +314,7 @@ export class SnapshotArtifactPublisherV1 {
       artifact.profileDigest !== document.profileDigest ||
       artifact.resultDigest !== digest(bytes) ||
       artifact.runtimeConfigHash !== document.expected.runtimeConfigHash ||
+      artifact.runtimeDigest !== document.runtimeDigest ||
       artifact.sourceDigest !== document.expected.sourceHash
     ) {
       throw new Error("The snapshot artifact store returned a receipt for different bytes or correlation.");
@@ -326,23 +347,30 @@ export class SnapshotArtifactPublisherV1 {
     identity: SnapshotPublicationIdentityV1,
     signal?: AbortSignal,
   ): Promise<SnapshotArtifactReadResultV1> {
+    const expectedIdentity = { ...identity, runtimeDigest: activeRuntimeDigest(identity.runtimeDigest) };
     let lastGeneration = 0n;
     for (let attempt = 0; attempt < MAX_READ_ATTEMPTS; attempt += 1) {
       signal?.throwIfAborted();
-      const current = await this.#publications.readCurrent(identity, signal);
+      const current = await this.#publications.readCurrent(expectedIdentity, signal);
       if (current.kind === "missing") return current;
       if (current.kind === "stale") {
         return { generation: current.generation, kind: "stale", reason: "source-stale" };
       }
       const { publication } = current;
+      if (
+        !sameIdentity(publication, expectedIdentity) ||
+        publication.artifact.runtimeDigest !== expectedIdentity.runtimeDigest
+      ) {
+        throw new Error("The snapshot repository returned a publication for another runtime or Scene.");
+      }
       lastGeneration = publication.generation;
       let bytes: Uint8Array;
       try {
-        bytes = await this.#artifacts.read(identity.tenantId, publication.artifact, signal);
+        bytes = await this.#artifacts.read(expectedIdentity.tenantId, publication.artifact, signal);
       } catch (error) {
         signal?.throwIfAborted();
         if (!(error instanceof SnapshotArtifactReadErrorV1)) throw error;
-        if (await this.#publications.clearHeadIfGeneration(identity, publication.generation, signal)) {
+        if (await this.#publications.clearHeadIfGeneration(expectedIdentity, publication.generation, signal)) {
           return {
             generation: publication.generation,
             kind: "stale",
@@ -351,12 +379,12 @@ export class SnapshotArtifactPublisherV1 {
         }
         continue;
       }
-      let document: SnapshotArtifactDocumentV1;
+      let document: SnapshotArtifactDocumentV2;
       try {
         document = await parseDocument(bytes, publication);
       } catch {
         signal?.throwIfAborted();
-        if (await this.#publications.clearHeadIfGeneration(identity, publication.generation, signal)) {
+        if (await this.#publications.clearHeadIfGeneration(expectedIdentity, publication.generation, signal)) {
           return { generation: publication.generation, kind: "stale", reason: "artifact-corrupt" };
         }
         continue;

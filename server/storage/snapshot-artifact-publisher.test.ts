@@ -12,21 +12,24 @@ import {
   ZERO_SHA256,
 } from "../fast-manim-snapshot-contract";
 import { SnapshotArtifactPublisherV1 } from "./snapshot-artifact-publisher";
-import type {
-  SnapshotArtifactReceiptV1,
-  SnapshotArtifactStoreV1,
-  SnapshotPublicationIdentityV1,
-  SnapshotPublicationReadV1,
-  SnapshotPublicationRepositoryV1,
-  SnapshotPublicationV1,
+import {
+  LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1,
+  SnapshotArtifactReadErrorV1,
+  type SnapshotArtifactReceiptV1,
+  type SnapshotArtifactStoreV1,
+  type SnapshotPublicationIdentityV1,
+  type SnapshotPublicationReadV1,
+  type SnapshotPublicationRepositoryV1,
+  type SnapshotPublicationV1,
 } from "./snapshot-publication-repository";
-import { SnapshotArtifactReadErrorV1 } from "./snapshot-publication-repository";
 
 const PROFILE = "c".repeat(64);
+const RUNTIME_DIGEST = "5".repeat(64);
 const TENANT = "tenant-a";
 const PUBLICATION_ID = "018f57e2-4c8b-7d31-a91e-4ae5e5c6c8a1";
 const identity = {
   projectId: "workspace-a",
+  runtimeDigest: RUNTIME_DIGEST,
   sceneName: "ExampleScene",
   sourcePath: "examples/scene.py",
   tenantId: TENANT,
@@ -121,7 +124,13 @@ class MemoryArtifactStore implements SnapshotArtifactStoreV1 {
 
   async put(
     tenantId: string,
-    input: Readonly<{ bytes: Uint8Array; profileDigest: string; runtimeConfigHash: string; sourceDigest: string }>,
+    input: Readonly<{
+      bytes: Uint8Array;
+      profileDigest: string;
+      runtimeConfigHash: string;
+      runtimeDigest: string;
+      sourceDigest: string;
+    }>,
   ) {
     this.events.push("put");
     const resultDigest = createHash("sha256").update(input.bytes).digest("hex");
@@ -129,10 +138,11 @@ class MemoryArtifactStore implements SnapshotArtifactStoreV1 {
     const receipt = {
       byteSize: input.bytes.byteLength,
       etag: `etag-${this.#version}`,
-      objectKey: `tenants/${tenantId}/snapshots/${input.sourceDigest}/${input.runtimeConfigHash}/${input.profileDigest}/${resultDigest}`,
+      objectKey: `tenants/${tenantId}/snapshots/${input.sourceDigest}/${input.runtimeConfigHash}/${input.profileDigest}/${input.runtimeDigest}/${resultDigest}`,
       profileDigest: input.profileDigest,
       resultDigest,
       runtimeConfigHash: input.runtimeConfigHash,
+      runtimeDigest: input.runtimeDigest,
       sourceDigest: input.sourceDigest,
       versionId,
     } satisfies SnapshotArtifactReceiptV1;
@@ -192,6 +202,7 @@ class MemoryPublicationRepository implements SnapshotPublicationRepositoryV1 {
       publicationId: input.publicationId,
       publishedAt: new Date("2026-07-28T00:00:00.000Z"),
       requestId: input.requestId,
+      runtimeDigest: input.runtimeDigest,
       sceneName: input.sceneName,
       snapshotHash: input.snapshotHash,
       sourceGeneration: input.expectedSourceGeneration,
@@ -286,12 +297,21 @@ describe("SnapshotArtifactPublisherV1", () => {
     if (result.kind === "published") {
       const bytes = artifacts.bytes.get(result.publication.artifact.versionId)!;
       const wire = JSON.parse(Buffer.from(bytes).toString("utf8")) as { expected: Record<string, unknown> };
-      expect(wire).toMatchObject({ schema: "poietra.studio-snapshot-artifact" });
+      expect(wire).toMatchObject({
+        runtimeDigest: RUNTIME_DIGEST,
+        schema: "poietra.studio-snapshot-artifact",
+        version: 2,
+      });
       expect(wire.expected).not.toHaveProperty("snapshotVersion");
       const read = await publisher.readCurrent(identity);
       expect(read.kind).toBe("published");
       if (read.kind === "published") expect(read.document.expected.snapshotVersion).toBe(1);
     }
+  });
+
+  it("rejects the reserved legacy runtime identity before uploading", async () => {
+    await expect(publish({ runtimeDigest: LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1 })).rejects.toThrow(/legacy/i);
+    expect(events).toEqual([]);
   });
 
   it("stores and revalidates an explicit V2 profile expectation", async () => {
@@ -437,5 +457,17 @@ describe("SnapshotArtifactPublisherV1", () => {
       kind: "stale",
       reason: "artifact-corrupt",
     });
+  });
+
+  it("rejects a repository response from another runtime before reading bytes", async () => {
+    const result = await publish();
+    if (result.kind !== "published") throw new Error("Expected publication.");
+    publications.head = {
+      kind: "published",
+      publication: { ...result.publication, runtimeDigest: "6".repeat(64) },
+    };
+
+    await expect(publisher.readCurrent(identity)).rejects.toThrow(/another runtime/i);
+    expect(events.at(-1)).toBe("publish");
   });
 });

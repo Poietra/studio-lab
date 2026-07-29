@@ -1,6 +1,7 @@
 import { manimTenantIdSchema } from "../manim-request-principal";
 
 export const MAX_SNAPSHOT_ARTIFACT_BYTES_V1 = 16 * 1024 * 1024;
+export const LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1 = "0".repeat(64);
 
 const SNAPSHOT_SHA256_PATTERN_V1 = /^[0-9a-f]{64}$/;
 
@@ -21,17 +22,18 @@ export type SnapshotArtifactReceiptV1 = Readonly<{
   profileDigest: string;
   resultDigest: string;
   runtimeConfigHash: string;
+  runtimeDigest: string;
   sourceDigest: string;
   versionId: string;
 }>;
 
 type SnapshotArtifactIdentityV1 = Pick<
   SnapshotArtifactReceiptV1,
-  "profileDigest" | "resultDigest" | "runtimeConfigHash" | "sourceDigest"
+  "profileDigest" | "resultDigest" | "runtimeConfigHash" | "runtimeDigest" | "sourceDigest"
 >;
 
 const SNAPSHOT_ARTIFACT_RECEIPT_FIELDS_V1 =
-  "byteSize etag objectKey profileDigest resultDigest runtimeConfigHash sourceDigest versionId".split(
+  "byteSize etag objectKey profileDigest resultDigest runtimeConfigHash runtimeDigest sourceDigest versionId".split(
     " ",
   ) as readonly (keyof SnapshotArtifactReceiptV1)[];
 
@@ -46,8 +48,12 @@ export function snapshotArtifactObjectKeyV1(tenantValue: string, identity: Snaps
   const source = snapshotDigestV1(identity?.sourceDigest, "Snapshot source digest");
   const runtime = snapshotDigestV1(identity?.runtimeConfigHash, "Snapshot runtime-config hash");
   const profile = snapshotDigestV1(identity?.profileDigest, "Snapshot profile digest");
+  const runtimeDigest = snapshotDigestV1(identity?.runtimeDigest, "Snapshot runtime digest");
   const result = snapshotDigestV1(identity?.resultDigest, "Snapshot result digest");
-  return `tenants/${tenant.data}/snapshots/${source}/${runtime}/${profile}/${result}`;
+  if (runtimeDigest === LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1) {
+    return `tenants/${tenant.data}/snapshots/${source}/${runtime}/${profile}/${result}`;
+  }
+  return `tenants/${tenant.data}/snapshots/${source}/${runtime}/${profile}/${runtimeDigest}/${result}`;
 }
 
 export function parseSnapshotArtifactReceiptV1(tenantId: string, value: unknown): SnapshotArtifactReceiptV1 {
@@ -79,6 +85,7 @@ export function sameSnapshotArtifactReceiptV1(left: SnapshotArtifactReceiptV1, r
 
 export type SnapshotPublicationIdentityV1 = Readonly<{
   projectId: string;
+  runtimeDigest: string;
   sceneName: string;
   sourcePath: string;
   tenantId: string;
@@ -169,6 +176,7 @@ export interface SnapshotArtifactStoreV1 {
       bytes: Uint8Array;
       profileDigest: string;
       runtimeConfigHash: string;
+      runtimeDigest: string;
       sourceDigest: string;
     }>,
     signal?: AbortSignal,

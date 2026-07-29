@@ -33,6 +33,13 @@ All shipped SQL names the `public` schema explicitly, and owned pools force
 `search_path=pg_catalog,public`; caller-supplied startup options are not accepted
 by the production factory.
 
+Snapshot runtime-digest migration v10 is intentionally not rolling-compatible.
+Stop old API replicas and snapshot GC workers, apply v10 once, start the new
+generation, and resume traffic only after its readiness probe succeeds. The
+migration invalidates old snapshot heads instead of guessing which runtime made
+them. It retains their immutable objects with the reserved all-zero runtime
+digest so only the new GC can remove them; they are never eligible for API reads.
+
 The source bucket must satisfy every readiness probe:
 
 - versioning is enabled;

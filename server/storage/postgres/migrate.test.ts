@@ -13,6 +13,7 @@ import {
   applyRenderSessionMigrationV2,
   applyRenderSessionRetentionMigrationV6,
   applySnapshotPublicationMigrationV3,
+  applySnapshotRuntimeDigestMigrationV10,
   applyWorkspaceSourceMigrationV1,
   PROJECT_PNG_MIGRATION_V5_SOURCE,
   RENDER_ARTIFACT_MIGRATION_V4_SOURCE,
@@ -22,6 +23,7 @@ import {
   RENDER_SESSION_MIGRATION_V2_SOURCE,
   RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE,
   SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE,
+  SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE,
   WORKSPACE_SOURCE_MIGRATION_V1_SOURCE,
 } from "./migrate";
 
@@ -66,10 +68,10 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 9 });
-    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 10 });
+    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 9 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 10 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -79,7 +81,8 @@ describe("durable storage migrations", () => {
     expect(db.queries.filter(({ text }) => text === RENDER_CANCELLATION_MIGRATION_V7_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(18);
+    expect(db.queries.filter(({ text }) => text === SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(20);
   });
 
   it("rejects a missing prerequisite under the same advisory lock", async () => {
@@ -153,6 +156,28 @@ describe("durable storage migrations", () => {
       applyRenderSessionCpuFailureMigrationV9(db.pool, RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_SOURCE),
     ).rejects.toThrow(/requires durable storage migrations v1 through v8/i);
     expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("requires all nine durable-storage prerequisites before applying snapshot runtime digests v10", async () => {
+    const db = database();
+    await expect(
+      applySnapshotRuntimeDigestMigrationV10(db.pool, SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE),
+    ).rejects.toThrow(/requires durable storage migrations v1 through v9/i);
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("invalidates legacy heads while retaining legacy artifacts for GC in migration v10", () => {
+    expect(SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE).toContain("IN ACCESS EXCLUSIVE MODE");
+    expect(SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE).toContain("DELETE FROM public.workspace_project_references");
+    expect(SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE).toContain("DELETE FROM public.snapshot_scene_heads");
+    expect(SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE).toContain("DELETE FROM public.snapshot_publications");
+    expect(SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE).not.toContain("DELETE FROM public.snapshot_artifact_objects");
+    expect(SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE).toContain("SET runtime_digest = repeat('0', 64)");
+    expect(SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE).toContain("snapshot_artifact_objects_runtime_object_key");
+    expect(SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE).toContain("DROP CONSTRAINT snapshot_artifact_objects_pkey");
+    expect(SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE).toContain("(tenant_id, runtime_digest, result_digest)");
+    expect(SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE).toContain("snapshot_scene_heads_runtime_publication_fkey");
+    expect(SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE).toContain("snapshot_publications_runtime_artifact_fkey");
   });
 
   it("backfills CPU failures and extends the closed catalog without a second normalization trigger in v9", () => {

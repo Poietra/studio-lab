@@ -28,6 +28,7 @@ const RUNTIME_DIGEST = "b".repeat(64);
 const PROFILE_DIGEST = "c".repeat(64);
 const RESULT_DIGEST = "d".repeat(64);
 const SNAPSHOT_DIGEST = "e".repeat(64);
+const RELEASE_RUNTIME_DIGEST = "f".repeat(64);
 const PUBLISHED_AT = new Date("2026-07-28T01:02:03.000Z");
 const request = {
   projectId: PROJECT,
@@ -84,6 +85,7 @@ const artifact = {
   profileDigest: PROFILE_DIGEST,
   resultDigest: RESULT_DIGEST,
   runtimeConfigHash: RUNTIME_DIGEST,
+  runtimeDigest: RELEASE_RUNTIME_DIGEST,
   sourceDigest: SOURCE_DIGEST,
   versionId: "snapshot-version-a",
 } satisfies SnapshotArtifactReceiptV1;
@@ -96,6 +98,7 @@ function publication(generation = 12n): SnapshotPublicationV1 {
     publicationId: "018f57e2-4c8b-4d31-a91e-4ae5e5c6c8a1",
     publishedAt: PUBLISHED_AT,
     requestId: request.requestId,
+    runtimeDigest: RELEASE_RUNTIME_DIGEST,
     sceneName: SCENE_NAME,
     snapshotHash: SNAPSHOT_DIGEST,
     sourceGeneration: 7n,
@@ -128,7 +131,10 @@ function deferred<T>() {
   return { promise, reject, resolve };
 }
 
-function harness(runView: FastManimUnpublishedSnapshotRunViewV1 = verifiedView) {
+function harness(
+  runView: FastManimUnpublishedSnapshotRunViewV1 = verifiedView,
+  runtimeDigest = RELEASE_RUNTIME_DIGEST,
+) {
   const runnerClose = vi.fn(async () => undefined);
   const runnerRun = vi.fn<FastManimSnapshotRunner["runUnpublished"]>(async () => runView);
   const runner = {
@@ -138,11 +144,13 @@ function harness(runView: FastManimUnpublishedSnapshotRunViewV1 = verifiedView) 
   const create = vi.fn<DurableFastManimSnapshotRunnerFactoryV1["create"]>(async () => ({
     profileDigest: PROFILE_DIGEST,
     runner,
+    runtimeDigest,
   }));
   const factory = {
     close: vi.fn(async () => undefined),
     create,
     ready: vi.fn(async () => true),
+    runtimeDigest,
   } satisfies DurableFastManimSnapshotRunnerFactoryV1;
   const readSourceHead = vi.fn<WorkspaceSourceRepositoryV1["readSourceHead"]>(async () => sourceHead());
   const sourceRepository = {
@@ -195,6 +203,13 @@ describe("DurableFastManimSnapshotServiceV1", () => {
     vi.restoreAllMocks();
   });
 
+  it.each(["not-a-digest", "0".repeat(64)])(
+    "rejects an invalid or legacy active runtime identity before taking ownership",
+    (runtimeDigest) => {
+      expect(() => harness(verifiedView, runtimeDigest)).toThrow(/factory runtime digest is invalid/i);
+    },
+  );
+
   it("lazily shares one project runner and returns the committed durable revision", async () => {
     const fixture = harness();
 
@@ -212,6 +227,7 @@ describe("DurableFastManimSnapshotServiceV1", () => {
       expected: expected(),
       expectedSourceGeneration: 7n,
       profileDigest: PROFILE_DIGEST,
+      runtimeDigest: RELEASE_RUNTIME_DIGEST,
     });
   });
 
@@ -277,10 +293,11 @@ describe("DurableFastManimSnapshotServiceV1", () => {
       document: {
         expected: expected(),
         profileDigest: PROFILE_DIGEST,
+        runtimeDigest: RELEASE_RUNTIME_DIGEST,
         schema: "poietra.studio-snapshot-artifact",
         snapshot: compiledSnapshot,
         sourceRuntimeIdentity: null,
-        version: 1,
+        version: 2,
       },
       kind: "published",
       publication: publication(15n),
@@ -296,6 +313,16 @@ describe("DurableFastManimSnapshotServiceV1", () => {
       status: "verified",
     });
     expect(fixture.factory.create).not.toHaveBeenCalled();
+    expect(fixture.readCurrent).toHaveBeenCalledWith(
+      {
+        projectId: PROJECT,
+        runtimeDigest: RELEASE_RUNTIME_DIGEST,
+        sceneName: SCENE_NAME,
+        sourcePath: SOURCE_PATH,
+        tenantId: TENANT,
+      },
+      undefined,
+    );
   });
 
   it.each([
@@ -424,18 +451,36 @@ describe("DurableFastManimSnapshotServiceV1", () => {
 
   it("closes a runner that finishes creation after its project is released", async () => {
     const fixture = harness();
-    const creation = deferred<{ profileDigest: string; runner: FastManimSnapshotRunner }>();
+    const creation = deferred<{ profileDigest: string; runner: FastManimSnapshotRunner; runtimeDigest: string }>();
     fixture.factory.create.mockReturnValueOnce(creation.promise);
     const run = fixture.service.run(request);
     await vi.waitFor(() => expect(fixture.factory.create).toHaveBeenCalledTimes(1));
 
     const release = fixture.service.releaseProject(PROJECT);
-    creation.resolve({ profileDigest: PROFILE_DIGEST, runner: fixture.runner });
+    creation.resolve({
+      profileDigest: PROFILE_DIGEST,
+      runner: fixture.runner,
+      runtimeDigest: RELEASE_RUNTIME_DIGEST,
+    });
 
     await expect(run).rejects.toBeInstanceOf(HttpError);
     await expect(release).resolves.toBeUndefined();
     expect(fixture.runnerClose).toHaveBeenCalledTimes(1);
     expect(fixture.runnerRun).not.toHaveBeenCalled();
+  });
+
+  it("closes and rejects a runner from a different runtime generation", async () => {
+    const fixture = harness();
+    fixture.factory.create.mockResolvedValueOnce({
+      profileDigest: PROFILE_DIGEST,
+      runner: fixture.runner,
+      runtimeDigest: "1".repeat(64),
+    });
+
+    await expect(fixture.service.run(request)).rejects.toThrow(/runner identity is invalid/i);
+    expect(fixture.runnerClose).toHaveBeenCalledOnce();
+    expect(fixture.runnerRun).not.toHaveBeenCalled();
+    expect(fixture.publish).not.toHaveBeenCalled();
   });
 
   it("does not overturn a committed deletion when runner cleanup fails", async () => {
