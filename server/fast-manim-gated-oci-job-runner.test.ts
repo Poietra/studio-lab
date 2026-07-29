@@ -52,6 +52,10 @@ const pathMorphScene = readFileSync(
   fileURLToPath(new URL("../fixtures/real-preview-harness/scene_path_morph.py", import.meta.url)),
   "utf8",
 );
+const motionPathScene = readFileSync(
+  fileURLToPath(new URL("../fixtures/real-preview-harness/scene_motion_path.py", import.meta.url)),
+  "utf8",
+);
 
 function context(signal = new AbortController().signal, deadlineMs = 30_000) {
   return {
@@ -757,6 +761,60 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
       "sentinel",
       "shape",
       "line",
+    ]);
+  });
+
+  it("isolates and seals real open and closed MoveAlongPath channels", { timeout: 60_000 }, async () => {
+    const source = producerRequestFor(motionPathScene, "DynamicMotionPathScene", 2);
+    const request = new FastManimSandboxRequestBundleV1(source);
+    const execution = await runFastManimGatedOciJobV1({
+      deadlineEpochMs: Date.now() + 30_000,
+      image,
+      requestBytes: request.copyBytes(),
+      signal: new AbortController().signal,
+    });
+    expect(execution.cleanupVerified).toBe(true);
+    const { snapshot, sourceRuntimeIdentity } = await verifyCombinedResult(execution.resultBytes, source);
+    if (snapshot.kind !== "compiled") throw new Error("Expected compiled motion-path evidence.");
+
+    expect(snapshot.bundle.scene).toMatchObject({
+      duration: 3,
+      requiredCapabilities: ["cubic-path-geometry", "motion-path-animation"],
+    });
+    expect(snapshot.bundle.scene.entities).toHaveLength(3);
+    expect(snapshot.bundle.scene.entities.map((entity) => entity.lifetimes)).toEqual([
+      [{ end: 3, start: 0 }],
+      [{ end: 3, start: 0 }],
+      [{ end: 3, start: 1 }],
+    ]);
+    const channels = snapshot.bundle.scene.animationChannels;
+    expect(channels).toHaveLength(2);
+    expect(channels.map((channel) => channel.kind)).toEqual(["motion-path", "motion-path"]);
+    for (const [index, channel] of channels.entries()) {
+      if (channel.kind !== "motion-path") throw new Error("Expected only motion-path channels.");
+      expect(channel).toMatchObject({
+        entityId: `${source.sceneId}/entity:${index + 1}`,
+        id: `${source.sceneId}/channel:motion-path:${index + 1}`,
+        orientToPath: false,
+        parameterization: "manim-point-from-proportion-v1",
+        provenanceId: `${source.sceneId}/provenance:channel:motion-path:${index + 1}`,
+      });
+      expect(channel.keyframes.map(({ at, value }) => ({ at, value }))).toEqual([
+        { at: index, value: 0 },
+        { at: index + 1, value: 1 },
+      ]);
+    }
+    if (channels[0]?.kind !== "motion-path" || channels[1]?.kind !== "motion-path") {
+      throw new Error("Expected motion-path channel narrowing.");
+    }
+    expect(channels[0].path.subpaths[0]?.closed).toBe(false);
+    expect(channels[0].path.subpaths[0]?.segments).toHaveLength(1);
+    expect(channels[1].path.subpaths[0]?.closed).toBe(true);
+    expect(channels[1].path.subpaths[0]?.segments).toHaveLength(8);
+    expect(sourceRuntimeIdentity?.mappings.map((mapping) => mapping.binding.name)).toEqual([
+      "sentinel",
+      "rectangle",
+      "circle",
     ]);
   });
 
