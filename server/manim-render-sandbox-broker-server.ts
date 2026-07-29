@@ -14,6 +14,7 @@ import {
 } from "./manim-render-sandbox-broker-protocol";
 import type { ManimRenderSandboxBackendV1 } from "./manim-render-sandbox-backend";
 import {
+  digestManimRenderSandboxCancellationFenceV1,
   manimRenderSandboxDescriptorV2Schema,
   MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V2,
   SealedManimRenderSandboxRequestV2,
@@ -129,14 +130,14 @@ function createConnection(
   receiveTimer.unref();
 
   const send = (
-    operationKind: "cancel" | "status" | "submit",
+    operationKind: "cancel" | "cleanup" | "status" | "submit",
     value: Parameters<typeof encodeManimRenderSandboxBrokerServerFrameV1>[1],
   ) => {
     if (!socket.destroyed && socket.writable)
       socket.end(encodeManimRenderSandboxBrokerServerFrameV1(operationKind, value));
   };
   const error = (
-    operationKind: "cancel" | "status" | "submit",
+    operationKind: "cancel" | "cleanup" | "status" | "submit",
     code: "capacity" | "cleanup" | "internal" | "unavailable",
   ) => send(operationKind, { code, kind: "error" });
 
@@ -158,9 +159,21 @@ function createConnection(
         return send("status", { kind: "status-result", status });
       }
       if (request.kind === "cancel") {
-        await backend.cancel(request.jobId, { deadlineEpochMs: request.deadlineEpochMs, signal: controller.signal });
+        await backend.cancel(request.fence, { deadlineEpochMs: request.deadlineEpochMs, signal: controller.signal });
         controller.signal.throwIfAborted();
-        return send("cancel", { cancelled: true, kind: "cancel-result" });
+        return send("cancel", {
+          cancelled: true,
+          fenceDigest: digestManimRenderSandboxCancellationFenceV1(request.fence),
+          kind: "cancel-result",
+        });
+      }
+      if (request.kind === "cleanup") {
+        await backend.cleanup(request.jobId, {
+          deadlineEpochMs: request.deadlineEpochMs,
+          signal: controller.signal,
+        });
+        controller.signal.throwIfAborted();
+        return send("cleanup", { cleaned: true, kind: "cleanup-result" });
       }
       const release = acquireJob();
       if (!release) return error("submit", "capacity");

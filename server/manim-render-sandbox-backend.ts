@@ -4,6 +4,7 @@ import {
   type ManimRenderGatedOciBaseResultV1,
 } from "./manim-render-gated-oci-job-runner";
 import {
+  type ManimRenderSandboxCancellationFenceV1,
   type ManimRenderSandboxStatusV1,
   type ManimRenderSandboxTerminalV1,
   MANIM_RENDER_SANDBOX_RESULT_SCHEMA_V1,
@@ -17,7 +18,8 @@ export type ManimRenderSandboxOperationContextV1 = Readonly<{
 }>;
 
 export interface ManimRenderSandboxBackendV1 {
-  cancel(jobId: string, context: ManimRenderSandboxOperationContextV1): Promise<void>;
+  cancel(fence: ManimRenderSandboxCancellationFenceV1, context: ManimRenderSandboxOperationContextV1): Promise<void>;
+  cleanup(jobId: string, context: ManimRenderSandboxOperationContextV1): Promise<void>;
   close(): Promise<void>;
   status(context: ManimRenderSandboxOperationContextV1): Promise<ManimRenderSandboxStatusV1>;
   submitOrReattach(
@@ -83,9 +85,14 @@ export class ManimRenderGatedOciBackendV1 implements ManimRenderSandboxBackendV1
     return terminal(request, await this.#runner.submitOrReattach(request, context.deadlineEpochMs, context.signal));
   }
 
-  async cancel(jobId: string, context: ManimRenderSandboxOperationContextV1) {
+  async cancel(fence: ManimRenderSandboxCancellationFenceV1, context: ManimRenderSandboxOperationContextV1) {
     context.signal.throwIfAborted();
-    await this.#runner.cancel(opaqueIdV1Schema.parse(jobId), context.deadlineEpochMs, context.signal);
+    await this.#runner.cancel(fence, context.deadlineEpochMs, context.signal);
+  }
+
+  async cleanup(jobId: string, context: ManimRenderSandboxOperationContextV1) {
+    context.signal.throwIfAborted();
+    await this.#runner.cleanup(opaqueIdV1Schema.parse(jobId), context.deadlineEpochMs, context.signal);
   }
 
   close() {

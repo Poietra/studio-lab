@@ -10,6 +10,8 @@ import {
 } from "./manim-render-sandbox-broker-protocol";
 import type { ManimRenderSandboxBackendV1, ManimRenderSandboxOperationContextV1 } from "./manim-render-sandbox-backend";
 import {
+  digestManimRenderSandboxCancellationFenceV1,
+  type ManimRenderSandboxCancellationFenceV1,
   manimRenderSandboxStatusV1Schema,
   manimRenderSandboxTerminalV1Schema,
   manimRenderStagingIdV1,
@@ -103,13 +105,27 @@ export class ManimRenderUdsSandboxBackendV1 implements ManimRenderSandboxBackend
     );
   }
 
-  async cancel(jobId: string, context: ManimRenderSandboxOperationContextV1) {
+  async cancel(fence: ManimRenderSandboxCancellationFenceV1, context: ManimRenderSandboxOperationContextV1) {
+    const fenceDigest = digestManimRenderSandboxCancellationFenceV1(fence);
     await this.#open(
       "cancel",
-      { deadlineEpochMs: context.deadlineEpochMs, jobId, kind: "cancel" },
+      { deadlineEpochMs: context.deadlineEpochMs, fence, kind: "cancel" },
       context,
       (message) => {
-        if (message.kind !== "cancel-result" || message.cancelled !== true) throw transportError();
+        if (message.kind !== "cancel-result" || message.cancelled !== true || message.fenceDigest !== fenceDigest) {
+          throw transportError();
+        }
+      },
+    );
+  }
+
+  async cleanup(jobId: string, context: ManimRenderSandboxOperationContextV1) {
+    await this.#open(
+      "cleanup",
+      { deadlineEpochMs: context.deadlineEpochMs, jobId, kind: "cleanup" },
+      context,
+      (message) => {
+        if (message.kind !== "cleanup-result" || message.cleaned !== true) throw transportError();
       },
     );
   }

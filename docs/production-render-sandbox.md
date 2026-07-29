@@ -71,11 +71,30 @@ rejection of forged MP4, denial of Scene access to `/proc/1/mem`, hostile early
 output replacement, refenced reattachment, owner-isolated concurrent brokers,
 restart cleanup, active cancellation, and cleanup.
 
+User cancellation first aborts the job in its current worker, then waits for the
+broker to persist a job-wide cancellation fence in the private staging root,
+and only after the correlated broker acknowledgement changes the PostgreSQL
+session to `cancelled`. The fence rejects both video and thumbnail admission
+before active or staged reattachment and survives broker restart until the
+immutable render deadline plus a short cleanup grace period. Normal publication
+cleanup is a separate non-fencing operation. Global and per-tenant hard caps
+reject new fences without evicting a live cancellation or stopping other
+tenants. Every worker allowed to claim from one render queue must route that
+queue to the same broker/staging-root shard;
+deployments that can route the same job to independent brokers require a durable
+database cancel-intent and owner-shard relay before horizontal admission is
+enabled.
+
 Before upgrading from a build that predates owner-scoped container names and
 labels, stop every old broker and drain its `poietra-render-<staging-id>`
 containers. The new broker deliberately refuses to claim or delete those
 unattributed containers; only containers bearing its exact staging-owner digest
 are eligible for automatic reconciliation.
+
+A render-profile digest change also requires a drained broker rollout. Stop new
+admission, wait for active sessions and cancellation-fence deadlines to expire,
+stop the old broker, empty its staged media root, and then start the new broker.
+An old-profile manifest is deliberately not reinterpreted by a new broker.
 
 This slice deliberately accepts only the single validated `image.png` generation
 already pinned atomically with the source in PostgreSQL. Generic project asset

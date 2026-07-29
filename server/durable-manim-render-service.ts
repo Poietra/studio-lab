@@ -32,7 +32,7 @@ import type { SourceContentBlobStoreV1, WorkspaceSourceRepositoryV1 } from "./st
 export type DurableManimRenderServiceOptionsV1 = Readonly<{
   artifactReader?: Pick<AuthorizedArtifactReaderV1, "ready" | "sessionVideo">;
   blobs: SourceContentBlobStoreV1;
-  execution?: Pick<DurableManimRenderWorkerV1, "cancel" | "wake">;
+  execution: Pick<DurableManimRenderWorkerV1, "cancel" | "wake">;
   executionTimeoutMs?: number;
   frame?: Readonly<{ height: number; width: number }>;
   repository: RenderSessionRepositoryV1;
@@ -89,7 +89,7 @@ function sessionView(
 export class DurableManimRenderServiceV1 {
   readonly #artifactReader: Pick<AuthorizedArtifactReaderV1, "ready" | "sessionVideo"> | undefined;
   readonly #blobs: SourceContentBlobStoreV1;
-  readonly #execution: Pick<DurableManimRenderWorkerV1, "cancel" | "wake"> | undefined;
+  readonly #execution: Pick<DurableManimRenderWorkerV1, "cancel" | "wake">;
   readonly #executionTimeoutMs: number;
   readonly #frame: Readonly<{ height: number; width: number }>;
   readonly #repository: RenderSessionRepositoryV1;
@@ -200,7 +200,7 @@ export class DurableManimRenderServiceV1 {
       }
       throw error;
     }
-    this.#execution?.wake();
+    this.#execution.wake();
     return sessionView(created);
   }
 
@@ -209,9 +209,15 @@ export class DurableManimRenderServiceV1 {
   }
 
   async cancel(id: string): Promise<RenderSessionView> {
-    const cancelled = await this.#repository.cancelSession(this.#tenantId, id);
-    await this.#execution?.cancel(id);
-    return sessionView(cancelled);
+    await this.#execution.cancel(id);
+    try {
+      return sessionView(await this.#repository.cancelSession(this.#tenantId, id));
+    } catch (error) {
+      if (!(error instanceof HttpError) || error.status !== 409) throw error;
+      const current = await this.#repository.readSession(this.#tenantId, id);
+      if (current.status !== "cancelled") throw error;
+      return sessionView(current);
+    }
   }
 
   async commit(id: string, expected: RenderCommitRequest, signal?: AbortSignal): Promise<RenderSessionView> {
@@ -280,8 +286,8 @@ export class DurableManimRenderServiceV1 {
   async abandonStart(id: string): Promise<void> {
     try {
       const session = await this.#repository.readSession(this.#tenantId, id);
+      await this.#execution.cancel(id);
       await this.#repository.abandonSession(this.#tenantId, id, session.renderRequestId);
-      await this.#execution?.cancel(id);
     } catch (error) {
       if (error instanceof HttpError && error.status === 404) return;
       throw error;
@@ -289,14 +295,18 @@ export class DurableManimRenderServiceV1 {
   }
 
   async abandon(id: string, expectedRenderRequestId: string) {
+    let session: DurableRenderSessionV1;
     try {
-      await this.#repository.readSession(this.#tenantId, id);
+      session = await this.#repository.readSession(this.#tenantId, id);
     } catch (error) {
       if (error instanceof HttpError && error.status === 404) return { abandoned: true } as const;
       throw error;
     }
+    if (session.renderRequestId !== expectedRenderRequestId) {
+      throw new HttpError("The abandoned render no longer matches the Studio request.", 409);
+    }
+    await this.#execution.cancel(id);
     await this.#repository.abandonSession(this.#tenantId, id, expectedRenderRequestId);
-    await this.#execution?.cancel(id);
     return { abandoned: true } as const;
   }
 

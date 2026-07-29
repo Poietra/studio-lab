@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -136,6 +136,14 @@ function partial<T>(value: Partial<T>): T {
 
 function never(): Promise<never> {
   return new Promise(() => undefined);
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }
 
 function healthyStatus() {
@@ -290,8 +298,18 @@ describe("render sandbox contracts", () => {
       }),
       encodeManimRenderSandboxBrokerClientFrameV1({
         deadlineEpochMs: Date.now() + 60_000,
-        jobId: "tenant-a/session-a",
+        fence: {
+          jobId: "tenant-a/session-a",
+          rejectUntilEpochMs: request.parseDescriptor().deadlineEpochMs,
+          sessionId: "session-a",
+          tenantId: "tenant-a",
+        },
         kind: "cancel",
+      }),
+      encodeManimRenderSandboxBrokerClientFrameV1({
+        deadlineEpochMs: Date.now() + 60_000,
+        jobId: "tenant-a/session-a",
+        kind: "cleanup",
       }),
     ];
     for (const frame of clientFrames) {
@@ -302,7 +320,7 @@ describe("render sandbox contracts", () => {
       expect(decoded).toMatchObject({ kind: expect.any(String) });
     }
 
-    for (const operation of ["status", "submit", "cancel"] as const) {
+    for (const operation of ["status", "submit", "cancel", "cleanup"] as const) {
       const frame = encodeManimRenderSandboxBrokerServerFrameV1(operation, {
         code: "unavailable",
         kind: "error",
@@ -512,9 +530,162 @@ describe("render OCI lifecycle", () => {
         runner.submitOrReattach(request, request.parseDescriptor().deadlineEpochMs, new AbortController().signal),
       ).resolves.toEqual({ code: "cleanup-failed", kind: "failed" });
       await expect(runner.ready()).resolves.toBe(false);
+      const current = request.parseDescriptor();
+      await expect(
+        runner.cancel(
+          {
+            jobId: current.jobId,
+            rejectUntilEpochMs: current.deadlineEpochMs,
+            sessionId: current.sessionId,
+            tenantId: current.tenantId,
+          },
+          Date.now() + 5_000,
+          new AbortController().signal,
+        ),
+      ).rejects.toThrow(/create outcome/i);
       await expect(runner.close()).rejects.toThrow(/cleanup/i);
       expect(docker.calls.filter((call) => call[0] === "container" && call[1] === "ls")).toHaveLength(2);
     } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("persists cancel-first admission across runner restart without fencing normal cleanup", async () => {
+    const root = await mkdtemp(join(tmpdir(), "poietra-render-cancel-fence-"));
+    await chmod(root, 0o700);
+    const docker = new ScriptedDockerClient();
+    const first = new ManimRenderGatedOciJobRunnerV1({
+      cgroupKillPolicy: "best-effort",
+      dockerClient: docker,
+      image,
+      seccompPath: "/missing/seccomp.json",
+      stagingRoot: root,
+    });
+    const current = descriptor();
+    const request = new SealedManimRenderSandboxRequestV2(current);
+    const fence = {
+      jobId: current.jobId,
+      rejectUntilEpochMs: current.deadlineEpochMs,
+      sessionId: current.sessionId,
+      tenantId: current.tenantId,
+    };
+    const alternateFence = {
+      jobId: "tenant_a/session_a",
+      rejectUntilEpochMs: current.deadlineEpochMs,
+      sessionId: "session_a",
+      tenantId: "tenant_a",
+    };
+    let restarted: ManimRenderGatedOciJobRunnerV1 | undefined;
+    try {
+      await first.reconcileOrphans();
+      await first.cleanup("tenant-a/cleanup-only", Date.now() + 5_000, new AbortController().signal);
+      expect(await readdir(root)).toEqual([]);
+      await first.cancel(fence, Date.now() + 5_000, new AbortController().signal);
+      await first.cancel(alternateFence, Date.now() + 5_000, new AbortController().signal);
+      const state = JSON.parse(await readFile(join(root, "render-cancellations-v1.json"), "utf8"));
+      expect(state.entries).toEqual([fence, alternateFence]);
+      await expect(
+        first.cancel(
+          { ...fence, rejectUntilEpochMs: fence.rejectUntilEpochMs + 1 },
+          Date.now() + 5_000,
+          new AbortController().signal,
+        ),
+      ).rejects.toThrow(/different cancellation fence/i);
+      await first.close();
+
+      restarted = new ManimRenderGatedOciJobRunnerV1({
+        cgroupKillPolicy: "best-effort",
+        dockerClient: docker,
+        image,
+        seccompPath: "/missing/seccomp.json",
+        stagingRoot: root,
+      });
+      await restarted.reconcileOrphans();
+      await expect(
+        restarted.submitOrReattach(request, current.deadlineEpochMs, new AbortController().signal),
+      ).resolves.toEqual({ code: "cancelled", kind: "failed" });
+      expect(docker.calls.filter((call) => call[0] === "container" && call[1] === "create")).toEqual([]);
+    } finally {
+      await Promise.allSettled([first.close(), restarted?.close()]);
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("isolates cancellation-fence capacity per tenant without latching the broker", async () => {
+    const root = await mkdtemp(join(tmpdir(), "poietra-render-cancel-capacity-"));
+    await chmod(root, 0o700);
+    const deadlineEpochMs = Date.now() + 60_000;
+    const entries = Array.from(
+      { length: MANIM_RENDER_GATED_OCI_PROFILE_V1.cancellationFences.maximumEntriesPerTenant },
+      (_, index) => {
+        const sessionId = `session-${index.toString().padStart(3, "0")}`;
+        return { jobId: `tenant-a/${sessionId}`, rejectUntilEpochMs: deadlineEpochMs, sessionId, tenantId: "tenant-a" };
+      },
+    );
+    await writeFile(
+      join(root, "render-cancellations-v1.json"),
+      canonicalJsonV1({
+        entries,
+        schema: "poietra.manim-render-cancellation-state",
+        stagingRootDigest: digestManimRenderStagingRootV1(root),
+        version: 1,
+      }),
+      { mode: 0o600 },
+    );
+    const runner = new ManimRenderGatedOciJobRunnerV1({
+      cgroupKillPolicy: "best-effort",
+      dockerClient: new ScriptedDockerClient(),
+      image,
+      seccompPath: "/missing/seccomp.json",
+      stagingRoot: root,
+    });
+    try {
+      await runner.reconcileOrphans();
+      await expect(
+        runner.cancel(
+          {
+            jobId: "tenant-a/session-overflow",
+            rejectUntilEpochMs: deadlineEpochMs,
+            sessionId: "session-overflow",
+            tenantId: "tenant-a",
+          },
+          Date.now() + 5_000,
+          new AbortController().signal,
+        ),
+      ).rejects.toThrow(/capacity/i);
+      const otherTenantFence = {
+        jobId: "tenant-b/session-a",
+        rejectUntilEpochMs: deadlineEpochMs,
+        sessionId: "session-a",
+        tenantId: "tenant-b",
+      };
+      await runner.cancel(otherTenantFence, Date.now() + 5_000, new AbortController().signal);
+      const state = JSON.parse(await readFile(join(root, "render-cancellations-v1.json"), "utf8"));
+      expect(state.entries).toContainEqual(otherTenantFence);
+      await runner.close();
+    } finally {
+      await Promise.allSettled([runner.close()]);
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("fails readiness closed on malformed durable cancellation state", async () => {
+    const root = await mkdtemp(join(tmpdir(), "poietra-render-cancel-corrupt-"));
+    await chmod(root, 0o700);
+    const statePath = join(root, "render-cancellations-v1.json");
+    await writeFile(statePath, "not-json", { encoding: "utf8", mode: 0o600 });
+    await chmod(statePath, 0o600);
+    const runner = new ManimRenderGatedOciJobRunnerV1({
+      dockerClient: new ScriptedDockerClient(),
+      image,
+      seccompPath: "/missing/seccomp.json",
+      stagingRoot: root,
+    });
+    try {
+      await expect(runner.ready()).resolves.toBe(false);
+      await expect(runner.reconcileOrphans()).rejects.toThrow();
+    } finally {
+      await runner.close();
       await rm(root, { force: true, recursive: true });
     }
   });
@@ -787,32 +958,43 @@ describe("production durable render execution", () => {
       ready: vi.fn(async () => true),
     });
     const submitted: SealedManimRenderSandboxRequestV2[] = [];
+    const sandboxResult = (
+      request: SealedManimRenderSandboxRequestV2,
+      code?: "cancelled" | "cleanup-failed" | "render-failed",
+    ) => {
+      const value = request.parseDescriptor();
+      const correlation = {
+        deadlineEpochMs: value.deadlineEpochMs,
+        fenceToken: value.fenceToken,
+        jobId: value.jobId,
+        logTail: "",
+        profileDigest: value.profileDigest,
+        requestDigest: request.requestDigest,
+        runtimeDigest: value.runtimeDigest,
+        schema: MANIM_RENDER_SANDBOX_RESULT_SCHEMA_V1,
+        sessionId: value.sessionId,
+        sourceDigest: value.sourceDigest,
+        tenantId: value.tenantId,
+        version: 1 as const,
+      };
+      return code
+        ? { ...correlation, code, kind: "failed" as const }
+        : {
+            ...correlation,
+            artifactDigest: "b".repeat(64),
+            artifactSize: 12,
+            kind: "ready" as const,
+            mediaType: value.output.mediaType,
+            stagingId: manimRenderStagingIdV1(value.jobId, value.output.kind),
+          };
+    };
     const backend = partial<ManimRenderSandboxBackendV1>({
       cancel: vi.fn(async () => undefined),
       close: vi.fn(async () => undefined),
       status: vi.fn(async () => healthyStatus()),
       submitOrReattach: vi.fn<ManimRenderSandboxBackendV1["submitOrReattach"]>(async (request) => {
         submitted.push(request);
-        const value = request.parseDescriptor();
-        return {
-          artifactDigest: "b".repeat(64),
-          artifactSize: 12,
-          deadlineEpochMs: value.deadlineEpochMs,
-          fenceToken: value.fenceToken,
-          jobId: value.jobId,
-          kind: "ready",
-          logTail: "",
-          mediaType: value.output.mediaType,
-          profileDigest: value.profileDigest,
-          requestDigest: request.requestDigest,
-          runtimeDigest: value.runtimeDigest,
-          schema: MANIM_RENDER_SANDBOX_RESULT_SCHEMA_V1,
-          sessionId: value.sessionId,
-          sourceDigest: value.sourceDigest,
-          stagingId: manimRenderStagingIdV1(value.jobId, value.output.kind),
-          tenantId: value.tenantId,
-          version: 1 as const,
-        };
+        return sandboxResult(request);
       }),
     });
     expect(
@@ -936,6 +1118,66 @@ describe("production durable render execution", () => {
           },
         ]);
       }
+
+      const submittedBeforeCancellation = submitted.length;
+      const sourceReadEntered = deferred<void>();
+      const releaseSourceRead = deferred<void>();
+      vi.mocked(blobs.readSource).mockImplementationOnce(async () => {
+        sourceReadEntered.resolve(undefined);
+        await releaseSourceRead.promise;
+        return source;
+      });
+      const sourceReadAbort = new AbortController();
+      const sourceReadExecution = executor.submitOrReattach({
+        jobId: "tenant-a/session-source-abort",
+        session: { ...session, id: "session-source-abort" },
+        signal: sourceReadAbort.signal,
+      });
+      await sourceReadEntered.promise;
+      sourceReadAbort.abort(new DOMException("cancelled", "AbortError"));
+      releaseSourceRead.resolve(undefined);
+      await expect(sourceReadExecution).rejects.toMatchObject({ name: "AbortError" });
+
+      const assetReadEntered = deferred<void>();
+      const releaseAssetRead = deferred<void>();
+      vi.mocked(projectPngs.read).mockImplementationOnce(async () => {
+        assetReadEntered.resolve(undefined);
+        await releaseAssetRead.promise;
+        return projectPngBytes;
+      });
+      const assetReadAbort = new AbortController();
+      const assetReadExecution = executor.submitOrReattach({
+        jobId: "tenant-a/session-asset-abort",
+        session: { ...assetSession, id: "session-asset-abort" },
+        signal: assetReadAbort.signal,
+      });
+      await assetReadEntered.promise;
+      assetReadAbort.abort(new DOMException("cancelled", "AbortError"));
+      releaseAssetRead.resolve(undefined);
+      await expect(assetReadExecution).rejects.toMatchObject({ name: "AbortError" });
+      expect(submitted).toHaveLength(submittedBeforeCancellation);
+
+      vi.mocked(backend.submitOrReattach)
+        .mockImplementationOnce(async (request) => sandboxResult(request, "render-failed"))
+        .mockImplementationOnce(async (request) => sandboxResult(request, "cancelled"));
+      await expect(
+        executor.submitOrReattach({
+          jobId: "tenant-a/session-mixed-cancel",
+          session: { ...session, id: "session-mixed-cancel" },
+          signal: new AbortController().signal,
+        }),
+      ).resolves.toEqual({ code: "cancelled", kind: "failed", logTail: "" });
+
+      vi.mocked(backend.submitOrReattach)
+        .mockImplementationOnce(async (request) => sandboxResult(request, "cleanup-failed"))
+        .mockImplementationOnce(async (request) => sandboxResult(request, "cancelled"));
+      await expect(
+        executor.submitOrReattach({
+          jobId: "tenant-a/session-mixed-cleanup",
+          session: { ...session, id: "session-mixed-cleanup" },
+          signal: new AbortController().signal,
+        }),
+      ).resolves.toEqual({ code: "render-failed", kind: "failed", logTail: "" });
     } finally {
       await executor.close();
     }
@@ -1031,10 +1273,18 @@ describe("render broker bounded shutdown", () => {
       await expect(
         Promise.all([
           client.status({ deadlineEpochMs: Date.now() + 5_000, signal: new AbortController().signal }),
-          client.cancel("tenant-a/session-control", {
-            deadlineEpochMs: Date.now() + 5_000,
-            signal: new AbortController().signal,
-          }),
+          client.cancel(
+            {
+              jobId: "tenant-a/session-control",
+              rejectUntilEpochMs: Date.now() + 60_000,
+              sessionId: "session-control",
+              tenantId: "tenant-a",
+            },
+            {
+              deadlineEpochMs: Date.now() + 5_000,
+              signal: new AbortController().signal,
+            },
+          ),
         ]),
       ).resolves.toEqual([healthyStatus(), undefined]);
       expect(submitOrReattach).toHaveBeenCalledTimes(8);
@@ -1092,14 +1342,18 @@ describe("render broker bounded shutdown", () => {
     }
   });
 
-  it("round-trips status and successful void cancellation over the real UDS protocol", async () => {
+  it("round-trips status, cancellation, and cleanup over the real UDS protocol", async () => {
     const root = await mkdtemp(join(tmpdir(), "poietra-render-broker-roundtrip-"));
     await chmod(root, 0o700);
     const socketPath = join(root, "render.sock");
     const cancelled: string[] = [];
+    const cleaned: string[] = [];
     const backend = partial<ManimRenderSandboxBackendV1>({
-      cancel: async (jobId) => {
-        cancelled.push(jobId);
+      cancel: async (fence) => {
+        cancelled.push(fence.jobId);
+      },
+      cleanup: async (jobId) => {
+        cleaned.push(jobId);
       },
       close: async () => undefined,
       status: async () => healthyStatus(),
@@ -1119,12 +1373,27 @@ describe("render broker bounded shutdown", () => {
         }),
       ).resolves.toEqual(healthyStatus());
       await expect(
-        client.cancel("tenant-a/session-a", {
+        client.cancel(
+          {
+            jobId: "tenant-a/session-a",
+            rejectUntilEpochMs: Date.now() + 60_000,
+            sessionId: "session-a",
+            tenantId: "tenant-a",
+          },
+          {
+            deadlineEpochMs: Date.now() + 5_000,
+            signal: new AbortController().signal,
+          },
+        ),
+      ).resolves.toBeUndefined();
+      await expect(
+        client.cleanup("tenant-a/session-a", {
           deadlineEpochMs: Date.now() + 5_000,
           signal: new AbortController().signal,
         }),
       ).resolves.toBeUndefined();
       expect(cancelled).toEqual(["tenant-a/session-a"]);
+      expect(cleaned).toEqual(["tenant-a/session-a"]);
     } finally {
       await Promise.allSettled([client.close(), broker.close()]);
       await rm(root, { force: true, recursive: true });

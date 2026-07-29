@@ -90,11 +90,13 @@ function fixture(
     completeLease,
     expireTimedOutSessions: vi.fn(async () => 0),
     findRecoverableSessions: vi.fn(async () => [queued]),
+    readSession: vi.fn(async () => claimed),
     ready: vi.fn(async () => true),
     renewLease,
   });
   const close = vi.fn(async () => undefined);
-  const cancel = vi.fn(async () => undefined);
+  const cancel = vi.fn<DurableManimRenderExecutorV1["cancel"]>(async () => undefined);
+  const cleanup = vi.fn<DurableManimRenderExecutorV1["cleanup"]>(async () => undefined);
   const submitOrReattach = vi.fn<DurableManimRenderExecutorV1["submitOrReattach"]>(async () => ({
     artifactLocator: "artifact:verified",
     kind: "ready",
@@ -102,6 +104,7 @@ function fixture(
   }));
   const executor = {
     cancel,
+    cleanup,
     close,
     ready: vi.fn(async () => true),
     submitOrReattach,
@@ -121,6 +124,7 @@ function fixture(
   return {
     cancel,
     claimed,
+    cleanup,
     close,
     completeLease,
     executor,
@@ -163,6 +167,64 @@ describe("DurableManimRenderWorkerV1", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  it("cancels a session while its lease claim is still pending", async () => {
+    const claim = deferred<DurableRenderSessionV1>();
+    const { cancel, claimed, repository, submitOrReattach, worker } = fixture();
+    vi.mocked(repository.claimLease).mockImplementationOnce(async () => claim.promise);
+
+    const run = worker.runOnce();
+    await vi.waitFor(() => expect(repository.claimLease).toHaveBeenCalledOnce());
+    await worker.cancel(claimed.id);
+    claim.resolve(claimed);
+    await run;
+
+    expect(vi.mocked(repository.claimLease).mock.calls[0]?.[1]?.aborted).toBe(true);
+    expect(submitOrReattach).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledOnce();
+    await worker.close();
+  });
+
+  it("blocks a lease claim that starts while cancellation is reading the session", async () => {
+    const sessionRead = deferred<DurableRenderSessionV1>();
+    const { cancel, claimed, repository, submitOrReattach, worker } = fixture();
+    vi.mocked(repository.readSession).mockImplementationOnce(async () => sessionRead.promise);
+
+    const cancellation = worker.cancel(claimed.id);
+    await vi.waitFor(() => expect(repository.readSession).toHaveBeenCalledOnce());
+    const run = worker.runOnce();
+    await vi.waitFor(() => expect(repository.claimLease).toHaveBeenCalledOnce());
+    sessionRead.resolve(claimed);
+    await Promise.all([cancellation, run]);
+
+    expect(vi.mocked(repository.claimLease).mock.calls[0]?.[1]?.aborted).toBe(true);
+    expect(submitOrReattach).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledOnce();
+    await worker.close();
+  });
+
+  it("aborts an active executor read before forwarding cancellation", async () => {
+    const entered = deferred<void>();
+    const { cancel, claimed, completeLease, submitOrReattach, worker } = fixture();
+    let executionSignal: AbortSignal | undefined;
+    submitOrReattach.mockImplementationOnce(async (request) => {
+      executionSignal = request.signal;
+      entered.resolve();
+      await new Promise<void>((resolve) => request.signal.addEventListener("abort", () => resolve(), { once: true }));
+      return { code: "interrupted", kind: "failed", logTail: "" };
+    });
+    cancel.mockImplementationOnce(async () => expect(executionSignal?.aborted).toBe(true));
+
+    const run = worker.runOnce();
+    await entered.promise;
+    await worker.cancel(claimed.id);
+    await run;
+
+    expect(executionSignal?.aborted).toBe(true);
+    expect(completeLease).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledOnce();
+    await worker.close();
+  });
+
   it("turns a broker reattach failure into a bounded interrupted terminal state", async () => {
     const { claimed, completeLease, submitOrReattach, worker } = fixture();
     submitOrReattach.mockRejectedValueOnce(new Error("broker leaked a sensitive traceback"));
@@ -178,6 +240,24 @@ describe("DurableManimRenderWorkerV1", () => {
       }),
     );
     expect(completeLease.mock.calls[0]?.[0].error).not.toContain("sensitive traceback");
+    await worker.close();
+  });
+
+  it("lets a lease owner complete a broker-fenced job as cancelled", async () => {
+    const { claimed, cleanup, completeLease, submitOrReattach, worker } = fixture();
+    submitOrReattach.mockResolvedValueOnce({ code: "cancelled", kind: "failed", logTail: "" });
+
+    await worker.runOnce();
+
+    expect(completeLease).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: null,
+        expectedVersion: claimed.version,
+        fenceToken: claimed.fenceToken,
+        status: "cancelled",
+      }),
+    );
+    expect(cleanup).toHaveBeenCalledOnce();
     await worker.close();
   });
 
@@ -306,7 +386,7 @@ describe("DurableManimRenderWorkerV1", () => {
       publish: vi.fn(async () => undefined),
       ready: vi.fn(async () => true),
     };
-    const { cancel, claimed, completeLease, submitOrReattach, worker } = fixture({ publisher });
+    const { claimed, cleanup, completeLease, submitOrReattach, worker } = fixture({ publisher });
     submitOrReattach.mockResolvedValueOnce({
       artifactLocator: "legacy-video",
       kind: "ready",
@@ -326,7 +406,7 @@ describe("DurableManimRenderWorkerV1", () => {
       expect.any(AbortSignal),
     );
     expect(completeLease).not.toHaveBeenCalled();
-    expect(cancel).toHaveBeenCalledWith({
+    expect(cleanup).toHaveBeenCalledWith({
       jobId: durableManimRenderJobIdV1("tenant-a", claimed.id),
       sessionId: claimed.id,
       tenantId: "tenant-a",
@@ -340,7 +420,7 @@ describe("DurableManimRenderWorkerV1", () => {
       publish: vi.fn(async () => Promise.reject(unavailable)),
       ready: vi.fn(async () => true),
     };
-    const { cancel, completeLease, submitOrReattach, worker } = fixture({ publisher });
+    const { cleanup, completeLease, submitOrReattach, worker } = fixture({ publisher });
     submitOrReattach.mockResolvedValueOnce({
       kind: "ready",
       logTail: "rendered",
@@ -349,12 +429,12 @@ describe("DurableManimRenderWorkerV1", () => {
 
     await expect(worker.runOnce()).rejects.toBe(unavailable);
     expect(completeLease).not.toHaveBeenCalled();
-    expect(cancel).not.toHaveBeenCalled();
+    expect(cleanup).not.toHaveBeenCalled();
     await worker.close();
   });
 
   it("cleans partial staging only after a fenced terminal failure commits", async () => {
-    const { cancel, claimed, completeLease, submitOrReattach, worker } = fixture();
+    const { claimed, cleanup, completeLease, submitOrReattach, worker } = fixture();
     submitOrReattach.mockResolvedValueOnce({ code: "render-failed", kind: "failed", logTail: "bounded" });
 
     await worker.runOnce();
@@ -362,18 +442,18 @@ describe("DurableManimRenderWorkerV1", () => {
     expect(completeLease).toHaveBeenCalledWith(
       expect.objectContaining({ expectedVersion: claimed.version, status: "failed" }),
     );
-    expect(cancel).toHaveBeenCalledOnce();
+    expect(cleanup).toHaveBeenCalledOnce();
     await worker.close();
   });
 
   it("does not clear a new owner's staging after terminal completion loses its fence", async () => {
-    const { cancel, completeLease, submitOrReattach, worker } = fixture();
+    const { cleanup, completeLease, submitOrReattach, worker } = fixture();
     submitOrReattach.mockResolvedValueOnce({ code: "render-failed", kind: "failed", logTail: "bounded" });
     completeLease.mockRejectedValueOnce(new HttpError("stale", 409));
 
     await worker.runOnce();
 
-    expect(cancel).not.toHaveBeenCalled();
+    expect(cleanup).not.toHaveBeenCalled();
     await worker.close();
   });
 
@@ -385,7 +465,7 @@ describe("DurableManimRenderWorkerV1", () => {
       publish: vi.fn(async () => publication.promise),
       ready: vi.fn(async () => true),
     };
-    const { cancel, renewLease, submitOrReattach, worker } = fixture({ publisher });
+    const { cleanup, renewLease, submitOrReattach, worker } = fixture({ publisher });
     submitOrReattach.mockResolvedValueOnce({
       kind: "ready",
       logTail: "published",
@@ -399,7 +479,7 @@ describe("DurableManimRenderWorkerV1", () => {
     publication.resolve();
     await run;
 
-    expect(cancel).toHaveBeenCalledOnce();
+    expect(cleanup).toHaveBeenCalledOnce();
     await worker.close();
   });
 });

@@ -353,7 +353,7 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
       const png = await readFile(join(stagingRoot, `${thumbnail.stagingId}.png`));
       expect(mp4.subarray(4, 8).toString("ascii")).toBe("ftyp");
       expect(png.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
-      await runner.cancel(base.jobId, Date.now() + 30_000, signal);
+      await runner.cleanup(base.jobId, Date.now() + 30_000, signal);
       expect(await readdir(stagingRoot)).toEqual([]);
     } catch (error) {
       operationError = error;
@@ -403,9 +403,19 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
       await runner.reconcileOrphans();
       const result = runner.submitOrReattach(request, deadlineEpochMs, signal);
       await new Promise((resolve) => setTimeout(resolve, 500));
-      await runner.cancel(request.parseDescriptor().jobId, Date.now() + 30_000, signal);
+      const cancelled = request.parseDescriptor();
+      await runner.cancel(
+        {
+          jobId: cancelled.jobId,
+          rejectUntilEpochMs: cancelled.deadlineEpochMs,
+          sessionId: cancelled.sessionId,
+          tenantId: cancelled.tenantId,
+        },
+        Date.now() + 30_000,
+        signal,
+      );
       await expect(result).resolves.toEqual({ code: "cancelled", kind: "failed" });
-      expect(await readdir(stagingRoot)).toEqual([]);
+      expect(await readdir(stagingRoot)).toEqual(["render-cancellations-v1.json"]);
       expect(await ownedContainerIds(docker, runner, true)).toEqual([]);
     } catch (error) {
       operationError = error;
@@ -470,11 +480,21 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
       await expect(result).resolves.toMatchObject({ kind: "failed" });
       expect(await ownedContainerIds(docker, restarted, true)).toEqual([]);
       expect(await ownedContainerIds(docker, unrelated)).toEqual([unrelatedContainer]);
-      await unrelated.cancel(request.parseDescriptor().jobId, Date.now() + 30_000, signal);
+      const cancelled = request.parseDescriptor();
+      await unrelated.cancel(
+        {
+          jobId: cancelled.jobId,
+          rejectUntilEpochMs: cancelled.deadlineEpochMs,
+          sessionId: cancelled.sessionId,
+          tenantId: cancelled.tenantId,
+        },
+        Date.now() + 30_000,
+        signal,
+      );
       await expect(unrelatedResult).resolves.toEqual({ code: "cancelled", kind: "failed" });
       expect(await ownedContainerIds(docker, unrelated, true)).toEqual([]);
       expect(await readdir(stagingRoot)).toEqual([]);
-      expect(await readdir(unrelatedStagingRoot)).toEqual([]);
+      expect(await readdir(unrelatedStagingRoot)).toEqual(["render-cancellations-v1.json"]);
     } catch (error) {
       operationError = error;
     }
