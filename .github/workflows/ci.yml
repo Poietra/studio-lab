@@ -123,6 +123,8 @@ jobs:
         run: cargo fmt --all --manifest-path engine/Cargo.toml -- --check
       - name: Run Engine tests
         run: cargo test --locked --workspace --manifest-path engine/Cargo.toml
+      - name: Smoke-test the MathTex Python ABI
+        run: node scripts/smoke-mathtex-python.mjs
       - name: Install software Vulkan adapter when absent
         run: |
           if ! dpkg-query --show --showformat='${Status}' mesa-vulkan-drivers 2>/dev/null | grep --quiet 'install ok installed'; then
