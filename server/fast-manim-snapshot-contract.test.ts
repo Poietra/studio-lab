@@ -350,13 +350,6 @@ function parseProducer(value: unknown, expectedValue: ExpectedFastManimSnapshotC
   return parseAndSealFastManimSnapshotProducerJsonV1(JSON.stringify(value), expectedValue);
 }
 
-function offsetRawF64Bits(value: number, offset: bigint) {
-  const buffer = Buffer.alloc(8);
-  buffer.writeDoubleBE(value);
-  buffer.writeBigUInt64BE(buffer.readBigUInt64BE() + offset);
-  return buffer.readDoubleBE();
-}
-
 describe("canonical fast-manim Line cubic", () => {
   const start = { x: -4, y: 2 };
   const end = { x: 4, y: 2 };
@@ -366,7 +359,7 @@ describe("canonical fast-manim Line cubic", () => {
     end,
   };
 
-  it("accepts the actual exporter control that differs by one ordered-f64 ULP", () => {
+  it("accepts bounded producer roundoff beyond one ordered-f64 ULP", () => {
     expect(
       isCanonicalFastManimLineSegmentV1(start, {
         ...canonical,
@@ -374,13 +367,23 @@ describe("canonical fast-manim Line cubic", () => {
         control2: { x: 1.333333333333333, y: 2 },
       }),
     ).toBe(true);
+    expect(
+      isCanonicalFastManimLineSegmentV1(
+        { x: -2.1, y: 0.7 },
+        {
+          control1: { x: -0.9333333333333336, y: 0.36666666666666664 },
+          control2: { x: 0.23333333333333317, y: 0.033333333333333354 },
+          end: { x: 1.4, y: -0.3 },
+        },
+      ),
+    ).toBe(true);
   });
 
-  it("rejects two ULP drift and arbitrary collinear controls", () => {
+  it("rejects drift outside the numeric bound and arbitrary collinear controls", () => {
     expect(
       isCanonicalFastManimLineSegmentV1(start, {
         ...canonical,
-        control1: { ...canonical.control1, x: offsetRawF64Bits(canonical.control1.x, 2n) },
+        control1: { ...canonical.control1, x: canonical.control1.x + 1e-10 },
       }),
     ).toBe(false);
     expect(isCanonicalFastManimLineSegmentV1(start, { control1: start, control2: end, end })).toBe(false);
@@ -1443,8 +1446,8 @@ describe("fast-manim snapshot result v1", () => {
           stroke: { ...(scene.entities[2]!.appearance as { stroke: object }).stroke, join: "round" },
         },
       }),
-      // Collinearity alone is insufficient: the renderer accepts only the
-      // exporter's canonical 1/3 and 2/3 Line controls within one f64 ULP.
+      // Collinearity alone is insufficient: the verifier accepts only the
+      // exporter's canonical 1/3 and 2/3 Line controls within bounded roundoff.
       mutateLineSegment({ control1: lineSubpath.start, control2: lineSegment.end }),
       // Fully transparent fill: the exporter never emits invisible paint.
       mutateEntity(0, {

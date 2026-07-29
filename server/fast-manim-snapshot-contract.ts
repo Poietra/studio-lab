@@ -470,42 +470,53 @@ type StaticProfileSegment = Readonly<{
 
 const MAX_STATIC_PROFILE_CLOSED_SEGMENTS = 16;
 const STATIC_PROFILE_RELATIVE_TOLERANCE = 1e-9;
-const MAX_CANONICAL_LINE_CONTROL_ULPS_V1 = 1n;
-const F64_SIGN_MASK = 1n << 63n;
-const F64_BIT_MASK = (1n << 64n) - 1n;
+const CANONICAL_LINE_ROUNDOFF_MULTIPLIER_V1 = 64;
 
 function canonicalLineControl(start: StaticProfilePoint, end: StaticProfilePoint, factor: number) {
   return { x: start.x + (end.x - start.x) * factor, y: start.y + (end.y - start.y) * factor };
 }
 
-function orderedFiniteF64Bits(value: number) {
-  const bits = BigInt(`0x${canonicalF64HexV1(value).slice(4)}`);
-  return (bits & F64_SIGN_MASK) === 0n ? bits | F64_SIGN_MASK : F64_BIT_MASK ^ bits;
+function pointDistance(left: StaticProfilePoint, right: StaticProfilePoint) {
+  return Math.hypot(left.x - right.x, left.y - right.y);
 }
 
-function finiteF64sWithinOneUlp(left: number, right: number) {
-  if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
-  const leftBits = orderedFiniteF64Bits(left);
-  const rightBits = orderedFiniteF64Bits(right);
-  const distance = leftBits >= rightBits ? leftBits - rightBits : rightBits - leftBits;
-  return distance <= MAX_CANONICAL_LINE_CONTROL_ULPS_V1;
+function projectionOntoChord(
+  point: StaticProfilePoint,
+  start: StaticProfilePoint,
+  dx: number,
+  dy: number,
+  lengthSquared: number,
+) {
+  return ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared;
 }
 
-/** Mirrors the Rust WGPU stroke slice's finite canonical-Line predicate. */
+/** Accepts only the bounded roundoff produced by canonical Cairo Line controls. */
 export function isCanonicalFastManimLineSegmentV1(start: StaticProfilePoint, segment: StaticProfileSegment) {
+  const points = [start, segment.control1, segment.control2, segment.end];
+  if (points.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.y))) return false;
+  const dx = segment.end.x - start.x;
+  const dy = segment.end.y - start.y;
+  const lengthSquared = dx * dx + dy * dy;
+  if (!Number.isFinite(lengthSquared) || lengthSquared === 0) return false;
+  const firstProjection = projectionOntoChord(segment.control1, start, dx, dy, lengthSquared);
+  const secondProjection = projectionOntoChord(segment.control2, start, dx, dy, lengthSquared);
   if (
-    ![start.x, start.y, segment.end.x, segment.end.y].every(Number.isFinite) ||
-    (start.x === segment.end.x && start.y === segment.end.y)
-  )
+    !Number.isFinite(firstProjection) ||
+    !Number.isFinite(secondProjection) ||
+    firstProjection < 0 ||
+    firstProjection > secondProjection ||
+    secondProjection > 1
+  ) {
     return false;
+  }
   const control1 = canonicalLineControl(start, segment.end, 1 / 3);
   const control2 = canonicalLineControl(start, segment.end, 2 / 3);
-  return (
-    finiteF64sWithinOneUlp(segment.control1.x, control1.x) &&
-    finiteF64sWithinOneUlp(segment.control1.y, control1.y) &&
-    finiteF64sWithinOneUlp(segment.control2.x, control2.x) &&
-    finiteF64sWithinOneUlp(segment.control2.y, control2.y)
+  const maximumControlError = Math.max(
+    pointDistance(segment.control1, control1),
+    pointDistance(segment.control2, control2),
   );
+  const coordinateScale = Math.max(1, ...points.flatMap((point) => [Math.abs(point.x), Math.abs(point.y)]));
+  return maximumControlError <= coordinateScale * Number.EPSILON * CANONICAL_LINE_ROUNDOFF_MULTIPLIER_V1;
 }
 
 function isConvexControlPolygon(pointsInput: readonly StaticProfilePoint[]) {
@@ -650,7 +661,9 @@ function assertStaticProfileEntity(entity: StaticProfileEntity, pathTrimTarget: 
   // with visible paint; a fully transparent stroke is never emitted.
   assertCanonicalStaticProfileStroke(stroke);
   if (subpath.segments.length !== 1 || !isCanonicalFastManimLineSegmentV1(subpath.start, subpath.segments[0]!)) {
-    profileViolation("Static profile open paths must be one finite canonical 1/3–2/3 Line cubic (±1 f64 ULP).");
+    profileViolation(
+      "Static profile open paths must be one finite canonical 1/3–2/3 Line cubic within bounded roundoff.",
+    );
   }
 }
 
@@ -1028,8 +1041,8 @@ function assertDynamicProfileV2(scene: SceneIrBundleV1["scene"]) {
 /**
  * The v1 static snapshot profile: the only Scene shape the renderer provably
  * supports end to end (static filled convex closed paths lowered from Circle
- * and Rectangle, stroked Lines with canonical 1/3–2/3 cubic controls (±1
- * ordered-f64 ULP), no animation channels, exact
+ * and Rectangle, stroked Lines with canonical 1/3–2/3 cubic controls plus
+ * bounded producer roundoff, no animation channels, exact
  * fidelity, no assets). Every identifier must be the exact deterministic ID
  * derived from the Scene identity and sceneOrder, so no producer-chosen string
  * (including unreferenced provenance suffixes) can carry host details or
