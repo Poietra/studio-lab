@@ -10,6 +10,27 @@ const DYNAMIC_SCENE_ID = "scene:6b288d59a3a8c97d32ce60dd8518133ad740f2bc5172eb71
 const DYNAMIC_RUNTIME_ENTITY_ID = `${DYNAMIC_SCENE_ID}/entity:0`;
 const DYNAMIC_SOURCE_HASH = "4cb935a058980b3131ab26b756c71cb08ce6a72524c51bbc05b282343bd93702";
 const DYNAMIC_VIEWPORT = "832x468";
+const AFFINE_SCENE_ID = "scene:e9afb093122a4e056a92bd23fca4e32d63bb7170f5634e455672aa0bce468949";
+const AFFINE_SOURCE_HASH = "783ce0d0fbf5f3d4f2866e66b5ed6d02120ef66e721940daa5476632f4cde3ec";
+const AFFINE_ENTITY_IDS = Array.from({ length: 7 }, (_, index) => `${AFFINE_SCENE_ID}/entity:${index}`);
+const AFFINE_BINDINGS = [
+  ["sentinel", "source-binding:f24244a5c6e4c3105d4a8c64cdeba64645681f2ccdbe00b83156e59124acab35", 16],
+  ["translation", "source-binding:69d960aa08a853c1d9cffc849f83a78ac17b89389bfb710619403683e060b8e1", 19],
+  ["rotation", "source-binding:51aa3c4be4149b430b0073dc296cce70dcca267f2e6ae3f52bcb7635a2687005", 16],
+  ["scale", "source-binding:27dc9759d2bf1a976beddbdb8c65421f278e2fa35d53e3b7b99bd7253496ef44", 13],
+  ["stretch", "source-binding:62fb2839f5fbb4edba0aa5993fa8b8d7d4405b417b97cb5aecc869dcffc73c6a", 15],
+  ["shear", "source-binding:d1b6ea5b81c0e1aa7a757287b8ae2c55a20d780dc650f0f02d37b15b5f191d2d", 13],
+  ["reflection", "source-binding:0fcb61b906cff5fbfc5e0f50864e4fefa1c55e0e51f355f26d5ce6963ce843cf", 18],
+] as const;
+const AFFINE_BOUNDS_AT_FIVE = [
+  [-0.75234375, 0.6625, -0.65390625, 0.8375],
+  [-0.61875, -0.5625, -0.50625, -0.4375],
+  [-0.45, -0.625, -0.39375, -0.375],
+  [-0.214453125, -0.63125, -0.066796875, -0.36875],
+  [0.09140625, -0.63125, 0.18984375, -0.36875],
+  [0.348046875, -0.5625, 0.495703125, -0.4375],
+  [0.225, 0.175, 0.3375, 0.325],
+] as const;
 
 type RgbaPixel = readonly [number, number, number, number];
 
@@ -124,14 +145,15 @@ async function readBackIndependentRendererPixels(
 async function readBackDynamicRendererSamples(
   page: Page,
   input: Readonly<{
-    entityId: string;
+    entityIds: readonly string[];
+    evidenceSamples?: readonly Readonly<{ fractionX: number; fractionY: number }>[];
     revision: string;
     samples: readonly Readonly<{ id: string; sampleTime: number }>[];
     snapshot: SceneIrBundleV1;
     viewport: string;
   }>,
 ) {
-  return page.evaluate(async ({ entityId, revision, samples, snapshot, viewport }) => {
+  return page.evaluate(async ({ entityIds, evidenceSamples, revision, samples, snapshot, viewport }) => {
     const [widthPx, heightPx] = viewport.split("x").map(Number);
     const canvas = Object.assign(document.createElement("canvas"), { height: heightPx, width: widthPx });
     const clientModuleUrl = "/src/engine/canvas-worker-client.ts";
@@ -148,14 +170,14 @@ async function readBackDynamicRendererSamples(
       const results = [];
       for (const sample of samples) {
         const frame = await client.render({
-          interactionEntityIds: [entityId],
+          interactionEntityIds: entityIds,
           revision,
           sampleTime: sample.sampleTime,
           viewport: { heightPx, widthPx },
         });
         const evidence = await client.captureFrameEvidence({
           revision,
-          samples: [
+          samples: evidenceSamples ?? [
             { fractionX: 0.5, fractionY: 0.5 },
             { fractionX: 0.03, fractionY: 0.05 },
           ],
@@ -338,7 +360,7 @@ test("preserves real V2 opacity and lifetime boundaries across non-monotonic Web
     { id: "a-final-rewind", sampleTime: 2 },
   ] as const;
   const samples = await readBackDynamicRendererSamples(page, {
-    entityId,
+    entityIds: [entityId],
     revision,
     samples: samplePlan,
     snapshot: bundle,
@@ -408,6 +430,168 @@ test("preserves real V2 opacity and lifetime boundaries across non-monotonic Web
     hostPackets.add((await canvasRoot.getAttribute("data-preview-packet-id")) ?? "");
   }
   expect(hostPackets.size).toBe(3);
+});
+
+test("preserves real V2 affine methods and isolates a singular reflection sample", async ({ page }) => {
+  await expectVerifiedRun(await openRealWorkspace(page));
+  const run = await expectVerifiedRun(await selectScene(page, "DynamicAffineScene", "scene_affine.py"));
+  const bundle = run.snapshot?.bundle;
+  const revision = run.snapshot?.snapshotHash;
+  const identity = run.sourceRuntimeIdentity;
+  if (!bundle || !revision || !identity) {
+    throw new Error("The affine Scene did not publish a complete verified snapshot and identity map.");
+  }
+
+  expect(bundle.scene).toMatchObject({
+    duration: 7,
+    requiredCapabilities: ["affine-transform-animation", "cubic-path-geometry"],
+    sceneId: AFFINE_SCENE_ID,
+    source: {
+      kind: "imported-manim-server-snapshot",
+      snapshotVersion: 2,
+      sourceHash: AFFINE_SOURCE_HASH,
+    },
+  });
+  expect(bundle.scene.entities).toHaveLength(7);
+  expect(bundle.scene.entities.map((entity) => entity.id)).toEqual(AFFINE_ENTITY_IDS);
+  expect(bundle.scene.entities.every((entity) => entity.lifetimes.length === 1)).toBe(true);
+  expect(bundle.scene.entities.map((entity) => entity.lifetimes[0])).toEqual(
+    Array.from({ length: 7 }, () => ({ end: 7, start: 0 })),
+  );
+
+  const channels = bundle.scene.animationChannels;
+  expect(channels).toHaveLength(6);
+  const expectedEndpoints = [
+    [1, 0, 0, 1, 1, 0],
+    [0, -1, 1, 0, -5, 1],
+    [1.5, 0, 0, 1.5, 0.5, 1],
+    [1, 0, 0, 1.5, 0, 1],
+    [1, 0.5, 0, 1, 1, 0],
+    [-1, 0, 0, 1, 6, 0],
+  ] as const;
+  for (const [index, channel] of channels.entries()) {
+    expect(channel.kind).toBe("affine-transform");
+    if (channel.kind !== "affine-transform") throw new Error("Expected only affine-transform channels.");
+    const sceneOrder = index + 1;
+    expect(channel).toMatchObject({
+      entityId: AFFINE_ENTITY_IDS[sceneOrder],
+      id: `${AFFINE_SCENE_ID}/channel:affine-transform:${sceneOrder}`,
+      keyframes: [
+        {
+          at: index,
+          easingToNext: { kind: "linear" },
+          value: { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 },
+        },
+        { at: index + 1, easingToNext: null },
+      ],
+      provenanceId: `${AFFINE_SCENE_ID}/provenance:channel:affine-transform:${sceneOrder}`,
+    });
+    const endpoint = channel.keyframes[1]?.value;
+    if (!endpoint) throw new Error("An affine producer channel omitted its endpoint.");
+    for (const [componentIndex, component] of [
+      endpoint.m11,
+      endpoint.m12,
+      endpoint.m21,
+      endpoint.m22,
+      endpoint.tx,
+      endpoint.ty,
+    ].entries()) {
+      expect(component).toBeCloseTo(expectedEndpoints[index]![componentIndex]!, 12);
+    }
+  }
+
+  expect(identity).toMatchObject({
+    sceneId: AFFINE_SCENE_ID,
+    snapshotHash: revision,
+    sourceHash: AFFINE_SOURCE_HASH,
+  });
+  expect(identity.mappings).toHaveLength(7);
+  expect(identity.mappings).toEqual(
+    AFFINE_BINDINGS.map(([name, id, endColumn], index) => ({
+      binding: {
+        id,
+        name,
+        ordinal: index + 1,
+        span: { endColumn, endLine: index + 6, startColumn: 8, startLine: index + 6 },
+      },
+      entityId: AFFINE_ENTITY_IDS[index],
+      familyPath: [],
+      provenanceId: `${AFFINE_SCENE_ID}/provenance:entity:${index}`,
+    })),
+  );
+  await expectPresented(page, run.revision);
+
+  const canvasRoot = page.locator("[data-studio-canvas]");
+  const viewport = await canvasRoot.getAttribute("data-preview-viewport");
+  if (!viewport) throw new Error("The affine WebGPU proof did not expose a viewport.");
+  const samplePlan = [
+    { id: "a-first", sampleTime: 5 },
+    { id: "singular", sampleTime: 5.5 },
+    { id: "b", sampleTime: 6 },
+    { id: "a-repeat", sampleTime: 5 },
+  ] as const;
+  const samples = await readBackDynamicRendererSamples(page, {
+    entityIds: AFFINE_ENTITY_IDS,
+    evidenceSamples: [
+      { fractionX: 0.1484375, fractionY: 0.125 },
+      { fractionX: 0.640625, fractionY: 0.375 },
+      { fractionX: 0.78125, fractionY: 0.375 },
+      { fractionX: 0.03, fractionY: 0.05 },
+    ],
+    revision,
+    samples: samplePlan,
+    snapshot: bundle,
+    viewport,
+  });
+  const byId = new Map(samples.map((sample) => [sample.id, sample]));
+  const expectBoundsNear = (actual: readonly number[] | undefined, expected: readonly number[]) => {
+    expect(actual).toHaveLength(4);
+    for (const [index, component] of (actual ?? []).entries()) {
+      expect(component).toBeCloseTo(expected[index]!, 6);
+    }
+  };
+
+  for (const planned of samplePlan) {
+    const sample = byId.get(planned.id);
+    expect(sample?.frame).toMatchObject({ kind: "frame-presented", revision, sampleTime: planned.sampleTime });
+    expect(sample?.evidence).toMatchObject({
+      packetId: sample?.frame.packetId,
+      revision,
+      sampleTime: planned.sampleTime,
+      viewport: sample?.frame.viewport,
+    });
+    expect(sample?.frame.interaction).toMatchObject({ space: "clip-v1", status: "available" });
+    const entries = sample?.frame.interaction.entries;
+    expect(entries).toHaveLength(7);
+    for (const [index, expectedBounds] of AFFINE_BOUNDS_AT_FIVE.entries()) {
+      const entry = entries?.[index];
+      if (planned.id === "singular" && index === 6) {
+        expect(entry).toEqual({ status: "empty" });
+      } else {
+        expect(entry?.status).toBe("present");
+        if (entry?.status !== "present") throw new Error("Expected a present affine interaction entry.");
+        expectBoundsNear(
+          entry.bounds,
+          planned.id === "b" && index === 6 ? [0.50625, 0.175, 0.61875, 0.325] : expectedBounds,
+        );
+      }
+    }
+  }
+  expect(byId.get("a-repeat")?.frame.interaction).toEqual(byId.get("a-first")?.frame.interaction);
+
+  const pixels = (id: string) => byId.get(id)?.evidence.samples as readonly RgbaPixel[];
+  expectPixelNear(pixels("a-first")[0]!, [255, 255, 255, 255]);
+  expectPixelNear(pixels("a-first")[1]!, [252, 98, 85, 255]);
+  expectPixelNear(pixels("a-first")[2]!, [0, 0, 0, 255]);
+  expectPixelNear(pixels("singular")[0]!, [255, 255, 255, 255]);
+  expectPixelNear(pixels("singular")[1]!, [0, 0, 0, 255]);
+  expectPixelNear(pixels("singular")[2]!, [0, 0, 0, 255]);
+  expectPixelNear(pixels("b")[1]!, [0, 0, 0, 255]);
+  expectPixelNear(pixels("b")[2]!, [252, 98, 85, 255]);
+  expect(pixels("a-repeat")).toEqual(pixels("a-first"));
+  for (const sample of samples) expectPixelNear(sample.evidence.samples[3] as RgbaPixel, [0, 0, 0, 255]);
+
+  await expect(page.getByRole("slider", { name: "Scene playhead" })).toHaveAttribute("max", "7");
 });
 
 test("falls back the whole Scene for real producer unsupported and exit results", async ({ page }) => {

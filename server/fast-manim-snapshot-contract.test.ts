@@ -5,11 +5,13 @@ import { describe, expect, it } from "vitest";
 import { digestAssetManifestV1, type SceneIrBundleV1, sceneIrBundleV1Schema } from "../src/engine/contracts";
 import {
   digestFastManimSnapshotBundleV1,
-  expectedFastManimSnapshotCorrelationV1Schema,
   type ExpectedFastManimSnapshotCorrelationV1,
+  expectedFastManimSnapshotCorrelationV1Schema,
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V1,
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V2,
   FAST_MANIM_SNAPSHOT_UNSUPPORTED_MESSAGES_V1,
+  fastManimSnapshotAffineTransformChannelIdV2,
+  fastManimSnapshotAffineTransformChannelProvenanceIdV2,
   fastManimSnapshotOpacityChannelIdV2,
   fastManimSnapshotOpacityChannelProvenanceIdV2,
   fastManimSnapshotRunViewV1Schema,
@@ -143,6 +145,60 @@ async function dynamicOpacityBundle(): Promise<SceneIrBundleV1> {
         },
       ],
       requiredCapabilities: ["cubic-path-geometry", "opacity-animation"],
+      source: { ...base.scene.source, snapshotVersion: 2 },
+    },
+  });
+}
+
+async function dynamicAffineBundle(): Promise<SceneIrBundleV1> {
+  const base = await importedBundle();
+  const duration = 6;
+  const channelProvenanceId = fastManimSnapshotAffineTransformChannelProvenanceIdV2(expected.sceneId, 0);
+  return sceneIrBundleV1Schema.parse({
+    ...base,
+    scene: {
+      ...base.scene,
+      animationChannels: [
+        {
+          entityId: base.scene.entities[0]!.id,
+          id: fastManimSnapshotAffineTransformChannelIdV2(expected.sceneId, 0),
+          keyframes: [
+            {
+              at: 1,
+              easingToNext: { kind: "linear" },
+              value: { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 },
+            },
+            {
+              at: 2,
+              easingToNext: { kind: "linear" },
+              value: { m11: 1, m12: 0, m21: 0, m22: 1, tx: 2, ty: -1 },
+            },
+            {
+              at: 3,
+              easingToNext: { kind: "linear" },
+              value: { m11: 1, m12: 0, m21: 0, m22: 1, tx: 2, ty: -1 },
+            },
+            {
+              at: 5,
+              easingToNext: null,
+              value: { m11: -1, m12: 0.5, m21: 0, m22: 2, tx: 4, ty: -3 },
+            },
+          ],
+          kind: "affine-transform",
+          provenanceId: channelProvenanceId,
+        },
+      ],
+      duration,
+      entities: base.scene.entities.map((entity) => ({ ...entity, lifetimes: [{ end: duration, start: 0 }] })),
+      provenance: [
+        ...base.scene.provenance,
+        {
+          evidence: ["producer-authored affine evidence must be normalized"],
+          id: channelProvenanceId,
+          origin: "fast-manim-server-snapshot",
+        },
+      ],
+      requiredCapabilities: ["affine-transform-animation", "cubic-path-geometry"],
       source: { ...base.scene.source, snapshotVersion: 2 },
     },
   });
@@ -355,6 +411,152 @@ describe("fast-manim snapshot result v1", () => {
     await expect(parseProducer(compiled(cumulativeGrid), expectedV2)).resolves.toMatchObject({ kind: "compiled" });
   });
 
+  it("seals bounded absolute affine keyframes, including reflection, while keeping the base static", async () => {
+    const bundle = await dynamicAffineBundle();
+    const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
+    const sealed = await parseProducer(compiled(bundle), expectedV2);
+    if (sealed.kind !== "compiled") throw new Error("Expected a compiled affine V2 snapshot.");
+
+    expect(sealed.bundle.scene.requiredCapabilities).toEqual(["affine-transform-animation", "cubic-path-geometry"]);
+    expect(sealed.bundle.scene.entities[0]?.geometry).toEqual(bundle.scene.entities[0]?.geometry);
+    expect(sealed.bundle.scene.entities[0]?.transform).toEqual({ m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 });
+    expect(sealed.bundle.scene.animationChannels).toEqual(bundle.scene.animationChannels);
+    const sealedChannel = sealed.bundle.scene.animationChannels[0]!;
+    if (sealedChannel.kind !== "affine-transform") throw new Error("Expected the sealed affine channel.");
+    const reflected = sealedChannel.keyframes.at(-1)!.value;
+    expect(reflected.m11 * reflected.m22 - reflected.m12 * reflected.m21).toBeLessThan(0);
+    expect(
+      sealed.bundle.scene.provenance.every(
+        (record) => record.evidence[0] === FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V2,
+      ),
+    ).toBe(true);
+    await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV2)).resolves.toEqual(sealed);
+  });
+
+  it("accepts affine then opacity for one entity and rejects reversed channel identity order", async () => {
+    const opacity = await dynamicOpacityBundle();
+    const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
+    const entity = opacity.scene.entities[0]!;
+    const affineProvenanceId = fastManimSnapshotAffineTransformChannelProvenanceIdV2(expected.sceneId, 0);
+    const affine = {
+      entityId: entity.id,
+      id: fastManimSnapshotAffineTransformChannelIdV2(expected.sceneId, 0),
+      keyframes: [
+        {
+          at: 1,
+          easingToNext: { kind: "linear" as const },
+          value: { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 },
+        },
+        {
+          at: 2,
+          easingToNext: null,
+          value: { m11: 1, m12: 0, m21: 0, m22: 1, tx: 2, ty: 0 },
+        },
+      ],
+      kind: "affine-transform" as const,
+      provenanceId: affineProvenanceId,
+    };
+    const combined = sceneIrBundleV1Schema.parse({
+      ...opacity,
+      scene: {
+        ...opacity.scene,
+        animationChannels: [affine, ...opacity.scene.animationChannels],
+        provenance: [
+          ...opacity.scene.provenance.slice(0, 2),
+          {
+            evidence: ["producer-authored affine evidence must be normalized"],
+            id: affineProvenanceId,
+            origin: "fast-manim-server-snapshot",
+          },
+          opacity.scene.provenance[2],
+        ],
+        requiredCapabilities: ["affine-transform-animation", "cubic-path-geometry", "opacity-animation"],
+      },
+    });
+    await expect(parseProducer(compiled(combined), expectedV2)).resolves.toMatchObject({ kind: "compiled" });
+
+    const reversed = {
+      ...combined,
+      scene: { ...combined.scene, animationChannels: [...combined.scene.animationChannels].reverse() },
+    } as SceneIrBundleV1;
+    await expect(parseProducer(compiled(reversed), expectedV2)).rejects.toMatchObject({ code: "profile-violation" });
+  });
+
+  it("rejects schema-valid affine evidence outside the exact producer profile", async () => {
+    const bundle = await dynamicAffineBundle();
+    const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
+    const scene = bundle.scene;
+    const channel = scene.animationChannels[0]!;
+    if (channel.kind !== "affine-transform") throw new Error("Expected the affine fixture channel.");
+    const mutate = (patch: Partial<typeof scene>) => ({ ...bundle, scene: { ...scene, ...patch } }) as SceneIrBundleV1;
+    const mutateChannel = (patch: Partial<typeof channel>) =>
+      mutate({ animationChannels: [{ ...channel, ...patch }] } as Partial<typeof scene>);
+    const identity = { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 };
+
+    const profileViolations = [
+      mutateChannel({ id: fastManimSnapshotAffineTransformChannelIdV2(expected.sceneId, 1) }),
+      mutateChannel({ provenanceId: scene.provenance[1]!.id }),
+      mutateChannel({ entityId: scene.entities[1]!.id }),
+      mutateChannel({ keyframes: channel.keyframes.map((keyframe) => ({ ...keyframe, value: identity })) }),
+      mutateChannel({
+        keyframes: channel.keyframes.map((keyframe, index) =>
+          index === 0 ? { ...keyframe, value: { ...keyframe.value, tx: 1 } } : keyframe,
+        ),
+      }),
+      mutateChannel({
+        keyframes: channel.keyframes.map((keyframe, index) =>
+          index === 0 ? { ...keyframe, easingToNext: { kind: "smooth" as const } } : keyframe,
+        ),
+      }),
+      mutateChannel({
+        keyframes: channel.keyframes.map((keyframe, index) => (index === 1 ? { ...keyframe, at: 2.01 } : keyframe)),
+      }),
+      mutateChannel({
+        keyframes: channel.keyframes.map((keyframe, index) =>
+          index === 1 ? { ...keyframe, value: { ...keyframe.value, m11: 1_000_000_001 } } : keyframe,
+        ),
+      }),
+      mutateChannel({
+        keyframes: channel.keyframes.map((keyframe, index) =>
+          index === 1 ? { ...keyframe, value: { ...keyframe.value, m11: 1_000_000_000 } } : keyframe,
+        ),
+      }),
+      mutate({
+        entities: scene.entities.map((entity, index) =>
+          index === 0 ? { ...entity, transform: { ...entity.transform, tx: 1 } } : entity,
+        ),
+      } as Partial<typeof scene>),
+    ];
+    for (const invalid of profileViolations) {
+      await expect(parseProducer(compiled(invalid), expectedV2)).rejects.toMatchObject({ code: "profile-violation" });
+    }
+  });
+
+  it("rejects omitted, unknown, and non-finite affine matrix fields at the Scene IR boundary", async () => {
+    const bundle = await dynamicAffineBundle();
+    const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
+    const missing = structuredClone(bundle) as unknown as {
+      scene: { animationChannels: Array<{ keyframes: Array<{ value: Record<string, unknown> }> }> };
+    };
+    delete missing.scene.animationChannels[0]!.keyframes[1]!.value.m11;
+    const unknown = structuredClone(bundle) as unknown as {
+      scene: { animationChannels: Array<{ keyframes: Array<{ value: Record<string, unknown> }> }> };
+    };
+    unknown.scene.animationChannels[0]!.keyframes[1]!.value.future = 1;
+    const nonFinite = structuredClone(bundle) as unknown as {
+      scene: { animationChannels: Array<{ keyframes: Array<{ value: Record<string, unknown> }> }> };
+    };
+    nonFinite.scene.animationChannels[0]!.keyframes[1]!.value.m11 = Number.NaN;
+    const wrongCapabilities = {
+      ...bundle,
+      scene: { ...bundle.scene, requiredCapabilities: ["cubic-path-geometry"] },
+    };
+
+    for (const invalid of [missing, unknown, nonFinite, wrongCapabilities]) {
+      await expect(parseProducer(compiled(invalid as unknown as SceneIrBundleV1), expectedV2)).rejects.toThrow();
+    }
+  });
+
   it("rejects schema-valid opacity/lifetime evidence outside the exact producer profile", async () => {
     const bundle = await dynamicOpacityBundle();
     const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
@@ -373,7 +575,7 @@ describe("fast-manim snapshot result v1", () => {
     ).rejects.toMatchObject({
       code: "profile-violation",
       message:
-        "Dynamic profile V2 provenance must be exactly the derived scene, per-entity, and per-opacity-channel records in order.",
+        "Dynamic profile V2 provenance must be exactly the derived scene, per-entity, and per-animation-channel records in order.",
     });
 
     const profileViolations = [
