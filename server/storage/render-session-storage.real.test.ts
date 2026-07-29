@@ -164,9 +164,11 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE === undefined)("durable render-s
         },
       }) as RenderSessionRepositoryV1;
       const executor: DurableManimRenderExecutorV1 = {
+        async cancel() {},
         async close() {
           await broker.end();
         },
+        async cleanup() {},
         async ready() {
           return true;
         },
@@ -631,7 +633,9 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
       );
       let reattachCount = 0;
       const recoveringExecutor: DurableManimRenderExecutorV1 = {
+        async cancel() {},
         async close() {},
+        async cleanup() {},
         async ready() {
           return true;
         },

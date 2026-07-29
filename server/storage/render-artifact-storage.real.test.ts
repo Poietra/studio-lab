@@ -672,7 +672,7 @@ async function publishThroughRealOci(
       group.mockRestore();
       user.mockRestore();
     }
-    await backend.cancel(base.jobId, { deadlineEpochMs: Date.now() + 30_000, signal });
+    await backend.cleanup(base.jobId, { deadlineEpochMs: Date.now() + 30_000, signal });
     evidence = { published: invalidateFence === undefined, requestDigests, runtimeDigest: runner.runtimeDigest };
   } catch (error) {
     operationError = error;

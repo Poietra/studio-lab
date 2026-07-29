@@ -160,6 +160,30 @@ export const manimRenderSandboxDescriptorV2Schema = z
 export type ManimRenderSandboxDescriptorV2 = Readonly<z.infer<typeof manimRenderSandboxDescriptorV2Schema>>;
 export type ManimRenderSandboxDescriptorInputV2 = Readonly<z.input<typeof manimRenderSandboxDescriptorV2Schema>>;
 
+export const manimRenderSandboxCancellationFenceV1Schema = z
+  .object({
+    jobId: opaqueIdV1Schema,
+    rejectUntilEpochMs: deadlineEpochMsSchema,
+    sessionId: opaqueIdV1Schema,
+    tenantId: manimTenantIdSchema,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.jobId !== `${value.tenantId}/${value.sessionId}`) {
+      context.addIssue({ code: "custom", message: "Render cancellation identity is inconsistent." });
+    }
+  });
+
+export type ManimRenderSandboxCancellationFenceV1 = Readonly<
+  z.infer<typeof manimRenderSandboxCancellationFenceV1Schema>
+>;
+
+export function digestManimRenderSandboxCancellationFenceV1(value: ManimRenderSandboxCancellationFenceV1) {
+  return createHash("sha256")
+    .update(canonicalJsonV1(manimRenderSandboxCancellationFenceV1Schema.parse(value)), "utf8")
+    .digest("hex");
+}
+
 export class SealedManimRenderSandboxRequestV2 {
   readonly byteLength: number;
   readonly requestDigest: string;

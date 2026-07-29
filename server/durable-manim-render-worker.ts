@@ -4,6 +4,7 @@ import { HttpError } from "./http/json";
 import { manimTenantIdSchema } from "./manim-request-principal";
 import {
   type DurableRenderSessionV1,
+  MAX_DURABLE_RENDER_EXECUTION_TIMEOUT_MS_V1,
   MAX_DURABLE_RENDER_LEASE_MS_V1,
   type RenderSessionRepositoryV1,
 } from "./storage/render-session-repository";
@@ -24,7 +25,7 @@ export type DurableManimRenderExecutionResultV1 =
       logTail: string;
     }>
   | Readonly<{
-      code: "interrupted" | "render-failed";
+      code: "cancelled" | "interrupted" | "render-failed";
       kind: "failed";
       logTail: string;
     }>;
@@ -36,9 +37,29 @@ export type DurableManimRenderExecutionRequestV1 = Readonly<{
   signal: AbortSignal;
 }>;
 
+export type DurableManimRenderCancellationRequestV1 = Readonly<{
+  jobId: string;
+  rejectUntilEpochMs: number;
+  sessionId: string;
+  tenantId: string;
+}>;
+
+export type DurableManimRenderCleanupRequestV1 = Readonly<{
+  jobId: string;
+  sessionId: string;
+  tenantId: string;
+}>;
+
+type CancellationState = {
+  deadlineEpochMs: number;
+  durable: boolean;
+  pending: number;
+};
+
 export interface DurableManimRenderExecutorV1 {
-  cancel?(request: Readonly<{ jobId: string; sessionId: string; tenantId: string }>): Promise<void>;
+  cancel(request: DurableManimRenderCancellationRequestV1): Promise<void>;
   close(): Promise<void>;
+  cleanup(request: DurableManimRenderCleanupRequestV1): Promise<void>;
   ready(signal?: AbortSignal): Promise<boolean>;
   submitOrReattach(request: DurableManimRenderExecutionRequestV1): Promise<DurableManimRenderExecutionResultV1>;
 }
@@ -103,7 +124,8 @@ function expectedConflict(error: unknown) {
   return error instanceof HttpError && error.status === 409;
 }
 
-function executionFailureMessage(code: "interrupted" | "render-failed") {
+function executionFailureMessage(code: "cancelled" | "interrupted" | "render-failed") {
+  if (code === "cancelled") return null;
   return code === "interrupted" ? "Render execution was interrupted." : "The sandbox render failed.";
 }
 
@@ -128,6 +150,8 @@ export class DurableManimRenderWorkerV1 {
   readonly #repository: RenderSessionRepositoryV1;
   readonly #tenantId: string;
   readonly #workerId: string;
+  readonly #activeJobAborts = new Map<string, AbortController>();
+  readonly #cancellations = new Map<string, CancellationState>();
   #closeRequest: Promise<void> | null = null;
   #pollTimer: NodeJS.Timeout | null = null;
   #runRequest: Promise<void> | null = null;
@@ -194,14 +218,35 @@ export class DurableManimRenderWorkerV1 {
   }
 
   async cancel(sessionId: string) {
+    const cancellation = this.#cancellations.get(sessionId) ?? {
+      deadlineEpochMs: Date.now() + MAX_DURABLE_RENDER_EXECUTION_TIMEOUT_MS_V1,
+      durable: false,
+      pending: 0,
+    };
+    cancellation.deadlineEpochMs = Math.max(
+      cancellation.deadlineEpochMs,
+      Date.now() + MAX_DURABLE_RENDER_EXECUTION_TIMEOUT_MS_V1,
+    );
+    cancellation.pending += 1;
+    this.#cancellations.set(sessionId, cancellation);
+    this.#activeJobAborts
+      .get(sessionId)
+      ?.abort(new DOMException("The durable render session was cancelled.", "AbortError"));
     try {
-      await this.#executor.cancel?.({
+      const session = await this.#repository.readSession(this.#tenantId, sessionId);
+      cancellation.deadlineEpochMs = session.deadline.getTime();
+      await this.#executor.cancel({
         jobId: durableManimRenderJobIdV1(this.#tenantId, sessionId),
+        rejectUntilEpochMs: cancellation.deadlineEpochMs,
         sessionId,
         tenantId: this.#tenantId,
       });
-    } catch (error) {
-      this.#reportFailure(error);
+      cancellation.durable = true;
+    } finally {
+      cancellation.pending -= 1;
+      if (!cancellation.durable && cancellation.pending === 0 && this.#cancellations.get(sessionId) === cancellation) {
+        this.#cancellations.delete(sessionId);
+      }
     }
   }
 
@@ -216,6 +261,10 @@ export class DurableManimRenderWorkerV1 {
 
   async #run(signal: AbortSignal) {
     signal.throwIfAborted();
+    const now = Date.now();
+    for (const [sessionId, cancellation] of this.#cancellations) {
+      if (cancellation.pending === 0 && cancellation.deadlineEpochMs <= now) this.#cancellations.delete(sessionId);
+    }
     if (!(await this.#repository.ready(signal))) return;
     await this.#repository.expireTimedOutSessions(this.#tenantId, this.#maxConcurrentJobs, signal);
     if (!(await this.#executor.ready(signal))) return;
@@ -228,22 +277,42 @@ export class DurableManimRenderWorkerV1 {
   }
 
   async #claimAndExecute(session: DurableRenderSessionV1, signal: AbortSignal) {
-    let claimed: DurableRenderSessionV1;
-    try {
-      claimed = await this.#repository.claimLease(
-        {
-          leaseDurationMs: this.#leaseDurationMs,
-          ownerId: this.#workerId,
-          sessionId: session.id,
-          tenantId: this.#tenantId,
-        },
-        signal,
-      );
-    } catch (error) {
-      if (expectedConflict(error)) return;
-      throw error;
+    const jobAbort = new AbortController();
+    const abortFromParent = () => jobAbort.abort(interruptedError(signal));
+    if (signal.aborted) abortFromParent();
+    else signal.addEventListener("abort", abortFromParent, { once: true });
+    if (this.#activeJobAborts.has(session.id)) {
+      signal.removeEventListener("abort", abortFromParent);
+      throw new Error("The durable render session is already active in this worker.");
     }
-    await this.#executeClaimed(claimed, signal);
+    this.#activeJobAborts.set(session.id, jobAbort);
+    const cancellation = this.#cancellations.get(session.id);
+    if (cancellation && (cancellation.pending > 0 || cancellation.deadlineEpochMs > Date.now())) {
+      jobAbort.abort(new DOMException("The durable render session was cancelled.", "AbortError"));
+    }
+    try {
+      let claimed: DurableRenderSessionV1;
+      try {
+        claimed = await this.#repository.claimLease(
+          {
+            leaseDurationMs: this.#leaseDurationMs,
+            ownerId: this.#workerId,
+            sessionId: session.id,
+            tenantId: this.#tenantId,
+          },
+          jobAbort.signal,
+        );
+      } catch (error) {
+        if (jobAbort.signal.aborted) return;
+        if (expectedConflict(error)) return;
+        throw error;
+      }
+      if (jobAbort.signal.aborted) return;
+      await this.#executeClaimed(claimed, jobAbort.signal);
+    } finally {
+      signal.removeEventListener("abort", abortFromParent);
+      if (this.#activeJobAborts.get(session.id) === jobAbort) this.#activeJobAborts.delete(session.id);
+    }
   }
 
   async #executeClaimed(claimed: DurableRenderSessionV1, parentSignal: AbortSignal) {
@@ -347,6 +416,7 @@ export class DurableManimRenderWorkerV1 {
         : outcome.kind === "result" && outcome.result.kind === "failed"
           ? outcome.result.code
           : "interrupted";
+    const cancelled = failureCode === "cancelled";
     try {
       await this.#repository.completeLease({
         ...(outcome.kind === "result" && outcome.result.kind === "ready"
@@ -359,7 +429,7 @@ export class DurableManimRenderWorkerV1 {
         ownerId: this.#workerId,
         progress: failed ? claimed.progress : 1,
         sessionId: claimed.id,
-        status: failed ? "failed" : "ready",
+        status: cancelled ? "cancelled" : failed ? "failed" : "ready",
         tenantId: this.#tenantId,
       });
       if (failed) await this.#cleanupStaging(claimed.id);
@@ -370,7 +440,7 @@ export class DurableManimRenderWorkerV1 {
 
   async #cleanupStaging(sessionId: string) {
     try {
-      await this.#executor.cancel?.({
+      await this.#executor.cleanup({
         jobId: durableManimRenderJobIdV1(this.#tenantId, sessionId),
         sessionId,
         tenantId: this.#tenantId,

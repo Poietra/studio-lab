@@ -1,4 +1,9 @@
-import type { DurableManimRenderExecutionRequestV1, DurableManimRenderExecutorV1 } from "./durable-manim-render-worker";
+import type {
+  DurableManimRenderCancellationRequestV1,
+  DurableManimRenderCleanupRequestV1,
+  DurableManimRenderExecutionRequestV1,
+  DurableManimRenderExecutorV1,
+} from "./durable-manim-render-worker";
 import {
   createManimRenderProductionSandboxClientV1,
   type ManimRenderProductionSandboxClientOptionsV1,
@@ -7,6 +12,7 @@ import type { ManimRenderSandboxBackendV1 } from "./manim-render-sandbox-backend
 import {
   canonicalManimRenderFenceTokenV1,
   encodeManimRenderStagingLocatorV1,
+  manimRenderSandboxCancellationFenceV1Schema,
   MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
   MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V2,
   SealedManimRenderSandboxRequestV2,
@@ -190,20 +196,49 @@ export class ProductionDurableManimRenderExecutorV1 implements DurableManimRende
         },
       } as const;
     }
-    const terminal = video.kind === "failed" ? video : thumbnail.kind === "failed" ? thumbnail : null;
+    const cleanupFailed =
+      video.kind === "failed" && video.code === "cleanup-failed"
+        ? video
+        : thumbnail.kind === "failed" && thumbnail.code === "cleanup-failed"
+          ? thumbnail
+          : null;
+    const cancelled =
+      video.kind === "failed" && video.code === "cancelled"
+        ? video
+        : thumbnail.kind === "failed" && thumbnail.code === "cancelled"
+          ? thumbnail
+          : null;
+    const terminal =
+      cleanupFailed ?? cancelled ?? (video.kind === "failed" ? video : thumbnail.kind === "failed" ? thumbnail : null);
     if (!terminal) throw new Error("The render sandbox returned an invalid media bundle.");
     return {
-      code: terminal.code === "cancelled" || terminal.code === "deadline-exceeded" ? "interrupted" : "render-failed",
+      code:
+        terminal.code === "cancelled"
+          ? "cancelled"
+          : terminal.code === "deadline-exceeded"
+            ? "interrupted"
+            : "render-failed",
       kind: "failed",
       logTail: "",
     } as const;
   }
 
-  cancel(request: Readonly<{ jobId: string; sessionId: string; tenantId: string }>) {
-    if (request.tenantId !== this.#tenantId || request.jobId !== `${request.tenantId}/${request.sessionId}`) {
+  cancel(request: DurableManimRenderCancellationRequestV1) {
+    if (request.tenantId !== this.#tenantId) {
       return Promise.reject(new TypeError("The render cancellation identity is invalid."));
     }
-    return this.#backend.cancel(request.jobId, {
+    const fence = manimRenderSandboxCancellationFenceV1Schema.parse(request);
+    return this.#backend.cancel(fence, {
+      deadlineEpochMs: Date.now() + READINESS_TIMEOUT_MS,
+      signal: new AbortController().signal,
+    });
+  }
+
+  cleanup(request: DurableManimRenderCleanupRequestV1) {
+    if (request.tenantId !== this.#tenantId || request.jobId !== `${request.tenantId}/${request.sessionId}`) {
+      return Promise.reject(new TypeError("The render cleanup identity is invalid."));
+    }
+    return this.#backend.cleanup(request.jobId, {
       deadlineEpochMs: Date.now() + READINESS_TIMEOUT_MS,
       signal: new AbortController().signal,
     });

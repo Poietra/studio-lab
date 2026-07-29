@@ -22,6 +22,8 @@ import {
   reapFastManimGatedOciAttachedDockerClientV1,
 } from "./fast-manim-gated-oci-job-runner";
 import {
+  type ManimRenderSandboxCancellationFenceV1,
+  manimRenderSandboxCancellationFenceV1Schema,
   digestManimRenderStagingRootV1,
   digestManimRenderSandboxExecutionV2,
   MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
@@ -32,6 +34,7 @@ import {
   type SealedManimRenderSandboxRequestV2,
   verifySealedManimRenderSandboxRequestV2,
 } from "./manim-render-sandbox-contract";
+import { MAX_DURABLE_RENDER_EXECUTION_TIMEOUT_MS_V1 } from "./storage/render-session-repository";
 
 const IMAGE_ID = /^sha256:[a-f0-9]{64}$/u;
 const CONTAINER_ID = /^[a-f0-9]{64}$/u;
@@ -52,6 +55,12 @@ const POLL_INTERVAL_MS = 50;
 const MAX_ACTIVE_JOBS = 8;
 const MAX_STAGED_ARTIFACTS = 64;
 const MAX_STAGED_MANIFEST_BYTES = 8 * 1024;
+const MAX_CANCELLATION_FENCES = 4_096;
+const MAX_CANCELLATION_FENCES_PER_TENANT = 256;
+const MAX_CANCELLATION_STATE_BYTES = 4 * 1024 * 1024;
+const CANCELLATION_GRACE_MS = 30_000;
+const CANCELLATION_STATE_FILE = "render-cancellations-v1.json";
+const CANCELLATION_STATE_TEMPORARY_FILE = ".render-cancellations-v1.json.tmp";
 const STAGING_RESERVATION_BYTES = MAX_MANIM_RENDER_SANDBOX_ARTIFACT_BYTES_V1 + MAX_STAGED_MANIFEST_BYTES;
 const MAX_STAGED_BYTES = 16 * STAGING_RESERVATION_BYTES;
 const TMPFS_BYTES = 256 * 1024 * 1024;
@@ -125,6 +134,15 @@ export const MANIM_RENDER_GATED_OCI_PROFILE_V1 = Object.freeze({
   artifactBytes: MAX_MANIM_RENDER_SANDBOX_ARTIFACT_BYTES_V1,
   capabilitiesAdded: Object.freeze([]),
   capabilitiesDropped: Object.freeze(["ALL"]),
+  cancellationFences: Object.freeze({
+    cleanupOperation: 1,
+    graceMilliseconds: CANCELLATION_GRACE_MS,
+    maximumEntries: MAX_CANCELLATION_FENCES,
+    maximumEntriesPerTenant: MAX_CANCELLATION_FENCES_PER_TENANT,
+    maximumExecutionMilliseconds: MAX_DURABLE_RENDER_EXECUTION_TIMEOUT_MS_V1,
+    persistence: "private-staging-root",
+    version: 1,
+  }),
   cgroupNamespace: "private",
   cpuNanoSeconds: CPU_NANOSECONDS,
   entrypoint: FIXED_ENTRYPOINT,
@@ -231,6 +249,32 @@ const stagedManifestSchema = z
     version: z.literal(1),
   })
   .strict();
+
+const cancellationStateSchema = z
+  .object({
+    entries: z.array(manimRenderSandboxCancellationFenceV1Schema).max(MAX_CANCELLATION_FENCES),
+    schema: z.literal("poietra.manim-render-cancellation-state"),
+    stagingRootDigest: z.string().regex(/^[a-f0-9]{64}$/u),
+    version: z.literal(1),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const tenantCounts = new Map<string, number>();
+    for (let index = 1; index < value.entries.length; index += 1) {
+      if (value.entries[index - 1]!.jobId >= value.entries[index]!.jobId) {
+        context.addIssue({ code: "custom", message: "Render cancellation entries are not uniquely sorted." });
+        break;
+      }
+    }
+    for (const entry of value.entries) {
+      const count = (tenantCounts.get(entry.tenantId) ?? 0) + 1;
+      tenantCounts.set(entry.tenantId, count);
+      if (count > MAX_CANCELLATION_FENCES_PER_TENANT) {
+        context.addIssue({ code: "custom", message: "A tenant exceeds the render cancellation fence capacity." });
+        break;
+      }
+    }
+  });
 
 const containerTerminalSchema = z.discriminatedUnion("kind", [
   z
@@ -407,6 +451,8 @@ function throwIfDeadlineElapsed(deadlineEpochMs: number, signal: AbortSignal) {
 function abortError() {
   return new DOMException("The render sandbox operation was aborted.", "AbortError");
 }
+
+class ManimRenderCancellationRejectedErrorV1 extends Error {}
 
 function delay(milliseconds: number, signal: AbortSignal) {
   signal.throwIfAborted();
@@ -701,6 +747,50 @@ async function readStagedManifest(path: string) {
   }
 }
 
+async function readCancellationState(path: string, stagingRootDigest: string) {
+  let pathMetadata;
+  try {
+    pathMetadata = await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  const userId = process.geteuid?.();
+  if (
+    userId === undefined ||
+    !pathMetadata.isFile() ||
+    pathMetadata.isSymbolicLink() ||
+    pathMetadata.uid !== userId ||
+    (pathMetadata.mode & 0o777) !== 0o600 ||
+    pathMetadata.size <= 0 ||
+    pathMetadata.size > MAX_CANCELLATION_STATE_BYTES
+  ) {
+    throw new TypeError("The render cancellation state is not a bounded private file.");
+  }
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const metadata = await file.stat();
+    if (
+      !metadata.isFile() ||
+      metadata.dev !== pathMetadata.dev ||
+      metadata.ino !== pathMetadata.ino ||
+      metadata.size !== pathMetadata.size ||
+      metadata.uid !== userId ||
+      (metadata.mode & 0o777) !== 0o600
+    ) {
+      throw new TypeError("The render cancellation state changed while it was verified.");
+    }
+    const text = await file.readFile("utf8");
+    const state = cancellationStateSchema.parse(JSON.parse(text));
+    if (state.stagingRootDigest !== stagingRootDigest || canonicalJsonV1(state) !== text) {
+      throw new TypeError("The render cancellation state is not canonically owned by this staging root.");
+    }
+    return state;
+  } finally {
+    await file.close();
+  }
+}
+
 function artifactExtension(mediaType: "image/png" | "video/mp4") {
   return mediaType === "image/png" ? "png" : "mp4";
 }
@@ -708,6 +798,7 @@ function artifactExtension(mediaType: "image/png" | "video/mp4") {
 /** Stable-job OCI owner. Raw media is copied only Docker→private broker staging, never through UDS. */
 export class ManimRenderGatedOciJobRunnerV1 {
   readonly #active = new Map<string, ActiveJob>();
+  readonly #cancellationFences = new Map<string, ManimRenderSandboxCancellationFenceV1>();
   readonly #docker: FastManimGatedOciDockerClientV1;
   readonly #cgroupKillPolicy: FastManimGatedOciCgroupKillPolicyV1;
   readonly #image: string;
@@ -719,6 +810,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
   readonly #stagingRoot: string;
   readonly #stagingRootDigest: string;
   #closed = false;
+  #cancellationStateLoaded = false;
   #cleanupFailure: unknown = undefined;
   #stagingIdentity: StagingRootIdentityV1 | undefined;
   #stagingMaintenance = Promise.resolve();
@@ -845,11 +937,77 @@ export class ManimRenderGatedOciJobRunnerV1 {
     this.#stagingIdentity ??= identity;
   }
 
+  async #ensureCancellationStateLoaded() {
+    if (this.#cancellationStateLoaded) return;
+    await this.#assertStagingRootIdentity();
+    await rm(join(this.#stagingRoot, CANCELLATION_STATE_TEMPORARY_FILE), { force: true });
+    const state = await readCancellationState(
+      join(this.#stagingRoot, CANCELLATION_STATE_FILE),
+      this.#stagingRootDigest,
+    );
+    this.#cancellationFences.clear();
+    for (const fence of state?.entries ?? []) this.#cancellationFences.set(fence.jobId, fence);
+    this.#cancellationStateLoaded = true;
+  }
+
+  async #persistCancellationState() {
+    const state = cancellationStateSchema.parse({
+      entries: [...this.#cancellationFences.values()].sort((left, right) =>
+        left.jobId < right.jobId ? -1 : left.jobId > right.jobId ? 1 : 0,
+      ),
+      schema: "poietra.manim-render-cancellation-state",
+      stagingRootDigest: this.#stagingRootDigest,
+      version: 1,
+    });
+    const text = canonicalJsonV1(state);
+    if (Buffer.byteLength(text, "utf8") > MAX_CANCELLATION_STATE_BYTES) {
+      throw new RangeError("The render cancellation state exceeds its byte budget.");
+    }
+    await this.#assertStagingRootIdentity();
+    const temporary = join(this.#stagingRoot, CANCELLATION_STATE_TEMPORARY_FILE);
+    const destination = join(this.#stagingRoot, CANCELLATION_STATE_FILE);
+    await rm(temporary, { force: true });
+    const file = await open(temporary, "wx", 0o600);
+    try {
+      await file.writeFile(text, "utf8");
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await rename(temporary, destination);
+    const directory = await open(this.#stagingRoot, "r");
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
+    await this.#assertStagingRootIdentity();
+  }
+
+  async #pruneCancellationFences(now: number) {
+    await this.#ensureCancellationStateLoaded();
+    let changed = false;
+    let earliest: number | undefined;
+    for (const [jobId, fence] of this.#cancellationFences) {
+      const expiresAt = fence.rejectUntilEpochMs + CANCELLATION_GRACE_MS;
+      if (expiresAt <= now) {
+        this.#cancellationFences.delete(jobId);
+        changed = true;
+      } else {
+        earliest = Math.min(earliest ?? Number.POSITIVE_INFINITY, expiresAt);
+      }
+    }
+    if (changed) await this.#persistCancellationState();
+    return earliest;
+  }
+
   async ready(signal?: AbortSignal) {
     signal?.throwIfAborted();
     if (this.#closed || this.#cleanupFailure !== undefined) return false;
     try {
       await this.#assertStagingRootIdentity();
+      const earliestCancellation = await this.#withStagingMaintenance(() => this.#pruneCancellationFences(Date.now()));
+      this.#scheduleStagingSweep(earliestCancellation);
     } catch {
       return false;
     }
@@ -900,12 +1058,13 @@ export class ManimRenderGatedOciJobRunnerV1 {
 
   async #sweepExpiredStaging(now: number): Promise<StagingUsageV1> {
     await this.#assertStagingRootIdentity();
+    const earliestCancellation = await this.#pruneCancellationFences(now);
     const entries = await readdir(this.#stagingRoot, { withFileTypes: true });
     const activeIds = new Set(this.#active.keys());
     const handled = new Set<string>();
     let artifactBytes = 0;
     let artifactCount = 0;
-    let earliestDeadlineEpochMs: number | undefined;
+    let earliestDeadlineEpochMs = earliestCancellation;
 
     for (const entry of entries) {
       const match = entry.name.match(/^([a-f0-9]{32})[.]json$/u);
@@ -949,6 +1108,11 @@ export class ManimRenderGatedOciJobRunnerV1 {
 
     for (const entry of entries) {
       if (handled.has(entry.name)) continue;
+      if (entry.name === CANCELLATION_STATE_FILE) continue;
+      if (entry.name === CANCELLATION_STATE_TEMPORARY_FILE) {
+        await rm(join(this.#stagingRoot, entry.name), { force: true });
+        continue;
+      }
       const temporaryManifest = entry.name.match(/^[.]([a-f0-9]{32})[.]json[.]tmp$/u);
       if (temporaryManifest && activeIds.has(temporaryManifest[1]!)) continue;
       if (
@@ -977,6 +1141,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
       if (
         entry.name.startsWith(".artifact-") ||
         entry.name.startsWith(".terminal-") ||
+        entry.name === CANCELLATION_STATE_TEMPORARY_FILE ||
         /^\.[a-f0-9]{32}[.]json[.]tmp$/u.test(entry.name)
       ) {
         await rm(join(this.#stagingRoot, entry.name), { force: true, recursive: true });
@@ -1082,6 +1247,9 @@ export class ManimRenderGatedOciJobRunnerV1 {
     if (!Number.isSafeInteger(deadlineEpochMs) || deadlineEpochMs <= Date.now()) {
       return Promise.resolve({ code: "deadline-exceeded", kind: "failed" } as const);
     }
+    if (deadlineEpochMs > Date.now() + MAX_DURABLE_RENDER_EXECUTION_TIMEOUT_MS_V1) {
+      return Promise.resolve({ code: "request-mismatch", kind: "failed" } as const);
+    }
     if (!verifySealedManimRenderSandboxRequestV2(request)) {
       return Promise.resolve({ code: "result-rejected", kind: "failed" } as const);
     }
@@ -1103,6 +1271,11 @@ export class ManimRenderGatedOciJobRunnerV1 {
         }
         if (deadlineEpochMs <= Date.now()) {
           return { result: Promise.resolve({ code: "deadline-exceeded", kind: "failed" } as const) };
+        }
+        await this.#ensureCancellationStateLoaded();
+        const cancellation = this.#cancellationFences.get(descriptor.jobId);
+        if (cancellation && cancellation.rejectUntilEpochMs + CANCELLATION_GRACE_MS > Date.now()) {
+          return { result: Promise.resolve({ code: "cancelled", kind: "failed" } as const) };
         }
         const active = this.#active.get(stagingId);
         if (active) {
@@ -1167,16 +1340,74 @@ export class ManimRenderGatedOciJobRunnerV1 {
     }
   }
 
-  async cancel(jobId: string, deadlineEpochMs: number, signal: AbortSignal) {
+  async cancel(fenceValue: ManimRenderSandboxCancellationFenceV1, deadlineEpochMs: number, signal: AbortSignal) {
+    const fence = manimRenderSandboxCancellationFenceV1Schema.parse(fenceValue);
     if (!Number.isSafeInteger(deadlineEpochMs) || deadlineEpochMs <= Date.now()) {
       throw new TypeError("The render cancellation deadline must be in the future.");
     }
+    if (fence.rejectUntilEpochMs > Date.now() + MAX_DURABLE_RENDER_EXECUTION_TIMEOUT_MS_V1) {
+      throw new TypeError("The render cancellation horizon is too far in the future.");
+    }
     signal.throwIfAborted();
+    if (this.#cleanupFailure !== undefined) throw this.#cleanupFailure;
+    try {
+      await this.#withStagingMaintenance(async () => {
+        await this.#pruneCancellationFences(Date.now());
+        const existing = this.#cancellationFences.get(fence.jobId);
+        if (existing && canonicalJsonV1(existing) !== canonicalJsonV1(fence)) {
+          throw new ManimRenderCancellationRejectedErrorV1(
+            "The stable render job already has a different cancellation fence.",
+          );
+        }
+        if (!existing) {
+          let tenantFenceCount = 0;
+          for (const candidate of this.#cancellationFences.values()) {
+            if (candidate.tenantId === fence.tenantId) tenantFenceCount += 1;
+          }
+          if (
+            this.#cancellationFences.size >= MAX_CANCELLATION_FENCES ||
+            tenantFenceCount >= MAX_CANCELLATION_FENCES_PER_TENANT
+          ) {
+            throw new ManimRenderCancellationRejectedErrorV1("The render cancellation fence capacity is exhausted.");
+          }
+          this.#cancellationFences.set(fence.jobId, fence);
+          try {
+            await this.#persistCancellationState();
+          } catch (error) {
+            this.#cancellationFences.delete(fence.jobId);
+            throw error;
+          }
+        }
+        for (const kind of ["video", "thumbnail"] as const) {
+          this.#active
+            .get(manimRenderStagingIdV1(fence.jobId, kind))
+            ?.abort.abort(new DOMException("Render cancelled.", "AbortError"));
+        }
+        const usage = await this.#sweepExpiredStaging(Date.now());
+        this.#scheduleStagingSweep(usage.earliestDeadlineEpochMs);
+      });
+    } catch (error) {
+      if (!(error instanceof ManimRenderCancellationRejectedErrorV1)) this.#latchCleanupFailure(error);
+      throw error;
+    }
+    await this.cleanup(fence.jobId, deadlineEpochMs, signal);
+  }
+
+  async cleanup(jobId: string, deadlineEpochMs: number, signal: AbortSignal) {
+    if (!Number.isSafeInteger(deadlineEpochMs) || deadlineEpochMs <= Date.now()) {
+      throw new TypeError("The render cleanup deadline must be in the future.");
+    }
+    signal.throwIfAborted();
+    if (this.#cleanupFailure !== undefined) throw this.#cleanupFailure;
     for (const kind of ["video", "thumbnail"] as const) {
       const stagingId = manimRenderStagingIdV1(jobId, kind);
-      const active = this.#active.get(stagingId);
-      active?.abort.abort(new DOMException("Render cancelled.", "AbortError"));
+      let active: ActiveJob | undefined;
+      await this.#withStagingMaintenance(async () => {
+        active = this.#active.get(stagingId);
+        active?.abort.abort(new DOMException("Render cleanup requested.", "AbortError"));
+      });
       if (active) await active.result;
+      if (this.#cleanupFailure !== undefined) throw this.#cleanupFailure;
       try {
         await this.#cleanupByStableId(stagingId);
       } catch (error) {
