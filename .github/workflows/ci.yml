@@ -137,6 +137,8 @@ jobs:
         run: node scripts/smoke-engine-wasm.mjs
       - name: Smoke-test generated MathTex outline WASM bindings
         run: node scripts/smoke-mathtex-wasm.mjs
+      - name: Enforce MathTex outline WASM size budget and report warm compile
+        run: node scripts/measure-mathtex-wasm.mjs --check
       - name: Upload browser WASM bindings
         uses: actions/upload-artifact@v6
         with:

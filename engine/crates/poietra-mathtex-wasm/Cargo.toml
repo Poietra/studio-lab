@@ -14,5 +14,12 @@ serde.workspace = true
 serde_json.workspace = true
 wasm-bindgen.workspace = true
 
+[package.metadata.wasm-pack.profile.custom]
+# Fat LTO plus LLVM's size optimization compresses better than a subsequent
+# Binaryen -Oz pass for this dependency-heavy module, while avoiding minutes of
+# build time. Keep this explicit so wasm-pack does not enable its custom-profile
+# default optimizer.
+wasm-opt = false
+
 [lints]
 workspace = true
