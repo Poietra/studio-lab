@@ -1,8 +1,9 @@
 //! Deterministic geometry and easing operations for Poietra Engine v1.
 //!
 //! The algorithms in this crate intentionally mirror ADR 0002. In particular,
-//! cubic arc length always uses 64 equal-parameter chord intervals. It is not an
-//! adaptive numerical integration routine.
+//! cubic arc length always uses 64 equal-parameter chord intervals. The explicit
+//! Manim-compatible motion mode instead uses 10 points (9 chords) per serialized
+//! cubic before applying a uniform local parameter. Neither is adaptive.
 
 mod easing;
 mod path;
@@ -10,12 +11,14 @@ mod transform;
 
 pub use easing::apply_easing_v1;
 pub use path::{
-    PATH_ARC_SUBDIVISIONS_V1, PathSampleV1, interpolate_cubic_path_v1, point_on_cubic_v1,
+    MANIM_CURVE_LENGTH_SAMPLE_POINTS_V1, PATH_ARC_SUBDIVISIONS_V1, PathSampleV1,
+    interpolate_cubic_path_v1, point_on_cubic_v1, sample_cubic_path_manim_point_from_proportion_v1,
     sample_cubic_path_v1, scene_geometry_as_cubic_path_v1, trim_cubic_path_uniform_parameter_v1,
     trim_cubic_path_v1,
 };
 pub use transform::{
-    apply_motion_path_v1, compose_affine_transforms_v1, interpolate_affine_transform_v1,
+    apply_manim_motion_path_v1, apply_motion_path_v1, compose_affine_transforms_v1,
+    interpolate_affine_transform_v1,
 };
 
 /// A deterministic v1 geometry operation could not be evaluated truthfully.

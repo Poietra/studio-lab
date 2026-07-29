@@ -8,6 +8,8 @@ use crate::GeometryError;
 
 /// Number of equal-parameter chord intervals used for every v1 cubic.
 pub const PATH_ARC_SUBDIVISIONS_V1: usize = 64;
+/// Number of points, including both endpoints, used by Manim to estimate each curve length.
+pub const MANIM_CURVE_LENGTH_SAMPLE_POINTS_V1: usize = 10;
 const TANGENT_EPSILON_V1: f64 = 1.0e-12;
 
 /// A position and, when one exists, the deterministic non-zero path tangent.
@@ -501,6 +503,65 @@ pub fn sample_cubic_path_v1(
     })
 }
 
+/// Mirrors `VMobject.point_from_proportion` for canonical two-dimensional cubics.
+///
+/// Each serialized cubic receives a length estimated from ten equally spaced
+/// points (nine chords). The chosen cubic is then sampled with a uniform local
+/// parameter; the close flag never invents another curve.
+///
+/// # Errors
+///
+/// Returns [`GeometryError::EmptyPath`] when the input has no serialized cubic.
+pub fn sample_cubic_path_manim_point_from_proportion_v1(
+    path: &CubicPathV1,
+    progress: f64,
+) -> Result<PointV1, GeometryError> {
+    let entries: Vec<_> = serialized_segment_entries_by_subpath(path)?
+        .into_iter()
+        .flatten()
+        .collect();
+    let last = entries.last().ok_or(GeometryError::EmptyPath)?;
+    if progress >= 1.0 {
+        return Ok(last.segment.end.clone());
+    }
+
+    let lengths: Vec<_> = entries
+        .iter()
+        .map(|entry| {
+            let mut length = 0.0;
+            let mut previous = entry.start.clone();
+            #[allow(clippy::cast_precision_loss)]
+            let sample_step = 1.0 / (MANIM_CURVE_LENGTH_SAMPLE_POINTS_V1 - 1) as f64;
+            for index in 1..MANIM_CURVE_LENGTH_SAMPLE_POINTS_V1 {
+                #[allow(clippy::cast_precision_loss)]
+                let parameter = index as f64 * sample_step;
+                let point = point_on_cubic_v1(entry.start, entry.segment.as_ref(), parameter);
+                length += distance(&previous, &point);
+                previous = point;
+            }
+            length
+        })
+        .collect();
+    let target = progress.clamp(0.0, 1.0) * lengths.iter().sum::<f64>();
+    let mut current = 0.0;
+    for (entry, length) in entries.iter().zip(lengths) {
+        if current + length >= target {
+            let parameter = if length == 0.0 {
+                0.0
+            } else {
+                (target - current) / length
+            };
+            return Ok(point_on_cubic_v1(
+                entry.start,
+                entry.segment.as_ref(),
+                parameter,
+            ));
+        }
+        current += length;
+    }
+    Ok(last.segment.end.clone())
+}
+
 /// Interpolates matching cubic path topology component-wise.
 ///
 /// # Errors
@@ -824,6 +885,44 @@ mod tests {
         assert!((sample.point.x - 0.0).abs() < 1.0e-12);
         assert!((sample.point.y - 2.0).abs() < 1.0e-12);
         assert!(sample.tangent.is_some());
+    }
+
+    #[test]
+    fn manim_sampling_pins_zero_length_and_explicit_close_behavior() {
+        let mut path = line_path(PointV1 { x: 0.0, y: 0.0 }, &PointV1 { x: 2.0, y: 0.0 });
+        path.subpaths[0].segments.insert(
+            0,
+            CubicSegmentV1 {
+                control1: PointV1 { x: 0.0, y: 0.0 },
+                control2: PointV1 { x: 0.0, y: 0.0 },
+                end: PointV1 { x: 0.0, y: 0.0 },
+            },
+        );
+        assert_eq!(
+            sample_cubic_path_manim_point_from_proportion_v1(&path, 0.0).unwrap(),
+            PointV1 { x: 0.0, y: 0.0 }
+        );
+        assert_eq!(
+            sample_cubic_path_manim_point_from_proportion_v1(&path, 0.5).unwrap(),
+            PointV1 { x: 1.0, y: 0.0 }
+        );
+        let mut all_zero = path.clone();
+        all_zero.subpaths[0].segments.truncate(1);
+        assert_eq!(
+            sample_cubic_path_manim_point_from_proportion_v1(&all_zero, 0.5).unwrap(),
+            PointV1 { x: 0.0, y: 0.0 }
+        );
+
+        path.subpaths[0].segments.remove(0);
+        path.subpaths[0].closed = true;
+        assert_eq!(
+            sample_cubic_path_manim_point_from_proportion_v1(&path, 0.75).unwrap(),
+            PointV1 { x: 1.5, y: 0.0 }
+        );
+        assert_eq!(
+            sample_cubic_path_manim_point_from_proportion_v1(&path, 1.0).unwrap(),
+            PointV1 { x: 2.0, y: 0.0 }
+        );
     }
 
     #[test]

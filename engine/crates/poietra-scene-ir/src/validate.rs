@@ -1051,6 +1051,8 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
             }
             AnimationChannelV1::MotionPath {
                 keyframes,
+                orient_to_path,
+                parameterization,
                 path: motion_path,
                 ..
             } => {
@@ -1074,6 +1076,16 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                     validator.issue(
                         format!("{path}.path.subpaths"),
                         "motion-path v1 requires exactly one cubic subpath",
+                    );
+                }
+                if matches!(
+                    parameterization,
+                    Some(crate::model::MotionPathParameterizationV1::ManimPointFromProportionV1)
+                ) && *orient_to_path
+                {
+                    validator.issue(
+                        format!("{path}.orientToPath"),
+                        "manim-point-from-proportion-v1 does not orient the moved entity",
                     );
                 }
             }

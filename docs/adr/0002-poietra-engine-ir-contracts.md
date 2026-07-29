@@ -79,6 +79,17 @@ fraction with De Casteljau splitting. The currently partial subpath stays open;
 fully consumed prior subpaths retain their closure. This matches Manim's pointwise
 partial-path semantics without changing existing bytes.
 
+`motion-path` likewise defaults to `arc-length-v1` when `parameterization` is
+omitted. `manim-point-from-proportion-v1` mirrors the bounded canonical subset of
+`VMobject.point_from_proportion`: it measures every explicitly serialized cubic
+with 10 equally spaced points including both endpoints (9 chords), selects the
+first cubic whose cumulative estimated length reaches the requested progress, and
+uses the remaining fraction as that cubic's uniform parameter. Progress 1 returns
+the final serialized endpoint exactly. A zero-length selected cubic uses parameter
+zero; zero-length cubics at later progress are skipped by the cumulative scan. The
+close flag does not synthesize another curve. This mode requires `orientToPath` to
+be false because `MoveAlongPath` translates its mobject without rotating it.
+
 Scene, entity, channel, and provenance identities preserve the portable ASCII
 source fragment separator `#` used by imported IDs such as `scene.py#Scene`.
 Generated packet/manifest IDs and asset IDs use the stricter portable subset
@@ -105,19 +116,20 @@ does not independently sort Scene entities.
 Animation channel meaning is fixed as follows. An affine or opacity channel
 replaces the entity's base value at the sampled time. Path trim is the visible
 prefix fraction `[0, 1]`, measured by cubic arc length across subpaths in declaration
-order. Motion-path values are arc-length progress `[0, 1]`; `orientToPath` uses the
-forward tangent, retaining the previous non-zero tangent at a cusp. At a stationary
-path start with no previous tangent, evaluation uses the first following non-zero
-tangent; if the entire path has no tangent, oriented evaluation rejects the frame.
+order. Motion-path values are normalized progress `[0, 1]`. In the default
+`arc-length-v1` mode, `orientToPath` uses the forward tangent, retaining the previous
+non-zero tangent at a cusp. At a stationary path start with no previous tangent,
+evaluation uses the first following non-zero tangent; if the entire path has no
+tangent, oriented evaluation rejects the frame.
 V1 motion paths contain exactly one subpath. Path morph is component-wise
 interpolation of matching cubic control points. Path trim is restricted to
 stroke-only entities because filling an open prefix would introduce an implicit
 closing edge. A camera channel replaces the base camera view. Only one channel may
 write a given entity/property, and only one camera channel may exist.
 
-V1 arc length is deterministic rather than adaptive: every cubic is sampled at 64
-equal parameter intervals and the resulting chord lengths are accumulated. A
-position inside an interval linearly interpolates its parameter endpoints. Path
+V1 `arc-length-v1` evaluation is deterministic rather than adaptive: every cubic
+is sampled at 64 equal parameter intervals and the resulting chord lengths are
+accumulated. A position inside an interval linearly interpolates its parameter endpoints. Path
 trim splits the selected cubic at that parameter with de Casteljau's algorithm.
 Progress zero is represented by one degenerate cubic at the first path point, since
 empty subpaths are not valid v1 data. Motion-path pose replaces the sampled affine
