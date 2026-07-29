@@ -13,8 +13,8 @@ import {
   manimRenderSandboxStatusV1Schema,
   manimRenderSandboxTerminalV1Schema,
   manimRenderStagingIdV1,
-  type SealedManimRenderSandboxRequestV1,
-  verifySealedManimRenderSandboxRequestV1,
+  type SealedManimRenderSandboxRequestV2,
+  verifySealedManimRenderSandboxRequestV2,
 } from "./manim-render-sandbox-contract";
 
 const MAX_ACTIVE_OPERATIONS = 16;
@@ -65,8 +65,8 @@ export class ManimRenderUdsSandboxBackendV1 implements ManimRenderSandboxBackend
     });
   }
 
-  submitOrReattach(request: SealedManimRenderSandboxRequestV1, context: ManimRenderSandboxOperationContextV1) {
-    if (!verifySealedManimRenderSandboxRequestV1(request)) {
+  submitOrReattach(request: SealedManimRenderSandboxRequestV2, context: ManimRenderSandboxOperationContextV1) {
+    if (!verifySealedManimRenderSandboxRequestV2(request)) {
       return Promise.reject(new TypeError("The render sandbox request seal is invalid."));
     }
     const descriptor = request.parseDescriptor();

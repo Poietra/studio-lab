@@ -23,14 +23,14 @@ import {
 } from "./fast-manim-gated-oci-job-runner";
 import {
   digestManimRenderStagingRootV1,
-  digestManimRenderSandboxExecutionV1,
+  digestManimRenderSandboxExecutionV2,
   MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
-  type ManimRenderSandboxDescriptorV1,
+  type ManimRenderSandboxDescriptorV2,
   type ManimRenderSandboxTerminalV1,
   manimRenderStagingIdV1,
   MAX_MANIM_RENDER_SANDBOX_ARTIFACT_BYTES_V1,
-  type SealedManimRenderSandboxRequestV1,
-  verifySealedManimRenderSandboxRequestV1,
+  type SealedManimRenderSandboxRequestV2,
+  verifySealedManimRenderSandboxRequestV2,
 } from "./manim-render-sandbox-contract";
 
 const IMAGE_ID = /^sha256:[a-f0-9]{64}$/u;
@@ -85,6 +85,7 @@ const FIXED_LABELS = Object.freeze({
   "io.poietra.fast-manim.commit": "ac143dc46ebe314095ae7864a32efa289a0afe96",
   "io.poietra.fast-manim.tree": "b86e2ec81f257cae20669e3c5c33080facfbd610",
   "io.poietra.render-job": "v1",
+  "io.poietra.render-request-descriptor-version": "2",
   "io.poietra.sandbox-slice": "manim-render-gated-v1",
 });
 const REQUIRED_MASKED_SYSTEM_PATHS = Object.freeze([
@@ -159,6 +160,7 @@ export const MANIM_RENDER_GATED_OCI_PROFILE_V1 = Object.freeze({
   privileged: false,
   readOnlyRootfs: true,
   requestWire: Object.freeze({
+    descriptorVersion: 2,
     headerBytes: REQUEST_WIRE_BYTES,
     identity: "execution-sha256-without-fence",
     magic: "POIETR1\\0",
@@ -449,7 +451,7 @@ function observeJob<T>(result: Promise<T>, signal: AbortSignal) {
   });
 }
 
-function requestWire(request: SealedManimRenderSandboxRequestV1, executionDigest: string) {
+function requestWire(request: SealedManimRenderSandboxRequestV2, executionDigest: string) {
   if (!/^[a-f0-9]{64}$/u.test(executionDigest)) {
     throw new TypeError("The render execution digest is invalid.");
   }
@@ -465,7 +467,7 @@ function requestWire(request: SealedManimRenderSandboxRequestV1, executionDigest
 
 export async function deliverSealedManimRenderGateRequestV1(
   attached: ChildProcessWithoutNullStreams,
-  request: SealedManimRenderSandboxRequestV1,
+  request: SealedManimRenderSandboxRequestV2,
   executionDigest: string,
   deadlineEpochMs: number,
   signal: AbortSignal,
@@ -1072,7 +1074,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
     this.#scheduleStagingSweep(usage.earliestDeadlineEpochMs);
   }
 
-  async submitOrReattach(request: SealedManimRenderSandboxRequestV1, deadlineEpochMs: number, signal: AbortSignal) {
+  async submitOrReattach(request: SealedManimRenderSandboxRequestV2, deadlineEpochMs: number, signal: AbortSignal) {
     if (this.#closed) return Promise.reject(abortError());
     if (this.#cleanupFailure !== undefined) {
       return Promise.resolve({ code: "cleanup-failed", kind: "failed" } as const);
@@ -1080,7 +1082,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
     if (!Number.isSafeInteger(deadlineEpochMs) || deadlineEpochMs <= Date.now()) {
       return Promise.resolve({ code: "deadline-exceeded", kind: "failed" } as const);
     }
-    if (!verifySealedManimRenderSandboxRequestV1(request)) {
+    if (!verifySealedManimRenderSandboxRequestV2(request)) {
       return Promise.resolve({ code: "result-rejected", kind: "failed" } as const);
     }
     const descriptor = request.parseDescriptor();
@@ -1092,7 +1094,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
       return Promise.resolve({ code: "request-mismatch", kind: "failed" } as const);
     }
     const stagingId = manimRenderStagingIdV1(descriptor.jobId, descriptor.output.kind);
-    const executionDigest = digestManimRenderSandboxExecutionV1(descriptor);
+    const executionDigest = digestManimRenderSandboxExecutionV2(descriptor);
     try {
       const admission = await this.#withStagingMaintenance(async () => {
         if (this.#closed) throw abortError();
@@ -1202,8 +1204,8 @@ export class ManimRenderGatedOciJobRunnerV1 {
   }
 
   async #run(
-    request: SealedManimRenderSandboxRequestV1,
-    descriptor: ManimRenderSandboxDescriptorV1,
+    request: SealedManimRenderSandboxRequestV2,
+    descriptor: ManimRenderSandboxDescriptorV2,
     executionDigest: string,
     stagingId: string,
     deadlineEpochMs: number,
@@ -1407,7 +1409,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
 
   async #startAndGate(
     containerId: string,
-    request: SealedManimRenderSandboxRequestV1,
+    request: SealedManimRenderSandboxRequestV2,
     executionDigest: string,
     deadlineEpochMs: number,
     signal: AbortSignal,
@@ -1418,7 +1420,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
 
   async #inspectNamedContainer(
     containerName: string,
-    descriptor: ManimRenderSandboxDescriptorV1,
+    descriptor: ManimRenderSandboxDescriptorV2,
     executionDigest: string,
   ) {
     const listed = await this.#docker.run([
@@ -1649,7 +1651,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
   async #copyArtifact(
     containerId: string,
     identity: FastManimGatedOciRunningIdentityV1,
-    descriptor: ManimRenderSandboxDescriptorV1,
+    descriptor: ManimRenderSandboxDescriptorV2,
     executionDigest: string,
     stagingId: string,
     deadlineEpochMs: number,
@@ -1758,7 +1760,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
   }
 
   async #readStaged(
-    descriptor: ManimRenderSandboxDescriptorV1,
+    descriptor: ManimRenderSandboxDescriptorV2,
     executionDigest: string,
     stagingId: string,
     deadlineEpochMs: number,

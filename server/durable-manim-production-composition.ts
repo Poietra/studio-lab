@@ -27,6 +27,7 @@ import {
 import { S3ContentBlobStoreV1 } from "./storage/s3/s3-content-blob-store";
 import { S3ArtifactReaderV1 } from "./storage/s3/s3-artifact-reader";
 import { PrivateVersionedS3BucketTransportV1 } from "./storage/s3/s3-private-versioned-bucket-transport";
+import { S3ProjectPngStoreV1 } from "./storage/s3/s3-project-png-store";
 import { S3SnapshotArtifactStoreV1 } from "./storage/s3/s3-snapshot-artifact-store";
 import { createDurableSnapshotArtifactGcWorkerV1 } from "./storage/snapshot-artifact-gc";
 import { createDurableRenderArtifactGcWorkerV1 } from "./storage/render-artifact-gc";
@@ -200,6 +201,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   let snapshotRepository: PostgresSnapshotPublicationRepositoryV1 | undefined;
   let objectTransport: PrivateVersionedS3BucketTransportV1 | undefined;
   let blobs: S3ContentBlobStoreV1 | undefined;
+  let projectPngs: S3ProjectPngStoreV1 | undefined;
   let artifacts: S3SnapshotArtifactStoreV1 | undefined;
   let mediaArtifacts: S3ArtifactReaderV1 | undefined;
   try {
@@ -225,6 +227,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       deployment: "production",
     });
     blobs = new S3ContentBlobStoreV1({ transport: objectTransport });
+    projectPngs = new S3ProjectPngStoreV1({ transport: objectTransport });
     artifacts = new S3SnapshotArtifactStoreV1({ transport: objectTransport });
     mediaArtifacts = new S3ArtifactReaderV1({ transport: objectTransport });
   } catch (error) {
@@ -233,6 +236,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       [
         mediaArtifacts,
         artifacts,
+        projectPngs,
         blobs,
         objectTransport,
         mediaRepository,
@@ -260,6 +264,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       ...(options.renderWorker.maxConcurrentJobs === undefined
         ? {}
         : { maxConcurrentJobs: options.renderWorker.maxConcurrentJobs }),
+      projectPngs,
       tenantId: options.tenantId,
     });
     artifactReader = new AuthorizedArtifactReaderV1({
@@ -329,7 +334,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
     return cleanupAndThrow(
       error,
       [
-        renderWorker ?? renderExecutor,
+        renderWorker ?? renderExecutor ?? projectPngs,
         renders ?? renderRepository,
         snapshots ?? publisher ?? artifacts,
         ...(snapshots ? [] : [snapshotFactory]),

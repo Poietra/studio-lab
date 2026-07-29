@@ -1,11 +1,14 @@
 # Production Manim render sandbox
 
-The production durable render worker executes source-only Manim scenes through a
-separately supervised Unix-domain-socket broker. Studio never receives a Docker
-socket and the broker accepts only sealed, fixed-profile requests. The shipped
+The production durable render worker executes Manim scenes and their optional,
+session-pinned `image.png` through a separately supervised Unix-domain-socket
+broker. Studio never receives a Docker socket and the broker accepts only sealed,
+fixed-profile requests. The shipped
 profile renders 854×480 media at 15 fps and supports MP4 video and PNG thumbnail
 jobs from the canonical 8×(128/9) scene frame. Custom frames fail closed until
-the trusted renderer can apply them explicitly. A stable
+the trusted renderer can apply them explicitly. The descriptor version is bound
+to both the profile digest and an inspected image label, so mixed rollouts fail
+readiness before admission. A stable
 `(tenantId, sessionId, mediaKind)` identity makes submit,
 reattach, and cancellation idempotent across lease-fence changes.
 
@@ -15,8 +18,13 @@ read-only root filesystem, and bounded CPU, memory, PIDs, files, and tmpfs. The
 production service requires `cgroup.kill`; `best-effort` cgroup cleanup exists
 only for local real-OCI conformance on hosts that cannot expose that control.
 
-Untrusted source and rendered bytes stay inside container tmpfs. Before it
-spawns the same-UID Scene process, fixed PID 1 makes itself non-dumpable. It
+Untrusted source, the fixed PNG asset, and rendered bytes stay inside container
+tmpfs. The sealed request binds the PNG bytes, length, dimensions, MIME, logical
+path, and SHA-256 to the request digest. PID 1 independently decodes and
+validates the bounded static PNG before creating only
+`/run/poietra/tmp/image.png`; no host project mount or object-storage credential
+enters the container. Before it spawns the same-UID Scene process, fixed PID 1
+makes itself non-dumpable. It
 then kills and reaps every descendant before using image-owned PyAV/Pillow code
 to fully decode and validate the fixed stream count, codec, pixel format,
 dimensions, frame rate, duration, or PNG dimensions. PID 1 then publishes correlated
@@ -69,9 +77,10 @@ containers. The new broker deliberately refuses to claim or delete those
 unattributed containers; only containers bearing its exact staging-owner digest
 are eligible for automatic reconciliation.
 
-This source-only slice deliberately accepts no project asset bundle and mounts
-no host project directory. Digest-bounded asset ingestion remains follow-up
-work. Completed staging locators are consumed only by the trusted Studio
+This slice deliberately accepts only the single validated `image.png` generation
+already pinned atomically with the source in PostgreSQL. Generic project asset
+bundles remain follow-up work, and no host project directory is mounted.
+Completed staging locators are consumed only by the trusted Studio
 publisher: it verifies broker ownership, mode, inode stability, locator
 correlation, size, signature, and digest; uploads the exact video and thumbnail
 versions to private S3; and atomically commits both receipts in PostgreSQL under
@@ -84,5 +93,5 @@ The real storage lane can be combined with
 `POIETRA_MANIM_RENDER_GATED_OCI_IMAGE=<sha256:image-id>` to exercise the complete
 fixed-image render → broker staging → trusted publisher → MinIO/PostgreSQL → HTTP
 HEAD/range path. It also proves that process loss after publication does not
-lose either artifact. Required rootless `cgroup.kill` deployment evidence and
-digest-bounded input assets remain separate Issue #117 acceptance work.
+lose either artifact. Required rootless `cgroup.kill` deployment evidence
+remains separate Issue #117 acceptance work.

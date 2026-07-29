@@ -7,15 +7,25 @@ import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import { opaqueIdV1Schema, sha256V1Schema } from "../src/engine/primitives";
 import { manimProjectIdSchema, manimSourcePathSchema } from "../src/render-pipeline/contracts";
 import { manimTenantIdSchema } from "./manim-request-principal";
+import {
+  MAX_PROJECT_PNG_BYTES_V1,
+  MAX_PROJECT_PNG_DIMENSION_V1,
+  MAX_PROJECT_PNG_PIXELS_V1,
+  PROJECT_PNG_LOGICAL_PATH_V1,
+} from "./storage/project-png-storage";
 
-export const MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V1 = "poietra.manim-render-sandbox-request" as const;
+export const MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V2 = "poietra.manim-render-sandbox-request" as const;
 export const MANIM_RENDER_SANDBOX_RESULT_SCHEMA_V1 = "poietra.manim-render-sandbox-result" as const;
 export const MANIM_RENDER_SANDBOX_STATUS_SCHEMA_V1 = "poietra.manim-render-sandbox-status" as const;
-export const MAX_MANIM_RENDER_SANDBOX_SOURCE_BYTES_V1 = 2 * 1024 * 1024;
-export const MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V1 = MAX_MANIM_RENDER_SANDBOX_SOURCE_BYTES_V1 + 32 * 1024;
+export const MAX_MANIM_RENDER_SANDBOX_SOURCE_BYTES_V2 = 2 * 1024 * 1024;
+export const MAX_MANIM_RENDER_SANDBOX_ASSET_BYTES_V2 = MAX_PROJECT_PNG_BYTES_V1;
+const MAX_MANIM_RENDER_SANDBOX_ASSET_BASE64_BYTES_V2 = 4 * Math.ceil(MAX_MANIM_RENDER_SANDBOX_ASSET_BYTES_V2 / 3);
+export const MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V2 =
+  MAX_MANIM_RENDER_SANDBOX_SOURCE_BYTES_V2 + MAX_MANIM_RENDER_SANDBOX_ASSET_BASE64_BYTES_V2 + 64 * 1024;
 export const MAX_MANIM_RENDER_SANDBOX_ARTIFACT_BYTES_V1 = 128 * 1024 * 1024;
 export const MAX_MANIM_RENDER_SANDBOX_LOG_BYTES_V1 = 4 * 1024;
-export const MAX_MANIM_RENDER_SANDBOX_FRAME_BYTES_V1 = 3 * 1024 * 1024;
+export const MAX_MANIM_RENDER_SANDBOX_FRAME_BYTES_V2 =
+  4 * Math.ceil(MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V2 / 3) + 32 * 1024;
 export const MANIM_RENDER_CANONICAL_SCENE_FRAME_V1 = Object.freeze({
   height: 8 as const,
   width: 128 / 9,
@@ -46,9 +56,39 @@ const deadlineEpochMsSchema = z.number().int().safe().positive();
 const boundedSourceSchema = z
   .string()
   .refine(
-    (value) => Buffer.byteLength(value, "utf8") <= MAX_MANIM_RENDER_SANDBOX_SOURCE_BYTES_V1,
+    (value) => Buffer.byteLength(value, "utf8") <= MAX_MANIM_RENDER_SANDBOX_SOURCE_BYTES_V2,
     "Render source exceeds its UTF-8 byte budget.",
   );
+const projectPngAssetSchema = z
+  .object({
+    byteLength: z.number().int().positive().max(MAX_MANIM_RENDER_SANDBOX_ASSET_BYTES_V2),
+    bytesBase64: z.string().max(MAX_MANIM_RENDER_SANDBOX_ASSET_BASE64_BYTES_V2),
+    digest: sha256V1Schema,
+    height: z.number().int().positive().max(MAX_PROJECT_PNG_DIMENSION_V1),
+    logicalPath: z.literal(PROJECT_PNG_LOGICAL_PATH_V1),
+    mediaType: z.literal("image/png"),
+    width: z.number().int().positive().max(MAX_PROJECT_PNG_DIMENSION_V1),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const bytes = Buffer.from(value.bytesBase64, "base64");
+    if (bytes.toString("base64") !== value.bytesBase64) {
+      context.addIssue({ code: "custom", message: "Render asset bytes must use canonical base64." });
+      return;
+    }
+    const signature = "89504e470d0a1a0a";
+    if (
+      bytes.byteLength !== value.byteLength ||
+      createHash("sha256").update(bytes).digest("hex") !== value.digest ||
+      bytes.byteLength < 24 ||
+      bytes.subarray(0, 8).toString("hex") !== signature ||
+      bytes.readUInt32BE(16) !== value.width ||
+      bytes.readUInt32BE(20) !== value.height ||
+      value.width * value.height > MAX_PROJECT_PNG_PIXELS_V1
+    ) {
+      context.addIssue({ code: "custom", message: "Render asset metadata does not match its PNG bytes." });
+    }
+  });
 const stagingIdSchema = z.string().regex(/^[a-f0-9]{32}$/u);
 const boundedLogSchema = z
   .string()
@@ -57,8 +97,9 @@ const boundedLogSchema = z
     "Render diagnostics exceed their UTF-8 byte budget.",
   );
 
-export const manimRenderSandboxDescriptorV1Schema = z
+export const manimRenderSandboxDescriptorV2Schema = z
   .object({
+    assets: z.array(projectPngAssetSchema).max(1).default([]),
     deadlineEpochMs: deadlineEpochMsSchema,
     fenceToken: canonicalFenceTokenSchema,
     jobId: opaqueIdV1Schema,
@@ -92,13 +133,13 @@ export const manimRenderSandboxDescriptorV1Schema = z
       })
       .strict(),
     sceneName: sceneNameSchema,
-    schema: z.literal(MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V1),
+    schema: z.literal(MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V2),
     sessionId: opaqueIdV1Schema,
     source: boundedSourceSchema,
     sourceDigest: sha256V1Schema,
     sourcePath: manimSourcePathSchema,
     tenantId: manimTenantIdSchema,
-    version: z.literal(1),
+    version: z.literal(2),
   })
   .strict()
   .superRefine((value, context) => {
@@ -116,17 +157,18 @@ export const manimRenderSandboxDescriptorV1Schema = z
     }
   });
 
-export type ManimRenderSandboxDescriptorV1 = Readonly<z.infer<typeof manimRenderSandboxDescriptorV1Schema>>;
+export type ManimRenderSandboxDescriptorV2 = Readonly<z.infer<typeof manimRenderSandboxDescriptorV2Schema>>;
+export type ManimRenderSandboxDescriptorInputV2 = Readonly<z.input<typeof manimRenderSandboxDescriptorV2Schema>>;
 
-export class SealedManimRenderSandboxRequestV1 {
+export class SealedManimRenderSandboxRequestV2 {
   readonly byteLength: number;
   readonly requestDigest: string;
   readonly #bytes: Uint8Array;
 
-  constructor(value: ManimRenderSandboxDescriptorV1) {
-    const descriptor = manimRenderSandboxDescriptorV1Schema.parse(value);
+  constructor(value: ManimRenderSandboxDescriptorInputV2) {
+    const descriptor = manimRenderSandboxDescriptorV2Schema.parse(value);
     const bytes = Buffer.from(canonicalJsonV1(descriptor), "utf8");
-    if (bytes.byteLength > MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V1) {
+    if (bytes.byteLength > MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V2) {
       throw new RangeError("Render sandbox request exceeds its byte budget.");
     }
     this.#bytes = Uint8Array.from(bytes);
@@ -140,15 +182,15 @@ export class SealedManimRenderSandboxRequestV1 {
   }
 
   parseDescriptor() {
-    return manimRenderSandboxDescriptorV1Schema.parse(JSON.parse(Buffer.from(this.#bytes).toString("utf8")));
+    return manimRenderSandboxDescriptorV2Schema.parse(JSON.parse(Buffer.from(this.#bytes).toString("utf8")));
   }
 }
 
-export function verifySealedManimRenderSandboxRequestV1(request: SealedManimRenderSandboxRequestV1) {
+export function verifySealedManimRenderSandboxRequestV2(request: SealedManimRenderSandboxRequestV2) {
   const bytes = request.copyBytes();
   return (
     bytes.byteLength === request.byteLength &&
-    bytes.byteLength <= MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V1 &&
+    bytes.byteLength <= MAX_MANIM_RENDER_SANDBOX_REQUEST_BYTES_V2 &&
     createHash("sha256").update(bytes).digest("hex") === request.requestDigest &&
     canonicalJsonV1(request.parseDescriptor()) === Buffer.from(bytes).toString("utf8")
   );
@@ -222,8 +264,8 @@ export function canonicalManimRenderFenceTokenV1(value: bigint) {
   return canonicalFenceTokenSchema.parse(value.toString(10));
 }
 
-export function digestManimRenderSandboxExecutionV1(descriptor: ManimRenderSandboxDescriptorV1) {
-  const { fenceToken: _fenceToken, ...stable } = manimRenderSandboxDescriptorV1Schema.parse(descriptor);
+export function digestManimRenderSandboxExecutionV2(descriptor: ManimRenderSandboxDescriptorV2) {
+  const { fenceToken: _fenceToken, ...stable } = manimRenderSandboxDescriptorV2Schema.parse(descriptor);
   return createHash("sha256").update(canonicalJsonV1(stable), "utf8").digest("hex");
 }
 

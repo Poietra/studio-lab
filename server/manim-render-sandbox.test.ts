@@ -14,6 +14,7 @@ import {
   digestManimRenderGatedOciRuntimeV1,
   deliverSealedManimRenderGateRequestV1,
   MANIM_RENDER_GATED_OCI_PROFILE_DIGEST_V1,
+  MANIM_RENDER_GATED_OCI_PROFILE_V1,
   ManimRenderGatedOciJobRunnerV1,
   writeBoundedManimRenderChildStdoutV1,
 } from "./manim-render-gated-oci-job-runner";
@@ -31,18 +32,19 @@ import {
 import {
   decodeManimRenderStagingLocatorV1,
   digestManimRenderStagingRootV1,
-  digestManimRenderSandboxExecutionV1,
+  digestManimRenderSandboxExecutionV2,
   encodeManimRenderStagingLocatorV1,
   MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
-  MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V1,
+  MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V2,
   MANIM_RENDER_SANDBOX_RESULT_SCHEMA_V1,
   MANIM_RENDER_SANDBOX_STATUS_SCHEMA_V1,
   manimRenderStagingIdV1,
-  SealedManimRenderSandboxRequestV1,
-  verifySealedManimRenderSandboxRequestV1,
+  SealedManimRenderSandboxRequestV2,
+  verifySealedManimRenderSandboxRequestV2,
 } from "./manim-render-sandbox-contract";
 import { ManimRenderUdsSandboxBackendV1 } from "./manim-render-uds-sandbox-backend";
 import { ProductionDurableManimRenderExecutorV1 } from "./production-durable-manim-render-executor";
+import { inspectProjectPngBytesV1, type ProjectPngBlobStoreV1 } from "./storage/project-png-storage";
 import type { DurableRenderSessionV1 } from "./storage/render-session-repository";
 import type { SourceContentBlobStoreV1 } from "./storage/workspace-source-repository";
 
@@ -50,9 +52,15 @@ const image = `sha256:${"a".repeat(64)}`;
 const stagingRoot = "/var/lib/poietra/render-staging";
 const source = `from manim import Scene\n\nclass MainScene(Scene):\n    def construct(self):\n        self.wait(0.1)\n`;
 const sourceDigest = createHash("sha256").update(source, "utf8").digest("hex");
+const projectPngBytes = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
+const projectPng = inspectProjectPngBytesV1(projectPngBytes);
 
-function descriptor(overrides: Partial<ConstructorParameters<typeof SealedManimRenderSandboxRequestV1>[0]> = {}) {
+function descriptor(overrides: Partial<ConstructorParameters<typeof SealedManimRenderSandboxRequestV2>[0]> = {}) {
   return {
+    assets: [],
     deadlineEpochMs: Date.now() + 60_000,
     fenceToken: "1",
     jobId: "tenant-a/session-a",
@@ -68,13 +76,13 @@ function descriptor(overrides: Partial<ConstructorParameters<typeof SealedManimR
     runtimeDigest: digestManimRenderGatedOciRuntimeV1(image),
     sceneFrame: MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
     sceneName: "MainScene",
-    schema: MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V1,
+    schema: MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V2,
     sessionId: "session-a",
     source,
     sourceDigest,
     sourcePath: "main.py",
     tenantId: "tenant-a",
-    version: 1 as const,
+    version: 2 as const,
     ...overrides,
   };
 }
@@ -158,7 +166,7 @@ async function writeStagedVideo(
       artifactDigest,
       artifactSize: artifact.byteLength,
       deadlineEpochMs: value.deadlineEpochMs,
-      executionDigest: digestManimRenderSandboxExecutionV1(value),
+      executionDigest: digestManimRenderSandboxExecutionV2(value),
       jobId: value.jobId,
       mediaType: "video/mp4",
       profileDigest: MANIM_RENDER_GATED_OCI_PROFILE_DIGEST_V1,
@@ -184,31 +192,49 @@ describe("render sandbox contracts", () => {
 
   it("seals private bytes and keeps execution identity stable across fencing", () => {
     const mutable = descriptor();
-    const sealed = new SealedManimRenderSandboxRequestV1(mutable);
+    const sealed = new SealedManimRenderSandboxRequestV2(mutable);
     mutable.source = "tampered";
     const copied = sealed.copyBytes();
     copied[0] ^= 0xff;
 
-    expect(verifySealedManimRenderSandboxRequestV1(sealed)).toBe(true);
+    expect(verifySealedManimRenderSandboxRequestV2(sealed)).toBe(true);
     expect(sealed.parseDescriptor().source).toBe(source);
-    const refenced = new SealedManimRenderSandboxRequestV1(
+    const refenced = new SealedManimRenderSandboxRequestV2(
       descriptor({
         deadlineEpochMs: sealed.parseDescriptor().deadlineEpochMs,
         fenceToken: "2",
       }),
     );
     expect(refenced.requestDigest).not.toBe(sealed.requestDigest);
-    expect(digestManimRenderSandboxExecutionV1(refenced.parseDescriptor())).toBe(
-      digestManimRenderSandboxExecutionV1(sealed.parseDescriptor()),
+    expect(digestManimRenderSandboxExecutionV2(refenced.parseDescriptor())).toBe(
+      digestManimRenderSandboxExecutionV2(sealed.parseDescriptor()),
     );
     expect(manimRenderStagingIdV1(mutable.jobId, "thumbnail")).not.toBe(manimRenderStagingIdV1(mutable.jobId, "video"));
     expect(
-      () => new SealedManimRenderSandboxRequestV1(descriptor({ sceneFrame: { height: 8, width: 14.222 } })),
+      () => new SealedManimRenderSandboxRequestV2(descriptor({ sceneFrame: { height: 8, width: 14.222 } })),
     ).toThrow();
+    expect(
+      () =>
+        new SealedManimRenderSandboxRequestV2(
+          descriptor({
+            assets: [
+              {
+                byteLength: projectPng.byteSize,
+                bytesBase64: projectPngBytes.toString("base64"),
+                digest: "0".repeat(64),
+                height: projectPng.height,
+                logicalPath: "image.png",
+                mediaType: "image/png",
+                width: projectPng.width,
+              },
+            ],
+          }),
+        ),
+    ).toThrow(/asset/i);
   });
 
   it("encodes only bounded correlation metadata in opaque staging locators", () => {
-    const request = new SealedManimRenderSandboxRequestV1(descriptor());
+    const request = new SealedManimRenderSandboxRequestV2(descriptor());
     const value = {
       artifactDigest: "b".repeat(64),
       artifactSize: 12,
@@ -250,7 +276,7 @@ describe("render sandbox contracts", () => {
   });
 
   it("decodes every operation across one-byte fragments and checks the response operation prefix", () => {
-    const request = new SealedManimRenderSandboxRequestV1(descriptor());
+    const request = new SealedManimRenderSandboxRequestV2(descriptor());
     const clientFrames = [
       encodeManimRenderSandboxBrokerClientFrameV1({
         deadlineEpochMs: Date.now() + 60_000,
@@ -378,7 +404,7 @@ describe("render OCI lifecycle", () => {
       timeoutMs: 25,
     },
   ])("reaps the attached Docker client after gate $label", async ({ program, timeoutMs }) => {
-    const request = new SealedManimRenderSandboxRequestV1(descriptor());
+    const request = new SealedManimRenderSandboxRequestV2(descriptor());
     const child = spawn(process.execPath, ["--eval", program], {
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -386,7 +412,7 @@ describe("render OCI lifecycle", () => {
       deliverSealedManimRenderGateRequestV1(
         child,
         request,
-        digestManimRenderSandboxExecutionV1(request.parseDescriptor()),
+        digestManimRenderSandboxExecutionV2(request.parseDescriptor()),
         Date.now() + timeoutMs,
         new AbortController().signal,
       ),
@@ -481,7 +507,7 @@ describe("render OCI lifecycle", () => {
       stagingRoot: root,
     });
     try {
-      const request = new SealedManimRenderSandboxRequestV1(descriptor());
+      const request = new SealedManimRenderSandboxRequestV2(descriptor());
       await expect(
         runner.submitOrReattach(request, request.parseDescriptor().deadlineEpochMs, new AbortController().signal),
       ).resolves.toEqual({ code: "cleanup-failed", kind: "failed" });
@@ -521,7 +547,7 @@ describe("render OCI lifecycle", () => {
         artifactDigest,
         artifactSize: artifact.byteLength,
         deadlineEpochMs: expired.deadlineEpochMs,
-        executionDigest: digestManimRenderSandboxExecutionV1(expired),
+        executionDigest: digestManimRenderSandboxExecutionV2(expired),
         jobId: expired.jobId,
         mediaType: "video/mp4",
         profileDigest: MANIM_RENDER_GATED_OCI_PROFILE_DIGEST_V1,
@@ -576,7 +602,7 @@ describe("render OCI lifecycle", () => {
       stagingRoot: root,
     });
     try {
-      const next = new SealedManimRenderSandboxRequestV1(
+      const next = new SealedManimRenderSandboxRequestV2(
         descriptor({
           jobId: "tenant-a/session-next",
           sessionId: "session-next",
@@ -602,7 +628,7 @@ describe("render OCI lifecycle", () => {
       seccompPath: "/missing/seccomp.json",
       stagingRoot: root,
     });
-    const first = new SealedManimRenderSandboxRequestV1(
+    const first = new SealedManimRenderSandboxRequestV2(
       descriptor({
         jobId: "tenant-a/session-active",
         sessionId: "session-active",
@@ -615,7 +641,7 @@ describe("render OCI lifecycle", () => {
     );
     try {
       await docker.entered;
-      const second = new SealedManimRenderSandboxRequestV1(
+      const second = new SealedManimRenderSandboxRequestV2(
         descriptor({
           jobId: "tenant-a/session-blocked",
           sessionId: "session-blocked",
@@ -668,7 +694,7 @@ describe("render OCI lifecycle", () => {
       stagingRoot: root,
     });
     try {
-      const request = new SealedManimRenderSandboxRequestV1(current);
+      const request = new SealedManimRenderSandboxRequestV2(current);
       await expect(
         runner.submitOrReattach(request, current.deadlineEpochMs, new AbortController().signal),
       ).resolves.toMatchObject({ kind: "ready" });
@@ -707,7 +733,7 @@ describe("render OCI lifecycle", () => {
       stagingRoot: root,
     });
     try {
-      const request = new SealedManimRenderSandboxRequestV1(current);
+      const request = new SealedManimRenderSandboxRequestV2(current);
       await expect(
         runner.submitOrReattach(request, current.deadlineEpochMs, new AbortController().signal),
       ).resolves.toMatchObject({
@@ -745,6 +771,7 @@ describe("production durable render execution", () => {
         },
       },
       projectId: "project-a",
+      projectPng: null,
       sceneName: "MainScene",
       sourcePath: "main.py",
       tenantId: "tenant-a",
@@ -752,7 +779,14 @@ describe("production durable render execution", () => {
     const blobs = partial<SourceContentBlobStoreV1>({
       readSource: vi.fn(async () => source),
     });
-    const submitted: SealedManimRenderSandboxRequestV1[] = [];
+    const projectPngs = partial<ProjectPngBlobStoreV1>({
+      close: vi.fn(async () => undefined),
+      read: vi.fn(async () => {
+        throw new Error("The source-only render must not read project image.png.");
+      }),
+      ready: vi.fn(async () => true),
+    });
+    const submitted: SealedManimRenderSandboxRequestV2[] = [];
     const backend = partial<ManimRenderSandboxBackendV1>({
       cancel: vi.fn(async () => undefined),
       close: vi.fn(async () => undefined),
@@ -788,6 +822,7 @@ describe("production durable render execution", () => {
           blobs,
           frame: MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
           maxConcurrentJobs: 5,
+          projectPngs,
           profileDigest: MANIM_RENDER_GATED_OCI_PROFILE_DIGEST_V1,
           runtimeDigest: digestManimRenderGatedOciRuntimeV1(image),
           stagingRootDigest: digestManimRenderStagingRootV1(stagingRoot),
@@ -798,6 +833,7 @@ describe("production durable render execution", () => {
       backend,
       blobs,
       frame: MANIM_RENDER_CANONICAL_SCENE_FRAME_V1,
+      projectPngs,
       profileDigest: MANIM_RENDER_GATED_OCI_PROFILE_DIGEST_V1,
       runtimeDigest: digestManimRenderGatedOciRuntimeV1(image),
       stagingRootDigest: digestManimRenderStagingRootV1(stagingRoot),
@@ -808,6 +844,20 @@ describe("production durable render execution", () => {
       vi.mocked(backend.status).mockResolvedValueOnce({
         ...healthyStatus(),
         stagingRootDigest: "f".repeat(64),
+      });
+      await expect(executor.ready()).resolves.toBe(false);
+      const { descriptorVersion, ...legacyRequestWire } = MANIM_RENDER_GATED_OCI_PROFILE_V1.requestWire;
+      expect(descriptorVersion).toBe(2);
+      const legacyProfileDigest = createHash("sha256")
+        .update(canonicalJsonV1({ ...MANIM_RENDER_GATED_OCI_PROFILE_V1, requestWire: legacyRequestWire }), "utf8")
+        .digest("hex");
+      const legacyRuntimeDigest = createHash("sha256")
+        .update(canonicalJsonV1({ image, profileDigest: legacyProfileDigest }), "utf8")
+        .digest("hex");
+      vi.mocked(backend.status).mockResolvedValueOnce({
+        ...healthyStatus(),
+        profileDigest: legacyProfileDigest,
+        runtimeDigest: legacyRuntimeDigest,
       });
       await expect(executor.ready()).resolves.toBe(false);
       const result = await executor.submitOrReattach({
@@ -846,6 +896,46 @@ describe("production durable render execution", () => {
           }),
         ]),
       );
+
+      const receipt = {
+        byteSize: projectPng.byteSize,
+        digest: projectPng.digest,
+        etag: "png-etag-a",
+        objectKey: `tenants/tenant-a/projects/project-a/assets/image.png/${projectPng.digest}`,
+        versionId: "png-version-a",
+      };
+      vi.mocked(projectPngs.read).mockResolvedValueOnce(projectPngBytes);
+      const assetSession = {
+        ...session,
+        id: "session-png",
+        projectPng: {
+          generation: 3n,
+          projectId: "project-a",
+          receipt,
+          tenantId: "tenant-a",
+        },
+      };
+      await expect(
+        executor.submitOrReattach({
+          jobId: "tenant-a/session-png",
+          session: assetSession,
+          signal: new AbortController().signal,
+        }),
+      ).resolves.toMatchObject({ kind: "ready" });
+      expect(projectPngs.read).toHaveBeenCalledWith("tenant-a", "project-a", receipt, expect.any(AbortSignal));
+      for (const request of submitted.slice(-2)) {
+        expect(request.parseDescriptor().assets).toEqual([
+          {
+            byteLength: projectPng.byteSize,
+            bytesBase64: projectPngBytes.toString("base64"),
+            digest: projectPng.digest,
+            height: projectPng.height,
+            logicalPath: "image.png",
+            mediaType: "image/png",
+            width: projectPng.width,
+          },
+        ]);
+      }
     } finally {
       await executor.close();
     }
@@ -921,7 +1011,7 @@ describe("render broker bounded shutdown", () => {
     const client = new ManimRenderUdsSandboxBackendV1({ socketPath });
     const requests = Array.from({ length: 9 }, (_, index) => {
       const deadlineEpochMs = Date.now() + 60_000;
-      return new SealedManimRenderSandboxRequestV1(
+      return new SealedManimRenderSandboxRequestV2(
         descriptor({
           deadlineEpochMs,
           jobId: `tenant-a/session-${index}`,
@@ -929,7 +1019,7 @@ describe("render broker bounded shutdown", () => {
         }),
       );
     });
-    const submit = (request: SealedManimRenderSandboxRequestV1) =>
+    const submit = (request: SealedManimRenderSandboxRequestV2) =>
       client.submitOrReattach(request, {
         deadlineEpochMs: request.parseDescriptor().deadlineEpochMs,
         signal: new AbortController().signal,
@@ -1088,7 +1178,7 @@ describe("render broker bounded shutdown", () => {
     });
     const client = new ManimRenderUdsSandboxBackendV1({ socketPath });
     try {
-      const request = new SealedManimRenderSandboxRequestV1(descriptor());
+      const request = new SealedManimRenderSandboxRequestV2(descriptor());
       await expect(
         client.submitOrReattach(request, {
           deadlineEpochMs: request.parseDescriptor().deadlineEpochMs,
