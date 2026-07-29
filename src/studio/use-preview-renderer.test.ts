@@ -3,14 +3,15 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { parseVerifiedSceneIrBundleV1 } from "../engine/contracts";
 import { digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
+import { type MathTexOutlineResponseV1, mathTexOutlineResponseV1Schema } from "../engine/mathtex-outline";
 import { applySceneIrDeltaV1, createSceneIrDeltaV1 } from "../engine/scene-delta";
 import { createStudioEntitiesProgram } from "./authoring-commands";
 import { evaluateWorkingState, programRecord } from "./evaluator";
 import {
-  STUDIO_STATE_VERSION,
   type ProgramRecord,
   type ProposedState,
   type RuntimeSceneState,
+  STUDIO_STATE_VERSION,
   type WorkingState,
 } from "./model";
 import { EDIT_OPERATION_VERSION } from "./operations";
@@ -25,14 +26,55 @@ import {
   compileStudioPreviewSceneV1,
   createStudioPreviewDeltaOrReplacementV1,
   digestStudioPreviewSceneRevisionV1,
-  studioPreviewHostReadyForSceneUpdateV1,
   type StudioPreviewSnapshotMetadataStateV1,
+  studioPreviewHostReadyForSceneUpdateV1,
   studioPreviewSnapshotMetadataForWorkspaceV1,
 } from "./use-preview-renderer";
 
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 const HASH_C = "c".repeat(64);
+
+function compiledMathTexResponse(
+  digests: Readonly<{ content?: string; font?: string; toolchain?: string }> = {},
+): MathTexOutlineResponseV1 {
+  const points = [
+    { x: -1, y: -0.5 },
+    { x: 1, y: -0.5 },
+    { x: 1, y: 0.5 },
+    { x: -1, y: 0.5 },
+    { x: -1, y: -0.5 },
+  ];
+  return mathTexOutlineResponseV1Schema.parse({
+    result: {
+      bounds: { bottom: -0.5, left: -1, right: 1, top: 0.5 },
+      contentDigest: digests.content ?? HASH_A,
+      fillRule: "nonzero",
+      fontDigest: digests.font ?? HASH_B,
+      kind: "compiled",
+      path: {
+        subpaths: [
+          {
+            closed: true,
+            segments: points.slice(1).map((end, index) => {
+              const start = points[index];
+              if (!start) throw new Error("MathTex test path is malformed.");
+              return {
+                control1: { x: start.x + (end.x - start.x) / 3, y: start.y + (end.y - start.y) / 3 },
+                control2: { x: start.x + ((end.x - start.x) * 2) / 3, y: start.y + ((end.y - start.y) * 2) / 3 },
+                end,
+              };
+            }),
+            start: points[0],
+          },
+        ],
+      },
+      toolchainDigest: digests.toolchain ?? HASH_C,
+    },
+    schema: "poietra.mathtex-outline-response",
+    version: 1,
+  });
+}
 
 async function compilablePreviewInput() {
   const fixtureUrl = new URL("../../fixtures/engine-v1/shared-circle-opacity.json", import.meta.url);
@@ -398,6 +440,104 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(result.scene.bundle.scene.entities.map(({ id }) => id)).toContain(creation.entityIds[0]);
   });
 
+  it("compiles a Studio-created MathTex outline and fails closed on an unsupported expression", async () => {
+    const { proposedState, snapshot } = await compilablePreviewInput();
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 0.5,
+      entities: [
+        {
+          content: { displayLines: ["E = mc^2"], label: "E = mc^2", texParts: ["E = mc^2"] },
+          position: { x: 400, y: 180 },
+          type: "MathTex",
+        },
+      ],
+      scene: proposedState.base.runtimeSceneState,
+      transactionId: "real-mathtex",
+    });
+    expect(creation.validation.kind, JSON.stringify(creation.validation.issues)).toBe("valid");
+    const edited = evaluateWorkingState({
+      ...proposedState.base,
+      appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
+    });
+    const inputs: string[][] = [];
+    const result = await compileStudioPreviewSceneV1({
+      frame: { height: 9, width: 16 },
+      mathTexOutlineCompiler: async (texParts) => {
+        inputs.push([...texParts]);
+        return compiledMathTexResponse();
+      },
+      proposedState: edited,
+      snapshot,
+      workingRevision: "studio-working-v1:real-mathtex",
+      workspaceKey: "project-a/scene.py/CircleScene",
+    });
+    expect(inputs).toEqual([["E = mc^2"]]);
+    expect(result.kind).toBe("compiled");
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(result.scene.bundle.scene.entities.find(({ id }) => id === creation.entityIds[0])).toMatchObject({
+      appearance: { fill: { color: { alpha: 1, blue: 1, green: 1, red: 1 }, rule: "nonzero" }, stroke: null },
+      geometry: { kind: "cubic-path" },
+      transform: { m11: 1, m22: 1, tx: 2, ty: 0 },
+    });
+    expect(result.scene.bundle.scene.requiredCapabilities).toEqual([
+      "cubic-path-geometry",
+      "opacity-animation",
+      "shape-primitives",
+    ]);
+
+    const unsupported = await compileStudioPreviewSceneV1({
+      frame: { height: 9, width: 16 },
+      mathTexOutlineCompiler: async () => ({
+        result: { code: "frame-item-unsupported", kind: "unsupported", message: "Shape frame item is unsupported." },
+        schema: "poietra.mathtex-outline-response",
+        version: 1,
+      }),
+      proposedState: edited,
+      snapshot,
+      workingRevision: "studio-working-v1:unsupported-mathtex",
+      workspaceKey: "project-a/scene.py/CircleScene",
+    });
+    expect(unsupported).toMatchObject({
+      error: expect.stringContaining("frame-item-unsupported"),
+      kind: "unsupported",
+    });
+
+    let discontinuousCompilerCalls = 0;
+    const discontinuous = await compileStudioPreviewSceneV1({
+      frame: { height: 9, width: 16 },
+      mathTexOutlineCompiler: async () => {
+        discontinuousCompilerCalls += 1;
+        return compiledMathTexResponse();
+      },
+      proposedState: {
+        ...edited,
+        evaluatedScene: {
+          ...edited.evaluatedScene,
+          propertyChannels: {
+            ...edited.evaluatedScene.propertyChannels,
+            [`${creation.entityIds[0]}/content`]: {
+              entityId: creation.entityIds[0] ?? "missing-mathtex",
+              key: "content",
+              samples: [
+                {
+                  interval: { end: edited.evaluatedScene.duration, start: 1 },
+                  kind: "exact",
+                  provenanceId: "test-content-change",
+                  value: { displayLines: ["E = mc^3"], texParts: ["E = mc^3"] },
+                },
+              ],
+            },
+          },
+        },
+      },
+      snapshot,
+      workingRevision: "studio-working-v1:dynamic-mathtex",
+      workspaceKey: "project-a/scene.py/CircleScene",
+    });
+    expect(discontinuousCompilerCalls).toBe(0);
+    expect(discontinuous).toMatchObject({ error: expect.stringContaining("changes content"), kind: "unsupported" });
+  });
+
   it("fails closed instead of dropping verified base animation channels on edit", async () => {
     const { proposedState, snapshot } = await compilablePreviewInput();
     const animatedSnapshot: StudioVerifiedPreviewSnapshotV1 = {
@@ -485,6 +625,9 @@ describe("compileStudioPreviewSceneV1", () => {
       workingRevision: "studio-working-v1:circle",
       workspaceKey: "project-a/scene.py/CircleScene",
     } as const;
+    const outline = compiledMathTexResponse().result;
+    if (outline.kind !== "compiled") throw new Error("MathTex test outline did not compile.");
+    const outlineBasis = { ...basis, mathTexOutlines: { math: outline } };
     const digests = await Promise.all([
       digestStudioPreviewSceneRevisionV1(basis),
       digestStudioPreviewSceneRevisionV1({
@@ -502,6 +645,19 @@ describe("compileStudioPreviewSceneV1", () => {
         },
       }),
       digestStudioPreviewSceneRevisionV1({ ...basis, frame: { height: 9, width: 15 } }),
+      digestStudioPreviewSceneRevisionV1(outlineBasis),
+      digestStudioPreviewSceneRevisionV1({
+        ...outlineBasis,
+        mathTexOutlines: { math: { ...outline, contentDigest: "d".repeat(64) } },
+      }),
+      digestStudioPreviewSceneRevisionV1({
+        ...outlineBasis,
+        mathTexOutlines: { math: { ...outline, toolchainDigest: "e".repeat(64) } },
+      }),
+      digestStudioPreviewSceneRevisionV1({
+        ...outlineBasis,
+        mathTexOutlines: { math: { ...outline, fontDigest: "f".repeat(64) } },
+      }),
     ]);
     expect(new Set(digests).size).toBe(digests.length);
   });

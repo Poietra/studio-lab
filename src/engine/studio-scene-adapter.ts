@@ -1,3 +1,4 @@
+import { canonicalEditableContent } from "../studio/editable-content";
 import type {
   EntityDimensions,
   Knowledge,
@@ -17,6 +18,7 @@ import {
 import { STUDIO_VIEWPORT } from "../studio/studio-viewport-geometry";
 import { type AssetManifestV1, parseVerifiedAssetManifestV1 } from "./asset-manifest";
 import type { SceneIrBundleV1 } from "./contracts";
+import type { MathTexOutlineArtifactV1 } from "./mathtex-outline";
 import type { EnginePointV1 } from "./primitives";
 import { type SceneIrV1, sceneIrV1Schema } from "./scene-ir";
 
@@ -27,6 +29,7 @@ export type StudioSceneIrAdapterEvidenceV1 = Readonly<{
   camera: SceneIrV1["camera"];
   entityIds?: Readonly<Record<string, string>>;
   fidelity?: SceneIrV1["fidelity"];
+  mathTexOutlines?: Readonly<Record<string, MathTexOutlineArtifactV1>>;
   paintOrder: readonly Readonly<{ entityId: string; sourceZIndex: number }>[];
   provenance: readonly string[];
 }>;
@@ -73,6 +76,7 @@ export type StudioSceneIrAdapterResultV1 =
 
 const STATIC_PROPERTY_KEYS = new Set<PropertyChannel["key"]>([
   "appearance",
+  "content",
   "dimensions",
   "position",
   "presence",
@@ -106,6 +110,12 @@ const MANIM_DEFAULT_SHAPE_APPEARANCE: VectorAppearanceV1 = {
     widthWorld: 0.04,
   },
 };
+const MANIM_DEFAULT_MATHTEX_APPEARANCE: VectorAppearanceV1 = {
+  fill: { color: MANIM_WHITE, rule: "nonzero" },
+  kind: "vector",
+  opacity: 1,
+  stroke: null,
+};
 
 export type BuildStudioSceneIrAdapterEvidenceResultV1 =
   | Readonly<{ evidence: StudioSceneIrAdapterEvidenceV1; kind: "resolved" }>
@@ -137,10 +147,12 @@ function studioCreateTransactionForEntity(
  * objects inherit camera, paint, appearance, and runtime identity from the
  * server-verified snapshot map. Studio-created Circle/Rectangle objects use
  * Manim's fixed vector defaults only while Studio carries known empty style
- * evidence; custom or unknown style stays on the semantic fallback path.
+ * evidence. Studio-created MathTex uses a separately verified outline and the
+ * fixed Manim white fill. Custom or unknown style stays on semantic fallback.
  */
 export function buildStudioSceneIrAdapterEvidenceV1(
   input: Readonly<{
+    mathTexOutlines?: Readonly<Record<string, MathTexOutlineArtifactV1>>;
     proposedState: Pick<ProposedState, "evaluatedScene" | "programs">;
     snapshot: SceneIrBundleV1;
     sourceRuntimeIdentity: StudioSceneIrAdapterRuntimeIdentityV1 | null;
@@ -218,11 +230,13 @@ export function buildStudioSceneIrAdapterEvidenceV1(
   let nextZ = paintOrder.reduce((maximum, entry) => Math.max(maximum, entry.sourceZIndex), -1);
   for (const entity of created) {
     const style = entity.geometry?.style;
+    const isShape = entity.type === "Circle" || entity.type === "Rectangle";
+    const isMathTex = entity.type === "MathTex" && input.mathTexOutlines?.[entity.id] !== undefined;
     if (
       studioCreateTransactionForEntity(input.proposedState, entity) === null ||
-      (entity.type !== "Circle" && entity.type !== "Rectangle") ||
-      style?.kind !== "known" ||
-      Object.values(style.value).some((value) => value !== undefined)
+      (!isShape && !isMathTex) ||
+      (isShape && (style?.kind !== "known" || Object.values(style.value).some((value) => value !== undefined))) ||
+      (isMathTex && entity.geometry !== undefined)
     ) {
       issues.push(
         issue(
@@ -234,7 +248,7 @@ export function buildStudioSceneIrAdapterEvidenceV1(
       continue;
     }
     nextZ += 1;
-    appearances[entity.id] = MANIM_DEFAULT_SHAPE_APPEARANCE;
+    appearances[entity.id] = isMathTex ? MANIM_DEFAULT_MATHTEX_APPEARANCE : MANIM_DEFAULT_SHAPE_APPEARANCE;
     entityIds[entity.id] = entity.id;
     paintOrder.push({ entityId: entity.id, sourceZIndex: nextZ });
   }
@@ -246,13 +260,14 @@ export function buildStudioSceneIrAdapterEvidenceV1(
       camera: input.snapshot.scene.camera,
       entityIds,
       fidelity: {
-        evidence: ["Studio shape geometry reconstructed from server-correlated static/runtime evidence"],
+        evidence: ["Studio geometry reconstructed from server-correlated static/runtime evidence"],
         kind: "approximate",
       },
+      mathTexOutlines: input.mathTexOutlines,
       paintOrder,
       provenance: [
         "server-verified imported snapshot and source/runtime identity",
-        "known Studio Circle/Rectangle defaults",
+        "known Studio Circle/Rectangle/MathTex defaults",
       ],
     },
     kind: "resolved",
@@ -275,6 +290,79 @@ function activeCriticalTimes(entity: RuntimeEntity, channel: PropertyChannel | u
     }
   }
   return [...times].sort((left, right) => left - right);
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function resolveStaticMathTexContent(
+  entity: RuntimeEntity,
+  channel: PropertyChannel | undefined,
+  issues: StudioSceneIrAdapterIssueV1[],
+) {
+  if (channel?.samples.some(({ kind }) => kind === "animated")) {
+    issues.push(
+      issue("property-animation-unsupported", "Static Studio adapter cannot compile animated MathTex content.", {
+        entityId: entity.id,
+      }),
+    );
+    return undefined;
+  }
+  let resolved: readonly string[] | undefined;
+  const times = activeCriticalTimes(entity, channel);
+  if (times.length === 0) {
+    issues.push(
+      issue("unknown-evidence", `MathTex entity ${entity.id} has no active content interval.`, { entityId: entity.id }),
+    );
+    return undefined;
+  }
+  for (const time of times) {
+    const sampled = samplePropertyValue(channel?.samples ?? [], time);
+    const content = canonicalEditableContent(sampled ?? entity.content, "MathTex");
+    if (!content?.texParts) {
+      issues.push(
+        issue("unknown-evidence", `MathTex entity ${entity.id} has no canonical content at ${time}.`, {
+          entityId: entity.id,
+        }),
+      );
+      return undefined;
+    }
+    if (resolved && !sameStrings(resolved, content.texParts)) {
+      issues.push(
+        issue(
+          "property-discontinuity-unsupported",
+          `MathTex entity ${entity.id} changes content during its lifetime.`,
+          { entityId: entity.id },
+        ),
+      );
+      return undefined;
+    }
+    resolved = content.texParts;
+  }
+  return resolved;
+}
+
+export type StudioMathTexOutlineInputV1 = Readonly<{ entityId: string; texParts: readonly string[] }>;
+
+export function collectStudioMathTexOutlineInputsV1(
+  proposedState: Pick<ProposedState, "evaluatedScene" | "programs">,
+):
+  | Readonly<{ inputs: readonly StudioMathTexOutlineInputV1[]; kind: "resolved" }>
+  | Readonly<{ issues: readonly StudioSceneIrAdapterIssueV1[]; kind: "unsupported" }> {
+  const issues: StudioSceneIrAdapterIssueV1[] = [];
+  const inputs = Object.values(proposedState.evaluatedScene.objectGraph.entities)
+    .filter((entity) => entity.type === "MathTex" && studioCreateTransactionForEntity(proposedState, entity) !== null)
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .flatMap((entity) => {
+      const texParts = resolveStaticMathTexContent(
+        entity,
+        channelFor(proposedState.evaluatedScene, entity.id, "content"),
+        issues,
+      );
+      return texParts ? [{ entityId: entity.id, texParts }] : [];
+    });
+  return issues.length > 0 ? { issues, kind: "unsupported" } : { inputs, kind: "resolved" };
 }
 
 function resolveStaticKnowledge<T extends EntityDimensions | number | Point>(
@@ -410,6 +498,15 @@ function validateGlobalEvidence(input: StudioSceneIrAdapterInputV1, issues: Stud
       );
     }
   }
+  for (const id of Object.keys(input.evidence.mathTexOutlines ?? {})) {
+    if (scene.objectGraph.entities[id]?.type !== "MathTex") {
+      issues.push(
+        issue("geometry-unsupported", `MathTex outline evidence references non-MathTex entity ${id}.`, {
+          entityId: id,
+        }),
+      );
+    }
+  }
   if (input.evidence.entityIds) {
     const outputIds = new Set<string>();
     for (const [entityId, outputId] of Object.entries(input.evidence.entityIds)) {
@@ -447,7 +544,8 @@ function validateGlobalEvidence(input: StudioSceneIrAdapterInputV1, issues: Stud
 }
 
 function validateProgramsAndChannels(input: StudioSceneIrAdapterInputV1, issues: StudioSceneIrAdapterIssueV1[]) {
-  const entityIds = new Set(Object.keys(input.proposedState.evaluatedScene.objectGraph.entities));
+  const entities = input.proposedState.evaluatedScene.objectGraph.entities;
+  const entityIds = new Set(Object.keys(entities));
   const validOperationIds = new Set<string>();
   for (const record of input.proposedState.programs) {
     if (record.validation.status !== "valid") {
@@ -471,7 +569,10 @@ function validateProgramsAndChannels(input: StudioSceneIrAdapterInputV1, issues:
         }),
       );
     }
-    if (!STATIC_PROPERTY_KEYS.has(channel.key)) {
+    if (
+      !STATIC_PROPERTY_KEYS.has(channel.key) ||
+      (channel.key === "content" && entities[channel.entityId]?.type !== "MathTex")
+    ) {
       issues.push(
         issue("property-unsupported", `Static Studio adapter cannot compile ${channel.key} channels.`, {
           entityId: channel.entityId,
@@ -505,7 +606,8 @@ function compileEntities(input: StudioSceneIrAdapterInputV1, issues: StudioScene
   return input.evidence.paintOrder.flatMap((order, sceneOrder) => {
     const entity = scene.objectGraph.entities[order.entityId];
     if (!entity) return [];
-    if (entity.type !== "Circle" && entity.type !== "Rectangle") {
+    const isMathTex = entity.type === "MathTex";
+    if (entity.type !== "Circle" && entity.type !== "Rectangle" && !isMathTex) {
       issues.push(
         issue("geometry-unsupported", `Static Studio adapter does not have geometry for ${entity.type}.`, {
           entityId: entity.id,
@@ -528,15 +630,17 @@ function compileEntities(input: StudioSceneIrAdapterInputV1, issues: StudioScene
       if (!STATIC_PROPERTY_KEYS.has(channel.key)) return [];
     }
 
-    const dimensions = resolveStaticKnowledge(
-      entity,
-      channelFor(scene, entity.id, "dimensions"),
-      entity.geometry?.dimensions,
-      isEntityDimensionsValue,
-      sameDimensions,
-      "dimensions",
-      issues,
-    );
+    const dimensions = isMathTex
+      ? undefined
+      : resolveStaticKnowledge(
+          entity,
+          channelFor(scene, entity.id, "dimensions"),
+          entity.geometry?.dimensions,
+          isEntityDimensionsValue,
+          sameDimensions,
+          "dimensions",
+          issues,
+        );
     const position = resolveStaticKnowledge(
       entity,
       channelFor(scene, entity.id, "position"),
@@ -549,30 +653,46 @@ function compileEntities(input: StudioSceneIrAdapterInputV1, issues: StudioScene
     const scale = resolveStaticKnowledge(
       entity,
       channelFor(scene, entity.id, "scale"),
-      entity.geometry?.scale,
+      entity.geometry?.scale ?? (isMathTex ? { kind: "known", value: 1 } : undefined),
       (value): value is number => typeof value === "number" && Number.isFinite(value),
       (left, right) => left === right,
       "scale",
       issues,
     );
+    const mathTexContent = isMathTex
+      ? resolveStaticMathTexContent(entity, channelFor(scene, entity.id, "content"), issues)
+      : undefined;
+    const mathTexOutline = isMathTex ? input.evidence.mathTexOutlines?.[entity.id] : undefined;
+    if (isMathTex && (!mathTexContent || !mathTexOutline)) {
+      if (!mathTexOutline) {
+        issues.push(
+          issue("geometry-unsupported", `MathTex entity ${entity.id} has no verified outline.`, {
+            entityId: entity.id,
+          }),
+        );
+      }
+      return [];
+    }
     validatePresence(entity, channelFor(scene, entity.id, "presence"), issues);
-    if (!dimensions || !position || scale === undefined) return [];
+    if ((!isMathTex && !dimensions) || !position || scale === undefined) return [];
 
     const geometry =
-      entity.type === "Circle" && dimensions.radius !== undefined
-        ? { center: { x: 0, y: 0 }, kind: "circle" as const, radius: dimensions.radius }
-        : entity.type === "Rectangle" && dimensions.height !== undefined && dimensions.width !== undefined
-          ? {
-              center: { x: 0, y: 0 },
-              cornerRadius: 0,
-              height: dimensions.height,
-              kind: "rectangle" as const,
-              width: dimensions.width,
-            }
-          : undefined;
+      isMathTex && mathTexOutline
+        ? { kind: "cubic-path" as const, path: mathTexOutline.path }
+        : entity.type === "Circle" && dimensions?.radius !== undefined
+          ? { center: { x: 0, y: 0 }, kind: "circle" as const, radius: dimensions.radius }
+          : entity.type === "Rectangle" && dimensions?.height !== undefined && dimensions.width !== undefined
+            ? {
+                center: { x: 0, y: 0 },
+                cornerRadius: 0,
+                height: dimensions.height,
+                kind: "rectangle" as const,
+                width: dimensions.width,
+              }
+            : undefined;
     if (!geometry || scale <= 0) {
       issues.push(
-        issue("unknown-evidence", `Entity ${entity.id} has invalid shape dimensions or scale.`, {
+        issue("unknown-evidence", `Entity ${entity.id} has invalid geometry or scale.`, {
           entityId: entity.id,
         }),
       );
@@ -638,7 +758,7 @@ function compileOpacityChannels(input: StudioSceneIrAdapterInputV1, issues: Stud
     const animated = channel.samples.filter((sample) => sample.kind === "animated");
     if (studioCreateTransactionForEntity(input.proposedState, entity) === null || animated.length !== 1) {
       issues.push(
-        issue("property-animation-unsupported", "Only one Studio-created shape opacity transition is supported.", {
+        issue("property-animation-unsupported", "Only one Studio-created entity opacity transition is supported.", {
           entityId: order.entityId,
         }),
       );
@@ -753,8 +873,9 @@ export async function compileStudioSceneIrV1(
       },
     ],
     requiredCapabilities: [
+      ...(entities.some(({ geometry }) => geometry.kind === "cubic-path") ? (["cubic-path-geometry"] as const) : []),
       ...(animationChannels.length > 0 ? (["opacity-animation"] as const) : []),
-      ...(entities.length > 0 ? (["shape-primitives"] as const) : []),
+      ...(entities.some(({ geometry }) => geometry.kind !== "cubic-path") ? (["shape-primitives"] as const) : []),
     ],
     sceneId: stableInput.proposedState.evaluatedScene.sceneId,
     schema: "poietra.scene-ir",

@@ -4,6 +4,12 @@ import { MAX_CANVAS_INTERACTION_ENTITY_IDS } from "../engine/canvas-worker-proto
 import type { SceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
 import {
+  compileMathTexOutlineV1,
+  type MathTexOutlineArtifactV1,
+  type MathTexOutlineCompilerV1,
+  mathTexOutlineResponseV1Schema,
+} from "../engine/mathtex-outline";
+import {
   createCanvasPreviewRendererV1,
   type PreviewRendererHostStateV1,
   type PreviewViewportV1,
@@ -12,7 +18,11 @@ import {
 import { sourceIdentityV1Schema } from "../engine/primitives";
 import { createSceneIrDeltaV1, type SceneIrDeltaV1 } from "../engine/scene-delta";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
-import { buildStudioSceneIrAdapterEvidenceV1, compileStudioSceneIrV1 } from "../engine/studio-scene-adapter";
+import {
+  buildStudioSceneIrAdapterEvidenceV1,
+  collectStudioMathTexOutlineInputsV1,
+  compileStudioSceneIrV1,
+} from "../engine/studio-scene-adapter";
 import type { ProposedState } from "./model";
 import {
   detectStudioPreviewCapabilitiesV1,
@@ -141,6 +151,7 @@ export function studioPreviewHostReadyForSceneUpdateV1(state: PreviewRendererHos
 export async function digestStudioPreviewSceneRevisionV1(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
+    mathTexOutlines?: Readonly<Record<string, MathTexOutlineArtifactV1>>;
     snapshot: StudioVerifiedPreviewSnapshotV1;
     studioScene: Readonly<{ duration: number; sceneId: string }>;
     workingRevision: string;
@@ -169,6 +180,16 @@ export async function digestStudioPreviewSceneRevisionV1(
     input.studioScene.duration,
     input.frame.width,
     input.frame.height,
+    Object.entries(input.mathTexOutlines ?? {})
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([entityId, outline]) => [
+        entityId,
+        outline.contentDigest,
+        outline.toolchainDigest,
+        outline.fontDigest,
+        outline.bounds,
+        outline.path,
+      ]),
   ];
   const bytes = new TextEncoder().encode(canonicalJsonV1(revisionBasis));
   const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
@@ -178,6 +199,7 @@ export async function digestStudioPreviewSceneRevisionV1(
 export async function compileStudioPreviewSceneV1(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
+    mathTexOutlineCompiler?: MathTexOutlineCompilerV1;
     proposedState: ProposedState;
     snapshot: StudioVerifiedPreviewSnapshotV1;
     workingRevision: string;
@@ -230,7 +252,36 @@ export async function compileStudioPreviewSceneV1(
       kind: "unsupported",
     };
   }
+  const outlineInputs = collectStudioMathTexOutlineInputsV1(input.proposedState);
+  if (outlineInputs.kind === "unsupported") {
+    return { error: outlineInputs.issues.map(({ message }) => message).join(" "), kind: "unsupported" };
+  }
+  const mathTexOutlines: Record<string, MathTexOutlineArtifactV1> = {};
+  try {
+    const compiler = input.mathTexOutlineCompiler ?? compileMathTexOutlineV1;
+    const responses = await Promise.all(
+      outlineInputs.inputs.map(async ({ entityId, texParts }) => ({
+        entityId,
+        response: mathTexOutlineResponseV1Schema.parse(await compiler(texParts)),
+      })),
+    );
+    for (const { entityId, response } of responses) {
+      if (response.result.kind === "unsupported") {
+        return {
+          error: `MathTex entity ${entityId} is unsupported (${response.result.code}): ${response.result.message}`,
+          kind: "unsupported",
+        };
+      }
+      mathTexOutlines[entityId] = response.result;
+    }
+  } catch (error) {
+    return {
+      error: `MathTex outline compilation failed: ${error instanceof Error ? error.message : String(error)}`,
+      kind: "unsupported",
+    };
+  }
   const evidence = buildStudioSceneIrAdapterEvidenceV1({
+    mathTexOutlines,
     proposedState: input.proposedState,
     snapshot: input.snapshot.snapshot,
     sourceRuntimeIdentity: input.snapshot.sourceRuntimeIdentity,
@@ -240,6 +291,7 @@ export async function compileStudioPreviewSceneV1(
   }
   const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
     frame: input.frame,
+    mathTexOutlines,
     snapshot: input.snapshot,
     studioScene: input.proposedState.evaluatedScene,
     workingRevision: input.workingRevision,
