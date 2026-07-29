@@ -509,6 +509,8 @@ function abortError() {
 
 class ManimRenderCancellationRejectedErrorV1 extends Error {}
 
+class ManimRenderResultRejectedErrorV1 extends Error {}
+
 function delay(milliseconds: number, signal: AbortSignal) {
   signal.throwIfAborted();
   return new Promise<void>((resolveDelay, rejectDelay) => {
@@ -575,28 +577,79 @@ export async function deliverSealedManimRenderGateRequestV1(
 ) {
   let stderr = Buffer.alloc(0);
   let ready = false;
+  let closeRequested = false;
+  let controlStreamViolated = false;
   let resolveReady!: () => void;
   let rejectReady!: (error: unknown) => void;
+  let resolveExit!: (value: Readonly<{ code: number; signal: NodeJS.Signals | null }>) => void;
   const gate = new Promise<void>((resolveGate, rejectGate) => {
     resolveReady = resolveGate;
     rejectReady = rejectGate;
   });
-  const exit = new Promise<Readonly<{ code: number; signal: NodeJS.Signals | null }>>((resolveExit) => {
-    attached.once("error", rejectReady);
-    attached.once("close", (code, signalName) => resolveExit({ code: code ?? 1, signal: signalName }));
+  const exit = new Promise<Readonly<{ code: number; signal: NodeJS.Signals | null }>>((resolveClose) => {
+    resolveExit = resolveClose;
+  });
+  const markControlStreamViolation = () => {
+    if (controlStreamViolated) return;
+    controlStreamViolated = true;
+    rejectReady(new ManimRenderResultRejectedErrorV1("The render OCI gate violated its control stream."));
+  };
+  const rejectControlStream = () => {
+    markControlStreamViolation();
+    attached.kill("SIGKILL");
+  };
+  attached.once("error", (error) => {
+    if (!closeRequested) markControlStreamViolation();
+    rejectReady(error);
+  });
+  attached.once("close", (code, signalName) => {
+    if (!closeRequested) markControlStreamViolation();
+    resolveExit({ code: code ?? 1, signal: signalName });
   });
   attached.stdout.on("data", (chunk: Buffer) => {
-    if (chunk.byteLength > 0) attached.kill("SIGKILL");
+    if (chunk.byteLength > 0) rejectControlStream();
   });
   attached.stderr.on("data", (chunk: Buffer) => {
-    if (stderr.byteLength + chunk.byteLength > MAX_CONTROL_BYTES) return attached.kill("SIGKILL");
+    if (chunk.byteLength === 0 || controlStreamViolated) return;
+    const remaining = READY.byteLength - stderr.byteLength;
+    if (
+      remaining <= 0 ||
+      chunk.byteLength > remaining ||
+      !chunk.equals(READY.subarray(stderr.byteLength, stderr.byteLength + chunk.byteLength))
+    ) {
+      rejectControlStream();
+      return;
+    }
     stderr = Buffer.concat([stderr, chunk]);
-    if (!ready && stderr.subarray(0, READY.byteLength).equals(READY)) {
+    if (!ready && stderr.byteLength === READY.byteLength) {
       ready = true;
       resolveReady();
     }
   });
-  const abort = () => attached.kill("SIGKILL");
+  const abort = () => {
+    closeRequested = true;
+    attached.kill("SIGKILL");
+  };
+  const closeControlStream = async () => {
+    if (!closeRequested) {
+      // Let an already-queued close/error event establish an untrusted early
+      // exit before an intentional SIGKILL can make that exit look expected.
+      await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+    }
+    if (!closeRequested) {
+      let signalled = false;
+      if (attached.exitCode === null && attached.signalCode === null) {
+        try {
+          signalled = attached.kill("SIGKILL");
+        } catch {
+          // The bounded reap below remains authoritative.
+        }
+      }
+      if (signalled) closeRequested = true;
+      else markControlStreamViolation();
+    }
+    await reapFastManimGatedOciAttachedDockerClientV1(attached, exit);
+  };
   signal.addEventListener("abort", abort, { once: true });
   try {
     await Promise.race([
@@ -607,24 +660,29 @@ export async function deliverSealedManimRenderGateRequestV1(
     await Promise.race([
       new Promise<void>((resolveWrite, rejectWrite) => {
         const onError = () => {
-          cleanup();
+          if (!closeRequested) markControlStreamViolation();
           rejectWrite(new Error("The render OCI gate rejected its authenticated request stream."));
         };
-        const cleanup = () => attached.stdin.removeListener("error", onError);
         attached.stdin.once("error", onError);
-        attached.stdin.end(requestWire(request, executionDigest), () => {
-          cleanup();
-          resolveWrite();
-        });
+        attached.stdin.end(requestWire(request, executionDigest), resolveWrite);
       }),
       exit.then(() => Promise.reject(new Error("Render OCI gate exited while receiving its request."))),
       delay(remaining(deadlineEpochMs), signal).then(() =>
         Promise.reject(new Error("Render OCI gate request delivery timed out.")),
       ),
     ]);
-    return { attached, attachedExit: exit };
+    await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+    if (controlStreamViolated) {
+      throw new ManimRenderResultRejectedErrorV1("The render OCI gate violated its control stream.");
+    }
+    return { attached, attachedExit: exit, closeControlStream, controlStreamViolated: () => controlStreamViolated };
   } catch (error) {
-    await reapFastManimGatedOciAttachedDockerClientV1(attached, exit);
+    await closeControlStream();
+    if (controlStreamViolated) {
+      throw new ManimRenderResultRejectedErrorV1("The render OCI gate violated its control stream.", {
+        cause: error,
+      });
+    }
     throw error;
   } finally {
     signal.removeEventListener("abort", abort);
@@ -720,7 +778,7 @@ export async function writeBoundedManimRenderChildStdoutV1(
       if (outputBytes > maximumBytes) {
         overflow = true;
         child.kill("SIGKILL");
-        throw new Error("The streamed render artifact exceeded its byte budget.");
+        throw new ManimRenderResultRejectedErrorV1("The streamed render artifact exceeded its byte budget.");
       }
       let written = 0;
       while (written < chunk.byteLength) {
@@ -734,8 +792,17 @@ export async function writeBoundedManimRenderChildStdoutV1(
     }
     const result = await exit;
     throwIfDeadlineElapsed(deadlineEpochMs, signal);
-    if (overflow || result.code !== 0 || result.signal !== null || stderrBytes !== 0 || outputBytes === 0) {
+    if (overflow) {
+      throw new ManimRenderResultRejectedErrorV1("The render artifact export violated its byte bounds.");
+    }
+    if (stderrBytes !== 0) {
+      throw new ManimRenderResultRejectedErrorV1("The render artifact export violated its control bounds.");
+    }
+    if (result.code !== 0 || result.signal !== null) {
       throw new Error("Docker could not stream one bounded render artifact.");
+    }
+    if (outputBytes === 0) {
+      throw new ManimRenderResultRejectedErrorV1("The render artifact export returned an empty result.");
     }
     await destination.sync();
     throwIfDeadlineElapsed(deadlineEpochMs, signal);
@@ -1497,8 +1564,8 @@ export class ManimRenderGatedOciJobRunnerV1 {
     deadlineEpochMs: number,
     signal: AbortSignal,
   ): Promise<ManimRenderGatedOciBaseResultV1> {
-    let attached: ReturnType<FastManimGatedOciDockerClientV1["attach"]> | undefined;
-    let attachedExit: Promise<Readonly<{ code: number; signal: NodeJS.Signals | null }>> | undefined;
+    let closeControlStream: (() => Promise<void>) | undefined;
+    let controlStreamViolated: (() => boolean) | undefined;
     let containerId: string | undefined;
     let containerCreationAttempted = false;
     let immutableContainerIdObserved = false;
@@ -1507,6 +1574,12 @@ export class ManimRenderGatedOciJobRunnerV1 {
     const containerName = this.#containerName(stagingId);
     const inspectResourceFailure = () =>
       runningIdentity ? inspectManimRenderCgroupFailureV1(runningIdentity) : Promise.resolve(null);
+    const reapAttached = async () => {
+      if (!closeControlStream) return;
+      const close = closeControlStream;
+      closeControlStream = undefined;
+      await close();
+    };
     const execute = async (): Promise<ManimRenderGatedOciBaseResultV1> => {
       try {
         const staged = await this.#readStaged(descriptor, executionDigest, stagingId, deadlineEpochMs, signal);
@@ -1521,7 +1594,7 @@ export class ManimRenderGatedOciJobRunnerV1 {
           containerCreationAttempted = true;
           containerId = await this.#createContainer(containerName, executionDigest, deadlineEpochMs, signal);
           immutableContainerIdObserved = true;
-          ({ attached, attachedExit } = await this.#startAndGate(
+          ({ closeControlStream, controlStreamViolated } = await this.#startAndGate(
             containerId,
             request,
             executionDigest,
@@ -1542,6 +1615,10 @@ export class ManimRenderGatedOciJobRunnerV1 {
           await inspectFastManimGatedOciRunningResourcesV1(runningIdentity);
         }
         await this.#waitForBrokerReadable(runningIdentity!, deadlineEpochMs, signal);
+        await reapAttached();
+        if (controlStreamViolated?.()) {
+          throw new ManimRenderResultRejectedErrorV1("The render OCI gate violated its control stream.");
+        }
         const terminal = await this.#readTerminal(
           containerId,
           runningIdentity!,
@@ -1597,10 +1674,15 @@ export class ManimRenderGatedOciJobRunnerV1 {
           await rm(copied.incoming, { force: true, recursive: true });
         }
       } catch (error) {
+        const cancelledBeforeDeadline = signal.aborted && Date.now() < deadlineEpochMs;
         if (fastManimSandboxBackendControlErrorCode(error) === "cleanup") {
           this.#latchCleanupFailure(error);
         }
-        const cancelledBeforeDeadline = signal.aborted && Date.now() < deadlineEpochMs;
+        try {
+          await reapAttached();
+        } catch (cleanupError) {
+          this.#latchCleanupFailure(cleanupError);
+        }
         const resourceFailure = await inspectResourceFailure().catch(() => null);
         try {
           if (containerId) {
@@ -1630,6 +1712,9 @@ export class ManimRenderGatedOciJobRunnerV1 {
         }
         if (cancelledBeforeDeadline) return { code: "cancelled", kind: "failed" };
         if (resourceFailure) return { code: resourceFailure, kind: "failed" };
+        if (error instanceof ManimRenderResultRejectedErrorV1 || controlStreamViolated?.()) {
+          return { code: "result-rejected", kind: "failed" };
+        }
         if (Date.now() >= deadlineEpochMs) return { code: "deadline-exceeded", kind: "failed" };
         if (signal.aborted) return { code: "cancelled", kind: "failed" };
         return { code: "render-failed", kind: "failed" };
@@ -1642,9 +1727,9 @@ export class ManimRenderGatedOciJobRunnerV1 {
     } catch (error) {
       executionError = error;
     }
-    if (attached && attachedExit) {
+    if (closeControlStream) {
       try {
-        await reapFastManimGatedOciAttachedDockerClientV1(attached, attachedExit);
+        await reapAttached();
       } catch (error) {
         this.#latchCleanupFailure(error);
         await this.#deleteStaged(stagingId);
@@ -1933,19 +2018,28 @@ export class ManimRenderGatedOciJobRunnerV1 {
     );
     throwIfDeadlineElapsed(deadlineEpochMs, signal);
     await this.#assertBrokerReadable(identity);
-    if (result.code !== 0 || result.stderr.byteLength !== 0 || result.stdout.byteLength > 4 * 1024) {
+    if (result.stderr.byteLength !== 0 || result.stdout.byteLength > 4 * 1024) {
+      throw new ManimRenderResultRejectedErrorV1("The render terminal marker violated its byte bounds.");
+    }
+    if (result.code !== 0) {
       throw new Error("Docker could not read one bounded render terminal marker.");
     }
-    const text = new TextDecoder("utf-8", { fatal: true }).decode(result.stdout);
-    const terminal = containerTerminalSchema.parse(JSON.parse(text));
-    if (
-      canonicalJsonV1(terminal) !== text ||
-      terminal.executionDigest !== executionDigest ||
-      (terminal.kind === "ready" && terminal.mediaType !== mediaType)
-    ) {
-      throw new Error("The render terminal marker is not canonically correlated.");
+    try {
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(result.stdout);
+      const terminal = containerTerminalSchema.parse(JSON.parse(text));
+      if (
+        canonicalJsonV1(terminal) !== text ||
+        terminal.executionDigest !== executionDigest ||
+        (terminal.kind === "ready" && terminal.mediaType !== mediaType)
+      ) {
+        throw new TypeError("The render terminal marker is not canonically correlated.");
+      }
+      return terminal;
+    } catch (error) {
+      throw new ManimRenderResultRejectedErrorV1("The render terminal marker failed host verification.", {
+        cause: error,
+      });
     }
-    return terminal;
   }
 
   async #copyArtifact(
@@ -1979,10 +2073,19 @@ export class ManimRenderGatedOciJobRunnerV1 {
         await artifactHandle.close();
       }
       await this.#assertBrokerReadable(identity);
-      const { digest, size } = await validateMedia(temporaryArtifact, mediaType, {
-        deadlineEpochMs,
-        signal,
-      });
+      let verifiedMedia: Awaited<ReturnType<typeof validateMedia>>;
+      try {
+        verifiedMedia = await validateMedia(temporaryArtifact, mediaType, {
+          deadlineEpochMs,
+          signal,
+        });
+      } catch (error) {
+        if (!(error instanceof TypeError)) throw error;
+        throw new ManimRenderResultRejectedErrorV1("The exported render artifact failed host verification.", {
+          cause: error,
+        });
+      }
+      const { digest, size } = verifiedMedia;
       const manifest = stagedManifestSchema.parse({
         artifactDigest: digest,
         artifactSize: size,

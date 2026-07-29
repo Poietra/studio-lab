@@ -31,10 +31,14 @@ dimensions, frame rate, duration, or PNG dimensions. PID 1 then publishes correl
 terminal metadata and enters an image-owned process state. The broker verifies
 that state and an exact one-process cgroup before and after each export. It uses
 only `/bin/cat` with one fixed image path to stream media into a broker-owned
-exclusive file descriptor. Both stdout and stderr are bounded, deadlines and
-abort signals kill and reap the Docker CLI child, and the host independently validates
-media size, signature, and SHA-256 through a separately reopened `O_NOFOLLOW`
-descriptor under the pinned private staging-root identity. Raw media
+exclusive file descriptor. Scene stdin/stdout/stderr are fixed to `/dev/null`
+and the container log driver is `none`, so untrusted output is never retained.
+The gate attach accepts exactly one fixed readiness marker; any other control
+output remains a sticky `result-rejected` failure after cleanup. Artifact export
+stdout is byte-capped, stderr must stay empty, deadlines and abort signals kill
+and reap the Docker CLI child, and the host independently validates media size,
+signature, and SHA-256 through a separately reopened `O_NOFOLLOW` descriptor
+under the pinned private staging-root identity. Raw media
 never crosses the Studio UDS protocol. The broker reports a digest of the
 canonical staging root, and Studio refuses readiness unless it exactly matches
 the root configured for trusted publication. This stream is intentional: Docker's
