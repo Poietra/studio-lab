@@ -2,6 +2,7 @@
 
 mod support;
 
+use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
@@ -12,9 +13,11 @@ use poietra_render_wgpu::{
     WgpuPaintRendererV1, WgpuRenderTargetV1, build_gpu_upload_plan_v1, prepare_frame_v1,
 };
 use poietra_scene_ir::{
-    RenderCapabilityV1, RenderDrawV1, RenderPacketV1, SceneIrBundleV1, StrokeCapV1, ViewportV1,
+    RenderCapabilityV1, RenderDrawV1, RenderPacketV1, SceneIrBundleV1, SceneSourceV1, StrokeCapV1,
+    ViewportV1,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use support::{
     PixelReferenceSet, generic_fill_fixture, generic_stroke_fixture, sampled_packet,
     straight_stroke_packet,
@@ -83,6 +86,275 @@ struct DynamicSample {
 #[serde(rename_all = "camelCase")]
 struct DynamicExpected {
     pixel_reference_id: String,
+    semantic_digest: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct VisualParityCorpus {
+    default_thresholds: serde_json::Value,
+    entries: Vec<VisualParityCorpusEntry>,
+    metric_contract: serde_json::Value,
+    schema: String,
+    version: u32,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct VisualParityCorpusEntry {
+    fixture: VisualParityFixtureIdentity,
+    id: String,
+    sample: VisualParitySampleIdentity,
+    threshold_exception: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct VisualParityFixtureIdentity {
+    id: String,
+    path: String,
+    revision: VisualParityFixtureRevision,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct VisualParityFixtureRevision {
+    kind: String,
+    sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct VisualParitySampleIdentity {
+    id: String,
+    sample_time: f64,
+    semantic_digest: String,
+    viewport: ViewportV1,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeVisualParityArtifact<'a> {
+    adapter: AdapterEvidence,
+    capture: NativeVisualParityCapture,
+    corpus_entry_id: &'a str,
+    fixture: NativeVisualParityFixture<'a>,
+    rgba: NativeVisualParityRgba,
+    schema: &'static str,
+    target: NativeVisualParityTarget,
+    version: u32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeVisualParityCapture {
+    policy: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeVisualParityFixture<'a> {
+    fixture_id: &'a str,
+    fixture_path: &'a str,
+    fixture_revision: &'a str,
+    sample_id: &'a str,
+    sample_time: f64,
+    semantic_digest: &'a str,
+    viewport: ViewportV1,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeVisualParityRgba {
+    byte_length: usize,
+    channel_order: &'static str,
+    path: &'static str,
+    row_order: &'static str,
+    row_stride_bytes: u32,
+    sha256: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeVisualParityTarget {
+    color_domain: &'static str,
+    format: &'static str,
+}
+
+const VISUAL_PARITY_CORPUS_SCHEMA_V1: &str = "poietra.visual-parity-corpus";
+const VISUAL_PARITY_ENTRY_V1: &str = "dynamic-affine-camera--a-first";
+const VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1: &str = "POIETRA_VISUAL_PARITY_NATIVE_ARTIFACT_DIR";
+const SEMANTIC_NUMBER_SCALE: f64 = 1_000_000_000.0;
+
+fn repository_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..")
+}
+
+fn load_visual_parity_entry() -> VisualParityCorpusEntry {
+    let path = repository_root().join("fixtures/visual-parity-v1/corpus.json");
+    let corpus: VisualParityCorpus =
+        serde_json::from_slice(&fs::read(path).expect("visual parity corpus must be readable"))
+            .expect("visual parity corpus must match its strict native envelope");
+    assert_eq!(corpus.schema, VISUAL_PARITY_CORPUS_SCHEMA_V1);
+    assert_eq!(corpus.version, 1);
+    assert_eq!(
+        corpus.default_thresholds,
+        serde_json::json!({
+            "maximumPixelFractionAboveThreshold": 0.005,
+            "minimumSsim": 0.995,
+        })
+    );
+    assert_eq!(
+        corpus
+            .metric_contract
+            .get("schema")
+            .and_then(serde_json::Value::as_str),
+        Some("poietra.visual-parity-metric")
+    );
+    assert_eq!(
+        corpus
+            .metric_contract
+            .get("version")
+            .and_then(serde_json::Value::as_u64),
+        Some(1)
+    );
+    let entry = corpus
+        .entries
+        .into_iter()
+        .find(|entry| entry.id == VISUAL_PARITY_ENTRY_V1)
+        .expect("the initial visual parity corpus entry must exist");
+    assert!(
+        entry.threshold_exception.is_null(),
+        "the initial corpus item must use the v1 default gate"
+    );
+    entry
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn normalize_semantic_numbers(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Number(number) => {
+            let scaled = (number
+                .as_f64()
+                .expect("frame semantics must contain finite JSON numbers")
+                * SEMANTIC_NUMBER_SCALE)
+                .round() as i64;
+            *number = scaled.into();
+        }
+        serde_json::Value::Array(entries) => {
+            entries.iter_mut().for_each(normalize_semantic_numbers);
+        }
+        serde_json::Value::Object(entries) => {
+            entries.values_mut().for_each(normalize_semantic_numbers);
+        }
+        serde_json::Value::Bool(_) | serde_json::Value::Null | serde_json::Value::String(_) => {}
+    }
+}
+
+fn render_packet_semantic_digest(packet: &RenderPacketV1) -> String {
+    let mut normalized = serde_json::json!({
+        "camera": packet.camera,
+        "draws": packet.draws,
+    });
+    normalize_semantic_numbers(&mut normalized);
+    format!(
+        "{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&normalized).expect("normalized frame semantics must serialize")
+        )
+    )
+}
+
+fn adapter_evidence(adapter_info: &wgpu::AdapterInfo) -> AdapterEvidence {
+    AdapterEvidence {
+        backend: format!("{:?}", adapter_info.backend),
+        device: adapter_info.device,
+        device_type: format!("{:?}", adapter_info.device_type),
+        driver: adapter_info.driver.clone(),
+        driver_info: adapter_info.driver_info.clone(),
+        fallback_requested: true,
+        name: adapter_info.name.clone(),
+        vendor: adapter_info.vendor,
+    }
+}
+
+fn emit_native_visual_parity_artifact(
+    entry: &VisualParityCorpusEntry,
+    adapter_info: &wgpu::AdapterInfo,
+    rgba: &[u8],
+) -> bool {
+    let Some(root) = env::var_os(VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1) else {
+        return false;
+    };
+    assert!(
+        !entry.id.contains('/') && !entry.id.contains('\\'),
+        "corpus entry id must be one safe artifact path component"
+    );
+    let expected_byte_length = usize::try_from(entry.sample.viewport.width_px)
+        .expect("viewport width must fit usize")
+        .checked_mul(
+            usize::try_from(entry.sample.viewport.height_px)
+                .expect("viewport height must fit usize"),
+        )
+        .and_then(|pixels| pixels.checked_mul(BYTES_PER_PIXEL as usize))
+        .expect("visual parity RGBA size must fit usize");
+    assert_eq!(
+        rgba.len(),
+        expected_byte_length,
+        "native artifact must be unpadded RGBA"
+    );
+    let root = PathBuf::from(root);
+    let output = if root.is_absolute() {
+        root
+    } else {
+        repository_root().join(root)
+    }
+    .join(&entry.id);
+    fs::create_dir_all(&output).expect("native visual parity artifact directory must be created");
+    fs::write(output.join("expected.rgba"), rgba)
+        .expect("native visual parity RGBA must be written");
+    let metadata = NativeVisualParityArtifact {
+        adapter: adapter_evidence(adapter_info),
+        capture: NativeVisualParityCapture {
+            policy: "final-readback-submit-after-render-return",
+        },
+        corpus_entry_id: &entry.id,
+        fixture: NativeVisualParityFixture {
+            fixture_id: &entry.fixture.id,
+            fixture_path: &entry.fixture.path,
+            fixture_revision: &entry.fixture.revision.sha256,
+            sample_id: &entry.sample.id,
+            sample_time: entry.sample.sample_time,
+            semantic_digest: &entry.sample.semantic_digest,
+            viewport: entry.sample.viewport.clone(),
+        },
+        rgba: NativeVisualParityRgba {
+            byte_length: rgba.len(),
+            channel_order: "rgba",
+            path: "expected.rgba",
+            row_order: "top-to-bottom",
+            row_stride_bytes: entry
+                .sample
+                .viewport
+                .width_px
+                .checked_mul(BYTES_PER_PIXEL)
+                .expect("native artifact row stride must fit u32"),
+            sha256: format!("{:x}", Sha256::digest(rgba)),
+        },
+        schema: "poietra.visual-parity-native-artifact",
+        target: NativeVisualParityTarget {
+            color_domain: "srgb-u8",
+            format: "Rgba8UnormSrgb",
+        },
+        version: 1,
+    };
+    let mut metadata_bytes =
+        serde_json::to_vec_pretty(&metadata).expect("native visual parity metadata must serialize");
+    metadata_bytes.push(b'\n');
+    fs::write(output.join("metadata.json"), metadata_bytes)
+        .expect("native visual parity metadata must be written");
+    println!("poietra-visual-parity-native-artifact={}", output.display());
+    true
 }
 
 fn padded_bytes_per_row(width_px: u32) -> (u32, u32) {
@@ -306,7 +578,7 @@ fn readback_texture(
 }
 
 fn record_and_assert_evidence(
-    adapter_info: wgpu::AdapterInfo,
+    adapter_info: &wgpu::AdapterInfo,
     padded_bytes_per_row: u32,
     rgba: &[u8],
     viewport: [u32; 2],
@@ -321,16 +593,7 @@ fn record_and_assert_evidence(
         red_center: pixel(rgba, width_px, 70, 45),
     };
     let evidence = SmokeEvidence {
-        adapter: AdapterEvidence {
-            backend: format!("{:?}", adapter_info.backend),
-            device: adapter_info.device,
-            device_type: format!("{:?}", adapter_info.device_type),
-            driver: adapter_info.driver,
-            driver_info: adapter_info.driver_info,
-            fallback_requested: true,
-            name: adapter_info.name,
-            vendor: adapter_info.vendor,
-        },
+        adapter: adapter_evidence(adapter_info),
         format: format!("{TARGET_FORMAT:?}"),
         padded_bytes_per_row,
         pixels,
@@ -397,7 +660,7 @@ fn renders_shared_fixture_with_fallback_adapter() {
         "device must remain available through readback"
     );
     record_and_assert_evidence(
-        adapter_info,
+        &adapter_info,
         padded_bytes_per_row,
         &rgba,
         [extent.width, extent.height],
@@ -436,8 +699,44 @@ fn non_background_bounds(rgba: &[u8], width_px: u32, height_px: u32) -> Option<[
 
 #[test]
 #[ignore = "requires a native software WGPU adapter; the dedicated CI step runs this proof"]
+#[allow(clippy::too_many_lines)] // One dynamic GPU proof keeps shared probes and the opt-in artifact bound together.
 fn renders_dynamic_affine_camera_samples_with_fallback_adapter() {
     let (fixture, bundle) = dynamic_fixture();
+    let visual_parity_entry = load_visual_parity_entry();
+    assert_eq!(visual_parity_entry.fixture.id, fixture.id);
+    assert_eq!(
+        visual_parity_entry.fixture.path,
+        "fixtures/engine-v1/dynamic-affine-camera.json"
+    );
+    assert_eq!(
+        visual_parity_entry.fixture.revision.kind,
+        "studio-edit-program"
+    );
+    assert!(matches!(
+        &bundle.scene.source,
+        SceneSourceV1::StudioEditProgram { .. }
+    ));
+    assert_eq!(
+        bundle.scene.source.revision_hash(),
+        visual_parity_entry.fixture.revision.sha256
+    );
+    let selected_sample = fixture
+        .samples
+        .iter()
+        .find(|sample| sample.id == visual_parity_entry.sample.id)
+        .expect("visual parity sample must exist in the shared dynamic fixture");
+    assert_eq!(
+        selected_sample.sample_time.to_bits(),
+        visual_parity_entry.sample.sample_time.to_bits()
+    );
+    assert_eq!(
+        selected_sample.viewport,
+        visual_parity_entry.sample.viewport
+    );
+    assert_eq!(
+        selected_sample.expected.semantic_digest,
+        visual_parity_entry.sample.semantic_digest
+    );
     let session = EngineSessionV1::new(bundle).expect("dynamic fixture must install");
     let DynamicFixture {
         id,
@@ -460,6 +759,8 @@ fn renders_dynamic_affine_camera_samples_with_fallback_adapter() {
         .expect("proof target format must be supported by the renderer");
 
     let mut frames_by_sample = std::collections::BTreeMap::new();
+    let artifact_requested = env::var_os(VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1).is_some();
+    let mut artifact_emitted = false;
     for sample in samples {
         let reference = pixel_references
             .get(&sample.expected.pixel_reference_id)
@@ -472,8 +773,23 @@ fn renders_dynamic_affine_camera_samples_with_fallback_adapter() {
                 viewport: sample.viewport,
             })
             .unwrap_or_else(|error| panic!("{} must sample: {error}", sample.id));
+        let semantic_digest = render_packet_semantic_digest(&packet);
+        assert_eq!(
+            semantic_digest, sample.expected.semantic_digest,
+            "{}",
+            sample.id
+        );
         let (texture, extent) = render_packet(&device, &queue, &mut renderer, &packet);
         let (_, rgba) = readback_texture(&device, &queue, &texture, extent);
+        if sample.id == visual_parity_entry.sample.id {
+            assert_eq!(semantic_digest, visual_parity_entry.sample.semantic_digest);
+            assert!(
+                !artifact_emitted,
+                "visual parity artifact must be emitted once"
+            );
+            artifact_emitted =
+                emit_native_visual_parity_artifact(&visual_parity_entry, &adapter_info, &rgba);
+        }
         let bounds = non_background_bounds(&rgba, extent.width, extent.height);
         assert_eq!(
             bounds.is_none(),
@@ -507,6 +823,10 @@ fn renders_dynamic_affine_camera_samples_with_fallback_adapter() {
 
     assert_eq!(frames_by_sample["a-repeat"], frames_by_sample["a-first"]);
     assert_eq!(frames_by_sample["a-after-end"], frames_by_sample["a-first"]);
+    assert_eq!(
+        artifact_emitted, artifact_requested,
+        "an opt-in native artifact request must emit exactly one selected frame"
+    );
     assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
     assert_no_gpu_error("internal", pollster::block_on(internal_scope.pop()));
     assert_no_gpu_error(
