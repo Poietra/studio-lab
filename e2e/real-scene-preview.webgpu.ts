@@ -45,6 +45,9 @@ const PATH_TRIM_VIEWPORT = "832x468";
 const PATH_MORPH_SCENE_ID = "scene:6977ca337b82c7845dcfb7254f63e7eb9055aefaf877107f123c4b8efb80db13";
 const PATH_MORPH_SOURCE_HASH = "5f911a03b7d2426805c343ad294ca98fe2769805f2e452e46c3f64095ce30d88";
 const PATH_MORPH_ENTITY_IDS = Array.from({ length: 3 }, (_, index) => `${PATH_MORPH_SCENE_ID}/entity:${index}`);
+const MOTION_PATH_SCENE_ID = "scene:6c6dc9de3aebd24f13920ab2e2e597ef5cc7da8e780b6072ee94319434e92ca4";
+const MOTION_PATH_SOURCE_HASH = "3833b7cad5f4654bd5a27e71f158500f235ecc022b8332a6cfc30e1b7d45b8fa";
+const MOTION_PATH_ENTITY_IDS = Array.from({ length: 3 }, (_, index) => `${MOTION_PATH_SCENE_ID}/entity:${index}`);
 
 type RgbaPixel = readonly [number, number, number, number];
 
@@ -941,6 +944,172 @@ test("renders real compatible path morphs deterministically through retained Web
   expectPixelNear(pixels("line-target")[3]!, [0, 0, 0, 255]);
   expectPixelNear(pixels("line-target")[4]!, [252, 98, 85, 255]);
   await expect(page.getByRole("slider", { name: "Scene playhead" })).toHaveAttribute("max", "5");
+});
+
+test("renders real Manim MoveAlongPath sampling across shuffled retained WebGPU seeks", async ({ page }) => {
+  await expectVerifiedRun(await openRealWorkspace(page));
+  const run = await expectVerifiedRun(await selectScene(page, "DynamicMotionPathScene", "scene_motion_path.py"));
+  const bundle = run.snapshot?.bundle;
+  const revision = run.snapshot?.snapshotHash;
+  const identity = run.sourceRuntimeIdentity;
+  if (!bundle || !revision || !identity) {
+    throw new Error("The motion-path Scene did not publish a complete verified snapshot and identity map.");
+  }
+
+  expect(bundle.scene).toMatchObject({
+    duration: 3,
+    requiredCapabilities: ["cubic-path-geometry", "motion-path-animation"],
+    sceneId: MOTION_PATH_SCENE_ID,
+    source: { snapshotVersion: 2, sourceHash: MOTION_PATH_SOURCE_HASH },
+  });
+  expect(bundle.scene.entities.map((entity) => entity.id)).toEqual(MOTION_PATH_ENTITY_IDS);
+  expect(
+    bundle.scene.entities.map((entity) =>
+      entity.geometry.kind === "cubic-path" ? entity.geometry.path.subpaths[0]?.segments.length : null,
+    ),
+  ).toEqual([8, 4, 8]);
+  expect(identity.mappings.map((mapping) => [mapping.binding.name, mapping.entityId])).toEqual([
+    ["sentinel", MOTION_PATH_ENTITY_IDS[0]],
+    ["rectangle", MOTION_PATH_ENTITY_IDS[1]],
+    ["circle", MOTION_PATH_ENTITY_IDS[2]],
+  ]);
+
+  const [openMotion, closedMotion] = bundle.scene.animationChannels;
+  if (openMotion?.kind !== "motion-path" || closedMotion?.kind !== "motion-path") {
+    throw new Error("Expected only motion-path producer channels.");
+  }
+  for (const [channel, entityIndex, times] of [
+    [openMotion, 1, [0, 1]],
+    [closedMotion, 2, [1, 2]],
+  ] as const) {
+    expect(channel).toMatchObject({
+      entityId: MOTION_PATH_ENTITY_IDS[entityIndex],
+      id: `${MOTION_PATH_SCENE_ID}/channel:motion-path:${entityIndex}`,
+      orientToPath: false,
+      parameterization: "manim-point-from-proportion-v1",
+      provenanceId: `${MOTION_PATH_SCENE_ID}/provenance:channel:motion-path:${entityIndex}`,
+    });
+    expect(channel.keyframes.map((keyframe) => keyframe.at)).toEqual(times);
+  }
+  expect(openMotion.path.subpaths[0]).toMatchObject({ closed: false, start: { x: -4, y: -1 } });
+  expect(openMotion.path.subpaths[0]?.segments).toHaveLength(1);
+  const closedSubpath = closedMotion.path.subpaths[0]!;
+  expect(closedSubpath.closed).toBe(true);
+  expect(closedSubpath.segments).toHaveLength(8);
+  expect(closedSubpath.segments.at(-1)?.end).not.toEqual(closedSubpath.start);
+
+  await expectPresented(page, run.revision);
+  const viewport = await page.locator("[data-studio-canvas]").getAttribute("data-preview-viewport");
+  if (!viewport) throw new Error("The motion-path WebGPU proof did not expose a viewport.");
+  expect(viewport).toBe(PATH_TRIM_VIEWPORT);
+  const checkpoints = [
+    { circle: null, id: "initial", rectangle: [-0.58359375, -0.275, -0.54140625, -0.225], sampleTime: 0 },
+    {
+      circle: null,
+      id: "curve-quarter",
+      rectangle: [-0.45505371, 0.066796875, -0.41286621, 0.116796875],
+      sampleTime: 0.25,
+    },
+    { circle: null, id: "curve-half", rectangle: [-0.29355469, 0.021875, -0.25136719, 0.071875], sampleTime: 0.5 },
+    {
+      circle: null,
+      id: "curve-three-quarter",
+      rectangle: [-0.11887207, -0.046484375, -0.07668457, 0.003515625],
+      sampleTime: 0.75,
+    },
+    {
+      circle: [0.5484375, -0.075, 0.6328125, 0.075],
+      id: "orbit-start",
+      rectangle: [0.04921875, 0.225, 0.09140625, 0.275],
+      sampleTime: 1,
+    },
+    {
+      circle: [0.2109375, -0.075, 0.2953125, 0.075],
+      id: "orbit-half",
+      rectangle: [0.04921875, 0.225, 0.09140625, 0.275],
+      sampleTime: 1.5,
+    },
+    {
+      circle: [0.5484375, -0.075, 0.6328125, 0.075],
+      id: "orbit-end",
+      rectangle: [0.04921875, 0.225, 0.09140625, 0.275],
+      sampleTime: 2,
+    },
+  ] as const;
+  const shuffled = [
+    "orbit-half",
+    "initial",
+    "orbit-end",
+    "curve-quarter",
+    "orbit-start",
+    "curve-half",
+    "curve-three-quarter",
+  ];
+  const checkpointById = new Map(checkpoints.map((checkpoint) => [checkpoint.id, checkpoint]));
+  const samples = await readBackDynamicRendererSamples(page, {
+    entityIds: MOTION_PATH_ENTITY_IDS,
+    evidenceSamples: [
+      { fractionX: 0.1484375, fractionY: 0.125 },
+      { fractionX: 0.28302001953125, fractionY: 0.4541015625 },
+      { fractionX: 0.53515625, fractionY: 0.375 },
+      { fractionX: 0.7953125, fractionY: 0.5 },
+      { fractionX: 0.6265625, fractionY: 0.5 },
+      { fractionX: 0.2679854142423624, fractionY: 0.4676737818992146 },
+      { fractionX: 0.03, fractionY: 0.05 },
+    ],
+    revision,
+    samples: [
+      ...checkpoints.map(({ id, sampleTime }) => ({ id: `monotonic:${id}`, sampleTime })),
+      ...shuffled.map((id) => ({ id: `shuffled:${id}`, sampleTime: checkpointById.get(id)!.sampleTime })),
+    ],
+    snapshot: bundle,
+    viewport,
+  });
+  const byId = new Map(samples.map((sample) => [sample.id, sample]));
+  const expectBoundsNear = (actual: readonly number[] | undefined, expected: readonly number[]) => {
+    expect(actual).toHaveLength(expected.length);
+    expected.forEach((value, index) => expect(actual?.[index]).toBeCloseTo(value, 6));
+  };
+  for (const checkpoint of checkpoints) {
+    const monotonic = byId.get(`monotonic:${checkpoint.id}`)!;
+    const shuffledSample = byId.get(`shuffled:${checkpoint.id}`)!;
+    expect(shuffledSample.frame.interaction).toEqual(monotonic.frame.interaction);
+    expect(shuffledSample.evidence.samples).toEqual(monotonic.evidence.samples);
+    expectBoundsNear(monotonic.frame.interaction.entries[1]?.bounds, checkpoint.rectangle);
+    if (checkpoint.circle === null) expect(monotonic.frame.interaction.entries[2]).toEqual({ status: "inactive" });
+    else expectBoundsNear(monotonic.frame.interaction.entries[2]?.bounds, checkpoint.circle);
+    expectPixelNear(monotonic.evidence.samples[0] as RgbaPixel, [255, 255, 255, 255]);
+    expectPixelNear(monotonic.evidence.samples[6] as RgbaPixel, [0, 0, 0, 255]);
+  }
+  const pixels = (id: string) => byId.get(`monotonic:${id}`)!.evidence.samples as readonly RgbaPixel[];
+  expectPixelNear(pixels("curve-quarter")[1]!, [88, 196, 221, 255]);
+  expectPixelNear(pixels("curve-quarter")[5]!, [0, 0, 0, 255]);
+  expectPixelNear(pixels("orbit-start")[2]!, [88, 196, 221, 255]);
+  expectPixelNear(pixels("orbit-start")[3]!, [252, 98, 85, 255]);
+  expectPixelNear(pixels("orbit-half")[4]!, [252, 98, 85, 255]);
+  expectPixelNear(pixels("orbit-end")[3]!, [252, 98, 85, 255]);
+
+  const legacy = structuredClone(bundle);
+  const legacyOpenMotion = legacy.scene.animationChannels[0];
+  if (legacyOpenMotion?.kind !== "motion-path") throw new Error("Expected the cloned open motion-path channel.");
+  legacyOpenMotion.parameterization = "arc-length-v1";
+  const [legacyQuarter] = await readBackDynamicRendererSamples(page, {
+    entityIds: MOTION_PATH_ENTITY_IDS,
+    evidenceSamples: [
+      { fractionX: 0.28302001953125, fractionY: 0.4541015625 },
+      { fractionX: 0.2679854142423624, fractionY: 0.4676737818992146 },
+    ],
+    revision,
+    samples: [{ id: "legacy-quarter", sampleTime: 0.25 }],
+    snapshot: legacy,
+    viewport,
+  });
+  expect(legacyQuarter?.frame.interaction.entries[1]).not.toEqual(
+    byId.get("monotonic:curve-quarter")?.frame.interaction.entries[1],
+  );
+  expectPixelNear(legacyQuarter?.evidence.samples[0] as RgbaPixel, [0, 0, 0, 255]);
+  expectPixelNear(legacyQuarter?.evidence.samples[1] as RgbaPixel, [88, 196, 221, 255]);
+  await expect(page.getByRole("slider", { name: "Scene playhead" })).toHaveAttribute("max", "3");
 });
 
 test("falls back the whole Scene for real producer unsupported and exit results", async ({ page }) => {
