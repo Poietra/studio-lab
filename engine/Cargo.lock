@@ -2083,6 +2083,7 @@ name = "poietra-render-wgpu"
 version = "0.1.0"
 dependencies = [
  "lyon_tessellation",
+ "png",
  "poietra-eval",
  "poietra-scene-ir",
  "pollster",
