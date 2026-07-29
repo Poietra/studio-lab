@@ -88,9 +88,19 @@ const REQUIRED_READ_ONLY_SYSTEM_PATHS = Object.freeze([
   "/proc/sysrq-trigger",
 ] as const);
 const LOCKED_LABELS = Object.freeze({
-  "io.poietra.fast-manim.archive-sha256": "ff55e3893ed10f7770f8202e50f677082efa28cd5ae335195ecb40b0cdb32d04",
-  "io.poietra.fast-manim.commit": "d9ad83be1855eafb18c555d3d56fe797db61014d",
-  "io.poietra.fast-manim.tree": "13cf9649d9416cd160ffdccd21378b034549db7b",
+  "io.poietra.fast-manim.archive-sha256": "bfb53a85c45965203174a0c671edc94e803e9ce6b276b67e4144ad2f97ef41ad",
+  "io.poietra.fast-manim.commit": "2b2294a4b55291b088778417c4e2714a75026147",
+  "io.poietra.fast-manim.tree": "c1505126b47b4c3ed96b582f37057a1424069b72",
+  "io.poietra.mathtex-outline.abi-version": "1",
+  "io.poietra.mathtex-outline.artifact-sha256": "fcae06b2065de2da938be484ed0bde88cd31777ef29471d63580852f28c132d4",
+  "io.poietra.mathtex-outline.engine-archive-sha256":
+    "91cfd3b1a0e19615c586bf0144b1554046280f5ef76f53099d1cc06679dee65c",
+  "io.poietra.mathtex-outline.engine-commit": "1fa7f851b1685e8e4dcc6d99f3e089f55a567513",
+  "io.poietra.mathtex-outline.engine-tree": "d110dc1c3b3b3dfce00bee15a44ab863b024aa7a",
+  "io.poietra.mathtex-outline.font-sha256": "d66ac1cc91c55c24d3636ae2df1238076debdff51841f9893fc5419cc2df3df7",
+  "io.poietra.mathtex-outline.notice-sha256": "44e67c7f539ae83b25514aa15aae51a73c90c19a45ea33bbb293da52927f6608",
+  "io.poietra.mathtex-outline.target": "linux-amd64",
+  "io.poietra.mathtex-outline.toolchain-sha256": "95c98e10edff239e6ee237c9eac99dc96c06ba9fc712c30816ddc47d7db12f9e",
   "io.poietra.sandbox-slice": "gated-oci-v1",
 });
 const FIXED_ENVIRONMENT = Object.freeze({

@@ -16,19 +16,25 @@ const profiles = {
     tree: "b86e2ec81f257cae20669e3c5c33080facfbd610",
   },
   snapshot: {
-    archiveSha256: "ff55e3893ed10f7770f8202e50f677082efa28cd5ae335195ecb40b0cdb32d04",
+    archiveSha256: "bfb53a85c45965203174a0c671edc94e803e9ce6b276b67e4144ad2f97ef41ad",
     assetDirectory: "fast-manim-gated-oci",
-    commit: "d9ad83be1855eafb18c555d3d56fe797db61014d",
+    commit: "2b2294a4b55291b088778417c4e2714a75026147",
+    engineArchiveSha256: "91cfd3b1a0e19615c586bf0144b1554046280f5ef76f53099d1cc06679dee65c",
+    engineCommit: "1fa7f851b1685e8e4dcc6d99f3e089f55a567513",
+    engineTree: "d110dc1c3b3b3dfce00bee15a44ab863b024aa7a",
     entrypoint: "gated-entrypoint.py",
-    tag: "poietra-fast-manim-gated:d9ad83b",
-    tree: "13cf9649d9416cd160ffdccd21378b034549db7b",
+    mathtexExtensionSha256: "fcae06b2065de2da938be484ed0bde88cd31777ef29471d63580852f28c132d4",
+    platform: "linux/amd64",
+    tag: "poietra-fast-manim-gated:2b2294a",
+    tree: "c1505126b47b4c3ed96b582f37057a1424069b72",
+    verifier: "verify-mathtex-provider.py",
   },
 };
 const profile = profiles[target];
 const sourceRepository = process.env.POIETRA_FAST_MANIM_SOURCE_REPO;
 if (!profile) throw new Error("The OCI build target must be snapshot or render.");
-const { archiveSha256, commit, tree } = profile;
-const assetRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../sandbox", profile.assetDirectory);
+const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const assetRoot = resolve(repositoryRoot, "sandbox", profile.assetDirectory);
 
 function run(command, arguments_, options = {}) {
   return new Promise((resolveRun, rejectRun) => {
@@ -44,7 +50,7 @@ function run(command, arguments_, options = {}) {
       else chunks.push(chunk);
     });
     child.once("error", rejectRun);
-    child.once("close", async (code) => {
+    child.once("close", (code) => {
       if (code !== 0) {
         rejectRun(new Error(`${command} exited with ${code ?? 1}`));
         return;
@@ -54,11 +60,14 @@ function run(command, arguments_, options = {}) {
   });
 }
 
-async function writeGitArchive(repository, destination) {
+async function writeGitArchive(repository, destination, commit, options = {}) {
   const output = await open(destination, "wx", 0o600);
   try {
+    const arguments_ = ["-C", repository, "archive", "--format=tar.gz"];
+    if (options.prefix) arguments_.push(`--prefix=${options.prefix}`);
+    arguments_.push(commit, ...(options.pathspec ?? []));
     await new Promise((resolveArchive, rejectArchive) => {
-      const child = spawn("git", ["-C", repository, "archive", "--format=tar.gz", "--prefix=fast-manim/", commit], {
+      const child = spawn("git", arguments_, {
         env: { PATH: process.env.PATH },
         stdio: ["ignore", output.fd, "inherit"],
       });
@@ -72,49 +81,99 @@ async function writeGitArchive(repository, destination) {
   }
 }
 
+async function sha256(path) {
+  return createHash("sha256")
+    .update(await readFile(path))
+    .digest("hex");
+}
+
 if (!sourceRepository) throw new Error("POIETRA_FAST_MANIM_SOURCE_REPO is required.");
 const canonicalSource = resolve(sourceRepository);
-const actualCommit = await run("git", ["-C", canonicalSource, "rev-parse", `${commit}^{commit}`]);
-const actualTree = await run("git", ["-C", canonicalSource, "show", "--no-patch", "--format=%T", commit]);
-if (actualCommit !== commit || actualTree !== tree)
+const actualCommit = await run("git", ["-C", canonicalSource, "rev-parse", `${profile.commit}^{commit}`]);
+const actualTree = await run("git", ["-C", canonicalSource, "show", "--no-patch", "--format=%T", profile.commit]);
+if (actualCommit !== profile.commit || actualTree !== profile.tree) {
   throw new Error("The locked fast-manim commit/tree is unavailable.");
+}
+if (target === "snapshot") {
+  const actualEngineCommit = await run("git", ["-C", repositoryRoot, "rev-parse", `${profile.engineCommit}^{commit}`]);
+  const actualEngineTree = await run("git", ["-C", repositoryRoot, "rev-parse", `${profile.engineCommit}:engine`]);
+  if (actualEngineCommit !== profile.engineCommit || actualEngineTree !== profile.engineTree) {
+    throw new Error("The locked Studio engine commit/tree is unavailable.");
+  }
+}
 
 const context = await mkdtemp(join(tmpdir(), "poietra-gated-oci-build-"));
 try {
   const archivePath = join(context, "fast-manim.tar.gz");
-  await writeGitArchive(canonicalSource, archivePath);
-  const digest = createHash("sha256")
-    .update(await readFile(archivePath))
-    .digest("hex");
-  if (digest !== archiveSha256) throw new Error("The locked fast-manim archive digest does not match.");
-  await Promise.all([
+  await writeGitArchive(canonicalSource, archivePath, profile.commit, { prefix: "fast-manim/" });
+  if ((await sha256(archivePath)) !== profile.archiveSha256) {
+    throw new Error("The locked fast-manim archive digest does not match.");
+  }
+  const assets = [
     copyFile(join(assetRoot, "Containerfile"), join(context, "Containerfile")),
     copyFile(join(assetRoot, profile.entrypoint), join(context, profile.entrypoint)),
-  ]);
-  await run(
-    "docker",
-    [
-      "build",
-      "--pull=false",
-      "--file",
-      join(context, "Containerfile"),
-      "--tag",
-      profile.tag,
-      "--build-arg",
-      `FAST_MANIM_ARCHIVE_SHA256=${archiveSha256}`,
-      "--build-arg",
-      `FAST_MANIM_COMMIT=${commit}`,
-      "--build-arg",
-      `FAST_MANIM_TREE=${tree}`,
-      context,
-    ],
-    { inheritStdout: true },
+  ];
+  if (target === "snapshot") {
+    const engineArchivePath = join(context, "studio-engine.tar.gz");
+    await writeGitArchive(repositoryRoot, engineArchivePath, profile.engineCommit, { pathspec: ["engine"] });
+    if ((await sha256(engineArchivePath)) !== profile.engineArchiveSha256) {
+      throw new Error("The locked Studio engine archive digest does not match.");
+    }
+    assets.push(copyFile(join(assetRoot, profile.verifier), join(context, profile.verifier)));
+  }
+  await Promise.all(assets);
+
+  const buildArguments = ["build", "--pull=false"];
+  if (profile.platform) buildArguments.push("--platform", profile.platform);
+  buildArguments.push(
+    "--file",
+    join(context, "Containerfile"),
+    "--tag",
+    profile.tag,
+    "--build-arg",
+    `FAST_MANIM_ARCHIVE_SHA256=${profile.archiveSha256}`,
+    "--build-arg",
+    `FAST_MANIM_COMMIT=${profile.commit}`,
+    "--build-arg",
+    `FAST_MANIM_TREE=${profile.tree}`,
   );
-  const imageId = await run("docker", ["image", "inspect", profile.tag, "--format", "{{.Id}}"]).then((value) =>
-    value.replace(/^sha256:/, ""),
+  if (target === "snapshot") {
+    buildArguments.push(
+      "--build-arg",
+      `MATHTEX_EXTENSION_SHA256=${profile.mathtexExtensionSha256}`,
+      "--build-arg",
+      `STUDIO_ENGINE_ARCHIVE_SHA256=${profile.engineArchiveSha256}`,
+      "--build-arg",
+      `STUDIO_ENGINE_COMMIT=${profile.engineCommit}`,
+      "--build-arg",
+      `STUDIO_ENGINE_TREE=${profile.engineTree}`,
+    );
+  }
+  buildArguments.push(context);
+  await run("docker", buildArguments, { inheritStdout: true });
+
+  const imageId = await run("docker", ["image", "inspect", profile.tag, "--format", "{{.Id}}"]);
+  const normalizedImageId = imageId.replace(/^sha256:/, "");
+  if (!/^[a-f0-9]{64}$/.test(normalizedImageId)) {
+    throw new Error("Docker did not return an immutable image ID.");
+  }
+  process.stdout.write(
+    `${JSON.stringify({
+      archiveSha256: profile.archiveSha256,
+      commit: profile.commit,
+      ...(target === "snapshot"
+        ? {
+            engineArchiveSha256: profile.engineArchiveSha256,
+            engineCommit: profile.engineCommit,
+            engineTree: profile.engineTree,
+            mathtexExtensionSha256: profile.mathtexExtensionSha256,
+            platform: profile.platform,
+          }
+        : {}),
+      image: `sha256:${normalizedImageId}`,
+      tree: profile.tree,
+    })}\n`,
   );
-  if (!/^[a-f0-9]{64}$/.test(imageId)) throw new Error("Docker did not return an immutable image ID.");
-  process.stdout.write(`${JSON.stringify({ archiveSha256, commit, image: `sha256:${imageId}`, tree })}\n`);
 } finally {
   await rm(context, { force: true, recursive: true });
 }

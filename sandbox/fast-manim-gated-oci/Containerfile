@@ -1,34 +1,110 @@
+FROM rust@sha256:6ca5ad23231207874325a751b9df584d51cd42c066c74c6963c264e3233c3e8e AS mathtex-builder
+
+ARG MATHTEX_EXTENSION_SHA256
+ARG STUDIO_ENGINE_ARCHIVE_SHA256
+ARG STUDIO_ENGINE_COMMIT
+ARG STUDIO_ENGINE_TREE
+
+ENV CARGO_HOME=/opt/poietra-build/cargo-home \
+    CARGO_INCREMENTAL=0 \
+    CARGO_TARGET_DIR=/opt/poietra-build/target \
+    PYO3_NO_PYTHON=1 \
+    SOURCE_DATE_EPOCH=0
+
+WORKDIR /opt/poietra-build/studio
+COPY studio-engine.tar.gz /opt/poietra-build/studio-engine.tar.gz
+
+RUN test "$STUDIO_ENGINE_ARCHIVE_SHA256" = "91cfd3b1a0e19615c586bf0144b1554046280f5ef76f53099d1cc06679dee65c" \
+    && test "$STUDIO_ENGINE_COMMIT" = "1fa7f851b1685e8e4dcc6d99f3e089f55a567513" \
+    && test "$STUDIO_ENGINE_TREE" = "d110dc1c3b3b3dfce00bee15a44ab863b024aa7a" \
+    && test "$MATHTEX_EXTENSION_SHA256" = "fcae06b2065de2da938be484ed0bde88cd31777ef29471d63580852f28c132d4" \
+    && test "$(rustc --version)" = "rustc 1.92.0 (ded5c06cf 2025-12-08)" \
+    && printf '%s  %s\n' "$STUDIO_ENGINE_ARCHIVE_SHA256" /opt/poietra-build/studio-engine.tar.gz \
+      | sha256sum --check --strict - \
+    && tar --extract --gzip --file=/opt/poietra-build/studio-engine.tar.gz \
+      --directory=/opt/poietra-build/studio --no-same-owner \
+    && cargo build --locked --profile mathtex-python-release --package poietra-mathtex-py \
+      --manifest-path /opt/poietra-build/studio/engine/Cargo.toml \
+      --target x86_64-unknown-linux-gnu \
+    && printf '%s  %s\n' "$MATHTEX_EXTENSION_SHA256" \
+      /opt/poietra-build/target/x86_64-unknown-linux-gnu/mathtex-python-release/libpoietra_mathtex_outline.so \
+      | sha256sum --check --strict - \
+    && printf '%s  %s\n' "44e67c7f539ae83b25514aa15aae51a73c90c19a45ea33bbb293da52927f6608" \
+      /opt/poietra-build/studio/engine/crates/poietra-mathtex-outline/PACKAGE-LICENSES.txt \
+      | sha256sum --check --strict -
+
 FROM manimcommunity/manim@sha256:f18f53f2e4eaf2ea41713437d34363fb3f5cc6008b03fd798676ac0359396c3b
 
 ARG FAST_MANIM_ARCHIVE_SHA256
 ARG FAST_MANIM_COMMIT
 ARG FAST_MANIM_TREE
+ARG MATHTEX_EXTENSION_SHA256
+ARG STUDIO_ENGINE_ARCHIVE_SHA256
+ARG STUDIO_ENGINE_COMMIT
+ARG STUDIO_ENGINE_TREE
 
 USER root
 COPY fast-manim.tar.gz /opt/poietra-build/fast-manim.tar.gz
 COPY gated-entrypoint.py /opt/poietra/gated-entrypoint.py
+COPY verify-mathtex-provider.py /opt/poietra/verify-mathtex-provider.py
+COPY --from=mathtex-builder \
+  /opt/poietra-build/target/x86_64-unknown-linux-gnu/mathtex-python-release/libpoietra_mathtex_outline.so \
+  /opt/poietra-build/poietra_mathtex_outline.abi3.so
+COPY --from=mathtex-builder \
+  /opt/poietra-build/studio/engine/crates/poietra-mathtex-outline/PACKAGE-LICENSES.txt \
+  /opt/poietra-build/THIRD_PARTY_NOTICES.txt
 
-RUN test "$FAST_MANIM_ARCHIVE_SHA256" = "ff55e3893ed10f7770f8202e50f677082efa28cd5ae335195ecb40b0cdb32d04" \
-    && test "$FAST_MANIM_COMMIT" = "d9ad83be1855eafb18c555d3d56fe797db61014d" \
-    && test "$FAST_MANIM_TREE" = "13cf9649d9416cd160ffdccd21378b034549db7b" \
+RUN test "$FAST_MANIM_ARCHIVE_SHA256" = "bfb53a85c45965203174a0c671edc94e803e9ce6b276b67e4144ad2f97ef41ad" \
+    && test "$FAST_MANIM_COMMIT" = "2b2294a4b55291b088778417c4e2714a75026147" \
+    && test "$FAST_MANIM_TREE" = "c1505126b47b4c3ed96b582f37057a1424069b72" \
+    && test "$STUDIO_ENGINE_ARCHIVE_SHA256" = "91cfd3b1a0e19615c586bf0144b1554046280f5ef76f53099d1cc06679dee65c" \
+    && test "$STUDIO_ENGINE_COMMIT" = "1fa7f851b1685e8e4dcc6d99f3e089f55a567513" \
+    && test "$STUDIO_ENGINE_TREE" = "d110dc1c3b3b3dfce00bee15a44ab863b024aa7a" \
+    && test "$MATHTEX_EXTENSION_SHA256" = "fcae06b2065de2da938be484ed0bde88cd31777ef29471d63580852f28c132d4" \
     && printf '%s  %s\n' "$FAST_MANIM_ARCHIVE_SHA256" /opt/poietra-build/fast-manim.tar.gz \
       | sha256sum --check --strict - \
-    && mkdir --parents /opt/fast-manim /run/poietra \
+    && printf '%s  %s\n' "$MATHTEX_EXTENSION_SHA256" /opt/poietra-build/poietra_mathtex_outline.abi3.so \
+      | sha256sum --check --strict - \
+    && printf '%s  %s\n' "44e67c7f539ae83b25514aa15aae51a73c90c19a45ea33bbb293da52927f6608" \
+      /opt/poietra-build/THIRD_PARTY_NOTICES.txt \
+      | sha256sum --check --strict - \
+    && mkdir --parents /opt/fast-manim /run/poietra /usr/share/doc/poietra-mathtex-outline \
     && tar --extract --gzip --file=/opt/poietra-build/fast-manim.tar.gz \
       --directory=/opt/fast-manim --strip-components=1 --no-same-owner \
     && test "$(sha256sum /opt/fast-manim/pyproject.toml | cut -d ' ' -f 1)" \
       = "f791e3ab6ef3e12457e3f36f5d7d7d4c249ae97678d23607781556556a5d6012" \
     && test "$(sha256sum /opt/fast-manim/uv.lock | cut -d ' ' -f 1)" \
       = "3244a21383800a8a1049438f24c54121c483b1a4ab24ae8523d8c852b7431753" \
+    && platlib="$(/opt/venv/bin/python -I -c 'import sysconfig; print(sysconfig.get_path("platlib"))')" \
+    && test "$platlib" = "/opt/venv/lib/python3.14/site-packages" \
+    && test "$(realpath "$platlib")" = "$platlib" \
+    && install --owner=0 --group=0 --mode=0555 /opt/poietra-build/poietra_mathtex_outline.abi3.so \
+      "$platlib/poietra_mathtex_outline.abi3.so" \
+    && test ! -L "$platlib/poietra_mathtex_outline.abi3.so" \
+    && install --owner=0 --group=0 --mode=0444 /opt/poietra-build/THIRD_PARTY_NOTICES.txt \
+      /usr/share/doc/poietra-mathtex-outline/THIRD_PARTY_NOTICES.txt \
+    && /opt/venv/bin/python -I /opt/poietra/verify-mathtex-provider.py \
     && rm --force /opt/poietra-build/fast-manim.tar.gz \
-    && chmod 0555 /opt/poietra /opt/poietra/gated-entrypoint.py /run/poietra \
+      /opt/poietra-build/poietra_mathtex_outline.abi3.so \
+      /opt/poietra-build/THIRD_PARTY_NOTICES.txt \
+    && chmod 0555 /opt/poietra /opt/poietra/gated-entrypoint.py \
+      /opt/poietra/verify-mathtex-provider.py /run/poietra \
     && chmod --recursive go-w /opt/fast-manim \
     && PYTHONHASHSEED=0 PYTHONPATH=/opt/fast-manim \
       /opt/venv/bin/python -c 'from manim.renderer.source_runtime_identity import export_source_runtime_identity; assert callable(export_source_runtime_identity)'
 
-LABEL io.poietra.fast-manim.commit="d9ad83be1855eafb18c555d3d56fe797db61014d" \
-      io.poietra.fast-manim.tree="13cf9649d9416cd160ffdccd21378b034549db7b" \
-      io.poietra.fast-manim.archive-sha256="ff55e3893ed10f7770f8202e50f677082efa28cd5ae335195ecb40b0cdb32d04" \
+LABEL io.poietra.fast-manim.commit="2b2294a4b55291b088778417c4e2714a75026147" \
+      io.poietra.fast-manim.tree="c1505126b47b4c3ed96b582f37057a1424069b72" \
+      io.poietra.fast-manim.archive-sha256="bfb53a85c45965203174a0c671edc94e803e9ce6b276b67e4144ad2f97ef41ad" \
+      io.poietra.mathtex-outline.engine-commit="1fa7f851b1685e8e4dcc6d99f3e089f55a567513" \
+      io.poietra.mathtex-outline.engine-tree="d110dc1c3b3b3dfce00bee15a44ab863b024aa7a" \
+      io.poietra.mathtex-outline.engine-archive-sha256="91cfd3b1a0e19615c586bf0144b1554046280f5ef76f53099d1cc06679dee65c" \
+      io.poietra.mathtex-outline.artifact-sha256="fcae06b2065de2da938be484ed0bde88cd31777ef29471d63580852f28c132d4" \
+      io.poietra.mathtex-outline.abi-version="1" \
+      io.poietra.mathtex-outline.font-sha256="d66ac1cc91c55c24d3636ae2df1238076debdff51841f9893fc5419cc2df3df7" \
+      io.poietra.mathtex-outline.toolchain-sha256="95c98e10edff239e6ee237c9eac99dc96c06ba9fc712c30816ddc47d7db12f9e" \
+      io.poietra.mathtex-outline.notice-sha256="44e67c7f539ae83b25514aa15aae51a73c90c19a45ea33bbb293da52927f6608" \
+      io.poietra.mathtex-outline.target="linux-amd64" \
       io.poietra.sandbox-slice="gated-oci-v1"
 
 ENV HOME=/run/poietra/home \
