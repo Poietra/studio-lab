@@ -40,9 +40,23 @@ const requested =
 const FRAME = { height: 8, width: 14.222222222222221 } as const;
 const PROJECT_ID = "default";
 const TENANT_ID = "real-production";
+const MATHTEX_CONFORMANCE_CASE_V3 = Object.freeze({
+  expectedKind: "compiled" as const,
+  sceneName: "GatedMathTexScene",
+  sourcePath: "mathtex.py",
+  sourceText: `from manim import MathTex, Scene
+
+# ${FAST_MANIM_SANDBOX_CONFORMANCE_LEAK_SENTINELS_V1.join(" ")}
+class GatedMathTexScene(Scene):
+    def construct(self):
+        equation = MathTex("E = mc^2")
+        self.add(equation)
+`,
+});
 
 type ConformanceCase =
-  (typeof FAST_MANIM_SANDBOX_CONFORMANCE_CASES_V1)[keyof typeof FAST_MANIM_SANDBOX_CONFORMANCE_CASES_V1];
+  | (typeof FAST_MANIM_SANDBOX_CONFORMANCE_CASES_V1)[keyof typeof FAST_MANIM_SANDBOX_CONFORMANCE_CASES_V1]
+  | typeof MATHTEX_CONFORMANCE_CASE_V3;
 
 function sourceHash(sourceText: string) {
   return createHash("sha256").update(sourceText, "utf8").digest("hex");
@@ -50,7 +64,9 @@ function sourceHash(sourceText: string) {
 
 function conformanceSourceProvider(): FastManimSnapshotSourceProviderV1 {
   const cases = new Map<string, ConformanceCase>(
-    Object.values(FAST_MANIM_SANDBOX_CONFORMANCE_CASES_V1).map((testCase) => [testCase.sourcePath, testCase] as const),
+    [...Object.values(FAST_MANIM_SANDBOX_CONFORMANCE_CASES_V1), MATHTEX_CONFORMANCE_CASE_V3].map(
+      (testCase) => [testCase.sourcePath, testCase] as const,
+    ),
   );
   return {
     async readVerified(sourcePath, signal) {
@@ -95,7 +111,7 @@ describe.skipIf(!requested)("production sandbox broker real rootless lane", () =
     }
   });
 
-  it("seals the shared supported and unsupported cases through the production UDS runner", async () => {
+  it("seals V1 conformance and a real V3 MathTex outline through the production UDS runner", async () => {
     const directory = await mkdtemp(join(tmpdir(), "poietra-production-broker-"));
     await chmod(directory, 0o750);
     const socketPath = join(directory, "broker.sock");
@@ -127,6 +143,8 @@ describe.skipIf(!requested)("production sandbox broker real rootless lane", () =
     let broker: Awaited<ReturnType<typeof startFastManimProductionSandboxBrokerServiceV1>> | undefined;
     let client: FastManimUdsSandboxBackendV1 | undefined;
     let runner: FastManimSnapshotRunner | undefined;
+    let mathTexClient: FastManimUdsSandboxBackendV1 | undefined;
+    let mathTexRunner: FastManimSnapshotRunner | undefined;
     let operationError: unknown;
     let operationFailed = false;
     try {
@@ -155,6 +173,21 @@ describe.skipIf(!requested)("production sandbox broker real rootless lane", () =
         tenantId: TENANT_ID,
         timeoutMs: 60_000,
       });
+      mathTexClient = new FastManimUdsSandboxBackendV1({
+        closeTimeoutMs: FAST_MANIM_PRODUCTION_BROKER_CLOSE_TIMEOUT_MS_V1,
+        socketPath,
+      });
+      mathTexRunner = new FastManimSnapshotRunner({
+        attestationVerifier: verifiedRelease.attestationVerifier,
+        backend: mathTexClient,
+        deployment: "production",
+        frame: FRAME,
+        projectId: PROJECT_ID,
+        snapshotVersion: 3,
+        sourceProvider: conformanceSourceProvider(),
+        tenantId: TENANT_ID,
+        timeoutMs: 60_000,
+      });
 
       const supportedCase = FAST_MANIM_SANDBOX_CONFORMANCE_CASES_V1.supported;
       const supported = await runner.runUnpublished(
@@ -168,6 +201,51 @@ describe.skipIf(!requested)("production sandbox broker real rootless lane", () =
       const supportedBundle = await parseVerifiedSceneIrBundleV1(supported.snapshot.bundle);
       expect(supportedBundle.scene.entities).toHaveLength(3);
       expectNoConformanceLeak(supported);
+
+      const mathTex = await mathTexRunner.runUnpublished(
+        runRequest(MATHTEX_CONFORMANCE_CASE_V3, "real-production-mathtex-v3"),
+        abort.signal,
+      );
+      expect(mathTex.status).toBe("verified");
+      if (mathTex.status !== "verified" || mathTex.snapshot.kind !== MATHTEX_CONFORMANCE_CASE_V3.expectedKind) {
+        throw new Error("The production broker did not return a verified hermetic MathTex V3 snapshot.");
+      }
+      const mathTexBundle = await parseVerifiedSceneIrBundleV1(mathTex.snapshot.bundle);
+      expect(mathTexBundle.scene.source).toMatchObject({
+        kind: "imported-manim-server-snapshot",
+        snapshotVersion: 3,
+      });
+      expect(mathTexBundle.scene.requiredCapabilities).toEqual(["cubic-path-geometry"]);
+      expect(mathTexBundle.scene.entities).toHaveLength(1);
+      const mathTexEntity = mathTexBundle.scene.entities[0]!;
+      if (mathTexEntity.geometry.kind !== "cubic-path" || mathTexEntity.appearance.kind !== "vector") {
+        throw new Error("The production MathTex snapshot did not contain one vector cubic outline.");
+      }
+      expect(mathTexEntity.geometry.path.subpaths.length).toBeGreaterThan(1);
+      expect(
+        mathTexEntity.geometry.path.subpaths.every((subpath) => subpath.closed && subpath.segments.length > 0),
+      ).toBe(true);
+      expect(mathTexEntity.appearance).toEqual({
+        fill: {
+          color: { alpha: 1, blue: 1, green: 1, red: 1 },
+          rule: "nonzero",
+        },
+        kind: "vector",
+        opacity: 1,
+        stroke: null,
+      });
+      expect(mathTex.sourceRuntimeIdentity?.mappings).toMatchObject([
+        {
+          binding: { name: "equation" },
+          entityId: mathTexEntity.id,
+        },
+      ]);
+      expect(mathTex.sourceRuntimeIdentity?.mappings).toHaveLength(1);
+      const mathTexWire = JSON.stringify(mathTex);
+      expectNoConformanceLeak(mathTex);
+      expect(mathTexWire).not.toContain("E = mc^2");
+      expect(mathTexWire).not.toContain("poietra_mathtex_outline");
+      expect(mathTexWire).not.toContain(".so");
 
       const unsupportedCase = FAST_MANIM_SANDBOX_CONFORMANCE_CASES_V1.unsupported;
       const unsupported = await runner.runUnpublished(
@@ -190,7 +268,10 @@ describe.skipIf(!requested)("production sandbox broker real rootless lane", () =
       operationFailed = true;
       operationError = error;
     }
-    const clientCleanup = await Promise.allSettled([runner?.close() ?? client?.close() ?? Promise.resolve()]);
+    const clientCleanup = await Promise.allSettled([
+      runner?.close() ?? client?.close() ?? Promise.resolve(),
+      mathTexRunner?.close() ?? mathTexClient?.close() ?? Promise.resolve(),
+    ]);
     abort.abort();
     const brokerCleanup = await Promise.allSettled([broker?.close() ?? Promise.resolve()]);
     await rm(directory, { force: true, recursive: true });
