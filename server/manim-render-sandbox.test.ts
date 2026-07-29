@@ -15,6 +15,7 @@ import {
 import { FastManimGatedOciDockerClientV1 } from "./fast-manim-gated-oci-job-runner";
 import { acquireFastManimSandboxOwnerLeaseV1 } from "./fast-manim-sandbox-broker-lease";
 import {
+  classifyManimRenderCgroupFailureV1,
   deliverSealedManimRenderGateRequestV1,
   digestManimRenderGatedOciRuntimeV1,
   MANIM_RENDER_GATED_OCI_PROFILE_DIGEST_V1,
@@ -213,6 +214,17 @@ async function writeStagedVideo(
 afterEach(() => vi.restoreAllMocks());
 
 describe("render sandbox contracts", () => {
+  it("classifies only bounded kernel cgroup resource events", () => {
+    const noMemoryPressure = "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\n";
+    expect(classifyManimRenderCgroupFailureV1(noMemoryPressure, "max 0\n")).toBeNull();
+    expect(classifyManimRenderCgroupFailureV1(noMemoryPressure, "max 1\n")).toBe("pids-limit");
+    expect(classifyManimRenderCgroupFailureV1("oom 1\noom_kill 0\n", "max 0\n")).toBe("memory-limit");
+    expect(() => classifyManimRenderCgroupFailureV1("oom 1\noom_kill 0\n", "max 1\n")).toThrow(/ambiguous/i);
+    expect(() => classifyManimRenderCgroupFailureV1("oom 0\n", "max 0\n")).toThrow(/incomplete/i);
+    expect(() => classifyManimRenderCgroupFailureV1("oom 0\noom_kill 0\noom 1\n", "max 0\n")).toThrow(/invalid/i);
+    expect(() => classifyManimRenderCgroupFailureV1("oom 0\noom_kill 0 \n", "max 0\n")).toThrow(/invalid/i);
+  });
+
   it("rejects non-canonical or over-budget staging roots before identity correlation", () => {
     expect(() => digestManimRenderStagingRootV1("/tmp/staging\0suffix")).toThrow(/staging root/i);
     expect(() => digestManimRenderStagingRootV1(`/${"a".repeat(4_096)}`)).toThrow(/staging root/i);
