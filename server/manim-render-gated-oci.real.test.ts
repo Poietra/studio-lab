@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,13 +28,49 @@ const productionDockerVersion = process.env.POIETRA_FAST_MANIM_PRODUCTION_DOCKER
 const productionEvidence = productionDockerSocket !== undefined || productionDockerVersion !== undefined;
 const cgroupKillPolicy: FastManimGatedOciCgroupKillPolicyV1 = productionEvidence ? "required" : "best-effort";
 const seccompPath = fileURLToPath(new URL("../sandbox/fast-manim-gated-oci/seccomp.v1.json", import.meta.url));
-const source = `from pathlib import Path
+const HOST_SECRET_ENVIRONMENT_KEY = "POIETRA_TEST_RENDER_HOST_SECRET";
+
+function boundaryCheckedSource(hostSecretPath: string) {
+  return `from pathlib import Path
+import errno
 import os
+import socket
 
 from manim import Circle, Create, FadeOut, ImageMobject, LEFT, RIGHT, Scene, Square, Transform
 
+HOST_SECRET_ENVIRONMENT_KEY = ${JSON.stringify(HOST_SECRET_ENVIRONMENT_KEY)}
+HOST_SECRET_PATH = ${JSON.stringify(hostSecretPath)}
+
+def assert_host_file_is_unreachable(path):
+    try:
+        Path(path).read_bytes()
+    except OSError:
+        return
+    raise RuntimeError("untrusted Scene read a host-only file")
+
+def assert_socket_family_is_blocked(family):
+    # Denying socket creation covers loopback, cloud metadata, outbound TCP,
+    # and Unix-domain endpoints before a connection can be attempted.
+    try:
+        descriptor = socket.socket(family, socket.SOCK_STREAM)
+    except OSError as error:
+        if error.errno in (errno.EACCES, errno.EPERM):
+            return
+        raise RuntimeError("sandbox socket denial was inconclusive") from error
+    descriptor.close()
+    raise RuntimeError("untrusted Scene opened a network or Unix socket")
+
 class MultiAnimationScene(Scene):
     def construct(self):
+        if HOST_SECRET_ENVIRONMENT_KEY in os.environ:
+            raise RuntimeError("untrusted Scene inherited a host secret")
+        assert_host_file_is_unreachable(HOST_SECRET_PATH)
+        assert_host_file_is_unreachable("/proc/1/root" + HOST_SECRET_PATH)
+        if Path("/var/run/docker.sock").exists() or Path("/run/docker.sock").exists():
+            raise RuntimeError("untrusted Scene reached a Docker socket")
+        assert_socket_family_is_blocked(socket.AF_INET)
+        assert_socket_family_is_blocked(socket.AF_INET6)
+        assert_socket_family_is_blocked(socket.AF_UNIX)
         try:
             descriptor = os.open("/proc/1/mem", os.O_RDWR)
         except PermissionError:
@@ -53,6 +89,7 @@ class MultiAnimationScene(Scene):
         self.play(Transform(shape, target), run_time=0.2)
         self.play(FadeOut(shape), run_time=0.2)
 `;
+}
 const forgedMediaSource = `from pathlib import Path
 
 from manim import Scene
@@ -241,8 +278,15 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
     parseFastManimRootlessDockerInfoV1(info.stdout, productionDockerVersion);
   });
 
-  it("renders a pinned project PNG with multi-animation media and no host project mount", async () => {
+  it("denies host, environment, and socket access while rendering pinned multi-animation media", async () => {
     const stagingRoot = await mkdtemp(join(tmpdir(), "poietra-real-render-staging-"));
+    const hostSecretRoot = await mkdtemp(join(tmpdir(), "poietra-real-render-host-secret-"));
+    const hostSecretPath = join(hostSecretRoot, "secret.txt");
+    const hostSecret = `poietra-host-secret-${randomBytes(16).toString("hex")}`;
+    const previousHostSecret = process.env[HOST_SECRET_ENVIRONMENT_KEY];
+    await chmod(hostSecretRoot, 0o755);
+    await writeFile(hostSecretPath, hostSecret, { encoding: "utf8", mode: 0o644 });
+    const source = boundaryCheckedSource(hostSecretPath);
     await chmod(stagingRoot, 0o700);
     const runner = createRunner(stagingRoot);
     const deadlineEpochMs = Date.now() + 120_000;
@@ -278,6 +322,7 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
     };
     const signal = new AbortController().signal;
     let operationError: unknown;
+    process.env[HOST_SECRET_ENVIRONMENT_KEY] = hostSecret;
     try {
       await expect(runner.ready(signal)).resolves.toBe(true);
       await runner.reconcileOrphans();
@@ -353,13 +398,23 @@ describe.skipIf(!enabled && !productionEvidence)("render gated OCI real media la
       const png = await readFile(join(stagingRoot, `${thumbnail.stagingId}.png`));
       expect(mp4.subarray(4, 8).toString("ascii")).toBe("ftyp");
       expect(png.subarray(0, 8).toString("hex")).toBe("89504e470d0a1a0a");
+      for (const leaked of [hostSecret, hostSecretPath]) {
+        expect(JSON.stringify({ forgedMedia, thumbnail, video })).not.toContain(leaked);
+        expect(mp4.includes(Buffer.from(leaked, "utf8"))).toBe(false);
+        expect(png.includes(Buffer.from(leaked, "utf8"))).toBe(false);
+      }
       await runner.cleanup(base.jobId, Date.now() + 30_000, signal);
       expect(await readdir(stagingRoot)).toEqual([]);
     } catch (error) {
       operationError = error;
     }
+    if (previousHostSecret === undefined) delete process.env[HOST_SECRET_ENVIRONMENT_KEY];
+    else process.env[HOST_SECRET_ENVIRONMENT_KEY] = previousHostSecret;
     const cleanup = await Promise.allSettled([runner.close()]);
-    await rm(stagingRoot, { force: true, recursive: true });
+    await Promise.all([
+      rm(stagingRoot, { force: true, recursive: true }),
+      rm(hostSecretRoot, { force: true, recursive: true }),
+    ]);
     const errors = [
       ...(operationError === undefined ? [] : [operationError]),
       ...cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])),
