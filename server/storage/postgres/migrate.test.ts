@@ -8,6 +8,7 @@ import {
   applyProjectPngMigrationV5,
   applyRenderArtifactMigrationV4,
   applyRenderCancellationMigrationV7,
+  applyRenderSessionFailureMigrationV8,
   applyRenderSessionMigrationV2,
   applyRenderSessionRetentionMigrationV6,
   applySnapshotPublicationMigrationV3,
@@ -15,6 +16,7 @@ import {
   PROJECT_PNG_MIGRATION_V5_SOURCE,
   RENDER_ARTIFACT_MIGRATION_V4_SOURCE,
   RENDER_CANCELLATION_MIGRATION_V7_SOURCE,
+  RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE,
   RENDER_SESSION_MIGRATION_V2_SOURCE,
   RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE,
   SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE,
@@ -62,10 +64,10 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 7 });
-    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 8 });
+    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 7 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 8 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -73,7 +75,8 @@ describe("durable storage migrations", () => {
     expect(db.queries.filter(({ text }) => text === PROJECT_PNG_MIGRATION_V5_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_CANCELLATION_MIGRATION_V7_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(14);
+    expect(db.queries.filter(({ text }) => text === RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(16);
   });
 
   it("rejects a missing prerequisite under the same advisory lock", async () => {
@@ -131,6 +134,46 @@ describe("durable storage migrations", () => {
       /requires durable storage migrations v1 through v6/i,
     );
     expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("requires all seven durable-storage prerequisites before applying render-session failures v8", async () => {
+    const db = database();
+    await expect(
+      applyRenderSessionFailureMigrationV8(db.pool, RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE),
+    ).rejects.toThrow(/requires durable storage migrations v1 through v7/i);
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("adds a rolling-compatible closed render-session failure code in migration v8", () => {
+    expect(RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE).toContain("ADD COLUMN failure_code text");
+    expect(RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE).toContain("failure_code IS NULL");
+    expect(RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE).not.toContain("failure_code text NOT NULL");
+    expect(RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE).toContain("status IN ('failed', 'discarded')");
+    expect(RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE).toContain("status = 'discarded' AND error IS NOT NULL");
+    expect(RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE).toContain(
+      "CREATE FUNCTION public.normalize_render_session_failure_code_v8()",
+    );
+    expect(RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE).toContain(
+      "CREATE TRIGGER render_sessions_failure_code_normalization",
+    );
+    expect(RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE).toContain(
+      "BEFORE INSERT OR UPDATE OF status, error, failure_code",
+    );
+    expect(RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE).toContain(
+      "failure_code IS NULL AND status NOT IN ('cancelled', 'failed')",
+    );
+    expect(RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE).toContain("status = 'failed' AND failure_code IS NOT NULL");
+    expect(RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE).not.toContain("'cleanup-failed'");
+    for (const code of [
+      "cancelled",
+      "deadline-exceeded",
+      "interrupted",
+      "memory-limit",
+      "pids-limit",
+      "render-failed",
+    ]) {
+      expect(RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE).toContain(`'${code}'`);
+    }
   });
 
   it("pins shard ownership and bounded durable cancellation state in migration v7", () => {

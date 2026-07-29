@@ -49,6 +49,7 @@ function sessionFromCreate(input: CreateDurableRenderSessionInputV1): DurableRen
     deadline: new Date(now.getTime() + input.executionTimeoutMs),
     error: null,
     executionAttempts: 0,
+    failureCode: null,
     fenceToken: 0n,
     id: input.id,
     latestAction: null,
@@ -148,6 +149,7 @@ describe("DurableManimRenderServiceV1", () => {
 
     expect(view).toMatchObject({
       canCancel: true,
+      failureCode: null,
       id: "00000000-0000-4000-8000-000000000010",
       progress: 0,
       projectId: "default",
@@ -174,7 +176,7 @@ describe("DurableManimRenderServiceV1", () => {
     const started = await service.start(request());
     const created = createSession.mock.calls[0]?.[0];
     if (!created) throw new Error("The render session was not created.");
-    readSession.mockResolvedValueOnce({ ...sessionFromCreate(created), status: "cancelled" });
+    readSession.mockResolvedValueOnce({ ...sessionFromCreate(created), failureCode: "cancelled", status: "cancelled" });
 
     const cancelled = await service.cancel(started.id);
 
@@ -182,6 +184,7 @@ describe("DurableManimRenderServiceV1", () => {
     expect(readSession).toHaveBeenCalledWith("tenant-a", started.id);
     expect(executionCancel.mock.invocationCallOrder[0]).toBeLessThan(readSession.mock.invocationCallOrder[0]!);
     expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.failureCode).toBe("cancelled");
   });
 
   it("leaves the PostgreSQL row active when the broker fence fails", async () => {

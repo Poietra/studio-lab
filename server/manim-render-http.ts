@@ -10,6 +10,10 @@ import {
   manimThumbnailGenerateRequestSchema,
   originalManimSourceExportRequestSchema,
   programRenderRequestSchema,
+  RENDER_SESSION_CONTRACT_VERSION_HEADER,
+  RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE,
+  type RenderSessionView,
+  type RenderSourceActionCancellationView,
   renameManimProjectRequestSchema,
   renderAbandonRequestSchema,
   renderCommitRequestSchema,
@@ -265,12 +269,30 @@ function requireEmptyRenderActionBody(body: unknown) {
   }
 }
 
+function includeRenderSessionFailureCode(request: IncomingMessage) {
+  return request.headers[RENDER_SESSION_CONTRACT_VERSION_HEADER] === RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE;
+}
+
+function renderSessionHttpView(session: RenderSessionView, includeFailureCode: boolean) {
+  if (includeFailureCode) return session;
+  const { failureCode: _failureCode, ...legacySession } = session;
+  return legacySession;
+}
+
+function renderSourceActionCancellationHttpView(view: RenderSourceActionCancellationView, includeFailureCode: boolean) {
+  return {
+    ...view,
+    session: renderSessionHttpView(view.session, includeFailureCode),
+  };
+}
+
 async function runRenderAction(
   manager: ManimApi,
   id: string,
   action: string | undefined,
   body: unknown,
   signal: AbortSignal,
+  includeFailureCode: boolean,
 ) {
   switch (action) {
     case "abandon": {
@@ -280,26 +302,29 @@ async function runRenderAction(
     }
     case "cancel": {
       requireEmptyRenderActionBody(body);
-      return manager.cancel(id);
+      return renderSessionHttpView(await manager.cancel(id), includeFailureCode);
     }
     case "commit": {
       const parsed = renderCommitRequestSchema.safeParse(body);
       if (!parsed.success) throw new HttpError("The render commit request is invalid or stale.", 400);
-      return manager.commit(id, parsed.data, signal);
+      return renderSessionHttpView(await manager.commit(id, parsed.data, signal), includeFailureCode);
     }
     case "cancel-source-action": {
       const parsed = renderSourceActionCancellationRequestSchema.safeParse(body);
       if (!parsed.success) throw new HttpError("The source-action cancellation request is invalid.", 400);
-      return manager.cancelSourceAction(id, parsed.data);
+      return renderSourceActionCancellationHttpView(
+        await manager.cancelSourceAction(id, parsed.data),
+        includeFailureCode,
+      );
     }
     case "discard": {
       requireEmptyRenderActionBody(body);
-      return manager.discard(id);
+      return renderSessionHttpView(await manager.discard(id), includeFailureCode);
     }
     case "undo": {
       const parsed = renderSourceActionRequestSchema.safeParse(body);
       if (!parsed.success) throw new HttpError("The Undo action request is invalid.", 400);
-      return manager.undo(id, parsed.data.actionId, signal);
+      return renderSessionHttpView(await manager.undo(id, parsed.data.actionId, signal), includeFailureCode);
     }
     default:
       throw new HttpError("Method not allowed.", 405);
@@ -378,6 +403,7 @@ async function routeManimRequest(
   policy: ManimRequestPolicy,
 ) {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
+  const includeFailureCode = includeRenderSessionFailureCode(request);
   if (request.method === "POST" || request.method === "PATCH" || request.method === "DELETE") {
     requireSameOriginJsonMutation(request, policy.expectedMutationOrigin);
   }
@@ -413,7 +439,7 @@ async function routeManimRequest(
       throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid canonical EditProgram render request.", 400);
     }
     const started = await manager.start(parsed.data, signal);
-    if (!(await sendJsonAndWaitForFinish(response, 202, started))) {
+    if (!(await sendJsonAndWaitForFinish(response, 202, renderSessionHttpView(started, includeFailureCode)))) {
       await manager.abandonStart(started.id);
       const error = new Error("The render request was disconnected before its response was sent.");
       error.name = "AbortError";
@@ -533,7 +559,7 @@ async function routeManimRequest(
       throw new HttpError("The request project does not match the project endpoint.", 409);
     }
     const started = await manager.start(parsed.data, signal);
-    if (!(await sendJsonAndWaitForFinish(response, 202, started))) {
+    if (!(await sendJsonAndWaitForFinish(response, 202, renderSessionHttpView(started, includeFailureCode)))) {
       await manager.abandonStart(started.id);
       const error = new Error("The render request was disconnected before its response was sent.");
       error.name = "AbortError";
@@ -545,7 +571,7 @@ async function routeManimRequest(
   if (!match) throw new HttpError("Manim endpoint not found.", 404);
   const [, id, action] = match;
   if (request.method === "GET" && !action) {
-    sendJson(response, 200, await manager.view(id));
+    sendJson(response, 200, renderSessionHttpView(await manager.view(id), includeFailureCode));
     return;
   }
   if ((request.method === "GET" || request.method === "HEAD") && action === "video") {
@@ -555,7 +581,7 @@ async function routeManimRequest(
   }
   if (request.method !== "POST") throw new HttpError("Method not allowed.", 405);
   const body = await readBoundedJsonBody(request, policy, 4 * 1024);
-  sendJson(response, 200, await runRenderAction(manager, id, action, body, signal));
+  sendJson(response, 200, await runRenderAction(manager, id, action, body, signal, includeFailureCode));
 }
 
 export async function handleManimRequest(

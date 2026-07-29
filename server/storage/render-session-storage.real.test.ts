@@ -499,6 +499,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
           artifactLocator: "artifact:stale",
           error: null,
           expectedVersion: BigInt(firstClaim.version!),
+          failureCode: null,
           fenceToken: BigInt(firstClaim.fenceToken!),
           logTail: "stale worker",
           ownerId: "process-a-worker",
@@ -512,6 +513,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
         artifactLocator: "artifact:verified",
         error: null,
         expectedVersion: secondClaim.version,
+        failureCode: null,
         fenceToken: secondClaim.fenceToken,
         logTail: "render complete",
         ownerId: "process-b-worker",
@@ -552,6 +554,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
       const expiredCompletion = {
         error: null,
         expectedVersion: expiredClaim.version,
+        failureCode: null,
         fenceToken: expiredClaim.fenceToken,
         logTail: "deadline test",
         ownerId: "deadline-worker",
@@ -565,13 +568,19 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
       await expect(
         renders.completeLease({
           ...expiredCompletion,
-          error: "Render execution was interrupted.",
+          error: "Render exceeded its memory limit.",
+          failureCode: "memory-limit",
           status: "failed",
         }),
       ).resolves.toMatchObject({
-        error: "Render execution was interrupted.",
+        error: "Render exceeded its memory limit.",
+        failureCode: "memory-limit",
         lease: null,
         status: "failed",
+      });
+      await expect(renders.discardSession(tenantId, expiredSessionId)).resolves.toMatchObject({
+        failureCode: "memory-limit",
+        status: "discarded",
       });
 
       const sweepSessionId = randomUUID();
@@ -596,9 +605,61 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
       );
       await expect(renders.expireTimedOutSessions(tenantId, 16)).resolves.toBe(1);
       await expect(renders.readSession(tenantId, sweepSessionId)).resolves.toMatchObject({
-        error: "Render execution was interrupted.",
+        error: "Render execution deadline exceeded.",
+        failureCode: "deadline-exceeded",
         lease: null,
         status: "failed",
+      });
+
+      const createRollingSession = (id: string, label: string) =>
+        renders.createSession({
+          commitCorrelationKey: `${label}-candidate`,
+          executionTimeoutMs: 120_000,
+          id,
+          originalHead,
+          patch: { anchorLine: 4, anchorLines: [4], insertedCode: "        self.wait(2)\n" },
+          patchedBlob,
+          programBatchId: `batch-${label}`,
+          programTransactionId: `transaction-${label}`,
+          renderRequestId: `request-${label}`,
+          sceneName: "MainScene",
+          tenantId,
+        });
+      const rollingFailureSessionId = randomUUID();
+      await createRollingSession(rollingFailureSessionId, "rolling-failure-code");
+      await setupPool.query(
+        `UPDATE public.render_sessions
+            SET status = 'failed',
+                error = 'Render exceeded its process limit.'
+          WHERE tenant_id = $1 AND session_id = $2::uuid`,
+        [tenantId, rollingFailureSessionId],
+      );
+      await expect(renders.readSession(tenantId, rollingFailureSessionId)).resolves.toMatchObject({
+        failureCode: "pids-limit",
+        status: "failed",
+      });
+      await setupPool.query(
+        `UPDATE public.render_sessions
+            SET status = 'discarded'
+          WHERE tenant_id = $1 AND session_id = $2::uuid`,
+        [tenantId, rollingFailureSessionId],
+      );
+      await expect(renders.readSession(tenantId, rollingFailureSessionId)).resolves.toMatchObject({
+        failureCode: "pids-limit",
+        status: "discarded",
+      });
+
+      const rollingUnknownDiscardSessionId = randomUUID();
+      await createRollingSession(rollingUnknownDiscardSessionId, "rolling-unknown-discard");
+      await setupPool.query(
+        `UPDATE public.render_sessions
+            SET status = 'discarded'
+          WHERE tenant_id = $1 AND session_id = $2::uuid`,
+        [tenantId, rollingUnknownDiscardSessionId],
+      );
+      await expect(renders.readSession(tenantId, rollingUnknownDiscardSessionId)).resolves.toMatchObject({
+        failureCode: null,
+        status: "discarded",
       });
 
       const brokerSessionId = randomUUID();
@@ -870,6 +931,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
           artifactLocator: "artifact:must-not-publish",
           error: null,
           expectedVersion: claimed.version,
+          failureCode: null,
           fenceToken: claimed.fenceToken,
           logTail: "late publication",
           ownerId: "render-worker-b",
@@ -928,6 +990,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
         tenantId,
       } as const;
       await expect(workerRepository.acknowledgeCancellation(acknowledgement)).resolves.toMatchObject({
+        failureCode: "cancelled",
         lease: null,
         status: "cancelled",
       });
@@ -947,6 +1010,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
         status: "cancelled",
       });
       await expect(apiRepository.discardSession(tenantId, sessionId)).resolves.toMatchObject({
+        failureCode: "cancelled",
         status: "discarded",
       });
       await apiRepository.close();
@@ -973,6 +1037,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
           artifactLocator: "artifact:late-after-ack",
           error: null,
           expectedVersion: claimed.version,
+          failureCode: null,
           fenceToken: claimed.fenceToken,
           logTail: "late after ACK",
           ownerId: "render-worker-b",

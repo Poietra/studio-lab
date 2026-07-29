@@ -56,6 +56,7 @@ function sessionView(
     ...renderSessionCapabilities(session.status, actionInProgress),
     createdAt: session.createdAt.toISOString(),
     error: session.error,
+    failureCode: session.failureCode,
     id: session.id,
     logTail: session.logTail,
     patch: {

@@ -3,6 +3,11 @@ import type { AddressInfo } from "node:net";
 
 import { describe, expect, it, vi } from "vitest";
 
+import {
+  RENDER_SESSION_CONTRACT_VERSION_HEADER,
+  RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE,
+  type RenderSessionView,
+} from "../src/render-pipeline/contracts";
 import { createStructuredLogger, type StructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
 import { handleManimRequest, type ManimApi, type ManimRequestPolicy, resolveByteRange } from "./manim-render-http";
@@ -21,7 +26,7 @@ async function listen(api: ManimApi, policy?: ManimRequestPolicy, logger?: Struc
 async function send(
   port: number,
   path: string,
-  options: Readonly<{ headers?: Record<string, string>; method?: string }> = {},
+  options: Readonly<{ body?: string; headers?: Record<string, string>; method?: string }> = {},
 ) {
   return new Promise<Readonly<{ body: Buffer; headers: import("node:http").IncomingHttpHeaders; status: number }>>(
     (resolve, reject) => {
@@ -40,10 +45,126 @@ async function send(
         },
       );
       request.once("error", reject);
-      request.end();
+      request.end(options.body);
     },
   );
 }
+
+function renderSession(overrides: Partial<RenderSessionView> = {}): RenderSessionView {
+  return {
+    actionInProgress: false,
+    canCancel: false,
+    canCommit: false,
+    canDiscard: true,
+    canUndo: false,
+    createdAt: "2026-07-29T00:00:00.000Z",
+    error: "Render exceeded its memory limit.",
+    failureCode: "memory-limit",
+    id: "00000000-0000-4000-8000-000000000001",
+    logTail: "",
+    patch: {
+      anchorLine: 1,
+      anchorLines: [1],
+      insertedCode: "self.wait(1)",
+      patchedSourceHash: "b".repeat(64),
+      sourceHash: "a".repeat(64),
+    },
+    programBatchId: "batch-1",
+    programTransactionId: "transaction-1",
+    progress: 1,
+    projectId: "project-a",
+    renderRequestId: "render-request-1",
+    sceneName: "SceneOne",
+    sourceAction: null,
+    sourcePath: "scene.py",
+    status: "failed",
+    updatedAt: "2026-07-29T00:00:01.000Z",
+    videoUrl: null,
+    ...overrides,
+  };
+}
+
+describe("render session contract negotiation", () => {
+  it("omits failureCode for an old client and includes it only after an exact opt-in", async () => {
+    const api = {
+      storageBoundary: { kind: "shared-durable", namespace: "http-render-contract-test" },
+      tenantId: "tenant-render-contract",
+      view: vi.fn(async () => renderSession()),
+    } as unknown as ManimApi;
+    const server = await listen(api);
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const path = "/api/manim/renders/00000000-0000-4000-8000-000000000001";
+      const legacy = JSON.parse((await send(port, path)).body.toString("utf8")) as Record<string, unknown>;
+      const unsupportedVersion = JSON.parse(
+        (
+          await send(port, path, {
+            headers: { [RENDER_SESSION_CONTRACT_VERSION_HEADER]: "1" },
+          })
+        ).body.toString("utf8"),
+      ) as Record<string, unknown>;
+      const negotiated = JSON.parse(
+        (
+          await send(port, path, {
+            headers: {
+              [RENDER_SESSION_CONTRACT_VERSION_HEADER]: RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE,
+            },
+          })
+        ).body.toString("utf8"),
+      ) as Record<string, unknown>;
+
+      expect(legacy).not.toHaveProperty("failureCode");
+      expect(unsupportedVersion).not.toHaveProperty("failureCode");
+      expect(negotiated.failureCode).toBe("memory-limit");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("applies the same negotiation to a nested source-action cancellation session", async () => {
+    const actionId = "00000000-0000-4000-8000-000000000002";
+    const api = {
+      cancelSourceAction: vi.fn(async () => ({
+        action: { id: actionId, kind: "commit", outcome: null, state: "cancelled" },
+        session: renderSession(),
+      })),
+      storageBoundary: { kind: "shared-durable", namespace: "http-render-contract-test" },
+      tenantId: "tenant-render-contract",
+    } as unknown as ManimApi;
+    const server = await listen(api);
+    const path = "/api/manim/renders/00000000-0000-4000-8000-000000000001/cancel-source-action";
+    const body = JSON.stringify({ actionId, kind: "commit" });
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const legacy = JSON.parse(
+        (
+          await send(port, path, {
+            body,
+            headers: { "content-type": "application/json" },
+            method: "POST",
+          })
+        ).body.toString("utf8"),
+      ) as { session: Record<string, unknown> };
+      const negotiated = JSON.parse(
+        (
+          await send(port, path, {
+            body,
+            headers: {
+              "content-type": "application/json",
+              [RENDER_SESSION_CONTRACT_VERSION_HEADER]: RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE,
+            },
+            method: "POST",
+          })
+        ).body.toString("utf8"),
+      ) as { session: Record<string, unknown> };
+
+      expect(legacy.session).not.toHaveProperty("failureCode");
+      expect(negotiated.session.failureCode).toBe("memory-limit");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+});
 
 describe("Manim video byte ranges", () => {
   it("supports full, bounded, open-ended, and suffix requests", () => {

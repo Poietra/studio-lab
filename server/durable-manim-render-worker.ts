@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-
+import type { RenderSessionFailureCode } from "../src/render-pipeline/contracts";
 import { HttpError } from "./http/json";
 import { manimRenderBrokerShardIdV1Schema } from "./manim-render-sandbox-contract";
 import { manimTenantIdSchema } from "./manim-request-principal";
@@ -25,7 +25,7 @@ export type DurableManimRenderExecutionResultV1 =
       logTail: string;
     }>
   | Readonly<{
-      code: "cancelled" | "interrupted" | "render-failed";
+      code: RenderSessionFailureCode;
       kind: "failed";
       logTail: string;
     }>;
@@ -123,9 +123,21 @@ function expectedConflict(error: unknown) {
   return error instanceof HttpError && error.status === 409;
 }
 
-function executionFailureMessage(code: "cancelled" | "interrupted" | "render-failed") {
-  if (code === "cancelled") return null;
-  return code === "interrupted" ? "Render execution was interrupted." : "The sandbox render failed.";
+function executionFailureMessage(code: RenderSessionFailureCode) {
+  switch (code) {
+    case "cancelled":
+      return null;
+    case "deadline-exceeded":
+      return "Render execution deadline exceeded.";
+    case "interrupted":
+      return "Render execution was interrupted.";
+    case "memory-limit":
+      return "Render exceeded its memory limit.";
+    case "pids-limit":
+      return "Render exceeded its process limit.";
+    case "render-failed":
+      return "The sandbox render failed.";
+  }
 }
 
 /** Tenant ownership is part of the stable broker idempotency key. */
@@ -384,8 +396,9 @@ export class DurableManimRenderWorkerV1 {
       throw publicationError;
     }
     const failed = outcome.kind !== "result" || outcome.result.kind === "failed" || publicationError !== undefined;
-    const failureCode =
-      publicationError !== undefined
+    const failureCode = deadlineReached
+      ? "deadline-exceeded"
+      : publicationError !== undefined
         ? "render-failed"
         : outcome.kind === "result" && outcome.result.kind === "failed"
           ? outcome.result.code
@@ -398,6 +411,7 @@ export class DurableManimRenderWorkerV1 {
           : {}),
         error: failed ? executionFailureMessage(failureCode) : null,
         expectedVersion: claimed.version,
+        failureCode: failed ? failureCode : null,
         fenceToken: claimed.fenceToken,
         logTail: outcome.kind === "result" ? outcome.result.logTail : "",
         ownerId: this.#workerId,

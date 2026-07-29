@@ -584,6 +584,7 @@ export class ManimRenderManager {
       ...capabilities,
       createdAt: session.createdAt,
       error: session.error,
+      failureCode: session.status === "cancelled" ? "cancelled" : session.status === "failed" ? "render-failed" : null,
       id: session.id,
       logTail: session.logTail,
       patch: {
