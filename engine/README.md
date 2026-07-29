@@ -32,6 +32,25 @@ The proofs fail when no fallback adapter is available. They render the shared
 fixture and a focused round-cap packet into sRGB textures, read aligned rows back
 to the CPU, check stable interior pixels, and emit machine-readable adapter evidence.
 
+The first native-to-browser visual-parity corpus item is
+`dynamic-affine-camera--a-first`. Regenerate its complete evidence set with:
+
+```sh
+pnpm visual-parity:regenerate
+```
+
+The command renders the corpus-pinned EngineFrame once with the native fallback
+adapter, writes unpadded top-to-bottom RGBA plus adapter/format metadata under
+`test-results/visual-parity/native/`, builds the browser WASM module, then transfers
+the complete browser RGBA frame out of the dedicated E2E worker. Deterministic
+`expected.png`, `actual.png`, `diff.png`, and `report.json` files land under
+`test-results/visual-parity/output/`. The v1 corpus fixes the existing fixture
+revision, `a-first` semantic digest, 160x90 viewport, sRGB byte-domain four-channel
+SSIM definition, and the gate of SSIM >= 0.995 with at most 0.5% of pixels having
+any RGBA channel differ by more than 8. Threshold exceptions require both an
+explicit override and a non-empty reason. This is test-only instrumentation: the
+production canvas response and frame-evidence ABIs are unchanged.
+
 Both evaluators consume the JSON fixtures under `fixtures/engine-v1`; categorical
 results are exact and floating-point results use the fixture's explicit combined
 absolute/relative tolerance. The TypeScript evaluator remains Studio's current

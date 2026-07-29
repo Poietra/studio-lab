@@ -59,6 +59,7 @@ type WasmBindingsV1 = {
 };
 
 type ProofRequestV1 = Readonly<{
+  fullRgba?: boolean;
   kind: "prove-frame";
   requestJson: ArrayBuffer;
   samplePoints?: Readonly<Record<string, readonly [number, number]>>;
@@ -93,7 +94,9 @@ function installReadbackHooks(canvas: OffscreenCanvas, viewport: ProofRequestV1[
   let device: GpuDeviceV1 | null = null;
   let readback: GpuBufferV1 | null = null;
   let surfaceFormat: string | null = null;
+  let viewFormat: "Bgra8UnormSrgb" | "Rgba8UnormSrgb" | null = null;
   let armed = false;
+  let renderSubmissionCount = 0;
   let delayedErrorScopes: ReturnType<typeof createDelayedErrorScopeBatch> | null = null;
   let errorScopePopCalls = 0;
   let errorScopePushCalls = 0;
@@ -107,6 +110,25 @@ function installReadbackHooks(canvas: OffscreenCanvas, viewport: ProofRequestV1[
   const configure = context.configure.bind(context);
   context.configure = (configuration) => {
     surfaceFormat = configuration.format;
+    const configuredViewFormats = configuration.viewFormats;
+    const configuredViewFormat = Array.isArray(configuredViewFormats) ? configuredViewFormats[0] : undefined;
+    viewFormat =
+      configuredViewFormat === "bgra8unorm-srgb"
+        ? "Bgra8UnormSrgb"
+        : configuredViewFormat === "rgba8unorm-srgb"
+          ? "Rgba8UnormSrgb"
+          : null;
+    const expectedViewFormat =
+      configuration.format === "bgra8unorm"
+        ? "Bgra8UnormSrgb"
+        : configuration.format === "rgba8unorm"
+          ? "Rgba8UnormSrgb"
+          : null;
+    if (!viewFormat || !expectedViewFormat || viewFormat !== expectedViewFormat) {
+      throw new Error(
+        `The E2E readback requires the matching sRGB surface view; received ${String(configuredViewFormat)} for ${configuration.format}.`,
+      );
+    }
     configure({
       ...configuration,
       usage:
@@ -168,7 +190,11 @@ function installReadbackHooks(canvas: OffscreenCanvas, viewport: ProofRequestV1[
           submit(commands);
           return;
         }
-        armed = false;
+        renderSubmissionCount += 1;
+        if (renderSubmissionCount !== 1) {
+          submit(commands);
+          return;
+        }
         const bytesPerRow = Math.ceil((viewport.widthPx * 4) / 256) * 256;
         readback = device.createBuffer({
           size: bytesPerRow * viewport.heightPx,
@@ -192,6 +218,7 @@ function installReadbackHooks(canvas: OffscreenCanvas, viewport: ProofRequestV1[
       armed = true;
       capturedTexture = undefined;
       readback = null;
+      renderSubmissionCount = 0;
     },
     delayNextErrorScopes: (injected: readonly unknown[]) => {
       if (delayedErrorScopes) throw new Error("An error-scope delay batch is already active.");
@@ -200,14 +227,28 @@ function installReadbackHooks(canvas: OffscreenCanvas, viewport: ProofRequestV1[
       return delayedErrorScopes;
     },
     errorScopeCalls: () => ({ pops: errorScopePopCalls, pushes: errorScopePushCalls }),
+    finishCapture: () => {
+      armed = false;
+      if (renderSubmissionCount !== 1) {
+        throw new Error(
+          `The visual parity capture requires exactly one render submit; observed ${renderSubmissionCount}.`,
+        );
+      }
+      return renderSubmissionCount;
+    },
     nativeErrorScopeCalls: () => ({ pops: nativeErrorScopePopCalls, pushes: nativeErrorScopePushCalls }),
     rejectNativePopAtOffset: (offset: number, error: unknown) => {
       if (!Number.isSafeInteger(offset) || offset < 1) throw new Error("The pop rejection offset must be positive.");
       if (scheduledNativePopRejection) throw new Error("A native pop rejection is already scheduled.");
       scheduledNativePopRejection = { call: errorScopePopCalls + offset, error };
     },
-    readPixels: async (samplePoints: Readonly<Record<string, readonly [number, number]>> = {}) => {
-      if (!readback || !surfaceFormat) throw new Error("The WASM renderer did not submit a readable surface frame.");
+    readPixels: async (
+      samplePoints: Readonly<Record<string, readonly [number, number]>> = {},
+      includeFullRgba = false,
+    ) => {
+      if (!readback || !surfaceFormat || !viewFormat) {
+        throw new Error("The WASM renderer did not submit a readable surface frame.");
+      }
       await readback.mapAsync(GPU_MAP_MODE_READ);
       const mapped = new Uint8Array(readback.getMappedRange());
       const bytesPerRow = Math.ceil((viewport.widthPx * 4) / 256) * 256;
@@ -221,9 +262,12 @@ function installReadbackHooks(canvas: OffscreenCanvas, viewport: ProofRequestV1[
         return [red, green, blue, alpha] as const;
       };
       let bounds: [number, number, number, number] | null = null;
+      const fullRgba = includeFullRgba ? new Uint8Array(viewport.widthPx * viewport.heightPx * 4) : undefined;
       for (let y = 0; y < viewport.heightPx; y += 1) {
         for (let x = 0; x < viewport.widthPx; x += 1) {
-          const [red, green, blue] = pixelAt(x, y);
+          const rgba = pixelAt(x, y);
+          const [red, green, blue] = rgba;
+          fullRgba?.set(rgba, (y * viewport.widthPx + x) * 4);
           if (red === 0 && green === 0 && blue === 0) continue;
           bounds = bounds
             ? [Math.min(bounds[0], x), Math.min(bounds[1], y), Math.max(bounds[2], x), Math.max(bounds[3], y)]
@@ -240,9 +284,10 @@ function installReadbackHooks(canvas: OffscreenCanvas, viewport: ProofRequestV1[
         redCenter: pixelAt(70, 45),
         samples: Object.fromEntries(Object.entries(samplePoints).map(([name, [x, y]]) => [name, pixelAt(x, y)])),
         surfaceFormat,
+        viewFormat,
       };
       readback.unmap();
-      return pixels;
+      return { fullRgba, pixels };
     },
     throwPushAtOffset: (offset: number, error: unknown) => {
       if (!Number.isSafeInteger(offset) || offset < 1) throw new Error("The push throw offset must be positive.");
@@ -547,9 +592,21 @@ self.addEventListener("message", (event: MessageEvent<WorkerRequestV1>) => {
     const engine = await bindings.PoietraCanvasEngineV1.create(new Uint8Array(request.snapshotJson), canvas);
     hooks.arm();
     const responseJson = await engine.render(new Uint8Array(request.requestJson));
+    const renderSubmissionCount = hooks.finishCapture();
     const response = decodeJson(responseJson);
-    const pixels = await hooks.readPixels(request.samplePoints);
-    self.postMessage({ kind: "proof", pixels, response });
+    const { fullRgba, pixels } = await hooks.readPixels(request.samplePoints, request.fullRgba);
+    const proof = {
+      capture: { policy: "exactly-one-render-submit", renderSubmissionCount },
+      kind: "proof",
+      pixels,
+      response,
+      ...(fullRgba ? { rgba: fullRgba.buffer } : {}),
+    };
+    if (fullRgba) {
+      self.postMessage(proof, { transfer: [fullRgba.buffer] });
+    } else {
+      self.postMessage(proof);
+    }
   })().catch((error: unknown) => {
     self.postMessage({ kind: "error", message: error instanceof Error ? error.message : String(error) });
   });

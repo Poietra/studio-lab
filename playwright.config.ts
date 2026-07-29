@@ -20,7 +20,7 @@ export default defineConfig({
     },
     {
       name: "chromium-webgpu",
-      testIgnore: ["**/preview-renderer.webgpu.ts", "**/real-scene-preview.webgpu.ts"],
+      testIgnore: ["**/preview-renderer.webgpu.ts", "**/real-scene-preview.webgpu.ts", "**/visual-parity.webgpu.ts"],
       testMatch: "**/*.webgpu.ts",
       use: {
         browserName: "chromium",

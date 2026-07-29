@@ -133,8 +133,16 @@ jobs:
           fi
       - name: Prove headless WGPU rendering with Lavapipe
         env:
+          POIETRA_VISUAL_PARITY_NATIVE_ARTIFACT_DIR: test-results/visual-parity/native
           WGPU_BACKEND: vulkan
         run: cargo test --locked --package poietra-render-wgpu --test headless_gpu --manifest-path engine/Cargo.toml -- --ignored --nocapture
+      - name: Upload native visual parity artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: poietra-visual-parity-native
+          path: test-results/visual-parity/native/
+          if-no-files-found: error
+          retention-days: 1
       - name: Run Clippy
         run: cargo clippy --locked --workspace --all-targets --all-features --manifest-path engine/Cargo.toml -- -D warnings
       - name: Check the browser WASM target
@@ -185,6 +193,15 @@ jobs:
         run: pnpm test:e2e
       - name: Run retained WebGPU preview tests
         run: pnpm test:e2e:preview:webgpu
+      - name: Download native visual parity artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: poietra-visual-parity-native
+          path: test-results/visual-parity/native/
+      - name: Compare browser WebGPU against native Lavapipe
+        env:
+          POIETRA_VISUAL_PARITY_NATIVE_ARTIFACT_DIR: test-results/visual-parity/native
+        run: pnpm test:e2e:visual-parity
       - name: Upload Playwright diagnostics
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v6
