@@ -167,17 +167,19 @@ export const engineFrameV1Schema = engineFrameV1BaseSchema.superRefine((frame, c
         path: ["packet", "draws", index, "kind"],
       });
     }
-    if (
-      draw.kind === "empty" &&
-      !frame.scene.animationChannels.some(
-        (channel) => channel.kind === "path-trim" && channel.entityId === draw.entityId,
-      )
-    ) {
-      context.addIssue({
-        code: "custom",
-        message: `Empty draw entity ${draw.entityId} has no path-trim channel.`,
-        path: ["packet", "draws", index, "reason"],
-      });
+    if (draw.kind === "empty") {
+      const channelKind = draw.reason === "path-trim-zero" ? "path-trim" : "affine-transform";
+      if (
+        !frame.scene.animationChannels.some(
+          (channel) => channel.kind === channelKind && channel.entityId === draw.entityId,
+        )
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: `Empty draw entity ${draw.entityId} has no ${channelKind} channel.`,
+          path: ["packet", "draws", index, "reason"],
+        });
+      }
     }
     if (
       draw.kind === "path" &&

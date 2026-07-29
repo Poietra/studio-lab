@@ -175,6 +175,49 @@ describe("Poietra TypeScript reference evaluator v1", () => {
     expect(frame.packet.draws[0].opacity).toBe(0.15625);
   });
 
+  it("lowers a sampled singular affine midpoint without dropping sibling draws", async () => {
+    const assets = await emptyManifest();
+    const scene = createScene(assets, {
+      animationChannels: [
+        {
+          entityId: "circle",
+          id: "reflect",
+          keyframes: [
+            { at: 0, easingToNext: { kind: "linear" }, value: identity },
+            { at: 1, easingToNext: null, value: { ...identity, m11: -1 } },
+          ],
+          kind: "affine-transform",
+          provenanceId: "fixture",
+        },
+      ],
+      entities: [
+        vectorEntity("circle", 0, { center: { x: 0, y: 0 }, kind: "circle", radius: 1 }),
+        vectorEntity("sibling", 1, { center: { x: 2, y: 0 }, kind: "circle", radius: 0.5 }),
+        vectorEntity("inherited", 2, { center: { x: -2, y: 0 }, kind: "circle", radius: 0.5 }, { parentId: "circle" }),
+      ],
+      requiredCapabilities: ["affine-transform-animation", "shape-primitives"],
+    });
+
+    const identityFrame = await compile(scene, assets, 0);
+    const singularFrame = await compile(scene, assets, 0.5);
+    const reflectedFrame = await compile(scene, assets, 1);
+    const singularRepeat = await compile(scene, assets, 0.5);
+    const identityRepeat = await compile(scene, assets, 0);
+
+    expect(identityFrame.packet.draws[0].kind).toBe("path");
+    expect(singularFrame.packet.draws[0]).toMatchObject({
+      entityId: "circle",
+      kind: "empty",
+      reason: "singular-affine-sample",
+      transform: { m11: 0 },
+    });
+    expect(singularFrame.packet.draws[1]).toMatchObject({ entityId: "sibling", kind: "path" });
+    expect(singularFrame.packet.draws[2]).toMatchObject({ entityId: "inherited", kind: "path" });
+    expect(reflectedFrame.packet.draws[0]).toMatchObject({ kind: "path", transform: { m11: -1 } });
+    expect(singularRepeat.packet.draws).toEqual(singularFrame.packet.draws);
+    expect(identityRepeat.packet.draws).toEqual(identityFrame.packet.draws);
+  });
+
   it("composes hierarchy transforms and opacity from root to leaf", async () => {
     const assets = await emptyManifest();
     const scene = createScene(assets, {

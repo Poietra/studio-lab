@@ -803,6 +803,8 @@ impl RenderDrawV1 {
 pub enum RenderEmptyReasonV1 {
     #[serde(rename = "path-trim-zero")]
     PathTrimZero,
+    #[serde(rename = "singular-affine-sample")]
+    SingularAffineSample,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]

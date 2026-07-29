@@ -321,6 +321,34 @@ fn validate_render_packet_for_scene(
                 }
             }
             (
+                RenderDrawV1::Empty {
+                    reason: RenderEmptyReasonV1::SingularAffineSample,
+                    ..
+                },
+                _,
+                SceneAppearanceV1::Vector { .. },
+            ) => {
+                // This v1 reason authenticates only the entity's direct leaf
+                // channel; ancestor-derived emptiness requires hierarchy evidence.
+                let has_affine_transform = scene.animation_channels.iter().any(|channel| {
+                    matches!(
+                        channel,
+                        AnimationChannelV1::AffineTransform { entity_id, .. }
+                            if entity_id == draw.entity_id()
+                    )
+                });
+                if !has_affine_transform {
+                    issue(
+                        &mut issues,
+                        format!("{path}.reason"),
+                        format!(
+                            "empty draw entity {} has no affine-transform channel",
+                            draw.entity_id()
+                        ),
+                    );
+                }
+            }
+            (
                 RenderDrawV1::Path { fill, stroke, .. },
                 _,
                 SceneAppearanceV1::Vector {

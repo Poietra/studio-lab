@@ -345,6 +345,102 @@ fn engine_frame_checks_digest_and_cross_document_identity() {
 }
 
 #[test]
+fn singular_affine_empty_draw_requires_a_singular_transform_and_matching_channel() {
+    let mut scene = empty_scene();
+    scene.entities.push(SceneEntityV1 {
+        appearance: SceneAppearanceV1::Vector {
+            fill: Some(FillStyleV1 {
+                color: black(),
+                rule: FillRuleV1::NonZero,
+            }),
+            opacity: 1.0,
+            stroke: None,
+        },
+        geometry: SceneGeometryV1::Circle {
+            center: PointV1 { x: 0.0, y: 0.0 },
+            radius: 1.0,
+        },
+        id: "circle".to_owned(),
+        lifetimes: vec![IntervalV1 {
+            end: 2.0,
+            start: 0.0,
+        }],
+        parent_id: None,
+        provenance_id: "fixture:root".to_owned(),
+        scene_order: 0,
+        source_z_index: 0.0,
+        transform: AffineTransformV1::identity(),
+    });
+    scene.required_capabilities = vec![SceneCapabilityV1::ShapePrimitives];
+
+    let singular_transform = AffineTransformV1 {
+        m11: 0.0,
+        ..AffineTransformV1::identity()
+    };
+    let mut packet = empty_packet();
+    packet.draws.push(RenderDrawV1::Empty {
+        draw_id: "draw:0".to_owned(),
+        entity_id: "circle".to_owned(),
+        opacity: 1.0,
+        paint_order: 0,
+        reason: RenderEmptyReasonV1::SingularAffineSample,
+        source_z_index: 0.0,
+        transform: singular_transform,
+    });
+    validate_render_packet_v1(&packet).unwrap();
+
+    let mut frame = EngineFrameV1 {
+        assets: empty_manifest(),
+        packet,
+        scene,
+    };
+    assert!(
+        validate_engine_frame_v1(&frame)
+            .unwrap_err()
+            .contains_message("no affine-transform channel")
+    );
+
+    frame
+        .scene
+        .animation_channels
+        .push(AnimationChannelV1::AffineTransform {
+            entity_id: "circle".to_owned(),
+            id: "reflect:circle".to_owned(),
+            keyframes: vec![
+                KeyframeV1 {
+                    at: 0.0,
+                    easing_to_next: Some(EasingV1::Linear {}),
+                    value: AffineTransformV1::identity(),
+                },
+                KeyframeV1 {
+                    at: 2.0,
+                    easing_to_next: None,
+                    value: AffineTransformV1 {
+                        m11: -1.0,
+                        ..AffineTransformV1::identity()
+                    },
+                },
+            ],
+            provenance_id: "fixture:root".to_owned(),
+        });
+    frame.scene.required_capabilities = vec![
+        SceneCapabilityV1::AffineTransformAnimation,
+        SceneCapabilityV1::ShapePrimitives,
+    ];
+    validate_engine_frame_v1(&frame).unwrap();
+
+    let RenderDrawV1::Empty { transform, .. } = &mut frame.packet.draws[0] else {
+        unreachable!()
+    };
+    *transform = AffineTransformV1::identity();
+    assert!(
+        validate_render_packet_v1(&frame.packet)
+            .unwrap_err()
+            .contains_message("requires an exactly singular transform")
+    );
+}
+
+#[test]
 fn serialized_field_and_tag_names_match_the_v1_wire_format() {
     let scene = serde_json::to_value(empty_scene()).unwrap();
     assert!(scene.get("animationChannels").is_some());

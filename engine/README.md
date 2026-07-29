@@ -58,7 +58,9 @@ checked f32 Lyon tessellation at the target-derived 0.25-pixel tolerance;
 world-space width is not multiplied by the object transform. Combined paths emit
 adjacent fill-then-stroke paint phases with distinct materials, before the next
 source draw. Nonzero morph/trim/motion samples use this same path; exact zero trim
-lowers to an explicit `path-trim-zero` empty visual and contributes no paint phase.
+lowers to an explicit `path-trim-zero` empty visual, while an exactly singular
+sample from a direct leaf affine-transform channel lowers to
+`singular-affine-sample`; neither contributes a paint phase.
 Open fill, image, unmarked degenerate, numeric, precision-collapse, and tessellation-limit cases reject
 the complete frame with a structured error. Each fill is bounded to 2,048 source
 cubics, 32,768 flattened input points, and 65,536 Lyon output vertices; each stroke
