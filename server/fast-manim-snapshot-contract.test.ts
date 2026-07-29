@@ -751,6 +751,20 @@ describe("fast-manim snapshot result v1", () => {
       mutateChannel((channel) => {
         channel.keyframes[2]!.value = thirdShape;
       }),
+      mutateChannel((channel) => {
+        channel.keyframes = [
+          channel.keyframes[0]!,
+          { ...channel.keyframes[0]!, at: 2 },
+          { ...channel.keyframes[1]!, at: 3, easingToNext: null },
+        ];
+      }),
+      mutateChannel((channel) => {
+        channel.keyframes = [
+          channel.keyframes[0]!,
+          channel.keyframes[1]!,
+          { ...channel.keyframes[2]!, easingToNext: null },
+        ];
+      }),
     ];
     for (const candidate of invalid) {
       await expect(parseProducer(compiled(candidate), expectedV2)).rejects.toMatchObject({ code: "profile-violation" });

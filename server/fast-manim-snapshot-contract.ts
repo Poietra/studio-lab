@@ -926,8 +926,7 @@ function assertDynamicProfileV2(scene: SceneIrBundleV1["scene"]) {
       if (!staticProfilePathsAreEqual(basePath, channel.keyframes[0]!.value)) {
         profileViolation("A dynamic path-morph channel must begin at the entity's exact base geometry.");
       }
-      let transformSteps = 0;
-      let holdSteps = 0;
+      const transitionKinds: Array<"hold" | "transform"> = [];
       for (const [keyframeIndex, keyframe] of channel.keyframes.entries()) {
         if (
           !isCanonicalSnapshotFrameTimeV2(keyframe.at) ||
@@ -949,17 +948,24 @@ function assertDynamicProfileV2(scene: SceneIrBundleV1["scene"]) {
         if (keyframeIndex === 0) continue;
         const previous = channel.keyframes[keyframeIndex - 1]!;
         if (staticProfilePathsAreEqual(previous.value, keyframe.value)) {
-          holdSteps += 1;
+          transitionKinds.push("hold");
         } else {
-          transformSteps += 1;
+          transitionKinds.push("transform");
           if (!isCanonicalDynamicTimedStepV2(previous.at, keyframe.at)) {
             profileViolation("Each verified path morph must span one exact producer-supported 60fps timed step.");
           }
         }
       }
-      if (transformSteps < 1 || transformSteps > 2 || holdSteps > 1) {
+      const producerReachableShape =
+        (transitionKinds.length === 1 && transitionKinds[0] === "transform") ||
+        (transitionKinds.length === 2 && transitionKinds.every((kind) => kind === "transform")) ||
+        (transitionKinds.length === 3 &&
+          transitionKinds[0] === "transform" &&
+          transitionKinds[1] === "hold" &&
+          transitionKinds[2] === "transform");
+      if (!producerReachableShape) {
         profileViolation(
-          "Dynamic path-morph channels must encode one or two direct Transform steps and at most one hold.",
+          "Dynamic path-morph channels must encode one Transform, two adjacent Transforms, or two Transforms separated by one hold.",
         );
       }
       continue;
