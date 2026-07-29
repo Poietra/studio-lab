@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import harnessManifest from "../../fixtures/engine-v1/shared-circle-opacity.harness.json";
+import mathTexHarnessManifest from "../../fixtures/engine-v1/studio-mathtex-preview.harness.json";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import {
   createUnavailableStudioPreviewSnapshotProviderV1,
@@ -9,9 +10,13 @@ import {
   type StudioPreviewSceneIdentityV1,
   studioPreviewWorkspaceKeyV1,
 } from "./preview-snapshot-provider";
-import { createFixturePreviewSnapshotProviderV1 } from "./preview-snapshot-provider.fixture";
+import {
+  createFixturePreviewSnapshotProviderV1,
+  createMathTexFixturePreviewSnapshotProviderV1,
+} from "./preview-snapshot-provider.fixture";
 
 const HARNESS_IDENTITY: StudioPreviewSceneIdentityV1 = harnessManifest.expectedIdentity;
+const MATHTEX_HARNESS_IDENTITY: StudioPreviewSceneIdentityV1 = mathTexHarnessManifest.expectedIdentity;
 
 describe("resolveStudioPreviewSnapshotProviderV1", () => {
   it("keeps the existing semantic preview as the default", async () => {
@@ -28,11 +33,14 @@ describe("resolveStudioPreviewSnapshotProviderV1", () => {
   it("resolves the fixture provider only on explicit opt-in in a dev/test build", async () => {
     expect(import.meta.env.DEV).toBe(true);
     const provider = await resolveStudioPreviewSnapshotProviderV1("?previewRenderer=fixture");
+    const mathTexProvider = await resolveStudioPreviewSnapshotProviderV1("?previewRenderer=mathtex-fixture");
     expect(provider?.id).toBe("checked-in-fixture");
+    expect(mathTexProvider?.id).toBe("checked-in-mathtex-fixture");
     // The dev evidence client extension is wired explicitly by the harness
     // provider, never implicitly by being a snapshot provider.
     expect(provider?.evidence).toBeDefined();
     expect(typeof provider?.evidence?.capture).toBe("function");
+    expect(typeof mathTexProvider?.evidence?.capture).toBe("function");
   });
 });
 
@@ -103,6 +111,13 @@ describe("createFixturePreviewSnapshotProviderV1", () => {
       sourceDuration: harnessManifest.expectedDuration,
       workingRevision: PRISTINE_WORKING_REVISION,
     });
+    expect(snapshot.snapshot.scene.source).toEqual({
+      kind: "imported-manim-server-snapshot",
+      runtimeConfigHash: harnessManifest.runtimeConfigHash,
+      snapshotHash: "a".repeat(64),
+      snapshotVersion: 1,
+      sourceHash: harnessManifest.expectedIdentity.sourceHash,
+    });
     expect(snapshot.correlation.engineRevisionHash).toBe(sceneIrSourceRevisionHash(snapshot.snapshot.scene));
     expect(snapshot.correlation.engineRevisionHash).toMatch(/^[0-9a-f]{64}$/);
     expect(snapshot.correlation.assetsManifestDigest).toBe(snapshot.snapshot.assets.manifestDigest);
@@ -156,5 +171,37 @@ describe("createFixturePreviewSnapshotProviderV1", () => {
         signal: controller.signal,
       }),
     ).rejects.toThrow();
+  });
+
+  it("loads the dedicated empty imported Scene only for its MathTex harness identity", async () => {
+    const provider = createMathTexFixturePreviewSnapshotProviderV1();
+    const snapshot = await provider.loadVerifiedSnapshot({ identity: MATHTEX_HARNESS_IDENTITY });
+
+    expect(snapshot).toMatchObject({
+      duration: mathTexHarnessManifest.expectedDuration,
+      sceneId: mathTexHarnessManifest.sceneId,
+      sourceLabel: "verified MathTex fixture",
+    });
+    expect(snapshot.snapshot.scene).toMatchObject({
+      animationChannels: [],
+      entities: [],
+      source: {
+        kind: "imported-manim-server-snapshot",
+        sourceHash: mathTexHarnessManifest.expectedIdentity.sourceHash,
+      },
+    });
+    expect(snapshot.correlation.context).toEqual({
+      ...MATHTEX_HARNESS_IDENTITY,
+      sourceDuration: mathTexHarnessManifest.expectedDuration,
+      workingRevision: PRISTINE_WORKING_REVISION,
+    });
+    expect(snapshot.correlation.engineRevisionHash).toBe(sceneIrSourceRevisionHash(snapshot.snapshot.scene));
+    expect(snapshot.sourceRuntimeIdentity).toEqual(new Map());
+
+    await expect(
+      provider.loadVerifiedSnapshot({
+        identity: { ...MATHTEX_HARNESS_IDENTITY, sceneName: "SharedCircleOpacity" },
+      }),
+    ).rejects.toThrow(/checked-in harness Scene/);
   });
 });

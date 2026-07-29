@@ -1,9 +1,11 @@
 import { expect, type Page, test } from "@playwright/test";
 
 const FIXTURE_QUERY = "?previewRenderer=fixture";
+const MATHTEX_FIXTURE_QUERY = "?previewRenderer=mathtex-fixture";
 // The fixture Scene IR's source revision hash — the revision the retained
 // worker echoes on every frame and every piece of evidence.
 const FIXTURE_ENGINE_REVISION = "a".repeat(64);
+const MATHTEX_FIXTURE_ENGINE_REVISION = "e".repeat(64);
 
 type RgbaPixel = readonly [number, number, number, number];
 
@@ -28,6 +30,9 @@ async function openHarnessWorkspace(page: Page) {
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
   await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
   await expect(page.getByLabel("Current workspace")).toHaveText("Preview Harness");
+  const scene = page.getByLabel("Active imported Scene");
+  await scene.selectOption({ label: "shared_circle_opacity.py · SharedCircleOpacity" });
+  await expect(scene.locator("option:checked")).toHaveText("shared_circle_opacity.py · SharedCircleOpacity");
   await expect(page.locator("[data-studio-canvas]")).toBeVisible();
   await page.getByRole("button", { name: "Enable preview…" }).click();
   await expect(page.getByRole("alertdialog", { name: "Run Manim Scenes for GPU preview?" })).toBeVisible();
@@ -70,6 +75,100 @@ async function captureHostEvidence(
     return capture(samples);
   }, points)) as HostFrameEvidence | null;
 }
+
+async function expectMathTexCanvasInk(page: Page, revision: string, sampleTime: number) {
+  const canvasRoot = page.locator("[data-studio-canvas]");
+  const mathTexEntities = page.locator("button[data-studio-entity]").filter({
+    has: page.locator("[data-rendered-math]"),
+  });
+  await expect(mathTexEntities).toHaveCount(1);
+  const [canvasBox, mathTexBox, packetId] = await Promise.all([
+    canvasRoot.boundingBox(),
+    mathTexEntities.first().boundingBox(),
+    canvasRoot.getAttribute("data-preview-packet-id"),
+  ]);
+  if (!canvasBox || !mathTexBox || !packetId) {
+    throw new Error("The presented MathTex or its correlated canvas evidence is unavailable.");
+  }
+
+  const background = await captureHostEvidence(page, [{ fractionX: 0.03, fractionY: 0.05 }]);
+  if (!background) throw new Error("The preview frame evidence channel is not exposed.");
+  expect(background.packetId).toBe(packetId);
+  expect(background.revision).toBe(revision);
+  expect(background.sampleTime).toBe(sampleTime);
+  expectPixelNear(background.samples[0], [0, 0, 0, 255]);
+
+  const points = Array.from({ length: 12 }, (_, row) =>
+    Array.from({ length: 24 }, (_, column) => ({
+      fractionX: (mathTexBox.x + ((column + 0.5) / 24) * mathTexBox.width - canvasBox.x) / canvasBox.width,
+      fractionY: (mathTexBox.y + ((row + 0.5) / 12) * mathTexBox.height - canvasBox.y) / canvasBox.height,
+    })),
+  ).flat();
+  let foundInk = false;
+  for (let offset = 0; offset < points.length; offset += 16) {
+    const evidence = await captureHostEvidence(page, points.slice(offset, offset + 16));
+    if (!evidence) throw new Error("The preview frame evidence channel disappeared while sampling MathTex.");
+    expect(evidence.packetId).toBe(packetId);
+    expect(evidence.revision).toBe(revision);
+    expect(evidence.sampleTime).toBe(sampleTime);
+    foundInk ||= evidence.samples.some(([red, green, blue]) => Math.max(red, green, blue) > 24);
+    if (foundInk) break;
+  }
+  expect(foundInk).toBe(true);
+}
+
+test("presents Studio-created MathTex and restores semantic paint for unsupported syntax", async ({ page }) => {
+  await page.goto(`/${MATHTEX_FIXTURE_QUERY}`);
+  await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+  await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
+  await expect(page.getByLabel("Current workspace")).toHaveText("Preview Harness");
+  await page.getByRole("button", { name: "Hide Magic Edit" }).click();
+  const scene = page.getByLabel("Active imported Scene");
+  await scene.selectOption({ label: "studio_mathtex.py · StudioMathTexPreview" });
+  await expect(scene.locator("option:checked")).toHaveText("studio_mathtex.py · StudioMathTexPreview");
+  await page.getByRole("button", { name: "Enable preview…" }).click();
+  await page.getByRole("button", { name: "Run Scene preview" }).click();
+  await expectPresented(page);
+
+  const canvasRoot = page.locator("[data-studio-canvas]");
+  await expect(canvasRoot).toHaveAttribute("data-preview-revision", MATHTEX_FIXTURE_ENGINE_REVISION);
+  const playhead = page.getByRole("slider", { name: "Scene playhead" });
+  await playhead.fill("0");
+  await page.getByRole("button", { name: /Insert equation/ }).click();
+  await page.getByRole("textbox", { name: "MathTex" }).fill("E = mc^2");
+  const canvasBounds = await canvasRoot.boundingBox();
+  if (!canvasBounds) throw new Error("The Studio canvas is unavailable for MathTex placement.");
+  await canvasRoot.click({ position: { x: canvasBounds.width / 2, y: canvasBounds.height / 2 } });
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+
+  await playhead.fill("0.5");
+  await expectPresented(page);
+  await expectSemanticPaintDeferred(page);
+  const firstRevision = await canvasRoot.getAttribute("data-preview-revision");
+  expect(firstRevision).toMatch(/^[0-9a-f]{64}$/);
+  expect(firstRevision).not.toBe(MATHTEX_FIXTURE_ENGINE_REVISION);
+  await expectMathTexCanvasInk(page, firstRevision ?? "", 0.5);
+
+  await page.getByRole("button", { name: "Undo" }).click();
+  await expect(page.getByRole("button", { name: "Move E = mc^2", exact: true })).toHaveCount(0);
+  await playhead.fill("0");
+  await expectPresented(page);
+  await expect(canvasRoot).toHaveAttribute("data-preview-revision", MATHTEX_FIXTURE_ENGINE_REVISION);
+  await page.getByRole("button", { name: /Insert equation/ }).click();
+  await page.getByRole("textbox", { name: "MathTex" }).fill(String.raw`\frac{1}{2}`);
+  await canvasRoot.click({ position: { x: canvasBounds.width / 2, y: canvasBounds.height / 2 } });
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+  await playhead.fill("0.5");
+  await expect(canvasRoot).toHaveAttribute("data-preview-renderer", "fallback");
+  await expect(canvasRoot).toHaveAttribute("data-preview-fallback-reason", "snapshot-uncorrelated");
+  await expect(canvasRoot).not.toHaveAttribute("data-preview-packet-id", /.+/);
+  await expect(page.locator("[data-studio-preview-status]")).toHaveAttribute("title", /syntax-unsupported/);
+  await expectSemanticPaintRestored(page);
+});
 
 test("presents exactly correlated retained WebGPU frames while the semantic editor stays live", async ({ page }) => {
   await openHarnessWorkspace(page);

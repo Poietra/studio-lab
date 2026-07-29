@@ -93,11 +93,13 @@ export function reduceStudioPreviewAuthorityV1(
 }
 
 /** Keeps semantic preview as default and admits only the production provider,
- * plus the checked-in fixture in development/test builds. */
+ * plus the checked-in fixtures in development/test builds. */
 export function requestedStudioPreviewRendererSearchV1(search: string | null, fixtureAllowed: boolean) {
   if (search === null) return null;
   const requested = new URLSearchParams(search).get(STUDIO_PREVIEW_RENDERER_QUERY_PARAM);
-  return requested === "server" || (fixtureAllowed && requested === "fixture") ? search : null;
+  return requested === "server" || (fixtureAllowed && (requested === "fixture" || requested === "mathtex-fixture"))
+    ? search
+    : null;
 }
 
 type StudioPreviewLocationSearchSourcesV1 = Readonly<{

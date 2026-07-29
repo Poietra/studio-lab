@@ -139,8 +139,8 @@ export function studioPreviewWorkspaceKeyV1(context: StudioPreviewEditingContext
 /**
  * The retained WebGPU preview stays off unless explicitly requested. The
  * server provider ships in production behind `?previewRenderer=server`; the
- * checked-in fixture remains behind a DEV-only dynamic import, so production
- * can never present fixture data or include its client evidence extension.
+ * checked-in fixtures remain behind DEV-only dynamic imports, so production
+ * can never present fixture data or include their client evidence extension.
  * The existing semantic preview remains the default editing surface.
  */
 export async function resolveStudioPreviewSnapshotProviderV1(
@@ -152,7 +152,8 @@ export async function resolveStudioPreviewSnapshotProviderV1(
     const server = await import("./preview-snapshot-provider.server");
     return server.createServerPreviewSnapshotProviderV1();
   }
-  if (!import.meta.env.DEV || requested !== "fixture") return null;
+  if (!import.meta.env.DEV || (requested !== "fixture" && requested !== "mathtex-fixture")) return null;
   const fixture = await import("./preview-snapshot-provider.fixture");
-  return fixture.createFixturePreviewSnapshotProviderV1();
+  if (requested === "fixture") return fixture.createFixturePreviewSnapshotProviderV1();
+  return fixture.createMathTexFixturePreviewSnapshotProviderV1();
 }

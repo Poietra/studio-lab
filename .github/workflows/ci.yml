@@ -102,7 +102,7 @@ jobs:
   engine-rust:
     name: Poietra Engine Rust core
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -128,13 +128,15 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --locked --workspace --all-targets --all-features --manifest-path engine/Cargo.toml -- -D warnings
       - name: Check the browser WASM target
-        run: cargo check --locked --package poietra-wasm --package poietra-render-wgpu --target wasm32-unknown-unknown --manifest-path engine/Cargo.toml
+        run: cargo check --locked --package poietra-wasm --package poietra-render-wgpu --package poietra-mathtex-wasm --target wasm32-unknown-unknown --manifest-path engine/Cargo.toml
       - name: Install pinned wasm-pack
         run: cargo install wasm-pack --locked --version 0.15.0
       - name: Build browser WASM bindings
         run: node scripts/build-engine-wasm.mjs
       - name: Smoke-test generated WASM bindings
         run: node scripts/smoke-engine-wasm.mjs
+      - name: Smoke-test generated MathTex outline WASM bindings
+        run: node scripts/smoke-mathtex-wasm.mjs
       - name: Upload browser WASM bindings
         uses: actions/upload-artifact@v6
         with:
@@ -169,6 +171,8 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium webkit
       - name: Run browser tests
         run: pnpm test:e2e
+      - name: Run retained WebGPU preview tests
+        run: pnpm test:e2e:preview:webgpu
       - name: Upload Playwright diagnostics
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v6
