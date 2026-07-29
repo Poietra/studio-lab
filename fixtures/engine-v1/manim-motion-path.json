@@ -1,0 +1,113 @@
+{
+  "id": "eng-v1-manim-point-from-proportion",
+  "reference": {
+    "commit": "f505776c37ecb4147e10a54ff917fc857034b3d4",
+    "samplePointsPerCurve": 10,
+    "symbol": "manim.mobject.types.vectorized_mobject.VMobject.point_from_proportion"
+  },
+  "assets": {
+    "assets": [],
+    "manifestDigest": "e675cb4bad3da6b425e5a6bbe88d7da7a986e3cac61dab06139ef63950dcc181",
+    "manifestId": "manifest",
+    "schema": "poietra.asset-manifest",
+    "version": 1
+  },
+  "scene": {
+    "animationChannels": [
+      {
+        "entityId": "mover",
+        "id": "motion:mover",
+        "keyframes": [
+          { "at": 0, "easingToNext": { "kind": "linear" }, "value": 0 },
+          { "at": 1, "easingToNext": null, "value": 1 }
+        ],
+        "kind": "motion-path",
+        "orientToPath": false,
+        "parameterization": "manim-point-from-proportion-v1",
+        "path": {
+          "subpaths": [
+            {
+              "closed": false,
+              "segments": [
+                {
+                  "control1": { "x": 0, "y": 4 },
+                  "control2": { "x": 4, "y": 4 },
+                  "end": { "x": 4, "y": 0 }
+                },
+                {
+                  "control1": { "x": 5, "y": -3 },
+                  "control2": { "x": 8, "y": 3 },
+                  "end": { "x": 10, "y": 0 }
+                }
+              ],
+              "start": { "x": 0, "y": 0 }
+            }
+          ]
+        },
+        "provenanceId": "fixture"
+      }
+    ],
+    "assetManifest": {
+      "manifestDigest": "e675cb4bad3da6b425e5a6bbe88d7da7a986e3cac61dab06139ef63950dcc181",
+      "manifestId": "manifest"
+    },
+    "camera": {
+      "background": { "alpha": 1, "blue": 0, "green": 0, "red": 0 },
+      "view": { "center": { "x": 5, "y": 0 }, "frameHeight": 9, "frameWidth": 16 }
+    },
+    "coordinateSpace": {
+      "cpuPrecision": "f64",
+      "kind": "cartesian-2d",
+      "origin": "center",
+      "unit": "scene-unit",
+      "xAxis": "right",
+      "yAxis": "up"
+    },
+    "duration": 2,
+    "entities": [
+      {
+        "appearance": {
+          "fill": { "color": { "alpha": 1, "blue": 1, "green": 1, "red": 1 }, "rule": "nonzero" },
+          "kind": "vector",
+          "opacity": 1,
+          "stroke": null
+        },
+        "geometry": { "center": { "x": 0, "y": 0 }, "kind": "circle", "radius": 0.25 },
+        "id": "mover",
+        "lifetimes": [{ "end": 2, "start": 0 }],
+        "parentId": null,
+        "provenanceId": "fixture",
+        "sceneOrder": 0,
+        "sourceZIndex": 0,
+        "transform": { "m11": 1, "m12": 0, "m21": 0, "m22": 1, "tx": 0, "ty": 0 }
+      }
+    ],
+    "fidelity": { "kind": "exact" },
+    "provenance": [
+      {
+        "evidence": ["fast-manim VMobject.point_from_proportion reference samples"],
+        "id": "fixture",
+        "origin": "fixture"
+      }
+    ],
+    "requiredCapabilities": ["motion-path-animation", "shape-primitives"],
+    "sceneId": "fixture:manim-motion-path",
+    "schema": "poietra.scene-ir",
+    "source": {
+      "editProgramVersion": 1,
+      "kind": "studio-edit-program",
+      "revisionHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "version": 1
+  },
+  "samples": [
+    { "sampleTime": 0.75, "translation": [6.436016451838079, -0.12642516867045517] },
+    { "sampleTime": 0, "translation": [0, 0] },
+    { "sampleTime": 0.5, "translation": [3.9702461620942464, 0.5770922736594881] },
+    { "sampleTime": 0.25, "translation": [1.8481584782546459, 2.9923015528154746] },
+    { "sampleTime": 0.75, "translation": [6.436016451838079, -0.12642516867045517] },
+    { "sampleTime": 1, "translation": [10, 0] },
+    { "sampleTime": 0.125, "translation": [0.568989236780047, 2.1720896304041695] },
+    { "sampleTime": 0.875, "translation": [8.261471093225659, 0.8252659574291632] }
+  ]
+}
