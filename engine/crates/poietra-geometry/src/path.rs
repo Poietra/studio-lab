@@ -155,12 +155,25 @@ fn parameter_at_length(measurement: &CubicMeasurement, target: f64) -> f64 {
 #[derive(Debug)]
 struct SegmentEntry<'a> {
     closing: bool,
-    length: f64,
     segment: Cow<'a, CubicSegmentV1>,
     start: &'a PointV1,
 }
 
-fn segment_entries_by_subpath(
+#[derive(Debug)]
+struct MeasuredSegmentEntry<'a> {
+    entry: SegmentEntry<'a>,
+    length: f64,
+}
+
+impl<'a> std::ops::Deref for MeasuredSegmentEntry<'a> {
+    type Target = SegmentEntry<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.entry
+    }
+}
+
+fn serialized_segment_entries_by_subpath(
     path: &CubicPathV1,
 ) -> Result<Vec<Vec<SegmentEntry<'_>>>, GeometryError> {
     if path.subpaths.is_empty()
@@ -175,28 +188,52 @@ fn segment_entries_by_subpath(
         .subpaths
         .iter()
         .map(|subpath| {
-            let mut entries =
-                Vec::with_capacity(subpath.segments.len() + usize::from(subpath.closed));
+            let mut entries = Vec::with_capacity(subpath.segments.len());
             let mut start = &subpath.start;
             for segment in &subpath.segments {
                 entries.push(SegmentEntry {
                     closing: false,
-                    length: measure_cubic_length(start, segment),
                     segment: Cow::Borrowed(segment),
                     start,
                 });
                 start = &segment.end;
             }
-            if subpath.closed && distance(start, &subpath.start) > 0.0 {
-                let segment = line_segment(start, &subpath.start);
-                entries.push(SegmentEntry {
-                    closing: true,
-                    length: measure_cubic_length(start, &segment),
-                    segment: Cow::Owned(segment),
-                    start,
-                });
-            }
             entries
+        })
+        .collect())
+}
+
+fn segment_entries_by_subpath(
+    path: &CubicPathV1,
+) -> Result<Vec<Vec<SegmentEntry<'_>>>, GeometryError> {
+    let mut entries_by_subpath = serialized_segment_entries_by_subpath(path)?;
+    for (subpath, entries) in path.subpaths.iter().zip(&mut entries_by_subpath) {
+        let start = &subpath.segments.last().ok_or(GeometryError::EmptyPath)?.end;
+        if subpath.closed && distance(start, &subpath.start) > 0.0 {
+            let segment = line_segment(start, &subpath.start);
+            entries.push(SegmentEntry {
+                closing: true,
+                segment: Cow::Owned(segment),
+                start,
+            });
+        }
+    }
+    Ok(entries_by_subpath)
+}
+
+fn measured_segment_entries_by_subpath(
+    path: &CubicPathV1,
+) -> Result<Vec<Vec<MeasuredSegmentEntry<'_>>>, GeometryError> {
+    Ok(segment_entries_by_subpath(path)?
+        .into_iter()
+        .map(|entries| {
+            entries
+                .into_iter()
+                .map(|entry| MeasuredSegmentEntry {
+                    length: measure_cubic_length(entry.start, entry.segment.as_ref()),
+                    entry,
+                })
+                .collect()
         })
         .collect())
 }
@@ -235,7 +272,7 @@ pub fn trim_cubic_path_v1(path: &CubicPathV1, progress: f64) -> Result<CubicPath
         return Ok(degenerate_path(&first_point));
     }
 
-    let entries_by_subpath = segment_entries_by_subpath(path)?;
+    let entries_by_subpath = measured_segment_entries_by_subpath(path)?;
     let total_length: f64 = entries_by_subpath
         .iter()
         .flatten()
@@ -249,9 +286,10 @@ pub fn trim_cubic_path_v1(path: &CubicPathV1, progress: f64) -> Result<CubicPath
 
     for (source_subpath, entries) in path.subpaths.iter().zip(entries_by_subpath) {
         let mut output_segments = Vec::with_capacity(source_subpath.segments.len());
-        for entry in entries {
-            if remaining >= entry.length {
-                remaining -= entry.length;
+        for measured in entries {
+            let MeasuredSegmentEntry { entry, length } = measured;
+            if remaining >= length {
+                remaining -= length;
                 if !entry.closing {
                     output_segments.push(entry.segment.into_owned());
                 }
@@ -283,6 +321,85 @@ pub fn trim_cubic_path_v1(path: &CubicPathV1, progress: f64) -> Result<CubicPath
     Ok(path.clone())
 }
 
+/// Returns the prefix obtained by assigning equal progress to each serialized cubic.
+///
+/// # Errors
+///
+/// Returns [`GeometryError::EmptyPath`] when the input is not structurally valid
+/// v1 cubic geometry.
+pub fn trim_cubic_path_uniform_parameter_v1(
+    path: &CubicPathV1,
+    progress: f64,
+) -> Result<CubicPathV1, GeometryError> {
+    let first_point = path
+        .subpaths
+        .first()
+        .ok_or(GeometryError::EmptyPath)?
+        .start
+        .clone();
+    if progress >= 1.0 {
+        return Ok(path.clone());
+    }
+    if progress <= 0.0 {
+        return Ok(degenerate_path(&first_point));
+    }
+
+    let entries_by_subpath = serialized_segment_entries_by_subpath(path)?;
+    let entry_count: usize = entries_by_subpath.iter().map(Vec::len).sum();
+    if entry_count == 0 {
+        return Ok(degenerate_path(&first_point));
+    }
+
+    #[allow(clippy::cast_precision_loss)]
+    let extent = entry_count as f64 * progress;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let mut complete_entries = extent.floor() as usize;
+    #[allow(clippy::cast_precision_loss)]
+    let partial_parameter = extent - complete_entries as f64;
+    let mut output = Vec::with_capacity(path.subpaths.len());
+
+    for (source_subpath, entries) in path.subpaths.iter().zip(entries_by_subpath) {
+        let mut output_segments = Vec::with_capacity(source_subpath.segments.len());
+        for entry in entries {
+            if complete_entries > 0 {
+                complete_entries -= 1;
+                if !entry.closing {
+                    output_segments.push(entry.segment.into_owned());
+                }
+                continue;
+            }
+            if partial_parameter > 0.0 {
+                output_segments.push(split_cubic_prefix(
+                    entry.start,
+                    entry.segment.as_ref(),
+                    partial_parameter,
+                ));
+                output.push(CubicSubpathV1 {
+                    closed: false,
+                    segments: output_segments,
+                    start: source_subpath.start.clone(),
+                });
+            } else if !output_segments.is_empty() {
+                output.push(CubicSubpathV1 {
+                    closed: false,
+                    segments: output_segments,
+                    start: source_subpath.start.clone(),
+                });
+            }
+            return Ok(CubicPathV1 { subpaths: output });
+        }
+        output.push(CubicSubpathV1 {
+            closed: source_subpath.closed,
+            segments: output_segments,
+            start: source_subpath.start.clone(),
+        });
+        if complete_entries == 0 && partial_parameter == 0.0 {
+            return Ok(CubicPathV1 { subpaths: output });
+        }
+    }
+    Ok(path.clone())
+}
+
 fn tangent_is_zero(tangent: &PointV1) -> bool {
     tangent.x.hypot(tangent.y) <= TANGENT_EPSILON_V1
 }
@@ -301,7 +418,7 @@ pub fn sample_cubic_path_v1(
     path: &CubicPathV1,
     progress: f64,
 ) -> Result<PathSampleV1, GeometryError> {
-    let entries: Vec<_> = segment_entries_by_subpath(path)?
+    let entries: Vec<_> = measured_segment_entries_by_subpath(path)?
         .into_iter()
         .flatten()
         .collect();
@@ -729,6 +846,65 @@ mod tests {
         assert!((segment.end.x - 4.0).abs() < 1.0e-12);
         assert!((segment.control1.x - 4.0 / 3.0).abs() < 1.0e-12);
         assert!((segment.control2.x - 8.0 / 3.0).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn uniform_cubic_trim_differs_from_arc_length_on_a_nonuniform_rectangle() {
+        let path = scene_geometry_as_cubic_path_v1(&SceneGeometryV1::Rectangle {
+            center: PointV1 { x: 0.0, y: 0.0 },
+            corner_radius: 0.0,
+            height: 2.0,
+            width: 4.0,
+        })
+        .unwrap();
+        let arc_length = trim_cubic_path_v1(&path, 0.25).unwrap();
+        let uniform = trim_cubic_path_uniform_parameter_v1(&path, 0.25).unwrap();
+        assert_eq!(
+            arc_length.subpaths[0].segments.last().unwrap().end,
+            PointV1 { x: -1.0, y: -1.0 }
+        );
+        assert_eq!(
+            uniform.subpaths[0].segments.last().unwrap().end,
+            PointV1 { x: -2.0, y: -1.0 }
+        );
+    }
+
+    #[test]
+    fn uniform_cubic_trim_preserves_subpath_order_and_boundaries() {
+        let path = CubicPathV1 {
+            subpaths: vec![
+                line_path(PointV1 { x: 0.0, y: 0.0 }, &PointV1 { x: 2.0, y: 0.0 })
+                    .subpaths
+                    .remove(0),
+                line_path(PointV1 { x: 10.0, y: 0.0 }, &PointV1 { x: 14.0, y: 0.0 })
+                    .subpaths
+                    .remove(0),
+            ],
+        };
+        let boundary = trim_cubic_path_uniform_parameter_v1(&path, 0.5).unwrap();
+        assert_eq!(boundary.subpaths, path.subpaths[..1]);
+        let partial_second = trim_cubic_path_uniform_parameter_v1(&path, 0.75).unwrap();
+        assert_eq!(partial_second.subpaths.len(), 2);
+        assert_eq!(
+            partial_second.subpaths[1].segments[0].end,
+            PointV1 { x: 12.0, y: 0.0 }
+        );
+    }
+
+    #[test]
+    fn uniform_cubic_trim_does_not_count_an_implicit_renderer_close() {
+        let mut path = line_path(PointV1 { x: 0.0, y: 0.0 }, &PointV1 { x: 2.0, y: 0.0 });
+        path.subpaths[0].closed = true;
+        let partial = trim_cubic_path_uniform_parameter_v1(&path, 0.5).unwrap();
+        assert!(!partial.subpaths[0].closed);
+        assert_eq!(
+            partial.subpaths[0].segments[0].end,
+            PointV1 { x: 1.0, y: 0.0 }
+        );
+        assert_eq!(
+            trim_cubic_path_uniform_parameter_v1(&path, 1.0).unwrap(),
+            path
+        );
     }
 
     #[test]

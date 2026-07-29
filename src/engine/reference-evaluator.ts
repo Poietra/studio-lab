@@ -7,6 +7,7 @@ import {
   interpolateAffineTransformV1,
   interpolateCubicPathV1,
   sceneGeometryAsCubicPathV1,
+  trimCubicPathUniformParameterV1,
   trimCubicPathV1,
 } from "./geometry";
 import type { CubicPathV1, EngineAffineTransformV1 } from "./primitives";
@@ -130,7 +131,10 @@ function sampleLocalEntity(
   if (pathTrimChannel) {
     const trim = sampleKeyframes(1, pathTrimChannel.keyframes, time, interpolateNumber).value;
     if (trim === 0) return { emptyReason: "path-trim-zero", entity, opacity, path, transform };
-    path = trimCubicPathV1(path, trim);
+    path =
+      pathTrimChannel.parameterization === "uniform-cubic-parameter-v1"
+        ? trimCubicPathUniformParameterV1(path, trim)
+        : trimCubicPathV1(path, trim);
   }
   return { entity, opacity, path, transform };
 }

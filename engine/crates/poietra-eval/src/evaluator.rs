@@ -3,14 +3,15 @@ use std::collections::BTreeSet;
 use poietra_geometry::{
     GeometryError, apply_easing_v1, apply_motion_path_v1, compose_affine_transforms_v1,
     interpolate_affine_transform_v1, interpolate_cubic_path_v1, scene_geometry_as_cubic_path_v1,
-    trim_cubic_path_v1,
+    trim_cubic_path_uniform_parameter_v1, trim_cubic_path_v1,
 };
 use poietra_scene_ir::{
     AffineTransformV1, AnimationChannelV1, AssetManifestV1, ContractVersionV1, CubicPathV1,
-    EngineFrameV1, KeyframeV1, RenderCameraKindV1, RenderCameraV1, RenderCapabilityV1,
-    RenderDrawV1, RenderEmptyReasonV1, RenderPacketSchemaV1, RenderPacketV1, SceneAppearanceV1,
-    SceneCameraViewV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1, SceneIrV1, ViewportV1,
-    validate_render_packet_for_validated_scene_v1, validate_scene_ir_with_assets_v1,
+    EngineFrameV1, KeyframeV1, PathTrimParameterizationV1, RenderCameraKindV1, RenderCameraV1,
+    RenderCapabilityV1, RenderDrawV1, RenderEmptyReasonV1, RenderPacketSchemaV1, RenderPacketV1,
+    SceneAppearanceV1, SceneCameraViewV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1,
+    SceneIrV1, ViewportV1, validate_render_packet_for_validated_scene_v1,
+    validate_scene_ir_with_assets_v1,
 };
 
 use crate::retained_index::{
@@ -315,8 +316,11 @@ fn sample_local_entity(
     }
     let mut empty_reason = None;
     if let Some(channel_index) = index.path_trim_channel(entity_index) {
-        let Some(AnimationChannelV1::PathTrim { keyframes, .. }) =
-            scene.animation_channels.get(channel_index)
+        let Some(AnimationChannelV1::PathTrim {
+            keyframes,
+            parameterization,
+            ..
+        }) = scene.animation_channels.get(channel_index)
         else {
             return Err(EvaluationError::MalformedScene(
                 "retained path-trim channel index has the wrong kind",
@@ -326,7 +330,14 @@ fn sample_local_entity(
         if progress == 0.0 {
             empty_reason = Some(RenderEmptyReasonV1::PathTrimZero);
         } else {
-            path = trim_cubic_path_v1(&path, progress)?;
+            path = match parameterization {
+                None | Some(PathTrimParameterizationV1::ArcLengthV1) => {
+                    trim_cubic_path_v1(&path, progress)?
+                }
+                Some(PathTrimParameterizationV1::UniformCubicParameterV1) => {
+                    trim_cubic_path_uniform_parameter_v1(&path, progress)?
+                }
+            };
         }
     }
     Ok(LocalSample {
@@ -828,6 +839,7 @@ mod tests {
                     value: 1.0,
                 },
             ],
+            parameterization: None,
             provenance_id: "fixture".to_owned(),
         });
         scene.required_capabilities = vec![
@@ -870,6 +882,82 @@ mod tests {
             positive.packet.required_capabilities,
             vec![RenderCapabilityV1::CubicPathStroke]
         );
+    }
+
+    #[test]
+    fn retained_uniform_cubic_trim_is_stable_across_non_monotonic_seeks() {
+        let (assets, mut scene) = fixture();
+        scene.entities[0].appearance = SceneAppearanceV1::Vector {
+            fill: None,
+            opacity: 1.0,
+            stroke: Some(StrokeStyleV1 {
+                cap: StrokeCapV1::Butt,
+                color: color(1.0, 0.0, 0.0, 1.0),
+                join: StrokeJoinV1::Miter,
+                miter_limit: 4.0,
+                width_world: 0.1,
+            }),
+        };
+        scene.entities[0].geometry = SceneGeometryV1::Rectangle {
+            center: poietra_scene_ir::PointV1 { x: 0.0, y: 0.0 },
+            corner_radius: 0.0,
+            height: 2.0,
+            width: 4.0,
+        };
+        scene.animation_channels.push(AnimationChannelV1::PathTrim {
+            entity_id: "circle".to_owned(),
+            id: "trim:rectangle".to_owned(),
+            keyframes: vec![
+                KeyframeV1 {
+                    at: 0.0,
+                    easing_to_next: Some(poietra_scene_ir::EasingV1::Linear {}),
+                    value: 0.0,
+                },
+                KeyframeV1 {
+                    at: 2.0,
+                    easing_to_next: None,
+                    value: 1.0,
+                },
+            ],
+            parameterization: Some(PathTrimParameterizationV1::UniformCubicParameterV1),
+            provenance_id: "fixture".to_owned(),
+        });
+        scene.required_capabilities = vec![
+            SceneCapabilityV1::OpacityAnimation,
+            SceneCapabilityV1::PathTrimAnimation,
+            SceneCapabilityV1::ShapePrimitives,
+        ];
+        let session = EngineSessionV1::new(SceneIrBundleV1 { assets, scene }).unwrap();
+        let endpoint_at = |sample_time: f64| {
+            let packet_id = format!("packet:uniform:{sample_time}");
+            let packet = session
+                .sample_render_packet(SampleEngineSessionOptionsV1 {
+                    evidence: &[],
+                    packet_id: &packet_id,
+                    sample_time,
+                    viewport: ViewportV1 {
+                        height_px: 900,
+                        width_px: 1600,
+                    },
+                })
+                .unwrap();
+            let Some(RenderDrawV1::Path { path, .. }) = packet.draws.first() else {
+                return None;
+            };
+            path.subpaths
+                .last()
+                .and_then(|subpath| subpath.segments.last())
+                .map(|segment| segment.end.clone())
+        };
+
+        let first = endpoint_at(0.5);
+        assert_eq!(
+            endpoint_at(1.0),
+            Some(poietra_scene_ir::PointV1 { x: -2.0, y: 1.0 })
+        );
+        assert_eq!(endpoint_at(0.5), first);
+        assert_eq!(first, Some(poietra_scene_ir::PointV1 { x: -2.0, y: -1.0 }));
+        assert_eq!(endpoint_at(2.0), None);
     }
 
     #[test]

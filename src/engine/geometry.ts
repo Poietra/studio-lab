@@ -1,5 +1,5 @@
-import type { SceneEntityGeometryV1 } from "./scene-ir";
 import type { CubicPathV1, EngineAffineTransformV1, EnginePointV1 } from "./primitives";
+import type { SceneEntityGeometryV1 } from "./scene-ir";
 
 export const PATH_ARC_SUBDIVISIONS_V1 = 64;
 const TANGENT_EPSILON_V1 = 1e-12;
@@ -110,12 +110,11 @@ function parameterAtLength(measurement: CubicMeasurement, target: number) {
   return (upperIndex - 1 + local) / PATH_ARC_SUBDIVISIONS_V1;
 }
 
-function segmentEntriesBySubpath(path: CubicPathV1) {
+function serializedCubicEntriesBySubpath(path: CubicPathV1) {
   return path.subpaths.map((subpath, subpathIndex) => {
     const entries: Array<
       Readonly<{
         closing: boolean;
-        measurement: CubicMeasurement;
         segment: CubicSegmentV1;
         start: EnginePointV1;
         subpathIndex: number;
@@ -123,19 +122,33 @@ function segmentEntriesBySubpath(path: CubicPathV1) {
     > = [];
     let start = subpath.start;
     for (const segment of subpath.segments) {
-      entries.push({ closing: false, measurement: measureCubic(start, segment), segment, start, subpathIndex });
+      entries.push({ closing: false, segment, start, subpathIndex });
       start = segment.end;
-    }
-    if (subpath.closed && distance(start, subpath.start) > 0) {
-      const segment = lineSegment(start, subpath.start);
-      entries.push({ closing: true, measurement: measureCubic(start, segment), segment, start, subpathIndex });
     }
     return entries;
   });
 }
 
+function cubicEntriesBySubpath(path: CubicPathV1) {
+  return serializedCubicEntriesBySubpath(path).map((entries, subpathIndex) => {
+    const subpath = path.subpaths[subpathIndex];
+    const start = subpath.segments.at(-1)?.end ?? subpath.start;
+    if (subpath.closed && distance(start, subpath.start) > 0) {
+      const segment = lineSegment(start, subpath.start);
+      entries.push({ closing: true, segment, start, subpathIndex });
+    }
+    return entries;
+  });
+}
+
+function measuredSegmentEntriesBySubpath(path: CubicPathV1) {
+  return cubicEntriesBySubpath(path).map((entries) =>
+    entries.map((entry) => ({ ...entry, measurement: measureCubic(entry.start, entry.segment) })),
+  );
+}
+
 function segmentEntries(path: CubicPathV1) {
-  return segmentEntriesBySubpath(path).flat();
+  return measuredSegmentEntriesBySubpath(path).flat();
 }
 
 function degeneratePath(point: EnginePointV1): CubicPathV1 {
@@ -149,7 +162,7 @@ export function trimCubicPathV1(path: CubicPathV1, progress: number): CubicPathV
   const firstPoint = path.subpaths[0].start;
   if (progress <= 0) return degeneratePath(firstPoint);
 
-  const entriesBySubpath = segmentEntriesBySubpath(path);
+  const entriesBySubpath = measuredSegmentEntriesBySubpath(path);
   const totalLength = entriesBySubpath.reduce(
     (total, entries) => total + entries.reduce((subtotal, entry) => subtotal + entry.measurement.length, 0),
     0,
@@ -175,6 +188,44 @@ export function trimCubicPathV1(path: CubicPathV1, progress: number): CubicPathV
     }
     output.push({ closed: sourceSubpath.closed, segments: outputSegments, start: sourceSubpath.start });
     if (remaining <= 0) return { subpaths: output };
+  }
+  return path;
+}
+
+/** Returns the prefix obtained by assigning equal progress to each serialized cubic. */
+export function trimCubicPathUniformParameterV1(path: CubicPathV1, progress: number): CubicPathV1 {
+  if (progress >= 1) return path;
+  const firstPoint = path.subpaths[0].start;
+  if (progress <= 0) return degeneratePath(firstPoint);
+
+  const entriesBySubpath = serializedCubicEntriesBySubpath(path);
+  const entryCount = entriesBySubpath.reduce((total, entries) => total + entries.length, 0);
+  if (entryCount === 0) return degeneratePath(firstPoint);
+
+  const extent = entryCount * progress;
+  let completeEntries = Math.floor(extent);
+  const partialParameter = extent - completeEntries;
+  const output: Array<CubicPathV1["subpaths"][number]> = [];
+
+  for (let subpathIndex = 0; subpathIndex < path.subpaths.length; subpathIndex += 1) {
+    const sourceSubpath = path.subpaths[subpathIndex];
+    const outputSegments: CubicSegmentV1[] = [];
+    for (const entry of entriesBySubpath[subpathIndex]) {
+      if (completeEntries > 0) {
+        completeEntries -= 1;
+        if (!entry.closing) outputSegments.push(entry.segment);
+        continue;
+      }
+      if (partialParameter > 0) {
+        outputSegments.push(splitCubicPrefix(entry.start, entry.segment, partialParameter));
+        output.push({ closed: false, segments: outputSegments, start: sourceSubpath.start });
+      } else if (outputSegments.length > 0) {
+        output.push({ closed: false, segments: outputSegments, start: sourceSubpath.start });
+      }
+      return { subpaths: output };
+    }
+    output.push({ closed: sourceSubpath.closed, segments: outputSegments, start: sourceSubpath.start });
+    if (completeEntries === 0 && partialParameter === 0) return { subpaths: output };
   }
   return path;
 }
