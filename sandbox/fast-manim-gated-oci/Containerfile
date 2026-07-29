@@ -8,9 +8,9 @@ USER root
 COPY fast-manim.tar.gz /opt/poietra-build/fast-manim.tar.gz
 COPY gated-entrypoint.py /opt/poietra/gated-entrypoint.py
 
-RUN test "$FAST_MANIM_ARCHIVE_SHA256" = "8ac9869c7ace48715053d9392e323042921cd5f4f7f0c8d369d8a6a27d05719d" \
-    && test "$FAST_MANIM_COMMIT" = "bd93f660c1bd27afefd0b7f5beb2380984d9f938" \
-    && test "$FAST_MANIM_TREE" = "3c983435616218241359325eb00e0ad585067ddf" \
+RUN test "$FAST_MANIM_ARCHIVE_SHA256" = "57dc425090dbe448a3259a86134155a0df118566868c88bd2858c8445fd22903" \
+    && test "$FAST_MANIM_COMMIT" = "f505776c37ecb4147e10a54ff917fc857034b3d4" \
+    && test "$FAST_MANIM_TREE" = "a194bb6ba80d566163e946712e441901904faac7" \
     && printf '%s  %s\n' "$FAST_MANIM_ARCHIVE_SHA256" /opt/poietra-build/fast-manim.tar.gz \
       | sha256sum --check --strict - \
     && mkdir --parents /opt/fast-manim /run/poietra \
@@ -26,9 +26,9 @@ RUN test "$FAST_MANIM_ARCHIVE_SHA256" = "8ac9869c7ace48715053d9392e323042921cd5f
     && PYTHONHASHSEED=0 PYTHONPATH=/opt/fast-manim \
       /opt/venv/bin/python -c 'from manim.renderer.source_runtime_identity import export_source_runtime_identity; assert callable(export_source_runtime_identity)'
 
-LABEL io.poietra.fast-manim.commit="bd93f660c1bd27afefd0b7f5beb2380984d9f938" \
-      io.poietra.fast-manim.tree="3c983435616218241359325eb00e0ad585067ddf" \
-      io.poietra.fast-manim.archive-sha256="8ac9869c7ace48715053d9392e323042921cd5f4f7f0c8d369d8a6a27d05719d" \
+LABEL io.poietra.fast-manim.commit="f505776c37ecb4147e10a54ff917fc857034b3d4" \
+      io.poietra.fast-manim.tree="a194bb6ba80d566163e946712e441901904faac7" \
+      io.poietra.fast-manim.archive-sha256="57dc425090dbe448a3259a86134155a0df118566868c88bd2858c8445fd22903" \
       io.poietra.sandbox-slice="gated-oci-v1"
 
 ENV HOME=/run/poietra/home \

@@ -14,6 +14,8 @@ import {
   fastManimSnapshotAffineTransformChannelProvenanceIdV2,
   fastManimSnapshotOpacityChannelIdV2,
   fastManimSnapshotOpacityChannelProvenanceIdV2,
+  fastManimSnapshotPathMorphChannelIdV2,
+  fastManimSnapshotPathMorphChannelProvenanceIdV2,
   fastManimSnapshotPathTrimChannelIdV2,
   fastManimSnapshotPathTrimChannelProvenanceIdV2,
   fastManimSnapshotRunViewV1Schema,
@@ -263,6 +265,80 @@ async function dynamicPathTrimBundle(values: readonly number[] = [0, 1, 1, 0]): 
   });
 }
 
+type TestCubicPath = Extract<SceneIrBundleV1["scene"]["entities"][number]["geometry"], { kind: "cubic-path" }>["path"];
+
+function mapCubicPath(
+  path: TestCubicPath,
+  mapPoint: (point: Readonly<{ x: number; y: number }>) => { x: number; y: number },
+) {
+  return {
+    subpaths: path.subpaths.map((subpath) => ({
+      ...subpath,
+      segments: subpath.segments.map((segment) => ({
+        control1: mapPoint(segment.control1),
+        control2: mapPoint(segment.control2),
+        end: mapPoint(segment.end),
+      })),
+      start: mapPoint(subpath.start),
+    })),
+  } satisfies TestCubicPath;
+}
+
+async function dynamicPathMorphBundle(
+  shape: "one-transform" | "two-adjacent-transforms" | "two-transforms-with-hold" = "two-transforms-with-hold",
+  entityIndex = 0,
+): Promise<SceneIrBundleV1> {
+  const base = await importedBundle();
+  const duration = 6;
+  const sourceEntity = base.scene.entities[entityIndex]!;
+  if (sourceEntity.geometry.kind !== "cubic-path") throw new Error("Expected the fixture's cubic geometry.");
+  const entity = { ...sourceEntity, lifetimes: [{ end: duration, start: 0 }] };
+  const basePath = structuredClone(sourceEntity.geometry.path);
+  const stretched = mapCubicPath(basePath, ({ x, y }) => ({ x: -1 + (x + 1) * 1.25, y: y * 0.75 }));
+  const sheared = mapCubicPath(basePath, ({ x, y }) => ({ x: x + y * 0.35, y: y * 1.1 }));
+  const values =
+    shape === "one-transform"
+      ? [basePath, stretched]
+      : shape === "two-adjacent-transforms"
+        ? [basePath, stretched, sheared]
+        : [basePath, stretched, stretched, sheared];
+  const times = shape === "one-transform" ? [1, 2] : shape === "two-adjacent-transforms" ? [1, 2, 5] : [1, 2, 3, 5];
+  const channelProvenanceId = fastManimSnapshotPathMorphChannelProvenanceIdV2(expected.sceneId, entityIndex);
+  return sceneIrBundleV1Schema.parse({
+    ...base,
+    scene: {
+      ...base.scene,
+      animationChannels: [
+        {
+          entityId: entity.id,
+          id: fastManimSnapshotPathMorphChannelIdV2(expected.sceneId, entityIndex),
+          keyframes: values.map((value, index) => ({
+            at: times[index],
+            easingToNext: index === values.length - 1 ? null : { kind: "linear" as const },
+            value,
+          })),
+          kind: "path-morph",
+          provenanceId: channelProvenanceId,
+        },
+      ],
+      duration,
+      entities: base.scene.entities.map((candidate, index) =>
+        index === entityIndex ? entity : { ...candidate, lifetimes: [{ end: duration, start: 0 }] },
+      ),
+      provenance: [
+        ...base.scene.provenance,
+        {
+          evidence: ["producer-authored path-morph evidence must be normalized"],
+          id: channelProvenanceId,
+          origin: "fast-manim-server-snapshot",
+        },
+      ],
+      requiredCapabilities: ["cubic-path-geometry", "path-morph-animation"],
+      source: { ...base.scene.source, snapshotVersion: 2 },
+    },
+  });
+}
+
 function compiled(bundle: SceneIrBundleV1) {
   if (bundle.scene.source.kind !== "imported-manim-server-snapshot") throw new Error("Expected imported source.");
   return {
@@ -279,13 +355,6 @@ function parseProducer(value: unknown, expectedValue: ExpectedFastManimSnapshotC
   return parseAndSealFastManimSnapshotProducerJsonV1(JSON.stringify(value), expectedValue);
 }
 
-function offsetRawF64Bits(value: number, offset: bigint) {
-  const buffer = Buffer.alloc(8);
-  buffer.writeDoubleBE(value);
-  buffer.writeBigUInt64BE(buffer.readBigUInt64BE() + offset);
-  return buffer.readDoubleBE();
-}
-
 describe("canonical fast-manim Line cubic", () => {
   const start = { x: -4, y: 2 };
   const end = { x: 4, y: 2 };
@@ -295,7 +364,7 @@ describe("canonical fast-manim Line cubic", () => {
     end,
   };
 
-  it("accepts the actual exporter control that differs by one ordered-f64 ULP", () => {
+  it("accepts bounded producer roundoff beyond one ordered-f64 ULP", () => {
     expect(
       isCanonicalFastManimLineSegmentV1(start, {
         ...canonical,
@@ -303,13 +372,23 @@ describe("canonical fast-manim Line cubic", () => {
         control2: { x: 1.333333333333333, y: 2 },
       }),
     ).toBe(true);
+    expect(
+      isCanonicalFastManimLineSegmentV1(
+        { x: -2.1, y: 0.7 },
+        {
+          control1: { x: -0.9333333333333336, y: 0.36666666666666664 },
+          control2: { x: 0.23333333333333317, y: 0.033333333333333354 },
+          end: { x: 1.4, y: -0.3 },
+        },
+      ),
+    ).toBe(true);
   });
 
-  it("rejects two ULP drift and arbitrary collinear controls", () => {
+  it("rejects drift outside the numeric bound and arbitrary collinear controls", () => {
     expect(
       isCanonicalFastManimLineSegmentV1(start, {
         ...canonical,
-        control1: { ...canonical.control1, x: offsetRawF64Bits(canonical.control1.x, 2n) },
+        control1: { ...canonical.control1, x: canonical.control1.x + 1e-10 },
       }),
     ).toBe(false);
     expect(isCanonicalFastManimLineSegmentV1(start, { control1: start, control2: end, end })).toBe(false);
@@ -614,6 +693,190 @@ describe("fast-manim snapshot result v1", () => {
     for (const invalid of [missing, unknown, nonFinite, wrongCapabilities]) {
       await expect(parseProducer(compiled(invalid as unknown as SceneIrBundleV1), expectedV2)).rejects.toThrow();
     }
+  });
+
+  it("seals one or two compatible direct path morphs without rewriting base geometry or style", async () => {
+    const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
+    for (const [shape, entityIndex] of [
+      ["one-transform", 0],
+      ["two-adjacent-transforms", 0],
+      ["two-transforms-with-hold", 0],
+      ["one-transform", 2],
+    ] as const) {
+      const bundle = await dynamicPathMorphBundle(shape, entityIndex);
+      const baseEntity = structuredClone(bundle.scene.entities[entityIndex]!);
+      const sealed = await parseProducer(compiled(bundle), expectedV2);
+      if (sealed.kind !== "compiled") throw new Error("Expected a compiled path-morph V2 snapshot.");
+
+      expect(sealed.bundle.scene.requiredCapabilities).toEqual(["cubic-path-geometry", "path-morph-animation"]);
+      expect(sealed.bundle.scene.entities[entityIndex]).toEqual(baseEntity);
+      expect(sealed.bundle.scene.animationChannels).toEqual(bundle.scene.animationChannels);
+      expect(sealed.bundle.scene.animationChannels[0]).toMatchObject({
+        id: fastManimSnapshotPathMorphChannelIdV2(expected.sceneId, entityIndex),
+        kind: "path-morph",
+        provenanceId: fastManimSnapshotPathMorphChannelProvenanceIdV2(expected.sceneId, entityIndex),
+      });
+      expect(
+        sealed.bundle.scene.provenance.every(
+          (record) => record.evidence[0] === FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V2,
+        ),
+      ).toBe(true);
+      await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV2)).resolves.toEqual(sealed);
+    }
+  });
+
+  it("rejects schema-valid path morph evidence outside the direct Transform profile", async () => {
+    const bundle = await dynamicPathMorphBundle();
+    const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
+    type PathMorphChannel = Extract<SceneIrBundleV1["scene"]["animationChannels"][number], { kind: "path-morph" }>;
+    const mutateChannel = (mutate: (channel: PathMorphChannel) => void) => {
+      const candidate = structuredClone(bundle);
+      const channel = candidate.scene.animationChannels[0];
+      if (channel?.kind !== "path-morph") throw new Error("Expected the path-morph fixture channel.");
+      mutate(channel);
+      return candidate;
+    };
+    const thirdShape = (() => {
+      const entity = bundle.scene.entities[0]!;
+      if (entity.geometry.kind !== "cubic-path") throw new Error("Expected cubic path geometry.");
+      return mapCubicPath(entity.geometry.path, ({ x, y }) => ({ x: x * 0.9 - y * 0.2, y: x * 0.1 + y }));
+    })();
+    const invalid = [
+      mutateChannel((channel) => {
+        channel.id = fastManimSnapshotPathMorphChannelIdV2(expected.sceneId, 1);
+      }),
+      mutateChannel((channel) => {
+        channel.provenanceId = bundle.scene.provenance[1]!.id;
+      }),
+      mutateChannel((channel) => {
+        channel.keyframes[0]!.value.subpaths[0]!.start.x += 0.125;
+      }),
+      mutateChannel((channel) => {
+        channel.keyframes[0]!.easingToNext = { kind: "smooth" };
+      }),
+      mutateChannel((channel) => {
+        channel.keyframes[1]!.at = 2.01;
+      }),
+      mutateChannel((channel) => {
+        channel.keyframes[2]!.value = thirdShape;
+      }),
+      mutateChannel((channel) => {
+        channel.keyframes = [
+          channel.keyframes[0]!,
+          { ...channel.keyframes[0]!, at: 2 },
+          { ...channel.keyframes[1]!, at: 3, easingToNext: null },
+        ];
+      }),
+      mutateChannel((channel) => {
+        channel.keyframes = [
+          channel.keyframes[0]!,
+          channel.keyframes[1]!,
+          { ...channel.keyframes[2]!, easingToNext: null },
+        ];
+      }),
+    ];
+    for (const candidate of invalid) {
+      await expect(parseProducer(compiled(candidate), expectedV2)).rejects.toMatchObject({ code: "profile-violation" });
+    }
+  });
+
+  it("rejects incompatible cubic topology and another channel on the morph entity", async () => {
+    const bundle = await dynamicPathMorphBundle("one-transform");
+    const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
+    const topologyMismatch = structuredClone(bundle);
+    const morph = topologyMismatch.scene.animationChannels[0];
+    if (morph?.kind !== "path-morph") throw new Error("Expected the path-morph fixture channel.");
+    const targetSegments = morph.keyframes[1]!.value.subpaths[0]!.segments;
+    // Models the producer-visible Circle/Rectangle mismatch: eight serialized
+    // cubics cannot silently remesh to the base entity's four cubics.
+    morph.keyframes[1]!.value.subpaths[0]!.segments = targetSegments.flatMap((segment) => [segment, segment]);
+    await expect(parseProducer(compiled(topologyMismatch), expectedV2)).rejects.toThrow(/matching cubic topology/i);
+
+    const affineProvenanceId = fastManimSnapshotAffineTransformChannelProvenanceIdV2(expected.sceneId, 0);
+    const combined = sceneIrBundleV1Schema.parse({
+      ...bundle,
+      scene: {
+        ...bundle.scene,
+        animationChannels: [
+          {
+            entityId: bundle.scene.entities[0]!.id,
+            id: fastManimSnapshotAffineTransformChannelIdV2(expected.sceneId, 0),
+            keyframes: [
+              {
+                at: 0,
+                easingToNext: { kind: "linear" },
+                value: { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 },
+              },
+              {
+                at: 1,
+                easingToNext: null,
+                value: { m11: 1, m12: 0, m21: 0, m22: 1, tx: 1, ty: 0 },
+              },
+            ],
+            kind: "affine-transform",
+            provenanceId: affineProvenanceId,
+          },
+          bundle.scene.animationChannels[0],
+        ],
+        provenance: [
+          ...bundle.scene.provenance.slice(0, -1),
+          {
+            evidence: ["producer-authored affine evidence must be normalized"],
+            id: affineProvenanceId,
+            origin: "fast-manim-server-snapshot",
+          },
+          bundle.scene.provenance.at(-1),
+        ],
+        requiredCapabilities: ["affine-transform-animation", "cubic-path-geometry", "path-morph-animation"],
+      },
+    });
+    await expect(parseProducer(compiled(combined), expectedV2)).rejects.toMatchObject({ code: "profile-violation" });
+  });
+
+  it("rejects path morphs that collapse between otherwise valid endpoints", async () => {
+    const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
+    for (const entityIndex of [0, 2]) {
+      const bundle = await dynamicPathMorphBundle("one-transform", entityIndex);
+      const morph = bundle.scene.animationChannels[0];
+      if (morph?.kind !== "path-morph") throw new Error("Expected the path-morph fixture channel.");
+      morph.keyframes[1]!.value = mapCubicPath(morph.keyframes[0]!.value, ({ x, y }) => ({ x: -x, y: -y }));
+      await expect(parseProducer(compiled(bundle), expectedV2)).rejects.toThrow(/non-degenerate/i);
+    }
+  });
+
+  it("rejects path morphs that become concave while retaining positive area", async () => {
+    type ControlPoint = Readonly<{ x: number; y: number }>;
+    const pathFromControlPolygon = (points: readonly [ControlPoint, ControlPoint, ControlPoint, ControlPoint]) => ({
+      subpaths: [
+        {
+          closed: true,
+          segments: [{ control1: points[1], control2: points[2], end: points[3] }],
+          start: points[0],
+        },
+      ],
+    });
+    const bundle = await dynamicPathMorphBundle("one-transform");
+    const entity = bundle.scene.entities[0]!;
+    const morph = bundle.scene.animationChannels[0];
+    if (entity.geometry.kind !== "cubic-path" || morph?.kind !== "path-morph") {
+      throw new Error("Expected the path-morph fixture geometry and channel.");
+    }
+    const start = pathFromControlPolygon([
+      { x: -5, y: -2 },
+      { x: -4, y: -3 },
+      { x: 5, y: -5 },
+      { x: 3, y: 4 },
+    ]);
+    const end = pathFromControlPolygon([
+      { x: -5, y: -1 },
+      { x: 3, y: 0 },
+      { x: 4, y: 1 },
+      { x: -4, y: 4 },
+    ]);
+    entity.geometry.path = start;
+    morph.keyframes[0]!.value = start;
+    morph.keyframes[1]!.value = end;
+    await expect(parseProducer(compiled(bundle), { ...expected, snapshotVersion: 2 })).rejects.toThrow(/convex/i);
   });
 
   it("seals the four exact producer path-trim shapes without rewriting canonical geometry", async () => {
@@ -1235,8 +1498,8 @@ describe("fast-manim snapshot result v1", () => {
           stroke: { ...(scene.entities[2]!.appearance as { stroke: object }).stroke, join: "round" },
         },
       }),
-      // Collinearity alone is insufficient: the renderer accepts only the
-      // exporter's canonical 1/3 and 2/3 Line controls within one f64 ULP.
+      // Collinearity alone is insufficient: the verifier accepts only the
+      // exporter's canonical 1/3 and 2/3 Line controls within bounded roundoff.
       mutateLineSegment({ control1: lineSubpath.start, control2: lineSegment.end }),
       // Fully transparent fill: the exporter never emits invisible paint.
       mutateEntity(0, {

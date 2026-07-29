@@ -48,6 +48,10 @@ const pathTrimScene = readFileSync(
   fileURLToPath(new URL("../fixtures/real-preview-harness/scene_path_trim.py", import.meta.url)),
   "utf8",
 );
+const pathMorphScene = readFileSync(
+  fileURLToPath(new URL("../fixtures/real-preview-harness/scene_path_morph.py", import.meta.url)),
+  "utf8",
+);
 
 function context(signal = new AbortController().signal, deadlineMs = 30_000) {
   return {
@@ -168,9 +172,9 @@ function trustedImageInspection(image: string, target: readonly string[] = FAST_
           Cmd: target,
           Entrypoint: ["/opt/venv/bin/python", "/opt/poietra/gated-entrypoint.py"],
           Labels: {
-            "io.poietra.fast-manim.archive-sha256": "8ac9869c7ace48715053d9392e323042921cd5f4f7f0c8d369d8a6a27d05719d",
-            "io.poietra.fast-manim.commit": "bd93f660c1bd27afefd0b7f5beb2380984d9f938",
-            "io.poietra.fast-manim.tree": "3c983435616218241359325eb00e0ad585067ddf",
+            "io.poietra.fast-manim.archive-sha256": "57dc425090dbe448a3259a86134155a0df118566868c88bd2858c8445fd22903",
+            "io.poietra.fast-manim.commit": "f505776c37ecb4147e10a54ff917fc857034b3d4",
+            "io.poietra.fast-manim.tree": "a194bb6ba80d566163e946712e441901904faac7",
             "io.poietra.sandbox-slice": "gated-oci-v1",
           },
         },
@@ -716,6 +720,44 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
     expect(sourceRuntimeIdentity?.mappings.map((mapping) => mapping.binding.name)).toEqual(
       expect.arrayContaining(["sentinel", "circle", "rectangle", "line"]),
     );
+  });
+
+  it("isolates and correlates real compatible path morphs", { timeout: 60_000 }, async () => {
+    const source = producerRequestFor(pathMorphScene, "DynamicPathMorphScene", 2);
+    const request = new FastManimSandboxRequestBundleV1(source);
+    const execution = await runFastManimGatedOciJobV1({
+      deadlineEpochMs: Date.now() + 30_000,
+      image,
+      requestBytes: request.copyBytes(),
+      signal: new AbortController().signal,
+    });
+    expect(execution.cleanupVerified).toBe(true);
+    const { snapshot, sourceRuntimeIdentity } = await verifyCombinedResult(execution.resultBytes, source);
+    if (snapshot.kind !== "compiled") throw new Error("Expected compiled path-morph evidence.");
+    expect(snapshot.bundle.scene).toMatchObject({
+      duration: 5,
+      requiredCapabilities: ["cubic-path-geometry", "path-morph-animation"],
+    });
+    expect(snapshot.bundle.scene.entities).toHaveLength(3);
+    const channels = snapshot.bundle.scene.animationChannels;
+    expect(channels).toHaveLength(2);
+    const [shapeMorph, lineMorph] = channels;
+    if (shapeMorph?.kind !== "path-morph" || lineMorph?.kind !== "path-morph") {
+      throw new Error("Expected only path-morph channels.");
+    }
+    expect(shapeMorph.entityId).toBe(`${source.sceneId}/entity:1`);
+    expect(shapeMorph.keyframes.map((keyframe) => keyframe.at)).toEqual([0, 1, 2, 3]);
+    expect(shapeMorph.keyframes[0]?.value).toEqual(shapeMorph.keyframes[3]?.value);
+    expect(shapeMorph.keyframes[0]?.value).not.toEqual(shapeMorph.keyframes[1]?.value);
+    expect(shapeMorph.keyframes[1]?.value).toEqual(shapeMorph.keyframes[2]?.value);
+    expect(lineMorph.entityId).toBe(`${source.sceneId}/entity:2`);
+    expect(lineMorph.keyframes.map((keyframe) => keyframe.at)).toEqual([3, 4]);
+    expect(lineMorph.keyframes[0]?.value).not.toEqual(lineMorph.keyframes[1]?.value);
+    expect(sourceRuntimeIdentity?.mappings.map((mapping) => mapping.binding.name)).toEqual([
+      "sentinel",
+      "shape",
+      "line",
+    ]);
   });
 
   it("does not quarantine an abort observed after known-ID cleanup was verified", { timeout: 60_000 }, async () => {

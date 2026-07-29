@@ -42,6 +42,9 @@ const PATH_TRIM_BINDINGS = [
   ["immediate_circle", "source-binding:6ec5fefa194850eb55dc1e5668cc3abf66b117f0590691ed3ec68a4ad123b3b5", 24],
 ] as const;
 const PATH_TRIM_VIEWPORT = "832x468";
+const PATH_MORPH_SCENE_ID = "scene:6977ca337b82c7845dcfb7254f63e7eb9055aefaf877107f123c4b8efb80db13";
+const PATH_MORPH_SOURCE_HASH = "5f911a03b7d2426805c343ad294ca98fe2769805f2e452e46c3f64095ce30d88";
+const PATH_MORPH_ENTITY_IDS = Array.from({ length: 3 }, (_, index) => `${PATH_MORPH_SCENE_ID}/entity:${index}`);
 
 type RgbaPixel = readonly [number, number, number, number];
 
@@ -786,6 +789,158 @@ test("preserves real V2 Create and Uncreate trims across shuffled WebGPU seeks",
   expectPixelNear(pixels(7)[1]!, [252, 98, 85, 255]);
   expectPixelNear(pixels(7)[4]!, [0, 0, 0, 255]);
   await expect(page.getByRole("slider", { name: "Scene playhead" })).toHaveAttribute("max", "8");
+});
+
+test("renders real compatible path morphs deterministically through retained WebGPU", async ({ page }) => {
+  await expectVerifiedRun(await openRealWorkspace(page));
+  const run = await expectVerifiedRun(await selectScene(page, "DynamicPathMorphScene", "scene_path_morph.py"));
+  const bundle = run.snapshot?.bundle;
+  const revision = run.snapshot?.snapshotHash;
+  const identity = run.sourceRuntimeIdentity;
+  if (!bundle || !revision || !identity) {
+    throw new Error("The path-morph Scene did not publish a complete verified snapshot and identity map.");
+  }
+
+  expect(bundle.scene).toMatchObject({
+    duration: 5,
+    requiredCapabilities: ["cubic-path-geometry", "path-morph-animation"],
+    sceneId: PATH_MORPH_SCENE_ID,
+    source: {
+      kind: "imported-manim-server-snapshot",
+      snapshotVersion: 2,
+      sourceHash: PATH_MORPH_SOURCE_HASH,
+    },
+  });
+  expect(bundle.scene.entities.map((entity) => entity.id)).toEqual(PATH_MORPH_ENTITY_IDS);
+  expect(bundle.scene.entities.map((entity) => entity.lifetimes)).toEqual(
+    Array.from({ length: 3 }, () => [{ end: 5, start: 0 }]),
+  );
+  expect(
+    bundle.scene.entities.map((entity) =>
+      entity.geometry.kind === "cubic-path" ? entity.geometry.path.subpaths[0]?.segments.length : null,
+    ),
+  ).toEqual([8, 8, 1]);
+
+  const [shapeMorph, lineMorph] = bundle.scene.animationChannels;
+  expect(bundle.scene.animationChannels).toHaveLength(2);
+  if (shapeMorph?.kind !== "path-morph" || lineMorph?.kind !== "path-morph") {
+    throw new Error("Expected only path-morph producer channels.");
+  }
+  expect(shapeMorph).toMatchObject({
+    entityId: PATH_MORPH_ENTITY_IDS[1],
+    id: `${PATH_MORPH_SCENE_ID}/channel:path-morph:1`,
+    provenanceId: `${PATH_MORPH_SCENE_ID}/provenance:channel:path-morph:1`,
+  });
+  expect(shapeMorph.keyframes.map((keyframe) => keyframe.at)).toEqual([0, 1, 2, 3]);
+  expect(shapeMorph.keyframes[0]?.value).toEqual(bundle.scene.entities[1]?.geometry.path);
+  expect(shapeMorph.keyframes[0]?.value).toEqual(shapeMorph.keyframes[3]?.value);
+  expect(shapeMorph.keyframes[0]?.value).not.toEqual(shapeMorph.keyframes[1]?.value);
+  expect(shapeMorph.keyframes[1]?.value).toEqual(shapeMorph.keyframes[2]?.value);
+  expect(lineMorph).toMatchObject({
+    entityId: PATH_MORPH_ENTITY_IDS[2],
+    id: `${PATH_MORPH_SCENE_ID}/channel:path-morph:2`,
+    provenanceId: `${PATH_MORPH_SCENE_ID}/provenance:channel:path-morph:2`,
+  });
+  expect(lineMorph.keyframes.map((keyframe) => keyframe.at)).toEqual([3, 4]);
+  expect(lineMorph.keyframes[0]?.value).not.toEqual(lineMorph.keyframes[1]?.value);
+  expect(identity.mappings.map((mapping) => [mapping.binding.name, mapping.entityId])).toEqual([
+    ["sentinel", PATH_MORPH_ENTITY_IDS[0]],
+    ["shape", PATH_MORPH_ENTITY_IDS[1]],
+    ["line", PATH_MORPH_ENTITY_IDS[2]],
+  ]);
+  await expectPresented(page, run.revision);
+
+  const canvasRoot = page.locator("[data-studio-canvas]");
+  const viewport = await canvasRoot.getAttribute("data-preview-viewport");
+  if (!viewport) throw new Error("The path-morph WebGPU proof did not expose a viewport.");
+  expect(viewport).toBe(PATH_TRIM_VIEWPORT);
+  const checkpoints = [
+    { id: "initial", sampleTime: 0 },
+    { id: "warped", sampleTime: 1 },
+    { id: "hold", sampleTime: 1.5 },
+    { id: "returning", sampleTime: 2.5 },
+    { id: "restored", sampleTime: 3 },
+    { id: "line-half", sampleTime: 3.5 },
+    { id: "line-target", sampleTime: 4 },
+  ] as const;
+  const checkpointById = new Map(checkpoints.map((checkpoint) => [checkpoint.id, checkpoint]));
+  const shuffledCheckpointIds = [
+    "hold",
+    "line-target",
+    "initial",
+    "returning",
+    "warped",
+    "line-half",
+    "restored",
+  ] as const;
+  const samplePlan = [
+    ...checkpoints.map((checkpoint) => ({ id: `monotonic:${checkpoint.id}`, sampleTime: checkpoint.sampleTime })),
+    ...shuffledCheckpointIds.map((id) => ({
+      id: `shuffled:${id}`,
+      sampleTime: checkpointById.get(id)!.sampleTime,
+    })),
+  ];
+  const samples = await readBackDynamicRendererSamples(page, {
+    entityIds: PATH_MORPH_ENTITY_IDS,
+    evidenceSamples: [
+      { fractionX: 0.1484375, fractionY: 0.125 },
+      { fractionX: 0.39453125, fractionY: 0.5 },
+      { fractionX: 0.33125, fractionY: 0.5 },
+      { fractionX: 0.39453125, fractionY: 0.7714285714285715 },
+      { fractionX: 0.482421875, fractionY: 0.8375 },
+      { fractionX: 0.03, fractionY: 0.05 },
+    ],
+    revision,
+    samples: samplePlan,
+    snapshot: bundle,
+    viewport,
+  });
+  const byId = new Map(samples.map((sample) => [sample.id, sample]));
+  type CheckpointId = (typeof checkpoints)[number]["id"];
+  const result = (order: "monotonic" | "shuffled", id: CheckpointId) => {
+    const sample = byId.get(`${order}:${id}`);
+    if (!sample) throw new Error(`Missing ${order} WebGPU evidence for ${id}.`);
+    return sample;
+  };
+  const entries = (id: CheckpointId) => result("monotonic", id).frame.interaction.entries;
+  const pixels = (id: CheckpointId) => result("monotonic", id).evidence.samples as readonly RgbaPixel[];
+  for (const checkpoint of checkpoints) {
+    const monotonic = result("monotonic", checkpoint.id);
+    const shuffled = result("shuffled", checkpoint.id);
+    expect(monotonic.frame).toMatchObject({
+      kind: "frame-presented",
+      revision,
+      sampleTime: checkpoint.sampleTime,
+    });
+    expect(monotonic.frame.interaction.entries.every((entry) => entry.status === "present")).toBe(true);
+    expect(shuffled.frame).toMatchObject({
+      kind: "frame-presented",
+      revision,
+      sampleTime: checkpoint.sampleTime,
+    });
+    expect(shuffled.frame.interaction.entries).toEqual(monotonic.frame.interaction.entries);
+    expect(shuffled.evidence.samples).toEqual(monotonic.evidence.samples);
+    expectPixelNear(pixels(checkpoint.id)[0]!, [255, 255, 255, 255]);
+    expectPixelNear(pixels(checkpoint.id)[1]!, [88, 196, 221, 255]);
+    expectPixelNear(pixels(checkpoint.id)[5]!, [0, 0, 0, 255]);
+  }
+  expect(entries("hold")?.[1]).toEqual(entries("warped")?.[1]);
+  expect(entries("warped")?.[1]).not.toEqual(entries("initial")?.[1]);
+  expect(entries("returning")?.[1]).not.toEqual(entries("warped")?.[1]);
+  expect(entries("returning")?.[1]).not.toEqual(entries("restored")?.[1]);
+  expect(entries("restored")?.[1]).toEqual(entries("initial")?.[1]);
+  expect(entries("line-half")?.[2]).not.toEqual(entries("restored")?.[2]);
+  expect(entries("line-half")?.[2]).not.toEqual(entries("line-target")?.[2]);
+  expect(entries("line-target")?.[2]).not.toEqual(entries("restored")?.[2]);
+  expectPixelNear(pixels("initial")[2]!, [0, 0, 0, 255]);
+  expectPixelNear(pixels("warped")[2]!, [88, 196, 221, 255]);
+  expectPixelNear(pixels("hold")[2]!, [88, 196, 221, 255]);
+  expectPixelNear(pixels("returning")[2]!, [88, 196, 221, 255]);
+  expectPixelNear(pixels("restored")[2]!, [0, 0, 0, 255]);
+  expectPixelNear(pixels("restored")[3]!, [252, 98, 85, 255]);
+  expectPixelNear(pixels("line-target")[3]!, [0, 0, 0, 255]);
+  expectPixelNear(pixels("line-target")[4]!, [252, 98, 85, 255]);
+  await expect(page.getByRole("slider", { name: "Scene playhead" })).toHaveAttribute("max", "5");
 });
 
 test("falls back the whole Scene for real producer unsupported and exit results", async ({ page }) => {

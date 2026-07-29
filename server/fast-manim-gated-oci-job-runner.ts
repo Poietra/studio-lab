@@ -19,10 +19,10 @@ import {
 import {
   MAX_FAST_MANIM_SNAPSHOT_ARRAY_ITEMS,
   MAX_FAST_MANIM_SNAPSHOT_OBJECT_FIELDS,
-  MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
   MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_DEPTH,
   MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_ENTRIES,
   MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_VALUES,
+  MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
 } from "./fast-manim-snapshot-contract";
 import { abortError } from "./fast-manim-snapshot-producer-process";
 
@@ -88,9 +88,9 @@ const REQUIRED_READ_ONLY_SYSTEM_PATHS = Object.freeze([
   "/proc/sysrq-trigger",
 ] as const);
 const LOCKED_LABELS = Object.freeze({
-  "io.poietra.fast-manim.archive-sha256": "8ac9869c7ace48715053d9392e323042921cd5f4f7f0c8d369d8a6a27d05719d",
-  "io.poietra.fast-manim.commit": "bd93f660c1bd27afefd0b7f5beb2380984d9f938",
-  "io.poietra.fast-manim.tree": "3c983435616218241359325eb00e0ad585067ddf",
+  "io.poietra.fast-manim.archive-sha256": "57dc425090dbe448a3259a86134155a0df118566868c88bd2858c8445fd22903",
+  "io.poietra.fast-manim.commit": "f505776c37ecb4147e10a54ff917fc857034b3d4",
+  "io.poietra.fast-manim.tree": "a194bb6ba80d566163e946712e441901904faac7",
   "io.poietra.sandbox-slice": "gated-oci-v1",
 });
 const FIXED_ENVIRONMENT = Object.freeze({
