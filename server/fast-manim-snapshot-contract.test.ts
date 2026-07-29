@@ -285,7 +285,7 @@ function mapCubicPath(
 }
 
 async function dynamicPathMorphBundle(
-  shape: "one-transform" | "two-transforms-with-hold" = "two-transforms-with-hold",
+  shape: "one-transform" | "two-adjacent-transforms" | "two-transforms-with-hold" = "two-transforms-with-hold",
   entityIndex = 0,
 ): Promise<SceneIrBundleV1> {
   const base = await importedBundle();
@@ -296,8 +296,13 @@ async function dynamicPathMorphBundle(
   const basePath = structuredClone(sourceEntity.geometry.path);
   const stretched = mapCubicPath(basePath, ({ x, y }) => ({ x: -1 + (x + 1) * 1.25, y: y * 0.75 }));
   const sheared = mapCubicPath(basePath, ({ x, y }) => ({ x: x + y * 0.35, y: y * 1.1 }));
-  const values = shape === "one-transform" ? [basePath, stretched] : [basePath, stretched, stretched, sheared];
-  const times = shape === "one-transform" ? [1, 2] : [1, 2, 3, 5];
+  const values =
+    shape === "one-transform"
+      ? [basePath, stretched]
+      : shape === "two-adjacent-transforms"
+        ? [basePath, stretched, sheared]
+        : [basePath, stretched, stretched, sheared];
+  const times = shape === "one-transform" ? [1, 2] : shape === "two-adjacent-transforms" ? [1, 2, 5] : [1, 2, 3, 5];
   const channelProvenanceId = fastManimSnapshotPathMorphChannelProvenanceIdV2(expected.sceneId, entityIndex);
   return sceneIrBundleV1Schema.parse({
     ...base,
@@ -694,6 +699,7 @@ describe("fast-manim snapshot result v1", () => {
     const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
     for (const [shape, entityIndex] of [
       ["one-transform", 0],
+      ["two-adjacent-transforms", 0],
       ["two-transforms-with-hold", 0],
       ["one-transform", 2],
     ] as const) {
