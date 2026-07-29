@@ -10,7 +10,8 @@ The built `manim-production-server.mjs` entry exports
 checksummed migrations with a one-connection DDL pool, creates bounded workspace
 and render-session PostgreSQL repositories plus the private versioned S3 stores,
 initializes the tenant, and starts the render queue consumer and the source,
-snapshot, and render-artifact GC workers. It returns the adapter consumed by
+project-image, snapshot, and render-artifact GC workers plus terminal-session
+retention. It returns the adapter consumed by
 `startProductionManimServer`.
 
 Render sessions store immutable original/patched source receipts, a DB-clock
@@ -61,10 +62,17 @@ versions at the front of a large bucket cannot starve later orphan cleanup. It
 collects only S3 versions that were never published, such as uploads
 left by a failed transaction or losing CAS. Deleted version receipts remain as
 durable tombstones so a delayed publisher cannot resurrect a missing object.
-Render sessions now retain explicit project/source references, so their original
-and patched receipts cannot be collected while the session is retained. Terminal
-session retention, reference detachment, and the DB-clock `orphaned_at` boundary
-remain #144; object creation time is not a safe substitute for detachment time.
+Render sessions retain explicit project/source references, so their original and
+patched receipts and pinned project `image.png` generation cannot be collected
+while the session is active or within its configured input-retention window.
+After a terminal session's deadline and retention window have elapsed, one
+transaction detaches those references and records a DB-clock release boundary.
+Committed, leased, running-action, and still-readable media sessions are never
+detached. Source and project-image GC use that boundary—not object creation
+time—as the start of their grace period, recheck every reference under the same
+database locks used by publishers, and delete only the exact unreferenced S3
+version. Released session/action audit rows are purged later under a separately
+configured retention window and only after their media links are gone.
 
 Render media uses a separate trusted-publication transaction. The broker writes
 only to one canonical capability directory owned by `broker:Studio-group` with

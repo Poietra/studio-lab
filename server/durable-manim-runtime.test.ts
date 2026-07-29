@@ -39,7 +39,7 @@ describe("DurableManimRuntimeV1 production readiness", () => {
     await expect(runtime.productionReady()).resolves.toBe(false);
     await expect(adapter.ready(new AbortController().signal)).resolves.toEqual({ ready: false });
 
-    await adapter.close();
+    await Promise.all([adapter.close(), adapter.close()]);
     expect(maintenanceClose).toHaveBeenCalledOnce();
     expect(blobsClose).toHaveBeenCalledOnce();
     expect(repositoryClose).toHaveBeenCalledOnce();

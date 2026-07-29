@@ -66,6 +66,7 @@ export interface ProjectPngRepositoryV1 {
     tenantId: string,
     projectId: string,
     receipt: ProjectPngBlobReceiptV1,
+    graceMs: number,
     signal?: AbortSignal,
   ): Promise<ProjectPngDeletionV1 | null>;
   readHead(tenantId: string, projectId: string, signal?: AbortSignal): Promise<ProjectPngHeadV1 | null>;

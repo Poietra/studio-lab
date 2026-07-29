@@ -10,6 +10,7 @@ import {
 } from "../../../src/render-pipeline/contracts";
 import { HttpError } from "../../http/json";
 import { manimTenantIdSchema } from "../../manim-request-principal";
+import { MAX_DURABLE_GC_GRACE_MS_V1, MIN_DURABLE_GC_GRACE_MS_V1 } from "../durable-gc-core";
 import {
   type BlobDeletionV1,
   MAX_MANAGED_PROJECTS_PER_TENANT_V1,
@@ -19,6 +20,7 @@ import {
   type WorkspaceSourceProjectV1,
   type WorkspaceSourceRepositoryV1,
 } from "../workspace-source-repository";
+import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import { POSTGRES_REPOSITORY_OPTIONS_V1, PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 
 export const WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM =
@@ -55,6 +57,8 @@ type BlobRow = QueryResultRow & {
 };
 
 type DeletionRow = BlobRow & { deleted_at: Date | null; deletion_id: string };
+type OrphanCandidateRow = QueryResultRow & { digest: string };
+type OrphanedBlobRow = BlobRow & { orphaned_at: Date | null; referenced: boolean };
 
 const SOURCE_HEAD_COLUMNS = `
   h.tenant_id,
@@ -68,6 +72,25 @@ const SOURCE_HEAD_COLUMNS = `
   b.byte_size
 `;
 const MAX_INCREMENTABLE_SOURCE_GENERATION_V1 = 9_223_372_036_854_775_806n;
+const SOURCE_BLOB_REFERENCED_SQL = `
+  EXISTS (
+    SELECT 1 FROM public.workspace_source_heads head
+     WHERE head.tenant_id = b.tenant_id AND head.digest = b.digest
+  ) OR EXISTS (
+    SELECT 1 FROM public.render_sessions session
+     WHERE session.tenant_id = b.tenant_id
+       AND (session.original_digest = b.digest OR session.patched_digest = b.digest)
+  ) OR EXISTS (
+    SELECT 1 FROM public.snapshot_artifact_objects artifact
+     WHERE artifact.tenant_id = b.tenant_id AND artifact.source_digest = b.digest
+  ) OR EXISTS (
+    SELECT 1 FROM public.snapshot_publications publication
+     WHERE publication.tenant_id = b.tenant_id AND publication.source_digest = b.digest
+  ) OR EXISTS (
+    SELECT 1 FROM public.render_artifact_objects artifact
+     WHERE artifact.tenant_id = b.tenant_id AND artifact.source_digest = b.digest
+  )
+`;
 
 function throwIfAborted(signal?: AbortSignal) {
   signal?.throwIfAborted();
@@ -106,6 +129,13 @@ function sourcePath(value: string) {
 
 function sourceDigest(value: string) {
   if (!/^[0-9a-f]{64}$/.test(value)) throw new TypeError("Source digest is invalid.");
+  return value;
+}
+
+function gcGraceMs(value: number) {
+  if (!Number.isSafeInteger(value) || value < MIN_DURABLE_GC_GRACE_MS_V1 || value > MAX_DURABLE_GC_GRACE_MS_V1) {
+    throw new RangeError("Source GC graceMs must be between one minute and 30 days.");
+  }
   return value;
 }
 
@@ -195,16 +225,26 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
       [tenant, candidate.digest, candidate.objectKey, candidate.versionId, candidate.etag, candidate.byteSize],
     );
     if (inserted.rowCount === 1) return candidate;
-    const existing = await client.query<BlobRow>(
-      `SELECT tenant_id, digest, object_key, version_id, etag, byte_size
+    const existing = await client.query<BlobRow & { orphaned_at: Date | null }>(
+      `SELECT tenant_id, digest, object_key, version_id, etag, byte_size, orphaned_at
          FROM public.source_blob_objects
         WHERE tenant_id = $1 AND digest = $2
-        FOR KEY SHARE`,
+        FOR UPDATE`,
       [tenant, candidate.digest],
     );
     const row = existing.rows[0];
     if (!row || row.object_key !== candidate.objectKey || row.byte_size !== candidate.byteSize) {
       throw new TypeError("The stored source blob metadata conflicts with its digest.");
+    }
+    if (row.orphaned_at !== null) {
+      if (!(row.orphaned_at instanceof Date))
+        throw new TypeError("The stored source blob orphan timestamp is invalid.");
+      await client.query(
+        `UPDATE public.source_blob_objects
+            SET orphaned_at = NULL
+          WHERE tenant_id = $1 AND digest = $2`,
+        [tenant, candidate.digest],
+      );
     }
     return blobFromRow(row);
   }
@@ -212,13 +252,19 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
   async ready(signal?: AbortSignal) {
     try {
       throwIfAborted(signal);
-      const result = await this.#connection.query<{ checksum: string }>(
-        "SELECT checksum FROM public.poietra_schema_migrations WHERE version = 1",
+      const result = await this.#connection.query<{ checksum: string; version: number }>(
+        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (1, 6) ORDER BY version",
         [],
         signal,
       );
       throwIfAborted(signal);
-      return result.rowCount === 1 && result.rows[0]?.checksum === WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM;
+      return (
+        result.rowCount === 2 &&
+        result.rows[0]?.version === 1 &&
+        result.rows[0]?.checksum === WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM &&
+        result.rows[1]?.version === 6 &&
+        result.rows[1]?.checksum === DURABLE_RETENTION_MIGRATION_V6_CHECKSUM
+      );
     } catch {
       throwIfAborted(signal);
       return false;
@@ -281,6 +327,141 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
       }
       if (queued.rows[0]!.deleted_at !== null) return null;
       return deletion;
+    }, signal);
+  }
+
+  async queueOrphanedBlobDeletions(
+    tenantValue: string,
+    graceValue: number,
+    maximumValue: number,
+    signal?: AbortSignal,
+  ) {
+    const tenant = tenantId(tenantValue);
+    const grace = gcGraceMs(graceValue);
+    const maximum = boundedPositiveInteger(maximumValue, "maximum", 256);
+    return this.#connection.transaction(async (client) => {
+      const mature = await client.query<OrphanCandidateRow>(
+        `SELECT b.digest
+           FROM public.source_blob_objects b
+          WHERE b.tenant_id = $1
+            AND b.orphaned_at IS NOT NULL
+            AND b.orphaned_at <= clock_timestamp() - ($2::double precision * interval '1 millisecond')
+          ORDER BY b.orphaned_at, b.digest
+          LIMIT $3`,
+        [tenant, grace, maximum],
+      );
+      const matureDigests = [...new Set(mature.rows.map(({ digest }) => sourceDigest(digest)))].sort();
+      const remaining = maximum - matureDigests.length;
+      const unmarked =
+        remaining === 0
+          ? []
+          : (
+              await client.query<OrphanCandidateRow>(
+                `SELECT b.digest
+                   FROM public.source_blob_objects b
+                  WHERE b.tenant_id = $1
+                    AND b.orphaned_at IS NULL
+                    AND NOT (${SOURCE_BLOB_REFERENCED_SQL})
+                  ORDER BY b.created_at, b.digest
+                  LIMIT $2`,
+                [tenant, remaining],
+              )
+            ).rows;
+      const unmarkedDigests = [...new Set(unmarked.map(({ digest }) => sourceDigest(digest)))].sort();
+      const lockedDigests = [...new Set([...unmarkedDigests, ...matureDigests])].sort();
+      for (const digest of lockedDigests) {
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`${tenant}:${digest}`]);
+      }
+
+      // Discover registered objects whose final reference disappeared outside
+      // the session-retention transaction (for example, during artifact GC).
+      // A fresh DB-clock mark must survive one complete grace interval, so it
+      // is deliberately not added to matureDigests during this sweep.
+      for (const digest of unmarkedDigests) {
+        await client.query(
+          `UPDATE public.source_blob_objects b
+              SET orphaned_at = clock_timestamp()
+            WHERE b.tenant_id = $1
+              AND b.digest = $2
+              AND b.orphaned_at IS NULL
+              AND NOT (${SOURCE_BLOB_REFERENCED_SQL})`,
+          [tenant, digest],
+        );
+      }
+
+      let queuedCount = 0;
+      for (const digest of matureDigests) {
+        const selected = await client.query<OrphanedBlobRow>(
+          `SELECT b.tenant_id, b.digest, b.object_key, b.version_id, b.etag, b.byte_size, b.orphaned_at,
+                  (${SOURCE_BLOB_REFERENCED_SQL}) AS referenced
+             FROM public.source_blob_objects b
+            WHERE b.tenant_id = $1 AND b.digest = $2
+            FOR UPDATE OF b`,
+          [tenant, digest],
+        );
+        const current = selected.rows[0];
+        if (!current) continue;
+        if (current.referenced) {
+          await client.query(
+            `UPDATE public.source_blob_objects
+                SET orphaned_at = NULL
+              WHERE tenant_id = $1 AND digest = $2`,
+            [tenant, digest],
+          );
+          continue;
+        }
+        if (current.orphaned_at === null) {
+          await client.query(
+            `UPDATE public.source_blob_objects
+                SET orphaned_at = clock_timestamp()
+              WHERE tenant_id = $1 AND digest = $2 AND orphaned_at IS NULL`,
+            [tenant, digest],
+          );
+          continue;
+        }
+        if (!(current.orphaned_at instanceof Date)) {
+          throw new TypeError("PostgreSQL returned an invalid source blob orphan timestamp.");
+        }
+        const removed = await client.query<BlobRow>(
+          `DELETE FROM public.source_blob_objects b
+                WHERE b.tenant_id = $1
+                  AND b.digest = $2
+                  AND b.orphaned_at <= clock_timestamp() - ($3::double precision * interval '1 millisecond')
+                  AND NOT (${SOURCE_BLOB_REFERENCED_SQL})
+            RETURNING b.tenant_id, b.digest, b.object_key, b.version_id, b.etag, b.byte_size`,
+          [tenant, digest, grace],
+        );
+        const row = removed.rows[0];
+        if (!row) continue;
+        const deletionId = randomUUID();
+        const queued = await client.query<DeletionRow>(
+          `INSERT INTO public.source_blob_deletions
+             (deletion_id, tenant_id, digest, object_key, version_id, etag, byte_size)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (tenant_id, object_key, version_id) DO UPDATE
+             SET object_key = EXCLUDED.object_key
+           RETURNING deletion_id, tenant_id, digest, object_key, version_id, etag, byte_size, deleted_at`,
+          [deletionId, row.tenant_id, row.digest, row.object_key, row.version_id, row.etag, row.byte_size],
+        );
+        const deletionRow = queued.rows[0];
+        if (!deletionRow) {
+          throw new TypeError("PostgreSQL did not return the queued source deletion.");
+        }
+        const deletion = deletionFromRow(deletionRow);
+        if (
+          deletionRow.deleted_at !== null ||
+          deletion.tenantId !== tenant ||
+          deletion.blob.digest !== row.digest ||
+          deletion.blob.objectKey !== row.object_key ||
+          deletion.blob.versionId !== row.version_id ||
+          deletion.blob.etag !== row.etag ||
+          deletion.blob.byteSize !== row.byte_size
+        ) {
+          throw new TypeError("The queued source deletion conflicts with the orphaned object version.");
+        }
+        queuedCount += 1;
+      }
+      return queuedCount;
     }, signal);
   }
 

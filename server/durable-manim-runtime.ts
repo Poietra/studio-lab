@@ -433,13 +433,19 @@ export function createDurableProductionManimRuntimeAdapterV1(
   runtime: DurableManimRuntimeV1,
   maintenance: Pick<DurableSourceBlobGcWorkerV1, "close" | "ready">,
 ): ProductionManimRuntimeAdapterV1 {
+  let closeRequest: Promise<void> | undefined;
   return {
     api: runtime,
-    async close() {
-      const errors: unknown[] = [];
-      await maintenance.close().catch((error: unknown) => errors.push(error));
-      await runtime.close().catch((error: unknown) => errors.push(error));
-      if (errors.length > 0) throw new AggregateError(errors, "Could not fully close the durable production runtime.");
+    close() {
+      closeRequest ??= (async () => {
+        const errors: unknown[] = [];
+        await maintenance.close().catch((error: unknown) => errors.push(error));
+        await runtime.close().catch((error: unknown) => errors.push(error));
+        if (errors.length > 0) {
+          throw new AggregateError(errors, "Could not fully close the durable production runtime.");
+        }
+      })();
+      return closeRequest;
     },
     async ready(signal) {
       if (!maintenance.ready() || !(await runtime.productionReady(signal))) return { ready: false };

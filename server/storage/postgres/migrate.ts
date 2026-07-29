@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 
 import type { Pool } from "pg";
+import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import workspaceSourceSqlV1 from "./migrations/0001_workspace_source.sql?raw";
 import renderSessionSqlV2 from "./migrations/0002_render_sessions.sql?raw";
 import snapshotPublicationSqlV3 from "./migrations/0003_snapshot_publications.sql?raw";
 import renderArtifactSqlV4 from "./migrations/0004_render_artifacts.sql?raw";
 import projectPngSqlV5 from "./migrations/0005_project_png.sql?raw";
+import renderSessionRetentionSqlV6 from "./migrations/0006_render_session_retention.sql?raw";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
 import { RENDER_SESSION_MIGRATION_V2_CHECKSUM } from "./postgres-render-session-repository";
@@ -42,6 +44,7 @@ export const RENDER_SESSION_MIGRATION_V2_SOURCE = renderSessionSqlV2;
 export const SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE = snapshotPublicationSqlV3;
 export const RENDER_ARTIFACT_MIGRATION_V4_SOURCE = renderArtifactSqlV4;
 export const PROJECT_PNG_MIGRATION_V5_SOURCE = projectPngSqlV5;
+export const RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE = renderSessionRetentionSqlV6;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -91,12 +94,24 @@ const projectPngMigrationV5: DurableStorageMigration<5> = Object.freeze({
   version: 5,
 });
 
+const renderSessionRetentionMigrationV6: DurableStorageMigration<6> = Object.freeze({
+  checksum: DURABLE_RETENTION_MIGRATION_V6_CHECKSUM,
+  checksumMismatch: "The render-session retention migration checksum is invalid.",
+  installedMismatch: "The installed render-session retention schema does not match migration v6.",
+  missingPrerequisite: "Render-session retention migration v6 requires durable storage migrations v1 through v5.",
+  prerequisiteMismatch:
+    "Render-session retention migration v6 requires exact durable storage migrations v1 through v5.",
+  source: RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE,
+  version: 6,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
   snapshotPublicationMigrationV3,
   renderArtifactMigrationV4,
   projectPngMigrationV5,
+  renderSessionRetentionMigrationV6,
 ]);
 
 function validateSource(migration: DurableStorageMigration) {
@@ -194,6 +209,16 @@ export function applyProjectPngMigrationV5(pool: Pool, source: string) {
     renderSessionMigrationV2,
     snapshotPublicationMigrationV3,
     renderArtifactMigrationV4,
+  ]);
+}
+
+export function applyRenderSessionRetentionMigrationV6(pool: Pool, source: string) {
+  return applyMigration(pool, { ...renderSessionRetentionMigrationV6, source }, [
+    workspaceSourceMigrationV1,
+    renderSessionMigrationV2,
+    snapshotPublicationMigrationV3,
+    renderArtifactMigrationV4,
+    projectPngMigrationV5,
   ]);
 }
 

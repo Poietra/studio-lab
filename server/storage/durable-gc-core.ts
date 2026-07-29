@@ -5,6 +5,9 @@ export type DurableGcResultV1<Cursor> = Readonly<{
   queued: number;
 }>;
 
+export const MIN_DURABLE_GC_GRACE_MS_V1 = 60_000;
+export const MAX_DURABLE_GC_GRACE_MS_V1 = 30 * 24 * 60 * 60_000;
+
 type DurableGcSweepOptionsV1<Candidate, Deletion, Cursor> = Readonly<{
   acknowledge: (deletion: Deletion, signal?: AbortSignal) => Promise<void>;
   createError: (errors: readonly unknown[], result: DurableGcResultV1<Cursor>) => unknown;
@@ -70,21 +73,27 @@ export type DurableGcWorkerCoreOptionsV1<Result extends DurableGcResultV1<Cursor
   validationPrefix: string;
 }>;
 
-/** Timer and cancellation lifecycle shared by explicitly composed durable maintenance loops. */
-export class DurableGcWorkerCoreV1<Result extends DurableGcResultV1<Cursor>, Cursor> {
+export type DurableMaintenanceWorkerCoreOptionsV1<Result> = Readonly<{
+  intervalMs: number;
+  onFailure: (error: unknown) => void;
+  run: (signal: AbortSignal) => Promise<Result>;
+  startOnceError: string;
+  sweepTimeoutMs: number;
+  validationPrefix: string;
+}>;
+
+/** Timer, deadline, cancellation, and retry lifecycle shared by durable maintenance loops. */
+export class DurableMaintenanceWorkerCoreV1<Result> {
   readonly #controller = new AbortController();
-  readonly #options: DurableGcWorkerCoreOptionsV1<Result, Cursor>;
+  readonly #options: DurableMaintenanceWorkerCoreOptionsV1<Result>;
   readonly #state = { closed: false, healthy: false, started: false };
   #active: Promise<Result> | null = null;
   #closeRequest: Promise<void> | null = null;
-  #cursor: Cursor | null = null;
   #timer: NodeJS.Timeout | null = null;
 
-  constructor(options: DurableGcWorkerCoreOptionsV1<Result, Cursor>) {
+  constructor(options: DurableMaintenanceWorkerCoreOptionsV1<Result>) {
     const prefix = options.validationPrefix;
     const bounds = [
-      ["batchSize", 1, 256, "an integer between 1 and 256."],
-      ["graceMs", 60_000, 30 * 24 * 60 * 60_000, "between one minute and 30 days."],
       ["intervalMs", 1_000, 24 * 60 * 60_000, "between one second and one day."],
       ["sweepTimeoutMs", 1_000, 5 * 60_000, "between one second and five minutes."],
     ] as const;
@@ -99,24 +108,7 @@ export class DurableGcWorkerCoreV1<Result extends DurableGcResultV1<Cursor>, Cur
 
   async #sweep(signal: AbortSignal) {
     const sweepSignal = AbortSignal.any([signal, AbortSignal.timeout(this.#options.sweepTimeoutMs)]);
-    const request = (async () => {
-      const ready = await this.#options.isStorageReady(sweepSignal);
-      sweepSignal.throwIfAborted();
-      if (!ready) throw new Error(this.#options.readinessError);
-      try {
-        const result = await this.#options.run({
-          cursor: this.#cursor,
-          cutoff: new Date(Date.now() - this.#options.graceMs),
-          maximum: this.#options.batchSize,
-          signal: sweepSignal,
-        });
-        this.#cursor = result.nextCursor;
-        return result;
-      } catch (error) {
-        this.#cursor = this.#options.cursorAfterFailure(error, this.#cursor);
-        throw error;
-      }
-    })();
+    const request = this.#options.run(sweepSignal);
     this.#active = request;
     try {
       const result = await request;
@@ -152,6 +144,7 @@ export class DurableGcWorkerCoreV1<Result extends DurableGcResultV1<Cursor>, Cur
     const sweepSignal = signal ? AbortSignal.any([signal, this.#controller.signal]) : this.#controller.signal;
     try {
       await this.#sweep(sweepSignal);
+      sweepSignal.throwIfAborted();
       this.#schedule();
       return this;
     } catch (error) {
@@ -174,5 +167,51 @@ export class DurableGcWorkerCoreV1<Result extends DurableGcResultV1<Cursor>, Cur
       this.#state.healthy = false;
     })();
     return this.#closeRequest;
+  }
+}
+
+/** Adds bounded listing/grace/cursor semantics to the shared maintenance lifecycle. */
+export class DurableGcWorkerCoreV1<
+  Result extends DurableGcResultV1<Cursor>,
+  Cursor,
+> extends DurableMaintenanceWorkerCoreV1<Result> {
+  constructor(options: DurableGcWorkerCoreOptionsV1<Result, Cursor>) {
+    const bounds = [
+      ["batchSize", options.batchSize, 1, 256, "an integer between 1 and 256."],
+      [
+        "graceMs",
+        options.graceMs,
+        MIN_DURABLE_GC_GRACE_MS_V1,
+        MAX_DURABLE_GC_GRACE_MS_V1,
+        "between one minute and 30 days.",
+      ],
+    ] as const;
+    for (const [key, value, minimum, maximum, requirement] of bounds) {
+      if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+        throw new RangeError(`${options.validationPrefix} ${key} must be ${requirement}`);
+      }
+    }
+    let cursor: Cursor | null = null;
+    super({
+      ...options,
+      run: async (signal) => {
+        const ready = await options.isStorageReady(signal);
+        signal.throwIfAborted();
+        if (!ready) throw new Error(options.readinessError);
+        try {
+          const result = await options.run({
+            cursor,
+            cutoff: new Date(Date.now() - options.graceMs),
+            maximum: options.batchSize,
+            signal,
+          });
+          cursor = result.nextCursor;
+          return result;
+        } catch (error) {
+          cursor = options.cursorAfterFailure(error, cursor);
+          throw error;
+        }
+      },
+    });
   }
 }
