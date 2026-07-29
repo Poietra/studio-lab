@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { isNativeError, isProxy } from "node:util/types";
 
 import {
   createManimProjectRequestSchema,
@@ -66,6 +67,19 @@ export type ManimRequestPolicy = Readonly<{
 const DEFAULT_MANIM_REQUEST_POLICY: ManimRequestPolicy = {
   allowExistingProjectRegistration: true,
 };
+const DOM_EXCEPTION_NAME_GETTER = Object.getOwnPropertyDescriptor(DOMException.prototype, "name")?.get;
+
+function hasNativeErrorName(error: unknown, name: string) {
+  if (isProxy(error) || !isNativeError(error)) return false;
+  const descriptor = Object.getOwnPropertyDescriptor(error, "name");
+  if (descriptor !== undefined) return "value" in descriptor && descriptor.value === name;
+  if (!DOM_EXCEPTION_NAME_GETTER) return false;
+  try {
+    return DOM_EXCEPTION_NAME_GETTER.call(error) === name;
+  } catch {
+    return false;
+  }
+}
 
 export function isManimVideoRequest(method: string | undefined, pathname: string) {
   const match = pathname.match(RENDER_ROUTE);
@@ -580,12 +594,12 @@ export async function handleManimRequest(
     await routeManimRequest(manager, request, response, requestAbort.signal, policy);
     logger.info("response.sent", { status: response.statusCode });
   } catch (error) {
-    if (requestAbort.signal.aborted || (response.destroyed && error instanceof Error && error.name === "AbortError")) {
+    if (requestAbort.signal.aborted || (response.destroyed && hasNativeErrorName(error, "AbortError"))) {
       const expectedAbort =
         error === requestAbort.signal.reason ||
-        (error instanceof Error && error.name === "AbortError") ||
+        hasNativeErrorName(error, "AbortError") ||
         (error instanceof HttpError && error.message === "Request body was interrupted.");
-      const details = { kind: error instanceof Error ? error.name : "UnknownError" };
+      const details = { kind: expectedAbort ? "ExpectedAbort" : "AbortCleanupFailure" };
       if (expectedAbort) logger.info("request.aborted", details);
       else logger.error("request.abort_cleanup_failed", details);
       return;
@@ -594,7 +608,10 @@ export async function handleManimRequest(
     const expected = error instanceof HttpError || ambiguousScene;
     const status = error instanceof HttpError ? error.status : ambiguousScene ? 409 : 500;
     const message = expected && error instanceof Error ? error.message : "Manim render pipeline failed.";
-    const details = { kind: error instanceof Error ? error.name : "UnknownError", status };
+    const details = {
+      kind: error instanceof HttpError ? "HttpError" : ambiguousScene ? "AmbiguousSourceSceneError" : "UnhandledError",
+      status,
+    };
     if (expected) logger.warn("request.rejected", details);
     else logger.error("request.failed", details);
     if (!sendJson(response, status, { error: message })) {

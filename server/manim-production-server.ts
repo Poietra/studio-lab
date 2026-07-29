@@ -601,9 +601,7 @@ export async function startProductionManimServer(
         });
         return;
       }
-      logger.error("production.request_failed", {
-        kind: error instanceof Error ? error.name : "UnknownError",
-      });
+      logger.error("production.request_failed", { kind: "UnhandledError" });
       request.resume();
       response.setHeader("connection", "close");
       sendJson(response, 500, { error: "Production request failed." });
@@ -636,7 +634,7 @@ export async function startProductionManimServer(
   server.on("clientError", (_error, socket) => {
     if (socket.writable) socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
   });
-  server.on("error", (error) => logger.error("production.server_error", { kind: error.name }));
+  server.on("error", () => logger.error("production.server_error", { kind: "ServerError" }));
 
   try {
     await new Promise<void>((resolveListen, rejectListen) => {
