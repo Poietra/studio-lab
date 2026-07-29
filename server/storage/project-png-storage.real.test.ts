@@ -73,7 +73,7 @@ function png(red: number) {
 }
 
 describe.skipIf(!E2E_CONFIGURED)("PostgreSQL + MinIO project image.png storage", () => {
-  it("replaces atomically, pins render generations, isolates tenants, and collects an upload orphan", async () => {
+  it("replaces atomically across ABA reuse, pins render generations, isolates tenants, and collects orphans", async () => {
     const config = environment();
     const setupPool = new Pool({ connectionString: config.databaseUrl, max: 2 });
     const setupS3 = new S3Client(s3Config(config));
@@ -181,6 +181,28 @@ describe.skipIf(!E2E_CONFIGURED)("PostgreSQL + MinIO project image.png storage",
       await expect(pngStore.read(tenant, project, orphan)).rejects.toThrow();
       await expect(pngStore.read(tenant, project, firstReceipt)).resolves.toEqual(Uint8Array.from(png(16)));
       await expect(pngStore.read(tenant, project, secondReceipt)).resolves.toEqual(Uint8Array.from(png(32)));
+
+      const reusedFirstReceipt = await pngStore.put(tenant, project, png(16));
+      expect(reusedFirstReceipt).toEqual(firstReceipt);
+      const restoredHead = await pngRepository.compareAndSwapHead({
+        candidate: reusedFirstReceipt,
+        expected: { digest: secondHead.receipt.digest, generation: secondHead.generation },
+        projectId: project,
+        tenantId: tenant,
+      });
+      expect(restoredHead).toEqual({ ...firstHead, generation: 3n });
+      expect((await renderRepository.readSession(tenant, session.id)).projectPng).toEqual(firstHead);
+
+      const replacementGc = await runProjectPngGcV1({
+        cutoff: new Date(Date.now() + 2_000),
+        maximum: 32,
+        repository: pngRepository,
+        store: pngStore,
+        tenantId: tenant,
+      });
+      expect(replacementGc).toMatchObject({ deleted: 1, queued: 1 });
+      await expect(pngStore.read(tenant, project, firstReceipt)).resolves.toEqual(Uint8Array.from(png(16)));
+      await expect(pngStore.read(tenant, project, secondReceipt)).rejects.toThrow();
 
       await expect(pngRepository.readHead("tenant-b", project)).resolves.toBeNull();
       await expect(pngStore.read("tenant-b", project, firstReceipt)).rejects.toThrow(/receipt/i);

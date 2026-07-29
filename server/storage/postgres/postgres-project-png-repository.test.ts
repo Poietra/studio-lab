@@ -76,7 +76,14 @@ describe("PostgresProjectPngRepositoryV1", () => {
         return { rowCount: 0, rows: [] };
       }
       if (text.startsWith("INSERT INTO public.project_png_objects")) {
-        expect(values).toEqual([TENANT, PROJECT, "1", DIGEST, receipt().objectKey, "version-a", '"etag-a"', 128]);
+        expect(values).toEqual([TENANT, PROJECT, DIGEST, receipt().objectKey, "version-a", '"etag-a"', 128]);
+        return { rowCount: 1, rows: [] };
+      }
+      if (text.includes("FROM public.project_png_objects") && text.includes("FOR KEY SHARE")) {
+        return { rowCount: 1, rows: [headRow()] };
+      }
+      if (text.startsWith("INSERT INTO public.project_png_generations")) {
+        expect(values).toEqual([TENANT, PROJECT, "1", DIGEST, receipt().objectKey, "version-a"]);
         return { rowCount: 1, rows: [] };
       }
       if (text.startsWith("INSERT INTO public.project_png_heads")) return { rowCount: 1, rows: [] };
@@ -127,10 +134,11 @@ describe("PostgresProjectPngRepositoryV1", () => {
       if (text.includes("FROM public.project_png_objects") && text.includes("FOR UPDATE")) {
         return { rowCount: 0, rows: [] };
       }
-      if (text.startsWith("SELECT 1") && text.includes("FROM public.project_png_objects o")) {
+      if (text.startsWith("SELECT 1") && text.includes("FROM public.project_png_generations g")) {
         expect(text).toContain("FROM public.render_sessions");
         return { rowCount: 0, rows: [] };
       }
+      if (text.startsWith("DELETE FROM public.project_png_generations")) return { rowCount: 0, rows: [] };
       if (text.startsWith("DELETE FROM public.project_png_objects")) return { rowCount: 0, rows: [] };
       if (text.startsWith("INSERT INTO public.project_png_deletions")) return { rowCount: 1, rows: [] };
       if (text.includes("FROM public.project_png_deletions") && text.includes("FOR UPDATE")) {

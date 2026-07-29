@@ -192,11 +192,17 @@ const SESSION_JOINS = `
     ON original.tenant_id = s.tenant_id AND original.digest = s.original_digest
   JOIN public.source_blob_objects patched
     ON patched.tenant_id = s.tenant_id AND patched.digest = s.patched_digest
+  LEFT JOIN public.project_png_generations project_png_generation
+    ON project_png_generation.tenant_id = s.tenant_id
+   AND project_png_generation.project_id = s.project_id
+   AND project_png_generation.generation = s.project_png_generation
+   AND project_png_generation.digest = s.project_png_digest
   LEFT JOIN public.project_png_objects project_png
-    ON project_png.tenant_id = s.tenant_id
-   AND project_png.project_id = s.project_id
-   AND project_png.generation = s.project_png_generation
-   AND project_png.digest = s.project_png_digest
+    ON project_png.tenant_id = project_png_generation.tenant_id
+   AND project_png.project_id = project_png_generation.project_id
+   AND project_png.digest = project_png_generation.digest
+   AND project_png.object_key = project_png_generation.object_key
+   AND project_png.version_id = project_png_generation.version_id
   LEFT JOIN public.render_source_actions action
     ON action.tenant_id = s.tenant_id
    AND action.session_id = s.session_id
@@ -572,11 +578,14 @@ export class PostgresRenderSessionRepositoryV1 implements RenderSessionRepositor
           `SELECT h.tenant_id, h.project_id, h.generation::text AS generation,
                   o.digest, o.object_key, o.version_id, o.etag, o.byte_size
              FROM public.project_png_heads h
+             JOIN public.project_png_generations g
+               ON g.tenant_id = h.tenant_id AND g.project_id = h.project_id
+              AND g.generation = h.generation AND g.digest = h.digest
              JOIN public.project_png_objects o
-               ON o.tenant_id = h.tenant_id AND o.project_id = h.project_id
-              AND o.generation = h.generation AND o.digest = h.digest
+               ON o.tenant_id = g.tenant_id AND o.project_id = g.project_id
+              AND o.digest = g.digest AND o.object_key = g.object_key AND o.version_id = g.version_id
             WHERE h.tenant_id = $1 AND h.project_id = $2
-            FOR KEY SHARE OF h, o`,
+            FOR KEY SHARE OF h, g, o`,
           [tenant, project],
         );
         const pinnedPngRow = projectPngResult.rows[0];

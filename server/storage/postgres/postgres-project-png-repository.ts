@@ -12,7 +12,7 @@ import {
 } from "../project-png-storage";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 
-export const PROJECT_PNG_MIGRATION_V5_CHECKSUM = "8e0c02f355a0a88a50e89e2075e5d1fdade76c83eeb494aee41f32facb04beb2";
+export const PROJECT_PNG_MIGRATION_V5_CHECKSUM = "5366292bd9f2ef2a575e2de9573c5d76b7e8e2f17510966265861ad673a608a0";
 
 const MAX_GENERATION = 9_223_372_036_854_775_807n;
 
@@ -132,9 +132,12 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
       `SELECT h.tenant_id, h.project_id, h.generation::text AS generation,
               o.digest, o.object_key, o.version_id, o.etag, o.byte_size
          FROM public.project_png_heads h
+         JOIN public.project_png_generations g
+           ON g.tenant_id = h.tenant_id AND g.project_id = h.project_id
+          AND g.generation = h.generation AND g.digest = h.digest
          JOIN public.project_png_objects o
-           ON o.tenant_id = h.tenant_id AND o.project_id = h.project_id
-          AND o.generation = h.generation AND o.digest = h.digest
+           ON o.tenant_id = g.tenant_id AND o.project_id = g.project_id
+          AND o.digest = g.digest AND o.object_key = g.object_key AND o.version_id = g.version_id
         WHERE h.tenant_id = $1 AND h.project_id = $2
         ${lock ? "FOR UPDATE OF h" : ""}`,
       [tenant, project],
@@ -193,18 +196,35 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
       generation(nextGeneration);
       await client.query(
         `INSERT INTO public.project_png_objects
-           (tenant_id, project_id, generation, digest, object_key, version_id, etag, byte_size)
-         VALUES ($1, $2, $3::bigint, $4, $5, $6, $7, $8)`,
+           (tenant_id, project_id, digest, object_key, version_id, etag, byte_size)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (tenant_id, object_key, version_id) DO NOTHING`,
         [
           tenant,
           project,
-          nextGeneration.toString(),
           candidate.digest,
           candidate.objectKey,
           candidate.versionId,
           candidate.etag,
           candidate.byteSize,
         ],
+      );
+      const storedObject = await client.query<ReceiptRow>(
+        `SELECT ${RECEIPT_COLUMNS}
+           FROM public.project_png_objects
+          WHERE tenant_id = $1 AND project_id = $2 AND object_key = $3 AND version_id = $4
+          FOR KEY SHARE`,
+        [tenant, project, candidate.objectKey, candidate.versionId],
+      );
+      const registered = storedObject.rows[0];
+      if (!registered || !sameReceipt(receiptFromRow(tenant, project, registered), candidate)) {
+        throw new Error("The immutable image.png object version is bound to different metadata.");
+      }
+      await client.query(
+        `INSERT INTO public.project_png_generations
+           (tenant_id, project_id, generation, digest, object_key, version_id)
+         VALUES ($1, $2, $3::bigint, $4, $5, $6)`,
+        [tenant, project, nextGeneration.toString(), candidate.digest, candidate.objectKey, candidate.versionId],
       );
       await client.query(
         `INSERT INTO public.project_png_heads (tenant_id, project_id, generation, digest)
@@ -239,24 +259,28 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
     const result = await this.#connection.query(
       `SELECT 1
          FROM public.project_png_objects o
+         JOIN public.project_png_generations g
+           ON g.tenant_id = o.tenant_id AND g.project_id = o.project_id
+          AND g.digest = o.digest AND g.object_key = o.object_key AND g.version_id = o.version_id
         WHERE o.tenant_id = $1 AND o.project_id = $2
           AND o.digest = $3 AND o.object_key = $4 AND o.version_id = $5
           AND o.etag = $6 AND o.byte_size = $7
           AND (
             EXISTS (
               SELECT 1 FROM public.project_png_heads h
-               WHERE h.tenant_id = o.tenant_id AND h.project_id = o.project_id
-                 AND h.generation = o.generation AND h.digest = o.digest
+               WHERE h.tenant_id = g.tenant_id AND h.project_id = g.project_id
+                 AND h.generation = g.generation AND h.digest = g.digest
             ) OR EXISTS (
               SELECT 1 FROM public.render_sessions s
-               WHERE s.tenant_id = o.tenant_id AND s.project_id = o.project_id
-                 AND s.project_png_generation = o.generation AND s.project_png_digest = o.digest
+               WHERE s.tenant_id = g.tenant_id AND s.project_id = g.project_id
+                 AND s.project_png_generation = g.generation AND s.project_png_digest = g.digest
             )
-          )`,
+          )
+        LIMIT 1`,
       [tenant, project, receipt.digest, receipt.objectKey, receipt.versionId, receipt.etag, receipt.byteSize],
       signal,
     );
-    return result.rowCount === 1;
+    return result.rowCount !== 0;
   }
 
   async queueDeletion(
@@ -285,24 +309,34 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
       }
       const retained = await client.query(
         `SELECT 1
-           FROM public.project_png_objects o
-          WHERE o.tenant_id = $1 AND o.project_id = $2
-            AND o.object_key = $3 AND o.version_id = $4
+           FROM public.project_png_generations g
+           JOIN public.project_png_objects o
+             ON o.tenant_id = g.tenant_id AND o.project_id = g.project_id
+            AND o.digest = g.digest AND o.object_key = g.object_key AND o.version_id = g.version_id
+          WHERE g.tenant_id = $1 AND g.project_id = $2
+            AND g.object_key = $3 AND g.version_id = $4
             AND (
               EXISTS (
                 SELECT 1 FROM public.project_png_heads h
-                 WHERE h.tenant_id = o.tenant_id AND h.project_id = o.project_id
-                   AND h.generation = o.generation AND h.digest = o.digest
+                 WHERE h.tenant_id = g.tenant_id AND h.project_id = g.project_id
+                   AND h.generation = g.generation AND h.digest = g.digest
               ) OR EXISTS (
                 SELECT 1 FROM public.render_sessions s
-                 WHERE s.tenant_id = o.tenant_id AND s.project_id = o.project_id
-                   AND s.project_png_generation = o.generation AND s.project_png_digest = o.digest
+                 WHERE s.tenant_id = g.tenant_id AND s.project_id = g.project_id
+                   AND s.project_png_generation = g.generation AND s.project_png_digest = g.digest
               )
             )
+          LIMIT 1
           FOR KEY SHARE OF o`,
         [tenant, project, receipt.objectKey, receipt.versionId],
       );
       if (retained.rowCount !== 0) return null;
+      await client.query(
+        `DELETE FROM public.project_png_generations
+          WHERE tenant_id = $1 AND project_id = $2
+            AND digest = $3 AND object_key = $4 AND version_id = $5`,
+        [tenant, project, receipt.digest, receipt.objectKey, receipt.versionId],
+      );
       await client.query(
         `DELETE FROM public.project_png_objects
           WHERE tenant_id = $1 AND project_id = $2

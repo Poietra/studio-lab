@@ -89,7 +89,7 @@ const STORAGE_SUITES = [
     database: "poietra_project_png",
     file: "server/storage/project-png-storage.real.test.ts",
     id: "project-png",
-    title: "replaces atomically, pins render generations, isolates tenants, and collects an upload orphan",
+    title: "replaces atomically across ABA reuse, pins render generations, isolates tenants, and collects orphans",
   },
 ];
 
