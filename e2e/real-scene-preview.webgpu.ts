@@ -854,22 +854,38 @@ test("renders real compatible path morphs deterministically through retained Web
   const viewport = await canvasRoot.getAttribute("data-preview-viewport");
   if (!viewport) throw new Error("The path-morph WebGPU proof did not expose a viewport.");
   expect(viewport).toBe(PATH_TRIM_VIEWPORT);
-  const samplePlan = [
-    { id: "a-first", sampleTime: 0 },
+  const checkpoints = [
+    { id: "initial", sampleTime: 0 },
     { id: "warped", sampleTime: 1 },
     { id: "hold", sampleTime: 1.5 },
     { id: "returning", sampleTime: 2.5 },
     { id: "restored", sampleTime: 3 },
     { id: "line-half", sampleTime: 3.5 },
     { id: "line-target", sampleTime: 4 },
-    { id: "a-repeat", sampleTime: 0 },
   ] as const;
+  const checkpointById = new Map(checkpoints.map((checkpoint) => [checkpoint.id, checkpoint]));
+  const shuffledCheckpointIds = [
+    "hold",
+    "line-target",
+    "initial",
+    "returning",
+    "warped",
+    "line-half",
+    "restored",
+  ] as const;
+  const samplePlan = [
+    ...checkpoints.map((checkpoint) => ({ id: `monotonic:${checkpoint.id}`, sampleTime: checkpoint.sampleTime })),
+    ...shuffledCheckpointIds.map((id) => ({
+      id: `shuffled:${id}`,
+      sampleTime: checkpointById.get(id)!.sampleTime,
+    })),
+  ];
   const samples = await readBackDynamicRendererSamples(page, {
     entityIds: PATH_MORPH_ENTITY_IDS,
     evidenceSamples: [
       { fractionX: 0.1484375, fractionY: 0.125 },
       { fractionX: 0.39453125, fractionY: 0.5 },
-      { fractionX: 0.32421875, fractionY: 0.5 },
+      { fractionX: 0.33125, fractionY: 0.5 },
       { fractionX: 0.39453125, fractionY: 0.7714285714285715 },
       { fractionX: 0.482421875, fractionY: 0.8375 },
       { fractionX: 0.03, fractionY: 0.05 },
@@ -880,29 +896,46 @@ test("renders real compatible path morphs deterministically through retained Web
     viewport,
   });
   const byId = new Map(samples.map((sample) => [sample.id, sample]));
-  const entries = (id: (typeof samplePlan)[number]["id"]) => byId.get(id)?.frame.interaction.entries;
-  const pixels = (id: (typeof samplePlan)[number]["id"]) => byId.get(id)?.evidence.samples as readonly RgbaPixel[];
-  for (const planned of samplePlan) {
-    expect(byId.get(planned.id)?.frame).toMatchObject({
+  type CheckpointId = (typeof checkpoints)[number]["id"];
+  const result = (order: "monotonic" | "shuffled", id: CheckpointId) => {
+    const sample = byId.get(`${order}:${id}`);
+    if (!sample) throw new Error(`Missing ${order} WebGPU evidence for ${id}.`);
+    return sample;
+  };
+  const entries = (id: CheckpointId) => result("monotonic", id).frame.interaction.entries;
+  const pixels = (id: CheckpointId) => result("monotonic", id).evidence.samples as readonly RgbaPixel[];
+  for (const checkpoint of checkpoints) {
+    const monotonic = result("monotonic", checkpoint.id);
+    const shuffled = result("shuffled", checkpoint.id);
+    expect(monotonic.frame).toMatchObject({
       kind: "frame-presented",
       revision,
-      sampleTime: planned.sampleTime,
+      sampleTime: checkpoint.sampleTime,
     });
-    expect(entries(planned.id)?.every((entry) => entry.status === "present")).toBe(true);
-    expectPixelNear(pixels(planned.id)[0]!, [255, 255, 255, 255]);
-    expectPixelNear(pixels(planned.id)[1]!, [88, 196, 221, 255]);
-    expectPixelNear(pixels(planned.id)[5]!, [0, 0, 0, 255]);
+    expect(monotonic.frame.interaction.entries.every((entry) => entry.status === "present")).toBe(true);
+    expect(shuffled.frame).toMatchObject({
+      kind: "frame-presented",
+      revision,
+      sampleTime: checkpoint.sampleTime,
+    });
+    expect(shuffled.frame.interaction.entries).toEqual(monotonic.frame.interaction.entries);
+    expect(shuffled.evidence.samples).toEqual(monotonic.evidence.samples);
+    expectPixelNear(pixels(checkpoint.id)[0]!, [255, 255, 255, 255]);
+    expectPixelNear(pixels(checkpoint.id)[1]!, [88, 196, 221, 255]);
+    expectPixelNear(pixels(checkpoint.id)[5]!, [0, 0, 0, 255]);
   }
-  expect(entries("a-repeat")).toEqual(entries("a-first"));
-  expect(pixels("a-repeat")).toEqual(pixels("a-first"));
   expect(entries("hold")?.[1]).toEqual(entries("warped")?.[1]);
-  expect(entries("warped")?.[1]).not.toEqual(entries("a-first")?.[1]);
+  expect(entries("warped")?.[1]).not.toEqual(entries("initial")?.[1]);
   expect(entries("returning")?.[1]).not.toEqual(entries("warped")?.[1]);
-  expect(entries("restored")?.[1]).toEqual(entries("a-first")?.[1]);
+  expect(entries("returning")?.[1]).not.toEqual(entries("restored")?.[1]);
+  expect(entries("restored")?.[1]).toEqual(entries("initial")?.[1]);
+  expect(entries("line-half")?.[2]).not.toEqual(entries("restored")?.[2]);
+  expect(entries("line-half")?.[2]).not.toEqual(entries("line-target")?.[2]);
   expect(entries("line-target")?.[2]).not.toEqual(entries("restored")?.[2]);
-  expectPixelNear(pixels("a-first")[2]!, [0, 0, 0, 255]);
+  expectPixelNear(pixels("initial")[2]!, [0, 0, 0, 255]);
   expectPixelNear(pixels("warped")[2]!, [88, 196, 221, 255]);
   expectPixelNear(pixels("hold")[2]!, [88, 196, 221, 255]);
+  expectPixelNear(pixels("returning")[2]!, [88, 196, 221, 255]);
   expectPixelNear(pixels("restored")[2]!, [0, 0, 0, 255]);
   expectPixelNear(pixels("restored")[3]!, [252, 98, 85, 255]);
   expectPixelNear(pixels("line-target")[3]!, [0, 0, 0, 255]);
