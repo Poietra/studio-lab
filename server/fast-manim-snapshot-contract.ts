@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import {
   evidenceV1Schema,
+  MAX_COORDINATE,
   opaqueIdV1Schema,
   parseVerifiedSceneIrBundleV1,
   type SceneIrBundleV1,
@@ -410,6 +411,22 @@ export function fastManimSnapshotOpacityChannelProvenanceIdV2(sceneId: string, s
   return `${sceneId}/provenance:channel:opacity:${sceneOrder}`;
 }
 
+export function fastManimSnapshotAffineTransformChannelIdV2(sceneId: string, sceneOrder: number) {
+  if (!Number.isSafeInteger(sceneOrder) || sceneOrder < 0) {
+    throw new TypeError("Affine-transform channel identifiers derive from a non-negative integer sceneOrder.");
+  }
+  return `${sceneId}/channel:affine-transform:${sceneOrder}`;
+}
+
+export function fastManimSnapshotAffineTransformChannelProvenanceIdV2(sceneId: string, sceneOrder: number) {
+  if (!Number.isSafeInteger(sceneOrder) || sceneOrder < 0) {
+    throw new TypeError(
+      "Affine-transform channel provenance identifiers derive from a non-negative integer sceneOrder.",
+    );
+  }
+  return `${sceneId}/provenance:channel:affine-transform:${sceneOrder}`;
+}
+
 /** The exact static Scene duration the v1 exporter emits. */
 export const FAST_MANIM_SNAPSHOT_STATIC_DURATION_SECONDS_V1 = 1;
 
@@ -561,7 +578,7 @@ function isCanonicalDynamicTimedStepV2(start: number, end: number) {
   return Number.isInteger(producerFrames) && producerFrames / FAST_MANIM_SNAPSHOT_FRAME_RATE_V2 === duration;
 }
 
-function assertDynamicOpacityProfileV2(scene: SceneIrBundleV1["scene"]) {
+function assertDynamicProfileV2(scene: SceneIrBundleV1["scene"]) {
   if (scene.duration > MAX_FAST_MANIM_SNAPSHOT_DURATION_SECONDS_V2) {
     profileViolation(`Variable-duration snapshots accept at most ${MAX_FAST_MANIM_SNAPSHOT_DURATION_SECONDS_V2}s.`);
   }
@@ -583,17 +600,102 @@ function assertDynamicOpacityProfileV2(scene: SceneIrBundleV1["scene"]) {
   }
 
   const entityIndexes = new Map(scene.entities.map((entity, index) => [entity.id, index]));
-  let previousEntityIndex = -1;
+  let previousChannelOrder = -1;
   for (const channel of scene.animationChannels) {
-    if (channel.kind !== "opacity") {
-      profileViolation("Dynamic profile V2 accepts only opacity animation channels.");
+    if (channel.kind !== "affine-transform" && channel.kind !== "opacity") {
+      profileViolation("Dynamic profile V2 accepts only affine-transform and opacity animation channels.");
     }
     const entityIndex = entityIndexes.get(channel.entityId);
-    if (entityIndex === undefined || entityIndex <= previousEntityIndex) {
-      profileViolation("Dynamic opacity channels must follow entity sceneOrder without duplicates.");
+    const kindOrder = channel.kind === "affine-transform" ? 0 : 1;
+    const channelOrder = entityIndex === undefined ? -1 : entityIndex * 2 + kindOrder;
+    if (entityIndex === undefined || channelOrder <= previousChannelOrder) {
+      profileViolation(
+        "Dynamic channels must follow entity sceneOrder, with affine-transform before opacity, without duplicates.",
+      );
     }
-    previousEntityIndex = entityIndex;
+    previousChannelOrder = channelOrder;
     const entity = scene.entities[entityIndex]!;
+
+    if (channel.kind === "affine-transform") {
+      if (
+        channel.id !== fastManimSnapshotAffineTransformChannelIdV2(scene.sceneId, entityIndex) ||
+        channel.provenanceId !== fastManimSnapshotAffineTransformChannelProvenanceIdV2(scene.sceneId, entityIndex)
+      ) {
+        profileViolation(
+          "Dynamic affine-transform channel identifiers must derive from Scene identity and sceneOrder.",
+        );
+      }
+      const lifetime = entity.lifetimes[0]!;
+      const identity = { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 } as const;
+      const isIdentity = (value: (typeof channel.keyframes)[number]["value"]) =>
+        value.m11 === identity.m11 &&
+        value.m12 === identity.m12 &&
+        value.m21 === identity.m21 &&
+        value.m22 === identity.m22 &&
+        value.tx === identity.tx &&
+        value.ty === identity.ty;
+      if (!isIdentity(channel.keyframes[0]!.value)) {
+        profileViolation("A dynamic affine-transform channel must begin at the identity base transform.");
+      }
+      if (channel.keyframes.every((keyframe) => isIdentity(keyframe.value))) {
+        profileViolation("A dynamic affine-transform channel must contain a non-identity endpoint.");
+      }
+      if (entity.geometry.kind !== "cubic-path") {
+        profileViolation("Dynamic affine-transform channels require canonical cubic-path base geometry.");
+      }
+      const points = entity.geometry.path.subpaths.flatMap((subpath) => [
+        subpath.start,
+        ...subpath.segments.flatMap((segment) => [segment.control1, segment.control2, segment.end]),
+      ]);
+      if (points.length > 1 + MAX_STATIC_PROFILE_CLOSED_SEGMENTS * 3) {
+        profileViolation("Dynamic affine-transform base geometry exceeds the proven profile segment budget.");
+      }
+      for (const [keyframeIndex, keyframe] of channel.keyframes.entries()) {
+        if (
+          !isCanonicalSnapshotFrameTimeV2(keyframe.at) ||
+          keyframe.at < lifetime.start ||
+          keyframe.at > lifetime.end
+        ) {
+          profileViolation(
+            "Dynamic affine-transform keyframes must lie within the entity lifetime on the canonical 60fps grid.",
+          );
+        }
+        const final = keyframeIndex === channel.keyframes.length - 1;
+        if ((!final && keyframe.easingToNext?.kind !== "linear") || (final && keyframe.easingToNext !== null)) {
+          profileViolation(
+            "Dynamic affine-transform keyframes must use explicit linear easing and a null final easing.",
+          );
+        }
+        const { m11, m12, m21, m22, tx, ty } = keyframe.value;
+        if ([m11, m12, m21, m22, tx, ty].some((value) => !Number.isFinite(value) || Math.abs(value) > MAX_COORDINATE)) {
+          profileViolation("Dynamic affine-transform keyframes contain an out-of-range matrix component.");
+        }
+        // Do not require a non-zero determinant. Component-linear interpolation
+        // from identity to a valid reflection necessarily crosses a singular
+        // sample; renderer issue #195 owns draw-local handling at that instant.
+        if (
+          points.some((point) => {
+            const x = m11 * point.x + m12 * point.y + tx;
+            const y = m21 * point.x + m22 * point.y + ty;
+            return (
+              !Number.isFinite(x) || !Number.isFinite(y) || Math.abs(x) > MAX_COORDINATE || Math.abs(y) > MAX_COORDINATE
+            );
+          })
+        ) {
+          profileViolation(
+            "Dynamic affine-transform keyframes move base geometry outside the bounded coordinate range.",
+          );
+        }
+        if (
+          keyframeIndex > 0 &&
+          !isCanonicalDynamicTimedStepV2(channel.keyframes[keyframeIndex - 1]!.at, keyframe.at)
+        ) {
+          profileViolation("Dynamic affine-transform segments must span exact producer-supported 60fps timed steps.");
+        }
+      }
+      continue;
+    }
+
     if (
       channel.id !== fastManimSnapshotOpacityChannelIdV2(scene.sceneId, entityIndex) ||
       channel.provenanceId !== fastManimSnapshotOpacityChannelProvenanceIdV2(scene.sceneId, entityIndex)
@@ -683,18 +785,22 @@ function assertFastManimSnapshotProfileV1(
     profileViolation("Static profile cameras must use exactly the requested runtime frame.");
   }
   // V1 remains the exact one-second still contract. V2 adds a bounded 60fps
-  // timeline with observed membership lifetimes and exact linear Fade
-  // opacity channels. Geometry and transforms remain immutable.
+  // timeline with observed membership, exact linear Fade opacity, and exact
+  // component-linear affine channels. Geometry and the entity's base transform
+  // stay immutable; every animated local transform lives in its channel.
   if (snapshotVersion === 1 && scene.duration !== FAST_MANIM_SNAPSHOT_STATIC_DURATION_SECONDS_V1) {
     profileViolation("Static profile Scenes must report exactly the canonical 1-second static duration.");
   }
-  if (snapshotVersion === 2) assertDynamicOpacityProfileV2(scene);
+  if (snapshotVersion === 2) assertDynamicProfileV2(scene);
   if (snapshotVersion === 1 && scene.animationChannels.length > 0) {
     profileViolation("Static profile Scenes must not carry animation channels.");
   }
   const expectedCapabilities = [
+    ...(scene.animationChannels.some((channel) => channel.kind === "affine-transform")
+      ? (["affine-transform-animation"] as const)
+      : []),
     ...(scene.entities.length > 0 ? (["cubic-path-geometry"] as const) : []),
-    ...(scene.animationChannels.length > 0 ? (["opacity-animation"] as const) : []),
+    ...(scene.animationChannels.some((channel) => channel.kind === "opacity") ? (["opacity-animation"] as const) : []),
   ];
   if (
     scene.requiredCapabilities.length !== expectedCapabilities.length ||
@@ -703,7 +809,7 @@ function assertFastManimSnapshotProfileV1(
     profileViolation(
       snapshotVersion === 1
         ? "Static profile Scenes must require exactly cubic-path-geometry, or nothing when empty."
-        : "Dynamic profile V2 Scenes must require cubic-path-geometry for entities, followed by opacity-animation exactly when opacity channels are present.",
+        : "Dynamic profile V2 Scenes must derive affine-transform-animation, cubic-path-geometry, and opacity-animation exactly from their contents.",
     );
   }
   // Entities are the exporter's enumerate order: each sceneOrder must equal
@@ -739,7 +845,9 @@ function assertFastManimSnapshotProfileV1(
     }
     const { m11, m12, m21, m22, tx, ty } = entity.transform;
     if (m11 !== 1 || m12 !== 0 || m21 !== 0 || m22 !== 1 || tx !== 0 || ty !== 0) {
-      profileViolation("Static profile entities must use the identity transform.");
+      profileViolation(
+        "Snapshot profile entities must keep their base transform at identity; V2 affine motion belongs only in affine-transform channels.",
+      );
     }
     assertStaticProfileEntity(entity);
   });
@@ -747,16 +855,22 @@ function assertFastManimSnapshotProfileV1(
   // record per entity in validated enumerate order — no extra, missing,
   // reordered, or unreferenced records: a producer-chosen record could
   // otherwise carry an arbitrary suffix into browser JSON.
+  const entityIndexById = new Map(scene.entities.map((entity, index) => [entity.id, index]));
   const expectedProvenanceIds = [
     fastManimSnapshotSceneProvenanceIdV1(sceneId),
     ...scene.entities.map((_, index) => fastManimSnapshotEntityProvenanceIdV1(sceneId, index)),
     ...(snapshotVersion === 2
       ? scene.animationChannels.map((channel) => {
-          if (channel.kind !== "opacity") {
-            profileViolation("Dynamic profile V2 accepts only opacity animation channels.");
+          if (channel.kind !== "affine-transform" && channel.kind !== "opacity") {
+            profileViolation("Dynamic profile V2 accepts only affine-transform and opacity animation channels.");
           }
-          const entityIndex = scene.entities.findIndex((entity) => entity.id === channel.entityId);
-          return fastManimSnapshotOpacityChannelProvenanceIdV2(sceneId, entityIndex);
+          const entityIndex = entityIndexById.get(channel.entityId);
+          if (entityIndex === undefined) {
+            profileViolation("Dynamic animation channels must target a validated Scene entity.");
+          }
+          return channel.kind === "affine-transform"
+            ? fastManimSnapshotAffineTransformChannelProvenanceIdV2(sceneId, entityIndex)
+            : fastManimSnapshotOpacityChannelProvenanceIdV2(sceneId, entityIndex);
         })
       : []),
   ];
@@ -767,7 +881,7 @@ function assertFastManimSnapshotProfileV1(
     profileViolation(
       snapshotVersion === 1
         ? "Static profile provenance must be exactly the derived scene and per-entity records in order."
-        : "Dynamic profile V2 provenance must be exactly the derived scene, per-entity, and per-opacity-channel records in order.",
+        : "Dynamic profile V2 provenance must be exactly the derived scene, per-entity, and per-animation-channel records in order.",
     );
   }
 }
@@ -912,11 +1026,12 @@ export type FastManimSnapshotRuntimeCapabilityV1 = z.infer<typeof sceneCapabilit
  * Scene capabilities this server runtime honors end to end. A deliberately
  * conservative allowlist, NOT the schema capability universe: every entry
  * needs proven evaluator + renderer coverage, so adding a capability to the
- * Scene IR schema must never silently claim support here. The fast-manim#4
- * initial profile lowers Circle, Rectangle, and Line to cubic paths and
- * reports cubic-path-geometry.
+ * Scene IR schema must never silently claim support here. The static profile
+ * lowers Circle, Rectangle, and Line to cubic paths; V2 additionally admits
+ * the strictly verified opacity and affine-transform channel slices.
  */
 export const FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1 = Object.freeze([
+  "affine-transform-animation",
   "cubic-path-geometry",
   "opacity-animation",
   "shape-primitives",

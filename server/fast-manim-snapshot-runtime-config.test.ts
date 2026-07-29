@@ -15,6 +15,7 @@ import { runtimeConfig, sceneSource } from "./test-fixtures/fast-manim-snapshot-
 describe("fast-manim snapshot runtime config", () => {
   it("keeps the runtime allowlist conservative instead of mirroring the schema universe", () => {
     expect([...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1]).toEqual([
+      "affine-transform-animation",
       "cubic-path-geometry",
       "opacity-animation",
       "shape-primitives",
