@@ -12,15 +12,15 @@ vi.mock("node:fs/promises", () => filesystem);
 
 import {
   encodeManimRenderStagingLocatorV1,
-  manimRenderStagingIdV1,
   MANIM_RENDER_SANDBOX_RESULT_SCHEMA_V1,
   type ManimRenderSandboxTerminalV1,
+  manimRenderStagingIdV1,
 } from "../manim-render-sandbox-contract";
 import {
   parseRenderArtifactReceiptV1,
-  renderArtifactObjectKeyV1,
   type RenderArtifactRepositoryV1,
   type RenderArtifactStoreV1,
+  renderArtifactObjectKeyV1,
 } from "./render-artifact-repository";
 import type { DurableRenderSessionV1 } from "./render-session-repository";
 import { VerifiedArtifactPublisherV1 } from "./verified-artifact-publisher";
@@ -104,6 +104,7 @@ function session(id: string): DurableRenderSessionV1 {
     programTransactionId: "transaction-a",
     progress: 0.5,
     projectId: "project-a",
+    projectPng: null,
     renderRequestId: `request-${id}`,
     sceneName: "MainScene",
     sourcePath: "main.py",

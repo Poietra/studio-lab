@@ -11,7 +11,7 @@ import {
   durableManimRenderJobIdV1,
 } from "../durable-manim-render-worker";
 import { HttpError } from "../http/json";
-import { applyBundledDurableStorageMigrationsV2 } from "./postgres/migrate";
+import { applyBundledDurableStorageMigrations } from "./postgres/migrate";
 import { PostgresRenderSessionRepositoryV1 } from "./postgres/postgres-render-session-repository";
 import { PostgresWorkspaceSourceRepositoryV1 } from "./postgres/postgres-workspace-source-repository";
 import type { RenderSessionRepositoryV1 } from "./render-session-repository";
@@ -421,7 +421,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
     const commitCorrelationKey = "render-session-e2e-candidate";
 
     try {
-      await applyBundledDurableStorageMigrationsV2(setupPool);
+      await applyBundledDurableStorageMigrations(setupPool);
       await setupPool.query(
         `CREATE TABLE public.render_session_e2e_broker_jobs (
            job_id text PRIMARY KEY,

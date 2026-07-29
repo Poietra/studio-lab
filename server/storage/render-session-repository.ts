@@ -1,5 +1,5 @@
 import type { RenderSessionStatus, RenderSourceActionView } from "../../src/render-pipeline/contracts";
-
+import type { ProjectPngHeadV1 } from "./project-png-storage";
 import type { SourceBlobReceiptV1, WorkspaceSourceHeadV1 } from "./workspace-source-repository";
 
 export const MAX_DURABLE_RENDER_LOG_BYTES_V1 = 64 * 1024;
@@ -41,6 +41,7 @@ export type DurableRenderSessionV1 = Readonly<{
   programTransactionId: string;
   progress: number;
   projectId: string;
+  projectPng: ProjectPngHeadV1 | null;
   renderRequestId: string;
   sceneName: string;
   sourcePath: string;
