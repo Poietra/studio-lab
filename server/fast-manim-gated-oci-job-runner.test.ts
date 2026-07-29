@@ -172,9 +172,9 @@ function trustedImageInspection(image: string, target: readonly string[] = FAST_
           Cmd: target,
           Entrypoint: ["/opt/venv/bin/python", "/opt/poietra/gated-entrypoint.py"],
           Labels: {
-            "io.poietra.fast-manim.archive-sha256": "e85a0d72cc9f7d5ad684aa03f5a96e27e295a8dc17ba3444430a2995c279c659",
-            "io.poietra.fast-manim.commit": "badc17c365241df478b0aa5574a02d2b409ffb96",
-            "io.poietra.fast-manim.tree": "0ed167648df271c1180cc8fbf07d1018ec6e8ddd",
+            "io.poietra.fast-manim.archive-sha256": "57dc425090dbe448a3259a86134155a0df118566868c88bd2858c8445fd22903",
+            "io.poietra.fast-manim.commit": "f505776c37ecb4147e10a54ff917fc857034b3d4",
+            "io.poietra.fast-manim.tree": "a194bb6ba80d566163e946712e441901904faac7",
             "io.poietra.sandbox-slice": "gated-oci-v1",
           },
         },
