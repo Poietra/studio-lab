@@ -11,6 +11,7 @@ import {
 
 const SERVER_SEARCH = "?previewRenderer=server";
 const FIXTURE_SEARCH = "?previewRenderer=fixture";
+const MATHTEX_FIXTURE_SEARCH = "?previewRenderer=mathtex-fixture";
 const provider: StudioPreviewSnapshotProviderV1 = {
   id: "resolved-provider",
   loadVerifiedSnapshot: async () => {
@@ -28,7 +29,9 @@ describe("requestedStudioPreviewRendererSearchV1", () => {
   it("admits server authority in production but fixture authority only in development", () => {
     expect(requestedStudioPreviewRendererSearchV1(SERVER_SEARCH, false)).toBe(SERVER_SEARCH);
     expect(requestedStudioPreviewRendererSearchV1(FIXTURE_SEARCH, false)).toBeNull();
+    expect(requestedStudioPreviewRendererSearchV1(MATHTEX_FIXTURE_SEARCH, false)).toBeNull();
     expect(requestedStudioPreviewRendererSearchV1(FIXTURE_SEARCH, true)).toBe(FIXTURE_SEARCH);
+    expect(requestedStudioPreviewRendererSearchV1(MATHTEX_FIXTURE_SEARCH, true)).toBe(MATHTEX_FIXTURE_SEARCH);
   });
 });
 

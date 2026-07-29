@@ -7,5 +7,6 @@
     "sourcePath": "shared_circle_opacity.py"
   },
   "fixtureId": "eng-v1-shared-circle-opacity",
+  "runtimeConfigHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "sceneId": "shared:circle-opacity"
 }

@@ -1,0 +1,21 @@
+[package]
+name = "poietra-mathtex-outline"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version = "1.92"
+
+[dependencies]
+mitex.workspace = true
+poietra-scene-ir.workspace = true
+serde.workspace = true
+sha2.workspace = true
+ttf-parser.workspace = true
+typst.workspace = true
+typst-layout.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

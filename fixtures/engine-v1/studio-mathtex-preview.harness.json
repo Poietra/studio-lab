@@ -1,0 +1,11 @@
+{
+  "expectedDuration": 2,
+  "expectedIdentity": {
+    "projectId": "preview-harness",
+    "sceneName": "StudioMathTexPreview",
+    "sourceHash": "c18f55dc4e443119d12b947c7bcd6382c19b407c319b28f255724e3ad8ae4426",
+    "sourcePath": "studio_mathtex.py"
+  },
+  "fixtureId": "eng-v1-studio-mathtex-preview",
+  "sceneId": "fixture:studio-mathtex-preview"
+}

@@ -803,8 +803,8 @@ impl GeometryPhaseV1 {
     }
 }
 
-fn validate_geometry_output(
-    output: &BoundedGeometryV1,
+fn sanitize_geometry_output(
+    output: &mut BoundedGeometryV1,
     draw_id: &str,
     degenerate_reason: UnsupportedDrawReasonV1,
     phase: GeometryPhaseV1,
@@ -827,7 +827,13 @@ fn validate_geometry_output(
             "triangle index output is not divisible by three".to_owned(),
         ));
     }
-    for triangle in output.indices.chunks_exact(3) {
+    let mut retained_indices = 0usize;
+    for offset in (0..output.indices.len()).step_by(3) {
+        let triangle = [
+            output.indices[offset],
+            output.indices[offset + 1],
+            output.indices[offset + 2],
+        ];
         let [first, second, third] = [
             usize::try_from(triangle[0]).map_err(|_| PrepareFrameErrorV1::IndexRange)?,
             usize::try_from(triangle[1]).map_err(|_| PrepareFrameErrorV1::IndexRange)?,
@@ -846,12 +852,30 @@ fn validate_geometry_output(
             * (f64::from(third.y) - f64::from(first.y))
             - (f64::from(second.y) - f64::from(first.y))
                 * (f64::from(third.x) - f64::from(first.x));
-        if doubled_area == 0.0 || !doubled_area.is_finite() {
+        if !doubled_area.is_finite() {
             return Err(PrepareFrameErrorV1::Unsupported {
                 draw_id: draw_id.to_owned(),
                 reason: degenerate_reason,
             });
         }
+        // Lyon may emit zero-area bookkeeping triangles at collinear contour
+        // joins even when the rest of the fill is valid. They cover no pixels,
+        // so remove them while preserving fail-closed rejection when no
+        // renderable triangle remains. Source topology is checked separately.
+        if doubled_area == 0.0 {
+            continue;
+        }
+        output
+            .indices
+            .copy_within(offset..offset + 3, retained_indices);
+        retained_indices += 3;
+    }
+    output.indices.truncate(retained_indices);
+    if output.indices.is_empty() {
+        return Err(PrepareFrameErrorV1::Unsupported {
+            draw_id: draw_id.to_owned(),
+            reason: degenerate_reason,
+        });
     }
     Ok(())
 }
@@ -1471,15 +1495,15 @@ fn prepare_stroke_geometry(
     validate_round_stroke_complexity(&options, context.draw_id)?;
     let prepared_path =
         prepare_stroke_path_input(path, transform, stroke, &options, pixels_per_world, context)?;
-    let output = tessellate_stroke_path(
+    let mut output = tessellate_stroke_path(
         &prepared_path,
         &options,
         maximum_output_vertices,
         reported_output_limit,
         context.draw_id,
     )?;
-    validate_geometry_output(
-        &output,
+    sanitize_geometry_output(
+        &mut output,
         context.draw_id,
         UnsupportedDrawReasonV1::DegenerateStroke,
         GeometryPhaseV1::Stroke,
@@ -1646,8 +1670,8 @@ fn prepare_fill_geometry(
     builder
         .build()
         .map_err(|error| fill_tessellation_error(&error, draw_id, reported_output_limit))?;
-    validate_geometry_output(
-        &output,
+    sanitize_geometry_output(
+        &mut output,
         draw_id,
         UnsupportedDrawReasonV1::DegenerateFill,
         GeometryPhaseV1::Fill,
@@ -2016,6 +2040,47 @@ fn tessellate_validated_frame_inner_v1(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn geometry_sanitization_drops_zero_area_triangles_but_keeps_valid_output() {
+        let mut mixed = BoundedGeometryV1::new(4);
+        mixed.vertices = vec![
+            lyon_point(0.0, 0.0),
+            lyon_point(1.0, 0.0),
+            lyon_point(2.0, 0.0),
+            lyon_point(0.0, 1.0),
+        ];
+        mixed.indices = vec![0, 1, 2, 0, 1, 3];
+
+        sanitize_geometry_output(
+            &mut mixed,
+            "draw:mixed",
+            UnsupportedDrawReasonV1::DegenerateFill,
+            GeometryPhaseV1::Fill,
+        )
+        .expect("one valid triangle must keep the geometry renderable");
+        assert_eq!(mixed.indices, [0, 1, 3]);
+
+        let mut entirely_degenerate = BoundedGeometryV1::new(3);
+        entirely_degenerate.vertices = vec![
+            lyon_point(0.0, 0.0),
+            lyon_point(1.0, 0.0),
+            lyon_point(2.0, 0.0),
+        ];
+        entirely_degenerate.indices = vec![0, 1, 2];
+        assert!(matches!(
+            sanitize_geometry_output(
+                &mut entirely_degenerate,
+                "draw:degenerate",
+                UnsupportedDrawReasonV1::DegenerateFill,
+                GeometryPhaseV1::Fill,
+            ),
+            Err(PrepareFrameErrorV1::Unsupported {
+                reason: UnsupportedDrawReasonV1::DegenerateFill,
+                ..
+            })
+        ));
+    }
 
     #[test]
     fn collinear_control_overshoot_is_not_flattened_to_the_endpoint_chord() {

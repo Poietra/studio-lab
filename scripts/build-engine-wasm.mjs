@@ -17,18 +17,17 @@ if (installedVersion !== expectedVersion) {
   process.exit(1);
 }
 
-execFileSync(
-  "wasm-pack",
-  [
-    "build",
-    "engine/crates/poietra-wasm",
-    "--target",
-    "web",
-    "--release",
-    "--out-dir",
-    "../../../public/engine-wasm",
-    "--out-name",
-    "poietra_wasm",
-  ],
-  { cwd: repositoryRoot, stdio: "inherit" },
+function buildWasmPackage(cratePath, outDir, outName) {
+  execFileSync(
+    "wasm-pack",
+    ["build", cratePath, "--target", "web", "--release", "--out-dir", outDir, "--out-name", outName],
+    { cwd: repositoryRoot, stdio: "inherit" },
+  );
+}
+
+buildWasmPackage("engine/crates/poietra-wasm", "../../../public/engine-wasm", "poietra_wasm");
+buildWasmPackage(
+  "engine/crates/poietra-mathtex-wasm",
+  "../../../public/engine-wasm/mathtex-outline",
+  "poietra_mathtex_wasm",
 );
