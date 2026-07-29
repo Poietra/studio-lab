@@ -32,7 +32,8 @@ describe("Manim command parsing", () => {
   it("keeps snapshot profile V1 as the default and accepts an explicit V2 opt-in", () => {
     expect(parseFastManimSnapshotVersion(undefined)).toBe(1);
     expect(parseFastManimSnapshotVersion("2")).toBe(2);
-    expect(() => parseFastManimSnapshotVersion("3")).toThrow(/must be 1 or 2/i);
+    expect(parseFastManimSnapshotVersion("3")).toBe(3);
+    expect(() => parseFastManimSnapshotVersion("4")).toThrow(/must be 1, 2, or 3/i);
   });
 });
 

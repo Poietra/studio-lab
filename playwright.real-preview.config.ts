@@ -10,8 +10,12 @@ if (!producerCommand) {
     "POIETRA_FAST_MANIM_SNAPSHOT_COMMAND must name the real fast-manim snapshot producer as a command or JSON argv array.",
   );
 }
+const snapshotProfile = process.env.POIETRA_E2E_REAL_PREVIEW_PROFILE?.trim() || "2";
+if (snapshotProfile !== "2" && snapshotProfile !== "3") {
+  throw new Error("POIETRA_E2E_REAL_PREVIEW_PROFILE must be 2 or 3.");
+}
 
-const dataRoot = join(process.cwd(), "test-results", `workspace-store-${process.pid}-real-preview`);
+const dataRoot = join(process.cwd(), "test-results", `workspace-store-${process.pid}-real-preview-v${snapshotProfile}`);
 const port = Number(process.env.POIETRA_E2E_REAL_PREVIEW_PORT ?? 4184);
 
 export default defineConfig({
@@ -19,8 +23,8 @@ export default defineConfig({
   fullyParallel: false,
   projects: [
     {
-      name: "real-preview-webgpu",
-      testMatch: "**/real-scene-preview.webgpu.ts",
+      name: snapshotProfile === "3" ? "real-mathtex-preview-webgpu" : "real-preview-webgpu",
+      testMatch: snapshotProfile === "3" ? "**/real-mathtex-preview.webgpu.ts" : "**/real-scene-preview.webgpu.ts",
       use: {
         browserName: "chromium",
         channel: WEBGPU_CHROMIUM_CHANNEL,
@@ -41,7 +45,7 @@ export default defineConfig({
       POIETRA_AI_DEBUG_LOG: "off",
       POIETRA_FAST_MANIM_SNAPSHOT_COMMAND: producerCommand,
       POIETRA_FAST_MANIM_SNAPSHOT_DEV_OPT_IN: "1",
-      POIETRA_FAST_MANIM_SNAPSHOT_VERSION: "2",
+      POIETRA_FAST_MANIM_SNAPSHOT_VERSION: snapshotProfile,
       POIETRA_MANIM_PROJECTS: JSON.stringify([
         {
           id: "real-preview-harness",
