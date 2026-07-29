@@ -51,3 +51,14 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# The MathTex compiler pulls in Typst's complete standard library. Keep its
+# browser payload on a size-oriented link path without changing the release
+# profile used by the interactive renderer.
+[profile.mathtex-wasm-size]
+inherits = "release"
+codegen-units = 1
+lto = "fat"
+opt-level = "z"
+panic = "abort"
+strip = "symbols"
