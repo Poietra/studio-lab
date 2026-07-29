@@ -3,6 +3,7 @@ members = [
   "crates/poietra-eval",
   "crates/poietra-geometry",
   "crates/poietra-mathtex-outline",
+  "crates/poietra-mathtex-py",
   "crates/poietra-mathtex-wasm",
   "crates/poietra-render-wgpu",
   "crates/poietra-scene-ir",
@@ -21,6 +22,7 @@ poietra-geometry = { path = "crates/poietra-geometry" }
 poietra-scene-ir = { path = "crates/poietra-scene-ir" }
 poietra-eval = { path = "crates/poietra-eval" }
 poietra-mathtex-outline = { path = "crates/poietra-mathtex-outline" }
+pyo3 = { version = "=0.28.3", features = ["abi3-py310"] }
 lyon_tessellation = "=1.0.20"
 mitex = { git = "https://github.com/mitex-rs/mitex", rev = "51f7210e026ab05d037125247e92d4d023d8a80d" }
 serde = { version = "1.0", features = ["derive"] }

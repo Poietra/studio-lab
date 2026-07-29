@@ -1,0 +1,26 @@
+[package]
+name = "poietra-mathtex-py"
+version.workspace = true
+edition.workspace = true
+license-file = "../poietra-mathtex-outline/PACKAGE-LICENSES.txt"
+publish = false
+rust-version = "1.92"
+
+[lib]
+name = "poietra_mathtex_outline"
+crate-type = ["cdylib", "rlib"]
+doctest = false
+test = false
+
+[features]
+default = ["extension-module"]
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+poietra-mathtex-outline.workspace = true
+pyo3.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
