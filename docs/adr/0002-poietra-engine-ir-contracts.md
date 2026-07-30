@@ -463,10 +463,34 @@ fixtures and the following budgets on the reference host:
 | scrub input to presented frame, p95 | <= 50 ms |
 | worker + WASM cold ready, p95 over 20 runs | <= 1,000 ms |
 | additional compressed engine payload | <= 3 MiB |
-| engine peak memory above loaded Studio baseline | <= 256 MiB |
+| observed retained response-boundary logical peak (`WASM linear + logical GPU resident`) | <= 256 MiB |
 | initial Scene snapshot | <= 5 MiB |
 | typical edit delta across the worker boundary | <= 256 KiB |
 | browser/native perceptual parity | SSIM >= 0.995 and <= 0.5% pixels above 8/255 error |
+
+The memory budget has a deliberately narrower boundary than either intra-frame
+engine peak or browser-process RSS. `retainedBoundaryTotal` is exactly WebAssembly
+linear-memory bytes plus logical GPU resident bytes at the post-GPU-fence,
+pre-response-serialization boundary. Logical GPU resident is the allocated
+capacity of the retained vertex/index buffer arena plus the logical RGBA8 bytes
+of retained image textures; it is not a claim about physical VRAM allocation.
+The retained Scene index, prepared-geometry cache, and decoded image assets are
+informative breakdowns inside WASM linear memory and are never added to the total
+a second time.
+
+Transient per-frame image vertex/index buffers (bounded separately at 64 MiB),
+browser JS/DOM, and surface, pipeline, bind-group, sampler, driver, browser-process,
+and compositor allocations not byte-accounted by the retained caches are outside
+this gate. A future asset-workload memory slice must add same-frame transient
+accounting before this metric can be called a full intra-frame engine peak.
+
+The canonical gate observes one engine's lifetime high-water mark across every
+one of the 300 measured stage-telemetry frames for each pinned workload, after the
+30-frame telemetry warm-up. Every measured frame must expose memory evidence, and
+the maximum reported `retainedBoundaryTotal.peakBytes` must remain at or below
+256 MiB. This is an observed retained-boundary high-water mark with no loaded-
+Studio baseline subtraction; full intra-frame peak and browser RSS require
+separate evidence if they become adoption criteria.
 
 Meeting a timing budget cannot override correctness, asset integrity, visual parity,
 or fallback failure. The experiment produces a Go, conditional Go, or No-Go update
@@ -499,7 +523,7 @@ The following evidence is reproducible in this repository:
 | incremental edit transfer | partial | a Studio-only, 256 KiB, stale-revision-safe atomic delta contract is verified in TypeScript; Worker/WASM still receives complete replacement snapshots |
 | fast-manim bridge | met for the bounded static profile; production execution blocked | the real exporter emits complete camera, paint-order, appearance, and geometry evidence for a filled Circle, filled Rectangle, and canonical stroked Line; Studio now hands canonical immutable request bytes only to the explicit [sandbox backend boundary](../fast-manim-sandbox-backend.md), rechecks backend attestation and result correlation, then verifies and seals the result. Runner-owned status/job/close bounds quarantine adapters that miss lifecycle promises, omitted deployment defaults to production, and the local-process adapter remains explicit dev/test-only. The profile still fixes duration at one second, while variable runtime timing remains #75 and Poietra/fast-manim#7 |
 | frame, scrub, and cold-start latency | instrumented, decision evidence not met | an opt-in browser harness records 20 cold starts and warm/scrub acknowledgement p95, but no reference-host report for evaluate-plus-submit or input-to-present is checked in |
-| browser memory budget | unmeasured | no loaded-baseline/peak-memory report has been checked in |
+| retained-boundary memory budget | instrumented, decision evidence not met | telemetry reports `WASM linear + logical GPU resident` current/lifetime high-water marks at the post-fence response boundary and the canonical stage lane requires 300 measured frames per workload; transient image geometry and browser/driver memory remain excluded, and no named reference-host report satisfying the 256 MiB gate is checked in |
 
 The correctness run used Rust 1.92.0, Node 24.13.0, Playwright 1.61.1,
 Chromium 146.0.7678.0, and Linux 6.6.87.2 WSL2 on the reference CPU. It passed
