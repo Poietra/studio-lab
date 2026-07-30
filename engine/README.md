@@ -110,19 +110,19 @@ The shared browser/native WGPU 30 pipeline accepts caller-owned `Device`, `Queue
 and `TextureView` values, clears an extent-checked target, and draws premultiplied
 linear-light indexed path triangles and verified PNG quads in packet paint order.
 It accepts only `Rgba8UnormSrgb` and `Bgra8UnormSrgb` single-sample render targets.
-Device creation,
-browser asset transport and registry integration, long-lived texture caching,
-antialiasing, and clipping remain outside this slice. Native software-adapter and
+Device creation, long-lived texture caching, antialiasing, and clipping remain
+outside this slice. Native software-adapter and
 Chromium Worker readbacks share fixtures for generic fill topology and for animated
 curved/joined strokes, fill/stroke composition, and translucent source order; the
 native proof additionally covers exact PNG sampling and mixed path/image order.
 
 On `wasm32`, `PoietraCanvasEngineV1` owns an `OffscreenCanvas` WebGPU surface,
-device, queue, and the solid-paint renderer. Its asynchronous `create` method
-installs a validated snapshot, `replaceSnapshot` atomically replaces that snapshot,
-and `render` consumes the existing bounded sample request. Render responses contain
-only presentation correlation metadata or a structured error; they never transfer a
-`RenderPacket` back to JavaScript.
+device, queue, path/image renderer, and immutable digest-keyed PNG registry. Its
+asynchronous `create` method installs a validated snapshot and verified asset bytes,
+`replaceSnapshot` atomically replaces both authorities, and `render` consumes the
+existing bounded sample request. Render responses contain only presentation
+correlation metadata or a structured error; they never transfer a `RenderPacket`
+back to JavaScript.
 
 The canvas engine also exposes an opt-in stage-telemetry ABI, versioned
 independently of the base canvas ABI (`poietraCanvasTelemetryAbiVersion`).
