@@ -6,8 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
-import { PersistentManimProjectCatalog } from "./manim-project-catalog";
 import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
+import { PersistentManimProjectCatalog } from "./manim-project-catalog";
 import { handleManimRequest } from "./manim-render-http";
 import {
   cleanupManimRenderPipelineFixtures,
@@ -19,6 +19,11 @@ import {
   temporaryRoots,
   waitForTerminal,
 } from "./manim-render-pipeline-test-fixtures";
+
+const projectPngBytes = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
 
 afterEach(cleanupManimRenderPipelineFixtures);
 
@@ -41,6 +46,18 @@ describe("Manim project registry", () => {
       projectName: "Project B",
     });
     expect(() => registry.workspace("missing-project")).toThrow(/project not found/i);
+  });
+
+  it("routes digest-addressed snapshot assets through the owning project", async () => {
+    const { firstRoot, registry } = await registryFixture();
+    await writeFile(join(firstRoot, "image.png"), projectPngBytes);
+    const digest = createHash("sha256").update(projectPngBytes).digest("hex");
+
+    const asset = await registry.sceneSnapshotAsset("project-a", digest);
+    expect(asset).toMatchObject({ digest, mediaType: "image/png" });
+    expect(Buffer.from(asset.body)).toEqual(projectPngBytes);
+    await expect(registry.sceneSnapshotAsset("project-a", "f".repeat(64))).rejects.toMatchObject({ status: 404 });
+    expect(() => registry.sceneSnapshotAsset("missing-project", digest)).toThrow(/project not found/i);
   });
 
   it("persists create, rename, and unregister without deleting source folders", async () => {

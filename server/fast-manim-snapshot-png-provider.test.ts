@@ -1,6 +1,14 @@
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
-import { readFastManimSnapshotPngV1, sameFastManimSnapshotPngReadV1 } from "./fast-manim-snapshot-png-provider";
+import {
+  FileSystemFastManimSnapshotPngProviderV1,
+  readFastManimSnapshotPngV1,
+  sameFastManimSnapshotPngReadV1,
+} from "./fast-manim-snapshot-png-provider";
 
 const pngBytes = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
@@ -8,6 +16,25 @@ const pngBytes = Buffer.from(
 );
 
 describe("fast-manim snapshot PNG provider", () => {
+  it("reads only the fixed regular image.png from a local project root", async () => {
+    const root = await mkdtemp(join(tmpdir(), "poietra-snapshot-png-provider-"));
+    const outside = join(root, "outside.png");
+    try {
+      await writeFile(join(root, "image.png"), pngBytes);
+      const provider = new FileSystemFastManimSnapshotPngProviderV1(root);
+      const first = await readFastManimSnapshotPngV1(provider);
+      const second = await readFastManimSnapshotPngV1(provider);
+      expect(sameFastManimSnapshotPngReadV1(first, second)).toBe(true);
+
+      await rm(join(root, "image.png"));
+      await writeFile(outside, pngBytes);
+      await symlink(outside, join(root, "image.png"));
+      await expect(provider.readVerified()).rejects.toMatchObject({ status: 404 });
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
   it("owns and validates the exact static PNG generation", async () => {
     const candidate = Uint8Array.from(pngBytes);
     const read = await readFastManimSnapshotPngV1({
