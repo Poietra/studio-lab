@@ -1527,6 +1527,19 @@ fn retains_image_textures_and_sampler_bindings_with_bounded_lru() {
     assert_eq!(eviction.image_texture_cache.texture_uploads(), 1);
     assert_eq!(eviction.image_texture_cache.evictions(), 1);
 
+    let green_packet = retained_image_packet(
+        std::slice::from_ref(&green_metadata),
+        &[ImageSamplerV1::Nearest],
+    );
+    let green_again = prepare_frame_with_assets_v1(&green_packet, &resolver).unwrap();
+    let (_, regenerated) = bounded
+        .render_with_stage_evidence(&device, &queue, target, &green_again, None)
+        .unwrap();
+    assert_eq!(regenerated.image_texture_cache.texture_hits(), 0);
+    assert_eq!(regenerated.image_texture_cache.texture_uploads(), 1);
+    assert_eq!(regenerated.image_texture_cache.evictions(), 1);
+    assert_eq!(regenerated.image_texture_cache.texture_upload_bytes(), 4);
+
     let too_small = ImageTextureCacheLimitsV1 {
         decoded_cpu_bytes: 4,
         entries: 1,
