@@ -48,6 +48,24 @@
         "viewport": { "heightPx": 90, "widthPx": 160 }
       },
       "thresholdException": null
+    },
+    {
+      "id": "png-alpha-edge-camera--midpoint",
+      "fixture": {
+        "id": "eng-v1-png-alpha-edge-camera",
+        "path": "fixtures/engine-v1/png-alpha-edge-camera.json",
+        "revision": {
+          "kind": "studio-edit-program",
+          "sha256": "e7f8dcbd4eabd88861b101575fdb6b420ec4447173622bf6f9c7bbf6381160fc"
+        }
+      },
+      "sample": {
+        "id": "midpoint",
+        "sampleTime": 0.5,
+        "semanticDigest": "d9b5ec588d4366327c73fde436597f008b615450aa0a35824618e81573ebcec6",
+        "viewport": { "heightPx": 4, "widthPx": 8 }
+      },
+      "thresholdException": null
     }
   ]
 }

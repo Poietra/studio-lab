@@ -1,0 +1,154 @@
+{
+  "id": "eng-v1-png-alpha-edge-camera",
+  "assetPayloads": [
+    {
+      "assetId": "asset:png-alpha-edge",
+      "encodedBytes": [
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 2, 0, 0, 0, 1, 8, 6, 0, 0, 0, 244, 34,
+        127, 138, 0, 0, 0, 13, 73, 68, 65, 84, 120, 218, 99, 248, 207, 192, 0, 70, 0, 14, 250, 2, 254, 42, 64, 94, 185,
+        0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130
+      ]
+    }
+  ],
+  "analyticReferences": {
+    "midpoint": {
+      "channelOrder": "rgba",
+      "colorDomain": "srgb-u8",
+      "derivation": "Pixel centers sample a 2x1 premultiplied-linear texture across the full 8x4 target. The transparent blue texel contributes zero RGB before filtering; linear red weights [1,1,0.875,0.625,0.375,0.125,0,0] are encoded to sRGB and repeated for every row.",
+      "rgba": [
+        255, 0, 0, 255, 255, 0, 0, 255, 240, 0, 0, 255, 207, 0, 0, 255, 165, 0, 0, 255, 99, 0, 0, 255, 0, 0, 0, 255, 0,
+        0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 240, 0, 0, 255, 207, 0, 0, 255, 165, 0, 0, 255, 99, 0, 0, 255, 0, 0,
+        0, 255, 0, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 240, 0, 0, 255, 207, 0, 0, 255, 165, 0, 0, 255, 99, 0, 0,
+        255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 240, 0, 0, 255, 207, 0, 0, 255, 165, 0, 0, 255,
+        99, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255
+      ],
+      "sha256": "bd57ff57b18706b3d25886038a568d3a2904ec3987b365860aa0471bc7119b8b",
+      "viewport": { "heightPx": 4, "widthPx": 8 }
+    }
+  },
+  "assets": {
+    "assets": [
+      {
+        "alphaMode": "straight",
+        "byteLength": 70,
+        "colorSpace": "srgb",
+        "id": "asset:png-alpha-edge",
+        "kind": "png-image",
+        "mediaType": "image/png",
+        "pixelHeight": 1,
+        "pixelWidth": 2,
+        "sha256": "2bebb4821b77232aaafcc637c21da7f1e70f6799cf38f16a699a02fd4173c888"
+      }
+    ],
+    "manifestDigest": "17c31321cfaca4b6b84f6ef0d5192a74580314913d8e3739450f45f83cd92af5",
+    "manifestId": "manifest:png-alpha-edge-camera",
+    "schema": "poietra.asset-manifest",
+    "version": 1
+  },
+  "scene": {
+    "animationChannels": [
+      {
+        "entityId": "png-alpha-edge",
+        "id": "affine:png-alpha-edge",
+        "keyframes": [
+          {
+            "at": 0,
+            "easingToNext": { "kind": "linear" },
+            "value": { "m11": 2, "m12": 0, "m21": 0, "m22": 2, "tx": -1, "ty": 0 }
+          },
+          {
+            "at": 1,
+            "easingToNext": null,
+            "value": { "m11": 4, "m12": 0, "m21": 0, "m22": 4, "tx": 1, "ty": 0 }
+          }
+        ],
+        "kind": "affine-transform",
+        "provenanceId": "fixture"
+      },
+      {
+        "id": "camera:png-alpha-edge",
+        "keyframes": [
+          {
+            "at": 0,
+            "easingToNext": { "kind": "linear" },
+            "value": { "center": { "x": -1, "y": 0 }, "frameHeight": 4, "frameWidth": 8 }
+          },
+          {
+            "at": 1,
+            "easingToNext": null,
+            "value": { "center": { "x": 1, "y": 0 }, "frameHeight": 2, "frameWidth": 4 }
+          }
+        ],
+        "kind": "camera",
+        "provenanceId": "fixture"
+      }
+    ],
+    "assetManifest": {
+      "manifestDigest": "17c31321cfaca4b6b84f6ef0d5192a74580314913d8e3739450f45f83cd92af5",
+      "manifestId": "manifest:png-alpha-edge-camera"
+    },
+    "camera": {
+      "background": { "alpha": 1, "blue": 0, "green": 0, "red": 0 },
+      "view": { "center": { "x": -1, "y": 0 }, "frameHeight": 4, "frameWidth": 8 }
+    },
+    "coordinateSpace": {
+      "cpuPrecision": "f64",
+      "kind": "cartesian-2d",
+      "origin": "center",
+      "unit": "scene-unit",
+      "xAxis": "right",
+      "yAxis": "up"
+    },
+    "duration": 1,
+    "entities": [
+      {
+        "appearance": { "kind": "image", "opacity": 1 },
+        "geometry": {
+          "asset": {
+            "assetId": "asset:png-alpha-edge",
+            "sha256": "2bebb4821b77232aaafcc637c21da7f1e70f6799cf38f16a699a02fd4173c888"
+          },
+          "kind": "image",
+          "localRect": { "bottom": -0.5, "left": -1, "right": 1, "top": 0.5 },
+          "sampler": "linear"
+        },
+        "id": "png-alpha-edge",
+        "lifetimes": [{ "end": 1, "start": 0 }],
+        "parentId": null,
+        "provenanceId": "fixture",
+        "sceneOrder": 0,
+        "sourceZIndex": 0,
+        "transform": { "m11": 2, "m12": 0, "m21": 0, "m22": 2, "tx": -1, "ty": 0 }
+      }
+    ],
+    "fidelity": { "kind": "exact" },
+    "provenance": [
+      {
+        "evidence": ["Analytic 2x1 PNG alpha-edge visual parity fixture"],
+        "id": "fixture",
+        "origin": "fixture"
+      }
+    ],
+    "requiredCapabilities": ["affine-transform-animation", "camera-animation", "png-image"],
+    "sceneId": "visual-parity:png-alpha-edge-camera",
+    "schema": "poietra.scene-ir",
+    "source": {
+      "editProgramVersion": 1,
+      "kind": "studio-edit-program",
+      "revisionHash": "e7f8dcbd4eabd88861b101575fdb6b420ec4447173622bf6f9c7bbf6381160fc"
+    },
+    "version": 1
+  },
+  "samples": [
+    {
+      "expected": {
+        "analyticReferenceId": "midpoint",
+        "semanticDigest": "d9b5ec588d4366327c73fde436597f008b615450aa0a35824618e81573ebcec6"
+      },
+      "id": "midpoint",
+      "packetId": "visual-parity:png-alpha-edge-camera:midpoint",
+      "sampleTime": 0.5,
+      "viewport": { "heightPx": 4, "widthPx": 8 }
+    }
+  ]
+}
