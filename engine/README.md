@@ -310,11 +310,12 @@ Evidence rules:
   fixed absolute path, uses a fixed system module path, and discovers Edge
   from HKLM or fixed machine-install paths. This fail-closed harness does not
   claim resistance to an administrator modifying HKLM or Windows system files.
-- The current exact report pairs are `poietra.engine-webgpu-benchmark` v3,
-  `poietra.engine-webgpu-stress-benchmark` v4, and
-  `poietra.engine-webgpu-stage-telemetry` v2. Their eligibility/provenance and
-  reference-host additions are breaking changes; prior-version readers must
-  reject them rather than accepting a widened envelope.
+- The current exact report pairs are `poietra.engine-webgpu-benchmark` v4,
+  `poietra.engine-webgpu-stress-benchmark` v5, and
+  `poietra.engine-webgpu-stage-telemetry` v3. Their eligibility/provenance,
+  reference-host, and canonical-run nonce additions are breaking changes;
+  prior-version readers must reject them rather than accepting a widened
+  envelope.
 - The lane never retries: a Worker crash or destroyed page context fails the
   run, and the reports record the actual retry counters.
 - The stress report compares the existing no-interaction acknowledgement with

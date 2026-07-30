@@ -10,6 +10,7 @@ import {
   readPinnedReferenceHostProfile,
   readServedWasmEvidence,
   reportContracts,
+  requireBenchmarkRunId,
   requireReferenceHostPreflight,
   requireStableCommitIdentity,
   requireStableReferenceHostEnvironment,
@@ -634,6 +635,7 @@ test("records retained Worker latency without making CI hardware an adoption ora
   expect(testInfo.retry).toBe(0);
   expect(testInfo.project.retries).toBe(0);
   const provenance = resolveBenchmarkProvenance();
+  const benchmarkRunId = requireBenchmarkRunId();
   const host = collectHostEnvironment();
   const referenceHost = readPinnedReferenceHostProfile();
   const browserLaunch = { args: [...WEBGPU_CHROMIUM_LAUNCH_ARGS], channel: WEBGPU_CHROMIUM_CHANNEL };
@@ -818,6 +820,7 @@ test("records retained Worker latency without making CI hardware an adoption ora
   const warmFrame = summarizeTiming(samples.warmFrameMs, 300);
   const scrubAck = summarizeTiming(samples.scrubAckMs, 300);
   const report = {
+    benchmarkRunId,
     budgets: {
       coldClientImportToSceneReady: { limitMs: 1_000, met: coldClientImportToSceneReady.p95Ms <= 1_000 },
       scrubAck: { limitMs: 50, met: scrubAck.p95Ms <= 50 },

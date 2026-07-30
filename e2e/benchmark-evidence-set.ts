@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 
@@ -43,6 +43,7 @@ const stressConfigurationSchema = z.looseObject({
 const stageConfigurationSchema = z.looseObject({ telemetryFrames: z.literal(300) });
 
 const evidenceSetManifestSchema = z.strictObject({
+  benchmarkRunId: z.string().uuid(),
   commit: z.string().regex(/^[0-9a-f]{40}$/),
   profile: z.strictObject({ id: z.string().min(1), sha256: z.string().regex(/^[0-9a-f]{64}$/) }),
   reports: z.tuple([
@@ -165,6 +166,31 @@ function verifyStressReport(raw: unknown) {
       summarizeByteLengths(byteSummary.samplesBytes, configuration.measuredFrames),
       `${prefix}.interactionBounds.logicalResponseJsonBytes`,
     );
+    const expectedRequestedEntities = Math.min(workload.definition.entityCount, 128);
+    const expectedEntries = expectedRequestedEntities * configuration.measuredFrames;
+    requireEqual(
+      workload.interactionBounds.sceneEntityCount,
+      workload.definition.entityCount,
+      `${prefix}.interactionBounds.sceneEntityCount`,
+    );
+    requireEqual(
+      workload.interactionBounds.requestedEntityCount,
+      expectedRequestedEntities,
+      `${prefix}.interactionBounds.requestedEntityCount`,
+    );
+    requireEqual(
+      workload.interactionBounds.responses,
+      { available: configuration.measuredFrames, missing: 0, unavailable: 0 },
+      `${prefix}.interactionBounds.responses`,
+    );
+    requireEqual(
+      workload.interactionBounds.entries,
+      {
+        observedTotal: expectedEntries,
+        statuses: { empty: 0, inactive: 0, present: expectedEntries, unavailable: 0 },
+      },
+      `${prefix}.interactionBounds.entries`,
+    );
     requireEqual(
       workload.budgets,
       {
@@ -284,6 +310,7 @@ export function verifyBenchmarkEvidenceSetV1(input: EvidenceSetInput) {
   const stageTelemetry = verifyStageTelemetryReport(input.stageTelemetry);
   const reports = [benchmark, stress, stageTelemetry] as const;
   const sharedFields = [
+    ["benchmark run id", reports.map(({ benchmarkRunId }) => benchmarkRunId)],
     ["commit identity", reports.map(({ provenance }) => provenance.commitIdentity)],
     ["host", reports.map(({ environment }) => environment.host)],
     ["browser launch", reports.map(({ environment }) => environment.browserLaunch)],
@@ -300,9 +327,21 @@ export function verifyBenchmarkEvidenceSetV1(input: EvidenceSetInput) {
     "cross-report benchmark/vector base fixture",
   );
   requireEqual(stageTelemetry.baseFixtureIds, stress.baseFixtureIds, "cross-report stress/stage base fixtures");
+  for (const stressWorkload of stress.workloads) {
+    const stageWorkload = stageTelemetry.workloads.find(
+      ({ definition }) => definition.id === stressWorkload.definition.id,
+    );
+    if (!stageWorkload) throw new Error(`stage telemetry is missing workload ${stressWorkload.definition.id}`);
+    requireEqual(
+      { bytes: stageWorkload.snapshotBytes, sha256: stageWorkload.snapshotSha256 },
+      { bytes: stressWorkload.snapshotBytes, sha256: stressWorkload.snapshotSha256 },
+      `cross-report workload snapshot ${stressWorkload.definition.id}`,
+    );
+  }
   return {
     benchmark,
     identity: {
+      benchmarkRunId: benchmark.benchmarkRunId,
       commit: benchmark.provenance.commitIdentity.headCommit,
       profileId: benchmark.environment.referenceHostProfile.id,
       profileSha256: benchmark.environment.referenceHostProfile.sha256,
@@ -364,6 +403,7 @@ export async function promoteBenchmarkEvidenceSetV1(input: PromotionInput) {
       sourceEntries.map(([filename], index) => writeFile(join(temporary, filename), sourceBytes[index]!)),
     );
     const manifest = evidenceSetManifestSchema.parse({
+      benchmarkRunId: verified.identity.benchmarkRunId,
       commit,
       profile: { id: profileId, sha256: verified.identity.profileSha256 },
       reports,
@@ -395,9 +435,37 @@ export async function verifyPromotedBenchmarkEvidenceSetV1(directory: string) {
   const parsed = sourceBytes.map((bytes) => JSON.parse(new TextDecoder().decode(bytes)) as unknown);
   const verified = verifyBenchmarkEvidenceSetV1({ benchmark: parsed[0], stress: parsed[1], stageTelemetry: parsed[2] });
   requireEqual(verified.identity.commit, manifest.commit, "manifest commit");
+  requireEqual(verified.identity.benchmarkRunId, manifest.benchmarkRunId, "manifest benchmark run id");
   requireEqual(verified.identity.profileId, manifest.profile.id, "manifest profile id");
   requireEqual(verified.identity.profileSha256, manifest.profile.sha256, "manifest profile SHA-256");
   requireEqual(verified.identity.runBuildPath, manifest.runBuildPath, "manifest run build path");
   requireEqual(verified.identity.wasmSha256, manifest.wasmSha256, "manifest WASM SHA-256");
   return { manifest, verified } as const;
+}
+
+export async function verifyCheckedInBenchmarkEvidenceV1(
+  root = "docs/evidence/engine-webgpu",
+): Promise<readonly string[]> {
+  let profiles;
+  try {
+    profiles = await readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+  const verifiedDirectories: string[] = [];
+  for (const profile of profiles
+    .filter((entry) => entry.isDirectory())
+    .sort((left, right) => left.name.localeCompare(right.name))) {
+    const profileDirectory = join(root, profile.name);
+    const commits = await readdir(profileDirectory, { withFileTypes: true });
+    for (const commit of commits
+      .filter((entry) => entry.isDirectory())
+      .sort((left, right) => left.name.localeCompare(right.name))) {
+      const directory = join(profileDirectory, commit.name);
+      await verifyPromotedBenchmarkEvidenceSetV1(directory);
+      verifiedDirectories.push(directory);
+    }
+  }
+  return verifiedDirectories;
 }

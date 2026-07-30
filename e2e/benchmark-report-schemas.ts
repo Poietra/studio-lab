@@ -33,7 +33,7 @@ export const ENGINE_MEMORY_BUDGET_BYTES = 256 * 1024 * 1024;
 export const ENGINE_STAGE_TELEMETRY_SAMPLE_COUNT = 300;
 export const ENGINE_STAGE_TELEMETRY_WARMUP_COUNT = 30;
 export const ENGINE_WEBGPU_BENCHMARK_REPORT_SCHEMA = "poietra.engine-webgpu-benchmark";
-export const ENGINE_WEBGPU_BENCHMARK_REPORT_VERSION = 3;
+export const ENGINE_WEBGPU_BENCHMARK_REPORT_VERSION = 4;
 export const ENGINE_WEBGPU_STRESS_REPORT_SCHEMA = "poietra.engine-webgpu-stress-benchmark";
 export const ENGINE_WEBGPU_STRESS_REPORT_VERSION = 5;
 export const ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_SCHEMA = "poietra.engine-webgpu-stage-telemetry";
@@ -87,6 +87,7 @@ const workerAdapter = z.discriminatedUnion("kind", [
   strictObject({ kind: z.literal("unavailable"), reason: z.string().min(1) }),
 ]);
 const evidenceEnvelope = {
+  benchmarkRunId: z.string().uuid(),
   contracts: strictObject({
     canvasWorkerProtocolVersion: z.literal(1),
     engineContractVersion: z.literal(1),
@@ -129,6 +130,7 @@ const wasmEvidence = strictObject({
 const retries = strictObject({ projectRetries: z.literal(0), testRetry: z.literal(0) });
 
 type EvidenceEnvelopeReport = Readonly<{
+  benchmarkRunId: string;
   contracts: Readonly<{
     reportSchema: string;
     reportVersion: number;

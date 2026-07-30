@@ -451,10 +451,11 @@ canonical zero/empty; synthetic native-looking values invalidate the report.
 The checked-in profile binds those two evidence classes explicitly instead of
 claiming the browser exposed native PCI identity.
 
-The eligibility/provenance envelope is a breaking report-contract change. Its
-exact dispatch pairs are `poietra.engine-webgpu-benchmark` v3,
-`poietra.engine-webgpu-stress-benchmark` v4, and
-`poietra.engine-webgpu-stage-telemetry` v2. Producers and readers must reject
+The eligibility/provenance envelope and canonical-run nonce are breaking
+report-contract changes. Their exact dispatch pairs are
+`poietra.engine-webgpu-benchmark` v4,
+`poietra.engine-webgpu-stress-benchmark` v5, and
+`poietra.engine-webgpu-stage-telemetry` v3. Producers and readers must reject
 the respective prior versions instead of interpreting the added fields under
 their old contracts. The Windows probe ignores caller `PATH`, `SystemRoot`,
 `ProgramFiles`, and `PSModulePath`: it uses fixed Windows system paths and HKLM

@@ -20,6 +20,7 @@ import {
   type PinnedReferenceHostProfile,
   readPinnedReferenceHostProfile,
   referenceHostProfileSchema,
+  requireBenchmarkRunId,
   requireReferenceHostPreflight,
   requireStableCommitIdentity,
   requireStableReferenceHostEnvironment,
@@ -32,6 +33,7 @@ import {
 import {
   promoteBenchmarkEvidenceSetV1,
   verifyBenchmarkEvidenceSetV1,
+  verifyCheckedInBenchmarkEvidenceV1,
   verifyPromotedBenchmarkEvidenceSetV1,
 } from "./benchmark-evidence-set";
 import {
@@ -69,6 +71,7 @@ import { webgpuBrowserLaunch } from "./webgpu-launch";
 
 const COMMIT_A = "a".repeat(40);
 const COMMIT_B = "b".repeat(40);
+const BENCHMARK_RUN_ID = "11111111-1111-4111-8111-111111111111";
 const REFERENCE_HOST = readPinnedReferenceHostProfile();
 
 function fakeGit(headCommit: string, porcelain: string) {
@@ -233,6 +236,7 @@ const FIXTURE_PAGE_ADAPTER_HINT = {
 
 function reportEnvelopeFixture(reportSchema: string, reportVersion: number) {
   return {
+    benchmarkRunId: BENCHMARK_RUN_ID,
     contracts: {
       canvasWorkerProtocolVersion: 1,
       engineContractVersion: 1,
@@ -517,26 +521,36 @@ function promotableEvidenceSetFixture() {
       pacedFrames: 301,
       scrubFrames: 120,
     },
-    workloads: stressReport.workloads.map((workload) => ({
-      ...workload,
-      continuousScrub: {
-        ...workload.continuousScrub,
-        fulfilledRequests: 120,
-        requestedRequests: 120,
-      },
-      interactionBounds: {
-        ...workload.interactionBounds,
-        acknowledgement: measuredTiming,
-        logicalResponseJsonBytes: byteSummary,
-      },
-      pacedPresentation: {
-        ...workload.pacedPresentation,
-        acknowledgement: pacedTiming,
-        effectivePresentationAckFps: 1_000,
-        presentationAckInterval: measuredTiming,
-      },
-      randomSeekAck: measuredTiming,
-    })),
+    workloads: stressReport.workloads.map((workload) => {
+      const requestedEntityCount = Math.min(workload.definition.entityCount, 128);
+      const expectedEntries = requestedEntityCount * 300;
+      return {
+        ...workload,
+        continuousScrub: {
+          ...workload.continuousScrub,
+          fulfilledRequests: 120,
+          requestedRequests: 120,
+        },
+        interactionBounds: {
+          ...workload.interactionBounds,
+          acknowledgement: measuredTiming,
+          entries: {
+            observedTotal: expectedEntries,
+            statuses: { empty: 0, inactive: 0, present: expectedEntries, unavailable: 0 },
+          },
+          logicalResponseJsonBytes: byteSummary,
+          requestedEntityCount,
+          responses: { available: 300, missing: 0, unavailable: 0 },
+        },
+        pacedPresentation: {
+          ...workload.pacedPresentation,
+          acknowledgement: pacedTiming,
+          effectivePresentationAckFps: 1_000,
+          presentationAckInterval: measuredTiming,
+        },
+        randomSeekAck: measuredTiming,
+      };
+    }),
   };
 
   const stageReport = stageTelemetryReportFixture();
@@ -595,6 +609,12 @@ function promotableEvidenceSetFixture() {
 }
 
 describe("benchmark provenance", () => {
+  it("requires a canonical runner nonce", () => {
+    expect(requireBenchmarkRunId({ POIETRA_BENCHMARK_RUN_ID: BENCHMARK_RUN_ID })).toBe(BENCHMARK_RUN_ID);
+    expect(() => requireBenchmarkRunId({})).toThrow(/RUN_ID/);
+    expect(() => requireBenchmarkRunId({ POIETRA_BENCHMARK_RUN_ID: "not-a-uuid" })).toThrow(/RUN_ID/);
+  });
+
   it("derives clean/dirty identity from git and fails closed when git is unavailable", () => {
     expect(collectCommitIdentity(fakeGit(COMMIT_A, ""))).toEqual({
       headCommit: COMMIT_A,
@@ -1211,7 +1231,7 @@ describe("report summaries", () => {
     }
   });
 
-  it("requires benchmark v3 cold-run indexes, browser versions, and complete adapter identity to agree", () => {
+  it("requires benchmark v4 cold-run indexes, browser versions, and complete adapter identity to agree", () => {
     const report = benchmarkReportFixture();
     expect(engineWebgpuBenchmarkReportSchema.safeParse(report).success).toBe(true);
 
@@ -1262,7 +1282,7 @@ describe("report summaries", () => {
     }
   });
 
-  it("executes the stress report schema for canonical vector and PNG definitions", () => {
+  it("executes the stress report v5 schema for 100/128 IDs and rejects oversized evidence", () => {
     const report = stressReportFixture(completeStressWorkloadFixtures());
     const parsed = engineWebgpuStressReportSchema.parse(report);
     expect(parsed.version).toBe(ENGINE_WEBGPU_STRESS_REPORT_VERSION);
@@ -1499,6 +1519,7 @@ describe("report summaries", () => {
   it("recomputes decision-driving benchmark evidence and rejects mixed runs", () => {
     const evidence = promotableEvidenceSetFixture();
     expect(verifyBenchmarkEvidenceSetV1(evidence).identity).toMatchObject({
+      benchmarkRunId: BENCHMARK_RUN_ID,
       commit: COMMIT_A,
       profileId: REFERENCE_HOST.profile.id,
       runBuildPath: "fixture.wasm",
@@ -1520,9 +1541,17 @@ describe("report summaries", () => {
     forgedCache.stageTelemetry.workloads[0]!.caches.summary.pipeline = { hit: 300 };
     expect(() => verifyBenchmarkEvidenceSetV1(forgedCache)).toThrow(/caches.summary.pipeline/);
 
+    const forgedInteraction = structuredClone(evidence);
+    forgedInteraction.stress.workloads[0]!.interactionBounds.responses.available = 299;
+    expect(() => verifyBenchmarkEvidenceSetV1(forgedInteraction)).toThrow(/interactionBounds.responses/);
+
+    const mixedSnapshot = structuredClone(evidence);
+    mixedSnapshot.stageTelemetry.workloads[0]!.snapshotSha256 = "f".repeat(64);
+    expect(() => verifyBenchmarkEvidenceSetV1(mixedSnapshot)).toThrow(/cross-report workload snapshot/);
+
     const mixedRun = structuredClone(evidence);
-    mixedRun.stageTelemetry.environment.wasm.path = "dist-benchmark/run-another/engine-wasm/poietra_wasm_bg.wasm";
-    expect(() => verifyBenchmarkEvidenceSetV1(mixedRun)).toThrow(/cross-report run-specific WASM/);
+    mixedRun.stageTelemetry.benchmarkRunId = "22222222-2222-4222-8222-222222222222";
+    expect(() => verifyBenchmarkEvidenceSetV1(mixedRun)).toThrow(/cross-report benchmark run id/);
   });
 
   it("promotes exactly one verified report set without overwriting evidence", async () => {
@@ -1543,6 +1572,7 @@ describe("report summaries", () => {
       };
       const promoted = await promoteBenchmarkEvidenceSetV1(input);
       expect(promoted.manifest).toMatchObject({
+        benchmarkRunId: BENCHMARK_RUN_ID,
         commit: COMMIT_A,
         profile: { id: REFERENCE_HOST.profile.id },
         runBuildPath: "fixture.wasm",
@@ -1560,5 +1590,10 @@ describe("report summaries", () => {
     } finally {
       rmSync(temporary, { force: true, recursive: true });
     }
+  });
+
+  it("revalidates every checked-in benchmark evidence set in the normal unit lane", async () => {
+    const verified = await verifyCheckedInBenchmarkEvidenceV1();
+    expect(verified.every((directory) => directory.startsWith("docs/evidence/engine-webgpu/"))).toBe(true);
   });
 });

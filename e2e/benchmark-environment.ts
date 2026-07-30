@@ -138,6 +138,17 @@ export type BenchmarkProvenance = Readonly<{
   grade: "clean-commit" | "non-decision-grade-dirty-tree";
 }>;
 
+/** Canonical runner nonce shared by all three reports from one invocation. */
+export function requireBenchmarkRunId(env: Readonly<Record<string, string | undefined>> = process.env): string {
+  const parsed = z.string().uuid().safeParse(env.POIETRA_BENCHMARK_RUN_ID);
+  if (!parsed.success) {
+    throw new Error(
+      "POIETRA_BENCHMARK_RUN_ID is missing or invalid; run benchmarks through `pnpm benchmark:engine:webgpu`.",
+    );
+  }
+  return parsed.data;
+}
+
 /**
  * Resolves the provenance a benchmark run is allowed to claim.
  *

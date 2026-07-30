@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 import { writeBenchmarkBuildManifest } from "./benchmark-build-manifest.mjs";
 
 const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+const benchmarkRunId = randomUUID();
 
 // Canonical benchmark runner: a dedicated benchmark production build in a
 // run-specific output directory (never the shared dist/ or the HMR dev
@@ -20,6 +22,11 @@ execFileSync(pnpm, ["exec", "vite", "build", "--outDir", runDir], {
 writeBenchmarkBuildManifest(runDir);
 
 execFileSync(pnpm, ["exec", "playwright", "test", "--config", "playwright.benchmark.config.ts"], {
-  env: { ...process.env, POIETRA_BENCHMARK_DIST: runDir, POIETRA_ENGINE_BENCHMARK: "1" },
+  env: {
+    ...process.env,
+    POIETRA_BENCHMARK_DIST: runDir,
+    POIETRA_BENCHMARK_RUN_ID: benchmarkRunId,
+    POIETRA_ENGINE_BENCHMARK: "1",
+  },
   stdio: "inherit",
 });

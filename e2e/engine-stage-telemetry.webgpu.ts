@@ -15,6 +15,7 @@ import {
   readPinnedReferenceHostProfile,
   readServedWasmEvidence,
   reportContracts,
+  requireBenchmarkRunId,
   requireReferenceHostPreflight,
   requireStableCommitIdentity,
   requireStableReferenceHostEnvironment,
@@ -317,6 +318,7 @@ test("records the 1080p WebGPU stage telemetry matrix", async ({ page, request }
   expect(testInfo.retry).toBe(0);
   expect(testInfo.project.retries).toBe(0);
   const provenance = resolveBenchmarkProvenance();
+  const benchmarkRunId = requireBenchmarkRunId();
   const wasm = await readServedWasmEvidence();
   const vectorFixture = JSON.parse(
     await readFile("fixtures/engine-v1/shared-circle-opacity.json", "utf8"),
@@ -499,6 +501,7 @@ test("records the 1080p WebGPU stage telemetry matrix", async ({ page, request }
   });
 
   const report = {
+    benchmarkRunId,
     capturedAt: new Date().toISOString(),
     decisionEligibility,
     evidenceLevel: decisionEligibility.eligible ? "decision-candidate" : "exploratory",

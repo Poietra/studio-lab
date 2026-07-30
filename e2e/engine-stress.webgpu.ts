@@ -11,6 +11,7 @@ import {
   readPinnedReferenceHostProfile,
   readServedWasmEvidence,
   reportContracts,
+  requireBenchmarkRunId,
   requireReferenceHostPreflight,
   requireStableCommitIdentity,
   requireStableReferenceHostEnvironment,
@@ -289,6 +290,7 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
     scene: unknown;
   }>;
   const provenance = resolveBenchmarkProvenance();
+  const benchmarkRunId = requireBenchmarkRunId();
   const host = collectHostEnvironment();
   const referenceHost = readPinnedReferenceHostProfile();
   const browserLaunch = { args: [...WEBGPU_CHROMIUM_LAUNCH_ARGS], channel: WEBGPU_CHROMIUM_CHANNEL };
@@ -418,6 +420,7 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
   });
 
   const report = {
+    benchmarkRunId,
     capturedAt: new Date().toISOString(),
     decisionEligibility,
     evidenceLevel: decisionEligibility.eligible ? "decision-candidate" : "exploratory",
