@@ -492,11 +492,22 @@ the maximum reported `retainedBoundaryTotal.peakBytes` must remain at or below
 Studio baseline subtraction; full intra-frame peak and browser RSS require
 separate evidence if they become adoption criteria.
 
+The stress and stage-report schemas pin exactly six workloads in one canonical
+order: 100 and 1,000 shape primitives, animated cubic paths, and PNG images. The
+PNG workloads reuse one digest-verified asset with an even nearest/linear sampler
+split. After warm-up, every measured PNG frame must hit both retained texture and
+sampler-binding caches, perform no texture upload, binding creation, eviction, or
+tessellation, create exactly the two transient geometry buffers, and upload exactly
+104 bytes of vertex/index geometry per image draw. Retained texture and decoded-
+asset memory must also remain observable. This makes asset reuse part of the
+repeatable browser workload rather than a one-off fixture proof; it still does not
+measure transient buffer allocation, physical VRAM, or browser/driver RSS.
+
 Meeting a timing budget cannot override correctness, asset integrity, visual parity,
 or fallback failure. The experiment produces a Go, conditional Go, or No-Go update
 to this ADR before production migration.
 
-## Interim Go/No-Go decision (updated 2026-07-26)
+## Interim Go/No-Go decision (updated 2026-07-30)
 
 **Conditional Go for the explicit, verified static-Scene integration experiment;
 No-Go for calling it visible-preview adoption evidence, making it Studio's default
@@ -523,7 +534,7 @@ The following evidence is reproducible in this repository:
 | incremental edit transfer | partial | a Studio-only, 256 KiB, stale-revision-safe atomic delta contract is verified in TypeScript; Worker/WASM still receives complete replacement snapshots |
 | fast-manim bridge | met for the bounded static profile; production execution blocked | the real exporter emits complete camera, paint-order, appearance, and geometry evidence for a filled Circle, filled Rectangle, and canonical stroked Line; Studio now hands canonical immutable request bytes only to the explicit [sandbox backend boundary](../fast-manim-sandbox-backend.md), rechecks backend attestation and result correlation, then verifies and seals the result. Runner-owned status/job/close bounds quarantine adapters that miss lifecycle promises, omitted deployment defaults to production, and the local-process adapter remains explicit dev/test-only. The profile still fixes duration at one second, while variable runtime timing remains #75 and Poietra/fast-manim#7 |
 | frame, scrub, and cold-start latency | instrumented, decision evidence not met | an opt-in browser harness records 20 cold starts and warm/scrub acknowledgement p95, but no reference-host report for evaluate-plus-submit or input-to-present is checked in |
-| retained-boundary memory budget | instrumented, decision evidence not met | telemetry reports `WASM linear + logical GPU resident` current/lifetime high-water marks at the post-fence response boundary and the canonical stage lane requires 300 measured frames per workload; transient image geometry and browser/driver memory remain excluded, and no named reference-host report satisfying the 256 MiB gate is checked in |
+| retained-boundary memory budget | instrumented across six canonical workloads; decision evidence not met | telemetry reports `WASM linear + logical GPU resident` current/lifetime high-water marks at the post-fence response boundary. The stage lane measures 100/1,000 shape, animated-cubic, and verified-PNG entities for 300 frames each and proves warm retained texture/sampler reuse for the PNG cases; transient image buffer allocation and browser/driver memory remain excluded, and no named reference-host report satisfying the 256 MiB gate is checked in |
 
 The correctness run used Rust 1.92.0, Node 24.13.0, Playwright 1.61.1,
 Chromium 146.0.7678.0, and Linux 6.6.87.2 WSL2 on the reference CPU. It passed
