@@ -15,10 +15,7 @@ export const sandboxPngSource = `from manim import ImageMobject, RESAMPLING_ALGO
 
 class ImageScene(Scene):
     def construct(self):
-        image = ImageMobject(
-            "image.png",
-            resampling_algorithm=RESAMPLING_ALGORITHMS["nearest"],
-        )
+        image = ImageMobject("image.png", resampling_algorithm=RESAMPLING_ALGORITHMS["nearest"])
         self.add(image)
 `;
 
