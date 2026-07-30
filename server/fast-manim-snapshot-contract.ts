@@ -42,7 +42,12 @@ export const MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_VALUES = 50_000;
 export const MAX_FAST_MANIM_SNAPSHOT_DURATION_SECONDS_V2 = 3_600;
 export const FAST_MANIM_SNAPSHOT_FRAME_RATE_V2 = 60;
 
-export const fastManimSnapshotProfileVersionV1Schema = z.union([z.literal(1), z.literal(2), z.literal(3)]);
+export const fastManimSnapshotProfileVersionV1Schema = z.union([
+  z.literal(1),
+  z.literal(2),
+  z.literal(3),
+  z.literal(4),
+]);
 export type FastManimSnapshotProfileVersionV1 = z.infer<typeof fastManimSnapshotProfileVersionV1Schema>;
 
 const sceneNameSchema = z
@@ -316,6 +321,7 @@ export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V2 =
   "fast-manim server snapshot variable-duration static profile v2" as const;
 export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V3 =
   "fast-manim server snapshot hermetic MathTex profile v3" as const;
+export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V4 = "fast-manim server snapshot hermetic PNG profile v4" as const;
 
 export const FAST_MANIM_SNAPSHOT_UNSUPPORTED_MESSAGES_V1: Readonly<Record<FastManimSnapshotIssueCodeV1, string>> = {
   "animation-evidence-incomplete": "The Scene animates in ways the static snapshot profile cannot capture.",
@@ -397,6 +403,10 @@ export function fastManimSnapshotEntityIdV1(sceneId: string, sceneOrder: number)
     throw new TypeError("Entity identifiers derive from a non-negative integer sceneOrder.");
   }
   return `${sceneId}/entity:${sceneOrder}`;
+}
+
+export function fastManimSnapshotPngAssetIdV4(sceneId: string) {
+  return `${sceneId}/asset:image:0`;
 }
 
 export function fastManimSnapshotOpacityChannelIdV2(sceneId: string, sceneOrder: number) {
@@ -491,6 +501,9 @@ const MATHTEX_PROFILE_COORDINATE_QUANTUM_V3 = 0.000_001;
 const MATHTEX_PROFILE_FONT_DIGEST_V3 = "d66ac1cc91c55c24d3636ae2df1238076debdff51841f9893fc5419cc2df3df7";
 const MATHTEX_PROFILE_TOOLCHAIN_DIGEST_V3 = "95c98e10edff239e6ee237c9eac99dc96c06ba9fc712c30816ddc47d7db12f9e";
 const MATHTEX_PROFILE_CONTENT_DIGEST_EVIDENCE_V3 = /^MathTex content digest [0-9a-f]{64}$/;
+const HERMETIC_PNG_SCALE_TO_RESOLUTION_V4 = 1_080;
+const HERMETIC_PNG_CAPABILITY_EVIDENCE_V4 = "capability png-image: one verified PNG-backed rectangle";
+const HERMETIC_PNG_PROFILE_EVIDENCE_V4 = "fast-manim hermetic PNG Scene snapshot profile v4";
 const STATIC_PROFILE_RELATIVE_TOLERANCE = 1e-9;
 const CANONICAL_LINE_ROUNDOFF_MULTIPLIER_V1 = 64;
 
@@ -942,6 +955,68 @@ function assertHermeticMathTexProfileProvenanceV3(scene: SceneIrBundleV1["scene"
     evidence.at(-1) !== `MathTex font digest ${MATHTEX_PROFILE_FONT_DIGEST_V3}`
   ) {
     profileViolation("Hermetic MathTex provenance must attest the pinned compiler toolchain and embedded font.");
+  }
+}
+
+function assertHermeticPngProfileEntityV4(
+  entity: StaticProfileEntity,
+  asset: SceneIrBundleV1["assets"]["assets"][number],
+  expectedFrame: Readonly<{ height: number; width: number }>,
+) {
+  if (entity.appearance.kind !== "image" || entity.appearance.opacity !== 1) {
+    profileViolation("Hermetic PNG profile entities must use fully opaque image appearance.");
+  }
+  if (entity.sourceZIndex !== 0) {
+    profileViolation("Hermetic PNG profile entities must use the canonical zero source z-index.");
+  }
+  if (entity.geometry.kind !== "image") {
+    profileViolation("Hermetic PNG profile geometry must be one image rectangle.");
+  }
+  if (entity.geometry.asset.assetId !== asset.id || entity.geometry.asset.sha256 !== asset.sha256) {
+    profileViolation("Hermetic PNG geometry must reference the one verified manifest asset exactly.");
+  }
+
+  // ImageMobject's admitted source form retains its default 1080px scaling:
+  // one source pixel maps to frameHeight / 1080 scene units. Re-derive the
+  // centered rectangle from server-held frame state and manifest dimensions,
+  // rather than trusting producer-authored world bounds.
+  const height = (asset.pixelHeight / HERMETIC_PNG_SCALE_TO_RESOLUTION_V4) * expectedFrame.height;
+  const width = (height * asset.pixelWidth) / asset.pixelHeight;
+  const expectedLocalRect = {
+    bottom: -height / 2,
+    left: -width / 2,
+    right: width / 2,
+    top: height / 2,
+  };
+  if (
+    entity.geometry.localRect.bottom !== expectedLocalRect.bottom ||
+    entity.geometry.localRect.left !== expectedLocalRect.left ||
+    entity.geometry.localRect.right !== expectedLocalRect.right ||
+    entity.geometry.localRect.top !== expectedLocalRect.top
+  ) {
+    profileViolation("Hermetic PNG localRect must derive exactly from its pixel dimensions and requested frame.");
+  }
+}
+
+function assertHermeticPngProfileProvenanceV4(
+  scene: SceneIrBundleV1["scene"],
+  asset: SceneIrBundleV1["assets"]["assets"][number],
+) {
+  const sceneEvidence = scene.provenance[0]?.evidence;
+  const entityEvidence = scene.provenance[1]?.evidence;
+  const geometry = scene.entities[0]?.geometry;
+  if (sceneEvidence?.[0] !== HERMETIC_PNG_PROFILE_EVIDENCE_V4) {
+    profileViolation("Hermetic PNG scene provenance must attest snapshot profile v4.");
+  }
+  if (
+    !entityEvidence ||
+    geometry?.kind !== "image" ||
+    !entityEvidence.includes(HERMETIC_PNG_CAPABILITY_EVIDENCE_V4) ||
+    entityEvidence.at(-3) !== `PNG encoded digest ${asset.sha256}` ||
+    entityEvidence.at(-2) !== `PNG dimensions ${asset.pixelWidth} x ${asset.pixelHeight}` ||
+    entityEvidence.at(-1) !== `PNG sampler ${geometry.sampler}`
+  ) {
+    profileViolation("Hermetic PNG entity provenance must attest the exact asset digest, dimensions, and sampler.");
   }
 }
 
@@ -1402,9 +1477,15 @@ function assertFastManimSnapshotProfileV1(
   const { scene } = bundle;
   const sceneId = scene.sceneId;
   if (scene.fidelity.kind !== "exact") profileViolation("Static profile Scenes must report exact fidelity.");
-  if (bundle.assets.assets.length > 0) profileViolation("Static profile Scenes must use an empty asset manifest.");
   if (bundle.assets.manifestId !== fastManimSnapshotManifestIdV1(sceneId)) {
     profileViolation("The asset manifest ID must be the exact derived Scene manifest identifier.");
+  }
+  if (snapshotVersion === 4) {
+    if (bundle.assets.assets.length !== 1 || bundle.assets.assets[0]?.id !== fastManimSnapshotPngAssetIdV4(sceneId)) {
+      profileViolation("Hermetic PNG profile V4 requires exactly one asset with its derived Scene asset identifier.");
+    }
+  } else if (bundle.assets.assets.length > 0) {
+    profileViolation("Snapshot profiles V1-V3 must use an empty asset manifest.");
   }
   // The exporter's static camera is fixed at the origin with exactly the
   // frame the producer request's runtimeConfig carried; the server re-checks
@@ -1420,8 +1501,8 @@ function assertFastManimSnapshotProfileV1(
   // V1 remains the exact one-second still contract. V2 adds a bounded 60fps
   // timeline with observed membership, exact linear Fade opacity, exact
   // component-linear affine channels, and exact uniform-cubic Create/Uncreate
-  // trims. V3 is a separate one-second hermetic MathTex outline contract.
-  // Geometry and the entity's base transform stay immutable.
+  // trims. V3 and V4 are separate one-second hermetic MathTex and PNG
+  // contracts. Geometry and the entity's base transform stay immutable.
   if (snapshotVersion !== 2 && scene.duration !== FAST_MANIM_SNAPSHOT_STATIC_DURATION_SECONDS_V1) {
     profileViolation("Static profile Scenes must report exactly the canonical 1-second static duration.");
   }
@@ -1432,30 +1513,40 @@ function assertFastManimSnapshotProfileV1(
   if (snapshotVersion === 3 && scene.entities.length !== 1) {
     profileViolation("Hermetic MathTex profile V3 requires exactly one outline entity.");
   }
-  const expectedCapabilities = [
-    ...(scene.animationChannels.some((channel) => channel.kind === "affine-transform")
-      ? (["affine-transform-animation"] as const)
-      : []),
-    ...(scene.entities.length > 0 ? (["cubic-path-geometry"] as const) : []),
-    ...(scene.animationChannels.some((channel) => channel.kind === "motion-path")
-      ? (["motion-path-animation"] as const)
-      : []),
-    ...(scene.animationChannels.some((channel) => channel.kind === "opacity") ? (["opacity-animation"] as const) : []),
-    ...(scene.animationChannels.some((channel) => channel.kind === "path-morph")
-      ? (["path-morph-animation"] as const)
-      : []),
-    ...(scene.animationChannels.some((channel) => channel.kind === "path-trim")
-      ? (["path-trim-animation"] as const)
-      : []),
-  ];
+  if (snapshotVersion === 4 && scene.entities.length !== 1) {
+    profileViolation("Hermetic PNG profile V4 requires exactly one image entity.");
+  }
+  const expectedCapabilities =
+    snapshotVersion === 4
+      ? (["png-image"] as const)
+      : [
+          ...(scene.animationChannels.some((channel) => channel.kind === "affine-transform")
+            ? (["affine-transform-animation"] as const)
+            : []),
+          ...(scene.entities.length > 0 ? (["cubic-path-geometry"] as const) : []),
+          ...(scene.animationChannels.some((channel) => channel.kind === "motion-path")
+            ? (["motion-path-animation"] as const)
+            : []),
+          ...(scene.animationChannels.some((channel) => channel.kind === "opacity")
+            ? (["opacity-animation"] as const)
+            : []),
+          ...(scene.animationChannels.some((channel) => channel.kind === "path-morph")
+            ? (["path-morph-animation"] as const)
+            : []),
+          ...(scene.animationChannels.some((channel) => channel.kind === "path-trim")
+            ? (["path-trim-animation"] as const)
+            : []),
+        ];
   if (
     scene.requiredCapabilities.length !== expectedCapabilities.length ||
     scene.requiredCapabilities.some((capability, index) => capability !== expectedCapabilities[index])
   ) {
     profileViolation(
-      snapshotVersion !== 2
-        ? "Static profile Scenes must require exactly cubic-path-geometry, or nothing when empty."
-        : "Dynamic profile V2 Scenes must derive affine-transform-animation, cubic-path-geometry, motion-path-animation, opacity-animation, path-morph-animation, and path-trim-animation exactly from their contents.",
+      snapshotVersion === 2
+        ? "Dynamic profile V2 Scenes must derive affine-transform-animation, cubic-path-geometry, motion-path-animation, opacity-animation, path-morph-animation, and path-trim-animation exactly from their contents."
+        : snapshotVersion === 4
+          ? "Hermetic PNG profile V4 must require exactly png-image."
+          : "Static vector profiles must require exactly cubic-path-geometry, or nothing when empty.",
     );
   }
   // Entities are the exporter's enumerate order: each sceneOrder must equal
@@ -1506,14 +1597,21 @@ function assertFastManimSnapshotProfileV1(
         "Snapshot profile entities must keep their base transform at identity; V2 affine motion belongs only in affine-transform channels.",
       );
     }
-    if (snapshotVersion === 3) {
-      assertHermeticMathTexProfileEntityV3(entity);
-    } else {
-      assertStaticProfileEntity(
-        entity,
-        pathTrimEntityIds.has(entity.id),
-        motionPathRoundoffScaleFloorByEntityId.get(entity.id),
-      );
+    switch (snapshotVersion) {
+      case 1:
+      case 2:
+        assertStaticProfileEntity(
+          entity,
+          pathTrimEntityIds.has(entity.id),
+          motionPathRoundoffScaleFloorByEntityId.get(entity.id),
+        );
+        break;
+      case 3:
+        assertHermeticMathTexProfileEntityV3(entity);
+        break;
+      case 4:
+        assertHermeticPngProfileEntityV4(entity, bundle.assets.assets[0]!, expectedFrame);
+        break;
     }
   });
   // The provenance array is exactly the derived scene record followed by one
@@ -1571,6 +1669,28 @@ function assertFastManimSnapshotProfileV1(
     );
   }
   if (snapshotVersion === 3 && mode === "producer") assertHermeticMathTexProfileProvenanceV3(scene);
+  if (snapshotVersion === 4 && mode === "producer") {
+    assertHermeticPngProfileProvenanceV4(scene, bundle.assets.assets[0]!);
+  }
+}
+
+function fastManimSnapshotProvenanceEvidence(
+  snapshotVersion: FastManimSnapshotProfileVersionV1,
+):
+  | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V1
+  | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V2
+  | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V3
+  | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V4 {
+  switch (snapshotVersion) {
+    case 1:
+      return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V1;
+    case 2:
+      return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V2;
+    case 3:
+      return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V3;
+    case 4:
+      return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V4;
+  }
 }
 
 async function parseFastManimSnapshotResultV1(
@@ -1634,13 +1754,7 @@ async function parseFastManimSnapshotResultV1(
     scene: {
       ...bundle.scene,
       provenance: bundle.scene.provenance.map((record) => ({
-        evidence: [
-          expected.snapshotVersion === 1
-            ? FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V1
-            : expected.snapshotVersion === 2
-              ? FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V2
-              : FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V3,
-        ],
+        evidence: [fastManimSnapshotProvenanceEvidence(expected.snapshotVersion)],
         id: record.id,
         origin: record.origin,
       })),
@@ -1765,7 +1879,25 @@ export const fastManimSnapshotRuntimeConfigV1Schema = z
     snapshotVersion: fastManimSnapshotProfileVersionV1Schema,
     version: z.literal(1),
   })
-  .strict();
+  .strict()
+  .superRefine((config, context) => {
+    const declaresPng = config.capabilities.includes("png-image");
+    if (config.snapshotVersion === 4) {
+      if (config.capabilities.length !== 1 || !declaresPng) {
+        context.addIssue({
+          code: "custom",
+          message: "Hermetic PNG profile V4 runtime requests must declare exactly png-image.",
+          path: ["capabilities"],
+        });
+      }
+    } else if (declaresPng) {
+      context.addIssue({
+        code: "custom",
+        message: "Only hermetic PNG profile V4 runtime requests may declare png-image.",
+        path: ["capabilities"],
+      });
+    }
+  });
 
 export type FastManimSnapshotRuntimeConfigV1 = z.infer<typeof fastManimSnapshotRuntimeConfigV1Schema>;
 
