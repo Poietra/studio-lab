@@ -423,6 +423,10 @@ impl ImageTextureCacheV1 {
         self.use_clock = 0;
     }
 
+    pub(crate) const fn accounted_gpu_bytes(&self) -> usize {
+        self.accounted_gpu_bytes
+    }
+
     fn binding(&self, key: &ImageBindGroupCacheKeyV1) -> Option<&wgpu::BindGroup> {
         self.entries
             .get(&key.texture)

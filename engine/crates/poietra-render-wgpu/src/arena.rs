@@ -114,6 +114,13 @@ impl Default for GpuBufferArenaV1 {
 }
 
 impl GpuBufferArenaV1 {
+    pub(crate) fn capacity_bytes(&self) -> Result<u64, GpuBufferArenaErrorV1> {
+        self.vertex
+            .capacity
+            .checked_add(self.index.capacity)
+            .ok_or(GpuBufferArenaErrorV1::CapacityOverflow)
+    }
+
     pub(crate) fn buffers(&self) -> Option<(&wgpu::Buffer, &wgpu::Buffer)> {
         Some((self.vertex.buffer.as_ref()?, self.index.buffer.as_ref()?))
     }
@@ -209,6 +216,11 @@ fn dirty_aligned_range(previous: &[u8], current: &[u8]) -> Option<Range<usize>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_arena_reports_zero_retained_capacity() {
+        assert_eq!(GpuBufferArenaV1::default().capacity_bytes().unwrap(), 0);
+    }
 
     #[test]
     fn capacity_grows_geometrically_and_never_past_twice_the_trigger() {

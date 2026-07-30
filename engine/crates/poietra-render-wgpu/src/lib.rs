@@ -22,7 +22,8 @@ pub use asset::{
     DecodePngAssetErrorV1, DecodedPngAssetV1, MAX_ENCODED_PNG_BYTES_V1, decode_verified_png_v1,
 };
 pub use gpu::{
-    CreateRendererErrorV1, RenderFrameErrorV1, RenderStageEvidenceV1, WgpuFillRendererV1,
+    CreateRendererErrorV1, RenderFrameErrorV1, RenderStageEvidenceV1,
+    RendererMemorySnapshotErrorV1, RendererMemorySnapshotV1, WgpuFillRendererV1,
     WgpuRenderTargetV1,
 };
 pub use image_gpu::{
