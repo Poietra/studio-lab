@@ -1,11 +1,12 @@
 use crate::arena::GpuBufferArenaV1;
 use crate::image_gpu::{
-    ImageFrameGpuV1, ImagePipelineV1, build_image_geometry_upload_plan_v1,
+    ImageFrameGpuV1, ImagePipelineV1, ImageTextureCacheV1, build_image_geometry_upload_plan_v1,
     preflight_image_resources_v1, upload_image_frame_v1,
 };
 use crate::upload::VERTEX_ENCODED_SIZE_V1;
 use crate::{
-    GpuBufferArenaErrorV1, GpuUploadPlanErrorV1, ImageGpuUploadErrorV1, PreparedFrameV1,
+    GpuBufferArenaErrorV1, GpuUploadPlanErrorV1, ImageGpuUploadErrorV1,
+    ImageTextureCacheFrameStatsV1, ImageTextureCacheLimitsV1, PreparedFrameV1,
     PreparedRenderCommandV1, build_gpu_upload_plan_v1,
 };
 
@@ -111,6 +112,8 @@ pub struct RenderStageEvidenceV1 {
     /// `buffer_create_and_stage`, `draw_record`) executed for this frame.
     /// They are skipped as a group exactly when the frame has no drawable geometry.
     pub geometry_stages_executed: bool,
+    /// Retained texture and sampler-binding work performed for this frame.
+    pub image_texture_cache: ImageTextureCacheFrameStatsV1,
     /// Wall time submitting the finished command buffer to the queue. Queue
     /// submission returning says nothing about GPU execution completion.
     pub submit_ms: Option<f64>,
@@ -122,7 +125,7 @@ pub struct RenderStageEvidenceV1 {
 }
 
 impl RenderStageEvidenceV1 {
-    const fn empty() -> Self {
+    fn empty() -> Self {
         Self {
             buffer_create_and_stage_ms: None,
             buffer_creations: 0,
@@ -130,6 +133,7 @@ impl RenderStageEvidenceV1 {
             draw_calls: 0,
             draw_record_ms: None,
             geometry_stages_executed: false,
+            image_texture_cache: ImageTextureCacheFrameStatsV1::default(),
             submit_ms: None,
             upload_bytes: 0,
             vertex_index_encode_ms: None,
@@ -168,6 +172,7 @@ fn record_ordered_draws_v1(
     paint_pipeline: &wgpu::RenderPipeline,
     paint_buffers: Option<(&wgpu::Buffer, &wgpu::Buffer)>,
     image_pipeline: &ImagePipelineV1,
+    image_texture_cache: &ImageTextureCacheV1,
     image_frame: Option<&ImageFrameGpuV1>,
     frame: &PreparedFrameV1,
 ) -> Result<u64, GpuUploadPlanErrorV1> {
@@ -236,11 +241,11 @@ fn record_ordered_draws_v1(
                 let image_index = usize::try_from(image_index).map_err(|_| {
                     GpuUploadPlanErrorV1::Inconsistent("image draw index does not fit usize")
                 })?;
-                let bind_group = image_frame.bind_group(image_index).ok_or(
-                    GpuUploadPlanErrorV1::Inconsistent(
+                let bind_group = image_frame
+                    .bind_group(image_index, image_texture_cache)
+                    .ok_or(GpuUploadPlanErrorV1::Inconsistent(
                         "image command references an unknown bind group",
-                    ),
-                )?;
+                    ))?;
                 let index_range = image_frame.index_range(image_index).ok_or(
                     GpuUploadPlanErrorV1::Inconsistent(
                         "image command references an unknown index range",
@@ -275,6 +280,7 @@ fn record_ordered_draws_v1(
 pub struct WgpuFillRendererV1 {
     arena: GpuBufferArenaV1,
     image_pipeline: ImagePipelineV1,
+    image_texture_cache: ImageTextureCacheV1,
     pipeline: wgpu::RenderPipeline,
     target_format: wgpu::TextureFormat,
 }
@@ -288,6 +294,26 @@ impl WgpuFillRendererV1 {
     pub fn new(
         device: &wgpu::Device,
         target_format: wgpu::TextureFormat,
+    ) -> Result<Self, CreateRendererErrorV1> {
+        Self::new_with_image_texture_cache_limits(
+            device,
+            target_format,
+            ImageTextureCacheLimitsV1::default(),
+        )
+    }
+
+    /// Creates a renderer with explicit logical image-cache budgets.
+    ///
+    /// This is primarily useful to test deterministic eviction policy; normal
+    /// callers should use [`Self::new`].
+    ///
+    /// # Errors
+    ///
+    /// Rejects the same unsupported target formats as [`Self::new`].
+    pub fn new_with_image_texture_cache_limits(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+        image_texture_cache_limits: ImageTextureCacheLimitsV1,
     ) -> Result<Self, CreateRendererErrorV1> {
         if !matches!(
             target_format,
@@ -334,9 +360,16 @@ impl WgpuFillRendererV1 {
         Ok(Self {
             arena: GpuBufferArenaV1::default(),
             image_pipeline: ImagePipelineV1::new(device, target_format),
+            image_texture_cache: ImageTextureCacheV1::with_limits(image_texture_cache_limits),
             pipeline,
             target_format,
         })
+    }
+
+    /// Drops all device-bound image resources. Future frames rebuild them
+    /// from the verified decoded assets retained by their resolver/session.
+    pub fn clear_image_texture_cache(&mut self) {
+        self.image_texture_cache.clear();
     }
 
     #[must_use]
@@ -424,22 +457,31 @@ impl WgpuFillRendererV1 {
             };
             evidence.vertex_index_encode_ms = stage_elapsed(clock, vertex_index_encode_started);
             let buffer_create_started = stage_started(clock);
+            if let Some(image_resources) = image_resources.as_ref() {
+                evidence.image_texture_cache = self.image_texture_cache.prepare_frame(
+                    device,
+                    queue,
+                    &self.image_pipeline,
+                    image_resources,
+                )?;
+                evidence.upload_bytes = evidence
+                    .upload_bytes
+                    .checked_add(evidence.image_texture_cache.texture_upload_bytes())
+                    .ok_or(GpuUploadPlanErrorV1::ByteAccountingOverflow)?;
+            }
             if let Some((vertex_bytes, index_bytes)) = path_upload {
                 let arena_stats = self
                     .arena
                     .upload(device, queue, vertex_bytes, index_bytes)?;
                 evidence.buffer_creations = arena_stats.buffer_creations;
-                evidence.upload_bytes = arena_stats.upload_bytes;
+                evidence.upload_bytes = evidence
+                    .upload_bytes
+                    .checked_add(arena_stats.upload_bytes)
+                    .ok_or(GpuUploadPlanErrorV1::ByteAccountingOverflow)?;
                 debug_assert!(arena_stats.capacity_bytes > 0);
             }
             if let Some((image_upload, image_resources)) = image_upload.zip(image_resources) {
-                let uploaded = upload_image_frame_v1(
-                    device,
-                    queue,
-                    &self.image_pipeline,
-                    image_upload,
-                    image_resources,
-                )?;
+                let uploaded = upload_image_frame_v1(device, queue, image_upload, image_resources)?;
                 evidence.buffer_creations = evidence
                     .buffer_creations
                     .checked_add(ImageFrameGpuV1::BUFFER_CREATIONS)
@@ -491,6 +533,7 @@ impl WgpuFillRendererV1 {
                     &self.pipeline,
                     paint_buffers(&self.arena, frame)?,
                     &self.image_pipeline,
+                    &self.image_texture_cache,
                     image_frame.as_ref(),
                     frame,
                 )?;

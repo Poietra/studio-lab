@@ -10,8 +10,9 @@ use std::time::Duration;
 
 use poietra_eval::{EngineSessionV1, SampleEngineSessionOptionsV1};
 use poietra_render_wgpu::{
-    DecodedPngAssetResolverV1, PreparedFrameV1, WgpuPaintRendererV1, WgpuRenderTargetV1,
-    build_gpu_upload_plan_v1, prepare_frame_v1, prepare_frame_with_assets_v1,
+    DecodedPngAssetResolverV1, ImageTextureCacheLimitsV1, PreparedFrameV1, RenderFrameErrorV1,
+    WgpuPaintRendererV1, WgpuRenderTargetV1, build_gpu_upload_plan_v1, prepare_frame_v1,
+    prepare_frame_with_assets_v1,
 };
 use poietra_scene_ir::{
     AffineTransformV1, ImageLocalRectV1, ImageSamplerV1, RenderCameraKindV1, RenderCameraV1,
@@ -1339,5 +1340,221 @@ fn renders_verified_png_sampling_transforms_and_mixed_paint_order() {
             .expect("device-loss evidence mutex must not be poisoned")
             .is_none(),
         "device must remain available through image readback"
+    );
+}
+
+fn retained_image_packet(
+    assets: &[poietra_scene_ir::PngAssetV1],
+    samplers: &[ImageSamplerV1],
+) -> RenderPacketV1 {
+    assert_eq!(assets.len(), samplers.len());
+    let mut packet = empty_render_packet(
+        ViewportV1 {
+            height_px: 4,
+            width_px: 4,
+        },
+        image_proof_camera(-2.0, 2.0, -2.0, 2.0),
+    );
+    packet.draws = assets
+        .iter()
+        .zip(samplers)
+        .enumerate()
+        .map(|(index, (asset, sampler))| {
+            image_draw(
+                asset,
+                &format!("draw:cache:{index}"),
+                &format!("entity:cache:{index}"),
+                ImageLocalRectV1 {
+                    bottom: -2.0,
+                    left: -2.0,
+                    right: 2.0,
+                    top: 2.0,
+                },
+                1.0,
+                u32::try_from(index).unwrap(),
+                *sampler,
+                AffineTransformV1::identity(),
+            )
+        })
+        .collect();
+    packet.required_capabilities = vec![RenderCapabilityV1::PngImage];
+    packet
+}
+
+fn retained_image_target(device: &wgpu::Device) -> (wgpu::Texture, wgpu::TextureView) {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("poietra retained image cache proof target"),
+        size: wgpu::Extent3d {
+            depth_or_array_layers: 1,
+            height: 4,
+            width: 4,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: TARGET_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    (texture, view)
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the dedicated CI step runs this proof"]
+#[allow(clippy::too_many_lines)]
+fn retains_image_textures_and_sampler_bindings_with_bounded_lru() {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = request_fallback_adapter(&instance);
+    assert_target_format_support(&adapter);
+    let (device, queue) = request_device(&adapter);
+    let device_loss = track_device_loss(&device);
+    let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+    let (red_metadata, red) = verified_rgba_png("asset:cache:red", 1, 1, &[255, 0, 0, 255]);
+    let (green_metadata, green) = verified_rgba_png("asset:cache:green", 1, 1, &[0, 255, 0, 255]);
+    let (blue_metadata, blue) = verified_rgba_png("asset:cache:blue", 1, 1, &[0, 0, 255, 255]);
+    let asset_table = [
+        (red_metadata.sha256.as_str(), Arc::clone(&red)),
+        (green_metadata.sha256.as_str(), Arc::clone(&green)),
+        (blue_metadata.sha256.as_str(), Arc::clone(&blue)),
+    ];
+    let resolver = |digest: &str| {
+        asset_table
+            .iter()
+            .find(|(candidate, _)| *candidate == digest)
+            .map(|(_, asset)| Arc::clone(asset))
+    };
+
+    let dual_sampler_packet = retained_image_packet(
+        &[red_metadata.clone(), red_metadata.clone()],
+        &[ImageSamplerV1::Nearest, ImageSamplerV1::Linear],
+    );
+    let dual_sampler = prepare_frame_with_assets_v1(&dual_sampler_packet, &resolver).unwrap();
+    let (_texture, view) = retained_image_target(&device);
+    let target = WgpuRenderTargetV1 {
+        format: TARGET_FORMAT,
+        height_px: 4,
+        view: &view,
+        width_px: 4,
+    };
+    let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT).unwrap();
+    let (_, cold) = renderer
+        .render_with_stage_evidence(&device, &queue, target, &dual_sampler, None)
+        .unwrap();
+    assert_eq!(cold.image_texture_cache.texture_uploads(), 1);
+    assert_eq!(cold.image_texture_cache.texture_hits(), 0);
+    assert_eq!(cold.image_texture_cache.sampler_binding_creations(), 2);
+    assert_eq!(cold.image_texture_cache.sampler_binding_hits(), 0);
+    assert_eq!(cold.image_texture_cache.texture_upload_bytes(), 4);
+
+    for _ in 0..300 {
+        let (_, warm) = renderer
+            .render_with_stage_evidence(&device, &queue, target, &dual_sampler, None)
+            .unwrap();
+        assert_eq!(warm.image_texture_cache.texture_uploads(), 0);
+        assert_eq!(warm.image_texture_cache.texture_hits(), 1);
+        assert_eq!(warm.image_texture_cache.sampler_binding_creations(), 0);
+        assert_eq!(warm.image_texture_cache.sampler_binding_hits(), 2);
+        assert_eq!(warm.image_texture_cache.texture_upload_bytes(), 0);
+    }
+
+    // A recreated device and renderer rebuild directly from the already
+    // verified Arc retained in the prepared frame; no PNG transfer or decode
+    // occurs on this path.
+    drop(renderer);
+    let (recreated_device, recreated_queue) = request_device(&adapter);
+    let (_recreated_texture, recreated_view) = retained_image_target(&recreated_device);
+    let recreated_target = WgpuRenderTargetV1 {
+        format: TARGET_FORMAT,
+        height_px: 4,
+        view: &recreated_view,
+        width_px: 4,
+    };
+    let mut recreated_renderer =
+        WgpuPaintRendererV1::new(&recreated_device, TARGET_FORMAT).unwrap();
+    let (recreated_submission, recreated) = recreated_renderer
+        .render_with_stage_evidence(
+            &recreated_device,
+            &recreated_queue,
+            recreated_target,
+            &dual_sampler,
+            None,
+        )
+        .unwrap();
+    assert_eq!(recreated.image_texture_cache.texture_uploads(), 1);
+    assert_eq!(recreated.image_texture_cache.sampler_binding_creations(), 2);
+    assert!(
+        recreated_device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(recreated_submission),
+                timeout: Some(GPU_TIMEOUT),
+            })
+            .unwrap()
+            .wait_finished()
+    );
+
+    let limits = ImageTextureCacheLimitsV1 {
+        decoded_cpu_bytes: 8,
+        entries: 2,
+        gpu_texture_bytes: 8,
+    };
+    let mut bounded =
+        WgpuPaintRendererV1::new_with_image_texture_cache_limits(&device, TARGET_FORMAT, limits)
+            .unwrap();
+    let red_green_packet = retained_image_packet(
+        &[red_metadata.clone(), green_metadata.clone()],
+        &[ImageSamplerV1::Nearest, ImageSamplerV1::Nearest],
+    );
+    let red_green = prepare_frame_with_assets_v1(&red_green_packet, &resolver).unwrap();
+    let (_, fill) = bounded
+        .render_with_stage_evidence(&device, &queue, target, &red_green, None)
+        .unwrap();
+    assert_eq!(fill.image_texture_cache.texture_uploads(), 2);
+
+    let red_blue_packet = retained_image_packet(
+        &[red_metadata.clone(), blue_metadata.clone()],
+        &[ImageSamplerV1::Nearest, ImageSamplerV1::Nearest],
+    );
+    let red_blue = prepare_frame_with_assets_v1(&red_blue_packet, &resolver).unwrap();
+    let (_, eviction) = bounded
+        .render_with_stage_evidence(&device, &queue, target, &red_blue, None)
+        .unwrap();
+    assert_eq!(eviction.image_texture_cache.texture_hits(), 1);
+    assert_eq!(eviction.image_texture_cache.texture_uploads(), 1);
+    assert_eq!(eviction.image_texture_cache.evictions(), 1);
+
+    let too_small = ImageTextureCacheLimitsV1 {
+        decoded_cpu_bytes: 4,
+        entries: 1,
+        gpu_texture_bytes: 4,
+    };
+    let mut rejecting =
+        WgpuPaintRendererV1::new_with_image_texture_cache_limits(&device, TARGET_FORMAT, too_small)
+            .unwrap();
+    assert!(matches!(
+        rejecting.render_with_stage_evidence(&device, &queue, target, &red_green, None),
+        Err(RenderFrameErrorV1::ImageUpload(
+            poietra_render_wgpu::ImageGpuUploadErrorV1::RetainedEntryLimitExceeded {
+                maximum_entries: 1,
+                required_entries: 2,
+            }
+        ))
+    ));
+
+    assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
+    assert_no_gpu_error("internal", pollster::block_on(internal_scope.pop()));
+    assert_no_gpu_error(
+        "out-of-memory",
+        pollster::block_on(out_of_memory_scope.pop()),
+    );
+    assert!(
+        device_loss
+            .lock()
+            .expect("device-loss evidence mutex must not be poisoned")
+            .is_none()
     );
 }
