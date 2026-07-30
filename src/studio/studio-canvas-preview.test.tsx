@@ -259,6 +259,56 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).toContain("pointer-events-none opacity-0");
   });
 
+  it("keeps a verified ImageMobject selectable and aspect-resizable without semantic dimensions", () => {
+    const imageEntity: ProjectedEntity = {
+      ...CIRCLE_ENTITY,
+      content: { displayLines: ["image"], label: "image" },
+      geometry: {
+        ...CIRCLE_ENTITY.geometry,
+        dimensions: { kind: "unknown", reason: "Imported image dimensions are runtime-owned." },
+        position: { kind: "known", value: { x: 320, y: 180 } },
+      },
+      id: "entity:image",
+      sourceIdentity: { kind: "known", value: "image" },
+      type: "ImageMobject",
+    };
+    const markup = renderToStaticMarkup(
+      <StudioCanvas
+        {...baseProps()}
+        entities={[imageEntity]}
+        preview={previewView(
+          {
+            frame: {
+              packetId: "canvas:image",
+              revision: "a".repeat(64),
+              sampleTime: 0,
+              viewport: { heightPx: 90, widthPx: 160 },
+            },
+            phase: "presented",
+          },
+          new Map([["scene:image/entity:0", { dimensions: { height: 1, width: 2 }, position: { x: 320, y: 180 } }]]),
+          new Map([
+            [
+              "image",
+              {
+                bindingId: `source-binding:${"c".repeat(64)}`,
+                entityId: "scene:image/entity:0",
+                sourceName: "image",
+              },
+            ],
+          ]),
+        )}
+        selectedIds={new Set([imageEntity.id])}
+      />,
+    );
+    expect(markup).toContain('aria-label="Move image"');
+    expect(markup).not.toContain('aria-label="Move image" aria-pressed="true" disabled=""');
+    expect(markup).toContain('data-studio-runtime-entity="scene:image/entity:0"');
+    expect(markup).toContain("height:12.5cqh;width:14.0627");
+    expect(markup).toContain('aria-label="Resize image from bottom-right corner"');
+    expect(markup.match(/data-studio-resize-handle="entity:image"/g)).toHaveLength(1);
+  });
+
   it("never guesses a runtime entity from geometry or a duplicated current source name", () => {
     const state = {
       frame: {

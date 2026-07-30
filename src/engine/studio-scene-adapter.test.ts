@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { type ProgramRecord, type ProposedState, type RuntimeSceneState, STUDIO_STATE_VERSION } from "../studio/model";
+import {
+  type ProgramRecord,
+  type PropertyChannelSample,
+  type PropertyValue,
+  type ProposedState,
+  type RuntimeSceneState,
+  STUDIO_STATE_VERSION,
+} from "../studio/model";
 import { EDIT_OPERATION_VERSION } from "../studio/operations";
 import { type AssetManifestV1, assetManifestV1Schema, digestAssetManifestV1 } from "./asset-manifest";
 import { compileEngineFrameV1 } from "./reference-evaluator";
+import { sceneIrV1Schema } from "./scene-ir";
 import {
   buildStudioSceneIrAdapterEvidenceV1,
   compileStudioSceneIrV1,
@@ -15,6 +23,11 @@ const REVISION_HASH = "a".repeat(64);
 const CIRCLE_ID = "source:scene.py#Scene:circle";
 const RECTANGLE_ID = "rectangle";
 const CREATED_RECTANGLE_ID = "tx:create-shape/entity:rectangle";
+const IMAGE_ID = "source:image_scene.py#ImageScene:image";
+const IMAGE_RUNTIME_ID = "runtime:image";
+const IMAGE_ASSET_ID = "asset:image.png";
+const IMAGE_SHA256 = "b".repeat(64);
+const IDENTITY_TRANSFORM = { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 } as const;
 const white = { alpha: 1, blue: 1, green: 1, red: 1 };
 
 async function emptyManifest(): Promise<AssetManifestV1> {
@@ -26,6 +39,137 @@ async function emptyManifest(): Promise<AssetManifestV1> {
     version: 1,
   });
   return { ...draft, manifestDigest: await digestAssetManifestV1(draft) };
+}
+
+async function imageManifest(): Promise<AssetManifestV1> {
+  const draft = assetManifestV1Schema.parse({
+    assets: [
+      {
+        alphaMode: "straight",
+        byteLength: 128,
+        colorSpace: "srgb",
+        id: IMAGE_ASSET_ID,
+        kind: "png-image",
+        mediaType: "image/png",
+        pixelHeight: 180,
+        pixelWidth: 320,
+        sha256: IMAGE_SHA256,
+      },
+    ],
+    manifestDigest: ZERO_HASH,
+    manifestId: "studio-image",
+    schema: "poietra.asset-manifest",
+    version: 1,
+  });
+  return { ...draft, manifestDigest: await digestAssetManifestV1(draft) };
+}
+
+function exactSample(
+  provenanceId: string,
+  value: PropertyValue,
+  options: Readonly<Partial<Pick<PropertyChannelSample, "interval" | "knowledge" | "operationId">>> = {},
+): PropertyChannelSample {
+  return { interval: { end: 2, start: 0 }, kind: "exact", provenanceId, value, ...options };
+}
+
+function imageScene(): RuntimeSceneState {
+  const dimensions = { evidence: ["runtime snapshot"], kind: "unknown" as const, reason: "Runtime-owned." };
+  const base = scene();
+  return {
+    ...base,
+    objectGraph: {
+      entities: {
+        [IMAGE_ID]: {
+          content: { displayLines: ["image"], label: "image" },
+          geometry: {
+            dimensions,
+            position: { kind: "known", value: { x: 320, y: 180 } },
+            scale: { kind: "known", value: 1 },
+            style: { kind: "known", value: {} },
+          },
+          id: IMAGE_ID,
+          lifetime: [{ end: 2, start: 0 }],
+          provisional: false,
+          sourceIdentity: { kind: "known", value: "image" },
+          type: "ImageMobject",
+        },
+      },
+      lineage: [],
+    },
+    propertyChannels: {
+      [`${IMAGE_ID}/content`]: {
+        entityId: IMAGE_ID,
+        key: "content",
+        samples: [exactSample("import:image:content", { displayLines: ["image"], label: "image" })],
+      },
+      [`${IMAGE_ID}/dimensions`]: {
+        entityId: IMAGE_ID,
+        key: "dimensions",
+        samples: [
+          exactSample(
+            "import:image:dimensions",
+            {},
+            {
+              interval: { end: 0.1, start: 0 },
+              knowledge: dimensions,
+            },
+          ),
+        ],
+      },
+      [`${IMAGE_ID}/position`]: {
+        entityId: IMAGE_ID,
+        key: "position",
+        samples: [exactSample("import:image:position", { x: 320, y: 180 })],
+      },
+      [`${IMAGE_ID}/scale`]: {
+        entityId: IMAGE_ID,
+        key: "scale",
+        samples: [exactSample("import:image:scale", 1)],
+      },
+    },
+    sceneId: "image_scene.py#ImageScene",
+  };
+}
+
+async function imageAdapterFixture() {
+  const assets = await imageManifest();
+  const proposedState = { evaluatedScene: imageScene(), programs: [] };
+  const base = await input();
+  const compiled = await compileStudioSceneIrV1(base);
+  if (compiled.kind !== "compiled") throw new Error("vector adapter fixture did not compile");
+  const snapshot = {
+    assets,
+    scene: sceneIrV1Schema.parse({
+      ...compiled.scene,
+      assetManifest: { manifestDigest: assets.manifestDigest, manifestId: assets.manifestId },
+      entities: [
+        {
+          ...compiled.scene.entities[0],
+          appearance: { kind: "image", opacity: 0.8 },
+          geometry: {
+            asset: { assetId: IMAGE_ASSET_ID, sha256: IMAGE_SHA256 },
+            kind: "image",
+            localRect: { bottom: -1.125, left: -2, right: 2, top: 1.125 },
+            sampler: "nearest",
+          },
+          id: IMAGE_RUNTIME_ID,
+          sourceZIndex: -3,
+          transform: IDENTITY_TRANSFORM,
+        },
+      ],
+      requiredCapabilities: ["png-image"],
+      sceneId: "image_scene.py#ImageScene",
+    }),
+  };
+  const evidence = buildStudioSceneIrAdapterEvidenceV1({
+    proposedState,
+    snapshot,
+    sourceRuntimeIdentity: new Map([
+      ["image", { bindingId: "binding:image", entityId: IMAGE_RUNTIME_ID, sourceName: "image" }],
+    ]),
+  });
+  if (evidence.kind !== "resolved") throw new Error(evidence.issues.map(({ message }) => message).join("\n"));
+  return { assets, evidence: evidence.evidence, proposedState, snapshot };
 }
 
 function scene(): RuntimeSceneState {
@@ -170,8 +314,8 @@ describe("Studio to SceneIrV1 truthful adapter", () => {
   it("compiles static Circle and Rectangle evidence and feeds the reference evaluator", async () => {
     const adapterInput = await input();
     const result = await compileStudioSceneIrV1(adapterInput);
-    expect(result.kind).toBe("compiled");
     if (result.kind !== "compiled") throw new Error(result.issues.map(({ message }) => message).join("\n"));
+    expect(result.kind).toBe("compiled");
 
     expect(result.scene.sceneId).toBe("scene.py#Scene");
     expect(result.scene.entities.map(({ id }) => id)).toEqual([RECTANGLE_ID, CIRCLE_ID]);
@@ -265,6 +409,121 @@ describe("Studio to SceneIrV1 truthful adapter", () => {
       sourceRuntimeIdentity: new Map(),
     });
     expect(missing.kind).toBe("unsupported");
+  });
+
+  it("preserves verified image evidence and applies Studio move/scale exactly once", async () => {
+    const fixture = await imageAdapterFixture();
+    expect(fixture.evidence).toMatchObject({
+      appearances: { [IMAGE_ID]: { kind: "image", opacity: 0.8 } },
+      entityIds: { [IMAGE_ID]: IMAGE_RUNTIME_ID },
+      images: {
+        [IMAGE_ID]: {
+          geometry: {
+            asset: { assetId: IMAGE_ASSET_ID, sha256: IMAGE_SHA256 },
+            kind: "image",
+            localRect: { bottom: -1.125, left: -2, right: 2, top: 1.125 },
+            sampler: "nearest",
+          },
+        },
+      },
+      paintOrder: [{ entityId: IMAGE_ID, sourceZIndex: -3 }],
+    });
+
+    const pristine = await compileStudioSceneIrV1({
+      assets: fixture.assets,
+      evidence: fixture.evidence,
+      frame: { height: 9, width: 16 },
+      proposedState: fixture.proposedState,
+      sourceRevisionHash: REVISION_HASH,
+    });
+    if (pristine.kind !== "compiled") throw new Error(pristine.issues.map(({ message }) => message).join("\n"));
+    expect(pristine.scene.entities).toEqual([
+      expect.objectContaining({
+        appearance: { kind: "image", opacity: 0.8 },
+        geometry: fixture.snapshot.scene.entities[0]?.geometry,
+        id: IMAGE_RUNTIME_ID,
+        sceneOrder: 0,
+        sourceZIndex: -3,
+        transform: fixture.snapshot.scene.entities[0]?.transform,
+      }),
+    ]);
+    expect(pristine.scene.requiredCapabilities).toEqual(["png-image"]);
+
+    const moveId = "tx:edit-image/operation:position";
+    const scaleId = "tx:edit-image/operation:scale";
+    const editedScene = fixture.proposedState.evaluatedScene;
+    const proposedState = {
+      evaluatedScene: {
+        ...editedScene,
+        propertyChannels: {
+          ...editedScene.propertyChannels,
+          [`${IMAGE_ID}/position`]: {
+            ...editedScene.propertyChannels[`${IMAGE_ID}/position`],
+            samples: [
+              ...editedScene.propertyChannels[`${IMAGE_ID}/position`].samples,
+              exactSample("edit:image:position", { x: 400, y: 140 }, { operationId: moveId }),
+            ],
+          },
+          [`${IMAGE_ID}/scale`]: {
+            ...editedScene.propertyChannels[`${IMAGE_ID}/scale`],
+            samples: [
+              ...editedScene.propertyChannels[`${IMAGE_ID}/scale`].samples,
+              {
+                easing: "smooth",
+                from: 1,
+                interval: { end: 0, start: 0 },
+                kind: "animated",
+                operationId: scaleId,
+                provenanceId: "edit:image:scale",
+                value: 1.5,
+              } as const,
+            ],
+          },
+        },
+      },
+      programs: [
+        {
+          program: { operations: [{ id: moveId }, { id: scaleId }] },
+          validation: { issues: [], status: "valid" },
+        },
+      ] as unknown as ProposedState["programs"],
+    };
+    const result = await compileStudioSceneIrV1({
+      assets: fixture.assets,
+      evidence: fixture.evidence,
+      frame: { height: 9, width: 16 },
+      proposedState,
+      sourceRevisionHash: REVISION_HASH,
+    });
+    if (result.kind !== "compiled") throw new Error(result.issues.map(({ message }) => message).join("\n"));
+    expect(result.scene.entities[0]).toMatchObject({
+      geometry: fixture.snapshot.scene.entities[0]?.geometry,
+      transform: { m11: 1.5, m12: 0, m21: 0, m22: 1.5, tx: 2, ty: 1 },
+    });
+  });
+
+  it("fails closed when verified image asset evidence is not in the manifest", async () => {
+    const fixture = await imageAdapterFixture();
+    const image = fixture.evidence.images?.[IMAGE_ID];
+    if (!image) throw new Error("image evidence fixture is incomplete");
+    expectIssue(
+      await compileStudioSceneIrV1({
+        assets: fixture.assets,
+        evidence: {
+          ...fixture.evidence,
+          images: {
+            [IMAGE_ID]: {
+              ...image,
+              geometry: { ...image.geometry, asset: { ...image.geometry.asset, sha256: "c".repeat(64) } },
+            },
+          },
+        },
+        frame: { height: 9, width: 16 },
+        proposedState: fixture.proposedState,
+        sourceRevisionHash: REVISION_HASH,
+      }),
+      "asset-evidence-invalid",
+    );
   });
 
   it.each([

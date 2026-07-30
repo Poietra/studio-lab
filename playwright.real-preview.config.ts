@@ -17,6 +17,32 @@ if (snapshotProfile !== "2" && snapshotProfile !== "3" && snapshotProfile !== "4
   throw new Error("POIETRA_E2E_REAL_PREVIEW_PROFILE must be 2, 3, or 4.");
 }
 
+function resolveManimCommand() {
+  const explicit = process.env.POIETRA_MANIM_COMMAND?.trim();
+  if (explicit) return explicit;
+  try {
+    const producerArgv: unknown = JSON.parse(producerCommand);
+    if (
+      Array.isArray(producerArgv) &&
+      producerArgv.length >= 3 &&
+      producerArgv.every((argument) => typeof argument === "string") &&
+      producerArgv[1] === "-m"
+    ) {
+      return JSON.stringify([producerArgv[0], "-m", "manim"]);
+    }
+  } catch {
+    // A non-JSON producer command cannot identify its companion Manim CLI.
+  }
+  return null;
+}
+
+const manimCommand = resolveManimCommand();
+if (snapshotProfile === "4" && !manimCommand) {
+  throw new Error(
+    "The real ImageMobject edit E2E requires POIETRA_MANIM_COMMAND, unless the snapshot producer is a JSON Python -m argv array.",
+  );
+}
+
 const dataRoot = join(process.cwd(), "test-results", `workspace-store-${process.pid}-real-preview-v${snapshotProfile}`);
 const harnessRoot =
   snapshotProfile === "4"
@@ -75,6 +101,7 @@ export default defineConfig({
       POIETRA_FAST_MANIM_SNAPSHOT_COMMAND: producerCommand,
       POIETRA_FAST_MANIM_SNAPSHOT_DEV_OPT_IN: "1",
       POIETRA_FAST_MANIM_SNAPSHOT_VERSION: snapshotProfile,
+      ...(manimCommand ? { POIETRA_MANIM_COMMAND: manimCommand } : {}),
       POIETRA_MANIM_PROJECTS: JSON.stringify([
         {
           id: "real-preview-harness",
