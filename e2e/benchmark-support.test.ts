@@ -887,7 +887,7 @@ describe("decision eligibility", () => {
       ...host,
       powerMode: {
         ...host.powerMode,
-        userConfiguredAcPowerModeGuid: "ded574b5-45a0-4f42-8737-46345c09c238",
+        userConfiguredAcPowerModeGuid: "00000000-0000-0000-0000-000000000000",
       },
     };
     expect(() =>

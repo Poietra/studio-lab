@@ -436,7 +436,7 @@ being mislabeled as part of that number.
   inventory pinned;
 - AC connected, Windows Balanced active power-plan GUID
   `381b4222-f694-41f0-9685-ff5bb260df2e`, and user-configured AC power-mode GUID
-  `00000000-0000-0000-0000-000000000000`.
+  `ded574b5-45a0-4f42-8737-46345c09c238` (Best performance).
 
 The authoritative values and Worker adapter identity live in the v2 profile
 `fixtures/engine-benchmark-v1/windows-d3d12-reference-host.json`; the sibling
