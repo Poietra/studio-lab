@@ -1278,7 +1278,7 @@ describe("Poietra canvas WASM binding handshake", () => {
     ).rejects.toThrow(/PoietraCanvasEngineV1/i);
   });
 
-  it("requires an exact telemetry version-1 handshake for any telemetry surface", async () => {
+  it("requires an exact telemetry version-2 handshake for any telemetry surface", async () => {
     class TelemetryEngine extends Engine {
       adapterEvidence() {
         return new Uint8Array();
@@ -1292,7 +1292,7 @@ describe("Poietra canvas WASM binding handshake", () => {
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
         poietraCanvasAbiVersion: () => 4,
-        poietraCanvasTelemetryAbiVersion: () => 1,
+        poietraCanvasTelemetryAbiVersion: () => 2,
         PoietraCanvasEngineV1: TelemetryEngine,
       }),
     ).resolves.toBe(TelemetryEngine);
@@ -1302,10 +1302,10 @@ describe("Poietra canvas WASM binding handshake", () => {
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
         poietraCanvasAbiVersion: () => 4,
-        poietraCanvasTelemetryAbiVersion: () => 2,
+        poietraCanvasTelemetryAbiVersion: () => 1,
         PoietraCanvasEngineV1: TelemetryEngine,
       }),
-    ).rejects.toThrow(/telemetry ABI version 1/i);
+    ).rejects.toThrow(/telemetry ABI version 2/i);
 
     // Telemetry methods without the version export are never trusted.
     await expect(
@@ -1314,7 +1314,7 @@ describe("Poietra canvas WASM binding handshake", () => {
         poietraCanvasAbiVersion: () => 4,
         PoietraCanvasEngineV1: TelemetryEngine,
       }),
-    ).rejects.toThrow(/telemetry ABI version 1/i);
+    ).rejects.toThrow(/telemetry ABI version 2/i);
 
     // A version export without the complete method pair is inconsistent.
     class PartialTelemetryEngine extends Engine {
@@ -1326,10 +1326,10 @@ describe("Poietra canvas WASM binding handshake", () => {
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
         poietraCanvasAbiVersion: () => 4,
-        poietraCanvasTelemetryAbiVersion: () => 1,
+        poietraCanvasTelemetryAbiVersion: () => 2,
         PoietraCanvasEngineV1: PartialTelemetryEngine,
       }),
-    ).rejects.toThrow(/telemetry ABI version 1/i);
+    ).rejects.toThrow(/telemetry ABI version 2/i);
 
     // A telemetry-free module stays valid and simply reports unavailable.
     await expect(

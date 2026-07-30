@@ -106,12 +106,19 @@ under a checked 64 MiB hard limit, then is discarded after buffer staging. No
 prepared-geometry cache exists yet, so telemetry continues to report
 `preparedGeometry: "absent"` rather than treating transient upload data as a cache.
 
+Each renderer retains immutable image textures by verified digest, dimensions,
+decode version, and sampler binding under explicit 128 MiB decoded-CPU,
+256 MiB GPU-texture, and 4,096-entry limits. LRU eviction never removes a
+texture needed by the current frame; a later miss recreates it from the shared
+verified decoded bytes. Texture uploads and nearest/linear binding reuse are
+reported separately by opt-in telemetry.
+
 The shared browser/native WGPU 30 pipeline accepts caller-owned `Device`, `Queue`,
 and `TextureView` values, clears an extent-checked target, and draws premultiplied
 linear-light indexed path triangles and verified PNG quads in packet paint order.
 It accepts only `Rgba8UnormSrgb` and `Bgra8UnormSrgb` single-sample render targets.
-Device creation, long-lived texture caching, antialiasing, and clipping remain
-outside this slice. Native software-adapter and
+Device creation, cross-worker/persistent texture caching, antialiasing, and
+clipping remain outside this slice. Native software-adapter and
 Chromium Worker readbacks share fixtures for generic fill topology and for animated
 curved/joined strokes, fill/stroke composition, and translucent source order; the
 native proof additionally covers exact PNG sampling and mixed path/image order.

@@ -55,7 +55,7 @@ const evidenceEnvelope = {
     engineContractVersion: z.literal(1),
     reportSchema: z.string().min(1),
     reportVersion: positiveCount,
-    telemetryAbiVersion: z.literal(1),
+    telemetryAbiVersion: z.literal(2),
   }),
   decisionEligibility: strictObject({ eligible: z.boolean(), reasons: z.array(z.string().min(1)) }),
   evidenceLevel: z.enum(["decision-candidate", "exploratory"]),
@@ -190,6 +190,8 @@ const stageWorkload = strictObject({
       .array(
         strictObject({
           frameIndex: count,
+          imageSamplerBinding: cacheOutcome,
+          imageTexture: cacheOutcome,
           pipeline: cacheOutcome,
           preparedGeometry: cacheOutcome,
           surfaceConfiguration: cacheOutcome,
@@ -197,7 +199,13 @@ const stageWorkload = strictObject({
         }),
       )
       .min(1),
-    summary: strictObject({ pipeline: cacheCounts, preparedGeometry: cacheCounts, surfaceConfiguration: cacheCounts }),
+    summary: strictObject({
+      imageSamplerBinding: cacheCounts,
+      imageTexture: cacheCounts,
+      pipeline: cacheCounts,
+      preparedGeometry: cacheCounts,
+      surfaceConfiguration: cacheCounts,
+    }),
   }),
   correlation: z
     .array(

@@ -7,13 +7,22 @@ import type { CanvasAdapterEvidenceV1, CanvasFrameTelemetryV1 } from "./canvas-w
 /// against totalMs 5.5ms, so it passes attribution validation as-is.
 export function measuredTelemetryFixtureV1(): CanvasFrameTelemetryV1 {
   return {
-    caches: { pipeline: "retained", preparedGeometry: "miss", surfaceConfiguration: "hit" },
+    caches: {
+      imageSamplerBinding: "hit",
+      imageTexture: "hit",
+      pipeline: "retained",
+      preparedGeometry: "miss",
+      surfaceConfiguration: "hit",
+    },
     clock: "worker-performance-now",
     counts: {
       bufferCreations: 2,
       drawCalls: 3,
       evaluatedDraws: 3,
       evaluatedEntities: 3,
+      imageSamplerBindingCreations: 0,
+      imageTextureEvictions: 0,
+      imageTextureUploads: 0,
       surfaceConfigurations: 0,
       tessellationCalls: 3,
       tessellatedIndices: 96,
@@ -48,6 +57,9 @@ export function nullTelemetryCountsV1(): CanvasFrameTelemetryV1["counts"] {
     drawCalls: null,
     evaluatedDraws: null,
     evaluatedEntities: null,
+    imageSamplerBindingCreations: null,
+    imageTextureEvictions: null,
+    imageTextureUploads: null,
     surfaceConfigurations: null,
     tessellationCalls: null,
     tessellatedIndices: null,
@@ -62,7 +74,13 @@ export function nullTelemetryCountsV1(): CanvasFrameTelemetryV1["counts"] {
 export function unavailableTelemetryFixtureV1(reason = "no clock"): CanvasFrameTelemetryV1 {
   const unavailable = { kind: "unavailable", reason } as const;
   return {
-    caches: { pipeline: "retained", preparedGeometry: "skipped", surfaceConfiguration: "miss" },
+    caches: {
+      imageSamplerBinding: "skipped",
+      imageTexture: "skipped",
+      pipeline: "retained",
+      preparedGeometry: "skipped",
+      surfaceConfiguration: "miss",
+    },
     clock: "unavailable",
     counts: nullTelemetryCountsV1(),
     phases: {

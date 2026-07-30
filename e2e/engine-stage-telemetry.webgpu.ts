@@ -218,7 +218,13 @@ function aggregateCounts(frames: readonly TelemetryFrameRecord[]) {
 
 function aggregateCaches(frames: readonly TelemetryFrameRecord[]) {
   const summary: Record<string, Record<string, number>> = {};
-  for (const cache of ["pipeline", "preparedGeometry", "surfaceConfiguration"] as const) {
+  for (const cache of [
+    "imageSamplerBinding",
+    "imageTexture",
+    "pipeline",
+    "preparedGeometry",
+    "surfaceConfiguration",
+  ] as const) {
     const outcomes: Record<string, number> = {};
     for (const frame of frames) {
       const outcome = frame.telemetry.caches[cache];
@@ -228,6 +234,8 @@ function aggregateCaches(frames: readonly TelemetryFrameRecord[]) {
   }
   const perFrame = frames.map((frame) => ({
     frameIndex: frame.frameIndex,
+    imageSamplerBinding: frame.telemetry.caches.imageSamplerBinding,
+    imageTexture: frame.telemetry.caches.imageTexture,
     pipeline: frame.telemetry.caches.pipeline,
     preparedGeometry: frame.telemetry.caches.preparedGeometry,
     surfaceConfiguration: frame.telemetry.caches.surfaceConfiguration,

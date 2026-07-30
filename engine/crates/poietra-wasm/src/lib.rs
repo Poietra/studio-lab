@@ -22,7 +22,7 @@ use wasm_bindgen::prelude::*;
 pub use canvas_protocol::MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES_V1;
 pub use canvas_telemetry::{
     MAX_CANVAS_ADAPTER_EVIDENCE_JSON_BYTES_V1, MAX_CANVAS_TELEMETRY_RESPONSE_JSON_BYTES_V1,
-    POIETRA_CANVAS_TELEMETRY_ABI_VERSION_V1,
+    POIETRA_CANVAS_TELEMETRY_ABI_VERSION_V2,
 };
 pub use protocol::{
     EngineWorkerSessionV1, MAX_SAMPLE_REQUEST_JSON_BYTES_V1, MAX_WORKER_RESPONSE_JSON_BYTES_V1,
@@ -55,7 +55,7 @@ pub fn poietra_canvas_abi_version() -> u32 {
 #[must_use]
 #[wasm_bindgen(js_name = poietraCanvasTelemetryAbiVersion)]
 pub fn poietra_canvas_telemetry_abi_version() -> u32 {
-    POIETRA_CANVAS_TELEMETRY_ABI_VERSION_V1
+    POIETRA_CANVAS_TELEMETRY_ABI_VERSION_V2
 }
 
 /// Opaque WASM handle owned by one dedicated browser worker.
@@ -106,6 +106,6 @@ mod tests {
     fn exported_abi_versions_are_explicit() {
         assert_eq!(poietra_engine_abi_version(), 1);
         assert_eq!(poietra_canvas_abi_version(), 4);
-        assert_eq!(poietra_canvas_telemetry_abi_version(), 1);
+        assert_eq!(poietra_canvas_telemetry_abi_version(), 2);
     }
 }
