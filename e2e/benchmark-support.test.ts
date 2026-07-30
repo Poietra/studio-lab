@@ -846,15 +846,22 @@ describe("decision eligibility", () => {
     expect(invocation.executablePath).toBe(WINDOWS_POWERSHELL_EXECUTABLE);
     expect(invocation.executablePath).toBe(String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`);
     expect(invocation.args).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Write-Output canonical"]);
-    expect(invocation.env).toMatchObject({
+    expect(invocation.env).toEqual({
       ComSpec: String.raw`C:\Windows\System32\cmd.exe`,
       Path: String.raw`C:\Windows\System32;C:\Windows\System32\WindowsPowerShell\v1.0`,
       PATHEXT: ".COM;.EXE;.BAT;.CMD",
       PSModulePath: String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\Modules`,
       SystemRoot: String.raw`C:\Windows`,
+      TEMP: String.raw`C:\Windows\Temp`,
+      TMP: String.raw`C:\Windows\Temp`,
       WINDIR: String.raw`C:\Windows`,
     });
-    expect(WINDOWS_HOST_EVIDENCE_SCRIPT).not.toMatch(/\$env:|GetEnvironmentVariable|&\s+powercfg\.exe/u);
+    expect(WINDOWS_HOST_EVIDENCE_SCRIPT).not.toMatch(/GetEnvironmentVariable|&\s+powercfg\.exe/u);
+    expect(WINDOWS_HOST_EVIDENCE_SCRIPT).toContain("$env:TEMP = $userTemp");
+    expect(WINDOWS_HOST_EVIDENCE_SCRIPT).toContain("$env:TMP = $userTemp");
+    expect(WINDOWS_HOST_EVIDENCE_SCRIPT).toContain(
+      "[Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)",
+    );
     expect(WINDOWS_HOST_EVIDENCE_SCRIPT).toContain(String.raw`C:\Windows\System32\powercfg.exe`);
     expect(WINDOWS_HOST_EVIDENCE_SCRIPT).toContain("PowerGetUserConfiguredACPowerMode");
     expect(WINDOWS_HOST_EVIDENCE_SCRIPT).toContain(

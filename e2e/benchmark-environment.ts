@@ -593,6 +593,20 @@ export const WINDOWS_HOST_EVIDENCE_SCRIPT = String.raw`
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+
+# Add-Type emits transient compiler input, and an unprivileged benchmark user
+# cannot write to the OS-owned C:\Windows\Temp fallback in the sanitized child
+# environment. Resolve the actual user's local temp directory through the
+# Windows known-folder API instead of trusting caller-provided TEMP/TMP values.
+$localApplicationData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+if (-not [regex]::IsMatch($localApplicationData, "^[A-Za-z]:\\") -or -not [System.IO.Directory]::Exists($localApplicationData)) {
+  throw "the Windows local application data directory is unavailable"
+}
+$userTemp = [System.IO.Path]::Combine($localApplicationData, "Temp")
+if (-not [System.IO.Directory]::Exists($userTemp)) { throw "the Windows user temp directory is unavailable" }
+$env:TEMP = $userTemp
+$env:TMP = $userTemp
+
 Add-Type -AssemblyName System.Windows.Forms
 Import-Module -Name "C:\Windows\System32\WindowsPowerShell\v1.0\Modules\CimCmdlets\CimCmdlets.psd1" -Force
 
