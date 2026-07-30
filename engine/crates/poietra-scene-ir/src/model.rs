@@ -80,6 +80,7 @@ pub enum SnapshotProfileVersionV1 {
     V1,
     V2,
     V3,
+    V4,
 }
 
 impl Serialize for SnapshotProfileVersionV1 {
@@ -91,6 +92,7 @@ impl Serialize for SnapshotProfileVersionV1 {
             Self::V1 => 1,
             Self::V2 => 2,
             Self::V3 => 3,
+            Self::V4 => 4,
         })
     }
 }
@@ -104,8 +106,9 @@ impl<'de> Deserialize<'de> for SnapshotProfileVersionV1 {
             1 => Ok(Self::V1),
             2 => Ok(Self::V2),
             3 => Ok(Self::V3),
+            4 => Ok(Self::V4),
             version => Err(de::Error::custom(format!(
-                "unsupported fast-manim snapshot profile version {version}; expected 1, 2, or 3"
+                "unsupported fast-manim snapshot profile version {version}; expected 1, 2, 3, or 4"
             ))),
         }
     }
@@ -899,7 +902,11 @@ mod integer_wire_tests {
             serde_json::from_str::<SnapshotProfileVersionV1>("3.0").unwrap(),
             SnapshotProfileVersionV1::V3
         );
-        assert!(serde_json::from_str::<SnapshotProfileVersionV1>("4.0").is_err());
+        assert_eq!(
+            serde_json::from_str::<SnapshotProfileVersionV1>("4.0").unwrap(),
+            SnapshotProfileVersionV1::V4
+        );
+        assert!(serde_json::from_str::<SnapshotProfileVersionV1>("5.0").is_err());
     }
 }
 
