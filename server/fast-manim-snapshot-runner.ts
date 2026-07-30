@@ -45,6 +45,12 @@ import {
   type VerifiedSourceRuntimeIdentityMapV1,
 } from "./fast-manim-snapshot-contract";
 import { abortError } from "./fast-manim-snapshot-producer-process";
+import {
+  type FastManimSnapshotPngProviderV1,
+  type FastManimSnapshotPngReadV1,
+  readFastManimSnapshotPngV1,
+  sameFastManimSnapshotPngReadV1,
+} from "./fast-manim-snapshot-png-provider";
 import { type FastManimSnapshotPublicationStore, processPublicationStore } from "./fast-manim-snapshot-publication";
 import {
   type FastManimSnapshotSourceProviderV1,
@@ -183,6 +189,8 @@ type TrackedFastManimSandboxStatus = {
 };
 
 const FAILURE_MESSAGES: Readonly<Record<FastManimSnapshotRunFailureCodeV1, string>> = {
+  "asset-changed": "The project image.png generation changed while the snapshot producer was running.",
+  "asset-unavailable": "The exact project image.png generation is unavailable for snapshot execution.",
   "capability-unsupported": "The compiled Scene requires capabilities outside the server runtime allowlist.",
   "producer-exit": "The fast-manim snapshot producer exited without a usable result.",
   "producer-output-overflow": "The fast-manim snapshot producer exceeded the raw stdout/stderr byte budget.",
@@ -225,6 +233,7 @@ export class FastManimSnapshotRunner {
   private readonly maxPublishedSnapshots: number;
   private ownerId: number | null = null;
   private readonly projectId: string;
+  private readonly pngProvider: FastManimSnapshotPngProviderV1 | undefined;
   private readonly publicationStore: FastManimSnapshotPublicationStore;
   private readonly publishRetentionMs: number;
   private readonly sandboxCloseGraceMs: number;
@@ -247,6 +256,7 @@ export class FastManimSnapshotRunner {
       maxPublishedSnapshots?: number;
       projectId: string;
       projectRoot?: string;
+      pngProvider?: FastManimSnapshotPngProviderV1;
       publicationStore?: FastManimSnapshotPublicationStore;
       publishRetentionMs?: number;
       sandboxCloseGraceMs?: number;
@@ -298,7 +308,11 @@ export class FastManimSnapshotRunner {
     }
     this.attestationVerifier = options.attestationVerifier;
     this.backend = options.backend ?? new UnavailableFastManimSandboxBackendV1();
-    this.capabilities = Object.freeze([...(options.capabilities ?? FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1)]);
+    this.snapshotVersion = options.snapshotVersion ?? 1;
+    this.capabilities = Object.freeze([
+      ...(options.capabilities ??
+        (this.snapshotVersion === 4 ? (["png-image"] as const) : FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1)),
+    ]);
     this.deployment = deployment;
     this.frame = Object.freeze({ height: options.frame.height, width: options.frame.width });
     this.logger = options.logger ?? nullLogger;
@@ -311,10 +325,10 @@ export class FastManimSnapshotRunner {
       tenantId: options.tenantId,
     });
     this.projectId = configuredIdentity.projectId;
+    this.pngProvider = options.pngProvider;
     this.publicationStore = options.publicationStore ?? processPublicationStore;
     this.publishRetentionMs = publishRetentionMs;
     this.sandboxCloseGraceMs = sandboxCloseGraceMs;
-    this.snapshotVersion = options.snapshotVersion ?? 1;
     this.sourceProvider =
       options.sourceProvider ??
       new FileSystemFastManimSnapshotSourceProviderV1(options.projectRoot!, options.sourceReadHooks);
@@ -756,6 +770,18 @@ export class FastManimSnapshotRunner {
       return failed("source-correlation-stale");
     }
 
+    let beforePng: FastManimSnapshotPngReadV1 | null = null;
+    if (this.snapshotVersion === 4) {
+      if (!this.pngProvider) return failed("asset-unavailable");
+      try {
+        beforePng = await readFastManimSnapshotPngV1(this.pngProvider, signal);
+      } catch {
+        throwIfHalted();
+        return failed("asset-unavailable");
+      }
+      throwIfHalted();
+    }
+
     const expected: ExpectedFastManimSnapshotCorrelationV1 = {
       frame: { height: this.frame.height, width: this.frame.width },
       projectId: request.projectId,
@@ -784,7 +810,10 @@ export class FastManimSnapshotRunner {
       version: 1,
     } satisfies FastManimSnapshotProducerRequestV1);
 
-    const sandboxRequest = new FastManimSandboxRequestBundleV1(producerRequest);
+    const sandboxRequest = new FastManimSandboxRequestBundleV1(
+      producerRequest,
+      beforePng === null ? undefined : { pngBytes: beforePng.bytes },
+    );
     const produced = await this.produce(sandboxRequest, readiness.attestationDigest, request, signal);
     throwIfHalted();
     if (produced.kind !== "ok") return failed(produced.code);
@@ -820,6 +849,20 @@ export class FastManimSnapshotRunner {
     }
     throwIfHalted();
 
+    if (beforePng !== null && sealed.kind === "compiled") {
+      const asset = sealed.bundle.assets.assets[0];
+      if (
+        !asset ||
+        asset.kind !== "png-image" ||
+        asset.sha256 !== beforePng.digest ||
+        asset.byteLength !== beforePng.byteSize ||
+        asset.pixelHeight !== beforePng.height ||
+        asset.pixelWidth !== beforePng.width
+      ) {
+        return failed("result-rejected");
+      }
+    }
+
     // Correlate source and runtime capability again after execution: the file
     // may have been rewritten while the producer ran, and a snapshot must only
     // publish against the exact inputs it was correlated with beforehand. A
@@ -835,6 +878,17 @@ export class FastManimSnapshotRunner {
     throwIfHalted();
     if (after.hash !== expected.sourceHash || after.versionToken !== before.versionToken)
       return failed("source-changed");
+    if (beforePng !== null) {
+      let afterPng: FastManimSnapshotPngReadV1;
+      try {
+        afterPng = await readFastManimSnapshotPngV1(this.pngProvider!, signal);
+      } catch {
+        throwIfHalted();
+        return failed("asset-changed");
+      }
+      throwIfHalted();
+      if (!sameFastManimSnapshotPngReadV1(beforePng, afterPng)) return failed("asset-changed");
+    }
     if (digestFastManimSnapshotRuntimeConfigV1(this.runtimeConfig()) !== runtimeConfigHash) {
       return failed("runtime-config-changed");
     }

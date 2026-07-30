@@ -2012,6 +2012,8 @@ export const fastManimSnapshotProducerRequestV1Schema = z
   });
 
 export const fastManimSnapshotRunFailureCodeV1Schema = z.enum([
+  "asset-changed",
+  "asset-unavailable",
   "capability-unsupported",
   "producer-exit",
   "producer-output-overflow",
