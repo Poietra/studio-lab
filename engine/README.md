@@ -85,7 +85,9 @@ Verified static PNG draws are prepared as camera-projected affine quads with
 row-zero-top UVs. The decoder converts straight-alpha sRGB samples to
 premultiplied linear-light RGBA8 before nearest or linear clamp-to-edge sampling;
 path and image pipeline switches preserve packet paint order. Image packets need
-an immutable decoded-asset resolver. Open fill, unresolved or invalid image,
+an immutable decoded-asset resolver. Before creating GPU resources, frame preflight
+caps unique textures at 4,096, texture/sampler bindings at 8,192, and decoded
+texture upload at 256 MiB. Open fill, unresolved or invalid image,
 unmarked degenerate, numeric, precision-collapse, and tessellation-limit cases
 reject the complete frame with a structured error. Each fill is bounded to 2,048 source
 cubics, 32,768 flattened input points, and 65,536 Lyon output vertices; each stroke

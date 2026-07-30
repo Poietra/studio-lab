@@ -1,10 +1,11 @@
 use std::collections::HashMap;
 use std::mem::size_of;
 use std::ops::Range;
+use std::sync::Arc;
 
-use poietra_scene_ir::ImageSamplerV1;
+use poietra_scene_ir::{ImageSamplerV1, MAX_ASSETS_V1};
 
-use crate::PreparedImageDrawV1;
+use crate::{DecodedPngAssetV1, PreparedImageDrawV1};
 
 const IMAGE_VERTICES_PER_DRAW_V1: usize = 4;
 const IMAGE_INDICES_PER_DRAW_V1: usize = 6;
@@ -15,6 +16,10 @@ const MAX_IMAGE_GEOMETRY_UPLOAD_BYTES_V1: usize = 64 * 1024 * 1024;
 
 /// Hard ceiling for unique decoded texture bytes uploaded by one frame.
 pub const MAX_IMAGE_TEXTURE_UPLOAD_BYTES_V1: usize = 256 * 1024 * 1024;
+/// Hard ceiling for unique image textures referenced by one frame.
+pub const MAX_IMAGE_TEXTURES_PER_FRAME_V1: usize = MAX_ASSETS_V1;
+/// Each unique image can have at most one nearest and one linear binding.
+pub const MAX_IMAGE_BIND_GROUPS_PER_FRAME_V1: usize = MAX_IMAGE_TEXTURES_PER_FRAME_V1 * 2;
 
 const IMAGE_VERTEX_ATTRIBUTES_V1: [wgpu::VertexAttribute; 3] = [
     wgpu::VertexAttribute {
@@ -61,6 +66,20 @@ pub enum ImageGpuUploadErrorV1 {
     TextureByteLimitExceeded {
         maximum_bytes: usize,
         required_bytes: usize,
+    },
+    #[error(
+        "image frame references {required_textures} unique textures; maximum is {maximum_textures}"
+    )]
+    TextureCountLimitExceeded {
+        maximum_textures: usize,
+        required_textures: usize,
+    },
+    #[error(
+        "image frame requires {required_bind_groups} texture/sampler bindings; maximum is {maximum_bind_groups}"
+    )]
+    BindGroupCountLimitExceeded {
+        maximum_bind_groups: usize,
+        required_bind_groups: usize,
     },
     #[error("image upload allocation failed")]
     AllocationFailed,
@@ -193,6 +212,7 @@ impl ImagePipelineV1 {
 #[derive(Debug)]
 pub(crate) struct ImageFrameGpuV1 {
     bind_groups: Vec<wgpu::BindGroup>,
+    bind_group_indices: Vec<usize>,
     index_buffer: wgpu::Buffer,
     index_ranges: Vec<Range<u32>>,
     _textures: Vec<wgpu::Texture>,
@@ -208,11 +228,34 @@ pub(crate) struct ImageGeometryUploadPlanV1 {
     vertex_bytes: Vec<u8>,
 }
 
+#[derive(Clone, Debug)]
+struct ImageTextureUploadV1 {
+    asset: Arc<DecodedPngAssetV1>,
+    bytes_per_row: u32,
+    extent: wgpu::Extent3d,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ImageBindGroupUploadV1 {
+    sampler: ImageSamplerV1,
+    texture_index: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct ImageResourceUploadPlanV1 {
+    bind_group_indices: Vec<usize>,
+    bind_groups: Vec<ImageBindGroupUploadV1>,
+    texture_upload_bytes: usize,
+    textures: Vec<ImageTextureUploadV1>,
+}
+
 impl ImageFrameGpuV1 {
     pub(crate) const BUFFER_CREATIONS: u32 = 2;
 
-    pub(crate) fn bind_group(&self, index: usize) -> Option<&wgpu::BindGroup> {
-        self.bind_groups.get(index)
+    pub(crate) fn bind_group(&self, draw_index: usize) -> Option<&wgpu::BindGroup> {
+        self.bind_group_indices
+            .get(draw_index)
+            .and_then(|index| self.bind_groups.get(*index))
     }
 
     pub(crate) const fn index_buffer(&self) -> &wgpu::Buffer {
@@ -321,86 +364,219 @@ pub(crate) fn build_image_geometry_upload_plan_v1(
     }))
 }
 
+const fn image_sampler_key(sampler: ImageSamplerV1) -> u8 {
+    match sampler {
+        ImageSamplerV1::Linear => 0,
+        ImageSamplerV1::Nearest => 1,
+    }
+}
+
+fn preflight_texture_upload_v1(
+    asset: &Arc<DecodedPngAssetV1>,
+    maximum_dimension: u32,
+    prior_upload_bytes: usize,
+) -> Result<(ImageTextureUploadV1, usize), ImageGpuUploadErrorV1> {
+    if asset.width() > maximum_dimension || asset.height() > maximum_dimension {
+        return Err(ImageGpuUploadErrorV1::DeviceDimensionLimit {
+            height: asset.height(),
+            maximum_dimension,
+            sha256: asset.sha256().to_owned(),
+            width: asset.width(),
+        });
+    }
+    let expected_bytes = usize::try_from(asset.width())
+        .ok()
+        .and_then(|width| {
+            usize::try_from(asset.height())
+                .ok()
+                .map(|height| (width, height))
+        })
+        .and_then(|(width, height)| width.checked_mul(height))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or(ImageGpuUploadErrorV1::ByteAccountingOverflow)?;
+    if asset.premultiplied_linear_rgba8().len() != expected_bytes {
+        return Err(ImageGpuUploadErrorV1::InconsistentDecodedBytes {
+            sha256: asset.sha256().to_owned(),
+        });
+    }
+    let texture_upload_bytes = prior_upload_bytes
+        .checked_add(expected_bytes)
+        .ok_or(ImageGpuUploadErrorV1::ByteAccountingOverflow)?;
+    if texture_upload_bytes > MAX_IMAGE_TEXTURE_UPLOAD_BYTES_V1 {
+        return Err(ImageGpuUploadErrorV1::TextureByteLimitExceeded {
+            maximum_bytes: MAX_IMAGE_TEXTURE_UPLOAD_BYTES_V1,
+            required_bytes: texture_upload_bytes,
+        });
+    }
+    let bytes_per_row = asset
+        .width()
+        .checked_mul(4)
+        .ok_or(ImageGpuUploadErrorV1::ByteAccountingOverflow)?;
+    Ok((
+        ImageTextureUploadV1 {
+            asset: Arc::clone(asset),
+            bytes_per_row,
+            extent: wgpu::Extent3d {
+                depth_or_array_layers: 1,
+                height: asset.height(),
+                width: asset.width(),
+            },
+        },
+        texture_upload_bytes,
+    ))
+}
+
+pub(crate) fn preflight_image_resources_v1(
+    draws: &[PreparedImageDrawV1],
+    maximum_dimension: u32,
+) -> Result<ImageResourceUploadPlanV1, ImageGpuUploadErrorV1> {
+    let texture_capacity = draws.len().min(MAX_IMAGE_TEXTURES_PER_FRAME_V1);
+    let bind_group_capacity = draws.len().min(MAX_IMAGE_BIND_GROUPS_PER_FRAME_V1);
+    let mut texture_by_digest = HashMap::<&str, usize>::new();
+    texture_by_digest
+        .try_reserve(texture_capacity)
+        .map_err(|_| ImageGpuUploadErrorV1::AllocationFailed)?;
+    let mut bind_group_by_resource = HashMap::<(usize, u8), usize>::new();
+    bind_group_by_resource
+        .try_reserve(bind_group_capacity)
+        .map_err(|_| ImageGpuUploadErrorV1::AllocationFailed)?;
+    let mut textures = Vec::new();
+    textures
+        .try_reserve_exact(texture_capacity)
+        .map_err(|_| ImageGpuUploadErrorV1::AllocationFailed)?;
+    let mut bind_groups = Vec::new();
+    bind_groups
+        .try_reserve_exact(bind_group_capacity)
+        .map_err(|_| ImageGpuUploadErrorV1::AllocationFailed)?;
+    let mut bind_group_indices = Vec::new();
+    bind_group_indices
+        .try_reserve_exact(draws.len())
+        .map_err(|_| ImageGpuUploadErrorV1::AllocationFailed)?;
+    let mut texture_upload_bytes = 0usize;
+
+    for draw in draws {
+        let asset = draw.asset();
+        let texture_index = if let Some(index) = texture_by_digest.get(asset.sha256()).copied() {
+            index
+        } else {
+            let required_textures = textures
+                .len()
+                .checked_add(1)
+                .ok_or(ImageGpuUploadErrorV1::ByteAccountingOverflow)?;
+            if required_textures > MAX_IMAGE_TEXTURES_PER_FRAME_V1 {
+                return Err(ImageGpuUploadErrorV1::TextureCountLimitExceeded {
+                    maximum_textures: MAX_IMAGE_TEXTURES_PER_FRAME_V1,
+                    required_textures,
+                });
+            }
+            let (texture, next_upload_bytes) =
+                preflight_texture_upload_v1(asset, maximum_dimension, texture_upload_bytes)?;
+            texture_upload_bytes = next_upload_bytes;
+            let index = textures.len();
+            textures.push(texture);
+            texture_by_digest.insert(asset.sha256(), index);
+            index
+        };
+
+        let binding_key = (texture_index, image_sampler_key(draw.sampler()));
+        let bind_group_index = if let Some(index) = bind_group_by_resource.get(&binding_key) {
+            *index
+        } else {
+            let required_bind_groups = bind_groups
+                .len()
+                .checked_add(1)
+                .ok_or(ImageGpuUploadErrorV1::ByteAccountingOverflow)?;
+            if required_bind_groups > MAX_IMAGE_BIND_GROUPS_PER_FRAME_V1 {
+                return Err(ImageGpuUploadErrorV1::BindGroupCountLimitExceeded {
+                    maximum_bind_groups: MAX_IMAGE_BIND_GROUPS_PER_FRAME_V1,
+                    required_bind_groups,
+                });
+            }
+            let index = bind_groups.len();
+            bind_groups.push(ImageBindGroupUploadV1 {
+                sampler: draw.sampler(),
+                texture_index,
+            });
+            bind_group_by_resource.insert(binding_key, index);
+            index
+        };
+        bind_group_indices.push(bind_group_index);
+    }
+
+    if bind_group_indices.len() != draws.len() {
+        return Err(ImageGpuUploadErrorV1::InconsistentDrawPlan);
+    }
+    Ok(ImageResourceUploadPlanV1 {
+        bind_group_indices,
+        bind_groups,
+        texture_upload_bytes,
+        textures,
+    })
+}
+
 #[allow(clippy::too_many_lines)] // One bounded upload transaction owns all temporary GPU handles.
 pub(crate) fn upload_image_frame_v1(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     pipeline: &ImagePipelineV1,
-    draws: &[PreparedImageDrawV1],
-    plan: ImageGeometryUploadPlanV1,
+    geometry_plan: ImageGeometryUploadPlanV1,
+    resource_plan: ImageResourceUploadPlanV1,
 ) -> Result<ImageFrameGpuV1, ImageGpuUploadErrorV1> {
     let ImageGeometryUploadPlanV1 {
         index_bytes,
         index_ranges,
         vertex_bytes,
-    } = plan;
+    } = geometry_plan;
+    let upload_bytes = vertex_bytes
+        .len()
+        .checked_add(index_bytes.len())
+        .and_then(|bytes| bytes.checked_add(resource_plan.texture_upload_bytes))
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(ImageGpuUploadErrorV1::ByteAccountingOverflow)?;
+    let vertex_buffer_size = u64::try_from(vertex_bytes.len())
+        .map_err(|_| ImageGpuUploadErrorV1::ByteAccountingOverflow)?;
+    let index_buffer_size = u64::try_from(index_bytes.len())
+        .map_err(|_| ImageGpuUploadErrorV1::ByteAccountingOverflow)?;
+    let mut textures = Vec::new();
+    textures
+        .try_reserve_exact(resource_plan.textures.len())
+        .map_err(|_| ImageGpuUploadErrorV1::AllocationFailed)?;
+    let mut texture_views = Vec::new();
+    texture_views
+        .try_reserve_exact(resource_plan.textures.len())
+        .map_err(|_| ImageGpuUploadErrorV1::AllocationFailed)?;
+    let mut bind_groups = Vec::new();
+    bind_groups
+        .try_reserve_exact(resource_plan.bind_groups.len())
+        .map_err(|_| ImageGpuUploadErrorV1::AllocationFailed)?;
+    let ImageResourceUploadPlanV1 {
+        bind_group_indices,
+        bind_groups: bind_group_uploads,
+        texture_upload_bytes: _,
+        textures: texture_uploads,
+    } = resource_plan;
+
+    // The caller constructs the complete resource plan before staging either
+    // path or image GPU data; all remaining host allocations were reserved above.
     let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("poietra image vertex buffer v1"),
-        size: u64::try_from(vertex_bytes.len())
-            .map_err(|_| ImageGpuUploadErrorV1::ByteAccountingOverflow)?,
+        size: vertex_buffer_size,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::VERTEX,
         mapped_at_creation: false,
     });
     let index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("poietra image index buffer v1"),
-        size: u64::try_from(index_bytes.len())
-            .map_err(|_| ImageGpuUploadErrorV1::ByteAccountingOverflow)?,
+        size: index_buffer_size,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::INDEX,
         mapped_at_creation: false,
     });
     queue.write_buffer(&vertex_buffer, 0, &vertex_bytes);
     queue.write_buffer(&index_buffer, 0, &index_bytes);
 
-    let maximum_dimension = device.limits().max_texture_dimension_2d;
-    let mut textures = Vec::new();
-    let mut texture_views = Vec::new();
-    let mut resource_by_digest = HashMap::new();
-    let mut texture_upload_bytes = 0usize;
-    for draw in draws {
-        let asset = draw.asset();
-        if resource_by_digest.contains_key(asset.sha256()) {
-            continue;
-        }
-        if asset.width() > maximum_dimension || asset.height() > maximum_dimension {
-            return Err(ImageGpuUploadErrorV1::DeviceDimensionLimit {
-                height: asset.height(),
-                maximum_dimension,
-                sha256: asset.sha256().to_owned(),
-                width: asset.width(),
-            });
-        }
-        let expected_bytes = usize::try_from(asset.width())
-            .ok()
-            .and_then(|width| {
-                usize::try_from(asset.height())
-                    .ok()
-                    .map(|height| (width, height))
-            })
-            .and_then(|(width, height)| width.checked_mul(height))
-            .and_then(|pixels| pixels.checked_mul(4))
-            .ok_or(ImageGpuUploadErrorV1::ByteAccountingOverflow)?;
-        if asset.premultiplied_linear_rgba8().len() != expected_bytes {
-            return Err(ImageGpuUploadErrorV1::InconsistentDecodedBytes {
-                sha256: asset.sha256().to_owned(),
-            });
-        }
-        texture_upload_bytes = texture_upload_bytes
-            .checked_add(expected_bytes)
-            .ok_or(ImageGpuUploadErrorV1::ByteAccountingOverflow)?;
-        if texture_upload_bytes > MAX_IMAGE_TEXTURE_UPLOAD_BYTES_V1 {
-            return Err(ImageGpuUploadErrorV1::TextureByteLimitExceeded {
-                maximum_bytes: MAX_IMAGE_TEXTURE_UPLOAD_BYTES_V1,
-                required_bytes: texture_upload_bytes,
-            });
-        }
-        let extent = wgpu::Extent3d {
-            depth_or_array_layers: 1,
-            height: asset.height(),
-            width: asset.width(),
-        };
+    for upload in texture_uploads {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("poietra premultiplied linear image texture v1"),
-            size: extent,
+            size: upload.extent,
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -415,37 +591,22 @@ pub(crate) fn upload_image_frame_v1(
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            asset.premultiplied_linear_rgba8(),
+            upload.asset.premultiplied_linear_rgba8(),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(
-                    asset
-                        .width()
-                        .checked_mul(4)
-                        .ok_or(ImageGpuUploadErrorV1::ByteAccountingOverflow)?,
-                ),
-                rows_per_image: Some(asset.height()),
+                bytes_per_row: Some(upload.bytes_per_row),
+                rows_per_image: Some(upload.extent.height),
             },
-            extent,
+            upload.extent,
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let resource_index = texture_views.len();
         textures.push(texture);
         texture_views.push(view);
-        resource_by_digest.insert(asset.sha256().to_owned(), resource_index);
     }
 
-    let mut bind_groups = Vec::new();
-    bind_groups
-        .try_reserve_exact(draws.len())
-        .map_err(|_| ImageGpuUploadErrorV1::AllocationFailed)?;
-    for draw in draws {
-        let resource_index = resource_by_digest
-            .get(draw.asset().sha256())
-            .copied()
-            .ok_or(ImageGpuUploadErrorV1::InconsistentDrawPlan)?;
+    for upload in bind_group_uploads {
         let view = texture_views
-            .get(resource_index)
+            .get(upload.texture_index)
             .ok_or(ImageGpuUploadErrorV1::InconsistentDrawPlan)?;
         bind_groups.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("poietra image bind group v1"),
@@ -457,19 +618,14 @@ pub(crate) fn upload_image_frame_v1(
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(pipeline.sampler(draw.sampler())),
+                    resource: wgpu::BindingResource::Sampler(pipeline.sampler(upload.sampler)),
                 },
             ],
         }));
     }
-    let upload_bytes = vertex_bytes
-        .len()
-        .checked_add(index_bytes.len())
-        .and_then(|bytes| bytes.checked_add(texture_upload_bytes))
-        .and_then(|bytes| u64::try_from(bytes).ok())
-        .ok_or(ImageGpuUploadErrorV1::ByteAccountingOverflow)?;
     Ok(ImageFrameGpuV1 {
         bind_groups,
+        bind_group_indices,
         index_buffer,
         index_ranges,
         _textures: textures,

@@ -1248,7 +1248,7 @@ fn renders_verified_png_sampling_transforms_and_mixed_paint_order() {
         1,
     );
 
-    let (mixed_metadata, mixed_asset) = verified_rgba_png("asset:mixed", 1, 1, &[0, 255, 0, 128]);
+    let (mixed_metadata, mixed_asset) = verified_rgba_png("asset:mixed", 1, 1, &[0, 255, 0, 255]);
     let full_rect = ImageLocalRectV1 {
         bottom: -1.0,
         left: -2.0,
@@ -1281,7 +1281,7 @@ fn renders_verified_png_sampling_transforms_and_mixed_paint_order() {
             "draw:middle",
             "entity:middle",
             full_rect,
-            1.0,
+            0.5,
             1,
             ImageSamplerV1::Nearest,
             AffineTransformV1::identity(),
@@ -1319,8 +1319,8 @@ fn renders_verified_png_sampling_transforms_and_mixed_paint_order() {
     );
     let (_, mixed_rgba) = readback_texture(&device, &queue, &texture, extent);
     let mixed_row = [
-        [187, 188, 0, 255],
-        [187, 188, 0, 255],
+        [188, 188, 0, 255],
+        [188, 188, 0, 255],
         [137, 137, 188, 255],
         [137, 137, 188, 255],
     ];

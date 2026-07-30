@@ -25,7 +25,10 @@ pub use gpu::{
     CreateRendererErrorV1, RenderFrameErrorV1, RenderStageEvidenceV1, WgpuFillRendererV1,
     WgpuRenderTargetV1,
 };
-pub use image_gpu::{ImageGpuUploadErrorV1, MAX_IMAGE_TEXTURE_UPLOAD_BYTES_V1};
+pub use image_gpu::{
+    ImageGpuUploadErrorV1, MAX_IMAGE_BIND_GROUPS_PER_FRAME_V1, MAX_IMAGE_TEXTURE_UPLOAD_BYTES_V1,
+    MAX_IMAGE_TEXTURES_PER_FRAME_V1,
+};
 pub use prepare::{
     DecodedPngAssetResolverV1, FLATTEN_TOLERANCE_PIXELS_V1, MAX_PREPARED_VERTICES_V1,
     OrderedDrawPlanV1, PrepareFrameErrorV1, PreparedDrawV1, PreparedFrameV1,

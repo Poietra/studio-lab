@@ -1,6 +1,7 @@
 use crate::arena::GpuBufferArenaV1;
 use crate::image_gpu::{
-    ImageFrameGpuV1, ImagePipelineV1, build_image_geometry_upload_plan_v1, upload_image_frame_v1,
+    ImageFrameGpuV1, ImagePipelineV1, build_image_geometry_upload_plan_v1,
+    preflight_image_resources_v1, upload_image_frame_v1,
 };
 use crate::upload::VERTEX_ENCODED_SIZE_V1;
 use crate::{
@@ -413,6 +414,14 @@ impl WgpuFillRendererV1 {
                 Some(build_gpu_upload_plan_v1(frame)?.into_parts())
             };
             let image_upload = build_image_geometry_upload_plan_v1(frame.image_draws())?;
+            let image_resources = if image_upload.is_some() {
+                Some(preflight_image_resources_v1(
+                    frame.image_draws(),
+                    device.limits().max_texture_dimension_2d,
+                )?)
+            } else {
+                None
+            };
             evidence.vertex_index_encode_ms = stage_elapsed(clock, vertex_index_encode_started);
             let buffer_create_started = stage_started(clock);
             if let Some((vertex_bytes, index_bytes)) = path_upload {
@@ -423,13 +432,13 @@ impl WgpuFillRendererV1 {
                 evidence.upload_bytes = arena_stats.upload_bytes;
                 debug_assert!(arena_stats.capacity_bytes > 0);
             }
-            if let Some(image_upload) = image_upload {
+            if let Some((image_upload, image_resources)) = image_upload.zip(image_resources) {
                 let uploaded = upload_image_frame_v1(
                     device,
                     queue,
                     &self.image_pipeline,
-                    frame.image_draws(),
                     image_upload,
+                    image_resources,
                 )?;
                 evidence.buffer_creations = evidence
                     .buffer_creations
