@@ -176,6 +176,10 @@ export async function prepareCanvasPngAssetTransfersV1(
   const manifestDigests = new Set(manifest.assets.map((asset) => asset.sha256));
   const payloadByDigest = new Map(payloads.map((payload) => [payload.sha256, payload]));
 
+  for (const digest of nextByDigest.keys()) {
+    if (!manifestDigests.has(digest)) nextByDigest.delete(digest);
+  }
+
   for (const payload of payloads) {
     const asset = manifestById.get(payload.assetId);
     if (!asset || !manifestDigests.has(payload.sha256) || !transferMatchesManifest(payload, asset)) {

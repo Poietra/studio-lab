@@ -126,6 +126,34 @@ impl CanvasPngAssetRegistryV1 {
                 ));
             }
         }
+        let retained_digests: BTreeSet<&str> = manifest
+            .assets
+            .iter()
+            .map(|asset| asset.sha256.as_str())
+            .collect();
+        candidate
+            .by_digest
+            .retain(|digest, _| retained_digests.contains(digest.as_str()));
+        candidate.encoded_bytes =
+            candidate
+                .by_digest
+                .values()
+                .try_fold(0_u64, |total, asset| {
+                    total
+                        .checked_add(asset.byte_length)
+                        .ok_or(CanvasPngAssetRegistryErrorV1::RegistryLimit)
+                })?;
+        candidate.decoded_pixels =
+            candidate
+                .by_digest
+                .values()
+                .try_fold(0_u64, |total, asset| {
+                    total
+                        .checked_add(
+                            u64::from(asset.decoded.width()) * u64::from(asset.decoded.height()),
+                        )
+                        .ok_or(CanvasPngAssetRegistryErrorV1::RegistryLimit)
+                })?;
         if candidate.by_digest.len() > MAX_ASSETS_V1
             || candidate.encoded_bytes > MAX_ENCODED_ASSET_BYTES_V1
             || candidate.decoded_pixels > MAX_TOTAL_IMAGE_PIXELS_V1
@@ -230,7 +258,9 @@ mod tests {
                 &[replacement_bytes],
             )
             .unwrap();
-        assert_eq!(advanced.by_digest.len(), 2);
+        assert_eq!(advanced.by_digest.len(), 1);
+        assert!(candidate.get(&first_asset.sha256).is_some());
+        assert!(advanced.get(&first_asset.sha256).is_none());
     }
 
     #[test]
@@ -258,19 +288,34 @@ mod tests {
     }
 
     #[test]
-    fn bounds_decoded_pixels_retained_across_replacements() {
+    fn removed_digest_requires_a_new_verified_transfer_before_reuse() {
         let bytes = png([10, 20, 30, 255]);
         let first_asset = asset("asset:first", &bytes);
         let metadata = serde_json::to_vec(&vec![first_asset.clone()]).unwrap();
-        let registry = CanvasPngAssetRegistryV1 {
-            decoded_pixels: MAX_TOTAL_IMAGE_PIXELS_V1,
-            ..CanvasPngAssetRegistryV1::default()
-        };
-
+        let installed = CanvasPngAssetRegistryV1::default()
+            .prepare_candidate(
+                &manifest(first_asset.clone()),
+                &metadata,
+                std::slice::from_ref(&bytes),
+            )
+            .unwrap();
+        let removed = installed
+            .prepare_candidate(
+                &AssetManifestV1 {
+                    assets: Vec::new(),
+                    manifest_digest: "1".repeat(64),
+                    manifest_id: "manifest:empty".to_owned(),
+                    schema: AssetManifestSchemaV1::AssetManifest,
+                    version: ContractVersionV1,
+                },
+                b"[]",
+                &[],
+            )
+            .unwrap();
+        assert!(removed.get(&first_asset.sha256).is_none());
         assert!(matches!(
-            registry.prepare_candidate(&manifest(first_asset), &metadata, &[bytes]),
-            Err(CanvasPngAssetRegistryErrorV1::RegistryLimit)
+            removed.prepare_candidate(&manifest(first_asset), b"[]", &[]),
+            Err(CanvasPngAssetRegistryErrorV1::Missing(_))
         ));
-        assert!(registry.by_digest.is_empty());
     }
 }

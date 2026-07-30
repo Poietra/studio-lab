@@ -85,7 +85,8 @@ describe("canvas PNG asset ingress", () => {
       registry: installed.nextRegistry,
     });
     expect(advanced.transfers).toHaveLength(1);
-    expect(advanced.nextRegistry.byDigest.size).toBe(2);
+    expect(advanced.nextRegistry.byDigest.size).toBe(1);
+    expect(advanced.nextRegistry.byDigest.has(first.asset.sha256)).toBe(false);
   });
 
   it("rejects stale length, digest, decoded dimensions, and decoder failure", async () => {
@@ -151,23 +152,28 @@ describe("canvas PNG asset ingress", () => {
     ).rejects.toThrow(/conflicting immutable metadata/i);
   });
 
-  it("bounds decoded pixels retained across successive scene replacements", async () => {
+  it("removes absent digests and requires a verified transfer before reintroduction", async () => {
     const current = await fixture(new Uint8Array([1, 2, 3, 4]).buffer);
-    const fullSize = { byteLength: 1, pixelHeight: 4_096, pixelWidth: 4_096 };
-    const registry = {
-      byDigest: new Map([
-        ["a".repeat(64), fullSize],
-        ["b".repeat(64), fullSize],
-      ]),
+    const installed = await prepareCanvasPngAssetTransfersV1({
+      decodeDimensions,
+      manifest: current.manifest,
+      payloads: [current.payload],
+    });
+    const emptyDraft: AssetManifestV1 = {
+      assets: [],
+      manifestDigest: "0".repeat(64),
+      manifestId: "manifest:empty",
+      schema: "poietra.asset-manifest",
+      version: 1,
     };
-
+    const empty = { ...emptyDraft, manifestDigest: await digestAssetManifestV1(emptyDraft) };
+    const removed = await prepareCanvasPngAssetTransfersV1({ manifest: empty, registry: installed.nextRegistry });
+    expect(removed.nextRegistry.byDigest.size).toBe(0);
     await expect(
       prepareCanvasPngAssetTransfersV1({
-        decodeDimensions,
         manifest: current.manifest,
-        payloads: [current.payload],
-        registry,
+        registry: removed.nextRegistry,
       }),
-    ).rejects.toThrow(/retained resource limits/i);
+    ).rejects.toThrow(/missing/i);
   });
 });
