@@ -39,6 +39,7 @@ import {
   FAST_MANIM_SANDBOX_CONFORMANCE_CASES_V1,
   FAST_MANIM_SANDBOX_CONFORMANCE_LEAK_SENTINELS_V1,
 } from "./test-fixtures/fast-manim-sandbox-conformance-fixture";
+import { sandboxPngBytes, sandboxPngProducerRequest } from "./test-fixtures/fast-manim-sandbox-png-fixture";
 
 const realImage = process.env.POIETRA_FAST_MANIM_GATED_OCI_IMAGE;
 const realLane = /^sha256:[a-f0-9]{64}$/.test(realImage ?? "");
@@ -182,6 +183,7 @@ const TRUSTED_IMAGE_LABELS = Object.freeze({
   "io.poietra.mathtex-outline.notice-sha256": "44e67c7f539ae83b25514aa15aae51a73c90c19a45ea33bbb293da52927f6608",
   "io.poietra.mathtex-outline.target": "linux-amd64",
   "io.poietra.mathtex-outline.toolchain-sha256": "95c98e10edff239e6ee237c9eac99dc96c06ba9fc712c30816ddc47d7db12f9e",
+  "io.poietra.snapshot-sandbox-envelope-version": "2",
   "io.poietra.sandbox-slice": "gated-oci-v1",
 });
 
@@ -436,6 +438,21 @@ describe("gated OCI Docker ownership", () => {
 });
 
 describe("gated OCI fixed profile", () => {
+  it("validates and materializes only the fixed sealed PNG attachment in Python", () => {
+    const entrypointPath = fileURLToPath(
+      new URL("../sandbox/fast-manim-gated-oci/gated-entrypoint.py", import.meta.url),
+    );
+    const testPath = fileURLToPath(
+      new URL("../sandbox/fast-manim-gated-oci/gated-entrypoint.test.py", import.meta.url),
+    );
+    const pngPath = fileURLToPath(new URL("../src-tauri/icons/32x32.png", import.meta.url));
+    const result = spawnSync("/usr/bin/python3", [testPath, entrypointPath, pngPath], { encoding: "utf8" });
+    expect({ stderr: result.stderr, status: result.status }).toEqual({
+      stderr: expect.stringContaining("Ran 4 tests"),
+      status: 0,
+    });
+  });
+
   it("treats seccomp EPERM/EACCES at stream socket creation as proof that outbound networking is blocked", () => {
     const entrypointPath = fileURLToPath(
       new URL("../sandbox/fast-manim-gated-oci/gated-entrypoint.py", import.meta.url),
@@ -500,6 +517,36 @@ describe("gated OCI job runner lifecycle", () => {
     expect(jobs.health()).toBe("cleanup-failed");
     expect(() => jobs.start(request, jobContext)).toThrow(FastManimSandboxBackendControlError);
     await expect(jobs.close()).rejects.toMatchObject({ code: "cleanup" });
+  });
+
+  it("forwards the exact digest-bound V2 PNG envelope to the fixed OCI gate", async () => {
+    let capturedRequestBytes: Uint8Array | undefined;
+    const jobs = new FastManimGatedOciJobRunnerV1({
+      cgroupKillPolicy: "best-effort",
+      dockerClient: new FastManimGatedOciDockerClientV1(),
+      executeJob: async (options) => {
+        capturedRequestBytes = options.requestBytes;
+        return {
+          cleanupVerified: true,
+          evidence: {
+            cgroup: "0::/test",
+            containerId: "b".repeat(64),
+            pid: 42,
+            resources: { cpuMax: "100000 100000", memoryMax: "1", memorySwapMax: "0", pidsMax: "1" },
+          },
+          resultBytes: Uint8Array.of(0x7b, 0x7d),
+        };
+      },
+      image: `sha256:${"a".repeat(64)}`,
+    });
+    const request = new FastManimSandboxRequestBundleV1(sandboxPngProducerRequest(), {
+      pngBytes: sandboxPngBytes(),
+    });
+    const result = await jobs.start(request, { ...context(), attestationDigest: "b".repeat(64) }).result;
+    expect(result).toMatchObject({ kind: "ok", requestDigest: request.requestDigest });
+    expect(capturedRequestBytes).toEqual(request.copyBytes());
+    expect(createHash("sha256").update(capturedRequestBytes!).digest("hex")).toBe(request.requestDigest);
+    await expect(jobs.close()).resolves.toBeUndefined();
   });
 
   it("permanently taints after create dispatch is aborted before an immutable ID is observed", async () => {

@@ -28,13 +28,14 @@ import {
   type FastManimSandboxBrokerServerV1,
   startFastManimSandboxBrokerServerV1 as startBroker,
 } from "./fast-manim-sandbox-broker-server";
-import { FastManimUdsSandboxBackendV1 } from "./fast-manim-uds-sandbox-backend";
 import { MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES } from "./fast-manim-snapshot-contract";
+import { FastManimUdsSandboxBackendV1 } from "./fast-manim-uds-sandbox-backend";
 import {
   localSandboxReadyStatus,
   SANDBOX_TEST_SHA_A,
   sandboxProducerRequest,
 } from "./test-fixtures/fast-manim-sandbox-backend-fixture";
+import { sandboxPngBytes, sandboxPngProducerRequest } from "./test-fixtures/fast-manim-sandbox-png-fixture";
 
 const roots: string[] = [];
 const servers: FastManimSandboxBrokerServerV1[] = [];
@@ -155,6 +156,34 @@ describe("fast-manim single-operation broker server", () => {
     ).resolves.toMatchObject({ kind: "ok", requestDigest: bundle.requestDigest });
     await client.close();
     expect(backend.starts[0]?.request.copyBytes()).toEqual(bundle.copyBytes());
+  });
+
+  it("reconstructs a sealed V2 PNG envelope across the UDS broker boundary", async () => {
+    const path = await socketPath();
+    const backend = new TestBackend();
+    const server = await start({ backend, socketPath: path });
+    servers.push(server);
+    const producer = sandboxPngProducerRequest();
+    const png = sandboxPngBytes();
+    const bundle = new RequestBundle(producer, { pngBytes: png });
+    const pngIdentity = { ...identity, requestId: producer.requestId };
+    const client = new FastManimUdsSandboxBackendV1({ socketPath: path });
+    await expect(
+      client.start(bundle, {
+        attestationDigest: SANDBOX_TEST_SHA_A,
+        deadlineEpochMs: Date.now() + 10_000,
+        identity: pngIdentity,
+        signal: new AbortController().signal,
+      }).result,
+    ).resolves.toMatchObject({ kind: "ok", requestDigest: bundle.requestDigest });
+    await client.close();
+    expect(backend.starts).toHaveLength(1);
+    expect(backend.starts[0]?.request.version).toBe(2);
+    expect(backend.starts[0]?.request.copyBytes()).toEqual(bundle.copyBytes());
+    expect(backend.starts[0]?.request.copyPngBytes()).toEqual(png);
+    expect(JSON.parse(Buffer.from(backend.starts[0]!.request.copyProducerRequestBytes()).toString("utf8"))).toEqual(
+      producer,
+    );
   });
 
   it("round-trips result bytes beyond the legacy snapshot cap across the full UDS boundary", {
