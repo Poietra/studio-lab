@@ -5,6 +5,7 @@ import {
   canvasMeasuredMemoryTelemetryV1Schema,
   MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES,
 } from "../src/engine/canvas-worker-protocol";
+import { hostEnvironmentSchema, referenceHostProfileEvidenceSchema } from "./benchmark-environment";
 import { STAGE_TELEMETRY_COUNT_NAMES, STAGE_TELEMETRY_PHASE_NAMES } from "./engine-stress-workloads";
 
 /** Strict schemas for the raw measurement bodies; envelopes may add descriptive metadata. */
@@ -18,6 +19,12 @@ const byteCount = count.max(Number.MAX_SAFE_INTEGER);
 export const ENGINE_MEMORY_BUDGET_BYTES = 256 * 1024 * 1024;
 export const ENGINE_STAGE_TELEMETRY_SAMPLE_COUNT = 300;
 export const ENGINE_STAGE_TELEMETRY_WARMUP_COUNT = 30;
+export const ENGINE_WEBGPU_BENCHMARK_REPORT_SCHEMA = "poietra.engine-webgpu-benchmark";
+export const ENGINE_WEBGPU_BENCHMARK_REPORT_VERSION = 3;
+export const ENGINE_WEBGPU_STRESS_REPORT_SCHEMA = "poietra.engine-webgpu-stress-benchmark";
+export const ENGINE_WEBGPU_STRESS_REPORT_VERSION = 5;
+export const ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_SCHEMA = "poietra.engine-webgpu-stage-telemetry";
+export const ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_VERSION = 4;
 const timingSummary = (sample: z.ZodNumber) =>
   strictObject({
     maximumMs: sample,
@@ -37,18 +44,20 @@ const byteLengthSummary = strictObject({
   p99Bytes: byteLength,
   samplesBytes: z.array(byteLength).min(1),
 });
-const unavailable = strictObject({ reason: z.string().min(1), status: z.literal("unavailable") });
 const commitIdentity = strictObject({
   headCommit: z.string().regex(/^[0-9a-f]{40}$/),
   treeState: z.enum(["clean", "dirty"]),
   uncommittedPathCount: count,
-});
-const hostEnvironment = strictObject({
-  commitIdentity: z.union([commitIdentity, unavailable]),
-  cpu: z.union([strictObject({ logicalCores: positiveCount, model: z.string() }), unavailable]),
-  gpuDriver: unavailable,
-  osKernel: strictObject({ platform: z.string(), release: z.string(), version: z.string() }),
-  powerMode: unavailable,
+}).superRefine((identity, context) => {
+  const countMatchesTreeState =
+    identity.treeState === "clean" ? identity.uncommittedPathCount === 0 : identity.uncommittedPathCount > 0;
+  if (!countMatchesTreeState) {
+    context.addIssue({
+      code: "custom",
+      message: "treeState and uncommittedPathCount must describe the same working-tree state",
+      path: ["uncommittedPathCount"],
+    });
+  }
 });
 const workerAdapter = z.discriminatedUnion("kind", [
   strictObject({ evidence: canvasAdapterEvidenceV1Schema, kind: z.literal("available") }),
@@ -70,7 +79,8 @@ const evidenceEnvelope = {
   }),
   provenanceStableThroughRun: z.literal(true),
 };
-const browserLaunch = strictObject({ args: z.array(z.string()), channel: z.string().min(1) });
+const browserLaunch = strictObject({ args: z.array(z.string()), channel: z.enum(["chromium", "msedge"]) });
+const browserVersion = z.string().min(1);
 const wasmEvidence = strictObject({
   byteLength: positiveCount,
   gzipByteLength: positiveCount,
@@ -79,41 +89,147 @@ const wasmEvidence = strictObject({
 });
 const retries = strictObject({ projectRetries: z.literal(0), testRetry: z.literal(0) });
 
-export const engineWebgpuBenchmarkReportSchema = z.looseObject({
-  ...evidenceEnvelope,
-  baseFixtureId: z.string().min(1),
-  capturedAt: z.string().datetime(),
-  coldRuns: z
-    .array(
-      strictObject({
-        run: count,
-        sceneReadyMs: nonnegative,
-        workerDeviceAdapter: canvasAdapterEvidenceV1Schema,
-      }),
-    )
-    .min(1),
-  configuration: z.looseObject({
-    coldProcessRuns: positiveCount,
-    lane: z.literal("production-build-static-server"),
-    retries,
-  }),
-  environment: z.looseObject({
-    browserLaunch,
-    host: hostEnvironment,
-    wasm: wasmEvidence,
-    workerDeviceAdapter: workerAdapter,
-  }),
-  metrics: strictObject({
-    coldBrowserLaunch: nonnegativeTimingSummary,
-    coldClientImportToSceneReady: nonnegativeTimingSummary,
-    coldPageLoad: nonnegativeTimingSummary,
-    scrubAck: nonnegativeTimingSummary,
-    warmFrame: nonnegativeTimingSummary,
-  }),
-  schema: z.literal("poietra.engine-webgpu-benchmark"),
-  snapshotSha256: sha256,
-  version: z.literal(2),
-});
+type EvidenceEnvelopeReport = Readonly<{
+  contracts: Readonly<{
+    reportSchema: string;
+    reportVersion: number;
+  }>;
+  decisionEligibility: Readonly<{ eligible: boolean; reasons: readonly string[] }>;
+  environment: Readonly<{ host: z.infer<typeof hostEnvironmentSchema> }>;
+  evidenceLevel: "decision-candidate" | "exploratory";
+  provenance: Readonly<{
+    commitIdentity: z.infer<typeof commitIdentity>;
+    grade: "clean-commit" | "non-decision-grade-dirty-tree";
+  }>;
+}>;
+
+type EnvelopeIssue = Readonly<{ message: string; path: readonly (number | string)[] }>;
+
+function evidenceEnvelopeIssues(
+  report: EvidenceEnvelopeReport,
+  expectedSchema: string,
+  expectedVersion: number,
+): EnvelopeIssue[] {
+  const issues: EnvelopeIssue[] = [];
+  if (report.contracts.reportSchema !== expectedSchema) {
+    issues.push({
+      message: `contracts.reportSchema must equal ${expectedSchema}`,
+      path: ["contracts", "reportSchema"],
+    });
+  }
+  if (report.contracts.reportVersion !== expectedVersion) {
+    issues.push({
+      message: `contracts.reportVersion must equal ${expectedVersion}`,
+      path: ["contracts", "reportVersion"],
+    });
+  }
+  const reasonsAreEmpty = report.decisionEligibility.reasons.length === 0;
+  if (report.decisionEligibility.eligible !== reasonsAreEmpty) {
+    issues.push({
+      message: "eligible must be true exactly when decisionEligibility.reasons is empty",
+      path: ["decisionEligibility"],
+    });
+  }
+  const expectedEvidenceLevel = report.decisionEligibility.eligible ? "decision-candidate" : "exploratory";
+  if (report.evidenceLevel !== expectedEvidenceLevel) {
+    issues.push({
+      message: `evidenceLevel must be ${expectedEvidenceLevel} for this eligibility result`,
+      path: ["evidenceLevel"],
+    });
+  }
+  const expectedGrade =
+    report.provenance.commitIdentity.treeState === "clean" ? "clean-commit" : "non-decision-grade-dirty-tree";
+  if (report.provenance.grade !== expectedGrade) {
+    issues.push({
+      message: `provenance.grade must be ${expectedGrade} for this commit identity`,
+      path: ["provenance", "grade"],
+    });
+  }
+  if (report.decisionEligibility.eligible && report.provenance.grade !== "clean-commit") {
+    issues.push({
+      message: "decision-eligible evidence requires clean-commit provenance",
+      path: ["decisionEligibility", "eligible"],
+    });
+  }
+  const hostCommitIdentity = report.environment.host.commitIdentity;
+  if ("status" in hostCommitIdentity) {
+    issues.push({
+      message: "benchmark reports require OS-environment commit identity to remain available",
+      path: ["environment", "host", "commitIdentity"],
+    });
+  } else if (
+    hostCommitIdentity.headCommit !== report.provenance.commitIdentity.headCommit ||
+    hostCommitIdentity.treeState !== report.provenance.commitIdentity.treeState ||
+    hostCommitIdentity.uncommittedPathCount !== report.provenance.commitIdentity.uncommittedPathCount
+  ) {
+    issues.push({
+      message: "environment.host.commitIdentity must equal provenance.commitIdentity",
+      path: ["environment", "host", "commitIdentity"],
+    });
+  }
+  return issues;
+}
+
+function addEvidenceEnvelopeIssues(
+  report: EvidenceEnvelopeReport,
+  expectedSchema: string,
+  expectedVersion: number,
+  addIssue: (issue: { code: "custom"; message: string; path: (number | string)[] }) => void,
+) {
+  for (const issue of evidenceEnvelopeIssues(report, expectedSchema, expectedVersion)) {
+    addIssue({ code: "custom", message: issue.message, path: [...issue.path] });
+  }
+}
+
+export const engineWebgpuBenchmarkReportSchema = z
+  .looseObject({
+    ...evidenceEnvelope,
+    baseFixtureId: z.string().min(1),
+    capturedAt: z.string().datetime(),
+    coldRuns: z
+      .array(
+        strictObject({
+          browserVersion,
+          run: count,
+          sceneReadyMs: nonnegative,
+          workerDeviceAdapter: canvasAdapterEvidenceV1Schema,
+        }),
+      )
+      .length(20),
+    configuration: z.looseObject({
+      coldProcessRuns: z.literal(20),
+      lane: z.literal("production-build-static-server"),
+      measuredFrames: z.literal(300),
+      retries,
+      warmupFrames: z.literal(30),
+    }),
+    environment: z.looseObject({
+      browserLaunch,
+      browserVersion,
+      host: hostEnvironmentSchema,
+      referenceHostProfile: referenceHostProfileEvidenceSchema,
+      wasm: wasmEvidence,
+      workerDeviceAdapter: workerAdapter,
+    }),
+    metrics: strictObject({
+      coldBrowserLaunch: nonnegativeTimingSummary,
+      coldClientImportToSceneReady: nonnegativeTimingSummary,
+      coldPageLoad: nonnegativeTimingSummary,
+      scrubAck: nonnegativeTimingSummary,
+      warmFrame: nonnegativeTimingSummary,
+    }),
+    schema: z.literal(ENGINE_WEBGPU_BENCHMARK_REPORT_SCHEMA),
+    snapshotSha256: sha256,
+    version: z.literal(ENGINE_WEBGPU_BENCHMARK_REPORT_VERSION),
+  })
+  .superRefine((report, context) => {
+    addEvidenceEnvelopeIssues(
+      report,
+      ENGINE_WEBGPU_BENCHMARK_REPORT_SCHEMA,
+      ENGINE_WEBGPU_BENCHMARK_REPORT_VERSION,
+      (issue) => context.addIssue(issue),
+    );
+  });
 
 function canonicalStressDefinition(
   entityCount: 100 | 1_000,
@@ -216,41 +332,30 @@ function requireCanonicalStressWorkloadOrder(
   }
 }
 
-function requireMatchingReportContract(
-  report: Readonly<{ contracts: Readonly<{ reportSchema: string; reportVersion: number }> }>,
-  reportSchema: string,
-  reportVersion: number,
-  context: z.core.$RefinementCtx<unknown>,
-) {
-  if (report.contracts.reportSchema !== reportSchema) {
-    context.addIssue({
-      code: "custom",
-      message: "contracts.reportSchema must match the top-level report schema",
-      path: ["contracts", "reportSchema"],
-    });
-  }
-  if (report.contracts.reportVersion !== reportVersion) {
-    context.addIssue({
-      code: "custom",
-      message: "contracts.reportVersion must match the top-level report version",
-      path: ["contracts", "reportVersion"],
-    });
-  }
-}
-
 export const engineWebgpuStressReportSchema = z
   .looseObject({
     ...evidenceEnvelope,
     baseFixtureIds: stressBaseFixtureIds,
     capturedAt: z.string().datetime(),
     configuration: z.looseObject({ lane: z.literal("production-build-static-server"), retries }),
-    environment: z.looseObject({ browserLaunch, host: hostEnvironment, wasm: wasmEvidence }),
-    schema: z.literal("poietra.engine-webgpu-stress-benchmark"),
-    version: z.literal(4),
-    workloads: z.array(stressWorkload),
+    environment: z.looseObject({
+      browserLaunch,
+      browserVersion,
+      host: hostEnvironmentSchema,
+      referenceHostProfile: referenceHostProfileEvidenceSchema,
+      wasm: wasmEvidence,
+    }),
+    schema: z.literal(ENGINE_WEBGPU_STRESS_REPORT_SCHEMA),
+    version: z.literal(ENGINE_WEBGPU_STRESS_REPORT_VERSION),
+    workloads: z.array(stressWorkload).min(1),
   })
   .superRefine((report, context) => {
-    requireMatchingReportContract(report, "poietra.engine-webgpu-stress-benchmark", 4, context);
+    addEvidenceEnvelopeIssues(
+      report,
+      ENGINE_WEBGPU_STRESS_REPORT_SCHEMA,
+      ENGINE_WEBGPU_STRESS_REPORT_VERSION,
+      (issue) => context.addIssue(issue),
+    );
     requireCanonicalStressWorkloadOrder(report.workloads, context);
   });
 
@@ -346,7 +451,13 @@ export const engineWebgpuStageTelemetryReportSchema = z
       telemetryFrames: z.literal(ENGINE_STAGE_TELEMETRY_SAMPLE_COUNT),
       warmupFrames: z.literal(ENGINE_STAGE_TELEMETRY_WARMUP_COUNT),
     }),
-    environment: z.looseObject({ browserLaunch, host: hostEnvironment, wasm: wasmEvidence }),
+    environment: z.looseObject({
+      browserLaunch,
+      browserVersion,
+      host: hostEnvironmentSchema,
+      referenceHostProfile: referenceHostProfileEvidenceSchema,
+      wasm: wasmEvidence,
+    }),
     memoryAccounting: strictObject({
       exclusions: z.tuple([
         z.literal("browser-js-dom"),
@@ -359,12 +470,17 @@ export const engineWebgpuStageTelemetryReportSchema = z
       total: z.literal("wasm-linear-plus-logical-gpu-resident"),
       wasmBreakdown: z.literal("informational-subsets-already-contained-in-wasm-linear"),
     }),
-    schema: z.literal("poietra.engine-webgpu-stage-telemetry"),
-    version: z.literal(3),
+    schema: z.literal(ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_SCHEMA),
+    version: z.literal(ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_VERSION),
     workloads: z.array(stageWorkload).min(1),
   })
   .superRefine((report, context) => {
-    requireMatchingReportContract(report, "poietra.engine-webgpu-stage-telemetry", 3, context);
+    addEvidenceEnvelopeIssues(
+      report,
+      ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_SCHEMA,
+      ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_VERSION,
+      (issue) => context.addIssue(issue),
+    );
     requireCanonicalStressWorkloadOrder(report.workloads, context);
     for (const [workloadIndex, workload] of report.workloads.entries()) {
       const path = ["workloads", workloadIndex, "memory"] as const;

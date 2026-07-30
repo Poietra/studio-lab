@@ -290,8 +290,26 @@ Evidence rules:
   development smoke whose report is permanently graded
   `non-decision-grade-dirty-tree`.
 - Every report carries machine-readable `decisionEligibility`; software
-  adapters (for example SwiftShader/CPU) and missing driver/power-mode
-  evidence keep a run exploratory regardless of budget booleans.
+  adapters (for example SwiftShader/CPU), Linux hosts, and missing or mismatched
+  driver/AC/power evidence keep a run exploratory regardless of budget
+  booleans. The only decision candidate is native Windows Edge on its default
+  D3D12 path, with no Linux Vulkan/ANGLE flags.
+- `fixtures/engine-benchmark-v1/windows-d3d12-reference-host.json` is the
+  strict reference-host profile; its sibling `.sha256` file authenticates the
+  exact reviewed bytes. Windows build, CPU, complete GPU/driver inventory, AC
+  state, active power-plan GUID, launched Edge version, and selected Worker
+  adapter must all match. The primary adapter and all 20 fresh-process cold
+  samples must also have one identical hardware identity. Environment
+  variables cannot replace any of this OS/browser evidence: the production
+  probe launches the canonical Windows PowerShell and `powercfg` binaries by
+  fixed absolute path, uses a fixed system module path, and discovers Edge
+  from HKLM or fixed machine-install paths. This fail-closed harness does not
+  claim resistance to an administrator modifying HKLM or Windows system files.
+- The current exact report pairs are `poietra.engine-webgpu-benchmark` v3,
+  `poietra.engine-webgpu-stress-benchmark` v4, and
+  `poietra.engine-webgpu-stage-telemetry` v2. Their eligibility/provenance and
+  reference-host additions are breaking changes; prior-version readers must
+  reject them rather than accepting a widened envelope.
 - The lane never retries: a Worker crash or destroyed page context fails the
   run, and the reports record the actual retry counters.
 - The stress report compares the existing no-interaction acknowledgement with

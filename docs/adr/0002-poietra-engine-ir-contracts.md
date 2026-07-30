@@ -415,9 +415,11 @@ separate follow-up and is not claimed by this boundary alone.
 ## Fixed experiment protocol and adoption budget
 
 Every result records commit, contract version, fixture ID, browser build, OS/kernel,
-CPU, GPU/adapter, driver, power mode, viewport, warm-up count, and sample count.
-Correctness runs use the Playwright 1.61.1 Chromium revision pinned by this
-repository. The first performance reference host is:
+CPU, GPU/adapter, driver, AC state, power plan, viewport, warm-up count, and
+sample count. Correctness runs use the Playwright 1.61.1 Chromium revision
+pinned by this repository. Decision-grade performance runs use installed native
+Edge and its production-default D3D12 path on the checked-in, separately hashed
+reference profile:
 
 The checked-in TypeScript harness enforces at least 30 warm-up and 300 measured
 frames, records every evaluator sample, uses nearest-rank p50/p95, and hashes the
@@ -426,9 +428,31 @@ canonical sampled RenderPackets for reproducibility. Its metric is explicitly
 memory, transfer, and bundle measurements remain separate reports rather than
 being mislabeled as part of that number.
 
-- Linux 6.6 WSL2, x86-64;
+- Windows 11 Home build 26200, native Edge 150.0.4078.105;
 - Intel Core Ultra 7 255H, 16 logical CPUs, 32 GiB RAM;
-- NVIDIA RTX PRO 500 Blackwell Laptop GPU, 6 GiB, driver 595.71.
+- NVIDIA RTX PRO 500 Blackwell Laptop GPU selected for WebGPU, driver
+  32.0.15.9571 (NVIDIA 595.71), with the complete Intel/NVIDIA controller
+  inventory pinned;
+- AC connected and Windows Balanced power-plan GUID
+  `381b4222-f694-41f0-9685-ff5bb260df2e`.
+
+The authoritative values and Worker adapter IDs live in
+`fixtures/engine-benchmark-v1/windows-d3d12-reference-host.json`; the sibling
+`.sha256` file prevents an unreviewed profile edit from becoming evidence.
+Linux/WSL SwiftShader runs remain useful exploratory regressions but cannot be
+decision evidence. The main browser and all 20 independent cold processes must
+report the same non-software Worker adapter identity.
+
+The eligibility/provenance envelope is a breaking report-contract change. Its
+exact dispatch pairs are `poietra.engine-webgpu-benchmark` v3,
+`poietra.engine-webgpu-stress-benchmark` v4, and
+`poietra.engine-webgpu-stage-telemetry` v2. Producers and readers must reject
+the respective prior versions instead of interpreting the added fields under
+their old contracts. The Windows probe ignores caller `PATH`, `SystemRoot`,
+`ProgramFiles`, and `PSModulePath`: it uses fixed Windows system paths and HKLM
+machine installation data. This protects the harness from ordinary environment
+spoofing, not from an administrator replacing registry or operating-system
+state; such a host is outside the reference-evidence threat model.
 
 A later host may be added, but results from different hosts are never combined.
 WebGPU-disabled and initialization/device-loss runs are correctness/fallback tests,

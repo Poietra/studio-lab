@@ -13,8 +13,18 @@ import {
   assessDecisionEligibility,
   collectCommitIdentity,
   collectHostEnvironment,
+  type HostEnvironment,
+  type PinnedReferenceHostProfile,
+  readPinnedReferenceHostProfile,
+  referenceHostProfileSchema,
+  requireReferenceHostPreflight,
   requireStableCommitIdentity,
+  requireStableReferenceHostEnvironment,
   resolveBenchmarkProvenance,
+  WINDOWS_HOST_EVIDENCE_SCRIPT,
+  WINDOWS_POWERSHELL_EXECUTABLE,
+  type WorkerAdapterIdentity,
+  windowsHostEvidenceInvocation,
 } from "./benchmark-environment";
 import {
   BENCHMARK_BUILD_MANIFEST_PATH,
@@ -27,6 +37,13 @@ import {
   ENGINE_MEMORY_BUDGET_BYTES,
   ENGINE_STAGE_TELEMETRY_SAMPLE_COUNT,
   ENGINE_STAGE_TELEMETRY_WARMUP_COUNT,
+  ENGINE_WEBGPU_BENCHMARK_REPORT_SCHEMA,
+  ENGINE_WEBGPU_BENCHMARK_REPORT_VERSION,
+  ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_SCHEMA,
+  ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_VERSION,
+  ENGINE_WEBGPU_STRESS_REPORT_SCHEMA,
+  ENGINE_WEBGPU_STRESS_REPORT_VERSION,
+  engineWebgpuBenchmarkReportSchema,
   engineWebgpuStageTelemetryReportSchema,
   engineWebgpuStressReportSchema,
 } from "./benchmark-report-schemas";
@@ -40,9 +57,11 @@ import {
   summarizeSignedTiming,
   summarizeTiming,
 } from "./engine-stress-workloads";
+import { webgpuBrowserLaunch } from "./webgpu-launch";
 
 const COMMIT_A = "a".repeat(40);
 const COMMIT_B = "b".repeat(40);
+const REFERENCE_HOST = readPinnedReferenceHostProfile();
 
 function fakeGit(headCommit: string, porcelain: string) {
   return (args: readonly string[]) => {
@@ -54,6 +73,47 @@ function fakeGit(headCommit: string, porcelain: string) {
 
 function timingSummary(sample = 1) {
   return { maximumMs: sample, p50Ms: sample, p95Ms: sample, p99Ms: sample, samplesMs: [sample] };
+}
+
+function referenceHostEnvironment(referenceHost: PinnedReferenceHostProfile = REFERENCE_HOST): HostEnvironment {
+  const profile = referenceHost.profile;
+  return {
+    browserInstallation: {
+      channel: profile.browser.channel,
+      executablePath: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+      productVersion: profile.browser.version,
+      source: "windows-file-version",
+      status: "available",
+    },
+    commitIdentity: { headCommit: COMMIT_A, treeState: "clean", uncommittedPathCount: 0 },
+    cpu: profile.cpu,
+    gpuDriver: {
+      controllers: profile.gpuControllers.map((controller, index) => ({
+        ...controller,
+        pnpDeviceId: `PCI\\REFERENCE-${index}`,
+      })),
+      source: "windows-cim",
+      status: "available",
+    },
+    osKernel: { platform: "win32", release: profile.windowsBuild.version, version: "fixture Windows kernel" },
+    powerMode: {
+      ...profile.power,
+      source: "windows-system-power-status+powercfg",
+      status: "available",
+    },
+    windowsBuild: { ...profile.windowsBuild, source: "windows-cim", status: "available" },
+  };
+}
+
+function referenceWorkerAdapter(referenceHost: PinnedReferenceHostProfile = REFERENCE_HOST): WorkerAdapterIdentity {
+  return {
+    ...referenceHost.profile.selectedWorkerAdapter,
+    driver: "",
+    driverInfo: "",
+    name: "NVIDIA reference adapter",
+    subgroupMaxSize: 128,
+    subgroupMinSize: 4,
+  };
 }
 
 type StressProfile = "animated-cubic-paths" | "png-images" | "shape-primitives";
@@ -123,37 +183,59 @@ function stressWorkloadFixture(
   };
 }
 
-function stressReportFixture(workloads: readonly unknown[]) {
-  const unavailable = { reason: "not observable in this harness", status: "unavailable" } as const;
-  const commitIdentity = { headCommit: COMMIT_A, treeState: "clean", uncommittedPathCount: 0 } as const;
+function completeStressWorkloadFixtures() {
+  return [
+    stressWorkloadFixture(100, 100),
+    stressWorkloadFixture(1_000, 128, MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES),
+    stressWorkloadFixture(100, 100, 1_000, "animated-cubic-paths"),
+    stressWorkloadFixture(1_000, 128, 1_000, "animated-cubic-paths"),
+    stressWorkloadFixture(100, 100, 1_000, "png-images"),
+    stressWorkloadFixture(1_000, 128, 1_000, "png-images"),
+  ];
+}
+
+const FIXTURE_UNAVAILABLE = { reason: "not observable in this harness", status: "unavailable" } as const;
+const FIXTURE_COMMIT_IDENTITY = { headCommit: COMMIT_A, treeState: "clean", uncommittedPathCount: 0 } as const;
+
+function reportEnvelopeFixture(reportSchema: string, reportVersion: number) {
   return {
-    baseFixtureIds: ["eng-v1-shared-circle-opacity", "eng-v1-png-alpha-edge-camera"],
-    capturedAt: "2026-07-28T00:00:00.000Z",
-    configuration: { lane: "production-build-static-server", retries: { projectRetries: 0, testRetry: 0 } },
     contracts: {
       canvasWorkerProtocolVersion: 1,
       engineContractVersion: 1,
-      reportSchema: "poietra.engine-webgpu-stress-benchmark",
-      reportVersion: 4,
+      reportSchema,
+      reportVersion,
       telemetryAbiVersion: 3,
     },
-    decisionEligibility: { eligible: false, reasons: ["reference host is not pinned"] },
+    decisionEligibility: { eligible: false, reasons: ["fixture report is exploratory"] },
     environment: {
       browserLaunch: { args: [], channel: "chromium" },
+      browserVersion: "fixture-browser",
       host: {
-        commitIdentity,
+        browserInstallation: FIXTURE_UNAVAILABLE,
+        commitIdentity: FIXTURE_COMMIT_IDENTITY,
         cpu: { logicalCores: 1, model: "fixture CPU" },
-        gpuDriver: unavailable,
+        gpuDriver: FIXTURE_UNAVAILABLE,
         osKernel: { platform: "linux", release: "fixture", version: "fixture" },
-        powerMode: unavailable,
+        powerMode: FIXTURE_UNAVAILABLE,
+        windowsBuild: FIXTURE_UNAVAILABLE,
       },
+      referenceHostProfile: REFERENCE_HOST.evidence,
       wasm: { byteLength: 1, gzipByteLength: 1, path: "fixture.wasm", sha256: "3".repeat(64) },
     },
     evidenceLevel: "exploratory",
-    provenance: { commitIdentity, grade: "clean-commit" },
+    provenance: { commitIdentity: FIXTURE_COMMIT_IDENTITY, grade: "clean-commit" },
     provenanceStableThroughRun: true,
-    schema: "poietra.engine-webgpu-stress-benchmark",
-    version: 4,
+    schema: reportSchema,
+    version: reportVersion,
+  };
+}
+
+function stressReportFixture(workloads: readonly unknown[]) {
+  return {
+    ...reportEnvelopeFixture(ENGINE_WEBGPU_STRESS_REPORT_SCHEMA, ENGINE_WEBGPU_STRESS_REPORT_VERSION),
+    baseFixtureIds: ["eng-v1-shared-circle-opacity", "eng-v1-png-alpha-edge-camera"],
+    capturedAt: "2026-07-28T00:00:00.000Z",
+    configuration: { lane: "production-build-static-server", retries: { projectRetries: 0, testRetry: 0 } },
     workloads,
   };
 }
@@ -173,9 +255,42 @@ function measuredMemorySample(frameIndex: number, retainedBoundaryPeakBytes: num
   };
 }
 
-function stageReportFixture() {
-  const unavailable = { reason: "not observable in this harness", status: "unavailable" } as const;
-  const commitIdentity = { headCommit: COMMIT_A, treeState: "clean", uncommittedPathCount: 0 } as const;
+function benchmarkReportFixture() {
+  const adapter = adapterEvidenceFixtureV1();
+  const envelope = reportEnvelopeFixture(ENGINE_WEBGPU_BENCHMARK_REPORT_SCHEMA, ENGINE_WEBGPU_BENCHMARK_REPORT_VERSION);
+  return {
+    ...envelope,
+    baseFixtureId: "eng-v1-shared-circle-opacity",
+    capturedAt: "2026-07-28T00:00:00.000Z",
+    coldRuns: Array.from({ length: 20 }, (_, run) => ({
+      browserVersion: "fixture-browser",
+      run,
+      sceneReadyMs: 1,
+      workerDeviceAdapter: adapter,
+    })),
+    configuration: {
+      coldProcessRuns: 20,
+      lane: "production-build-static-server",
+      measuredFrames: 300,
+      retries: { projectRetries: 0, testRetry: 0 },
+      warmupFrames: 30,
+    },
+    environment: {
+      ...envelope.environment,
+      workerDeviceAdapter: { evidence: adapter, kind: "available" },
+    },
+    metrics: {
+      coldBrowserLaunch: timingSummary(),
+      coldClientImportToSceneReady: timingSummary(),
+      coldPageLoad: timingSummary(),
+      scrubAck: timingSummary(),
+      warmFrame: timingSummary(),
+    },
+    snapshotSha256: "4".repeat(64),
+  };
+}
+
+function stageTelemetryWorkloadFixture(definition = STRESS_DEFINITIONS[0]!) {
   const frameCount = ENGINE_STAGE_TELEMETRY_SAMPLE_COUNT;
   const frameIndices = Array.from({ length: frameCount }, (_, frameIndex) => frameIndex);
   const timing = { ...timingSummary(), samplesMs: frameIndices.map(() => 1) };
@@ -194,7 +309,7 @@ function stageReportFixture() {
     STAGE_TELEMETRY_COUNT_NAMES.map((name) => [name, { maximum: 1, minimum: 1, perFrame: frameIndices.map(() => 1) }]),
   );
   const memorySamples = frameIndices.map((frameIndex) => measuredMemorySample(frameIndex, 30_000_000 + frameIndex));
-  const workload = {
+  return {
     attributionViolations: [],
     caches: {
       perFrame: frameIndices.map((frameIndex) => ({
@@ -226,12 +341,7 @@ function stageReportFixture() {
       totalMs: 1,
     })),
     counts,
-    definition: {
-      entityCount: 100,
-      id: "shape-primitives-100",
-      profile: "shape-primitives",
-      revision: "1".repeat(64),
-    },
+    definition,
     installMs: 1,
     memory: {
       budget: { limitBytes: ENGINE_MEMORY_BUDGET_BYTES, met: true },
@@ -246,35 +356,19 @@ function stageReportFixture() {
     totalMsSummary: timing,
     workerDeviceAdapter: { evidence: adapterEvidenceFixtureV1(), kind: "available" },
   };
+}
+
+function stageTelemetryReportFixture() {
   return {
+    ...reportEnvelopeFixture(ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_SCHEMA, ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_VERSION),
     baseFixtureIds: ["eng-v1-shared-circle-opacity", "eng-v1-png-alpha-edge-camera"],
     capturedAt: "2026-07-28T00:00:00.000Z",
     configuration: {
       lane: "production-build-static-server",
       retries: { projectRetries: 0, testRetry: 0 },
-      telemetryFrames: frameCount,
+      telemetryFrames: ENGINE_STAGE_TELEMETRY_SAMPLE_COUNT,
       warmupFrames: ENGINE_STAGE_TELEMETRY_WARMUP_COUNT,
     },
-    contracts: {
-      canvasWorkerProtocolVersion: 1,
-      engineContractVersion: 1,
-      reportSchema: "poietra.engine-webgpu-stage-telemetry",
-      reportVersion: 3,
-      telemetryAbiVersion: 3,
-    },
-    decisionEligibility: { eligible: false, reasons: ["reference host is not pinned"] },
-    environment: {
-      browserLaunch: { args: [], channel: "chromium" },
-      host: {
-        commitIdentity,
-        cpu: { logicalCores: 1, model: "fixture CPU" },
-        gpuDriver: unavailable,
-        osKernel: { platform: "linux", release: "fixture", version: "fixture" },
-        powerMode: unavailable,
-      },
-      wasm: { byteLength: 1, gzipByteLength: 1, path: "fixture.wasm", sha256: "3".repeat(64) },
-    },
-    evidenceLevel: "exploratory",
     memoryAccounting: {
       exclusions: [
         "browser-js-dom",
@@ -287,13 +381,11 @@ function stageReportFixture() {
       total: "wasm-linear-plus-logical-gpu-resident",
       wasmBreakdown: "informational-subsets-already-contained-in-wasm-linear",
     },
-    provenance: { commitIdentity, grade: "clean-commit" },
-    provenanceStableThroughRun: true,
-    schema: "poietra.engine-webgpu-stage-telemetry",
-    version: 3,
-    workloads: STRESS_DEFINITIONS.map((definition) => ({ ...structuredClone(workload), definition })),
+    workloads: STRESS_DEFINITIONS.map((definition) => stageTelemetryWorkloadFixture(definition)),
   };
 }
+
+const stageReportFixture = stageTelemetryReportFixture;
 
 describe("benchmark provenance", () => {
   it("derives clean/dirty identity from git and fails closed when git is unavailable", () => {
@@ -334,41 +426,192 @@ describe("benchmark provenance", () => {
 });
 
 describe("decision eligibility", () => {
-  const hardwareAdapter = { backend: "BrowserWebGpu", deviceType: "DiscreteGpu", name: "Radeon" };
+  const hardwareAdapter = referenceWorkerAdapter();
+  const softwareAdapter: WorkerAdapterIdentity = {
+    backend: "BrowserWebGpu",
+    deviceId: 0,
+    deviceType: "Cpu",
+    driver: "",
+    driverInfo: "",
+    name: "Google SwiftShader",
+    source: "worker-wgpu-adapter-info",
+    subgroupMaxSize: 128,
+    subgroupMinSize: 4,
+    vendorId: 0,
+  };
 
-  it("flags software adapters, missing evidence, and unpinned reference profiles machine-readably", () => {
+  it("keeps Linux/SwiftShader and dirty evidence decision-ineligible", () => {
     const assessment = assessDecisionEligibility({
+      browserChannel: "chromium",
+      browserVersions: ["fixture-browser"],
       grade: "non-decision-grade-dirty-tree",
       host: collectHostEnvironment(),
       pageAdapterHintArchitecture: "swiftshader",
-      workerAdapters: [{ backend: "BrowserWebGpu", deviceType: "Cpu", name: "" }],
+      referenceHost: REFERENCE_HOST,
+      workerAdapters: [softwareAdapter],
     });
     expect(assessment.eligible).toBe(false);
     expect(assessment.reasons.join("\n")).toMatch(/dirty/);
     expect(assessment.reasons.join("\n")).toMatch(/software adapter/);
     expect(assessment.reasons.join("\n")).toMatch(/swiftshader/);
-    expect(assessment.reasons.join("\n")).toMatch(/reference adapter\/host\/driver\/power-mode/);
+    expect(assessment.reasons.join("\n")).toMatch(/host platform is linux/);
 
-    // Even a clean hardware run stays ineligible until a reference profile is
-    // pinned; the reasons say exactly why.
-    const cleanest = assessDecisionEligibility({
+    const linuxHardware = assessDecisionEligibility({
+      browserChannel: "chromium",
+      browserVersions: [REFERENCE_HOST.profile.browser.version],
       grade: "clean-commit",
       host: collectHostEnvironment(),
       pageAdapterHintArchitecture: null,
+      referenceHost: REFERENCE_HOST,
       workerAdapters: [hardwareAdapter],
     });
-    expect(cleanest.eligible).toBe(false);
-    expect(cleanest.reasons.every((reason) => reason.length > 0)).toBe(true);
+    expect(linuxHardware.eligible).toBe(false);
+    expect(linuxHardware.reasons.every((reason) => reason.length > 0)).toBe(true);
   });
 
-  it("requires at least one worker adapter evidence entry", () => {
+  it("requires the exact sample count and makes only the pinned Windows host eligible", () => {
     const assessment = assessDecisionEligibility({
+      browserChannel: "msedge",
+      browserVersions: [],
       grade: "clean-commit",
-      host: collectHostEnvironment(),
+      host: referenceHostEnvironment(),
       pageAdapterHintArchitecture: null,
+      referenceHost: REFERENCE_HOST,
+      requiredBrowserVersionSamples: 21,
+      requiredWorkerAdapterSamples: 21,
       workerAdapters: [],
     });
     expect(assessment.reasons.join("\n")).toMatch(/no Worker device adapter evidence/);
+    expect(assessment.reasons.join("\n")).toMatch(/required exactly 21/);
+
+    const exact = assessDecisionEligibility({
+      browserChannel: "msedge",
+      browserVersions: Array.from({ length: 21 }, () => REFERENCE_HOST.profile.browser.version),
+      grade: "clean-commit",
+      host: referenceHostEnvironment(),
+      pageAdapterHintArchitecture: null,
+      referenceHost: REFERENCE_HOST,
+      requiredBrowserVersionSamples: 21,
+      requiredWorkerAdapterSamples: 21,
+      workerAdapters: Array.from({ length: 21 }, () => hardwareAdapter),
+    });
+    expect(exact).toEqual({ eligible: true, reasons: [] });
+
+    const changed = assessDecisionEligibility({
+      browserChannel: "msedge",
+      browserVersions: [REFERENCE_HOST.profile.browser.version, "0.0.0.0"],
+      grade: "clean-commit",
+      host: referenceHostEnvironment(),
+      pageAdapterHintArchitecture: null,
+      referenceHost: REFERENCE_HOST,
+      workerAdapters: [hardwareAdapter, { ...hardwareAdapter, name: "another physical adapter" }],
+    });
+    expect(changed.eligible).toBe(false);
+    expect(changed.reasons.join("\n")).toMatch(/browser version/);
+    expect(changed.reasons.join("\n")).toMatch(/identity changed/);
+  });
+
+  it("uses platform-owned launch settings and rejects non-OS host assertions", () => {
+    expect(webgpuBrowserLaunch("win32")).toEqual({ args: [], channel: "msedge" });
+    expect(webgpuBrowserLaunch("linux")).toEqual({
+      args: ["--disable-vulkan-surface", "--enable-features=Vulkan", "--enable-unsafe-webgpu", "--use-angle=vulkan"],
+      channel: "chromium",
+    });
+
+    const unavailable = collectHostEnvironment({
+      platform: "win32",
+      windowsHostEvidence: () => {
+        throw new Error("PowerShell unavailable");
+      },
+    });
+    expect(unavailable.gpuDriver).toMatchObject({ status: "unavailable" });
+    expect(unavailable.browserInstallation).toMatchObject({ status: "unavailable" });
+    expect(unavailable.powerMode).toMatchObject({ status: "unavailable" });
+    expect(unavailable.windowsBuild).toMatchObject({ status: "unavailable" });
+    expect(() =>
+      requireReferenceHostPreflight({
+        browserLaunch: webgpuBrowserLaunch("win32"),
+        host: unavailable,
+        referenceHost: REFERENCE_HOST,
+      }),
+    ).toThrow(/preflight failed/);
+
+    const expected = referenceHostEnvironment();
+    const measured = collectHostEnvironment({
+      platform: "win32",
+      windowsHostEvidence: () =>
+        JSON.stringify({
+          browserInstallation: expected.browserInstallation,
+          gpuDriver: expected.gpuDriver,
+          powerMode: expected.powerMode,
+          windowsBuild: expected.windowsBuild,
+        }),
+    });
+    expect(measured.gpuDriver).toEqual(expected.gpuDriver);
+    expect(measured.browserInstallation).toEqual(expected.browserInstallation);
+    expect(measured.powerMode).toEqual(expected.powerMode);
+    expect(measured.windowsBuild).toEqual(expected.windowsBuild);
+  });
+
+  it("pins Windows evidence commands and discovery independently of caller environment variables", () => {
+    const invocation = windowsHostEvidenceInvocation("Write-Output canonical");
+    expect(invocation.executablePath).toBe(WINDOWS_POWERSHELL_EXECUTABLE);
+    expect(invocation.executablePath).toBe(String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`);
+    expect(invocation.args).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Write-Output canonical"]);
+    expect(invocation.env).toMatchObject({
+      Path: String.raw`C:\Windows\System32;C:\Windows\System32\WindowsPowerShell\v1.0`,
+      PSModulePath: String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\Modules`,
+      SystemRoot: String.raw`C:\Windows`,
+      WINDIR: String.raw`C:\Windows`,
+    });
+    expect(WINDOWS_HOST_EVIDENCE_SCRIPT).not.toMatch(/\$env:|GetEnvironmentVariable|&\s+powercfg\.exe/u);
+    expect(WINDOWS_HOST_EVIDENCE_SCRIPT).toContain(String.raw`C:\Windows\System32\powercfg.exe`);
+    expect(WINDOWS_HOST_EVIDENCE_SCRIPT).toContain(
+      String.raw`SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe`,
+    );
+  });
+
+  it("requires AC power and stable OS-owned evidence before publishing a Windows run", () => {
+    const host = referenceHostEnvironment();
+    expect(() =>
+      requireReferenceHostPreflight({
+        browserLaunch: webgpuBrowserLaunch("win32"),
+        host,
+        referenceHost: REFERENCE_HOST,
+      }),
+    ).not.toThrow();
+
+    const offline = {
+      ...host,
+      powerMode: { ...host.powerMode, acLineStatus: "offline" as const },
+    };
+    expect(() =>
+      requireReferenceHostPreflight({
+        browserLaunch: webgpuBrowserLaunch("win32"),
+        host: offline,
+        referenceHost: REFERENCE_HOST,
+      }),
+    ).toThrow(/not connected to AC power/);
+    expect(() => requireStableReferenceHostEnvironment(host, offline)).toThrow(/changed during/);
+  });
+
+  it("verifies the checked-in profile bytes against the separate reviewed hash", () => {
+    expect(readPinnedReferenceHostProfile()).toEqual(REFERENCE_HOST);
+    expect(() => readPinnedReferenceHostProfile(Buffer.from("{}"), "0".repeat(64))).toThrow(/hashes to/);
+  });
+
+  it("requires the selected Worker adapter to belong to the pinned GPU-controller inventory", () => {
+    expect(referenceHostProfileSchema.safeParse(REFERENCE_HOST.profile).success).toBe(true);
+    expect(
+      referenceHostProfileSchema.safeParse({
+        ...REFERENCE_HOST.profile,
+        selectedWorkerAdapter: {
+          ...REFERENCE_HOST.profile.selectedWorkerAdapter,
+          deviceId: 1,
+          vendorId: 1,
+        },
+      }).success,
+    ).toBe(false);
   });
 });
 
@@ -546,17 +789,37 @@ describe("report summaries", () => {
     });
   });
 
-  it("executes the stress report v4 schema for canonical vector and PNG definitions", () => {
-    const report = stressReportFixture([
-      stressWorkloadFixture(100, 100),
-      stressWorkloadFixture(1_000, 128, MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES),
-      stressWorkloadFixture(100, 100, 1_000, "animated-cubic-paths"),
-      stressWorkloadFixture(1_000, 128, 1_000, "animated-cubic-paths"),
-      stressWorkloadFixture(100, 100, 1_000, "png-images"),
-      stressWorkloadFixture(1_000, 128, 1_000, "png-images"),
-    ]);
+  it("dispatches all three breaking report contracts by their next exact versions", () => {
+    const benchmark = benchmarkReportFixture();
+    const stress = stressReportFixture(completeStressWorkloadFixtures());
+    const stage = stageTelemetryReportFixture();
+
+    expect(engineWebgpuBenchmarkReportSchema.parse(benchmark).version).toBe(ENGINE_WEBGPU_BENCHMARK_REPORT_VERSION);
+    expect(engineWebgpuStressReportSchema.parse(stress).version).toBe(ENGINE_WEBGPU_STRESS_REPORT_VERSION);
+    expect(engineWebgpuStageTelemetryReportSchema.parse(stage).version).toBe(
+      ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_VERSION,
+    );
+    expect(
+      engineWebgpuBenchmarkReportSchema.safeParse({
+        ...benchmark,
+        version: ENGINE_WEBGPU_BENCHMARK_REPORT_VERSION - 1,
+      }).success,
+    ).toBe(false);
+    expect(
+      engineWebgpuStressReportSchema.safeParse({ ...stress, version: ENGINE_WEBGPU_STRESS_REPORT_VERSION - 1 }).success,
+    ).toBe(false);
+    expect(
+      engineWebgpuStageTelemetryReportSchema.safeParse({
+        ...stage,
+        version: ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_VERSION - 1,
+      }).success,
+    ).toBe(false);
+  });
+
+  it("executes the stress report schema for canonical vector and PNG definitions", () => {
+    const report = stressReportFixture(completeStressWorkloadFixtures());
     const parsed = engineWebgpuStressReportSchema.parse(report);
-    expect(parsed.version).toBe(4);
+    expect(parsed.version).toBe(ENGINE_WEBGPU_STRESS_REPORT_VERSION);
     expect(parsed.workloads.map((workload) => workload.definition.id)).toEqual([
       "shape-primitives-100",
       "shape-primitives-1000",
@@ -565,12 +828,20 @@ describe("report summaries", () => {
       "png-images-100",
       "png-images-1000",
     ]);
+    expect(parsed.workloads.map((workload) => workload.interactionBounds.requestedEntityCount)).toEqual([
+      100, 128, 100, 128, 100, 128,
+    ]);
 
-    expect(engineWebgpuStressReportSchema.safeParse({ ...report, version: 3 }).success).toBe(false);
     expect(
       engineWebgpuStressReportSchema.safeParse({
         ...report,
-        contracts: { ...report.contracts, reportVersion: 3 },
+        version: ENGINE_WEBGPU_STRESS_REPORT_VERSION - 1,
+      }).success,
+    ).toBe(false);
+    expect(
+      engineWebgpuStressReportSchema.safeParse({
+        ...report,
+        contracts: { ...report.contracts, reportVersion: ENGINE_WEBGPU_STRESS_REPORT_VERSION - 1 },
       }).success,
     ).toBe(false);
     expect(
@@ -593,19 +864,23 @@ describe("report summaries", () => {
         ],
       }).success,
     ).toBe(false);
+
+    const oversizedWorkloads = completeStressWorkloadFixtures();
+    oversizedWorkloads[1] = stressWorkloadFixture(1_000, 128, MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES + 1);
     expect(
-      engineWebgpuStressReportSchema.safeParse(
-        stressReportFixture([stressWorkloadFixture(1_000, 128, MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES + 1)]),
-      ).success,
+      engineWebgpuStressReportSchema.safeParse(stressReportFixture(oversizedWorkloads)).success,
     ).toBe(false);
+
+    const overRequestedWorkloads = completeStressWorkloadFixtures();
+    overRequestedWorkloads[1] = stressWorkloadFixture(1_000, 129);
     expect(
-      engineWebgpuStressReportSchema.safeParse(stressReportFixture([stressWorkloadFixture(1_000, 129)])).success,
+      engineWebgpuStressReportSchema.safeParse(stressReportFixture(overRequestedWorkloads)).success,
     ).toBe(false);
   });
 
-  it("accepts a complete stage report v3 memory series", () => {
+  it("accepts a complete stage report memory series", () => {
     const parsed = engineWebgpuStageTelemetryReportSchema.parse(stageReportFixture());
-    expect(parsed.version).toBe(3);
+    expect(parsed.version).toBe(ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_VERSION);
     expect(parsed.workloads[0]?.memory.samples).toHaveLength(ENGINE_STAGE_TELEMETRY_SAMPLE_COUNT);
     expect(parsed.workloads[0]?.memory.peakRetainedBoundaryBytes).toBe(
       30_000_000 + ENGINE_STAGE_TELEMETRY_SAMPLE_COUNT - 1,
@@ -652,5 +927,71 @@ describe("report summaries", () => {
     const report = stageReportFixture();
     report.workloads[0]!.memory.samples[1]!.memory.retainedBoundaryTotal.peakBytes = 29_000_000;
     expect(engineWebgpuStageTelemetryReportSchema.safeParse(report).success).toBe(false);
+  });
+
+  it("rejects contradictory eligibility, evidence-level, and provenance claims", () => {
+    const report = stressReportFixture(completeStressWorkloadFixtures());
+    expect(
+      engineWebgpuStressReportSchema.safeParse({
+        ...report,
+        decisionEligibility: { eligible: true, reasons: ["contradiction"] },
+        evidenceLevel: "decision-candidate",
+      }).success,
+    ).toBe(false);
+    expect(
+      engineWebgpuStressReportSchema.safeParse({
+        ...report,
+        decisionEligibility: { eligible: false, reasons: [] },
+      }).success,
+    ).toBe(false);
+    expect(engineWebgpuStressReportSchema.safeParse({ ...report, evidenceLevel: "decision-candidate" }).success).toBe(
+      false,
+    );
+    expect(
+      engineWebgpuStressReportSchema.safeParse({
+        ...report,
+        provenance: { ...report.provenance, grade: "non-decision-grade-dirty-tree" },
+      }).success,
+    ).toBe(false);
+
+    const dirtyCommitIdentity = { headCommit: COMMIT_A, treeState: "dirty", uncommittedPathCount: 1 } as const;
+    const consistentDirtyReport = {
+      ...report,
+      environment: {
+        ...report.environment,
+        host: { ...report.environment.host, commitIdentity: dirtyCommitIdentity },
+      },
+      provenance: { commitIdentity: dirtyCommitIdentity, grade: "non-decision-grade-dirty-tree" },
+    };
+    expect(engineWebgpuStressReportSchema.safeParse(consistentDirtyReport).success).toBe(true);
+    expect(
+      engineWebgpuStressReportSchema.safeParse({
+        ...consistentDirtyReport,
+        decisionEligibility: { eligible: true, reasons: [] },
+        evidenceLevel: "decision-candidate",
+      }).success,
+    ).toBe(false);
+  });
+
+  it("requires report contracts and host commit identity to match their enclosing provenance", () => {
+    const report = stressReportFixture(completeStressWorkloadFixtures());
+    expect(
+      engineWebgpuStressReportSchema.safeParse({
+        ...report,
+        contracts: { ...report.contracts, reportSchema: ENGINE_WEBGPU_BENCHMARK_REPORT_SCHEMA },
+      }).success,
+    ).toBe(false);
+    expect(
+      engineWebgpuStressReportSchema.safeParse({
+        ...report,
+        environment: {
+          ...report.environment,
+          host: {
+            ...report.environment.host,
+            commitIdentity: { ...FIXTURE_COMMIT_IDENTITY, headCommit: COMMIT_B },
+          },
+        },
+      }).success,
+    ).toBe(false);
   });
 });

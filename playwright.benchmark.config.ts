@@ -37,7 +37,7 @@ export default defineConfig({
   outputDir: "test-results-benchmark",
   projects: [
     {
-      name: "chromium-webgpu-benchmark",
+      name: WEBGPU_CHROMIUM_CHANNEL === "msedge" ? "edge-d3d12-webgpu-benchmark" : "chromium-webgpu-benchmark",
       testMatch: ["engine-canvas.webgpu.ts", "engine-stress.webgpu.ts", "engine-stage-telemetry.webgpu.ts"],
       use: {
         browserName: "chromium",

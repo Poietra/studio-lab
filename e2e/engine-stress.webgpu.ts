@@ -8,13 +8,21 @@ import {
   assessDecisionEligibility,
   canonicalSceneBundleSha256,
   collectHostEnvironment,
+  readPinnedReferenceHostProfile,
   readServedWasmEvidence,
   reportContracts,
+  requireReferenceHostPreflight,
   requireStableCommitIdentity,
+  requireStableReferenceHostEnvironment,
   resolveBenchmarkProvenance,
+  type WorkerAdapterIdentity,
 } from "./benchmark-environment";
 import { makeServedBuildVerifier } from "./benchmark-manifest";
-import { engineWebgpuStressReportSchema } from "./benchmark-report-schemas";
+import {
+  ENGINE_WEBGPU_STRESS_REPORT_SCHEMA,
+  ENGINE_WEBGPU_STRESS_REPORT_VERSION,
+  engineWebgpuStressReportSchema,
+} from "./benchmark-report-schemas";
 import {
   collectPageAdapterHintOnce,
   STRESS_DEFINITIONS,
@@ -281,10 +289,16 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
     scene: unknown;
   }>;
   const provenance = resolveBenchmarkProvenance();
+  const host = collectHostEnvironment();
+  const referenceHost = readPinnedReferenceHostProfile();
+  const browserLaunch = { args: [...WEBGPU_CHROMIUM_LAUNCH_ARGS], channel: WEBGPU_CHROMIUM_CHANNEL };
+  requireReferenceHostPreflight({ browserLaunch, host, referenceHost });
   const wasm = await readServedWasmEvidence();
   const verifyServedBuild = makeServedBuildVerifier(request, provenance.commitIdentity);
   await verifyServedBuild();
   await page.goto("/benchmark.html");
+  const browserVersion = page.context().browser()?.version();
+  if (!browserVersion) throw new Error("The benchmark lane could not read the launched browser version.");
   const devClientPresent = await page.evaluate(() => Boolean(document.querySelector('script[src*="@vite/client"]')));
   expect(devClientPresent, "the benchmark lane must not run against the HMR dev server").toBe(false);
 
@@ -386,14 +400,19 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
   const pageAdapterHint = await page.evaluate(collectPageAdapterHintOnce);
   await verifyServedBuild();
   requireStableCommitIdentity(provenance.commitIdentity);
+  requireStableReferenceHostEnvironment(host, collectHostEnvironment());
   const decisionEligibility = assessDecisionEligibility({
+    browserChannel: WEBGPU_CHROMIUM_CHANNEL,
+    browserVersions: [browserVersion],
     grade: provenance.grade,
-    host: collectHostEnvironment(),
+    host,
     pageAdapterHintArchitecture: pageAdapterHint.kind === "available" ? pageAdapterHint.architecture : null,
+    referenceHost,
+    requiredWorkerAdapterSamples: STRESS_DEFINITIONS.length,
     workerAdapters: workloads.map((workload) => {
       const adapter = workload.workerDeviceAdapter;
       if (adapter.kind !== "available") throw new Error("worker adapter evidence was asserted available");
-      return (adapter.evidence as { adapter: { backend: string; deviceType: string; name: string } }).adapter;
+      return (adapter.evidence as { adapter: WorkerAdapterIdentity }).adapter;
     }),
   });
 
@@ -404,7 +423,7 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
     provenance,
     provenanceStableThroughRun: true,
     baseFixtureIds: ["eng-v1-shared-circle-opacity", "eng-v1-png-alpha-edge-camera"],
-    contracts: reportContracts("poietra.engine-webgpu-stress-benchmark", 4),
+    contracts: reportContracts(ENGINE_WEBGPU_STRESS_REPORT_SCHEMA, ENGINE_WEBGPU_STRESS_REPORT_VERSION),
     configuration: {
       lane: "production-build-static-server",
       frameBudgetMs: FRAME_BUDGET_MS,
@@ -441,15 +460,24 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
         "MathTex glyph outlines under stress",
         "generic multi-subpath fill and stroke topology under stress",
         "surface suboptimal acknowledgement counts",
+        "verified PNG/image sampling and texture upload under 1080p stress",
+        "MathTex outline workloads under 1080p stress",
       ],
-      rendererUnsupported: [],
+      rendererUnsupported: [
+        {
+          feature: "antialiasing and clipping",
+          reason: "The current WebGPU renderer has no multisample-antialiasing or clipping contract.",
+        },
+      ],
     },
     environment: {
       browser,
-      browserLaunch: { args: [...WEBGPU_CHROMIUM_LAUNCH_ARGS], channel: WEBGPU_CHROMIUM_CHANNEL },
-      host: collectHostEnvironment(),
+      browserLaunch,
+      browserVersion,
+      host,
       nodePlatform: process.platform,
       pageAdapterHint,
+      referenceHostProfile: referenceHost.evidence,
       wasm,
     },
     notes: [
@@ -461,11 +489,11 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
       "Interaction acknowledgement uses the same production render path after separate warm-up; the 1,000-entity workloads request the contract cap of 128 IDs rather than claiming 1,000 returned bounds.",
       "logicalResponseJsonBytes is the UTF-8 JSON size of the page-visible correlated Worker response, not an estimate of the browser's structured-clone transport bytes; every sample is gated by the 16 KiB canvas-response budget.",
       "Stress workloads validate successful acknowledgements, not pixel correctness; the shared small fixture owns readback proof.",
-      "This exploratory host report omits the fixed reference-host CPU, OS-kernel, driver, and power-mode evidence required for an adoption decision.",
+      "decisionEligibility compares OS-derived host evidence, the launched browser version, and every Worker adapter sample against the hash-verified checked-in reference profile.",
       "Budget booleans describe this recorded host only and do not fail CI.",
     ],
-    schema: "poietra.engine-webgpu-stress-benchmark",
-    version: 4,
+    schema: ENGINE_WEBGPU_STRESS_REPORT_SCHEMA,
+    version: ENGINE_WEBGPU_STRESS_REPORT_VERSION,
     workloads,
   } as const;
   const encoded = `${JSON.stringify(report, null, 2)}\n`;
