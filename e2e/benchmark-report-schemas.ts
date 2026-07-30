@@ -115,12 +115,40 @@ export const engineWebgpuBenchmarkReportSchema = z.looseObject({
   version: z.literal(2),
 });
 
-const stressDefinition = strictObject({
-  entityCount: z.union([z.literal(100), z.literal(1_000)]),
-  id: z.string().min(1),
-  profile: z.enum(["animated-cubic-paths", "shape-primitives"]),
-  revision: sha256,
-});
+function canonicalStressDefinition(
+  entityCount: 100 | 1_000,
+  id: string,
+  profile: "animated-cubic-paths" | "png-images" | "shape-primitives",
+  revisionDigit: string,
+) {
+  return strictObject({
+    entityCount: z.literal(entityCount),
+    id: z.literal(id),
+    profile: z.literal(profile),
+    revision: z.literal(revisionDigit.repeat(64)),
+  });
+}
+
+const stressDefinition = z.union([
+  canonicalStressDefinition(100, "shape-primitives-100", "shape-primitives", "1"),
+  canonicalStressDefinition(1_000, "shape-primitives-1000", "shape-primitives", "2"),
+  canonicalStressDefinition(100, "animated-cubic-paths-100", "animated-cubic-paths", "3"),
+  canonicalStressDefinition(1_000, "animated-cubic-paths-1000", "animated-cubic-paths", "4"),
+  canonicalStressDefinition(100, "png-images-100", "png-images", "5"),
+  canonicalStressDefinition(1_000, "png-images-1000", "png-images", "6"),
+]);
+const canonicalStressWorkloadIds = [
+  "shape-primitives-100",
+  "shape-primitives-1000",
+  "animated-cubic-paths-100",
+  "animated-cubic-paths-1000",
+  "png-images-100",
+  "png-images-1000",
+] as const;
+const stressBaseFixtureIds = z.tuple([
+  z.literal("eng-v1-shared-circle-opacity"),
+  z.literal("eng-v1-png-alpha-edge-camera"),
+]);
 const budget = strictObject({ limitMs: nonnegative, met: z.boolean() });
 const interactionEntityCount = z.union([z.literal(100), z.literal(128)]);
 const stressWorkload = strictObject({
@@ -165,16 +193,66 @@ const stressWorkload = strictObject({
   workerDeviceAdapter: workerAdapter,
 });
 
-export const engineWebgpuStressReportSchema = z.looseObject({
-  ...evidenceEnvelope,
-  baseFixtureId: z.string().min(1),
-  capturedAt: z.string().datetime(),
-  configuration: z.looseObject({ lane: z.literal("production-build-static-server"), retries }),
-  environment: z.looseObject({ browserLaunch, host: hostEnvironment, wasm: wasmEvidence }),
-  schema: z.literal("poietra.engine-webgpu-stress-benchmark"),
-  version: z.literal(3),
-  workloads: z.array(stressWorkload).min(1),
-});
+function requireCanonicalStressWorkloadOrder(
+  workloads: readonly Readonly<{ definition: Readonly<{ id: string }> }>[],
+  context: z.core.$RefinementCtx<unknown>,
+) {
+  if (workloads.length !== canonicalStressWorkloadIds.length) {
+    context.addIssue({
+      code: "custom",
+      message: "report must contain every canonical stress workload exactly once",
+      path: ["workloads"],
+    });
+    return;
+  }
+  for (const [index, expectedId] of canonicalStressWorkloadIds.entries()) {
+    if (workloads[index]?.definition.id !== expectedId) {
+      context.addIssue({
+        code: "custom",
+        message: `canonical workload ${index} must be ${expectedId}`,
+        path: ["workloads", index, "definition", "id"],
+      });
+    }
+  }
+}
+
+function requireMatchingReportContract(
+  report: Readonly<{ contracts: Readonly<{ reportSchema: string; reportVersion: number }> }>,
+  reportSchema: string,
+  reportVersion: number,
+  context: z.core.$RefinementCtx<unknown>,
+) {
+  if (report.contracts.reportSchema !== reportSchema) {
+    context.addIssue({
+      code: "custom",
+      message: "contracts.reportSchema must match the top-level report schema",
+      path: ["contracts", "reportSchema"],
+    });
+  }
+  if (report.contracts.reportVersion !== reportVersion) {
+    context.addIssue({
+      code: "custom",
+      message: "contracts.reportVersion must match the top-level report version",
+      path: ["contracts", "reportVersion"],
+    });
+  }
+}
+
+export const engineWebgpuStressReportSchema = z
+  .looseObject({
+    ...evidenceEnvelope,
+    baseFixtureIds: stressBaseFixtureIds,
+    capturedAt: z.string().datetime(),
+    configuration: z.looseObject({ lane: z.literal("production-build-static-server"), retries }),
+    environment: z.looseObject({ browserLaunch, host: hostEnvironment, wasm: wasmEvidence }),
+    schema: z.literal("poietra.engine-webgpu-stress-benchmark"),
+    version: z.literal(4),
+    workloads: z.array(stressWorkload),
+  })
+  .superRefine((report, context) => {
+    requireMatchingReportContract(report, "poietra.engine-webgpu-stress-benchmark", 4, context);
+    requireCanonicalStressWorkloadOrder(report.workloads, context);
+  });
 
 const cacheOutcome = z.enum(["absent", "hit", "miss", "retained", "skipped"]);
 const cacheCounts = z.partialRecord(cacheOutcome, count);
@@ -260,7 +338,7 @@ const stageWorkload = strictObject({
 export const engineWebgpuStageTelemetryReportSchema = z
   .looseObject({
     ...evidenceEnvelope,
-    baseFixtureId: z.string().min(1),
+    baseFixtureIds: stressBaseFixtureIds,
     capturedAt: z.string().datetime(),
     configuration: z.looseObject({
       lane: z.literal("production-build-static-server"),
@@ -282,10 +360,12 @@ export const engineWebgpuStageTelemetryReportSchema = z
       wasmBreakdown: z.literal("informational-subsets-already-contained-in-wasm-linear"),
     }),
     schema: z.literal("poietra.engine-webgpu-stage-telemetry"),
-    version: z.literal(2),
+    version: z.literal(3),
     workloads: z.array(stageWorkload).min(1),
   })
   .superRefine((report, context) => {
+    requireMatchingReportContract(report, "poietra.engine-webgpu-stage-telemetry", 3, context);
+    requireCanonicalStressWorkloadOrder(report.workloads, context);
     for (const [workloadIndex, workload] of report.workloads.entries()) {
       const path = ["workloads", workloadIndex, "memory"] as const;
       if (workload.memory.samples.length !== report.configuration.telemetryFrames) {

@@ -26,6 +26,7 @@ import {
 } from "./benchmark-report-schemas";
 import {
   collectPageAdapterHintOnce,
+  IMAGE_GEOMETRY_UPLOAD_BYTES_PER_DRAW,
   STAGE_TELEMETRY_COUNT_NAMES,
   STAGE_TELEMETRY_PHASE_NAMES,
   STRESS_DEFINITIONS,
@@ -86,7 +87,13 @@ type BrowserTelemetryResult = Readonly<{
   workerDeviceAdapter: WorkerDeviceAdapter;
 }>;
 
+type SerializedPngAssetPayload = Readonly<{
+  assetId: string;
+  encodedBytes: readonly number[];
+}>;
+
 async function runBrowserStageTelemetry(input: {
+  assetPayloads: readonly SerializedPngAssetPayload[];
   bundle: SceneIrBundleV1;
   revision: string;
   telemetryFrames: number;
@@ -113,8 +120,24 @@ async function runBrowserStageTelemetry(input: {
   const client = new PoietraCanvasWorkerClient({ requestTimeoutMs: 60_000 });
 
   try {
+    const assetById = new Map(input.bundle.assets.assets.map((asset) => [asset.id, asset]));
+    const assetPayloads = input.assetPayloads.map(({ assetId, encodedBytes }) => {
+      const asset = assetById.get(assetId);
+      if (!asset || asset.kind !== "png-image") {
+        throw new Error(`The benchmark payload references unknown PNG asset ${assetId}.`);
+      }
+      return {
+        assetId,
+        byteLength: asset.byteLength,
+        bytes: Uint8Array.from(encodedBytes).buffer,
+        mediaType: asset.mediaType,
+        pixelHeight: asset.pixelHeight,
+        pixelWidth: asset.pixelWidth,
+        sha256: asset.sha256,
+      } as const;
+    });
     const installStarted = performance.now();
-    await client.installScene({ canvas, revision: input.revision, snapshot: input.bundle });
+    await client.installScene({ assetPayloads, canvas, revision: input.revision, snapshot: input.bundle });
     const installMs = performance.now() - installStarted;
 
     const duration = input.bundle.scene.duration;
@@ -289,11 +312,15 @@ test("records the 1080p WebGPU stage telemetry matrix", async ({ page, request }
   expect(testInfo.project.retries).toBe(0);
   const provenance = resolveBenchmarkProvenance();
   const wasm = await readServedWasmEvidence();
-  const fixture = JSON.parse(await readFile("fixtures/engine-v1/shared-circle-opacity.json", "utf8")) as Readonly<{
+  const vectorFixture = JSON.parse(
+    await readFile("fixtures/engine-v1/shared-circle-opacity.json", "utf8"),
+  ) as Readonly<{ assetPayloads?: readonly SerializedPngAssetPayload[]; assets: unknown; id: string; scene: unknown }>;
+  const imageFixture = JSON.parse(await readFile("fixtures/engine-v1/png-alpha-edge-camera.json", "utf8")) as Readonly<{
+    assetPayloads: readonly SerializedPngAssetPayload[];
     assets: unknown;
+    id: string;
     scene: unknown;
   }>;
-  const base = sceneIrBundleV1Schema.parse({ assets: fixture.assets, scene: fixture.scene });
   const verifyServedBuild = makeServedBuildVerifier(request, provenance.commitIdentity);
   await verifyServedBuild();
   await page.goto("/benchmark.html");
@@ -306,10 +333,13 @@ test("records the 1080p WebGPU stage telemetry matrix", async ({ page, request }
 
   let browser: BrowserTelemetryResult["browser"] | null = null;
   for (const definition of STRESS_DEFINITIONS) {
+    const fixture = definition.profile === "png-images" ? imageFixture : vectorFixture;
+    const base = sceneIrBundleV1Schema.parse({ assets: fixture.assets, scene: fixture.scene });
     const bundle = stressBundle(base, definition);
     const snapshotBytes = new TextEncoder().encode(JSON.stringify(bundle)).byteLength;
     const snapshotSha256 = canonicalSceneBundleSha256(bundle);
     const measured = await page.evaluate(runBrowserStageTelemetry, {
+      assetPayloads: fixture.assetPayloads ?? [],
       bundle,
       revision: definition.revision,
       telemetryFrames: TELEMETRY_FRAMES,
@@ -355,6 +385,7 @@ test("records the 1080p WebGPU stage telemetry matrix", async ({ page, request }
       const frameCounts = frame.telemetry.counts;
       expect(frameCounts.evaluatedEntities).toBe(definition.entityCount);
       expect(frameCounts.evaluatedDraws).toBe(definition.entityCount);
+      if (definition.profile === "png-images") expect(frameCounts.drawCalls).toBe(definition.entityCount);
     }
 
     const caches = aggregateCaches(measured.frames);
@@ -366,6 +397,23 @@ test("records the 1080p WebGPU stage telemetry matrix", async ({ page, request }
       expect(counts.tessellationCalls).toMatchObject({ maximum: 0, minimum: 0 });
     }
     const memory = aggregateMemory(measured.frames);
+    if (definition.profile === "png-images") {
+      expect(caches.summary.imageTexture).toEqual({ hit: TELEMETRY_FRAMES });
+      expect(caches.summary.imageSamplerBinding).toEqual({ hit: TELEMETRY_FRAMES });
+      expect(counts.bufferCreations).toMatchObject({ maximum: 2, minimum: 2 });
+      expect(counts.imageSamplerBindingCreations).toMatchObject({ maximum: 0, minimum: 0 });
+      expect(counts.imageTextureEvictions).toMatchObject({ maximum: 0, minimum: 0 });
+      expect(counts.imageTextureUploads).toMatchObject({ maximum: 0, minimum: 0 });
+      expect(counts.tessellationCalls).toMatchObject({ maximum: 0, minimum: 0 });
+      expect(counts.uploadBytes).toMatchObject({
+        maximum: definition.entityCount * IMAGE_GEOMETRY_UPLOAD_BYTES_PER_DRAW,
+        minimum: definition.entityCount * IMAGE_GEOMETRY_UPLOAD_BYTES_PER_DRAW,
+      });
+      for (const sample of memory.samples) {
+        expect(sample.memory.logicalGpuBreakdown.retainedImageTextures.currentBytes).toBeGreaterThan(0);
+        expect(sample.memory.wasmLinearBreakdown.decodedImageAssets.currentBytes).toBeGreaterThan(0);
+      }
+    }
 
     const attributionViolations: {
       frameIndex: number;
@@ -438,8 +486,8 @@ test("records the 1080p WebGPU stage telemetry matrix", async ({ page, request }
     evidenceLevel: decisionEligibility.eligible ? "decision-candidate" : "exploratory",
     provenance,
     provenanceStableThroughRun: true,
-    baseFixtureId: "eng-v1-shared-circle-opacity",
-    contracts: reportContracts("poietra.engine-webgpu-stage-telemetry", 2),
+    baseFixtureIds: ["eng-v1-shared-circle-opacity", "eng-v1-png-alpha-edge-camera"],
+    contracts: reportContracts("poietra.engine-webgpu-stage-telemetry", 3),
     configuration: {
       additivePhases: CANVAS_TELEMETRY_ADDITIVE_PHASES,
       attributionToleranceMs: ATTRIBUTION_TOLERANCE_MS,
@@ -517,7 +565,7 @@ test("records the 1080p WebGPU stage telemetry matrix", async ({ page, request }
       "environment.host records kernel and CPU evidence; GPU driver identity and host power mode are explicitly unavailable from this harness, so this exploratory report still lacks the fixed reference-host evidence an adoption decision requires.",
     ],
     schema: "poietra.engine-webgpu-stage-telemetry",
-    version: 2,
+    version: 3,
     workloads,
   } as const;
   const encoded = `${JSON.stringify(report, null, 2)}\n`;

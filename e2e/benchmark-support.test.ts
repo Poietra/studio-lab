@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import { makeBenchmarkBuildManifest } from "../scripts/benchmark-build-manifest.mjs";
 import { adapterEvidenceFixtureV1, measuredTelemetryFixtureV1 } from "../src/engine/canvas-telemetry-test-fixtures";
 import { MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES } from "../src/engine/canvas-worker-protocol";
+import { sceneIrBundleV1Schema } from "../src/engine/contracts";
 import {
   assessDecisionEligibility,
   collectCommitIdentity,
@@ -30,8 +31,11 @@ import {
   engineWebgpuStressReportSchema,
 } from "./benchmark-report-schemas";
 import {
+  IMAGE_GEOMETRY_UPLOAD_BYTES_PER_DRAW,
   STAGE_TELEMETRY_COUNT_NAMES,
   STAGE_TELEMETRY_PHASE_NAMES,
+  STRESS_DEFINITIONS,
+  stressBundle,
   summarizeByteLengths,
   summarizeSignedTiming,
   summarizeTiming,
@@ -52,7 +56,22 @@ function timingSummary(sample = 1) {
   return { maximumMs: sample, p50Ms: sample, p95Ms: sample, p99Ms: sample, samplesMs: [sample] };
 }
 
-function stressWorkloadFixture(sceneEntityCount: 100 | 1_000, requestedEntityCount: number, responseBytes = 1_000) {
+type StressProfile = "animated-cubic-paths" | "png-images" | "shape-primitives";
+
+function stressDefinitionFixture(profile: StressProfile, entityCount: 100 | 1_000) {
+  const definition = STRESS_DEFINITIONS.find(
+    (candidate) => candidate.profile === profile && candidate.entityCount === entityCount,
+  );
+  if (!definition) throw new Error(`missing canonical ${profile}-${entityCount} stress definition`);
+  return definition;
+}
+
+function stressWorkloadFixture(
+  sceneEntityCount: 100 | 1_000,
+  requestedEntityCount: number,
+  responseBytes = 1_000,
+  profile: StressProfile = "shape-primitives",
+) {
   const timing = timingSummary();
   return {
     budgets: {
@@ -70,12 +89,7 @@ function stressWorkloadFixture(sceneEntityCount: 100 | 1_000, requestedEntityCou
       settleDurationMs: 0,
       supersededRequests: 0,
     },
-    definition: {
-      entityCount: sceneEntityCount,
-      id: `shape-primitives-${sceneEntityCount}`,
-      profile: "shape-primitives",
-      revision: "1".repeat(64),
-    },
+    definition: stressDefinitionFixture(profile, sceneEntityCount),
     interactionBounds: {
       acknowledgement: timing,
       entries: {
@@ -113,14 +127,14 @@ function stressReportFixture(workloads: readonly unknown[]) {
   const unavailable = { reason: "not observable in this harness", status: "unavailable" } as const;
   const commitIdentity = { headCommit: COMMIT_A, treeState: "clean", uncommittedPathCount: 0 } as const;
   return {
-    baseFixtureId: "eng-v1-shared-circle-opacity",
+    baseFixtureIds: ["eng-v1-shared-circle-opacity", "eng-v1-png-alpha-edge-camera"],
     capturedAt: "2026-07-28T00:00:00.000Z",
     configuration: { lane: "production-build-static-server", retries: { projectRetries: 0, testRetry: 0 } },
     contracts: {
       canvasWorkerProtocolVersion: 1,
       engineContractVersion: 1,
       reportSchema: "poietra.engine-webgpu-stress-benchmark",
-      reportVersion: 3,
+      reportVersion: 4,
       telemetryAbiVersion: 3,
     },
     decisionEligibility: { eligible: false, reasons: ["reference host is not pinned"] },
@@ -139,7 +153,7 @@ function stressReportFixture(workloads: readonly unknown[]) {
     provenance: { commitIdentity, grade: "clean-commit" },
     provenanceStableThroughRun: true,
     schema: "poietra.engine-webgpu-stress-benchmark",
-    version: 3,
+    version: 4,
     workloads,
   };
 }
@@ -233,7 +247,7 @@ function stageReportFixture() {
     workerDeviceAdapter: { evidence: adapterEvidenceFixtureV1(), kind: "available" },
   };
   return {
-    baseFixtureId: "eng-v1-shared-circle-opacity",
+    baseFixtureIds: ["eng-v1-shared-circle-opacity", "eng-v1-png-alpha-edge-camera"],
     capturedAt: "2026-07-28T00:00:00.000Z",
     configuration: {
       lane: "production-build-static-server",
@@ -245,7 +259,7 @@ function stageReportFixture() {
       canvasWorkerProtocolVersion: 1,
       engineContractVersion: 1,
       reportSchema: "poietra.engine-webgpu-stage-telemetry",
-      reportVersion: 2,
+      reportVersion: 3,
       telemetryAbiVersion: 3,
     },
     decisionEligibility: { eligible: false, reasons: ["reference host is not pinned"] },
@@ -276,8 +290,8 @@ function stageReportFixture() {
     provenance: { commitIdentity, grade: "clean-commit" },
     provenanceStableThroughRun: true,
     schema: "poietra.engine-webgpu-stage-telemetry",
-    version: 2,
-    workloads: [workload],
+    version: 3,
+    workloads: STRESS_DEFINITIONS.map((definition) => ({ ...structuredClone(workload), definition })),
   };
 }
 
@@ -454,6 +468,53 @@ describe("served build manifest verification", () => {
 });
 
 describe("report summaries", () => {
+  it("builds both canonical PNG workloads from one unchanged caller-owned asset", () => {
+    const fixture = JSON.parse(
+      readFileSync(join(process.cwd(), "fixtures/engine-v1/png-alpha-edge-camera.json"), "utf8"),
+    ) as { assets: unknown; scene: unknown };
+    const base = sceneIrBundleV1Schema.parse({ assets: fixture.assets, scene: fixture.scene });
+    const originalAssets = structuredClone(base.assets);
+    const definitions = STRESS_DEFINITIONS.filter(({ profile }) => profile === "png-images");
+
+    expect(IMAGE_GEOMETRY_UPLOAD_BYTES_PER_DRAW).toBe(104);
+    expect(definitions.map(({ entityCount, id, revision }) => ({ entityCount, id, revision }))).toEqual([
+      { entityCount: 100, id: "png-images-100", revision: "5".repeat(64) },
+      { entityCount: 1_000, id: "png-images-1000", revision: "6".repeat(64) },
+    ]);
+    for (const definition of definitions) {
+      const bundle = stressBundle(base, definition);
+      const asset = originalAssets.assets[0]!;
+      expect(bundle.assets).toEqual(originalAssets);
+      expect(bundle.scene.animationChannels).toEqual([]);
+      expect(bundle.scene.camera.view).toEqual({ center: { x: 0, y: 0 }, frameHeight: 9, frameWidth: 16 });
+      expect(bundle.scene.requiredCapabilities).toEqual(["png-image"]);
+      expect(bundle.scene.entities).toHaveLength(definition.entityCount);
+      expect(new Set(bundle.scene.entities.map(({ id }) => id)).size).toBe(definition.entityCount);
+      const samplers: Record<"linear" | "nearest", number> = { linear: 0, nearest: 0 };
+      for (const [index, entity] of bundle.scene.entities.entries()) {
+        expect(entity.id).toBe(`stress:image:${index}`);
+        expect(entity.appearance).toEqual({ kind: "image", opacity: 1 });
+        expect(entity.geometry).toMatchObject({
+          asset: { assetId: asset.id, sha256: asset.sha256 },
+          kind: "image",
+        });
+        if (entity.geometry.kind !== "image") throw new Error("PNG workload entity must use image geometry");
+        samplers[entity.geometry.sampler] += 1;
+      }
+      expect(samplers).toEqual({ linear: definition.entityCount / 2, nearest: definition.entityCount / 2 });
+    }
+    expect(base.assets).toEqual(originalAssets);
+
+    const assetlessFixture = JSON.parse(
+      readFileSync(join(process.cwd(), "fixtures/engine-v1/shared-circle-opacity.json"), "utf8"),
+    ) as { assets: unknown; scene: unknown };
+    const assetlessBase = sceneIrBundleV1Schema.parse({
+      assets: assetlessFixture.assets,
+      scene: assetlessFixture.scene,
+    });
+    expect(() => stressBundle(assetlessBase, definitions[0]!)).toThrow(/exactly one verified PNG asset/);
+  });
+
   it("rejects short, non-finite, or negative series and keeps signed residuals unclamped", () => {
     expect(() => summarizeTiming([1, 2], 3)).toThrow(/exactly 3/);
     expect(() => summarizeTiming([1, -0.5, 2], 3)).toThrow(/invalid/);
@@ -485,16 +546,53 @@ describe("report summaries", () => {
     });
   });
 
-  it("executes the stress report v3 schema for 100/128 IDs and rejects oversized evidence", () => {
+  it("executes the stress report v4 schema for canonical vector and PNG definitions", () => {
     const report = stressReportFixture([
       stressWorkloadFixture(100, 100),
       stressWorkloadFixture(1_000, 128, MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES),
+      stressWorkloadFixture(100, 100, 1_000, "animated-cubic-paths"),
+      stressWorkloadFixture(1_000, 128, 1_000, "animated-cubic-paths"),
+      stressWorkloadFixture(100, 100, 1_000, "png-images"),
+      stressWorkloadFixture(1_000, 128, 1_000, "png-images"),
     ]);
     const parsed = engineWebgpuStressReportSchema.parse(report);
-    expect(parsed.version).toBe(3);
-    expect(parsed.workloads.map((workload) => workload.interactionBounds.requestedEntityCount)).toEqual([100, 128]);
+    expect(parsed.version).toBe(4);
+    expect(parsed.workloads.map((workload) => workload.definition.id)).toEqual([
+      "shape-primitives-100",
+      "shape-primitives-1000",
+      "animated-cubic-paths-100",
+      "animated-cubic-paths-1000",
+      "png-images-100",
+      "png-images-1000",
+    ]);
 
-    expect(engineWebgpuStressReportSchema.safeParse({ ...report, version: 2 }).success).toBe(false);
+    expect(engineWebgpuStressReportSchema.safeParse({ ...report, version: 3 }).success).toBe(false);
+    expect(
+      engineWebgpuStressReportSchema.safeParse({
+        ...report,
+        contracts: { ...report.contracts, reportVersion: 3 },
+      }).success,
+    ).toBe(false);
+    expect(
+      engineWebgpuStressReportSchema.safeParse({
+        ...report,
+        baseFixtureIds: ["eng-v1-png-alpha-edge-camera", "eng-v1-shared-circle-opacity"],
+      }).success,
+    ).toBe(false);
+    expect(
+      engineWebgpuStressReportSchema.safeParse({ ...report, workloads: report.workloads.slice(0, -1) }).success,
+    ).toBe(false);
+    expect(
+      engineWebgpuStressReportSchema.safeParse({
+        ...report,
+        workloads: [
+          {
+            ...stressWorkloadFixture(100, 100, 1_000, "png-images"),
+            definition: { ...stressDefinitionFixture("png-images", 100), revision: "6".repeat(64) },
+          },
+        ],
+      }).success,
+    ).toBe(false);
     expect(
       engineWebgpuStressReportSchema.safeParse(
         stressReportFixture([stressWorkloadFixture(1_000, 128, MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES + 1)]),
@@ -505,13 +603,16 @@ describe("report summaries", () => {
     ).toBe(false);
   });
 
-  it("accepts a complete stage report v2 memory series", () => {
+  it("accepts a complete stage report v3 memory series", () => {
     const parsed = engineWebgpuStageTelemetryReportSchema.parse(stageReportFixture());
-    expect(parsed.version).toBe(2);
+    expect(parsed.version).toBe(3);
     expect(parsed.workloads[0]?.memory.samples).toHaveLength(ENGINE_STAGE_TELEMETRY_SAMPLE_COUNT);
     expect(parsed.workloads[0]?.memory.peakRetainedBoundaryBytes).toBe(
       30_000_000 + ENGINE_STAGE_TELEMETRY_SAMPLE_COUNT - 1,
     );
+    const mismatchedContract = stageReportFixture();
+    mismatchedContract.contracts.reportSchema = "poietra.engine-webgpu-stress-benchmark";
+    expect(engineWebgpuStageTelemetryReportSchema.safeParse(mismatchedContract).success).toBe(false);
   });
 
   it("rejects missing or non-contiguous stage memory samples", () => {

@@ -65,7 +65,13 @@ type BrowserStressResult = Readonly<{
     | Readonly<{ kind: "unavailable"; reason: string }>;
 }>;
 
+type SerializedPngAssetPayload = Readonly<{
+  assetId: string;
+  encodedBytes: readonly number[];
+}>;
+
 async function runBrowserStress(input: {
+  assetPayloads: readonly SerializedPngAssetPayload[];
   bundle: SceneIrBundleV1;
   interactionEntityIdCap: number;
   measuredFrames: number;
@@ -106,8 +112,24 @@ async function runBrowserStress(input: {
       viewport: input.viewport,
     });
 
+  const assetById = new Map(input.bundle.assets.assets.map((asset) => [asset.id, asset]));
+  const assetPayloads = input.assetPayloads.map(({ assetId, encodedBytes }) => {
+    const asset = assetById.get(assetId);
+    if (!asset || asset.kind !== "png-image") {
+      throw new Error(`The benchmark payload references unknown PNG asset ${assetId}.`);
+    }
+    return {
+      assetId,
+      byteLength: asset.byteLength,
+      bytes: Uint8Array.from(encodedBytes).buffer,
+      mediaType: asset.mediaType,
+      pixelHeight: asset.pixelHeight,
+      pixelWidth: asset.pixelWidth,
+      sha256: asset.sha256,
+    } as const;
+  });
   const installStarted = performance.now();
-  await client.installScene({ canvas, revision: input.revision, snapshot: input.bundle });
+  await client.installScene({ assetPayloads, canvas, revision: input.revision, snapshot: input.bundle });
   const installMs = performance.now() - installStarted;
   const duration = input.bundle.scene.duration;
   const sampleTime = (frame: number, count: number) => (((frame * 197) % count) / count) * (duration - 0.001);
@@ -249,11 +271,15 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
   test.setTimeout(600_000);
   expect(testInfo.retry).toBe(0);
   expect(testInfo.project.retries).toBe(0);
-  const fixture = JSON.parse(await readFile("fixtures/engine-v1/shared-circle-opacity.json", "utf8")) as Readonly<{
+  const vectorFixture = JSON.parse(
+    await readFile("fixtures/engine-v1/shared-circle-opacity.json", "utf8"),
+  ) as Readonly<{ assetPayloads?: readonly SerializedPngAssetPayload[]; assets: unknown; id: string; scene: unknown }>;
+  const imageFixture = JSON.parse(await readFile("fixtures/engine-v1/png-alpha-edge-camera.json", "utf8")) as Readonly<{
+    assetPayloads: readonly SerializedPngAssetPayload[];
     assets: unknown;
+    id: string;
     scene: unknown;
   }>;
-  const base = sceneIrBundleV1Schema.parse({ assets: fixture.assets, scene: fixture.scene });
   const provenance = resolveBenchmarkProvenance();
   const wasm = await readServedWasmEvidence();
   const verifyServedBuild = makeServedBuildVerifier(request, provenance.commitIdentity);
@@ -265,9 +291,12 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
   const workloads = [];
   let browser: BrowserStressResult["browser"] | null = null;
   for (const definition of STRESS_DEFINITIONS) {
+    const fixture = definition.profile === "png-images" ? imageFixture : vectorFixture;
+    const base = sceneIrBundleV1Schema.parse({ assets: fixture.assets, scene: fixture.scene });
     const bundle = stressBundle(base, definition);
     const snapshotBytes = new TextEncoder().encode(JSON.stringify(bundle)).byteLength;
     const measured = await page.evaluate(runBrowserStress, {
+      assetPayloads: fixture.assetPayloads ?? [],
       bundle,
       interactionEntityIdCap: MAX_CANVAS_INTERACTION_ENTITY_IDS,
       measuredFrames: MEASURED_FRAMES,
@@ -374,8 +403,8 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
     evidenceLevel: decisionEligibility.eligible ? "decision-candidate" : "exploratory",
     provenance,
     provenanceStableThroughRun: true,
-    baseFixtureId: "eng-v1-shared-circle-opacity",
-    contracts: reportContracts("poietra.engine-webgpu-stress-benchmark", 3),
+    baseFixtureIds: ["eng-v1-shared-circle-opacity", "eng-v1-png-alpha-edge-camera"],
+    contracts: reportContracts("poietra.engine-webgpu-stress-benchmark", 4),
     configuration: {
       lane: "production-build-static-server",
       frameBudgetMs: FRAME_BUDGET_MS,
@@ -395,6 +424,8 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
         "translation through affine-transform animation",
         "single-subpath convex filled path morph animation",
         "camera pan and zoom",
+        "verified PNG image draws sharing one retained texture",
+        "nearest and linear image sampler bindings",
         "random-seek request-to-present acknowledgement",
         "rAF-paced changing playhead",
         "continuous scrub request coalescing",
@@ -407,24 +438,11 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
         "lifetime churn",
         "entity hierarchy",
         "affine rotation, scale, shear, and reflection",
+        "MathTex glyph outlines under stress",
+        "generic multi-subpath fill and stroke topology under stress",
         "surface suboptimal acknowledgement counts",
       ],
-      rendererUnsupported: [
-        {
-          feature: "MathTex",
-          reason:
-            "Scene IR v1 has no text or glyph contract, and the current WebGPU renderer cannot render the multi-subpath/non-convex outlines MathTex requires.",
-        },
-        {
-          feature: "PNG/image draws",
-          reason: "Scene IR v1 defines images, but the current WebGPU renderer rejects them.",
-        },
-        {
-          feature: "general vector paint",
-          reason:
-            "The current renderer rejects curved or multi-segment strokes, fill+stroke, multiple subpaths, and concave fills.",
-        },
-      ],
+      rendererUnsupported: [],
     },
     environment: {
       browser,
@@ -447,7 +465,7 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
       "Budget booleans describe this recorded host only and do not fail CI.",
     ],
     schema: "poietra.engine-webgpu-stress-benchmark",
-    version: 3,
+    version: 4,
     workloads,
   } as const;
   const encoded = `${JSON.stringify(report, null, 2)}\n`;
