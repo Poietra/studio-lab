@@ -1,4 +1,22 @@
-import { renderRequestPrograms, type ProgramRenderRequest, type SingleProgramRenderRequest } from "./contracts";
+import { canonicalEditableContent, type EditableContentType } from "../studio/editable-content";
+import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "../studio/magic-edit-capabilities";
+import type { EntityContent, MotionEasing } from "../studio/model";
+import { operationExecutionCapabilities, programExecutionCapabilities } from "../studio/operation-registry";
+import {
+  type CanonicalEditOperation,
+  type CanonicalEditProgram,
+  type CreateEntityOperation,
+  EDIT_OPERATION_VERSION,
+} from "../studio/operations";
+import { insertedProgramDuration } from "../studio/program-composition";
+import { samplePropertyKnowledge, samplePropertyValue } from "../studio/property-sampling";
+import { scaleTransformViolation, sceneBoundaryViolation } from "../studio/source-lowering-invariants";
+import { type ProgramRenderRequest, renderRequestPrograms, type SingleProgramRenderRequest } from "./contracts";
+import {
+  PythonReferenceAnalysisError,
+  pythonReferenceClosure,
+  referencedPythonReferences,
+} from "./python-reference-analysis";
 import { analyzePythonSource, isPythonStatementStart } from "./python-source-analysis";
 import {
   findSourceComments,
@@ -7,24 +25,6 @@ import {
   importManimScene,
   isSimpleShiftAnimationStatement,
 } from "./source-import";
-import {
-  pythonReferenceClosure,
-  PythonReferenceAnalysisError,
-  referencedPythonReferences,
-} from "./python-reference-analysis";
-import { canonicalEditableContent, type EditableContentType } from "../studio/editable-content";
-import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "../studio/magic-edit-capabilities";
-import type { EntityContent, MotionEasing } from "../studio/model";
-import {
-  EDIT_OPERATION_VERSION,
-  type CanonicalEditOperation,
-  type CanonicalEditProgram,
-  type CreateEntityOperation,
-} from "../studio/operations";
-import { operationExecutionCapabilities, programExecutionCapabilities } from "../studio/operation-registry";
-import { insertedProgramDuration } from "../studio/program-composition";
-import { samplePropertyKnowledge, samplePropertyValue } from "../studio/property-sampling";
-import { scaleTransformViolation, sceneBoundaryViolation } from "../studio/source-lowering-invariants";
 
 export type MotionAnchor = Readonly<{
   line: number;
@@ -167,6 +167,11 @@ function formatAmount(value: number) {
   return Number(normalized.toFixed(4)).toString();
 }
 
+function formatPointCoordinate(value: number) {
+  const normalized = Math.abs(value) < 0.0000000000005 ? 0 : value;
+  return Number(normalized.toFixed(12)).toString();
+}
+
 function formatShiftAmount(value: number) {
   const formatted = formatAmount(Math.abs(value));
   return formatted === "0" && value !== 0 ? Number(Math.abs(value).toPrecision(4)).toString() : formatted;
@@ -281,19 +286,20 @@ function pointExpression(
 ) {
   const x = (point.x / viewport.width - 0.5) * frame.width;
   const y = (0.5 - point.y / viewport.height) * frame.height;
-  const terms = [
-    Math.abs(x) > 0.0001 ? `${formatAmount(Math.abs(x))} * ${x > 0 ? "RIGHT" : "LEFT"}` : null,
-    Math.abs(y) > 0.0001 ? `${formatAmount(Math.abs(y))} * ${y > 0 ? "UP" : "DOWN"}` : null,
-  ].filter((term): term is string => term !== null);
-  return terms.length > 0 ? terms.join(" + ") : "ORIGIN";
+  // An absolute point must stay executable even when a source uses explicit
+  // Manim imports. A numeric point tuple is accepted by Mobject.move_to and
+  // does not silently depend on RIGHT/LEFT/UP/DOWN/ORIGIN being in scope.
+  return `(${formatPointCoordinate(x)}, ${formatPointCoordinate(y)}, 0)`;
 }
 
 function markerPoint(point: Readonly<{ x: number; y: number }>, viewport: Readonly<{ height: number; width: number }>) {
   return {
-    x: Number(((point.x / viewport.width) * 640).toFixed(4)),
-    y: Number(((point.y / viewport.height) * 360).toFixed(4)),
+    x: Number(((point.x / viewport.width) * 640).toFixed(12)),
+    y: Number(((point.y / viewport.height) * 360).toFixed(12)),
   };
 }
+
+const SOURCE_MARKER_VIEWPORT = { height: 360, width: 640 } as const;
 
 function sourceMarker(
   kind: "content" | "dimensions" | "motion" | "position" | "scale",
@@ -1079,14 +1085,15 @@ export function lowerCanonicalProgramSource(
       if (operation.kind === "SetProperty") {
         const variable = requireVariable(variableByEntity, operation.entityId);
         if (operation.key === "position" && isPoint(operation.value)) {
+          const canonicalPosition = markerPoint(operation.value, request.viewport);
           output.push(
             sourceMarker("position", {
               kind: "absolute",
-              value: markerPoint(operation.value, request.viewport),
+              value: canonicalPosition,
               variable,
             }),
           );
-          output.push(`${variable}.move_to(${pointExpression(operation.value, frame, request.viewport)})`);
+          output.push(`${variable}.move_to(${pointExpression(canonicalPosition, frame, SOURCE_MARKER_VIEWPORT)})`);
         } else if (operation.key === "content") {
           const target = contentTarget(operation.value);
           if (!target) {

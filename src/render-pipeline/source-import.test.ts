@@ -360,6 +360,62 @@ class Geometry(Scene):
     );
   });
 
+  it("imports direct ImageMobject assignments without inventing asset content or runtime dimensions", () => {
+    const imported = importManimScene(
+      `from manim import *
+
+class Images(Scene):
+    def construct(self):
+        logo = ImageMobject("/private/assets/logo.png")
+        pixels = ImageMobject(load_pixels()).move_to(where())
+        alias = logo
+        self.add(logo, pixels)
+        self.wait(1)
+`,
+      "scene.py",
+      "Images",
+    );
+    const logoId = "source:scene.py#Images:logo";
+    const pixelsId = "source:scene.py#Images:pixels";
+    const logo = imported?.runtimeSceneState.objectGraph.entities[logoId];
+
+    expect(imported?.sourceVariables).toEqual({ [logoId]: "logo", [pixelsId]: "pixels" });
+    expect(imported?.staticSemanticState.entities).toEqual([
+      {
+        runtimeIdentities: { kind: "known", value: [logoId] },
+        sourceIdentity: "logo",
+        type: { kind: "known", value: "ImageMobject" },
+      },
+      {
+        runtimeIdentities: { kind: "known", value: [pixelsId] },
+        sourceIdentity: "pixels",
+        type: { kind: "known", value: "ImageMobject" },
+      },
+    ]);
+    expect(logo).toMatchObject({
+      content: { displayLines: ["logo"], label: "logo" },
+      lifetime: [{ end: 1, start: 0 }],
+      sourceIdentity: { kind: "known", value: "logo" },
+      type: "ImageMobject",
+    });
+    expect(logo?.geometry?.dimensions).toEqual({
+      evidence: ["ImageMobject(...)"],
+      kind: "unknown",
+      reason: "ImageMobject dimensions require verified runtime geometry.",
+    });
+    expect(logo?.geometry?.position).toEqual({ kind: "known", value: { x: 320, y: 180 } });
+    expect(imported?.runtimeSceneState.objectGraph.entities[pixelsId]?.geometry?.position).toMatchObject({
+      kind: "unknown",
+      reason: expect.stringMatching(/placement expression/i),
+    });
+    expect(JSON.stringify(logo?.content)).not.toContain("/private/assets/logo.png");
+    expect(imported?.contentReplacementSafety).not.toHaveProperty("logo");
+    expect(imported?.runtimeSceneState.objectGraph.entities).not.toHaveProperty("source:scene.py#Images:alias");
+    expect(runtimeSceneStateSchema.parse(JSON.parse(JSON.stringify(imported?.runtimeSceneState)))).toEqual(
+      imported?.runtimeSceneState,
+    );
+  });
+
   it("fails closed when constructor chains mutate dimensions", () => {
     const imported = importManimScene(
       `from manim import *

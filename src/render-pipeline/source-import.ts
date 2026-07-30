@@ -1,10 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-
-import { analyzePythonSource, isPythonStatementStart, isStandalonePythonComment } from "./python-source-analysis";
 import { canonicalEditableContent, UNKNOWN_EDITABLE_CONTENT } from "../studio/editable-content";
 import {
-  STUDIO_STATE_VERSION,
   type EntityContent,
   type EntityDimensions,
   type EntityGeometryKnowledge,
@@ -17,9 +14,11 @@ import {
   type PropertyChannelSample,
   type RuntimeEntity,
   type RuntimeSceneState,
+  STUDIO_STATE_VERSION,
   type StaticSemanticState,
   type TimelineEvent,
 } from "../studio/model";
+import { analyzePythonSource, isPythonStatementStart, isStandalonePythonComment } from "./python-source-analysis";
 
 export type ImportedManimEntity = Readonly<{
   id: string;
@@ -103,6 +102,7 @@ const SUPPORTED_TYPES = new Set([
   "Circle",
   "Dot",
   "Group",
+  "ImageMobject",
   "Line",
   "MathTex",
   "Rectangle",
@@ -550,6 +550,9 @@ function unknown<T>(reason: string, evidence: readonly string[]): Knowledge<T> {
 }
 
 function dimensionsFrom(type: string, argumentsSource: string): Knowledge<EntityDimensions> {
+  if (type === "ImageMobject") {
+    return unknown("ImageMobject dimensions require verified runtime geometry.", ["ImageMobject(...)"]);
+  }
   const { keywords, positional } = constructorArguments(argumentsSource);
   const read = (keyword: string, index: number, fallback: number) => {
     const expression = keywords.get(keyword) ?? positional[index];
