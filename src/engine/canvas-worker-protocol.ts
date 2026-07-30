@@ -506,16 +506,21 @@ export const canvasAdapterEvidenceV1Schema = z
   .object({
     adapter: z
       .object({
-        backend: boundedAdapterEvidenceStringSchema,
-        deviceId: z.number().int().nonnegative(),
-        deviceType: boundedAdapterEvidenceStringSchema,
-        driver: boundedAdapterEvidenceStringSchema,
-        driverInfo: boundedAdapterEvidenceStringSchema,
+        // wgpu 30's browser backend reads GPUDevice.adapterInfo for the
+        // device it created, but deliberately cannot expose native PCI IDs,
+        // driver strings, or a native device class. Keep those discarded
+        // fields canonical so callers cannot mistake synthetic native values
+        // for browser-observed identity.
+        backend: z.literal("BrowserWebGpu"),
+        deviceId: z.literal(0),
+        deviceType: z.enum(["Cpu", "Other"]),
+        driver: z.literal(""),
+        driverInfo: z.literal(""),
         name: boundedAdapterEvidenceStringSchema,
         source: z.literal("worker-wgpu-adapter-info"),
         subgroupMaxSize: z.number().int().nonnegative(),
         subgroupMinSize: z.number().int().nonnegative(),
-        vendorId: z.number().int().nonnegative(),
+        vendorId: z.literal(0),
       })
       .strict(),
     device: z
