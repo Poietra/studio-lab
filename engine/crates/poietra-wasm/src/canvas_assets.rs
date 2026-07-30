@@ -52,6 +52,17 @@ pub(crate) enum CanvasPngAssetRegistryErrorV1 {
 }
 
 impl CanvasPngAssetRegistryV1 {
+    /// Logical decoded RGBA bytes retained in WASM linear memory.
+    ///
+    /// Encoded transfer buffers are not retained by this registry. The
+    /// returned value is therefore a breakdown within linear memory, not an
+    /// additional process-memory allocation.
+    pub(crate) fn decoded_image_asset_bytes(&self) -> Result<u64, CanvasPngAssetRegistryErrorV1> {
+        self.decoded_pixels
+            .checked_mul(4)
+            .ok_or(CanvasPngAssetRegistryErrorV1::RegistryLimit)
+    }
+
     /// Builds a complete candidate without changing the installed registry.
     pub(crate) fn prepare_candidate(
         &self,
@@ -241,12 +252,14 @@ mod tests {
                 .resolve_png_asset_v1(&first_asset.sha256)
                 .is_some()
         );
+        assert_eq!(candidate.decoded_image_asset_bytes().unwrap(), 4);
 
         let second_asset = asset("asset:second", &bytes);
         let reused = candidate
             .prepare_candidate(&manifest(second_asset), b"[]", &[])
             .unwrap();
         assert_eq!(reused.by_digest.len(), 1);
+        assert_eq!(reused.decoded_image_asset_bytes().unwrap(), 4);
 
         let replacement_bytes = png([40, 50, 60, 255]);
         let replacement_asset = asset("asset:first", &replacement_bytes);

@@ -29,6 +29,21 @@ export function measuredTelemetryFixtureV1(): CanvasFrameTelemetryV1 {
       tessellatedVertices: 34,
       uploadBytes: 1_200,
     },
+    memory: {
+      retainedBoundaryTotal: { currentBytes: 25_000_000, peakBytes: 30_000_000 },
+      kind: "measured",
+      logicalGpuBreakdown: {
+        geometryBufferArena: { currentBytes: 3_000_000, peakBytes: 4_000_000 },
+        retainedImageTextures: { currentBytes: 2_000_000, peakBytes: 3_000_000 },
+      },
+      logicalGpuResident: { currentBytes: 5_000_000, peakBytes: 6_000_000 },
+      wasmLinear: { currentBytes: 20_000_000, peakBytes: 25_000_000 },
+      wasmLinearBreakdown: {
+        decodedImageAssets: { currentBytes: 3_000_000, peakBytes: 4_000_000 },
+        preparedGeometryCache: { currentBytes: 2_000_000, peakBytes: 3_000_000 },
+        retainedSceneIndex: { currentBytes: 1_000_000, peakBytes: 1_500_000 },
+      },
+    },
     phases: {
       browserComposite: { kind: "unavailable", reason: "the worker cannot observe browser compositing" },
       bufferCreateAndStage: { kind: "measured", ms: 0.05 },
@@ -83,6 +98,7 @@ export function unavailableTelemetryFixtureV1(reason = "no clock"): CanvasFrameT
     },
     clock: "unavailable",
     counts: nullTelemetryCountsV1(),
+    memory: { kind: "unavailable", reason: "engine-owned memory snapshot was not captured" },
     phases: {
       browserComposite: { kind: "unavailable", reason: "the worker cannot observe browser compositing" },
       bufferCreateAndStage: unavailable,

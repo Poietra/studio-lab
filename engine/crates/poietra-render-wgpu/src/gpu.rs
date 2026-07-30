@@ -285,6 +285,39 @@ pub struct WgpuFillRendererV1 {
     target_format: wgpu::TextureFormat,
 }
 
+/// Exact logical byte counts for GPU resources retained by one renderer.
+///
+/// These values cover the grow-only vertex/index buffer arena and image
+/// textures retained by the bounded LRU. They intentionally exclude transient
+/// frame buffers and backend-owned pipeline/surface allocation overhead, so
+/// they are not a browser-process RSS claim.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RendererMemorySnapshotV1 {
+    geometry_buffer_arena_bytes: u64,
+    retained_image_texture_bytes: u64,
+}
+
+impl RendererMemorySnapshotV1 {
+    #[must_use]
+    pub const fn geometry_buffer_arena_bytes(self) -> u64 {
+        self.geometry_buffer_arena_bytes
+    }
+
+    #[must_use]
+    pub const fn retained_image_texture_bytes(self) -> u64 {
+        self.retained_image_texture_bytes
+    }
+}
+
+/// A retained renderer byte count could not be represented exactly.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum RendererMemorySnapshotErrorV1 {
+    #[error(transparent)]
+    BufferArena(#[from] GpuBufferArenaErrorV1),
+    #[error("retained image texture byte accounting is not representable as u64")]
+    ImageTextureByteConversion,
+}
+
 impl WgpuFillRendererV1 {
     /// Creates a single-sample pipeline for the caller's target format.
     ///
@@ -370,6 +403,25 @@ impl WgpuFillRendererV1 {
     /// from the verified decoded assets retained by their resolver/session.
     pub fn clear_image_texture_cache(&mut self) {
         self.image_texture_cache.clear();
+    }
+
+    /// Reports exact logical capacity for the GPU resources retained by this
+    /// renderer at the call boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error instead of saturating if either retained byte count is
+    /// not representable.
+    pub fn memory_snapshot(
+        &self,
+    ) -> Result<RendererMemorySnapshotV1, RendererMemorySnapshotErrorV1> {
+        Ok(RendererMemorySnapshotV1 {
+            geometry_buffer_arena_bytes: self.arena.capacity_bytes()?,
+            retained_image_texture_bytes: u64::try_from(
+                self.image_texture_cache.accounted_gpu_bytes(),
+            )
+            .map_err(|_| RendererMemorySnapshotErrorV1::ImageTextureByteConversion)?,
+        })
     }
 
     #[must_use]

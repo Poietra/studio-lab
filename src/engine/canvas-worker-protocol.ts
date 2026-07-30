@@ -11,7 +11,7 @@ import { renderViewportV1Schema } from "./render-packet";
 import { MAX_SCENE_DELTA_JSON_BYTES } from "./scene-delta";
 
 export const POIETRA_CANVAS_WORKER_VERSION = 1 as const;
-export const POIETRA_CANVAS_TELEMETRY_ABI_VERSION = 2 as const;
+export const POIETRA_CANVAS_TELEMETRY_ABI_VERSION = 3 as const;
 export const MAX_CANVAS_SNAPSHOT_JSON_BYTES = 8 * 1024 * 1024;
 export const MAX_CANVAS_SAMPLE_JSON_BYTES = 256 * 1024;
 export const MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES = 16 * 1024;
@@ -242,6 +242,134 @@ const canvasPhaseSampleV1Schema = z.discriminatedUnion("kind", [
 
 const canvasCacheOutcomeV1Schema = z.enum(["absent", "hit", "miss", "retained", "skipped"]);
 const nullableTelemetryCountSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).nullable();
+const telemetryByteCountSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+
+const canvasMemoryHighWaterV1Schema = z
+  .object({
+    currentBytes: telemetryByteCountSchema,
+    peakBytes: telemetryByteCountSchema,
+  })
+  .strict()
+  .superRefine(({ currentBytes, peakBytes }, context) => {
+    if (currentBytes > peakBytes) {
+      context.addIssue({ code: "custom", message: "currentBytes cannot exceed peakBytes", path: ["currentBytes"] });
+    }
+  });
+
+function addExactMemorySumIssue(
+  context: z.core.$RefinementCtx<unknown>,
+  left: number,
+  right: number,
+  reported: number,
+  path: string[],
+  label: string,
+) {
+  const expected = left + right;
+  if (!Number.isSafeInteger(expected) || reported !== expected) {
+    context.addIssue({ code: "custom", message: `${label} must equal its current-byte components`, path });
+  }
+}
+
+function addMemoryRangeIssue(
+  context: z.core.$RefinementCtx<unknown>,
+  value: number,
+  minimum: number,
+  maximum: number,
+  path: string[],
+  label: string,
+) {
+  if (value < minimum || value > maximum) {
+    context.addIssue({ code: "custom", message: `${label} is outside its component bounds`, path });
+  }
+}
+
+export const canvasMeasuredMemoryTelemetryV1Schema = z
+  .object({
+    retainedBoundaryTotal: canvasMemoryHighWaterV1Schema,
+    kind: z.literal("measured"),
+    logicalGpuBreakdown: z
+      .object({
+        geometryBufferArena: canvasMemoryHighWaterV1Schema,
+        retainedImageTextures: canvasMemoryHighWaterV1Schema,
+      })
+      .strict(),
+    logicalGpuResident: canvasMemoryHighWaterV1Schema,
+    wasmLinear: canvasMemoryHighWaterV1Schema,
+    wasmLinearBreakdown: z
+      .object({
+        decodedImageAssets: canvasMemoryHighWaterV1Schema,
+        preparedGeometryCache: canvasMemoryHighWaterV1Schema,
+        retainedSceneIndex: canvasMemoryHighWaterV1Schema,
+      })
+      .strict(),
+  })
+  .strict()
+  .superRefine((memory, context) => {
+    addExactMemorySumIssue(
+      context,
+      memory.logicalGpuBreakdown.geometryBufferArena.currentBytes,
+      memory.logicalGpuBreakdown.retainedImageTextures.currentBytes,
+      memory.logicalGpuResident.currentBytes,
+      ["logicalGpuResident", "currentBytes"],
+      "logicalGpuResident.currentBytes",
+    );
+    addExactMemorySumIssue(
+      context,
+      memory.wasmLinear.currentBytes,
+      memory.logicalGpuResident.currentBytes,
+      memory.retainedBoundaryTotal.currentBytes,
+      ["retainedBoundaryTotal", "currentBytes"],
+      "retainedBoundaryTotal.currentBytes",
+    );
+    addMemoryRangeIssue(
+      context,
+      memory.logicalGpuResident.peakBytes,
+      Math.max(
+        memory.logicalGpuBreakdown.geometryBufferArena.peakBytes,
+        memory.logicalGpuBreakdown.retainedImageTextures.peakBytes,
+      ),
+      memory.logicalGpuBreakdown.geometryBufferArena.peakBytes +
+        memory.logicalGpuBreakdown.retainedImageTextures.peakBytes,
+      ["logicalGpuResident", "peakBytes"],
+      "logicalGpuResident.peakBytes",
+    );
+    addMemoryRangeIssue(
+      context,
+      memory.retainedBoundaryTotal.peakBytes,
+      Math.max(memory.wasmLinear.peakBytes, memory.logicalGpuResident.peakBytes),
+      memory.wasmLinear.peakBytes + memory.logicalGpuResident.peakBytes,
+      ["retainedBoundaryTotal", "peakBytes"],
+      "retainedBoundaryTotal.peakBytes",
+    );
+    for (const [name, breakdown] of Object.entries(memory.wasmLinearBreakdown)) {
+      if (
+        breakdown.currentBytes > memory.wasmLinear.currentBytes ||
+        breakdown.peakBytes > memory.wasmLinear.peakBytes
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: `${name} must remain within WebAssembly linear memory`,
+          path: ["wasmLinearBreakdown", name],
+        });
+      }
+    }
+    const currentBreakdownTotal = Object.values(memory.wasmLinearBreakdown).reduce(
+      (total, breakdown) => total + breakdown.currentBytes,
+      0,
+    );
+    if (!Number.isSafeInteger(currentBreakdownTotal) || currentBreakdownTotal > memory.wasmLinear.currentBytes) {
+      context.addIssue({
+        code: "custom",
+        message: "current WebAssembly memory breakdowns cannot exceed linear memory",
+        path: ["wasmLinearBreakdown"],
+      });
+    }
+  });
+
+export const canvasFrameMemoryTelemetryV1Schema = z.discriminatedUnion("kind", [
+  canvasMeasuredMemoryTelemetryV1Schema,
+  z.object({ kind: z.literal("unavailable"), reason: z.string().min(1).max(500) }).strict(),
+]);
 
 export const canvasFrameTelemetryV1Schema = z
   .object({
@@ -271,6 +399,7 @@ export const canvasFrameTelemetryV1Schema = z
         uploadBytes: nullableTelemetryCountSchema,
       })
       .strict(),
+    memory: canvasFrameMemoryTelemetryV1Schema,
     phases: z
       .object({
         browserComposite: canvasPhaseSampleV1Schema,
@@ -552,7 +681,9 @@ export const canvasWorkerResponseV1Schema = z.discriminatedUnion("kind", [
 
 export type CanvasAdapterEvidenceV1 = z.infer<typeof canvasAdapterEvidenceV1Schema>;
 export type CanvasEngineSampleRequestV1 = z.infer<typeof canvasEngineSampleRequestV1Schema>;
+export type CanvasFrameMemoryTelemetryV1 = z.infer<typeof canvasFrameMemoryTelemetryV1Schema>;
 export type CanvasFrameTelemetryV1 = z.infer<typeof canvasFrameTelemetryV1Schema>;
+export type CanvasMeasuredMemoryTelemetryV1 = z.infer<typeof canvasMeasuredMemoryTelemetryV1Schema>;
 export type CanvasInteractionResultV1 = z.infer<typeof canvasInteractionResultV1Schema>;
 export type CanvasSceneDeltaDirtySetV1 = z.infer<typeof canvasSceneDeltaDirtySetV1Schema>;
 export type CanvasRenderErrorCodeV1 = z.infer<typeof canvasRenderErrorCodeV1Schema>;

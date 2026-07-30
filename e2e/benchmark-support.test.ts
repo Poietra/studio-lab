@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 // @ts-expect-error - plain .mjs module with a sibling .d.ts; vitest resolves it at runtime.
 import { makeBenchmarkBuildManifest } from "../scripts/benchmark-build-manifest.mjs";
-import { adapterEvidenceFixtureV1 } from "../src/engine/canvas-telemetry-test-fixtures";
+import { adapterEvidenceFixtureV1, measuredTelemetryFixtureV1 } from "../src/engine/canvas-telemetry-test-fixtures";
 import { MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES } from "../src/engine/canvas-worker-protocol";
 import {
   assessDecisionEligibility,
@@ -22,8 +22,20 @@ import {
   sha256Hex,
   verifyServedBuildManifest,
 } from "./benchmark-manifest";
-import { engineWebgpuStressReportSchema } from "./benchmark-report-schemas";
-import { summarizeByteLengths, summarizeSignedTiming, summarizeTiming } from "./engine-stress-workloads";
+import {
+  ENGINE_MEMORY_BUDGET_BYTES,
+  ENGINE_STAGE_TELEMETRY_SAMPLE_COUNT,
+  ENGINE_STAGE_TELEMETRY_WARMUP_COUNT,
+  engineWebgpuStageTelemetryReportSchema,
+  engineWebgpuStressReportSchema,
+} from "./benchmark-report-schemas";
+import {
+  STAGE_TELEMETRY_COUNT_NAMES,
+  STAGE_TELEMETRY_PHASE_NAMES,
+  summarizeByteLengths,
+  summarizeSignedTiming,
+  summarizeTiming,
+} from "./engine-stress-workloads";
 
 const COMMIT_A = "a".repeat(40);
 const COMMIT_B = "b".repeat(40);
@@ -109,7 +121,7 @@ function stressReportFixture(workloads: readonly unknown[]) {
       engineContractVersion: 1,
       reportSchema: "poietra.engine-webgpu-stress-benchmark",
       reportVersion: 3,
-      telemetryAbiVersion: 2,
+      telemetryAbiVersion: 3,
     },
     decisionEligibility: { eligible: false, reasons: ["reference host is not pinned"] },
     environment: {
@@ -129,6 +141,143 @@ function stressReportFixture(workloads: readonly unknown[]) {
     schema: "poietra.engine-webgpu-stress-benchmark",
     version: 3,
     workloads,
+  };
+}
+
+function measuredMemorySample(frameIndex: number, retainedBoundaryPeakBytes: number) {
+  const memory = measuredTelemetryFixtureV1().memory;
+  if (memory.kind !== "measured") throw new Error("measured telemetry fixture must include measured memory");
+  return {
+    frameIndex,
+    memory: {
+      ...memory,
+      retainedBoundaryTotal: {
+        ...memory.retainedBoundaryTotal,
+        peakBytes: retainedBoundaryPeakBytes,
+      },
+    },
+  };
+}
+
+function stageReportFixture() {
+  const unavailable = { reason: "not observable in this harness", status: "unavailable" } as const;
+  const commitIdentity = { headCommit: COMMIT_A, treeState: "clean", uncommittedPathCount: 0 } as const;
+  const frameCount = ENGINE_STAGE_TELEMETRY_SAMPLE_COUNT;
+  const frameIndices = Array.from({ length: frameCount }, (_, frameIndex) => frameIndex);
+  const timing = { ...timingSummary(), samplesMs: frameIndices.map(() => 1) };
+  const phases = Object.fromEntries(
+    STAGE_TELEMETRY_PHASE_NAMES.map((name) => [
+      name,
+      {
+        availability: { measured: frameCount, skipped: 0, unavailable: 0 },
+        samplesMs: frameIndices.map(() => 1),
+        summary: timing,
+        unavailableReasons: [],
+      },
+    ]),
+  );
+  const counts = Object.fromEntries(
+    STAGE_TELEMETRY_COUNT_NAMES.map((name) => [name, { maximum: 1, minimum: 1, perFrame: frameIndices.map(() => 1) }]),
+  );
+  const memorySamples = frameIndices.map((frameIndex) => measuredMemorySample(frameIndex, 30_000_000 + frameIndex));
+  const workload = {
+    attributionViolations: [],
+    caches: {
+      perFrame: frameIndices.map((frameIndex) => ({
+        frameIndex,
+        imageSamplerBinding: "hit",
+        imageTexture: "hit",
+        pipeline: "retained",
+        preparedGeometry: "hit",
+        surfaceConfiguration: "hit",
+        surfaceConfigurations: 0,
+      })),
+      summary: {
+        imageSamplerBinding: { hit: frameCount },
+        imageTexture: { hit: frameCount },
+        pipeline: { retained: frameCount },
+        preparedGeometry: { hit: frameCount },
+        surfaceConfiguration: { hit: frameCount },
+      },
+    },
+    correlation: frameIndices.map((frameIndex) => ({
+      ackMs: 1,
+      frameIndex,
+      packetId: `packet-${frameIndex}`,
+      requestId: frameIndex + 1,
+      requestedSampleTime: frameIndex,
+      residualMs: 0,
+      sampleTime: frameIndex,
+      suboptimal: false,
+      totalMs: 1,
+    })),
+    counts,
+    definition: {
+      entityCount: 100,
+      id: "shape-primitives-100",
+      profile: "shape-primitives",
+      revision: "1".repeat(64),
+    },
+    installMs: 1,
+    memory: {
+      budget: { limitBytes: ENGINE_MEMORY_BUDGET_BYTES, met: true },
+      peakRetainedBoundaryBytes: 30_000_000 + frameCount - 1,
+      samples: memorySamples,
+    },
+    phases,
+    residual: timing,
+    snapshotBytes: 1,
+    snapshotSha256: "2".repeat(64),
+    telemetryAck: timing,
+    totalMsSummary: timing,
+    workerDeviceAdapter: { evidence: adapterEvidenceFixtureV1(), kind: "available" },
+  };
+  return {
+    baseFixtureId: "eng-v1-shared-circle-opacity",
+    capturedAt: "2026-07-28T00:00:00.000Z",
+    configuration: {
+      lane: "production-build-static-server",
+      retries: { projectRetries: 0, testRetry: 0 },
+      telemetryFrames: frameCount,
+      warmupFrames: ENGINE_STAGE_TELEMETRY_WARMUP_COUNT,
+    },
+    contracts: {
+      canvasWorkerProtocolVersion: 1,
+      engineContractVersion: 1,
+      reportSchema: "poietra.engine-webgpu-stage-telemetry",
+      reportVersion: 2,
+      telemetryAbiVersion: 3,
+    },
+    decisionEligibility: { eligible: false, reasons: ["reference host is not pinned"] },
+    environment: {
+      browserLaunch: { args: [], channel: "chromium" },
+      host: {
+        commitIdentity,
+        cpu: { logicalCores: 1, model: "fixture CPU" },
+        gpuDriver: unavailable,
+        osKernel: { platform: "linux", release: "fixture", version: "fixture" },
+        powerMode: unavailable,
+      },
+      wasm: { byteLength: 1, gzipByteLength: 1, path: "fixture.wasm", sha256: "3".repeat(64) },
+    },
+    evidenceLevel: "exploratory",
+    memoryAccounting: {
+      exclusions: [
+        "browser-js-dom",
+        "transient-per-frame-image-vertex-index-buffers-up-to-64-mib",
+        "surface-pipeline-bind-group-sampler-and-driver-allocations-not-byte-accounted",
+      ],
+      observation: "post-gpu-fence-pre-response-serialization-boundary",
+      peak: "maximum-raw-retained-boundary-total-peak-never-component-peak-sum",
+      scope: "retained-response-boundary-logical-bytes-not-intra-frame-peak-or-process-rss",
+      total: "wasm-linear-plus-logical-gpu-resident",
+      wasmBreakdown: "informational-subsets-already-contained-in-wasm-linear",
+    },
+    provenance: { commitIdentity, grade: "clean-commit" },
+    provenanceStableThroughRun: true,
+    schema: "poietra.engine-webgpu-stage-telemetry",
+    version: 2,
+    workloads: [workload],
   };
 }
 
@@ -354,5 +503,53 @@ describe("report summaries", () => {
     expect(
       engineWebgpuStressReportSchema.safeParse(stressReportFixture([stressWorkloadFixture(1_000, 129)])).success,
     ).toBe(false);
+  });
+
+  it("accepts a complete stage report v2 memory series", () => {
+    const parsed = engineWebgpuStageTelemetryReportSchema.parse(stageReportFixture());
+    expect(parsed.version).toBe(2);
+    expect(parsed.workloads[0]?.memory.samples).toHaveLength(ENGINE_STAGE_TELEMETRY_SAMPLE_COUNT);
+    expect(parsed.workloads[0]?.memory.peakRetainedBoundaryBytes).toBe(
+      30_000_000 + ENGINE_STAGE_TELEMETRY_SAMPLE_COUNT - 1,
+    );
+  });
+
+  it("rejects missing or non-contiguous stage memory samples", () => {
+    const missing = stageReportFixture();
+    missing.workloads[0]!.memory.samples.pop();
+    expect(engineWebgpuStageTelemetryReportSchema.safeParse(missing).success).toBe(false);
+
+    const nonContiguous = stageReportFixture();
+    nonContiguous.workloads[0]!.memory.samples[1]!.frameIndex = 7;
+    expect(engineWebgpuStageTelemetryReportSchema.safeParse(nonContiguous).success).toBe(false);
+
+    const forgedShortRun = stageReportFixture();
+    forgedShortRun.configuration.telemetryFrames = 2;
+    forgedShortRun.workloads[0]!.memory.samples.splice(2);
+    expect(engineWebgpuStageTelemetryReportSchema.safeParse(forgedShortRun).success).toBe(false);
+
+    const forgedShortWarmup = stageReportFixture();
+    forgedShortWarmup.configuration.warmupFrames = 1;
+    expect(engineWebgpuStageTelemetryReportSchema.safeParse(forgedShortWarmup).success).toBe(false);
+  });
+
+  it("rejects inconsistent memory arithmetic and forged aggregate fields", () => {
+    const inconsistentCurrent = stageReportFixture();
+    inconsistentCurrent.workloads[0]!.memory.samples[0]!.memory.retainedBoundaryTotal.currentBytes += 1;
+    expect(engineWebgpuStageTelemetryReportSchema.safeParse(inconsistentCurrent).success).toBe(false);
+
+    const forgedPeak = stageReportFixture();
+    forgedPeak.workloads[0]!.memory.peakRetainedBoundaryBytes = 1;
+    expect(engineWebgpuStageTelemetryReportSchema.safeParse(forgedPeak).success).toBe(false);
+
+    const forgedBudget = stageReportFixture();
+    forgedBudget.workloads[0]!.memory.budget.met = false;
+    expect(engineWebgpuStageTelemetryReportSchema.safeParse(forgedBudget).success).toBe(false);
+  });
+
+  it("rejects a regressing memory high-water sequence", () => {
+    const report = stageReportFixture();
+    report.workloads[0]!.memory.samples[1]!.memory.retainedBoundaryTotal.peakBytes = 29_000_000;
+    expect(engineWebgpuStageTelemetryReportSchema.safeParse(report).success).toBe(false);
   });
 });
