@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { constants } from "node:fs";
+import { mkdtemp, open, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join, resolve, sep } from "node:path";
 
@@ -34,10 +35,38 @@ import {
   processAdmissionController,
 } from "./fast-manim-snapshot-publication";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
+import { inspectProjectPngBytesV1, PROJECT_PNG_LOGICAL_PATH_V1 } from "./storage/project-png-storage";
 
 /** Environment variables the explicitly local-only backend may inherit. */
 const LOCAL_PROCESS_ENV_ALLOWLIST = ["LANG", "LC_ALL", "LC_CTYPE", "PATH", "TZ", "VIRTUAL_ENV"] as const;
 const LOCAL_PROCESS_PRIVATE_DIRECTORY_KEYS = new Set(["HOME", "TEMP", "TMP", "TMPDIR"]);
+
+/** Writes the verified V2 attachment to the one private logical path visible to fast-manim. */
+export async function materializeFastManimSandboxPngV2(runtimeDir: string, request: FastManimSandboxRequestBundleV1) {
+  const bytes = request.copyPngBytes();
+  if (bytes === undefined) return;
+  const canonicalRuntimeDir = resolve(runtimeDir);
+  if (!isAbsolute(runtimeDir) || canonicalRuntimeDir !== runtimeDir || runtimeDir.includes("\0")) {
+    throw new TypeError("The local sandbox runtime directory must be canonical and absolute.");
+  }
+  const inspected = inspectProjectPngBytesV1(bytes);
+  const path = join(canonicalRuntimeDir, PROJECT_PNG_LOGICAL_PATH_V1);
+  const descriptor = await open(
+    path,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    await descriptor.writeFile(inspected.bytes);
+    await descriptor.sync();
+    const metadata = await descriptor.stat();
+    if (!metadata.isFile() || metadata.size !== inspected.byteSize) {
+      throw new TypeError("The local sandbox image.png materialization is not a bounded regular file.");
+    }
+  } finally {
+    await descriptor.close();
+  }
+}
 
 export type LocalProcessFastManimSandboxBackendOptions = Readonly<{
   admissionController?: FastManimSnapshotAdmissionController;
@@ -135,7 +164,9 @@ export class LocalProcessFastManimSandboxBackendV1 implements FastManimSandboxBa
       .update(
         canonicalJsonV1({
           capabilities: FAST_MANIM_SANDBOX_REQUIRED_CAPABILITIES_V1,
+          fixedAssets: [PROJECT_PNG_LOGICAL_PATH_V1],
           processBoundary: "node-child-process-development-only-v1",
+          requestEnvelopeVersions: [1, 2],
           timings: this.#producerProcessTimings,
         }),
         "utf8",
@@ -226,6 +257,8 @@ export class LocalProcessFastManimSandboxBackendV1 implements FastManimSandboxBa
       throw error;
     }
     try {
+      await materializeFastManimSandboxPngV2(runtimeDir, request);
+      context.signal.throwIfAborted();
       const produced = await superviseProducerProcess({
         command: this.#command,
         cwd: runtimeDir,
@@ -236,7 +269,7 @@ export class LocalProcessFastManimSandboxBackendV1 implements FastManimSandboxBa
         onSettled: () => undefined,
         onSpawned: () => undefined,
         requestId: context.identity.requestId,
-        requestJson: Buffer.from(request.copyBytes()).toString("utf8"),
+        requestJson: Buffer.from(request.copyProducerRequestBytes()).toString("utf8"),
         signal: context.signal,
         timings: this.#producerProcessTimings,
         timeoutMs,

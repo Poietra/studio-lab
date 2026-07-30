@@ -165,6 +165,7 @@ async function compilablePreviewInput() {
     workingRevision: "pristine",
   } as const;
   const snapshot: StudioVerifiedPreviewSnapshotV1 = {
+    assetPayloads: [],
     correlation: {
       assetsManifestDigest: snapshotBundle.assets.manifestDigest,
       context,

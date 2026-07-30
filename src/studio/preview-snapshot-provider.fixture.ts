@@ -96,6 +96,7 @@ export function createFixturePreviewSnapshotProviderV1(): StudioPreviewSnapshotP
       }
       signal?.throwIfAborted();
       return {
+        assetPayloads: [],
         correlation: {
           assetsManifestDigest: snapshot.assets.manifestDigest,
           context: {
@@ -181,6 +182,7 @@ export function createMathTexFixturePreviewSnapshotProviderV1(): StudioPreviewSn
       }
       signal?.throwIfAborted();
       return {
+        assetPayloads: [],
         correlation: {
           assetsManifestDigest: snapshot.assets.manifestDigest,
           context: {

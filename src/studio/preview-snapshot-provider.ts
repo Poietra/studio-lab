@@ -1,3 +1,4 @@
+import type { CanvasPngAssetTransferV1 } from "../engine/canvas-png-assets";
 import type { CanvasWorkerClientEvidenceAdapterV1 } from "../engine/canvas-worker-client";
 import type { SceneIrBundleV1 } from "../engine/contracts";
 
@@ -55,6 +56,7 @@ export type StudioPreviewSourceRuntimeMappingV1 = Readonly<{
 export type StudioPreviewSourceRuntimeIdentityV1 = ReadonlyMap<string, StudioPreviewSourceRuntimeMappingV1>;
 
 export type StudioVerifiedPreviewSnapshotV1 = Readonly<{
+  assetPayloads: readonly CanvasPngAssetTransferV1[];
   correlation: StudioPreviewSnapshotCorrelationV1;
   duration: number;
   sceneId: string;

@@ -8,11 +8,15 @@ import {
   type FastManimProductionSandboxClientOptionsV1,
 } from "./fast-manim-production-sandbox-client";
 import type { FastManimSnapshotProfileVersionV1 } from "./fast-manim-snapshot-contract";
+import { DurableFastManimSnapshotPngProviderV1 } from "./fast-manim-snapshot-durable-png-provider";
 import { FastManimSnapshotRunner } from "./fast-manim-snapshot-runner";
+import type { ProjectPngBlobStoreV1, ProjectPngRepositoryV1 } from "./storage/project-png-storage";
 
 export type FastManimProductionSnapshotRunnerFactoryOptionsV1 = Readonly<{
   client: FastManimProductionSandboxClientOptionsV1;
   frame: Readonly<{ height: number; width: number }>;
+  projectPngRepository?: Pick<ProjectPngRepositoryV1, "readHead">;
+  projectPngs?: Pick<ProjectPngBlobStoreV1, "read">;
   snapshotVersion?: FastManimSnapshotProfileVersionV1;
   tenantId: string;
   timeoutMs?: number;
@@ -38,6 +42,12 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
   #closed = false;
 
   constructor(options: FastManimProductionSnapshotRunnerFactoryOptionsV1) {
+    if ((options.projectPngRepository === undefined) !== (options.projectPngs === undefined)) {
+      throw new TypeError("Production snapshot PNG repository and blob store must be configured together.");
+    }
+    if (options.snapshotVersion === 4 && (!options.projectPngRepository || !options.projectPngs)) {
+      throw new TypeError("Hermetic PNG snapshot profile V4 requires durable project PNG storage.");
+    }
     this.#options = options;
     this.#runtimeDigest = verifyFastManimGatedOciReleaseV1(
       options.client.signedRelease,
@@ -73,6 +83,15 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
       throw closed;
     }
     try {
+      const pngProvider =
+        this.#options.projectPngRepository && this.#options.projectPngs
+          ? new DurableFastManimSnapshotPngProviderV1({
+              blobs: this.#options.projectPngs,
+              projectId: input.projectId,
+              repository: this.#options.projectPngRepository,
+              tenantId: this.#options.tenantId,
+            })
+          : undefined;
       return {
         profileDigest: client.profileDigest,
         runner: new FastManimSnapshotRunner({
@@ -80,6 +99,7 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
           backend: client.backend,
           deployment: "production",
           frame: this.#options.frame,
+          ...(pngProvider === undefined ? {} : { pngProvider }),
           projectId: input.projectId,
           sourceProvider: input.sourceProvider,
           ...(this.#options.snapshotVersion === undefined ? {} : { snapshotVersion: this.#options.snapshotVersion }),

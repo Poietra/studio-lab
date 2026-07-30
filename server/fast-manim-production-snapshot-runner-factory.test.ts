@@ -40,6 +40,30 @@ function client() {
 afterEach(() => vi.clearAllMocks());
 
 describe("FastManimProductionSnapshotRunnerFactoryV1", () => {
+  it("requires both durable PNG authorities for snapshot profile V4", async () => {
+    const base = {
+      client: {} as never,
+      frame: { height: 8, width: 14.222 },
+      snapshotVersion: 4 as const,
+      tenantId: "tenant-a",
+    };
+    expect(() => new FastManimProductionSnapshotRunnerFactoryV1(base)).toThrow(/requires durable project PNG/i);
+    expect(
+      () =>
+        new FastManimProductionSnapshotRunnerFactoryV1({
+          ...base,
+          projectPngRepository: { readHead: vi.fn() },
+        }),
+    ).toThrow(/configured together/i);
+
+    const configured = new FastManimProductionSnapshotRunnerFactoryV1({
+      ...base,
+      projectPngRepository: { readHead: vi.fn() },
+      projectPngs: { read: vi.fn() },
+    });
+    await configured.close();
+  });
+
   it("uses a fresh verified broker client for readiness and closes its runner", async () => {
     const created = client();
     createClient.mockResolvedValue(created as never);

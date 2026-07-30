@@ -88,9 +88,9 @@ const REQUIRED_READ_ONLY_SYSTEM_PATHS = Object.freeze([
   "/proc/sysrq-trigger",
 ] as const);
 const LOCKED_LABELS = Object.freeze({
-  "io.poietra.fast-manim.archive-sha256": "bfb53a85c45965203174a0c671edc94e803e9ce6b276b67e4144ad2f97ef41ad",
-  "io.poietra.fast-manim.commit": "2b2294a4b55291b088778417c4e2714a75026147",
-  "io.poietra.fast-manim.tree": "c1505126b47b4c3ed96b582f37057a1424069b72",
+  "io.poietra.fast-manim.archive-sha256": "8c1e29ae95275a55a7c0ccc21f77848b63378ef37a469bd56820f7a372ff97e2",
+  "io.poietra.fast-manim.commit": "4d2a80abe1dbb0d800fd74c36d8a442afdb8efb6",
+  "io.poietra.fast-manim.tree": "270b237602705c240cab9daef824e6f0400d2f3c",
   "io.poietra.mathtex-outline.abi-version": "1",
   "io.poietra.mathtex-outline.artifact-sha256": "fcae06b2065de2da938be484ed0bde88cd31777ef29471d63580852f28c132d4",
   "io.poietra.mathtex-outline.engine-archive-sha256":
@@ -101,6 +101,7 @@ const LOCKED_LABELS = Object.freeze({
   "io.poietra.mathtex-outline.notice-sha256": "44e67c7f539ae83b25514aa15aae51a73c90c19a45ea33bbb293da52927f6608",
   "io.poietra.mathtex-outline.target": "linux-amd64",
   "io.poietra.mathtex-outline.toolchain-sha256": "95c98e10edff239e6ee237c9eac99dc96c06ba9fc712c30816ddc47d7db12f9e",
+  "io.poietra.snapshot-sandbox-envelope-version": "2",
   "io.poietra.sandbox-slice": "gated-oci-v1",
 });
 const FIXED_ENVIRONMENT = Object.freeze({
@@ -148,6 +149,7 @@ export const FAST_MANIM_GATED_OCI_PROFILE_V1 = Object.freeze({
   pidsLimit: PIDS_LIMIT,
   privileged: false,
   readOnlyRootfs: true,
+  requestEnvelopeVersions: Object.freeze([1, 2]),
   requiredContainerLabels: Object.freeze({ ...LOCKED_LABELS, [JOB_LABEL_KEY]: JOB_LABEL_VALUE }),
   requiredMaskedSystemPaths: REQUIRED_MASKED_SYSTEM_PATHS,
   requiredReadOnlySystemPaths: REQUIRED_READ_ONLY_SYSTEM_PATHS,
@@ -158,6 +160,7 @@ export const FAST_MANIM_GATED_OCI_PROFILE_V1 = Object.freeze({
   stopTimeoutSeconds: 1,
   target: FIXED_TARGET,
   tty: false,
+  fixedAssets: Object.freeze(["image.png"]),
   tmpfs: Object.freeze({ options: FIXED_TMPFS_OPTIONS, path: FIXED_TMPFS_PATH }),
   ulimits: FIXED_ULIMITS,
   user: "65532:65532",

@@ -541,6 +541,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     queuedScene.current = { binding, scene: installedScene };
     setBound({ binding, host: nextHost, state: nextHost.state });
     void nextHost.install({
+      assetPayloads: snapshot.assetPayloads,
       canvas: canvasEl,
       interactionEntityIds: installedScene.interactionEntityIds,
       revision: installedScene.engineRevisionHash,
@@ -575,6 +576,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
       queuedScene.current = { binding: updateBinding, scene: currentCompiledScene };
       void updateHost
         .update({
+          assetPayloads: currentCompiledScene.snapshot.assetPayloads,
           delta,
           interactionEntityIds: currentCompiledScene.interactionEntityIds,
           revision: currentCompiledScene.engineRevisionHash,

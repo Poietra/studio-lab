@@ -50,7 +50,8 @@ export function parseFastManimSnapshotVersion(value: string | undefined): FastMa
   if (!normalized || normalized === "1") return 1;
   if (normalized === "2") return 2;
   if (normalized === "3") return 3;
-  throw new TypeError("POIETRA_FAST_MANIM_SNAPSHOT_VERSION must be 1, 2, or 3.");
+  if (normalized === "4") return 4;
+  throw new TypeError("POIETRA_FAST_MANIM_SNAPSHOT_VERSION must be 1, 2, 3, or 4.");
 }
 
 export function parseManimProjects(value: string | undefined): readonly ManimProjectConfig[] | undefined {

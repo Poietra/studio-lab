@@ -147,6 +147,7 @@ describe("snapStudioPreviewViewportV1", () => {
 });
 
 const VIEW_SNAPSHOT = {
+  assetPayloads: [],
   correlation: CORRELATION,
   duration: 2,
   sceneId: "shared:circle-opacity",

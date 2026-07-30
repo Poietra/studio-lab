@@ -24,6 +24,7 @@ import {
 import { FastManimSandboxBackendControlError, FastManimSandboxRequestBundleV1 } from "./fast-manim-sandbox-backend";
 import {
   digestFastManimSnapshotRuntimeConfigV1,
+  type FastManimSnapshotProducerRequestV1,
   fastManimSnapshotSceneIdV1,
   MAX_FAST_MANIM_SNAPSHOT_ARRAY_ITEMS,
   MAX_FAST_MANIM_SNAPSHOT_OBJECT_FIELDS,
@@ -39,6 +40,7 @@ import {
   FAST_MANIM_SANDBOX_CONFORMANCE_CASES_V1,
   FAST_MANIM_SANDBOX_CONFORMANCE_LEAK_SENTINELS_V1,
 } from "./test-fixtures/fast-manim-sandbox-conformance-fixture";
+import { sandboxPngBytes, sandboxPngProducerRequest } from "./test-fixtures/fast-manim-sandbox-png-fixture";
 
 const realImage = process.env.POIETRA_FAST_MANIM_GATED_OCI_IMAGE;
 const realLane = /^sha256:[a-f0-9]{64}$/.test(realImage ?? "");
@@ -95,7 +97,7 @@ function requestFor(sourceText: string, sceneName: string, snapshotVersion: 1 | 
   return new FastManimSandboxRequestBundleV1(producerRequestFor(sourceText, sceneName, snapshotVersion));
 }
 
-type ProducerRequest = ReturnType<typeof producerRequestFor>;
+type ProducerRequest = FastManimSnapshotProducerRequestV1;
 
 function expectedFor(source: ProducerRequest) {
   return {
@@ -169,9 +171,9 @@ class GatedMathTexScene(Scene):
 `;
 
 const TRUSTED_IMAGE_LABELS = Object.freeze({
-  "io.poietra.fast-manim.archive-sha256": "bfb53a85c45965203174a0c671edc94e803e9ce6b276b67e4144ad2f97ef41ad",
-  "io.poietra.fast-manim.commit": "2b2294a4b55291b088778417c4e2714a75026147",
-  "io.poietra.fast-manim.tree": "c1505126b47b4c3ed96b582f37057a1424069b72",
+  "io.poietra.fast-manim.archive-sha256": "8c1e29ae95275a55a7c0ccc21f77848b63378ef37a469bd56820f7a372ff97e2",
+  "io.poietra.fast-manim.commit": "4d2a80abe1dbb0d800fd74c36d8a442afdb8efb6",
+  "io.poietra.fast-manim.tree": "270b237602705c240cab9daef824e6f0400d2f3c",
   "io.poietra.mathtex-outline.abi-version": "1",
   "io.poietra.mathtex-outline.artifact-sha256": "fcae06b2065de2da938be484ed0bde88cd31777ef29471d63580852f28c132d4",
   "io.poietra.mathtex-outline.engine-archive-sha256":
@@ -182,6 +184,7 @@ const TRUSTED_IMAGE_LABELS = Object.freeze({
   "io.poietra.mathtex-outline.notice-sha256": "44e67c7f539ae83b25514aa15aae51a73c90c19a45ea33bbb293da52927f6608",
   "io.poietra.mathtex-outline.target": "linux-amd64",
   "io.poietra.mathtex-outline.toolchain-sha256": "95c98e10edff239e6ee237c9eac99dc96c06ba9fc712c30816ddc47d7db12f9e",
+  "io.poietra.snapshot-sandbox-envelope-version": "2",
   "io.poietra.sandbox-slice": "gated-oci-v1",
 });
 
@@ -436,6 +439,21 @@ describe("gated OCI Docker ownership", () => {
 });
 
 describe("gated OCI fixed profile", () => {
+  it("validates and materializes only the fixed sealed PNG attachment in Python", () => {
+    const entrypointPath = fileURLToPath(
+      new URL("../sandbox/fast-manim-gated-oci/gated-entrypoint.py", import.meta.url),
+    );
+    const testPath = fileURLToPath(
+      new URL("../sandbox/fast-manim-gated-oci/gated-entrypoint.test.py", import.meta.url),
+    );
+    const pngPath = fileURLToPath(new URL("../src-tauri/icons/32x32.png", import.meta.url));
+    const result = spawnSync("/usr/bin/python3", [testPath, entrypointPath, pngPath], { encoding: "utf8" });
+    expect({ stderr: result.stderr, status: result.status }).toEqual({
+      stderr: expect.stringContaining("Ran 4 tests"),
+      status: 0,
+    });
+  });
+
   it("treats seccomp EPERM/EACCES at stream socket creation as proof that outbound networking is blocked", () => {
     const entrypointPath = fileURLToPath(
       new URL("../sandbox/fast-manim-gated-oci/gated-entrypoint.py", import.meta.url),
@@ -500,6 +518,36 @@ describe("gated OCI job runner lifecycle", () => {
     expect(jobs.health()).toBe("cleanup-failed");
     expect(() => jobs.start(request, jobContext)).toThrow(FastManimSandboxBackendControlError);
     await expect(jobs.close()).rejects.toMatchObject({ code: "cleanup" });
+  });
+
+  it("forwards the exact digest-bound V2 PNG envelope to the fixed OCI gate", async () => {
+    let capturedRequestBytes: Uint8Array | undefined;
+    const jobs = new FastManimGatedOciJobRunnerV1({
+      cgroupKillPolicy: "best-effort",
+      dockerClient: new FastManimGatedOciDockerClientV1(),
+      executeJob: async (options) => {
+        capturedRequestBytes = options.requestBytes;
+        return {
+          cleanupVerified: true,
+          evidence: {
+            cgroup: "0::/test",
+            containerId: "b".repeat(64),
+            pid: 42,
+            resources: { cpuMax: "100000 100000", memoryMax: "1", memorySwapMax: "0", pidsMax: "1" },
+          },
+          resultBytes: Uint8Array.of(0x7b, 0x7d),
+        };
+      },
+      image: `sha256:${"a".repeat(64)}`,
+    });
+    const request = new FastManimSandboxRequestBundleV1(sandboxPngProducerRequest(), {
+      pngBytes: sandboxPngBytes(),
+    });
+    const result = await jobs.start(request, { ...context(), attestationDigest: "b".repeat(64) }).result;
+    expect(result).toMatchObject({ kind: "ok", requestDigest: request.requestDigest });
+    expect(capturedRequestBytes).toEqual(request.copyBytes());
+    expect(createHash("sha256").update(capturedRequestBytes!).digest("hex")).toBe(request.requestDigest);
+    await expect(jobs.close()).resolves.toBeUndefined();
   });
 
   it("permanently taints after create dispatch is aborted before an immutable ID is observed", async () => {
@@ -691,6 +739,42 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
     expect(entity.appearance.fill).not.toBeNull();
     expect(entity.appearance.stroke).toBeNull();
     expect(sourceRuntimeIdentity?.mappings).toMatchObject([{ binding: { name: "equation" }, entityId: entity.id }]);
+  });
+
+  it("materializes one sealed PNG and returns a real V4 image entity", { timeout: 60_000 }, async () => {
+    const source = sandboxPngProducerRequest();
+    const pngBytes = sandboxPngBytes();
+    const request = new FastManimSandboxRequestBundleV1(source, { pngBytes });
+    const execution = await runFastManimGatedOciJobV1({
+      deadlineEpochMs: Date.now() + 30_000,
+      image,
+      requestBytes: request.copyBytes(),
+      signal: new AbortController().signal,
+    });
+    expect(execution.cleanupVerified).toBe(true);
+    const { snapshot, sourceRuntimeIdentity } = await verifyCombinedResult(execution.resultBytes, source);
+    if (snapshot.kind !== "compiled") throw new Error("Expected a compiled PNG V4 snapshot.");
+    expect(snapshot.bundle.scene).toMatchObject({
+      requiredCapabilities: ["png-image"],
+      source: { kind: "imported-manim-server-snapshot", snapshotVersion: 4 },
+    });
+    const asset = snapshot.bundle.assets.assets[0];
+    expect(asset).toMatchObject({
+      byteLength: pngBytes.byteLength,
+      kind: "png-image",
+      mediaType: "image/png",
+      pixelHeight: 32,
+      pixelWidth: 32,
+      sha256: createHash("sha256").update(pngBytes).digest("hex"),
+    });
+    const entity = snapshot.bundle.scene.entities[0];
+    expect(entity?.appearance).toEqual({ kind: "image", opacity: 1 });
+    expect(entity?.geometry).toMatchObject({
+      asset: { assetId: asset?.id, sha256: asset?.sha256 },
+      kind: "image",
+      sampler: "nearest",
+    });
+    expect(sourceRuntimeIdentity?.mappings).toMatchObject([{ binding: { name: "image" }, entityId: entity?.id }]);
   });
 
   it("isolates, seals, and correlates real V2 opacity/lifetime evidence", { timeout: 60_000 }, async () => {

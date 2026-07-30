@@ -191,3 +191,103 @@ describe("verifyFastManimSourceRuntimeIdentityV1 complexity", () => {
     expect(result?.mappings).toEqual([]);
   });
 });
+
+describe("verifyFastManimSourceRuntimeIdentityV1 profile constructors", () => {
+  it.each([
+    [1, false],
+    [2, false],
+    [3, false],
+    [4, true],
+  ] as const)("maps a direct ImageMobject assignment only for snapshot profile %i", (snapshotVersion, supported) => {
+    const sourceText = `from manim import ImageMobject, RESAMPLING_ALGORITHMS, Scene
+
+class ImageScene(Scene):
+    def construct(self):
+        image = ImageMobject("image.png", resampling_algorithm=RESAMPLING_ALGORITHMS["nearest"])
+        self.add(image)
+`;
+    const sourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
+    const sceneId = `scene:${"a".repeat(64)}`;
+    const runtimeConfigHash = "b".repeat(64);
+    const snapshotHash = "c".repeat(64);
+    const snapshotDigest = "d".repeat(64);
+    const span = { endColumn: 13, endLine: 5, startColumn: 8, startLine: 5 };
+    const bindingPayload = [
+      FAST_MANIM_SOURCE_RUNTIME_IDENTITY_SCHEMA_V1,
+      String(FAST_MANIM_SOURCE_RUNTIME_IDENTITY_VERSION_V1),
+      sourceHash,
+      sceneId,
+      "image",
+      "1",
+      String(span.startLine),
+      String(span.startColumn),
+      String(span.endLine),
+      String(span.endColumn),
+    ].join("\u0000");
+    const binding = {
+      id: `source-binding:${createHash("sha256").update(bindingPayload, "utf8").digest("hex")}`,
+      name: "image",
+      ordinal: 1,
+      span,
+    };
+    const entity = {
+      id: `${sceneId}/entity:0`,
+      provenanceId: `${sceneId}/provenance:entity:0`,
+    };
+    const expected = {
+      frame: { height: 8, width: 14.222222222222221 },
+      projectId: "default",
+      requestId: `image-identity-v${snapshotVersion}`,
+      runtimeConfigHash,
+      snapshotVersion,
+      sceneId,
+      sceneName: "ImageScene",
+      sourceHash,
+      sourcePath: "scene.py",
+    };
+    const evidence = {
+      issues: [],
+      kind: "complete",
+      projectId: expected.projectId,
+      records: [
+        {
+          bindings: [{ binding, boundSequence: 1, releasedSequence: null }],
+          entityId: entity.id,
+          familyPath: [],
+          lifecycle: [],
+          provenanceId: entity.provenanceId,
+          reasons: [],
+          runtimeType: "manim.mobject.types.image_mobject.ImageMobject",
+          sceneOrder: 0,
+          status: "mapped",
+        },
+      ],
+      requestId: expected.requestId,
+      runtimeConfigHash,
+      sceneId,
+      sceneName: expected.sceneName,
+      snapshotDigest,
+      sourceHash,
+      sourcePath: expected.sourcePath,
+    };
+    const result = verifyFastManimSourceRuntimeIdentityV1(
+      { document: { evidence, snapshotDigest }, snapshotDigest },
+      {
+        expected,
+        snapshot: {
+          bundle: { scene: { entities: [entity] } },
+          kind: "compiled",
+          runtimeConfigHash,
+          sceneId,
+          snapshotHash,
+          sourceHash,
+        } as never,
+        sourceText,
+      },
+    );
+
+    expect(result?.mappings).toEqual(
+      supported ? [{ binding, entityId: entity.id, familyPath: [], provenanceId: entity.provenanceId }] : [],
+    );
+  });
+});

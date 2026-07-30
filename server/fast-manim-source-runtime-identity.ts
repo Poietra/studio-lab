@@ -142,7 +142,7 @@ type SourceBindingLookup = Readonly<{
   tokens: ReadonlySet<string>;
 }>;
 
-const STUDIO_SUPPORTED_CONSTRUCTORS = new Set([
+const STUDIO_SUPPORTED_CONSTRUCTORS_V1_TO_V3 = new Set([
   "Arrow",
   "Circle",
   "Dot",
@@ -156,6 +156,15 @@ const STUDIO_SUPPORTED_CONSTRUCTORS = new Set([
   "Text",
   "VGroup",
 ]);
+
+function studioSupportsConstructor(
+  constructor: string,
+  snapshotVersion: ExpectedFastManimSnapshotCorrelationV1["snapshotVersion"],
+) {
+  return (
+    STUDIO_SUPPORTED_CONSTRUCTORS_V1_TO_V3.has(constructor) || (snapshotVersion === 4 && constructor === "ImageMobject")
+  );
+}
 
 function sourceBindingKey(binding: Readonly<{ name: string; ordinal?: number; span: SourceBindingV1["span"] }>) {
   const { endColumn, endLine, startColumn, startLine } = binding.span;
@@ -195,6 +204,7 @@ function buildSourceBindingLookup(
   sourceText: string,
   analysis: ReturnType<typeof analyzePythonSource>,
   sourceBlock: NonNullable<ReturnType<typeof findSourceSceneBlock>>,
+  snapshotVersion: ExpectedFastManimSnapshotCorrelationV1["snapshotVersion"],
 ) {
   const sourceLines = sourceText.split(/\r?\n/);
   const tokens = new Set<string>();
@@ -252,7 +262,7 @@ function buildSourceBindingLookup(
       line.indentation !== sourceBlock.bodyIndent ||
       constructor === undefined ||
       !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ||
-      !STUDIO_SUPPORTED_CONSTRUCTORS.has(constructor)
+      !studioSupportsConstructor(constructor, snapshotVersion)
     ) {
       continue;
     }
@@ -479,7 +489,12 @@ export function verifyFastManimSourceRuntimeIdentityV1(
     identityError("The selected source Scene cannot be identified unambiguously.", cause);
   }
   requireIdentity(sourceBlock !== null, "The selected source Scene is missing from its correlated source.");
-  const sourceBindings = buildSourceBindingLookup(input.sourceText, sourceAnalysis, sourceBlock);
+  const sourceBindings = buildSourceBindingLookup(
+    input.sourceText,
+    sourceAnalysis,
+    sourceBlock,
+    input.expected.snapshotVersion,
+  );
 
   const seenMemberships = new Set<string>();
   const activeBindingNames = new Set<string>();

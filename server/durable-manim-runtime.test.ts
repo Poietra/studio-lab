@@ -4,6 +4,13 @@ import type { DurableFastManimSnapshotServiceV1 } from "./durable-fast-manim-sna
 import type { DurableManimRenderServiceV1 } from "./durable-manim-render-service";
 import { createDurableProductionManimRuntimeAdapterV1, DurableManimRuntimeV1 } from "./durable-manim-runtime";
 import type { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
+import {
+  inspectProjectPngBytesV1,
+  type ProjectPngBlobStoreV1,
+  type ProjectPngHeadV1,
+  type ProjectPngRepositoryV1,
+  projectPngObjectKeyV1,
+} from "./storage/project-png-storage";
 import type { DurableSourceBlobGcWorkerV1 } from "./storage/source-blob-gc";
 import type { SourceContentBlobStoreV1, WorkspaceSourceRepositoryV1 } from "./storage/workspace-source-repository";
 
@@ -11,7 +18,70 @@ function partial<T>(value: Partial<T>): T {
   return value as T;
 }
 
+const pngBytes = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
+
+function pngHead(generation = 1n): ProjectPngHeadV1 {
+  const inspected = inspectProjectPngBytesV1(pngBytes);
+  return {
+    generation,
+    projectId: "project-a",
+    receipt: {
+      byteSize: inspected.byteSize,
+      digest: inspected.digest,
+      etag: "etag-a",
+      objectKey: projectPngObjectKeyV1("tenant-a", "project-a", inspected.digest),
+      versionId: "version-a",
+    },
+    tenantId: "tenant-a",
+  };
+}
+
 describe("DurableManimRuntimeV1 production readiness", () => {
+  it("serves only the unchanged digest-addressed project PNG head", async () => {
+    const head = pngHead();
+    const readHead = vi.fn(async () => head);
+    const read = vi.fn(async () => pngBytes);
+    const runtime = new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({ close: async () => undefined, ready: async () => true }),
+      execution: { ready: async () => true },
+      namespace: "snapshot-png-test",
+      projectPngRepository: partial<ProjectPngRepositoryV1>({ readHead }),
+      projectPngs: partial<ProjectPngBlobStoreV1>({ read }),
+      repository: partial<WorkspaceSourceRepositoryV1>({ close: async () => undefined, ready: async () => true }),
+      tenantId: "tenant-a",
+    });
+
+    const asset = await runtime.sceneSnapshotAsset("project-a", head.receipt.digest);
+
+    expect(asset).toEqual({ body: Uint8Array.from(pngBytes), digest: head.receipt.digest, mediaType: "image/png" });
+    expect(readHead).toHaveBeenCalledTimes(2);
+    expect(read).toHaveBeenCalledWith("tenant-a", "project-a", head.receipt, undefined);
+    await expect(runtime.sceneSnapshotAsset("project-a", "f".repeat(64))).rejects.toMatchObject({ status: 404 });
+    await runtime.close();
+  });
+
+  it("refuses PNG delivery when the project head changes during the read", async () => {
+    const before = pngHead();
+    const after = { ...before, generation: 2n };
+    const runtime = new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({ close: async () => undefined, ready: async () => true }),
+      execution: { ready: async () => true },
+      namespace: "snapshot-png-stale-test",
+      projectPngRepository: partial<ProjectPngRepositoryV1>({
+        readHead: vi.fn().mockResolvedValueOnce(before).mockResolvedValueOnce(after),
+      }),
+      projectPngs: partial<ProjectPngBlobStoreV1>({ read: async () => pngBytes }),
+      repository: partial<WorkspaceSourceRepositoryV1>({ close: async () => undefined, ready: async () => true }),
+      tenantId: "tenant-a",
+    });
+
+    await expect(runtime.sceneSnapshotAsset("project-a", before.receipt.digest)).rejects.toMatchObject({ status: 409 });
+    await runtime.close();
+  });
+
   it("does not attest production readiness without the durable render service", async () => {
     const repositoryClose = vi.fn(async () => undefined);
     const blobsClose = vi.fn(async () => undefined);

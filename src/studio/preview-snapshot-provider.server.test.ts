@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import bundleFixture from "../../server/test-fixtures/fast-manim-static-bundle.json";
-import { parseVerifiedSceneIrBundleV1 } from "../engine/contracts";
+import { digestAssetManifestV1, parseVerifiedSceneIrBundleV1 } from "../engine/contracts";
 import { digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
 import type { StudioPreviewSceneIdentityV1 } from "./preview-snapshot-provider";
 import { createServerPreviewSnapshotProviderV1 } from "./preview-snapshot-provider.server";
@@ -8,6 +8,9 @@ import { createServerPreviewSnapshotProviderV1 } from "./preview-snapshot-provid
 const REQUEST_ID = "studio-preview:test-request";
 const SOURCE_HASH = "a".repeat(64);
 const RUNTIME_HASH = "b".repeat(64);
+const PNG_BYTES = Uint8Array.from(
+  Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64"),
+);
 const identity: StudioPreviewSceneIdentityV1 = {
   projectId: "default",
   sceneName: "ExampleScene",
@@ -23,12 +26,60 @@ async function sceneId() {
   return `scene:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-async function verifiedRun(options: Readonly<{ identityMap?: boolean }> = {}) {
+async function verifiedRun(options: Readonly<{ identityMap?: boolean; pngAsset?: boolean }> = {}) {
   const id = await sceneId();
+  const pngDigest = await crypto.subtle.digest("SHA-256", PNG_BYTES);
+  const pngSha256 = Array.from(new Uint8Array(pngDigest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const pngAsset = {
+    alphaMode: "straight" as const,
+    byteLength: PNG_BYTES.byteLength,
+    colorSpace: "srgb" as const,
+    id: `${id}/asset:image:0`,
+    kind: "png-image" as const,
+    mediaType: "image/png" as const,
+    pixelHeight: 1,
+    pixelWidth: 1,
+    sha256: pngSha256,
+  };
+  const manifestId = `${id}/manifest`;
+  const pngManifestDigest = await digestAssetManifestV1({
+    assets: [pngAsset],
+    manifestDigest: "0".repeat(64),
+    manifestId,
+    schema: "poietra.asset-manifest",
+    version: 1,
+  });
+  const pngManifest = {
+    assets: [pngAsset],
+    manifestDigest: pngManifestDigest,
+    manifestId,
+    schema: "poietra.asset-manifest" as const,
+    version: 1 as const,
+  };
   const unsealedBundle = {
     ...bundleFixture,
+    assets: options.pngAsset ? pngManifest : bundleFixture.assets,
     scene: {
       ...bundleFixture.scene,
+      ...(options.pngAsset
+        ? {
+            assetManifest: { manifestDigest: pngManifestDigest, manifestId },
+            entities: [
+              {
+                ...bundleFixture.scene.entities[0],
+                appearance: { kind: "image", opacity: 1 },
+                geometry: {
+                  asset: { assetId: pngAsset.id, sha256: pngAsset.sha256 },
+                  kind: "image",
+                  localRect: { bottom: -0.5, left: -0.5, right: 0.5, top: 0.5 },
+                  sampler: "nearest",
+                },
+              },
+              ...bundleFixture.scene.entities.slice(1),
+            ],
+            requiredCapabilities: ["cubic-path-geometry", "png-image"],
+          }
+        : {}),
       sceneId: id,
       source: {
         kind: "imported-manim-server-snapshot",
@@ -147,6 +198,81 @@ describe("createServerPreviewSnapshotProviderV1", () => {
       sourceName: "circle",
     });
     expect(provider.evidence).toBeUndefined();
+  });
+
+  it("fetches each digest-correlated PNG and returns manifest-owned transfer metadata", async () => {
+    const run = await verifiedRun({ pngAsset: true });
+    const asset = run.snapshot.bundle.assets.assets[0]!;
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/scene-snapshots")) return jsonResponse(run);
+      expect(String(input)).toBe(`/api/manim/projects/default/scene-snapshot-assets/${asset.sha256}`);
+      expect(init).toMatchObject({ headers: { accept: "image/png" }, method: "GET" });
+      return new Response(PNG_BYTES.slice(), {
+        headers: { "content-length": String(PNG_BYTES.byteLength), "content-type": "image/png" },
+      });
+    });
+    const loaded = await createServerPreviewSnapshotProviderV1({
+      fetcher,
+      requestIdFactory: () => REQUEST_ID,
+    }).loadVerifiedSnapshot({ identity });
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(loaded.assetPayloads).toHaveLength(1);
+    expect(loaded.assetPayloads[0]).toMatchObject({
+      assetId: asset.id,
+      byteLength: asset.byteLength,
+      mediaType: "image/png",
+      pixelHeight: asset.pixelHeight,
+      pixelWidth: asset.pixelWidth,
+      sha256: asset.sha256,
+    });
+    expect(new Uint8Array(loaded.assetPayloads[0]!.bytes)).toEqual(PNG_BYTES);
+  });
+
+  it("rejects stale, malformed, truncated, oversized, and failed PNG responses", async () => {
+    const run = await verifiedRun({ pngAsset: true });
+    const wrongDigest = PNG_BYTES.slice();
+    wrongDigest[wrongDigest.length - 1] ^= 1;
+    const variants: ReadonlyArray<Readonly<{ message: RegExp; response: () => Response }>> = [
+      {
+        message: /non-PNG/i,
+        response: () => new Response(PNG_BYTES.slice(), { headers: { "content-type": "application/octet-stream" } }),
+      },
+      {
+        message: /HTTP 404/i,
+        response: () => new Response(null, { status: 404 }),
+      },
+      {
+        message: /shorter than its manifest/i,
+        response: () => new Response(PNG_BYTES.slice(0, -1), { headers: { "content-type": "image/png" } }),
+      },
+      {
+        message: /exceeds its manifest/i,
+        response: () =>
+          new Response(new Uint8Array(PNG_BYTES.byteLength + 1), { headers: { "content-type": "image/png" } }),
+      },
+      {
+        message: /stale digest/i,
+        response: () => new Response(wrongDigest, { headers: { "content-type": "image/png" } }),
+      },
+      {
+        message: /content length does not match/i,
+        response: () =>
+          new Response(PNG_BYTES.slice(), {
+            headers: { "content-length": String(PNG_BYTES.byteLength + 1), "content-type": "image/png" },
+          }),
+      },
+    ];
+    for (const variant of variants) {
+      const fetcher = vi.fn(async (input: RequestInfo | URL) =>
+        String(input).endsWith("/scene-snapshots") ? jsonResponse(run) : variant.response(),
+      );
+      await expect(
+        createServerPreviewSnapshotProviderV1({ fetcher, requestIdFactory: () => REQUEST_ID }).loadVerifiedSnapshot({
+          identity,
+        }),
+      ).rejects.toThrow(variant.message);
+    }
   });
 
   it("keeps legacy verified runs without identity evidence on semantic interaction fallback", async () => {

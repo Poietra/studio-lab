@@ -1,3 +1,4 @@
+import type { CanvasPngAssetTransferV1 } from "./canvas-png-assets";
 import {
   type CanvasFrameEvidenceResponseV1,
   CanvasWorkerClientError,
@@ -80,6 +81,7 @@ export type StudioPreviewRendererHostOptionsV1 = Readonly<{
 }>;
 
 export type InstallPreviewSnapshotInputV1 = Readonly<{
+  assetPayloads?: readonly CanvasPngAssetTransferV1[];
   canvas: HTMLCanvasElement;
   interactionEntityIds?: readonly string[];
   revision: string;
@@ -87,6 +89,7 @@ export type InstallPreviewSnapshotInputV1 = Readonly<{
 }>;
 
 export type UpdatePreviewSnapshotInputV1 = Readonly<{
+  assetPayloads?: readonly CanvasPngAssetTransferV1[];
   delta: SceneIrDeltaV1 | null;
   interactionEntityIds?: readonly string[];
   revision: string;
@@ -182,7 +185,12 @@ export class StudioPreviewRendererHost {
     try {
       const snapshot = structuredClone(input.snapshot);
       this.renderer = this.createRenderer();
-      await this.renderer.installScene({ canvas: input.canvas, revision: input.revision, snapshot });
+      await this.renderer.installScene({
+        assetPayloads: input.assetPayloads,
+        canvas: input.canvas,
+        revision: input.revision,
+        snapshot,
+      });
       this.installedSnapshot = snapshot;
     } catch (error) {
       if (!this.isDisposed()) {
@@ -359,9 +367,15 @@ export class StudioPreviewRendererHost {
       }
       if (this.isDisposed() || this.renderer !== renderer) return;
       if (input.delta === null) {
-        await renderer.replaceScene({ baseRevision, revision: input.revision, snapshot: next });
+        await renderer.replaceScene({
+          assetPayloads: input.assetPayloads,
+          baseRevision,
+          revision: input.revision,
+          snapshot: next,
+        });
       } else {
         await renderer.updateScene({
+          assetPayloads: input.assetPayloads,
           baseRevision,
           delta: input.delta,
           revision: input.revision,

@@ -111,6 +111,24 @@ describe("fast-manim snapshot runtime config", () => {
     expect(() => fastManimSnapshotProducerRequestV1Schema.parse({ ...v2Request, snapshotVersion: 1 })).toThrow(
       /different snapshot version/i,
     );
+    const v4Config = {
+      ...config,
+      capabilities: ["png-image"],
+      snapshotVersion: 4,
+    } satisfies FastManimSnapshotRuntimeConfigV1;
+    const v4Request = {
+      ...producerRequest,
+      runtimeConfig: v4Config,
+      runtimeConfigHash: digestFastManimSnapshotRuntimeConfigV1(v4Config),
+      snapshotVersion: 4 as const,
+    };
+    expect(fastManimSnapshotProducerRequestV1Schema.parse(v4Request)).toEqual(v4Request);
+    expect(() => digestFastManimSnapshotRuntimeConfigV1({ ...config, snapshotVersion: 4 })).toThrow(
+      /exactly png-image/i,
+    );
+    expect(() => digestFastManimSnapshotRuntimeConfigV1({ ...config, capabilities: ["png-image"] })).toThrow(
+      /only hermetic PNG profile V4/i,
+    );
     expect(() =>
       fastManimSnapshotProducerRequestV1Schema.parse({ ...producerRequest, runtimeConfigHash: "b".repeat(64) }),
     ).toThrow(/canonical digest/i);

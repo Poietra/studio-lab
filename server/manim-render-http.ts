@@ -40,6 +40,8 @@ const RENDER_ROUTE =
 const PROJECT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/(workspace|renders|export)$/;
 const PROJECT_THUMBNAIL_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/thumbnail(?:\/(status|generate))?$/;
 const PROJECT_SCENE_SNAPSHOT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/scene-snapshots$/;
+const PROJECT_SCENE_SNAPSHOT_ASSET_ROUTE =
+  /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/scene-snapshot-assets\/([0-9a-f]{64})$/;
 const PROJECT_ITEM_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})$/;
 const DEFAULT_MEDIA_STREAM_IDLE_TIMEOUT_MS = 30_000;
 const MAX_MEDIA_STREAM_IDLE_TIMEOUT_MS = 120_000;
@@ -165,6 +167,9 @@ function requestRouteTemplate(rawUrl: string | undefined) {
   }
   if (pathname === "/api/manim/projects" || pathname === "/api/manim/workspace") return pathname;
   if (PROJECT_SCENE_SNAPSHOT_ROUTE.test(pathname)) return "/api/manim/projects/:projectId/scene-snapshots";
+  if (PROJECT_SCENE_SNAPSHOT_ASSET_ROUTE.test(pathname)) {
+    return "/api/manim/projects/:projectId/scene-snapshot-assets/:digest";
+  }
   if (PROJECT_THUMBNAIL_ROUTE.test(pathname)) return "/api/manim/projects/:projectId/thumbnail/:action?";
   if (PROJECT_ROUTE.test(pathname)) return "/api/manim/projects/:projectId/:action";
   if (PROJECT_ITEM_ROUTE.test(pathname)) return "/api/manim/projects/:projectId";
@@ -379,6 +384,26 @@ function sendThumbnailAsset(response: ServerResponse, asset: ThumbnailAsset) {
   return true;
 }
 
+function sendSceneSnapshotAsset(
+  request: IncomingMessage,
+  response: ServerResponse,
+  asset: Awaited<ReturnType<NonNullable<ManimApi["sceneSnapshotAsset"]>>>,
+) {
+  if (response.destroyed || response.writableEnded) return false;
+  if (response.headersSent) {
+    response.destroy();
+    return false;
+  }
+  response.statusCode = 200;
+  response.setHeader("cache-control", "private, max-age=31536000, immutable");
+  response.setHeader("content-length", asset.body.byteLength);
+  response.setHeader("content-type", asset.mediaType);
+  response.setHeader("etag", `"sha256:${asset.digest}"`);
+  response.setHeader("x-content-type-options", "nosniff");
+  response.end(request.method === "HEAD" ? undefined : asset.body);
+  return true;
+}
+
 function sendJsonAndWaitForFinish(response: ServerResponse, status: number, body: unknown) {
   return new Promise<boolean>((resolveDelivery, rejectDelivery) => {
     let settled = false;
@@ -496,6 +521,14 @@ async function routeManimRequest(
       throw new HttpError("The request project does not match the project endpoint.", 409);
     }
     sendJson(response, 200, await manager.runSceneSnapshot(parsed.data, signal));
+    return;
+  }
+  const sceneSnapshotAssetMatch = url.pathname.match(PROJECT_SCENE_SNAPSHOT_ASSET_ROUTE);
+  if (sceneSnapshotAssetMatch) {
+    if (request.method !== "GET" && request.method !== "HEAD") throw new HttpError("Method not allowed.", 405);
+    if (!manager.sceneSnapshotAsset) throw new HttpError("Scene snapshot assets are not configured.", 404);
+    const [, projectId, digest] = sceneSnapshotAssetMatch;
+    sendSceneSnapshotAsset(request, response, await manager.sceneSnapshotAsset(projectId!, digest!, signal));
     return;
   }
   const thumbnailMatch = url.pathname.match(PROJECT_THUMBNAIL_ROUTE);

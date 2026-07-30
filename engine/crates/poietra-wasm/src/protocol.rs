@@ -603,6 +603,23 @@ mod tests {
     }
 
     #[test]
+    fn retained_session_accepts_imported_snapshot_profile_four() {
+        let mut fixture = fixture();
+        fixture["scene"]["source"] = json!({
+            "kind": "imported-manim-server-snapshot",
+            "runtimeConfigHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "snapshotHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "snapshotVersion": 4,
+            "sourceHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        });
+
+        let session = EngineWorkerSessionV1::from_snapshot_json(&snapshot(&fixture)).unwrap();
+        let response: Value =
+            serde_json::from_slice(&session.sample_json(&sample_request())).unwrap();
+        assert_eq!(response["result"]["kind"], "ready");
+    }
+
+    #[test]
     fn typed_sample_path_preserves_request_correlation_without_json_round_trip() {
         let fixture = fixture();
         let session = EngineWorkerSessionV1::from_snapshot_json(&snapshot(&fixture)).unwrap();

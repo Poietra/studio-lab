@@ -269,6 +269,10 @@ export class ManimProjectRegistry {
     return this.project(projectId).sceneSnapshot(projectId, query);
   }
 
+  sceneSnapshotAsset(projectId: string, digest: string, signal?: AbortSignal) {
+    return this.project(projectId).sceneSnapshotAsset(projectId, digest, signal);
+  }
+
   exportSource(request: ProgramRenderRequest, signal?: AbortSignal) {
     return this.project(request.projectId).exportSource(request, signal);
   }
