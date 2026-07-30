@@ -10,9 +10,11 @@ import {
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V1,
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V2,
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V3,
+  FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V4,
   FAST_MANIM_SNAPSHOT_UNSUPPORTED_MESSAGES_V1,
   fastManimSnapshotAffineTransformChannelIdV2,
   fastManimSnapshotAffineTransformChannelProvenanceIdV2,
+  fastManimSnapshotManifestIdV1,
   fastManimSnapshotMotionPathChannelIdV2,
   fastManimSnapshotMotionPathChannelProvenanceIdV2,
   fastManimSnapshotOpacityChannelIdV2,
@@ -21,6 +23,7 @@ import {
   fastManimSnapshotPathMorphChannelProvenanceIdV2,
   fastManimSnapshotPathTrimChannelIdV2,
   fastManimSnapshotPathTrimChannelProvenanceIdV2,
+  fastManimSnapshotPngAssetIdV4,
   fastManimSnapshotRunViewV1Schema,
   fastManimSnapshotSceneIdV1,
   isCanonicalFastManimLineSegmentV1,
@@ -184,6 +187,78 @@ async function hermeticMathTexBundle(): Promise<SceneIrBundleV1> {
         },
       ],
       source: { ...base.scene.source, snapshotVersion: 3 },
+    },
+  });
+}
+
+async function hermeticPngBundle(sampler: "linear" | "nearest" = "nearest"): Promise<SceneIrBundleV1> {
+  const base = await importedBundle();
+  const pixelHeight = 1;
+  const pixelWidth = 2;
+  const sha256 = "4".repeat(64);
+  const assetId = fastManimSnapshotPngAssetIdV4(expected.sceneId);
+  const manifestId = fastManimSnapshotManifestIdV1(expected.sceneId);
+  const asset = {
+    alphaMode: "straight" as const,
+    byteLength: 74,
+    colorSpace: "srgb" as const,
+    id: assetId,
+    kind: "png-image" as const,
+    mediaType: "image/png" as const,
+    pixelHeight,
+    pixelWidth,
+    sha256,
+  };
+  const manifestDigest = await digestAssetManifestV1({
+    assets: [asset],
+    manifestDigest: ZERO_SHA256,
+    manifestId,
+    schema: "poietra.asset-manifest",
+    version: 1,
+  });
+  const height = (pixelHeight / 1_080) * expected.frame.height;
+  const width = (height * pixelWidth) / pixelHeight;
+  return sceneIrBundleV1Schema.parse({
+    assets: {
+      assets: [asset],
+      manifestDigest,
+      manifestId,
+      schema: "poietra.asset-manifest",
+      version: 1,
+    },
+    scene: {
+      ...base.scene,
+      assetManifest: { manifestDigest, manifestId },
+      entities: [
+        {
+          ...base.scene.entities[0],
+          appearance: { kind: "image", opacity: 1 },
+          geometry: {
+            asset: { assetId, sha256 },
+            kind: "image",
+            localRect: { bottom: -height / 2, left: -width / 2, right: width / 2, top: height / 2 },
+            sampler,
+          },
+          sourceZIndex: 0,
+        },
+      ],
+      provenance: [
+        {
+          ...base.scene.provenance[0],
+          evidence: ["fast-manim hermetic PNG Scene snapshot profile v4"],
+        },
+        {
+          ...base.scene.provenance[1],
+          evidence: [
+            "capability png-image: one verified PNG-backed rectangle",
+            `PNG encoded digest ${sha256}`,
+            `PNG dimensions ${pixelWidth} x ${pixelHeight}`,
+            `PNG sampler ${sampler}`,
+          ],
+        },
+      ],
+      requiredCapabilities: ["png-image"],
+      source: { ...base.scene.source, snapshotVersion: 4 },
     },
   });
 }
@@ -736,6 +811,102 @@ describe("fast-manim snapshot result v1", () => {
     for (const rejected of [wrongPaint, wrongQuantum, wrongAttestation]) {
       await expect(parseProducer(compiled(rejected), expectedV3)).rejects.toMatchObject({ code: "profile-violation" });
     }
+  });
+
+  it.each(["nearest", "linear"] as const)("seals one bounded hermetic PNG with the %s sampler", async (sampler) => {
+    const expectedV4 = { ...expected, snapshotVersion: 4 } as const;
+    const bundle = await hermeticPngBundle(sampler);
+    const sealed = await parseProducer(compiled(bundle), expectedV4);
+    if (sealed.kind !== "compiled") throw new Error("Expected a compiled PNG snapshot.");
+    expect(sealed.bundle.assets.assets).toEqual([
+      expect.objectContaining({
+        id: fastManimSnapshotPngAssetIdV4(expected.sceneId),
+        kind: "png-image",
+        pixelHeight: 1,
+        pixelWidth: 2,
+      }),
+    ]);
+    expect(sealed.bundle.scene.entities[0]?.geometry).toMatchObject({ kind: "image", sampler });
+    expect(
+      sealed.bundle.scene.provenance.every(
+        ({ evidence }) => evidence.length === 1 && evidence[0] === FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V4,
+      ),
+    ).toBe(true);
+    await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV4)).resolves.toEqual(sealed);
+  });
+
+  it("fails closed when profile V4 image metadata, geometry, capability, or provenance drifts", async () => {
+    const expectedV4 = { ...expected, snapshotVersion: 4 } as const;
+    const bundle = await hermeticPngBundle();
+    const entity = bundle.scene.entities[0]!;
+    if (entity.geometry.kind !== "image") throw new Error("Expected image fixture geometry.");
+
+    const mutateScene = (patch: Partial<typeof bundle.scene>) => ({
+      ...bundle,
+      scene: { ...bundle.scene, ...patch },
+    });
+    const rejected = [
+      mutateScene({
+        entities: [
+          {
+            ...entity,
+            geometry: {
+              ...entity.geometry,
+              localRect: { ...entity.geometry.localRect, right: entity.geometry.localRect.right + 0.000_001 },
+            },
+          },
+        ],
+      }),
+      mutateScene({
+        provenance: bundle.scene.provenance.map((record, index) =>
+          index === 0 ? { ...record, evidence: ["fast-manim hermetic PNG Scene snapshot profile v5"] } : record,
+        ),
+      }),
+      mutateScene({
+        provenance: bundle.scene.provenance.map((record, index) =>
+          index === 1
+            ? { ...record, evidence: [...record.evidence.slice(0, -3), `PNG encoded digest ${"5".repeat(64)}`] }
+            : record,
+        ),
+      }),
+      mutateScene({
+        provenance: bundle.scene.provenance.map((record, index) =>
+          index === 1
+            ? {
+                ...record,
+                evidence: [...record.evidence.slice(0, -2), "PNG dimensions 1 x 2", record.evidence.at(-1)!],
+              }
+            : record,
+        ),
+      }),
+      mutateScene({
+        provenance: bundle.scene.provenance.map((record, index) =>
+          index === 1 ? { ...record, evidence: [...record.evidence.slice(0, -1), "PNG sampler linear"] } : record,
+        ),
+      }),
+    ];
+    await expect(
+      parseProducer(
+        compiled(mutateScene({ requiredCapabilities: ["cubic-path-geometry"] }) as SceneIrBundleV1),
+        expectedV4,
+      ),
+    ).rejects.toThrow(/requiredCapabilities must exactly equal: png-image/i);
+    for (const candidate of rejected) {
+      await expect(parseProducer(compiled(candidate as SceneIrBundleV1), expectedV4)).rejects.toMatchObject({
+        code: "profile-violation",
+      });
+    }
+
+    const secondAsset = { ...bundle.assets.assets[0]!, id: `${expected.sceneId}/asset:image:1` };
+    const assets = [...bundle.assets.assets, secondAsset];
+    const manifestDigest = await digestAssetManifestV1({ ...bundle.assets, assets, manifestDigest: ZERO_SHA256 });
+    const extraAsset = {
+      assets: { ...bundle.assets, assets, manifestDigest },
+      scene: { ...bundle.scene, assetManifest: { ...bundle.scene.assetManifest, manifestDigest } },
+    };
+    await expect(parseProducer(compiled(extraAsset as SceneIrBundleV1), expectedV4)).rejects.toMatchObject({
+      code: "profile-violation",
+    });
   });
 
   it("seals a bounded variable-duration V2 still while keeping versions correlated", async () => {
@@ -1517,7 +1688,10 @@ describe("fast-manim snapshot result v1", () => {
     expect(expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 3 }).snapshotVersion).toBe(
       3,
     );
-    expect(() => expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 4 })).toThrow();
+    expect(expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 4 }).snapshotVersion).toBe(
+      4,
+    );
+    expect(() => expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 5 })).toThrow();
   });
 
   it("rejects unknown fields and newer envelope versions", async () => {
@@ -1539,7 +1713,7 @@ describe("fast-manim snapshot result v1", () => {
           ...value,
           bundle: {
             ...value.bundle,
-            scene: { ...value.bundle.scene, source: { ...value.bundle.scene.source, snapshotVersion: 4 } },
+            scene: { ...value.bundle.scene, source: { ...value.bundle.scene.source, snapshotVersion: 5 } },
           },
         },
         expected,
