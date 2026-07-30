@@ -365,6 +365,7 @@ function referenceAdapterIdentityEquals(
 
 export function assessDecisionEligibility(input: {
   browserChannel: string;
+  browserLaunchArgs: readonly string[];
   browserVersions: readonly string[];
   grade: BenchmarkProvenance["grade"];
   host: HostEnvironment;
@@ -382,6 +383,9 @@ export function assessDecisionEligibility(input: {
     reasons.push(
       `browser channel is ${input.browserChannel}; reference profile requires ${input.referenceHost.profile.browser.channel}`,
     );
+  }
+  if (input.browserLaunchArgs.length !== 0) {
+    reasons.push("decision evidence requires native browser launch settings with no command-line overrides");
   }
   if (input.browserVersions.length === 0) reasons.push("no launched browser version was collected");
   for (const browserVersion of input.browserVersions) {

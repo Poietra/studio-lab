@@ -403,6 +403,7 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
   requireStableReferenceHostEnvironment(host, collectHostEnvironment());
   const decisionEligibility = assessDecisionEligibility({
     browserChannel: WEBGPU_CHROMIUM_CHANNEL,
+    browserLaunchArgs: browserLaunch.args,
     browserVersions: [browserVersion],
     grade: provenance.grade,
     host,

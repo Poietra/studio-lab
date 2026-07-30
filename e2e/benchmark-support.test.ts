@@ -256,6 +256,7 @@ function reportEnvelopeFixture(reportSchema: string, reportVersion: number) {
 
 function fixtureDecisionFields(input: {
   browserChannel?: string;
+  browserLaunchArgs?: readonly string[];
   browserVersions: readonly string[];
   grade?: "clean-commit" | "non-decision-grade-dirty-tree";
   host?: HostEnvironment;
@@ -266,6 +267,7 @@ function fixtureDecisionFields(input: {
 }) {
   const decisionEligibility = assessDecisionEligibility({
     browserChannel: input.browserChannel ?? "msedge",
+    browserLaunchArgs: input.browserLaunchArgs ?? [],
     browserVersions: input.browserVersions,
     grade: input.grade ?? "clean-commit",
     host: input.host ?? referenceHostEnvironment(),
@@ -525,6 +527,7 @@ describe("decision eligibility", () => {
   it("keeps Linux/SwiftShader and dirty evidence decision-ineligible", () => {
     const assessment = assessDecisionEligibility({
       browserChannel: "chromium",
+      browserLaunchArgs: ["--use-angle=swiftshader"],
       browserVersions: ["fixture-browser"],
       grade: "non-decision-grade-dirty-tree",
       host: collectHostEnvironment(),
@@ -537,9 +540,11 @@ describe("decision eligibility", () => {
     expect(assessment.reasons.join("\n")).toMatch(/software adapter/);
     expect(assessment.reasons.join("\n")).toMatch(/swiftshader/);
     expect(assessment.reasons.join("\n")).toMatch(/host platform is linux/);
+    expect(assessment.reasons.join("\n")).toMatch(/command-line overrides/);
 
     const linuxHardware = assessDecisionEligibility({
       browserChannel: "chromium",
+      browserLaunchArgs: [],
       browserVersions: [REFERENCE_HOST.profile.browser.version],
       grade: "clean-commit",
       host: collectHostEnvironment(),
@@ -554,6 +559,7 @@ describe("decision eligibility", () => {
   it("requires the exact sample count and makes only the pinned Windows host eligible", () => {
     const assessment = assessDecisionEligibility({
       browserChannel: "msedge",
+      browserLaunchArgs: [],
       browserVersions: [],
       grade: "clean-commit",
       host: referenceHostEnvironment(),
@@ -568,6 +574,7 @@ describe("decision eligibility", () => {
 
     const exact = assessDecisionEligibility({
       browserChannel: "msedge",
+      browserLaunchArgs: [],
       browserVersions: Array.from({ length: 21 }, () => REFERENCE_HOST.profile.browser.version),
       grade: "clean-commit",
       host: referenceHostEnvironment(),
@@ -581,6 +588,7 @@ describe("decision eligibility", () => {
 
     const changed = assessDecisionEligibility({
       browserChannel: "msedge",
+      browserLaunchArgs: [],
       browserVersions: [REFERENCE_HOST.profile.browser.version, "0.0.0.0"],
       grade: "clean-commit",
       host: referenceHostEnvironment(),
@@ -1011,8 +1019,18 @@ describe("report summaries", () => {
           browserLaunch: { args: [], channel: "chromium" },
         },
       };
+      const swiftShaderLaunch = {
+        ...common,
+        environment: {
+          ...common.environment,
+          browserLaunch: { args: ["--use-angle=swiftshader"], channel: "msedge" },
+        },
+      };
       expect(reportCase.schema.safeParse(linux).success, `${reportCase.name}: Linux host`).toBe(false);
       expect(reportCase.schema.safeParse(chromium).success, `${reportCase.name}: Chromium channel`).toBe(false);
+      expect(reportCase.schema.safeParse(swiftShaderLaunch).success, `${reportCase.name}: SwiftShader launch args`).toBe(
+        false,
+      );
       expect(reportCase.schema.safeParse(reportCase.cpuReport).success, `${reportCase.name}: CPU adapter`).toBe(false);
       expect(
         reportCase.schema.safeParse(reportCase.softwareReport).success,
@@ -1202,6 +1220,50 @@ describe("report summaries", () => {
     const report = stageReportFixture();
     report.workloads[0]!.memory.samples[1]!.memory.retainedBoundaryTotal.peakBytes = 29_000_000;
     expect(engineWebgpuStageTelemetryReportSchema.safeParse(report).success).toBe(false);
+  });
+
+  it("requires the exact pinned workload order and available adapters in stress and stage reports", () => {
+    const cases = [
+      {
+        name: "stress",
+        report: stressReportFixture(completeStressWorkloadFixtures()),
+        schema: engineWebgpuStressReportSchema,
+      },
+      { name: "stage", report: stageTelemetryReportFixture(), schema: engineWebgpuStageTelemetryReportSchema },
+    ] as const;
+
+    for (const reportCase of cases) {
+      const { report, schema } = reportCase;
+      expect(schema.safeParse(report).success, `${reportCase.name}: baseline`).toBe(true);
+      const duplicate = report.workloads.map((workload, index) =>
+        index === report.workloads.length - 1
+          ? { ...workload, definition: report.workloads[0]!.definition }
+          : workload,
+      );
+      const missing = report.workloads.slice(0, -1);
+      const staleRevision = report.workloads.map((workload, index) =>
+        index === 0 ? { ...workload, definition: { ...workload.definition, revision: "f".repeat(64) } } : workload,
+      );
+      const reversed = [...report.workloads].reverse();
+      const unavailable = report.workloads.map((workload, index) =>
+        index === 0
+          ? {
+              ...workload,
+              workerDeviceAdapter: { kind: "unavailable", reason: "adapter evidence was not collected" },
+            }
+          : workload,
+      );
+
+      for (const [name, workloads] of [
+        ["duplicate", duplicate],
+        ["missing", missing],
+        ["reversed", reversed],
+        ["stale revision", staleRevision],
+        ["unavailable adapter", unavailable],
+      ] as const) {
+        expect(schema.safeParse({ ...report, workloads }).success, `${reportCase.name}: ${name}`).toBe(false);
+      }
+    }
   });
 
   it("rejects contradictory eligibility, evidence-level, and provenance claims", () => {

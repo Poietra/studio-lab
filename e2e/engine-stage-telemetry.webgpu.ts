@@ -483,6 +483,7 @@ test("records the 1080p WebGPU stage telemetry matrix", async ({ page, request }
   requireStableReferenceHostEnvironment(host, collectHostEnvironment());
   const decisionEligibility = assessDecisionEligibility({
     browserChannel: WEBGPU_CHROMIUM_CHANNEL,
+    browserLaunchArgs: browserLaunch.args,
     browserVersions: [browserVersion],
     grade: provenance.grade,
     host,

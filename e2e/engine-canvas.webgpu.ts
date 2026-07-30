@@ -801,6 +801,7 @@ test("records retained Worker latency without making CI hardware an adoption ora
   ];
   const decisionEligibility = assessDecisionEligibility({
     browserChannel: WEBGPU_CHROMIUM_CHANNEL,
+    browserLaunchArgs: browserLaunch.args,
     browserVersions: [...coldRuns.map((entry) => entry.browserVersion), browserVersion],
     grade: provenance.grade,
     host,

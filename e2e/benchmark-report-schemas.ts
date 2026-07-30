@@ -72,8 +72,12 @@ const commitIdentity = strictObject({
     });
   }
 });
+const availableWorkerAdapter = strictObject({
+  evidence: canvasAdapterEvidenceV1Schema,
+  kind: z.literal("available"),
+});
 const workerAdapter = z.discriminatedUnion("kind", [
-  strictObject({ evidence: canvasAdapterEvidenceV1Schema, kind: z.literal("available") }),
+  availableWorkerAdapter,
   strictObject({ kind: z.literal("unavailable"), reason: z.string().min(1) }),
 ]);
 const evidenceEnvelope = {
@@ -246,6 +250,7 @@ function addRecomputedDecisionEligibilityIssues(
   }
   const recomputed = assessDecisionEligibility({
     browserChannel: input.browserChannel,
+    browserLaunchArgs: input.browserLaunchArgs,
     browserVersions: input.browserVersions,
     grade: input.grade,
     host: input.host,
@@ -352,6 +357,7 @@ export const engineWebgpuBenchmarkReportSchema = z
     addRecomputedDecisionEligibilityIssues(
       {
         browserChannel: report.environment.browserLaunch.channel,
+        browserLaunchArgs: report.environment.browserLaunch.args,
         browserVersions: [...report.coldRuns.map((run) => run.browserVersion), report.environment.browserVersion],
         grade: report.provenance.grade,
         host: report.environment.host,
@@ -444,7 +450,7 @@ const stressWorkload = strictObject({
   randomSeekAck: nonnegativeTimingSummary,
   snapshotBytes: positiveCount,
   snapshotSha256: sha256,
-  workerDeviceAdapter: workerAdapter,
+  workerDeviceAdapter: availableWorkerAdapter,
 });
 
 function requireCanonicalStressWorkloadOrder(
@@ -486,7 +492,7 @@ export const engineWebgpuStressReportSchema = z
     }),
     schema: z.literal(ENGINE_WEBGPU_STRESS_REPORT_SCHEMA),
     version: z.literal(ENGINE_WEBGPU_STRESS_REPORT_VERSION),
-    workloads: z.array(stressWorkload).min(1),
+    workloads: z.array(stressWorkload),
   })
   .superRefine((report, context) => {
     addEvidenceEnvelopeIssues(
@@ -499,6 +505,7 @@ export const engineWebgpuStressReportSchema = z
     addRecomputedDecisionEligibilityIssues(
       {
         browserChannel: report.environment.browserLaunch.channel,
+        browserLaunchArgs: report.environment.browserLaunch.args,
         browserVersions: [report.environment.browserVersion],
         grade: report.provenance.grade,
         host: report.environment.host,
@@ -593,7 +600,7 @@ const stageWorkload = strictObject({
   snapshotSha256: sha256,
   telemetryAck: nonnegativeTimingSummary,
   totalMsSummary: nonnegativeTimingSummary,
-  workerDeviceAdapter: workerAdapter,
+  workerDeviceAdapter: availableWorkerAdapter,
 });
 
 export const engineWebgpuStageTelemetryReportSchema = z
@@ -629,7 +636,7 @@ export const engineWebgpuStageTelemetryReportSchema = z
     }),
     schema: z.literal(ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_SCHEMA),
     version: z.literal(ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_VERSION),
-    workloads: z.array(stageWorkload).min(1),
+    workloads: z.array(stageWorkload),
   })
   .superRefine((report, context) => {
     addEvidenceEnvelopeIssues(
@@ -712,6 +719,7 @@ export const engineWebgpuStageTelemetryReportSchema = z
     addRecomputedDecisionEligibilityIssues(
       {
         browserChannel: report.environment.browserLaunch.channel,
+        browserLaunchArgs: report.environment.browserLaunch.args,
         browserVersions: [report.environment.browserVersion],
         grade: report.provenance.grade,
         host: report.environment.host,
