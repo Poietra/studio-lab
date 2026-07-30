@@ -29,6 +29,11 @@ import {
   FAST_MANIM_SANDBOX_CONFORMANCE_CASES_V1,
   FAST_MANIM_SANDBOX_CONFORMANCE_LEAK_SENTINELS_V1,
 } from "./test-fixtures/fast-manim-sandbox-conformance-fixture";
+import {
+  SANDBOX_TRANSFORMED_PNG_EXPECTED,
+  sandboxPngBytes,
+  sandboxTransformedPngSource,
+} from "./test-fixtures/fast-manim-sandbox-png-fixture";
 
 const required = process.env.POIETRA_FAST_MANIM_PRODUCTION_REQUIRED === "1";
 const dockerSocketPath = process.env.POIETRA_FAST_MANIM_PRODUCTION_DOCKER_SOCKET;
@@ -53,10 +58,17 @@ class GatedMathTexScene(Scene):
         self.add(equation)
 `,
 });
+const TRANSFORMED_PNG_CONFORMANCE_CASE_V4 = Object.freeze({
+  expectedKind: "compiled" as const,
+  sceneName: "TransformedImageScene",
+  sourcePath: "transformed_image_scene.py",
+  sourceText: sandboxTransformedPngSource,
+});
 
 type ConformanceCase =
   | (typeof FAST_MANIM_SANDBOX_CONFORMANCE_CASES_V1)[keyof typeof FAST_MANIM_SANDBOX_CONFORMANCE_CASES_V1]
-  | typeof MATHTEX_CONFORMANCE_CASE_V3;
+  | typeof MATHTEX_CONFORMANCE_CASE_V3
+  | typeof TRANSFORMED_PNG_CONFORMANCE_CASE_V4;
 
 function sourceHash(sourceText: string) {
   return createHash("sha256").update(sourceText, "utf8").digest("hex");
@@ -64,9 +76,11 @@ function sourceHash(sourceText: string) {
 
 function conformanceSourceProvider(): FastManimSnapshotSourceProviderV1 {
   const cases = new Map<string, ConformanceCase>(
-    [...Object.values(FAST_MANIM_SANDBOX_CONFORMANCE_CASES_V1), MATHTEX_CONFORMANCE_CASE_V3].map(
-      (testCase) => [testCase.sourcePath, testCase] as const,
-    ),
+    [
+      ...Object.values(FAST_MANIM_SANDBOX_CONFORMANCE_CASES_V1),
+      MATHTEX_CONFORMANCE_CASE_V3,
+      TRANSFORMED_PNG_CONFORMANCE_CASE_V4,
+    ].map((testCase) => [testCase.sourcePath, testCase] as const),
   );
   return {
     async readVerified(sourcePath, signal) {
@@ -111,7 +125,7 @@ describe.skipIf(!requested)("production sandbox broker real rootless lane", () =
     }
   });
 
-  it("seals V1 conformance and a real V3 MathTex outline through the production UDS runner", async () => {
+  it("seals V1 conformance, V3 MathTex, and transformed V4 PNG through the production UDS runner", async () => {
     const directory = await mkdtemp(join(tmpdir(), "poietra-production-broker-"));
     await chmod(directory, 0o750);
     const socketPath = join(directory, "broker.sock");
@@ -145,6 +159,8 @@ describe.skipIf(!requested)("production sandbox broker real rootless lane", () =
     let runner: FastManimSnapshotRunner | undefined;
     let mathTexClient: FastManimUdsSandboxBackendV1 | undefined;
     let mathTexRunner: FastManimSnapshotRunner | undefined;
+    let pngClient: FastManimUdsSandboxBackendV1 | undefined;
+    let pngRunner: FastManimSnapshotRunner | undefined;
     let operationError: unknown;
     let operationFailed = false;
     try {
@@ -184,6 +200,24 @@ describe.skipIf(!requested)("production sandbox broker real rootless lane", () =
         frame: FRAME,
         projectId: PROJECT_ID,
         snapshotVersion: 3,
+        sourceProvider: conformanceSourceProvider(),
+        tenantId: TENANT_ID,
+        timeoutMs: 60_000,
+      });
+      pngClient = new FastManimUdsSandboxBackendV1({
+        closeTimeoutMs: FAST_MANIM_PRODUCTION_BROKER_CLOSE_TIMEOUT_MS_V1,
+        socketPath,
+      });
+      pngRunner = new FastManimSnapshotRunner({
+        attestationVerifier: verifiedRelease.attestationVerifier,
+        backend: pngClient,
+        deployment: "production",
+        frame: FRAME,
+        pngProvider: {
+          readVerified: async () => ({ bytes: sandboxPngBytes(), versionToken: "fixture-image-v1" }),
+        },
+        projectId: PROJECT_ID,
+        snapshotVersion: 4,
         sourceProvider: conformanceSourceProvider(),
         tenantId: TENANT_ID,
         timeoutMs: 60_000,
@@ -247,6 +281,38 @@ describe.skipIf(!requested)("production sandbox broker real rootless lane", () =
       expect(mathTexWire).not.toContain("poietra_mathtex_outline");
       expect(mathTexWire).not.toContain(".so");
 
+      const png = await pngRunner.runUnpublished(
+        runRequest(TRANSFORMED_PNG_CONFORMANCE_CASE_V4, "real-production-transformed-png-v4"),
+        abort.signal,
+      );
+      expect(png.status).toBe("verified");
+      if (png.status !== "verified" || png.snapshot.kind !== TRANSFORMED_PNG_CONFORMANCE_CASE_V4.expectedKind) {
+        throw new Error("The production broker did not return a verified transformed PNG V4 snapshot.");
+      }
+      const pngBundle = await parseVerifiedSceneIrBundleV1(png.snapshot.bundle);
+      expect(pngBundle.scene).toMatchObject({
+        duration: 1,
+        requiredCapabilities: ["png-image"],
+        source: { kind: "imported-manim-server-snapshot", snapshotVersion: 4 },
+      });
+      expect(pngBundle.scene.entities).toHaveLength(1);
+      const pngEntity = pngBundle.scene.entities[0]!;
+      if (pngEntity.geometry.kind !== "image") throw new Error("Expected transformed image geometry.");
+      const pngAsset = pngBundle.assets.assets[0]!;
+      expect(pngAsset).toMatchObject({ kind: "png-image", pixelHeight: 32, pixelWidth: 32 });
+      const height = (pngAsset.pixelHeight / 1_080) * FRAME.height * SANDBOX_TRANSFORMED_PNG_EXPECTED.cumulativeScale;
+      const width = (height * pngAsset.pixelWidth) / pngAsset.pixelHeight;
+      expect(pngEntity.geometry.localRect).toEqual({
+        bottom: expect.closeTo(SANDBOX_TRANSFORMED_PNG_EXPECTED.centerY - height / 2, 13),
+        left: expect.closeTo(SANDBOX_TRANSFORMED_PNG_EXPECTED.centerX - width / 2, 13),
+        right: expect.closeTo(SANDBOX_TRANSFORMED_PNG_EXPECTED.centerX + width / 2, 13),
+        top: expect.closeTo(SANDBOX_TRANSFORMED_PNG_EXPECTED.centerY + height / 2, 13),
+      });
+      expect(png.sourceRuntimeIdentity?.mappings).toMatchObject([
+        { binding: { name: "image" }, entityId: pngEntity.id },
+      ]);
+      expectNoConformanceLeak(png);
+
       const unsupportedCase = FAST_MANIM_SANDBOX_CONFORMANCE_CASES_V1.unsupported;
       const unsupported = await runner.runUnpublished(
         runRequest(unsupportedCase, "real-production-unsupported"),
@@ -271,6 +337,7 @@ describe.skipIf(!requested)("production sandbox broker real rootless lane", () =
     const clientCleanup = await Promise.allSettled([
       runner?.close() ?? client?.close() ?? Promise.resolve(),
       mathTexRunner?.close() ?? mathTexClient?.close() ?? Promise.resolve(),
+      pngRunner?.close() ?? pngClient?.close() ?? Promise.resolve(),
     ]);
     abort.abort();
     const brokerCleanup = await Promise.allSettled([broker?.close() ?? Promise.resolve()]);
