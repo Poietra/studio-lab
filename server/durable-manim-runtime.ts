@@ -22,6 +22,13 @@ import { manimTenantIdSchema } from "./manim-request-principal";
 import type { ThumbnailAsset } from "./manim-thumbnail-cache";
 import { importSourceSnapshot } from "./manim-workspace";
 import type { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
+import {
+  assertProjectPngReceiptV1,
+  inspectProjectPngBytesV1,
+  type ProjectPngBlobStoreV1,
+  type ProjectPngHeadV1,
+  type ProjectPngRepositoryV1,
+} from "./storage/project-png-storage";
 import type { DurableSourceBlobGcWorkerV1 } from "./storage/source-blob-gc";
 import type {
   SourceContentBlobStoreV1,
@@ -51,6 +58,8 @@ export type DurableManimRuntimeOptionsV1 = Readonly<{
   frame?: Readonly<{ height: number; width: number }>;
   namespace: string;
   projectIdFactory?: () => string;
+  projectPngRepository?: Pick<ProjectPngRepositoryV1, "readHead">;
+  projectPngs?: Pick<ProjectPngBlobStoreV1, "read">;
   renders?: DurableManimRenderServiceV1;
   repository: WorkspaceSourceRepositoryV1;
   snapshots?: DurableFastManimSnapshotServiceV1;
@@ -74,6 +83,20 @@ function exportFileName(sourcePath: string, suffix = "") {
     .replace(/^-+|-+$/g, "");
   const stem = (sourceName || "manim-scene.py").replace(/[.]py$/, "");
   return `${stem}${suffix}.py`;
+}
+
+function sameProjectPngHead(left: ProjectPngHeadV1, right: ProjectPngHeadV1 | null) {
+  return (
+    right !== null &&
+    left.tenantId === right.tenantId &&
+    left.projectId === right.projectId &&
+    left.generation === right.generation &&
+    left.receipt.byteSize === right.receipt.byteSize &&
+    left.receipt.digest === right.receipt.digest &&
+    left.receipt.etag === right.receipt.etag &&
+    left.receipt.objectKey === right.receipt.objectKey &&
+    left.receipt.versionId === right.receipt.versionId
+  );
 }
 
 function unavailableThumbnail(projectId: string): ManimThumbnailStatus {
@@ -102,6 +125,8 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
   readonly #execution: DurableManimExecutionReadinessV1 | undefined;
   readonly #frame: Readonly<{ height: number; width: number }>;
   readonly #projectIdFactory: () => string;
+  readonly #projectPngRepository: Pick<ProjectPngRepositoryV1, "readHead"> | undefined;
+  readonly #projectPngs: Pick<ProjectPngBlobStoreV1, "read"> | undefined;
   readonly #renders: DurableManimRenderServiceV1 | undefined;
   readonly #repository: WorkspaceSourceRepositoryV1;
   readonly #snapshots: DurableFastManimSnapshotServiceV1 | undefined;
@@ -125,6 +150,11 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     this.#snapshots = options.snapshots;
     this.#frame = validateFrame(options.frame ?? DEFAULT_FRAME);
     this.#projectIdFactory = options.projectIdFactory ?? projectIdFromUuid;
+    if ((options.projectPngRepository === undefined) !== (options.projectPngs === undefined)) {
+      throw new TypeError("Durable project PNG repository and blob store must be configured together.");
+    }
+    this.#projectPngRepository = options.projectPngRepository;
+    this.#projectPngs = options.projectPngs;
   }
 
   async initialize(signal?: AbortSignal) {
@@ -344,6 +374,26 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
   async sceneSnapshot(projectId: string, query: FastManimSnapshotQueryV1) {
     if (!this.#snapshots) throw new HttpError("Durable Scene snapshots require the external sandbox runtime.", 503);
     return this.#snapshots.snapshot(projectId, query);
+  }
+
+  async sceneSnapshotAsset(projectId: string, digest: string, signal?: AbortSignal) {
+    if (!/^[0-9a-f]{64}$/.test(digest)) throw new HttpError("Scene snapshot PNG asset not found.", 404);
+    if (!this.#projectPngRepository || !this.#projectPngs) {
+      throw new HttpError("Scene snapshot PNG assets are not configured.", 404);
+    }
+    const before = await this.#projectPngRepository.readHead(this.tenantId, projectId, signal);
+    if (!before || before.receipt.digest !== digest) throw new HttpError("Scene snapshot PNG asset not found.", 404);
+    assertProjectPngReceiptV1(this.tenantId, projectId, before.receipt);
+    const inspected = inspectProjectPngBytesV1(
+      await this.#projectPngs.read(this.tenantId, projectId, before.receipt, signal),
+    );
+    if (inspected.digest !== digest || inspected.byteSize !== before.receipt.byteSize) {
+      throw new Error("The durable Scene snapshot PNG bytes do not match their pinned receipt.");
+    }
+    const after = await this.#projectPngRepository.readHead(this.tenantId, projectId, signal);
+    if (!sameProjectPngHead(before, after))
+      throw new HttpError("Scene snapshot PNG asset changed during delivery.", 409);
+    return { body: inspected.bytes, digest, mediaType: "image/png" as const };
   }
 
   async start(request: ProgramRenderRequest, signal?: AbortSignal) {

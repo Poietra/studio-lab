@@ -222,6 +222,38 @@ describe("Manim video byte ranges", () => {
 });
 
 describe("async Manim API port", () => {
+  it("serves authenticated digest-addressed snapshot PNG bytes without storage identity", async () => {
+    const digest = "a".repeat(64);
+    const sceneSnapshotAsset = vi.fn(async () => ({
+      body: Uint8Array.of(137, 80, 78, 71),
+      digest,
+      mediaType: "image/png" as const,
+    }));
+    const api = {
+      sceneSnapshotAsset,
+      storageBoundary: { kind: "shared-durable", namespace: "http-snapshot-asset-test" },
+      tenantId: "tenant-snapshot-asset",
+    } as unknown as ManimApi;
+    const server = await listen(api);
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const path = `/api/manim/projects/project-a/scene-snapshot-assets/${digest}`;
+      const get = await send(port, path);
+      expect(get).toMatchObject({ body: Buffer.from([137, 80, 78, 71]), status: 200 });
+      expect(get.headers["content-type"]).toBe("image/png");
+      expect(get.headers.etag).toBe(`"sha256:${digest}"`);
+      expect(get.headers["cache-control"]).toBe("private, max-age=31536000, immutable");
+      expect(JSON.stringify(get.headers)).not.toContain("objectKey");
+
+      const head = await send(port, path, { method: "HEAD" });
+      expect(head).toMatchObject({ body: Buffer.alloc(0), status: 200 });
+      expect(head.headers["content-length"]).toBe("4");
+      expect(sceneSnapshotAsset).toHaveBeenNthCalledWith(1, "project-a", digest, expect.any(AbortSignal));
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
   it("awaits a durable project-list adapter before serializing the response", async () => {
     let resolved = false;
     const api = {

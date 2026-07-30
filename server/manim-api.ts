@@ -31,6 +31,13 @@ export type ManimMediaAssetV1 = Readonly<{
   ) => Promise<AsyncIterable<Uint8Array>>;
 }>;
 
+/** Exact verified PNG bytes for one digest-addressed Scene snapshot asset. */
+export type ManimSnapshotPngAssetV1 = Readonly<{
+  body: Uint8Array;
+  digest: string;
+  mediaType: "image/png";
+}>;
+
 export type ManimTenantStorageBoundary =
   | Readonly<{
       kind: "host-paths";
@@ -83,6 +90,7 @@ export interface ManimApiOperations {
     request: FastManimSnapshotRunRequestV1,
     signal?: AbortSignal,
   ): ManimApiResult<FastManimSnapshotRunViewV1>;
+  sceneSnapshotAsset?(projectId: string, digest: string, signal?: AbortSignal): ManimApiResult<ManimSnapshotPngAssetV1>;
   sceneSnapshot(projectId: string, query: FastManimSnapshotQueryV1): ManimApiResult<FastManimSnapshotRunViewV1>;
   start(request: ProgramRenderRequest, signal?: AbortSignal): ManimApiResult<RenderSessionView>;
   thumbnail(projectId: string, signal?: AbortSignal): ManimApiResult<ThumbnailAsset>;

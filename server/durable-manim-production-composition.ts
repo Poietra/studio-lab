@@ -396,6 +396,8 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
     snapshotFactory = new FastManimProductionSnapshotRunnerFactoryV1({
       client: options.snapshot.sandbox,
       frame,
+      projectPngRepository,
+      projectPngs,
       ...(options.snapshot.snapshotVersion === undefined ? {} : { snapshotVersion: options.snapshot.snapshotVersion }),
       tenantId: options.tenantId,
       ...(options.snapshot.timeoutMs === undefined ? {} : { timeoutMs: options.snapshot.timeoutMs }),
@@ -454,6 +456,8 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
         execution: renderExecution,
         frame,
         namespace: options.namespace,
+        projectPngRepository,
+        projectPngs,
         renders,
         repository,
         snapshots,
