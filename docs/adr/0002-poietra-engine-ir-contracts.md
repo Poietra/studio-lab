@@ -415,8 +415,9 @@ separate follow-up and is not claimed by this boundary alone.
 ## Fixed experiment protocol and adoption budget
 
 Every result records commit, contract version, fixture ID, browser build, OS/kernel,
-CPU, GPU/adapter, driver, AC state, power plan, viewport, warm-up count, and
-sample count. Correctness runs use the Playwright 1.61.1 Chromium revision
+CPU, GPU/adapter, driver, AC state, active power plan, user-configured AC power
+mode, viewport, warm-up count, and sample count. Correctness runs use the
+Playwright 1.61.1 Chromium revision
 pinned by this repository. Decision-grade performance runs use installed native
 Edge and its production-default D3D12 path on the checked-in, separately hashed
 reference profile:
@@ -433,12 +434,14 @@ being mislabeled as part of that number.
 - NVIDIA RTX PRO 500 Blackwell Laptop GPU selected for WebGPU, driver
   32.0.15.9571 (NVIDIA 595.71), with the complete Intel/NVIDIA controller
   inventory pinned;
-- AC connected and Windows Balanced power-plan GUID
-  `381b4222-f694-41f0-9685-ff5bb260df2e`.
+- AC connected, Windows Balanced active power-plan GUID
+  `381b4222-f694-41f0-9685-ff5bb260df2e`, and user-configured AC power-mode GUID
+  `00000000-0000-0000-0000-000000000000`.
 
-The authoritative values and Worker adapter identity live in
+The authoritative values and Worker adapter identity live in the v2 profile
 `fixtures/engine-benchmark-v1/windows-d3d12-reference-host.json`; the sibling
-`.sha256` file prevents an unreviewed profile edit from becoming evidence.
+`.sha256` file detects byte drift and forces the profile and its pinned digest
+to change together. Code review of both files remains the trust decision.
 Linux/WSL SwiftShader runs remain useful exploratory regressions but cannot be
 decision evidence. The main browser and all 20 independent cold processes must
 report the same non-software Worker adapter identity. On wgpu 30's browser
@@ -455,17 +458,23 @@ The eligibility/provenance envelope and canonical-run nonce are breaking
 report-contract changes. Their exact dispatch pairs are
 `poietra.engine-webgpu-benchmark` v4,
 `poietra.engine-webgpu-stress-benchmark` v5, and
-`poietra.engine-webgpu-stage-telemetry` v3. Producers and readers must reject
+`poietra.engine-webgpu-stage-telemetry` v4. Producers and readers must reject
 the respective prior versions instead of interpreting the added fields under
 their old contracts. The Windows probe ignores caller `PATH`, `SystemRoot`,
 `ProgramFiles`, and `PSModulePath`: it uses fixed Windows system paths and HKLM
-machine installation data. This protects the harness from ordinary environment
-spoofing, not from an administrator replacing registry or operating-system
-state; such a host is outside the reference-evidence threat model.
+machine installation data, and reads the user-configured AC power mode through
+`PowerGetUserConfiguredACPowerMode`. Windows may override that configured vote,
+so this is not evidence of the dynamically effective power mode. These checks
+protect the harness from ordinary environment spoofing, not from an administrator
+replacing registry or operating-system state; such a host is outside the
+reference-evidence threat model.
 
-A later host may be added, but results from different hosts are never combined.
-WebGPU-disabled and initialization/device-loss runs are correctness/fallback tests,
-not GPU performance samples.
+Checked-in performance evidence is a rolling single current set, bound to its
+profile and commit directory names. Issue #262 permits zero sets while the lane
+is WIP; a future profile or report-contract replacement replaces that set rather
+than making the current reader reinterpret obsolete evidence. Results from
+different hosts are never combined. WebGPU-disabled and initialization/device-loss
+runs are correctness/fallback tests, not GPU performance samples.
 
 The checked-in golden suite will contain 10–20 stable fixture IDs and at least:
 

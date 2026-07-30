@@ -295,11 +295,12 @@ Evidence rules:
   booleans. The only decision candidate is native Windows Edge on its default
   D3D12 path, with no Linux Vulkan/ANGLE flags.
 - `fixtures/engine-benchmark-v1/windows-d3d12-reference-host.json` is the
-  strict reference-host profile; its sibling `.sha256` file authenticates the
-  exact reviewed bytes. Windows build, CPU, complete GPU/driver inventory, AC
-  state, active power-plan GUID, launched Edge version, and selected Worker
-  adapter must all match. The primary adapter and all 20 fresh-process cold
-  samples must also have one identical hardware identity. Browser identity is
+  strict v2 reference-host profile; its sibling `.sha256` file pins the exact
+  bytes and detects drift, while review of both files establishes trust. Windows
+  build, CPU, complete GPU/driver inventory, AC state, active power-plan GUID,
+  user-configured AC power-mode GUID, launched Edge version, and selected Worker
+  adapter must all match. The primary adapter and all 20 fresh-process cold samples
+  must also have one identical hardware identity. Browser identity is
   read from the same created `GPUDevice`: raw privacy-safe vendor/architecture,
   fallback class, and subgroup bounds. Production-default Edge redacts
   description/device/driver details, so native PCI and driver identity stays a
@@ -307,15 +308,23 @@ Evidence rules:
   canonical zero/empty. Environment
   variables cannot replace any of this OS/browser evidence: the production
   probe launches the canonical Windows PowerShell and `powercfg` binaries by
-  fixed absolute path, uses a fixed system module path, and discovers Edge
-  from HKLM or fixed machine-install paths. This fail-closed harness does not
-  claim resistance to an administrator modifying HKLM or Windows system files.
+  fixed absolute path, uses a fixed system module path, reads the configured AC
+  power mode through `PowerGetUserConfiguredACPowerMode`, and discovers Edge from
+  HKLM or fixed machine-install paths. Windows may override that configured vote,
+  so the harness does not claim to observe the dynamically effective power mode.
+  This fail-closed harness does not claim resistance to an administrator modifying
+  HKLM or Windows system files.
 - The current exact report pairs are `poietra.engine-webgpu-benchmark` v4,
   `poietra.engine-webgpu-stress-benchmark` v5, and
-  `poietra.engine-webgpu-stage-telemetry` v3. Their eligibility/provenance,
+  `poietra.engine-webgpu-stage-telemetry` v4. Their eligibility/provenance,
   reference-host, and canonical-run nonce additions are breaking changes;
   prior-version readers must reject them rather than accepting a widened
   envelope.
+- Checked-in performance evidence is a rolling single current set bound to its
+  profile and commit directory names. Issue #262 permits zero sets while the lane
+  is WIP; once physical evidence lands, replacing the profile or report contract
+  replaces that set rather than asking the current reader to reinterpret obsolete
+  history.
 - The lane never retries: a Worker crash or destroyed page context fails the
   run, and the reports record the actual retry counters.
 - The stress report compares the existing no-interaction acknowledgement with
