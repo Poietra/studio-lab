@@ -484,7 +484,60 @@ fn singular_affine_empty_draw_requires_a_singular_transform_and_matching_channel
     assert!(
         validate_render_packet_v1(&frame.packet)
             .unwrap_err()
-            .contains_message("requires an exactly singular transform")
+            .contains_message("requires a singular or near-singular transform")
+    );
+}
+
+#[test]
+fn near_singular_affine_empty_draws_are_accepted_at_the_f32_threshold() {
+    // Parity with `isSingularAffineTransform` in src/engine/primitives.ts.
+    // The production snapshot profile seals every finite, bounded, non-zero
+    // matrix, so a sample that only collapses once rounded to the renderer's
+    // f32 geometry has to classify as singular here rather than reaching
+    // WGPU preparation and failing the complete frame.
+    let empty_packet_with = |transform: AffineTransformV1| {
+        let mut packet = empty_packet();
+        packet.draws.push(RenderDrawV1::Empty {
+            draw_id: "draw:0".to_owned(),
+            entity_id: "circle".to_owned(),
+            opacity: 1.0,
+            paint_order: 0,
+            reason: RenderEmptyReasonV1::SingularAffineSample,
+            source_z_index: 0.0,
+            transform,
+        });
+        packet
+    };
+    let matrix = |m11: f64, m22: f64| AffineTransformV1 {
+        m11,
+        m22,
+        ..AffineTransformV1::identity()
+    };
+
+    // Bit equality: the threshold is an exact IEEE-754 quantity, not a
+    // tolerance, and src/engine/primitives.ts spells the same literal.
+    assert_eq!(
+        MIN_AFFINE_DETERMINANT_V1.to_bits(),
+        1.175_494_350_822_287_5e-38_f64.to_bits()
+    );
+    // Exactly singular keeps classifying exactly as before.
+    validate_render_packet_v1(&empty_packet_with(matrix(0.0, 1.0))).unwrap();
+    // Determinant below the smallest normal f32.
+    validate_render_packet_v1(&empty_packet_with(matrix(1e-50, 1.0))).unwrap();
+    // One entry underflows in f32 even though the f64 determinant is 1e-20,
+    // which is why the predicate rounds entries before multiplying.
+    validate_render_packet_v1(&empty_packet_with(matrix(1e-50, 1e30))).unwrap();
+    // Exactly at the threshold is renderable, so the reason does not apply.
+    assert!(
+        validate_render_packet_v1(&empty_packet_with(matrix(1.0, MIN_AFFINE_DETERMINANT_V1)))
+            .unwrap_err()
+            .contains_message("requires a singular or near-singular transform")
+    );
+    // An ordinary small-but-renderable scale keeps its path draw.
+    assert!(
+        validate_render_packet_v1(&empty_packet_with(matrix(1e-3, 1e-3)))
+            .unwrap_err()
+            .contains_message("requires a singular or near-singular transform")
     );
 }
 

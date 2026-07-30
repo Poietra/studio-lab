@@ -218,6 +218,84 @@ describe("Poietra TypeScript reference evaluator v1", () => {
     expect(identityRepeat.packet.draws).toEqual(identityFrame.packet.draws);
   });
 
+  it("lowers a near-singular affine sample that would collapse in f32 preparation", async () => {
+    // The production snapshot profile seals every finite, bounded, non-zero
+    // matrix, so `stretch(1e-50, 1)` arrives verified. Its f64 determinant is
+    // non-zero, but the entry rounds to zero in the renderer's f32 geometry
+    // and preparation fails the complete frame. Lowering it draw-locally is
+    // the deterministic policy; siblings stay visible.
+    const assets = await emptyManifest();
+    const nearSingular = { ...identity, m11: 1e-50 };
+    const scene = createScene(assets, {
+      animationChannels: [
+        {
+          entityId: "circle",
+          id: "collapse",
+          keyframes: [
+            { at: 0, easingToNext: { kind: "linear" }, value: nearSingular },
+            { at: 1, easingToNext: null, value: nearSingular },
+          ],
+          kind: "affine-transform",
+          provenanceId: "fixture",
+        },
+      ],
+      entities: [
+        vectorEntity("circle", 0, { center: { x: 0, y: 0 }, kind: "circle", radius: 1 }),
+        vectorEntity("sibling", 1, { center: { x: 2, y: 0 }, kind: "circle", radius: 0.5 }),
+      ],
+      requiredCapabilities: ["affine-transform-animation", "shape-primitives"],
+    });
+
+    const frame = await compile(scene, assets, 0.5);
+    expect(frame.packet.draws[0]).toMatchObject({
+      entityId: "circle",
+      kind: "empty",
+      reason: "singular-affine-sample",
+    });
+    expect(frame.packet.draws[1]).toMatchObject({ entityId: "sibling", kind: "path" });
+  });
+
+  it("keeps small-but-renderable scales drawn and is stable under non-monotonic seeks", async () => {
+    // The threshold is the smallest normal f32 determinant, so an ordinary
+    // small scale stays a path. Seeking backwards and forwards across the
+    // boundary must produce the same draws every time it lands on the same
+    // time, or a retained-frame consumer would see the boundary flicker.
+    const assets = await emptyManifest();
+    const renderable = { ...identity, m11: 1e-3, m22: 1e-3 };
+    const collapsing = { ...identity, m11: 1e-45, m22: 1e-45 };
+    const scene = createScene(assets, {
+      animationChannels: [
+        {
+          entityId: "circle",
+          id: "shrink",
+          keyframes: [
+            { at: 0, easingToNext: { kind: "linear" }, value: renderable },
+            { at: 1, easingToNext: null, value: collapsing },
+          ],
+          kind: "affine-transform",
+          provenanceId: "fixture",
+        },
+      ],
+      entities: [vectorEntity("circle", 0, { center: { x: 0, y: 0 }, kind: "circle", radius: 1 })],
+      requiredCapabilities: ["affine-transform-animation", "shape-primitives"],
+    });
+
+    const seekOrder = [0, 1, 0.5, 0, 1, 0.5, 1, 0];
+    const byTime = new Map<number, unknown>();
+    for (const time of seekOrder) {
+      const draws = (await compile(scene, assets, time)).packet.draws;
+      const previous = byTime.get(time);
+      if (previous === undefined) byTime.set(time, draws);
+      else expect(draws).toEqual(previous);
+    }
+
+    expect((await compile(scene, assets, 0)).packet.draws[0].kind).toBe("path");
+    expect((await compile(scene, assets, 1)).packet.draws[0]).toMatchObject({
+      kind: "empty",
+      reason: "singular-affine-sample",
+    });
+  });
+
   it("composes hierarchy transforms and opacity from root to leaf", async () => {
     const assets = await emptyManifest();
     const scene = createScene(assets, {

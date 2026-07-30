@@ -13,6 +13,7 @@ import {
   sceneIrBundleV1Schema,
   sceneIrV1Schema,
 } from "./contracts";
+import { isSingularAffineTransform, MIN_AFFINE_DETERMINANT } from "./primitives";
 
 const ZERO_HASH = "0".repeat(64);
 const SCENE_HASH = "b".repeat(64);
@@ -299,6 +300,46 @@ describe("Poietra Engine v1 contracts", () => {
         draws: [{ ...singularDraw, transform: identity }, ...validPacket.draws.slice(1)],
       }).success,
     ).toBe(false);
+  });
+
+  it("accepts a near-singular empty transform and pins the threshold", async () => {
+    // Parity with `affine_transform_is_singular` in poietra-scene-ir: the
+    // predicate rounds entries to f32 first, so an entry that underflows on
+    // its own counts even when the f64 determinant does not.
+    const assets = await manifest();
+    const validScene = scene(assets);
+    const validPacket = packet(validScene, assets);
+    const sourceDraw = validPacket.draws[0];
+    const emptyDraw = (transform: Record<string, number>) => ({
+      ...validPacket,
+      draws: [
+        {
+          drawId: sourceDraw.drawId,
+          entityId: sourceDraw.entityId,
+          kind: "empty" as const,
+          opacity: sourceDraw.opacity,
+          paintOrder: sourceDraw.paintOrder,
+          reason: "singular-affine-sample" as const,
+          sourceZIndex: sourceDraw.sourceZIndex,
+          transform,
+        },
+        ...validPacket.draws.slice(1),
+      ],
+      requiredCapabilities: ["cubic-path-stroke", "png-image"],
+    });
+
+    // Exactly singular, and a determinant under the smallest normal f32.
+    expect(renderPacketV1Schema.safeParse(emptyDraw({ ...identity, m11: 0 })).success).toBe(true);
+    expect(renderPacketV1Schema.safeParse(emptyDraw({ ...identity, m11: 1e-50 })).success).toBe(true);
+    // One entry underflowing in f32 counts even though det(f64) is 1e-20.
+    expect(renderPacketV1Schema.safeParse(emptyDraw({ ...identity, m11: 1e-50, m22: 1e30 })).success).toBe(true);
+    // A renderable scale must not claim the singular reason.
+    expect(renderPacketV1Schema.safeParse(emptyDraw({ ...identity, m11: 1e-3, m22: 1e-3 })).success).toBe(false);
+
+    expect(MIN_AFFINE_DETERMINANT).toBe(1.1754943508222875e-38);
+    expect(isSingularAffineTransform({ m11: 1, m12: 0, m21: 0, m22: MIN_AFFINE_DETERMINANT })).toBe(false);
+    expect(isSingularAffineTransform({ m11: 1, m12: 0, m21: 0, m22: MIN_AFFINE_DETERMINANT / 2 })).toBe(true);
+    expect(isSingularAffineTransform({ m11: Number.NaN, m12: 0, m21: 0, m22: 1 })).toBe(true);
   });
 
   it("rejects newer versions, unknown fields, and padded identities", async () => {

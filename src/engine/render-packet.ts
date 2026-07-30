@@ -10,6 +10,7 @@ import {
   evidenceV1Schema,
   fillStyleV1Schema,
   finiteNumberV1Schema,
+  isSingularAffineTransform,
   MAX_TOTAL_PATH_SEGMENTS,
   normalizedNumberV1Schema,
   opaqueIdV1Schema,
@@ -201,11 +202,11 @@ export const renderPacketV1Schema = renderPacketV1BaseSchema.superRefine((packet
     if (
       draw.kind === "empty" &&
       draw.reason === "singular-affine-sample" &&
-      draw.transform.m11 * draw.transform.m22 - draw.transform.m12 * draw.transform.m21 !== 0
+      !isSingularAffineTransform(draw.transform)
     ) {
       context.addIssue({
         code: "custom",
-        message: "singular-affine-sample requires an exactly singular transform.",
+        message: "singular-affine-sample requires a singular or near-singular transform.",
         path: ["draws", index, "transform"],
       });
     }

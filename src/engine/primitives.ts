@@ -47,6 +47,53 @@ export const engineAffineTransformV1Schema = z
   })
   .strict();
 
+/**
+ * Smallest determinant magnitude an affine sample may carry and still be
+ * prepared as f32 renderer geometry.
+ *
+ * The authoritative contract domain is f64, but the renderer converts geometry
+ * to f32 before WGPU preparation, so the boundary that matters is the smallest
+ * normal f32. Below it a determinant is a subnormal or zero in the renderer's
+ * domain: preparation collapses and fails the *complete* frame, which is an
+ * availability failure for input the snapshot profile sealed as verified
+ * (`stretch(1e-50, 1)` is finite, bounded, and non-zero).
+ *
+ * Stable across WASM and native because it is not a tuned tolerance.
+ * `f32::MIN_POSITIVE` is a fixed IEEE-754 binary32 quantity, and the predicate
+ * reaches it only through operations IEEE-754 pins exactly in both targets:
+ * round-to-nearest-even f64 -> f32 conversion (`Math.fround` here, `as f32` in
+ * Rust) and one f64 multiply-subtract. No platform math library is involved,
+ * so the same matrix classifies identically everywhere.
+ *
+ * Mirrored by `MIN_AFFINE_DETERMINANT_V1` in `poietra-scene-ir`.
+ */
+export const MIN_AFFINE_DETERMINANT = 1.1754943508222875e-38;
+
+/**
+ * Determinant of `transform` as the renderer will see it.
+ *
+ * Entries are rounded to f32 first: an entry can underflow on its own
+ * (`m11 = 1e-50` with `m22 = 1e30` has an f64 determinant of `1e-20`, but
+ * `m11` is zero once rounded), so an f64-only determinant would miss the
+ * collapse this guard exists to catch.
+ */
+export function renderedAffineDeterminant(transform: { m11: number; m12: number; m21: number; m22: number }): number {
+  return (
+    Math.fround(transform.m11) * Math.fround(transform.m22) - Math.fround(transform.m12) * Math.fround(transform.m21)
+  );
+}
+
+/**
+ * Whether an affine sample is singular, or near enough that f32 preparation
+ * would collapse it. An exactly singular transform — reflection's midpoint,
+ * for instance — is the `determinant === 0` case and is unchanged.
+ */
+export function isSingularAffineTransform(transform: { m11: number; m12: number; m21: number; m22: number }): boolean {
+  // Negated comparison so a NaN determinant classifies as singular rather than
+  // reaching preparation.
+  return !(Math.abs(renderedAffineDeterminant(transform)) >= MIN_AFFINE_DETERMINANT);
+}
+
 export const rgbaColorV1Schema = z
   .object({
     alpha: normalizedNumberV1Schema,

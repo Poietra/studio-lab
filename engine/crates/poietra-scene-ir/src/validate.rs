@@ -218,8 +218,47 @@ fn validate_transform(transform: &AffineTransformV1, path: &str, validator: &mut
     validate_coordinate(transform.ty, &format!("{path}.ty"), validator);
 }
 
+/// Smallest determinant magnitude an affine sample may carry and still be
+/// prepared as f32 renderer geometry.
+///
+/// The authoritative contract domain is f64, but the renderer converts
+/// geometry to f32 before WGPU preparation, so the boundary that matters is
+/// the smallest normal f32. Below it a determinant is a subnormal or zero in
+/// the renderer's domain: preparation collapses and fails the *complete*
+/// frame, which is an availability failure for input the snapshot profile
+/// happily sealed as verified (`stretch(1e-50, 1)` is finite, bounded, and
+/// non-zero).
+///
+/// The value is stable across WASM and native because it is not a tuned
+/// tolerance. `f32::MIN_POSITIVE` is a fixed IEEE-754 binary32 quantity, and
+/// the predicate reaches it only through operations IEEE-754 pins exactly in
+/// both targets: round-to-nearest-even f64 -> f32 conversion (`as f32` in
+/// Rust, `Math.fround` in TypeScript) and one f64 multiply-subtract. No
+/// platform math library is involved, so the same matrix classifies
+/// identically everywhere.
+pub const MIN_AFFINE_DETERMINANT_V1: f64 = f32::MIN_POSITIVE as f64;
+
+/// Determinant of `transform` as the renderer will see it, in f64.
+///
+/// The entries are rounded to f32 first: an entry can underflow on its own
+/// (`m11 = 1e-50` with `m22 = 1e30` has an f64 determinant of `1e-20`, but
+/// `m11` is zero once rounded), so an f64-only determinant would miss the
+/// collapse this guard exists to catch.
+fn affine_transform_rendered_determinant(transform: &AffineTransformV1) -> f64 {
+    #[allow(clippy::cast_possible_truncation)]
+    let round = |value: f64| f64::from(value as f32);
+    round(transform.m11) * round(transform.m22) - round(transform.m12) * round(transform.m21)
+}
+
+/// Whether an affine sample is singular, or near enough that f32 preparation
+/// would collapse it.
+///
+/// An exactly singular transform — reflection's midpoint, for instance — is
+/// the `determinant == 0` case and keeps classifying exactly as before.
 fn affine_transform_is_singular(transform: &AffineTransformV1) -> bool {
-    transform.m11 * transform.m22 - transform.m12 * transform.m21 == 0.0
+    let determinant = affine_transform_rendered_determinant(transform).abs();
+    // A NaN determinant classifies as singular rather than reaching preparation.
+    determinant.is_nan() || determinant < MIN_AFFINE_DETERMINANT_V1
 }
 
 fn validate_color(color: &RgbaColorV1, path: &str, validator: &mut Validator) {
@@ -1263,7 +1302,8 @@ pub fn validate_render_packet_v1(packet: &RenderPacketV1) -> Result<(), Validati
                 {
                     validator.issue(
                         format!("{path}.transform"),
-                        "singular-affine-sample requires an exactly singular transform",
+                        "singular-affine-sample requires a singular or \
+                         near-singular transform",
                     );
                 }
             }
