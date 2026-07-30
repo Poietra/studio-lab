@@ -771,9 +771,9 @@ fn reverse_subpath(subpath: &mut CubicSubpathV1) {
     subpath.segments = reversed;
 }
 
-pub(crate) fn extract_normalized_outline_v1(
+fn extract_normalized_outline_evidence_v1(
     display_list: &DisplayList,
-) -> Result<(CubicPathV1, MathTexOutlineBoundsV1), OutlineFailureV1> {
+) -> Result<(CubicPathV1, MathTexOutlineBoundsV1, f64), OutlineFailureV1> {
     let mut collector = OutlineCollector::default();
     collector.visit_display_list(display_list)?;
     if collector.subpaths.is_empty() {
@@ -790,6 +790,8 @@ pub(crate) fn extract_normalized_outline_v1(
     }
     let center_x = raw_bounds.left.midpoint(raw_bounds.right);
     let center_y = raw_bounds.bottom.midpoint(raw_bounds.top);
+    let raw_baseline_y = -display_list.height;
+    let baseline_y = quantize((raw_baseline_y - center_y) / height)?;
 
     for subpath in &mut path.subpaths {
         normalize_point(&mut subpath.start, center_x, center_y, height)?;
@@ -808,6 +810,13 @@ pub(crate) fn extract_normalized_outline_v1(
     {
         return Err(OutlineFailureV1::Invalid);
     }
+    Ok((path, bounds, baseline_y))
+}
+
+pub(crate) fn extract_normalized_outline_v1(
+    display_list: &DisplayList,
+) -> Result<(CubicPathV1, MathTexOutlineBoundsV1), OutlineFailureV1> {
+    let (path, bounds, _) = extract_normalized_outline_evidence_v1(display_list)?;
     Ok((path, bounds))
 }
 
@@ -984,10 +993,42 @@ fn evaluate_cubic(start: &PointV1, segment: &CubicSegmentV1, amount: f64) -> Poi
 
 #[cfg(test)]
 mod tests {
+    use ratex_layout::{LayoutOptions, layout, to_display_list};
+    use serde::Deserialize;
     use sha2::{Digest, Sha256};
 
     use super::*;
     use crate::MATHTEX_FONT_DIGEST_V1;
+
+    const MANIM_PARITY_CORPUS_JSON: &str =
+        include_str!("../../../../fixtures/mathtex-manim-parity-v1/corpus.json");
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct BaselineCorpus {
+        comparison: BaselineComparison,
+        cases: Vec<BaselineCase>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct BaselineComparison {
+        maximum_baseline_absolute_delta: f64,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct BaselineCase {
+        id: String,
+        tex_parts: Vec<String>,
+        svg_view_box: BaselineViewBox,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct BaselineViewBox {
+        baseline_y: f64,
+    }
 
     const FONT_ASSET_NAMES_V1: [&str; 20] = [
         "KaTeX_AMS-Regular.ttf",
@@ -1025,6 +1066,36 @@ mod tests {
             digest.update(bytes.as_ref());
         }
         assert_eq!(format!("{:x}", digest.finalize()), MATHTEX_FONT_DIGEST_V1);
+    }
+
+    #[test]
+    fn normalized_baselines_match_pinned_real_manim_references() {
+        let corpus: BaselineCorpus =
+            serde_json::from_str(MANIM_PARITY_CORPUS_JSON).expect("parity corpus must deserialize");
+        assert!(corpus.comparison.maximum_baseline_absolute_delta >= 0.0);
+
+        for case in corpus.cases {
+            let expression = case.tex_parts.join(" ");
+            let parsed = ratex_parser::parse(&expression).unwrap_or_else(|error| {
+                panic!("{} must parse for baseline evidence: {error}", case.id)
+            });
+            let display_list = to_display_list(&layout(&parsed, &LayoutOptions::default()));
+            let (_, _, baseline_y) = extract_normalized_outline_evidence_v1(&display_list)
+                .unwrap_or_else(|error| {
+                    panic!("{} must lower for baseline evidence: {error:?}", case.id)
+                });
+            let baseline_delta = (baseline_y - case.svg_view_box.baseline_y).abs();
+            println!(
+                "{}: RaTeX baseline={baseline_y:.6}, Manim baseline={:.6}, delta={baseline_delta:.6}",
+                case.id, case.svg_view_box.baseline_y
+            );
+            assert!(
+                baseline_delta <= corpus.comparison.maximum_baseline_absolute_delta,
+                "{}: RaTeX/Manim baseline delta {baseline_delta:.6} exceeds {:.6}",
+                case.id,
+                corpus.comparison.maximum_baseline_absolute_delta
+            );
+        }
     }
 
     #[test]
