@@ -1,13 +1,12 @@
 //! Hermetic, bounded MathTex-to-cubic-outline compilation for Poietra Studio.
 //!
-//! The v1 surface intentionally accepts only a small, versioned `MathTex` subset.
-//! It embeds one font, exposes no filesystem or network loader, and returns
+//! The v1 surface accepts a bounded, versioned `MathTex` subset through `RaTeX`.
+//! It embeds the required `KaTeX` fonts, exposes no filesystem or network loader, and returns
 //! renderer-native cubic paths instead of SVG or executable markup.
 
 mod compile;
 mod digest;
 mod outline;
-mod world;
 
 use poietra_scene_ir::{CubicPathV1, FillRuleV1};
 use serde::{Deserialize, Serialize};
@@ -26,9 +25,14 @@ pub const MAX_MATHTEX_PARTS_V1: usize = 16;
 pub const MAX_MATHTEX_SOURCE_BYTES_V1: usize = 2_000;
 /// Maximum diagnostic bytes exposed across the trust boundary.
 pub const MAX_MATHTEX_UNSUPPORTED_MESSAGE_BYTES_V1: usize = 512;
-/// SHA-256 of the embedded, unmodified `NewCMMath-Regular.otf`.
+/// Aggregate SHA-256 of all 20 `KaTeX` TTF faces embedded by `RaTeX` v0.1.14.
+///
+/// The digest frames the basename-sorted files with the domain
+/// `poietra.mathtex-outline.fonts.v1\0`, an unsigned big-endian file count,
+/// then the unsigned big-endian basename length, basename, byte length, and
+/// raw bytes for each face. A unit test recomputes it from the embedded assets.
 pub const MATHTEX_FONT_DIGEST_V1: &str =
-    "d66ac1cc91c55c24d3636ae2df1238076debdff51841f9893fc5419cc2df3df7";
+    "e52df76208d1e41c8222496e9fb30cc2a1fe8a275b14995f3f6c3a9205db21fa";
 
 /// Literal request schema represented as a closed serde enum.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -1,19 +1,24 @@
+use kurbo::{BezPath, Cap, Join, PathEl, Shape, Stroke, StrokeOpts};
 use poietra_scene_ir::{
     CubicPathV1, CubicSegmentV1, CubicSubpathV1, PointV1, validate_cubic_path_v1,
 };
-use ttf_parser::{GlyphId, OutlineBuilder};
-use typst::layout::{Frame, FrameItem, Transform};
-use typst::text::TextItem;
-use typst::visualize::Paint;
+use ratex_font::FontId;
+use ratex_types::{Color, DisplayItem, DisplayList, PathCommand};
+use ttf_parser::OutlineBuilder;
 
 use crate::MathTexOutlineBoundsV1;
 
+const MAX_DISPLAY_ITEMS_V1: usize = 1_024;
 const MAX_GLYPHS_V1: usize = 64;
-const MAX_FRAME_DEPTH_V1: usize = 16;
+const MAX_PATH_COMMANDS_V1: usize = 2_048;
 const MAX_SUBPATHS_V1: usize = 512;
 const MAX_CUBIC_SEGMENTS_V1: usize = 2_048;
 const COORDINATE_QUANTUM_V1: f64 = 0.000_001;
 const MIN_INK_HEIGHT_V1: f64 = 1.0e-12;
+// Match the pinned RaTeX raster renderer's 1.5px stroke at its canonical
+// 40px/em layout scale (the SVG default currently has the same ratio).
+const PATH_STROKE_WIDTH_EM_V1: f64 = 1.5 / 40.0;
+const PATH_STROKE_TOLERANCE_V1: f64 = 0.000_1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OutlineFailureV1 {
@@ -24,69 +29,26 @@ pub(crate) enum OutlineFailureV1 {
 
 #[derive(Clone, Copy, Debug)]
 struct Affine {
-    m11: f64,
-    m12: f64,
-    m21: f64,
-    m22: f64,
-    tx: f64,
-    ty: f64,
+    scale_x: f64,
+    scale_y: f64,
+    translate_x: f64,
+    translate_y: f64,
 }
 
 impl Affine {
-    const fn identity() -> Self {
+    const fn new(scale_x: f64, scale_y: f64, translate_x: f64, translate_y: f64) -> Self {
         Self {
-            m11: 1.0,
-            m12: 0.0,
-            m21: 0.0,
-            m22: 1.0,
-            tx: 0.0,
-            ty: 0.0,
-        }
-    }
-
-    const fn translate(tx: f64, ty: f64) -> Self {
-        Self {
-            tx,
-            ty,
-            ..Self::identity()
-        }
-    }
-
-    const fn scale(x: f64, y: f64) -> Self {
-        Self {
-            m11: x,
-            m22: y,
-            ..Self::identity()
-        }
-    }
-
-    fn from_typst(transform: Transform) -> Self {
-        Self {
-            m11: transform.sx.get(),
-            m12: transform.kx.get(),
-            m21: transform.ky.get(),
-            m22: transform.sy.get(),
-            tx: transform.tx.to_pt(),
-            ty: transform.ty.to_pt(),
-        }
-    }
-
-    /// Returns `self * inner`, applying `inner` before `self`.
-    fn concat(self, inner: Self) -> Self {
-        Self {
-            m11: self.m11 * inner.m11 + self.m12 * inner.m21,
-            m12: self.m11 * inner.m12 + self.m12 * inner.m22,
-            m21: self.m21 * inner.m11 + self.m22 * inner.m21,
-            m22: self.m21 * inner.m12 + self.m22 * inner.m22,
-            tx: self.m11 * inner.tx + self.m12 * inner.ty + self.tx,
-            ty: self.m21 * inner.tx + self.m22 * inner.ty + self.ty,
+            scale_x,
+            scale_y,
+            translate_x,
+            translate_y,
         }
     }
 
     fn point(self, x: f64, y: f64) -> PointV1 {
         PointV1 {
-            x: self.m11 * x + self.m12 * y + self.tx,
-            y: self.m21 * x + self.m22 * y + self.ty,
+            x: self.translate_x + x * self.scale_x,
+            y: self.translate_y + y * self.scale_y,
         }
     }
 }
@@ -98,13 +60,68 @@ struct OpenSubpath {
     segments: Vec<CubicSegmentV1>,
 }
 
+impl OpenSubpath {
+    fn new(start: PointV1) -> Self {
+        Self {
+            current: start.clone(),
+            start,
+            segments: Vec::new(),
+        }
+    }
+
+    fn line_to(&mut self, end: PointV1) {
+        let start = self.current.clone();
+        self.segments.push(CubicSegmentV1 {
+            control1: lerp(&start, &end, 1.0 / 3.0),
+            control2: lerp(&start, &end, 2.0 / 3.0),
+            end: end.clone(),
+        });
+        self.current = end;
+    }
+
+    fn quad_to(&mut self, control: &PointV1, end: PointV1) {
+        let start = self.current.clone();
+        self.segments.push(CubicSegmentV1 {
+            control1: PointV1 {
+                x: start.x + (2.0 / 3.0) * (control.x - start.x),
+                y: start.y + (2.0 / 3.0) * (control.y - start.y),
+            },
+            control2: PointV1 {
+                x: end.x + (2.0 / 3.0) * (control.x - end.x),
+                y: end.y + (2.0 / 3.0) * (control.y - end.y),
+            },
+            end: end.clone(),
+        });
+        self.current = end;
+    }
+
+    fn curve_to(&mut self, control1: PointV1, control2: PointV1, end: PointV1) {
+        self.segments.push(CubicSegmentV1 {
+            control1,
+            control2,
+            end: end.clone(),
+        });
+        self.current = end;
+    }
+
+    fn finish(self) -> Result<CubicSubpathV1, OutlineFailureV1> {
+        if self.segments.is_empty() {
+            return Err(OutlineFailureV1::Invalid);
+        }
+        Ok(CubicSubpathV1 {
+            closed: true,
+            segments: self.segments,
+            start: self.start,
+        })
+    }
+}
+
 #[derive(Debug)]
 struct GlyphOutlineBuilder {
     transform: Affine,
     subpaths: Vec<CubicSubpathV1>,
     current: Option<OpenSubpath>,
     invalid: bool,
-    callback_count: usize,
     segment_count: usize,
 }
 
@@ -115,24 +132,15 @@ impl GlyphOutlineBuilder {
             subpaths: Vec::new(),
             current: None,
             invalid: false,
-            callback_count: 0,
             segment_count: 0,
         }
     }
 
-    fn push_segment(&mut self, segment: CubicSegmentV1) {
-        self.callback_count += 1;
+    fn account_segment(&mut self) {
         self.segment_count += 1;
         if self.segment_count > MAX_CUBIC_SEGMENTS_V1 {
             self.invalid = true;
-            return;
         }
-        let Some(current) = &mut self.current else {
-            self.invalid = true;
-            return;
-        };
-        current.current = segment.end.clone();
-        current.segments.push(segment);
     }
 
     fn finish(self) -> Result<Vec<CubicSubpathV1>, OutlineFailureV1> {
@@ -148,77 +156,57 @@ impl GlyphOutlineBuilder {
 
 impl OutlineBuilder for GlyphOutlineBuilder {
     fn move_to(&mut self, x: f32, y: f32) {
-        self.callback_count += 1;
         if self.current.is_some() {
             self.invalid = true;
             return;
         }
-        let start = self.transform.point(f64::from(x), f64::from(y));
-        self.current = Some(OpenSubpath {
-            current: start.clone(),
-            start,
-            segments: Vec::new(),
-        });
+        self.current = Some(OpenSubpath::new(
+            self.transform.point(f64::from(x), f64::from(y)),
+        ));
     }
 
     fn line_to(&mut self, x: f32, y: f32) {
-        let Some(current) = &self.current else {
+        let end = self.transform.point(f64::from(x), f64::from(y));
+        let Some(current) = &mut self.current else {
             self.invalid = true;
             return;
         };
-        let start = current.current.clone();
-        let end = self.transform.point(f64::from(x), f64::from(y));
-        self.push_segment(CubicSegmentV1 {
-            control1: lerp(&start, &end, 1.0 / 3.0),
-            control2: lerp(&start, &end, 2.0 / 3.0),
-            end,
-        });
+        current.line_to(end);
+        self.account_segment();
     }
 
     fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
-        let Some(current) = &self.current else {
+        let control = self.transform.point(f64::from(x1), f64::from(y1));
+        let end = self.transform.point(f64::from(x), f64::from(y));
+        let Some(current) = &mut self.current else {
             self.invalid = true;
             return;
         };
-        let start = current.current.clone();
-        let control = self.transform.point(f64::from(x1), f64::from(y1));
-        let end = self.transform.point(f64::from(x), f64::from(y));
-        self.push_segment(CubicSegmentV1 {
-            control1: PointV1 {
-                x: start.x + (2.0 / 3.0) * (control.x - start.x),
-                y: start.y + (2.0 / 3.0) * (control.y - start.y),
-            },
-            control2: PointV1 {
-                x: end.x + (2.0 / 3.0) * (control.x - end.x),
-                y: end.y + (2.0 / 3.0) * (control.y - end.y),
-            },
-            end,
-        });
+        current.quad_to(&control, end);
+        self.account_segment();
     }
 
     fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
-        self.push_segment(CubicSegmentV1 {
-            control1: self.transform.point(f64::from(x1), f64::from(y1)),
-            control2: self.transform.point(f64::from(x2), f64::from(y2)),
-            end: self.transform.point(f64::from(x), f64::from(y)),
-        });
+        let control1 = self.transform.point(f64::from(x1), f64::from(y1));
+        let control2 = self.transform.point(f64::from(x2), f64::from(y2));
+        let end = self.transform.point(f64::from(x), f64::from(y));
+        let Some(current) = &mut self.current else {
+            self.invalid = true;
+            return;
+        };
+        current.curve_to(control1, control2, end);
+        self.account_segment();
     }
 
     fn close(&mut self) {
-        self.callback_count += 1;
         let Some(current) = self.current.take() else {
             self.invalid = true;
             return;
         };
-        if current.segments.is_empty() {
-            self.invalid = true;
-            return;
+        match current.finish() {
+            Ok(subpath) => self.subpaths.push(subpath),
+            Err(_) => self.invalid = true,
         }
-        self.subpaths.push(CubicSubpathV1 {
-            closed: true,
-            segments: current.segments,
-            start: current.start,
-        });
     }
 }
 
@@ -237,108 +225,557 @@ struct OutlineCollector {
 }
 
 impl OutlineCollector {
-    fn visit_frame(
-        &mut self,
-        frame: &Frame,
-        parent: Affine,
-        depth: usize,
-    ) -> Result<(), OutlineFailureV1> {
-        if depth > MAX_FRAME_DEPTH_V1 {
+    fn visit_display_list(&mut self, list: &DisplayList) -> Result<(), OutlineFailureV1> {
+        if list.items.len() > MAX_DISPLAY_ITEMS_V1 {
             return Err(OutlineFailureV1::LimitExceeded);
         }
+        ensure_finite(&[list.width, list.height, list.depth])?;
+        if list.width < 0.0 || list.height < 0.0 || list.depth < 0.0 {
+            return Err(OutlineFailureV1::Invalid);
+        }
 
-        for (position, item) in frame.items() {
-            let positioned =
-                parent.concat(Affine::translate(position.x.to_pt(), position.y.to_pt()));
-            match item {
-                FrameItem::Group(group) => {
-                    if group.clip.is_some() {
-                        return Err(OutlineFailureV1::UnsupportedFrameItem);
-                    }
-                    self.visit_frame(
-                        &group.frame,
-                        positioned.concat(Affine::from_typst(group.transform)),
-                        depth + 1,
-                    )?;
-                }
-                FrameItem::Text(text) => self.visit_text(text, positioned)?,
-                FrameItem::Tag(_) => {}
-                FrameItem::Shape(_, _) | FrameItem::Image(_, _, _) | FrameItem::Link(_, _) => {
-                    return Err(OutlineFailureV1::UnsupportedFrameItem);
-                }
-            }
+        for item in &list.items {
+            self.visit_item(item)?;
         }
         Ok(())
     }
 
-    fn visit_text(&mut self, text: &TextItem, positioned: Affine) -> Result<(), OutlineFailureV1> {
-        if text.stroke.is_some() || !matches!(text.fill, Paint::Solid(_)) {
-            return Err(OutlineFailureV1::UnsupportedFrameItem);
-        }
-
-        let font_scale = text.size.to_pt() / text.font.units_per_em();
-        if !font_scale.is_finite() || font_scale <= 0.0 {
-            return Err(OutlineFailureV1::Invalid);
-        }
-
-        let text_to_scene = positioned.concat(Affine::scale(1.0, -1.0));
-        let mut cursor_x = 0.0;
-        let mut cursor_y = 0.0;
-
-        for glyph in &text.glyphs {
-            self.glyph_count += 1;
-            if self.glyph_count > MAX_GLYPHS_V1 {
-                return Err(OutlineFailureV1::LimitExceeded);
-            }
-
-            let x_offset = glyph.x_offset.at(text.size).to_pt();
-            let y_offset = glyph.y_offset.at(text.size).to_pt();
-            let glyph_transform = text_to_scene
-                .concat(Affine::translate(cursor_x + x_offset, cursor_y + y_offset))
-                .concat(Affine::scale(font_scale, font_scale));
-            let mut builder = GlyphOutlineBuilder::new(glyph_transform);
-            let has_outline = text
-                .font
-                .ttf()
-                .outline_glyph(GlyphId(glyph.id), &mut builder)
-                .is_some();
-
-            if has_outline {
-                let subpaths = builder.finish()?;
-                if subpaths.is_empty() {
+    fn visit_item(&mut self, item: &DisplayItem) -> Result<(), OutlineFailureV1> {
+        match item {
+            DisplayItem::GlyphPath {
+                x,
+                y,
+                scale,
+                font,
+                char_code,
+                color,
+            } => {
+                ensure_finite(&[*x, *y, *scale])?;
+                if *scale <= 0.0 {
                     return Err(OutlineFailureV1::Invalid);
                 }
-                let added_segments = subpaths
-                    .iter()
-                    .map(|subpath| subpath.segments.len())
-                    .sum::<usize>();
-                self.segment_count = self
-                    .segment_count
-                    .checked_add(added_segments)
-                    .ok_or(OutlineFailureV1::LimitExceeded)?;
-                if self.segment_count > MAX_CUBIC_SEGMENTS_V1
-                    || self.subpaths.len() + subpaths.len() > MAX_SUBPATHS_V1
-                {
+                if !Self::accept_color(*color)? {
+                    return Ok(());
+                }
+                self.visit_glyph(*x, *y, *scale, font, *char_code)
+            }
+            DisplayItem::Line {
+                x,
+                y,
+                width,
+                thickness,
+                color,
+                dashed,
+            } => {
+                ensure_nonnegative_rect(&[*x, *y], *width, *thickness)?;
+                if *width == 0.0 || *thickness == 0.0 || !Self::accept_color(*color)? {
+                    return Ok(());
+                }
+                self.visit_line(*x, *y, *width, *thickness, *dashed)
+            }
+            DisplayItem::Rect {
+                x,
+                y,
+                width,
+                height,
+                color,
+            } => {
+                ensure_nonnegative_rect(&[*x, *y], *width, *height)?;
+                if *width == 0.0 || *height == 0.0 || !Self::accept_color(*color)? {
+                    return Ok(());
+                }
+                self.push_subpaths(vec![rectangle_subpath(*x, -*y, *width, *height)?])
+            }
+            DisplayItem::Path {
+                x,
+                y,
+                commands,
+                fill,
+                color,
+            } => {
+                ensure_finite(&[*x, *y])?;
+                if commands.len() > MAX_PATH_COMMANDS_V1 {
                     return Err(OutlineFailureV1::LimitExceeded);
                 }
-                self.subpaths.extend(subpaths);
-            } else if builder.callback_count > 0 {
-                return Err(OutlineFailureV1::Invalid);
+                if commands.is_empty() || !Self::accept_color(*color)? {
+                    return Ok(());
+                }
+                self.visit_path(*x, *y, commands, *fill)
             }
-
-            cursor_x += glyph.x_advance.at(text.size).to_pt();
-            cursor_y += glyph.y_advance.at(text.size).to_pt();
         }
+    }
+
+    fn accept_color(color: Color) -> Result<bool, OutlineFailureV1> {
+        let components = [color.r, color.g, color.b, color.a];
+        if !components
+            .into_iter()
+            .all(|component| component.is_finite() && (0.0..=1.0).contains(&component))
+        {
+            return Err(OutlineFailureV1::Invalid);
+        }
+        if color.a == 0.0 {
+            return Ok(false);
+        }
+        // The v1 outline ABI carries geometry but no paint. Studio applies its
+        // fixed Manim-white appearance downstream, so accepting any visible
+        // RaTeX color other than the parser default would silently recolor the
+        // expression. Preserve truthful preview by falling back until paint is
+        // represented explicitly in the ABI.
+        if color != Color::BLACK {
+            return Err(OutlineFailureV1::UnsupportedFrameItem);
+        }
+        Ok(true)
+    }
+
+    fn visit_glyph(
+        &mut self,
+        x: f64,
+        y: f64,
+        scale: f64,
+        font_name: &str,
+        char_code: u32,
+    ) -> Result<(), OutlineFailureV1> {
+        self.glyph_count += 1;
+        if self.glyph_count > MAX_GLYPHS_V1 {
+            return Err(OutlineFailureV1::LimitExceeded);
+        }
+
+        let font_id = FontId::parse(font_name).ok_or(OutlineFailureV1::UnsupportedFrameItem)?;
+        let filename =
+            katex_font_filename(font_id).ok_or(OutlineFailureV1::UnsupportedFrameItem)?;
+        let bytes =
+            ratex_katex_fonts::ttf_bytes(filename).ok_or(OutlineFailureV1::UnsupportedFrameItem)?;
+        let face =
+            ttf_parser::Face::parse(bytes.as_ref(), 0).map_err(|_| OutlineFailureV1::Invalid)?;
+        let character = ratex_font::katex_ttf_glyph_char(font_id, char_code);
+        let Some(glyph_id) = face.glyph_index(character) else {
+            return if character.is_whitespace() {
+                Ok(())
+            } else {
+                Err(OutlineFailureV1::UnsupportedFrameItem)
+            };
+        };
+        let units_per_em = f64::from(face.units_per_em());
+        if units_per_em <= 0.0 {
+            return Err(OutlineFailureV1::Invalid);
+        }
+        let glyph_scale = scale / units_per_em;
+        let mut builder = GlyphOutlineBuilder::new(Affine::new(glyph_scale, glyph_scale, x, -y));
+        let has_outline = face.outline_glyph(glyph_id, &mut builder).is_some();
+        if !has_outline {
+            return if character.is_whitespace() {
+                Ok(())
+            } else {
+                Err(OutlineFailureV1::UnsupportedFrameItem)
+            };
+        }
+        let mut subpaths = builder.finish()?;
+        if subpaths.is_empty() {
+            return Err(OutlineFailureV1::Invalid);
+        }
+        orient_contour_group_clockwise(&mut subpaths);
+        self.push_subpaths(subpaths)
+    }
+
+    fn visit_line(
+        &mut self,
+        x: f64,
+        y: f64,
+        width: f64,
+        thickness: f64,
+        dashed: bool,
+    ) -> Result<(), OutlineFailureV1> {
+        if !dashed {
+            return self.push_subpaths(vec![rectangle_subpath(
+                x,
+                -y + thickness / 2.0,
+                width,
+                thickness,
+            )?]);
+        }
+
+        // Canonicalize to the pinned RaTeX raster backend: 4t ink followed by
+        // a 4t gap. Its SVG backend currently differs (3t/3t), so this choice
+        // is covered by a focused regression test below.
+        let dash_length = 4.0 * thickness;
+        let period = 2.0 * dash_length;
+        if !dash_length.is_finite() || dash_length <= 0.0 {
+            return Err(OutlineFailureV1::Invalid);
+        }
+        let mut cursor = 0.0;
+        let mut dash_subpaths = Vec::new();
+        while cursor < width {
+            let dash_width = dash_length.min(width - cursor);
+            dash_subpaths.push(rectangle_subpath(
+                x + cursor,
+                -y + thickness / 2.0,
+                dash_width,
+                thickness,
+            )?);
+            if dash_subpaths.len() > MAX_SUBPATHS_V1 {
+                return Err(OutlineFailureV1::LimitExceeded);
+            }
+            cursor += period;
+        }
+        self.push_subpaths(dash_subpaths)
+    }
+
+    fn visit_path(
+        &mut self,
+        x: f64,
+        y: f64,
+        commands: &[PathCommand],
+        fill: bool,
+    ) -> Result<(), OutlineFailureV1> {
+        let transform = Affine::new(1.0, -1.0, x, -y);
+        if fill {
+            let mut subpaths = filled_path_subpaths(commands, transform)?;
+            // RaTeX fills every MoveTo-delimited component independently. A
+            // single NonZero path must give all independent components the
+            // same outer winding so overlaps cannot cancel. Clockwise matches
+            // the embedded TrueType outlines and rectangle primitives.
+            for subpath in &mut subpaths {
+                if signed_area(subpath) > 0.0 {
+                    reverse_subpath(subpath);
+                }
+            }
+            return self.push_subpaths(subpaths);
+        }
+
+        let source = path_commands_to_kurbo(commands, x, y)?;
+        let style = Stroke::new(PATH_STROKE_WIDTH_EM_V1)
+            .with_caps(Cap::Round)
+            .with_join(Join::Round);
+        let stroked = kurbo::stroke(
+            source.elements().iter().copied(),
+            &style,
+            &StrokeOpts::default(),
+            PATH_STROKE_TOLERANCE_V1,
+        );
+        let mut subpaths = kurbo_to_cubic_subpaths(&stroked, Affine::new(1.0, -1.0, 0.0, 0.0))?;
+        orient_contour_group_clockwise(&mut subpaths);
+        self.push_subpaths(subpaths)
+    }
+
+    fn push_subpaths(&mut self, subpaths: Vec<CubicSubpathV1>) -> Result<(), OutlineFailureV1> {
+        let added_segments = subpaths
+            .iter()
+            .try_fold(0usize, |total, subpath| {
+                total.checked_add(subpath.segments.len())
+            })
+            .ok_or(OutlineFailureV1::LimitExceeded)?;
+        if self.subpaths.len() + subpaths.len() > MAX_SUBPATHS_V1
+            || self.segment_count + added_segments > MAX_CUBIC_SEGMENTS_V1
+        {
+            return Err(OutlineFailureV1::LimitExceeded);
+        }
+        self.segment_count += added_segments;
+        self.subpaths.extend(subpaths);
         Ok(())
     }
 }
 
+fn ensure_finite(values: &[f64]) -> Result<(), OutlineFailureV1> {
+    if values.iter().copied().all(f64::is_finite) {
+        Ok(())
+    } else {
+        Err(OutlineFailureV1::Invalid)
+    }
+}
+
+fn ensure_nonnegative_rect(
+    origin: &[f64; 2],
+    width: f64,
+    height: f64,
+) -> Result<(), OutlineFailureV1> {
+    ensure_finite(&[origin[0], origin[1], width, height])?;
+    if width < 0.0 || height < 0.0 {
+        Err(OutlineFailureV1::Invalid)
+    } else {
+        Ok(())
+    }
+}
+
+fn katex_font_filename(font_id: FontId) -> Option<&'static str> {
+    Some(match font_id {
+        FontId::AmsRegular => "KaTeX_AMS-Regular.ttf",
+        FontId::CaligraphicRegular => "KaTeX_Caligraphic-Regular.ttf",
+        FontId::FrakturRegular => "KaTeX_Fraktur-Regular.ttf",
+        FontId::FrakturBold => "KaTeX_Fraktur-Bold.ttf",
+        FontId::MainBold => "KaTeX_Main-Bold.ttf",
+        FontId::MainBoldItalic => "KaTeX_Main-BoldItalic.ttf",
+        FontId::MainItalic => "KaTeX_Main-Italic.ttf",
+        FontId::MainRegular => "KaTeX_Main-Regular.ttf",
+        FontId::MathBoldItalic => "KaTeX_Math-BoldItalic.ttf",
+        FontId::MathItalic => "KaTeX_Math-Italic.ttf",
+        FontId::SansSerifBold => "KaTeX_SansSerif-Bold.ttf",
+        FontId::SansSerifItalic => "KaTeX_SansSerif-Italic.ttf",
+        FontId::SansSerifRegular => "KaTeX_SansSerif-Regular.ttf",
+        FontId::ScriptRegular => "KaTeX_Script-Regular.ttf",
+        FontId::Size1Regular => "KaTeX_Size1-Regular.ttf",
+        FontId::Size2Regular => "KaTeX_Size2-Regular.ttf",
+        FontId::Size3Regular => "KaTeX_Size3-Regular.ttf",
+        FontId::Size4Regular => "KaTeX_Size4-Regular.ttf",
+        FontId::TypewriterRegular => "KaTeX_Typewriter-Regular.ttf",
+        FontId::CjkRegular | FontId::CjkFallback | FontId::EmojiFallback => return None,
+    })
+}
+
+fn rectangle_subpath(
+    left: f64,
+    top: f64,
+    width: f64,
+    height: f64,
+) -> Result<CubicSubpathV1, OutlineFailureV1> {
+    ensure_nonnegative_rect(&[left, top], width, height)?;
+    if width == 0.0 || height == 0.0 {
+        return Err(OutlineFailureV1::Invalid);
+    }
+    let mut open = OpenSubpath::new(PointV1 { x: left, y: top });
+    open.line_to(PointV1 {
+        x: left + width,
+        y: top,
+    });
+    open.line_to(PointV1 {
+        x: left + width,
+        y: top - height,
+    });
+    open.line_to(PointV1 {
+        x: left,
+        y: top - height,
+    });
+    open.finish()
+}
+
+fn filled_path_subpaths(
+    commands: &[PathCommand],
+    transform: Affine,
+) -> Result<Vec<CubicSubpathV1>, OutlineFailureV1> {
+    let mut subpaths = Vec::new();
+    let mut current: Option<OpenSubpath> = None;
+    for command in commands {
+        match *command {
+            PathCommand::MoveTo { x, y } => {
+                ensure_finite(&[x, y])?;
+                if let Some(open) = current.take() {
+                    subpaths.push(open.finish()?);
+                }
+                current = Some(OpenSubpath::new(transform.point(x, y)));
+            }
+            PathCommand::LineTo { x, y } => {
+                ensure_finite(&[x, y])?;
+                current
+                    .as_mut()
+                    .ok_or(OutlineFailureV1::Invalid)?
+                    .line_to(transform.point(x, y));
+            }
+            PathCommand::QuadTo { x1, y1, x, y } => {
+                ensure_finite(&[x1, y1, x, y])?;
+                current
+                    .as_mut()
+                    .ok_or(OutlineFailureV1::Invalid)?
+                    .quad_to(&transform.point(x1, y1), transform.point(x, y));
+            }
+            PathCommand::CubicTo {
+                x1,
+                y1,
+                x2,
+                y2,
+                x,
+                y,
+            } => {
+                ensure_finite(&[x1, y1, x2, y2, x, y])?;
+                current.as_mut().ok_or(OutlineFailureV1::Invalid)?.curve_to(
+                    transform.point(x1, y1),
+                    transform.point(x2, y2),
+                    transform.point(x, y),
+                );
+            }
+            PathCommand::Close => {
+                let open = current.take().ok_or(OutlineFailureV1::Invalid)?;
+                subpaths.push(open.finish()?);
+            }
+        }
+    }
+    if let Some(open) = current {
+        // SVG fills implicitly close an unterminated final subpath.
+        subpaths.push(open.finish()?);
+    }
+    if subpaths.is_empty() {
+        return Err(OutlineFailureV1::Invalid);
+    }
+    Ok(subpaths)
+}
+
+fn path_commands_to_kurbo(
+    commands: &[PathCommand],
+    origin_x: f64,
+    origin_y: f64,
+) -> Result<BezPath, OutlineFailureV1> {
+    let mut path = BezPath::new();
+    let mut has_move = false;
+    for command in commands {
+        match *command {
+            PathCommand::MoveTo { x, y } => {
+                ensure_finite(&[x, y])?;
+                path.move_to((origin_x + x, origin_y + y));
+                has_move = true;
+            }
+            PathCommand::LineTo { x, y } => {
+                ensure_finite(&[x, y])?;
+                if !has_move {
+                    return Err(OutlineFailureV1::Invalid);
+                }
+                path.line_to((origin_x + x, origin_y + y));
+            }
+            PathCommand::QuadTo { x1, y1, x, y } => {
+                ensure_finite(&[x1, y1, x, y])?;
+                if !has_move {
+                    return Err(OutlineFailureV1::Invalid);
+                }
+                path.quad_to((origin_x + x1, origin_y + y1), (origin_x + x, origin_y + y));
+            }
+            PathCommand::CubicTo {
+                x1,
+                y1,
+                x2,
+                y2,
+                x,
+                y,
+            } => {
+                ensure_finite(&[x1, y1, x2, y2, x, y])?;
+                if !has_move {
+                    return Err(OutlineFailureV1::Invalid);
+                }
+                path.curve_to(
+                    (origin_x + x1, origin_y + y1),
+                    (origin_x + x2, origin_y + y2),
+                    (origin_x + x, origin_y + y),
+                );
+            }
+            PathCommand::Close => {
+                if !has_move {
+                    return Err(OutlineFailureV1::Invalid);
+                }
+                path.close_path();
+            }
+        }
+    }
+    if !has_move {
+        return Err(OutlineFailureV1::Invalid);
+    }
+    Ok(path)
+}
+
+fn kurbo_to_cubic_subpaths(
+    path: &BezPath,
+    transform: Affine,
+) -> Result<Vec<CubicSubpathV1>, OutlineFailureV1> {
+    let mut subpaths = Vec::new();
+    let mut current: Option<OpenSubpath> = None;
+    for element in path.elements() {
+        match *element {
+            PathEl::MoveTo(point) => {
+                if let Some(open) = current.take() {
+                    subpaths.push(open.finish()?);
+                }
+                current = Some(OpenSubpath::new(transform.point(point.x, point.y)));
+            }
+            PathEl::LineTo(point) => current
+                .as_mut()
+                .ok_or(OutlineFailureV1::Invalid)?
+                .line_to(transform.point(point.x, point.y)),
+            PathEl::QuadTo(control, end) => {
+                current.as_mut().ok_or(OutlineFailureV1::Invalid)?.quad_to(
+                    &transform.point(control.x, control.y),
+                    transform.point(end.x, end.y),
+                );
+            }
+            PathEl::CurveTo(control1, control2, end) => {
+                current.as_mut().ok_or(OutlineFailureV1::Invalid)?.curve_to(
+                    transform.point(control1.x, control1.y),
+                    transform.point(control2.x, control2.y),
+                    transform.point(end.x, end.y),
+                );
+            }
+            PathEl::ClosePath => {
+                let open = current.take().ok_or(OutlineFailureV1::Invalid)?;
+                subpaths.push(open.finish()?);
+            }
+        }
+    }
+    if let Some(open) = current {
+        subpaths.push(open.finish()?);
+    }
+    if subpaths.is_empty() {
+        Err(OutlineFailureV1::Invalid)
+    } else {
+        Ok(subpaths)
+    }
+}
+
+fn signed_area(subpath: &CubicSubpathV1) -> f64 {
+    let mut path = BezPath::new();
+    path.move_to((subpath.start.x, subpath.start.y));
+    for segment in &subpath.segments {
+        path.curve_to(
+            (segment.control1.x, segment.control1.y),
+            (segment.control2.x, segment.control2.y),
+            (segment.end.x, segment.end.y),
+        );
+    }
+    path.close_path();
+    path.area()
+}
+
+fn orient_contour_group_clockwise(subpaths: &mut [CubicSubpathV1]) {
+    let representative_area = subpaths
+        .iter()
+        .map(signed_area)
+        .max_by(|left, right| left.abs().total_cmp(&right.abs()));
+    if representative_area.is_some_and(|area| area > 0.0) {
+        // Reverse the whole group so counter contours retain the opposite
+        // winding required for glyph and stroke holes.
+        for subpath in subpaths {
+            reverse_subpath(subpath);
+        }
+    }
+}
+
+fn reverse_subpath(subpath: &mut CubicSubpathV1) {
+    let previous_starts = std::iter::once(subpath.start.clone())
+        .chain(
+            subpath
+                .segments
+                .iter()
+                .take(subpath.segments.len().saturating_sub(1))
+                .map(|segment| segment.end.clone()),
+        )
+        .collect::<Vec<_>>();
+    let new_start = subpath
+        .segments
+        .last()
+        .map_or_else(|| subpath.start.clone(), |segment| segment.end.clone());
+    let reversed = subpath
+        .segments
+        .iter()
+        .zip(previous_starts)
+        .rev()
+        .map(|(segment, end)| CubicSegmentV1 {
+            control1: segment.control2.clone(),
+            control2: segment.control1.clone(),
+            end,
+        })
+        .collect();
+    subpath.start = new_start;
+    subpath.segments = reversed;
+}
+
 pub(crate) fn extract_normalized_outline_v1(
-    frame: &Frame,
+    display_list: &DisplayList,
 ) -> Result<(CubicPathV1, MathTexOutlineBoundsV1), OutlineFailureV1> {
     let mut collector = OutlineCollector::default();
-    // Typst frames use y-down coordinates. Poietra scene-local coordinates use y-up.
-    collector.visit_frame(frame, Affine::scale(1.0, -1.0), 0)?;
+    collector.visit_display_list(display_list)?;
     if collector.subpaths.is_empty() {
         return Err(OutlineFailureV1::Invalid);
     }
@@ -547,7 +984,48 @@ fn evaluate_cubic(start: &PointV1, segment: &CubicSegmentV1, amount: f64) -> Poi
 
 #[cfg(test)]
 mod tests {
+    use sha2::{Digest, Sha256};
+
     use super::*;
+    use crate::MATHTEX_FONT_DIGEST_V1;
+
+    const FONT_ASSET_NAMES_V1: [&str; 20] = [
+        "KaTeX_AMS-Regular.ttf",
+        "KaTeX_Caligraphic-Bold.ttf",
+        "KaTeX_Caligraphic-Regular.ttf",
+        "KaTeX_Fraktur-Bold.ttf",
+        "KaTeX_Fraktur-Regular.ttf",
+        "KaTeX_Main-Bold.ttf",
+        "KaTeX_Main-BoldItalic.ttf",
+        "KaTeX_Main-Italic.ttf",
+        "KaTeX_Main-Regular.ttf",
+        "KaTeX_Math-BoldItalic.ttf",
+        "KaTeX_Math-Italic.ttf",
+        "KaTeX_SansSerif-Bold.ttf",
+        "KaTeX_SansSerif-Italic.ttf",
+        "KaTeX_SansSerif-Regular.ttf",
+        "KaTeX_Script-Regular.ttf",
+        "KaTeX_Size1-Regular.ttf",
+        "KaTeX_Size2-Regular.ttf",
+        "KaTeX_Size3-Regular.ttf",
+        "KaTeX_Size4-Regular.ttf",
+        "KaTeX_Typewriter-Regular.ttf",
+    ];
+
+    #[test]
+    fn embedded_font_digest_covers_every_shipped_face_in_basename_order() {
+        let mut digest = Sha256::new();
+        digest.update(b"poietra.mathtex-outline.fonts.v1\0");
+        digest.update((FONT_ASSET_NAMES_V1.len() as u64).to_be_bytes());
+        for filename in FONT_ASSET_NAMES_V1 {
+            let bytes = ratex_katex_fonts::ttf_bytes(filename).expect("declared font is embedded");
+            digest.update((filename.len() as u64).to_be_bytes());
+            digest.update(filename.as_bytes());
+            digest.update((bytes.len() as u64).to_be_bytes());
+            digest.update(bytes.as_ref());
+        }
+        assert_eq!(format!("{:x}", digest.finalize()), MATHTEX_FONT_DIGEST_V1);
+    }
 
     #[test]
     fn tight_bounds_include_cubic_extrema() {
@@ -567,5 +1045,144 @@ mod tests {
         assert!((bounds.right - 1.0).abs() < f64::EPSILON);
         assert!((bounds.top - 1.5).abs() < 1.0e-12);
         assert!(bounds.bottom.abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn filled_path_components_are_oriented_for_union_semantics() {
+        let commands = [
+            PathCommand::MoveTo { x: 0.0, y: 0.0 },
+            PathCommand::LineTo { x: 1.0, y: 0.0 },
+            PathCommand::LineTo { x: 1.0, y: 1.0 },
+            PathCommand::Close,
+            PathCommand::MoveTo { x: 0.0, y: 0.0 },
+            PathCommand::LineTo { x: 1.0, y: 1.0 },
+            PathCommand::LineTo { x: 0.0, y: 1.0 },
+            PathCommand::Close,
+        ];
+        let mut subpaths = filled_path_subpaths(&commands, Affine::new(1.0, -1.0, 0.0, 0.0))
+            .expect("valid components");
+        for subpath in &mut subpaths {
+            if signed_area(subpath) > 0.0 {
+                reverse_subpath(subpath);
+            }
+        }
+        assert_eq!(subpaths.len(), 2);
+        assert!(subpaths.iter().all(|subpath| signed_area(subpath) < 0.0));
+    }
+
+    #[test]
+    fn all_display_item_kinds_lower_to_closed_cubics() {
+        let list = DisplayList {
+            items: vec![
+                DisplayItem::GlyphPath {
+                    x: 0.0,
+                    y: 1.0,
+                    scale: 1.0,
+                    font: "Main-Regular".to_owned(),
+                    char_code: u32::from('x'),
+                    color: Color::BLACK,
+                },
+                DisplayItem::Line {
+                    x: 1.0,
+                    y: 0.5,
+                    width: 1.0,
+                    thickness: 0.05,
+                    color: Color::BLACK,
+                    dashed: true,
+                },
+                DisplayItem::Rect {
+                    x: 2.0,
+                    y: 0.0,
+                    width: 0.5,
+                    height: 0.5,
+                    color: Color::BLACK,
+                },
+                DisplayItem::Path {
+                    x: 3.0,
+                    y: 0.0,
+                    commands: vec![
+                        PathCommand::MoveTo { x: 0.0, y: 0.0 },
+                        PathCommand::CubicTo {
+                            x1: 0.2,
+                            y1: 0.6,
+                            x2: 0.8,
+                            y2: 0.6,
+                            x: 1.0,
+                            y: 0.0,
+                        },
+                    ],
+                    fill: false,
+                    color: Color::BLACK,
+                },
+            ],
+            width: 4.0,
+            height: 1.0,
+            depth: 0.0,
+        };
+        let (path, _) = extract_normalized_outline_v1(&list).expect("all items lower");
+        assert!(!path.subpaths.is_empty());
+        assert!(path.subpaths.iter().all(|subpath| subpath.closed));
+    }
+
+    #[test]
+    fn dashed_lines_follow_the_canonical_raster_four_thickness_pattern() {
+        let mut collector = OutlineCollector::default();
+        collector
+            .visit_line(0.0, 0.0, 1.0, 0.1, true)
+            .expect("bounded dashed line");
+        assert_eq!(collector.subpaths.len(), 2);
+
+        let first = tight_bounds(&CubicPathV1 {
+            subpaths: vec![collector.subpaths[0].clone()],
+        })
+        .expect("first dash bounds");
+        let second = tight_bounds(&CubicPathV1 {
+            subpaths: vec![collector.subpaths[1].clone()],
+        })
+        .expect("second dash bounds");
+        assert!((first.left - 0.0).abs() < f64::EPSILON);
+        assert!((first.right - 0.4).abs() < 1.0e-12);
+        assert!((second.left - 0.8).abs() < 1.0e-12);
+        assert!((second.right - 1.0).abs() < 1.0e-12);
+    }
+
+    #[test]
+    fn non_default_visible_colors_fail_closed() {
+        for items in [
+            vec![DisplayItem::Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0,
+                color: Color::rgb(1.0, 0.0, 0.0),
+            }],
+            vec![
+                DisplayItem::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1.0,
+                    height: 1.0,
+                    color: Color::BLACK,
+                },
+                DisplayItem::Rect {
+                    x: 1.0,
+                    y: 0.0,
+                    width: 1.0,
+                    height: 1.0,
+                    color: Color::WHITE,
+                },
+            ],
+        ] {
+            let list = DisplayList {
+                items,
+                width: 2.0,
+                height: 1.0,
+                depth: 0.0,
+            };
+            assert_eq!(
+                extract_normalized_outline_v1(&list),
+                Err(OutlineFailureV1::UnsupportedFrameItem)
+            );
+        }
     }
 }

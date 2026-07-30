@@ -68,7 +68,8 @@ fn content_edit_changes_the_retained_outline_and_revision_digest() {
 
 #[test]
 fn unsupported_mathtex_returns_a_small_structured_fallback() {
-    let MathTexOutlineResultV1::Unsupported(unsupported) = compile(&[r"\frac{1}{2}"]) else {
+    let MathTexOutlineResultV1::Unsupported(unsupported) = compile(&[r"\definitelyUnknown{x}"])
+    else {
         panic!("out-of-scope syntax must not compile");
     };
     assert_eq!(
@@ -80,4 +81,36 @@ fn unsupported_mathtex_returns_a_small_structured_fallback() {
         .expect("fallback must serialize");
     assert_eq!(wire["kind"], "unsupported");
     assert!(wire.get("path").is_none());
+}
+
+#[test]
+fn color_controls_missing_from_pinned_manim_fail_closed() {
+    for formula in [r"\color{red}{x}", r"\textcolor{red}{x}"] {
+        let MathTexOutlineResultV1::Unsupported(unsupported) = compile(&[formula]) else {
+            panic!("colored MathTex must not lose its paint: {formula:?}");
+        };
+        assert_eq!(
+            unsupported.code,
+            MathTexOutlineUnsupportedCodeV1::SyntaxUnsupported,
+            "{formula:?}"
+        );
+    }
+}
+
+#[test]
+fn fraction_radical_and_matrix_vertical_slice_compiles() {
+    for formula in [
+        r"\frac{1}{2}",
+        r"\sqrt{x^2 + y^2}",
+        r"\begin{bmatrix}a & b \\ c & d\end{bmatrix}",
+    ] {
+        let MathTexOutlineResultV1::Compiled(artifact) = compile(&[formula]) else {
+            panic!("RaTeX vertical slice must compile {formula:?}");
+        };
+        assert!(!artifact.path.subpaths.is_empty(), "{formula:?}");
+        assert!(
+            artifact.path.subpaths.iter().all(|subpath| subpath.closed),
+            "{formula:?}"
+        );
+    }
 }

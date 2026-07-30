@@ -57,10 +57,16 @@ assert compiled["result"]["kind"] == "compiled"
 assert compiled["result"]["fillRule"] == "nonzero"
 assert len(compiled["result"]["path"]["subpaths"]) > 1
 
-unsupported = json.loads(poietra_mathtex_outline.compile_mathtex_outline_v1([r"\frac{1}{2}"]))
+fraction = json.loads(poietra_mathtex_outline.compile_mathtex_outline_v1([r"\frac{1}{2}"]))
+assert fraction["result"]["kind"] == "compiled"
+unsupported = json.loads(poietra_mathtex_outline.compile_mathtex_outline_v1([]))
 assert unsupported["result"]["kind"] == "unsupported"
-assert unsupported["result"]["code"] == "syntax-unsupported"
-print(json.dumps({"abiVersion": 1, "compiledSubpaths": len(compiled["result"]["path"]["subpaths"])}))
+assert unsupported["result"]["code"] == "invalid-request"
+print(json.dumps({
+    "abiVersion": 1,
+    "compiledSubpaths": len(compiled["result"]["path"]["subpaths"]),
+    "fractionSubpaths": len(fraction["result"]["path"]["subpaths"]),
+}))
 `;
   const python = spawnSync(process.env.PYTHON ?? "python3", ["-c", pythonSource], {
     encoding: "utf8",
@@ -74,6 +80,7 @@ print(json.dumps({"abiVersion": 1, "compiledSubpaths": len(compiled["result"]["p
   const evidence = JSON.parse(python.stdout);
   assert.equal(evidence.abiVersion, 1);
   assert.ok(evidence.compiledSubpaths > 1);
+  assert.ok(evidence.fractionSubpaths > 1);
   process.stdout.write(`${JSON.stringify(evidence)}\n`);
 } finally {
   await rm(fixtureRoot, { force: true, recursive: true });

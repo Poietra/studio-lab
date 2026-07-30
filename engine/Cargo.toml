@@ -24,15 +24,19 @@ poietra-eval = { path = "crates/poietra-eval" }
 poietra-mathtex-outline = { path = "crates/poietra-mathtex-outline" }
 pyo3 = { version = "=0.28.3", features = ["abi3-py310"] }
 lyon_tessellation = "=1.0.20"
+kurbo = "=0.13.1"
 png = "=0.18.1"
-mitex = { git = "https://github.com/mitex-rs/mitex", rev = "51f7210e026ab05d037125247e92d4d023d8a80d" }
+ratex-font = { git = "https://github.com/erweixin/RaTeX.git", rev = "ae391d727ac615437c63c308f4538d971a84bede" }
+ratex-katex-fonts = { git = "https://github.com/erweixin/RaTeX.git", rev = "ae391d727ac615437c63c308f4538d971a84bede" }
+ratex-layout = { git = "https://github.com/erweixin/RaTeX.git", rev = "ae391d727ac615437c63c308f4538d971a84bede" }
+ratex-lexer = { git = "https://github.com/erweixin/RaTeX.git", rev = "ae391d727ac615437c63c308f4538d971a84bede" }
+ratex-parser = { git = "https://github.com/erweixin/RaTeX.git", rev = "ae391d727ac615437c63c308f4538d971a84bede" }
+ratex-types = { git = "https://github.com/erweixin/RaTeX.git", rev = "ae391d727ac615437c63c308f4538d971a84bede" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["float_roundtrip", "raw_value"] }
 sha2 = "0.10"
 thiserror = "2.0"
 ttf-parser = "=0.25.1"
-typst = "=0.15.1"
-typst-layout = "=0.15.1"
 wasm-bindgen = "=0.2.126"
 wgpu = { version = "=30.0.0", default-features = false }
 
@@ -55,9 +59,8 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
 
-# The MathTex compiler pulls in Typst's complete standard library. Keep its
-# browser payload on a size-oriented link path without changing the release
-# profile used by the interactive renderer.
+# Keep the browser MathTex compiler on a size-oriented link path without
+# changing the release profile used by the interactive renderer.
 [profile.mathtex-wasm-size]
 inherits = "release"
 codegen-units = 1

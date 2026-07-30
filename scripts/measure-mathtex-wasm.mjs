@@ -4,11 +4,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 
 const BASELINE_GZIP_BYTES = 10_600_905;
-const MAX_GZIP_BYTES = Math.floor(BASELINE_GZIP_BYTES * 0.9);
+const MAX_GZIP_BYTES = 1_200_000;
+const MAX_WARM_COMPILE_P95_MS = 10;
 const WARMUP_RUNS = 20;
 const MEASURED_RUNS = 200;
-// Warm timings stay in the report rather than the fail gate: shared-runner
-// scheduling is not stable enough for a millisecond-level CI threshold.
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 const defaultModuleBase = `${repositoryRoot}/public/engine-wasm/mathtex-outline/poietra_mathtex_wasm`;
 
@@ -39,7 +38,7 @@ const initializationMs = performance.now() - initializationStarted;
 const request = new TextEncoder().encode(
   JSON.stringify({
     schema: "poietra.mathtex-outline-request",
-    texParts: ["E = mc^2"],
+    texParts: [String.raw`\sum_{n=1}^\infty \frac{1}{n^2} = \frac{\pi^2}{6}`],
     version: 1,
   }),
 );
@@ -58,6 +57,8 @@ function percentile(samples, quantile) {
 }
 
 const gzipBytes = gzipSync(Buffer.concat([glueBytes, wasmBytes]), { level: 6 }).byteLength;
+const warmCompileMedianMs = percentile(compileSamplesMs, 0.5);
+const warmCompileP95Ms = percentile(compileSamplesMs, 0.95);
 const report = {
   baselineGzipBytes: BASELINE_GZIP_BYTES,
   glueBytes: glueBytes.byteLength,
@@ -65,16 +66,21 @@ const report = {
   gzipReductionPercent: ((BASELINE_GZIP_BYTES - gzipBytes) / BASELINE_GZIP_BYTES) * 100,
   initializationMs,
   maxGzipBytes: MAX_GZIP_BYTES,
+  maxWarmCompileP95Ms: MAX_WARM_COMPILE_P95_MS,
   measuredRuns: MEASURED_RUNS,
   rawWasmBytes: wasmBytes.byteLength,
-  warmCompileMedianMs: percentile(compileSamplesMs, 0.5),
-  warmCompileP95Ms: percentile(compileSamplesMs, 0.95),
+  warmCompileMedianMs,
+  warmCompileP95Ms,
   warmupRuns: WARMUP_RUNS,
 };
 console.log(JSON.stringify(report, null, 2));
 
 if (check && gzipBytes > MAX_GZIP_BYTES) {
+  throw new Error(`MathTex outline WASM gzip budget exceeded: ${gzipBytes} > ${MAX_GZIP_BYTES} bytes.`);
+}
+
+if (check && warmCompileP95Ms > MAX_WARM_COMPILE_P95_MS) {
   throw new Error(
-    `MathTex outline WASM gzip budget exceeded: ${gzipBytes} > ${MAX_GZIP_BYTES} bytes (10% below baseline).`,
+    `MathTex outline WASM warm compile p95 exceeded: ${warmCompileP95Ms.toFixed(3)}ms > ${MAX_WARM_COMPILE_P95_MS}ms.`,
   );
 }
