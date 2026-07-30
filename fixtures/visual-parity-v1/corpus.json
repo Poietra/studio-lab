@@ -1,0 +1,53 @@
+{
+  "schema": "poietra.visual-parity-corpus",
+  "version": 1,
+  "metricContract": {
+    "schema": "poietra.visual-parity-metric",
+    "version": 1,
+    "colorDomain": "srgb-u8",
+    "alpha": "stored-premultiplied-rgba-four-channels-equal-weight",
+    "ssim": {
+      "aggregation": "unweighted-arithmetic-mean-of-window-channel-scores",
+      "channels": ["red", "green", "blue", "alpha"],
+      "constants": { "dynamicRange": 255, "k1": 0.01, "k2": 0.03 },
+      "variance": "population",
+      "window": {
+        "edge": "clip",
+        "edgeWindowWeight": "equal",
+        "heightPx": 8,
+        "kind": "uniform",
+        "stridePx": 8,
+        "widthPx": 8
+      }
+    },
+    "pixelDifference": {
+      "classification": "any-rgba-channel-strictly-greater",
+      "thresholdU8": 8
+    },
+    "diffImage": "max-absolute-rgba-grayscale-opaque"
+  },
+  "defaultThresholds": {
+    "maximumPixelFractionAboveThreshold": 0.005,
+    "minimumSsim": 0.995
+  },
+  "entries": [
+    {
+      "id": "dynamic-affine-camera--a-first",
+      "fixture": {
+        "id": "eng-v1-dynamic-affine-camera",
+        "path": "fixtures/engine-v1/dynamic-affine-camera.json",
+        "revision": {
+          "kind": "studio-edit-program",
+          "sha256": "1641641641641641641641641641641641641641641641641641641641641641"
+        }
+      },
+      "sample": {
+        "id": "a-first",
+        "sampleTime": 0.75,
+        "semanticDigest": "c29280443cc17ea9fed6882527d3a624865296a864e4f14a0aa791d656ba4a19",
+        "viewport": { "heightPx": 90, "widthPx": 160 }
+      },
+      "thresholdException": null
+    }
+  ]
+}
