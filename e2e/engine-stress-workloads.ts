@@ -1,3 +1,4 @@
+import { MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES } from "../src/engine/canvas-worker-protocol";
 import {
   type AnimationChannelV1,
   type CubicPathV1,
@@ -6,14 +7,13 @@ import {
   type SceneIrBundleV1,
   sceneIrBundleV1Schema,
 } from "../src/engine/contracts";
-import { MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES } from "../src/engine/canvas-worker-protocol";
 
 /**
  * Shared 1920x1080 stress workload generators.
  *
  * The stress benchmark and the stage-telemetry benchmark must measure the
- * exact same 100/1,000 shape-primitive and animated-cubic workloads so their
- * evidence stays comparable across runs and commits.
+ * exact same 100/1,000 shape-primitive, animated-cubic, and PNG-image
+ * workloads so their evidence stays comparable across runs and commits.
  */
 export const STRESS_VIEWPORT = { heightPx: 1_080, widthPx: 1_920 } as const;
 
@@ -53,9 +53,12 @@ export const STAGE_TELEMETRY_COUNT_NAMES = [
 export type StressDefinition = Readonly<{
   entityCount: 100 | 1_000;
   id: string;
-  profile: "animated-cubic-paths" | "shape-primitives";
+  profile: "animated-cubic-paths" | "png-images" | "shape-primitives";
   revision: string;
 }>;
+
+/** Four f32x5 vertices and six u32 indices emitted for each image draw. */
+export const IMAGE_GEOMETRY_UPLOAD_BYTES_PER_DRAW = 4 * 5 * 4 + 6 * 4;
 
 export const STRESS_DEFINITIONS: readonly StressDefinition[] = [
   { entityCount: 100, id: "shape-primitives-100", profile: "shape-primitives", revision: "1".repeat(64) },
@@ -67,6 +70,8 @@ export const STRESS_DEFINITIONS: readonly StressDefinition[] = [
     profile: "animated-cubic-paths",
     revision: "4".repeat(64),
   },
+  { entityCount: 100, id: "png-images-100", profile: "png-images", revision: "5".repeat(64) },
+  { entityCount: 1_000, id: "png-images-1000", profile: "png-images", revision: "6".repeat(64) },
 ];
 
 export type TimingSummary = Readonly<{
@@ -289,6 +294,36 @@ function animatedCubicEntity(index: number, count: number): SceneEntityV1 {
   };
 }
 
+function imageEntity(index: number, count: number, asset: SceneIrBundleV1["assets"]["assets"][number]): SceneEntityV1 {
+  const position = gridPosition(index, count);
+  const maxWidth = position.cellWidth * 0.72;
+  const maxHeight = position.cellHeight * 0.72;
+  const aspectRatio = asset.pixelWidth / asset.pixelHeight;
+  const width = Math.min(maxWidth, maxHeight * aspectRatio);
+  const height = width / aspectRatio;
+  return {
+    appearance: { kind: "image", opacity: 1 },
+    geometry: {
+      asset: { assetId: asset.id, sha256: asset.sha256 },
+      kind: "image",
+      localRect: {
+        bottom: position.y - height / 2,
+        left: position.x - width / 2,
+        right: position.x + width / 2,
+        top: position.y + height / 2,
+      },
+      sampler: index % 2 === 0 ? "nearest" : "linear",
+    },
+    id: `stress:image:${index}`,
+    lifetimes: [{ end: 4, start: 0 }],
+    parentId: null,
+    provenanceId: "stress-fixture",
+    sceneOrder: index,
+    sourceZIndex: index,
+    transform: IDENTITY,
+  };
+}
+
 function animatedChannel(index: number, count: number): AnimationChannelV1 {
   const entityId = `stress:cubic:${index}`;
   const position = gridPosition(index, count);
@@ -336,8 +371,16 @@ function animatedChannel(index: number, count: number): AnimationChannelV1 {
 
 export function stressBundle(base: SceneIrBundleV1, definition: StressDefinition) {
   const animated = definition.profile === "animated-cubic-paths";
+  const imageAsset = definition.profile === "png-images" ? base.assets.assets[0] : undefined;
+  if (definition.profile === "png-images" && (base.assets.assets.length !== 1 || !imageAsset)) {
+    throw new Error(`${definition.id} requires exactly one verified PNG asset in its base fixture`);
+  }
   const entities = Array.from({ length: definition.entityCount }, (_, index) =>
-    animated ? animatedCubicEntity(index, definition.entityCount) : shapeEntity(index, definition.entityCount),
+    animated
+      ? animatedCubicEntity(index, definition.entityCount)
+      : imageAsset
+        ? imageEntity(index, definition.entityCount, imageAsset)
+        : shapeEntity(index, definition.entityCount),
   );
   const animationChannels: AnimationChannelV1[] = animated
     ? [
@@ -366,6 +409,10 @@ export function stressBundle(base: SceneIrBundleV1, definition: StressDefinition
     scene: {
       ...base.scene,
       animationChannels,
+      camera: {
+        ...base.scene.camera,
+        view: { center: { x: 0, y: 0 }, frameHeight: 9, frameWidth: 16 },
+      },
       duration: 4,
       entities,
       provenance: [
@@ -377,7 +424,9 @@ export function stressBundle(base: SceneIrBundleV1, definition: StressDefinition
       ],
       requiredCapabilities: animated
         ? ["affine-transform-animation", "camera-animation", "cubic-path-geometry", "path-morph-animation"]
-        : ["shape-primitives"],
+        : imageAsset
+          ? ["png-image"]
+          : ["shape-primitives"],
       sceneId: `stress:${definition.id}`,
       source: { editProgramVersion: 1, kind: "studio-edit-program", revisionHash: definition.revision },
     },
