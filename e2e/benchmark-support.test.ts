@@ -7,7 +7,10 @@ import { describe, expect, it } from "vitest";
 // @ts-expect-error - plain .mjs module with a sibling .d.ts; vitest resolves it at runtime.
 import { makeBenchmarkBuildManifest } from "../scripts/benchmark-build-manifest.mjs";
 import { adapterEvidenceFixtureV1, measuredTelemetryFixtureV1 } from "../src/engine/canvas-telemetry-test-fixtures";
-import { MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES } from "../src/engine/canvas-worker-protocol";
+import {
+  type CanvasAdapterEvidenceV1,
+  MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES,
+} from "../src/engine/canvas-worker-protocol";
 import { sceneIrBundleV1Schema } from "../src/engine/contracts";
 import {
   assessDecisionEligibility,
@@ -116,6 +119,32 @@ function referenceWorkerAdapter(referenceHost: PinnedReferenceHostProfile = REFE
   };
 }
 
+function referenceAdapterEvidenceFixture(): CanvasAdapterEvidenceV1 {
+  return {
+    ...adapterEvidenceFixtureV1(),
+    adapter: referenceWorkerAdapter(),
+  };
+}
+
+function cpuAdapterEvidence(evidence: CanvasAdapterEvidenceV1): CanvasAdapterEvidenceV1 {
+  return {
+    ...evidence,
+    adapter: { ...evidence.adapter, deviceType: "Cpu", name: "forged CPU adapter" },
+  };
+}
+
+function softwareAdapterEvidence(evidence: CanvasAdapterEvidenceV1): CanvasAdapterEvidenceV1 {
+  return {
+    ...evidence,
+    adapter: {
+      ...evidence.adapter,
+      driver: "SwiftShader",
+      driverInfo: "software rasterizer",
+      name: "Google SwiftShader",
+    },
+  };
+}
+
 type StressProfile = "animated-cubic-paths" | "png-images" | "shape-primitives";
 
 function stressDefinitionFixture(profile: StressProfile, entityCount: 100 | 1_000) {
@@ -179,23 +208,25 @@ function stressWorkloadFixture(
     randomSeekAck: timing,
     snapshotBytes: 1,
     snapshotSha256: "2".repeat(64),
-    workerDeviceAdapter: { evidence: adapterEvidenceFixtureV1(), kind: "available" },
+    workerDeviceAdapter: { evidence: referenceAdapterEvidenceFixture(), kind: "available" },
   };
 }
 
 function completeStressWorkloadFixtures() {
-  return [
-    stressWorkloadFixture(100, 100),
-    stressWorkloadFixture(1_000, 128, MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES),
-    stressWorkloadFixture(100, 100, 1_000, "animated-cubic-paths"),
-    stressWorkloadFixture(1_000, 128, 1_000, "animated-cubic-paths"),
-    stressWorkloadFixture(100, 100, 1_000, "png-images"),
-    stressWorkloadFixture(1_000, 128, 1_000, "png-images"),
-  ];
+  return STRESS_DEFINITIONS.map((definition) => ({
+    ...stressWorkloadFixture(definition.entityCount, Math.min(definition.entityCount, 128)),
+    definition,
+  }));
 }
 
-const FIXTURE_UNAVAILABLE = { reason: "not observable in this harness", status: "unavailable" } as const;
 const FIXTURE_COMMIT_IDENTITY = { headCommit: COMMIT_A, treeState: "clean", uncommittedPathCount: 0 } as const;
+const FIXTURE_PAGE_ADAPTER_HINT = {
+  architecture: "reference-hardware",
+  description: "reference adapter",
+  device: REFERENCE_HOST.profile.selectedWorkerAdapter.deviceId.toString(16),
+  kind: "available",
+  vendor: REFERENCE_HOST.profile.selectedWorkerAdapter.vendorId.toString(16),
+} as const;
 
 function reportEnvelopeFixture(reportSchema: string, reportVersion: number) {
   return {
@@ -206,23 +237,16 @@ function reportEnvelopeFixture(reportSchema: string, reportVersion: number) {
       reportVersion,
       telemetryAbiVersion: 3,
     },
-    decisionEligibility: { eligible: false, reasons: ["fixture report is exploratory"] },
+    decisionEligibility: { eligible: true, reasons: [] },
     environment: {
-      browserLaunch: { args: [], channel: "chromium" },
-      browserVersion: "fixture-browser",
-      host: {
-        browserInstallation: FIXTURE_UNAVAILABLE,
-        commitIdentity: FIXTURE_COMMIT_IDENTITY,
-        cpu: { logicalCores: 1, model: "fixture CPU" },
-        gpuDriver: FIXTURE_UNAVAILABLE,
-        osKernel: { platform: "linux", release: "fixture", version: "fixture" },
-        powerMode: FIXTURE_UNAVAILABLE,
-        windowsBuild: FIXTURE_UNAVAILABLE,
-      },
+      browserLaunch: { args: [], channel: "msedge" },
+      browserVersion: REFERENCE_HOST.profile.browser.version,
+      host: referenceHostEnvironment(),
+      pageAdapterHint: FIXTURE_PAGE_ADAPTER_HINT,
       referenceHostProfile: REFERENCE_HOST.evidence,
       wasm: { byteLength: 1, gzipByteLength: 1, path: "fixture.wasm", sha256: "3".repeat(64) },
     },
-    evidenceLevel: "exploratory",
+    evidenceLevel: "decision-candidate",
     provenance: { commitIdentity: FIXTURE_COMMIT_IDENTITY, grade: "clean-commit" },
     provenanceStableThroughRun: true,
     schema: reportSchema,
@@ -230,9 +254,47 @@ function reportEnvelopeFixture(reportSchema: string, reportVersion: number) {
   };
 }
 
-function stressReportFixture(workloads: readonly unknown[]) {
+function fixtureDecisionFields(input: {
+  browserChannel?: string;
+  browserVersions: readonly string[];
+  grade?: "clean-commit" | "non-decision-grade-dirty-tree";
+  host?: HostEnvironment;
+  pageAdapterHintArchitecture?: string | null;
+  requiredBrowserVersionSamples?: number;
+  requiredWorkerAdapterSamples: number;
+  workerAdapters: readonly WorkerAdapterIdentity[];
+}) {
+  const decisionEligibility = assessDecisionEligibility({
+    browserChannel: input.browserChannel ?? "msedge",
+    browserVersions: input.browserVersions,
+    grade: input.grade ?? "clean-commit",
+    host: input.host ?? referenceHostEnvironment(),
+    pageAdapterHintArchitecture:
+      input.pageAdapterHintArchitecture === undefined
+        ? FIXTURE_PAGE_ADAPTER_HINT.architecture
+        : input.pageAdapterHintArchitecture,
+    referenceHost: REFERENCE_HOST,
+    ...(input.requiredBrowserVersionSamples === undefined
+      ? {}
+      : { requiredBrowserVersionSamples: input.requiredBrowserVersionSamples }),
+    requiredWorkerAdapterSamples: input.requiredWorkerAdapterSamples,
+    workerAdapters: input.workerAdapters,
+  });
+  return {
+    decisionEligibility,
+    evidenceLevel: decisionEligibility.eligible ? ("decision-candidate" as const) : ("exploratory" as const),
+  };
+}
+
+function stressReportFixture(workloads: readonly ReturnType<typeof stressWorkloadFixture>[]) {
+  const decision = fixtureDecisionFields({
+    browserVersions: [REFERENCE_HOST.profile.browser.version],
+    requiredWorkerAdapterSamples: STRESS_DEFINITIONS.length,
+    workerAdapters: workloads.map((workload) => workload.workerDeviceAdapter.evidence.adapter),
+  });
   return {
     ...reportEnvelopeFixture(ENGINE_WEBGPU_STRESS_REPORT_SCHEMA, ENGINE_WEBGPU_STRESS_REPORT_VERSION),
+    ...decision,
     baseFixtureIds: ["eng-v1-shared-circle-opacity", "eng-v1-png-alpha-edge-camera"],
     capturedAt: "2026-07-28T00:00:00.000Z",
     configuration: { lane: "production-build-static-server", retries: { projectRetries: 0, testRetry: 0 } },
@@ -256,14 +318,21 @@ function measuredMemorySample(frameIndex: number, retainedBoundaryPeakBytes: num
 }
 
 function benchmarkReportFixture() {
-  const adapter = adapterEvidenceFixtureV1();
+  const adapter = referenceAdapterEvidenceFixture();
   const envelope = reportEnvelopeFixture(ENGINE_WEBGPU_BENCHMARK_REPORT_SCHEMA, ENGINE_WEBGPU_BENCHMARK_REPORT_VERSION);
+  const decision = fixtureDecisionFields({
+    browserVersions: Array.from({ length: 21 }, () => REFERENCE_HOST.profile.browser.version),
+    requiredBrowserVersionSamples: 21,
+    requiredWorkerAdapterSamples: 21,
+    workerAdapters: Array.from({ length: 21 }, () => adapter.adapter),
+  });
   return {
     ...envelope,
+    ...decision,
     baseFixtureId: "eng-v1-shared-circle-opacity",
     capturedAt: "2026-07-28T00:00:00.000Z",
     coldRuns: Array.from({ length: 20 }, (_, run) => ({
-      browserVersion: "fixture-browser",
+      browserVersion: REFERENCE_HOST.profile.browser.version,
       run,
       sceneReadyMs: 1,
       workerDeviceAdapter: adapter,
@@ -277,6 +346,12 @@ function benchmarkReportFixture() {
     },
     environment: {
       ...envelope.environment,
+      pageAdapterHint: {
+        architecture: FIXTURE_PAGE_ADAPTER_HINT.architecture,
+        description: FIXTURE_PAGE_ADAPTER_HINT.description,
+        device: FIXTURE_PAGE_ADAPTER_HINT.device,
+        vendor: FIXTURE_PAGE_ADAPTER_HINT.vendor,
+      },
       workerDeviceAdapter: { evidence: adapter, kind: "available" },
     },
     metrics: {
@@ -354,13 +429,20 @@ function stageTelemetryWorkloadFixture(definition = STRESS_DEFINITIONS[0]!) {
     snapshotSha256: "2".repeat(64),
     telemetryAck: timing,
     totalMsSummary: timing,
-    workerDeviceAdapter: { evidence: adapterEvidenceFixtureV1(), kind: "available" },
+    workerDeviceAdapter: { evidence: referenceAdapterEvidenceFixture(), kind: "available" },
   };
 }
 
 function stageTelemetryReportFixture() {
+  const workloads = STRESS_DEFINITIONS.map((definition) => stageTelemetryWorkloadFixture(definition));
+  const decision = fixtureDecisionFields({
+    browserVersions: [REFERENCE_HOST.profile.browser.version],
+    requiredWorkerAdapterSamples: STRESS_DEFINITIONS.length,
+    workerAdapters: workloads.map((workload) => workload.workerDeviceAdapter.evidence.adapter),
+  });
   return {
     ...reportEnvelopeFixture(ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_SCHEMA, ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_VERSION),
+    ...decision,
     baseFixtureIds: ["eng-v1-shared-circle-opacity", "eng-v1-png-alpha-edge-camera"],
     capturedAt: "2026-07-28T00:00:00.000Z",
     configuration: {
@@ -381,7 +463,7 @@ function stageTelemetryReportFixture() {
       total: "wasm-linear-plus-logical-gpu-resident",
       wasmBreakdown: "informational-subsets-already-contained-in-wasm-linear",
     },
-    workloads: STRESS_DEFINITIONS.map((definition) => stageTelemetryWorkloadFixture(definition)),
+    workloads,
   };
 }
 
@@ -816,6 +898,199 @@ describe("report summaries", () => {
     ).toBe(false);
   });
 
+  it("recomputes eligibility from every report's host, browser, profile hash, and Worker evidence", () => {
+    const benchmark = benchmarkReportFixture();
+    const stress = stressReportFixture(completeStressWorkloadFixtures());
+    const stage = stageTelemetryReportFixture();
+    const benchmarkWithAdapters = (transform: (evidence: CanvasAdapterEvidenceV1) => CanvasAdapterEvidenceV1) => ({
+      ...benchmark,
+      coldRuns: benchmark.coldRuns.map((coldRun) => ({
+        ...coldRun,
+        workerDeviceAdapter: transform(coldRun.workerDeviceAdapter),
+      })),
+      environment: {
+        ...benchmark.environment,
+        workerDeviceAdapter: {
+          evidence: transform(benchmark.environment.workerDeviceAdapter.evidence),
+          kind: "available" as const,
+        },
+      },
+    });
+    const stressWithAdapters = (transform: (evidence: CanvasAdapterEvidenceV1) => CanvasAdapterEvidenceV1) => ({
+      ...stress,
+      workloads: stress.workloads.map((workload) => ({
+        ...workload,
+        workerDeviceAdapter: {
+          evidence: transform(workload.workerDeviceAdapter.evidence),
+          kind: "available" as const,
+        },
+      })),
+    });
+    const stageWithAdapters = (transform: (evidence: CanvasAdapterEvidenceV1) => CanvasAdapterEvidenceV1) => ({
+      ...stage,
+      workloads: stage.workloads.map((workload) => ({
+        ...workload,
+        workerDeviceAdapter: {
+          evidence: transform(workload.workerDeviceAdapter.evidence),
+          kind: "available" as const,
+        },
+      })),
+    });
+    const cases = [
+      {
+        cpuReport: benchmarkWithAdapters(cpuAdapterEvidence),
+        name: "benchmark",
+        pageSoftwareReport: {
+          ...benchmark,
+          environment: {
+            ...benchmark.environment,
+            pageAdapterHint: { ...benchmark.environment.pageAdapterHint, architecture: "SwiftShader" },
+          },
+        },
+        report: benchmark,
+        schema: engineWebgpuBenchmarkReportSchema,
+        softwareReport: benchmarkWithAdapters(softwareAdapterEvidence),
+      },
+      {
+        cpuReport: stressWithAdapters(cpuAdapterEvidence),
+        name: "stress",
+        pageSoftwareReport: {
+          ...stress,
+          environment: {
+            ...stress.environment,
+            pageAdapterHint: { ...stress.environment.pageAdapterHint, architecture: "SwiftShader" },
+          },
+        },
+        report: stress,
+        schema: engineWebgpuStressReportSchema,
+        softwareReport: stressWithAdapters(softwareAdapterEvidence),
+      },
+      {
+        cpuReport: stageWithAdapters(cpuAdapterEvidence),
+        name: "stage",
+        pageSoftwareReport: {
+          ...stage,
+          environment: {
+            ...stage.environment,
+            pageAdapterHint: { ...stage.environment.pageAdapterHint, architecture: "SwiftShader" },
+          },
+        },
+        report: stage,
+        schema: engineWebgpuStageTelemetryReportSchema,
+        softwareReport: stageWithAdapters(softwareAdapterEvidence),
+      },
+    ] as const;
+
+    for (const reportCase of cases) {
+      expect(reportCase.report.decisionEligibility, reportCase.name).toEqual({ eligible: true, reasons: [] });
+      expect(reportCase.report.provenance.grade, reportCase.name).toBe("clean-commit");
+      expect(reportCase.schema.safeParse(reportCase.report).success, reportCase.name).toBe(true);
+
+      const common = reportCase.report as typeof reportCase.report & {
+        environment: {
+          browserLaunch: { args: readonly string[]; channel: string };
+          browserVersion: string;
+          host: HostEnvironment;
+          referenceHostProfile: PinnedReferenceHostProfile["evidence"];
+        };
+      };
+      const linux = {
+        ...common,
+        environment: {
+          ...common.environment,
+          host: {
+            ...common.environment.host,
+            osKernel: { ...common.environment.host.osKernel, platform: "linux" },
+          },
+        },
+      };
+      const chromium = {
+        ...common,
+        environment: {
+          ...common.environment,
+          browserLaunch: { args: [], channel: "chromium" },
+        },
+      };
+      expect(reportCase.schema.safeParse(linux).success, `${reportCase.name}: Linux host`).toBe(false);
+      expect(reportCase.schema.safeParse(chromium).success, `${reportCase.name}: Chromium channel`).toBe(false);
+      expect(reportCase.schema.safeParse(reportCase.cpuReport).success, `${reportCase.name}: CPU adapter`).toBe(false);
+      expect(
+        reportCase.schema.safeParse(reportCase.softwareReport).success,
+        `${reportCase.name}: software adapter`,
+      ).toBe(false);
+      expect(
+        reportCase.schema.safeParse(reportCase.pageSoftwareReport).success,
+        `${reportCase.name}: page software hint`,
+      ).toBe(false);
+      expect(
+        reportCase.schema.safeParse({
+          ...common,
+          environment: {
+            ...common.environment,
+            referenceHostProfile: { ...common.environment.referenceHostProfile, sha256: "0".repeat(64) },
+          },
+        }).success,
+        `${reportCase.name}: forged reference-profile hash`,
+      ).toBe(false);
+      expect(
+        reportCase.schema.safeParse({
+          ...common,
+          environment: { ...common.environment, browserVersion: "0.0.0.0" },
+        }).success,
+        `${reportCase.name}: browser-version mismatch`,
+      ).toBe(false);
+    }
+  });
+
+  it("requires benchmark v3 cold-run indexes, browser versions, and complete adapter identity to agree", () => {
+    const report = benchmarkReportFixture();
+    expect(engineWebgpuBenchmarkReportSchema.safeParse(report).success).toBe(true);
+
+    expect(
+      engineWebgpuBenchmarkReportSchema.safeParse({
+        ...report,
+        coldRuns: report.coldRuns.map((coldRun, index) => (index === 19 ? { ...coldRun, run: 18 } : coldRun)),
+      }).success,
+    ).toBe(false);
+    expect(
+      engineWebgpuBenchmarkReportSchema.safeParse({
+        ...report,
+        coldRuns: report.coldRuns.map((coldRun, index) => (index === 19 ? { ...coldRun, run: 20 } : coldRun)),
+      }).success,
+    ).toBe(false);
+    expect(
+      engineWebgpuBenchmarkReportSchema.safeParse({
+        ...report,
+        coldRuns: report.coldRuns.map((coldRun, index) =>
+          index === 0 ? { ...coldRun, browserVersion: "0.0.0.0" } : coldRun,
+        ),
+      }).success,
+    ).toBe(false);
+
+    for (const adapterPatch of [
+      { deviceId: report.coldRuns[0]!.workerDeviceAdapter.adapter.deviceId + 1 },
+      { driver: "different-driver" },
+      { deviceType: "IntegratedGpu" },
+    ]) {
+      expect(
+        engineWebgpuBenchmarkReportSchema.safeParse({
+          ...report,
+          coldRuns: report.coldRuns.map((coldRun, index) =>
+            index === 0
+              ? {
+                  ...coldRun,
+                  workerDeviceAdapter: {
+                    ...coldRun.workerDeviceAdapter,
+                    adapter: { ...coldRun.workerDeviceAdapter.adapter, ...adapterPatch },
+                  },
+                }
+              : coldRun,
+          ),
+        }).success,
+      ).toBe(false);
+    }
+  });
+
   it("executes the stress report schema for canonical vector and PNG definitions", () => {
     const report = stressReportFixture(completeStressWorkloadFixtures());
     const parsed = engineWebgpuStressReportSchema.parse(report);
@@ -944,9 +1219,13 @@ describe("report summaries", () => {
         decisionEligibility: { eligible: false, reasons: [] },
       }).success,
     ).toBe(false);
-    expect(engineWebgpuStressReportSchema.safeParse({ ...report, evidenceLevel: "decision-candidate" }).success).toBe(
-      false,
-    );
+    expect(
+      engineWebgpuStressReportSchema.safeParse({
+        ...report,
+        decisionEligibility: { eligible: false, reasons: ["forged evidence-derived reason"] },
+      }).success,
+    ).toBe(false);
+    expect(engineWebgpuStressReportSchema.safeParse({ ...report, evidenceLevel: "exploratory" }).success).toBe(false);
     expect(
       engineWebgpuStressReportSchema.safeParse({
         ...report,
@@ -955,11 +1234,20 @@ describe("report summaries", () => {
     ).toBe(false);
 
     const dirtyCommitIdentity = { headCommit: COMMIT_A, treeState: "dirty", uncommittedPathCount: 1 } as const;
+    const dirtyHost = { ...report.environment.host, commitIdentity: dirtyCommitIdentity };
+    const dirtyDecision = fixtureDecisionFields({
+      browserVersions: [report.environment.browserVersion],
+      grade: "non-decision-grade-dirty-tree",
+      host: dirtyHost,
+      requiredWorkerAdapterSamples: STRESS_DEFINITIONS.length,
+      workerAdapters: report.workloads.map((workload) => workload.workerDeviceAdapter.evidence.adapter),
+    });
     const consistentDirtyReport = {
       ...report,
+      ...dirtyDecision,
       environment: {
         ...report.environment,
-        host: { ...report.environment.host, commitIdentity: dirtyCommitIdentity },
+        host: dirtyHost,
       },
       provenance: { commitIdentity: dirtyCommitIdentity, grade: "non-decision-grade-dirty-tree" },
     };

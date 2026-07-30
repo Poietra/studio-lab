@@ -5,8 +5,21 @@ import {
   canvasMeasuredMemoryTelemetryV1Schema,
   MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES,
 } from "../src/engine/canvas-worker-protocol";
-import { hostEnvironmentSchema, referenceHostProfileEvidenceSchema } from "./benchmark-environment";
-import { STAGE_TELEMETRY_COUNT_NAMES, STAGE_TELEMETRY_PHASE_NAMES } from "./engine-stress-workloads";
+import {
+  assessDecisionEligibility,
+  type DecisionEligibility,
+  hostEnvironmentSchema,
+  type PinnedReferenceHostProfile,
+  readPinnedReferenceHostProfile,
+  referenceHostProfileEvidenceSchema,
+  type WorkerAdapterIdentity,
+  workerAdapterIdentityEquals,
+} from "./benchmark-environment";
+import {
+  STAGE_TELEMETRY_COUNT_NAMES,
+  STAGE_TELEMETRY_PHASE_NAMES,
+  STRESS_DEFINITIONS,
+} from "./engine-stress-workloads";
 
 /** Strict schemas for the raw measurement bodies; envelopes may add descriptive metadata. */
 const strictObject = z.strictObject;
@@ -81,6 +94,18 @@ const evidenceEnvelope = {
 };
 const browserLaunch = strictObject({ args: z.array(z.string()), channel: z.enum(["chromium", "msedge"]) });
 const browserVersion = z.string().min(1);
+const availablePageAdapterHint = strictObject({
+  architecture: z.string().min(1),
+  description: z.string().min(1),
+  device: z.string().min(1),
+  kind: z.literal("available"),
+  vendor: z.string().min(1),
+});
+const pageAdapterHint = z.discriminatedUnion("kind", [
+  availablePageAdapterHint,
+  strictObject({ kind: z.literal("unavailable"), reason: z.string().min(1) }),
+]);
+const benchmarkPageAdapterHint = z.union([availablePageAdapterHint.omit({ kind: true }), z.null()]);
 const wasmEvidence = strictObject({
   byteLength: positiveCount,
   gzipByteLength: positiveCount,
@@ -104,6 +129,9 @@ type EvidenceEnvelopeReport = Readonly<{
 }>;
 
 type EnvelopeIssue = Readonly<{ message: string; path: readonly (number | string)[] }>;
+type AddEnvelopeIssue = (issue: { code: "custom"; message: string; path: (number | string)[] }) => void;
+
+const PINNED_REFERENCE_HOST = readPinnedReferenceHostProfile();
 
 function evidenceEnvelopeIssues(
   report: EvidenceEnvelopeReport,
@@ -174,11 +202,70 @@ function addEvidenceEnvelopeIssues(
   report: EvidenceEnvelopeReport,
   expectedSchema: string,
   expectedVersion: number,
-  addIssue: (issue: { code: "custom"; message: string; path: (number | string)[] }) => void,
+  addIssue: AddEnvelopeIssue,
 ) {
   for (const issue of evidenceEnvelopeIssues(report, expectedSchema, expectedVersion)) {
     addIssue({ code: "custom", message: issue.message, path: [...issue.path] });
   }
+}
+
+function referenceHostEvidenceEquals(
+  evidence: z.infer<typeof referenceHostProfileEvidenceSchema>,
+  pinned: PinnedReferenceHostProfile,
+): boolean {
+  return (
+    evidence.id === pinned.evidence.id &&
+    evidence.path === pinned.evidence.path &&
+    evidence.sha256 === pinned.evidence.sha256 &&
+    evidence.status === pinned.evidence.status
+  );
+}
+
+function decisionEligibilityEquals(left: DecisionEligibility, right: DecisionEligibility): boolean {
+  return (
+    left.eligible === right.eligible &&
+    left.reasons.length === right.reasons.length &&
+    left.reasons.every((reason, index) => reason === right.reasons[index])
+  );
+}
+
+function addRecomputedDecisionEligibilityIssues(
+  input: Omit<Parameters<typeof assessDecisionEligibility>[0], "referenceHost"> &
+    Readonly<{
+      referenceHostEvidence: z.infer<typeof referenceHostProfileEvidenceSchema>;
+      reported: DecisionEligibility;
+    }>,
+  addIssue: AddEnvelopeIssue,
+) {
+  if (!referenceHostEvidenceEquals(input.referenceHostEvidence, PINNED_REFERENCE_HOST)) {
+    addIssue({
+      code: "custom",
+      message: "environment.referenceHostProfile must exactly identify the checked-in profile bytes",
+      path: ["environment", "referenceHostProfile"],
+    });
+  }
+  const recomputed = assessDecisionEligibility({
+    browserChannel: input.browserChannel,
+    browserVersions: input.browserVersions,
+    grade: input.grade,
+    host: input.host,
+    pageAdapterHintArchitecture: input.pageAdapterHintArchitecture,
+    referenceHost: PINNED_REFERENCE_HOST,
+    requiredBrowserVersionSamples: input.requiredBrowserVersionSamples,
+    requiredWorkerAdapterSamples: input.requiredWorkerAdapterSamples,
+    workerAdapters: input.workerAdapters,
+  });
+  if (!decisionEligibilityEquals(input.reported, recomputed)) {
+    addIssue({
+      code: "custom",
+      message: `decisionEligibility must exactly equal the evidence-derived assessment: ${JSON.stringify(recomputed)}`,
+      path: ["decisionEligibility"],
+    });
+  }
+}
+
+function availableAdapterIdentities(samples: readonly z.infer<typeof workerAdapter>[]): WorkerAdapterIdentity[] {
+  return samples.flatMap((sample) => (sample.kind === "available" ? [sample.evidence.adapter] : []));
 }
 
 export const engineWebgpuBenchmarkReportSchema = z
@@ -207,6 +294,7 @@ export const engineWebgpuBenchmarkReportSchema = z
       browserLaunch,
       browserVersion,
       host: hostEnvironmentSchema,
+      pageAdapterHint: benchmarkPageAdapterHint,
       referenceHostProfile: referenceHostProfileEvidenceSchema,
       wasm: wasmEvidence,
       workerDeviceAdapter: workerAdapter,
@@ -227,6 +315,56 @@ export const engineWebgpuBenchmarkReportSchema = z
       report,
       ENGINE_WEBGPU_BENCHMARK_REPORT_SCHEMA,
       ENGINE_WEBGPU_BENCHMARK_REPORT_VERSION,
+      (issue) => context.addIssue(issue),
+    );
+    const runIndexes = new Set(report.coldRuns.map((run) => run.run));
+    if (runIndexes.size !== 20 || [...runIndexes].some((run) => run < 0 || run >= 20)) {
+      context.addIssue({
+        code: "custom",
+        message: "coldRuns.run must contain every unique index from 0 through 19",
+        path: ["coldRuns"],
+      });
+    }
+    for (const [index, coldRun] of report.coldRuns.entries()) {
+      if (coldRun.browserVersion !== report.environment.browserVersion) {
+        context.addIssue({
+          code: "custom",
+          message: "cold-run browserVersion must equal environment.browserVersion",
+          path: ["coldRuns", index, "browserVersion"],
+        });
+      }
+    }
+    const primaryAdapter =
+      report.environment.workerDeviceAdapter.kind === "available"
+        ? report.environment.workerDeviceAdapter.evidence.adapter
+        : null;
+    if (primaryAdapter) {
+      for (const [index, coldRun] of report.coldRuns.entries()) {
+        if (!workerAdapterIdentityEquals(coldRun.workerDeviceAdapter.adapter, primaryAdapter)) {
+          context.addIssue({
+            code: "custom",
+            message: "cold-run Worker adapter identity must equal the primary Worker adapter identity",
+            path: ["coldRuns", index, "workerDeviceAdapter", "adapter"],
+          });
+        }
+      }
+    }
+    addRecomputedDecisionEligibilityIssues(
+      {
+        browserChannel: report.environment.browserLaunch.channel,
+        browserVersions: [...report.coldRuns.map((run) => run.browserVersion), report.environment.browserVersion],
+        grade: report.provenance.grade,
+        host: report.environment.host,
+        pageAdapterHintArchitecture: report.environment.pageAdapterHint?.architecture ?? null,
+        referenceHostEvidence: report.environment.referenceHostProfile,
+        reported: report.decisionEligibility,
+        requiredBrowserVersionSamples: 21,
+        requiredWorkerAdapterSamples: 21,
+        workerAdapters: [
+          ...report.coldRuns.map((run) => run.workerDeviceAdapter.adapter),
+          ...availableAdapterIdentities([report.environment.workerDeviceAdapter]),
+        ],
+      },
       (issue) => context.addIssue(issue),
     );
   });
@@ -342,6 +480,7 @@ export const engineWebgpuStressReportSchema = z
       browserLaunch,
       browserVersion,
       host: hostEnvironmentSchema,
+      pageAdapterHint,
       referenceHostProfile: referenceHostProfileEvidenceSchema,
       wasm: wasmEvidence,
     }),
@@ -357,6 +496,23 @@ export const engineWebgpuStressReportSchema = z
       (issue) => context.addIssue(issue),
     );
     requireCanonicalStressWorkloadOrder(report.workloads, context);
+    addRecomputedDecisionEligibilityIssues(
+      {
+        browserChannel: report.environment.browserLaunch.channel,
+        browserVersions: [report.environment.browserVersion],
+        grade: report.provenance.grade,
+        host: report.environment.host,
+        pageAdapterHintArchitecture:
+          report.environment.pageAdapterHint.kind === "available"
+            ? report.environment.pageAdapterHint.architecture
+            : null,
+        referenceHostEvidence: report.environment.referenceHostProfile,
+        reported: report.decisionEligibility,
+        requiredWorkerAdapterSamples: STRESS_DEFINITIONS.length,
+        workerAdapters: availableAdapterIdentities(report.workloads.map((workload) => workload.workerDeviceAdapter)),
+      },
+      (issue) => context.addIssue(issue),
+    );
   });
 
 const cacheOutcome = z.enum(["absent", "hit", "miss", "retained", "skipped"]);
@@ -455,6 +611,7 @@ export const engineWebgpuStageTelemetryReportSchema = z
       browserLaunch,
       browserVersion,
       host: hostEnvironmentSchema,
+      pageAdapterHint,
       referenceHostProfile: referenceHostProfileEvidenceSchema,
       wasm: wasmEvidence,
     }),
@@ -552,4 +709,21 @@ export const engineWebgpuStageTelemetryReportSchema = z
         });
       }
     }
+    addRecomputedDecisionEligibilityIssues(
+      {
+        browserChannel: report.environment.browserLaunch.channel,
+        browserVersions: [report.environment.browserVersion],
+        grade: report.provenance.grade,
+        host: report.environment.host,
+        pageAdapterHintArchitecture:
+          report.environment.pageAdapterHint.kind === "available"
+            ? report.environment.pageAdapterHint.architecture
+            : null,
+        referenceHostEvidence: report.environment.referenceHostProfile,
+        reported: report.decisionEligibility,
+        requiredWorkerAdapterSamples: STRESS_DEFINITIONS.length,
+        workerAdapters: availableAdapterIdentities(report.workloads.map((workload) => workload.workerDeviceAdapter)),
+      },
+      (issue) => context.addIssue(issue),
+    );
   });

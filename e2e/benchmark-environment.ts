@@ -334,9 +334,33 @@ function adapterIdentity(adapter: WorkerAdapterIdentity): WorkerAdapterIdentity 
   return workerAdapterIdentitySchema.parse(adapter);
 }
 
-function referenceAdapterIdentity(adapter: WorkerAdapterIdentity) {
-  const { backend, deviceId, deviceType, source, vendorId } = adapter;
-  return { backend, deviceId, deviceType, source, vendorId };
+/** Exact identity used to prove that every sample rendered on one adapter. */
+export function workerAdapterIdentityEquals(left: WorkerAdapterIdentity, right: WorkerAdapterIdentity): boolean {
+  return (
+    left.backend === right.backend &&
+    left.deviceId === right.deviceId &&
+    left.deviceType === right.deviceType &&
+    left.driver === right.driver &&
+    left.driverInfo === right.driverInfo &&
+    left.name === right.name &&
+    left.source === right.source &&
+    left.subgroupMaxSize === right.subgroupMaxSize &&
+    left.subgroupMinSize === right.subgroupMinSize &&
+    left.vendorId === right.vendorId
+  );
+}
+
+function referenceAdapterIdentityEquals(
+  adapter: WorkerAdapterIdentity,
+  reference: ReferenceHostProfile["selectedWorkerAdapter"],
+): boolean {
+  return (
+    adapter.backend === reference.backend &&
+    adapter.deviceId === reference.deviceId &&
+    adapter.deviceType === reference.deviceType &&
+    adapter.source === reference.source &&
+    adapter.vendorId === reference.vendorId
+  );
 }
 
 export function assessDecisionEligibility(input: {
@@ -399,15 +423,14 @@ export function assessDecisionEligibility(input: {
       );
       break;
     }
-    if (firstAdapter && JSON.stringify(adapter) !== JSON.stringify(adapterIdentity(firstAdapter))) {
+    if (firstAdapter && !workerAdapterIdentityEquals(adapter, adapterIdentity(firstAdapter))) {
       reasons.push("Worker adapter identity changed between benchmark samples");
       break;
     }
   }
   if (
     firstAdapter &&
-    JSON.stringify(referenceAdapterIdentity(adapterIdentity(firstAdapter))) !==
-      JSON.stringify(input.referenceHost.profile.selectedWorkerAdapter)
+    !referenceAdapterIdentityEquals(adapterIdentity(firstAdapter), input.referenceHost.profile.selectedWorkerAdapter)
   ) {
     reasons.push("the selected Worker adapter does not exactly match the pinned reference profile");
   }
