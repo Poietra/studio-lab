@@ -20,15 +20,22 @@ import { type AssetManifestV1, parseVerifiedAssetManifestV1 } from "./asset-mani
 import type { SceneIrBundleV1 } from "./contracts";
 import type { MathTexOutlineArtifactV1 } from "./mathtex-outline";
 import type { EnginePointV1 } from "./primitives";
-import { type SceneIrV1, sceneIrV1Schema } from "./scene-ir";
+import { type SceneEntityV1, type SceneIrV1, sceneIrV1Schema } from "./scene-ir";
 
 type VectorAppearanceV1 = Extract<SceneIrV1["entities"][number]["appearance"], { kind: "vector" }>;
+type EntityAppearanceV1 = SceneEntityV1["appearance"];
+type ImageGeometryV1 = Extract<SceneEntityV1["geometry"], { kind: "image" }>;
+type ImageSnapshotEvidenceV1 = Readonly<{
+  geometry: ImageGeometryV1;
+  transform: SceneEntityV1["transform"];
+}>;
 
 export type StudioSceneIrAdapterEvidenceV1 = Readonly<{
-  appearances: Readonly<Record<string, VectorAppearanceV1>>;
+  appearances: Readonly<Record<string, EntityAppearanceV1>>;
   camera: SceneIrV1["camera"];
   entityIds?: Readonly<Record<string, string>>;
   fidelity?: SceneIrV1["fidelity"];
+  images?: Readonly<Record<string, ImageSnapshotEvidenceV1>>;
   mathTexOutlines?: Readonly<Record<string, MathTexOutlineArtifactV1>>;
   paintOrder: readonly Readonly<{ entityId: string; sourceZIndex: number }>[];
   provenance: readonly string[];
@@ -159,8 +166,9 @@ export function buildStudioSceneIrAdapterEvidenceV1(
   }>,
 ): BuildStudioSceneIrAdapterEvidenceResultV1 {
   const issues: StudioSceneIrAdapterIssueV1[] = [];
-  const appearances: Record<string, VectorAppearanceV1> = {};
+  const appearances: Record<string, EntityAppearanceV1> = {};
   const entityIds: Record<string, string> = {};
+  const images: Record<string, ImageSnapshotEvidenceV1> = {};
   const paintOrder: { entityId: string; sourceZIndex: number }[] = [];
   const snapshotEntities = new Map(input.snapshot.scene.entities.map((entity) => [entity.id, entity]));
   const mappedRuntimeIds = new Set<string>();
@@ -199,17 +207,25 @@ export function buildStudioSceneIrAdapterEvidenceV1(
       );
       continue;
     }
-    if (mappedRuntimeIds.has(runtimeEntity.id) || runtimeEntity.appearance.kind !== "vector") {
+    const studioImage = entity.type === "ImageMobject";
+    const runtimeImage = runtimeEntity.geometry.kind === "image" && runtimeEntity.appearance.kind === "image";
+    const runtimeVector = runtimeEntity.geometry.kind !== "image" && runtimeEntity.appearance.kind === "vector";
+    if (mappedRuntimeIds.has(runtimeEntity.id) || (studioImage ? !runtimeImage : !runtimeVector)) {
       issues.push(
-        issue("render-style-unresolved", `Imported entity ${entity.id} has ambiguous or non-vector runtime paint.`, {
-          entityId: entity.id,
-        }),
+        issue(
+          "render-style-unresolved",
+          `Imported entity ${entity.id} has ambiguous or mismatched runtime geometry and paint.`,
+          { entityId: entity.id },
+        ),
       );
       continue;
     }
     mappedRuntimeIds.add(runtimeEntity.id);
     appearances[entity.id] = runtimeEntity.appearance;
     entityIds[entity.id] = runtimeEntity.id;
+    if (runtimeImage && runtimeEntity.geometry.kind === "image") {
+      images[entity.id] = { geometry: runtimeEntity.geometry, transform: runtimeEntity.transform };
+    }
     paintOrder.push({ entityId: entity.id, sourceZIndex: runtimeEntity.sourceZIndex });
   }
 
@@ -263,11 +279,14 @@ export function buildStudioSceneIrAdapterEvidenceV1(
         evidence: ["Studio geometry reconstructed from server-correlated static/runtime evidence"],
         kind: "approximate",
       },
+      images,
       mathTexOutlines: input.mathTexOutlines,
       paintOrder,
       provenance: [
         "server-verified imported snapshot and source/runtime identity",
-        "known Studio Circle/Rectangle/MathTex defaults",
+        Object.keys(images).length > 0
+          ? "verified imported image geometry and known Studio Circle/Rectangle/MathTex defaults"
+          : "known Studio Circle/Rectangle/MathTex defaults",
       ],
     },
     kind: "resolved",
@@ -374,7 +393,7 @@ function resolveStaticKnowledge<T extends EntityDimensions | number | Point>(
   key: "dimensions" | "position" | "scale",
   issues: StudioSceneIrAdapterIssueV1[],
 ) {
-  if (channel?.samples.some(({ kind }) => kind === "animated")) {
+  if (channel?.samples.some((sample) => sample.kind === "animated" && sample.interval.end > sample.interval.start)) {
     issues.push(
       issue("property-animation-unsupported", `Static Studio adapter cannot compile animated ${key}.`, {
         entityId: entity.id,
@@ -469,6 +488,36 @@ export function studioPointToScenePointV1(
   };
 }
 
+function imageWorldCenter(image: ImageSnapshotEvidenceV1): EnginePointV1 {
+  const x = (image.geometry.localRect.left + image.geometry.localRect.right) / 2;
+  const y = (image.geometry.localRect.bottom + image.geometry.localRect.top) / 2;
+  return {
+    x: image.transform.m11 * x + image.transform.m12 * y + image.transform.tx,
+    y: image.transform.m21 * x + image.transform.m22 * y + image.transform.ty,
+  };
+}
+
+function sameScenePoint(left: EnginePointV1, right: EnginePointV1) {
+  const tolerance = 1e-9 * Math.max(1, Math.abs(left.x), Math.abs(left.y), Math.abs(right.x), Math.abs(right.y));
+  return Math.abs(left.x - right.x) <= tolerance && Math.abs(left.y - right.y) <= tolerance;
+}
+
+function transformedImageTransform(
+  image: ImageSnapshotEvidenceV1,
+  target: EnginePointV1,
+  relativeScale: number,
+): SceneEntityV1["transform"] {
+  const center = imageWorldCenter(image);
+  return {
+    m11: relativeScale * image.transform.m11,
+    m12: relativeScale * image.transform.m12,
+    m21: relativeScale * image.transform.m21,
+    m22: relativeScale * image.transform.m22,
+    tx: target.x + relativeScale * (image.transform.tx - center.x),
+    ty: target.y + relativeScale * (image.transform.ty - center.y),
+  };
+}
+
 function validateGlobalEvidence(input: StudioSceneIrAdapterInputV1, issues: StudioSceneIrAdapterIssueV1[]) {
   const scene = input.proposedState.evaluatedScene;
   const entityIds = new Set(Object.keys(scene.objectGraph.entities));
@@ -503,6 +552,40 @@ function validateGlobalEvidence(input: StudioSceneIrAdapterInputV1, issues: Stud
       issues.push(
         issue("geometry-unsupported", `MathTex outline evidence references non-MathTex entity ${id}.`, {
           entityId: id,
+        }),
+      );
+    }
+  }
+  for (const [id, image] of Object.entries(input.evidence.images ?? {})) {
+    const entity = scene.objectGraph.entities[id];
+    const appearance = input.evidence.appearances[id];
+    const asset = input.assets.assets.find(({ id: assetId }) => assetId === image.geometry.asset.assetId);
+    if (entity?.type !== "ImageMobject" || appearance?.kind !== "image") {
+      issues.push(
+        issue("geometry-unsupported", `Image snapshot evidence references non-image entity ${id}.`, { entityId: id }),
+      );
+    }
+    if (!asset || asset.sha256 !== image.geometry.asset.sha256) {
+      issues.push(
+        issue("asset-evidence-invalid", `Image entity ${id} does not reference one verified manifest asset.`, {
+          entityId: id,
+        }),
+      );
+    }
+  }
+  for (const entity of Object.values(scene.objectGraph.entities)) {
+    const image = input.evidence.images?.[entity.id];
+    const appearance = input.evidence.appearances[entity.id];
+    if (entity.type === "ImageMobject" && (!image || appearance?.kind !== "image")) {
+      issues.push(
+        issue("geometry-unsupported", `Image entity ${entity.id} has no verified snapshot image evidence.`, {
+          entityId: entity.id,
+        }),
+      );
+    } else if (entity.type !== "ImageMobject" && appearance?.kind === "image") {
+      issues.push(
+        issue("render-style-unresolved", `Non-image entity ${entity.id} cannot use image appearance evidence.`, {
+          entityId: entity.id,
         }),
       );
     }
@@ -555,6 +638,7 @@ function validateProgramsAndChannels(input: StudioSceneIrAdapterInputV1, issues:
     for (const operation of record.program.operations) validOperationIds.add(operation.id);
   }
   for (const [recordId, channel] of Object.entries(input.proposedState.evaluatedScene.propertyChannels)) {
+    const entity = entities[channel.entityId];
     if (recordId !== `${channel.entityId}/${channel.key}`) {
       issues.push(
         issue("unknown-evidence", `Property channel key ${recordId} does not match its entity and property.`, {
@@ -571,7 +655,10 @@ function validateProgramsAndChannels(input: StudioSceneIrAdapterInputV1, issues:
     }
     if (
       !STATIC_PROPERTY_KEYS.has(channel.key) ||
-      (channel.key === "content" && entities[channel.entityId]?.type !== "MathTex")
+      (channel.key === "content" && entity?.type !== "MathTex" && entity?.type !== "ImageMobject") ||
+      (entity?.type === "ImageMobject" &&
+        (channel.key === "content" || channel.key === "dimensions") &&
+        channel.samples.some(({ operationId }) => operationId !== undefined))
     ) {
       issues.push(
         issue("property-unsupported", `Static Studio adapter cannot compile ${channel.key} channels.`, {
@@ -580,7 +667,13 @@ function validateProgramsAndChannels(input: StudioSceneIrAdapterInputV1, issues:
       );
     }
     for (const sample of channel.samples) {
-      if (sample.knowledge?.kind === "unknown") {
+      const snapshotOwnsImageBase =
+        entity?.type === "ImageMobject" &&
+        input.evidence.images?.[channel.entityId] !== undefined &&
+        sample.operationId === undefined &&
+        sample.kind === "exact" &&
+        channel.key === "dimensions";
+      if (sample.knowledge?.kind === "unknown" && !snapshotOwnsImageBase) {
         issues.push(
           issue("unknown-evidence", `Property channel ${recordId} contains unresolved evidence.`, {
             entityId: channel.entityId,
@@ -607,7 +700,8 @@ function compileEntities(input: StudioSceneIrAdapterInputV1, issues: StudioScene
     const entity = scene.objectGraph.entities[order.entityId];
     if (!entity) return [];
     const isMathTex = entity.type === "MathTex";
-    if (entity.type !== "Circle" && entity.type !== "Rectangle" && !isMathTex) {
+    const isImage = entity.type === "ImageMobject";
+    if (entity.type !== "Circle" && entity.type !== "Rectangle" && !isMathTex && !isImage) {
       issues.push(
         issue("geometry-unsupported", `Static Studio adapter does not have geometry for ${entity.type}.`, {
           entityId: entity.id,
@@ -626,21 +720,35 @@ function compileEntities(input: StudioSceneIrAdapterInputV1, issues: StudioScene
       );
       return [];
     }
+    const image = isImage ? input.evidence.images?.[entity.id] : undefined;
+    if (isImage && (!image || appearance.kind !== "image")) {
+      issues.push(
+        issue("geometry-unsupported", `Image entity ${entity.id} has no usable verified snapshot geometry.`, {
+          entityId: entity.id,
+        }),
+      );
+      return [];
+    }
     for (const channel of Object.values(scene.propertyChannels).filter(({ entityId }) => entityId === entity.id)) {
       if (!STATIC_PROPERTY_KEYS.has(channel.key)) return [];
     }
 
-    const dimensions = isMathTex
-      ? undefined
-      : resolveStaticKnowledge(
-          entity,
-          channelFor(scene, entity.id, "dimensions"),
-          entity.geometry?.dimensions,
-          isEntityDimensionsValue,
-          sameDimensions,
-          "dimensions",
-          issues,
-        );
+    const dimensions =
+      isMathTex || isImage
+        ? undefined
+        : resolveStaticKnowledge(
+            entity,
+            channelFor(scene, entity.id, "dimensions"),
+            entity.geometry?.dimensions,
+            isEntityDimensionsValue,
+            sameDimensions,
+            "dimensions",
+            issues,
+          );
+    const snapshotImageCenter = image ? imageWorldCenter(image) : undefined;
+    const baseImagePosition =
+      image && entity.geometry?.position.kind === "known" ? entity.geometry.position.value : null;
+    const baseImageScale = image && entity.geometry?.scale.kind === "known" ? entity.geometry.scale.value : null;
     const position = resolveStaticKnowledge(
       entity,
       channelFor(scene, entity.id, "position"),
@@ -650,11 +758,13 @@ function compileEntities(input: StudioSceneIrAdapterInputV1, issues: StudioScene
       "position",
       issues,
     );
+    const numberGuard = (value: PropertyValue | undefined): value is number =>
+      typeof value === "number" && Number.isFinite(value);
     const scale = resolveStaticKnowledge(
       entity,
       channelFor(scene, entity.id, "scale"),
       entity.geometry?.scale ?? (isMathTex ? { kind: "known", value: 1 } : undefined),
-      (value): value is number => typeof value === "number" && Number.isFinite(value),
+      numberGuard,
       (left, right) => left === right,
       "scale",
       issues,
@@ -674,22 +784,41 @@ function compileEntities(input: StudioSceneIrAdapterInputV1, issues: StudioScene
       return [];
     }
     validatePresence(entity, channelFor(scene, entity.id, "presence"), issues);
-    if ((!isMathTex && !dimensions) || !position || scale === undefined) return [];
+    if ((!isMathTex && !isImage && !dimensions) || !position || scale === undefined) return [];
+    let imageRelativeScale: number | undefined;
+    if (image && snapshotImageCenter) {
+      const baseCenter = baseImagePosition
+        ? studioPointToScenePointV1(baseImagePosition, input.frame, input.evidence.camera.view.center)
+        : null;
+      if (!baseCenter || !sameScenePoint(baseCenter, snapshotImageCenter) || !baseImageScale || baseImageScale <= 0) {
+        issues.push(
+          issue(
+            "unknown-evidence",
+            `Imported image ${entity.id} semantic baseline does not match its verified runtime geometry.`,
+            { entityId: entity.id },
+          ),
+        );
+        return [];
+      }
+      imageRelativeScale = scale / baseImageScale;
+    }
 
     const geometry =
-      isMathTex && mathTexOutline
-        ? { kind: "cubic-path" as const, path: mathTexOutline.path }
-        : entity.type === "Circle" && dimensions?.radius !== undefined
-          ? { center: { x: 0, y: 0 }, kind: "circle" as const, radius: dimensions.radius }
-          : entity.type === "Rectangle" && dimensions?.height !== undefined && dimensions.width !== undefined
-            ? {
-                center: { x: 0, y: 0 },
-                cornerRadius: 0,
-                height: dimensions.height,
-                kind: "rectangle" as const,
-                width: dimensions.width,
-              }
-            : undefined;
+      isImage && image
+        ? image.geometry
+        : isMathTex && mathTexOutline
+          ? { kind: "cubic-path" as const, path: mathTexOutline.path }
+          : entity.type === "Circle" && dimensions?.radius !== undefined
+            ? { center: { x: 0, y: 0 }, kind: "circle" as const, radius: dimensions.radius }
+            : entity.type === "Rectangle" && dimensions?.height !== undefined && dimensions.width !== undefined
+              ? {
+                  center: { x: 0, y: 0 },
+                  cornerRadius: 0,
+                  height: dimensions.height,
+                  kind: "rectangle" as const,
+                  width: dimensions.width,
+                }
+              : undefined;
     if (!geometry || scale <= 0) {
       issues.push(
         issue("unknown-evidence", `Entity ${entity.id} has invalid geometry or scale.`, {
@@ -699,6 +828,10 @@ function compileEntities(input: StudioSceneIrAdapterInputV1, issues: StudioScene
       return [];
     }
     const translation = studioPointToScenePointV1(position, input.frame, input.evidence.camera.view.center);
+    const transform =
+      image && imageRelativeScale !== undefined
+        ? transformedImageTransform(image, translation, imageRelativeScale)
+        : { m11: scale, m12: 0, m21: 0, m22: scale, tx: translation.x, ty: translation.y };
     return [
       {
         appearance,
@@ -709,7 +842,7 @@ function compileEntities(input: StudioSceneIrAdapterInputV1, issues: StudioScene
         provenanceId: "studio-adapter",
         sceneOrder,
         sourceZIndex: order.sourceZIndex,
-        transform: { m11: scale, m12: 0, m21: 0, m22: scale, tx: translation.x, ty: translation.y },
+        transform,
       },
     ];
   });
@@ -875,7 +1008,10 @@ export async function compileStudioSceneIrV1(
     requiredCapabilities: [
       ...(entities.some(({ geometry }) => geometry.kind === "cubic-path") ? (["cubic-path-geometry"] as const) : []),
       ...(animationChannels.length > 0 ? (["opacity-animation"] as const) : []),
-      ...(entities.some(({ geometry }) => geometry.kind !== "cubic-path") ? (["shape-primitives"] as const) : []),
+      ...(entities.some(({ geometry }) => geometry.kind === "image") ? (["png-image"] as const) : []),
+      ...(entities.some(({ geometry }) => geometry.kind === "circle" || geometry.kind === "rectangle")
+        ? (["shape-primitives"] as const)
+        : []),
     ],
     sceneId: stableInput.proposedState.evaluatedScene.sceneId,
     schema: "poietra.scene-ir",

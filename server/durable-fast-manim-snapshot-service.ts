@@ -1,7 +1,8 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { manimProjectIdSchema } from "../src/render-pipeline/contracts";
 import {
+  deriveHermeticPngV4TransformPlan,
   type ExpectedFastManimSnapshotCorrelationV1,
   FAST_MANIM_SNAPSHOT_FALLBACK_V1,
   FAST_MANIM_SNAPSHOT_RUN_SCHEMA_V1,
@@ -284,8 +285,23 @@ export class DurableFastManimSnapshotServiceV1 {
     if (!sameSourceHead(before, after) || before.blob.digest !== snapshot.sourceHash) {
       return sourceChanged(view);
     }
+    let hermeticPngV4Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticPngV4Plan"];
+    if (scene.source.snapshotVersion === 4) {
+      signal?.throwIfAborted();
+      const source = await this.#blobs.readSource(this.#tenantId, before.blob, signal);
+      this.#assertProjectActive(request.projectId, entry);
+      signal?.throwIfAborted();
+      if (
+        Buffer.byteLength(source, "utf8") !== before.blob.byteSize ||
+        createHash("sha256").update(source, "utf8").digest("hex") !== before.blob.digest
+      ) {
+        throw new Error("The durable PNG snapshot source does not match its version-pinned blob receipt.");
+      }
+      hermeticPngV4Plan = deriveHermeticPngV4TransformPlan(source, view.sceneName);
+    }
     const expected: ExpectedFastManimSnapshotCorrelationV1 = {
       frame: { height: scene.camera.view.frameHeight, width: scene.camera.view.frameWidth },
+      ...(hermeticPngV4Plan ? { hermeticPngV4Plan } : {}),
       projectId: view.projectId,
       requestId: view.requestId,
       runtimeConfigHash: view.runtimeConfigHash,

@@ -504,6 +504,67 @@ class GroupedEquation(Scene):
     });
   });
 
+  it("moves and uniformly scales a direct ImageMobject without reconstructing its asset source", () => {
+    const imageSource = `from manim import ImageMobject, RESAMPLING_ALGORITHMS, Scene
+
+class GroupedEquation(Scene):
+    def construct(self):
+        image = ImageMobject("image.png", resampling_algorithm=RESAMPLING_ALGORITHMS["nearest"])
+        self.add(image)
+        # poietra:anchor 7.000
+        self.wait(1)
+`;
+    const position: CanonicalEditOperation = {
+      ...operationBase("move-image", 7),
+      entityId: "image_1",
+      key: "position",
+      kind: "SetProperty",
+      value: { x: 400.123456, y: 135.654321 },
+    };
+    const scale: CanonicalEditOperation = {
+      ...operationBase("scale-image", 7),
+      easing: "smooth",
+      entityId: "image_1",
+      from: 1,
+      key: "scale",
+      kind: "AnimateProperty",
+      to: 1.5,
+    };
+
+    const lowered = lowerCanonicalProgramSource(
+      imageSource,
+      request(canonicalProgram([position, scale], "edit-image"), [{ entityId: "image_1", sourceVariable: "image" }]),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
+    const entityId = "source:examples/relativity.py#GroupedEquation:image";
+
+    expect(lowered.source.match(/ImageMobject\("image\.png"/g)).toHaveLength(1);
+    expect(lowered.source).toContain('resampling_algorithm=RESAMPLING_ALGORITHMS["nearest"]');
+    expect(lowered.insertedCode).toContain(
+      '# poietra:position {"kind":"absolute","value":{"x":400.123456,"y":135.654321},"variable":"image","version":1}',
+    );
+    expect(lowered.insertedCode).toContain("image.move_to((1.7804934238, 0.985459533333, 0))");
+    expect(lowered.insertedCode).not.toMatch(/\b(?:RIGHT|LEFT|UP|DOWN|ORIGIN)\b/);
+    expect(lowered.insertedCode).toContain(
+      '# poietra:scale {"kind":"exact","value":1.5,"variable":"image","version":1}',
+    );
+    expect(lowered.insertedCode).toContain("image.scale(1.5)");
+    expect(imported?.runtimeSceneState.objectGraph.entities[entityId]).toMatchObject({
+      geometry: { dimensions: { kind: "unknown" } },
+      type: "ImageMobject",
+    });
+    expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/position`]?.samples.at(-1)).toMatchObject({
+      kind: "exact",
+      value: { x: 400.123456, y: 135.654321 },
+    });
+    expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/scale`]?.samples.at(-1)).toMatchObject({
+      kind: "exact",
+      value: 1.5,
+    });
+  });
+
   it("reimports adjacent motion and scale markers from one parallel play", () => {
     const scale: CanonicalEditOperation = {
       ...operationBase("scale-with-motion", 7, 8.5),

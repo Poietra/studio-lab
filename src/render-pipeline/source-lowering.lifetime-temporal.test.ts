@@ -768,7 +768,7 @@ class GroupedEquation(Scene):
     expect(lowered.insertedCode).toContain('Text("Energy")');
     expect(lowered.insertedCode).toContain(".get_center() + 3.2222 * RIGHT");
     expect(lowered.insertedCode.indexOf(".get_center() + 3.2222 * RIGHT")).toBeLessThan(
-      lowered.insertedCode.indexOf(".move_to(ORIGIN)"),
+      lowered.insertedCode.indexOf(".move_to((0, 0, 0))"),
     );
     expect(lowered.insertedCode).toContain("FadeIn(");
     expect(lowered.insertedCode).toContain("self.clear()");
