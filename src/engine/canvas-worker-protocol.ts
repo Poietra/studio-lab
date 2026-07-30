@@ -507,11 +507,15 @@ export const canvasAdapterEvidenceV1Schema = z
     adapter: z
       .object({
         // wgpu 30's browser backend reads GPUDevice.adapterInfo for the
-        // device it created, but deliberately cannot expose native PCI IDs,
-        // driver strings, or a native device class. Keep those discarded
-        // fields canonical so callers cannot mistake synthetic native values
-        // for browser-observed identity.
+        // device it created. The additive browser fields come from that same
+        // raw GPUDevice handle; they stay optional so telemetry ABI v2 can
+        // still decode an older module, while decision reports require them.
+        // Native PCI IDs, driver strings, and device class remain discarded
+        // and canonical so callers cannot mistake synthetic values for
+        // browser-observed identity.
         backend: z.literal("BrowserWebGpu"),
+        browserArchitecture: boundedAdapterEvidenceStringSchema.optional(),
+        browserVendor: boundedAdapterEvidenceStringSchema.optional(),
         deviceId: z.literal(0),
         deviceType: z.enum(["Cpu", "Other"]),
         driver: z.literal(""),

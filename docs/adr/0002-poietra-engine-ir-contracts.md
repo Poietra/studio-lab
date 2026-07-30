@@ -436,12 +436,20 @@ being mislabeled as part of that number.
 - AC connected and Windows Balanced power-plan GUID
   `381b4222-f694-41f0-9685-ff5bb260df2e`.
 
-The authoritative values and Worker adapter IDs live in
+The authoritative values and Worker adapter identity live in
 `fixtures/engine-benchmark-v1/windows-d3d12-reference-host.json`; the sibling
 `.sha256` file prevents an unreviewed profile edit from becoming evidence.
 Linux/WSL SwiftShader runs remain useful exploratory regressions but cannot be
 decision evidence. The main browser and all 20 independent cold processes must
-report the same non-software Worker adapter identity.
+report the same non-software Worker adapter identity. On wgpu 30's browser
+backend, that identity comes from the same created `GPUDevice`: the raw
+privacy-safe vendor and architecture strings, fallback classification, and
+subgroup bounds. Production-default Edge redacts description, device, and
+driver details. Native PCI vendor/device IDs and driver strings therefore
+remain a separate OS-owned controller identity, while their Worker fields stay
+canonical zero/empty; synthetic native-looking values invalidate the report.
+The checked-in profile binds those two evidence classes explicitly instead of
+claiming the browser exposed native PCI identity.
 
 The eligibility/provenance envelope is a breaking report-contract change. Its
 exact dispatch pairs are `poietra.engine-webgpu-benchmark` v3,

@@ -421,14 +421,26 @@ async fn acquire_canvas_gpu_candidate(
         label: Some("poietra canvas device v1"),
         ..wgpu::DeviceDescriptor::default()
     };
-    let adapter_evidence =
-        build_adapter_evidence(&adapter.get_info(), &device_descriptor, &selection);
     let (device, queue) = adapter
         .request_device(&device_descriptor)
         .await
         .map_err(|error| {
             renderer_unavailable(&format!("could not create WebGPU device: {error}"))
         })?;
+    let (browser_architecture, browser_vendor) = device
+        .as_webgpu()
+        .map(|device| {
+            let info = device.adapter_info();
+            (info.architecture(), info.vendor())
+        })
+        .unwrap_or_default();
+    let adapter_evidence = build_adapter_evidence(
+        &device.adapter_info(),
+        &browser_architecture,
+        &browser_vendor,
+        &device_descriptor,
+        &selection,
+    );
 
     let device_lost = install_device_lost_handler(&device);
     let uncaptured_gpu_failure = shared_failure();
@@ -1603,17 +1615,23 @@ fn named_js_error(name: &str, message: &str) -> JsValue {
     error.into()
 }
 
-/// Builds bounded evidence from the adapter this worker actually creates its
-/// device with (wgpu `AdapterInfo`), never from the page's `navigator.gpu`
-/// hint, plus the exact device request and surface selection.
+/// Builds bounded evidence from `GPUDevice.adapterInfo` for the device this
+/// worker actually created, never from a second page/Worker adapter request,
+/// plus the exact device request and surface selection. The raw browser handle
+/// retains the privacy-safe vendor and architecture strings that wgpu's native
+/// shaped `AdapterInfo` deliberately discards.
 fn build_adapter_evidence(
     adapter_info: &wgpu::AdapterInfo,
+    browser_architecture: &str,
+    browser_vendor: &str,
     device_descriptor: &wgpu::DeviceDescriptor<'_>,
     selection: &SurfaceSelectionV1,
 ) -> CanvasAdapterEvidenceV1 {
     CanvasAdapterEvidenceV1::new(
         AdapterEvidenceV1 {
             backend: bounded_evidence_string(&format!("{:?}", adapter_info.backend)),
+            browser_architecture: bounded_evidence_string(browser_architecture),
+            browser_vendor: bounded_evidence_string(browser_vendor),
             device_id: adapter_info.device,
             device_type: bounded_evidence_string(&format!("{:?}", adapter_info.device_type)),
             driver: bounded_evidence_string(&adapter_info.driver),

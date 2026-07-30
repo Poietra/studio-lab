@@ -436,6 +436,8 @@ describe("canvas worker v1 protocol", () => {
     const evidence = {
       adapter: {
         backend: "BrowserWebGpu",
+        browserArchitecture: "blackwell",
+        browserVendor: "nvidia",
         deviceId: 0,
         deviceType: "Other",
         driver: "",

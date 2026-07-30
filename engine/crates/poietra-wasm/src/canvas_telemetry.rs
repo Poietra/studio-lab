@@ -605,6 +605,8 @@ struct CanvasRenderTelemetryResponseV1 {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct AdapterEvidenceV1 {
     pub(crate) backend: String,
+    pub(crate) browser_architecture: String,
+    pub(crate) browser_vendor: String,
     pub(crate) device_id: u32,
     pub(crate) device_type: String,
     pub(crate) driver: String,
@@ -1122,6 +1124,8 @@ mod tests {
         let evidence = CanvasAdapterEvidenceV1::new(
             AdapterEvidenceV1 {
                 backend: bounded_evidence_string("BrowserWebGpu"),
+                browser_architecture: bounded_evidence_string("blackwell"),
+                browser_vendor: bounded_evidence_string("nvidia"),
                 device_id: 0,
                 device_type: bounded_evidence_string("Other"),
                 driver: bounded_evidence_string(&"d".repeat(2_000)),
@@ -1154,6 +1158,8 @@ mod tests {
         assert_eq!(value["kind"], "available");
         assert_eq!(value["schema"], "poietra.canvas-adapter-evidence");
         assert_eq!(value["adapter"]["source"], "worker-wgpu-adapter-info");
+        assert_eq!(value["adapter"]["browserArchitecture"], "blackwell");
+        assert_eq!(value["adapter"]["browserVendor"], "nvidia");
         assert_eq!(value["adapter"]["driver"].as_str().unwrap().len(), 256);
         assert_eq!(value["adapter"]["vendorId"], 0x10de);
         assert_eq!(value["device"]["label"], "poietra canvas device v1");

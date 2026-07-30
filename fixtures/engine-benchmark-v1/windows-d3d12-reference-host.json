@@ -30,12 +30,19 @@
     "activeSchemeGuid": "381b4222-f694-41f0-9685-ff5bb260df2e"
   },
   "schema": "poietra.engine-webgpu-reference-host",
+  "selectedGpuController": {
+    "deviceId": 11705,
+    "vendorId": 4318
+  },
   "selectedWorkerAdapter": {
     "backend": "BrowserWebGpu",
-    "deviceId": 11705,
-    "deviceType": "DiscreteGpu",
+    "browserArchitecture": "blackwell",
+    "browserVendor": "nvidia",
+    "deviceType": "Other",
+    "name": "",
     "source": "worker-wgpu-adapter-info",
-    "vendorId": 4318
+    "subgroupMaxSize": 128,
+    "subgroupMinSize": 4
   },
   "version": 1,
   "windowsBuild": {

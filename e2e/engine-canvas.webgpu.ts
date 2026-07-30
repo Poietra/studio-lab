@@ -841,7 +841,7 @@ test("records retained Worker latency without making CI hardware an adoption ora
     coldRuns,
     environment: {
       ...samples.environment,
-      browserLaunch,
+      browserLaunch: { channel: browserLaunch.channel, configuredArgs: browserLaunch.args },
       browserVersion,
       host,
       pageAdapterHint: samples.adapterInfo,

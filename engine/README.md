@@ -299,7 +299,12 @@ Evidence rules:
   exact reviewed bytes. Windows build, CPU, complete GPU/driver inventory, AC
   state, active power-plan GUID, launched Edge version, and selected Worker
   adapter must all match. The primary adapter and all 20 fresh-process cold
-  samples must also have one identical hardware identity. Environment
+  samples must also have one identical hardware identity. Browser identity is
+  read from the same created `GPUDevice`: raw privacy-safe vendor/architecture,
+  fallback class, and subgroup bounds. Production-default Edge redacts
+  description/device/driver details, so native PCI and driver identity stays a
+  separately pinned OS controller record and discarded Worker fields remain
+  canonical zero/empty. Environment
   variables cannot replace any of this OS/browser evidence: the production
   probe launches the canonical Windows PowerShell and `powercfg` binaries by
   fixed absolute path, uses a fixed system module path, and discovers Edge

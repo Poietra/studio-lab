@@ -7,6 +7,7 @@ const LINUX_WEBGPU_CHROMIUM_LAUNCH_ARGS = [
 ] as const;
 
 export type WebgpuBrowserLaunch = Readonly<{
+  /** Project-supplied additional args; Playwright's own launch args are not represented here. */
   args: readonly string[];
   channel: "chromium" | "msedge";
 }>;

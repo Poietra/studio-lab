@@ -72,8 +72,14 @@ const commitIdentity = strictObject({
     });
   }
 });
+const benchmarkWorkerAdapterEvidence = canvasAdapterEvidenceV1Schema.extend({
+  adapter: canvasAdapterEvidenceV1Schema.shape.adapter.extend({
+    browserArchitecture: z.string().max(256),
+    browserVendor: z.string().max(256),
+  }),
+});
 const availableWorkerAdapter = strictObject({
-  evidence: canvasAdapterEvidenceV1Schema,
+  evidence: benchmarkWorkerAdapterEvidence,
   kind: z.literal("available"),
 });
 const workerAdapter = z.discriminatedUnion("kind", [
@@ -96,14 +102,18 @@ const evidenceEnvelope = {
   }),
   provenanceStableThroughRun: z.literal(true),
 };
-const browserLaunch = strictObject({ args: z.array(z.string()), channel: z.enum(["chromium", "msedge"]) });
+const browserLaunch = strictObject({
+  channel: z.enum(["chromium", "msedge"]),
+  configuredArgs: z.array(z.string()),
+});
 const browserVersion = z.string().min(1);
+const browserAdapterInfoString = z.string().max(256);
 const availablePageAdapterHint = strictObject({
-  architecture: z.string().min(1),
-  description: z.string().min(1),
-  device: z.string().min(1),
+  architecture: browserAdapterInfoString,
+  description: browserAdapterInfoString,
+  device: browserAdapterInfoString,
   kind: z.literal("available"),
-  vendor: z.string().min(1),
+  vendor: browserAdapterInfoString,
 });
 const pageAdapterHint = z.discriminatedUnion("kind", [
   availablePageAdapterHint,
@@ -284,7 +294,7 @@ export const engineWebgpuBenchmarkReportSchema = z
           browserVersion,
           run: count,
           sceneReadyMs: nonnegative,
-          workerDeviceAdapter: canvasAdapterEvidenceV1Schema,
+          workerDeviceAdapter: benchmarkWorkerAdapterEvidence,
         }),
       )
       .length(20),
@@ -357,7 +367,7 @@ export const engineWebgpuBenchmarkReportSchema = z
     addRecomputedDecisionEligibilityIssues(
       {
         browserChannel: report.environment.browserLaunch.channel,
-        browserLaunchArgs: report.environment.browserLaunch.args,
+        browserLaunchArgs: report.environment.browserLaunch.configuredArgs,
         browserVersions: [...report.coldRuns.map((run) => run.browserVersion), report.environment.browserVersion],
         grade: report.provenance.grade,
         host: report.environment.host,
@@ -505,7 +515,7 @@ export const engineWebgpuStressReportSchema = z
     addRecomputedDecisionEligibilityIssues(
       {
         browserChannel: report.environment.browserLaunch.channel,
-        browserLaunchArgs: report.environment.browserLaunch.args,
+        browserLaunchArgs: report.environment.browserLaunch.configuredArgs,
         browserVersions: [report.environment.browserVersion],
         grade: report.provenance.grade,
         host: report.environment.host,
@@ -719,7 +729,7 @@ export const engineWebgpuStageTelemetryReportSchema = z
     addRecomputedDecisionEligibilityIssues(
       {
         browserChannel: report.environment.browserLaunch.channel,
-        browserLaunchArgs: report.environment.browserLaunch.args,
+        browserLaunchArgs: report.environment.browserLaunch.configuredArgs,
         browserVersions: [report.environment.browserVersion],
         grade: report.provenance.grade,
         host: report.environment.host,

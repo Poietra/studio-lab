@@ -473,7 +473,7 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
     },
     environment: {
       browser,
-      browserLaunch,
+      browserLaunch: { channel: browserLaunch.channel, configuredArgs: browserLaunch.args },
       browserVersion,
       host,
       nodePlatform: process.platform,

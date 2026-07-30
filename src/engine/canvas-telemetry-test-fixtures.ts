@@ -124,6 +124,8 @@ export function adapterEvidenceFixtureV1(): CanvasAdapterEvidenceV1 {
   return {
     adapter: {
       backend: "BrowserWebGpu",
+      browserArchitecture: "blackwell",
+      browserVendor: "nvidia",
       deviceId: 0,
       deviceType: "Other",
       driver: "",

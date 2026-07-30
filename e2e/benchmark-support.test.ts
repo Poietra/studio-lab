@@ -111,11 +111,10 @@ function referenceHostEnvironment(referenceHost: PinnedReferenceHostProfile = RE
 function referenceWorkerAdapter(referenceHost: PinnedReferenceHostProfile = REFERENCE_HOST): WorkerAdapterIdentity {
   return {
     ...referenceHost.profile.selectedWorkerAdapter,
+    deviceId: 0,
     driver: "",
     driverInfo: "",
-    name: "NVIDIA reference adapter",
-    subgroupMaxSize: 128,
-    subgroupMinSize: 4,
+    vendorId: 0,
   };
 }
 
@@ -138,8 +137,7 @@ function softwareAdapterEvidence(evidence: CanvasAdapterEvidenceV1): CanvasAdapt
     ...evidence,
     adapter: {
       ...evidence.adapter,
-      driver: "SwiftShader",
-      driverInfo: "software rasterizer",
+      deviceType: "Other",
       name: "Google SwiftShader",
     },
   };
@@ -221,11 +219,11 @@ function completeStressWorkloadFixtures() {
 
 const FIXTURE_COMMIT_IDENTITY = { headCommit: COMMIT_A, treeState: "clean", uncommittedPathCount: 0 } as const;
 const FIXTURE_PAGE_ADAPTER_HINT = {
-  architecture: "reference-hardware",
-  description: "reference adapter",
-  device: REFERENCE_HOST.profile.selectedWorkerAdapter.deviceId.toString(16),
+  architecture: REFERENCE_HOST.profile.selectedWorkerAdapter.browserArchitecture,
+  description: "",
+  device: "",
   kind: "available",
-  vendor: REFERENCE_HOST.profile.selectedWorkerAdapter.vendorId.toString(16),
+  vendor: REFERENCE_HOST.profile.selectedWorkerAdapter.browserVendor,
 } as const;
 
 function reportEnvelopeFixture(reportSchema: string, reportVersion: number) {
@@ -239,7 +237,7 @@ function reportEnvelopeFixture(reportSchema: string, reportVersion: number) {
     },
     decisionEligibility: { eligible: true, reasons: [] },
     environment: {
-      browserLaunch: { args: [], channel: "msedge" },
+      browserLaunch: { channel: "msedge", configuredArgs: [] },
       browserVersion: REFERENCE_HOST.profile.browser.version,
       host: referenceHostEnvironment(),
       pageAdapterHint: FIXTURE_PAGE_ADAPTER_HINT,
@@ -513,6 +511,8 @@ describe("decision eligibility", () => {
   const hardwareAdapter = referenceWorkerAdapter();
   const softwareAdapter: WorkerAdapterIdentity = {
     backend: "BrowserWebGpu",
+    browserArchitecture: "swiftshader",
+    browserVendor: "google",
     deviceId: 0,
     deviceType: "Cpu",
     driver: "",
@@ -540,7 +540,7 @@ describe("decision eligibility", () => {
     expect(assessment.reasons.join("\n")).toMatch(/software adapter/);
     expect(assessment.reasons.join("\n")).toMatch(/swiftshader/);
     expect(assessment.reasons.join("\n")).toMatch(/host platform is linux/);
-    expect(assessment.reasons.join("\n")).toMatch(/command-line overrides/);
+    expect(assessment.reasons.join("\n")).toMatch(/renderer overrides/);
 
     const linuxHardware = assessDecisionEligibility({
       browserChannel: "chromium",
@@ -586,6 +586,19 @@ describe("decision eligibility", () => {
     });
     expect(exact).toEqual({ eligible: true, reasons: [] });
 
+    const redacted = assessDecisionEligibility({
+      browserChannel: "msedge",
+      browserLaunchArgs: [],
+      browserVersions: [REFERENCE_HOST.profile.browser.version],
+      grade: "clean-commit",
+      host: referenceHostEnvironment(),
+      pageAdapterHintArchitecture: null,
+      referenceHost: REFERENCE_HOST,
+      workerAdapters: [{ ...hardwareAdapter, browserArchitecture: "", browserVendor: "" }],
+    });
+    expect(redacted.eligible).toBe(false);
+    expect(redacted.reasons.join("\n")).toMatch(/vendor\/architecture identity is unavailable/);
+
     const changed = assessDecisionEligibility({
       browserChannel: "msedge",
       browserLaunchArgs: [],
@@ -594,7 +607,7 @@ describe("decision eligibility", () => {
       host: referenceHostEnvironment(),
       pageAdapterHintArchitecture: null,
       referenceHost: REFERENCE_HOST,
-      workerAdapters: [hardwareAdapter, { ...hardwareAdapter, name: "another physical adapter" }],
+      workerAdapters: [hardwareAdapter, { ...hardwareAdapter, browserArchitecture: "another-architecture" }],
     });
     expect(changed.eligible).toBe(false);
     expect(changed.reasons.join("\n")).toMatch(/browser version/);
@@ -690,15 +703,27 @@ describe("decision eligibility", () => {
     expect(() => readPinnedReferenceHostProfile(Buffer.from("{}"), "0".repeat(64))).toThrow(/hashes to/);
   });
 
-  it("requires the selected Worker adapter to belong to the pinned GPU-controller inventory", () => {
+  it("separates the selected OS controller from the same-device browser identity", () => {
     expect(referenceHostProfileSchema.safeParse(REFERENCE_HOST.profile).success).toBe(true);
+    expect(
+      referenceHostProfileSchema.safeParse({
+        ...REFERENCE_HOST.profile,
+        selectedGpuController: { ...REFERENCE_HOST.profile.selectedGpuController, deviceId: 1 },
+      }).success,
+    ).toBe(false);
+    expect(
+      referenceHostProfileSchema.safeParse({
+        ...REFERENCE_HOST.profile,
+        selectedWorkerAdapter: { ...REFERENCE_HOST.profile.selectedWorkerAdapter, browserVendor: "" },
+      }).success,
+    ).toBe(false);
     expect(
       referenceHostProfileSchema.safeParse({
         ...REFERENCE_HOST.profile,
         selectedWorkerAdapter: {
           ...REFERENCE_HOST.profile.selectedWorkerAdapter,
-          deviceId: 1,
-          vendorId: 1,
+          subgroupMaxSize: 4,
+          subgroupMinSize: 128,
         },
       }).success,
     ).toBe(false);
@@ -996,7 +1021,7 @@ describe("report summaries", () => {
 
       const common = reportCase.report as typeof reportCase.report & {
         environment: {
-          browserLaunch: { args: readonly string[]; channel: string };
+          browserLaunch: { channel: string; configuredArgs: readonly string[] };
           browserVersion: string;
           host: HostEnvironment;
           referenceHostProfile: PinnedReferenceHostProfile["evidence"];
@@ -1016,21 +1041,22 @@ describe("report summaries", () => {
         ...common,
         environment: {
           ...common.environment,
-          browserLaunch: { args: [], channel: "chromium" },
+          browserLaunch: { channel: "chromium", configuredArgs: [] },
         },
       };
       const swiftShaderLaunch = {
         ...common,
         environment: {
           ...common.environment,
-          browserLaunch: { args: ["--use-angle=swiftshader"], channel: "msedge" },
+          browserLaunch: { channel: "msedge", configuredArgs: ["--use-angle=swiftshader"] },
         },
       };
       expect(reportCase.schema.safeParse(linux).success, `${reportCase.name}: Linux host`).toBe(false);
       expect(reportCase.schema.safeParse(chromium).success, `${reportCase.name}: Chromium channel`).toBe(false);
-      expect(reportCase.schema.safeParse(swiftShaderLaunch).success, `${reportCase.name}: SwiftShader launch args`).toBe(
-        false,
-      );
+      expect(
+        reportCase.schema.safeParse(swiftShaderLaunch).success,
+        `${reportCase.name}: SwiftShader launch args`,
+      ).toBe(false);
       expect(reportCase.schema.safeParse(reportCase.cpuReport).success, `${reportCase.name}: CPU adapter`).toBe(false);
       expect(
         reportCase.schema.safeParse(reportCase.softwareReport).success,
@@ -1086,9 +1112,11 @@ describe("report summaries", () => {
     ).toBe(false);
 
     for (const adapterPatch of [
-      { deviceId: report.coldRuns[0]!.workerDeviceAdapter.adapter.deviceId + 1 },
-      { driver: "different-driver" },
-      { deviceType: "IntegratedGpu" },
+      { browserArchitecture: "another-architecture" },
+      { browserVendor: "another-vendor" },
+      { browserVendor: undefined },
+      { subgroupMaxSize: report.coldRuns[0]!.workerDeviceAdapter.adapter.subgroupMaxSize + 1 },
+      { deviceType: "Cpu" },
     ]) {
       expect(
         engineWebgpuBenchmarkReportSchema.safeParse({
@@ -1236,9 +1264,7 @@ describe("report summaries", () => {
       const { report, schema } = reportCase;
       expect(schema.safeParse(report).success, `${reportCase.name}: baseline`).toBe(true);
       const duplicate = report.workloads.map((workload, index) =>
-        index === report.workloads.length - 1
-          ? { ...workload, definition: report.workloads[0]!.definition }
-          : workload,
+        index === report.workloads.length - 1 ? { ...workload, definition: report.workloads[0]!.definition } : workload,
       );
       const missing = report.workloads.slice(0, -1);
       const staleRevision = report.workloads.map((workload, index) =>

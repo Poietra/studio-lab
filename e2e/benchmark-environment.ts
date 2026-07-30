@@ -170,23 +170,37 @@ export const PINNED_REFERENCE_HOST_PROFILE_HASH_PATH = `${PINNED_REFERENCE_HOST_
 
 const referenceGpuControllerSchema = gpuControllerSchema.omit({ pnpDeviceId: true });
 const workerAdapterIdentitySchema = z.strictObject({
-  backend: z.string().min(1),
-  deviceId: z.number().int().nonnegative(),
-  deviceType: z.string().min(1),
-  driver: z.string(),
-  driverInfo: z.string(),
+  backend: z.literal("BrowserWebGpu"),
+  browserArchitecture: z.string().max(256),
+  browserVendor: z.string().max(256),
+  deviceId: z.literal(0),
+  deviceType: z.enum(["Cpu", "Other"]),
+  driver: z.literal(""),
+  driverInfo: z.literal(""),
   name: z.string(),
   source: z.literal("worker-wgpu-adapter-info"),
   subgroupMaxSize: z.number().int().nonnegative(),
   subgroupMinSize: z.number().int().nonnegative(),
-  vendorId: z.number().int().nonnegative(),
+  vendorId: z.literal(0),
 });
 const referenceWorkerAdapterIdentitySchema = workerAdapterIdentitySchema
-  .pick({ backend: true, deviceId: true, deviceType: true, source: true, vendorId: true })
+  .pick({
+    backend: true,
+    browserArchitecture: true,
+    browserVendor: true,
+    deviceType: true,
+    name: true,
+    source: true,
+    subgroupMaxSize: true,
+    subgroupMinSize: true,
+  })
   .extend({
-    deviceId: z.number().int().positive(),
-    deviceType: z.enum(["DiscreteGpu", "IntegratedGpu"]),
-    vendorId: z.number().int().positive(),
+    browserArchitecture: z.string().min(1).max(256),
+    browserVendor: z.string().min(1).max(256),
+    deviceType: z.literal("Other"),
+    name: z.literal(""),
+    subgroupMaxSize: z.number().int().positive(),
+    subgroupMinSize: z.number().int().positive(),
   });
 
 /** The one reviewable host/browser/adapter configuration allowed to become decision evidence. */
@@ -202,21 +216,29 @@ export const referenceHostProfileSchema = z
       activeSchemeGuid: z.string().regex(/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/),
     }),
     schema: z.literal("poietra.engine-webgpu-reference-host"),
+    selectedGpuController: referenceGpuControllerSchema.pick({ deviceId: true, vendorId: true }),
     selectedWorkerAdapter: referenceWorkerAdapterIdentitySchema,
     version: z.literal(1),
     windowsBuild: availableWindowsBuildSchema.omit({ source: true, status: true }),
   })
   .superRefine((profile, context) => {
-    const selectedControllerIsPresent = profile.gpuControllers.some(
+    const selectedControllers = profile.gpuControllers.filter(
       (controller) =>
-        controller.deviceId === profile.selectedWorkerAdapter.deviceId &&
-        controller.vendorId === profile.selectedWorkerAdapter.vendorId,
+        controller.deviceId === profile.selectedGpuController.deviceId &&
+        controller.vendorId === profile.selectedGpuController.vendorId,
     );
-    if (!selectedControllerIsPresent) {
+    if (selectedControllers.length !== 1) {
       context.addIssue({
         code: "custom",
-        message: "selectedWorkerAdapter must identify one controller in gpuControllers",
-        path: ["selectedWorkerAdapter"],
+        message: "selectedGpuController must identify exactly one controller in gpuControllers",
+        path: ["selectedGpuController"],
+      });
+    }
+    if (profile.selectedWorkerAdapter.subgroupMinSize > profile.selectedWorkerAdapter.subgroupMaxSize) {
+      context.addIssue({
+        code: "custom",
+        message: "selectedWorkerAdapter subgroup bounds must be ordered",
+        path: ["selectedWorkerAdapter", "subgroupMinSize"],
       });
     }
   });
@@ -338,6 +360,8 @@ function adapterIdentity(adapter: WorkerAdapterIdentity): WorkerAdapterIdentity 
 export function workerAdapterIdentityEquals(left: WorkerAdapterIdentity, right: WorkerAdapterIdentity): boolean {
   return (
     left.backend === right.backend &&
+    left.browserArchitecture === right.browserArchitecture &&
+    left.browserVendor === right.browserVendor &&
     left.deviceId === right.deviceId &&
     left.deviceType === right.deviceType &&
     left.driver === right.driver &&
@@ -356,10 +380,13 @@ function referenceAdapterIdentityEquals(
 ): boolean {
   return (
     adapter.backend === reference.backend &&
-    adapter.deviceId === reference.deviceId &&
+    adapter.browserArchitecture === reference.browserArchitecture &&
+    adapter.browserVendor === reference.browserVendor &&
     adapter.deviceType === reference.deviceType &&
+    adapter.name === reference.name &&
     adapter.source === reference.source &&
-    adapter.vendorId === reference.vendorId
+    adapter.subgroupMaxSize === reference.subgroupMaxSize &&
+    adapter.subgroupMinSize === reference.subgroupMinSize
   );
 }
 
@@ -385,7 +412,7 @@ export function assessDecisionEligibility(input: {
     );
   }
   if (input.browserLaunchArgs.length !== 0) {
-    reasons.push("decision evidence requires native browser launch settings with no command-line overrides");
+    reasons.push("decision evidence forbids project-supplied browser renderer overrides");
   }
   if (input.browserVersions.length === 0) reasons.push("no launched browser version was collected");
   for (const browserVersion of input.browserVersions) {
@@ -418,9 +445,15 @@ export function assessDecisionEligibility(input: {
   const firstAdapter = input.workerAdapters[0];
   for (const candidate of input.workerAdapters) {
     const adapter = adapterIdentity(candidate);
+    if (adapter.browserArchitecture.length === 0 || adapter.browserVendor.length === 0) {
+      reasons.push("the Worker browser adapter vendor/architecture identity is unavailable");
+      break;
+    }
     if (
       adapter.deviceType === "Cpu" ||
-      SOFTWARE_ADAPTER_PATTERN.test(`${adapter.name} ${adapter.driver} ${adapter.driverInfo}`)
+      SOFTWARE_ADAPTER_PATTERN.test(
+        `${adapter.browserArchitecture} ${adapter.browserVendor} ${adapter.name} ${adapter.driver} ${adapter.driverInfo}`,
+      )
     ) {
       reasons.push(
         `the Worker rendered on a software adapter (deviceType ${adapter.deviceType}, name "${adapter.name}")`,
@@ -453,7 +486,7 @@ export function requireReferenceHostPreflight(input: {
   if (input.host.osKernel.platform !== "win32") return;
   const reasons = hostProfileMismatchReasons(input.host, input.referenceHost.profile);
   if (input.browserLaunch.channel !== "msedge" || input.browserLaunch.args.length !== 0) {
-    reasons.push("Windows decision runs require native Edge with no Linux Vulkan/ANGLE launch flags");
+    reasons.push("Windows decision runs require native Edge with no project-supplied Vulkan/ANGLE renderer flags");
   }
   if (reasons.length > 0) throw new Error(`reference-host preflight failed:\n- ${reasons.join("\n- ")}`);
 }
