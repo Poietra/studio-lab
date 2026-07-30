@@ -712,15 +712,18 @@ export type WindowsHostEvidenceInvocation = Readonly<{
 
 /**
  * Returns the production probe invocation without consulting caller-provided
- * PATH, SystemRoot, ProgramFiles, PSModulePath, or PowerShell profiles. The
- * benchmark threat model fails closed on a non-standard Windows installation;
- * it does not claim resistance to an administrator replacing OS files or HKLM.
+ * PATH, PATHEXT, ComSpec, SystemRoot, ProgramFiles, PSModulePath, or PowerShell
+ * profiles. The benchmark threat model fails closed on a non-standard Windows
+ * installation; it does not claim resistance to an administrator replacing OS
+ * files or HKLM.
  */
 export function windowsHostEvidenceInvocation(script: string): WindowsHostEvidenceInvocation {
   return {
     args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
     env: {
+      ComSpec: `${WINDOWS_SYSTEM32}\\cmd.exe`,
       Path: `${WINDOWS_SYSTEM32};${WINDOWS_POWERSHELL_DIRECTORY}`,
+      PATHEXT: ".COM;.EXE;.BAT;.CMD",
       PSModulePath: `${WINDOWS_POWERSHELL_DIRECTORY}\\Modules`,
       SystemRoot: WINDOWS_ROOT,
       TEMP: `${WINDOWS_ROOT}\\Temp`,

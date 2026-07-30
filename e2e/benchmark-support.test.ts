@@ -715,7 +715,7 @@ describe("decision eligibility", () => {
       browserLaunchArgs: ["--use-angle=swiftshader"],
       browserVersions: ["fixture-browser"],
       grade: "non-decision-grade-dirty-tree",
-      host: collectHostEnvironment(),
+      host: collectHostEnvironment({ platform: "linux" }),
       pageAdapterHintArchitecture: "swiftshader",
       referenceHost: REFERENCE_HOST,
       workerAdapters: [softwareAdapter],
@@ -732,7 +732,7 @@ describe("decision eligibility", () => {
       browserLaunchArgs: [],
       browserVersions: [REFERENCE_HOST.profile.browser.version],
       grade: "clean-commit",
-      host: collectHostEnvironment(),
+      host: collectHostEnvironment({ platform: "linux" }),
       pageAdapterHintArchitecture: null,
       referenceHost: REFERENCE_HOST,
       workerAdapters: [hardwareAdapter],
@@ -847,7 +847,9 @@ describe("decision eligibility", () => {
     expect(invocation.executablePath).toBe(String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`);
     expect(invocation.args).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Write-Output canonical"]);
     expect(invocation.env).toMatchObject({
+      ComSpec: String.raw`C:\Windows\System32\cmd.exe`,
       Path: String.raw`C:\Windows\System32;C:\Windows\System32\WindowsPowerShell\v1.0`,
+      PATHEXT: ".COM;.EXE;.BAT;.CMD",
       PSModulePath: String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\Modules`,
       SystemRoot: String.raw`C:\Windows`,
       WINDIR: String.raw`C:\Windows`,
