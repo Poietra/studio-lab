@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from "node:util";
 
 import { z } from "zod";
 
+import { CANVAS_TELEMETRY_ADDITIVE_PHASES } from "../src/engine/canvas-worker-protocol";
 import {
   ENGINE_WEBGPU_BENCHMARK_REPORT_SCHEMA,
   ENGINE_WEBGPU_BENCHMARK_REPORT_VERSION,
@@ -34,13 +35,19 @@ const benchmarkDecisionFieldsSchema = z.looseObject({
   }),
 });
 
-const stressConfigurationSchema = z.looseObject({
-  measuredFrames: z.literal(300),
-  pacedFrames: z.literal(301),
-  scrubFrames: z.literal(120),
-});
+const requiredMeasuredStagePhases = [
+  "evaluate",
+  "prepare",
+  "surfaceAcquire",
+  "commandEncodeTotal",
+  "drawRecord",
+  "submit",
+  "present",
+  "gpuErrorScopeResolution",
+  "gpuQueueSubmittedWorkDone",
+] as const;
 
-const stageConfigurationSchema = z.looseObject({ telemetryFrames: z.literal(300) });
+const requiredUnavailableStagePhases = ["gpuExecution", "browserComposite"] as const;
 
 const evidenceSetManifestSchema = z.strictObject({
   benchmarkRunId: z.string().uuid(),
@@ -144,7 +151,7 @@ function verifyBenchmarkReport(raw: unknown) {
 
 function verifyStressReport(raw: unknown) {
   const report = engineWebgpuStressReportSchema.parse(raw);
-  const configuration = stressConfigurationSchema.parse(report.configuration);
+  const configuration = report.configuration;
   for (const [index, workload] of report.workloads.entries()) {
     const prefix = `stress.workloads[${index}]`;
     const summaries = [
@@ -238,7 +245,7 @@ function verifyStressReport(raw: unknown) {
 
 function verifyStageTelemetryReport(raw: unknown) {
   const report = engineWebgpuStageTelemetryReportSchema.parse(raw);
-  const configuration = stageConfigurationSchema.parse(report.configuration);
+  const configuration = report.configuration;
   for (const [index, workload] of report.workloads.entries()) {
     const prefix = `stageTelemetry.workloads[${index}]`;
     if (workload.attributionViolations.length !== 0 || workload.correlation.length !== configuration.telemetryFrames) {
@@ -268,6 +275,27 @@ function verifyStageTelemetryReport(raw: unknown) {
       ),
       `${prefix}.residual`,
     );
+    const requestIds = new Set<number>();
+    let previousRequestId = 0;
+    for (const [frameIndex, frame] of workload.correlation.entries()) {
+      if (frame.frameIndex !== frameIndex) {
+        throw new Error(`${prefix}.correlation frameIndex must be contiguous and ordered`);
+      }
+      if (requestIds.has(frame.requestId) || frame.requestId <= previousRequestId) {
+        throw new Error(`${prefix}.correlation requestId must be unique and strictly increasing`);
+      }
+      if (frame.packetId !== `canvas:${frame.requestId}`) {
+        throw new Error(`${prefix}.correlation packetId does not match requestId`);
+      }
+      if (frame.sampleTime !== frame.requestedSampleTime) {
+        throw new Error(`${prefix}.correlation sampleTime does not match the requested sample time`);
+      }
+      if (frame.residualMs < -configuration.attributionToleranceMs || frame.residualMs > frame.totalMs) {
+        throw new Error(`${prefix}.correlation residualMs violates the attribution bounds`);
+      }
+      requestIds.add(frame.requestId);
+      previousRequestId = frame.requestId;
+    }
     for (const [name, counts] of Object.entries(workload.counts)) {
       if (counts.perFrame.length !== configuration.telemetryFrames) {
         throw new Error(`${prefix}.counts.${name} has an invalid sample count`);
@@ -277,6 +305,11 @@ function verifyStageTelemetryReport(raw: unknown) {
     }
     if (workload.caches.perFrame.length !== configuration.telemetryFrames) {
       throw new Error(`${prefix}.caches has an invalid sample count`);
+    }
+    for (const [frameIndex, frame] of workload.caches.perFrame.entries()) {
+      if (frame.frameIndex !== frameIndex) {
+        throw new Error(`${prefix}.caches frameIndex must be contiguous and ordered`);
+      }
     }
     for (const name of [
       "imageSamplerBinding",
@@ -296,8 +329,38 @@ function verifyStageTelemetryReport(raw: unknown) {
       requireEqual(observedFrames, configuration.telemetryFrames, `${prefix}.phases.${name}.availability`);
       requireEqual(phase.samplesMs.length, phase.availability.measured, `${prefix}.phases.${name}.samplesMs`);
       const expectedSummary =
-        phase.samplesMs.length === 0 ? null : summarizeTiming(phase.samplesMs, phase.availability.measured);
+        phase.availability.measured === configuration.telemetryFrames
+          ? summarizeTiming(phase.samplesMs, configuration.telemetryFrames)
+          : null;
       requireEqual(phase.summary, expectedSummary, `${prefix}.phases.${name}.summary`);
+      if (phase.availability.unavailable === 0) {
+        requireEqual(phase.unavailableReasons, [], `${prefix}.phases.${name}.unavailableReasons`);
+      } else if (phase.unavailableReasons.length === 0) {
+        throw new Error(`${prefix}.phases.${name} must record why samples are unavailable`);
+      }
+    }
+    for (const name of CANVAS_TELEMETRY_ADDITIVE_PHASES) {
+      const phase = workload.phases[name];
+      if (phase.availability.unavailable !== 0) {
+        throw new Error(`${prefix}.phases.${name} additive attribution must never be unavailable`);
+      }
+    }
+    for (const name of requiredMeasuredStagePhases) {
+      const phase = workload.phases[name];
+      requireEqual(
+        phase.availability,
+        { measured: configuration.telemetryFrames, skipped: 0, unavailable: 0 },
+        `${prefix}.phases.${name}.required-measured availability`,
+      );
+      requireEqual(phase.unavailableReasons, [], `${prefix}.phases.${name}.required-measured reasons`);
+    }
+    for (const name of requiredUnavailableStagePhases) {
+      const phase = workload.phases[name];
+      requireEqual(
+        phase.availability,
+        { measured: 0, skipped: 0, unavailable: configuration.telemetryFrames },
+        `${prefix}.phases.${name}.required-unavailable availability`,
+      );
     }
   }
   requirePromotableReport(report, "stage telemetry report");
@@ -321,11 +384,7 @@ export function verifyBenchmarkEvidenceSetV1(input: EvidenceSetInput) {
   for (const [name, values] of sharedFields) {
     for (const value of values.slice(1)) requireEqual(value, values[0], `cross-report ${name}`);
   }
-  requireEqual(
-    stress.baseFixtureIds[0],
-    benchmark.baseFixtureId,
-    "cross-report benchmark/vector base fixture",
-  );
+  requireEqual(stress.baseFixtureIds[0], benchmark.baseFixtureId, "cross-report benchmark/vector base fixture");
   requireEqual(stageTelemetry.baseFixtureIds, stress.baseFixtureIds, "cross-report stress/stage base fixtures");
   for (const stressWorkload of stress.workloads) {
     const stageWorkload = stageTelemetry.workloads.find(
@@ -453,19 +512,39 @@ export async function verifyCheckedInBenchmarkEvidenceV1(
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
-  const verifiedDirectories: string[] = [];
+  const candidateDirectories: Readonly<{ commit: string; directory: string; profile: string }>[] = [];
   for (const profile of profiles
     .filter((entry) => entry.isDirectory())
     .sort((left, right) => left.name.localeCompare(right.name))) {
+    const profileName = safePathComponent(profile.name, "checked-in evidence profile directory");
     const profileDirectory = join(root, profile.name);
     const commits = await readdir(profileDirectory, { withFileTypes: true });
     for (const commit of commits
       .filter((entry) => entry.isDirectory())
       .sort((left, right) => left.name.localeCompare(right.name))) {
-      const directory = join(profileDirectory, commit.name);
-      await verifyPromotedBenchmarkEvidenceSetV1(directory);
-      verifiedDirectories.push(directory);
+      if (!/^[0-9a-f]{40}$/.test(commit.name)) {
+        throw new Error(`checked-in evidence commit directory is invalid: ${commit.name}`);
+      }
+      candidateDirectories.push({
+        commit: commit.name,
+        directory: join(profileDirectory, commit.name),
+        profile: profileName,
+      });
     }
+  }
+  // Issue #262 is still WIP and therefore permits zero sets. Once physical
+  // Windows evidence lands, this remains a rolling single-current-evidence
+  // directory rather than an unverifiable archive of obsolete schema/profile
+  // versions.
+  if (candidateDirectories.length > 1) {
+    throw new Error("checked-in engine WebGPU evidence must contain at most one current evidence set");
+  }
+  const verifiedDirectories: string[] = [];
+  for (const candidate of candidateDirectories) {
+    const { manifest } = await verifyPromotedBenchmarkEvidenceSetV1(candidate.directory);
+    requireEqual(manifest.profile.id, candidate.profile, "evidence profile directory");
+    requireEqual(manifest.commit, candidate.commit, "evidence commit directory");
+    verifiedDirectories.push(candidate.directory);
   }
   return verifiedDirectories;
 }

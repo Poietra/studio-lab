@@ -464,6 +464,9 @@ describe("canvas worker v1 protocol", () => {
       version: 1,
     };
     expect(canvasAdapterEvidenceV1Schema.parse(evidence)).toEqual(evidence);
+    const { browserArchitecture: _architecture, browserVendor: _vendor, ...preV4Adapter } = evidence.adapter;
+    const preV4Evidence = { ...evidence, adapter: preV4Adapter };
+    expect(canvasAdapterEvidenceV1Schema.parse(preV4Evidence)).toEqual(preV4Evidence);
     for (const syntheticNativeIdentity of [
       { deviceId: 0x2db9 },
       { deviceType: "DiscreteGpu" },

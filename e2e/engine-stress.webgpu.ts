@@ -464,8 +464,6 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
         "MathTex glyph outlines under stress",
         "generic multi-subpath fill and stroke topology under stress",
         "surface suboptimal acknowledgement counts",
-        "verified PNG/image sampling and texture upload under 1080p stress",
-        "MathTex outline workloads under 1080p stress",
       ],
       rendererUnsupported: [
         {

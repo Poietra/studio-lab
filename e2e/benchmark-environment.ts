@@ -53,8 +53,9 @@ const availableGpuDriverSchema = z.strictObject({
 const availablePowerModeSchema = z.strictObject({
   acLineStatus: z.enum(["offline", "online", "unknown"]),
   activeSchemeGuid: z.string().regex(/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/),
-  source: z.literal("windows-system-power-status+powercfg"),
+  source: z.literal("windows-system-power-status+powercfg+powrprof"),
   status: z.literal("available"),
+  userConfiguredAcPowerModeGuid: z.string().regex(/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/),
 });
 
 export type CommitIdentity = Readonly<{
@@ -225,11 +226,12 @@ export const referenceHostProfileSchema = z
     power: z.strictObject({
       acLineStatus: z.literal("online"),
       activeSchemeGuid: z.string().regex(/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/),
+      userConfiguredAcPowerModeGuid: z.string().regex(/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/),
     }),
     schema: z.literal("poietra.engine-webgpu-reference-host"),
     selectedGpuController: referenceGpuControllerSchema.pick({ deviceId: true, vendorId: true }),
     selectedWorkerAdapter: referenceWorkerAdapterIdentitySchema,
-    version: z.literal(1),
+    version: z.literal(2),
     windowsBuild: availableWindowsBuildSchema.omit({ source: true, status: true }),
   })
   .superRefine((profile, context) => {
@@ -358,6 +360,9 @@ function hostProfileMismatchReasons(host: HostEnvironment, profile: ReferenceHos
     if (host.powerMode.acLineStatus !== "online") reasons.push("the Windows host is not connected to AC power");
     if (host.powerMode.activeSchemeGuid !== profile.power.activeSchemeGuid) {
       reasons.push("the active Windows power plan does not match the pinned reference profile");
+    }
+    if (host.powerMode.userConfiguredAcPowerModeGuid !== profile.power.userConfiguredAcPowerModeGuid) {
+      reasons.push("the user-configured Windows AC power mode does not match the pinned reference profile");
     }
   }
   return reasons;
@@ -652,6 +657,21 @@ if ($LASTEXITCODE -ne 0) { throw "powercfg /GETACTIVESCHEME failed with exit cod
 $schemeIdentity = [regex]::Match($activeScheme, "[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}")
 if (-not $schemeIdentity.Success) { throw "powercfg did not return an active scheme GUID" }
 
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+public static class PoietraPowerModeProbe {
+  [DllImport("powrprof.dll", ExactSpelling = true)]
+  public static extern uint PowerGetUserConfiguredACPowerMode(out Guid powerModeGuid);
+}
+"@
+$userConfiguredAcPowerMode = [Guid]::Empty
+$powerModeResult = [PoietraPowerModeProbe]::PowerGetUserConfiguredACPowerMode([ref]$userConfiguredAcPowerMode)
+if ($powerModeResult -ne 0) {
+  throw "PowerGetUserConfiguredACPowerMode failed with error code $powerModeResult"
+}
+
 [ordered]@{
   browserInstallation = [ordered]@{
     channel = "msedge"
@@ -668,8 +688,9 @@ if (-not $schemeIdentity.Success) { throw "powercfg did not return an active sch
   powerMode = [ordered]@{
     acLineStatus = $acLineStatus
     activeSchemeGuid = $schemeIdentity.Value.ToLowerInvariant()
-    source = "windows-system-power-status+powercfg"
+    source = "windows-system-power-status+powercfg+powrprof"
     status = "available"
+    userConfiguredAcPowerModeGuid = $userConfiguredAcPowerMode.ToString("D").ToLowerInvariant()
   }
   windowsBuild = [ordered]@{
     buildNumber = [string]$operatingSystem.BuildNumber

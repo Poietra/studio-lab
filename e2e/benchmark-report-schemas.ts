@@ -1,8 +1,10 @@
 import { z } from "zod";
 
 import {
+  CANVAS_TELEMETRY_ADDITIVE_PHASES,
   canvasAdapterEvidenceV1Schema,
   canvasMeasuredMemoryTelemetryV1Schema,
+  MAX_CANVAS_INTERACTION_ENTITY_IDS,
   MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES,
 } from "../src/engine/canvas-worker-protocol";
 import {
@@ -93,7 +95,7 @@ const evidenceEnvelope = {
     engineContractVersion: z.literal(1),
     reportSchema: z.string().min(1),
     reportVersion: positiveCount,
-    telemetryAbiVersion: z.literal(3),
+    telemetryAbiVersion: z.literal(4),
   }),
   decisionEligibility: strictObject({ eligible: z.boolean(), reasons: z.array(z.string().min(1)) }),
   evidenceLevel: z.enum(["decision-candidate", "exploratory"]),
@@ -128,6 +130,18 @@ const wasmEvidence = strictObject({
   sha256,
 });
 const retries = strictObject({ projectRetries: z.literal(0), testRetry: z.literal(0) });
+const benchmarkViewport = strictObject({ heightPx: z.literal(90), widthPx: z.literal(160) });
+const stressViewport = strictObject({ heightPx: z.literal(1_080), widthPx: z.literal(1_920) });
+const stageAdditivePhases = z
+  .array(z.enum(CANVAS_TELEMETRY_ADDITIVE_PHASES))
+  .length(CANVAS_TELEMETRY_ADDITIVE_PHASES.length)
+  .superRefine((phases, context) => {
+    for (const [index, expected] of CANVAS_TELEMETRY_ADDITIVE_PHASES.entries()) {
+      if (phases[index] !== expected) {
+        context.addIssue({ code: "custom", message: `additive phase ${index} must be ${expected}`, path: [index] });
+      }
+    }
+  });
 
 type EvidenceEnvelopeReport = Readonly<{
   benchmarkRunId: string;
@@ -305,6 +319,7 @@ export const engineWebgpuBenchmarkReportSchema = z
       lane: z.literal("production-build-static-server"),
       measuredFrames: z.literal(300),
       retries,
+      viewport: benchmarkViewport,
       warmupFrames: z.literal(30),
     }),
     environment: z.looseObject({
@@ -493,7 +508,18 @@ export const engineWebgpuStressReportSchema = z
     ...evidenceEnvelope,
     baseFixtureIds: stressBaseFixtureIds,
     capturedAt: z.string().datetime(),
-    configuration: z.looseObject({ lane: z.literal("production-build-static-server"), retries }),
+    configuration: z.looseObject({
+      frameBudgetMs: z.literal(1_000 / 60),
+      interactionEntityIdCap: z.literal(MAX_CANVAS_INTERACTION_ENTITY_IDS),
+      lane: z.literal("production-build-static-server"),
+      longFrameThresholdMs: z.literal(25),
+      measuredFrames: z.literal(300),
+      pacedFrames: z.literal(301),
+      retries,
+      scrubFrames: z.literal(120),
+      viewport: stressViewport,
+      warmupFrames: z.literal(30),
+    }),
     environment: z.looseObject({
       browserLaunch,
       browserVersion,
@@ -621,10 +647,18 @@ export const engineWebgpuStageTelemetryReportSchema = z
     baseFixtureIds: stressBaseFixtureIds,
     capturedAt: z.string().datetime(),
     configuration: z.looseObject({
+      additivePhases: stageAdditivePhases,
+      attributionToleranceMs: z.literal(2),
+      interFrameYield: z.literal(
+        "one requestAnimationFrame before every warmup and telemetry frame, outside all measured intervals",
+      ),
       lane: z.literal("production-build-static-server"),
       retries,
       telemetryFrames: z.literal(ENGINE_STAGE_TELEMETRY_SAMPLE_COUNT),
+      viewport: stressViewport,
       warmupFrames: z.literal(ENGINE_STAGE_TELEMETRY_WARMUP_COUNT),
+      warmupPath: z.literal("renderTelemetry with awaited GPU queue fence per warmup frame"),
+      workloadCount: z.literal(6),
     }),
     environment: z.looseObject({
       browserLaunch,

@@ -31,7 +31,9 @@ export type PoietraWasmCanvasEngineV1 = {
   applySceneDelta?: (deltaJson: Uint8Array, baseRevision: string, nextRevision: string) => Uint8Array;
   render: (requestJson: Uint8Array) => Promise<Uint8Array>;
   replaceSnapshot: (snapshotJson: Uint8Array, assetMetadataJson: Uint8Array, assetBytes: Uint8Array[]) => void;
-  // Optional telemetry ABI v3; feature-detected so older modules keep working.
+  // Telemetry-free modules remain supported. A module that exposes any
+  // telemetry surface must complete the exact v4 handshake below; ABI3 is
+  // intentionally rejected instead of being partially interpreted.
   adapterEvidence?: () => Uint8Array;
   renderWithTelemetry?: (requestJson: Uint8Array) => Promise<Uint8Array>;
 };
@@ -142,7 +144,7 @@ export async function initializePoietraCanvasBindingsV1(module: unknown): Promis
     throw new Error("The Poietra WASM module does not implement PoietraCanvasEngineV1.");
   }
   // Telemetry is optional, but never trusted on method presence alone: any
-  // telemetry surface requires an exact version-3 handshake AND the complete
+  // telemetry surface requires an exact version-4 handshake AND the complete
   // method pair. A version without methods, methods without a version, or a
   // foreign version all fail closed instead of being partially used.
   const telemetryVersion =
@@ -151,7 +153,7 @@ export async function initializePoietraCanvasBindingsV1(module: unknown): Promis
   const hasAdapterEvidence = typeof EngineClass.prototype.adapterEvidence === "function";
   if (telemetryVersion !== null || hasRenderWithTelemetry || hasAdapterEvidence) {
     if (telemetryVersion !== POIETRA_CANVAS_TELEMETRY_ABI_VERSION || !hasRenderWithTelemetry || !hasAdapterEvidence) {
-      throw new Error("The Poietra WASM module exposes telemetry without a complete telemetry ABI version 3.");
+      throw new Error("The Poietra WASM module exposes telemetry without a complete telemetry ABI version 4.");
     }
   }
   return EngineClass;
@@ -646,7 +648,7 @@ export class PoietraCanvasWorkerRuntimeV1 {
           correlation,
           "telemetry-unavailable",
           null,
-          "The loaded Poietra WASM module does not implement canvas telemetry ABI v3.",
+          "The loaded Poietra WASM module does not implement canvas telemetry ABI v4.",
         ),
       );
       return;

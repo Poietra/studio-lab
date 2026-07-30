@@ -27,7 +27,8 @@
   "platform": "win32",
   "power": {
     "acLineStatus": "online",
-    "activeSchemeGuid": "381b4222-f694-41f0-9685-ff5bb260df2e"
+    "activeSchemeGuid": "381b4222-f694-41f0-9685-ff5bb260df2e",
+    "userConfiguredAcPowerModeGuid": "00000000-0000-0000-0000-000000000000"
   },
   "schema": "poietra.engine-webgpu-reference-host",
   "selectedGpuController": {
@@ -44,7 +45,7 @@
     "subgroupMaxSize": 128,
     "subgroupMinSize": 4
   },
-  "version": 1,
+  "version": 2,
   "windowsBuild": {
     "buildNumber": "26200",
     "caption": "Microsoft Windows 11 Home",

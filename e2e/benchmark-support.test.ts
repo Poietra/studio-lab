@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,7 +8,9 @@ import { describe, expect, it } from "vitest";
 import { makeBenchmarkBuildManifest } from "../scripts/benchmark-build-manifest.mjs";
 import { adapterEvidenceFixtureV1, measuredTelemetryFixtureV1 } from "../src/engine/canvas-telemetry-test-fixtures";
 import {
+  CANVAS_TELEMETRY_ADDITIVE_PHASES,
   type CanvasAdapterEvidenceV1,
+  MAX_CANVAS_INTERACTION_ENTITY_IDS,
   MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES,
 } from "../src/engine/canvas-worker-protocol";
 import { sceneIrBundleV1Schema } from "../src/engine/contracts";
@@ -109,7 +111,7 @@ function referenceHostEnvironment(referenceHost: PinnedReferenceHostProfile = RE
     osKernel: { platform: "win32", release: profile.windowsBuild.version, version: "fixture Windows kernel" },
     powerMode: {
       ...profile.power,
-      source: "windows-system-power-status+powercfg",
+      source: "windows-system-power-status+powercfg+powrprof",
       status: "available",
     },
     windowsBuild: { ...profile.windowsBuild, source: "windows-cim", status: "available" },
@@ -242,7 +244,7 @@ function reportEnvelopeFixture(reportSchema: string, reportVersion: number) {
       engineContractVersion: 1,
       reportSchema,
       reportVersion,
-      telemetryAbiVersion: 3,
+      telemetryAbiVersion: 4,
     },
     decisionEligibility: { eligible: true, reasons: [] },
     environment: {
@@ -306,7 +308,18 @@ function stressReportFixture(workloads: readonly ReturnType<typeof stressWorkloa
     ...decision,
     baseFixtureIds: ["eng-v1-shared-circle-opacity", "eng-v1-png-alpha-edge-camera"],
     capturedAt: "2026-07-28T00:00:00.000Z",
-    configuration: { lane: "production-build-static-server", retries: { projectRetries: 0, testRetry: 0 } },
+    configuration: {
+      frameBudgetMs: 1_000 / 60,
+      interactionEntityIdCap: MAX_CANVAS_INTERACTION_ENTITY_IDS,
+      lane: "production-build-static-server",
+      longFrameThresholdMs: 25,
+      measuredFrames: 300,
+      pacedFrames: 301,
+      retries: { projectRetries: 0, testRetry: 0 },
+      scrubFrames: 120,
+      viewport: { heightPx: 1_080, widthPx: 1_920 },
+      warmupFrames: 30,
+    },
     workloads,
   };
 }
@@ -351,6 +364,7 @@ function benchmarkReportFixture() {
       lane: "production-build-static-server",
       measuredFrames: 300,
       retries: { projectRetries: 0, testRetry: 0 },
+      viewport: { heightPx: 90, widthPx: 160 },
       warmupFrames: 30,
     },
     environment: {
@@ -455,10 +469,17 @@ function stageTelemetryReportFixture() {
     baseFixtureIds: ["eng-v1-shared-circle-opacity", "eng-v1-png-alpha-edge-camera"],
     capturedAt: "2026-07-28T00:00:00.000Z",
     configuration: {
+      additivePhases: CANVAS_TELEMETRY_ADDITIVE_PHASES,
+      attributionToleranceMs: 2,
+      interFrameYield:
+        "one requestAnimationFrame before every warmup and telemetry frame, outside all measured intervals",
       lane: "production-build-static-server",
       retries: { projectRetries: 0, testRetry: 0 },
       telemetryFrames: ENGINE_STAGE_TELEMETRY_SAMPLE_COUNT,
+      viewport: { heightPx: 1_080, widthPx: 1_920 },
       warmupFrames: ENGINE_STAGE_TELEMETRY_WARMUP_COUNT,
+      warmupPath: "renderTelemetry with awaited GPU queue fence per warmup frame",
+      workloadCount: STRESS_DEFINITIONS.length,
     },
     memoryAccounting: {
       exclusions: [
@@ -557,11 +578,11 @@ function promotableEvidenceSetFixture() {
   const correlation = Array.from({ length: 300 }, (_, frameIndex) => ({
     ackMs: 1,
     frameIndex,
-    packetId: `fixture-packet-${frameIndex}`,
+    packetId: `canvas:${frameIndex + 1}`,
     requestId: frameIndex + 1,
-    requestedSampleTime: 0,
+    requestedSampleTime: frameIndex,
     residualMs: 0,
-    sampleTime: 0,
+    sampleTime: frameIndex,
     suboptimal: false,
     totalMs: 1,
   }));
@@ -571,6 +592,12 @@ function promotableEvidenceSetFixture() {
     samplesMs: measuredTiming.samplesMs,
     summary: measuredTiming,
     unavailableReasons: [],
+  };
+  const unavailablePhaseSample = {
+    availability: { measured: 0, skipped: 0, unavailable: 300 },
+    samplesMs: [],
+    summary: null,
+    unavailableReasons: ["The architecture does not observe this phase."],
   };
   const cachePerFrame = Array.from({ length: 300 }, (_, frameIndex) => ({
     frameIndex,
@@ -596,7 +623,20 @@ function promotableEvidenceSetFixture() {
       caches: { perFrame: cachePerFrame, summary: cacheSummary },
       correlation,
       counts: Object.fromEntries(STAGE_TELEMETRY_COUNT_NAMES.map((name) => [name, countSample])),
-      phases: Object.fromEntries(STAGE_TELEMETRY_PHASE_NAMES.map((name) => [name, phaseSample])),
+      phases: Object.fromEntries(
+        STAGE_TELEMETRY_PHASE_NAMES.map((name) => {
+          const sample = name === "gpuExecution" || name === "browserComposite" ? unavailablePhaseSample : phaseSample;
+          return [
+            name,
+            {
+              ...sample,
+              availability: { ...sample.availability },
+              samplesMs: [...sample.samplesMs],
+              unavailableReasons: [...sample.unavailableReasons],
+            },
+          ];
+        }),
+      ),
       residual: summarizeSignedTiming(
         Array.from({ length: 300 }, () => 0),
         300,
@@ -814,6 +854,7 @@ describe("decision eligibility", () => {
     });
     expect(WINDOWS_HOST_EVIDENCE_SCRIPT).not.toMatch(/\$env:|GetEnvironmentVariable|&\s+powercfg\.exe/u);
     expect(WINDOWS_HOST_EVIDENCE_SCRIPT).toContain(String.raw`C:\Windows\System32\powercfg.exe`);
+    expect(WINDOWS_HOST_EVIDENCE_SCRIPT).toContain("PowerGetUserConfiguredACPowerMode");
     expect(WINDOWS_HOST_EVIDENCE_SCRIPT).toContain(
       String.raw`SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe`,
     );
@@ -841,6 +882,22 @@ describe("decision eligibility", () => {
       }),
     ).toThrow(/not connected to AC power/);
     expect(() => requireStableReferenceHostEnvironment(host, offline)).toThrow(/changed during/);
+
+    const differentPowerMode = {
+      ...host,
+      powerMode: {
+        ...host.powerMode,
+        userConfiguredAcPowerModeGuid: "ded574b5-45a0-4f42-8737-46345c09c238",
+      },
+    };
+    expect(() =>
+      requireReferenceHostPreflight({
+        browserLaunch: webgpuBrowserLaunch("win32"),
+        host: differentPowerMode,
+        referenceHost: REFERENCE_HOST,
+      }),
+    ).toThrow(/user-configured Windows AC power mode/);
+    expect(() => requireStableReferenceHostEnvironment(host, differentPowerMode)).toThrow(/changed during/);
   });
 
   it("verifies the checked-in profile bytes against the separate reviewed hash", () => {
@@ -1238,6 +1295,13 @@ describe("report summaries", () => {
     expect(
       engineWebgpuBenchmarkReportSchema.safeParse({
         ...report,
+        contracts: { ...report.contracts, telemetryAbiVersion: 3 },
+      }).success,
+    ).toBe(false);
+
+    expect(
+      engineWebgpuBenchmarkReportSchema.safeParse({
+        ...report,
         coldRuns: report.coldRuns.map((coldRun, index) => (index === 19 ? { ...coldRun, run: 18 } : coldRun)),
       }).success,
     ).toBe(false);
@@ -1333,15 +1397,11 @@ describe("report summaries", () => {
 
     const oversizedWorkloads = completeStressWorkloadFixtures();
     oversizedWorkloads[1] = stressWorkloadFixture(1_000, 128, MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES + 1);
-    expect(
-      engineWebgpuStressReportSchema.safeParse(stressReportFixture(oversizedWorkloads)).success,
-    ).toBe(false);
+    expect(engineWebgpuStressReportSchema.safeParse(stressReportFixture(oversizedWorkloads)).success).toBe(false);
 
     const overRequestedWorkloads = completeStressWorkloadFixtures();
     overRequestedWorkloads[1] = stressWorkloadFixture(1_000, 129);
-    expect(
-      engineWebgpuStressReportSchema.safeParse(stressReportFixture(overRequestedWorkloads)).success,
-    ).toBe(false);
+    expect(engineWebgpuStressReportSchema.safeParse(stressReportFixture(overRequestedWorkloads)).success).toBe(false);
   });
 
   it("accepts a complete stage report memory series", () => {
@@ -1393,6 +1453,44 @@ describe("report summaries", () => {
     const report = stageReportFixture();
     report.workloads[0]!.memory.samples[1]!.memory.retainedBoundaryTotal.peakBytes = 29_000_000;
     expect(engineWebgpuStageTelemetryReportSchema.safeParse(report).success).toBe(false);
+  });
+
+  it("pins the canonical viewport, retry, warmup, and stage-attribution configuration", () => {
+    const benchmark = benchmarkReportFixture();
+    expect(
+      engineWebgpuBenchmarkReportSchema.safeParse({
+        ...benchmark,
+        configuration: { ...benchmark.configuration, viewport: { heightPx: 90, widthPx: 161 } },
+      }).success,
+    ).toBe(false);
+
+    const stress = stressReportFixture(completeStressWorkloadFixtures());
+    expect(
+      engineWebgpuStressReportSchema.safeParse({
+        ...stress,
+        configuration: { ...stress.configuration, warmupFrames: 1 },
+      }).success,
+    ).toBe(false);
+    expect(
+      engineWebgpuStressReportSchema.safeParse({
+        ...stress,
+        configuration: { ...stress.configuration, viewport: { heightPx: 720, widthPx: 1_280 } },
+      }).success,
+    ).toBe(false);
+
+    const stage = stageTelemetryReportFixture();
+    expect(
+      engineWebgpuStageTelemetryReportSchema.safeParse({
+        ...stage,
+        configuration: { ...stage.configuration, additivePhases: [...stage.configuration.additivePhases].reverse() },
+      }).success,
+    ).toBe(false);
+    expect(
+      engineWebgpuStageTelemetryReportSchema.safeParse({
+        ...stage,
+        configuration: { ...stage.configuration, retries: { projectRetries: 1, testRetry: 0 } },
+      }).success,
+    ).toBe(false);
   });
 
   it("requires the exact pinned workload order and available adapters in stress and stage reports", () => {
@@ -1554,6 +1652,61 @@ describe("report summaries", () => {
     expect(() => verifyBenchmarkEvidenceSetV1(mixedRun)).toThrow(/cross-report benchmark run id/);
   });
 
+  it("rejects forged stage frame correlation, cache ordering, and required phase availability", () => {
+    const nonContiguousCorrelation = promotableEvidenceSetFixture();
+    nonContiguousCorrelation.stageTelemetry.workloads[0]!.correlation[1]!.frameIndex = 7;
+    expect(() => verifyBenchmarkEvidenceSetV1(nonContiguousCorrelation)).toThrow(/correlation frameIndex/);
+
+    const duplicateRequest = promotableEvidenceSetFixture();
+    duplicateRequest.stageTelemetry.workloads[0]!.correlation[1]!.requestId = 1;
+    duplicateRequest.stageTelemetry.workloads[0]!.correlation[1]!.packetId = "canvas:1";
+    expect(() => verifyBenchmarkEvidenceSetV1(duplicateRequest)).toThrow(/requestId must be unique/);
+
+    const mismatchedPacket = promotableEvidenceSetFixture();
+    mismatchedPacket.stageTelemetry.workloads[0]!.correlation[0]!.packetId = "canvas:999";
+    expect(() => verifyBenchmarkEvidenceSetV1(mismatchedPacket)).toThrow(/packetId does not match/);
+
+    const mismatchedSample = promotableEvidenceSetFixture();
+    mismatchedSample.stageTelemetry.workloads[0]!.correlation[0]!.sampleTime = 0.5;
+    expect(() => verifyBenchmarkEvidenceSetV1(mismatchedSample)).toThrow(/sampleTime does not match/);
+
+    const nonContiguousCache = promotableEvidenceSetFixture();
+    nonContiguousCache.stageTelemetry.workloads[0]!.caches.perFrame[1]!.frameIndex = 7;
+    expect(() => verifyBenchmarkEvidenceSetV1(nonContiguousCache)).toThrow(/caches frameIndex/);
+
+    const invalidResidual = promotableEvidenceSetFixture();
+    invalidResidual.stageTelemetry.workloads[0]!.correlation[0]!.residualMs = -3;
+    invalidResidual.stageTelemetry.workloads[0]!.residual = summarizeSignedTiming(
+      invalidResidual.stageTelemetry.workloads[0]!.correlation.map(({ residualMs }) => residualMs),
+      300,
+    );
+    expect(() => verifyBenchmarkEvidenceSetV1(invalidResidual)).toThrow(/residualMs violates/);
+
+    const observedGpuExecution = promotableEvidenceSetFixture();
+    observedGpuExecution.stageTelemetry.workloads[0]!.phases.gpuExecution = structuredClone(
+      observedGpuExecution.stageTelemetry.workloads[0]!.phases.evaluate,
+    );
+    expect(() => verifyBenchmarkEvidenceSetV1(observedGpuExecution)).toThrow(/required-unavailable availability/);
+
+    const skippedEvaluate = promotableEvidenceSetFixture();
+    const evaluate = skippedEvaluate.stageTelemetry.workloads[0]!.phases.evaluate;
+    evaluate.availability = { measured: 299, skipped: 1, unavailable: 0 };
+    evaluate.samplesMs.pop();
+    evaluate.summary = null;
+    expect(() => verifyBenchmarkEvidenceSetV1(skippedEvaluate)).toThrow(/required-measured availability/);
+
+    const unavailableAdditivePhase = promotableEvidenceSetFixture();
+    unavailableAdditivePhase.stageTelemetry.workloads[0]!.phases.tessellate = {
+      availability: { measured: 0, skipped: 299, unavailable: 1 },
+      samplesMs: [],
+      summary: null,
+      unavailableReasons: ["forged missing attribution"],
+    };
+    expect(() => verifyBenchmarkEvidenceSetV1(unavailableAdditivePhase)).toThrow(
+      /additive attribution must never be unavailable/,
+    );
+  });
+
   it("promotes exactly one verified report set without overwriting evidence", async () => {
     const temporary = mkdtempSync(join(tmpdir(), "poietra-benchmark-evidence-"));
     try {
@@ -1587,6 +1740,44 @@ describe("report summaries", () => {
       await expect(promoteBenchmarkEvidenceSetV1(input)).rejects.toThrow(/already exists/);
       writeFileSync(join(promoted.destination, "stress.json"), "{}\n");
       await expect(verifyPromotedBenchmarkEvidenceSetV1(promoted.destination)).rejects.toThrow(/manifest SHA-256/);
+    } finally {
+      rmSync(temporary, { force: true, recursive: true });
+    }
+  });
+
+  it("binds the rolling checked-in evidence directory to its manifest identity", async () => {
+    const temporary = mkdtempSync(join(tmpdir(), "poietra-benchmark-evidence-layout-"));
+    try {
+      const evidence = promotableEvidenceSetFixture();
+      const benchmarkPath = join(temporary, "benchmark.json");
+      const stressPath = join(temporary, "stress.json");
+      const stageTelemetryPath = join(temporary, "stage.json");
+      const outputRoot = join(temporary, "checked-in-root");
+      writeFileSync(benchmarkPath, `${JSON.stringify(evidence.benchmark)}\n`);
+      writeFileSync(stressPath, `${JSON.stringify(evidence.stress)}\n`);
+      writeFileSync(stageTelemetryPath, `${JSON.stringify(evidence.stageTelemetry)}\n`);
+      const promoted = await promoteBenchmarkEvidenceSetV1({
+        benchmarkPath,
+        outputRoot,
+        stageTelemetryPath,
+        stressPath,
+      });
+      await expect(verifyCheckedInBenchmarkEvidenceV1(outputRoot)).resolves.toEqual([promoted.destination]);
+
+      const profileRoot = join(outputRoot, REFERENCE_HOST.profile.id);
+      const wrongProfileRoot = join(outputRoot, "wrong-profile");
+      renameSync(profileRoot, wrongProfileRoot);
+      await expect(verifyCheckedInBenchmarkEvidenceV1(outputRoot)).rejects.toThrow(/evidence profile directory/);
+      renameSync(wrongProfileRoot, profileRoot);
+
+      const commitRoot = join(profileRoot, COMMIT_A);
+      const wrongCommitRoot = join(profileRoot, COMMIT_B);
+      renameSync(commitRoot, wrongCommitRoot);
+      await expect(verifyCheckedInBenchmarkEvidenceV1(outputRoot)).rejects.toThrow(/evidence commit directory/);
+      renameSync(wrongCommitRoot, commitRoot);
+
+      mkdirSync(join(outputRoot, "second-profile", COMMIT_B), { recursive: true });
+      await expect(verifyCheckedInBenchmarkEvidenceV1(outputRoot)).rejects.toThrow(/at most one current evidence set/);
     } finally {
       rmSync(temporary, { force: true, recursive: true });
     }
