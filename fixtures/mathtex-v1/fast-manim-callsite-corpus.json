@@ -1,0 +1,165 @@
+{
+  "schema": "poietra.mathtex-fast-manim-callsite-corpus",
+  "version": 1,
+  "repository": "https://github.com/Poietra/fast-manim",
+  "sourceCommit": "4d2a80abe1dbb0d800fd74c36d8a442afdb8efb6",
+  "extractionRule": "All MathTex calls with one or more literal positional string/number arguments under example_scenes, tests, and manim; calls with an explicit tex_template keyword are excluded. Duplicate expressions remain because this is a call-site census, not a syntax showcase.",
+  "cases": [
+    {
+      "id": "example-basic-basel-frac",
+      "texParts": ["\\sum_{n=1}^\\infty \\frac{1}{n^2} = \\frac{\\pi^2}{6}"],
+      "provenance": "example_scenes/basic.py:21"
+    },
+    {
+      "id": "example-basic-basel-over",
+      "texParts": ["\\sum_{k=1}^\\infty {1 \\over k^2} = {\\pi^2 \\over 6}"],
+      "provenance": "example_scenes/basic.py:100"
+    },
+    {
+      "id": "example-basic-pi",
+      "texParts": ["\\pi"],
+      "provenance": "example_scenes/basic.py:141"
+    },
+    {
+      "id": "example-customtex-cli-template",
+      "texParts": ["\\vv{vb}"],
+      "provenance": "example_scenes/customtex.py:14",
+      "requiresCustomTexTemplate": true
+    },
+    {
+      "id": "test-logging-basel-over",
+      "texParts": ["\\sum_{k=1}^\\infty {1 \\over k^2} = {\\pi^2 \\over 6}"],
+      "provenance": "tests/test_logging/basic_scenes_write_stuff.py:11"
+    },
+    {
+      "id": "transform-parts-start-1",
+      "texParts": ["A", "+", "B", "=", "C"],
+      "provenance": "tests/test_graphical_units/test_transform_matching_parts.py:33"
+    },
+    {
+      "id": "transform-parts-end-1",
+      "texParts": ["C", "=", "B", "-", "A"],
+      "provenance": "tests/test_graphical_units/test_transform_matching_parts.py:34"
+    },
+    {
+      "id": "transform-parts-start-2",
+      "texParts": ["A", "+", "B", "=", "C"],
+      "provenance": "tests/test_graphical_units/test_transform_matching_parts.py:42"
+    },
+    {
+      "id": "transform-parts-end-2",
+      "texParts": ["C", "=", "B", "-", "A"],
+      "provenance": "tests/test_graphical_units/test_transform_matching_parts.py:43"
+    },
+    {
+      "id": "transform-parts-start-3",
+      "texParts": ["A", "+", "B", "=", "C"],
+      "provenance": "tests/test_graphical_units/test_transform_matching_parts.py:51"
+    },
+    {
+      "id": "transform-parts-end-3",
+      "texParts": ["C", "=", "B", "-", "A"],
+      "provenance": "tests/test_graphical_units/test_transform_matching_parts.py:52"
+    },
+    {
+      "id": "transform-arrow-forward",
+      "texParts": ["A", "\\to", "B"],
+      "provenance": "tests/test_graphical_units/test_transform_matching_parts.py:61"
+    },
+    {
+      "id": "transform-arrow-reverse",
+      "texParts": ["B", "\\to", "A"],
+      "provenance": "tests/test_graphical_units/test_transform_matching_parts.py:62"
+    },
+    {
+      "id": "table-top",
+      "texParts": ["TOP"],
+      "provenance": "tests/test_graphical_units/test_tables.py:15"
+    },
+    {
+      "id": "axes-pi-half",
+      "texParts": ["\\frac{\\pi}{2}"],
+      "provenance": "tests/test_graphical_units/test_axes.py:158"
+    },
+    {
+      "id": "graphical-color-inheritance",
+      "texParts": ["test color inheritance"],
+      "provenance": "tests/test_graphical_units/test_tex_mobject.py:14"
+    },
+    {
+      "id": "graphical-function",
+      "texParts": ["f(x) = y"],
+      "provenance": "tests/test_graphical_units/test_tex_mobject.py:24"
+    },
+    {
+      "id": "opengl-pythagorean",
+      "texParts": ["a^2 + b^2 = c^2"],
+      "provenance": "tests/opengl/test_texmobject_opengl.py:11"
+    },
+    {
+      "id": "opengl-zero-scale",
+      "texParts": ["0"],
+      "provenance": "tests/opengl/test_texmobject_opengl.py:92"
+    },
+    {
+      "id": "opengl-zero-font-size",
+      "texParts": ["0"],
+      "provenance": "tests/opengl/test_texmobject_opengl.py:99"
+    },
+    {
+      "id": "opengl-zero-quarter-scale",
+      "texParts": ["0"],
+      "provenance": "tests/opengl/test_texmobject_opengl.py:100"
+    },
+    {
+      "id": "typst-compat-fraction",
+      "texParts": ["\\frac{a}{b}"],
+      "provenance": "tests/module/mobject/text/test_typst_mobject.py:143"
+    },
+    {
+      "id": "module-pythagorean",
+      "texParts": ["a^2 + b^2 = c^2"],
+      "provenance": "tests/module/mobject/text/test_texmobject.py:12"
+    },
+    {
+      "id": "module-zero-scale",
+      "texParts": ["0"],
+      "provenance": "tests/module/mobject/text/test_texmobject.py:238"
+    },
+    {
+      "id": "module-zero-font-size",
+      "texParts": ["0"],
+      "provenance": "tests/module/mobject/text/test_texmobject.py:245"
+    },
+    {
+      "id": "module-zero-quarter-scale",
+      "texParts": ["0"],
+      "provenance": "tests/module/mobject/text/test_texmobject.py:246"
+    },
+    {
+      "id": "matrix-parentheses",
+      "texParts": ["(", ")"],
+      "provenance": "manim/mobject/matrix.py:627"
+    },
+    {
+      "id": "matrix-equals",
+      "texParts": ["="],
+      "provenance": "manim/mobject/matrix.py:640"
+    },
+    {
+      "id": "number-equals",
+      "texParts": ["="],
+      "provenance": "manim/mobject/text/numbers.py:456"
+    },
+    {
+      "id": "tex-mobject-cdot",
+      "texParts": ["\\cdot"],
+      "provenance": "manim/mobject/text/tex_mobject.py:743"
+    },
+    {
+      "id": "checkhealth-contour-integral",
+      "texParts": ["\\oint_{\\gamma} f(z)~dz = 0"],
+      "provenance": "manim/cli/checkhealth/commands.py:73"
+    }
+  ]
+}

@@ -210,7 +210,9 @@ Web and packaged Electron distributions expose the canonical font license notice
 `/THIRD_PARTY_NOTICES.txt`. The standalone server distribution places the same file
 beside `manim-production-server.mjs`. Its source of truth is the MathTex outline
 crate's `PACKAGE-LICENSES.txt`; the build and package smoke checks require byte-identical
-copies and verify the embedded font SHA-256. The gated snapshot OCI image installs
+copies and verify the RaTeX revision, complete 20-face KaTeX font manifest, and aggregate
+font attestation. The MathTex crate's unit test independently recomputes that SHA-256 from
+the bytes embedded by `ratex-katex-fonts`. The gated snapshot OCI image installs
 the same byte-identical notice at
 `/usr/share/doc/poietra-mathtex-outline/THIRD_PARTY_NOTICES.txt` and binds its
 SHA-256 into the admitted image labels.

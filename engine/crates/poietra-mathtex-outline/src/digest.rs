@@ -5,13 +5,17 @@ const TOOLCHAIN_DOMAIN_V1: &[u8] = b"poietra.mathtex-outline.toolchain.v1\0";
 
 const TOOLCHAIN_MANIFEST_V1: &str = concat!(
     "algorithm=poietra-mathtex-outline-v1\n",
-    "mitex=0.2.7@51f7210e026ab05d037125247e92d4d023d8a80d\n",
-    "typst=0.15.1\n",
+    "ratex=0.1.14@ae391d727ac615437c63c308f4538d971a84bede\n",
+    "kurbo=0.13.1\n",
     "ttf-parser=0.25.1\n",
-    "font-family=New Computer Modern Math\n",
+    "font-set=KaTeX-20-TTF\n",
+    "font-digest=e52df76208d1e41c8222496e9fb30cc2a1fe8a275b14995f3f6c3a9205db21fa\n",
+    "open-path-stroke-width-em=0.0375\n",
     "normalization-height=1\n",
     "coordinate-quantum=0.000001\n",
     "fill-rule=nonzero\n",
+    "source-profile=manim-default-corpus-v1-ascii\n",
+    "user-defined-macros=fail-closed\n",
 );
 
 fn digest(domain: &[u8], content: &[u8]) -> String {
@@ -48,6 +52,7 @@ pub(crate) fn toolchain_digest_v1() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MATHTEX_FONT_DIGEST_V1;
 
     #[test]
     fn domains_and_content_are_part_of_the_digest() {
@@ -63,6 +68,18 @@ mod tests {
             content_digest_v1(&["E".to_owned(), "=".to_owned()]),
             content_digest_v1(&["E =".to_owned()]),
             "length framing preserves Studio texParts boundaries"
+        );
+    }
+
+    #[test]
+    fn toolchain_manifest_tracks_the_public_font_and_source_profile() {
+        assert!(
+            TOOLCHAIN_MANIFEST_V1.contains(MATHTEX_FONT_DIGEST_V1),
+            "font provenance must invalidate the toolchain digest"
+        );
+        assert!(
+            TOOLCHAIN_MANIFEST_V1.contains("source-profile=manim-default-corpus-v1-ascii"),
+            "source compatibility policy must invalidate the toolchain digest"
         );
     }
 }

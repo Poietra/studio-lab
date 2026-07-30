@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,35 +7,61 @@ import { electronPackageLayout } from "./electron-package-layout.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 const noticePath = resolve(repositoryRoot, "engine/crates/poietra-mathtex-outline/PACKAGE-LICENSES.txt");
-const fontPath = resolve(repositoryRoot, "engine/crates/poietra-mathtex-outline/assets/NewCMMath-Regular.otf");
 const manifestPath = resolve(repositoryRoot, "engine/crates/poietra-mathtex-outline/Cargo.toml");
 const libraryPath = resolve(repositoryRoot, "engine/crates/poietra-mathtex-outline/src/lib.rs");
+const digestPath = resolve(repositoryRoot, "engine/crates/poietra-mathtex-outline/src/digest.rs");
 const noticeName = "THIRD_PARTY_NOTICES.txt";
-const expectedFontDigest = "d66ac1cc91c55c24d3636ae2df1238076debdff51841f9893fc5419cc2df3df7";
+const expectedFontDigest = "e52df76208d1e41c8222496e9fb30cc2a1fe8a275b14995f3f6c3a9205db21fa";
+const expectedFontFaces = [
+  "KaTeX_AMS-Regular.ttf",
+  "KaTeX_Caligraphic-Bold.ttf",
+  "KaTeX_Caligraphic-Regular.ttf",
+  "KaTeX_Fraktur-Bold.ttf",
+  "KaTeX_Fraktur-Regular.ttf",
+  "KaTeX_Main-Bold.ttf",
+  "KaTeX_Main-BoldItalic.ttf",
+  "KaTeX_Main-Italic.ttf",
+  "KaTeX_Main-Regular.ttf",
+  "KaTeX_Math-BoldItalic.ttf",
+  "KaTeX_Math-Italic.ttf",
+  "KaTeX_SansSerif-Bold.ttf",
+  "KaTeX_SansSerif-Italic.ttf",
+  "KaTeX_SansSerif-Regular.ttf",
+  "KaTeX_Script-Regular.ttf",
+  "KaTeX_Size1-Regular.ttf",
+  "KaTeX_Size2-Regular.ttf",
+  "KaTeX_Size3-Regular.ttf",
+  "KaTeX_Size4-Regular.ttf",
+  "KaTeX_Typewriter-Regular.ttf",
+];
 
-const [notice, font, manifest, library] = await Promise.all([
+const [notice, manifest, library, digestSource] = await Promise.all([
   readFile(noticePath),
-  readFile(fontPath),
   readFile(manifestPath, "utf8"),
   readFile(libraryPath, "utf8"),
+  readFile(digestPath, "utf8"),
 ]);
 const noticeText = notice.toString("utf8");
-const actualFontDigest = createHash("sha256").update(font).digest("hex");
 
-assert.equal(actualFontDigest, expectedFontDigest, "the embedded font bytes changed without a notice update");
 for (const required of [
-  "Name: New Computer Modern Math",
-  "Official distribution: https://ctan.org/pkg/newcomputermodern",
-  "License: GUST Font License, version 1.0, 22 June 2009",
-  `SHA-256: ${expectedFontDigest}`,
+  "Name: RaTeX",
+  "Version: 0.1.14",
+  "Pinned revision: ae391d727ac615437c63c308f4538d971a84bede",
+  "Name: KaTeX mathematical fonts",
+  "License: SIL Open Font License, Version 1.1",
+  `Aggregate SHA-256: ${expectedFontDigest}`,
   "The Rust source code in this package is licensed under the MIT license",
 ]) {
   assert.ok(noticeText.includes(required), `the canonical notice is missing: ${required}`);
+}
+for (const face of expectedFontFaces) {
+  assert.ok(noticeText.includes(`  ${face}\n`), `the canonical notice is missing font face: ${face}`);
 }
 assert.match(manifest, /^license-file = "PACKAGE-LICENSES[.]txt"$/mu);
 assert.match(manifest, /^publish = false$/mu);
 assert.doesNotMatch(manifest, /^license(?:[.]workspace)?\s*=/mu);
 assert.ok(library.includes(`"${expectedFontDigest}"`), "the Rust font digest and notice digest differ");
+assert.ok(digestSource.includes(`font-digest=${expectedFontDigest}`), "the toolchain and font digests differ");
 
 const outputRoots = new Map([
   ["--web", resolve(repositoryRoot, "dist")],
@@ -51,5 +76,5 @@ for (const argument of process.argv.slice(2)) {
 }
 
 process.stdout.write(
-  `${JSON.stringify({ checked: process.argv.slice(2), fontDigest: actualFontDigest, noticeBytes: notice.byteLength })}\n`,
+  `${JSON.stringify({ checked: process.argv.slice(2), fontDigest: expectedFontDigest, fontFaces: expectedFontFaces.length, noticeBytes: notice.byteLength })}\n`,
 );

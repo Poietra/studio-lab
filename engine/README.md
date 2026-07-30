@@ -10,6 +10,10 @@ ABI is isolated in `poietra-wasm`.
 - `poietra-eval`: pure `SceneIrV1` to `RenderPacketV1` frame sampling.
 - `poietra-render-wgpu`: fail-closed CPU preparation and WGPU 30 path/image pipelines.
 - `poietra-wasm`: retained Scene snapshot session and bounded browser-worker ABI.
+- `poietra-mathtex-outline`: pinned RaTeX layout plus embedded KaTeX fonts,
+  lowered into the same bounded cubic-path contract used by browser and Python.
+- `poietra-mathtex-wasm` / `poietra-mathtex-py`: byte-identical browser and
+  native boundaries around that compiler.
 
 Run the workspace checks with:
 
@@ -19,6 +23,22 @@ cargo test --locked --workspace --manifest-path engine/Cargo.toml
 cargo clippy --locked --workspace --all-targets --all-features --manifest-path engine/Cargo.toml -- -D warnings
 cargo check --locked --package poietra-wasm --target wasm32-unknown-unknown --manifest-path engine/Cargo.toml
 cargo check --locked --package poietra-render-wgpu --target wasm32-unknown-unknown --manifest-path engine/Cargo.toml
+```
+
+The MathTex compiler accepts an evidence-backed subset of default-template
+formula source; it does not load user packages, fonts, files, or custom
+`TexTemplate` definitions. Unsupported syntax, raw Unicode rejected by the
+pinned pdfLaTeX template, user-defined macros, unavailable glyphs, non-default
+paint, and geometry above the public bounds return a structured fallback. Its
+checked-in acceptance corpus contains 25 representative Manim expressions,
+including fractions, radicals, text, accents, stretchy delimiters, matrices,
+and multi-part formulas. A separate 31-call-site census pinned to a fast-manim
+commit guards the measured support
+floor (30/31; the remaining call requires a custom TeX package). Three pinned
+real-Manim SVG references separately measure normalized outline similarity:
+
+```sh
+node scripts/regenerate-mathtex-manim-parity.mjs
 ```
 
 The native GPU proof is ignored by the portable default test suite. On a host

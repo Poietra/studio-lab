@@ -32,7 +32,38 @@ function compileWasm(request) {
   return responseBytes;
 }
 
-const requests = [encodeRequest(["E = mc^2"]), encodeRequest([String.raw`\frac{1}{2}`])];
+const corpus = JSON.parse(await readFile(new URL("../fixtures/mathtex-v1/manim-corpus.json", import.meta.url), "utf8"));
+assert.equal(corpus.schema, "poietra.mathtex-manim-corpus");
+assert.equal(corpus.version, 1);
+assert.equal(corpus.cases.length, 25);
+
+const compiledRequests = corpus.cases.map(({ texParts }) => encodeRequest(texParts));
+const macroAmplifier = `\\def\\a#1{${"#1".repeat(300)}}\\a{${"x".repeat(250)}}`;
+assert.equal(encoder.encode(macroAmplifier).byteLength, 864);
+const macroRequests = [macroAmplifier, `\\url{${macroAmplifier}}`, `\\href{${macroAmplifier}}{x}`].map((source) =>
+  encodeRequest([source]),
+);
+const sourceProfileRequests = [
+  String.raw`\htmlStyle{font-size:2em}{x}`,
+  String.raw`\href{https://example.test}{x}`,
+  String.raw`\url{https://example.test}`,
+  String.raw`\ce{H2O}`,
+  String.raw`\color{red}{x}`,
+  String.raw`\textcolor{red}{x}`,
+  "α",
+  "∑",
+  "√x",
+  "é",
+  "ℝ",
+  "x#y",
+  "x%y",
+  "$x$",
+  String.raw`\begin{array}{c:c}a&b\end{array}`,
+  String.raw`\begin{array}{:}a\end{array}`,
+  String.raw`a\\*b`,
+  String.raw`a\\[1mu]b`,
+].map((source) => encodeRequest([source]));
+const requests = [...compiledRequests, ...macroRequests, ...sourceProfileRequests, encodeRequest([])];
 const wasmResponses = requests.map(compileWasm);
 const nativeOutput = execFileSync(
   "cargo",
@@ -61,6 +92,11 @@ for (const [index, wasmResponse] of wasmResponses.entries()) {
     Buffer.from(nativeResponses[index]),
     `native and WASM response ${index} must be byte-identical`,
   );
+}
+
+for (const [index, response] of wasmResponses.slice(0, compiledRequests.length).entries()) {
+  const result = JSON.parse(decoder.decode(response));
+  assert.equal(result.result.kind, "compiled", `${corpus.cases[index].id} must compile in the WASM acceptance corpus`);
 }
 
 function assertExactKeys(value, expected) {
@@ -120,14 +156,34 @@ for (const subpath of representative.result.path.subpaths) {
 }
 assert.ok(segmentCount > 0 && segmentCount <= 2048);
 
-const unsupported = JSON.parse(decoder.decode(wasmResponses[1]));
+const macroFallbacks = wasmResponses
+  .slice(compiledRequests.length, compiledRequests.length + macroRequests.length)
+  .map((response) => JSON.parse(decoder.decode(response)));
+for (const macroFallback of macroFallbacks) {
+  assertExactKeys(macroFallback, ["result", "schema", "version"]);
+  assert.equal(macroFallback.result.kind, "unsupported");
+  assert.equal(macroFallback.result.code, "syntax-unsupported");
+}
+
+const sourceProfileFallbacks = wasmResponses
+  .slice(
+    compiledRequests.length + macroRequests.length,
+    compiledRequests.length + macroRequests.length + sourceProfileRequests.length,
+  )
+  .map((response) => JSON.parse(decoder.decode(response)));
+for (const sourceProfileFallback of sourceProfileFallbacks) {
+  assertExactKeys(sourceProfileFallback, ["result", "schema", "version"]);
+  assert.equal(sourceProfileFallback.result.kind, "unsupported");
+  assert.equal(sourceProfileFallback.result.code, "syntax-unsupported");
+}
+
+const unsupported = JSON.parse(decoder.decode(wasmResponses.at(-1)));
 assertExactKeys(unsupported, ["result", "schema", "version"]);
 assert.equal(unsupported.schema, "poietra.mathtex-outline-response");
 assert.equal(unsupported.version, 1);
 assertExactKeys(unsupported.result, ["code", "kind", "message"]);
 assert.equal(unsupported.result.kind, "unsupported");
-assert.equal(typeof unsupported.result.code, "string");
-assert.ok(unsupported.result.code.length > 0);
+assert.equal(unsupported.result.code, "invalid-request");
 assert.equal(typeof unsupported.result.message, "string");
 assert.ok(unsupported.result.message.length > 0);
 assert.ok(encoder.encode(unsupported.result.message).byteLength <= 512);
@@ -135,9 +191,14 @@ assert.ok(encoder.encode(unsupported.result.message).byteLength <= 512);
 const gzipBytes = gzipSync(Buffer.concat([glueBytes, wasmBytes])).byteLength;
 console.log(
   JSON.stringify({
+    compiledCases: compiledRequests.length,
     compiledSubpaths: representative.result.path.subpaths.length,
     gzipBytes,
     segmentCount,
+    macroUnsupportedCases: macroFallbacks.length,
+    macroUnsupportedCode: macroFallbacks[0].result.code,
+    sourceProfileUnsupportedCases: sourceProfileFallbacks.length,
+    sourceProfileUnsupportedCode: sourceProfileFallbacks[0].result.code,
     unsupportedCode: unsupported.result.code,
     wasmBytes: wasmBytes.byteLength,
   }),

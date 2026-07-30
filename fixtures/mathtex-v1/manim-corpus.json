@@ -1,0 +1,131 @@
+{
+  "schema": "poietra.mathtex-manim-corpus",
+  "version": 1,
+  "cases": [
+    {
+      "id": "basel-sum",
+      "texParts": ["\\sum_{n=1}^\\infty \\frac{1}{n^2} = \\frac{\\pi^2}{6}"],
+      "provenance": "fast-manim/example_scenes/basic.py:21"
+    },
+    {
+      "id": "basel-over",
+      "texParts": ["\\sum_{k=1}^\\infty {1 \\over k^2} = {\\pi^2 \\over 6}"],
+      "provenance": "fast-manim/example_scenes/basic.py:100"
+    },
+    {
+      "id": "pi-symbol",
+      "texParts": ["\\pi"],
+      "provenance": "fast-manim/example_scenes/basic.py:141"
+    },
+    {
+      "id": "pythagorean-isolated-parts",
+      "texParts": ["{{x}}^2", "+", "{{y}}^2", "=", "{{z}}^2"],
+      "provenance": "fast-manim/manim/animation/transform_matching_parts.py:255"
+    },
+    {
+      "id": "rearranged-isolated-parts",
+      "texParts": ["{{a}}^2", "=", "{{c}}^2", "-", "{{b}}^2"],
+      "provenance": "fast-manim/manim/animation/transform_matching_parts.py:257"
+    },
+    {
+      "id": "contour-integral",
+      "texParts": ["\\oint_{\\gamma} f(z)~dz = 0"],
+      "provenance": "fast-manim/manim/cli/checkhealth/commands.py:73"
+    },
+    {
+      "id": "bold-vector-label",
+      "texParts": ["\\vec{\\textbf{v}}"],
+      "provenance": "fast-manim/manim/scene/vector_space_scene.py:339"
+    },
+    {
+      "id": "product-rule-parts",
+      "texParts": ["\\frac{d}{dx}f(x)g(x)=", "f(x)\\frac{d}{dx}g(x)", "+", "g(x)\\frac{d}{dx}f(x)"],
+      "provenance": "fast-manim/manim/utils/debug.py:58"
+    },
+    {
+      "id": "fundamental-theorem",
+      "texParts": ["\\int_a^b f'(x) dx = f(b)- f(a)"],
+      "provenance": "fast-manim/manim/mobject/text/tex_mobject.py:239"
+    },
+    {
+      "id": "double-brace-groups",
+      "texParts": ["{{ a^2 }} + {{ b^2 }} = {{ c^2 }}"],
+      "provenance": "fast-manim/manim/mobject/text/tex_mobject.py:248"
+    },
+    {
+      "id": "nested-radical-fraction",
+      "texParts": ["\\frac{1}{a+b\\sqrt{2}}"],
+      "provenance": "fast-manim/manim/mobject/text/tex_mobject.py:274"
+    },
+    {
+      "id": "split-unbalanced-braces",
+      "texParts": ["e^{i", "\\tau} = 1"],
+      "provenance": "fast-manim/manim/mobject/text/tex_mobject.py:195"
+    },
+    {
+      "id": "multiplication-dot",
+      "texParts": ["\\cdot"],
+      "provenance": "fast-manim/manim/mobject/text/tex_mobject.py:743"
+    },
+    {
+      "id": "pi-half",
+      "texParts": ["\\frac{\\pi}{2}"],
+      "provenance": "fast-manim/manim/mobject/graphing/coordinate_systems.py:1155"
+    },
+    {
+      "id": "inequality",
+      "texParts": ["x < y"],
+      "provenance": "server/manim-thumbnail.test.ts:72"
+    },
+    {
+      "id": "hat-and-vector",
+      "texParts": ["\\hat{x} + \\vec{v}"],
+      "provenance": "issue-263 reported acceptance expression"
+    },
+    {
+      "id": "text-and-stretchy-delimiters",
+      "texParts": ["\\left(\\text{energy}\\right)"],
+      "provenance": "issue-263 reported acceptance expression"
+    },
+    {
+      "id": "sine-table-three",
+      "texParts": ["\\frac{ \\sqrt{3} }{2}"],
+      "provenance": "fast-manim/manim/mobject/table.py:1101"
+    },
+    {
+      "id": "trig-labels",
+      "texParts": ["\\sin", "/", "\\cos"],
+      "provenance": "fast-manim/manim/mobject/table.py:1103"
+    },
+    {
+      "id": "exponential-function",
+      "texParts": ["f(x)=e^{x}"],
+      "provenance": "fast-manim/manim/mobject/table.py:1147"
+    },
+    {
+      "id": "greek-alpha",
+      "texParts": ["\\alpha"],
+      "provenance": "fast-manim/manim/mobject/geometry/arc.py:13"
+    },
+    {
+      "id": "generated-matrix",
+      "texParts": ["\\left[ \\begin{array}{cc}1 & 0 \\\\ 0 & 1\\end{array} \\right]"],
+      "provenance": "fast-manim/manim/mobject/matrix.py:55"
+    },
+    {
+      "id": "bmatrix",
+      "texParts": ["\\begin{bmatrix} a & b \\\\ c & d \\end{bmatrix}"],
+      "provenance": "issue-263 reported acceptance expression"
+    },
+    {
+      "id": "degree-label",
+      "texParts": ["90^{\\circ}"],
+      "provenance": "fast-manim/manim/mobject/graphing/coordinate_systems.py:3277"
+    },
+    {
+      "id": "mass-energy",
+      "texParts": ["E = mc^2"],
+      "provenance": "fixtures/real-preview-harness/scene_mathtex.py"
+    }
+  ]
+}
