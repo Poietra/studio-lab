@@ -16,11 +16,15 @@ pub const MAX_CANVAS_TELEMETRY_RESPONSE_JSON_BYTES_V1: usize = 32 * 1024;
 /// requested device features/limits dumps.
 pub const MAX_CANVAS_ADAPTER_EVIDENCE_JSON_BYTES_V1: usize = 8 * 1024;
 /// Telemetry render ABI version, independent of the base canvas ABI.
-pub const POIETRA_CANVAS_TELEMETRY_ABI_VERSION_V2: u32 = 2;
+pub const POIETRA_CANVAS_TELEMETRY_ABI_VERSION_V3: u32 = 3;
 
 const MAX_EVIDENCE_STRING_UTF16_UNITS_V1: usize = 256;
 const MAX_EVIDENCE_DUMP_UTF16_UNITS_V1: usize = 1_000;
 const MAX_PHASE_REASON_UTF16_UNITS_V1: usize = 500;
+const MAX_MEMORY_REASON_UTF16_UNITS_V1: usize = 500;
+const MAX_EXACT_JSON_INTEGER_V1: u64 = 9_007_199_254_740_991;
+pub(crate) const MEMORY_SNAPSHOT_NOT_CAPTURED_REASON_V1: &str =
+    "engine-owned memory snapshot was not captured";
 
 #[derive(Clone, Copy, Debug, Serialize)]
 enum CanvasRenderTelemetryResponseSchemaV1 {
@@ -357,12 +361,216 @@ pub(crate) enum TelemetryClockSourceV1 {
     WorkerPerformanceNow,
 }
 
+/// Current and engine-lifetime high-water bytes observed at telemetry response
+/// boundaries. `peakBytes` is the maximum observed value for this exact
+/// quantity, never a sum of independently observed component peaks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct MemoryHighWaterV1 {
+    current_bytes: u64,
+    peak_bytes: u64,
+}
+
+impl MemoryHighWaterV1 {
+    const fn new(current_bytes: u64, peak_bytes: u64) -> Self {
+        Self {
+            current_bytes,
+            peak_bytes,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct LogicalGpuMemoryBreakdownV1 {
+    geometry_buffer_arena: MemoryHighWaterV1,
+    retained_image_textures: MemoryHighWaterV1,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct WasmLinearMemoryBreakdownV1 {
+    decoded_image_assets: MemoryHighWaterV1,
+    prepared_geometry_cache: MemoryHighWaterV1,
+    retained_scene_index: MemoryHighWaterV1,
+}
+
+/// Truthful retained-boundary memory evidence for one opt-in telemetry response.
+///
+/// Rust heap/cache values are informative subsets of `wasmLinear`; they are
+/// deliberately not added again to `retainedBoundaryTotal`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub(crate) enum FrameMemorySampleV1 {
+    Measured {
+        retained_boundary_total: MemoryHighWaterV1,
+        logical_gpu_breakdown: LogicalGpuMemoryBreakdownV1,
+        logical_gpu_resident: MemoryHighWaterV1,
+        wasm_linear: MemoryHighWaterV1,
+        wasm_linear_breakdown: WasmLinearMemoryBreakdownV1,
+    },
+    Unavailable {
+        reason: String,
+    },
+}
+
+impl Default for FrameMemorySampleV1 {
+    fn default() -> Self {
+        Self::unavailable(MEMORY_SNAPSHOT_NOT_CAPTURED_REASON_V1)
+    }
+}
+
+impl FrameMemorySampleV1 {
+    pub(crate) fn unavailable(reason: &str) -> Self {
+        Self::Unavailable {
+            reason: truncate_utf16(reason, MAX_MEMORY_REASON_UTF16_UNITS_V1),
+        }
+    }
+}
+
+/// Exact current values captured from one engine at one telemetry response
+/// boundary before any high-water state is advanced.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct EngineMemoryCurrentV1 {
+    pub(crate) decoded_image_assets: u64,
+    pub(crate) geometry_buffer_arena: u64,
+    pub(crate) prepared_geometry_cache: u64,
+    pub(crate) retained_image_textures: u64,
+    pub(crate) retained_scene_index: u64,
+    pub(crate) wasm_linear: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub(crate) enum EngineMemoryAccountingErrorV1 {
+    #[error("{quantity} byte accounting exceeds the largest exact JSON integer")]
+    JsonIntegerRange { quantity: &'static str },
+    #[error("logical GPU resident byte accounting overflowed")]
+    LogicalGpuResidentOverflow,
+    #[error("retained-boundary total byte accounting overflowed")]
+    RetainedBoundaryTotalOverflow,
+}
+
+/// Monotonic high-water state scoped to one `PoietraCanvasEngineV1` lifetime.
+///
+/// Observation is transactional: checked aggregate arithmetic finishes before
+/// any peak mutates, so an overflow cannot corrupt later evidence.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct EngineMemoryHighWaterV1 {
+    decoded_image_assets: u64,
+    retained_boundary_total: u64,
+    geometry_buffer_arena: u64,
+    logical_gpu_resident: u64,
+    prepared_geometry_cache: u64,
+    retained_image_textures: u64,
+    retained_scene_index: u64,
+    wasm_linear: u64,
+}
+
+impl EngineMemoryHighWaterV1 {
+    pub(crate) fn observe(
+        &mut self,
+        current: EngineMemoryCurrentV1,
+    ) -> Result<FrameMemorySampleV1, EngineMemoryAccountingErrorV1> {
+        let logical_gpu_resident = current
+            .geometry_buffer_arena
+            .checked_add(current.retained_image_textures)
+            .ok_or(EngineMemoryAccountingErrorV1::LogicalGpuResidentOverflow)?;
+        let retained_boundary_total = current
+            .wasm_linear
+            .checked_add(logical_gpu_resident)
+            .ok_or(EngineMemoryAccountingErrorV1::RetainedBoundaryTotalOverflow)?;
+        for (quantity, value) in [
+            ("decoded image assets", current.decoded_image_assets),
+            ("geometry buffer arena", current.geometry_buffer_arena),
+            ("prepared geometry cache", current.prepared_geometry_cache),
+            ("retained image textures", current.retained_image_textures),
+            ("retained Scene index", current.retained_scene_index),
+            ("WebAssembly linear memory", current.wasm_linear),
+            ("logical GPU resident", logical_gpu_resident),
+            ("retained-boundary total", retained_boundary_total),
+        ] {
+            ensure_exact_json_integer(quantity, value)?;
+        }
+
+        let next = Self {
+            decoded_image_assets: self.decoded_image_assets.max(current.decoded_image_assets),
+            retained_boundary_total: self.retained_boundary_total.max(retained_boundary_total),
+            geometry_buffer_arena: self
+                .geometry_buffer_arena
+                .max(current.geometry_buffer_arena),
+            logical_gpu_resident: self.logical_gpu_resident.max(logical_gpu_resident),
+            prepared_geometry_cache: self
+                .prepared_geometry_cache
+                .max(current.prepared_geometry_cache),
+            retained_image_textures: self
+                .retained_image_textures
+                .max(current.retained_image_textures),
+            retained_scene_index: self.retained_scene_index.max(current.retained_scene_index),
+            wasm_linear: self.wasm_linear.max(current.wasm_linear),
+        };
+        let sample = FrameMemorySampleV1::Measured {
+            retained_boundary_total: MemoryHighWaterV1::new(
+                retained_boundary_total,
+                next.retained_boundary_total,
+            ),
+            logical_gpu_breakdown: LogicalGpuMemoryBreakdownV1 {
+                geometry_buffer_arena: MemoryHighWaterV1::new(
+                    current.geometry_buffer_arena,
+                    next.geometry_buffer_arena,
+                ),
+                retained_image_textures: MemoryHighWaterV1::new(
+                    current.retained_image_textures,
+                    next.retained_image_textures,
+                ),
+            },
+            logical_gpu_resident: MemoryHighWaterV1::new(
+                logical_gpu_resident,
+                next.logical_gpu_resident,
+            ),
+            wasm_linear: MemoryHighWaterV1::new(current.wasm_linear, next.wasm_linear),
+            wasm_linear_breakdown: WasmLinearMemoryBreakdownV1 {
+                decoded_image_assets: MemoryHighWaterV1::new(
+                    current.decoded_image_assets,
+                    next.decoded_image_assets,
+                ),
+                prepared_geometry_cache: MemoryHighWaterV1::new(
+                    current.prepared_geometry_cache,
+                    next.prepared_geometry_cache,
+                ),
+                retained_scene_index: MemoryHighWaterV1::new(
+                    current.retained_scene_index,
+                    next.retained_scene_index,
+                ),
+            },
+        };
+        *self = next;
+        Ok(sample)
+    }
+}
+
+fn ensure_exact_json_integer(
+    quantity: &'static str,
+    value: u64,
+) -> Result<(), EngineMemoryAccountingErrorV1> {
+    if value <= MAX_EXACT_JSON_INTEGER_V1 {
+        Ok(())
+    } else {
+        Err(EngineMemoryAccountingErrorV1::JsonIntegerRange { quantity })
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct FrameTelemetryV1 {
     pub(crate) caches: FrameTelemetryCachesV1,
     pub(crate) clock: TelemetryClockSourceV1,
     pub(crate) counts: FrameTelemetryCountsV1,
+    pub(crate) memory: FrameMemorySampleV1,
     pub(crate) phases: FrameTelemetryPhasesV1,
     pub(crate) total_ms: Option<f64>,
 }
@@ -373,6 +581,7 @@ impl FrameTelemetryV1 {
             caches: FrameTelemetryCachesV1::skipped(),
             clock,
             counts: FrameTelemetryCountsV1::default(),
+            memory: FrameMemorySampleV1::default(),
             phases: FrameTelemetryPhasesV1::all_skipped(),
             total_ms: None,
         }
@@ -475,7 +684,7 @@ impl CanvasAdapterEvidenceV1 {
 /// unobservable and therefore `unavailable` with their bounded reasons, never
 /// `skipped`. A Rust test asserts deep equality with the constructor output
 /// and a TypeScript protocol test parses this exact document.
-pub(crate) const TELEMETRY_SERIALIZATION_FALLBACK_V1: &[u8] = br#"{"result":{"kind":"error","code":"serialization-failed","message":"Canvas telemetry response serialization failed","packetId":null,"sampleTime":null,"viewport":null},"schema":"poietra.canvas-render-telemetry-response","telemetry":{"caches":{"imageSamplerBinding":"skipped","imageTexture":"skipped","pipeline":"retained","preparedGeometry":"skipped","surfaceConfiguration":"skipped"},"clock":"unavailable","counts":{"bufferCreations":null,"drawCalls":null,"evaluatedDraws":null,"evaluatedEntities":null,"imageSamplerBindingCreations":null,"imageTextureEvictions":null,"imageTextureUploads":null,"surfaceConfigurations":null,"tessellationCalls":null,"tessellatedIndices":null,"tessellatedVertices":null,"uploadBytes":null},"phases":{"browserComposite":{"kind":"unavailable","reason":"The dedicated worker cannot observe browser compositor presentation; only the embedding page could approximate it."},"bufferCreateAndStage":{"kind":"skipped"},"commandEncodeTotal":{"kind":"skipped"},"drawRecord":{"kind":"skipped"},"evaluate":{"kind":"skipped"},"gpuErrorScopeResolution":{"kind":"skipped"},"gpuExecution":{"kind":"unavailable","reason":"GPU-side execution timing requires timestamp queries, which this pipeline does not request; only the awaited queue onSubmittedWorkDone fence is observed."},"gpuQueueSubmittedWorkDone":{"kind":"skipped"},"postPresentReconfigure":{"kind":"skipped"},"prepare":{"kind":"skipped"},"present":{"kind":"skipped"},"submit":{"kind":"skipped"},"surfaceAcquire":{"kind":"skipped"},"tessellate":{"kind":"skipped"},"vertexIndexEncode":{"kind":"skipped"}},"totalMs":null},"version":1}"#;
+pub(crate) const TELEMETRY_SERIALIZATION_FALLBACK_V1: &[u8] = br#"{"result":{"kind":"error","code":"serialization-failed","message":"Canvas telemetry response serialization failed","packetId":null,"sampleTime":null,"viewport":null},"schema":"poietra.canvas-render-telemetry-response","telemetry":{"caches":{"imageSamplerBinding":"skipped","imageTexture":"skipped","pipeline":"retained","preparedGeometry":"skipped","surfaceConfiguration":"skipped"},"clock":"unavailable","counts":{"bufferCreations":null,"drawCalls":null,"evaluatedDraws":null,"evaluatedEntities":null,"imageSamplerBindingCreations":null,"imageTextureEvictions":null,"imageTextureUploads":null,"surfaceConfigurations":null,"tessellationCalls":null,"tessellatedIndices":null,"tessellatedVertices":null,"uploadBytes":null},"memory":{"kind":"unavailable","reason":"engine-owned memory snapshot was not captured"},"phases":{"browserComposite":{"kind":"unavailable","reason":"The dedicated worker cannot observe browser compositor presentation; only the embedding page could approximate it."},"bufferCreateAndStage":{"kind":"skipped"},"commandEncodeTotal":{"kind":"skipped"},"drawRecord":{"kind":"skipped"},"evaluate":{"kind":"skipped"},"gpuErrorScopeResolution":{"kind":"skipped"},"gpuExecution":{"kind":"unavailable","reason":"GPU-side execution timing requires timestamp queries, which this pipeline does not request; only the awaited queue onSubmittedWorkDone fence is observed."},"gpuQueueSubmittedWorkDone":{"kind":"skipped"},"postPresentReconfigure":{"kind":"skipped"},"prepare":{"kind":"skipped"},"present":{"kind":"skipped"},"submit":{"kind":"skipped"},"surfaceAcquire":{"kind":"skipped"},"tessellate":{"kind":"skipped"},"vertexIndexEncode":{"kind":"skipped"}},"totalMs":null},"version":1}"#;
 
 /// Serializes one telemetry acknowledgement within the bounded envelope.
 ///
@@ -544,8 +753,26 @@ mod tests {
         PhaseSampleV1::from_optional_ms(Some(ms), "unused")
     }
 
+    fn memory_current(
+        wasm_linear: u64,
+        geometry_buffer_arena: u64,
+        retained_image_textures: u64,
+    ) -> EngineMemoryCurrentV1 {
+        EngineMemoryCurrentV1 {
+            decoded_image_assets: 300,
+            geometry_buffer_arena,
+            prepared_geometry_cache: 200,
+            retained_image_textures,
+            retained_scene_index: 100,
+            wasm_linear,
+        }
+    }
+
     fn measured_telemetry() -> FrameTelemetryV1 {
         let mut telemetry = FrameTelemetryV1::new(TelemetryClockSourceV1::WorkerPerformanceNow);
+        telemetry.memory = EngineMemoryHighWaterV1::default()
+            .observe(memory_current(1_000, 200, 100))
+            .unwrap();
         telemetry.phases.evaluate = measured(1.25);
         telemetry.phases.vertex_index_encode = measured(0.3);
         telemetry.phases.command_encode_total = measured(0.2);
@@ -595,11 +822,134 @@ mod tests {
             ("/telemetry/counts/uploadBytes", json!(40_800)),
             ("/telemetry/counts/tessellationCalls", json!(100)),
             ("/telemetry/caches/surfaceConfiguration", json!("hit")),
+            ("/telemetry/memory/kind", json!("measured")),
+            (
+                "/telemetry/memory/retainedBoundaryTotal/currentBytes",
+                json!(1_300),
+            ),
+            (
+                "/telemetry/memory/logicalGpuBreakdown/geometryBufferArena/currentBytes",
+                json!(200),
+            ),
+            (
+                "/telemetry/memory/wasmLinearBreakdown/decodedImageAssets/currentBytes",
+                json!(300),
+            ),
             ("/telemetry/totalMs", json!(21.5)),
         ] {
             assert_eq!(value.pointer(pointer), Some(&expected), "{pointer}");
         }
         assert!(value["result"].get("packet").is_none());
+    }
+
+    #[test]
+    fn memory_totals_exclude_linear_breakdowns_and_peaks_are_observed_aggregates() {
+        let mut tracker = EngineMemoryHighWaterV1::default();
+        let first = serde_json::to_value(tracker.observe(memory_current(1_000, 200, 100)).unwrap())
+            .unwrap();
+        assert_eq!(
+            first["retainedBoundaryTotal"],
+            json!({"currentBytes": 1_300, "peakBytes": 1_300})
+        );
+        assert_eq!(
+            first["logicalGpuResident"],
+            json!({"currentBytes": 300, "peakBytes": 300})
+        );
+        assert_eq!(
+            first["wasmLinear"],
+            json!({"currentBytes": 1_000, "peakBytes": 1_000})
+        );
+        // The 600 logical CPU breakdown bytes are already within linear
+        // memory and therefore do not inflate the 1,300-byte total.
+        assert_eq!(
+            first["wasmLinearBreakdown"]["retainedSceneIndex"]["currentBytes"],
+            100
+        );
+        assert_eq!(
+            first["wasmLinearBreakdown"]["preparedGeometryCache"]["currentBytes"],
+            200
+        );
+        assert_eq!(
+            first["wasmLinearBreakdown"]["decodedImageAssets"]["currentBytes"],
+            300
+        );
+
+        let second =
+            serde_json::to_value(tracker.observe(memory_current(900, 50, 500)).unwrap()).unwrap();
+        assert_eq!(
+            second["retainedBoundaryTotal"],
+            json!({"currentBytes": 1_450, "peakBytes": 1_450})
+        );
+        assert_eq!(
+            second["logicalGpuResident"],
+            json!({"currentBytes": 550, "peakBytes": 550})
+        );
+        assert_eq!(
+            second["wasmLinear"],
+            json!({"currentBytes": 900, "peakBytes": 1_000})
+        );
+        assert_eq!(
+            second["logicalGpuBreakdown"]["geometryBufferArena"]["peakBytes"],
+            200
+        );
+        assert_eq!(
+            second["logicalGpuBreakdown"]["retainedImageTextures"]["peakBytes"],
+            500
+        );
+        // Independent component peaks sum to 1,550, but that state was never
+        // observed; aggregate high-water remains the real 1,450-byte sample.
+        assert_eq!(second["retainedBoundaryTotal"]["peakBytes"], 1_450);
+    }
+
+    #[test]
+    fn memory_accounting_overflow_and_json_range_fail_without_advancing_peaks() {
+        let mut tracker = EngineMemoryHighWaterV1::default();
+        tracker.observe(memory_current(1_000, 200, 100)).unwrap();
+        let before = tracker;
+
+        let logical_overflow = EngineMemoryCurrentV1 {
+            geometry_buffer_arena: u64::MAX,
+            retained_image_textures: 1,
+            ..memory_current(0, 0, 0)
+        };
+        assert_eq!(
+            tracker.observe(logical_overflow),
+            Err(EngineMemoryAccountingErrorV1::LogicalGpuResidentOverflow)
+        );
+        assert_eq!(tracker, before);
+
+        let total_overflow = EngineMemoryCurrentV1 {
+            wasm_linear: u64::MAX,
+            geometry_buffer_arena: 1,
+            ..memory_current(0, 0, 0)
+        };
+        assert_eq!(
+            tracker.observe(total_overflow),
+            Err(EngineMemoryAccountingErrorV1::RetainedBoundaryTotalOverflow)
+        );
+        assert_eq!(tracker, before);
+
+        let json_range = memory_current(MAX_EXACT_JSON_INTEGER_V1, 1, 0);
+        assert_eq!(
+            tracker.observe(json_range),
+            Err(EngineMemoryAccountingErrorV1::JsonIntegerRange {
+                quantity: "retained-boundary total"
+            })
+        );
+        assert_eq!(tracker, before);
+    }
+
+    #[test]
+    fn unavailable_memory_is_bounded_and_never_fabricates_zero_measurements() {
+        let sample = FrameMemorySampleV1::unavailable(&"x".repeat(600));
+        let value = serde_json::to_value(sample).unwrap();
+        assert_eq!(value["kind"], "unavailable");
+        assert_eq!(
+            value["reason"].as_str().unwrap().encode_utf16().count(),
+            500
+        );
+        assert!(value.get("retainedBoundaryTotal").is_none());
+        assert!(value.get("wasmLinear").is_none());
     }
 
     #[test]

@@ -25,18 +25,48 @@ use crate::canvas_protocol::{
 };
 use crate::canvas_telemetry::{
     AdapterEvidenceSourceV1, AdapterEvidenceV1, CLOCK_UNAVAILABLE_REASON_V1, CacheOutcomeV1,
-    CanvasAdapterEvidenceV1, DeviceEvidenceV1, FenceFailurePolicyV1, FenceObservationFailureV1,
-    FenceObservationStepV1, FrameTelemetryV1, PhaseSampleV1, SurfaceEvidenceV1,
-    TelemetryClockSourceV1, adapter_evidence_response, bounded_evidence_dump,
-    bounded_evidence_string, classify_fence_observation_failure, fence_failure_policy,
+    CanvasAdapterEvidenceV1, DeviceEvidenceV1, EngineMemoryCurrentV1, EngineMemoryHighWaterV1,
+    FenceFailurePolicyV1, FenceObservationFailureV1, FenceObservationStepV1, FrameMemorySampleV1,
+    FrameTelemetryV1, PhaseSampleV1, SurfaceEvidenceV1, TelemetryClockSourceV1,
+    adapter_evidence_response, bounded_evidence_dump, bounded_evidence_string,
+    classify_fence_observation_failure, fence_failure_policy,
     finalize_surface_configuration_evidence, normalized_duration_ms, stage_phase_sample,
-    telemetry_response,
+    telemetry_response as serialize_telemetry_response,
 };
 use crate::protocol::EngineWorkerSessionV1;
 
 const SNAPSHOT_REJECTED_ERROR_NAME: &str = "PoietraCanvasSnapshotRejected";
 const DELTA_REJECTED_ERROR_NAME: &str = "PoietraCanvasDeltaRejected";
 const RENDERER_UNAVAILABLE_ERROR_NAME: &str = "PoietraCanvasRendererUnavailable";
+const MAX_EXACT_JAVASCRIPT_INTEGER_V1: f64 = 9_007_199_254_740_991.0;
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn wasm_linear_memory_bytes() -> Result<u64, String> {
+    let memory = wasm_bindgen::memory()
+        .dyn_into::<js_sys::WebAssembly::Memory>()
+        .map_err(|_| "the WebAssembly linear memory export is unavailable".to_owned())?;
+    // Create the property key before taking the buffer handle: creating a JS
+    // string may grow linear memory and detach the previous ArrayBuffer view.
+    let byte_length_key = JsValue::from_str("byteLength");
+    let buffer = memory.buffer();
+    let byte_length = js_sys::Reflect::get(&buffer, &byte_length_key)
+        .map_err(|_| "the WebAssembly linear memory byte length is unavailable".to_owned())?
+        .as_f64()
+        .ok_or_else(|| "the WebAssembly linear memory byte length is not numeric".to_owned())?;
+    if !byte_length.is_finite()
+        || byte_length < 0.0
+        || byte_length.fract() != 0.0
+        || byte_length > MAX_EXACT_JAVASCRIPT_INTEGER_V1
+    {
+        return Err(
+            "the WebAssembly linear memory byte length is not an exact JavaScript integer"
+                .to_owned(),
+        );
+    }
+    // The finite, non-negative, integral and JS-safe checks above make this
+    // conversion exact; Rust has no checked f64-to-u64 conversion primitive.
+    Ok(byte_length as u64)
+}
 
 fn copy_asset_byte_arrays(values: &js_sys::Array) -> Result<Vec<Vec<u8>>, String> {
     let count = usize::try_from(values.length())
@@ -456,6 +486,7 @@ pub struct PoietraCanvasEngineV1 {
     // Checked count of surface reconfigurations within the frame being
     // rendered; `None` records an explicit counter overflow.
     frame_surface_configurations: Option<u32>,
+    memory_high_water: EngineMemoryHighWaterV1,
     // Kept before `device` so Drop unregisters the JS callback first.
     _uncaptured_error_listener: RawUncapturedErrorListenerV1,
     device: wgpu::Device,
@@ -524,6 +555,7 @@ impl PoietraCanvasEngineV1 {
             canvas,
             configured_viewport: None,
             frame_surface_configurations: Some(0),
+            memory_high_water: EngineMemoryHighWaterV1::default(),
             _uncaptured_error_listener: gpu.uncaptured_error_listener,
             device: gpu.device,
             deferred_scope_state: Arc::new(Mutex::new(DeferredGpuScopeStateV1::default())),
@@ -679,7 +711,7 @@ impl PoietraCanvasEngineV1 {
                     CLOCK_UNAVAILABLE_REASON_V1,
                 );
                 telemetry.total_ms = normalized_duration_ms(clock.elapsed_ms(total_started));
-                return telemetry_response(
+                return self.telemetry_response(
                     error_result(
                         sample_error_code(error.code),
                         &error.message,
@@ -702,7 +734,7 @@ impl PoietraCanvasEngineV1 {
 
         if let Some(failure) = self.current_terminal_failure() {
             telemetry.total_ms = normalized_duration_ms(clock.elapsed_ms(total_started));
-            return telemetry_response(
+            return self.telemetry_response(
                 error_result(failure.code, &failure.message, Some(&correlation)),
                 telemetry,
             );
@@ -717,7 +749,7 @@ impl PoietraCanvasEngineV1 {
                     CLOCK_UNAVAILABLE_REASON_V1,
                 );
                 telemetry.total_ms = normalized_duration_ms(clock.elapsed_ms(total_started));
-                return telemetry_response(
+                return self.telemetry_response(
                     error_result(
                         CanvasRenderErrorCodeV1::UnsupportedFrame,
                         &error.to_string(),
@@ -747,7 +779,7 @@ impl PoietraCanvasEngineV1 {
                     CLOCK_UNAVAILABLE_REASON_V1,
                 );
                 telemetry.total_ms = normalized_duration_ms(clock.elapsed_ms(total_started));
-                return telemetry_response(
+                return self.telemetry_response(
                     error_result(
                         CanvasRenderErrorCodeV1::UnsupportedFrame,
                         &error.to_string(),
@@ -803,7 +835,7 @@ impl PoietraCanvasEngineV1 {
                                     Some(failure) => (failure.code, failure.message),
                                     None => (CanvasRenderErrorCodeV1::GpuInternal, message),
                                 };
-                                return telemetry_response(
+                                return self.telemetry_response(
                                     error_result(code, &message, Some(&correlation)),
                                     telemetry,
                                 );
@@ -816,11 +848,11 @@ impl PoietraCanvasEngineV1 {
                     }
                 }
                 telemetry.total_ms = normalized_duration_ms(clock.elapsed_ms(total_started));
-                telemetry_response(presented_result(&correlation, suboptimal), telemetry)
+                self.telemetry_response(presented_result(&correlation, suboptimal), telemetry)
             }
             Err(failure) => {
                 telemetry.total_ms = normalized_duration_ms(clock.elapsed_ms(total_started));
-                telemetry_response(
+                self.telemetry_response(
                     error_result(failure.code, &failure.message, Some(&correlation)),
                     telemetry,
                 )
@@ -838,6 +870,54 @@ impl PoietraCanvasEngineV1 {
 }
 
 impl PoietraCanvasEngineV1 {
+    fn current_memory_values(&self) -> Result<EngineMemoryCurrentV1, String> {
+        let renderer = self
+            .renderer
+            .memory_snapshot()
+            .map_err(|error| error.to_string())?;
+        let retained_scene_index = u64::try_from(self.session.retained_index_accounted_bytes())
+            .map_err(|_| {
+                "the retained Scene index byte count is not representable as u64".to_owned()
+            })?;
+        let prepared_geometry_cache = u64::try_from(self.prepared_geometry_cache.accounted_bytes())
+            .map_err(|_| {
+                "the prepared geometry cache byte count is not representable as u64".to_owned()
+            })?;
+        let decoded_image_assets = self
+            .asset_registry
+            .decoded_image_asset_bytes()
+            .map_err(|error| error.to_string())?;
+        // Read linear memory last so the reported total contains all Rust-side
+        // allocations needed to gather the logical component breakdown.
+        let wasm_linear = wasm_linear_memory_bytes()?;
+        Ok(EngineMemoryCurrentV1 {
+            decoded_image_assets,
+            geometry_buffer_arena: renderer.geometry_buffer_arena_bytes(),
+            prepared_geometry_cache,
+            retained_image_textures: renderer.retained_image_texture_bytes(),
+            retained_scene_index,
+            wasm_linear,
+        })
+    }
+
+    /// Captures memory at the opt-in response boundary, immediately before
+    /// serialization. Reporting allocations themselves are intentionally not
+    /// folded recursively into the snapshot.
+    fn telemetry_response(
+        &mut self,
+        result: crate::canvas_protocol::CanvasRenderResultV1,
+        mut telemetry: FrameTelemetryV1,
+    ) -> Vec<u8> {
+        telemetry.memory = match self.current_memory_values() {
+            Ok(current) => self
+                .memory_high_water
+                .observe(current)
+                .unwrap_or_else(|error| FrameMemorySampleV1::unavailable(&error.to_string())),
+            Err(reason) => FrameMemorySampleV1::unavailable(&reason),
+        };
+        serialize_telemetry_response(result, telemetry)
+    }
+
     /// Reacquires every GPU-owned object and swaps only after the complete
     /// candidate is ready. A failed recovery leaves the already-lost state in
     /// place so the caller can terminate fail-closed; Scene/revision and

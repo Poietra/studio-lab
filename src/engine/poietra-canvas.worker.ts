@@ -1,4 +1,5 @@
 import { POIETRA_CANVAS_ABI_VERSION } from "./canvas-abi";
+import type { CanvasFrameEvidenceCaptureV1 } from "./canvas-frame-evidence";
 import {
   type CanvasRenderResponseV1,
   type CanvasRenderTelemetryResponseV1,
@@ -6,22 +7,21 @@ import {
   type CanvasWorkerRequestV1,
   type CanvasWorkerResponseV1,
   canvasAdapterEvidenceResponseV1Schema,
-  canvasSceneDeltaDirtySetV1Schema,
   canvasEngineSampleRequestV1Schema,
   canvasRenderResponseV1Schema,
   canvasRenderTelemetryResponseV1Schema,
+  canvasSceneDeltaDirtySetV1Schema,
   canvasUrlsShareOrigin,
   canvasWorkerRequestV1Schema,
   MAX_CANVAS_ADAPTER_EVIDENCE_JSON_BYTES,
   MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES,
-  MAX_CANVAS_SCENE_DELTA_ACK_JSON_BYTES,
   MAX_CANVAS_SAMPLE_JSON_BYTES,
+  MAX_CANVAS_SCENE_DELTA_ACK_JSON_BYTES,
   MAX_CANVAS_TELEMETRY_RESPONSE_JSON_BYTES,
   normalizeCanvasInteractionEntityIdsV1,
   POIETRA_CANVAS_TELEMETRY_ABI_VERSION,
   POIETRA_CANVAS_WORKER_VERSION,
 } from "./canvas-worker-protocol";
-import type { CanvasFrameEvidenceCaptureV1 } from "./canvas-frame-evidence";
 
 const MAX_ERROR_MESSAGE_LENGTH = 4_096;
 
@@ -31,7 +31,7 @@ export type PoietraWasmCanvasEngineV1 = {
   applySceneDelta?: (deltaJson: Uint8Array, baseRevision: string, nextRevision: string) => Uint8Array;
   render: (requestJson: Uint8Array) => Promise<Uint8Array>;
   replaceSnapshot: (snapshotJson: Uint8Array, assetMetadataJson: Uint8Array, assetBytes: Uint8Array[]) => void;
-  // Optional telemetry ABI v2; feature-detected so older modules keep working.
+  // Optional telemetry ABI v3; feature-detected so older modules keep working.
   adapterEvidence?: () => Uint8Array;
   renderWithTelemetry?: (requestJson: Uint8Array) => Promise<Uint8Array>;
 };
@@ -142,7 +142,7 @@ export async function initializePoietraCanvasBindingsV1(module: unknown): Promis
     throw new Error("The Poietra WASM module does not implement PoietraCanvasEngineV1.");
   }
   // Telemetry is optional, but never trusted on method presence alone: any
-  // telemetry surface requires an exact version-2 handshake AND the complete
+  // telemetry surface requires an exact version-3 handshake AND the complete
   // method pair. A version without methods, methods without a version, or a
   // foreign version all fail closed instead of being partially used.
   const telemetryVersion =
@@ -151,7 +151,7 @@ export async function initializePoietraCanvasBindingsV1(module: unknown): Promis
   const hasAdapterEvidence = typeof EngineClass.prototype.adapterEvidence === "function";
   if (telemetryVersion !== null || hasRenderWithTelemetry || hasAdapterEvidence) {
     if (telemetryVersion !== POIETRA_CANVAS_TELEMETRY_ABI_VERSION || !hasRenderWithTelemetry || !hasAdapterEvidence) {
-      throw new Error("The Poietra WASM module exposes telemetry without a complete telemetry ABI version 2.");
+      throw new Error("The Poietra WASM module exposes telemetry without a complete telemetry ABI version 3.");
     }
   }
   return EngineClass;
@@ -646,7 +646,7 @@ export class PoietraCanvasWorkerRuntimeV1 {
           correlation,
           "telemetry-unavailable",
           null,
-          "The loaded Poietra WASM module does not implement canvas telemetry ABI v2.",
+          "The loaded Poietra WASM module does not implement canvas telemetry ABI v3.",
         ),
       );
       return;

@@ -424,6 +424,11 @@ impl EngineWorkerSessionV1 {
         Ok(())
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn retained_index_accounted_bytes(&self) -> usize {
+        self.session.retained_index_stats().accounted_bytes()
+    }
+
     /// Atomically applies one bounded Studio-only Scene delta.
     ///
     /// # Errors

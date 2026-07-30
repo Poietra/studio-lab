@@ -18,8 +18,8 @@ import {
   MAX_CANVAS_ADAPTER_EVIDENCE_JSON_BYTES,
   MAX_CANVAS_INTERACTION_ENTITY_IDS,
   MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES,
-  MAX_CANVAS_SCENE_DELTA_ACK_JSON_BYTES,
   MAX_CANVAS_SAMPLE_JSON_BYTES,
+  MAX_CANVAS_SCENE_DELTA_ACK_JSON_BYTES,
   MAX_CANVAS_SNAPSHOT_JSON_BYTES,
   MAX_CANVAS_TELEMETRY_RESPONSE_JSON_BYTES,
   MAX_CANVAS_WASM_MODULE_URL_LENGTH,
@@ -311,6 +311,92 @@ describe("canvas worker v1 protocol", () => {
     expect(canvasRenderResponseV1Schema.safeParse(response).success).toBe(false);
   });
 
+  it("requires exact, non-double-counted engine memory accounting", () => {
+    const telemetry = measuredTelemetryFixtureV1();
+    expect(canvasFrameTelemetryV1Schema.parse(telemetry).memory).toEqual(telemetry.memory);
+    if (telemetry.memory.kind !== "measured") throw new Error("The measured fixture must contain memory evidence.");
+
+    expect(
+      canvasFrameTelemetryV1Schema.safeParse({
+        ...telemetry,
+        memory: {
+          ...telemetry.memory,
+          retainedBoundaryTotal: {
+            ...telemetry.memory.retainedBoundaryTotal,
+            currentBytes: 25_000_001,
+          },
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      canvasFrameTelemetryV1Schema.safeParse({
+        ...telemetry,
+        memory: {
+          ...telemetry.memory,
+          logicalGpuResident: { ...telemetry.memory.logicalGpuResident, currentBytes: 5_000_001 },
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      canvasFrameTelemetryV1Schema.safeParse({
+        ...telemetry,
+        memory: {
+          ...telemetry.memory,
+          wasmLinear: { ...telemetry.memory.wasmLinear, peakBytes: telemetry.memory.wasmLinear.currentBytes - 1 },
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      canvasFrameTelemetryV1Schema.safeParse({
+        ...telemetry,
+        memory: {
+          ...telemetry.memory,
+          logicalGpuResident: { ...telemetry.memory.logicalGpuResident, peakBytes: 1_000_000 },
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      canvasFrameTelemetryV1Schema.safeParse({
+        ...telemetry,
+        memory: {
+          ...telemetry.memory,
+          retainedBoundaryTotal: { ...telemetry.memory.retainedBoundaryTotal, peakBytes: 20_000_000 },
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      canvasFrameTelemetryV1Schema.safeParse({
+        ...telemetry,
+        memory: {
+          ...telemetry.memory,
+          wasmLinearBreakdown: {
+            ...telemetry.memory.wasmLinearBreakdown,
+            decodedImageAssets: { currentBytes: 3_000_000, peakBytes: 26_000_000 },
+          },
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      canvasFrameTelemetryV1Schema.safeParse({
+        ...telemetry,
+        memory: {
+          ...telemetry.memory,
+          wasmLinearBreakdown: {
+            ...telemetry.memory.wasmLinearBreakdown,
+            decodedImageAssets: { currentBytes: 18_000_000, peakBytes: 18_000_000 },
+            preparedGeometryCache: { currentBytes: 18_000_000, peakBytes: 18_000_000 },
+          },
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      canvasFrameTelemetryV1Schema.safeParse({
+        ...telemetry,
+        memory: { kind: "unavailable", reason: "engine-owned memory snapshot was not captured" },
+      }).success,
+    ).toBe(true);
+  });
+
   it("keeps the compact render response free of telemetry payloads", () => {
     const frame = {
       kind: "frame-presented",
@@ -477,7 +563,7 @@ describe("canvas worker v1 protocol", () => {
     // consumer schema, with the architecturally unobservable phases
     // (browserComposite, gpuExecution) reported as unavailable with their
     // bounded reasons — matching FrameTelemetryV1::new, never skipped.
-    const rustFallback = `{"result":{"kind":"error","code":"serialization-failed","message":"Canvas telemetry response serialization failed","packetId":null,"sampleTime":null,"viewport":null},"schema":"poietra.canvas-render-telemetry-response","telemetry":{"caches":{"imageSamplerBinding":"skipped","imageTexture":"skipped","pipeline":"retained","preparedGeometry":"skipped","surfaceConfiguration":"skipped"},"clock":"unavailable","counts":{"bufferCreations":null,"drawCalls":null,"evaluatedDraws":null,"evaluatedEntities":null,"imageSamplerBindingCreations":null,"imageTextureEvictions":null,"imageTextureUploads":null,"surfaceConfigurations":null,"tessellationCalls":null,"tessellatedIndices":null,"tessellatedVertices":null,"uploadBytes":null},"phases":{"browserComposite":{"kind":"unavailable","reason":"The dedicated worker cannot observe browser compositor presentation; only the embedding page could approximate it."},"bufferCreateAndStage":{"kind":"skipped"},"commandEncodeTotal":{"kind":"skipped"},"drawRecord":{"kind":"skipped"},"evaluate":{"kind":"skipped"},"gpuErrorScopeResolution":{"kind":"skipped"},"gpuExecution":{"kind":"unavailable","reason":"GPU-side execution timing requires timestamp queries, which this pipeline does not request; only the awaited queue onSubmittedWorkDone fence is observed."},"gpuQueueSubmittedWorkDone":{"kind":"skipped"},"postPresentReconfigure":{"kind":"skipped"},"prepare":{"kind":"skipped"},"present":{"kind":"skipped"},"submit":{"kind":"skipped"},"surfaceAcquire":{"kind":"skipped"},"tessellate":{"kind":"skipped"},"vertexIndexEncode":{"kind":"skipped"}},"totalMs":null},"version":1}`;
+    const rustFallback = `{"result":{"kind":"error","code":"serialization-failed","message":"Canvas telemetry response serialization failed","packetId":null,"sampleTime":null,"viewport":null},"schema":"poietra.canvas-render-telemetry-response","telemetry":{"caches":{"imageSamplerBinding":"skipped","imageTexture":"skipped","pipeline":"retained","preparedGeometry":"skipped","surfaceConfiguration":"skipped"},"clock":"unavailable","counts":{"bufferCreations":null,"drawCalls":null,"evaluatedDraws":null,"evaluatedEntities":null,"imageSamplerBindingCreations":null,"imageTextureEvictions":null,"imageTextureUploads":null,"surfaceConfigurations":null,"tessellationCalls":null,"tessellatedIndices":null,"tessellatedVertices":null,"uploadBytes":null},"memory":{"kind":"unavailable","reason":"engine-owned memory snapshot was not captured"},"phases":{"browserComposite":{"kind":"unavailable","reason":"The dedicated worker cannot observe browser compositor presentation; only the embedding page could approximate it."},"bufferCreateAndStage":{"kind":"skipped"},"commandEncodeTotal":{"kind":"skipped"},"drawRecord":{"kind":"skipped"},"evaluate":{"kind":"skipped"},"gpuErrorScopeResolution":{"kind":"skipped"},"gpuExecution":{"kind":"unavailable","reason":"GPU-side execution timing requires timestamp queries, which this pipeline does not request; only the awaited queue onSubmittedWorkDone fence is observed."},"gpuQueueSubmittedWorkDone":{"kind":"skipped"},"postPresentReconfigure":{"kind":"skipped"},"prepare":{"kind":"skipped"},"present":{"kind":"skipped"},"submit":{"kind":"skipped"},"surfaceAcquire":{"kind":"skipped"},"tessellate":{"kind":"skipped"},"vertexIndexEncode":{"kind":"skipped"}},"totalMs":null},"version":1}`;
     const parsedFallback = canvasRenderTelemetryResponseV1Schema.parse(JSON.parse(rustFallback));
     const fallbackPhases = parsedFallback.telemetry.phases;
     expect(fallbackPhases.browserComposite.kind).toBe("unavailable");
