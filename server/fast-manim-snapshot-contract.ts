@@ -535,6 +535,11 @@ const MATHTEX_PROFILE_FONT_DIGEST_V3 = "d66ac1cc91c55c24d3636ae2df1238076debdff5
 const MATHTEX_PROFILE_TOOLCHAIN_DIGEST_V3 = "95c98e10edff239e6ee237c9eac99dc96c06ba9fc712c30816ddc47d7db12f9e";
 const MATHTEX_PROFILE_CONTENT_DIGEST_EVIDENCE_V3 = /^MathTex content digest [0-9a-f]{64}$/;
 const HERMETIC_PNG_SCALE_TO_RESOLUTION_V4 = 1_080;
+// Each admitted transform uses fewer than 16 primitive floating-point
+// operations per bound in both NumPy's point replay and this independent
+// server replay. Account for both sides without turning machine roundoff into
+// a visual tolerance.
+const HERMETIC_PNG_ROUNDOFF_OPERATIONS_PER_TRANSFORM_V4 = 32;
 const HERMETIC_PNG_CAPABILITY_EVIDENCE_V4 = "capability png-image: one verified PNG-backed rectangle";
 const HERMETIC_PNG_PROFILE_EVIDENCE_V4 = "fast-manim hermetic PNG Scene snapshot profile v4";
 const STATIC_PROFILE_RELATIVE_TOLERANCE = 1e-9;
@@ -1100,6 +1105,7 @@ function expectedHermeticPngLocalRectV4(
   let left = -width / 2;
   let right = width / 2;
   let top = height / 2;
+  let maximumMagnitude = Math.max(1, Math.abs(bottom), Math.abs(left), Math.abs(right), Math.abs(top));
   for (const transform of plan?.transforms ?? []) {
     const centerX = (left + right) / 2;
     const centerY = (bottom + top) / 2;
@@ -1122,8 +1128,16 @@ function expectedHermeticPngLocalRectV4(
     ) {
       profileViolation("Hermetic PNG transforms produce geometry outside the bounded profile.");
     }
+    maximumMagnitude = Math.max(maximumMagnitude, Math.abs(bottom), Math.abs(left), Math.abs(right), Math.abs(top));
   }
-  return { bottom: Object.is(bottom, -0) ? 0 : bottom, left: Object.is(left, -0) ? 0 : left, right, top };
+  const transformCount = plan?.transforms.length ?? 0;
+  return {
+    localRect: { bottom: Object.is(bottom, -0) ? 0 : bottom, left: Object.is(left, -0) ? 0 : left, right, top },
+    roundoffTolerance:
+      transformCount === 0
+        ? 0
+        : maximumMagnitude * Number.EPSILON * HERMETIC_PNG_ROUNDOFF_OPERATIONS_PER_TRANSFORM_V4 * transformCount,
+  };
 }
 
 function assertHermeticPngProfileEntityV4(
@@ -1149,12 +1163,16 @@ function assertHermeticPngProfileEntityV4(
   // one source pixel maps to frameHeight / 1080 scene units. Re-derive the
   // centered rectangle from server-held frame state and manifest dimensions,
   // rather than trusting producer-authored world bounds.
-  const expectedLocalRect = expectedHermeticPngLocalRectV4(transformPlan, asset, expectedFrame);
+  const { localRect: expectedLocalRect, roundoffTolerance } = expectedHermeticPngLocalRectV4(
+    transformPlan,
+    asset,
+    expectedFrame,
+  );
   if (
-    entity.geometry.localRect.bottom !== expectedLocalRect.bottom ||
-    entity.geometry.localRect.left !== expectedLocalRect.left ||
-    entity.geometry.localRect.right !== expectedLocalRect.right ||
-    entity.geometry.localRect.top !== expectedLocalRect.top
+    Math.abs(entity.geometry.localRect.bottom - expectedLocalRect.bottom) > roundoffTolerance ||
+    Math.abs(entity.geometry.localRect.left - expectedLocalRect.left) > roundoffTolerance ||
+    Math.abs(entity.geometry.localRect.right - expectedLocalRect.right) > roundoffTolerance ||
+    Math.abs(entity.geometry.localRect.top - expectedLocalRect.top) > roundoffTolerance
   ) {
     profileViolation("Hermetic PNG localRect must derive exactly from its pixel dimensions and requested frame.");
   }

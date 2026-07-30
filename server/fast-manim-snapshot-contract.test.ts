@@ -903,6 +903,32 @@ class ExampleScene(Scene):
     const sealed = await parseProducer(compiled(transformed, expectedV4), expectedV4, source);
     await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV4)).resolves.toEqual(sealed);
 
+    const transformedGeometry = transformed.scene.entities[0]!.geometry;
+    if (transformedGeometry.kind !== "image") throw new Error("Expected transformed image geometry.");
+    const machineRounded = sceneIrBundleV1Schema.parse({
+      ...transformed,
+      scene: {
+        ...transformed.scene,
+        entities: [
+          {
+            ...entity,
+            geometry: {
+              ...entity.geometry,
+              localRect: {
+                bottom: transformedGeometry.localRect.bottom - Number.EPSILON * 4,
+                left: transformedGeometry.localRect.left + Number.EPSILON * 4,
+                right: transformedGeometry.localRect.right - Number.EPSILON * 4,
+                top: transformedGeometry.localRect.top + Number.EPSILON * 4,
+              },
+            },
+          },
+        ],
+      },
+    });
+    await expect(parseProducer(compiled(machineRounded, expectedV4), expectedV4, source)).resolves.toMatchObject({
+      kind: "compiled",
+    });
+
     const wrongPlan = {
       ...expectedV4,
       hermeticPngV4Plan: {
@@ -914,8 +940,6 @@ class ExampleScene(Scene):
       code: "profile-violation",
     });
 
-    const transformedGeometry = transformed.scene.entities[0]!.geometry;
-    if (transformedGeometry.kind !== "image") throw new Error("Expected transformed image geometry.");
     const drifted = sceneIrBundleV1Schema.parse({
       ...transformed,
       scene: {
