@@ -1,47 +1,51 @@
 {
   "schema": "poietra.mathtex-wasm-size-evidence",
-  "version": 1,
-  "sourceCommit": "3b06ce08ae9632683049d94abc930bf4081282df",
+  "version": 2,
+  "sourceCommit": "37a29bfbeac233ee39e57d1181a86320c7e40895",
   "environment": {
     "cpu": "Intel(R) Core(TM) Ultra 7 255H",
     "node": "24.13.0",
     "os": "Linux 6.6.87.2-microsoft-standard-WSL2 x86_64",
-    "rust": "1.92.0",
+    "rust": "1.97.1",
     "wasmPack": "0.15.0",
     "zlib": "1.3.1-470d3a2"
   },
   "measurement": {
-    "buildCommand": "node scripts/build-engine-wasm.mjs",
-    "candidateCommand": "node scripts/measure-mathtex-wasm.mjs",
+    "buildCommand": "pnpm build:mathtex:wasm",
+    "candidateCommand": "node scripts/measure-mathtex-wasm.mjs --check",
     "gzipLevel": 6,
     "measuredRuns": 200,
-    "representativeTex": "E = mc^2",
+    "representativeTex": "\\sum_{n=1}^\\infty \\frac{1}{n^2} = \\frac{\\pi^2}{6}",
     "warmupRuns": 20
   },
-  "baselineRelease": {
+  "historicalReleaseBaseline": {
+    "toolchain": "MiTeX + Typst + New Computer Modern",
     "gzipBytes": 10600905,
     "initializationMs": 51.417337,
     "rawWasmBytes": 27444906,
     "warmCompileMedianMs": 1.44884,
     "warmCompileP95Ms": 3.086285
   },
-  "selectedSizeProfile": {
+  "typstSizeProfileBaseline": {
+    "toolchain": "MiTeX + Typst + New Computer Modern",
     "gzipBytes": 8581046,
-    "gzipReductionPercent": 19.053647,
     "initializationMs": 54.939141,
-    "initializationRatio": 1.068494,
     "rawWasmBytes": 23242889,
-    "rawWasmReductionPercent": 15.310736,
     "warmCompileMedianMs": 2.153427,
-    "warmCompileMedianRatio": 1.486311,
-    "warmCompileP95Ms": 2.718492,
-    "warmCompileP95Ratio": 0.88083
+    "warmCompileP95Ms": 2.718492
   },
-  "rejectedOptLevelS": {
-    "gzipBytes": 9261212,
-    "gzipReductionPercent": 12.637534,
-    "rawWasmBytes": 25159692,
-    "warmCompileMedianMs": 1.48591,
-    "warmCompileP95Ms": 1.883548
+  "ratexCutover": {
+    "toolchain": "RaTeX 0.1.14 ae391d727ac615437c63c308f4538d971a84bede + KaTeX TTF; pinned default-Manim source profile v1",
+    "gzipBudgetBytes": 1200000,
+    "gzipBytes": 1033254,
+    "gzipReductionFromTypstPercent": 87.958881,
+    "initializationMs": 22.877439,
+    "rawWasmBytes": 2826398,
+    "rawWasmReductionFromTypstPercent": 87.83973,
+    "warmCompileMedianMs": 0.728606,
+    "warmCompileMedianRatioToTypst": 0.338347,
+    "warmCompileP95BudgetMs": 10,
+    "warmCompileP95Ms": 0.93258,
+    "warmCompileP95RatioToTypst": 0.34305
   }
 }
