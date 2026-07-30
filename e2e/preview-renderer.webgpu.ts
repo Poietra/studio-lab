@@ -117,7 +117,7 @@ async function expectMathTexCanvasInk(page: Page, revision: string, sampleTime: 
   expect(foundInk).toBe(true);
 }
 
-test("presents Studio-created MathTex and restores semantic paint for unsupported syntax", async ({ page }) => {
+test("presents Studio-created MathTex across undo and LaTeX commands", async ({ page }) => {
   await page.goto(`/${MATHTEX_FIXTURE_QUERY}`);
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
   await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
@@ -163,11 +163,12 @@ test("presents Studio-created MathTex and restores semantic paint for unsupporte
   await page.getByRole("button", { name: "Apply program" }).click();
   await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
   await playhead.fill("0.5");
-  await expect(canvasRoot).toHaveAttribute("data-preview-renderer", "fallback");
-  await expect(canvasRoot).toHaveAttribute("data-preview-fallback-reason", "snapshot-uncorrelated");
-  await expect(canvasRoot).not.toHaveAttribute("data-preview-packet-id", /.+/);
-  await expect(page.locator("[data-studio-preview-status]")).toHaveAttribute("title", /syntax-unsupported/);
-  await expectSemanticPaintRestored(page);
+  await expectPresented(page);
+  await expectSemanticPaintDeferred(page);
+  const fractionRevision = await canvasRoot.getAttribute("data-preview-revision");
+  expect(fractionRevision).toMatch(/^[0-9a-f]{64}$/);
+  expect(fractionRevision).not.toBe(MATHTEX_FIXTURE_ENGINE_REVISION);
+  await expectMathTexCanvasInk(page, fractionRevision ?? "", 0.5);
 });
 
 test("presents exactly correlated retained WebGPU frames while the semantic editor stays live", async ({ page }) => {

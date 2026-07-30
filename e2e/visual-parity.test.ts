@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { inflateSync } from "node:zlib";
 
 import { describe, expect, it } from "vitest";
+import { sceneIrBundleV1Schema } from "../src/engine/contracts";
 import { encodeRgbaPngV1 } from "./png-rgba";
 import { thresholdsForEntryV1, visualParityCorpusV1Schema, visualParityReportV1Schema } from "./visual-parity-contract";
 import { compareVisualParityFramesV1, makeOpaqueVisualParityDiffV1 } from "./visual-parity-metrics";
@@ -18,7 +19,7 @@ function sha256(bytes: Uint8Array) {
 describe("visual parity v1 contracts", () => {
   it("pins the first corpus item to the existing dynamic semantic digest and default gate", async () => {
     const corpus = await corpusFixture();
-    expect(corpus.entries).toHaveLength(2);
+    expect(corpus.entries).toHaveLength(3);
     const entry = corpus.entries.find(({ id }) => id === "dynamic-affine-camera--a-first");
     expect(entry).toBeDefined();
     if (!entry) throw new Error("The dynamic visual parity entry is missing.");
@@ -88,6 +89,51 @@ describe("visual parity v1 contracts", () => {
     );
     expect(reference.sha256).toBe("bd57ff57b18706b3d25886038a568d3a2904ec3987b365860aa0471bc7119b8b");
     expect(reference.derivation).toContain("Pixel centers");
+  });
+
+  it("pins the Studio-created nested radical fraction to the default full-RGBA gate", async () => {
+    const corpus = await corpusFixture();
+    const entry = corpus.entries.find(({ id }) => id === "mathtex-nested-radical-fraction--static");
+    expect(entry).toMatchObject({
+      fixture: {
+        id: "eng-v1-mathtex-nested-radical-fraction",
+        revision: { sha256: "d1202edc9c77e7a00aadbec7a0844cce183caf4d8f925e396622ca1a0ea84efd" },
+      },
+      sample: {
+        id: "static",
+        sampleTime: 0.5,
+        semanticDigest: "b5d2a54ee6b837f2bbb5e9427ac4a7acfc55b674a6dd55e20050627f076752a3",
+        viewport: { heightPx: 360, widthPx: 640 },
+      },
+      thresholdException: null,
+    });
+    if (!entry) throw new Error("The MathTex visual parity entry is missing.");
+    expect(thresholdsForEntryV1(corpus, entry)).toEqual(corpus.defaultThresholds);
+
+    const fixture = JSON.parse(await readFile("fixtures/engine-v1/mathtex-nested-radical-fraction.json", "utf8"));
+    expect(sceneIrBundleV1Schema.parse({ assets: fixture.assets, scene: fixture.scene }).scene.entities).toHaveLength(
+      1,
+    );
+    expect(fixture.scene.source.revisionHash).toBe(entry.fixture.revision.sha256);
+    expect(fixture.samples).toContainEqual(
+      expect.objectContaining({
+        expected: { semanticDigest: entry.sample.semanticDigest },
+        id: entry.sample.id,
+        sampleTime: entry.sample.sampleTime,
+        viewport: entry.sample.viewport,
+      }),
+    );
+    const manimCorpus = JSON.parse(await readFile("fixtures/mathtex-manim-parity-v1/corpus.json", "utf8"));
+    const manimCase = manimCorpus.cases.find(({ id }: { id: string }) => id === fixture.mathTexReference.id);
+    expect(manimCase).toMatchObject({
+      provenance: fixture.mathTexReference.provenance,
+      svgFile: "references/nested-radical-fraction.svg",
+      svgSha256: fixture.mathTexReference.svgSha256,
+      texParts: fixture.mathTexReference.texParts,
+    });
+    expect(sha256(new Uint8Array(await readFile(fixture.mathTexReference.svgFile)))).toBe(
+      fixture.mathTexReference.svgSha256,
+    );
   });
 
   it("compares all four sRGB byte channels and uses a strict >8 pixel classification", async () => {

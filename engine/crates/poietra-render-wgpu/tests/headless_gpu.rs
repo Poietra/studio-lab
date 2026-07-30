@@ -94,6 +94,31 @@ struct DynamicExpected {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct MathTexVisualParityFixture {
+    assets: serde_json::Value,
+    id: String,
+    samples: Vec<MathTexVisualParitySample>,
+    scene: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MathTexVisualParitySample {
+    expected: MathTexVisualParityExpected,
+    id: String,
+    packet_id: String,
+    sample_time: f64,
+    viewport: ViewportV1,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MathTexVisualParityExpected {
+    semantic_digest: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct PngVisualParityFixture {
     analytic_references: std::collections::BTreeMap<String, AnalyticFullFrameReference>,
     asset_payloads: Vec<FixtureAssetPayload>,
@@ -233,6 +258,7 @@ struct NativeVisualParityTarget {
 const VISUAL_PARITY_CORPUS_SCHEMA_V1: &str = "poietra.visual-parity-corpus";
 const VISUAL_PARITY_ENTRY_V1: &str = "dynamic-affine-camera--a-first";
 const PNG_VISUAL_PARITY_ENTRY_V1: &str = "png-alpha-edge-camera--midpoint";
+const MATHTEX_VISUAL_PARITY_ENTRY_V1: &str = "mathtex-nested-radical-fraction--static";
 const VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1: &str = "POIETRA_VISUAL_PARITY_NATIVE_ARTIFACT_DIR";
 const SEMANTIC_NUMBER_SCALE: f64 = 1_000_000_000.0;
 
@@ -765,6 +791,20 @@ fn png_visual_parity_fixture() -> (PngVisualParityFixture, SceneIrBundleV1) {
     (fixture, bundle)
 }
 
+fn mathtex_visual_parity_fixture() -> (MathTexVisualParityFixture, SceneIrBundleV1) {
+    let path = repository_root().join("fixtures/engine-v1/mathtex-nested-radical-fraction.json");
+    let fixture: MathTexVisualParityFixture = serde_json::from_slice(
+        &fs::read(path).expect("MathTex visual parity fixture must be readable"),
+    )
+    .expect("MathTex visual parity fixture envelope must deserialize");
+    let bundle = serde_json::from_value(serde_json::json!({
+        "assets": fixture.assets,
+        "scene": fixture.scene,
+    }))
+    .expect("MathTex visual parity fixture must contain a valid Scene bundle");
+    (fixture, bundle)
+}
+
 fn non_background_bounds(rgba: &[u8], width_px: u32, height_px: u32) -> Option<[u32; 4]> {
     let background = pixel(rgba, width_px, 0, 0);
     let mut bounds: Option<[u32; 4]> = None;
@@ -1189,6 +1229,102 @@ fn assert_full_rgba_bytes_close(actual: &[u8], expected: &[u8], tolerance: u8) {
             "RGBA byte {index}: expected {expected} +/- {tolerance}, received {actual}"
         );
     }
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the visual parity lane runs this proof"]
+fn renders_mathtex_nested_radical_fraction_with_fallback_adapter() {
+    let (fixture, bundle) = mathtex_visual_parity_fixture();
+    let visual_parity_entry = load_visual_parity_entry(MATHTEX_VISUAL_PARITY_ENTRY_V1);
+    assert_eq!(visual_parity_entry.fixture.id, fixture.id);
+    assert_eq!(
+        visual_parity_entry.fixture.path,
+        "fixtures/engine-v1/mathtex-nested-radical-fraction.json"
+    );
+    assert_eq!(
+        visual_parity_entry.fixture.revision.kind,
+        "studio-edit-program"
+    );
+    assert!(matches!(
+        &bundle.scene.source,
+        SceneSourceV1::StudioEditProgram { .. }
+    ));
+    assert_eq!(
+        bundle.scene.source.revision_hash(),
+        visual_parity_entry.fixture.revision.sha256
+    );
+    let sample = fixture
+        .samples
+        .iter()
+        .find(|sample| sample.id == visual_parity_entry.sample.id)
+        .expect("MathTex visual parity sample must exist");
+    assert_eq!(
+        sample.sample_time.to_bits(),
+        visual_parity_entry.sample.sample_time.to_bits()
+    );
+    assert_eq!(sample.viewport, visual_parity_entry.sample.viewport);
+    assert_eq!(
+        sample.expected.semantic_digest,
+        visual_parity_entry.sample.semantic_digest
+    );
+
+    let session = EngineSessionV1::new(bundle).expect("MathTex visual parity fixture must install");
+    let packet = session
+        .sample_render_packet(SampleEngineSessionOptionsV1 {
+            evidence: &[fixture.id.clone(), sample.id.clone()],
+            packet_id: &sample.packet_id,
+            sample_time: sample.sample_time,
+            viewport: sample.viewport.clone(),
+        })
+        .expect("MathTex visual parity sample must compile");
+    let semantic_digest = render_packet_semantic_digest(&packet);
+    assert_eq!(semantic_digest, sample.expected.semantic_digest);
+    let [RenderDrawV1::Path { path, .. }] = packet.draws.as_slice() else {
+        panic!("MathTex visual parity sample must produce exactly one path draw");
+    };
+    assert_eq!(path.subpaths.len(), 10);
+
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = request_fallback_adapter(&instance);
+    let adapter_info = adapter.get_info();
+    assert_eq!(adapter_info.device_type, wgpu::DeviceType::Cpu);
+    assert_target_format_support(&adapter);
+    let (device, queue) = request_device(&adapter);
+    let device_loss = track_device_loss(&device);
+    let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT)
+        .expect("proof target format must be supported by the renderer");
+    let (texture, extent) = render_packet(&device, &queue, &mut renderer, &packet);
+    let (_, rgba) = readback_texture(&device, &queue, &texture, extent);
+    assert_eq!(extent.width, sample.viewport.width_px);
+    assert_eq!(extent.height, sample.viewport.height_px);
+    assert!(
+        non_background_bounds(&rgba, extent.width, extent.height).is_some(),
+        "MathTex visual parity readback must contain visible ink"
+    );
+
+    let artifact_requested = env::var_os(VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1).is_some();
+    assert_eq!(
+        emit_native_visual_parity_artifact(&visual_parity_entry, &adapter_info, &rgba),
+        artifact_requested,
+        "the opt-in MathTex native artifact must be emitted exactly once"
+    );
+    assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
+    assert_no_gpu_error("internal", pollster::block_on(internal_scope.pop()));
+    assert_no_gpu_error(
+        "out-of-memory",
+        pollster::block_on(out_of_memory_scope.pop()),
+    );
+    assert!(
+        device_loss
+            .lock()
+            .expect("device-loss evidence mutex must not be poisoned")
+            .is_none(),
+        "device must remain available through MathTex visual parity readback"
+    );
 }
 
 #[test]

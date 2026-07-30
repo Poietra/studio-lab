@@ -66,6 +66,24 @@
         "viewport": { "heightPx": 4, "widthPx": 8 }
       },
       "thresholdException": null
+    },
+    {
+      "id": "mathtex-nested-radical-fraction--static",
+      "fixture": {
+        "id": "eng-v1-mathtex-nested-radical-fraction",
+        "path": "fixtures/engine-v1/mathtex-nested-radical-fraction.json",
+        "revision": {
+          "kind": "studio-edit-program",
+          "sha256": "d1202edc9c77e7a00aadbec7a0844cce183caf4d8f925e396622ca1a0ea84efd"
+        }
+      },
+      "sample": {
+        "id": "static",
+        "sampleTime": 0.5,
+        "semanticDigest": "b5d2a54ee6b837f2bbb5e9427ac4a7acfc55b674a6dd55e20050627f076752a3",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
     }
   ]
 }
