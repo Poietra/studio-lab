@@ -28,6 +28,7 @@
     "test:e2e:preview:webgpu": "playwright test --config playwright.preview.config.ts --project preview-webgpu --workers 1",
     "test:e2e:preview:real": "playwright test --config playwright.real-preview.config.ts",
     "test:e2e:preview:real:mathtex": "POIETRA_E2E_REAL_PREVIEW_PROFILE=3 playwright test --config playwright.real-preview.config.ts",
+    "test:e2e:preview:real:image": "POIETRA_E2E_REAL_PREVIEW_PROFILE=4 playwright test --config playwright.real-preview.config.ts",
     "test:e2e:visual-parity": "playwright test --config playwright.visual-parity.config.ts",
     "test:electron-packaged": "pnpm package:electron && node scripts/electron-packaged-smoke.mjs",
     "test:e2e:webkit-smoke": "playwright test --project=webkit-minimum",

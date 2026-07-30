@@ -1,7 +1,9 @@
+import { cpSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { defineConfig } from "@playwright/test";
-
+import { encodeRgbaPngV1 } from "./e2e/png-rgba";
 import { WEBGPU_CHROMIUM_CHANNEL, WEBGPU_CHROMIUM_LAUNCH_ARGS } from "./e2e/webgpu-launch";
 
 const producerCommand = process.env.POIETRA_FAST_MANIM_SNAPSHOT_COMMAND?.trim();
@@ -11,11 +13,28 @@ if (!producerCommand) {
   );
 }
 const snapshotProfile = process.env.POIETRA_E2E_REAL_PREVIEW_PROFILE?.trim() || "2";
-if (snapshotProfile !== "2" && snapshotProfile !== "3") {
-  throw new Error("POIETRA_E2E_REAL_PREVIEW_PROFILE must be 2 or 3.");
+if (snapshotProfile !== "2" && snapshotProfile !== "3" && snapshotProfile !== "4") {
+  throw new Error("POIETRA_E2E_REAL_PREVIEW_PROFILE must be 2, 3, or 4.");
 }
 
 const dataRoot = join(process.cwd(), "test-results", `workspace-store-${process.pid}-real-preview-v${snapshotProfile}`);
+const harnessRoot =
+  snapshotProfile === "4"
+    ? mkdtempSync(join(tmpdir(), "poietra-real-preview-harness-v4-"))
+    : join(process.cwd(), "fixtures", "real-preview-harness");
+if (snapshotProfile === "4") {
+  cpSync(join(process.cwd(), "fixtures", "real-preview-harness"), harnessRoot, { recursive: true });
+  const width = 270;
+  const height = 135;
+  const rgba = new Uint8Array(width * height * 4);
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      rgba.set(x < width / 2 ? [255, 0, 0, 255] : [0, 0, 255, 255], offset);
+    }
+  }
+  writeFileSync(join(harnessRoot, "image.png"), encodeRgbaPngV1(rgba, width, height));
+}
 const port = Number(process.env.POIETRA_E2E_REAL_PREVIEW_PORT ?? 4184);
 
 export default defineConfig({
@@ -23,8 +42,18 @@ export default defineConfig({
   fullyParallel: false,
   projects: [
     {
-      name: snapshotProfile === "3" ? "real-mathtex-preview-webgpu" : "real-preview-webgpu",
-      testMatch: snapshotProfile === "3" ? "**/real-mathtex-preview.webgpu.ts" : "**/real-scene-preview.webgpu.ts",
+      name:
+        snapshotProfile === "3"
+          ? "real-mathtex-preview-webgpu"
+          : snapshotProfile === "4"
+            ? "real-image-preview-webgpu"
+            : "real-preview-webgpu",
+      testMatch:
+        snapshotProfile === "3"
+          ? "**/real-mathtex-preview.webgpu.ts"
+          : snapshotProfile === "4"
+            ? "**/real-image-preview.webgpu.ts"
+            : "**/real-scene-preview.webgpu.ts",
       use: {
         browserName: "chromium",
         channel: WEBGPU_CHROMIUM_CHANNEL,
@@ -50,7 +79,7 @@ export default defineConfig({
         {
           id: "real-preview-harness",
           name: "Real Preview Harness",
-          root: "./fixtures/real-preview-harness",
+          root: harnessRoot,
         },
       ]),
       POIETRA_STUDIO_DATA_ROOT: dataRoot,
