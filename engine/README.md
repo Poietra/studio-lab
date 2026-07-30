@@ -53,24 +53,27 @@ fixture, a focused round-cap packet, and verified PNG sampling/order cases into
 sRGB textures, read aligned rows back to the CPU, check pixels, and emit
 machine-readable adapter evidence.
 
-The first native-to-browser visual-parity corpus item is
-`dynamic-affine-camera--a-first`. Regenerate its complete evidence set with:
+The native-to-browser visual-parity corpus is enumerated from
+`fixtures/visual-parity-v1/corpus.json`. Regenerate its complete evidence set with:
 
 ```sh
 pnpm visual-parity:regenerate
 ```
 
-The command renders the corpus-pinned EngineFrame once with the native fallback
-adapter, writes unpadded top-to-bottom RGBA plus adapter/format metadata under
+The command renders every corpus-pinned EngineFrame once with the native fallback
+adapter, rejects any entry that did not produce a fresh artifact, writes unpadded
+top-to-bottom RGBA plus adapter/format metadata under
 `test-results/visual-parity/native/`, builds the browser WASM module, then transfers
 the complete browser RGBA frame out of the dedicated E2E worker. Deterministic
 `expected.png`, `actual.png`, `diff.png`, and `report.json` files land under
-`test-results/visual-parity/output/`. The v1 corpus fixes the existing fixture
-revision, `a-first` semantic digest, 160x90 viewport, sRGB byte-domain four-channel
-SSIM definition, and the gate of SSIM >= 0.995 with at most 0.5% of pixels having
-any RGBA channel differ by more than 8. Threshold exceptions require both an
-explicit override and a non-empty reason. This is test-only instrumentation: the
-production canvas response and frame-evidence ABIs are unchanged.
+`test-results/visual-parity/output/`. The browser tests are generated from the same
+corpus, so a new entry cannot be omitted from the native-artifact or browser lanes.
+The v1 corpus fixes each fixture revision, sample semantic digest and viewport, the
+sRGB byte-domain four-channel SSIM definition, and the gate of SSIM >= 0.995 with
+at most 0.5% of pixels having any RGBA channel differ by more than 8. Threshold
+exceptions require both an explicit override and a non-empty reason. This is
+test-only instrumentation: the production canvas response and frame-evidence ABIs
+are unchanged.
 
 Both evaluators consume the JSON fixtures under `fixtures/engine-v1`; categorical
 results are exact and floating-point results use the fixture's explicit combined
