@@ -304,6 +304,9 @@ pub(crate) struct FrameTelemetryCountsV1 {
     pub(crate) draw_calls: Option<u64>,
     pub(crate) evaluated_draws: Option<u64>,
     pub(crate) evaluated_entities: Option<u64>,
+    pub(crate) image_sampler_binding_creations: Option<u64>,
+    pub(crate) image_texture_evictions: Option<u64>,
+    pub(crate) image_texture_uploads: Option<u64>,
     pub(crate) surface_configurations: Option<u64>,
     /// Per-draw tessellation operations counted at the tessellation call
     /// sites, never inferred from vertex or index totals.
@@ -328,6 +331,8 @@ pub(crate) enum CacheOutcomeV1 {
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct FrameTelemetryCachesV1 {
+    pub(crate) image_sampler_binding: CacheOutcomeV1,
+    pub(crate) image_texture: CacheOutcomeV1,
     pub(crate) pipeline: CacheOutcomeV1,
     pub(crate) prepared_geometry: CacheOutcomeV1,
     pub(crate) surface_configuration: CacheOutcomeV1,
@@ -336,6 +341,8 @@ pub(crate) struct FrameTelemetryCachesV1 {
 impl FrameTelemetryCachesV1 {
     pub(crate) fn skipped() -> Self {
         Self {
+            image_sampler_binding: CacheOutcomeV1::Skipped,
+            image_texture: CacheOutcomeV1::Skipped,
             pipeline: CacheOutcomeV1::Retained,
             prepared_geometry: CacheOutcomeV1::Skipped,
             surface_configuration: CacheOutcomeV1::Skipped,
@@ -468,7 +475,7 @@ impl CanvasAdapterEvidenceV1 {
 /// unobservable and therefore `unavailable` with their bounded reasons, never
 /// `skipped`. A Rust test asserts deep equality with the constructor output
 /// and a TypeScript protocol test parses this exact document.
-pub(crate) const TELEMETRY_SERIALIZATION_FALLBACK_V1: &[u8] = br#"{"result":{"kind":"error","code":"serialization-failed","message":"Canvas telemetry response serialization failed","packetId":null,"sampleTime":null,"viewport":null},"schema":"poietra.canvas-render-telemetry-response","telemetry":{"caches":{"pipeline":"retained","preparedGeometry":"skipped","surfaceConfiguration":"skipped"},"clock":"unavailable","counts":{"bufferCreations":null,"drawCalls":null,"evaluatedDraws":null,"evaluatedEntities":null,"surfaceConfigurations":null,"tessellationCalls":null,"tessellatedIndices":null,"tessellatedVertices":null,"uploadBytes":null},"phases":{"browserComposite":{"kind":"unavailable","reason":"The dedicated worker cannot observe browser compositor presentation; only the embedding page could approximate it."},"bufferCreateAndStage":{"kind":"skipped"},"commandEncodeTotal":{"kind":"skipped"},"drawRecord":{"kind":"skipped"},"evaluate":{"kind":"skipped"},"gpuErrorScopeResolution":{"kind":"skipped"},"gpuExecution":{"kind":"unavailable","reason":"GPU-side execution timing requires timestamp queries, which this pipeline does not request; only the awaited queue onSubmittedWorkDone fence is observed."},"gpuQueueSubmittedWorkDone":{"kind":"skipped"},"postPresentReconfigure":{"kind":"skipped"},"prepare":{"kind":"skipped"},"present":{"kind":"skipped"},"submit":{"kind":"skipped"},"surfaceAcquire":{"kind":"skipped"},"tessellate":{"kind":"skipped"},"vertexIndexEncode":{"kind":"skipped"}},"totalMs":null},"version":1}"#;
+pub(crate) const TELEMETRY_SERIALIZATION_FALLBACK_V1: &[u8] = br#"{"result":{"kind":"error","code":"serialization-failed","message":"Canvas telemetry response serialization failed","packetId":null,"sampleTime":null,"viewport":null},"schema":"poietra.canvas-render-telemetry-response","telemetry":{"caches":{"imageSamplerBinding":"skipped","imageTexture":"skipped","pipeline":"retained","preparedGeometry":"skipped","surfaceConfiguration":"skipped"},"clock":"unavailable","counts":{"bufferCreations":null,"drawCalls":null,"evaluatedDraws":null,"evaluatedEntities":null,"imageSamplerBindingCreations":null,"imageTextureEvictions":null,"imageTextureUploads":null,"surfaceConfigurations":null,"tessellationCalls":null,"tessellatedIndices":null,"tessellatedVertices":null,"uploadBytes":null},"phases":{"browserComposite":{"kind":"unavailable","reason":"The dedicated worker cannot observe browser compositor presentation; only the embedding page could approximate it."},"bufferCreateAndStage":{"kind":"skipped"},"commandEncodeTotal":{"kind":"skipped"},"drawRecord":{"kind":"skipped"},"evaluate":{"kind":"skipped"},"gpuErrorScopeResolution":{"kind":"skipped"},"gpuExecution":{"kind":"unavailable","reason":"GPU-side execution timing requires timestamp queries, which this pipeline does not request; only the awaited queue onSubmittedWorkDone fence is observed."},"gpuQueueSubmittedWorkDone":{"kind":"skipped"},"postPresentReconfigure":{"kind":"skipped"},"prepare":{"kind":"skipped"},"present":{"kind":"skipped"},"submit":{"kind":"skipped"},"surfaceAcquire":{"kind":"skipped"},"tessellate":{"kind":"skipped"},"vertexIndexEncode":{"kind":"skipped"}},"totalMs":null},"version":1}"#;
 
 /// Serializes one telemetry acknowledgement within the bounded envelope.
 ///
@@ -548,6 +555,8 @@ mod tests {
         telemetry.counts.tessellation_calls = Some(100);
         telemetry.counts.upload_bytes = Some(40_800);
         telemetry.caches = FrameTelemetryCachesV1 {
+            image_sampler_binding: CacheOutcomeV1::Hit,
+            image_texture: CacheOutcomeV1::Hit,
             pipeline: CacheOutcomeV1::Retained,
             prepared_geometry: CacheOutcomeV1::Miss,
             surface_configuration: CacheOutcomeV1::Hit,

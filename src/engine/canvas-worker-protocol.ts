@@ -247,6 +247,8 @@ export const canvasFrameTelemetryV1Schema = z
   .object({
     caches: z
       .object({
+        imageSamplerBinding: canvasCacheOutcomeV1Schema,
+        imageTexture: canvasCacheOutcomeV1Schema,
         pipeline: canvasCacheOutcomeV1Schema,
         preparedGeometry: canvasCacheOutcomeV1Schema,
         surfaceConfiguration: canvasCacheOutcomeV1Schema,
@@ -259,6 +261,9 @@ export const canvasFrameTelemetryV1Schema = z
         drawCalls: nullableTelemetryCountSchema,
         evaluatedDraws: nullableTelemetryCountSchema,
         evaluatedEntities: nullableTelemetryCountSchema,
+        imageSamplerBindingCreations: nullableTelemetryCountSchema,
+        imageTextureEvictions: nullableTelemetryCountSchema,
+        imageTextureUploads: nullableTelemetryCountSchema,
         surfaceConfigurations: nullableTelemetryCountSchema,
         tessellationCalls: nullableTelemetryCountSchema,
         tessellatedIndices: nullableTelemetryCountSchema,

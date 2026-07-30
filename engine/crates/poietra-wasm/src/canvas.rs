@@ -81,6 +81,32 @@ fn prepared_geometry_cache_outcome(stats: PreparedGeometryCacheFrameStatsV1) -> 
     }
 }
 
+fn image_texture_cache_outcome(
+    stats: poietra_render_wgpu::ImageTextureCacheFrameStatsV1,
+    has_images: bool,
+) -> CacheOutcomeV1 {
+    if !has_images {
+        CacheOutcomeV1::Skipped
+    } else if stats.texture_uploads() > 0 {
+        CacheOutcomeV1::Miss
+    } else {
+        CacheOutcomeV1::Hit
+    }
+}
+
+fn image_sampler_binding_cache_outcome(
+    stats: poietra_render_wgpu::ImageTextureCacheFrameStatsV1,
+    has_images: bool,
+) -> CacheOutcomeV1 {
+    if !has_images {
+        CacheOutcomeV1::Skipped
+    } else if stats.sampler_binding_creations() > 0 {
+        CacheOutcomeV1::Miss
+    } else {
+        CacheOutcomeV1::Hit
+    }
+}
+
 #[derive(Clone, Debug)]
 struct RuntimeFailureV1 {
     code: CanvasRenderErrorCodeV1,
@@ -509,6 +535,7 @@ impl PoietraCanvasEngineV1 {
             .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
         self.asset_registry = candidate_registry;
         self.prepared_geometry_cache.clear();
+        self.renderer.clear_image_texture_cache();
         Ok(())
     }
 
@@ -962,7 +989,21 @@ impl PoietraCanvasEngineV1 {
             recorder.phases.submit = stage_phase_sample(true, stage_evidence.submit_ms);
             recorder.counts.buffer_creations = Some(u64::from(stage_evidence.buffer_creations));
             recorder.counts.draw_calls = Some(stage_evidence.draw_calls);
+            recorder.counts.image_sampler_binding_creations = Some(
+                stage_evidence
+                    .image_texture_cache
+                    .sampler_binding_creations(),
+            );
+            recorder.counts.image_texture_evictions =
+                Some(stage_evidence.image_texture_cache.evictions());
+            recorder.counts.image_texture_uploads =
+                Some(stage_evidence.image_texture_cache.texture_uploads());
             recorder.counts.upload_bytes = Some(stage_evidence.upload_bytes);
+            let has_images = !frame.image_draws().is_empty();
+            recorder.caches.image_sampler_binding =
+                image_sampler_binding_cache_outcome(stage_evidence.image_texture_cache, has_images);
+            recorder.caches.image_texture =
+                image_texture_cache_outcome(stage_evidence.image_texture_cache, has_images);
         }
         let present_started = clock.and_then(WorkerClockV1::now_ms);
         self.queue.present(surface_texture);
