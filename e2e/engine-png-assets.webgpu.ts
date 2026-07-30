@@ -94,7 +94,7 @@ async function pngScene(
   return { bundle, bytes: [...bytes] };
 }
 
-function revisionBundle(input: EncodedPngScene, revision: string): EncodedPngScene {
+function translatedRevisionBundle(input: EncodedPngScene, revision: string): EncodedPngScene {
   if (input.bundle.scene.source.kind !== "studio-edit-program") {
     throw new Error("The image fixture must remain Studio-owned.");
   }
@@ -103,6 +103,10 @@ function revisionBundle(input: EncodedPngScene, revision: string): EncodedPngSce
       assets: input.bundle.assets,
       scene: {
         ...input.bundle.scene,
+        entities: input.bundle.scene.entities.map((entity) => ({
+          ...entity,
+          transform: { ...entity.transform, tx: 4 },
+        })),
         source: { ...input.bundle.scene.source, revisionHash: revision },
       },
     }),
@@ -135,7 +139,7 @@ test("installs, retries, and reuses verified PNGs through the real Worker/WASM i
     rgbaPng([255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255]),
     BASE_REVISION,
   );
-  const reused = revisionBundle(initial, REUSED_REVISION);
+  const reused = translatedRevisionBundle(initial, REUSED_REVISION);
   const replacement = await pngScene(
     base,
     rgbaPng([0, 255, 255, 255, 255, 0, 255, 255, 255, 255, 0, 255, 0, 0, 0, 255]),
@@ -395,9 +399,15 @@ test("installs, retries, and reuses verified PNGs through the real Worker/WASM i
     [255, 255, 0, 255],
     [0, 0, 0, 255],
   ];
+  const reusedPixels = [
+    [0, 0, 0, 255],
+    [0, 255, 0, 255],
+    [0, 0, 0, 255],
+    [255, 255, 255, 255],
+  ];
   expectPixels(result.frames.initial.evidence.samples, initialPixels);
-  expectPixels(result.frames.reused.evidence.samples, initialPixels);
-  expectPixels(result.frames.preserved.evidence.samples, initialPixels);
+  expectPixels(result.frames.reused.evidence.samples, reusedPixels);
+  expectPixels(result.frames.preserved.evidence.samples, reusedPixels);
   expectPixels(result.frames.replacement.evidence.samples, replacementPixels);
   expectPixels(result.frames.final.evidence.samples, replacementPixels);
   expect(result.frames.final.evidence.revision).toBe(REPLACEMENT_REVISION);
