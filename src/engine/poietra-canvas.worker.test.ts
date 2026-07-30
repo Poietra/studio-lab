@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-import { adapterEvidenceFixtureV1, measuredTelemetryFixtureV1 } from "./canvas-telemetry-test-fixtures";
 import { createFakeGpuDevice } from "./canvas-frame-evidence.test-fixtures";
+import { adapterEvidenceFixtureV1, measuredTelemetryFixtureV1 } from "./canvas-telemetry-test-fixtures";
 import { createCanvasWorkerEvidenceSupportV1 } from "./canvas-worker-evidence";
 import {
   type CanvasRenderResponseV1,
@@ -926,7 +925,8 @@ describe("Poietra canvas worker runtime", () => {
 });
 
 function createEvidenceHarness() {
-  const { buffers, device } = createFakeGpuDevice();
+  const fakeDevice = createFakeGpuDevice();
+  const { buffers, device } = fakeDevice;
   let currentTexture: { fill: number } | null = null;
   const adapter = { requestDevice: () => Promise.resolve(device) };
   const gpu = { requestAdapter: () => Promise.resolve(adapter) };
@@ -946,6 +946,9 @@ function createEvidenceHarness() {
     },
     buffers,
     canvas: new EvidenceCanvas(160, 90),
+    get destroyCalls() {
+      return fakeDevice.destroyCalls;
+    },
     gpu,
   };
 }
@@ -1025,6 +1028,17 @@ function captureEvidenceRequest(requestId: number, revision = REVISION_A) {
   };
 }
 
+function injectDeviceLossRequest(requestId: number, revision = REVISION_A, failRecovery = false) {
+  return {
+    ...(failRecovery ? { failRecovery: true } : {}),
+    kind: "inject-canvas-device-loss",
+    requestId,
+    revision,
+    schema: "poietra.canvas-worker-request",
+    version: 1,
+  };
+}
+
 function replaceSceneRequest(requestId: number) {
   return {
     assetPayloads: [],
@@ -1076,7 +1090,38 @@ describe("Poietra canvas worker frame evidence lifecycle", () => {
     expect(posted.at(-1)).toMatchObject({ kind: "canvas-ready", operation: "install", requestId: 2 });
     await runtime.accept(captureEvidenceRequest(3));
     expect(posted.at(-1)).toMatchObject({ code: "invalid-message", kind: "error", requestId: 3 });
+    await runtime.accept(injectDeviceLossRequest(4));
+    expect(posted.at(-1)).toMatchObject({ code: "invalid-message", kind: "error", requestId: 4 });
     expect(harness.buffers).toHaveLength(0);
+  });
+
+  it("injects a correlated real-device destroy only through the dev evidence runtime", async () => {
+    const { harness, posted, runtime } = await setupEvidenceWorker([]);
+
+    await runtime.accept(injectDeviceLossRequest(2, REVISION_B));
+    expect(posted.at(-1)).toMatchObject({ code: "stale-revision", kind: "error", requestId: 2 });
+    expect(harness.destroyCalls).toBe(0);
+
+    await runtime.accept(injectDeviceLossRequest(3));
+    expect(posted.at(-1)).toEqual({
+      kind: "canvas-device-loss-injected",
+      reason: "destroyed",
+      requestId: 3,
+      revision: REVISION_A,
+      schema: "poietra.canvas-worker-response",
+      version: 1,
+    });
+    expect(harness.destroyCalls).toBe(1);
+  });
+
+  it("arms one device-reacquisition failure only when requested by the dev fault injector", async () => {
+    const { harness, runtime } = await setupEvidenceWorker([]);
+
+    await runtime.accept(injectDeviceLossRequest(2, REVISION_A, true));
+
+    const adapter = await harness.gpu.requestAdapter();
+    await expect(adapter?.requestDevice()).rejects.toThrow("Injected WebGPU device reacquisition failure.");
+    await expect(adapter?.requestDevice()).resolves.not.toBeNull();
   });
 
   it("discards staged evidence on a decode/protocol failure and keeps the last committed frame", async () => {

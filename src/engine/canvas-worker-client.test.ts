@@ -13,6 +13,7 @@ import {
 import {
   captureFrameEvidenceRequestV1Schema,
   createCanvasWorkerClientEvidenceAdapterV1,
+  injectCanvasDeviceLossRequestV1Schema,
 } from "./canvas-worker-evidence";
 import {
   type CanvasWorkerRequestV1,
@@ -1301,6 +1302,38 @@ describe("Poietra canvas worker client", () => {
     const capturing = client.captureFrameEvidence({ revision: REVISION_A, samples: [{ fractionX: 0, fractionY: 0 }] });
     worker.emitMessage(evidenceResponse(captureRequestAt(worker, 1), { revision: REVISION_B }));
     await expect(capturing).rejects.toMatchObject({ code: "protocol-violation" });
+    client.dispose();
+  });
+
+  it("injects device loss through one correlated dev-only request without transferring Scene data", async () => {
+    const bundle = await fixtureBundle();
+    const worker = new FakeWorker();
+    const client = createEvidenceClient(worker);
+    await install(client, worker, bundle);
+
+    const injecting = client.injectDeviceLossForTest({ failRecovery: true });
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(2));
+    const posted = worker.posted[1];
+    const request = injectCanvasDeviceLossRequestV1Schema.parse(posted?.message);
+    expect(request.failRecovery).toBe(true);
+    expect(posted?.transfer).toEqual([]);
+    worker.emitMessage({
+      kind: "canvas-device-loss-injected",
+      reason: "destroyed",
+      requestId: request.requestId,
+      revision: request.revision,
+      schema: "poietra.canvas-worker-response",
+      version: 1,
+    });
+    await expect(injecting).resolves.toBeUndefined();
+    expect(client.revision).toBe(REVISION_A);
+
+    const rendered = client.render({ revision: REVISION_A, sampleTime: 1, viewport: { heightPx: 90, widthPx: 160 } });
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(3));
+    const renderRequest = requestAt(worker, 2);
+    if (renderRequest.kind !== "render-frame") throw new Error("missing render after device-loss injection");
+    worker.emitMessage(presentedResponse(renderRequest));
+    await expect(rendered).resolves.toMatchObject({ revision: REVISION_A });
     client.dispose();
   });
 

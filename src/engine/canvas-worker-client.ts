@@ -1,4 +1,12 @@
 import {
+  type CanvasPngAssetRegistrySnapshotV1,
+  type CanvasPngAssetTransferV1,
+  type CanvasPngDimensionDecoderV1,
+  canvasSceneDeltaChangesAssetsV1,
+  prepareCanvasPngAssetTransfersV1,
+} from "./canvas-png-assets";
+import type { CanvasFrameEvidenceResponseV1 } from "./canvas-worker-evidence";
+import {
   type CanvasFrameTelemetryV1,
   type CanvasSceneDeltaDirtySetV1,
   type CanvasWorkerErrorCodeV1,
@@ -12,18 +20,10 @@ import {
   normalizeCanvasInteractionEntityIdsV1,
   POIETRA_CANVAS_WORKER_VERSION,
 } from "./canvas-worker-protocol";
-import type { CanvasFrameEvidenceResponseV1 } from "./canvas-worker-evidence";
-import {
-  type CanvasPngAssetRegistrySnapshotV1,
-  type CanvasPngAssetTransferV1,
-  type CanvasPngDimensionDecoderV1,
-  canvasSceneDeltaChangesAssetsV1,
-  prepareCanvasPngAssetTransfersV1,
-} from "./canvas-png-assets";
 import type { SceneIrBundleV1 } from "./contracts";
 import { parseVerifiedSceneIrBundleV1, sceneIrBundleV1Schema } from "./contracts";
-import { sceneIrSourceRevisionHash } from "./scene-ir";
 import { parseSceneIrDeltaV1, type SceneIrDeltaV1 } from "./scene-delta";
+import { sceneIrSourceRevisionHash } from "./scene-ir";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const MAX_REQUEST_TIMEOUT_MS = 60_000;
@@ -159,6 +159,14 @@ export type CanvasWorkerClientEvidenceAdapterV1 = Readonly<{
     }>,
   ) => Promise<CanvasFrameEvidenceResponseV1>;
   createWorker: () => Worker;
+  injectDeviceLoss: (
+    context: Readonly<{
+      dispatch: (request: object, expectedKind: string) => Promise<unknown>;
+      failRecovery: boolean;
+      requestId: number;
+      revision: string;
+    }>,
+  ) => Promise<void>;
   parseResponse: (value: unknown) => ReturnType<typeof canvasWorkerResponseV1Schema.safeParse>;
 }>;
 
@@ -199,7 +207,7 @@ type ScheduledRenderV1 = {
   settled: boolean;
 };
 
-type ExclusiveCanvasOperationV1 = "adapter-evidence" | "frame-evidence" | "telemetry-render";
+type ExclusiveCanvasOperationV1 = "adapter-evidence" | "device-loss-injection" | "frame-evidence" | "telemetry-render";
 
 function createCanvasWorker() {
   return new Worker(new URL("./poietra-canvas.worker.ts", import.meta.url), { type: "module" });
@@ -792,6 +800,39 @@ export class PoietraCanvasWorkerClient {
         requestId: this.takeRequestId(),
         revision: input.revision,
         samples: input.samples,
+      });
+    } finally {
+      this.exclusiveOperation = null;
+    }
+  }
+
+  /** Dev/test-only deterministic fault injection on the Worker's real device. */
+  async injectDeviceLossForTest(options: Readonly<{ failRecovery?: boolean }> = {}) {
+    if (!this.evidence) {
+      throw new CanvasWorkerClientError("invalid-state", "This client was created without the dev evidence extension.");
+    }
+    if (this.exclusiveOperation !== null) {
+      throw new CanvasWorkerClientError(
+        "invalid-state",
+        `The ${this.exclusiveOperation} operation is in flight; device-loss injection is mutually exclusive with it.`,
+      );
+    }
+    if (this.state !== "ready" || this.currentRevision === null) {
+      throw new CanvasWorkerClientError("invalid-state", "No canvas Scene revision is installed.");
+    }
+    if (this.activeRender?.settled === false || this.queuedRender?.settled === false) {
+      throw new CanvasWorkerClientError(
+        "invalid-state",
+        "Device-loss injection cannot interleave with in-flight canvas renders.",
+      );
+    }
+    this.exclusiveOperation = "device-loss-injection";
+    try {
+      await this.evidence.injectDeviceLoss({
+        dispatch: (request, expectedKind) => this.dispatch(request as CanvasWorkerRequestV1, [expectedKind]),
+        failRecovery: options.failRecovery === true,
+        requestId: this.takeRequestId(),
+        revision: this.currentRevision,
       });
     } finally {
       this.exclusiveOperation = null;

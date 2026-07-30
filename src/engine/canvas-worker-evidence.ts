@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { type EvidenceCanvasV1, installCanvasFrameEvidenceCaptureV1 } from "./canvas-frame-evidence";
-import { type CanvasWorkerClientEvidenceAdapterV1, CanvasWorkerClientError } from "./canvas-worker-client";
+import { CanvasWorkerClientError, type CanvasWorkerClientEvidenceAdapterV1 } from "./canvas-worker-client";
 import {
   canvasWorkerRequestEnvelopeV1,
   canvasWorkerResponseEnvelopeV1,
@@ -37,6 +37,15 @@ export const captureFrameEvidenceRequestV1Schema = z
   })
   .strict();
 
+export const injectCanvasDeviceLossRequestV1Schema = z
+  .object({
+    ...canvasWorkerRequestEnvelopeV1,
+    failRecovery: z.boolean().optional(),
+    kind: z.literal("inject-canvas-device-loss"),
+    revision: sha256V1Schema,
+  })
+  .strict();
+
 const rgbaSampleV1Schema = z.tuple([
   z.number().int().min(0).max(255),
   z.number().int().min(0).max(255),
@@ -59,9 +68,18 @@ export const frameEvidenceResponseV1Schema = z
   })
   .strict();
 
+export const canvasDeviceLossInjectedResponseV1Schema = z
+  .object({
+    ...canvasWorkerResponseEnvelopeV1,
+    kind: z.literal("canvas-device-loss-injected"),
+    reason: z.literal("destroyed"),
+  })
+  .strict();
+
 export const canvasWorkerResponseWithEvidenceV1Schema = z.discriminatedUnion("kind", [
   ...canvasWorkerResponseV1Schema.options,
   frameEvidenceResponseV1Schema,
+  canvasDeviceLossInjectedResponseV1Schema,
 ]);
 
 export type CanvasEvidenceSamplePointV1 = z.infer<typeof evidenceSamplePointV1Schema>;
@@ -72,6 +90,35 @@ export function createCanvasWorkerEvidenceSupportV1(): CanvasWorkerEvidenceSuppo
   return {
     createCapture: (canvas) => installCanvasFrameEvidenceCaptureV1(canvas as unknown as EvidenceCanvasV1),
     handleRequest: async (value, host) => {
+      const injected = injectCanvasDeviceLossRequestV1Schema.safeParse(value);
+      if (injected.success) {
+        const request = injected.data;
+        if (!host.capture) {
+          host.postError(request, "invalid-state", null, "Device-loss injection is not enabled on this worker.");
+          return true;
+        }
+        if (request.revision !== host.revision) {
+          host.postError(request, "stale-revision", null, "The device-loss revision is stale.");
+          return true;
+        }
+        try {
+          const loss = await host.capture.injectDeviceLoss({
+            failNextDeviceRequest: request.failRecovery === true,
+          });
+          host.postResponse({
+            kind: "canvas-device-loss-injected",
+            reason: loss.reason,
+            requestId: request.requestId,
+            revision: request.revision,
+            schema: "poietra.canvas-worker-response",
+            version: POIETRA_CANVAS_WORKER_VERSION,
+          });
+        } catch (error) {
+          host.postError(request, "internal-error", error, "WebGPU device-loss injection failed.");
+        }
+        return true;
+      }
+
       const parsed = captureFrameEvidenceRequestV1Schema.safeParse(value);
       if (!parsed.success) return false;
       const request = parsed.data;
@@ -144,6 +191,25 @@ export function createCanvasWorkerClientEvidenceAdapterV1(): CanvasWorkerClientE
       return response;
     },
     createWorker: () => new Worker(new URL("./poietra-canvas.dev.worker.ts", import.meta.url), { type: "module" }),
+    injectDeviceLoss: async ({ dispatch, failRecovery, requestId, revision }) => {
+      const request = injectCanvasDeviceLossRequestV1Schema.parse({
+        ...(failRecovery ? { failRecovery: true } : {}),
+        kind: "inject-canvas-device-loss",
+        requestId,
+        revision,
+        schema: "poietra.canvas-worker-request",
+        version: POIETRA_CANVAS_WORKER_VERSION,
+      });
+      const response = (await dispatch(request, "canvas-device-loss-injected")) as z.infer<
+        typeof canvasDeviceLossInjectedResponseV1Schema
+      >;
+      if (response.kind !== "canvas-device-loss-injected" || response.reason !== "destroyed") {
+        throw new CanvasWorkerClientError(
+          "protocol-violation",
+          "The canvas worker did not confirm the injected device loss.",
+        );
+      }
+    },
     parseResponse: (value) =>
       canvasWorkerResponseWithEvidenceV1Schema.safeParse(value) as ReturnType<
         typeof canvasWorkerResponseV1Schema.safeParse

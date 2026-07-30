@@ -49,6 +49,8 @@ type GpuCommandEncoderV1 = {
 type GpuDeviceV1 = {
   createBuffer: (descriptor: Readonly<{ size: number; usage: number }>) => GpuBufferV1;
   createCommandEncoder: () => GpuCommandEncoderV1;
+  destroy: () => void;
+  lost: Promise<Readonly<{ message: string; reason: string }>>;
   queue: { submit: (commands: Iterable<unknown>) => void };
 };
 
@@ -111,6 +113,10 @@ export type CanvasFrameEvidenceCaptureV1 = Readonly<{
   discard: () => void;
   /** Destroy every retained GPU buffer and restore every installed hook. */
   dispose: () => void;
+  /** Dev/test-only: destroys the real device currently bound to the surface. */
+  injectDeviceLoss: (
+    options?: Readonly<{ failNextDeviceRequest?: boolean }>,
+  ) => Promise<Readonly<{ reason: "destroyed" }>>;
   /**
    * Drop the committed evidence without touching the hooks — used after a
    * successful Scene replace, when the retained frame no longer describes the
@@ -134,11 +140,12 @@ export function installCanvasFrameEvidenceCaptureV1(
   let capturedTexture: unknown;
   let committed: Readonly<{ buffer: GpuBufferV1; correlation: CapturedFrameCorrelationV1 }> | null = null;
   let disposed = false;
+  let failNextDeviceRequest = false;
   let staged: StagedCopyV1 | null = null;
   let stagingViewport: CapturedFrameCorrelationV1["viewport"] | null = null;
   // The one device allowed to stage: a copy recorded on a foreign device
   // would be a cross-device validation error and perturb unrelated work.
-  let surfaceDevice: unknown = null;
+  let surfaceDevice: GpuDeviceV1 | null = null;
   let surfaceFormat: string | null = null;
 
   const bytesPerRowFor = (viewport: CapturedFrameCorrelationV1["viewport"]) =>
@@ -222,6 +229,10 @@ export function installCanvasFrameEvidenceCaptureV1(
     installHook(adapter, "requestDevice", (original) => {
       const requestDevice = original.bind(adapter);
       return async (descriptor) => {
+        if (failNextDeviceRequest) {
+          failNextDeviceRequest = false;
+          throw new Error("Injected WebGPU device reacquisition failure.");
+        }
         const gpuDevice = await requestDevice(descriptor);
         if (!disposed) hookQueue(gpuDevice);
         return gpuDevice;
@@ -252,7 +263,7 @@ export function installCanvasFrameEvidenceCaptureV1(
         // captured from the old surface; only a fresh acquisition and
         // submission on the new device can re-arm evidence.
         surfaceFormat = configuration.format;
-        surfaceDevice = configuration.device;
+        surfaceDevice = configuration.device as GpuDeviceV1;
         capturedTexture = undefined;
         destroyStaged();
         destroyCommitted();
@@ -321,6 +332,24 @@ export function installCanvasFrameEvidenceCaptureV1(
       destroyStaged();
       destroyCommitted();
       restoreInstalledHooks();
+    },
+    injectDeviceLoss: async (options = {}) => {
+      const device = surfaceDevice;
+      if (disposed || !device || typeof device.destroy !== "function" || !(device.lost instanceof Promise)) {
+        throw new Error("No recoverable WebGPU surface device is available for fault injection.");
+      }
+      // Nothing tied to the doomed device may survive as frame evidence.
+      stagingViewport = null;
+      capturedTexture = undefined;
+      destroyStaged();
+      destroyCommitted();
+      device.destroy();
+      const loss = await device.lost;
+      if (loss.reason !== "destroyed") {
+        throw new Error(`The injected WebGPU device loss reported unexpected reason ${loss.reason}.`);
+      }
+      failNextDeviceRequest = options.failNextDeviceRequest === true;
+      return { reason: "destroyed" };
     },
     invalidateCommitted: () => {
       destroyCommitted();

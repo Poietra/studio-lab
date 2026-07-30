@@ -15,7 +15,8 @@ function createFakeGpu() {
   const configureCalls: Record<string, unknown>[] = [];
   const failures: FakeGpuStageFailures = {};
   const textures: { fill: number }[] = [];
-  const { buffers, device } = createFakeGpuDevice(failures);
+  const fakeDevice = createFakeGpuDevice(failures);
+  const { buffers, device } = fakeDevice;
   const adapter = { requestDevice: () => Promise.resolve(device) };
   const gpu = { requestAdapter: () => Promise.resolve(adapter) };
   const context = {
@@ -30,6 +31,9 @@ function createFakeGpu() {
     canvas,
     configureCalls,
     device,
+    get destroyCalls() {
+      return fakeDevice.destroyCalls;
+    },
     failures,
     gpu,
     async initialize(capture: CanvasFrameEvidenceCaptureV1) {
@@ -424,6 +428,28 @@ describe("installCanvasFrameEvidenceCaptureV1", () => {
     const evidence = await capture.readSamples(CENTER);
     expect(evidence?.samples[0]?.[0]).toBe(5);
     expect(evidence?.surfaceFormat).toBe("bgra8unorm");
+  });
+
+  it("destroys the configured surface device and invalidates its committed evidence", async () => {
+    const fixture = await createCapture();
+    expect(presentFrame(fixture, 12)).toBe("committed");
+    expect(await firstSample(fixture.capture)).toBe(12);
+
+    await expect(fixture.capture.injectDeviceLoss()).resolves.toEqual({ reason: "destroyed" });
+
+    expect(fixture.fake.destroyCalls).toBe(1);
+    expect(fixture.fake.buffers.map((buffer) => buffer.destroyCalls)).toEqual([1]);
+    await expect(fixture.capture.readSamples(CENTER)).resolves.toBeNull();
+  });
+
+  it("can refuse exactly one device reacquisition after injected device loss", async () => {
+    const fixture = await createCapture();
+
+    await fixture.capture.injectDeviceLoss({ failNextDeviceRequest: true });
+
+    const adapter = await fixture.fake.gpu.requestAdapter();
+    await expect(adapter?.requestDevice()).rejects.toThrow("Injected WebGPU device reacquisition failure.");
+    await expect(adapter?.requestDevice()).resolves.not.toBeNull();
   });
 
   it("restores every hooked adapter and device queue identity-safely across multiple adapters", async () => {

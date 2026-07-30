@@ -19,6 +19,11 @@ export type FakeGpuStageFailures = {
 export function createFakeGpuDevice(failures: FakeGpuStageFailures = {}) {
   const buffers: FakeGpuBuffer[] = [];
   const originalSubmits: unknown[][] = [];
+  let destroyCalls = 0;
+  let resolveLost!: (loss: Readonly<{ message: string; reason: string }>) => void;
+  const lost = new Promise<Readonly<{ message: string; reason: string }>>((resolve) => {
+    resolveLost = resolve;
+  });
   let copies: Readonly<{ buffer: FakeGpuBuffer; texture: { fill: number } }>[] = [];
   const device = {
     createBuffer: (descriptor: Readonly<{ size: number; usage: number }>) => {
@@ -57,6 +62,11 @@ export function createFakeGpuDevice(failures: FakeGpuStageFailures = {}) {
         },
       };
     },
+    destroy: () => {
+      destroyCalls += 1;
+      resolveLost({ message: "The fake device was destroyed.", reason: "destroyed" });
+    },
+    lost,
     queue: {
       submit: (commands: Iterable<unknown>) => {
         if (failures.submit) throw failures.submit;
@@ -72,5 +82,12 @@ export function createFakeGpuDevice(failures: FakeGpuStageFailures = {}) {
       },
     },
   };
-  return { buffers, device, originalSubmits };
+  return {
+    buffers,
+    device,
+    get destroyCalls() {
+      return destroyCalls;
+    },
+    originalSubmits,
+  };
 }
