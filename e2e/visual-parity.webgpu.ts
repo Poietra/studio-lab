@@ -324,3 +324,7 @@ test("matches native Lavapipe for dynamic-affine-camera/a-first", async ({ page 
 test("matches native and analytic reference for PNG alpha-edge/camera midpoint", async ({ page }) => {
   await proveVisualParityEntry(page, "png-alpha-edge-camera--midpoint");
 });
+
+test("matches native Lavapipe for a Studio-created nested radical fraction", async ({ page }) => {
+  await proveVisualParityEntry(page, "mathtex-nested-radical-fraction--static");
+});

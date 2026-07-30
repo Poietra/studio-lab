@@ -16,6 +16,7 @@ const environment = {
 
 for (const nativeTest of [
   "renders_dynamic_affine_camera_samples_with_fallback_adapter",
+  "renders_mathtex_nested_radical_fraction_with_fallback_adapter",
   "renders_png_alpha_edge_camera_midpoint_with_fallback_adapter",
 ]) {
   execFileSync(
