@@ -101,6 +101,7 @@ const LOCKED_LABELS = Object.freeze({
   "io.poietra.mathtex-outline.notice-sha256": "44e67c7f539ae83b25514aa15aae51a73c90c19a45ea33bbb293da52927f6608",
   "io.poietra.mathtex-outline.target": "linux-amd64",
   "io.poietra.mathtex-outline.toolchain-sha256": "95c98e10edff239e6ee237c9eac99dc96c06ba9fc712c30816ddc47d7db12f9e",
+  "io.poietra.snapshot-sandbox-envelope-version": "2",
   "io.poietra.sandbox-slice": "gated-oci-v1",
 });
 const FIXED_ENVIRONMENT = Object.freeze({
@@ -148,6 +149,7 @@ export const FAST_MANIM_GATED_OCI_PROFILE_V1 = Object.freeze({
   pidsLimit: PIDS_LIMIT,
   privileged: false,
   readOnlyRootfs: true,
+  requestEnvelopeVersions: Object.freeze([1, 2]),
   requiredContainerLabels: Object.freeze({ ...LOCKED_LABELS, [JOB_LABEL_KEY]: JOB_LABEL_VALUE }),
   requiredMaskedSystemPaths: REQUIRED_MASKED_SYSTEM_PATHS,
   requiredReadOnlySystemPaths: REQUIRED_READ_ONLY_SYSTEM_PATHS,
@@ -158,6 +160,7 @@ export const FAST_MANIM_GATED_OCI_PROFILE_V1 = Object.freeze({
   stopTimeoutSeconds: 1,
   target: FIXED_TARGET,
   tty: false,
+  fixedAssets: Object.freeze(["image.png"]),
   tmpfs: Object.freeze({ options: FIXED_TMPFS_OPTIONS, path: FIXED_TMPFS_PATH }),
   ulimits: FIXED_ULIMITS,
   user: "65532:65532",

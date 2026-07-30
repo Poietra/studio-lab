@@ -256,13 +256,13 @@ function createBrokerConnection(
     try {
       const bytes = decodeFastManimSandboxBrokerRequestBytesV1(request.requestBytesBase64);
       if (createHash("sha256").update(bytes).digest("hex") !== request.requestDigest) throw new Error();
+      bundle = FastManimSandboxRequestBundleV1.fromBytes(bytes);
       const producer = fastManimSnapshotProducerRequestV1Schema.parse(
-        JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
+        JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bundle.copyProducerRequestBytes())),
       );
       if (producer.projectId !== request.identity.projectId || producer.requestId !== request.identity.requestId) {
         throw new Error();
       }
-      bundle = new FastManimSandboxRequestBundleV1(producer);
       if (!Buffer.from(bundle.copyBytes()).equals(Buffer.from(bytes))) throw new Error();
     } catch {
       release();

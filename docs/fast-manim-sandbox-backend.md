@@ -6,11 +6,12 @@ Status: contract and production broker infrastructure implemented; durable Studi
 
 `FastManimSnapshotRunner` no longer starts a host child process. It passes a
 copy-on-read immutable byte bundle to one `FastManimSandboxBackendV1` job handle.
-The bundle is canonical JSON for the bounded producer-request v1 schema and is
-bound to a SHA-256 digest. It contains verified source text, logical relative
-source identity, Scene name, runtime configuration, and their correlation
-digests. It never contains the host project root, inherited server environment,
-credentials, HOME, temp path, or socket path.
+Profiles 1-3 preserve the canonical bounded producer-request JSON byte for byte.
+Profile 4 wraps that same strict producer request in a Studio-owned V2 envelope
+that binds one independently verified, bounded static PNG. The attachment has
+only fixed `image.png` identity, bytes, digest, length, media type, and decoded
+dimensions; it never carries a host path, mount, object-store locator, or
+credential. The whole selected wire form is bound to a SHA-256 digest.
 
 The lifecycle context is out of band from those bytes and carries only bounded
 opaque tenant, project, and request IDs, the request deadline, the expected
@@ -172,7 +173,11 @@ fixed CPU/memory/pid/fd/core limits, and Docker logging disabled. A trusted PID
 1 entrypoint checks the effective runtime confinement before emitting READY.
 Studio then inspects the actual container configuration, PID, cgroup v2 files,
 and `/proc/<pid>/limits` before releasing a length- and SHA-256-bound request.
-The request becomes sealed memfd stdin for the fixed producer. Result and
+For profile 4 only, PID 1 independently checks the PNG digest, dimensions,
+single-frame decode, and byte budget, creates mode-0600 `image.png` with
+exclusive/no-follow semantics inside the private tmpfs, and gives the producer
+only the original strict producer-request JSON on sealed memfd stdin. Profiles
+1-3 retain their previous stdin bytes and create no asset file. Result and
 diagnostic streams are independently capped; accepted result bytes must be one
 LF-terminated, canonical UTF-8, compact and recursively key-sorted JSON object.
 Every path attempts force-removal and verifies absence through a successful

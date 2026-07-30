@@ -105,6 +105,7 @@ LABEL io.poietra.fast-manim.commit="2b2294a4b55291b088778417c4e2714a75026147" \
       io.poietra.mathtex-outline.toolchain-sha256="95c98e10edff239e6ee237c9eac99dc96c06ba9fc712c30816ddc47d7db12f9e" \
       io.poietra.mathtex-outline.notice-sha256="44e67c7f539ae83b25514aa15aae51a73c90c19a45ea33bbb293da52927f6608" \
       io.poietra.mathtex-outline.target="linux-amd64" \
+      io.poietra.snapshot-sandbox-envelope-version="2" \
       io.poietra.sandbox-slice="gated-oci-v1"
 
 ENV HOME=/run/poietra/home \
