@@ -1,12 +1,16 @@
+import { createHash } from "node:crypto";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
 import {
   type DurableFastManimSnapshotRunnerFactoryV1,
   DurableFastManimSnapshotServiceV1,
 } from "./durable-fast-manim-snapshot-service";
-import type {
-  ExpectedFastManimSnapshotCorrelationV1,
-  FastManimSnapshotRunViewV1,
-  VerifiedCompiledFastManimSnapshotResultV1,
+import {
+  deriveHermeticPngV4TransformPlan,
+  type ExpectedFastManimSnapshotCorrelationV1,
+  type FastManimSnapshotRunViewV1,
+  type VerifiedCompiledFastManimSnapshotResultV1,
 } from "./fast-manim-snapshot-contract";
 import type { FastManimSnapshotRunner, FastManimUnpublishedSnapshotRunViewV1 } from "./fast-manim-snapshot-runner";
 import { DurableFastManimSnapshotSourceProviderV1 } from "./fast-manim-snapshot-source-provider";
@@ -36,6 +40,17 @@ const request = {
   sceneName: SCENE_NAME,
   sourcePath: SOURCE_PATH,
 } as const;
+const TRANSFORMED_PNG_SOURCE = `from manim import ImageMobject, RESAMPLING_ALGORITHMS, Scene
+
+class ExampleScene(Scene):
+    def construct(self):
+        image = ImageMobject("image.png", resampling_algorithm=RESAMPLING_ALGORITHMS["nearest"])
+        self.add(image)
+        image.move_to((1.25, -0.75, 0))
+        image.scale(1.5)
+        self.wait(1)
+`;
+const TRANSFORMED_PNG_SOURCE_DIGEST = createHash("sha256").update(TRANSFORMED_PNG_SOURCE, "utf8").digest("hex");
 
 function sourceHead(generation = 7n, digest = SOURCE_DIGEST): WorkspaceSourceHeadV1 {
   return {
@@ -121,6 +136,33 @@ function expected(): ExpectedFastManimSnapshotCorrelationV1 {
   };
 }
 
+function transformedPngV4View() {
+  const snapshot = {
+    ...compiledSnapshot,
+    bundle: {
+      ...compiledSnapshot.bundle,
+      scene: {
+        ...compiledSnapshot.bundle.scene,
+        source: {
+          ...compiledSnapshot.bundle.scene.source,
+          snapshotVersion: 4,
+          sourceHash: TRANSFORMED_PNG_SOURCE_DIGEST,
+        },
+      },
+    },
+    sourceHash: TRANSFORMED_PNG_SOURCE_DIGEST,
+  } as unknown as VerifiedCompiledFastManimSnapshotResultV1;
+  return { ...verifiedView, snapshot } satisfies FastManimUnpublishedSnapshotRunViewV1;
+}
+
+function transformedPngSourceHead() {
+  const head = sourceHead(7n, TRANSFORMED_PNG_SOURCE_DIGEST);
+  return {
+    ...head,
+    blob: { ...head.blob, byteSize: Buffer.byteLength(TRANSFORMED_PNG_SOURCE, "utf8") },
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -157,9 +199,10 @@ function harness(
     close: vi.fn(async () => undefined),
     readSourceHead,
   } as unknown as WorkspaceSourceRepositoryV1;
+  const readSource = vi.fn<SourceContentBlobStoreV1["readSource"]>(async () => "from manim import *");
   const blobs = {
     close: vi.fn(async () => undefined),
-    readSource: vi.fn(async () => "from manim import *"),
+    readSource,
   } as unknown as SourceContentBlobStoreV1;
   const publish = vi.fn<SnapshotArtifactPublisherV1["publish"]>(async () => ({
     kind: "published" as const,
@@ -188,6 +231,7 @@ function harness(
     publish,
     publisher,
     readCurrent,
+    readSource,
     readSourceHead,
     runner,
     runnerClose,
@@ -229,6 +273,32 @@ describe("DurableFastManimSnapshotServiceV1", () => {
       profileDigest: PROFILE_DIGEST,
       runtimeDigest: RELEASE_RUNTIME_DIGEST,
     });
+  });
+
+  it("retains the server-derived V4 image transform plan for durable publication", async () => {
+    const fixture = harness(transformedPngV4View());
+    const head = transformedPngSourceHead();
+    fixture.readSourceHead.mockResolvedValue(head);
+    fixture.readSource.mockResolvedValue(TRANSFORMED_PNG_SOURCE);
+
+    await expect(fixture.service.run(request)).resolves.toMatchObject({ status: "verified" });
+
+    expect(fixture.readSource).toHaveBeenCalledWith(TENANT, head.blob, undefined);
+    const published = fixture.publish.mock.calls[0]?.[0];
+    if (!published) throw new Error("Expected one durable V4 publication.");
+    expect(published.expected.hermeticPngV4Plan).toEqual(
+      deriveHermeticPngV4TransformPlan(TRANSFORMED_PNG_SOURCE, SCENE_NAME),
+    );
+  });
+
+  it("fails closed when the version-pinned V4 source bytes do not match their receipt", async () => {
+    const fixture = harness(transformedPngV4View());
+    const head = transformedPngSourceHead();
+    fixture.readSourceHead.mockResolvedValue(head);
+    fixture.readSource.mockResolvedValue(`${TRANSFORMED_PNG_SOURCE}# changed after receipt\n`);
+
+    await expect(fixture.service.run(request)).rejects.toThrow(/version-pinned blob receipt/i);
+    expect(fixture.publish).not.toHaveBeenCalled();
   });
 
   it("does not allocate runners for valid project IDs whose durable source does not exist", async () => {

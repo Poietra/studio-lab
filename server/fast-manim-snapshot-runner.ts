@@ -17,6 +17,7 @@ import {
 } from "./fast-manim-sandbox-backend";
 import {
   assertFastManimSnapshotDiagnosticsSafeV1,
+  deriveHermeticPngV4TransformPlan,
   digestFastManimSnapshotRuntimeConfigV1,
   type ExpectedFastManimSnapshotCorrelationV1,
   FAST_MANIM_SNAPSHOT_FALLBACK_V1,
@@ -44,13 +45,13 @@ import {
   type VerifiedFastManimSnapshotResultV1,
   type VerifiedSourceRuntimeIdentityMapV1,
 } from "./fast-manim-snapshot-contract";
-import { abortError } from "./fast-manim-snapshot-producer-process";
 import {
   type FastManimSnapshotPngProviderV1,
   type FastManimSnapshotPngReadV1,
   readFastManimSnapshotPngV1,
   sameFastManimSnapshotPngReadV1,
 } from "./fast-manim-snapshot-png-provider";
+import { abortError } from "./fast-manim-snapshot-producer-process";
 import { type FastManimSnapshotPublicationStore, processPublicationStore } from "./fast-manim-snapshot-publication";
 import {
   type FastManimSnapshotSourceProviderV1,
@@ -782,8 +783,19 @@ export class FastManimSnapshotRunner {
       throwIfHalted();
     }
 
+    let hermeticPngV4Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticPngV4Plan"];
+    if (this.snapshotVersion === 4) {
+      try {
+        hermeticPngV4Plan = deriveHermeticPngV4TransformPlan(before.source, request.sceneName);
+      } catch {
+        // An unsupported source must still reach the producer and preserve its
+        // structured unsupported result. A compiled result is rejected below
+        // because sealing independently derives the same plan from source.
+      }
+    }
     const expected: ExpectedFastManimSnapshotCorrelationV1 = {
       frame: { height: this.frame.height, width: this.frame.width },
+      ...(hermeticPngV4Plan ? { hermeticPngV4Plan } : {}),
       projectId: request.projectId,
       requestId: request.requestId,
       runtimeConfigHash,
@@ -800,7 +812,12 @@ export class FastManimSnapshotRunner {
     // and sourceHash instead of echoing them and never re-opens sourcePath.
     // The expected frame is server-side verification state only; the wire
     // request carries the frame inside the canonical runtimeConfig object.
-    const { frame: _serverFrame, snapshotVersion, ...wireCorrelation } = expected;
+    const {
+      frame: _serverFrame,
+      hermeticPngV4Plan: _serverHermeticPngV4Plan,
+      snapshotVersion,
+      ...wireCorrelation
+    } = expected;
     const producerRequest = fastManimSnapshotProducerRequestV1Schema.parse({
       ...wireCorrelation,
       runtimeConfig: this.runtimeConfig(),
@@ -825,7 +842,11 @@ export class FastManimSnapshotRunner {
       // passes the unchanged strict Snapshot/Scene IR verifier and server seal;
       // only then may the paired identity evidence be interpreted.
       const producerDocument = parseFastManimProducerDocumentV1(produced.resultBytes);
-      sealed = await parseAndSealFastManimSnapshotProducerJsonV1(producerDocument.snapshotJson, expected);
+      sealed = await parseAndSealFastManimSnapshotProducerJsonV1(
+        producerDocument.snapshotJson,
+        expected,
+        before.source,
+      );
       // Defense in depth behind the structural static-profile normalization.
       assertFastManimSnapshotDiagnosticsSafeV1(sealed, {
         ...(this.sourceProvider.diagnosticProjectRoot

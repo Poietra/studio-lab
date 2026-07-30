@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
 import { digestAssetManifestV1, type SceneIrBundleV1, sceneIrBundleV1Schema } from "../src/engine/contracts";
 import {
+  deriveHermeticPngV4TransformPlan,
   digestFastManimSnapshotBundleV1,
   type ExpectedFastManimSnapshotCorrelationV1,
   expectedFastManimSnapshotCorrelationV1Schema,
@@ -558,10 +560,16 @@ async function dynamicMotionPathBundle(): Promise<SceneIrBundleV1> {
   });
 }
 
-function compiled(bundle: SceneIrBundleV1) {
+function compiled(bundle: SceneIrBundleV1, expectedValue: ExpectedFastManimSnapshotCorrelationV1 = expected) {
   if (bundle.scene.source.kind !== "imported-manim-server-snapshot") throw new Error("Expected imported source.");
+  const {
+    frame: _serverFrame,
+    hermeticPngV4Plan: _serverHermeticPngV4Plan,
+    snapshotVersion: _serverSnapshotVersion,
+    ...resultCorrelation
+  } = expectedValue;
   return {
-    ...wireCorrelation,
+    ...resultCorrelation,
     bundle,
     kind: "compiled" as const,
     schema: "poietra.fast-manim-snapshot-result" as const,
@@ -570,8 +578,12 @@ function compiled(bundle: SceneIrBundleV1) {
   };
 }
 
-function parseProducer(value: unknown, expectedValue: ExpectedFastManimSnapshotCorrelationV1 = expected) {
-  return parseAndSealFastManimSnapshotProducerJsonV1(JSON.stringify(value), expectedValue);
+function parseProducer(
+  value: unknown,
+  expectedValue: ExpectedFastManimSnapshotCorrelationV1 = expected,
+  sourceText?: string,
+) {
+  return parseAndSealFastManimSnapshotProducerJsonV1(JSON.stringify(value), expectedValue, sourceText);
 }
 
 describe("canonical fast-manim Line cubic", () => {
@@ -833,6 +845,121 @@ describe("fast-manim snapshot result v1", () => {
       ),
     ).toBe(true);
     await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV4)).resolves.toEqual(sealed);
+  });
+
+  it("re-derives ordered PNG transforms from exact source and retains the plan for sealed revalidation", async () => {
+    const source = `from manim import ImageMobject, RESAMPLING_ALGORITHMS, Scene
+
+class ExampleScene(Scene):
+    def construct(self):
+        image = ImageMobject("image.png", resampling_algorithm=RESAMPLING_ALGORITHMS["nearest"])
+        self.add(image)
+        # image.move_to((999, 999, 0)) must remain a comment.
+        image.scale(1.5)
+        image.move_to((1, -2, 0))
+        # image.scale(999) must remain a comment too.
+        self.wait(2)
+`;
+    const sourceHash = createHash("sha256").update(source, "utf8").digest("hex");
+    const hermeticPngV4Plan = deriveHermeticPngV4TransformPlan(source, expected.sceneName);
+    expect(hermeticPngV4Plan).toEqual({
+      terminalWait: 2,
+      transforms: [
+        { factor: 1.5, kind: "scale" },
+        { kind: "move-to", x: 1, y: -2 },
+      ],
+    });
+    const expectedV4 = { ...expected, hermeticPngV4Plan, snapshotVersion: 4, sourceHash } as const;
+    const base = await hermeticPngBundle();
+    const entity = base.scene.entities[0]!;
+    if (entity.geometry.kind !== "image") throw new Error("Expected image fixture geometry.");
+    const baseHeight = (base.assets.assets[0]!.pixelHeight / 1_080) * expected.frame.height;
+    const baseWidth = (baseHeight * base.assets.assets[0]!.pixelWidth) / base.assets.assets[0]!.pixelHeight;
+    const transformed = sceneIrBundleV1Schema.parse({
+      ...base,
+      scene: {
+        ...base.scene,
+        // A terminal wait is admitted source syntax, but V4 remains the
+        // one-second static snapshot profile.
+        duration: 1,
+        entities: [
+          {
+            ...entity,
+            geometry: {
+              ...entity.geometry,
+              localRect: {
+                bottom: -2 - (baseHeight * 1.5) / 2,
+                left: 1 - (baseWidth * 1.5) / 2,
+                right: 1 + (baseWidth * 1.5) / 2,
+                top: -2 + (baseHeight * 1.5) / 2,
+              },
+            },
+          },
+        ],
+        source: { ...base.scene.source, sourceHash },
+      },
+    });
+
+    const sealed = await parseProducer(compiled(transformed, expectedV4), expectedV4, source);
+    await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV4)).resolves.toEqual(sealed);
+
+    const wrongPlan = {
+      ...expectedV4,
+      hermeticPngV4Plan: {
+        ...hermeticPngV4Plan,
+        transforms: [{ factor: 2, kind: "scale" as const }, hermeticPngV4Plan.transforms[1]!],
+      },
+    };
+    await expect(parseProducer(compiled(transformed, wrongPlan), wrongPlan, source)).rejects.toMatchObject({
+      code: "profile-violation",
+    });
+
+    const transformedGeometry = transformed.scene.entities[0]!.geometry;
+    if (transformedGeometry.kind !== "image") throw new Error("Expected transformed image geometry.");
+    const drifted = sceneIrBundleV1Schema.parse({
+      ...transformed,
+      scene: {
+        ...transformed.scene,
+        entities: [
+          {
+            ...entity,
+            geometry: {
+              ...entity.geometry,
+              localRect: {
+                ...transformedGeometry.localRect,
+                right: transformedGeometry.localRect.right + 0.000_001,
+              },
+            },
+          },
+        ],
+      },
+    });
+    await expect(parseProducer(compiled(drifted, expectedV4), expectedV4, source)).rejects.toMatchObject({
+      code: "profile-violation",
+    });
+  });
+
+  it("preserves producer unsupported results when V4 source is outside the transform grammar", async () => {
+    const expectedV4 = { ...expected, snapshotVersion: 4 } as const;
+    await expect(
+      parseProducer(
+        {
+          ...wireCorrelation,
+          issues: [
+            {
+              code: "runtime-semantics-unsupported",
+              evidence: [],
+              message: FAST_MANIM_SNAPSHOT_UNSUPPORTED_MESSAGES_V1["runtime-semantics-unsupported"],
+            },
+          ],
+          kind: "unsupported",
+          schema: "poietra.fast-manim-snapshot-result",
+          version: 1,
+        },
+        expectedV4,
+        "this is not valid Python and must not mask producer unsupported",
+      ),
+    ).resolves.toMatchObject({ kind: "unsupported" });
   });
 
   it("fails closed when profile V4 image metadata, geometry, capability, or provenance drifts", async () => {
@@ -1684,6 +1811,7 @@ describe("fast-manim snapshot result v1", () => {
 
   it("defaults legacy persisted correlation metadata to profile V1 only", () => {
     const { snapshotVersion: _snapshotVersion, ...legacy } = expected;
+    const hermeticPngV4Plan = { terminalWait: null, transforms: [] } as const;
     expect(expectedFastManimSnapshotCorrelationV1Schema.parse(legacy).snapshotVersion).toBe(1);
     expect(expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 3 }).snapshotVersion).toBe(
       3,
@@ -1691,6 +1819,15 @@ describe("fast-manim snapshot result v1", () => {
     expect(expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 4 }).snapshotVersion).toBe(
       4,
     );
+    expect(
+      expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, hermeticPngV4Plan, snapshotVersion: 4 })
+        .hermeticPngV4Plan,
+    ).toEqual(hermeticPngV4Plan);
+    for (const snapshotVersion of [1, 2, 3] as const) {
+      expect(() =>
+        expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, hermeticPngV4Plan, snapshotVersion }),
+      ).toThrow(/only for snapshot profile V4/i);
+    }
     expect(() => expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 5 })).toThrow();
   });
 
