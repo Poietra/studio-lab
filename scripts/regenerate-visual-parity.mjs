@@ -14,26 +14,31 @@ const environment = {
   WGPU_BACKEND: process.env.WGPU_BACKEND ?? "vulkan",
 };
 
-execFileSync(
-  cargo,
-  [
-    "+1.92.0",
-    "test",
-    "--locked",
-    "--package",
-    "poietra-render-wgpu",
-    "--test",
-    "headless_gpu",
-    "--manifest-path",
-    "engine/Cargo.toml",
-    "renders_dynamic_affine_camera_samples_with_fallback_adapter",
-    "--",
-    "--exact",
-    "--ignored",
-    "--nocapture",
-  ],
-  { env: environment, stdio: "inherit" },
-);
+for (const nativeTest of [
+  "renders_dynamic_affine_camera_samples_with_fallback_adapter",
+  "renders_png_alpha_edge_camera_midpoint_with_fallback_adapter",
+]) {
+  execFileSync(
+    cargo,
+    [
+      "+1.92.0",
+      "test",
+      "--locked",
+      "--package",
+      "poietra-render-wgpu",
+      "--test",
+      "headless_gpu",
+      "--manifest-path",
+      "engine/Cargo.toml",
+      nativeTest,
+      "--",
+      "--exact",
+      "--ignored",
+      "--nocapture",
+    ],
+    { env: environment, stdio: "inherit" },
+  );
+}
 execFileSync(pnpm, ["build:canvas:wasm"], { env: environment, stdio: "inherit" });
 execFileSync(pnpm, ["exec", "playwright", "test", "--config", "playwright.visual-parity.config.ts"], {
   env: environment,

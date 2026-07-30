@@ -11,8 +11,8 @@ use std::time::Duration;
 use poietra_eval::{EngineSessionV1, SampleEngineSessionOptionsV1};
 use poietra_render_wgpu::{
     DecodedPngAssetResolverV1, ImageTextureCacheLimitsV1, PreparedFrameV1, RenderFrameErrorV1,
-    WgpuPaintRendererV1, WgpuRenderTargetV1, build_gpu_upload_plan_v1, prepare_frame_v1,
-    prepare_frame_with_assets_v1,
+    WgpuPaintRendererV1, WgpuRenderTargetV1, build_gpu_upload_plan_v1, decode_verified_png_v1,
+    prepare_frame_v1, prepare_frame_with_assets_v1,
 };
 use poietra_scene_ir::{
     AffineTransformV1, ImageLocalRectV1, ImageSamplerV1, RenderCameraKindV1, RenderCameraV1,
@@ -89,6 +89,52 @@ struct DynamicSample {
 #[serde(rename_all = "camelCase")]
 struct DynamicExpected {
     pixel_reference_id: String,
+    semantic_digest: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PngVisualParityFixture {
+    analytic_references: std::collections::BTreeMap<String, AnalyticFullFrameReference>,
+    asset_payloads: Vec<FixtureAssetPayload>,
+    assets: serde_json::Value,
+    id: String,
+    samples: Vec<PngVisualParitySample>,
+    scene: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct FixtureAssetPayload {
+    asset_id: String,
+    encoded_bytes: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct AnalyticFullFrameReference {
+    channel_order: String,
+    color_domain: String,
+    derivation: String,
+    rgba: Vec<u8>,
+    sha256: String,
+    viewport: ViewportV1,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct PngVisualParitySample {
+    expected: PngVisualParityExpected,
+    id: String,
+    packet_id: String,
+    sample_time: f64,
+    viewport: ViewportV1,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct PngVisualParityExpected {
+    analytic_reference_id: String,
     semantic_digest: String,
 }
 
@@ -186,6 +232,7 @@ struct NativeVisualParityTarget {
 
 const VISUAL_PARITY_CORPUS_SCHEMA_V1: &str = "poietra.visual-parity-corpus";
 const VISUAL_PARITY_ENTRY_V1: &str = "dynamic-affine-camera--a-first";
+const PNG_VISUAL_PARITY_ENTRY_V1: &str = "png-alpha-edge-camera--midpoint";
 const VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1: &str = "POIETRA_VISUAL_PARITY_NATIVE_ARTIFACT_DIR";
 const SEMANTIC_NUMBER_SCALE: f64 = 1_000_000_000.0;
 
@@ -193,7 +240,7 @@ fn repository_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..")
 }
 
-fn load_visual_parity_entry() -> VisualParityCorpusEntry {
+fn load_visual_parity_entry(entry_id: &str) -> VisualParityCorpusEntry {
     let path = repository_root().join("fixtures/visual-parity-v1/corpus.json");
     let corpus: VisualParityCorpus =
         serde_json::from_slice(&fs::read(path).expect("visual parity corpus must be readable"))
@@ -224,11 +271,11 @@ fn load_visual_parity_entry() -> VisualParityCorpusEntry {
     let entry = corpus
         .entries
         .into_iter()
-        .find(|entry| entry.id == VISUAL_PARITY_ENTRY_V1)
-        .expect("the initial visual parity corpus entry must exist");
+        .find(|entry| entry.id == entry_id)
+        .unwrap_or_else(|| panic!("visual parity corpus entry {entry_id} must exist"));
     assert!(
         entry.threshold_exception.is_null(),
-        "the initial corpus item must use the v1 default gate"
+        "the corpus item must use the v1 default gate"
     );
     entry
 }
@@ -704,6 +751,20 @@ fn dynamic_fixture() -> (DynamicFixture, SceneIrBundleV1) {
     (fixture, bundle)
 }
 
+fn png_visual_parity_fixture() -> (PngVisualParityFixture, SceneIrBundleV1) {
+    let path = repository_root().join("fixtures/engine-v1/png-alpha-edge-camera.json");
+    let fixture: PngVisualParityFixture = serde_json::from_slice(
+        &fs::read(path).expect("PNG visual parity fixture must be readable"),
+    )
+    .expect("PNG visual parity fixture envelope must deserialize");
+    let bundle = serde_json::from_value(serde_json::json!({
+        "assets": fixture.assets,
+        "scene": fixture.scene,
+    }))
+    .expect("PNG visual parity fixture must contain a valid Scene bundle");
+    (fixture, bundle)
+}
+
 fn non_background_bounds(rgba: &[u8], width_px: u32, height_px: u32) -> Option<[u32; 4]> {
     let background = pixel(rgba, width_px, 0, 0);
     let mut bounds: Option<[u32; 4]> = None;
@@ -725,7 +786,7 @@ fn non_background_bounds(rgba: &[u8], width_px: u32, height_px: u32) -> Option<[
 #[allow(clippy::too_many_lines)] // One dynamic GPU proof keeps shared probes and the opt-in artifact bound together.
 fn renders_dynamic_affine_camera_samples_with_fallback_adapter() {
     let (fixture, bundle) = dynamic_fixture();
-    let visual_parity_entry = load_visual_parity_entry();
+    let visual_parity_entry = load_visual_parity_entry(VISUAL_PARITY_ENTRY_V1);
     assert_eq!(visual_parity_entry.fixture.id, fixture.id);
     assert_eq!(
         visual_parity_entry.fixture.path,
@@ -1118,6 +1179,169 @@ fn assert_full_frame_close(actual: &[u8], expected: &[[u8; 4]], tolerance: u8) {
             "pixel {index}: expected {expected:?} +/- {tolerance}, received {actual:?}"
         );
     }
+}
+
+fn assert_full_rgba_bytes_close(actual: &[u8], expected: &[u8], tolerance: u8) {
+    assert_eq!(actual.len(), expected.len(), "full RGBA frames must align");
+    for (index, (actual, expected)) in actual.iter().zip(expected).enumerate() {
+        assert!(
+            actual.abs_diff(*expected) <= tolerance,
+            "RGBA byte {index}: expected {expected} +/- {tolerance}, received {actual}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the visual parity lane runs this proof"]
+#[allow(clippy::too_many_lines)] // One full-frame proof keeps fixture, asset, GPU, and artifact evidence together.
+fn renders_png_alpha_edge_camera_midpoint_with_fallback_adapter() {
+    let (fixture, bundle) = png_visual_parity_fixture();
+    assert_eq!(fixture.id, "eng-v1-png-alpha-edge-camera");
+    let sample = fixture
+        .samples
+        .iter()
+        .find(|sample| sample.id == "midpoint")
+        .expect("PNG visual parity midpoint sample must exist");
+    let reference = fixture
+        .analytic_references
+        .get(&sample.expected.analytic_reference_id)
+        .expect("PNG visual parity sample must select an analytic reference");
+    assert_eq!(reference.channel_order, "rgba");
+    assert_eq!(reference.color_domain, "srgb-u8");
+    assert!(
+        reference.derivation.contains("premultiplied-linear"),
+        "analytic reference must record the alpha-before-filter derivation"
+    );
+    assert_eq!(reference.viewport, sample.viewport);
+    assert_eq!(
+        reference.rgba.len(),
+        usize::try_from(sample.viewport.width_px)
+            .expect("fixture width must fit usize")
+            .checked_mul(
+                usize::try_from(sample.viewport.height_px).expect("fixture height must fit usize")
+            )
+            .and_then(|pixels| pixels.checked_mul(BYTES_PER_PIXEL as usize))
+            .expect("fixture RGBA size must fit usize")
+    );
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&reference.rgba)),
+        reference.sha256,
+        "analytic RGBA digest must pin the independent full-frame reference"
+    );
+
+    let scene_revision_hash = bundle.scene.source.revision_hash().to_owned();
+    let asset_metadata = bundle
+        .assets
+        .assets
+        .iter()
+        .find(|asset| asset.id == "asset:png-alpha-edge")
+        .expect("PNG visual parity metadata must exist")
+        .clone();
+    let payload = fixture
+        .asset_payloads
+        .iter()
+        .find(|payload| payload.asset_id == asset_metadata.id)
+        .expect("PNG visual parity encoded payload must exist");
+    assert_eq!(
+        u64::try_from(payload.encoded_bytes.len()).expect("fixture payload length must fit u64"),
+        asset_metadata.byte_length
+    );
+    let decoded = Arc::new(
+        decode_verified_png_v1(&asset_metadata, &payload.encoded_bytes)
+            .expect("PNG visual parity payload must match its immutable metadata"),
+    );
+    let session = EngineSessionV1::new(bundle).expect("PNG visual parity fixture must install");
+    let packet = session
+        .sample_render_packet(SampleEngineSessionOptionsV1 {
+            evidence: &[fixture.id.clone(), sample.id.clone()],
+            packet_id: &sample.packet_id,
+            sample_time: sample.sample_time,
+            viewport: sample.viewport.clone(),
+        })
+        .expect("PNG visual parity midpoint must sample");
+    let semantic_digest = render_packet_semantic_digest(&packet);
+    assert_eq!(semantic_digest, sample.expected.semantic_digest);
+    assert_eq!(
+        packet.camera,
+        image_proof_camera(-3.0, 3.0, -1.5, 1.5),
+        "the midpoint camera must include both pan and zoom"
+    );
+    let [
+        RenderDrawV1::Image {
+            sampler, transform, ..
+        },
+    ] = packet.draws.as_slice()
+    else {
+        panic!("PNG visual parity midpoint must produce exactly one image draw");
+    };
+    assert_eq!(*sampler, ImageSamplerV1::Linear);
+    assert_eq!(
+        *transform,
+        AffineTransformV1 {
+            m11: 3.0,
+            m12: 0.0,
+            m21: 0.0,
+            m22: 3.0,
+            tx: 0.0,
+            ty: 0.0,
+        },
+        "the midpoint image must exercise non-identity affine interpolation"
+    );
+
+    let visual_parity_entry = load_visual_parity_entry(PNG_VISUAL_PARITY_ENTRY_V1);
+    assert_eq!(visual_parity_entry.fixture.id, fixture.id);
+    assert_eq!(
+        visual_parity_entry.fixture.path,
+        "fixtures/engine-v1/png-alpha-edge-camera.json"
+    );
+    assert_eq!(
+        visual_parity_entry.fixture.revision.sha256,
+        scene_revision_hash
+    );
+    assert_eq!(visual_parity_entry.sample.id, sample.id);
+    assert_eq!(visual_parity_entry.sample.viewport, sample.viewport);
+    assert_eq!(visual_parity_entry.sample.semantic_digest, semantic_digest);
+
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = request_fallback_adapter(&instance);
+    let adapter_info = adapter.get_info();
+    assert_eq!(adapter_info.device_type, wgpu::DeviceType::Cpu);
+    assert_target_format_support(&adapter);
+    let (device, queue) = request_device(&adapter);
+    let device_loss = track_device_loss(&device);
+    let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT)
+        .expect("proof target format must be supported by the renderer");
+    let resolver = |sha256: &str| (sha256 == asset_metadata.sha256).then(|| Arc::clone(&decoded));
+    let (texture, extent) =
+        render_packet_with_assets(&device, &queue, &mut renderer, &packet, &resolver);
+    let (_, rgba) = readback_texture(&device, &queue, &texture, extent);
+    assert_eq!(extent.width, sample.viewport.width_px);
+    assert_eq!(extent.height, sample.viewport.height_px);
+    assert_full_rgba_bytes_close(&rgba, &reference.rgba, 1);
+
+    let artifact_requested = env::var_os(VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1).is_some();
+    assert_eq!(
+        emit_native_visual_parity_artifact(&visual_parity_entry, &adapter_info, &rgba),
+        artifact_requested,
+        "the opt-in PNG native artifact must be emitted exactly once"
+    );
+    assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
+    assert_no_gpu_error("internal", pollster::block_on(internal_scope.pop()));
+    assert_no_gpu_error(
+        "out-of-memory",
+        pollster::block_on(out_of_memory_scope.pop()),
+    );
+    assert!(
+        device_loss
+            .lock()
+            .expect("device-loss evidence mutex must not be poisoned")
+            .is_none(),
+        "device must remain available through PNG visual parity readback"
+    );
 }
 
 #[test]

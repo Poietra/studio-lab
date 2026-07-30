@@ -61,6 +61,8 @@ type WasmBindingsV1 = {
 };
 
 type ProofRequestV1 = Readonly<{
+  assetBytes?: readonly ArrayBuffer[];
+  assetMetadataJson?: ArrayBuffer;
   fullRgba?: boolean;
   kind: "prove-frame";
   requestJson: ArrayBuffer;
@@ -89,8 +91,19 @@ const GPU_TEXTURE_USAGE_COPY_SRC = 1;
 const GPU_TEXTURE_USAGE_RENDER_ATTACHMENT = 16;
 const EMPTY_ASSET_METADATA_JSON = new TextEncoder().encode("[]");
 
-function createAssetFreeEngine(bindings: WasmBindingsV1, snapshotJson: ArrayBuffer, canvas: OffscreenCanvas) {
-  return bindings.PoietraCanvasEngineV1.create(new Uint8Array(snapshotJson), EMPTY_ASSET_METADATA_JSON, [], canvas);
+function createCanvasEngine(
+  bindings: WasmBindingsV1,
+  snapshotJson: ArrayBuffer,
+  canvas: OffscreenCanvas,
+  assetMetadataJson?: ArrayBuffer,
+  assetBytes: readonly ArrayBuffer[] = [],
+) {
+  return bindings.PoietraCanvasEngineV1.create(
+    new Uint8Array(snapshotJson),
+    assetMetadataJson ? new Uint8Array(assetMetadataJson) : EMPTY_ASSET_METADATA_JSON,
+    assetBytes.map((bytes) => new Uint8Array(bytes)),
+    canvas,
+  );
 }
 
 function installReadbackHooks(canvas: OffscreenCanvas, viewport: ProofRequestV1["viewport"]) {
@@ -410,7 +423,7 @@ async function probeErrorScopes(request: ErrorScopeProbeRequestV1) {
     throw new Error("Unexpected canvas ABI version.");
   }
   const createEngine = (targetCanvas: OffscreenCanvas) =>
-    createAssetFreeEngine(bindings, request.snapshotJson, targetCanvas);
+    createCanvasEngine(bindings, request.snapshotJson, targetCanvas);
   const engine = await createEngine(canvas);
 
   const normalScopeCallsBefore = hooks.errorScopeCalls();
@@ -596,7 +609,13 @@ self.addEventListener("message", (event: MessageEvent<WorkerRequestV1>) => {
     if (bindings.poietraCanvasAbiVersion() !== POIETRA_CANVAS_ABI_VERSION) {
       throw new Error("Unexpected canvas ABI version.");
     }
-    const engine = await createAssetFreeEngine(bindings, request.snapshotJson, canvas);
+    const engine = await createCanvasEngine(
+      bindings,
+      request.snapshotJson,
+      canvas,
+      request.assetMetadataJson,
+      request.assetBytes,
+    );
     hooks.arm();
     const responseJson = await engine.render(new Uint8Array(request.requestJson));
     const renderSubmissionCount = hooks.finishCapture();

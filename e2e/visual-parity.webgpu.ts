@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import { encodeRgbaPngV1 } from "./png-rgba";
 import {
   nativeVisualParityArtifactV1Schema,
@@ -13,10 +13,32 @@ import {
 import { compareVisualParityFramesV1, makeOpaqueVisualParityDiffV1 } from "./visual-parity-metrics";
 
 type DynamicFixture = Readonly<{
-  assets: unknown;
+  assetPayloads?: readonly Readonly<{
+    assetId: string;
+    encodedBytes: readonly number[];
+  }>[];
+  analyticReferences?: Readonly<
+    Record<
+      string,
+      Readonly<{
+        derivation: string;
+        rgba: readonly number[];
+        sha256: string;
+        viewport: Readonly<{ heightPx: number; widthPx: number }>;
+      }>
+    >
+  >;
+  assets: Readonly<{
+    assets: readonly Readonly<{
+      id: string;
+      sha256: string;
+      [key: string]: unknown;
+    }>[];
+    [key: string]: unknown;
+  }>;
   id: string;
   samples: readonly Readonly<{
-    expected: Readonly<{ semanticDigest: string }>;
+    expected: Readonly<{ analyticReferenceId?: string; semanticDigest: string }>;
     id: string;
     packetId: string;
     sampleTime: number;
@@ -59,13 +81,13 @@ function requireArtifactRoot() {
   return root;
 }
 
-test("matches native Lavapipe for dynamic-affine-camera/a-first", async ({ page }) => {
+async function proveVisualParityEntry(page: Page, entryId: string) {
   const corpus = visualParityCorpusV1Schema.parse(
     JSON.parse(await readFile("fixtures/visual-parity-v1/corpus.json", "utf8")),
   );
-  const entry = corpus.entries.find(({ id }) => id === "dynamic-affine-camera--a-first");
-  expect(entry, "the initial visual parity corpus entry must exist").toBeDefined();
-  if (!entry) throw new Error("The initial visual parity corpus entry is missing.");
+  const entry = corpus.entries.find(({ id }) => id === entryId);
+  expect(entry, `the ${entryId} visual parity corpus entry must exist`).toBeDefined();
+  if (!entry) throw new Error(`The ${entryId} visual parity corpus entry is missing.`);
 
   const nativeDirectory = join(requireArtifactRoot(), entry.id);
   const nativeMetadataBytes = new Uint8Array(await readFile(join(nativeDirectory, "metadata.json")));
@@ -101,10 +123,16 @@ test("matches native Lavapipe for dynamic-affine-camera/a-first", async ({ page 
     sampleTime: entry.sample.sampleTime,
     viewport: entry.sample.viewport,
   });
+  const analyticReference = sample.expected.analyticReferenceId
+    ? fixture.analyticReferences?.[sample.expected.analyticReferenceId]
+    : undefined;
+  if (sample.expected.analyticReferenceId && !analyticReference) {
+    throw new Error(`The analytic reference ${sample.expected.analyticReferenceId} is missing.`);
+  }
 
   await page.goto("/");
   const browserProof = await page.evaluate(
-    async ({ assets, fixtureId, sample, scene }) => {
+    async ({ assetPayloads, assets, fixtureId, sample, scene }) => {
       const worker = new Worker("/e2e/engine-canvas-readback.worker.ts", { type: "module" });
       const proof = new Promise<FullRgbaProofV1>((resolve, reject) => {
         worker.addEventListener(
@@ -122,6 +150,14 @@ test("matches native Lavapipe for dynamic-affine-camera/a-first", async ({ page 
         );
       });
       const snapshotJson = new TextEncoder().encode(JSON.stringify({ assets, scene })).buffer;
+      const metadataById = new Map(assets.assets.map((asset) => [asset.id, asset]));
+      const assetMetadata = (assetPayloads ?? []).map(({ assetId }) => {
+        const metadata = metadataById.get(assetId);
+        if (!metadata) throw new Error(`The parity payload references unknown asset ${assetId}.`);
+        return metadata;
+      });
+      const assetMetadataJson = new TextEncoder().encode(JSON.stringify(assetMetadata)).buffer;
+      const assetBytes = (assetPayloads ?? []).map(({ encodedBytes }) => Uint8Array.from(encodedBytes).buffer);
       const requestJson = new TextEncoder().encode(
         JSON.stringify({
           evidence: [fixtureId, sample.id],
@@ -136,12 +172,14 @@ test("matches native Lavapipe for dynamic-affine-camera/a-first", async ({ page 
         {
           fullRgba: true,
           kind: "prove-frame",
+          assetBytes,
+          assetMetadataJson,
           requestJson,
           snapshotJson,
           viewport: sample.viewport,
           wasmModuleUrl: new URL("/engine-wasm/poietra_wasm.js", location.href).href,
         },
-        [requestJson, snapshotJson],
+        [requestJson, snapshotJson, assetMetadataJson, ...assetBytes],
       );
       try {
         const result = await proof;
@@ -153,7 +191,13 @@ test("matches native Lavapipe for dynamic-affine-camera/a-first", async ({ page 
         worker.terminate();
       }
     },
-    { assets: fixture.assets, fixtureId: fixture.id, sample, scene: fixture.scene },
+    {
+      assetPayloads: fixture.assetPayloads,
+      assets: fixture.assets,
+      fixtureId: fixture.id,
+      sample,
+      scene: fixture.scene,
+    },
   );
 
   expect(browserProof.capture).toEqual({ policy: "exactly-one-render-submit", renderSubmissionCount: 1 });
@@ -177,14 +221,56 @@ test("matches native Lavapipe for dynamic-affine-camera/a-first", async ({ page 
   );
   await mkdir(outputDirectory, { recursive: true });
   const { heightPx, widthPx } = entry.sample.viewport;
-  await Promise.all([
+  const artifactWrites: Promise<void>[] = [
     writeFile(join(outputDirectory, "expected.png"), encodeRgbaPngV1(expectedRgba, widthPx, heightPx)),
     writeFile(join(outputDirectory, "actual.png"), encodeRgbaPngV1(actualRgba, widthPx, heightPx)),
     writeFile(
       join(outputDirectory, "diff.png"),
       encodeRgbaPngV1(makeOpaqueVisualParityDiffV1(expectedRgba, actualRgba), widthPx, heightPx),
     ),
-  ]);
+  ];
+  if (analyticReference) {
+    expect(analyticReference.viewport).toEqual(entry.sample.viewport);
+    const referenceRgba = Uint8Array.from(analyticReference.rgba);
+    expect(referenceRgba.byteLength).toBe(expectedRgba.byteLength);
+    expect(sha256(referenceRgba)).toBe(analyticReference.sha256);
+    const nativeReferenceMetrics = compareVisualParityFramesV1(
+      referenceRgba,
+      expectedRgba,
+      entry.sample.viewport,
+      corpus.metricContract,
+    );
+    const browserReferenceMetrics = compareVisualParityFramesV1(
+      referenceRgba,
+      actualRgba,
+      entry.sample.viewport,
+      corpus.metricContract,
+    );
+    for (const [comparison, comparisonMetrics] of [
+      ["native/reference", nativeReferenceMetrics],
+      ["browser/reference", browserReferenceMetrics],
+    ] as const) {
+      expect(comparisonMetrics.ssim, `${comparison}: ${analyticReference.derivation}`).toBeGreaterThanOrEqual(
+        thresholds.minimumSsim,
+      );
+      expect(
+        comparisonMetrics.pixelFractionAboveThreshold,
+        `${comparison}: ${analyticReference.derivation}`,
+      ).toBeLessThanOrEqual(thresholds.maximumPixelFractionAboveThreshold);
+    }
+    artifactWrites.push(
+      writeFile(join(outputDirectory, "reference.png"), encodeRgbaPngV1(referenceRgba, widthPx, heightPx)),
+      writeFile(
+        join(outputDirectory, "native-reference-diff.png"),
+        encodeRgbaPngV1(makeOpaqueVisualParityDiffV1(referenceRgba, expectedRgba), widthPx, heightPx),
+      ),
+      writeFile(
+        join(outputDirectory, "browser-reference-diff.png"),
+        encodeRgbaPngV1(makeOpaqueVisualParityDiffV1(referenceRgba, actualRgba), widthPx, heightPx),
+      ),
+    );
+  }
+  await Promise.all(artifactWrites);
   const report = visualParityReportV1Schema.parse({
     artifacts: { actualPng: "actual.png", diffPng: "diff.png", expectedPng: "expected.png" },
     browser: {
@@ -229,4 +315,12 @@ test("matches native Lavapipe for dynamic-affine-camera/a-first", async ({ page 
     metrics.pixelFractionAboveThreshold,
     `visual parity report: ${join(outputDirectory, "report.json")}`,
   ).toBeLessThanOrEqual(thresholds.maximumPixelFractionAboveThreshold);
+}
+
+test("matches native Lavapipe for dynamic-affine-camera/a-first", async ({ page }) => {
+  await proveVisualParityEntry(page, "dynamic-affine-camera--a-first");
+});
+
+test("matches native and analytic reference for PNG alpha-edge/camera midpoint", async ({ page }) => {
+  await proveVisualParityEntry(page, "png-alpha-edge-camera--midpoint");
 });

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { inflateSync } from "node:zlib";
 
@@ -10,11 +11,17 @@ async function corpusFixture() {
   return visualParityCorpusV1Schema.parse(JSON.parse(await readFile("fixtures/visual-parity-v1/corpus.json", "utf8")));
 }
 
+function sha256(bytes: Uint8Array) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
 describe("visual parity v1 contracts", () => {
   it("pins the first corpus item to the existing dynamic semantic digest and default gate", async () => {
     const corpus = await corpusFixture();
-    expect(corpus.entries).toHaveLength(1);
-    const entry = corpus.entries[0]!;
+    expect(corpus.entries).toHaveLength(2);
+    const entry = corpus.entries.find(({ id }) => id === "dynamic-affine-camera--a-first");
+    expect(entry).toBeDefined();
+    if (!entry) throw new Error("The dynamic visual parity entry is missing.");
     expect(entry).toMatchObject({
       fixture: {
         id: "eng-v1-dynamic-affine-camera",
@@ -48,6 +55,39 @@ describe("visual parity v1 contracts", () => {
         entries: [{ ...entry, thresholdException: { reason: "temporary adapter variance" } }],
       }).success,
     ).toBe(false);
+  });
+
+  it("pins PNG alpha-edge bytes and its independent full-frame reference", async () => {
+    const corpus = await corpusFixture();
+    const entry = corpus.entries.find(({ id }) => id === "png-alpha-edge-camera--midpoint");
+    expect(entry).toMatchObject({
+      fixture: {
+        id: "eng-v1-png-alpha-edge-camera",
+        revision: { sha256: "e7f8dcbd4eabd88861b101575fdb6b420ec4447173622bf6f9c7bbf6381160fc" },
+      },
+      sample: {
+        id: "midpoint",
+        sampleTime: 0.5,
+        semanticDigest: "d9b5ec588d4366327c73fde436597f008b615450aa0a35824618e81573ebcec6",
+        viewport: { heightPx: 4, widthPx: 8 },
+      },
+      thresholdException: null,
+    });
+
+    const fixture = JSON.parse(await readFile("fixtures/engine-v1/png-alpha-edge-camera.json", "utf8"));
+    const payload = fixture.assetPayloads[0];
+    const asset = fixture.assets.assets[0];
+    const reference = fixture.analyticReferences.midpoint;
+    expect(payload.assetId).toBe(asset.id);
+    expect(payload.encodedBytes).toHaveLength(asset.byteLength);
+    expect(sha256(Uint8Array.from(payload.encodedBytes))).toBe(asset.sha256);
+    expect(reference.viewport).toEqual({ heightPx: 4, widthPx: 8 });
+    expect(reference.rgba).toHaveLength(4 * 8 * 4);
+    expect(sha256(Uint8Array.from(reference.rgba))).toBe(
+      "bd57ff57b18706b3d25886038a568d3a2904ec3987b365860aa0471bc7119b8b",
+    );
+    expect(reference.sha256).toBe("bd57ff57b18706b3d25886038a568d3a2904ec3987b365860aa0471bc7119b8b");
+    expect(reference.derivation).toContain("Pixel centers");
   });
 
   it("compares all four sRGB byte channels and uses a strict >8 pixel classification", async () => {
