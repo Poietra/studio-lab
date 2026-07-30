@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use poietra_render_wgpu::{DecodedPngAssetV1, decode_verified_png_v1};
+use poietra_render_wgpu::{DecodedPngAssetResolverV1, DecodedPngAssetV1, decode_verified_png_v1};
 use poietra_scene_ir::{
     AssetManifestV1, MAX_ASSETS_V1, MAX_ENCODED_ASSET_BYTES_V1, MAX_TOTAL_IMAGE_PIXELS_V1,
     PngAssetV1,
@@ -135,11 +135,16 @@ impl CanvasPngAssetRegistryV1 {
         Ok(candidate)
     }
 
-    #[allow(dead_code)] // Used by the image renderer slice after registry ingress lands.
     pub(crate) fn get(&self, digest: &str) -> Option<Arc<DecodedPngAssetV1>> {
         self.by_digest
             .get(digest)
             .map(|asset| Arc::clone(&asset.decoded))
+    }
+}
+
+impl DecodedPngAssetResolverV1 for CanvasPngAssetRegistryV1 {
+    fn resolve_png_asset_v1(&self, sha256: &str) -> Option<Arc<DecodedPngAssetV1>> {
+        self.get(sha256)
     }
 }
 
@@ -203,7 +208,11 @@ mod tests {
             )
             .unwrap();
         assert!(registry.get(&first_asset.sha256).is_none());
-        assert!(candidate.get(&first_asset.sha256).is_some());
+        assert!(
+            candidate
+                .resolve_png_asset_v1(&first_asset.sha256)
+                .is_some()
+        );
 
         let second_asset = asset("asset:second", &bytes);
         let reused = candidate

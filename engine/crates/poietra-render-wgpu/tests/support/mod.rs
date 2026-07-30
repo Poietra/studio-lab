@@ -1,14 +1,19 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use poietra_eval::{CompileEngineFrameOptionsV1, compile_engine_frame_v1};
+use poietra_render_wgpu::{DecodedPngAssetV1, decode_verified_png_v1};
 use poietra_scene_ir::{
-    AnimationChannelV1, AssetManifestV1, CubicPathV1, CubicSegmentV1, CubicSubpathV1, PointV1,
-    RenderCapabilityV1, RenderDrawV1, RgbaColorV1, SceneIrV1, StrokeCapV1, StrokeJoinV1,
-    StrokeStyleV1, ViewportV1,
+    AffineTransformV1, AnimationChannelV1, AssetAlphaModeV1, AssetColorSpaceV1, AssetManifestV1,
+    AssetReferenceV1, CubicPathV1, CubicSegmentV1, CubicSubpathV1, FillRuleV1, FillStyleV1,
+    ImageLocalRectV1, ImageSamplerV1, PngAssetKindV1, PngAssetV1, PngMediaTypeV1, PointV1,
+    RenderCameraV1, RenderCapabilityV1, RenderDrawV1, RenderPacketV1, RgbaColorV1, SceneIrV1,
+    StrokeCapV1, StrokeJoinV1, StrokeStyleV1, ViewportV1,
 };
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -78,6 +83,142 @@ fn compile_fixture(fixture: &SharedFixture) -> poietra_scene_ir::RenderPacketV1 
 
 pub fn sampled_packet() -> poietra_scene_ir::RenderPacketV1 {
     compile_fixture(&read_fixture("shared-circle-opacity.json"))
+}
+
+#[allow(dead_code)]
+pub fn verified_rgba_png(
+    id: &str,
+    width: u32,
+    height: u32,
+    pixels: &[u8],
+) -> (PngAssetV1, Arc<DecodedPngAssetV1>) {
+    let mut bytes = Vec::new();
+    let mut encoder = png::Encoder::new(&mut bytes, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().expect("test PNG header must encode");
+    writer
+        .write_image_data(pixels)
+        .expect("test PNG pixels must encode");
+    writer.finish().expect("test PNG must finish");
+    let metadata = PngAssetV1 {
+        alpha_mode: AssetAlphaModeV1::Straight,
+        byte_length: u64::try_from(bytes.len()).expect("test PNG length must fit u64"),
+        color_space: AssetColorSpaceV1::Srgb,
+        id: id.to_owned(),
+        kind: PngAssetKindV1::PngImage,
+        media_type: PngMediaTypeV1::ImagePng,
+        pixel_height: height,
+        pixel_width: width,
+        sha256: format!("{:x}", Sha256::digest(&bytes)),
+    };
+    let decoded = Arc::new(
+        decode_verified_png_v1(&metadata, &bytes).expect("test PNG must verify and decode"),
+    );
+    (metadata, decoded)
+}
+
+#[allow(dead_code)]
+pub fn empty_render_packet(viewport: ViewportV1, camera: RenderCameraV1) -> RenderPacketV1 {
+    let mut packet = sampled_packet();
+    packet.camera = camera;
+    packet.draws.clear();
+    packet.required_capabilities.clear();
+    packet.viewport = viewport;
+    packet
+}
+
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)] // Test fixture mirrors the Image draw contract fields.
+pub fn image_draw(
+    metadata: &PngAssetV1,
+    draw_id: &str,
+    entity_id: &str,
+    local_rect: ImageLocalRectV1,
+    opacity: f64,
+    paint_order: u32,
+    sampler: ImageSamplerV1,
+    transform: AffineTransformV1,
+) -> RenderDrawV1 {
+    RenderDrawV1::Image {
+        asset: AssetReferenceV1 {
+            asset_id: metadata.id.clone(),
+            sha256: metadata.sha256.clone(),
+        },
+        draw_id: draw_id.to_owned(),
+        entity_id: entity_id.to_owned(),
+        local_rect,
+        opacity,
+        paint_order,
+        sampler,
+        source_z_index: f64::from(paint_order),
+        transform,
+    }
+}
+
+fn rectangle_path(rectangle: &ImageLocalRectV1) -> CubicPathV1 {
+    let points = [
+        PointV1 {
+            x: rectangle.left,
+            y: rectangle.top,
+        },
+        PointV1 {
+            x: rectangle.left,
+            y: rectangle.bottom,
+        },
+        PointV1 {
+            x: rectangle.right,
+            y: rectangle.bottom,
+        },
+        PointV1 {
+            x: rectangle.right,
+            y: rectangle.top,
+        },
+        PointV1 {
+            x: rectangle.left,
+            y: rectangle.top,
+        },
+    ];
+    let mut segments = Vec::new();
+    for pair in points.windows(2) {
+        segments.push(CubicSegmentV1 {
+            control1: line_control(&pair[0], &pair[1], 1.0 / 3.0),
+            control2: line_control(&pair[0], &pair[1], 2.0 / 3.0),
+            end: pair[1].clone(),
+        });
+    }
+    CubicPathV1 {
+        subpaths: vec![CubicSubpathV1 {
+            closed: true,
+            segments,
+            start: points[0].clone(),
+        }],
+    }
+}
+
+#[allow(dead_code)]
+pub fn solid_rectangle_draw(
+    draw_id: &str,
+    entity_id: &str,
+    rectangle: &ImageLocalRectV1,
+    color: RgbaColorV1,
+    opacity: f64,
+    paint_order: u32,
+) -> RenderDrawV1 {
+    RenderDrawV1::Path {
+        draw_id: draw_id.to_owned(),
+        entity_id: entity_id.to_owned(),
+        fill: Some(FillStyleV1 {
+            color,
+            rule: FillRuleV1::NonZero,
+        }),
+        opacity,
+        paint_order,
+        path: rectangle_path(rectangle),
+        source_z_index: f64::from(paint_order),
+        stroke: None,
+        transform: AffineTransformV1::identity(),
+    }
 }
 
 #[allow(dead_code)]

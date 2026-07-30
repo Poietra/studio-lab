@@ -10,17 +10,19 @@ use std::time::Duration;
 
 use poietra_eval::{EngineSessionV1, SampleEngineSessionOptionsV1};
 use poietra_render_wgpu::{
-    WgpuPaintRendererV1, WgpuRenderTargetV1, build_gpu_upload_plan_v1, prepare_frame_v1,
+    DecodedPngAssetResolverV1, PreparedFrameV1, WgpuPaintRendererV1, WgpuRenderTargetV1,
+    build_gpu_upload_plan_v1, prepare_frame_v1, prepare_frame_with_assets_v1,
 };
 use poietra_scene_ir::{
-    RenderCapabilityV1, RenderDrawV1, RenderPacketV1, SceneIrBundleV1, SceneSourceV1, StrokeCapV1,
-    ViewportV1,
+    AffineTransformV1, ImageLocalRectV1, ImageSamplerV1, RenderCameraKindV1, RenderCameraV1,
+    RenderCapabilityV1, RenderDrawV1, RenderPacketV1, RgbaColorV1, SceneIrBundleV1, SceneSourceV1,
+    StrokeCapV1, ViewportV1,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use support::{
-    PixelReferenceSet, generic_fill_fixture, generic_stroke_fixture, sampled_packet,
-    straight_stroke_packet,
+    PixelReferenceSet, empty_render_packet, generic_fill_fixture, generic_stroke_fixture,
+    image_draw, sampled_packet, solid_rectangle_draw, straight_stroke_packet, verified_rgba_png,
 };
 
 const BYTES_PER_PIXEL: u32 = 4;
@@ -458,6 +460,26 @@ fn render_packet(
     packet: &RenderPacketV1,
 ) -> (wgpu::Texture, wgpu::Extent3d) {
     let prepared = prepare_frame_v1(packet).expect("packet must prepare");
+    render_prepared(device, queue, renderer, &prepared)
+}
+
+fn render_packet_with_assets(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    renderer: &mut WgpuPaintRendererV1,
+    packet: &RenderPacketV1,
+    assets: &dyn DecodedPngAssetResolverV1,
+) -> (wgpu::Texture, wgpu::Extent3d) {
+    let prepared = prepare_frame_with_assets_v1(packet, assets).expect("image packet must prepare");
+    render_prepared(device, queue, renderer, &prepared)
+}
+
+fn render_prepared(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    renderer: &mut WgpuPaintRendererV1,
+    prepared: &PreparedFrameV1,
+) -> (wgpu::Texture, wgpu::Extent3d) {
     let [width_px, height_px] = prepared.viewport();
     let extent = wgpu::Extent3d {
         depth_or_array_layers: 1,
@@ -485,7 +507,7 @@ fn render_packet(
                 view: &view,
                 width_px,
             },
-            &prepared,
+            prepared,
         )
         .expect("prepared fixture must submit to the proof target");
     (texture, extent)
@@ -1064,5 +1086,258 @@ fn renders_round_capped_stroke_with_fallback_adapter() {
         pixel(&rgba, extent.width, 80, 45),
         [0, 188, 0, 255],
         [0, 1, 0, 0],
+    );
+}
+
+fn image_proof_camera(left: f64, right: f64, bottom: f64, top: f64) -> RenderCameraV1 {
+    RenderCameraV1 {
+        bottom,
+        clear_color: RgbaColorV1 {
+            alpha: 1.0,
+            blue: 0.0,
+            green: 0.0,
+            red: 0.0,
+        },
+        kind: RenderCameraKindV1::Orthographic2d,
+        left,
+        right,
+        top,
+    }
+}
+
+fn assert_full_frame_close(actual: &[u8], expected: &[[u8; 4]], tolerance: u8) {
+    assert_eq!(actual.len(), expected.len() * 4);
+    for (index, (actual, expected)) in actual.chunks_exact(4).zip(expected).enumerate() {
+        let actual: [u8; 4] = actual.try_into().expect("RGBA8 chunk must have four bytes");
+        assert!(
+            actual
+                .into_iter()
+                .zip(expected)
+                .all(|(actual, expected)| actual.abs_diff(*expected) <= tolerance),
+            "pixel {index}: expected {expected:?} +/- {tolerance}, received {actual:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the dedicated CI step runs this proof"]
+#[allow(clippy::too_many_lines)]
+fn renders_verified_png_sampling_transforms_and_mixed_paint_order() {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = request_fallback_adapter(&instance);
+    assert_target_format_support(&adapter);
+    let (device, queue) = request_device(&adapter);
+    let device_loss = track_device_loss(&device);
+    let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT)
+        .expect("proof target format must be supported by the renderer");
+
+    let (nearest_metadata, nearest_asset) = verified_rgba_png(
+        "asset:nearest",
+        2,
+        2,
+        &[
+            255, 0, 0, 255, 0, 255, 0, 255, // PNG top row
+            0, 0, 255, 255, 255, 255, 255, 255, // PNG bottom row
+        ],
+    );
+    let mut nearest_packet = empty_render_packet(
+        ViewportV1 {
+            height_px: 4,
+            width_px: 4,
+        },
+        image_proof_camera(-2.0, 2.0, -2.0, 2.0),
+    );
+    nearest_packet.draws.push(image_draw(
+        &nearest_metadata,
+        "draw:nearest",
+        "entity:nearest",
+        ImageLocalRectV1 {
+            bottom: -1.0,
+            left: -1.0,
+            right: 1.0,
+            top: 1.0,
+        },
+        1.0,
+        0,
+        ImageSamplerV1::Nearest,
+        AffineTransformV1 {
+            m11: 2.0,
+            m12: 0.0,
+            m21: 0.0,
+            m22: 2.0,
+            tx: 0.0,
+            ty: 0.0,
+        },
+    ));
+    nearest_packet.required_capabilities = vec![RenderCapabilityV1::PngImage];
+    let nearest_resolver = |_digest: &str| Some(Arc::clone(&nearest_asset));
+    let (texture, extent) = render_packet_with_assets(
+        &device,
+        &queue,
+        &mut renderer,
+        &nearest_packet,
+        &nearest_resolver,
+    );
+    let (_, nearest_rgba) = readback_texture(&device, &queue, &texture, extent);
+    let nearest_row_top = [
+        [255, 0, 0, 255],
+        [255, 0, 0, 255],
+        [0, 255, 0, 255],
+        [0, 255, 0, 255],
+    ];
+    let nearest_row_bottom = [
+        [0, 0, 255, 255],
+        [0, 0, 255, 255],
+        [255, 255, 255, 255],
+        [255, 255, 255, 255],
+    ];
+    let nearest_expected = nearest_row_top
+        .into_iter()
+        .chain(nearest_row_top)
+        .chain(nearest_row_bottom)
+        .chain(nearest_row_bottom)
+        .collect::<Vec<_>>();
+    assert_full_frame_close(&nearest_rgba, &nearest_expected, 0);
+
+    let (linear_metadata, linear_asset) =
+        verified_rgba_png("asset:linear-alpha", 2, 1, &[255, 0, 0, 255, 0, 0, 255, 0]);
+    let mut linear_packet = empty_render_packet(
+        ViewportV1 {
+            height_px: 1,
+            width_px: 4,
+        },
+        image_proof_camera(-2.0, 2.0, -0.5, 0.5),
+    );
+    linear_packet.draws.push(image_draw(
+        &linear_metadata,
+        "draw:linear-alpha",
+        "entity:linear-alpha",
+        ImageLocalRectV1 {
+            bottom: -0.5,
+            left: -2.0,
+            right: 2.0,
+            top: 0.5,
+        },
+        1.0,
+        0,
+        ImageSamplerV1::Linear,
+        AffineTransformV1::identity(),
+    ));
+    linear_packet.required_capabilities = vec![RenderCapabilityV1::PngImage];
+    let linear_resolver = |_digest: &str| Some(Arc::clone(&linear_asset));
+    let (texture, extent) = render_packet_with_assets(
+        &device,
+        &queue,
+        &mut renderer,
+        &linear_packet,
+        &linear_resolver,
+    );
+    let (_, linear_rgba) = readback_texture(&device, &queue, &texture, extent);
+    assert_full_frame_close(
+        &linear_rgba,
+        &[
+            [255, 0, 0, 255],
+            [225, 0, 0, 255],
+            [137, 0, 0, 255],
+            [0, 0, 0, 255],
+        ],
+        1,
+    );
+
+    let (mixed_metadata, mixed_asset) = verified_rgba_png("asset:mixed", 1, 1, &[0, 255, 0, 255]);
+    let full_rect = ImageLocalRectV1 {
+        bottom: -1.0,
+        left: -2.0,
+        right: 2.0,
+        top: 1.0,
+    };
+    let mut mixed_packet = empty_render_packet(
+        ViewportV1 {
+            height_px: 2,
+            width_px: 4,
+        },
+        image_proof_camera(-2.0, 2.0, -1.0, 1.0),
+    );
+    mixed_packet.draws = vec![
+        solid_rectangle_draw(
+            "draw:back",
+            "entity:back",
+            &full_rect,
+            RgbaColorV1 {
+                alpha: 1.0,
+                blue: 0.0,
+                green: 0.0,
+                red: 1.0,
+            },
+            1.0,
+            0,
+        ),
+        image_draw(
+            &mixed_metadata,
+            "draw:middle",
+            "entity:middle",
+            full_rect,
+            0.5,
+            1,
+            ImageSamplerV1::Nearest,
+            AffineTransformV1::identity(),
+        ),
+        solid_rectangle_draw(
+            "draw:front",
+            "entity:front",
+            &ImageLocalRectV1 {
+                bottom: -1.0,
+                left: 0.0,
+                right: 2.0,
+                top: 1.0,
+            },
+            RgbaColorV1 {
+                alpha: 1.0,
+                blue: 1.0,
+                green: 0.0,
+                red: 0.0,
+            },
+            0.5,
+            2,
+        ),
+    ];
+    mixed_packet.required_capabilities = vec![
+        RenderCapabilityV1::CubicPathFill,
+        RenderCapabilityV1::PngImage,
+    ];
+    let mixed_resolver = |_digest: &str| Some(Arc::clone(&mixed_asset));
+    let (texture, extent) = render_packet_with_assets(
+        &device,
+        &queue,
+        &mut renderer,
+        &mixed_packet,
+        &mixed_resolver,
+    );
+    let (_, mixed_rgba) = readback_texture(&device, &queue, &texture, extent);
+    let mixed_row = [
+        [188, 188, 0, 255],
+        [188, 188, 0, 255],
+        [137, 137, 188, 255],
+        [137, 137, 188, 255],
+    ];
+    let mixed_expected = mixed_row.into_iter().chain(mixed_row).collect::<Vec<_>>();
+    assert_full_frame_close(&mixed_rgba, &mixed_expected, 2);
+
+    assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
+    assert_no_gpu_error("internal", pollster::block_on(internal_scope.pop()));
+    assert_no_gpu_error(
+        "out-of-memory",
+        pollster::block_on(out_of_memory_scope.pop()),
+    );
+    assert!(
+        device_loss
+            .lock()
+            .expect("device-loss evidence mutex must not be poisoned")
+            .is_none(),
+        "device must remain available through image readback"
     );
 }

@@ -1,7 +1,12 @@
 use crate::arena::GpuBufferArenaV1;
+use crate::image_gpu::{
+    ImageFrameGpuV1, ImagePipelineV1, build_image_geometry_upload_plan_v1,
+    preflight_image_resources_v1, upload_image_frame_v1,
+};
 use crate::upload::VERTEX_ENCODED_SIZE_V1;
 use crate::{
-    GpuBufferArenaErrorV1, GpuUploadPlanErrorV1, PreparedFrameV1, build_gpu_upload_plan_v1,
+    GpuBufferArenaErrorV1, GpuUploadPlanErrorV1, ImageGpuUploadErrorV1, PreparedFrameV1,
+    PreparedRenderCommandV1, build_gpu_upload_plan_v1,
 };
 
 const VERTEX_STRIDE: wgpu::BufferAddress = VERTEX_ENCODED_SIZE_V1 as wgpu::BufferAddress;
@@ -49,6 +54,8 @@ pub enum RenderFrameErrorV1 {
     UploadPlan(#[from] GpuUploadPlanErrorV1),
     #[error(transparent)]
     BufferArena(#[from] GpuBufferArenaErrorV1),
+    #[error(transparent)]
+    ImageUpload(#[from] ImageGpuUploadErrorV1),
     #[error("target format {actual:?} does not match renderer format {expected:?}")]
     TargetFormatMismatch {
         actual: wgpu::TextureFormat,
@@ -89,7 +96,7 @@ pub struct RenderStageEvidenceV1 {
     /// Wall time for retained-buffer growth, dirty-range comparison, and
     /// queue writes. This is CPU-side staging cost, not GPU transfer time.
     pub buffer_create_and_stage_ms: Option<f64>,
-    /// Vertex/index buffers created by arena growth for this frame.
+    /// Vertex/index buffers created by arena growth or transient image staging.
     pub buffer_creations: u32,
     /// Wall time from command-encoder creation through `encoder.finish()`.
     /// This is a nested total: it INCLUDES the `draw_record_ms` interval.
@@ -102,12 +109,12 @@ pub struct RenderStageEvidenceV1 {
     pub draw_record_ms: Option<f64>,
     /// Whether the geometry stages (`vertex_index_encode`,
     /// `buffer_create_and_stage`, `draw_record`) executed for this frame.
-    /// They are skipped as a group exactly when the frame has no indices.
+    /// They are skipped as a group exactly when the frame has no drawable geometry.
     pub geometry_stages_executed: bool,
     /// Wall time submitting the finished command buffer to the queue. Queue
     /// submission returning says nothing about GPU execution completion.
     pub submit_ms: Option<f64>,
-    /// Vertex plus index bytes passed to queue writes after dirty comparison.
+    /// Vertex, index, and unique decoded texture bytes staged for this frame.
     pub upload_bytes: u64,
     /// Wall time encoding vertices/indices into little-endian byte vectors on
     /// the CPU, before any buffer exists.
@@ -141,6 +148,125 @@ fn stage_started(clock: StageClock<'_>) -> Option<f64> {
     clock.and_then(|now| now())
 }
 
+fn paint_buffers<'arena>(
+    arena: &'arena GpuBufferArenaV1,
+    frame: &PreparedFrameV1,
+) -> Result<Option<(&'arena wgpu::Buffer, &'arena wgpu::Buffer)>, GpuUploadPlanErrorV1> {
+    if frame.indices().is_empty() {
+        return Ok(None);
+    }
+    arena
+        .buffers()
+        .map(Some)
+        .ok_or(GpuUploadPlanErrorV1::Inconsistent(
+            "successful non-empty upload did not retain both GPU buffers",
+        ))
+}
+
+fn record_ordered_draws_v1(
+    pass: &mut wgpu::RenderPass<'_>,
+    paint_pipeline: &wgpu::RenderPipeline,
+    paint_buffers: Option<(&wgpu::Buffer, &wgpu::Buffer)>,
+    image_pipeline: &ImagePipelineV1,
+    image_frame: Option<&ImageFrameGpuV1>,
+    frame: &PreparedFrameV1,
+) -> Result<u64, GpuUploadPlanErrorV1> {
+    let mut command_index = 0usize;
+    let mut draw_calls = 0u64;
+    while let Some(command) = frame.render_commands().get(command_index) {
+        match *command {
+            PreparedRenderCommandV1::Paint { draw_index } => {
+                let (vertex_buffer, index_buffer) = paint_buffers.ok_or(
+                    GpuUploadPlanErrorV1::Inconsistent("paint command has no staged path buffers"),
+                )?;
+                let draw_index = usize::try_from(draw_index).map_err(|_| {
+                    GpuUploadPlanErrorV1::Inconsistent("paint draw index does not fit usize")
+                })?;
+                let first_draw =
+                    frame
+                        .draws()
+                        .get(draw_index)
+                        .ok_or(GpuUploadPlanErrorV1::Inconsistent(
+                            "paint command references an unknown draw",
+                        ))?;
+                let index_start = first_draw.index_range().start;
+                let mut index_end = first_draw.index_range().end;
+                let mut next_draw_index = draw_index + 1;
+                command_index += 1;
+                while let Some(PreparedRenderCommandV1::Paint { draw_index }) =
+                    frame.render_commands().get(command_index)
+                {
+                    let candidate_index = usize::try_from(*draw_index).map_err(|_| {
+                        GpuUploadPlanErrorV1::Inconsistent("paint draw index does not fit usize")
+                    })?;
+                    if candidate_index != next_draw_index {
+                        return Err(GpuUploadPlanErrorV1::Inconsistent(
+                            "ordered paint commands do not reference consecutive draws",
+                        ));
+                    }
+                    let candidate = frame.draws().get(candidate_index).ok_or(
+                        GpuUploadPlanErrorV1::Inconsistent(
+                            "paint command references an unknown draw",
+                        ),
+                    )?;
+                    if candidate.index_range().start != index_end {
+                        return Err(GpuUploadPlanErrorV1::Inconsistent(
+                            "consecutive paint draw index ranges are not contiguous",
+                        ));
+                    }
+                    index_end = candidate.index_range().end;
+                    next_draw_index += 1;
+                    command_index += 1;
+                }
+                pass.set_pipeline(paint_pipeline);
+                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(index_start..index_end, 0, 0..1);
+                draw_calls =
+                    draw_calls
+                        .checked_add(1)
+                        .ok_or(GpuUploadPlanErrorV1::Inconsistent(
+                            "GPU draw-call count overflowed",
+                        ))?;
+            }
+            PreparedRenderCommandV1::Image { image_index } => {
+                let image_frame = image_frame.ok_or(GpuUploadPlanErrorV1::Inconsistent(
+                    "image command has no staged image resources",
+                ))?;
+                let image_index = usize::try_from(image_index).map_err(|_| {
+                    GpuUploadPlanErrorV1::Inconsistent("image draw index does not fit usize")
+                })?;
+                let bind_group = image_frame.bind_group(image_index).ok_or(
+                    GpuUploadPlanErrorV1::Inconsistent(
+                        "image command references an unknown bind group",
+                    ),
+                )?;
+                let index_range = image_frame.index_range(image_index).ok_or(
+                    GpuUploadPlanErrorV1::Inconsistent(
+                        "image command references an unknown index range",
+                    ),
+                )?;
+                pass.set_pipeline(image_pipeline.pipeline());
+                pass.set_vertex_buffer(0, image_frame.vertex_buffer().slice(..));
+                pass.set_index_buffer(
+                    image_frame.index_buffer().slice(..),
+                    wgpu::IndexFormat::Uint32,
+                );
+                pass.set_bind_group(0, bind_group, &[]);
+                pass.draw_indexed(index_range, 0, 0..1);
+                draw_calls =
+                    draw_calls
+                        .checked_add(1)
+                        .ok_or(GpuUploadPlanErrorV1::Inconsistent(
+                            "GPU draw-call count overflowed",
+                        ))?;
+                command_index += 1;
+            }
+        }
+    }
+    Ok(draw_calls)
+}
+
 /// Browser/native WGPU pipeline for premultiplied solid-paint triangles.
 ///
 /// The historical `Fill` name remains for API compatibility; new callers may
@@ -148,6 +274,7 @@ fn stage_started(clock: StageClock<'_>) -> Option<f64> {
 #[derive(Debug)]
 pub struct WgpuFillRendererV1 {
     arena: GpuBufferArenaV1,
+    image_pipeline: ImagePipelineV1,
     pipeline: wgpu::RenderPipeline,
     target_format: wgpu::TextureFormat,
 }
@@ -206,6 +333,7 @@ impl WgpuFillRendererV1 {
         });
         Ok(Self {
             arena: GpuBufferArenaV1::default(),
+            image_pipeline: ImagePipelineV1::new(device, target_format),
             pipeline,
             target_format,
         })
@@ -249,6 +377,7 @@ impl WgpuFillRendererV1 {
     ///
     /// Returns the same format, extent, upload-plan, or retained-buffer errors
     /// as [`Self::render`].
+    #[allow(clippy::too_many_lines)] // Keeps one frame's measured stage boundaries contiguous.
     pub fn render_with_stage_evidence(
         &mut self,
         device: &wgpu::Device,
@@ -274,20 +403,56 @@ impl WgpuFillRendererV1 {
         }
 
         let mut evidence = RenderStageEvidenceV1::empty();
-        if !frame.indices().is_empty() {
+        let has_geometry = !frame.indices().is_empty() || !frame.image_draws().is_empty();
+        let mut image_frame = None;
+        if has_geometry {
             evidence.geometry_stages_executed = true;
             let vertex_index_encode_started = stage_started(clock);
-            let upload_plan = build_gpu_upload_plan_v1(frame)?;
+            let path_upload = if frame.indices().is_empty() {
+                None
+            } else {
+                Some(build_gpu_upload_plan_v1(frame)?.into_parts())
+            };
+            let image_upload = build_image_geometry_upload_plan_v1(frame.image_draws())?;
+            let image_resources = if image_upload.is_some() {
+                Some(preflight_image_resources_v1(
+                    frame.image_draws(),
+                    device.limits().max_texture_dimension_2d,
+                )?)
+            } else {
+                None
+            };
             evidence.vertex_index_encode_ms = stage_elapsed(clock, vertex_index_encode_started);
-            let (vertex_bytes, index_bytes) = upload_plan.into_parts();
             let buffer_create_started = stage_started(clock);
-            let arena_stats = self
-                .arena
-                .upload(device, queue, vertex_bytes, index_bytes)?;
+            if let Some((vertex_bytes, index_bytes)) = path_upload {
+                let arena_stats = self
+                    .arena
+                    .upload(device, queue, vertex_bytes, index_bytes)?;
+                evidence.buffer_creations = arena_stats.buffer_creations;
+                evidence.upload_bytes = arena_stats.upload_bytes;
+                debug_assert!(arena_stats.capacity_bytes > 0);
+            }
+            if let Some((image_upload, image_resources)) = image_upload.zip(image_resources) {
+                let uploaded = upload_image_frame_v1(
+                    device,
+                    queue,
+                    &self.image_pipeline,
+                    image_upload,
+                    image_resources,
+                )?;
+                evidence.buffer_creations = evidence
+                    .buffer_creations
+                    .checked_add(ImageFrameGpuV1::BUFFER_CREATIONS)
+                    .ok_or(GpuUploadPlanErrorV1::Inconsistent(
+                        "GPU buffer creation count overflowed",
+                    ))?;
+                evidence.upload_bytes = evidence
+                    .upload_bytes
+                    .checked_add(uploaded.upload_bytes())
+                    .ok_or(GpuUploadPlanErrorV1::ByteAccountingOverflow)?;
+                image_frame = Some(uploaded);
+            }
             evidence.buffer_create_and_stage_ms = stage_elapsed(clock, buffer_create_started);
-            evidence.buffer_creations = arena_stats.buffer_creations;
-            evidence.upload_bytes = arena_stats.upload_bytes;
-            debug_assert!(arena_stats.capacity_bytes > 0);
         }
 
         let command_encode_started = stage_started(clock);
@@ -319,29 +484,17 @@ impl WgpuFillRendererV1 {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            if !frame.indices().is_empty() {
-                let (vertex_buffer, index_buffer) =
-                    self.arena
-                        .buffers()
-                        .ok_or(GpuUploadPlanErrorV1::Inconsistent(
-                            "successful non-empty upload did not retain both GPU buffers",
-                        ))?;
-                pass.set_pipeline(&self.pipeline);
-                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            if has_geometry {
                 let draw_record_started = stage_started(clock);
-                let index_count = u32::try_from(frame.indices().len()).map_err(|_| {
-                    GpuUploadPlanErrorV1::Inconsistent(
-                        "prepared index count does not fit the ordered GPU draw range",
-                    )
-                })?;
-                // Every current solid-paint draw uses the same pipeline and has
-                // no bind-group/scissor state. The index buffer is already in
-                // packet paint order, so one indexed draw preserves translucent
-                // primitive order. Future resource state becomes a boundary here.
-                pass.draw_indexed(0..index_count, 0, 0..1);
+                evidence.draw_calls = record_ordered_draws_v1(
+                    &mut pass,
+                    &self.pipeline,
+                    paint_buffers(&self.arena, frame)?,
+                    &self.image_pipeline,
+                    image_frame.as_ref(),
+                    frame,
+                )?;
                 draw_record_ms = stage_elapsed(clock, draw_record_started);
-                evidence.draw_calls = 1;
             }
         }
         let command_buffer = encoder.finish();

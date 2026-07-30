@@ -4,8 +4,9 @@ use std::sync::{Arc, Mutex};
 
 use poietra_render_wgpu::{
     MAX_ENCODED_PNG_BYTES_V1, PreparedFrameV1, PreparedGeometryCacheFrameStatsV1,
-    PreparedGeometryCacheV1, WgpuPaintRendererV1, WgpuRenderTargetV1, prepare_frame_with_cache_v1,
-    tessellate_validated_frame_with_cache_v1, validate_frame_packet_v1,
+    PreparedGeometryCacheV1, WgpuPaintRendererV1, WgpuRenderTargetV1,
+    prepare_frame_with_cache_and_assets_v1, tessellate_validated_frame_with_cache_and_assets_v1,
+    validate_frame_packet_v1,
 };
 use poietra_scene_ir::{
     MAX_ASSETS_V1, MAX_ENCODED_ASSET_BYTES_V1, RenderDrawV1, ViewportV1,
@@ -543,17 +544,20 @@ impl PoietraCanvasEngineV1 {
         if let Some(failure) = self.current_terminal_failure() {
             return error_response(failure.code, &failure.message, Some(correlation));
         }
-        let frame =
-            match prepare_frame_with_cache_v1(&sampled.packet, &mut self.prepared_geometry_cache) {
-                Ok(frame) => frame,
-                Err(error) => {
-                    return error_response(
-                        CanvasRenderErrorCodeV1::UnsupportedFrame,
-                        &error.to_string(),
-                        Some(correlation),
-                    );
-                }
-            };
+        let frame = match prepare_frame_with_cache_and_assets_v1(
+            &sampled.packet,
+            &mut self.prepared_geometry_cache,
+            &self.asset_registry,
+        ) {
+            Ok(frame) => frame,
+            Err(error) => {
+                return error_response(
+                    CanvasRenderErrorCodeV1::UnsupportedFrame,
+                    &error.to_string(),
+                    Some(correlation),
+                );
+            }
+        };
 
         match self.render_prepared_frame(&frame) {
             Ok(suboptimal) => {
@@ -644,9 +648,10 @@ impl PoietraCanvasEngineV1 {
         );
 
         let tessellate_started = clock.now_ms();
-        let frame = match tessellate_validated_frame_with_cache_v1(
+        let frame = match tessellate_validated_frame_with_cache_and_assets_v1(
             validated,
             &mut self.prepared_geometry_cache,
+            &self.asset_registry,
         ) {
             Ok(frame) => frame,
             Err(error) => {

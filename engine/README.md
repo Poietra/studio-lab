@@ -8,7 +8,7 @@ ABI is isolated in `poietra-wasm`.
 - `poietra-scene-ir`: strict versioned JSON wire types and validation.
 - `poietra-geometry`: deterministic cubic geometry and easing primitives.
 - `poietra-eval`: pure `SceneIrV1` to `RenderPacketV1` frame sampling.
-- `poietra-render-wgpu`: fail-closed CPU preparation and a minimal WGPU 30 solid-paint pipeline.
+- `poietra-render-wgpu`: fail-closed CPU preparation and WGPU 30 path/image pipelines.
 - `poietra-wasm`: retained Scene snapshot session and bounded browser-worker ABI.
 
 Run the workspace checks with:
@@ -29,8 +29,9 @@ WGPU_BACKEND=vulkan cargo test --locked --package poietra-render-wgpu --test hea
 ```
 
 The proofs fail when no fallback adapter is available. They render the shared
-fixture and a focused round-cap packet into sRGB textures, read aligned rows back
-to the CPU, check stable interior pixels, and emit machine-readable adapter evidence.
+fixture, a focused round-cap packet, and verified PNG sampling/order cases into
+sRGB textures, read aligned rows back to the CPU, check pixels, and emit
+machine-readable adapter evidence.
 
 The first native-to-browser visual-parity corpus item is
 `dynamic-affine-camera--a-first`. Regenerate its complete evidence set with:
@@ -80,8 +81,15 @@ source draw. Nonzero morph/trim/motion samples use this same path; exact zero tr
 lowers to an explicit `path-trim-zero` empty visual, while an exactly singular
 sample from a direct leaf affine-transform channel lowers to
 `singular-affine-sample`; neither contributes a paint phase.
-Open fill, image, unmarked degenerate, numeric, precision-collapse, and tessellation-limit cases reject
-the complete frame with a structured error. Each fill is bounded to 2,048 source
+Verified static PNG draws are prepared as camera-projected affine quads with
+row-zero-top UVs. The decoder converts straight-alpha sRGB samples to
+premultiplied linear-light RGBA8 before nearest or linear clamp-to-edge sampling;
+path and image pipeline switches preserve packet paint order. Image packets need
+an immutable decoded-asset resolver. Before creating GPU resources, frame preflight
+caps unique textures at 4,096, texture/sampler bindings at 8,192, and decoded
+texture upload at 256 MiB. Open fill, unresolved or invalid image,
+unmarked degenerate, numeric, precision-collapse, and tessellation-limit cases
+reject the complete frame with a structured error. Each fill is bounded to 2,048 source
 cubics, 32,768 flattened input points, and 65,536 Lyon output vertices; each stroke
 is bounded to 2,048 source cubics, a preflighted 32,768 flattened segments, 65,536
 Lyon output vertices, and 15 recursive round-cap/join subdivisions. The preflight
@@ -100,19 +108,21 @@ prepared-geometry cache exists yet, so telemetry continues to report
 
 The shared browser/native WGPU 30 pipeline accepts caller-owned `Device`, `Queue`,
 and `TextureView` values, clears an extent-checked target, and draws premultiplied
-linear-light indexed solid-paint triangles in packet paint order. It accepts only
-`Rgba8UnormSrgb` and `Bgra8UnormSrgb` single-sample render targets. Device creation,
-browser fallback policy, image support, antialiasing, and clipping remain outside
-this slice. Native software-adapter and Chromium Worker readbacks share fixtures for
-generic fill topology and for animated curved/joined strokes, fill/stroke
-composition, and later translucent source order.
+linear-light indexed path triangles and verified PNG quads in packet paint order.
+It accepts only `Rgba8UnormSrgb` and `Bgra8UnormSrgb` single-sample render targets.
+Device creation, long-lived texture caching, antialiasing, and clipping remain
+outside this slice. Native software-adapter and
+Chromium Worker readbacks share fixtures for generic fill topology and for animated
+curved/joined strokes, fill/stroke composition, and translucent source order; the
+native proof additionally covers exact PNG sampling and mixed path/image order.
 
 On `wasm32`, `PoietraCanvasEngineV1` owns an `OffscreenCanvas` WebGPU surface,
-device, queue, and the solid-paint renderer. Its asynchronous `create` method
-installs a validated snapshot, `replaceSnapshot` atomically replaces that snapshot,
-and `render` consumes the existing bounded sample request. Render responses contain
-only presentation correlation metadata or a structured error; they never transfer a
-`RenderPacket` back to JavaScript.
+device, queue, path/image renderer, and immutable digest-keyed PNG registry. Its
+asynchronous `create` method installs a validated snapshot and verified asset bytes,
+`replaceSnapshot` atomically replaces both authorities, and `render` consumes the
+existing bounded sample request. Render responses contain only presentation
+correlation metadata or a structured error; they never transfer a `RenderPacket`
+back to JavaScript.
 
 The canvas engine also exposes an opt-in stage-telemetry ABI, versioned
 independently of the base canvas ABI (`poietraCanvasTelemetryAbiVersion`).

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::Arc;
 
 use lyon_tessellation::geometry_builder::{
     FillGeometryBuilder, GeometryBuilder, StrokeGeometryBuilder,
@@ -10,11 +11,12 @@ use lyon_tessellation::{
     StrokeOptions, StrokeTessellator, StrokeVertex, TessellationError, VertexId,
 };
 use poietra_scene_ir::{
-    AffineTransformV1, CubicSegmentV1, CubicSubpathV1, FillRuleV1, FillStyleV1, RenderCameraV1,
-    RenderDrawV1, RenderPacketV1, RgbaColorV1, StrokeCapV1, StrokeJoinV1, StrokeStyleV1,
-    ViewportV1, validate_render_packet_v1,
+    AffineTransformV1, CubicSegmentV1, CubicSubpathV1, FillRuleV1, FillStyleV1, ImageLocalRectV1,
+    ImageSamplerV1, PointV1, RenderCameraV1, RenderDrawV1, RenderPacketV1, RgbaColorV1,
+    StrokeCapV1, StrokeJoinV1, StrokeStyleV1, ViewportV1, validate_render_packet_v1,
 };
 
+use crate::DecodedPngAssetV1;
 use crate::cache::{CachedPhaseGeometryV1, PreparedGeometryCacheInputV1, PreparedGeometryCacheV1};
 
 /// Maximum deviation between a cubic control hull and its emitted chord.
@@ -34,7 +36,7 @@ const MAX_FLATTEN_DEPTH_V1: u8 = 20;
 /// A valid v1 draw feature not implemented by the bounded WGPU paint slice.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum UnsupportedDrawReasonV1 {
-    #[error("image draws are not implemented")]
+    #[error("image draws require a verified decoded-asset resolver")]
     Image,
     #[error("path draws must contain a solid fill or stroke")]
     MissingPaint,
@@ -55,6 +57,14 @@ pub enum PrepareFrameErrorV1 {
     Unsupported {
         draw_id: String,
         reason: UnsupportedDrawReasonV1,
+    },
+    #[error("draw {draw_id} references missing verified PNG digest {sha256}")]
+    MissingImageAsset { draw_id: String, sha256: String },
+    #[error("draw {draw_id} resolved PNG digest {actual_sha256}, expected {expected_sha256}")]
+    ResolvedImageDigestMismatch {
+        actual_sha256: String,
+        draw_id: String,
+        expected_sha256: String,
     },
     #[error("{context} is non-finite or outside the finite f32 range")]
     NumericRange { context: String },
@@ -145,6 +155,92 @@ pub struct PreparedDrawV1 {
     vertex_range: Range<u32>,
 }
 
+/// One camera-projected image vertex. UV `(0, 0)` is the PNG top-left pixel.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PreparedImageVertexV1 {
+    position: [f32; 2],
+    uv: [f32; 2],
+}
+
+impl PreparedImageVertexV1 {
+    #[must_use]
+    pub const fn position(&self) -> [f32; 2] {
+        self.position
+    }
+
+    #[must_use]
+    pub const fn uv(&self) -> [f32; 2] {
+        self.uv
+    }
+}
+
+/// One verified PNG quad in packet paint order.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreparedImageDrawV1 {
+    asset: Arc<DecodedPngAssetV1>,
+    draw_id: String,
+    entity_id: String,
+    opacity: f32,
+    sampler: ImageSamplerV1,
+    vertices: [PreparedImageVertexV1; 4],
+}
+
+impl PreparedImageDrawV1 {
+    #[must_use]
+    pub fn asset(&self) -> &Arc<DecodedPngAssetV1> {
+        &self.asset
+    }
+
+    #[must_use]
+    pub fn draw_id(&self) -> &str {
+        &self.draw_id
+    }
+
+    #[must_use]
+    pub fn entity_id(&self) -> &str {
+        &self.entity_id
+    }
+
+    #[must_use]
+    pub const fn opacity(&self) -> f32 {
+        self.opacity
+    }
+
+    #[must_use]
+    pub const fn sampler(&self) -> ImageSamplerV1 {
+        self.sampler
+    }
+
+    #[must_use]
+    pub const fn vertices(&self) -> &[PreparedImageVertexV1; 4] {
+        &self.vertices
+    }
+}
+
+/// Pipeline/resource command preserving the packet's translucent paint order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PreparedRenderCommandV1 {
+    Paint { draw_index: u32 },
+    Image { image_index: u32 },
+}
+
+/// Resolves one immutable decoded PNG by its verified SHA-256 digest.
+///
+/// Returning an owned [`Arc`] lets a prepared frame remain valid while an
+/// atomic registry replacement installs a newer manifest.
+pub trait DecodedPngAssetResolverV1 {
+    fn resolve_png_asset_v1(&self, sha256: &str) -> Option<Arc<DecodedPngAssetV1>>;
+}
+
+impl<F> DecodedPngAssetResolverV1 for F
+where
+    F: Fn(&str) -> Option<Arc<DecodedPngAssetV1>>,
+{
+    fn resolve_png_asset_v1(&self, sha256: &str) -> Option<Arc<DecodedPngAssetV1>> {
+        self(sha256)
+    }
+}
+
 impl PreparedDrawV1 {
     #[must_use]
     pub fn draw_id(&self) -> &str {
@@ -190,7 +286,9 @@ pub struct PreparedMaterialPlanV1 {
 /// Indexed draw ranges in the packet's stable translucent paint order.
 #[derive(Debug, PartialEq)]
 pub struct OrderedDrawPlanV1 {
+    commands: Vec<PreparedRenderCommandV1>,
     draws: Vec<PreparedDrawV1>,
+    image_draws: Vec<PreparedImageDrawV1>,
 }
 
 /// Complete, fail-closed CPU output consumed by [`crate::WgpuPaintRendererV1`].
@@ -211,6 +309,16 @@ impl PreparedFrameV1 {
     #[must_use]
     pub fn draws(&self) -> &[PreparedDrawV1] {
         &self.ordered_draws.draws
+    }
+
+    #[must_use]
+    pub fn image_draws(&self) -> &[PreparedImageDrawV1] {
+        &self.ordered_draws.image_draws
+    }
+
+    #[must_use]
+    pub fn render_commands(&self) -> &[PreparedRenderCommandV1] {
+        &self.ordered_draws.commands
     }
 
     #[must_use]
@@ -238,6 +346,22 @@ impl PreparedFrameV1 {
             let end = usize::try_from(draw.vertex_range.end).ok()?;
             let vertices = self.geometry.vertices.get(start..end)?;
             for vertex in vertices {
+                let [x, y] = vertex.position;
+                if !x.is_finite() || !y.is_finite() {
+                    return None;
+                }
+                bounds = Some(bounds.map_or([x, y, x, y], |[min_x, min_y, max_x, max_y]| {
+                    [min_x.min(x), min_y.min(y), max_x.max(x), max_y.max(y)]
+                }));
+            }
+        }
+        for draw in self
+            .ordered_draws
+            .image_draws
+            .iter()
+            .filter(|draw| draw.entity_id == entity_id)
+        {
+            for vertex in draw.vertices {
                 let [x, y] = vertex.position;
                 if !x.is_finite() || !y.is_finite() {
                     return None;
@@ -311,6 +435,7 @@ impl PreparedFrameV1 {
                 }],
             },
             ordered_draws: OrderedDrawPlanV1 {
+                commands: vec![PreparedRenderCommandV1::Paint { draw_index: 0 }],
                 draws: vec![PreparedDrawV1 {
                     draw_id: "draw:test".to_owned(),
                     entity_id: "entity:test".to_owned(),
@@ -318,6 +443,7 @@ impl PreparedFrameV1 {
                     material_index: 0,
                     vertex_range: 0..3,
                 }],
+                image_draws: Vec::new(),
             },
             viewport: [160, 90],
         }
@@ -355,8 +481,18 @@ impl PreparedMaterialPlanV1 {
 
 impl OrderedDrawPlanV1 {
     #[must_use]
+    pub fn commands(&self) -> &[PreparedRenderCommandV1] {
+        &self.commands
+    }
+
+    #[must_use]
     pub fn draws(&self) -> &[PreparedDrawV1] {
         &self.draws
+    }
+
+    #[must_use]
+    pub fn image_draws(&self) -> &[PreparedImageDrawV1] {
+        &self.image_draws
     }
 }
 
@@ -1082,6 +1218,19 @@ pub fn prepare_frame_v1(packet: &RenderPacketV1) -> Result<PreparedFrameV1, Prep
     tessellate_validated_frame_v1(validate_frame_packet_v1(packet)?)
 }
 
+/// Validates and prepares a complete packet using verified decoded PNG assets.
+///
+/// # Errors
+///
+/// Returns the same fail-closed errors as [`prepare_frame_v1`], plus a missing
+/// or mismatched asset error before any partial frame is returned.
+pub fn prepare_frame_with_assets_v1(
+    packet: &RenderPacketV1,
+    assets: &dyn DecodedPngAssetResolverV1,
+) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
+    tessellate_validated_frame_with_assets_v1(validate_frame_packet_v1(packet)?, assets)
+}
+
 /// Validates and prepares a complete packet through one bounded retained cache.
 ///
 /// # Errors
@@ -1094,7 +1243,26 @@ pub fn prepare_frame_with_cache_v1(
     cache: &mut PreparedGeometryCacheV1,
 ) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
     cache.begin_frame();
-    tessellate_validated_frame_inner_v1(validate_frame_packet_v1(packet)?, Some(cache))
+    tessellate_validated_frame_inner_v1(validate_frame_packet_v1(packet)?, Some(cache), None)
+}
+
+/// Validates and prepares a packet through both the retained path cache and a
+/// verified decoded-PNG resolver.
+///
+/// # Errors
+///
+/// Returns the same fail-closed errors as [`prepare_frame_with_assets_v1`].
+pub fn prepare_frame_with_cache_and_assets_v1(
+    packet: &RenderPacketV1,
+    cache: &mut PreparedGeometryCacheV1,
+    assets: &dyn DecodedPngAssetResolverV1,
+) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
+    cache.begin_frame();
+    tessellate_validated_frame_inner_v1(
+        validate_frame_packet_v1(packet)?,
+        Some(cache),
+        Some(assets),
+    )
 }
 
 fn prepare_material(
@@ -1694,7 +1862,9 @@ fn prepare_fill_geometry(
 }
 
 struct PreparedFrameAccumulatorV1 {
+    commands: Vec<PreparedRenderCommandV1>,
     draws: Vec<PreparedDrawV1>,
+    image_draws: Vec<PreparedImageDrawV1>,
     indices: Vec<u32>,
     materials: Vec<PreparedMaterialV1>,
     tessellation_calls: u64,
@@ -1704,7 +1874,9 @@ struct PreparedFrameAccumulatorV1 {
 impl PreparedFrameAccumulatorV1 {
     fn with_phase_capacity(phase_capacity: usize) -> Self {
         Self {
+            commands: Vec::with_capacity(phase_capacity),
             draws: Vec::with_capacity(phase_capacity),
+            image_draws: Vec::with_capacity(phase_capacity / 2),
             indices: Vec::new(),
             materials: Vec::with_capacity(phase_capacity),
             tessellation_calls: 0,
@@ -1748,6 +1920,10 @@ impl PreparedFrameAccumulatorV1 {
             index_range: index_start..index_end,
             material_index,
             vertex_range: vertex_start..vertex_end,
+        });
+        self.commands.push(PreparedRenderCommandV1::Paint {
+            draw_index: u32::try_from(self.draws.len() - 1)
+                .map_err(|_| PrepareFrameErrorV1::IndexRange)?,
         });
         self.tessellation_calls = self
             .tessellation_calls
@@ -1825,6 +2001,34 @@ impl PreparedFrameAccumulatorV1 {
             vertex_range: vertex_start
                 ..u32::try_from(vertex_end_len).map_err(|_| PrepareFrameErrorV1::IndexRange)?,
         });
+        self.commands.push(PreparedRenderCommandV1::Paint {
+            draw_index: u32::try_from(self.draws.len() - 1)
+                .map_err(|_| PrepareFrameErrorV1::IndexRange)?,
+        });
+        Ok(())
+    }
+
+    fn append_image(
+        &mut self,
+        asset: Arc<DecodedPngAssetV1>,
+        draw_id: &str,
+        entity_id: &str,
+        opacity: f64,
+        sampler: ImageSamplerV1,
+        vertices: [PreparedImageVertexV1; 4],
+    ) -> Result<(), PrepareFrameErrorV1> {
+        let image_index =
+            u32::try_from(self.image_draws.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+        self.image_draws.push(PreparedImageDrawV1 {
+            asset,
+            draw_id: draw_id.to_owned(),
+            entity_id: entity_id.to_owned(),
+            opacity: checked_f32(opacity, Some(draw_id), "image opacity")?,
+            sampler,
+            vertices,
+        });
+        self.commands
+            .push(PreparedRenderCommandV1::Image { image_index });
         Ok(())
     }
 }
@@ -1940,6 +2144,79 @@ fn append_stroke_phase_v1(
     Ok(())
 }
 
+fn prepare_image_vertex(
+    x: f64,
+    y: f64,
+    uv: [f32; 2],
+    transform: &AffineTransformV1,
+    camera: &RenderCameraV1,
+    draw_id: &str,
+) -> Result<PreparedImageVertexV1, PrepareFrameErrorV1> {
+    let local = PointV1 { x, y };
+    let clip = world_to_clip(
+        transform_to_world(&local, transform, draw_id)?,
+        camera,
+        draw_id,
+    )?;
+    Ok(PreparedImageVertexV1 {
+        position: [
+            checked_f32(clip.x, Some(draw_id), "image clip x")?,
+            checked_f32(clip.y, Some(draw_id), "image clip y")?,
+        ],
+        uv,
+    })
+}
+
+fn append_image_draw_v1(
+    prepared: &mut PreparedFrameAccumulatorV1,
+    assets: &dyn DecodedPngAssetResolverV1,
+    camera: &RenderCameraV1,
+    draw: &RenderDrawV1,
+) -> Result<(), PrepareFrameErrorV1> {
+    let RenderDrawV1::Image {
+        asset,
+        draw_id,
+        entity_id,
+        local_rect,
+        opacity,
+        sampler,
+        transform,
+        ..
+    } = draw
+    else {
+        return Err(PrepareFrameErrorV1::Unsupported {
+            draw_id: draw.draw_id().to_owned(),
+            reason: UnsupportedDrawReasonV1::Image,
+        });
+    };
+    let decoded = assets.resolve_png_asset_v1(&asset.sha256).ok_or_else(|| {
+        PrepareFrameErrorV1::MissingImageAsset {
+            draw_id: draw_id.clone(),
+            sha256: asset.sha256.clone(),
+        }
+    })?;
+    if decoded.sha256() != asset.sha256 {
+        return Err(PrepareFrameErrorV1::ResolvedImageDigestMismatch {
+            actual_sha256: decoded.sha256().to_owned(),
+            draw_id: draw_id.clone(),
+            expected_sha256: asset.sha256.clone(),
+        });
+    }
+    let ImageLocalRectV1 {
+        bottom,
+        left,
+        right,
+        top,
+    } = local_rect;
+    let vertices = [
+        prepare_image_vertex(*left, *top, [0.0, 0.0], transform, camera, draw_id)?,
+        prepare_image_vertex(*right, *top, [1.0, 0.0], transform, camera, draw_id)?,
+        prepare_image_vertex(*left, *bottom, [0.0, 1.0], transform, camera, draw_id)?,
+        prepare_image_vertex(*right, *bottom, [1.0, 1.0], transform, camera, draw_id)?,
+    ];
+    prepared.append_image(decoded, draw_id, entity_id, *opacity, *sampler, vertices)
+}
+
 /// Tessellates a packet that [`validate_frame_packet_v1`] has already accepted.
 ///
 /// This is the tessellation half of [`prepare_frame_v1`]. The
@@ -1954,7 +2231,20 @@ fn append_stroke_phase_v1(
 pub fn tessellate_validated_frame_v1(
     validated: ValidatedRenderPacketV1<'_>,
 ) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
-    tessellate_validated_frame_inner_v1(validated, None)
+    tessellate_validated_frame_inner_v1(validated, None, None)
+}
+
+/// Prepares a validated packet using immutable decoded PNG assets.
+///
+/// # Errors
+///
+/// Returns a missing/mismatched asset or the same bounded preparation errors
+/// as [`tessellate_validated_frame_v1`].
+pub fn tessellate_validated_frame_with_assets_v1(
+    validated: ValidatedRenderPacketV1<'_>,
+    assets: &dyn DecodedPngAssetResolverV1,
+) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
+    tessellate_validated_frame_inner_v1(validated, None, Some(assets))
 }
 
 /// Tessellates a validated packet through a bounded exact-signature cache.
@@ -1967,19 +2257,44 @@ pub fn tessellate_validated_frame_with_cache_v1(
     cache: &mut PreparedGeometryCacheV1,
 ) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
     cache.begin_frame();
-    tessellate_validated_frame_inner_v1(validated, Some(cache))
+    tessellate_validated_frame_inner_v1(validated, Some(cache), None)
+}
+
+/// Prepares a validated packet through both the retained path cache and
+/// immutable decoded PNG assets.
+///
+/// # Errors
+///
+/// Returns the same fail-closed errors as
+/// [`tessellate_validated_frame_with_assets_v1`].
+pub fn tessellate_validated_frame_with_cache_and_assets_v1(
+    validated: ValidatedRenderPacketV1<'_>,
+    cache: &mut PreparedGeometryCacheV1,
+    assets: &dyn DecodedPngAssetResolverV1,
+) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
+    cache.begin_frame();
+    tessellate_validated_frame_inner_v1(validated, Some(cache), Some(assets))
 }
 
 fn tessellate_validated_frame_inner_v1(
     validated: ValidatedRenderPacketV1<'_>,
     mut cache: Option<&mut PreparedGeometryCacheV1>,
+    assets: Option<&dyn DecodedPngAssetResolverV1>,
 ) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
     let packet = validated.packet;
     let phase_capacity = packet.draws.len().saturating_mul(2);
     let mut prepared = PreparedFrameAccumulatorV1::with_phase_capacity(phase_capacity);
     for draw in &packet.draws {
+        if matches!(draw, RenderDrawV1::Image { .. }) {
+            let assets = assets.ok_or_else(|| PrepareFrameErrorV1::Unsupported {
+                draw_id: draw.draw_id().to_owned(),
+                reason: UnsupportedDrawReasonV1::Image,
+            })?;
+            append_image_draw_v1(&mut prepared, assets, &packet.camera, draw)?;
+            continue;
+        }
         let (draw_id, entity_id, fill, opacity, path, stroke, transform) = match draw {
-            RenderDrawV1::Empty { .. } => continue,
+            RenderDrawV1::Empty { .. } | RenderDrawV1::Image { .. } => continue,
             RenderDrawV1::Path {
                 draw_id,
                 entity_id,
@@ -1990,12 +2305,6 @@ fn tessellate_validated_frame_inner_v1(
                 transform,
                 ..
             } => (draw_id, entity_id, fill, opacity, path, stroke, transform),
-            RenderDrawV1::Image { .. } => {
-                return Err(PrepareFrameErrorV1::Unsupported {
-                    draw_id: draw.draw_id().to_owned(),
-                    reason: UnsupportedDrawReasonV1::Image,
-                });
-            }
         };
         if fill.is_none() && stroke.is_none() {
             return Err(PrepareFrameErrorV1::Unsupported {
@@ -2031,7 +2340,9 @@ fn tessellate_validated_frame_inner_v1(
             materials: prepared.materials,
         },
         ordered_draws: OrderedDrawPlanV1 {
+            commands: prepared.commands,
             draws: prepared.draws,
+            image_draws: prepared.image_draws,
         },
         viewport: [packet.viewport.width_px, packet.viewport.height_px],
     })
