@@ -26,18 +26,23 @@ import type { CanvasFrameEvidenceCaptureV1 } from "./canvas-frame-evidence";
 const MAX_ERROR_MESSAGE_LENGTH = 4_096;
 
 export type PoietraWasmCanvasEngineV1 = {
-  // Optional only for injected negative-test seams; the ABI v3 loader below
+  // Optional only for injected negative-test seams; the ABI v4 loader below
   // requires this method before a production engine can be constructed.
   applySceneDelta?: (deltaJson: Uint8Array, baseRevision: string, nextRevision: string) => Uint8Array;
   render: (requestJson: Uint8Array) => Promise<Uint8Array>;
-  replaceSnapshot: (snapshotJson: Uint8Array) => void;
+  replaceSnapshot: (snapshotJson: Uint8Array, assetMetadataJson: Uint8Array, assetBytes: Uint8Array[]) => void;
   // Optional telemetry ABI v1; feature-detected so older modules keep working.
   adapterEvidence?: () => Uint8Array;
   renderWithTelemetry?: (requestJson: Uint8Array) => Promise<Uint8Array>;
 };
 
 export type PoietraWasmCanvasEngineClassV1 = {
-  create: (snapshotJson: Uint8Array, canvas: OffscreenCanvas) => Promise<PoietraWasmCanvasEngineV1>;
+  create: (
+    snapshotJson: Uint8Array,
+    assetMetadataJson: Uint8Array,
+    assetBytes: Uint8Array[],
+    canvas: OffscreenCanvas,
+  ) => Promise<PoietraWasmCanvasEngineV1>;
   prototype: PoietraWasmCanvasEngineV1;
 };
 
@@ -170,6 +175,26 @@ function decodeBoundedJson(responseJson: Uint8Array, maximumBytes: number) {
   } catch (cause) {
     throw new Error("The canvas engine returned malformed UTF-8 JSON.", { cause });
   }
+}
+
+function encodeAssetTransfers(
+  assets: Extract<CanvasWorkerRequestV1, Readonly<{ kind: "install-canvas" | "replace-scene" }>>["assetPayloads"],
+) {
+  const metadataJson = new TextEncoder().encode(
+    JSON.stringify(
+      assets.map(({ assetId, bytes: _bytes, ...metadata }) => ({
+        alphaMode: "straight",
+        colorSpace: "srgb",
+        id: assetId,
+        kind: "png-image",
+        ...metadata,
+      })),
+    ),
+  );
+  return {
+    bytes: assets.map((asset) => new Uint8Array(asset.bytes)),
+    metadataJson,
+  };
 }
 
 function decodeRenderResponse(responseJson: Uint8Array) {
@@ -327,7 +352,13 @@ export class PoietraCanvasWorkerRuntimeV1 {
       if (request.captureFrameEvidence === true && this.evidence) {
         this.evidenceCapture = this.evidence.createCapture(request.canvas);
       }
-      this.engine = await Engine.create(new Uint8Array(request.snapshotJson), request.canvas);
+      const assets = encodeAssetTransfers(request.assetPayloads);
+      this.engine = await Engine.create(
+        new Uint8Array(request.snapshotJson),
+        assets.metadataJson,
+        assets.bytes,
+        request.canvas,
+      );
       this.currentRevision = request.revision;
     } catch (error) {
       // A failed create must fully unwind the evidence hooks so a retried
@@ -365,7 +396,8 @@ export class PoietraCanvasWorkerRuntimeV1 {
       return;
     }
     try {
-      this.engine.replaceSnapshot(new Uint8Array(request.snapshotJson));
+      const assets = encodeAssetTransfers(request.assetPayloads);
+      this.engine.replaceSnapshot(new Uint8Array(request.snapshotJson), assets.metadataJson, assets.bytes);
       this.currentRevision = request.revision;
     } catch (error) {
       // A rejected replace leaves both the Scene and the surface in their
@@ -424,7 +456,7 @@ export class PoietraCanvasWorkerRuntimeV1 {
       dirty = decodeSceneDeltaDirtySet(dirtyJson);
     } catch (error) {
       // The ABI commits only after pre-serializing a bounded ACK. Reaching
-      // this branch therefore means the loaded module violated ABI v3 after
+      // this branch therefore means the loaded module violated ABI v4 after
       // applying the revision; retain that revision internally and force the
       // page client to terminate rather than attempting unsafe recovery.
       this.currentRevision = request.revision;

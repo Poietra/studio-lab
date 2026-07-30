@@ -2,15 +2,15 @@ use std::collections::BTreeSet;
 
 use poietra_eval::{EngineSessionV1, EvaluationError, SampleEngineSessionOptionsV1};
 use poietra_scene_ir::{
-    ContractJsonError, ContractVersionV1, MAX_VIEWPORT_PIXELS_V1, RenderPacketV1, ViewportV1,
-    parse_scene_ir_bundle_json_v1,
+    ContractJsonError, ContractVersionV1, MAX_VIEWPORT_PIXELS_V1, RenderPacketV1, SceneIrBundleV1,
+    ViewportV1, parse_scene_ir_bundle_json_v1,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
 use crate::bounded_writer::BoundedWriter;
 #[cfg(target_arch = "wasm32")]
-use crate::scene_delta::{SceneDeltaErrorV1, apply_scene_delta_json};
+use crate::scene_delta::{SceneDeltaErrorV1, apply_scene_delta_json, scene_delta_updates_assets};
 
 /// Playhead requests should remain small compared with the retained snapshot.
 /// The envelope still accommodates every contract-valid evidence array.
@@ -388,16 +388,19 @@ pub struct EngineWorkerSessionV1 {
 }
 
 impl EngineWorkerSessionV1 {
+    pub(crate) fn from_bundle(bundle: SceneIrBundleV1) -> Result<Self, WorkerSessionError> {
+        Ok(Self {
+            session: EngineSessionV1::new(bundle)?,
+        })
+    }
+
     /// Parses and retains one bounded Scene snapshot.
     ///
     /// # Errors
     ///
     /// Returns a contract or semantic validation error without retaining partial state.
     pub fn from_snapshot_json(snapshot_json: &[u8]) -> Result<Self, WorkerSessionError> {
-        let bundle = parse_scene_ir_bundle_json_v1(snapshot_json)?;
-        Ok(Self {
-            session: EngineSessionV1::new(bundle)?,
-        })
+        Self::from_bundle(parse_scene_ir_bundle_json_v1(snapshot_json)?)
     }
 
     /// Atomically validates and installs a new complete snapshot.
@@ -409,7 +412,14 @@ impl EngineWorkerSessionV1 {
         &mut self,
         snapshot_json: &[u8],
     ) -> Result<(), WorkerSessionError> {
-        let bundle = parse_scene_ir_bundle_json_v1(snapshot_json)?;
+        self.replace_snapshot_bundle(parse_scene_ir_bundle_json_v1(snapshot_json)?)?;
+        Ok(())
+    }
+
+    pub(crate) fn replace_snapshot_bundle(
+        &mut self,
+        bundle: SceneIrBundleV1,
+    ) -> Result<(), WorkerSessionError> {
         self.session.replace_snapshot(bundle)?;
         Ok(())
     }
@@ -426,6 +436,11 @@ impl EngineWorkerSessionV1 {
         expected_base_revision: &str,
         expected_next_revision: &str,
     ) -> Result<Vec<u8>, SceneDeltaErrorV1> {
+        if scene_delta_updates_assets(delta_json)? {
+            return Err(SceneDeltaErrorV1::Invalid(
+                "canvas Scene deltas cannot change the asset manifest; use atomic replacement",
+            ));
+        }
         apply_scene_delta_json(
             &mut self.session,
             delta_json,

@@ -46,6 +46,7 @@ afterEach(() => {
 describe("canvas worker v1 protocol", () => {
   it("transfers a canvas and snapshot only during installation", () => {
     const install = {
+      assetPayloads: [],
       canvas: new FakeOffscreenCanvas(160, 90),
       kind: "install-canvas",
       requestId: 1,

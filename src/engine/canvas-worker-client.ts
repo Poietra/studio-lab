@@ -13,8 +13,15 @@ import {
   POIETRA_CANVAS_WORKER_VERSION,
 } from "./canvas-worker-protocol";
 import type { CanvasFrameEvidenceResponseV1 } from "./canvas-worker-evidence";
+import {
+  type CanvasPngAssetRegistrySnapshotV1,
+  type CanvasPngAssetTransferV1,
+  type CanvasPngDimensionDecoderV1,
+  canvasSceneDeltaChangesAssetsV1,
+  prepareCanvasPngAssetTransfersV1,
+} from "./canvas-png-assets";
 import type { SceneIrBundleV1 } from "./contracts";
-import { sceneIrBundleV1Schema } from "./contracts";
+import { parseVerifiedSceneIrBundleV1, sceneIrBundleV1Schema } from "./contracts";
 import { sceneIrSourceRevisionHash } from "./scene-ir";
 import { parseSceneIrDeltaV1, type SceneIrDeltaV1 } from "./scene-delta";
 
@@ -92,12 +99,14 @@ export class CanvasTelemetryRenderError extends CanvasWorkerClientError {
 }
 
 export type InstallCanvasSceneInputV1 = Readonly<{
+  assetPayloads?: readonly CanvasPngAssetTransferV1[];
   canvas: HTMLCanvasElement;
   revision: string;
   snapshot: SceneIrBundleV1;
 }>;
 
 export type ReplaceCanvasSceneInputV1 = Readonly<{
+  assetPayloads?: readonly CanvasPngAssetTransferV1[];
   baseRevision: string;
   revision: string;
   snapshot: SceneIrBundleV1;
@@ -111,6 +120,7 @@ export type ApplyCanvasSceneDeltaInputV1 = Readonly<{
 
 export type UpdateCanvasSceneInputV1 = ApplyCanvasSceneDeltaInputV1 &
   Readonly<{
+    assetPayloads?: readonly CanvasPngAssetTransferV1[];
     /** Complete verified fallback used only when the bounded delta is rejected. */
     snapshot: SceneIrBundleV1;
   }>;
@@ -153,6 +163,8 @@ export type CanvasWorkerClientEvidenceAdapterV1 = Readonly<{
 }>;
 
 export type CanvasWorkerClientOptions = Readonly<{
+  /** Testable page-side PNG decoder; production uses createImageBitmap. */
+  decodePngDimensions?: CanvasPngDimensionDecoderV1;
   /** Dev/test-only frame-proof extension; never set by production callers. */
   evidence?: CanvasWorkerClientEvidenceAdapterV1;
   requestTimeoutMs?: number;
@@ -210,12 +222,23 @@ function encodeSnapshot(revision: string, snapshot: SceneIrBundleV1) {
   return bytes.buffer;
 }
 
+async function verifySnapshot(snapshot: SceneIrBundleV1) {
+  try {
+    return await parseVerifiedSceneIrBundleV1(snapshot);
+  } catch (cause) {
+    throw validationError("The Scene snapshot failed its manifest integrity check.", cause);
+  }
+}
+
 function encodeSceneDelta(input: ApplyCanvasSceneDeltaInputV1) {
   let delta: SceneIrDeltaV1;
   try {
     delta = parseSceneIrDeltaV1(input.delta);
   } catch (cause) {
     throw validationError("The Scene delta does not match the bounded v1 contract.", cause);
+  }
+  if (canvasSceneDeltaChangesAssetsV1(delta)) {
+    throw validationError("Canvas Scene deltas cannot change assets; use verified replacement.");
   }
   if (delta.baseRevision !== input.baseRevision || delta.nextRevision !== input.revision) {
     throw validationError("The Scene delta revisions do not match their transport correlation.");
@@ -262,6 +285,8 @@ function normalizeError(error: unknown, code: CanvasWorkerClientErrorCode, messa
 }
 
 export class PoietraCanvasWorkerClient {
+  private assetRegistry: CanvasPngAssetRegistrySnapshotV1 = { byDigest: new Map() };
+  private readonly decodePngDimensions: CanvasPngDimensionDecoderV1 | undefined;
   private readonly evidence: CanvasWorkerClientEvidenceAdapterV1 | null;
   private readonly pending = new Map<number, PendingRequestV1>();
   private readonly requestTimeoutMs: number;
@@ -273,6 +298,7 @@ export class PoietraCanvasWorkerClient {
   private queuedRender: ScheduledRenderV1 | null = null;
   private exclusiveOperation: ExclusiveCanvasOperationV1 | null = null;
   private state: "applying-delta" | "empty" | "failed" | "installing" | "ready" | "replacing" | "disposed" = "empty";
+  private terminalError: CanvasWorkerClientError | null = null;
 
   private readonly handleError = (event: ErrorEvent) => {
     event.preventDefault();
@@ -329,6 +355,7 @@ export class PoietraCanvasWorkerClient {
   };
 
   constructor(options: CanvasWorkerClientOptions = {}) {
+    this.decodePngDimensions = options.decodePngDimensions;
     this.evidence = options.evidence ?? null;
     this.requestTimeoutMs = validateTimeout(options.requestTimeoutMs);
     this.wasmModuleUrl = options.wasmModuleUrl;
@@ -345,21 +372,39 @@ export class PoietraCanvasWorkerClient {
   async installScene(input: InstallCanvasSceneInputV1) {
     if (this.state !== "empty")
       throw new CanvasWorkerClientError("invalid-state", "A canvas Scene is already installed.");
-    const snapshotJson = encodeSnapshot(input.revision, input.snapshot);
     const wasmModuleUrl = resolveSameOriginWasmModuleUrl(this.wasmModuleUrl);
     if (typeof input.canvas.transferControlToOffscreen !== "function") {
       throw validationError("The target canvas cannot transfer control to a Worker.");
+    }
+    this.state = "installing";
+    let snapshotJson: ArrayBuffer;
+    let preparedAssets: Awaited<ReturnType<typeof prepareCanvasPngAssetTransfersV1>>;
+    try {
+      const snapshot = await verifySnapshot(input.snapshot);
+      snapshotJson = encodeSnapshot(input.revision, snapshot);
+      preparedAssets = await prepareCanvasPngAssetTransfersV1({
+        decodeDimensions: this.decodePngDimensions,
+        manifest: snapshot.assets,
+        payloads: input.assetPayloads,
+        registry: this.assetRegistry,
+      });
+      this.requirePendingState("installing", "The canvas Scene installation was superseded.");
+    } catch (cause) {
+      if (this.state === "installing") this.state = "empty";
+      throw normalizeError(cause, "invalid-input", "The canvas PNG assets failed page-side verification.");
     }
     let canvas: OffscreenCanvas;
     try {
       canvas = input.canvas.transferControlToOffscreen();
     } catch (cause) {
+      if (this.state === "installing") this.state = "empty";
       throw validationError("The target canvas could not transfer control to a Worker.", cause);
     }
     let request: Extract<CanvasWorkerRequestV1, Readonly<{ kind: "install-canvas" }>>;
     try {
       const parsed = parseWorkerRequest({
         canvas,
+        assetPayloads: preparedAssets.transfers,
         ...(this.evidence ? { captureFrameEvidence: true } : {}),
         kind: "install-canvas",
         requestId: this.takeRequestId(),
@@ -376,10 +421,14 @@ export class PoietraCanvasWorkerClient {
       this.failFatally(normalized);
       throw normalized;
     }
-    this.state = "installing";
     try {
-      await this.dispatch(request, ["canvas-ready"], "install", [canvas, snapshotJson]);
+      await this.dispatch(request, ["canvas-ready"], "install", [
+        canvas,
+        snapshotJson,
+        ...preparedAssets.transfers.map((asset) => asset.bytes),
+      ]);
       this.requirePendingState("installing", "The canvas Scene installation was superseded.");
+      this.assetRegistry = preparedAssets.nextRegistry;
       this.currentRevision = input.revision;
       this.state = "ready";
     } catch (error) {
@@ -399,26 +448,51 @@ export class PoietraCanvasWorkerClient {
     if (this.state !== "ready" || this.currentRevision !== input.baseRevision) {
       throw new CanvasWorkerClientError("invalid-state", "The replacement base revision is not installed.");
     }
-    const snapshotJson = encodeSnapshot(input.revision, input.snapshot);
-    const request = parseWorkerRequest({
-      baseRevision: input.baseRevision,
-      kind: "replace-scene",
-      requestId: this.takeRequestId(),
-      revision: input.revision,
-      schema: "poietra.canvas-worker-request",
-      snapshotJson,
-      version: POIETRA_CANVAS_WORKER_VERSION,
-    });
-    if (request.kind !== "replace-scene") {
-      throw new CanvasWorkerClientError("protocol-violation", "The replacement request kind was lost.");
+    this.state = "replacing";
+    let snapshotJson: ArrayBuffer;
+    let preparedAssets: Awaited<ReturnType<typeof prepareCanvasPngAssetTransfersV1>>;
+    try {
+      const snapshot = await verifySnapshot(input.snapshot);
+      snapshotJson = encodeSnapshot(input.revision, snapshot);
+      preparedAssets = await prepareCanvasPngAssetTransfersV1({
+        decodeDimensions: this.decodePngDimensions,
+        manifest: snapshot.assets,
+        payloads: input.assetPayloads,
+        registry: this.assetRegistry,
+      });
+      this.requirePendingState("replacing", "The canvas Scene replacement was superseded.");
+    } catch (cause) {
+      if (this.state === "replacing") this.state = "ready";
+      throw normalizeError(cause, "invalid-input", "The canvas PNG assets failed page-side verification.");
+    }
+    let request: Extract<CanvasWorkerRequestV1, Readonly<{ kind: "replace-scene" }>>;
+    try {
+      const parsed = parseWorkerRequest({
+        assetPayloads: preparedAssets.transfers,
+        baseRevision: input.baseRevision,
+        kind: "replace-scene",
+        requestId: this.takeRequestId(),
+        revision: input.revision,
+        schema: "poietra.canvas-worker-request",
+        snapshotJson,
+        version: POIETRA_CANVAS_WORKER_VERSION,
+      });
+      if (parsed.kind !== "replace-scene") throw new Error("The replacement request kind was lost.");
+      request = parsed;
+    } catch (cause) {
+      if (this.state === "replacing") this.state = "ready";
+      throw normalizeError(cause, "protocol-violation", "The canvas replacement request failed.");
     }
     this.cancelScheduledRenders(
       new CanvasWorkerClientError("stale-response", "A Scene replacement superseded this canvas render."),
     );
-    this.state = "replacing";
     try {
-      await this.dispatch(request, ["canvas-ready"], "replace", [snapshotJson]);
+      await this.dispatch(request, ["canvas-ready"], "replace", [
+        snapshotJson,
+        ...preparedAssets.transfers.map((asset) => asset.bytes),
+      ]);
       this.requirePendingState("replacing", "The canvas Scene replacement was superseded.");
+      this.assetRegistry = preparedAssets.nextRegistry;
       this.currentRevision = input.revision;
       this.state = "ready";
     } catch (error) {
@@ -488,6 +562,22 @@ export class PoietraCanvasWorkerClient {
    * existing whole-scene replacement only as explicit fail-closed recovery.
    */
   async updateScene(input: UpdateCanvasSceneInputV1): Promise<UpdateCanvasSceneResultV1> {
+    let parsedDelta: SceneIrDeltaV1 | null = null;
+    try {
+      parsedDelta = parseSceneIrDeltaV1(input.delta);
+    } catch {
+      // Preserve the established malformed-delta path: the verified complete
+      // snapshot below remains the only recovery authority.
+    }
+    if (parsedDelta && canvasSceneDeltaChangesAssetsV1(parsedDelta)) {
+      await this.replaceScene({
+        assetPayloads: input.assetPayloads,
+        baseRevision: input.baseRevision,
+        revision: input.revision,
+        snapshot: input.snapshot,
+      });
+      return { operation: "replace" };
+    }
     try {
       const dirty = await this.applySceneDelta(input);
       return { dirty, operation: "delta" };
@@ -498,6 +588,7 @@ export class PoietraCanvasWorkerClient {
       if (!recoverable) throw error;
     }
     await this.replaceScene({
+      assetPayloads: input.assetPayloads,
       baseRevision: input.baseRevision,
       revision: input.revision,
       snapshot: input.snapshot,
@@ -712,6 +803,7 @@ export class PoietraCanvasWorkerClient {
     this.state = "disposed";
     this.currentRevision = null;
     const error = new CanvasWorkerClientError("disposed", "The canvas worker client was disposed.");
+    this.terminalError = error;
     this.cancelScheduledRenders(error);
     this.rejectPending(error);
     this.detachAndTerminate();
@@ -806,6 +898,7 @@ export class PoietraCanvasWorkerClient {
 
   private requirePendingState(expected: "applying-delta" | "installing" | "replacing", message: string) {
     if (this.state === expected) return;
+    if (this.terminalError) throw this.terminalError;
     throw new CanvasWorkerClientError(this.state === "disposed" ? "disposed" : "invalid-state", message);
   }
 
@@ -828,6 +921,7 @@ export class PoietraCanvasWorkerClient {
     if (this.state === "failed" || this.state === "disposed") return;
     this.state = "failed";
     this.currentRevision = null;
+    this.terminalError = error;
     this.cancelScheduledRenders(error);
     this.rejectPending(error);
     this.detachAndTerminate();

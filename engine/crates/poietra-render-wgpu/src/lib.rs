@@ -8,12 +8,16 @@
 //! any phase falls outside the bounded subset.
 
 mod arena;
+mod asset;
 mod cache;
 mod gpu;
 mod prepare;
 mod upload;
 
 pub use arena::{GpuBufferArenaErrorV1, MAX_GPU_BUFFER_ARENA_BYTES_V1};
+pub use asset::{
+    DecodePngAssetErrorV1, DecodedPngAssetV1, MAX_ENCODED_PNG_BYTES_V1, decode_verified_png_v1,
+};
 pub use gpu::{
     CreateRendererErrorV1, RenderFrameErrorV1, RenderStageEvidenceV1, WgpuFillRendererV1,
     WgpuRenderTargetV1,

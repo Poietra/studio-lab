@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
+import { digestAssetManifestV1 } from "./asset-manifest";
 import { MAX_CANVAS_SCENE_DELTA_ACK_JSON_BYTES } from "./canvas-worker-protocol";
 import { EngineContractIntegrityError, parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "./contracts";
 import {
@@ -157,6 +158,22 @@ describe("Scene IR delta v1", () => {
       },
     };
     await expect(createSceneIrDeltaV1(base, byteOverflow)).resolves.toBeNull();
+
+    const assetDraft = {
+      ...base.assets,
+      manifestDigest: "0".repeat(64),
+      manifestId: "manifest:replacement",
+    };
+    const assets = { ...assetDraft, manifestDigest: await digestAssetManifestV1(assetDraft) };
+    const assetChange = {
+      assets,
+      scene: {
+        ...base.scene,
+        assetManifest: { manifestDigest: assets.manifestDigest, manifestId: assets.manifestId },
+        source: { editProgramVersion: 1 as const, kind: "studio-edit-program" as const, revisionHash: REVISION_B },
+      },
+    };
+    await expect(createSceneIrDeltaV1(base, assetChange)).resolves.toBeNull();
   });
 
   it("matches the shared Rust success and rejection corpus without mutating rejected bases", async () => {

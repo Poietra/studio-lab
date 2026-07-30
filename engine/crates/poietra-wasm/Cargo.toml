@@ -10,6 +10,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 poietra-eval.workspace = true
+poietra-render-wgpu = { path = "../poietra-render-wgpu" }
 poietra-scene-ir.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -18,12 +19,12 @@ wasm-bindgen.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "=0.3.103"
-poietra-render-wgpu = { path = "../poietra-render-wgpu" }
 wasm-bindgen-futures = "=0.4.76"
 web-sys = { version = "=0.3.103", features = ["OffscreenCanvas"] }
 wgpu = { workspace = true, features = ["std", "webgpu", "wgsl"] }
 
 [dev-dependencies]
+png.workspace = true
 sha2.workspace = true
 
 [lints]

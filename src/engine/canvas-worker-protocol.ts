@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { canvasPngAssetTransfersV1Schema } from "./canvas-png-assets";
 import {
   evidenceV1Schema,
   finiteNumberV1Schema,
@@ -78,6 +79,7 @@ const installCanvasRequestV1Schema = z
     // channel. Production workers reject flagged installs as a bounded error.
     captureFrameEvidence: z.boolean().optional(),
     kind: z.literal("install-canvas"),
+    assetPayloads: canvasPngAssetTransfersV1Schema,
     revision: revisionSchema,
     snapshotJson: snapshotJsonSchema,
     wasmModuleUrl: z.string().url().max(MAX_CANVAS_WASM_MODULE_URL_LENGTH),
@@ -88,6 +90,7 @@ const replaceSceneRequestV1Schema = z
   .object({
     ...requestEnvelope,
     baseRevision: revisionSchema,
+    assetPayloads: canvasPngAssetTransfersV1Schema,
     kind: z.literal("replace-scene"),
     revision: revisionSchema,
     snapshotJson: snapshotJsonSchema,

@@ -3,16 +3,20 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use poietra_render_wgpu::{
-    PreparedFrameV1, PreparedGeometryCacheFrameStatsV1, PreparedGeometryCacheV1,
-    WgpuPaintRendererV1, WgpuRenderTargetV1, prepare_frame_with_cache_v1,
+    MAX_ENCODED_PNG_BYTES_V1, PreparedFrameV1, PreparedGeometryCacheFrameStatsV1,
+    PreparedGeometryCacheV1, WgpuPaintRendererV1, WgpuRenderTargetV1, prepare_frame_with_cache_v1,
     tessellate_validated_frame_with_cache_v1, validate_frame_packet_v1,
 };
-use poietra_scene_ir::{RenderDrawV1, ViewportV1};
+use poietra_scene_ir::{
+    MAX_ASSETS_V1, MAX_ENCODED_ASSET_BYTES_V1, RenderDrawV1, ViewportV1,
+    parse_scene_ir_bundle_json_v1,
+};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::OffscreenCanvas;
 
+use crate::canvas_assets::CanvasPngAssetRegistryV1;
 use crate::canvas_protocol::{
     CanvasRenderErrorCodeV1, error_response, error_result, gpu_error_code_from_js_class_name,
     interaction_metadata, presented_response_with_interaction, presented_result, sample_error_code,
@@ -32,6 +36,39 @@ use crate::protocol::EngineWorkerSessionV1;
 const SNAPSHOT_REJECTED_ERROR_NAME: &str = "PoietraCanvasSnapshotRejected";
 const DELTA_REJECTED_ERROR_NAME: &str = "PoietraCanvasDeltaRejected";
 const RENDERER_UNAVAILABLE_ERROR_NAME: &str = "PoietraCanvasRendererUnavailable";
+
+fn copy_asset_byte_arrays(values: &js_sys::Array) -> Result<Vec<Vec<u8>>, String> {
+    let count = usize::try_from(values.length())
+        .map_err(|_| "PNG transfer count is not representable".to_owned())?;
+    if count > MAX_ASSETS_V1 {
+        return Err(format!(
+            "PNG transfer contains more than {MAX_ASSETS_V1} assets"
+        ));
+    }
+    let mut copied = Vec::with_capacity(count);
+    let mut total_bytes = 0_u64;
+    for index in 0..values.length() {
+        let bytes = values
+            .get(index)
+            .dyn_into::<js_sys::Uint8Array>()
+            .map_err(|_| format!("PNG transfer {index} is not a Uint8Array"))?;
+        if u64::from(bytes.length()) > MAX_ENCODED_PNG_BYTES_V1 {
+            return Err(format!(
+                "PNG transfer {index} exceeds the {MAX_ENCODED_PNG_BYTES_V1}-byte limit"
+            ));
+        }
+        total_bytes = total_bytes
+            .checked_add(u64::from(bytes.length()))
+            .ok_or_else(|| "PNG transfer byte length overflowed".to_owned())?;
+        if total_bytes > MAX_ENCODED_ASSET_BYTES_V1 {
+            return Err(format!(
+                "PNG transfers exceed the {MAX_ENCODED_ASSET_BYTES_V1}-byte limit"
+            ));
+        }
+        copied.push(bytes.to_vec());
+    }
+    Ok(copied)
+}
 
 fn prepared_geometry_cache_outcome(stats: PreparedGeometryCacheFrameStatsV1) -> CacheOutcomeV1 {
     if stats.misses() > 0 {
@@ -294,6 +331,7 @@ fn rollback_pushed_error_scopes(raw_device: &JsValue, pushed_scope_count: usize)
 #[wasm_bindgen]
 pub struct PoietraCanvasEngineV1 {
     adapter_evidence: CanvasAdapterEvidenceV1,
+    asset_registry: CanvasPngAssetRegistryV1,
     canvas: OffscreenCanvas,
     configured_viewport: Option<ViewportV1>,
     // Checked count of surface reconfigurations within the frame being
@@ -346,9 +384,18 @@ impl PoietraCanvasEngineV1 {
     #[wasm_bindgen(js_name = create)]
     pub async fn create(
         snapshot_json: &[u8],
+        asset_metadata_json: &[u8],
+        asset_bytes: js_sys::Array,
         canvas: OffscreenCanvas,
     ) -> Result<PoietraCanvasEngineV1, JsValue> {
-        let session = EngineWorkerSessionV1::from_snapshot_json(snapshot_json)
+        let bundle = parse_scene_ir_bundle_json_v1(snapshot_json)
+            .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
+        let copied_asset_bytes = copy_asset_byte_arrays(&asset_bytes)
+            .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error))?;
+        let asset_registry = CanvasPngAssetRegistryV1::default()
+            .prepare_candidate(&bundle.assets, asset_metadata_json, &copied_asset_bytes)
+            .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
+        let session = EngineWorkerSessionV1::from_bundle(bundle)
             .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
 
         let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
@@ -405,6 +452,7 @@ impl PoietraCanvasEngineV1 {
 
         Ok(Self {
             adapter_evidence,
+            asset_registry,
             canvas,
             configured_viewport: None,
             frame_surface_configurations: Some(0),
@@ -441,10 +489,24 @@ impl PoietraCanvasEngineV1 {
     ///
     /// Returns a JavaScript error and preserves the current snapshot on failure.
     #[wasm_bindgen(js_name = replaceSnapshot)]
-    pub fn replace_snapshot(&mut self, snapshot_json: &[u8]) -> Result<(), JsValue> {
-        self.session
-            .replace_snapshot_json(snapshot_json)
+    pub fn replace_snapshot(
+        &mut self,
+        snapshot_json: &[u8],
+        asset_metadata_json: &[u8],
+        asset_bytes: js_sys::Array,
+    ) -> Result<(), JsValue> {
+        let bundle = parse_scene_ir_bundle_json_v1(snapshot_json)
             .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
+        let copied_asset_bytes = copy_asset_byte_arrays(&asset_bytes)
+            .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error))?;
+        let candidate_registry = self
+            .asset_registry
+            .prepare_candidate(&bundle.assets, asset_metadata_json, &copied_asset_bytes)
+            .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
+        self.session
+            .replace_snapshot_bundle(bundle)
+            .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
+        self.asset_registry = candidate_registry;
         self.prepared_geometry_cache.clear();
         Ok(())
     }
