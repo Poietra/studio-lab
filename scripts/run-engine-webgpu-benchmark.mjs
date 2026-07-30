@@ -10,7 +10,7 @@ const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 // server), stamped with a build manifest the harness verifies over HTTP
 // before and after measurement. Concurrent builds cannot swap files under a
 // running measurement because each run owns its directory.
-execFileSync(pnpm, ["build:engine:wasm"], { env: process.env, stdio: "inherit" });
+execFileSync(pnpm, ["build:canvas:wasm"], { env: process.env, stdio: "inherit" });
 
 const runDir = process.env.POIETRA_BENCHMARK_DIST ?? join("dist-benchmark", `run-${Date.now()}-${process.pid}`);
 execFileSync(pnpm, ["exec", "vite", "build", "--outDir", runDir], {

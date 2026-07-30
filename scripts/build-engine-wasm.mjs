@@ -3,6 +3,12 @@ import { fileURLToPath } from "node:url";
 
 const expectedVersion = "wasm-pack 0.15.0";
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
+const target = process.argv[2] ?? "all";
+
+if (process.argv.length > 3 || !["all", "canvas", "mathtex"].includes(target)) {
+  console.error("Usage: node scripts/build-engine-wasm.mjs [all|canvas|mathtex]");
+  process.exit(1);
+}
 
 let installedVersion;
 try {
@@ -25,10 +31,14 @@ function buildWasmPackage(cratePath, outDir, outName, profileArgs) {
   );
 }
 
-buildWasmPackage("engine/crates/poietra-wasm", "../../../public/engine-wasm", "poietra_wasm", ["--release"]);
-buildWasmPackage(
-  "engine/crates/poietra-mathtex-wasm",
-  "../../../public/engine-wasm/mathtex-outline",
-  "poietra_mathtex_wasm",
-  ["--profile", "mathtex-wasm-size"],
-);
+if (target === "all" || target === "canvas") {
+  buildWasmPackage("engine/crates/poietra-wasm", "../../../public/engine-wasm", "poietra_wasm", ["--release"]);
+}
+if (target === "all" || target === "mathtex") {
+  buildWasmPackage(
+    "engine/crates/poietra-mathtex-wasm",
+    "../../../public/engine-wasm/mathtex-outline",
+    "poietra_mathtex_wasm",
+    ["--profile", "mathtex-wasm-size"],
+  );
+}

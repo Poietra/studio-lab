@@ -202,6 +202,9 @@ work remains in #70.
 
 ```sh
 cargo install wasm-pack --locked --version 0.15.0
+pnpm build:canvas:wasm
+pnpm build:mathtex:wasm
+# or build both packages for a release/CI artifact
 pnpm build:engine:wasm
 ```
 

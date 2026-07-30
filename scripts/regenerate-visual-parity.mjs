@@ -34,7 +34,7 @@ execFileSync(
   ],
   { env: environment, stdio: "inherit" },
 );
-execFileSync(pnpm, ["build:engine:wasm"], { env: environment, stdio: "inherit" });
+execFileSync(pnpm, ["build:canvas:wasm"], { env: environment, stdio: "inherit" });
 execFileSync(pnpm, ["exec", "playwright", "test", "--config", "playwright.visual-parity.config.ts"], {
   env: environment,
   stdio: "inherit",
