@@ -109,7 +109,7 @@ function stressReportFixture(workloads: readonly unknown[]) {
       engineContractVersion: 1,
       reportSchema: "poietra.engine-webgpu-stress-benchmark",
       reportVersion: 3,
-      telemetryAbiVersion: 1,
+      telemetryAbiVersion: 2,
     },
     decisionEligibility: { eligible: false, reasons: ["reference host is not pinned"] },
     environment: {

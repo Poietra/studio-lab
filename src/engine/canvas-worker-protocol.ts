@@ -11,7 +11,7 @@ import { renderViewportV1Schema } from "./render-packet";
 import { MAX_SCENE_DELTA_JSON_BYTES } from "./scene-delta";
 
 export const POIETRA_CANVAS_WORKER_VERSION = 1 as const;
-export const POIETRA_CANVAS_TELEMETRY_ABI_VERSION = 1 as const;
+export const POIETRA_CANVAS_TELEMETRY_ABI_VERSION = 2 as const;
 export const MAX_CANVAS_SNAPSHOT_JSON_BYTES = 8 * 1024 * 1024;
 export const MAX_CANVAS_SAMPLE_JSON_BYTES = 256 * 1024;
 export const MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES = 16 * 1024;

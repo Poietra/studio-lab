@@ -16,7 +16,7 @@ pub const MAX_CANVAS_TELEMETRY_RESPONSE_JSON_BYTES_V1: usize = 32 * 1024;
 /// requested device features/limits dumps.
 pub const MAX_CANVAS_ADAPTER_EVIDENCE_JSON_BYTES_V1: usize = 8 * 1024;
 /// Telemetry render ABI version, independent of the base canvas ABI.
-pub const POIETRA_CANVAS_TELEMETRY_ABI_VERSION_V1: u32 = 1;
+pub const POIETRA_CANVAS_TELEMETRY_ABI_VERSION_V2: u32 = 2;
 
 const MAX_EVIDENCE_STRING_UTF16_UNITS_V1: usize = 256;
 const MAX_EVIDENCE_DUMP_UTF16_UNITS_V1: usize = 1_000;
