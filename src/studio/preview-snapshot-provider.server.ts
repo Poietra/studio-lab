@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { CanvasPngAssetTransferV1 } from "../engine/canvas-png-assets";
 import {
   opaqueIdV1Schema,
   parseVerifiedSceneIrBundleV1,
@@ -140,6 +141,77 @@ async function readBoundedJson(response: Response) {
   }
 }
 
+async function readBoundedPng(response: Response, expectedLength: number) {
+  const mediaType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (mediaType !== "image/png") throw providerError("The Scene snapshot asset endpoint returned a non-PNG response.");
+  const lengthHeader = response.headers.get("content-length");
+  if (lengthHeader !== null) {
+    if (!/^(0|[1-9][0-9]*)$/.test(lengthHeader)) {
+      throw providerError("The Scene snapshot asset endpoint returned an invalid content length.");
+    }
+    const declaredLength = Number(lengthHeader);
+    if (!Number.isSafeInteger(declaredLength) || declaredLength !== expectedLength) {
+      throw providerError("The Scene snapshot asset endpoint content length does not match its manifest.");
+    }
+  }
+  const reader = response.body?.getReader();
+  if (!reader) throw providerError("The Scene snapshot asset endpoint returned no PNG body.");
+  const bytes = new Uint8Array(expectedLength);
+  let offset = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (offset + value.byteLength > expectedLength) {
+      await reader.cancel();
+      throw providerError("The Scene snapshot asset endpoint response exceeds its manifest byte length.");
+    }
+    bytes.set(value, offset);
+    offset += value.byteLength;
+  }
+  if (offset !== expectedLength) {
+    throw providerError("The Scene snapshot asset endpoint response is shorter than its manifest byte length.");
+  }
+  return bytes.buffer;
+}
+
+async function sha256Hex(bytes: ArrayBuffer) {
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function loadSnapshotAssetPayloads(
+  fetcher: typeof globalThis.fetch,
+  projectId: string,
+  assets: Awaited<ReturnType<typeof validateVerifiedRun>>["bundle"]["assets"]["assets"],
+  signal?: AbortSignal,
+) {
+  const payloads: CanvasPngAssetTransferV1[] = [];
+  for (const asset of assets) {
+    signal?.throwIfAborted();
+    const response = await fetcher(
+      `/api/manim/projects/${encodeURIComponent(projectId)}/scene-snapshot-assets/${asset.sha256}`,
+      { headers: { accept: "image/png" }, method: "GET", signal },
+    );
+    signal?.throwIfAborted();
+    if (!response.ok) throw providerError(`The Scene snapshot asset endpoint failed with HTTP ${response.status}.`);
+    const bytes = await readBoundedPng(response, asset.byteLength);
+    signal?.throwIfAborted();
+    if ((await sha256Hex(bytes)) !== asset.sha256) {
+      throw providerError("The Scene snapshot asset endpoint returned bytes with a stale digest.");
+    }
+    payloads.push({
+      assetId: asset.id,
+      byteLength: asset.byteLength,
+      bytes,
+      mediaType: asset.mediaType,
+      pixelHeight: asset.pixelHeight,
+      pixelWidth: asset.pixelWidth,
+      sha256: asset.sha256,
+    });
+  }
+  return payloads;
+}
+
 async function validateVerifiedRun(value: unknown, identity: StudioPreviewSceneIdentityV1, requestId: string) {
   const status = runStatusSchema.safeParse(value);
   if (!status.success) throw providerError("The Scene snapshot endpoint returned a malformed run state.", status.error);
@@ -259,7 +331,10 @@ export function createServerPreviewSnapshotProviderV1(
         requestId,
       );
       signal?.throwIfAborted();
+      const assetPayloads = await loadSnapshotAssetPayloads(fetcher, identity.projectId, bundle.assets.assets, signal);
+      signal?.throwIfAborted();
       return {
+        assetPayloads,
         correlation: {
           assetsManifestDigest: bundle.assets.manifestDigest,
           context: {
