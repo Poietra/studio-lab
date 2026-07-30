@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   type CanvasFrameEvidenceResponseV1,
   CanvasWorkerClientError,
+  type InstallCanvasSceneInputV1,
   type PresentedCanvasFrameV1,
   type RenderCanvasFrameInputV1,
   type ReplaceCanvasSceneInputV1,
@@ -20,6 +21,15 @@ const THIRD_REVISION = "c".repeat(64);
 const VIEWPORT = { heightPx: 90, widthPx: 160 } as const;
 const OTHER_VIEWPORT = { heightPx: 180, widthPx: 320 } as const;
 const CANVAS = {} as HTMLCanvasElement;
+const ASSET_PAYLOAD = {
+  assetId: "asset:image:0",
+  byteLength: 4,
+  bytes: new ArrayBuffer(4),
+  mediaType: "image/png" as const,
+  pixelHeight: 1,
+  pixelWidth: 1,
+  sha256: "d".repeat(64),
+};
 
 type Deferred<T> = Readonly<{ promise: Promise<T>; reject: (error: unknown) => void; resolve: (value: T) => void }>;
 
@@ -49,6 +59,7 @@ function frameFor(input: RenderCanvasFrameInputV1, requestId: number): Presented
 
 function createFixture() {
   const install = deferred<void>();
+  const installs: InstallCanvasSceneInputV1[] = [];
   const replacements: { deferred: Deferred<void>; input: ReplaceCanvasSceneInputV1 }[] = [];
   const renders: { deferred: Deferred<PresentedCanvasFrameV1>; input: RenderCanvasFrameInputV1 }[] = [];
   const updates: { deferred: Deferred<UpdateCanvasSceneResultV1>; input: UpdateCanvasSceneInputV1 }[] = [];
@@ -68,7 +79,10 @@ function createFixture() {
     dispose: () => {
       disposeCount += 1;
     },
-    installScene: () => install.promise,
+    installScene: (input) => {
+      installs.push(input);
+      return install.promise;
+    },
     render: (input) => {
       const pending = deferred<PresentedCanvasFrameV1>();
       renders.push({ deferred: pending, input });
@@ -96,6 +110,7 @@ function createFixture() {
     },
     host,
     install,
+    installs,
     presentMismatchedRender: (
       index: number,
       mismatch: Partial<Pick<RenderCanvasFrameInputV1, "revision" | "sampleTime" | "viewport">>,
@@ -468,6 +483,29 @@ describe("StudioPreviewRendererHost", () => {
     await expect(fixture.host.install(installInput())).rejects.toMatchObject({ code: "invalid-state" });
     fixture.install.resolve();
     await pending;
+  });
+
+  it("forwards verified PNG payloads through install and full replacement", async () => {
+    const fixture = createFixture();
+    const pendingInstall = fixture.host.install({ ...installInput(), assetPayloads: [ASSET_PAYLOAD] });
+    expect(fixture.installs[0]?.assetPayloads).toEqual([ASSET_PAYLOAD]);
+    fixture.install.resolve();
+    await pendingInstall;
+
+    const snapshot = await fixtureBundle();
+    // Seed the host with the structurally verified bundle expected by update.
+    // The initial install fixture is deliberately minimal, so use a fresh host
+    // for the replacement half of the transport assertion.
+    const replacementFixture = createFixture();
+    const installing = replacementFixture.host.install({ canvas: CANVAS, revision: REVISION, snapshot });
+    replacementFixture.install.resolve();
+    await installing;
+    const revisionB = await updateInput(snapshot, OTHER_REVISION, 3, [], false);
+    const replacing = replacementFixture.host.update({ ...revisionB.input, assetPayloads: [ASSET_PAYLOAD] });
+    await vi.waitFor(() => expect(replacementFixture.replacements).toHaveLength(1));
+    expect(replacementFixture.replacements[0]?.input.assetPayloads).toEqual([ASSET_PAYLOAD]);
+    replacementFixture.replacements[0]?.deferred.resolve();
+    await replacing;
   });
 
   it("serializes rapid A→B→C updates and presents only the final acknowledged revision", async () => {
