@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   canvasAdapterEvidenceV1Schema,
+  canvasMeasuredMemoryTelemetryV1Schema,
   MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES,
 } from "../src/engine/canvas-worker-protocol";
 import { STAGE_TELEMETRY_COUNT_NAMES, STAGE_TELEMETRY_PHASE_NAMES } from "./engine-stress-workloads";
@@ -13,6 +14,10 @@ const nonnegative = finite.nonnegative();
 const count = z.number().int().nonnegative();
 const positiveCount = count.positive();
 const sha256 = z.string().regex(/^[0-9a-f]{64}$/);
+const byteCount = count.max(Number.MAX_SAFE_INTEGER);
+export const ENGINE_MEMORY_BUDGET_BYTES = 256 * 1024 * 1024;
+export const ENGINE_STAGE_TELEMETRY_SAMPLE_COUNT = 300;
+export const ENGINE_STAGE_TELEMETRY_WARMUP_COUNT = 30;
 const timingSummary = (sample: z.ZodNumber) =>
   strictObject({
     maximumMs: sample,
@@ -55,7 +60,7 @@ const evidenceEnvelope = {
     engineContractVersion: z.literal(1),
     reportSchema: z.string().min(1),
     reportVersion: positiveCount,
-    telemetryAbiVersion: z.literal(2),
+    telemetryAbiVersion: z.literal(3),
   }),
   decisionEligibility: strictObject({ eligible: z.boolean(), reasons: z.array(z.string().min(1)) }),
   evidenceLevel: z.enum(["decision-candidate", "exploratory"]),
@@ -173,6 +178,12 @@ export const engineWebgpuStressReportSchema = z.looseObject({
 
 const cacheOutcome = z.enum(["absent", "hit", "miss", "retained", "skipped"]);
 const cacheCounts = z.partialRecord(cacheOutcome, count);
+const stageMemorySample = strictObject({ frameIndex: count, memory: canvasMeasuredMemoryTelemetryV1Schema });
+const stageMemory = strictObject({
+  budget: strictObject({ limitBytes: z.literal(ENGINE_MEMORY_BUDGET_BYTES), met: z.boolean() }),
+  peakRetainedBoundaryBytes: byteCount,
+  samples: z.array(stageMemorySample).min(1),
+});
 const stageWorkload = strictObject({
   attributionViolations: z.array(
     strictObject({
@@ -228,6 +239,7 @@ const stageWorkload = strictObject({
   ),
   definition: stressDefinition,
   installMs: nonnegative,
+  memory: stageMemory,
   phases: z.record(
     z.enum(STAGE_TELEMETRY_PHASE_NAMES),
     strictObject({
@@ -245,18 +257,103 @@ const stageWorkload = strictObject({
   workerDeviceAdapter: workerAdapter,
 });
 
-export const engineWebgpuStageTelemetryReportSchema = z.looseObject({
-  ...evidenceEnvelope,
-  baseFixtureId: z.string().min(1),
-  capturedAt: z.string().datetime(),
-  configuration: z.looseObject({
-    lane: z.literal("production-build-static-server"),
-    retries,
-    telemetryFrames: positiveCount,
-    warmupFrames: positiveCount,
-  }),
-  environment: z.looseObject({ browserLaunch, host: hostEnvironment, wasm: wasmEvidence }),
-  schema: z.literal("poietra.engine-webgpu-stage-telemetry"),
-  version: z.literal(1),
-  workloads: z.array(stageWorkload).min(1),
-});
+export const engineWebgpuStageTelemetryReportSchema = z
+  .looseObject({
+    ...evidenceEnvelope,
+    baseFixtureId: z.string().min(1),
+    capturedAt: z.string().datetime(),
+    configuration: z.looseObject({
+      lane: z.literal("production-build-static-server"),
+      retries,
+      telemetryFrames: z.literal(ENGINE_STAGE_TELEMETRY_SAMPLE_COUNT),
+      warmupFrames: z.literal(ENGINE_STAGE_TELEMETRY_WARMUP_COUNT),
+    }),
+    environment: z.looseObject({ browserLaunch, host: hostEnvironment, wasm: wasmEvidence }),
+    memoryAccounting: strictObject({
+      exclusions: z.tuple([
+        z.literal("browser-js-dom"),
+        z.literal("transient-per-frame-image-vertex-index-buffers-up-to-64-mib"),
+        z.literal("surface-pipeline-bind-group-sampler-and-driver-allocations-not-byte-accounted"),
+      ]),
+      observation: z.literal("post-gpu-fence-pre-response-serialization-boundary"),
+      peak: z.literal("maximum-raw-retained-boundary-total-peak-never-component-peak-sum"),
+      scope: z.literal("retained-response-boundary-logical-bytes-not-intra-frame-peak-or-process-rss"),
+      total: z.literal("wasm-linear-plus-logical-gpu-resident"),
+      wasmBreakdown: z.literal("informational-subsets-already-contained-in-wasm-linear"),
+    }),
+    schema: z.literal("poietra.engine-webgpu-stage-telemetry"),
+    version: z.literal(2),
+    workloads: z.array(stageWorkload).min(1),
+  })
+  .superRefine((report, context) => {
+    for (const [workloadIndex, workload] of report.workloads.entries()) {
+      const path = ["workloads", workloadIndex, "memory"] as const;
+      if (workload.memory.samples.length !== report.configuration.telemetryFrames) {
+        context.addIssue({
+          code: "custom",
+          message: "memory samples must cover every telemetry frame",
+          path: [...path, "samples"],
+        });
+        continue;
+      }
+      const highWaterPaths = [
+        ["retainedBoundaryTotal"],
+        ["logicalGpuBreakdown", "geometryBufferArena"],
+        ["logicalGpuBreakdown", "retainedImageTextures"],
+        ["logicalGpuResident"],
+        ["wasmLinear"],
+        ["wasmLinearBreakdown", "decodedImageAssets"],
+        ["wasmLinearBreakdown", "preparedGeometryCache"],
+        ["wasmLinearBreakdown", "retainedSceneIndex"],
+      ] as const;
+      let previousPeaks: number[] | null = null;
+      for (const [sampleIndex, sample] of workload.memory.samples.entries()) {
+        if (sample.frameIndex !== sampleIndex) {
+          context.addIssue({
+            code: "custom",
+            message: "memory sample frameIndex must be contiguous and ordered",
+            path: [...path, "samples", sampleIndex, "frameIndex"],
+          });
+        }
+        const peaks = [
+          sample.memory.retainedBoundaryTotal.peakBytes,
+          sample.memory.logicalGpuBreakdown.geometryBufferArena.peakBytes,
+          sample.memory.logicalGpuBreakdown.retainedImageTextures.peakBytes,
+          sample.memory.logicalGpuResident.peakBytes,
+          sample.memory.wasmLinear.peakBytes,
+          sample.memory.wasmLinearBreakdown.decodedImageAssets.peakBytes,
+          sample.memory.wasmLinearBreakdown.preparedGeometryCache.peakBytes,
+          sample.memory.wasmLinearBreakdown.retainedSceneIndex.peakBytes,
+        ];
+        if (previousPeaks) {
+          for (const [peakIndex, peak] of peaks.entries()) {
+            if (peak < previousPeaks[peakIndex]!) {
+              context.addIssue({
+                code: "custom",
+                message: "memory high-water values must be nondecreasing",
+                path: [...path, "samples", sampleIndex, "memory", ...highWaterPaths[peakIndex]!, "peakBytes"],
+              });
+            }
+          }
+        }
+        previousPeaks = peaks;
+      }
+      const recomputedPeak = Math.max(
+        ...workload.memory.samples.map(({ memory }) => memory.retainedBoundaryTotal.peakBytes),
+      );
+      if (workload.memory.peakRetainedBoundaryBytes !== recomputedPeak) {
+        context.addIssue({
+          code: "custom",
+          message: "peakRetainedBoundaryBytes must be recomputed from raw retainedBoundaryTotal peak samples",
+          path: [...path, "peakRetainedBoundaryBytes"],
+        });
+      }
+      if (workload.memory.budget.met !== recomputedPeak <= ENGINE_MEMORY_BUDGET_BYTES) {
+        context.addIssue({
+          code: "custom",
+          message: "memory budget status must be derived from the recomputed peak",
+          path: [...path, "budget", "met"],
+        });
+      }
+    }
+  });

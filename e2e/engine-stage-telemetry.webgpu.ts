@@ -18,7 +18,12 @@ import {
   resolveBenchmarkProvenance,
 } from "./benchmark-environment";
 import { makeServedBuildVerifier } from "./benchmark-manifest";
-import { engineWebgpuStageTelemetryReportSchema } from "./benchmark-report-schemas";
+import {
+  ENGINE_MEMORY_BUDGET_BYTES,
+  ENGINE_STAGE_TELEMETRY_SAMPLE_COUNT,
+  ENGINE_STAGE_TELEMETRY_WARMUP_COUNT,
+  engineWebgpuStageTelemetryReportSchema,
+} from "./benchmark-report-schemas";
 import {
   collectPageAdapterHintOnce,
   STAGE_TELEMETRY_COUNT_NAMES,
@@ -32,8 +37,8 @@ import {
 import { WEBGPU_CHROMIUM_CHANNEL, WEBGPU_CHROMIUM_LAUNCH_ARGS } from "./webgpu-launch";
 
 const VIEWPORT = STRESS_VIEWPORT;
-const WARMUP_FRAMES = 30;
-const TELEMETRY_FRAMES = 300;
+const WARMUP_FRAMES = ENGINE_STAGE_TELEMETRY_WARMUP_COUNT;
+const TELEMETRY_FRAMES = ENGINE_STAGE_TELEMETRY_SAMPLE_COUNT;
 
 /** Semantic per-frame work that remains mandatory across cache/buffer strategies. */
 const REQUIRED_MEASURED_PHASES = [
@@ -244,6 +249,24 @@ function aggregateCaches(frames: readonly TelemetryFrameRecord[]) {
   return { perFrame, summary };
 }
 
+function aggregateMemory(frames: readonly TelemetryFrameRecord[]) {
+  const samples = frames.map((frame) => {
+    if (frame.telemetry.memory.kind !== "measured") {
+      throw new Error(`engine memory must be measured on frame ${frame.frameIndex}: ${frame.telemetry.memory.reason}`);
+    }
+    return { frameIndex: frame.frameIndex, memory: frame.telemetry.memory };
+  });
+  const peakRetainedBoundaryBytes = Math.max(...samples.map(({ memory }) => memory.retainedBoundaryTotal.peakBytes));
+  return {
+    budget: {
+      limitBytes: ENGINE_MEMORY_BUDGET_BYTES,
+      met: peakRetainedBoundaryBytes <= ENGINE_MEMORY_BUDGET_BYTES,
+    },
+    peakRetainedBoundaryBytes,
+    samples,
+  };
+}
+
 /**
  * Per-frame signed attribution residual: raw totalMs minus the additive
  * (pairwise non-overlapping) measured phase sum. Never clamped — a residual
@@ -342,6 +365,7 @@ test("records the 1080p WebGPU stage telemetry matrix", async ({ page, request }
       expect(caches.summary.preparedGeometry).toEqual({ hit: TELEMETRY_FRAMES });
       expect(counts.tessellationCalls).toMatchObject({ maximum: 0, minimum: 0 });
     }
+    const memory = aggregateMemory(measured.frames);
 
     const attributionViolations: {
       frameIndex: number;
@@ -376,6 +400,7 @@ test("records the 1080p WebGPU stage telemetry matrix", async ({ page, request }
       counts,
       definition,
       installMs: measured.installMs,
+      memory,
       phases,
       residual: summarizeSignedTiming(residualPerFrame, TELEMETRY_FRAMES),
       snapshotBytes,
@@ -414,7 +439,7 @@ test("records the 1080p WebGPU stage telemetry matrix", async ({ page, request }
     provenance,
     provenanceStableThroughRun: true,
     baseFixtureId: "eng-v1-shared-circle-opacity",
-    contracts: reportContracts("poietra.engine-webgpu-stage-telemetry", 1),
+    contracts: reportContracts("poietra.engine-webgpu-stage-telemetry", 2),
     configuration: {
       additivePhases: CANVAS_TELEMETRY_ADDITIVE_PHASES,
       attributionToleranceMs: ATTRIBUTION_TOLERANCE_MS,
@@ -435,6 +460,18 @@ test("records the 1080p WebGPU stage telemetry matrix", async ({ page, request }
       nodePlatform: process.platform,
       pageAdapterHint,
       wasm,
+    },
+    memoryAccounting: {
+      exclusions: [
+        "browser-js-dom",
+        "transient-per-frame-image-vertex-index-buffers-up-to-64-mib",
+        "surface-pipeline-bind-group-sampler-and-driver-allocations-not-byte-accounted",
+      ],
+      observation: "post-gpu-fence-pre-response-serialization-boundary",
+      peak: "maximum-raw-retained-boundary-total-peak-never-component-peak-sum",
+      scope: "retained-response-boundary-logical-bytes-not-intra-frame-peak-or-process-rss",
+      total: "wasm-linear-plus-logical-gpu-resident",
+      wasmBreakdown: "informational-subsets-already-contained-in-wasm-linear",
     },
     measurementBoundaries: {
       browserCompositing: {
@@ -474,11 +511,13 @@ test("records the 1080p WebGPU stage telemetry matrix", async ({ page, request }
       "Raw cache outcomes, bufferCreations, drawCalls, tessellationCalls, and uploadBytes record the implementation topology without freezing it; semantic entity/draw counts, correlation, and timing attribution remain fail-closed invariants.",
       "pageAdapterHint is the page-scope navigator.gpu hint; workerDeviceAdapter is the wgpu AdapterInfo of the adapter the Worker actually created its device with. They are reported separately and never asserted equal.",
       "All percentiles are nearest-rank values recomputed from the attached raw samples.",
+      "Retained-boundary memory is the WebAssembly linear-memory allocation plus renderer-owned logical GPU cache bytes, sampled after the GPU queue fence and before response serialization. The CPU cache breakdown is already inside linear memory and is never added again; independently observed component peaks are never summed.",
+      "This is not an intra-frame engine peak or browser process RSS. Browser JS/DOM; transient per-frame image vertex/index buffers (bounded separately at 64 MiB); and surface, pipeline, bind-group, sampler, and driver allocations not byte-accounted by retained caches are explicitly excluded.",
       "environment.host.commitIdentity records the HEAD commit together with the working-tree state; a dirty-tree run is not attributable to that commit alone.",
       "environment.host records kernel and CPU evidence; GPU driver identity and host power mode are explicitly unavailable from this harness, so this exploratory report still lacks the fixed reference-host evidence an adoption decision requires.",
     ],
     schema: "poietra.engine-webgpu-stage-telemetry",
-    version: 1,
+    version: 2,
     workloads,
   } as const;
   const encoded = `${JSON.stringify(report, null, 2)}\n`;
@@ -497,6 +536,8 @@ test("records the 1080p WebGPU stage telemetry matrix", async ({ page, request }
         gpuErrorScopeResolutionP95Ms: workload.phases.gpuErrorScopeResolution!.summary?.p95Ms,
         gpuQueueSubmittedWorkDoneP95Ms: workload.phases.gpuQueueSubmittedWorkDone!.summary?.p95Ms,
         id: workload.definition.id,
+        memoryBudgetMet: workload.memory.budget.met,
+        peakRetainedBoundaryBytes: workload.memory.peakRetainedBoundaryBytes,
         submitP95Ms: workload.phases.submit!.summary?.p95Ms,
         surfaceAcquireP95Ms: workload.phases.surfaceAcquire!.summary?.p95Ms,
         residualP95Ms: workload.residual.p95Ms,
