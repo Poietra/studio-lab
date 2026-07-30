@@ -17,10 +17,12 @@ import type {
 import {
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
+  type FastManimSnapshotProfileVersionV1,
   type FastManimSnapshotRuntimeCapabilityV1,
   type FastManimSnapshotRuntimeConfigV1,
   type FastManimSnapshotRunViewV1,
 } from "../fast-manim-snapshot-contract";
+import type { FastManimSnapshotPngProviderV1 } from "../fast-manim-snapshot-png-provider";
 import type { ProducerGroupKill, ProducerProcessTimings } from "../fast-manim-snapshot-producer-process";
 import {
   FastManimSnapshotAdmissionController,
@@ -111,10 +113,11 @@ export function createRunner(
     maxPublishedSnapshots?: number;
     producerEnv?: Readonly<Record<string, string>>;
     producerProcessTimings?: Partial<ProducerProcessTimings>;
+    pngProvider?: FastManimSnapshotPngProviderV1;
     publicationStore?: FastManimSnapshotPublicationStore;
     publishRetentionMs?: number;
     runtimeDirectoryRemover?: (runtimeDir: string) => Promise<void>;
-    snapshotVersion?: 1 | 2;
+    snapshotVersion?: FastManimSnapshotProfileVersionV1;
     sourceReadHooks?: ManimSourceReadHooks;
     timeoutMs?: number;
   }> = {},
@@ -147,6 +150,7 @@ export function createRunner(
     maxPublishedSnapshots: options.maxPublishedSnapshots,
     projectId: "default",
     projectRoot: root,
+    pngProvider: options.pngProvider,
     publicationStore: options.publicationStore ?? new FastManimSnapshotPublicationStore(),
     publishRetentionMs: options.publishRetentionMs,
     sourceReadHooks: options.sourceReadHooks,
@@ -304,9 +308,11 @@ export async function withFakePlatform<T>(platform: string, run: () => Promise<T
   }
 }
 
-export function runtimeConfig(snapshotVersion: 1 | 2 = 1): FastManimSnapshotRuntimeConfigV1 {
+export function runtimeConfig(
+  snapshotVersion: FastManimSnapshotProfileVersionV1 = 1,
+): FastManimSnapshotRuntimeConfigV1 {
   return {
-    capabilities: [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1],
+    capabilities: snapshotVersion === 4 ? ["png-image"] : [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1],
     frame: { height: 8, width: 14.222222222222221 },
     randomSeed: 0,
     schema: FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,

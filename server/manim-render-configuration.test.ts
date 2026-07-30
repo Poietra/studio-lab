@@ -7,9 +7,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ManimRenderManager,
   manimRenderPipeline,
+  parseFastManimSnapshotVersion,
   parseManimCommand,
   parseManimProjects,
-  parseFastManimSnapshotVersion,
 } from "./manim-render-pipeline";
 import { cleanupManimRenderPipelineFixtures, temporaryRoots } from "./manim-render-pipeline-test-fixtures";
 
@@ -33,7 +33,8 @@ describe("Manim command parsing", () => {
     expect(parseFastManimSnapshotVersion(undefined)).toBe(1);
     expect(parseFastManimSnapshotVersion("2")).toBe(2);
     expect(parseFastManimSnapshotVersion("3")).toBe(3);
-    expect(() => parseFastManimSnapshotVersion("4")).toThrow(/must be 1, 2, or 3/i);
+    expect(parseFastManimSnapshotVersion("4")).toBe(4);
+    expect(() => parseFastManimSnapshotVersion("5")).toThrow(/must be 1, 2, 3, or 4/i);
   });
 });
 

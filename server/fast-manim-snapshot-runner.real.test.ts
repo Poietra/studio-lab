@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -12,6 +13,7 @@ import {
   fastManimSnapshotEntityIdV1,
   fastManimSnapshotEntityProvenanceIdV1,
   fastManimSnapshotManifestIdV1,
+  fastManimSnapshotPngAssetIdV4,
   fastManimSnapshotRunViewV1Schema,
   fastManimSnapshotSceneIdV1,
   fastManimSnapshotSceneProvenanceIdV1,
@@ -71,6 +73,22 @@ class VariableWaitScene(Scene):
         self.wait(2.5, frozen_frame=True)
 `;
 
+const imageSceneSource = `from manim import ImageMobject, RESAMPLING_ALGORITHMS, Scene
+
+class ImageScene(Scene):
+    def construct(self):
+        image = ImageMobject(
+            "image.png",
+            resampling_algorithm=RESAMPLING_ALGORITHMS["nearest"],
+        )
+        self.add(image)
+`;
+
+const imagePngBytes = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR4nGP4z8Dwn4HhvwMADzoDPsGQfWoAAAAASUVORK5CYII=",
+  "base64",
+);
+
 const REAL_FRAME = { height: 8, width: 14.222222222222221 } as const;
 
 const temporaryRoots: string[] = [];
@@ -91,7 +109,11 @@ async function temporaryProject(fileName: string, source: string) {
   return projectRoot;
 }
 
-function createRealRunner(projectRoot: string, snapshotVersion: 1 | 2 = 1) {
+function createRealRunner(
+  projectRoot: string,
+  snapshotVersion: 1 | 2 | 4 = 1,
+  pngProvider?: Readonly<{ readVerified: () => Promise<{ bytes: Uint8Array; versionToken: string }> }>,
+) {
   if (!producerCommand) throw new Error("Unreachable: the real producer command gate failed.");
   const backend = new LocalProcessFastManimSandboxBackendV1({
     admissionController: new FastManimSnapshotAdmissionController(),
@@ -106,6 +128,7 @@ function createRealRunner(projectRoot: string, snapshotVersion: 1 | 2 = 1) {
     frame: REAL_FRAME,
     projectId: "default",
     projectRoot,
+    ...(pngProvider === undefined ? {} : { pngProvider }),
     publicationStore: new FastManimSnapshotPublicationStore(),
     snapshotVersion,
     tenantId: "test-tenant",
@@ -118,6 +141,55 @@ function createRealRunner(projectRoot: string, snapshotVersion: 1 | 2 = 1) {
 const realSeamEnabled = Boolean(producerCommand) && ManimSourceStore.supportsVerifiedRead;
 
 describe.skipIf(!realSeamEnabled)("real fast-manim snapshot producer integration", () => {
+  it("seals one real ImageMobject against the exact PNG bytes sent to its private sandbox", {
+    timeout: 300_000,
+  }, async () => {
+    const projectRoot = await temporaryProject("image-scene.py", imageSceneSource);
+    const runner = createRealRunner(projectRoot, 4, {
+      readVerified: async () => ({ bytes: imagePngBytes, versionToken: "generation:1" }),
+    });
+    const view = fastManimSnapshotRunViewV1Schema.parse(
+      await runner.run({
+        projectId: "default",
+        requestId: "real-snapshot-request-v4",
+        sceneName: "ImageScene",
+        sourcePath: "image-scene.py",
+      }),
+    );
+    if (view.status !== "verified" || view.snapshot.kind !== "compiled") {
+      throw new Error(`Expected a verified V4 image snapshot, got ${JSON.stringify(view)}`);
+    }
+    const bundle = view.snapshot.bundle as Parameters<typeof digestFastManimSnapshotBundleV1>[0];
+    const sceneId = fastManimSnapshotSceneIdV1("image-scene.py", "ImageScene");
+    const digest = createHash("sha256").update(imagePngBytes).digest("hex");
+    expect(bundle.assets.assets).toEqual([
+      {
+        alphaMode: "straight",
+        byteLength: imagePngBytes.byteLength,
+        colorSpace: "srgb",
+        id: fastManimSnapshotPngAssetIdV4(sceneId),
+        kind: "png-image",
+        mediaType: "image/png",
+        pixelHeight: 1,
+        pixelWidth: 2,
+        sha256: digest,
+      },
+    ]);
+    expect(bundle.scene.requiredCapabilities).toEqual(["png-image"]);
+    expect(bundle.scene.entities).toHaveLength(1);
+    expect(bundle.scene.entities[0]).toMatchObject({
+      appearance: { kind: "image", opacity: 1 },
+      geometry: {
+        asset: { assetId: fastManimSnapshotPngAssetIdV4(sceneId), sha256: digest },
+        kind: "image",
+        sampler: "nearest",
+      },
+    });
+    const wire = JSON.stringify(view);
+    expect(wire).not.toContain(projectRoot);
+    expect(wire).not.toContain("image.png");
+  });
+
   it("seals the static Circle+Rectangle+Line Scene as verified with a stable snapshot digest", {
     timeout: 300_000,
   }, async () => {
