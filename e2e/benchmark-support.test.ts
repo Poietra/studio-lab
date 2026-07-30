@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -29,6 +29,11 @@ import {
   type WorkerAdapterIdentity,
   windowsHostEvidenceInvocation,
 } from "./benchmark-environment";
+import {
+  promoteBenchmarkEvidenceSetV1,
+  verifyBenchmarkEvidenceSetV1,
+  verifyPromotedBenchmarkEvidenceSetV1,
+} from "./benchmark-evidence-set";
 import {
   BENCHMARK_BUILD_MANIFEST_PATH,
   benchmarkBuildManifestSchema,
@@ -468,6 +473,126 @@ function stageTelemetryReportFixture() {
 }
 
 const stageReportFixture = stageTelemetryReportFixture;
+
+function promotableEvidenceSetFixture() {
+  const benchmark = benchmarkReportFixture();
+  const coldTiming = summarizeTiming(
+    Array.from({ length: 20 }, () => 1),
+    20,
+  );
+  const measuredTiming = summarizeTiming(
+    Array.from({ length: 300 }, () => 1),
+    300,
+  );
+  const benchmarkReport = {
+    ...benchmark,
+    budgets: {
+      coldClientImportToSceneReady: { limitMs: 1_000, met: true },
+      scrubAck: { limitMs: 50, met: true },
+      warmFrame: { limitMs: 16.7, met: true },
+    },
+    metrics: {
+      coldBrowserLaunch: coldTiming,
+      coldClientImportToSceneReady: coldTiming,
+      coldPageLoad: coldTiming,
+      scrubAck: measuredTiming,
+      warmFrame: measuredTiming,
+    },
+  };
+
+  const pacedTiming = summarizeTiming(
+    Array.from({ length: 301 }, () => 1),
+    301,
+  );
+  const byteSummary = summarizeByteLengths(
+    Array.from({ length: 300 }, () => 1_000),
+    300,
+  );
+  const stressReport = stressReportFixture(completeStressWorkloadFixtures());
+  const stress = {
+    ...stressReport,
+    configuration: {
+      ...stressReport.configuration,
+      measuredFrames: 300,
+      pacedFrames: 301,
+      scrubFrames: 120,
+    },
+    workloads: stressReport.workloads.map((workload) => ({
+      ...workload,
+      continuousScrub: {
+        ...workload.continuousScrub,
+        fulfilledRequests: 120,
+        requestedRequests: 120,
+      },
+      interactionBounds: {
+        ...workload.interactionBounds,
+        acknowledgement: measuredTiming,
+        logicalResponseJsonBytes: byteSummary,
+      },
+      pacedPresentation: {
+        ...workload.pacedPresentation,
+        acknowledgement: pacedTiming,
+        effectivePresentationAckFps: 1_000,
+        presentationAckInterval: measuredTiming,
+      },
+      randomSeekAck: measuredTiming,
+    })),
+  };
+
+  const stageReport = stageTelemetryReportFixture();
+  const correlation = Array.from({ length: 300 }, (_, frameIndex) => ({
+    ackMs: 1,
+    frameIndex,
+    packetId: `fixture-packet-${frameIndex}`,
+    requestId: frameIndex + 1,
+    requestedSampleTime: 0,
+    residualMs: 0,
+    sampleTime: 0,
+    suboptimal: false,
+    totalMs: 1,
+  }));
+  const countSample = { maximum: 1, minimum: 1, perFrame: Array.from({ length: 300 }, () => 1) };
+  const phaseSample = {
+    availability: { measured: 300, skipped: 0, unavailable: 0 },
+    samplesMs: measuredTiming.samplesMs,
+    summary: measuredTiming,
+    unavailableReasons: [],
+  };
+  const cachePerFrame = Array.from({ length: 300 }, (_, frameIndex) => ({
+    frameIndex,
+    imageSamplerBinding: "miss" as const,
+    imageTexture: "miss" as const,
+    pipeline: "miss" as const,
+    preparedGeometry: "miss" as const,
+    surfaceConfiguration: "miss" as const,
+    surfaceConfigurations: 1,
+  }));
+  const cacheSummary = {
+    imageSamplerBinding: { miss: 300 },
+    imageTexture: { miss: 300 },
+    pipeline: { miss: 300 },
+    preparedGeometry: { miss: 300 },
+    surfaceConfiguration: { miss: 300 },
+  };
+  const stageTelemetry = {
+    ...stageReport,
+    configuration: { ...stageReport.configuration, telemetryFrames: 300 },
+    workloads: stageReport.workloads.map((workload) => ({
+      ...workload,
+      caches: { perFrame: cachePerFrame, summary: cacheSummary },
+      correlation,
+      counts: Object.fromEntries(STAGE_TELEMETRY_COUNT_NAMES.map((name) => [name, countSample])),
+      phases: Object.fromEntries(STAGE_TELEMETRY_PHASE_NAMES.map((name) => [name, phaseSample])),
+      residual: summarizeSignedTiming(
+        Array.from({ length: 300 }, () => 0),
+        300,
+      ),
+      telemetryAck: measuredTiming,
+      totalMsSummary: measuredTiming,
+    })),
+  };
+  return { benchmark: benchmarkReport, stageTelemetry, stress };
+}
 
 describe("benchmark provenance", () => {
   it("derives clean/dirty identity from git and fails closed when git is unavailable", () => {
@@ -1369,5 +1494,71 @@ describe("report summaries", () => {
         },
       }).success,
     ).toBe(false);
+  });
+
+  it("recomputes decision-driving benchmark evidence and rejects mixed runs", () => {
+    const evidence = promotableEvidenceSetFixture();
+    expect(verifyBenchmarkEvidenceSetV1(evidence).identity).toMatchObject({
+      commit: COMMIT_A,
+      profileId: REFERENCE_HOST.profile.id,
+      runBuildPath: "fixture.wasm",
+    });
+
+    const wrongSummary = structuredClone(evidence);
+    wrongSummary.benchmark.metrics.warmFrame = { ...wrongSummary.benchmark.metrics.warmFrame, p95Ms: 99 };
+    expect(() => verifyBenchmarkEvidenceSetV1(wrongSummary)).toThrow(/benchmark.metrics.warmFrame/);
+
+    const missingSamples = structuredClone(evidence);
+    missingSamples.stress.workloads[0]!.randomSeekAck.samplesMs.pop();
+    expect(() => verifyBenchmarkEvidenceSetV1(missingSamples)).toThrow(/exactly 300 timing samples/);
+
+    const forgedBudget = structuredClone(evidence);
+    forgedBudget.stress.workloads[0]!.budgets.randomSeekAcknowledgement.met = false;
+    expect(() => verifyBenchmarkEvidenceSetV1(forgedBudget)).toThrow(/budgets/);
+
+    const forgedCache = structuredClone(evidence);
+    forgedCache.stageTelemetry.workloads[0]!.caches.summary.pipeline = { hit: 300 };
+    expect(() => verifyBenchmarkEvidenceSetV1(forgedCache)).toThrow(/caches.summary.pipeline/);
+
+    const mixedRun = structuredClone(evidence);
+    mixedRun.stageTelemetry.environment.wasm.path = "dist-benchmark/run-another/engine-wasm/poietra_wasm_bg.wasm";
+    expect(() => verifyBenchmarkEvidenceSetV1(mixedRun)).toThrow(/cross-report run-specific WASM/);
+  });
+
+  it("promotes exactly one verified report set without overwriting evidence", async () => {
+    const temporary = mkdtempSync(join(tmpdir(), "poietra-benchmark-evidence-"));
+    try {
+      const evidence = promotableEvidenceSetFixture();
+      const benchmarkPath = join(temporary, "source-benchmark.json");
+      const stressPath = join(temporary, "source-stress.json");
+      const stageTelemetryPath = join(temporary, "source-stage.json");
+      writeFileSync(benchmarkPath, `${JSON.stringify(evidence.benchmark)}\n`);
+      writeFileSync(stressPath, `${JSON.stringify(evidence.stress)}\n`);
+      writeFileSync(stageTelemetryPath, `${JSON.stringify(evidence.stageTelemetry)}\n`);
+      const input = {
+        benchmarkPath,
+        outputRoot: join(temporary, "checked-in-root"),
+        stageTelemetryPath,
+        stressPath,
+      };
+      const promoted = await promoteBenchmarkEvidenceSetV1(input);
+      expect(promoted.manifest).toMatchObject({
+        commit: COMMIT_A,
+        profile: { id: REFERENCE_HOST.profile.id },
+        runBuildPath: "fixture.wasm",
+        schema: "poietra.engine-webgpu-evidence-set",
+        version: 1,
+      });
+      expect(existsSync(join(promoted.destination, "benchmark.json"))).toBe(true);
+      expect(JSON.parse(readFileSync(join(promoted.destination, "manifest.json"), "utf8"))).toEqual(promoted.manifest);
+      expect((await verifyPromotedBenchmarkEvidenceSetV1(promoted.destination)).verified.identity.commit).toBe(
+        COMMIT_A,
+      );
+      await expect(promoteBenchmarkEvidenceSetV1(input)).rejects.toThrow(/already exists/);
+      writeFileSync(join(promoted.destination, "stress.json"), "{}\n");
+      await expect(verifyPromotedBenchmarkEvidenceSetV1(promoted.destination)).rejects.toThrow(/manifest SHA-256/);
+    } finally {
+      rmSync(temporary, { force: true, recursive: true });
+    }
   });
 });
