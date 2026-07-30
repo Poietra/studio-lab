@@ -49,9 +49,20 @@ pub struct PixelReference {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct EvaluationRequest {
     evidence: Vec<String>,
+    #[allow(dead_code)]
+    expected: Option<EvaluationExpectation>,
+    #[allow(dead_code)]
+    id: Option<String>,
     packet_id: String,
     sample_time: f64,
     viewport: ViewportV1,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)]
+struct EvaluationExpectation {
+    semantic_digest: String,
 }
 
 fn fixture_path(file_name: &str) -> PathBuf {

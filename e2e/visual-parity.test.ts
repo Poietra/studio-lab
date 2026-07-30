@@ -19,7 +19,12 @@ function sha256(bytes: Uint8Array) {
 describe("visual parity v1 contracts", () => {
   it("pins the first corpus item to the existing dynamic semantic digest and default gate", async () => {
     const corpus = await corpusFixture();
-    expect(corpus.entries).toHaveLength(3);
+    expect(corpus.entries.map(({ id }) => id)).toEqual([
+      "dynamic-affine-camera--a-first",
+      "png-alpha-edge-camera--midpoint",
+      "mathtex-nested-radical-fraction--static",
+      "generic-stroke-topology--sample",
+    ]);
     const entry = corpus.entries.find(({ id }) => id === "dynamic-affine-camera--a-first");
     expect(entry).toBeDefined();
     if (!entry) throw new Error("The dynamic visual parity entry is missing.");
@@ -260,5 +265,35 @@ describe("visual parity v1 contracts", () => {
         browser: { ...valid.browser, rgbaByteLength: 4 },
       }).success,
     ).toBe(false);
+  });
+
+  it("pins generic stroke topology and composition to the default full-RGBA gate", async () => {
+    const corpus = await corpusFixture();
+    const entry = corpus.entries.find(({ id }) => id === "generic-stroke-topology--sample");
+    expect(entry).toMatchObject({
+      fixture: {
+        id: "eng-v1-generic-stroke-topology",
+        revision: { sha256: "c".repeat(64) },
+      },
+      sample: {
+        id: "sample",
+        sampleTime: 0.5,
+        semanticDigest: "168d5dd63f8e50c8b79bd25fd34de99b5cde9280088771e0f2a7850e693af252",
+        viewport: { heightPx: 90, widthPx: 160 },
+      },
+      thresholdException: null,
+    });
+    if (!entry) throw new Error("The generic stroke visual parity entry is missing.");
+    expect(thresholdsForEntryV1(corpus, entry)).toEqual(corpus.defaultThresholds);
+
+    const fixture = JSON.parse(await readFile("fixtures/engine-v1/generic-stroke-topology.json", "utf8"));
+    expect(fixture.scene.source.revisionHash).toBe(entry.fixture.revision.sha256);
+    expect(fixture.sample).toMatchObject({
+      expected: { semanticDigest: entry.sample.semanticDigest },
+      id: entry.sample.id,
+      sampleTime: entry.sample.sampleTime,
+      viewport: entry.sample.viewport,
+    });
+    expect(Object.keys(fixture.reference.samples)).toHaveLength(10);
   });
 });
