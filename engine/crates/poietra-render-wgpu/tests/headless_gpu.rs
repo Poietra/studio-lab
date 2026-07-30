@@ -259,6 +259,7 @@ const VISUAL_PARITY_CORPUS_SCHEMA_V1: &str = "poietra.visual-parity-corpus";
 const VISUAL_PARITY_ENTRY_V1: &str = "dynamic-affine-camera--a-first";
 const PNG_VISUAL_PARITY_ENTRY_V1: &str = "png-alpha-edge-camera--midpoint";
 const MATHTEX_VISUAL_PARITY_ENTRY_V1: &str = "mathtex-nested-radical-fraction--static";
+const GENERIC_STROKE_VISUAL_PARITY_ENTRY_V1: &str = "generic-stroke-topology--sample";
 const VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1: &str = "POIETRA_VISUAL_PARITY_NATIVE_ARTIFACT_DIR";
 const SEMANTIC_NUMBER_SCALE: f64 = 1_000_000_000.0;
 
@@ -1088,10 +1089,12 @@ fn render_and_assert_shared_reference(
     packet: &RenderPacketV1,
     reference: PixelReferenceSet,
     evidence_name: &str,
+    visual_parity_entry: Option<&VisualParityCorpusEntry>,
 ) {
     let instance =
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
     let adapter = request_fallback_adapter(&instance);
+    let adapter_info = adapter.get_info();
     assert_target_format_support(&adapter);
     let (device, queue) = request_device(&adapter);
     let device_loss = track_device_loss(&device);
@@ -1128,20 +1131,86 @@ fn render_and_assert_shared_reference(
         assert_pixel_close(actual, sample.rgba, [sample.tolerance; 4]);
         println!("poietra-{evidence_name}-asserted={name}");
     }
+    if let Some(entry) = visual_parity_entry {
+        let artifact_requested = env::var_os(VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1).is_some();
+        assert_eq!(
+            emit_native_visual_parity_artifact(entry, &adapter_info, &rgba),
+            artifact_requested,
+            "the opt-in {evidence_name} native artifact must be emitted exactly once"
+        );
+    }
 }
 
 #[test]
 #[ignore = "requires a native software WGPU adapter; the dedicated CI step runs this proof"]
 fn renders_shared_generic_fill_fixture_with_fallback_adapter() {
     let (packet, reference) = generic_fill_fixture();
-    render_and_assert_shared_reference(&packet, reference, "generic-fill");
+    render_and_assert_shared_reference(&packet, reference, "generic-fill", None);
 }
 
 #[test]
 #[ignore = "requires a native software WGPU adapter; the dedicated CI step runs this proof"]
 fn renders_shared_generic_stroke_fixture_with_fallback_adapter() {
     let (packet, reference) = generic_stroke_fixture();
-    render_and_assert_shared_reference(&packet, reference, "generic-stroke");
+    let visual_parity_entry = load_visual_parity_entry(GENERIC_STROKE_VISUAL_PARITY_ENTRY_V1);
+    assert_eq!(
+        visual_parity_entry.fixture.id,
+        "eng-v1-generic-stroke-topology"
+    );
+    assert_eq!(
+        visual_parity_entry.fixture.path,
+        "fixtures/engine-v1/generic-stroke-topology.json"
+    );
+    assert_eq!(
+        visual_parity_entry.fixture.revision.kind,
+        "studio-edit-program"
+    );
+
+    let fixture: serde_json::Value = serde_json::from_slice(
+        &fs::read(repository_root().join(&visual_parity_entry.fixture.path))
+            .expect("generic stroke visual parity fixture must be readable"),
+    )
+    .expect("generic stroke visual parity fixture must be JSON");
+    assert_eq!(
+        fixture["id"].as_str(),
+        Some(visual_parity_entry.fixture.id.as_str())
+    );
+    assert_eq!(
+        fixture["scene"]["source"]["revisionHash"].as_str(),
+        Some(visual_parity_entry.fixture.revision.sha256.as_str())
+    );
+    assert_eq!(
+        fixture["sample"]["id"].as_str(),
+        Some(visual_parity_entry.sample.id.as_str())
+    );
+    assert_eq!(
+        fixture["sample"]["sampleTime"].as_f64().map(f64::to_bits),
+        Some(visual_parity_entry.sample.sample_time.to_bits())
+    );
+    assert_eq!(
+        packet.sample_time.to_bits(),
+        visual_parity_entry.sample.sample_time.to_bits()
+    );
+    assert_eq!(
+        packet.scene_revision_hash,
+        visual_parity_entry.fixture.revision.sha256
+    );
+    assert_eq!(packet.viewport, visual_parity_entry.sample.viewport);
+    assert_eq!(
+        fixture["sample"]["expected"]["semanticDigest"].as_str(),
+        Some(visual_parity_entry.sample.semantic_digest.as_str())
+    );
+    assert_eq!(
+        render_packet_semantic_digest(&packet),
+        visual_parity_entry.sample.semantic_digest
+    );
+
+    render_and_assert_shared_reference(
+        &packet,
+        reference,
+        "generic-stroke",
+        Some(&visual_parity_entry),
+    );
 }
 
 #[test]

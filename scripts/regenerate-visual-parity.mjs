@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { accessSync, existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 
 const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
@@ -7,6 +8,61 @@ const nativeArtifactRoot = resolve(
   process.env.POIETRA_VISUAL_PARITY_NATIVE_ARTIFACT_DIR ?? "test-results/visual-parity/native",
 );
 const outputRoot = resolve(process.env.POIETRA_VISUAL_PARITY_OUTPUT_DIR ?? "test-results/visual-parity/output");
+const corpus = JSON.parse(readFileSync(resolve("fixtures/visual-parity-v1/corpus.json"), "utf8"));
+const entryIdPattern = /^[a-z0-9-]+--[a-z0-9-]+$/;
+if (corpus.schema !== "poietra.visual-parity-corpus" || corpus.version !== 1 || !Array.isArray(corpus.entries)) {
+  throw new Error("The visual parity corpus must use the v1 envelope.");
+}
+for (const entry of corpus.entries) {
+  if (typeof entry.id !== "string" || !entryIdPattern.test(entry.id)) {
+    throw new Error("Every visual parity corpus entry must have one safe artifact ID.");
+  }
+}
+const nativeTestByEntryId = new Map([
+  ["dynamic-affine-camera--a-first", "renders_dynamic_affine_camera_samples_with_fallback_adapter"],
+  ["png-alpha-edge-camera--midpoint", "renders_png_alpha_edge_camera_midpoint_with_fallback_adapter"],
+  ["mathtex-nested-radical-fraction--static", "renders_mathtex_nested_radical_fraction_with_fallback_adapter"],
+  ["generic-stroke-topology--sample", "renders_shared_generic_stroke_fixture_with_fallback_adapter"],
+]);
+const expectedArtifactIds = corpus.entries.map(({ id }) => id).sort();
+const configuredArtifactIds = [...nativeTestByEntryId.keys()].sort();
+if (JSON.stringify(configuredArtifactIds) !== JSON.stringify(expectedArtifactIds)) {
+  throw new Error(
+    `Native visual parity producers must exactly match the corpus: expected ${expectedArtifactIds.join(", ")}; configured ${configuredArtifactIds.join(", ")}`,
+  );
+}
+
+function removeGeneratedEntryDirectories(root, markerFile, expectedSchema, markerEntryId) {
+  if (!existsSync(root)) return;
+  for (const directory of readdirSync(root, { withFileTypes: true })) {
+    if (!directory.isDirectory() || !entryIdPattern.test(directory.name)) continue;
+    const markerPath = resolve(root, directory.name, markerFile);
+    if (!existsSync(markerPath)) continue;
+    let marker;
+    try {
+      marker = JSON.parse(readFileSync(markerPath, "utf8"));
+    } catch {
+      continue;
+    }
+    if (marker.schema === expectedSchema && markerEntryId(marker) === directory.name) {
+      rmSync(resolve(root, directory.name), { force: true, recursive: true });
+    }
+  }
+}
+
+removeGeneratedEntryDirectories(
+  nativeArtifactRoot,
+  "metadata.json",
+  "poietra.visual-parity-native-artifact",
+  (marker) => marker.corpusEntryId,
+);
+removeGeneratedEntryDirectories(outputRoot, "report.json", "poietra.visual-parity-report", (marker) =>
+  marker.corpus ? marker.corpus.entryId : undefined,
+);
+for (const entry of corpus.entries) {
+  rmSync(resolve(nativeArtifactRoot, entry.id), { force: true, recursive: true });
+  rmSync(resolve(outputRoot, entry.id), { force: true, recursive: true });
+}
 const environment = {
   ...process.env,
   POIETRA_VISUAL_PARITY_NATIVE_ARTIFACT_DIR: nativeArtifactRoot,
@@ -14,11 +70,9 @@ const environment = {
   WGPU_BACKEND: process.env.WGPU_BACKEND ?? "vulkan",
 };
 
-for (const nativeTest of [
-  "renders_dynamic_affine_camera_samples_with_fallback_adapter",
-  "renders_mathtex_nested_radical_fraction_with_fallback_adapter",
-  "renders_png_alpha_edge_camera_midpoint_with_fallback_adapter",
-]) {
+for (const entry of corpus.entries) {
+  const nativeTest = nativeTestByEntryId.get(entry.id);
+  if (!nativeTest) throw new Error(`Missing native visual parity producer for ${entry.id}.`);
   execFileSync(
     cargo,
     [
@@ -39,6 +93,20 @@ for (const nativeTest of [
     ],
     { env: environment, stdio: "inherit" },
   );
+}
+const producedArtifactIds = readdirSync(nativeArtifactRoot, { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => entry.name)
+  .sort();
+if (JSON.stringify(producedArtifactIds) !== JSON.stringify(expectedArtifactIds)) {
+  throw new Error(
+    `Native visual parity artifacts must exactly match the corpus: expected ${expectedArtifactIds.join(", ")}; received ${producedArtifactIds.join(", ")}`,
+  );
+}
+for (const entry of corpus.entries) {
+  const entryDirectory = resolve(nativeArtifactRoot, entry.id);
+  accessSync(resolve(entryDirectory, "metadata.json"));
+  accessSync(resolve(entryDirectory, "expected.rgba"));
 }
 execFileSync(pnpm, ["build:canvas:wasm"], { env: environment, stdio: "inherit" });
 execFileSync(pnpm, ["exec", "playwright", "test", "--config", "playwright.visual-parity.config.ts"], {

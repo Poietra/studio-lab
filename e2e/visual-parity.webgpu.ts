@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { expect, type Page, test } from "@playwright/test";
@@ -11,6 +12,14 @@ import {
   visualParityReportV1Schema,
 } from "./visual-parity-contract";
 import { compareVisualParityFramesV1, makeOpaqueVisualParityDiffV1 } from "./visual-parity-metrics";
+
+type VisualParityFixtureSample = Readonly<{
+  expected: Readonly<{ analyticReferenceId?: string; semanticDigest: string }>;
+  id: string;
+  packetId: string;
+  sampleTime: number;
+  viewport: Readonly<{ heightPx: number; widthPx: number }>;
+}>;
 
 type DynamicFixture = Readonly<{
   assetPayloads?: readonly Readonly<{
@@ -37,17 +46,16 @@ type DynamicFixture = Readonly<{
     [key: string]: unknown;
   }>;
   id: string;
-  samples: readonly Readonly<{
-    expected: Readonly<{ analyticReferenceId?: string; semanticDigest: string }>;
-    id: string;
-    packetId: string;
-    sampleTime: number;
-    viewport: Readonly<{ heightPx: number; widthPx: number }>;
-  }>[];
+  sample?: VisualParityFixtureSample;
+  samples?: readonly VisualParityFixtureSample[];
   scene: Readonly<{
     source: Readonly<{ kind: string; revisionHash?: string }>;
   }>;
 }>;
+
+const VISUAL_PARITY_CORPUS = visualParityCorpusV1Schema.parse(
+  JSON.parse(readFileSync("fixtures/visual-parity-v1/corpus.json", "utf8")),
+);
 
 type FullRgbaProofV1 = Readonly<{
   capture: Readonly<{ policy: "exactly-one-render-submit"; renderSubmissionCount: 1 }>;
@@ -81,10 +89,19 @@ function requireArtifactRoot() {
   return root;
 }
 
-async function proveVisualParityEntry(page: Page, entryId: string) {
-  const corpus = visualParityCorpusV1Schema.parse(
-    JSON.parse(await readFile("fixtures/visual-parity-v1/corpus.json", "utf8")),
+test.beforeAll(async () => {
+  const expectedEntryIds = VISUAL_PARITY_CORPUS.entries.map(({ id }) => id).sort();
+  const artifactEntryIds = (await readdir(requireArtifactRoot(), { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+  expect(artifactEntryIds, "native artifact directories must exactly match the visual parity corpus").toEqual(
+    expectedEntryIds,
   );
+});
+
+async function proveVisualParityEntry(page: Page, entryId: string) {
+  const corpus = VISUAL_PARITY_CORPUS;
   const entry = corpus.entries.find(({ id }) => id === entryId);
   expect(entry, `the ${entryId} visual parity corpus entry must exist`).toBeDefined();
   if (!entry) throw new Error(`The ${entryId} visual parity corpus entry is missing.`);
@@ -115,7 +132,11 @@ async function proveVisualParityEntry(page: Page, entryId: string) {
   expect(fixture.scene.source).toEqual(
     expect.objectContaining({ kind: entry.fixture.revision.kind, revisionHash: entry.fixture.revision.sha256 }),
   );
-  const sample = fixture.samples.find(({ id }) => id === entry.sample.id);
+  if ((fixture.sample === undefined) === (fixture.samples === undefined)) {
+    throw new Error(`The ${entry.id} fixture must define exactly one of sample or samples.`);
+  }
+  const samples = fixture.samples ?? [fixture.sample!];
+  const sample = samples.find(({ id }) => id === entry.sample.id);
   expect(sample, "the corpus sample must exist in the shared fixture").toBeDefined();
   if (!sample) throw new Error("The corpus sample is missing from the shared fixture.");
   expect(sample).toMatchObject({
@@ -317,14 +338,8 @@ async function proveVisualParityEntry(page: Page, entryId: string) {
   ).toBeLessThanOrEqual(thresholds.maximumPixelFractionAboveThreshold);
 }
 
-test("matches native Lavapipe for dynamic-affine-camera/a-first", async ({ page }) => {
-  await proveVisualParityEntry(page, "dynamic-affine-camera--a-first");
-});
-
-test("matches native and analytic reference for PNG alpha-edge/camera midpoint", async ({ page }) => {
-  await proveVisualParityEntry(page, "png-alpha-edge-camera--midpoint");
-});
-
-test("matches native Lavapipe for a Studio-created nested radical fraction", async ({ page }) => {
-  await proveVisualParityEntry(page, "mathtex-nested-radical-fraction--static");
-});
+for (const entry of VISUAL_PARITY_CORPUS.entries) {
+  test(`matches native full-RGBA for ${entry.id}`, async ({ page }) => {
+    await proveVisualParityEntry(page, entry.id);
+  });
+}

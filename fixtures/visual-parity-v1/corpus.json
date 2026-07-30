@@ -84,6 +84,24 @@
         "viewport": { "heightPx": 360, "widthPx": 640 }
       },
       "thresholdException": null
+    },
+    {
+      "id": "generic-stroke-topology--sample",
+      "fixture": {
+        "id": "eng-v1-generic-stroke-topology",
+        "path": "fixtures/engine-v1/generic-stroke-topology.json",
+        "revision": {
+          "kind": "studio-edit-program",
+          "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      },
+      "sample": {
+        "id": "sample",
+        "sampleTime": 0.5,
+        "semanticDigest": "168d5dd63f8e50c8b79bd25fd34de99b5cde9280088771e0f2a7850e693af252",
+        "viewport": { "heightPx": 90, "widthPx": 160 }
+      },
+      "thresholdException": null
     }
   ]
 }
