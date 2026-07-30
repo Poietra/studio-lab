@@ -2,10 +2,11 @@ import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 import { parseVerifiedSceneIrBundleV1 } from "../engine/contracts";
-import { digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
+import { canonicalJsonV1, digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
 import { type MathTexOutlineResponseV1, mathTexOutlineResponseV1Schema } from "../engine/mathtex-outline";
 import { applySceneIrDeltaV1, createSceneIrDeltaV1 } from "../engine/scene-delta";
 import { createStudioEntitiesProgram } from "./authoring-commands";
+import { canonicalEditorWorkingRevision } from "./editor-revision-policy";
 import { evaluateWorkingState, programRecord } from "./evaluator";
 import {
   type ProgramRecord,
@@ -21,6 +22,7 @@ import {
   type StudioVerifiedPreviewSnapshotV1,
   studioPreviewWorkspaceKeyV1,
 } from "./preview-snapshot-provider";
+import { createMathTexFixturePreviewSnapshotProviderV1 } from "./preview-snapshot-provider.fixture";
 import {
   claimStudioPreviewCanvasV1,
   compileStudioPreviewSceneV1,
@@ -537,6 +539,136 @@ describe("compileStudioPreviewSceneV1", () => {
     });
     expect(discontinuousCompilerCalls).toBe(0);
     expect(discontinuous).toMatchObject({ error: expect.stringContaining("changes content"), kind: "unsupported" });
+  });
+
+  it("canonically reconstructs the checked MathTex parity fixture through the Studio adapter", async () => {
+    const [fixtureSource, harnessSource] = await Promise.all([
+      readFile(new URL("../../fixtures/engine-v1/mathtex-nested-radical-fraction.json", import.meta.url), "utf8"),
+      readFile(new URL("../../fixtures/engine-v1/studio-mathtex-preview.harness.json", import.meta.url), "utf8"),
+    ]);
+    const fixture = JSON.parse(fixtureSource) as Readonly<{
+      assets: unknown;
+      id: string;
+      mathTexReference: Readonly<{
+        compilerBounds: unknown;
+        compilerContentDigest: string;
+        compilerFillRule: unknown;
+        compilerFontDigest: string;
+        compilerToolchainDigest: string;
+        texParts: string[];
+      }>;
+      scene: unknown;
+    }>;
+    const harness = JSON.parse(harnessSource) as Readonly<{
+      expectedIdentity: Readonly<{ projectId: string; sceneName: string; sourceHash: string; sourcePath: string }>;
+    }>;
+    const expectedBundle = await parseVerifiedSceneIrBundleV1({ assets: fixture.assets, scene: fixture.scene });
+    if (expectedBundle.scene.source.kind !== "studio-edit-program") {
+      throw new Error("The checked MathTex parity fixture must carry Studio revision evidence.");
+    }
+    const [expectedEntity] = expectedBundle.scene.entities;
+    if (!expectedEntity || expectedEntity.geometry.kind !== "cubic-path") {
+      throw new Error("The checked MathTex parity fixture must contain one cubic-path entity.");
+    }
+    const outlineResponse = mathTexOutlineResponseV1Schema.parse({
+      result: {
+        bounds: fixture.mathTexReference.compilerBounds,
+        contentDigest: fixture.mathTexReference.compilerContentDigest,
+        fillRule: fixture.mathTexReference.compilerFillRule,
+        fontDigest: fixture.mathTexReference.compilerFontDigest,
+        kind: "compiled",
+        path: expectedEntity.geometry.path,
+        toolchainDigest: fixture.mathTexReference.compilerToolchainDigest,
+      },
+      schema: "poietra.mathtex-outline-response",
+      version: 1,
+    });
+    const snapshot = await createMathTexFixturePreviewSnapshotProviderV1().loadVerifiedSnapshot({
+      identity: harness.expectedIdentity,
+    });
+    const baseScene: RuntimeSceneState = {
+      constraintGraph: { constraints: [] },
+      duration: snapshot.duration,
+      eventTrack: { events: [] },
+      objectGraph: { entities: {}, lineage: [] },
+      propertyChannels: {},
+      provenanceGraph: { records: [] },
+      sceneId: snapshot.sceneId,
+      version: STUDIO_STATE_VERSION,
+    };
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 0,
+      entities: [
+        {
+          content: {
+            displayLines: [...fixture.mathTexReference.texParts],
+            label: fixture.mathTexReference.texParts.join(""),
+            texParts: [...fixture.mathTexReference.texParts],
+          },
+          position: { x: 320, y: 180 },
+          type: "MathTex",
+        },
+      ],
+      scene: baseScene,
+      transactionId: "visual-parity-mathtex-nested-radical-fraction",
+    });
+    expect(creation.validation.kind, JSON.stringify(creation.validation.issues)).toBe("valid");
+    const record = programRecord(creation.validation.program, creation.validation);
+    const workingState: WorkingState = {
+      appliedPrograms: [record],
+      editorContext: {
+        activeSceneId: baseScene.sceneId,
+        playhead: 0.5,
+        selection: [...creation.entityIds],
+        version: STUDIO_STATE_VERSION,
+        viewport: { height: 360, width: 640 },
+      },
+      runtimeSceneState: baseScene,
+      sourceSnapshot: {
+        configId: "visual-parity-v1",
+        hash: `sha256:${snapshot.correlation.context.sourceHash}`,
+        sourceId: snapshot.correlation.context.sourcePath,
+        version: STUDIO_STATE_VERSION,
+      },
+      stagedPrograms: [],
+      staticSemanticState: { entities: [], unknowns: [], version: STUDIO_STATE_VERSION },
+      version: STUDIO_STATE_VERSION,
+    };
+    const proposedState = evaluateWorkingState(workingState);
+    const workingRevision = canonicalEditorWorkingRevision({
+      appliedPrograms: [record],
+      draftProgram: null,
+      editingAppliedProgram: null,
+      redoPrograms: [],
+    });
+    const workspaceKey = studioPreviewWorkspaceKeyV1({ ...snapshot.correlation.context, workingRevision });
+    const compilerInputs: string[][] = [];
+    const result = await compileStudioPreviewSceneV1({
+      frame: {
+        height: snapshot.snapshot.scene.camera.view.frameHeight,
+        width: snapshot.snapshot.scene.camera.view.frameWidth,
+      },
+      mathTexOutlineCompiler: async (texParts) => {
+        compilerInputs.push([...texParts]);
+        return outlineResponse;
+      },
+      proposedState,
+      snapshot,
+      workingRevision,
+      workspaceKey,
+    });
+    expect(compilerInputs).toEqual([fixture.mathTexReference.texParts]);
+    expect(result.kind).toBe("compiled");
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(canonicalJsonV1(result.scene.bundle)).toBe(canonicalJsonV1(expectedBundle));
+    expect(result.scene.engineRevisionHash).toBe(expectedBundle.scene.source.revisionHash);
+    expect(canonicalJsonV1(result.scene.bundle.scene.entities[0]?.geometry)).toBe(
+      canonicalJsonV1(expectedEntity.geometry),
+    );
+    expect(outlineResponse.result).toMatchObject({
+      contentDigest: fixture.mathTexReference.compilerContentDigest,
+      kind: "compiled",
+    });
   });
 
   it("fails closed instead of dropping verified base animation channels on edit", async () => {
