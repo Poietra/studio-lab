@@ -50,6 +50,8 @@ type WasmBindingsV1 = {
   PoietraCanvasEngineV1: {
     create: (
       snapshotJson: Uint8Array,
+      assetMetadataJson: Uint8Array,
+      assetBytes: Uint8Array[],
       canvas: OffscreenCanvas,
     ) => Promise<{
       render: (requestJson: Uint8Array) => Promise<Uint8Array>;
@@ -85,6 +87,11 @@ const GPU_BUFFER_USAGE_COPY_DST = 8;
 const GPU_MAP_MODE_READ = 1;
 const GPU_TEXTURE_USAGE_COPY_SRC = 1;
 const GPU_TEXTURE_USAGE_RENDER_ATTACHMENT = 16;
+const EMPTY_ASSET_METADATA_JSON = new TextEncoder().encode("[]");
+
+function createAssetFreeEngine(bindings: WasmBindingsV1, snapshotJson: ArrayBuffer, canvas: OffscreenCanvas) {
+  return bindings.PoietraCanvasEngineV1.create(new Uint8Array(snapshotJson), EMPTY_ASSET_METADATA_JSON, [], canvas);
+}
 
 function installReadbackHooks(canvas: OffscreenCanvas, viewport: ProofRequestV1["viewport"]) {
   const context = canvas.getContext("webgpu") as unknown as GpuCanvasContextV1 | null;
@@ -403,7 +410,7 @@ async function probeErrorScopes(request: ErrorScopeProbeRequestV1) {
     throw new Error("Unexpected canvas ABI version.");
   }
   const createEngine = (targetCanvas: OffscreenCanvas) =>
-    bindings.PoietraCanvasEngineV1.create(new Uint8Array(request.snapshotJson), targetCanvas);
+    createAssetFreeEngine(bindings, request.snapshotJson, targetCanvas);
   const engine = await createEngine(canvas);
 
   const normalScopeCallsBefore = hooks.errorScopeCalls();
@@ -589,7 +596,7 @@ self.addEventListener("message", (event: MessageEvent<WorkerRequestV1>) => {
     if (bindings.poietraCanvasAbiVersion() !== POIETRA_CANVAS_ABI_VERSION) {
       throw new Error("Unexpected canvas ABI version.");
     }
-    const engine = await bindings.PoietraCanvasEngineV1.create(new Uint8Array(request.snapshotJson), canvas);
+    const engine = await createAssetFreeEngine(bindings, request.snapshotJson, canvas);
     hooks.arm();
     const responseJson = await engine.render(new Uint8Array(request.requestJson));
     const renderSubmissionCount = hooks.finishCapture();
