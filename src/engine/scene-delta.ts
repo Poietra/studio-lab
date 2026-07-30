@@ -147,6 +147,7 @@ export async function createSceneIrDeltaV1(
     baseRevision === nextRevision ||
     base.scene.source.kind !== "studio-edit-program" ||
     next.scene.source.kind !== "studio-edit-program" ||
+    !sameJsonValue(base.assets, next.assets) ||
     !sameJsonValue(base.scene.coordinateSpace, next.scene.coordinateSpace) ||
     base.scene.schema !== next.scene.schema ||
     base.scene.version !== next.scene.version
@@ -182,7 +183,6 @@ export async function createSceneIrDeltaV1(
   }
 
   const metadata: Omit<Extract<SceneDeltaOperationV1, Readonly<{ kind: "update-scene" }>>, "kind"> = {};
-  if (!sameJsonValue(base.assets, next.assets)) metadata.assets = next.assets;
   if (!sameJsonValue(base.scene.camera, next.scene.camera)) metadata.camera = next.scene.camera;
   if (base.scene.duration !== next.scene.duration) metadata.duration = next.scene.duration;
   if (!sameJsonValue(base.scene.fidelity, next.scene.fidelity)) metadata.fidelity = next.scene.fidelity;

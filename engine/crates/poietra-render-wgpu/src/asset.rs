@@ -4,7 +4,7 @@ use png::{BitDepth, ColorType, Decoder, Limits, Transformations};
 use poietra_scene_ir::{MAX_IMAGE_PIXELS_V1, PngAssetV1};
 use sha2::{Digest, Sha256};
 
-const MAX_ENCODED_PNG_BYTES_V1: u64 = 134_217_728;
+pub const MAX_ENCODED_PNG_BYTES_V1: u64 = 134_217_728;
 const PNG_DECODER_WORKING_BYTES_V1: usize = 64 * 1024 * 1024;
 
 /// A manifest-verified static PNG decoded for linear-light GPU filtering.

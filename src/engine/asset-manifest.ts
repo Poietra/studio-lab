@@ -8,12 +8,12 @@ import {
   sha256V1Schema,
 } from "./primitives";
 
-const MAX_ASSETS = 4_096;
-const MAX_ENCODED_ASSET_BYTES = 268_435_456;
-const MAX_IMAGE_PIXELS = 16_777_216;
-const MAX_TOTAL_IMAGE_PIXELS = 33_554_432;
+export const MAX_ASSETS = 4_096;
+export const MAX_ENCODED_ASSET_BYTES = 268_435_456;
+export const MAX_IMAGE_PIXELS = 16_777_216;
+export const MAX_TOTAL_IMAGE_PIXELS = 33_554_432;
 
-const pngAssetV1Schema = z
+export const pngAssetV1Schema = z
   .object({
     alphaMode: z.literal("straight"),
     byteLength: z.number().int().positive().max(134_217_728),
@@ -65,6 +65,7 @@ export const assetManifestV1Schema = assetManifestV1BaseSchema.superRefine((mani
 });
 
 export type AssetManifestV1 = z.infer<typeof assetManifestV1Schema>;
+export type PngAssetV1 = z.infer<typeof pngAssetV1Schema>;
 
 function canonicalManifestMetadata(manifest: AssetManifestV1) {
   return {

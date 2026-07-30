@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type AssetManifestV1, digestAssetManifestV1, type PngAssetV1 } from "./asset-manifest";
+import type { CanvasPngAssetTransferV1 } from "./canvas-png-assets";
 import { adapterEvidenceFixtureV1, measuredTelemetryFixtureV1 } from "./canvas-telemetry-test-fixtures";
 import {
   CanvasTelemetryRenderError,
@@ -22,6 +24,7 @@ import type { SceneIrDeltaV1 } from "./scene-delta";
 
 const REVISION_A = "a".repeat(64);
 const REVISION_B = "b".repeat(64);
+const REVISION_C = "c".repeat(64);
 
 class FakeOffscreenCanvas {
   constructor(
@@ -184,6 +187,54 @@ function revisionBundle(bundle: SceneIrBundleV1, revision: string): SceneIrBundl
   };
 }
 
+async function bundleWithPng(
+  bundle: SceneIrBundleV1,
+  bytes: ArrayBuffer,
+  id = "asset:image",
+): Promise<Readonly<{ bundle: SceneIrBundleV1; payload: CanvasPngAssetTransferV1 }>> {
+  const digestBytes = await crypto.subtle.digest("SHA-256", bytes);
+  const sha256 = Array.from(new Uint8Array(digestBytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const asset: PngAssetV1 = {
+    alphaMode: "straight",
+    byteLength: bytes.byteLength,
+    colorSpace: "srgb",
+    id,
+    kind: "png-image",
+    mediaType: "image/png",
+    pixelHeight: 2,
+    pixelWidth: 3,
+    sha256,
+  };
+  const draft: AssetManifestV1 = {
+    assets: [asset],
+    manifestDigest: "0".repeat(64),
+    manifestId: "manifest:image",
+    schema: "poietra.asset-manifest",
+    version: 1,
+  };
+  const assets = { ...draft, manifestDigest: await digestAssetManifestV1(draft) };
+  return {
+    bundle: {
+      assets,
+      scene: {
+        ...bundle.scene,
+        assetManifest: { manifestDigest: assets.manifestDigest, manifestId: assets.manifestId },
+      },
+    },
+    payload: {
+      assetId: id,
+      byteLength: bytes.byteLength,
+      bytes,
+      mediaType: "image/png",
+      pixelHeight: 2,
+      pixelWidth: 3,
+      sha256,
+    },
+  };
+}
+
+const decodePngDimensions = async () => ({ pixelHeight: 2, pixelWidth: 3 });
+
 function createClient(worker: FakeWorker, requestTimeoutMs = 5_000, wasmModuleUrl = "./engine-wasm/poietra_wasm.js") {
   return new PoietraCanvasWorkerClient({
     requestTimeoutMs,
@@ -203,6 +254,7 @@ async function install(
     revision: REVISION_A,
     snapshot: bundle,
   });
+  await vi.waitFor(() => expect(worker.posted).toHaveLength(1));
   const request = requestAt(worker, 0);
   if (request.kind !== "install-canvas") throw new Error("missing install request");
   worker.emitMessage(readyResponse(request));
@@ -413,6 +465,161 @@ describe("Poietra canvas worker client", () => {
     client.dispose();
   });
 
+  it("transfers each new PNG digest once and reuses it after the correlated acknowledgement", async () => {
+    const base = await fixtureBundle();
+    const firstBytes = new Uint8Array([1, 2, 3, 4]).buffer;
+    const first = await bundleWithPng(base, firstBytes);
+    const worker = new FakeWorker();
+    const client = new PoietraCanvasWorkerClient({
+      decodePngDimensions,
+      wasmModuleUrl: "./engine-wasm/poietra_wasm.js",
+      workerFactory: () => worker as unknown as Worker,
+    });
+
+    const installing = client.installScene({
+      assetPayloads: [first.payload],
+      canvas: new FakeCanvas() as unknown as HTMLCanvasElement,
+      revision: REVISION_A,
+      snapshot: first.bundle,
+    });
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1));
+    const installRequest = requestAt(worker, 0);
+    if (installRequest.kind !== "install-canvas") throw new Error("missing PNG install request");
+    expect(installRequest.assetPayloads).toHaveLength(1);
+    expect(installRequest.assetPayloads[0]?.bytes.byteLength).toBe(4);
+    const installTransfer = worker.posted[0]?.transfer;
+    expect(installTransfer).toHaveLength(3);
+    const transferredPng = installTransfer?.[2];
+    expect(transferredPng).not.toBe(firstBytes);
+    if (!(transferredPng instanceof ArrayBuffer)) throw new Error("missing transferred PNG buffer");
+    expect(transferredPng.byteLength).toBe(4);
+    expect(firstBytes.byteLength).toBe(4);
+    worker.emitMessage(readyResponse(installRequest));
+    await installing;
+
+    const reusing = client.replaceScene({
+      baseRevision: REVISION_A,
+      revision: REVISION_B,
+      snapshot: revisionBundle(first.bundle, REVISION_B),
+    });
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(2));
+    const reuseRequest = requestAt(worker, 1);
+    if (reuseRequest.kind !== "replace-scene") throw new Error("missing PNG reuse request");
+    expect(reuseRequest.assetPayloads).toEqual([]);
+    expect(worker.posted[1]?.transfer).toHaveLength(1);
+    worker.emitMessage(readyResponse(reuseRequest));
+    await reusing;
+
+    const secondBytes = new Uint8Array([5, 6, 7, 8]).buffer;
+    const second = await bundleWithPng(revisionBundle(base, REVISION_C), secondBytes, first.payload.assetId);
+    const advancing = client.replaceScene({
+      assetPayloads: [second.payload],
+      baseRevision: REVISION_B,
+      revision: REVISION_C,
+      snapshot: second.bundle,
+    });
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(3));
+    const advanceRequest = requestAt(worker, 2);
+    if (advanceRequest.kind !== "replace-scene") throw new Error("missing PNG advance request");
+    expect(advanceRequest.assetPayloads).toHaveLength(1);
+    expect(worker.posted[2]?.transfer).toHaveLength(2);
+    expect(secondBytes.byteLength).toBe(4);
+    worker.emitMessage(readyResponse(advanceRequest));
+    await advancing;
+    expect(client.revision).toBe(REVISION_C);
+    client.dispose();
+  });
+
+  it("does not cache a PNG digest when atomic replacement is rejected", async () => {
+    const base = await fixtureBundle();
+    const first = await bundleWithPng(base, new Uint8Array([1, 2, 3, 4]).buffer);
+    const worker = new FakeWorker();
+    const client = new PoietraCanvasWorkerClient({
+      decodePngDimensions,
+      wasmModuleUrl: "./engine-wasm/poietra_wasm.js",
+      workerFactory: () => worker as unknown as Worker,
+    });
+    const installing = client.installScene({
+      assetPayloads: [first.payload],
+      canvas: new FakeCanvas() as unknown as HTMLCanvasElement,
+      revision: REVISION_A,
+      snapshot: first.bundle,
+    });
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1));
+    const installRequest = requestAt(worker, 0);
+    if (installRequest.kind !== "install-canvas") throw new Error("missing PNG install request");
+    worker.emitMessage(readyResponse(installRequest));
+    await installing;
+
+    const second = await bundleWithPng(
+      revisionBundle(base, REVISION_B),
+      new Uint8Array([9, 10, 11, 12]).buffer,
+      first.payload.assetId,
+    );
+    const rejected = client.replaceScene({
+      assetPayloads: [second.payload],
+      baseRevision: REVISION_A,
+      revision: REVISION_B,
+      snapshot: second.bundle,
+    });
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(2));
+    const rejectedRequest = requestAt(worker, 1);
+    worker.emitMessage(errorResponse(rejectedRequest, "snapshot-rejected"));
+    await expect(rejected).rejects.toMatchObject({ code: "snapshot-rejected" });
+
+    const retry = client.replaceScene({
+      assetPayloads: [second.payload],
+      baseRevision: REVISION_A,
+      revision: REVISION_B,
+      snapshot: second.bundle,
+    });
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(3));
+    const retryRequest = requestAt(worker, 2);
+    if (retryRequest.kind !== "replace-scene") throw new Error("missing PNG retry request");
+    expect(retryRequest.assetPayloads).toHaveLength(1);
+    worker.emitMessage(readyResponse(retryRequest));
+    await retry;
+    client.dispose();
+  });
+
+  it("lowers an asset-changing delta directly to verified replacement", async () => {
+    const base = await fixtureBundle();
+    const delta = await fixtureDelta();
+    const next = await bundleWithPng(revisionBundle(base, REVISION_B), new Uint8Array([1, 2, 3, 4]).buffer);
+    const assetDelta = {
+      ...delta,
+      operations: [...delta.operations, { assets: next.bundle.assets, kind: "update-scene" as const }],
+    };
+    const worker = new FakeWorker();
+    const client = new PoietraCanvasWorkerClient({
+      decodePngDimensions,
+      wasmModuleUrl: "./engine-wasm/poietra_wasm.js",
+      workerFactory: () => worker as unknown as Worker,
+    });
+    await install(client, worker, base);
+
+    await expect(
+      client.applySceneDelta({ baseRevision: REVISION_A, delta: assetDelta, revision: REVISION_B }),
+    ).rejects.toMatchObject({ code: "invalid-input" });
+    expect(worker.posted).toHaveLength(1);
+
+    const updating = client.updateScene({
+      assetPayloads: [next.payload],
+      baseRevision: REVISION_A,
+      delta: assetDelta,
+      revision: REVISION_B,
+      snapshot: next.bundle,
+    });
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(2));
+    const request = requestAt(worker, 1);
+    expect(request.kind).toBe("replace-scene");
+    if (request.kind !== "replace-scene") throw new Error("asset delta reached the delta transport");
+    expect(request.assetPayloads).toHaveLength(1);
+    worker.emitMessage(readyResponse(request));
+    await expect(updating).resolves.toEqual({ operation: "replace" });
+    client.dispose();
+  });
+
   it("transfers one bounded delta and advances revision only after its dirty-set ACK", async () => {
     const bundle = await fixtureBundle();
     const delta = await fixtureDelta();
@@ -512,6 +719,7 @@ describe("Poietra canvas worker client", () => {
       revision: REVISION_B,
       snapshot: replacement,
     });
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(2));
     const replaceRequest = requestAt(worker, 1);
     worker.emitMessage(errorResponse(replaceRequest, "snapshot-rejected"));
     await expect(replacing).rejects.toMatchObject({ code: "snapshot-rejected" });
@@ -544,6 +752,7 @@ describe("Poietra canvas worker client", () => {
         revision: REVISION_B,
         snapshot: replacement,
       });
+      await vi.waitFor(() => expect(worker.posted).toHaveLength(2));
       const replaceRequest = requestAt(worker, 1);
       worker.emitMessage(errorResponse(replaceRequest, code));
       await expect(replacing).rejects.toMatchObject({ code });
@@ -676,7 +885,6 @@ describe("Poietra canvas worker client", () => {
     ).rejects.toMatchObject({ code: "transport-failed" });
     expect(renderTransportWorker.terminate).toHaveBeenCalledOnce();
 
-    vi.useFakeTimers();
     const timeoutWorker = new FakeWorker();
     const timeoutClient = createClient(timeoutWorker, 10);
     const timedOut = timeoutClient.installScene({
@@ -685,7 +893,6 @@ describe("Poietra canvas worker client", () => {
       snapshot: bundle,
     });
     const timeoutOutcome = timedOut.catch((error: unknown) => error as CanvasWorkerClientError);
-    await vi.advanceTimersByTimeAsync(10);
     await expect(timeoutOutcome).resolves.toMatchObject({ code: "timeout" });
     expect(timeoutWorker.terminate).toHaveBeenCalledOnce();
   });
@@ -735,6 +942,7 @@ describe("Poietra canvas worker client", () => {
       revision: REVISION_A,
       snapshot: bundle,
     });
+    await vi.waitFor(() => expect(installWorker.posted).toHaveLength(1));
     const installRequest = requestAt(installWorker, 0);
     if (installRequest.kind !== "install-canvas") throw new Error("missing raced install request");
     installWorker.addEventListener("message", () => installClient.dispose());
@@ -750,6 +958,7 @@ describe("Poietra canvas worker client", () => {
       revision: REVISION_B,
       snapshot: revisionBundle(bundle, REVISION_B),
     });
+    await vi.waitFor(() => expect(replaceWorker.posted).toHaveLength(2));
     const replaceRequest = requestAt(replaceWorker, 1);
     if (replaceRequest.kind !== "replace-scene") throw new Error("missing raced replacement request");
     replaceWorker.addEventListener("message", () => replaceClient.dispose());
@@ -1103,6 +1312,7 @@ describe("Poietra canvas worker client", () => {
     await install(client, worker, bundle);
 
     const replacing = client.replaceScene({ baseRevision: REVISION_A, revision: REVISION_B, snapshot: replacement });
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(2));
     const replaceRequest = requestAt(worker, 1);
     if (replaceRequest.kind !== "replace-scene") throw new Error("missing replacement request");
     worker.emitMessage(readyResponse(replaceRequest));
@@ -1133,6 +1343,7 @@ describe("Poietra canvas worker client", () => {
     await install(client, worker, bundle);
 
     const replacing = client.replaceScene({ baseRevision: REVISION_A, revision: REVISION_B, snapshot: replacement });
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(2));
     const replaceRequest = requestAt(worker, 1);
     worker.emitMessage(errorResponse(replaceRequest, "snapshot-rejected"));
     await expect(replacing).rejects.toMatchObject({ code: "snapshot-rejected" });

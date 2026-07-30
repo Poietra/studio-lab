@@ -151,8 +151,10 @@ and return only the sampled `RenderPacket`; immutable Scene and manifest data ar
 not cloned across the worker boundary on every frame. Build the web-target package
 with the repository script:
 
-Canvas ABI v3 additionally accepts a Studio-only `SceneDeltaV1` (256 KiB and
-256 operations maximum) as one transferred `ArrayBuffer`. Rust checks the
+Canvas ABI v4 additionally accepts transferable, manifest-verified PNG assets
+during atomic install/replacement. It retains the Studio-only `SceneDeltaV1`
+transport from v3 (256 KiB and 256 operations maximum) as one transferred
+`ArrayBuffer`. Rust checks the
 transport base/next revisions, constructs and indexes the complete candidate,
 and pre-serializes a 128 KiB-bounded entity/channel/camera/asset dirty-set ACK
 before the atomic swap. The page client advances its revision only after that

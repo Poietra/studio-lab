@@ -324,6 +324,18 @@ fn parse_scene_delta(json: &[u8]) -> Result<SceneDeltaV1, SceneDeltaErrorV1> {
     Ok(delta)
 }
 
+pub(crate) fn scene_delta_updates_assets(json: &[u8]) -> Result<bool, SceneDeltaErrorV1> {
+    Ok(parse_scene_delta(json)?.operations.iter().any(|operation| {
+        matches!(
+            operation,
+            SceneDeltaOperationV1::UpdateScene {
+                assets: Some(_),
+                ..
+            }
+        )
+    }))
+}
+
 fn put_by_id<T>(
     values: &mut Vec<T>,
     value: T,
@@ -697,6 +709,18 @@ mod tests {
             (entity.transform.tx - shared["expected"]["tx"].as_f64().unwrap()).abs() < f64::EPSILON
         );
         assert_eq!(session.retained_index_stats().build_count(), 2);
+    }
+
+    #[test]
+    fn canvas_asset_manifest_changes_are_detected_before_candidate_mutation() {
+        let mut shared = fixture("shared-single-entity-delta.json")["delta"].clone();
+        let assets = base_bundle().assets;
+        shared["operations"].as_array_mut().unwrap().push(json!({
+            "assets": assets,
+            "kind": "update-scene",
+        }));
+        let delta_json = serde_json::to_vec(&shared).unwrap();
+        assert!(scene_delta_updates_assets(&delta_json).unwrap());
     }
 
     #[test]
