@@ -31,11 +31,15 @@ import type {
   FastManimSnapshotQueryV1,
   FastManimSnapshotRunRequestV1,
 } from "./fast-manim-snapshot-contract";
+import {
+  FileSystemFastManimSnapshotPngProviderV1,
+  readFastManimSnapshotPngV1,
+  sameFastManimSnapshotPngReadV1,
+} from "./fast-manim-snapshot-png-provider";
 import { FastManimSnapshotRunner } from "./fast-manim-snapshot-runner";
 import { HttpError } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import type { ManimProjectKind } from "./manim-project-catalog";
-import { manimTenantIdSchema } from "./manim-request-principal";
 import {
   beginRenderSessionAction,
   createRenderMutationTransactionState,
@@ -58,9 +62,10 @@ import {
   renderSessionCapabilities,
   renderSessionStatusPolicy,
 } from "./manim-render-session-policy";
+import { manimTenantIdSchema } from "./manim-request-principal";
 import { type ManimSourceReadHooks, ManimSourceStore, sourceHash } from "./manim-source-store";
-import { ManimThumbnailCache } from "./manim-thumbnail-cache";
 import { normalizeManimStorageRoots } from "./manim-tenant-storage";
+import { ManimThumbnailCache } from "./manim-thumbnail-cache";
 import { discoverPythonSources } from "./manim-workspace";
 
 type RenderSession = {
@@ -184,6 +189,7 @@ export class ManimRenderManager {
   private readonly maxRetainedSessions: number;
   private readonly mutationTransactions: RenderMutationTransactionCoordinator;
   private readonly onSessionRemoved: (id: string) => void;
+  private readonly pngProvider: FileSystemFastManimSnapshotPngProviderV1;
   private pendingStarts = 0;
   private pendingRetainedSessions = 0;
   private readonly renderTimeoutMs: number;
@@ -251,6 +257,7 @@ export class ManimRenderManager {
     this.projectName = options.projectName?.trim() || basename(this.sourceStore.projectRoot) || "Manim Project";
     if (this.projectName.length > 120) throw new TypeError("Manim project name must be at most 120 characters.");
     this.projectRoot = this.sourceStore.projectRoot;
+    this.pngProvider = new FileSystemFastManimSnapshotPngProviderV1(this.projectRoot);
     const parsedTenantId = manimTenantIdSchema.safeParse(options.tenantId);
     if (!parsedTenantId.success) throw new TypeError("Manim tenant ID must be an opaque lower-case identifier.");
     this.tenantId = parsedTenantId.data;
@@ -287,6 +294,7 @@ export class ManimRenderManager {
       logger: this.logger,
       projectId: this.projectId,
       projectRoot: this.projectRoot,
+      pngProvider: this.pngProvider,
       snapshotVersion: options.snapshotVersion,
       tenantId: this.tenantId,
       timeoutMs: options.snapshotTimeoutMs,
@@ -1007,6 +1015,20 @@ export class ManimRenderManager {
     if (this.closing) throw new HttpError("The Manim render pipeline is shutting down.", 503);
     if (projectId !== this.projectId) throw new HttpError("Configured Manim project not found.", 404);
     return this.snapshotRunner.snapshot(query);
+  }
+
+  async sceneSnapshotAsset(projectId: string, digest: string, signal?: AbortSignal) {
+    if (this.closing) throw new HttpError("The Manim render pipeline is shutting down.", 503);
+    if (projectId !== this.projectId || !/^[0-9a-f]{64}$/.test(digest)) {
+      throw new HttpError("Scene snapshot PNG asset not found.", 404);
+    }
+    const before = await readFastManimSnapshotPngV1(this.pngProvider, signal);
+    if (before.digest !== digest) throw new HttpError("Scene snapshot PNG asset not found.", 404);
+    const after = await readFastManimSnapshotPngV1(this.pngProvider, signal);
+    if (!sameFastManimSnapshotPngReadV1(before, after)) {
+      throw new HttpError("Scene snapshot PNG asset changed during delivery.", 409);
+    }
+    return { body: before.bytes, digest, mediaType: "image/png" as const };
   }
 
   private async closeResources() {
