@@ -120,6 +120,22 @@ struct SurfaceSelectionV1 {
     view_format: wgpu::TextureFormat,
 }
 
+/// Complete device-bound Canvas state constructed before it replaces a lost
+/// runtime. The retained Scene and decoded PNG registry deliberately live on
+/// [`PoietraCanvasEngineV1`] instead, so recovery never needs page I/O.
+struct CanvasGpuCandidateV1 {
+    adapter_evidence: CanvasAdapterEvidenceV1,
+    uncaptured_error_listener: RawUncapturedErrorListenerV1,
+    device: wgpu::Device,
+    device_lost: SharedFailureV1,
+    queue: wgpu::Queue,
+    renderer: WgpuPaintRendererV1,
+    surface: wgpu::Surface<'static>,
+    surface_config: wgpu::SurfaceConfiguration,
+    uncaptured_gpu_failure: SharedFailureV1,
+    view_format: wgpu::TextureFormat,
+}
+
 type SharedFailureV1 = Arc<Mutex<Option<RuntimeFailureV1>>>;
 
 #[derive(Debug, Default)]
@@ -354,6 +370,82 @@ fn rollback_pushed_error_scopes(raw_device: &JsValue, pushed_scope_count: usize)
     });
 }
 
+async fn acquire_canvas_gpu_candidate(
+    canvas: &OffscreenCanvas,
+) -> Result<CanvasGpuCandidateV1, JsValue> {
+    let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+    instance_descriptor.backends = wgpu::Backends::BROWSER_WEBGPU;
+    let instance = wgpu::Instance::new(instance_descriptor);
+    let surface = instance
+        .create_surface(wgpu::SurfaceTarget::OffscreenCanvas(canvas.clone()))
+        .map_err(|error| renderer_unavailable(&format!("could not create surface: {error}")))?;
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            compatible_surface: Some(&surface),
+            ..wgpu::RequestAdapterOptions::default()
+        })
+        .await
+        .map_err(|error| renderer_unavailable(&format!("no compatible WebGPU adapter: {error}")))?;
+    let selection = select_surface_capabilities(&surface.get_capabilities(&adapter))?;
+    let device_descriptor = wgpu::DeviceDescriptor {
+        label: Some("poietra canvas device v1"),
+        ..wgpu::DeviceDescriptor::default()
+    };
+    let adapter_evidence =
+        build_adapter_evidence(&adapter.get_info(), &device_descriptor, &selection);
+    let (device, queue) = adapter
+        .request_device(&device_descriptor)
+        .await
+        .map_err(|error| {
+            renderer_unavailable(&format!("could not create WebGPU device: {error}"))
+        })?;
+
+    let device_lost = install_device_lost_handler(&device);
+    let uncaptured_gpu_failure = shared_failure();
+    let uncaptured_error_listener =
+        RawUncapturedErrorListenerV1::install(&device, &uncaptured_gpu_failure)
+            .map_err(|failure| renderer_unavailable(&failure.message))?;
+
+    let scopes = GpuErrorScopesV1::push(&device)
+        .map_err(|failure| renderer_unavailable(&failure.message))?;
+    let renderer = WgpuPaintRendererV1::new(&device, selection.view_format).map_err(|error| {
+        renderer_unavailable(&format!("could not create paint renderer: {error}"))
+    });
+    let scoped_failure = scopes.pop().finish().await;
+    if let Some(failure) = scoped_failure {
+        return Err(renderer_unavailable(&failure.message));
+    }
+    if let Some(failure) =
+        read_shared_failure(&device_lost).or_else(|| read_shared_failure(&uncaptured_gpu_failure))
+    {
+        return Err(renderer_unavailable(&failure.message));
+    }
+    let renderer = renderer?;
+
+    Ok(CanvasGpuCandidateV1 {
+        adapter_evidence,
+        uncaptured_error_listener,
+        device,
+        device_lost,
+        queue,
+        renderer,
+        surface,
+        surface_config: wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: selection.surface_format,
+            color_space: wgpu::SurfaceColorSpace::Auto,
+            width: 1,
+            height: 1,
+            desired_maximum_frame_latency: 2,
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode: selection.alpha_mode,
+            view_formats: vec![selection.view_format],
+        },
+        uncaptured_gpu_failure,
+        view_format: selection.view_format,
+    })
+}
+
 /// Retained Scene evaluator and WebGPU surface owned by one browser worker.
 #[wasm_bindgen]
 pub struct PoietraCanvasEngineV1 {
@@ -424,89 +516,28 @@ impl PoietraCanvasEngineV1 {
             .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
         let session = EngineWorkerSessionV1::from_bundle(bundle)
             .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
-
-        let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-        instance_descriptor.backends = wgpu::Backends::BROWSER_WEBGPU;
-        let instance = wgpu::Instance::new(instance_descriptor);
-        let surface = instance
-            .create_surface(wgpu::SurfaceTarget::OffscreenCanvas(canvas.clone()))
-            .map_err(|error| renderer_unavailable(&format!("could not create surface: {error}")))?;
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                compatible_surface: Some(&surface),
-                ..wgpu::RequestAdapterOptions::default()
-            })
-            .await
-            .map_err(|error| {
-                renderer_unavailable(&format!("no compatible WebGPU adapter: {error}"))
-            })?;
-        let selection = select_surface_capabilities(&surface.get_capabilities(&adapter))?;
-        let device_descriptor = wgpu::DeviceDescriptor {
-            label: Some("poietra canvas device v1"),
-            ..wgpu::DeviceDescriptor::default()
-        };
-        let adapter_evidence =
-            build_adapter_evidence(&adapter.get_info(), &device_descriptor, &selection);
-        let (device, queue) =
-            adapter
-                .request_device(&device_descriptor)
-                .await
-                .map_err(|error| {
-                    renderer_unavailable(&format!("could not create WebGPU device: {error}"))
-                })?;
-
-        let device_lost = install_device_lost_handler(&device);
-        let uncaptured_gpu_failure = shared_failure();
-        let uncaptured_error_listener =
-            RawUncapturedErrorListenerV1::install(&device, &uncaptured_gpu_failure)
-                .map_err(|failure| renderer_unavailable(&failure.message))?;
-
-        let scopes = GpuErrorScopesV1::push(&device)
-            .map_err(|failure| renderer_unavailable(&failure.message))?;
-        let renderer = WgpuPaintRendererV1::new(&device, selection.view_format).map_err(|error| {
-            renderer_unavailable(&format!("could not create paint renderer: {error}"))
-        });
-        let scoped_failure = scopes.pop().finish().await;
-        if let Some(failure) = scoped_failure {
-            return Err(renderer_unavailable(&failure.message));
-        }
-        if let Some(failure) = read_shared_failure(&device_lost)
-            .or_else(|| read_shared_failure(&uncaptured_gpu_failure))
-        {
-            return Err(renderer_unavailable(&failure.message));
-        }
-        let renderer = renderer?;
+        let gpu = acquire_canvas_gpu_candidate(&canvas).await?;
 
         Ok(Self {
-            adapter_evidence,
+            adapter_evidence: gpu.adapter_evidence,
             asset_registry,
             canvas,
             configured_viewport: None,
             frame_surface_configurations: Some(0),
-            _uncaptured_error_listener: uncaptured_error_listener,
-            device,
+            _uncaptured_error_listener: gpu.uncaptured_error_listener,
+            device: gpu.device,
             deferred_scope_state: Arc::new(Mutex::new(DeferredGpuScopeStateV1::default())),
-            device_lost,
+            device_lost: gpu.device_lost,
             normal_active_error_scopes: None,
             prepared_geometry_cache: PreparedGeometryCacheV1::default(),
-            queue,
-            renderer,
+            queue: gpu.queue,
+            renderer: gpu.renderer,
             session,
-            surface,
-            surface_config: wgpu::SurfaceConfiguration {
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                format: selection.surface_format,
-                color_space: wgpu::SurfaceColorSpace::Auto,
-                width: 1,
-                height: 1,
-                desired_maximum_frame_latency: 2,
-                present_mode: wgpu::PresentMode::Fifo,
-                alpha_mode: selection.alpha_mode,
-                view_formats: vec![selection.view_format],
-            },
+            surface: gpu.surface,
+            surface_config: gpu.surface_config,
             terminal_surface_failure: None,
-            uncaptured_gpu_failure,
-            view_format: selection.view_format,
+            uncaptured_gpu_failure: gpu.uncaptured_gpu_failure,
+            view_format: gpu.view_format,
         })
     }
 
@@ -561,15 +592,25 @@ impl PoietraCanvasEngineV1 {
     /// The returned JSON contains only presentation correlation or a structured
     /// error. A `RenderPacket` never crosses this ABI.
     #[must_use]
-    #[allow(clippy::unused_async)] // Preserve the Promise-returning wasm-bindgen ABI without awaiting GPU progress.
     pub async fn render(&mut self, request_json: &[u8]) -> Vec<u8> {
         let sampled = match self.session.sample_packet_json(request_json) {
             Ok(sampled) => sampled,
             Err(error) => return sample_error_response(&error),
         };
         let correlation = &sampled.correlation;
+        let mut recovery_attempted = false;
         if let Some(failure) = self.current_terminal_failure() {
-            return error_response(failure.code, &failure.message, Some(correlation));
+            if failure.code != CanvasRenderErrorCodeV1::DeviceLost {
+                return error_response(failure.code, &failure.message, Some(correlation));
+            }
+            recovery_attempted = true;
+            if let Err(recovery_failure) = self.recover_after_device_loss().await {
+                return error_response(
+                    recovery_failure.code,
+                    &recovery_failure.message,
+                    Some(correlation),
+                );
+            }
         }
         let frame = match prepare_frame_with_cache_and_assets_v1(
             &sampled.packet,
@@ -586,7 +627,24 @@ impl PoietraCanvasEngineV1 {
             }
         };
 
-        match self.render_prepared_frame(&frame) {
+        let first_attempt = self.render_prepared_frame(&frame);
+        let rendered = match first_attempt {
+            Err(failure)
+                if failure.code == CanvasRenderErrorCodeV1::DeviceLost && !recovery_attempted =>
+            {
+                if let Err(recovery_failure) = self.recover_after_device_loss().await {
+                    return error_response(
+                        recovery_failure.code,
+                        &recovery_failure.message,
+                        Some(correlation),
+                    );
+                }
+                self.render_prepared_frame(&frame)
+            }
+            outcome => outcome,
+        };
+
+        match rendered {
             Ok(suboptimal) => {
                 let interaction = interaction_metadata(&sampled.interaction, |entity_id| {
                     frame.clip_bounds_for_entity(entity_id)
@@ -780,6 +838,43 @@ impl PoietraCanvasEngineV1 {
 }
 
 impl PoietraCanvasEngineV1 {
+    /// Reacquires every GPU-owned object and swaps only after the complete
+    /// candidate is ready. A failed recovery leaves the already-lost state in
+    /// place so the caller can terminate fail-closed; Scene/revision and
+    /// decoded PNG authorities are never moved or reconstructed.
+    async fn recover_after_device_loss(&mut self) -> Result<(), RuntimeFailureV1> {
+        let gpu = acquire_canvas_gpu_candidate(&self.canvas)
+            .await
+            .map_err(|error| RuntimeFailureV1 {
+                code: CanvasRenderErrorCodeV1::DeviceLost,
+                message: format!(
+                    "WebGPU device recovery failed: {}",
+                    js_error_message(&error)
+                ),
+            })?;
+
+        // Drop device-bound dependants before replacing the old device. Any
+        // detached error-scope drain retains only the old Arc and cannot poison
+        // this new generation.
+        self.normal_active_error_scopes = None;
+        self.renderer = gpu.renderer;
+        self.surface = gpu.surface;
+        self.queue = gpu.queue;
+        self._uncaptured_error_listener = gpu.uncaptured_error_listener;
+        self.device = gpu.device;
+        self.adapter_evidence = gpu.adapter_evidence;
+        self.device_lost = gpu.device_lost;
+        self.uncaptured_gpu_failure = gpu.uncaptured_gpu_failure;
+        self.deferred_scope_state = Arc::new(Mutex::new(DeferredGpuScopeStateV1::default()));
+        self.surface_config = gpu.surface_config;
+        self.view_format = gpu.view_format;
+        self.configured_viewport = None;
+        self.frame_surface_configurations = Some(0);
+        self.terminal_surface_failure = None;
+        self.prepared_geometry_cache.clear();
+        Ok(())
+    }
+
     fn render_prepared_frame(&mut self, frame: &PreparedFrameV1) -> Result<bool, RuntimeFailureV1> {
         if let Some(failure) = self.current_terminal_failure() {
             return Err(failure);

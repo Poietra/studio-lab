@@ -131,6 +131,13 @@ existing bounded sample request. Render responses contain only presentation
 correlation metadata or a structured error; they never transfer a `RenderPacket`
 back to JavaScript.
 
+Normal `render` calls recover one lost-device generation lazily. The engine
+reacquires a complete adapter/device/queue/surface/renderer candidate, preserves
+the retained Scene and decoded PNG registry, and retries that prepared frame at
+most once. Candidate acquisition failure or a second device loss returns the
+existing structured `device-lost` error so the page keeps its whole-Scene fatal
+fallback. This does not change the Canvas ABI or the opt-in telemetry path.
+
 The canvas engine also exposes an opt-in stage-telemetry ABI, versioned
 independently of the base canvas ABI (`poietraCanvasTelemetryAbiVersion`).
 `renderWithTelemetry` runs the identical pipeline while recording one bounded

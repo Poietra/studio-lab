@@ -146,3 +146,153 @@ test("uploads one verified texture and reuses both sampler bindings for 300 brow
     expect(frame.counts.imageTextureEvictions).toBe(0);
   }
 });
+
+test("recovers a destroyed Canvas device from Worker-retained PNG pixels without retransferring assets", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const fixture = await imageCacheFixture();
+  await page.goto("/");
+  const result = await page.evaluate(async ({ asset, png, revision, snapshot }) => {
+    const { CanvasWorkerClientError, PoietraCanvasWorkerClient } = await import("../src/engine/canvas-worker-client");
+    const { createCanvasWorkerClientEvidenceAdapterV1 } = await import("../src/engine/canvas-worker-evidence");
+
+    type ObservedRequest = Readonly<{
+      assetPayloads?: readonly Readonly<{ bytes: ArrayBuffer }>[];
+      kind?: string;
+    }>;
+    const requests: Array<Readonly<{ assetCount: number; kind: string; transferCount: number }>> = [];
+    const workerErrors: string[] = [];
+    let workerCreations = 0;
+    let workerTerminations = 0;
+    const NativeWorker = globalThis.Worker;
+    class ObservedCanvasWorker extends NativeWorker {
+      constructor() {
+        workerCreations += 1;
+        super(new URL("/src/engine/poietra-canvas.dev.worker.ts", location.href), { type: "module" });
+        this.addEventListener("error", (event) => workerErrors.push(event.message));
+      }
+
+      override postMessage(message: unknown, transferOrOptions?: StructuredSerializeOptions | Transferable[]) {
+        const request = message as ObservedRequest;
+        requests.push({
+          assetCount: request.assetPayloads?.length ?? 0,
+          kind: request.kind ?? "unknown",
+          transferCount: Array.isArray(transferOrOptions) ? transferOrOptions.length : 0,
+        });
+        if (Array.isArray(transferOrOptions)) super.postMessage(message, transferOrOptions);
+        else super.postMessage(message, transferOrOptions);
+      }
+
+      override terminate() {
+        workerTerminations += 1;
+        super.terminate();
+      }
+    }
+
+    const canvas = Object.assign(document.createElement("canvas"), { height: 90, width: 160 });
+    document.body.replaceChildren(canvas);
+    const client = new PoietraCanvasWorkerClient({
+      evidence: createCanvasWorkerClientEvidenceAdapterV1(),
+      requestTimeoutMs: 60_000,
+      workerFactory: () => new ObservedCanvasWorker(),
+    });
+    const samples = [
+      { fractionX: 0.375, fractionY: 0.5 },
+      { fractionX: 0.625, fractionY: 0.5 },
+    ];
+    try {
+      await client.installScene({
+        assetPayloads: [
+          {
+            assetId: asset.id,
+            byteLength: asset.byteLength,
+            bytes: Uint8Array.from(png).buffer,
+            mediaType: asset.mediaType,
+            pixelHeight: asset.pixelHeight,
+            pixelWidth: asset.pixelWidth,
+            sha256: asset.sha256,
+          },
+        ],
+        canvas,
+        revision,
+        snapshot,
+      });
+      const render = () => client.render({ revision, sampleTime: 1, viewport: { heightPx: 90, widthPx: 160 } });
+      await render();
+      const before = await client.captureFrameEvidence({ revision, samples });
+
+      await client.injectDeviceLossForTest();
+      const recovered = await render();
+      const after = await client.captureFrameEvidence({ revision, samples });
+      await render();
+      const recoveredClientRevision = client.revision;
+
+      await client.injectDeviceLossForTest({ failRecovery: true });
+      let fatalCode = "resolved";
+      let fatalMessage = "";
+      let fatalWasTyped = false;
+      try {
+        await render();
+      } catch (error) {
+        if (error instanceof CanvasWorkerClientError) {
+          fatalWasTyped = true;
+          fatalCode = error.code;
+          fatalMessage = error.message;
+        } else {
+          fatalCode = String(error);
+          fatalMessage = String(error);
+        }
+      }
+
+      return {
+        after: after.samples,
+        before: before.samples,
+        fatalCode,
+        fatalMessage,
+        fatalWasTyped,
+        postFatalRevision: client.revision,
+        recoveredRevision: recovered.revision,
+        requests,
+        revision: recoveredClientRevision,
+        workerCreations,
+        workerErrors,
+        workerTerminationsBeforeDispose: workerTerminations,
+      };
+    } finally {
+      client.dispose();
+    }
+  }, fixture);
+
+  for (const samples of [result.before, result.after]) {
+    expect(samples).toHaveLength(2);
+    for (const [red, green, blue, alpha] of samples) {
+      expect(red).toBeGreaterThanOrEqual(252);
+      expect(green).toBeLessThanOrEqual(3);
+      expect(blue).toBeLessThanOrEqual(3);
+      expect(alpha).toBeGreaterThanOrEqual(252);
+    }
+  }
+  expect(result.after).toEqual(result.before);
+  expect(result.recoveredRevision).toBe(fixture.revision);
+  expect(result.revision).toBe(fixture.revision);
+  expect(result.workerCreations).toBe(1);
+  expect(result.fatalWasTyped).toBe(true);
+  expect(result.fatalCode).toBe("device-lost");
+  expect(result.fatalMessage).toContain("WebGPU device recovery failed");
+  expect(result.postFatalRevision).toBeNull();
+  expect(result.workerErrors).toEqual([]);
+  expect(result.workerTerminationsBeforeDispose).toBe(1);
+  expect(result.requests.filter(({ kind }) => kind === "install-canvas")).toEqual([
+    { assetCount: 1, kind: "install-canvas", transferCount: 3 },
+  ]);
+  expect(result.requests.some(({ kind }) => kind === "replace-scene")).toBe(false);
+  expect(result.requests.filter(({ assetCount }) => assetCount > 0)).toEqual([
+    { assetCount: 1, kind: "install-canvas", transferCount: 3 },
+  ]);
+  expect(
+    result.requests
+      .filter(({ kind }) => kind === "render-frame")
+      .every(({ assetCount, transferCount }) => assetCount === 0 && transferCount === 0),
+  ).toBe(true);
+});
