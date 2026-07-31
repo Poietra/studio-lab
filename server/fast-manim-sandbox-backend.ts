@@ -244,10 +244,11 @@ export function resolveFastManimSandboxReadiness(
 /**
  * Opaque immutable request bundle. Consumers receive a fresh byte copy on each
  * access, so neither a backend nor the caller can mutate the bytes later seen
- * by another lifecycle stage. Profiles 1-3 retain their exact legacy producer
- * JSON bytes. Profile 4 uses the Studio-owned V2 envelope to bind one verified
- * PNG while copyProducerRequestBytes() still returns the unchanged strict
- * producer JSON. No host workspace or object-store locator enters either form.
+ * by another lifecycle stage. Profiles 1-3, 5, and 6 retain their exact legacy
+ * producer JSON bytes. Profile 4 uses the Studio-owned V2 envelope to bind one
+ * verified PNG while copyProducerRequestBytes() still returns the unchanged
+ * strict producer JSON. No host workspace or object-store locator enters either
+ * form.
  */
 export class FastManimSandboxRequestBundleV1 {
   readonly byteLength: number;

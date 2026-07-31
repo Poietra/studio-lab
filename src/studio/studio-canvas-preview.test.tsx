@@ -143,24 +143,23 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).toContain("Move circle_1");
   });
 
-  it("presents aggregate MathTex morph pixels without enabling guessed authoring gestures", () => {
+  it("presents display-only runtime pixels without enabling guessed authoring gestures", () => {
+    const presented = {
+      frame: {
+        packetId: "canvas:v5",
+        revision: "a".repeat(64),
+        sampleTime: 1.5,
+        viewport: { heightPx: 90, widthPx: 160 },
+      },
+      phase: "presented",
+    } as const;
     const markup = renderToStaticMarkup(
       <StudioCanvas
         {...baseProps()}
-        preview={previewView(
-          {
-            frame: {
-              packetId: "canvas:v5",
-              revision: "a".repeat(64),
-              sampleTime: 1.5,
-              viewport: { heightPx: 90, widthPx: 160 },
-            },
-            phase: "presented",
-          },
-          null,
-          new Map(),
-          { kind: "display-only", reason: "aggregate-mathtex-morph-lineage" },
-        )}
+        preview={previewView(presented, null, new Map(), {
+          kind: "display-only",
+          reason: "aggregate-mathtex-morph-lineage",
+        })}
         selectedIds={new Set([CIRCLE_ENTITY.id])}
       />,
     );
@@ -181,6 +180,19 @@ describe("StudioCanvas retained preview layer", () => {
     );
     expect(fallbackMarkup).toContain('data-preview-interaction="display-only"');
     expect(fallbackMarkup).toMatch(/aria-label="Move circle_1"[^>]*disabled=""/);
+
+    const unverifiedMarkup = renderToStaticMarkup(
+      <StudioCanvas
+        {...baseProps()}
+        preview={previewView(presented, null, null, {
+          kind: "display-only",
+          reason: "source-runtime-identity-unverified",
+        })}
+      />,
+    );
+    expect(unverifiedMarkup).toContain('data-preview-interaction="display-only"');
+    expect(unverifiedMarkup).toContain("Canvas preview · verified fixture · display only");
+    expect(unverifiedMarkup).not.toContain('data-studio-entity="entity:circle_1"');
   });
 
   it("moves hit targets to the verified snapshot's positions while presented", () => {

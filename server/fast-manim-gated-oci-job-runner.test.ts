@@ -189,9 +189,9 @@ class GatedMathTexScene(Scene):
 `;
 
 const TRUSTED_IMAGE_LABELS = Object.freeze({
-  "io.poietra.fast-manim.archive-sha256": "3c64e0440fb5a2e0541aacc7a19bf87bdf46ac6f84059620ae5a0d812385cc1b",
-  "io.poietra.fast-manim.commit": "3083db9ed9a9a93c2808ee3f51189ceca92d230b",
-  "io.poietra.fast-manim.tree": "bff6f60534f820650d1c9e3c7d38627c56c6a0c6",
+  "io.poietra.fast-manim.archive-sha256": "2efa05e411df6a13b7c1bfab93bc99f8b58aeb8f3daf5f17db894b3c0ed54823",
+  "io.poietra.fast-manim.commit": "d2480e8096a5cac64f7f86ed1d0d01f5c87839e3",
+  "io.poietra.fast-manim.tree": "0ca5f7fc0c77a87fec7df605c8ce1190edf16f0a",
   "io.poietra.mathtex-outline.abi-version": "1",
   "io.poietra.mathtex-outline.artifact-sha256": "0".repeat(64),
   "io.poietra.mathtex-outline.engine-archive-sha256":
@@ -539,6 +539,9 @@ describe("gated OCI fixed profile", () => {
       TRUSTED_IMAGE_LABELS["io.poietra.mathtex-outline.notice-sha256"],
     );
     for (const stale of [
+      "3083db9ed9a9a93c2808ee3f51189ceca92d230b",
+      "bff6f60534f820650d1c9e3c7d38627c56c6a0c6",
+      "3c64e0440fb5a2e0541aacc7a19bf87bdf46ac6f84059620ae5a0d812385cc1b",
       "4d2a80abe1dbb0d800fd74c36d8a442afdb8efb6",
       "270b237602705c240cab9daef824e6f0400d2f3c",
       "8c1e29ae95275a55a7c0ccc21f77848b63378ef37a469bd56820f7a372ff97e2",

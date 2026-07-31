@@ -66,7 +66,10 @@ export type StudioPreviewRendererViewV1 = Readonly<{
 
 export type StudioPreviewInteractionAuthorityV1 =
   | Readonly<{ kind: "interactive" }>
-  | Readonly<{ kind: "display-only"; reason: "aggregate-mathtex-morph-lineage" }>;
+  | Readonly<{
+      kind: "display-only";
+      reason: "aggregate-mathtex-morph-lineage" | "source-runtime-identity-unverified";
+    }>;
 
 export type UseStudioPreviewRendererInputV1 = Readonly<{
   committedProposedState: ProposedState | null;
@@ -122,15 +125,25 @@ type StudioPreviewHostInstallationV1 = Readonly<{
   workspaceKey: string;
 }>;
 
-/** V5 deliberately has no glyph/source identity, so paint may be presented but
- * authoring gestures must not guess a binding from alias or Scene order. */
+/**
+ * Runtime pixels may be presented without source interaction authority. V5
+ * deliberately has aggregate morph lineage, while V6 requires at least one
+ * server-verified source/runtime binding. Older snapshot-only profiles retain
+ * their semantic interaction fallback; no gesture guesses from Scene order.
+ */
 export function studioPreviewInteractionAuthorityV1(
   snapshot: StudioVerifiedPreviewSnapshotV1 | null,
 ): StudioPreviewInteractionAuthorityV1 {
   const source = snapshot?.snapshot.scene.source;
-  return source?.kind === "imported-manim-server-snapshot" && Number(source.snapshotVersion) === 5
-    ? { kind: "display-only", reason: "aggregate-mathtex-morph-lineage" }
-    : { kind: "interactive" };
+  if (source?.kind !== "imported-manim-server-snapshot") return { kind: "interactive" };
+  if (Number(source.snapshotVersion) === 5) {
+    return { kind: "display-only", reason: "aggregate-mathtex-morph-lineage" };
+  }
+  if (Number(source.snapshotVersion) !== 6) return { kind: "interactive" };
+  const identity = snapshot?.sourceRuntimeIdentity;
+  return identity && identity.size > 0
+    ? { kind: "interactive" }
+    : { kind: "display-only", reason: "source-runtime-identity-unverified" };
 }
 
 /** Selects only IDs admitted by the server-verified source/runtime map. */

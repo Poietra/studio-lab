@@ -111,6 +111,15 @@ describe("fast-manim snapshot runtime config", () => {
     expect(() => fastManimSnapshotProducerRequestV1Schema.parse({ ...v2Request, snapshotVersion: 1 })).toThrow(
       /different snapshot version/i,
     );
+    const v6Config = { ...config, snapshotVersion: 6 } as const;
+    const v6Request = {
+      ...producerRequest,
+      runtimeConfig: v6Config,
+      runtimeConfigHash: digestFastManimSnapshotRuntimeConfigV1(v6Config),
+      snapshotVersion: 6,
+    } as const;
+    expect(fastManimSnapshotProducerRequestV1Schema.parse(v6Request)).toEqual(v6Request);
+    expect(v6Request.runtimeConfigHash).not.toBe(producerRequest.runtimeConfigHash);
     const v4Config = {
       ...config,
       capabilities: ["png-image"],

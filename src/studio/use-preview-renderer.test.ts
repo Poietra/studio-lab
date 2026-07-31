@@ -20,6 +20,7 @@ import { EDIT_OPERATION_VERSION } from "./operations";
 import {
   PRISTINE_WORKING_REVISION,
   type StudioPreviewSnapshotProviderV1,
+  type StudioPreviewSourceRuntimeMappingV1,
   type StudioVerifiedPreviewSnapshotV1,
   studioPreviewWorkspaceKeyV1,
 } from "./preview-snapshot-provider";
@@ -486,6 +487,49 @@ describe("studioPreviewInteractionAuthorityV1", () => {
         authority,
       ),
     ).toEqual([]);
+  });
+
+  it("makes unverified V6 identity display-only and admits only mapped runtime hit targets", async () => {
+    const { snapshot } = await linePreviewInput();
+    const source = snapshot.snapshot.scene.source;
+    if (source.kind !== "imported-manim-server-snapshot") throw new Error("Expected imported snapshot source.");
+    const partialIdentity = new Map<string, StudioPreviewSourceRuntimeMappingV1>([
+      ["line", { bindingId: "binding:line", entityId: "runtime-line", sourceName: "line" }],
+    ]);
+    const fullIdentity = new Map<string, StudioPreviewSourceRuntimeMappingV1>([
+      ...partialIdentity,
+      ["polygon", { bindingId: "binding:polygon", entityId: "runtime-polygon", sourceName: "polygon" }],
+    ]);
+    const displayOnly = { kind: "display-only", reason: "source-runtime-identity-unverified" } as const;
+    expect(studioPreviewInteractionAuthorityV1({ ...snapshot, sourceRuntimeIdentity: null })).toEqual({
+      kind: "interactive",
+    });
+    for (const { expectedAuthority, expectedEntityIds, identity } of [
+      { expectedAuthority: displayOnly, expectedEntityIds: [], identity: null },
+      { expectedAuthority: displayOnly, expectedEntityIds: [], identity: new Map() },
+      {
+        expectedAuthority: { kind: "interactive" } as const,
+        expectedEntityIds: ["runtime-line"],
+        identity: partialIdentity,
+      },
+      {
+        expectedAuthority: { kind: "interactive" } as const,
+        expectedEntityIds: ["runtime-line", "runtime-polygon"],
+        identity: fullIdentity,
+      },
+    ]) {
+      const v6 = {
+        ...snapshot,
+        snapshot: {
+          ...snapshot.snapshot,
+          scene: { ...snapshot.snapshot.scene, source: { ...source, snapshotVersion: 6 } },
+        },
+        sourceRuntimeIdentity: identity,
+      } as StudioVerifiedPreviewSnapshotV1;
+      const authority = studioPreviewInteractionAuthorityV1(v6);
+      expect(authority).toEqual(expectedAuthority);
+      expect(studioPreviewInteractionEntityIdsV1(identity, authority)).toEqual(expectedEntityIds);
+    }
   });
 });
 

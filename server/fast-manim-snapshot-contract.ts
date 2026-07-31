@@ -55,6 +55,7 @@ export const fastManimSnapshotProfileVersionV1Schema = z.union([
   z.literal(3),
   z.literal(4),
   z.literal(5),
+  z.literal(6),
 ]);
 export type FastManimSnapshotProfileVersionV1 = z.infer<typeof fastManimSnapshotProfileVersionV1Schema>;
 
@@ -429,6 +430,8 @@ export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V3 =
 export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V4 = "fast-manim server snapshot hermetic PNG profile v4" as const;
 export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V5 =
   "fast-manim server snapshot hermetic MathTex morph profile v5" as const;
+export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V6 =
+  "fast-manim server snapshot generic planar VMobject profile v6" as const;
 
 export const FAST_MANIM_SNAPSHOT_UNSUPPORTED_MESSAGES_V1: Readonly<Record<FastManimSnapshotIssueCodeV1, string>> = {
   "animation-evidence-incomplete": "The Scene animates in ways the static snapshot profile cannot capture.",
@@ -991,6 +994,40 @@ function assertStaticProfileEntity(entity: StaticProfileEntity, pathTrimTarget: 
     profileViolation(
       "Static profile open paths must be one finite canonical 1/3–2/3 Line cubic within bounded roundoff.",
     );
+  }
+}
+
+/**
+ * Profile V6 admits the producer's bounded generic planar VMobject leaves.
+ * Scene IR already bounds every coordinate, subpath, and aggregate segment
+ * count; this layer independently narrows that general schema to the exact
+ * static paint/path surface exported by fast-manim instead of trusting the
+ * producer's admission decision.
+ */
+function assertGenericVmobjectProfileEntityV6(entity: StaticProfileEntity) {
+  if (entity.appearance.kind !== "vector" || entity.appearance.opacity !== 1) {
+    profileViolation("Generic VMobject V6 entities must use fully opaque vector appearance.");
+  }
+  if (entity.geometry.kind !== "cubic-path") {
+    profileViolation("Generic VMobject V6 geometry must use bounded cubic paths.");
+  }
+  const { fill, stroke } = entity.appearance;
+  if (fill === null && stroke === null) {
+    profileViolation("Generic VMobject V6 entities must carry visible fill or stroke paint.");
+  }
+  if (fill !== null) {
+    if (fill.rule !== "nonzero" || fill.color.alpha <= 0) {
+      profileViolation("Generic VMobject V6 fills must use visible solid nonzero-winding paint.");
+    }
+    if (entity.geometry.path.subpaths.some((subpath) => !subpath.closed)) {
+      profileViolation("Generic VMobject V6 does not admit visible fill on an open subpath.");
+    }
+  }
+  if (
+    stroke !== null &&
+    (stroke.color.alpha <= 0 || stroke.cap !== "butt" || stroke.join !== "miter" || stroke.miterLimit !== 10)
+  ) {
+    profileViolation("Generic VMobject V6 strokes must use visible solid paint and canonical butt/miter/10 styling.");
   }
 }
 
@@ -2156,6 +2193,9 @@ function assertFastManimSnapshotProfileV1(
       case 5:
         assertHermeticMathTexMorphProfileEntityV5(entity);
         break;
+      case 6:
+        assertGenericVmobjectProfileEntityV6(entity);
+        break;
     }
   });
   // The provenance array is exactly the derived scene record followed by one
@@ -2228,7 +2268,8 @@ function fastManimSnapshotProvenanceEvidence(
   | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V2
   | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V3
   | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V4
-  | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V5 {
+  | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V5
+  | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V6 {
   switch (snapshotVersion) {
     case 1:
       return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V1;
@@ -2240,6 +2281,8 @@ function fastManimSnapshotProvenanceEvidence(
       return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V4;
     case 5:
       return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V5;
+    case 6:
+      return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V6;
   }
 }
 

@@ -29,13 +29,14 @@ describe("Manim command parsing", () => {
     expect(() => parseManimProjects('[{"root":"/tmp/a","path":"/private"}]')).toThrow(/unsupported field/i);
   });
 
-  it("keeps snapshot profile V1 as the default and accepts an explicit V2 opt-in", () => {
+  it("keeps snapshot profile V1 as the default and accepts explicit supported profiles", () => {
     expect(parseFastManimSnapshotVersion(undefined)).toBe(1);
     expect(parseFastManimSnapshotVersion("2")).toBe(2);
     expect(parseFastManimSnapshotVersion("3")).toBe(3);
     expect(parseFastManimSnapshotVersion("4")).toBe(4);
     expect(parseFastManimSnapshotVersion("5")).toBe(5);
-    expect(() => parseFastManimSnapshotVersion("6")).toThrow(/must be 1, 2, 3, 4, or 5/i);
+    expect(parseFastManimSnapshotVersion("6")).toBe(6);
+    expect(() => parseFastManimSnapshotVersion("7")).toThrow(/must be 1, 2, 3, 4, 5, or 6/i);
   });
 });
 
