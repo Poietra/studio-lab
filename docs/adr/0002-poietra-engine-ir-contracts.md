@@ -1,6 +1,6 @@
 # ADR 0002: Versioned contracts for the Poietra Engine vertical slice
 
-- Status: Accepted for the vertical-slice experiment
+- Status: Accepted for bounded opt-in adoption
 - Date: 2026-07-25
 - Decision owner: Poietra Studio
 
@@ -552,16 +552,16 @@ Meeting a timing budget cannot override correctness, asset integrity, visual par
 or fallback failure. The experiment produces a Go, conditional Go, or No-Go update
 to this ADR before production migration.
 
-## Interim Go/No-Go decision (updated 2026-07-31)
+## Final bounded Go/No-Go decision (2026-07-31)
 
-**Go for the named-host D3D12 evidence lane; Conditional Go for the explicit
-WebGPU preview; No-Go for making it Studio's default renderer or exposing Python
+**Go for the bounded, explicit-opt-in WebGPU preview on the named-host evidence;
+No-Go for making it Studio's universal default renderer or exposing Python
 execution to untrusted SaaS traffic.** The checked-in physical run meets every
-defined latency and retained-memory budget. The 1,000 animated-cubic workload is
-still a visible limit: acknowledgement p95 remains within 33.3 ms, but paced
-presentation reaches 40.42 fps rather than 60 fps. The evidence therefore supports
-continued opt-in adoption without claiming that all production migration criteria
-are complete.
+defined correctness, latency, retained-memory, and static real-Manim compositor
+gate. The 1,000 animated-cubic workload remains a documented service-level limit:
+acknowledgement p95 is within 33.3 ms, but paced presentation reaches 40.42 fps
+rather than 60 fps. Issue #295 is therefore a non-blocking optimization for this
+bounded adoption, not evidence that every supported workload sustains 60 Hz.
 
 The following evidence is reproducible in this repository:
 
@@ -575,9 +575,9 @@ The following evidence is reproducible in this repository:
 | whole-Scene failure policy | met at contract, renderer, Worker, and client boundaries | unsupported draws, malformed responses, stale correlation, surface/device failures, and protocol divergence never produce a partial success |
 | generated payload | met on the named host | the clean-commit report binds the served release WASM at 1,631,912 raw bytes / 552,354 gzip bytes with SHA-256 `2d917354...a640`, below the 3 MiB compressed budget |
 | initial shared snapshot | met for the fixture | 2,414 encoded bytes, below the 5 MiB budget |
-| fixture breadth and visual parity | partial | the catalog fixes 15 workload IDs; the original opacity/stroke fixture plus generic-fill and generic-stroke/composition fixtures execute through native WGPU and Chromium WASM/WebGPU with shared interior-pixel references. The corpus-driven full-RGBA lane now covers `dynamic-affine-camera/a-first`, an alpha-edge PNG under entity scale plus animated camera pan/zoom, a Studio-created nested radical fraction with 10 MathTex subpaths, generic stroke topology with trim/morph/motion, and five server-sealed profile-V5 samples across a real `E = mc^2` → Maxwell → `E = mc^2` MathTex morph. The V5 lane proves restored endpoint identity and distinct transition midpoints, but its aggregate-path interpolation is not evidence of exact Manim/Cairo animation parity. The PNG slice also gates native and browser output against an independent analytic reference. Physical performance evidence is checked in; the real Manim/Cairo visible-compositor gate is tracked by #296. |
+| fixture breadth and visual parity | met for the bounded corpus and static real-Scene slice | the catalog fixes 15 workload IDs; the corpus-driven full-RGBA lane covers affine/camera, PNG alpha, nested MathTex, generic stroke topology, and five bounded real MathTex morph samples. The V5 aggregate-path interpolation remains semantic evidence rather than exact Manim/Cairo animation parity. The independent static `RealPreviewScene` Cairo-to-visible-Edge compositor run passes at SSIM `0.9985658029` with `1,855 / 389,376` pixels (`0.47640327%`) above `8/255`, against gates of `0.995` and `0.5%`; expected, actual, diff, report, source, host, commit, producer, and served-WASM identities are checked in under [`docs/evidence/manim-compositor-parity-2026-07-31`](../evidence/manim-compositor-parity-2026-07-31/report.json). This does not claim exact dynamic Manim/Cairo animation parity. |
 | renderer capability coverage | partial | non-convex closed cubic fills, multiple subpaths, holes, self-intersections, nonzero/even-odd rules, general cubic strokes with v1 caps/joins/miter limits, ordered fill-then-stroke composition, transforms/camera/animation, and verified PNG images work; the shared stroke fixture also samples nonzero trim, morph, and motion. Open fill paths, antialiasing, and clipping remain truthful fallbacks. |
-| Studio preview integration | partial pending visible-compositor proof | `?previewRenderer=server` selects a real project source and Scene across the bounded V1–V6 profiles, installs its verified server snapshot once, and accepts only exactly correlated retained frame acknowledgements while the semantic editor stays mounted. Verified source/runtime identity drives imported hit geometry; exact GPU texture readback is covered, while the named-host visible browser-compositor gate remains #296. |
+| Studio preview integration | met for bounded V1–V6 opt-in | `?previewRenderer=server` selects a real project source and Scene across the bounded V1–V6 profiles, installs its verified server snapshot once, and accepts only exactly correlated retained frame acknowledgements while the semantic editor stays mounted. Verified source/runtime identity drives imported hit geometry; exact GPU texture readback and the named-host visible browser-compositor path are both covered. Unsupported semantics still fail closed to the semantic/server fallback. |
 | incremental edit transfer | met for Studio-owned Scenes | the first revision uses a verified full install; subsequent edits use the 256 KiB stale-revision-safe delta through Canvas Worker ABI v4 and WASM, with asset changes and rejected/stale deltas using a verified full replacement. Imported Manim snapshots remain server-sealed full installs. |
 | fast-manim bridge | met for bounded V1–V6; production arbitrary Python blocked | V1 covers the static Circle/Rectangle/Line slice; V2 adds variable duration and bounded affine, opacity, trim, morph, and motion channels; V3 adds hermetic MathTex; V4 adds verified PNG; V5 adds the bounded MathTex A/B/A morph; V6 adds generic planar VMobject paths. Studio hands canonical immutable request bytes to the explicit [sandbox backend boundary](../fast-manim-sandbox-backend.md), rechecks backend attestation and result correlation, and then verifies and seals the result. Runner-owned lifecycle bounds quarantine invalid adapters, omitted deployment defaults to production, and the local-process adapter remains explicit dev/test-only. |
 | frame, scrub, and cold-start latency | met on the named host | native Edge/D3D12 on the pinned NVIDIA adapter records warm acknowledgement p95 0.7 ms, scrub p95 0.3 ms, and 20-process cold scene-ready p95 397.6 ms. Five stress workloads sustain about 60 fps; 1,000 animated cubics sustain 40.42 fps while remaining within the 33.3 ms acknowledgement budget. |
@@ -594,12 +594,16 @@ the exact driver/profile/commit/WASM identities, and no eligibility exceptions.
 
 Production-default migration remains blocked until independent follow-up work:
 
-1. expands independent Manim/Cairo visual parity and resolves or explicitly
-   accepts the 1,000 animated-cubic cadence limit (#78);
+1. expands real Manim/Cairo parity beyond the bounded static Scene whenever a
+   broader profile is proposed for default rendering;
 2. promotes the current immutable snapshot/render artifacts and passes the
    operator-owned rootless production conformance gates (#186, #227, #280); and
 3. completes the production rollout and multi-tenant adversarial evidence for
    arbitrary Python execution (#80–#85).
+
+The measured 1,000 animated-cubic cadence limit is explicitly accepted for this
+opt-in decision and tracked as non-blocking follow-up #295. It must be resolved or
+given a narrower product service level before any claim of universal 60 Hz preview.
 
 The Studio-side backend/job contract, runner-owned lifecycle bounds, production-
 safe deployment default, and default-off local adapter are defined by #81 and
@@ -608,14 +612,14 @@ not satisfy the OS isolation, hard-limit, multi-tenant, or rollout evidence
 required from #82–#85.
 
 The `PreviewRenderer` host and explicit server-side fast-manim snapshot exporter
-now cover the bounded V1–V6 profiles. The host's broader independent compositor
-parity and production operator evidence remain open; the physical performance run
-does not satisfy those separate gates.
+now cover the bounded V1–V6 profiles. The static real-Scene visible-compositor
+gate is complete; broader dynamic Manim/Cairo parity and production operator
+evidence remain outside this bounded decision.
 
-Until the remaining gates are satisfied, WebGPU remains an explicit experimental
-client preview. The semantic preview remains the default fallback, and server-side
-video rendering/export remains authoritative; presenting a client frame never
-asserts that a final render or source commit succeeded.
+WebGPU is accepted as an explicit bounded client preview, while the semantic
+preview remains the default fallback. Server-side video rendering/export remains
+authoritative; presenting a client frame never asserts that a final render or
+source commit succeeded.
 
 ## Consequences
 

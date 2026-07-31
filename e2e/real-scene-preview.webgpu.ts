@@ -188,9 +188,8 @@ async function expectPresented(page: Page, revision: number) {
 
 /**
  * Complementary renderer proof: render the server-sealed bundle in an
- * independent worker and read exact GPU texture pixels. The locator screenshot
- * remains an issue #78 real-GPU gate because this headless environment does
- * not compositor-capture even a fenced main-thread WebGPU clear.
+ * independent worker and read exact GPU texture pixels alongside the promoted
+ * visible-compositor proof.
  */
 async function readBackIndependentRendererPixels(
   page: Page,
