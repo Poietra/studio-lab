@@ -17,8 +17,9 @@ geometry library. RenderTrace v0 provides runtime identity, event, bounding-box,
 and hash evidence, but not complete path points, paint, camera, or asset payloads.
 Geometry must never be reconstructed from a bounding box or geometry hash.
 
-The experiment therefore fixes a small renderer-neutral boundary before Rust,
-WASM, or WebGPU implementation begins.
+The experiment therefore fixed a small renderer-neutral boundary before the
+Rust/WASM/WebGPU implementation. This ADR now also records the implemented
+bounded profiles and the limits of their adoption decision.
 
 ## Decision
 
@@ -161,10 +162,11 @@ or final rendering will succeed.
 
 For imported Manim scenes, Python source and server-side execution remain the
 source of truth. An `imported-manim-server-snapshot` is bound to source hash,
-runtime configuration hash, snapshot hash, and snapshot schema version. RenderTrace
-v0 may correlate identity and provenance, but cannot generate this snapshot alone.
-The fast-manim bridge must add an explicit geometry/style/camera/scene-order export
-or use the existing server render fallback.
+runtime configuration hash, snapshot hash, and snapshot schema version. The
+fast-manim bridge exports explicit geometry, style, camera, scene order, supported
+animation, and asset evidence for the bounded V1–V6 profiles. RenderTrace v0 is
+used only for source/runtime identity correlation; semantics outside those
+profiles remain on the server-rendered fallback.
 
 The contracts have no asset locator, URL, data URL, absolute filesystem path, or
 raw Python field. Human-readable provenance may name a source anchor, but the
@@ -218,9 +220,11 @@ referential integrity, not proof that sampling was implemented correctly. The pu
 evaluator tests must independently compare sampled path, transform, opacity, and
 camera against golden results before either renderer consumes production frames.
 
-The broader architecture may later need clip and glyph-outline primitives, but
-they are intentionally not promises of v1. MathTex continues through the existing
-DOM/SVG or server-rendered fallback during this vertical slice. Adding clip, glyph,
+The broader architecture may later need clip and dedicated glyph primitives, but
+they are intentionally not promises of v1. Supported MathTex is compiled by the
+pinned RaTeX/KaTeX outline module and normalized into the existing closed cubic
+path primitive; imported V3/V5 MathTex uses separately verified snapshot geometry.
+Unsupported source syntax remains on the semantic/server fallback. Adding clip,
 SVG/JPEG/WebP, gradient, dash, filter, 3D, perspective, or material semantics
 requires a new contract version after fixture-backed design.
 
@@ -302,28 +306,25 @@ that display projection intentionally substitutes `(0,0)`, scale `1`, and opacit
 would fabricate render evidence and lose paint order.
 
 The adapter may also consult the Canonical Edit Program that produced the
-evaluated state; it does not infer facts absent from both. The first checked-in
-adapter is deliberately a static Circle/Rectangle slice. Resolved camera,
-appearance, and complete paint order are explicit adapter inputs because the
-current Runtime Scene does not contain enough evidence to reconstruct them. Its
-initial mapping is:
+evaluated state; it does not infer facts absent from both. Resolved camera,
+appearance, complete paint order, imported geometry, and asset identity remain
+explicit evidence because the Runtime Scene cannot reconstruct them. The bounded
+mapping is:
 
 | Input evidence | v1 result |
 | --- | --- |
-| known, lifetime-constant Circle/Rectangle dimensions, position, and scale plus explicit appearance/order | normalized shape entity |
-| any animated or discontinuous property | structured unsupported result and whole-Scene fallback |
-| exact camera and matching fixed viewport/frame evidence | normalized base camera |
-| Line endpoints or cubic points absent from state/program | compilation error and fallback |
-| ambiguous current `camera` number channel | compilation error and fallback |
+| imported vector, PNG, or MathTex with a verified runtime identity and snapshot geometry | preserved entity with Studio position/scale applied exactly once |
+| Studio-created Circle, Rectangle, or MathTex with known static geometry/content and supported appearance evidence | normalized shape or closed cubic-path entity |
+| supported opacity transition with known endpoints and easing | normalized opacity channel |
+| unsupported animation, discontinuity, or MathTex content change | structured unsupported result and whole-Scene fallback |
+| exact camera and matching viewport/frame evidence | normalized camera with the evaluated Scene duration |
 | image without exact PNG digest, dimensions, and nearest/linear sampler | compilation error and fallback |
 | any required `Knowledge.unknown` | compilation error and fallback |
 
-This static boundary is replaced or extended only when an animated mapping has
-fixture proof. In particular, current Studio curved motion is parameter-time
-quadratic motion while Scene IR motion progress is arc length; copying its values
-would change intermediate positions. The adapter therefore rejects it rather than
-claiming an inexact motion channel. A failure for one entity rejects the complete
-Scene and never returns a partial Scene IR.
+This boundary is extended only when a mapping has fixture proof. Studio motion,
+transform, and content channels that are not explicitly mapped are rejected rather
+than copied into a different interpolation model. A failure for one entity rejects
+the complete Scene and never returns a partial Scene IR.
 
 In particular, fast-manim's default bicubic ImageMobject sampling is not silently
 downgraded to v1 linear sampling. It remains on the server fallback unless an
@@ -352,10 +353,10 @@ existing preview/server fallback.
 
 ## Repository boundary
 
-The TypeScript contracts and first adapter stay in `studio-lab` while the vertical
-slice changes. The Rust experiment will be a top-level `engine/` Cargo workspace,
-not a child of `src-tauri`, because browser, native/headless, Electron, and Tauri
-must consume the same core without a desktop-shell dependency.
+The TypeScript contracts, Studio adapter, and Rust implementation stay in
+`studio-lab` while the boundary evolves. Rust lives in the top-level `engine/`
+Cargo workspace rather than under `src-tauri`, so browser, native/headless,
+Electron, and Tauri can consume the same core without a desktop-shell dependency.
 
 Extraction to an independent Poietra repository is considered only after browser
 and native consumers pass the same golden fixtures and a release/compatibility
@@ -390,10 +391,11 @@ limits are intentionally narrower than the general Scene IR theoretical maxima:
 larger imported Scenes use the server-rendered fallback instead of amplifying
 validation errors in the Studio server.
 
-This contract is not a fast-manim exporter, process runner, or HTTP endpoint.
-RenderTrace v0 still cannot populate the complete geometry, appearance, camera,
-ordering, animation, and asset evidence, so the producer remains upstream work
-and the existing server-rendered artifact remains the fallback.
+The contract is wired through the Scene-snapshot HTTP endpoint, bounded runner,
+server sealing, and fast-manim V1–V6 exporters. Those exporters cover the declared
+static/dynamic vector, MathTex, PNG, and generic planar VMobject profiles; they do
+not claim arbitrary Python or updater semantics. Unsupported or unverifiable
+Scenes continue through the existing server-rendered fallback.
 
 ### Incremental Scene transaction boundary
 
@@ -408,9 +410,10 @@ failure requests a full-snapshot fallback and leaves the base unchanged.
 
 Imported Manim snapshots deliberately do not use this delta. Their revision is a
 server-sealed content digest whose integrity cannot be established from a client
-edit transaction, so they require another verified full server snapshot. The v1
-delta contract and pure atomic apply are present, but Worker/WASM transport is a
-separate follow-up and is not claimed by this boundary alone.
+edit transaction, so they require another verified full server snapshot. For
+Studio-owned Scenes, Canvas Worker ABI v4 carries the bounded delta into WASM and
+advances revision ownership only after the correlated acknowledgement. Asset
+changes and rejected or stale deltas use an explicit verified full replacement.
 
 ## Fixed experiment protocol and adoption budget
 
@@ -476,7 +479,7 @@ obsolete evidence. Results from different hosts are never combined. WebGPU-disab
 and initialization/device-loss runs are correctness/fallback tests, not GPU
 performance samples.
 
-The checked-in golden suite will contain 10–20 stable fixture IDs and at least:
+The checked-in golden suite contains 15 stable workload IDs spanning:
 
 - empty camera and frame edges;
 - filled Circle, stroked Line, Rectangle with fill and stroke, and a cubic S-curve;
