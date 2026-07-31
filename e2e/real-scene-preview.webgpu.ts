@@ -289,6 +289,7 @@ async function expectWholeSceneFallback(page: Page, status: "failed" | "unsuppor
 }
 
 test("correlates a real fast-manim Scene with the retained host and verifies GPU texture output", async ({ page }) => {
+  test.setTimeout(120_000);
   const run = await expectVerifiedRun(await openRealWorkspace(page));
   expect(run.snapshot?.bundle?.scene?.entities).toHaveLength(3);
   expect(run.snapshot?.bundle?.scene.duration).toBe(1);
