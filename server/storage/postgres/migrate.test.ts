@@ -11,6 +11,7 @@ import {
   applyBundledDurableStorageMigrations,
   type applyBundledDurableStorageMigrationsV2,
   type applyBundledWorkspaceSourceMigrationV1,
+  applyOidcLoginMigrationV13,
   applyProjectPngMigrationV5,
   applyRenderArtifactMigrationV4,
   applyRenderCancellationMigrationV7,
@@ -22,6 +23,8 @@ import {
   applySnapshotRuntimeDigestMigrationV10,
   applyWorkspaceSourceMigrationV1,
   durableStorageMigrationChecksum,
+  OIDC_LOGIN_MIGRATION_V13_CHECKSUM,
+  OIDC_LOGIN_MIGRATION_V13_SOURCE,
   PROJECT_PNG_MIGRATION_V5_SOURCE,
   RENDER_ARTIFACT_MIGRATION_V4_SOURCE,
   RENDER_CANCELLATION_MIGRATION_V7_SOURCE,
@@ -75,10 +78,10 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 12 });
-    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 13 });
+    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 12 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 13 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -91,7 +94,8 @@ describe("durable storage migrations", () => {
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === ACCOUNT_SESSION_MIGRATION_V12_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(24);
+    expect(db.queries.filter(({ text }) => text === OIDC_LOGIN_MIGRATION_V13_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(26);
   });
 
   it("rejects a missing prerequisite under the same advisory lock", async () => {
@@ -210,6 +214,27 @@ describe("durable storage migrations", () => {
     expect(ACCOUNT_SESSION_MIGRATION_V12_SOURCE).toContain("advance_account_record_version_v11()");
     expect(ACCOUNT_SESSION_MIGRATION_V12_SOURCE).not.toContain("access_token");
     expect(ACCOUNT_SESSION_MIGRATION_V12_SOURCE).not.toContain("refresh_token");
+  });
+
+  it("requires all twelve durable-storage prerequisites before applying OIDC login v13", async () => {
+    const db = database();
+    await expect(applyOidcLoginMigrationV13(db.pool, OIDC_LOGIN_MIGRATION_V13_SOURCE)).rejects.toThrow(
+      /requires durable storage migrations v1 through v12/i,
+    );
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("pins one-time OIDC attempts and bounds opaque browser sessions in v13", () => {
+    expect(durableStorageMigrationChecksum(OIDC_LOGIN_MIGRATION_V13_SOURCE)).toBe(OIDC_LOGIN_MIGRATION_V13_CHECKSUM);
+    expect(OIDC_LOGIN_MIGRATION_V13_SOURCE).toContain("state_hash bytea PRIMARY KEY");
+    expect(OIDC_LOGIN_MIGRATION_V13_SOURCE).toContain("browser_binding_hash bytea NOT NULL");
+    expect(OIDC_LOGIN_MIGRATION_V13_SOURCE).toContain("octet_length(state_hash) = 32");
+    expect(OIDC_LOGIN_MIGRATION_V13_SOURCE).toContain("expires_at <= created_at + interval '10 minutes'");
+    expect(OIDC_LOGIN_MIGRATION_V13_SOURCE).toContain("account_sessions_bounded_lifetime_v13");
+    expect(OIDC_LOGIN_MIGRATION_V13_SOURCE).toContain("expires_at <= created_at + interval '30 days'");
+    expect(OIDC_LOGIN_MIGRATION_V13_SOURCE).not.toContain("access_token");
+    expect(OIDC_LOGIN_MIGRATION_V13_SOURCE).not.toContain("refresh_token");
+    expect(OIDC_LOGIN_MIGRATION_V13_SOURCE).not.toContain("return_path");
   });
 
   it("defines bounded identities, memberships, and a deferred last-owner invariant in v11", () => {
