@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { inflateSync } from "node:zlib";
 
 import { describe, expect, it } from "vitest";
@@ -7,6 +7,7 @@ import { digestFastManimSnapshotBundleV1 } from "../server/fast-manim-snapshot-c
 import { sceneIrBundleV1Schema } from "../src/engine/contracts";
 import { sceneIrSourceRevisionHash } from "../src/engine/scene-ir";
 import { manimCompositorReferenceV1Schema } from "./manim-compositor-parity";
+import { verifyManimCompositorParityEvidenceV1 } from "./manim-compositor-parity-evidence";
 import { encodeRgbaPngV1 } from "./png-rgba";
 import { thresholdsForEntryV1, visualParityCorpusV1Schema, visualParityReportV1Schema } from "./visual-parity-contract";
 import { compareVisualParityFramesV1, makeOpaqueVisualParityDiffV1 } from "./visual-parity-metrics";
@@ -17,6 +18,16 @@ async function corpusFixture() {
 
 function sha256(bytes: Uint8Array) {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+async function pathExists(path: string) {
+  try {
+    await access(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
 }
 
 describe("visual parity v1 contracts", () => {
@@ -59,6 +70,16 @@ describe("visual parity v1 contracts", () => {
     expect(png.byteLength).toBe(reference.png.byteLength);
     expect(sha256(png)).toBe(reference.png.sha256);
     expect(sha256(new Uint8Array(await readFile(reference.scene.sourcePath)))).toBe(reference.scene.sourceSha256);
+  });
+
+  it("revalidates the promoted real Manim compositor evidence when present", async () => {
+    const directory = "docs/evidence/manim-compositor-parity-2026-07-31";
+    if (!(await pathExists(directory))) return;
+    await expect(verifyManimCompositorParityEvidenceV1(directory)).resolves.toMatchObject({
+      gate: { passed: true },
+      schema: "poietra.manim-compositor-parity-report",
+      version: 1,
+    });
   });
 
   it("pins the corpus order and existing dynamic semantic digest to the default gate", async () => {
