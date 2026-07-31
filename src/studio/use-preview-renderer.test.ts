@@ -32,6 +32,8 @@ import {
   digestStudioPreviewSceneRevisionV1,
   type StudioPreviewSnapshotMetadataStateV1,
   studioPreviewHostReadyForSceneUpdateV1,
+  studioPreviewInteractionAuthorityV1,
+  studioPreviewInteractionEntityIdsV1,
   studioPreviewSnapshotMetadataForWorkspaceV1,
 } from "./use-preview-renderer";
 
@@ -461,6 +463,29 @@ describe("claimStudioPreviewCanvasV1", () => {
     // and requests a new canvas epoch instead of re-transferring the element.
     expect(claimStudioPreviewCanvasV1(canvas)).toBe(false);
     expect(claimStudioPreviewCanvasV1({})).toBe(true);
+  });
+});
+
+describe("studioPreviewInteractionAuthorityV1", () => {
+  it("keeps aggregate MathTex morph identity display-only even if mappings are supplied", async () => {
+    const { snapshot } = await linePreviewInput();
+    const source = snapshot.snapshot.scene.source;
+    if (source.kind !== "imported-manim-server-snapshot") throw new Error("Expected imported snapshot source.");
+    const v5 = {
+      ...snapshot,
+      snapshot: {
+        ...snapshot.snapshot,
+        scene: { ...snapshot.snapshot.scene, source: { ...source, snapshotVersion: 5 } },
+      },
+    } as StudioVerifiedPreviewSnapshotV1;
+    const authority = studioPreviewInteractionAuthorityV1(v5);
+    expect(authority).toEqual({ kind: "display-only", reason: "aggregate-mathtex-morph-lineage" });
+    expect(
+      studioPreviewInteractionEntityIdsV1(
+        new Map([["equation", { bindingId: "binding:equation", entityId: "runtime-line", sourceName: "equation" }]]),
+        authority,
+      ),
+    ).toEqual([]);
   });
 });
 

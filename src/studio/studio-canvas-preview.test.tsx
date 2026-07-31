@@ -59,11 +59,13 @@ function previewView(
   state: StudioPreviewRendererViewV1["state"],
   interactionGeometry: StudioPreviewRendererViewV1["interactionGeometry"] = null,
   sourceRuntimeIdentity: StudioPreviewRendererViewV1["sourceRuntimeIdentity"] = null,
+  interactionAuthority: StudioPreviewRendererViewV1["interactionAuthority"] = { kind: "interactive" },
 ): StudioPreviewRendererViewV1 {
   return {
     attachCanvas: vi.fn(),
     epoch: 0,
     interactionGeometry,
+    interactionAuthority,
     sourceLabel: "verified fixture",
     sourceMetadataPhase: "ready",
     sourceRuntimeIdentity,
@@ -139,6 +141,46 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).toContain('data-studio-semantic-paint="deferred-to-canvas"');
     expect(markup).toContain('data-studio-entity="entity:circle_1"');
     expect(markup).toContain("Move circle_1");
+  });
+
+  it("presents aggregate MathTex morph pixels without enabling guessed authoring gestures", () => {
+    const markup = renderToStaticMarkup(
+      <StudioCanvas
+        {...baseProps()}
+        preview={previewView(
+          {
+            frame: {
+              packetId: "canvas:v5",
+              revision: "a".repeat(64),
+              sampleTime: 1.5,
+              viewport: { heightPx: 90, widthPx: 160 },
+            },
+            phase: "presented",
+          },
+          null,
+          new Map(),
+          { kind: "display-only", reason: "aggregate-mathtex-morph-lineage" },
+        )}
+        selectedIds={new Set([CIRCLE_ENTITY.id])}
+      />,
+    );
+    expect(markup).toContain('data-preview-interaction="display-only"');
+    expect(markup).toContain("Canvas preview · verified fixture · display only");
+    expect(markup).not.toContain('data-studio-entity="entity:circle_1"');
+    expect(markup).not.toContain("Move circle_1");
+    expect(markup).not.toContain("data-studio-resize-handle");
+
+    const fallbackMarkup = renderToStaticMarkup(
+      <StudioCanvas
+        {...baseProps()}
+        preview={previewView({ detail: "device lost", phase: "fallback", reason: "renderer-failed" }, null, new Map(), {
+          kind: "display-only",
+          reason: "aggregate-mathtex-morph-lineage",
+        })}
+      />,
+    );
+    expect(fallbackMarkup).toContain('data-preview-interaction="display-only"');
+    expect(fallbackMarkup).toMatch(/aria-label="Move circle_1"[^>]*disabled=""/);
   });
 
   it("moves hit targets to the verified snapshot's positions while presented", () => {

@@ -53,6 +53,7 @@ export type StudioPreviewRendererViewV1 = Readonly<{
    * keyed by verified runtime entity ID; non-null only while correlated.
    */
   interactionGeometry: StudioPreviewInteractionGeometryV1 | null;
+  interactionAuthority: StudioPreviewInteractionAuthorityV1;
   sourceLabel: string | null;
   /** Lifecycle of verified source metadata for the current provider/Scene. */
   sourceMetadataPhase: "failed" | "inactive" | "loading" | "ready";
@@ -62,6 +63,10 @@ export type StudioPreviewRendererViewV1 = Readonly<{
   /** Verified fast-manim base duration for the current source identity. */
   verifiedSourceDuration: number | null;
 }>;
+
+export type StudioPreviewInteractionAuthorityV1 =
+  | Readonly<{ kind: "interactive" }>
+  | Readonly<{ kind: "display-only"; reason: "aggregate-mathtex-morph-lineage" }>;
 
 export type UseStudioPreviewRendererInputV1 = Readonly<{
   committedProposedState: ProposedState | null;
@@ -117,8 +122,23 @@ type StudioPreviewHostInstallationV1 = Readonly<{
   workspaceKey: string;
 }>;
 
+/** V5 deliberately has no glyph/source identity, so paint may be presented but
+ * authoring gestures must not guess a binding from alias or Scene order. */
+export function studioPreviewInteractionAuthorityV1(
+  snapshot: StudioVerifiedPreviewSnapshotV1 | null,
+): StudioPreviewInteractionAuthorityV1 {
+  const source = snapshot?.snapshot.scene.source;
+  return source?.kind === "imported-manim-server-snapshot" && Number(source.snapshotVersion) === 5
+    ? { kind: "display-only", reason: "aggregate-mathtex-morph-lineage" }
+    : { kind: "interactive" };
+}
+
 /** Selects only IDs admitted by the server-verified source/runtime map. */
-export function studioPreviewInteractionEntityIdsV1(identity: StudioPreviewSourceRuntimeIdentityV1 | null) {
+export function studioPreviewInteractionEntityIdsV1(
+  identity: StudioPreviewSourceRuntimeIdentityV1 | null,
+  authority: StudioPreviewInteractionAuthorityV1 = { kind: "interactive" },
+) {
+  if (authority.kind === "display-only") return [];
   if (!identity) return [];
   const entityIds: string[] = [];
   const seen = new Set<string>();
@@ -239,7 +259,10 @@ export async function compileStudioPreviewSceneV1(
         bundle: snapshot,
         engineRevisionHash: correlation.engineRevisionHash,
         frame: { ...input.frame },
-        interactionEntityIds: studioPreviewInteractionEntityIdsV1(input.snapshot.sourceRuntimeIdentity),
+        interactionEntityIds: studioPreviewInteractionEntityIdsV1(
+          input.snapshot.sourceRuntimeIdentity,
+          studioPreviewInteractionAuthorityV1(input.snapshot),
+        ),
         snapshot: input.snapshot,
         workingRevision: input.workingRevision,
         workspaceKey: input.workspaceKey,
@@ -694,6 +717,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     attachCanvas,
     epoch,
     interactionGeometry,
+    interactionAuthority: studioPreviewInteractionAuthorityV1(snapshot),
     sourceLabel: snapshot?.sourceLabel ?? null,
     sourceMetadataPhase: currentMetadata.phase,
     sourceRuntimeIdentity: snapshot?.sourceRuntimeIdentity ?? null,

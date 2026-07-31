@@ -520,7 +520,12 @@ async function routeManimRequest(
     if (parsed.data.projectId !== projectId) {
       throw new HttpError("The request project does not match the project endpoint.", 409);
     }
-    sendJson(response, 200, await manager.runSceneSnapshot(parsed.data, signal));
+    const snapshot = await manager.runSceneSnapshot(parsed.data, signal);
+    if (!(await sendJsonAndWaitForFinish(response, 200, snapshot))) {
+      const error = new Error("The Scene snapshot request was disconnected before its response was sent.");
+      error.name = "AbortError";
+      throw error;
+    }
     return;
   }
   const sceneSnapshotAssetMatch = url.pathname.match(PROJECT_SCENE_SNAPSHOT_ASSET_ROUTE);
