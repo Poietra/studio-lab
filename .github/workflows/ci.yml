@@ -58,6 +58,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build web application
         run: pnpm build:web
+      - name: Bundle Cloudflare account control plane
+        run: pnpm build:account-worker
 
   tests:
     name: Unit and integration tests
