@@ -1,12 +1,19 @@
 import { createHash } from "node:crypto";
 import { access, copyFile, mkdir, mkdtemp, readFile, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
-import { readPinnedReferenceHostProfile } from "./benchmark-environment";
+import {
+  PINNED_REFERENCE_HOST_PROFILE_HASH_PATH,
+  PINNED_REFERENCE_HOST_PROFILE_PATH,
+  readPinnedReferenceHostProfile,
+  requireReferenceHostPreflight,
+} from "./benchmark-environment";
 import { manimCompositorParityReportV1Schema, manimCompositorReferenceV1Schema } from "./manim-compositor-parity";
 
-const PINNED_REFERENCE_ROOT = "fixtures/manim-compositor-parity-v1";
+const REPOSITORY_ROOT = fileURLToPath(new URL("..", import.meta.url));
+const PINNED_REFERENCE_ROOT = join(REPOSITORY_ROOT, "fixtures", "manim-compositor-parity-v1");
 const EVIDENCE_FILENAMES = ["actual.png", "diff.png", "expected.png", "report.json"] as const;
 
 function sha256(bytes: Uint8Array) {
@@ -41,11 +48,29 @@ export async function verifyManimCompositorParityEvidenceV1(directory: string) {
   const pinnedReference = manimCompositorReferenceV1Schema.parse(
     JSON.parse(await readFile(join(PINNED_REFERENCE_ROOT, "reference.json"), "utf8")),
   );
+  const pinnedHost = readPinnedReferenceHostProfile(
+    await readFile(join(REPOSITORY_ROOT, PINNED_REFERENCE_HOST_PROFILE_PATH)),
+    await readFile(join(REPOSITORY_ROOT, PINNED_REFERENCE_HOST_PROFILE_HASH_PATH), "utf8"),
+  );
   requireEqual(report.reference, pinnedReference, "the embedded Manim/Cairo reference");
+  requireEqual(report.environment.referenceHostProfile, pinnedHost.evidence, "the reference-host profile");
+  requireReferenceHostPreflight({
+    browserLaunch: { args: report.browser.configuredArgs, channel: report.browser.channel },
+    host: report.environment.host,
+    referenceHost: pinnedHost,
+  });
+  const commitIdentity = report.environment.host.commitIdentity;
+  if ("status" in commitIdentity || commitIdentity.treeState !== "clean" || commitIdentity.uncommittedPathCount !== 0) {
+    throw new Error("the promoted compositor evidence requires a clean measured checkout");
+  }
+  requireEqual(report.browser.version, pinnedHost.profile.browser.version, "the measured Edge version");
   requireEqual(
-    report.environment.referenceHostProfile,
-    readPinnedReferenceHostProfile().evidence,
-    "the reference-host profile",
+    report.browser.pageAdapterHint,
+    {
+      architecture: pinnedHost.profile.selectedWorkerAdapter.browserArchitecture,
+      vendor: pinnedHost.profile.selectedWorkerAdapter.browserVendor,
+    },
+    "the page adapter hint",
   );
 
   const [actual, diff, expected, pinnedExpected, source] = await Promise.all([
@@ -53,7 +78,7 @@ export async function verifyManimCompositorParityEvidenceV1(directory: string) {
     readFile(join(directory, report.artifacts.diff.path)),
     readFile(join(directory, report.artifacts.expected.path)),
     readFile(join(PINNED_REFERENCE_ROOT, pinnedReference.png.path)),
-    readFile(pinnedReference.scene.sourcePath),
+    readFile(join(REPOSITORY_ROOT, pinnedReference.scene.sourcePath)),
   ]);
   requireDigest(actual, report.artifacts.actual.sha256, "the actual PNG artifact");
   requireDigest(diff, report.artifacts.diff.sha256, "the diff PNG artifact");
