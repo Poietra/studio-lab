@@ -9,7 +9,9 @@ import { digestFastManimSnapshotBundleV1 } from "../server/fast-manim-snapshot-c
 import type { SceneIrBundleV1 } from "../src/engine/contracts";
 import { sceneIrSourceRevisionHash } from "../src/engine/scene-ir";
 import {
+  collectCommitIdentity,
   collectHostEnvironment,
+  type GitRunner,
   hostEnvironmentSchema,
   readPinnedReferenceHostProfile,
   referenceHostProfileEvidenceSchema,
@@ -112,6 +114,12 @@ export const manimCompositorParityReportV1Schema = z
     environment: z.strictObject({
       host: hostEnvironmentSchema,
       referenceHostProfile: referenceHostProfileEvidenceSchema,
+      serverCheckout: z.strictObject({
+        commitSha: COMMIT_SHA,
+        source: z.literal("git-tracked-checkout"),
+        topology: z.enum(["local-web-server", "external-loopback-web-server"]),
+        trackedTreeState: z.literal("clean"),
+      }),
       servedWasm: z.strictObject({ byteLength: z.number().int().positive(), path: z.string().min(1), sha256: SHA256 }),
       snapshotProducer: snapshotProducerSchema,
     }),
@@ -137,6 +145,7 @@ export const manimCompositorParityReportV1Schema = z
       sampleTime: z.literal(0),
       sceneId: z.string().min(1),
       serverPublicationRevision: z.number().int().positive(),
+      snapshotRequestId: z.string().min(1).max(256),
       snapshotHash: SHA256,
       snapshotVersion: z.literal(2),
       sourceHash: SHA256,
@@ -218,6 +227,13 @@ export const manimCompositorParityReportV1Schema = z
         path: ["studio", "commitSha"],
       });
     }
+    if (report.environment.serverCheckout.commitSha !== report.studio.commitSha) {
+      context.addIssue({
+        code: "custom",
+        message: "The web server checkout must equal the measured Studio commit.",
+        path: ["environment", "serverCheckout", "commitSha"],
+      });
+    }
   });
 
 function sha256(bytes: Uint8Array) {
@@ -265,6 +281,53 @@ print(json.dumps({
   );
 }
 
+function collectServerCheckoutEvidence(expectedCommit: string) {
+  const externalBaseUrl = process.env.POIETRA_E2E_EXTERNAL_BASE_URL?.trim();
+  if (!externalBaseUrl) {
+    return {
+      evidence: {
+        commitSha: expectedCommit,
+        source: "git-tracked-checkout" as const,
+        topology: "local-web-server" as const,
+        trackedTreeState: "clean" as const,
+      },
+      git: null,
+      identity: null,
+    };
+  }
+
+  const repository = process.env.POIETRA_E2E_EXTERNAL_SERVER_REPOSITORY?.trim();
+  if (!repository) {
+    throw new Error("The external compositor parity server requires POIETRA_E2E_EXTERNAL_SERVER_REPOSITORY.");
+  }
+  const git: GitRunner = (arguments_) => {
+    const command = arguments_[0] === "status" ? [...arguments_, "--untracked-files=no"] : [...arguments_];
+    return execFileSync("git", ["-c", `safe.directory=${repository}`, "-C", repository, ...command], {
+      encoding: "utf8",
+    });
+  };
+  const identity = collectCommitIdentity(git);
+  if ("status" in identity) throw new Error(`The external server checkout is unavailable: ${identity.reason}`);
+  if (identity.treeState !== "clean" || identity.uncommittedPathCount !== 0) {
+    throw new Error("The external server checkout contains uncommitted tracked files.");
+  }
+  if (identity.headCommit !== expectedCommit) {
+    throw new Error(
+      `The external server checkout is ${identity.headCommit}, while the measured Studio checkout is ${expectedCommit}.`,
+    );
+  }
+  return {
+    evidence: {
+      commitSha: identity.headCommit,
+      source: "git-tracked-checkout" as const,
+      topology: "external-loopback-web-server" as const,
+      trackedTreeState: "clean" as const,
+    },
+    git,
+    identity,
+  };
+}
+
 async function decodePng(page: Page, png: Uint8Array) {
   const rgba = await page.evaluate(async (base64) => {
     const encoded = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
@@ -303,6 +366,7 @@ type ProofInput = Readonly<{
   engineRevisionHash: string;
   page: Page;
   serverPublicationRevision: number;
+  snapshotRequestId: string;
   snapshot: SceneIrBundleV1;
 }>;
 
@@ -319,6 +383,7 @@ export async function proveManimCompositorParityV1(input: ProofInput) {
   if ("status" in host.commitIdentity || host.commitIdentity.treeState !== "clean") {
     throw new Error("The compositor parity evidence requires a clean committed checkout.");
   }
+  const serverCheckout = collectServerCheckoutEvidence(host.commitIdentity.headCommit);
   const browserVersion = input.page.context().browser()?.version();
   expect(browserVersion).toBe(referenceHost.profile.browser.version);
 
@@ -426,6 +491,9 @@ export async function proveManimCompositorParityV1(input: ProofInput) {
   const wasm = new Uint8Array(await wasmResponse.body());
   requireStableReferenceHostEnvironment(host, collectHostEnvironment());
   requireStableCommitIdentity(host.commitIdentity);
+  if (serverCheckout.git && serverCheckout.identity) {
+    requireStableCommitIdentity(serverCheckout.identity, serverCheckout.git);
+  }
   const diffPng = encodeRgbaPngV1(makeOpaqueVisualParityDiffV1(expectedRgba, actualRgba), 832, 468);
 
   const report = manimCompositorParityReportV1Schema.parse({
@@ -450,6 +518,7 @@ export async function proveManimCompositorParityV1(input: ProofInput) {
     environment: {
       host,
       referenceHostProfile: referenceHost.evidence,
+      serverCheckout: serverCheckout.evidence,
       servedWasm: { byteLength: wasm.byteLength, path: wasmPath, sha256: sha256(wasm) },
       snapshotProducer,
     },
@@ -466,6 +535,7 @@ export async function proveManimCompositorParityV1(input: ProofInput) {
       sampleTime: 0,
       sceneId: input.snapshot.scene.sceneId,
       serverPublicationRevision: input.serverPublicationRevision,
+      snapshotRequestId: input.snapshotRequestId,
       snapshotHash: source.snapshotHash,
       snapshotVersion: source.snapshotVersion,
       sourceHash: source.sourceHash,

@@ -295,7 +295,8 @@ test("correlates a real fast-manim Scene with the retained host and verifies GPU
   await expectPresented(page, run.revision);
   const bundle = run.snapshot?.bundle;
   const snapshotHash = run.snapshot?.snapshotHash;
-  if (!bundle || !snapshotHash) {
+  const snapshotRequestId = run.requestId;
+  if (!bundle || !snapshotHash || !snapshotRequestId) {
     throw new Error("The verified server snapshot did not expose complete WebGPU proof inputs.");
   }
   const canvas = page.locator("[data-studio-preview-canvas]");
@@ -306,6 +307,7 @@ test("correlates a real fast-manim Scene with the retained host and verifies GPU
     engineRevisionHash: snapshotHash,
     page,
     serverPublicationRevision: run.revision,
+    snapshotRequestId,
     snapshot: bundle,
   });
 
