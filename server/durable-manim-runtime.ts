@@ -180,6 +180,16 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     return repositoryReady && blobsReady && artifactReaderReady && executionReady && rendersReady && snapshotsReady;
   }
 
+  async workspaceReady(signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    const [repositoryReady, blobsReady] = await Promise.all([
+      this.#repository.ready(signal),
+      this.#blobs.ready(signal),
+    ]);
+    signal?.throwIfAborted();
+    return repositoryReady && blobsReady;
+  }
+
   /** Production attestation additionally requires the durable render service. */
   async productionReady(signal?: AbortSignal) {
     if (!this.#artifactReader || !this.#renders || !this.#snapshots) return false;
@@ -535,6 +545,9 @@ export function createDurableProductionManimRuntimeAdapterV1(
         storageBoundary: "shared-durable",
         tenantBoundary: "server-owned-tenant-key",
       };
+    },
+    async workspaceReady(signal) {
+      return maintenance.ready() && (await runtime.workspaceReady(signal));
     },
   };
 }

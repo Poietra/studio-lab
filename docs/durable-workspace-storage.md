@@ -20,9 +20,12 @@ Commit/Undo action ledger. The worker uses the stable `(tenantId, sessionId)` jo
 identity to submit or reattach through the concrete UDS sandbox executor. PostgreSQL rejects
 stale lease publication, expires timed-out work even while the executor is
 unavailable, and preserves terminal interrupted sessions for inspection. The
-production readiness attestation is false unless the render repository and
-executor both pass their probes. An injected or in-process host-spawn fallback
-is not part of the production composition.
+full runtime readiness attestation is false unless the render repository and
+executor both pass their probes. Load-balancer readiness uses the narrower
+durable workspace probe so Studio remains reachable and can report a bounded
+render outage; render and media routes still fail closed on the full probe. An
+injected or in-process host-spawn fallback is not part of the production
+composition.
 
 The migration and runtime database configurations are deliberately separate so
 the runtime credential does not need DDL authority. Both require an explicit TCP

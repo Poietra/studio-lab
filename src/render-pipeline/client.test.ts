@@ -508,7 +508,7 @@ describe("Manim API client contracts", () => {
                 canCommit: false,
                 canDiscard: false,
                 progress: 0.5,
-                status: "running",
+                status: "rendering",
               }),
             ),
             { status: 200 },

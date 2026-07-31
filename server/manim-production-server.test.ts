@@ -65,7 +65,11 @@ async function startConfig(overrides: Readonly<Record<string, unknown>> = {}) {
   return config({ port: await availablePort(), ...overrides });
 }
 
-function createRuntime(ready: () => boolean = () => true, onProjects: () => void = () => {}) {
+function createRuntime(
+  ready: () => boolean = () => true,
+  onProjects: () => void = () => {},
+  workspaceReady: () => boolean = () => true,
+) {
   const api = {
     cancel() {
       throw new HttpError("Render session not found.", 404);
@@ -89,6 +93,7 @@ function createRuntime(ready: () => boolean = () => true, onProjects: () => void
             tenantBoundary: "server-owned-tenant-key",
           } as const)
         : ({ ready: false } as const),
+    workspaceReady: async () => workspaceReady(),
   } as const;
 }
 
@@ -317,7 +322,11 @@ describe("standalone production Manim HTTP adapter", () => {
         ready: async () => admissionReady,
       },
       config: await startConfig(),
-      runtime: createRuntime(() => runtimeReady),
+      runtime: createRuntime(
+        () => runtimeReady,
+        () => undefined,
+        () => runtimeReady,
+      ),
     });
     servers.push(server);
 
@@ -337,6 +346,8 @@ describe("standalone production Manim HTTP adapter", () => {
 
   it("keeps authenticated workspace bootstrap readable during a render outage while mutations fail closed", async () => {
     const fullReadiness = vi.fn(async () => ({ ready: false }) as const);
+    let workspaceAvailable = true;
+    const workspaceReadiness = vi.fn(async () => workspaceAvailable);
     const projects = vi.fn(async () => ({ defaultProjectId: "project-a", projects: [] }));
     const workspace = vi.fn(async () => ({
       commandAvailable: false,
@@ -359,11 +370,12 @@ describe("standalone production Manim HTTP adapter", () => {
         ...baseRuntime,
         api: { ...baseRuntime.api, projects, start, workspace } as unknown as ManimApi,
         ready: fullReadiness,
+        workspaceReady: workspaceReadiness,
       },
     });
     servers.push(server);
 
-    expect(await send(server, "/readyz")).toMatchObject({ status: 503 });
+    expect(await send(server, "/readyz")).toMatchObject({ status: 200 });
     expect(await send(server, "/api/manim/projects")).toMatchObject({ status: 200 });
     expect(await send(server, "/api/manim/workspace")).toMatchObject({ status: 200 });
     const scoped = await send(server, "/api/manim/projects/project-a/workspace");
@@ -373,7 +385,13 @@ describe("standalone production Manim HTTP adapter", () => {
       kind: "durable-sandbox",
       unavailableReason: "durable-render-unavailable",
     });
-    expect(fullReadiness).toHaveBeenCalledOnce();
+    expect(fullReadiness).not.toHaveBeenCalled();
+    expect(workspaceReadiness).toHaveBeenCalledTimes(4);
+
+    workspaceAvailable = false;
+    expect(await send(server, "/api/manim/projects")).toMatchObject({ status: 503 });
+    expect(workspaceReadiness).toHaveBeenCalledTimes(5);
+    expect(projects).toHaveBeenCalledOnce();
 
     const render = await send(server, "/api/manim/projects/project-a/renders", {
       body: "{}",
@@ -381,7 +399,7 @@ describe("standalone production Manim HTTP adapter", () => {
       method: "POST",
     });
     expect(render).toMatchObject({ status: 503 });
-    expect(fullReadiness).toHaveBeenCalledTimes(2);
+    expect(fullReadiness).toHaveBeenCalledOnce();
     expect(start).not.toHaveBeenCalled();
     expect(projects).toHaveBeenCalledOnce();
     expect(workspace).toHaveBeenCalledTimes(2);

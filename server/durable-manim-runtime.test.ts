@@ -172,7 +172,9 @@ describe("DurableManimRuntimeV1 production readiness", () => {
     const adapter = createDurableProductionManimRuntimeAdapterV1(runtime, maintenance);
 
     await expect(runtime.ready()).resolves.toBe(true);
+    await expect(runtime.workspaceReady()).resolves.toBe(true);
     await expect(runtime.productionReady()).resolves.toBe(false);
+    await expect(adapter.workspaceReady(new AbortController().signal)).resolves.toBe(true);
     await expect(adapter.ready(new AbortController().signal)).resolves.toEqual({ ready: false });
 
     await Promise.all([adapter.close(), adapter.close()]);
