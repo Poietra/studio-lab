@@ -16,6 +16,23 @@ const snapshotProfile = process.env.POIETRA_E2E_REAL_PREVIEW_PROFILE?.trim() || 
 if (snapshotProfile !== "2" && snapshotProfile !== "3" && snapshotProfile !== "4" && snapshotProfile !== "5") {
   throw new Error("POIETRA_E2E_REAL_PREVIEW_PROFILE must be 2, 3, 4, or 5.");
 }
+const externalBaseUrl = (() => {
+  const configured = process.env.POIETRA_E2E_EXTERNAL_BASE_URL?.trim();
+  if (!configured) return null;
+  const url = new URL(configured);
+  if (
+    url.protocol !== "http:" ||
+    (url.hostname !== "127.0.0.1" && url.hostname !== "localhost") ||
+    url.username ||
+    url.password ||
+    url.pathname !== "/" ||
+    url.search ||
+    url.hash
+  ) {
+    throw new Error("POIETRA_E2E_EXTERNAL_BASE_URL must be an uncredentialed loopback HTTP origin.");
+  }
+  return url.origin;
+})();
 
 function resolveManimCommand() {
   const explicit = process.env.POIETRA_MANIM_COMMAND?.trim();
@@ -94,32 +111,36 @@ export default defineConfig({
   reporter: "line",
   testDir: "./e2e",
   use: {
-    baseURL: `http://127.0.0.1:${port}`,
+    baseURL: externalBaseUrl ?? `http://127.0.0.1:${port}`,
     deviceScaleFactor: 1,
     trace: "retain-on-failure",
     viewport: { height: 900, width: 1440 },
   },
-  webServer: {
-    command: `pnpm dev:web --port ${port}`,
-    env: {
-      POIETRA_AI_DEBUG_LOG: "off",
-      POIETRA_FAST_MANIM_SNAPSHOT_COMMAND: producerCommand,
-      POIETRA_FAST_MANIM_SNAPSHOT_DEV_OPT_IN: "1",
-      POIETRA_FAST_MANIM_SNAPSHOT_VERSION: snapshotProfile,
-      ...(manimCommand ? { POIETRA_MANIM_COMMAND: manimCommand } : {}),
-      POIETRA_MANIM_PROJECTS: JSON.stringify([
-        {
-          id: "real-preview-harness",
-          name: "Real Preview Harness",
-          root: harnessRoot,
+  ...(externalBaseUrl
+    ? {}
+    : {
+        webServer: {
+          command: `pnpm dev:web --port ${port}`,
+          env: {
+            POIETRA_AI_DEBUG_LOG: "off",
+            POIETRA_FAST_MANIM_SNAPSHOT_COMMAND: producerCommand,
+            POIETRA_FAST_MANIM_SNAPSHOT_DEV_OPT_IN: "1",
+            POIETRA_FAST_MANIM_SNAPSHOT_VERSION: snapshotProfile,
+            ...(manimCommand ? { POIETRA_MANIM_COMMAND: manimCommand } : {}),
+            POIETRA_MANIM_PROJECTS: JSON.stringify([
+              {
+                id: "real-preview-harness",
+                name: "Real Preview Harness",
+                root: harnessRoot,
+              },
+            ]),
+            POIETRA_STUDIO_DATA_ROOT: dataRoot,
+            VITE_POIETRA_AI_ENDPOINT: "/api/ai/edit-suggestions",
+          },
+          stdout: "pipe" as const,
+          timeout: 120_000,
+          wait: { stdout: new RegExp(`Local:\\s+http://127\\.0\\.0\\.1:${port}/`) },
         },
-      ]),
-      POIETRA_STUDIO_DATA_ROOT: dataRoot,
-      VITE_POIETRA_AI_ENDPOINT: "/api/ai/edit-suggestions",
-    },
-    stdout: "pipe",
-    timeout: 120_000,
-    wait: { stdout: new RegExp(`Local:\\s+http://127\\.0\\.0\\.1:${port}/`) },
-  },
+      }),
   workers: 1,
 });

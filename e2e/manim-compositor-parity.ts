@@ -238,12 +238,14 @@ function collectSnapshotProducerEvidence() {
   const command: unknown = JSON.parse(configured);
   if (
     !Array.isArray(command) ||
-    command.length !== 3 ||
+    command.length < 3 ||
     !command.every((argument) => typeof argument === "string") ||
-    command[1] !== "-m" ||
-    command[2] !== "manim.renderer.source_runtime_identity"
+    command.at(-2) !== "-m" ||
+    command.at(-1) !== "manim.renderer.source_runtime_identity"
   ) {
-    throw new Error("The compositor parity lane requires a direct JSON [python, -m, source_runtime_identity] command.");
+    throw new Error(
+      "The compositor parity lane requires JSON argv ending in [python-prefix..., -m, source_runtime_identity].",
+    );
   }
   const probe = String.raw`
 import json, pathlib, subprocess, sys
@@ -258,7 +260,9 @@ print(json.dumps({
     "pythonVersion": ".".join(map(str, sys.version_info[:3])),
 }))
 `;
-  return snapshotProducerSchema.parse(JSON.parse(execFileSync(command[0], ["-c", probe], { encoding: "utf8" })));
+  return snapshotProducerSchema.parse(
+    JSON.parse(execFileSync(command[0], [...command.slice(1, -2), "-c", probe], { encoding: "utf8" })),
+  );
 }
 
 async function decodePng(page: Page, png: Uint8Array) {
