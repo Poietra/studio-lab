@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 
 import type { ProductionAdmissionRequest } from "../manim-production-server";
+import { ACCOUNT_SESSION_COOKIE_NAME_V1 } from "./account-session-cookie";
 import type { AccountSessionRepositoryV1 } from "./account-session-repository";
 import type { ExternalAccountIdentityAuthenticatorV1 } from "./organization-membership-admission";
 
-export const ACCOUNT_SESSION_COOKIE_NAME_V1 = "__Host-poietra_session";
+export { ACCOUNT_SESSION_COOKIE_NAME_V1 } from "./account-session-cookie";
 
 const MAX_COOKIE_HEADER_BYTES_V1 = 8 * 1_024;
 const MAX_COOKIES_V1 = 64;

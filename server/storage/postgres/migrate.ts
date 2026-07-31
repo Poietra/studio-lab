@@ -16,6 +16,8 @@ import renderSessionCpuFailureSqlV9 from "./migrations/0009_render_cpu_limit.sql
 import snapshotRuntimeDigestSqlV10 from "./migrations/0010_snapshot_runtime_digest.sql?raw";
 import accountOrganizationSqlV11 from "./migrations/0011_accounts_organizations.sql?raw";
 import accountSessionSqlV12 from "./migrations/0012_account_sessions.sql?raw";
+import oidcLoginSqlV13 from "./migrations/0013_oidc_login.sql?raw";
+import { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
 import { RENDER_SESSION_MIGRATION_V2_CHECKSUM } from "./postgres-render-session-repository";
@@ -28,6 +30,7 @@ import { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runti
 
 export { ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM } from "./account-organization-schema";
 export { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
+export { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 export { SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM } from "./postgres-snapshot-publication-repository";
 export { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
 export { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-session-cpu-failure-schema";
@@ -69,6 +72,7 @@ export const RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_SOURCE = renderSessionCpuFa
 export const SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE = snapshotRuntimeDigestSqlV10;
 export const ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE = accountOrganizationSqlV11;
 export const ACCOUNT_SESSION_MIGRATION_V12_SOURCE = accountSessionSqlV12;
+export const OIDC_LOGIN_MIGRATION_V13_SOURCE = oidcLoginSqlV13;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -191,6 +195,16 @@ const accountSessionMigrationV12: DurableStorageMigration<12> = Object.freeze({
   version: 12,
 });
 
+const oidcLoginMigrationV13: DurableStorageMigration<13> = Object.freeze({
+  checksum: OIDC_LOGIN_MIGRATION_V13_CHECKSUM,
+  checksumMismatch: "The OIDC-login migration checksum is invalid.",
+  installedMismatch: "The installed OIDC-login schema does not match migration v13.",
+  missingPrerequisite: "OIDC-login migration v13 requires durable storage migrations v1 through v12.",
+  prerequisiteMismatch: "OIDC-login migration v13 requires exact durable storage migrations v1 through v12.",
+  source: OIDC_LOGIN_MIGRATION_V13_SOURCE,
+  version: 13,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
@@ -204,6 +218,7 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   snapshotRuntimeDigestMigrationV10,
   accountOrganizationMigrationV11,
   accountSessionMigrationV12,
+  oidcLoginMigrationV13,
 ]);
 
 function validateSource(migration: DurableStorageMigration) {
@@ -392,6 +407,23 @@ export function applyAccountSessionMigrationV12(pool: Pool, source: string) {
     renderSessionCpuFailureMigrationV9,
     snapshotRuntimeDigestMigrationV10,
     accountOrganizationMigrationV11,
+  ]);
+}
+
+export function applyOidcLoginMigrationV13(pool: Pool, source: string) {
+  return applyMigration(pool, { ...oidcLoginMigrationV13, source }, [
+    workspaceSourceMigrationV1,
+    renderSessionMigrationV2,
+    snapshotPublicationMigrationV3,
+    renderArtifactMigrationV4,
+    projectPngMigrationV5,
+    renderSessionRetentionMigrationV6,
+    renderCancellationMigrationV7,
+    renderSessionFailureMigrationV8,
+    renderSessionCpuFailureMigrationV9,
+    snapshotRuntimeDigestMigrationV10,
+    accountOrganizationMigrationV11,
+    accountSessionMigrationV12,
   ]);
 }
 

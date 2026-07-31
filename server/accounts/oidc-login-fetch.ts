@@ -1,0 +1,204 @@
+import { ACCOUNT_SESSION_COOKIE_NAME_V1 } from "./account-session-cookie";
+import { OidcLoginErrorV1, type OidcLoginServiceV1 } from "./oidc-login-service";
+
+export const OIDC_LOGIN_START_ROUTE_V1 = "/auth/oidc/start";
+export const OIDC_LOGIN_CALLBACK_ROUTE_V1 = "/auth/oidc/callback";
+export const OIDC_LOGIN_BINDING_COOKIE_NAME_V1 = "__Host-poietra_oidc_login";
+
+const MAX_AUTH_REQUEST_TARGET_BYTES_V1 = 8 * 1_024;
+const MAX_COOKIE_HEADER_BYTES_V1 = 8 * 1_024;
+const MAX_COOKIES_V1 = 64;
+const OPAQUE_TOKEN_PATTERN_V1 = /^[A-Za-z0-9_-]{43}$/u;
+
+export interface OidcLoginFetchHandlerV1 {
+  fetch(request: Request): Promise<Response>;
+}
+
+export interface OidcLoginFetchRequestGuardV1 {
+  reject(request: Request): Response | null;
+}
+
+function baseHeaders() {
+  return new Headers({
+    "cache-control": "no-store",
+    pragma: "no-cache",
+    "referrer-policy": "no-referrer",
+    "x-content-type-options": "nosniff",
+  });
+}
+
+function redirect(status: 302 | 303, location: string, cookies: readonly string[] = []) {
+  const headers = baseHeaders();
+  headers.set("location", location);
+  for (const value of cookies) headers.append("set-cookie", value);
+  return new Response(null, { headers, status });
+}
+
+function errorResponse(status: 400 | 403 | 404 | 405 | 503, message: string, clear = false) {
+  const headers = baseHeaders();
+  headers.set("content-type", "application/json; charset=utf-8");
+  if (status === 405) headers.set("allow", "GET");
+  if (clear) headers.append("set-cookie", clearLoginBindingCookie());
+  return new Response(JSON.stringify({ error: message }), { headers, status });
+}
+
+function cookie(name: string, value: string, maxAgeSeconds: number) {
+  if (!Number.isSafeInteger(maxAgeSeconds) || maxAgeSeconds <= 0) {
+    throw new TypeError("OIDC cookie lifetime is invalid.");
+  }
+  return `${name}=${value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}`;
+}
+
+function clearLoginBindingCookie() {
+  return `${OIDC_LOGIN_BINDING_COOKIE_NAME_V1}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`;
+}
+
+function browserBindingToken(cookieHeader: string | null) {
+  if (cookieHeader === null || new TextEncoder().encode(cookieHeader).byteLength > MAX_COOKIE_HEADER_BYTES_V1) {
+    return null;
+  }
+  const cookies = cookieHeader.split(";");
+  if (cookies.length > MAX_COOKIES_V1) return null;
+  let token: string | null = null;
+  for (const rawCookie of cookies) {
+    const pair = rawCookie.trim();
+    const equals = pair.indexOf("=");
+    if (equals < 1) {
+      if (pair === OIDC_LOGIN_BINDING_COOKIE_NAME_V1) return null;
+      continue;
+    }
+    if (pair.slice(0, equals) !== OIDC_LOGIN_BINDING_COOKIE_NAME_V1) continue;
+    const candidate = pair.slice(equals + 1);
+    if (token !== null || !OPAQUE_TOKEN_PATTERN_V1.test(candidate)) return null;
+    token = candidate;
+  }
+  return token;
+}
+
+function configuredOrigin(value: string) {
+  const url = new URL(value);
+  if (url.protocol !== "https:" || url.origin !== value || url.pathname !== "/" || url.search || url.hash) {
+    throw new TypeError("OIDC edge handler requires an exact HTTPS public origin.");
+  }
+  return url.origin;
+}
+
+/** Rejects traffic that cannot reach an OIDC operation without opening request-scoped storage. */
+export function createOidcLoginFetchRequestGuardV1(publicOriginValue: string): OidcLoginFetchRequestGuardV1 {
+  const publicOrigin = configuredOrigin(publicOriginValue);
+  return Object.freeze({
+    reject(request: Request) {
+      if (new TextEncoder().encode(request.url).byteLength > MAX_AUTH_REQUEST_TARGET_BYTES_V1) {
+        return errorResponse(400, "Invalid authentication request.");
+      }
+      const url = new URL(request.url);
+      if (
+        url.origin !== publicOrigin ||
+        (url.pathname !== OIDC_LOGIN_START_ROUTE_V1 && url.pathname !== OIDC_LOGIN_CALLBACK_ROUTE_V1)
+      ) {
+        return errorResponse(404, "Authentication endpoint not found.");
+      }
+      if (request.method !== "GET") {
+        return errorResponse(405, "Method not allowed.", url.pathname === OIDC_LOGIN_CALLBACK_ROUTE_V1);
+      }
+      if (url.pathname === OIDC_LOGIN_START_ROUTE_V1) {
+        if ([...url.searchParams].length > 0) return errorResponse(400, "Authentication request is invalid.");
+        if (!sameOriginStart(request, publicOrigin)) {
+          return errorResponse(403, "Authentication could not be started.");
+        }
+        return null;
+      }
+      const state = validCallbackParameters(url);
+      const binding = browserBindingToken(request.headers.get("cookie"));
+      if (!state || !binding) return errorResponse(400, "Authentication callback is invalid.", true);
+      return null;
+    },
+  });
+}
+
+function exactSingleParameter(url: URL, name: string) {
+  const values = url.searchParams.getAll(name);
+  return values.length === 1 ? values[0] : null;
+}
+
+function validState(value: string | null) {
+  return value !== null && OPAQUE_TOKEN_PATTERN_V1.test(value) ? value : null;
+}
+
+function validCallbackParameters(url: URL) {
+  const state = validState(exactSingleParameter(url, "state"));
+  const codes = url.searchParams.getAll("code");
+  const errors = url.searchParams.getAll("error");
+  if (!state || (codes.length === 1) === (errors.length === 1)) return null;
+  if (codes.length > 1 || errors.length > 1) return null;
+  const responseValue = codes[0] ?? errors[0];
+  if (!responseValue || responseValue.length > 4_096 || /[\u0000-\u001f\u007f]/u.test(responseValue)) return null;
+  return state;
+}
+
+function sameOriginStart(request: Request, publicOrigin: string) {
+  const fetchSite = request.headers.get("sec-fetch-site")?.toLowerCase();
+  if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") return false;
+  const origin = request.headers.get("origin");
+  return origin === null || origin === publicOrigin;
+}
+
+/** Fetch API boundary intended for the Cloudflare account/control-plane Worker. */
+export function createOidcLoginFetchHandlerV1(
+  service: OidcLoginServiceV1,
+  publicOriginValue: string,
+): OidcLoginFetchHandlerV1 {
+  if (typeof service?.start !== "function" || typeof service.complete !== "function") {
+    throw new TypeError("OIDC edge handler requires a complete login service.");
+  }
+  const publicOrigin = configuredOrigin(publicOriginValue);
+  const requestGuard = createOidcLoginFetchRequestGuardV1(publicOrigin);
+  return Object.freeze({
+    async fetch(request) {
+      const rejected = requestGuard.reject(request);
+      if (rejected) return rejected;
+      const url = new URL(request.url);
+
+      if (url.pathname === OIDC_LOGIN_START_ROUTE_V1) {
+        if ([...url.searchParams].length > 0) return errorResponse(400, "Authentication request is invalid.");
+        if (!sameOriginStart(request, publicOrigin)) {
+          return errorResponse(403, "Authentication could not be started.");
+        }
+        try {
+          const started = await service.start(request.signal);
+          request.signal.throwIfAborted();
+          return redirect(302, started.authorizationUrl.href, [
+            cookie(OIDC_LOGIN_BINDING_COOKIE_NAME_V1, started.browserBindingToken, started.browserBindingTtlSeconds),
+          ]);
+        } catch {
+          request.signal.throwIfAborted();
+          return errorResponse(503, "Authentication is temporarily unavailable.");
+        }
+      }
+
+      const state = validCallbackParameters(url);
+      const binding = browserBindingToken(request.headers.get("cookie"));
+      if (!state || !binding) return errorResponse(400, "Authentication callback is invalid.", true);
+      try {
+        const completed = await service.complete(
+          { browserBindingToken: binding, callbackUrl: url, state },
+          request.signal,
+        );
+        request.signal.throwIfAborted();
+        return redirect(303, "/", [
+          cookie(ACCOUNT_SESSION_COOKIE_NAME_V1, completed.sessionToken, completed.sessionTtlSeconds),
+          clearLoginBindingCookie(),
+        ]);
+      } catch (error) {
+        request.signal.throwIfAborted();
+        if (error instanceof OidcLoginErrorV1 && error.kind === "access-denied") {
+          return errorResponse(403, "Account access is not available.", true);
+        }
+        if (error instanceof OidcLoginErrorV1 && error.kind === "invalid-callback") {
+          return errorResponse(400, "Authentication callback is invalid.", true);
+        }
+        return errorResponse(503, "Authentication is temporarily unavailable.", true);
+      }
+    },
+  } satisfies OidcLoginFetchHandlerV1);
+}
