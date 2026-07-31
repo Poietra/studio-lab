@@ -49,7 +49,7 @@ const corpusEntrySchema = strictObject({
     id: z.string().min(1).max(200),
     path: z.string().regex(/^fixtures\/[a-zA-Z0-9._/-]+\.json$/),
     revision: strictObject({
-      kind: z.literal("studio-edit-program"),
+      kind: z.enum(["imported-manim-server-snapshot", "studio-edit-program"]),
       sha256,
     }),
   }),
