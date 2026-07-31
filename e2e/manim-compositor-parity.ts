@@ -102,7 +102,7 @@ export const manimCompositorParityReportV1Schema = z
       cssViewport: z.strictObject({ heightPx: z.literal(468), widthPx: z.literal(832) }),
       devicePixelRatio: z.literal(1),
       packetId: z.string().min(1),
-      policy: z.literal("visible-locator-screenshot-after-two-animation-frames"),
+      policy: z.literal("visible-locator-screenshot-with-studio-overlays-hidden-after-two-animation-frames"),
       rgbaNormalization: z.literal(
         "browser-png-decoded-to-srgb-rgba-unorm8-with-color-conversion-none-and-premultiply-alpha-none",
       ),
@@ -422,6 +422,7 @@ export async function proveManimCompositorParityV1(input: ProofInput) {
         width: ${VIEWPORT.widthPx}px !important;
       }
       [data-studio-canvas] > :not([data-studio-preview-canvas]) { visibility: hidden !important; }
+      #studio-magic-edit { visibility: hidden !important; }
     `,
   });
   let actualPng: Buffer | null = null;
@@ -507,7 +508,7 @@ export async function proveManimCompositorParityV1(input: ProofInput) {
       cssViewport: VIEWPORT,
       devicePixelRatio: 1,
       packetId: capturedPacketId,
-      policy: "visible-locator-screenshot-after-two-animation-frames",
+      policy: "visible-locator-screenshot-with-studio-overlays-hidden-after-two-animation-frames",
       rgbaNormalization:
         "browser-png-decoded-to-srgb-rgba-unorm8-with-color-conversion-none-and-premultiply-alpha-none",
       pngByteLength: actualPng.byteLength,
