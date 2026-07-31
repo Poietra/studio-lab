@@ -23,7 +23,7 @@ RUN test "$STUDIO_ENGINE_ARCHIVE_SHA256" = "91cfd3b1a0e19615c586bf0144b155404628
       | sha256sum --check --strict - \
     && tar --extract --gzip --file=/opt/poietra-build/studio-engine.tar.gz \
       --directory=/opt/poietra-build/studio --no-same-owner \
-    && cargo build --locked --profile mathtex-python-release --package poietra-mathtex-py \
+    && env -u MATHTEX_EXTENSION_SHA256 cargo build --locked --profile mathtex-python-release --package poietra-mathtex-py \
       --manifest-path /opt/poietra-build/studio/engine/Cargo.toml \
       --target x86_64-unknown-linux-gnu \
     && printf '%s  %s\n' "$MATHTEX_EXTENSION_SHA256" \

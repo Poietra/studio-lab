@@ -130,6 +130,27 @@ POIETRA_FAST_MANIM_SOURCE_REPO=/path/to/fast-manim \
 pnpm sandbox:oci:gated:build
 ```
 
+Before advancing the engine pin, derive the unknown native extension digest on
+an amd64 operator with the digest-pinned Rust builder. Supply the independently
+reviewed commit, `engine/` tree, and canonical engine archive digest:
+
+```sh
+pnpm --silent sandbox:mathtex:artifact:derive \
+  <40-hex-engine-commit> \
+  <40-hex-engine-tree> \
+  <64-hex-engine-archive-sha256> \
+  > mathtex-artifact-derivation.json
+```
+
+Preload the exact builder image named in the derivation contract; the command
+uses `--pull=never`. It runs two separate `--rm` builder containers with clean
+Cargo roots and fails unless the ABI3 extension bytes match. It does not build,
+tag, pull, or run the final Manim image, and it creates no persistent BuildKit
+cache. Allow at least 10 GiB of temporary daemon space. The bounded JSON record
+is printed only after both extension digests, sizes, and bytes have been
+independently rechecked. Named containers and the host temporary context are
+removed on success or failure.
+
 The snapshot image is fixed to `linux/amd64`. Its first stage uses a
 digest-pinned Rust builder, verifies the exact Rust 1.92.0 compiler, archives
 only `engine/` from the pinned Studio commit/tree, and checks that archive
