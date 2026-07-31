@@ -386,6 +386,11 @@ export class ManimRenderManager {
         frame: this.frame,
         projectId: this.projectId,
         projectName: this.projectName,
+        renderCapability: {
+          available: commandAvailable,
+          kind: "local-command",
+          unavailableReason: commandAvailable ? null : "local-command-unavailable",
+        },
         sources,
       };
     })();

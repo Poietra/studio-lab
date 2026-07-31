@@ -342,11 +342,18 @@ export type ManimWorkspaceSource = Readonly<{
   }>[];
 }>;
 
+export type ManimRenderCapability = Readonly<{
+  available: boolean;
+  kind: "durable-sandbox" | "local-command";
+  unavailableReason: "durable-render-unavailable" | "durable-render-unconfigured" | "local-command-unavailable" | null;
+}>;
+
 export type ManimWorkspaceView = Readonly<{
   commandAvailable: boolean;
   frame: Readonly<{ height: number; width: number }>;
   projectId: string;
   projectName: string;
+  renderCapability: ManimRenderCapability;
   sources: readonly ManimWorkspaceSource[];
 }>;
 
@@ -474,6 +481,12 @@ export const renderSessionViewSchema: z.ZodType<RenderSessionView> = z
       (session.status === "cancelled" && session.failureCode === "cancelled") ||
       (session.status === "failed" && session.failureCode !== "cancelled");
     if (!valid) context.addIssue({ code: "custom", message: "Render failure code does not match its status." });
+    if (session.videoUrl !== null && session.videoUrl !== `/api/manim/renders/${session.id}/video`) {
+      context.addIssue({ code: "custom", message: "Render video URL does not match its session." });
+    }
+    if (session.videoUrl !== null && !["committed", "ready", "undone"].includes(session.status)) {
+      context.addIssue({ code: "custom", message: "Only a ready render may expose a video URL." });
+    }
   });
 
 export const renderSourceActionCancellationViewSchema: z.ZodType<RenderSourceActionCancellationView> = z
@@ -503,12 +516,33 @@ export const manimWorkspaceSourceSchema: z.ZodType<ManimWorkspaceSource> = z
   })
   .strict();
 
+export const manimRenderCapabilitySchema: z.ZodType<ManimRenderCapability> = z
+  .object({
+    available: z.boolean(),
+    kind: z.enum(["durable-sandbox", "local-command"]),
+    unavailableReason: z
+      .enum(["durable-render-unavailable", "durable-render-unconfigured", "local-command-unavailable"])
+      .nullable(),
+  })
+  .strict()
+  .refine(
+    (capability) =>
+      capability.available
+        ? capability.unavailableReason === null
+        : capability.kind === "local-command"
+          ? capability.unavailableReason === "local-command-unavailable"
+          : capability.unavailableReason === "durable-render-unavailable" ||
+            capability.unavailableReason === "durable-render-unconfigured",
+    { message: "Render capability availability and reason do not match." },
+  );
+
 export const manimWorkspaceViewSchema: z.ZodType<ManimWorkspaceView> = z
   .object({
     commandAvailable: z.boolean(),
     frame: z.object({ height: finiteNumber.positive(), width: finiteNumber.positive() }).strict(),
     projectId: manimProjectIdSchema,
     projectName: z.string().min(1).max(120),
+    renderCapability: manimRenderCapabilitySchema,
     sources: z.array(manimWorkspaceSourceSchema),
   })
   .strict();

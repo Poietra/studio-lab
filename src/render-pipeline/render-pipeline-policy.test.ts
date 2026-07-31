@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import type { CanonicalEditProgram } from "../studio/operations";
-import { renderProgramBatchId, renderRequestId, type ManimWorkspaceView, type RenderSessionView } from "./contracts";
+import { type ManimWorkspaceView, type RenderSessionView, renderProgramBatchId, renderRequestId } from "./contracts";
 import {
+  type RenderProgramCandidate,
   renderCandidateRequest,
+  renderCapabilityBlocker,
   renderPipelineActionBlocker,
   renderSessionMatchesCandidate,
   renderSourceMutationOutcome,
@@ -11,7 +13,6 @@ import {
   renderSourceRefreshResolved,
   renderSourceRefreshTarget,
   resolveRenderPipelinePolicy,
-  type RenderProgramCandidate,
 } from "./render-pipeline-policy";
 
 function program(deltaX = 64): CanonicalEditProgram {
@@ -104,13 +105,27 @@ function policy(
     candidate: target,
     candidateBlocker: target ? null : "Create a Canonical draft first.",
     candidateLifecycleBlocker: lifecycleBlocker,
-    commandAvailable: true,
     originalExportBlocker: null,
+    renderCapability: { available: true, kind: "local-command", unavailableReason: null },
     session: rendered,
   });
 }
 
 describe("render pipeline lifecycle policy", () => {
+  it.each([
+    ["local-command-unavailable", "The configured Manim command is unavailable."],
+    ["durable-render-unconfigured", "Durable rendering is not configured for this workspace."],
+    ["durable-render-unavailable", "The durable render service is temporarily unavailable."],
+  ] as const)("explains the bounded %s capability", (unavailableReason, expected) => {
+    expect(
+      renderCapabilityBlocker({
+        available: false,
+        kind: unavailableReason === "local-command-unavailable" ? "local-command" : "durable-sandbox",
+        unavailableReason,
+      }),
+    ).toBe(expected);
+  });
+
   it("allows Commit only for the exact current rendered candidate", () => {
     const target = candidate();
     const resolved = policy(target, session(target));
@@ -230,6 +245,7 @@ describe("render source refresh correlation", () => {
       frame: { height: 8, width: 14.222 },
       projectId: target.projectId,
       projectName: "Project A",
+      renderCapability: { available: true, kind: "local-command", unavailableReason: null },
       sources: [
         {
           path: target.sourcePath,

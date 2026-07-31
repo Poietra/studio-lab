@@ -38,6 +38,11 @@ describe("Manim render manager", () => {
     const { manager, projectRoot } = await fixture();
     const workspace = await manager.workspace();
     expect(workspace.commandAvailable).toBe(true);
+    expect(workspace.renderCapability).toEqual({
+      available: true,
+      kind: "local-command",
+      unavailableReason: null,
+    });
     expect(workspace.sources).toHaveLength(1);
     expect(workspace.sources[0]?.path).toBe("scene.py");
     expect(workspace.sources[0]?.scenes).toHaveLength(1);
@@ -140,7 +145,14 @@ describe("Manim render manager", () => {
   it("checks the configured command adapter rather than only its executable", async () => {
     const { manager } = await fixture({ command: [process.execPath, fakeRenderer, "--fail-version"] });
 
-    await expect(manager.workspace()).resolves.toMatchObject({ commandAvailable: false });
+    await expect(manager.workspace()).resolves.toMatchObject({
+      commandAvailable: false,
+      renderCapability: {
+        available: false,
+        kind: "local-command",
+        unavailableReason: "local-command-unavailable",
+      },
+    });
   });
 
   it("refuses to overwrite source changed after preview", async () => {

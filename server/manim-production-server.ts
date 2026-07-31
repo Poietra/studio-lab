@@ -13,6 +13,7 @@ import {
   authenticateManimRequestContext,
   handleManimRequest,
   isManimVideoRequest,
+  isManimWorkspaceBootstrapRequest,
   type ManimApi,
 } from "./manim-render-http";
 import { isReservedLocalManimTenantId, type ManimPrincipalAuthenticator } from "./manim-request-principal";
@@ -198,6 +199,8 @@ export type ProductionManimRuntimeAdapterV1 = Readonly<{
   close: () => Promise<void>;
   /** Covers fresh sandbox attestation plus PostgreSQL/S3 durable probes. */
   ready: (signal: AbortSignal) => Promise<ProductionRuntimeReadinessV1>;
+  /** Covers the durable source workspace required to serve the editor shell. */
+  workspaceReady: (signal: AbortSignal) => Promise<boolean>;
 }>;
 
 export type ProductionManimServer = Readonly<{
@@ -389,6 +392,7 @@ export async function startProductionManimServer(
     typeof options.runtime.api !== "object" ||
     options.runtime.api === null ||
     typeof options.runtime.ready !== "function" ||
+    typeof options.runtime.workspaceReady !== "function" ||
     typeof options.runtime.close !== "function"
   ) {
     throw new TypeError("Production Manim runtime adapter is incomplete.");
@@ -498,8 +502,26 @@ export async function startProductionManimServer(
     }
   };
 
+  const runtimeWorkspaceIsReady = async (signal: AbortSignal) => {
+    try {
+      return (
+        (await waitForProbe(
+          (probeSignal) => trackRuntimeTask(() => options.runtime.workspaceReady(probeSignal)),
+          signal,
+          config.limits.readinessTimeoutMs,
+        )) === true
+      );
+    } catch {
+      logger.warn("production.workspace_readiness_probe_failed");
+      return false;
+    }
+  };
+
   const dependenciesReady = async (signal: AbortSignal) => {
-    const [admissionReady, runtimeReady] = await Promise.all([admissionIsReady(signal), runtimeIsReady(signal)]);
+    const [admissionReady, runtimeReady] = await Promise.all([
+      admissionIsReady(signal),
+      runtimeWorkspaceIsReady(signal),
+    ]);
     return admissionReady && runtimeReady;
   };
 
@@ -601,7 +623,13 @@ export async function startProductionManimServer(
         });
         return;
       }
-      if (!(await runtimeIsReady(controller.signal))) {
+      // Project/workspace bootstrap requires only its durable source storage so
+      // the workspace can report a bounded render outage. Every other route
+      // remains gated by the full sandbox + durable-runtime attestation.
+      const requestRuntimeReady = isManimWorkspaceBootstrapRequest(request.method, pathname)
+        ? await runtimeWorkspaceIsReady(controller.signal)
+        : await runtimeIsReady(controller.signal);
+      if (!requestRuntimeReady) {
         throw new TransportError("Production runtime is not ready.", 503);
       }
       if (controller.signal.aborted) return;

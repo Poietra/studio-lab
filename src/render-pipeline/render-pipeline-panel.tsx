@@ -1,13 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "../lib/cn";
-import {
-  renderProgramBatchId,
-  renderRequestId,
-  type ManimWorkspaceView,
-  type OriginalManimSourceExportRequest,
-  type RenderSessionView,
-} from "./contracts";
+import { savePythonSourceWithDesktop } from "../shell/desktop-bridge";
 import {
   abandonManimRender,
   cancelManimRenderSourceAction,
@@ -18,25 +12,31 @@ import {
   runManimRenderAction,
   startManimRender,
 } from "./client";
-import { savePythonSourceWithDesktop } from "../shell/desktop-bridge";
 import {
-  renderCandidateRequestKey,
-  renderCandidateRequest,
-  renderPipelineActionBlocker,
-  renderSessionMatchesCandidate,
-  renderSourceMutationOutcome,
-  renderSourceRefreshTarget,
-  resolveRenderPipelinePolicy,
-  type RenderPipelineAction,
-  type RenderProgramCandidate,
-  type RenderSourceRefreshTarget,
-} from "./render-pipeline-policy";
+  type ManimWorkspaceView,
+  type OriginalManimSourceExportRequest,
+  type RenderSessionView,
+  renderProgramBatchId,
+  renderRequestId,
+} from "./contracts";
 import {
   mutationMayBeAborted,
   mutationTargetIsCurrent,
   type RenderMutationTarget,
   type RenderPipelineMutationContext,
 } from "./render-mutation-policy";
+import {
+  type RenderPipelineAction,
+  type RenderProgramCandidate,
+  type RenderSourceRefreshTarget,
+  renderCandidateRequest,
+  renderCandidateRequestKey,
+  renderPipelineActionBlocker,
+  renderSessionMatchesCandidate,
+  renderSourceMutationOutcome,
+  renderSourceRefreshTarget,
+  resolveRenderPipelinePolicy,
+} from "./render-pipeline-policy";
 
 type RenderPipelinePanelProps = Readonly<{
   candidate: RenderProgramCandidate | null;
@@ -244,8 +244,8 @@ export function RenderPipelinePanel({
     candidate,
     candidateBlocker,
     candidateLifecycleBlocker,
-    commandAvailable: workspace?.commandAvailable ?? false,
     originalExportBlocker,
+    renderCapability: workspace?.renderCapability ?? null,
     session,
   });
   const { commitBlocker, exportBlocker, previewBlocker, sessionMatchesCandidate } = policy;
@@ -671,6 +671,15 @@ export function RenderPipelinePanel({
       ) : null}
 
       <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+        {session?.videoUrl ? (
+          <a
+            className="border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800"
+            download={`poietra-${session.id}.mp4`}
+            href={`${session.videoUrl}?v=${encodeURIComponent(session.updatedAt)}`}
+          >
+            Download MP4
+          </a>
+        ) : null}
         <button
           className="border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-600"
           disabled={exportBlocker !== null || pendingAction !== null}

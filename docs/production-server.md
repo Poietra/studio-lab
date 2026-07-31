@@ -7,8 +7,9 @@ The deploying service must supply both of these adapters:
 - `ProductionRequestAdmission`, whose `ready` probe covers the authentication
   provider and whose `authenticate` method returns server-verified principal
   claims for authenticated API requests.
-- `ProductionManimRuntimeAdapterV1`, whose `ready` probe covers its backing
-  stores and a fresh external-sandbox attestation.
+- `ProductionManimRuntimeAdapterV1`, whose `workspaceReady` probe covers the
+  durable source workspace and whose `ready` probe additionally covers media,
+  snapshots, and a fresh external-sandbox attestation.
 
 There is intentionally no environment-only or unauthenticated CLI. The current
 `ManimProjectRegistry` launches Manim on the host and is therefore not a
@@ -21,8 +22,11 @@ separate broker described in
 [production-render-sandbox.md](./production-render-sandbox.md). Issue #298 owns
 multi-organization account selection and edge-to-cell routing, while
 digest-bounded input assets remain
-follow-up work. Readiness stays unavailable unless the durable stores, the
-staging-root correlation, and both external sandbox brokers pass their probes.
+follow-up work. The load-balancer readiness probe depends on authentication and
+the durable source workspace, so a render outage can still be reported inside
+Studio. Render, snapshot, and media routes remain unavailable unless their
+durable stores, staging-root correlation, and external sandbox brokers pass the
+full runtime probe.
 
 Migration v11 adds the account control-plane records required by request
 admission: OIDC identities, organizations, and memberships. Invitations remain
@@ -104,12 +108,15 @@ are rejected by both production authentication and runtime startup. Existing-
 folder workspace registration is disabled in production so a request cannot
 attach another tenant's host path. Authentication readiness and principal
 verification run
-before runtime readiness, preventing unauthenticated API traffic from probing
-the render/storage adapter; the public `/readyz` probe still checks both
-dependencies. The shipped production composition stores tenant-scoped source,
-session, snapshot, video, and thumbnail state in PostgreSQL plus a private,
-versioned S3-compatible bucket. Filesystem-backed catalogs and process-local
-publication stores remain confined to the Vite/Electron development paths.
+before full runtime readiness, preventing unauthenticated API traffic from
+probing the render/storage adapter. The public `/readyz` probe checks admission
+and durable workspace readiness; authenticated project/workspace GETs can then
+surface a bounded render-capability outage while mutations and execution routes
+continue to require full readiness. The shipped production composition stores
+tenant-scoped source, session, snapshot, video, and thumbnail state in
+PostgreSQL plus a private, versioned S3-compatible bucket. Filesystem-backed
+catalogs and process-local publication stores remain confined to the
+Vite/Electron development paths.
 
 The transport configuration is strict and production-only. It requires one
 public origin, an IP literal to bind, and bounded connection, header, body,

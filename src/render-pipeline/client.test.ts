@@ -105,6 +105,7 @@ describe("Manim API client contracts", () => {
       frame: { height: 8, width: 14.222 },
       projectId: "default",
       projectName: "Demo",
+      renderCapability: { available: true, kind: "local-command", unavailableReason: null },
       sources: [],
     };
     vi.stubGlobal(
@@ -127,6 +128,33 @@ describe("Manim API client contracts", () => {
               projectId: "default",
               projectName: "Demo",
               projectRoot: "/private/project",
+              renderCapability: { available: true, kind: "local-command", unavailableReason: null },
+              sources: [],
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    await expect(loadManimWorkspace()).rejects.toThrow(/does not match the API contract/i);
+  });
+
+  it("rejects contradictory render capability state", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              commandAvailable: false,
+              frame: { height: 8, width: 14.222 },
+              projectId: "default",
+              projectName: "Demo",
+              renderCapability: {
+                available: true,
+                kind: "durable-sandbox",
+                unavailableReason: "durable-render-unavailable",
+              },
               sources: [],
             }),
             { status: 200 },
@@ -260,6 +288,11 @@ describe("Manim API client contracts", () => {
       frame: { height: 8, width: 14.222 },
       projectId: "project-a",
       projectName: "Demo",
+      renderCapability: {
+        available: false,
+        kind: "local-command",
+        unavailableReason: "local-command-unavailable",
+      },
       sources: [],
     };
     const fetch = vi.fn(async () => new Response(JSON.stringify(workspace), { status: 200 }));
@@ -449,6 +482,41 @@ describe("Manim API client contracts", () => {
       new Response(JSON.stringify(session({ failureCode: "raw-kernel-message", status: "failed" })), { status: 200 }),
     );
     await expect(loadManimRender("invalid-failure")).rejects.toThrow(/does not match the API contract/i);
+  });
+
+  it.each(["https://attacker.example/video.mp4", "/api/manim/renders/another-render/video"])(
+    "rejects a render video URL outside its exact authenticated session route: %s",
+    async (videoUrl) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response(JSON.stringify(session({ videoUrl })), { status: 200 })),
+      );
+
+      await expect(loadManimRender("render-id")).rejects.toThrow(/does not match the API contract/i);
+    },
+  );
+
+  it("rejects a video URL before its render artifact is ready", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify(
+              session({
+                canCancel: true,
+                canCommit: false,
+                canDiscard: false,
+                progress: 0.5,
+                status: "rendering",
+              }),
+            ),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    await expect(loadManimRender("render-id")).rejects.toThrow(/does not match the API contract/i);
   });
 
   it("preserves a missing-session status so the editor can recover", async () => {
