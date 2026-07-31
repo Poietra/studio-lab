@@ -89,6 +89,8 @@ const hermeticPngV4TransformPlanSchema = z
   .strict();
 
 export type HermeticPngV4TransformPlan = z.infer<typeof hermeticPngV4TransformPlanSchema>;
+const hermeticMathTexV3TransformPlanSchema = hermeticPngV4TransformPlanSchema;
+export type HermeticMathTexV3TransformPlan = z.infer<typeof hermeticMathTexV3TransformPlanSchema>;
 
 /**
  * The minimal expected boundary the server holds against a result: the wire
@@ -106,6 +108,10 @@ export const expectedFastManimSnapshotCorrelationV1Schema = z
     // complete source blob. Omission is accepted only for legacy centered V4
     // artifacts, whose geometry remains subject to the old exact base rect.
     hermeticPngV4Plan: hermeticPngV4TransformPlanSchema.optional(),
+    // V3 retains the canonical provider path and carries only the independently
+    // source-derived uniform affine. Omission keeps legacy centered snapshots
+    // readable while non-identity producer output remains fail-closed.
+    hermeticMathTexV3Plan: hermeticMathTexV3TransformPlanSchema.optional(),
     // Durable V1 publications predate this correlation field. Treat only an
     // omitted stored value as V1; an explicit unsupported value still fails.
     snapshotVersion: fastManimSnapshotProfileVersionV1Schema.default(1),
@@ -117,6 +123,13 @@ export const expectedFastManimSnapshotCorrelationV1Schema = z
         code: "custom",
         message: "Hermetic PNG transform evidence is valid only for snapshot profile V4.",
         path: ["hermeticPngV4Plan"],
+      });
+    }
+    if (value.snapshotVersion !== 3 && value.hermeticMathTexV3Plan !== undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "Hermetic MathTex transform evidence is valid only for snapshot profile V3.",
+        path: ["hermeticMathTexV3Plan"],
       });
     }
   });
@@ -982,6 +995,78 @@ function assertHermeticMathTexProfileEntityV3(entity: StaticProfileEntity) {
   }
 }
 
+const HERMETIC_MATHTEX_ROUNDOFF_OPERATIONS_PER_TRANSFORM_V3 = 32;
+
+function assertHermeticMathTexTransformV3(
+  entity: StaticProfileEntity,
+  plan: HermeticMathTexV3TransformPlan | undefined,
+) {
+  if (entity.geometry.kind !== "cubic-path") {
+    profileViolation("Hermetic MathTex transform evidence requires canonical cubic geometry.");
+  }
+  const points = entity.geometry.path.subpaths.flatMap((subpath) => [
+    subpath.start,
+    ...subpath.segments.flatMap(({ control1, control2, end }) => [control1, control2, end]),
+  ]);
+  const minimumX = Math.min(...points.map(({ x }) => x));
+  const maximumX = Math.max(...points.map(({ x }) => x));
+  const minimumY = Math.min(...points.map(({ y }) => y));
+  const maximumY = Math.max(...points.map(({ y }) => y));
+  const baseCenter = { x: (minimumX + maximumX) / 2, y: (minimumY + maximumY) / 2 };
+  let scale = 1;
+  let targetCenter: Readonly<{ x: number; y: number }> | null = null;
+  for (const transform of plan?.transforms ?? []) {
+    if (transform.kind === "move-to") {
+      targetCenter = transform;
+    } else {
+      scale *= transform.factor;
+      if (!Number.isFinite(scale) || scale <= 0 || scale > MAX_COORDINATE) {
+        profileViolation("Hermetic MathTex transforms produce an out-of-range cumulative scale.");
+      }
+    }
+  }
+  const center = targetCenter ?? baseCenter;
+  const expected = {
+    m11: scale,
+    m12: 0,
+    m21: 0,
+    m22: scale,
+    tx: center.x - scale * baseCenter.x,
+    ty: center.y - scale * baseCenter.y,
+  };
+  const maximumMagnitude = Math.max(1, ...Object.values(expected).map(Math.abs));
+  const transformCount = plan?.transforms.length ?? 0;
+  const tolerance =
+    transformCount === 0
+      ? 0
+      : maximumMagnitude * Number.EPSILON * HERMETIC_MATHTEX_ROUNDOFF_OPERATIONS_PER_TRANSFORM_V3 * transformCount;
+  const actual = entity.transform;
+  if (
+    actual.m12 !== 0 ||
+    actual.m21 !== 0 ||
+    Math.abs(actual.m11 - expected.m11) > tolerance ||
+    Math.abs(actual.m22 - expected.m22) > tolerance ||
+    Math.abs(actual.tx - expected.tx) > tolerance ||
+    Math.abs(actual.ty - expected.ty) > tolerance
+  ) {
+    profileViolation("Hermetic MathTex transform must derive from the exact server-held source plan.");
+  }
+  if (
+    points.some(({ x, y }) => {
+      const transformedX = expected.m11 * x + expected.tx;
+      const transformedY = expected.m22 * y + expected.ty;
+      return (
+        !Number.isFinite(transformedX) ||
+        !Number.isFinite(transformedY) ||
+        Math.abs(transformedX) > MAX_COORDINATE ||
+        Math.abs(transformedY) > MAX_COORDINATE
+      );
+    })
+  ) {
+    profileViolation("Hermetic MathTex transforms produce geometry outside the bounded profile.");
+  }
+}
+
 function assertHermeticMathTexProfileProvenanceV3(scene: SceneIrBundleV1["scene"]) {
   const evidence = scene.provenance[1]?.evidence;
   const content = evidence?.at(-3);
@@ -1045,12 +1130,17 @@ function hermeticPngV4Statements(source: string, sceneName: string) {
  * Strings and comments are removed by the shared lexical pass; no Python is
  * executed and every unrecognized statement fails closed.
  */
-export function deriveHermeticPngV4TransformPlan(source: string, sceneName: string): HermeticPngV4TransformPlan {
+function deriveHermeticStaticTransformPlan(
+  source: string,
+  sceneName: string,
+  constructor: "ImageMobject" | "MathTex",
+  profile: "Hermetic MathTex" | "Hermetic PNG",
+): HermeticPngV4TransformPlan {
   const statements = hermeticPngV4Statements(source, sceneName);
-  const assignment = statements?.[0]?.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*ImageMobject\s*\(/);
+  const assignment = statements?.[0]?.match(new RegExp(`^([A-Za-z_][A-Za-z0-9_]*)\\s*=\\s*${constructor}\\s*\\(`));
   const variable = assignment?.[1];
   if (!statements || !variable || !new RegExp(`^self\\.add\\(\\s*${variable}\\s*\\)$`).test(statements[1] ?? "")) {
-    profileViolation("Hermetic PNG source does not expose one direct ImageMobject assignment followed by self.add.");
+    profileViolation(`${profile} source does not expose one direct ${constructor} assignment followed by self.add.`);
   }
   const tail = statements.slice(2);
   let terminalWait: number | null = null;
@@ -1058,15 +1148,16 @@ export function deriveHermeticPngV4TransformPlan(source: string, sceneName: stri
   if (wait) {
     terminalWait = hermeticPngV4NumberLiteral(wait[1]!, true);
     if (terminalWait === null || terminalWait > MAX_FAST_MANIM_SNAPSHOT_DURATION_SECONDS_V2) {
-      profileViolation("Hermetic PNG terminal wait must be one bounded positive numeric literal.");
+      profileViolation(`${profile} terminal wait must be one bounded positive numeric literal.`);
     }
     tail.pop();
   }
-  if (tail.length > 64) profileViolation("Hermetic PNG source contains too many static transforms.");
+  if (tail.length > 64) profileViolation(`${profile} source contains too many static transforms.`);
   const transforms: Array<HermeticPngV4TransformPlan["transforms"][number]> = [];
+  let cumulativeScale = 1;
   const escapedVariable = variable;
   const movePattern = new RegExp(
-    `^${escapedVariable}\\.move_to\\(\\s*\\(\\s*(${HERMETIC_PNG_V4_NUMBER_LITERAL})\\s*,\\s*(${HERMETIC_PNG_V4_NUMBER_LITERAL})\\s*,\\s*0\\s*\\)\\s*\\)$`,
+    `^${escapedVariable}\\.move_to\\(\\s*\\(\\s*(${HERMETIC_PNG_V4_NUMBER_LITERAL})\\s*,\\s*(${HERMETIC_PNG_V4_NUMBER_LITERAL})\\s*,\\s*0(?:_?0)*\\s*\\)\\s*\\)$`,
   );
   const scalePattern = new RegExp(`^${escapedVariable}\\.scale\\(\\s*(${HERMETIC_PNG_V4_NUMBER_LITERAL})\\s*\\)$`);
   for (const statement of tail) {
@@ -1074,23 +1165,38 @@ export function deriveHermeticPngV4TransformPlan(source: string, sceneName: stri
     if (move) {
       const x = hermeticPngV4NumberLiteral(move[1]!);
       const y = hermeticPngV4NumberLiteral(move[2]!);
-      if (x === null || y === null) profileViolation("Hermetic PNG move_to coordinates must be bounded literals.");
+      if (x === null || y === null) profileViolation(`${profile} move_to coordinates must be bounded literals.`);
       transforms.push({ kind: "move-to", x, y });
       continue;
     }
     const scale = statement.match(scalePattern);
     if (scale) {
       const factor = hermeticPngV4NumberLiteral(scale[1]!, true);
-      if (factor === null) profileViolation("Hermetic PNG scale factors must be bounded positive literals.");
+      if (factor === null) profileViolation(`${profile} scale factors must be bounded positive literals.`);
+      cumulativeScale *= factor;
+      if (!Number.isFinite(cumulativeScale) || cumulativeScale <= 0 || cumulativeScale > MAX_COORDINATE) {
+        profileViolation(`${profile} transforms produce an out-of-range cumulative scale.`);
+      }
       transforms.push({ factor, kind: "scale" });
       continue;
     }
-    profileViolation("Hermetic PNG source contains a statement outside the static transform profile.");
+    profileViolation(`${profile} source contains a statement outside the static transform profile.`);
   }
   return hermeticPngV4TransformPlanSchema.parse({ terminalWait, transforms });
 }
 
-function sameHermeticPngV4TransformPlan(left: HermeticPngV4TransformPlan, right: HermeticPngV4TransformPlan) {
+export function deriveHermeticPngV4TransformPlan(source: string, sceneName: string): HermeticPngV4TransformPlan {
+  return deriveHermeticStaticTransformPlan(source, sceneName, "ImageMobject", "Hermetic PNG");
+}
+
+export function deriveHermeticMathTexV3TransformPlan(
+  source: string,
+  sceneName: string,
+): HermeticMathTexV3TransformPlan {
+  return deriveHermeticStaticTransformPlan(source, sceneName, "MathTex", "Hermetic MathTex");
+}
+
+function sameHermeticTransformPlan(left: HermeticPngV4TransformPlan, right: HermeticPngV4TransformPlan) {
   return canonicalJsonV1(left) === canonicalJsonV1(right);
 }
 
@@ -1653,6 +1759,7 @@ function assertFastManimSnapshotProfileV1(
   expectedFrame: Readonly<{ height: number; width: number }>,
   snapshotVersion: FastManimSnapshotProfileVersionV1,
   mode: "producer" | "sealed",
+  hermeticMathTexV3Plan: HermeticMathTexV3TransformPlan | undefined,
   hermeticPngV4Plan: HermeticPngV4TransformPlan | undefined,
 ) {
   const { scene } = bundle;
@@ -1682,10 +1789,16 @@ function assertFastManimSnapshotProfileV1(
   // V1 remains the exact one-second still contract. V2 adds a bounded 60fps
   // timeline with observed membership, exact linear Fade opacity, exact
   // component-linear affine channels, and exact uniform-cubic Create/Uncreate
-  // trims. V3 and V4 are separate one-second hermetic MathTex and PNG
-  // contracts. Geometry and the entity's base transform stay immutable.
-  if (snapshotVersion !== 2 && scene.duration !== FAST_MANIM_SNAPSHOT_STATIC_DURATION_SECONDS_V1) {
-    profileViolation("Static profile Scenes must report exactly the canonical 1-second static duration.");
+  // trims. V3 and V4 remain static but may carry one source-proven terminal
+  // wait; that wait defines the still's full Scene duration.
+  const expectedHermeticDuration =
+    snapshotVersion === 3
+      ? (hermeticMathTexV3Plan?.terminalWait ?? FAST_MANIM_SNAPSHOT_STATIC_DURATION_SECONDS_V1)
+      : snapshotVersion === 4
+        ? (hermeticPngV4Plan?.terminalWait ?? FAST_MANIM_SNAPSHOT_STATIC_DURATION_SECONDS_V1)
+        : FAST_MANIM_SNAPSHOT_STATIC_DURATION_SECONDS_V1;
+  if (snapshotVersion !== 2 && scene.duration !== expectedHermeticDuration) {
+    profileViolation("Static profile Scene duration must match its exact source-proven terminal wait.");
   }
   if (snapshotVersion === 2) assertDynamicProfileV2(scene);
   if (snapshotVersion !== 2 && scene.animationChannels.length > 0) {
@@ -1773,7 +1886,7 @@ function assertFastManimSnapshotProfileV1(
       profileViolation("Entity lifetimes must match the negotiated snapshot timeline profile.");
     }
     const { m11, m12, m21, m22, tx, ty } = entity.transform;
-    if (m11 !== 1 || m12 !== 0 || m21 !== 0 || m22 !== 1 || tx !== 0 || ty !== 0) {
+    if (snapshotVersion !== 3 && (m11 !== 1 || m12 !== 0 || m21 !== 0 || m22 !== 1 || tx !== 0 || ty !== 0)) {
       profileViolation(
         "Snapshot profile entities must keep their base transform at identity; V2 affine motion belongs only in affine-transform channels.",
       );
@@ -1789,6 +1902,7 @@ function assertFastManimSnapshotProfileV1(
         break;
       case 3:
         assertHermeticMathTexProfileEntityV3(entity);
+        assertHermeticMathTexTransformV3(entity, hermeticMathTexV3Plan);
         break;
       case 4:
         assertHermeticPngProfileEntityV4(entity, bundle.assets.assets[0]!, expectedFrame, hermeticPngV4Plan);
@@ -1926,23 +2040,45 @@ async function parseFastManimSnapshotResultV1(
       "Every provenance record in a compiled fast-manim Scene must originate from its server snapshot.",
     );
   }
+  let hermeticMathTexV3Plan = expected.hermeticMathTexV3Plan;
   let hermeticPngV4Plan = expected.hermeticPngV4Plan;
-  if (expected.snapshotVersion === 4 && mode === "producer" && sourceText !== undefined) {
-    if (createHash("sha256").update(sourceText, "utf8").digest("hex") !== expected.sourceHash) {
-      throw new FastManimSnapshotContractError(
-        "correlation-mismatch",
-        "The server-held PNG source does not match the expected source digest.",
-      );
+  if (
+    (expected.snapshotVersion === 3 || expected.snapshotVersion === 4) &&
+    mode === "producer" &&
+    sourceText !== undefined &&
+    createHash("sha256").update(sourceText, "utf8").digest("hex") !== expected.sourceHash
+  ) {
+    throw new FastManimSnapshotContractError(
+      "correlation-mismatch",
+      "The server-held hermetic source does not match the expected source digest.",
+    );
+  }
+  if (expected.snapshotVersion === 3 && mode === "producer" && sourceText !== undefined) {
+    const derivedPlan = deriveHermeticMathTexV3TransformPlan(sourceText, expected.sceneName);
+    if (hermeticMathTexV3Plan && !sameHermeticTransformPlan(hermeticMathTexV3Plan, derivedPlan)) {
+      profileViolation("The retained MathTex transform plan does not match the server-held source.");
     }
+    hermeticMathTexV3Plan = derivedPlan;
+  } else if (expected.snapshotVersion === 3 && mode === "producer" && hermeticMathTexV3Plan) {
+    profileViolation("A retained MathTex transform plan requires the exact server-held source during sealing.");
+  }
+  if (expected.snapshotVersion === 4 && mode === "producer" && sourceText !== undefined) {
     const derivedPlan = deriveHermeticPngV4TransformPlan(sourceText, expected.sceneName);
-    if (hermeticPngV4Plan && !sameHermeticPngV4TransformPlan(hermeticPngV4Plan, derivedPlan)) {
+    if (hermeticPngV4Plan && !sameHermeticTransformPlan(hermeticPngV4Plan, derivedPlan)) {
       profileViolation("The retained PNG transform plan does not match the server-held source.");
     }
     hermeticPngV4Plan = derivedPlan;
   } else if (expected.snapshotVersion === 4 && mode === "producer" && hermeticPngV4Plan) {
     profileViolation("A retained PNG transform plan requires the exact server-held source during sealing.");
   }
-  assertFastManimSnapshotProfileV1(bundle, expected.frame, expected.snapshotVersion, mode, hermeticPngV4Plan);
+  assertFastManimSnapshotProfileV1(
+    bundle,
+    expected.frame,
+    expected.snapshotVersion,
+    mode,
+    hermeticMathTexV3Plan,
+    hermeticPngV4Plan,
+  );
   // Structural normalization before sealing: provenance evidence is replaced
   // with server-owned text, so the sealed digest never covers producer free
   // text. Re-normalizing an already-normalized stored bundle is a no-op, which

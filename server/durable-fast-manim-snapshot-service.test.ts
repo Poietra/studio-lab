@@ -7,6 +7,7 @@ import {
   DurableFastManimSnapshotServiceV1,
 } from "./durable-fast-manim-snapshot-service";
 import {
+  deriveHermeticMathTexV3TransformPlan,
   deriveHermeticPngV4TransformPlan,
   type ExpectedFastManimSnapshotCorrelationV1,
   type FastManimSnapshotRunViewV1,
@@ -51,6 +52,17 @@ class ExampleScene(Scene):
         self.wait(1)
 `;
 const TRANSFORMED_PNG_SOURCE_DIGEST = createHash("sha256").update(TRANSFORMED_PNG_SOURCE, "utf8").digest("hex");
+const TRANSFORMED_MATHTEX_SOURCE = `from manim import MathTex, Scene
+
+class ExampleScene(Scene):
+    def construct(self):
+        equation = MathTex("E = mc^2")
+        self.add(equation)
+        equation.move_to((1.25, -0.75, 0))
+        equation.scale(1.5)
+        self.wait(1)
+`;
+const TRANSFORMED_MATHTEX_SOURCE_DIGEST = createHash("sha256").update(TRANSFORMED_MATHTEX_SOURCE, "utf8").digest("hex");
 
 function sourceHead(generation = 7n, digest = SOURCE_DIGEST): WorkspaceSourceHeadV1 {
   return {
@@ -160,6 +172,33 @@ function transformedPngSourceHead() {
   return {
     ...head,
     blob: { ...head.blob, byteSize: Buffer.byteLength(TRANSFORMED_PNG_SOURCE, "utf8") },
+  };
+}
+
+function transformedMathTexV3View() {
+  const snapshot = {
+    ...compiledSnapshot,
+    bundle: {
+      ...compiledSnapshot.bundle,
+      scene: {
+        ...compiledSnapshot.bundle.scene,
+        source: {
+          ...compiledSnapshot.bundle.scene.source,
+          snapshotVersion: 3,
+          sourceHash: TRANSFORMED_MATHTEX_SOURCE_DIGEST,
+        },
+      },
+    },
+    sourceHash: TRANSFORMED_MATHTEX_SOURCE_DIGEST,
+  } as unknown as VerifiedCompiledFastManimSnapshotResultV1;
+  return { ...verifiedView, snapshot } satisfies FastManimUnpublishedSnapshotRunViewV1;
+}
+
+function transformedMathTexSourceHead() {
+  const head = sourceHead(7n, TRANSFORMED_MATHTEX_SOURCE_DIGEST);
+  return {
+    ...head,
+    blob: { ...head.blob, byteSize: Buffer.byteLength(TRANSFORMED_MATHTEX_SOURCE, "utf8") },
   };
 }
 
@@ -288,6 +327,22 @@ describe("DurableFastManimSnapshotServiceV1", () => {
     if (!published) throw new Error("Expected one durable V4 publication.");
     expect(published.expected.hermeticPngV4Plan).toEqual(
       deriveHermeticPngV4TransformPlan(TRANSFORMED_PNG_SOURCE, SCENE_NAME),
+    );
+  });
+
+  it("retains the server-derived V3 MathTex transform plan for durable publication", async () => {
+    const fixture = harness(transformedMathTexV3View());
+    const head = transformedMathTexSourceHead();
+    fixture.readSourceHead.mockResolvedValue(head);
+    fixture.readSource.mockResolvedValue(TRANSFORMED_MATHTEX_SOURCE);
+
+    await expect(fixture.service.run(request)).resolves.toMatchObject({ status: "verified" });
+
+    expect(fixture.readSource).toHaveBeenCalledWith(TENANT, head.blob, undefined);
+    const published = fixture.publish.mock.calls[0]?.[0];
+    if (!published) throw new Error("Expected one durable V3 publication.");
+    expect(published.expected.hermeticMathTexV3Plan).toEqual(
+      deriveHermeticMathTexV3TransformPlan(TRANSFORMED_MATHTEX_SOURCE, SCENE_NAME),
     );
   });
 
