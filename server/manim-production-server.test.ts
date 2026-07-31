@@ -304,7 +304,7 @@ describe("standalone production Manim HTTP adapter", () => {
     },
   );
 
-  it("keeps liveness public while readiness and API fail closed on either required dependency", async () => {
+  it("keeps liveness public while readiness reflects every dependency and admission fail-closes APIs", async () => {
     let admissionReady = false;
     let runtimeReady = true;
     let authenticateCalls = 0;
@@ -333,6 +333,58 @@ describe("standalone production Manim HTTP adapter", () => {
     expect(await send(server, "/readyz")).toMatchObject({ status: 200 });
     expect(await send(server, "/api/manim/projects")).toMatchObject({ status: 200 });
     expect(authenticateCalls).toBe(1);
+  });
+
+  it("keeps authenticated workspace bootstrap readable during a render outage while mutations fail closed", async () => {
+    const fullReadiness = vi.fn(async () => ({ ready: false }) as const);
+    const projects = vi.fn(async () => ({ defaultProjectId: "project-a", projects: [] }));
+    const workspace = vi.fn(async () => ({
+      commandAvailable: false,
+      frame: { height: 8, width: 14.222 },
+      projectId: "project-a",
+      projectName: "Project A",
+      renderCapability: {
+        available: false,
+        kind: "durable-sandbox",
+        unavailableReason: "durable-render-unavailable",
+      },
+      sources: [],
+    }));
+    const start = vi.fn();
+    const baseRuntime = createRuntime(() => false);
+    const server = await startProductionManimServer({
+      admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
+      config: await startConfig(),
+      runtime: {
+        ...baseRuntime,
+        api: { ...baseRuntime.api, projects, start, workspace } as unknown as ManimApi,
+        ready: fullReadiness,
+      },
+    });
+    servers.push(server);
+
+    expect(await send(server, "/readyz")).toMatchObject({ status: 503 });
+    expect(await send(server, "/api/manim/projects")).toMatchObject({ status: 200 });
+    expect(await send(server, "/api/manim/workspace")).toMatchObject({ status: 200 });
+    const scoped = await send(server, "/api/manim/projects/project-a/workspace");
+    expect(scoped).toMatchObject({ status: 200 });
+    expect(JSON.parse(scoped.body).renderCapability).toEqual({
+      available: false,
+      kind: "durable-sandbox",
+      unavailableReason: "durable-render-unavailable",
+    });
+    expect(fullReadiness).toHaveBeenCalledOnce();
+
+    const render = await send(server, "/api/manim/projects/project-a/renders", {
+      body: "{}",
+      headers: { "content-type": "application/json", origin: "https://studio.example" },
+      method: "POST",
+    });
+    expect(render).toMatchObject({ status: 503 });
+    expect(fullReadiness).toHaveBeenCalledTimes(2);
+    expect(start).not.toHaveBeenCalled();
+    expect(projects).toHaveBeenCalledOnce();
+    expect(workspace).toHaveBeenCalledTimes(2);
   });
 
   it("requires admission and validates Host plus the immediate proxy before API routing", async () => {
@@ -476,7 +528,7 @@ describe("standalone production Manim HTTP adapter", () => {
       status: 200,
     });
     expect(projectCalls).toBe(1);
-    expect(runtimeReadyCalls).toBe(1);
+    expect(runtimeReadyCalls).toBe(0);
 
     const existingRegistration = await send(server, "/api/manim/projects", {
       body: JSON.stringify({ kind: "existing", name: "Foreign root", root: "/tenant-b/private" }),
@@ -488,6 +540,7 @@ describe("standalone production Manim HTTP adapter", () => {
       method: "POST",
     });
     expect(existingRegistration).toMatchObject({ status: 403 });
+    expect(runtimeReadyCalls).toBe(1);
     expect(createExistingCalls).toBe(0);
   });
 

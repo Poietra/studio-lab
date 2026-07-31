@@ -484,6 +484,41 @@ describe("Manim API client contracts", () => {
     await expect(loadManimRender("invalid-failure")).rejects.toThrow(/does not match the API contract/i);
   });
 
+  it.each(["https://attacker.example/video.mp4", "/api/manim/renders/another-render/video"])(
+    "rejects a render video URL outside its exact authenticated session route: %s",
+    async (videoUrl) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response(JSON.stringify(session({ videoUrl })), { status: 200 })),
+      );
+
+      await expect(loadManimRender("render-id")).rejects.toThrow(/does not match the API contract/i);
+    },
+  );
+
+  it("rejects a video URL before its render artifact is ready", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify(
+              session({
+                canCancel: true,
+                canCommit: false,
+                canDiscard: false,
+                progress: 0.5,
+                status: "running",
+              }),
+            ),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    await expect(loadManimRender("render-id")).rejects.toThrow(/does not match the API contract/i);
+  });
+
   it("preserves a missing-session status so the editor can recover", async () => {
     vi.stubGlobal(
       "fetch",

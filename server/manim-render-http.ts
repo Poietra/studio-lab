@@ -43,6 +43,12 @@ const PROJECT_SCENE_SNAPSHOT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{
 const PROJECT_SCENE_SNAPSHOT_ASSET_ROUTE =
   /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/scene-snapshot-assets\/([0-9a-f]{64})$/;
 const PROJECT_ITEM_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})$/;
+
+export function isManimWorkspaceBootstrapRequest(method: string | undefined, pathname: string) {
+  if (method !== "GET") return false;
+  if (pathname === "/api/manim/projects" || pathname === "/api/manim/workspace") return true;
+  return PROJECT_ROUTE.exec(pathname)?.[2] === "workspace";
+}
 const DEFAULT_MEDIA_STREAM_IDLE_TIMEOUT_MS = 30_000;
 const MAX_MEDIA_STREAM_IDLE_TIMEOUT_MS = 120_000;
 

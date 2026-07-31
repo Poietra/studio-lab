@@ -253,7 +253,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     try {
       const [executionReady, rendersReady] = await Promise.all([
         this.#execution.ready(signal),
-        this.#renders.ready(signal),
+        this.#renders.deliveryReady(signal),
       ]);
       signal?.throwIfAborted();
       return executionReady && rendersReady

@@ -481,6 +481,12 @@ export const renderSessionViewSchema: z.ZodType<RenderSessionView> = z
       (session.status === "cancelled" && session.failureCode === "cancelled") ||
       (session.status === "failed" && session.failureCode !== "cancelled");
     if (!valid) context.addIssue({ code: "custom", message: "Render failure code does not match its status." });
+    if (session.videoUrl !== null && session.videoUrl !== `/api/manim/renders/${session.id}/video`) {
+      context.addIssue({ code: "custom", message: "Render video URL does not match its session." });
+    }
+    if (session.videoUrl !== null && !["committed", "ready", "undone"].includes(session.status)) {
+      context.addIssue({ code: "custom", message: "Only a ready render may expose a video URL." });
+    }
   });
 
 export const renderSourceActionCancellationViewSchema: z.ZodType<RenderSourceActionCancellationView> = z

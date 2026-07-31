@@ -13,6 +13,7 @@ import {
   authenticateManimRequestContext,
   handleManimRequest,
   isManimVideoRequest,
+  isManimWorkspaceBootstrapRequest,
   type ManimApi,
 } from "./manim-render-http";
 import { isReservedLocalManimTenantId, type ManimPrincipalAuthenticator } from "./manim-request-principal";
@@ -601,7 +602,11 @@ export async function startProductionManimServer(
         });
         return;
       }
-      if (!(await runtimeIsReady(controller.signal))) {
+      // Project/workspace bootstrap is storage-only and must remain available so
+      // the workspace can report a bounded render outage. Authentication and
+      // tenant admission above still apply; every other route remains gated by
+      // the full sandbox + durable-runtime attestation.
+      if (!isManimWorkspaceBootstrapRequest(request.method, pathname) && !(await runtimeIsReady(controller.signal))) {
         throw new TransportError("Production runtime is not ready.", 503);
       }
       if (controller.signal.aborted) return;

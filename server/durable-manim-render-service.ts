@@ -133,6 +133,11 @@ export class DurableManimRenderServiceV1 {
     return repositoryReady && artifactReaderReady;
   }
 
+  async deliveryReady(signal?: AbortSignal) {
+    if (!this.#artifactReader) return false;
+    return this.ready(signal);
+  }
+
   async start(request: ProgramRenderRequest, signal?: AbortSignal): Promise<RenderSessionView> {
     signal?.throwIfAborted();
     const originalHead = await this.#sourceRepository.readSourceHead(

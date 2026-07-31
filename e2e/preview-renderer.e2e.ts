@@ -316,12 +316,15 @@ test("a ready render exposes an explicit MP4 download on the authenticated video
 
   await page.getByRole("button", { name: "Render program" }).click();
 
-  const download = page.getByRole("link", { name: "Download MP4" });
-  await expect(download).toHaveAttribute("download", `poietra-${renderId}.mp4`);
-  await expect(download).toHaveAttribute(
+  const downloadLink = page.getByRole("link", { name: "Download MP4" });
+  await expect(downloadLink).toHaveAttribute("download", `poietra-${renderId}.mp4`);
+  await expect(downloadLink).toHaveAttribute(
     "href",
     `/api/manim/renders/${renderId}/video?v=${encodeURIComponent("2026-07-27T00:00:01.000Z")}`,
   );
+  const [download] = await Promise.all([page.waitForEvent("download"), downloadLink.click()]);
+  expect(download.suggestedFilename()).toBe(`poietra-${renderId}.mp4`);
+  await download.cancel();
 });
 
 test("a terminal source action keeps polling until its exact outcome is known", async ({ page }) => {

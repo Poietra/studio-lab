@@ -49,7 +49,10 @@ describe("DurableManimRuntimeV1 production readiness", () => {
       execution: options.executionReady ? { ready: options.executionReady } : undefined,
       namespace: "workspace-capability-test",
       renders: options.renderReady
-        ? partial<DurableManimRenderServiceV1>({ close: async () => undefined, ready: options.renderReady })
+        ? partial<DurableManimRenderServiceV1>({
+            close: async () => undefined,
+            deliveryReady: options.renderReady,
+          })
         : undefined,
       repository: partial<WorkspaceSourceRepositoryV1>({
         close: async () => undefined,

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { RenderCommitRequest } from "../src/render-pipeline/contracts";
-import { DurableManimRenderServiceV1 } from "./durable-manim-render-service";
+import { type DurableManimRenderServiceOptionsV1, DurableManimRenderServiceV1 } from "./durable-manim-render-service";
 import { HttpError } from "./http/json";
 import { request, sceneSource } from "./manim-render-pipeline-test-fixtures";
 import { renderCommitCorrelationKey } from "./manim-render-session-policy";
@@ -75,6 +75,7 @@ function sessionFromCreate(input: CreateDurableRenderSessionInputV1): DurableRen
 
 function fixture(
   overrides: Readonly<{
+    artifactReader?: DurableManimRenderServiceOptionsV1["artifactReader"];
     createSession?: RenderSessionRepositoryV1["createSession"];
     putSource?: SourceContentBlobStoreV1["putSource"];
     readSession?: RenderSessionRepositoryV1["readSession"];
@@ -118,6 +119,7 @@ function fixture(
   const executionCancel = vi.fn(async () => undefined);
   const wake = vi.fn();
   const service = new DurableManimRenderServiceV1({
+    ...(overrides.artifactReader ? { artifactReader: overrides.artifactReader } : {}),
     blobs,
     execution: { cancel: executionCancel, wake },
     frame: { height: 8, width: 14.222 },
@@ -417,8 +419,21 @@ describe("DurableManimRenderServiceV1", () => {
     const { close, service } = fixture();
 
     await expect(service.ready()).resolves.toBe(true);
+    await expect(service.deliveryReady()).resolves.toBe(false);
     await Promise.all([service.close(), service.close()]);
 
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("reports end-to-end delivery readiness only with an available artifact reader", async () => {
+    const { service } = fixture({
+      artifactReader: {
+        ready: async () => true,
+        sessionVideo: vi.fn(),
+      },
+    });
+
+    await expect(service.deliveryReady()).resolves.toBe(true);
+    await service.close();
   });
 });
