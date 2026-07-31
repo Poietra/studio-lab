@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { access, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { inflateSync } from "node:zlib";
 
 import { describe, expect, it } from "vitest";
@@ -18,16 +18,6 @@ async function corpusFixture() {
 
 function sha256(bytes: Uint8Array) {
   return createHash("sha256").update(bytes).digest("hex");
-}
-
-async function pathExists(path: string) {
-  try {
-    await access(path);
-    return true;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw error;
-  }
 }
 
 describe("visual parity v1 contracts", () => {
@@ -72,9 +62,8 @@ describe("visual parity v1 contracts", () => {
     expect(sha256(new Uint8Array(await readFile(reference.scene.sourcePath)))).toBe(reference.scene.sourceSha256);
   });
 
-  it("revalidates the promoted real Manim compositor evidence when present", async () => {
+  it("revalidates the promoted real Manim compositor evidence", async () => {
     const directory = "docs/evidence/manim-compositor-parity-2026-07-31";
-    if (!(await pathExists(directory))) return;
     await expect(verifyManimCompositorParityEvidenceV1(directory)).resolves.toMatchObject({
       gate: { passed: true },
       schema: "poietra.manim-compositor-parity-report",
