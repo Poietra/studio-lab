@@ -52,6 +52,18 @@ const MOTION_PATH_ENTITY_IDS = Array.from({ length: 3 }, (_, index) => `${MOTION
 
 type RgbaPixel = readonly [number, number, number, number];
 
+type SnapshotRunBody = {
+  failure?: { code?: string };
+  projectId?: string;
+  requestId?: string;
+  revision?: number;
+  sceneName?: string;
+  snapshot?: { bundle?: SceneIrBundleV1; snapshotHash?: string };
+  sourcePath?: string;
+  sourceRuntimeIdentity?: VerifiedSourceRuntimeIdentityMapV1;
+  status?: string;
+};
+
 function expectPixelNear(actual: RgbaPixel, expected: RgbaPixel, tolerance = 4) {
   for (const [index, component] of actual.entries()) {
     expect(Math.abs(component - expected[index])).toBeLessThanOrEqual(tolerance);
@@ -88,16 +100,71 @@ async function selectScene(page: Page, name: string, sourcePath = "scene.py") {
   return response;
 }
 
+function isExternalResponseBodyEviction(error: unknown) {
+  return (
+    Boolean(process.env.POIETRA_E2E_EXTERNAL_BASE_URL?.trim()) &&
+    error instanceof Error &&
+    error.message.includes("Protocol error (Network.getResponseBody): No data found for resource with given identifier")
+  );
+}
+
+async function readSnapshotRunBody(response: Response, expectedStatus: string): Promise<SnapshotRunBody> {
+  try {
+    return (await response.json()) as SnapshotRunBody;
+  } catch (error) {
+    if (expectedStatus !== "verified" || !isExternalResponseBodyEviction(error)) throw error;
+
+    const requestBody = response.request().postDataJSON() as unknown;
+    if (
+      typeof requestBody !== "object" ||
+      requestBody === null ||
+      !("projectId" in requestBody) ||
+      typeof requestBody.projectId !== "string" ||
+      !("requestId" in requestBody) ||
+      typeof requestBody.requestId !== "string" ||
+      !("sceneName" in requestBody) ||
+      typeof requestBody.sceneName !== "string" ||
+      !("sourcePath" in requestBody) ||
+      typeof requestBody.sourcePath !== "string"
+    ) {
+      throw new Error("The external Scene snapshot request did not expose its lookup identity.");
+    }
+
+    const lookupUrl = new URL(response.url());
+    lookupUrl.search = new URLSearchParams({
+      sceneName: requestBody.sceneName,
+      sourcePath: requestBody.sourcePath,
+    }).toString();
+    const published = await response
+      .request()
+      .frame()
+      .page()
+      .evaluate(async (url) => {
+        const lookup = await fetch(url, {
+          cache: "no-store",
+          credentials: "same-origin",
+          headers: { accept: "application/json" },
+        });
+        if (!lookup.ok) throw new Error(`Scene snapshot lookup failed with HTTP ${lookup.status}.`);
+        return lookup.json() as Promise<unknown>;
+      }, lookupUrl.href);
+    const body = published as SnapshotRunBody;
+    if (
+      body.projectId !== requestBody.projectId ||
+      body.requestId !== requestBody.requestId ||
+      body.sceneName !== requestBody.sceneName ||
+      body.sourcePath !== requestBody.sourcePath
+    ) {
+      throw new Error("The external Scene snapshot lookup returned a different publication identity.");
+    }
+    return body;
+  }
+}
+
 async function expectRunStatus(responsePromise: Promise<Response>, status: string) {
   const response = await responsePromise;
   expect(response.ok()).toBe(true);
-  const body = (await response.json()) as {
-    failure?: { code?: string };
-    revision?: number;
-    snapshot?: { bundle?: SceneIrBundleV1; snapshotHash?: string };
-    sourceRuntimeIdentity?: VerifiedSourceRuntimeIdentityMapV1;
-    status?: string;
-  };
+  const body = await readSnapshotRunBody(response, status);
   expect(body.status).toBe(status);
   return body;
 }
