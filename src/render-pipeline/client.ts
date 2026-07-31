@@ -1,4 +1,5 @@
 import type { z } from "zod";
+import { fetchOrganizationScopedManimApiV1 } from "../accounts/organization-scoped-manim-fetch";
 import { desktopBridge } from "../shell/desktop-bridge";
 import type {
   ManimApiError,
@@ -103,7 +104,10 @@ async function readJson<T>(response: Response, schema: z.ZodType<T>): Promise<T>
 }
 
 export async function loadManimProjects(signal?: AbortSignal) {
-  return readJson(await fetch("/api/manim/projects", { signal }), manimProjectListViewSchema);
+  return readJson(
+    await fetchOrganizationScopedManimApiV1("/api/manim/projects", { signal }),
+    manimProjectListViewSchema,
+  );
 }
 
 export async function createManimProject(input: ManimProjectCreationInput, signal?: AbortSignal) {
@@ -134,7 +138,7 @@ export async function createManimProject(input: ManimProjectCreationInput, signa
   const parsed = createManimProjectRequestSchema.safeParse(input);
   if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "The workspace registration is invalid.");
   const created = await readJson(
-    await fetch("/api/manim/projects", {
+    await fetchOrganizationScopedManimApiV1("/api/manim/projects", {
       body: JSON.stringify(parsed.data),
       headers: { "content-type": "application/json" },
       method: "POST",
@@ -155,7 +159,7 @@ export async function renameManimProject(projectId: string, name: string, signal
   const parsed = renameManimProjectRequestSchema.safeParse({ name });
   if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "The workspace name is invalid.");
   return readJson(
-    await fetch(`/api/manim/projects/${encodeURIComponent(projectId)}`, {
+    await fetchOrganizationScopedManimApiV1(`/api/manim/projects/${encodeURIComponent(projectId)}`, {
       body: JSON.stringify(parsed.data),
       headers: { "content-type": "application/json" },
       method: "PATCH",
@@ -170,7 +174,7 @@ export async function unregisterManimProject(projectId: string, signal?: AbortSi
     throw new Error("The project ID does not match the API contract.");
   }
   return readJson(
-    await fetch(`/api/manim/projects/${encodeURIComponent(projectId)}`, {
+    await fetchOrganizationScopedManimApiV1(`/api/manim/projects/${encodeURIComponent(projectId)}`, {
       headers: { "content-type": "application/json" },
       method: "DELETE",
       signal,
@@ -184,7 +188,9 @@ export async function loadManimThumbnailStatus(projectId: string, signal?: Abort
     throw new Error("The project ID does not match the API contract.");
   }
   const status = await readJson(
-    await fetch(`/api/manim/projects/${encodeURIComponent(projectId)}/thumbnail/status`, { signal }),
+    await fetchOrganizationScopedManimApiV1(`/api/manim/projects/${encodeURIComponent(projectId)}/thumbnail/status`, {
+      signal,
+    }),
     manimThumbnailStatusSchema,
   );
   if (status.projectId !== projectId) {
@@ -198,7 +204,7 @@ export async function generateManimThumbnail(projectId: string, signal?: AbortSi
     throw new Error("The project ID does not match the API contract.");
   }
   const status = await readJson(
-    await fetch(`/api/manim/projects/${encodeURIComponent(projectId)}/thumbnail/generate`, {
+    await fetchOrganizationScopedManimApiV1(`/api/manim/projects/${encodeURIComponent(projectId)}/thumbnail/generate`, {
       body: JSON.stringify(manimThumbnailGenerateRequestSchema.parse({})),
       headers: { "content-type": "application/json" },
       method: "POST",
@@ -219,7 +225,10 @@ export async function loadManimWorkspace(projectIdOrSignal?: string | AbortSigna
     throw new Error("The project ID does not match the API contract.");
   }
   const path = projectId ? `/api/manim/projects/${encodeURIComponent(projectId)}/workspace` : "/api/manim/workspace";
-  const workspace = await readJson(await fetch(path, { signal: requestSignal }), manimWorkspaceViewSchema);
+  const workspace = await readJson(
+    await fetchOrganizationScopedManimApiV1(path, { signal: requestSignal }),
+    manimWorkspaceViewSchema,
+  );
   if (projectId && workspace.projectId !== projectId) {
     throw new Error("The server returned a workspace for a different project.");
   }
@@ -232,12 +241,15 @@ export async function startManimRender(request: ProgramRenderRequest, signal?: A
     throw new Error("The render request does not match the API contract.");
   }
   const session = await readJson(
-    await fetch(`/api/manim/projects/${encodeURIComponent(parsedRequest.data.projectId)}/renders`, {
-      body: JSON.stringify(parsedRequest.data),
-      headers: renderSessionJsonHeaders,
-      method: "POST",
-      signal,
-    }),
+    await fetchOrganizationScopedManimApiV1(
+      `/api/manim/projects/${encodeURIComponent(parsedRequest.data.projectId)}/renders`,
+      {
+        body: JSON.stringify(parsedRequest.data),
+        headers: renderSessionJsonHeaders,
+        method: "POST",
+        signal,
+      },
+    ),
     renderSessionViewSchema,
   );
   if (session.projectId !== parsedRequest.data.projectId) {
@@ -278,12 +290,15 @@ export async function exportManimSource(
   if (!parsedRequest.success) {
     throw new Error("The export request does not match the API contract.");
   }
-  const response = await fetch(`/api/manim/projects/${encodeURIComponent(parsedRequest.data.projectId)}/export`, {
-    body: JSON.stringify(parsedRequest.data),
-    headers: { "content-type": "application/json" },
-    method: "POST",
-    signal,
-  });
+  const response = await fetchOrganizationScopedManimApiV1(
+    `/api/manim/projects/${encodeURIComponent(parsedRequest.data.projectId)}/export`,
+    {
+      body: JSON.stringify(parsedRequest.data),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+      signal,
+    },
+  );
   return readPythonExport(response, parsedRequest.data.projectId);
 }
 
@@ -295,18 +310,24 @@ export async function exportOriginalManimSource(
   if (!parsedRequest.success) {
     throw new Error("The original source export request does not match the API contract.");
   }
-  const response = await fetch(`/api/manim/projects/${encodeURIComponent(parsedRequest.data.projectId)}/export`, {
-    body: JSON.stringify(parsedRequest.data),
-    headers: { "content-type": "application/json" },
-    method: "POST",
-    signal,
-  });
+  const response = await fetchOrganizationScopedManimApiV1(
+    `/api/manim/projects/${encodeURIComponent(parsedRequest.data.projectId)}/export`,
+    {
+      body: JSON.stringify(parsedRequest.data),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+      signal,
+    },
+  );
   return readPythonExport(response, parsedRequest.data.projectId);
 }
 
 export async function loadManimRender(id: string, signal?: AbortSignal) {
   return readJson(
-    await fetch(`/api/manim/renders/${encodeURIComponent(id)}`, { headers: renderSessionHeaders, signal }),
+    await fetchOrganizationScopedManimApiV1(`/api/manim/renders/${encodeURIComponent(id)}`, {
+      headers: renderSessionHeaders,
+      signal,
+    }),
     renderSessionViewSchema,
   );
 }
@@ -315,7 +336,7 @@ export async function abandonManimRender(id: string, renderRequestId: string, si
   const body = renderAbandonRequestSchema.safeParse({ renderRequestId });
   if (!body.success) throw new Error("The abandoned render identity does not match the API contract.");
   return readJson(
-    await fetch(`/api/manim/renders/${encodeURIComponent(id)}/abandon`, {
+    await fetchOrganizationScopedManimApiV1(`/api/manim/renders/${encodeURIComponent(id)}/abandon`, {
       body: JSON.stringify(body.data),
       headers: { "content-type": "application/json" },
       method: "POST",
@@ -345,7 +366,7 @@ export async function runManimRenderAction(
     expectedSourceAction = { actionId: parsed.data.actionId, kind: "undo" };
   }
   const session = await readJson(
-    await fetch(`/api/manim/renders/${encodeURIComponent(id)}/${action}`, {
+    await fetchOrganizationScopedManimApiV1(`/api/manim/renders/${encodeURIComponent(id)}/${action}`, {
       body: JSON.stringify(body),
       headers: renderSessionJsonHeaders,
       method: "POST",
@@ -377,7 +398,7 @@ export async function cancelManimRenderSourceAction(
   const body = renderSourceActionCancellationRequestSchema.safeParse({ actionId, kind });
   if (!body.success) throw new Error("The source-action cancellation does not match the API contract.");
   return readJson(
-    await fetch(`/api/manim/renders/${encodeURIComponent(id)}/cancel-source-action`, {
+    await fetchOrganizationScopedManimApiV1(`/api/manim/renders/${encodeURIComponent(id)}/cancel-source-action`, {
       body: JSON.stringify(body.data),
       headers: renderSessionJsonHeaders,
       method: "POST",
