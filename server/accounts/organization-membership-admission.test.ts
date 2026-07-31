@@ -46,6 +46,7 @@ function fixture(options: {
   const authenticate = vi.fn(async () =>
     Object.hasOwn(options, "authenticatedIdentity") ? options.authenticatedIdentity : identity,
   );
+  const identitiesClose = vi.fn(async () => undefined);
   const identitiesReady = vi.fn(async () => options.identitiesReady ?? true);
   const membershipsClose = vi.fn(async () => undefined);
   const resolveActiveMembership = vi.fn(async () =>
@@ -58,10 +59,18 @@ function fixture(options: {
     resolveActiveMembership,
   };
   const admission = createOrganizationMembershipProductionAdmissionV1({
-    identities: { authenticate, ready: identitiesReady },
+    identities: { authenticate, close: identitiesClose, ready: identitiesReady },
     memberships,
   });
-  return { admission, authenticate, identitiesReady, membershipsClose, membershipsReady, resolveActiveMembership };
+  return {
+    admission,
+    authenticate,
+    identitiesClose,
+    identitiesReady,
+    membershipsClose,
+    membershipsReady,
+    resolveActiveMembership,
+  };
 }
 
 describe("organization membership production admission", () => {
@@ -216,6 +225,7 @@ describe("organization membership production admission", () => {
 
     await available.admission.close?.();
     await available.admission.close?.();
+    expect(available.identitiesClose).toHaveBeenCalledOnce();
     expect(available.membershipsClose).toHaveBeenCalledOnce();
   });
 });

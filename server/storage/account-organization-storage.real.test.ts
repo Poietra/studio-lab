@@ -2,6 +2,8 @@ import { Pool } from "pg";
 import { describe, expect, it } from "vitest";
 
 import { applyBundledDurableStorageMigrations } from "./postgres/migrate";
+import { PostgresAccountSessionRepositoryV1 } from "./postgres/postgres-account-session-repository";
+import { PostgresOidcLoginRepositoryV1 } from "./postgres/postgres-oidc-login-repository";
 import { PostgresOrganizationMembershipRepositoryV1 } from "./postgres/postgres-organization-membership-repository";
 
 const DATABASE_URL = process.env.POIETRA_STORAGE_E2E_DATABASE_URL;
@@ -23,8 +25,14 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
     const repository = new PostgresOrganizationMembershipRepositoryV1({
       poolConfig: { connectionString: DATABASE_URL, max: 2 },
     });
+    const sessions = new PostgresAccountSessionRepositoryV1({
+      poolConfig: { connectionString: DATABASE_URL, max: 2 },
+    });
+    const oidc = new PostgresOidcLoginRepositoryV1({
+      poolConfig: { connectionString: DATABASE_URL, max: 2 },
+    });
     try {
-      expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: true, version: 11 });
+      expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: true, version: 13 });
       const setup = await pool.connect();
       try {
         await setup.query("BEGIN");
@@ -88,6 +96,119 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
         repository.resolveActiveMembership(identity("suspended-membership"), "organization-membership-suspended"),
       ).resolves.toBeNull();
 
+      const activeHash = Buffer.alloc(32, 1);
+      const expiredHash = Buffer.alloc(32, 2);
+      const revokedHash = Buffer.alloc(32, 3);
+      const cascadeHash = Buffer.alloc(32, 4);
+      await pool.query(
+        `INSERT INTO public.account_sessions
+           (session_token_hash, user_id, active_tenant_id, created_at, expires_at, revoked_at)
+         VALUES ($1, $5, 'organization-active', clock_timestamp(), clock_timestamp() + interval '1 hour', NULL),
+                ($2, $5, 'organization-active', clock_timestamp() - interval '2 hours',
+                 clock_timestamp() - interval '1 hour', NULL),
+                ($3, $5, 'organization-active', clock_timestamp(), clock_timestamp() + interval '1 hour',
+                 clock_timestamp()),
+                ($4, $6, 'organization-user-suspended', clock_timestamp(),
+                 clock_timestamp() + interval '1 hour', NULL)`,
+        [activeHash, expiredHash, revokedHash, cascadeHash, users.activeOwner, users.suspendedUser],
+      );
+      await expect(sessions.ready()).resolves.toBe(true);
+      await expect(sessions.resolveActiveSession(activeHash)).resolves.toEqual({
+        issuer: IDENTITY_ISSUER,
+        sessionOrganizationId: "organization-active",
+        subject: "active-owner",
+      });
+      await expect(sessions.resolveActiveSession(expiredHash)).resolves.toBeNull();
+      await expect(sessions.resolveActiveSession(revokedHash)).resolves.toBeNull();
+      await expect(sessions.resolveActiveSession(cascadeHash)).resolves.toBeNull();
+
+      const stateHash = Buffer.alloc(32, 6);
+      const browserBindingHash = Buffer.alloc(32, 7);
+      const issuedSessionHash = Buffer.alloc(32, 8);
+      const expiredStateHash = Buffer.alloc(32, 9);
+      await expect(oidc.ready()).resolves.toBe(true);
+      await pool.query(
+        `INSERT INTO public.oidc_login_attempts
+           (state_hash, browser_binding_hash, code_verifier, nonce, created_at, expires_at)
+         VALUES ($1, $2, $3, $4, clock_timestamp() - interval '2 minutes',
+                 clock_timestamp() - interval '1 minute')`,
+        [expiredStateHash, Buffer.alloc(32, 10), "x".repeat(43), "y".repeat(43)],
+      );
+      await expect(
+        oidc.createLoginAttempt({
+          browserBindingHash,
+          codeVerifier: "v".repeat(43),
+          lifetimeMs: 10 * 60_000,
+          nonce: "n".repeat(43),
+          stateHash,
+        }),
+      ).resolves.toMatchObject({ expiresAt: expect.any(Date) });
+      await expect(
+        pool.query("SELECT 1 FROM public.oidc_login_attempts WHERE state_hash = $1", [expiredStateHash]),
+      ).resolves.toMatchObject({ rowCount: 0 });
+      const concurrentConsumption = await Promise.all([
+        oidc.consumeLoginAttempt({ browserBindingHash, stateHash }),
+        oidc.consumeLoginAttempt({ browserBindingHash, stateHash }),
+      ]);
+      expect(concurrentConsumption.filter((attempt) => attempt !== null)).toEqual([
+        { codeVerifier: "v".repeat(43), nonce: "n".repeat(43) },
+      ]);
+      expect(concurrentConsumption.filter((attempt) => attempt === null)).toHaveLength(1);
+      await expect(
+        oidc.issueAccountSession({
+          identity: identity("active-owner"),
+          lifetimeMs: 7 * 24 * 60 * 60_000,
+          sessionTokenHash: issuedSessionHash,
+        }),
+      ).resolves.toMatchObject({ expiresAt: expect.any(Date) });
+      await expect(sessions.resolveActiveSession(issuedSessionHash)).resolves.toEqual({
+        issuer: IDENTITY_ISSUER,
+        sessionOrganizationId: "organization-active",
+        subject: "active-owner",
+      });
+      await expect(
+        oidc.issueAccountSession({
+          identity: identity("unknown-user"),
+          lifetimeMs: 60_000,
+          sessionTokenHash: Buffer.alloc(32, 9),
+        }),
+      ).resolves.toBeNull();
+      await expect(
+        Promise.all(
+          ["suspended-user", "suspended-organization-member", "suspended-membership"].map((subject, index) =>
+            oidc.issueAccountSession({
+              identity: identity(subject),
+              lifetimeMs: 60_000,
+              sessionTokenHash: Buffer.alloc(32, 20 + index),
+            }),
+          ),
+        ),
+      ).resolves.toEqual([null, null, null]);
+      await expect(
+        pool.query(
+          `INSERT INTO public.account_sessions
+             (session_token_hash, user_id, active_tenant_id, created_at, expires_at)
+           VALUES ($1, $2, 'organization-active', clock_timestamp(), clock_timestamp() + interval '31 days')`,
+          [Buffer.alloc(32, 30), users.activeOwner],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+      await expect(
+        pool.query(
+          `INSERT INTO public.account_sessions
+             (session_token_hash, user_id, active_tenant_id, expires_at)
+           VALUES ($1, $2, 'organization-active', clock_timestamp() + interval '1 hour')`,
+          [activeHash, users.activeOwner],
+        ),
+      ).rejects.toMatchObject({ code: "23505" });
+      await pool.query(
+        `DELETE FROM public.organization_memberships
+          WHERE tenant_id = 'organization-user-suspended' AND user_id = $1`,
+        [users.suspendedUser],
+      );
+      await expect(
+        pool.query("SELECT 1 FROM public.account_sessions WHERE session_token_hash = $1", [cascadeHash]),
+      ).resolves.toMatchObject({ rowCount: 0 });
+
       await expect(
         pool.query("DELETE FROM public.organization_memberships WHERE tenant_id = 'organization-active'"),
       ).rejects.toMatchObject({ code: "23514" });
@@ -103,6 +224,8 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
         pool.query("DELETE FROM public.organizations WHERE tenant_id = 'organization-active'"),
       ).rejects.toMatchObject({ code: "23514" });
     } finally {
+      await oidc.close();
+      await sessions.close();
       await repository.close();
       await pool.end();
     }

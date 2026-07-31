@@ -52,6 +52,7 @@ const resolvedMembershipSchemaV1 = z
 export type ExternalAccountIdentityAuthenticatorV1 = Readonly<{
   /** Returns null/malformed output or HttpError(401) for invalid credentials; HttpError(503) means provider outage. */
   authenticate(input: ProductionAdmissionRequest, signal: AbortSignal): Promise<unknown>;
+  close?: () => Promise<void>;
   ready(signal: AbortSignal): Promise<boolean>;
 }>;
 
@@ -109,6 +110,7 @@ export function createOrganizationMembershipProductionAdmissionV1(
   if (
     typeof options.identities?.authenticate !== "function" ||
     typeof options.identities.ready !== "function" ||
+    (options.identities.close !== undefined && typeof options.identities.close !== "function") ||
     typeof options.memberships?.resolveActiveMembership !== "function" ||
     typeof options.memberships.ready !== "function"
   ) {
@@ -153,7 +155,13 @@ export function createOrganizationMembershipProductionAdmissionV1(
       };
     },
     close() {
-      closeRequest ??= Promise.resolve().then(() => options.memberships.close());
+      closeRequest ??= Promise.allSettled([
+        Promise.resolve().then(() => options.memberships.close()),
+        ...(options.identities.close ? [Promise.resolve().then(() => options.identities.close!())] : []),
+      ]).then((results) => {
+        const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+        if (errors.length > 0) throw new AggregateError(errors, "Organization admission cleanup failed.");
+      });
       return closeRequest;
     },
     async ready(signal: AbortSignal) {

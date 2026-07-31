@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "./http/json";
 import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import {
+  ACCOUNT_SESSION_COOKIE_NAME_V1,
+  createAccountSessionIdentityAuthenticatorV1,
   createOrganizationMembershipProductionAdmissionV1,
   type ProductionManimServer,
   parseProductionManimServerConfig,
@@ -224,18 +226,19 @@ describe("standalone production Manim HTTP adapter", () => {
       userId: "00000000-0000-4000-8000-000000000001",
       version: 1n,
     }));
-    const authenticate = vi.fn(async (input: Readonly<{ credentials: Readonly<{ cookie?: string }> }>) =>
-      input.credentials.cookie === "__Host-poietra-session=verified"
-        ? {
-            issuer: "https://identity.example",
-            sessionOrganizationId: "tenant-a",
-            subject: "external-user",
-          }
-        : null,
-    );
+    const sessionToken = Buffer.alloc(32, 7).toString("base64url");
+    const resolveActiveSession = vi.fn(async () => ({
+      issuer: "https://identity.example",
+      sessionOrganizationId: "tenant-a",
+      subject: "external-user",
+    }));
     const server = await startProductionManimServer({
       admission: createOrganizationMembershipProductionAdmissionV1({
-        identities: { authenticate, ready: async () => true },
+        identities: createAccountSessionIdentityAuthenticatorV1({
+          close: async () => undefined,
+          ready: async () => true,
+          resolveActiveSession,
+        }),
         memberships: {
           close: async () => undefined,
           ready: async () => true,
@@ -249,9 +252,10 @@ describe("standalone production Manim HTTP adapter", () => {
 
     expect(
       await send(server, "/api/manim/projects", {
-        headers: { cookie: "__Host-poietra-session=verified" },
+        headers: { cookie: `${ACCOUNT_SESSION_COOKIE_NAME_V1}=${sessionToken}` },
       }),
     ).toMatchObject({ status: 200 });
+    expect(resolveActiveSession).toHaveBeenCalledOnce();
     expect(resolveActiveMembership).toHaveBeenCalledWith(
       { issuer: "https://identity.example", subject: "external-user" },
       "tenant-a",
