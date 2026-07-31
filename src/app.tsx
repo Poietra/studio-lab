@@ -57,6 +57,7 @@ import { projectMotionPaths, type StudioMotionPath } from "./studio/motion-paths
 import type { AppliedMotionClip, AppliedMotionClipChange } from "./studio/motion-timeline-clip";
 import { programExecutionCapabilities } from "./studio/operation-registry";
 import type { OperationOrigin } from "./studio/operations";
+import { PoietraBrand } from "./studio/poietra-brand";
 import { latestSafeSourceAnchor, sourceTimeToWorkingTime, workingTimeToSourceTime } from "./studio/program-composition";
 import { samplePropertyValue } from "./studio/property-sampling";
 import {
@@ -2363,7 +2364,7 @@ export function App() {
       <main className="flex h-dvh min-h-0 flex-col overflow-hidden bg-zinc-950 text-zinc-100" ref={workspaceBounds}>
         <header className="flex min-h-12 shrink-0 items-center justify-between gap-2 border-b border-zinc-800 px-3 py-2">
           <div className="flex min-w-0 flex-1 items-center gap-3">
-            <h1 className="hidden shrink-0 text-balance text-sm font-semibold md:block">Poietra Studio Lab</h1>
+            <PoietraBrand nameClassName="hidden md:block" />
             <button
               aria-label="Back to workspaces"
               className="shrink-0 border border-zinc-700 px-2 py-1 text-xs font-medium text-zinc-300 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-wait disabled:text-zinc-600"

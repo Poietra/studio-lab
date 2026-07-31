@@ -23,6 +23,9 @@ describe("workspace launcher shell modes", () => {
       />,
     );
 
+    expect(markup).toContain('<h1 aria-label="Poietra Studio Lab"');
+    expect(markup).toContain('alt="" aria-hidden="true"');
+    expect(markup).toContain("data-poietra-symbol");
     expect(markup).toContain("Choose folder…");
     expect(markup).not.toContain("Existing folder path");
     expect(markup).not.toContain("/path/to/manim-project");
