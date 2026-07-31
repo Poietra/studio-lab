@@ -15,15 +15,16 @@ use poietra_render_wgpu::{
     prepare_frame_v1, prepare_frame_with_assets_v1,
 };
 use poietra_scene_ir::{
-    AffineTransformV1, ImageLocalRectV1, ImageSamplerV1, RenderCameraKindV1, RenderCameraV1,
-    RenderCapabilityV1, RenderDrawV1, RenderPacketV1, RgbaColorV1, SceneIrBundleV1, SceneSourceV1,
-    SnapshotProfileVersionV1, StrokeCapV1, ViewportV1,
+    AffineTransformV1, CubicSubpathV1, ImageLocalRectV1, ImageSamplerV1, RenderCameraKindV1,
+    RenderCameraV1, RenderCapabilityV1, RenderDrawV1, RenderPacketV1, RgbaColorV1, SceneIrBundleV1,
+    SceneSourceV1, SnapshotProfileVersionV1, StrokeCapV1, ViewportV1,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use support::{
-    PixelReferenceSet, empty_render_packet, generic_fill_fixture, generic_stroke_fixture,
-    image_draw, sampled_packet, solid_rectangle_draw, straight_stroke_packet, verified_rgba_png,
+    PixelReference, PixelReferenceSet, empty_render_packet, generic_fill_fixture,
+    generic_stroke_fixture, image_draw, sampled_packet, solid_rectangle_draw,
+    straight_stroke_packet, verified_rgba_png,
 };
 
 const BYTES_PER_PIXEL: u32 = 4;
@@ -119,17 +120,17 @@ struct MathTexVisualParityExpected {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct RealMathTexMorphV5Fixture {
+struct RealSnapshotVisualParityFixture {
     assets: serde_json::Value,
     id: String,
-    producer_reference: RealMathTexMorphV5ProducerReference,
-    samples: Vec<RealMathTexMorphV5Sample>,
+    producer_reference: RealSnapshotProducerReference,
+    samples: Vec<RealSnapshotVisualParitySample>,
     scene: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct RealMathTexMorphV5ProducerReference {
+struct RealSnapshotProducerReference {
     engine_commit: String,
     fast_manim_commit: String,
     kind: String,
@@ -140,8 +141,8 @@ struct RealMathTexMorphV5ProducerReference {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct RealMathTexMorphV5Sample {
-    expected: RealMathTexMorphV5Expected,
+struct RealSnapshotVisualParitySample {
+    expected: RealSnapshotVisualParityExpected,
     id: String,
     packet_id: String,
     sample_time: f64,
@@ -150,7 +151,7 @@ struct RealMathTexMorphV5Sample {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct RealMathTexMorphV5Expected {
+struct RealSnapshotVisualParityExpected {
     semantic_digest: String,
 }
 
@@ -297,6 +298,12 @@ const VISUAL_PARITY_ENTRY_V1: &str = "dynamic-affine-camera--a-first";
 const PNG_VISUAL_PARITY_ENTRY_V1: &str = "png-alpha-edge-camera--midpoint";
 const MATHTEX_VISUAL_PARITY_ENTRY_V1: &str = "mathtex-nested-radical-fraction--static";
 const GENERIC_STROKE_VISUAL_PARITY_ENTRY_V1: &str = "generic-stroke-topology--sample";
+const REAL_GENERIC_VMOBJECT_V6_ENTRY_V1: &str = "real-generic-vmobject-v6--static";
+const REAL_GENERIC_VMOBJECT_V6_FIXTURE_ID: &str = "eng-v1-real-generic-vmobject-v6";
+const REAL_GENERIC_VMOBJECT_V6_FIXTURE_PATH: &str =
+    "fixtures/engine-v1/real-generic-vmobject-v6.json";
+const REAL_GENERIC_VMOBJECT_V6_SOURCE_PATH: &str =
+    "fixtures/real-preview-harness/scene_generic_vmobject.py";
 const REAL_MATHTEX_MORPH_V5_FIXTURE_ID: &str = "eng-v1-real-mathtex-morph-v5";
 const REAL_MATHTEX_MORPH_V5_FIXTURE_PATH: &str = "fixtures/engine-v1/real-mathtex-morph-v5.json";
 const REAL_MATHTEX_MORPH_V5_SOURCE_PATH: &str =
@@ -868,9 +875,9 @@ fn mathtex_visual_parity_fixture() -> (MathTexVisualParityFixture, SceneIrBundle
     (fixture, bundle)
 }
 
-fn real_mathtex_morph_v5_fixture() -> (RealMathTexMorphV5Fixture, SceneIrBundleV1) {
+fn real_mathtex_morph_v5_fixture() -> (RealSnapshotVisualParityFixture, SceneIrBundleV1) {
     let path = repository_root().join(REAL_MATHTEX_MORPH_V5_FIXTURE_PATH);
-    let fixture: RealMathTexMorphV5Fixture = serde_json::from_slice(
+    let fixture: RealSnapshotVisualParityFixture = serde_json::from_slice(
         &fs::read(path).expect("real MathTex morph V5 fixture must be readable"),
     )
     .expect("real MathTex morph V5 fixture must match its strict native envelope");
@@ -879,6 +886,20 @@ fn real_mathtex_morph_v5_fixture() -> (RealMathTexMorphV5Fixture, SceneIrBundleV
         "scene": fixture.scene,
     }))
     .expect("real MathTex morph V5 fixture must contain a valid Scene bundle");
+    (fixture, bundle)
+}
+
+fn real_generic_vmobject_v6_fixture() -> (RealSnapshotVisualParityFixture, SceneIrBundleV1) {
+    let path = repository_root().join(REAL_GENERIC_VMOBJECT_V6_FIXTURE_PATH);
+    let fixture: RealSnapshotVisualParityFixture = serde_json::from_slice(
+        &fs::read(path).expect("real generic VMobject V6 fixture must be readable"),
+    )
+    .expect("real generic VMobject V6 fixture must match its strict native envelope");
+    let bundle = serde_json::from_value(serde_json::json!({
+        "assets": fixture.assets,
+        "scene": fixture.scene,
+    }))
+    .expect("real generic VMobject V6 fixture must contain a valid Scene bundle");
     (fixture, bundle)
 }
 
@@ -896,6 +917,51 @@ fn non_background_bounds(rgba: &[u8], width_px: u32, height_px: u32) -> Option<[
         }
     }
     bounds
+}
+
+fn closed_subpath_is_nonconvex(subpath: &CubicSubpathV1) -> bool {
+    if !subpath.closed {
+        return false;
+    }
+    let mut vertices = vec![&subpath.start];
+    vertices.extend(subpath.segments.iter().map(|segment| &segment.end));
+    if vertices.last() == vertices.first() {
+        vertices.pop();
+    }
+    if vertices.len() < 4 {
+        return false;
+    }
+    let mut positive_turn = false;
+    let mut negative_turn = false;
+    for index in 0..vertices.len() {
+        let previous = vertices[(index + vertices.len() - 1) % vertices.len()];
+        let current = vertices[index];
+        let next = vertices[(index + 1) % vertices.len()];
+        let cross = (current.x - previous.x) * (next.y - current.y)
+            - (current.y - previous.y) * (next.x - current.x);
+        positive_turn |= cross > 1.0e-9;
+        negative_turn |= cross < -1.0e-9;
+    }
+    positive_turn && negative_turn
+}
+
+fn open_subpath_has_curve(subpath: &CubicSubpathV1) -> bool {
+    if subpath.closed {
+        return false;
+    }
+    let mut start = &subpath.start;
+    for segment in &subpath.segments {
+        let chord_x = segment.end.x - start.x;
+        let chord_y = segment.end.y - start.y;
+        for control in [&segment.control1, &segment.control2] {
+            let cross = chord_x * (control.y - start.y) - chord_y * (control.x - start.x);
+            if cross.abs() > 1.0e-9 {
+                return true;
+            }
+        }
+        start = &segment.end;
+    }
+    false
 }
 
 #[test]
@@ -1182,6 +1248,12 @@ fn render_and_assert_shared_reference(
         .expect("proof target format must be supported by the renderer");
     let (texture, extent) = render_packet(&device, &queue, &mut renderer, packet);
     let (_, rgba) = readback_texture(&device, &queue, &texture, extent);
+    assert_eq!(
+        non_background_bounds(&rgba, extent.width, extent.height).is_none(),
+        reference.clear_only,
+        "{evidence_name}: {}",
+        reference.reason
+    );
 
     assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
     assert_no_gpu_error("internal", pollster::block_on(internal_scope.pop()));
@@ -1701,6 +1773,165 @@ fn renders_real_mathtex_morph_v5_samples_with_fallback_adapter() {
             0
         },
         "an opt-in real MathTex morph artifact request must emit all five frames"
+    );
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the visual parity lane runs this proof"]
+#[allow(clippy::too_many_lines)] // The single real-scene proof binds provenance, topology, one GPU readback, and one artifact.
+fn renders_real_generic_vmobject_v6_static_with_fallback_adapter() {
+    let (fixture, bundle) = real_generic_vmobject_v6_fixture();
+    let entry = load_visual_parity_entry(REAL_GENERIC_VMOBJECT_V6_ENTRY_V1);
+    assert_eq!(fixture.id, REAL_GENERIC_VMOBJECT_V6_FIXTURE_ID);
+    assert_eq!(entry.fixture.id, fixture.id);
+    assert_eq!(entry.fixture.path, REAL_GENERIC_VMOBJECT_V6_FIXTURE_PATH);
+    assert_eq!(
+        entry.fixture.revision.kind,
+        "imported-manim-server-snapshot"
+    );
+    assert_eq!(
+        fixture.producer_reference.kind,
+        "server-sealed-real-fast-manim-profile-v6"
+    );
+    assert_eq!(
+        fixture.producer_reference.source_path,
+        REAL_GENERIC_VMOBJECT_V6_SOURCE_PATH
+    );
+    assert_eq!(
+        fixture.producer_reference.snapshot_hash,
+        entry.fixture.revision.sha256
+    );
+    for (label, commit) in [
+        ("engine", &fixture.producer_reference.engine_commit),
+        ("fast-manim", &fixture.producer_reference.fast_manim_commit),
+    ] {
+        assert!(
+            commit.len() == 40 && commit.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "{label} producer commit must remain a full Git object ID"
+        );
+    }
+    let source_sha256 = format!(
+        "{:x}",
+        Sha256::digest(
+            fs::read(repository_root().join(REAL_GENERIC_VMOBJECT_V6_SOURCE_PATH))
+                .expect("the real generic VMobject source must remain readable")
+        )
+    );
+    assert_eq!(fixture.producer_reference.source_sha256, source_sha256);
+
+    let SceneSourceV1::ImportedManimServerSnapshot {
+        snapshot_hash,
+        snapshot_version,
+        source_hash,
+        ..
+    } = &bundle.scene.source
+    else {
+        panic!("real generic VMobject V6 must remain an imported server snapshot");
+    };
+    assert_eq!(*snapshot_version, SnapshotProfileVersionV1::V6);
+    assert_eq!(snapshot_hash, &entry.fixture.revision.sha256);
+    assert_eq!(source_hash, &source_sha256);
+    assert_eq!(bundle.scene.source.revision_hash(), snapshot_hash);
+    assert_eq!(bundle.scene.animation_channels.len(), 0);
+    assert_eq!(bundle.scene.entities.len(), 3);
+
+    let [sample] = fixture.samples.as_slice() else {
+        panic!("real generic VMobject V6 fixture must contain one static sample");
+    };
+    assert_eq!(sample.id, entry.sample.id);
+    assert_eq!(
+        sample.sample_time.to_bits(),
+        entry.sample.sample_time.to_bits()
+    );
+    assert_eq!(sample.viewport, entry.sample.viewport);
+    assert_eq!(
+        sample.expected.semantic_digest,
+        entry.sample.semantic_digest
+    );
+    let session =
+        EngineSessionV1::new(bundle).expect("real generic VMobject V6 fixture must install");
+    let packet = session
+        .sample_render_packet(SampleEngineSessionOptionsV1 {
+            evidence: &[fixture.id.clone(), sample.id.clone()],
+            packet_id: &sample.packet_id,
+            sample_time: sample.sample_time,
+            viewport: sample.viewport.clone(),
+        })
+        .expect("real generic VMobject V6 fixture must sample");
+    assert_eq!(packet.scene_revision_hash, entry.fixture.revision.sha256);
+    assert_eq!(
+        render_packet_semantic_digest(&packet),
+        sample.expected.semantic_digest
+    );
+
+    let path_draws = packet
+        .draws
+        .iter()
+        .map(|draw| match draw {
+            RenderDrawV1::Path {
+                fill, path, stroke, ..
+            } => (fill, path, stroke),
+            _ => panic!("generic VMobject V6 must lower every leaf to a path draw"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(path_draws.len(), 3);
+    assert!(
+        path_draws.iter().any(|(fill, path, stroke)| {
+            fill.is_some()
+                && stroke.is_none()
+                && path.subpaths.iter().any(closed_subpath_is_nonconvex)
+        }),
+        "the real scene must retain a nonconvex fill-only leaf"
+    );
+    assert!(
+        path_draws.iter().any(|(fill, path, stroke)| {
+            fill.is_none() && stroke.is_some() && path.subpaths.iter().any(open_subpath_has_curve)
+        }),
+        "the real scene must retain an open curved stroke-only leaf"
+    );
+    assert!(
+        path_draws.iter().any(|(fill, path, stroke)| {
+            fill.is_some() && stroke.is_some() && path.subpaths.iter().any(|subpath| subpath.closed)
+        }),
+        "the real scene must retain a closed fill-and-stroke leaf"
+    );
+
+    render_and_assert_shared_reference(
+        &packet,
+        PixelReferenceSet {
+            clear_only: false,
+            reason:
+                "the real V6 scene must retain visible nonconvex, curved, and fill+stroke paint"
+                    .to_owned(),
+            samples: std::collections::BTreeMap::from([
+                (
+                    "nonconvex-fill".to_owned(),
+                    PixelReference {
+                        at: [160, 210],
+                        rgba: [79, 177, 200, 255],
+                        tolerance: 2,
+                    },
+                ),
+                (
+                    "curved-stroke".to_owned(),
+                    PixelReference {
+                        at: [292, 151],
+                        rgba: [131, 193, 103, 255],
+                        tolerance: 2,
+                    },
+                ),
+                (
+                    "fill-and-stroke".to_owned(),
+                    PixelReference {
+                        at: [450, 180],
+                        rgba: [185, 70, 60, 255],
+                        tolerance: 2,
+                    },
+                ),
+            ]),
+        },
+        "real-generic-vmobject-v6",
+        Some(&entry),
     );
 }
 

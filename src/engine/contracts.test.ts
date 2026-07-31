@@ -234,16 +234,16 @@ function packet(sceneIr: SceneIrV1, assets: AssetManifestV1) {
 }
 
 describe("Poietra Engine v1 contracts", () => {
-  it("round-trips imported snapshot profile V5 without widening the negotiated integer union", () => {
+  it("round-trips imported snapshot profile V6 without widening the negotiated integer union", () => {
     const source = {
       kind: "imported-manim-server-snapshot" as const,
       runtimeConfigHash: ZERO_HASH,
       snapshotHash: ASSET_HASH,
-      snapshotVersion: 5 as const,
+      snapshotVersion: 6 as const,
       sourceHash: SCENE_HASH,
     };
     expect(sceneSourceV1Schema.parse(JSON.parse(JSON.stringify(source)))).toEqual(source);
-    for (const unsupported of [0, 2.5, 6]) {
+    for (const unsupported of [0, 2.5, 7]) {
       expect(sceneSourceV1Schema.safeParse({ ...source, snapshotVersion: unsupported }).success).toBe(false);
     }
   });

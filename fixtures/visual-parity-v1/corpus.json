@@ -192,6 +192,24 @@
         "viewport": { "heightPx": 360, "widthPx": 640 }
       },
       "thresholdException": null
+    },
+    {
+      "id": "real-generic-vmobject-v6--static",
+      "fixture": {
+        "id": "eng-v1-real-generic-vmobject-v6",
+        "path": "fixtures/engine-v1/real-generic-vmobject-v6.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "cb8bd9ddaf45ac208f294d9e0b4871d3f758957e8dc523c7ab253e2d8ea1488b"
+        }
+      },
+      "sample": {
+        "id": "static",
+        "sampleTime": 0.5,
+        "semanticDigest": "a8d50e51c3c0f997b4abfcb363b88422f759ba4027e34228fdc9f531915c8b7f",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
     }
   ]
 }

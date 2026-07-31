@@ -31,6 +31,7 @@ describe("visual parity v1 contracts", () => {
       "real-mathtex-morph-v5--maxwell-hold",
       "real-mathtex-morph-v5--return-midpoint",
       "real-mathtex-morph-v5--a-restored",
+      "real-generic-vmobject-v6--static",
     ]);
     const entry = corpus.entries.find(({ id }) => id === "dynamic-affine-camera--a-first");
     expect(entry).toBeDefined();
@@ -251,6 +252,56 @@ describe("visual parity v1 contracts", () => {
     const browserPayload = JSON.stringify(bundle);
     expect(browserPayload).not.toContain("E = mc^2");
     expect(browserPayload).not.toContain("\\nabla");
+  });
+
+  it("pins the server-sealed real generic VMobject V6 scene to the default full-RGBA gate", async () => {
+    const corpus = await corpusFixture();
+    const entry = corpus.entries.find(({ id }) => id === "real-generic-vmobject-v6--static");
+    if (!entry) throw new Error("The real generic VMobject V6 corpus entry is missing.");
+    expect(entry).toMatchObject({
+      fixture: {
+        id: "eng-v1-real-generic-vmobject-v6",
+        path: "fixtures/engine-v1/real-generic-vmobject-v6.json",
+        revision: { kind: "imported-manim-server-snapshot" },
+      },
+      sample: { id: "static", sampleTime: 0.5, viewport: { heightPx: 360, widthPx: 640 } },
+      thresholdException: null,
+    });
+    expect(thresholdsForEntryV1(corpus, entry)).toEqual(corpus.defaultThresholds);
+
+    const fixtureBytes = new Uint8Array(await readFile(entry.fixture.path));
+    expect(fixtureBytes.byteLength).toBeLessThanOrEqual(64 * 1024);
+    const fixture = JSON.parse(new TextDecoder().decode(fixtureBytes));
+    const bundle = sceneIrBundleV1Schema.parse({ assets: fixture.assets, scene: fixture.scene });
+    expect(bundle.scene.source).toMatchObject({
+      kind: "imported-manim-server-snapshot",
+      snapshotHash: entry.fixture.revision.sha256,
+      snapshotVersion: 6,
+      sourceHash: fixture.producerReference.sourceSha256,
+    });
+    expect(digestFastManimSnapshotBundleV1(bundle)).toBe(entry.fixture.revision.sha256);
+    expect(sceneIrSourceRevisionHash(bundle.scene)).toBe(entry.fixture.revision.sha256);
+    expect(bundle.scene.entities).toHaveLength(3);
+    expect(bundle.scene.animationChannels).toHaveLength(0);
+    expect(fixture.producerReference).toMatchObject({
+      engineCommit: "7d5ff0a9b0a3a2ab148669310261be982a3f8843",
+      fastManimCommit: "d2480e8096a5cac64f7f86ed1d0d01f5c87839e3",
+      kind: "server-sealed-real-fast-manim-profile-v6",
+      snapshotHash: entry.fixture.revision.sha256,
+      sourcePath: "fixtures/real-preview-harness/scene_generic_vmobject.py",
+      sourceSha256: "b9b921b1e9aba717c3f6fa3b90672f2d4f268d19310c3c9d1ebaf1e9d3b44159",
+    });
+    expect(sha256(new Uint8Array(await readFile(fixture.producerReference.sourcePath)))).toBe(
+      fixture.producerReference.sourceSha256,
+    );
+    expect(fixture.samples).toEqual([
+      expect.objectContaining({
+        expected: { semanticDigest: entry.sample.semanticDigest },
+        id: entry.sample.id,
+        sampleTime: entry.sample.sampleTime,
+        viewport: entry.sample.viewport,
+      }),
+    ]);
   });
 
   it("compares all four sRGB byte channels and uses a strict >8 pixel classification", async () => {

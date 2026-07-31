@@ -6,12 +6,13 @@ Status: contract and production broker infrastructure implemented; durable Studi
 
 `FastManimSnapshotRunner` no longer starts a host child process. It passes a
 copy-on-read immutable byte bundle to one `FastManimSandboxBackendV1` job handle.
-Profiles 1-3 preserve the canonical bounded producer-request JSON byte for byte.
-Profile 4 wraps that same strict producer request in a Studio-owned V2 envelope
-that binds one independently verified, bounded static PNG. The attachment has
-only fixed `image.png` identity, bytes, digest, length, media type, and decoded
-dimensions; it never carries a host path, mount, object-store locator, or
-credential. The whole selected wire form is bound to a SHA-256 digest.
+Profiles 1-3, 5, and 6 preserve the canonical bounded producer-request JSON byte
+for byte. Profile 4 wraps that same strict producer request in a Studio-owned V2
+envelope that binds one independently verified, bounded static PNG. The
+attachment has only fixed `image.png` identity, bytes, digest, length, media
+type, and decoded dimensions; it never carries a host path, mount, object-store
+locator, or credential. The whole selected wire form is bound to a SHA-256
+digest.
 
 The lifecycle context is out of band from those bytes and carries only bounded
 opaque tenant, project, and request IDs, the request deadline, the expected

@@ -16,6 +16,7 @@ import {
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V3,
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V4,
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V5,
+  FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V6,
   FAST_MANIM_SNAPSHOT_UNSUPPORTED_MESSAGES_V1,
   fastManimSnapshotAffineTransformChannelIdV2,
   fastManimSnapshotAffineTransformChannelProvenanceIdV2,
@@ -126,6 +127,98 @@ async function importedBundle(): Promise<SceneIrBundleV1> {
 }
 
 type FixturePoint = Readonly<{ x: number; y: number }>;
+
+function lineCubicSubpath(points: readonly FixturePoint[], closed: boolean) {
+  if (points.length < 2) throw new Error("A fixture subpath requires at least two anchors.");
+  const [start, ...rest] = points;
+  const ends = closed ? [...rest, start!] : rest;
+  let current = start!;
+  return {
+    closed,
+    segments: ends.map((end) => {
+      const segment = { control1: current, control2: end, end };
+      current = end;
+      return segment;
+    }),
+    start: start!,
+  };
+}
+
+async function genericVmobjectBundleV6(): Promise<SceneIrBundleV1> {
+  const base = await importedBundle();
+  const [nonconvex, fillAndStroke, curvedStroke] = base.scene.entities;
+  if (!nonconvex || !fillAndStroke || !curvedStroke) throw new Error("Expected three static fixture entities.");
+  const stroke = {
+    cap: "butt" as const,
+    color: { alpha: 0.8, blue: 0.2, green: 0.4, red: 0.9 },
+    join: "miter" as const,
+    miterLimit: 10,
+    widthWorld: 0.075,
+  };
+  return sceneIrBundleV1Schema.parse({
+    ...base,
+    scene: {
+      ...base.scene,
+      entities: [
+        {
+          ...nonconvex,
+          geometry: {
+            kind: "cubic-path",
+            path: {
+              subpaths: [
+                lineCubicSubpath(
+                  [
+                    { x: -4, y: -1 },
+                    { x: -1, y: -1 },
+                    { x: -2.5, y: 0 },
+                    { x: -1, y: 1 },
+                    { x: -4, y: 1 },
+                  ],
+                  true,
+                ),
+                lineCubicSubpath(
+                  [
+                    { x: -3.5, y: -0.25 },
+                    { x: -3, y: 0.25 },
+                    { x: -2.5, y: -0.25 },
+                  ],
+                  true,
+                ),
+              ],
+            },
+          },
+        },
+        {
+          ...fillAndStroke,
+          appearance: { ...fillAndStroke.appearance, stroke },
+        },
+        {
+          ...curvedStroke,
+          appearance: { fill: null, kind: "vector", opacity: 1, stroke },
+          geometry: {
+            kind: "cubic-path",
+            path: {
+              subpaths: [
+                {
+                  closed: false,
+                  segments: [
+                    {
+                      control1: { x: 1.5, y: 2 },
+                      control2: { x: 3.5, y: -2 },
+                      end: { x: 4, y: 0 },
+                    },
+                  ],
+                  start: { x: 1, y: 0 },
+                },
+              ],
+            },
+          },
+        },
+      ],
+      source: { ...base.scene.source, snapshotVersion: 6 },
+    },
+  });
+}
 
 function closedFixtureSubpath(points: readonly [FixturePoint, FixturePoint, FixturePoint, FixturePoint]) {
   const [start, ...rest] = points;
@@ -798,6 +891,90 @@ describe("fast-manim snapshot result v1", () => {
         expected,
       ),
     ).resolves.toMatchObject({ kind: "unsupported" });
+  });
+
+  it("seals bounded generic V6 leaves with nonconvex, multi-subpath, curved, and fill+stroke geometry", async () => {
+    const expectedV6 = { ...expected, snapshotVersion: 6 } as const;
+    const bundle = await genericVmobjectBundleV6();
+    const sealed = await parseProducer(compiled(bundle, expectedV6), expectedV6);
+    if (sealed.kind !== "compiled") throw new Error("Expected a compiled generic VMobject snapshot.");
+
+    expect(sealed.bundle.scene.entities).toHaveLength(3);
+    expect(sealed.bundle.scene.entities[0]?.geometry).toMatchObject({
+      kind: "cubic-path",
+      path: { subpaths: [{ closed: true }, { closed: true }] },
+    });
+    expect(sealed.bundle.scene.entities[1]?.appearance).toMatchObject({
+      fill: { rule: "nonzero" },
+      kind: "vector",
+      stroke: { cap: "butt", join: "miter", miterLimit: 10 },
+    });
+    expect(sealed.bundle.scene.entities[2]?.geometry).toMatchObject({
+      kind: "cubic-path",
+      path: { subpaths: [{ closed: false }] },
+    });
+    expect(
+      sealed.bundle.scene.provenance.every(
+        ({ evidence }) => evidence.length === 1 && evidence[0] === FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V6,
+      ),
+    ).toBe(true);
+    await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV6)).resolves.toEqual(sealed);
+  });
+
+  it("keeps generic V6 paint and topology admission fail-closed without relaxing V1", async () => {
+    const expectedV6 = { ...expected, snapshotVersion: 6 } as const;
+    const bundle = await genericVmobjectBundleV6();
+    const mutateEntity = (index: number, mutation: Record<string, unknown>) => ({
+      ...bundle,
+      scene: {
+        ...bundle.scene,
+        entities: bundle.scene.entities.map((entity, entityIndex) =>
+          entityIndex === index ? { ...entity, ...mutation } : entity,
+        ),
+      },
+    });
+    const openEntity = bundle.scene.entities[2]!;
+    const filledEntity = bundle.scene.entities[0]!;
+    const combinedEntity = bundle.scene.entities[1]!;
+    if (
+      openEntity.appearance.kind !== "vector" ||
+      filledEntity.appearance.kind !== "vector" ||
+      combinedEntity.appearance.kind !== "vector" ||
+      combinedEntity.appearance.stroke === null
+    ) {
+      throw new Error("Expected vector V6 fixture paint.");
+    }
+    const rejected = [
+      mutateEntity(2, {
+        appearance: {
+          ...openEntity.appearance,
+          fill: { color: { alpha: 1, blue: 1, green: 1, red: 1 }, rule: "nonzero" },
+        },
+      }),
+      mutateEntity(0, {
+        appearance: { ...filledEntity.appearance, fill: { ...filledEntity.appearance.fill!, rule: "evenodd" } },
+      }),
+      mutateEntity(1, {
+        appearance: {
+          ...combinedEntity.appearance,
+          stroke: { ...combinedEntity.appearance.stroke, cap: "round" },
+        },
+      }),
+      mutateEntity(1, { appearance: { ...combinedEntity.appearance, opacity: 0.5 } }),
+    ];
+    for (const invalid of rejected) {
+      await expect(parseProducer(compiled(invalid as SceneIrBundleV1, expectedV6), expectedV6)).rejects.toMatchObject({
+        code: "profile-violation",
+      });
+    }
+
+    const v1 = {
+      ...bundle,
+      scene: { ...bundle.scene, source: { ...bundle.scene.source, snapshotVersion: 1 as const } },
+    };
+    await expect(parseProducer(compiled(v1, expected), expected)).rejects.toMatchObject({
+      code: "profile-violation",
+    });
   });
 
   it("seals one bounded hermetic MathTex outline with multiple subpaths and a counter", async () => {
@@ -2267,6 +2444,9 @@ class ExampleScene(Scene):
     expect(expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 5 }).snapshotVersion).toBe(
       5,
     );
+    expect(expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 6 }).snapshotVersion).toBe(
+      6,
+    );
     expect(
       expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, hermeticPngV4Plan, snapshotVersion: 4 })
         .hermeticPngV4Plan,
@@ -2282,17 +2462,17 @@ class ExampleScene(Scene):
         snapshotVersion: 5,
       }).hermeticMathTexMorphV5Plan,
     ).toEqual(hermeticMathTexMorphV5Plan);
-    for (const snapshotVersion of [1, 2, 3, 5] as const) {
+    for (const snapshotVersion of [1, 2, 3, 5, 6] as const) {
       expect(() =>
         expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, hermeticPngV4Plan, snapshotVersion }),
       ).toThrow(/only for snapshot profile V4/i);
     }
-    for (const snapshotVersion of [1, 2, 4, 5] as const) {
+    for (const snapshotVersion of [1, 2, 4, 5, 6] as const) {
       expect(() =>
         expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, hermeticMathTexV3Plan, snapshotVersion }),
       ).toThrow(/only for snapshot profile V3/i);
     }
-    for (const snapshotVersion of [1, 2, 3, 4] as const) {
+    for (const snapshotVersion of [1, 2, 3, 4, 6] as const) {
       expect(() =>
         expectedFastManimSnapshotCorrelationV1Schema.parse({
           ...legacy,
