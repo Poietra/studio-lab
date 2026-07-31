@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import {
   assertFastManimGatedOciImageV1,
   assertFastManimGatedOciSeccompV1,
+  FAST_MANIM_GATED_OCI_SNAPSHOT_RELEASE_READY_V1,
   FastManimGatedOciDockerClientV1,
   FastManimGatedOciJobRunnerV1,
   reconcileFastManimGatedOciDockerOrphansV1,
@@ -313,6 +314,9 @@ export async function createFastManimProductionGatedOciBackendV1(options: Produc
     !(options.verifiedRelease instanceof VerifiedFastManimGatedOciReleaseV1)
   ) {
     throw new TypeError("The production gated OCI backend configuration is invalid.");
+  }
+  if (!FAST_MANIM_GATED_OCI_SNAPSHOT_RELEASE_READY_V1) {
+    throw new TypeError("The production snapshot image is awaiting its pinned-builder MathTex artifact digest.");
   }
   await assertFastManimProductionHostMaterialsV1(options.dockerSocketPath, options.seccompPath);
   const backend = new ProductionGatedOciBackendV1(options);

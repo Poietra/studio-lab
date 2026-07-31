@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const target = process.argv[2] ?? "snapshot";
+const PENDING_MATHTEX_ARTIFACT_SHA256 = "0000000000000000000000000000000000000000000000000000000000000000";
 const profiles = {
   render: {
     archiveSha256: "46f66b6698650988c18327732d1d3c30cccd53b38de91e1059c61187d92c2b61",
@@ -16,23 +17,30 @@ const profiles = {
     tree: "b86e2ec81f257cae20669e3c5c33080facfbd610",
   },
   snapshot: {
-    archiveSha256: "d7ddb1f7ac5b2cbfdb56c0c8ebfbed27bc9ebd681b95876e52edc096129fb8e4",
+    archiveSha256: "3c64e0440fb5a2e0541aacc7a19bf87bdf46ac6f84059620ae5a0d812385cc1b",
     assetDirectory: "fast-manim-gated-oci",
-    commit: "cb9f1963f5e1911cfdcb21c316f5ac35052a2024",
-    engineArchiveSha256: "91cfd3b1a0e19615c586bf0144b1554046280f5ef76f53099d1cc06679dee65c",
-    engineCommit: "1fa7f851b1685e8e4dcc6d99f3e089f55a567513",
-    engineTree: "d110dc1c3b3b3dfce00bee15a44ab863b024aa7a",
+    commit: "3083db9ed9a9a93c2808ee3f51189ceca92d230b",
+    engineArchiveSha256: "2aa42246977322bae54862f49ce28b3e61bf8b472a93800b2fdda8e344173d32",
+    engineCommit: "be671c1ddcfc8466548c8822956e19579256e581",
+    engineTree: "d0f6d72213c65527ae9b7a4717390b48db1e9256",
     entrypoint: "gated-entrypoint.py",
-    mathtexExtensionSha256: "fcae06b2065de2da938be484ed0bde88cd31777ef29471d63580852f28c132d4",
+    // Promotion remains deliberately unavailable until the pinned amd64
+    // builder produces the double-clean native artifact digest for this tree.
+    mathtexExtensionSha256: PENDING_MATHTEX_ARTIFACT_SHA256,
     platform: "linux/amd64",
-    tag: "poietra-fast-manim-gated:cb9f196",
-    tree: "fb62085765a801fb4a93d9562b99888164d5d556",
+    tag: "poietra-fast-manim-gated:3083db9",
+    tree: "bff6f60534f820650d1c9e3c7d38627c56c6a0c6",
     verifier: "verify-mathtex-provider.py",
   },
 };
 const profile = profiles[target];
 const sourceRepository = process.env.POIETRA_FAST_MANIM_SOURCE_REPO;
 if (!profile) throw new Error("The OCI build target must be snapshot or render.");
+if (target === "snapshot" && profile.mathtexExtensionSha256 === PENDING_MATHTEX_ARTIFACT_SHA256) {
+  throw new Error(
+    "The snapshot image is awaiting the pinned-builder MathTex artifact digest; run the bounded derivation on the external amd64 operator host first.",
+  );
+}
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const assetRoot = resolve(repositoryRoot, "sandbox", profile.assetDirectory);
 

@@ -14,6 +14,7 @@ import {
 import {
   assertFastManimGatedOciImageV1,
   FAST_MANIM_GATED_OCI_PROFILE_V1,
+  FAST_MANIM_GATED_OCI_SNAPSHOT_RELEASE_READY_V1,
   FastManimGatedOciDockerClientV1,
   FastManimGatedOciError,
   FastManimGatedOciJobRunnerV1,
@@ -23,6 +24,7 @@ import {
 } from "./fast-manim-gated-oci-job-runner";
 import { FastManimSandboxBackendControlError, FastManimSandboxRequestBundleV1 } from "./fast-manim-sandbox-backend";
 import {
+  deriveHermeticMathTexV3TransformPlan,
   deriveHermeticPngV4TransformPlan,
   digestFastManimSnapshotRuntimeConfigV1,
   type FastManimSnapshotProducerRequestV1,
@@ -173,11 +175,11 @@ class GatedOpacityLifetimeScene(Scene):
         self.play(FadeOut(circle, rate_func=linear), run_time=2)
 `;
 
-const mathTexScene = `from manim import MathTex, Scene
+const mathTexScene = String.raw`from manim import MathTex, Scene
 
 class GatedMathTexScene(Scene):
     def construct(self):
-        equation = MathTex("E = mc^2")
+        equation = MathTex(r"\frac{a}{b}")
         self.add(equation)
         equation.move_to((1.25, -0.75, 0))
         equation.scale(1.5)
@@ -187,19 +189,19 @@ class GatedMathTexScene(Scene):
 `;
 
 const TRUSTED_IMAGE_LABELS = Object.freeze({
-  "io.poietra.fast-manim.archive-sha256": "d7ddb1f7ac5b2cbfdb56c0c8ebfbed27bc9ebd681b95876e52edc096129fb8e4",
-  "io.poietra.fast-manim.commit": "cb9f1963f5e1911cfdcb21c316f5ac35052a2024",
-  "io.poietra.fast-manim.tree": "fb62085765a801fb4a93d9562b99888164d5d556",
+  "io.poietra.fast-manim.archive-sha256": "3c64e0440fb5a2e0541aacc7a19bf87bdf46ac6f84059620ae5a0d812385cc1b",
+  "io.poietra.fast-manim.commit": "3083db9ed9a9a93c2808ee3f51189ceca92d230b",
+  "io.poietra.fast-manim.tree": "bff6f60534f820650d1c9e3c7d38627c56c6a0c6",
   "io.poietra.mathtex-outline.abi-version": "1",
-  "io.poietra.mathtex-outline.artifact-sha256": "fcae06b2065de2da938be484ed0bde88cd31777ef29471d63580852f28c132d4",
+  "io.poietra.mathtex-outline.artifact-sha256": "0".repeat(64),
   "io.poietra.mathtex-outline.engine-archive-sha256":
-    "91cfd3b1a0e19615c586bf0144b1554046280f5ef76f53099d1cc06679dee65c",
-  "io.poietra.mathtex-outline.engine-commit": "1fa7f851b1685e8e4dcc6d99f3e089f55a567513",
-  "io.poietra.mathtex-outline.engine-tree": "d110dc1c3b3b3dfce00bee15a44ab863b024aa7a",
-  "io.poietra.mathtex-outline.font-sha256": "d66ac1cc91c55c24d3636ae2df1238076debdff51841f9893fc5419cc2df3df7",
-  "io.poietra.mathtex-outline.notice-sha256": "44e67c7f539ae83b25514aa15aae51a73c90c19a45ea33bbb293da52927f6608",
+    "2aa42246977322bae54862f49ce28b3e61bf8b472a93800b2fdda8e344173d32",
+  "io.poietra.mathtex-outline.engine-commit": "be671c1ddcfc8466548c8822956e19579256e581",
+  "io.poietra.mathtex-outline.engine-tree": "d0f6d72213c65527ae9b7a4717390b48db1e9256",
+  "io.poietra.mathtex-outline.font-sha256": "e52df76208d1e41c8222496e9fb30cc2a1fe8a275b14995f3f6c3a9205db21fa",
+  "io.poietra.mathtex-outline.notice-sha256": "44eebb7f078626c705cf0d952509075410f86bb91af6e4102d38565c53ddb856",
   "io.poietra.mathtex-outline.target": "linux-amd64",
-  "io.poietra.mathtex-outline.toolchain-sha256": "95c98e10edff239e6ee237c9eac99dc96c06ba9fc712c30816ddc47d7db12f9e",
+  "io.poietra.mathtex-outline.toolchain-sha256": "40a85bd625fe868b295906a6a002a1cfae677be241f835898f467a113b626430",
   "io.poietra.snapshot-sandbox-envelope-version": "2",
   "io.poietra.sandbox-slice": "gated-oci-v1",
 });
@@ -455,6 +457,30 @@ describe("gated OCI Docker ownership", () => {
 });
 
 describe("gated OCI fixed profile", () => {
+  it("keeps production promotion closed until the external native artifact is pinned", () => {
+    const buildScriptPath = fileURLToPath(new URL("../scripts/build-fast-manim-gated-oci.mjs", import.meta.url));
+    const result = spawnSync(process.execPath, [buildScriptPath], { encoding: "utf8" });
+    expect(FAST_MANIM_GATED_OCI_SNAPSHOT_RELEASE_READY_V1).toBe(false);
+    expect(TRUSTED_IMAGE_LABELS["io.poietra.mathtex-outline.artifact-sha256"]).toBe("0".repeat(64));
+    expect({ status: result.status, stderr: result.stderr }).toEqual({
+      status: 1,
+      stderr: expect.stringContaining("awaiting the pinned-builder MathTex artifact digest"),
+    });
+  });
+
+  it("admits the RaTeX-only fraction source under the V3 server-owned plan", () => {
+    expect(mathTexScene).toContain('MathTex(r"\\frac{a}{b}")');
+    expect(deriveHermeticMathTexV3TransformPlan(mathTexScene, "GatedMathTexScene")).toEqual({
+      terminalWait: 2,
+      transforms: [
+        { kind: "move-to", x: 1.25, y: -0.75 },
+        { factor: 1.5, kind: "scale" },
+        { kind: "move-to", x: -0.25, y: 0.75 },
+        { factor: 0.5, kind: "scale" },
+      ],
+    });
+  });
+
   it("admits the shared repeated-transform V4 source under the server-owned plan", () => {
     expect(deriveHermeticPngV4TransformPlan(sandboxTransformedPngSource, "TransformedImageScene")).toEqual({
       terminalWait: 2,
@@ -476,15 +502,42 @@ describe("gated OCI fixed profile", () => {
       fileURLToPath(new URL("../sandbox/fast-manim-gated-oci/Containerfile", import.meta.url)),
       "utf8",
     );
-    const producerLabels = Object.entries(TRUSTED_IMAGE_LABELS).filter(([key]) =>
-      key.startsWith("io.poietra.fast-manim."),
+    const verifier = readFileSync(
+      fileURLToPath(new URL("../sandbox/fast-manim-gated-oci/verify-mathtex-provider.py", import.meta.url)),
+      "utf8",
+    );
+    const snapshotContract = readFileSync(
+      fileURLToPath(new URL("./fast-manim-snapshot-contract.ts", import.meta.url)),
+      "utf8",
+    );
+    const buildPinnedLabels = Object.entries(TRUSTED_IMAGE_LABELS).filter(
+      ([key]) =>
+        key.startsWith("io.poietra.fast-manim.") ||
+        key.startsWith("io.poietra.mathtex-outline.engine-") ||
+        key === "io.poietra.mathtex-outline.artifact-sha256",
     );
 
     expect(FAST_MANIM_GATED_OCI_PROFILE_V1.requiredContainerLabels).toMatchObject(TRUSTED_IMAGE_LABELS);
-    for (const [key, value] of producerLabels) {
-      expect(buildScript, `${key} must be pinned by the build helper`).toContain(value);
+    for (const [key, value] of Object.entries(TRUSTED_IMAGE_LABELS)) {
       expect(containerfile, `${key} must be emitted by the immutable image`).toContain(`${key}="${value}"`);
     }
+    for (const [key, value] of buildPinnedLabels) {
+      expect(buildScript, `${key} must be pinned by the build helper`).toContain(value);
+    }
+    for (const key of [
+      "io.poietra.mathtex-outline.font-sha256",
+      "io.poietra.mathtex-outline.toolchain-sha256",
+    ] as const) {
+      const digest = TRUSTED_IMAGE_LABELS[key];
+      expect(verifier, `${key} must be verified inside the image`).toContain(digest);
+      expect(snapshotContract, `${key} must be admitted by the server`).toContain(digest);
+    }
+    const noticePath = fileURLToPath(
+      new URL("../engine/crates/poietra-mathtex-outline/PACKAGE-LICENSES.txt", import.meta.url),
+    );
+    expect(createHash("sha256").update(readFileSync(noticePath)).digest("hex")).toBe(
+      TRUSTED_IMAGE_LABELS["io.poietra.mathtex-outline.notice-sha256"],
+    );
     for (const stale of [
       "4d2a80abe1dbb0d800fd74c36d8a442afdb8efb6",
       "270b237602705c240cab9daef824e6f0400d2f3c",

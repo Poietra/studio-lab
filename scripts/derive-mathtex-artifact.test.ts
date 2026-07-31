@@ -151,6 +151,7 @@ describe("MathTex artifact derivation", () => {
       report({ engineCommit: "e".repeat(40) }),
       report({ builderImage: "rust:latest" }),
       report({ artifactSha256: "not-a-digest" }),
+      report({ artifactSha256: "0".repeat(64) }),
       report({ unexpected: true }),
       Buffer.alloc(4 * 1024 + 1),
     ]) {
