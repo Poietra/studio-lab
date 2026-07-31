@@ -69,6 +69,13 @@ const STORAGE_SUITES = [
     title: "resolves only active membership boundaries and preserves the last active owner",
   },
   {
+    database: "poietra_billing_entitlement",
+    file: "server/storage/billing-entitlement-storage.real.test.ts",
+    id: "billing-entitlement",
+    objectStorage: false,
+    title: "atomically reserves one render quota, replays safely, preserves period usage, and isolates tenants",
+  },
+  {
     database: "poietra_workspace_source",
     file: "server/storage/workspace-source-storage.real.test.ts",
     id: "workspace-source",
