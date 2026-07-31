@@ -285,6 +285,15 @@ library is involved. Both implementations spell the same literal:
 `MIN_AFFINE_DETERMINANT_V1` in `poietra-scene-ir` and `MIN_AFFINE_DETERMINANT`
 in `src/engine/primitives.ts`.
 
+The rendering path and the reference evaluator classify a sample with the same
+predicate, not with two copies of it: `poietra-eval` — the crate the Canvas
+worker loads through `poietra-wasm` — calls
+`poietra_scene_ir::affine_transform_is_singular_v1`, the function packet
+validation itself uses. The shared golden fixture set carries a near-singular
+case (`fixtures/engine-v1/shared-near-singular-affine.json`), which both the
+Rust and the TypeScript harness run, so the two evaluators cannot drift apart
+on this rule without a failing test.
+
 GPU preparation has one operation order:
 
 1. compose parent/local affine transforms and transform local geometry in f64;

@@ -255,7 +255,7 @@ fn affine_transform_rendered_determinant(transform: &AffineTransformV1) -> f64 {
 ///
 /// An exactly singular transform — reflection's midpoint, for instance — is
 /// the `determinant == 0` case and keeps classifying exactly as before.
-fn affine_transform_is_singular(transform: &AffineTransformV1) -> bool {
+pub fn affine_transform_is_singular_v1(transform: &AffineTransformV1) -> bool {
     let determinant = affine_transform_rendered_determinant(transform).abs();
     // A NaN determinant classifies as singular rather than reaching preparation.
     determinant.is_nan() || determinant < MIN_AFFINE_DETERMINANT_V1
@@ -1298,7 +1298,7 @@ pub fn validate_render_packet_v1(packet: &RenderPacketV1) -> Result<(), Validati
             } => {
                 validate_transform(transform, &format!("{path}.transform"), &mut validator);
                 if *reason == RenderEmptyReasonV1::SingularAffineSample
-                    && !affine_transform_is_singular(transform)
+                    && !affine_transform_is_singular_v1(transform)
                 {
                     validator.issue(
                         format!("{path}.transform"),

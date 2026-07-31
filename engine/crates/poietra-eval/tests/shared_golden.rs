@@ -48,9 +48,18 @@ struct ExpectedCamera {
     top: f64,
 }
 
-fn fixture_path() -> PathBuf {
+/// Every fixture both implementations must agree on. A shared case is the
+/// only thing that fails when the two evaluators drift apart, so a semantic
+/// rule that exists in one of them belongs here.
+const SHARED_FIXTURE_FILES: [&str; 2] = [
+    "shared-circle-opacity.json",
+    "shared-near-singular-affine.json",
+];
+
+fn fixture_path(file_name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../fixtures/engine-v1/shared-circle-opacity.json")
+        .join("../../../fixtures/engine-v1")
+        .join(file_name)
 }
 
 fn assert_close(actual: f64, expected: f64, tolerance: f64, label: &str) {
@@ -61,8 +70,15 @@ fn assert_close(actual: f64, expected: f64, tolerance: f64, label: &str) {
 }
 
 #[test]
-fn parses_and_evaluates_shared_typescript_rust_fixture() {
-    let fixture_bytes = fs::read(fixture_path()).expect("shared golden fixture must be readable");
+fn parses_and_evaluates_shared_typescript_rust_fixtures() {
+    for file_name in SHARED_FIXTURE_FILES {
+        parses_and_evaluates_shared_fixture(file_name);
+    }
+}
+
+fn parses_and_evaluates_shared_fixture(file_name: &str) {
+    let fixture_bytes =
+        fs::read(fixture_path(file_name)).expect("shared golden fixture must be readable");
     let fixture: SharedFixture = serde_json::from_slice(&fixture_bytes)
         .expect("shared golden fixture must match its envelope");
     validate_scene_ir_bundle_v1(&SceneIrBundleV1 {
