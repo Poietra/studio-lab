@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { manimProjectIdSchema } from "../src/render-pipeline/contracts";
 import {
+  deriveHermeticMathTexMorphV5Plan,
   deriveHermeticMathTexV3TransformPlan,
   deriveHermeticPngV4TransformPlan,
   type ExpectedFastManimSnapshotCorrelationV1,
@@ -288,7 +289,12 @@ export class DurableFastManimSnapshotServiceV1 {
     }
     let hermeticMathTexV3Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexV3Plan"];
     let hermeticPngV4Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticPngV4Plan"];
-    if (scene.source.snapshotVersion === 3 || scene.source.snapshotVersion === 4) {
+    let hermeticMathTexMorphV5Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexMorphV5Plan"];
+    if (
+      scene.source.snapshotVersion === 3 ||
+      scene.source.snapshotVersion === 4 ||
+      scene.source.snapshotVersion === 5
+    ) {
       signal?.throwIfAborted();
       const source = await this.#blobs.readSource(this.#tenantId, before.blob, signal);
       this.#assertProjectActive(request.projectId, entry);
@@ -301,13 +307,16 @@ export class DurableFastManimSnapshotServiceV1 {
       }
       if (scene.source.snapshotVersion === 3) {
         hermeticMathTexV3Plan = deriveHermeticMathTexV3TransformPlan(source, view.sceneName);
-      } else {
+      } else if (scene.source.snapshotVersion === 4) {
         hermeticPngV4Plan = deriveHermeticPngV4TransformPlan(source, view.sceneName);
+      } else {
+        hermeticMathTexMorphV5Plan = deriveHermeticMathTexMorphV5Plan(source, view.sceneName);
       }
     }
     const expected: ExpectedFastManimSnapshotCorrelationV1 = {
       frame: { height: scene.camera.view.frameHeight, width: scene.camera.view.frameWidth },
       ...(hermeticMathTexV3Plan ? { hermeticMathTexV3Plan } : {}),
+      ...(hermeticMathTexMorphV5Plan ? { hermeticMathTexMorphV5Plan } : {}),
       ...(hermeticPngV4Plan ? { hermeticPngV4Plan } : {}),
       projectId: view.projectId,
       requestId: view.requestId,

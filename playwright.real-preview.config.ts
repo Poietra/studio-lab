@@ -13,8 +13,8 @@ if (!producerCommand) {
   );
 }
 const snapshotProfile = process.env.POIETRA_E2E_REAL_PREVIEW_PROFILE?.trim() || "2";
-if (snapshotProfile !== "2" && snapshotProfile !== "3" && snapshotProfile !== "4") {
-  throw new Error("POIETRA_E2E_REAL_PREVIEW_PROFILE must be 2, 3, or 4.");
+if (snapshotProfile !== "2" && snapshotProfile !== "3" && snapshotProfile !== "4" && snapshotProfile !== "5") {
+  throw new Error("POIETRA_E2E_REAL_PREVIEW_PROFILE must be 2, 3, 4, or 5.");
 }
 
 function resolveManimCommand() {
@@ -69,17 +69,21 @@ export default defineConfig({
   projects: [
     {
       name:
-        snapshotProfile === "3"
-          ? "real-mathtex-preview-webgpu"
-          : snapshotProfile === "4"
-            ? "real-image-preview-webgpu"
-            : "real-preview-webgpu",
+        snapshotProfile === "5"
+          ? "real-mathtex-morph-preview-webgpu"
+          : snapshotProfile === "3"
+            ? "real-mathtex-preview-webgpu"
+            : snapshotProfile === "4"
+              ? "real-image-preview-webgpu"
+              : "real-preview-webgpu",
       testMatch:
-        snapshotProfile === "3"
-          ? "**/real-mathtex-preview.webgpu.ts"
-          : snapshotProfile === "4"
-            ? "**/real-image-preview.webgpu.ts"
-            : "**/real-scene-preview.webgpu.ts",
+        snapshotProfile === "5"
+          ? "**/real-mathtex-morph-preview.webgpu.ts"
+          : snapshotProfile === "3"
+            ? "**/real-mathtex-preview.webgpu.ts"
+            : snapshotProfile === "4"
+              ? "**/real-image-preview.webgpu.ts"
+              : "**/real-scene-preview.webgpu.ts",
       use: {
         browserName: "chromium",
         channel: WEBGPU_CHROMIUM_CHANNEL,

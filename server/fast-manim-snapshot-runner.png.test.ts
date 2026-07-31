@@ -126,4 +126,40 @@ class ExampleScene(Scene):
     expect(encoded).not.toContain("hermeticMathTexV3Plan");
     await runner.close();
   });
+
+  it("keeps the source-derived V5 MathTex morph plan out of the producer wire", async () => {
+    const root = await projectRoot();
+    const source = String.raw`from manim import MathTex, Scene, TransformMatchingTex, smoothstep
+
+class ExampleScene(Scene):
+    def construct(self):
+        equation = MathTex("E = mc^2")
+        self.add(equation)
+        maxwell = MathTex(r"\nabla \cdot \mathbf{E}")
+        maxwell.move_to(equation.get_center())
+        self.play(TransformMatchingTex(equation, maxwell, transform_mismatches=True), run_time=1, rate_func=smoothstep)
+        equation = maxwell
+        restored = MathTex("E = mc^2")
+        restored.move_to(maxwell.get_center())
+        self.play(TransformMatchingTex(maxwell, restored, transform_mismatches=True), run_time=1, rate_func=smoothstep)
+        maxwell = restored
+        equation = restored
+`;
+    await writeFile(join(root, "scene.py"), source, "utf8");
+    let capturedRequest: Uint8Array | undefined;
+    const backend = captureThenFail((request) => {
+      capturedRequest = request;
+    });
+    const runner = createRunner(root, null, { backend, snapshotVersion: 5 });
+
+    expectFailure(await runner.run(runRequest()), "sandbox-execution-failed");
+    expect(capturedRequest).toBeDefined();
+    const encoded = Buffer.from(capturedRequest!).toString("utf8");
+    const producerRequest = JSON.parse(encoded) as Record<string, unknown>;
+    expect(producerRequest.sourceText).toBe(source);
+    expect(producerRequest.snapshotVersion).toBe(5);
+    expect(producerRequest).not.toHaveProperty("hermeticMathTexMorphV5Plan");
+    expect(encoded).not.toContain("hermeticMathTexMorphV5Plan");
+    await runner.close();
+  });
 });

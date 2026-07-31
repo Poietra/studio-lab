@@ -12,6 +12,7 @@ import {
   type SceneIrV1,
   sceneIrBundleV1Schema,
   sceneIrV1Schema,
+  sceneSourceV1Schema,
 } from "./contracts";
 
 const ZERO_HASH = "0".repeat(64);
@@ -233,6 +234,20 @@ function packet(sceneIr: SceneIrV1, assets: AssetManifestV1) {
 }
 
 describe("Poietra Engine v1 contracts", () => {
+  it("round-trips imported snapshot profile V5 without widening the negotiated integer union", () => {
+    const source = {
+      kind: "imported-manim-server-snapshot" as const,
+      runtimeConfigHash: ZERO_HASH,
+      snapshotHash: ASSET_HASH,
+      snapshotVersion: 5 as const,
+      sourceHash: SCENE_HASH,
+    };
+    expect(sceneSourceV1Schema.parse(JSON.parse(JSON.stringify(source)))).toEqual(source);
+    for (const unsupported of [0, 2.5, 6]) {
+      expect(sceneSourceV1Schema.safeParse({ ...source, snapshotVersion: unsupported }).success).toBe(false);
+    }
+  });
+
   it("accepts and integrity-checks a complete Scene IR to RenderPacket frame", async () => {
     const assets = await manifest();
     const sceneIr = scene(assets);

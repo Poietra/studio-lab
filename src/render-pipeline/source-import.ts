@@ -86,12 +86,13 @@ type MutableEntity = {
   relation?: Readonly<{ direction: "DOWN" | "LEFT" | "RIGHT" | "UP"; target: string }>;
   scale: number;
   scaleKnowledge: Knowledge<number>;
+  sourceLine: number;
   sourceVariable: string;
   style: Knowledge<EntityStyle>;
   type: string;
 };
 
-type SourceStatement = Readonly<{
+export type SourceStatement = Readonly<{
   line: number;
   text: string;
 }>;
@@ -411,6 +412,16 @@ function collectStatements(block: SourceSceneBlock): readonly SourceStatement[] 
   return statements;
 }
 
+/**
+ * Returns the direct statements in one Scene's construct body without trying
+ * to execute Python. Dedicated fail-closed source profiles can build stricter
+ * semantic checks on the same lexical statement boundaries as the importer.
+ */
+export function findSourceSceneStatements(source: string, sceneName: string, sourcePath = "<source>") {
+  const block = findSourceSceneBlock(source, sceneName, sourcePath);
+  return block ? collectStatements(block) : [];
+}
+
 function decodeStringLiteral(literal: string) {
   if (literal.startsWith('"') && literal.endsWith('"')) {
     try {
@@ -540,11 +551,20 @@ function constructorArguments(source: string) {
   return { keywords, positional };
 }
 
+const UNSIGNED_NUMBER_LITERAL =
+  "[+]?(?:(?:\\d(?:_?\\d)*)\\.(?:\\d(?:_?\\d)*)?|\\.(?:\\d(?:_?\\d)*)|(?:\\d(?:_?\\d)*))(?:[eE][+-]?\\d(?:_?\\d)*)?";
+const UNSIGNED_NUMBER_LITERAL_PATTERN = new RegExp(`^${UNSIGNED_NUMBER_LITERAL}$`);
+
+function unsignedNumberLiteral(source: string) {
+  const literal = source.trim();
+  if (!UNSIGNED_NUMBER_LITERAL_PATTERN.test(literal)) return null;
+  const value = Number(literal.replaceAll("_", ""));
+  return Number.isFinite(value) ? value : null;
+}
+
 function positiveNumberLiteral(source: string) {
-  const normalized = source.trim().replaceAll("_", "");
-  if (!/^[+]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$/.test(normalized)) return null;
-  const value = Number(normalized);
-  return Number.isFinite(value) && value > 0 ? value : null;
+  const value = unsignedNumberLiteral(source);
+  return value !== null && value > 0 ? value : null;
 }
 
 const BOUNDED_STATIC_NUMBER_LITERAL =
@@ -584,6 +604,16 @@ function directLiteralMoveToPosition(
     y: Number(((0.5 - y / frame.height) * 360).toFixed(12)),
   };
   return Number.isFinite(point.x) && Number.isFinite(point.y) ? point : null;
+}
+
+function directCenterMoveToSource(statement: string, targetVariable: string) {
+  const target = targetVariable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return statement.match(
+    new RegExp(
+      `^\\s*${target}\\s*\\.\\s*move_to\\s*\\(\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\.\\s*get_center\\s*\\(\\s*\\)\\s*\\)\\s*$`,
+      "s",
+    ),
+  )?.[1];
 }
 
 function unknown<T>(reason: string, evidence: readonly string[]): Knowledge<T> {
@@ -770,8 +800,8 @@ function endPresence(entity: MutableEntity, at: number) {
 }
 
 function durationFrom(statement: string, fallback = 1) {
-  const match = statement.match(/\brun_time\s*=\s*([0-9]+(?:\.[0-9]+)?)/);
-  return match ? Number(match[1]) : fallback;
+  const match = statement.match(new RegExp(`\\brun_time\\s*=\\s*(${UNSIGNED_NUMBER_LITERAL})(?![A-Za-z0-9_.])`));
+  return match ? (unsignedNumberLiteral(match[1]) ?? fallback) : fallback;
 }
 
 function topLevelPlayKeywordIdentifier(statement: string, keyword: string): string | null | undefined {
@@ -850,12 +880,17 @@ function topLevelPlayKeywordIdentifier(statement: string, keyword: string): stri
 function motionEasingFrom(statement: string): MotionEasing | null {
   const rateFunction = topLevelPlayKeywordIdentifier(statement, "rate_func");
   if (rateFunction === undefined) return "smooth";
+  if (rateFunction === "smoothstep") return "smooth";
   return rateFunction === "linear" || rateFunction === "smooth" ? rateFunction : null;
 }
 
 function waitDuration(statement: string) {
-  const match = statement.match(/^self\.wait\(\s*([0-9]+(?:\.[0-9]+)?)?\s*\)/s);
-  return match ? Number(match[1] ?? 1) : null;
+  const frozen = statement.match(
+    new RegExp(`^self\\.wait\\(\\s*(${UNSIGNED_NUMBER_LITERAL})\\s*,\\s*frozen_frame\\s*=\\s*True\\s*\\)$`, "s"),
+  );
+  if (frozen) return unsignedNumberLiteral(frozen[1]);
+  const match = statement.match(new RegExp(`^self\\.wait\\(\\s*(?:(${UNSIGNED_NUMBER_LITERAL})\\s*)?\\)`, "s"));
+  return match ? (match[1] === undefined ? 1 : unsignedNumberLiteral(match[1])) : null;
 }
 
 function markerBefore(statements: readonly SourceStatement[], statementIndex: number, pattern: RegExp): unknown {
@@ -1274,6 +1309,7 @@ export function importManimScene(
       relation: relationFrom(statement.text),
       scale: initialScale.value,
       scaleKnowledge: initialScale.knowledge,
+      sourceLine: statement.line,
       sourceVariable,
       style: styleFrom(argumentsSource, suffix),
       type,
@@ -1496,6 +1532,13 @@ export function importManimScene(
           if (literalPosition) {
             position = literalPosition;
             knowledge = { kind: "known", value: position };
+          } else {
+            const centeredOn = directCenterMoveToSource(statement.text, moveToVariable);
+            const relative = centeredOn ? byVariable.get(centeredOn) : null;
+            if (relative && relative.sourceLine < statement.line) {
+              position = relative.position;
+              knowledge = relative.positionKnowledge;
+            }
           }
         }
         if (Number.isFinite(position.x) && Number.isFinite(position.y)) {

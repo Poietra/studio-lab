@@ -242,6 +242,23 @@ fn degenerate_and_f32_collapsed_fills_fail_closed() {
 }
 
 #[test]
+fn zero_area_morph_padding_does_not_hide_a_visible_fill_contour() {
+    const SQUARE: &[(f64, f64)] = &[(-2.0, -2.0), (2.0, -2.0), (2.0, 2.0), (-2.0, 2.0)];
+    const PADDED_CONTOUR: &[(f64, f64)] = &[
+        (3.0, 3.0),
+        (3.0 + 1.0e-14, 3.0),
+        (3.0 + 1.0e-14, 3.0 + 1.0e-14),
+        (3.0, 3.0 + 1.0e-14),
+    ];
+    let packet = fill_packet(&[SQUARE, PADDED_CONTOUR], FillRuleV1::NonZero);
+
+    let frame = prepare_frame_v1(&packet)
+        .expect("zero-area morph padding must not hide visible sibling contours");
+
+    assert_close(draw_area(&frame, 0), 4.0 / 9.0);
+}
+
+#[test]
 fn camera_relative_f64_math_prevents_large_world_coordinate_collapse() {
     const SQUARE: &[(f64, f64)] = &[(-2.0, -2.0), (2.0, -2.0), (2.0, 2.0), (-2.0, 2.0)];
     let mut packet = fill_packet(&[SQUARE], FillRuleV1::NonZero);

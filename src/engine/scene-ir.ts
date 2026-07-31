@@ -261,7 +261,7 @@ export const sceneSourceV1Schema = z.discriminatedUnion("kind", [
       kind: z.literal("imported-manim-server-snapshot"),
       runtimeConfigHash: sha256V1Schema,
       snapshotHash: sha256V1Schema,
-      snapshotVersion: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
+      snapshotVersion: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]),
       sourceHash: sha256V1Schema,
     })
     .strict(),

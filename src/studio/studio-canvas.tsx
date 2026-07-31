@@ -330,6 +330,7 @@ export function StudioCanvas({
   // fully interactive as a paint-free overlay, and any fallback restores the
   // semantic paint in the same render.
   const presentingCanvasPixels = preview?.state.phase === "presented";
+  const displayOnlyPreview = preview?.interactionAuthority.kind === "display-only";
   const studioEntityIdByUniqueSourceName = new Map<string, string | null>();
   if (presentingCanvasPixels && preview?.sourceRuntimeIdentity && preview.interactionGeometry) {
     for (const entity of entities) {
@@ -348,6 +349,7 @@ export function StudioCanvas({
         data-studio-canvas
         data-preview-fallback-reason={preview?.state.phase === "fallback" ? preview.state.reason : undefined}
         data-preview-packet-id={preview?.state.phase === "presented" ? preview.state.frame.packetId : undefined}
+        data-preview-interaction={displayOnlyPreview ? "display-only" : "interactive"}
         data-preview-renderer={preview ? preview.state.phase : "off"}
         data-preview-revision={preview?.state.phase === "presented" ? preview.state.frame.revision : undefined}
         data-preview-sample-time={
@@ -361,7 +363,13 @@ export function StudioCanvas({
         data-proposed-state-sample={sampleId}
         data-scene-phase={boundaryActive ? "incoming" : "outgoing"}
         onPointerDown={(event) => {
-          if (insertTool === "select" || boundaryActive || isCanvasInteractionTarget(event.target)) return;
+          if (
+            displayOnlyPreview ||
+            insertTool === "select" ||
+            boundaryActive ||
+            isCanvasInteractionTarget(event.target)
+          )
+            return;
           onCanvasPlace(
             clientPointToViewport(event.currentTarget.getBoundingClientRect(), { x: event.clientX, y: event.clientY }),
           );
@@ -403,6 +411,11 @@ export function StudioCanvas({
           />
           {entities.map((entity) => {
             if (!entity.present) return null;
+            // Aggregate morph identity is intentionally ambiguous. Once its
+            // verified pixels are presented, retaining source-projected hit
+            // targets would both obscure the frame and suggest unsupported
+            // per-entity editing authority.
+            if (displayOnlyPreview && presentingCanvasPixels) return null;
             if (isTransitionOverlay(entity)) {
               const transition = transitionStyle(entity);
               return <div className={transition.className} key={entity.id} style={transition.style} />;
@@ -410,6 +423,7 @@ export function StudioCanvas({
             const selected = selectedIds.has(entity.id);
             const locked =
               readOnly ||
+              displayOnlyPreview ||
               (entity.provisional && !(entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
             const positionUnknown = entity.geometry.position.kind === "unknown";
             const scaleUnknown = entity.geometry.scale.kind === "unknown";
@@ -520,7 +534,9 @@ export function StudioCanvas({
             title={preview.state.phase === "fallback" ? (preview.state.detail ?? undefined) : undefined}
           >
             {preview.state.phase === "presented"
-              ? `Canvas preview · ${preview.sourceLabel ?? "verified snapshot"} · editing preview only`
+              ? `Canvas preview · ${preview.sourceLabel ?? "verified snapshot"} · ${
+                  displayOnlyPreview ? "display only" : "editing preview only"
+                }`
               : `Canvas preview fallback · ${describeStudioPreviewFallbackV1(preview.state.reason)}`}
           </div>
         ) : null}
