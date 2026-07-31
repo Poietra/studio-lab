@@ -1,2 +1,4 @@
 fixtures/engine-benchmark-v1/windows-d3d12-reference-host.json text eol=lf
 fixtures/engine-benchmark-v1/windows-d3d12-reference-host.json.sha256 text eol=lf
+fixtures/mathtex-manim-parity-v1/references/*.svg text eol=lf
+fixtures/real-preview-harness/*.py text eol=lf
