@@ -37,8 +37,9 @@ function interpolateDimensions(from: EntityDimensions, to: EntityDimensions, pro
 
 function sameStartPriority(sample: PropertyChannelSample, index: number, baseIndex: number) {
   if (index === baseIndex) return 0;
-  if (sample.operationId !== undefined) return 1;
-  return 2;
+  if (sample.sameAnchorOrder === "before-studio-insertion") return 1;
+  if (sample.operationId !== undefined) return 2;
+  return 3;
 }
 
 function chronologicalSamples(samples: readonly PropertyChannelSample[]) {

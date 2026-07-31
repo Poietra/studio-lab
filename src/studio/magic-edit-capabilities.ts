@@ -17,12 +17,31 @@ export function hasSafeMagicEditIdentity(entity: RuntimeEntity) {
   return entity.sourceIdentity.kind === "known" || isAppliedStudioEntity(entity);
 }
 
+function isProvenSourceScaleBeforeStudio(sample: RuntimeSceneState["propertyChannels"][string]["samples"][number]) {
+  return (
+    sample.kind === "exact" &&
+    sample.sameAnchorOrder === "before-studio-insertion" &&
+    typeof sample.from === "number" &&
+    Number.isFinite(sample.from) &&
+    sample.from > 0 &&
+    typeof sample.value === "number" &&
+    Number.isFinite(sample.value) &&
+    sample.value > 0 &&
+    sample.knowledge?.kind === "known" &&
+    typeof sample.knowledge.value === "number" &&
+    Math.abs(sample.knowledge.value - sample.value) < 0.0005
+  );
+}
+
 export function exactEntityScaleAt(scene: RuntimeSceneState, entity: RuntimeEntity, time: number) {
   const samples = scene.propertyChannels[`${entity.id}/scale`]?.samples ?? [];
   if (
     samples.some(
       (sample) =>
-        sample.relative === true && sample.operationId === undefined && Math.abs(sample.interval.start - time) < 0.0005,
+        sample.relative === true &&
+        sample.operationId === undefined &&
+        Math.abs(sample.interval.start - time) < 0.0005 &&
+        !isProvenSourceScaleBeforeStudio(sample),
     )
   ) {
     return {

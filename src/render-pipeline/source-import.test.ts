@@ -295,6 +295,115 @@ class Positioned(Scene):
     });
   });
 
+  it("imports repeated direct literal move_to tuples while keeping Studio markers authoritative", () => {
+    const source = `from manim import *
+
+class LiteralPositioned(Scene):
+    def construct(self):
+        equation = MathTex("E = mc^2")
+        marked = MathTex("F = ma")
+        malformed = MathTex("x")
+        self.add(equation, marked, malformed)
+        equation.move_to((2.0, -1e0, 0))
+        equation.scale(1.5)
+        equation.move_to((4, 1, 0))
+        # poietra:position {"kind":"absolute","value":{"x":100,"y":120},"variable":"marked","version":1}
+        marked.move_to((3, -2, 0))
+        # poietra:position {"variable":"malformed","version":99}
+        malformed.move_to((1, 2, 0))
+        # poietra:anchor 0.000
+        self.wait(1)
+`;
+    const imported = importManimScene(source, "scene.py", "LiteralPositioned", { height: 9, width: 16 });
+    const channel = (variable: string) =>
+      imported?.runtimeSceneState.propertyChannels[`source:scene.py#LiteralPositioned:${variable}/position`]?.samples;
+
+    expect(channel("equation")?.slice(-2)).toEqual([
+      expect.objectContaining({
+        knowledge: { kind: "known", value: { x: 400, y: 220 } },
+        sameAnchorOrder: "before-studio-insertion",
+        value: { x: 400, y: 220 },
+      }),
+      expect.objectContaining({
+        knowledge: { kind: "known", value: { x: 480, y: 140 } },
+        sameAnchorOrder: "before-studio-insertion",
+        value: { x: 480, y: 140 },
+      }),
+    ]);
+    expect(
+      imported?.runtimeSceneState.propertyChannels["source:scene.py#LiteralPositioned:equation/scale"]?.samples.at(-1),
+    ).toMatchObject({ sameAnchorOrder: "before-studio-insertion", value: 1.5 });
+    expect(
+      imported?.runtimeSceneState.objectGraph.entities["source:scene.py#LiteralPositioned:equation"]?.geometry,
+    ).toMatchObject({
+      position: { kind: "known", value: { x: 480, y: 140 } },
+      scale: { kind: "known", value: 1.5 },
+    });
+    expect(channel("marked")?.at(-1)).toMatchObject({
+      knowledge: { kind: "known", value: { x: 100, y: 120 } },
+      value: { x: 100, y: 120 },
+    });
+    expect(channel("malformed")?.at(-1)?.knowledge).toMatchObject({ kind: "unknown" });
+    expect(runtimeSceneStateSchema.parse(JSON.parse(JSON.stringify(imported?.runtimeSceneState)))).toEqual(
+      imported?.runtimeSceneState,
+    );
+  });
+
+  it.each([
+    ["anchor before scale", "# poietra:anchor 0.000\n        equation.scale(2)"],
+    ["no anchor", "equation.scale(2)"],
+    [
+      "nested false anchor",
+      "if True:\n            # poietra:anchor 0.000\n            pass\n        equation.scale(2)",
+    ],
+  ])("does not certify a direct scale after %s as a pre-insertion baseline", (_label, body) => {
+    const imported = importManimScene(
+      `from manim import *
+
+class UnprovenScale(Scene):
+    def construct(self):
+        equation = MathTex("x")
+        self.add(equation)
+        ${body}
+        self.wait(1)
+`,
+      "scene.py",
+      "UnprovenScale",
+    );
+    expect(
+      imported?.runtimeSceneState.propertyChannels["source:scene.py#UnprovenScale:equation/scale"]?.samples.at(-1),
+    ).not.toHaveProperty("sameAnchorOrder");
+  });
+
+  it.each([
+    ["dynamic coordinate", "equation.move_to((target, 1, 0))"],
+    ["non-tuple expression", "equation.move_to(ORIGIN)"],
+    ["nonzero z", "equation.move_to((1, 2, 1))"],
+    ["non-integer zero z", "equation.move_to((1, 2, 0.0))"],
+    ["negative zero", "equation.move_to((-0, 2, 0))"],
+    ["out-of-range coordinate", "equation.move_to((1e10, 2, 0))"],
+  ])("keeps a direct %s move_to baseline unknown", (_label, move) => {
+    const imported = importManimScene(
+      `from manim import *
+
+class UnsupportedPosition(Scene):
+    def construct(self):
+        equation = MathTex("x")
+        self.add(equation)
+        ${move}
+        self.wait(1)
+`,
+      "scene.py",
+      "UnsupportedPosition",
+      { height: 9, width: 16 },
+    );
+    expect(
+      imported?.runtimeSceneState.propertyChannels["source:scene.py#UnsupportedPosition:equation/position"]?.samples.at(
+        -1,
+      )?.knowledge,
+    ).toMatchObject({ kind: "unknown" });
+  });
+
   it("round-trips Studio quadratic control offsets from MoveAlongPath source", () => {
     const curved = `from manim import *
 

@@ -27,6 +27,8 @@ const IMAGE_ID = "source:image_scene.py#ImageScene:image";
 const IMAGE_RUNTIME_ID = "runtime:image";
 const IMAGE_ASSET_ID = "asset:image.png";
 const IMAGE_SHA256 = "b".repeat(64);
+const MATHTEX_ID = "source:mathtex_scene.py#MathTexScene:equation";
+const MATHTEX_RUNTIME_ID = "runtime:mathtex";
 const IDENTITY_TRANSFORM = { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 } as const;
 const white = { alpha: 1, blue: 1, green: 1, red: 1 };
 
@@ -170,6 +172,113 @@ async function imageAdapterFixture() {
   });
   if (evidence.kind !== "resolved") throw new Error(evidence.issues.map(({ message }) => message).join("\n"));
   return { assets, evidence: evidence.evidence, proposedState, snapshot };
+}
+
+function mathTexScene(): RuntimeSceneState {
+  const base = scene();
+  const content = {
+    displayLines: [String.raw`\frac{a}{b}`],
+    label: String.raw`\frac{a}{b}`,
+    texParts: [String.raw`\frac{a}{b}`],
+  };
+  return {
+    ...base,
+    objectGraph: {
+      entities: {
+        [MATHTEX_ID]: {
+          content,
+          geometry: {
+            dimensions: { kind: "unknown", reason: "MathTex dimensions are owned by verified snapshot geometry." },
+            position: { kind: "known", value: { x: 400, y: 220 } },
+            scale: { kind: "known", value: 1.5 },
+            style: { kind: "known", value: {} },
+          },
+          id: MATHTEX_ID,
+          lifetime: [{ end: 2, start: 0 }],
+          provisional: false,
+          sourceIdentity: { kind: "known", value: "equation" },
+          type: "MathTex",
+        },
+      },
+      lineage: [],
+    },
+    propertyChannels: {
+      [`${MATHTEX_ID}/content`]: {
+        entityId: MATHTEX_ID,
+        key: "content",
+        samples: [exactSample("import:mathtex:content", content)],
+      },
+      [`${MATHTEX_ID}/position`]: {
+        entityId: MATHTEX_ID,
+        key: "position",
+        samples: [exactSample("import:mathtex:position", { x: 400, y: 220 })],
+      },
+      [`${MATHTEX_ID}/scale`]: {
+        entityId: MATHTEX_ID,
+        key: "scale",
+        samples: [exactSample("import:mathtex:scale", 1.5)],
+      },
+    },
+    sceneId: "mathtex_scene.py#MathTexScene",
+  };
+}
+
+async function mathTexAdapterFixture() {
+  const assets = await emptyManifest();
+  const proposedState = { evaluatedScene: mathTexScene(), programs: [] };
+  const base = await input();
+  const compiled = await compileStudioSceneIrV1(base);
+  if (compiled.kind !== "compiled") throw new Error("vector adapter fixture did not compile");
+  const geometry = {
+    kind: "cubic-path" as const,
+    path: {
+      subpaths: [
+        {
+          closed: true,
+          segments: [
+            { control1: { x: 2 / 3, y: -0.5 }, control2: { x: 4 / 3, y: -0.5 }, end: { x: 2, y: -0.5 } },
+            { control1: { x: 2, y: 1 / 6 }, control2: { x: 2, y: 5 / 6 }, end: { x: 2, y: 1.5 } },
+            { control1: { x: 4 / 3, y: 1.5 }, control2: { x: 2 / 3, y: 1.5 }, end: { x: 0, y: 1.5 } },
+            { control1: { x: 0, y: 5 / 6 }, control2: { x: 0, y: 1 / 6 }, end: { x: 0, y: -0.5 } },
+          ],
+          start: { x: 0, y: -0.5 },
+        },
+      ],
+    },
+  };
+  const transform = { m11: 1.5, m12: 0, m21: 0, m22: 1.5, tx: 0.5, ty: -1.75 } as const;
+  const snapshot = {
+    assets,
+    scene: sceneIrV1Schema.parse({
+      ...compiled.scene,
+      entities: [
+        {
+          ...compiled.scene.entities[0],
+          appearance: {
+            fill: { color: white, rule: "nonzero" },
+            kind: "vector",
+            opacity: 1,
+            stroke: null,
+          },
+          geometry,
+          id: MATHTEX_RUNTIME_ID,
+          sourceZIndex: -2,
+          transform,
+        },
+      ],
+      requiredCapabilities: ["cubic-path-geometry"],
+      sceneId: "mathtex_scene.py#MathTexScene",
+    }),
+  };
+  const evidence = buildStudioSceneIrAdapterEvidenceV1({
+    proposedState,
+    snapshot,
+    sourceRuntimeIdentity: new Map([
+      ["equation", { bindingId: "binding:equation", entityId: MATHTEX_RUNTIME_ID, sourceName: "equation" }],
+    ]),
+  });
+  if (evidence.kind !== "resolved") throw new Error(evidence.issues.map(({ message }) => message).join("\n"));
+  return { assets, evidence: evidence.evidence, geometry, proposedState, snapshot, transform };
 }
 
 function scene(): RuntimeSceneState {
@@ -524,6 +633,150 @@ describe("Studio to SceneIrV1 truthful adapter", () => {
       }),
       "asset-evidence-invalid",
     );
+  });
+
+  it("preserves imported MathTex geometry and applies Studio move/scale exactly once", async () => {
+    const fixture = await mathTexAdapterFixture();
+    expect(fixture.evidence).toMatchObject({
+      appearances: { [MATHTEX_ID]: { kind: "vector", opacity: 1, stroke: null } },
+      entityIds: { [MATHTEX_ID]: MATHTEX_RUNTIME_ID },
+      mathTexSnapshots: {
+        [MATHTEX_ID]: { geometry: fixture.geometry, transform: fixture.transform },
+      },
+      paintOrder: [{ entityId: MATHTEX_ID, sourceZIndex: -2 }],
+    });
+    expect(fixture.evidence.mathTexOutlines).toBeUndefined();
+
+    const pristine = await compileStudioSceneIrV1({
+      assets: fixture.assets,
+      evidence: fixture.evidence,
+      frame: { height: 9, width: 16 },
+      proposedState: fixture.proposedState,
+      sourceRevisionHash: REVISION_HASH,
+    });
+    if (pristine.kind !== "compiled") throw new Error(pristine.issues.map(({ message }) => message).join("\n"));
+    expect(pristine.scene.entities).toEqual([
+      expect.objectContaining({
+        geometry: fixture.geometry,
+        id: MATHTEX_RUNTIME_ID,
+        transform: fixture.transform,
+      }),
+    ]);
+
+    const moveId = "tx:edit-mathtex/operation:position";
+    const scaleId = "tx:edit-mathtex/operation:scale";
+    const editedScene = fixture.proposedState.evaluatedScene;
+    const proposedState = {
+      evaluatedScene: {
+        ...editedScene,
+        propertyChannels: {
+          ...editedScene.propertyChannels,
+          [`${MATHTEX_ID}/position`]: {
+            ...editedScene.propertyChannels[`${MATHTEX_ID}/position`],
+            samples: [
+              ...editedScene.propertyChannels[`${MATHTEX_ID}/position`].samples,
+              exactSample("edit:mathtex:position", { x: 480, y: 140 }, { operationId: moveId }),
+            ],
+          },
+          [`${MATHTEX_ID}/scale`]: {
+            ...editedScene.propertyChannels[`${MATHTEX_ID}/scale`],
+            samples: [
+              ...editedScene.propertyChannels[`${MATHTEX_ID}/scale`].samples,
+              {
+                easing: "smooth",
+                from: 1.5,
+                interval: { end: 0, start: 0 },
+                kind: "animated",
+                operationId: scaleId,
+                provenanceId: "edit:mathtex:scale",
+                value: 3,
+              } as const,
+            ],
+          },
+        },
+      },
+      programs: [
+        {
+          program: { operations: [{ id: moveId }, { id: scaleId }] },
+          validation: { issues: [], status: "valid" },
+        },
+      ] as unknown as ProposedState["programs"],
+    };
+    const result = await compileStudioSceneIrV1({
+      assets: fixture.assets,
+      evidence: fixture.evidence,
+      frame: { height: 9, width: 16 },
+      proposedState,
+      sourceRevisionHash: REVISION_HASH,
+    });
+    if (result.kind !== "compiled") throw new Error(result.issues.map(({ message }) => message).join("\n"));
+    expect(result.scene.entities[0]).toMatchObject({
+      geometry: fixture.geometry,
+      transform: { m11: 3, m12: 0, m21: 0, m22: 3, tx: 1, ty: -0.5 },
+    });
+  });
+
+  it("fails closed for imported MathTex content edits and mismatched semantic baselines", async () => {
+    const fixture = await mathTexAdapterFixture();
+    const contentId = "tx:edit-mathtex/operation:content";
+    const contentScene = fixture.proposedState.evaluatedScene;
+    const contentResult = await compileStudioSceneIrV1({
+      assets: fixture.assets,
+      evidence: fixture.evidence,
+      frame: { height: 9, width: 16 },
+      proposedState: {
+        evaluatedScene: {
+          ...contentScene,
+          propertyChannels: {
+            ...contentScene.propertyChannels,
+            [`${MATHTEX_ID}/content`]: {
+              ...contentScene.propertyChannels[`${MATHTEX_ID}/content`],
+              samples: [
+                ...contentScene.propertyChannels[`${MATHTEX_ID}/content`].samples,
+                exactSample(
+                  "edit:mathtex:content",
+                  { displayLines: ["E = mc^2"], texParts: ["E = mc^2"] },
+                  { operationId: contentId },
+                ),
+              ],
+            },
+          },
+        },
+        programs: [
+          {
+            program: { operations: [{ id: contentId }] },
+            validation: { issues: [], status: "valid" },
+          },
+        ] as unknown as ProposedState["programs"],
+      },
+      sourceRevisionHash: REVISION_HASH,
+    });
+    expectIssue(contentResult, "property-unsupported");
+
+    const entity = fixture.proposedState.evaluatedScene.objectGraph.entities[MATHTEX_ID];
+    if (!entity?.geometry) throw new Error("MathTex fixture semantic geometry is missing");
+    const baselineResult = await compileStudioSceneIrV1({
+      assets: fixture.assets,
+      evidence: fixture.evidence,
+      frame: { height: 9, width: 16 },
+      proposedState: {
+        ...fixture.proposedState,
+        evaluatedScene: {
+          ...fixture.proposedState.evaluatedScene,
+          objectGraph: {
+            ...fixture.proposedState.evaluatedScene.objectGraph,
+            entities: {
+              [MATHTEX_ID]: {
+                ...entity,
+                geometry: { ...entity.geometry, scale: { kind: "known", value: 1.25 } },
+              },
+            },
+          },
+        },
+      },
+      sourceRevisionHash: REVISION_HASH,
+    });
+    expectIssue(baselineResult, "unknown-evidence");
   });
 
   it.each([
