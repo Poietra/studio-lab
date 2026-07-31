@@ -36,6 +36,13 @@ Browser-native requests that cannot attach this header (`<video>`,
 `<a download>`, and WebSocket upgrades) may instead use the active organization
 bound to the verified HttpOnly session. That value is still only a selector:
 PostgreSQL membership is revalidated before every admitted request.
+Migration v12 adds the minimal browser-session read path. The fixed
+`__Host-poietra_session` cookie contains one canonical 256-bit opaque token;
+only its SHA-256 hash is stored. Expired, revoked, malformed, or inactive-user
+sessions fail authentication before membership admission, and deleting a
+membership cascades its sessions. Bearer credentials are not a fallback for
+this browser authenticator. OIDC callback, session issuance, switching, and
+logout remain #309 follow-up slices.
 OIDC tenant and role claims are never authorization inputs. Owner, admin, and
 member roles can enter the Manim API; the billing-only role cannot. The
 membership admission exposes `close()`, transferring its owned PostgreSQL pool

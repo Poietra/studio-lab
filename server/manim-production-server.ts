@@ -19,6 +19,11 @@ import { isReservedLocalManimTenantId, type ManimPrincipalAuthenticator } from "
 import { ManimTenantRegistry } from "./manim-tenant-registry";
 
 export {
+  ACCOUNT_SESSION_COOKIE_NAME_V1,
+  createAccountSessionIdentityAuthenticatorV1,
+} from "./accounts/account-session-authenticator";
+export type { AccountSessionRepositoryV1, ResolvedAccountSessionV1 } from "./accounts/account-session-repository";
+export {
   createOrganizationMembershipProductionAdmissionV1,
   type ExternalAccountIdentityAuthenticatorV1,
 } from "./accounts/organization-membership-admission";
@@ -40,6 +45,7 @@ export {
   applyBundledWorkspaceSourceMigrationV1,
   WORKSPACE_SOURCE_MIGRATION_V1_SOURCE,
 } from "./storage/postgres/migrate";
+export { PostgresAccountSessionRepositoryV1 } from "./storage/postgres/postgres-account-session-repository";
 export { PostgresOrganizationMembershipRepositoryV1 } from "./storage/postgres/postgres-organization-membership-repository";
 export { PostgresWorkspaceSourceRepositoryV1 } from "./storage/postgres/postgres-workspace-source-repository";
 export { S3ContentBlobStoreV1 } from "./storage/s3/s3-content-blob-store";

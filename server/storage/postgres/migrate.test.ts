@@ -4,7 +4,10 @@ import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
   ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM,
   ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE,
+  ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM,
+  ACCOUNT_SESSION_MIGRATION_V12_SOURCE,
   applyAccountOrganizationMigrationV11,
+  applyAccountSessionMigrationV12,
   applyBundledDurableStorageMigrations,
   type applyBundledDurableStorageMigrationsV2,
   type applyBundledWorkspaceSourceMigrationV1,
@@ -72,10 +75,10 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 11 });
-    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 12 });
+    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 11 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 12 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -87,7 +90,8 @@ describe("durable storage migrations", () => {
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(22);
+    expect(db.queries.filter(({ text }) => text === ACCOUNT_SESSION_MIGRATION_V12_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(24);
   });
 
   it("rejects a missing prerequisite under the same advisory lock", async () => {
@@ -183,6 +187,29 @@ describe("durable storage migrations", () => {
     expect(durableStorageMigrationChecksum(ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE)).toBe(
       ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM,
     );
+  });
+
+  it("requires all eleven durable-storage prerequisites before applying account sessions v12", async () => {
+    const db = database();
+    await expect(applyAccountSessionMigrationV12(db.pool, ACCOUNT_SESSION_MIGRATION_V12_SOURCE)).rejects.toThrow(
+      /requires durable storage migrations v1 through v11/i,
+    );
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("pins a hashed opaque-session schema to active organization membership", () => {
+    expect(durableStorageMigrationChecksum(ACCOUNT_SESSION_MIGRATION_V12_SOURCE)).toBe(
+      ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM,
+    );
+    expect(ACCOUNT_SESSION_MIGRATION_V12_SOURCE).toContain("session_token_hash bytea PRIMARY KEY");
+    expect(ACCOUNT_SESSION_MIGRATION_V12_SOURCE).toContain("octet_length(session_token_hash) = 32");
+    expect(ACCOUNT_SESSION_MIGRATION_V12_SOURCE).toContain(
+      "REFERENCES public.organization_memberships (tenant_id, user_id)",
+    );
+    expect(ACCOUNT_SESSION_MIGRATION_V12_SOURCE).toContain("ON DELETE CASCADE");
+    expect(ACCOUNT_SESSION_MIGRATION_V12_SOURCE).toContain("advance_account_record_version_v11()");
+    expect(ACCOUNT_SESSION_MIGRATION_V12_SOURCE).not.toContain("access_token");
+    expect(ACCOUNT_SESSION_MIGRATION_V12_SOURCE).not.toContain("refresh_token");
   });
 
   it("defines bounded identities, memberships, and a deferred last-owner invariant in v11", () => {

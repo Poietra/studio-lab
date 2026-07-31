@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import type { Pool } from "pg";
 import { ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM } from "./account-organization-schema";
+import { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import workspaceSourceSqlV1 from "./migrations/0001_workspace_source.sql?raw";
 import renderSessionSqlV2 from "./migrations/0002_render_sessions.sql?raw";
@@ -14,6 +15,7 @@ import renderSessionFailureSqlV8 from "./migrations/0008_render_failure_codes.sq
 import renderSessionCpuFailureSqlV9 from "./migrations/0009_render_cpu_limit.sql?raw";
 import snapshotRuntimeDigestSqlV10 from "./migrations/0010_snapshot_runtime_digest.sql?raw";
 import accountOrganizationSqlV11 from "./migrations/0011_accounts_organizations.sql?raw";
+import accountSessionSqlV12 from "./migrations/0012_account_sessions.sql?raw";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
 import { RENDER_SESSION_MIGRATION_V2_CHECKSUM } from "./postgres-render-session-repository";
@@ -25,6 +27,7 @@ import { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-f
 import { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
 
 export { ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM } from "./account-organization-schema";
+export { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
 export { SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM } from "./postgres-snapshot-publication-repository";
 export { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
 export { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-session-cpu-failure-schema";
@@ -65,6 +68,7 @@ export const RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE = renderSessionFailureSq
 export const RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_SOURCE = renderSessionCpuFailureSqlV9;
 export const SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE = snapshotRuntimeDigestSqlV10;
 export const ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE = accountOrganizationSqlV11;
+export const ACCOUNT_SESSION_MIGRATION_V12_SOURCE = accountSessionSqlV12;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -177,6 +181,16 @@ const accountOrganizationMigrationV11: DurableStorageMigration<11> = Object.free
   version: 11,
 });
 
+const accountSessionMigrationV12: DurableStorageMigration<12> = Object.freeze({
+  checksum: ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM,
+  checksumMismatch: "The account-session migration checksum is invalid.",
+  installedMismatch: "The installed account-session schema does not match migration v12.",
+  missingPrerequisite: "Account-session migration v12 requires durable storage migrations v1 through v11.",
+  prerequisiteMismatch: "Account-session migration v12 requires exact durable storage migrations v1 through v11.",
+  source: ACCOUNT_SESSION_MIGRATION_V12_SOURCE,
+  version: 12,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
@@ -189,6 +203,7 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   renderSessionCpuFailureMigrationV9,
   snapshotRuntimeDigestMigrationV10,
   accountOrganizationMigrationV11,
+  accountSessionMigrationV12,
 ]);
 
 function validateSource(migration: DurableStorageMigration) {
@@ -361,6 +376,22 @@ export function applyAccountOrganizationMigrationV11(pool: Pool, source: string)
     renderSessionFailureMigrationV8,
     renderSessionCpuFailureMigrationV9,
     snapshotRuntimeDigestMigrationV10,
+  ]);
+}
+
+export function applyAccountSessionMigrationV12(pool: Pool, source: string) {
+  return applyMigration(pool, { ...accountSessionMigrationV12, source }, [
+    workspaceSourceMigrationV1,
+    renderSessionMigrationV2,
+    snapshotPublicationMigrationV3,
+    renderArtifactMigrationV4,
+    projectPngMigrationV5,
+    renderSessionRetentionMigrationV6,
+    renderCancellationMigrationV7,
+    renderSessionFailureMigrationV8,
+    renderSessionCpuFailureMigrationV9,
+    snapshotRuntimeDigestMigrationV10,
+    accountOrganizationMigrationV11,
   ]);
 }
 
