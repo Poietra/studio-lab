@@ -1,6 +1,7 @@
 import { expect, type Page, type Response, test } from "@playwright/test";
 import type { SceneIrBundleV1 } from "../src/engine/contracts";
 import type { VerifiedSourceRuntimeIdentityMapV1 } from "../src/engine/source-runtime-identity";
+import { proveManimCompositorParityV1 } from "./manim-compositor-parity";
 
 const SERVER_QUERY = "?previewRenderer=server";
 const SNAPSHOT_PATH = "/api/manim/projects/real-preview-harness/scene-snapshots";
@@ -221,14 +222,25 @@ async function expectWholeSceneFallback(page: Page, status: "failed" | "unsuppor
 }
 
 test("correlates a real fast-manim Scene with the retained host and verifies GPU texture output", async ({ page }) => {
-  test.info().annotations.push({
-    description: "Issue #78: visible WebGPU compositor golden requires a real-GPU browser lane.",
-    type: "evidence-gap",
-  });
   const run = await expectVerifiedRun(await openRealWorkspace(page));
   expect(run.snapshot?.bundle?.scene?.entities).toHaveLength(3);
   expect(run.snapshot?.bundle?.scene.duration).toBe(1);
   await expectPresented(page, run.revision);
+  const bundle = run.snapshot?.bundle;
+  const snapshotHash = run.snapshot?.snapshotHash;
+  if (!bundle || !snapshotHash) {
+    throw new Error("The verified server snapshot did not expose complete WebGPU proof inputs.");
+  }
+  const canvas = page.locator("[data-studio-preview-canvas]");
+  const canvasRoot = page.locator("[data-studio-canvas]");
+  await proveManimCompositorParityV1({
+    canvas,
+    canvasRoot,
+    engineRevisionHash: snapshotHash,
+    page,
+    serverPublicationRevision: run.revision,
+    snapshot: bundle,
+  });
 
   for (const name of ["circle", "rectangle", "line"]) {
     await expect(page.getByRole("button", { name: `Move ${name}`, exact: true })).toBeVisible();
@@ -239,15 +251,10 @@ test("correlates a real fast-manim Scene with the retained host and verifies GPU
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "Move circle", exact: true })).toHaveAttribute("aria-pressed", "false");
 
-  const canvas = page.locator("[data-studio-preview-canvas]");
   await canvas.evaluate((element) => {
     element.dataset.realProducerCanvas = "retained";
   });
-  const canvasRoot = page.locator("[data-studio-canvas]");
-  if (!run.snapshot?.snapshotHash) {
-    throw new Error("The verified server snapshot did not expose a snapshot hash.");
-  }
-  await expect(canvasRoot).toHaveAttribute("data-preview-revision", run.snapshot.snapshotHash);
+  await expect(canvasRoot).toHaveAttribute("data-preview-revision", snapshotHash);
 
   await page.getByRole("button", { name: "Set position" }).click();
   const circleButton = page.getByRole("button", { name: "Move circle", exact: true });
@@ -263,23 +270,23 @@ test("correlates a real fast-manim Scene with the retained host and verifies GPU
   );
   await page.getByRole("button", { name: "Discard" }).click();
   await expectPresented(page, run.revision);
-  await expect(canvasRoot).toHaveAttribute("data-preview-revision", run.snapshot.snapshotHash);
+  await expect(canvasRoot).toHaveAttribute("data-preview-revision", snapshotHash);
 
   const firstPacket = await canvasRoot.getAttribute("data-preview-packet-id");
   const viewport = await canvasRoot.getAttribute("data-preview-viewport");
-  if (!run.snapshot.bundle || !viewport) {
+  if (!viewport) {
     throw new Error("The verified server snapshot did not expose complete WebGPU proof inputs.");
   }
   const proof = await readBackIndependentRendererPixels(page, {
-    revision: run.snapshot.snapshotHash,
+    revision: snapshotHash,
     sampleTime: 0,
-    snapshot: run.snapshot.bundle,
+    snapshot: bundle,
     viewport,
   });
-  expect(proof.frame).toMatchObject({ kind: "frame-presented", revision: run.snapshot.snapshotHash, sampleTime: 0 });
+  expect(proof.frame).toMatchObject({ kind: "frame-presented", revision: snapshotHash, sampleTime: 0 });
   expect(proof.evidence).toMatchObject({
     packetId: proof.frame.packetId,
-    revision: run.snapshot.snapshotHash,
+    revision: snapshotHash,
     sampleTime: 0,
   });
   expect(`${proof.evidence.viewport.widthPx}x${proof.evidence.viewport.heightPx}`).toBe(viewport);

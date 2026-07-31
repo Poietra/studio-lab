@@ -95,6 +95,7 @@ export default defineConfig({
   testDir: "./e2e",
   use: {
     baseURL: `http://127.0.0.1:${port}`,
+    deviceScaleFactor: 1,
     trace: "retain-on-failure",
     viewport: { height: 900, width: 1440 },
   },
