@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 
 import { describe, expect, it } from "vitest";
 
@@ -1741,13 +1742,15 @@ describe("report summaries", () => {
         schema: "poietra.engine-webgpu-evidence-set",
         version: 1,
       });
-      expect(existsSync(join(promoted.destination, "benchmark.json"))).toBe(true);
+      const promotedBenchmark = readFileSync(join(promoted.destination, "benchmark.json.gz"));
+      expect(promotedBenchmark[9]).toBe(255);
+      expect(gunzipSync(promotedBenchmark)).toEqual(readFileSync(benchmarkPath));
       expect(JSON.parse(readFileSync(join(promoted.destination, "manifest.json"), "utf8"))).toEqual(promoted.manifest);
       expect((await verifyPromotedBenchmarkEvidenceSetV1(promoted.destination)).verified.identity.commit).toBe(
         COMMIT_A,
       );
       await expect(promoteBenchmarkEvidenceSetV1(input)).rejects.toThrow(/already exists/);
-      writeFileSync(join(promoted.destination, "stress.json"), "{}\n");
+      writeFileSync(join(promoted.destination, "stress.json.gz"), "{}\n");
       await expect(verifyPromotedBenchmarkEvidenceSetV1(promoted.destination)).rejects.toThrow(/manifest SHA-256/);
     } finally {
       rmSync(temporary, { force: true, recursive: true });
@@ -1786,7 +1789,7 @@ describe("report summaries", () => {
       renameSync(wrongCommitRoot, commitRoot);
 
       mkdirSync(join(outputRoot, "second-profile", COMMIT_B), { recursive: true });
-      await expect(verifyCheckedInBenchmarkEvidenceV1(outputRoot)).rejects.toThrow(/at most one current evidence set/);
+      await expect(verifyCheckedInBenchmarkEvidenceV1(outputRoot)).rejects.toThrow(/exactly one current evidence set/);
     } finally {
       rmSync(temporary, { force: true, recursive: true });
     }
@@ -1794,6 +1797,7 @@ describe("report summaries", () => {
 
   it("revalidates every checked-in benchmark evidence set in the normal unit lane", async () => {
     const verified = await verifyCheckedInBenchmarkEvidenceV1();
-    expect(verified.every((directory) => directory.startsWith("docs/evidence/engine-webgpu/"))).toBe(true);
+    expect(verified).toHaveLength(1);
+    expect(verified[0]).toMatch(/^docs\/evidence\/engine-webgpu\//);
   });
 });

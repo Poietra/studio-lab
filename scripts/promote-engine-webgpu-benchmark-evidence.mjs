@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import { createServer } from "vite";
 
-const args = process.argv.slice(2);
+const args = process.argv.slice(2).filter((argument) => argument !== "--");
 if (args.length !== 3 && !(args.length === 2 && args[0] === "--verify")) {
   console.error("Usage: pnpm benchmark:engine:webgpu:promote -- <benchmark.json> <stress.json> <stage-telemetry.json>");
   console.error("   or: pnpm benchmark:engine:webgpu:verify -- <checked-in-evidence-directory>");

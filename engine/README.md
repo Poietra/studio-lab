@@ -321,10 +321,11 @@ Evidence rules:
   prior-version readers must reject them rather than accepting a widened
   envelope.
 - Checked-in performance evidence is a rolling single current set bound to its
-  profile and commit directory names. Issue #262 permits zero sets while the lane
-  is WIP; once physical evidence lands, replacing the profile or report contract
-  replaces that set rather than asking the current reader to reinterpret obsolete
-  history.
+  profile and commit directory names. The three raw JSON reports are stored as
+  deterministic gzip files so per-frame telemetry remains revalidatable without
+  adding hundreds of thousands of source lines. Once physical evidence lands,
+  replacing the profile or report contract replaces that set rather than asking
+  the current reader to reinterpret obsolete history.
 - The lane never retries: a Worker crash or destroyed page context fails the
   run, and the reports record the actual retry counters.
 - The stress report compares the existing no-interaction acknowledgement with

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { access, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { gunzipSync, gzipSync } from "node:zlib";
 
 import { z } from "zod";
 
@@ -20,6 +21,15 @@ import {
 import { summarizeByteLengths, summarizeSignedTiming, summarizeTiming } from "./engine-stress-workloads";
 
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+
+function deterministicGzip(bytes: Uint8Array): Uint8Array {
+  const compressed = new Uint8Array(gzipSync(bytes, { level: 9 }));
+  // zlib writes a platform-specific gzip OS byte (Windows=10, Unix=3).
+  // Normalize advisory header fields so promotion is byte-identical across hosts.
+  compressed.fill(0, 4, 8);
+  compressed[9] = 255;
+  return compressed;
+}
 
 const fixedBudget = (limitMs: number) =>
   z.strictObject({
@@ -55,19 +65,19 @@ const evidenceSetManifestSchema = z.strictObject({
   profile: z.strictObject({ id: z.string().min(1), sha256: z.string().regex(/^[0-9a-f]{64}$/) }),
   reports: z.tuple([
     z.strictObject({
-      filename: z.literal("benchmark.json"),
+      filename: z.literal("benchmark.json.gz"),
       schema: z.literal(ENGINE_WEBGPU_BENCHMARK_REPORT_SCHEMA),
       sha256: z.string().regex(/^[0-9a-f]{64}$/),
       version: z.literal(ENGINE_WEBGPU_BENCHMARK_REPORT_VERSION),
     }),
     z.strictObject({
-      filename: z.literal("stress.json"),
+      filename: z.literal("stress.json.gz"),
       schema: z.literal(ENGINE_WEBGPU_STRESS_REPORT_SCHEMA),
       sha256: z.string().regex(/^[0-9a-f]{64}$/),
       version: z.literal(ENGINE_WEBGPU_STRESS_REPORT_VERSION),
     }),
     z.strictObject({
-      filename: z.literal("stage-telemetry.json"),
+      filename: z.literal("stage-telemetry.json.gz"),
       schema: z.literal(ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_SCHEMA),
       sha256: z.string().regex(/^[0-9a-f]{64}$/),
       version: z.literal(ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_VERSION),
@@ -436,11 +446,12 @@ async function pathExists(path: string): Promise<boolean> {
 
 export async function promoteBenchmarkEvidenceSetV1(input: PromotionInput) {
   const sourceEntries = [
-    ["benchmark.json", input.benchmarkPath],
-    ["stress.json", input.stressPath],
-    ["stage-telemetry.json", input.stageTelemetryPath],
+    ["benchmark.json.gz", input.benchmarkPath],
+    ["stress.json.gz", input.stressPath],
+    ["stage-telemetry.json.gz", input.stageTelemetryPath],
   ] as const;
   const sourceBytes = await Promise.all(sourceEntries.map(async ([, path]) => new Uint8Array(await readFile(path))));
+  const storedBytes = sourceBytes.map(deterministicGzip);
   const parsed = sourceBytes.map((bytes) => JSON.parse(new TextDecoder().decode(bytes)) as unknown);
   const verified = verifyBenchmarkEvidenceSetV1({ benchmark: parsed[0], stress: parsed[1], stageTelemetry: parsed[2] });
   const profileId = safePathComponent(verified.identity.profileId, "profile id");
@@ -455,11 +466,11 @@ export async function promoteBenchmarkEvidenceSetV1(input: PromotionInput) {
     const reports = sourceEntries.map(([filename], index) => ({
       filename,
       schema: [verified.benchmark.schema, verified.stress.schema, verified.stageTelemetry.schema][index]!,
-      sha256: sha256(sourceBytes[index]!),
+      sha256: sha256(storedBytes[index]!),
       version: [verified.benchmark.version, verified.stress.version, verified.stageTelemetry.version][index]!,
     }));
     await Promise.all(
-      sourceEntries.map(([filename], index) => writeFile(join(temporary, filename), sourceBytes[index]!)),
+      sourceEntries.map(([filename], index) => writeFile(join(temporary, filename), storedBytes[index]!)),
     );
     const manifest = evidenceSetManifestSchema.parse({
       benchmarkRunId: verified.identity.benchmarkRunId,
@@ -486,9 +497,11 @@ export async function verifyPromotedBenchmarkEvidenceSetV1(directory: string) {
   );
   const sourceBytes = await Promise.all(
     manifest.reports.map(async ({ filename, sha256: expectedSha256 }) => {
-      const bytes = new Uint8Array(await readFile(join(directory, filename)));
-      if (sha256(bytes) !== expectedSha256) throw new Error(`${filename} does not match its manifest SHA-256`);
-      return bytes;
+      const storedBytes = new Uint8Array(await readFile(join(directory, filename)));
+      if (sha256(storedBytes) !== expectedSha256) {
+        throw new Error(`${filename} does not match its manifest SHA-256`);
+      }
+      return new Uint8Array(gunzipSync(storedBytes));
     }),
   );
   const parsed = sourceBytes.map((bytes) => JSON.parse(new TextDecoder().decode(bytes)) as unknown);
@@ -509,7 +522,9 @@ export async function verifyCheckedInBenchmarkEvidenceV1(
   try {
     profiles = await readdir(root, { withFileTypes: true });
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error("checked-in engine WebGPU evidence must contain exactly one current evidence set");
+    }
     throw error;
   }
   const candidateDirectories: Readonly<{ commit: string; directory: string; profile: string }>[] = [];
@@ -532,12 +547,10 @@ export async function verifyCheckedInBenchmarkEvidenceV1(
       });
     }
   }
-  // Issue #262 is still WIP and therefore permits zero sets. Once physical
-  // Windows evidence lands, this remains a rolling single-current-evidence
-  // directory rather than an unverifiable archive of obsolete schema/profile
-  // versions.
-  if (candidateDirectories.length > 1) {
-    throw new Error("checked-in engine WebGPU evidence must contain at most one current evidence set");
+  // Keep one rolling current set rather than an unverifiable archive of
+  // obsolete schema/profile versions.
+  if (candidateDirectories.length !== 1) {
+    throw new Error("checked-in engine WebGPU evidence must contain exactly one current evidence set");
   }
   const verifiedDirectories: string[] = [];
   for (const candidate of candidateDirectories) {

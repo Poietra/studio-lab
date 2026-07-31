@@ -1,0 +1,32 @@
+{
+  "benchmarkRunId": "1195c093-f728-4732-ad0d-6ed4af125c95",
+  "commit": "49373bc3c9188d34f23c917ccfa636ac4fee0bcf",
+  "profile": {
+    "id": "windows-edge-d3d12-rtx-pro-500-2026-07",
+    "sha256": "9cdd6539bcf7e5e8ee04e2f8abdab6293a8e5d9565259e2a80f8e40e8fd44a02"
+  },
+  "reports": [
+    {
+      "filename": "benchmark.json.gz",
+      "schema": "poietra.engine-webgpu-benchmark",
+      "sha256": "3c5e3366fb379a182ba91925dbe4429347d7fd0935759a23e28c4c3ea055e894",
+      "version": 4
+    },
+    {
+      "filename": "stress.json.gz",
+      "schema": "poietra.engine-webgpu-stress-benchmark",
+      "sha256": "07ae69a0ca28296e6403ebb4154e8130c75125f993a88bbef49a9b779af0af49",
+      "version": 5
+    },
+    {
+      "filename": "stage-telemetry.json.gz",
+      "schema": "poietra.engine-webgpu-stage-telemetry",
+      "sha256": "6f7c243ca54a99ff52f693435c567644aacc3486d1606828b54960e7622ecf6f",
+      "version": 4
+    }
+  ],
+  "runBuildPath": "dist-benchmark\\run-1785485795520-26976/engine-wasm/poietra_wasm_bg.wasm",
+  "schema": "poietra.engine-webgpu-evidence-set",
+  "version": 1,
+  "wasmSha256": "2d9173540413ccadd9cd55f17f3267a9b41bdcf2d0bd68a5fda349d843eaa640"
+}
