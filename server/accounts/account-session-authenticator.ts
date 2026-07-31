@@ -11,8 +11,9 @@ const MAX_COOKIE_HEADER_BYTES_V1 = 8 * 1_024;
 const MAX_COOKIES_V1 = 64;
 const SESSION_TOKEN_PATTERN_V1 = /^[A-Za-z0-9_-]{43}$/u;
 
-function sessionTokenHash(cookieHeader: string | undefined) {
-  if (cookieHeader === undefined) return null;
+/** Parses one canonical opaque session cookie and returns only its SHA-256 digest. */
+export function accountSessionTokenHashV1(cookieHeader: string | null | undefined) {
+  if (cookieHeader === undefined || cookieHeader === null) return null;
   if (Buffer.byteLength(cookieHeader, "utf8") > MAX_COOKIE_HEADER_BYTES_V1) return null;
   const cookies = cookieHeader.split(";");
   if (cookies.length > MAX_COOKIES_V1) return null;
@@ -50,7 +51,7 @@ export function createAccountSessionIdentityAuthenticatorV1(
   return Object.freeze({
     async authenticate(input: ProductionAdmissionRequest, signal: AbortSignal) {
       signal.throwIfAborted();
-      const hash = sessionTokenHash(input.credentials.cookie);
+      const hash = accountSessionTokenHashV1(input.credentials.cookie);
       if (hash === null) return null;
       return repository.resolveActiveSession(hash, signal);
     },

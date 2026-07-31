@@ -46,7 +46,8 @@ only its SHA-256 hash is stored. Expired, revoked, malformed, or inactive-user
 sessions fail authentication before membership admission, and deleting a
 membership cascades its sessions. Bearer credentials are not a fallback for
 this browser authenticator. Migration v13 and the Fetch API account-control-plane
-handler add `/auth/oidc/start` and `/auth/oidc/callback`. Login uses Authorization
+handler add `/auth/oidc/start`, `/auth/oidc/callback`, and the browser bootstrap
+`GET /api/account/session`. Login uses Authorization
 Code, PKCE S256, state, nonce, and a separate short-lived browser-binding cookie.
 PostgreSQL stores only the state and binding hashes; `DELETE ... RETURNING`
 consumes the verifier and nonce exactly once. A successful callback issues a new
@@ -61,9 +62,12 @@ client authentication method, and client credentials are
 trusted startup configuration; the redirect URI is always derived from
 `publicOrigin`, and the post-login redirect is fixed to `/`. The OIDC routes are
 exposed only through the account-control-plane Fetch handler; Vite, Electron,
-and the single-tenant Node render server do not host them. Organization
-switching, logout, self-signup/bootstrap, and Organization-scoped client state
-remain #309 follow-up slices. Cloudflare Worker/BFF deployment must rate-limit
+and the single-tenant Node render server do not host them. The account bootstrap
+reads the opaque cookie through a separate request-scoped PostgreSQL adapter,
+returns only the user display identity plus bounded active organization
+memberships, and does not consult OIDC discovery, its rate limits, or
+`CF-Connecting-IP`. Organization switching, logout, and self-signup remain #309
+follow-up slices. Cloudflare Worker/BFF deployment must rate-limit
 both `/auth/oidc/start` and `/auth/oidc/callback` at the edge (with separate
 thresholds if needed); an in-process per-isolate limiter is not a meaningful
 abuse boundary. A syntactically valid but unknown callback still performs the
@@ -88,9 +92,10 @@ production configuration.
 
 Authentication must use a dedicated Hyperdrive configuration created or
 updated with `--caching-disabled`; stale reads are not acceptable for sessions,
-memberships, or one-time login state. The Worker route must remain limited to
-the same-origin `/auth/oidc/*` path, with `workers_dev` and preview URLs off.
-Set that security-critical route to fail closed in Cloudflare before promotion.
+memberships, or one-time login state. The Worker routes must remain limited to
+the same-origin `/auth/oidc/*` path and the exact `/api/account/session` path,
+with `workers_dev` and preview URLs off.
+Set those security-critical routes to fail closed in Cloudflare before promotion.
 Invocation logs and traces remain disabled because callback URLs contain OIDC
 codes and state. Do not attach raw Worker Tail, Logpush, or request-URL logging
 to this Worker; zone Logpush must omit full request URIs for these routes. Use a
