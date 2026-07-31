@@ -24,7 +24,7 @@
     "compilerContentDigest": "b9b6d79554e087576c6cc9095254deed52821214187a62929a60a07d1985c616",
     "compilerFillRule": "nonzero",
     "compilerFontDigest": "e52df76208d1e41c8222496e9fb30cc2a1fe8a275b14995f3f6c3a9205db21fa",
-    "compilerToolchainDigest": "278d8c7c53ccb6f7d7d6c0fd5873d8306baa9c156936b75feb7e5c5ff1672497",
+    "compilerToolchainDigest": "40a85bd625fe868b295906a6a002a1cfae677be241f835898f467a113b626430",
     "id": "nested-radical-fraction",
     "provenance": "fast-manim/manim/mobject/text/tex_mobject.py:274",
     "svgFile": "fixtures/mathtex-manim-parity-v1/references/nested-radical-fraction.svg",
