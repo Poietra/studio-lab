@@ -47,6 +47,8 @@
     "benchmark:engine:webgpu": "node scripts/run-engine-webgpu-benchmark.mjs",
     "benchmark:engine:webgpu:promote": "node scripts/promote-engine-webgpu-benchmark-evidence.mjs",
     "benchmark:engine:webgpu:verify": "node scripts/promote-engine-webgpu-benchmark-evidence.mjs --verify",
+    "evidence:manim-compositor:promote": "node scripts/promote-manim-compositor-parity-evidence.mjs",
+    "evidence:manim-compositor:verify": "node scripts/promote-manim-compositor-parity-evidence.mjs --verify",
     "visual-parity:regenerate": "node scripts/regenerate-visual-parity.mjs",
     "sandbox:oci:gated:build": "node scripts/build-fast-manim-gated-oci.mjs",
     "sandbox:oci:render:build": "node scripts/build-fast-manim-gated-oci.mjs render",

@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest";
 import { digestFastManimSnapshotBundleV1 } from "../server/fast-manim-snapshot-contract";
 import { sceneIrBundleV1Schema } from "../src/engine/contracts";
 import { sceneIrSourceRevisionHash } from "../src/engine/scene-ir";
+import { manimCompositorReferenceV1Schema } from "./manim-compositor-parity";
+import { verifyManimCompositorParityEvidenceV1 } from "./manim-compositor-parity-evidence";
 import { encodeRgbaPngV1 } from "./png-rgba";
 import { thresholdsForEntryV1, visualParityCorpusV1Schema, visualParityReportV1Schema } from "./visual-parity-contract";
 import { compareVisualParityFramesV1, makeOpaqueVisualParityDiffV1 } from "./visual-parity-metrics";
@@ -19,6 +21,56 @@ function sha256(bytes: Uint8Array) {
 }
 
 describe("visual parity v1 contracts", () => {
+  it("pins the independent real Manim/Cairo compositor reference", async () => {
+    const root = "fixtures/manim-compositor-parity-v1";
+    const reference = manimCompositorReferenceV1Schema.parse(
+      JSON.parse(await readFile(`${root}/reference.json`, "utf8")),
+    );
+    expect(reference).toMatchObject({
+      frame: { sampleTime: 0, viewport: { heightPx: 468, widthPx: 832 } },
+      producer: {
+        cairoVersion: "1.18.0",
+        fastManimCommit: "d2480e8096a5cac64f7f86ed1d0d01f5c87839e3",
+        manimVersion: "0.20.1",
+        pillowVersion: "12.2.0",
+        pycairoVersion: "1.29.0",
+        renderer: "cairo",
+      },
+      rendererConfig: {
+        antialias: "default",
+        backgroundColor: "#000000",
+        backgroundOpacity: 1,
+        cairoCompositor: false,
+        cairoCompositorFades: false,
+        cairoForkWorkers: 0,
+        cairoStaticLayers: false,
+        disableCaching: true,
+        frameRate: 60,
+        saveLastFrame: true,
+        transparent: false,
+        writeToMovie: false,
+      },
+      scene: {
+        className: "RealPreviewScene",
+        sourcePath: "fixtures/real-preview-harness/scene.py",
+        sourceSha256: "be19c7339d0a33f31ad48ff8770b09ad4bd8b186363f1ccf5e2db9469d2e82b5",
+      },
+    });
+    const png = new Uint8Array(await readFile(`${root}/${reference.png.path}`));
+    expect(png.byteLength).toBe(reference.png.byteLength);
+    expect(sha256(png)).toBe(reference.png.sha256);
+    expect(sha256(new Uint8Array(await readFile(reference.scene.sourcePath)))).toBe(reference.scene.sourceSha256);
+  });
+
+  it("revalidates the promoted real Manim compositor evidence", async () => {
+    const directory = "docs/evidence/manim-compositor-parity-2026-07-31";
+    await expect(verifyManimCompositorParityEvidenceV1(directory)).resolves.toMatchObject({
+      gate: { passed: true },
+      schema: "poietra.manim-compositor-parity-report",
+      version: 1,
+    });
+  });
+
   it("pins the corpus order and existing dynamic semantic digest to the default gate", async () => {
     const corpus = await corpusFixture();
     expect(corpus.entries.map(({ id }) => id)).toEqual([
