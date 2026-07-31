@@ -499,7 +499,8 @@ async function prepareStorage(environment: StorageEnvironment) {
       applied: true,
       version: 10,
     });
-    expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: false, version: 10 });
+    expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: true, version: 11 });
+    expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: false, version: 11 });
     const migratedLegacy = await pool.query<{
       artifact_runtime_digest: string;
       artifact_object_key: string;

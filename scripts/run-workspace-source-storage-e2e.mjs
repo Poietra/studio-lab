@@ -62,6 +62,13 @@ async function retry(label, operation, attempts = 150) {
 
 const STORAGE_SUITES = [
   {
+    database: "poietra_account_organization",
+    file: "server/storage/account-organization-storage.real.test.ts",
+    id: "account-organization",
+    objectStorage: false,
+    title: "resolves only active membership boundaries and preserves the last active owner",
+  },
+  {
     database: "poietra_workspace_source",
     file: "server/storage/workspace-source-storage.real.test.ts",
     id: "workspace-source",
@@ -120,9 +127,11 @@ async function createSuiteDatabases(adminUrl) {
 function suiteEnvironment(commonEnvironment, postgresAdminUrl, suite) {
   const databaseUrl = new URL(postgresAdminUrl);
   databaseUrl.pathname = `/${suite.database}`;
+  const postgresEnvironment = { POIETRA_STORAGE_E2E_DATABASE_URL: databaseUrl.href };
+  if (suite.objectStorage === false) return postgresEnvironment;
   return {
     ...commonEnvironment,
-    POIETRA_STORAGE_E2E_DATABASE_URL: databaseUrl.href,
+    ...postgresEnvironment,
     POIETRA_STORAGE_E2E_S3_BUCKET: `poietra-storage-e2e-${runId}-${suite.id}`,
   };
 }

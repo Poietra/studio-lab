@@ -2,6 +2,9 @@ import type { Pool } from "pg";
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import {
+  ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM,
+  ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE,
+  applyAccountOrganizationMigrationV11,
   applyBundledDurableStorageMigrations,
   type applyBundledDurableStorageMigrationsV2,
   type applyBundledWorkspaceSourceMigrationV1,
@@ -15,6 +18,7 @@ import {
   applySnapshotPublicationMigrationV3,
   applySnapshotRuntimeDigestMigrationV10,
   applyWorkspaceSourceMigrationV1,
+  durableStorageMigrationChecksum,
   PROJECT_PNG_MIGRATION_V5_SOURCE,
   RENDER_ARTIFACT_MIGRATION_V4_SOURCE,
   RENDER_CANCELLATION_MIGRATION_V7_SOURCE,
@@ -68,10 +72,10 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 10 });
-    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 11 });
+    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 10 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 11 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -82,7 +86,8 @@ describe("durable storage migrations", () => {
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(20);
+    expect(db.queries.filter(({ text }) => text === ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(22);
   });
 
   it("rejects a missing prerequisite under the same advisory lock", async () => {
@@ -164,6 +169,44 @@ describe("durable storage migrations", () => {
       applySnapshotRuntimeDigestMigrationV10(db.pool, SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE),
     ).rejects.toThrow(/requires durable storage migrations v1 through v9/i);
     expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("requires all ten durable-storage prerequisites before applying accounts and organizations v11", async () => {
+    const db = database();
+    await expect(
+      applyAccountOrganizationMigrationV11(db.pool, ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE),
+    ).rejects.toThrow(/requires durable storage migrations v1 through v10/i);
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("pins the account and organization migration checksum", () => {
+    expect(durableStorageMigrationChecksum(ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE)).toBe(
+      ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM,
+    );
+  });
+
+  it("defines bounded identities, memberships, and a deferred last-owner invariant in v11", () => {
+    expect(ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE).toContain("CREATE TABLE public.users");
+    expect(ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE).toContain("UNIQUE (oidc_issuer, oidc_subject)");
+    expect(ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE).toContain("A user OIDC identity is immutable.");
+    expect(ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE).toContain("CREATE TABLE public.organizations");
+    expect(ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE).toContain(
+      "REFERENCES public.workspace_tenants (tenant_id) ON DELETE RESTRICT",
+    );
+    expect(ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE).toContain("CREATE TABLE public.organization_memberships");
+    expect(ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE).toContain("role IN ('owner', 'admin', 'member', 'billing')");
+    expect(ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE).toContain("status IN ('active', 'suspended')");
+    expect(ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE).not.toContain("organization_invitations");
+    expect(ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE).toContain(
+      "Organizations require an explicit tenant purge workflow.",
+    );
+    expect(ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE).toContain("FOR UPDATE");
+    expect(ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE).toContain("DEFERRABLE INITIALLY DEFERRED");
+    expect(ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE).toContain("membership.role = 'owner'");
+    expect(ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE).toContain("membership.status = 'active'");
+    expect(ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE).toContain(
+      "Organization creation must insert its first active owner in the same",
+    );
   });
 
   it("invalidates legacy heads while retaining legacy artifacts for GC in migration v10", () => {
