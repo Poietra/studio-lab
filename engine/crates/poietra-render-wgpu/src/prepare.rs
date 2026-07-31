@@ -756,6 +756,12 @@ fn fill_point_key(point: LyonPoint) -> (u32, u32) {
     (normalized_f32_bits(point.x), normalized_f32_bits(point.y))
 }
 
+fn clip_distance_pixels(left: PointF64, right: PointF64, viewport: &ViewportV1) -> f64 {
+    let distance_x = (left.x - right.x).abs() * f64::from(viewport.width_px) * 0.5;
+    let distance_y = (left.y - right.y).abs() * f64::from(viewport.height_px) * 0.5;
+    distance_x.hypot(distance_y)
+}
+
 fn world_to_fill_point(
     world: PointF64,
     camera: &RenderCameraV1,
@@ -1772,6 +1778,8 @@ fn prepare_fill_geometry(
         fill_output_limits(vertices.len(), draw_id)?;
     let mut flattened_vertices = 0usize;
     let mut upload_points = HashMap::new();
+    let mut has_renderable_contour = false;
+    let mut saw_precision_collapse = false;
     let lyon_fill_rule = match fill_rule {
         FillRuleV1::EvenOdd => lyon_tessellation::FillRule::EvenOdd,
         FillRuleV1::NonZero => lyon_tessellation::FillRule::NonZero,
@@ -1807,33 +1815,79 @@ fn prepare_fill_geometry(
                 draw_id: draw_id.to_owned(),
                 maximum_vertices: MAX_FILL_FLATTENED_POINTS_PER_DRAW_V1,
             })?;
-        let mut topology = FillContourTopologyV1::default();
+        let mut contour_points = Vec::with_capacity(world_points.len());
+        let mut previous_upload = None;
+        let mut precision_collapse = false;
         for world_point in world_points {
             let (fill_point, clip_point) =
                 world_to_fill_point(world_point, context.camera, context.viewport, draw_id)?;
             let fill_key = fill_point_key(fill_point);
-            if upload_points
-                .insert(fill_key, point_key(clip_point))
-                .is_some_and(|previous| previous != point_key(clip_point))
-            {
-                return Err(PrepareFrameErrorV1::FillPrecisionLoss {
-                    draw_id: draw_id.to_owned(),
-                    maximum_error_pixels: FLATTEN_TOLERANCE_PIXELS_V1,
-                });
-            }
-            if topology.observe(fill_point) {
-                builder.begin(fill_point);
+            if let Some(previous) = upload_points.get(&fill_key).copied() {
+                if point_key(previous) != point_key(clip_point)
+                    && clip_distance_pixels(previous, clip_point, context.viewport)
+                        > FLATTEN_TOLERANCE_PIXELS_V1
+                {
+                    return Err(PrepareFrameErrorV1::FillPrecisionLoss {
+                        draw_id: draw_id.to_owned(),
+                        maximum_error_pixels: FLATTEN_TOLERANCE_PIXELS_V1,
+                    });
+                }
             } else {
-                builder.line_to(fill_point);
+                upload_points.insert(fill_key, clip_point);
             }
+
+            if let Some((previous_key, previous_clip)) = previous_upload {
+                if previous_key == fill_key {
+                    precision_collapse |= point_key(previous_clip) != point_key(clip_point);
+                    continue;
+                }
+            }
+            previous_upload = Some((fill_key, clip_point));
+            contour_points.push(fill_point);
+        }
+        saw_precision_collapse |= precision_collapse;
+
+        if contour_points.len() > 1
+            && fill_point_key(contour_points[0])
+                == fill_point_key(*contour_points.last().expect("length checked"))
+        {
+            contour_points.pop();
+        }
+
+        let mut topology = FillContourTopologyV1::default();
+        for &point in &contour_points {
+            topology.observe(point);
         }
         if topology.is_degenerate() {
-            return Err(PrepareFrameErrorV1::Unsupported {
-                draw_id: draw_id.to_owned(),
-                reason: UnsupportedDrawReasonV1::DegenerateFill,
-            });
+            // Path-morph topology is padded with zero-area contours while a
+            // glyph appears or disappears. Such a contour contributes no
+            // pixels in the bounded upload domain and must not hide the
+            // draw's remaining visible contours.
+            continue;
+        }
+
+        has_renderable_contour = true;
+        for (index, point) in contour_points.into_iter().enumerate() {
+            if index == 0 {
+                builder.begin(point);
+            } else {
+                builder.line_to(point);
+            }
         }
         builder.end(true);
+    }
+    if !has_renderable_contour {
+        return if saw_precision_collapse {
+            Err(PrepareFrameErrorV1::FillPrecisionLoss {
+                draw_id: draw_id.to_owned(),
+                maximum_error_pixels: FLATTEN_TOLERANCE_PIXELS_V1,
+            })
+        } else {
+            Err(PrepareFrameErrorV1::Unsupported {
+                draw_id: draw_id.to_owned(),
+                reason: UnsupportedDrawReasonV1::DegenerateFill,
+            })
+        };
     }
     builder
         .build()
