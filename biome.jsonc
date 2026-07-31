@@ -7,7 +7,14 @@
     "defaultBranch": "main"
   },
   "files": {
-    "includes": ["**", "!!src-tauri/icons", "!!fixtures/mathtex-manim-parity-v1"]
+    "includes": [
+      "**",
+      "!!src-tauri/icons",
+      "!!fixtures/mathtex-manim-parity-v1",
+      // Sealed producer output stays canonical/minified; formatting it would add thousands of generated lines.
+      "!!fixtures/engine-v1/real-mathtex-morph-v5.json",
+      "!!fixtures/engine-v1/real-generic-vmobject-v6.json"
+    ]
   },
   "formatter": {
     "enabled": true,

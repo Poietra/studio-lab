@@ -114,3 +114,73 @@ fn fraction_radical_and_matrix_vertical_slice_compiles() {
         );
     }
 }
+
+#[test]
+fn maxwell_vertical_slice_compiles_with_bounded_outlines() {
+    for formula in [
+        r"\nabla \cdot \mathbf{E} = \frac{\rho}{\varepsilon_0}",
+        r"\nabla \cdot \mathbf{B} = 0",
+        r"\nabla \times \mathbf{E} = -\frac{\partial \mathbf{B}}{\partial t}",
+        r"\nabla \times \mathbf{B} = \mu_0\mathbf{J} + \mu_0\varepsilon_0\frac{\partial \mathbf{E}}{\partial t}",
+    ] {
+        let MathTexOutlineResultV1::Compiled(artifact) = compile(&[formula]) else {
+            panic!("Maxwell source profile must compile {formula:?}");
+        };
+        let segment_count = artifact
+            .path
+            .subpaths
+            .iter()
+            .map(|subpath| subpath.segments.len())
+            .sum::<usize>();
+        assert!((1..=2_048).contains(&segment_count), "{formula:?}");
+        assert!(
+            artifact.path.subpaths.iter().all(|subpath| subpath.closed),
+            "{formula:?}"
+        );
+        assert!(artifact.bounds.left.is_finite(), "{formula:?}");
+        assert!(artifact.bounds.right.is_finite(), "{formula:?}");
+        assert!(artifact.bounds.bottom.is_finite(), "{formula:?}");
+        assert!(artifact.bounds.top.is_finite(), "{formula:?}");
+    }
+}
+
+#[test]
+fn malformed_maxwell_commands_fail_closed() {
+    for formula in [
+        r"\nabla{",
+        r"\mathbf{E",
+        r"\rho{",
+        r"\varepsilon_{",
+        r"A \times {B",
+        r"\frac{\partial E}{\partial {t}",
+        r"\mu_{0",
+    ] {
+        let MathTexOutlineResultV1::Unsupported(unsupported) = compile(&[formula]) else {
+            panic!("malformed Maxwell source must fail closed: {formula:?}");
+        };
+        assert_eq!(
+            unsupported.code,
+            MathTexOutlineUnsupportedCodeV1::SyntaxUnsupported,
+            "{formula:?}"
+        );
+    }
+
+    for formula in [
+        r"\nablax",
+        r"\mathbfE",
+        r"\rhos",
+        r"\varepsilonx",
+        r"\timesx",
+        r"\partialt",
+        r"\mux",
+    ] {
+        let MathTexOutlineResultV1::Unsupported(unsupported) = compile(&[formula]) else {
+            panic!("control-word prefix must not expand the profile: {formula:?}");
+        };
+        assert_eq!(
+            unsupported.code,
+            MathTexOutlineUnsupportedCodeV1::SyntaxUnsupported,
+            "{formula:?}"
+        );
+    }
+}

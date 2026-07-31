@@ -53,6 +53,7 @@ export type StudioPreviewRendererViewV1 = Readonly<{
    * keyed by verified runtime entity ID; non-null only while correlated.
    */
   interactionGeometry: StudioPreviewInteractionGeometryV1 | null;
+  interactionAuthority: StudioPreviewInteractionAuthorityV1;
   sourceLabel: string | null;
   /** Lifecycle of verified source metadata for the current provider/Scene. */
   sourceMetadataPhase: "failed" | "inactive" | "loading" | "ready";
@@ -62,6 +63,13 @@ export type StudioPreviewRendererViewV1 = Readonly<{
   /** Verified fast-manim base duration for the current source identity. */
   verifiedSourceDuration: number | null;
 }>;
+
+export type StudioPreviewInteractionAuthorityV1 =
+  | Readonly<{ kind: "interactive" }>
+  | Readonly<{
+      kind: "display-only";
+      reason: "aggregate-mathtex-morph-lineage" | "source-runtime-identity-unverified";
+    }>;
 
 export type UseStudioPreviewRendererInputV1 = Readonly<{
   committedProposedState: ProposedState | null;
@@ -117,8 +125,33 @@ type StudioPreviewHostInstallationV1 = Readonly<{
   workspaceKey: string;
 }>;
 
+/**
+ * Runtime pixels may be presented without source interaction authority. V5
+ * deliberately has aggregate morph lineage, while V6 requires at least one
+ * server-verified source/runtime binding. Older snapshot-only profiles retain
+ * their semantic interaction fallback; no gesture guesses from Scene order.
+ */
+export function studioPreviewInteractionAuthorityV1(
+  snapshot: StudioVerifiedPreviewSnapshotV1 | null,
+): StudioPreviewInteractionAuthorityV1 {
+  const source = snapshot?.snapshot.scene.source;
+  if (source?.kind !== "imported-manim-server-snapshot") return { kind: "interactive" };
+  if (Number(source.snapshotVersion) === 5) {
+    return { kind: "display-only", reason: "aggregate-mathtex-morph-lineage" };
+  }
+  if (Number(source.snapshotVersion) !== 6) return { kind: "interactive" };
+  const identity = snapshot?.sourceRuntimeIdentity;
+  return identity && identity.size > 0
+    ? { kind: "interactive" }
+    : { kind: "display-only", reason: "source-runtime-identity-unverified" };
+}
+
 /** Selects only IDs admitted by the server-verified source/runtime map. */
-export function studioPreviewInteractionEntityIdsV1(identity: StudioPreviewSourceRuntimeIdentityV1 | null) {
+export function studioPreviewInteractionEntityIdsV1(
+  identity: StudioPreviewSourceRuntimeIdentityV1 | null,
+  authority: StudioPreviewInteractionAuthorityV1 = { kind: "interactive" },
+) {
+  if (authority.kind === "display-only") return [];
   if (!identity) return [];
   const entityIds: string[] = [];
   const seen = new Set<string>();
@@ -239,7 +272,10 @@ export async function compileStudioPreviewSceneV1(
         bundle: snapshot,
         engineRevisionHash: correlation.engineRevisionHash,
         frame: { ...input.frame },
-        interactionEntityIds: studioPreviewInteractionEntityIdsV1(input.snapshot.sourceRuntimeIdentity),
+        interactionEntityIds: studioPreviewInteractionEntityIdsV1(
+          input.snapshot.sourceRuntimeIdentity,
+          studioPreviewInteractionAuthorityV1(input.snapshot),
+        ),
         snapshot: input.snapshot,
         workingRevision: input.workingRevision,
         workspaceKey: input.workspaceKey,
@@ -694,6 +730,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     attachCanvas,
     epoch,
     interactionGeometry,
+    interactionAuthority: studioPreviewInteractionAuthorityV1(snapshot),
     sourceLabel: snapshot?.sourceLabel ?? null,
     sourceMetadataPhase: currentMetadata.phase,
     sourceRuntimeIdentity: snapshot?.sourceRuntimeIdentity ?? null,

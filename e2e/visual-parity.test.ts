@@ -3,7 +3,11 @@ import { readFile } from "node:fs/promises";
 import { inflateSync } from "node:zlib";
 
 import { describe, expect, it } from "vitest";
+import { digestFastManimSnapshotBundleV1 } from "../server/fast-manim-snapshot-contract";
 import { sceneIrBundleV1Schema } from "../src/engine/contracts";
+import { sceneIrSourceRevisionHash } from "../src/engine/scene-ir";
+import { manimCompositorReferenceV1Schema } from "./manim-compositor-parity";
+import { verifyManimCompositorParityEvidenceV1 } from "./manim-compositor-parity-evidence";
 import { encodeRgbaPngV1 } from "./png-rgba";
 import { thresholdsForEntryV1, visualParityCorpusV1Schema, visualParityReportV1Schema } from "./visual-parity-contract";
 import { compareVisualParityFramesV1, makeOpaqueVisualParityDiffV1 } from "./visual-parity-metrics";
@@ -17,13 +21,69 @@ function sha256(bytes: Uint8Array) {
 }
 
 describe("visual parity v1 contracts", () => {
-  it("pins the first corpus item to the existing dynamic semantic digest and default gate", async () => {
+  it("pins the independent real Manim/Cairo compositor reference", async () => {
+    const root = "fixtures/manim-compositor-parity-v1";
+    const reference = manimCompositorReferenceV1Schema.parse(
+      JSON.parse(await readFile(`${root}/reference.json`, "utf8")),
+    );
+    expect(reference).toMatchObject({
+      frame: { sampleTime: 0, viewport: { heightPx: 468, widthPx: 832 } },
+      producer: {
+        cairoVersion: "1.18.0",
+        fastManimCommit: "d2480e8096a5cac64f7f86ed1d0d01f5c87839e3",
+        manimVersion: "0.20.1",
+        pillowVersion: "12.2.0",
+        pycairoVersion: "1.29.0",
+        renderer: "cairo",
+      },
+      rendererConfig: {
+        antialias: "default",
+        backgroundColor: "#000000",
+        backgroundOpacity: 1,
+        cairoCompositor: false,
+        cairoCompositorFades: false,
+        cairoForkWorkers: 0,
+        cairoStaticLayers: false,
+        disableCaching: true,
+        frameRate: 60,
+        saveLastFrame: true,
+        transparent: false,
+        writeToMovie: false,
+      },
+      scene: {
+        className: "RealPreviewScene",
+        sourcePath: "fixtures/real-preview-harness/scene.py",
+        sourceSha256: "be19c7339d0a33f31ad48ff8770b09ad4bd8b186363f1ccf5e2db9469d2e82b5",
+      },
+    });
+    const png = new Uint8Array(await readFile(`${root}/${reference.png.path}`));
+    expect(png.byteLength).toBe(reference.png.byteLength);
+    expect(sha256(png)).toBe(reference.png.sha256);
+    expect(sha256(new Uint8Array(await readFile(reference.scene.sourcePath)))).toBe(reference.scene.sourceSha256);
+  });
+
+  it("revalidates the promoted real Manim compositor evidence", async () => {
+    const directory = "docs/evidence/manim-compositor-parity-2026-07-31";
+    await expect(verifyManimCompositorParityEvidenceV1(directory)).resolves.toMatchObject({
+      gate: { passed: true },
+      schema: "poietra.manim-compositor-parity-report",
+      version: 1,
+    });
+  });
+
+  it("pins the corpus order and existing dynamic semantic digest to the default gate", async () => {
     const corpus = await corpusFixture();
     expect(corpus.entries.map(({ id }) => id)).toEqual([
       "dynamic-affine-camera--a-first",
       "png-alpha-edge-camera--midpoint",
       "mathtex-nested-radical-fraction--static",
       "generic-stroke-topology--sample",
+      "real-mathtex-morph-v5--a-initial",
+      "real-mathtex-morph-v5--outbound-midpoint",
+      "real-mathtex-morph-v5--maxwell-hold",
+      "real-mathtex-morph-v5--return-midpoint",
+      "real-mathtex-morph-v5--a-restored",
+      "real-generic-vmobject-v6--static",
     ]);
     const entry = corpus.entries.find(({ id }) => id === "dynamic-affine-camera--a-first");
     expect(entry).toBeDefined();
@@ -102,7 +162,7 @@ describe("visual parity v1 contracts", () => {
     expect(entry).toMatchObject({
       fixture: {
         id: "eng-v1-mathtex-nested-radical-fraction",
-        revision: { sha256: "d1202edc9c77e7a00aadbec7a0844cce183caf4d8f925e396622ca1a0ea84efd" },
+        revision: { sha256: "a4236d9217e19d519f3b5d405f012d0a6129d8f4923b053aa455ad0ab2ad5da9" },
       },
       sample: {
         id: "static",
@@ -139,6 +199,161 @@ describe("visual parity v1 contracts", () => {
     expect(sha256(new Uint8Array(await readFile(fixture.mathTexReference.svgFile)))).toBe(
       fixture.mathTexReference.svgSha256,
     );
+  });
+
+  it("pins the server-sealed real MathTex morph V5 timeline to the default full-RGBA gate", async () => {
+    const fixtureRevision = "05c0318c662004e9b1898a4018eaedef3a11b0926be9a166daa621145f645cbf";
+    const corpus = await corpusFixture();
+    const expectedSamples = [
+      [
+        "real-mathtex-morph-v5--a-initial",
+        "a-initial",
+        0.5,
+        "204357f09544d3de5022e59929cc97cf1451f3507ca300557b95ed92bd450928",
+      ],
+      [
+        "real-mathtex-morph-v5--outbound-midpoint",
+        "outbound-midpoint",
+        1.5,
+        "1e7f5357fe7c3d53cdf38cd249fe9e0d1ecc34f0ffbb1270bb14c1fbe0d07709",
+      ],
+      [
+        "real-mathtex-morph-v5--maxwell-hold",
+        "maxwell-hold",
+        2.25,
+        "fbbe1b4d440c13d04506565ba80dc47473c5bfce3709e10cd03038ddd6d9fe9c",
+      ],
+      [
+        "real-mathtex-morph-v5--return-midpoint",
+        "return-midpoint",
+        3.5,
+        "37419bcecc1f39f128ac5225ffb7b35fea52b6b988d7b0138d43a3b3658242ed",
+      ],
+      [
+        "real-mathtex-morph-v5--a-restored",
+        "a-restored",
+        5,
+        "204357f09544d3de5022e59929cc97cf1451f3507ca300557b95ed92bd450928",
+      ],
+    ] as const;
+    const entries = expectedSamples.map(([entryId]) => {
+      const entry = corpus.entries.find(({ id }) => id === entryId);
+      if (!entry) throw new Error(`The real MathTex morph corpus entry ${entryId} is missing.`);
+      return entry;
+    });
+    for (const [index, entry] of entries.entries()) {
+      const [entryId, sampleId, sampleTime, semanticDigest] = expectedSamples[index]!;
+      expect(entry).toMatchObject({
+        fixture: {
+          id: "eng-v1-real-mathtex-morph-v5",
+          path: "fixtures/engine-v1/real-mathtex-morph-v5.json",
+          revision: { kind: "imported-manim-server-snapshot", sha256: fixtureRevision },
+        },
+        id: entryId,
+        sample: {
+          id: sampleId,
+          sampleTime,
+          semanticDigest,
+          viewport: { heightPx: 360, widthPx: 640 },
+        },
+        thresholdException: null,
+      });
+      expect(thresholdsForEntryV1(corpus, entry)).toEqual(corpus.defaultThresholds);
+    }
+
+    const fixtureBytes = new Uint8Array(await readFile("fixtures/engine-v1/real-mathtex-morph-v5.json"));
+    expect(fixtureBytes.byteLength).toBeLessThanOrEqual(256 * 1024);
+    const fixture = JSON.parse(new TextDecoder().decode(fixtureBytes));
+    const bundle = sceneIrBundleV1Schema.parse({ assets: fixture.assets, scene: fixture.scene });
+    expect(bundle.scene).toMatchObject({
+      duration: 5.5,
+      requiredCapabilities: ["cubic-path-geometry", "path-morph-animation"],
+      source: {
+        kind: "imported-manim-server-snapshot",
+        snapshotHash: fixtureRevision,
+        snapshotVersion: 5,
+        sourceHash: "f03e0c5eed2c2c35047e8d0ee9ef0aa3f0fc00cd5ecd83ce36c3cf21e46e9dd6",
+      },
+    });
+    expect(digestFastManimSnapshotBundleV1(bundle)).toBe(fixtureRevision);
+    expect(sceneIrSourceRevisionHash(bundle.scene)).toBe(fixtureRevision);
+    expect(bundle.scene.entities).toHaveLength(1);
+    expect(bundle.scene.animationChannels).toHaveLength(1);
+    expect(fixture.producerReference).toMatchObject({
+      engineCommit: "be671c1ddcfc8466548c8822956e19579256e581",
+      fastManimCommit: "3083db9ed9a9a93c2808ee3f51189ceca92d230b",
+      kind: "server-sealed-real-fast-manim-profile-v5",
+      snapshotHash: fixtureRevision,
+      sourcePath: "fixtures/real-preview-harness/scene_mathtex_morph.py",
+      sourceSha256: "f03e0c5eed2c2c35047e8d0ee9ef0aa3f0fc00cd5ecd83ce36c3cf21e46e9dd6",
+    });
+    expect(sha256(new Uint8Array(await readFile(fixture.producerReference.sourcePath)))).toBe(
+      fixture.producerReference.sourceSha256,
+    );
+    expect(fixture.samples.map(({ id, sampleTime }: { id: string; sampleTime: number }) => [id, sampleTime])).toEqual(
+      expectedSamples.map(([, sampleId, sampleTime]) => [sampleId, sampleTime]),
+    );
+    for (const [index, sample] of fixture.samples.entries()) {
+      expect(sample).toMatchObject({
+        expected: { semanticDigest: entries[index]!.sample.semanticDigest },
+        id: entries[index]!.sample.id,
+        sampleTime: entries[index]!.sample.sampleTime,
+        viewport: entries[index]!.sample.viewport,
+      });
+    }
+    const browserPayload = JSON.stringify(bundle);
+    expect(browserPayload).not.toContain("E = mc^2");
+    expect(browserPayload).not.toContain("\\nabla");
+  });
+
+  it("pins the server-sealed real generic VMobject V6 scene to the default full-RGBA gate", async () => {
+    const corpus = await corpusFixture();
+    const entry = corpus.entries.find(({ id }) => id === "real-generic-vmobject-v6--static");
+    if (!entry) throw new Error("The real generic VMobject V6 corpus entry is missing.");
+    expect(entry).toMatchObject({
+      fixture: {
+        id: "eng-v1-real-generic-vmobject-v6",
+        path: "fixtures/engine-v1/real-generic-vmobject-v6.json",
+        revision: { kind: "imported-manim-server-snapshot" },
+      },
+      sample: { id: "static", sampleTime: 0.5, viewport: { heightPx: 360, widthPx: 640 } },
+      thresholdException: null,
+    });
+    expect(thresholdsForEntryV1(corpus, entry)).toEqual(corpus.defaultThresholds);
+
+    const fixtureBytes = new Uint8Array(await readFile(entry.fixture.path));
+    expect(fixtureBytes.byteLength).toBeLessThanOrEqual(64 * 1024);
+    const fixture = JSON.parse(new TextDecoder().decode(fixtureBytes));
+    const bundle = sceneIrBundleV1Schema.parse({ assets: fixture.assets, scene: fixture.scene });
+    expect(bundle.scene.source).toMatchObject({
+      kind: "imported-manim-server-snapshot",
+      snapshotHash: entry.fixture.revision.sha256,
+      snapshotVersion: 6,
+      sourceHash: fixture.producerReference.sourceSha256,
+    });
+    expect(digestFastManimSnapshotBundleV1(bundle)).toBe(entry.fixture.revision.sha256);
+    expect(sceneIrSourceRevisionHash(bundle.scene)).toBe(entry.fixture.revision.sha256);
+    expect(bundle.scene.entities).toHaveLength(3);
+    expect(bundle.scene.animationChannels).toHaveLength(0);
+    expect(fixture.producerReference).toMatchObject({
+      engineCommit: "7d5ff0a9b0a3a2ab148669310261be982a3f8843",
+      fastManimCommit: "d2480e8096a5cac64f7f86ed1d0d01f5c87839e3",
+      kind: "server-sealed-real-fast-manim-profile-v6",
+      snapshotHash: entry.fixture.revision.sha256,
+      sourcePath: "fixtures/real-preview-harness/scene_generic_vmobject.py",
+      sourceSha256: "b9b921b1e9aba717c3f6fa3b90672f2d4f268d19310c3c9d1ebaf1e9d3b44159",
+    });
+    expect(sha256(new Uint8Array(await readFile(fixture.producerReference.sourcePath)))).toBe(
+      fixture.producerReference.sourceSha256,
+    );
+    expect(fixture.samples).toEqual([
+      expect.objectContaining({
+        expected: { semanticDigest: entry.sample.semanticDigest },
+        id: entry.sample.id,
+        sampleTime: entry.sample.sampleTime,
+        viewport: entry.sample.viewport,
+      }),
+    ]);
   });
 
   it("compares all four sRGB byte channels and uses a strict >8 pixel classification", async () => {

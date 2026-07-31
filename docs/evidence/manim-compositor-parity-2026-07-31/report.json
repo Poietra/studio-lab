@@ -1,0 +1,208 @@
+{
+  "artifacts": {
+    "actual": {
+      "path": "actual.png",
+      "sha256": "1242960d0d91bdfce8be8ace3b72d6b7d5d4ad41981869ba6e7bdde21f23f5fa"
+    },
+    "diff": {
+      "path": "diff.png",
+      "sha256": "44951692169e019503c6a232ba74f025037af02c57fc490863ee6f998e1d4c6f"
+    },
+    "expected": {
+      "path": "expected.png",
+      "sha256": "a96a0d6f89c2e289cf9a2c089dde3c61fcb8466b8c40e726688f89a970a33ec9"
+    }
+  },
+  "browser": {
+    "channel": "msedge",
+    "configuredArgs": [],
+    "pageAdapterHint": {
+      "architecture": "blackwell",
+      "vendor": "nvidia"
+    },
+    "version": "150.0.4078.105"
+  },
+  "capture": {
+    "cssViewport": {
+      "heightPx": 468,
+      "widthPx": 832
+    },
+    "devicePixelRatio": 1,
+    "packetId": "canvas:3",
+    "policy": "visible-locator-screenshot-with-studio-overlays-hidden-after-two-animation-frames",
+    "rgbaNormalization": "browser-png-decoded-to-srgb-rgba-unorm8-with-color-conversion-none-and-premultiply-alpha-none",
+    "pngByteLength": 2860,
+    "pngSha256": "1242960d0d91bdfce8be8ace3b72d6b7d5d4ad41981869ba6e7bdde21f23f5fa",
+    "rgbaByteLength": 1557504,
+    "rgbaSha256": "17e7b7c4512a98950f740918c75a0bc4eebc53361e97bac7a6bd82cbf60b6a3b"
+  },
+  "environment": {
+    "host": {
+      "browserInstallation": {
+        "channel": "msedge",
+        "executablePath": "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+        "productVersion": "150.0.4078.105",
+        "source": "windows-file-version",
+        "status": "available"
+      },
+      "commitIdentity": {
+        "headCommit": "c8c0eeddd20891778cb68be7635175e2ad38a621",
+        "treeState": "clean",
+        "uncommittedPathCount": 0
+      },
+      "cpu": {
+        "logicalCores": 16,
+        "model": "Intel(R) Core(TM) Ultra 7 255H"
+      },
+      "gpuDriver": {
+        "controllers": [
+          {
+            "deviceId": 11705,
+            "driverVersion": "32.0.15.9571",
+            "name": "NVIDIA RTX PRO 500 Blackwell Generation Laptop GPU",
+            "pnpDeviceId": "PCI\\VEN_10DE&DEV_2DB9&SUBSYS_234617AA&REV_A1\\4E1F88AF422DB04800",
+            "vendorId": 4318,
+            "vendorName": "NVIDIA"
+          },
+          {
+            "deviceId": 32081,
+            "driverVersion": "32.0.101.8517",
+            "name": "Intel(R) Arc(TM) Pro 140T GPU (32GB)",
+            "pnpDeviceId": "PCI\\VEN_8086&DEV_7D51&SUBSYS_234617AA&REV_03\\3&11583659&1&10",
+            "vendorId": 32902,
+            "vendorName": "Intel Corporation"
+          }
+        ],
+        "source": "windows-cim",
+        "status": "available"
+      },
+      "osKernel": {
+        "platform": "win32",
+        "release": "10.0.26200",
+        "version": "Windows 11 Home"
+      },
+      "powerMode": {
+        "acLineStatus": "online",
+        "activeSchemeGuid": "381b4222-f694-41f0-9685-ff5bb260df2e",
+        "source": "windows-system-power-status+powercfg+powrprof",
+        "status": "available",
+        "userConfiguredAcPowerModeGuid": "ded574b5-45a0-4f42-8737-46345c09c238"
+      },
+      "windowsBuild": {
+        "buildNumber": "26200",
+        "caption": "Microsoft Windows 11 Home",
+        "source": "windows-cim",
+        "status": "available",
+        "version": "10.0.26200"
+      }
+    },
+    "referenceHostProfile": {
+      "id": "windows-edge-d3d12-rtx-pro-500-2026-07",
+      "path": "fixtures/engine-benchmark-v1/windows-d3d12-reference-host.json",
+      "sha256": "9cdd6539bcf7e5e8ee04e2f8abdab6293a8e5d9565259e2a80f8e40e8fd44a02",
+      "status": "verified"
+    },
+    "serverCheckout": {
+      "commitSha": "c8c0eeddd20891778cb68be7635175e2ad38a621",
+      "source": "git-tracked-checkout",
+      "topology": "external-loopback-web-server",
+      "trackedTreeState": "clean"
+    },
+    "servedWasm": {
+      "byteLength": 1552066,
+      "path": "/engine-wasm/poietra_wasm_bg.wasm",
+      "sha256": "002c2bbfbe0efd3421041802493a1e9f445b879471a28556dd496b24ffb0d1f9"
+    },
+    "snapshotProducer": {
+      "clean": true,
+      "fastManimCommit": "d2480e8096a5cac64f7f86ed1d0d01f5c87839e3",
+      "manimVersion": "0.20.1",
+      "pythonVersion": "3.13.11"
+    }
+  },
+  "gate": {
+    "maximumPixelFractionAboveThreshold": 0.005,
+    "minimumSsim": 0.995,
+    "passed": true
+  },
+  "metrics": {
+    "pixelCount": 389376,
+    "pixelCountAboveThreshold": 1855,
+    "pixelFractionAboveThreshold": 0.004764032708744247,
+    "ssim": 0.9985658029161615
+  },
+  "reference": {
+    "frame": {
+      "background": "opaque-black",
+      "camera": {
+        "height": 8,
+        "width": 14.222222222222221
+      },
+      "colorDomain": "srgb-u8",
+      "sampleTime": 0,
+      "viewport": {
+        "heightPx": 468,
+        "widthPx": 832
+      }
+    },
+    "png": {
+      "byteLength": 6435,
+      "channelOrder": "rgba",
+      "path": "expected.png",
+      "rgbaByteLength": 1557504,
+      "rgbaSha256": "445adf912fb519c75fb74fb8319e368b57efd2f81b786604be2cfe3f20253927",
+      "rowOrder": "top-to-bottom",
+      "sha256": "a96a0d6f89c2e289cf9a2c089dde3c61fcb8466b8c40e726688f89a970a33ec9"
+    },
+    "producer": {
+      "cairoVersion": "1.18.0",
+      "fastManimCommit": "d2480e8096a5cac64f7f86ed1d0d01f5c87839e3",
+      "manimVersion": "0.20.1",
+      "pillowVersion": "12.2.0",
+      "pycairoVersion": "1.29.0",
+      "pythonVersion": "3.13.11",
+      "renderer": "cairo"
+    },
+    "rendererConfig": {
+      "antialias": "default",
+      "backgroundColor": "#000000",
+      "backgroundOpacity": 1,
+      "cairoCompositor": false,
+      "cairoCompositorFades": false,
+      "cairoForkWorkers": 0,
+      "cairoStaticLayers": false,
+      "disableCaching": true,
+      "frameRate": 60,
+      "saveLastFrame": true,
+      "transparent": false,
+      "writeToMovie": false
+    },
+    "scene": {
+      "className": "RealPreviewScene",
+      "sourcePath": "fixtures/real-preview-harness/scene.py",
+      "sourceSha256": "be19c7339d0a33f31ad48ff8770b09ad4bd8b186363f1ccf5e2db9469d2e82b5"
+    },
+    "schema": "poietra.manim-compositor-reference",
+    "version": 1
+  },
+  "schema": "poietra.manim-compositor-parity-report",
+  "studio": {
+    "assetsManifestDigest": "bdf43b9ac075dade7885ed5becc966c3a5daae89ef5877974ecebd414f6952f7",
+    "commitSha": "c8c0eeddd20891778cb68be7635175e2ad38a621",
+    "engineRevisionHash": "c216e5b37593c861b930528ea0dfef58e211ebe36b278008c29af8d6ec6ce92f",
+    "packetId": "canvas:3",
+    "runtimeConfigHash": "64a012df329bfd29c2d45cc19d977b53eb17fdab3599f5b70cd03e149f37d458",
+    "sampleTime": 0,
+    "sceneId": "scene:795bc1954cc159ce48d66dc2199c0d911d02cff6440e9feca7d97ba92940b692",
+    "serverPublicationRevision": 3,
+    "snapshotRequestId": "studio-preview:88cc025b-74ff-492d-a275-23fba3e28495",
+    "snapshotHash": "c216e5b37593c861b930528ea0dfef58e211ebe36b278008c29af8d6ec6ce92f",
+    "snapshotVersion": 2,
+    "sourceHash": "be19c7339d0a33f31ad48ff8770b09ad4bd8b186363f1ccf5e2db9469d2e82b5",
+    "viewport": {
+      "heightPx": 468,
+      "widthPx": 832
+    }
+  },
+  "version": 1
+}

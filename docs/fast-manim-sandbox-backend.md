@@ -6,12 +6,13 @@ Status: contract and production broker infrastructure implemented; durable Studi
 
 `FastManimSnapshotRunner` no longer starts a host child process. It passes a
 copy-on-read immutable byte bundle to one `FastManimSandboxBackendV1` job handle.
-Profiles 1-3 preserve the canonical bounded producer-request JSON byte for byte.
-Profile 4 wraps that same strict producer request in a Studio-owned V2 envelope
-that binds one independently verified, bounded static PNG. The attachment has
-only fixed `image.png` identity, bytes, digest, length, media type, and decoded
-dimensions; it never carries a host path, mount, object-store locator, or
-credential. The whole selected wire form is bound to a SHA-256 digest.
+Profiles 1-3, 5, and 6 preserve the canonical bounded producer-request JSON byte
+for byte. Profile 4 wraps that same strict producer request in a Studio-owned V2
+envelope that binds one independently verified, bounded static PNG. The
+attachment has only fixed `image.png` identity, bytes, digest, length, media
+type, and decoded dimensions; it never carries a host path, mount, object-store
+locator, or credential. The whole selected wire form is bound to a SHA-256
+digest.
 
 The lifecycle context is out of band from those bytes and carries only bounded
 opaque tenant, project, and request IDs, the request deadline, the expected
@@ -123,12 +124,35 @@ readiness or trust claim and is not composed into the Studio server by itself.
 
 Build the immutable local image from the pinned fast-manim commit already
 present in a local checkout. The Studio checkout must also retain the pinned
-engine commit recorded by the build script:
+engine commit recorded by the build script. While #280 is awaiting the current
+native artifact digest, this command intentionally fails before invoking
+Docker; an old image must not be promoted against the new server contract:
 
 ```sh
 POIETRA_FAST_MANIM_SOURCE_REPO=/path/to/fast-manim \
 pnpm sandbox:oci:gated:build
 ```
+
+Before advancing the engine pin, derive the unknown native extension digest on
+an amd64 operator with the digest-pinned Rust builder. Supply the independently
+reviewed commit, `engine/` tree, and canonical engine archive digest:
+
+```sh
+pnpm --silent sandbox:mathtex:artifact:derive \
+  be671c1ddcfc8466548c8822956e19579256e581 \
+  d0f6d72213c65527ae9b7a4717390b48db1e9256 \
+  2aa42246977322bae54862f49ce28b3e61bf8b472a93800b2fdda8e344173d32 \
+  > mathtex-artifact-derivation.json
+```
+
+Preload the exact builder image named in the derivation contract; the command
+uses `--pull=never`. It runs two separate `--rm` builder containers with clean
+Cargo roots and fails unless the ABI3 extension bytes match. It does not build,
+tag, pull, or run the final Manim image, and it creates no persistent BuildKit
+cache. Allow at least 10 GiB of temporary daemon space. The bounded JSON record
+is printed only after both extension digests, sizes, and bytes have been
+independently rechecked. Named containers and the host temporary context are
+removed on success or failure.
 
 The snapshot image is fixed to `linux/amd64`. Its first stage uses a
 digest-pinned Rust builder, verifies the exact Rust 1.92.0 compiler, archives
@@ -137,7 +161,7 @@ before building `poietra-mathtex-py` with Cargo's locked
 `mathtex-python-release` profile for `x86_64-unknown-linux-gnu`. The resulting
 native extension is accepted only when its SHA-256 matches the release pin.
 The final image installs that ABI3 module into the fixed Python 3.14 platlib and
-runs an isolated import/ABI/real-`MathTex("E = mc^2")` verification during the
+runs an isolated import/ABI/real-`MathTex(r"\frac{a}{b}")` verification during the
 build. The image labels record the Studio engine commit, tree and archive
 digest, native artifact digest, ABI version, target, font/toolchain digests,
 and notice digest in addition to the fast-manim provenance.
@@ -161,7 +185,7 @@ POIETRA_FAST_MANIM_GATED_OCI_IMAGE=sha256:<local-image-id> \
 pnpm exec vitest run server/fast-manim-gated-oci-job-runner.test.ts
 ```
 
-That real lane includes a V3 `MathTex("E = mc^2")` request and requires the
+That real lane includes a V3 `MathTex(r"\frac{a}{b}")` request and requires the
 image-owned native provider to return a verified multi-subpath outline with its
 same-run source/runtime identity. An unavailable extension therefore fails the
 fresh-image conformance rather than falling back to regular TeX.

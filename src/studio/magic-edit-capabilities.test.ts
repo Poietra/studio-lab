@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
-import type { RuntimeEntity, RuntimeSceneState } from "./model";
 import { exactEntityScaleAt, magicEditCapabilities } from "./magic-edit-capabilities";
+import type { RuntimeEntity, RuntimeSceneState } from "./model";
 
 function withEntity(
   entity: RuntimeEntity,
@@ -129,6 +129,36 @@ describe("Magic Edit object capabilities", () => {
       kind: "blocked",
       reason: "A relative source scale shares this anchor, so source order cannot be represented safely in preview.",
     });
+  });
+
+  it("allows a verified direct source scale before the Studio insertion anchor", () => {
+    const entity = STUDIO_FIXTURE_SCENE.objectGraph.entities.equation_1;
+    const scene = withEntity(entity, {
+      "equation_1/scale": {
+        entityId: "equation_1",
+        key: "scale",
+        samples: [
+          {
+            interval: { end: 12, start: 0 },
+            kind: "exact",
+            provenanceId: "source:base-scale",
+            value: 1,
+          },
+          {
+            from: 1,
+            interval: { end: 12, start: 5 },
+            kind: "exact",
+            knowledge: { kind: "known", value: 2 },
+            provenanceId: "source:verified-scale-before-anchor",
+            relative: true,
+            sameAnchorOrder: "before-studio-insertion",
+            value: 2,
+          },
+        ],
+      },
+    });
+
+    expect(magicEditCapabilities(scene, entity, 5).scale).toEqual({ current: 2, kind: "supported" });
   });
 
   it("keeps the known order of an applied Studio scale at the same source anchor", () => {

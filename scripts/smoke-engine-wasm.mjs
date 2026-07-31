@@ -10,11 +10,14 @@ const engine = await import("../public/engine-wasm/poietra_wasm.js");
 await engine.default({ module_or_path: wasmBytes });
 assert.equal(engine.poietraEngineAbiVersion(), 1);
 assert.equal(engine.poietraCanvasAbiVersion(), 4);
+assert.equal(engine.poietraCanvasTelemetryAbiVersion(), 4);
 assert.equal(typeof engine.PoietraCanvasEngineV1, "function");
 assert.equal(typeof engine.PoietraCanvasEngineV1.create, "function");
 assert.equal(typeof engine.PoietraCanvasEngineV1.prototype.applySceneDelta, "function");
+assert.equal(typeof engine.PoietraCanvasEngineV1.prototype.adapterEvidence, "function");
 assert.equal(typeof engine.PoietraCanvasEngineV1.prototype.replaceSnapshot, "function");
 assert.equal(typeof engine.PoietraCanvasEngineV1.prototype.render, "function");
+assert.equal(typeof engine.PoietraCanvasEngineV1.prototype.renderWithTelemetry, "function");
 
 const encoder = new TextEncoder();
 const snapshot = encoder.encode(JSON.stringify({ assets: fixture.assets, scene: fixture.scene }));

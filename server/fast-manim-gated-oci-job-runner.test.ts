@@ -14,6 +14,7 @@ import {
 import {
   assertFastManimGatedOciImageV1,
   FAST_MANIM_GATED_OCI_PROFILE_V1,
+  FAST_MANIM_GATED_OCI_SNAPSHOT_RELEASE_READY_V1,
   FastManimGatedOciDockerClientV1,
   FastManimGatedOciError,
   FastManimGatedOciJobRunnerV1,
@@ -23,6 +24,8 @@ import {
 } from "./fast-manim-gated-oci-job-runner";
 import { FastManimSandboxBackendControlError, FastManimSandboxRequestBundleV1 } from "./fast-manim-sandbox-backend";
 import {
+  deriveHermeticMathTexV3TransformPlan,
+  deriveHermeticPngV4TransformPlan,
   digestFastManimSnapshotRuntimeConfigV1,
   type FastManimSnapshotProducerRequestV1,
   fastManimSnapshotSceneIdV1,
@@ -40,7 +43,13 @@ import {
   FAST_MANIM_SANDBOX_CONFORMANCE_CASES_V1,
   FAST_MANIM_SANDBOX_CONFORMANCE_LEAK_SENTINELS_V1,
 } from "./test-fixtures/fast-manim-sandbox-conformance-fixture";
-import { sandboxPngBytes, sandboxPngProducerRequest } from "./test-fixtures/fast-manim-sandbox-png-fixture";
+import {
+  SANDBOX_TRANSFORMED_PNG_EXPECTED,
+  sandboxPngBytes,
+  sandboxPngProducerRequest,
+  sandboxTransformedPngProducerRequest,
+  sandboxTransformedPngSource,
+} from "./test-fixtures/fast-manim-sandbox-png-fixture";
 
 const realImage = process.env.POIETRA_FAST_MANIM_GATED_OCI_IMAGE;
 const realLane = /^sha256:[a-f0-9]{64}$/.test(realImage ?? "");
@@ -117,7 +126,11 @@ async function verifyCombinedResult(resultBytes: Uint8Array, source: ProducerReq
   const producerDocument = parseFastManimProducerDocumentV1(resultBytes);
   if (!producerDocument.combined) throw new Error("The gated OCI producer returned a legacy snapshot-only result.");
   const expected = expectedFor(source);
-  const snapshot = await parseAndSealFastManimSnapshotProducerJsonV1(producerDocument.snapshotJson, expected);
+  const snapshot = await parseAndSealFastManimSnapshotProducerJsonV1(
+    producerDocument.snapshotJson,
+    expected,
+    source.sourceText,
+  );
   const sourceRuntimeIdentity = verifyFastManimSourceRuntimeIdentityV1(producerDocument.combined, {
     expected,
     snapshot,
@@ -162,28 +175,33 @@ class GatedOpacityLifetimeScene(Scene):
         self.play(FadeOut(circle, rate_func=linear), run_time=2)
 `;
 
-const mathTexScene = `from manim import MathTex, Scene
+const mathTexScene = String.raw`from manim import MathTex, Scene
 
 class GatedMathTexScene(Scene):
     def construct(self):
-        equation = MathTex("E = mc^2")
+        equation = MathTex(r"\frac{a}{b}")
         self.add(equation)
+        equation.move_to((1.25, -0.75, 0))
+        equation.scale(1.5)
+        equation.move_to((-0.25, 0.75, 0))
+        equation.scale(0.5)
+        self.wait(2)
 `;
 
 const TRUSTED_IMAGE_LABELS = Object.freeze({
-  "io.poietra.fast-manim.archive-sha256": "8c1e29ae95275a55a7c0ccc21f77848b63378ef37a469bd56820f7a372ff97e2",
-  "io.poietra.fast-manim.commit": "4d2a80abe1dbb0d800fd74c36d8a442afdb8efb6",
-  "io.poietra.fast-manim.tree": "270b237602705c240cab9daef824e6f0400d2f3c",
+  "io.poietra.fast-manim.archive-sha256": "2efa05e411df6a13b7c1bfab93bc99f8b58aeb8f3daf5f17db894b3c0ed54823",
+  "io.poietra.fast-manim.commit": "d2480e8096a5cac64f7f86ed1d0d01f5c87839e3",
+  "io.poietra.fast-manim.tree": "0ca5f7fc0c77a87fec7df605c8ce1190edf16f0a",
   "io.poietra.mathtex-outline.abi-version": "1",
-  "io.poietra.mathtex-outline.artifact-sha256": "fcae06b2065de2da938be484ed0bde88cd31777ef29471d63580852f28c132d4",
+  "io.poietra.mathtex-outline.artifact-sha256": "0".repeat(64),
   "io.poietra.mathtex-outline.engine-archive-sha256":
-    "91cfd3b1a0e19615c586bf0144b1554046280f5ef76f53099d1cc06679dee65c",
-  "io.poietra.mathtex-outline.engine-commit": "1fa7f851b1685e8e4dcc6d99f3e089f55a567513",
-  "io.poietra.mathtex-outline.engine-tree": "d110dc1c3b3b3dfce00bee15a44ab863b024aa7a",
-  "io.poietra.mathtex-outline.font-sha256": "d66ac1cc91c55c24d3636ae2df1238076debdff51841f9893fc5419cc2df3df7",
-  "io.poietra.mathtex-outline.notice-sha256": "44e67c7f539ae83b25514aa15aae51a73c90c19a45ea33bbb293da52927f6608",
+    "2aa42246977322bae54862f49ce28b3e61bf8b472a93800b2fdda8e344173d32",
+  "io.poietra.mathtex-outline.engine-commit": "be671c1ddcfc8466548c8822956e19579256e581",
+  "io.poietra.mathtex-outline.engine-tree": "d0f6d72213c65527ae9b7a4717390b48db1e9256",
+  "io.poietra.mathtex-outline.font-sha256": "e52df76208d1e41c8222496e9fb30cc2a1fe8a275b14995f3f6c3a9205db21fa",
+  "io.poietra.mathtex-outline.notice-sha256": "44eebb7f078626c705cf0d952509075410f86bb91af6e4102d38565c53ddb856",
   "io.poietra.mathtex-outline.target": "linux-amd64",
-  "io.poietra.mathtex-outline.toolchain-sha256": "95c98e10edff239e6ee237c9eac99dc96c06ba9fc712c30816ddc47d7db12f9e",
+  "io.poietra.mathtex-outline.toolchain-sha256": "40a85bd625fe868b295906a6a002a1cfae677be241f835898f467a113b626430",
   "io.poietra.snapshot-sandbox-envelope-version": "2",
   "io.poietra.sandbox-slice": "gated-oci-v1",
 });
@@ -439,6 +457,100 @@ describe("gated OCI Docker ownership", () => {
 });
 
 describe("gated OCI fixed profile", () => {
+  it("keeps production promotion closed until the external native artifact is pinned", () => {
+    const buildScriptPath = fileURLToPath(new URL("../scripts/build-fast-manim-gated-oci.mjs", import.meta.url));
+    const result = spawnSync(process.execPath, [buildScriptPath], { encoding: "utf8" });
+    expect(FAST_MANIM_GATED_OCI_SNAPSHOT_RELEASE_READY_V1).toBe(false);
+    expect(TRUSTED_IMAGE_LABELS["io.poietra.mathtex-outline.artifact-sha256"]).toBe("0".repeat(64));
+    expect({ status: result.status, stderr: result.stderr }).toEqual({
+      status: 1,
+      stderr: expect.stringContaining("awaiting the pinned-builder MathTex artifact digest"),
+    });
+  });
+
+  it("admits the RaTeX-only fraction source under the V3 server-owned plan", () => {
+    expect(mathTexScene).toContain('MathTex(r"\\frac{a}{b}")');
+    expect(deriveHermeticMathTexV3TransformPlan(mathTexScene, "GatedMathTexScene")).toEqual({
+      terminalWait: 2,
+      transforms: [
+        { kind: "move-to", x: 1.25, y: -0.75 },
+        { factor: 1.5, kind: "scale" },
+        { kind: "move-to", x: -0.25, y: 0.75 },
+        { factor: 0.5, kind: "scale" },
+      ],
+    });
+  });
+
+  it("admits the shared repeated-transform V4 source under the server-owned plan", () => {
+    expect(deriveHermeticPngV4TransformPlan(sandboxTransformedPngSource, "TransformedImageScene")).toEqual({
+      terminalWait: 2,
+      transforms: [
+        { kind: "move-to", x: 1.25, y: -0.75 },
+        { factor: 1.5, kind: "scale" },
+        { kind: "move-to", x: -0.25, y: 0.75 },
+        { factor: 0.5, kind: "scale" },
+      ],
+    });
+  });
+
+  it("keeps the immutable producer pin aligned across the builder, image, and admitted profile", () => {
+    const buildScript = readFileSync(
+      fileURLToPath(new URL("../scripts/build-fast-manim-gated-oci.mjs", import.meta.url)),
+      "utf8",
+    );
+    const containerfile = readFileSync(
+      fileURLToPath(new URL("../sandbox/fast-manim-gated-oci/Containerfile", import.meta.url)),
+      "utf8",
+    );
+    const verifier = readFileSync(
+      fileURLToPath(new URL("../sandbox/fast-manim-gated-oci/verify-mathtex-provider.py", import.meta.url)),
+      "utf8",
+    );
+    const snapshotContract = readFileSync(
+      fileURLToPath(new URL("./fast-manim-snapshot-contract.ts", import.meta.url)),
+      "utf8",
+    );
+    const buildPinnedLabels = Object.entries(TRUSTED_IMAGE_LABELS).filter(
+      ([key]) =>
+        key.startsWith("io.poietra.fast-manim.") ||
+        key.startsWith("io.poietra.mathtex-outline.engine-") ||
+        key === "io.poietra.mathtex-outline.artifact-sha256",
+    );
+
+    expect(FAST_MANIM_GATED_OCI_PROFILE_V1.requiredContainerLabels).toMatchObject(TRUSTED_IMAGE_LABELS);
+    for (const [key, value] of Object.entries(TRUSTED_IMAGE_LABELS)) {
+      expect(containerfile, `${key} must be emitted by the immutable image`).toContain(`${key}="${value}"`);
+    }
+    for (const [key, value] of buildPinnedLabels) {
+      expect(buildScript, `${key} must be pinned by the build helper`).toContain(value);
+    }
+    for (const key of [
+      "io.poietra.mathtex-outline.font-sha256",
+      "io.poietra.mathtex-outline.toolchain-sha256",
+    ] as const) {
+      const digest = TRUSTED_IMAGE_LABELS[key];
+      expect(verifier, `${key} must be verified inside the image`).toContain(digest);
+      expect(snapshotContract, `${key} must be admitted by the server`).toContain(digest);
+    }
+    const noticePath = fileURLToPath(
+      new URL("../engine/crates/poietra-mathtex-outline/PACKAGE-LICENSES.txt", import.meta.url),
+    );
+    expect(createHash("sha256").update(readFileSync(noticePath)).digest("hex")).toBe(
+      TRUSTED_IMAGE_LABELS["io.poietra.mathtex-outline.notice-sha256"],
+    );
+    for (const stale of [
+      "3083db9ed9a9a93c2808ee3f51189ceca92d230b",
+      "bff6f60534f820650d1c9e3c7d38627c56c6a0c6",
+      "3c64e0440fb5a2e0541aacc7a19bf87bdf46ac6f84059620ae5a0d812385cc1b",
+      "4d2a80abe1dbb0d800fd74c36d8a442afdb8efb6",
+      "270b237602705c240cab9daef824e6f0400d2f3c",
+      "8c1e29ae95275a55a7c0ccc21f77848b63378ef37a469bd56820f7a372ff97e2",
+    ]) {
+      expect(buildScript).not.toContain(stale);
+      expect(containerfile).not.toContain(stale);
+    }
+  });
+
   it("validates and materializes only the fixed sealed PNG attachment in Python", () => {
     const entrypointPath = fileURLToPath(
       new URL("../sandbox/fast-manim-gated-oci/gated-entrypoint.py", import.meta.url),
@@ -713,7 +825,9 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
     }
   });
 
-  it("loads the pinned native provider and returns a real V3 MathTex outline", { timeout: 60_000 }, async () => {
+  it("loads the pinned native provider and returns a transformed real V3 MathTex outline", {
+    timeout: 60_000,
+  }, async () => {
     const source = producerRequestFor(mathTexScene, "GatedMathTexScene", 3, "mathtex.py");
     const request = new FastManimSandboxRequestBundleV1(source);
     const execution = await runFastManimGatedOciJobV1({
@@ -726,6 +840,7 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
     const { snapshot, sourceRuntimeIdentity } = await verifyCombinedResult(execution.resultBytes, source);
     if (snapshot.kind !== "compiled") throw new Error("Expected a compiled MathTex V3 snapshot.");
     expect(snapshot.bundle.scene).toMatchObject({
+      duration: 2,
       requiredCapabilities: ["cubic-path-geometry"],
       source: { kind: "imported-manim-server-snapshot", snapshotVersion: 3 },
     });
@@ -738,6 +853,8 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
     expect(entity.geometry.path.subpaths.every((subpath) => subpath.closed && subpath.segments.length > 0)).toBe(true);
     expect(entity.appearance.fill).not.toBeNull();
     expect(entity.appearance.stroke).toBeNull();
+    expect(entity.lifetimes).toEqual([{ end: 2, start: 0 }]);
+    expect(entity.transform).toEqual({ m11: 0.75, m12: 0, m21: 0, m22: 0.75, tx: -0.25, ty: 0.75 });
     expect(sourceRuntimeIdentity?.mappings).toMatchObject([{ binding: { name: "equation" }, entityId: entity.id }]);
   });
 
@@ -775,6 +892,40 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
       sampler: "nearest",
     });
     expect(sourceRuntimeIdentity?.mappings).toMatchObject([{ binding: { name: "image" }, entityId: entity?.id }]);
+  });
+
+  it("applies repeated V4 PNG transforms and a terminal wait in the real OCI producer", {
+    timeout: 60_000,
+  }, async () => {
+    const source = sandboxTransformedPngProducerRequest();
+    const pngBytes = sandboxPngBytes();
+    const request = new FastManimSandboxRequestBundleV1(source, { pngBytes });
+    const execution = await runFastManimGatedOciJobV1({
+      deadlineEpochMs: Date.now() + 30_000,
+      image,
+      requestBytes: request.copyBytes(),
+      signal: new AbortController().signal,
+    });
+    expect(execution.cleanupVerified).toBe(true);
+    const { snapshot, sourceRuntimeIdentity } = await verifyCombinedResult(execution.resultBytes, source);
+    if (snapshot.kind !== "compiled") throw new Error("Expected a compiled transformed PNG V4 snapshot.");
+    expect(snapshot.bundle.scene).toMatchObject({
+      duration: 1,
+      requiredCapabilities: ["png-image"],
+      source: { kind: "imported-manim-server-snapshot", snapshotVersion: 4 },
+    });
+    expect(snapshot.bundle.scene.entities).toHaveLength(1);
+    const entity = snapshot.bundle.scene.entities[0]!;
+    if (entity.geometry.kind !== "image") throw new Error("Expected transformed image geometry.");
+    const halfExtent =
+      ((32 / 1_080) * source.runtimeConfig.frame.height * SANDBOX_TRANSFORMED_PNG_EXPECTED.cumulativeScale) / 2;
+    expect(entity.geometry.localRect).toEqual({
+      bottom: expect.closeTo(SANDBOX_TRANSFORMED_PNG_EXPECTED.centerY - halfExtent, 13),
+      left: expect.closeTo(SANDBOX_TRANSFORMED_PNG_EXPECTED.centerX - halfExtent, 13),
+      right: expect.closeTo(SANDBOX_TRANSFORMED_PNG_EXPECTED.centerX + halfExtent, 13),
+      top: expect.closeTo(SANDBOX_TRANSFORMED_PNG_EXPECTED.centerY + halfExtent, 13),
+    });
+    expect(sourceRuntimeIdentity?.mappings).toMatchObject([{ binding: { name: "image" }, entityId: entity.id }]);
   });
 
   it("isolates, seals, and correlates real V2 opacity/lifetime evidence", { timeout: 60_000 }, async () => {

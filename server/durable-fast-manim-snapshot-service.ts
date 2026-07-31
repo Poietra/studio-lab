@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { manimProjectIdSchema } from "../src/render-pipeline/contracts";
 import {
+  deriveHermeticMathTexMorphV5Plan,
+  deriveHermeticMathTexV3TransformPlan,
   deriveHermeticPngV4TransformPlan,
   type ExpectedFastManimSnapshotCorrelationV1,
   FAST_MANIM_SNAPSHOT_FALLBACK_V1,
@@ -285,8 +287,14 @@ export class DurableFastManimSnapshotServiceV1 {
     if (!sameSourceHead(before, after) || before.blob.digest !== snapshot.sourceHash) {
       return sourceChanged(view);
     }
+    let hermeticMathTexV3Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexV3Plan"];
     let hermeticPngV4Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticPngV4Plan"];
-    if (scene.source.snapshotVersion === 4) {
+    let hermeticMathTexMorphV5Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexMorphV5Plan"];
+    if (
+      scene.source.snapshotVersion === 3 ||
+      scene.source.snapshotVersion === 4 ||
+      scene.source.snapshotVersion === 5
+    ) {
       signal?.throwIfAborted();
       const source = await this.#blobs.readSource(this.#tenantId, before.blob, signal);
       this.#assertProjectActive(request.projectId, entry);
@@ -295,12 +303,20 @@ export class DurableFastManimSnapshotServiceV1 {
         Buffer.byteLength(source, "utf8") !== before.blob.byteSize ||
         createHash("sha256").update(source, "utf8").digest("hex") !== before.blob.digest
       ) {
-        throw new Error("The durable PNG snapshot source does not match its version-pinned blob receipt.");
+        throw new Error("The durable hermetic snapshot source does not match its version-pinned blob receipt.");
       }
-      hermeticPngV4Plan = deriveHermeticPngV4TransformPlan(source, view.sceneName);
+      if (scene.source.snapshotVersion === 3) {
+        hermeticMathTexV3Plan = deriveHermeticMathTexV3TransformPlan(source, view.sceneName);
+      } else if (scene.source.snapshotVersion === 4) {
+        hermeticPngV4Plan = deriveHermeticPngV4TransformPlan(source, view.sceneName);
+      } else {
+        hermeticMathTexMorphV5Plan = deriveHermeticMathTexMorphV5Plan(source, view.sceneName);
+      }
     }
     const expected: ExpectedFastManimSnapshotCorrelationV1 = {
       frame: { height: scene.camera.view.frameHeight, width: scene.camera.view.frameWidth },
+      ...(hermeticMathTexV3Plan ? { hermeticMathTexV3Plan } : {}),
+      ...(hermeticMathTexMorphV5Plan ? { hermeticMathTexMorphV5Plan } : {}),
       ...(hermeticPngV4Plan ? { hermeticPngV4Plan } : {}),
       projectId: view.projectId,
       requestId: view.requestId,

@@ -1,0 +1,54 @@
+{
+  "frame": {
+    "background": "opaque-black",
+    "camera": {
+      "height": 8.0,
+      "width": 14.222222222222221
+    },
+    "colorDomain": "srgb-u8",
+    "sampleTime": 0,
+    "viewport": {
+      "heightPx": 468,
+      "widthPx": 832
+    }
+  },
+  "png": {
+    "byteLength": 6435,
+    "channelOrder": "rgba",
+    "path": "expected.png",
+    "rgbaByteLength": 1557504,
+    "rgbaSha256": "445adf912fb519c75fb74fb8319e368b57efd2f81b786604be2cfe3f20253927",
+    "rowOrder": "top-to-bottom",
+    "sha256": "a96a0d6f89c2e289cf9a2c089dde3c61fcb8466b8c40e726688f89a970a33ec9"
+  },
+  "producer": {
+    "cairoVersion": "1.18.0",
+    "fastManimCommit": "d2480e8096a5cac64f7f86ed1d0d01f5c87839e3",
+    "manimVersion": "0.20.1",
+    "pillowVersion": "12.2.0",
+    "pycairoVersion": "1.29.0",
+    "pythonVersion": "3.13.11",
+    "renderer": "cairo"
+  },
+  "rendererConfig": {
+    "antialias": "default",
+    "backgroundColor": "#000000",
+    "backgroundOpacity": 1.0,
+    "cairoCompositor": false,
+    "cairoCompositorFades": false,
+    "cairoForkWorkers": 0,
+    "cairoStaticLayers": false,
+    "disableCaching": true,
+    "frameRate": 60.0,
+    "saveLastFrame": true,
+    "transparent": false,
+    "writeToMovie": false
+  },
+  "scene": {
+    "className": "RealPreviewScene",
+    "sourcePath": "fixtures/real-preview-harness/scene.py",
+    "sourceSha256": "be19c7339d0a33f31ad48ff8770b09ad4bd8b186363f1ccf5e2db9469d2e82b5"
+  },
+  "schema": "poietra.manim-compositor-reference",
+  "version": 1
+}

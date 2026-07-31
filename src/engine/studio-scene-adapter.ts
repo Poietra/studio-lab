@@ -25,8 +25,13 @@ import { type SceneEntityV1, type SceneIrV1, sceneIrV1Schema } from "./scene-ir"
 type VectorAppearanceV1 = Extract<SceneIrV1["entities"][number]["appearance"], { kind: "vector" }>;
 type EntityAppearanceV1 = SceneEntityV1["appearance"];
 type ImageGeometryV1 = Extract<SceneEntityV1["geometry"], { kind: "image" }>;
+type CubicPathGeometryV1 = Extract<SceneEntityV1["geometry"], { kind: "cubic-path" }>;
 type ImageSnapshotEvidenceV1 = Readonly<{
   geometry: ImageGeometryV1;
+  transform: SceneEntityV1["transform"];
+}>;
+type MathTexSnapshotEvidenceV1 = Readonly<{
+  geometry: CubicPathGeometryV1;
   transform: SceneEntityV1["transform"];
 }>;
 
@@ -37,6 +42,7 @@ export type StudioSceneIrAdapterEvidenceV1 = Readonly<{
   fidelity?: SceneIrV1["fidelity"];
   images?: Readonly<Record<string, ImageSnapshotEvidenceV1>>;
   mathTexOutlines?: Readonly<Record<string, MathTexOutlineArtifactV1>>;
+  mathTexSnapshots?: Readonly<Record<string, MathTexSnapshotEvidenceV1>>;
   paintOrder: readonly Readonly<{ entityId: string; sourceZIndex: number }>[];
   provenance: readonly string[];
 }>;
@@ -151,8 +157,8 @@ function studioCreateTransactionForEntity(
 
 /**
  * Resolves only evidence that the Studio adapter is allowed to claim. Imported
- * objects inherit camera, paint, appearance, and runtime identity from the
- * server-verified snapshot map. Studio-created Circle/Rectangle objects use
+ * objects inherit camera, paint, appearance, runtime identity, and supported
+ * image/MathTex geometry from the server-verified snapshot map. Studio-created Circle/Rectangle objects use
  * Manim's fixed vector defaults only while Studio carries known empty style
  * evidence. Studio-created MathTex uses a separately verified outline and the
  * fixed Manim white fill. Custom or unknown style stays on semantic fallback.
@@ -169,6 +175,7 @@ export function buildStudioSceneIrAdapterEvidenceV1(
   const appearances: Record<string, EntityAppearanceV1> = {};
   const entityIds: Record<string, string> = {};
   const images: Record<string, ImageSnapshotEvidenceV1> = {};
+  const mathTexSnapshots: Record<string, MathTexSnapshotEvidenceV1> = {};
   const paintOrder: { entityId: string; sourceZIndex: number }[] = [];
   const snapshotEntities = new Map(input.snapshot.scene.entities.map((entity) => [entity.id, entity]));
   const mappedRuntimeIds = new Set<string>();
@@ -208,9 +215,14 @@ export function buildStudioSceneIrAdapterEvidenceV1(
       continue;
     }
     const studioImage = entity.type === "ImageMobject";
+    const studioMathTex = entity.type === "MathTex";
     const runtimeImage = runtimeEntity.geometry.kind === "image" && runtimeEntity.appearance.kind === "image";
     const runtimeVector = runtimeEntity.geometry.kind !== "image" && runtimeEntity.appearance.kind === "vector";
-    if (mappedRuntimeIds.has(runtimeEntity.id) || (studioImage ? !runtimeImage : !runtimeVector)) {
+    const runtimeMathTex = runtimeEntity.geometry.kind === "cubic-path" && runtimeEntity.appearance.kind === "vector";
+    if (
+      mappedRuntimeIds.has(runtimeEntity.id) ||
+      (studioImage ? !runtimeImage : studioMathTex ? !runtimeMathTex : !runtimeVector)
+    ) {
       issues.push(
         issue(
           "render-style-unresolved",
@@ -225,6 +237,9 @@ export function buildStudioSceneIrAdapterEvidenceV1(
     entityIds[entity.id] = runtimeEntity.id;
     if (runtimeImage && runtimeEntity.geometry.kind === "image") {
       images[entity.id] = { geometry: runtimeEntity.geometry, transform: runtimeEntity.transform };
+    }
+    if (studioMathTex && runtimeEntity.geometry.kind === "cubic-path") {
+      mathTexSnapshots[entity.id] = { geometry: runtimeEntity.geometry, transform: runtimeEntity.transform };
     }
     paintOrder.push({ entityId: entity.id, sourceZIndex: runtimeEntity.sourceZIndex });
   }
@@ -281,11 +296,12 @@ export function buildStudioSceneIrAdapterEvidenceV1(
       },
       images,
       mathTexOutlines: input.mathTexOutlines,
+      mathTexSnapshots,
       paintOrder,
       provenance: [
         "server-verified imported snapshot and source/runtime identity",
-        Object.keys(images).length > 0
-          ? "verified imported image geometry and known Studio Circle/Rectangle/MathTex defaults"
+        Object.keys(images).length > 0 || Object.keys(mathTexSnapshots).length > 0
+          ? "verified imported image/MathTex geometry and known Studio Circle/Rectangle/MathTex defaults"
           : "known Studio Circle/Rectangle/MathTex defaults",
       ],
     },
@@ -497,6 +513,27 @@ function imageWorldCenter(image: ImageSnapshotEvidenceV1): EnginePointV1 {
   };
 }
 
+function mathTexLocalCenter(mathTex: MathTexSnapshotEvidenceV1): EnginePointV1 {
+  const points = mathTex.geometry.path.subpaths.flatMap((subpath) => [
+    subpath.start,
+    ...subpath.segments.flatMap(({ control1, control2, end }) => [control1, control2, end]),
+  ]);
+  const xCoordinates = points.map(({ x }) => x);
+  const yCoordinates = points.map(({ y }) => y);
+  return {
+    x: (Math.min(...xCoordinates) + Math.max(...xCoordinates)) / 2,
+    y: (Math.min(...yCoordinates) + Math.max(...yCoordinates)) / 2,
+  };
+}
+
+function mathTexWorldCenter(mathTex: MathTexSnapshotEvidenceV1): EnginePointV1 {
+  const center = mathTexLocalCenter(mathTex);
+  return {
+    x: mathTex.transform.m11 * center.x + mathTex.transform.m12 * center.y + mathTex.transform.tx,
+    y: mathTex.transform.m21 * center.x + mathTex.transform.m22 * center.y + mathTex.transform.ty,
+  };
+}
+
 function sameScenePoint(left: EnginePointV1, right: EnginePointV1) {
   const tolerance = 1e-9 * Math.max(1, Math.abs(left.x), Math.abs(left.y), Math.abs(right.x), Math.abs(right.y));
   return Math.abs(left.x - right.x) <= tolerance && Math.abs(left.y - right.y) <= tolerance;
@@ -516,6 +553,33 @@ function transformedImageTransform(
     tx: target.x + relativeScale * (image.transform.tx - center.x),
     ty: target.y + relativeScale * (image.transform.ty - center.y),
   };
+}
+
+function transformedMathTexTransform(
+  mathTex: MathTexSnapshotEvidenceV1,
+  target: EnginePointV1,
+  relativeScale: number,
+): SceneEntityV1["transform"] {
+  const center = mathTexWorldCenter(mathTex);
+  if (relativeScale === 1 && sameScenePoint(target, center)) return mathTex.transform;
+  return {
+    m11: relativeScale * mathTex.transform.m11,
+    m12: relativeScale * mathTex.transform.m12,
+    m21: relativeScale * mathTex.transform.m21,
+    m22: relativeScale * mathTex.transform.m22,
+    tx: target.x + relativeScale * (mathTex.transform.tx - center.x),
+    ty: target.y + relativeScale * (mathTex.transform.ty - center.y),
+  };
+}
+
+function uniformPositiveScale(transform: SceneEntityV1["transform"]): number | null {
+  const tolerance = Number.EPSILON * Math.max(1, Math.abs(transform.m11), Math.abs(transform.m22)) * 32;
+  return transform.m11 > 0 &&
+    transform.m12 === 0 &&
+    transform.m21 === 0 &&
+    Math.abs(transform.m11 - transform.m22) <= tolerance
+    ? transform.m11
+    : null;
 }
 
 function validateGlobalEvidence(input: StudioSceneIrAdapterInputV1, issues: StudioSceneIrAdapterIssueV1[]) {
@@ -548,9 +612,24 @@ function validateGlobalEvidence(input: StudioSceneIrAdapterInputV1, issues: Stud
     }
   }
   for (const id of Object.keys(input.evidence.mathTexOutlines ?? {})) {
-    if (scene.objectGraph.entities[id]?.type !== "MathTex") {
+    const entity = scene.objectGraph.entities[id];
+    if (entity?.type !== "MathTex" || studioCreateTransactionForEntity(input.proposedState, entity) === null) {
       issues.push(
-        issue("geometry-unsupported", `MathTex outline evidence references non-MathTex entity ${id}.`, {
+        issue("geometry-unsupported", `MathTex outline evidence does not reference a Studio-created MathTex ${id}.`, {
+          entityId: id,
+        }),
+      );
+    }
+  }
+  for (const id of Object.keys(input.evidence.mathTexSnapshots ?? {})) {
+    const entity = scene.objectGraph.entities[id];
+    if (
+      entity?.type !== "MathTex" ||
+      studioCreateTransactionForEntity(input.proposedState, entity) !== null ||
+      input.evidence.appearances[id]?.kind !== "vector"
+    ) {
+      issues.push(
+        issue("geometry-unsupported", `MathTex snapshot evidence does not reference one imported vector ${id}.`, {
           entityId: id,
         }),
       );
@@ -575,6 +654,8 @@ function validateGlobalEvidence(input: StudioSceneIrAdapterInputV1, issues: Stud
   }
   for (const entity of Object.values(scene.objectGraph.entities)) {
     const image = input.evidence.images?.[entity.id];
+    const mathTexOutline = input.evidence.mathTexOutlines?.[entity.id];
+    const mathTexSnapshot = input.evidence.mathTexSnapshots?.[entity.id];
     const appearance = input.evidence.appearances[entity.id];
     if (entity.type === "ImageMobject" && (!image || appearance?.kind !== "image")) {
       issues.push(
@@ -588,6 +669,20 @@ function validateGlobalEvidence(input: StudioSceneIrAdapterInputV1, issues: Stud
           entityId: entity.id,
         }),
       );
+    }
+    if (entity.type === "MathTex") {
+      const created = studioCreateTransactionForEntity(input.proposedState, entity) !== null;
+      if ((created && (!mathTexOutline || mathTexSnapshot)) || (!created && (!mathTexSnapshot || mathTexOutline))) {
+        issues.push(
+          issue(
+            "geometry-unsupported",
+            created
+              ? `Studio-created MathTex ${entity.id} requires only a browser-compiled outline.`
+              : `Imported MathTex ${entity.id} requires only its verified snapshot geometry.`,
+            { entityId: entity.id },
+          ),
+        );
+      }
     }
   }
   if (input.evidence.entityIds) {
@@ -658,6 +753,10 @@ function validateProgramsAndChannels(input: StudioSceneIrAdapterInputV1, issues:
       (channel.key === "content" && entity?.type !== "MathTex" && entity?.type !== "ImageMobject") ||
       (entity?.type === "ImageMobject" &&
         (channel.key === "content" || channel.key === "dimensions") &&
+        channel.samples.some(({ operationId }) => operationId !== undefined)) ||
+      (entity?.type === "MathTex" &&
+        input.evidence.mathTexSnapshots?.[channel.entityId] !== undefined &&
+        (channel.key === "content" || channel.key === "dimensions") &&
         channel.samples.some(({ operationId }) => operationId !== undefined))
     ) {
       issues.push(
@@ -667,13 +766,13 @@ function validateProgramsAndChannels(input: StudioSceneIrAdapterInputV1, issues:
       );
     }
     for (const sample of channel.samples) {
-      const snapshotOwnsImageBase =
-        entity?.type === "ImageMobject" &&
-        input.evidence.images?.[channel.entityId] !== undefined &&
+      const snapshotOwnsBaseDimensions =
+        ((entity?.type === "ImageMobject" && input.evidence.images?.[channel.entityId] !== undefined) ||
+          (entity?.type === "MathTex" && input.evidence.mathTexSnapshots?.[channel.entityId] !== undefined)) &&
         sample.operationId === undefined &&
         sample.kind === "exact" &&
         channel.key === "dimensions";
-      if (sample.knowledge?.kind === "unknown" && !snapshotOwnsImageBase) {
+      if (sample.knowledge?.kind === "unknown" && !snapshotOwnsBaseDimensions) {
         issues.push(
           issue("unknown-evidence", `Property channel ${recordId} contains unresolved evidence.`, {
             entityId: channel.entityId,
@@ -721,6 +820,7 @@ function compileEntities(input: StudioSceneIrAdapterInputV1, issues: StudioScene
       return [];
     }
     const image = isImage ? input.evidence.images?.[entity.id] : undefined;
+    const mathTexSnapshot = isMathTex ? input.evidence.mathTexSnapshots?.[entity.id] : undefined;
     if (isImage && (!image || appearance.kind !== "image")) {
       issues.push(
         issue("geometry-unsupported", `Image entity ${entity.id} has no usable verified snapshot geometry.`, {
@@ -746,9 +846,14 @@ function compileEntities(input: StudioSceneIrAdapterInputV1, issues: StudioScene
             issues,
           );
     const snapshotImageCenter = image ? imageWorldCenter(image) : undefined;
+    const snapshotMathTexCenter = mathTexSnapshot ? mathTexWorldCenter(mathTexSnapshot) : undefined;
     const baseImagePosition =
       image && entity.geometry?.position.kind === "known" ? entity.geometry.position.value : null;
     const baseImageScale = image && entity.geometry?.scale.kind === "known" ? entity.geometry.scale.value : null;
+    const baseMathTexPosition =
+      mathTexSnapshot && entity.geometry?.position.kind === "known" ? entity.geometry.position.value : null;
+    const baseMathTexScale =
+      mathTexSnapshot && entity.geometry?.scale.kind === "known" ? entity.geometry.scale.value : null;
     const position = resolveStaticKnowledge(
       entity,
       channelFor(scene, entity.id, "position"),
@@ -772,11 +877,11 @@ function compileEntities(input: StudioSceneIrAdapterInputV1, issues: StudioScene
     const mathTexContent = isMathTex
       ? resolveStaticMathTexContent(entity, channelFor(scene, entity.id, "content"), issues)
       : undefined;
-    const mathTexOutline = isMathTex ? input.evidence.mathTexOutlines?.[entity.id] : undefined;
-    if (isMathTex && (!mathTexContent || !mathTexOutline)) {
-      if (!mathTexOutline) {
+    const mathTexOutline = isMathTex && !mathTexSnapshot ? input.evidence.mathTexOutlines?.[entity.id] : undefined;
+    if (isMathTex && (!mathTexContent || (!mathTexOutline && !mathTexSnapshot))) {
+      if (!mathTexOutline && !mathTexSnapshot) {
         issues.push(
-          issue("geometry-unsupported", `MathTex entity ${entity.id} has no verified outline.`, {
+          issue("geometry-unsupported", `MathTex entity ${entity.id} has no verified outline or snapshot geometry.`, {
             entityId: entity.id,
           }),
         );
@@ -802,23 +907,51 @@ function compileEntities(input: StudioSceneIrAdapterInputV1, issues: StudioScene
       }
       imageRelativeScale = scale / baseImageScale;
     }
+    let mathTexRelativeScale: number | undefined;
+    if (mathTexSnapshot && snapshotMathTexCenter) {
+      const baseCenter = baseMathTexPosition
+        ? studioPointToScenePointV1(baseMathTexPosition, input.frame, input.evidence.camera.view.center)
+        : null;
+      const snapshotScale = uniformPositiveScale(mathTexSnapshot.transform);
+      if (
+        !baseCenter ||
+        !sameScenePoint(baseCenter, snapshotMathTexCenter) ||
+        !baseMathTexScale ||
+        baseMathTexScale <= 0 ||
+        snapshotScale === null ||
+        Math.abs(baseMathTexScale - snapshotScale) >
+          1e-9 * Math.max(1, Math.abs(baseMathTexScale), Math.abs(snapshotScale))
+      ) {
+        issues.push(
+          issue(
+            "unknown-evidence",
+            `Imported MathTex ${entity.id} semantic baseline does not match its verified runtime geometry.`,
+            { entityId: entity.id },
+          ),
+        );
+        return [];
+      }
+      mathTexRelativeScale = scale / baseMathTexScale;
+    }
 
     const geometry =
       isImage && image
         ? image.geometry
-        : isMathTex && mathTexOutline
-          ? { kind: "cubic-path" as const, path: mathTexOutline.path }
-          : entity.type === "Circle" && dimensions?.radius !== undefined
-            ? { center: { x: 0, y: 0 }, kind: "circle" as const, radius: dimensions.radius }
-            : entity.type === "Rectangle" && dimensions?.height !== undefined && dimensions.width !== undefined
-              ? {
-                  center: { x: 0, y: 0 },
-                  cornerRadius: 0,
-                  height: dimensions.height,
-                  kind: "rectangle" as const,
-                  width: dimensions.width,
-                }
-              : undefined;
+        : isMathTex && mathTexSnapshot
+          ? mathTexSnapshot.geometry
+          : isMathTex && mathTexOutline
+            ? { kind: "cubic-path" as const, path: mathTexOutline.path }
+            : entity.type === "Circle" && dimensions?.radius !== undefined
+              ? { center: { x: 0, y: 0 }, kind: "circle" as const, radius: dimensions.radius }
+              : entity.type === "Rectangle" && dimensions?.height !== undefined && dimensions.width !== undefined
+                ? {
+                    center: { x: 0, y: 0 },
+                    cornerRadius: 0,
+                    height: dimensions.height,
+                    kind: "rectangle" as const,
+                    width: dimensions.width,
+                  }
+                : undefined;
     if (!geometry || scale <= 0) {
       issues.push(
         issue("unknown-evidence", `Entity ${entity.id} has invalid geometry or scale.`, {
@@ -831,7 +964,9 @@ function compileEntities(input: StudioSceneIrAdapterInputV1, issues: StudioScene
     const transform =
       image && imageRelativeScale !== undefined
         ? transformedImageTransform(image, translation, imageRelativeScale)
-        : { m11: scale, m12: 0, m21: 0, m22: scale, tx: translation.x, ty: translation.y };
+        : mathTexSnapshot && mathTexRelativeScale !== undefined
+          ? transformedMathTexTransform(mathTexSnapshot, translation, mathTexRelativeScale)
+          : { m11: scale, m12: 0, m21: 0, m22: scale, tx: translation.x, ty: translation.y };
     return [
       {
         appearance,

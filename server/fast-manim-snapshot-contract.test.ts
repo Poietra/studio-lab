@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 
 import { digestAssetManifestV1, type SceneIrBundleV1, sceneIrBundleV1Schema } from "../src/engine/contracts";
 import {
+  deriveHermeticMathTexMorphV5Plan,
+  deriveHermeticMathTexV3TransformPlan,
   deriveHermeticPngV4TransformPlan,
   digestFastManimSnapshotBundleV1,
   type ExpectedFastManimSnapshotCorrelationV1,
@@ -13,6 +15,8 @@ import {
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V2,
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V3,
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V4,
+  FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V5,
+  FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V6,
   FAST_MANIM_SNAPSHOT_UNSUPPORTED_MESSAGES_V1,
   fastManimSnapshotAffineTransformChannelIdV2,
   fastManimSnapshotAffineTransformChannelProvenanceIdV2,
@@ -124,6 +128,98 @@ async function importedBundle(): Promise<SceneIrBundleV1> {
 
 type FixturePoint = Readonly<{ x: number; y: number }>;
 
+function lineCubicSubpath(points: readonly FixturePoint[], closed: boolean) {
+  if (points.length < 2) throw new Error("A fixture subpath requires at least two anchors.");
+  const [start, ...rest] = points;
+  const ends = closed ? [...rest, start!] : rest;
+  let current = start!;
+  return {
+    closed,
+    segments: ends.map((end) => {
+      const segment = { control1: current, control2: end, end };
+      current = end;
+      return segment;
+    }),
+    start: start!,
+  };
+}
+
+async function genericVmobjectBundleV6(): Promise<SceneIrBundleV1> {
+  const base = await importedBundle();
+  const [nonconvex, fillAndStroke, curvedStroke] = base.scene.entities;
+  if (!nonconvex || !fillAndStroke || !curvedStroke) throw new Error("Expected three static fixture entities.");
+  const stroke = {
+    cap: "butt" as const,
+    color: { alpha: 0.8, blue: 0.2, green: 0.4, red: 0.9 },
+    join: "miter" as const,
+    miterLimit: 10,
+    widthWorld: 0.075,
+  };
+  return sceneIrBundleV1Schema.parse({
+    ...base,
+    scene: {
+      ...base.scene,
+      entities: [
+        {
+          ...nonconvex,
+          geometry: {
+            kind: "cubic-path",
+            path: {
+              subpaths: [
+                lineCubicSubpath(
+                  [
+                    { x: -4, y: -1 },
+                    { x: -1, y: -1 },
+                    { x: -2.5, y: 0 },
+                    { x: -1, y: 1 },
+                    { x: -4, y: 1 },
+                  ],
+                  true,
+                ),
+                lineCubicSubpath(
+                  [
+                    { x: -3.5, y: -0.25 },
+                    { x: -3, y: 0.25 },
+                    { x: -2.5, y: -0.25 },
+                  ],
+                  true,
+                ),
+              ],
+            },
+          },
+        },
+        {
+          ...fillAndStroke,
+          appearance: { ...fillAndStroke.appearance, stroke },
+        },
+        {
+          ...curvedStroke,
+          appearance: { fill: null, kind: "vector", opacity: 1, stroke },
+          geometry: {
+            kind: "cubic-path",
+            path: {
+              subpaths: [
+                {
+                  closed: false,
+                  segments: [
+                    {
+                      control1: { x: 1.5, y: 2 },
+                      control2: { x: 3.5, y: -2 },
+                      end: { x: 4, y: 0 },
+                    },
+                  ],
+                  start: { x: 1, y: 0 },
+                },
+              ],
+            },
+          },
+        },
+      ],
+      source: { ...base.scene.source, snapshotVersion: 6 },
+    },
+  });
+}
+
 function closedFixtureSubpath(points: readonly [FixturePoint, FixturePoint, FixturePoint, FixturePoint]) {
   const [start, ...rest] = points;
   const ends = [...rest, start];
@@ -183,12 +279,110 @@ async function hermeticMathTexBundle(): Promise<SceneIrBundleV1> {
           ...base.scene.provenance[1],
           evidence: [
             `MathTex content digest ${"3".repeat(64)}`,
-            "MathTex toolchain digest 95c98e10edff239e6ee237c9eac99dc96c06ba9fc712c30816ddc47d7db12f9e",
-            "MathTex font digest d66ac1cc91c55c24d3636ae2df1238076debdff51841f9893fc5419cc2df3df7",
+            "MathTex toolchain digest 40a85bd625fe868b295906a6a002a1cfae677be241f835898f467a113b626430",
+            "MathTex font digest e52df76208d1e41c8222496e9fb30cc2a1fe8a275b14995f3f6c3a9205db21fa",
           ],
         },
       ],
       source: { ...base.scene.source, snapshotVersion: 3 },
+    },
+  });
+}
+
+const HERMETIC_MATHTEX_MORPH_SOURCE_V5 = String.raw`from manim import MathTex, Scene, TransformMatchingTex, smoothstep
+
+class ExampleScene(Scene):
+    def construct(self):
+        equation = MathTex("E = mc^2")
+        self.add(equation)
+        self.wait(1, frozen_frame=True)
+        maxwell = MathTex(r"\nabla \cdot \mathbf{E} = \frac{\rho}{\varepsilon_0}")
+        maxwell.move_to(equation.get_center())
+        self.play(
+            TransformMatchingTex(equation, maxwell, transform_mismatches=True),
+            run_time=1,
+            rate_func=smoothstep,
+        )
+        equation = maxwell
+        self.wait(0.5, frozen_frame=True)
+        restored = MathTex("E = mc^2")
+        restored.move_to(maxwell.get_center())
+        self.play(
+            TransformMatchingTex(maxwell, restored, transform_mismatches=True),
+            run_time=2,
+            rate_func=smoothstep,
+        )
+        maxwell = restored
+        equation = restored
+        self.wait(1, frozen_frame=True)
+`;
+
+async function hermeticMathTexMorphBundleV5(
+  plan = deriveHermeticMathTexMorphV5Plan(HERMETIC_MATHTEX_MORPH_SOURCE_V5, expected.sceneName),
+): Promise<SceneIrBundleV1> {
+  const base = await hermeticMathTexBundle();
+  const entity = base.scene.entities[0]!;
+  if (entity.geometry.kind !== "cubic-path") throw new Error("Expected cubic MathTex fixture geometry.");
+  const initial = entity.geometry.path;
+  const middle = structuredClone(initial);
+  middle.subpaths[0]!.segments[0]!.control1.x += 0.25;
+  const channelProvenanceId = fastManimSnapshotPathMorphChannelProvenanceIdV2(expected.sceneId, 0);
+  const [initialDigest, middleDigest] = plan.contentDigests;
+  const keyframes =
+    plan.keyframeTimes.length === 3
+      ? [
+          { at: plan.keyframeTimes[0], easingToNext: { kind: "smooth" as const }, value: initial },
+          { at: plan.keyframeTimes[1], easingToNext: { kind: "smooth" as const }, value: middle },
+          { at: plan.keyframeTimes[2], easingToNext: null, value: initial },
+        ]
+      : [
+          { at: plan.keyframeTimes[0], easingToNext: { kind: "smooth" as const }, value: initial },
+          { at: plan.keyframeTimes[1], easingToNext: { kind: "smooth" as const }, value: middle },
+          { at: plan.keyframeTimes[2], easingToNext: { kind: "smooth" as const }, value: middle },
+          { at: plan.keyframeTimes[3], easingToNext: null, value: initial },
+        ];
+  return sceneIrBundleV1Schema.parse({
+    ...base,
+    scene: {
+      ...base.scene,
+      animationChannels: [
+        {
+          entityId: entity.id,
+          id: fastManimSnapshotPathMorphChannelIdV2(expected.sceneId, 0),
+          keyframes,
+          kind: "path-morph",
+          provenanceId: channelProvenanceId,
+        },
+      ],
+      duration: plan.duration,
+      entities: [{ ...entity, lifetimes: [{ end: plan.duration, start: 0 }] }],
+      fidelity: {
+        evidence: [
+          "TransformMatchingTex is represented as a bounded aggregate cubic-path alignment; provider v1 exposes aggregate outlines without glyph identity",
+        ],
+        kind: "approximate",
+      },
+      provenance: [
+        { ...base.scene.provenance[0], evidence: ["fast-manim hermetic MathTex morph Scene snapshot profile v5"] },
+        {
+          ...base.scene.provenance[1],
+          evidence: [
+            `MathTex content digest ${initialDigest}`,
+            "MathTex toolchain digest 40a85bd625fe868b295906a6a002a1cfae677be241f835898f467a113b626430",
+            "MathTex font digest e52df76208d1e41c8222496e9fb30cc2a1fe8a275b14995f3f6c3a9205db21fa",
+          ],
+        },
+        {
+          evidence: [
+            `MathTex morph stage 0 content digests ${initialDigest} -> ${middleDigest}`,
+            `MathTex morph stage 1 content digests ${middleDigest} -> ${initialDigest}`,
+          ],
+          id: channelProvenanceId,
+          origin: "fast-manim-server-snapshot",
+        },
+      ],
+      requiredCapabilities: ["cubic-path-geometry", "path-morph-animation"],
+      source: { ...base.scene.source, snapshotVersion: 5 },
     },
   });
 }
@@ -564,6 +758,8 @@ function compiled(bundle: SceneIrBundleV1, expectedValue: ExpectedFastManimSnaps
   if (bundle.scene.source.kind !== "imported-manim-server-snapshot") throw new Error("Expected imported source.");
   const {
     frame: _serverFrame,
+    hermeticMathTexV3Plan: _serverHermeticMathTexV3Plan,
+    hermeticMathTexMorphV5Plan: _serverHermeticMathTexMorphV5Plan,
     hermeticPngV4Plan: _serverHermeticPngV4Plan,
     snapshotVersion: _serverSnapshotVersion,
     ...resultCorrelation
@@ -697,6 +893,90 @@ describe("fast-manim snapshot result v1", () => {
     ).resolves.toMatchObject({ kind: "unsupported" });
   });
 
+  it("seals bounded generic V6 leaves with nonconvex, multi-subpath, curved, and fill+stroke geometry", async () => {
+    const expectedV6 = { ...expected, snapshotVersion: 6 } as const;
+    const bundle = await genericVmobjectBundleV6();
+    const sealed = await parseProducer(compiled(bundle, expectedV6), expectedV6);
+    if (sealed.kind !== "compiled") throw new Error("Expected a compiled generic VMobject snapshot.");
+
+    expect(sealed.bundle.scene.entities).toHaveLength(3);
+    expect(sealed.bundle.scene.entities[0]?.geometry).toMatchObject({
+      kind: "cubic-path",
+      path: { subpaths: [{ closed: true }, { closed: true }] },
+    });
+    expect(sealed.bundle.scene.entities[1]?.appearance).toMatchObject({
+      fill: { rule: "nonzero" },
+      kind: "vector",
+      stroke: { cap: "butt", join: "miter", miterLimit: 10 },
+    });
+    expect(sealed.bundle.scene.entities[2]?.geometry).toMatchObject({
+      kind: "cubic-path",
+      path: { subpaths: [{ closed: false }] },
+    });
+    expect(
+      sealed.bundle.scene.provenance.every(
+        ({ evidence }) => evidence.length === 1 && evidence[0] === FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V6,
+      ),
+    ).toBe(true);
+    await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV6)).resolves.toEqual(sealed);
+  });
+
+  it("keeps generic V6 paint and topology admission fail-closed without relaxing V1", async () => {
+    const expectedV6 = { ...expected, snapshotVersion: 6 } as const;
+    const bundle = await genericVmobjectBundleV6();
+    const mutateEntity = (index: number, mutation: Record<string, unknown>) => ({
+      ...bundle,
+      scene: {
+        ...bundle.scene,
+        entities: bundle.scene.entities.map((entity, entityIndex) =>
+          entityIndex === index ? { ...entity, ...mutation } : entity,
+        ),
+      },
+    });
+    const openEntity = bundle.scene.entities[2]!;
+    const filledEntity = bundle.scene.entities[0]!;
+    const combinedEntity = bundle.scene.entities[1]!;
+    if (
+      openEntity.appearance.kind !== "vector" ||
+      filledEntity.appearance.kind !== "vector" ||
+      combinedEntity.appearance.kind !== "vector" ||
+      combinedEntity.appearance.stroke === null
+    ) {
+      throw new Error("Expected vector V6 fixture paint.");
+    }
+    const rejected = [
+      mutateEntity(2, {
+        appearance: {
+          ...openEntity.appearance,
+          fill: { color: { alpha: 1, blue: 1, green: 1, red: 1 }, rule: "nonzero" },
+        },
+      }),
+      mutateEntity(0, {
+        appearance: { ...filledEntity.appearance, fill: { ...filledEntity.appearance.fill!, rule: "evenodd" } },
+      }),
+      mutateEntity(1, {
+        appearance: {
+          ...combinedEntity.appearance,
+          stroke: { ...combinedEntity.appearance.stroke, cap: "round" },
+        },
+      }),
+      mutateEntity(1, { appearance: { ...combinedEntity.appearance, opacity: 0.5 } }),
+    ];
+    for (const invalid of rejected) {
+      await expect(parseProducer(compiled(invalid as SceneIrBundleV1, expectedV6), expectedV6)).rejects.toMatchObject({
+        code: "profile-violation",
+      });
+    }
+
+    const v1 = {
+      ...bundle,
+      scene: { ...bundle.scene, source: { ...bundle.scene.source, snapshotVersion: 1 as const } },
+    };
+    await expect(parseProducer(compiled(v1, expected), expected)).rejects.toMatchObject({
+      code: "profile-violation",
+    });
+  });
+
   it("seals one bounded hermetic MathTex outline with multiple subpaths and a counter", async () => {
     const expectedV3 = { ...expected, snapshotVersion: 3 } as const;
     const bundle = await hermeticMathTexBundle();
@@ -713,6 +993,137 @@ describe("fast-manim snapshot result v1", () => {
       ),
     ).toBe(true);
     await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV3)).resolves.toEqual(sealed);
+  });
+
+  it("re-derives static MathTex transforms while preserving the canonical outline", async () => {
+    const source = `from manim import MathTex, Scene
+
+class ExampleScene(Scene):
+    def construct(self):
+        equation = MathTex("E = mc^2")
+        self.add(equation)
+        equation.move_to((1.25, -0.75, 0_0))
+        equation.scale(1.5)
+        equation.move_to((-0.25, 0.75, 0))
+        equation.scale(0.5)
+        self.wait(2)
+`;
+    const sourceHash = createHash("sha256").update(source, "utf8").digest("hex");
+    const hermeticMathTexV3Plan = deriveHermeticMathTexV3TransformPlan(source, expected.sceneName);
+    expect(hermeticMathTexV3Plan).toEqual({
+      terminalWait: 2,
+      transforms: [
+        { kind: "move-to", x: 1.25, y: -0.75 },
+        { factor: 1.5, kind: "scale" },
+        { kind: "move-to", x: -0.25, y: 0.75 },
+        { factor: 0.5, kind: "scale" },
+      ],
+    });
+    const expectedV3 = { ...expected, hermeticMathTexV3Plan, snapshotVersion: 3, sourceHash } as const;
+    const base = await hermeticMathTexBundle();
+    const entity = base.scene.entities[0]!;
+    const transformed = sceneIrBundleV1Schema.parse({
+      ...base,
+      scene: {
+        ...base.scene,
+        duration: 2,
+        entities: [
+          {
+            ...entity,
+            lifetimes: [{ end: 2, start: 0 }],
+            transform: { m11: 0.75, m12: 0, m21: 0, m22: 0.75, tx: -0.25, ty: 0.75 },
+          },
+        ],
+        source: { ...base.scene.source, sourceHash },
+      },
+    });
+
+    const sealed = await parseProducer(compiled(transformed, expectedV3), expectedV3, source);
+    expect(sealed).toMatchObject({ kind: "compiled", bundle: { scene: { duration: 2 } } });
+    await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV3)).resolves.toEqual(sealed);
+
+    const wrongDuration = sceneIrBundleV1Schema.parse({
+      ...transformed,
+      scene: {
+        ...transformed.scene,
+        duration: 1,
+        entities: transformed.scene.entities.map((candidate) => ({
+          ...candidate,
+          lifetimes: [{ end: 1, start: 0 }],
+        })),
+      },
+    });
+    await expect(parseProducer(compiled(wrongDuration, expectedV3), expectedV3, source)).rejects.toMatchObject({
+      code: "profile-violation",
+    });
+
+    const machineRounded = sceneIrBundleV1Schema.parse({
+      ...transformed,
+      scene: {
+        ...transformed.scene,
+        entities: [
+          {
+            ...entity,
+            lifetimes: [{ end: 2, start: 0 }],
+            transform: {
+              m11: 0.75 + Number.EPSILON,
+              m12: 0,
+              m21: 0,
+              m22: 0.75 - Number.EPSILON,
+              tx: -0.25 + Number.EPSILON,
+              ty: 0.75 - Number.EPSILON,
+            },
+          },
+        ],
+      },
+    });
+    await expect(parseProducer(compiled(machineRounded, expectedV3), expectedV3, source)).resolves.toMatchObject({
+      kind: "compiled",
+    });
+
+    const wrongPlan = {
+      ...expectedV3,
+      hermeticMathTexV3Plan: {
+        ...hermeticMathTexV3Plan,
+        transforms: [{ factor: 2, kind: "scale" as const }, ...hermeticMathTexV3Plan.transforms.slice(1)],
+      },
+    };
+    await expect(parseProducer(compiled(transformed, wrongPlan), wrongPlan, source)).rejects.toMatchObject({
+      code: "profile-violation",
+    });
+
+    const drifted = sceneIrBundleV1Schema.parse({
+      ...transformed,
+      scene: {
+        ...transformed.scene,
+        entities: [
+          {
+            ...entity,
+            lifetimes: [{ end: 2, start: 0 }],
+            transform: { ...entity.transform, m11: 0.750_001, m22: 0.75, tx: -0.25, ty: 0.75 },
+          },
+        ],
+      },
+    });
+    await expect(parseProducer(compiled(drifted, expectedV3), expectedV3, source)).rejects.toMatchObject({
+      code: "profile-violation",
+    });
+  });
+
+  it("rejects a hermetic static transform plan whose cumulative scale underflows", () => {
+    const source = `from manim import MathTex, Scene
+
+class ExampleScene(Scene):
+    def construct(self):
+        equation = MathTex("E = mc^2")
+        self.add(equation)
+        equation.scale(1e-300)
+        equation.scale(1e-300)
+`;
+
+    expect(() => deriveHermeticMathTexV3TransformPlan(source, expected.sceneName)).toThrow(
+      /out-of-range cumulative scale/,
+    );
   });
 
   it("fails closed when profile V3 contains an open contour or more than one entity", async () => {
@@ -825,6 +1236,186 @@ describe("fast-manim snapshot result v1", () => {
     }
   });
 
+  it("seals one source-derived two-stage MathTex A/B/A morph as profile V5", async () => {
+    const sourceHash = createHash("sha256").update(HERMETIC_MATHTEX_MORPH_SOURCE_V5, "utf8").digest("hex");
+    const hermeticMathTexMorphV5Plan = deriveHermeticMathTexMorphV5Plan(
+      HERMETIC_MATHTEX_MORPH_SOURCE_V5,
+      expected.sceneName,
+    );
+    expect(hermeticMathTexMorphV5Plan).toMatchObject({
+      duration: 5.5,
+      keyframeTimes: [1, 2, 2.5, 4.5],
+    });
+    expect(hermeticMathTexMorphV5Plan.contentDigests[0]).toBe(hermeticMathTexMorphV5Plan.contentDigests[2]);
+    expect(hermeticMathTexMorphV5Plan.contentDigests[0]).not.toBe(hermeticMathTexMorphV5Plan.contentDigests[1]);
+    const expectedV5 = {
+      ...expected,
+      hermeticMathTexMorphV5Plan,
+      snapshotVersion: 5,
+      sourceHash,
+    } as const;
+    const bundle = await hermeticMathTexMorphBundleV5(hermeticMathTexMorphV5Plan);
+    const correlated = sceneIrBundleV1Schema.parse({
+      ...bundle,
+      scene: { ...bundle.scene, source: { ...bundle.scene.source, sourceHash } },
+    });
+    const sealed = await parseProducer(compiled(correlated, expectedV5), expectedV5, HERMETIC_MATHTEX_MORPH_SOURCE_V5);
+    expect(sealed).toMatchObject({
+      kind: "compiled",
+      bundle: {
+        scene: {
+          duration: 5.5,
+          fidelity: { kind: "approximate" },
+          requiredCapabilities: ["cubic-path-geometry", "path-morph-animation"],
+          source: { snapshotVersion: 5 },
+        },
+      },
+    });
+    if (sealed.kind !== "compiled") throw new Error("Expected a compiled MathTex morph snapshot.");
+    expect(
+      sealed.bundle.scene.provenance.every(
+        ({ evidence }) => evidence.length === 1 && evidence[0] === FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V5,
+      ),
+    ).toBe(true);
+    await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV5)).resolves.toEqual(sealed);
+  });
+
+  it("matches the producer's three-keyframe normalization for adjacent V5 morphs", async () => {
+    const source = HERMETIC_MATHTEX_MORPH_SOURCE_V5.replace("        self.wait(0.5, frozen_frame=True)\n", "");
+    const sourceHash = createHash("sha256").update(source, "utf8").digest("hex");
+    const hermeticMathTexMorphV5Plan = deriveHermeticMathTexMorphV5Plan(source, expected.sceneName);
+    expect(hermeticMathTexMorphV5Plan).toMatchObject({ duration: 5, keyframeTimes: [1, 2, 4] });
+    const expectedV5 = {
+      ...expected,
+      hermeticMathTexMorphV5Plan,
+      snapshotVersion: 5,
+      sourceHash,
+    } as const;
+    const bundle = await hermeticMathTexMorphBundleV5(hermeticMathTexMorphV5Plan);
+    const correlated = sceneIrBundleV1Schema.parse({
+      ...bundle,
+      scene: { ...bundle.scene, source: { ...bundle.scene.source, sourceHash } },
+    });
+    const sealed = await parseProducer(compiled(correlated, expectedV5), expectedV5, source);
+    expect(sealed).toMatchObject({
+      kind: "compiled",
+      bundle: { scene: { animationChannels: [{ keyframes: [{ at: 1 }, { at: 2 }, { at: 4 }] }] } },
+    });
+  });
+
+  it("fails closed on every V5 A/B/B/A trust boundary", async () => {
+    const sourceHash = createHash("sha256").update(HERMETIC_MATHTEX_MORPH_SOURCE_V5, "utf8").digest("hex");
+    const hermeticMathTexMorphV5Plan = deriveHermeticMathTexMorphV5Plan(
+      HERMETIC_MATHTEX_MORPH_SOURCE_V5,
+      expected.sceneName,
+    );
+    const expectedV5 = {
+      ...expected,
+      hermeticMathTexMorphV5Plan,
+      snapshotVersion: 5,
+      sourceHash,
+    } as const;
+    const base = await hermeticMathTexMorphBundleV5(hermeticMathTexMorphV5Plan);
+    const correlated = sceneIrBundleV1Schema.parse({
+      ...base,
+      scene: { ...base.scene, source: { ...base.scene.source, sourceHash } },
+    });
+    const channel = correlated.scene.animationChannels[0]!;
+    if (channel.kind !== "path-morph") throw new Error("Expected V5 path-morph fixture.");
+    const entity = correlated.scene.entities[0]!;
+    if (entity.geometry.kind !== "cubic-path") throw new Error("Expected V5 cubic fixture.");
+    const wrongTopologyPath = structuredClone(channel.keyframes[1]!.value);
+    wrongTopologyPath.subpaths[0]!.segments.pop();
+    const wrongTopology = {
+      ...correlated,
+      scene: {
+        ...correlated.scene,
+        animationChannels: [
+          {
+            ...channel,
+            keyframes: channel.keyframes.map((keyframe, index) =>
+              index === 1 ? { ...keyframe, value: wrongTopologyPath } : keyframe,
+            ),
+          },
+        ],
+      },
+    } as SceneIrBundleV1;
+    const wrongTime = sceneIrBundleV1Schema.parse({
+      ...correlated,
+      scene: {
+        ...correlated.scene,
+        animationChannels: [
+          {
+            ...channel,
+            keyframes: channel.keyframes.map((keyframe, index) =>
+              index === 2 ? { ...keyframe, at: keyframe.at + 1 / 60 } : keyframe,
+            ),
+          },
+        ],
+      },
+    });
+    const wrongEasing = sceneIrBundleV1Schema.parse({
+      ...correlated,
+      scene: {
+        ...correlated.scene,
+        animationChannels: [
+          {
+            ...channel,
+            keyframes: channel.keyframes.map((keyframe, index) =>
+              index === 0 ? { ...keyframe, easingToNext: { kind: "linear" } } : keyframe,
+            ),
+          },
+        ],
+      },
+    });
+    const wrongFidelity = sceneIrBundleV1Schema.parse({
+      ...correlated,
+      scene: { ...correlated.scene, fidelity: { kind: "exact" } },
+    });
+    const wrongToolchain = sceneIrBundleV1Schema.parse({
+      ...correlated,
+      scene: {
+        ...correlated.scene,
+        provenance: correlated.scene.provenance.map((record, index) =>
+          index === 1
+            ? {
+                ...record,
+                evidence: record.evidence.map((entry) =>
+                  entry.startsWith("MathTex toolchain digest") ? `MathTex toolchain digest ${"0".repeat(64)}` : entry,
+                ),
+              }
+            : record,
+        ),
+      },
+    });
+    const wrongRestored = sceneIrBundleV1Schema.parse({
+      ...correlated,
+      scene: {
+        ...correlated.scene,
+        animationChannels: [
+          {
+            ...channel,
+            keyframes: channel.keyframes.map((keyframe, index) =>
+              index === 3 ? { ...keyframe, value: channel.keyframes[1]!.value } : keyframe,
+            ),
+          },
+        ],
+      },
+    });
+    expect(entity.geometry.path).toEqual(channel.keyframes[0]!.value);
+    await expect(
+      parseProducer(compiled(wrongTopology, expectedV5), expectedV5, HERMETIC_MATHTEX_MORPH_SOURCE_V5),
+    ).rejects.toThrow(/matching cubic topology/i);
+    for (const rejected of [wrongTime, wrongEasing, wrongFidelity, wrongToolchain, wrongRestored]) {
+      await expect(
+        parseProducer(compiled(rejected, expectedV5), expectedV5, HERMETIC_MATHTEX_MORPH_SOURCE_V5),
+      ).rejects.toMatchObject({ code: "profile-violation" });
+    }
+    await expect(parseProducer(compiled(correlated, expectedV5), expectedV5)).rejects.toMatchObject({
+      code: "profile-violation",
+    });
+  });
+
   it.each(["nearest", "linear"] as const)("seals one bounded hermetic PNG with the %s sampler", async (sampler) => {
     const expectedV4 = { ...expected, snapshotVersion: 4 } as const;
     const bundle = await hermeticPngBundle(sampler);
@@ -879,12 +1470,11 @@ class ExampleScene(Scene):
       ...base,
       scene: {
         ...base.scene,
-        // A terminal wait is admitted source syntax, but V4 remains the
-        // one-second static snapshot profile.
-        duration: 1,
+        duration: 2,
         entities: [
           {
             ...entity,
+            lifetimes: [{ end: 2, start: 0 }],
             geometry: {
               ...entity.geometry,
               localRect: {
@@ -901,7 +1491,35 @@ class ExampleScene(Scene):
     });
 
     const sealed = await parseProducer(compiled(transformed, expectedV4), expectedV4, source);
+    expect(sealed).toMatchObject({ kind: "compiled", bundle: { scene: { duration: 2 } } });
     await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV4)).resolves.toEqual(sealed);
+
+    const transformedGeometry = transformed.scene.entities[0]!.geometry;
+    if (transformedGeometry.kind !== "image") throw new Error("Expected transformed image geometry.");
+    const machineRounded = sceneIrBundleV1Schema.parse({
+      ...transformed,
+      scene: {
+        ...transformed.scene,
+        entities: [
+          {
+            ...entity,
+            lifetimes: [{ end: 2, start: 0 }],
+            geometry: {
+              ...entity.geometry,
+              localRect: {
+                bottom: transformedGeometry.localRect.bottom - Number.EPSILON * 4,
+                left: transformedGeometry.localRect.left + Number.EPSILON * 4,
+                right: transformedGeometry.localRect.right - Number.EPSILON * 4,
+                top: transformedGeometry.localRect.top + Number.EPSILON * 4,
+              },
+            },
+          },
+        ],
+      },
+    });
+    await expect(parseProducer(compiled(machineRounded, expectedV4), expectedV4, source)).resolves.toMatchObject({
+      kind: "compiled",
+    });
 
     const wrongPlan = {
       ...expectedV4,
@@ -914,8 +1532,6 @@ class ExampleScene(Scene):
       code: "profile-violation",
     });
 
-    const transformedGeometry = transformed.scene.entities[0]!.geometry;
-    if (transformedGeometry.kind !== "image") throw new Error("Expected transformed image geometry.");
     const drifted = sceneIrBundleV1Schema.parse({
       ...transformed,
       scene: {
@@ -923,6 +1539,7 @@ class ExampleScene(Scene):
         entities: [
           {
             ...entity,
+            lifetimes: [{ end: 2, start: 0 }],
             geometry: {
               ...entity.geometry,
               localRect: {
@@ -1811,6 +2428,11 @@ class ExampleScene(Scene):
 
   it("defaults legacy persisted correlation metadata to profile V1 only", () => {
     const { snapshotVersion: _snapshotVersion, ...legacy } = expected;
+    const hermeticMathTexV3Plan = { terminalWait: 2, transforms: [{ factor: 1.5, kind: "scale" as const }] };
+    const hermeticMathTexMorphV5Plan = deriveHermeticMathTexMorphV5Plan(
+      HERMETIC_MATHTEX_MORPH_SOURCE_V5,
+      expected.sceneName,
+    );
     const hermeticPngV4Plan = { terminalWait: null, transforms: [] } as const;
     expect(expectedFastManimSnapshotCorrelationV1Schema.parse(legacy).snapshotVersion).toBe(1);
     expect(expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 3 }).snapshotVersion).toBe(
@@ -1819,16 +2441,46 @@ class ExampleScene(Scene):
     expect(expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 4 }).snapshotVersion).toBe(
       4,
     );
+    expect(expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 5 }).snapshotVersion).toBe(
+      5,
+    );
+    expect(expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 6 }).snapshotVersion).toBe(
+      6,
+    );
     expect(
       expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, hermeticPngV4Plan, snapshotVersion: 4 })
         .hermeticPngV4Plan,
     ).toEqual(hermeticPngV4Plan);
-    for (const snapshotVersion of [1, 2, 3] as const) {
+    expect(
+      expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, hermeticMathTexV3Plan, snapshotVersion: 3 })
+        .hermeticMathTexV3Plan,
+    ).toEqual(hermeticMathTexV3Plan);
+    expect(
+      expectedFastManimSnapshotCorrelationV1Schema.parse({
+        ...legacy,
+        hermeticMathTexMorphV5Plan,
+        snapshotVersion: 5,
+      }).hermeticMathTexMorphV5Plan,
+    ).toEqual(hermeticMathTexMorphV5Plan);
+    for (const snapshotVersion of [1, 2, 3, 5, 6] as const) {
       expect(() =>
         expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, hermeticPngV4Plan, snapshotVersion }),
       ).toThrow(/only for snapshot profile V4/i);
     }
-    expect(() => expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 5 })).toThrow();
+    for (const snapshotVersion of [1, 2, 4, 5, 6] as const) {
+      expect(() =>
+        expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, hermeticMathTexV3Plan, snapshotVersion }),
+      ).toThrow(/only for snapshot profile V3/i);
+    }
+    for (const snapshotVersion of [1, 2, 3, 4, 6] as const) {
+      expect(() =>
+        expectedFastManimSnapshotCorrelationV1Schema.parse({
+          ...legacy,
+          hermeticMathTexMorphV5Plan,
+          snapshotVersion,
+        }),
+      ).toThrow(/only for snapshot profile V5/i);
+    }
   });
 
   it("rejects unknown fields and newer envelope versions", async () => {

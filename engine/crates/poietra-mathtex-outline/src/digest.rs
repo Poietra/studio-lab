@@ -14,7 +14,7 @@ const TOOLCHAIN_MANIFEST_V1: &str = concat!(
     "normalization-height=1\n",
     "coordinate-quantum=0.000001\n",
     "fill-rule=nonzero\n",
-    "source-profile=manim-default-corpus-v1-ascii\n",
+    "source-profile=manim-default-corpus-v1-maxwell\n",
     "user-defined-macros=fail-closed\n",
 );
 
@@ -78,7 +78,7 @@ mod tests {
             "font provenance must invalidate the toolchain digest"
         );
         assert!(
-            TOOLCHAIN_MANIFEST_V1.contains("source-profile=manim-default-corpus-v1-ascii"),
+            TOOLCHAIN_MANIFEST_V1.contains("source-profile=manim-default-corpus-v1-maxwell"),
             "source compatibility policy must invalidate the toolchain digest"
         );
     }

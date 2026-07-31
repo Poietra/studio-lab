@@ -1,6 +1,7 @@
 import { expect, type Page, type Response, test } from "@playwright/test";
 import type { SceneIrBundleV1 } from "../src/engine/contracts";
 import type { VerifiedSourceRuntimeIdentityMapV1 } from "../src/engine/source-runtime-identity";
+import { proveManimCompositorParityV1 } from "./manim-compositor-parity";
 
 const SERVER_QUERY = "?previewRenderer=server";
 const SNAPSHOT_PATH = "/api/manim/projects/real-preview-harness/scene-snapshots";
@@ -51,6 +52,18 @@ const MOTION_PATH_ENTITY_IDS = Array.from({ length: 3 }, (_, index) => `${MOTION
 
 type RgbaPixel = readonly [number, number, number, number];
 
+type SnapshotRunBody = {
+  failure?: { code?: string };
+  projectId?: string;
+  requestId?: string;
+  revision?: number;
+  sceneName?: string;
+  snapshot?: { bundle?: SceneIrBundleV1; snapshotHash?: string };
+  sourcePath?: string;
+  sourceRuntimeIdentity?: VerifiedSourceRuntimeIdentityMapV1;
+  status?: string;
+};
+
 function expectPixelNear(actual: RgbaPixel, expected: RgbaPixel, tolerance = 4) {
   for (const [index, component] of actual.entries()) {
     expect(Math.abs(component - expected[index])).toBeLessThanOrEqual(tolerance);
@@ -87,16 +100,71 @@ async function selectScene(page: Page, name: string, sourcePath = "scene.py") {
   return response;
 }
 
+function isExternalResponseBodyEviction(error: unknown) {
+  return (
+    Boolean(process.env.POIETRA_E2E_EXTERNAL_BASE_URL?.trim()) &&
+    error instanceof Error &&
+    error.message.includes("Protocol error (Network.getResponseBody): No data found for resource with given identifier")
+  );
+}
+
+async function readSnapshotRunBody(response: Response, expectedStatus: string): Promise<SnapshotRunBody> {
+  try {
+    return (await response.json()) as SnapshotRunBody;
+  } catch (error) {
+    if (expectedStatus !== "verified" || !isExternalResponseBodyEviction(error)) throw error;
+
+    const requestBody = response.request().postDataJSON() as unknown;
+    if (
+      typeof requestBody !== "object" ||
+      requestBody === null ||
+      !("projectId" in requestBody) ||
+      typeof requestBody.projectId !== "string" ||
+      !("requestId" in requestBody) ||
+      typeof requestBody.requestId !== "string" ||
+      !("sceneName" in requestBody) ||
+      typeof requestBody.sceneName !== "string" ||
+      !("sourcePath" in requestBody) ||
+      typeof requestBody.sourcePath !== "string"
+    ) {
+      throw new Error("The external Scene snapshot request did not expose its lookup identity.");
+    }
+
+    const lookupUrl = new URL(response.url());
+    lookupUrl.search = new URLSearchParams({
+      sceneName: requestBody.sceneName,
+      sourcePath: requestBody.sourcePath,
+    }).toString();
+    const published = await response
+      .request()
+      .frame()
+      .page()
+      .evaluate(async (url) => {
+        const lookup = await fetch(url, {
+          cache: "no-store",
+          credentials: "same-origin",
+          headers: { accept: "application/json" },
+        });
+        if (!lookup.ok) throw new Error(`Scene snapshot lookup failed with HTTP ${lookup.status}.`);
+        return lookup.json() as Promise<unknown>;
+      }, lookupUrl.href);
+    const body = published as SnapshotRunBody;
+    if (
+      body.projectId !== requestBody.projectId ||
+      body.requestId !== requestBody.requestId ||
+      body.sceneName !== requestBody.sceneName ||
+      body.sourcePath !== requestBody.sourcePath
+    ) {
+      throw new Error("The external Scene snapshot lookup returned a different publication identity.");
+    }
+    return body;
+  }
+}
+
 async function expectRunStatus(responsePromise: Promise<Response>, status: string) {
   const response = await responsePromise;
   expect(response.ok()).toBe(true);
-  const body = (await response.json()) as {
-    failure?: { code?: string };
-    revision?: number;
-    snapshot?: { bundle?: SceneIrBundleV1; snapshotHash?: string };
-    sourceRuntimeIdentity?: VerifiedSourceRuntimeIdentityMapV1;
-    status?: string;
-  };
+  const body = await readSnapshotRunBody(response, status);
   expect(body.status).toBe(status);
   return body;
 }
@@ -120,9 +188,8 @@ async function expectPresented(page: Page, revision: number) {
 
 /**
  * Complementary renderer proof: render the server-sealed bundle in an
- * independent worker and read exact GPU texture pixels. The locator screenshot
- * remains an issue #78 real-GPU gate because this headless environment does
- * not compositor-capture even a fenced main-thread WebGPU clear.
+ * independent worker and read exact GPU texture pixels alongside the promoted
+ * visible-compositor proof.
  */
 async function readBackIndependentRendererPixels(
   page: Page,
@@ -221,14 +288,28 @@ async function expectWholeSceneFallback(page: Page, status: "failed" | "unsuppor
 }
 
 test("correlates a real fast-manim Scene with the retained host and verifies GPU texture output", async ({ page }) => {
-  test.info().annotations.push({
-    description: "Issue #78: visible WebGPU compositor golden requires a real-GPU browser lane.",
-    type: "evidence-gap",
-  });
+  test.setTimeout(120_000);
   const run = await expectVerifiedRun(await openRealWorkspace(page));
   expect(run.snapshot?.bundle?.scene?.entities).toHaveLength(3);
   expect(run.snapshot?.bundle?.scene.duration).toBe(1);
   await expectPresented(page, run.revision);
+  const bundle = run.snapshot?.bundle;
+  const snapshotHash = run.snapshot?.snapshotHash;
+  const snapshotRequestId = run.requestId;
+  if (!bundle || !snapshotHash || !snapshotRequestId) {
+    throw new Error("The verified server snapshot did not expose complete WebGPU proof inputs.");
+  }
+  const canvas = page.locator("[data-studio-preview-canvas]");
+  const canvasRoot = page.locator("[data-studio-canvas]");
+  await proveManimCompositorParityV1({
+    canvas,
+    canvasRoot,
+    engineRevisionHash: snapshotHash,
+    page,
+    serverPublicationRevision: run.revision,
+    snapshotRequestId,
+    snapshot: bundle,
+  });
 
   for (const name of ["circle", "rectangle", "line"]) {
     await expect(page.getByRole("button", { name: `Move ${name}`, exact: true })).toBeVisible();
@@ -239,15 +320,10 @@ test("correlates a real fast-manim Scene with the retained host and verifies GPU
   await page.keyboard.press("Escape");
   await expect(page.getByRole("button", { name: "Move circle", exact: true })).toHaveAttribute("aria-pressed", "false");
 
-  const canvas = page.locator("[data-studio-preview-canvas]");
   await canvas.evaluate((element) => {
     element.dataset.realProducerCanvas = "retained";
   });
-  const canvasRoot = page.locator("[data-studio-canvas]");
-  if (!run.snapshot?.snapshotHash) {
-    throw new Error("The verified server snapshot did not expose a snapshot hash.");
-  }
-  await expect(canvasRoot).toHaveAttribute("data-preview-revision", run.snapshot.snapshotHash);
+  await expect(canvasRoot).toHaveAttribute("data-preview-revision", snapshotHash);
 
   await page.getByRole("button", { name: "Set position" }).click();
   const circleButton = page.getByRole("button", { name: "Move circle", exact: true });
@@ -263,23 +339,23 @@ test("correlates a real fast-manim Scene with the retained host and verifies GPU
   );
   await page.getByRole("button", { name: "Discard" }).click();
   await expectPresented(page, run.revision);
-  await expect(canvasRoot).toHaveAttribute("data-preview-revision", run.snapshot.snapshotHash);
+  await expect(canvasRoot).toHaveAttribute("data-preview-revision", snapshotHash);
 
   const firstPacket = await canvasRoot.getAttribute("data-preview-packet-id");
   const viewport = await canvasRoot.getAttribute("data-preview-viewport");
-  if (!run.snapshot.bundle || !viewport) {
+  if (!viewport) {
     throw new Error("The verified server snapshot did not expose complete WebGPU proof inputs.");
   }
   const proof = await readBackIndependentRendererPixels(page, {
-    revision: run.snapshot.snapshotHash,
+    revision: snapshotHash,
     sampleTime: 0,
-    snapshot: run.snapshot.bundle,
+    snapshot: bundle,
     viewport,
   });
-  expect(proof.frame).toMatchObject({ kind: "frame-presented", revision: run.snapshot.snapshotHash, sampleTime: 0 });
+  expect(proof.frame).toMatchObject({ kind: "frame-presented", revision: snapshotHash, sampleTime: 0 });
   expect(proof.evidence).toMatchObject({
     packetId: proof.frame.packetId,
-    revision: run.snapshot.snapshotHash,
+    revision: snapshotHash,
     sampleTime: 0,
   });
   expect(`${proof.evidence.viewport.widthPx}x${proof.evidence.viewport.heightPx}`).toBe(viewport);

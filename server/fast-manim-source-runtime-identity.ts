@@ -157,13 +157,28 @@ const STUDIO_SUPPORTED_CONSTRUCTORS_V1_TO_V3 = new Set([
   "VGroup",
 ]);
 
+const STUDIO_SUPPORTED_CONSTRUCTORS_V6 = new Set([
+  "Arc",
+  "Circle",
+  "CubicBezier",
+  "Line",
+  "Polygon",
+  "Rectangle",
+  "Square",
+  "Triangle",
+]);
+
 function studioSupportsConstructor(
   constructor: string,
   snapshotVersion: ExpectedFastManimSnapshotCorrelationV1["snapshotVersion"],
 ) {
-  return (
-    STUDIO_SUPPORTED_CONSTRUCTORS_V1_TO_V3.has(constructor) || (snapshotVersion === 4 && constructor === "ImageMobject")
-  );
+  // V5 intentionally represents one aggregate render track whose three live
+  // Python aliases cannot identify one editable source object. It remains
+  // display-only even if producer evidence attempts to select one alias.
+  if (snapshotVersion === 5) return false;
+  if (snapshotVersion === 4) return constructor === "ImageMobject";
+  if (snapshotVersion === 6) return STUDIO_SUPPORTED_CONSTRUCTORS_V6.has(constructor);
+  return STUDIO_SUPPORTED_CONSTRUCTORS_V1_TO_V3.has(constructor);
 }
 
 function sourceBindingKey(binding: Readonly<{ name: string; ordinal?: number; span: SourceBindingV1["span"] }>) {
@@ -194,10 +209,35 @@ function topLevelAssignmentOperators(code: string) {
   return count;
 }
 
+function bracketContinuedStatementCode(
+  lines: ReturnType<typeof analyzePythonSource>["lines"],
+  startIndex: number,
+  endIndexExclusive: number,
+) {
+  const parts: string[] = [];
+  for (let index = startIndex; index < endIndexExclusive; index += 1) {
+    const line = lines[index];
+    if (
+      !line ||
+      line.continuedFromPrevious ||
+      line.continuesToNext ||
+      /\\\s*$/.test(line.code) ||
+      (index > startIndex && line.bracketDepthBefore === 0)
+    ) {
+      return null;
+    }
+    parts.push(line.code);
+    if (line.bracketDepthAfter === 0) return parts.join("\n");
+  }
+  return null;
+}
+
 /**
  * Builds all byte-exact Python Name-token coordinates once. It also derives a
  * deliberately narrower Studio site set only when every construct binding
- * ordinal can be accounted for by one simple, single-line Name assignment.
+ * ordinal can be accounted for by one simple Name assignment. Parenthesized
+ * continuations are treated as one logical statement; explicit backslash
+ * continuations and every other ambiguous binding form still fail closed.
  * Claims then perform bounded O(1) lookups rather than rescanning source.
  */
 function buildSourceBindingLookup(
@@ -231,7 +271,15 @@ function buildSourceBindingLookup(
   for (let lineIndex = sourceBlock.bodyStart; lineIndex < sourceBlock.bodyEnd; lineIndex += 1) {
     const line = analysis.lines[lineIndex];
     if (!line || !isPythonStatementStart(line)) continue;
-    const code = line.code;
+    let code = line.code;
+    if (snapshotVersion === 6) {
+      const continuedCode = bracketContinuedStatementCode(analysis.lines, lineIndex, sourceBlock.bodyEnd);
+      if (continuedCode === null) {
+        proofComplete = false;
+        continue;
+      }
+      code = continuedCode;
+    }
     if (
       /:=/.test(code) ||
       /^\s*(?:_|\p{ID_Start})(?:_|\p{ID_Continue})*\s*(?::|(?:\*\*|\/\/|<<|>>|[+\-*/%@&|^])=)/u.test(code) ||
@@ -248,9 +296,7 @@ function buildSourceBindingLookup(
     if (
       assignments !== 1 ||
       !direct ||
-      line.bracketDepthAfter !== 0 ||
-      line.continuesToNext ||
-      line.continuedFromPrevious
+      (snapshotVersion !== 6 && (line.bracketDepthAfter !== 0 || line.continuesToNext || line.continuedFromPrevious))
     ) {
       proofComplete = false;
       continue;
@@ -708,6 +754,18 @@ export function verifyFastManimSourceRuntimeIdentityV1(
         record.entityId === entity.id &&
         record.provenanceId === entity.provenanceId,
       "Complete identity evidence does not correspond one-to-one with snapshot provenance.",
+    );
+  }
+  if (input.expected.snapshotVersion === 5) {
+    const record = records[0];
+    requireIdentity(
+      records.length === 1 &&
+        isPlainObject(record) &&
+        record.status === "ambiguous" &&
+        Array.isArray(record.reasons) &&
+        JSON.stringify(record.reasons) === JSON.stringify(["multiple-active-source-bindings"]) &&
+        mappings.length === 0,
+      "Hermetic MathTex morph V5 identity must remain one explicitly ambiguous display-only render track.",
     );
   }
   const map = {

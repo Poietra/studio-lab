@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { accessSync, existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { accessSync, existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 
 const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
@@ -23,6 +23,12 @@ const nativeTestByEntryId = new Map([
   ["png-alpha-edge-camera--midpoint", "renders_png_alpha_edge_camera_midpoint_with_fallback_adapter"],
   ["mathtex-nested-radical-fraction--static", "renders_mathtex_nested_radical_fraction_with_fallback_adapter"],
   ["generic-stroke-topology--sample", "renders_shared_generic_stroke_fixture_with_fallback_adapter"],
+  ["real-mathtex-morph-v5--a-initial", "renders_real_mathtex_morph_v5_samples_with_fallback_adapter"],
+  ["real-mathtex-morph-v5--outbound-midpoint", "renders_real_mathtex_morph_v5_samples_with_fallback_adapter"],
+  ["real-mathtex-morph-v5--maxwell-hold", "renders_real_mathtex_morph_v5_samples_with_fallback_adapter"],
+  ["real-mathtex-morph-v5--return-midpoint", "renders_real_mathtex_morph_v5_samples_with_fallback_adapter"],
+  ["real-mathtex-morph-v5--a-restored", "renders_real_mathtex_morph_v5_samples_with_fallback_adapter"],
+  ["real-generic-vmobject-v6--static", "renders_real_generic_vmobject_v6_static_with_fallback_adapter"],
 ]);
 const expectedArtifactIds = corpus.entries.map(({ id }) => id).sort();
 const configuredArtifactIds = [...nativeTestByEntryId.keys()].sort();
@@ -70,9 +76,12 @@ const environment = {
   WGPU_BACKEND: process.env.WGPU_BACKEND ?? "vulkan",
 };
 
-for (const entry of corpus.entries) {
+const nativeTests = corpus.entries.map((entry) => {
   const nativeTest = nativeTestByEntryId.get(entry.id);
   if (!nativeTest) throw new Error(`Missing native visual parity producer for ${entry.id}.`);
+  return nativeTest;
+});
+for (const nativeTest of new Set(nativeTests)) {
   execFileSync(
     cargo,
     [

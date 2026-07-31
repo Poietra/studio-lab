@@ -30,6 +30,12 @@ runtime label mismatch is rejected; changing an expected provenance value
 requires a new profile digest and signed release. Image inspection must match
 the complete label set before readiness and again before dispatch.
 
+The current #280 profile deliberately carries an all-zero native-artifact
+promotion sentinel. The build helper, Containerfile, and production backend all
+reject that sentinel. The broker therefore remains unavailable until the
+external amd64 double-clean derivation supplies the exact artifact SHA-256 and
+the pin is replaced atomically; the sentinel is never valid operator evidence.
+
 The service must run as the configured dedicated non-root broker user. Its
 rootless Docker socket must be owned by that user with mode `0600` in a private
 directory. Install `sandbox/fast-manim-gated-oci/seccomp.v1.json` under a
@@ -88,7 +94,7 @@ a rebuilt mutable tag.
 
 The required lane creates a short-lived signed release for the supplied image
 and fixed profile, executes the existing V1 supported Scene, verifies a real
-V3 `MathTex("E = mc^2")` snapshot through a separate client/runner, checks the
+V3 `MathTex(r"\frac{a}{b}")` snapshot through a separate client/runner, checks the
 V1 unsupported result, and then requires bounded cleanup of both clients and
 the broker. Missing or malformed inputs fail the required command rather than
 silently skipping it.

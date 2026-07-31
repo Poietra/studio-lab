@@ -436,6 +436,8 @@ describe("canvas worker v1 protocol", () => {
     const evidence = {
       adapter: {
         backend: "BrowserWebGpu",
+        browserArchitecture: "blackwell",
+        browserVendor: "nvidia",
         deviceId: 0,
         deviceType: "Other",
         driver: "",
@@ -444,7 +446,7 @@ describe("canvas worker v1 protocol", () => {
         source: "worker-wgpu-adapter-info",
         subgroupMaxSize: 128,
         subgroupMinSize: 4,
-        vendorId: 4_318,
+        vendorId: 0,
       },
       device: {
         label: "poietra canvas device v1",
@@ -462,6 +464,23 @@ describe("canvas worker v1 protocol", () => {
       version: 1,
     };
     expect(canvasAdapterEvidenceV1Schema.parse(evidence)).toEqual(evidence);
+    const { browserArchitecture: _architecture, browserVendor: _vendor, ...preV4Adapter } = evidence.adapter;
+    const preV4Evidence = { ...evidence, adapter: preV4Adapter };
+    expect(canvasAdapterEvidenceV1Schema.parse(preV4Evidence)).toEqual(preV4Evidence);
+    for (const syntheticNativeIdentity of [
+      { deviceId: 0x2db9 },
+      { deviceType: "DiscreteGpu" },
+      { driver: "595.71" },
+      { driverInfo: "D3D12" },
+      { vendorId: 0x10de },
+    ]) {
+      expect(
+        canvasAdapterEvidenceV1Schema.safeParse({
+          ...evidence,
+          adapter: { ...evidence.adapter, ...syntheticNativeIdentity },
+        }).success,
+      ).toBe(false);
+    }
     expect(
       canvasAdapterEvidenceResponseV1Schema.parse({
         kind: "unavailable",

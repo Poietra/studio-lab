@@ -5,7 +5,8 @@ import { parseVerifiedSceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1, digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
 import { type MathTexOutlineResponseV1, mathTexOutlineResponseV1Schema } from "../engine/mathtex-outline";
 import { applySceneIrDeltaV1, createSceneIrDeltaV1 } from "../engine/scene-delta";
-import { createStudioEntitiesProgram } from "./authoring-commands";
+import { importManimScene } from "../render-pipeline/source-import";
+import { createInspectorEntityEditProgram, createStudioEntitiesProgram } from "./authoring-commands";
 import { canonicalEditorWorkingRevision } from "./editor-revision-policy";
 import { evaluateWorkingState, programRecord } from "./evaluator";
 import {
@@ -19,10 +20,12 @@ import { EDIT_OPERATION_VERSION } from "./operations";
 import {
   PRISTINE_WORKING_REVISION,
   type StudioPreviewSnapshotProviderV1,
+  type StudioPreviewSourceRuntimeMappingV1,
   type StudioVerifiedPreviewSnapshotV1,
   studioPreviewWorkspaceKeyV1,
 } from "./preview-snapshot-provider";
 import { createMathTexFixturePreviewSnapshotProviderV1 } from "./preview-snapshot-provider.fixture";
+import { createDirectManipulationPositionProgram, createDirectManipulationScaleProgram } from "./suggestion-program";
 import {
   claimStudioPreviewCanvasV1,
   compileStudioPreviewSceneV1,
@@ -30,6 +33,8 @@ import {
   digestStudioPreviewSceneRevisionV1,
   type StudioPreviewSnapshotMetadataStateV1,
   studioPreviewHostReadyForSceneUpdateV1,
+  studioPreviewInteractionAuthorityV1,
+  studioPreviewInteractionEntityIdsV1,
   studioPreviewSnapshotMetadataForWorkspaceV1,
 } from "./use-preview-renderer";
 
@@ -327,6 +332,129 @@ async function linePreviewInput() {
   };
 }
 
+async function importedMathTexPreviewInput() {
+  const base = await compilablePreviewInput();
+  const runtimeEntity = base.snapshot.snapshot.scene.entities[0];
+  const outline = compiledMathTexResponse().result;
+  const imported = importManimScene(
+    `from manim import *
+
+class MathTexScene(Scene):
+    def construct(self):
+        equation = MathTex("E = mc^2")
+        self.add(equation)
+        # poietra:position {"kind":"absolute","value":{"x":400,"y":220},"variable":"equation","version":1}
+        equation.move_to((2, -1, 0))
+        # poietra:scale {"kind":"exact","value":1.5,"variable":"equation","version":1}
+        equation.scale(1.5)
+        # poietra:anchor 0.000
+        self.wait(2)
+`,
+    "scene.py",
+    "MathTexScene",
+    { height: 9, width: 16 },
+  );
+  if (!runtimeEntity || outline.kind !== "compiled" || !imported) {
+    throw new Error("Imported MathTex preview fixture is incomplete");
+  }
+  const entityId = "source:scene.py#MathTexScene:equation";
+  const runtimeEntityId = "runtime:equation";
+  const runtimeSceneState = imported.runtimeSceneState;
+  const unsigned = await parseVerifiedSceneIrBundleV1({
+    assets: base.snapshot.snapshot.assets,
+    scene: {
+      ...base.snapshot.snapshot.scene,
+      entities: [
+        {
+          ...runtimeEntity,
+          appearance: {
+            fill: { color: { alpha: 1, blue: 1, green: 1, red: 1 }, rule: "nonzero" },
+            kind: "vector",
+            opacity: 1,
+            stroke: null,
+          },
+          geometry: { kind: "cubic-path", path: outline.path },
+          id: runtimeEntityId,
+          transform: { m11: 1.5, m12: 0, m21: 0, m22: 1.5, tx: 2, ty: -1 },
+        },
+      ],
+      requiredCapabilities: ["cubic-path-geometry"],
+      source: {
+        ...base.snapshot.snapshot.scene.source,
+        snapshotHash: "0".repeat(64),
+        snapshotVersion: 3,
+        sourceHash: imported.sourceHash,
+      },
+    },
+  });
+  const revision = await digestFastManimSnapshotBundleInBrowserV1(unsigned);
+  const snapshotBundle = await parseVerifiedSceneIrBundleV1({
+    ...unsigned,
+    scene: { ...unsigned.scene, source: { ...unsigned.scene.source, snapshotHash: revision } },
+  });
+  const workingState: WorkingState = {
+    ...base.proposedState.base,
+    appliedPrograms: [],
+    runtimeSceneState,
+    sourceSnapshot: {
+      ...base.proposedState.base.sourceSnapshot,
+      hash: `sha256:${imported.sourceHash}`,
+      sourceId: "scene.py",
+    },
+    stagedPrograms: [],
+    staticSemanticState: imported.staticSemanticState,
+  };
+  const position = createDirectManipulationPositionProgram({
+    capturedPlayhead: 0,
+    delta: { x: 80, y: -80 },
+    positions: { [entityId]: { x: 400, y: 220 } },
+    scene: runtimeSceneState,
+    start: 0,
+    targetEntityIds: [entityId],
+    transactionId: "move-imported-mathtex",
+  });
+  const scale = createDirectManipulationScaleProgram({
+    capturedPlayhead: 0,
+    interval: { end: 0, start: 0 },
+    scales: { [entityId]: { from: 1.5, to: 3 } },
+    scene: runtimeSceneState,
+    targetEntityIds: [entityId],
+    transactionId: "scale-imported-mathtex",
+  });
+  if (position.kind !== "valid" || scale.kind !== "valid") {
+    throw new Error(
+      `Imported MathTex edit fixture programs did not validate: ${JSON.stringify([position.issues, scale.issues])}`,
+    );
+  }
+  const snapshot: StudioVerifiedPreviewSnapshotV1 = {
+    ...base.snapshot,
+    correlation: {
+      ...base.snapshot.correlation,
+      context: {
+        ...base.snapshot.correlation.context,
+        sceneName: "MathTexScene",
+        sourceHash: imported.sourceHash,
+        sourcePath: "scene.py",
+      },
+      engineRevisionHash: revision,
+    },
+    snapshot: snapshotBundle,
+    sourceRuntimeIdentity: new Map([
+      ["equation", { bindingId: "binding:equation", entityId: runtimeEntityId, sourceName: "equation" }],
+    ]),
+  };
+  return {
+    edited: evaluateWorkingState({
+      ...workingState,
+      appliedPrograms: [programRecord(position.program, position), programRecord(scale.program, scale)],
+    }),
+    entityId,
+    runtimeEntityId,
+    snapshot,
+    workingState,
+  };
+}
+
 describe("claimStudioPreviewCanvasV1", () => {
   it("claims a canvas exactly once so StrictMode remounts must mint a fresh element", () => {
     const canvas = {};
@@ -336,6 +464,72 @@ describe("claimStudioPreviewCanvasV1", () => {
     // and requests a new canvas epoch instead of re-transferring the element.
     expect(claimStudioPreviewCanvasV1(canvas)).toBe(false);
     expect(claimStudioPreviewCanvasV1({})).toBe(true);
+  });
+});
+
+describe("studioPreviewInteractionAuthorityV1", () => {
+  it("keeps aggregate MathTex morph identity display-only even if mappings are supplied", async () => {
+    const { snapshot } = await linePreviewInput();
+    const source = snapshot.snapshot.scene.source;
+    if (source.kind !== "imported-manim-server-snapshot") throw new Error("Expected imported snapshot source.");
+    const v5 = {
+      ...snapshot,
+      snapshot: {
+        ...snapshot.snapshot,
+        scene: { ...snapshot.snapshot.scene, source: { ...source, snapshotVersion: 5 } },
+      },
+    } as StudioVerifiedPreviewSnapshotV1;
+    const authority = studioPreviewInteractionAuthorityV1(v5);
+    expect(authority).toEqual({ kind: "display-only", reason: "aggregate-mathtex-morph-lineage" });
+    expect(
+      studioPreviewInteractionEntityIdsV1(
+        new Map([["equation", { bindingId: "binding:equation", entityId: "runtime-line", sourceName: "equation" }]]),
+        authority,
+      ),
+    ).toEqual([]);
+  });
+
+  it("makes unverified V6 identity display-only and admits only mapped runtime hit targets", async () => {
+    const { snapshot } = await linePreviewInput();
+    const source = snapshot.snapshot.scene.source;
+    if (source.kind !== "imported-manim-server-snapshot") throw new Error("Expected imported snapshot source.");
+    const partialIdentity = new Map<string, StudioPreviewSourceRuntimeMappingV1>([
+      ["line", { bindingId: "binding:line", entityId: "runtime-line", sourceName: "line" }],
+    ]);
+    const fullIdentity = new Map<string, StudioPreviewSourceRuntimeMappingV1>([
+      ...partialIdentity,
+      ["polygon", { bindingId: "binding:polygon", entityId: "runtime-polygon", sourceName: "polygon" }],
+    ]);
+    const displayOnly = { kind: "display-only", reason: "source-runtime-identity-unverified" } as const;
+    expect(studioPreviewInteractionAuthorityV1({ ...snapshot, sourceRuntimeIdentity: null })).toEqual({
+      kind: "interactive",
+    });
+    for (const { expectedAuthority, expectedEntityIds, identity } of [
+      { expectedAuthority: displayOnly, expectedEntityIds: [], identity: null },
+      { expectedAuthority: displayOnly, expectedEntityIds: [], identity: new Map() },
+      {
+        expectedAuthority: { kind: "interactive" } as const,
+        expectedEntityIds: ["runtime-line"],
+        identity: partialIdentity,
+      },
+      {
+        expectedAuthority: { kind: "interactive" } as const,
+        expectedEntityIds: ["runtime-line", "runtime-polygon"],
+        identity: fullIdentity,
+      },
+    ]) {
+      const v6 = {
+        ...snapshot,
+        snapshot: {
+          ...snapshot.snapshot,
+          scene: { ...snapshot.snapshot.scene, source: { ...source, snapshotVersion: 6 } },
+        },
+        sourceRuntimeIdentity: identity,
+      } as StudioVerifiedPreviewSnapshotV1;
+      const authority = studioPreviewInteractionAuthorityV1(v6);
+      expect(authority).toEqual(expectedAuthority);
+      expect(studioPreviewInteractionEntityIdsV1(identity, authority)).toEqual(expectedEntityIds);
+    }
   });
 });
 
@@ -539,6 +733,69 @@ describe("compileStudioPreviewSceneV1", () => {
     });
     expect(discontinuousCompilerCalls).toBe(0);
     expect(discontinuous).toMatchObject({ error: expect.stringContaining("changes content"), kind: "unsupported" });
+  });
+
+  it("edits imported MathTex from verified snapshot geometry without invoking the browser outline compiler", async () => {
+    const fixture = await importedMathTexPreviewInput();
+    let compilerCalls = 0;
+    const result = await compileStudioPreviewSceneV1({
+      frame: { height: 9, width: 16 },
+      mathTexOutlineCompiler: async () => {
+        compilerCalls += 1;
+        return compiledMathTexResponse();
+      },
+      proposedState: fixture.edited,
+      snapshot: fixture.snapshot,
+      workingRevision: "studio-working-v1:edit-imported-mathtex",
+      workspaceKey: "project-a/scene.py/MathTexScene",
+    });
+    expect(compilerCalls).toBe(0);
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(result.kind).toBe("compiled");
+    expect(result.scene.bundle.scene.entities).toEqual([
+      expect.objectContaining({
+        geometry: fixture.snapshot.snapshot.scene.entities[0]?.geometry,
+        id: fixture.runtimeEntityId,
+        transform: expect.objectContaining({ m11: 3, m12: 0, m21: 0, m22: 3, tx: 4 }),
+      }),
+    ]);
+    expect(result.scene.bundle.scene.entities[0]?.transform.ty).toBeCloseTo(1, 12);
+  });
+
+  it("fails closed instead of showing a stale imported MathTex outline after a content edit", async () => {
+    const fixture = await importedMathTexPreviewInput();
+    const contentEdit = createInspectorEntityEditProgram({
+      capturedPlayhead: 0,
+      edits: {
+        content: { displayLines: ["F = ma"], label: "F = ma", texParts: ["F = ma"] },
+      },
+      entityId: fixture.entityId,
+      from: { position: { x: 400, y: 220 }, scale: 1.5 },
+      scene: fixture.workingState.runtimeSceneState,
+      transactionId: "edit-imported-mathtex-content",
+    });
+    if (contentEdit.kind !== "valid") throw new Error("Imported MathTex content edit fixture did not validate");
+    const proposedState = evaluateWorkingState({
+      ...fixture.workingState,
+      appliedPrograms: [programRecord(contentEdit.program, contentEdit)],
+    });
+    let compilerCalls = 0;
+    const result = await compileStudioPreviewSceneV1({
+      frame: { height: 9, width: 16 },
+      mathTexOutlineCompiler: async () => {
+        compilerCalls += 1;
+        return compiledMathTexResponse();
+      },
+      proposedState,
+      snapshot: fixture.snapshot,
+      workingRevision: "studio-working-v1:edit-imported-mathtex-content",
+      workspaceKey: "project-a/scene.py/MathTexScene",
+    });
+    expect(compilerCalls).toBe(0);
+    expect(result).toMatchObject({
+      error: expect.stringContaining("cannot compile content channels"),
+      kind: "unsupported",
+    });
   });
 
   it("canonically reconstructs the checked MathTex parity fixture through the Studio adapter", async () => {

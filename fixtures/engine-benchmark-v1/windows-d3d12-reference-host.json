@@ -1,0 +1,54 @@
+{
+  "browser": {
+    "channel": "msedge",
+    "version": "150.0.4078.105"
+  },
+  "cpu": {
+    "logicalCores": 16,
+    "model": "Intel(R) Core(TM) Ultra 7 255H"
+  },
+  "gpuControllers": [
+    {
+      "deviceId": 11705,
+      "driverVersion": "32.0.15.9571",
+      "name": "NVIDIA RTX PRO 500 Blackwell Generation Laptop GPU",
+      "vendorId": 4318,
+      "vendorName": "NVIDIA"
+    },
+    {
+      "deviceId": 32081,
+      "driverVersion": "32.0.101.8517",
+      "name": "Intel(R) Arc(TM) Pro 140T GPU (32GB)",
+      "vendorId": 32902,
+      "vendorName": "Intel Corporation"
+    }
+  ],
+  "id": "windows-edge-d3d12-rtx-pro-500-2026-07",
+  "platform": "win32",
+  "power": {
+    "acLineStatus": "online",
+    "activeSchemeGuid": "381b4222-f694-41f0-9685-ff5bb260df2e",
+    "userConfiguredAcPowerModeGuid": "ded574b5-45a0-4f42-8737-46345c09c238"
+  },
+  "schema": "poietra.engine-webgpu-reference-host",
+  "selectedGpuController": {
+    "deviceId": 11705,
+    "vendorId": 4318
+  },
+  "selectedWorkerAdapter": {
+    "backend": "BrowserWebGpu",
+    "browserArchitecture": "blackwell",
+    "browserVendor": "nvidia",
+    "deviceType": "Other",
+    "name": "",
+    "source": "worker-wgpu-adapter-info",
+    "subgroupMaxSize": 128,
+    "subgroupMinSize": 32
+  },
+  "version": 2,
+  "windowsBuild": {
+    "buildNumber": "26200",
+    "caption": "Microsoft Windows 11 Home",
+    "version": "10.0.26200"
+  }
+}

@@ -8,6 +8,8 @@ import { describe, expect, it } from "vitest";
 import {
   digestFastManimSnapshotRuntimeConfigV1,
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V1,
+  FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V6,
+  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
   fastManimSnapshotRunViewV1Schema,
   fastManimSnapshotSceneIdV1,
   ZERO_SHA256,
@@ -166,6 +168,51 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     expect(fetched.status).toBe("verified");
     if (fetched.status !== "verified") throw new Error("Expected a verified published snapshot.");
     expect(fetched.sourceRuntimeIdentity).toEqual(first.sourceRuntimeIdentity);
+  });
+
+  it("carries profile V6 through the production capability set and combined identity boundary", async () => {
+    const root = await projectRoot();
+    const source = `from manim import Circle, Scene
+
+class ExampleScene(Scene):
+    def construct(self):
+        circle = Circle()
+        self.add(circle)
+`;
+    await writeFile(join(root, "scene.py"), source, "utf8");
+    const runner = createRunner(root, producerCommand("--mode=combined-identity"), { snapshotVersion: 6 });
+
+    const view = await runner.run(runRequest({ requestId: "snapshot-request-v6-production-capabilities" }));
+
+    expect(view.status).toBe("verified");
+    if (view.status !== "verified" || view.snapshot.kind !== "compiled") {
+      throw new Error("Expected a verified V6 combined snapshot run.");
+    }
+    expect(view.runtimeConfigHash).toBe(digestFastManimSnapshotRuntimeConfigV1(runtimeConfig(6)));
+    expect(runtimeConfig(6).capabilities).toEqual(FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1);
+    const bundle = view.snapshot.bundle as {
+      scene: {
+        provenance: readonly { evidence: readonly string[] }[];
+        requiredCapabilities: readonly string[];
+        source: { kind: string; snapshotVersion: number };
+      };
+    };
+    expect(bundle.scene).toMatchObject({
+      requiredCapabilities: ["cubic-path-geometry"],
+      source: { kind: "imported-manim-server-snapshot", snapshotVersion: 6 },
+    });
+    expect(
+      bundle.scene.provenance.every(
+        ({ evidence }) => evidence.length === 1 && evidence[0] === FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V6,
+      ),
+    ).toBe(true);
+    expect(view.sourceRuntimeIdentity?.mappings).toMatchObject([
+      {
+        binding: { name: "circle", ordinal: 1 },
+        entityId: `${view.snapshot.sceneId}/entity:0`,
+      },
+    ]);
+    await runner.close();
   });
 
   it("omits claims that point at a source usage instead of a Studio-provable assignment", async () => {
