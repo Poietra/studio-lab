@@ -17,6 +17,7 @@ import {
 } from "./fast-manim-sandbox-backend";
 import {
   assertFastManimSnapshotDiagnosticsSafeV1,
+  deriveHermeticMathTexMorphV5Plan,
   deriveHermeticMathTexV3TransformPlan,
   deriveHermeticPngV4TransformPlan,
   digestFastManimSnapshotRuntimeConfigV1,
@@ -786,12 +787,15 @@ export class FastManimSnapshotRunner {
 
     let hermeticMathTexV3Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexV3Plan"];
     let hermeticPngV4Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticPngV4Plan"];
-    if (this.snapshotVersion === 3 || this.snapshotVersion === 4) {
+    let hermeticMathTexMorphV5Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexMorphV5Plan"];
+    if (this.snapshotVersion === 3 || this.snapshotVersion === 4 || this.snapshotVersion === 5) {
       try {
         if (this.snapshotVersion === 3) {
           hermeticMathTexV3Plan = deriveHermeticMathTexV3TransformPlan(before.source, request.sceneName);
-        } else {
+        } else if (this.snapshotVersion === 4) {
           hermeticPngV4Plan = deriveHermeticPngV4TransformPlan(before.source, request.sceneName);
+        } else {
+          hermeticMathTexMorphV5Plan = deriveHermeticMathTexMorphV5Plan(before.source, request.sceneName);
         }
       } catch {
         // An unsupported source must still reach the producer and preserve its
@@ -802,6 +806,7 @@ export class FastManimSnapshotRunner {
     const expected: ExpectedFastManimSnapshotCorrelationV1 = {
       frame: { height: this.frame.height, width: this.frame.width },
       ...(hermeticMathTexV3Plan ? { hermeticMathTexV3Plan } : {}),
+      ...(hermeticMathTexMorphV5Plan ? { hermeticMathTexMorphV5Plan } : {}),
       ...(hermeticPngV4Plan ? { hermeticPngV4Plan } : {}),
       projectId: request.projectId,
       requestId: request.requestId,
@@ -822,6 +827,7 @@ export class FastManimSnapshotRunner {
     const {
       frame: _serverFrame,
       hermeticMathTexV3Plan: _serverHermeticMathTexV3Plan,
+      hermeticMathTexMorphV5Plan: _serverHermeticMathTexMorphV5Plan,
       hermeticPngV4Plan: _serverHermeticPngV4Plan,
       snapshotVersion,
       ...wireCorrelation

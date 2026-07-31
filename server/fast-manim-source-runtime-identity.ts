@@ -161,6 +161,10 @@ function studioSupportsConstructor(
   constructor: string,
   snapshotVersion: ExpectedFastManimSnapshotCorrelationV1["snapshotVersion"],
 ) {
+  // V5 intentionally represents one aggregate render track whose three live
+  // Python aliases cannot identify one editable source object. It remains
+  // display-only even if producer evidence attempts to select one alias.
+  if (snapshotVersion === 5) return false;
   return (
     STUDIO_SUPPORTED_CONSTRUCTORS_V1_TO_V3.has(constructor) || (snapshotVersion === 4 && constructor === "ImageMobject")
   );
@@ -708,6 +712,18 @@ export function verifyFastManimSourceRuntimeIdentityV1(
         record.entityId === entity.id &&
         record.provenanceId === entity.provenanceId,
       "Complete identity evidence does not correspond one-to-one with snapshot provenance.",
+    );
+  }
+  if (input.expected.snapshotVersion === 5) {
+    const record = records[0];
+    requireIdentity(
+      records.length === 1 &&
+        isPlainObject(record) &&
+        record.status === "ambiguous" &&
+        Array.isArray(record.reasons) &&
+        JSON.stringify(record.reasons) === JSON.stringify(["multiple-active-source-bindings"]) &&
+        mappings.length === 0,
+      "Hermetic MathTex morph V5 identity must remain one explicitly ambiguous display-only render track.",
     );
   }
   const map = {

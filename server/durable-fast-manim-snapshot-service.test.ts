@@ -7,6 +7,7 @@ import {
   DurableFastManimSnapshotServiceV1,
 } from "./durable-fast-manim-snapshot-service";
 import {
+  deriveHermeticMathTexMorphV5Plan,
   deriveHermeticMathTexV3TransformPlan,
   deriveHermeticPngV4TransformPlan,
   type ExpectedFastManimSnapshotCorrelationV1,
@@ -63,6 +64,26 @@ class ExampleScene(Scene):
         self.wait(1)
 `;
 const TRANSFORMED_MATHTEX_SOURCE_DIGEST = createHash("sha256").update(TRANSFORMED_MATHTEX_SOURCE, "utf8").digest("hex");
+const MATHTEX_MORPH_SOURCE_V5 = String.raw`from manim import MathTex, Scene, TransformMatchingTex, smoothstep
+
+class ExampleScene(Scene):
+    def construct(self):
+        equation = MathTex("E = mc^2")
+        self.add(equation)
+        self.wait(1, frozen_frame=True)
+        maxwell = MathTex(r"\nabla \cdot \mathbf{E} = \frac{\rho}{\varepsilon_0}")
+        maxwell.move_to(equation.get_center())
+        self.play(TransformMatchingTex(equation, maxwell, transform_mismatches=True), run_time=1, rate_func=smoothstep)
+        equation = maxwell
+        self.wait(0.5, frozen_frame=True)
+        restored = MathTex("E = mc^2")
+        restored.move_to(maxwell.get_center())
+        self.play(TransformMatchingTex(maxwell, restored, transform_mismatches=True), run_time=2, rate_func=smoothstep)
+        maxwell = restored
+        equation = restored
+        self.wait(1, frozen_frame=True)
+`;
+const MATHTEX_MORPH_SOURCE_DIGEST_V5 = createHash("sha256").update(MATHTEX_MORPH_SOURCE_V5, "utf8").digest("hex");
 
 function sourceHead(generation = 7n, digest = SOURCE_DIGEST): WorkspaceSourceHeadV1 {
   return {
@@ -200,6 +221,27 @@ function transformedMathTexSourceHead() {
     ...head,
     blob: { ...head.blob, byteSize: Buffer.byteLength(TRANSFORMED_MATHTEX_SOURCE, "utf8") },
   };
+}
+
+function mathTexMorphV5View(sourceDigest = MATHTEX_MORPH_SOURCE_DIGEST_V5) {
+  const snapshot = {
+    ...compiledSnapshot,
+    bundle: {
+      ...compiledSnapshot.bundle,
+      scene: {
+        ...compiledSnapshot.bundle.scene,
+        source: { ...compiledSnapshot.bundle.scene.source, snapshotVersion: 5, sourceHash: sourceDigest },
+      },
+    },
+    sourceHash: sourceDigest,
+  } as unknown as VerifiedCompiledFastManimSnapshotResultV1;
+  return { ...verifiedView, snapshot } satisfies FastManimUnpublishedSnapshotRunViewV1;
+}
+
+function mathTexMorphSourceHeadV5(source: string) {
+  const digest = createHash("sha256").update(source, "utf8").digest("hex");
+  const head = sourceHead(7n, digest);
+  return { ...head, blob: { ...head.blob, byteSize: Buffer.byteLength(source, "utf8") } };
 }
 
 function deferred<T>() {
@@ -344,6 +386,32 @@ describe("DurableFastManimSnapshotServiceV1", () => {
     expect(published.expected.hermeticMathTexV3Plan).toEqual(
       deriveHermeticMathTexV3TransformPlan(TRANSFORMED_MATHTEX_SOURCE, SCENE_NAME),
     );
+  });
+
+  it("re-derives and retains the strict V5 MathTex morph plan for durable publication", async () => {
+    const fixture = harness(mathTexMorphV5View());
+    const head = mathTexMorphSourceHeadV5(MATHTEX_MORPH_SOURCE_V5);
+    fixture.readSourceHead.mockResolvedValue(head);
+    fixture.readSource.mockResolvedValue(MATHTEX_MORPH_SOURCE_V5);
+
+    await expect(fixture.service.run(request)).resolves.toMatchObject({ status: "verified" });
+
+    const published = fixture.publish.mock.calls[0]?.[0];
+    if (!published) throw new Error("Expected one durable V5 publication.");
+    expect(published.expected.hermeticMathTexMorphV5Plan).toEqual(
+      deriveHermeticMathTexMorphV5Plan(MATHTEX_MORPH_SOURCE_V5, SCENE_NAME),
+    );
+  });
+
+  it("refuses a receipt-valid V5 source that drifts outside the strict source profile", async () => {
+    const driftedSource = `import os\n${MATHTEX_MORPH_SOURCE_V5}`;
+    const head = mathTexMorphSourceHeadV5(driftedSource);
+    const fixture = harness(mathTexMorphV5View(head.blob.digest));
+    fixture.readSourceHead.mockResolvedValue(head);
+    fixture.readSource.mockResolvedValue(driftedSource);
+
+    await expect(fixture.service.run(request)).rejects.toMatchObject({ code: "profile-violation" });
+    expect(fixture.publish).not.toHaveBeenCalled();
   });
 
   it("fails closed when the version-pinned V4 source bytes do not match their receipt", async () => {
