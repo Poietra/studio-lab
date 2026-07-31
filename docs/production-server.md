@@ -32,6 +32,10 @@ external-identity verifier with `PostgresOrganizationMembershipRepositoryV1`.
 `X-Poietra-Organization-Id` is only an untrusted organization selector; the
 repository must resolve an active user, organization, and membership before it
 returns the internal user UUID and tenant ID accepted by the existing API.
+Browser-native requests that cannot attach this header (`<video>`,
+`<a download>`, and WebSocket upgrades) may instead use the active organization
+bound to the verified HttpOnly session. That value is still only a selector:
+PostgreSQL membership is revalidated before every admitted request.
 OIDC tenant and role claims are never authorization inputs. Owner, admin, and
 member roles can enter the Manim API; the billing-only role cannot. The
 membership admission exposes `close()`, transferring its owned PostgreSQL pool

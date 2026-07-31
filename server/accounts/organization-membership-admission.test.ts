@@ -78,12 +78,45 @@ describe("organization membership production admission", () => {
     expect(resolveActiveMembership).toHaveBeenCalledWith(identity, organizationId, signal);
   });
 
+  it("uses a verified session organization when browser-native requests cannot attach the selector header", async () => {
+    const { admission, resolveActiveMembership } = fixture({
+      authenticatedIdentity: { ...identity, sessionOrganizationId: organizationId },
+    });
+    const signal = new AbortController().signal;
+
+    await expect(
+      admission.authenticate(
+        request({
+          credentials: { cookie: "__Host-poietra-session=verified" },
+          pathname: "/api/manim/renders/render-id/video",
+          requestedOrganizationId: undefined,
+        }),
+        signal,
+      ),
+    ).resolves.toEqual({ subjectId: userId, tenantId: organizationId });
+    expect(resolveActiveMembership).toHaveBeenCalledWith(identity, organizationId, signal);
+  });
+
+  it("treats an explicit selector as an untrusted override of the session organization", async () => {
+    const { admission, resolveActiveMembership } = fixture({
+      authenticatedIdentity: { ...identity, sessionOrganizationId: organizationId },
+      membership: membership({ organizationId: "organization-b" }),
+    });
+    const signal = new AbortController().signal;
+
+    await expect(
+      admission.authenticate(request({ requestedOrganizationId: "organization-b" }), signal),
+    ).resolves.toEqual({ subjectId: userId, tenantId: "organization-b" });
+    expect(resolveActiveMembership).toHaveBeenCalledWith(identity, "organization-b", signal);
+  });
+
   it("rejects invalid external identity output before consulting memberships", async () => {
     for (const authenticatedIdentity of [
       null,
       { issuer: "http://identity.example/", subject: identity.subject },
       { issuer: identity.issuer, subject: "unsafe\nsubject" },
       { ...identity, userId },
+      { ...identity, sessionOrganizationId: "invalid organization" },
     ]) {
       const { admission, resolveActiveMembership } = fixture({ authenticatedIdentity });
       await expect(admission.authenticate(request(), new AbortController().signal)).rejects.toMatchObject({

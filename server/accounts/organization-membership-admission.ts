@@ -35,6 +35,8 @@ const externalAccountIdentitySchemaV1 = z
       .max(255)
       .regex(/^[^\u0000-\u001f\u007f]+$/u)
       .refine((value) => value.trim() === value),
+    /** Verified active organization carried by the server-owned browser session. */
+    sessionOrganizationId: organizationIdSchemaV1.optional(),
   })
   .strict();
 
@@ -123,9 +125,20 @@ export function createOrganizationMembershipProductionAdmissionV1(
       signal.throwIfAborted();
       if (!identity.success) return authenticationRequired();
 
-      const selectedOrganization = organizationIdSchemaV1.safeParse(input.requestedOrganizationId);
+      const selectedOrganization = organizationIdSchemaV1.safeParse(
+        input.requestedOrganizationId ?? identity.data.sessionOrganizationId,
+      );
       if (!selectedOrganization.success) return organizationAccessDenied();
-      const candidate = await resolveMembership(options.memberships, identity.data, selectedOrganization.data, signal);
+      const externalIdentity: ExternalAccountIdentityV1 = {
+        issuer: identity.data.issuer,
+        subject: identity.data.subject,
+      };
+      const candidate = await resolveMembership(
+        options.memberships,
+        externalIdentity,
+        selectedOrganization.data,
+        signal,
+      );
       signal.throwIfAborted();
       if (candidate === null) return organizationAccessDenied();
       const membership = resolvedMembershipSchemaV1.safeParse(candidate);

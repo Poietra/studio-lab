@@ -217,6 +217,48 @@ describe("standalone production Manim HTTP adapter", () => {
     );
   });
 
+  it("admits a browser-native cookie request through its verified session organization", async () => {
+    const resolveActiveMembership = vi.fn(async (_identity: unknown, organizationId: string) => ({
+      organizationId,
+      role: "member" as const,
+      userId: "00000000-0000-4000-8000-000000000001",
+      version: 1n,
+    }));
+    const authenticate = vi.fn(async (input: Readonly<{ credentials: Readonly<{ cookie?: string }> }>) =>
+      input.credentials.cookie === "__Host-poietra-session=verified"
+        ? {
+            issuer: "https://identity.example",
+            sessionOrganizationId: "tenant-a",
+            subject: "external-user",
+          }
+        : null,
+    );
+    const server = await startProductionManimServer({
+      admission: createOrganizationMembershipProductionAdmissionV1({
+        identities: { authenticate, ready: async () => true },
+        memberships: {
+          close: async () => undefined,
+          ready: async () => true,
+          resolveActiveMembership,
+        },
+      }),
+      config: await startConfig(),
+      runtime: createRuntime(),
+    });
+    servers.push(server);
+
+    expect(
+      await send(server, "/api/manim/projects", {
+        headers: { cookie: "__Host-poietra-session=verified" },
+      }),
+    ).toMatchObject({ status: 200 });
+    expect(resolveActiveMembership).toHaveBeenCalledWith(
+      { issuer: "https://identity.example", subject: "external-user" },
+      "tenant-a",
+      expect.any(AbortSignal),
+    );
+  });
+
   it("rejects an incomplete production runtime adapter before listening", async () => {
     await expect(
       startProductionManimServer({
