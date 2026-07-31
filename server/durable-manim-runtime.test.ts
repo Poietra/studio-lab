@@ -40,6 +40,69 @@ function pngHead(generation = 1n): ProjectPngHeadV1 {
 }
 
 describe("DurableManimRuntimeV1 production readiness", () => {
+  function workspaceRuntime(
+    options: Readonly<{ executionReady?: () => Promise<boolean>; renderReady?: () => Promise<boolean> }>,
+  ) {
+    const now = new Date("2026-07-31T00:00:00.000Z");
+    return new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({ close: async () => undefined, ready: async () => true }),
+      execution: options.executionReady ? { ready: options.executionReady } : undefined,
+      namespace: "workspace-capability-test",
+      renders: options.renderReady
+        ? partial<DurableManimRenderServiceV1>({ close: async () => undefined, ready: options.renderReady })
+        : undefined,
+      repository: partial<WorkspaceSourceRepositoryV1>({
+        close: async () => undefined,
+        listSourceHeads: async () => [],
+        readProject: async () => ({
+          createdAt: now,
+          name: "Project A",
+          projectId: "project-a",
+          tenantId: "tenant-a",
+          updatedAt: now,
+        }),
+        ready: async () => true,
+      }),
+      tenantId: "tenant-a",
+    });
+  }
+
+  it("reports durable rendering independently from local command availability", async () => {
+    const runtime = workspaceRuntime({ executionReady: async () => true, renderReady: async () => true });
+
+    await expect(runtime.workspace("project-a")).resolves.toMatchObject({
+      commandAvailable: false,
+      renderCapability: { available: true, kind: "durable-sandbox", unavailableReason: null },
+    });
+    await runtime.close();
+  });
+
+  it("keeps workspace inspection available when durable rendering is unavailable", async () => {
+    const unavailable = workspaceRuntime({ executionReady: async () => false, renderReady: async () => true });
+    const failing = workspaceRuntime({
+      executionReady: async () => {
+        throw new Error("sandbox probe failed");
+      },
+      renderReady: async () => true,
+    });
+    const unconfigured = workspaceRuntime({ executionReady: async () => true });
+
+    await expect(unavailable.workspace("project-a")).resolves.toMatchObject({
+      renderCapability: {
+        available: false,
+        kind: "durable-sandbox",
+        unavailableReason: "durable-render-unavailable",
+      },
+    });
+    await expect(failing.workspace("project-a")).resolves.toMatchObject({
+      renderCapability: { available: false, unavailableReason: "durable-render-unavailable" },
+    });
+    await expect(unconfigured.workspace("project-a")).resolves.toMatchObject({
+      renderCapability: { available: false, unavailableReason: "durable-render-unconfigured" },
+    });
+    await Promise.all([unavailable.close(), failing.close(), unconfigured.close()]);
+  });
+
   it("serves only the unchanged digest-addressed project PNG head", async () => {
     const head = pngHead();
     const readHead = vi.fn(async () => head);

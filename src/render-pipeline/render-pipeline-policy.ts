@@ -1,10 +1,11 @@
 import type { CanonicalEditProgram } from "../studio/operations";
 import {
-  renderProgramBatchId,
-  renderRequestId,
+  type ManimRenderCapability,
   type ManimWorkspaceView,
   type ProgramRenderRequest,
   type RenderSessionView,
+  renderProgramBatchId,
+  renderRequestId,
 } from "./contracts";
 
 export type RenderProgramCandidate = Readonly<{
@@ -127,16 +128,14 @@ export function resolveRenderPipelinePolicy(
     candidate: RenderProgramCandidate | null;
     candidateBlocker: string | null;
     candidateLifecycleBlocker: string | null;
-    commandAvailable: boolean;
     originalExportBlocker: string | null;
+    renderCapability: ManimRenderCapability | null;
     session: RenderSessionView | null;
   }>,
 ): RenderPipelinePolicy {
   const sessionMatchesCandidate = renderSessionMatchesCandidate(input.session, input.candidate);
   const previewBlocker =
-    input.candidateLifecycleBlocker ??
-    input.candidateBlocker ??
-    (!input.commandAvailable ? "The configured Manim command is unavailable." : null);
+    input.candidateLifecycleBlocker ?? input.candidateBlocker ?? renderCapabilityBlocker(input.renderCapability);
   const exportBlocker = input.candidate
     ? (input.candidateLifecycleBlocker ?? input.candidateBlocker)
     : input.originalExportBlocker;
@@ -147,6 +146,18 @@ export function resolveRenderPipelinePolicy(
         : input.candidateBlocker))
     : null;
   return { commitBlocker, exportBlocker, previewBlocker, sessionMatchesCandidate };
+}
+
+export function renderCapabilityBlocker(capability: ManimRenderCapability | null) {
+  if (!capability) return "Inspecting the render service…";
+  if (capability.available) return null;
+  if (capability.unavailableReason === "local-command-unavailable") {
+    return "The configured Manim command is unavailable.";
+  }
+  if (capability.unavailableReason === "durable-render-unconfigured") {
+    return "Durable rendering is not configured for this workspace.";
+  }
+  return "The durable render service is temporarily unavailable.";
 }
 
 export function renderPipelineActionBlocker(action: RenderPipelineAction, policy: RenderPipelinePolicy): string | null {

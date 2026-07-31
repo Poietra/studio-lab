@@ -3,6 +3,7 @@ import { basename } from "node:path";
 
 import type {
   ManimProjectMutationView,
+  ManimRenderCapability,
   ManimSourceExport,
   ManimThumbnailStatus,
   ManimWorkspaceView,
@@ -241,22 +242,51 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     return { heads, project };
   }
 
+  async #renderCapability(signal?: AbortSignal): Promise<ManimRenderCapability> {
+    if (!this.#execution || !this.#renders) {
+      return {
+        available: false,
+        kind: "durable-sandbox",
+        unavailableReason: "durable-render-unconfigured",
+      };
+    }
+    try {
+      const [executionReady, rendersReady] = await Promise.all([
+        this.#execution.ready(signal),
+        this.#renders.ready(signal),
+      ]);
+      signal?.throwIfAborted();
+      return executionReady && rendersReady
+        ? { available: true, kind: "durable-sandbox", unavailableReason: null }
+        : { available: false, kind: "durable-sandbox", unavailableReason: "durable-render-unavailable" };
+    } catch {
+      signal?.throwIfAborted();
+      return {
+        available: false,
+        kind: "durable-sandbox",
+        unavailableReason: "durable-render-unavailable",
+      };
+    }
+  }
+
   async workspace(projectId?: string, signal?: AbortSignal): Promise<ManimWorkspaceView> {
     const { heads, project } = await this.#projectAndHeads(projectId, signal);
-    const sources = (
-      await Promise.all(
+    const [renderCapability, importedSources] = await Promise.all([
+      this.#renderCapability(signal),
+      Promise.all(
         heads.map(async (head) => {
           const source = await this.#blobs.readSource(this.tenantId, head.blob, signal);
           return importSourceSnapshot(source, head.sourcePath, this.#frame).view;
         }),
-      )
-    ).filter((source) => source.scenes.length > 0);
+      ),
+    ]);
     return {
       commandAvailable: false,
       frame: this.#frame,
       projectId: project.projectId,
       projectName: project.name,
-      sources,
+      renderCapability,
+      sources: importedSources.filter((source) => source.scenes.length > 0),
     };
   }
 

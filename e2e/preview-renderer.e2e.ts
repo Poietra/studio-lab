@@ -1,10 +1,10 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 
 import {
-  renderProgramBatchId,
-  renderRequestId,
   type ProgramRenderRequest,
   type RenderSessionView,
+  renderProgramBatchId,
+  renderRequestId,
 } from "../src/render-pipeline/contracts";
 import { openWorkspace } from "./workspace";
 
@@ -30,7 +30,14 @@ async function makePreviewHarnessCommandAvailable(page: Page) {
   await page.route("**/api/manim/projects/preview-harness/workspace", async (route) => {
     const response = await route.fetch();
     const workspace = (await response.json()) as Record<string, unknown>;
-    await route.fulfill({ json: { ...workspace, commandAvailable: true }, response });
+    await route.fulfill({
+      json: {
+        ...workspace,
+        commandAvailable: true,
+        renderCapability: { available: true, kind: "local-command", unavailableReason: null },
+      },
+      response,
+    });
   });
 }
 
@@ -289,6 +296,34 @@ test("a stale Render response is atomically abandoned after timing changes", asy
   await expect(page.getByRole("button", { name: "Commit to source" })).toHaveCount(0);
 });
 
+test("a ready render exposes an explicit MP4 download on the authenticated video route", async ({ page }) => {
+  const renderId = "11111111-1111-4111-8111-111111111129";
+  await makePreviewHarnessCommandAvailable(page);
+  await page.route("**/api/manim/projects/preview-harness/renders", async (route) => {
+    const request = route.request().postDataJSON() as ProgramRenderRequest;
+    await route.fulfill({
+      json: {
+        ...readyRenderSession(request, renderId),
+        videoUrl: `/api/manim/renders/${renderId}/video`,
+      },
+      status: 202,
+    });
+  });
+  await page.route(`**/api/manim/renders/${renderId}/video*`, (route) =>
+    route.fulfill({ body: "", contentType: "video/mp4", status: 200 }),
+  );
+  await openPreviewHarnessDraft(page);
+
+  await page.getByRole("button", { name: "Render program" }).click();
+
+  const download = page.getByRole("link", { name: "Download MP4" });
+  await expect(download).toHaveAttribute("download", `poietra-${renderId}.mp4`);
+  await expect(download).toHaveAttribute(
+    "href",
+    `/api/manim/renders/${renderId}/video?v=${encodeURIComponent("2026-07-27T00:00:01.000Z")}`,
+  );
+});
+
 test("a terminal source action keeps polling until its exact outcome is known", async ({ page }) => {
   const renderId = "11111111-1111-4111-8111-111111111122";
   const actionId = "00000000-0000-4000-8000-000000000031";
@@ -373,7 +408,15 @@ test("source reimport locks Studio editing until the committed revision is loade
           : scene,
       ),
     }));
-    await route.fulfill({ json: { ...workspace, commandAvailable: true, sources }, response });
+    await route.fulfill({
+      json: {
+        ...workspace,
+        commandAvailable: true,
+        renderCapability: { available: true, kind: "local-command", unavailableReason: null },
+        sources,
+      },
+      response,
+    });
   });
   await page.route("**/api/manim/projects/preview-harness/renders", async (route) => {
     const request = route.request().postDataJSON() as ProgramRenderRequest;

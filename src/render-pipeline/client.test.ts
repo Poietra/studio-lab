@@ -105,6 +105,7 @@ describe("Manim API client contracts", () => {
       frame: { height: 8, width: 14.222 },
       projectId: "default",
       projectName: "Demo",
+      renderCapability: { available: true, kind: "local-command", unavailableReason: null },
       sources: [],
     };
     vi.stubGlobal(
@@ -127,6 +128,33 @@ describe("Manim API client contracts", () => {
               projectId: "default",
               projectName: "Demo",
               projectRoot: "/private/project",
+              renderCapability: { available: true, kind: "local-command", unavailableReason: null },
+              sources: [],
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    await expect(loadManimWorkspace()).rejects.toThrow(/does not match the API contract/i);
+  });
+
+  it("rejects contradictory render capability state", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              commandAvailable: false,
+              frame: { height: 8, width: 14.222 },
+              projectId: "default",
+              projectName: "Demo",
+              renderCapability: {
+                available: true,
+                kind: "durable-sandbox",
+                unavailableReason: "durable-render-unavailable",
+              },
               sources: [],
             }),
             { status: 200 },
@@ -260,6 +288,11 @@ describe("Manim API client contracts", () => {
       frame: { height: 8, width: 14.222 },
       projectId: "project-a",
       projectName: "Demo",
+      renderCapability: {
+        available: false,
+        kind: "local-command",
+        unavailableReason: "local-command-unavailable",
+      },
       sources: [],
     };
     const fetch = vi.fn(async () => new Response(JSON.stringify(workspace), { status: 200 }));

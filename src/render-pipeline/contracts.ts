@@ -342,11 +342,18 @@ export type ManimWorkspaceSource = Readonly<{
   }>[];
 }>;
 
+export type ManimRenderCapability = Readonly<{
+  available: boolean;
+  kind: "durable-sandbox" | "local-command";
+  unavailableReason: "durable-render-unavailable" | "durable-render-unconfigured" | "local-command-unavailable" | null;
+}>;
+
 export type ManimWorkspaceView = Readonly<{
   commandAvailable: boolean;
   frame: Readonly<{ height: number; width: number }>;
   projectId: string;
   projectName: string;
+  renderCapability: ManimRenderCapability;
   sources: readonly ManimWorkspaceSource[];
 }>;
 
@@ -503,12 +510,33 @@ export const manimWorkspaceSourceSchema: z.ZodType<ManimWorkspaceSource> = z
   })
   .strict();
 
+export const manimRenderCapabilitySchema: z.ZodType<ManimRenderCapability> = z
+  .object({
+    available: z.boolean(),
+    kind: z.enum(["durable-sandbox", "local-command"]),
+    unavailableReason: z
+      .enum(["durable-render-unavailable", "durable-render-unconfigured", "local-command-unavailable"])
+      .nullable(),
+  })
+  .strict()
+  .refine(
+    (capability) =>
+      capability.available
+        ? capability.unavailableReason === null
+        : capability.kind === "local-command"
+          ? capability.unavailableReason === "local-command-unavailable"
+          : capability.unavailableReason === "durable-render-unavailable" ||
+            capability.unavailableReason === "durable-render-unconfigured",
+    { message: "Render capability availability and reason do not match." },
+  );
+
 export const manimWorkspaceViewSchema: z.ZodType<ManimWorkspaceView> = z
   .object({
     commandAvailable: z.boolean(),
     frame: z.object({ height: finiteNumber.positive(), width: finiteNumber.positive() }).strict(),
     projectId: manimProjectIdSchema,
     projectName: z.string().min(1).max(120),
+    renderCapability: manimRenderCapabilitySchema,
     sources: z.array(manimWorkspaceSourceSchema),
   })
   .strict();
