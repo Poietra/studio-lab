@@ -26,6 +26,9 @@ importers:
       openai:
         specifier: ^6.48.0
         version: 6.48.0(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.10)(zod@4.4.3)
+      openid-client:
+        specifier: 6.8.4
+        version: 6.8.4
       pg:
         specifier: 8.22.0
         version: 8.22.0
@@ -986,6 +989,9 @@ packages:
     resolution: {integrity: sha512-N5A3KTWQpPWT4ExxxPlUx7WmykGXRzhNidWhV41d6Abu9YfI2NyWCJuxdPnslJCPWtbRpSVOWSnSS6GakLM/Rg==}
     engines: {node: '>= 20'}
 
+  jose@6.2.5:
+    resolution: {integrity: sha512-2E5L2yRp03FnwreJLJX8/r7mHiZICCf8kG7fAsTWkSQTDAcc46NIZoQLKy+EJ8sPoJlxyS4OQR5H70LjIZZlIQ==}
+
   katex@0.18.1:
     resolution: {integrity: sha512-Td8GCYSxDAoMhHOlKmCFMJ/hz5qlAAb71n66Dryw9nfCVfumLo7nhuotbvKom/XPADmrYC3O5QR71EPq4DarJQ==}
     hasBin: true
@@ -1109,6 +1115,9 @@ packages:
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
+  oauth4webapi@3.8.6:
+    resolution: {integrity: sha512-iwemM91xz8nryHti2yTmg5fhyEMVOkOXwHNqbvcATjyajb5oQxCQzrNOA6uElRHuMhQQTKUyFKV9y/CNyg25BQ==}
+
   obug@2.1.4:
     resolution: {integrity: sha512-4a+OsYv9UktOJKE+l1A4OufDgdRF9PifWj+tJnHURo/P+WOxpG4GzUFL9qCalmWauao6ogiG+QvnCovwPoyAWA==}
     engines: {node: '>=12.20.0'}
@@ -1132,6 +1141,9 @@ packages:
         optional: true
       zod:
         optional: true
+
+  openid-client@6.8.4:
+    resolution: {integrity: sha512-QSw0BA08piujetEwfZsHoTrDpMEha7GDZDicQqVwX4u0ChCjefvjDB++TZ8BTg76UpwhzIQgdvvfgfl3HpCSAw==}
 
   pathe@2.0.3:
     resolution: {integrity: sha512-WUjGcAqP1gQacoQe+OBJsFA7Ld4DyXuUIjZ5cc75cLHvJ7dtNsTugphxIADwspS+AraAUePCKrSVtPLFj/F88w==}
@@ -2271,6 +2283,8 @@ snapshots:
       '@hapi/topo': 6.0.2
       '@standard-schema/spec': 1.1.0
 
+  jose@6.2.5: {}
+
   katex@0.18.1:
     dependencies:
       commander: 8.3.0
@@ -2358,6 +2372,8 @@ snapshots:
 
   nanoid@3.3.16: {}
 
+  oauth4webapi@3.8.6: {}
+
   obug@2.1.4: {}
 
   openai@6.48.0(@aws-sdk/credential-provider-node@3.972.72)(@smithy/signature-v4@5.6.10)(zod@4.4.3):
@@ -2365,6 +2381,11 @@ snapshots:
       '@aws-sdk/credential-provider-node': 3.972.72
       '@smithy/signature-v4': 5.6.10
       zod: 4.4.3
+
+  openid-client@6.8.4:
+    dependencies:
+      jose: 6.2.5
+      oauth4webapi: 3.8.6
 
   pathe@2.0.3: {}
 

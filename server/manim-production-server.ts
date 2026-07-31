@@ -19,6 +19,20 @@ import { isReservedLocalManimTenantId, type ManimPrincipalAuthenticator } from "
 import { ManimTenantRegistry } from "./manim-tenant-registry";
 
 export {
+  ACCOUNT_SESSION_COOKIE_NAME_V1,
+  createAccountSessionIdentityAuthenticatorV1,
+} from "./accounts/account-session-authenticator";
+export type { AccountSessionRepositoryV1, ResolvedAccountSessionV1 } from "./accounts/account-session-repository";
+export {
+  createOrganizationMembershipProductionAdmissionV1,
+  type ExternalAccountIdentityAuthenticatorV1,
+} from "./accounts/organization-membership-admission";
+export type {
+  ExternalAccountIdentityV1,
+  OrganizationMembershipRepositoryV1,
+  ResolvedOrganizationMembershipV1,
+} from "./accounts/organization-membership-repository";
+export {
   createDurablePostgresS3ProductionRuntimeV1,
   type DurablePostgresS3ProductionRuntimeOptionsV1,
 } from "./durable-manim-production-composition";
@@ -31,6 +45,8 @@ export {
   applyBundledWorkspaceSourceMigrationV1,
   WORKSPACE_SOURCE_MIGRATION_V1_SOURCE,
 } from "./storage/postgres/migrate";
+export { PostgresAccountSessionRepositoryV1 } from "./storage/postgres/postgres-account-session-repository";
+export { PostgresOrganizationMembershipRepositoryV1 } from "./storage/postgres/postgres-organization-membership-repository";
 export { PostgresWorkspaceSourceRepositoryV1 } from "./storage/postgres/postgres-workspace-source-repository";
 export { S3ContentBlobStoreV1 } from "./storage/s3/s3-content-blob-store";
 export {
@@ -146,10 +162,13 @@ export type ProductionAdmissionRequest = Readonly<{
   }>;
   method: string;
   pathname: string;
+  /** Untrusted organization selector; admission must resolve it through server-owned membership state. */
+  requestedOrganizationId?: string;
 }>;
 
 export type ProductionRequestAdmission = ManimPrincipalAuthenticator<ProductionAdmissionRequest> &
   Readonly<{
+    close?: () => Promise<void>;
     ready: (signal: AbortSignal) => Promise<boolean>;
   }>;
 
@@ -378,7 +397,8 @@ export async function startProductionManimServer(
     typeof options.admission !== "object" ||
     options.admission === null ||
     typeof options.admission.authenticate !== "function" ||
-    typeof options.admission.ready !== "function"
+    typeof options.admission.ready !== "function" ||
+    (options.admission.close !== undefined && typeof options.admission.close !== "function")
   ) {
     throw new TypeError("Production request admission adapter is incomplete.");
   }
@@ -415,6 +435,7 @@ export async function startProductionManimServer(
   const activeTasks = new Set<Promise<void>>();
   const activeRuntimeTasks = new Set<Promise<unknown>>();
   let lifecycle: "accepting" | "draining" | "closed" = "accepting";
+  let admissionCloseRequest: Promise<void> | null = null;
   let runtimeCloseRequest: Promise<void> | null = null;
 
   const trackRuntimeTask = <T>(operation: () => Promise<T>) => {
@@ -429,6 +450,17 @@ export async function startProductionManimServer(
   const closeRuntime = () => {
     runtimeCloseRequest ??= Promise.resolve().then(() => options.runtime.close());
     return runtimeCloseRequest;
+  };
+  const closeAdmission = () => {
+    admissionCloseRequest ??= options.admission.close
+      ? Promise.resolve().then(() => options.admission.close!())
+      : Promise.resolve();
+    return admissionCloseRequest;
+  };
+  const closeOwnedAdapters = async () => {
+    const results = await Promise.allSettled([closeAdmission(), closeRuntime()]);
+    const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (errors.length > 0) throw new AggregateError(errors, "Production adapter cleanup failed.");
   };
 
   const admissionIsReady = async (signal: AbortSignal) => {
@@ -523,6 +555,11 @@ export async function startProductionManimServer(
       if (controller.signal.aborted) return;
       if (lifecycle !== "accepting") throw new TransportError("Production service is draining.", 503);
       accessBoundary = "authentication";
+      const requestedOrganizationHeaders = request.headersDistinct["x-poietra-organization-id"];
+      if (requestedOrganizationHeaders && requestedOrganizationHeaders.length !== 1) {
+        throw new TransportError("The organization selector must be a single header value.", 400);
+      }
+      const requestedOrganizationHeader = requestedOrganizationHeaders?.[0];
       const context = await raceWithSignal(
         () =>
           authenticateManimRequestContext(
@@ -541,6 +578,9 @@ export async function startProductionManimServer(
               },
               method: request.method ?? "UNKNOWN",
               pathname,
+              ...(requestedOrganizationHeader === undefined
+                ? {}
+                : { requestedOrganizationId: requestedOrganizationHeader }),
             },
             tenants,
             controller.signal,
@@ -646,13 +686,13 @@ export async function startProductionManimServer(
     });
   } catch (error) {
     server.closeAllConnections();
-    const runtimeClose = await settleWithin(closeRuntime(), config.limits.runtimeCloseTimeoutMs);
-    if (runtimeClose.kind === "fulfilled") throw error;
+    const adapterClose = await settleWithin(closeOwnedAdapters(), config.limits.runtimeCloseTimeoutMs);
+    if (adapterClose.kind === "fulfilled") throw error;
     const closeError =
-      runtimeClose.kind === "rejected"
-        ? runtimeClose.reason
-        : new Error("Production runtime cleanup timed out after listener startup failed.");
-    throw new AggregateError([error, closeError], "Production listener and runtime cleanup both failed.");
+      adapterClose.kind === "rejected"
+        ? adapterClose.reason
+        : new Error("Production adapter cleanup timed out after listener startup failed.");
+    throw new AggregateError([error, closeError], "Production listener and adapter cleanup both failed.");
   }
 
   const address = server.address() as AddressInfo;
@@ -711,11 +751,11 @@ export async function startProductionManimServer(
         }
 
         if (runtimeCanClose) {
-          const runtimeClose = await settleWithin(closeRuntime(), config.limits.runtimeCloseTimeoutMs);
-          if (runtimeClose.kind === "timeout") {
-            errors.push(new Error("Production runtime close exceeded its configured deadline."));
-          } else if (runtimeClose.kind === "rejected") {
-            errors.push(runtimeClose.reason);
+          const adapterClose = await settleWithin(closeOwnedAdapters(), config.limits.runtimeCloseTimeoutMs);
+          if (adapterClose.kind === "timeout") {
+            errors.push(new Error("Production adapter close exceeded its configured deadline."));
+          } else if (adapterClose.kind === "rejected") {
+            errors.push(adapterClose.reason);
           }
         } else {
           // Calling close while an uncooperative runtime operation is still
@@ -723,7 +763,7 @@ export async function startProductionManimServer(
           // HTTP boundary is already closed; defer teardown until quiescence
           // and let the process supervisor reclaim a permanently stuck adapter.
           void quiesce().then(
-            () => closeRuntime().catch(() => logger.error("production.deferred_runtime_close_failed")),
+            () => closeOwnedAdapters().catch(() => logger.error("production.deferred_adapter_close_failed")),
             () => logger.error("production.deferred_runtime_quiescence_failed"),
           );
         }

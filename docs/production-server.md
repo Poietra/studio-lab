@@ -15,13 +15,59 @@ There is intentionally no environment-only or unauthenticated CLI. The current
 production runtime adapter. The injected in-process adapter is trusted code:
 its structured readiness result is an operational assertion after it verifies
 the external sandbox, not an isolation proof verified by this HTTP layer. The
-current contract is limited to one deployment-isolated tenant. The shipped
+current runtime contract is limited to one deployment-isolated tenant. The shipped
 source-only render adapter and its trusted durable-media publisher use the
 separate broker described in
-[production-render-sandbox.md](./production-render-sandbox.md). Issue #120 owns
-principal-to-tenant selection, while digest-bounded input assets remain
+[production-render-sandbox.md](./production-render-sandbox.md). Issue #298 owns
+multi-organization account selection and edge-to-cell routing, while
+digest-bounded input assets remain
 follow-up work. Readiness stays unavailable unless the durable stores, the
 staging-root correlation, and both external sandbox brokers pass their probes.
+
+Migration v11 adds the account control-plane records required by request
+admission: OIDC identities, organizations, and memberships. Invitations remain
+deferred until their verified-email acceptance flow lands. The exported
+`createOrganizationMembershipProductionAdmissionV1` composes an injected
+external-identity verifier with `PostgresOrganizationMembershipRepositoryV1`.
+`X-Poietra-Organization-Id` is only an untrusted organization selector; the
+repository must resolve an active user, organization, and membership before it
+returns the internal user UUID and tenant ID accepted by the existing API.
+Browser-native requests that cannot attach this header (`<video>`,
+`<a download>`, and WebSocket upgrades) may instead use the active organization
+bound to the verified HttpOnly session. That value is still only a selector:
+PostgreSQL membership is revalidated before every admitted request.
+Migration v12 adds the minimal browser-session read path. The fixed
+`__Host-poietra_session` cookie contains one canonical 256-bit opaque token;
+only its SHA-256 hash is stored. Expired, revoked, malformed, or inactive-user
+sessions fail authentication before membership admission, and deleting a
+membership cascades its sessions. Bearer credentials are not a fallback for
+this browser authenticator. Migration v13 and the Fetch API account-control-plane
+handler add `/auth/oidc/start` and `/auth/oidc/callback`. Login uses Authorization
+Code, PKCE S256, state, nonce, and a separate short-lived browser-binding cookie.
+PostgreSQL stores only the state and binding hashes; `DELETE ... RETURNING`
+consumes the verifier and nonce exactly once. A successful callback issues a new
+opaque session only for an existing active OIDC identity with an active
+organization membership. It never provisions an account from email or accepts
+IdP role or tenant claims.
+
+OIDC discovery is lazy and caches only a successful configuration. The edge
+login routes can therefore return 503 during an IdP outage without entering a
+tenant cell or making existing PostgreSQL-backed sessions unavailable. Issuer,
+client authentication method, and client credentials are
+trusted startup configuration; the redirect URI is always derived from
+`publicOrigin`, and the post-login redirect is fixed to `/`. The OIDC routes are
+exposed only through the account-control-plane Fetch handler; Vite, Electron,
+and the single-tenant Node render server do not host them. Organization
+switching, logout, self-signup/bootstrap, and Organization-scoped client state
+remain #309 follow-up slices. Cloudflare Worker/BFF deployment must rate-limit
+both `/auth/oidc/start` and `/auth/oidc/callback` at the edge (with separate
+thresholds if needed); an in-process per-isolate limiter is not a meaningful
+abuse boundary. A syntactically valid but unknown callback still performs the
+one-time-state lookup, so callback limits protect PostgreSQL as well as the IdP.
+OIDC tenant and role claims are never authorization inputs. Owner, admin, and
+member roles can enter the Manim API; the billing-only role cannot. The
+membership admission exposes `close()`, transferring its owned PostgreSQL pool
+to the server lifecycle. Admissions without `close()` remain caller-owned.
 
 Each server instance remains a single-tenant cell: its runtime API declares one
 server-owned tenant ID and at least one bounded absolute storage root. A
@@ -45,16 +91,18 @@ Non-loopback public origins require HTTPS. TLS may terminate at a reverse
 proxy, but it must preserve the public `Host`; forwarded headers are rejected
 unless the immediate peer IP is listed in `trustedProxyAddresses`. Raw
 forwarded values are not passed to authentication—the admission adapter gets
-only the direct peer, the verified transport facts, and the Authorization and
-Cookie credentials. Mutation `Origin` is compared directly with the configured
-public origin rather than the unencrypted proxy-to-Node socket.
+only the direct peer, the verified transport facts, the Authorization and
+Cookie credentials, and the bounded organization selector. Mutation `Origin`
+is compared directly with the configured public origin rather than the
+unencrypted proxy-to-Node socket.
 
 Shutdown first stops new HTTP connections and drains tracked request tasks. It
 rechecks the lifecycle after asynchronous readiness and admission so a request
 cannot enter the runtime after draining begins. At the drain deadline,
 remaining tasks are aborted, active connections are destroyed, and task
-wrappers are joined before runtime close starts. Runtime close has its own
-deadline. Either deadline breach rejects the returned promise so the process
-supervisor can record an unclean shutdown. A valid adapter transfers runtime
-ownership to the server; listener startup failure also performs bounded runtime
-cleanup.
+wrappers are joined before owned admission and runtime adapters close. Adapter
+close has its own deadline. Either deadline breach rejects the returned promise
+so the process supervisor can record an unclean shutdown. A valid runtime
+adapter transfers runtime ownership to the server; an admission implementing
+`close()` transfers its lifecycle too. Listener startup failure performs
+bounded cleanup for both.
