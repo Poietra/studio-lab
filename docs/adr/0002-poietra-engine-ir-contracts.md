@@ -430,7 +430,7 @@ memory, transfer, and bundle measurements remain separate reports rather than
 being mislabeled as part of that number.
 
 - Windows 11 Home build 26200, native Edge 150.0.4078.105;
-- Intel Core Ultra 7 255H, 16 logical CPUs, 32 GiB RAM;
+- Intel Core Ultra 7 255H, 16 logical CPUs, 64 GiB RAM;
 - NVIDIA RTX PRO 500 Blackwell Laptop GPU selected for WebGPU, driver
   32.0.15.9571 (NVIDIA 595.71), with the complete Intel/NVIDIA controller
   inventory pinned;

@@ -43,7 +43,7 @@
     "name": "",
     "source": "worker-wgpu-adapter-info",
     "subgroupMaxSize": 128,
-    "subgroupMinSize": 4
+    "subgroupMinSize": 32
   },
   "version": 2,
   "windowsBuild": {
