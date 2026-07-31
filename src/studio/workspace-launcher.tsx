@@ -1,9 +1,10 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
 
 import { cn } from "../lib/cn";
-import { generateManimThumbnail, loadManimThumbnailStatus } from "../render-pipeline/client";
 import type { ManimProjectCreationInput } from "../render-pipeline/client";
+import { generateManimThumbnail, loadManimThumbnailStatus } from "../render-pipeline/client";
 import type { ManimProjectSummary, ManimThumbnailStatus } from "../render-pipeline/contracts";
+import { PoietraBrand } from "./poietra-brand";
 import type { WorkspaceMutation } from "./use-manim-workspace";
 
 type WorkspaceLauncherProps = Readonly<{
@@ -427,7 +428,7 @@ export function WorkspaceLauncher({
   return (
     <main className="flex h-dvh min-h-0 flex-col bg-zinc-950 text-zinc-100">
       <header className="flex min-h-12 shrink-0 items-center border-b border-zinc-800 px-4 py-2">
-        <h1 className="text-balance text-sm font-semibold">Poietra Studio Lab</h1>
+        <PoietraBrand />
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
