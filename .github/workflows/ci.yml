@@ -193,6 +193,8 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium webkit
       - name: Run browser tests
         run: pnpm test:e2e
+      - name: Run production account browser test
+        run: pnpm test:e2e:account
       - name: Run retained WebGPU preview tests
         run: pnpm test:e2e:preview:webgpu
       - name: Download native visual parity artifact

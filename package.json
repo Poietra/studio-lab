@@ -23,6 +23,7 @@
     "test:render-sandbox:production:required": "POIETRA_MANIM_RENDER_PRODUCTION_REQUIRED=1 vitest run server/manim-render-production-sandbox-broker-service.real.test.ts",
     "test:snapshot-sandbox:production:required": "POIETRA_FAST_MANIM_PRODUCTION_REQUIRED=1 vitest run server/fast-manim-production-sandbox-broker-service.real.test.ts",
     "test:e2e": "playwright test",
+    "test:e2e:account": "node e2e/account-production-runner.mjs",
     "test:e2e:preview": "pnpm test:e2e:preview:chromium && pnpm test:e2e:preview:webgpu",
     "test:e2e:preview:chromium": "playwright test --config playwright.preview.config.ts --project preview-chromium --fully-parallel --workers 4",
     "test:e2e:preview:webgpu": "playwright test --config playwright.preview.config.ts --project preview-webgpu --workers 1",
