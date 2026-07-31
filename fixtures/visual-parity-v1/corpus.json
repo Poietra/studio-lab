@@ -102,6 +102,96 @@
         "viewport": { "heightPx": 90, "widthPx": 160 }
       },
       "thresholdException": null
+    },
+    {
+      "id": "real-mathtex-morph-v5--a-initial",
+      "fixture": {
+        "id": "eng-v1-real-mathtex-morph-v5",
+        "path": "fixtures/engine-v1/real-mathtex-morph-v5.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "05c0318c662004e9b1898a4018eaedef3a11b0926be9a166daa621145f645cbf"
+        }
+      },
+      "sample": {
+        "id": "a-initial",
+        "sampleTime": 0.5,
+        "semanticDigest": "204357f09544d3de5022e59929cc97cf1451f3507ca300557b95ed92bd450928",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
+    },
+    {
+      "id": "real-mathtex-morph-v5--outbound-midpoint",
+      "fixture": {
+        "id": "eng-v1-real-mathtex-morph-v5",
+        "path": "fixtures/engine-v1/real-mathtex-morph-v5.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "05c0318c662004e9b1898a4018eaedef3a11b0926be9a166daa621145f645cbf"
+        }
+      },
+      "sample": {
+        "id": "outbound-midpoint",
+        "sampleTime": 1.5,
+        "semanticDigest": "1e7f5357fe7c3d53cdf38cd249fe9e0d1ecc34f0ffbb1270bb14c1fbe0d07709",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
+    },
+    {
+      "id": "real-mathtex-morph-v5--maxwell-hold",
+      "fixture": {
+        "id": "eng-v1-real-mathtex-morph-v5",
+        "path": "fixtures/engine-v1/real-mathtex-morph-v5.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "05c0318c662004e9b1898a4018eaedef3a11b0926be9a166daa621145f645cbf"
+        }
+      },
+      "sample": {
+        "id": "maxwell-hold",
+        "sampleTime": 2.25,
+        "semanticDigest": "fbbe1b4d440c13d04506565ba80dc47473c5bfce3709e10cd03038ddd6d9fe9c",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
+    },
+    {
+      "id": "real-mathtex-morph-v5--return-midpoint",
+      "fixture": {
+        "id": "eng-v1-real-mathtex-morph-v5",
+        "path": "fixtures/engine-v1/real-mathtex-morph-v5.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "05c0318c662004e9b1898a4018eaedef3a11b0926be9a166daa621145f645cbf"
+        }
+      },
+      "sample": {
+        "id": "return-midpoint",
+        "sampleTime": 3.5,
+        "semanticDigest": "37419bcecc1f39f128ac5225ffb7b35fea52b6b988d7b0138d43a3b3658242ed",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
+    },
+    {
+      "id": "real-mathtex-morph-v5--a-restored",
+      "fixture": {
+        "id": "eng-v1-real-mathtex-morph-v5",
+        "path": "fixtures/engine-v1/real-mathtex-morph-v5.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "05c0318c662004e9b1898a4018eaedef3a11b0926be9a166daa621145f645cbf"
+        }
+      },
+      "sample": {
+        "id": "a-restored",
+        "sampleTime": 5,
+        "semanticDigest": "204357f09544d3de5022e59929cc97cf1451f3507ca300557b95ed92bd450928",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
     }
   ]
 }

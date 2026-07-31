@@ -17,7 +17,7 @@ use poietra_render_wgpu::{
 use poietra_scene_ir::{
     AffineTransformV1, ImageLocalRectV1, ImageSamplerV1, RenderCameraKindV1, RenderCameraV1,
     RenderCapabilityV1, RenderDrawV1, RenderPacketV1, RgbaColorV1, SceneIrBundleV1, SceneSourceV1,
-    StrokeCapV1, ViewportV1,
+    SnapshotProfileVersionV1, StrokeCapV1, ViewportV1,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -114,6 +114,43 @@ struct MathTexVisualParitySample {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MathTexVisualParityExpected {
+    semantic_digest: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct RealMathTexMorphV5Fixture {
+    assets: serde_json::Value,
+    id: String,
+    producer_reference: RealMathTexMorphV5ProducerReference,
+    samples: Vec<RealMathTexMorphV5Sample>,
+    scene: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct RealMathTexMorphV5ProducerReference {
+    engine_commit: String,
+    fast_manim_commit: String,
+    kind: String,
+    snapshot_hash: String,
+    source_path: String,
+    source_sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct RealMathTexMorphV5Sample {
+    expected: RealMathTexMorphV5Expected,
+    id: String,
+    packet_id: String,
+    sample_time: f64,
+    viewport: ViewportV1,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct RealMathTexMorphV5Expected {
     semantic_digest: String,
 }
 
@@ -260,6 +297,31 @@ const VISUAL_PARITY_ENTRY_V1: &str = "dynamic-affine-camera--a-first";
 const PNG_VISUAL_PARITY_ENTRY_V1: &str = "png-alpha-edge-camera--midpoint";
 const MATHTEX_VISUAL_PARITY_ENTRY_V1: &str = "mathtex-nested-radical-fraction--static";
 const GENERIC_STROKE_VISUAL_PARITY_ENTRY_V1: &str = "generic-stroke-topology--sample";
+const REAL_MATHTEX_MORPH_V5_FIXTURE_ID: &str = "eng-v1-real-mathtex-morph-v5";
+const REAL_MATHTEX_MORPH_V5_FIXTURE_PATH: &str = "fixtures/engine-v1/real-mathtex-morph-v5.json";
+const REAL_MATHTEX_MORPH_V5_SOURCE_PATH: &str =
+    "fixtures/real-preview-harness/scene_mathtex_morph.py";
+const REAL_MATHTEX_MORPH_V5_SOURCE_SHA256: &str =
+    "f03e0c5eed2c2c35047e8d0ee9ef0aa3f0fc00cd5ecd83ce36c3cf21e46e9dd6";
+const REAL_MATHTEX_MORPH_V5_ENGINE_COMMIT: &str = "be671c1ddcfc8466548c8822956e19579256e581";
+const REAL_MATHTEX_MORPH_V5_FAST_MANIM_COMMIT: &str = "3083db9ed9a9a93c2808ee3f51189ceca92d230b";
+const REAL_MATHTEX_MORPH_V5_SNAPSHOT_HASH: &str =
+    "05c0318c662004e9b1898a4018eaedef3a11b0926be9a166daa621145f645cbf";
+const REAL_MATHTEX_MORPH_V5_SAMPLES: [(&str, &str, f64); 5] = [
+    ("real-mathtex-morph-v5--a-initial", "a-initial", 0.5),
+    (
+        "real-mathtex-morph-v5--outbound-midpoint",
+        "outbound-midpoint",
+        1.5,
+    ),
+    ("real-mathtex-morph-v5--maxwell-hold", "maxwell-hold", 2.25),
+    (
+        "real-mathtex-morph-v5--return-midpoint",
+        "return-midpoint",
+        3.5,
+    ),
+    ("real-mathtex-morph-v5--a-restored", "a-restored", 5.0),
+];
 const VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1: &str = "POIETRA_VISUAL_PARITY_NATIVE_ARTIFACT_DIR";
 const SEMANTIC_NUMBER_SCALE: f64 = 1_000_000_000.0;
 
@@ -803,6 +865,20 @@ fn mathtex_visual_parity_fixture() -> (MathTexVisualParityFixture, SceneIrBundle
         "scene": fixture.scene,
     }))
     .expect("MathTex visual parity fixture must contain a valid Scene bundle");
+    (fixture, bundle)
+}
+
+fn real_mathtex_morph_v5_fixture() -> (RealMathTexMorphV5Fixture, SceneIrBundleV1) {
+    let path = repository_root().join(REAL_MATHTEX_MORPH_V5_FIXTURE_PATH);
+    let fixture: RealMathTexMorphV5Fixture = serde_json::from_slice(
+        &fs::read(path).expect("real MathTex morph V5 fixture must be readable"),
+    )
+    .expect("real MathTex morph V5 fixture must match its strict native envelope");
+    let bundle = serde_json::from_value(serde_json::json!({
+        "assets": fixture.assets,
+        "scene": fixture.scene,
+    }))
+    .expect("real MathTex morph V5 fixture must contain a valid Scene bundle");
     (fixture, bundle)
 }
 
@@ -1393,6 +1469,238 @@ fn renders_mathtex_nested_radical_fraction_with_fallback_adapter() {
             .expect("device-loss evidence mutex must not be poisoned")
             .is_none(),
         "device must remain available through MathTex visual parity readback"
+    );
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the visual parity lane runs this proof"]
+#[allow(clippy::too_many_lines)] // One temporal proof intentionally shares one session, adapter, device, and renderer across all five samples.
+fn renders_real_mathtex_morph_v5_samples_with_fallback_adapter() {
+    let (fixture, bundle) = real_mathtex_morph_v5_fixture();
+    assert_eq!(fixture.id, REAL_MATHTEX_MORPH_V5_FIXTURE_ID);
+    assert_eq!(
+        fixture.producer_reference.kind,
+        "server-sealed-real-fast-manim-profile-v5"
+    );
+    assert_eq!(
+        fixture.producer_reference.engine_commit,
+        REAL_MATHTEX_MORPH_V5_ENGINE_COMMIT
+    );
+    assert_eq!(
+        fixture.producer_reference.fast_manim_commit,
+        REAL_MATHTEX_MORPH_V5_FAST_MANIM_COMMIT
+    );
+    assert_eq!(
+        fixture.producer_reference.snapshot_hash,
+        REAL_MATHTEX_MORPH_V5_SNAPSHOT_HASH
+    );
+    assert_eq!(
+        fixture.producer_reference.source_path,
+        REAL_MATHTEX_MORPH_V5_SOURCE_PATH
+    );
+    assert_eq!(
+        fixture.producer_reference.source_sha256,
+        REAL_MATHTEX_MORPH_V5_SOURCE_SHA256
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(
+                fs::read(repository_root().join(REAL_MATHTEX_MORPH_V5_SOURCE_PATH))
+                    .expect("the real MathTex morph source must remain readable")
+            )
+        ),
+        REAL_MATHTEX_MORPH_V5_SOURCE_SHA256,
+        "the checked-in Python source must match the sealed producer provenance"
+    );
+
+    let SceneSourceV1::ImportedManimServerSnapshot {
+        snapshot_hash,
+        snapshot_version,
+        source_hash,
+        ..
+    } = &bundle.scene.source
+    else {
+        panic!("real MathTex morph V5 must remain an imported server snapshot");
+    };
+    assert_eq!(*snapshot_version, SnapshotProfileVersionV1::V5);
+    assert_eq!(snapshot_hash, REAL_MATHTEX_MORPH_V5_SNAPSHOT_HASH);
+    assert_eq!(source_hash, REAL_MATHTEX_MORPH_V5_SOURCE_SHA256);
+    assert_eq!(
+        bundle.scene.source.revision_hash(),
+        REAL_MATHTEX_MORPH_V5_SNAPSHOT_HASH
+    );
+    assert_eq!(bundle.scene.duration.to_bits(), 5.5_f64.to_bits());
+    assert_eq!(bundle.scene.entities.len(), 1);
+    assert_eq!(bundle.scene.animation_channels.len(), 1);
+
+    let visual_parity_entries =
+        REAL_MATHTEX_MORPH_V5_SAMPLES.map(|(entry_id, _, _)| load_visual_parity_entry(entry_id));
+    assert_eq!(fixture.samples.len(), REAL_MATHTEX_MORPH_V5_SAMPLES.len());
+    let expected_viewport = ViewportV1 {
+        height_px: 360,
+        width_px: 640,
+    };
+    for (index, &(entry_id, sample_id, sample_time)) in
+        REAL_MATHTEX_MORPH_V5_SAMPLES.iter().enumerate()
+    {
+        let entry = &visual_parity_entries[index];
+        let sample = &fixture.samples[index];
+        assert_eq!(entry.id, entry_id);
+        assert_eq!(entry.fixture.id, REAL_MATHTEX_MORPH_V5_FIXTURE_ID);
+        assert_eq!(entry.fixture.path, REAL_MATHTEX_MORPH_V5_FIXTURE_PATH);
+        assert_eq!(
+            entry.fixture.revision.kind,
+            "imported-manim-server-snapshot"
+        );
+        assert_eq!(
+            entry.fixture.revision.sha256,
+            REAL_MATHTEX_MORPH_V5_SNAPSHOT_HASH
+        );
+        assert_eq!(entry.sample.id, sample_id);
+        assert_eq!(entry.sample.sample_time.to_bits(), sample_time.to_bits());
+        assert_eq!(entry.sample.viewport, expected_viewport);
+        assert_eq!(sample.id, sample_id);
+        assert_eq!(
+            sample.packet_id,
+            format!("real-mathtex-morph-v5:{sample_id}")
+        );
+        assert_eq!(sample.sample_time.to_bits(), sample_time.to_bits());
+        assert_eq!(sample.viewport, expected_viewport);
+        assert_eq!(
+            sample.expected.semantic_digest, entry.sample.semantic_digest,
+            "{sample_id} fixture and corpus semantics must stay pinned together"
+        );
+    }
+
+    let session =
+        EngineSessionV1::new(bundle).expect("real MathTex morph V5 fixture must install once");
+    let sampled_packets = fixture
+        .samples
+        .iter()
+        .map(|sample| {
+            let packet = session
+                .sample_render_packet(SampleEngineSessionOptionsV1 {
+                    evidence: &[fixture.id.clone(), sample.id.clone()],
+                    packet_id: &sample.packet_id,
+                    sample_time: sample.sample_time,
+                    viewport: sample.viewport.clone(),
+                })
+                .unwrap_or_else(|error| panic!("{} must sample: {error}", sample.id));
+            let semantic_digest = render_packet_semantic_digest(&packet);
+            (packet, semantic_digest)
+        })
+        .collect::<Vec<_>>();
+    for (index, (packet, semantic_digest)) in sampled_packets.iter().enumerate() {
+        let sample = &fixture.samples[index];
+        let entry = &visual_parity_entries[index];
+        assert_eq!(packet.packet_id, sample.packet_id);
+        assert_eq!(packet.sample_time.to_bits(), sample.sample_time.to_bits());
+        assert_eq!(packet.viewport, sample.viewport);
+        assert_eq!(
+            packet.scene_revision_hash,
+            REAL_MATHTEX_MORPH_V5_SNAPSHOT_HASH
+        );
+        assert_eq!(
+            semantic_digest, &sample.expected.semantic_digest,
+            "{} fixture semantic digest must match the native evaluator",
+            sample.id
+        );
+        assert_eq!(
+            semantic_digest, &entry.sample.semantic_digest,
+            "{} corpus semantic digest must match the native evaluator",
+            sample.id
+        );
+    }
+
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = request_fallback_adapter(&instance);
+    let adapter_info = adapter.get_info();
+    assert_eq!(adapter_info.device_type, wgpu::DeviceType::Cpu);
+    assert_target_format_support(&adapter);
+    let (device, queue) = request_device(&adapter);
+    let device_loss = track_device_loss(&device);
+    let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT)
+        .expect("proof target format must be supported by the renderer");
+    let mut frames_by_sample = std::collections::BTreeMap::new();
+
+    for (sample, (packet, _)) in fixture.samples.iter().zip(&sampled_packets) {
+        let (texture, extent) = render_packet(&device, &queue, &mut renderer, packet);
+        let (_, rgba) = readback_texture(&device, &queue, &texture, extent);
+        assert_eq!(extent.width, sample.viewport.width_px);
+        assert_eq!(extent.height, sample.viewport.height_px);
+        assert!(
+            non_background_bounds(&rgba, extent.width, extent.height).is_some(),
+            "{} must retain visible MathTex ink",
+            sample.id
+        );
+        assert!(
+            frames_by_sample.insert(sample.id.clone(), rgba).is_none(),
+            "real MathTex morph sample ids must be unique"
+        );
+    }
+
+    assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
+    assert_no_gpu_error("internal", pollster::block_on(internal_scope.pop()));
+    assert_no_gpu_error(
+        "out-of-memory",
+        pollster::block_on(out_of_memory_scope.pop()),
+    );
+    assert!(
+        device_loss
+            .lock()
+            .expect("device-loss evidence mutex must not be poisoned")
+            .is_none(),
+        "device must remain available through all five real MathTex morph readbacks"
+    );
+    assert_eq!(
+        frames_by_sample["a-initial"], frames_by_sample["a-restored"],
+        "the restored A frame must be byte-identical to the initial A frame"
+    );
+    assert_ne!(
+        frames_by_sample["a-initial"], frames_by_sample["maxwell-hold"],
+        "the Maxwell hold must differ from A"
+    );
+    assert_ne!(
+        frames_by_sample["outbound-midpoint"], frames_by_sample["a-initial"],
+        "the outbound midpoint must differ from its A endpoint"
+    );
+    assert_ne!(
+        frames_by_sample["outbound-midpoint"], frames_by_sample["maxwell-hold"],
+        "the outbound midpoint must differ from its Maxwell endpoint"
+    );
+    assert_ne!(
+        frames_by_sample["return-midpoint"], frames_by_sample["maxwell-hold"],
+        "the return midpoint must differ from its Maxwell endpoint"
+    );
+    assert_ne!(
+        frames_by_sample["return-midpoint"], frames_by_sample["a-restored"],
+        "the return midpoint must differ from its restored A endpoint"
+    );
+
+    let artifact_requested = env::var_os(VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1).is_some();
+    let artifact_count = visual_parity_entries
+        .iter()
+        .map(|entry| {
+            usize::from(emit_native_visual_parity_artifact(
+                entry,
+                &adapter_info,
+                &frames_by_sample[&entry.sample.id],
+            ))
+        })
+        .sum::<usize>();
+    assert_eq!(
+        artifact_count,
+        if artifact_requested {
+            REAL_MATHTEX_MORPH_V5_SAMPLES.len()
+        } else {
+            0
+        },
+        "an opt-in real MathTex morph artifact request must emit all five frames"
     );
 }
 

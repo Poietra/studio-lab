@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { expect, type Page, test } from "@playwright/test";
+import { sceneIrBundleV1Schema } from "../src/engine/contracts";
+import { sceneIrSourceRevisionHash } from "../src/engine/scene-ir";
 import { encodeRgbaPngV1 } from "./png-rgba";
 import {
   nativeVisualParityArtifactV1Schema,
@@ -49,9 +51,18 @@ type DynamicFixture = Readonly<{
   sample?: VisualParityFixtureSample;
   samples?: readonly VisualParityFixtureSample[];
   scene: Readonly<{
-    source: Readonly<{ kind: string; revisionHash?: string }>;
+    source: Readonly<{ kind: string; revisionHash?: string; snapshotHash?: string }>;
   }>;
 }>;
+
+const REAL_MATHTEX_MORPH_V5_ENTRY_IDS = [
+  "real-mathtex-morph-v5--a-initial",
+  "real-mathtex-morph-v5--outbound-midpoint",
+  "real-mathtex-morph-v5--maxwell-hold",
+  "real-mathtex-morph-v5--return-midpoint",
+  "real-mathtex-morph-v5--a-restored",
+] as const;
+const REAL_MATHTEX_MORPH_V5_ENTRY_ID_SET = new Set<string>(REAL_MATHTEX_MORPH_V5_ENTRY_IDS);
 
 const VISUAL_PARITY_CORPUS = visualParityCorpusV1Schema.parse(
   JSON.parse(readFileSync("fixtures/visual-parity-v1/corpus.json", "utf8")),
@@ -129,9 +140,9 @@ async function proveVisualParityEntry(page: Page, entryId: string) {
 
   const fixture = JSON.parse(await readFile(entry.fixture.path, "utf8")) as DynamicFixture;
   expect(fixture.id).toBe(entry.fixture.id);
-  expect(fixture.scene.source).toEqual(
-    expect.objectContaining({ kind: entry.fixture.revision.kind, revisionHash: entry.fixture.revision.sha256 }),
-  );
+  const fixtureBundle = sceneIrBundleV1Schema.parse({ assets: fixture.assets, scene: fixture.scene });
+  expect(fixtureBundle.scene.source.kind).toBe(entry.fixture.revision.kind);
+  expect(sceneIrSourceRevisionHash(fixtureBundle.scene)).toBe(entry.fixture.revision.sha256);
   if ((fixture.sample === undefined) === (fixture.samples === undefined)) {
     throw new Error(`The ${entry.id} fixture must define exactly one of sample or samples.`);
   }
@@ -336,10 +347,64 @@ async function proveVisualParityEntry(page: Page, entryId: string) {
     metrics.pixelFractionAboveThreshold,
     `visual parity report: ${join(outputDirectory, "report.json")}`,
   ).toBeLessThanOrEqual(thresholds.maximumPixelFractionAboveThreshold);
+
+  return { actualRgba, expectedRgba };
 }
 
-for (const entry of VISUAL_PARITY_CORPUS.entries) {
+function rgbaBytesEqual(left: Uint8Array, right: Uint8Array) {
+  return left.byteLength === right.byteLength && left.every((value, index) => value === right[index]);
+}
+
+function expectRealMathTexMorphRelations(
+  frames: ReadonlyMap<string, Awaited<ReturnType<typeof proveVisualParityEntry>>>,
+) {
+  function requireFrame(entryId: (typeof REAL_MATHTEX_MORPH_V5_ENTRY_IDS)[number]) {
+    const frame = frames.get(entryId);
+    if (!frame) throw new Error(`The real MathTex morph proof is missing ${entryId}.`);
+    return frame;
+  }
+
+  const initial = requireFrame("real-mathtex-morph-v5--a-initial");
+  const outbound = requireFrame("real-mathtex-morph-v5--outbound-midpoint");
+  const maxwell = requireFrame("real-mathtex-morph-v5--maxwell-hold");
+  const returning = requireFrame("real-mathtex-morph-v5--return-midpoint");
+  const restored = requireFrame("real-mathtex-morph-v5--a-restored");
+  for (const rgbaKind of ["expectedRgba", "actualRgba"] as const) {
+    const label = rgbaKind === "expectedRgba" ? "native" : "browser";
+    expect(rgbaBytesEqual(initial[rgbaKind], restored[rgbaKind]), `${label}: restored A must equal initial A`).toBe(
+      true,
+    );
+    expect(rgbaBytesEqual(initial[rgbaKind], maxwell[rgbaKind]), `${label}: Maxwell B must differ from A`).toBe(false);
+    expect(
+      rgbaBytesEqual(outbound[rgbaKind], initial[rgbaKind]),
+      `${label}: outbound midpoint must differ from initial A`,
+    ).toBe(false);
+    expect(
+      rgbaBytesEqual(outbound[rgbaKind], maxwell[rgbaKind]),
+      `${label}: outbound midpoint must differ from Maxwell B`,
+    ).toBe(false);
+    expect(
+      rgbaBytesEqual(returning[rgbaKind], maxwell[rgbaKind]),
+      `${label}: return midpoint must differ from Maxwell B`,
+    ).toBe(false);
+    expect(
+      rgbaBytesEqual(returning[rgbaKind], restored[rgbaKind]),
+      `${label}: return midpoint must differ from restored A`,
+    ).toBe(false);
+  }
+}
+
+for (const entry of VISUAL_PARITY_CORPUS.entries.filter(({ id }) => !REAL_MATHTEX_MORPH_V5_ENTRY_ID_SET.has(id))) {
   test(`matches native full-RGBA for ${entry.id}`, async ({ page }) => {
     await proveVisualParityEntry(page, entry.id);
   });
 }
+
+test("matches native full-RGBA across the real MathTex morph V5 timeline", async ({ page }, testInfo) => {
+  testInfo.setTimeout(120_000);
+  const frames = new Map<string, Awaited<ReturnType<typeof proveVisualParityEntry>>>();
+  for (const entryId of REAL_MATHTEX_MORPH_V5_ENTRY_IDS) {
+    frames.set(entryId, await proveVisualParityEntry(page, entryId));
+  }
+  expectRealMathTexMorphRelations(frames);
+});
