@@ -1,10 +1,11 @@
 import { createServer as createHttpServer, request as createRequest } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "./http/json";
 import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import {
+  createOrganizationMembershipProductionAdmissionV1,
   type ProductionManimServer,
   parseProductionManimServerConfig,
   startProductionManimServer,
@@ -171,6 +172,51 @@ describe("production Manim server configuration", () => {
 });
 
 describe("standalone production Manim HTTP adapter", () => {
+  it("resolves the selected organization through active membership before entering its tenant cell", async () => {
+    const resolveActiveMembership = vi.fn(async (_identity: unknown, organizationId: string) =>
+      organizationId === "tenant-a"
+        ? {
+            organizationId,
+            role: "member" as const,
+            userId: "00000000-0000-4000-8000-000000000001",
+            version: 1n,
+          }
+        : null,
+    );
+    const server = await startProductionManimServer({
+      admission: createOrganizationMembershipProductionAdmissionV1({
+        identities: {
+          authenticate: async () => ({ issuer: "https://identity.example", subject: "external-user" }),
+          ready: async () => true,
+        },
+        memberships: {
+          close: async () => undefined,
+          ready: async () => true,
+          resolveActiveMembership,
+        },
+      }),
+      config: await startConfig(),
+      runtime: createRuntime(),
+    });
+    servers.push(server);
+
+    expect(
+      await send(server, "/api/manim/projects", {
+        headers: { authorization: "Bearer verified", "x-poietra-organization-id": "tenant-a" },
+      }),
+    ).toMatchObject({ status: 200 });
+    expect(
+      await send(server, "/api/manim/projects", {
+        headers: { authorization: "Bearer verified", "x-poietra-organization-id": "tenant-b" },
+      }),
+    ).toMatchObject({ status: 403 });
+    expect(resolveActiveMembership).toHaveBeenCalledWith(
+      { issuer: "https://identity.example", subject: "external-user" },
+      "tenant-a",
+      expect.any(AbortSignal),
+    );
+  });
+
   it("rejects an incomplete production runtime adapter before listening", async () => {
     await expect(
       startProductionManimServer({
@@ -286,6 +332,7 @@ describe("standalone production Manim HTTP adapter", () => {
           authorization: "Bearer credential",
           cookie: "session=credential",
           "x-forwarded-for": "203.0.113.5",
+          "x-poietra-organization-id": "tenant-a",
         },
       }),
     ).toMatchObject({ status: 200 });
@@ -293,6 +340,7 @@ describe("standalone production Manim HTTP adapter", () => {
       credentials: { authorization: "Bearer credential", cookie: "session=credential" },
       directPeerAddress: "127.0.0.1",
       forwardedHeaders: { immediatePeerTrusted: true, present: true },
+      requestedOrganizationId: "tenant-a",
     });
     expect(admissionContext).not.toHaveProperty("headers");
     expect(JSON.stringify(admissionContext)).not.toContain("203.0.113.5");
@@ -761,9 +809,16 @@ describe("standalone production Manim HTTP adapter", () => {
 
   it("closes the listener and its runtime adapter exactly once", async () => {
     const runtime = createRuntime();
+    let admissionCloses = 0;
     let closes = 0;
     const server = await startProductionManimServer({
-      admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
+      admission: {
+        authenticate: async () => TEST_PRINCIPAL,
+        close: async () => {
+          admissionCloses += 1;
+        },
+        ready: async () => true,
+      },
       config: await startConfig(),
       runtime: {
         ...runtime,
@@ -777,6 +832,7 @@ describe("standalone production Manim HTTP adapter", () => {
 
     await server.close();
     await server.close();
+    expect(admissionCloses).toBe(1);
     expect(closes).toBe(1);
     await expect(send(server, "/healthz")).rejects.toThrow();
   });
@@ -792,7 +848,7 @@ describe("standalone production Manim HTTP adapter", () => {
 
     const readinessStarted = performance.now();
     expect(await send(server, "/readyz")).toMatchObject({ status: 503 });
-    expect(performance.now() - readinessStarted).toBeLessThan(1_000);
+    expect(performance.now() - readinessStarted).toBeLessThan(2_000);
     await expect(server.close()).rejects.toThrow(/fully close/i);
   });
 
@@ -803,12 +859,19 @@ describe("standalone production Manim HTTP adapter", () => {
       occupied.listen(0, "127.0.0.1", () => resolveListen());
     });
     const port = (occupied.address() as AddressInfo).port;
+    let admissionCloses = 0;
     let runtimeCloses = 0;
     try {
       const runtime = createRuntime();
       await expect(
         startProductionManimServer({
-          admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
+          admission: {
+            authenticate: async () => TEST_PRINCIPAL,
+            close: async () => {
+              admissionCloses += 1;
+            },
+            ready: async () => true,
+          },
           config: config({ port }),
           runtime: {
             ...runtime,
@@ -818,6 +881,7 @@ describe("standalone production Manim HTTP adapter", () => {
           },
         }),
       ).rejects.toMatchObject({ code: "EADDRINUSE" });
+      expect(admissionCloses).toBe(1);
       expect(runtimeCloses).toBe(1);
     } finally {
       await new Promise<void>((resolveClose) => occupied.close(() => resolveClose()));

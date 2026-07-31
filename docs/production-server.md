@@ -15,13 +15,27 @@ There is intentionally no environment-only or unauthenticated CLI. The current
 production runtime adapter. The injected in-process adapter is trusted code:
 its structured readiness result is an operational assertion after it verifies
 the external sandbox, not an isolation proof verified by this HTTP layer. The
-current contract is limited to one deployment-isolated tenant. The shipped
+current runtime contract is limited to one deployment-isolated tenant. The shipped
 source-only render adapter and its trusted durable-media publisher use the
 separate broker described in
-[production-render-sandbox.md](./production-render-sandbox.md). Issue #120 owns
-principal-to-tenant selection, while digest-bounded input assets remain
+[production-render-sandbox.md](./production-render-sandbox.md). Issue #298 owns
+multi-organization account selection and edge-to-cell routing, while
+digest-bounded input assets remain
 follow-up work. Readiness stays unavailable unless the durable stores, the
 staging-root correlation, and both external sandbox brokers pass their probes.
+
+Migration v11 adds the account control-plane records required by request
+admission: OIDC identities, organizations, and memberships. Invitations remain
+deferred until their verified-email acceptance flow lands. The exported
+`createOrganizationMembershipProductionAdmissionV1` composes an injected
+external-identity verifier with `PostgresOrganizationMembershipRepositoryV1`.
+`X-Poietra-Organization-Id` is only an untrusted organization selector; the
+repository must resolve an active user, organization, and membership before it
+returns the internal user UUID and tenant ID accepted by the existing API.
+OIDC tenant and role claims are never authorization inputs. Owner, admin, and
+member roles can enter the Manim API; the billing-only role cannot. The
+membership admission exposes `close()`, transferring its owned PostgreSQL pool
+to the server lifecycle. Admissions without `close()` remain caller-owned.
 
 Each server instance remains a single-tenant cell: its runtime API declares one
 server-owned tenant ID and at least one bounded absolute storage root. A
@@ -45,16 +59,18 @@ Non-loopback public origins require HTTPS. TLS may terminate at a reverse
 proxy, but it must preserve the public `Host`; forwarded headers are rejected
 unless the immediate peer IP is listed in `trustedProxyAddresses`. Raw
 forwarded values are not passed to authentication—the admission adapter gets
-only the direct peer, the verified transport facts, and the Authorization and
-Cookie credentials. Mutation `Origin` is compared directly with the configured
-public origin rather than the unencrypted proxy-to-Node socket.
+only the direct peer, the verified transport facts, the Authorization and
+Cookie credentials, and the bounded organization selector. Mutation `Origin`
+is compared directly with the configured public origin rather than the
+unencrypted proxy-to-Node socket.
 
 Shutdown first stops new HTTP connections and drains tracked request tasks. It
 rechecks the lifecycle after asynchronous readiness and admission so a request
 cannot enter the runtime after draining begins. At the drain deadline,
 remaining tasks are aborted, active connections are destroyed, and task
-wrappers are joined before runtime close starts. Runtime close has its own
-deadline. Either deadline breach rejects the returned promise so the process
-supervisor can record an unclean shutdown. A valid adapter transfers runtime
-ownership to the server; listener startup failure also performs bounded runtime
-cleanup.
+wrappers are joined before owned admission and runtime adapters close. Adapter
+close has its own deadline. Either deadline breach rejects the returned promise
+so the process supervisor can record an unclean shutdown. A valid runtime
+adapter transfers runtime ownership to the server; an admission implementing
+`close()` transfers its lifecycle too. Listener startup failure performs
+bounded cleanup for both.
