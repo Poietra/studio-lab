@@ -8,6 +8,10 @@ export const accountOrganizationIdSchemaV1 = z
 
 export const accountOrganizationRoleSchemaV1 = z.enum(["owner", "admin", "member", "billing"]);
 
+export const accountOrganizationSwitchRequestSchemaV1 = z
+  .object({ organizationId: accountOrganizationIdSchemaV1 })
+  .strict();
+
 export const accountDisplayNameSchemaV1 = z
   .string()
   .refine(

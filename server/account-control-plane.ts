@@ -1,9 +1,12 @@
 import {
+  ACCOUNT_LOGOUT_ROUTE_V1,
   ACCOUNT_SESSION_ROUTE_V1,
+  createAccountSessionActionFetchHandlerV1,
+  createAccountSessionActionFetchRequestGuardV1,
   createAccountSessionFetchHandlerV1,
   createAccountSessionFetchRequestGuardV1,
 } from "./accounts/account-session-fetch";
-import type { AccountSessionViewRepositoryV1 } from "./accounts/account-session-repository";
+import type { AccountSessionControlRepositoryV1 } from "./accounts/account-session-repository";
 import { createOidcLoginFetchHandlerV1, createOidcLoginFetchRequestGuardV1 } from "./accounts/oidc-login-fetch";
 import type { OidcLoginRepositoryV1 } from "./accounts/oidc-login-repository";
 import { createOidcLoginServiceV1 } from "./accounts/oidc-login-service";
@@ -18,8 +21,8 @@ export type OidcAccountControlPlaneOptionsV1<Environment> = Readonly<{
   oidc: OidcProviderConfigV1;
   /** Must create request-scoped storage; Cloudflare Hyperdrive connections cannot be held in global scope. */
   repository: (environment: Environment) => OidcLoginRepositoryV1;
-  /** Separate read adapter keeps an existing session independent from OIDC provider availability. */
-  sessionRepository: (environment: Environment) => AccountSessionViewRepositoryV1;
+  /** Separate session adapter keeps browser account access independent from OIDC provider availability. */
+  sessionRepository: (environment: Environment) => AccountSessionControlRepositoryV1;
   sessionLifetimeMs?: number;
 }>;
 
@@ -32,6 +35,7 @@ export function createOidcAccountControlPlaneV1<Environment>(options: OidcAccoun
   const oidcProvider = () => (provider ??= discoverOpenIdClientIdentityProviderV1(options.oidc));
   const oidcRequestGuard = createOidcLoginFetchRequestGuardV1(options.oidc.publicOrigin);
   const sessionRequestGuard = createAccountSessionFetchRequestGuardV1(options.oidc.publicOrigin);
+  const sessionActionRequestGuard = createAccountSessionActionFetchRequestGuardV1(options.oidc.publicOrigin);
   const withService = async <T>(
     environment: Environment,
     operation: (service: ReturnType<typeof createOidcLoginServiceV1>) => Promise<T>,
@@ -54,7 +58,7 @@ export function createOidcAccountControlPlaneV1<Environment>(options: OidcAccoun
   };
   const withSessionRepository = async <T>(
     environment: Environment,
-    operation: (repository: AccountSessionViewRepositoryV1) => Promise<T>,
+    operation: (repository: AccountSessionControlRepositoryV1) => Promise<T>,
   ) => {
     const repository = options.sessionRepository(environment);
     try {
@@ -65,11 +69,19 @@ export function createOidcAccountControlPlaneV1<Environment>(options: OidcAccoun
   };
   return Object.freeze({
     fetch: (request: Request, environment: Environment) => {
-      if (new URL(request.url).pathname === ACCOUNT_SESSION_ROUTE_V1) {
+      const pathname = new URL(request.url).pathname;
+      if (pathname === ACCOUNT_SESSION_ROUTE_V1 && request.method === "GET") {
         const rejected = sessionRequestGuard.reject(request);
         if (rejected) return Promise.resolve(rejected);
         return withSessionRepository(environment, (repository) =>
           createAccountSessionFetchHandlerV1(repository, options.oidc.publicOrigin).fetch(request),
+        );
+      }
+      if (pathname === ACCOUNT_SESSION_ROUTE_V1 || pathname === ACCOUNT_LOGOUT_ROUTE_V1) {
+        const rejected = sessionActionRequestGuard.reject(request);
+        if (rejected) return Promise.resolve(rejected);
+        return withSessionRepository(environment, (repository) =>
+          createAccountSessionActionFetchHandlerV1(repository, options.oidc.publicOrigin).fetch(request),
         );
       }
       const rejected = oidcRequestGuard.reject(request);
@@ -83,7 +95,7 @@ export function createOidcAccountControlPlaneV1<Environment>(options: OidcAccoun
   });
 }
 
-export { ACCOUNT_SESSION_ROUTE_V1 } from "./accounts/account-session-fetch";
+export { ACCOUNT_LOGOUT_ROUTE_V1, ACCOUNT_SESSION_ROUTE_V1 } from "./accounts/account-session-fetch";
 export {
   OIDC_LOGIN_BINDING_COOKIE_NAME_V1,
   OIDC_LOGIN_CALLBACK_ROUTE_V1,
