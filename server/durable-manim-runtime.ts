@@ -3,6 +3,7 @@ import { basename } from "node:path";
 
 import type {
   ManimProjectMutationView,
+  ManimRenderCapability,
   ManimSourceExport,
   ManimThumbnailStatus,
   ManimWorkspaceView,
@@ -45,6 +46,7 @@ class MainScene(Scene):
 `;
 
 const DEFAULT_FRAME = Object.freeze({ height: 8, width: 14.222 });
+const WORKSPACE_RENDER_CAPABILITY_PROBE_TIMEOUT_MS = 2_000;
 
 export type DurableManimExecutionReadinessV1 = Readonly<{
   close?: () => Promise<void>;
@@ -179,6 +181,16 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     return repositoryReady && blobsReady && artifactReaderReady && executionReady && rendersReady && snapshotsReady;
   }
 
+  async apiReady(signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    const [repositoryReady, blobsReady] = await Promise.all([
+      this.#repository.ready(signal),
+      this.#blobs.ready(signal),
+    ]);
+    signal?.throwIfAborted();
+    return repositoryReady && blobsReady;
+  }
+
   /** Production attestation additionally requires the durable render service. */
   async productionReady(signal?: AbortSignal) {
     if (!this.#artifactReader || !this.#renders || !this.#snapshots) return false;
@@ -241,8 +253,66 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     return { heads, project };
   }
 
+  async #renderCapability(signal?: AbortSignal, timeoutMs?: number): Promise<ManimRenderCapability> {
+    signal?.throwIfAborted();
+    const renders = this.#renders;
+    if (!renders) return { kind: "unavailable", reason: "durable-render-service-unavailable" };
+    const execution = this.#execution;
+    if (!execution) return { kind: "unavailable", reason: "durable-executor-unavailable" };
+
+    const probeController = timeoutMs === undefined ? null : new AbortController();
+    const probeSignal = probeController?.signal ?? signal;
+    let probeTimedOut = false;
+    let probeTimer: NodeJS.Timeout | undefined;
+    let releaseDeadline: ((ready: false) => void) | undefined;
+    const deadline = probeController
+      ? new Promise<false>((resolve) => {
+          releaseDeadline = resolve;
+          probeTimer = setTimeout(() => {
+            probeTimedOut = true;
+            probeController.abort(new Error("Render capability readiness timed out."));
+            resolve(false);
+          }, timeoutMs);
+          probeTimer.unref();
+        })
+      : null;
+    const abortProbe = () => {
+      probeController?.abort(signal?.reason);
+      releaseDeadline?.(false);
+    };
+    signal?.addEventListener("abort", abortProbe, { once: true });
+    const probe = async (ready: () => Promise<boolean>) => {
+      try {
+        const operation = ready();
+        return await (deadline ? Promise.race([operation, deadline]) : operation);
+      } catch {
+        signal?.throwIfAborted();
+        return false;
+      }
+    };
+    try {
+      const [renderServiceReady, executorReady] = await Promise.all([
+        probe(() => renders.ready(probeSignal)),
+        probe(() => execution.ready(probeSignal)),
+      ]);
+      signal?.throwIfAborted();
+      if (probeTimedOut) return { kind: "unavailable", reason: "durable-render-readiness-timeout" };
+      if (!renderServiceReady) {
+        return { kind: "unavailable", reason: "durable-render-service-unavailable" };
+      }
+      if (!executorReady) return { kind: "unavailable", reason: "durable-executor-unavailable" };
+      return { backend: "durable-sandbox", kind: "ready" };
+    } finally {
+      if (probeTimer) clearTimeout(probeTimer);
+      signal?.removeEventListener("abort", abortProbe);
+    }
+  }
+
   async workspace(projectId?: string, signal?: AbortSignal): Promise<ManimWorkspaceView> {
-    const { heads, project } = await this.#projectAndHeads(projectId, signal);
+    const [{ heads, project }, renderCapability] = await Promise.all([
+      this.#projectAndHeads(projectId, signal),
+      this.#renderCapability(signal, WORKSPACE_RENDER_CAPABILITY_PROBE_TIMEOUT_MS),
+    ]);
     const sources = (
       await Promise.all(
         heads.map(async (head) => {
@@ -252,10 +322,10 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
       )
     ).filter((source) => source.scenes.length > 0);
     return {
-      commandAvailable: false,
       frame: this.#frame,
       projectId: project.projectId,
       projectName: project.name,
+      renderCapability,
       sources,
     };
   }
@@ -398,11 +468,11 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
 
   async start(request: ProgramRenderRequest, signal?: AbortSignal) {
     signal?.throwIfAborted();
-    if (!this.#renders) throw new HttpError("Durable rendering requires the external sandbox runtime.", 503);
-    if (!(await this.#execution?.ready(signal))) {
+    const renders = this.#renders;
+    if ((await this.#renderCapability(signal)).kind !== "ready" || !renders) {
       throw new HttpError("Durable rendering requires the external sandbox runtime.", 503);
     }
-    return this.#renders.start(request, signal);
+    return renders.start(request, signal);
   }
 
   async view(id: string) {
@@ -486,6 +556,9 @@ export function createDurableProductionManimRuntimeAdapterV1(
   let closeRequest: Promise<void> | undefined;
   return {
     api: runtime,
+    apiReady(signal) {
+      return runtime.apiReady(signal);
+    },
     close() {
       closeRequest ??= (async () => {
         const errors: unknown[] = [];

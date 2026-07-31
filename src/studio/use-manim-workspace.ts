@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  ManimApiRequestError,
   createManimProject,
   generateManimThumbnail,
   isNativeWorkspacePickerCancelled,
   loadManimProjects,
   loadManimThumbnailStatus,
   loadManimWorkspace,
+  ManimApiRequestError,
+  type ManimProjectCreationInput,
   renameManimProject,
   unregisterManimProject,
-  type ManimProjectCreationInput,
 } from "../render-pipeline/client";
 import type { ManimProjectSummary, ManimWorkspaceView } from "../render-pipeline/contracts";
 import { type ManimWorkspaceScene, workspaceScenes } from "./imported-workspace";
@@ -109,7 +109,7 @@ export function useManimWorkspace() {
       setActiveProjectIdState(projectId);
       workspaceRef.current = nextWorkspace;
       setWorkspace(nextWorkspace);
-      if (nextWorkspace.commandAvailable) {
+      if (nextWorkspace.renderCapability.kind === "ready") {
         void refreshThumbnailAfterOpen(projectId).catch(() => undefined);
       }
       setActiveSceneIdState((current) => {

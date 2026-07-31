@@ -413,10 +413,10 @@ describe("DurableManimRenderServiceV1", () => {
     });
   });
 
-  it("owns only the render-session repository lifecycle", async () => {
+  it("does not claim final-render readiness without a media reader and owns only the session repository", async () => {
     const { close, service } = fixture();
 
-    await expect(service.ready()).resolves.toBe(true);
+    await expect(service.ready()).resolves.toBe(false);
     await Promise.all([service.close(), service.close()]);
 
     expect(close).toHaveBeenCalledOnce();

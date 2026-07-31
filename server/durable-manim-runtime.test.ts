@@ -40,6 +40,131 @@ function pngHead(generation = 1n): ProjectPngHeadV1 {
 }
 
 describe("DurableManimRuntimeV1 production readiness", () => {
+  it("reports the durable render capability and fails closed on readiness probe errors", async () => {
+    let renderServiceReadiness: boolean | Error = true;
+    let executorReadiness: boolean | Error | "pending" = true;
+    const renderStart = vi.fn();
+    const renderServiceReady = vi.fn(async () => {
+      if (renderServiceReadiness instanceof Error) throw renderServiceReadiness;
+      return renderServiceReadiness;
+    });
+    const executionReady = vi.fn(async () => {
+      if (executorReadiness instanceof Error) throw executorReadiness;
+      if (executorReadiness === "pending") return new Promise<boolean>(() => undefined);
+      return executorReadiness;
+    });
+    const runtime = new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({ close: async () => undefined, ready: async () => true }),
+      execution: { ready: executionReady },
+      namespace: "render-capability-test",
+      renders: partial<DurableManimRenderServiceV1>({
+        close: async () => undefined,
+        ready: renderServiceReady,
+        start: renderStart,
+      }),
+      repository: partial<WorkspaceSourceRepositoryV1>({
+        close: async () => undefined,
+        listSourceHeads: async () => [],
+        readProject: async () => ({
+          createdAt: new Date(0),
+          name: "Project A",
+          projectId: "project-a",
+          tenantId: "tenant-a",
+          updatedAt: new Date(0),
+        }),
+        ready: async () => true,
+      }),
+      tenantId: "tenant-a",
+    });
+
+    await expect(runtime.workspace("project-a")).resolves.toMatchObject({
+      renderCapability: { backend: "durable-sandbox", kind: "ready" },
+    });
+    await expect(runtime.start({} as never)).resolves.toBeUndefined();
+    expect(renderStart).toHaveBeenCalledOnce();
+    renderServiceReadiness = false;
+    await expect(runtime.workspace("project-a")).resolves.toMatchObject({
+      renderCapability: { kind: "unavailable", reason: "durable-render-service-unavailable" },
+    });
+    renderServiceReadiness = new Error("probe failed");
+    await expect(runtime.workspace("project-a")).resolves.toMatchObject({
+      renderCapability: { kind: "unavailable", reason: "durable-render-service-unavailable" },
+    });
+    renderServiceReadiness = true;
+    executorReadiness = false;
+    await expect(runtime.workspace("project-a")).resolves.toMatchObject({
+      renderCapability: { kind: "unavailable", reason: "durable-executor-unavailable" },
+    });
+    executorReadiness = new Error("probe failed");
+    await expect(runtime.workspace("project-a")).resolves.toMatchObject({
+      renderCapability: { kind: "unavailable", reason: "durable-executor-unavailable" },
+    });
+    await expect(runtime.start({} as never)).rejects.toMatchObject({ status: 503 });
+    executorReadiness = "pending";
+    vi.useFakeTimers();
+    try {
+      const timedOutWorkspace = runtime.workspace("project-a");
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(timedOutWorkspace).resolves.toMatchObject({
+        renderCapability: { kind: "unavailable", reason: "durable-render-readiness-timeout" },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(executionReady).toHaveBeenCalled();
+    expect(renderServiceReady).toHaveBeenCalled();
+    expect(renderStart).toHaveBeenCalledOnce();
+    await runtime.close();
+  });
+
+  it("keeps core API readiness independent from the render executor", async () => {
+    const repositoryReady = vi.fn(async () => true);
+    const blobsReady = vi.fn(async () => true);
+    const artifactReaderReady = vi.fn(async () => true);
+    const executionReady = vi.fn(async () => false);
+    const rendersReady = vi.fn(async () => true);
+    const snapshotsReady = vi.fn(async () => true);
+    const runtime = new DurableManimRuntimeV1({
+      artifactReader: partial<AuthorizedArtifactReaderV1>({
+        close: async () => undefined,
+        ready: artifactReaderReady,
+      }),
+      blobs: partial<SourceContentBlobStoreV1>({ close: async () => undefined, ready: blobsReady }),
+      execution: { ready: executionReady },
+      namespace: "api-readiness-test",
+      renders: partial<DurableManimRenderServiceV1>({ close: async () => undefined, ready: rendersReady }),
+      repository: partial<WorkspaceSourceRepositoryV1>({
+        close: async () => undefined,
+        ready: repositoryReady,
+      }),
+      snapshots: partial<DurableFastManimSnapshotServiceV1>({
+        close: async () => undefined,
+        ready: snapshotsReady,
+      }),
+      tenantId: "tenant-a",
+    });
+    const adapter = createDurableProductionManimRuntimeAdapterV1(
+      runtime,
+      partial<DurableSourceBlobGcWorkerV1>({ close: async () => undefined, ready: () => true }),
+    );
+    const signal = new AbortController().signal;
+
+    await expect(adapter.apiReady(signal)).resolves.toBe(true);
+    expect(repositoryReady).toHaveBeenCalledOnce();
+    expect(blobsReady).toHaveBeenCalledOnce();
+    expect(artifactReaderReady).not.toHaveBeenCalled();
+    expect(executionReady).not.toHaveBeenCalled();
+    expect(rendersReady).not.toHaveBeenCalled();
+    expect(snapshotsReady).not.toHaveBeenCalled();
+
+    await expect(adapter.ready(signal)).resolves.toEqual({ ready: false });
+    expect(artifactReaderReady).toHaveBeenCalledOnce();
+    expect(executionReady).toHaveBeenCalledOnce();
+    expect(rendersReady).toHaveBeenCalledOnce();
+    expect(snapshotsReady).toHaveBeenCalledOnce();
+    await adapter.close();
+  });
+
   it("serves only the unchanged digest-addressed project PNG head", async () => {
     const head = pngHead();
     const readHead = vi.fn(async () => head);

@@ -342,11 +342,22 @@ export type ManimWorkspaceSource = Readonly<{
   }>[];
 }>;
 
+export type ManimRenderCapability =
+  | Readonly<{ backend: "durable-sandbox" | "local-command"; kind: "ready" }>
+  | Readonly<{
+      kind: "unavailable";
+      reason:
+        | "durable-executor-unavailable"
+        | "durable-render-readiness-timeout"
+        | "durable-render-service-unavailable"
+        | "local-command-unavailable";
+    }>;
+
 export type ManimWorkspaceView = Readonly<{
-  commandAvailable: boolean;
   frame: Readonly<{ height: number; width: number }>;
   projectId: string;
   projectName: string;
+  renderCapability: ManimRenderCapability;
   sources: readonly ManimWorkspaceSource[];
 }>;
 
@@ -474,6 +485,17 @@ export const renderSessionViewSchema: z.ZodType<RenderSessionView> = z
       (session.status === "cancelled" && session.failureCode === "cancelled") ||
       (session.status === "failed" && session.failureCode !== "cancelled");
     if (!valid) context.addIssue({ code: "custom", message: "Render failure code does not match its status." });
+    if (session.videoUrl !== null) {
+      const downloadableStatus = ["committed", "ready", "undone"].includes(session.status);
+      const expectedUrl = `/api/manim/renders/${encodeURIComponent(session.id)}/video`;
+      if (!downloadableStatus || session.videoUrl !== expectedUrl) {
+        context.addIssue({
+          code: "custom",
+          message: "Render video URL does not match the authenticated session artifact endpoint.",
+          path: ["videoUrl"],
+        });
+      }
+    }
   });
 
 export const renderSourceActionCancellationViewSchema: z.ZodType<RenderSourceActionCancellationView> = z
@@ -503,12 +525,32 @@ export const manimWorkspaceSourceSchema: z.ZodType<ManimWorkspaceSource> = z
   })
   .strict();
 
+export const manimRenderCapabilitySchema: z.ZodType<ManimRenderCapability> = z.discriminatedUnion("kind", [
+  z
+    .object({
+      backend: z.enum(["durable-sandbox", "local-command"]),
+      kind: z.literal("ready"),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("unavailable"),
+      reason: z.enum([
+        "durable-executor-unavailable",
+        "durable-render-readiness-timeout",
+        "durable-render-service-unavailable",
+        "local-command-unavailable",
+      ]),
+    })
+    .strict(),
+]);
+
 export const manimWorkspaceViewSchema: z.ZodType<ManimWorkspaceView> = z
   .object({
-    commandAvailable: z.boolean(),
     frame: z.object({ height: finiteNumber.positive(), width: finiteNumber.positive() }).strict(),
     projectId: manimProjectIdSchema,
     projectName: z.string().min(1).max(120),
+    renderCapability: manimRenderCapabilitySchema,
     sources: z.array(manimWorkspaceSourceSchema),
   })
   .strict();

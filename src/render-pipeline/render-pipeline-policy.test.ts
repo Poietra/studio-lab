@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import type { CanonicalEditProgram } from "../studio/operations";
-import { renderProgramBatchId, renderRequestId, type ManimWorkspaceView, type RenderSessionView } from "./contracts";
 import {
+  type ManimRenderCapability,
+  type ManimWorkspaceView,
+  type RenderSessionView,
+  renderProgramBatchId,
+  renderRequestId,
+} from "./contracts";
+import {
+  type RenderProgramCandidate,
   renderCandidateRequest,
   renderPipelineActionBlocker,
   renderSessionMatchesCandidate,
@@ -11,7 +18,6 @@ import {
   renderSourceRefreshResolved,
   renderSourceRefreshTarget,
   resolveRenderPipelinePolicy,
-  type RenderProgramCandidate,
 } from "./render-pipeline-policy";
 
 function program(deltaX = 64): CanonicalEditProgram {
@@ -99,18 +105,28 @@ function policy(
   target: RenderProgramCandidate | null,
   rendered: RenderSessionView | null,
   lifecycleBlocker: string | null = null,
+  renderCapability: ManimRenderCapability = { backend: "local-command", kind: "ready" },
 ) {
   return resolveRenderPipelinePolicy({
     candidate: target,
     candidateBlocker: target ? null : "Create a Canonical draft first.",
     candidateLifecycleBlocker: lifecycleBlocker,
-    commandAvailable: true,
     originalExportBlocker: null,
+    renderCapability,
     session: rendered,
   });
 }
 
 describe("render pipeline lifecycle policy", () => {
+  it.each([
+    ["local-command-unavailable", /configured Manim command/i],
+    ["durable-render-service-unavailable", /durable Manim render service/i],
+    ["durable-executor-unavailable", /durable Manim sandbox executor/i],
+    ["durable-render-readiness-timeout", /could not confirm final-render availability/i],
+  ] as const)("surfaces the %s capability reason", (reason, expected) => {
+    expect(policy(candidate(), null, null, { kind: "unavailable", reason }).previewBlocker).toMatch(expected);
+  });
+
   it("allows Commit only for the exact current rendered candidate", () => {
     const target = candidate();
     const resolved = policy(target, session(target));
@@ -226,10 +242,10 @@ describe("render source refresh correlation", () => {
     const rendered = session(candidate());
     const target = renderSourceRefreshTarget(rendered, "committed");
     const workspace = {
-      commandAvailable: true,
       frame: { height: 8, width: 14.222 },
       projectId: target.projectId,
       projectName: "Project A",
+      renderCapability: { backend: "local-command", kind: "ready" },
       sources: [
         {
           path: target.sourcePath,

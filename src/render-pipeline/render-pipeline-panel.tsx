@@ -1,13 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "../lib/cn";
-import {
-  renderProgramBatchId,
-  renderRequestId,
-  type ManimWorkspaceView,
-  type OriginalManimSourceExportRequest,
-  type RenderSessionView,
-} from "./contracts";
+import { savePythonSourceWithDesktop } from "../shell/desktop-bridge";
 import {
   abandonManimRender,
   cancelManimRenderSourceAction,
@@ -18,25 +12,31 @@ import {
   runManimRenderAction,
   startManimRender,
 } from "./client";
-import { savePythonSourceWithDesktop } from "../shell/desktop-bridge";
 import {
-  renderCandidateRequestKey,
-  renderCandidateRequest,
-  renderPipelineActionBlocker,
-  renderSessionMatchesCandidate,
-  renderSourceMutationOutcome,
-  renderSourceRefreshTarget,
-  resolveRenderPipelinePolicy,
-  type RenderPipelineAction,
-  type RenderProgramCandidate,
-  type RenderSourceRefreshTarget,
-} from "./render-pipeline-policy";
+  type ManimWorkspaceView,
+  type OriginalManimSourceExportRequest,
+  type RenderSessionView,
+  renderProgramBatchId,
+  renderRequestId,
+} from "./contracts";
 import {
   mutationMayBeAborted,
   mutationTargetIsCurrent,
   type RenderMutationTarget,
   type RenderPipelineMutationContext,
 } from "./render-mutation-policy";
+import {
+  type RenderPipelineAction,
+  type RenderProgramCandidate,
+  type RenderSourceRefreshTarget,
+  renderCandidateRequest,
+  renderCandidateRequestKey,
+  renderPipelineActionBlocker,
+  renderSessionMatchesCandidate,
+  renderSourceMutationOutcome,
+  renderSourceRefreshTarget,
+  resolveRenderPipelinePolicy,
+} from "./render-pipeline-policy";
 
 type RenderPipelinePanelProps = Readonly<{
   candidate: RenderProgramCandidate | null;
@@ -244,11 +244,15 @@ export function RenderPipelinePanel({
     candidate,
     candidateBlocker,
     candidateLifecycleBlocker,
-    commandAvailable: workspace?.commandAvailable ?? false,
     originalExportBlocker,
+    renderCapability: workspace?.renderCapability ?? {
+      kind: "unavailable",
+      reason: "local-command-unavailable",
+    },
     session,
   });
   const { commitBlocker, exportBlocker, previewBlocker, sessionMatchesCandidate } = policy;
+  const videoUrl = session?.videoUrl ?? null;
   const candidateKey = candidate ? renderCandidateRequestKey(candidate) : null;
   const sourceExportKey = sourceExport ? JSON.stringify(sourceExport) : null;
   const currentMutationContext: RenderPipelineMutationContext = {
@@ -636,15 +640,26 @@ export function RenderPipelinePanel({
         </div>
       ) : null}
 
-      {session?.videoUrl ? (
-        <video
-          aria-label={`Rendered Manim preview of ${session.sceneName}`}
-          className="mt-3 aspect-video w-full border border-zinc-700 bg-black"
-          controls
-          key={`${session.id}-${session.status}`}
-          preload="metadata"
-          src={`${session.videoUrl}?v=${encodeURIComponent(session.updatedAt)}`}
-        />
+      {session && videoUrl ? (
+        <div className="mt-3">
+          <video
+            aria-label={`Rendered Manim preview of ${session.sceneName}`}
+            className="aspect-video w-full border border-zinc-700 bg-black"
+            controls
+            key={`${session.id}-${session.status}`}
+            preload="metadata"
+            src={`${videoUrl}?v=${encodeURIComponent(session.updatedAt)}`}
+          />
+          <div className="mt-2 flex justify-end">
+            <a
+              className="border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500"
+              download={`${session.sceneName}.mp4`}
+              href={videoUrl}
+            >
+              Download MP4
+            </a>
+          </div>
+        </div>
       ) : null}
 
       {session ? (

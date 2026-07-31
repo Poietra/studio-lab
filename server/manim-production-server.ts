@@ -176,8 +176,10 @@ export type ProductionRuntimeReadinessV1 =
  */
 export type ProductionManimRuntimeAdapterV1 = Readonly<{
   api: ManimApi;
+  /** Covers the durable workspace stores required by ordinary API requests. */
+  apiReady: (signal: AbortSignal) => Promise<boolean>;
   close: () => Promise<void>;
-  /** Covers fresh sandbox attestation plus PostgreSQL/S3 durable probes. */
+  /** Covers fresh sandbox attestation plus every durable render dependency. */
   ready: (signal: AbortSignal) => Promise<ProductionRuntimeReadinessV1>;
 }>;
 
@@ -369,6 +371,7 @@ export async function startProductionManimServer(
     options.runtime === null ||
     typeof options.runtime.api !== "object" ||
     options.runtime.api === null ||
+    typeof options.runtime.apiReady !== "function" ||
     typeof options.runtime.ready !== "function" ||
     typeof options.runtime.close !== "function"
   ) {
@@ -446,7 +449,22 @@ export async function startProductionManimServer(
     }
   };
 
-  const runtimeIsReady = async (signal: AbortSignal) => {
+  const runtimeApiIsReady = async (signal: AbortSignal) => {
+    try {
+      return (
+        (await waitForProbe(
+          (probeSignal) => trackRuntimeTask(() => options.runtime.apiReady(probeSignal)),
+          signal,
+          config.limits.readinessTimeoutMs,
+        )) === true
+      );
+    } catch {
+      logger.warn("production.runtime_api_readiness_probe_failed");
+      return false;
+    }
+  };
+
+  const runtimeRenderIsReady = async (signal: AbortSignal) => {
     try {
       const runtimeReady = await waitForProbe(
         (probeSignal) => trackRuntimeTask(() => options.runtime.ready(probeSignal)),
@@ -461,13 +479,13 @@ export async function startProductionManimServer(
         runtimeReady.tenantBoundary === "server-owned-tenant-key"
       );
     } catch {
-      logger.warn("production.runtime_readiness_probe_failed");
+      logger.warn("production.runtime_render_readiness_probe_failed");
       return false;
     }
   };
 
   const dependenciesReady = async (signal: AbortSignal) => {
-    const [admissionReady, runtimeReady] = await Promise.all([admissionIsReady(signal), runtimeIsReady(signal)]);
+    const [admissionReady, runtimeReady] = await Promise.all([admissionIsReady(signal), runtimeApiIsReady(signal)]);
     return admissionReady && runtimeReady;
   };
 
@@ -509,6 +527,19 @@ export async function startProductionManimServer(
         if (request.method !== "GET") throw new TransportError("Method not allowed.", 405);
         const ready =
           lifecycle === "accepting" && (await dependenciesReady(controller.signal)) && lifecycle === "accepting";
+        sendJson(response, ready ? 200 : 503, { status: ready ? "ready" : "unavailable" });
+        return;
+      }
+      if (pathname === "/render-readyz") {
+        if (request.method !== "GET") throw new TransportError("Method not allowed.", 405);
+        let ready = false;
+        if (lifecycle === "accepting") {
+          const [admissionReady, renderReady] = await Promise.all([
+            admissionIsReady(controller.signal),
+            runtimeRenderIsReady(controller.signal),
+          ]);
+          ready = lifecycle === "accepting" && admissionReady && renderReady;
+        }
         sendJson(response, ready ? 200 : 503, { status: ready ? "ready" : "unavailable" });
         return;
       }
@@ -561,7 +592,7 @@ export async function startProductionManimServer(
         });
         return;
       }
-      if (!(await runtimeIsReady(controller.signal))) {
+      if (!(await runtimeApiIsReady(controller.signal))) {
         throw new TransportError("Production runtime is not ready.", 503);
       }
       if (controller.signal.aborted) return;

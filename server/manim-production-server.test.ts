@@ -62,7 +62,11 @@ async function startConfig(overrides: Readonly<Record<string, unknown>> = {}) {
   return config({ port: await availablePort(), ...overrides });
 }
 
-function createRuntime(ready: () => boolean = () => true, onProjects: () => void = () => {}) {
+function createRuntime(
+  ready: () => boolean = () => true,
+  onProjects: () => void = () => {},
+  apiReady: () => boolean | Promise<boolean> = ready,
+) {
   const api = {
     cancel() {
       throw new HttpError("Render session not found.", 404);
@@ -76,6 +80,7 @@ function createRuntime(ready: () => boolean = () => true, onProjects: () => void
   } as unknown as ManimApi;
   return {
     api,
+    apiReady: async () => apiReady(),
     close: async () => {},
     ready: async () =>
       ready()
@@ -171,15 +176,18 @@ describe("production Manim server configuration", () => {
 });
 
 describe("standalone production Manim HTTP adapter", () => {
-  it("rejects an incomplete production runtime adapter before listening", async () => {
-    await expect(
-      startProductionManimServer({
-        admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
-        config: await startConfig(),
-        runtime: { ...createRuntime(), ready: undefined } as never,
-      }),
-    ).rejects.toThrow(/runtime adapter is incomplete/i);
-  });
+  it.each(["apiReady", "ready"] as const)(
+    "rejects a production runtime adapter without %s before listening",
+    async (missingMethod) => {
+      await expect(
+        startProductionManimServer({
+          admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
+          config: await startConfig(),
+          runtime: { ...createRuntime(), [missingMethod]: undefined } as never,
+        }),
+      ).rejects.toThrow(/runtime adapter is incomplete/i);
+    },
+  );
 
   it("rejects a runtime without a tenant-keyed durable storage namespace", async () => {
     const runtime = createRuntime();
@@ -239,8 +247,74 @@ describe("standalone production Manim HTTP adapter", () => {
     expect(await send(server, "/readyz")).toMatchObject({ status: 503 });
     runtimeReady = true;
     expect(await send(server, "/readyz")).toMatchObject({ status: 200 });
+    expect(await send(server, "/render-readyz")).toMatchObject({ status: 200 });
     expect(await send(server, "/api/manim/projects")).toMatchObject({ status: 200 });
     expect(authenticateCalls).toBe(1);
+  });
+
+  it("keeps readiness and workspace APIs available during an executor-only outage", async () => {
+    let apiReadyCalls = 0;
+    let fullReadyCalls = 0;
+    let projectCalls = 0;
+    const server = await startProductionManimServer({
+      admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
+      config: await startConfig(),
+      runtime: createRuntime(
+        () => {
+          fullReadyCalls += 1;
+          return false;
+        },
+        () => {
+          projectCalls += 1;
+        },
+        () => {
+          apiReadyCalls += 1;
+          return true;
+        },
+      ),
+    });
+    servers.push(server);
+
+    expect(await send(server, "/readyz")).toMatchObject({ status: 200 });
+    expect(await send(server, "/render-readyz")).toMatchObject({ status: 503 });
+    expect(await send(server, "/api/manim/projects")).toMatchObject({ status: 200 });
+    expect(apiReadyCalls).toBe(2);
+    expect(fullReadyCalls).toBe(1);
+    expect(projectCalls).toBe(1);
+  });
+
+  it("bounds the core readiness probe before entering an authenticated Manim API", async () => {
+    let probeAborted = false;
+    let projectCalls = 0;
+    const runtime = createRuntime(
+      () => true,
+      () => {
+        projectCalls += 1;
+      },
+    );
+    const server = await startProductionManimServer({
+      admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
+      config: await startConfig({ limits: { readinessTimeoutMs: 100 } }),
+      runtime: {
+        ...runtime,
+        apiReady: (signal: AbortSignal) =>
+          new Promise<boolean>((resolve) => {
+            signal.addEventListener(
+              "abort",
+              () => {
+                probeAborted = true;
+                resolve(false);
+              },
+              { once: true },
+            );
+          }),
+      },
+    });
+    servers.push(server);
+
+    expect(await send(server, "/api/manim/projects")).toMatchObject({ status: 503 });
+    expect(probeAborted).toBe(true);
+    expect(projectCalls).toBe(0);
   });
 
   it("requires admission and validates Host plus the immediate proxy before API routing", async () => {
@@ -395,6 +469,84 @@ describe("standalone production Manim HTTP adapter", () => {
     });
     expect(existingRegistration).toMatchObject({ status: 403 });
     expect(createExistingCalls).toBe(0);
+  });
+
+  it("admits only same-tenant principals to ready video HEAD and Range requests", async () => {
+    const readyId = "00000000-0000-4000-8000-000000000001";
+    const unreadyId = "00000000-0000-4000-8000-000000000002";
+    const absentId = "00000000-0000-4000-8000-000000000003";
+    const videoCalls: string[] = [];
+    const openedRanges: unknown[] = [];
+    let closeCalls = 0;
+    const baseRuntime = createRuntime();
+    const server = await startProductionManimServer({
+      admission: {
+        authenticate: async ({ credentials }) => {
+          if (credentials.cookie === "session=tenant-a") return TEST_PRINCIPAL;
+          if (credentials.cookie === "session=tenant-b") {
+            return { subjectId: "foreign-user", tenantId: "tenant-b" };
+          }
+          return null;
+        },
+        ready: async () => true,
+      },
+      config: await startConfig(),
+      runtime: {
+        ...baseRuntime,
+        api: {
+          ...baseRuntime.api,
+          video: async (id: string) => {
+            videoCalls.push(id);
+            if (id !== readyId) throw new HttpError("Rendered video not found.", 404);
+            return {
+              byteSize: 4,
+              close: async () => {
+                closeCalls += 1;
+              },
+              mediaType: "video/mp4" as const,
+              open: async (range: unknown) => {
+                openedRanges.push(range);
+                return (async function* () {
+                  yield Uint8Array.of(1, 2);
+                })();
+              },
+            };
+          },
+        } as unknown as ManimApi,
+      },
+    });
+    servers.push(server);
+    const videoPath = (id: string) => `/api/manim/renders/${id}/video`;
+
+    expect(await send(server, videoPath(readyId))).toMatchObject({ status: 401 });
+    expect(
+      await send(server, videoPath(readyId), {
+        headers: { cookie: "session=tenant-b" },
+        method: "HEAD",
+      }),
+    ).toMatchObject({ status: 403 });
+
+    const head = await send(server, videoPath(readyId), {
+      headers: { cookie: "session=tenant-a" },
+      method: "HEAD",
+    });
+    expect(head).toMatchObject({ body: "", status: 200 });
+    expect(head.headers["content-length"]).toBe("4");
+
+    const range = await send(server, videoPath(readyId), {
+      headers: { cookie: "session=tenant-a", range: "bytes=1-2" },
+    });
+    expect(range).toMatchObject({ body: "\u0001\u0002", status: 206 });
+    expect(range.headers["content-range"]).toBe("bytes 1-2/4");
+    expect(openedRanges).toEqual([{ end: 2, start: 1 }]);
+    expect(closeCalls).toBe(2);
+
+    for (const id of [unreadyId, absentId]) {
+      expect(await send(server, videoPath(id), { headers: { cookie: "session=tenant-a" } })).toMatchObject({
+        status: 404,
+      });
+    }
+    expect(videoCalls).toEqual([readyId, readyId, unreadyId, absentId]);
   });
 
   it("routes the injected AI adapter only after existing principal and tenant authorization", async () => {

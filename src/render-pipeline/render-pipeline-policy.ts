@@ -1,10 +1,11 @@
 import type { CanonicalEditProgram } from "../studio/operations";
 import {
-  renderProgramBatchId,
-  renderRequestId,
+  type ManimRenderCapability,
   type ManimWorkspaceView,
   type ProgramRenderRequest,
   type RenderSessionView,
+  renderProgramBatchId,
+  renderRequestId,
 } from "./contracts";
 
 export type RenderProgramCandidate = Readonly<{
@@ -127,16 +128,22 @@ export function resolveRenderPipelinePolicy(
     candidate: RenderProgramCandidate | null;
     candidateBlocker: string | null;
     candidateLifecycleBlocker: string | null;
-    commandAvailable: boolean;
     originalExportBlocker: string | null;
+    renderCapability: ManimRenderCapability;
     session: RenderSessionView | null;
   }>,
 ): RenderPipelinePolicy {
   const sessionMatchesCandidate = renderSessionMatchesCandidate(input.session, input.candidate);
-  const previewBlocker =
-    input.candidateLifecycleBlocker ??
-    input.candidateBlocker ??
-    (!input.commandAvailable ? "The configured Manim command is unavailable." : null);
+  const capabilityBlocker =
+    input.renderCapability.kind === "ready"
+      ? null
+      : {
+          "durable-executor-unavailable": "The durable Manim sandbox executor is unavailable.",
+          "durable-render-readiness-timeout": "Studio could not confirm final-render availability in time.",
+          "durable-render-service-unavailable": "The durable Manim render service is unavailable.",
+          "local-command-unavailable": "The configured Manim command is unavailable.",
+        }[input.renderCapability.reason];
+  const previewBlocker = input.candidateLifecycleBlocker ?? input.candidateBlocker ?? capabilityBlocker;
   const exportBlocker = input.candidate
     ? (input.candidateLifecycleBlocker ?? input.candidateBlocker)
     : input.originalExportBlocker;

@@ -126,10 +126,13 @@ export class DurableManimRenderServiceV1 {
   }
 
   async ready(signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    if (!this.#artifactReader) return false;
     const [repositoryReady, artifactReaderReady] = await Promise.all([
       this.#repository.ready(signal),
-      this.#artifactReader?.ready(signal) ?? Promise.resolve(true),
+      this.#artifactReader.ready(signal),
     ]);
+    signal?.throwIfAborted();
     return repositoryReady && artifactReaderReady;
   }
 

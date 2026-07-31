@@ -37,7 +37,7 @@ describe("Manim render manager", () => {
   it("discovers Scenes and runs preview, commit, and exact Undo", async () => {
     const { manager, projectRoot } = await fixture();
     const workspace = await manager.workspace();
-    expect(workspace.commandAvailable).toBe(true);
+    expect(workspace.renderCapability).toEqual({ backend: "local-command", kind: "ready" });
     expect(workspace.sources).toHaveLength(1);
     expect(workspace.sources[0]?.path).toBe("scene.py");
     expect(workspace.sources[0]?.scenes).toHaveLength(1);
@@ -140,7 +140,9 @@ describe("Manim render manager", () => {
   it("checks the configured command adapter rather than only its executable", async () => {
     const { manager } = await fixture({ command: [process.execPath, fakeRenderer, "--fail-version"] });
 
-    await expect(manager.workspace()).resolves.toMatchObject({ commandAvailable: false });
+    await expect(manager.workspace()).resolves.toMatchObject({
+      renderCapability: { kind: "unavailable", reason: "local-command-unavailable" },
+    });
   });
 
   it("refuses to overwrite source changed after preview", async () => {
@@ -915,7 +917,9 @@ class Independent(Scene):
     const probePid = Number(await readFile(versionMarker, "utf8"));
 
     await expect(manager.close()).resolves.toBeUndefined();
-    await expect(workspace).resolves.toMatchObject({ commandAvailable: false });
+    await expect(workspace).resolves.toMatchObject({
+      renderCapability: { kind: "unavailable", reason: "local-command-unavailable" },
+    });
     expect(() => process.kill(probePid, 0)).toThrow();
   });
 });

@@ -1,5 +1,5 @@
-import { access, copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { access, copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -246,7 +246,7 @@ describe.skipIf(process.env.POIETRA_REAL_MANIM_SMOKE !== "1")("real Manim render
       diagnostic.hashes.original = originalHash;
 
       const workspace = await manager.workspace();
-      expect(workspace.commandAvailable).toBe(true);
+      expect(workspace.renderCapability).toEqual({ backend: "local-command", kind: "ready" });
       const scene = workspace.sources
         .find((source) => source.path === "scene.py")
         ?.scenes.find((candidate) => candidate.name === "SmokeScene");

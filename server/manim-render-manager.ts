@@ -382,10 +382,12 @@ export class ManimRenderManager {
         discoverPythonSources(this.projectRoot, this.frame),
       ]);
       return {
-        commandAvailable,
         frame: this.frame,
         projectId: this.projectId,
         projectName: this.projectName,
+        renderCapability: commandAvailable
+          ? ({ backend: "local-command", kind: "ready" } as const)
+          : ({ kind: "unavailable", reason: "local-command-unavailable" } as const),
         sources,
       };
     })();

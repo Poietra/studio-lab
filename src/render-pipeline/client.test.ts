@@ -101,10 +101,10 @@ function renderRequest(projectId = "project-a"): ProgramRenderRequest {
 describe("Manim API client contracts", () => {
   it("accepts a workspace matching the runtime contract", async () => {
     const workspace = {
-      commandAvailable: true,
       frame: { height: 8, width: 14.222 },
       projectId: "default",
       projectName: "Demo",
+      renderCapability: { backend: "local-command", kind: "ready" },
       sources: [],
     };
     vi.stubGlobal(
@@ -115,6 +115,27 @@ describe("Manim API client contracts", () => {
     await expect(loadManimWorkspace()).resolves.toEqual(workspace);
   });
 
+  it("rejects an unknown render capability reason", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              frame: { height: 8, width: 14.222 },
+              projectId: "default",
+              projectName: "Demo",
+              renderCapability: { kind: "unavailable", reason: "server-supplied-message" },
+              sources: [],
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    await expect(loadManimWorkspace()).rejects.toThrow(/does not match the API contract/i);
+  });
+
   it("rejects undeclared workspace fields instead of exposing server paths", async () => {
     vi.stubGlobal(
       "fetch",
@@ -122,11 +143,11 @@ describe("Manim API client contracts", () => {
         async () =>
           new Response(
             JSON.stringify({
-              commandAvailable: true,
               frame: { height: 8, width: 14.222 },
               projectId: "default",
               projectName: "Demo",
               projectRoot: "/private/project",
+              renderCapability: { backend: "local-command", kind: "ready" },
               sources: [],
             }),
             { status: 200 },
@@ -256,10 +277,10 @@ describe("Manim API client contracts", () => {
 
   it("loads a selected project workspace without sending a filesystem path", async () => {
     const workspace = {
-      commandAvailable: false,
       frame: { height: 8, width: 14.222 },
       projectId: "project-a",
       projectName: "Demo",
+      renderCapability: { kind: "unavailable", reason: "durable-executor-unavailable" },
       sources: [],
     };
     const fetch = vi.fn(async () => new Response(JSON.stringify(workspace), { status: 200 }));
@@ -449,6 +470,13 @@ describe("Manim API client contracts", () => {
       new Response(JSON.stringify(session({ failureCode: "raw-kernel-message", status: "failed" })), { status: 200 }),
     );
     await expect(loadManimRender("invalid-failure")).rejects.toThrow(/does not match the API contract/i);
+    for (const invalidVideo of [
+      session({ videoUrl: "https://media.example/render.mp4" }),
+      session({ status: "rendering" }),
+    ]) {
+      fetch.mockResolvedValueOnce(new Response(JSON.stringify(invalidVideo), { status: 200 }));
+      await expect(loadManimRender("invalid-video")).rejects.toThrow(/does not match the API contract/i);
+    }
   });
 
   it("preserves a missing-session status so the editor can recover", async () => {
