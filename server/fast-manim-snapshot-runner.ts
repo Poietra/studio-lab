@@ -17,6 +17,7 @@ import {
 } from "./fast-manim-sandbox-backend";
 import {
   assertFastManimSnapshotDiagnosticsSafeV1,
+  deriveHermeticMathTexV3TransformPlan,
   deriveHermeticPngV4TransformPlan,
   digestFastManimSnapshotRuntimeConfigV1,
   type ExpectedFastManimSnapshotCorrelationV1,
@@ -783,10 +784,15 @@ export class FastManimSnapshotRunner {
       throwIfHalted();
     }
 
+    let hermeticMathTexV3Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexV3Plan"];
     let hermeticPngV4Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticPngV4Plan"];
-    if (this.snapshotVersion === 4) {
+    if (this.snapshotVersion === 3 || this.snapshotVersion === 4) {
       try {
-        hermeticPngV4Plan = deriveHermeticPngV4TransformPlan(before.source, request.sceneName);
+        if (this.snapshotVersion === 3) {
+          hermeticMathTexV3Plan = deriveHermeticMathTexV3TransformPlan(before.source, request.sceneName);
+        } else {
+          hermeticPngV4Plan = deriveHermeticPngV4TransformPlan(before.source, request.sceneName);
+        }
       } catch {
         // An unsupported source must still reach the producer and preserve its
         // structured unsupported result. A compiled result is rejected below
@@ -795,6 +801,7 @@ export class FastManimSnapshotRunner {
     }
     const expected: ExpectedFastManimSnapshotCorrelationV1 = {
       frame: { height: this.frame.height, width: this.frame.width },
+      ...(hermeticMathTexV3Plan ? { hermeticMathTexV3Plan } : {}),
       ...(hermeticPngV4Plan ? { hermeticPngV4Plan } : {}),
       projectId: request.projectId,
       requestId: request.requestId,
@@ -814,6 +821,7 @@ export class FastManimSnapshotRunner {
     // request carries the frame inside the canonical runtimeConfig object.
     const {
       frame: _serverFrame,
+      hermeticMathTexV3Plan: _serverHermeticMathTexV3Plan,
       hermeticPngV4Plan: _serverHermeticPngV4Plan,
       snapshotVersion,
       ...wireCorrelation

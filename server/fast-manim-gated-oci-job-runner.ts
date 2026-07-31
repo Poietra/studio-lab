@@ -88,9 +88,9 @@ const REQUIRED_READ_ONLY_SYSTEM_PATHS = Object.freeze([
   "/proc/sysrq-trigger",
 ] as const);
 const LOCKED_LABELS = Object.freeze({
-  "io.poietra.fast-manim.archive-sha256": "70bae68b477cd8e3d3e3a14fda1026b0995f0733037b316348afc23d179025f1",
-  "io.poietra.fast-manim.commit": "8bc9eebf08f99511d1c33ffe2af5daccf95a514f",
-  "io.poietra.fast-manim.tree": "7fd6e3a835ca58978b46df48774a53929e4acf18",
+  "io.poietra.fast-manim.archive-sha256": "d7ddb1f7ac5b2cbfdb56c0c8ebfbed27bc9ebd681b95876e52edc096129fb8e4",
+  "io.poietra.fast-manim.commit": "cb9f1963f5e1911cfdcb21c316f5ac35052a2024",
+  "io.poietra.fast-manim.tree": "fb62085765a801fb4a93d9562b99888164d5d556",
   "io.poietra.mathtex-outline.abi-version": "1",
   "io.poietra.mathtex-outline.artifact-sha256": "fcae06b2065de2da938be484ed0bde88cd31777ef29471d63580852f28c132d4",
   "io.poietra.mathtex-outline.engine-archive-sha256":

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { CanonicalEditOperation, CanonicalEditProgram } from "../studio/operations";
+import {
+  createDirectManipulationPositionProgram,
+  createDirectManipulationScaleProgram,
+} from "../studio/suggestion-program";
 import { importManimScene } from "./source-import";
 import {
   findMotionAnchors,
@@ -825,6 +829,100 @@ class GroupedEquation(Scene):
     expect(lowered.insertedCode).toContain("equation.animate.scale(1.5)");
     expect(lowered.insertedCode).toContain("equation.animate.scale(2)");
     expect(samples.at(-1)).toMatchObject({ from: 1.5, value: 3 });
+  });
+
+  it("round-trips Studio move and resize after repeated direct source transforms at the same anchor", () => {
+    const repeatedSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        equation = MathTex("x")
+        self.add(equation)
+        equation.move_to((2, -1, 0))
+        equation.scale(2)
+        equation.move_to((3, 1, 0))
+        equation.scale(0.75)
+        # poietra:anchor 0.000
+        self.wait(1)
+`;
+    const frame = { height: 9, width: 16 };
+    const imported = importManimScene(repeatedSource, "examples/relativity.py", "GroupedEquation", frame);
+    const entityId = "source:examples/relativity.py#GroupedEquation:equation";
+    const entity = imported?.runtimeSceneState.objectGraph.entities[entityId];
+    if (!imported || entity?.geometry?.position.kind !== "known" || entity.geometry.scale.kind !== "known") {
+      throw new Error("Repeated source transform fixture did not import with exact geometry");
+    }
+    const targetPosition = {
+      x: entity.geometry.position.value.x + 40,
+      y: entity.geometry.position.value.y - 20,
+    };
+    const move = createDirectManipulationPositionProgram({
+      capturedPlayhead: 0,
+      delta: { x: 40, y: -20 },
+      positions: { [entityId]: entity.geometry.position.value },
+      scene: imported.runtimeSceneState,
+      start: 0,
+      targetEntityIds: [entityId],
+      transactionId: "move-after-source-transforms",
+    });
+    const resize = createDirectManipulationScaleProgram({
+      capturedPlayhead: 0,
+      interval: { end: 0, start: 0 },
+      scales: { [entityId]: { from: entity.geometry.scale.value, to: 3 } },
+      scene: imported.runtimeSceneState,
+      targetEntityIds: [entityId],
+      transactionId: "resize-after-source-transforms",
+    });
+    if (move.kind !== "valid" || resize.kind !== "valid") {
+      throw new Error(`Direct manipulation did not validate: ${JSON.stringify([move.issues, resize.issues])}`);
+    }
+
+    const first = lowerCanonicalProgramBatchSource(
+      repeatedSource,
+      request(move.program, [{ entityId, sourceVariable: "equation" }]),
+      [
+        { program: move.program, sourceAnchor: 0 },
+        { program: resize.program, sourceAnchor: 0 },
+      ],
+      frame,
+      null,
+    );
+    const firstReimport = importManimScene(first.source, "examples/relativity.py", "GroupedEquation", frame);
+    const firstEntity = firstReimport?.runtimeSceneState.objectGraph.entities[entityId];
+    expect(firstEntity?.geometry).toMatchObject({
+      position: { kind: "known", value: targetPosition },
+      scale: { kind: "known", value: 3 },
+    });
+
+    const resizeAgain = createDirectManipulationScaleProgram({
+      capturedPlayhead: 0,
+      interval: { end: 0, start: 0 },
+      scales: { [entityId]: { from: 3, to: 4.5 } },
+      scene: firstReimport?.runtimeSceneState ?? imported.runtimeSceneState,
+      targetEntityIds: [entityId],
+      transactionId: "resize-reimported-source",
+    });
+    if (resizeAgain.kind !== "valid") {
+      throw new Error(`Reimported resize did not validate: ${JSON.stringify(resizeAgain.issues)}`);
+    }
+    const second = lowerCanonicalProgramSource(
+      first.source,
+      request(resizeAgain.program, [{ entityId, sourceVariable: "equation" }]),
+      frame,
+      null,
+    );
+    const secondReimport = importManimScene(second.source, "examples/relativity.py", "GroupedEquation", frame);
+    const scaleSamples = secondReimport?.runtimeSceneState.propertyChannels[`${entityId}/scale`]?.samples ?? [];
+
+    expect(second.source.indexOf("equation.scale(0.75)")).toBeLessThan(second.source.indexOf("# poietra:cursor 0"));
+    expect(second.source.lastIndexOf("equation.scale(1.5)")).toBeLessThan(
+      second.source.lastIndexOf("# poietra:anchor 0"),
+    );
+    expect(scaleSamples.at(-1)).toMatchObject({
+      knowledge: { kind: "known", value: 4.5 },
+      sameAnchorOrder: "before-studio-insertion",
+      value: 4.5,
+    });
   });
 
   it("rebases relative scale Programs added in reverse source-anchor order and reimports the same result", () => {

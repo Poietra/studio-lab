@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { MAX_COORDINATE } from "../engine/primitives";
 import { canonicalEditableContent, UNKNOWN_EDITABLE_CONTENT } from "../studio/editable-content";
 import {
   type EntityContent,
@@ -122,6 +123,7 @@ const MOTION_MARKER_PATTERN = /^\s*#\s*poietra:motion(?:\s+(.*))?\s*$/;
 const SCALE_MARKER_PATTERN = /^\s*#\s*poietra:scale(?:\s+(.*))?\s*$/;
 const DIMENSIONS_MARKER_PATTERN = /^\s*#\s*poietra:dimensions(?:\s+(.*))?\s*$/;
 const CONTENT_MARKER_PATTERN = /^\s*#\s*poietra:content(?:\s+(.*))?\s*$/;
+const SOURCE_TIME_EPSILON = 0.0005;
 const identifierSchema = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
 const markerPointSchema = z.object({ x: z.number().finite(), y: z.number().finite() }).strict();
 const positionMarkerSchema = z.discriminatedUnion("kind", [
@@ -543,6 +545,45 @@ function positiveNumberLiteral(source: string) {
   if (!/^[+]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$/.test(normalized)) return null;
   const value = Number(normalized);
   return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+const BOUNDED_STATIC_NUMBER_LITERAL =
+  "-?(?:(?:\\d(?:_?\\d)*)\\.(?:\\d(?:_?\\d)*)?|\\.(?:\\d(?:_?\\d)*)|(?:\\d(?:_?\\d)*))(?:[eE][+-]?\\d(?:_?\\d)*)?";
+
+function boundedStaticNumberLiteral(source: string) {
+  const value = Number(source.replaceAll("_", ""));
+  return Number.isFinite(value) && Math.abs(value) <= MAX_COORDINATE && !Object.is(value, -0) ? value : null;
+}
+
+function directLiteralMoveToPosition(
+  statement: string,
+  sourceVariable: string,
+  frame: Readonly<{ height: number; width: number }>,
+): Point | null {
+  const variable = sourceVariable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = statement.match(
+    new RegExp(
+      `^\\s*${variable}\\s*\\.\\s*move_to\\s*\\(\\s*\\(\\s*(${BOUNDED_STATIC_NUMBER_LITERAL})\\s*,\\s*(${BOUNDED_STATIC_NUMBER_LITERAL})\\s*,\\s*(0(?:_?0)*)\\s*\\)\\s*\\)\\s*$`,
+      "s",
+    ),
+  );
+  if (
+    !match ||
+    !Number.isFinite(frame.width) ||
+    !Number.isFinite(frame.height) ||
+    frame.width <= 0 ||
+    frame.height <= 0
+  ) {
+    return null;
+  }
+  const x = boundedStaticNumberLiteral(match[1]);
+  const y = boundedStaticNumberLiteral(match[2]);
+  if (x === null || y === null) return null;
+  const point = {
+    x: Number(((x / frame.width + 0.5) * 640).toFixed(12)),
+    y: Number(((0.5 - y / frame.height) * 360).toFixed(12)),
+  };
+  return Number.isFinite(point.x) && Number.isFinite(point.y) ? point : null;
 }
 
 function unknown<T>(reason: string, evidence: readonly string[]): Knowledge<T> {
@@ -1186,6 +1227,16 @@ export function importManimScene(
   const collectedStatements = collectStatements(block);
   const returnIndex = collectedStatements.findIndex((statement) => /^return\b/.test(statement.text));
   const statements = returnIndex < 0 ? collectedStatements : collectedStatements.slice(0, returnIndex + 1);
+  const sourceAnchors = statements.flatMap((statement, index) => {
+    const match = statement.text.match(ANCHOR_PATTERN);
+    return match ? [{ index, seconds: Number(match[1]) }] : [];
+  });
+  const isBeforeStudioInsertionAt = (statementIndex: number, seconds: number) => {
+    const firstSameTimeAnchor = sourceAnchors.find(
+      (anchor) => Math.abs(anchor.seconds - seconds) < SOURCE_TIME_EPSILON,
+    );
+    return firstSameTimeAnchor !== undefined && statementIndex < firstSameTimeAnchor.index;
+  };
   const sceneId = `${sourcePath}#${sceneName}`;
   const mutableEntities: MutableEntity[] = [];
   const byVariable = new Map<string, MutableEntity>();
@@ -1440,6 +1491,12 @@ export function importManimScene(
                     ]);
             }
           }
+        } else if (positionMarker === undefined) {
+          const literalPosition = directLiteralMoveToPosition(statement.text, moveToVariable, frame);
+          if (literalPosition) {
+            position = literalPosition;
+            knowledge = { kind: "known", value: position };
+          }
         }
         if (Number.isFinite(position.x) && Number.isFinite(position.y)) {
           appendChannelSample(positionSamples, entity.id, {
@@ -1447,6 +1504,9 @@ export function importManimScene(
             kind: "exact",
             knowledge,
             provenanceId: `import:${sceneId}:${entity.sourceVariable}:position:${statement.line}`,
+            ...(knowledge.kind === "known" && isBeforeStudioInsertionAt(statementIndex, cursor)
+              ? { sameAnchorOrder: "before-studio-insertion" as const }
+              : {}),
             value: position,
           });
           entity.position = position;
@@ -1529,6 +1589,9 @@ export function importManimScene(
           knowledge,
           provenanceId: `import:${sceneId}:${entity.sourceVariable}:scale:${statement.line}`,
           relative: factor !== null,
+          ...(factor !== null && knowledge.kind === "known" && isBeforeStudioInsertionAt(statementIndex, cursor)
+            ? { sameAnchorOrder: "before-studio-insertion" as const }
+            : {}),
           value,
         });
         entity.scale = value;

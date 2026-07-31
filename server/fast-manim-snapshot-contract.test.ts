@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import { digestAssetManifestV1, type SceneIrBundleV1, sceneIrBundleV1Schema } from "../src/engine/contracts";
 import {
+  deriveHermeticMathTexV3TransformPlan,
   deriveHermeticPngV4TransformPlan,
   digestFastManimSnapshotBundleV1,
   type ExpectedFastManimSnapshotCorrelationV1,
@@ -564,6 +565,7 @@ function compiled(bundle: SceneIrBundleV1, expectedValue: ExpectedFastManimSnaps
   if (bundle.scene.source.kind !== "imported-manim-server-snapshot") throw new Error("Expected imported source.");
   const {
     frame: _serverFrame,
+    hermeticMathTexV3Plan: _serverHermeticMathTexV3Plan,
     hermeticPngV4Plan: _serverHermeticPngV4Plan,
     snapshotVersion: _serverSnapshotVersion,
     ...resultCorrelation
@@ -713,6 +715,137 @@ describe("fast-manim snapshot result v1", () => {
       ),
     ).toBe(true);
     await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV3)).resolves.toEqual(sealed);
+  });
+
+  it("re-derives static MathTex transforms while preserving the canonical outline", async () => {
+    const source = `from manim import MathTex, Scene
+
+class ExampleScene(Scene):
+    def construct(self):
+        equation = MathTex("E = mc^2")
+        self.add(equation)
+        equation.move_to((1.25, -0.75, 0_0))
+        equation.scale(1.5)
+        equation.move_to((-0.25, 0.75, 0))
+        equation.scale(0.5)
+        self.wait(2)
+`;
+    const sourceHash = createHash("sha256").update(source, "utf8").digest("hex");
+    const hermeticMathTexV3Plan = deriveHermeticMathTexV3TransformPlan(source, expected.sceneName);
+    expect(hermeticMathTexV3Plan).toEqual({
+      terminalWait: 2,
+      transforms: [
+        { kind: "move-to", x: 1.25, y: -0.75 },
+        { factor: 1.5, kind: "scale" },
+        { kind: "move-to", x: -0.25, y: 0.75 },
+        { factor: 0.5, kind: "scale" },
+      ],
+    });
+    const expectedV3 = { ...expected, hermeticMathTexV3Plan, snapshotVersion: 3, sourceHash } as const;
+    const base = await hermeticMathTexBundle();
+    const entity = base.scene.entities[0]!;
+    const transformed = sceneIrBundleV1Schema.parse({
+      ...base,
+      scene: {
+        ...base.scene,
+        duration: 2,
+        entities: [
+          {
+            ...entity,
+            lifetimes: [{ end: 2, start: 0 }],
+            transform: { m11: 0.75, m12: 0, m21: 0, m22: 0.75, tx: -0.25, ty: 0.75 },
+          },
+        ],
+        source: { ...base.scene.source, sourceHash },
+      },
+    });
+
+    const sealed = await parseProducer(compiled(transformed, expectedV3), expectedV3, source);
+    expect(sealed).toMatchObject({ kind: "compiled", bundle: { scene: { duration: 2 } } });
+    await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV3)).resolves.toEqual(sealed);
+
+    const wrongDuration = sceneIrBundleV1Schema.parse({
+      ...transformed,
+      scene: {
+        ...transformed.scene,
+        duration: 1,
+        entities: transformed.scene.entities.map((candidate) => ({
+          ...candidate,
+          lifetimes: [{ end: 1, start: 0 }],
+        })),
+      },
+    });
+    await expect(parseProducer(compiled(wrongDuration, expectedV3), expectedV3, source)).rejects.toMatchObject({
+      code: "profile-violation",
+    });
+
+    const machineRounded = sceneIrBundleV1Schema.parse({
+      ...transformed,
+      scene: {
+        ...transformed.scene,
+        entities: [
+          {
+            ...entity,
+            lifetimes: [{ end: 2, start: 0 }],
+            transform: {
+              m11: 0.75 + Number.EPSILON,
+              m12: 0,
+              m21: 0,
+              m22: 0.75 - Number.EPSILON,
+              tx: -0.25 + Number.EPSILON,
+              ty: 0.75 - Number.EPSILON,
+            },
+          },
+        ],
+      },
+    });
+    await expect(parseProducer(compiled(machineRounded, expectedV3), expectedV3, source)).resolves.toMatchObject({
+      kind: "compiled",
+    });
+
+    const wrongPlan = {
+      ...expectedV3,
+      hermeticMathTexV3Plan: {
+        ...hermeticMathTexV3Plan,
+        transforms: [{ factor: 2, kind: "scale" as const }, ...hermeticMathTexV3Plan.transforms.slice(1)],
+      },
+    };
+    await expect(parseProducer(compiled(transformed, wrongPlan), wrongPlan, source)).rejects.toMatchObject({
+      code: "profile-violation",
+    });
+
+    const drifted = sceneIrBundleV1Schema.parse({
+      ...transformed,
+      scene: {
+        ...transformed.scene,
+        entities: [
+          {
+            ...entity,
+            lifetimes: [{ end: 2, start: 0 }],
+            transform: { ...entity.transform, m11: 0.750_001, m22: 0.75, tx: -0.25, ty: 0.75 },
+          },
+        ],
+      },
+    });
+    await expect(parseProducer(compiled(drifted, expectedV3), expectedV3, source)).rejects.toMatchObject({
+      code: "profile-violation",
+    });
+  });
+
+  it("rejects a hermetic static transform plan whose cumulative scale underflows", () => {
+    const source = `from manim import MathTex, Scene
+
+class ExampleScene(Scene):
+    def construct(self):
+        equation = MathTex("E = mc^2")
+        self.add(equation)
+        equation.scale(1e-300)
+        equation.scale(1e-300)
+`;
+
+    expect(() => deriveHermeticMathTexV3TransformPlan(source, expected.sceneName)).toThrow(
+      /out-of-range cumulative scale/,
+    );
   });
 
   it("fails closed when profile V3 contains an open contour or more than one entity", async () => {
@@ -879,12 +1012,11 @@ class ExampleScene(Scene):
       ...base,
       scene: {
         ...base.scene,
-        // A terminal wait is admitted source syntax, but V4 remains the
-        // one-second static snapshot profile.
-        duration: 1,
+        duration: 2,
         entities: [
           {
             ...entity,
+            lifetimes: [{ end: 2, start: 0 }],
             geometry: {
               ...entity.geometry,
               localRect: {
@@ -901,6 +1033,7 @@ class ExampleScene(Scene):
     });
 
     const sealed = await parseProducer(compiled(transformed, expectedV4), expectedV4, source);
+    expect(sealed).toMatchObject({ kind: "compiled", bundle: { scene: { duration: 2 } } });
     await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV4)).resolves.toEqual(sealed);
 
     const transformedGeometry = transformed.scene.entities[0]!.geometry;
@@ -912,6 +1045,7 @@ class ExampleScene(Scene):
         entities: [
           {
             ...entity,
+            lifetimes: [{ end: 2, start: 0 }],
             geometry: {
               ...entity.geometry,
               localRect: {
@@ -947,6 +1081,7 @@ class ExampleScene(Scene):
         entities: [
           {
             ...entity,
+            lifetimes: [{ end: 2, start: 0 }],
             geometry: {
               ...entity.geometry,
               localRect: {
@@ -1835,6 +1970,7 @@ class ExampleScene(Scene):
 
   it("defaults legacy persisted correlation metadata to profile V1 only", () => {
     const { snapshotVersion: _snapshotVersion, ...legacy } = expected;
+    const hermeticMathTexV3Plan = { terminalWait: 2, transforms: [{ factor: 1.5, kind: "scale" as const }] };
     const hermeticPngV4Plan = { terminalWait: null, transforms: [] } as const;
     expect(expectedFastManimSnapshotCorrelationV1Schema.parse(legacy).snapshotVersion).toBe(1);
     expect(expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 3 }).snapshotVersion).toBe(
@@ -1847,10 +1983,19 @@ class ExampleScene(Scene):
       expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, hermeticPngV4Plan, snapshotVersion: 4 })
         .hermeticPngV4Plan,
     ).toEqual(hermeticPngV4Plan);
+    expect(
+      expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, hermeticMathTexV3Plan, snapshotVersion: 3 })
+        .hermeticMathTexV3Plan,
+    ).toEqual(hermeticMathTexV3Plan);
     for (const snapshotVersion of [1, 2, 3] as const) {
       expect(() =>
         expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, hermeticPngV4Plan, snapshotVersion }),
       ).toThrow(/only for snapshot profile V4/i);
+    }
+    for (const snapshotVersion of [1, 2, 4] as const) {
+      expect(() =>
+        expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, hermeticMathTexV3Plan, snapshotVersion }),
+      ).toThrow(/only for snapshot profile V3/i);
     }
     expect(() => expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 5 })).toThrow();
   });

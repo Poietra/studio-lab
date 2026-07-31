@@ -179,12 +179,17 @@ class GatedMathTexScene(Scene):
     def construct(self):
         equation = MathTex("E = mc^2")
         self.add(equation)
+        equation.move_to((1.25, -0.75, 0))
+        equation.scale(1.5)
+        equation.move_to((-0.25, 0.75, 0))
+        equation.scale(0.5)
+        self.wait(2)
 `;
 
 const TRUSTED_IMAGE_LABELS = Object.freeze({
-  "io.poietra.fast-manim.archive-sha256": "70bae68b477cd8e3d3e3a14fda1026b0995f0733037b316348afc23d179025f1",
-  "io.poietra.fast-manim.commit": "8bc9eebf08f99511d1c33ffe2af5daccf95a514f",
-  "io.poietra.fast-manim.tree": "7fd6e3a835ca58978b46df48774a53929e4acf18",
+  "io.poietra.fast-manim.archive-sha256": "d7ddb1f7ac5b2cbfdb56c0c8ebfbed27bc9ebd681b95876e52edc096129fb8e4",
+  "io.poietra.fast-manim.commit": "cb9f1963f5e1911cfdcb21c316f5ac35052a2024",
+  "io.poietra.fast-manim.tree": "fb62085765a801fb4a93d9562b99888164d5d556",
   "io.poietra.mathtex-outline.abi-version": "1",
   "io.poietra.mathtex-outline.artifact-sha256": "fcae06b2065de2da938be484ed0bde88cd31777ef29471d63580852f28c132d4",
   "io.poietra.mathtex-outline.engine-archive-sha256":
@@ -764,7 +769,9 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
     }
   });
 
-  it("loads the pinned native provider and returns a real V3 MathTex outline", { timeout: 60_000 }, async () => {
+  it("loads the pinned native provider and returns a transformed real V3 MathTex outline", {
+    timeout: 60_000,
+  }, async () => {
     const source = producerRequestFor(mathTexScene, "GatedMathTexScene", 3, "mathtex.py");
     const request = new FastManimSandboxRequestBundleV1(source);
     const execution = await runFastManimGatedOciJobV1({
@@ -777,6 +784,7 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
     const { snapshot, sourceRuntimeIdentity } = await verifyCombinedResult(execution.resultBytes, source);
     if (snapshot.kind !== "compiled") throw new Error("Expected a compiled MathTex V3 snapshot.");
     expect(snapshot.bundle.scene).toMatchObject({
+      duration: 2,
       requiredCapabilities: ["cubic-path-geometry"],
       source: { kind: "imported-manim-server-snapshot", snapshotVersion: 3 },
     });
@@ -789,6 +797,8 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
     expect(entity.geometry.path.subpaths.every((subpath) => subpath.closed && subpath.segments.length > 0)).toBe(true);
     expect(entity.appearance.fill).not.toBeNull();
     expect(entity.appearance.stroke).toBeNull();
+    expect(entity.lifetimes).toEqual([{ end: 2, start: 0 }]);
+    expect(entity.transform).toEqual({ m11: 0.75, m12: 0, m21: 0, m22: 0.75, tx: -0.25, ty: 0.75 });
     expect(sourceRuntimeIdentity?.mappings).toMatchObject([{ binding: { name: "equation" }, entityId: entity.id }]);
   });
 

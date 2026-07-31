@@ -56,6 +56,11 @@ class GatedMathTexScene(Scene):
     def construct(self):
         equation = MathTex("E = mc^2")
         self.add(equation)
+        equation.move_to((1.25, -0.75, 0))
+        equation.scale(1.5)
+        equation.move_to((-0.25, 0.75, 0))
+        equation.scale(0.5)
+        self.wait(2)
 `,
 });
 const TRANSFORMED_PNG_CONFORMANCE_CASE_V4 = Object.freeze({
@@ -125,7 +130,7 @@ describe.skipIf(!requested)("production sandbox broker real rootless lane", () =
     }
   });
 
-  it("seals V1 conformance, V3 MathTex, and transformed V4 PNG through the production UDS runner", async () => {
+  it("seals V1 conformance and transformed V3 MathTex/V4 PNG through the production UDS runner", async () => {
     const directory = await mkdtemp(join(tmpdir(), "poietra-production-broker-"));
     await chmod(directory, 0o750);
     const socketPath = join(directory, "broker.sock");
@@ -245,6 +250,7 @@ describe.skipIf(!requested)("production sandbox broker real rootless lane", () =
         throw new Error("The production broker did not return a verified hermetic MathTex V3 snapshot.");
       }
       const mathTexBundle = await parseVerifiedSceneIrBundleV1(mathTex.snapshot.bundle);
+      expect(mathTexBundle.scene.duration).toBe(2);
       expect(mathTexBundle.scene.source).toMatchObject({
         kind: "imported-manim-server-snapshot",
         snapshotVersion: 3,
@@ -267,6 +273,15 @@ describe.skipIf(!requested)("production sandbox broker real rootless lane", () =
         kind: "vector",
         opacity: 1,
         stroke: null,
+      });
+      expect(mathTexEntity.lifetimes).toEqual([{ end: 2, start: 0 }]);
+      expect(mathTexEntity.transform).toEqual({
+        m11: 0.75,
+        m12: 0,
+        m21: 0,
+        m22: 0.75,
+        tx: -0.25,
+        ty: 0.75,
       });
       expect(mathTex.sourceRuntimeIdentity?.mappings).toMatchObject([
         {

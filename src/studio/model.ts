@@ -99,6 +99,7 @@ export type PropertyChannelSample = Readonly<{
   operationId?: string;
   provenanceId: string;
   relative?: boolean;
+  sameAnchorOrder?: "before-studio-insertion";
   value: PropertyValue;
 }>;
 

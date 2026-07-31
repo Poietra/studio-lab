@@ -5,11 +5,11 @@ import { evaluateWorkingState, programRecord, projectProposedState } from "./eva
 import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
 import { STUDIO_STATE_VERSION, type WorkingState } from "./model";
 import {
+  type CanonicalEditOperation,
+  type CanonicalEditProgram,
   EDIT_OPERATION_VERSION,
   operationId,
   provisionalEntityId,
-  type CanonicalEditOperation,
-  type CanonicalEditProgram,
 } from "./operations";
 import { validateAndScheduleProgram } from "./program-validation";
 import { normalizeDimensionsSamples, normalizePositionSamples, normalizeScaleSamples } from "./property-sampling";
@@ -490,6 +490,56 @@ class UnknownContentChronology(Scene):
       "later-source-half",
     ]);
     expect(samples.at(-1)).toMatchObject({ from: 3, value: 1.5 });
+  });
+
+  it("applies proven same-anchor source scales before a zero-time Studio scale", () => {
+    const samples = normalizeScaleSamples([
+      {
+        interval: { end: 10, start: 0 },
+        kind: "exact",
+        knowledge: { kind: "known", value: 1 },
+        provenanceId: "initial",
+        value: 1,
+      },
+      {
+        from: 1,
+        interval: { end: 10, start: 0 },
+        kind: "exact",
+        knowledge: { kind: "known", value: 2 },
+        provenanceId: "source-double",
+        relative: true,
+        sameAnchorOrder: "before-studio-insertion",
+        value: 2,
+      },
+      {
+        from: 2,
+        interval: { end: 10, start: 0 },
+        kind: "exact",
+        knowledge: { kind: "known", value: 1.5 },
+        provenanceId: "source-three-quarters",
+        relative: true,
+        sameAnchorOrder: "before-studio-insertion",
+        value: 1.5,
+      },
+      {
+        easing: "smooth",
+        from: 1.5,
+        interval: { end: 0, start: 0 },
+        kind: "animated",
+        operationId: "studio-scale",
+        provenanceId: "studio-scale/provenance",
+        relative: true,
+        value: 3,
+      },
+    ]);
+
+    expect(samples.map((sample) => sample.provenanceId)).toEqual([
+      "initial",
+      "source-double",
+      "source-three-quarters",
+      "studio-scale/provenance",
+    ]);
+    expect(samples.at(-1)).toMatchObject({ from: 1.5, value: 3 });
   });
 
   it("previews source scales before and after Magic scale with Manim's multiplicative semantics", () => {

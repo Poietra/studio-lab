@@ -80,6 +80,7 @@ const propertyChannelSampleSchema = z
     operationId: z.string().optional(),
     provenanceId: z.string(),
     relative: z.boolean().optional(),
+    sameAnchorOrder: z.literal("before-studio-insertion").optional(),
     value: propertyValueSchema,
   })
   .strict();
