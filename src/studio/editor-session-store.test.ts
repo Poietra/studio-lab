@@ -9,8 +9,10 @@ import {
   type EditorSessionSnapshot,
   type EditorSessionStorageAdapter,
   EditorSessionStore,
+  editorSessionStorageKey,
   MAX_EDITOR_SESSION_STORAGE_BYTES,
   MAX_STORED_EDITOR_SESSIONS,
+  WebStorageEditorSessionAdapter,
 } from "./editor-session-store";
 import type { ProgramRecord } from "./model";
 import {
@@ -41,6 +43,22 @@ class MemoryAdapter implements EditorSessionStorageAdapter {
 
   write(serialized: string) {
     this.value = serialized;
+  }
+}
+
+class KeyedMemoryStorage {
+  readonly values = new Map<string, string>();
+
+  getItem(key: string) {
+    return this.values.get(key) ?? null;
+  }
+
+  removeItem(key: string) {
+    this.values.delete(key);
+  }
+
+  setItem(key: string, value: string) {
+    this.values.set(key, value);
   }
 }
 
@@ -117,6 +135,60 @@ function snapshot(): EditorSessionSnapshot {
 }
 
 describe("durable editor session storage", () => {
+  it("uses disjoint validated browser keys for each account and organization", () => {
+    const first = editorSessionStorageKey({
+      organizationId: "organization-a",
+      userId: "2f2e3ea4-88de-4f37-81f7-1860d8f942f8",
+    });
+    const second = editorSessionStorageKey({
+      organizationId: "organization-b",
+      userId: "2f2e3ea4-88de-4f37-81f7-1860d8f942f8",
+    });
+    const third = editorSessionStorageKey({
+      organizationId: "organization-a",
+      userId: "35b33044-5387-4c29-aed1-cad82750f4cc",
+    });
+
+    expect(first).not.toBe(second);
+    expect(first).not.toBe(third);
+    expect(first).toBe("poietra.studio.editor-sessions.2f2e3ea4-88de-4f37-81f7-1860d8f942f8.organization-a");
+    expect(second).toBe("poietra.studio.editor-sessions.2f2e3ea4-88de-4f37-81f7-1860d8f942f8.organization-b");
+    expect(editorSessionStorageKey()).toBe("poietra.studio.editor-sessions");
+    expect(() =>
+      editorSessionStorageKey({
+        organizationId: "../foreign",
+        userId: "2f2e3ea4-88de-4f37-81f7-1860d8f942f8",
+      }),
+    ).toThrow("account scope is invalid");
+  });
+
+  it("never restores the same project identity from another account scope", () => {
+    const storage = new KeyedMemoryStorage();
+    const firstKey = editorSessionStorageKey({
+      organizationId: "organization-a",
+      userId: "2f2e3ea4-88de-4f37-81f7-1860d8f942f8",
+    });
+    const secondKey = editorSessionStorageKey({
+      organizationId: "organization-b",
+      userId: "35b33044-5387-4c29-aed1-cad82750f4cc",
+    });
+    new EditorSessionStore(new WebStorageEditorSessionAdapter(storage, firstKey)).save(identity(), {
+      ...snapshot(),
+      currentTime: 1,
+    });
+    new EditorSessionStore(new WebStorageEditorSessionAdapter(storage, secondKey)).save(identity(), {
+      ...snapshot(),
+      currentTime: 2,
+    });
+
+    expect(
+      new EditorSessionStore(new WebStorageEditorSessionAdapter(storage, firstKey)).restore(identity()),
+    ).toMatchObject({ kind: "restored", snapshot: { currentTime: 1 } });
+    expect(
+      new EditorSessionStore(new WebStorageEditorSessionAdapter(storage, secondKey)).restore(identity()),
+    ).toMatchObject({ kind: "restored", snapshot: { currentTime: 2 } });
+  });
+
   it("restores the closed, versioned editor payload through a fresh store", () => {
     const adapter = new MemoryAdapter();
     const firstStore = new EditorSessionStore(adapter, () => 100);

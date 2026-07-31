@@ -115,10 +115,25 @@ export class WebStorageEditorSessionAdapter implements EditorSessionStorageAdapt
   }
 }
 
-export function browserEditorSessionStorageAdapter(): EditorSessionStorageAdapter | null {
+export type EditorSessionAccountScope = Readonly<{
+  organizationId: string;
+  userId: string;
+}>;
+
+export function editorSessionStorageKey(scope?: EditorSessionAccountScope) {
+  if (scope === undefined) return EDITOR_SESSION_STORAGE_KEY;
+  if (!/^[a-z][a-z0-9_-]{0,63}$/.test(scope.organizationId) || !z.uuid().safeParse(scope.userId).success) {
+    throw new TypeError("The editor session account scope is invalid.");
+  }
+  return `${EDITOR_SESSION_STORAGE_KEY}.${scope.userId}.${scope.organizationId}`;
+}
+
+export function browserEditorSessionStorageAdapter(
+  scope?: EditorSessionAccountScope,
+): EditorSessionStorageAdapter | null {
   if (typeof window === "undefined") return null;
   try {
-    return new WebStorageEditorSessionAdapter(window.localStorage);
+    return new WebStorageEditorSessionAdapter(window.localStorage, editorSessionStorageKey(scope));
   } catch {
     return null;
   }
