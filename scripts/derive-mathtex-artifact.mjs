@@ -141,6 +141,7 @@ export function parseMathTexArtifactDerivationReport(bytes, expected) {
     value.artifactFile !== MATHTEX_ARTIFACT_FILE_V1 ||
     typeof value.artifactSha256 !== "string" ||
     !SHA256.test(value.artifactSha256) ||
+    value.artifactSha256 === "0".repeat(64) ||
     !Number.isSafeInteger(value.artifactSizeBytes) ||
     value.artifactSizeBytes <= 0 ||
     value.artifactSizeBytes > MAX_ARTIFACT_BYTES ||

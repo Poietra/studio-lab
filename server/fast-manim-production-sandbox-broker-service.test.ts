@@ -17,6 +17,7 @@ import {
 import {
   digestFastManimGatedOciRuntimeV1,
   FAST_MANIM_GATED_OCI_RELEASE_SCHEMA_V1,
+  verifyFastManimGatedOciReleaseV1,
 } from "./fast-manim-gated-oci-release";
 import {
   assertFastManimProductionHostMaterialsV1,
@@ -101,6 +102,18 @@ describe("production gated OCI host contract", () => {
     expect(createHash("sha256").update(canonicalJsonV1(FAST_MANIM_GATED_OCI_PROFILE_V1), "utf8").digest("hex")).toBe(
       FAST_MANIM_GATED_OCI_PROFILE_DIGEST_V1,
     );
+  });
+
+  it("keeps the production backend unavailable while the current native artifact digest is pending", async () => {
+    const release = productionRelease();
+    const verifiedRelease = verifyFastManimGatedOciReleaseV1(release.signedRelease, release.publicKeys);
+    await expect(
+      createFastManimProductionGatedOciBackendV1({
+        dockerSocketPath: "/missing/docker.sock",
+        seccompPath: "/missing/seccomp.json",
+        verifiedRelease,
+      }),
+    ).rejects.toThrow(/awaiting its pinned-builder MathTex artifact digest/i);
   });
 
   it("never falls back from an explicitly missing Docker socket to the default daemon", async () => {

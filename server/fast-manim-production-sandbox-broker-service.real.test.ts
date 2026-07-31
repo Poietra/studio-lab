@@ -49,12 +49,12 @@ const MATHTEX_CONFORMANCE_CASE_V3 = Object.freeze({
   expectedKind: "compiled" as const,
   sceneName: "GatedMathTexScene",
   sourcePath: "mathtex.py",
-  sourceText: `from manim import MathTex, Scene
+  sourceText: String.raw`from manim import MathTex, Scene
 
 # ${FAST_MANIM_SANDBOX_CONFORMANCE_LEAK_SENTINELS_V1.join(" ")}
 class GatedMathTexScene(Scene):
     def construct(self):
-        equation = MathTex("E = mc^2")
+        equation = MathTex(r"\frac{a}{b}")
         self.add(equation)
         equation.move_to((1.25, -0.75, 0))
         equation.scale(1.5)
@@ -292,7 +292,7 @@ describe.skipIf(!requested)("production sandbox broker real rootless lane", () =
       expect(mathTex.sourceRuntimeIdentity?.mappings).toHaveLength(1);
       const mathTexWire = JSON.stringify(mathTex);
       expectNoConformanceLeak(mathTex);
-      expect(mathTexWire).not.toContain("E = mc^2");
+      expect(mathTexWire).not.toContain("\\frac{a}{b}");
       expect(mathTexWire).not.toContain("poietra_mathtex_outline");
       expect(mathTexWire).not.toContain(".so");
 
