@@ -88,7 +88,8 @@ export class PostgresRepositoryConnectionV1 {
         () => reject(new Error("PostgreSQL connection acquisition timed out.")),
         this.#statementTimeoutMs,
       );
-      timeout.unref();
+      // Node timers expose `unref`; Workers use numeric Web-standard timers.
+      if (typeof timeout === "object" && typeof timeout.unref === "function") timeout.unref();
       if (signal) {
         abortListener = () => reject(signal.reason ?? new DOMException("The operation was aborted.", "AbortError"));
         signal.addEventListener("abort", abortListener, { once: true });

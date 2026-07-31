@@ -69,6 +69,33 @@ member roles can enter the Manim API; the billing-only role cannot. The
 membership admission exposes `close()`, transferring its owned PostgreSQL pool
 to the server lifecycle. Admissions without `close()` remain caller-owned.
 
+The deployable Cloudflare entry is
+`server/cloudflare-account-control-plane-worker.ts`. Copy
+`wrangler.account-control-plane.example.jsonc` to the ignored
+`wrangler.account-control-plane.jsonc`, then replace its example route, zone,
+Hyperdrive ID, rate-limit namespace IDs, and non-secret OIDC values. The two
+rate-limit namespaces must be distinct from each other and from other
+environments. Store `POIETRA_OIDC_CLIENT_SECRET` with
+`pnpm exec wrangler secret put POIETRA_OIDC_CLIENT_SECRET --config wrangler.account-control-plane.jsonc`;
+never add it to `vars`, an environment file in source control, or CI output.
+`pnpm build:account-worker` validates and bundles the committed example without
+deploying it. `pnpm deploy:account-worker` intentionally requires the ignored
+production configuration.
+
+Authentication must use a dedicated Hyperdrive configuration created or
+updated with `--caching-disabled`; stale reads are not acceptable for sessions,
+memberships, or one-time login state. The Worker route must remain limited to
+the same-origin `/auth/oidc/*` path, with `workers_dev` and preview URLs off.
+Set that security-critical route to fail closed in Cloudflare before promotion.
+Invocation logs and traces remain disabled because callback URLs contain OIDC
+codes and state. Do not attach raw Worker Tail, Logpush, or request-URL logging
+to this Worker; zone Logpush must omit full request URIs for these routes. Use a
+sentinel callback to verify that code, state, nonce, cookies, and secrets do not
+appear in production logs. The Worker limits start and callback independently
+before it opens PostgreSQL storage; missing bindings, invalid configuration,
+rate-limit errors, and missing Cloudflare client IPs fail closed with a generic
+503.
+
 Each server instance remains a single-tenant cell: its runtime API declares one
 server-owned tenant ID and at least one bounded absolute storage root. A
 verified principal must resolve to that same tenant. Foreign tenants receive a

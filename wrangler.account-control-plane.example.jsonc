@@ -1,0 +1,58 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "poietra-account-control-plane",
+  "main": "server/cloudflare-account-control-plane-worker.ts",
+  "compatibility_date": "2026-07-31",
+  "compatibility_flags": ["nodejs_compat", "disallow_importable_env"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "https://studio.example.com/auth/oidc/*",
+      "zone_name": "example.com"
+    }
+  ],
+  "observability": {
+    "enabled": false,
+    "logs": {
+      "enabled": false,
+      "invocation_logs": false
+    },
+    "traces": {
+      "enabled": false
+    }
+  },
+  "vars": {
+    "POIETRA_PUBLIC_ORIGIN": "https://studio.example.com",
+    "POIETRA_OIDC_ISSUER": "https://identity.example.com",
+    "POIETRA_OIDC_CLIENT_ID": "replace-with-production-client-id",
+    "POIETRA_OIDC_CLIENT_AUTHENTICATION": "client_secret_post"
+  },
+  "secrets": {
+    "required": ["POIETRA_OIDC_CLIENT_SECRET"]
+  },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "00000000000000000000000000000000"
+    }
+  ],
+  "ratelimits": [
+    {
+      "name": "OIDC_START_RATE_LIMITER",
+      "namespace_id": "31201",
+      "simple": {
+        "limit": 10,
+        "period": 60
+      }
+    },
+    {
+      "name": "OIDC_CALLBACK_RATE_LIMITER",
+      "namespace_id": "31202",
+      "simple": {
+        "limit": 30,
+        "period": 60
+      }
+    }
+  ]
+}
