@@ -12,16 +12,23 @@ import {
   assessDecisionEligibility,
   canonicalSceneBundleSha256,
   collectHostEnvironment,
+  readPinnedReferenceHostProfile,
   readServedWasmEvidence,
   reportContracts,
+  requireBenchmarkRunId,
+  requireReferenceHostPreflight,
   requireStableCommitIdentity,
+  requireStableReferenceHostEnvironment,
   resolveBenchmarkProvenance,
+  type WorkerAdapterIdentity,
 } from "./benchmark-environment";
 import { makeServedBuildVerifier } from "./benchmark-manifest";
 import {
   ENGINE_MEMORY_BUDGET_BYTES,
   ENGINE_STAGE_TELEMETRY_SAMPLE_COUNT,
   ENGINE_STAGE_TELEMETRY_WARMUP_COUNT,
+  ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_SCHEMA,
+  ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_VERSION,
   engineWebgpuStageTelemetryReportSchema,
 } from "./benchmark-report-schemas";
 import {
@@ -311,6 +318,7 @@ test("records the 1080p WebGPU stage telemetry matrix", async ({ page, request }
   expect(testInfo.retry).toBe(0);
   expect(testInfo.project.retries).toBe(0);
   const provenance = resolveBenchmarkProvenance();
+  const benchmarkRunId = requireBenchmarkRunId();
   const wasm = await readServedWasmEvidence();
   const vectorFixture = JSON.parse(
     await readFile("fixtures/engine-v1/shared-circle-opacity.json", "utf8"),
@@ -321,9 +329,15 @@ test("records the 1080p WebGPU stage telemetry matrix", async ({ page, request }
     id: string;
     scene: unknown;
   }>;
+  const host = collectHostEnvironment();
+  const referenceHost = readPinnedReferenceHostProfile();
+  const browserLaunch = { args: [...WEBGPU_CHROMIUM_LAUNCH_ARGS], channel: WEBGPU_CHROMIUM_CHANNEL };
+  requireReferenceHostPreflight({ browserLaunch, host, referenceHost });
   const verifyServedBuild = makeServedBuildVerifier(request, provenance.commitIdentity);
   await verifyServedBuild();
   await page.goto("/benchmark.html");
+  const browserVersion = page.context().browser()?.version();
+  if (!browserVersion) throw new Error("The benchmark lane could not read the launched browser version.");
   const devClientPresent = await page.evaluate(() => Boolean(document.querySelector('script[src*="@vite/client"]')));
   expect(devClientPresent, "the benchmark lane must not run against the HMR dev server").toBe(false);
 
@@ -468,26 +482,36 @@ test("records the 1080p WebGPU stage telemetry matrix", async ({ page, request }
   const pageAdapterHint = await page.evaluate(collectPageAdapterHintOnce);
   await verifyServedBuild();
   requireStableCommitIdentity(provenance.commitIdentity);
+  requireStableReferenceHostEnvironment(host, collectHostEnvironment());
   const decisionEligibility = assessDecisionEligibility({
+    browserChannel: WEBGPU_CHROMIUM_CHANNEL,
+    browserLaunchArgs: browserLaunch.args,
+    browserVersions: [browserVersion],
     grade: provenance.grade,
-    host: collectHostEnvironment(),
+    host,
     pageAdapterHintArchitecture: pageAdapterHint.kind === "available" ? pageAdapterHint.architecture : null,
+    referenceHost,
+    requiredWorkerAdapterSamples: STRESS_DEFINITIONS.length,
     workerAdapters: workloads.map((workload) => {
       const adapter = workload.workerDeviceAdapter;
       if (adapter.kind !== "available") throw new Error("worker adapter evidence was asserted available");
-      const evidence = adapter.evidence as { adapter: { backend: string; deviceType: string; name: string } };
+      const evidence = adapter.evidence as { adapter: WorkerAdapterIdentity };
       return evidence.adapter;
     }),
   });
 
   const report = {
+    benchmarkRunId,
     capturedAt: new Date().toISOString(),
     decisionEligibility,
     evidenceLevel: decisionEligibility.eligible ? "decision-candidate" : "exploratory",
     provenance,
     provenanceStableThroughRun: true,
     baseFixtureIds: ["eng-v1-shared-circle-opacity", "eng-v1-png-alpha-edge-camera"],
-    contracts: reportContracts("poietra.engine-webgpu-stage-telemetry", 3),
+    contracts: reportContracts(
+      ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_SCHEMA,
+      ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_VERSION,
+    ),
     configuration: {
       additivePhases: CANVAS_TELEMETRY_ADDITIVE_PHASES,
       attributionToleranceMs: ATTRIBUTION_TOLERANCE_MS,
@@ -503,10 +527,12 @@ test("records the 1080p WebGPU stage telemetry matrix", async ({ page, request }
     },
     environment: {
       browser,
-      browserLaunch: { args: [...WEBGPU_CHROMIUM_LAUNCH_ARGS], channel: WEBGPU_CHROMIUM_CHANNEL },
-      host: collectHostEnvironment(),
+      browserLaunch: { channel: browserLaunch.channel, configuredArgs: browserLaunch.args },
+      browserVersion,
+      host,
       nodePlatform: process.platform,
       pageAdapterHint,
+      referenceHostProfile: referenceHost.evidence,
       wasm,
     },
     memoryAccounting: {
@@ -562,10 +588,10 @@ test("records the 1080p WebGPU stage telemetry matrix", async ({ page, request }
       "Retained-boundary memory is the WebAssembly linear-memory allocation plus renderer-owned logical GPU cache bytes, sampled after the GPU queue fence and before response serialization. The CPU cache breakdown is already inside linear memory and is never added again; independently observed component peaks are never summed.",
       "This is not an intra-frame engine peak or browser process RSS. Browser JS/DOM; transient per-frame image vertex/index buffers (bounded separately at 64 MiB); and surface, pipeline, bind-group, sampler, and driver allocations not byte-accounted by retained caches are explicitly excluded.",
       "environment.host.commitIdentity records the HEAD commit together with the working-tree state; a dirty-tree run is not attributable to that commit alone.",
-      "environment.host records kernel and CPU evidence; GPU driver identity and host power mode are explicitly unavailable from this harness, so this exploratory report still lacks the fixed reference-host evidence an adoption decision requires.",
+      "decisionEligibility compares OS-derived host evidence, the launched browser version, and every Worker adapter sample against the hash-verified checked-in reference profile.",
     ],
-    schema: "poietra.engine-webgpu-stage-telemetry",
-    version: 3,
+    schema: ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_SCHEMA,
+    version: ENGINE_WEBGPU_STAGE_TELEMETRY_REPORT_VERSION,
     workloads,
   } as const;
   const encoded = `${JSON.stringify(report, null, 2)}\n`;

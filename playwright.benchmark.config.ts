@@ -29,6 +29,12 @@ if (!distDir) {
     "POIETRA_BENCHMARK_DIST is not set; run benchmarks through `pnpm benchmark:engine:webgpu`, which builds a run-specific benchmark bundle and its manifest.",
   );
 }
+const safeDistPath = process.platform === "win32" ? /^[a-z0-9._/\\:-]+$/i : /^[a-z0-9._/-]+$/i;
+if (!safeDistPath.test(distDir)) {
+  throw new Error(
+    "POIETRA_BENCHMARK_DIST must not contain whitespace or shell metacharacters because Playwright starts its owned preview server through a command string.",
+  );
+}
 
 export default defineConfig({
   forbidOnly: true,
@@ -37,7 +43,7 @@ export default defineConfig({
   outputDir: "test-results-benchmark",
   projects: [
     {
-      name: "chromium-webgpu-benchmark",
+      name: WEBGPU_CHROMIUM_CHANNEL === "msedge" ? "edge-d3d12-webgpu-benchmark" : "chromium-webgpu-benchmark",
       testMatch: ["engine-canvas.webgpu.ts", "engine-stress.webgpu.ts", "engine-stage-telemetry.webgpu.ts"],
       use: {
         browserName: "chromium",

@@ -11,7 +11,7 @@ import { renderViewportV1Schema } from "./render-packet";
 import { MAX_SCENE_DELTA_JSON_BYTES } from "./scene-delta";
 
 export const POIETRA_CANVAS_WORKER_VERSION = 1 as const;
-export const POIETRA_CANVAS_TELEMETRY_ABI_VERSION = 3 as const;
+export const POIETRA_CANVAS_TELEMETRY_ABI_VERSION = 4 as const;
 export const MAX_CANVAS_SNAPSHOT_JSON_BYTES = 8 * 1024 * 1024;
 export const MAX_CANVAS_SAMPLE_JSON_BYTES = 256 * 1024;
 export const MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES = 16 * 1024;
@@ -506,16 +506,26 @@ export const canvasAdapterEvidenceV1Schema = z
   .object({
     adapter: z
       .object({
-        backend: boundedAdapterEvidenceStringSchema,
-        deviceId: z.number().int().nonnegative(),
-        deviceType: boundedAdapterEvidenceStringSchema,
-        driver: boundedAdapterEvidenceStringSchema,
-        driverInfo: boundedAdapterEvidenceStringSchema,
+        // wgpu 30's browser backend reads GPUDevice.adapterInfo for the
+        // device it created. The additive browser fields come from that same
+        // raw GPUDevice handle. They remain optional in the general protocol
+        // parser for stored pre-v4 evidence, while telemetry ABI v4 prevents
+        // an older strict consumer from accepting a producer that emits them.
+        // Native PCI IDs, driver strings, and device class remain discarded
+        // and canonical so callers cannot mistake synthetic values for
+        // browser-observed identity.
+        backend: z.literal("BrowserWebGpu"),
+        browserArchitecture: boundedAdapterEvidenceStringSchema.optional(),
+        browserVendor: boundedAdapterEvidenceStringSchema.optional(),
+        deviceId: z.literal(0),
+        deviceType: z.enum(["Cpu", "Other"]),
+        driver: z.literal(""),
+        driverInfo: z.literal(""),
         name: boundedAdapterEvidenceStringSchema,
         source: z.literal("worker-wgpu-adapter-info"),
         subgroupMaxSize: z.number().int().nonnegative(),
         subgroupMinSize: z.number().int().nonnegative(),
-        vendorId: z.number().int().nonnegative(),
+        vendorId: z.literal(0),
       })
       .strict(),
     device: z

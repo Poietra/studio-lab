@@ -7,13 +7,22 @@ import {
   assessDecisionEligibility,
   canonicalSceneBundleSha256,
   collectHostEnvironment,
+  readPinnedReferenceHostProfile,
   readServedWasmEvidence,
   reportContracts,
+  requireBenchmarkRunId,
+  requireReferenceHostPreflight,
   requireStableCommitIdentity,
+  requireStableReferenceHostEnvironment,
   resolveBenchmarkProvenance,
+  type WorkerAdapterIdentity,
 } from "./benchmark-environment";
 import { makeServedBuildVerifier } from "./benchmark-manifest";
-import { engineWebgpuBenchmarkReportSchema } from "./benchmark-report-schemas";
+import {
+  ENGINE_WEBGPU_BENCHMARK_REPORT_SCHEMA,
+  ENGINE_WEBGPU_BENCHMARK_REPORT_VERSION,
+  engineWebgpuBenchmarkReportSchema,
+} from "./benchmark-report-schemas";
 import { summarizeTiming } from "./engine-stress-workloads";
 import { WEBGPU_CHROMIUM_CHANNEL, WEBGPU_CHROMIUM_LAUNCH_ARGS } from "./webgpu-launch";
 
@@ -626,6 +635,11 @@ test("records retained Worker latency without making CI hardware an adoption ora
   expect(testInfo.retry).toBe(0);
   expect(testInfo.project.retries).toBe(0);
   const provenance = resolveBenchmarkProvenance();
+  const benchmarkRunId = requireBenchmarkRunId();
+  const host = collectHostEnvironment();
+  const referenceHost = readPinnedReferenceHostProfile();
+  const browserLaunch = { args: [...WEBGPU_CHROMIUM_LAUNCH_ARGS], channel: WEBGPU_CHROMIUM_CHANNEL };
+  requireReferenceHostPreflight({ browserLaunch, host, referenceHost });
   const wasm = await readServedWasmEvidence();
   const fixture = JSON.parse(await readFile("fixtures/engine-v1/shared-circle-opacity.json", "utf8")) as SharedFixture;
   const baseUrl = testInfo.project.use.baseURL;
@@ -637,7 +651,7 @@ test("records retained Worker latency without making CI hardware an adoption ora
   const coldBrowserLaunchMs: number[] = [];
   const coldPageLoadMs: number[] = [];
   const coldClientImportToSceneReadyMs: number[] = [];
-  const coldRuns: { run: number; sceneReadyMs: number; workerDeviceAdapter: unknown }[] = [];
+  const coldRuns: { browserVersion: string; run: number; sceneReadyMs: number; workerDeviceAdapter: unknown }[] = [];
   for (let run = 0; run < COLD_PROCESS_RUNS; run += 1) {
     const launchStarted = performance.now();
     const coldBrowser = await playwright.chromium.launch({
@@ -678,6 +692,7 @@ test("records retained Worker latency without making CI hardware an adoption ora
       }, fixture);
       coldClientImportToSceneReadyMs.push(coldResult.sceneReadyMs);
       coldRuns.push({
+        browserVersion: coldBrowser.version(),
         run,
         sceneReadyMs: coldResult.sceneReadyMs,
         workerDeviceAdapter: coldResult.workerDeviceAdapter,
@@ -688,6 +703,8 @@ test("records retained Worker latency without making CI hardware an adoption ora
   }
 
   await page.goto("/benchmark.html");
+  const browserVersion = page.context().browser()?.version();
+  if (!browserVersion) throw new Error("The benchmark lane could not read the launched browser version.");
   const devClientPresent = await page.evaluate(() => Boolean(document.querySelector('script[src*="@vite/client"]')));
   expect(devClientPresent, "the benchmark lane must not run against the HMR dev server").toBe(false);
 
@@ -779,18 +796,21 @@ test("records retained Worker latency without making CI hardware an adoption ora
 
   await verifyServedBuild();
   requireStableCommitIdentity(provenance.commitIdentity);
+  requireStableReferenceHostEnvironment(host, collectHostEnvironment());
   const workerAdapters = [
-    ...coldRuns.map(
-      (entry) =>
-        (entry.workerDeviceAdapter as { adapter: { backend: string; deviceType: string; name: string } }).adapter,
-    ),
-    (samples.workerDeviceAdapter as { evidence: { adapter: { backend: string; deviceType: string; name: string } } })
-      .evidence.adapter,
+    ...coldRuns.map((entry) => (entry.workerDeviceAdapter as { adapter: WorkerAdapterIdentity }).adapter),
+    (samples.workerDeviceAdapter as { evidence: { adapter: WorkerAdapterIdentity } }).evidence.adapter,
   ];
   const decisionEligibility = assessDecisionEligibility({
+    browserChannel: WEBGPU_CHROMIUM_CHANNEL,
+    browserLaunchArgs: browserLaunch.args,
+    browserVersions: [...coldRuns.map((entry) => entry.browserVersion), browserVersion],
     grade: provenance.grade,
-    host: collectHostEnvironment(),
+    host,
     pageAdapterHintArchitecture: samples.adapterInfo?.architecture ?? null,
+    referenceHost,
+    requiredBrowserVersionSamples: COLD_PROCESS_RUNS + 1,
+    requiredWorkerAdapterSamples: COLD_PROCESS_RUNS + 1,
     workerAdapters,
   });
 
@@ -800,6 +820,7 @@ test("records retained Worker latency without making CI hardware an adoption ora
   const warmFrame = summarizeTiming(samples.warmFrameMs, 300);
   const scrubAck = summarizeTiming(samples.scrubAckMs, 300);
   const report = {
+    benchmarkRunId,
     budgets: {
       coldClientImportToSceneReady: { limitMs: 1_000, met: coldClientImportToSceneReady.p95Ms <= 1_000 },
       scrubAck: { limitMs: 50, met: scrubAck.p95Ms <= 50 },
@@ -810,7 +831,7 @@ test("records retained Worker latency without making CI hardware an adoption ora
     evidenceLevel: decisionEligibility.eligible ? "decision-candidate" : "exploratory",
     provenance,
     provenanceStableThroughRun: true,
-    contracts: reportContracts("poietra.engine-webgpu-benchmark", 2),
+    contracts: reportContracts(ENGINE_WEBGPU_BENCHMARK_REPORT_SCHEMA, ENGINE_WEBGPU_BENCHMARK_REPORT_VERSION),
     configuration: {
       coldProcessRuns: COLD_PROCESS_RUNS,
       lane: "production-build-static-server",
@@ -823,9 +844,11 @@ test("records retained Worker latency without making CI hardware an adoption ora
     coldRuns,
     environment: {
       ...samples.environment,
-      browserLaunch: { args: [...WEBGPU_CHROMIUM_LAUNCH_ARGS], channel: WEBGPU_CHROMIUM_CHANNEL },
-      host: collectHostEnvironment(),
+      browserLaunch: { channel: browserLaunch.channel, configuredArgs: browserLaunch.args },
+      browserVersion,
+      host,
       pageAdapterHint: samples.adapterInfo,
+      referenceHostProfile: referenceHost.evidence,
       wasm,
       workerDeviceAdapter: samples.workerDeviceAdapter,
     },
@@ -840,8 +863,8 @@ test("records retained Worker latency without making CI hardware an adoption ora
       "Percentiles are nearest-rank values recomputed from the attached raw samples.",
       "Budget booleans describe this recorded host only and are not CI pass/fail assertions; decisionEligibility states whether this run may count as decision evidence.",
     ],
-    schema: "poietra.engine-webgpu-benchmark",
-    version: 2,
+    schema: ENGINE_WEBGPU_BENCHMARK_REPORT_SCHEMA,
+    version: ENGINE_WEBGPU_BENCHMARK_REPORT_VERSION,
   } as const;
   const encoded = `${JSON.stringify(report, null, 2)}\n`;
   const reportPath = testInfo.outputPath("poietra-engine-webgpu-benchmark.json");

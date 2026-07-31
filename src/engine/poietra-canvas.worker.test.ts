@@ -1323,7 +1323,7 @@ describe("Poietra canvas WASM binding handshake", () => {
     ).rejects.toThrow(/PoietraCanvasEngineV1/i);
   });
 
-  it("requires an exact telemetry version-3 handshake for any telemetry surface", async () => {
+  it("requires an exact telemetry version-4 handshake for any telemetry surface", async () => {
     class TelemetryEngine extends Engine {
       adapterEvidence() {
         return new Uint8Array();
@@ -1337,20 +1337,20 @@ describe("Poietra canvas WASM binding handshake", () => {
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
         poietraCanvasAbiVersion: () => 4,
-        poietraCanvasTelemetryAbiVersion: () => 3,
+        poietraCanvasTelemetryAbiVersion: () => 4,
         PoietraCanvasEngineV1: TelemetryEngine,
       }),
     ).resolves.toBe(TelemetryEngine);
 
-    // A foreign telemetry version fails closed even with complete methods.
+    // The immediately preceding telemetry ABI fails closed even with complete methods.
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
         poietraCanvasAbiVersion: () => 4,
-        poietraCanvasTelemetryAbiVersion: () => 1,
+        poietraCanvasTelemetryAbiVersion: () => 3,
         PoietraCanvasEngineV1: TelemetryEngine,
       }),
-    ).rejects.toThrow(/telemetry ABI version 3/i);
+    ).rejects.toThrow(/telemetry ABI version 4/i);
 
     // Telemetry methods without the version export are never trusted.
     await expect(
@@ -1359,7 +1359,7 @@ describe("Poietra canvas WASM binding handshake", () => {
         poietraCanvasAbiVersion: () => 4,
         PoietraCanvasEngineV1: TelemetryEngine,
       }),
-    ).rejects.toThrow(/telemetry ABI version 3/i);
+    ).rejects.toThrow(/telemetry ABI version 4/i);
 
     // A version export without the complete method pair is inconsistent.
     class PartialTelemetryEngine extends Engine {
@@ -1371,10 +1371,10 @@ describe("Poietra canvas WASM binding handshake", () => {
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
         poietraCanvasAbiVersion: () => 4,
-        poietraCanvasTelemetryAbiVersion: () => 3,
+        poietraCanvasTelemetryAbiVersion: () => 4,
         PoietraCanvasEngineV1: PartialTelemetryEngine,
       }),
-    ).rejects.toThrow(/telemetry ABI version 3/i);
+    ).rejects.toThrow(/telemetry ABI version 4/i);
 
     // A telemetry-free module stays valid and simply reports unavailable.
     await expect(

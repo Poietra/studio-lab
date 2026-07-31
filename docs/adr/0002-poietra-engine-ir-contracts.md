@@ -415,9 +415,12 @@ separate follow-up and is not claimed by this boundary alone.
 ## Fixed experiment protocol and adoption budget
 
 Every result records commit, contract version, fixture ID, browser build, OS/kernel,
-CPU, GPU/adapter, driver, power mode, viewport, warm-up count, and sample count.
-Correctness runs use the Playwright 1.61.1 Chromium revision pinned by this
-repository. The first performance reference host is:
+CPU, GPU/adapter, driver, AC state, active power plan, user-configured AC power
+mode, viewport, warm-up count, and sample count. Correctness runs use the
+Playwright 1.61.1 Chromium revision
+pinned by this repository. Decision-grade performance runs use installed native
+Edge and its production-default D3D12 path on the checked-in, separately hashed
+reference profile:
 
 The checked-in TypeScript harness enforces at least 30 warm-up and 300 measured
 frames, records every evaluator sample, uses nearest-rank p50/p95, and hashes the
@@ -426,13 +429,52 @@ canonical sampled RenderPackets for reproducibility. Its metric is explicitly
 memory, transfer, and bundle measurements remain separate reports rather than
 being mislabeled as part of that number.
 
-- Linux 6.6 WSL2, x86-64;
-- Intel Core Ultra 7 255H, 16 logical CPUs, 32 GiB RAM;
-- NVIDIA RTX PRO 500 Blackwell Laptop GPU, 6 GiB, driver 595.71.
+- Windows 11 Home build 26200, native Edge 150.0.4078.105;
+- Intel Core Ultra 7 255H, 16 logical CPUs, 64 GiB RAM;
+- NVIDIA RTX PRO 500 Blackwell Laptop GPU selected for WebGPU, driver
+  32.0.15.9571 (NVIDIA 595.71), with the complete Intel/NVIDIA controller
+  inventory pinned;
+- AC connected, Windows Balanced active power-plan GUID
+  `381b4222-f694-41f0-9685-ff5bb260df2e`, and user-configured AC power-mode GUID
+  `ded574b5-45a0-4f42-8737-46345c09c238` (Best performance).
 
-A later host may be added, but results from different hosts are never combined.
-WebGPU-disabled and initialization/device-loss runs are correctness/fallback tests,
-not GPU performance samples.
+The authoritative values and Worker adapter identity live in the v2 profile
+`fixtures/engine-benchmark-v1/windows-d3d12-reference-host.json`; the sibling
+`.sha256` file detects byte drift and forces the profile and its pinned digest
+to change together. Code review of both files remains the trust decision.
+Linux/WSL SwiftShader runs remain useful exploratory regressions but cannot be
+decision evidence. The main browser and all 20 independent cold processes must
+report the same non-software Worker adapter identity. On wgpu 30's browser
+backend, that identity comes from the same created `GPUDevice`: the raw
+privacy-safe vendor and architecture strings, fallback classification, and
+subgroup bounds. Production-default Edge redacts description, device, and
+driver details. Native PCI vendor/device IDs and driver strings therefore
+remain a separate OS-owned controller identity, while their Worker fields stay
+canonical zero/empty; synthetic native-looking values invalidate the report.
+The checked-in profile binds those two evidence classes explicitly instead of
+claiming the browser exposed native PCI identity.
+
+The eligibility/provenance envelope and canonical-run nonce are breaking
+report-contract changes. Their exact dispatch pairs are
+`poietra.engine-webgpu-benchmark` v4,
+`poietra.engine-webgpu-stress-benchmark` v5, and
+`poietra.engine-webgpu-stage-telemetry` v4. Producers and readers must reject
+the respective prior versions instead of interpreting the added fields under
+their old contracts. The Windows probe ignores caller `PATH`, `SystemRoot`,
+`ProgramFiles`, and `PSModulePath`: it uses fixed Windows system paths and HKLM
+machine installation data, and reads the user-configured AC power mode through
+`PowerGetUserConfiguredACPowerMode`. Windows may override that configured vote,
+so this is not evidence of the dynamically effective power mode. These checks
+protect the harness from ordinary environment spoofing, not from an administrator
+replacing registry or operating-system state; such a host is outside the
+reference-evidence threat model.
+
+Checked-in performance evidence is a rolling single current set, bound to its
+profile and commit directory names. A future profile or report-contract
+replacement replaces that set rather than making the current reader reinterpret
+obsolete evidence. Results from different hosts are never combined. WebGPU-disabled
+and initialization/device-loss runs are correctness/fallback tests, not GPU
+performance samples.
 
 The checked-in golden suite will contain 10–20 stable fixture IDs and at least:
 
@@ -507,14 +549,16 @@ Meeting a timing budget cannot override correctness, asset integrity, visual par
 or fallback failure. The experiment produces a Go, conditional Go, or No-Go update
 to this ADR before production migration.
 
-## Interim Go/No-Go decision (updated 2026-07-30)
+## Interim Go/No-Go decision (updated 2026-07-31)
 
-**Conditional Go for the explicit, verified static-Scene integration experiment;
-No-Go for calling it visible-preview adoption evidence, making it Studio's default
-renderer, or exposing Python execution to untrusted SaaS traffic.** This decision
-was first made against the solid-fill slice through commit `b24e41c`; the evidence
-table is kept current with bounded follow-up slices. It does not claim that the full
-v1 capability set or the production migration criteria are complete.
+**Go for the named-host D3D12 evidence lane; Conditional Go for the explicit
+WebGPU preview; No-Go for making it Studio's default renderer or exposing Python
+execution to untrusted SaaS traffic.** The checked-in physical run meets every
+defined latency and retained-memory budget. The 1,000 animated-cubic workload is
+still a visible limit: acknowledgement p95 remains within 33.3 ms, but paced
+presentation reaches 40.42 fps rather than 60 fps. The evidence therefore supports
+continued opt-in adoption without claiming that all production migration criteria
+are complete.
 
 The following evidence is reproducible in this repository:
 
@@ -526,35 +570,33 @@ The following evidence is reproducible in this repository:
 | browser WASM/WebGPU output | met for the shared fill/Line fixture | Chromium 146 Worker readback proves the same fill and round-capped Line sample points through retained Scene evaluation |
 | retained browser boundary | met | the Worker transfers one Scene snapshot and canvas, retains both in Rust, and returns only bounded presentation correlation per frame |
 | whole-Scene failure policy | met at contract, renderer, Worker, and client boundaries | unsupported draws, malformed responses, stale correlation, surface/device failures, and protocol divergence never produce a partial success |
-| generated payload | mechanically enforced; clean evidence pending | the WASM smoke gate rejects compressed payloads above the 3 MiB budget, while the canonical benchmark records the exact served release-WASM byte and gzip sizes; adoption evidence must come from a clean-commit report rather than a mutable working-tree measurement |
+| generated payload | met on the named host | the clean-commit report binds the served release WASM at 1,631,912 raw bytes / 552,354 gzip bytes with SHA-256 `2d917354...a640`, below the 3 MiB compressed budget |
 | initial shared snapshot | met for the fixture | 2,414 encoded bytes, below the 5 MiB budget |
-| fixture breadth and visual parity | partial | the catalog fixes 15 workload IDs; the original opacity/stroke fixture plus generic-fill and generic-stroke/composition fixtures execute through native WGPU and Chromium WASM/WebGPU with shared interior-pixel references. The corpus-driven full-RGBA lane now covers `dynamic-affine-camera/a-first`, an alpha-edge PNG under entity scale plus animated camera pan/zoom, a Studio-created nested radical fraction with 10 MathTex subpaths, generic stroke topology with trim/morph/motion, and five server-sealed profile-V5 samples across a real `E = mc^2` → Maxwell → `E = mc^2` MathTex morph. The V5 lane proves restored endpoint identity and distinct transition midpoints, but its aggregate-path interpolation is not evidence of exact Manim/Cairo animation parity. The PNG slice also gates native and browser output against an independent analytic reference. Broader corpus and named real-GPU evidence remain #78. |
+| fixture breadth and visual parity | partial | the catalog fixes 15 workload IDs; the original opacity/stroke fixture plus generic-fill and generic-stroke/composition fixtures execute through native WGPU and Chromium WASM/WebGPU with shared interior-pixel references. The corpus-driven full-RGBA lane now covers `dynamic-affine-camera/a-first`, an alpha-edge PNG under entity scale plus animated camera pan/zoom, a Studio-created nested radical fraction with 10 MathTex subpaths, generic stroke topology with trim/morph/motion, and five server-sealed profile-V5 samples across a real `E = mc^2` → Maxwell → `E = mc^2` MathTex morph. The V5 lane proves restored endpoint identity and distinct transition midpoints, but its aggregate-path interpolation is not evidence of exact Manim/Cairo animation parity. The PNG slice also gates native and browser output against an independent analytic reference. Physical performance evidence is now checked in; broader independent Manim/Cairo visual parity remains #78. |
 | renderer capability coverage | partial | non-convex closed cubic fills, multiple subpaths, holes, self-intersections, nonzero/even-odd rules, general cubic strokes with v1 caps/joins/miter limits, ordered fill-then-stroke composition, transforms/camera/animation, and verified PNG images work; the shared stroke fixture also samples nonzero trim, morph, and motion. Open fill paths, antialiasing, and clipping remain truthful fallbacks. |
 | Studio preview integration | partial for the opt-in static profile | `?previewRenderer=server` selects a real project source and Scene, installs its verified server snapshot once, and accepts only exactly correlated retained frame acknowledgements while the semantic editor stays mounted; exact GPU texture readback is covered, but a visible browser-compositor golden on a named real-GPU host remains #78 evidence and verified source-to-runtime hit geometry remains #91 |
 | incremental edit transfer | partial | a Studio-only, 256 KiB, stale-revision-safe atomic delta contract is verified in TypeScript; Worker/WASM still receives complete replacement snapshots |
 | fast-manim bridge | met for the bounded static profile; production execution blocked | the real exporter emits complete camera, paint-order, appearance, and geometry evidence for a filled Circle, filled Rectangle, and canonical stroked Line; Studio now hands canonical immutable request bytes only to the explicit [sandbox backend boundary](../fast-manim-sandbox-backend.md), rechecks backend attestation and result correlation, then verifies and seals the result. Runner-owned status/job/close bounds quarantine adapters that miss lifecycle promises, omitted deployment defaults to production, and the local-process adapter remains explicit dev/test-only. The profile still fixes duration at one second, while variable runtime timing remains #75 and Poietra/fast-manim#7 |
-| frame, scrub, and cold-start latency | instrumented, decision evidence not met | an opt-in browser harness records 20 cold starts and warm/scrub acknowledgement p95, but no reference-host report for evaluate-plus-submit or input-to-present is checked in |
-| retained-boundary memory budget | instrumented across six canonical workloads; decision evidence not met | telemetry reports `WASM linear + logical GPU resident` current/lifetime high-water marks at the post-fence response boundary. The stage lane measures 100/1,000 shape, animated-cubic, and verified-PNG entities for 300 frames each and proves warm retained texture/sampler reuse for the PNG cases; transient image buffer allocation and browser/driver memory remain excluded, and no named reference-host report satisfying the 256 MiB gate is checked in |
+| frame, scrub, and cold-start latency | met on the named host | native Edge/D3D12 on the pinned NVIDIA adapter records warm acknowledgement p95 0.7 ms, scrub p95 0.3 ms, and 20-process cold scene-ready p95 397.6 ms. Five stress workloads sustain about 60 fps; 1,000 animated cubics sustain 40.42 fps while remaining within the 33.3 ms acknowledgement budget. |
+| retained-boundary memory budget | met across six canonical workloads | the largest post-fence `WASM linear + logical GPU resident` high-water mark is 11,534,336 bytes for 1,000 animated cubics, below 256 MiB. Transient image allocation and browser/driver RSS remain explicitly excluded. |
 
 The correctness run used Rust 1.92.0, Node 24.13.0, Playwright 1.61.1,
 Chromium 146.0.7678.0, and Linux 6.6.87.2 WSL2 on the reference CPU. It passed
 all Rust workspace tests, both separately enabled native GPU proofs, web unit tests,
 wasm32 check and Clippy, release WASM smoke, and the Chromium WebGPU pixel proof.
-These are correctness results; they are not substituted for the missing
-decision-grade performance evidence.
+Those Linux results remain correctness evidence rather than performance evidence.
+The separate checked-in Windows run records Edge 150.0.4078.105 on D3D12/NVIDIA
+Blackwell, 20 fresh browser processes, six stress and stage workloads, AC power,
+the exact driver/profile/commit/WASM identities, and no eligibility exceptions.
 
-Production migration remains blocked until independent follow-up work provides:
+Production-default migration remains blocked until independent follow-up work:
 
-1. executable broader-stroke, image, transform, camera, animation, and stress
-   fixtures with native/browser visual-diff reports (#72–#78);
-2. checked-in reference-host reports for every latency, memory, transfer, and cold
-   start budget, including retained preparation/buffers and removal of normal-path
-   serialized GPU error-scope waits (#69–#71, #78, #86);
-3. an incremental Scene transaction/delta protocol with atomic replacement and
-   stale-revision tests (#67); and
-4. a production fail-closed OS sandbox for arbitrary Python execution, with
-   immutable request inputs, network/credential/host isolation, hard resource
-   limits, descendant reaping, and multi-tenant adversarial evidence (#80–#85).
+1. expands independent Manim/Cairo visual parity and resolves or explicitly
+   accepts the 1,000 animated-cubic cadence limit (#78);
+2. promotes the current immutable snapshot/render artifacts and passes the
+   operator-owned rootless production conformance gates (#186, #227, #280); and
+3. completes the production rollout and multi-tenant adversarial evidence for
+   arbitrary Python execution (#80–#85).
 
 The Studio-side backend/job contract, runner-owned lifecycle bounds, production-
 safe deployment default, and default-off local adapter are defined by #81 and
@@ -562,10 +604,10 @@ documented in the sandbox runbook. They establish the fail-closed handoff but do
 not satisfy the OS isolation, hard-limit, multi-tenant, or rollout evidence
 required from #82–#85.
 
-The previously listed `PreviewRenderer` host and explicit server-side fast-manim
-snapshot exporter are implemented for the narrow static profile. The host's visible
-real-GPU compositor evidence remains open, and these pieces do not satisfy the
-remaining capability, visual-parity, performance, or sandbox gates.
+The `PreviewRenderer` host and explicit server-side fast-manim snapshot exporter
+now cover the bounded V1–V6 profiles. The host's broader independent compositor
+parity and production operator evidence remain open; the physical performance run
+does not satisfy those separate gates.
 
 Until the remaining gates are satisfied, WebGPU remains an explicit experimental
 client preview. The semantic preview remains the default fallback, and server-side
