@@ -10,7 +10,7 @@ use poietra_scene_ir::{
     EngineFrameV1, KeyframeV1, MotionPathParameterizationV1, PathTrimParameterizationV1,
     RenderCameraKindV1, RenderCameraV1, RenderCapabilityV1, RenderDrawV1, RenderEmptyReasonV1,
     RenderPacketSchemaV1, RenderPacketV1, SceneAppearanceV1, SceneCameraViewV1, SceneEntityV1,
-    SceneGeometryV1, SceneIrBundleV1, SceneIrV1, ViewportV1,
+    SceneGeometryV1, SceneIrBundleV1, SceneIrV1, ViewportV1, affine_transform_is_singular_v1,
     validate_render_packet_for_validated_scene_v1, validate_scene_ir_with_assets_v1,
 };
 
@@ -203,10 +203,6 @@ fn interpolate_number(left: &f64, right: &f64, progress: f64) -> Result<f64, Geo
     Ok(left + (right - left) * progress)
 }
 
-fn affine_transform_is_singular(transform: &AffineTransformV1) -> bool {
-    transform.m11 * transform.m22 - transform.m12 * transform.m21 == 0.0
-}
-
 #[allow(
     clippy::unnecessary_wraps,
     reason = "shares the generic fallible keyframe interpolation callback"
@@ -268,7 +264,13 @@ fn sample_affine_transform(
     // V1 evidence is deliberately limited to the entity's own sampled channel
     // before motion/world composition. Ancestor or motion-induced singularity,
     // and any composition that loses exact singularity, remain fail-closed.
-    let singular = active && affine_transform_is_singular(&transform);
+    //
+    // The predicate is the one `poietra-scene-ir` validates against, so this
+    // production path and the reference evaluator cannot classify a sample
+    // differently. It is the renderer's threshold rather than an exact zero:
+    // `stretch(1e-50, 1)` survives an f64 determinant but collapses in f32
+    // preparation, which would fail the whole frame instead of this draw.
+    let singular = active && affine_transform_is_singular_v1(&transform);
     Ok((transform, singular))
 }
 
@@ -988,6 +990,70 @@ mod tests {
         assert!(matches!(reflected.draws[0], RenderDrawV1::Path { .. }));
         assert_eq!(singular.draws, singular_repeat.draws);
         assert_eq!(identity.draws, identity_repeat.draws);
+    }
+
+    #[test]
+    fn near_singular_affine_sample_is_lowered_before_f32_preparation() {
+        // `stretch(1e-50, 1)` has a non-zero f64 determinant, so an exact
+        // `== 0.0` predicate emits a Path draw here and f32 preparation then
+        // collapses it and fails the complete frame. The shared threshold
+        // classifies it as singular on this production path, exactly as it
+        // does in the reference evaluator and in packet validation.
+        let (assets, mut scene) = fixture();
+        let mut sibling = scene.entities[0].clone();
+        sibling.id = "sibling".to_owned();
+        sibling.scene_order = 1;
+        sibling.source_z_index = 1.0;
+        scene.entities.push(sibling);
+        scene
+            .animation_channels
+            .push(AnimationChannelV1::AffineTransform {
+                entity_id: "circle".to_owned(),
+                id: "collapse:circle".to_owned(),
+                keyframes: vec![
+                    KeyframeV1 {
+                        at: 0.0,
+                        easing_to_next: Some(poietra_scene_ir::EasingV1::Linear {}),
+                        value: AffineTransformV1::identity(),
+                    },
+                    KeyframeV1 {
+                        at: 1.0,
+                        easing_to_next: None,
+                        value: AffineTransformV1 {
+                            m11: 1e-50,
+                            ..AffineTransformV1::identity()
+                        },
+                    },
+                ],
+                provenance_id: "fixture".to_owned(),
+            });
+        scene.required_capabilities = vec![
+            SceneCapabilityV1::AffineTransformAnimation,
+            SceneCapabilityV1::OpacityAnimation,
+            SceneCapabilityV1::ShapePrimitives,
+        ];
+        let session = EngineSessionV1::new(SceneIrBundleV1 { assets, scene }).unwrap();
+        let packet = session
+            .sample_render_packet(SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id: "packet:near-singular",
+                sample_time: 1.0,
+                viewport: ViewportV1 {
+                    height_px: 900,
+                    width_px: 1600,
+                },
+            })
+            .unwrap();
+
+        assert!(matches!(
+            packet.draws[0],
+            RenderDrawV1::Empty {
+                reason: RenderEmptyReasonV1::SingularAffineSample,
+                ..
+            }
+        ));
+        // The collapse is draw-local: the sibling still renders.
+        assert!(matches!(packet.draws[1], RenderDrawV1::Path { .. }));
     }
 
     #[test]

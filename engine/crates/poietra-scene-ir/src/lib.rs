@@ -26,8 +26,9 @@ pub use model::*;
 pub use validate::{
     MAX_ASSETS_V1, MAX_CHANNELS_V1, MAX_COORDINATE_V1, MAX_DRAWS_V1, MAX_ENCODED_ASSET_BYTES_V1,
     MAX_ENTITIES_V1, MAX_IMAGE_PIXELS_V1, MAX_KEYFRAMES_V1, MAX_TOTAL_IMAGE_PIXELS_V1,
-    MAX_TOTAL_PATH_SEGMENTS_V1, MAX_VALIDATION_ISSUES_V1, MAX_VIEWPORT_PIXELS_V1, ValidationErrors,
-    ValidationIssue, validate_asset_manifest_v1, validate_cubic_path_v1, validate_render_packet_v1,
+    MAX_TOTAL_PATH_SEGMENTS_V1, MAX_VALIDATION_ISSUES_V1, MAX_VIEWPORT_PIXELS_V1,
+    MIN_AFFINE_DETERMINANT_V1, ValidationErrors, ValidationIssue, affine_transform_is_singular_v1,
+    validate_asset_manifest_v1, validate_cubic_path_v1, validate_render_packet_v1,
     validate_scene_ir_v1,
 };
 

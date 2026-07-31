@@ -265,6 +265,39 @@ partial drawing are not truthful fallbacks.
 ## Precision and resource limits
 
 Scene evaluation, path geometry, camera math, transforms, and time use finite f64.
+
+One f64 value must be classified against the renderer's narrower domain before
+preparation: the determinant of an affine sample. The production snapshot
+profile seals every finite, bounded, non-zero matrix, so a direct producer
+value such as `stretch(1e-50, 1)` arrives verified; its geometry then collapses
+in f32 and fails the *complete* frame. An affine sample is therefore treated as
+singular when the determinant of its **f32-rounded** entries has magnitude below
+`f32::MIN_POSITIVE` (1.1754943508222875e-38), and its active samples lower to
+the draw-local `singular-affine-sample` empty reason. Sibling draws are
+unaffected; an exactly singular sample, such as a reflection's midpoint, is the
+`determinant == 0` case and is unchanged; and an ordinary small-but-renderable
+scale stays a path draw.
+
+Entries are rounded before multiplying because an entry can underflow on its
+own — `m11 = 1e-50` with `m22 = 1e30` has an f64 determinant of `1e-20`, but
+`m11` is zero once rounded. The threshold is stable across WASM and native
+because it is a fixed IEEE-754 binary32 quantity rather than a tuned tolerance,
+and the predicate reaches it only through operations IEEE-754 pins exactly in
+both targets: round-to-nearest-even f64 to f32 conversion (`as f32` in Rust,
+`Math.fround` in TypeScript) and one f64 multiply-subtract. No platform math
+library is involved. Both implementations spell the same literal:
+`MIN_AFFINE_DETERMINANT_V1` in `poietra-scene-ir` and `MIN_AFFINE_DETERMINANT`
+in `src/engine/primitives.ts`.
+
+The rendering path and the reference evaluator classify a sample with the same
+predicate, not with two copies of it: `poietra-eval` — the crate the Canvas
+worker loads through `poietra-wasm` — calls
+`poietra_scene_ir::affine_transform_is_singular_v1`, the function packet
+validation itself uses. The shared golden fixture set carries a near-singular
+case (`fixtures/engine-v1/shared-near-singular-affine.json`), which both the
+Rust and the TypeScript harness run, so the two evaluators cannot drift apart
+on this rule without a failing test.
+
 GPU preparation has one operation order:
 
 1. compose parent/local affine transforms and transform local geometry in f64;

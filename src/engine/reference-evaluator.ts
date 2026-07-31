@@ -11,7 +11,7 @@ import {
   trimCubicPathUniformParameterV1,
   trimCubicPathV1,
 } from "./geometry";
-import type { CubicPathV1, EngineAffineTransformV1 } from "./primitives";
+import { type CubicPathV1, type EngineAffineTransformV1, isSingularAffineTransform } from "./primitives";
 import { type SceneIrV1, sceneIrSourceRevisionHash } from "./scene-ir";
 
 type KeyframeV1<T> = Readonly<{
@@ -117,8 +117,13 @@ function sampleLocalEntity(
   let transform = transformSample?.value ?? entity.transform;
   // V1 evidence is direct-channel only and is sampled before motion/world
   // composition. Ancestor/motion-induced singularity remains fail-closed.
-  const singularAffineSample =
-    transformSample?.active === true && transform.m11 * transform.m22 - transform.m12 * transform.m21 === 0;
+  //
+  // "Singular" is the renderer's threshold, not an exact zero: the production
+  // snapshot profile seals every finite, bounded, non-zero matrix, so a sample
+  // such as `stretch(1e-50, 1)` reaches f32 preparation and collapses there,
+  // failing the complete frame. Lowering it to this draw-local empty reason
+  // keeps sibling draws visible instead.
+  const singularAffineSample = transformSample?.active === true && isSingularAffineTransform(transform);
   const motionPathChannel = entityChannel(channels, entity.id, "motion-path");
   if (motionPathChannel) {
     const motion = sampleKeyframes(0, motionPathChannel.keyframes, time, interpolateNumber);

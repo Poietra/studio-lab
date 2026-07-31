@@ -27,8 +27,15 @@ type SharedGoldenFixture = Readonly<{
   scene: unknown;
 }>;
 
-async function loadFixture(): Promise<SharedGoldenFixture> {
-  const url = new URL("../../fixtures/engine-v1/shared-circle-opacity.json", import.meta.url);
+/**
+ * Every fixture both implementations must agree on. A shared case is the only
+ * thing that fails when the two evaluators drift apart, so a semantic rule
+ * that exists in one of them belongs here.
+ */
+const SHARED_FIXTURE_FILES = ["shared-circle-opacity.json", "shared-near-singular-affine.json"] as const;
+
+async function loadFixture(fileName: string): Promise<SharedGoldenFixture> {
+  const url = new URL(`../../fixtures/engine-v1/${fileName}`, import.meta.url);
   return JSON.parse(await readFile(url, "utf8")) as SharedGoldenFixture;
 }
 
@@ -41,9 +48,9 @@ function expectClose(actual: number, expected: number, tolerance: number) {
   expect(Math.abs(actual - expected)).toBeLessThanOrEqual(tolerance * Math.max(1, Math.abs(expected)));
 }
 
-describe("shared Poietra Engine v1 golden fixture", () => {
-  it("parses and evaluates to the shared semantic expectation", async () => {
-    const fixture = await loadFixture();
+describe("shared Poietra Engine v1 golden fixtures", () => {
+  it.each(SHARED_FIXTURE_FILES)("parses and evaluates %s to the shared semantic expectation", async (fileName) => {
+    const fixture = await loadFixture(fileName);
     const assets = assetManifestV1Schema.parse(fixture.assets);
     const scene = sceneIrV1Schema.parse(fixture.scene);
     const result = await compileEngineFrameV1({ assets, scene, ...fixture.sample });
