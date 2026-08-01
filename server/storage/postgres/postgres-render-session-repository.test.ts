@@ -18,6 +18,7 @@ import { WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1 } from "./postgres-workspace-sourc
 import { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-usage-schema";
 
 const OBJECT_GENERATION = "123e4567-e89b-42d3-a456-426614174000";
+const FRESH_OBJECT_GENERATION = "223e4567-e89b-42d3-a456-426614174001";
 
 function renderSessionInput(sceneName: string) {
   const originalDigest = "1".repeat(64);
@@ -272,6 +273,143 @@ describe("Postgres render-session transitions", () => {
       }),
     ).rejects.toMatchObject({ status: 402 });
     expect(statements.some((statement) => statement.includes("INSERT INTO public.render_sessions"))).toBe(false);
+  });
+
+  it("accepts a patched blob whose digest already has a different canonical generation", async () => {
+    const input = renderSessionInput("MainScene");
+    const digest = input.patchedBlob.digest;
+    const canonical = {
+      byteSize: input.patchedBlob.byteSize,
+      digest,
+      etag: '"canonical"',
+      objectGeneration: OBJECT_GENERATION,
+      objectKey: immutableSourceBlobObjectKeyV1("tenant-a", digest, OBJECT_GENERATION),
+    };
+    const candidate = {
+      byteSize: input.patchedBlob.byteSize,
+      digest,
+      etag: '"fresh"',
+      objectGeneration: FRESH_OBJECT_GENERATION,
+      objectKey: immutableSourceBlobObjectKeyV1("tenant-a", digest, FRESH_OBJECT_GENERATION),
+    };
+    const createdAt = new Date("2026-08-01T00:00:00.000Z");
+    const statements: string[] = [];
+    const query = vi.fn(async (text: string, values: readonly unknown[] = []) => {
+      statements.push(text);
+      if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK" || text.startsWith("SELECT set_config(")) {
+        return { rowCount: null, rows: [] };
+      }
+      if (text.includes("FROM public.workspace_source_heads")) {
+        return {
+          rowCount: 1,
+          rows: [
+            {
+              byte_size: input.originalHead.blob.byteSize,
+              digest: input.originalHead.blob.digest,
+              etag: input.originalHead.blob.etag,
+              generation: "1",
+              object_generation: null,
+              object_key: input.originalHead.blob.objectKey,
+              version_id: input.originalHead.blob.versionId,
+            },
+          ],
+        };
+      }
+      if (text.includes("FROM public.project_png_heads")) return { rowCount: 0, rows: [] };
+      if (text.includes("FROM public.billing_accounts account")) {
+        return {
+          rowCount: 1,
+          rows: [
+            {
+              access_expired: false,
+              access_state: "active",
+              access_until: new Date("2026-08-31T00:00:00.000Z"),
+              created_at: createdAt,
+              period_end: new Date("2026-09-01T00:00:00.000Z"),
+              period_inactive: false,
+              period_start: createdAt,
+              plan_key: "starter",
+              render_enabled: true,
+              render_job_limit: 64,
+              snapshot_id: "00000000-0000-4000-8000-000000000002",
+              source_generation: "1",
+              tenant_id: "tenant-a",
+              usage_period_key: "2026-08",
+            },
+          ],
+        };
+      }
+      if (text.includes("FROM public.usage_reservations") && text.includes("operation_id")) {
+        return {
+          rowCount: 1,
+          rows: [
+            {
+              created_at: createdAt,
+              expired: false,
+              expires_at: new Date(createdAt.getTime() + input.executionTimeoutMs),
+              operation_id: input.id,
+              operation_kind: "render",
+              settled_at: null,
+              snapshot_id: "00000000-0000-4000-8000-000000000002",
+              source_generation: "1",
+              state: "reserved",
+              tenant_id: "tenant-a",
+              updated_at: createdAt,
+              usage_period_key: "2026-08",
+              version: "1",
+            },
+          ],
+        };
+      }
+      if (text.includes("pg_advisory_xact_lock")) return { rowCount: 1, rows: [{}] };
+      if (text.startsWith("SELECT 1 FROM public.source_blob_deletions")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("INSERT INTO public.source_blob_objects")) {
+        expect(values).toEqual([
+          "tenant-a",
+          digest,
+          candidate.objectKey,
+          null,
+          FRESH_OBJECT_GENERATION,
+          candidate.etag,
+          candidate.byteSize,
+        ]);
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.includes("FROM public.source_blob_objects") && text.includes("FOR UPDATE")) {
+        return {
+          rowCount: 1,
+          rows: [
+            {
+              byte_size: canonical.byteSize,
+              digest,
+              etag: canonical.etag,
+              object_generation: OBJECT_GENERATION,
+              object_key: canonical.objectKey,
+              version_id: null,
+            },
+          ],
+        };
+      }
+      if (text.startsWith("UPDATE public.source_blob_objects")) return { rowCount: 1, rows: [] };
+      if (text.startsWith("INSERT INTO public.render_sessions")) throw new Error("render-insert-sentinel");
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const pool = {
+      connect: vi.fn(async () => ({ query, release: vi.fn() })),
+      options: {
+        connectionTimeoutMillis: 1_000,
+        options: WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1,
+        query_timeout: 1_000,
+        statement_timeout: 1_000,
+      },
+    } as unknown as Pool;
+    const repository = new PostgresRenderSessionRepositoryV1({ pool, statementTimeoutMs: 1_000 });
+
+    await expect(repository.createSession({ ...input, patchedBlob: candidate })).rejects.toThrow(
+      "render-insert-sentinel",
+    );
+    expect(statements.some((text) => text.startsWith("UPDATE public.source_blob_objects"))).toBe(true);
+    expect(statements.at(-1)).toBe("ROLLBACK");
   });
 
   it("rejects an immutable pin when the database still points at the legacy version", async () => {

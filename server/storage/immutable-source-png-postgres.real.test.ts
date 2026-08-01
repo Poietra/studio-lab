@@ -13,16 +13,20 @@ import { PostgresWorkspaceSourceRepositoryV1 } from "./postgres/postgres-workspa
 const DATABASE_URL = process.env.POIETRA_STORAGE_E2E_DATABASE_URL;
 const TENANT = "tenant-immutable-locator-e2e";
 const PROJECT = "project-immutable-locator-e2e";
+const REUSE_PROJECT = "project-immutable-locator-reuse-e2e";
 const SOURCE_PATH = "main.py";
 const GENERATION_A = "123e4567-e89b-42d3-a456-426614174000";
 const GENERATION_B = "223e4567-e89b-42d3-a456-426614174001";
 const GENERATION_C = "323e4567-e89b-42d3-a456-426614174002";
+const GENERATION_D = "423e4567-e89b-42d3-a456-426614174003";
+const GENERATION_E = "523e4567-e89b-42d3-a456-426614174004";
+const GENERATION_F = "623e4567-e89b-42d3-a456-426614174005";
 
-function sourceReceipt(digest: string, objectGeneration: string) {
+function sourceReceipt(digest: string, objectGeneration: string, etag = `"source-${digest[0]}"`) {
   return {
     byteSize: 128,
     digest,
-    etag: `"source-${digest[0]}"`,
+    etag,
     objectGeneration,
     objectKey: immutableSourceBlobObjectKeyV1(TENANT, digest, objectGeneration),
   } as const;
@@ -51,7 +55,10 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL immutable source and project PNG loca
       poolConfig: { connectionString: DATABASE_URL, max: 2 },
     });
     const original = sourceReceipt("1".repeat(64), GENERATION_A);
+    const originalProjectReuse = sourceReceipt("1".repeat(64), GENERATION_D, '"source-1-project-reuse"');
+    const originalCasReuse = sourceReceipt("1".repeat(64), GENERATION_E, '"source-1-cas-reuse"');
     const patched = sourceReceipt("2".repeat(64), GENERATION_B);
+    const patchedRenderReuse = sourceReceipt("2".repeat(64), GENERATION_F, '"source-2-render-reuse"');
     const orphanSource = sourceReceipt("3".repeat(64), GENERATION_C);
     const png = pngReceipt("4".repeat(64), GENERATION_A);
     const orphanPng = pngReceipt("5".repeat(64), GENERATION_B);
@@ -67,6 +74,24 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL immutable source and project PNG loca
       });
       const sourceHead = await sourceRepository.readSourceHead(TENANT, PROJECT, SOURCE_PATH);
       expect(sourceHead.blob).toEqual(original);
+
+      await sourceRepository.createManagedProject({
+        name: "Canonical locator reuse proof",
+        projectId: REUSE_PROJECT,
+        source: { blob: originalProjectReuse, path: SOURCE_PATH },
+        tenantId: TENANT,
+      });
+      const reusedProjectHead = await sourceRepository.readSourceHead(TENANT, REUSE_PROJECT, SOURCE_PATH);
+      expect(reusedProjectHead).toMatchObject({ blob: original, generation: 1n });
+      const reusedCasHead = await sourceRepository.compareAndSwapSource({
+        candidate: originalCasReuse,
+        expectedDigest: reusedProjectHead.blob.digest,
+        expectedGeneration: reusedProjectHead.generation,
+        projectId: REUSE_PROJECT,
+        sourcePath: SOURCE_PATH,
+        tenantId: TENANT,
+      });
+      expect(reusedCasHead).toMatchObject({ blob: original, generation: 2n });
 
       const pngHead = await pngRepository.compareAndSwapHead({
         candidate: png,
@@ -97,6 +122,53 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL immutable source and project PNG loca
         patched: { blob: patched },
         projectPng: pngHead,
       });
+
+      const reusedSession = await renderRepository.createSession({
+        commitCorrelationKey: "immutable-locator-reuse-e2e",
+        executionTimeoutMs: 30_000,
+        id: randomUUID(),
+        originalHead: sourceHead,
+        patch: { anchorLine: 1, anchorLines: [1], insertedCode: "self.wait(3)" },
+        patchedBlob: patchedRenderReuse,
+        programBatchId: "batch-immutable-locator-reuse-e2e",
+        programTransactionId: "transaction-immutable-locator-reuse-e2e",
+        renderRequestId: "request-immutable-locator-reuse-e2e",
+        sceneName: "MainScene",
+        tenantId: TENANT,
+      });
+      expect(reusedSession.original.blob).toEqual(original);
+      expect(reusedSession.patched.blob).toEqual(patched);
+      await expect(renderRepository.readSession(TENANT, reusedSession.id)).resolves.toMatchObject({
+        original: { blob: original },
+        patched: { blob: patched },
+      });
+
+      const canonicalObjects = await pool.query<{
+        digest: string;
+        etag: string;
+        object_generation: string;
+        object_key: string;
+      }>(
+        `SELECT digest, object_key, object_generation::text AS object_generation, etag
+           FROM public.source_blob_objects
+          WHERE tenant_id = $1 AND digest = ANY($2::text[])
+          ORDER BY digest`,
+        [TENANT, [original.digest, patched.digest]],
+      );
+      expect(canonicalObjects.rows).toEqual([
+        {
+          digest: original.digest,
+          etag: original.etag,
+          object_generation: original.objectGeneration,
+          object_key: original.objectKey,
+        },
+        {
+          digest: patched.digest,
+          etag: patched.etag,
+          object_generation: patched.objectGeneration,
+          object_key: patched.objectKey,
+        },
+      ]);
 
       await expect(sourceRepository.queueBlobDeletion(TENANT, orphanSource)).resolves.toMatchObject({
         blob: orphanSource,

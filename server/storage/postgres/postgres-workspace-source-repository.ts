@@ -234,7 +234,11 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
       [tenant, candidate.digest],
     );
     const row = existing.rows[0];
-    if (!row || row.object_key !== candidate.objectKey || row.byte_size !== candidate.byteSize) {
+    if (!row) {
+      throw new TypeError("The stored source blob metadata conflicts with its digest.");
+    }
+    const canonical = blobFromRow(row);
+    if (canonical.digest !== candidate.digest || canonical.byteSize !== candidate.byteSize) {
       throw new TypeError("The stored source blob metadata conflicts with its digest.");
     }
     if (row.orphaned_at !== null) {
@@ -247,7 +251,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
         [tenant, candidate.digest],
       );
     }
-    return blobFromRow(row);
+    return canonical;
   }
 
   async ready(signal?: AbortSignal) {

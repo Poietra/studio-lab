@@ -697,7 +697,11 @@ export class PostgresRenderSessionRepositoryV1
       [tenant, candidate.digest],
     );
     const row = existing.rows[0];
-    if (!row || row.object_key !== candidate.objectKey || row.byte_size !== candidate.byteSize) {
+    if (!row) {
+      throw new TypeError("The stored source blob metadata conflicts with its digest.");
+    }
+    const canonical = receiptFromBlobRow(tenant, row);
+    if (canonical.digest !== candidate.digest || canonical.byteSize !== candidate.byteSize) {
       throw new TypeError("The stored source blob metadata conflicts with its digest.");
     }
     await client.query(
@@ -706,7 +710,7 @@ export class PostgresRenderSessionRepositoryV1
         WHERE tenant_id = $1 AND digest = $2 AND orphaned_at IS NOT NULL`,
       [tenant, candidate.digest],
     );
-    return receiptFromBlobRow(tenant, row);
+    return canonical;
   }
 
   async #selectSession(client: PoolClient, tenant: string, session: string, lock = false) {
