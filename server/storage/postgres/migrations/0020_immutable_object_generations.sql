@@ -1,3 +1,8 @@
+CREATE DOMAIN public.immutable_object_generation_v1 AS uuid
+  CONSTRAINT immutable_object_generation_v1_format CHECK (
+    VALUE::text ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+  );
+
 LOCK TABLE
   public.source_blob_objects,
   public.source_blob_deletions,
@@ -11,7 +16,7 @@ LOCK TABLE
   IN ACCESS EXCLUSIVE MODE;
 
 ALTER TABLE public.source_blob_objects
-  ADD COLUMN object_generation uuid,
+  ADD COLUMN object_generation public.immutable_object_generation_v1,
   ALTER COLUMN version_id DROP NOT NULL,
   ADD CONSTRAINT source_blob_objects_locator_mode_v20 CHECK (
     num_nonnulls(version_id, object_generation) = 1
@@ -28,7 +33,7 @@ ALTER TABLE public.source_blob_objects
     UNIQUE (tenant_id, object_key, object_generation);
 
 ALTER TABLE public.source_blob_deletions
-  ADD COLUMN object_generation uuid,
+  ADD COLUMN object_generation public.immutable_object_generation_v1,
   ALTER COLUMN version_id DROP NOT NULL,
   ADD CONSTRAINT source_blob_deletions_locator_mode_v20 CHECK (
     num_nonnulls(version_id, object_generation) = 1
@@ -45,7 +50,7 @@ ALTER TABLE public.source_blob_deletions
     UNIQUE (tenant_id, object_key, object_generation);
 
 ALTER TABLE public.snapshot_artifact_objects
-  ADD COLUMN object_generation uuid,
+  ADD COLUMN object_generation public.immutable_object_generation_v1,
   ALTER COLUMN version_id DROP NOT NULL,
   ADD CONSTRAINT snapshot_artifact_objects_locator_mode_v20 CHECK (
     num_nonnulls(version_id, object_generation) = 1
@@ -68,7 +73,7 @@ ALTER TABLE public.snapshot_artifact_objects
     UNIQUE (tenant_id, object_key, object_generation);
 
 ALTER TABLE public.snapshot_artifact_deletions
-  ADD COLUMN object_generation uuid,
+  ADD COLUMN object_generation public.immutable_object_generation_v1,
   ALTER COLUMN version_id DROP NOT NULL,
   ADD CONSTRAINT snapshot_artifact_deletions_locator_mode_v20 CHECK (
     num_nonnulls(version_id, object_generation) = 1
@@ -91,7 +96,7 @@ ALTER TABLE public.snapshot_artifact_deletions
     UNIQUE (tenant_id, object_key, object_generation);
 
 ALTER TABLE public.render_artifact_objects
-  ADD COLUMN object_generation uuid,
+  ADD COLUMN object_generation public.immutable_object_generation_v1,
   ALTER COLUMN version_id DROP NOT NULL,
   ADD CONSTRAINT render_artifact_objects_locator_mode_v20 CHECK (
     num_nonnulls(version_id, object_generation) = 1
@@ -109,7 +114,7 @@ ALTER TABLE public.render_artifact_objects
     UNIQUE (tenant_id, object_key, object_generation);
 
 ALTER TABLE public.render_artifact_deletions
-  ADD COLUMN object_generation uuid,
+  ADD COLUMN object_generation public.immutable_object_generation_v1,
   ALTER COLUMN version_id DROP NOT NULL,
   ADD CONSTRAINT render_artifact_deletions_locator_mode_v20 CHECK (
     num_nonnulls(version_id, object_generation) = 1
@@ -128,7 +133,7 @@ ALTER TABLE public.render_artifact_deletions
 
 ALTER TABLE public.project_png_objects
   ADD COLUMN object_locator_id bigint GENERATED ALWAYS AS IDENTITY,
-  ADD COLUMN object_generation uuid,
+  ADD COLUMN object_generation public.immutable_object_generation_v1,
   DROP CONSTRAINT project_png_objects_pkey,
   ADD CONSTRAINT project_png_objects_pkey PRIMARY KEY (object_locator_id),
   ADD CONSTRAINT project_png_objects_legacy_key_v20
@@ -152,7 +157,7 @@ ALTER TABLE public.project_png_objects
     UNIQUE (tenant_id, object_key, object_generation);
 
 ALTER TABLE public.project_png_generations
-  ADD COLUMN object_generation uuid,
+  ADD COLUMN object_generation public.immutable_object_generation_v1,
   ALTER COLUMN version_id DROP NOT NULL,
   ADD CONSTRAINT project_png_generations_locator_mode_v20 CHECK (
     num_nonnulls(version_id, object_generation) = 1
@@ -168,7 +173,7 @@ CREATE INDEX project_png_generations_immutable_object_v20
   WHERE object_generation IS NOT NULL;
 
 ALTER TABLE public.project_png_deletions
-  ADD COLUMN object_generation uuid,
+  ADD COLUMN object_generation public.immutable_object_generation_v1,
   ALTER COLUMN version_id DROP NOT NULL,
   ADD CONSTRAINT project_png_deletions_locator_mode_v20 CHECK (
     num_nonnulls(version_id, object_generation) = 1
