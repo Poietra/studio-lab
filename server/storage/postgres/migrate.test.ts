@@ -22,6 +22,8 @@ import {
   applySnapshotPublicationMigrationV3,
   applySnapshotRuntimeDigestMigrationV10,
   applyWorkspaceSourceMigrationV1,
+  BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM,
+  BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE,
   durableStorageMigrationChecksum,
   OIDC_LOGIN_MIGRATION_V13_CHECKSUM,
   OIDC_LOGIN_MIGRATION_V13_SOURCE,
@@ -78,10 +80,10 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 13 });
-    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 14 });
+    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 13 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 14 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -95,7 +97,8 @@ describe("durable storage migrations", () => {
     expect(db.queries.filter(({ text }) => text === ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === ACCOUNT_SESSION_MIGRATION_V12_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === OIDC_LOGIN_MIGRATION_V13_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(26);
+    expect(db.queries.filter(({ text }) => text === BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(28);
   });
 
   it("rejects a missing prerequisite under the same advisory lock", async () => {
@@ -235,6 +238,36 @@ describe("durable storage migrations", () => {
     expect(OIDC_LOGIN_MIGRATION_V13_SOURCE).not.toContain("access_token");
     expect(OIDC_LOGIN_MIGRATION_V13_SOURCE).not.toContain("refresh_token");
     expect(OIDC_LOGIN_MIGRATION_V13_SOURCE).not.toContain("return_path");
+  });
+
+  it("pins bounded append-only entitlement and usage ledgers in v14", () => {
+    expect(durableStorageMigrationChecksum(BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE)).toBe(
+      BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM,
+    );
+    expect(BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE).toContain("CREATE TABLE public.billing_accounts");
+    expect(BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE).toContain("CREATE TABLE public.entitlement_snapshots");
+    expect(BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE).toContain("render_job_limit BETWEEN 0 AND 1000000");
+    expect(BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE).toContain("render_enabled = (render_job_limit > 0)");
+    expect(BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE).toContain("access_state IN ('active', 'grace', 'blocked')");
+    expect(BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE).toContain("period_start < access_until");
+    expect(BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE).toContain("DEFERRABLE INITIALLY DEFERRED");
+    expect(BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE).toContain(
+      "Overlapping entitlement periods must share one usage period key.",
+    );
+    expect(BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE).toContain("CREATE TABLE public.usage_reservations");
+    expect(BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE).toContain("interval '1 second'");
+    expect(BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE).toContain("interval '30 minutes'");
+    expect(BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE).toContain("A terminal usage reservation is immutable.");
+    expect(BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE).toContain("Usage reservations cannot be deleted.");
+    expect(BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE).toContain("BEFORE INSERT OR UPDATE OR DELETE");
+    expect(BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE).toContain(
+      "CREATE CONSTRAINT TRIGGER usage_reservations_require_terminal_event_v14",
+    );
+    expect(BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE).toContain(
+      "A terminal usage reservation requires exactly one matching usage event.",
+    );
+    expect(BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE).toContain("CREATE TABLE public.usage_events");
+    expect(BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE).toContain("Usage events are append-only.");
   });
 
   it("defines bounded identities, memberships, and a deferred last-owner invariant in v11", () => {

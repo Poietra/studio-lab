@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { Pool } from "pg";
 import { ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM } from "./account-organization-schema";
 import { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
+import { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import workspaceSourceSqlV1 from "./migrations/0001_workspace_source.sql?raw";
 import renderSessionSqlV2 from "./migrations/0002_render_sessions.sql?raw";
@@ -17,6 +18,7 @@ import snapshotRuntimeDigestSqlV10 from "./migrations/0010_snapshot_runtime_dige
 import accountOrganizationSqlV11 from "./migrations/0011_accounts_organizations.sql?raw";
 import accountSessionSqlV12 from "./migrations/0012_account_sessions.sql?raw";
 import oidcLoginSqlV13 from "./migrations/0013_oidc_login.sql?raw";
+import billingEntitlementSqlV14 from "./migrations/0014_billing_entitlements.sql?raw";
 import { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
@@ -30,6 +32,7 @@ import { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runti
 
 export { ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM } from "./account-organization-schema";
 export { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
+export { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
 export { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 export { SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM } from "./postgres-snapshot-publication-repository";
 export { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
@@ -73,6 +76,7 @@ export const SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE = snapshotRuntimeDiges
 export const ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE = accountOrganizationSqlV11;
 export const ACCOUNT_SESSION_MIGRATION_V12_SOURCE = accountSessionSqlV12;
 export const OIDC_LOGIN_MIGRATION_V13_SOURCE = oidcLoginSqlV13;
+export const BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE = billingEntitlementSqlV14;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -205,6 +209,16 @@ const oidcLoginMigrationV13: DurableStorageMigration<13> = Object.freeze({
   version: 13,
 });
 
+const billingEntitlementMigrationV14: DurableStorageMigration<14> = Object.freeze({
+  checksum: BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM,
+  checksumMismatch: "The billing-entitlement migration checksum is invalid.",
+  installedMismatch: "The installed billing-entitlement schema does not match migration v14.",
+  missingPrerequisite: "Billing-entitlement migration v14 requires durable storage migrations v1 through v13.",
+  prerequisiteMismatch: "Billing-entitlement migration v14 requires exact durable storage migrations v1 through v13.",
+  source: BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE,
+  version: 14,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
@@ -219,6 +233,7 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   accountOrganizationMigrationV11,
   accountSessionMigrationV12,
   oidcLoginMigrationV13,
+  billingEntitlementMigrationV14,
 ]);
 
 function validateSource(migration: DurableStorageMigration) {

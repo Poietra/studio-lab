@@ -32,7 +32,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
       poolConfig: { connectionString: DATABASE_URL, max: 2 },
     });
     try {
-      expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: true, version: 13 });
+      expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: true, version: 14 });
       const setup = await pool.connect();
       try {
         await setup.query("BEGIN");
