@@ -217,10 +217,10 @@ export class ManimProjectRegistry {
 
   importBrowserProject(request: BrowserManimProjectImportRequestV1, signal?: AbortSignal) {
     signal?.throwIfAborted();
-    const { request: validated } = validateBrowserManimProjectImportV1(request, this.frame);
+    const { projectPng, request: validated } = validateBrowserManimProjectImportV1(request, this.frame);
     signal?.throwIfAborted();
     const catalog = this.mutableCatalog();
-    const created = catalog.createManagedFromSource(validated);
+    const created = catalog.createManagedFromSource(validated, projectPng?.bytes ?? null);
     try {
       this.addManager(created);
     } catch (error) {

@@ -6,6 +6,7 @@ import type { DurableFastManimSnapshotServiceV1 } from "./durable-fast-manim-sna
 import type { DurableManimRenderServiceV1 } from "./durable-manim-render-service";
 import { createDurableProductionManimRuntimeAdapterV1, DurableManimRuntimeV1 } from "./durable-manim-runtime";
 import type { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
+import { MIN_DURABLE_GC_GRACE_MS_V1 } from "./storage/durable-gc-core";
 import type { EditorDocumentRepositoryV1 } from "./storage/editor-document-repository";
 import {
   inspectProjectPngBytesV1,
@@ -30,18 +31,22 @@ const pngBytes = Buffer.from(
   "base64",
 );
 
-function pngHead(generation = 1n): ProjectPngHeadV1 {
+function pngReceipt(projectId: string, versionId = "version-a") {
   const inspected = inspectProjectPngBytesV1(pngBytes);
+  return {
+    byteSize: inspected.byteSize,
+    digest: inspected.digest,
+    etag: '"png-a"',
+    objectKey: projectPngObjectKeyV1("tenant-a", projectId, inspected.digest),
+    versionId,
+  } as const;
+}
+
+function pngHead(generation = 1n): ProjectPngHeadV1 {
   return {
     generation,
     projectId: "project-a",
-    receipt: {
-      byteSize: inspected.byteSize,
-      digest: inspected.digest,
-      etag: "etag-a",
-      objectKey: projectPngObjectKeyV1("tenant-a", "project-a", inspected.digest),
-      versionId: "version-a",
-    },
+    receipt: pngReceipt("project-a"),
     tenantId: "tenant-a",
   };
 }
@@ -443,7 +448,7 @@ class ImportedScene(Scene):
     });
 
     await expect(
-      runtime.importBrowserProject({ name: "Imported demo", source, sourceName: "lesson.py" }),
+      runtime.importBrowserProject({ imagePngBase64: null, name: "Imported demo", source, sourceName: "lesson.py" }),
     ).resolves.toEqual({
       catalog,
       project: { id: "project-browser-import", kind: "managed", name: "Imported demo" },
@@ -470,6 +475,154 @@ class ImportedScene(Scene):
         sourcePath: "lesson.py",
       }),
     ).resolves.toEqual({ fileName: "lesson.py", projectId: "project-browser-import", source });
+    await runtime.close();
+  });
+
+  it("publishes an exact browser image.png in the same project transaction as its source", async () => {
+    const source = `from manim import *
+class ImportedScene(Scene):
+    def construct(self):
+        image = ImageMobject("image.png")
+        self.add(image)
+`;
+    const sourceCandidate = {
+      byteSize: Buffer.byteLength(source),
+      digest: createHash("sha256").update(source).digest("hex"),
+      etag: '"source-png"',
+      objectKey: `tenants/tenant-a/sources/${createHash("sha256").update(source).digest("hex")}`,
+      versionId: "source-version-png",
+    } satisfies SourceBlobReceiptV1;
+    const projectPngCandidate = pngReceipt("project-browser-png");
+    const createManagedProject = vi.fn(async () => ({
+      createdAt: new Date("2026-08-02T00:00:00.000Z"),
+      name: "Image demo",
+      projectId: "project-browser-png",
+      tenantId: "tenant-a",
+      updatedAt: new Date("2026-08-02T00:00:00.000Z"),
+    }));
+    const putProjectPng = vi.fn(async () => projectPngCandidate);
+    const queueBlobDeletion = vi.fn(async () => null);
+    const queueProjectPngDeletion = vi.fn(async () => null);
+    const runtime = new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({
+        close: async () => undefined,
+        putSource: async () => sourceCandidate,
+        ready: async () => true,
+      }),
+      namespace: "browser-png-import-success-test",
+      projectIdFactory: () => "project-browser-png",
+      projectPngRepository: partial<ProjectPngRepositoryV1>({
+        queueDeletion: queueProjectPngDeletion,
+        readHead: async () => null,
+      }),
+      projectPngs: partial<ProjectPngBlobStoreV1>({
+        close: async () => undefined,
+        put: putProjectPng,
+        read: async () => pngBytes,
+      }),
+      repository: partial<WorkspaceSourceRepositoryV1>({
+        close: async () => undefined,
+        createManagedProject,
+        listProjects: async () => ({
+          defaultProjectId: "project-browser-png",
+          projects: [{ id: "project-browser-png", kind: "managed", name: "Image demo" }],
+        }),
+        queueBlobDeletion,
+        ready: async () => true,
+      }),
+      tenantId: "tenant-a",
+    });
+
+    await expect(
+      runtime.importBrowserProject({
+        imagePngBase64: pngBytes.toString("base64"),
+        name: "Image demo",
+        source,
+        sourceName: "scene.py",
+      }),
+    ).resolves.toMatchObject({ project: { id: "project-browser-png", kind: "managed", name: "Image demo" } });
+    expect(putProjectPng).toHaveBeenCalledWith("tenant-a", "project-browser-png", Uint8Array.from(pngBytes), undefined);
+    expect(createManagedProject).toHaveBeenCalledWith(
+      {
+        name: "Image demo",
+        projectId: "project-browser-png",
+        projectPng: projectPngCandidate,
+        source: { blob: sourceCandidate, path: "scene.py" },
+        tenantId: "tenant-a",
+      },
+      undefined,
+    );
+    expect(queueBlobDeletion).not.toHaveBeenCalled();
+    expect(queueProjectPngDeletion).not.toHaveBeenCalled();
+    await runtime.close();
+  });
+
+  it("queues both immutable candidates after image-backed project publication fails", async () => {
+    const source = `from manim import *
+class ImportedScene(Scene):
+    def construct(self):
+        image = ImageMobject("image.png")
+        self.add(image)
+`;
+    const sourceCandidate = {
+      byteSize: Buffer.byteLength(source),
+      digest: "d".repeat(64),
+      etag: '"source-d"',
+      objectKey: `tenants/tenant-a/sources/${"d".repeat(64)}`,
+      versionId: "source-version-d",
+    } satisfies SourceBlobReceiptV1;
+    const projectPngCandidate = pngReceipt("project-browser-png-failed", "version-failed");
+    const publicationError = new Error("publication failed");
+    const sourceCleanupError = new Error("source cleanup failed");
+    const queueBlobDeletion = vi.fn(async () => {
+      throw sourceCleanupError;
+    });
+    const queueProjectPngDeletion = vi.fn(async () => null);
+    const runtime = new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({
+        close: async () => undefined,
+        putSource: async () => sourceCandidate,
+        ready: async () => true,
+      }),
+      namespace: "browser-png-import-rollback-test",
+      projectIdFactory: () => "project-browser-png-failed",
+      projectPngRepository: partial<ProjectPngRepositoryV1>({
+        queueDeletion: queueProjectPngDeletion,
+        readHead: async () => null,
+      }),
+      projectPngs: partial<ProjectPngBlobStoreV1>({
+        close: async () => undefined,
+        put: async () => projectPngCandidate,
+        read: async () => pngBytes,
+      }),
+      repository: partial<WorkspaceSourceRepositoryV1>({
+        close: async () => undefined,
+        createManagedProject: async () => {
+          throw publicationError;
+        },
+        queueBlobDeletion,
+        ready: async () => true,
+      }),
+      tenantId: "tenant-a",
+    });
+
+    const failure = runtime.importBrowserProject({
+      imagePngBase64: pngBytes.toString("base64"),
+      name: "Image demo",
+      source,
+      sourceName: "scene.py",
+    });
+    await expect(failure).rejects.toMatchObject({
+      errors: expect.arrayContaining([publicationError, sourceCleanupError]),
+      message: "Project import and orphan cleanup both failed.",
+    });
+    expect(queueBlobDeletion).toHaveBeenCalledWith("tenant-a", sourceCandidate);
+    expect(queueProjectPngDeletion).toHaveBeenCalledWith(
+      "tenant-a",
+      "project-browser-png-failed",
+      projectPngCandidate,
+      MIN_DURABLE_GC_GRACE_MS_V1,
+    );
     await runtime.close();
   });
 
@@ -502,15 +655,20 @@ class ImportedScene(Scene):
       tenantId: "tenant-a",
     });
 
-    await expect(runtime.importBrowserProject({ name: "Demo", source, sourceName: "scene.py" })).rejects.toBe(
-      publicationError,
-    );
+    await expect(
+      runtime.importBrowserProject({ imagePngBase64: null, name: "Demo", source, sourceName: "scene.py" }),
+    ).rejects.toBe(publicationError);
     expect(queueBlobDeletion).toHaveBeenCalledWith("tenant-a", candidate);
     await runtime.close();
   });
 
-  it("never queues the referenced source when catalog materialization fails after publication", async () => {
-    const source = "from manim import *\nclass MainScene(Scene):\n    def construct(self):\n        self.wait(1)\n";
+  it("never queues referenced source or image candidates when the response fails after publication", async () => {
+    const source = `from manim import *
+class MainScene(Scene):
+    def construct(self):
+        image = ImageMobject("image.png")
+        self.add(image)
+`;
     const candidate = {
       byteSize: Buffer.byteLength(source),
       digest: "c".repeat(64),
@@ -518,7 +676,9 @@ class ImportedScene(Scene):
       objectKey: `tenants/tenant-a/sources/${"c".repeat(64)}`,
       versionId: "source-version-c",
     } satisfies SourceBlobReceiptV1;
+    const projectPngCandidate = pngReceipt("project-browser-import", "version-committed");
     const queueBlobDeletion = vi.fn(async () => null);
+    const queueProjectPngDeletion = vi.fn(async () => null);
     const runtime = new DurableManimRuntimeV1({
       blobs: partial<SourceContentBlobStoreV1>({
         close: async () => undefined,
@@ -526,6 +686,16 @@ class ImportedScene(Scene):
         ready: async () => true,
       }),
       namespace: "browser-import-post-publication-test",
+      projectIdFactory: () => "project-browser-import",
+      projectPngRepository: partial<ProjectPngRepositoryV1>({
+        queueDeletion: queueProjectPngDeletion,
+        readHead: async () => null,
+      }),
+      projectPngs: partial<ProjectPngBlobStoreV1>({
+        close: async () => undefined,
+        put: async () => projectPngCandidate,
+        read: async () => pngBytes,
+      }),
       repository: partial<WorkspaceSourceRepositoryV1>({
         close: async () => undefined,
         createManagedProject: async () => ({
@@ -544,10 +714,16 @@ class ImportedScene(Scene):
       tenantId: "tenant-a",
     });
 
-    await expect(runtime.importBrowserProject({ name: "Demo", source, sourceName: "scene.py" })).rejects.toThrow(
-      "catalog unavailable",
-    );
+    await expect(
+      runtime.importBrowserProject({
+        imagePngBase64: pngBytes.toString("base64"),
+        name: "Demo",
+        source,
+        sourceName: "scene.py",
+      }),
+    ).rejects.toThrow("catalog unavailable");
     expect(queueBlobDeletion).not.toHaveBeenCalled();
+    expect(queueProjectPngDeletion).not.toHaveBeenCalled();
     await runtime.close();
   });
 
@@ -561,16 +737,22 @@ class ImportedScene(Scene):
     });
 
     await expect(
-      runtime.importBrowserProject({ name: "No Scene", source: "print('hello')\n", sourceName: "script.py" }),
+      runtime.importBrowserProject({
+        imagePngBase64: null,
+        name: "No Scene",
+        source: "print('hello')\n",
+        sourceName: "script.py",
+      }),
     ).rejects.toMatchObject({ status: 422 });
     await expect(
       runtime.importBrowserProject({
+        imagePngBase64: null,
         name: "Asset Scene",
         source:
           'from manim import *\nclass AssetScene(Scene):\n    def construct(self):\n        image = ImageMobject("asset.png")\n        self.add(image)\n',
         sourceName: "asset_scene.py",
       }),
-    ).rejects.toThrow(/asset and archive import are not supported/i);
+    ).rejects.toThrow(/only direct ImageMobject assignments/i);
     expect(putSource).not.toHaveBeenCalled();
     await runtime.close();
   });

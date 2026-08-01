@@ -11,6 +11,7 @@ import {
 import { HttpError } from "../../http/json";
 import { manimTenantIdSchema } from "../../manim-request-principal";
 import { MAX_DURABLE_GC_GRACE_MS_V1, MIN_DURABLE_GC_GRACE_MS_V1 } from "../durable-gc-core";
+import { assertProjectPngReceiptV1 } from "../project-png-storage";
 import {
   assertSourceBlobReceiptV1,
   type BlobDeletionV1,
@@ -24,6 +25,7 @@ import {
 } from "../workspace-source-repository";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
+import { publishProjectPngHeadInTransactionV1 } from "./postgres-project-png-repository";
 import { POSTGRES_REPOSITORY_OPTIONS_V1, PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 import {
   type PostgresStorageObjectLocatorRowV1,
@@ -528,6 +530,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     const name = projectName(input.name);
     const path = sourcePath(input.source.path);
     const candidate = blobReceipt(tenant, input.source.blob);
+    const projectPng = input.projectPng ? assertProjectPngReceiptV1(tenant, id, input.projectPng) : null;
     try {
       return await this.#connection.transaction(async (client) => {
         await client.query("INSERT INTO public.workspace_tenants (tenant_id) VALUES ($1) ON CONFLICT DO NOTHING", [
@@ -554,6 +557,14 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
            VALUES ($1, $2, $3, 1, $4)`,
           [tenant, id, path, candidate.digest],
         );
+        if (projectPng) {
+          await publishProjectPngHeadInTransactionV1(client, {
+            candidate: projectPng,
+            current: null,
+            projectId: id,
+            tenantId: tenant,
+          });
+        }
         return projectFromRow(created.rows[0]!);
       }, signal);
     } catch (error) {

@@ -207,15 +207,20 @@ export class PersistentManimProjectCatalog {
     return this.createManagedWorkspace(name, "main.py", MANAGED_WORKSPACE_STARTER);
   }
 
-  createManagedFromSource(request: BrowserManimProjectImportRequestV1) {
+  createManagedFromSource(request: BrowserManimProjectImportRequestV1, projectPngBytes: Uint8Array | null) {
     const parsed = browserManimProjectImportRequestV1Schema.safeParse(request);
     if (!parsed.success) {
       throw new HttpError(parsed.error.issues[0]?.message ?? "The Python project import is invalid.", 400);
     }
-    return this.createManagedWorkspace(parsed.data.name, parsed.data.sourceName, parsed.data.source);
+    return this.createManagedWorkspace(parsed.data.name, parsed.data.sourceName, parsed.data.source, projectPngBytes);
   }
 
-  private createManagedWorkspace(name: string, sourceName: string, source: string) {
+  private createManagedWorkspace(
+    name: string,
+    sourceName: string,
+    source: string,
+    projectPngBytes: Uint8Array | null = null,
+  ) {
     const parsedName = this.validateNewProject(name);
     this.assertManagedRoot();
     const projectId = this.projectIdFactory();
@@ -232,6 +237,12 @@ export class PersistentManimProjectCatalog {
         flag: "wx",
         mode: 0o600,
       });
+      if (projectPngBytes) {
+        writeFileSync(join(workspaceRoot, "image.png"), projectPngBytes, {
+          flag: "wx",
+          mode: 0o600,
+        });
+      }
       const created = resolveManimProjects([
         {
           id: projectId,

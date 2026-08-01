@@ -15,6 +15,8 @@ import type {
 import {
   browserManimProjectImportRequestV1Schema,
   createManimProjectRequestSchema,
+  MAX_BROWSER_MANIM_IMAGE_PNG_BYTES_V1,
+  MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1,
   MAX_BROWSER_MANIM_SOURCE_BYTES_V1,
   manimProjectIdSchema,
   manimProjectListViewSchema,
@@ -45,8 +47,23 @@ export type BrowserManimProjectImportFileV1 = Readonly<{
 
 export type ManimProjectCreationInput =
   | ManimProjectCreateRequest
-  | Readonly<{ file: BrowserManimProjectImportFileV1; kind: "browser-import"; name: string }>
+  | Readonly<{
+      file: BrowserManimProjectImportFileV1;
+      imageFile?: BrowserManimProjectImportFileV1 | null;
+      kind: "browser-import";
+      name: string;
+    }>
   | Readonly<{ kind: "native-existing"; name: string }>;
+
+const BASE64_CHUNK_BYTES = 12 * 1024;
+
+function encodeCanonicalBase64(bytes: Uint8Array) {
+  const chunks: string[] = [];
+  for (let offset = 0; offset < bytes.byteLength; offset += BASE64_CHUNK_BYTES) {
+    chunks.push(btoa(String.fromCharCode(...bytes.subarray(offset, offset + BASE64_CHUNK_BYTES))));
+  }
+  return chunks.join("");
+}
 
 const renderSessionHeaders = {
   [RENDER_SESSION_CONTRACT_VERSION_HEADER]: RENDER_SESSION_CONTRACT_VERSION_WITH_CPU_LIMIT,
@@ -125,12 +142,24 @@ export async function loadManimProjects(signal?: AbortSignal) {
 export async function createManimProject(input: ManimProjectCreationInput, signal?: AbortSignal) {
   if (input.kind === "browser-import") {
     signal?.throwIfAborted();
+    const imageFile = input.imageFile ?? null;
     if (
       !Number.isSafeInteger(input.file.size) ||
       input.file.size < 1 ||
       input.file.size > MAX_BROWSER_MANIM_SOURCE_BYTES_V1
     ) {
       throw new Error(`Select a non-empty Python file up to ${MAX_BROWSER_MANIM_SOURCE_BYTES_V1} bytes.`);
+    }
+    if (imageFile && imageFile.name !== "image.png") {
+      throw new Error("The optional project image must use the exact filename image.png.");
+    }
+    if (
+      imageFile &&
+      (!Number.isSafeInteger(imageFile.size) ||
+        imageFile.size < 1 ||
+        imageFile.size > MAX_BROWSER_MANIM_IMAGE_PNG_BYTES_V1)
+    ) {
+      throw new Error(`Select a non-empty image.png file up to ${MAX_BROWSER_MANIM_IMAGE_PNG_BYTES_V1} bytes.`);
     }
     const bytes = new Uint8Array(await input.file.arrayBuffer());
     signal?.throwIfAborted();
@@ -145,12 +174,34 @@ export async function createManimProject(input: ManimProjectCreationInput, signa
     } catch {
       throw new Error("The selected Python file must use valid UTF-8 encoding.");
     }
-    const request: BrowserManimProjectImportRequestV1 = { name: input.name, source, sourceName: input.file.name };
+    let imagePngBase64: string | null = null;
+    if (imageFile) {
+      const imageBytes = new Uint8Array(await imageFile.arrayBuffer());
+      signal?.throwIfAborted();
+      if (
+        imageBytes.byteLength !== imageFile.size ||
+        imageBytes.byteLength < 1 ||
+        imageBytes.byteLength > MAX_BROWSER_MANIM_IMAGE_PNG_BYTES_V1
+      ) {
+        throw new Error("The selected image.png file changed while Studio was reading it.");
+      }
+      imagePngBase64 = encodeCanonicalBase64(imageBytes);
+    }
+    const request: BrowserManimProjectImportRequestV1 = {
+      imagePngBase64,
+      name: input.name,
+      source,
+      sourceName: input.file.name,
+    };
     const parsed = browserManimProjectImportRequestV1Schema.safeParse(request);
     if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "The Python project import is invalid.");
+    const body = JSON.stringify(parsed.data);
+    if (new TextEncoder().encode(body).byteLength > MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1) {
+      throw new Error("The selected browser project exceeds the import request byte limit.");
+    }
     const imported = await readJson(
       await fetchOrganizationScopedManimApiV1("/api/manim/project-imports", {
-        body: JSON.stringify(parsed.data),
+        body,
         headers: { "content-type": "application/json" },
         method: "POST",
         signal,

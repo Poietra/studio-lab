@@ -2,6 +2,7 @@ import { createServer as createHttpServer, request as createRequest } from "node
 import type { AddressInfo } from "node:net";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1 } from "../src/render-pipeline/contracts";
 import { fastManimSnapshotSceneIdV1 } from "./fast-manim-snapshot-contract";
 import { HttpError } from "./http/json";
 import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
@@ -154,7 +155,7 @@ describe("production Manim server configuration", () => {
     expect(parsed.publicOrigin).toBe("https://studio.example");
     expect(parsed.trustedProxyAddresses).toEqual(["127.0.0.1"]);
     expect(parsed.limits).toMatchObject({
-      maxBodyBytes: 1_280 * 1024,
+      maxBodyBytes: MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1,
       maxConnections: 256,
       maxHeaderBytes: 16 * 1024,
       requestDrainTimeoutMs: 10_000,
@@ -414,6 +415,7 @@ describe("standalone production Manim HTTP adapter", () => {
 
     const imported = await send(server, "/api/manim/project-imports", {
       body: JSON.stringify({
+        imagePngBase64: null,
         name: "Imported",
         source: "from manim import *\nclass DemoScene(Scene):\n    def construct(self):\n        self.wait(1)\n",
         sourceName: "demo.py",

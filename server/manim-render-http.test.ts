@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  MAX_BROWSER_MANIM_IMAGE_PNG_BYTES_V1,
   MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1,
   MAX_BROWSER_MANIM_SOURCE_BYTES_V1,
   type ProgramRenderRequest,
@@ -128,7 +129,7 @@ function programRenderRequest(sceneName: string): ProgramRenderRequest {
 }
 
 describe("render session contract negotiation", () => {
-  it("routes a bounded source-only browser import without accepting tenant or object identifiers", async () => {
+  it("routes bounded source and optional image browser imports without accepting storage identifiers", async () => {
     const imported = {
       catalog: {
         defaultProjectId: "project-browser-import",
@@ -147,19 +148,19 @@ describe("render session contract negotiation", () => {
     try {
       const port = (server.address() as AddressInfo).port;
       const accepted = await send(port, "/api/manim/project-imports", {
-        body: JSON.stringify({ name: "Imported demo", source, sourceName: "lesson.py" }),
+        body: JSON.stringify({ imagePngBase64: null, name: "Imported demo", source, sourceName: "lesson.py" }),
         headers: { "content-type": "application/json" },
         method: "POST",
       });
       expect(accepted.status).toBe(201);
       expect(JSON.parse(accepted.body.toString("utf8"))).toEqual(imported);
       expect(importBrowserProject).toHaveBeenCalledWith(
-        { name: "Imported demo", source, sourceName: "lesson.py" },
+        { imagePngBase64: null, name: "Imported demo", source, sourceName: "lesson.py" },
         expect.any(AbortSignal),
       );
 
       const traversal = await send(port, "/api/manim/project-imports", {
-        body: JSON.stringify({ name: "Traversal", source, sourceName: "../lesson.py" }),
+        body: JSON.stringify({ imagePngBase64: null, name: "Traversal", source, sourceName: "../lesson.py" }),
         headers: { "content-type": "application/json" },
         method: "POST",
       });
@@ -167,8 +168,15 @@ describe("render session contract negotiation", () => {
       expect(importBrowserProject).toHaveBeenCalledOnce();
 
       const escapedSource = `${source}${"\u0001".repeat(MAX_BROWSER_MANIM_SOURCE_BYTES_V1 - Buffer.byteLength(source))}`;
-      const worstCaseBody = JSON.stringify({ name: "Escaped source", source: escapedSource, sourceName: "scene.py" });
+      const maximumPngBase64 = Buffer.alloc(MAX_BROWSER_MANIM_IMAGE_PNG_BYTES_V1).toString("base64");
+      const worstCaseBody = JSON.stringify({
+        imagePngBase64: maximumPngBase64,
+        name: "Escaped source",
+        source: escapedSource,
+        sourceName: "scene.py",
+      });
       expect(Buffer.byteLength(escapedSource)).toBe(MAX_BROWSER_MANIM_SOURCE_BYTES_V1);
+      expect(Buffer.from(maximumPngBase64, "base64")).toHaveLength(MAX_BROWSER_MANIM_IMAGE_PNG_BYTES_V1);
       expect(Buffer.byteLength(worstCaseBody)).toBeLessThanOrEqual(MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1);
       const worstCase = await send(port, "/api/manim/project-imports", {
         body: worstCaseBody,
@@ -179,11 +187,12 @@ describe("render session contract negotiation", () => {
       expect(importBrowserProject).toHaveBeenCalledTimes(2);
       expect(importBrowserProject).toHaveBeenNthCalledWith(
         2,
-        { name: "Escaped source", source: escapedSource, sourceName: "scene.py" },
+        { imagePngBase64: maximumPngBase64, name: "Escaped source", source: escapedSource, sourceName: "scene.py" },
         expect.any(AbortSignal),
       );
 
       const oversizedBody = JSON.stringify({
+        imagePngBase64: null,
         name: "Oversized transport",
         source: "\u0001".repeat(Math.ceil(MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1 / 6) + 1_024),
         sourceName: "scene.py",

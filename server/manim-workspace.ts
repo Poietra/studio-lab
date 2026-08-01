@@ -8,8 +8,14 @@ import {
   isManimSourcePath,
   type ManimWorkspaceSource,
 } from "../src/render-pipeline/contracts";
-import { findSceneBlocks, type ImportedManimScene, importManimScene } from "../src/render-pipeline/source-import";
+import {
+  analyzeDirectImageMobjectReferences,
+  findSceneBlocks,
+  type ImportedManimScene,
+  importManimScene,
+} from "../src/render-pipeline/source-import";
 import { HttpError } from "./http/json";
+import { inspectProjectPngBytesV1 } from "./storage/project-png-storage";
 
 const SKIPPED_DIRECTORIES = new Set([
   ".git",
@@ -106,16 +112,49 @@ export function validateBrowserManimProjectImportV1(
   if (imported.view.scenes.length === 0) {
     throw new HttpError("The selected Python file does not contain an importable Manim Scene.", 422);
   }
-  const referencesImageMobject = imported.importedScenes.some((scene) =>
-    Object.values(scene.runtimeSceneState.objectGraph.entities).some((entity) => entity.type === "ImageMobject"),
+  const imageReferences = analyzeDirectImageMobjectReferences(parsed.data.source);
+  const importedImageReferences = imported.importedScenes.reduce(
+    (count, scene) =>
+      count +
+      Object.values(scene.runtimeSceneState.objectGraph.entities).filter((entity) => entity.type === "ImageMobject")
+        .length,
+    0,
   );
-  if (referencesImageMobject) {
+  if (imageReferences.unsupportedReferences > 0) {
     throw new HttpError(
-      "This Python file references ImageMobject assets. Browser asset and archive import are not supported yet.",
+      'Browser imports support only direct ImageMobject assignments with literal "image.png" as the first argument or filename_or_array keyword.',
       422,
     );
   }
-  return { imported, request: parsed.data } as const;
+  if (imageReferences.exactImagePngReferences !== importedImageReferences) {
+    throw new HttpError(
+      "Browser imports support image.png only when every reference is a reachable direct ImageMobject assignment in an imported Scene.",
+      422,
+    );
+  }
+  if (imageReferences.exactImagePngReferences > 0 && parsed.data.imagePngBase64 === null) {
+    throw new HttpError("This Python file references image.png. Select that PNG together with the Python file.", 422);
+  }
+  if (imageReferences.exactImagePngReferences === 0 && parsed.data.imagePngBase64 !== null) {
+    throw new HttpError(
+      "The selected image.png is not referenced by a direct ImageMobject assignment in this Python file.",
+      422,
+    );
+  }
+  let projectPng: ReturnType<typeof inspectProjectPngBytesV1> | null = null;
+  if (parsed.data.imagePngBase64 !== null) {
+    const bytes = Buffer.from(parsed.data.imagePngBase64, "base64");
+    if (bytes.toString("base64") !== parsed.data.imagePngBase64) {
+      throw new HttpError("The selected image.png must use canonical base64 encoding.", 422);
+    }
+    try {
+      projectPng = inspectProjectPngBytesV1(bytes);
+    } catch (error) {
+      if (error instanceof Error) throw new HttpError(error.message, 422);
+      throw new HttpError("The selected image.png does not satisfy Studio's strict PNG profile.", 422);
+    }
+  }
+  return { imported, projectPng, request: parsed.data } as const;
 }
 
 async function visitPythonSources(

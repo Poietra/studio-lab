@@ -4,6 +4,7 @@ import { cn } from "../lib/cn";
 import type { ManimProjectCreationInput } from "../render-pipeline/client";
 import { generateManimThumbnail, loadManimThumbnailStatus } from "../render-pipeline/client";
 import {
+  MAX_BROWSER_MANIM_IMAGE_PNG_BYTES_V1,
   MAX_BROWSER_MANIM_SOURCE_BYTES_V1,
   type ManimProjectSummary,
   type ManimThumbnailStatus,
@@ -346,15 +347,18 @@ export function WorkspaceLauncher({
 }: WorkspaceLauncherProps) {
   const addDialog = useRef<HTMLDialogElement | null>(null);
   const importFileInput = useRef<HTMLInputElement | null>(null);
+  const importImageInput = useRef<HTMLInputElement | null>(null);
   const renameDialog = useRef<HTMLDialogElement | null>(null);
   const removeDialog = useRef<HTMLDialogElement | null>(null);
   const [createName, setCreateName] = useState("");
   const [createRoot, setCreateRoot] = useState("");
   const [browserCreationKind, setBrowserCreationKind] = useState<"import" | "starter">("starter");
   const [importFile, setImportFile] = useState<File | null>(null);
+  const [importImageFile, setImportImageFile] = useState<File | null>(null);
   const [renameName, setRenameName] = useState("");
   const [selectedWorkspace, setSelectedWorkspace] = useState<ManimProjectSummary | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [createErrorFields, setCreateErrorFields] = useState<readonly ("image" | "name" | "root" | "source")[]>([]);
   const creating = mutation?.kind === "create";
   const renaming = mutation?.kind === "rename" && mutation.workspaceId === selectedWorkspace?.id;
   const unregistering = mutation?.kind === "unregister" && mutation.workspaceId === selectedWorkspace?.id;
@@ -364,9 +368,14 @@ export function WorkspaceLauncher({
   const linkingExistingFolder = registeringExistingFolder || pickingExistingFolder;
   const importingBrowserProject = creationMode === "managed" && browserCreationKind === "import";
   const deletingManagedWorkspace = selectedWorkspace?.kind === "managed";
+  const createNameInvalid = createErrorFields.includes("name");
+  const createRootInvalid = createErrorFields.includes("root");
+  const createSourceInvalid = createErrorFields.includes("source");
+  const createImageInvalid = createErrorFields.includes("image");
 
   function clearDialogError() {
     setFormError(null);
+    setCreateErrorFields([]);
     onClearMutationError();
   }
 
@@ -380,7 +389,9 @@ export function WorkspaceLauncher({
     setCreateRoot("");
     setBrowserCreationKind("starter");
     setImportFile(null);
+    setImportImageFile(null);
     if (importFileInput.current) importFileInput.current.value = "";
+    if (importImageInput.current) importImageInput.current.value = "";
     setSelectedWorkspace(null);
     clearDialogError();
     addDialog.current?.showModal();
@@ -404,6 +415,11 @@ export function WorkspaceLauncher({
     const name = createName.trim();
     const root = createRoot.trim();
     if (!name || (registeringExistingFolder && !root) || (importingBrowserProject && !importFile)) {
+      setCreateErrorFields([
+        ...(!name ? (["name"] as const) : []),
+        ...(registeringExistingFolder && !root ? (["root"] as const) : []),
+        ...(importingBrowserProject && !importFile ? (["source"] as const) : []),
+      ]);
       setFormError(
         registeringExistingFolder
           ? "Enter both a workspace name and an existing folder path."
@@ -414,16 +430,34 @@ export function WorkspaceLauncher({
       return;
     }
     if (importingBrowserProject && importFile && importFile.size > MAX_BROWSER_MANIM_SOURCE_BYTES_V1) {
+      setCreateErrorFields(["source"]);
       setFormError(`Select a Python file no larger than ${MAX_BROWSER_MANIM_SOURCE_BYTES_V1 / 1024} KiB.`);
       return;
     }
+    if (importingBrowserProject && importImageFile && importImageFile.name !== "image.png") {
+      setCreateErrorFields(["image"]);
+      setFormError("The optional project image must use the exact filename image.png.");
+      return;
+    }
+    if (
+      importingBrowserProject &&
+      importImageFile &&
+      (importImageFile.size < 1 || importImageFile.size > MAX_BROWSER_MANIM_IMAGE_PNG_BYTES_V1)
+    ) {
+      setCreateErrorFields(["image"]);
+      setFormError(
+        `Select a non-empty image.png file no larger than ${MAX_BROWSER_MANIM_IMAGE_PNG_BYTES_V1 / 1024} KiB.`,
+      );
+      return;
+    }
     setFormError(null);
+    setCreateErrorFields([]);
     const input: ManimProjectCreationInput = registeringExistingFolder
       ? { kind: "existing", name, root }
       : pickingExistingFolder
         ? { kind: "native-existing", name }
         : importingBrowserProject && importFile
-          ? { file: importFile, kind: "browser-import", name }
+          ? { file: importFile, imageFile: importImageFile, kind: "browser-import", name }
           : { kind: "managed", name };
     if (await onCreate(input)) addDialog.current?.close();
   }
@@ -568,7 +602,7 @@ export function WorkspaceLauncher({
                 ? "Choose an existing Manim folder on this machine. Studio will not move or copy its files."
                 : "Register an existing folder on this machine. Studio will not move or copy its files."
               : importingBrowserProject
-                ? "Upload one existing Manim Python file to private Studio storage. No local path is sent."
+                ? "Upload one existing Manim Python file and an optional image.png to private Studio storage. No local path is sent."
                 : "Create a new workspace with a starter Manim Scene. No folder setup is required."}
           </p>
           {creationMode === "managed" ? (
@@ -580,7 +614,10 @@ export function WorkspaceLauncher({
                     checked={browserCreationKind === "starter"}
                     disabled={creating}
                     name="workspace-content"
-                    onChange={() => setBrowserCreationKind("starter")}
+                    onChange={() => {
+                      setBrowserCreationKind("starter");
+                      clearDialogError();
+                    }}
                     type="radio"
                     value="starter"
                   />
@@ -596,14 +633,17 @@ export function WorkspaceLauncher({
                     checked={browserCreationKind === "import"}
                     disabled={creating}
                     name="workspace-content"
-                    onChange={() => setBrowserCreationKind("import")}
+                    onChange={() => {
+                      setBrowserCreationKind("import");
+                      clearDialogError();
+                    }}
                     type="radio"
                     value="import"
                   />
                   <span>
                     <span className="block font-medium text-zinc-100">Import Python</span>
                     <span className="mt-1 block text-pretty leading-5 text-zinc-500">
-                      Upload one existing .py file.
+                      Upload one .py file and an optional image.png.
                     </span>
                   </span>
                 </label>
@@ -614,14 +654,17 @@ export function WorkspaceLauncher({
             Workspace name
           </label>
           <input
-            aria-describedby={formError || mutationError ? "add-workspace-error" : undefined}
-            aria-invalid={Boolean(formError || mutationError)}
+            aria-describedby={createNameInvalid ? "add-workspace-error" : undefined}
+            aria-invalid={createNameInvalid}
             autoComplete="off"
             className={fieldClassName}
             disabled={creating}
             id="workspace-name"
             maxLength={120}
-            onChange={(event) => setCreateName(event.currentTarget.value)}
+            onChange={(event) => {
+              setCreateName(event.currentTarget.value);
+              clearDialogError();
+            }}
             placeholder="My animation"
             required
             value={createName}
@@ -632,14 +675,17 @@ export function WorkspaceLauncher({
                 Existing folder path
               </label>
               <input
-                aria-describedby={formError || mutationError ? "add-workspace-error" : undefined}
-                aria-invalid={Boolean(formError || mutationError)}
+                aria-describedby={createRootInvalid ? "add-workspace-error" : undefined}
+                aria-invalid={createRootInvalid}
                 autoComplete="off"
                 className={fieldClassName}
                 disabled={creating}
                 id="workspace-root"
                 maxLength={4096}
-                onChange={(event) => setCreateRoot(event.currentTarget.value)}
+                onChange={(event) => {
+                  setCreateRoot(event.currentTarget.value);
+                  clearDialogError();
+                }}
                 placeholder="/path/to/manim-project"
                 required
                 value={createRoot}
@@ -654,22 +700,52 @@ export function WorkspaceLauncher({
               <input
                 accept=".py,text/x-python"
                 aria-describedby={
-                  formError || mutationError ? "workspace-import-help add-workspace-error" : "workspace-import-help"
+                  createSourceInvalid ? "workspace-import-help add-workspace-error" : "workspace-import-help"
                 }
+                aria-invalid={createSourceInvalid}
                 className={cn(
                   fieldClassName,
                   "h-auto py-2 file:mr-3 file:border-0 file:bg-zinc-800 file:px-2 file:py-1 file:text-xs file:text-zinc-200",
                 )}
                 disabled={creating}
                 id="workspace-import-file"
-                onChange={(event) => setImportFile(event.currentTarget.files?.[0] ?? null)}
+                onChange={(event) => {
+                  setImportFile(event.currentTarget.files?.[0] ?? null);
+                  clearDialogError();
+                }}
                 ref={importFileInput}
                 required
                 type="file"
               />
               <p className="mt-2 text-pretty text-xs leading-5 text-zinc-500" id="workspace-import-help">
-                Up to {MAX_BROWSER_MANIM_SOURCE_BYTES_V1 / 1024} KiB. Archives, folders, symlinks, and assets such as
-                ImageMobject files are not supported in this import path yet.
+                Up to {MAX_BROWSER_MANIM_SOURCE_BYTES_V1 / 1024} KiB. Choose one UTF-8 .py file without a folder path.
+              </p>
+              <label className="mt-4 block text-xs font-medium text-zinc-300" htmlFor="workspace-import-image">
+                Project image.png (optional)
+              </label>
+              <input
+                accept=".png,image/png"
+                aria-describedby={
+                  createImageInvalid ? "workspace-import-image-help add-workspace-error" : "workspace-import-image-help"
+                }
+                aria-invalid={createImageInvalid}
+                className={cn(
+                  fieldClassName,
+                  "h-auto py-2 file:mr-3 file:border-0 file:bg-zinc-800 file:px-2 file:py-1 file:text-xs file:text-zinc-200",
+                )}
+                disabled={creating}
+                id="workspace-import-image"
+                onChange={(event) => {
+                  setImportImageFile(event.currentTarget.files?.[0] ?? null);
+                  clearDialogError();
+                }}
+                ref={importImageInput}
+                type="file"
+              />
+              <p className="mt-2 text-pretty text-xs leading-5 text-zinc-500" id="workspace-import-image-help">
+                Optional. The filename must be exactly image.png and the file must be 1 byte–
+                {MAX_BROWSER_MANIM_IMAGE_PNG_BYTES_V1 / 1024} KiB. Archives, folders, symlinks, and additional assets
+                are not supported in this import path yet.
               </p>
             </>
           ) : null}
