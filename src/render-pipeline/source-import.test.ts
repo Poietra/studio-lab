@@ -3,7 +3,12 @@ import { describe, expect, it } from "vitest";
 import { evaluateWorkingState, projectProposedState } from "../studio/evaluator";
 import { createFixtureWorkingState } from "../studio/fixture";
 import { runtimeSceneStateSchema } from "../studio/state-schema";
-import { AmbiguousSourceSceneError, findSceneBlocks, importManimScene } from "./source-import";
+import {
+  AmbiguousSourceSceneError,
+  analyzeDirectImageMobjectReferences,
+  findSceneBlocks,
+  importManimScene,
+} from "./source-import";
 
 const source = `from manim import *
 
@@ -32,6 +37,64 @@ class Second(Scene):
 `;
 
 describe("conservative Manim source import", () => {
+  it("classifies only direct ImageMobject assignment paths without comment or string false positives", () => {
+    const imageSource = `from manim import *
+
+class ImageScene(Scene):
+    def construct(self):
+        positional = ImageMobject("image.png")
+        keyword = ImageMobject(filename_or_array = 'image.png', resampling_algorithm="nearest")
+        wrong_path = ImageMobject("assets/private.png")
+        dynamic_path = ImageMobject(asset_path)
+        missing_path = ImageMobject()
+        documentation = 'fake = ImageMobject("other.png")'
+        # commented = ImageMobject("other.png")
+        if False:
+            nested = ImageMobject("other.png")
+        self.add(ImageMobject("image.png"))
+        self.add(positional, keyword)
+`;
+
+    expect(analyzeDirectImageMobjectReferences(imageSource)).toEqual({
+      exactImagePngReferences: 2,
+      unsupportedReferences: 5,
+    });
+  });
+
+  it("fails closed for ImageMobject aliases, split calls, and executable f-string fields", () => {
+    const scene = (body: string, imports = "from manim import *") => `${imports}
+class ImageScene(Scene):
+    def construct(self):
+${body}
+`;
+
+    expect(
+      analyzeDirectImageMobjectReferences(
+        scene(
+          '        image = ImageMobject("image.png")\n        note = f"ImageMobject is documented here"',
+          "from manim import ImageMobject, Scene",
+        ),
+      ),
+    ).toEqual({ exactImagePngReferences: 1, unsupportedReferences: 0 });
+    expect(
+      analyzeDirectImageMobjectReferences(
+        scene('        image = Picture("other.png")', "from manim import ImageMobject as Picture, Scene"),
+      ),
+    ).toEqual({ exactImagePngReferences: 0, unsupportedReferences: 1 });
+    expect(
+      analyzeDirectImageMobjectReferences(
+        scene('        Picture = ImageMobject\n        image = Picture("other.png")'),
+      ),
+    ).toEqual({ exactImagePngReferences: 0, unsupportedReferences: 1 });
+    expect(analyzeDirectImageMobjectReferences(scene("        detail = f\"{ImageMobject('other.png')}\""))).toEqual({
+      exactImagePngReferences: 0,
+      unsupportedReferences: 1,
+    });
+    expect(
+      analyzeDirectImageMobjectReferences(scene('        image = ImageMobject \\\n            ("other.png")')),
+    ).toEqual({ exactImagePngReferences: 0, unsupportedReferences: 1 });
+  });
+
   it("discovers ordered Scene blocks and imports runtime identities, timing, and content", () => {
     expect(findSceneBlocks(source).map((block) => block.name)).toEqual(["First", "Second"]);
     const imported = importManimScene(source, "scene.py", "First");

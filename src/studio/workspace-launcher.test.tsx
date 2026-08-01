@@ -24,7 +24,7 @@ describe("workspace launcher shell modes", () => {
     );
 
     expect(markup).toContain("Import Python");
-    expect(markup).toContain("Upload one existing .py file.");
+    expect(markup).toContain("Upload one .py file and an optional image.png.");
     expect(markup).not.toContain("Existing folder path");
     expect(markup).not.toContain("/path/to/manim-project");
   });

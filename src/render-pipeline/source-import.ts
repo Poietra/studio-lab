@@ -552,6 +552,166 @@ function constructorArguments(source: string) {
   return { keywords, positional };
 }
 
+export type DirectImageMobjectReferenceAnalysis = Readonly<{
+  exactImagePngReferences: number;
+  unsupportedReferences: number;
+}>;
+
+function directImageMobjectFilenameExpression(argumentsSource: string) {
+  const positional: string[] = [];
+  const filenameKeywords: string[] = [];
+  for (const argument of splitTopLevelArguments(argumentsSource)) {
+    const keyword = argument.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/s);
+    if (!keyword) {
+      positional.push(argument);
+      continue;
+    }
+    if (keyword[1] === "filename_or_array") filenameKeywords.push(keyword[2].trim());
+  }
+  if (filenameKeywords.length > 1 || (filenameKeywords.length === 1 && positional.length > 0)) return null;
+  return filenameKeywords[0] ?? positional[0] ?? null;
+}
+
+function isExactImagePngStringLiteral(expression: string) {
+  return /^(?:[rRuU])?(?:"image[.]png"|'image[.]png')$/.test(expression.trim());
+}
+
+const PYTHON_IMAGE_STRING_PREFIXES = new Set(["b", "br", "f", "fr", "r", "rb", "rf", "u"]);
+
+function stringPrefixAt(source: string, quoteIndex: number) {
+  for (const length of [2, 1]) {
+    const start = quoteIndex - length;
+    if (start < 0) continue;
+    const prefix = source.slice(start, quoteIndex);
+    if (!PYTHON_IMAGE_STRING_PREFIXES.has(prefix.toLowerCase())) continue;
+    const preceding = source[start - 1];
+    if (preceding === undefined || !/[A-Za-z0-9_]/.test(preceding)) return prefix.toLowerCase();
+  }
+  return "";
+}
+
+function escapedAt(source: string, index: number) {
+  let backslashes = 0;
+  for (let cursor = index - 1; cursor >= 0 && source[cursor] === "\\"; cursor -= 1) backslashes += 1;
+  return backslashes % 2 === 1;
+}
+
+function imageMobjectReferencesInFStringFields(content: string) {
+  let references = 0;
+  let fieldDepth = 0;
+  let fieldStart = 0;
+  let index = 0;
+  while (index < content.length) {
+    const character = content[index];
+    if (fieldDepth === 0) {
+      if (content.startsWith("{{", index) || content.startsWith("}}", index)) {
+        index += 2;
+        continue;
+      }
+      if (character === "{") {
+        fieldDepth = 1;
+        fieldStart = index + 1;
+      }
+      index += 1;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      const delimiter = content.slice(index, index + 3) === character.repeat(3) ? character.repeat(3) : character;
+      index += delimiter.length;
+      while (index < content.length && !(content.startsWith(delimiter, index) && !escapedAt(content, index))) {
+        index += 1;
+      }
+      index += delimiter.length;
+      continue;
+    }
+    if (character === "{") fieldDepth += 1;
+    if (character === "}") {
+      fieldDepth -= 1;
+      if (fieldDepth === 0) {
+        const field = analyzePythonSource(content.slice(fieldStart, index));
+        references += field.lines.reduce(
+          (count, line) => count + [...line.code.matchAll(/\bImageMobject\b/g)].length,
+          0,
+        );
+      }
+    }
+    index += 1;
+  }
+  return references;
+}
+
+function imageMobjectReferencesInFStrings(source: string) {
+  let references = 0;
+  let index = 0;
+  while (index < source.length) {
+    const character = source[index];
+    if (character === "#") {
+      index = source.indexOf("\n", index);
+      if (index < 0) break;
+      continue;
+    }
+    if (character !== '"' && character !== "'") {
+      index += 1;
+      continue;
+    }
+    const prefix = stringPrefixAt(source, index);
+    const delimiter = source.slice(index, index + 3) === character.repeat(3) ? character.repeat(3) : character;
+    const contentStart = index + delimiter.length;
+    let contentEnd = contentStart;
+    while (
+      contentEnd < source.length &&
+      !(source.startsWith(delimiter, contentEnd) && !escapedAt(source, contentEnd))
+    ) {
+      contentEnd += 1;
+    }
+    if (prefix.includes("f"))
+      references += imageMobjectReferencesInFStringFields(source.slice(contentStart, contentEnd));
+    index = contentEnd < source.length ? contentEnd + delimiter.length : source.length;
+  }
+  return references;
+}
+
+function unaliasedImageMobjectImports(code: string) {
+  let imports = 0;
+  for (const match of code.matchAll(
+    /\bfrom\s+manim(?:[.][A-Za-z_][A-Za-z0-9_]*)*\s+import\s*(?:\(([^)]*)\)|([^\n;]+))/g,
+  )) {
+    const names = (match[1] ?? match[2] ?? "").split(",");
+    imports += names.filter((name) => /^\s*ImageMobject\s*$/.test(name)).length;
+  }
+  return imports;
+}
+
+/**
+ * Classifies only direct construct-body assignments understood by the static
+ * importer as supported. Every other lexical ImageMobject call is unsupported;
+ * the lexical pass deliberately blanks comments and strings first so source
+ * prose cannot manufacture an asset reference.
+ */
+export function analyzeDirectImageMobjectReferences(source: string): DirectImageMobjectReferenceAnalysis {
+  const analysis = analyzePythonSource(source);
+  if (!analysis.valid) return { exactImagePngReferences: 0, unsupportedReferences: 0 };
+  const lexicalCode = analysis.lines.map((line) => line.code).join("\n");
+  const lexicalCalls = [...lexicalCode.matchAll(/\bImageMobject\s*\(/g)].length;
+  const lexicalIdentifiers = [...lexicalCode.matchAll(/\bImageMobject\b/g)].length;
+  const allowedImportIdentifiers = unaliasedImageMobjectImports(lexicalCode);
+  const indirectIdentifiers = Math.max(0, lexicalIdentifiers - lexicalCalls - allowedImportIdentifiers);
+  let exactImagePngReferences = 0;
+  for (const block of findSceneBlocks(source)) {
+    for (const statement of collectStatements(block)) {
+      const assignment = parseEntityAssignment(statement.text);
+      if (assignment?.type !== "ImageMobject") continue;
+      const filename = directImageMobjectFilenameExpression(assignment.argumentsSource);
+      if (filename !== null && isExactImagePngStringLiteral(filename)) exactImagePngReferences += 1;
+    }
+  }
+  return {
+    exactImagePngReferences,
+    unsupportedReferences:
+      lexicalCalls - exactImagePngReferences + indirectIdentifiers + imageMobjectReferencesInFStrings(source),
+  };
+}
+
 const UNSIGNED_NUMBER_LITERAL =
   "[+]?(?:(?:\\d(?:_?\\d)*)\\.(?:\\d(?:_?\\d)*)?|\\.(?:\\d(?:_?\\d)*)|(?:\\d(?:_?\\d)*))(?:[eE][+-]?\\d(?:_?\\d)*)?";
 const UNSIGNED_NUMBER_LITERAL_PATTERN = new RegExp(`^${UNSIGNED_NUMBER_LITERAL}$`);

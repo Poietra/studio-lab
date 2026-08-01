@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -137,6 +137,7 @@ describe("Manim project registry", () => {
       "from manim import *\nclass ImportedScene(Scene):\n    def construct(self):\n        circle = Circle()\n        self.add(circle)\n";
 
     const imported = registry.importBrowserProject({
+      imagePngBase64: null,
       name: "Imported browser workspace",
       source,
       sourceName: "lesson.py",
@@ -169,16 +170,159 @@ describe("Manim project registry", () => {
     const { dataRoot, registry } = await registryFixture(["poietra-command-that-does-not-exist"], true);
 
     expect(() =>
-      registry.importBrowserProject({ name: "No Scene", source: "print('hello')\n", sourceName: "script.py" }),
+      registry.importBrowserProject({
+        imagePngBase64: null,
+        name: "No Scene",
+        source: "print('hello')\n",
+        sourceName: "script.py",
+      }),
     ).toThrow(/does not contain an importable Manim Scene/i);
     expect(() =>
       registry.importBrowserProject({
+        imagePngBase64: null,
         name: "Asset Scene",
         source:
           'from manim import *\nclass AssetScene(Scene):\n    def construct(self):\n        image = ImageMobject("asset.png")\n        self.add(image)\n',
         sourceName: "asset_scene.py",
       }),
-    ).toThrow(/asset and archive import are not supported/i);
+    ).toThrow(/only direct ImageMobject assignments with literal "image[.]png"/i);
+    expect(await readdir(join(dataRoot!, ".workspaces"))).toEqual([]);
+  });
+
+  it("writes one validated browser image.png privately beside its source", async () => {
+    const { dataRoot, registry } = await registryFixture(["poietra-command-that-does-not-exist"], true);
+    const source = `from manim import *
+class ImageScene(Scene):
+    def construct(self):
+        image = ImageMobject(filename_or_array="image.png")
+        self.add(image)
+`;
+
+    const imported = registry.importBrowserProject({
+      imagePngBase64: projectPngBytes.toString("base64"),
+      name: "Image browser workspace",
+      source,
+      sourceName: "image_scene.py",
+    });
+    const projectId = imported.project?.id;
+    if (!projectId) throw new Error("The imported project ID is missing.");
+    const managedRoot = join(dataRoot!, ".workspaces", projectId);
+
+    expect(await readFile(join(managedRoot, "image_scene.py"), "utf8")).toBe(source);
+    expect(await readFile(join(managedRoot, "image.png"))).toEqual(projectPngBytes);
+    expect((await stat(join(managedRoot, "image.png"))).mode & 0o777).toBe(0o600);
+    await expect(registry.workspace(projectId)).resolves.toMatchObject({
+      projectId,
+      sources: [{ path: "image_scene.py", scenes: [{ name: "ImageScene" }] }],
+    });
+  });
+
+  it("rejects missing, unused, dynamic, and malformed browser image.png inputs before publication", async () => {
+    const { dataRoot, registry } = await registryFixture(["poietra-command-that-does-not-exist"], true);
+    const imageSource = (filename: string) => `from manim import *
+class ImageScene(Scene):
+    def construct(self):
+        image = ImageMobject(${filename})
+        self.add(image)
+`;
+    const plainSource = `from manim import *
+class PlainScene(Scene):
+    def construct(self):
+        self.add(Circle())
+`;
+
+    expect(() =>
+      registry.importBrowserProject({
+        imagePngBase64: null,
+        name: "Missing image",
+        source: imageSource('"image.png"'),
+        sourceName: "scene.py",
+      }),
+    ).toThrow(/select that PNG/i);
+    expect(() =>
+      registry.importBrowserProject({
+        imagePngBase64: projectPngBytes.toString("base64"),
+        name: "Unused image",
+        source: plainSource,
+        sourceName: "scene.py",
+      }),
+    ).toThrow(/not referenced/i);
+    expect(() =>
+      registry.importBrowserProject({
+        imagePngBase64: projectPngBytes.toString("base64"),
+        name: "Dynamic image",
+        source: imageSource("asset_path"),
+        sourceName: "scene.py",
+      }),
+    ).toThrow(/only direct ImageMobject assignments/i);
+    for (const source of [
+      `from manim import ImageMobject as Picture, Scene
+class AliasImageScene(Scene):
+    def construct(self):
+        image = Picture("other.png")
+`,
+      `from manim import *
+class ReboundImageScene(Scene):
+    def construct(self):
+        Picture = ImageMobject
+        image = Picture("other.png")
+`,
+      `from manim import *
+class FStringImageScene(Scene):
+    def construct(self):
+        detail = f"{ImageMobject('other.png')}"
+`,
+    ]) {
+      expect(() =>
+        registry.importBrowserProject({
+          imagePngBase64: null,
+          name: "Indirect image",
+          source,
+          sourceName: "scene.py",
+        }),
+      ).toThrow(/only direct ImageMobject assignments/i);
+    }
+    expect(() =>
+      registry.importBrowserProject({
+        imagePngBase64: projectPngBytes.toString("base64"),
+        name: "Unreachable image",
+        source: `from manim import *
+class UnreachableImageScene(Scene):
+    def construct(self):
+        return
+        image = ImageMobject("image.png")
+`,
+        sourceName: "scene.py",
+      }),
+    ).toThrow(/reachable direct ImageMobject assignment/i);
+    expect(() =>
+      registry.importBrowserProject({
+        imagePngBase64: projectPngBytes.toString("base64"),
+        name: "Inline image",
+        source: `from manim import *
+class InlineImageScene(Scene):
+    def construct(self):
+        self.add(ImageMobject("image.png"))
+`,
+        sourceName: "scene.py",
+      }),
+    ).toThrow(/only direct ImageMobject assignments/i);
+    expect(() =>
+      registry.importBrowserProject({
+        imagePngBase64: `${projectPngBytes.toString("base64")}=`,
+        name: "Noncanonical image",
+        source: imageSource('"image.png"'),
+        sourceName: "scene.py",
+      }),
+    ).toThrow(/canonical base64/i);
+    expect(() =>
+      registry.importBrowserProject({
+        imagePngBase64: Buffer.from("not a png", "utf8").toString("base64"),
+        name: "Invalid image",
+        source: imageSource('"image.png"'),
+        sourceName: "scene.py",
+      }),
+    ).toThrow(/image[.]png.*(?:truncated|signature)/i);
     expect(await readdir(join(dataRoot!, ".workspaces"))).toEqual([]);
   });
 

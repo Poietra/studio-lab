@@ -18,6 +18,7 @@ import {
   unregisterManimProject,
 } from "./client";
 import {
+  MAX_BROWSER_MANIM_IMAGE_PNG_BYTES_V1,
   MAX_BROWSER_MANIM_SOURCE_BYTES_V1,
   type ProgramRenderRequest,
   RENDER_SESSION_CONTRACT_VERSION_HEADER,
@@ -265,11 +266,49 @@ describe("Manim API client contracts", () => {
     ).resolves.toEqual(imported);
 
     expect(fetch).toHaveBeenCalledWith("/api/manim/project-imports", {
-      body: JSON.stringify({ name: "Imported demo", source, sourceName: "scene.py" }),
+      body: JSON.stringify({ imagePngBase64: null, name: "Imported demo", source, sourceName: "scene.py" }),
       headers: { "content-type": "application/json" },
       method: "POST",
       signal: undefined,
     });
+  });
+
+  it("encodes one exact optional image.png in canonical base64 without sending a client-owned asset path", async () => {
+    const imported = {
+      catalog: {
+        defaultProjectId: "project-a",
+        projects: [{ id: "project-a", kind: "managed", name: "Imported image" }],
+      },
+      project: { id: "project-a", kind: "managed", name: "Imported image" },
+    };
+    const source = "from manim import *\nclass ImportedScene(Scene):\n    pass\n";
+    const sourceBytes = new TextEncoder().encode(source);
+    const imageBytes = Uint8Array.from({ length: 12 * 1024 + 5 }, (_, index) => index % 251);
+    const fetch = vi.fn(async () => new Response(JSON.stringify(imported), { status: 201 }));
+    vi.stubGlobal("fetch", fetch);
+
+    await createManimProject({
+      file: { arrayBuffer: async () => sourceBytes.slice().buffer, name: "scene.py", size: sourceBytes.byteLength },
+      imageFile: {
+        arrayBuffer: async () => imageBytes.slice().buffer,
+        name: "image.png",
+        size: imageBytes.byteLength,
+      },
+      kind: "browser-import",
+      name: "Imported image",
+    });
+
+    const request = (fetch.mock.calls as unknown as readonly (readonly [string, RequestInit])[])[0]?.[1];
+    const body = JSON.parse(String(request?.body)) as Record<string, unknown>;
+    expect(body).toEqual({
+      imagePngBase64: Buffer.from(imageBytes).toString("base64"),
+      name: "Imported image",
+      source,
+      sourceName: "scene.py",
+    });
+    expect(body).not.toHaveProperty("imageName");
+    expect(body).not.toHaveProperty("imagePath");
+    expect(body).not.toHaveProperty("objectKey");
   });
 
   it("rejects oversized browser files before reading or uploading them", async () => {
@@ -306,6 +345,62 @@ describe("Manim API client contracts", () => {
         name: "Invalid encoding",
       }),
     ).rejects.toThrow(/valid UTF-8/i);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid image.png metadata or unstable bytes before upload", async () => {
+    const source = new TextEncoder().encode("from manim import *\nclass SceneOne(Scene):\n    pass\n");
+    const sourceFile = {
+      arrayBuffer: vi.fn(async () => source.slice().buffer),
+      name: "scene.py",
+      size: source.byteLength,
+    };
+    const wrongNameRead = vi.fn(async () => new Uint8Array([1]).buffer);
+    const emptyRead = vi.fn(async () => new ArrayBuffer(0));
+    const oversizedRead = vi.fn(async () => new ArrayBuffer(0));
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(
+      createManimProject({
+        file: sourceFile,
+        imageFile: { arrayBuffer: wrongNameRead, name: "diagram.png", size: 1 },
+        kind: "browser-import",
+        name: "Wrong image name",
+      }),
+    ).rejects.toThrow(/exact filename image[.]png/i);
+    await expect(
+      createManimProject({
+        file: sourceFile,
+        imageFile: { arrayBuffer: emptyRead, name: "image.png", size: 0 },
+        kind: "browser-import",
+        name: "Empty image",
+      }),
+    ).rejects.toThrow(/non-empty image[.]png/i);
+    await expect(
+      createManimProject({
+        file: sourceFile,
+        imageFile: {
+          arrayBuffer: oversizedRead,
+          name: "image.png",
+          size: MAX_BROWSER_MANIM_IMAGE_PNG_BYTES_V1 + 1,
+        },
+        kind: "browser-import",
+        name: "Large image",
+      }),
+    ).rejects.toThrow(/non-empty image[.]png/i);
+    await expect(
+      createManimProject({
+        file: sourceFile,
+        imageFile: { arrayBuffer: async () => new Uint8Array([1]).buffer, name: "image.png", size: 2 },
+        kind: "browser-import",
+        name: "Changed image",
+      }),
+    ).rejects.toThrow(/image[.]png file changed/i);
+
+    expect(wrongNameRead).not.toHaveBeenCalled();
+    expect(emptyRead).not.toHaveBeenCalled();
+    expect(oversizedRead).not.toHaveBeenCalled();
     expect(fetch).not.toHaveBeenCalled();
   });
 
