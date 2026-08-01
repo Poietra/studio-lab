@@ -3,6 +3,11 @@ import { createCanvasWorkerClientEvidenceAdapterV1 } from "../engine/canvas-work
 import { parseVerifiedSceneIrBundleV1 } from "../engine/contracts";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import {
+  manimProjectIdSchema,
+  manimSceneNameSchema,
+  manimSourcePathSchema,
+} from "../render-pipeline/manim-identity-contract";
+import {
   PRISTINE_WORKING_REVISION,
   type StudioPreviewSceneIdentityV1,
   type StudioPreviewSnapshotProviderV1,
@@ -10,10 +15,10 @@ import {
 
 const fixtureSceneIdentitySchema = z
   .object({
-    projectId: z.string().min(1),
-    sceneName: z.string().min(1),
+    projectId: manimProjectIdSchema,
+    sceneName: manimSceneNameSchema,
     sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
-    sourcePath: z.string().min(1),
+    sourcePath: manimSourcePathSchema,
   })
   .strict();
 

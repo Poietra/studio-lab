@@ -8,7 +8,7 @@ import { z } from "zod";
 
 export const BILLING_ENTITLEMENT_ROLLOUT_SCHEMA_V1 = "poietra.billing-entitlement-rollout";
 export const BILLING_ENTITLEMENT_ROLLOUT_VERSION_V1 = 1;
-export const BILLING_RENDER_LIFECYCLE_MIGRATION_VERSION_V1 = 18;
+export const BILLING_RENDER_LIFECYCLE_MIGRATION_VERSION_V1 = 19;
 
 const MAX_SPEC_BYTES = 16 * 1024;
 const POSTGRES_TIMEOUT_MS = 30_000;
@@ -107,7 +107,7 @@ export async function rolloutBillingEntitlementV1(specValue, dependencies) {
   const input = parseBillingEntitlementRolloutSpecV1(specValue);
   const migration = await dependencies.migrate();
   if (migration?.version !== BILLING_RENDER_LIFECYCLE_MIGRATION_VERSION_V1) {
-    fail("PostgreSQL did not reach the exact bundled durable-storage migration v18.");
+    fail("PostgreSQL did not reach the exact bundled durable-storage migration v19.");
   }
   if (!(await dependencies.ready())) fail("PostgreSQL is not ready at the exact billing-entitlement schema v14.");
 

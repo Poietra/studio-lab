@@ -22,6 +22,7 @@ import {
   applyRenderSessionFailureMigrationV8,
   applyRenderSessionMigrationV2,
   applyRenderSessionRetentionMigrationV6,
+  applyRenderSessionSceneNameMigrationV19,
   applySnapshotPublicationMigrationV3,
   applySnapshotRuntimeDigestMigrationV10,
   applyWorkspaceSourceMigrationV1,
@@ -41,6 +42,8 @@ import {
   RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE,
   RENDER_SESSION_MIGRATION_V2_SOURCE,
   RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE,
+  RENDER_SESSION_SCENE_NAME_MIGRATION_V19_CHECKSUM,
+  RENDER_SESSION_SCENE_NAME_MIGRATION_V19_SOURCE,
   RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM,
   RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE,
   SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE,
@@ -91,10 +94,10 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 18 });
-    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 19 });
+    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 18 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 19 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -113,7 +116,8 @@ describe("durable storage migrations", () => {
     expect(db.queries.filter(({ text }) => text === STRIPE_BILLING_MIGRATION_V16_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === EDITOR_DOCUMENT_MIGRATION_V17_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === EDITOR_MUTATION_MIGRATION_V18_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(36);
+    expect(db.queries.filter(({ text }) => text === RENDER_SESSION_SCENE_NAME_MIGRATION_V19_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(38);
   });
 
   it("applies an exact bundled prefix before a later cutover", async () => {
@@ -134,12 +138,18 @@ describe("durable storage migrations", () => {
       version: 18,
     });
     expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
+    expect(db.queries.some(({ text }) => text === RENDER_SESSION_SCENE_NAME_MIGRATION_V19_SOURCE)).toBe(false);
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 19)).resolves.toEqual({
+      applied: true,
+      version: 19,
+    });
+    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
   });
 
   it("rejects an unknown bundled target before acquiring a connection", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 19)).rejects.toThrow(
-      /migration v19 is not bundled/i,
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 20)).rejects.toThrow(
+      /migration v20 is not bundled/i,
     );
     expect(db.connect).not.toHaveBeenCalled();
   });
@@ -474,6 +484,27 @@ describe("durable storage migrations", () => {
     expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).not.toContain("UPDATE public.editor_edit_events");
     expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).not.toContain("DROP TRIGGER");
     expect(EDITOR_DOCUMENT_MIGRATION_V17_SOURCE).toContain("Editor edit events are append-only.");
+  });
+
+  it("requires all eighteen durable-storage prerequisites before expanding render Scene names in v19", async () => {
+    const db = database();
+    await expect(
+      applyRenderSessionSceneNameMigrationV19(db.pool, RENDER_SESSION_SCENE_NAME_MIGRATION_V19_SOURCE),
+    ).rejects.toThrow(/requires durable storage migrations v1 through v18/i);
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("expands only the forward render-session Scene-name constraint to the canonical 240-character boundary", () => {
+    expect(durableStorageMigrationChecksum(RENDER_SESSION_SCENE_NAME_MIGRATION_V19_SOURCE)).toBe(
+      RENDER_SESSION_SCENE_NAME_MIGRATION_V19_CHECKSUM,
+    );
+    expect(RENDER_SESSION_MIGRATION_V2_SOURCE).toContain("char_length(scene_name) <= 128");
+    expect(RENDER_SESSION_SCENE_NAME_MIGRATION_V19_SOURCE).toContain(
+      "DROP CONSTRAINT render_sessions_scene_name_check",
+    );
+    expect(RENDER_SESSION_SCENE_NAME_MIGRATION_V19_SOURCE).toContain("ADD CONSTRAINT render_sessions_scene_name_v19");
+    expect(RENDER_SESSION_SCENE_NAME_MIGRATION_V19_SOURCE).toContain("char_length(scene_name) <= 240");
+    expect(RENDER_SESSION_SCENE_NAME_MIGRATION_V19_SOURCE).not.toContain("<= 128");
   });
 
   it("defines bounded identities, memberships, and a deferred last-owner invariant in v11", () => {

@@ -128,9 +128,16 @@ pnpm exec wrangler secret put POIETRA_STRIPE_WEBHOOK_SECRET --config wrangler.bi
 
 `pnpm build:billing-worker` bundles the committed example without deploying;
 `pnpm deploy:billing-worker` requires the ignored production configuration.
-Apply bundled durable-storage migration v18 before deploying the Worker. Every
+Apply bundled durable-storage migration v19 before deploying the Worker. Every
 request scope verifies the exact billing migration v16 checksum and returns
 unavailable rather than serving against an older or modified schema.
+Migration v19 expands `render_sessions.scene_name` to the canonical 240-character
+Manim Scene boundary; new render processes remain unready until that migration is present.
+Drain old render processes before applying v19 and keep them stopped until the
+migration and new deployment finish. Validation scans `render_sessions` without
+holding an `ACCESS EXCLUSIVE` lock for the duration, but it should still be scheduled
+and observed on a large table. Old processes enforce the former 128-character
+repository boundary.
 Migration v18 is a coordinated editor cutover, not a rolling mixed-version
 upgrade. Drain every process that reads or writes the v17 editor event ledger,
 keep editor traffic unavailable while applying v18, and then start only

@@ -11,6 +11,11 @@ import { digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-s
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import { verifiedSourceRuntimeIdentityMapV1Schema } from "../engine/source-runtime-identity";
 import {
+  manimProjectIdSchema,
+  manimSceneNameSchema,
+  manimSourcePathSchema,
+} from "../render-pipeline/manim-identity-contract";
+import {
   PRISTINE_WORKING_REVISION,
   type StudioPreviewSceneIdentityV1,
   type StudioPreviewSnapshotProviderV1,
@@ -21,30 +26,12 @@ const SNAPSHOT_RESULT_SCHEMA = "poietra.fast-manim-snapshot-result";
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024 + 64 * 1024;
 const ZERO_SHA256 = "0".repeat(64);
 
-const projectIdSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
-const sceneNameSchema = z
-  .string()
-  .max(240)
-  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
-const sourcePathSchema = z
-  .string()
-  .refine(
-    (value) =>
-      value.length > 0 &&
-      value.length <= 500 &&
-      !/[\u0000-\u001f\u007f]/.test(value) &&
-      !value.includes("\\") &&
-      !value.startsWith("/") &&
-      !/^[A-Za-z]:/.test(value) &&
-      value.endsWith(".py") &&
-      value.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== ".."),
-  );
 const identitySchema = z
   .object({
-    projectId: projectIdSchema,
-    sceneName: sceneNameSchema,
+    projectId: manimProjectIdSchema,
+    sceneName: manimSceneNameSchema,
     sourceHash: sha256V1Schema,
-    sourcePath: sourcePathSchema,
+    sourcePath: manimSourcePathSchema,
   })
   .strict();
 
@@ -52,31 +39,31 @@ const compiledSnapshotSchema = z
   .object({
     bundle: z.unknown(),
     kind: z.literal("compiled"),
-    projectId: projectIdSchema,
+    projectId: manimProjectIdSchema,
     requestId: opaqueIdV1Schema,
     runtimeConfigHash: sha256V1Schema,
     sceneId: sourceIdentityV1Schema,
-    sceneName: sceneNameSchema,
+    sceneName: manimSceneNameSchema,
     schema: z.literal(SNAPSHOT_RESULT_SCHEMA),
     snapshotHash: sha256V1Schema,
     sourceHash: sha256V1Schema,
-    sourcePath: sourcePathSchema,
+    sourcePath: manimSourcePathSchema,
     version: z.literal(1),
   })
   .strict();
 
 const verifiedRunViewSchema = z
   .object({
-    projectId: projectIdSchema,
+    projectId: manimProjectIdSchema,
     publishedAt: z.iso.datetime(),
     requestId: opaqueIdV1Schema,
     revision: z.number().int().positive(),
     runtimeConfigHash: sha256V1Schema,
-    sceneName: sceneNameSchema,
+    sceneName: manimSceneNameSchema,
     schema: z.literal(SNAPSHOT_RUN_SCHEMA),
     snapshot: compiledSnapshotSchema,
     sourceRuntimeIdentity: verifiedSourceRuntimeIdentityMapV1Schema.optional(),
-    sourcePath: sourcePathSchema,
+    sourcePath: manimSourcePathSchema,
     status: z.literal("verified"),
     version: z.literal(1),
   })

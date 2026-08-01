@@ -1,6 +1,6 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { constants, type BigIntStats } from "node:fs";
+import { type BigIntStats, constants } from "node:fs";
 import { lstat, mkdir, mkdtemp, open, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -9,8 +9,9 @@ import { z } from "zod";
 
 import {
   MANIM_PROJECT_ID_PATTERN,
-  manimSourcePathSchema,
   type ManimThumbnailStatus,
+  manimSceneNameSchema,
+  manimSourcePathSchema,
 } from "../src/render-pipeline/contracts";
 import { HttpError } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
@@ -52,7 +53,7 @@ const cacheEntrySchema = z
   .object({
     fileName: z.string().regex(CACHE_FILE_PATTERN),
     generatedAt: z.string().datetime(),
-    sceneName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+    sceneName: manimSceneNameSchema,
     sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
     sourcePath: manimSourcePathSchema,
   })
@@ -62,7 +63,7 @@ const attemptSchema = z
   .object({
     error: z.string().max(MAX_ERROR_LENGTH).nullable(),
     finishedAt: z.string().datetime(),
-    sceneName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+    sceneName: manimSceneNameSchema,
     sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
     sourcePath: manimSourcePathSchema,
   })

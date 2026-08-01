@@ -17,7 +17,11 @@ import {
   type VerifiedSourceRuntimeIdentityMapV1,
   verifiedSourceRuntimeIdentityMapV1Schema,
 } from "../src/engine/source-runtime-identity";
-import { manimProjectIdSchema, manimSourcePathSchema } from "../src/render-pipeline/contracts";
+import {
+  manimProjectIdSchema,
+  manimSceneNameSchema,
+  manimSourcePathSchema,
+} from "../src/render-pipeline/manim-identity-contract";
 import {
   deriveHermeticMathTexMorphSourcePlanV5,
   HERMETIC_MATHTEX_MORPH_FRAME_RATE_V5,
@@ -59,16 +63,12 @@ export const fastManimSnapshotProfileVersionV1Schema = z.union([
 ]);
 export type FastManimSnapshotProfileVersionV1 = z.infer<typeof fastManimSnapshotProfileVersionV1Schema>;
 
-const sceneNameSchema = z
-  .string()
-  .max(240)
-  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/);
 const correlationShape = {
   projectId: manimProjectIdSchema,
   requestId: opaqueIdV1Schema,
   runtimeConfigHash: sha256V1Schema,
   sceneId: sourceIdentityV1Schema,
-  sceneName: sceneNameSchema,
+  sceneName: manimSceneNameSchema,
   sourceHash: sha256V1Schema,
   sourcePath: manimSourcePathSchema,
 };
@@ -2499,7 +2499,7 @@ export const MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES = 2 * 1024 * 1024;
  */
 export function fastManimSnapshotSceneIdV1(sourcePath: string, sceneName: string) {
   const parsedSourcePath = manimSourcePathSchema.parse(sourcePath);
-  const parsedSceneName = sceneNameSchema.parse(sceneName);
+  const parsedSceneName = manimSceneNameSchema.parse(sceneName);
   return `scene:${createHash("sha256").update(`${parsedSourcePath}\u0000${parsedSceneName}`, "utf8").digest("hex")}`;
 }
 
@@ -2585,7 +2585,7 @@ export const fastManimSnapshotRunRequestV1Schema = z
   .object({
     projectId: manimProjectIdSchema,
     requestId: opaqueIdV1Schema,
-    sceneName: sceneNameSchema,
+    sceneName: manimSceneNameSchema,
     sourceHash: sha256V1Schema.optional(),
     sourcePath: manimSourcePathSchema,
   })
@@ -2593,7 +2593,7 @@ export const fastManimSnapshotRunRequestV1Schema = z
 
 export const fastManimSnapshotQueryV1Schema = z
   .object({
-    sceneName: sceneNameSchema,
+    sceneName: manimSceneNameSchema,
     sourcePath: manimSourcePathSchema,
   })
   .strict();
@@ -2685,7 +2685,7 @@ const runViewBaseShape = {
   projectId: manimProjectIdSchema,
   requestId: opaqueIdV1Schema,
   runtimeConfigHash: sha256V1Schema,
-  sceneName: sceneNameSchema,
+  sceneName: manimSceneNameSchema,
   schema: z.literal(FAST_MANIM_SNAPSHOT_RUN_SCHEMA_V1),
   sourcePath: manimSourcePathSchema,
   version: z.literal(1),

@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  type ProgramRenderRequest,
   RENDER_SESSION_CONTRACT_VERSION_HEADER,
   RENDER_SESSION_CONTRACT_VERSION_WITH_CPU_LIMIT,
   RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE,
@@ -82,6 +83,45 @@ function renderSession(overrides: Partial<RenderSessionView> = {}): RenderSessio
     updatedAt: "2026-07-29T00:00:01.000Z",
     videoUrl: null,
     ...overrides,
+  };
+}
+
+function programRenderRequest(sceneName: string): ProgramRenderRequest {
+  const operation = {
+    controlOffset: { x: 0, y: 0 },
+    delta: { x: 64, y: 0 },
+    dependsOn: [],
+    easing: "smooth" as const,
+    id: "tx/operation:motion",
+    interval: { end: 2, start: 1 },
+    kind: "CreateMotion" as const,
+    provenance: { evidence: [], origin: "direct-manipulation" as const },
+    targetEntityIds: ["equation"],
+  };
+  return {
+    destination: null,
+    program: {
+      anchor: {
+        capturedPlayhead: 1,
+        evidence: [],
+        resolvedSeconds: 1,
+        source: { kind: "playhead", referenceSeconds: 1 },
+      },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [operation],
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      requestedExecution: "sequence",
+      schedule: { edges: [], mode: "sequence", order: [operation.id] },
+      transactionId: "tx",
+      version: 1,
+    },
+    projectId: "project-a",
+    sceneName,
+    sourceBindings: [{ entityId: "equation", sourceVariable: "equation" }],
+    sourceHash: "a".repeat(64),
+    sourcePath: "scene.py",
+    viewport: { height: 360, width: 640 },
   };
 }
 
@@ -222,6 +262,44 @@ describe("Manim video byte ranges", () => {
 });
 
 describe("async Manim API port", () => {
+  it("accepts Scene names through 240 characters and rejects 241 before the render adapter", async () => {
+    const start = vi.fn(async (request: ProgramRenderRequest) =>
+      renderSession({ projectId: request.projectId, sceneName: request.sceneName }),
+    );
+    const api = {
+      start,
+      storageBoundary: { kind: "shared-durable", namespace: "http-scene-name-boundary-test" },
+      tenantId: "tenant-scene-name-boundary",
+    } as unknown as ManimApi;
+    const server = await listen(api);
+    try {
+      const port = (server.address() as AddressInfo).port;
+      for (const length of [128, 129, 240]) {
+        const sceneName = `S${"a".repeat(length - 1)}`;
+        const response = await send(port, "/api/manim/projects/project-a/renders", {
+          body: JSON.stringify(programRenderRequest(sceneName)),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        });
+        expect(response.status, `${length}-character Scene name`).toBe(202);
+      }
+
+      const rejected = await send(port, "/api/manim/projects/project-a/renders", {
+        body: JSON.stringify(programRenderRequest(`S${"a".repeat(240)}`)),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(rejected.status).toBe(400);
+      expect(rejected.body.byteLength).toBeLessThan(1_024);
+      expect(JSON.parse(rejected.body.toString("utf8"))).toEqual({
+        error: "Scene names accept at most 240 characters.",
+      });
+      expect(start).toHaveBeenCalledTimes(3);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
   it("serves authenticated digest-addressed snapshot PNG bytes without storage identity", async () => {
     const digest = "a".repeat(64);
     const sceneSnapshotAsset = vi.fn(async () => ({

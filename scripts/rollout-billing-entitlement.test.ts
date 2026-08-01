@@ -34,7 +34,7 @@ function dependencies(overrides: Readonly<Record<string, unknown>> = {}) {
   return {
     applySnapshot: vi.fn(async (input) => ({ kind: "applied", snapshot: { ...input, createdAt: DATABASE_NOW } })),
     databaseNow: vi.fn(async () => DATABASE_NOW),
-    migrate: vi.fn(async () => ({ applied: true, version: 18 })),
+    migrate: vi.fn(async () => ({ applied: true, version: 19 })),
     readCurrentHead: vi.fn(async () => exactHead()),
     ready: vi.fn(async () => true),
     ...overrides,
@@ -77,7 +77,7 @@ describe("billing entitlement rollout", () => {
       }),
       migrate: vi.fn(async () => {
         calls.push("migrate");
-        return { applied: true, version: 18 };
+        return { applied: true, version: 19 };
       }),
       readCurrentHead: vi.fn(async () => {
         calls.push("verify");

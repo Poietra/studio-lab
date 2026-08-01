@@ -5,7 +5,11 @@ import { z } from "zod";
 
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import { opaqueIdV1Schema, sha256V1Schema } from "../src/engine/primitives";
-import { manimProjectIdSchema, manimSourcePathSchema } from "../src/render-pipeline/contracts";
+import {
+  manimProjectIdSchema,
+  manimSceneNameSchema,
+  manimSourcePathSchema,
+} from "../src/render-pipeline/manim-identity-contract";
 import { manimTenantIdSchema } from "./manim-request-principal";
 import {
   MAX_PROJECT_PNG_BYTES_V1,
@@ -46,10 +50,6 @@ export function digestManimRenderStagingRootV1(stagingRoot: string) {
   return createHash("sha256").update(`poietra.render-staging-root.v1\0${stagingRoot}`, "utf8").digest("hex");
 }
 
-const sceneNameSchema = z
-  .string()
-  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/u)
-  .max(240);
 const canonicalFenceTokenSchema = z
   .string()
   .regex(/^(?:0|[1-9][0-9]*)$/u)
@@ -134,7 +134,7 @@ export const manimRenderSandboxDescriptorV2Schema = z
         width: z.literal(MANIM_RENDER_CANONICAL_SCENE_FRAME_V1.width),
       })
       .strict(),
-    sceneName: sceneNameSchema,
+    sceneName: manimSceneNameSchema,
     schema: z.literal(MANIM_RENDER_SANDBOX_REQUEST_SCHEMA_V2),
     sessionId: opaqueIdV1Schema,
     source: boundedSourceSchema,
