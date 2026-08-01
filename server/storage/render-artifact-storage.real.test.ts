@@ -18,10 +18,26 @@ import {
 import { Pool, type PoolClient } from "pg";
 import { describe, expect, it, vi } from "vitest";
 
+import {
+  manimProjectMutationViewSchema,
+  manimWorkspaceViewSchema,
+  type ProgramRenderRequest,
+  programRenderRequestSchema,
+  renderSessionViewSchema,
+} from "../../src/render-pipeline/contracts";
+import type { CanonicalEditOperation, CanonicalEditProgram } from "../../src/studio/operations";
+import type { DurableFastManimSnapshotServiceV1 } from "../durable-fast-manim-snapshot-service";
+import { DurableManimRenderServiceV1 } from "../durable-manim-render-service";
+import { createDurableManimRuntimeV1, createDurableProductionManimRuntimeAdapterV1 } from "../durable-manim-runtime";
 import { FastManimGatedOciDockerClientV1 } from "../fast-manim-gated-oci-job-runner";
 import { HttpError } from "../http/json";
 import type { ManimApi } from "../manim-api";
 import { createTrustedLocalManimRequestContext } from "../manim-local-request-context";
+import {
+  type ProductionManimServer,
+  type ProductionRequestAdmission,
+  startProductionManimServer,
+} from "../manim-production-server";
 import { ManimRenderGatedOciJobRunnerV1 } from "../manim-render-gated-oci-job-runner";
 import { handleManimRequest } from "../manim-render-http";
 import { ManimRenderGatedOciBackendV1 } from "../manim-render-sandbox-backend";
@@ -36,6 +52,7 @@ import { AuthorizedArtifactReaderV1 } from "./authorized-artifact-reader";
 import { seedActiveRenderEntitlementFixtureV1 } from "./billing-entitlement-real-test-fixture";
 import { applyBundledDurableStorageMigrations, applyBundledDurableStorageMigrationsThrough } from "./postgres/migrate";
 import { PostgresArtifactRepositoryV1 } from "./postgres/postgres-artifact-repository";
+import { PostgresEditorDocumentRepositoryV1 } from "./postgres/postgres-editor-document-repository";
 import { PostgresRenderSessionRepositoryV1 } from "./postgres/postgres-render-session-repository";
 import { PostgresWorkspaceSourceRepositoryV1 } from "./postgres/postgres-workspace-source-repository";
 import { runRenderArtifactGcV1 } from "./render-artifact-gc";
@@ -50,6 +67,7 @@ import {
 import type { DurableRenderSessionV1 } from "./render-session-repository";
 import { S3ArtifactReaderV1 } from "./s3/s3-artifact-reader";
 import { S3ImmutableRenderArtifactStoreV1 } from "./s3/s3-immutable-render-artifact-store";
+import { ImmutableS3SourceBlobStoreV1 } from "./s3/s3-immutable-source-png-store";
 import { VerifiedArtifactPublisherV1 } from "./verified-artifact-publisher";
 import type { SourceBlobReceiptV1, WorkspaceSourceHeadV1 } from "./workspace-source-repository";
 
@@ -419,6 +437,158 @@ async function requestMedia(
       request.end();
     },
   );
+}
+
+async function availableProductionPort() {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const port = (server.address() as AddressInfo).port;
+  await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  return port;
+}
+
+function requestProduction(
+  server: ProductionManimServer,
+  path: string,
+  options: Readonly<{
+    body?: unknown;
+    cookie?: string;
+    headers?: Readonly<Record<string, string>>;
+    method?: string;
+  }> = {},
+) {
+  return new Promise<Readonly<{ body: Buffer; headers: import("node:http").IncomingHttpHeaders; status: number }>>(
+    (resolve, reject) => {
+      const method = options.method ?? "GET";
+      const hasBody = options.body !== undefined;
+      const body = hasBody ? Buffer.from(JSON.stringify(options.body), "utf8") : Buffer.alloc(0);
+      const mutation = method === "POST" || method === "PATCH" || method === "DELETE";
+      const request = createRequest(
+        {
+          headers: {
+            connection: "close",
+            host: new URL(server.config.publicOrigin).host,
+            ...(options.cookie ? { cookie: options.cookie } : {}),
+            ...(mutation
+              ? {
+                  "content-length": String(body.byteLength),
+                  "content-type": "application/json",
+                  origin: server.config.publicOrigin,
+                }
+              : {}),
+            ...options.headers,
+          },
+          host: server.address.address,
+          method,
+          path,
+          port: server.address.port,
+        },
+        (response) => {
+          const chunks: Buffer[] = [];
+          response.on("data", (chunk: Buffer) => chunks.push(chunk));
+          response.once("end", () =>
+            resolve({
+              body: Buffer.concat(chunks),
+              headers: response.headers,
+              status: response.statusCode ?? 0,
+            }),
+          );
+        },
+      );
+      request.once("error", reject);
+      request.end(body);
+    },
+  );
+}
+
+function parsedJson(response: Readonly<{ body: Buffer }>) {
+  return JSON.parse(response.body.toString("utf8")) as unknown;
+}
+
+function productionRenderRequest(projectId: string, sourceHash: string): ProgramRenderRequest {
+  const entityId = "tx:production-download/entity:circle";
+  const createId = "tx:production-download/operation:create";
+  const positionId = "tx:production-download/operation:position";
+  const presenceId = "tx:production-download/operation:presence";
+  const operations: CanonicalEditOperation[] = [
+    {
+      dependsOn: [],
+      entity: { id: entityId, lifetime: { end: null, start: 0 }, type: "Circle" },
+      id: createId,
+      interval: { end: 0, start: 0 },
+      kind: "CreateEntity",
+      provenance: { evidence: [], origin: "studio-default" },
+    },
+    {
+      dependsOn: [createId],
+      entityId,
+      id: positionId,
+      interval: { end: 0, start: 0 },
+      key: "position",
+      kind: "SetProperty",
+      provenance: { evidence: [], origin: "studio-default" },
+      value: { x: 320, y: 180 },
+    },
+    {
+      dependsOn: [positionId],
+      effect: "fade-in",
+      entityId,
+      id: presenceId,
+      interval: { end: 0.4, start: 0 },
+      kind: "ChangePresence",
+      persistent: true,
+      provenance: { evidence: [], origin: "studio-default" },
+    },
+  ];
+  const program: CanonicalEditProgram = {
+    anchor: {
+      capturedPlayhead: 0,
+      evidence: ["captured-playhead:0.000"],
+      resolvedSeconds: 0,
+      source: { kind: "playhead", referenceSeconds: 0 },
+    },
+    intentCount: 1,
+    loweringStatus: "supported",
+    operations,
+    provenance: { evidence: [], origin: "direct-manipulation" },
+    requestedExecution: "sequence",
+    schedule: { edges: [], mode: "sequence", order: operations.map((operation) => operation.id) },
+    transactionId: "production-download",
+    version: 1,
+  };
+  return programRenderRequestSchema.parse({
+    destination: null,
+    program,
+    projectId,
+    sceneName: "MainScene",
+    sourceBindings: [],
+    sourceHash,
+    sourcePath: "main.py",
+    viewport: { height: 360, width: 640 },
+  });
+}
+
+function cookieAdmission(tenantId: string): ProductionRequestAdmission {
+  return {
+    async authenticate(input, signal) {
+      signal.throwIfAborted();
+      const cookie = input.credentials.cookie
+        ?.split(";")
+        .map((part) => part.trim())
+        .find((part) => part.startsWith("poietra-e2e="))
+        ?.slice("poietra-e2e=".length);
+      if (cookie === "owner") return { subjectId: "production-e2e-owner", tenantId };
+      if (cookie === "foreign") return { subjectId: "production-e2e-foreign", tenantId: "foreign-tenant" };
+      return null;
+    },
+    async ready(signal) {
+      signal.throwIfAborted();
+      return true;
+    },
+  };
 }
 
 async function readSessionVideo(reader: AuthorizedArtifactReaderV1, sessionId: string, start?: number, end?: number) {
@@ -1211,4 +1381,209 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
       await Promise.allSettled([repository.close(), artifacts.close(), renders.close(), sources.close(), pool.end()]);
     }
   }, 60_000);
+
+  it("serves an authenticated production export, render, and downloadable MP4 lifecycle", async () => {
+    const environment = storageEnvironment();
+    await prepareStorage(environment);
+    const suffix = randomUUID().replaceAll("-", "");
+    const tenantId = `production-download-${suffix}`;
+    const projectId = `project-${suffix}`;
+    const ownerCookie = "poietra-e2e=owner";
+    const videoBytes = Buffer.from("000000186674797069736f6d00000000", "hex");
+    const thumbnailBytes = Buffer.alloc(24);
+    thumbnailBytes.set(Buffer.from("89504e470d0a1a0a", "hex"));
+    thumbnailBytes.writeUInt32BE(640, 16);
+    thumbnailBytes.writeUInt32BE(360, 20);
+
+    const pool = new Pool({ connectionString: environment.databaseUrl, max: 4 });
+    const sources = sourceRepository();
+    const blobs = new ImmutableS3SourceBlobStoreV1({
+      bucket: environment.bucket,
+      clientConfig: s3Config(environment),
+      deployment: "test",
+    });
+    const renders = renderRepository();
+    const artifactReader = new AuthorizedArtifactReaderV1({
+      repository: artifactRepository(),
+      store: immutableArtifactStore(),
+      tenantId,
+    });
+    const execution = {
+      async cancel(_sessionId: string) {},
+      async ready(signal?: AbortSignal) {
+        signal?.throwIfAborted();
+        return true;
+      },
+      wake: vi.fn(),
+    };
+    const renderService = new DurableManimRenderServiceV1({
+      artifactReader,
+      blobs,
+      execution,
+      repository: renders,
+      sourceRepository: sources,
+      tenantId,
+    });
+    const editorDocuments = new PostgresEditorDocumentRepositoryV1({
+      poolConfig: { connectionString: environment.databaseUrl, max: 2 },
+    });
+    const snapshots = {
+      async close() {},
+      async ready(signal?: AbortSignal) {
+        signal?.throwIfAborted();
+        return true;
+      },
+    } as unknown as DurableFastManimSnapshotServiceV1;
+    const runtime = await createDurableManimRuntimeV1({
+      artifactReader,
+      blobs,
+      editorDocuments,
+      execution,
+      namespace: "production-download-e2e",
+      projectIdFactory: () => projectId,
+      renders: renderService,
+      repository: sources,
+      snapshots,
+      tenantId,
+    });
+    const adapter = createDurableProductionManimRuntimeAdapterV1(runtime, {
+      async close() {},
+      ready: () => true,
+    });
+    const workerRenders = renderRepository();
+    const publisher = artifactRepository();
+    const publisherStore = immutableArtifactStore();
+    let server: ProductionManimServer | null = null;
+    try {
+      server = await startProductionManimServer({
+        admission: cookieAdmission(tenantId),
+        config: {
+          deployment: "production",
+          host: "127.0.0.1",
+          port: await availableProductionPort(),
+          publicOrigin: "https://studio.example",
+        },
+        runtime: adapter,
+      });
+
+      const createdResponse = await requestProduction(server, "/api/manim/projects", {
+        body: { kind: "managed", name: "Production download" },
+        cookie: ownerCookie,
+        method: "POST",
+      });
+      expect(createdResponse.status).toBe(201);
+      const created = manimProjectMutationViewSchema.parse(parsedJson(createdResponse));
+      expect(created.project).toEqual({ id: projectId, kind: "managed", name: "Production download" });
+      await seedActiveRenderEntitlementFixtureV1(pool, tenantId);
+
+      const workspaceResponse = await requestProduction(server, `/api/manim/projects/${projectId}/workspace`, {
+        cookie: ownerCookie,
+      });
+      expect(workspaceResponse.status).toBe(200);
+      const workspace = manimWorkspaceViewSchema.parse(parsedJson(workspaceResponse));
+      expect(workspace.renderCapability).toEqual({
+        available: true,
+        kind: "durable-sandbox",
+        unavailableReason: null,
+      });
+      const scene = workspace.sources.find((source) => source.path === "main.py")?.scenes[0];
+      expect(scene).toMatchObject({ anchors: [0], name: "MainScene" });
+      if (!scene) throw new Error("The managed production workspace did not expose its starter scene.");
+      const renderRequest = productionRenderRequest(projectId, scene.sourceHash);
+
+      const exportResponse = await requestProduction(server, `/api/manim/projects/${projectId}/export`, {
+        body: renderRequest,
+        cookie: ownerCookie,
+        method: "POST",
+      });
+      expect(exportResponse.status).toBe(200);
+      expect(exportResponse.headers["content-disposition"]).toContain('filename="main.poietra.py"');
+      expect(exportResponse.body.toString("utf8")).toContain("Circle(radius=1)");
+      expect(exportResponse.body.toString("utf8")).toContain("FadeIn(");
+
+      // This admission is the production proof that the capability reported
+      // immediately above and render POST use the same readiness boundary.
+      const startResponse = await requestProduction(server, `/api/manim/projects/${projectId}/renders`, {
+        body: renderRequest,
+        cookie: ownerCookie,
+        method: "POST",
+      });
+      expect(startResponse.status).toBe(202);
+      const started = renderSessionViewSchema.parse(parsedJson(startResponse));
+      expect(started).toMatchObject({ projectId, status: "preparing", videoUrl: null });
+      expect(execution.wake).toHaveBeenCalledOnce();
+
+      const unavailableVideo = await requestProduction(server, `/api/manim/renders/${started.id}/video`, {
+        cookie: ownerCookie,
+      });
+      expect(unavailableVideo.status).toBe(404);
+
+      const claimed = await workerRenders.claimLease({
+        brokerShardId: "production-download-e2e-shard",
+        leaseDurationMs: 60_000,
+        ownerId: `worker-${suffix}`,
+        sessionId: started.id,
+        tenantId,
+      });
+      expect(claimed.status).toBe("rendering");
+      const renderingResponse = await requestProduction(server, `/api/manim/renders/${started.id}`, {
+        cookie: ownerCookie,
+      });
+      expect(renderSessionViewSchema.parse(parsedJson(renderingResponse))).toMatchObject({ status: "rendering" });
+
+      const bundle = await putBundle(publisherStore, claimed, videoBytes, thumbnailBytes);
+      const publication = publicationInput(claimed, bundle);
+      await expect(
+        publisher.publishSessionArtifacts({ ...publication, fenceToken: publication.fenceToken + 1n }),
+      ).rejects.toMatchObject({ status: 409 });
+      const stillUnavailable = await requestProduction(server, `/api/manim/renders/${started.id}/video`, {
+        cookie: ownerCookie,
+      });
+      expect(stillUnavailable.status).toBe(404);
+      await publisher.publishSessionArtifacts(publication);
+
+      const readyResponse = await requestProduction(server, `/api/manim/renders/${started.id}`, {
+        cookie: ownerCookie,
+      });
+      expect(readyResponse.status).toBe(200);
+      const ready = renderSessionViewSchema.parse(parsedJson(readyResponse));
+      expect(ready).toMatchObject({
+        status: "ready",
+        videoUrl: `/api/manim/renders/${started.id}/video`,
+      });
+
+      const head = await requestProduction(server, ready.videoUrl!, { cookie: ownerCookie, method: "HEAD" });
+      expect(head).toMatchObject({ body: Buffer.alloc(0), status: 200 });
+      expect(head.headers["content-length"]).toBe(String(videoBytes.byteLength));
+      expect(head.headers["content-type"]).toBe("video/mp4");
+
+      const download = await requestProduction(server, `${ready.videoUrl}?v=${encodeURIComponent(ready.updatedAt)}`, {
+        cookie: ownerCookie,
+      });
+      expect(download.status).toBe(200);
+      expect(download.body).toEqual(videoBytes);
+
+      const range = await requestProduction(server, ready.videoUrl!, {
+        cookie: ownerCookie,
+        headers: { range: "bytes=4-11" },
+      });
+      expect(range.status).toBe(206);
+      expect(range.headers["content-range"]).toBe(`bytes 4-11/${videoBytes.byteLength}`);
+      expect(range.body).toEqual(videoBytes.subarray(4, 12));
+
+      await expect(
+        requestProduction(server, ready.videoUrl!, { cookie: "poietra-e2e=foreign" }),
+      ).resolves.toMatchObject({ status: 403 });
+      await expect(requestProduction(server, ready.videoUrl!)).resolves.toMatchObject({ status: 401 });
+    } finally {
+      const closeRuntime = server ? server.close() : adapter.close();
+      await Promise.allSettled([
+        closeRuntime,
+        workerRenders.close(),
+        publisher.close(),
+        publisherStore.close(),
+        pool.end(),
+      ]);
+    }
+  }, 120_000);
 });
