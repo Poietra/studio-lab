@@ -37,9 +37,20 @@ pnpm test:storage:r2:required
 
 The required lane fails when credentials are absent and exercises authenticated
 conditional PUT, exact HEAD, full GET, Range GET, bounded listing, and exact-key
-delete through the production R2 configuration. Bucket privacy remains an IaC
-and Cloudflare control-plane invariant; the S3-compatible data API cannot prove
-that `r2.dev` and custom-domain publication are disabled.
+delete through the production R2 configuration. The same command also runs a
+one-shot store-level shadow probe: it uploads source, PNG, snapshot, video, and
+thumbnail fixtures through the shipped immutable adapters, exact-reads and
+compares every payload, compares a nontrivial video Range, and then deletes and
+proves the absence of every generated key. The probe uses a unique tenant prefix
+and sweeps that prefix during bounded failure cleanup.
+
+The shadow probe never publishes a PostgreSQL row, reads or writes the legacy
+lane, or installs a runtime dual-write path. Its receipts exist only for the
+duration of the command. Repeat this one-shot command externally for the chosen
+observation window and record every result; do not treat one successful run as
+the cutover decision. Bucket privacy remains an IaC and Cloudflare control-plane
+invariant; the S3-compatible data API cannot prove that `r2.dev` and
+custom-domain publication are disabled.
 
 ## Deployment sequence
 
