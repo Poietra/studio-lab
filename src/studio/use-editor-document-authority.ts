@@ -8,9 +8,23 @@ import {
 } from "../collaboration/editor-document-authority";
 import { type EditorDocumentClientV1, FetchEditorDocumentClientV1 } from "../collaboration/editor-document-client";
 import type { EditorEditMutationV1 } from "../collaboration/editor-edit-mutation";
+import {
+  BrowserEditorLiveClientV1,
+  type EditorLiveClientV1,
+  type EditorLiveConnectionV1,
+} from "../collaboration/editor-live-client";
+import { EditorRemoteHeadQueueV1 } from "../collaboration/editor-remote-head-queue";
 import type { CanonicalEditProgram } from "./operations";
 
 const defaultEditorDocumentClientV1 = new FetchEditorDocumentClientV1();
+let defaultEditorLiveClientV1: EditorLiveClientV1 | null | undefined;
+
+function browserEditorLiveClientV1() {
+  if (defaultEditorLiveClientV1 !== undefined) return defaultEditorLiveClientV1;
+  defaultEditorLiveClientV1 =
+    typeof window === "undefined" || typeof WebSocket === "undefined" ? null : new BrowserEditorLiveClientV1();
+  return defaultEditorLiveClientV1;
+}
 
 type EditorDocumentAuthorityPhaseV1 = "blocked" | "disabled" | "opening" | "pending" | "ready" | "recoverable";
 
@@ -28,6 +42,7 @@ export type EditorDocumentAuthorityHookCommitOutcomeV1 =
 type UseEditorDocumentAuthorityInputV1 = Readonly<{
   client?: EditorDocumentClientV1;
   identity: EditorDocumentAuthorityIdentityV1 | null;
+  liveClient?: EditorLiveClientV1 | null;
   onProjection: (programs: readonly CanonicalEditProgram[], reason: "open" | "remote") => void;
 }>;
 
@@ -53,6 +68,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
   });
   const authority = useRef<EditorDocumentAuthorityV1 | null>(null);
   const authorityIdentityKey = useRef<string | null>(null);
+  const liveConnection = useRef<EditorLiveConnectionV1 | null>(null);
   const request = useRef<AbortController | null>(null);
   const generation = useRef(0);
   const stateRef = useRef(state);
@@ -64,9 +80,16 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
   const projection = useRef(input.onProjection);
   projection.current = input.onProjection;
   const client = input.client ?? defaultEditorDocumentClientV1;
+  const liveClient = input.liveClient === undefined ? browserEditorLiveClientV1() : input.liveClient;
   const identityKey = identityKeyV1(input.identity);
   const renderedIdentityKey = useRef(identityKey);
   renderedIdentityKey.current = identityKey;
+  const reconcileRunner = useRef<() => Promise<boolean>>(async () => false);
+  const remoteHeadQueue = useRef<EditorRemoteHeadQueueV1 | null>(null);
+  remoteHeadQueue.current ??= new EditorRemoteHeadQueueV1(
+    () => stateRef.current.phase === "ready",
+    () => reconcileRunner.current(),
+  );
 
   useEffect(() => {
     generation.current += 1;
@@ -75,6 +98,9 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     request.current = null;
     authority.current = null;
     authorityIdentityKey.current = null;
+    liveConnection.current?.close();
+    liveConnection.current = null;
+    remoteHeadQueue.current?.clear();
     if (!input.identity) {
       updateState({ message: null, phase: "disabled", retryable: false });
       return;
@@ -84,6 +110,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     request.current = controller;
     authority.current = nextAuthority;
     authorityIdentityKey.current = identityKey;
+    let nextLiveConnection: EditorLiveConnectionV1 | null = null;
     updateState({ message: null, phase: "opening", retryable: false });
     void nextAuthority
       .open(controller.signal)
@@ -97,6 +124,32 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
           return;
         projection.current(snapshot.programs, "open");
         updateState({ message: null, phase: "ready", retryable: false });
+        if (!liveClient) return;
+        try {
+          nextLiveConnection = liveClient.connect(
+            {
+              documentKey: snapshot.document.documentKey,
+              epoch: snapshot.document.epoch,
+              organizationId: input.identity!.organizationId,
+              projectId: input.identity!.projectId,
+            },
+            {
+              onHead: () => remoteHeadQueue.current?.notify(),
+              onPhase: (phase) => {
+                if (
+                  generation.current !== activeGeneration ||
+                  renderedIdentityKey.current !== identityKey ||
+                  authority.current !== nextAuthority
+                )
+                  return;
+                if (phase === "connected") remoteHeadQueue.current?.notify();
+              },
+            },
+          );
+          liveConnection.current = nextLiveConnection;
+        } catch {
+          nextLiveConnection = null;
+        }
       })
       .catch((error: unknown) => {
         if (
@@ -120,8 +173,11 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
         authority.current = null;
         authorityIdentityKey.current = null;
       }
+      nextLiveConnection?.close();
+      if (liveConnection.current === nextLiveConnection) liveConnection.current = null;
+      remoteHeadQueue.current?.clear();
     };
-  }, [client, identityKey, updateState]);
+  }, [client, identityKey, liveClient, updateState]);
 
   const canAuthor = useCallback(() => {
     const activeIdentityKey = renderedIdentityKey.current;
@@ -162,6 +218,10 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
           return { kind: "stale" };
         if (outcome.kind === "reconciled") projection.current(outcome.snapshot.programs, "remote");
         updateState({ message: null, phase: "ready", retryable: false });
+        if (outcome.kind === "committed" || outcome.accepted) {
+          liveConnection.current?.publishHead(outcome.snapshot.revision);
+        }
+        remoteHeadQueue.current?.kick();
         return outcome;
       } catch (error) {
         if (
@@ -208,6 +268,10 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
         return false;
       projection.current(outcome.snapshot.programs, "remote");
       updateState({ message: null, phase: "ready", retryable: false });
+      if (outcome.kind === "committed" || outcome.accepted) {
+        liveConnection.current?.publishHead(outcome.snapshot.revision);
+      }
+      remoteHeadQueue.current?.kick();
       return true;
     } catch (error) {
       if (
@@ -226,8 +290,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     }
   }, [updateState]);
 
-  /** Future WebSocket/DO transports only need to call this head-notification seam. */
-  const reconcileRemoteHead = useCallback(async () => {
+  const performRemoteHeadReconcile = useCallback(async () => {
     const activeAuthority = authority.current;
     const activeIdentityKey = renderedIdentityKey.current;
     if (
@@ -269,6 +332,12 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
       if (request.current === controller) request.current = null;
     }
   }, [updateState]);
+  reconcileRunner.current = performRemoteHeadReconcile;
+
+  /** Transport-independent wake-up seam. The notification revision is never trusted. */
+  const reconcileRemoteHead = useCallback(() => {
+    remoteHeadQueue.current?.notify();
+  }, []);
 
   return {
     authoringBlocked: input.identity !== null && state.phase !== "ready",
