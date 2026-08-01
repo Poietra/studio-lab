@@ -59,9 +59,9 @@ function contentAddressedKeyV1(tenantId: string, contentDigest: string, value: u
 }
 
 /**
- * Appends an application-owned, never-reused generation to a store-specific
- * content-addressed key. The store remains responsible for constructing the
- * path before the digest; this contract owns the provider-neutral suffix.
+ * Appends an application-owned generation to a store-specific content-addressed
+ * key. The persistence adapter must enforce uniqueness with a conditional create
+ * and a database constraint; this contract owns only the provider-neutral suffix.
  */
 export function immutableObjectKeyV1(input: ImmutableObjectKeyInputV1) {
   const tenantId = tenantIdV1(input?.tenantId);

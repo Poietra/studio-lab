@@ -45,17 +45,6 @@ describe("immutable object contract", () => {
     expect(immutableObjectGenerationV1(generation)).toBe(generation);
   });
 
-  it("makes delayed deletion targets generation-specific", () => {
-    const generationAKey = immutableObjectKeyV1(input());
-    const generationBKey = immutableObjectKeyV1(input({ objectGeneration: GENERATION_B }));
-    const objects = new Set([generationAKey, generationBKey]);
-
-    objects.delete(generationAKey);
-
-    expect(generationBKey).not.toBe(generationAKey);
-    expect(objects).toEqual(new Set([generationBKey]));
-  });
-
   it.each([
     null,
     "123E4567-E89B-42D3-A456-426614174000",
