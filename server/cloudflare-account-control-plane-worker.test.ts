@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+
 import { describe, expect, it, vi } from "vitest";
 import {
   type CloudflareAccountControlPlaneEnvironmentV1,
@@ -97,6 +99,19 @@ function harness() {
 }
 
 describe("Cloudflare OIDC account control-plane Worker", () => {
+  it("routes invitation creation and revocation through the production Worker template", async () => {
+    const configuration = JSON.parse(
+      await readFile(new URL("../wrangler.account-control-plane.example.jsonc", import.meta.url), "utf8"),
+    ) as { routes?: readonly { pattern?: unknown }[] };
+
+    expect(configuration.routes?.map(({ pattern }) => pattern)).toEqual(
+      expect.arrayContaining([
+        "https://studio.example.com/api/account/invitations",
+        "https://studio.example.com/api/account/invitations/*",
+      ]),
+    );
+  });
+
   it("rejects invalid requests before rate limiting or control-plane creation", async () => {
     const env = environment();
     const { createControlPlane, worker } = harness();
