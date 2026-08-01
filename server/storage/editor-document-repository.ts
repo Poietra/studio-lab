@@ -101,6 +101,11 @@ export type EditorDocumentV1 = Readonly<{
   updatedAt: Date;
 }>;
 
+export type EditorDocumentProjectionV1 = Readonly<{
+  programs: readonly CanonicalEditProgram[];
+  revision: bigint;
+}>;
+
 export type EditorEditEventV1 = Readonly<{
   baseRevision: bigint;
   clientMutationId: string;
@@ -117,7 +122,12 @@ export type EditorEditEventV1 = Readonly<{
 }>;
 
 export type EditorDocumentOpenResultV1 =
-  | Readonly<{ created: boolean; document: EditorDocumentV1; kind: "opened" }>
+  | Readonly<{
+      created: boolean;
+      document: EditorDocumentV1;
+      kind: "opened";
+      projection: EditorDocumentProjectionV1;
+    }>
   | Readonly<{ kind: "not-found" }>
   | Readonly<{ currentSourceHash: string; kind: "source-conflict" }>;
 
