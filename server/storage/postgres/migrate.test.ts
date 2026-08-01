@@ -38,6 +38,8 @@ import {
   RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE,
   SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE,
   SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE,
+  STRIPE_BILLING_MIGRATION_V16_CHECKSUM,
+  STRIPE_BILLING_MIGRATION_V16_SOURCE,
   WORKSPACE_SOURCE_MIGRATION_V1_SOURCE,
 } from "./migrate";
 
@@ -82,10 +84,10 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 15 });
-    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 16 });
+    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 15 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 16 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -101,7 +103,8 @@ describe("durable storage migrations", () => {
     expect(db.queries.filter(({ text }) => text === OIDC_LOGIN_MIGRATION_V13_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(30);
+    expect(db.queries.filter(({ text }) => text === STRIPE_BILLING_MIGRATION_V16_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(32);
   });
 
   it("rejects a missing prerequisite under the same advisory lock", async () => {
@@ -301,6 +304,51 @@ describe("durable storage migrations", () => {
       "current_status = 'discarded' AND reservation_state NOT IN ('committed', 'released')",
     );
     expect(RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE).toContain("IF TG_OP = 'UPDATE' THEN");
+  });
+
+  it("pins tenant-bound Stripe correlation and atomic reconciliation storage in v16", () => {
+    expect(durableStorageMigrationChecksum(STRIPE_BILLING_MIGRATION_V16_SOURCE)).toBe(
+      STRIPE_BILLING_MIGRATION_V16_CHECKSUM,
+    );
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain("ALTER TABLE public.billing_accounts");
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain("stripe_observation_generation bigint NOT NULL");
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain("stripe_reconcile_generation bigint NOT NULL");
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain("A Stripe customer binding is immutable.");
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain("A Stripe observation generation must advance exactly once.");
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain(
+      "CREATE UNIQUE INDEX billing_accounts_stripe_customer_unique_v16",
+    );
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain("WHERE stripe_customer_id IS NOT NULL");
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain("CREATE TABLE public.billing_checkout_attempts");
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain("stripe_customer_id text CHECK");
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain("stripe_price_id text NOT NULL CHECK");
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain("UNIQUE (attempt_id)");
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain("UNIQUE (stripe_checkout_session_id)");
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain("expires_at <= created_at + interval '25 hours'");
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain(
+      "CREATE UNIQUE INDEX billing_checkout_attempts_active_tenant_v16",
+    );
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain("WHERE state IN ('reserved', 'open')");
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain("CREATE TABLE public.stripe_event_inbox");
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain("PRIMARY KEY (stripe_livemode, stripe_event_id)");
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain(
+      "UNIQUE (tenant_id, stripe_customer_id, stripe_livemode, stripe_event_id)",
+    );
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain("octet_length(payload_digest) = 32");
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).not.toContain("payload_bytes bytea");
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain("checkout_attempt_id uuid");
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain("stripe_subscription_id text NOT NULL CHECK");
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain("A Stripe event inbox identity and payload are immutable.");
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain("CREATE TABLE public.billing_subscriptions");
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain(
+      "REFERENCES public.stripe_event_inbox (tenant_id, stripe_customer_id, stripe_livemode, stripe_event_id)",
+    );
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain(
+      "REFERENCES public.entitlement_snapshots (tenant_id, snapshot_id, source_generation)",
+    );
+    expect(STRIPE_BILLING_MIGRATION_V16_SOURCE).toContain(
+      "A billing subscription reconciliation must advance monotonically.",
+    );
   });
 
   it("defines bounded identities, memberships, and a deferred last-owner invariant in v11", () => {

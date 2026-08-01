@@ -42,6 +42,7 @@ function fixture(options: {
   identitiesReady?: boolean;
   membership?: ResolvedOrganizationMembershipV1 | null;
   membershipsReady?: boolean;
+  permissionForRequest?: "billing:manage" | "billing:read" | null;
 }) {
   const authenticate = vi.fn(async () =>
     Object.hasOwn(options, "authenticatedIdentity") ? options.authenticatedIdentity : identity,
@@ -61,6 +62,9 @@ function fixture(options: {
   const admission = createOrganizationMembershipProductionAdmissionV1({
     identities: { authenticate, close: identitiesClose, ready: identitiesReady },
     memberships,
+    ...(Object.hasOwn(options, "permissionForRequest")
+      ? { permissionForRequest: () => options.permissionForRequest as never }
+      : {}),
   });
   return {
     admission,
@@ -167,6 +171,27 @@ describe("organization membership production admission", () => {
         status: 403,
       });
     }
+  });
+
+  it("uses a trusted route permission without changing the default Manim policy", async () => {
+    for (const role of ["owner", "billing"] as const) {
+      const { admission } = fixture({ membership: membership({ role }), permissionForRequest: "billing:manage" });
+      await expect(admission.authenticate(request({ method: "POST" }), new AbortController().signal)).resolves.toEqual({
+        subjectId: userId,
+        tenantId: organizationId,
+      });
+    }
+    for (const role of ["admin", "member"] as const) {
+      const { admission } = fixture({ membership: membership({ role }), permissionForRequest: "billing:manage" });
+      await expect(
+        admission.authenticate(request({ method: "POST" }), new AbortController().signal),
+      ).rejects.toMatchObject({ status: 403 });
+    }
+
+    const malformed = fixture({ membership: membership({ role: "owner" }), permissionForRequest: null });
+    await expect(malformed.admission.authenticate(request(), new AbortController().signal)).rejects.toMatchObject({
+      status: 403,
+    });
   });
 
   it("fails closed when the repository returns malformed data or becomes unavailable", async () => {

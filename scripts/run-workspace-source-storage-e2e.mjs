@@ -73,7 +73,10 @@ const STORAGE_SUITES = [
     file: "server/storage/billing-entitlement-storage.real.test.ts",
     id: "billing-entitlement",
     objectStorage: false,
-    title: "atomically reserves one render quota, replays safely, preserves period usage, and isolates tenants",
+    titles: [
+      "atomically reserves one render quota, replays safely, preserves period usage, and isolates tenants",
+      "reconciles Stripe state into render admission atomically and replays duplicate delivery",
+    ],
   },
   {
     database: "poietra_workspace_source",

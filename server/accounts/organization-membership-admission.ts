@@ -2,7 +2,12 @@ import { z } from "zod";
 
 import { HttpError } from "../http/json";
 import type { ProductionAdmissionRequest, ProductionRequestAdmission } from "../manim-production-server";
-import { accountUserIdSchemaV1, organizationIdSchemaV1, organizationRoleAllowsV1 } from "./account-domain";
+import {
+  accountUserIdSchemaV1,
+  organizationIdSchemaV1,
+  organizationRoleAllowsV1,
+  type OrganizationPermissionV1,
+} from "./account-domain";
 import type {
   ExternalAccountIdentityV1,
   OrganizationMembershipRepositoryV1,
@@ -105,6 +110,8 @@ export function createOrganizationMembershipProductionAdmissionV1(
   options: Readonly<{
     identities: ExternalAccountIdentityAuthenticatorV1;
     memberships: OrganizationMembershipRepositoryV1;
+    /** Trusted route policy. Defaults to the existing Manim read/write mapping. */
+    permissionForRequest?: (input: ProductionAdmissionRequest) => OrganizationPermissionV1;
   }>,
 ): ProductionRequestAdmission {
   if (
@@ -112,7 +119,8 @@ export function createOrganizationMembershipProductionAdmissionV1(
     typeof options.identities.ready !== "function" ||
     (options.identities.close !== undefined && typeof options.identities.close !== "function") ||
     typeof options.memberships?.resolveActiveMembership !== "function" ||
-    typeof options.memberships.ready !== "function"
+    typeof options.memberships.ready !== "function" ||
+    (options.permissionForRequest !== undefined && typeof options.permissionForRequest !== "function")
   ) {
     throw new TypeError("Organization membership admission requires complete identity and membership adapters.");
   }
@@ -147,7 +155,11 @@ export function createOrganizationMembershipProductionAdmissionV1(
       if (!membership.success || membership.data.organizationId !== selectedOrganization.data) {
         return organizationDirectoryUnavailable();
       }
-      const permission = input.method === "GET" || input.method === "HEAD" ? "manim:read" : "manim:write";
+      const permission = options.permissionForRequest
+        ? options.permissionForRequest(input)
+        : input.method === "GET" || input.method === "HEAD"
+          ? "manim:read"
+          : "manim:write";
       if (!organizationRoleAllowsV1(membership.data.role, permission)) return organizationAccessDenied();
       return {
         subjectId: membership.data.userId,

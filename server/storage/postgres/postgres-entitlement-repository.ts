@@ -283,6 +283,70 @@ export async function settleRenderUsageWithClientV1(
   return { kind: "settled", replayed: false, reservation: reservationFromRow(updatedRow) };
 }
 
+/** Applies one entitlement snapshot on an existing PostgreSQL transaction. */
+export async function applyEntitlementSnapshotWithClientV1(
+  client: PoolClient,
+  inputValue: ApplyEntitlementSnapshotInputV1,
+) {
+  const input = parseApplyEntitlementSnapshotInputV1(inputValue);
+  const organization = await client.query(
+    "SELECT tenant_id FROM public.organizations WHERE tenant_id = $1 FOR UPDATE",
+    [input.tenantId],
+  );
+  if (organization.rowCount !== 1) throw new TypeError("The entitlement organization does not exist.");
+  await client.query(
+    `INSERT INTO public.billing_accounts (tenant_id)
+     VALUES ($1)
+     ON CONFLICT (tenant_id) DO NOTHING`,
+    [input.tenantId],
+  );
+  const account = await client.query<{ applied_generation: string }>(
+    `SELECT applied_generation::text AS applied_generation
+       FROM public.billing_accounts
+      WHERE tenant_id = $1
+      FOR UPDATE`,
+    [input.tenantId],
+  );
+  if (account.rowCount !== 1 || !account.rows[0]) {
+    throw new TypeError("PostgreSQL did not return the billing account.");
+  }
+  const appliedGeneration = generation(account.rows[0].applied_generation, "applied entitlement generation");
+  if (appliedGeneration !== input.expectedGeneration) return { appliedGeneration, kind: "conflict" } as const;
+
+  const inserted = await client.query<SnapshotRow>(
+    `INSERT INTO public.entitlement_snapshots
+       (tenant_id, snapshot_id, source_generation, plan_key, access_state, render_enabled,
+        render_job_limit, usage_period_key, period_start, period_end, access_until)
+     VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+     RETURNING tenant_id, snapshot_id::text AS snapshot_id, source_generation::text AS source_generation,
+               plan_key, access_state, render_enabled, render_job_limit, usage_period_key,
+               period_start, period_end, access_until, created_at`,
+    [
+      input.tenantId,
+      input.snapshotId,
+      input.sourceGeneration.toString(),
+      input.planKey,
+      input.accessState,
+      input.renderEnabled,
+      input.renderJobLimit,
+      input.usagePeriodKey,
+      input.periodStart,
+      input.periodEnd,
+      input.accessUntil,
+    ],
+  );
+  const row = inserted.rows[0];
+  if (inserted.rowCount !== 1 || !row) throw new TypeError("PostgreSQL did not return the applied entitlement.");
+  const advanced = await client.query(
+    `UPDATE public.billing_accounts
+        SET current_snapshot_id = $2::uuid, applied_generation = $3
+      WHERE tenant_id = $1 AND applied_generation = $4`,
+    [input.tenantId, input.snapshotId, input.sourceGeneration.toString(), input.expectedGeneration.toString()],
+  );
+  if (advanced.rowCount !== 1) throw new TypeError("PostgreSQL did not advance the billing account.");
+  return { kind: "applied", snapshot: snapshotFromRow(row) } as const;
+}
+
 export class PostgresBillingEntitlementRepositoryV1 implements BillingEntitlementRepositoryV1 {
   readonly #connection: PostgresRepositoryConnectionV1;
 
@@ -311,64 +375,7 @@ export class PostgresBillingEntitlementRepositoryV1 implements BillingEntitlemen
 
   async applySnapshot(inputValue: ApplyEntitlementSnapshotInputV1, signal?: AbortSignal) {
     const input = parseApplyEntitlementSnapshotInputV1(inputValue);
-    return this.#connection.transaction(async (client) => {
-      const organization = await client.query(
-        "SELECT tenant_id FROM public.organizations WHERE tenant_id = $1 FOR UPDATE",
-        [input.tenantId],
-      );
-      if (organization.rowCount !== 1) throw new TypeError("The entitlement organization does not exist.");
-      await client.query(
-        `INSERT INTO public.billing_accounts (tenant_id)
-         VALUES ($1)
-         ON CONFLICT (tenant_id) DO NOTHING`,
-        [input.tenantId],
-      );
-      const account = await client.query<{ applied_generation: string }>(
-        `SELECT applied_generation::text AS applied_generation
-           FROM public.billing_accounts
-          WHERE tenant_id = $1
-          FOR UPDATE`,
-        [input.tenantId],
-      );
-      if (account.rowCount !== 1 || !account.rows[0]) {
-        throw new TypeError("PostgreSQL did not return the billing account.");
-      }
-      const appliedGeneration = generation(account.rows[0].applied_generation, "applied entitlement generation");
-      if (appliedGeneration !== input.expectedGeneration) return { appliedGeneration, kind: "conflict" } as const;
-
-      const inserted = await client.query<SnapshotRow>(
-        `INSERT INTO public.entitlement_snapshots
-           (tenant_id, snapshot_id, source_generation, plan_key, access_state, render_enabled,
-            render_job_limit, usage_period_key, period_start, period_end, access_until)
-         VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-         RETURNING tenant_id, snapshot_id::text AS snapshot_id, source_generation::text AS source_generation,
-                   plan_key, access_state, render_enabled, render_job_limit, usage_period_key,
-                   period_start, period_end, access_until, created_at`,
-        [
-          input.tenantId,
-          input.snapshotId,
-          input.sourceGeneration.toString(),
-          input.planKey,
-          input.accessState,
-          input.renderEnabled,
-          input.renderJobLimit,
-          input.usagePeriodKey,
-          input.periodStart,
-          input.periodEnd,
-          input.accessUntil,
-        ],
-      );
-      const row = inserted.rows[0];
-      if (inserted.rowCount !== 1 || !row) throw new TypeError("PostgreSQL did not return the applied entitlement.");
-      const advanced = await client.query(
-        `UPDATE public.billing_accounts
-            SET current_snapshot_id = $2::uuid, applied_generation = $3
-          WHERE tenant_id = $1 AND applied_generation = $4`,
-        [input.tenantId, input.snapshotId, input.sourceGeneration.toString(), input.expectedGeneration.toString()],
-      );
-      if (advanced.rowCount !== 1) throw new TypeError("PostgreSQL did not advance the billing account.");
-      return { kind: "applied", snapshot: snapshotFromRow(row) } as const;
-    }, signal);
+    return this.#connection.transaction((client) => applyEntitlementSnapshotWithClientV1(client, input), signal);
   }
 
   async reserveRender(

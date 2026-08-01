@@ -20,6 +20,7 @@ import accountSessionSqlV12 from "./migrations/0012_account_sessions.sql?raw";
 import oidcLoginSqlV13 from "./migrations/0013_oidc_login.sql?raw";
 import billingEntitlementSqlV14 from "./migrations/0014_billing_entitlements.sql?raw";
 import renderSessionUsageSqlV15 from "./migrations/0015_render_session_usage.sql?raw";
+import stripeBillingSqlV16 from "./migrations/0016_stripe_billing_control_plane.sql?raw";
 import { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
@@ -31,6 +32,7 @@ import { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-sessi
 import { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
 import { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-usage-schema";
 import { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
+import { STRIPE_BILLING_MIGRATION_V16_CHECKSUM } from "./stripe-billing-schema";
 
 export { ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM } from "./account-organization-schema";
 export { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
@@ -42,6 +44,7 @@ export { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-sessi
 export { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
 export { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-usage-schema";
 export { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
+export { STRIPE_BILLING_MIGRATION_V16_CHECKSUM } from "./stripe-billing-schema";
 
 const DURABLE_STORAGE_MIGRATION_LOCK = "5784133447825795121";
 
@@ -81,6 +84,7 @@ export const ACCOUNT_SESSION_MIGRATION_V12_SOURCE = accountSessionSqlV12;
 export const OIDC_LOGIN_MIGRATION_V13_SOURCE = oidcLoginSqlV13;
 export const BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE = billingEntitlementSqlV14;
 export const RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE = renderSessionUsageSqlV15;
+export const STRIPE_BILLING_MIGRATION_V16_SOURCE = stripeBillingSqlV16;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -233,6 +237,16 @@ const renderSessionUsageMigrationV15: DurableStorageMigration<15> = Object.freez
   version: 15,
 });
 
+const stripeBillingMigrationV16: DurableStorageMigration<16> = Object.freeze({
+  checksum: STRIPE_BILLING_MIGRATION_V16_CHECKSUM,
+  checksumMismatch: "The Stripe billing migration checksum is invalid.",
+  installedMismatch: "The installed Stripe billing schema does not match migration v16.",
+  missingPrerequisite: "Stripe billing migration v16 requires durable storage migrations v1 through v15.",
+  prerequisiteMismatch: "Stripe billing migration v16 requires exact durable storage migrations v1 through v15.",
+  source: STRIPE_BILLING_MIGRATION_V16_SOURCE,
+  version: 16,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
@@ -249,6 +263,7 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   oidcLoginMigrationV13,
   billingEntitlementMigrationV14,
   renderSessionUsageMigrationV15,
+  stripeBillingMigrationV16,
 ]);
 
 function validateSource(migration: DurableStorageMigration) {
