@@ -665,6 +665,11 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
     [update],
   );
 
+  const installAcceptedState = useCallback((next: EditorControllerState) => {
+    requestController.current.cancel();
+    dispatch({ state: next, type: "replace" });
+  }, []);
+
   const suspend = useCallback(() => {
     requestController.current.cancel();
     update(suspendEditor);
@@ -700,6 +705,7 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
     editAppliedProgram,
     finishSuggestionRequest,
     isSuggestionRequestCurrent,
+    installAcceptedState,
     installAuthoritativePrograms,
     openSession,
     pruneSessions: (projectIds: ReadonlySet<string>) => {

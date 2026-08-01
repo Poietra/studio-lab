@@ -3,6 +3,15 @@ import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
 import type { EditorProgramRecord } from "./editor-session-store";
 import { evaluateWorkingState } from "./evaluator";
 import { importedWorkingState, type ManimWorkspaceScene } from "./imported-workspace";
+import { programExecutionCapabilities } from "./operation-registry";
+import type { CanonicalEditProgram } from "./operations";
+
+export function editorProgramsMatchAuthorityV1(
+  local: readonly EditorProgramRecord[],
+  authoritative: readonly CanonicalEditProgram[],
+) {
+  return canonicalJsonV1(local.map((record) => record.program)) === canonicalJsonV1(authoritative);
+}
 
 /**
  * Revalidates a wire projection against the selected imported Scene. The
@@ -29,7 +38,10 @@ export function materializeAuthoritativeEditorProgramsV1(
   );
   if (
     evaluated.programs.length !== programs.length ||
-    evaluated.programs.some((record) => record.validation.status !== "valid")
+    evaluated.programs.some(
+      (record) =>
+        record.validation.status !== "valid" || programExecutionCapabilities(record.program).apply !== "supported",
+    )
   ) {
     throw new TypeError("The authoritative Editor projection is invalid for the selected Scene source.");
   }

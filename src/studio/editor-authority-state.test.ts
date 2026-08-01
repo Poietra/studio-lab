@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { importManimScene } from "../render-pipeline/source-import";
-import { materializeAuthoritativeEditorProgramsV1 } from "./editor-authority-state";
+import { editorProgramsMatchAuthorityV1, materializeAuthoritativeEditorProgramsV1 } from "./editor-authority-state";
 import type { EditorProgramRecord } from "./editor-session-store";
 import type { CanonicalEditProgram } from "./operations";
 
@@ -45,6 +45,17 @@ function program(label = "wait"): CanonicalEditProgram {
 }
 
 describe("authoritative Editor Program materialization", () => {
+  it("compares accepted local state to the exact authoritative projection", () => {
+    const exact = program();
+    const local: EditorProgramRecord = {
+      program: exact,
+      validation: { issues: [], status: "valid" },
+    };
+
+    expect(editorProgramsMatchAuthorityV1([local], [exact])).toBe(true);
+    expect(editorProgramsMatchAuthorityV1([local], [program("remote spelling")])).toBe(false);
+  });
+
   it("preserves local authoring metadata only for an exact canonical match", () => {
     const exact = program();
     const local: EditorProgramRecord = {
@@ -64,6 +75,9 @@ describe("authoritative Editor Program materialization", () => {
   it("rejects a structurally valid remote Program that is invalid for the selected Scene", () => {
     expect(() =>
       materializeAuthoritativeEditorProgramsV1(scene(), [], [{ ...program(), loweringStatus: "unsupported" }]),
+    ).toThrow(/invalid for the selected Scene/i);
+    expect(() =>
+      materializeAuthoritativeEditorProgramsV1(scene(), [], [{ ...program(), loweringStatus: "illustrative" }]),
     ).toThrow(/invalid for the selected Scene/i);
   });
 });
