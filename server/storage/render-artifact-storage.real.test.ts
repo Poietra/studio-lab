@@ -33,6 +33,7 @@ import {
   SealedManimRenderSandboxRequestV2,
 } from "../manim-render-sandbox-contract";
 import { AuthorizedArtifactReaderV1 } from "./authorized-artifact-reader";
+import { seedActiveRenderEntitlementFixtureV1 } from "./billing-entitlement-real-test-fixture";
 import { applyBundledDurableStorageMigrations } from "./postgres/migrate";
 import { PostgresArtifactRepositoryV1 } from "./postgres/postgres-artifact-repository";
 import { PostgresRenderSessionRepositoryV1 } from "./postgres/postgres-render-session-repository";
@@ -710,6 +711,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
     try {
       const headA = await createProject(sources, tenantA, projectId, source);
       await createProject(sources, tenantB, projectId, source);
+      await seedActiveRenderEntitlementFixtureV1(pool, tenantA);
       const claimed = await createClaimedSession(renders, headA, `published-${suffix}`);
       if (!claimed.lease) throw new Error("The publication fixture did not acquire a lease.");
 
@@ -729,10 +731,22 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
         expires_at: Date;
         status: string;
         thumbnail_heads: number;
+        usage_outcome: string;
+        usage_state: string;
       }>(
         `SELECT session.status,
                   min(link.expires_at) AS expires_at,
                   count(link.artifact_id)::integer AS artifact_count,
+                  (SELECT reservation.state
+                     FROM public.usage_reservations reservation
+                    WHERE reservation.tenant_id = session.tenant_id
+                      AND reservation.operation_kind = 'render'
+                      AND reservation.operation_id = session.session_id) AS usage_state,
+                  (SELECT event.outcome
+                     FROM public.usage_events event
+                    WHERE event.tenant_id = session.tenant_id
+                      AND event.operation_kind = 'render'
+                      AND event.operation_id = session.session_id) AS usage_outcome,
                   (SELECT count(*)::integer FROM public.workspace_project_thumbnail_heads head
                     WHERE head.tenant_id = session.tenant_id AND head.project_id = session.project_id)
                     AS thumbnail_heads
@@ -740,10 +754,16 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
              JOIN public.render_session_artifacts link
                ON link.tenant_id = session.tenant_id AND link.session_id = session.session_id
             WHERE session.tenant_id = $1 AND session.session_id = $2::uuid
-            GROUP BY session.tenant_id, session.project_id, session.status`,
+            GROUP BY session.tenant_id, session.session_id, session.project_id, session.status`,
         [tenantA, claimed.id],
       );
-      expect(atomic.rows[0]).toMatchObject({ artifact_count: 2, status: "ready", thumbnail_heads: 1 });
+      expect(atomic.rows[0]).toMatchObject({
+        artifact_count: 2,
+        status: "ready",
+        thumbnail_heads: 1,
+        usage_outcome: "committed",
+        usage_state: "committed",
+      });
       const remainingLifetime = atomic.rows[0]!.expires_at.getTime() - Date.now();
       expect(remainingLifetime).toBeGreaterThan(29 * 24 * 60 * 60_000);
       expect(remainingLifetime).toBeLessThanOrEqual(MAX_EXPIRATION_MS);
@@ -1006,6 +1026,23 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
           ),
         ).toEqual([]);
       }
+
+      await expect(renders.discardSession(tenantA, claimed.id)).resolves.toMatchObject({ status: "discarded" });
+      await expect(
+        pool.query<{ event_count: number; outcome: string; state: string }>(
+          `SELECT reservation.state, event.outcome,
+                  count(event.operation_id) OVER ()::integer AS event_count
+             FROM public.usage_reservations reservation
+             JOIN public.usage_events event
+               ON event.tenant_id = reservation.tenant_id
+              AND event.operation_kind = reservation.operation_kind
+              AND event.operation_id = reservation.operation_id
+            WHERE reservation.tenant_id = $1 AND reservation.operation_id = $2::uuid`,
+          [tenantA, claimed.id],
+        ),
+      ).resolves.toMatchObject({
+        rows: [{ event_count: 1, outcome: "committed", state: "committed" }],
+      });
     } finally {
       rawS3.destroy();
       await Promise.allSettled([repository.close(), artifacts.close(), renders.close(), sources.close(), pool.end()]);

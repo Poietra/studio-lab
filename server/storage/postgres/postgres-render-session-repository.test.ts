@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import { describe, expect, it, vi } from "vitest";
 import { renderSessionTransitionSources } from "../../manim-render-session-policy";
+import { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
 import {
@@ -11,9 +12,10 @@ import {
   RENDER_SESSION_MIGRATION_V2_CHECKSUM,
 } from "./postgres-render-session-repository";
 import { WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1 } from "./postgres-workspace-source-repository";
+import { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-usage-schema";
 
 describe("Postgres render-session transitions", () => {
-  it("reports ready only for the exact six render-session migration checksums through v9", async () => {
+  it("reports ready only when render and billing migrations match", async () => {
     const rows = [
       { checksum: RENDER_SESSION_MIGRATION_V2_CHECKSUM, version: 2 },
       { checksum: PROJECT_PNG_MIGRATION_V5_CHECKSUM, version: 5 },
@@ -21,9 +23,11 @@ describe("Postgres render-session transitions", () => {
       { checksum: RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM, version: 7 },
       { checksum: RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM, version: 8 },
       { checksum: RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM, version: 9 },
+      { checksum: BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM, version: 14 },
+      { checksum: RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM, version: 15 },
     ];
     const query = vi.fn(async (text: string) => {
-      expect(text).toContain("version IN (2, 5, 6, 7, 8, 9)");
+      expect(text).toContain("version IN (2, 5, 6, 7, 8, 9, 14, 15)");
       return { rowCount: rows.length, rows };
     });
     const pool = {
@@ -85,6 +89,91 @@ describe("Postgres render-session transitions", () => {
     expect(update).not.toContain("DROP TABLE");
     expect(statements.at(-1)).toBe("ROLLBACK");
     expect(statements.some((statement) => statement.includes("DELETE FROM"))).toBe(false);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("creates no durable render records when the organization has no entitlement", async () => {
+    const statements: string[] = [];
+    const originalDigest = "1".repeat(64);
+    const patchedDigest = "2".repeat(64);
+    const query = vi.fn(async (text: string) => {
+      statements.push(text);
+      if (text.includes("FROM public.workspace_source_heads")) {
+        return {
+          rowCount: 1,
+          rows: [
+            {
+              byte_size: 128,
+              digest: originalDigest,
+              etag: '"original"',
+              generation: "1",
+              object_key: `tenants/tenant-a/sources/${originalDigest}`,
+              version_id: "original-version",
+            },
+          ],
+        };
+      }
+      if (text.includes("FROM public.project_png_heads")) return { rowCount: 0, rows: [] };
+      if (text.includes("FROM public.billing_accounts account")) return { rowCount: 0, rows: [] };
+      return { rowCount: null, rows: [] };
+    });
+    const release = vi.fn();
+    const pool = {
+      connect: vi.fn(async () => ({ query, release })),
+      options: {
+        connectionTimeoutMillis: 1_000,
+        options: WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1,
+        query_timeout: 1_000,
+        statement_timeout: 1_000,
+      },
+    } as unknown as Pool;
+    const repository = new PostgresRenderSessionRepositoryV1({ pool, statementTimeoutMs: 1_000 });
+
+    await expect(
+      repository.createSession({
+        commitCorrelationKey: "correlation-a",
+        executionTimeoutMs: 60_000,
+        id: "00000000-0000-4000-8000-000000000001",
+        originalHead: {
+          blob: {
+            byteSize: 128,
+            digest: originalDigest,
+            etag: '"original"',
+            objectKey: `tenants/tenant-a/sources/${originalDigest}`,
+            versionId: "original-version",
+          },
+          generation: 1n,
+          projectId: "project-a",
+          sourcePath: "main.py",
+          tenantId: "tenant-a",
+        },
+        patch: { anchorLine: 1, anchorLines: [1], insertedCode: "self.wait(1)" },
+        patchedBlob: {
+          byteSize: 144,
+          digest: patchedDigest,
+          etag: '"patched"',
+          objectKey: `tenants/tenant-a/sources/${patchedDigest}`,
+          versionId: "patched-version",
+        },
+        programBatchId: "batch-a",
+        programTransactionId: "transaction-a",
+        renderRequestId: "request-a",
+        sceneName: "MainScene",
+        tenantId: "tenant-a",
+      }),
+    ).rejects.toMatchObject({ status: 402 });
+
+    expect(statements.at(-1)).toBe("COMMIT");
+    expect(
+      statements.some((statement) =>
+        [
+          "INSERT INTO public.source_blob_objects",
+          "INSERT INTO public.usage_reservations",
+          "INSERT INTO public.render_sessions",
+          "INSERT INTO public.workspace_project_references",
+        ].some((write) => statement.includes(write)),
+      ),
+    ).toBe(false);
     expect(release).toHaveBeenCalledOnce();
   });
 
