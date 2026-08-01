@@ -118,6 +118,72 @@ PostgreSQL plus a private, versioned S3-compatible bucket. Filesystem-backed
 catalogs and process-local publication stores remain confined to the
 Vite/Electron development paths.
 
+## Billing-entitlement rollout
+
+Migration v14 adds metered entitlements, and migration v15 makes every new
+render session prove its matching usage lifecycle at transaction commit. This
+changes the safety contract of the running binary, so the pair must not be
+applied as a normal rolling migration. Applying them while an old API or render
+worker remains live is forbidden. Migration v15 makes an old binary's
+unmetered insert or terminal transition fail closed, but an old/new mixed
+deployment can still strand work. Rollback to an old binary is forbidden for
+the same reason.
+
+Use this mandatory rollout sequence for each single-tenant cell:
+
+1. Stop new render admission at the load balancer or deployment control plane.
+2. Drain all active preparing and rendering sessions, including outstanding
+   cancellation delivery and acknowledgement work.
+3. Stop every old API and render-worker process for the cell.
+4. Run the operator CLI below. It applies the bundled migrations, seeds the
+   tenant's generation-1 entitlement, and reads the current head back for an
+   exact, active-state verification.
+5. Start only the new generation and wait for its normal readiness probes.
+6. Resume traffic only when the CLI emitted `"promotionReady":true` and the new
+   generation is ready.
+
+The CLI does not stop admission, drain work, start processes, change a load
+balancer, or modify Cloudflare configuration. `/readyz` is also not an
+entitlement-promotion gate; operators must complete the sequence above.
+
+Create one strict JSON specification per cell. The UUID must be a stable,
+operator-assigned UUIDv4 so rerunning the same command can prove an exact replay:
+
+```json
+{
+  "tenantId": "tenant-a",
+  "snapshotId": "00000000-0000-4000-8000-000000000001",
+  "planKey": "starter",
+  "usagePeriodKey": "2026-08",
+  "renderJobLimit": 100,
+  "periodStart": "2026-08-01T00:00:00.000Z",
+  "accessUntil": "2026-08-31T00:00:00.000Z",
+  "periodEnd": "2026-09-01T00:00:00.000Z"
+}
+```
+
+Run it with an explicit TLS PostgreSQL endpoint. Supply the database password
+only through the process environment; do not put it in the specification,
+arguments, logs, or shell history. Use `NODE_EXTRA_CA_CERTS` when the database
+CA is not already trusted by Node:
+
+```sh
+PGHOST=db.example.internal \
+PGPORT=5432 \
+PGDATABASE=poietra \
+PGUSER=poietra_rollout \
+PGPASSWORD="$POIETRA_ROLLOUT_DATABASE_PASSWORD" \
+NODE_EXTRA_CA_CERTS=/run/secrets/database-ca.pem \
+pnpm billing:entitlement:rollout -- --spec /run/poietra/tenant-a-entitlement.json
+```
+
+The command is deliberately single-tenant and generation-1-only. It has no
+bulk mode and no `--force` escape hatch. A fresh apply reports `"status":"seeded"`;
+an idempotent rerun reports `"status":"already-current"` only when every
+persisted field still exactly matches. A different generation, snapshot,
+period, plan, quota, inactive organization, or expired grant fails closed and
+must be investigated rather than overwritten.
+
 The transport configuration is strict and production-only. It requires one
 public origin, an IP literal to bind, and bounded connection, header, body,
 request, readiness, drain, and runtime-close limits. Port zero is rejected.
