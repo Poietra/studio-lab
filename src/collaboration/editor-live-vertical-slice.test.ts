@@ -120,6 +120,7 @@ function liveHub(): EditorLiveClientV1 {
         publishHead: (revision: string) => {
           for (const peer of peers) if (peer !== callbacks) peer.onHead(revision);
         },
+        publishPresence: () => {},
       };
     },
   };
@@ -149,8 +150,8 @@ describe("Editor live two-browser vertical slice", () => {
     );
     const hub = liveHub();
     const liveIdentity = { documentKey, epoch, organizationId, projectId };
-    const socketA = hub.connect(liveIdentity, { onHead: vi.fn() });
-    hub.connect(liveIdentity, { onHead: () => queueB.notify() });
+    const socketA = hub.connect(liveIdentity, { onHead: vi.fn(), onParticipants: vi.fn() });
+    hub.connect(liveIdentity, { onHead: () => queueB.notify(), onParticipants: vi.fn() });
     const sharedProgram = program("shared-edit");
 
     const accepted = await authorityA.commit({ kind: "append", program: sharedProgram });
