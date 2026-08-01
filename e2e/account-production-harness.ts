@@ -62,6 +62,7 @@ type BrowserSession = {
   activeOrganizationId: string;
   expiresAt: Date;
   identity: ExternalAccountIdentityV1;
+  version: number;
 };
 
 type ManimRequestEvidence = Readonly<{
@@ -121,6 +122,7 @@ class AccountMemoryAuthority implements OidcLoginRepositoryV1, AccountSessionCon
       activeOrganizationId: BILLING_ORGANIZATION_ID,
       expiresAt,
       identity: input.identity,
+      version: 1,
     });
     return Promise.resolve({ expiresAt });
   }
@@ -133,7 +135,7 @@ class AccountMemoryAuthority implements OidcLoginRepositoryV1, AccountSessionCon
   resolveAccountSession(sessionTokenHash: Uint8Array, signal?: AbortSignal) {
     signal?.throwIfAborted();
     const session = this.activeSession(sessionTokenHash);
-    return Promise.resolve(session ? this.account(session.activeOrganizationId) : null);
+    return Promise.resolve(session ? this.account(session.activeOrganizationId, session.version) : null);
   }
 
   resolveActiveSession(sessionTokenHash: Uint8Array, signal?: AbortSignal): Promise<ResolvedAccountSessionV1 | null> {
@@ -150,22 +152,33 @@ class AccountMemoryAuthority implements OidcLoginRepositoryV1, AccountSessionCon
     return Promise.resolve();
   }
 
-  switchActiveOrganization(sessionTokenHash: Uint8Array, organizationId: string, signal?: AbortSignal) {
+  switchActiveOrganization(
+    sessionTokenHash: Uint8Array,
+    organizationId: string,
+    expectedVersion: number,
+    signal?: AbortSignal,
+  ) {
     signal?.throwIfAborted();
     const session = this.activeSession(sessionTokenHash);
     if (!session) return Promise.resolve({ kind: "invalid-session" } as const);
     if (!ORGANIZATIONS.some((organization) => organization.id === organizationId)) {
       return Promise.resolve({ kind: "organization-unavailable" } as const);
     }
+    if (session.activeOrganizationId === organizationId) {
+      return Promise.resolve({ account: this.account(organizationId, session.version), kind: "updated" } as const);
+    }
+    if (session.version !== expectedVersion) return Promise.resolve({ kind: "conflict" } as const);
     session.activeOrganizationId = organizationId;
-    return Promise.resolve({ account: this.account(organizationId), kind: "updated" } as const);
+    session.version += 1;
+    return Promise.resolve({ account: this.account(organizationId, session.version), kind: "updated" } as const);
   }
 
-  private account(activeOrganizationId: string): ResolvedAccountSessionAccountV1 {
+  private account(activeOrganizationId: string, version: number): ResolvedAccountSessionAccountV1 {
     return {
       activeOrganizationId,
       organizations: ORGANIZATIONS,
       user: { displayName: "Ada Lovelace", id: USER_ID },
+      version,
     };
   }
 

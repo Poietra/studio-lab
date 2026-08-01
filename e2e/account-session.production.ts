@@ -58,6 +58,7 @@ test("signs in, selects a Studio organization, loads cookie-native media, then l
     organizationHeader: null,
     pathname: "/api/manim/projects/production-demo/thumbnail",
   });
+  expect(evidence.manimRequests.some(({ organizationHeader }) => organizationHeader === "billing-team")).toBe(false);
 
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page.getByRole("heading", { name: "Sign in to Poietra" })).toBeVisible();
