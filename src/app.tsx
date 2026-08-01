@@ -29,6 +29,12 @@ import {
 } from "./studio/authoring-commands";
 import { commandForShortcut, isEditableShortcutTarget, type StudioCommandId } from "./studio/commands";
 import { projectedPositions, validatedProgramRecord, validateSuggestionDraft } from "./studio/draft-validation";
+import { materializeAuthoritativeEditorProgramsV1 } from "./studio/editor-authority-state";
+import {
+  collaborationMutationForApplyV1,
+  collaborationMutationForRedoV1,
+  collaborationMutationForUndoV1,
+} from "./studio/editor-collaboration-mutation";
 import {
   canResolveSourceDurationMismatch,
   clampPlayheadToResolvedSourceDuration,
@@ -92,11 +98,13 @@ import {
 import { replaceAppliedProgram } from "./studio/transactions";
 import {
   type AppliedProgramEdit,
+  applyEditorDraft as applyEditorDraftTransition,
   type EditorProgramRecord,
   type EditorSessionIdentity,
   editorProgramRecord,
   useEditorController,
 } from "./studio/use-editor-controller";
+import { useEditorDocumentAuthorityV1 } from "./studio/use-editor-document-authority";
 import { useEditorRevisionController } from "./studio/use-editor-revision-controller";
 import { useManimWorkspace } from "./studio/use-manim-workspace";
 import { useStudioPreviewAuthorityController } from "./studio/use-preview-authority-controller";
@@ -248,6 +256,11 @@ export function App({
     unregisterWorkspace,
     workspace,
   } = useManimWorkspace();
+  const editorController = useEditorController(
+    accountSession
+      ? { organizationId: accountSession.activeOrganization.id, userId: accountSession.user.id }
+      : undefined,
+  );
   const {
     activeSessionIdentity,
     applyDraft: applyEditorDraft,
@@ -258,6 +271,7 @@ export function App({
     discardDraft,
     editAppliedProgram: stageAppliedProgramEdit,
     finishSuggestionRequest,
+    installAuthoritativePrograms,
     isSuggestionRequestCurrent,
     openSession,
     pruneSessions,
@@ -279,36 +293,34 @@ export function App({
     setSuggestionMessage,
     setSuggestionStatus,
     stageDraft: stageEditorDraft,
-    state: {
-      appliedPrograms,
-      currentTime,
-      durationError,
-      draftError,
-      draftOperation,
-      draftProgram,
-      editingAppliedProgram,
-      insertTool,
-      insertValue,
-      instruction,
-      interactionMode,
-      isPlaying,
-      motionDuration,
-      pendingClarification,
-      redoPrograms,
-      selectedObjectIds,
-      suggestion,
-      suggestionMessage,
-      suggestionStatus,
-      verifiedSourceDurationBasis,
-    },
+    state: editorState,
     setVerifiedSourceDurationBasis,
     suspend: suspendEditor,
     undoProgram,
-  } = useEditorController(
-    accountSession
-      ? { organizationId: accountSession.activeOrganization.id, userId: accountSession.user.id }
-      : undefined,
-  );
+  } = editorController;
+  const {
+    appliedPrograms,
+    currentTime,
+    durationError,
+    draftError,
+    draftOperation,
+    draftProgram,
+    editingAppliedProgram,
+    insertTool,
+    insertValue,
+    instruction,
+    interactionMode,
+    isPlaying,
+    motionDuration,
+    pendingClarification,
+    programUndoEntries,
+    redoPrograms,
+    selectedObjectIds,
+    suggestion,
+    suggestionMessage,
+    suggestionStatus,
+    verifiedSourceDurationBasis,
+  } = editorState;
   const {
     reconcileRenderedSource,
     reimportWorkspace,
@@ -451,6 +463,36 @@ export function App({
     setInspectorReturnFocus(null);
   }, [activeScene?.sceneId, activeScene?.sourceHash, activeProjectId]);
 
+  const editorDocumentIdentity = useMemo(
+    () =>
+      accountSession && activeProjectId && activeScene
+        ? {
+            organizationId: accountSession.activeOrganization.id,
+            projectId: activeProjectId,
+            sceneName: activeScene.name,
+            sourceHash: activeScene.sourceHash,
+            sourcePath: activeScene.sourcePath,
+          }
+        : null,
+    [accountSession, activeProjectId, activeScene],
+  );
+  const installEditorDocumentProjection = useCallback(
+    (programs: readonly ProgramRecord["program"][], reason: "open" | "remote") => {
+      if (!activeScene) throw new TypeError("The authoritative Editor projection has no selected Scene.");
+      installAuthoritativePrograms(
+        materializeAuthoritativeEditorProgramsV1(activeScene, appliedPrograms, programs),
+        reason === "remote"
+          ? "This Scene changed in another editor. Local draft and Undo/Redo history were reset."
+          : null,
+      );
+    },
+    [activeScene, appliedPrograms, installAuthoritativePrograms],
+  );
+  const editorDocumentAuthority = useEditorDocumentAuthorityV1({
+    identity: editorDocumentIdentity,
+    onProjection: installEditorDocumentProjection,
+  });
+
   const importedSceneBoundaryActive =
     activeScene?.runtimeSceneState.eventTrack.events.some(
       (event) => event.kind === "scene-boundary" && event.at !== undefined && event.at <= currentTime,
@@ -561,7 +603,9 @@ export function App({
   });
   const { sourceLifecyclePending } = sourceLifecycle;
   const studioAuthoringLocked =
-    sourceLifecycle.studioAuthoringLocked || (editorRevision.selectionAligned && !editorRevision.sessionReady);
+    editorDocumentAuthority.authoringBlocked ||
+    sourceLifecycle.studioAuthoringLocked ||
+    (editorRevision.selectionAligned && !editorRevision.sessionReady);
   const sourceDurationSessionKey = editorRevision.sessionKey;
   function activatePreviewRenderer() {
     if (!activatePreviewAuthority()) return;
@@ -585,6 +629,11 @@ export function App({
     }
   }, [sourceDurationBasisMismatch, sourceDurationSessionKey]);
   function stageDraft(input: Parameters<typeof stageEditorDraft>[0]) {
+    if (editorDocumentAuthority.enabled && input.preserveAppliedProgram) {
+      setDraftError("Apply or discard the current draft before continuing this edit in shared mode.");
+      setIsPlaying(false);
+      return false;
+    }
     const lifecycleBlocker = readDurationBlocker();
     if (lifecycleBlocker) {
       setDraftError(lifecycleBlocker);
@@ -595,7 +644,44 @@ export function App({
   }
 
   function redoProgram() {
-    return redoEditorProgram(readDurationBlocker());
+    const lifecycleBlocker = readDurationBlocker();
+    const entry = redoPrograms.at(-1);
+    if (!editorDocumentAuthority.enabled || entry?.kind !== "mutation") {
+      return redoEditorProgram(lifecycleBlocker);
+    }
+    if (lifecycleBlocker || editorDocumentAuthority.authoringBlocked) {
+      setDraftError(lifecycleBlocker ?? editorDocumentAuthority.message ?? EDITOR_SESSION_LOADING_BLOCKER);
+      return false;
+    }
+    void commitEditorProgramMutation(collaborationMutationForRedoV1(entry.mutation), () =>
+      redoEditorProgram(readDurationBlocker()),
+    );
+    return true;
+  }
+
+  function undoProgramCommitFirst() {
+    if (!editorDocumentAuthority.enabled || draftProgram) return undoProgram();
+    const mutation = programUndoEntries.at(-1);
+    if (!mutation) return false;
+    const lifecycleBlocker = readDurationBlocker();
+    if (lifecycleBlocker || editorDocumentAuthority.authoringBlocked) {
+      setDraftError(lifecycleBlocker ?? editorDocumentAuthority.message ?? EDITOR_SESSION_LOADING_BLOCKER);
+      return false;
+    }
+    void commitEditorProgramMutation(collaborationMutationForUndoV1(mutation), undoProgram);
+    return true;
+  }
+
+  async function commitEditorProgramMutation(
+    mutation: Parameters<typeof editorDocumentAuthority.commitMutation>[0],
+    applyAcceptedTransition: () => unknown,
+  ) {
+    setDraftError(null);
+    const outcome = await editorDocumentAuthority.commitMutation(mutation);
+    if (outcome === "committed") applyAcceptedTransition();
+    if (outcome === "blocked") {
+      setDraftError(editorDocumentAuthority.message ?? "The shared Editor mutation could not be committed.");
+    }
   }
 
   function openSourceTimingResolution() {
@@ -624,6 +710,12 @@ export function App({
       })
     )
       return;
+    if (editorDocumentAuthority.enabled && appliedPrograms.length > 0) {
+      setDraftError(
+        "Shared Editor history cannot be discarded by a local timing reset. Reimport the Scene source instead.",
+      );
+      return;
+    }
     resetPrograms();
   }
 
@@ -1146,6 +1238,19 @@ export function App({
       setDraftError(readDurationBlocker() ?? WORKSPACE_REIMPORT_BLOCKER);
       return;
     }
+    const authorityMutation = (() => {
+      if (!editorDocumentAuthority.enabled) return null;
+      const planned = applyEditorDraftTransition(editorState);
+      const mutation = planned.programUndoEntries.at(-1);
+      if (planned.programUndoEntries.length !== programUndoEntries.length + 1 || !mutation) {
+        return undefined;
+      }
+      return collaborationMutationForApplyV1(mutation);
+    })();
+    if (authorityMutation === undefined) {
+      setDraftError("The draft could not be projected onto the shared Editor mutation log.");
+      return;
+    }
     setDraftApplyPending(true);
     setDraftError(null);
     try {
@@ -1168,6 +1273,15 @@ export function App({
       if (resolvedLifecycleBlocker) {
         setDraftError(resolvedLifecycleBlocker);
         return;
+      }
+      if (authorityMutation) {
+        const outcome = await editorDocumentAuthority.commitMutation(authorityMutation);
+        if (!isEditorRevisionRequestCurrent(revisionRequest)) return;
+        if (outcome === "reconciled" || outcome === "stale") return;
+        if (outcome !== "committed") {
+          setDraftError(editorDocumentAuthority.message ?? "The shared Editor mutation could not be committed.");
+          return;
+        }
       }
       applyEditorDraft();
     } catch (error) {
@@ -2229,7 +2343,7 @@ export function App({
     }
     if (command === "undo") {
       if (!draftProgram && appliedPrograms.length === 0) return false;
-      undoProgram();
+      undoProgramCommitFirst();
       return true;
     }
     if (command === "redo") return redoProgram();
@@ -2467,6 +2581,15 @@ export function App({
           </div>
         ) : null}
 
+        {editorDocumentAuthority.message ? (
+          <div
+            className="shrink-0 border-b border-amber-950 bg-amber-950/40 px-3 py-1.5 text-xs text-amber-200"
+            role="alert"
+          >
+            Editor sync: {editorDocumentAuthority.message}
+          </div>
+        ) : null}
+
         {previewRendererRequested && !previewRendererActivated ? (
           <section
             aria-labelledby="preview-activation-title"
@@ -2579,7 +2702,7 @@ export function App({
                   selected ? selection.filter((id) => id !== entityId) : [...selection, entityId],
                 )
               }
-              onUndo={undoProgram}
+              onUndo={undoProgramCommitFirst}
               redoCount={redoPrograms.length}
               selectedIds={selectedSet}
             />
