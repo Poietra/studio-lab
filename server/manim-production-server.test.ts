@@ -14,6 +14,7 @@ import {
   startProductionManimServer,
 } from "./manim-production-server";
 import type { ManimApi } from "./manim-render-http";
+import { request as renderRequest } from "./manim-render-pipeline-test-fixtures";
 import { createEditorDocumentKeyV1, type EditorDocumentRepositoryV1 } from "./storage/editor-document-repository";
 
 const servers: ProductionManimServer[] = [];
@@ -71,6 +72,7 @@ function createRuntime(
   ready: () => boolean = () => true,
   onProjects: () => void = () => {},
   workspaceReady: () => boolean = () => true,
+  renderReady: () => boolean = ready,
 ) {
   const api = {
     cancel() {
@@ -95,6 +97,7 @@ function createRuntime(
             tenantBoundary: "server-owned-tenant-key",
           } as const)
         : ({ ready: false } as const),
+    renderReady: async () => renderReady(),
     workspaceReady: async () => workspaceReady(),
   } as const;
 }
@@ -358,6 +361,7 @@ describe("standalone production Manim HTTP adapter", () => {
 
   it("keeps authenticated workspace bootstrap readable during a render outage while mutations fail closed", async () => {
     const fullReadiness = vi.fn(async () => ({ ready: false }) as const);
+    const renderReadiness = vi.fn(async () => false);
     let workspaceAvailable = true;
     const workspaceReadiness = vi.fn(async () => workspaceAvailable);
     const projects = vi.fn(async () => ({ defaultProjectId: "project-a", projects: [] }));
@@ -382,6 +386,7 @@ describe("standalone production Manim HTTP adapter", () => {
         ...baseRuntime,
         api: { ...baseRuntime.api, projects, start, workspace } as unknown as ManimApi,
         ready: fullReadiness,
+        renderReady: renderReadiness,
         workspaceReady: workspaceReadiness,
       },
     });
@@ -411,10 +416,61 @@ describe("standalone production Manim HTTP adapter", () => {
       method: "POST",
     });
     expect(render).toMatchObject({ status: 503 });
-    expect(fullReadiness).toHaveBeenCalledOnce();
+    expect(renderReadiness).toHaveBeenCalledOnce();
+    expect(fullReadiness).not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();
     expect(projects).toHaveBeenCalledOnce();
     expect(workspace).toHaveBeenCalledTimes(2);
+  });
+
+  it("admits render lifecycle routes through their reported boundary without requiring unrelated snapshot readiness", async () => {
+    const fullReadiness = vi.fn(async () => ({ ready: false }) as const);
+    const renderReadiness = vi.fn(async () => true);
+    const start = vi.fn(async () => {
+      throw new HttpError("Render admission reached the tenant runtime.", 409);
+    });
+    const video = vi.fn();
+    const workspace = vi.fn(async () => ({
+      commandAvailable: false,
+      frame: { height: 8, width: 14.222 },
+      projectId: "project-a",
+      projectName: "Project A",
+      renderCapability: { available: true, kind: "durable-sandbox", unavailableReason: null },
+      sources: [],
+    }));
+    const baseRuntime = createRuntime(() => false);
+    const server = await startProductionManimServer({
+      admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
+      config: await startConfig(),
+      runtime: {
+        ...baseRuntime,
+        api: { ...baseRuntime.api, start, video, workspace } as unknown as ManimApi,
+        ready: fullReadiness,
+        renderReady: renderReadiness,
+      },
+    });
+    servers.push(server);
+
+    const inspected = await send(server, "/api/manim/projects/project-a/workspace");
+    expect(inspected).toMatchObject({ status: 200 });
+    expect(JSON.parse(inspected.body).renderCapability).toMatchObject({ available: true });
+
+    const request = { ...renderRequest(), projectId: "project-a" };
+    const render = await send(server, "/api/manim/projects/project-a/renders", {
+      body: JSON.stringify(request),
+      headers: { "content-type": "application/json", origin: "https://studio.example" },
+      method: "POST",
+    });
+    expect(render).toMatchObject({ status: 409 });
+    expect(start).toHaveBeenCalledWith(request, expect.any(AbortSignal));
+    expect(renderReadiness).toHaveBeenCalledOnce();
+    expect(fullReadiness).not.toHaveBeenCalled();
+
+    const existingVideo = await send(server, "/api/manim/renders/00000000-0000-4000-8000-000000000001/video");
+    expect(existingVideo).toMatchObject({ status: 503 });
+    expect(fullReadiness).toHaveBeenCalledOnce();
+    expect(renderReadiness).toHaveBeenCalledOnce();
+    expect(video).not.toHaveBeenCalled();
   });
 
   it("serves authenticated editor storage independently from render readiness", async () => {

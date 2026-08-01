@@ -42,12 +42,22 @@ function pngHead(generation = 1n): ProjectPngHeadV1 {
 
 describe("DurableManimRuntimeV1 production readiness", () => {
   function workspaceRuntime(
-    options: Readonly<{ executionReady?: () => Promise<boolean>; renderReady?: () => Promise<boolean> }>,
+    options: Readonly<{
+      blobsReady?: () => Promise<boolean>;
+      editorDocuments?: EditorDocumentRepositoryV1;
+      executionReady?: () => Promise<boolean>;
+      renderReady?: () => Promise<boolean>;
+      repositoryReady?: () => Promise<boolean>;
+    }>,
   ) {
     const now = new Date("2026-07-31T00:00:00.000Z");
     return new DurableManimRuntimeV1({
-      blobs: partial<SourceContentBlobStoreV1>({ close: async () => undefined, ready: async () => true }),
+      blobs: partial<SourceContentBlobStoreV1>({
+        close: async () => undefined,
+        ready: options.blobsReady ?? (async () => true),
+      }),
       execution: options.executionReady ? { ready: options.executionReady } : undefined,
+      editorDocuments: options.editorDocuments,
       namespace: "workspace-capability-test",
       renders: options.renderReady
         ? partial<DurableManimRenderServiceV1>({
@@ -65,7 +75,7 @@ describe("DurableManimRuntimeV1 production readiness", () => {
           tenantId: "tenant-a",
           updatedAt: now,
         }),
-        ready: async () => true,
+        ready: options.repositoryReady ?? (async () => true),
       }),
       tenantId: "tenant-a",
     });
@@ -105,6 +115,52 @@ describe("DurableManimRuntimeV1 production readiness", () => {
       renderCapability: { available: false, unavailableReason: "durable-render-unconfigured" },
     });
     await Promise.all([unavailable.close(), failing.close(), unconfigured.close()]);
+  });
+
+  it("uses the same source-to-delivery readiness boundary for the workspace capability", async () => {
+    const sourceUnavailable = workspaceRuntime({
+      blobsReady: async () => false,
+      executionReady: async () => true,
+      renderReady: async () => true,
+    });
+
+    await expect(sourceUnavailable.renderReady()).resolves.toBe(false);
+    await expect(sourceUnavailable.workspace("project-a")).resolves.toMatchObject({
+      renderCapability: {
+        available: false,
+        kind: "durable-sandbox",
+        unavailableReason: "durable-render-unavailable",
+      },
+    });
+    await sourceUnavailable.close();
+  });
+
+  it("includes the production maintenance gate in both capability and render admission readiness", async () => {
+    let maintenanceAvailable = false;
+    const runtime = workspaceRuntime({
+      editorDocuments: partial<EditorDocumentRepositoryV1>({ close: async () => undefined }),
+      executionReady: async () => true,
+      renderReady: async () => true,
+    });
+    const adapter = createDurableProductionManimRuntimeAdapterV1(
+      runtime,
+      partial<DurableSourceBlobGcWorkerV1>({
+        close: async () => undefined,
+        ready: () => maintenanceAvailable,
+      }),
+    );
+
+    await expect(adapter.renderReady(new AbortController().signal)).resolves.toBe(false);
+    await expect(runtime.workspace("project-a")).resolves.toMatchObject({
+      renderCapability: { available: false, unavailableReason: "durable-render-unavailable" },
+    });
+
+    maintenanceAvailable = true;
+    await expect(adapter.renderReady(new AbortController().signal)).resolves.toBe(true);
+    await expect(runtime.workspace("project-a")).resolves.toMatchObject({
+      renderCapability: { available: true, unavailableReason: null },
+    });
+    await adapter.close();
   });
 
   it("serves only the unchanged digest-addressed project PNG head", async () => {

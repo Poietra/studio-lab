@@ -13,6 +13,7 @@ import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import {
   authenticateManimRequestContext,
   handleManimRequest,
+  isManimRenderStartRequest,
   isManimVideoRequest,
   isManimWorkspaceBootstrapRequest,
   type ManimApi,
@@ -203,6 +204,8 @@ export type ProductionManimRuntimeAdapterV1 = Readonly<{
   editorReady?: (signal: AbortSignal) => Promise<boolean>;
   /** Covers fresh sandbox attestation plus PostgreSQL/S3 durable probes. */
   ready: (signal: AbortSignal) => Promise<ProductionRuntimeReadinessV1>;
+  /** Covers the exact source, sandbox, session, and media dependencies required to start a render. */
+  renderReady: (signal: AbortSignal) => Promise<boolean>;
   /** Covers the durable source workspace required to serve the editor shell. */
   workspaceReady: (signal: AbortSignal) => Promise<boolean>;
 }>;
@@ -396,6 +399,7 @@ export async function startProductionManimServer(
     typeof options.runtime.api !== "object" ||
     options.runtime.api === null ||
     typeof options.runtime.ready !== "function" ||
+    typeof options.runtime.renderReady !== "function" ||
     typeof options.runtime.workspaceReady !== "function" ||
     typeof options.runtime.close !== "function"
   ) {
@@ -529,6 +533,21 @@ export async function startProductionManimServer(
       );
     } catch {
       logger.warn("production.workspace_readiness_probe_failed");
+      return false;
+    }
+  };
+
+  const runtimeRenderIsReady = async (signal: AbortSignal) => {
+    try {
+      return (
+        (await waitForProbe(
+          (probeSignal) => trackRuntimeTask(() => options.runtime.renderReady(probeSignal)),
+          signal,
+          config.limits.readinessTimeoutMs,
+        )) === true
+      );
+    } catch {
+      logger.warn("production.render_readiness_probe_failed");
       return false;
     }
   };
@@ -687,12 +706,15 @@ export async function startProductionManimServer(
         );
         return;
       }
-      // Project/workspace bootstrap requires only its durable source storage so
-      // the workspace can report a bounded render outage. Every other route
-      // remains gated by the full sandbox + durable-runtime attestation.
+      // Project/workspace bootstrap requires only durable source storage so the
+      // workspace can report a bounded render outage. Render-start routes use
+      // that same reported render boundary; existing session and unrelated
+      // routes retain the full sandbox + durable-runtime attestation.
       const requestRuntimeReady = isManimWorkspaceBootstrapRequest(request.method, pathname)
         ? await runtimeWorkspaceIsReady(controller.signal)
-        : await runtimeIsReady(controller.signal);
+        : isManimRenderStartRequest(request.method, pathname)
+          ? await runtimeRenderIsReady(controller.signal)
+          : await runtimeIsReady(controller.signal);
       if (!requestRuntimeReady) {
         throw new TransportError("Production runtime is not ready.", 503);
       }
