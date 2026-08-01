@@ -34,6 +34,7 @@ function harness() {
   const environment = {
     EDITOR_CONNECT_RATE_LIMITER: { limit },
     EDITOR_HEAD_RATE_LIMITER: { limit: vi.fn(async () => ({ success: true })) },
+    EDITOR_PRESENCE_RATE_LIMITER: { limit: vi.fn(async () => ({ success: true })) },
     EDITOR_ROOMS: { get, idFromName },
     HYPERDRIVE: { connectionString: "postgresql://user:password@database.example:5432/poietra" },
     POIETRA_PUBLIC_ORIGIN: origin,
@@ -129,6 +130,19 @@ describe("Cloudflare Editor collaboration Worker", () => {
   it("requires the Durable Object binding before authorization", async () => {
     const value = harness();
     const environment = { ...value.environment, EDITOR_ROOMS: undefined } as unknown as typeof value.environment;
+
+    const response = await value.worker.fetch(request(), environment);
+
+    expect(response.status).toBe(503);
+    expect(value.authorize).not.toHaveBeenCalled();
+  });
+
+  it("requires the separate presence limiter before authorization", async () => {
+    const value = harness();
+    const environment = {
+      ...value.environment,
+      EDITOR_PRESENCE_RATE_LIMITER: undefined,
+    } as unknown as typeof value.environment;
 
     const response = await value.worker.fetch(request(), environment);
 

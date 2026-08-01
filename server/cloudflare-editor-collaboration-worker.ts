@@ -39,6 +39,7 @@ export interface CloudflareEditorRateLimitBindingV1 {
 export type CloudflareEditorCollaborationEnvironmentV1 = Readonly<{
   EDITOR_CONNECT_RATE_LIMITER: CloudflareEditorRateLimitBindingV1;
   EDITOR_HEAD_RATE_LIMITER: CloudflareEditorRateLimitBindingV1;
+  EDITOR_PRESENCE_RATE_LIMITER: CloudflareEditorRateLimitBindingV1;
   EDITOR_ROOMS: CloudflareEditorRoomNamespaceV1;
   HYPERDRIVE: CloudflareEditorHyperdriveBindingV1;
   POIETRA_PUBLIC_ORIGIN: string;
@@ -326,6 +327,7 @@ export function createCloudflareEditorCollaborationWorkerV1(
         rooms = roomNamespaceV1(environment.EDITOR_ROOMS);
         connectLimiter = rateLimitBindingV1(environment.EDITOR_CONNECT_RATE_LIMITER, "Editor connect rate limiter");
         rateLimitBindingV1(environment.EDITOR_HEAD_RATE_LIMITER, "Editor head rate limiter");
+        rateLimitBindingV1(environment.EDITOR_PRESENCE_RATE_LIMITER, "Editor presence rate limiter");
       } catch {
         return safeJsonResponse(503, "Editor live access is temporarily unavailable.");
       }

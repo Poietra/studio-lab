@@ -2,7 +2,7 @@ import { cn } from "../lib/cn";
 import type { ProposedStateProjection } from "./model";
 import { StudioCanvas, type StudioCanvasProps } from "./studio-canvas";
 import { StudioTimeline, type StudioTimelineProps } from "./studio-timeline";
-import { StudioToolbar, type StudioTool } from "./studio-toolbar";
+import { type StudioTool, StudioToolbar } from "./studio-toolbar";
 
 export type StudioViewportProps = Readonly<
   Omit<StudioCanvasProps, "cameraScale" | "readOnly" | "sampleId"> &
@@ -62,10 +62,12 @@ export function StudioViewport({
   onLifetimeChange,
   onMotionControlChange,
   onMotionDurationChange,
+  onPresenceCursorChange,
   onSelectEntity,
   onTimeChange,
   onTogglePlayback,
   preview = null,
+  presenceParticipants,
   projection,
   readOnly = false,
   scalePreview,
@@ -106,7 +108,9 @@ export function StudioViewport({
         onEntityResizePointerMove={onEntityResizePointerMove}
         onEntityResizePointerUp={onEntityResizePointerUp}
         onMotionControlChange={onMotionControlChange}
+        onPresenceCursorChange={onPresenceCursorChange}
         preview={preview}
+        presenceParticipants={presenceParticipants}
         readOnly={readOnly}
         sampleId={projection.canvas.sampleId}
         scalePreview={scalePreview}
@@ -144,10 +148,10 @@ export function StudioViewport({
 
 export { entityLabel } from "./studio-canvas";
 export type { StudioTimelineAnchor } from "./studio-timeline-geometry";
-export { entityDragDelta, entityPreviewScale, STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 export type {
   EntityDragPreview,
   EntityGeometryPreview,
   EntityScalePreview,
   InteractionMode,
 } from "./studio-viewport-geometry";
+export { entityDragDelta, entityPreviewScale, STUDIO_VIEWPORT } from "./studio-viewport-geometry";

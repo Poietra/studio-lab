@@ -12,6 +12,11 @@ import {
   resizeKindForType,
 } from "./shape-resize";
 import { StudioMotionOverlay } from "./studio-motion-overlay";
+import {
+  orderedStudioPeersV1,
+  StudioPresenceOverlay,
+  type StudioPresenceParticipantV1,
+} from "./studio-presence-overlay";
 import type { StudioTool } from "./studio-toolbar";
 import {
   clientPointToViewport,
@@ -62,6 +67,8 @@ export type StudioCanvasProps = Readonly<{
   onEntityResizePointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
   onEntityResizePointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
   onMotionControlChange: (path: StudioMotionPath, delta: Point) => void;
+  onPresenceCursorChange?: (cursor: Readonly<{ x: number; y: number }> | null) => void;
+  presenceParticipants?: readonly StudioPresenceParticipantV1[];
   preview?: StudioPreviewRendererViewV1 | null;
   readOnly: boolean;
   sampleId: string;
@@ -316,7 +323,9 @@ export function StudioCanvas({
   onEntityResizePointerMove,
   onEntityResizePointerUp,
   onMotionControlChange,
+  onPresenceCursorChange = () => undefined,
   preview = null,
+  presenceParticipants = [],
   readOnly,
   sampleId,
   scalePreview,
@@ -331,6 +340,15 @@ export function StudioCanvas({
   // semantic paint in the same render.
   const presentingCanvasPixels = preview?.state.phase === "presented";
   const displayOnlyPreview = preview?.interactionAuthority.kind === "display-only";
+  const remotePeers = orderedStudioPeersV1(presenceParticipants);
+  const remoteSelectorOrdinalsByEntityId = new Map<string, number[]>();
+  remotePeers.forEach((participant, index) => {
+    for (const entityId of participant.selectedEntityIds) {
+      const selectors = remoteSelectorOrdinalsByEntityId.get(entityId) ?? [];
+      selectors.push(index + 1);
+      remoteSelectorOrdinalsByEntityId.set(entityId, selectors);
+    }
+  });
   const studioEntityIdByUniqueSourceName = new Map<string, string | null>();
   if (presentingCanvasPixels && preview?.sourceRuntimeIdentity && preview.interactionGeometry) {
     for (const entity of entities) {
@@ -362,6 +380,17 @@ export function StudioCanvas({
         }
         data-proposed-state-sample={sampleId}
         data-scene-phase={boundaryActive ? "incoming" : "outgoing"}
+        onPointerLeave={() => onPresenceCursorChange(null)}
+        onPointerMove={(event) => {
+          const point = clientPointToViewport(event.currentTarget.getBoundingClientRect(), {
+            x: event.clientX,
+            y: event.clientY,
+          });
+          onPresenceCursorChange({
+            x: Math.min(1, Math.max(0, point.x / STUDIO_VIEWPORT.width)),
+            y: Math.min(1, Math.max(0, point.y / STUDIO_VIEWPORT.height)),
+          });
+        }}
         onPointerDown={(event) => {
           if (
             displayOnlyPreview ||
@@ -457,9 +486,14 @@ export function StudioCanvas({
               !positionUnknown &&
               !scaleUnknown;
             const resizeAvailable = !scaleUnknown;
+            const remoteSelectorOrdinals = remoteSelectorOrdinalsByEntityId.get(entity.id) ?? [];
             return (
               <div
-                className={cn("absolute -translate-x-1/2 -translate-y-1/2", selected ? "z-20" : "z-10")}
+                className={cn(
+                  "absolute -translate-x-1/2 -translate-y-1/2",
+                  selected ? "z-20" : "z-10",
+                  remoteSelectorOrdinals.length > 0 && "outline outline-1 outline-offset-2 outline-sky-800",
+                )}
                 data-studio-geometry={approximate ? "approximate" : "known"}
                 data-studio-entity-height={(presentedGeometry ?? previewGeometry).dimensions?.height?.toFixed(4)}
                 data-studio-entity-radius={(presentedGeometry ?? previewGeometry).dimensions?.radius?.toFixed(4)}
@@ -522,6 +556,14 @@ export function StudioCanvas({
                       shape={shapeResizeAvailable ? shape : null}
                     />
                   ) : null}
+                  {remoteSelectorOrdinals.length > 0 ? (
+                    <span
+                      aria-hidden="true"
+                      className="pointer-events-none absolute -bottom-6 left-0 max-w-28 truncate border border-sky-900 bg-sky-950 px-1 py-0.5 text-[10px] text-sky-200"
+                    >
+                      {remoteSelectorOrdinals.map((ordinal) => `E${ordinal}`).join(", ")}
+                    </span>
+                  ) : null}
                 </div>
               </div>
             );
@@ -540,6 +582,7 @@ export function StudioCanvas({
               : `Canvas preview fallback · ${describeStudioPreviewFallbackV1(preview.state.reason)}`}
           </div>
         ) : null}
+        <StudioPresenceOverlay participants={presenceParticipants} />
         {boundaryActive && incomingSceneName ? (
           <div className="absolute bottom-2 left-2 z-30 border border-zinc-700 bg-zinc-950/90 px-2 py-1 text-[10px] text-zinc-300">
             Incoming Scene · {incomingSceneName}

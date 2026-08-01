@@ -13,8 +13,10 @@ import {
   type EditorLiveClientV1,
   type EditorLiveConnectionV1,
 } from "../collaboration/editor-live-client";
+import { type EditorLivePresenceV1, editorLivePresenceSchemaV1 } from "../collaboration/editor-live-contract";
 import { EditorRemoteHeadQueueV1 } from "../collaboration/editor-remote-head-queue";
 import type { CanonicalEditProgram } from "./operations";
+import type { StudioPresenceParticipantV1 } from "./studio-presence-overlay";
 
 const defaultEditorDocumentClientV1 = new FetchEditorDocumentClientV1();
 let defaultEditorLiveClientV1: EditorLiveClientV1 | null | undefined;
@@ -32,6 +34,11 @@ type EditorDocumentAuthorityUiStateV1 = Readonly<{
   message: string | null;
   phase: EditorDocumentAuthorityPhaseV1;
   retryable: boolean;
+}>;
+
+type EditorPresenceRoomV1 = Readonly<{
+  identityKey: string | null;
+  participants: readonly StudioPresenceParticipantV1[];
 }>;
 
 export type EditorDocumentAuthorityHookCommitOutcomeV1 =
@@ -60,6 +67,31 @@ function publicAuthorityMessageV1(error: unknown) {
   return "The authoritative Editor document is unavailable. Reload the Scene before editing.";
 }
 
+function emptyEditorPresenceV1(): EditorLivePresenceV1 {
+  return { cursor: null, playheadSeconds: 0, selectedEntityIds: [] };
+}
+
+function sameStudioPresenceParticipantsV1(
+  left: readonly StudioPresenceParticipantV1[],
+  right: readonly StudioPresenceParticipantV1[],
+) {
+  if (left.length !== right.length) return false;
+  return left.every((participant, index) => {
+    const candidate = right[index];
+    return (
+      candidate !== undefined &&
+      participant.memberId === candidate.memberId &&
+      participant.isSelf === candidate.isSelf &&
+      participant.cursor?.x === candidate.cursor?.x &&
+      participant.cursor?.y === candidate.cursor?.y &&
+      participant.selectedEntityIds.length === candidate.selectedEntityIds.length &&
+      participant.selectedEntityIds.every(
+        (entityId, entityIndex) => entityId === candidate.selectedEntityIds[entityIndex],
+      )
+    );
+  });
+}
+
 export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityInputV1) {
   const [state, setState] = useState<EditorDocumentAuthorityUiStateV1>({
     message: null,
@@ -69,6 +101,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
   const authority = useRef<EditorDocumentAuthorityV1 | null>(null);
   const authorityIdentityKey = useRef<string | null>(null);
   const liveConnection = useRef<EditorLiveConnectionV1 | null>(null);
+  const liveConnectionIdentityKey = useRef<string | null>(null);
   const request = useRef<AbortController | null>(null);
   const generation = useRef(0);
   const stateRef = useRef(state);
@@ -86,6 +119,9 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
   renderedIdentityKey.current = identityKey;
   const reconcileRunner = useRef<() => Promise<boolean>>(async () => false);
   const remoteHeadQueue = useRef<EditorRemoteHeadQueueV1 | null>(null);
+  const localPresence = useRef<EditorLivePresenceV1>(emptyEditorPresenceV1());
+  const localPresenceIdentityKey = useRef<string | null>(identityKey);
+  const [presenceRoom, setPresenceRoom] = useState<EditorPresenceRoomV1>({ identityKey: null, participants: [] });
   remoteHeadQueue.current ??= new EditorRemoteHeadQueueV1(
     () => stateRef.current.phase === "ready",
     () => reconcileRunner.current(),
@@ -100,6 +136,12 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     authorityIdentityKey.current = null;
     liveConnection.current?.close();
     liveConnection.current = null;
+    liveConnectionIdentityKey.current = null;
+    if (localPresenceIdentityKey.current !== identityKey) {
+      localPresence.current = emptyEditorPresenceV1();
+      localPresenceIdentityKey.current = identityKey;
+    }
+    setPresenceRoom({ identityKey: null, participants: [] });
     remoteHeadQueue.current?.clear();
     if (!input.identity) {
       updateState({ message: null, phase: "disabled", retryable: false });
@@ -134,7 +176,38 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
               projectId: input.identity!.projectId,
             },
             {
-              onHead: () => remoteHeadQueue.current?.notify(),
+              onHead: () => {
+                if (
+                  generation.current !== activeGeneration ||
+                  renderedIdentityKey.current !== identityKey ||
+                  authority.current !== nextAuthority
+                )
+                  return;
+                remoteHeadQueue.current?.notify();
+              },
+              onParticipants: (participants, selfMemberId) => {
+                if (
+                  generation.current !== activeGeneration ||
+                  renderedIdentityKey.current !== identityKey ||
+                  authority.current !== nextAuthority
+                )
+                  return;
+                const projected = participants.map((participant) => {
+                  const isSelf = participant.member.id === selfMemberId;
+                  return {
+                    cursor: isSelf ? null : participant.presence.cursor,
+                    isSelf,
+                    memberId: participant.member.id,
+                    selectedEntityIds: isSelf ? [] : participant.presence.selectedEntityIds,
+                  };
+                });
+                setPresenceRoom((current) =>
+                  current.identityKey === identityKey &&
+                  sameStudioPresenceParticipantsV1(current.participants, projected)
+                    ? current
+                    : { identityKey, participants: projected },
+                );
+              },
               onPhase: (phase) => {
                 if (
                   generation.current !== activeGeneration ||
@@ -142,13 +215,26 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
                   authority.current !== nextAuthority
                 )
                   return;
-                if (phase === "connected") remoteHeadQueue.current?.notify();
+                if (phase === "connected") {
+                  remoteHeadQueue.current?.notify();
+                } else {
+                  setPresenceRoom((current) =>
+                    current.identityKey === identityKey ? { identityKey: null, participants: [] } : current,
+                  );
+                }
               },
             },
           );
           liveConnection.current = nextLiveConnection;
+          liveConnectionIdentityKey.current = identityKey;
+          nextLiveConnection.publishPresence(
+            localPresenceIdentityKey.current === identityKey ? localPresence.current : emptyEditorPresenceV1(),
+          );
         } catch {
+          nextLiveConnection?.close();
+          if (liveConnection.current === nextLiveConnection) liveConnection.current = null;
           nextLiveConnection = null;
+          liveConnectionIdentityKey.current = null;
         }
       })
       .catch((error: unknown) => {
@@ -174,7 +260,10 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
         authorityIdentityKey.current = null;
       }
       nextLiveConnection?.close();
-      if (liveConnection.current === nextLiveConnection) liveConnection.current = null;
+      if (liveConnection.current === nextLiveConnection) {
+        liveConnection.current = null;
+        liveConnectionIdentityKey.current = null;
+      }
       remoteHeadQueue.current?.clear();
     };
   }, [client, identityKey, liveClient, updateState]);
@@ -339,6 +428,24 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     remoteHeadQueue.current?.notify();
   }, []);
 
+  const updatePresence = useCallback((update: Partial<EditorLivePresenceV1>) => {
+    const activeIdentityKey = renderedIdentityKey.current;
+    if (activeIdentityKey === null) return;
+    if (localPresenceIdentityKey.current !== activeIdentityKey) {
+      localPresence.current = emptyEditorPresenceV1();
+      localPresenceIdentityKey.current = activeIdentityKey;
+    }
+    const next = editorLivePresenceSchemaV1.safeParse({ ...localPresence.current, ...update });
+    if (!next.success) return;
+    localPresence.current = next.data;
+    if (liveConnectionIdentityKey.current !== activeIdentityKey) return;
+    try {
+      liveConnection.current?.publishPresence(next.data);
+    } catch {
+      // Presence is an ephemeral affordance and must never interrupt editing.
+    }
+  }, []);
+
   return {
     authoringBlocked: input.identity !== null && state.phase !== "ready",
     canAuthor,
@@ -346,8 +453,10 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     enabled: input.identity !== null,
     message: state.message,
     phase: state.phase,
+    presenceParticipants: presenceRoom.identityKey === identityKey ? presenceRoom.participants : [],
     reconcileRemoteHead,
     retry,
     retryable: state.retryable,
+    updatePresence,
   } as const;
 }
