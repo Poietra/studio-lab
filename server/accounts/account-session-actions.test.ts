@@ -18,6 +18,7 @@ const account = {
     { displayName: "Organization B", id: "organization-b", role: "owner" as const },
   ],
   user: { displayName: "Ada Lovelace", id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3" },
+  version: 4,
 };
 
 function fixture() {
@@ -30,7 +31,10 @@ function fixture() {
   return { handler: createAccountSessionActionFetchHandlerV1(repository, origin), repository };
 }
 
-function patch(body = JSON.stringify({ organizationId: "organization-b" }), headers: HeadersInit = {}) {
+function patch(
+  body = JSON.stringify({ expectedVersion: 3, organizationId: "organization-b" }),
+  headers: HeadersInit = {},
+) {
   return new Request(`${origin}${ACCOUNT_SESSION_ROUTE_V1}`, {
     body,
     headers: {
@@ -62,10 +66,12 @@ describe("account session action Fetch handler", () => {
       activeOrganization: { displayName: "Organization B", id: "organization-b", role: "owner" },
       organizations: account.organizations,
       user: account.user,
+      version: account.version,
     });
     expect(repository.switchActiveOrganization).toHaveBeenCalledWith(
       createHash("sha256").update(tokenBytes).digest(),
       "organization-b",
+      3,
       expect.any(AbortSignal),
     );
     expect(response.headers.get("cache-control")).toBe("private, no-store");
@@ -76,18 +82,26 @@ describe("account session action Fetch handler", () => {
     const missing = fixture();
     const invalid = fixture();
     const unavailable = fixture();
+    const conflict = fixture();
     vi.mocked(invalid.repository.switchActiveOrganization).mockResolvedValueOnce({ kind: "invalid-session" });
     vi.mocked(unavailable.repository.switchActiveOrganization).mockResolvedValueOnce({
       kind: "organization-unavailable",
     });
+    vi.mocked(conflict.repository.switchActiveOrganization).mockResolvedValueOnce({ kind: "conflict" });
 
     const missingResponse = await missing.handler.fetch(
-      patch(JSON.stringify({ organizationId: "organization-b" }), { cookie: "" }),
+      patch(JSON.stringify({ expectedVersion: 3, organizationId: "organization-b" }), { cookie: "" }),
     );
     const invalidResponse = await invalid.handler.fetch(patch());
     const unavailableResponse = await unavailable.handler.fetch(patch());
+    const conflictResponse = await conflict.handler.fetch(patch());
 
-    expect([missingResponse.status, invalidResponse.status, unavailableResponse.status]).toEqual([401, 401, 403]);
+    expect([
+      missingResponse.status,
+      invalidResponse.status,
+      unavailableResponse.status,
+      conflictResponse.status,
+    ]).toEqual([401, 401, 403, 409]);
     expect(missing.repository.switchActiveOrganization).not.toHaveBeenCalled();
   });
 
@@ -97,16 +111,16 @@ describe("account session action Fetch handler", () => {
       patch(undefined, { origin: "https://attacker.example" }),
       patch(undefined, { "sec-fetch-site": "cross-site" }),
       new Request(`${origin}${ACCOUNT_SESSION_ROUTE_V1}`, {
-        body: JSON.stringify({ organizationId: "organization-b" }),
+        body: JSON.stringify({ expectedVersion: 3, organizationId: "organization-b" }),
         headers: { "content-type": "application/json" },
         method: "PATCH",
       }),
       patch(undefined, { "content-type": "text/plain" }),
       patch("{"),
-      patch(JSON.stringify({ organizationId: "organization-b", tenantId: "organization-a" })),
-      patch(JSON.stringify({ organizationId: "organization-b" }), { "content-length": "513" }),
+      patch(JSON.stringify({ expectedVersion: 3, organizationId: "organization-b", tenantId: "organization-a" })),
+      patch(JSON.stringify({ expectedVersion: 3, organizationId: "organization-b" }), { "content-length": "513" }),
       new Request(`${origin}${ACCOUNT_SESSION_ROUTE_V1}?organizationId=organization-b`, {
-        body: JSON.stringify({ organizationId: "organization-b" }),
+        body: JSON.stringify({ expectedVersion: 3, organizationId: "organization-b" }),
         headers: { "content-type": "application/json", origin },
         method: "PATCH",
       }),

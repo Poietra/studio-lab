@@ -18,6 +18,7 @@ export type ResolvedAccountSessionAccountV1 = Readonly<{
   activeOrganizationId: string;
   organizations: AccountSessionViewV1["organizations"];
   user: AccountSessionViewV1["user"];
+  version: number;
 }>;
 
 /** Bounded account bootstrap read model for a server-issued opaque session. */
@@ -30,6 +31,7 @@ export interface AccountSessionViewRepositoryV1 {
 }
 
 export type SwitchActiveOrganizationResultV1 =
+  | Readonly<{ kind: "conflict" }>
   | Readonly<{ kind: "invalid-session" }>
   | Readonly<{ kind: "organization-unavailable" }>
   | Readonly<{ account: ResolvedAccountSessionAccountV1; kind: "updated" }>;
@@ -40,6 +42,7 @@ export interface AccountSessionControlRepositoryV1 extends AccountSessionViewRep
   switchActiveOrganization(
     sessionTokenHash: Uint8Array,
     organizationId: string,
+    expectedVersion: number,
     signal?: AbortSignal,
   ): Promise<SwitchActiveOrganizationResultV1>;
 }

@@ -47,8 +47,8 @@ sessions fail authentication before membership admission, and deleting a
 membership cascades its sessions. Bearer credentials are not a fallback for
 this browser authenticator. Migration v13 and the Fetch API account-control-plane
 handler add `/auth/oidc/start`, `/auth/oidc/callback`, browser bootstrap
-`GET /api/account/session`, active-organization switching through same-origin
-`PATCH /api/account/session`, and current-session logout through same-origin
+`GET /api/account/session`, version-fenced active-organization switching through
+same-origin `PATCH /api/account/session`, and current-session logout through same-origin
 `POST /api/account/logout`. Login uses Authorization
 Code, PKCE S256, state, nonce, and a separate short-lived browser-binding cookie.
 PostgreSQL stores only the state and binding hashes; `DELETE ... RETURNING`

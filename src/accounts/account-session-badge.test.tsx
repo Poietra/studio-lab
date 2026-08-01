@@ -15,6 +15,7 @@ describe("AccountSessionBadge", () => {
             { displayName: "Studio Team", id: "organization-b", role: "member" },
           ],
           user: { displayName: "Ada", id: "2f2e3ea4-88de-4f37-81f7-1860d8f942f8" },
+          version: 1,
         }}
       />,
     );

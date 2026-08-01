@@ -38,14 +38,18 @@ function responseHeaders() {
   });
 }
 
-function jsonResponse(status: 200 | 400 | 401 | 403 | 404 | 405 | 413 | 415 | 503, body: unknown, allow?: string) {
+function jsonResponse(
+  status: 200 | 400 | 401 | 403 | 404 | 405 | 409 | 413 | 415 | 503,
+  body: unknown,
+  allow?: string,
+) {
   const headers = responseHeaders();
   headers.set("content-type", "application/json; charset=utf-8");
   if (allow) headers.set("allow", allow);
   return new Response(JSON.stringify(body), { headers, status });
 }
 
-function errorResponse(status: 400 | 401 | 403 | 404 | 405 | 413 | 415 | 503, message: string, allow?: string) {
+function errorResponse(status: 400 | 401 | 403 | 404 | 405 | 409 | 413 | 415 | 503, message: string, allow?: string) {
   return jsonResponse(status, { error: message }, allow);
 }
 
@@ -100,6 +104,7 @@ function accountView(account: ResolvedAccountSessionAccountV1) {
     activeOrganization,
     organizations: account.organizations,
     user: account.user,
+    version: account.version,
   });
   return parsed.success ? parsed.data : null;
 }
@@ -213,7 +218,7 @@ export function createAccountSessionActionFetchRequestGuardV1(
   });
 }
 
-async function readOrganizationId(request: Request) {
+async function readOrganizationSwitch(request: Request) {
   const reader = request.body?.getReader();
   if (!reader) return { kind: "invalid" } as const;
   const chunks: Uint8Array[] = [];
@@ -248,7 +253,7 @@ async function readOrganizationId(request: Request) {
   }
   const organization = accountOrganizationSwitchRequestSchemaV1.safeParse(parsed);
   return organization.success
-    ? ({ kind: "valid", organizationId: organization.data.organizationId } as const)
+    ? ({ kind: "valid", request: organization.data } as const)
     : ({ kind: "invalid" } as const);
 }
 
@@ -286,19 +291,23 @@ export function createAccountSessionActionFetchHandlerV1(
       }
 
       if (sessionTokenHash === null) return errorResponse(401, "Authentication is required.");
-      const selected = await readOrganizationId(request);
+      const selected = await readOrganizationSwitch(request);
       if (selected.kind === "too-large") return errorResponse(413, "Account request is too large.");
       if (selected.kind !== "valid") return errorResponse(400, "Account request is invalid.");
       try {
         const result = await repository.switchActiveOrganization(
           sessionTokenHash,
-          selected.organizationId,
+          selected.request.organizationId,
+          selected.request.expectedVersion,
           request.signal,
         );
         request.signal.throwIfAborted();
         if (result.kind === "invalid-session") return errorResponse(401, "Authentication is required.");
         if (result.kind === "organization-unavailable") {
           return errorResponse(403, "Account access is not available.");
+        }
+        if (result.kind === "conflict") {
+          return errorResponse(409, "The account session changed. Refresh and try again.");
         }
         const view = accountView(result.account);
         return view ? jsonResponse(200, view) : errorResponse(503, "Account access is temporarily unavailable.");

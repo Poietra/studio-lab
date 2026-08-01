@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { accountSessionViewSchemaV1 } from "./account-session-contract";
+import { accountOrganizationSwitchRequestSchemaV1, accountSessionViewSchemaV1 } from "./account-session-contract";
 
 const session = {
   activeOrganization: { displayName: "Poietra", id: "organization-a", role: "owner" as const },
@@ -9,9 +9,26 @@ const session = {
     { displayName: "Studio Team", id: "organization-b", role: "member" as const },
   ],
   user: { displayName: "Ada", id: "2f2e3ea4-88de-4f37-81f7-1860d8f942f8" },
+  version: 3,
 };
 
 describe("account session contract", () => {
+  it("requires one strict organization switch compare-and-set request", () => {
+    expect(
+      accountOrganizationSwitchRequestSchemaV1.parse({ expectedVersion: 3, organizationId: "organization-b" }),
+    ).toEqual({ expectedVersion: 3, organizationId: "organization-b" });
+    expect(accountOrganizationSwitchRequestSchemaV1.safeParse({ organizationId: "organization-b" }).success).toBe(
+      false,
+    );
+    expect(
+      accountOrganizationSwitchRequestSchemaV1.safeParse({
+        expectedVersion: 3,
+        organizationId: "organization-b",
+        sessionToken: "must-not-cross",
+      }).success,
+    ).toBe(false);
+  });
+
   it("accepts one canonical active organization membership", () => {
     expect(accountSessionViewSchemaV1.parse(session)).toEqual(session);
   });
@@ -33,6 +50,12 @@ describe("account session contract", () => {
     ["a mismatched active role", { ...session, activeOrganization: { ...session.activeOrganization, role: "admin" } }],
     ["duplicate memberships", { ...session, organizations: [session.organizations[0], session.organizations[0]] }],
     ["an untrimmed display name", { ...session, user: { ...session.user, displayName: " Ada " } }],
+    [
+      "a missing version",
+      { activeOrganization: session.activeOrganization, organizations: session.organizations, user: session.user },
+    ],
+    ["a non-positive version", { ...session, version: 0 }],
+    ["an unsafe version", { ...session, version: Number.MAX_SAFE_INTEGER + 1 }],
   ])("rejects %s", (_label, value) => {
     expect(accountSessionViewSchemaV1.safeParse(value).success).toBe(false);
   });

@@ -12,6 +12,7 @@ function session(role: AccountSessionViewV1["activeOrganization"]["role"]): Acco
     activeOrganization: { displayName: "Poietra", id: "organization-a", role },
     organizations: [{ displayName: "Poietra", id: "organization-a", role }],
     user: { displayName: "Ada", id: "2f2e3ea4-88de-4f37-81f7-1860d8f942f8" },
+    version: 1,
   };
 }
 

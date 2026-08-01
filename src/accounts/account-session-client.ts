@@ -39,8 +39,12 @@ export async function loadAccountSessionV1(signal?: AbortSignal) {
   );
 }
 
-export async function switchAccountOrganizationV1(organizationId: string, signal?: AbortSignal) {
-  const request = accountOrganizationSwitchRequestSchemaV1.safeParse({ organizationId });
+export async function switchAccountOrganizationV1(
+  organizationId: string,
+  expectedVersion: number,
+  signal?: AbortSignal,
+) {
+  const request = accountOrganizationSwitchRequestSchemaV1.safeParse({ expectedVersion, organizationId });
   if (!request.success) throw new TypeError("The account organization is invalid.");
   const session = await readAccountSessionResponseV1(
     await fetch("/api/account/session", {

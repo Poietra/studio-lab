@@ -25,6 +25,7 @@ type AccountSessionAccountRow = QueryResultRow & {
   organization_role: string | null;
   user_display_name: string;
   user_id: string;
+  session_version: string;
 };
 
 type AccountSessionSwitchRow = AccountSessionAccountRow & {
@@ -82,6 +83,17 @@ function exactDisplayName(value: unknown, name: string) {
   return parsed.data;
 }
 
+function exactSessionVersion(value: unknown) {
+  if (typeof value !== "string" || !/^[1-9][0-9]*$/u.test(value)) {
+    throw new TypeError("PostgreSQL returned an invalid account session version.");
+  }
+  const version = Number(value);
+  if (!Number.isSafeInteger(version)) {
+    throw new TypeError("PostgreSQL returned an account session version outside the API range.");
+  }
+  return version;
+}
+
 function accountFromRows(rows: readonly AccountSessionAccountRow[]): ResolvedAccountSessionAccountV1 | null {
   const first = rows[0];
   if (!first) return null;
@@ -94,12 +106,14 @@ function accountFromRows(rows: readonly AccountSessionAccountRow[]): ResolvedAcc
     displayName: exactDisplayName(first.user_display_name, "account display name"),
     id: userId.data,
   };
+  const version = exactSessionVersion(first.session_version);
   const organizations: ResolvedAccountSessionAccountV1["organizations"] = [];
   for (const row of rows) {
     if (
       row.user_id !== user.id ||
       row.user_display_name !== user.displayName ||
-      row.active_organization_id !== activeOrganizationId.data
+      row.active_organization_id !== activeOrganizationId.data ||
+      row.session_version !== first.session_version
     ) {
       throw new TypeError("PostgreSQL returned inconsistent account session rows.");
     }
@@ -133,7 +147,7 @@ function accountFromRows(rows: readonly AccountSessionAccountRow[]): ResolvedAcc
       throw new TypeError("PostgreSQL returned non-canonical organization memberships.");
     }
   }
-  return { activeOrganizationId: activeOrganizationId.data, organizations, user };
+  return { activeOrganizationId: activeOrganizationId.data, organizations, user, version };
 }
 
 function switchResultFromRows(rows: readonly AccountSessionSwitchRow[]): SwitchActiveOrganizationResultV1 {
@@ -148,6 +162,10 @@ function switchResultFromRows(rows: readonly AccountSessionSwitchRow[]): SwitchA
   if (first.mutation_status === "organization-unavailable") {
     if (rows.length !== 1) throw new TypeError("PostgreSQL returned duplicate unavailable organizations.");
     return { kind: "organization-unavailable" };
+  }
+  if (first.mutation_status === "conflict") {
+    if (rows.length !== 1) throw new TypeError("PostgreSQL returned duplicate account session conflicts.");
+    return { kind: "conflict" };
   }
   if (first.mutation_status !== "updated") {
     throw new TypeError("PostgreSQL returned an unknown account organization switch status.");
@@ -215,7 +233,8 @@ export class PostgresAccountSessionRepositoryV1
       `WITH selected_session AS MATERIALIZED (
          SELECT session.user_id AS user_id,
                 account.display_name AS user_display_name,
-                session.active_tenant_id AS active_organization_id
+                session.active_tenant_id AS active_organization_id,
+                session.version::text AS session_version
            FROM public.account_sessions session
            JOIN public.users account ON account.user_id = session.user_id
           WHERE session.session_token_hash = $1
@@ -238,6 +257,7 @@ export class PostgresAccountSessionRepositoryV1
        SELECT selected.user_id,
               selected.user_display_name,
               selected.active_organization_id,
+              selected.session_version,
               organization.organization_id,
               organization.organization_display_name,
               organization.organization_role
@@ -252,14 +272,24 @@ export class PostgresAccountSessionRepositoryV1
     return account;
   }
 
-  async switchActiveOrganization(sessionTokenHashValue: Uint8Array, organizationIdValue: string, signal?: AbortSignal) {
+  async switchActiveOrganization(
+    sessionTokenHashValue: Uint8Array,
+    organizationIdValue: string,
+    expectedVersionValue: number,
+    signal?: AbortSignal,
+  ) {
     const sessionTokenHash = exactSessionTokenHash(sessionTokenHashValue);
     const organizationId = organizationIdSchemaV1.parse(organizationIdValue);
+    if (!Number.isSafeInteger(expectedVersionValue) || expectedVersionValue < 1) {
+      throw new TypeError("The expected account session version is invalid.");
+    }
     throwIfAborted(signal);
     const result = await this.#connection.query<AccountSessionSwitchRow>(
       `WITH selected_session AS MATERIALIZED (
          SELECT session.user_id,
-                account.display_name AS user_display_name
+                account.display_name AS user_display_name,
+                session.active_tenant_id AS active_organization_id,
+                session.version AS session_version
            FROM public.account_sessions session
            JOIN public.users account ON account.user_id = session.user_id
           WHERE session.session_token_hash = $1
@@ -284,8 +314,11 @@ export class PostgresAccountSessionRepositoryV1
            FROM target_access target
           WHERE session.session_token_hash = $1
             AND session.user_id = target.user_id
+            AND session.version = $3::bigint
             AND session.active_tenant_id IS DISTINCT FROM target.organization_id
-          RETURNING session.user_id
+          RETURNING session.active_tenant_id AS active_organization_id,
+                    session.user_id,
+                    session.version AS session_version
        ), active_organizations AS MATERIALIZED (
          SELECT membership.tenant_id AS organization_id,
                 organization.display_name AS organization_display_name,
@@ -301,21 +334,27 @@ export class PostgresAccountSessionRepositoryV1
        SELECT CASE
                 WHEN selected.user_id IS NULL THEN 'invalid-session'
                 WHEN target.user_id IS NULL THEN 'organization-unavailable'
+                WHEN selected.active_organization_id = target.organization_id THEN 'updated'
+                WHEN selected.session_version <> $3::bigint THEN 'conflict'
+                WHEN updated.user_id IS NULL THEN 'conflict'
                 ELSE 'updated'
               END AS mutation_status,
-              target.organization_id AS active_organization_id,
+              COALESCE(updated.active_organization_id, selected.active_organization_id) AS active_organization_id,
               organization.organization_display_name,
               organization.organization_id,
               organization.organization_role,
               selected.user_display_name,
-              selected.user_id
+              selected.user_id,
+              COALESCE(updated.session_version, selected.session_version)::text AS session_version
          FROM (VALUES (1)) AS request_anchor(value)
          LEFT JOIN selected_session selected ON true
          LEFT JOIN target_access target ON target.user_id = selected.user_id
          LEFT JOIN updated_session updated ON updated.user_id = selected.user_id
-         LEFT JOIN active_organizations organization ON target.user_id IS NOT NULL
+         LEFT JOIN active_organizations organization
+           ON target.user_id IS NOT NULL
+          AND (selected.active_organization_id = target.organization_id OR updated.user_id IS NOT NULL)
         ORDER BY organization.organization_id COLLATE "C" NULLS LAST`,
-      [sessionTokenHash, organizationId],
+      [sessionTokenHash, organizationId, expectedVersionValue],
       signal,
     );
     throwIfAborted(signal);

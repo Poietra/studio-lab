@@ -147,10 +147,12 @@ export function AccountSessionBootstrap({ children, enabled }: AccountSessionBoo
 
   const switchOrganization = useCallback(
     (organizationId: string) => {
+      if (state.phase !== "ready" || !state.session) return;
+      const expectedVersion = state.session.version;
       const transition = beginMutationTransition();
       if (!transition) return;
       const { controller, generation } = transition;
-      void switchAccountOrganizationV1(organizationId, controller.signal)
+      void switchAccountOrganizationV1(organizationId, expectedVersion, controller.signal)
         .then((session) => {
           const shouldRefresh = finishMutation(controller, generation);
           if (shouldRefresh === null) return;
@@ -172,7 +174,7 @@ export function AccountSessionBootstrap({ children, enabled }: AccountSessionBoo
           loadAuthoritativeSession("The organization could not be changed. Your account was refreshed.");
         });
     },
-    [beginMutationTransition, broadcastInvalidation, finishMutation, loadAuthoritativeSession],
+    [beginMutationTransition, broadcastInvalidation, finishMutation, loadAuthoritativeSession, state],
   );
 
   const logout = useCallback(() => {

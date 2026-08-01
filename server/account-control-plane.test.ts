@@ -21,6 +21,7 @@ function sessionRepository() {
     activeOrganizationId: "organization-a",
     organizations: [{ displayName: "Organization A", id: "organization-a", role: "billing" as const }],
     user: { displayName: "Ada Lovelace", id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3" },
+    version: 4,
   };
   const value: AccountSessionControlRepositoryV1 = {
     close,
@@ -87,7 +88,7 @@ describe("OIDC account control-plane composition", () => {
     await expect(
       controlPlane.fetch(
         new Request("https://studio.example/api/account/session", {
-          body: JSON.stringify({ organizationId: "organization-a" }),
+          body: JSON.stringify({ expectedVersion: 4, organizationId: "organization-a" }),
           headers: {
             "content-type": "application/json",
             cookie: `__Host-poietra_session=${token}`,
