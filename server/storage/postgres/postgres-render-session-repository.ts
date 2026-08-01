@@ -68,6 +68,7 @@ import {
 } from "../workspace-source-repository";
 import { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
+import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
 import { reserveRenderUsageWithClientV1, settleRenderUsageWithClientV1 } from "./postgres-entitlement-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
@@ -769,12 +770,12 @@ export class PostgresRenderSessionRepositoryV1
   async ready(signal?: AbortSignal) {
     try {
       const result = await this.#connection.query<{ checksum: string; version: number }>(
-        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (2, 5, 6, 7, 8, 9, 14, 15, 19) ORDER BY version",
+        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (2, 5, 6, 7, 8, 9, 14, 15, 19, 20) ORDER BY version",
         [],
         signal,
       );
       return (
-        result.rowCount === 9 &&
+        result.rowCount === 10 &&
         result.rows[0]?.version === 2 &&
         result.rows[0]?.checksum === RENDER_SESSION_MIGRATION_V2_CHECKSUM &&
         result.rows[1]?.version === 5 &&
@@ -792,7 +793,9 @@ export class PostgresRenderSessionRepositoryV1
         result.rows[7]?.version === 15 &&
         result.rows[7]?.checksum === RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM &&
         result.rows[8]?.version === 19 &&
-        result.rows[8]?.checksum === RENDER_SESSION_SCENE_NAME_MIGRATION_V19_CHECKSUM
+        result.rows[8]?.checksum === RENDER_SESSION_SCENE_NAME_MIGRATION_V19_CHECKSUM &&
+        result.rows[9]?.version === 20 &&
+        result.rows[9]?.checksum === IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM
       );
     } catch {
       throwIfAborted(signal);

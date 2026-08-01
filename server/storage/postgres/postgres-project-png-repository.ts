@@ -14,6 +14,7 @@ import {
   sameProjectPngReceiptV1,
 } from "../project-png-storage";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
+import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 import {
   type PostgresStorageObjectLocatorRowV1,
@@ -139,16 +140,18 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
 
   async ready(signal?: AbortSignal) {
     const result = await this.#connection.query<{ checksum: string; version: number }>(
-      "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (5, 6) ORDER BY version",
+      "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (5, 6, 20) ORDER BY version",
       [],
       signal,
     );
     return (
-      result.rowCount === 2 &&
+      result.rowCount === 3 &&
       result.rows[0]?.version === 5 &&
       result.rows[0]?.checksum === PROJECT_PNG_MIGRATION_V5_CHECKSUM &&
       result.rows[1]?.version === 6 &&
-      result.rows[1]?.checksum === DURABLE_RETENTION_MIGRATION_V6_CHECKSUM
+      result.rows[1]?.checksum === DURABLE_RETENTION_MIGRATION_V6_CHECKSUM &&
+      result.rows[2]?.version === 20 &&
+      result.rows[2]?.checksum === IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM
     );
   }
 

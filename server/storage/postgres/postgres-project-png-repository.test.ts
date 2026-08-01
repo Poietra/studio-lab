@@ -5,6 +5,7 @@ import { immutableProjectPngObjectKeyV1 } from "../immutable-source-png-storage"
 import type { ProjectPngBlobReceiptV1, VersionedProjectPngBlobReceiptV1 } from "../project-png-storage";
 import { storageObjectLocatorColumnsV1 } from "../storage-object-locator";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
+import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
 import { PostgresProjectPngRepositoryV1, PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
 import { POSTGRES_REPOSITORY_OPTIONS_V1 } from "./postgres-repository-connection";
 
@@ -80,15 +81,16 @@ function fakePool(handle: (text: string, values: readonly unknown[]) => QueryRes
 }
 
 describe("PostgresProjectPngRepositoryV1", () => {
-  it("reports ready only when the project PNG and retention migrations are installed", async () => {
+  it("reports ready only when project PNG, retention, and immutable-locator migrations are installed", async () => {
     const fixture = fakePool((text, values) => {
-      expect(text).toContain("version IN (5, 6)");
+      expect(text).toContain("version IN (5, 6, 20)");
       expect(values).toEqual([]);
       return {
-        rowCount: 2,
+        rowCount: 3,
         rows: [
           { checksum: PROJECT_PNG_MIGRATION_V5_CHECKSUM, version: 5 },
           { checksum: DURABLE_RETENTION_MIGRATION_V6_CHECKSUM, version: 6 },
+          { checksum: IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM, version: 20 },
         ],
       };
     });

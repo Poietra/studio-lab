@@ -4,6 +4,7 @@ import { renderSessionTransitionSources } from "../../manim-render-session-polic
 import { immutableSourceBlobObjectKeyV1 } from "../immutable-source-png-storage";
 import { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
+import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
 import {
   PostgresRenderSessionRepositoryV1,
@@ -66,9 +67,10 @@ describe("Postgres render-session transitions", () => {
       { checksum: BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM, version: 14 },
       { checksum: RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM, version: 15 },
       { checksum: RENDER_SESSION_SCENE_NAME_MIGRATION_V19_CHECKSUM, version: 19 },
+      { checksum: IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM, version: 20 },
     ];
     const query = vi.fn(async (text: string) => {
-      expect(text).toContain("version IN (2, 5, 6, 7, 8, 9, 14, 15, 19)");
+      expect(text).toContain("version IN (2, 5, 6, 7, 8, 9, 14, 15, 19, 20)");
       return { rowCount: rows.length, rows };
     });
     const pool = {

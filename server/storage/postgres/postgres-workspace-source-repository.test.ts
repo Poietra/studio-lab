@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { immutableSourceBlobObjectKeyV1 } from "../immutable-source-png-storage";
 import type { SourceBlobReceiptV1 } from "../workspace-source-repository";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
+import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
 import { POSTGRES_REPOSITORY_OPTIONS_V1 } from "./postgres-repository-connection";
 import {
   PostgresWorkspaceSourceRepositoryV1,
@@ -75,14 +76,15 @@ function fakePool(handle: (text: string, values: readonly unknown[]) => QueryRes
 }
 
 describe("PostgresWorkspaceSourceRepositoryV1 source retention", () => {
-  it("requires both the workspace and durable-retention schema migrations", async () => {
+  it("requires workspace, retention, and immutable-locator schema migrations", async () => {
     const fixture = fakePool((text) => {
-      expect(text).toContain("version IN (1, 6)");
+      expect(text).toContain("version IN (1, 6, 20)");
       return {
-        rowCount: 2,
+        rowCount: 3,
         rows: [
           { checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM, version: 1 },
           { checksum: DURABLE_RETENTION_MIGRATION_V6_CHECKSUM, version: 6 },
+          { checksum: IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM, version: 20 },
         ],
       };
     });
