@@ -7,16 +7,23 @@ import {
   editorDocumentOpenRequestSchemaV1,
   editorDocumentOpenResultViewSchemaV1,
   editorDocumentProjectionViewSchemaV1,
+  editorDocumentSessionPutRequestSchemaV1,
+  editorDocumentSessionPutResultViewSchemaV1,
+  editorDocumentSessionViewSchemaV1,
   editorDocumentTailQuerySchemaV1,
   editorDocumentViewSchemaV1,
+  parseEditorDocumentSessionQueryV1,
   parseEditorDocumentTailQueryV1,
   serializeEditorDocumentCommitResultV1,
   serializeEditorDocumentOpenResultV1,
   serializeEditorDocumentProjectionViewV1,
+  serializeEditorDocumentSessionPutResultV1,
+  serializeEditorDocumentSessionViewV1,
   serializeEditorDocumentTailResultV1,
   serializeEditorDocumentViewV1,
   serializeEditorEditEventViewV1,
 } from "./editor-document-http-contract";
+import { editorSessionSnapshotByteSizeV1 } from "./editor-session-contract";
 
 const DOCUMENT_KEY = "b".repeat(64);
 const SOURCE_HASH = "a".repeat(64);
@@ -24,6 +31,21 @@ const EVENT_DIGEST = "c".repeat(64);
 const EPOCH = "00000000-0000-4000-8000-000000000001";
 const MUTATION_ID = "00000000-0000-4000-8000-000000000002";
 const SUBJECT_ID = "00000000-0000-4000-8000-000000000003";
+
+const sessionSnapshot = {
+  appliedPrograms: [],
+  currentTime: 0,
+  draftOperation: null,
+  draftProgram: null,
+  editingAppliedProgram: null,
+  insertTool: "select",
+  interactionMode: "position",
+  motionDuration: 1,
+  programUndoEntries: [],
+  redoPrograms: [],
+  selectedObjectIds: [],
+  verifiedSourceDurationBasis: null,
+} as const;
 
 function program(transactionId = "motion"): CanonicalEditProgram {
   const operation = {
@@ -86,6 +108,21 @@ const event = {
 const projection = {
   programs: [program()],
   revision: document.revision,
+} as const;
+
+const session = {
+  documentKey: DOCUMENT_KEY,
+  documentRevision: document.revision,
+  epoch: EPOCH,
+  projectId: document.projectId,
+  sessionGeneration: 2n,
+  snapshot: sessionSnapshot,
+  snapshotByteSize: editorSessionSnapshotByteSizeV1(sessionSnapshot),
+  snapshotDigest: EVENT_DIGEST,
+  snapshotVersion: 1,
+  subjectId: SUBJECT_ID,
+  tenantId: document.tenantId,
+  updatedAt: new Date("2026-08-01T02:03:04.007Z"),
 } as const;
 
 describe("editor document HTTP requests", () => {
@@ -152,6 +189,56 @@ describe("editor document HTTP requests", () => {
       editorDocumentCommitRequestSchemaV1.safeParse({
         ...base,
         mutation: { ...base.mutation, tenantId: "forged" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("strictly validates standalone and atomic session updates", () => {
+    const put = {
+      documentRevision: "9007199254740993",
+      epoch: EPOCH,
+      expectedSessionGeneration: "1",
+      snapshot: sessionSnapshot,
+      snapshotVersion: 1,
+    } as const;
+    expect(editorDocumentSessionPutRequestSchemaV1.parse(put)).toEqual(put);
+    expect(editorDocumentSessionPutRequestSchemaV1.safeParse({ ...put, subjectId: SUBJECT_ID }).success).toBe(false);
+    expect(
+      editorDocumentSessionPutRequestSchemaV1.safeParse({
+        ...put,
+        expectedSessionGeneration: "9223372036854775807",
+      }).success,
+    ).toBe(false);
+    expect(
+      editorDocumentSessionPutRequestSchemaV1.safeParse({
+        ...put,
+        snapshot: { ...sessionSnapshot, internal: true },
+      }).success,
+    ).toBe(false);
+
+    const atomic = {
+      baseRevision: "0",
+      clientMutationId: MUTATION_ID,
+      epoch: EPOCH,
+      mutation: { kind: "append" as const, program: program() },
+      sessionUpdate: {
+        documentRevision: "1",
+        expectedSessionGeneration: "1",
+        snapshot: sessionSnapshot,
+        snapshotVersion: 1 as const,
+      },
+    };
+    expect(editorDocumentCommitRequestSchemaV1.parse(atomic)).toEqual(atomic);
+    expect(
+      editorDocumentCommitRequestSchemaV1.safeParse({
+        ...atomic,
+        sessionUpdate: { ...atomic.sessionUpdate, documentRevision: "2" },
+      }).success,
+    ).toBe(false);
+    expect(
+      editorDocumentCommitRequestSchemaV1.safeParse({
+        ...atomic,
+        sessionUpdate: { ...atomic.sessionUpdate, epoch: EPOCH },
       }).success,
     ).toBe(false);
   });
@@ -231,6 +318,14 @@ describe("editor document HTTP requests", () => {
       limit: "32",
     });
   });
+
+  it("parses an exact session epoch query without collapsing repeated parameters", () => {
+    expect(parseEditorDocumentSessionQueryV1(new URLSearchParams({ epoch: EPOCH }))).toEqual({ epoch: EPOCH });
+    expect(() => parseEditorDocumentSessionQueryV1(new URLSearchParams(`epoch=${EPOCH}&epoch=${EPOCH}`))).toThrow(
+      /exactly once/i,
+    );
+    expect(() => parseEditorDocumentSessionQueryV1(new URLSearchParams({ epoch: EPOCH, extra: "1" }))).toThrow();
+  });
 });
 
 describe("editor document HTTP views", () => {
@@ -297,6 +392,50 @@ describe("editor document HTTP views", () => {
       events: [{ revision: "9007199254740994" }],
     });
     expect(serializeEditorDocumentTailResultV1(null)).toBeNull();
+    expect(
+      serializeEditorDocumentCommitResultV1({
+        document,
+        event,
+        kind: "committed",
+        replayed: false,
+        sessionUpdate: {
+          documentRevision: event.revision,
+          sessionGeneration: 2n,
+          snapshotByteSize: session.snapshotByteSize,
+          snapshotDigest: session.snapshotDigest,
+          snapshotVersion: 1,
+        },
+      }),
+    ).toMatchObject({
+      sessionUpdate: { documentRevision: "9007199254740994", sessionGeneration: "2" },
+    });
+  });
+
+  it("serializes session generations and strict store outcomes", () => {
+    expect(serializeEditorDocumentSessionViewV1(session)).toMatchObject({
+      documentRevision: "9007199254740993",
+      sessionGeneration: "2",
+      snapshot: sessionSnapshot,
+      updatedAt: "2026-08-01T02:03:04.007Z",
+    });
+    expect(serializeEditorDocumentSessionPutResultV1({ kind: "stored", replayed: false, session })).toMatchObject({
+      kind: "stored",
+      replayed: false,
+      session: { sessionGeneration: "2" },
+    });
+    expect(
+      serializeEditorDocumentSessionPutResultV1({
+        currentDocumentRevision: document.revision,
+        currentSessionGeneration: 2n,
+        kind: "conflict",
+        reason: "session-generation-mismatch",
+      }),
+    ).toEqual({
+      currentDocumentRevision: "9007199254740993",
+      currentSessionGeneration: "2",
+      kind: "conflict",
+      reason: "session-generation-mismatch",
+    });
   });
 
   it.each([
@@ -305,7 +444,9 @@ describe("editor document HTTP views", () => {
     "invalid-mutation",
     "mutation-reused",
     "not-found",
+    "projection-mismatch",
     "revision-mismatch",
+    "session-generation-mismatch",
     "source-changed",
   ] as const)("preserves the %s conflict reason", (reason) => {
     expect(serializeEditorDocumentCommitResultV1({ kind: "conflict", reason })).toEqual({ kind: "conflict", reason });
@@ -321,6 +462,16 @@ describe("editor document HTTP views", () => {
       projection,
     });
     if (openedView.kind !== "opened") throw new Error("The opened-result fixture was not serialized.");
+    const sessionView = serializeEditorDocumentSessionViewV1(session);
+    expect(editorDocumentSessionViewSchemaV1.safeParse({ ...sessionView, subjectId: "forged" }).success).toBe(false);
+    expect(editorDocumentSessionViewSchemaV1.safeParse({ ...sessionView, internal: true }).success).toBe(false);
+    expect(
+      editorDocumentSessionPutResultViewSchemaV1.safeParse({
+        kind: "stored",
+        replayed: false,
+        session: { ...sessionView, snapshot: { ...sessionSnapshot, internal: true } },
+      }).success,
+    ).toBe(false);
     expect(editorDocumentViewSchemaV1.safeParse({ ...view, revision: 1 }).success).toBe(false);
     expect(editorDocumentViewSchemaV1.safeParse({ ...view, openedAt: "2026-08-01" }).success).toBe(false);
     expect(editorDocumentViewSchemaV1.safeParse({ ...view, internal: true }).success).toBe(false);

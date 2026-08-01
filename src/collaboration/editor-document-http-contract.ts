@@ -8,50 +8,24 @@ import {
   manimSourcePathSchema,
 } from "../render-pipeline/manim-identity-contract";
 import type { CanonicalEditProgram } from "../studio/operations";
+import { deepStrictWireSchemaV1 } from "./deep-strict-wire-schema";
 import {
   type EditorEditMutationV1,
   editorEditMutationV1Schema,
   MAX_APPLIED_EDITOR_PROGRAMS_V1,
   parseAuthoritativeEditorProgramsV1,
 } from "./editor-edit-mutation";
+import {
+  EDITOR_SESSION_SNAPSHOT_VERSION_V1,
+  type EditorSessionSnapshotV1,
+  editorSessionSnapshotByteSizeV1,
+  editorSessionSnapshotSchemaV1,
+  MAX_EDITOR_SESSION_SNAPSHOT_BYTES_V1,
+} from "./editor-session-contract";
 
 const MAX_EDITOR_REVISION_V1 = 9_223_372_036_854_775_807n;
 const MAX_EDITOR_HTTP_EVENT_TAIL_LIMIT_V1 = 32n;
 const MAX_EDITOR_PROGRAM_BYTES_V1 = 256 * 1024;
-
-function isPlainWireObjectV1(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function unknownWireKeyPathsV1(
-  input: unknown,
-  parsed: unknown,
-  path: readonly (number | string)[] = [],
-): readonly (readonly (number | string)[])[] {
-  if (Array.isArray(input) && Array.isArray(parsed)) {
-    return input.flatMap((value, index) => unknownWireKeyPathsV1(value, parsed[index], [...path, index]));
-  }
-  if (!isPlainWireObjectV1(input) || !isPlainWireObjectV1(parsed)) return [];
-  return Object.keys(input).flatMap((key) =>
-    Object.hasOwn(parsed, key) ? unknownWireKeyPathsV1(input[key], parsed[key], [...path, key]) : [[...path, key]],
-  );
-}
-
-/** Adds deep unknown-key rejection without changing the shared canonical schemas. */
-function deepStrictWireSchemaV1<Output>(schema: z.ZodType<Output>) {
-  return z.unknown().transform((value, context) => {
-    const parsed = schema.safeParse(value);
-    if (!parsed.success) {
-      context.addIssue({ code: "custom", message: parsed.error.issues[0]?.message ?? "Wire value is invalid." });
-      return z.NEVER;
-    }
-    const unknownPaths = unknownWireKeyPathsV1(value, parsed.data);
-    for (const path of unknownPaths) {
-      context.addIssue({ code: "custom", message: "Unknown wire field.", path: [...path] });
-    }
-    return parsed.data;
-  });
-}
 
 const deepStrictEditorEditMutationSchemaV1 = deepStrictWireSchemaV1(editorEditMutationV1Schema);
 const deepStrictCanonicalEditProgramSchemaV1 = deepStrictWireSchemaV1(canonicalEditProgramSchemaV1).superRefine(
@@ -98,6 +72,16 @@ export const editorRevisionStringSchemaV1 = z
     "Editor revision exceeds the durable storage range.",
   );
 
+const editorSessionBaseGenerationStringSchemaV1 = editorRevisionStringSchemaV1.refine(
+  (value) => BigInt(value) < MAX_EDITOR_REVISION_V1,
+  "Editor session generation cannot be incremented beyond the durable storage range.",
+);
+
+const editorSessionGenerationStringSchemaV1 = editorRevisionStringSchemaV1.refine(
+  (value) => BigInt(value) > 0n,
+  "Stored Editor session generations must be positive.",
+);
+
 const editorTailLimitStringSchemaV1 = z
   .string()
   .regex(/^[1-9][0-9]*$/u, "Editor tail limits must be canonical positive decimal strings.")
@@ -125,6 +109,39 @@ export const editorDocumentCommitRequestSchemaV1 = z
     clientMutationId: editorUuidSchemaV1,
     epoch: editorUuidSchemaV1,
     mutation: deepStrictEditorEditMutationSchemaV1,
+    sessionUpdate: z
+      .object({
+        documentRevision: editorRevisionStringSchemaV1,
+        expectedSessionGeneration: editorSessionBaseGenerationStringSchemaV1,
+        snapshot: editorSessionSnapshotSchemaV1,
+        snapshotVersion: z.literal(EDITOR_SESSION_SNAPSHOT_VERSION_V1),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .superRefine((request, context) => {
+    if (
+      request.sessionUpdate !== undefined &&
+      BigInt(request.sessionUpdate.documentRevision) !== BigInt(request.baseRevision) + 1n
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "An atomic Editor session update must target the post-mutation document revision.",
+        path: ["sessionUpdate", "documentRevision"],
+      });
+    }
+  });
+
+export const editorDocumentSessionQuerySchemaV1 = z.object({ epoch: editorUuidSchemaV1 }).strict();
+
+export const editorDocumentSessionPutRequestSchemaV1 = z
+  .object({
+    documentRevision: editorRevisionStringSchemaV1,
+    epoch: editorUuidSchemaV1,
+    expectedSessionGeneration: editorSessionBaseGenerationStringSchemaV1,
+    snapshot: editorSessionSnapshotSchemaV1,
+    snapshotVersion: z.literal(EDITOR_SESSION_SNAPSHOT_VERSION_V1),
   })
   .strict();
 
@@ -229,13 +246,82 @@ export const editorDocumentCommitConflictReasonSchemaV1 = z.enum([
   "invalid-mutation",
   "mutation-reused",
   "not-found",
+  "projection-mismatch",
   "revision-mismatch",
+  "session-generation-mismatch",
   "source-changed",
 ]);
+
+export const editorDocumentSessionViewSchemaV1 = z
+  .object({
+    documentKey: editorDocumentKeySchemaV1,
+    documentRevision: editorRevisionStringSchemaV1,
+    epoch: editorUuidSchemaV1,
+    projectId: manimProjectIdSchema,
+    sessionGeneration: editorSessionGenerationStringSchemaV1,
+    snapshot: editorSessionSnapshotSchemaV1,
+    snapshotByteSize: z.number().int().min(1).max(MAX_EDITOR_SESSION_SNAPSHOT_BYTES_V1),
+    snapshotDigest: sha256V1Schema,
+    snapshotVersion: z.literal(EDITOR_SESSION_SNAPSHOT_VERSION_V1),
+    tenantId: editorTenantIdSchemaV1,
+    updatedAt: editorIsoDateStringSchemaV1,
+  })
+  .strict()
+  .superRefine((session, context) => {
+    if (editorSessionSnapshotByteSizeV1(session.snapshot) !== session.snapshotByteSize) {
+      context.addIssue({
+        code: "custom",
+        message: "Editor session snapshot byte evidence is inconsistent.",
+        path: ["snapshotByteSize"],
+      });
+    }
+  });
+
+export const editorDocumentSessionConflictReasonSchemaV1 = z.enum([
+  "document-sealed",
+  "epoch-mismatch",
+  "forbidden",
+  "not-found",
+  "projection-mismatch",
+  "revision-mismatch",
+  "session-generation-mismatch",
+  "source-changed",
+]);
+
+export const editorDocumentSessionPutResultViewSchemaV1 = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("stored"),
+      replayed: z.boolean(),
+      session: editorDocumentSessionViewSchemaV1,
+    })
+    .strict(),
+  z
+    .object({
+      currentDocumentRevision: editorRevisionStringSchemaV1.optional(),
+      currentSessionGeneration: editorRevisionStringSchemaV1.optional(),
+      kind: z.literal("conflict"),
+      reason: editorDocumentSessionConflictReasonSchemaV1,
+    })
+    .strict(),
+]);
+
+export const editorDocumentSessionReadResultViewSchemaV1 = editorDocumentSessionViewSchemaV1.nullable();
+
+export const editorDocumentCommittedSessionUpdateViewSchemaV1 = z
+  .object({
+    documentRevision: editorRevisionStringSchemaV1,
+    sessionGeneration: editorSessionGenerationStringSchemaV1,
+    snapshotByteSize: z.number().int().min(1).max(MAX_EDITOR_SESSION_SNAPSHOT_BYTES_V1),
+    snapshotDigest: sha256V1Schema,
+    snapshotVersion: z.literal(EDITOR_SESSION_SNAPSHOT_VERSION_V1),
+  })
+  .strict();
 
 export const editorDocumentCommitConflictViewSchemaV1 = z
   .object({
     currentRevision: editorRevisionStringSchemaV1.optional(),
+    currentSessionGeneration: editorRevisionStringSchemaV1.optional(),
     kind: z.literal("conflict"),
     reason: editorDocumentCommitConflictReasonSchemaV1,
   })
@@ -248,6 +334,7 @@ export const editorDocumentCommitResultViewSchemaV1 = z.discriminatedUnion("kind
       event: editorEditEventViewSchemaV1,
       kind: z.literal("committed"),
       replayed: z.boolean(),
+      sessionUpdate: editorDocumentCommittedSessionUpdateViewSchemaV1.optional(),
     })
     .strict(),
   editorDocumentCommitConflictViewSchemaV1,
@@ -263,12 +350,28 @@ export const editorDocumentTailResultViewSchemaV1 = z
 
 export type EditorDocumentOpenRequestV1 = Readonly<z.infer<typeof editorDocumentOpenRequestSchemaV1>>;
 export type EditorDocumentCommitRequestV1 = Readonly<z.infer<typeof editorDocumentCommitRequestSchemaV1>>;
+export type EditorDocumentSessionQueryV1 = Readonly<z.infer<typeof editorDocumentSessionQuerySchemaV1>>;
+export type EditorDocumentSessionPutRequestV1 = Readonly<{
+  documentRevision: string;
+  epoch: string;
+  expectedSessionGeneration: string;
+  snapshot: EditorSessionSnapshotV1;
+  snapshotVersion: typeof EDITOR_SESSION_SNAPSHOT_VERSION_V1;
+}>;
 export type EditorDocumentTailQueryV1 = Readonly<z.infer<typeof editorDocumentTailQuerySchemaV1>>;
 export type EditorDocumentViewV1 = Readonly<z.infer<typeof editorDocumentViewSchemaV1>>;
 export type EditorDocumentProjectionViewV1 = Readonly<z.infer<typeof editorDocumentProjectionViewSchemaV1>>;
 export type EditorEditEventViewV1 = Readonly<z.infer<typeof editorEditEventViewSchemaV1>>;
 export type EditorDocumentOpenResultViewV1 = Readonly<z.infer<typeof editorDocumentOpenResultViewSchemaV1>>;
 export type EditorDocumentCommitResultViewV1 = Readonly<z.infer<typeof editorDocumentCommitResultViewSchemaV1>>;
+export type EditorDocumentSessionViewV1 = Readonly<z.infer<typeof editorDocumentSessionViewSchemaV1>>;
+export type EditorDocumentSessionPutResultViewV1 = Readonly<z.infer<typeof editorDocumentSessionPutResultViewSchemaV1>>;
+export type EditorDocumentSessionReadResultViewV1 = Readonly<
+  z.infer<typeof editorDocumentSessionReadResultViewSchemaV1>
+>;
+export type EditorDocumentCommittedSessionUpdateViewV1 = Readonly<
+  z.infer<typeof editorDocumentCommittedSessionUpdateViewSchemaV1>
+>;
 export type EditorDocumentTailResultViewV1 = Readonly<z.infer<typeof editorDocumentTailResultViewSchemaV1>>;
 
 export type EditorDocumentSerializationInputV1 = Readonly<{
@@ -304,6 +407,28 @@ export type EditorDocumentProjectionSerializationInputV1 = Readonly<{
   revision: bigint;
 }>;
 
+export type EditorDocumentSessionSerializationInputV1 = Readonly<{
+  documentKey: string;
+  documentRevision: bigint;
+  epoch: string;
+  projectId: string;
+  sessionGeneration: bigint;
+  snapshot: EditorSessionSnapshotV1;
+  snapshotByteSize: number;
+  snapshotDigest: string;
+  snapshotVersion: number;
+  tenantId: string;
+  updatedAt: Date;
+}>;
+
+export type EditorDocumentCommittedSessionUpdateSerializationInputV1 = Readonly<{
+  documentRevision: bigint;
+  sessionGeneration: bigint;
+  snapshotByteSize: number;
+  snapshotDigest: string;
+  snapshotVersion: number;
+}>;
+
 export type EditorDocumentOpenResultSerializationInputV1 =
   | Readonly<{
       created: boolean;
@@ -320,11 +445,26 @@ export type EditorDocumentCommitResultSerializationInputV1 =
       event: EditorEditEventSerializationInputV1;
       kind: "committed";
       replayed: boolean;
+      sessionUpdate?: EditorDocumentCommittedSessionUpdateSerializationInputV1;
     }>
   | Readonly<{
       currentRevision?: bigint;
+      currentSessionGeneration?: bigint;
       kind: "conflict";
       reason: z.infer<typeof editorDocumentCommitConflictReasonSchemaV1>;
+    }>;
+
+export type EditorDocumentSessionPutResultSerializationInputV1 =
+  | Readonly<{
+      kind: "stored";
+      replayed: boolean;
+      session: EditorDocumentSessionSerializationInputV1;
+    }>
+  | Readonly<{
+      currentDocumentRevision?: bigint;
+      currentSessionGeneration?: bigint;
+      kind: "conflict";
+      reason: z.infer<typeof editorDocumentSessionConflictReasonSchemaV1>;
     }>;
 
 export type EditorDocumentTailResultSerializationInputV1 = Readonly<{
@@ -341,6 +481,17 @@ export function parseEditorDocumentTailQueryV1(searchParams: URLSearchParams): E
     names.add(name);
   }
   return editorDocumentTailQuerySchemaV1.parse(Object.fromEntries(entries));
+}
+
+/** Parses a session query without silently accepting repeated or unknown keys. */
+export function parseEditorDocumentSessionQueryV1(searchParams: URLSearchParams): EditorDocumentSessionQueryV1 {
+  const entries = Array.from(searchParams.entries());
+  const names = new Set<string>();
+  for (const [name] of entries) {
+    if (names.has(name)) throw new TypeError(`Editor session query parameter ${name} must occur exactly once.`);
+    names.add(name);
+  }
+  return editorDocumentSessionQuerySchemaV1.parse(Object.fromEntries(entries));
 }
 
 function serializeEditorRevisionV1(value: bigint) {
@@ -394,6 +545,36 @@ export function serializeEditorDocumentProjectionViewV1(
   });
 }
 
+export function serializeEditorDocumentSessionViewV1(
+  input: EditorDocumentSessionSerializationInputV1,
+): EditorDocumentSessionViewV1 {
+  return editorDocumentSessionViewSchemaV1.parse({
+    documentKey: input.documentKey,
+    documentRevision: serializeEditorRevisionV1(input.documentRevision),
+    epoch: input.epoch,
+    projectId: input.projectId,
+    sessionGeneration: serializeEditorRevisionV1(input.sessionGeneration),
+    snapshot: input.snapshot,
+    snapshotByteSize: input.snapshotByteSize,
+    snapshotDigest: input.snapshotDigest,
+    snapshotVersion: input.snapshotVersion,
+    tenantId: input.tenantId,
+    updatedAt: serializeEditorDateV1(input.updatedAt),
+  });
+}
+
+export function serializeEditorDocumentCommittedSessionUpdateV1(
+  input: EditorDocumentCommittedSessionUpdateSerializationInputV1,
+): EditorDocumentCommittedSessionUpdateViewV1 {
+  return editorDocumentCommittedSessionUpdateViewSchemaV1.parse({
+    documentRevision: serializeEditorRevisionV1(input.documentRevision),
+    sessionGeneration: serializeEditorRevisionV1(input.sessionGeneration),
+    snapshotByteSize: input.snapshotByteSize,
+    snapshotDigest: input.snapshotDigest,
+    snapshotVersion: input.snapshotVersion,
+  });
+}
+
 export function serializeEditorDocumentOpenResultV1(
   input: EditorDocumentOpenResultSerializationInputV1,
 ): EditorDocumentOpenResultViewV1 {
@@ -423,12 +604,40 @@ export function serializeEditorDocumentCommitResultV1(
       event: serializeEditorEditEventViewV1(input.event),
       kind: input.kind,
       replayed: input.replayed,
+      ...(input.sessionUpdate === undefined
+        ? {}
+        : { sessionUpdate: serializeEditorDocumentCommittedSessionUpdateV1(input.sessionUpdate) }),
     });
   }
   return editorDocumentCommitResultViewSchemaV1.parse({
     ...(input.currentRevision === undefined
       ? undefined
       : { currentRevision: serializeEditorRevisionV1(input.currentRevision) }),
+    ...(input.currentSessionGeneration === undefined
+      ? {}
+      : { currentSessionGeneration: serializeEditorRevisionV1(input.currentSessionGeneration) }),
+    kind: input.kind,
+    reason: input.reason,
+  });
+}
+
+export function serializeEditorDocumentSessionPutResultV1(
+  input: EditorDocumentSessionPutResultSerializationInputV1,
+): EditorDocumentSessionPutResultViewV1 {
+  if (input.kind === "stored") {
+    return editorDocumentSessionPutResultViewSchemaV1.parse({
+      kind: input.kind,
+      replayed: input.replayed,
+      session: serializeEditorDocumentSessionViewV1(input.session),
+    });
+  }
+  return editorDocumentSessionPutResultViewSchemaV1.parse({
+    ...(input.currentDocumentRevision === undefined
+      ? {}
+      : { currentDocumentRevision: serializeEditorRevisionV1(input.currentDocumentRevision) }),
+    ...(input.currentSessionGeneration === undefined
+      ? {}
+      : { currentSessionGeneration: serializeEditorRevisionV1(input.currentSessionGeneration) }),
     kind: input.kind,
     reason: input.reason,
   });

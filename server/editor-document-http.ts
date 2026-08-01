@@ -1,13 +1,22 @@
+import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   editorDocumentCommitRequestSchemaV1,
   editorDocumentKeySchemaV1,
   editorDocumentOpenRequestSchemaV1,
+  editorDocumentSessionPutRequestSchemaV1,
+  parseEditorDocumentSessionQueryV1,
   parseEditorDocumentTailQueryV1,
   serializeEditorDocumentCommitResultV1,
   serializeEditorDocumentOpenResultV1,
+  serializeEditorDocumentSessionPutResultV1,
+  serializeEditorDocumentSessionViewV1,
   serializeEditorDocumentTailResultV1,
 } from "../src/collaboration/editor-document-http-contract";
+import {
+  canonicalEditorSessionSnapshotJsonV1,
+  editorSessionSnapshotByteSizeV1,
+} from "../src/collaboration/editor-session-contract";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import { manimProjectIdSchema } from "../src/render-pipeline/contracts";
 import { accountUserIdSchemaV1 } from "./accounts/account-domain";
@@ -23,8 +32,10 @@ import { createEditorDocumentKeyV1, MAX_EDITOR_PROGRAM_BYTES_V1 } from "./storag
 
 const OPEN_ROUTE_V1 = /^\/api\/editor\/projects\/([^/]+)\/documents\/open$/u;
 const EVENT_ROUTE_V1 = /^\/api\/editor\/projects\/([^/]+)\/documents\/([^/]+)\/events$/u;
+const SESSION_ROUTE_V1 = /^\/api\/editor\/projects\/([^/]+)\/documents\/([^/]+)\/session$/u;
 const MAX_OPEN_BODY_BYTES_V1 = 16 * 1024;
-const MAX_COMMIT_BODY_BYTES_V1 = 288 * 1024;
+export const MAX_EDITOR_DOCUMENT_COMMIT_BODY_BYTES_V1 = 672 * 1024;
+const MAX_SESSION_PUT_BODY_BYTES_V1 = 416 * 1024;
 
 export type EditorDocumentHttpOptionsV1 = Readonly<{
   expectedMutationOrigin?: string;
@@ -33,7 +44,7 @@ export type EditorDocumentHttpOptionsV1 = Readonly<{
 }>;
 
 export function isEditorDocumentRequest(pathname: string) {
-  return OPEN_ROUTE_V1.test(pathname) || EVENT_ROUTE_V1.test(pathname);
+  return OPEN_ROUTE_V1.test(pathname) || EVENT_ROUTE_V1.test(pathname) || SESSION_ROUTE_V1.test(pathname);
 }
 
 function bodyLimitV1(configured: number | undefined, routeLimit: number) {
@@ -124,6 +135,61 @@ function eventIdentityV1(
   ) {
     throw new TypeError("Editor storage returned an event outside the authenticated request identity.");
   }
+}
+
+type EditorSessionIdentityShapeV1 = Readonly<{
+  documentKey: string;
+  documentRevision: bigint;
+  epoch: string;
+  projectId: string;
+  sessionGeneration: bigint;
+  snapshot: unknown;
+  snapshotVersion: number;
+  subjectId: string;
+  tenantId: string;
+}>;
+
+function sessionIdentityV1(
+  session: EditorSessionIdentityShapeV1,
+  expected: Readonly<{
+    documentKey: string;
+    documentRevision?: bigint;
+    epoch: string;
+    projectId: string;
+    subjectId: string;
+    tenantId: string;
+  }>,
+) {
+  if (
+    session.tenantId !== expected.tenantId ||
+    session.projectId !== expected.projectId ||
+    session.documentKey !== expected.documentKey ||
+    session.subjectId !== expected.subjectId ||
+    session.epoch !== expected.epoch ||
+    (expected.documentRevision !== undefined && session.documentRevision !== expected.documentRevision)
+  ) {
+    throw new TypeError("Editor storage returned a session outside the authenticated request identity.");
+  }
+}
+
+function sessionSnapshotEvidenceV1(
+  session: EditorSessionIdentityShapeV1 & { snapshotByteSize: number; snapshotDigest: string },
+) {
+  const canonical = canonicalEditorSessionSnapshotJsonV1(session.snapshot);
+  if (
+    session.snapshotByteSize !== Buffer.byteLength(canonical, "utf8") ||
+    session.snapshotDigest !== createHash("sha256").update(canonical, "utf8").digest("hex")
+  ) {
+    throw new TypeError("Editor storage returned inconsistent session snapshot evidence.");
+  }
+}
+
+function requireAccountSubjectV1(principal: VerifiedManimPrincipal, request: IncomingMessage) {
+  if (!accountUserIdSchemaV1.safeParse(principal.subjectId).success) {
+    request.resume();
+    throw new HttpError("Editor sessions and mutations require an account actor.", 403);
+  }
+  return principal.subjectId;
 }
 
 function methodNotAllowedV1(response: ServerResponse, allow: string) {
@@ -263,12 +329,9 @@ async function commitEventV1(
   options: EditorDocumentHttpOptionsV1,
 ) {
   requireSameOriginJsonMutationV1(request, options.expectedMutationOrigin);
-  if (!accountUserIdSchemaV1.safeParse(principal.subjectId).success) {
-    request.resume();
-    throw new HttpError("Editor mutations require an account actor.", 403);
-  }
+  const subjectId = requireAccountSubjectV1(principal, request);
   const parsed = editorDocumentCommitRequestSchemaV1.safeParse(
-    await readJsonBody(request, bodyLimitV1(options.maxJsonBodyBytes, MAX_COMMIT_BODY_BYTES_V1)),
+    await readJsonBody(request, bodyLimitV1(options.maxJsonBodyBytes, MAX_EDITOR_DOCUMENT_COMMIT_BODY_BYTES_V1)),
   );
   if (!parsed.success) throw new HttpError("Editor mutation request is invalid.", 400);
   if (Buffer.byteLength(canonicalJsonV1(parsed.data.mutation.program), "utf8") > MAX_EDITOR_PROGRAM_BYTES_V1) {
@@ -283,7 +346,17 @@ async function commitEventV1(
       epoch: parsed.data.epoch,
       mutation: parsed.data.mutation,
       projectId,
-      subjectId: principal.subjectId,
+      ...(parsed.data.sessionUpdate === undefined
+        ? {}
+        : {
+            sessionUpdate: {
+              documentRevision: BigInt(parsed.data.sessionUpdate.documentRevision),
+              expectedSessionGeneration: BigInt(parsed.data.sessionUpdate.expectedSessionGeneration),
+              snapshot: parsed.data.sessionUpdate.snapshot,
+              snapshotVersion: parsed.data.sessionUpdate.snapshotVersion,
+            },
+          }),
+      subjectId,
       tenantId: principal.tenantId,
     },
     signal,
@@ -296,7 +369,7 @@ async function commitEventV1(
       ? result.document.revision >= result.event.revision
       : result.document.revision === result.event.revision;
     if (
-      result.event.subjectId !== principal.subjectId ||
+      result.event.subjectId !== subjectId ||
       result.event.clientMutationId !== parsed.data.clientMutationId ||
       result.event.baseRevision !== BigInt(parsed.data.baseRevision) ||
       result.event.revision !== result.event.baseRevision + 1n ||
@@ -304,6 +377,22 @@ async function commitEventV1(
       canonicalJsonV1(result.event.mutation) !== canonicalJsonV1(parsed.data.mutation)
     ) {
       throw new TypeError("Editor storage returned an event inconsistent with the mutation request.");
+    }
+    if ((parsed.data.sessionUpdate === undefined) !== (result.sessionUpdate === undefined)) {
+      throw new TypeError("Editor storage returned an inconsistent atomic session result.");
+    }
+    if (parsed.data.sessionUpdate !== undefined && result.sessionUpdate !== undefined) {
+      const expectedGeneration = BigInt(parsed.data.sessionUpdate.expectedSessionGeneration) + 1n;
+      const canonicalSnapshot = canonicalEditorSessionSnapshotJsonV1(parsed.data.sessionUpdate.snapshot);
+      if (
+        result.sessionUpdate.documentRevision !== BigInt(parsed.data.sessionUpdate.documentRevision) ||
+        result.sessionUpdate.sessionGeneration !== expectedGeneration ||
+        result.sessionUpdate.snapshotVersion !== parsed.data.sessionUpdate.snapshotVersion ||
+        result.sessionUpdate.snapshotByteSize !== editorSessionSnapshotByteSizeV1(parsed.data.sessionUpdate.snapshot) ||
+        result.sessionUpdate.snapshotDigest !== createHash("sha256").update(canonicalSnapshot, "utf8").digest("hex")
+      ) {
+        throw new TypeError("Editor storage returned a session inconsistent with the atomic mutation request.");
+      }
     }
   }
   const view = serializeEditorDocumentCommitResultV1(result);
@@ -317,6 +406,110 @@ async function commitEventV1(
         : result.reason === "not-found"
           ? 404
           : 409;
+  sendJson(response, status, view);
+}
+
+async function readSessionV1(
+  repository: EditorDocumentRepositoryV1,
+  principal: VerifiedManimPrincipal,
+  projectId: string,
+  documentKey: string,
+  request: IncomingMessage,
+  url: URL,
+  response: ServerResponse,
+  signal: AbortSignal | undefined,
+) {
+  const subjectId = requireAccountSubjectV1(principal, request);
+  let query: ReturnType<typeof parseEditorDocumentSessionQueryV1>;
+  try {
+    query = parseEditorDocumentSessionQueryV1(url.searchParams);
+  } catch {
+    throw new HttpError("Editor session query is invalid.", 400);
+  }
+  signal?.throwIfAborted();
+  const result = await repository.readSessionSnapshot(
+    { documentKey, epoch: query.epoch, projectId, subjectId, tenantId: principal.tenantId },
+    signal,
+  );
+  if (result !== null) {
+    sessionIdentityV1(result, {
+      documentKey,
+      epoch: query.epoch,
+      projectId,
+      subjectId,
+      tenantId: principal.tenantId,
+    });
+    sessionSnapshotEvidenceV1(result);
+  }
+  sendJson(
+    response,
+    result === null ? 404 : 200,
+    result === null ? null : serializeEditorDocumentSessionViewV1(result),
+  );
+}
+
+async function putSessionV1(
+  repository: EditorDocumentRepositoryV1,
+  principal: VerifiedManimPrincipal,
+  projectId: string,
+  documentKey: string,
+  request: IncomingMessage,
+  url: URL,
+  response: ServerResponse,
+  signal: AbortSignal | undefined,
+  options: EditorDocumentHttpOptionsV1,
+) {
+  requireSameOriginJsonMutationV1(request, options.expectedMutationOrigin);
+  const subjectId = requireAccountSubjectV1(principal, request);
+  let query: ReturnType<typeof parseEditorDocumentSessionQueryV1>;
+  try {
+    query = parseEditorDocumentSessionQueryV1(url.searchParams);
+  } catch {
+    throw new HttpError("Editor session query is invalid.", 400);
+  }
+  const parsed = editorDocumentSessionPutRequestSchemaV1.safeParse(
+    await readJsonBody(request, bodyLimitV1(options.maxJsonBodyBytes, MAX_SESSION_PUT_BODY_BYTES_V1)),
+  );
+  if (!parsed.success || parsed.data.epoch !== query.epoch) {
+    throw new HttpError("Editor session update request is invalid.", 400);
+  }
+  signal?.throwIfAborted();
+  const result = await repository.putSessionSnapshot(
+    {
+      documentKey,
+      documentRevision: BigInt(parsed.data.documentRevision),
+      epoch: query.epoch,
+      expectedSessionGeneration: BigInt(parsed.data.expectedSessionGeneration),
+      projectId,
+      snapshot: parsed.data.snapshot,
+      snapshotVersion: parsed.data.snapshotVersion,
+      subjectId,
+      tenantId: principal.tenantId,
+    },
+    signal,
+  );
+  if (result.kind === "stored") {
+    sessionIdentityV1(result.session, {
+      documentKey,
+      documentRevision: BigInt(parsed.data.documentRevision),
+      epoch: query.epoch,
+      projectId,
+      subjectId,
+      tenantId: principal.tenantId,
+    });
+    sessionSnapshotEvidenceV1(result.session);
+    if (
+      result.session.sessionGeneration !== BigInt(parsed.data.expectedSessionGeneration) + 1n ||
+      result.session.snapshotVersion !== parsed.data.snapshotVersion ||
+      canonicalEditorSessionSnapshotJsonV1(result.session.snapshot) !==
+        canonicalEditorSessionSnapshotJsonV1(parsed.data.snapshot)
+    ) {
+      throw new TypeError("Editor storage returned a session inconsistent with the update request.");
+    }
+  }
+  const view = serializeEditorDocumentSessionPutResultV1(result);
+  const status =
+    result.kind === "stored" ? 200 : result.reason === "forbidden" ? 403 : result.reason === "not-found" ? 404 : 409;
   sendJson(response, status, view);
 }
 
@@ -339,6 +532,42 @@ export async function handleEditorDocumentRequest(
         principal,
         parseProjectIdV1(open[1]!),
         request,
+        response,
+        options.requestSignal,
+        options,
+      );
+      return;
+    }
+    const session = SESSION_ROUTE_V1.exec(url.pathname);
+    if (session) {
+      const projectId = parseProjectIdV1(session[1]!);
+      const documentKey = parseDocumentKeyV1(session[2]!);
+      if (url.hash) throw new HttpError("Editor session request URL is invalid.", 400);
+      if (request.method === "GET") {
+        await readSessionV1(
+          repository,
+          principal,
+          projectId,
+          documentKey,
+          request,
+          url,
+          response,
+          options.requestSignal,
+        );
+        return;
+      }
+      if (request.method !== "PUT") {
+        request.resume();
+        methodNotAllowedV1(response, "GET, PUT");
+        return;
+      }
+      await putSessionV1(
+        repository,
+        principal,
+        projectId,
+        documentKey,
+        request,
+        url,
         response,
         options.requestSignal,
         options,

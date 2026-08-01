@@ -7,7 +7,11 @@ import { z } from "zod";
 import { EditSuggestionAdmissionController } from "./edit-suggestions/admission";
 import { createEditSuggestionRequestHandler, EDIT_SUGGESTION_ROUTE } from "./edit-suggestions/handler";
 import type { EditSuggestionGenerator } from "./edit-suggestions/service";
-import { handleEditorDocumentRequest, isEditorDocumentRequest } from "./editor-document-http";
+import {
+  handleEditorDocumentRequest,
+  isEditorDocumentRequest,
+  MAX_EDITOR_DOCUMENT_COMMIT_BODY_BYTES_V1,
+} from "./editor-document-http";
 import { HttpError, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import {
@@ -63,7 +67,7 @@ const DEFAULT_LIMITS = {
   handlerTimeoutMs: 30_000,
   headersTimeoutMs: 10_000,
   keepAliveTimeoutMs: 5_000,
-  maxBodyBytes: 512 * 1024,
+  maxBodyBytes: MAX_EDITOR_DOCUMENT_COMMIT_BODY_BYTES_V1,
   maxConnections: 256,
   maxHeaderBytes: 16 * 1024,
   maxRequestsPerSocket: 100,
@@ -90,7 +94,7 @@ const limitsSchema = z
       .number()
       .int()
       .min(1_024)
-      .max(512 * 1024)
+      .max(MAX_EDITOR_DOCUMENT_COMMIT_BODY_BYTES_V1)
       .default(DEFAULT_LIMITS.maxBodyBytes),
     maxConnections: z.number().int().min(1).max(10_000).default(DEFAULT_LIMITS.maxConnections),
     maxHeaderBytes: z
@@ -321,7 +325,7 @@ function validateTransportRequest(
     request.resume();
     throw new TransportError("Request body is too large.", 413);
   }
-  const bodyMethod = request.method === "POST" || request.method === "PATCH";
+  const bodyMethod = request.method === "POST" || request.method === "PUT" || request.method === "PATCH";
   if (bodyMethod && contentLength === undefined) {
     request.resume();
     throw new TransportError("A bounded Content-Length header is required.", 411);
@@ -412,7 +416,9 @@ export async function startProductionManimServer(
         options.runtime.editorDocuments === null ||
         typeof options.runtime.editorDocuments.openDocument !== "function" ||
         typeof options.runtime.editorDocuments.commitMutation !== "function" ||
+        typeof options.runtime.editorDocuments.putSessionSnapshot !== "function" ||
         typeof options.runtime.editorDocuments.readEventTail !== "function" ||
+        typeof options.runtime.editorDocuments.readSessionSnapshot !== "function" ||
         typeof options.runtime.editorReady !== "function"))
   ) {
     throw new TypeError("Production editor document adapter is incomplete.");
