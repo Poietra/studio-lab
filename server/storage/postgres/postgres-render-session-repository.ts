@@ -9,6 +9,7 @@ import {
   renderSessionStatusSchema,
   renderSourceActionIdSchema,
 } from "../../../src/render-pipeline/contracts";
+import type { ReserveRenderResultV1 } from "../../billing/entitlement-repository";
 import { HttpError } from "../../http/json";
 import { manimRenderBrokerShardIdV1Schema } from "../../manim-render-sandbox-contract";
 import {
@@ -56,12 +57,15 @@ import {
   type RenderSessionRetentionRepositoryV1,
 } from "../render-session-repository";
 import { MAX_MANIM_SOURCE_BYTES_V1, type SourceBlobReceiptV1 } from "../workspace-source-repository";
+import { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
+import { reserveRenderUsageWithClientV1, settleRenderUsageWithClientV1 } from "./postgres-entitlement-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 import { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
 import { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-session-cpu-failure-schema";
 import { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
+import { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-usage-schema";
 
 export { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
 export { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-session-cpu-failure-schema";
@@ -597,6 +601,26 @@ async function updateTransition(client: PoolClient, text: string, values: unknow
   if (result.rowCount !== 1) throw new HttpError("The render session transition was rejected.", 409);
 }
 
+type RenderUsageDenialReasonV1 = Extract<ReserveRenderResultV1, { kind: "denied" }>["reason"];
+
+function renderUsageAdmissionError(reason: RenderUsageDenialReasonV1) {
+  if (reason === "quota-exhausted") return new HttpError("The render usage quota is exhausted.", 429);
+  if (reason === "operation-settled") return new HttpError("That render operation is already settled.", 409);
+  return new HttpError("The organization does not have an active render entitlement.", 402);
+}
+
+async function settleRenderSessionUsageV1(
+  client: PoolClient,
+  tenantId: string,
+  sessionId: string,
+  target: "committed" | "released",
+) {
+  const result = await settleRenderUsageWithClientV1(client, tenantId, sessionId, target);
+  if (result.kind === "settled") return;
+  if (target === "released" && result.kind === "conflict" && result.state === "released") return;
+  throw new TypeError("The render session usage settlement is inconsistent.");
+}
+
 function transitionSourceSql(operation: RenderSessionTransitionOperation) {
   // Closed policy literals stay visible to PostgreSQL's partial-index planner.
   return renderSessionTransitionSources(operation)
@@ -709,18 +733,19 @@ export class PostgresRenderSessionRepositoryV1
           AND status IN (${transitionSourceSql("cancel")})`,
       [tenant, session],
     );
+    await settleRenderSessionUsageV1(client, tenant, session, "released");
     return this.#selectSession(client, tenant, session);
   }
 
   async ready(signal?: AbortSignal) {
     try {
       const result = await this.#connection.query<{ checksum: string; version: number }>(
-        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (2, 5, 6, 7, 8, 9) ORDER BY version",
+        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (2, 5, 6, 7, 8, 9, 14, 15) ORDER BY version",
         [],
         signal,
       );
       return (
-        result.rowCount === 6 &&
+        result.rowCount === 8 &&
         result.rows[0]?.version === 2 &&
         result.rows[0]?.checksum === RENDER_SESSION_MIGRATION_V2_CHECKSUM &&
         result.rows[1]?.version === 5 &&
@@ -732,7 +757,11 @@ export class PostgresRenderSessionRepositoryV1
         result.rows[4]?.version === 8 &&
         result.rows[4]?.checksum === RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM &&
         result.rows[5]?.version === 9 &&
-        result.rows[5]?.checksum === RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM
+        result.rows[5]?.checksum === RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM &&
+        result.rows[6]?.version === 14 &&
+        result.rows[6]?.checksum === BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM &&
+        result.rows[7]?.version === 15 &&
+        result.rows[7]?.checksum === RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM
       );
     } catch {
       throwIfAborted(signal);
@@ -780,8 +809,11 @@ export class PostgresRenderSessionRepositoryV1
     }
     boundedText(input.patch.insertedCode, "Inserted render source", MAX_MANIM_SOURCE_BYTES_V1, true);
 
+    let outcome:
+      | Readonly<{ kind: "created"; session: DurableRenderSessionV1 }>
+      | Readonly<{ kind: "denied"; reason: RenderUsageDenialReasonV1 }>;
     try {
-      return await this.#connection.transaction(async (client) => {
+      outcome = await this.#connection.transaction(async (client) => {
         const head = await client.query<BlobRow & { generation: string }>(
           `SELECT h.generation::text AS generation, b.digest, b.object_key, b.version_id, b.etag, b.byte_size
              FROM public.workspace_source_heads h
@@ -825,6 +857,12 @@ export class PostgresRenderSessionRepositoryV1
               receipt: assertProjectPngReceiptV1(tenant, project, receiptFromBlobRow(pinnedPngRow)),
             }
           : null;
+        const usage = await reserveRenderUsageWithClientV1(client, {
+          lifetimeMs: executionTimeout,
+          operationId: session,
+          tenantId: tenant,
+        });
+        if (usage.kind === "denied") return usage;
         await this.#registerBlob(client, tenant, patched);
         await client.query(
           `INSERT INTO public.render_sessions
@@ -836,7 +874,7 @@ export class PostgresRenderSessionRepositoryV1
            VALUES (
              $1, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10::bigint, $11, $12,
              $13::bigint, $14, $15, $16, $17,
-             'preparing', clock_timestamp() + ($18::integer * interval '1 millisecond')
+             'preparing', $18::timestamptz
            )`,
           [
             tenant,
@@ -856,7 +894,7 @@ export class PostgresRenderSessionRepositoryV1
             input.patch.anchorLine,
             [...input.patch.anchorLines],
             input.patch.insertedCode,
-            executionTimeout,
+            usage.reservation.expiresAt,
           ],
         );
         await client.query(
@@ -865,7 +903,7 @@ export class PostgresRenderSessionRepositoryV1
            VALUES ($1, $2, 'render-session', $3)`,
           [tenant, project, session],
         );
-        return this.#selectSession(client, tenant, session);
+        return { kind: "created", session: await this.#selectSession(client, tenant, session) } as const;
       }, signal);
     } catch (error) {
       if (error instanceof Error && "code" in error && error.code === "23505") {
@@ -873,6 +911,8 @@ export class PostgresRenderSessionRepositoryV1
       }
       throw error;
     }
+    if (outcome.kind === "denied") throw renderUsageAdmissionError(outcome.reason);
+    return outcome.session;
   }
 
   async readSession(tenantValue: string, sessionValue: string, signal?: AbortSignal) {
@@ -1114,6 +1154,7 @@ export class PostgresRenderSessionRepositoryV1
             AND status IN (${transitionSourceSql("cancel")})`,
         [tenant, session],
       );
+      await settleRenderSessionUsageV1(client, tenant, session, "released");
       return this.#selectSession(client, tenant, session);
     }, signal);
   }
@@ -1180,40 +1221,45 @@ export class PostgresRenderSessionRepositoryV1
   async expireTimedOutSessions(tenantValue: string, limitValue: number, signal?: AbortSignal) {
     const tenant = tenantId(tenantValue);
     const limit = boundedPositiveInteger(limitValue, "limit", MAX_RECOVERABLE_SESSION_PAGE_V1);
-    const result = await this.#connection.query(
-      `WITH expired AS (
-         SELECT tenant_id, session_id
-           FROM public.render_sessions
-          WHERE tenant_id = $1
-            AND status IN (${transitionSourceSql("expire")})
-            AND execution_deadline <= clock_timestamp()
-            AND NOT EXISTS (
-              SELECT 1 FROM public.render_cancellation_intents cancellation
-               WHERE cancellation.tenant_id = public.render_sessions.tenant_id
-                 AND cancellation.session_id = public.render_sessions.session_id
-                 AND cancellation.acknowledged_at IS NULL
-                 AND cancellation.expires_at > clock_timestamp()
-            )
-          ORDER BY execution_deadline, session_id
-          LIMIT $2
-          FOR UPDATE SKIP LOCKED
-       )
-       UPDATE public.render_sessions s
-          SET status = 'failed',
-              version = version + 1,
-              lease_owner = NULL,
-              lease_expires_at = NULL,
-              error = 'Render execution deadline exceeded.',
-              failure_code = 'deadline-exceeded',
-              artifact_locator = NULL,
-              updated_at = clock_timestamp()
-         FROM expired
-        WHERE s.tenant_id = expired.tenant_id
-          AND s.session_id = expired.session_id`,
-      [tenant, limit],
-      signal,
-    );
-    return result.rowCount ?? 0;
+    return this.#connection.transaction(async (client) => {
+      const result = await client.query<{ session_id: string }>(
+        `WITH expired AS (
+           SELECT tenant_id, session_id
+             FROM public.render_sessions
+            WHERE tenant_id = $1
+              AND status IN (${transitionSourceSql("expire")})
+              AND execution_deadline <= clock_timestamp()
+              AND NOT EXISTS (
+                SELECT 1 FROM public.render_cancellation_intents cancellation
+                 WHERE cancellation.tenant_id = public.render_sessions.tenant_id
+                   AND cancellation.session_id = public.render_sessions.session_id
+                   AND cancellation.acknowledged_at IS NULL
+                   AND cancellation.expires_at > clock_timestamp()
+              )
+            ORDER BY execution_deadline, session_id
+            LIMIT $2
+            FOR UPDATE SKIP LOCKED
+         )
+         UPDATE public.render_sessions s
+            SET status = 'failed',
+                version = version + 1,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                error = 'Render execution deadline exceeded.',
+                failure_code = 'deadline-exceeded',
+                artifact_locator = NULL,
+                updated_at = clock_timestamp()
+           FROM expired
+          WHERE s.tenant_id = expired.tenant_id
+            AND s.session_id = expired.session_id
+        RETURNING s.session_id::text AS session_id`,
+        [tenant, limit],
+      );
+      for (const row of result.rows) {
+        await settleRenderSessionUsageV1(client, tenant, existingSessionId(row.session_id), "released");
+      }
+      return result.rowCount ?? 0;
+    }, signal);
   }
 
   async claimLease(input: DurableRenderLeaseClaimV1, signal?: AbortSignal) {
@@ -1356,6 +1402,7 @@ export class PostgresRenderSessionRepositoryV1
         ],
       );
       if (result.rowCount !== 1) throw new HttpError("The render completion fence is stale.", 409);
+      await settleRenderSessionUsageV1(client, tenant, session, input.status === "ready" ? "committed" : "released");
       return this.#selectSession(client, tenant, session);
     }, signal);
   }
@@ -1613,6 +1660,7 @@ export class PostgresRenderSessionRepositoryV1
             AND status IN (${transitionSourceSql(operation)})`,
         [tenant, session, nextStatus],
       );
+      if (operation === "cancel") await settleRenderSessionUsageV1(client, tenant, session, "released");
       if (operation === "discard") {
         await client.query(
           `DELETE FROM public.workspace_project_references
@@ -1680,6 +1728,9 @@ export class PostgresRenderSessionRepositoryV1
           WHERE tenant_id = $1 AND session_id = $2::uuid AND status IN (${transitionSourceSql("abandon")})`,
         [tenant, session, nextStatus],
       );
+      if (renderSessionTransitionAllowed("claim-lease", status)) {
+        await settleRenderSessionUsageV1(client, tenant, session, "released");
+      }
       await client.query(
         `DELETE FROM public.workspace_project_references
           WHERE tenant_id = $1 AND project_id = $2

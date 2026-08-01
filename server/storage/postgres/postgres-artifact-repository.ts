@@ -20,8 +20,11 @@ import {
   sameRenderArtifactReceiptV1,
 } from "../render-artifact-repository";
 import { MAX_DURABLE_RENDER_LOG_BYTES_V1 } from "../render-session-repository";
+import { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
+import { settleRenderUsageWithClientV1 } from "./postgres-entitlement-repository";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 import { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
+import { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-usage-schema";
 
 export const RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM = "ba334dd77d8b876fdb4cde9a21ed90264eb2f00e4bfbfe64b9951fbbbf9fffbd";
 
@@ -197,16 +200,20 @@ export class PostgresArtifactRepositoryV1 implements RenderArtifactRepositoryV1 
   async ready(signal?: AbortSignal) {
     signal?.throwIfAborted();
     const result = await this.#connection.query<{ checksum: string; version: number }>(
-      "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (4, 7) ORDER BY version",
+      "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (4, 7, 14, 15) ORDER BY version",
       [],
       signal,
     );
     return (
-      result.rows.length === 2 &&
+      result.rows.length === 4 &&
       result.rows[0]?.version === 4 &&
       result.rows[0]?.checksum === RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM &&
       result.rows[1]?.version === 7 &&
-      result.rows[1]?.checksum === RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM
+      result.rows[1]?.checksum === RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM &&
+      result.rows[2]?.version === 14 &&
+      result.rows[2]?.checksum === BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM &&
+      result.rows[3]?.version === 15 &&
+      result.rows[3]?.checksum === RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM
     );
   }
 
@@ -384,6 +391,10 @@ export class PostgresArtifactRepositoryV1 implements RenderArtifactRepositoryV1 
         [tenant, session, owner, expectedVersion.toString(), fenceToken.toString(), input.logTail, video.artifactId],
       );
       if (completed.rowCount !== 1) throw new HttpError("The render publication fence is stale.", 409);
+      const usage = await settleRenderUsageWithClientV1(client, tenant, session, "committed");
+      if (usage.kind !== "settled") {
+        throw new TypeError("The published render usage settlement is inconsistent.");
+      }
     }, signal);
   }
 
