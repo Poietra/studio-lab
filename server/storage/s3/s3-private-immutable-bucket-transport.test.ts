@@ -1,7 +1,10 @@
 import type { S3Client } from "@aws-sdk/client-s3";
 import { describe, expect, it, vi } from "vitest";
 
-import { PrivateImmutableS3BucketTransportV1 } from "./s3-private-immutable-bucket-transport";
+import {
+  acquirePrivateImmutableS3BucketTransportV1,
+  PrivateImmutableS3BucketTransportV1,
+} from "./s3-private-immutable-bucket-transport";
 
 const BUCKET = "poietra-private-objects";
 const GENERATION = "123e4567-e89b-42d3-a456-426614174000";
@@ -27,6 +30,20 @@ function body() {
 }
 
 describe("PrivateImmutableS3BucketTransportV1", () => {
+  it("closes a transport owned by a direct consumer lease", async () => {
+    const close = vi.spyOn(PrivateImmutableS3BucketTransportV1.prototype, "close");
+    const lease = acquirePrivateImmutableS3BucketTransportV1({
+      bucket: BUCKET,
+      client: { destroy() {}, send: vi.fn() } as unknown as S3Client,
+      deployment: "test",
+    });
+
+    await lease.close();
+
+    expect(close).toHaveBeenCalledOnce();
+    close.mockRestore();
+  });
+
   it("builds a narrow conditional-create command and returns an opaque ETag", async () => {
     const send = vi.fn(async (command: SentCommand) => {
       expect(command.constructor.name).toBe("PutObjectCommand");
