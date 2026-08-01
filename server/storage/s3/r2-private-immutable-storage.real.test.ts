@@ -6,8 +6,8 @@ import { S3ImmutableRenderArtifactStoreV1 } from "./s3-immutable-render-artifact
 import { S3ImmutableSnapshotArtifactStoreV1 } from "./s3-immutable-snapshot-artifact-store";
 import { ImmutableS3ProjectPngStoreV1, ImmutableS3SourceBlobStoreV1 } from "./s3-immutable-source-png-store";
 import {
-  PrivateImmutableS3BucketTransportV1,
   type PrivateImmutableS3BucketOperationV1,
+  PrivateImmutableS3BucketTransportV1,
 } from "./s3-private-immutable-bucket-transport";
 
 const REQUIRED_ENVIRONMENT = [
@@ -273,9 +273,11 @@ describe.skipIf(!configured)("Cloudflare R2 private immutable storage", () => {
       for (const deleteObject of [...exactDeletes].reverse()) {
         await deleteObject().catch((error: unknown) => cleanupErrors.push(error));
       }
-      await deleteTenantObjects(cleanupLease.operation(), tenantPrefix).catch((error: unknown) =>
-        cleanupErrors.push(error),
-      );
+      for (const family of ["sources", "projects", "snapshots", "media"] as const) {
+        await deleteTenantObjects(cleanupLease.operation(), `${tenantPrefix}${family}/`).catch((error: unknown) =>
+          cleanupErrors.push(error),
+        );
+      }
       const closeResults = await Promise.allSettled([
         media.close(),
         snapshots.close(),
