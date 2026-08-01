@@ -11,6 +11,10 @@ import {
   type EditSuggestionOperation,
   suggestEdit,
 } from "./ai/edit-suggestions";
+import {
+  MAX_EDITOR_LIVE_PLAYHEAD_SECONDS_V1,
+  MAX_EDITOR_LIVE_SELECTED_ENTITY_IDS_V1,
+} from "./collaboration/editor-live-contract";
 import { cn } from "./lib/cn";
 import { exportManimSource } from "./render-pipeline/client";
 import type { RenderSessionView } from "./render-pipeline/contracts";
@@ -500,6 +504,22 @@ export function App({
     identity: editorDocumentIdentity,
     onProjection: installEditorDocumentProjection,
   });
+  const editorPresenceSessionAligned =
+    activeScene !== null &&
+    activeSessionIdentity?.projectId === activeProjectId &&
+    activeSessionIdentity.sceneId === activeScene.sceneId &&
+    activeSessionIdentity.sourceHash === activeScene.sourceHash;
+  const updateEditorPresence = editorDocumentAuthority.updatePresence;
+  useEffect(() => {
+    updateEditorPresence({
+      playheadSeconds: editorPresenceSessionAligned
+        ? Math.min(MAX_EDITOR_LIVE_PLAYHEAD_SECONDS_V1, Math.max(0, Number.isFinite(currentTime) ? currentTime : 0))
+        : 0,
+      selectedEntityIds: editorPresenceSessionAligned
+        ? [...new Set(selectedObjectIds)].slice(0, MAX_EDITOR_LIVE_SELECTED_ENTITY_IDS_V1)
+        : [],
+    });
+  }, [currentTime, editorDocumentIdentity, editorPresenceSessionAligned, selectedObjectIds, updateEditorPresence]);
   const editorDocumentPresentationReady = !editorDocumentAuthority.enabled || editorDocumentAuthority.canAuthor();
 
   const importedSceneBoundaryActive =
@@ -2827,6 +2847,7 @@ export function App({
               }}
               onMotionControlChange={changeDraftMotionControl}
               onMotionDurationChange={setMotionDuration}
+              onPresenceCursorChange={(cursor) => editorDocumentAuthority.updatePresence({ cursor })}
               onSelectEntity={(entityId) => setSelectedObjectIds([entityId])}
               onTimeChange={(time) => {
                 setIsPlaying(false);
@@ -2842,6 +2863,7 @@ export function App({
                 setIsPlaying((playing) => !playing);
               }}
               preview={previewRenderer}
+              presenceParticipants={editorDocumentAuthority.presenceParticipants}
               projection={projection}
               readOnly={boundary !== null || studioAuthoringLocked}
               scalePreview={scalePreview}
