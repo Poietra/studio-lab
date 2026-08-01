@@ -1,7 +1,12 @@
 import type { Pool, PoolClient } from "pg";
 import { describe, expect, it, vi } from "vitest";
 
-import type { SnapshotArtifactReceiptV1, SnapshotPublicationIdentityV1 } from "../snapshot-publication-repository";
+import type { ImmutableSnapshotArtifactReceiptV1 } from "../immutable-snapshot-artifact-store";
+import type {
+  SnapshotPublicationIdentityV1,
+  VersionedSnapshotArtifactReceiptV1,
+} from "../snapshot-publication-repository";
+import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
 import { POSTGRES_REPOSITORY_OPTIONS_V1 } from "./postgres-repository-connection";
 import {
   PostgresSnapshotPublicationRepositoryV1,
@@ -24,6 +29,7 @@ const OTHER_RUNTIME_DIGEST = "2".repeat(64);
 const PROFILE = "d".repeat(64);
 const RESULT = "e".repeat(64);
 const SNAPSHOT = "f".repeat(64);
+const OBJECT_GENERATION = "00000000-0000-4000-8000-000000000001";
 
 const identity: SnapshotPublicationIdentityV1 = {
   projectId: PROJECT,
@@ -33,7 +39,7 @@ const identity: SnapshotPublicationIdentityV1 = {
   tenantId: TENANT,
 };
 
-function artifact(sourceDigest = SOURCE_A, runtimeDigest = RUNTIME_DIGEST): SnapshotArtifactReceiptV1 {
+function artifact(sourceDigest = SOURCE_A, runtimeDigest = RUNTIME_DIGEST): VersionedSnapshotArtifactReceiptV1 {
   return {
     byteSize: 128,
     etag: "artifact-etag",
@@ -47,11 +53,31 @@ function artifact(sourceDigest = SOURCE_A, runtimeDigest = RUNTIME_DIGEST): Snap
   };
 }
 
+function immutableArtifact(): ImmutableSnapshotArtifactReceiptV1 {
+  return {
+    byteSize: 128,
+    etag: "immutable-artifact-etag",
+    identity: {
+      kind: "runtime-digest",
+      profileDigest: PROFILE,
+      resultDigest: RESULT,
+      runtimeConfigHash: RUNTIME,
+      runtimeDigest: RUNTIME_DIGEST,
+      sourceDigest: SOURCE_A,
+    },
+    objectGeneration: OBJECT_GENERATION,
+    objectKey: `${artifact().objectKey}/g/${OBJECT_GENERATION}`,
+    schema: "poietra.immutable-snapshot-artifact-receipt",
+    version: 1,
+  };
+}
+
 function artifactRow(value = artifact()) {
   return {
     artifact_byte_size: value.byteSize,
     artifact_etag: value.etag,
     artifact_object_key: value.objectKey,
+    artifact_object_generation: null,
     artifact_profile_digest: value.profileDigest,
     artifact_result_digest: value.resultDigest,
     artifact_runtime_config_hash: value.runtimeConfigHash,
@@ -59,6 +85,22 @@ function artifactRow(value = artifact()) {
     artifact_source_digest: value.sourceDigest,
     artifact_tenant_id: TENANT,
     artifact_version_id: value.versionId,
+  };
+}
+
+function immutableArtifactRow(value = immutableArtifact()) {
+  return {
+    artifact_byte_size: value.byteSize,
+    artifact_etag: value.etag,
+    artifact_object_generation: value.objectGeneration,
+    artifact_object_key: value.objectKey,
+    artifact_profile_digest: value.identity.profileDigest,
+    artifact_result_digest: value.identity.resultDigest,
+    artifact_runtime_config_hash: value.identity.runtimeConfigHash,
+    artifact_runtime_digest: value.identity.kind === "legacy" ? "0".repeat(64) : value.identity.runtimeDigest,
+    artifact_source_digest: value.identity.sourceDigest,
+    artifact_tenant_id: TENANT,
+    artifact_version_id: null,
   };
 }
 
@@ -345,6 +387,35 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
     expect(sql).not.toContain("DELETE FROM public.workspace_project_references");
   });
 
+  it("keeps a legacy row canonical when an immutable upload has the same content", async () => {
+    const fixture = fakePool((text) => {
+      if (text.includes("FROM public.workspace_source_heads h")) return { rowCount: 1, rows: [sourceRow()] };
+      if (text.includes("SELECT 1 FROM public.snapshot_artifact_deletions")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("INSERT INTO public.snapshot_artifact_objects")) return { rowCount: 0, rows: [] };
+      if (text.includes("FROM public.snapshot_artifact_objects a")) {
+        return { rowCount: 1, rows: [artifactRow()] };
+      }
+      if (text.includes("FROM public.snapshot_scene_heads h")) {
+        return { rowCount: 1, rows: [sceneHeadRow()] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresSnapshotPublicationRepositoryV1({ pool: fixture.pool });
+
+    const result = await repository.publish({
+      ...publishInput(),
+      artifact: immutableArtifact(),
+      publicationId: RETRY_PUBLICATION_ID,
+    });
+
+    expect(result).toMatchObject({
+      kind: "published",
+      publication: { artifact: { versionId: "artifact-version" }, publicationId: PUBLICATION_ID },
+    });
+    const sql = fixture.query.mock.calls.map(([text]) => text).join("\n");
+    expect(sql).not.toContain("INSERT INTO public.snapshot_publications");
+  });
+
   it("rolls back when an immutable artifact identity resolves to different metadata", async () => {
     const conflicting = artifactRow({ ...artifact(), etag: "different-etag" });
     const fixture = fakePool((text) => {
@@ -469,7 +540,7 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
     ).resolves.toBe(true);
   });
 
-  it("uses only the exact current artifact lookup and verifies migration v3 and v10 readiness", async () => {
+  it("uses only the exact current artifact lookup and verifies migration v3, v10, and v20 readiness", async () => {
     const fixture = fakePool((text, values) => {
       if (text.includes("FROM public.snapshot_artifact_objects a")) {
         expect(text).toContain("source.generation = p.source_generation");
@@ -482,6 +553,7 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
           RUNTIME_DIGEST,
           artifact().objectKey,
           "artifact-version",
+          null,
           "artifact-etag",
           128,
         ]);
@@ -490,10 +562,11 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
       if (text.includes("poietra_schema_migrations")) {
         expect(values).toEqual([]);
         return {
-          rowCount: 2,
+          rowCount: 3,
           rows: [
             { checksum: SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM, version: 3 },
             { checksum: SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM, version: 10 },
+            { checksum: IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM, version: 20 },
           ],
         };
       }
@@ -505,12 +578,53 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
     await expect(repository.ready()).resolves.toBe(true);
   });
 
-  it("is not ready when the runtime-digest migration is missing", async () => {
+  it("looks up an immutable current artifact with an exact generation locator", async () => {
+    const candidate = immutableArtifact();
+    const fixture = fakePool((text, values) => {
+      if (!text.includes("FROM public.snapshot_artifact_objects a")) throw new Error(`Unexpected query: ${text}`);
+      expect(text).toContain("a.object_generation IS NOT DISTINCT FROM $9::uuid");
+      expect(values).toEqual([
+        TENANT,
+        RESULT,
+        SOURCE_A,
+        RUNTIME,
+        PROFILE,
+        RUNTIME_DIGEST,
+        candidate.objectKey,
+        null,
+        OBJECT_GENERATION,
+        candidate.etag,
+        candidate.byteSize,
+      ]);
+      return { rowCount: 1, rows: [immutableArtifactRow(candidate)] };
+    });
+    const repository = new PostgresSnapshotPublicationRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.isArtifactPublished(TENANT, candidate)).resolves.toBe(true);
+  });
+
+  it.each([
+    ["mixed", { ...immutableArtifactRow(), artifact_version_id: "also-versioned" }],
+    ["missing", { ...immutableArtifactRow(), artifact_object_generation: null }],
+  ])("fails closed on a %s stored artifact locator", async (_name, row) => {
+    const fixture = fakePool((text) => {
+      if (text.includes("FROM public.snapshot_artifact_objects a")) return { rowCount: 1, rows: [row] };
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresSnapshotPublicationRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.isArtifactPublished(TENANT, immutableArtifact())).rejects.toThrow(/ambiguous/i);
+  });
+
+  it("is not ready when the immutable-locator migration is missing", async () => {
     const fixture = fakePool((text) => {
       if (text.includes("poietra_schema_migrations")) {
         return {
-          rowCount: 1,
-          rows: [{ checksum: SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM, version: 3 }],
+          rowCount: 2,
+          rows: [
+            { checksum: SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM, version: 3 },
+            { checksum: SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM, version: 10 },
+          ],
         };
       }
       throw new Error(`Unexpected query: ${text}`);
@@ -569,7 +683,7 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
   it.each([
     ["registered artifact", true],
     ["raw upload orphan", false],
-  ])("queues a non-current %s after atomically removing historical metadata", async (_name, registered) => {
+  ])("queues a non-current %s without touching unrelated metadata", async (_name, registered) => {
     const fixture = fakePool((text) => {
       if (text.includes("JOIN public.snapshot_publications p")) {
         return { rowCount: 0, rows: [] };
@@ -607,8 +721,52 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
       "DELETE FROM public.snapshot_artifact_objects",
       "INSERT INTO public.snapshot_artifact_deletions",
     ].map((prefix) => sql.findIndex((text) => text.startsWith(prefix)));
-    expect(ordered).toEqual([...ordered].sort((left, right) => left - right));
-    expect(ordered.every((index) => index >= 0)).toBe(true);
+    if (registered) {
+      expect(ordered).toEqual([...ordered].sort((left, right) => left - right));
+      expect(ordered.every((index) => index >= 0)).toBe(true);
+    } else {
+      expect(ordered.slice(0, 4)).toEqual([-1, -1, -1, -1]);
+      expect(ordered[4]).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("queues an immutable duplicate without removing canonical legacy metadata", async () => {
+    const candidate = immutableArtifact();
+    const fixture = fakePool((text, values) => {
+      if (text.includes("JOIN public.snapshot_publications p")) return { rowCount: 0, rows: [] };
+      if (text.includes("FROM public.snapshot_artifact_objects a")) return { rowCount: 1, rows: [artifactRow()] };
+      if (text.includes("FROM public.snapshot_artifact_deletions d")) {
+        expect(values).toEqual([TENANT, candidate.objectKey, null, OBJECT_GENERATION]);
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.startsWith("UPDATE public.snapshot_scene_heads")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("DELETE FROM public.workspace_project_references")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("DELETE FROM public.snapshot_publications")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("DELETE FROM public.snapshot_artifact_objects")) {
+        expect(text).toContain("object_generation IS NOT DISTINCT FROM $9::uuid");
+        expect(values?.[8]).toBe(OBJECT_GENERATION);
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.startsWith("INSERT INTO public.snapshot_artifact_deletions")) {
+        expect(text).toContain("object_generation");
+        expect(values?.[9]).toBe(OBJECT_GENERATION);
+        return {
+          rowCount: 1,
+          rows: [{ ...immutableArtifactRow(candidate), deleted_at: null, deletion_id: DELETION_ID }],
+        };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresSnapshotPublicationRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.queueArtifactDeletion(TENANT, candidate)).resolves.toEqual({
+      artifact: candidate,
+      deletionId: DELETION_ID,
+      tenantId: TENANT,
+    });
+    const sql = fixture.query.mock.calls.map(([text]) => text).join("\n");
+    expect(sql).not.toContain("DELETE FROM public.snapshot_publications");
+    expect(sql).not.toContain("DELETE FROM public.snapshot_artifact_objects");
   });
 
   it("rejects conflicting queued metadata and treats an acknowledged exact receipt as complete", async () => {
@@ -632,7 +790,7 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
     const fixture = fakePool((text, values) => {
       if (text.includes("FROM public.snapshot_artifact_objects a")) return { rowCount: 0, rows: [] };
       if (text.includes("FROM public.snapshot_artifact_deletions d")) {
-        expect(values).toEqual([TENANT, replacement.objectKey, replacement.versionId]);
+        expect(values).toEqual([TENANT, replacement.objectKey, replacement.versionId, null]);
         return { rowCount: 0, rows: [] };
       }
       if (text.includes("JOIN public.snapshot_publications p")) return { rowCount: 0, rows: [] };

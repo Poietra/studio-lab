@@ -59,12 +59,26 @@ import {
   type RenderSessionRepositoryV1,
   type RenderSessionRetentionRepositoryV1,
 } from "../render-session-repository";
-import { MAX_MANIM_SOURCE_BYTES_V1, type SourceBlobReceiptV1 } from "../workspace-source-repository";
+import {
+  assertSourceBlobReceiptV1,
+  MAX_MANIM_SOURCE_BYTES_V1,
+  type SourceBlobReceiptV1,
+  sameSourceBlobReceiptV1,
+  sourceBlobLocatorIdentityV1,
+} from "../workspace-source-repository";
 import { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
+import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
 import { reserveRenderUsageWithClientV1, settleRenderUsageWithClientV1 } from "./postgres-entitlement-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
+import {
+  type PostgresStorageObjectLocatorRowV1,
+  storageObjectLocatorFromRowV1,
+  storageObjectLocatorJoinSqlV1,
+  storageObjectLocatorPredicateSqlV1,
+  storageObjectLocatorSqlValuesV1,
+} from "./postgres-storage-object-locator";
 import { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
 import { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-session-cpu-failure-schema";
 import { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
@@ -120,7 +134,8 @@ type SessionRow = QueryResultRow & {
   original_etag: string;
   original_generation: string;
   original_object_key: string;
-  original_version_id: string;
+  original_object_generation: string | null;
+  original_version_id: string | null;
   patch_anchor_line: number;
   patch_anchor_lines: number[];
   patch_inserted_code: string;
@@ -128,7 +143,8 @@ type SessionRow = QueryResultRow & {
   patched_digest: string;
   patched_etag: string;
   patched_object_key: string;
-  patched_version_id: string;
+  patched_object_generation: string | null;
+  patched_version_id: string | null;
   program_batch_id: string;
   program_transaction_id: string;
   progress: number;
@@ -138,6 +154,7 @@ type SessionRow = QueryResultRow & {
   project_png_etag: string | null;
   project_png_generation: string | null;
   project_png_object_key: string | null;
+  project_png_object_generation: string | null;
   project_png_version_id: string | null;
   render_request_id: string;
   scene_name: string;
@@ -149,13 +166,13 @@ type SessionRow = QueryResultRow & {
   version: string;
 };
 
-type BlobRow = QueryResultRow & {
-  byte_size: number;
-  digest: string;
-  etag: string;
-  object_key: string;
-  version_id: string;
-};
+type BlobRow = QueryResultRow &
+  PostgresStorageObjectLocatorRowV1 & {
+    byte_size: number;
+    digest: string;
+    etag: string;
+    object_key: string;
+  };
 
 type ProjectPngRow = BlobRow & {
   generation: string;
@@ -259,15 +276,18 @@ const SESSION_COLUMNS = `
   original.digest AS original_digest,
   original.object_key AS original_object_key,
   original.version_id AS original_version_id,
+  original.object_generation AS original_object_generation,
   original.etag AS original_etag,
   original.byte_size AS original_byte_size,
   patched.digest AS patched_digest,
   patched.object_key AS patched_object_key,
   patched.version_id AS patched_version_id,
+  patched.object_generation AS patched_object_generation,
   patched.etag AS patched_etag,
   patched.byte_size AS patched_byte_size,
   project_png.object_key AS project_png_object_key,
   project_png.version_id AS project_png_version_id,
+  project_png.object_generation AS project_png_object_generation,
   project_png.etag AS project_png_etag,
   project_png.byte_size AS project_png_byte_size,
   action.action_id::text AS action_id,
@@ -294,7 +314,7 @@ const SESSION_JOINS = `
    AND project_png.project_id = project_png_generation.project_id
    AND project_png.digest = project_png_generation.digest
    AND project_png.object_key = project_png_generation.object_key
-   AND project_png.version_id = project_png_generation.version_id
+   AND ${storageObjectLocatorJoinSqlV1("project_png", "project_png_generation")}
   LEFT JOIN public.render_source_actions action
     ON action.tenant_id = s.tenant_id
    AND action.session_id = s.session_id
@@ -387,11 +407,6 @@ function sceneName(value: string) {
   return parsed.data;
 }
 
-function sourceDigest(value: string) {
-  if (!/^[0-9a-f]{64}$/.test(value)) throw new TypeError("Source digest is invalid.");
-  return value;
-}
-
 function projectPngGeneration(value: bigint) {
   if (value < 1n || value > 9_223_372_036_854_775_807n) {
     throw new TypeError("Project image.png generation is invalid.");
@@ -400,41 +415,35 @@ function projectPngGeneration(value: bigint) {
 }
 
 function blobReceipt(tenant: string, value: SourceBlobReceiptV1): SourceBlobReceiptV1 {
-  const digest = sourceDigest(value.digest);
-  const expectedKey = `tenants/${tenant}/sources/${digest}`;
-  if (
-    value.objectKey !== expectedKey ||
-    !Number.isSafeInteger(value.byteSize) ||
-    value.byteSize < 0 ||
-    value.byteSize > MAX_MANIM_SOURCE_BYTES_V1 ||
-    value.versionId.length < 1 ||
-    value.versionId.length > 1_024 ||
-    value.etag.length < 1 ||
-    value.etag.length > 512
-  ) {
-    throw new TypeError("Source blob receipt is invalid.");
-  }
-  return { ...value, digest, objectKey: expectedKey };
+  return assertSourceBlobReceiptV1(tenant, value);
 }
 
-function receiptFromBlobRow(row: BlobRow): SourceBlobReceiptV1 {
+function blobReceiptFieldsFromRow(row: BlobRow) {
   return {
     byteSize: row.byte_size,
     digest: row.digest,
     etag: row.etag,
     objectKey: row.object_key,
-    versionId: row.version_id,
+    ...storageObjectLocatorFromRowV1(row),
   };
 }
 
+function receiptFromBlobRow(tenant: string, row: BlobRow): SourceBlobReceiptV1 {
+  return blobReceipt(tenant, blobReceiptFieldsFromRow(row));
+}
+
 function blobFromRow(row: SessionRow, prefix: "original" | "patched"): SourceBlobReceiptV1 {
-  return {
+  const locator = storageObjectLocatorFromRowV1({
+    object_generation: row[`${prefix}_object_generation`],
+    version_id: row[`${prefix}_version_id`],
+  });
+  return blobReceipt(row.tenant_id, {
     byteSize: row[`${prefix}_byte_size`],
     digest: row[`${prefix}_digest`],
     etag: row[`${prefix}_etag`],
     objectKey: row[`${prefix}_object_key`],
-    versionId: row[`${prefix}_version_id`],
-  };
+    ...locator,
+  });
 }
 
 function projectPngFromRow(row: SessionRow): ProjectPngHeadV1 | null {
@@ -443,13 +452,25 @@ function projectPngFromRow(row: SessionRow): ProjectPngHeadV1 | null {
     row.project_png_digest,
     row.project_png_object_key,
     row.project_png_version_id,
+    row.project_png_object_generation,
+    row.project_png_etag,
+    row.project_png_byte_size,
+  ];
+  const baseValues = [
+    row.project_png_generation,
+    row.project_png_digest,
+    row.project_png_object_key,
     row.project_png_etag,
     row.project_png_byte_size,
   ];
   if (values.every((value) => value === null)) return null;
-  if (values.some((value) => value === null || value === undefined)) {
+  if (baseValues.some((value) => value === null || value === undefined)) {
     throw new TypeError("PostgreSQL returned an incomplete project image.png render pin.");
   }
+  const locator = storageObjectLocatorFromRowV1({
+    object_generation: row.project_png_object_generation,
+    version_id: row.project_png_version_id,
+  });
   const generation = BigInt(row.project_png_generation!);
   if (generation < 1n || generation > 9_223_372_036_854_775_807n) {
     throw new TypeError("PostgreSQL returned an invalid project image.png generation.");
@@ -462,7 +483,7 @@ function projectPngFromRow(row: SessionRow): ProjectPngHeadV1 | null {
       digest: row.project_png_digest!,
       etag: row.project_png_etag!,
       objectKey: row.project_png_object_key!,
-      versionId: row.project_png_version_id!,
+      ...locator,
     }),
     tenantId: row.tenant_id,
   };
@@ -647,31 +668,40 @@ export class PostgresRenderSessionRepositoryV1
 
   async #registerBlob(client: PoolClient, tenant: string, candidateValue: SourceBlobReceiptV1) {
     const candidate = blobReceipt(tenant, candidateValue);
+    const [versionId, objectGeneration] = storageObjectLocatorSqlValuesV1(candidate);
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`${tenant}:${candidate.digest}`]);
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+      `source-blob:${tenant}:${candidate.objectKey}:${sourceBlobLocatorIdentityV1(candidate)}`,
+    ]);
     const deleting = await client.query(
-      `SELECT 1 FROM public.source_blob_deletions
-        WHERE tenant_id = $1 AND object_key = $2 AND version_id = $3`,
-      [tenant, candidate.objectKey, candidate.versionId],
+      `SELECT 1 FROM public.source_blob_deletions deletion
+        WHERE deletion.tenant_id = $1 AND deletion.object_key = $2
+          AND ${storageObjectLocatorPredicateSqlV1("deletion", 3, 4)}`,
+      [tenant, candidate.objectKey, versionId, objectGeneration],
     );
     if (deleting.rowCount !== 0) throw new HttpError("The source candidate is no longer available.", 409);
     const inserted = await client.query<BlobRow>(
       `INSERT INTO public.source_blob_objects
-         (tenant_id, digest, object_key, version_id, etag, byte_size)
-       VALUES ($1, $2, $3, $4, $5, $6)
+         (tenant_id, digest, object_key, version_id, object_generation, etag, byte_size)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (tenant_id, digest) DO NOTHING
-       RETURNING digest, object_key, version_id, etag, byte_size`,
-      [tenant, candidate.digest, candidate.objectKey, candidate.versionId, candidate.etag, candidate.byteSize],
+       RETURNING digest, object_key, version_id, object_generation, etag, byte_size`,
+      [tenant, candidate.digest, candidate.objectKey, versionId, objectGeneration, candidate.etag, candidate.byteSize],
     );
     if (inserted.rowCount === 1) return candidate;
     const existing = await client.query<BlobRow>(
-      `SELECT digest, object_key, version_id, etag, byte_size
+      `SELECT digest, object_key, version_id, object_generation, etag, byte_size
         FROM public.source_blob_objects
         WHERE tenant_id = $1 AND digest = $2
         FOR UPDATE`,
       [tenant, candidate.digest],
     );
     const row = existing.rows[0];
-    if (!row || row.object_key !== candidate.objectKey || row.byte_size !== candidate.byteSize) {
+    if (!row) {
+      throw new TypeError("The stored source blob metadata conflicts with its digest.");
+    }
+    const canonical = receiptFromBlobRow(tenant, row);
+    if (canonical.digest !== candidate.digest || canonical.byteSize !== candidate.byteSize) {
       throw new TypeError("The stored source blob metadata conflicts with its digest.");
     }
     await client.query(
@@ -680,7 +710,7 @@ export class PostgresRenderSessionRepositoryV1
         WHERE tenant_id = $1 AND digest = $2 AND orphaned_at IS NOT NULL`,
       [tenant, candidate.digest],
     );
-    return receiptFromBlobRow(row);
+    return canonical;
   }
 
   async #selectSession(client: PoolClient, tenant: string, session: string, lock = false) {
@@ -744,12 +774,12 @@ export class PostgresRenderSessionRepositoryV1
   async ready(signal?: AbortSignal) {
     try {
       const result = await this.#connection.query<{ checksum: string; version: number }>(
-        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (2, 5, 6, 7, 8, 9, 14, 15, 19) ORDER BY version",
+        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (2, 5, 6, 7, 8, 9, 14, 15, 19, 20) ORDER BY version",
         [],
         signal,
       );
       return (
-        result.rowCount === 9 &&
+        result.rowCount === 10 &&
         result.rows[0]?.version === 2 &&
         result.rows[0]?.checksum === RENDER_SESSION_MIGRATION_V2_CHECKSUM &&
         result.rows[1]?.version === 5 &&
@@ -767,7 +797,9 @@ export class PostgresRenderSessionRepositoryV1
         result.rows[7]?.version === 15 &&
         result.rows[7]?.checksum === RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM &&
         result.rows[8]?.version === 19 &&
-        result.rows[8]?.checksum === RENDER_SESSION_SCENE_NAME_MIGRATION_V19_CHECKSUM
+        result.rows[8]?.checksum === RENDER_SESSION_SCENE_NAME_MIGRATION_V19_CHECKSUM &&
+        result.rows[9]?.version === 20 &&
+        result.rows[9]?.checksum === IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM
       );
     } catch {
       throwIfAborted(signal);
@@ -821,7 +853,8 @@ export class PostgresRenderSessionRepositoryV1
     try {
       outcome = await this.#connection.transaction(async (client) => {
         const head = await client.query<BlobRow & { generation: string }>(
-          `SELECT h.generation::text AS generation, b.digest, b.object_key, b.version_id, b.etag, b.byte_size
+          `SELECT h.generation::text AS generation, b.digest, b.object_key,
+                  b.version_id, b.object_generation, b.etag, b.byte_size
              FROM public.workspace_source_heads h
              JOIN public.workspace_projects p
                ON p.tenant_id = h.tenant_id AND p.project_id = h.project_id AND p.deleted_at IS NULL
@@ -831,27 +864,26 @@ export class PostgresRenderSessionRepositoryV1
           [tenant, project, path],
         );
         const current = head.rows[0];
+        const currentReceipt = current ? receiptFromBlobRow(tenant, current) : null;
         if (
           !current ||
+          !currentReceipt ||
           BigInt(current.generation) !== generation ||
-          current.digest !== original.digest ||
-          current.object_key !== original.objectKey ||
-          current.version_id !== original.versionId ||
-          current.etag !== original.etag ||
-          current.byte_size !== original.byteSize
+          !sameSourceBlobReceiptV1(currentReceipt, original)
         ) {
           throw new HttpError("The source changed before this render session could be created.", 409);
         }
         const projectPngResult = await client.query<ProjectPngRow>(
           `SELECT h.tenant_id, h.project_id, h.generation::text AS generation,
-                  o.digest, o.object_key, o.version_id, o.etag, o.byte_size
+                  o.digest, o.object_key, o.version_id, o.object_generation, o.etag, o.byte_size
              FROM public.project_png_heads h
              JOIN public.project_png_generations g
                ON g.tenant_id = h.tenant_id AND g.project_id = h.project_id
               AND g.generation = h.generation AND g.digest = h.digest
              JOIN public.project_png_objects o
                ON o.tenant_id = g.tenant_id AND o.project_id = g.project_id
-              AND o.digest = g.digest AND o.object_key = g.object_key AND o.version_id = g.version_id
+              AND o.digest = g.digest AND o.object_key = g.object_key
+              AND ${storageObjectLocatorJoinSqlV1("o", "g")}
             WHERE h.tenant_id = $1 AND h.project_id = $2
             FOR KEY SHARE OF h, g, o`,
           [tenant, project],
@@ -860,7 +892,7 @@ export class PostgresRenderSessionRepositoryV1
         const projectPng = pinnedPngRow
           ? {
               generation: projectPngGeneration(BigInt(pinnedPngRow.generation)),
-              receipt: assertProjectPngReceiptV1(tenant, project, receiptFromBlobRow(pinnedPngRow)),
+              receipt: assertProjectPngReceiptV1(tenant, project, blobReceiptFieldsFromRow(pinnedPngRow)),
             }
           : null;
         const usage = await reserveRenderUsageWithClientV1(client, {

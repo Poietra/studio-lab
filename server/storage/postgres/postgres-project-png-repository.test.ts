@@ -1,8 +1,11 @@
 import type { Pool, PoolClient } from "pg";
 import { describe, expect, it, vi } from "vitest";
 
-import type { ProjectPngBlobReceiptV1 } from "../project-png-storage";
+import { immutableProjectPngObjectKeyV1 } from "../immutable-source-png-storage";
+import type { ProjectPngBlobReceiptV1, VersionedProjectPngBlobReceiptV1 } from "../project-png-storage";
+import { storageObjectLocatorColumnsV1 } from "../storage-object-locator";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
+import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
 import { PostgresProjectPngRepositoryV1, PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
 import { POSTGRES_REPOSITORY_OPTIONS_V1 } from "./postgres-repository-connection";
 
@@ -11,8 +14,9 @@ const PROJECT = "project-a";
 const DIGEST = "a".repeat(64);
 const DELETION = "87654321-4321-4321-8321-cba987654321";
 const GRACE_MS = 60_000;
+const OBJECT_GENERATION = "123e4567-e89b-42d3-a456-426614174000";
 
-function receipt(overrides: Partial<ProjectPngBlobReceiptV1> = {}): ProjectPngBlobReceiptV1 {
+function receipt(overrides: Partial<VersionedProjectPngBlobReceiptV1> = {}): VersionedProjectPngBlobReceiptV1 {
   return {
     byteSize: 128,
     digest: DIGEST,
@@ -23,16 +27,28 @@ function receipt(overrides: Partial<ProjectPngBlobReceiptV1> = {}): ProjectPngBl
   };
 }
 
-function headRow(generation = "1", value = receipt()) {
+function immutableReceipt(): ProjectPngBlobReceiptV1 {
+  return {
+    byteSize: 128,
+    digest: DIGEST,
+    etag: '"etag-immutable"',
+    objectGeneration: OBJECT_GENERATION,
+    objectKey: immutableProjectPngObjectKeyV1(TENANT, PROJECT, DIGEST, OBJECT_GENERATION),
+  };
+}
+
+function headRow(generation = "1", value: ProjectPngBlobReceiptV1 = receipt()) {
+  const locator = storageObjectLocatorColumnsV1(value);
   return {
     byte_size: value.byteSize,
     digest: value.digest,
     etag: value.etag,
     generation,
     object_key: value.objectKey,
+    object_generation: locator.objectGeneration,
     project_id: PROJECT,
     tenant_id: TENANT,
-    version_id: value.versionId,
+    version_id: locator.versionId,
   };
 }
 
@@ -65,15 +81,16 @@ function fakePool(handle: (text: string, values: readonly unknown[]) => QueryRes
 }
 
 describe("PostgresProjectPngRepositoryV1", () => {
-  it("reports ready only when the project PNG and retention migrations are installed", async () => {
+  it("reports ready only when project PNG, retention, and immutable-locator migrations are installed", async () => {
     const fixture = fakePool((text, values) => {
-      expect(text).toContain("version IN (5, 6)");
+      expect(text).toContain("version IN (5, 6, 20)");
       expect(values).toEqual([]);
       return {
-        rowCount: 2,
+        rowCount: 3,
         rows: [
           { checksum: PROJECT_PNG_MIGRATION_V5_CHECKSUM, version: 5 },
           { checksum: DURABLE_RETENTION_MIGRATION_V6_CHECKSUM, version: 6 },
+          { checksum: IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM, version: 20 },
         ],
       };
     });
@@ -94,14 +111,14 @@ describe("PostgresProjectPngRepositoryV1", () => {
         return { rowCount: 0, rows: [] };
       }
       if (text.startsWith("INSERT INTO public.project_png_objects")) {
-        expect(values).toEqual([TENANT, PROJECT, DIGEST, receipt().objectKey, "version-a", '"etag-a"', 128]);
+        expect(values).toEqual([TENANT, PROJECT, DIGEST, receipt().objectKey, "version-a", null, '"etag-a"', 128]);
         return { rowCount: 1, rows: [] };
       }
       if (text.includes("FROM public.project_png_objects") && text.includes("FOR KEY SHARE")) {
         return { rowCount: 1, rows: [headRow()] };
       }
       if (text.startsWith("INSERT INTO public.project_png_generations")) {
-        expect(values).toEqual([TENANT, PROJECT, "1", DIGEST, receipt().objectKey, "version-a"]);
+        expect(values).toEqual([TENANT, PROJECT, "1", DIGEST, receipt().objectKey, "version-a", null]);
         return { rowCount: 1, rows: [] };
       }
       if (text.startsWith("INSERT INTO public.project_png_heads")) return { rowCount: 1, rows: [] };
@@ -137,6 +154,49 @@ describe("PostgresProjectPngRepositoryV1", () => {
     expect(fixture.query.mock.calls.at(-1)).toEqual(["ROLLBACK"]);
   });
 
+  it("publishes an immutable candidate without synthesizing a provider version", async () => {
+    const candidate = immutableReceipt();
+    let headReads = 0;
+    const fixture = fakePool((text, values) => {
+      if (text.includes("FROM public.workspace_projects")) return { rowCount: 1, rows: [{}] };
+      if (text.includes("FROM public.project_png_heads h")) {
+        headReads += 1;
+        return headReads === 1 ? { rowCount: 0, rows: [] } : { rowCount: 1, rows: [headRow("1", candidate)] };
+      }
+      if (text.includes("FROM public.project_png_deletions") && text.startsWith("SELECT 1")) {
+        expect(values).toEqual([TENANT, candidate.objectKey, null, OBJECT_GENERATION]);
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.startsWith("INSERT INTO public.project_png_objects")) {
+        expect(values).toEqual([
+          TENANT,
+          PROJECT,
+          DIGEST,
+          candidate.objectKey,
+          null,
+          OBJECT_GENERATION,
+          candidate.etag,
+          candidate.byteSize,
+        ]);
+        return { rowCount: 1, rows: [] };
+      }
+      if (text.includes("FROM public.project_png_objects") && text.includes("FOR KEY SHARE")) {
+        return { rowCount: 1, rows: [headRow("1", candidate)] };
+      }
+      if (text.startsWith("INSERT INTO public.project_png_generations")) {
+        expect(values).toEqual([TENANT, PROJECT, "1", DIGEST, candidate.objectKey, null, OBJECT_GENERATION]);
+        return { rowCount: 1, rows: [] };
+      }
+      if (text.startsWith("INSERT INTO public.project_png_heads")) return { rowCount: 1, rows: [] };
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresProjectPngRepositoryV1({ pool: fixture.pool });
+
+    await expect(
+      repository.compareAndSwapHead({ candidate, expected: null, projectId: PROJECT, tenantId: TENANT }),
+    ).resolves.toEqual({ generation: 1n, projectId: PROJECT, receipt: candidate, tenantId: TENANT });
+  });
+
   it("publishes a replacement as non-orphaned and marks the detached generation with the database clock", async () => {
     const replacement = receipt({
       digest: "b".repeat(64),
@@ -164,7 +224,7 @@ describe("PostgresProjectPngRepositoryV1", () => {
       if (text.startsWith("INSERT INTO public.project_png_generations")) {
         expect(text).toContain("orphaned_at");
         expect(text).toContain("NULL");
-        expect(values).toEqual([TENANT, PROJECT, "2", replacement.digest, replacement.objectKey, "version-b"]);
+        expect(values).toEqual([TENANT, PROJECT, "2", replacement.digest, replacement.objectKey, "version-b", null]);
         return { rowCount: 1, rows: [] };
       }
       if (text.startsWith("INSERT INTO public.project_png_heads")) return { rowCount: 1, rows: [] };
@@ -198,7 +258,7 @@ describe("PostgresProjectPngRepositoryV1", () => {
   it("retains a version pinned by either the head or a render session", async () => {
     const fixture = fakePool((text, values) => {
       expect(text).toContain("FROM public.render_sessions");
-      expect(values).toEqual([TENANT, PROJECT, DIGEST, receipt().objectKey, "version-a", '"etag-a"', 128]);
+      expect(values).toEqual([TENANT, PROJECT, DIGEST, receipt().objectKey, "version-a", null, '"etag-a"', 128]);
       return { rowCount: 1, rows: [{}] };
     });
     const repository = new PostgresProjectPngRepositoryV1({ pool: fixture.pool });
@@ -239,7 +299,7 @@ describe("PostgresProjectPngRepositoryV1", () => {
       if (text.startsWith("UPDATE public.project_png_generations g")) {
         expect(text).toContain("clock_timestamp()");
         expect(text).toContain("g.orphaned_at IS NULL");
-        expect(values).toEqual([TENANT, PROJECT, DIGEST, receipt().objectKey, "version-a"]);
+        expect(values).toEqual([TENANT, PROJECT, DIGEST, receipt().objectKey, "version-a", null]);
         return { rowCount: 1, rows: [] };
       }
       throw new Error(`Unexpected query: ${text}`);
@@ -273,7 +333,7 @@ describe("PostgresProjectPngRepositoryV1", () => {
         };
       }
       if (text.startsWith("DELETE FROM public.project_png_generations")) {
-        expect(values).toEqual([TENANT, PROJECT, DIGEST, receipt().objectKey, "version-a", GRACE_MS]);
+        expect(values).toEqual([TENANT, PROJECT, DIGEST, receipt().objectKey, "version-a", null, GRACE_MS]);
         return { rowCount: 2, rows: [] };
       }
       if (text.startsWith("DELETE FROM public.project_png_objects")) return { rowCount: 1, rows: [] };

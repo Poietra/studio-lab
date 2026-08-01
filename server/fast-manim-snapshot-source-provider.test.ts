@@ -40,7 +40,7 @@ describe("durable fast-manim snapshot source provider", () => {
       hash: digest,
       source: "class ExampleScene: pass\n",
       sourceGeneration: 4n,
-      versionToken: `4:${digest}:source-version`,
+      versionToken: `4:${digest}:version:source-version`,
     });
     expect(readSourceHead).toHaveBeenCalledTimes(2);
   });

@@ -24,10 +24,11 @@ import { HttpError } from "./http/json";
 import { manimTenantIdSchema } from "./manim-request-principal";
 import type { SnapshotArtifactPublisherV1 } from "./storage/snapshot-artifact-publisher";
 import { LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1 } from "./storage/snapshot-publication-repository";
-import type {
-  SourceContentBlobStoreV1,
-  WorkspaceSourceHeadV1,
-  WorkspaceSourceRepositoryV1,
+import {
+  type SourceContentBlobStoreV1,
+  sameSourceBlobReceiptV1,
+  type WorkspaceSourceHeadV1,
+  type WorkspaceSourceRepositoryV1,
 } from "./storage/workspace-source-repository";
 
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -69,11 +70,7 @@ function sameSourceHead(left: WorkspaceSourceHeadV1, right: WorkspaceSourceHeadV
     left.projectId === right.projectId &&
     left.sourcePath === right.sourcePath &&
     left.generation === right.generation &&
-    left.blob.byteSize === right.blob.byteSize &&
-    left.blob.digest === right.blob.digest &&
-    left.blob.etag === right.blob.etag &&
-    left.blob.objectKey === right.blob.objectKey &&
-    left.blob.versionId === right.blob.versionId
+    sameSourceBlobReceiptV1(left.blob, right.blob)
   );
 }
 

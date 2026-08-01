@@ -4,12 +4,13 @@ import { manimTenantIdSchema } from "../../manim-request-principal";
 import {
   LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1,
   MAX_SNAPSHOT_ARTIFACT_BYTES_V1,
-  parseSnapshotArtifactReceiptV1,
+  parseVersionedSnapshotArtifactReceiptV1,
   SnapshotArtifactReadErrorV1,
   type SnapshotArtifactReceiptV1,
   type SnapshotArtifactStoreV1,
   type SnapshotArtifactVersionV1,
   snapshotArtifactObjectKeyV1,
+  type VersionedSnapshotArtifactReceiptV1,
 } from "../snapshot-publication-repository";
 import {
   acquirePrivateVersionedS3BucketTransportV1,
@@ -212,7 +213,7 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
     receiptValue: SnapshotArtifactReceiptV1,
     operation: PrivateVersionedS3BucketOperationV1,
   ) {
-    const receipt = parseSnapshotArtifactReceiptV1(tenant, receiptValue);
+    const receipt = parseVersionedSnapshotArtifactReceiptV1(tenant, receiptValue);
     operation.signal.throwIfAborted();
     let response;
     try {
@@ -261,9 +262,9 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
       if (isMissingObjectVersion(error)) throw new SnapshotArtifactReadErrorV1("missing");
       throw error;
     }
-    let receipt: SnapshotArtifactReceiptV1;
+    let receipt: VersionedSnapshotArtifactReceiptV1;
     try {
-      receipt = parseSnapshotArtifactReceiptV1(tenant, {
+      receipt = parseVersionedSnapshotArtifactReceiptV1(tenant, {
         ...identity,
         etag: normalizeEtag(response.ETag),
         objectKey,
@@ -350,7 +351,7 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
       }
     }
     if (!response) throw new Error("S3 did not settle the bounded conditional snapshot upload.");
-    const receipt = parseSnapshotArtifactReceiptV1(tenant, {
+    const receipt = parseVersionedSnapshotArtifactReceiptV1(tenant, {
       ...identity,
       etag: normalizeEtag(response.ETag),
       objectKey,
@@ -362,7 +363,7 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
 
   async read(tenantValue: string, artifact: SnapshotArtifactReceiptV1, signal?: AbortSignal) {
     const tenant = tenantId(tenantValue);
-    parseSnapshotArtifactReceiptV1(tenant, artifact);
+    parseVersionedSnapshotArtifactReceiptV1(tenant, artifact);
     return this.#readBytes(tenant, artifact, this.#transport.operation(signal));
   }
 
@@ -381,7 +382,7 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
     const prefix = snapshotPrefix(tenant);
     const cursor = decodeCursor(cursorValue, prefix);
     const operation = this.#transport.operation(signal);
-    const versions: SnapshotArtifactVersionV1[] = [];
+    const versions: SnapshotArtifactVersionV1<VersionedSnapshotArtifactReceiptV1>[] = [];
     let keyMarker = cursor.keyMarker;
     let versionIdMarker = cursor.versionIdMarker;
     let nextCursor: string | null = null;
@@ -415,7 +416,7 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
         ) {
           throw new Error("S3 returned invalid snapshot-version metadata.");
         }
-        const artifact = parseSnapshotArtifactReceiptV1(tenant, {
+        const artifact = parseVersionedSnapshotArtifactReceiptV1(tenant, {
           ...identity,
           byteSize: version.Size!,
           etag: normalizeEtag(version.ETag),
@@ -438,7 +439,7 @@ export class S3SnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
   }
 
   async deleteVersion(tenantValue: string, artifactValue: SnapshotArtifactReceiptV1, signal?: AbortSignal) {
-    const artifact = parseSnapshotArtifactReceiptV1(tenantId(tenantValue), artifactValue);
+    const artifact = parseVersionedSnapshotArtifactReceiptV1(tenantId(tenantValue), artifactValue);
     const operation = this.#transport.operation(signal);
     operation.signal.throwIfAborted();
     await operation.deleteObjectVersion({ Key: artifact.objectKey, VersionId: artifact.versionId });

@@ -71,8 +71,15 @@ describe("durable storage configuration", () => {
       },
       namespace: "production-primary",
       objectStorage: {
-        bucket: "poietra-private-sources",
-        clientConfig: { ignoreConfiguredEndpointUrls: true, region: "us-east-1" },
+        immutable: {
+          bucket: "poietra-private-objects",
+          provider: {
+            accountId: "0123456789abcdef0123456789abcdef",
+            credentials: { accessKeyId: "access-key", secretAccessKey: "secret-key" },
+            kind: "cloudflare-r2",
+          },
+        },
+        writeLane: "immutable",
       },
       renderWorker: { onFailure: () => undefined },
       renderSandbox: {} as never,

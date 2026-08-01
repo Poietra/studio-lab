@@ -5,6 +5,7 @@ import type { Pool, PoolClient, PoolConfig, QueryResultRow } from "pg";
 import { manimProjectIdSchema } from "../../../src/render-pipeline/contracts";
 import { HttpError } from "../../http/json";
 import { manimTenantIdSchema } from "../../manim-request-principal";
+import { immutableObjectGenerationV1 } from "../immutable-object-contract";
 import {
   assertRenderArtifactPublishedV1,
   boundedRenderArtifactIntegerV1,
@@ -13,16 +14,20 @@ import {
   type PublishRenderArtifactsInputV1,
   parseRenderArtifactReceiptV1,
   type RenderArtifactDeletionV1,
+  type RenderArtifactLocatorV1,
   type RenderArtifactReadClaimV1,
   type RenderArtifactReceiptV1,
   type RenderArtifactRepositoryV1,
   renderArtifactIdV1,
+  renderArtifactLocatorV1,
   sameRenderArtifactReceiptV1,
 } from "../render-artifact-repository";
 import { MAX_DURABLE_RENDER_LOG_BYTES_V1 } from "../render-session-repository";
 import { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
+import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
 import { settleRenderUsageWithClientV1 } from "./postgres-entitlement-repository";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
+import { RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_CHECKSUM } from "./render-artifact-tombstone-schema";
 import { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
 import { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-usage-schema";
 
@@ -40,13 +45,14 @@ type ArtifactRow = QueryResultRow & {
   artifact_id: string;
   artifact_kind: string;
   artifact_media_type: string;
+  artifact_object_generation: string | null;
   artifact_object_key: string;
   artifact_profile_digest: string;
   artifact_request_digest: string;
   artifact_runtime_digest: string;
   artifact_source_digest: string;
   artifact_tenant_id: string;
-  artifact_version_id: string;
+  artifact_version_id: string | null;
   expires_at: Date;
 };
 
@@ -56,14 +62,19 @@ type DeletionRow = QueryResultRow & {
   artifact_etag: string;
   artifact_kind: string;
   artifact_media_type: string;
+  artifact_object_generation: string | null;
   artifact_object_key: string;
   artifact_profile_digest: string;
   artifact_request_digest: string;
   artifact_runtime_digest: string;
   artifact_source_digest: string;
   artifact_tenant_id: string;
-  artifact_version_id: string;
+  artifact_version_id: string | null;
   deletion_id: string;
+};
+
+type DeletionStateRow = DeletionRow & {
+  deleted_at: Date | null;
 };
 
 type SessionFenceRow = QueryResultRow & {
@@ -91,6 +102,7 @@ function artifactColumns(alias: string) {
     ${alias}.request_digest AS artifact_request_digest,
     ${alias}.object_key AS artifact_object_key,
     ${alias}.version_id AS artifact_version_id,
+    ${alias}.object_generation::text AS artifact_object_generation,
     ${alias}.etag AS artifact_etag,
     ${alias}.byte_size AS artifact_byte_size
   `;
@@ -133,6 +145,7 @@ function receiptFromRow(row: ArtifactRow | DeletionRow): RenderArtifactReceiptV1
     etag: row.artifact_etag,
     kind: row.artifact_kind,
     mediaType: row.artifact_media_type,
+    objectGeneration: row.artifact_object_generation,
     objectKey: row.artifact_object_key,
     profileDigest: row.artifact_profile_digest,
     requestDigest: row.artifact_request_digest,
@@ -164,6 +177,7 @@ function deletionFromRow(row: DeletionRow, expectedTenant: string): RenderArtifa
 }
 
 function receiptValues(receipt: RenderArtifactReceiptV1) {
+  const locator = renderArtifactLocatorV1(receipt);
   return [
     receipt.kind,
     receipt.mediaType,
@@ -172,11 +186,52 @@ function receiptValues(receipt: RenderArtifactReceiptV1) {
     receipt.runtimeDigest,
     receipt.profileDigest,
     receipt.requestDigest,
-    receipt.objectKey,
-    receipt.versionId,
+    locator.objectKey,
+    locator.versionId,
+    locator.objectGeneration,
     receipt.etag,
     receipt.byteSize,
   ] as const;
+}
+
+function locatorValues(receipt: RenderArtifactReceiptV1 | RenderArtifactLocatorV1) {
+  const locator = "advisoryIdentity" in receipt ? receipt : renderArtifactLocatorV1(receipt);
+  return [locator.objectKey, locator.versionId, locator.objectGeneration] as const;
+}
+
+function exactLocatorPredicateV1(alias: string, firstParameter: number) {
+  return `${alias}.object_key = $${firstParameter}
+      AND ${alias}.version_id IS NOT DISTINCT FROM $${firstParameter + 1}::text
+      AND ${alias}.object_generation IS NOT DISTINCT FROM $${firstParameter + 2}::uuid`;
+}
+
+function storedLocatorV1(objectKey: unknown, versionId: unknown, objectGeneration: unknown): RenderArtifactLocatorV1 {
+  if (typeof objectKey !== "string" || objectKey.length < 1 || objectKey.length > 4_096) {
+    throw new TypeError("Stored render artifact object key is invalid.");
+  }
+  const hasVersion = versionId !== null && versionId !== undefined;
+  const hasGeneration = objectGeneration !== null && objectGeneration !== undefined;
+  if (hasVersion === hasGeneration) throw new TypeError("Stored render artifact locator mode is invalid.");
+  if (hasVersion) {
+    if (typeof versionId !== "string" || versionId.length < 1 || versionId.length > 1_024) {
+      throw new TypeError("Stored render artifact version ID is invalid.");
+    }
+    return {
+      advisoryIdentity: `version:${versionId}`,
+      kind: "versioned",
+      objectGeneration: null,
+      objectKey,
+      versionId,
+    };
+  }
+  const generation = immutableObjectGenerationV1(objectGeneration);
+  return {
+    advisoryIdentity: `generation:${generation}`,
+    kind: "immutable",
+    objectGeneration: generation,
+    objectKey,
+    versionId: null,
+  };
 }
 
 function missingArtifact(): never {
@@ -200,12 +255,12 @@ export class PostgresArtifactRepositoryV1 implements RenderArtifactRepositoryV1 
   async ready(signal?: AbortSignal) {
     signal?.throwIfAborted();
     const result = await this.#connection.query<{ checksum: string; version: number }>(
-      "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (4, 7, 14, 15) ORDER BY version",
+      "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (4, 7, 14, 15, 20, 21) ORDER BY version",
       [],
       signal,
     );
     return (
-      result.rows.length === 4 &&
+      result.rows.length === 6 &&
       result.rows[0]?.version === 4 &&
       result.rows[0]?.checksum === RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM &&
       result.rows[1]?.version === 7 &&
@@ -213,7 +268,11 @@ export class PostgresArtifactRepositoryV1 implements RenderArtifactRepositoryV1 
       result.rows[2]?.version === 14 &&
       result.rows[2]?.checksum === BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM &&
       result.rows[3]?.version === 15 &&
-      result.rows[3]?.checksum === RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM
+      result.rows[3]?.checksum === RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM &&
+      result.rows[4]?.version === 20 &&
+      result.rows[4]?.checksum === IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM &&
+      result.rows[5]?.version === 21 &&
+      result.rows[5]?.checksum === RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_CHECKSUM
     );
   }
 
@@ -224,46 +283,54 @@ export class PostgresArtifactRepositoryV1 implements RenderArtifactRepositoryV1 
     receipt: RenderArtifactReceiptV1,
     expiresAt: Date,
   ) {
+    const locator = renderArtifactLocatorV1(receipt);
     const deleting = await client.query(
       `SELECT 1
          FROM public.render_artifact_deletions
-        WHERE tenant_id = $1 AND object_key = $2 AND version_id = $3`,
-      [tenant, receipt.objectKey, receipt.versionId],
+        WHERE tenant_id = $1 AND ${exactLocatorPredicateV1("render_artifact_deletions", 2)}`,
+      [tenant, ...locatorValues(locator)],
     );
     if (deleting.rowCount !== 0) {
-      throw new HttpError("The rendered artifact version is already queued for deletion.", 409);
+      throw new HttpError("The rendered artifact object is already queued for deletion.", 409);
     }
     await client.query(
       `INSERT INTO public.render_artifact_objects
          (tenant_id, artifact_id, artifact_kind, media_type, artifact_digest, source_digest,
-          runtime_digest, profile_digest, request_digest, object_key, version_id, etag, byte_size, expires_at)
-       VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-       ON CONFLICT (tenant_id, object_key, version_id) DO UPDATE
-          SET expires_at = GREATEST(public.render_artifact_objects.expires_at, EXCLUDED.expires_at)`,
+          runtime_digest, profile_digest, request_digest, object_key, version_id, object_generation,
+          etag, byte_size, expires_at)
+       VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::uuid, $13, $14, $15)
+       ON CONFLICT DO NOTHING`,
       [tenant, requestedArtifactId, ...receiptValues(receipt), expiresAt],
     );
     const stored = await client.query<ArtifactRow>(
       `SELECT ${ARTIFACT_COLUMNS}, artifact.expires_at
          FROM public.render_artifact_objects artifact
-        WHERE artifact.tenant_id = $1 AND artifact.object_key = $2 AND artifact.version_id = $3
+        WHERE artifact.tenant_id = $1 AND ${exactLocatorPredicateV1("artifact", 2)}
         FOR UPDATE`,
-      [tenant, receipt.objectKey, receipt.versionId],
+      [tenant, ...locatorValues(locator)],
     );
     if (stored.rows.length !== 1) throw new Error("PostgreSQL did not retain the uploaded render artifact.");
     const artifact = artifactFromRow(stored.rows[0]!);
     if (!sameRenderArtifactReceiptV1(artifact.receipt, receipt)) {
       throw new Error("An immutable render artifact key is already bound to different metadata.");
     }
-    return artifact;
+    const extended = await client.query<{ expires_at: Date }>(
+      `UPDATE public.render_artifact_objects
+          SET expires_at = GREATEST(expires_at, $3)
+        WHERE tenant_id = $1 AND artifact_id = $2::uuid
+      RETURNING expires_at`,
+      [tenant, artifact.artifactId, expiresAt],
+    );
+    return {
+      ...artifact,
+      expiresAt: date(extended.rows[0]?.expires_at, "Stored render artifact expiry"),
+    };
   }
 
-  async #lockArtifact(
-    client: PoolClient,
-    tenant: string,
-    receipt: Pick<RenderArtifactReceiptV1, "objectKey" | "versionId">,
-  ) {
+  async #lockArtifact(client: PoolClient, tenant: string, receipt: RenderArtifactReceiptV1 | RenderArtifactLocatorV1) {
+    const locator = "advisoryIdentity" in receipt ? receipt : renderArtifactLocatorV1(receipt);
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
-      `render-artifact:${tenant}:${receipt.objectKey}:${receipt.versionId}`,
+      `render-artifact:${tenant}:${locator.objectKey}:${locator.advisoryIdentity}`,
     ]);
   }
 
@@ -326,8 +393,10 @@ export class PostgresArtifactRepositoryV1 implements RenderArtifactRepositoryV1 
         throw new TypeError("The staged media does not match the rendered source digest.");
       }
       for (const { receipt } of [...receipts].sort((left, right) => {
-        const leftKey = `${left.receipt.objectKey}\0${left.receipt.versionId}`;
-        const rightKey = `${right.receipt.objectKey}\0${right.receipt.versionId}`;
+        const leftLocator = renderArtifactLocatorV1(left.receipt);
+        const rightLocator = renderArtifactLocatorV1(right.receipt);
+        const leftKey = `${leftLocator.objectKey}\0${leftLocator.advisoryIdentity}`;
+        const rightKey = `${rightLocator.objectKey}\0${rightLocator.advisoryIdentity}`;
         return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
       })) {
         await this.#lockArtifact(client, tenant, receipt);
@@ -510,8 +579,14 @@ export class PostgresArtifactRepositoryV1 implements RenderArtifactRepositoryV1 
       MAX_CLAIM_DURATION_MS,
     );
     return this.#connection.transaction(async (client) => {
-      const identity = await client.query<{ artifact_id: string; object_key: string; version_id: string }>(
-        `SELECT claim.artifact_id::text AS artifact_id, artifact.object_key, artifact.version_id
+      const identity = await client.query<{
+        artifact_id: string;
+        object_generation: string | null;
+        object_key: string;
+        version_id: string | null;
+      }>(
+        `SELECT claim.artifact_id::text AS artifact_id, artifact.object_key, artifact.version_id,
+                artifact.object_generation::text AS object_generation
            FROM public.render_artifact_read_claims claim
            JOIN public.render_artifact_objects artifact
              ON artifact.tenant_id = claim.tenant_id AND artifact.artifact_id = claim.artifact_id
@@ -521,13 +596,14 @@ export class PostgresArtifactRepositoryV1 implements RenderArtifactRepositoryV1 
       );
       const target = identity.rows[0];
       if (!target) throw new HttpError("The render artifact read claim expired.", 409);
-      await this.#lockArtifact(client, tenant, { objectKey: target.object_key, versionId: target.version_id });
+      const locator = storedLocatorV1(target.object_key, target.version_id, target.object_generation);
+      await this.#lockArtifact(client, tenant, locator);
       const artifact = await client.query(
         `SELECT 1 FROM public.render_artifact_objects
           WHERE tenant_id = $1 AND artifact_id = $2::uuid
-            AND object_key = $3 AND version_id = $4
+            AND ${exactLocatorPredicateV1("render_artifact_objects", 3)}
           FOR UPDATE`,
-        [tenant, target.artifact_id, target.object_key, target.version_id],
+        [tenant, target.artifact_id, ...locatorValues(locator)],
       );
       if (artifact.rowCount !== 1) throw new HttpError("The render artifact read claim expired.", 409);
       const result = await client.query<{ expires_at: Date }>(
@@ -547,11 +623,12 @@ export class PostgresArtifactRepositoryV1 implements RenderArtifactRepositoryV1 
   async isArtifactRetained(tenantValue: string, receiptValue: RenderArtifactReceiptV1, signal?: AbortSignal) {
     const tenant = tenantId(tenantValue);
     const receipt = parseRenderArtifactReceiptV1(tenant, receiptValue);
+    const locator = renderArtifactLocatorV1(receipt);
     const result = await this.#connection.query<{ retained: boolean }>(
       `SELECT EXISTS (
          SELECT 1 FROM public.render_artifact_objects artifact
-          WHERE artifact.tenant_id = $1 AND artifact.object_key = $2 AND artifact.version_id = $3
-            AND artifact.artifact_digest = $4
+          WHERE artifact.tenant_id = $1 AND ${exactLocatorPredicateV1("artifact", 2)}
+            AND artifact.artifact_digest = $5
             AND (
               artifact.expires_at > clock_timestamp()
               OR EXISTS (
@@ -561,7 +638,7 @@ export class PostgresArtifactRepositoryV1 implements RenderArtifactRepositoryV1 
               )
             )
        ) AS retained`,
-      [tenant, receipt.objectKey, receipt.versionId, receipt.artifactDigest],
+      [tenant, ...locatorValues(locator), receipt.artifactDigest],
       signal,
     );
     return result.rows[0]?.retained === true;
@@ -575,29 +652,37 @@ export class PostgresArtifactRepositoryV1 implements RenderArtifactRepositoryV1 
   ) {
     const tenant = tenantId(tenantValue);
     const receipt = parseRenderArtifactReceiptV1(tenant, receiptValue);
+    const locator = renderArtifactLocatorV1(receipt);
     const graceMs = boundedRenderArtifactIntegerV1(graceValue, "artifact GC graceMs", MAX_GC_GRACE_MS);
     return this.#connection.transaction(async (client) => {
       await this.#lockArtifact(client, tenant, receipt);
-      const existing = await client.query<DeletionRow>(
+      const existing = await client.query<DeletionStateRow>(
         `SELECT tenant_id AS artifact_tenant_id, deletion_id::text AS deletion_id,
                 artifact_kind, media_type AS artifact_media_type, artifact_digest,
                 source_digest AS artifact_source_digest, runtime_digest AS artifact_runtime_digest,
                 profile_digest AS artifact_profile_digest, request_digest AS artifact_request_digest,
                 object_key AS artifact_object_key, version_id AS artifact_version_id,
-                etag AS artifact_etag, byte_size AS artifact_byte_size
+                object_generation::text AS artifact_object_generation,
+                etag AS artifact_etag, byte_size AS artifact_byte_size, deleted_at
            FROM public.render_artifact_deletions
-          WHERE tenant_id = $1 AND object_key = $2 AND version_id = $3
+          WHERE tenant_id = $1 AND ${exactLocatorPredicateV1("render_artifact_deletions", 2)}
           FOR UPDATE`,
-        [tenant, receipt.objectKey, receipt.versionId],
+        [tenant, ...locatorValues(locator)],
       );
-      if (existing.rows[0]) return deletionFromRow(existing.rows[0], tenant);
+      const existingRow = existing.rows[0];
+      if (existingRow) {
+        const deletion = deletionFromRow(existingRow, tenant);
+        if (existingRow.deleted_at === null) return deletion;
+        date(existingRow.deleted_at, "Stored render artifact deletion acknowledgement");
+        return null;
+      }
 
       const stored = await client.query<ArtifactRow>(
         `SELECT ${ARTIFACT_COLUMNS}, artifact.expires_at
            FROM public.render_artifact_objects artifact
-          WHERE artifact.tenant_id = $1 AND artifact.object_key = $2 AND artifact.version_id = $3
+          WHERE artifact.tenant_id = $1 AND ${exactLocatorPredicateV1("artifact", 2)}
           FOR UPDATE`,
-        [tenant, receipt.objectKey, receipt.versionId],
+        [tenant, ...locatorValues(locator)],
       );
       const artifact = stored.rows[0] ? artifactFromRow(stored.rows[0]) : null;
       if (artifact) {
@@ -636,13 +721,15 @@ export class PostgresArtifactRepositoryV1 implements RenderArtifactRepositoryV1 
       const inserted = await client.query<DeletionRow>(
         `INSERT INTO public.render_artifact_deletions
            (tenant_id, deletion_id, artifact_kind, media_type, artifact_digest, source_digest,
-            runtime_digest, profile_digest, request_digest, object_key, version_id, etag, byte_size)
-         VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+            runtime_digest, profile_digest, request_digest, object_key, version_id, object_generation,
+            etag, byte_size)
+         VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::uuid, $13, $14)
          RETURNING tenant_id AS artifact_tenant_id, deletion_id::text AS deletion_id,
                    artifact_kind, media_type AS artifact_media_type, artifact_digest,
                    source_digest AS artifact_source_digest, runtime_digest AS artifact_runtime_digest,
                    profile_digest AS artifact_profile_digest, request_digest AS artifact_request_digest,
                    object_key AS artifact_object_key, version_id AS artifact_version_id,
+                   object_generation::text AS artifact_object_generation,
                    etag AS artifact_etag, byte_size AS artifact_byte_size`,
         [tenant, deletionId, ...receiptValues(receipt)],
       );
@@ -659,9 +746,10 @@ export class PostgresArtifactRepositoryV1 implements RenderArtifactRepositoryV1 
               source_digest AS artifact_source_digest, runtime_digest AS artifact_runtime_digest,
               profile_digest AS artifact_profile_digest, request_digest AS artifact_request_digest,
               object_key AS artifact_object_key, version_id AS artifact_version_id,
+              object_generation::text AS artifact_object_generation,
               etag AS artifact_etag, byte_size AS artifact_byte_size
          FROM public.render_artifact_deletions
-        WHERE tenant_id = $1
+        WHERE tenant_id = $1 AND deleted_at IS NULL
         ORDER BY queued_at, deletion_id
         LIMIT $2`,
       [tenant, maximum],
@@ -674,7 +762,9 @@ export class PostgresArtifactRepositoryV1 implements RenderArtifactRepositoryV1 
     const tenant = tenantId(tenantValue);
     const deletion = uuid(deletionValue, "Render artifact deletion ID");
     await this.#connection.query(
-      "DELETE FROM public.render_artifact_deletions WHERE tenant_id = $1 AND deletion_id = $2::uuid",
+      `UPDATE public.render_artifact_deletions
+          SET deleted_at = COALESCE(deleted_at, clock_timestamp())
+        WHERE tenant_id = $1 AND deletion_id = $2::uuid`,
       [tenant, deletion],
       signal,
     );

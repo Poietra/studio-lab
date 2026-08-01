@@ -28,12 +28,14 @@ import editorDocumentSqlV17 from "./migrations/0017_editor_documents.sql?raw";
 import editorMutationSqlV18 from "./migrations/0018_editor_mutation_semantics.sql?raw";
 import renderSessionSceneNameSqlV19 from "./migrations/0019_render_session_scene_name.sql?raw";
 import immutableObjectGenerationSqlV20 from "./migrations/0020_immutable_object_generations.sql?raw";
+import renderArtifactTombstoneSqlV21 from "./migrations/0021_render_artifact_tombstones.sql?raw";
 import { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
 import { RENDER_SESSION_MIGRATION_V2_CHECKSUM } from "./postgres-render-session-repository";
 import { SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM } from "./postgres-snapshot-publication-repository";
 import { WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM } from "./postgres-workspace-source-repository";
+import { RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_CHECKSUM } from "./render-artifact-tombstone-schema";
 import { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
 import { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-session-cpu-failure-schema";
 import { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
@@ -50,6 +52,7 @@ export { EDITOR_MUTATION_MIGRATION_V18_CHECKSUM } from "./editor-mutation-schema
 export { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
 export { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 export { SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM } from "./postgres-snapshot-publication-repository";
+export { RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_CHECKSUM } from "./render-artifact-tombstone-schema";
 export { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
 export { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-session-cpu-failure-schema";
 export { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
@@ -101,6 +104,7 @@ export const EDITOR_DOCUMENT_MIGRATION_V17_SOURCE = editorDocumentSqlV17;
 export const EDITOR_MUTATION_MIGRATION_V18_SOURCE = editorMutationSqlV18;
 export const RENDER_SESSION_SCENE_NAME_MIGRATION_V19_SOURCE = renderSessionSceneNameSqlV19;
 export const IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE = immutableObjectGenerationSqlV20;
+export const RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_SOURCE = renderArtifactTombstoneSqlV21;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -305,6 +309,17 @@ const immutableObjectGenerationMigrationV20: DurableStorageMigration<20> = Objec
   version: 20,
 });
 
+const renderArtifactTombstoneMigrationV21: DurableStorageMigration<21> = Object.freeze({
+  checksum: RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_CHECKSUM,
+  checksumMismatch: "The render-artifact tombstone migration checksum is invalid.",
+  installedMismatch: "The installed render-artifact tombstone schema does not match migration v21.",
+  missingPrerequisite: "Render-artifact tombstone migration v21 requires durable storage migrations v1 through v20.",
+  prerequisiteMismatch:
+    "Render-artifact tombstone migration v21 requires exact durable storage migrations v1 through v20.",
+  source: RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_SOURCE,
+  version: 21,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
@@ -326,6 +341,7 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   editorMutationMigrationV18,
   renderSessionSceneNameMigrationV19,
   immutableObjectGenerationMigrationV20,
+  renderArtifactTombstoneMigrationV21,
 ]);
 
 function bundledMigrationsThrough(version: number) {
@@ -558,6 +574,10 @@ export function applyRenderSessionSceneNameMigrationV19(pool: Pool, source: stri
 
 export function applyImmutableObjectGenerationMigrationV20(pool: Pool, source: string) {
   return applyMigration(pool, { ...immutableObjectGenerationMigrationV20, source }, bundledMigrationsBefore(20));
+}
+
+export function applyRenderArtifactTombstoneMigrationV21(pool: Pool, source: string) {
+  return applyMigration(pool, { ...renderArtifactTombstoneMigrationV21, source }, bundledMigrationsBefore(21));
 }
 
 /** Apply bundled migrations in order through one exact, validated catalog version. */

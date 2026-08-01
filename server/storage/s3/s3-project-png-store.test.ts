@@ -3,7 +3,7 @@ import { deflateSync } from "node:zlib";
 import type { S3Client } from "@aws-sdk/client-s3";
 import { describe, expect, it, vi } from "vitest";
 
-import { inspectProjectPngBytesV1, type ProjectPngBlobReceiptV1 } from "../project-png-storage";
+import { inspectProjectPngBytesV1, type VersionedProjectPngBlobReceiptV1 } from "../project-png-storage";
 import { S3ProjectPngStoreV1 } from "./s3-project-png-store";
 
 const BUCKET = "poietra-private-projects";
@@ -67,7 +67,7 @@ function testStore(send: (command: Readonly<{ input: Record<string, unknown> }>)
   };
 }
 
-function receipt(overrides: Partial<ProjectPngBlobReceiptV1> = {}): ProjectPngBlobReceiptV1 {
+function receipt(overrides: Partial<VersionedProjectPngBlobReceiptV1> = {}): VersionedProjectPngBlobReceiptV1 {
   return {
     byteSize: BYTES.byteLength,
     digest: DIGEST,

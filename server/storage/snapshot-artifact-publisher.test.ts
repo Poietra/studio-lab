@@ -21,6 +21,7 @@ import {
   type SnapshotPublicationReadV1,
   type SnapshotPublicationRepositoryV1,
   type SnapshotPublicationV1,
+  snapshotArtifactLocatorV1,
 } from "./snapshot-publication-repository";
 
 const PROFILE = "c".repeat(64);
@@ -34,6 +35,13 @@ const identity = {
   sourcePath: "examples/scene.py",
   tenantId: TENANT,
 } satisfies SnapshotPublicationIdentityV1;
+
+function versionId(artifact: SnapshotArtifactReceiptV1) {
+  const locator = snapshotArtifactLocatorV1(artifact);
+  if (locator.kind !== "versioned") throw new Error("Expected a versioned test artifact.");
+  return locator.versionId;
+}
+
 const expected = {
   frame: { height: 8, width: 14.222222222222221 },
   projectId: identity.projectId,
@@ -118,7 +126,10 @@ class MemoryArtifactStore implements SnapshotArtifactStoreV1 {
   readFailure: unknown = null;
   #version = 0;
 
-  constructor(events: string[]) {
+  constructor(
+    events: string[],
+    readonly mode: "immutable" | "versioned" = "versioned",
+  ) {
     this.events = events;
   }
 
@@ -135,24 +146,47 @@ class MemoryArtifactStore implements SnapshotArtifactStoreV1 {
     this.events.push("put");
     const resultDigest = createHash("sha256").update(input.bytes).digest("hex");
     const versionId = `version-${++this.#version}`;
-    const receipt = {
+    const shared = {
       byteSize: input.bytes.byteLength,
       etag: `etag-${this.#version}`,
-      objectKey: `tenants/${tenantId}/snapshots/${input.sourceDigest}/${input.runtimeConfigHash}/${input.profileDigest}/${input.runtimeDigest}/${resultDigest}`,
-      profileDigest: input.profileDigest,
-      resultDigest,
-      runtimeConfigHash: input.runtimeConfigHash,
-      runtimeDigest: input.runtimeDigest,
-      sourceDigest: input.sourceDigest,
-      versionId,
-    } satisfies SnapshotArtifactReceiptV1;
-    this.bytes.set(versionId, Uint8Array.from(input.bytes));
+    };
+    const contentKey = `tenants/${tenantId}/snapshots/${input.sourceDigest}/${input.runtimeConfigHash}/${input.profileDigest}/${input.runtimeDigest}/${resultDigest}`;
+    const objectGeneration = `00000000-0000-4000-8000-${String(this.#version).padStart(12, "0")}`;
+    const receipt: SnapshotArtifactReceiptV1 =
+      this.mode === "versioned"
+        ? {
+            ...shared,
+            objectKey: contentKey,
+            profileDigest: input.profileDigest,
+            resultDigest,
+            runtimeConfigHash: input.runtimeConfigHash,
+            runtimeDigest: input.runtimeDigest,
+            sourceDigest: input.sourceDigest,
+            versionId,
+          }
+        : {
+            ...shared,
+            identity: {
+              kind: "runtime-digest",
+              profileDigest: input.profileDigest,
+              resultDigest,
+              runtimeConfigHash: input.runtimeConfigHash,
+              runtimeDigest: input.runtimeDigest,
+              sourceDigest: input.sourceDigest,
+            },
+            objectGeneration,
+            objectKey: `${contentKey}/g/${objectGeneration}`,
+            schema: "poietra.immutable-snapshot-artifact-receipt",
+            version: 1,
+          };
+    this.bytes.set(this.mode === "versioned" ? versionId : objectGeneration, Uint8Array.from(input.bytes));
     return receipt;
   }
 
   async read(_tenantId: string, artifact: SnapshotArtifactReceiptV1) {
     if (this.readFailure) throw this.readFailure;
-    const bytes = this.bytes.get(artifact.versionId);
+    const locator = snapshotArtifactLocatorV1(artifact);
+    const bytes = this.bytes.get(locator.kind === "versioned" ? locator.versionId : locator.objectGeneration);
     if (!bytes) throw new SnapshotArtifactReadErrorV1("missing");
     return Uint8Array.from(bytes);
   }
@@ -295,7 +329,7 @@ describe("SnapshotArtifactPublisherV1", () => {
     expect(result.kind).toBe("published");
     expect(events).toEqual(["put", "publish"]);
     if (result.kind === "published") {
-      const bytes = artifacts.bytes.get(result.publication.artifact.versionId)!;
+      const bytes = artifacts.bytes.get(versionId(result.publication.artifact))!;
       const wire = JSON.parse(Buffer.from(bytes).toString("utf8")) as { expected: Record<string, unknown> };
       expect(wire).toMatchObject({
         runtimeDigest: RUNTIME_DIGEST,
@@ -309,6 +343,22 @@ describe("SnapshotArtifactPublisherV1", () => {
     }
   });
 
+  it("publishes and reads the immutable receipt shape without flattening its locator", async () => {
+    artifacts = new MemoryArtifactStore(events, "immutable");
+    publisher = new SnapshotArtifactPublisherV1({ artifacts, publications });
+
+    const result = await publish();
+
+    expect(result.kind).toBe("published");
+    if (result.kind !== "published") return;
+    expect(result.publication.artifact).toMatchObject({
+      identity: { kind: "runtime-digest", runtimeDigest: RUNTIME_DIGEST },
+      objectGeneration: expect.any(String),
+      schema: "poietra.immutable-snapshot-artifact-receipt",
+    });
+    await expect(publisher.readCurrent(identity)).resolves.toMatchObject({ kind: "published" });
+  });
+
   it("rejects the reserved legacy runtime identity before uploading", async () => {
     await expect(publish({ runtimeDigest: LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1 })).rejects.toThrow(/legacy/i);
     expect(events).toEqual([]);
@@ -318,7 +368,7 @@ describe("SnapshotArtifactPublisherV1", () => {
     const expectedV2 = { ...expected, requestId: "snapshot-request-v2", snapshotVersion: 2 } as const;
     const result = await publish({ expected: expectedV2, snapshot: await sealedSnapshot(expectedV2) });
     if (result.kind !== "published") throw new Error("Expected V2 publication.");
-    const bytes = artifacts.bytes.get(result.publication.artifact.versionId)!;
+    const bytes = artifacts.bytes.get(versionId(result.publication.artifact))!;
     const wire = JSON.parse(Buffer.from(bytes).toString("utf8")) as { expected: Record<string, unknown> };
     expect(wire.expected.snapshotVersion).toBe(2);
     const read = await publisher.readCurrent(identity);
@@ -341,7 +391,7 @@ describe("SnapshotArtifactPublisherV1", () => {
   it("conditionally unpublishes bytes tampered after publication", async () => {
     const result = await publish();
     if (result.kind !== "published") throw new Error("Expected publication.");
-    const stored = artifacts.bytes.get(result.publication.artifact.versionId)!;
+    const stored = artifacts.bytes.get(versionId(result.publication.artifact))!;
     stored[stored.byteLength - 1] ^= 1;
 
     await expect(publisher.readCurrent(identity)).resolves.toEqual({
@@ -355,7 +405,7 @@ describe("SnapshotArtifactPublisherV1", () => {
   it("marks an expired exact version stale", async () => {
     const result = await publish();
     if (result.kind !== "published") throw new Error("Expected publication.");
-    artifacts.bytes.delete(result.publication.artifact.versionId);
+    artifacts.bytes.delete(versionId(result.publication.artifact));
 
     await expect(publisher.readCurrent(identity)).resolves.toEqual({
       generation: result.publication.generation,
@@ -411,7 +461,7 @@ describe("SnapshotArtifactPublisherV1", () => {
   it("cannot clear a newer generation after finding an older artifact corrupt", async () => {
     const first = await publish();
     if (first.kind !== "published") throw new Error("Expected publication.");
-    const firstBytes = artifacts.bytes.get(first.publication.artifact.versionId)!;
+    const firstBytes = artifacts.bytes.get(versionId(first.publication.artifact))!;
     firstBytes[firstBytes.byteLength - 1] ^= 1;
     const secondExpected = { ...expected, requestId: "snapshot-request-newer" };
     const second = await publish({

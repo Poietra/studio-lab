@@ -73,6 +73,21 @@ that `r2.dev` and custom-domain publication are disabled.
    legacy reads and deletion handling until no legacy object or tombstone rows
    remain.
 
+## Render-media tombstone v21 boundary
+
+Migration v21 additively gives `render_artifact_deletions` a nullable
+`deleted_at` acknowledgement marker and a partial pending-queue index. Existing
+deletion rows remain pending after the migration. The v21 repository retains an
+acknowledged row permanently, excludes it from later physical-delete scans, and
+rejects any delayed publication of that exact locator.
+
+The schema change is compatible with pre-v21 inserts, but the old media GC is
+not behaviorally compatible: its acknowledgement deletes the tombstone. Drain
+and stop every pre-v21 media GC replica before applying v21, then deploy only
+replicas whose render-artifact readiness requires the exact v21 checksum. Do
+not enable immutable media writes or resume media GC until that probe is green
+on every replica. A pre-v21 acknowledger must never run after this boundary.
+
 ## Rollback boundaries
 
 - Before step 4, roll back the application and leave v20 installed. Existing

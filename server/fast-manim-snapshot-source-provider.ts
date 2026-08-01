@@ -2,11 +2,13 @@ import { manimProjectIdSchema } from "../src/render-pipeline/contracts";
 import { HttpError } from "./http/json";
 import { manimTenantIdSchema } from "./manim-request-principal";
 import { type ManimSourceReadHooks, ManimSourceStore } from "./manim-source-store";
-import type {
-  SourceBlobReceiptV1,
-  SourceContentBlobStoreV1,
-  WorkspaceSourceHeadV1,
-  WorkspaceSourceRepositoryV1,
+import {
+  type SourceBlobReceiptV1,
+  type SourceContentBlobStoreV1,
+  sameSourceBlobReceiptV1,
+  sourceBlobLocatorIdentityV1,
+  type WorkspaceSourceHeadV1,
+  type WorkspaceSourceRepositoryV1,
 } from "./storage/workspace-source-repository";
 
 export type FastManimSnapshotSourceReadV1 = Readonly<{
@@ -23,13 +25,7 @@ export interface FastManimSnapshotSourceProviderV1 {
 }
 
 function sameBlob(left: SourceBlobReceiptV1, right: SourceBlobReceiptV1) {
-  return (
-    left.byteSize === right.byteSize &&
-    left.digest === right.digest &&
-    left.etag === right.etag &&
-    left.objectKey === right.objectKey &&
-    left.versionId === right.versionId
-  );
+  return sameSourceBlobReceiptV1(left, right);
 }
 
 function sameHead(left: WorkspaceSourceHeadV1, right: WorkspaceSourceHeadV1) {
@@ -93,7 +89,7 @@ export class DurableFastManimSnapshotSourceProviderV1 implements FastManimSnapsh
       hash: before.blob.digest,
       source,
       sourceGeneration: before.generation,
-      versionToken: `${before.generation}:${before.blob.digest}:${before.blob.versionId}`,
+      versionToken: `${before.generation}:${before.blob.digest}:${sourceBlobLocatorIdentityV1(before.blob)}`,
     };
   }
 }

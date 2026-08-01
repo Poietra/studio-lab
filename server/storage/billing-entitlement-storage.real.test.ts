@@ -88,7 +88,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL billing entitlements", () => {
       poolConfig: { connectionString: DATABASE_URL, max: 4 },
     });
     try {
-      expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: true, version: 20 });
+      expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: true, version: 21 });
       await createOrganizations(pool);
       await expect(repositoryA.ready()).resolves.toBe(true);
       await expect(repositoryB.ready()).resolves.toBe(true);
@@ -370,7 +370,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL billing entitlements", () => {
       webhookSigningSecret: STRIPE_WEBHOOK_SECRET,
     });
     try {
-      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toMatchObject({ version: 20 });
+      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toMatchObject({ version: 21 });
       await createStripeOrganization(pool);
       await expect(stripeRepository.ready()).resolves.toBe(true);
 

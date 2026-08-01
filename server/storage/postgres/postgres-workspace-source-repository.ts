@@ -12,16 +12,25 @@ import { HttpError } from "../../http/json";
 import { manimTenantIdSchema } from "../../manim-request-principal";
 import { MAX_DURABLE_GC_GRACE_MS_V1, MIN_DURABLE_GC_GRACE_MS_V1 } from "../durable-gc-core";
 import {
+  assertSourceBlobReceiptV1,
   type BlobDeletionV1,
   MAX_MANAGED_PROJECTS_PER_TENANT_V1,
-  MAX_MANIM_SOURCE_BYTES_V1,
   type SourceBlobReceiptV1,
+  sameSourceBlobReceiptV1,
+  sourceBlobLocatorIdentityV1,
   type WorkspaceSourceHeadV1,
   type WorkspaceSourceProjectV1,
   type WorkspaceSourceRepositoryV1,
 } from "../workspace-source-repository";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
+import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
 import { POSTGRES_REPOSITORY_OPTIONS_V1, PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
+import {
+  type PostgresStorageObjectLocatorRowV1,
+  storageObjectLocatorFromRowV1,
+  storageObjectLocatorPredicateSqlV1,
+  storageObjectLocatorSqlValuesV1,
+} from "./postgres-storage-object-locator";
 
 export const WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM =
   "6300896079234275dcaac03f1f71c0263b18a3414835cbfb0be90e964ac88ccb";
@@ -35,26 +44,26 @@ type ProjectRow = QueryResultRow & {
   updated_at: Date;
 };
 
-type SourceHeadRow = QueryResultRow & {
-  byte_size: number;
-  digest: string;
-  etag: string;
-  generation: string;
-  object_key: string;
-  project_id: string;
-  source_path: string;
-  tenant_id: string;
-  version_id: string;
-};
+type SourceHeadRow = QueryResultRow &
+  PostgresStorageObjectLocatorRowV1 & {
+    byte_size: number;
+    digest: string;
+    etag: string;
+    generation: string;
+    object_key: string;
+    project_id: string;
+    source_path: string;
+    tenant_id: string;
+  };
 
-type BlobRow = QueryResultRow & {
-  byte_size: number;
-  digest: string;
-  etag: string;
-  object_key: string;
-  tenant_id: string;
-  version_id: string;
-};
+type BlobRow = QueryResultRow &
+  PostgresStorageObjectLocatorRowV1 & {
+    byte_size: number;
+    digest: string;
+    etag: string;
+    object_key: string;
+    tenant_id: string;
+  };
 
 type DeletionRow = BlobRow & { deleted_at: Date | null; deletion_id: string };
 type OrphanCandidateRow = QueryResultRow & { digest: string };
@@ -68,6 +77,7 @@ const SOURCE_HEAD_COLUMNS = `
   b.digest,
   b.object_key,
   b.version_id,
+  b.object_generation,
   b.etag,
   b.byte_size
 `;
@@ -140,21 +150,7 @@ function gcGraceMs(value: number) {
 }
 
 function blobReceipt(tenant: string, value: SourceBlobReceiptV1): SourceBlobReceiptV1 {
-  const digest = sourceDigest(value.digest);
-  const expectedKey = `tenants/${tenant}/sources/${digest}`;
-  if (
-    value.objectKey !== expectedKey ||
-    !Number.isSafeInteger(value.byteSize) ||
-    value.byteSize < 0 ||
-    value.byteSize > MAX_MANIM_SOURCE_BYTES_V1 ||
-    value.versionId.length < 1 ||
-    value.versionId.length > 1_024 ||
-    value.etag.length < 1 ||
-    value.etag.length > 512
-  ) {
-    throw new TypeError("Source blob receipt is invalid.");
-  }
-  return { ...value, digest, objectKey: expectedKey };
+  return assertSourceBlobReceiptV1(tenant, value);
 }
 
 function projectFromRow(row: ProjectRow): WorkspaceSourceProjectV1 {
@@ -171,13 +167,13 @@ function projectFromRow(row: ProjectRow): WorkspaceSourceProjectV1 {
 }
 
 function blobFromRow(row: BlobRow): SourceBlobReceiptV1 {
-  return {
+  return blobReceipt(row.tenant_id, {
     byteSize: row.byte_size,
     digest: row.digest,
     etag: row.etag,
     objectKey: row.object_key,
-    versionId: row.version_id,
-  };
+    ...storageObjectLocatorFromRowV1(row),
+  });
 }
 
 function headFromRow(row: SourceHeadRow): WorkspaceSourceHeadV1 {
@@ -209,31 +205,40 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
 
   async #registerBlob(client: PoolClient, tenant: string, candidateValue: SourceBlobReceiptV1) {
     const candidate = blobReceipt(tenant, candidateValue);
+    const [versionId, objectGeneration] = storageObjectLocatorSqlValuesV1(candidate);
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`${tenant}:${candidate.digest}`]);
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+      `source-blob:${tenant}:${candidate.objectKey}:${sourceBlobLocatorIdentityV1(candidate)}`,
+    ]);
     const deleting = await client.query(
-      `SELECT 1 FROM public.source_blob_deletions
-        WHERE tenant_id = $1 AND object_key = $2 AND version_id = $3`,
-      [tenant, candidate.objectKey, candidate.versionId],
+      `SELECT 1 FROM public.source_blob_deletions deletion
+        WHERE deletion.tenant_id = $1 AND deletion.object_key = $2
+          AND ${storageObjectLocatorPredicateSqlV1("deletion", 3, 4)}`,
+      [tenant, candidate.objectKey, versionId, objectGeneration],
     );
     if (deleting.rowCount !== 0) throw new HttpError("The source candidate is no longer available.", 409);
     const inserted = await client.query<BlobRow>(
       `INSERT INTO public.source_blob_objects
-         (tenant_id, digest, object_key, version_id, etag, byte_size)
-       VALUES ($1, $2, $3, $4, $5, $6)
+         (tenant_id, digest, object_key, version_id, object_generation, etag, byte_size)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (tenant_id, digest) DO NOTHING
-       RETURNING tenant_id, digest, object_key, version_id, etag, byte_size`,
-      [tenant, candidate.digest, candidate.objectKey, candidate.versionId, candidate.etag, candidate.byteSize],
+       RETURNING tenant_id, digest, object_key, version_id, object_generation, etag, byte_size`,
+      [tenant, candidate.digest, candidate.objectKey, versionId, objectGeneration, candidate.etag, candidate.byteSize],
     );
     if (inserted.rowCount === 1) return candidate;
     const existing = await client.query<BlobRow & { orphaned_at: Date | null }>(
-      `SELECT tenant_id, digest, object_key, version_id, etag, byte_size, orphaned_at
+      `SELECT tenant_id, digest, object_key, version_id, object_generation, etag, byte_size, orphaned_at
          FROM public.source_blob_objects
         WHERE tenant_id = $1 AND digest = $2
         FOR UPDATE`,
       [tenant, candidate.digest],
     );
     const row = existing.rows[0];
-    if (!row || row.object_key !== candidate.objectKey || row.byte_size !== candidate.byteSize) {
+    if (!row) {
+      throw new TypeError("The stored source blob metadata conflicts with its digest.");
+    }
+    const canonical = blobFromRow(row);
+    if (canonical.digest !== candidate.digest || canonical.byteSize !== candidate.byteSize) {
       throw new TypeError("The stored source blob metadata conflicts with its digest.");
     }
     if (row.orphaned_at !== null) {
@@ -246,24 +251,26 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
         [tenant, candidate.digest],
       );
     }
-    return blobFromRow(row);
+    return canonical;
   }
 
   async ready(signal?: AbortSignal) {
     try {
       throwIfAborted(signal);
       const result = await this.#connection.query<{ checksum: string; version: number }>(
-        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (1, 6) ORDER BY version",
+        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (1, 6, 20) ORDER BY version",
         [],
         signal,
       );
       throwIfAborted(signal);
       return (
-        result.rowCount === 2 &&
+        result.rowCount === 3 &&
         result.rows[0]?.version === 1 &&
         result.rows[0]?.checksum === WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM &&
         result.rows[1]?.version === 6 &&
-        result.rows[1]?.checksum === DURABLE_RETENTION_MIGRATION_V6_CHECKSUM
+        result.rows[1]?.checksum === DURABLE_RETENTION_MIGRATION_V6_CHECKSUM &&
+        result.rows[2]?.version === 20 &&
+        result.rows[2]?.checksum === IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM
       );
     } catch {
       throwIfAborted(signal);
@@ -285,11 +292,13 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
   async isBlobVersionPublished(tenantValue: string, blobValue: SourceBlobReceiptV1, signal?: AbortSignal) {
     const tenant = tenantId(tenantValue);
     const blob = blobReceipt(tenant, blobValue);
+    const [versionId, objectGeneration] = storageObjectLocatorSqlValuesV1(blob);
     throwIfAborted(signal);
     const result = await this.#connection.query(
-      `SELECT 1 FROM public.source_blob_objects
-        WHERE tenant_id = $1 AND digest = $2 AND object_key = $3 AND version_id = $4`,
-      [tenant, blob.digest, blob.objectKey, blob.versionId],
+      `SELECT 1 FROM public.source_blob_objects blob
+        WHERE blob.tenant_id = $1 AND blob.digest = $2 AND blob.object_key = $3
+          AND ${storageObjectLocatorPredicateSqlV1("blob", 4, 5)}`,
+      [tenant, blob.digest, blob.objectKey, versionId, objectGeneration],
       signal,
     );
     throwIfAborted(signal);
@@ -299,33 +308,46 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
   async queueBlobDeletion(tenantValue: string, blobValue: SourceBlobReceiptV1, signal?: AbortSignal) {
     const tenant = tenantId(tenantValue);
     const blob = blobReceipt(tenant, blobValue);
+    const [versionId, objectGeneration] = storageObjectLocatorSqlValuesV1(blob);
     return this.#connection.transaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`${tenant}:${blob.digest}`]);
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+        `source-blob:${tenant}:${blob.objectKey}:${sourceBlobLocatorIdentityV1(blob)}`,
+      ]);
       const published = await client.query(
-        `SELECT 1 FROM public.source_blob_objects
-          WHERE tenant_id = $1 AND digest = $2 AND object_key = $3 AND version_id = $4`,
-        [tenant, blob.digest, blob.objectKey, blob.versionId],
+        `SELECT 1 FROM public.source_blob_objects published
+          WHERE published.tenant_id = $1 AND published.digest = $2 AND published.object_key = $3
+            AND ${storageObjectLocatorPredicateSqlV1("published", 4, 5)}`,
+        [tenant, blob.digest, blob.objectKey, versionId, objectGeneration],
       );
       if (published.rowCount !== 0) return null;
       const deletionId = randomUUID();
       const queued = await client.query<DeletionRow>(
         `INSERT INTO public.source_blob_deletions
-           (deletion_id, tenant_id, digest, object_key, version_id, etag, byte_size)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (tenant_id, object_key, version_id) DO UPDATE
-           SET object_key = EXCLUDED.object_key
-         RETURNING deletion_id, tenant_id, digest, object_key, version_id, etag, byte_size, deleted_at`,
-        [deletionId, tenant, blob.digest, blob.objectKey, blob.versionId, blob.etag, blob.byteSize],
+           (deletion_id, tenant_id, digest, object_key, version_id, object_generation, etag, byte_size)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT DO NOTHING
+         RETURNING deletion_id, tenant_id, digest, object_key, version_id, object_generation, etag, byte_size, deleted_at`,
+        [deletionId, tenant, blob.digest, blob.objectKey, versionId, objectGeneration, blob.etag, blob.byteSize],
       );
-      const deletion = deletionFromRow(queued.rows[0]!);
-      if (
-        deletion.blob.digest !== blob.digest ||
-        deletion.blob.etag !== blob.etag ||
-        deletion.blob.byteSize !== blob.byteSize
-      ) {
+      let deletionRow = queued.rows[0];
+      if (!deletionRow) {
+        const existing = await client.query<DeletionRow>(
+          `SELECT deletion_id, tenant_id, digest, object_key, version_id, object_generation, etag, byte_size, deleted_at
+             FROM public.source_blob_deletions deletion
+            WHERE deletion.tenant_id = $1 AND deletion.object_key = $2
+              AND ${storageObjectLocatorPredicateSqlV1("deletion", 3, 4)}
+            FOR UPDATE`,
+          [tenant, blob.objectKey, versionId, objectGeneration],
+        );
+        deletionRow = existing.rows[0];
+      }
+      if (!deletionRow) throw new TypeError("PostgreSQL did not return the queued source deletion.");
+      const deletion = deletionFromRow(deletionRow);
+      if (!sameSourceBlobReceiptV1(deletion.blob, blob)) {
         throw new TypeError("The queued source deletion metadata conflicts with its object version.");
       }
-      if (queued.rows[0]!.deleted_at !== null) return null;
+      if (deletionRow.deleted_at !== null) return null;
       return deletion;
     }, signal);
   }
@@ -392,7 +414,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
       let queuedCount = 0;
       for (const digest of matureDigests) {
         const selected = await client.query<OrphanedBlobRow>(
-          `SELECT b.tenant_id, b.digest, b.object_key, b.version_id, b.etag, b.byte_size, b.orphaned_at,
+          `SELECT b.tenant_id, b.digest, b.object_key, b.version_id, b.object_generation, b.etag, b.byte_size, b.orphaned_at,
                   (${SOURCE_BLOB_REFERENCED_SQL}) AS referenced
              FROM public.source_blob_objects b
             WHERE b.tenant_id = $1 AND b.digest = $2
@@ -428,22 +450,37 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
                   AND b.digest = $2
                   AND b.orphaned_at <= clock_timestamp() - ($3::double precision * interval '1 millisecond')
                   AND NOT (${SOURCE_BLOB_REFERENCED_SQL})
-            RETURNING b.tenant_id, b.digest, b.object_key, b.version_id, b.etag, b.byte_size`,
+            RETURNING b.tenant_id, b.digest, b.object_key, b.version_id, b.object_generation, b.etag, b.byte_size`,
           [tenant, digest, grace],
         );
         const row = removed.rows[0];
         if (!row) continue;
+        const removedBlob = blobFromRow(row);
+        const [versionId, objectGeneration] = storageObjectLocatorSqlValuesV1(removedBlob);
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+          `source-blob:${tenant}:${removedBlob.objectKey}:${sourceBlobLocatorIdentityV1(removedBlob)}`,
+        ]);
         const deletionId = randomUUID();
         const queued = await client.query<DeletionRow>(
           `INSERT INTO public.source_blob_deletions
-             (deletion_id, tenant_id, digest, object_key, version_id, etag, byte_size)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
-           ON CONFLICT (tenant_id, object_key, version_id) DO UPDATE
-             SET object_key = EXCLUDED.object_key
-           RETURNING deletion_id, tenant_id, digest, object_key, version_id, etag, byte_size, deleted_at`,
-          [deletionId, row.tenant_id, row.digest, row.object_key, row.version_id, row.etag, row.byte_size],
+             (deletion_id, tenant_id, digest, object_key, version_id, object_generation, etag, byte_size)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           ON CONFLICT DO NOTHING
+           RETURNING deletion_id, tenant_id, digest, object_key, version_id, object_generation, etag, byte_size, deleted_at`,
+          [deletionId, row.tenant_id, row.digest, row.object_key, versionId, objectGeneration, row.etag, row.byte_size],
         );
-        const deletionRow = queued.rows[0];
+        let deletionRow = queued.rows[0];
+        if (!deletionRow) {
+          const existing = await client.query<DeletionRow>(
+            `SELECT deletion_id, tenant_id, digest, object_key, version_id, object_generation, etag, byte_size, deleted_at
+               FROM public.source_blob_deletions deletion
+              WHERE deletion.tenant_id = $1 AND deletion.object_key = $2
+                AND ${storageObjectLocatorPredicateSqlV1("deletion", 3, 4)}
+              FOR UPDATE`,
+            [tenant, removedBlob.objectKey, versionId, objectGeneration],
+          );
+          deletionRow = existing.rows[0];
+        }
         if (!deletionRow) {
           throw new TypeError("PostgreSQL did not return the queued source deletion.");
         }
@@ -451,11 +488,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
         if (
           deletionRow.deleted_at !== null ||
           deletion.tenantId !== tenant ||
-          deletion.blob.digest !== row.digest ||
-          deletion.blob.objectKey !== row.object_key ||
-          deletion.blob.versionId !== row.version_id ||
-          deletion.blob.etag !== row.etag ||
-          deletion.blob.byteSize !== row.byte_size
+          !sameSourceBlobReceiptV1(deletion.blob, removedBlob)
         ) {
           throw new TypeError("The queued source deletion conflicts with the orphaned object version.");
         }
@@ -683,7 +716,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     const maximum = boundedPositiveInteger(maximumValue, "maximum", 256);
     throwIfAborted(signal);
     const result = await this.#connection.query<DeletionRow>(
-      `SELECT deletion_id, tenant_id, digest, object_key, version_id, etag, byte_size, deleted_at
+      `SELECT deletion_id, tenant_id, digest, object_key, version_id, object_generation, etag, byte_size, deleted_at
          FROM public.source_blob_deletions
         WHERE tenant_id = $1 AND deleted_at IS NULL
         ORDER BY queued_at, deletion_id

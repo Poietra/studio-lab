@@ -2,11 +2,13 @@ import { createHash } from "node:crypto";
 
 import { manimTenantIdSchema } from "../../manim-request-principal";
 import {
+  assertVersionedSourceBlobReceiptV1,
   MAX_MANIM_SOURCE_BYTES_V1,
   type SourceBlobReceiptV1,
   type SourceBlobVersionCursorV1,
   type SourceBlobVersionV1,
   type SourceContentBlobStoreV1,
+  type VersionedSourceBlobReceiptV1,
 } from "../workspace-source-repository";
 import {
   acquirePrivateVersionedS3BucketTransportV1,
@@ -87,21 +89,8 @@ function normalizeEtag(value: string | undefined) {
   return value;
 }
 
-function validateReceipt(tenant: string, value: SourceBlobReceiptV1) {
-  if (
-    !/^[0-9a-f]{64}$/.test(value.digest) ||
-    value.objectKey !== sourceKey(tenant, value.digest) ||
-    !Number.isSafeInteger(value.byteSize) ||
-    value.byteSize < 0 ||
-    value.byteSize > MAX_MANIM_SOURCE_BYTES_V1 ||
-    value.versionId.length < 1 ||
-    value.versionId.length > 1_024 ||
-    value.etag.length < 1 ||
-    value.etag.length > 512
-  ) {
-    throw new TypeError("Source blob receipt is invalid.");
-  }
-  return value;
+function validateReceipt(tenant: string, value: SourceBlobReceiptV1): VersionedSourceBlobReceiptV1 {
+  return assertVersionedSourceBlobReceiptV1(tenant, value);
 }
 
 function isPreconditionFailed(error: unknown) {
@@ -189,7 +178,7 @@ export class S3ContentBlobStoreV1 implements SourceContentBlobStoreV1 {
   ) {
     const objectKey = sourceKey(tenant, digest);
     const response = await operation.getObject({ Key: objectKey });
-    let receipt: SourceBlobReceiptV1;
+    let receipt: VersionedSourceBlobReceiptV1;
     try {
       receipt = validateReceipt(tenant, {
         byteSize,

@@ -17,10 +17,10 @@ import {
   manimRenderStagingIdV1,
 } from "../manim-render-sandbox-contract";
 import {
+  immutableRenderArtifactObjectKeyV1,
   parseRenderArtifactReceiptV1,
   type RenderArtifactRepositoryV1,
   type RenderArtifactStoreV1,
-  renderArtifactObjectKeyV1,
 } from "./render-artifact-repository";
 import type { DurableRenderSessionV1 } from "./render-session-repository";
 import { VerifiedArtifactPublisherV1 } from "./verified-artifact-publisher";
@@ -165,7 +165,7 @@ function configureFilesystem() {
 }
 
 describe("VerifiedArtifactPublisherV1", () => {
-  it("serializes concurrent 128 MiB-capable publications through one abort-aware memory permit", async () => {
+  it("serializes concurrent immutable publications through one abort-aware memory permit", async () => {
     vi.spyOn(process, "geteuid").mockReturnValue(1_000);
     vi.spyOn(process, "getegid").mockReturnValue(STUDIO_GID);
     vi.spyOn(process, "getgroups").mockReturnValue([STUDIO_GID]);
@@ -183,12 +183,12 @@ describe("VerifiedArtifactPublisherV1", () => {
         if (putCount === 1) await firstPut.promise;
         activePuts -= 1;
         const { bytes: _bytes, ...identity } = input;
-        return parseRenderArtifactReceiptV1(tenant, {
-          ...identity,
-          etag: `"etag-${putCount}"`,
-          objectKey: renderArtifactObjectKeyV1(tenant, identity),
-          versionId: `version-${putCount}`,
-        });
+        const objectGeneration = `00000000-0000-4000-8000-${putCount.toString().padStart(12, "0")}`;
+        const locator = {
+          objectGeneration,
+          objectKey: immutableRenderArtifactObjectKeyV1(tenant, identity, objectGeneration),
+        };
+        return parseRenderArtifactReceiptV1(tenant, { ...identity, ...locator, etag: `"etag-${putCount}"` });
       }),
       ready: vi.fn(async () => true),
     } as unknown as RenderArtifactStoreV1;

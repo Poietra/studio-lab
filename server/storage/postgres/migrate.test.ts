@@ -18,6 +18,7 @@ import {
   applyOidcLoginMigrationV13,
   applyProjectPngMigrationV5,
   applyRenderArtifactMigrationV4,
+  applyRenderArtifactTombstoneMigrationV21,
   applyRenderCancellationMigrationV7,
   applyRenderSessionCpuFailureMigrationV9,
   applyRenderSessionFailureMigrationV8,
@@ -40,6 +41,8 @@ import {
   OIDC_LOGIN_MIGRATION_V13_SOURCE,
   PROJECT_PNG_MIGRATION_V5_SOURCE,
   RENDER_ARTIFACT_MIGRATION_V4_SOURCE,
+  RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_CHECKSUM,
+  RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_SOURCE,
   RENDER_CANCELLATION_MIGRATION_V7_SOURCE,
   RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_SOURCE,
   RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE,
@@ -97,10 +100,12 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 20 });
-    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 21 });
+    expect([...db.installed.keys()]).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+    ]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 20 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 21 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -121,7 +126,8 @@ describe("durable storage migrations", () => {
     expect(db.queries.filter(({ text }) => text === EDITOR_MUTATION_MIGRATION_V18_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_SCENE_NAME_MIGRATION_V19_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(40);
+    expect(db.queries.filter(({ text }) => text === RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(42);
   });
 
   it("applies an exact bundled prefix before a later cutover", async () => {
@@ -148,12 +154,21 @@ describe("durable storage migrations", () => {
       version: 19,
     });
     expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 20)).resolves.toEqual({
+      applied: true,
+      version: 20,
+    });
+    expect(db.queries.some(({ text }) => text === RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_SOURCE)).toBe(false);
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 21)).resolves.toEqual({
+      applied: true,
+      version: 21,
+    });
   });
 
   it("rejects an unknown bundled target before acquiring a connection", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 21)).rejects.toThrow(
-      /migration v21 is not bundled/i,
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 22)).rejects.toThrow(
+      /migration v22 is not bundled/i,
     );
     expect(db.connect).not.toHaveBeenCalled();
   });
@@ -516,9 +531,7 @@ describe("durable storage migrations", () => {
     expect(IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE).toContain(
       "ADD COLUMN object_generation public.immutable_object_generation_v1",
     );
-    expect(IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE).toContain(
-      "[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}",
-    );
+    expect(IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE).toContain("[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}");
     expect(IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE).toContain(
       "num_nonnulls(version_id, object_generation) = 1",
     );
@@ -527,6 +540,26 @@ describe("durable storage migrations", () => {
     expect(IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE).not.toContain("UPDATE public.snapshot_artifact_objects");
     expect(IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE).not.toContain("UPDATE public.render_artifact_objects");
     expect(IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE).not.toContain("UPDATE public.project_png_objects");
+  });
+
+  it("requires all twenty prerequisites before retaining render artifact tombstones in v21", async () => {
+    const db = database();
+    await expect(
+      applyRenderArtifactTombstoneMigrationV21(db.pool, RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_SOURCE),
+    ).rejects.toThrow(/requires durable storage migrations v1 through v20/i);
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("adds an acknowledgement marker and a bounded pending tombstone index", () => {
+    expect(durableStorageMigrationChecksum(RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_SOURCE)).toBe(
+      RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_CHECKSUM,
+    );
+    expect(RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_SOURCE).toContain("ADD COLUMN deleted_at timestamptz");
+    expect(RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_SOURCE).toContain(
+      "CREATE INDEX render_artifact_pending_deletion_queue_v21",
+    );
+    expect(RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_SOURCE).toContain("WHERE deleted_at IS NULL");
+    expect(RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_SOURCE).not.toContain("DELETE FROM");
   });
 
   it("expands only the forward render-session Scene-name constraint to the canonical 240-character boundary", () => {

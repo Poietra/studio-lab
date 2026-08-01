@@ -15,8 +15,19 @@ import {
   parseImmutableSourceBlobReceiptV1,
   sourceBlobContentAddressedKeyV1,
 } from "../immutable-source-png-storage";
-import { inspectProjectPngBytesV1, projectPngObjectKeyV1 } from "../project-png-storage";
-import { MAX_MANIM_SOURCE_BYTES_V1 } from "../workspace-source-repository";
+import {
+  inspectProjectPngBytesV1,
+  type ProjectPngBlobReceiptV1,
+  type ProjectPngBlobStoreV1,
+  type ProjectPngVersionPageV1,
+  projectPngObjectKeyV1,
+} from "../project-png-storage";
+import {
+  MAX_MANIM_SOURCE_BYTES_V1,
+  type SourceBlobReceiptV1,
+  type SourceBlobVersionPageV1,
+  type SourceContentBlobStoreV1,
+} from "../workspace-source-repository";
 import {
   acquirePrivateImmutableS3BucketTransportV1,
   type PrivateImmutableObjectHeadV1,
@@ -178,7 +189,7 @@ async function putWithGenerations(
 export type ImmutableS3SourceBlobStoreOptionsV1 = PrivateImmutableS3BucketConsumerOptionsV1;
 
 /** Unversioned source storage pinned by an application-owned object generation and exact ETag. */
-export class ImmutableS3SourceBlobStoreV1 implements ImmutableSourceContentBlobStoreV1 {
+export class ImmutableS3SourceBlobStoreV1 implements ImmutableSourceContentBlobStoreV1, SourceContentBlobStoreV1 {
   readonly #createGeneration: () => string;
   readonly #transport: PrivateImmutableS3BucketTransportLeaseV1;
 
@@ -206,11 +217,7 @@ export class ImmutableS3SourceBlobStoreV1 implements ImmutableSourceContentBlobS
     return receipt;
   }
 
-  async #read(
-    tenantId: string,
-    receiptValue: ImmutableSourceBlobReceiptV1,
-    operation: PrivateImmutableS3BucketOperationV1,
-  ) {
+  async #read(tenantId: string, receiptValue: unknown, operation: PrivateImmutableS3BucketOperationV1) {
     const receipt = parseImmutableSourceBlobReceiptV1(tenantId, receiptValue);
     const response = await operation.getObject({
       byteSize: receipt.byteSize,
@@ -253,7 +260,7 @@ export class ImmutableS3SourceBlobStoreV1 implements ImmutableSourceContentBlobS
     return receipt;
   }
 
-  async readSource(tenantId: string, receiptValue: ImmutableSourceBlobReceiptV1, signal?: AbortSignal) {
+  async readSource(tenantId: string, receiptValue: SourceBlobReceiptV1, signal?: AbortSignal) {
     return this.#read(tenantId, receiptValue, this.#transport.operation(signal));
   }
 
@@ -264,6 +271,11 @@ export class ImmutableS3SourceBlobStoreV1 implements ImmutableSourceContentBlobS
   async deleteObject(tenantId: string, receiptValue: ImmutableSourceBlobReceiptV1, signal?: AbortSignal) {
     const receipt = parseImmutableSourceBlobReceiptV1(tenantId, receiptValue);
     await this.#transport.operation(signal).deleteObject(receipt.objectKey);
+  }
+
+  async deleteVersion(tenantId: string, receiptValue: SourceBlobReceiptV1, signal?: AbortSignal) {
+    const receipt = parseImmutableSourceBlobReceiptV1(tenantId, receiptValue);
+    await this.deleteObject(tenantId, receipt, signal);
   }
 
   async listOrphanCandidates(tenantId: string, maximum: number, cursor?: string | null, signal?: AbortSignal) {
@@ -290,6 +302,25 @@ export class ImmutableS3SourceBlobStoreV1 implements ImmutableSourceContentBlobS
     };
   }
 
+  async listSourceVersions(
+    tenantId: string,
+    cutoff: Date,
+    maximum: number,
+    cursor?: string | null,
+    signal?: AbortSignal,
+  ): Promise<SourceBlobVersionPageV1> {
+    if (!(cutoff instanceof Date) || !Number.isFinite(cutoff.getTime())) {
+      throw new TypeError("Immutable source GC cutoff is invalid.");
+    }
+    const page = await this.listOrphanCandidates(tenantId, maximum, cursor, signal);
+    return {
+      nextCursor: page.nextCursor,
+      versions: page.candidates.flatMap((candidate) =>
+        candidate.lastModified < cutoff ? [{ blob: candidate.receipt, lastModified: candidate.lastModified }] : [],
+      ),
+    };
+  }
+
   close() {
     return this.#transport.close();
   }
@@ -298,7 +329,7 @@ export class ImmutableS3SourceBlobStoreV1 implements ImmutableSourceContentBlobS
 export type ImmutableS3ProjectPngStoreOptionsV1 = PrivateImmutableS3BucketConsumerOptionsV1;
 
 /** Unversioned project image storage pinned by an application-owned object generation and exact ETag. */
-export class ImmutableS3ProjectPngStoreV1 implements ImmutableProjectPngBlobStoreV1 {
+export class ImmutableS3ProjectPngStoreV1 implements ImmutableProjectPngBlobStoreV1, ProjectPngBlobStoreV1 {
   readonly #createGeneration: () => string;
   readonly #transport: PrivateImmutableS3BucketTransportLeaseV1;
 
@@ -335,7 +366,7 @@ export class ImmutableS3ProjectPngStoreV1 implements ImmutableProjectPngBlobStor
   async #read(
     tenantId: string,
     projectId: string,
-    receiptValue: ImmutableProjectPngReceiptV1,
+    receiptValue: unknown,
     operation: PrivateImmutableS3BucketOperationV1,
   ) {
     const receipt = parseImmutableProjectPngReceiptV1(tenantId, projectId, receiptValue);
@@ -385,7 +416,7 @@ export class ImmutableS3ProjectPngStoreV1 implements ImmutableProjectPngBlobStor
     return receipt;
   }
 
-  async read(tenantId: string, projectId: string, receiptValue: ImmutableProjectPngReceiptV1, signal?: AbortSignal) {
+  async read(tenantId: string, projectId: string, receiptValue: ProjectPngBlobReceiptV1, signal?: AbortSignal) {
     return this.#read(tenantId, projectId, receiptValue, this.#transport.operation(signal));
   }
 
@@ -401,6 +432,16 @@ export class ImmutableS3ProjectPngStoreV1 implements ImmutableProjectPngBlobStor
   ) {
     const receipt = parseImmutableProjectPngReceiptV1(tenantId, projectId, receiptValue);
     await this.#transport.operation(signal).deleteObject(receipt.objectKey);
+  }
+
+  async deleteVersion(
+    tenantId: string,
+    projectId: string,
+    receiptValue: ProjectPngBlobReceiptV1,
+    signal?: AbortSignal,
+  ) {
+    const receipt = parseImmutableProjectPngReceiptV1(tenantId, projectId, receiptValue);
+    await this.deleteObject(tenantId, projectId, receipt, signal);
   }
 
   async listOrphanCandidates(tenantId: string, maximum: number, cursor?: string | null, signal?: AbortSignal) {
@@ -425,6 +466,27 @@ export class ImmutableS3ProjectPngStoreV1 implements ImmutableProjectPngBlobStor
         };
       }),
       nextCursor: page.nextCursor,
+    };
+  }
+
+  async listVersions(
+    tenantId: string,
+    cutoff: Date,
+    maximum: number,
+    cursor?: string | null,
+    signal?: AbortSignal,
+  ): Promise<ProjectPngVersionPageV1> {
+    if (!(cutoff instanceof Date) || !Number.isFinite(cutoff.getTime())) {
+      throw new TypeError("Immutable project image.png GC cutoff is invalid.");
+    }
+    const page = await this.listOrphanCandidates(tenantId, maximum, cursor, signal);
+    return {
+      nextCursor: page.nextCursor,
+      versions: page.candidates.flatMap((candidate) =>
+        candidate.lastModified < cutoff
+          ? [{ lastModified: candidate.lastModified, projectId: candidate.projectId, receipt: candidate.receipt }]
+          : [],
+      ),
     };
   }
 

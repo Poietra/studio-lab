@@ -30,6 +30,7 @@ import {
   type ProjectPngBlobStoreV1,
   type ProjectPngHeadV1,
   type ProjectPngRepositoryV1,
+  sameProjectPngReceiptV1,
 } from "./storage/project-png-storage";
 import type { DurableSourceBlobGcWorkerV1 } from "./storage/source-blob-gc";
 import type {
@@ -62,7 +63,7 @@ export type DurableManimRuntimeOptionsV1 = Readonly<{
   namespace: string;
   projectIdFactory?: () => string;
   projectPngRepository?: Pick<ProjectPngRepositoryV1, "readHead">;
-  projectPngs?: Pick<ProjectPngBlobStoreV1, "read">;
+  projectPngs?: Pick<ProjectPngBlobStoreV1, "close" | "read">;
   renders?: DurableManimRenderServiceV1;
   repository: WorkspaceSourceRepositoryV1;
   snapshots?: DurableFastManimSnapshotServiceV1;
@@ -94,11 +95,7 @@ function sameProjectPngHead(left: ProjectPngHeadV1, right: ProjectPngHeadV1 | nu
     left.tenantId === right.tenantId &&
     left.projectId === right.projectId &&
     left.generation === right.generation &&
-    left.receipt.byteSize === right.receipt.byteSize &&
-    left.receipt.digest === right.receipt.digest &&
-    left.receipt.etag === right.receipt.etag &&
-    left.receipt.objectKey === right.receipt.objectKey &&
-    left.receipt.versionId === right.receipt.versionId
+    sameProjectPngReceiptV1(left.receipt, right.receipt)
   );
 }
 
@@ -130,7 +127,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
   readonly #frame: Readonly<{ height: number; width: number }>;
   readonly #projectIdFactory: () => string;
   readonly #projectPngRepository: Pick<ProjectPngRepositoryV1, "readHead"> | undefined;
-  readonly #projectPngs: Pick<ProjectPngBlobStoreV1, "read"> | undefined;
+  readonly #projectPngs: Pick<ProjectPngBlobStoreV1, "close" | "read"> | undefined;
   readonly #renders: DurableManimRenderServiceV1 | undefined;
   readonly #repository: WorkspaceSourceRepositoryV1;
   readonly #snapshots: DurableFastManimSnapshotServiceV1 | undefined;
@@ -511,6 +508,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
         this.#renders?.close() ?? Promise.resolve(),
         this.#artifactReader?.close() ?? Promise.resolve(),
         this.editorDocuments?.close() ?? Promise.resolve(),
+        this.#projectPngs?.close() ?? Promise.resolve(),
         this.#blobs.close(),
         this.#repository.close(),
       ]);

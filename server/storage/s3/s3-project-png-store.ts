@@ -1,7 +1,7 @@
 import { manimProjectIdSchema } from "../../../src/render-pipeline/contracts";
 import { manimTenantIdSchema } from "../../manim-request-principal";
 import {
-  assertProjectPngReceiptV1,
+  assertVersionedProjectPngReceiptV1,
   inspectProjectPngBytesV1,
   MAX_PROJECT_PNG_BYTES_V1,
   type ProjectPngBlobReceiptV1,
@@ -9,6 +9,7 @@ import {
   type ProjectPngVersionCursorV1,
   type ProjectPngVersionV1,
   projectPngObjectKeyV1,
+  type VersionedProjectPngBlobReceiptV1,
 } from "../project-png-storage";
 import {
   acquirePrivateVersionedS3BucketTransportV1,
@@ -146,7 +147,7 @@ export class S3ProjectPngStoreV1 implements ProjectPngBlobStoreV1 {
     value: ProjectPngBlobReceiptV1,
     operation: PrivateVersionedS3BucketOperationV1,
   ) {
-    const receipt = assertProjectPngReceiptV1(tenant, project, value);
+    const receipt = assertVersionedProjectPngReceiptV1(tenant, project, value);
     const response = await operation.getObject({ Key: receipt.objectKey, VersionId: receipt.versionId });
     try {
       if (
@@ -175,9 +176,9 @@ export class S3ProjectPngStoreV1 implements ProjectPngBlobStoreV1 {
   ) {
     const objectKey = projectPngObjectKeyV1(tenant, project, inspected.digest);
     const response = await operation.getObject({ Key: objectKey });
-    let receipt: ProjectPngBlobReceiptV1;
+    let receipt: VersionedProjectPngBlobReceiptV1;
     try {
-      receipt = assertProjectPngReceiptV1(tenant, project, {
+      receipt = assertVersionedProjectPngReceiptV1(tenant, project, {
         byteSize: inspected.byteSize,
         digest: inspected.digest,
         etag: normalizeEtag(response.ETag),
@@ -216,7 +217,7 @@ export class S3ProjectPngStoreV1 implements ProjectPngBlobStoreV1 {
       if (isPreconditionFailed(error)) return this.#currentReceipt(tenant, project, inspected, operation);
       throw error;
     }
-    const receipt = assertProjectPngReceiptV1(tenant, project, {
+    const receipt = assertVersionedProjectPngReceiptV1(tenant, project, {
       byteSize: inspected.byteSize,
       digest: inspected.digest,
       etag: normalizeEtag(response.ETag),
@@ -272,7 +273,7 @@ export class S3ProjectPngStoreV1 implements ProjectPngBlobStoreV1 {
       versions.push({
         lastModified: version.LastModified,
         projectId: identity.project,
-        receipt: assertProjectPngReceiptV1(tenant, identity.project, {
+        receipt: assertVersionedProjectPngReceiptV1(tenant, identity.project, {
           byteSize: version.Size!,
           digest: identity.digest,
           etag: version.ETag,
@@ -290,7 +291,7 @@ export class S3ProjectPngStoreV1 implements ProjectPngBlobStoreV1 {
   async deleteVersion(tenantValue: string, projectValue: string, value: ProjectPngBlobReceiptV1, signal?: AbortSignal) {
     const tenant = tenantId(tenantValue);
     const project = projectId(projectValue);
-    const receipt = assertProjectPngReceiptV1(tenant, project, value);
+    const receipt = assertVersionedProjectPngReceiptV1(tenant, project, value);
     const operation = this.#transport.operation(signal);
     await operation.deleteObjectVersion({ Key: receipt.objectKey, VersionId: receipt.versionId });
     operation.signal.throwIfAborted();

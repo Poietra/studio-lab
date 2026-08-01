@@ -1,17 +1,29 @@
 import type { ManimProjectListView } from "../../src/render-pipeline/contracts";
+import { immutableObjectKeyV1 } from "./immutable-object-contract";
+import {
+  type ApplicationImmutableObjectLocatorV1,
+  isApplicationImmutableLocatorV1,
+  type ProviderVersionedObjectLocatorV1,
+  sameStorageObjectLocatorV1,
+  storageObjectLocatorIdentityV1,
+  storageObjectLocatorV1,
+} from "./storage-object-locator";
 
 export const MAX_MANAGED_PROJECTS_PER_TENANT_V1 = 64;
 export const MAX_MANIM_SOURCE_BYTES_V1 = 2 * 1024 * 1024;
 
 export type SourceDigestV1 = string;
 
-export type SourceBlobReceiptV1 = Readonly<{
+type SourceBlobReceiptFieldsV1 = Readonly<{
   byteSize: number;
   digest: SourceDigestV1;
   etag: string;
   objectKey: string;
-  versionId: string;
 }>;
+
+export type VersionedSourceBlobReceiptV1 = SourceBlobReceiptFieldsV1 & ProviderVersionedObjectLocatorV1;
+export type ImmutableSourceBlobReceiptLikeV1 = SourceBlobReceiptFieldsV1 & ApplicationImmutableObjectLocatorV1;
+export type SourceBlobReceiptV1 = VersionedSourceBlobReceiptV1 | ImmutableSourceBlobReceiptLikeV1;
 
 export type WorkspaceSourceHeadV1 = Readonly<{
   blob: SourceBlobReceiptV1;
@@ -108,4 +120,62 @@ export interface SourceContentBlobStoreV1 {
   putSource(tenantId: string, source: string, signal?: AbortSignal): Promise<SourceBlobReceiptV1>;
   readSource(tenantId: string, blob: SourceBlobReceiptV1, signal?: AbortSignal): Promise<string>;
   ready(signal?: AbortSignal): Promise<boolean>;
+}
+
+export function assertSourceBlobReceiptV1(tenantId: string, value: SourceBlobReceiptV1): SourceBlobReceiptV1 {
+  const digest = value?.digest;
+  const baseKey = `tenants/${tenantId}/sources/${digest}`;
+  let locator;
+  try {
+    locator = storageObjectLocatorV1(value);
+  } catch {
+    throw new TypeError("Source blob receipt is invalid.");
+  }
+  const expectedKey = isApplicationImmutableLocatorV1(locator)
+    ? immutableObjectKeyV1({
+        contentAddressedKey: baseKey,
+        contentDigest: digest,
+        objectGeneration: locator.objectGeneration,
+        tenantId,
+      })
+    : baseKey;
+  if (
+    !/^[0-9a-f]{64}$/u.test(digest) ||
+    value.objectKey !== expectedKey ||
+    !Number.isSafeInteger(value.byteSize) ||
+    value.byteSize < 0 ||
+    value.byteSize > MAX_MANIM_SOURCE_BYTES_V1 ||
+    typeof value.etag !== "string" ||
+    value.etag.length < 1 ||
+    Buffer.byteLength(value.etag, "utf8") > 512
+  ) {
+    throw new TypeError("Source blob receipt is invalid.");
+  }
+  const fields = { byteSize: value.byteSize, digest, etag: value.etag, objectKey: expectedKey };
+  return isApplicationImmutableLocatorV1(locator)
+    ? { ...fields, objectGeneration: locator.objectGeneration }
+    : { ...fields, versionId: locator.versionId };
+}
+
+export function assertVersionedSourceBlobReceiptV1(
+  tenantId: string,
+  value: SourceBlobReceiptV1,
+): VersionedSourceBlobReceiptV1 {
+  const receipt = assertSourceBlobReceiptV1(tenantId, value);
+  if ("objectGeneration" in receipt) throw new TypeError("A provider-versioned source blob receipt is required.");
+  return receipt;
+}
+
+export function sameSourceBlobReceiptV1(left: SourceBlobReceiptV1, right: SourceBlobReceiptV1) {
+  return (
+    left.byteSize === right.byteSize &&
+    left.digest === right.digest &&
+    left.etag === right.etag &&
+    left.objectKey === right.objectKey &&
+    sameStorageObjectLocatorV1(left, right)
+  );
+}
+
+export function sourceBlobLocatorIdentityV1(value: SourceBlobReceiptV1) {
+  return storageObjectLocatorIdentityV1(value);
 }

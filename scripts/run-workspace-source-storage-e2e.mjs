@@ -93,6 +93,13 @@ const STORAGE_SUITES = [
     title: "keeps legacy locators explicit and constrains every new generation key",
   },
   {
+    database: "poietra_immutable_source_png",
+    file: "server/storage/immutable-source-png-postgres.real.test.ts",
+    id: "immutable-source-png",
+    objectStorage: false,
+    title: "persists exact generations through source heads, PNG heads, render pins, and deletion claims",
+  },
+  {
     database: "poietra_immutable_s3_transport",
     file: "server/storage/s3/s3-private-immutable-bucket-transport.real.test.ts",
     id: "immutable-s3-transport",
@@ -123,7 +130,11 @@ const STORAGE_SUITES = [
     database: "poietra_render_artifact",
     file: "server/storage/render-artifact-storage.real.test.ts",
     id: "render-artifact",
-    title: "survives SIGKILL, atomically publishes versioned media, fences races, expires reads, and collects orphans",
+    titles: [
+      "upgrades a nonempty media deletion queue and retains its acknowledgement",
+      "survives SIGKILL, atomically publishes versioned media, fences races, expires reads, and collects orphans",
+      "publishes, reads, and deletes an immutable media generation",
+    ],
   },
   {
     database: "poietra_project_png",

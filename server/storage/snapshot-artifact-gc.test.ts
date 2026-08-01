@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import type { ImmutableSnapshotArtifactReceiptV1 } from "./immutable-snapshot-artifact-store";
 import {
   DurableSnapshotArtifactGcWorkerV1,
   runSnapshotArtifactGcV1,
@@ -10,11 +11,13 @@ import type {
   SnapshotArtifactReceiptV1,
   SnapshotArtifactStoreV1,
   SnapshotPublicationRepositoryV1,
+  VersionedSnapshotArtifactReceiptV1,
 } from "./snapshot-publication-repository";
+import { snapshotArtifactIdentityV1, snapshotArtifactLocatorV1 } from "./snapshot-publication-repository";
 
 const TENANT = "tenant-a";
 
-function artifact(digestCharacter: string): SnapshotArtifactReceiptV1 {
+function artifact(digestCharacter: string): VersionedSnapshotArtifactReceiptV1 {
   const resultDigest = digestCharacter.repeat(64);
   const runtimeDigest = "4".repeat(64);
   return {
@@ -32,7 +35,35 @@ function artifact(digestCharacter: string): SnapshotArtifactReceiptV1 {
   };
 }
 
-function deletion(digestCharacter: string, deletionId: string): SnapshotArtifactDeletionV1 {
+function immutableArtifact(digestCharacter: string): ImmutableSnapshotArtifactReceiptV1 {
+  const resultDigest = digestCharacter.repeat(64);
+  const runtimeDigest = "4".repeat(64);
+  const objectGeneration = "00000000-0000-4000-8000-000000000001";
+  const contentKey =
+    `tenants/${TENANT}/snapshots/${"1".repeat(64)}/${"2".repeat(64)}/${"3".repeat(64)}` +
+    `/${runtimeDigest}/${resultDigest}`;
+  return {
+    byteSize: 1,
+    etag: `etag-${digestCharacter}`,
+    identity: {
+      kind: "runtime-digest",
+      profileDigest: "3".repeat(64),
+      resultDigest,
+      runtimeConfigHash: "2".repeat(64),
+      runtimeDigest,
+      sourceDigest: "1".repeat(64),
+    },
+    objectGeneration,
+    objectKey: `${contentKey}/g/${objectGeneration}`,
+    schema: "poietra.immutable-snapshot-artifact-receipt",
+    version: 1,
+  };
+}
+
+function deletion(
+  digestCharacter: string,
+  deletionId: string,
+): SnapshotArtifactDeletionV1 & Readonly<{ artifact: VersionedSnapshotArtifactReceiptV1 }> {
   return { artifact: artifact(digestCharacter), deletionId, tenantId: TENANT };
 }
 
@@ -45,7 +76,8 @@ describe("durable snapshot artifact GC", () => {
     const acknowledged: string[] = [];
     const artifacts = {
       async deleteVersion(tenantId: string, receipt: SnapshotArtifactReceiptV1) {
-        deleted.push([tenantId, receipt.versionId]);
+        const locator = snapshotArtifactLocatorV1(receipt);
+        deleted.push([tenantId, locator.kind === "versioned" ? locator.versionId : locator.objectGeneration]);
       },
       async listVersions() {
         return {
@@ -62,13 +94,13 @@ describe("durable snapshot artifact GC", () => {
         acknowledged.push(deletionId);
       },
       async isArtifactPublished(_tenantId: string, receipt: SnapshotArtifactReceiptV1) {
-        return receipt.resultDigest === published.resultDigest;
+        return snapshotArtifactIdentityV1(receipt).resultDigest === published.resultDigest;
       },
       async pendingArtifactDeletions() {
         return [orphan];
       },
       async queueArtifactDeletion(_tenantId: string, receipt: SnapshotArtifactReceiptV1) {
-        queued.push(receipt.resultDigest);
+        queued.push(snapshotArtifactIdentityV1(receipt).resultDigest);
         return orphan;
       },
     } as unknown as SnapshotPublicationRepositoryV1;
@@ -85,6 +117,39 @@ describe("durable snapshot artifact GC", () => {
     expect(queued).toEqual([orphan.artifact.resultDigest]);
     expect(deleted).toEqual([[TENANT, orphan.artifact.versionId]]);
     expect(acknowledged).toEqual([orphan.deletionId]);
+  });
+
+  it("durably queues and deletes an immutable generation receipt", async () => {
+    const candidate = immutableArtifact("c");
+    const queued: SnapshotArtifactDeletionV1 = {
+      artifact: candidate,
+      deletionId: "00000000-0000-4000-8000-000000000003",
+      tenantId: TENANT,
+    };
+    const deleted = vi.fn(async () => undefined);
+    const artifacts = {
+      deleteVersion: deleted,
+      async listVersions() {
+        return { nextCursor: null, versions: [{ artifact: candidate, lastModified: new Date(0) }] };
+      },
+    } as unknown as SnapshotArtifactStoreV1;
+    const repository = {
+      acknowledgeArtifactDeletion: vi.fn(async () => undefined),
+      async isArtifactPublished() {
+        return false;
+      },
+      async pendingArtifactDeletions() {
+        return [queued];
+      },
+      async queueArtifactDeletion() {
+        return queued;
+      },
+    } as unknown as SnapshotPublicationRepositoryV1;
+
+    await expect(
+      runSnapshotArtifactGcV1({ artifacts, cutoff: new Date(), maximum: 1, repository, tenantId: TENANT }),
+    ).resolves.toEqual({ deleted: 1, examined: 1, nextCursor: null, queued: 1 });
+    expect(deleted).toHaveBeenCalledWith(TENANT, candidate, undefined);
   });
 
   it("continues past a full published page so a later orphan cannot starve", async () => {
@@ -106,13 +171,13 @@ describe("durable snapshot artifact GC", () => {
     } as unknown as SnapshotArtifactStoreV1;
     const repository = {
       async isArtifactPublished(_tenantId: string, receipt: SnapshotArtifactReceiptV1) {
-        return receipt.resultDigest === published.resultDigest;
+        return snapshotArtifactIdentityV1(receipt).resultDigest === published.resultDigest;
       },
       async pendingArtifactDeletions() {
         return [];
       },
       async queueArtifactDeletion(_tenantId: string, receipt: SnapshotArtifactReceiptV1) {
-        queued.push(receipt.resultDigest);
+        queued.push(snapshotArtifactIdentityV1(receipt).resultDigest);
         return orphan;
       },
       ready: vi.fn(async () => true),
@@ -147,8 +212,10 @@ describe("durable snapshot artifact GC", () => {
     const acknowledged: string[] = [];
     const artifacts = {
       async deleteVersion(_tenantId: string, receipt: SnapshotArtifactReceiptV1) {
-        attempted.push(receipt.versionId);
-        if (receipt.versionId === first.artifact.versionId) throw new Error("locked version");
+        const locator = snapshotArtifactLocatorV1(receipt);
+        const token = locator.kind === "versioned" ? locator.versionId : locator.objectGeneration;
+        attempted.push(token);
+        if (token === first.artifact.versionId) throw new Error("locked version");
       },
       async listVersions() {
         return { nextCursor: null, versions: [] };

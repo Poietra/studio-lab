@@ -7,7 +7,7 @@ export class RenderArtifactGcSweepErrorV1 extends AggregateError {
   readonly result: RenderArtifactGcResultV1;
 
   constructor(errors: readonly unknown[], result: RenderArtifactGcResultV1) {
-    super(errors, `Render artifact GC could not delete ${errors.length} queued object version(s).`);
+    super(errors, `Render artifact GC could not delete ${errors.length} queued object(s).`);
     this.name = "RenderArtifactGcSweepErrorV1";
     this.result = result;
   }
@@ -27,13 +27,15 @@ export async function runRenderArtifactGcV1(
 ) {
   return runDurableGcSweepV1({
     ...options,
-    list: (cutoff, maximum, cursor, signal) =>
-      options.artifacts.listVersions(options.tenantId, cutoff, maximum, cursor, signal),
+    list: async (cutoff, maximum, cursor, signal) => {
+      const page = await options.artifacts.listObjects(options.tenantId, cutoff, maximum, cursor, signal);
+      return { nextCursor: page.nextCursor, versions: page.objects };
+    },
     isPublished: ({ receipt }, signal) => options.repository.isArtifactRetained(options.tenantId, receipt, signal),
     queue: ({ receipt }, signal) =>
       options.repository.queueDeletion(options.tenantId, receipt, options.graceMs, signal),
     pending: (maximum, signal) => options.repository.pendingDeletions(options.tenantId, maximum, signal),
-    deleteVersion: ({ receipt, tenantId }, signal) => options.artifacts.deleteVersion(tenantId, receipt, signal),
+    deleteVersion: ({ receipt, tenantId }, signal) => options.artifacts.deleteObject(tenantId, receipt, signal),
     acknowledge: ({ deletionId, tenantId }, signal) =>
       options.repository.acknowledgeDeletion(tenantId, deletionId, signal),
     createError: (errors, result) => new RenderArtifactGcSweepErrorV1(errors, result),

@@ -8,7 +8,7 @@ import {
   LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1,
   MAX_SNAPSHOT_ARTIFACT_BYTES_V1,
   snapshotArtifactObjectKeyV1,
-} from "./snapshot-publication-repository";
+} from "./snapshot-artifact-contract";
 
 export const IMMUTABLE_SNAPSHOT_ARTIFACT_RECEIPT_SCHEMA_V1 = "poietra.immutable-snapshot-artifact-receipt" as const;
 export const IMMUTABLE_SNAPSHOT_ARTIFACT_DELETION_SCHEMA_V1 = "poietra.immutable-snapshot-artifact-deletion" as const;

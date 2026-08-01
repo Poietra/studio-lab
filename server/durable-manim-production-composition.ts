@@ -14,6 +14,7 @@ import {
   type FastManimProductionSnapshotRunnerFactoryOptionsV1,
   FastManimProductionSnapshotRunnerFactoryV1,
 } from "./fast-manim-production-snapshot-runner-factory";
+import type { ProductionManimRuntimeAdapterV1 } from "./manim-production-server";
 import type { ManimRenderProductionSandboxClientOptionsV1 } from "./manim-render-production-sandbox-client";
 import { MANIM_RENDER_CANONICAL_SCENE_FRAME_V1 } from "./manim-render-sandbox-contract";
 import {
@@ -34,8 +35,22 @@ import {
 import { createDurableProjectPngGcWorkerV1 } from "./storage/project-png-gc";
 import { createDurableRenderArtifactGcWorkerV1 } from "./storage/render-artifact-gc";
 import { createDurableRenderSessionRetentionWorkerV1 } from "./storage/render-session-retention";
+import { RollingSnapshotArtifactStoreV1 } from "./storage/rolling-snapshot-artifact-store";
+import { RoutedRenderArtifactStoreV1 } from "./storage/routed-render-artifact-store";
+import {
+  RoutedProjectPngBlobStoreV1,
+  RoutedSourceContentBlobStoreV1,
+  type StorageWriteLaneV1,
+} from "./storage/routed-source-png-store";
 import { S3ArtifactReaderV1 } from "./storage/s3/s3-artifact-reader";
 import { S3ContentBlobStoreV1 } from "./storage/s3/s3-content-blob-store";
+import { S3ImmutableRenderArtifactStoreV1 } from "./storage/s3/s3-immutable-render-artifact-store";
+import { S3ImmutableSnapshotArtifactStoreV1 } from "./storage/s3/s3-immutable-snapshot-artifact-store";
+import { ImmutableS3ProjectPngStoreV1, ImmutableS3SourceBlobStoreV1 } from "./storage/s3/s3-immutable-source-png-store";
+import {
+  PrivateImmutableS3BucketTransportV1,
+  type PrivateImmutableS3ProductionProviderV1,
+} from "./storage/s3/s3-private-immutable-bucket-transport";
 import { PrivateVersionedS3BucketTransportV1 } from "./storage/s3/s3-private-versioned-bucket-transport";
 import { S3ProjectPngStoreV1 } from "./storage/s3/s3-project-png-store";
 import { S3SnapshotArtifactStoreV1 } from "./storage/s3/s3-snapshot-artifact-store";
@@ -54,8 +69,15 @@ export type DurablePostgresS3ProductionRuntimeOptionsV1 = Readonly<{
   frame?: Readonly<{ height: number; width: number }>;
   namespace: string;
   objectStorage: Readonly<{
-    bucket: string;
-    clientConfig: S3ClientConfig;
+    immutable: Readonly<{
+      bucket: string;
+      provider: PrivateImmutableS3ProductionProviderV1;
+    }>;
+    legacy?: Readonly<{
+      bucket: string;
+      clientConfig: S3ClientConfig;
+    }>;
+    writeLane: StorageWriteLaneV1;
   }>;
   renderWorker: Readonly<{
     executionTimeoutMs?: number;
@@ -177,23 +199,47 @@ type Closeable = Readonly<{ close: () => Promise<void> }>;
 
 async function closeAll(resources: readonly (Closeable | undefined)[], message: string) {
   const unique = [...new Set(resources.filter((resource): resource is Closeable => resource !== undefined))];
-  const results = await Promise.allSettled(unique.map((resource) => resource.close()));
+  const results = await Promise.allSettled(unique.map(async (resource) => resource.close()));
   const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
   if (errors.length > 0) throw new AggregateError(errors, message);
 }
 
-async function cleanupAndThrow(
-  error: unknown,
-  resources: readonly (Closeable | undefined)[],
-  message: string,
-): Promise<never> {
-  try {
-    await closeAll(resources, message);
-  } catch (cleanupError) {
-    const cleanupErrors = cleanupError instanceof AggregateError ? cleanupError.errors : [cleanupError];
-    throw new AggregateError([error, ...cleanupErrors], message);
-  }
-  throw error;
+function collectCloseErrors(errors: unknown[], error: unknown) {
+  errors.push(...(error instanceof AggregateError ? error.errors : [error]));
+}
+
+/**
+ * Owns the shared object-storage transports below an otherwise complete
+ * production adapter. Stores release their leases before transport shutdown;
+ * every phase still runs when an earlier close reports an error.
+ */
+export function createProductionStorageOwnershipBoundaryV1(
+  runtime: ProductionManimRuntimeAdapterV1,
+  stores: readonly (Closeable | undefined)[],
+  transports: readonly (Closeable | undefined)[],
+): ProductionManimRuntimeAdapterV1 {
+  let closeRequest: Promise<void> | undefined;
+  return {
+    ...runtime,
+    close() {
+      closeRequest ??= (async () => {
+        const errors: unknown[] = [];
+        await closeAll([runtime], "Could not close the production runtime.").catch((error: unknown) =>
+          collectCloseErrors(errors, error),
+        );
+        await closeAll(stores, "Could not close the production object stores.").catch((error: unknown) =>
+          collectCloseErrors(errors, error),
+        );
+        await closeAll(transports, "Could not close the production object transports.").catch((error: unknown) =>
+          collectCloseErrors(errors, error),
+        );
+        if (errors.length > 0) {
+          throw new AggregateError(errors, "Could not fully close production storage ownership.");
+        }
+      })();
+      return closeRequest;
+    },
+  };
 }
 
 async function cleanupInOrderAndThrow(
@@ -233,6 +279,15 @@ function renderExecutionBoundary(relay: DurableManimRenderCancellationRelayV1, w
   };
 }
 
+function assertObjectStorageCutoverOptions(options: DurablePostgresS3ProductionRuntimeOptionsV1["objectStorage"]) {
+  if (options.writeLane !== "immutable" && options.writeLane !== "versioned") {
+    throw new TypeError("Production object-storage write lane is invalid.");
+  }
+  if (options.writeLane === "versioned" && options.legacy === undefined) {
+    throw new TypeError("The versioned production write lane requires legacy object storage.");
+  }
+}
+
 /** Build the shipped PostgreSQL + private S3 runtime and its durable maintenance workers. */
 export async function createDurablePostgresS3ProductionRuntimeV1(
   options: DurablePostgresS3ProductionRuntimeOptionsV1,
@@ -248,6 +303,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   }
   assertProductionPoolConfig(options.database.migrationPoolConfig, "Migration");
   assertProductionPoolConfig(options.database.runtimePoolConfig, "Runtime");
+  assertObjectStorageCutoverOptions(options.objectStorage);
   await migrate(options.database);
   signal?.throwIfAborted();
 
@@ -257,11 +313,20 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   let projectPngRepository: PostgresProjectPngRepositoryV1 | undefined;
   let mediaRepository: PostgresArtifactRepositoryV1 | undefined;
   let snapshotRepository: PostgresSnapshotPublicationRepositoryV1 | undefined;
-  let objectTransport: PrivateVersionedS3BucketTransportV1 | undefined;
-  let blobs: S3ContentBlobStoreV1 | undefined;
-  let projectPngs: S3ProjectPngStoreV1 | undefined;
-  let artifacts: S3SnapshotArtifactStoreV1 | undefined;
-  let mediaArtifacts: S3ArtifactReaderV1 | undefined;
+  let immutableTransport: PrivateImmutableS3BucketTransportV1 | undefined;
+  let legacyTransport: PrivateVersionedS3BucketTransportV1 | undefined;
+  let immutableBlobs: ImmutableS3SourceBlobStoreV1 | undefined;
+  let legacyBlobs: S3ContentBlobStoreV1 | undefined;
+  let immutableProjectPngs: ImmutableS3ProjectPngStoreV1 | undefined;
+  let legacyProjectPngs: S3ProjectPngStoreV1 | undefined;
+  let immutableArtifacts: S3ImmutableSnapshotArtifactStoreV1 | undefined;
+  let legacyArtifacts: S3SnapshotArtifactStoreV1 | undefined;
+  let immutableMediaArtifacts: S3ImmutableRenderArtifactStoreV1 | undefined;
+  let legacyMediaArtifacts: S3ArtifactReaderV1 | undefined;
+  let blobs: RoutedSourceContentBlobStoreV1 | undefined;
+  let projectPngs: RoutedProjectPngBlobStoreV1 | undefined;
+  let artifacts: RollingSnapshotArtifactStoreV1 | undefined;
+  let mediaArtifacts: RoutedRenderArtifactStoreV1 | undefined;
   try {
     repository = new PostgresWorkspaceSourceRepositoryV1({
       poolConfig: options.database.runtimePoolConfig,
@@ -287,30 +352,67 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       poolConfig: options.database.runtimePoolConfig,
       statementTimeoutMs: options.database.statementTimeoutMs,
     });
-    objectTransport = new PrivateVersionedS3BucketTransportV1({
-      bucket: options.objectStorage.bucket,
-      clientConfig: options.objectStorage.clientConfig,
+    immutableTransport = new PrivateImmutableS3BucketTransportV1({
+      bucket: options.objectStorage.immutable.bucket,
       deployment: "production",
+      provider: options.objectStorage.immutable.provider,
     });
-    blobs = new S3ContentBlobStoreV1({ transport: objectTransport });
-    projectPngs = new S3ProjectPngStoreV1({ transport: objectTransport });
-    artifacts = new S3SnapshotArtifactStoreV1({ transport: objectTransport });
-    mediaArtifacts = new S3ArtifactReaderV1({ transport: objectTransport });
+    if (options.objectStorage.legacy) {
+      legacyTransport = new PrivateVersionedS3BucketTransportV1({
+        bucket: options.objectStorage.legacy.bucket,
+        clientConfig: options.objectStorage.legacy.clientConfig,
+        deployment: "production",
+      });
+    }
+
+    immutableBlobs = new ImmutableS3SourceBlobStoreV1({ transport: immutableTransport });
+    immutableProjectPngs = new ImmutableS3ProjectPngStoreV1({ transport: immutableTransport });
+    immutableArtifacts = new S3ImmutableSnapshotArtifactStoreV1({ transport: immutableTransport });
+    immutableMediaArtifacts = new S3ImmutableRenderArtifactStoreV1({ transport: immutableTransport });
+    if (legacyTransport) {
+      legacyBlobs = new S3ContentBlobStoreV1({ transport: legacyTransport });
+      legacyProjectPngs = new S3ProjectPngStoreV1({ transport: legacyTransport });
+      legacyArtifacts = new S3SnapshotArtifactStoreV1({ transport: legacyTransport });
+      legacyMediaArtifacts = new S3ArtifactReaderV1({ transport: legacyTransport });
+    }
+
+    blobs = new RoutedSourceContentBlobStoreV1({
+      immutable: immutableBlobs,
+      ...(legacyBlobs ? { legacy: legacyBlobs } : {}),
+      writeLane: options.objectStorage.writeLane,
+    });
+    projectPngs = new RoutedProjectPngBlobStoreV1({
+      immutable: immutableProjectPngs,
+      ...(legacyProjectPngs ? { legacy: legacyProjectPngs } : {}),
+      writeLane: options.objectStorage.writeLane,
+    });
+    artifacts = new RollingSnapshotArtifactStoreV1({
+      immutable: immutableArtifacts,
+      ...(legacyArtifacts ? { versioned: legacyArtifacts } : {}),
+      writeLane: options.objectStorage.writeLane,
+    });
+    mediaArtifacts = new RoutedRenderArtifactStoreV1({
+      immutable: immutableMediaArtifacts,
+      ...(legacyMediaArtifacts ? { legacy: legacyMediaArtifacts } : {}),
+      writeLane: options.objectStorage.writeLane,
+    });
   } catch (error) {
-    return cleanupAndThrow(
+    return cleanupInOrderAndThrow(
       error,
       [
-        mediaArtifacts,
-        artifacts,
-        projectPngs,
-        blobs,
-        objectTransport,
-        mediaRepository,
-        snapshotRepository,
-        projectPngRepository,
-        renderRepository,
-        editorDocuments,
-        repository,
+        [mediaArtifacts, artifacts, projectPngs, blobs],
+        [
+          immutableMediaArtifacts,
+          legacyMediaArtifacts,
+          immutableArtifacts,
+          legacyArtifacts,
+          immutableProjectPngs,
+          legacyProjectPngs,
+          immutableBlobs,
+          legacyBlobs,
+        ],
+        [immutableTransport, legacyTransport],
+        [mediaRepository, snapshotRepository, projectPngRepository, renderRepository, editorDocuments, repository],
       ],
       "Production storage composition and cleanup failed.",
     );
@@ -418,20 +520,13 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       tenantId: options.tenantId,
     });
   } catch (error) {
-    return cleanupAndThrow(
+    return cleanupInOrderAndThrow(
       error,
       [
-        renderWorker ?? renderExecutor ?? projectPngs,
-        renders ?? renderRepository,
-        snapshots ?? publisher ?? artifacts,
-        ...(snapshots ? [] : [snapshotFactory]),
-        ...(publisher ? [] : [snapshotRepository]),
-        mediaArtifacts,
-        mediaRepository,
-        projectPngRepository,
-        blobs,
-        editorDocuments,
-        repository,
+        [renderWorker ?? renderExecutor, renders, snapshots ?? publisher, ...(snapshots ? [] : [snapshotFactory])],
+        [mediaArtifacts, artifacts, projectPngs, blobs],
+        [immutableTransport, legacyTransport],
+        [mediaRepository, snapshotRepository, projectPngRepository, renderRepository, editorDocuments, repository],
       ],
       "Production runtime service composition and cleanup failed.",
     );
@@ -474,21 +569,14 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
     await runtime.initialize(signal);
     renderWorker.start();
   } catch (error) {
-    return cleanupAndThrow(
+    return cleanupInOrderAndThrow(
       error,
-      runtime
-        ? [projectPngRepository, runtime]
-        : [
-            renderExecution ?? renderWorker,
-            renders,
-            snapshots,
-            mediaArtifacts,
-            mediaRepository,
-            projectPngRepository,
-            blobs,
-            editorDocuments,
-            repository,
-          ],
+      [
+        runtime ? [runtime] : [renderExecution ?? renderWorker, renders, snapshots],
+        [mediaArtifacts, artifacts, projectPngs, blobs],
+        [immutableTransport, legacyTransport],
+        [mediaRepository, snapshotRepository, projectPngRepository, renderRepository, editorDocuments, repository],
+      ],
       "Production durable runtime construction and cleanup failed.",
     );
   }
@@ -549,28 +637,50 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
     );
     retentionMaintenance = retention;
     const maintenance = {
-      close: async () => {
-        const errors: unknown[] = [];
-        await closeAll(
+      close: () =>
+        closeAll(
           [retention, mediaGc, artifactGc, projectPngGc, sourceGc],
           "Could not fully close durable storage maintenance.",
-        ).catch((error: unknown) => errors.push(error));
-        await projectPngRepository.close().catch((error: unknown) => errors.push(error));
-        if (errors.length > 0) {
-          throw new AggregateError(errors, "Could not fully close durable storage maintenance.");
-        }
-      },
+        ),
       ready: () =>
         sourceGc.ready() && projectPngGc.ready() && artifactGc.ready() && mediaGc.ready() && retention.ready(),
     };
-    return createDurableProductionManimRuntimeAdapterV1(runtime, maintenance);
+    const adapter = createDurableProductionManimRuntimeAdapterV1(runtime, maintenance);
+    return createProductionStorageOwnershipBoundaryV1(
+      adapter,
+      [
+        mediaArtifacts,
+        artifacts,
+        projectPngs,
+        blobs,
+        projectPngRepository,
+        mediaRepository,
+        snapshotRepository,
+        renderRepository,
+        editorDocuments,
+        repository,
+      ],
+      [immutableTransport, legacyTransport],
+    );
   } catch (error) {
     return cleanupInOrderAndThrow(
       error,
       [
         [retentionMaintenance, mediaMaintenance, snapshotMaintenance, projectPngMaintenance, sourceMaintenance],
-        [projectPngRepository],
         [runtime],
+        [
+          mediaArtifacts,
+          artifacts,
+          projectPngs,
+          blobs,
+          projectPngRepository,
+          mediaRepository,
+          snapshotRepository,
+          renderRepository,
+          editorDocuments,
+          repository,
+        ],
+        [immutableTransport, legacyTransport],
       ],
       "Production runtime maintenance composition and cleanup failed.",
     );
