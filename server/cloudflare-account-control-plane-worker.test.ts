@@ -47,6 +47,12 @@ function callbackRequest(ip = "2001:db8::4") {
   });
 }
 
+function accountRequest() {
+  return new Request(`${origin}/api/account/session`, {
+    headers: { cookie: `__Host-poietra_session=${opaqueToken}`, origin, "sec-fetch-site": "same-origin" },
+  });
+}
+
 function harness() {
   const forwarded = vi.fn(async () => new Response(null, { status: 204 }));
   const createControlPlane = vi.fn(() => ({ fetch: forwarded }));
@@ -82,12 +88,48 @@ describe("Cloudflare OIDC account control-plane Worker", () => {
 
     await expect(worker.fetch(start, env.value)).resolves.toMatchObject({ status: 204 });
     await expect(worker.fetch(callback, env.value)).resolves.toMatchObject({ status: 204 });
+    await expect(worker.fetch(accountRequest(), env.value)).resolves.toMatchObject({ status: 204 });
 
     expect(env.start.limit).toHaveBeenCalledWith({ key: "oidc:start:203.0.113.4" });
     expect(env.callback.limit).toHaveBeenCalledWith({ key: "oidc:callback:2001:db8::4" });
     expect(createControlPlane).toHaveBeenCalledOnce();
     expect(forwarded).toHaveBeenNthCalledWith(1, start, env.value);
     expect(forwarded).toHaveBeenNthCalledWith(2, callback, env.value);
+    expect(forwarded).toHaveBeenNthCalledWith(3, expect.any(Request), env.value);
+  });
+
+  it("keeps an existing account session independent from OIDC and connecting-IP bindings", async () => {
+    const env = environment();
+    const accountOnlyEnvironment = {
+      HYPERDRIVE: env.value.HYPERDRIVE,
+      POIETRA_PUBLIC_ORIGIN: env.value.POIETRA_PUBLIC_ORIGIN,
+    } as CloudflareAccountControlPlaneEnvironmentV1;
+    const { createControlPlane, forwarded, worker } = harness();
+
+    const response = await worker.fetch(accountRequest(), accountOnlyEnvironment);
+
+    expect(response.status).toBe(204);
+    expect(createControlPlane).toHaveBeenCalledOnce();
+    expect(forwarded).toHaveBeenCalledOnce();
+    expect(env.start.limit).not.toHaveBeenCalled();
+    expect(env.callback.limit).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed account requests before creating request-scoped storage", async () => {
+    const env = environment();
+    const { createControlPlane, worker } = harness();
+    const requests = [
+      new Request(`${origin}/api/account/session?organization=organization-a`),
+      new Request(`${origin}/api/account/session`, { method: "POST" }),
+      new Request(`${origin}/api/account/session`, { headers: { origin: "https://attacker.example" } }),
+    ];
+
+    const responses = await Promise.all(requests.map((request) => worker.fetch(request, env.value)));
+
+    expect(responses.map(({ status }) => status)).toEqual([400, 405, 403]);
+    expect(createControlPlane).not.toHaveBeenCalled();
+    expect(env.start.limit).not.toHaveBeenCalled();
+    expect(env.callback.limit).not.toHaveBeenCalled();
   });
 
   it("returns a non-cacheable 429 without consuming a rejected callback", async () => {

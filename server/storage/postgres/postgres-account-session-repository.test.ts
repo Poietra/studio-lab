@@ -70,6 +70,128 @@ describe("PostgresAccountSessionRepositoryV1", () => {
     await expect(repository.resolveActiveSession(Buffer.alloc(32))).resolves.toBeNull();
   });
 
+  it("reads one bounded, deterministic account bootstrap snapshot", async () => {
+    const hash = Buffer.alloc(32, 10);
+    const fixture = fakePool((text, values) => {
+      expect(text).toContain("session.revoked_at IS NULL");
+      expect(text).toContain("session.expires_at > clock_timestamp()");
+      expect(text).toContain("account.status = 'active'");
+      expect(text).toContain("membership.status = 'active'");
+      expect(text).toContain("organization.status = 'active'");
+      expect(text).toContain('ORDER BY membership.tenant_id COLLATE "C"');
+      expect(text).toContain("LIMIT 257");
+      expect(values).toHaveLength(1);
+      expect(Buffer.compare(values[0] as Buffer, hash)).toBe(0);
+      return {
+        rowCount: 2,
+        rows: [
+          {
+            active_organization_id: "organization-b",
+            organization_display_name: "Organization A",
+            organization_id: "organization-a",
+            organization_role: "billing",
+            user_display_name: "Ada Lovelace",
+            user_id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3",
+          },
+          {
+            active_organization_id: "organization-b",
+            organization_display_name: "Organization B",
+            organization_id: "organization-b",
+            organization_role: "owner",
+            user_display_name: "Ada Lovelace",
+            user_id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3",
+          },
+        ],
+      };
+    });
+    const repository = new PostgresAccountSessionRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.resolveAccountSession(hash)).resolves.toEqual({
+      activeOrganizationId: "organization-b",
+      organizations: [
+        { displayName: "Organization A", id: "organization-a", role: "billing" },
+        { displayName: "Organization B", id: "organization-b", role: "owner" },
+      ],
+      user: { displayName: "Ada Lovelace", id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3" },
+    });
+  });
+
+  it("keeps a valid session visible when its selected membership is inactive", async () => {
+    const fixture = fakePool(() => ({
+      rowCount: 1,
+      rows: [
+        {
+          active_organization_id: "organization-b",
+          organization_display_name: "Organization A",
+          organization_id: "organization-a",
+          organization_role: "member",
+          user_display_name: "Ada Lovelace",
+          user_id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3",
+        },
+      ],
+    }));
+    const repository = new PostgresAccountSessionRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.resolveAccountSession(Buffer.alloc(32))).resolves.toMatchObject({
+      activeOrganizationId: "organization-b",
+      organizations: [{ id: "organization-a" }],
+    });
+  });
+
+  it("returns null for an invalid session and rejects malformed bootstrap rows", async () => {
+    const missing = new PostgresAccountSessionRepositoryV1({
+      pool: fakePool(() => ({ rowCount: 0, rows: [] })).pool,
+    });
+    await expect(missing.resolveAccountSession(Buffer.alloc(32))).resolves.toBeNull();
+
+    for (const rows of [
+      [
+        {
+          active_organization_id: "organization-a",
+          organization_display_name: null,
+          organization_id: "organization-a",
+          organization_role: "owner",
+          user_display_name: "Ada Lovelace",
+          user_id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3",
+        },
+      ],
+      [
+        {
+          active_organization_id: "organization-a",
+          organization_display_name: "Organization B",
+          organization_id: "organization-b",
+          organization_role: "future-role",
+          user_display_name: "Ada Lovelace",
+          user_id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3",
+        },
+      ],
+    ]) {
+      const repository = new PostgresAccountSessionRepositoryV1({
+        pool: fakePool(() => ({ rowCount: rows.length, rows })).pool,
+      });
+      await expect(repository.resolveAccountSession(Buffer.alloc(32))).rejects.toThrow();
+    }
+  });
+
+  it("fails closed when the bounded query returns a 257th active organization", async () => {
+    const rows = Array.from({ length: 257 }, (_, index) => {
+      const organizationId = `organization-${index.toString().padStart(3, "0")}`;
+      return {
+        active_organization_id: "organization-000",
+        organization_display_name: `Organization ${index}`,
+        organization_id: organizationId,
+        organization_role: "member",
+        user_display_name: "Ada Lovelace",
+        user_id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3",
+      };
+    });
+    const repository = new PostgresAccountSessionRepositoryV1({
+      pool: fakePool(() => ({ rowCount: rows.length, rows })).pool,
+    });
+
+    await expect(repository.resolveAccountSession(Buffer.alloc(32))).rejects.toThrow(/too many/i);
+  });
+
   it("fails closed on duplicate or malformed persisted sessions", async () => {
     for (const rows of [
       [
@@ -92,6 +214,7 @@ describe("PostgresAccountSessionRepositoryV1", () => {
     const repository = new PostgresAccountSessionRepositoryV1({ pool: fixture.pool });
 
     await expect(repository.resolveActiveSession(Buffer.alloc(31))).rejects.toThrow(/exactly 32 bytes/i);
+    await expect(repository.resolveAccountSession(Buffer.alloc(31))).rejects.toThrow(/exactly 32 bytes/i);
     expect(fixture.pool.connect).not.toHaveBeenCalled();
   });
 });

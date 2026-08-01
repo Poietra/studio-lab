@@ -1,6 +1,8 @@
 import { LazyMotion } from "motion/react";
 import { type KeyboardEvent, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { AccountSessionBadge } from "./accounts/account-session-badge";
+import type { AccountSessionViewV1 } from "./accounts/account-session-contract";
 import { createClarificationContextFingerprint, MAX_CLARIFICATION_HISTORY } from "./ai/clarification";
 import {
   type ClarificationOption,
@@ -213,7 +215,7 @@ function isStudioEntityInsertion(record: ProgramRecord) {
   );
 }
 
-export function App() {
+export function App({ accountSession = null }: Readonly<{ accountSession?: AccountSessionViewV1 | null }>) {
   const shell = detectShell();
   const aiEndpointConfigured = Boolean(import.meta.env.VITE_POIETRA_AI_ENDPOINT);
   const {
@@ -295,7 +297,11 @@ export function App() {
     setVerifiedSourceDurationBasis,
     suspend: suspendEditor,
     undoProgram,
-  } = useEditorController();
+  } = useEditorController(
+    accountSession
+      ? { organizationId: accountSession.activeOrganization.id, userId: accountSession.user.id }
+      : undefined,
+  );
   const {
     reconcileRenderedSource,
     reimportWorkspace,
@@ -2344,6 +2350,7 @@ export function App() {
       <WorkspaceLauncher
         creationMode={shell === "Browser" ? "managed" : window.poietraDesktop ? "native-existing" : "existing"}
         error={workspaceError}
+        headerAccessory={accountSession ? <AccountSessionBadge session={accountSession} /> : null}
         isLoading={workspaceStatus === "loading"}
         mutation={workspaceMutation}
         mutationError={workspaceMutationError}
@@ -2401,6 +2408,7 @@ export function App() {
             ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-2 text-xs">
+            {accountSession ? <AccountSessionBadge className="hidden xl:flex" session={accountSession} /> : null}
             <button
               className="border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-wait disabled:text-zinc-600"
               disabled={workspaceIsRefreshing || sourceMutationPendingProjectId === activeProjectId}

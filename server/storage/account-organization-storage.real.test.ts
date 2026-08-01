@@ -118,6 +118,11 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
         sessionOrganizationId: "organization-active",
         subject: "active-owner",
       });
+      await expect(sessions.resolveAccountSession(activeHash)).resolves.toEqual({
+        activeOrganizationId: "organization-active",
+        organizations: [{ displayName: "Active organization", id: "organization-active", role: "owner" }],
+        user: { displayName: "Active owner", id: users.activeOwner },
+      });
       await expect(sessions.resolveActiveSession(expiredHash)).resolves.toBeNull();
       await expect(sessions.resolveActiveSession(revokedHash)).resolves.toBeNull();
       await expect(sessions.resolveActiveSession(cascadeHash)).resolves.toBeNull();

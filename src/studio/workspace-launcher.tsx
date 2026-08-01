@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 
 import { cn } from "../lib/cn";
 import type { ManimProjectCreationInput } from "../render-pipeline/client";
@@ -10,6 +10,7 @@ import type { WorkspaceMutation } from "./use-manim-workspace";
 type WorkspaceLauncherProps = Readonly<{
   creationMode: "existing" | "managed" | "native-existing";
   error: string | null;
+  headerAccessory?: ReactNode;
   isLoading: boolean;
   mutation: WorkspaceMutation;
   mutationError: string | null;
@@ -326,6 +327,7 @@ function WorkspaceCard({
 export function WorkspaceLauncher({
   creationMode,
   error,
+  headerAccessory,
   isLoading,
   mutation,
   mutationError,
@@ -427,8 +429,9 @@ export function WorkspaceLauncher({
 
   return (
     <main className="flex h-dvh min-h-0 flex-col bg-zinc-950 text-zinc-100">
-      <header className="flex min-h-12 shrink-0 items-center border-b border-zinc-800 px-4 py-2">
+      <header className="flex min-h-12 shrink-0 items-center justify-between gap-4 border-b border-zinc-800 px-4 py-2">
         <PoietraBrand />
+        {headerAccessory}
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto">

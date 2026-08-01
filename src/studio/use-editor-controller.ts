@@ -8,6 +8,7 @@ import {
   browserEditorSessionStorageAdapter,
   EDITOR_SESSION_STALE_SOURCE_MESSAGE,
   type EditorProgramRecord,
+  type EditorSessionAccountScope,
   type EditorSessionIdentity,
   type EditorSessionSnapshot,
   EditorSessionStore,
@@ -494,11 +495,11 @@ function resolveStateAction<T>(previous: T, next: SetStateAction<T>) {
   return typeof next === "function" ? (next as (value: T) => T)(previous) : next;
 }
 
-export function useEditorController() {
+export function useEditorController(accountScope?: EditorSessionAccountScope) {
   const [state, dispatch] = useReducer(editorControllerReducer, undefined, createInitialEditorState);
   const sessionStore = useRef<EditorSessionStore | null>(null);
   if (!sessionStore.current) {
-    sessionStore.current = new EditorSessionStore(browserEditorSessionStorageAdapter());
+    sessionStore.current = new EditorSessionStore(browserEditorSessionStorageAdapter(accountScope));
   }
   const activeSession = useRef<EditorSessionIdentity | null>(null);
   const stateRef = useRef(state);

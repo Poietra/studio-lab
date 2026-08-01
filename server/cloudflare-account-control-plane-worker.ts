@@ -1,10 +1,14 @@
 import {
+  ACCOUNT_SESSION_ROUTE_V1,
   createOidcAccountControlPlaneV1,
   OIDC_LOGIN_START_ROUTE_V1,
   type OidcAccountControlPlaneOptionsV1,
+  PostgresAccountSessionRepositoryV1,
   PostgresOidcLoginRepositoryV1,
 } from "./account-control-plane";
+import { createAccountSessionFetchRequestGuardV1 } from "./accounts/account-session-fetch";
 import { createOidcLoginFetchRequestGuardV1 } from "./accounts/oidc-login-fetch";
+import type { OidcProviderConfigV1 } from "./accounts/openid-client-provider";
 
 export interface CloudflareRateLimitBindingV1 {
   limit(input: Readonly<{ key: string }>): Promise<unknown>;
@@ -50,10 +54,17 @@ function safeHeaders() {
   });
 }
 
-function unavailableResponse(status: 429 | 503) {
+function unavailableResponse(status: 429 | 503, message = "Authentication is temporarily unavailable.") {
   const headers = safeHeaders();
   if (status === 429) headers.set("retry-after", "60");
-  return new Response(JSON.stringify({ error: "Authentication is temporarily unavailable." }), { headers, status });
+  return new Response(JSON.stringify({ error: message }), { headers, status });
+}
+
+function accountUnavailableResponse() {
+  const response = unavailableResponse(503, "Account access is temporarily unavailable.");
+  response.headers.set("cache-control", "private, no-store");
+  response.headers.set("vary", "Cookie");
+  return response;
 }
 
 function boundedString(value: unknown, name: string, maximum: number) {
@@ -124,7 +135,20 @@ function oidcOptions(environment: CloudflareAccountControlPlaneEnvironmentV1) {
   });
 }
 
-function configuredBindings(environment: CloudflareAccountControlPlaneEnvironmentV1) {
+function deferredOidcOptions(
+  environment: CloudflareAccountControlPlaneEnvironmentV1,
+  publicOrigin: string,
+): OidcProviderConfigV1 {
+  return {
+    clientAuthentication: environment.POIETRA_OIDC_CLIENT_AUTHENTICATION,
+    clientId: environment.POIETRA_OIDC_CLIENT_ID,
+    clientSecret: environment.POIETRA_OIDC_CLIENT_SECRET,
+    issuer: environment.POIETRA_OIDC_ISSUER,
+    publicOrigin,
+  };
+}
+
+function configuredOidcBindings(environment: CloudflareAccountControlPlaneEnvironmentV1) {
   const oidc = oidcOptions(environment);
   postgresConnectionString(environment);
   return Object.freeze({
@@ -149,11 +173,41 @@ export function createCloudflareAccountControlPlaneWorkerV1(
   const createControlPlane: AccountControlPlaneFactoryV1 =
     options.createControlPlane ?? ((controlPlaneOptions) => createOidcAccountControlPlaneV1(controlPlaneOptions));
   let controlPlane: AccountControlPlaneFetchV1 | null = null;
+  const controlPlaneFor = (oidc: OidcProviderConfigV1) => {
+    controlPlane ??= createControlPlane({
+      oidc,
+      repository: (requestEnvironment) =>
+        new PostgresOidcLoginRepositoryV1({
+          poolConfig: {
+            connectionString: postgresConnectionString(requestEnvironment),
+            max: 1,
+          },
+        }),
+      sessionRepository: (requestEnvironment) =>
+        new PostgresAccountSessionRepositoryV1({
+          poolConfig: {
+            connectionString: postgresConnectionString(requestEnvironment),
+            max: 1,
+          },
+        }),
+    });
+    return controlPlane;
+  };
 
   return Object.freeze({
     async fetch(request: Request, environment: CloudflareAccountControlPlaneEnvironmentV1) {
+      if (new URL(request.url).pathname === ACCOUNT_SESSION_ROUTE_V1) {
+        try {
+          const publicOrigin = boundedString(environment.POIETRA_PUBLIC_ORIGIN, "Public origin", 2_048);
+          const rejected = createAccountSessionFetchRequestGuardV1(publicOrigin).reject(request);
+          if (rejected) return rejected;
+          return await controlPlaneFor(deferredOidcOptions(environment, publicOrigin)).fetch(request, environment);
+        } catch {
+          return accountUnavailableResponse();
+        }
+      }
       try {
-        const bindings = configuredBindings(environment);
+        const bindings = configuredOidcBindings(environment);
         const rejected = createOidcLoginFetchRequestGuardV1(bindings.oidc.publicOrigin).reject(request);
         if (rejected) return rejected;
 
@@ -164,17 +218,7 @@ export function createCloudflareAccountControlPlaneWorkerV1(
           return unavailableResponse(429);
         }
 
-        controlPlane ??= createControlPlane({
-          oidc: bindings.oidc,
-          repository: (requestEnvironment) =>
-            new PostgresOidcLoginRepositoryV1({
-              poolConfig: {
-                connectionString: postgresConnectionString(requestEnvironment),
-                max: 1,
-              },
-            }),
-        });
-        return await controlPlane.fetch(request, environment);
+        return await controlPlaneFor(bindings.oidc).fetch(request, environment);
       } catch {
         return unavailableResponse(503);
       }
