@@ -5,6 +5,7 @@ import { ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM } from "./account-organizat
 import { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
 import { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
+import { EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM } from "./editor-document-schema";
 import workspaceSourceSqlV1 from "./migrations/0001_workspace_source.sql?raw";
 import renderSessionSqlV2 from "./migrations/0002_render_sessions.sql?raw";
 import snapshotPublicationSqlV3 from "./migrations/0003_snapshot_publications.sql?raw";
@@ -21,6 +22,7 @@ import oidcLoginSqlV13 from "./migrations/0013_oidc_login.sql?raw";
 import billingEntitlementSqlV14 from "./migrations/0014_billing_entitlements.sql?raw";
 import renderSessionUsageSqlV15 from "./migrations/0015_render_session_usage.sql?raw";
 import stripeBillingSqlV16 from "./migrations/0016_stripe_billing_control_plane.sql?raw";
+import editorDocumentSqlV17 from "./migrations/0017_editor_documents.sql?raw";
 import { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
@@ -37,6 +39,7 @@ import { STRIPE_BILLING_MIGRATION_V16_CHECKSUM } from "./stripe-billing-schema";
 export { ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM } from "./account-organization-schema";
 export { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
 export { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
+export { EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM } from "./editor-document-schema";
 export { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 export { SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM } from "./postgres-snapshot-publication-repository";
 export { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
@@ -85,6 +88,7 @@ export const OIDC_LOGIN_MIGRATION_V13_SOURCE = oidcLoginSqlV13;
 export const BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE = billingEntitlementSqlV14;
 export const RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE = renderSessionUsageSqlV15;
 export const STRIPE_BILLING_MIGRATION_V16_SOURCE = stripeBillingSqlV16;
+export const EDITOR_DOCUMENT_MIGRATION_V17_SOURCE = editorDocumentSqlV17;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -247,6 +251,16 @@ const stripeBillingMigrationV16: DurableStorageMigration<16> = Object.freeze({
   version: 16,
 });
 
+const editorDocumentMigrationV17: DurableStorageMigration<17> = Object.freeze({
+  checksum: EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM,
+  checksumMismatch: "The editor-document migration checksum is invalid.",
+  installedMismatch: "The installed editor-document schema does not match migration v17.",
+  missingPrerequisite: "Editor-document migration v17 requires durable storage migrations v1 through v16.",
+  prerequisiteMismatch: "Editor-document migration v17 requires exact durable storage migrations v1 through v16.",
+  source: EDITOR_DOCUMENT_MIGRATION_V17_SOURCE,
+  version: 17,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
@@ -264,6 +278,7 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   billingEntitlementMigrationV14,
   renderSessionUsageMigrationV15,
   stripeBillingMigrationV16,
+  editorDocumentMigrationV17,
 ]);
 
 function validateSource(migration: DurableStorageMigration) {
@@ -470,6 +485,14 @@ export function applyOidcLoginMigrationV13(pool: Pool, source: string) {
     accountOrganizationMigrationV11,
     accountSessionMigrationV12,
   ]);
+}
+
+export function applyEditorDocumentMigrationV17(pool: Pool, source: string) {
+  return applyMigration(
+    pool,
+    { ...editorDocumentMigrationV17, source },
+    BUNDLED_DURABLE_STORAGE_MIGRATIONS.slice(0, -1),
+  );
 }
 
 /** Apply every bundled migration in version order without encoding the count in the public API. */
