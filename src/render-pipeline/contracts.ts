@@ -4,29 +4,19 @@ import type { RuntimeSceneState, StaticSemanticState } from "../studio/model";
 import { canonicalOperationSchema } from "../studio/operation-registry";
 import type { CanonicalEditProgram } from "../studio/operations";
 import { runtimeSceneStateSchema, staticSemanticStateSchema } from "../studio/state-schema";
+import { manimProjectIdSchema, manimSceneNameSchema, manimSourcePathSchema } from "./manim-identity-contract";
+
+export {
+  isManimSourcePath,
+  MANIM_PROJECT_ID_PATTERN,
+  MAX_MANIM_SCENE_NAME_LENGTH_V1,
+  manimProjectIdSchema,
+  manimSceneNameSchema,
+  manimSourcePathSchema,
+} from "./manim-identity-contract";
 
 const finiteNumber = z.number().finite();
-export const MANIM_PROJECT_ID_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/;
-export const manimProjectIdSchema = z
-  .string()
-  .regex(MANIM_PROJECT_ID_PATTERN, "Project ID must be an opaque lower-case identifier.");
 export const manimProjectNameSchema = z.string().trim().min(1).max(120);
-export function isManimSourcePath(value: string) {
-  if (
-    value.length === 0 ||
-    value.length > 500 ||
-    /[\u0000-\u001f\u007f]/.test(value) ||
-    value.includes("\\") ||
-    value.startsWith("/") ||
-    /^[A-Za-z]:/.test(value) ||
-    !value.endsWith(".py")
-  )
-    return false;
-  return value.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
-}
-export const manimSourcePathSchema = z
-  .string()
-  .refine(isManimSourcePath, "Source path must be a normalized relative Python file path.");
 const resolvedAnchorSchema = z.object({
   capturedPlayhead: finiteNumber,
   evidence: z.array(z.string().max(500)).max(32),
@@ -78,13 +68,13 @@ export const canonicalEditProgramSchemaV1 = z.object({
 const programRenderRequestBaseSchema = z.object({
   destination: z
     .object({
-      sceneName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+      sceneName: manimSceneNameSchema,
       sourcePath: manimSourcePathSchema,
     })
     .strict()
     .nullable(),
   projectId: manimProjectIdSchema,
-  sceneName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+  sceneName: manimSceneNameSchema,
   sourceBindings: z
     .array(
       z
@@ -242,7 +232,7 @@ export const renderCommitRequestSchema = z
     programBatchId: z.string().min(1).max(240),
     projectId: manimProjectIdSchema,
     renderRequestId: z.string().min(1).max(240),
-    sceneName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+    sceneName: manimSceneNameSchema,
     sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
     sourcePath: manimSourcePathSchema,
   })
@@ -466,7 +456,7 @@ export const renderSessionViewSchema: z.ZodType<RenderSessionView> = z
     programTransactionId: z.string(),
     renderRequestId: z.string(),
     progress: finiteNumber.min(0).max(1),
-    sceneName: z.string(),
+    sceneName: manimSceneNameSchema,
     sourceAction: renderSourceActionViewSchema.nullable(),
     sourcePath: manimSourcePathSchema,
     status: renderSessionStatusSchema,
@@ -503,7 +493,7 @@ export const manimWorkspaceSourceSchema: z.ZodType<ManimWorkspaceSource> = z
       z
         .object({
           anchors: z.array(finiteNumber.nonnegative()),
-          name: z.string(),
+          name: manimSceneNameSchema,
           nextSceneId: z.string().nullable(),
           runtimeSceneState: runtimeSceneStateSchema,
           sceneId: z.string(),
@@ -630,10 +620,7 @@ export const manimThumbnailStatusSchema: z.ZodType<ManimThumbnailStatus> = z
     generatedAt: z.string().datetime().nullable(),
     imageKind: z.enum(["empty", "rendered", "semantic"]),
     projectId: manimProjectIdSchema,
-    sceneName: z
-      .string()
-      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
-      .nullable(),
+    sceneName: manimSceneNameSchema.nullable(),
     sourceHash: z
       .string()
       .regex(/^[0-9a-f]{64}$/)

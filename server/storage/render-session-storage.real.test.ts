@@ -17,6 +17,7 @@ import {
 } from "./billing-entitlement-real-test-fixture";
 import {
   applyBundledDurableStorageMigrations,
+  applyBundledDurableStorageMigrationsThrough,
   RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_SOURCE,
   RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE,
 } from "./postgres/migrate";
@@ -492,7 +493,26 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
 
     try {
       await verifyRenderCpuFailureMigration(setupPool);
+      await applyBundledDurableStorageMigrationsThrough(setupPool, 18);
+      const legacySceneNameConstraint = await setupPool.query<{ definition: string }>(
+        `SELECT pg_get_constraintdef(oid) AS definition
+           FROM pg_constraint
+          WHERE conrelid = 'public.render_sessions'::regclass
+            AND conname = 'render_sessions_scene_name_check'`,
+      );
+      expect(legacySceneNameConstraint.rows).toEqual([
+        { definition: expect.stringContaining("char_length(scene_name) <= 128") },
+      ]);
       await applyBundledDurableStorageMigrations(setupPool);
+      const expandedSceneNameConstraint = await setupPool.query<{ definition: string }>(
+        `SELECT pg_get_constraintdef(oid) AS definition
+           FROM pg_constraint
+          WHERE conrelid = 'public.render_sessions'::regclass
+            AND conname = 'render_sessions_scene_name_v19'`,
+      );
+      expect(expandedSceneNameConstraint.rows).toEqual([
+        { definition: expect.stringContaining("char_length(scene_name) <= 240") },
+      ]);
       await setupPool.query(
         `CREATE TABLE public.render_session_e2e_broker_jobs (
            job_id text PRIMARY KEY,
@@ -510,6 +530,55 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
         tenantId,
       });
       const originalHead = await sources.readSourceHead(tenantId, projectId, "main.py");
+      const sceneNameBoundarySessions: string[] = [];
+      for (const length of [128, 129, 240]) {
+        const boundarySessionId = randomUUID();
+        const sceneName = `S${"a".repeat(length - 1)}`;
+        await expect(
+          renders.createSession({
+            commitCorrelationKey: `scene-name-boundary-${length}`,
+            executionTimeoutMs: 120_000,
+            id: boundarySessionId,
+            originalHead,
+            patch: { anchorLine: 4, anchorLines: [4], insertedCode: "        self.wait(2)\n" },
+            patchedBlob,
+            programBatchId: `batch-scene-name-${length}`,
+            programTransactionId: `transaction-scene-name-${length}`,
+            renderRequestId: `request-scene-name-${length}`,
+            sceneName,
+            tenantId,
+          }),
+        ).resolves.toMatchObject({ sceneName });
+        sceneNameBoundarySessions.push(boundarySessionId);
+      }
+      await expect(
+        renders.createSession({
+          commitCorrelationKey: "scene-name-boundary-241",
+          executionTimeoutMs: 120_000,
+          id: randomUUID(),
+          originalHead,
+          patch: { anchorLine: 4, anchorLines: [4], insertedCode: "        self.wait(2)\n" },
+          patchedBlob,
+          programBatchId: "batch-scene-name-241",
+          programTransactionId: "transaction-scene-name-241",
+          renderRequestId: "request-scene-name-241",
+          sceneName: `S${"a".repeat(240)}`,
+          tenantId,
+        }),
+      ).rejects.toThrow("Scene name is invalid.");
+      await expect(
+        setupPool.query(
+          `UPDATE public.render_sessions
+              SET scene_name = $3
+            WHERE tenant_id = $1 AND session_id = $2::uuid`,
+          [tenantId, sceneNameBoundarySessions.at(-1), `S${"a".repeat(240)}`],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+      for (const boundarySessionId of sceneNameBoundarySessions) {
+        await expect(renders.cancelSession(tenantId, boundarySessionId)).resolves.toMatchObject({
+          status: "cancelled",
+        });
+      }
       const guardedSessionId = randomUUID();
       await renders.createSession({
         commitCorrelationKey: "usage-guard-candidate",

@@ -25,6 +25,7 @@ import renderSessionUsageSqlV15 from "./migrations/0015_render_session_usage.sql
 import stripeBillingSqlV16 from "./migrations/0016_stripe_billing_control_plane.sql?raw";
 import editorDocumentSqlV17 from "./migrations/0017_editor_documents.sql?raw";
 import editorMutationSqlV18 from "./migrations/0018_editor_mutation_semantics.sql?raw";
+import renderSessionSceneNameSqlV19 from "./migrations/0019_render_session_scene_name.sql?raw";
 import { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
@@ -34,6 +35,7 @@ import { WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM } from "./postgres-workspace-sou
 import { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
 import { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-session-cpu-failure-schema";
 import { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
+import { RENDER_SESSION_SCENE_NAME_MIGRATION_V19_CHECKSUM } from "./render-session-scene-name-schema";
 import { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-usage-schema";
 import { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
 import { STRIPE_BILLING_MIGRATION_V16_CHECKSUM } from "./stripe-billing-schema";
@@ -48,6 +50,7 @@ export { SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM } from "./postgres-snapshot-
 export { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
 export { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-session-cpu-failure-schema";
 export { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
+export { RENDER_SESSION_SCENE_NAME_MIGRATION_V19_CHECKSUM } from "./render-session-scene-name-schema";
 export { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-usage-schema";
 export { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
 export { STRIPE_BILLING_MIGRATION_V16_CHECKSUM } from "./stripe-billing-schema";
@@ -93,6 +96,7 @@ export const RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE = renderSessionUsageSqlV1
 export const STRIPE_BILLING_MIGRATION_V16_SOURCE = stripeBillingSqlV16;
 export const EDITOR_DOCUMENT_MIGRATION_V17_SOURCE = editorDocumentSqlV17;
 export const EDITOR_MUTATION_MIGRATION_V18_SOURCE = editorMutationSqlV18;
+export const RENDER_SESSION_SCENE_NAME_MIGRATION_V19_SOURCE = renderSessionSceneNameSqlV19;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -275,6 +279,17 @@ const editorMutationMigrationV18: DurableStorageMigration<18> = Object.freeze({
   version: 18,
 });
 
+const renderSessionSceneNameMigrationV19: DurableStorageMigration<19> = Object.freeze({
+  checksum: RENDER_SESSION_SCENE_NAME_MIGRATION_V19_CHECKSUM,
+  checksumMismatch: "The render-session Scene-name migration checksum is invalid.",
+  installedMismatch: "The installed render-session Scene-name schema does not match migration v19.",
+  missingPrerequisite: "Render-session Scene-name migration v19 requires durable storage migrations v1 through v18.",
+  prerequisiteMismatch:
+    "Render-session Scene-name migration v19 requires exact durable storage migrations v1 through v18.",
+  source: RENDER_SESSION_SCENE_NAME_MIGRATION_V19_SOURCE,
+  version: 19,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
@@ -294,6 +309,7 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   stripeBillingMigrationV16,
   editorDocumentMigrationV17,
   editorMutationMigrationV18,
+  renderSessionSceneNameMigrationV19,
 ]);
 
 function bundledMigrationsThrough(version: number) {
@@ -518,6 +534,10 @@ export function applyEditorDocumentMigrationV17(pool: Pool, source: string) {
 
 export function applyEditorMutationMigrationV18(pool: Pool, source: string) {
   return applyMigration(pool, { ...editorMutationMigrationV18, source }, bundledMigrationsBefore(18));
+}
+
+export function applyRenderSessionSceneNameMigrationV19(pool: Pool, source: string) {
+  return applyMigration(pool, { ...renderSessionSceneNameMigrationV19, source }, bundledMigrationsBefore(19));
 }
 
 /** Apply bundled migrations in order through one exact, validated catalog version. */

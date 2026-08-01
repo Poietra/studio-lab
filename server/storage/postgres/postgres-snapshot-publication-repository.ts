@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 
 import type { Pool, PoolClient, PoolConfig, QueryResultRow } from "pg";
 
-import { manimProjectIdSchema, manimSourcePathSchema } from "../../../src/render-pipeline/contracts";
+import {
+  manimProjectIdSchema,
+  manimSceneNameSchema,
+  manimSourcePathSchema,
+} from "../../../src/render-pipeline/manim-identity-contract";
 import { HttpError } from "../../http/json";
 import { manimTenantIdSchema } from "../../manim-request-principal";
 import {
@@ -140,10 +144,9 @@ function sourcePath(value: string) {
 }
 
 function sceneName(value: string) {
-  if (typeof value !== "string" || value.length > 240 || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
-    throw new TypeError("Scene name is invalid.");
-  }
-  return value;
+  const parsed = manimSceneNameSchema.safeParse(value);
+  if (!parsed.success) throw new TypeError("Scene name is invalid.");
+  return parsed.data;
 }
 
 function sha256(value: string, name: string) {

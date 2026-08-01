@@ -1,11 +1,12 @@
 import { z } from "zod";
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
 import { sha256V1Schema } from "../engine/primitives";
+import { canonicalEditProgramSchemaV1 } from "../render-pipeline/contracts";
 import {
-  canonicalEditProgramSchemaV1,
   manimProjectIdSchema,
+  manimSceneNameSchema,
   manimSourcePathSchema,
-} from "../render-pipeline/contracts";
+} from "../render-pipeline/manim-identity-contract";
 import type { CanonicalEditProgram } from "../studio/operations";
 import {
   type EditorEditMutationV1,
@@ -82,10 +83,6 @@ export const editorDocumentKeySchemaV1 = z
   .string()
   .regex(/^[0-9a-f]{64}$/u, "Editor document key must be a lower-case SHA-256 digest.");
 
-const editorSceneNameSchemaV1 = z
-  .string()
-  .max(240)
-  .regex(/^[A-Za-z_][A-Za-z0-9_]*$/u, "Scene name must be a Python identifier.");
 const editorUuidSchemaV1 = z.uuid();
 const editorTenantIdSchemaV1 = z
   .string()
@@ -116,7 +113,7 @@ const editorIsoDateStringSchemaV1 = z.string().refine((value) => {
 
 export const editorDocumentOpenRequestSchemaV1 = z
   .object({
-    sceneName: editorSceneNameSchemaV1,
+    sceneName: manimSceneNameSchema,
     sourceHash: sha256V1Schema,
     sourcePath: manimSourcePathSchema,
   })

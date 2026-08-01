@@ -547,6 +547,25 @@ describe("Manim API client contracts", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [128, true],
+    [129, true],
+    [240, true],
+    [241, false],
+  ] as const)("enforces the canonical %i-character Scene-name boundary before fetch", async (length, accepted) => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify(session({ projectId: "project-a" })), { status: 202 }));
+    vi.stubGlobal("fetch", fetch);
+    const request = { ...renderRequest(), sceneName: `S${"a".repeat(length - 1)}` };
+
+    if (accepted) {
+      await expect(startManimRender(request)).resolves.toMatchObject({ projectId: "project-a" });
+      expect(fetch).toHaveBeenCalledOnce();
+    } else {
+      await expect(startManimRender(request)).rejects.toThrow(/request.*API contract/i);
+      expect(fetch).not.toHaveBeenCalled();
+    }
+  });
+
   it("starts a render through the request's configured project", async () => {
     const fetch = vi.fn(async (url: string) => {
       expect(url).toBe("/api/manim/projects/project-a/renders");

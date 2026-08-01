@@ -10,9 +10,46 @@ import {
   RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM,
   RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM,
   RENDER_SESSION_MIGRATION_V2_CHECKSUM,
+  RENDER_SESSION_SCENE_NAME_MIGRATION_V19_CHECKSUM,
 } from "./postgres-render-session-repository";
 import { WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1 } from "./postgres-workspace-source-repository";
 import { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-usage-schema";
+
+function renderSessionInput(sceneName: string) {
+  const originalDigest = "1".repeat(64);
+  const patchedDigest = "2".repeat(64);
+  return {
+    commitCorrelationKey: "correlation-a",
+    executionTimeoutMs: 60_000,
+    id: "00000000-0000-4000-8000-000000000001",
+    originalHead: {
+      blob: {
+        byteSize: 128,
+        digest: originalDigest,
+        etag: '"original"',
+        objectKey: `tenants/tenant-a/sources/${originalDigest}`,
+        versionId: "original-version",
+      },
+      generation: 1n,
+      projectId: "project-a",
+      sourcePath: "main.py",
+      tenantId: "tenant-a",
+    },
+    patch: { anchorLine: 1, anchorLines: [1], insertedCode: "self.wait(1)" },
+    patchedBlob: {
+      byteSize: 144,
+      digest: patchedDigest,
+      etag: '"patched"',
+      objectKey: `tenants/tenant-a/sources/${patchedDigest}`,
+      versionId: "patched-version",
+    },
+    programBatchId: "batch-a",
+    programTransactionId: "transaction-a",
+    renderRequestId: "request-a",
+    sceneName,
+    tenantId: "tenant-a",
+  } as const;
+}
 
 describe("Postgres render-session transitions", () => {
   it("reports ready only when render and billing migrations match", async () => {
@@ -25,9 +62,10 @@ describe("Postgres render-session transitions", () => {
       { checksum: RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM, version: 9 },
       { checksum: BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM, version: 14 },
       { checksum: RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM, version: 15 },
+      { checksum: RENDER_SESSION_SCENE_NAME_MIGRATION_V19_CHECKSUM, version: 19 },
     ];
     const query = vi.fn(async (text: string) => {
-      expect(text).toContain("version IN (2, 5, 6, 7, 8, 9, 14, 15)");
+      expect(text).toContain("version IN (2, 5, 6, 7, 8, 9, 14, 15, 19)");
       return { rowCount: rows.length, rows };
     });
     const pool = {
@@ -175,6 +213,46 @@ describe("Postgres render-session transitions", () => {
       ),
     ).toBe(false);
     expect(release).toHaveBeenCalledOnce();
+  });
+
+  it.each([128, 129, 240])("accepts a %i-character Scene name before acquiring durable storage", async (length) => {
+    const connect = vi.fn(async () => {
+      throw new Error("storage-connection-sentinel");
+    });
+    const pool = {
+      connect,
+      options: {
+        connectionTimeoutMillis: 1_000,
+        options: WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1,
+        query_timeout: 1_000,
+        statement_timeout: 1_000,
+      },
+    } as unknown as Pool;
+    const repository = new PostgresRenderSessionRepositoryV1({ pool, statementTimeoutMs: 1_000 });
+
+    await expect(repository.createSession(renderSessionInput(`S${"a".repeat(length - 1)}`))).rejects.toThrow(
+      "storage-connection-sentinel",
+    );
+    expect(connect).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a 241-character Scene name before acquiring durable storage", async () => {
+    const connect = vi.fn();
+    const pool = {
+      connect,
+      options: {
+        connectionTimeoutMillis: 1_000,
+        options: WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1,
+        query_timeout: 1_000,
+        statement_timeout: 1_000,
+      },
+    } as unknown as Pool;
+    const repository = new PostgresRenderSessionRepositoryV1({ pool, statementTimeoutMs: 1_000 });
+
+    await expect(repository.createSession(renderSessionInput(`S${"a".repeat(240)}`))).rejects.toThrow(
+      "Scene name is invalid.",
+    );
+    expect(connect).not.toHaveBeenCalled();
   });
 
   it.each([

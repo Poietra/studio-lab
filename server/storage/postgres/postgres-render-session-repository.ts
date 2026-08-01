@@ -2,13 +2,16 @@ import type { Pool, PoolClient, PoolConfig, QueryResultRow } from "pg";
 
 import { opaqueIdV1Schema, sha256V1Schema } from "../../../src/engine/primitives";
 import {
-  manimProjectIdSchema,
-  manimSourcePathSchema,
   type RenderSessionStatus,
   renderSessionFailureCodeSchema,
   renderSessionStatusSchema,
   renderSourceActionIdSchema,
 } from "../../../src/render-pipeline/contracts";
+import {
+  manimProjectIdSchema,
+  manimSceneNameSchema,
+  manimSourcePathSchema,
+} from "../../../src/render-pipeline/manim-identity-contract";
 import type { ReserveRenderResultV1 } from "../../billing/entitlement-repository";
 import { HttpError } from "../../http/json";
 import { manimRenderBrokerShardIdV1Schema } from "../../manim-render-sandbox-contract";
@@ -65,11 +68,13 @@ import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection
 import { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
 import { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-session-cpu-failure-schema";
 import { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
+import { RENDER_SESSION_SCENE_NAME_MIGRATION_V19_CHECKSUM } from "./render-session-scene-name-schema";
 import { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-usage-schema";
 
 export { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
 export { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-session-cpu-failure-schema";
 export { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
+export { RENDER_SESSION_SCENE_NAME_MIGRATION_V19_CHECKSUM } from "./render-session-scene-name-schema";
 
 export const RENDER_SESSION_MIGRATION_V2_CHECKSUM = "f67255ae5d05b2951975a700974a9748c848c6a39b9bb51b3189c3e8ed2664e9";
 
@@ -377,10 +382,9 @@ function existingSessionId(value: string) {
 }
 
 function sceneName(value: string) {
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value) || value.length > 128) {
-    throw new TypeError("Scene name is invalid.");
-  }
-  return value;
+  const parsed = manimSceneNameSchema.safeParse(value);
+  if (!parsed.success) throw new TypeError("Scene name is invalid.");
+  return parsed.data;
 }
 
 function sourceDigest(value: string) {
@@ -740,12 +744,12 @@ export class PostgresRenderSessionRepositoryV1
   async ready(signal?: AbortSignal) {
     try {
       const result = await this.#connection.query<{ checksum: string; version: number }>(
-        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (2, 5, 6, 7, 8, 9, 14, 15) ORDER BY version",
+        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (2, 5, 6, 7, 8, 9, 14, 15, 19) ORDER BY version",
         [],
         signal,
       );
       return (
-        result.rowCount === 8 &&
+        result.rowCount === 9 &&
         result.rows[0]?.version === 2 &&
         result.rows[0]?.checksum === RENDER_SESSION_MIGRATION_V2_CHECKSUM &&
         result.rows[1]?.version === 5 &&
@@ -761,7 +765,9 @@ export class PostgresRenderSessionRepositoryV1
         result.rows[6]?.version === 14 &&
         result.rows[6]?.checksum === BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM &&
         result.rows[7]?.version === 15 &&
-        result.rows[7]?.checksum === RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM
+        result.rows[7]?.checksum === RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM &&
+        result.rows[8]?.version === 19 &&
+        result.rows[8]?.checksum === RENDER_SESSION_SCENE_NAME_MIGRATION_V19_CHECKSUM
       );
     } catch {
       throwIfAborted(signal);
