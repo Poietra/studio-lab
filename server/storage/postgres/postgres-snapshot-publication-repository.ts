@@ -24,6 +24,7 @@ import {
   sameSnapshotArtifactContentV1 as sameArtifactContent,
 } from "../snapshot-publication-repository";
 import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
+import { detachProjectPngHeadInTransactionV1 } from "./postgres-project-png-repository";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 import { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
 
@@ -919,6 +920,10 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
             AND reference_kind = 'snapshot-publication'`,
         [tenant, project],
       );
+      await detachProjectPngHeadInTransactionV1(client, {
+        projectId: project,
+        tenantId: tenant,
+      });
       const deleted = await client.query(
         `UPDATE public.workspace_projects
             SET deleted_at = clock_timestamp(), updated_at = clock_timestamp()

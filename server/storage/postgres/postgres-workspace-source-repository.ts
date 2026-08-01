@@ -25,7 +25,10 @@ import {
 } from "../workspace-source-repository";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
-import { publishProjectPngHeadInTransactionV1 } from "./postgres-project-png-repository";
+import {
+  detachProjectPngHeadInTransactionV1,
+  publishProjectPngHeadInTransactionV1,
+} from "./postgres-project-png-repository";
 import { POSTGRES_REPOSITORY_OPTIONS_V1, PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 import {
   type PostgresStorageObjectLocatorRowV1,
@@ -627,12 +630,16 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
       if (references.rowCount !== 0) {
         throw new HttpError("Wait for active workspace work before removing it from Studio.", 409);
       }
-      await client.query(
+      await detachProjectPngHeadInTransactionV1(client, { projectId: id, tenantId: tenant });
+      const deleted = await client.query(
         `UPDATE public.workspace_projects
             SET deleted_at = clock_timestamp(), updated_at = clock_timestamp()
-          WHERE tenant_id = $1 AND project_id = $2`,
+          WHERE tenant_id = $1 AND project_id = $2 AND deleted_at IS NULL`,
         [tenant, id],
       );
+      if (deleted.rowCount !== 1) {
+        throw new Error("The workspace changed before it could be removed from Studio.");
+      }
     }, signal);
   }
 

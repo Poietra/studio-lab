@@ -448,6 +448,92 @@ describe("PostgresWorkspaceSourceRepositoryV1 source retention", () => {
     ).rejects.toThrow("The stored source blob metadata conflicts with its digest.");
   });
 
+  it("detaches an image.png head before soft-deleting its locked workspace", async () => {
+    const actions: string[] = [];
+    const fixture = fakePool((text, values) => {
+      if (text.startsWith("SELECT project_id FROM public.workspace_projects")) {
+        actions.push("project-lock");
+        return { rowCount: 1, rows: [{ project_id: "project-png" }] };
+      }
+      if (text.includes("FROM public.workspace_project_references")) {
+        actions.push("reference-check");
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.startsWith("SELECT h.tenant_id") && text.includes("FROM public.project_png_heads h")) {
+        expect(text).toContain("FOR UPDATE OF h");
+        actions.push("png-head-lock");
+        return { rowCount: 1, rows: [pngRow()] };
+      }
+      if (text.startsWith("DELETE FROM public.project_png_heads")) {
+        expect(values).toEqual([TENANT, "project-png", "1", PNG_DIGEST]);
+        actions.push("png-head-detach");
+        return { rowCount: 1, rows: [] };
+      }
+      if (text.startsWith("UPDATE public.project_png_generations g")) {
+        expect(text).toContain("FROM public.render_sessions s");
+        actions.push("png-orphan");
+        return { rowCount: 1, rows: [] };
+      }
+      if (text.startsWith("UPDATE public.workspace_projects")) {
+        expect(text).toContain("deleted_at IS NULL");
+        actions.push("project-delete");
+        return { rowCount: 1, rows: [] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresWorkspaceSourceRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.softDeleteProject(TENANT, "project-png")).resolves.toBeUndefined();
+    expect(actions).toEqual([
+      "project-lock",
+      "reference-check",
+      "png-head-lock",
+      "png-head-detach",
+      "png-orphan",
+      "project-delete",
+    ]);
+    expect(fixture.query.mock.calls.at(-1)).toEqual(["COMMIT"]);
+  });
+
+  it("does not inspect or mutate image.png state when workspace references block deletion", async () => {
+    const fixture = fakePool((text) => {
+      if (text.startsWith("SELECT project_id FROM public.workspace_projects")) {
+        return { rowCount: 1, rows: [{ project_id: "project-png" }] };
+      }
+      if (text.includes("FROM public.workspace_project_references")) return { rowCount: 1, rows: [{}] };
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresWorkspaceSourceRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.softDeleteProject(TENANT, "project-png")).rejects.toMatchObject({ status: 409 });
+    expect(fixture.query.mock.calls.some(([text]) => text.includes("project_png_heads"))).toBe(false);
+    expect(fixture.query.mock.calls.at(-1)).toEqual(["ROLLBACK"]);
+  });
+
+  it("rolls image.png detachment back when the final workspace delete loses its row", async () => {
+    const fixture = fakePool((text) => {
+      if (text.startsWith("SELECT project_id FROM public.workspace_projects")) {
+        return { rowCount: 1, rows: [{ project_id: "project-png" }] };
+      }
+      if (text.includes("FROM public.workspace_project_references")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("SELECT h.tenant_id") && text.includes("FROM public.project_png_heads h")) {
+        return { rowCount: 1, rows: [pngRow()] };
+      }
+      if (text.startsWith("DELETE FROM public.project_png_heads")) return { rowCount: 1, rows: [] };
+      if (text.startsWith("UPDATE public.project_png_generations g")) return { rowCount: 1, rows: [] };
+      if (text.startsWith("UPDATE public.workspace_projects")) return { rowCount: 0, rows: [] };
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresWorkspaceSourceRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.softDeleteProject(TENANT, "project-png")).rejects.toThrow("workspace changed");
+    expect(fixture.query.mock.calls.some(([text]) => text.startsWith("DELETE FROM public.project_png_heads"))).toBe(
+      true,
+    );
+    expect(fixture.query.mock.calls.at(-1)).toEqual(["ROLLBACK"]);
+    expect(fixture.query.mock.calls.some(([text]) => text === "COMMIT")).toBe(false);
+  });
+
   it("queues an immutable upload with its exact application generation", async () => {
     const blob = immutableReceipt();
     const fixture = fakePool((text, values) => {

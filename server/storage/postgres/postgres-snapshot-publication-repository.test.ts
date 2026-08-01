@@ -30,6 +30,8 @@ const PROFILE = "d".repeat(64);
 const RESULT = "e".repeat(64);
 const SNAPSHOT = "f".repeat(64);
 const OBJECT_GENERATION = "00000000-0000-4000-8000-000000000001";
+const PROJECT_PNG_DIGEST = "9".repeat(64);
+const PROJECT_PNG_OBJECT_KEY = `tenants/${TENANT}/projects/${PROJECT}/assets/image.png/${PROJECT_PNG_DIGEST}`;
 
 const identity: SnapshotPublicationIdentityV1 = {
   projectId: PROJECT,
@@ -119,6 +121,20 @@ function sourceRow(sourceDigest = SOURCE_A, generation = "4") {
     project_id: PROJECT,
     source_path: SOURCE_PATH,
     tenant_id: TENANT,
+  };
+}
+
+function projectPngHeadRow(generation = "1") {
+  return {
+    byte_size: 256,
+    digest: PROJECT_PNG_DIGEST,
+    etag: '"project-png-etag"',
+    generation,
+    object_generation: null,
+    object_key: PROJECT_PNG_OBJECT_KEY,
+    project_id: PROJECT,
+    tenant_id: TENANT,
+    version_id: "project-png-version",
   };
 }
 
@@ -223,11 +239,14 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
     const sql = fixture.query.mock.calls.map(([text]) => text).join("\n");
     expect(sql).not.toContain("UPDATE public.snapshot_scene_heads");
     expect(sql).not.toContain("DELETE FROM public.workspace_project_references");
+    expect(sql).not.toContain("FROM public.project_png_heads");
+    expect(sql).not.toContain("DELETE FROM public.project_png_heads");
+    expect(sql).not.toContain("UPDATE public.project_png_generations");
     expect(sql).not.toContain("UPDATE public.workspace_projects");
     expect(fixture.query.mock.calls.at(-1)).toEqual(["ROLLBACK"]);
   });
 
-  it("atomically tombstones snapshot heads, releases their references, and deletes the project", async () => {
+  it("atomically tombstones snapshot heads, observes no PNG head, and deletes the project", async () => {
     const fixture = fakePool((text, values) => {
       if (text.includes("FROM public.workspace_projects") && text.includes("FOR UPDATE")) {
         return { rowCount: 1, rows: [{ project_id: PROJECT }] };
@@ -245,6 +264,11 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
         expect(values).toEqual([TENANT, PROJECT]);
         return { rowCount: 2, rows: [] };
       }
+      if (text.startsWith("SELECT h.tenant_id")) {
+        expect(text).toContain("FOR UPDATE OF h");
+        expect(values).toEqual([TENANT, PROJECT]);
+        return { rowCount: 0, rows: [] };
+      }
       if (text.startsWith("UPDATE public.workspace_projects")) {
         expect(values).toEqual([TENANT, PROJECT]);
         return { rowCount: 1, rows: [] };
@@ -259,11 +283,59 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
     const mutationOrder = [
       "UPDATE public.snapshot_scene_heads",
       "DELETE FROM public.workspace_project_references",
+      "SELECT h.tenant_id",
       "UPDATE public.workspace_projects",
     ].map((prefix) => sql.findIndex((text) => text.startsWith(prefix)));
     expect(mutationOrder).toEqual([...mutationOrder].sort((left, right) => left - right));
     expect(mutationOrder.every((index) => index >= 0)).toBe(true);
     expect(fixture.query.mock.calls.at(-1)).toEqual(["COMMIT"]);
+  });
+
+  it("rolls back a detached PNG head when the final project tombstone fails", async () => {
+    const fixture = fakePool((text, values) => {
+      if (text.includes("FROM public.workspace_projects") && text.includes("FOR UPDATE")) {
+        return { rowCount: 1, rows: [{ project_id: PROJECT }] };
+      }
+      if (text.startsWith("SELECT 1") && text.includes("FROM public.workspace_project_references")) {
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.startsWith("UPDATE public.snapshot_scene_heads")) return { rowCount: 1, rows: [] };
+      if (text.startsWith("DELETE FROM public.workspace_project_references")) return { rowCount: 1, rows: [] };
+      if (text.startsWith("SELECT h.tenant_id")) {
+        expect(text).toContain("FOR UPDATE OF h");
+        return { rowCount: 1, rows: [projectPngHeadRow()] };
+      }
+      if (text.startsWith("DELETE FROM public.project_png_heads")) {
+        expect(values).toEqual([TENANT, PROJECT, "1", PROJECT_PNG_DIGEST]);
+        return { rowCount: 1, rows: [] };
+      }
+      if (text.startsWith("UPDATE public.project_png_generations")) {
+        expect(text).toContain("NOT EXISTS");
+        expect(text).toContain("FROM public.render_sessions");
+        expect(values).toEqual([TENANT, PROJECT, "1", PROJECT_PNG_DIGEST]);
+        return { rowCount: 1, rows: [] };
+      }
+      if (text.startsWith("UPDATE public.workspace_projects")) return { rowCount: 0, rows: [] };
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresSnapshotPublicationRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.softDeleteProject(TENANT, PROJECT)).rejects.toThrow(
+      "The locked workspace project changed unexpectedly.",
+    );
+
+    const sql = fixture.query.mock.calls.map(([text]) => text);
+    const mutationOrder = [
+      "UPDATE public.snapshot_scene_heads",
+      "DELETE FROM public.workspace_project_references",
+      "DELETE FROM public.project_png_heads",
+      "UPDATE public.project_png_generations",
+      "UPDATE public.workspace_projects",
+    ].map((prefix) => sql.findIndex((text) => text.startsWith(prefix)));
+    expect(mutationOrder).toEqual([...mutationOrder].sort((left, right) => left - right));
+    expect(mutationOrder.every((index) => index >= 0)).toBe(true);
+    expect(fixture.query.mock.calls.at(-1)).toEqual(["ROLLBACK"]);
+    expect(sql).not.toContain("COMMIT");
   });
 
   it("rejects a stale locked source before registering an artifact or publication", async () => {
