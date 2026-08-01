@@ -1,3 +1,4 @@
+import { accountRoleCanManageBillingV1, BillingSettingsControl } from "../billing/billing-settings";
 import { cn } from "../lib/cn";
 import type { AccountSessionActionsV1 } from "./account-session-bootstrap";
 import type { AccountSessionViewV1 } from "./account-session-contract";
@@ -43,6 +44,9 @@ export function AccountSessionBadge({
       <span className={cn("max-w-32 truncate text-zinc-500", compact && "hidden")} title={session.user.displayName}>
         {session.user.displayName}
       </span>
+      {accountRoleCanManageBillingV1(session.activeOrganization.role) ? (
+        <BillingSettingsControl key={session.activeOrganization.id} organization={session.activeOrganization} />
+      ) : null}
       <button
         className="min-h-8 shrink-0 border border-zinc-700 px-2 text-xs font-medium text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500"
         onClick={actions.logout}
