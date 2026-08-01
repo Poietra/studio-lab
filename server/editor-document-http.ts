@@ -182,7 +182,8 @@ async function openDocumentV1(
     if (
       result.document.sourcePath !== parsed.data.sourcePath ||
       result.document.sourceHash !== parsed.data.sourceHash ||
-      result.document.sealedAt !== null
+      result.document.sealedAt !== null ||
+      result.projection.revision !== result.document.revision
     ) {
       throw new TypeError("Editor storage returned an inconsistent open document.");
     }

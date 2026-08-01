@@ -60,6 +60,10 @@ function program(): CanonicalEditProgram {
 
 const mutation = { kind: "append", program: program() } as const;
 
+function projection(revision = 0n, programs: readonly CanonicalEditProgram[] = revision === 0n ? [] : [program()]) {
+  return { programs, revision } as const;
+}
+
 function document(revision = 0n): EditorDocumentV1 {
   return {
     documentKey: DOCUMENT_KEY,
@@ -97,7 +101,7 @@ function repository(overrides: Partial<EditorDocumentRepositoryV1> = {}): Editor
   return {
     close: async () => undefined,
     commitMutation: async () => ({ document: document(1n), event: event(), kind: "committed", replayed: false }),
-    openDocument: async () => ({ created: true, document: document(), kind: "opened" }),
+    openDocument: async () => ({ created: true, document: document(), kind: "opened", projection: projection() }),
     readEventTail: async () => ({ document: document(1n), events: [event()] }),
     ready: async () => true,
     ...overrides,
@@ -167,7 +171,15 @@ afterEach(async () => {
 
 describe("authenticated Editor document HTTP handler", () => {
   it("derives Scene identity server-side and opens in the principal tenant", async () => {
-    const openDocument = vi.fn(async () => ({ created: true, document: document(), kind: "opened" }) as const);
+    const openDocument = vi.fn(
+      async () =>
+        ({
+          created: true,
+          document: document(),
+          kind: "opened",
+          projection: projection(),
+        }) as const,
+    );
     const port = await listen(repository({ openDocument }), { expectedMutationOrigin: ORIGIN });
 
     const result = await send(port, `/api/editor/projects/${PROJECT}/documents/open`, {
@@ -177,7 +189,12 @@ describe("authenticated Editor document HTTP handler", () => {
     });
 
     expect(result).toMatchObject({
-      body: { created: true, document: { documentKey: DOCUMENT_KEY, revision: "0" }, kind: "opened" },
+      body: {
+        created: true,
+        document: { documentKey: DOCUMENT_KEY, revision: "0" },
+        kind: "opened",
+        projection: { programs: [], revision: "0" },
+      },
       status: 201,
     });
     expect(openDocument).toHaveBeenCalledWith(
@@ -185,6 +202,54 @@ describe("authenticated Editor document HTTP handler", () => {
       undefined,
     );
     expect(isEditorDocumentRequest(`/api/editor/projects/${PROJECT}/documents/open`)).toBe(true);
+  });
+
+  it("fails closed when an opened projection disagrees with its document or exceeds the wire bound", async () => {
+    const path = `/api/editor/projects/${PROJECT}/documents/open`;
+    const request = (port: number) =>
+      send(port, path, {
+        body: { sceneName: SCENE_NAME, sourceHash: SOURCE_HASH, sourcePath: SOURCE_PATH },
+        headers: mutationHeaders(),
+        method: "POST",
+      });
+    const mismatchedPort = await listen(
+      repository({
+        openDocument: async () => ({
+          created: false,
+          document: document(1n),
+          kind: "opened",
+          projection: projection(0n),
+        }),
+      }),
+      { expectedMutationOrigin: ORIGIN },
+    );
+    expect(await request(mismatchedPort)).toMatchObject({ status: 500 });
+
+    const baseProgram = program();
+    const oversizedProgram: CanonicalEditProgram = {
+      ...baseProgram,
+      operations: [
+        {
+          ...baseProgram.operations[0]!,
+          provenance: {
+            ...baseProgram.operations[0]!.provenance,
+            evidence: ["x".repeat(MAX_EDITOR_PROGRAM_BYTES_V1)],
+          },
+        },
+      ],
+    };
+    const oversizedPort = await listen(
+      repository({
+        openDocument: async () => ({
+          created: false,
+          document: document(1n),
+          kind: "opened",
+          projection: projection(1n, [oversizedProgram]),
+        }),
+      }),
+      { expectedMutationOrigin: ORIGIN },
+    );
+    expect(await request(oversizedPort)).toMatchObject({ status: 500 });
   });
 
   it("commits with server-owned identity and reads a bounded decimal-revision tail", async () => {

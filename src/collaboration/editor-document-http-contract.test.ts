@@ -5,11 +5,14 @@ import {
   editorDocumentCommitRequestSchemaV1,
   editorDocumentCommitResultViewSchemaV1,
   editorDocumentOpenRequestSchemaV1,
+  editorDocumentOpenResultViewSchemaV1,
+  editorDocumentProjectionViewSchemaV1,
   editorDocumentTailQuerySchemaV1,
   editorDocumentViewSchemaV1,
   parseEditorDocumentTailQueryV1,
   serializeEditorDocumentCommitResultV1,
   serializeEditorDocumentOpenResultV1,
+  serializeEditorDocumentProjectionViewV1,
   serializeEditorDocumentTailResultV1,
   serializeEditorDocumentViewV1,
   serializeEditorEditEventViewV1,
@@ -78,6 +81,11 @@ const event = {
   revision: document.revision + 1n,
   subjectId: SUBJECT_ID,
   tenantId: "tenant-a",
+} as const;
+
+const projection = {
+  programs: [program()],
+  revision: document.revision,
 } as const;
 
 describe("editor document HTTP requests", () => {
@@ -245,11 +253,22 @@ describe("editor document HTTP views", () => {
   });
 
   it("serializes every open result without leaking extra repository fields", () => {
-    expect(serializeEditorDocumentOpenResultV1({ created: true, document, kind: "opened" })).toMatchObject({
-      created: true,
-      document: { revision: "9007199254740993" },
-      kind: "opened",
-    });
+    expect(serializeEditorDocumentOpenResultV1({ created: false, document, kind: "opened", projection })).toMatchObject(
+      {
+        created: false,
+        document: { revision: "9007199254740993" },
+        kind: "opened",
+        projection: { programs: [{ transactionId: "motion" }], revision: "9007199254740993" },
+      },
+    );
+    expect(
+      serializeEditorDocumentOpenResultV1({
+        created: true,
+        document: { ...document, revision: 0n },
+        kind: "opened",
+        projection: { programs: [], revision: 0n },
+      }),
+    ).toMatchObject({ created: true, projection: { programs: [], revision: "0" } });
     expect(serializeEditorDocumentOpenResultV1({ kind: "not-found" })).toEqual({ kind: "not-found" });
     expect(serializeEditorDocumentOpenResultV1({ currentSourceHash: EVENT_DIGEST, kind: "source-conflict" })).toEqual({
       currentSourceHash: EVENT_DIGEST,
@@ -294,9 +313,81 @@ describe("editor document HTTP views", () => {
 
   it("fails closed on malformed wire views and invalid serialization inputs", () => {
     const view = serializeEditorDocumentViewV1(document);
+    const projectionView = serializeEditorDocumentProjectionViewV1(projection);
+    const openedView = serializeEditorDocumentOpenResultV1({
+      created: false,
+      document,
+      kind: "opened",
+      projection,
+    });
+    if (openedView.kind !== "opened") throw new Error("The opened-result fixture was not serialized.");
     expect(editorDocumentViewSchemaV1.safeParse({ ...view, revision: 1 }).success).toBe(false);
     expect(editorDocumentViewSchemaV1.safeParse({ ...view, openedAt: "2026-08-01" }).success).toBe(false);
     expect(editorDocumentViewSchemaV1.safeParse({ ...view, internal: true }).success).toBe(false);
+    expect(editorDocumentProjectionViewSchemaV1.safeParse({ ...projectionView, revision: 1 }).success).toBe(false);
+    expect(
+      editorDocumentOpenResultViewSchemaV1.safeParse({
+        ...openedView,
+        projection: { ...openedView.projection, revision: (document.revision - 1n).toString() },
+      }).success,
+    ).toBe(false);
+    expect(editorDocumentOpenResultViewSchemaV1.safeParse({ ...openedView, created: true }).success).toBe(false);
+    expect(
+      editorDocumentProjectionViewSchemaV1.safeParse({
+        ...projectionView,
+        programs: Array.from({ length: 33 }, (_, index) => program(`program-${index}`)),
+      }).success,
+    ).toBe(false);
+    const laterProgram = {
+      ...program("later"),
+      anchor: { ...program("later").anchor, resolvedSeconds: 2 },
+    };
+    expect(
+      editorDocumentProjectionViewSchemaV1.safeParse({
+        programs: [program("duplicate"), program("duplicate")],
+        revision: "2",
+      }).success,
+    ).toBe(false);
+    expect(
+      editorDocumentProjectionViewSchemaV1.safeParse({
+        programs: [laterProgram, program("earlier")],
+        revision: "2",
+      }).success,
+    ).toBe(false);
+    expect(
+      editorDocumentProjectionViewSchemaV1.safeParse({ programs: [program("impossible")], revision: "0" }).success,
+    ).toBe(false);
+    const oversizedProgram = program("oversized");
+    expect(
+      editorDocumentProjectionViewSchemaV1.safeParse({
+        ...projectionView,
+        programs: [
+          {
+            ...oversizedProgram,
+            operations: [
+              {
+                ...oversizedProgram.operations[0]!,
+                provenance: {
+                  ...oversizedProgram.operations[0]!.provenance,
+                  evidence: ["x".repeat(256 * 1024)],
+                },
+              },
+            ],
+          },
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      editorDocumentProjectionViewSchemaV1.safeParse({
+        ...projectionView,
+        programs: [
+          {
+            ...program(),
+            operations: [{ ...program().operations[0]!, internal: true }],
+          },
+        ],
+      }).success,
+    ).toBe(false);
     expect(
       editorDocumentCommitResultViewSchemaV1.safeParse({
         currentRevision: 1,
@@ -305,6 +396,23 @@ describe("editor document HTTP views", () => {
       }).success,
     ).toBe(false);
     expect(() => serializeEditorDocumentViewV1({ ...document, revision: 9_223_372_036_854_775_808n })).toThrow();
+    expect(() =>
+      serializeEditorDocumentProjectionViewV1({
+        programs: projection.programs,
+        revision: 9_223_372_036_854_775_808n,
+      }),
+    ).toThrow();
+    expect(() =>
+      serializeEditorDocumentOpenResultV1({
+        created: false,
+        document,
+        kind: "opened",
+        projection: { ...projection, revision: document.revision - 1n },
+      }),
+    ).toThrow();
+    expect(() =>
+      serializeEditorDocumentOpenResultV1({ created: true, document, kind: "opened", projection }),
+    ).toThrow();
     expect(() => serializeEditorDocumentViewV1({ ...document, updatedAt: new Date(Number.NaN) })).toThrow();
     expect(() => serializeEditorDocumentTailResultV1({ document, events: Array(33).fill(event) })).toThrow();
   });

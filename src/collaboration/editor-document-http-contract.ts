@@ -1,7 +1,18 @@
 import { z } from "zod";
+import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
 import { sha256V1Schema } from "../engine/primitives";
-import { manimProjectIdSchema, manimSourcePathSchema } from "../render-pipeline/contracts";
-import { type EditorEditMutationV1, editorEditMutationV1Schema } from "./editor-edit-mutation";
+import {
+  canonicalEditProgramSchemaV1,
+  manimProjectIdSchema,
+  manimSourcePathSchema,
+} from "../render-pipeline/contracts";
+import type { CanonicalEditProgram } from "../studio/operations";
+import {
+  type EditorEditMutationV1,
+  editorEditMutationV1Schema,
+  MAX_APPLIED_EDITOR_PROGRAMS_V1,
+  parseAuthoritativeEditorProgramsV1,
+} from "./editor-edit-mutation";
 
 const MAX_EDITOR_REVISION_V1 = 9_223_372_036_854_775_807n;
 const MAX_EDITOR_HTTP_EVENT_TAIL_LIMIT_V1 = 32n;
@@ -42,6 +53,30 @@ function deepStrictWireSchemaV1<Output>(schema: z.ZodType<Output>) {
 }
 
 const deepStrictEditorEditMutationSchemaV1 = deepStrictWireSchemaV1(editorEditMutationV1Schema);
+const deepStrictCanonicalEditProgramSchemaV1 = deepStrictWireSchemaV1(canonicalEditProgramSchemaV1).superRefine(
+  (program, context) => {
+    const byteSize = new TextEncoder().encode(canonicalJsonV1(program)).byteLength;
+    if (byteSize > MAX_EDITOR_PROGRAM_BYTES_V1) {
+      context.addIssue({
+        code: "custom",
+        message: `Canonical Editor Programs accept at most ${MAX_EDITOR_PROGRAM_BYTES_V1} UTF-8 bytes.`,
+      });
+    }
+  },
+);
+const editorDocumentProjectionProgramsViewSchemaV1 = z
+  .array(deepStrictCanonicalEditProgramSchemaV1)
+  .max(MAX_APPLIED_EDITOR_PROGRAMS_V1)
+  .superRefine((programs, context) => {
+    try {
+      parseAuthoritativeEditorProgramsV1(programs);
+    } catch {
+      context.addIssue({
+        code: "custom",
+        message: "Editor projection Programs must have unique identities and canonical source order.",
+      });
+    }
+  });
 
 export const editorDocumentKeySchemaV1 = z
   .string()
@@ -119,6 +154,22 @@ export const editorDocumentViewSchemaV1 = z
   })
   .strict();
 
+export const editorDocumentProjectionViewSchemaV1 = z
+  .object({
+    programs: editorDocumentProjectionProgramsViewSchemaV1,
+    revision: editorRevisionStringSchemaV1,
+  })
+  .strict()
+  .superRefine((projection, context) => {
+    if (BigInt(projection.revision) < BigInt(projection.programs.length)) {
+      context.addIssue({
+        code: "custom",
+        message: "Editor projection Program count cannot exceed its revision.",
+        path: ["programs"],
+      });
+    }
+  });
+
 export const editorEditEventViewSchemaV1 = z
   .object({
     baseRevision: editorRevisionStringSchemaV1,
@@ -136,14 +187,36 @@ export const editorEditEventViewSchemaV1 = z
   })
   .strict();
 
+const editorDocumentOpenedResultViewSchemaV1 = z
+  .object({
+    created: z.boolean(),
+    document: editorDocumentViewSchemaV1,
+    kind: z.literal("opened"),
+    projection: editorDocumentProjectionViewSchemaV1,
+  })
+  .strict()
+  .superRefine((opened, context) => {
+    if (opened.document.revision !== opened.projection.revision) {
+      context.addIssue({
+        code: "custom",
+        message: "Editor document and projection revisions must match.",
+        path: ["projection", "revision"],
+      });
+    }
+    if (
+      opened.created &&
+      (opened.document.revision !== "0" || opened.projection.revision !== "0" || opened.projection.programs.length > 0)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "A newly opened Editor document must have an empty revision-zero projection.",
+        path: ["projection"],
+      });
+    }
+  });
+
 export const editorDocumentOpenResultViewSchemaV1 = z.discriminatedUnion("kind", [
-  z
-    .object({
-      created: z.boolean(),
-      document: editorDocumentViewSchemaV1,
-      kind: z.literal("opened"),
-    })
-    .strict(),
+  editorDocumentOpenedResultViewSchemaV1,
   z.object({ kind: z.literal("not-found") }).strict(),
   z
     .object({
@@ -195,6 +268,7 @@ export type EditorDocumentOpenRequestV1 = Readonly<z.infer<typeof editorDocument
 export type EditorDocumentCommitRequestV1 = Readonly<z.infer<typeof editorDocumentCommitRequestSchemaV1>>;
 export type EditorDocumentTailQueryV1 = Readonly<z.infer<typeof editorDocumentTailQuerySchemaV1>>;
 export type EditorDocumentViewV1 = Readonly<z.infer<typeof editorDocumentViewSchemaV1>>;
+export type EditorDocumentProjectionViewV1 = Readonly<z.infer<typeof editorDocumentProjectionViewSchemaV1>>;
 export type EditorEditEventViewV1 = Readonly<z.infer<typeof editorEditEventViewSchemaV1>>;
 export type EditorDocumentOpenResultViewV1 = Readonly<z.infer<typeof editorDocumentOpenResultViewSchemaV1>>;
 export type EditorDocumentCommitResultViewV1 = Readonly<z.infer<typeof editorDocumentCommitResultViewSchemaV1>>;
@@ -228,8 +302,18 @@ export type EditorEditEventSerializationInputV1 = Readonly<{
   tenantId: string;
 }>;
 
+export type EditorDocumentProjectionSerializationInputV1 = Readonly<{
+  programs: readonly CanonicalEditProgram[];
+  revision: bigint;
+}>;
+
 export type EditorDocumentOpenResultSerializationInputV1 =
-  | Readonly<{ created: boolean; document: EditorDocumentSerializationInputV1; kind: "opened" }>
+  | Readonly<{
+      created: boolean;
+      document: EditorDocumentSerializationInputV1;
+      kind: "opened";
+      projection: EditorDocumentProjectionSerializationInputV1;
+    }>
   | Readonly<{ kind: "not-found" }>
   | Readonly<{ currentSourceHash: string; kind: "source-conflict" }>;
 
@@ -304,6 +388,15 @@ export function serializeEditorEditEventViewV1(input: EditorEditEventSerializati
   });
 }
 
+export function serializeEditorDocumentProjectionViewV1(
+  input: EditorDocumentProjectionSerializationInputV1,
+): EditorDocumentProjectionViewV1 {
+  return editorDocumentProjectionViewSchemaV1.parse({
+    programs: input.programs,
+    revision: serializeEditorRevisionV1(input.revision),
+  });
+}
+
 export function serializeEditorDocumentOpenResultV1(
   input: EditorDocumentOpenResultSerializationInputV1,
 ): EditorDocumentOpenResultViewV1 {
@@ -312,6 +405,7 @@ export function serializeEditorDocumentOpenResultV1(
       created: input.created,
       document: serializeEditorDocumentViewV1(input.document),
       kind: input.kind,
+      projection: serializeEditorDocumentProjectionViewV1(input.projection),
     });
   }
   if (input.kind === "source-conflict") {
