@@ -257,6 +257,25 @@ export function suspendEditor(state: EditorControllerState): EditorControllerSta
   });
 }
 
+export function installAuthoritativeEditorPrograms(
+  state: EditorControllerState,
+  programs: readonly EditorProgramRecord[],
+  message: string | null = null,
+): EditorControllerState {
+  return withoutSuggestion({
+    ...state,
+    appliedPrograms: programs,
+    draftError: message,
+    draftOperation: null,
+    draftProgram: null,
+    editingAppliedProgram: null,
+    isPlaying: false,
+    programUndoEntries: [],
+    redoPrograms: [],
+    selectedObjectIds: [],
+  });
+}
+
 export function applyEditorDraft(state: EditorControllerState): EditorControllerState {
   if (!state.draftProgram) return state;
   const blocker = applyBlocker(state.draftProgram);
@@ -638,6 +657,14 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
     update(resetEditorPrograms);
   }, [update]);
 
+  const installAuthoritativePrograms = useCallback(
+    (programs: readonly EditorProgramRecord[], message: string | null = null) => {
+      requestController.current.cancel();
+      update((current) => installAuthoritativeEditorPrograms(current, programs, message));
+    },
+    [update],
+  );
+
   const suspend = useCallback(() => {
     requestController.current.cancel();
     update(suspendEditor);
@@ -673,6 +700,7 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
     editAppliedProgram,
     finishSuggestionRequest,
     isSuggestionRequestCurrent,
+    installAuthoritativePrograms,
     openSession,
     pruneSessions: (projectIds: ReadonlySet<string>) => {
       sessionStore.current?.pruneProjects(projectIds);
