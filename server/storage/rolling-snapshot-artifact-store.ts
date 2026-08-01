@@ -58,7 +58,7 @@ function immutableUploadIdentity(input: SnapshotArtifactWriteInputV1): Immutable
   };
 }
 
-/** Rolling-cutover port: new writes are immutable while legacy version-pinned receipts remain readable and collectable. */
+/** Rolling-cutover port for legacy-write, immutable-write, and immutable-only deployment phases. */
 export class RollingSnapshotArtifactStoreV1 implements SnapshotArtifactStoreV1 {
   readonly #immutable: ImmutableSnapshotArtifactStoreV1;
   readonly #versioned: SnapshotArtifactStoreV1 | undefined;

@@ -6,6 +6,7 @@ import type {
   SnapshotPublicationIdentityV1,
   VersionedSnapshotArtifactReceiptV1,
 } from "../snapshot-publication-repository";
+import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
 import { POSTGRES_REPOSITORY_OPTIONS_V1 } from "./postgres-repository-connection";
 import {
   PostgresSnapshotPublicationRepositoryV1,
@@ -539,7 +540,7 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
     ).resolves.toBe(true);
   });
 
-  it("uses only the exact current artifact lookup and verifies migration v3 and v10 readiness", async () => {
+  it("uses only the exact current artifact lookup and verifies migration v3, v10, and v20 readiness", async () => {
     const fixture = fakePool((text, values) => {
       if (text.includes("FROM public.snapshot_artifact_objects a")) {
         expect(text).toContain("source.generation = p.source_generation");
@@ -561,10 +562,11 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
       if (text.includes("poietra_schema_migrations")) {
         expect(values).toEqual([]);
         return {
-          rowCount: 2,
+          rowCount: 3,
           rows: [
             { checksum: SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM, version: 3 },
             { checksum: SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM, version: 10 },
+            { checksum: IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM, version: 20 },
           ],
         };
       }
@@ -614,12 +616,15 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
     await expect(repository.isArtifactPublished(TENANT, immutableArtifact())).rejects.toThrow(/ambiguous/i);
   });
 
-  it("is not ready when the runtime-digest migration is missing", async () => {
+  it("is not ready when the immutable-locator migration is missing", async () => {
     const fixture = fakePool((text) => {
       if (text.includes("poietra_schema_migrations")) {
         return {
-          rowCount: 1,
-          rows: [{ checksum: SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM, version: 3 }],
+          rowCount: 2,
+          rows: [
+            { checksum: SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM, version: 3 },
+            { checksum: SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM, version: 10 },
+          ],
         };
       }
       throw new Error(`Unexpected query: ${text}`);
