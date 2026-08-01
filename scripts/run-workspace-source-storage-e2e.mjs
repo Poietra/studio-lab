@@ -93,6 +93,12 @@ const STORAGE_SUITES = [
     title: "keeps legacy locators explicit and constrains every new generation key",
   },
   {
+    database: "poietra_immutable_s3_transport",
+    file: "server/storage/s3/s3-private-immutable-bucket-transport.real.test.ts",
+    id: "immutable-s3-transport",
+    title: "publishes, pins, ranges, lists, and deletes without bucket versioning",
+  },
+  {
     database: "poietra_workspace_source",
     file: "server/storage/workspace-source-storage.real.test.ts",
     id: "workspace-source",
