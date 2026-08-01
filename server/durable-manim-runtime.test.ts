@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type { DurableFastManimSnapshotServiceV1 } from "./durable-fast-manim-snapshot-service";
@@ -13,7 +15,11 @@ import {
   projectPngObjectKeyV1,
 } from "./storage/project-png-storage";
 import type { DurableSourceBlobGcWorkerV1 } from "./storage/source-blob-gc";
-import type { SourceContentBlobStoreV1, WorkspaceSourceRepositoryV1 } from "./storage/workspace-source-repository";
+import type {
+  SourceBlobReceiptV1,
+  SourceContentBlobStoreV1,
+  WorkspaceSourceRepositoryV1,
+} from "./storage/workspace-source-repository";
 
 function partial<T>(value: Partial<T>): T {
   return value as T;
@@ -367,6 +373,205 @@ describe("DurableManimRuntimeV1 production readiness", () => {
     await expect(runtime.unregisterProject("project-a")).resolves.toMatchObject({ project: null });
 
     expect(softDeleteProject).toHaveBeenCalledWith("tenant-a", "project-a", undefined);
+    await runtime.close();
+  });
+
+  it("atomically publishes a browser-imported Scene under one server-owned project identity", async () => {
+    const source = `from manim import *
+
+class ImportedScene(Scene):
+    def construct(self):
+        equation = MathTex("E = mc^2")
+        self.add(equation)
+`;
+    const digest = createHash("sha256").update(source).digest("hex");
+    const candidate: SourceBlobReceiptV1 = {
+      byteSize: Buffer.byteLength(source),
+      digest,
+      etag: '"source-a"',
+      objectKey: `tenants/tenant-a/sources/${digest}`,
+      versionId: "source-version-a",
+    };
+    const putSource = vi.fn(async () => candidate);
+    const createManagedProject = vi.fn(async () => ({
+      createdAt: new Date("2026-08-02T00:00:00.000Z"),
+      name: "Imported demo",
+      projectId: "project-browser-import",
+      tenantId: "tenant-a",
+      updatedAt: new Date("2026-08-02T00:00:00.000Z"),
+    }));
+    const catalog = {
+      defaultProjectId: "project-browser-import",
+      projects: [{ id: "project-browser-import", kind: "managed" as const, name: "Imported demo" }],
+    };
+    const listProjects = vi.fn(async () => catalog);
+    const project = {
+      createdAt: new Date("2026-08-02T00:00:00.000Z"),
+      name: "Imported demo",
+      projectId: "project-browser-import",
+      tenantId: "tenant-a",
+      updatedAt: new Date("2026-08-02T00:00:00.000Z"),
+    };
+    const head = {
+      blob: candidate,
+      generation: 1n,
+      projectId: project.projectId,
+      sourcePath: "lesson.py",
+      tenantId: "tenant-a",
+    };
+    const queueBlobDeletion = vi.fn(async () => null);
+    const runtime = new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({
+        close: async () => undefined,
+        putSource,
+        readSource: async () => source,
+        ready: async () => true,
+      }),
+      namespace: "browser-import-success-test",
+      projectIdFactory: () => "project-browser-import",
+      repository: partial<WorkspaceSourceRepositoryV1>({
+        close: async () => undefined,
+        createManagedProject,
+        listProjects,
+        listSourceHeads: async () => [head],
+        queueBlobDeletion,
+        readProject: async () => project,
+        readSourceHead: async () => head,
+        ready: async () => true,
+      }),
+      tenantId: "tenant-a",
+    });
+
+    await expect(
+      runtime.importBrowserProject({ name: "Imported demo", source, sourceName: "lesson.py" }),
+    ).resolves.toEqual({
+      catalog,
+      project: { id: "project-browser-import", kind: "managed", name: "Imported demo" },
+    });
+    expect(putSource).toHaveBeenCalledWith("tenant-a", source, undefined);
+    expect(createManagedProject).toHaveBeenCalledWith(
+      {
+        name: "Imported demo",
+        projectId: "project-browser-import",
+        source: { blob: candidate, path: "lesson.py" },
+        tenantId: "tenant-a",
+      },
+      undefined,
+    );
+    expect(queueBlobDeletion).not.toHaveBeenCalled();
+    await expect(runtime.workspace("project-browser-import")).resolves.toMatchObject({
+      projectId: "project-browser-import",
+      sources: [{ path: "lesson.py", scenes: [{ name: "ImportedScene", sourceHash: digest }] }],
+    });
+    await expect(
+      runtime.exportOriginalSource({
+        projectId: "project-browser-import",
+        sourceHash: digest,
+        sourcePath: "lesson.py",
+      }),
+    ).resolves.toEqual({ fileName: "lesson.py", projectId: "project-browser-import", source });
+    await runtime.close();
+  });
+
+  it("queues an uploaded source only when atomic project publication fails", async () => {
+    const source = "from manim import *\nclass MainScene(Scene):\n    def construct(self):\n        self.wait(1)\n";
+    const candidate = {
+      byteSize: Buffer.byteLength(source),
+      digest: "b".repeat(64),
+      etag: '"source-b"',
+      objectKey: `tenants/tenant-a/sources/${"b".repeat(64)}`,
+      versionId: "source-version-b",
+    } satisfies SourceBlobReceiptV1;
+    const publicationError = new Error("publication failed");
+    const queueBlobDeletion = vi.fn(async () => null);
+    const runtime = new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({
+        close: async () => undefined,
+        putSource: async () => candidate,
+        ready: async () => true,
+      }),
+      namespace: "browser-import-rollback-test",
+      repository: partial<WorkspaceSourceRepositoryV1>({
+        close: async () => undefined,
+        createManagedProject: async () => {
+          throw publicationError;
+        },
+        queueBlobDeletion,
+        ready: async () => true,
+      }),
+      tenantId: "tenant-a",
+    });
+
+    await expect(runtime.importBrowserProject({ name: "Demo", source, sourceName: "scene.py" })).rejects.toBe(
+      publicationError,
+    );
+    expect(queueBlobDeletion).toHaveBeenCalledWith("tenant-a", candidate);
+    await runtime.close();
+  });
+
+  it("never queues the referenced source when catalog materialization fails after publication", async () => {
+    const source = "from manim import *\nclass MainScene(Scene):\n    def construct(self):\n        self.wait(1)\n";
+    const candidate = {
+      byteSize: Buffer.byteLength(source),
+      digest: "c".repeat(64),
+      etag: '"source-c"',
+      objectKey: `tenants/tenant-a/sources/${"c".repeat(64)}`,
+      versionId: "source-version-c",
+    } satisfies SourceBlobReceiptV1;
+    const queueBlobDeletion = vi.fn(async () => null);
+    const runtime = new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({
+        close: async () => undefined,
+        putSource: async () => candidate,
+        ready: async () => true,
+      }),
+      namespace: "browser-import-post-publication-test",
+      repository: partial<WorkspaceSourceRepositoryV1>({
+        close: async () => undefined,
+        createManagedProject: async () => ({
+          createdAt: new Date(),
+          name: "Demo",
+          projectId: "project-browser-import",
+          tenantId: "tenant-a",
+          updatedAt: new Date(),
+        }),
+        listProjects: async () => {
+          throw new Error("catalog unavailable");
+        },
+        queueBlobDeletion,
+        ready: async () => true,
+      }),
+      tenantId: "tenant-a",
+    });
+
+    await expect(runtime.importBrowserProject({ name: "Demo", source, sourceName: "scene.py" })).rejects.toThrow(
+      "catalog unavailable",
+    );
+    expect(queueBlobDeletion).not.toHaveBeenCalled();
+    await runtime.close();
+  });
+
+  it("reports missing Scenes and unsupported browser assets before uploading source bytes", async () => {
+    const putSource = vi.fn();
+    const runtime = new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({ close: async () => undefined, putSource, ready: async () => true }),
+      namespace: "browser-import-diagnostics-test",
+      repository: partial<WorkspaceSourceRepositoryV1>({ close: async () => undefined, ready: async () => true }),
+      tenantId: "tenant-a",
+    });
+
+    await expect(
+      runtime.importBrowserProject({ name: "No Scene", source: "print('hello')\n", sourceName: "script.py" }),
+    ).rejects.toMatchObject({ status: 422 });
+    await expect(
+      runtime.importBrowserProject({
+        name: "Asset Scene",
+        source:
+          'from manim import *\nclass AssetScene(Scene):\n    def construct(self):\n        image = ImageMobject("asset.png")\n        self.add(image)\n',
+        sourceName: "asset_scene.py",
+      }),
+    ).rejects.toThrow(/asset and archive import are not supported/i);
+    expect(putSource).not.toHaveBeenCalled();
     await runtime.close();
   });
 });

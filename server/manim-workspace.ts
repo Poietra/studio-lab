@@ -1,9 +1,15 @@
-import { constants, type BigIntStats } from "node:fs";
+import { type BigIntStats, constants } from "node:fs";
 import { open, readdir } from "node:fs/promises";
 import { join, sep } from "node:path";
 
-import { isManimSourcePath, type ManimWorkspaceSource } from "../src/render-pipeline/contracts";
-import { findSceneBlocks, importManimScene, type ImportedManimScene } from "../src/render-pipeline/source-import";
+import {
+  type BrowserManimProjectImportRequestV1,
+  browserManimProjectImportRequestV1Schema,
+  isManimSourcePath,
+  type ManimWorkspaceSource,
+} from "../src/render-pipeline/contracts";
+import { findSceneBlocks, type ImportedManimScene, importManimScene } from "../src/render-pipeline/source-import";
+import { HttpError } from "./http/json";
 
 const SKIPPED_DIRECTORIES = new Set([
   ".git",
@@ -86,6 +92,30 @@ export function importSourceSnapshot(
       })),
     },
   };
+}
+
+export function validateBrowserManimProjectImportV1(
+  request: BrowserManimProjectImportRequestV1,
+  frame: Readonly<{ height: number; width: number }>,
+) {
+  const parsed = browserManimProjectImportRequestV1Schema.safeParse(request);
+  if (!parsed.success) {
+    throw new HttpError(parsed.error.issues[0]?.message ?? "The Python project import is invalid.", 400);
+  }
+  const imported = importSourceSnapshot(parsed.data.source, parsed.data.sourceName, frame);
+  if (imported.view.scenes.length === 0) {
+    throw new HttpError("The selected Python file does not contain an importable Manim Scene.", 422);
+  }
+  const referencesImageMobject = imported.importedScenes.some((scene) =>
+    Object.values(scene.runtimeSceneState.objectGraph.entities).some((entity) => entity.type === "ImageMobject"),
+  );
+  if (referencesImageMobject) {
+    throw new HttpError(
+      "This Python file references ImageMobject assets. Browser asset and archive import are not supported yet.",
+      422,
+    );
+  }
+  return { imported, request: parsed.data } as const;
 }
 
 async function visitPythonSources(

@@ -154,7 +154,7 @@ describe("production Manim server configuration", () => {
     expect(parsed.publicOrigin).toBe("https://studio.example");
     expect(parsed.trustedProxyAddresses).toEqual(["127.0.0.1"]);
     expect(parsed.limits).toMatchObject({
-      maxBodyBytes: 512 * 1024,
+      maxBodyBytes: 1_280 * 1024,
       maxConnections: 256,
       maxHeaderBytes: 16 * 1024,
       requestDrainTimeoutMs: 10_000,
@@ -359,7 +359,7 @@ describe("standalone production Manim HTTP adapter", () => {
     expect(authenticateCalls).toBe(1);
   });
 
-  it("keeps authenticated workspace bootstrap readable during a render outage while mutations fail closed", async () => {
+  it("keeps authenticated workspace bootstrap and source import available during a render outage", async () => {
     const fullReadiness = vi.fn(async () => ({ ready: false }) as const);
     const renderReadiness = vi.fn(async () => false);
     let workspaceAvailable = true;
@@ -378,13 +378,20 @@ describe("standalone production Manim HTTP adapter", () => {
       sources: [],
     }));
     const start = vi.fn();
+    const importBrowserProject = vi.fn(async () => ({
+      catalog: {
+        defaultProjectId: "project-imported",
+        projects: [{ id: "project-imported", kind: "managed" as const, name: "Imported" }],
+      },
+      project: { id: "project-imported", kind: "managed" as const, name: "Imported" },
+    }));
     const baseRuntime = createRuntime(() => false);
     const server = await startProductionManimServer({
       admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
       config: await startConfig(),
       runtime: {
         ...baseRuntime,
-        api: { ...baseRuntime.api, projects, start, workspace } as unknown as ManimApi,
+        api: { ...baseRuntime.api, importBrowserProject, projects, start, workspace } as unknown as ManimApi,
         ready: fullReadiness,
         renderReady: renderReadiness,
         workspaceReady: workspaceReadiness,
@@ -405,9 +412,23 @@ describe("standalone production Manim HTTP adapter", () => {
     expect(fullReadiness).not.toHaveBeenCalled();
     expect(workspaceReadiness).toHaveBeenCalledTimes(4);
 
+    const imported = await send(server, "/api/manim/project-imports", {
+      body: JSON.stringify({
+        name: "Imported",
+        source: "from manim import *\nclass DemoScene(Scene):\n    def construct(self):\n        self.wait(1)\n",
+        sourceName: "demo.py",
+      }),
+      headers: { "content-type": "application/json", origin: "https://studio.example" },
+      method: "POST",
+    });
+    expect(imported).toMatchObject({ status: 201 });
+    expect(importBrowserProject).toHaveBeenCalledOnce();
+    expect(workspaceReadiness).toHaveBeenCalledTimes(5);
+    expect(fullReadiness).not.toHaveBeenCalled();
+
     workspaceAvailable = false;
     expect(await send(server, "/api/manim/projects")).toMatchObject({ status: 503 });
-    expect(workspaceReadiness).toHaveBeenCalledTimes(5);
+    expect(workspaceReadiness).toHaveBeenCalledTimes(6);
     expect(projects).toHaveBeenCalledOnce();
 
     const render = await send(server, "/api/manim/projects/project-a/renders", {

@@ -363,6 +363,18 @@ export type ManimProjectMutationView = Readonly<{
   project: ManimProjectSummary | null;
 }>;
 
+export const MAX_BROWSER_MANIM_SOURCE_BYTES_V1 = 192 * 1024;
+// One valid source byte can occupy six JSON bytes when an ASCII control
+// character is escaped as `\u00xx`. Keep the transport ceiling above that
+// worst case plus the bounded project-name and file-name envelope.
+export const MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1 = 1_280 * 1024;
+
+export type BrowserManimProjectImportRequestV1 = Readonly<{
+  name: string;
+  source: string;
+  sourceName: string;
+}>;
+
 export type ManimThumbnailState = "current" | "failed" | "generating" | "missing" | "stale" | "unavailable";
 
 export type ManimThumbnailStatus = Readonly<{
@@ -594,6 +606,29 @@ export const createManimProjectRequestSchema: z.ZodType<ManimProjectCreateReques
     })
     .strict(),
 ]);
+
+export const browserManimProjectImportRequestV1Schema: z.ZodType<BrowserManimProjectImportRequestV1> = z
+  .object({
+    name: manimProjectNameSchema,
+    source: z
+      .string()
+      .min(1, "The selected Python file is empty.")
+      .refine(
+        (source) => new TextEncoder().encode(source).byteLength <= MAX_BROWSER_MANIM_SOURCE_BYTES_V1,
+        `Browser imports accept at most ${MAX_BROWSER_MANIM_SOURCE_BYTES_V1} UTF-8 bytes.`,
+      )
+      .refine((source) => !source.includes("\0"), "Python source cannot contain NUL bytes."),
+    sourceName: z
+      .string()
+      .min(1)
+      .max(240)
+      .regex(/^[^/\\\u0000-\u001f\u007f]+[.]py$/u, "Select one Python .py file without a directory path.")
+      .refine(
+        (sourceName) => manimSourcePathSchema.safeParse(sourceName).success,
+        "Select one normalized Python .py file without a directory path.",
+      ),
+  })
+  .strict();
 
 export const renameManimProjectRequestSchema = z
   .object({

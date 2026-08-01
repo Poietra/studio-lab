@@ -5,7 +5,9 @@ import { pipeline } from "node:stream/promises";
 import { isNativeError, isProxy } from "node:util/types";
 
 import {
+  browserManimProjectImportRequestV1Schema,
   createManimProjectRequestSchema,
+  MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1,
   type ManimSourceExport,
   manimThumbnailGenerateRequestSchema,
   originalManimSourceExportRequestSchema,
@@ -25,7 +27,7 @@ import { AmbiguousSourceSceneError } from "../src/render-pipeline/source-import"
 import { fastManimSnapshotQueryV1Schema, fastManimSnapshotRunRequestV1Schema } from "./fast-manim-snapshot-contract";
 import { HttpError, readJsonBody, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
-import type { ManimApi, MutableManimProjectApi } from "./manim-api";
+import type { BrowserManimProjectImportApiV1, ManimApi, MutableManimProjectApi } from "./manim-api";
 import {
   authenticateManimPrincipal,
   type ManimPrincipalAuthenticator,
@@ -43,11 +45,16 @@ const PROJECT_SCENE_SNAPSHOT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{
 const PROJECT_SCENE_SNAPSHOT_ASSET_ROUTE =
   /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/scene-snapshot-assets\/([0-9a-f]{64})$/;
 const PROJECT_ITEM_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})$/;
+const BROWSER_PROJECT_IMPORT_ROUTE = "/api/manim/project-imports";
 
 export function isManimWorkspaceBootstrapRequest(method: string | undefined, pathname: string) {
   if (method !== "GET") return false;
   if (pathname === "/api/manim/projects" || pathname === "/api/manim/workspace") return true;
   return PROJECT_ROUTE.exec(pathname)?.[2] === "workspace";
+}
+
+export function isManimBrowserProjectImportRequest(method: string | undefined, pathname: string) {
+  return method === "POST" && pathname === BROWSER_PROJECT_IMPORT_ROUTE;
 }
 const DEFAULT_MEDIA_STREAM_IDLE_TIMEOUT_MS = 30_000;
 const MAX_MEDIA_STREAM_IDLE_TIMEOUT_MS = 120_000;
@@ -176,7 +183,12 @@ function requestRouteTemplate(rawUrl: string | undefined) {
   } catch {
     return "invalid";
   }
-  if (pathname === "/api/manim/projects" || pathname === "/api/manim/workspace") return pathname;
+  if (
+    pathname === "/api/manim/projects" ||
+    pathname === "/api/manim/workspace" ||
+    pathname === BROWSER_PROJECT_IMPORT_ROUTE
+  )
+    return pathname;
   if (PROJECT_SCENE_SNAPSHOT_ROUTE.test(pathname)) return "/api/manim/projects/:projectId/scene-snapshots";
   if (PROJECT_SCENE_SNAPSHOT_ASSET_ROUTE.test(pathname)) {
     return "/api/manim/projects/:projectId/scene-snapshot-assets/:digest";
@@ -199,6 +211,14 @@ function mutableProjectRegistry(manager: ManimApi) {
     throw new HttpError("Workspace registry mutations are not configured.", 405);
   }
   return candidate as MutableManimProjectApi;
+}
+
+function browserProjectImporter(manager: ManimApi) {
+  const candidate = manager as Partial<BrowserManimProjectImportApiV1>;
+  if (typeof candidate.importBrowserProject !== "function") {
+    throw new HttpError("Browser project import is not configured.", 405);
+  }
+  return candidate as BrowserManimProjectImportApiV1;
 }
 
 export function resolveByteRange(
@@ -452,6 +472,16 @@ async function routeManimRequest(
   const renderSessionVersion = renderSessionContractVersion(request);
   if (request.method === "POST" || request.method === "PATCH" || request.method === "DELETE") {
     requireSameOriginJsonMutation(request, policy.expectedMutationOrigin);
+  }
+  if (url.pathname === BROWSER_PROJECT_IMPORT_ROUTE) {
+    if (request.method !== "POST") throw new HttpError("Method not allowed.", 405);
+    const parsed = browserManimProjectImportRequestV1Schema.safeParse(
+      await readBoundedJsonBody(request, policy, MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1),
+    );
+    if (!parsed.success) throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid project import.", 400);
+    signal.throwIfAborted();
+    sendJson(response, 201, await browserProjectImporter(manager).importBrowserProject(parsed.data, signal));
+    return;
   }
   if (url.pathname === "/api/manim/projects") {
     if (request.method === "GET") {
