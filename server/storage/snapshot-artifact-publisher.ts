@@ -19,7 +19,8 @@ import {
   type SnapshotPublicationIdentityV1,
   type SnapshotPublicationRepositoryV1,
   type SnapshotPublicationV1,
-  sameSnapshotArtifactReceiptV1,
+  sameSnapshotArtifactContentV1,
+  snapshotArtifactIdentityV1,
 } from "./snapshot-publication-repository";
 
 export const SNAPSHOT_ARTIFACT_DOCUMENT_SCHEMA_V1 = "poietra.studio-snapshot-artifact" as const;
@@ -134,7 +135,7 @@ function assertPublication(
 ) {
   if (
     !sameIdentity(publication, input.identity) ||
-    !sameSnapshotArtifactReceiptV1(publication.artifact, input.artifact) ||
+    !sameSnapshotArtifactContentV1(publication.artifact, input.artifact) ||
     publication.sourceGeneration !== input.expectedSourceGeneration ||
     publication.requestId !== input.requestId ||
     publication.snapshotHash !== input.snapshotHash
@@ -188,10 +189,11 @@ async function verifiedDocument(
 }
 
 async function parseDocument(bytes: Uint8Array, publication: SnapshotPublicationV1) {
+  const artifactIdentity = snapshotArtifactIdentityV1(publication.artifact);
   if (bytes.byteLength < 1 || bytes.byteLength > MAX_SNAPSHOT_ARTIFACT_BYTES_V1) {
     throw new RangeError("The stored snapshot artifact is outside its 16 MiB bound.");
   }
-  if (publication.artifact.byteSize !== bytes.byteLength || publication.artifact.resultDigest !== digest(bytes)) {
+  if (publication.artifact.byteSize !== bytes.byteLength || artifactIdentity.resultDigest !== digest(bytes)) {
     throw new Error("The stored snapshot artifact does not match its published digest.");
   }
   let text: string;
@@ -227,11 +229,11 @@ async function parseDocument(bytes: Uint8Array, publication: SnapshotPublication
   assertExpectedIdentity(document.expected, publication);
   if (
     document.expected.requestId !== publication.requestId ||
-    document.expected.sourceHash !== publication.artifact.sourceDigest ||
-    document.expected.runtimeConfigHash !== publication.artifact.runtimeConfigHash ||
-    document.profileDigest !== publication.artifact.profileDigest ||
+    document.expected.sourceHash !== artifactIdentity.sourceDigest ||
+    document.expected.runtimeConfigHash !== artifactIdentity.runtimeConfigHash ||
+    document.profileDigest !== artifactIdentity.profileDigest ||
     document.runtimeDigest !== publication.runtimeDigest ||
-    document.runtimeDigest !== publication.artifact.runtimeDigest ||
+    document.runtimeDigest !== artifactIdentity.runtimeDigest ||
     document.snapshot.snapshotHash !== publication.snapshotHash
   ) {
     throw new TypeError("The stored snapshot artifact is cross-correlated with its publication metadata.");
@@ -309,13 +311,14 @@ export class SnapshotArtifactPublisherV1 {
         signal,
       ),
     );
+    const artifactIdentity = snapshotArtifactIdentityV1(artifact);
     if (
       artifact.byteSize !== bytes.byteLength ||
-      artifact.profileDigest !== document.profileDigest ||
-      artifact.resultDigest !== digest(bytes) ||
-      artifact.runtimeConfigHash !== document.expected.runtimeConfigHash ||
-      artifact.runtimeDigest !== document.runtimeDigest ||
-      artifact.sourceDigest !== document.expected.sourceHash
+      artifactIdentity.profileDigest !== document.profileDigest ||
+      artifactIdentity.resultDigest !== digest(bytes) ||
+      artifactIdentity.runtimeConfigHash !== document.expected.runtimeConfigHash ||
+      artifactIdentity.runtimeDigest !== document.runtimeDigest ||
+      artifactIdentity.sourceDigest !== document.expected.sourceHash
     ) {
       throw new Error("The snapshot artifact store returned a receipt for different bytes or correlation.");
     }
@@ -357,9 +360,10 @@ export class SnapshotArtifactPublisherV1 {
         return { generation: current.generation, kind: "stale", reason: "source-stale" };
       }
       const { publication } = current;
+      const artifactIdentity = snapshotArtifactIdentityV1(publication.artifact);
       if (
         !sameIdentity(publication, expectedIdentity) ||
-        publication.artifact.runtimeDigest !== expectedIdentity.runtimeDigest
+        artifactIdentity.runtimeDigest !== expectedIdentity.runtimeDigest
       ) {
         throw new Error("The snapshot repository returned a publication for another runtime or Scene.");
       }

@@ -30,6 +30,8 @@ import {
   SnapshotArtifactReadErrorV1,
   type SnapshotArtifactReceiptV1,
   type SnapshotPublicationIdentityV1,
+  snapshotArtifactIdentityV1,
+  snapshotArtifactLocatorV1,
 } from "./snapshot-publication-repository";
 
 const PROCESS_ROLE = process.env.POIETRA_SNAPSHOT_STORAGE_E2E_PROCESS_ROLE;
@@ -197,7 +199,9 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== "reader")("durable snapshot 
       const result = await storage.publications.readCurrent(identityFromEnvironment());
       if (result.kind !== "published") throw new Error(`Expected a published snapshot, received ${result.kind}.`);
       const bytes = await storage.artifacts.read(result.publication.tenantId, result.publication.artifact);
-      expect(createHash("sha256").update(bytes).digest("hex")).toBe(result.publication.artifact.resultDigest);
+      expect(createHash("sha256").update(bytes).digest("hex")).toBe(
+        snapshotArtifactIdentityV1(result.publication.artifact).resultDigest,
+      );
       emitProcessResult({
         artifact: result.publication.artifact,
         event: "published",
@@ -617,7 +621,9 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
         requestId: `other-runtime-${requestId}`,
         snapshotHash: createHash("sha256").update(`other-runtime-snapshot-${suffix}`).digest("hex"),
       });
-      expect(otherRuntimePublication.artifact.resultDigest).toBe(publication.artifact.resultDigest);
+      expect(snapshotArtifactIdentityV1(otherRuntimePublication.artifact).resultDigest).toBe(
+        snapshotArtifactIdentityV1(publication.artifact).resultDigest,
+      );
       expect(otherRuntimePublication.artifact.objectKey).not.toBe(publication.artifact.objectKey);
       expect(await runReaderChild(otherRuntimeIdentity)).toEqual(otherRuntimePublication);
       expect(await runReaderChild(identity)).toEqual(publication);
@@ -784,13 +790,16 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
       const orphanStorage = snapshotStorage();
       const orphanInspection = new Pool({ connectionString: environment.databaseUrl, max: 1 });
       try {
+        const orphanIdentity = snapshotArtifactIdentityV1(orphan);
+        const orphanLocator = snapshotArtifactLocatorV1(orphan);
+        if (orphanLocator.kind !== "versioned") throw new Error("Expected a versioned orphan fixture.");
         const registered = await orphanInspection.query<{ registered: boolean }>(
           `SELECT EXISTS (
              SELECT 1 FROM public.snapshot_artifact_objects
               WHERE tenant_id = $1 AND result_digest = $2
                 AND object_key = $3 AND version_id = $4
            ) AS registered`,
-          [tenantA, orphan.resultDigest, orphan.objectKey, orphan.versionId],
+          [tenantA, orphanIdentity.resultDigest, orphan.objectKey, orphanLocator.versionId],
         );
         expect(registered.rows[0]?.registered).toBe(false);
         expect(await orphanStorage.publications.isArtifactPublished(tenantA, orphan)).toBe(false);

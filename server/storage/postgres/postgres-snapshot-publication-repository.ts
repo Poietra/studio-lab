@@ -9,7 +9,10 @@ import {
 } from "../../../src/render-pipeline/manim-identity-contract";
 import { HttpError } from "../../http/json";
 import { manimTenantIdSchema } from "../../manim-request-principal";
+import { IMMUTABLE_SNAPSHOT_ARTIFACT_RECEIPT_SCHEMA_V1 } from "../immutable-snapshot-artifact-store";
 import {
+  snapshotArtifactIdentityV1 as artifactIdentity,
+  snapshotArtifactLocatorV1 as artifactLocator,
   parseSnapshotArtifactReceiptV1 as artifactReceipt,
   sameSnapshotArtifactReceiptV1 as exactArtifact,
   LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1,
@@ -18,6 +21,7 @@ import {
   type SnapshotPublicationIdentityV1,
   type SnapshotPublicationRepositoryV1,
   type SnapshotPublicationV1,
+  sameSnapshotArtifactContentV1 as sameArtifactContent,
 } from "../snapshot-publication-repository";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 import { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
@@ -34,13 +38,14 @@ type ArtifactRow = QueryResultRow & {
   artifact_byte_size: number;
   artifact_etag: string;
   artifact_object_key: string;
+  artifact_object_generation: string | null;
   artifact_profile_digest: string;
   artifact_result_digest: string;
   artifact_runtime_config_hash: string;
   artifact_runtime_digest: string;
   artifact_source_digest: string;
   artifact_tenant_id: string;
-  artifact_version_id: string;
+  artifact_version_id: string | null;
 };
 
 type PublicationRow = ArtifactRow & {
@@ -94,6 +99,7 @@ function artifactColumns(alias: string) {
     ${alias}.profile_digest AS artifact_profile_digest,
     ${alias}.runtime_digest AS artifact_runtime_digest,
     ${alias}.object_key AS artifact_object_key,
+    ${alias}.object_generation::text AS artifact_object_generation,
     ${alias}.version_id AS artifact_version_id,
     ${alias}.etag AS artifact_etag,
     ${alias}.byte_size AS artifact_byte_size
@@ -182,6 +188,24 @@ function boundedPositiveInteger(value: number, name: string, maximum: number) {
   return value;
 }
 
+function artifactValues(tenant: string, artifact: SnapshotArtifactReceiptV1) {
+  const identity = artifactIdentity(artifact);
+  const locator = artifactLocator(artifact);
+  return [
+    tenant,
+    identity.resultDigest,
+    identity.sourceDigest,
+    identity.runtimeConfigHash,
+    identity.profileDigest,
+    identity.runtimeDigest,
+    locator.objectKey,
+    locator.kind === "versioned" ? locator.versionId : null,
+    locator.kind === "immutable" ? locator.objectGeneration : null,
+    artifact.etag,
+    artifact.byteSize,
+  ];
+}
+
 function generationFromRow(value: unknown, name: string, maximum: bigint) {
   if (typeof value !== "string" || !/^[1-9][0-9]*$/.test(value)) {
     throw new TypeError(`PostgreSQL returned an invalid ${name}.`);
@@ -208,16 +232,34 @@ function publicationIdentity(value: SnapshotPublicationIdentityV1): SnapshotPubl
 
 function artifactFromRow(row: ArtifactRow): SnapshotArtifactReceiptV1 {
   const tenant = tenantId(row.artifact_tenant_id);
-  return artifactReceipt(tenant, {
-    byteSize: row.artifact_byte_size,
-    etag: row.artifact_etag,
-    objectKey: row.artifact_object_key,
+  const identity = {
     profileDigest: row.artifact_profile_digest,
     resultDigest: row.artifact_result_digest,
     runtimeConfigHash: row.artifact_runtime_config_hash,
     runtimeDigest: row.artifact_runtime_digest,
     sourceDigest: row.artifact_source_digest,
-    versionId: row.artifact_version_id,
+  };
+  if ((row.artifact_version_id === null) === (row.artifact_object_generation === null)) {
+    throw new TypeError("PostgreSQL returned an ambiguous snapshot artifact locator.");
+  }
+  const shared = {
+    byteSize: row.artifact_byte_size,
+    etag: row.artifact_etag,
+    objectKey: row.artifact_object_key,
+  };
+  if (row.artifact_version_id !== null) {
+    return artifactReceipt(tenant, { ...shared, ...identity, versionId: row.artifact_version_id });
+  }
+  const { runtimeDigest, ...digests } = identity;
+  return artifactReceipt(tenant, {
+    ...shared,
+    identity:
+      runtimeDigest === LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1
+        ? { ...digests, kind: "legacy" }
+        : { ...digests, kind: "runtime-digest", runtimeDigest },
+    objectGeneration: row.artifact_object_generation,
+    schema: IMMUTABLE_SNAPSHOT_ARTIFACT_RECEIPT_SCHEMA_V1,
+    version: 1,
   });
 }
 
@@ -245,14 +287,15 @@ function publicationFromRow(row: PublicationRow): SnapshotPublicationV1 {
     tenantId: row.tenant_id,
   });
   const artifact = artifactFromRow(row);
+  const storedIdentity = artifactIdentity(artifact);
   if (
     row.artifact_tenant_id !== identity.tenantId ||
-    sha256(row.publication_source_digest, "Stored publication source digest") !== artifact.sourceDigest ||
+    sha256(row.publication_source_digest, "Stored publication source digest") !== storedIdentity.sourceDigest ||
     sha256(row.publication_runtime_config_hash, "Stored publication runtime-config hash") !==
-      artifact.runtimeConfigHash ||
-    sha256(row.publication_profile_digest, "Stored publication profile digest") !== artifact.profileDigest ||
-    identity.runtimeDigest !== artifact.runtimeDigest ||
-    sha256(row.publication_result_digest, "Stored publication result digest") !== artifact.resultDigest ||
+      storedIdentity.runtimeConfigHash ||
+    sha256(row.publication_profile_digest, "Stored publication profile digest") !== storedIdentity.profileDigest ||
+    identity.runtimeDigest !== storedIdentity.runtimeDigest ||
+    sha256(row.publication_result_digest, "Stored publication result digest") !== storedIdentity.resultDigest ||
     !(row.published_at instanceof Date) ||
     Number.isNaN(row.published_at.getTime())
   ) {
@@ -273,7 +316,7 @@ function publicationFromRow(row: PublicationRow): SnapshotPublicationV1 {
 function checkedPublication(value: SnapshotPublicationV1): SnapshotPublicationV1 {
   const identity = publicationIdentity(value);
   const artifact = artifactReceipt(identity.tenantId, value.artifact);
-  if (artifact.runtimeDigest !== identity.runtimeDigest) {
+  if (artifactIdentity(artifact).runtimeDigest !== identity.runtimeDigest) {
     throw new TypeError("The snapshot artifact does not belong to the publication runtime.");
   }
   if (!(value.publishedAt instanceof Date) || Number.isNaN(value.publishedAt.getTime())) {
@@ -416,36 +459,63 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
     return result.rows[0] ? headFromRow(result.rows[0], identity) : null;
   }
 
-  async #lockArtifact(client: PoolClient, tenant: string, runtimeDigest: string, resultDigest: string) {
+  async #lockArtifact(client: PoolClient, tenant: string, artifact: SnapshotArtifactReceiptV1) {
+    const identity = artifactIdentity(artifact);
     await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
-      `snapshot-artifact:${tenant}:${runtimeDigest}:${resultDigest}`,
+      `snapshot-artifact:${tenant}:${identity.runtimeDigest}:${identity.resultDigest}`,
     ]);
   }
 
   async #storedArtifact(client: PoolClient, tenant: string, candidate: SnapshotArtifactReceiptV1) {
+    const identity = artifactIdentity(candidate);
+    const locator = artifactLocator(candidate);
     const existing = await client.query<ArtifactRow>(
       `SELECT ${ARTIFACT_COLUMNS}
          FROM public.snapshot_artifact_objects a
         WHERE a.tenant_id = $1
           AND (
             (a.result_digest = $2 AND a.runtime_digest = $3)
-            OR (a.object_key = $4 AND a.version_id = $5)
+            OR (
+              a.object_key = $4
+              AND a.version_id IS NOT DISTINCT FROM $5
+              AND a.object_generation IS NOT DISTINCT FROM $6::uuid
+            )
           )
         FOR UPDATE`,
-      [tenant, candidate.resultDigest, candidate.runtimeDigest, candidate.objectKey, candidate.versionId],
+      [
+        tenant,
+        identity.resultDigest,
+        identity.runtimeDigest,
+        locator.objectKey,
+        locator.kind === "versioned" ? locator.versionId : null,
+        locator.kind === "immutable" ? locator.objectGeneration : null,
+      ],
     );
     if (existing.rows.length > 1) {
       throw new TypeError("The stored snapshot artifact metadata conflicts with its immutable identity.");
     }
     if (!existing.rows[0]) return null;
     const stored = artifactFromRow(existing.rows[0]);
-    if (existing.rows[0].artifact_tenant_id !== tenant || !exactArtifact(stored, candidate)) {
+    const storedLocator = artifactLocator(stored);
+    const candidateLocator = artifactLocator(candidate);
+    const sameLocator =
+      storedLocator.kind === candidateLocator.kind &&
+      storedLocator.objectKey === candidateLocator.objectKey &&
+      (storedLocator.kind === "versioned"
+        ? candidateLocator.kind === "versioned" && storedLocator.versionId === candidateLocator.versionId
+        : candidateLocator.kind === "immutable" &&
+          storedLocator.objectGeneration === candidateLocator.objectGeneration);
+    if (
+      existing.rows[0].artifact_tenant_id !== tenant ||
+      (sameLocator ? !exactArtifact(stored, candidate) : !sameArtifactContent(stored, candidate))
+    ) {
       throw new TypeError("The stored snapshot artifact metadata conflicts with its immutable identity.");
     }
     return stored;
   }
 
   async #isCurrentArtifact(client: PoolClient, tenant: string, artifact: SnapshotArtifactReceiptV1) {
+    const values = artifactValues(tenant, artifact);
     const result = await client.query<ArtifactRow>(
       `SELECT ${ARTIFACT_COLUMNS}
          FROM public.snapshot_artifact_objects a
@@ -479,22 +549,12 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
           AND a.profile_digest = $5
           AND a.runtime_digest = $6
           AND a.object_key = $7
-          AND a.version_id = $8
-          AND a.etag = $9
-          AND a.byte_size = $10
+          AND a.version_id IS NOT DISTINCT FROM $8
+          AND a.object_generation IS NOT DISTINCT FROM $9::uuid
+          AND a.etag = $10
+          AND a.byte_size = $11
         LIMIT 1`,
-      [
-        tenant,
-        artifact.resultDigest,
-        artifact.sourceDigest,
-        artifact.runtimeConfigHash,
-        artifact.profileDigest,
-        artifact.runtimeDigest,
-        artifact.objectKey,
-        artifact.versionId,
-        artifact.etag,
-        artifact.byteSize,
-      ],
+      values,
     );
     for (const row of result.rows) {
       if (row.artifact_tenant_id !== tenant || !exactArtifact(artifactFromRow(row), artifact)) {
@@ -511,23 +571,14 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
     lockHeld = false,
   ) {
     const candidate = artifactReceipt(tenant, candidateValue);
-    if (!lockHeld) await this.#lockArtifact(client, tenant, candidate.runtimeDigest, candidate.resultDigest);
-    const values = [
-      tenant,
-      candidate.resultDigest,
-      candidate.sourceDigest,
-      candidate.runtimeConfigHash,
-      candidate.profileDigest,
-      candidate.runtimeDigest,
-      candidate.objectKey,
-      candidate.versionId,
-      candidate.etag,
-      candidate.byteSize,
-    ];
+    if (!lockHeld) await this.#lockArtifact(client, tenant, candidate);
+    const values = artifactValues(tenant, candidate);
     const deleting = await client.query(
       `SELECT 1 FROM public.snapshot_artifact_deletions
-        WHERE tenant_id = $1 AND object_key = $2 AND version_id = $3`,
-      [tenant, candidate.objectKey, candidate.versionId],
+        WHERE tenant_id = $1 AND object_key = $2
+          AND version_id IS NOT DISTINCT FROM $3
+          AND object_generation IS NOT DISTINCT FROM $4::uuid`,
+      [tenant, values[6], values[7], values[8]],
     );
     if (deleting.rows.length !== 0) {
       throw new TypeError("The snapshot artifact candidate is no longer available.");
@@ -535,8 +586,8 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
     const inserted = await client.query<ArtifactRow>(
       `INSERT INTO public.snapshot_artifact_objects
          (tenant_id, result_digest, source_digest, runtime_config_hash, profile_digest,
-          runtime_digest, object_key, version_id, etag, byte_size)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          runtime_digest, object_key, version_id, object_generation, etag, byte_size)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::uuid, $10, $11)
        ON CONFLICT DO NOTHING
        RETURNING
          tenant_id AS artifact_tenant_id,
@@ -546,6 +597,7 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
          profile_digest AS artifact_profile_digest,
          runtime_digest AS artifact_runtime_digest,
          object_key AS artifact_object_key,
+         object_generation::text AS artifact_object_generation,
          version_id AS artifact_version_id,
          etag AS artifact_etag,
          byte_size AS artifact_byte_size`,
@@ -562,7 +614,7 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
       }
       stored = existing;
     }
-    if (!exactArtifact(stored, candidate)) {
+    if (!sameArtifactContent(stored, candidate)) {
       throw new TypeError("The stored snapshot artifact metadata conflicts with its immutable identity.");
     }
     return stored;
@@ -623,16 +675,17 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
   async publish(input: Parameters<SnapshotPublicationRepositoryV1["publish"]>[0], signal?: AbortSignal) {
     const identity = publicationIdentity(input);
     const artifact = artifactReceipt(identity.tenantId, input.artifact);
+    const candidateIdentity = artifactIdentity(artifact);
     const expectedSourceDigest = sha256(input.expectedSourceDigest, "Expected source digest");
     const expectedSourceGeneration = generation(
       input.expectedSourceGeneration,
       "Expected source generation",
       MAX_POSTGRES_GENERATION_V1,
     );
-    if (artifact.sourceDigest !== expectedSourceDigest) {
+    if (candidateIdentity.sourceDigest !== expectedSourceDigest) {
       throw new TypeError("The snapshot artifact does not belong to the expected source.");
     }
-    if (artifact.runtimeDigest !== identity.runtimeDigest) {
+    if (candidateIdentity.runtimeDigest !== identity.runtimeDigest) {
       throw new TypeError("The snapshot artifact does not belong to the active runtime.");
     }
     const publicationId = uuid(input.publicationId, "Snapshot publication ID");
@@ -640,7 +693,7 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
     const snapshotHash = sha256(input.snapshotHash, "Snapshot hash");
 
     return this.#connection.transaction(async (client) => {
-      await this.#lockArtifact(client, identity.tenantId, identity.runtimeDigest, artifact.resultDigest);
+      await this.#lockArtifact(client, identity.tenantId, artifact);
       const source = await this.#currentSource(client, identity);
       if (
         !source ||
@@ -709,9 +762,9 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
           nextGeneration.toString(),
           expectedSourceGeneration.toString(),
           expectedSourceDigest,
-          storedArtifact.runtimeConfigHash,
-          storedArtifact.profileDigest,
-          storedArtifact.resultDigest,
+          artifactIdentity(storedArtifact).runtimeConfigHash,
+          artifactIdentity(storedArtifact).profileDigest,
+          artifactIdentity(storedArtifact).resultDigest,
           snapshotHash,
           requestId,
         ],
@@ -786,7 +839,7 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
       if (
         !source ||
         source.generation !== publication.sourceGeneration ||
-        source.digest !== publication.artifact.sourceDigest
+        source.digest !== artifactIdentity(publication.artifact).sourceDigest
       ) {
         await this.#tombstone(client, identity, head.generation, publication.publicationId);
         return { generation: head.generation, kind: "stale" as const };
@@ -803,7 +856,7 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
       if (!source || !head?.publication) return false;
       return (
         source.generation === expected.sourceGeneration &&
-        source.digest === expected.artifact.sourceDigest &&
+        source.digest === artifactIdentity(expected.artifact).sourceDigest &&
         head.generation === expected.generation &&
         exactPublication(head.publication, expected)
       );
@@ -887,29 +940,19 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
   async queueArtifactDeletion(tenantValue: string, artifactValue: SnapshotArtifactReceiptV1, signal?: AbortSignal) {
     const tenant = tenantId(tenantValue);
     const artifact = artifactReceipt(tenant, artifactValue);
-    const values = [
-      tenant,
-      artifact.resultDigest,
-      artifact.sourceDigest,
-      artifact.runtimeConfigHash,
-      artifact.profileDigest,
-      artifact.runtimeDigest,
-      artifact.objectKey,
-      artifact.versionId,
-      artifact.etag,
-      artifact.byteSize,
-    ];
+    const values = artifactValues(tenant, artifact);
     return this.#connection.transaction(async (client) => {
-      await this.#lockArtifact(client, tenant, artifact.runtimeDigest, artifact.resultDigest);
+      await this.#lockArtifact(client, tenant, artifact);
       const stored = await this.#storedArtifact(client, tenant, artifact);
       const queued = await client.query<DeletionRow>(
         `SELECT d.deletion_id::text AS deletion_id, d.deleted_at, ${artifactColumns("d")}
            FROM public.snapshot_artifact_deletions d
           WHERE d.tenant_id = $1
             AND d.object_key = $2
-            AND d.version_id = $3
+            AND d.version_id IS NOT DISTINCT FROM $3
+            AND d.object_generation IS NOT DISTINCT FROM $4::uuid
           FOR UPDATE`,
-        [tenant, artifact.objectKey, artifact.versionId],
+        [tenant, values[6], values[7], values[8]],
       );
       if (queued.rows.length > 1) {
         throw new TypeError("The queued snapshot artifact deletion conflicts with its immutable identity.");
@@ -921,8 +964,9 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
       if (await this.#isCurrentArtifact(client, tenant, artifact)) return null;
       if (queued.rows[0]) return queued.rows[0].deleted_at === null ? existing : null;
 
-      await client.query(
-        `UPDATE public.snapshot_scene_heads h
+      if (stored && exactArtifact(stored, artifact)) {
+        await client.query(
+          `UPDATE public.snapshot_scene_heads h
             SET publication_id = NULL, updated_at = clock_timestamp()
            FROM public.snapshot_publications p
           WHERE h.tenant_id = p.tenant_id
@@ -938,10 +982,10 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
             AND p.runtime_config_hash = $4
             AND p.profile_digest = $5
             AND p.runtime_digest = $6`,
-        values.slice(0, 6),
-      );
-      await client.query(
-        `DELETE FROM public.workspace_project_references reference
+          values.slice(0, 6),
+        );
+        await client.query(
+          `DELETE FROM public.workspace_project_references reference
           USING public.snapshot_publications p
           WHERE reference.tenant_id = p.tenant_id
             AND reference.project_id = p.project_id
@@ -953,20 +997,20 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
             AND p.runtime_config_hash = $4
             AND p.profile_digest = $5
             AND p.runtime_digest = $6`,
-        values.slice(0, 6),
-      );
-      await client.query(
-        `DELETE FROM public.snapshot_publications
+          values.slice(0, 6),
+        );
+        await client.query(
+          `DELETE FROM public.snapshot_publications
           WHERE tenant_id = $1
             AND result_digest = $2
             AND source_digest = $3
             AND runtime_config_hash = $4
             AND profile_digest = $5
             AND runtime_digest = $6`,
-        values.slice(0, 6),
-      );
-      const removed = await client.query(
-        `DELETE FROM public.snapshot_artifact_objects
+          values.slice(0, 6),
+        );
+        const removed = await client.query(
+          `DELETE FROM public.snapshot_artifact_objects
           WHERE tenant_id = $1
             AND result_digest = $2
             AND source_digest = $3
@@ -974,23 +1018,24 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
             AND profile_digest = $5
             AND runtime_digest = $6
             AND object_key = $7
-            AND version_id = $8
-            AND etag = $9
-            AND byte_size = $10`,
-        values,
-      );
-      if (stored && removed.rowCount !== 1) {
-        throw new Error("The locked snapshot artifact metadata changed unexpectedly.");
+            AND version_id IS NOT DISTINCT FROM $8
+            AND object_generation IS NOT DISTINCT FROM $9::uuid
+            AND etag = $10
+            AND byte_size = $11`,
+          values,
+        );
+        if (removed.rowCount !== 1) {
+          throw new Error("The locked snapshot artifact metadata changed unexpectedly.");
+        }
       }
 
       const deletionId = randomUUID();
       const inserted = await client.query<DeletionRow>(
         `INSERT INTO public.snapshot_artifact_deletions
            (deletion_id, tenant_id, result_digest, source_digest, runtime_config_hash,
-            profile_digest, runtime_digest, object_key, version_id, etag, byte_size)
-         VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-         ON CONFLICT (tenant_id, object_key, version_id) DO UPDATE
-           SET object_key = EXCLUDED.object_key
+            profile_digest, runtime_digest, object_key, version_id, object_generation, etag, byte_size)
+         VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10::uuid, $11, $12)
+         ON CONFLICT DO NOTHING
          RETURNING deletion_id::text AS deletion_id, deleted_at, ${artifactColumns("snapshot_artifact_deletions")}`,
         [deletionId, ...values],
       );

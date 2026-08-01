@@ -1,67 +1,50 @@
-import { manimTenantIdSchema } from "../manim-request-principal";
+import {
+  type ImmutableSnapshotArtifactReceiptV1,
+  parseImmutableSnapshotArtifactReceiptV1,
+} from "./immutable-snapshot-artifact-store";
+import {
+  LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1,
+  MAX_SNAPSHOT_ARTIFACT_BYTES_V1,
+  type SnapshotArtifactIdentityV1,
+  snapshotArtifactObjectKeyV1,
+} from "./snapshot-artifact-contract";
 
-export const MAX_SNAPSHOT_ARTIFACT_BYTES_V1 = 16 * 1024 * 1024;
-export const LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1 = "0".repeat(64);
+export {
+  LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1,
+  MAX_SNAPSHOT_ARTIFACT_BYTES_V1,
+  type SnapshotArtifactIdentityV1,
+  SnapshotArtifactReadErrorV1,
+  snapshotArtifactObjectKeyV1,
+} from "./snapshot-artifact-contract";
 
-const SNAPSHOT_SHA256_PATTERN_V1 = /^[0-9a-f]{64}$/;
+export type VersionedSnapshotArtifactReceiptV1 = SnapshotArtifactIdentityV1 &
+  Readonly<{
+    byteSize: number;
+    etag: string;
+    objectKey: string;
+    versionId: string;
+  }>;
 
-export class SnapshotArtifactReadErrorV1 extends Error {
-  readonly code: "corrupt" | "missing";
+export type SnapshotArtifactReceiptV1 = VersionedSnapshotArtifactReceiptV1 | ImmutableSnapshotArtifactReceiptV1;
 
-  constructor(code: "corrupt" | "missing") {
-    super(code === "missing" ? "The snapshot artifact version is missing." : "The snapshot artifact is corrupt.");
-    this.name = "SnapshotArtifactReadErrorV1";
-    this.code = code;
-  }
-}
-
-export type SnapshotArtifactReceiptV1 = Readonly<{
-  byteSize: number;
-  etag: string;
-  objectKey: string;
-  profileDigest: string;
-  resultDigest: string;
-  runtimeConfigHash: string;
-  runtimeDigest: string;
-  sourceDigest: string;
-  versionId: string;
-}>;
-
-type SnapshotArtifactIdentityV1 = Pick<
-  SnapshotArtifactReceiptV1,
-  "profileDigest" | "resultDigest" | "runtimeConfigHash" | "runtimeDigest" | "sourceDigest"
->;
+export type SnapshotArtifactLocatorV1 =
+  | Readonly<{ kind: "immutable"; objectGeneration: string; objectKey: string }>
+  | Readonly<{ kind: "versioned"; objectKey: string; versionId: string }>;
 
 const SNAPSHOT_ARTIFACT_RECEIPT_FIELDS_V1 =
   "byteSize etag objectKey profileDigest resultDigest runtimeConfigHash runtimeDigest sourceDigest versionId".split(
     " ",
-  ) as readonly (keyof SnapshotArtifactReceiptV1)[];
+  ) as readonly (keyof VersionedSnapshotArtifactReceiptV1)[];
 
-function snapshotDigestV1(value: unknown, name: string) {
-  if (typeof value !== "string" || !SNAPSHOT_SHA256_PATTERN_V1.test(value)) throw new TypeError(`${name} is invalid.`);
-  return value;
-}
-
-export function snapshotArtifactObjectKeyV1(tenantValue: string, identity: SnapshotArtifactIdentityV1) {
-  const tenant = manimTenantIdSchema.safeParse(tenantValue);
-  if (!tenant.success) throw new TypeError("Tenant ID is invalid.");
-  const source = snapshotDigestV1(identity?.sourceDigest, "Snapshot source digest");
-  const runtime = snapshotDigestV1(identity?.runtimeConfigHash, "Snapshot runtime-config hash");
-  const profile = snapshotDigestV1(identity?.profileDigest, "Snapshot profile digest");
-  const runtimeDigest = snapshotDigestV1(identity?.runtimeDigest, "Snapshot runtime digest");
-  const result = snapshotDigestV1(identity?.resultDigest, "Snapshot result digest");
-  if (runtimeDigest === LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1) {
-    return `tenants/${tenant.data}/snapshots/${source}/${runtime}/${profile}/${result}`;
-  }
-  return `tenants/${tenant.data}/snapshots/${source}/${runtime}/${profile}/${runtimeDigest}/${result}`;
-}
-
-export function parseSnapshotArtifactReceiptV1(tenantId: string, value: unknown): SnapshotArtifactReceiptV1 {
+export function parseVersionedSnapshotArtifactReceiptV1(
+  tenantId: string,
+  value: unknown,
+): VersionedSnapshotArtifactReceiptV1 {
   if (!value || typeof value !== "object") throw new TypeError("Snapshot artifact receipt is invalid.");
   const candidate = value as Record<string, unknown>;
   const receipt = Object.fromEntries(
     SNAPSHOT_ARTIFACT_RECEIPT_FIELDS_V1.map((field) => [field, candidate[field]]),
-  ) as SnapshotArtifactReceiptV1;
+  ) as VersionedSnapshotArtifactReceiptV1;
   if (
     receipt.objectKey !== snapshotArtifactObjectKeyV1(tenantId, receipt) ||
     !Number.isSafeInteger(receipt.byteSize) ||
@@ -79,8 +62,72 @@ export function parseSnapshotArtifactReceiptV1(tenantId: string, value: unknown)
   return receipt;
 }
 
+export function parseSnapshotArtifactReceiptV1(tenantId: string, value: unknown): SnapshotArtifactReceiptV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Snapshot artifact receipt is invalid.");
+  }
+  const candidate = value as Record<string, unknown>;
+  const hasVersionId = Object.hasOwn(candidate, "versionId");
+  const hasObjectGeneration = Object.hasOwn(candidate, "objectGeneration");
+  if (hasVersionId === hasObjectGeneration) throw new TypeError("Snapshot artifact receipt locator is ambiguous.");
+  return hasVersionId
+    ? parseVersionedSnapshotArtifactReceiptV1(tenantId, candidate)
+    : parseImmutableSnapshotArtifactReceiptV1(tenantId, candidate);
+}
+
+export function snapshotArtifactIdentityV1(receipt: SnapshotArtifactReceiptV1): SnapshotArtifactIdentityV1 {
+  if ("versionId" in receipt) {
+    const { profileDigest, resultDigest, runtimeConfigHash, runtimeDigest, sourceDigest } = receipt;
+    return { profileDigest, resultDigest, runtimeConfigHash, runtimeDigest, sourceDigest };
+  }
+  const { identity } = receipt;
+  return {
+    profileDigest: identity.profileDigest,
+    resultDigest: identity.resultDigest,
+    runtimeConfigHash: identity.runtimeConfigHash,
+    runtimeDigest: identity.kind === "legacy" ? LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1 : identity.runtimeDigest,
+    sourceDigest: identity.sourceDigest,
+  };
+}
+
+export function snapshotArtifactLocatorV1(receipt: SnapshotArtifactReceiptV1): SnapshotArtifactLocatorV1 {
+  return "versionId" in receipt
+    ? { kind: "versioned", objectKey: receipt.objectKey, versionId: receipt.versionId }
+    : { kind: "immutable", objectGeneration: receipt.objectGeneration, objectKey: receipt.objectKey };
+}
+
 export function sameSnapshotArtifactReceiptV1(left: SnapshotArtifactReceiptV1, right: SnapshotArtifactReceiptV1) {
-  return SNAPSHOT_ARTIFACT_RECEIPT_FIELDS_V1.every((field) => left[field] === right[field]);
+  const leftIdentity = snapshotArtifactIdentityV1(left);
+  const rightIdentity = snapshotArtifactIdentityV1(right);
+  const leftLocator = snapshotArtifactLocatorV1(left);
+  const rightLocator = snapshotArtifactLocatorV1(right);
+  return (
+    left.byteSize === right.byteSize &&
+    left.etag === right.etag &&
+    leftIdentity.profileDigest === rightIdentity.profileDigest &&
+    leftIdentity.resultDigest === rightIdentity.resultDigest &&
+    leftIdentity.runtimeConfigHash === rightIdentity.runtimeConfigHash &&
+    leftIdentity.runtimeDigest === rightIdentity.runtimeDigest &&
+    leftIdentity.sourceDigest === rightIdentity.sourceDigest &&
+    leftLocator.kind === rightLocator.kind &&
+    leftLocator.objectKey === rightLocator.objectKey &&
+    (leftLocator.kind === "versioned"
+      ? rightLocator.kind === "versioned" && leftLocator.versionId === rightLocator.versionId
+      : rightLocator.kind === "immutable" && leftLocator.objectGeneration === rightLocator.objectGeneration)
+  );
+}
+
+export function sameSnapshotArtifactContentV1(left: SnapshotArtifactReceiptV1, right: SnapshotArtifactReceiptV1) {
+  const leftIdentity = snapshotArtifactIdentityV1(left);
+  const rightIdentity = snapshotArtifactIdentityV1(right);
+  return (
+    left.byteSize === right.byteSize &&
+    leftIdentity.profileDigest === rightIdentity.profileDigest &&
+    leftIdentity.resultDigest === rightIdentity.resultDigest &&
+    leftIdentity.runtimeConfigHash === rightIdentity.runtimeConfigHash &&
+    leftIdentity.runtimeDigest === rightIdentity.runtimeDigest &&
+    leftIdentity.sourceDigest === rightIdentity.sourceDigest
+  );
 }
 
 export type SnapshotPublicationIdentityV1 = Readonly<{
@@ -107,15 +154,17 @@ export type SnapshotPublicationReadV1 =
   | Readonly<{ generation: bigint; kind: "stale" }>
   | Readonly<{ kind: "published"; publication: SnapshotPublicationV1 }>;
 
-export type SnapshotArtifactVersionV1 = Readonly<{
-  artifact: SnapshotArtifactReceiptV1;
-  lastModified: Date;
-}>;
+export type SnapshotArtifactVersionV1<Receipt extends SnapshotArtifactReceiptV1 = SnapshotArtifactReceiptV1> =
+  Readonly<{
+    artifact: Receipt;
+    lastModified: Date;
+  }>;
 
-export type SnapshotArtifactVersionPageV1 = Readonly<{
-  nextCursor: string | null;
-  versions: readonly SnapshotArtifactVersionV1[];
-}>;
+export type SnapshotArtifactVersionPageV1<Receipt extends SnapshotArtifactReceiptV1 = SnapshotArtifactReceiptV1> =
+  Readonly<{
+    nextCursor: string | null;
+    versions: readonly SnapshotArtifactVersionV1<Receipt>[];
+  }>;
 
 export type SnapshotArtifactDeletionV1 = Readonly<{
   artifact: SnapshotArtifactReceiptV1;
@@ -160,27 +209,25 @@ export interface SnapshotPublicationRepositoryV1 {
   ): Promise<SnapshotArtifactDeletionV1 | null>;
 }
 
-export interface SnapshotArtifactStoreV1 {
+export type SnapshotArtifactWriteInputV1 = Readonly<{
+  bytes: Uint8Array;
+  profileDigest: string;
+  runtimeConfigHash: string;
+  runtimeDigest: string;
+  sourceDigest: string;
+}>;
+
+export interface SnapshotArtifactStoreV1<Receipt extends SnapshotArtifactReceiptV1 = SnapshotArtifactReceiptV1> {
   close(): Promise<void>;
-  deleteVersion(tenantId: string, artifact: SnapshotArtifactReceiptV1, signal?: AbortSignal): Promise<void>;
+  deleteVersion(tenantId: string, artifact: Receipt, signal?: AbortSignal): Promise<void>;
   listVersions(
     tenantId: string,
     cutoff: Date,
     maximum: number,
     cursor?: string | null,
     signal?: AbortSignal,
-  ): Promise<SnapshotArtifactVersionPageV1>;
-  put(
-    tenantId: string,
-    input: Readonly<{
-      bytes: Uint8Array;
-      profileDigest: string;
-      runtimeConfigHash: string;
-      runtimeDigest: string;
-      sourceDigest: string;
-    }>,
-    signal?: AbortSignal,
-  ): Promise<SnapshotArtifactReceiptV1>;
-  read(tenantId: string, artifact: SnapshotArtifactReceiptV1, signal?: AbortSignal): Promise<Uint8Array>;
+  ): Promise<SnapshotArtifactVersionPageV1<Receipt>>;
+  put(tenantId: string, input: SnapshotArtifactWriteInputV1, signal?: AbortSignal): Promise<Receipt>;
+  read(tenantId: string, artifact: Receipt, signal?: AbortSignal): Promise<Uint8Array>;
   ready(signal?: AbortSignal): Promise<boolean>;
 }
