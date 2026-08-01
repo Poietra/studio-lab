@@ -6,8 +6,10 @@ import {
   canonicalEditorProgramV1,
   createEditorDocumentKeyV1,
   type EditorDocumentCommitInputV1,
+  type EditorEditMutationV1,
 } from "../editor-document-repository";
 import { EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM } from "./editor-document-schema";
+import { EDITOR_MUTATION_MIGRATION_V18_CHECKSUM } from "./editor-mutation-schema";
 import { PostgresEditorDocumentRepositoryV1 } from "./postgres-editor-document-repository";
 import { POSTGRES_REPOSITORY_OPTIONS_V1 } from "./postgres-repository-connection";
 
@@ -86,6 +88,11 @@ function program(label: string): CanonicalEditProgram {
 const PROGRAM_A = program("editor-a");
 const PROGRAM_B = program("editor-b");
 const PROGRAM_C = program("editor-c");
+const PROGRAM_A_REPLACED = {
+  ...program("editor-a"),
+  operations: program("editor-a-replaced").operations,
+  schedule: program("editor-a-replaced").schedule,
+} satisfies CanonicalEditProgram;
 
 function documentRow(
   options: Readonly<{
@@ -115,12 +122,13 @@ function eventRow(
     baseRevision?: string;
     clientMutationId?: string;
     epoch?: string;
-    program?: CanonicalEditProgram;
+    mutation?: EditorEditMutationV1;
     revision?: string;
     tenantId?: string;
   }> = {},
 ) {
-  const canonical = canonicalEditorProgramV1(options.program ?? PROGRAM_A);
+  const mutation = options.mutation ?? ({ kind: "append", program: PROGRAM_A } as const);
+  const canonical = canonicalEditorProgramV1(mutation.program);
   return {
     base_revision: options.baseRevision ?? "0",
     canonical_byte_size: canonical.byteSize,
@@ -130,15 +138,17 @@ function eventRow(
     committed_at: COMMITTED_AT,
     document_key: Buffer.from(DOCUMENT_KEY, "hex"),
     epoch: options.epoch ?? EPOCH_A,
+    mutation_kind: mutation.kind,
     project_id: PROJECT,
     revision: options.revision ?? "1",
     subject_id: SUBJECT,
+    target_transaction_id: mutation.kind === "append" ? null : mutation.targetTransactionId,
     tenant_id: options.tenantId ?? TENANT_A,
   };
 }
 
 function commitInput(
-  programValue: CanonicalEditProgram,
+  mutation: EditorEditMutationV1,
   overrides: Partial<EditorDocumentCommitInputV1> = {},
 ): EditorDocumentCommitInputV1 {
   return {
@@ -146,12 +156,16 @@ function commitInput(
     clientMutationId: MUTATION_A,
     documentKey: DOCUMENT_KEY,
     epoch: EPOCH_A,
-    program: programValue,
+    mutation,
     projectId: PROJECT,
     subjectId: SUBJECT,
     tenantId: TENANT_A,
     ...overrides,
   };
+}
+
+function append(programValue: CanonicalEditProgram): EditorEditMutationV1 {
+  return { kind: "append", program: programValue };
 }
 
 function queryTexts(query: ReturnType<typeof vi.fn>) {
@@ -163,13 +177,17 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
     const sourceHashes = [SOURCE_A, SOURCE_A, SOURCE_B, SOURCE_B];
     let currentReads = 0;
     let documentInserts = 0;
+    let projectionInserts = 0;
     const sealValues: (readonly unknown[])[] = [];
     const fixture = fakePool((text, values) => {
       if (text.includes("FROM public.poietra_schema_migrations")) {
-        expect(text).toContain("version = 17");
+        expect(text).toContain("version IN (17, 18) ORDER BY version");
         return {
-          rowCount: 1,
-          rows: [{ checksum: EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM, version: 17 }],
+          rowCount: 2,
+          rows: [
+            { checksum: EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM, version: 17 },
+            { checksum: EDITOR_MUTATION_MIGRATION_V18_CHECKSUM, version: 18 },
+          ],
         };
       }
       if (text.includes("FROM public.workspace_projects project")) {
@@ -205,6 +223,11 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
             ),
           ],
         };
+      }
+      if (text.startsWith("INSERT INTO public.editor_document_projections")) {
+        projectionInserts += 1;
+        expect(values).toHaveLength(4);
+        return { rowCount: 1, rows: [] };
       }
       throw new Error(`Unexpected query: ${text}`);
     });
@@ -256,6 +279,7 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
       [TENANT_A, PROJECT, SOURCE_PATH, Buffer.from(SOURCE_B, "hex")],
     ]);
     expect(documentInserts).toBe(2);
+    expect(projectionInserts).toBe(2);
 
     const changedTexts = queryTexts(fixture.query).slice(changedStart);
     const projectLock = changedTexts.findIndex((text) => text.includes("FROM public.workspace_projects project"));
@@ -270,13 +294,14 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
 
   it("appends once, replays the exact mutation before CAS, and rejects mutation-key payload reuse", async () => {
     let existingReads = 0;
+    let historyReads = 0;
     const canonicalA = canonicalEditorProgramV1(PROGRAM_A);
     const fixture = fakePool((text, values) => {
       if (text.includes("AS actor_can_edit")) {
         expect(values).toEqual([TENANT_A, SUBJECT]);
         return { rowCount: 1, rows: [{ actor_can_edit: true }] };
       }
-      if (text.includes("FROM public.editor_edit_events event") && text.includes("client_mutation_id")) {
+      if (text.includes("FROM public.editor_edit_events event") && text.includes("event.subject_id = $3::uuid")) {
         existingReads += 1;
         expect(values).toEqual([TENANT_A, PROJECT, SUBJECT, MUTATION_A]);
         return existingReads === 1 ? { rowCount: 0, rows: [] } : { rowCount: 1, rows: [eventRow()] };
@@ -300,16 +325,35 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
           rows: [documentRow()],
         };
       }
+      if (text.includes("FROM public.editor_document_projections projection")) {
+        return { rowCount: 1, rows: [{ canonical_programs: [], revision: "0" }] };
+      }
+      if (
+        text.includes("FROM public.editor_edit_events event") &&
+        text.includes("event.revision <=") &&
+        text.includes("ORDER BY event.revision")
+      ) {
+        historyReads += 1;
+        expect(values).toEqual([TENANT_A, PROJECT, Buffer.from(DOCUMENT_KEY, "hex"), EPOCH_A, "0"]);
+        return { rowCount: 0, rows: [] };
+      }
       if (text.startsWith("INSERT INTO public.editor_edit_events")) {
         expect(values.slice(4, 8)).toEqual(["0", "1", SUBJECT, MUTATION_A]);
-        expect(values[8]).toBe(canonicalA.json);
-        expect(values[9]).toEqual(Buffer.from(canonicalA.digest, "hex"));
-        expect(values[10]).toBe(canonicalA.byteSize);
+        expect(values.slice(8, 10)).toEqual(["append", null]);
+        expect(values[10]).toBe(canonicalA.json);
+        expect(values[11]).toEqual(Buffer.from(canonicalA.digest, "hex"));
+        expect(values[12]).toBe(canonicalA.byteSize);
         return { rowCount: 1, rows: [eventRow()] };
       }
       if (text.startsWith("UPDATE public.editor_documents document") && text.includes("SET revision")) {
         expect(values.slice(4)).toEqual(["1", "0"]);
         return { rowCount: 1, rows: [documentRow({ revision: "1" })] };
+      }
+      if (text.startsWith("UPDATE public.editor_document_projections projection")) {
+        expect(values[4]).toBe("1");
+        expect(JSON.parse(String(values[5]))).toEqual([PROGRAM_A]);
+        expect(values[6]).toBe("0");
+        return { rowCount: 1, rows: [] };
       }
       if (text.includes("FROM public.editor_documents document") && !text.includes("FOR UPDATE OF document")) {
         return { rowCount: 1, rows: [documentRow({ revision: "1" })] };
@@ -317,11 +361,14 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
       throw new Error(`Unexpected query: ${text}`);
     });
     const repository = new PostgresEditorDocumentRepositoryV1({ pool: fixture.pool });
-    const input = commitInput(PROGRAM_A);
+    const input = commitInput(append(PROGRAM_A));
 
-    const first = await repository.commitProgram(input);
-    const replay = await repository.commitProgram(input);
-    const reused = await repository.commitProgram(commitInput(PROGRAM_B));
+    const first = await repository.commitMutation(input);
+    const replay = await repository.commitMutation(input);
+    const reused = await repository.commitMutation(commitInput(append(PROGRAM_B)));
+    const reusedKindAndTarget = await repository.commitMutation(
+      commitInput({ kind: "replace", program: PROGRAM_A, targetTransactionId: "editor-a" }),
+    );
 
     expect(first).toMatchObject({
       document: { revision: 1n },
@@ -329,6 +376,7 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
         baseRevision: 0n,
         byteSize: canonicalA.byteSize,
         digest: canonicalA.digest,
+        mutation: { kind: "append", program: PROGRAM_A },
         revision: 1n,
       },
       kind: "committed",
@@ -340,6 +388,8 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
     }
     expect(replay.event).toEqual(first.event);
     expect(reused).toEqual({ kind: "conflict", reason: "mutation-reused" });
+    expect(reusedKindAndTarget).toEqual({ kind: "conflict", reason: "mutation-reused" });
+    expect(historyReads).toBe(0);
 
     const texts = queryTexts(fixture.query);
     expect(texts.filter((text) => text.startsWith("INSERT INTO public.editor_edit_events"))).toHaveLength(1);
@@ -363,6 +413,243 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
     );
     const ordered = [existing, candidate, project, source, selected, inserted, advanced];
     expect(ordered).toEqual(ordered.toSorted((a, b) => a - b));
+  });
+
+  it("folds authoritative history before replace/remove and rejects invalid mutation semantics", async () => {
+    const scenarios = [
+      {
+        expected: "committed",
+        history: [eventRow()],
+        mutation: { kind: "replace", program: PROGRAM_A_REPLACED, targetTransactionId: "editor-a" } as const,
+      },
+      {
+        expected: "committed",
+        history: [
+          eventRow(),
+          eventRow({
+            baseRevision: "1",
+            clientMutationId: "00000000-0000-4000-8000-000000000211",
+            mutation: { kind: "replace", program: PROGRAM_A_REPLACED, targetTransactionId: "editor-a" },
+            revision: "2",
+          }),
+        ],
+        mutation: { kind: "remove", program: PROGRAM_A_REPLACED, targetTransactionId: "editor-a" } as const,
+      },
+      {
+        expected: "invalid-mutation",
+        history: [eventRow()],
+        mutation: append(PROGRAM_A),
+      },
+      {
+        expected: "invalid-mutation",
+        history: [eventRow()],
+        mutation: { kind: "replace", program: PROGRAM_B, targetTransactionId: "missing" } as const,
+      },
+      {
+        expected: "invalid-mutation",
+        history: [eventRow()],
+        mutation: { kind: "remove", program: PROGRAM_A_REPLACED, targetTransactionId: "editor-a" } as const,
+      },
+      {
+        expected: "corrupt-history",
+        history: [
+          eventRow(),
+          eventRow({
+            baseRevision: "1",
+            clientMutationId: "00000000-0000-4000-8000-000000000212",
+            revision: "2",
+          }),
+        ],
+        mutation: append(PROGRAM_B),
+      },
+    ] as const;
+
+    for (const [index, scenario] of scenarios.entries()) {
+      const baseRevision = BigInt(scenario.history.length);
+      const mutationId = `00000000-0000-4000-8000-${(300 + index).toString().padStart(12, "0")}`;
+      const canonical = canonicalEditorProgramV1(scenario.mutation.program);
+      let historyReads = 0;
+      const fixture = fakePool((text, values) => {
+        if (text.includes("AS actor_can_edit")) return { rowCount: 1, rows: [{ actor_can_edit: true }] };
+        if (text.includes("event.subject_id = $3::uuid") && text.includes("event.client_mutation_id = $4::uuid")) {
+          return { rowCount: 0, rows: [] };
+        }
+        if (text.startsWith("SELECT document.source_path")) {
+          return { rowCount: 1, rows: [{ source_path: SOURCE_PATH }] };
+        }
+        if (text.startsWith("SELECT project.project_id")) {
+          return { rowCount: 1, rows: [{ project_id: PROJECT }] };
+        }
+        if (text.includes("FROM public.workspace_source_heads source")) {
+          return { rowCount: 1, rows: [{ current_source_hash: Buffer.from(SOURCE_A, "hex") }] };
+        }
+        if (text.includes("FROM public.editor_documents document") && text.includes("FOR UPDATE OF document")) {
+          return { rowCount: 1, rows: [documentRow({ revision: baseRevision.toString() })] };
+        }
+        if (text.includes("FROM public.editor_document_projections projection")) {
+          const canonicalPrograms =
+            scenario.expected === "corrupt-history"
+              ? [PROGRAM_A]
+              : scenario.history.length === 2
+                ? [PROGRAM_A_REPLACED]
+                : [PROGRAM_A];
+          return {
+            rowCount: 1,
+            rows: [
+              {
+                canonical_programs: canonicalPrograms,
+                revision: (scenario.expected === "corrupt-history" ? baseRevision + 1n : baseRevision).toString(),
+              },
+            ],
+          };
+        }
+        if (text.includes("event.revision <=") && text.includes("ORDER BY event.revision")) {
+          historyReads += 1;
+          return { rowCount: scenario.history.length, rows: scenario.history };
+        }
+        if (text.startsWith("INSERT INTO public.editor_edit_events")) {
+          expect(values.slice(8, 10)).toEqual([
+            scenario.mutation.kind,
+            scenario.mutation.kind === "append" ? null : scenario.mutation.targetTransactionId,
+          ]);
+          expect(values.slice(10)).toEqual([canonical.json, Buffer.from(canonical.digest, "hex"), canonical.byteSize]);
+          return {
+            rowCount: 1,
+            rows: [
+              eventRow({
+                baseRevision: baseRevision.toString(),
+                clientMutationId: mutationId,
+                mutation: scenario.mutation,
+                revision: (baseRevision + 1n).toString(),
+              }),
+            ],
+          };
+        }
+        if (text.startsWith("UPDATE public.editor_documents document") && text.includes("SET revision")) {
+          return { rowCount: 1, rows: [documentRow({ revision: (baseRevision + 1n).toString() })] };
+        }
+        if (text.startsWith("UPDATE public.editor_document_projections projection")) {
+          return { rowCount: 1, rows: [] };
+        }
+        throw new Error(`Unexpected query: ${text}`);
+      });
+      const repository = new PostgresEditorDocumentRepositoryV1({ pool: fixture.pool });
+      const request = commitInput(scenario.mutation, { baseRevision, clientMutationId: mutationId });
+      if (scenario.expected === "corrupt-history") {
+        await expect(repository.commitMutation(request)).rejects.toThrow(/projection ahead/i);
+        expect(queryTexts(fixture.query).at(-1)).toBe("ROLLBACK");
+        continue;
+      }
+      const result = await repository.commitMutation(request);
+
+      if (scenario.expected === "committed") {
+        expect(result).toMatchObject({ event: { mutation: scenario.mutation }, kind: "committed", replayed: false });
+      } else {
+        expect(result).toEqual({ currentRevision: baseRevision, kind: "conflict", reason: "invalid-mutation" });
+      }
+      expect(
+        queryTexts(fixture.query).filter((text) => text.startsWith("INSERT INTO public.editor_edit_events")),
+      ).toHaveLength(scenario.expected === "committed" ? 1 : 0);
+      expect(historyReads).toBe(0);
+    }
+  });
+
+  it("catches up missing or behind projections and preserves catch-up on an invalid candidate", async () => {
+    const cases = [
+      {
+        expected: "invalid-mutation",
+        history: [eventRow()],
+        mutation: append(PROGRAM_A),
+        projection: null,
+      },
+      {
+        expected: "committed",
+        history: [
+          eventRow({
+            baseRevision: "1",
+            clientMutationId: "00000000-0000-4000-8000-000000000501",
+            mutation: { kind: "replace", program: PROGRAM_A_REPLACED, targetTransactionId: "editor-a" },
+            revision: "2",
+          }),
+        ],
+        mutation: { kind: "remove", program: PROGRAM_A_REPLACED, targetTransactionId: "editor-a" } as const,
+        projection: { canonical_programs: [PROGRAM_A], revision: "1" },
+      },
+    ] as const;
+
+    for (const [index, testCase] of cases.entries()) {
+      const documentRevision = testCase.projection === null ? 1n : 2n;
+      const mutationId = `00000000-0000-4000-8000-${(510 + index).toString().padStart(12, "0")}`;
+      const projectionWrites: Readonly<{ text: string; values: readonly unknown[] }>[] = [];
+      const fixture = fakePool((text, values) => {
+        if (text.includes("AS actor_can_edit")) return { rowCount: 1, rows: [{ actor_can_edit: true }] };
+        if (text.includes("event.subject_id = $3::uuid")) return { rowCount: 0, rows: [] };
+        if (text.startsWith("SELECT document.source_path")) {
+          return { rowCount: 1, rows: [{ source_path: SOURCE_PATH }] };
+        }
+        if (text.startsWith("SELECT project.project_id")) return { rowCount: 1, rows: [{ project_id: PROJECT }] };
+        if (text.includes("FROM public.workspace_source_heads source")) {
+          return { rowCount: 1, rows: [{ current_source_hash: Buffer.from(SOURCE_A, "hex") }] };
+        }
+        if (text.includes("FROM public.editor_documents document") && text.includes("FOR UPDATE OF document")) {
+          return { rowCount: 1, rows: [documentRow({ revision: documentRevision.toString() })] };
+        }
+        if (text.includes("FROM public.editor_document_projections projection")) {
+          return testCase.projection === null
+            ? { rowCount: 0, rows: [] }
+            : { rowCount: 1, rows: [testCase.projection] };
+        }
+        if (text.includes("event.revision > $5::bigint")) {
+          expect(text).toContain("LIMIT 33");
+          expect(values.slice(-2)).toEqual([testCase.projection?.revision ?? "0", documentRevision.toString()]);
+          return { rowCount: testCase.history.length, rows: testCase.history };
+        }
+        if (
+          text.startsWith("INSERT INTO public.editor_document_projections") ||
+          text.startsWith("UPDATE public.editor_document_projections projection")
+        ) {
+          projectionWrites.push({ text, values });
+          return { rowCount: 1, rows: [] };
+        }
+        if (text.startsWith("INSERT INTO public.editor_edit_events")) {
+          return {
+            rowCount: 1,
+            rows: [
+              eventRow({
+                baseRevision: documentRevision.toString(),
+                clientMutationId: mutationId,
+                mutation: testCase.mutation,
+                revision: (documentRevision + 1n).toString(),
+              }),
+            ],
+          };
+        }
+        if (text.startsWith("UPDATE public.editor_documents document") && text.includes("SET revision")) {
+          return { rowCount: 1, rows: [documentRow({ revision: (documentRevision + 1n).toString() })] };
+        }
+        throw new Error(`Unexpected query: ${text}`);
+      });
+      const repository = new PostgresEditorDocumentRepositoryV1({ pool: fixture.pool });
+      const result = await repository.commitMutation(
+        commitInput(testCase.mutation, { baseRevision: documentRevision, clientMutationId: mutationId }),
+      );
+
+      if (testCase.expected === "invalid-mutation") {
+        expect(result).toEqual({ currentRevision: 1n, kind: "conflict", reason: "invalid-mutation" });
+        expect(projectionWrites).toHaveLength(1);
+        expect(projectionWrites[0]?.text).toContain("INSERT INTO public.editor_document_projections");
+        expect(projectionWrites[0]?.values[4]).toBe("1");
+        expect(JSON.parse(String(projectionWrites[0]?.values[5]))).toEqual([PROGRAM_A]);
+        expect(queryTexts(fixture.query).at(-1)).toBe("COMMIT");
+      } else {
+        expect(result).toMatchObject({ document: { revision: 3n }, event: { mutation: { kind: "remove" } } });
+        expect(projectionWrites).toHaveLength(2);
+        expect(projectionWrites[0]?.values[4]).toBe("2");
+        expect(JSON.parse(String(projectionWrites[0]?.values[5]))).toEqual([PROGRAM_A_REPLACED]);
+        expect(projectionWrites[0]?.values[6]).toBe("1");
+        expect(projectionWrites[1]?.values.slice(4)).toEqual(["3", "[]", "2"]);
+      }
+    }
   });
 
   it("classifies non-appending conflicts and reads one bounded tenant-scoped event tail", async () => {
@@ -437,7 +724,9 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
       const repository = new PostgresEditorDocumentRepositoryV1({ pool: fixture.pool });
 
       await expect(
-        repository.commitProgram(commitInput(PROGRAM_A, { baseRevision: 2n, clientMutationId: testCase.mutationId })),
+        repository.commitMutation(
+          commitInput(append(PROGRAM_A), { baseRevision: 2n, clientMutationId: testCase.mutationId }),
+        ),
       ).resolves.toEqual(testCase.expected);
 
       const texts = queryTexts(fixture.query);
@@ -459,6 +748,9 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
     let eventTailReads = 0;
     const tailFixture = fakePool((text, values) => {
       if (text.includes("FROM public.editor_documents document") && text.includes("FOR SHARE OF document")) {
+        expect(text).toContain("JOIN public.workspace_projects project");
+        expect(text).toContain("project.deleted_at IS NULL");
+        expect(text).toContain("FOR SHARE OF document, project");
         expect(values.slice(1)).toEqual([PROJECT, Buffer.from(DOCUMENT_KEY, "hex"), EPOCH_A]);
         return values[0] === TENANT_A
           ? { rowCount: 1, rows: [documentRow({ revision: "3" })] }
@@ -476,13 +768,13 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
             eventRow({
               baseRevision: "1",
               clientMutationId: "00000000-0000-4000-8000-000000000401",
-              program: PROGRAM_B,
+              mutation: append(PROGRAM_B),
               revision: "2",
             }),
             eventRow({
               baseRevision: "2",
               clientMutationId: "00000000-0000-4000-8000-000000000402",
-              program: PROGRAM_C,
+              mutation: append(PROGRAM_C),
               revision: "3",
             }),
           ],

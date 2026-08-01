@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { z } from "zod";
 
+import { type EditorEditMutationV1, parseEditorEditMutationV1 } from "../../src/collaboration/editor-edit-mutation";
 import { canonicalJsonV1 } from "../../src/engine/fast-manim-snapshot-digest";
 import { sha256V1Schema } from "../../src/engine/primitives";
 import {
@@ -41,7 +42,7 @@ const editorDocumentCommitInputSchemaV1 = z
     clientMutationId: editorUuidSchemaV1,
     documentKey: editorDocumentKeySchemaV1,
     epoch: editorUuidSchemaV1,
-    program: z.unknown(),
+    mutation: z.unknown(),
     projectId: manimProjectIdSchema,
     subjectId: editorUuidSchemaV1,
     tenantId: manimTenantIdSchema,
@@ -72,7 +73,7 @@ export type EditorDocumentCommitInputV1 = Readonly<{
   clientMutationId: string;
   documentKey: string;
   epoch: string;
-  program: CanonicalEditProgram;
+  mutation: EditorEditMutationV1;
   projectId: string;
   subjectId: string;
   tenantId: string;
@@ -108,7 +109,7 @@ export type EditorEditEventV1 = Readonly<{
   byteSize: number;
   digest: string;
   epoch: string;
-  program: CanonicalEditProgram;
+  mutation: EditorEditMutationV1;
   projectId: string;
   revision: bigint;
   subjectId: string;
@@ -123,6 +124,7 @@ export type EditorDocumentOpenResultV1 =
 export type EditorDocumentCommitConflictReasonV1 =
   | "document-sealed"
   | "forbidden"
+  | "invalid-mutation"
   | "mutation-reused"
   | "not-found"
   | "revision-mismatch"
@@ -170,13 +172,22 @@ export function canonicalEditorProgramV1(value: unknown) {
   } as const;
 }
 
+/**
+ * Canonicalizes the mutation while retaining the v17 program-only evidence
+ * seal. Mutation kind and target are persisted separately by v18.
+ */
+export function canonicalEditorMutationV1(value: unknown) {
+  const mutation = parseEditorEditMutationV1(value);
+  return { ...canonicalEditorProgramV1(mutation.program), mutation } as const;
+}
+
 export function parseEditorDocumentOpenInputV1(value: unknown): EditorDocumentOpenInputV1 {
   return editorDocumentOpenInputSchemaV1.parse(value);
 }
 
 export function parseEditorDocumentCommitInputV1(value: unknown): EditorDocumentCommitInputV1 {
   const parsed = editorDocumentCommitInputSchemaV1.parse(value);
-  return { ...parsed, program: canonicalEditorProgramV1(parsed.program).program };
+  return { ...parsed, mutation: canonicalEditorMutationV1(parsed.mutation).mutation };
 }
 
 export function parseEditorDocumentTailInputV1(value: unknown): EditorDocumentTailInputV1 {
@@ -185,8 +196,20 @@ export function parseEditorDocumentTailInputV1(value: unknown): EditorDocumentTa
 
 export interface EditorDocumentRepositoryV1 {
   close(): Promise<void>;
-  commitProgram(input: EditorDocumentCommitInputV1, signal?: AbortSignal): Promise<EditorDocumentCommitResultV1>;
+  commitMutation(input: EditorDocumentCommitInputV1, signal?: AbortSignal): Promise<EditorDocumentCommitResultV1>;
   openDocument(input: EditorDocumentOpenInputV1, signal?: AbortSignal): Promise<EditorDocumentOpenResultV1>;
   readEventTail(input: EditorDocumentTailInputV1, signal?: AbortSignal): Promise<EditorDocumentTailResultV1>;
   ready(signal?: AbortSignal): Promise<boolean>;
 }
+
+export type {
+  EditorEditMutationApplyResultV1,
+  EditorEditMutationConflictReasonV1,
+  EditorEditMutationV1,
+} from "../../src/collaboration/editor-edit-mutation";
+export {
+  applyEditorEditMutationV1,
+  editorEditMutationV1Schema,
+  parseAuthoritativeEditorProgramsV1,
+  parseEditorEditMutationV1,
+} from "../../src/collaboration/editor-edit-mutation";

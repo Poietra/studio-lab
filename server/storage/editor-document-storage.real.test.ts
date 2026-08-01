@@ -2,8 +2,8 @@ import { Pool } from "pg";
 import { describe, expect, it } from "vitest";
 
 import type { CanonicalEditProgram } from "../../src/studio/operations";
-import { canonicalEditorProgramV1 } from "./editor-document-repository";
-import { applyBundledDurableStorageMigrations } from "./postgres/migrate";
+import { canonicalEditorProgramV1, createEditorDocumentKeyV1 } from "./editor-document-repository";
+import { applyBundledDurableStorageMigrations, applyBundledDurableStorageMigrationsThrough } from "./postgres/migrate";
 import { PostgresEditorDocumentRepositoryV1 } from "./postgres/postgres-editor-document-repository";
 
 const DATABASE_URL = process.env.POIETRA_STORAGE_E2E_DATABASE_URL;
@@ -11,14 +11,17 @@ const TENANT_A = "editor-tenant-a";
 const TENANT_B = "editor-tenant-b";
 const PROJECT = "editor-project";
 const SOURCE_PATH = "scene.py";
+const LEGACY_SOURCE_PATH = "legacy.py";
 const SOURCE_A = "a".repeat(64);
 const SOURCE_B = "b".repeat(64);
 const SCENE = `scene:${"c".repeat(64)}`;
+const LEGACY_SCENE = `scene:${"d".repeat(64)}`;
 const USER_A = "10000000-0000-4000-8000-000000000001";
 const USER_B = "20000000-0000-4000-8000-000000000002";
 const EPOCH_A = "30000000-0000-4000-8000-000000000003";
 const EPOCH_A2 = "40000000-0000-4000-8000-000000000004";
 const EPOCH_B = "50000000-0000-4000-8000-000000000005";
+const LEGACY_EPOCH = "51000000-0000-4000-8000-000000000005";
 
 function program(deltaX: number, transactionId: string): CanonicalEditProgram {
   const operation = {
@@ -48,6 +51,10 @@ function program(deltaX: number, transactionId: string): CanonicalEditProgram {
     transactionId,
     version: 1,
   };
+}
+
+function appendMutation(programValue: CanonicalEditProgram) {
+  return { kind: "append", program: programValue } as const;
 }
 
 async function seedEditorFixture(pool: Pool) {
@@ -86,8 +93,8 @@ async function seedEditorFixture(pool: Pool) {
     );
     await client.query(
       `INSERT INTO public.workspace_source_heads (tenant_id, project_id, source_path, generation, digest)
-       VALUES ($1, $3, $4, 1, $5), ($2, $3, $4, 1, $5)`,
-      [TENANT_A, TENANT_B, PROJECT, SOURCE_PATH, SOURCE_A],
+       VALUES ($1, $3, $4, 1, $5), ($2, $3, $4, 1, $5), ($1, $3, $6, 1, $5)`,
+      [TENANT_A, TENANT_B, PROJECT, SOURCE_PATH, SOURCE_A, LEGACY_SOURCE_PATH],
     );
     await client.query("COMMIT");
   } catch (error) {
@@ -98,6 +105,112 @@ async function seedEditorFixture(pool: Pool) {
   }
 }
 
+async function seedCompatibleLegacyEditorV17(pool: Pool) {
+  const documentKey = createEditorDocumentKeyV1(LEGACY_SOURCE_PATH, LEGACY_SCENE);
+  const legacyProgram = program(16, "legacy-edit");
+  const canonical = canonicalEditorProgramV1(legacyProgram);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `INSERT INTO public.editor_documents
+         (tenant_id, project_id, document_key, epoch, source_path, source_hash, revision)
+       VALUES ($1, $2, decode($3, 'hex'), $4::uuid, $5, decode($6, 'hex'), 0)`,
+      [TENANT_A, PROJECT, documentKey, LEGACY_EPOCH, LEGACY_SOURCE_PATH, SOURCE_A],
+    );
+    await client.query(
+      `INSERT INTO public.editor_edit_events
+         (tenant_id, project_id, document_key, epoch, base_revision, revision, subject_id,
+          client_mutation_id, canonical_program, canonical_digest, canonical_byte_size)
+       VALUES ($1, $2, decode($3, 'hex'), $4::uuid, 0, 1, $5::uuid, $6::uuid,
+               $7::jsonb, decode($8, 'hex'), $9)`,
+      [
+        TENANT_A,
+        PROJECT,
+        documentKey,
+        LEGACY_EPOCH,
+        USER_A,
+        "52000000-0000-4000-8000-000000000005",
+        canonical.json,
+        canonical.digest,
+        canonical.byteSize,
+      ],
+    );
+    await client.query(
+      `UPDATE public.editor_documents SET revision = 1
+        WHERE tenant_id = $1 AND project_id = $2
+          AND document_key = decode($3, 'hex') AND epoch = $4::uuid`,
+      [TENANT_A, PROJECT, documentKey, LEGACY_EPOCH],
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+  return { documentKey, legacyProgram } as const;
+}
+
+async function expectCompatibleLegacyEditorUpgradedV18(
+  pool: Pool,
+  legacy: Awaited<ReturnType<typeof seedCompatibleLegacyEditorV17>>,
+) {
+  const upgraded = await pool.query<{ mutation_kind: string; target_transaction_id: string | null }>(
+    `SELECT mutation_kind, target_transaction_id
+       FROM public.editor_edit_events
+      WHERE tenant_id = $1 AND project_id = $2
+        AND document_key = decode($3, 'hex') AND epoch = $4::uuid`,
+    [TENANT_A, PROJECT, legacy.documentKey, LEGACY_EPOCH],
+  );
+  expect(upgraded.rows).toEqual([{ mutation_kind: "append", target_transaction_id: null }]);
+  const mutationKindColumn = await pool.query<{ column_default: string | null }>(
+    `SELECT column_default
+       FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'editor_edit_events'
+        AND column_name = 'mutation_kind'`,
+  );
+  expect(mutationKindColumn.rows).toEqual([{ column_default: null }]);
+
+  const repository = new PostgresEditorDocumentRepositoryV1({
+    poolConfig: { connectionString: DATABASE_URL, max: 2 },
+  });
+  try {
+    await expect(repository.ready()).resolves.toBe(true);
+    await expect(
+      repository.commitMutation({
+        baseRevision: 1n,
+        clientMutationId: "53000000-0000-4000-8000-000000000005",
+        documentKey: legacy.documentKey,
+        epoch: LEGACY_EPOCH,
+        mutation: appendMutation(program(24, "post-upgrade-edit")),
+        projectId: PROJECT,
+        subjectId: USER_A,
+        tenantId: TENANT_A,
+      }),
+    ).resolves.toMatchObject({ document: { revision: 2n }, kind: "committed", replayed: false });
+  } finally {
+    await repository.close();
+  }
+
+  const projection = await pool.query<{ canonical_programs: CanonicalEditProgram[]; revision: string }>(
+    `SELECT revision::text AS revision, canonical_programs
+       FROM public.editor_document_projections
+      WHERE tenant_id = $1 AND project_id = $2
+        AND document_key = decode($3, 'hex') AND epoch = $4::uuid`,
+    [TENANT_A, PROJECT, legacy.documentKey, LEGACY_EPOCH],
+  );
+  expect(projection.rows).toMatchObject([
+    {
+      canonical_programs: [
+        { transactionId: legacy.legacyProgram.transactionId },
+        { transactionId: "post-upgrade-edit" },
+      ],
+      revision: "2",
+    },
+  ]);
+}
+
 async function expectUnpairedEventRejected(pool: Pool, documentKey: string, epoch: string) {
   const canonical = canonicalEditorProgramV1(program(32, "unpaired-event"));
   const client = await pool.connect();
@@ -106,8 +219,8 @@ async function expectUnpairedEventRejected(pool: Pool, documentKey: string, epoc
     await client.query(
       `INSERT INTO public.editor_edit_events
          (tenant_id, project_id, document_key, epoch, base_revision, revision, subject_id,
-          client_mutation_id, canonical_program, canonical_digest, canonical_byte_size)
-       VALUES ($1, $2, decode($3, 'hex'), $4::uuid, 0, 1, $5::uuid, $6::uuid,
+          client_mutation_id, mutation_kind, canonical_program, canonical_digest, canonical_byte_size)
+       VALUES ($1, $2, decode($3, 'hex'), $4::uuid, 0, 1, $5::uuid, $6::uuid, 'append',
                $7::jsonb, decode($8, 'hex'), $9)`,
       [
         TENANT_A,
@@ -144,8 +257,11 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL collaborative editor document authori
       randomUuid: () => EPOCH_B,
     });
     try {
-      expect(await applyBundledDurableStorageMigrations(setup)).toEqual({ applied: true, version: 17 });
+      expect(await applyBundledDurableStorageMigrationsThrough(setup, 17)).toEqual({ applied: true, version: 17 });
       await seedEditorFixture(setup);
+      const legacy = await seedCompatibleLegacyEditorV17(setup);
+      expect(await applyBundledDurableStorageMigrations(setup)).toEqual({ applied: true, version: 18 });
+      await expectCompatibleLegacyEditorUpgradedV18(setup, legacy);
       await expect(editorA.ready()).resolves.toBe(true);
 
       const openInput = {
@@ -176,7 +292,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL collaborative editor document authori
           clientMutationId: "60000000-0000-4000-8000-000000000006",
           documentKey: opened.document.documentKey,
           epoch: opened.document.epoch,
-          program: firstProgram,
+          mutation: appendMutation(firstProgram),
           projectId: PROJECT,
           subjectId: USER_A,
           tenantId: TENANT_A,
@@ -186,13 +302,13 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL collaborative editor document authori
           clientMutationId: "70000000-0000-4000-8000-000000000007",
           documentKey: opened.document.documentKey,
           epoch: opened.document.epoch,
-          program: firstProgram,
+          mutation: appendMutation(firstProgram),
           projectId: PROJECT,
           subjectId: USER_A,
           tenantId: TENANT_A,
         },
       ] as const;
-      const race = await Promise.all([editorA.commitProgram(contenders[0]), peerA.commitProgram(contenders[1])]);
+      const race = await Promise.all([editorA.commitMutation(contenders[0]), peerA.commitMutation(contenders[1])]);
       expect(race.filter((result) => result.kind === "committed")).toHaveLength(1);
       expect(race.filter((result) => result.kind === "conflict")).toEqual([
         { currentRevision: 1n, kind: "conflict", reason: "revision-mismatch" },
@@ -201,23 +317,63 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL collaborative editor document authori
       const winner = race[winnerIndex];
       if (winner?.kind !== "committed") throw new Error("The edit race produced no winner.");
       const winnerInput = contenders[winnerIndex]!;
-      await expect(editorA.commitProgram(winnerInput)).resolves.toMatchObject({
+      await expect(editorA.commitMutation(winnerInput)).resolves.toMatchObject({
         event: { digest: winner.event.digest, revision: 1n },
         kind: "committed",
         replayed: true,
       });
-      await expect(editorA.commitProgram({ ...winnerInput, program: program(65, "changed-reuse") })).resolves.toEqual({
-        kind: "conflict",
-        reason: "mutation-reused",
-      });
+      await expect(
+        editorA.commitMutation({ ...winnerInput, mutation: appendMutation(program(65, "changed-reuse")) }),
+      ).resolves.toEqual({ kind: "conflict", reason: "mutation-reused" });
 
-      const second = await editorA.commitProgram({
+      const second = await editorA.commitMutation({
         ...winnerInput,
         baseRevision: 1n,
         clientMutationId: "80000000-0000-4000-8000-000000000008",
-        program: program(96, "second-edit"),
+        mutation: appendMutation(program(96, "second-edit")),
       });
       expect(second).toMatchObject({ document: { revision: 2n }, event: { revision: 2n }, kind: "committed" });
+      const replacementProgram = program(72, "first-edit");
+      await expect(
+        editorA.commitMutation({
+          ...winnerInput,
+          baseRevision: 2n,
+          clientMutationId: "81000000-0000-4000-8000-000000000008",
+          mutation: { kind: "replace", program: replacementProgram, targetTransactionId: "first-edit" },
+        }),
+      ).resolves.toMatchObject({ document: { revision: 3n }, event: { mutation: { kind: "replace" }, revision: 3n } });
+      for (const [clientMutationId, mutation] of [
+        [
+          "82000000-0000-4000-8000-000000000008",
+          { kind: "replace", program: program(12, "missing"), targetTransactionId: "missing" },
+        ],
+        [
+          "83000000-0000-4000-8000-000000000008",
+          { kind: "remove", program: firstProgram, targetTransactionId: "first-edit" },
+        ],
+      ] as const) {
+        await expect(
+          editorA.commitMutation({ ...winnerInput, baseRevision: 3n, clientMutationId, mutation }),
+        ).resolves.toEqual({ currentRevision: 3n, kind: "conflict", reason: "invalid-mutation" });
+      }
+      await expect(
+        editorA.commitMutation({
+          ...winnerInput,
+          baseRevision: 3n,
+          clientMutationId: "84000000-0000-4000-8000-000000000008",
+          mutation: { kind: "remove", program: replacementProgram, targetTransactionId: "first-edit" },
+        }),
+      ).resolves.toMatchObject({ document: { revision: 4n }, event: { mutation: { kind: "remove" }, revision: 4n } });
+      const projection = await setup.query<{ canonical_programs: CanonicalEditProgram[]; revision: string }>(
+        `SELECT revision::text AS revision, canonical_programs
+           FROM public.editor_document_projections
+          WHERE tenant_id = $1 AND project_id = $2
+            AND document_key = decode($3, 'hex') AND epoch = $4::uuid`,
+        [TENANT_A, PROJECT, opened.document.documentKey, EPOCH_A],
+      );
+      expect(projection.rows).toMatchObject([
+        { canonical_programs: [{ transactionId: "second-edit" }], revision: "4" },
+      ]);
       await expect(
         editorA.readEventTail({
           afterRevision: 0n,
@@ -227,7 +383,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL collaborative editor document authori
           projectId: PROJECT,
           tenantId: TENANT_A,
         }),
-      ).resolves.toMatchObject({ document: { revision: 2n }, events: [{ revision: 1n }] });
+      ).resolves.toMatchObject({ document: { revision: 4n }, events: [{ revision: 1n }] });
       await expect(
         editorA.readEventTail({
           afterRevision: 1n,
@@ -237,7 +393,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL collaborative editor document authori
           projectId: PROJECT,
           tenantId: TENANT_A,
         }),
-      ).resolves.toMatchObject({ events: [{ revision: 2n }] });
+      ).resolves.toMatchObject({ events: [{ revision: 2n }, { revision: 3n }, { revision: 4n }] });
 
       await expect(
         editorB.readEventTail({
@@ -249,10 +405,29 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL collaborative editor document authori
           tenantId: TENANT_B,
         }),
       ).resolves.toBeNull();
+      await setup.query(
+        `UPDATE public.workspace_projects SET deleted_at = clock_timestamp()
+          WHERE tenant_id = $1 AND project_id = $2`,
+        [TENANT_B, PROJECT],
+      );
       await expect(
-        editorB.commitProgram({
-          ...winnerInput,
+        editorB.readEventTail({
+          afterRevision: 0n,
+          documentKey: openedB.document.documentKey,
+          epoch: openedB.document.epoch,
+          limit: 10,
+          projectId: PROJECT,
+          tenantId: TENANT_B,
+        }),
+      ).resolves.toBeNull();
+      await expect(
+        editorB.commitMutation({
+          baseRevision: 0n,
           clientMutationId: "90000000-0000-4000-8000-000000000009",
+          documentKey: openedB.document.documentKey,
+          epoch: openedB.document.epoch,
+          mutation: appendMutation(program(112, "deleted-project-edit")),
+          projectId: PROJECT,
           subjectId: USER_B,
           tenantId: TENANT_B,
         }),
@@ -271,24 +446,24 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL collaborative editor document authori
         [SOURCE_B, TENANT_A, PROJECT, SOURCE_PATH],
       );
       await expect(
-        editorA.commitProgram({
+        editorA.commitMutation({
           ...winnerInput,
-          baseRevision: 2n,
+          baseRevision: 4n,
           clientMutationId: "a0000000-0000-4000-8000-00000000000a",
-          program: program(128, "stale-source"),
+          mutation: appendMutation(program(128, "stale-source")),
         }),
-      ).resolves.toEqual({ currentRevision: 2n, kind: "conflict", reason: "source-changed" });
+      ).resolves.toEqual({ currentRevision: 4n, kind: "conflict", reason: "source-changed" });
       await expect(
         editorA.readEventTail({
-          afterRevision: 2n,
+          afterRevision: 4n,
           documentKey: opened.document.documentKey,
           epoch: EPOCH_A,
           limit: 1,
           projectId: PROJECT,
           tenantId: TENANT_A,
         }),
-      ).resolves.toMatchObject({ document: { revision: 2n, sealedAt: expect.any(Date) }, events: [] });
-      await expect(editorA.commitProgram(winnerInput)).resolves.toMatchObject({ kind: "committed", replayed: true });
+      ).resolves.toMatchObject({ document: { revision: 4n, sealedAt: expect.any(Date) }, events: [] });
+      await expect(editorA.commitMutation(winnerInput)).resolves.toMatchObject({ kind: "committed", replayed: true });
       const reopened = await editorA.openDocument({ ...openInput, sourceHash: SOURCE_B });
       expect(reopened).toMatchObject({ created: true, document: { epoch: EPOCH_A2, revision: 0n }, kind: "opened" });
 
