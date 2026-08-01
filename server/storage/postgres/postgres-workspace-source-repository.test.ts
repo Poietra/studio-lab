@@ -6,6 +6,7 @@ import type { ProjectPngBlobReceiptV1 } from "../project-png-storage";
 import type { SourceBlobReceiptV1 } from "../workspace-source-repository";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
+import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
 import { POSTGRES_REPOSITORY_OPTIONS_V1 } from "./postgres-repository-connection";
 import {
   PostgresWorkspaceSourceRepositoryV1,
@@ -105,13 +106,14 @@ function fakePool(handle: (text: string, values: readonly unknown[]) => QueryRes
 }
 
 describe("PostgresWorkspaceSourceRepositoryV1 source retention", () => {
-  it("requires workspace, retention, and immutable-locator schema migrations", async () => {
+  it("requires workspace, project PNG, retention, and immutable-locator schema migrations", async () => {
     const fixture = fakePool((text) => {
-      expect(text).toContain("version IN (1, 6, 20)");
+      expect(text).toContain("version IN (1, 5, 6, 20)");
       return {
-        rowCount: 3,
+        rowCount: 4,
         rows: [
           { checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM, version: 1 },
+          { checksum: PROJECT_PNG_MIGRATION_V5_CHECKSUM, version: 5 },
           { checksum: DURABLE_RETENTION_MIGRATION_V6_CHECKSUM, version: 6 },
           { checksum: IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM, version: 20 },
         ],

@@ -6,7 +6,9 @@ import type {
   SnapshotPublicationIdentityV1,
   VersionedSnapshotArtifactReceiptV1,
 } from "../snapshot-publication-repository";
+import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
+import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
 import { POSTGRES_REPOSITORY_OPTIONS_V1 } from "./postgres-repository-connection";
 import {
   PostgresSnapshotPublicationRepositoryV1,
@@ -612,7 +614,7 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
     ).resolves.toBe(true);
   });
 
-  it("uses only the exact current artifact lookup and verifies migration v3, v10, and v20 readiness", async () => {
+  it("uses only the exact current artifact lookup and verifies every directly required migration", async () => {
     const fixture = fakePool((text, values) => {
       if (text.includes("FROM public.snapshot_artifact_objects a")) {
         expect(text).toContain("source.generation = p.source_generation");
@@ -632,11 +634,14 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
         return { rowCount: 1, rows: [artifactRow()] };
       }
       if (text.includes("poietra_schema_migrations")) {
+        expect(text).toContain("version IN (3, 5, 6, 10, 20)");
         expect(values).toEqual([]);
         return {
-          rowCount: 3,
+          rowCount: 5,
           rows: [
             { checksum: SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM, version: 3 },
+            { checksum: PROJECT_PNG_MIGRATION_V5_CHECKSUM, version: 5 },
+            { checksum: DURABLE_RETENTION_MIGRATION_V6_CHECKSUM, version: 6 },
             { checksum: SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM, version: 10 },
             { checksum: IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM, version: 20 },
           ],
@@ -688,13 +693,15 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
     await expect(repository.isArtifactPublished(TENANT, immutableArtifact())).rejects.toThrow(/ambiguous/i);
   });
 
-  it("is not ready when the immutable-locator migration is missing", async () => {
+  it("is not ready when any directly required migration is missing", async () => {
     const fixture = fakePool((text) => {
       if (text.includes("poietra_schema_migrations")) {
         return {
-          rowCount: 2,
+          rowCount: 4,
           rows: [
             { checksum: SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM, version: 3 },
+            { checksum: PROJECT_PNG_MIGRATION_V5_CHECKSUM, version: 5 },
+            { checksum: DURABLE_RETENTION_MIGRATION_V6_CHECKSUM, version: 6 },
             { checksum: SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM, version: 10 },
           ],
         };

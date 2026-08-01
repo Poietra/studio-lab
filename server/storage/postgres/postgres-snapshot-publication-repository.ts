@@ -23,8 +23,12 @@ import {
   type SnapshotPublicationV1,
   sameSnapshotArtifactContentV1 as sameArtifactContent,
 } from "../snapshot-publication-repository";
+import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
-import { detachProjectPngHeadInTransactionV1 } from "./postgres-project-png-repository";
+import {
+  detachProjectPngHeadInTransactionV1,
+  PROJECT_PNG_MIGRATION_V5_CHECKSUM,
+} from "./postgres-project-png-repository";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 import { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
 
@@ -657,18 +661,22 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
   async ready(signal?: AbortSignal) {
     try {
       const result = await this.#connection.query<{ checksum: string; version: number }>(
-        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (3, 10, 20) ORDER BY version",
+        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (3, 5, 6, 10, 20) ORDER BY version",
         [],
         signal,
       );
       return (
-        result.rows.length === 3 &&
+        result.rows.length === 5 &&
         result.rows[0]?.version === 3 &&
         result.rows[0]?.checksum === SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM &&
-        result.rows[1]?.version === 10 &&
-        result.rows[1]?.checksum === SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM &&
-        result.rows[2]?.version === 20 &&
-        result.rows[2]?.checksum === IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM
+        result.rows[1]?.version === 5 &&
+        result.rows[1]?.checksum === PROJECT_PNG_MIGRATION_V5_CHECKSUM &&
+        result.rows[2]?.version === 6 &&
+        result.rows[2]?.checksum === DURABLE_RETENTION_MIGRATION_V6_CHECKSUM &&
+        result.rows[3]?.version === 10 &&
+        result.rows[3]?.checksum === SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM &&
+        result.rows[4]?.version === 20 &&
+        result.rows[4]?.checksum === IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM
       );
     } catch {
       throwIfAborted(signal);

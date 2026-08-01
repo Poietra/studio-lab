@@ -27,6 +27,7 @@ import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-sch
 import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
 import {
   detachProjectPngHeadInTransactionV1,
+  PROJECT_PNG_MIGRATION_V5_CHECKSUM,
   publishProjectPngHeadInTransactionV1,
 } from "./postgres-project-png-repository";
 import { POSTGRES_REPOSITORY_OPTIONS_V1, PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
@@ -263,19 +264,21 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     try {
       throwIfAborted(signal);
       const result = await this.#connection.query<{ checksum: string; version: number }>(
-        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (1, 6, 20) ORDER BY version",
+        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (1, 5, 6, 20) ORDER BY version",
         [],
         signal,
       );
       throwIfAborted(signal);
       return (
-        result.rowCount === 3 &&
+        result.rowCount === 4 &&
         result.rows[0]?.version === 1 &&
         result.rows[0]?.checksum === WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM &&
-        result.rows[1]?.version === 6 &&
-        result.rows[1]?.checksum === DURABLE_RETENTION_MIGRATION_V6_CHECKSUM &&
-        result.rows[2]?.version === 20 &&
-        result.rows[2]?.checksum === IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM
+        result.rows[1]?.version === 5 &&
+        result.rows[1]?.checksum === PROJECT_PNG_MIGRATION_V5_CHECKSUM &&
+        result.rows[2]?.version === 6 &&
+        result.rows[2]?.checksum === DURABLE_RETENTION_MIGRATION_V6_CHECKSUM &&
+        result.rows[3]?.version === 20 &&
+        result.rows[3]?.checksum === IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM
       );
     } catch {
       throwIfAborted(signal);
