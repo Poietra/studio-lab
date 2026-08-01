@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 
 import type {
+  BrowserManimProjectImportRequestV1,
   ManimProjectMutationView,
   ManimRenderCapability,
   ManimSourceExport,
@@ -21,7 +22,7 @@ import type { ProductionManimRuntimeAdapterV1 } from "./manim-production-server"
 import { lowerManimRenderRequest } from "./manim-render-request-lowering";
 import { manimTenantIdSchema } from "./manim-request-principal";
 import type { ThumbnailAsset } from "./manim-thumbnail-cache";
-import { importSourceSnapshot } from "./manim-workspace";
+import { importSourceSnapshot, validateBrowserManimProjectImportV1 } from "./manim-workspace";
 import type { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
 import type { EditorDocumentRepositoryV1 } from "./storage/editor-document-repository";
 import {
@@ -36,6 +37,7 @@ import type { DurableSourceBlobGcWorkerV1 } from "./storage/source-blob-gc";
 import type {
   SourceContentBlobStoreV1,
   WorkspaceSourceHeadV1,
+  WorkspaceSourceProjectV1,
   WorkspaceSourceRepositoryV1,
 } from "./storage/workspace-source-repository";
 
@@ -258,6 +260,38 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
       },
       signal,
     );
+    return this.#mutationView({ id: created.projectId, kind: "managed", name: created.name }, signal);
+  }
+
+  async importBrowserProject(request: BrowserManimProjectImportRequestV1, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    const { request: validated } = validateBrowserManimProjectImportV1(request, this.#frame);
+
+    const projectId = this.#projectIdFactory();
+    const candidate = await this.#blobs.putSource(this.tenantId, validated.source, signal);
+    let created: WorkspaceSourceProjectV1;
+    try {
+      signal?.throwIfAborted();
+      created = await this.#repository.createManagedProject(
+        {
+          name: validated.name,
+          projectId,
+          source: { blob: candidate, path: validated.sourceName },
+          tenantId: this.tenantId,
+        },
+        signal,
+      );
+    } catch (error) {
+      try {
+        await this.#repository.queueBlobDeletion(this.tenantId, candidate);
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], "Project import and orphan cleanup both failed.");
+      }
+      throw error;
+    }
+    // Publication is committed once createManagedProject returns. A later
+    // catalog-read or response failure is an unknown client outcome, not an
+    // orphan, and must never queue the referenced object for deletion.
     return this.#mutationView({ id: created.projectId, kind: "managed", name: created.name }, signal);
   }
 

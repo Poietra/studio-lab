@@ -39,7 +39,7 @@ function isFileSystemError(error: unknown, code: string): error is NodeJS.ErrnoE
  */
 function decodeExactUtf8(bytes: Uint8Array): string {
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch {
     throw new HttpError("The selected Python source must be valid UTF-8 text.", 400);
   }

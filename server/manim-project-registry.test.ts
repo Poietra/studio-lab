@@ -131,6 +131,57 @@ describe("Manim project registry", () => {
     expect(reopened.projects().some((project) => project.projectId === projectId)).toBe(false);
   });
 
+  it("publishes a browser-selected Python file through the local managed adapter under one project identity", async () => {
+    const { dataRoot, registry } = await registryFixture(["poietra-command-that-does-not-exist"], true);
+    const source =
+      "from manim import *\nclass ImportedScene(Scene):\n    def construct(self):\n        circle = Circle()\n        self.add(circle)\n";
+
+    const imported = registry.importBrowserProject({
+      name: "Imported browser workspace",
+      source,
+      sourceName: "lesson.py",
+    });
+    const projectId = imported.project?.id;
+    if (!projectId) throw new Error("The imported project ID is missing.");
+    const managedRoot = join(dataRoot!, ".workspaces", projectId);
+
+    expect(imported.project).toEqual({ id: projectId, kind: "managed", name: "Imported browser workspace" });
+    expect(await readFile(join(managedRoot, "lesson.py"), "utf8")).toBe(source);
+    const workspace = await registry.workspace(projectId);
+    expect(workspace).toMatchObject({
+      projectId,
+      projectName: "Imported browser workspace",
+      sources: [{ path: "lesson.py", scenes: [{ name: "ImportedScene" }] }],
+    });
+    await expect(
+      registry.exportOriginalSource({
+        projectId,
+        sourceHash: createHash("sha256").update(source).digest("hex"),
+        sourcePath: "lesson.py",
+      }),
+    ).resolves.toEqual({ fileName: "lesson.py", projectId, source });
+    expect(new PersistentManimProjectCatalog({ dataRoot: dataRoot!, seedProjects: [] }).projects()).toContainEqual(
+      expect.objectContaining({ canonicalRoot: managedRoot, kind: "managed", projectId }),
+    );
+  });
+
+  it("rejects unsupported browser imports before allocating a local managed workspace", async () => {
+    const { dataRoot, registry } = await registryFixture(["poietra-command-that-does-not-exist"], true);
+
+    expect(() =>
+      registry.importBrowserProject({ name: "No Scene", source: "print('hello')\n", sourceName: "script.py" }),
+    ).toThrow(/does not contain an importable Manim Scene/i);
+    expect(() =>
+      registry.importBrowserProject({
+        name: "Asset Scene",
+        source:
+          'from manim import *\nclass AssetScene(Scene):\n    def construct(self):\n        image = ImageMobject("asset.png")\n        self.add(image)\n',
+        sourceName: "asset_scene.py",
+      }),
+    ).toThrow(/asset and archive import are not supported/i);
+    expect(await readdir(join(dataRoot!, ".workspaces"))).toEqual([]);
+  });
+
   it("does not delete an existing managed directory when ID allocation collides", async () => {
     const dataRoot = await mkdtemp(join(tmpdir(), "poietra-managed-collision-"));
     temporaryRoots.push(dataRoot);

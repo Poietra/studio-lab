@@ -18,6 +18,7 @@ import {
   unregisterManimProject,
 } from "./client";
 import {
+  MAX_BROWSER_MANIM_SOURCE_BYTES_V1,
   type ProgramRenderRequest,
   RENDER_SESSION_CONTRACT_VERSION_HEADER,
   RENDER_SESSION_CONTRACT_VERSION_WITH_CPU_LIMIT,
@@ -239,6 +240,73 @@ describe("Manim API client contracts", () => {
       method: "DELETE",
       signal: undefined,
     });
+  });
+
+  it("imports one bounded browser-selected Python file without sending a host path", async () => {
+    const imported = {
+      catalog: {
+        defaultProjectId: "project-a",
+        projects: [{ id: "project-a", kind: "managed", name: "Imported demo" }],
+      },
+      project: { id: "project-a", kind: "managed", name: "Imported demo" },
+    };
+    const source =
+      "\ufefffrom manim import *\n\nclass ImportedScene(Scene):\n    def construct(self):\n        self.wait(1)\n";
+    const bytes = new TextEncoder().encode(source);
+    const fetch = vi.fn(async () => new Response(JSON.stringify(imported), { status: 201 }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(
+      createManimProject({
+        file: { arrayBuffer: async () => bytes.slice().buffer, name: "scene.py", size: bytes.byteLength },
+        kind: "browser-import",
+        name: " Imported demo ",
+      }),
+    ).resolves.toEqual(imported);
+
+    expect(fetch).toHaveBeenCalledWith("/api/manim/project-imports", {
+      body: JSON.stringify({ name: "Imported demo", source, sourceName: "scene.py" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+      signal: undefined,
+    });
+  });
+
+  it("rejects oversized browser files before reading or uploading them", async () => {
+    const arrayBuffer = vi.fn(async () => new ArrayBuffer(0));
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(
+      createManimProject({
+        file: { arrayBuffer, name: "scene.py", size: MAX_BROWSER_MANIM_SOURCE_BYTES_V1 + 1 },
+        kind: "browser-import",
+        name: "Imported demo",
+      }),
+    ).rejects.toThrow(/non-empty Python file/i);
+    expect(arrayBuffer).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects unstable or non-UTF-8 browser file bytes before upload", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(
+      createManimProject({
+        file: { arrayBuffer: async () => new Uint8Array([0x61]).buffer, name: "scene.py", size: 2 },
+        kind: "browser-import",
+        name: "Changed file",
+      }),
+    ).rejects.toThrow(/changed while Studio was reading/i);
+    await expect(
+      createManimProject({
+        file: { arrayBuffer: async () => new Uint8Array([0xc3, 0x28]).buffer, name: "scene.py", size: 2 },
+        kind: "browser-import",
+        name: "Invalid encoding",
+      }),
+    ).rejects.toThrow(/valid UTF-8/i);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("registers a native-picked workspace without exposing its filesystem path", async () => {
@@ -627,6 +695,8 @@ describe("Manim API client contracts", () => {
   });
 
   it("downloads an unchanged Python source when there is no EditProgram", async () => {
+    const source = "\ufefffrom manim import *\n";
+    const sourceBytes = new TextEncoder().encode(source);
     const fetch = vi.fn(async (url: string, init: RequestInit) => {
       expect(url).toBe("/api/manim/projects/project-a/export");
       expect(init.method).toBe("POST");
@@ -635,8 +705,9 @@ describe("Manim API client contracts", () => {
         sourceHash: "a".repeat(64),
         sourcePath: "nested/scene.py",
       });
-      return new Response("from manim import *\n", {
+      return new Response(sourceBytes, {
         headers: {
+          "content-length": String(sourceBytes.byteLength),
           "content-disposition": 'attachment; filename="scene.py"',
           "content-type": "text/x-python; charset=utf-8",
           "x-poietra-project-id": "project-a",
@@ -655,8 +726,33 @@ describe("Manim API client contracts", () => {
     ).resolves.toEqual({
       fileName: "scene.py",
       projectId: "project-a",
-      source: "from manim import *\n",
+      source,
     });
+  });
+
+  it("preserves an AbortError raised while reading an export body", async () => {
+    const aborted = new DOMException("The operation was aborted.", "AbortError");
+    const response = new Response("from manim import *\n", {
+      headers: {
+        "content-disposition": 'attachment; filename="scene.py"',
+        "content-type": "text/x-python; charset=utf-8",
+        "x-poietra-project-id": "project-a",
+      },
+      status: 200,
+    });
+    vi.spyOn(response, "arrayBuffer").mockRejectedValue(aborted);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => response),
+    );
+
+    await expect(
+      exportOriginalManimSource({
+        projectId: "project-a",
+        sourceHash: "a".repeat(64),
+        sourcePath: "nested/scene.py",
+      }),
+    ).rejects.toBe(aborted);
   });
 
   it("encodes render identities and forwards abort signals to mutation requests", async () => {

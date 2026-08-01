@@ -1,4 +1,5 @@
 import type {
+  BrowserManimProjectImportRequestV1,
   ManimProjectListView,
   ManimProjectMutationView,
   ManimSourceExport,
@@ -112,3 +113,13 @@ export interface MutableManimProjectApiOperations extends ManimApiOperations {
 }
 
 export type MutableManimProjectApi = MutableManimProjectApiOperations & ManimApiStorage;
+
+/** Browser imports are intentionally separate from local host-folder registration. */
+export interface BrowserManimProjectImportApiOperationsV1 extends ManimApiOperations {
+  importBrowserProject(
+    request: BrowserManimProjectImportRequestV1,
+    signal?: AbortSignal,
+  ): ManimApiResult<ManimProjectMutationView>;
+}
+
+export type BrowserManimProjectImportApiV1 = BrowserManimProjectImportApiOperationsV1 & ManimApiStorage;

@@ -3,7 +3,11 @@ import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "rea
 import { cn } from "../lib/cn";
 import type { ManimProjectCreationInput } from "../render-pipeline/client";
 import { generateManimThumbnail, loadManimThumbnailStatus } from "../render-pipeline/client";
-import type { ManimProjectSummary, ManimThumbnailStatus } from "../render-pipeline/contracts";
+import {
+  MAX_BROWSER_MANIM_SOURCE_BYTES_V1,
+  type ManimProjectSummary,
+  type ManimThumbnailStatus,
+} from "../render-pipeline/contracts";
 import { PoietraBrand } from "./poietra-brand";
 import type { WorkspaceMutation } from "./use-manim-workspace";
 
@@ -341,10 +345,13 @@ export function WorkspaceLauncher({
   projects,
 }: WorkspaceLauncherProps) {
   const addDialog = useRef<HTMLDialogElement | null>(null);
+  const importFileInput = useRef<HTMLInputElement | null>(null);
   const renameDialog = useRef<HTMLDialogElement | null>(null);
   const removeDialog = useRef<HTMLDialogElement | null>(null);
   const [createName, setCreateName] = useState("");
   const [createRoot, setCreateRoot] = useState("");
+  const [browserCreationKind, setBrowserCreationKind] = useState<"import" | "starter">("starter");
+  const [importFile, setImportFile] = useState<File | null>(null);
   const [renameName, setRenameName] = useState("");
   const [selectedWorkspace, setSelectedWorkspace] = useState<ManimProjectSummary | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -355,6 +362,7 @@ export function WorkspaceLauncher({
   const registeringExistingFolder = creationMode === "existing";
   const pickingExistingFolder = creationMode === "native-existing";
   const linkingExistingFolder = registeringExistingFolder || pickingExistingFolder;
+  const importingBrowserProject = creationMode === "managed" && browserCreationKind === "import";
   const deletingManagedWorkspace = selectedWorkspace?.kind === "managed";
 
   function clearDialogError() {
@@ -370,6 +378,9 @@ export function WorkspaceLauncher({
   function showAddDialog() {
     setCreateName("");
     setCreateRoot("");
+    setBrowserCreationKind("starter");
+    setImportFile(null);
+    if (importFileInput.current) importFileInput.current.value = "";
     setSelectedWorkspace(null);
     clearDialogError();
     addDialog.current?.showModal();
@@ -392,12 +403,18 @@ export function WorkspaceLauncher({
     event.preventDefault();
     const name = createName.trim();
     const root = createRoot.trim();
-    if (!name || (registeringExistingFolder && !root)) {
+    if (!name || (registeringExistingFolder && !root) || (importingBrowserProject && !importFile)) {
       setFormError(
         registeringExistingFolder
           ? "Enter both a workspace name and an existing folder path."
-          : "Enter a workspace name.",
+          : importingBrowserProject
+            ? "Enter a workspace name and select one Python .py file."
+            : "Enter a workspace name.",
       );
+      return;
+    }
+    if (importingBrowserProject && importFile && importFile.size > MAX_BROWSER_MANIM_SOURCE_BYTES_V1) {
+      setFormError(`Select a Python file no larger than ${MAX_BROWSER_MANIM_SOURCE_BYTES_V1 / 1024} KiB.`);
       return;
     }
     setFormError(null);
@@ -405,7 +422,9 @@ export function WorkspaceLauncher({
       ? { kind: "existing", name, root }
       : pickingExistingFolder
         ? { kind: "native-existing", name }
-        : { kind: "managed", name };
+        : importingBrowserProject && importFile
+          ? { file: importFile, kind: "browser-import", name }
+          : { kind: "managed", name };
     if (await onCreate(input)) addDialog.current?.close();
   }
 
@@ -443,7 +462,7 @@ export function WorkspaceLauncher({
               <p className="mt-3 max-w-xl text-pretty text-sm leading-6 text-zinc-400">
                 {linkingExistingFolder
                   ? "Open a registered Manim folder, or add another workspace to Studio."
-                  : "Open a workspace or create a new animation from a starter Scene."}
+                  : "Open a workspace, create a starter Scene, or import an existing Python Scene."}
               </p>
             </div>
             {projects.length > 0 && !isLoading ? (
@@ -510,7 +529,7 @@ export function WorkspaceLauncher({
               <p className="mt-2 text-pretty text-xs leading-5 text-zinc-500">
                 {linkingExistingFolder
                   ? "Add an existing Manim project folder to start editing its Scenes."
-                  : "Create a workspace to start with an editable Manim Scene."}
+                  : "Create a starter workspace or import one Python Scene file."}
               </p>
               <button
                 className={cn(primaryButtonClassName, addWorkspaceButtonClassName, "mt-4")}
@@ -548,8 +567,49 @@ export function WorkspaceLauncher({
               ? pickingExistingFolder
                 ? "Choose an existing Manim folder on this machine. Studio will not move or copy its files."
                 : "Register an existing folder on this machine. Studio will not move or copy its files."
-              : "Create a new workspace with a starter Manim Scene. No folder setup is required."}
+              : importingBrowserProject
+                ? "Upload one existing Manim Python file to private Studio storage. No local path is sent."
+                : "Create a new workspace with a starter Manim Scene. No folder setup is required."}
           </p>
+          {creationMode === "managed" ? (
+            <fieldset className="mt-4">
+              <legend className="text-xs font-medium text-zinc-300">Workspace content</legend>
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <label className="flex cursor-pointer gap-2 border border-zinc-700 p-3 text-xs text-zinc-300 has-checked:border-sky-500 has-checked:bg-sky-950/40">
+                  <input
+                    checked={browserCreationKind === "starter"}
+                    disabled={creating}
+                    name="workspace-content"
+                    onChange={() => setBrowserCreationKind("starter")}
+                    type="radio"
+                    value="starter"
+                  />
+                  <span>
+                    <span className="block font-medium text-zinc-100">Starter Scene</span>
+                    <span className="mt-1 block text-pretty leading-5 text-zinc-500">
+                      Begin with a minimal main.py.
+                    </span>
+                  </span>
+                </label>
+                <label className="flex cursor-pointer gap-2 border border-zinc-700 p-3 text-xs text-zinc-300 has-checked:border-sky-500 has-checked:bg-sky-950/40">
+                  <input
+                    checked={browserCreationKind === "import"}
+                    disabled={creating}
+                    name="workspace-content"
+                    onChange={() => setBrowserCreationKind("import")}
+                    type="radio"
+                    value="import"
+                  />
+                  <span>
+                    <span className="block font-medium text-zinc-100">Import Python</span>
+                    <span className="mt-1 block text-pretty leading-5 text-zinc-500">
+                      Upload one existing .py file.
+                    </span>
+                  </span>
+                </label>
+              </div>
+            </fieldset>
+          ) : null}
           <label className="mt-4 block text-xs font-medium text-zinc-300" htmlFor="workspace-name">
             Workspace name
           </label>
@@ -586,6 +646,33 @@ export function WorkspaceLauncher({
               />
             </>
           ) : null}
+          {importingBrowserProject ? (
+            <>
+              <label className="mt-4 block text-xs font-medium text-zinc-300" htmlFor="workspace-import-file">
+                Manim Python file
+              </label>
+              <input
+                accept=".py,text/x-python"
+                aria-describedby={
+                  formError || mutationError ? "workspace-import-help add-workspace-error" : "workspace-import-help"
+                }
+                className={cn(
+                  fieldClassName,
+                  "h-auto py-2 file:mr-3 file:border-0 file:bg-zinc-800 file:px-2 file:py-1 file:text-xs file:text-zinc-200",
+                )}
+                disabled={creating}
+                id="workspace-import-file"
+                onChange={(event) => setImportFile(event.currentTarget.files?.[0] ?? null)}
+                ref={importFileInput}
+                required
+                type="file"
+              />
+              <p className="mt-2 text-pretty text-xs leading-5 text-zinc-500" id="workspace-import-help">
+                Up to {MAX_BROWSER_MANIM_SOURCE_BYTES_V1 / 1024} KiB. Archives, folders, symlinks, and assets such as
+                ImageMobject files are not supported in this import path yet.
+              </p>
+            </>
+          ) : null}
           {formError || mutationError ? (
             <p className="mt-3 text-pretty text-xs leading-5 text-red-300" id="add-workspace-error" role="alert">
               {formError ?? mutationError}
@@ -608,7 +695,9 @@ export function WorkspaceLauncher({
                   ? "Choose folder…"
                   : registeringExistingFolder
                     ? "Add workspace"
-                    : "Create workspace"}
+                    : importingBrowserProject
+                      ? "Import workspace"
+                      : "Create workspace"}
             </button>
           </div>
         </form>
