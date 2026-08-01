@@ -12,12 +12,18 @@ import type { CanonicalEditProgram } from "./operations";
 
 const defaultEditorDocumentClientV1 = new FetchEditorDocumentClientV1();
 
-type EditorDocumentAuthorityPhaseV1 = "blocked" | "disabled" | "opening" | "pending" | "ready";
+type EditorDocumentAuthorityPhaseV1 = "blocked" | "disabled" | "opening" | "pending" | "ready" | "recoverable";
 
 type EditorDocumentAuthorityUiStateV1 = Readonly<{
   message: string | null;
   phase: EditorDocumentAuthorityPhaseV1;
+  retryable: boolean;
 }>;
+
+export type EditorDocumentAuthorityHookCommitOutcomeV1 =
+  | EditorDocumentAuthorityCommitOutcomeV1
+  | Readonly<{ kind: "blocked" }>
+  | Readonly<{ kind: "stale" }>;
 
 type UseEditorDocumentAuthorityInputV1 = Readonly<{
   client?: EditorDocumentClientV1;
@@ -40,7 +46,11 @@ function publicAuthorityMessageV1(error: unknown) {
 }
 
 export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityInputV1) {
-  const [state, setState] = useState<EditorDocumentAuthorityUiStateV1>({ message: null, phase: "disabled" });
+  const [state, setState] = useState<EditorDocumentAuthorityUiStateV1>({
+    message: null,
+    phase: "disabled",
+    retryable: false,
+  });
   const authority = useRef<EditorDocumentAuthorityV1 | null>(null);
   const authorityIdentityKey = useRef<string | null>(null);
   const request = useRef<AbortController | null>(null);
@@ -66,7 +76,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     authority.current = null;
     authorityIdentityKey.current = null;
     if (!input.identity) {
-      updateState({ message: null, phase: "disabled" });
+      updateState({ message: null, phase: "disabled", retryable: false });
       return;
     }
     const controller = new AbortController();
@@ -74,7 +84,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     request.current = controller;
     authority.current = nextAuthority;
     authorityIdentityKey.current = identityKey;
-    updateState({ message: null, phase: "opening" });
+    updateState({ message: null, phase: "opening", retryable: false });
     void nextAuthority
       .open(controller.signal)
       .then((snapshot) => {
@@ -86,7 +96,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
         )
           return;
         projection.current(snapshot.programs, "open");
-        updateState({ message: null, phase: "ready" });
+        updateState({ message: null, phase: "ready", retryable: false });
       })
       .catch((error: unknown) => {
         if (
@@ -97,7 +107,8 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
         )
           return;
         const message = publicAuthorityMessageV1(error);
-        if (message) updateState({ message, phase: "blocked" });
+        const retryable = nextAuthority.recoveryKind !== null;
+        if (message) updateState({ message, phase: retryable ? "recoverable" : "blocked", retryable });
       })
       .finally(() => {
         if (request.current === controller) request.current = null;
@@ -112,8 +123,18 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     };
   }, [client, identityKey, updateState]);
 
+  const canAuthor = useCallback(() => {
+    const activeIdentityKey = renderedIdentityKey.current;
+    return (
+      activeIdentityKey !== null &&
+      authority.current !== null &&
+      authorityIdentityKey.current === activeIdentityKey &&
+      stateRef.current.phase === "ready"
+    );
+  }, []);
+
   const commitMutation = useCallback(
-    async (mutation: EditorEditMutationV1) => {
+    async (mutation: EditorEditMutationV1): Promise<EditorDocumentAuthorityHookCommitOutcomeV1> => {
       const activeAuthority = authority.current;
       const activeIdentityKey = renderedIdentityKey.current;
       if (
@@ -122,11 +143,11 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
         authorityIdentityKey.current !== activeIdentityKey ||
         stateRef.current.phase !== "ready"
       )
-        return "blocked" as const;
+        return { kind: "blocked" };
       const activeGeneration = generation.current;
       const controller = new AbortController();
       request.current = controller;
-      updateState({ message: null, phase: "pending" });
+      updateState({ message: null, phase: "pending", retryable: false });
       try {
         const outcome: EditorDocumentAuthorityCommitOutcomeV1 = await activeAuthority.commit(
           mutation,
@@ -138,10 +159,10 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
           renderedIdentityKey.current !== activeIdentityKey ||
           authority.current !== activeAuthority
         )
-          return "stale" as const;
+          return { kind: "stale" };
         if (outcome.kind === "reconciled") projection.current(outcome.snapshot.programs, "remote");
-        updateState({ message: null, phase: "ready" });
-        return outcome.kind;
+        updateState({ message: null, phase: "ready", retryable: false });
+        return outcome;
       } catch (error) {
         if (
           controller.signal.aborted ||
@@ -149,16 +170,61 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
           renderedIdentityKey.current !== activeIdentityKey ||
           authority.current !== activeAuthority
         )
-          return "stale" as const;
+          return { kind: "stale" };
         const message = publicAuthorityMessageV1(error);
-        if (message) updateState({ message, phase: "blocked" });
-        return "blocked" as const;
+        const retryable = activeAuthority.recoveryKind !== null;
+        if (message) updateState({ message, phase: retryable ? "recoverable" : "blocked", retryable });
+        return { kind: "blocked" };
       } finally {
         if (request.current === controller) request.current = null;
       }
     },
     [updateState],
   );
+
+  const retry = useCallback(async () => {
+    const activeAuthority = authority.current;
+    const activeIdentityKey = renderedIdentityKey.current;
+    if (
+      !activeAuthority ||
+      activeIdentityKey === null ||
+      authorityIdentityKey.current !== activeIdentityKey ||
+      stateRef.current.phase !== "recoverable" ||
+      activeAuthority.recoveryKind === null
+    )
+      return false;
+    const activeGeneration = generation.current;
+    const controller = new AbortController();
+    request.current = controller;
+    updateState({ message: null, phase: "pending", retryable: false });
+    try {
+      const outcome = await activeAuthority.retry(controller.signal);
+      if (
+        controller.signal.aborted ||
+        generation.current !== activeGeneration ||
+        renderedIdentityKey.current !== activeIdentityKey ||
+        authority.current !== activeAuthority
+      )
+        return false;
+      projection.current(outcome.snapshot.programs, "remote");
+      updateState({ message: null, phase: "ready", retryable: false });
+      return true;
+    } catch (error) {
+      if (
+        controller.signal.aborted ||
+        generation.current !== activeGeneration ||
+        renderedIdentityKey.current !== activeIdentityKey ||
+        authority.current !== activeAuthority
+      )
+        return false;
+      const message = publicAuthorityMessageV1(error);
+      const retryable = activeAuthority.recoveryKind !== null;
+      if (message) updateState({ message, phase: retryable ? "recoverable" : "blocked", retryable });
+      return false;
+    } finally {
+      if (request.current === controller) request.current = null;
+    }
+  }, [updateState]);
 
   /** Future WebSocket/DO transports only need to call this head-notification seam. */
   const reconcileRemoteHead = useCallback(async () => {
@@ -174,7 +240,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     const activeGeneration = generation.current;
     const controller = new AbortController();
     request.current = controller;
-    updateState({ message: null, phase: "pending" });
+    updateState({ message: null, phase: "pending", retryable: false });
     try {
       const result = await activeAuthority.reconcile(controller.signal);
       if (
@@ -185,7 +251,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
       )
         return false;
       if (result.changed) projection.current(result.snapshot.programs, "remote");
-      updateState({ message: null, phase: "ready" });
+      updateState({ message: null, phase: "ready", retryable: false });
       return true;
     } catch (error) {
       if (
@@ -196,7 +262,8 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
       )
         return false;
       const message = publicAuthorityMessageV1(error);
-      if (message) updateState({ message, phase: "blocked" });
+      const retryable = activeAuthority.recoveryKind !== null;
+      if (message) updateState({ message, phase: retryable ? "recoverable" : "blocked", retryable });
       return false;
     } finally {
       if (request.current === controller) request.current = null;
@@ -205,10 +272,13 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
 
   return {
     authoringBlocked: input.identity !== null && state.phase !== "ready",
+    canAuthor,
     commitMutation,
     enabled: input.identity !== null,
     message: state.message,
     phase: state.phase,
     reconcileRemoteHead,
+    retry,
+    retryable: state.retryable,
   } as const;
 }

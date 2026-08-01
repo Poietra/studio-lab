@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type { CanonicalEditProgram } from "../studio/operations";
@@ -8,7 +10,6 @@ import type { EditorEditMutationV1 } from "./editor-edit-mutation";
 
 const ORGANIZATION = "organization-a";
 const PROJECT = "project-a";
-const DOCUMENT_KEY = "a".repeat(64);
 const SOURCE_HASH = "b".repeat(64);
 const EPOCH = "11111111-1111-4111-8111-111111111111";
 const MUTATION_ID = "22222222-2222-4222-8222-222222222222";
@@ -20,6 +21,15 @@ const identity = {
   sourceHash: SOURCE_HASH,
   sourcePath: "scene.py",
 } as const;
+
+function keyForScene(sceneName: string) {
+  const sceneDigest = createHash("sha256").update(`scene.py\0${sceneName}`, "utf8").digest("hex");
+  return createHash("sha256")
+    .update(`poietra.editor-document.v1\0scene.py\0scene:${sceneDigest}`, "utf8")
+    .digest("hex");
+}
+
+const DOCUMENT_KEY = keyForScene(identity.sceneName);
 
 function program(transactionId: string, anchor: number): CanonicalEditProgram {
   const operationId = `${transactionId}/wait`;
@@ -127,7 +137,7 @@ describe("Editor document authority", () => {
     expect(requests[0]).toMatchObject({ baseRevision: "0", clientMutationId: MUTATION_ID, mutation });
   });
 
-  it("retains an ambiguous request across calls and refuses to replace it with another mutation", async () => {
+  it("exposes an ambiguous request for manual replay without changing any request byte", async () => {
     const value = program("first", 1);
     const mutation = { kind: "append", program: value } as const;
     const otherMutation = { kind: "append", program: program("other", 2) } as const;
@@ -146,8 +156,9 @@ describe("Editor document authority", () => {
     await authority.open();
 
     await expect(authority.commit(mutation)).rejects.toThrow("connection reset");
+    expect(authority.recoveryKind).toBe("commit");
     await expect(authority.commit(otherMutation)).rejects.toMatchObject({ code: "conflict" });
-    await expect(authority.commit(mutation)).resolves.toMatchObject({
+    await expect(authority.retry()).resolves.toMatchObject({
       kind: "committed",
       snapshot: { programs: [value], revision: "1" },
     });
@@ -155,6 +166,42 @@ describe("Editor document authority", () => {
     expect(commit).toHaveBeenCalledTimes(3);
     expect(requests[0]).toEqual(requests[1]);
     expect(requests[1]).toEqual(requests[2]);
+    expect(authority.recoveryKind).toBeNull();
+  });
+
+  it("recovers an accepted commit through tail only and never resends the mutation", async () => {
+    const first = program("first", 1);
+    const second = program("second", 2);
+    const firstMutation = { kind: "append", program: first } as const;
+    const secondMutation = { kind: "append", program: second } as const;
+    const commit = vi.fn<EditorDocumentClientV1["commit"]>(async (_identity, _key, request) => ({
+      document: document(2),
+      event: event(1, firstMutation, { clientMutationId: request.clientMutationId }),
+      kind: "committed",
+      replayed: false,
+    }));
+    const tail = vi
+      .fn<EditorDocumentClientV1["tail"]>()
+      .mockResolvedValueOnce({ document: document(0), events: [] })
+      .mockRejectedValueOnce(new Error("tail connection reset"))
+      .mockResolvedValueOnce({ document: document(2), events: [event(2, secondMutation)] });
+    const authority = new EditorDocumentAuthorityV1(client({ commit, tail }), identity, () => MUTATION_ID);
+    await authority.open();
+
+    await expect(authority.commit(firstMutation)).rejects.toThrow("tail connection reset");
+    expect(authority.recoveryKind).toBe("tail");
+    await expect(authority.commit({ kind: "append", program: program("third", 3) })).rejects.toMatchObject({
+      code: "conflict",
+    });
+    await expect(authority.retry()).resolves.toMatchObject({
+      kind: "reconciled",
+      snapshot: { programs: [first, second], revision: "2" },
+    });
+
+    expect(commit).toHaveBeenCalledOnce();
+    expect(tail).toHaveBeenCalledTimes(3);
+    expect(tail.mock.calls.map((call) => call[2].afterRevision)).toEqual(["0", "1", "1"]);
+    expect(authority.recoveryKind).toBeNull();
   });
 
   it("rejects a second in-flight mutation without disturbing the active commit", async () => {
@@ -187,6 +234,7 @@ describe("Editor document authority", () => {
     const firstMutation = { kind: "append", program: first } as const;
     const secondMutation = { kind: "append", program: second } as const;
     const tail = vi.fn<EditorDocumentClientV1["tail"]>(async (_identity, _key, request) => {
+      if (request.afterRevision === "0") return { document: document(0), events: [] };
       expect(request.afterRevision).toBe("1");
       return { document: document(2), events: [event(2, secondMutation)] };
     });
@@ -209,17 +257,21 @@ describe("Editor document authority", () => {
       kind: "reconciled",
       snapshot: { programs: [first, second], revision: "2" },
     });
-    expect(tail).toHaveBeenCalledOnce();
+    expect(tail).toHaveBeenCalledTimes(2);
   });
 
   it("reconciles a revision conflict without applying the rejected local mutation", async () => {
     const local = program("local", 1);
     const remote = program("remote", 1);
     const remoteMutation = { kind: "append", program: remote } as const;
+    const tail = vi
+      .fn<EditorDocumentClientV1["tail"]>()
+      .mockResolvedValueOnce({ document: document(0), events: [] })
+      .mockResolvedValueOnce({ document: document(1), events: [event(1, remoteMutation)] });
     const authority = new EditorDocumentAuthorityV1(
       client({
         commit: async () => ({ currentRevision: "1", kind: "conflict", reason: "revision-mismatch" }),
-        tail: async () => ({ document: document(1), events: [event(1, remoteMutation)] }),
+        tail,
       }),
       identity,
       () => MUTATION_ID,
@@ -232,7 +284,7 @@ describe("Editor document authority", () => {
     });
   });
 
-  it("follows partial tail pages until the exact authoritative head", async () => {
+  it("opens through partial tail pages until the exact authoritative head", async () => {
     const first = program("first", 1);
     const second = program("second", 2);
     const tail = vi
@@ -254,20 +306,19 @@ describe("Editor document authority", () => {
         ],
       });
     const authority = new EditorDocumentAuthorityV1(client({ tail }), identity);
-    await authority.open();
-
-    await expect(authority.reconcile()).resolves.toMatchObject({
-      changed: true,
-      snapshot: { programs: [first, second], revision: "2" },
+    await expect(authority.open()).resolves.toMatchObject({
+      programs: [first, second],
+      revision: "2",
     });
     expect(tail.mock.calls.map((call) => call[2].afterRevision)).toEqual(["0", "1"]);
   });
 
   it("fails closed when a tail claims a newer head without returning the missing event", async () => {
-    const authority = new EditorDocumentAuthorityV1(
-      client({ tail: async () => ({ document: document(1), events: [] }) }),
-      identity,
-    );
+    const tail = vi
+      .fn<EditorDocumentClientV1["tail"]>()
+      .mockResolvedValueOnce({ document: document(0), events: [] })
+      .mockResolvedValueOnce({ document: document(1), events: [] });
+    const authority = new EditorDocumentAuthorityV1(client({ tail }), identity);
     await authority.open();
 
     await expect(authority.reconcile()).rejects.toMatchObject({ code: "corrupt-response" });
@@ -275,17 +326,32 @@ describe("Editor document authority", () => {
 
   it("fails closed on a wrong-epoch event instead of advancing the replica", async () => {
     const remoteMutation = { kind: "append", program: program("remote", 1) } as const;
+    const tail = vi
+      .fn<EditorDocumentClientV1["tail"]>()
+      .mockResolvedValueOnce({ document: document(0), events: [] })
+      .mockResolvedValueOnce({
+        document: document(1),
+        events: [event(1, remoteMutation, { epoch: "44444444-4444-4444-8444-444444444444" })],
+      });
+    const authority = new EditorDocumentAuthorityV1(client({ tail }), identity);
+    await authority.open();
+
+    await expect(authority.reconcile()).rejects.toMatchObject({ code: "corrupt-response" });
+  });
+
+  it("rejects an open response for another Scene in the same source file", async () => {
     const authority = new EditorDocumentAuthorityV1(
       client({
-        tail: async () => ({
-          document: document(1),
-          events: [event(1, remoteMutation, { epoch: "44444444-4444-4444-8444-444444444444" })],
+        open: async () => ({
+          created: false,
+          document: document(0, { documentKey: keyForScene("OtherScene") }),
+          kind: "opened",
+          projection: { programs: [], revision: "0" },
         }),
       }),
       identity,
     );
-    await authority.open();
 
-    await expect(authority.reconcile()).rejects.toMatchObject({ code: "corrupt-response" });
+    await expect(authority.open()).rejects.toMatchObject({ code: "corrupt-response" });
   });
 });

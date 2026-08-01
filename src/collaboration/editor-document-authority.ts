@@ -10,7 +10,10 @@ import type {
   EditorDocumentViewV1,
   EditorEditEventViewV1,
 } from "./editor-document-http-contract";
-import { editorDocumentCommitRequestSchemaV1 } from "./editor-document-http-contract";
+import {
+  editorDocumentCommitRequestSchemaV1,
+  editorDocumentOpenRequestSchemaV1,
+} from "./editor-document-http-contract";
 import {
   applyEditorEditMutationV1,
   type EditorEditMutationV1,
@@ -37,6 +40,8 @@ export type EditorDocumentAuthorityCommitOutcomeV1 =
   | Readonly<{ kind: "committed"; snapshot: EditorDocumentAuthoritySnapshotV1 }>
   | Readonly<{ kind: "reconciled"; snapshot: EditorDocumentAuthoritySnapshotV1 }>;
 
+export type EditorDocumentAuthorityRecoveryKindV1 = "commit" | "tail";
+
 export class EditorDocumentAuthorityErrorV1 extends Error {
   constructor(
     message: string,
@@ -55,6 +60,22 @@ type PendingMutationV1 = Readonly<{
 
 function revisionV1(value: string) {
   return BigInt(value);
+}
+
+async function sha256HexV1(value: string) {
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** Browser equivalent of the server's Scene ID + Editor document-key derivation. */
+export async function createBrowserEditorDocumentKeyV1(identity: EditorDocumentAuthorityIdentityV1) {
+  const request = editorDocumentOpenRequestSchemaV1.parse({
+    sceneName: identity.sceneName,
+    sourceHash: identity.sourceHash,
+    sourcePath: identity.sourcePath,
+  });
+  const sceneDigest = await sha256HexV1(`${request.sourcePath}\0${request.sceneName}`);
+  return sha256HexV1(`poietra.editor-document.v1\0${request.sourcePath}\0scene:${sceneDigest}`);
 }
 
 function authorityErrorV1(message: string, code: EditorDocumentAuthorityErrorV1["code"]): never {
@@ -121,6 +142,7 @@ export class EditorDocumentAuthorityV1 {
   #inFlight = false;
   #pending: PendingMutationV1 | null = null;
   #programs: readonly CanonicalEditProgram[] = [];
+  #recovery: "tail" | null = null;
   #revision = 0n;
 
   constructor(
@@ -129,26 +151,34 @@ export class EditorDocumentAuthorityV1 {
     private readonly randomUuid: () => string = () => crypto.randomUUID(),
   ) {}
 
+  get recoveryKind(): EditorDocumentAuthorityRecoveryKindV1 | null {
+    if (this.#pending) return "commit";
+    return this.#recovery;
+  }
+
   async open(signal?: AbortSignal) {
     if (this.#inFlight) authorityErrorV1("An Editor authority request is already active.", "busy");
     this.#inFlight = true;
     try {
-      const result = await this.client.open(
-        this.identity,
-        {
-          sceneName: this.identity.sceneName,
-          sourceHash: this.identity.sourceHash,
-          sourcePath: this.identity.sourcePath,
-        },
-        signal,
-      );
+      const [result, expectedDocumentKey] = await Promise.all([
+        this.client.open(
+          this.identity,
+          {
+            sceneName: this.identity.sceneName,
+            sourceHash: this.identity.sourceHash,
+            sourcePath: this.identity.sourcePath,
+          },
+          signal,
+        ),
+        createBrowserEditorDocumentKeyV1(this.identity),
+      ]);
       if (result.kind === "not-found") {
         authorityErrorV1("The selected Editor document is unavailable.", "unavailable");
       }
       if (result.kind === "source-conflict") {
         authorityErrorV1("The selected Scene source changed before its Editor document could open.", "source-conflict");
       }
-      assertDocumentIdentityV1(result.document, this.identity);
+      assertDocumentIdentityV1(result.document, this.identity, { documentKey: expectedDocumentKey });
       if (result.document.revision !== result.projection.revision) {
         authorityErrorV1("The Editor open projection is not aligned to its document.", "corrupt-response");
       }
@@ -156,7 +186,8 @@ export class EditorDocumentAuthorityV1 {
       this.#revision = revisionV1(result.projection.revision);
       this.#programs = parseAuthoritativeEditorProgramsV1(result.projection.programs);
       this.#pending = null;
-      return snapshotV1(this.#document, this.#revision, this.#programs);
+      this.#recovery = "tail";
+      return (await this.#recoverTailV1(signal)).snapshot;
     } finally {
       this.#inFlight = false;
     }
@@ -169,6 +200,9 @@ export class EditorDocumentAuthorityV1 {
     const document = this.#document;
     if (!document) authorityErrorV1("Open the Editor document before committing.", "not-open");
     if (this.#inFlight) authorityErrorV1("An Editor authority request is already active.", "busy");
+    if (this.#recovery === "tail") {
+      authorityErrorV1("Finish reconciling the accepted Editor mutation before committing another edit.", "conflict");
+    }
     const mutation = parseEditorEditMutationV1(mutationValue);
     const canonicalMutation = canonicalJsonV1(mutation);
     const baseRevision = this.#revision.toString(10);
@@ -196,25 +230,70 @@ export class EditorDocumentAuthorityV1 {
     this.#pending = pending;
     this.#inFlight = true;
     try {
-      let result;
-      for (let attempt = 0; ; attempt += 1) {
-        try {
-          result = await this.client.commit(this.identity, document.documentKey, pending.request, signal);
-          break;
-        } catch (error) {
-          if (attempt === 0 && !signal?.aborted && editorCommitOutcomeMayBeUnknownV1(error)) continue;
-          throw error;
-        }
-      }
-      this.#pending = null;
-      if (result.kind === "conflict") {
-        if (result.reason !== "revision-mismatch") {
-          authorityErrorV1(`The Editor mutation was rejected (${result.reason}).`, "conflict");
-        }
-        const reconciled = await this.#reconcileV1(signal);
-        return { kind: "reconciled", snapshot: reconciled.snapshot };
-      }
+      return await this.#submitPendingV1(pending, signal);
+    } finally {
+      this.#inFlight = false;
+    }
+  }
 
+  async retry(signal?: AbortSignal): Promise<EditorDocumentAuthorityCommitOutcomeV1> {
+    if (!this.#document) authorityErrorV1("Open the Editor document before retrying.", "not-open");
+    if (this.#inFlight) authorityErrorV1("An Editor authority request is already active.", "busy");
+    const pending = this.#pending;
+    if (!pending && this.#recovery !== "tail") {
+      authorityErrorV1("The Editor authority has no recoverable request.", "conflict");
+    }
+    this.#inFlight = true;
+    try {
+      if (pending) return await this.#submitPendingV1(pending, signal);
+      const reconciled = await this.#recoverTailV1(signal);
+      return { kind: "reconciled", snapshot: reconciled.snapshot };
+    } finally {
+      this.#inFlight = false;
+    }
+  }
+
+  async reconcile(signal?: AbortSignal) {
+    if (!this.#document) authorityErrorV1("Open the Editor document before reconciling.", "not-open");
+    if (this.#inFlight) authorityErrorV1("An Editor authority request is already active.", "busy");
+    this.#inFlight = true;
+    this.#recovery = "tail";
+    try {
+      return await this.#recoverTailV1(signal);
+    } finally {
+      this.#inFlight = false;
+    }
+  }
+
+  async #submitPendingV1(
+    pending: PendingMutationV1,
+    signal?: AbortSignal,
+  ): Promise<EditorDocumentAuthorityCommitOutcomeV1> {
+    const document = this.#document;
+    if (!document) authorityErrorV1("Open the Editor document before committing.", "not-open");
+    let result;
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        result = await this.client.commit(this.identity, document.documentKey, pending.request, signal);
+        break;
+      } catch (error) {
+        const outcomeUnknown = editorCommitOutcomeMayBeUnknownV1(error);
+        if (attempt === 0 && !signal?.aborted && outcomeUnknown) continue;
+        if (!outcomeUnknown) this.#pending = null;
+        throw error;
+      }
+    }
+    if (result.kind === "conflict") {
+      this.#pending = null;
+      if (result.reason !== "revision-mismatch") {
+        authorityErrorV1(`The Editor mutation was rejected (${result.reason}).`, "conflict");
+      }
+      this.#recovery = "tail";
+      const reconciled = await this.#recoverTailV1(signal);
+      return { kind: "reconciled", snapshot: reconciled.snapshot };
+    }
+
+    try {
       assertDocumentIdentityV1(result.document, this.identity, {
         documentKey: document.documentKey,
         epoch: document.epoch,
@@ -223,7 +302,7 @@ export class EditorDocumentAuthorityV1 {
       if (
         result.event.clientMutationId !== pending.request.clientMutationId ||
         result.event.baseRevision !== pending.request.baseRevision ||
-        canonicalJsonV1(result.event.mutation) !== canonicalMutation
+        canonicalJsonV1(result.event.mutation) !== pending.canonicalMutation
       ) {
         authorityErrorV1("The Editor service acknowledged a different mutation request.", "corrupt-response");
       }
@@ -234,24 +313,30 @@ export class EditorDocumentAuthorityV1 {
       if (revisionV1(result.document.revision) < this.#revision) {
         authorityErrorV1("The Editor commit response regressed its document revision.", "corrupt-response");
       }
-      if (revisionV1(result.document.revision) > this.#revision) {
-        const reconciled = await this.#reconcileV1(signal);
-        return { kind: "reconciled", snapshot: reconciled.snapshot };
-      }
-      return { kind: "committed", snapshot: snapshotV1(this.#document, this.#revision, this.#programs) };
-    } finally {
-      this.#inFlight = false;
+    } catch (error) {
+      this.#pending = null;
+      throw error;
     }
+    this.#pending = null;
+    if (revisionV1(result.document.revision) > this.#revision) {
+      this.#recovery = "tail";
+      const reconciled = await this.#recoverTailV1(signal);
+      return { kind: "reconciled", snapshot: reconciled.snapshot };
+    }
+    this.#recovery = null;
+    return { kind: "committed", snapshot: snapshotV1(this.#document, this.#revision, this.#programs) };
   }
 
-  async reconcile(signal?: AbortSignal) {
-    if (!this.#document) authorityErrorV1("Open the Editor document before reconciling.", "not-open");
-    if (this.#inFlight) authorityErrorV1("An Editor authority request is already active.", "busy");
-    this.#inFlight = true;
+  async #recoverTailV1(signal?: AbortSignal) {
     try {
-      return await this.#reconcileV1(signal);
-    } finally {
-      this.#inFlight = false;
+      const reconciled = await this.#reconcileV1(signal);
+      this.#recovery = null;
+      return reconciled;
+    } catch (error) {
+      if (error instanceof EditorDocumentAuthorityErrorV1 || !editorCommitOutcomeMayBeUnknownV1(error)) {
+        this.#recovery = null;
+      }
+      throw error;
     }
   }
 
@@ -292,7 +377,6 @@ export class EditorDocumentAuthorityV1 {
         authorityErrorV1("The Editor service returned an incomplete event tail.", "corrupt-response");
       }
     }
-    this.#pending = null;
     return {
       changed: this.#revision !== startingRevision,
       snapshot: snapshotV1(document, this.#revision, this.#programs),
