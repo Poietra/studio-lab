@@ -73,9 +73,22 @@ function logoutRequest() {
   });
 }
 
+function invitationRequest() {
+  return new Request(`${origin}/api/account/invitations`, {
+    body: JSON.stringify({ email: "member@example.com", role: "member" }),
+    headers: {
+      "content-type": "application/json",
+      cookie: `__Host-poietra_session=${opaqueToken}`,
+      origin,
+      "sec-fetch-site": "same-origin",
+    },
+    method: "POST",
+  });
+}
+
 function harness() {
   const forwarded = vi.fn(async () => new Response(null, { status: 204 }));
-  const createControlPlane = vi.fn(() => ({ fetch: forwarded }));
+  const createControlPlane = vi.fn((_options: unknown) => ({ fetch: forwarded }));
   return {
     createControlPlane,
     forwarded,
@@ -111,13 +124,17 @@ describe("Cloudflare OIDC account control-plane Worker", () => {
     await expect(worker.fetch(accountRequest(), env.value)).resolves.toMatchObject({ status: 204 });
     await expect(worker.fetch(accountSwitchRequest(), env.value)).resolves.toMatchObject({ status: 204 });
     await expect(worker.fetch(logoutRequest(), env.value)).resolves.toMatchObject({ status: 204 });
+    await expect(worker.fetch(invitationRequest(), env.value)).resolves.toMatchObject({ status: 204 });
 
     expect(env.start.limit).toHaveBeenCalledWith({ key: "oidc:start:203.0.113.4" });
     expect(env.callback.limit).toHaveBeenCalledWith({ key: "oidc:callback:2001:db8::4" });
     expect(createControlPlane).toHaveBeenCalledOnce();
+    expect(createControlPlane.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ invitationRepository: expect.any(Function) }),
+    );
     expect(forwarded).toHaveBeenNthCalledWith(1, start, env.value);
     expect(forwarded).toHaveBeenNthCalledWith(2, callback, env.value);
-    expect(forwarded).toHaveBeenCalledTimes(5);
+    expect(forwarded).toHaveBeenCalledTimes(6);
   });
 
   it("keeps an existing account session independent from OIDC and connecting-IP bindings", async () => {
@@ -129,14 +146,14 @@ describe("Cloudflare OIDC account control-plane Worker", () => {
     const { createControlPlane, forwarded, worker } = harness();
 
     const responses = await Promise.all(
-      [accountRequest(), accountSwitchRequest(), logoutRequest()].map((request) =>
+      [accountRequest(), accountSwitchRequest(), logoutRequest(), invitationRequest()].map((request) =>
         worker.fetch(request, accountOnlyEnvironment),
       ),
     );
 
-    expect(responses.map(({ status }) => status)).toEqual([204, 204, 204]);
+    expect(responses.map(({ status }) => status)).toEqual([204, 204, 204, 204]);
     expect(createControlPlane).toHaveBeenCalledOnce();
-    expect(forwarded).toHaveBeenCalledTimes(3);
+    expect(forwarded).toHaveBeenCalledTimes(4);
     expect(env.start.limit).not.toHaveBeenCalled();
     expect(env.callback.limit).not.toHaveBeenCalled();
   });
@@ -153,11 +170,16 @@ describe("Cloudflare OIDC account control-plane Worker", () => {
         headers: { origin, "sec-fetch-site": "same-origin" },
         method: "POST",
       }),
+      new Request(`${origin}/api/account/invitations`, {
+        body: JSON.stringify({ email: "member@example.com", role: "member" }),
+        headers: { "content-type": "application/json", origin: "https://attacker.example" },
+        method: "POST",
+      }),
     ];
 
     const responses = await Promise.all(requests.map((request) => worker.fetch(request, env.value)));
 
-    expect(responses.map(({ status }) => status)).toEqual([400, 405, 403, 400]);
+    expect(responses.map(({ status }) => status)).toEqual([400, 405, 403, 400, 403]);
     expect(createControlPlane).not.toHaveBeenCalled();
     expect(env.start.limit).not.toHaveBeenCalled();
     expect(env.callback.limit).not.toHaveBeenCalled();

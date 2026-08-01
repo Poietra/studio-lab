@@ -7,6 +7,22 @@ export const accountUserIdSchemaV1 = z.uuid();
 export const organizationIdSchemaV1 = manimTenantIdSchema;
 export const organizationRoleSchemaV1 = z.enum(["owner", "admin", "member", "billing"]);
 export type OrganizationRoleV1 = z.infer<typeof organizationRoleSchemaV1>;
+export const organizationInvitationRoleSchemaV1 = z.enum(["admin", "member", "billing"]);
+export type OrganizationInvitationRoleV1 = z.infer<typeof organizationInvitationRoleSchemaV1>;
+
+const ACCOUNT_EMAIL_PATTERN_V1 = /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9.-]+\.[a-z]{2,63}$/u;
+
+/** One deterministic ASCII comparison form shared by invitations and verified OIDC claims. */
+export function normalizeAccountEmailV1(value: unknown): string {
+  if (typeof value !== "string" || /[\u0000-\u001f\u007f]/u.test(value)) {
+    throw new TypeError("Account email is invalid.");
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized.length < 3 || normalized.length > 254 || !ACCOUNT_EMAIL_PATTERN_V1.test(normalized)) {
+    throw new TypeError("Account email is invalid.");
+  }
+  return normalized;
+}
 
 export const ORGANIZATION_PERMISSIONS_V1 = [
   "organization:read",

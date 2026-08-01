@@ -43,6 +43,28 @@ describe("OIDC login Fetch handler", () => {
     expect(service.start).toHaveBeenCalledOnce();
   });
 
+  it("starts an invitation with 303 and never forwards the raw token to the provider URL", async () => {
+    const { handler, service } = fixture();
+    const invitationToken = Buffer.alloc(32, 9).toString("base64url");
+    const response = await handler.fetch(
+      new Request(`${origin}${OIDC_LOGIN_START_ROUTE_V1}`, {
+        body: JSON.stringify({ invitationToken }),
+        headers: {
+          "content-type": "application/json",
+          origin,
+          "sec-fetch-site": "same-origin",
+        },
+        method: "POST",
+      }),
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("https://identity.example/authorize?request=fixed");
+    expect(response.headers.get("location")).not.toContain(invitationToken);
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(service.start).toHaveBeenCalledWith({ invitationToken }, expect.any(AbortSignal));
+  });
+
   it("completes the callback with a new session and clears the binding", async () => {
     const { handler, service } = fixture();
     const callback = `${OIDC_LOGIN_CALLBACK_ROUTE_V1}?code=provider-code&state=${state}`;
@@ -72,12 +94,47 @@ describe("OIDC login Fetch handler", () => {
         new Request(`${origin}${OIDC_LOGIN_START_ROUTE_V1}`, { headers: { "sec-fetch-site": "cross-site" } }),
       ),
       handler.fetch(new Request(`${origin}${OIDC_LOGIN_CALLBACK_ROUTE_V1}?code=one&state=${state}&state=${state}`)),
-      handler.fetch(new Request(`${origin}${OIDC_LOGIN_START_ROUTE_V1}`, { method: "POST" })),
+      handler.fetch(new Request(`${origin}${OIDC_LOGIN_START_ROUTE_V1}`, { method: "PUT" })),
     ]);
 
     expect(responses.map(({ status }) => status)).toEqual([404, 403, 400, 405]);
     expect(service.start).not.toHaveBeenCalled();
     expect(service.complete).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed, cross-origin, query-carried, and oversized invitation starts", async () => {
+    const { handler, service } = fixture();
+    const responses = await Promise.all([
+      handler.fetch(
+        new Request(`${origin}${OIDC_LOGIN_START_ROUTE_V1}`, {
+          body: JSON.stringify({ invitationToken: "invalid" }),
+          headers: { "content-type": "application/json", origin },
+          method: "POST",
+        }),
+      ),
+      handler.fetch(
+        new Request(`${origin}${OIDC_LOGIN_START_ROUTE_V1}`, {
+          body: JSON.stringify({ invitationToken: token }),
+          headers: { "content-type": "application/json", origin: "https://attacker.example" },
+          method: "POST",
+        }),
+      ),
+      handler.fetch(
+        new Request(`${origin}${OIDC_LOGIN_START_ROUTE_V1}?invitationToken=${token}`, {
+          headers: { "sec-fetch-site": "same-origin" },
+        }),
+      ),
+      handler.fetch(
+        new Request(`${origin}${OIDC_LOGIN_START_ROUTE_V1}`, {
+          body: JSON.stringify({ invitationToken: token, padding: "x".repeat(256) }),
+          headers: { "content-type": "application/json", origin },
+          method: "POST",
+        }),
+      ),
+    ]);
+
+    expect(responses.map(({ status }) => status)).toEqual([400, 403, 400, 413]);
+    expect(service.start).not.toHaveBeenCalled();
   });
 
   it("does not reflect provider failures and clears callback binding", async () => {

@@ -1,5 +1,11 @@
 import { ClientSecretPost, Configuration } from "openid-client";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+const authorizationCodeGrant = vi.hoisted(() => vi.fn());
+vi.mock("openid-client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openid-client")>()),
+  authorizationCodeGrant,
+}));
 
 import { createOpenIdClientIdentityProviderV1, discoverOpenIdClientIdentityProviderV1 } from "./openid-client-provider";
 
@@ -51,8 +57,42 @@ describe("openid-client identity provider configuration", () => {
       nonce: "n".repeat(43),
       redirect_uri: "https://studio.example/auth/oidc/callback",
       response_type: "code",
-      scope: "openid",
+      scope: "openid email",
       state: "s".repeat(43),
+    });
+  });
+
+  it.each([
+    [{ email: " Invited@Example.COM ", email_verified: true }, "invited@example.com"],
+    [{ email: "invited@example.com", email_verified: false }, undefined],
+    [{ email: "invalid", email_verified: true }, undefined],
+  ])("returns only a valid provider-verified normalized email: %j", async (emailClaims, expected) => {
+    const configuration = new Configuration(
+      {
+        authorization_endpoint: "https://identity.example/authorize",
+        issuer: "https://identity.example",
+        token_endpoint: "https://identity.example/token",
+      },
+      "poietra",
+      { client_secret: "secret" },
+      ClientSecretPost("secret"),
+    );
+    authorizationCodeGrant.mockResolvedValueOnce({
+      claims: () => ({ iss: "https://identity.example", sub: "external-user", ...emailClaims }),
+    });
+    const provider = createOpenIdClientIdentityProviderV1(configuration, "https://studio.example/auth/oidc/callback");
+
+    await expect(
+      provider.exchange({
+        callbackUrl: new URL(`https://studio.example/auth/oidc/callback?code=fake&state=${"s".repeat(43)}`),
+        codeVerifier: "v".repeat(43),
+        expectedNonce: "n".repeat(43),
+        expectedState: "s".repeat(43),
+      }),
+    ).resolves.toEqual({
+      issuer: "https://identity.example",
+      subject: "external-user",
+      ...(expected === undefined ? {} : { verifiedEmail: expected }),
     });
   });
 });

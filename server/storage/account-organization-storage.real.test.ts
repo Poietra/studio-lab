@@ -32,7 +32,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
       poolConfig: { connectionString: DATABASE_URL, max: 2 },
     });
     try {
-      expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: true, version: 21 });
+      expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: true, version: 22 });
       const setup = await pool.connect();
       try {
         await setup.query("BEGIN");
@@ -198,7 +198,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
         oidc.consumeLoginAttempt({ browserBindingHash, stateHash }),
       ]);
       expect(concurrentConsumption.filter((attempt) => attempt !== null)).toEqual([
-        { codeVerifier: "v".repeat(43), nonce: "n".repeat(43) },
+        { codeVerifier: "v".repeat(43), invitationTokenDigest: null, nonce: "n".repeat(43) },
       ]);
       expect(concurrentConsumption.filter((attempt) => attempt === null)).toHaveLength(1);
       await expect(

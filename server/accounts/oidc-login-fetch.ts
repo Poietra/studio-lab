@@ -6,6 +6,7 @@ export const OIDC_LOGIN_CALLBACK_ROUTE_V1 = "/auth/oidc/callback";
 export const OIDC_LOGIN_BINDING_COOKIE_NAME_V1 = "__Host-poietra_oidc_login";
 
 const MAX_AUTH_REQUEST_TARGET_BYTES_V1 = 8 * 1_024;
+const MAX_INVITATION_START_BODY_BYTES_V1 = 256;
 const MAX_COOKIE_HEADER_BYTES_V1 = 8 * 1_024;
 const MAX_COOKIES_V1 = 64;
 const OPAQUE_TOKEN_PATTERN_V1 = /^[A-Za-z0-9_-]{43}$/u;
@@ -34,10 +35,10 @@ function redirect(status: 302 | 303, location: string, cookies: readonly string[
   return new Response(null, { headers, status });
 }
 
-function errorResponse(status: 400 | 403 | 404 | 405 | 503, message: string, clear = false) {
+function errorResponse(status: 400 | 403 | 404 | 405 | 413 | 415 | 503, message: string, clear = false, allow = "GET") {
   const headers = baseHeaders();
   headers.set("content-type", "application/json; charset=utf-8");
-  if (status === 405) headers.set("allow", "GET");
+  if (status === 405) headers.set("allow", allow);
   if (clear) headers.append("set-cookie", clearLoginBindingCookie());
   return new Response(JSON.stringify({ error: message }), { headers, status });
 }
@@ -98,16 +99,20 @@ export function createOidcLoginFetchRequestGuardV1(publicOriginValue: string): O
       ) {
         return errorResponse(404, "Authentication endpoint not found.");
       }
-      if (request.method !== "GET") {
-        return errorResponse(405, "Method not allowed.", url.pathname === OIDC_LOGIN_CALLBACK_ROUTE_V1);
-      }
       if (url.pathname === OIDC_LOGIN_START_ROUTE_V1) {
+        if (request.method !== "GET" && request.method !== "POST") {
+          return errorResponse(405, "Method not allowed.", false, "GET, POST");
+        }
         if ([...url.searchParams].length > 0) return errorResponse(400, "Authentication request is invalid.");
-        if (!sameOriginStart(request, publicOrigin)) {
+        if (request.method === "POST" && !validInvitationStartRequest(request, publicOrigin)) {
+          return invalidInvitationStartResponse(request);
+        }
+        if (request.method === "GET" && !sameOriginStart(request, publicOrigin)) {
           return errorResponse(403, "Authentication could not be started.");
         }
         return null;
       }
+      if (request.method !== "GET") return errorResponse(405, "Method not allowed.");
       const state = validCallbackParameters(url);
       const binding = browserBindingToken(request.headers.get("cookie"));
       if (!state || !binding) return errorResponse(400, "Authentication callback is invalid.", true);
@@ -143,6 +148,90 @@ function sameOriginStart(request: Request, publicOrigin: string) {
   return origin === null || origin === publicOrigin;
 }
 
+function contentLength(request: Request) {
+  const value = request.headers.get("content-length");
+  if (value === null) return null;
+  if (!/^(0|[1-9][0-9]*)$/u.test(value)) return Number.NaN;
+  return Number(value);
+}
+
+function validInvitationStartRequest(request: Request, publicOrigin: string) {
+  const fetchSite = request.headers.get("sec-fetch-site")?.toLowerCase();
+  const length = contentLength(request);
+  return (
+    request.headers.get("origin") === publicOrigin &&
+    (fetchSite === undefined || fetchSite === "same-origin") &&
+    request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() === "application/json" &&
+    request.body !== null &&
+    !request.headers.has("transfer-encoding") &&
+    (length === null || (Number.isSafeInteger(length) && length > 0 && length <= MAX_INVITATION_START_BODY_BYTES_V1))
+  );
+}
+
+function invalidInvitationStartResponse(request: Request) {
+  const length = contentLength(request);
+  if (Number.isFinite(length) && (length as number) > MAX_INVITATION_START_BODY_BYTES_V1) {
+    return errorResponse(413, "Authentication request is too large.");
+  }
+  if (request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+    return errorResponse(415, "Authentication request content type must be application/json.");
+  }
+  if (request.headers.get("origin") === null || request.headers.get("origin") !== new URL(request.url).origin) {
+    return errorResponse(403, "Authentication could not be started.");
+  }
+  return errorResponse(400, "Authentication request is invalid.");
+}
+
+function canonicalInvitationToken(value: unknown) {
+  if (typeof value !== "string" || !OPAQUE_TOKEN_PATTERN_V1.test(value)) return null;
+  try {
+    const base64 = value.replaceAll("-", "+").replaceAll("_", "/") + "=".repeat((4 - (value.length % 4)) % 4);
+    const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
+    const canonical = btoa(String.fromCharCode(...bytes))
+      .replaceAll("+", "-")
+      .replaceAll("/", "_")
+      .replace(/=+$/u, "");
+    return bytes.byteLength === 32 && canonical === value ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readInvitationStart(request: Request) {
+  const reader = request.body?.getReader();
+  if (!reader) return null;
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      request.signal.throwIfAborted();
+      const result = await reader.read();
+      if (result.done) break;
+      total += result.value.byteLength;
+      if (total > MAX_INVITATION_START_BODY_BYTES_V1) {
+        await reader.cancel();
+        return "too-large" as const;
+      }
+      chunks.push(result.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    if (typeof parsed !== "object" || parsed === null || Object.keys(parsed).length !== 1) return null;
+    return canonicalInvitationToken((parsed as { invitationToken?: unknown }).invitationToken);
+  } catch {
+    return null;
+  }
+}
+
 /** Fetch API boundary intended for the Cloudflare account/control-plane Worker. */
 export function createOidcLoginFetchHandlerV1(
   service: OidcLoginServiceV1,
@@ -165,13 +254,24 @@ export function createOidcLoginFetchHandlerV1(
           return errorResponse(403, "Authentication could not be started.");
         }
         try {
-          const started = await service.start(request.signal);
+          const invitationToken = request.method === "POST" ? await readInvitationStart(request) : undefined;
+          if (invitationToken === "too-large") return errorResponse(413, "Authentication request is too large.");
+          if (request.method === "POST" && invitationToken === null) {
+            return errorResponse(400, "Authentication request is invalid.");
+          }
+          const started = await service.start(
+            typeof invitationToken === "string" ? { invitationToken } : {},
+            request.signal,
+          );
           request.signal.throwIfAborted();
-          return redirect(302, started.authorizationUrl.href, [
+          return redirect(request.method === "POST" ? 303 : 302, started.authorizationUrl.href, [
             cookie(OIDC_LOGIN_BINDING_COOKIE_NAME_V1, started.browserBindingToken, started.browserBindingTtlSeconds),
           ]);
-        } catch {
+        } catch (error) {
           request.signal.throwIfAborted();
+          if (error instanceof OidcLoginErrorV1 && error.kind === "access-denied") {
+            return errorResponse(403, "Account access is not available.");
+          }
           return errorResponse(503, "Authentication is temporarily unavailable.");
         }
       }

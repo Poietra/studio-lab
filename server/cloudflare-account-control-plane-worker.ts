@@ -1,16 +1,19 @@
 import {
   ACCOUNT_LOGOUT_ROUTE_V1,
+  ACCOUNT_INVITATIONS_ROUTE_V1,
   ACCOUNT_SESSION_ROUTE_V1,
   createOidcAccountControlPlaneV1,
   OIDC_LOGIN_START_ROUTE_V1,
   type OidcAccountControlPlaneOptionsV1,
   PostgresAccountSessionRepositoryV1,
+  PostgresAccountInvitationRepositoryV1,
   PostgresOidcLoginRepositoryV1,
 } from "./account-control-plane";
 import {
   createAccountSessionActionFetchRequestGuardV1,
   createAccountSessionFetchRequestGuardV1,
 } from "./accounts/account-session-fetch";
+import { createAccountInvitationFetchRequestGuardV1 } from "./accounts/account-invitation-fetch";
 import { createOidcLoginFetchRequestGuardV1 } from "./accounts/oidc-login-fetch";
 import type { OidcProviderConfigV1 } from "./accounts/openid-client-provider";
 
@@ -179,6 +182,13 @@ export function createCloudflareAccountControlPlaneWorkerV1(
   let controlPlane: AccountControlPlaneFetchV1 | null = null;
   const controlPlaneFor = (oidc: OidcProviderConfigV1) => {
     controlPlane ??= createControlPlane({
+      invitationRepository: (requestEnvironment) =>
+        new PostgresAccountInvitationRepositoryV1({
+          poolConfig: {
+            connectionString: postgresConnectionString(requestEnvironment),
+            max: 1,
+          },
+        }),
       oidc,
       repository: (requestEnvironment) =>
         new PostgresOidcLoginRepositoryV1({
@@ -201,13 +211,20 @@ export function createCloudflareAccountControlPlaneWorkerV1(
   return Object.freeze({
     async fetch(request: Request, environment: CloudflareAccountControlPlaneEnvironmentV1) {
       const pathname = new URL(request.url).pathname;
-      if (pathname === ACCOUNT_SESSION_ROUTE_V1 || pathname === ACCOUNT_LOGOUT_ROUTE_V1) {
+      if (
+        pathname === ACCOUNT_SESSION_ROUTE_V1 ||
+        pathname === ACCOUNT_LOGOUT_ROUTE_V1 ||
+        pathname === ACCOUNT_INVITATIONS_ROUTE_V1 ||
+        pathname.startsWith(`${ACCOUNT_INVITATIONS_ROUTE_V1}/`)
+      ) {
         try {
           const publicOrigin = boundedString(environment.POIETRA_PUBLIC_ORIGIN, "Public origin", 2_048);
           const rejected =
-            pathname === ACCOUNT_SESSION_ROUTE_V1 && request.method === "GET"
-              ? createAccountSessionFetchRequestGuardV1(publicOrigin).reject(request)
-              : createAccountSessionActionFetchRequestGuardV1(publicOrigin).reject(request);
+            pathname === ACCOUNT_SESSION_ROUTE_V1 || pathname === ACCOUNT_LOGOUT_ROUTE_V1
+              ? pathname === ACCOUNT_SESSION_ROUTE_V1 && request.method === "GET"
+                ? createAccountSessionFetchRequestGuardV1(publicOrigin).reject(request)
+                : createAccountSessionActionFetchRequestGuardV1(publicOrigin).reject(request)
+              : createAccountInvitationFetchRequestGuardV1(publicOrigin).reject(request);
           if (rejected) return rejected;
           return await controlPlaneFor(deferredOidcOptions(environment, publicOrigin)).fetch(request, environment);
         } catch {
