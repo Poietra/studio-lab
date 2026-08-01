@@ -66,6 +66,8 @@
     "deploy:account-worker": "wrangler deploy --config wrangler.account-control-plane.jsonc",
     "build:billing-worker": "wrangler deploy --dry-run --config wrangler.billing-control-plane.example.jsonc --outdir dist-billing-worker",
     "deploy:billing-worker": "wrangler deploy --config wrangler.billing-control-plane.jsonc",
+    "build:collaboration-worker": "wrangler deploy --dry-run --config wrangler.editor-collaboration.example.jsonc --outdir dist-collaboration-worker",
+    "deploy:collaboration-worker": "wrangler deploy --config wrangler.editor-collaboration.jsonc",
     "build:sandbox-broker": "vite build --config vite.sandbox-broker.config.ts",
     "build:render-sandbox-broker": "vite build --config vite.render-sandbox-broker.config.ts",
     "start:sandbox-broker": "node dist-sandbox-broker/fast-manim-sandbox-broker.mjs",

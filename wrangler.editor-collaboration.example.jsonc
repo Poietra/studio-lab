@@ -1,0 +1,66 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "poietra-editor-collaboration",
+  "main": "server/cloudflare-editor-collaboration-worker.ts",
+  "compatibility_date": "2026-07-31",
+  "compatibility_flags": ["nodejs_compat", "disallow_importable_env"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "https://studio.example.com/api/collaboration/*",
+      "zone_name": "example.com"
+    }
+  ],
+  "observability": {
+    "enabled": false,
+    "logs": {
+      "enabled": false,
+      "invocation_logs": false
+    },
+    "traces": {
+      "enabled": false
+    }
+  },
+  "vars": {
+    "POIETRA_PUBLIC_ORIGIN": "https://studio.example.com"
+  },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "00000000000000000000000000000000"
+    }
+  ],
+  "ratelimits": [
+    {
+      "name": "EDITOR_CONNECT_RATE_LIMITER",
+      "namespace_id": "34701",
+      "simple": {
+        "limit": 60,
+        "period": 60
+      }
+    },
+    {
+      "name": "EDITOR_HEAD_RATE_LIMITER",
+      "namespace_id": "34702",
+      "simple": {
+        "limit": 120,
+        "period": 60
+      }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "EDITOR_ROOMS",
+        "class_name": "EditorProjectRoomDurableObjectV1"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["EditorProjectRoomDurableObjectV1"]
+    }
+  ]
+}
