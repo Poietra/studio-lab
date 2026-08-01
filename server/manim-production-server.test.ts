@@ -2,6 +2,7 @@ import { createServer as createHttpServer, request as createRequest } from "node
 import type { AddressInfo } from "node:net";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { fastManimSnapshotSceneIdV1 } from "./fast-manim-snapshot-contract";
 import { HttpError } from "./http/json";
 import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import {
@@ -13,6 +14,7 @@ import {
   startProductionManimServer,
 } from "./manim-production-server";
 import type { ManimApi } from "./manim-render-http";
+import { createEditorDocumentKeyV1, type EditorDocumentRepositoryV1 } from "./storage/editor-document-repository";
 
 const servers: ProductionManimServer[] = [];
 const TEST_PRINCIPAL = Object.freeze({ subjectId: "production-user", tenantId: "tenant-a" });
@@ -278,6 +280,16 @@ describe("standalone production Manim HTTP adapter", () => {
     ).rejects.toThrow(/runtime adapter is incomplete/i);
   });
 
+  it("rejects a partially configured editor document adapter before listening", async () => {
+    await expect(
+      startProductionManimServer({
+        admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
+        config: await startConfig(),
+        runtime: { ...createRuntime(), editorDocuments: {} } as never,
+      }),
+    ).rejects.toThrow(/editor document adapter is incomplete/i);
+  });
+
   it("rejects a runtime without a tenant-keyed durable storage namespace", async () => {
     const runtime = createRuntime();
     await expect(
@@ -403,6 +415,122 @@ describe("standalone production Manim HTTP adapter", () => {
     expect(start).not.toHaveBeenCalled();
     expect(projects).toHaveBeenCalledOnce();
     expect(workspace).toHaveBeenCalledTimes(2);
+  });
+
+  it("serves authenticated editor storage independently from render readiness", async () => {
+    const openedAt = new Date("2026-08-01T00:00:00.000Z");
+    const sceneId = fastManimSnapshotSceneIdV1("scene.py", "Scene");
+    const openDocument = vi.fn<EditorDocumentRepositoryV1["openDocument"]>(async (input) => ({
+      created: true,
+      document: {
+        documentKey: createEditorDocumentKeyV1("scene.py", sceneId),
+        epoch: "10000000-0000-4000-8000-000000000001",
+        openedAt,
+        projectId: input.projectId,
+        revision: 0n,
+        sealedAt: null,
+        sourceHash: input.sourceHash,
+        sourcePath: input.sourcePath,
+        tenantId: input.tenantId,
+        updatedAt: openedAt,
+      },
+      kind: "opened",
+    }));
+    const editorDocuments: EditorDocumentRepositoryV1 = {
+      close: async () => undefined,
+      commitMutation: async () => {
+        throw new Error("commitMutation was not expected");
+      },
+      openDocument,
+      readEventTail: async () => {
+        throw new Error("readEventTail was not expected");
+      },
+      ready: async () => true,
+    };
+    const fullReadiness = vi.fn(async () => ({ ready: false }) as const);
+    const workspaceReadiness = vi.fn(async () => true);
+    let editorAvailable = true;
+    const editorReadiness = vi.fn(async () => editorAvailable);
+    const baseRuntime = createRuntime(() => false);
+    const admission = {
+      authenticate: async ({ credentials }: { credentials: { authorization?: string } }) => {
+        if (credentials.authorization === "Bearer tenant-a") return TEST_PRINCIPAL;
+        if (credentials.authorization === "Bearer tenant-b") {
+          return { subjectId: "foreign-user", tenantId: "tenant-b" };
+        }
+        return null;
+      },
+      ready: async () => true,
+    };
+    const server = await startProductionManimServer({
+      admission,
+      config: await startConfig(),
+      runtime: {
+        ...baseRuntime,
+        editorDocuments,
+        editorReady: editorReadiness,
+        ready: fullReadiness,
+        workspaceReady: workspaceReadiness,
+      },
+    });
+    servers.push(server);
+    const body = JSON.stringify({
+      sceneName: "Scene",
+      sourceHash: "a".repeat(64),
+      sourcePath: "scene.py",
+    });
+    const request = (authorization?: string) =>
+      send(server, "/api/editor/projects/project-a/documents/open", {
+        body,
+        headers: {
+          ...(authorization ? { authorization } : {}),
+          "content-type": "application/json",
+          origin: "https://studio.example",
+        },
+        method: "POST",
+      });
+
+    expect(await request()).toMatchObject({ status: 401 });
+    expect(await request("Bearer tenant-b")).toMatchObject({ status: 403 });
+    expect(openDocument).not.toHaveBeenCalled();
+    const opened = await request("Bearer tenant-a");
+    expect(opened).toMatchObject({ status: 201 });
+    expect(JSON.parse(opened.body)).toMatchObject({ document: { revision: "0" }, kind: "opened" });
+    expect(openDocument).toHaveBeenCalledWith(
+      {
+        projectId: "project-a",
+        sceneId,
+        sourceHash: "a".repeat(64),
+        sourcePath: "scene.py",
+        tenantId: "tenant-a",
+      },
+      expect.any(AbortSignal),
+    );
+    expect(fullReadiness).not.toHaveBeenCalled();
+    expect(workspaceReadiness).toHaveBeenCalledOnce();
+    expect(editorReadiness).toHaveBeenCalledOnce();
+
+    editorAvailable = false;
+    expect(await request("Bearer tenant-a")).toMatchObject({ status: 503 });
+    expect(openDocument).toHaveBeenCalledOnce();
+
+    const unconfigured = await startProductionManimServer({
+      admission,
+      config: await startConfig(),
+      runtime: createRuntime(),
+    });
+    servers.push(unconfigured);
+    expect(
+      await send(unconfigured, "/api/editor/projects/project-a/documents/open", {
+        body,
+        headers: {
+          authorization: "Bearer tenant-a",
+          "content-type": "application/json",
+          origin: "https://studio.example",
+        },
+        method: "POST",
+      }),
+    ).toMatchObject({ status: 503 });
   });
 
   it("requires admission and validates Host plus the immediate proxy before API routing", async () => {

@@ -9,7 +9,7 @@ import {
 } from "./durable-manim-render-cancellation";
 import { DurableManimRenderServiceV1 } from "./durable-manim-render-service";
 import { DurableManimRenderWorkerV1 } from "./durable-manim-render-worker";
-import { createDurableManimRuntimeV1, createDurableProductionManimRuntimeAdapterV1 } from "./durable-manim-runtime";
+import { createDurableProductionManimRuntimeAdapterV1, DurableManimRuntimeV1 } from "./durable-manim-runtime";
 import {
   type FastManimProductionSnapshotRunnerFactoryOptionsV1,
   FastManimProductionSnapshotRunnerFactoryV1,
@@ -23,6 +23,7 @@ import {
 import { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
 import { applyBundledDurableStorageMigrations } from "./storage/postgres/migrate";
 import { PostgresArtifactRepositoryV1 } from "./storage/postgres/postgres-artifact-repository";
+import { PostgresEditorDocumentRepositoryV1 } from "./storage/postgres/postgres-editor-document-repository";
 import { PostgresProjectPngRepositoryV1 } from "./storage/postgres/postgres-project-png-repository";
 import { PostgresRenderSessionRepositoryV1 } from "./storage/postgres/postgres-render-session-repository";
 import { PostgresSnapshotPublicationRepositoryV1 } from "./storage/postgres/postgres-snapshot-publication-repository";
@@ -251,6 +252,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   signal?.throwIfAborted();
 
   let repository: PostgresWorkspaceSourceRepositoryV1 | undefined;
+  let editorDocuments: PostgresEditorDocumentRepositoryV1 | undefined;
   let renderRepository: PostgresRenderSessionRepositoryV1 | undefined;
   let projectPngRepository: PostgresProjectPngRepositoryV1 | undefined;
   let mediaRepository: PostgresArtifactRepositoryV1 | undefined;
@@ -262,6 +264,10 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   let mediaArtifacts: S3ArtifactReaderV1 | undefined;
   try {
     repository = new PostgresWorkspaceSourceRepositoryV1({
+      poolConfig: options.database.runtimePoolConfig,
+      statementTimeoutMs: options.database.statementTimeoutMs,
+    });
+    editorDocuments = new PostgresEditorDocumentRepositoryV1({
       poolConfig: options.database.runtimePoolConfig,
       statementTimeoutMs: options.database.statementTimeoutMs,
     });
@@ -303,6 +309,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
         snapshotRepository,
         projectPngRepository,
         renderRepository,
+        editorDocuments,
         repository,
       ],
       "Production storage composition and cleanup failed.",
@@ -423,6 +430,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
         mediaRepository,
         projectPngRepository,
         blobs,
+        editorDocuments,
         repository,
       ],
       "Production runtime service composition and cleanup failed.",
@@ -430,7 +438,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   }
 
   let renderExecution: ReturnType<typeof renderExecutionBoundary> | undefined;
-  let runtime: Awaited<ReturnType<typeof createDurableManimRuntimeV1>> | undefined;
+  let runtime: DurableManimRuntimeV1 | undefined;
   try {
     renderCancellationRelay = await createDurableManimRenderCancellationRelayV1(
       {
@@ -449,22 +457,21 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       signal,
     );
     renderExecution = renderExecutionBoundary(renderCancellationRelay, renderWorker);
-    runtime = await createDurableManimRuntimeV1(
-      {
-        artifactReader,
-        blobs,
-        execution: renderExecution,
-        frame,
-        namespace: options.namespace,
-        projectPngRepository,
-        projectPngs,
-        renders,
-        repository,
-        snapshots,
-        tenantId: options.tenantId,
-      },
-      signal,
-    );
+    runtime = new DurableManimRuntimeV1({
+      artifactReader,
+      blobs,
+      editorDocuments,
+      execution: renderExecution,
+      frame,
+      namespace: options.namespace,
+      projectPngRepository,
+      projectPngs,
+      renders,
+      repository,
+      snapshots,
+      tenantId: options.tenantId,
+    });
+    await runtime.initialize(signal);
     renderWorker.start();
   } catch (error) {
     return cleanupAndThrow(
@@ -479,6 +486,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
             mediaRepository,
             projectPngRepository,
             blobs,
+            editorDocuments,
             repository,
           ],
       "Production durable runtime construction and cleanup failed.",
