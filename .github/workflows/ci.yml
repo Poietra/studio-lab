@@ -75,8 +75,17 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+      - name: Set up Python test interpreter
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Install pinned Python test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check --no-deps "Pillow==12.2.0"
+          python_interpreter="$(command -v python)"
+          printf 'PYTHON=%s\n' "$python_interpreter" >> "$GITHUB_ENV"
       - name: Run unit tests
         run: pnpm test:unit
       - name: Run boundary and integration tests

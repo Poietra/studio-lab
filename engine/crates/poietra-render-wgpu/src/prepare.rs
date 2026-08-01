@@ -1764,6 +1764,83 @@ fn geometry_output_limits(
     Ok((maximum_output_vertices, reported_output_limit))
 }
 
+struct PreparedFillContourV1 {
+    flattened_vertex_count: usize,
+    points: Vec<LyonPoint>,
+    precision_collapse: bool,
+    renderable: bool,
+}
+
+fn prepare_fill_contour(
+    subpath: &CubicSubpathV1,
+    transform: &AffineTransformV1,
+    context: GeometryContextV1<'_>,
+    maximum_vertices: usize,
+    upload_points: &mut HashMap<(u32, u32), PointF64>,
+) -> Result<PreparedFillContourV1, PrepareFrameErrorV1> {
+    let world_points = flatten_subpath_world(
+        subpath,
+        transform,
+        context.camera,
+        context.viewport,
+        context.draw_id,
+        maximum_vertices,
+        MAX_FILL_FLATTENED_POINTS_PER_DRAW_V1,
+    )?;
+    let flattened_vertex_count = world_points.len();
+    let mut points = Vec::with_capacity(flattened_vertex_count);
+    let mut previous_upload = None;
+    let mut precision_collapse = false;
+    for world_point in world_points {
+        let (fill_point, clip_point) = world_to_fill_point(
+            world_point,
+            context.camera,
+            context.viewport,
+            context.draw_id,
+        )?;
+        let fill_key = fill_point_key(fill_point);
+        if let Some(previous) = upload_points.get(&fill_key).copied() {
+            if point_key(previous) != point_key(clip_point)
+                && clip_distance_pixels(previous, clip_point, context.viewport)
+                    > FLATTEN_TOLERANCE_PIXELS_V1
+            {
+                return Err(PrepareFrameErrorV1::FillPrecisionLoss {
+                    draw_id: context.draw_id.to_owned(),
+                    maximum_error_pixels: FLATTEN_TOLERANCE_PIXELS_V1,
+                });
+            }
+        } else {
+            upload_points.insert(fill_key, clip_point);
+        }
+
+        if let Some((previous_key, previous_clip)) = previous_upload
+            && previous_key == fill_key
+        {
+            precision_collapse |= point_key(previous_clip) != point_key(clip_point);
+            continue;
+        }
+        previous_upload = Some((fill_key, clip_point));
+        points.push(fill_point);
+    }
+
+    if points.len() > 1
+        && fill_point_key(points[0]) == fill_point_key(*points.last().expect("length checked"))
+    {
+        points.pop();
+    }
+
+    let mut topology = FillContourTopologyV1::default();
+    for &point in &points {
+        topology.observe(point);
+    }
+    Ok(PreparedFillContourV1 {
+        flattened_vertex_count,
+        points,
+        precision_collapse,
+        renderable: !topology.is_degenerate(),
+    })
+}
+
 fn prepare_fill_geometry(
     vertices: &mut Vec<PreparedGeometryVertexV1>,
     indices: &mut Vec<u32>,
@@ -1800,65 +1877,21 @@ fn prepare_fill_geometry(
                 draw_id: draw_id.to_owned(),
                 maximum_vertices: MAX_FILL_FLATTENED_POINTS_PER_DRAW_V1,
             })?;
-        let world_points = flatten_subpath_world(
+        let contour = prepare_fill_contour(
             subpath,
             transform,
-            context.camera,
-            context.viewport,
-            draw_id,
+            context,
             available_for_subpath,
-            MAX_FILL_FLATTENED_POINTS_PER_DRAW_V1,
+            &mut upload_points,
         )?;
         flattened_vertices = flattened_vertices
-            .checked_add(world_points.len())
+            .checked_add(contour.flattened_vertex_count)
             .ok_or_else(|| PrepareFrameErrorV1::TessellationVertexLimit {
                 draw_id: draw_id.to_owned(),
                 maximum_vertices: MAX_FILL_FLATTENED_POINTS_PER_DRAW_V1,
             })?;
-        let mut contour_points = Vec::with_capacity(world_points.len());
-        let mut previous_upload = None;
-        let mut precision_collapse = false;
-        for world_point in world_points {
-            let (fill_point, clip_point) =
-                world_to_fill_point(world_point, context.camera, context.viewport, draw_id)?;
-            let fill_key = fill_point_key(fill_point);
-            if let Some(previous) = upload_points.get(&fill_key).copied() {
-                if point_key(previous) != point_key(clip_point)
-                    && clip_distance_pixels(previous, clip_point, context.viewport)
-                        > FLATTEN_TOLERANCE_PIXELS_V1
-                {
-                    return Err(PrepareFrameErrorV1::FillPrecisionLoss {
-                        draw_id: draw_id.to_owned(),
-                        maximum_error_pixels: FLATTEN_TOLERANCE_PIXELS_V1,
-                    });
-                }
-            } else {
-                upload_points.insert(fill_key, clip_point);
-            }
-
-            if let Some((previous_key, previous_clip)) = previous_upload {
-                if previous_key == fill_key {
-                    precision_collapse |= point_key(previous_clip) != point_key(clip_point);
-                    continue;
-                }
-            }
-            previous_upload = Some((fill_key, clip_point));
-            contour_points.push(fill_point);
-        }
-        saw_precision_collapse |= precision_collapse;
-
-        if contour_points.len() > 1
-            && fill_point_key(contour_points[0])
-                == fill_point_key(*contour_points.last().expect("length checked"))
-        {
-            contour_points.pop();
-        }
-
-        let mut topology = FillContourTopologyV1::default();
-        for &point in &contour_points {
-            topology.observe(point);
-        }
-        if topology.is_degenerate() {
+        saw_precision_collapse |= contour.precision_collapse;
+        if !contour.renderable {
             // Path-morph topology is padded with zero-area contours while a
             // glyph appears or disappears. Such a contour contributes no
             // pixels in the bounded upload domain and must not hide the
@@ -1867,7 +1900,7 @@ fn prepare_fill_geometry(
         }
 
         has_renderable_contour = true;
-        for (index, point) in contour_points.into_iter().enumerate() {
+        for (index, point) in contour.points.into_iter().enumerate() {
             if index == 0 {
                 builder.begin(point);
             } else {

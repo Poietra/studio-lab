@@ -1,9 +1,10 @@
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { chmod, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -27,7 +28,26 @@ import {
 import { createFastManimProductionSandboxClientV1 } from "./fast-manim-production-sandbox-client";
 import { FastManimUdsSandboxBackendV1 } from "./fast-manim-uds-sandbox-backend";
 
+const dockerSpawn = vi.hoisted(() => vi.fn());
+vi.mock("node:child_process", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:child_process")>()),
+  spawn: dockerSpawn,
+}));
+
 const SERVER_VERSION = "28.3.3";
+
+function completedDockerProcess(code: number) {
+  const child = new EventEmitter() as EventEmitter & {
+    kill: ReturnType<typeof vi.fn>;
+    stderr: PassThrough;
+    stdout: PassThrough;
+  };
+  child.kill = vi.fn();
+  child.stderr = new PassThrough();
+  child.stdout = new PassThrough();
+  queueMicrotask(() => child.emit("close", code));
+  return child;
+}
 
 function productionRelease(keyId = "studio-release-key") {
   const keys = generateKeyPairSync("ed25519");
@@ -116,29 +136,24 @@ describe("production gated OCI host contract", () => {
     ).rejects.toThrow(/awaiting its pinned-builder MathTex artifact digest/i);
   });
 
-  it("never falls back from an explicitly missing Docker socket to the default daemon", async () => {
+  it("pins every explicit Docker command to the configured Unix socket without fallback", async () => {
     const missingSocket = `/tmp/poietra-missing-docker-${process.pid}.sock`;
-    const explicit = new FastManimGatedOciDockerClientV1({ socketPath: missingSocket });
-    const explicitResult = await explicit.run(["info", "--format", "{{json .}}"], 2_000);
-    expect(explicitResult.code).not.toBe(0);
+    dockerSpawn.mockReset();
+    dockerSpawn.mockReturnValueOnce(completedDockerProcess(17));
 
-    const defaultResult = await new FastManimGatedOciDockerClientV1().run(["info", "--format", "{{json .}}"], 2_000);
-    expect(Number.isInteger(defaultResult.code)).toBe(true);
-    if (defaultResult.code === 0) {
-      const report = JSON.parse(defaultResult.stdout.toString("utf8")) as {
-        SecurityOptions?: unknown;
-        ServerVersion?: unknown;
-      };
-      if (
-        typeof report.ServerVersion === "string" &&
-        Array.isArray(report.SecurityOptions) &&
-        !report.SecurityOptions.includes("name=rootless")
-      ) {
-        expect(() => parseFastManimRootlessDockerInfoV1(defaultResult.stdout, report.ServerVersion as string)).toThrow(
-          /rootless/i,
-        );
-      }
-    }
+    const result = await new FastManimGatedOciDockerClientV1({ socketPath: missingSocket }).run([
+      "info",
+      "--format",
+      "{{json .}}",
+    ]);
+
+    expect(result).toEqual({ code: 17, stderr: Buffer.alloc(0), stdout: Buffer.alloc(0) });
+    expect(dockerSpawn).toHaveBeenCalledOnce();
+    expect(dockerSpawn).toHaveBeenCalledWith(
+      "/usr/bin/docker",
+      ["--host", `unix://${missingSocket}`, "info", "--format", "{{json .}}"],
+      { env: { PATH: "/usr/bin:/bin" }, stdio: ["ignore", "pipe", "pipe"] },
+    );
   });
 
   it("rejects missing host materials and every public production test seam", async () => {
