@@ -361,6 +361,39 @@ class RejectedCollision(Scene):
     expect(pendingBrowserPngDeletions[0]!.receipt).toHaveProperty("objectGeneration");
     expect(pendingBrowserPngDeletions[0]!.receipt).not.toEqual(reopenedBrowserPngHead!.receipt);
     await expect(browserPngRepository.readHead("tenant-other", browserProjectId)).resolves.toBeNull();
+
+    const deletionFixture = await createImmutableRuntime("tenant-browser");
+    try {
+      await expect(deletionFixture.runtime.unregisterProject(browserProjectId)).resolves.toMatchObject({
+        project: null,
+      });
+      await expect(browserPngRepository.readHead("tenant-browser", browserProjectId)).resolves.toBeNull();
+      await expect(
+        deletionFixture.runtime.sceneSnapshotAsset(browserProjectId, reopenedBrowserPngHead!.receipt.digest),
+      ).rejects.toMatchObject({ status: 404 });
+      const deletionAuditPool = new Pool({ connectionString: environment.databaseUrl, max: 1 });
+      try {
+        const detached = await deletionAuditPool.query<{ head_count: string; orphaned: boolean }>(
+          `SELECT
+           (SELECT count(*)::text
+              FROM public.project_png_heads
+             WHERE tenant_id = $1 AND project_id = $2) AS head_count,
+           COALESCE((
+             SELECT orphaned_at IS NOT NULL
+               FROM public.project_png_generations
+              WHERE tenant_id = $1 AND project_id = $2
+                AND generation = $3::bigint AND digest = $4
+            ), false) AS orphaned`,
+          ["tenant-browser", browserProjectId, "1", reopenedBrowserPngHead!.receipt.digest],
+        );
+        expect(detached.rows[0]).toEqual({ head_count: "0", orphaned: true });
+      } finally {
+        await deletionAuditPool.end();
+      }
+    } finally {
+      await deletionFixture.runtime.close();
+      await deletionFixture.projectPngRepository.close();
+    }
     await browserBlobs.close();
     await browserPngRepository.close();
     await browserRepository.close();

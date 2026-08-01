@@ -6,7 +6,11 @@ import type { ProjectPngBlobReceiptV1, VersionedProjectPngBlobReceiptV1 } from "
 import { storageObjectLocatorColumnsV1 } from "../storage-object-locator";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
-import { PostgresProjectPngRepositoryV1, PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
+import {
+  detachProjectPngHeadInTransactionV1,
+  PostgresProjectPngRepositoryV1,
+  PROJECT_PNG_MIGRATION_V5_CHECKSUM,
+} from "./postgres-project-png-repository";
 import { POSTGRES_REPOSITORY_OPTIONS_V1 } from "./postgres-repository-connection";
 
 const TENANT = "tenant-a";
@@ -77,7 +81,7 @@ function fakePool(handle: (text: string, values: readonly unknown[]) => QueryRes
       statement_timeout: 5_000,
     },
   } as unknown as Pool;
-  return { pool, query };
+  return { client, pool, query };
 }
 
 describe("PostgresProjectPngRepositoryV1", () => {
@@ -97,6 +101,113 @@ describe("PostgresProjectPngRepositoryV1", () => {
     const repository = new PostgresProjectPngRepositoryV1({ pool: fixture.pool });
 
     await expect(repository.ready()).resolves.toBe(true);
+  });
+
+  it("returns no public head for a deleted workspace", async () => {
+    const fixture = fakePool((text, values) => {
+      expect(text).toContain("JOIN public.workspace_projects p");
+      expect(text).toContain("p.deleted_at IS NULL");
+      expect(values).toEqual([TENANT, PROJECT]);
+      return { rowCount: 0, rows: [] };
+    });
+    const repository = new PostgresProjectPngRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.readHead(TENANT, PROJECT)).resolves.toBeNull();
+  });
+
+  it("leaves storage untouched when a locked workspace has no project image.png head", async () => {
+    const fixture = fakePool((text) => {
+      if (text.startsWith("SELECT h.tenant_id") && text.includes("FROM public.project_png_heads h")) {
+        expect(text).toContain("FOR UPDATE OF h");
+        return { rowCount: 0, rows: [] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+
+    await expect(
+      detachProjectPngHeadInTransactionV1(fixture.client, { projectId: PROJECT, tenantId: TENANT }),
+    ).resolves.toBeNull();
+    expect(fixture.query.mock.calls.some(([text]) => text.includes("pg_advisory_xact_lock"))).toBe(false);
+    expect(fixture.query.mock.calls.some(([text]) => text.startsWith("DELETE"))).toBe(false);
+    expect(fixture.query.mock.calls.some(([text]) => text.startsWith("UPDATE"))).toBe(false);
+  });
+
+  it("locks the current object, conditionally detaches its head, then orphans the unpinned generation", async () => {
+    const fixture = fakePool((text, values) => {
+      if (text.startsWith("SELECT h.tenant_id") && text.includes("FROM public.project_png_heads h")) {
+        return { rowCount: 1, rows: [headRow()] };
+      }
+      if (text.startsWith("DELETE FROM public.project_png_heads")) {
+        expect(values).toEqual([TENANT, PROJECT, "1", DIGEST]);
+        return { rowCount: 1, rows: [] };
+      }
+      if (text.startsWith("UPDATE public.project_png_generations g")) {
+        expect(text).toContain("FROM public.project_png_heads h");
+        expect(text).toContain("FROM public.render_sessions s");
+        expect(values).toEqual([TENANT, PROJECT, "1", DIGEST]);
+        return { rowCount: 1, rows: [] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+
+    await expect(
+      detachProjectPngHeadInTransactionV1(fixture.client, { projectId: PROJECT, tenantId: TENANT }),
+    ).resolves.toEqual({ generation: 1n, projectId: PROJECT, receipt: receipt(), tenantId: TENANT });
+
+    const headLock = fixture.query.mock.calls.findIndex(
+      ([text]) => text.includes("FROM public.project_png_heads h") && text.includes("FOR UPDATE OF h"),
+    );
+    const objectLock = fixture.query.mock.calls.findIndex(
+      ([text, values]) =>
+        text.includes("pg_advisory_xact_lock") &&
+        values?.[0] === `project-png-object:${TENANT}:${receipt().objectKey}:version:version-a`,
+    );
+    const detach = fixture.query.mock.calls.findIndex(([text]) =>
+      text.startsWith("DELETE FROM public.project_png_heads"),
+    );
+    const orphan = fixture.query.mock.calls.findIndex(([text]) =>
+      text.startsWith("UPDATE public.project_png_generations g"),
+    );
+    expect([headLock, objectLock, detach, orphan]).toEqual([0, 1, 2, 3]);
+  });
+
+  it("preserves a detached generation retained by a render session", async () => {
+    const fixture = fakePool((text) => {
+      if (text.includes("FROM public.project_png_heads h") && text.includes("FOR UPDATE OF h")) {
+        return { rowCount: 1, rows: [headRow()] };
+      }
+      if (text.startsWith("DELETE FROM public.project_png_heads")) return { rowCount: 1, rows: [] };
+      if (text.startsWith("UPDATE public.project_png_generations g")) {
+        expect(text).toContain("NOT EXISTS");
+        expect(text).toContain("FROM public.render_sessions s");
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.startsWith("SELECT 1") && text.includes("FROM public.project_png_generations g")) {
+        expect(text).toContain("FROM public.render_sessions s");
+        expect(text).toContain("FOR UPDATE OF g");
+        return { rowCount: 1, rows: [{}] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+
+    await expect(
+      detachProjectPngHeadInTransactionV1(fixture.client, { projectId: PROJECT, tenantId: TENANT }),
+    ).resolves.toEqual({ generation: 1n, projectId: PROJECT, receipt: receipt(), tenantId: TENANT });
+  });
+
+  it("fails closed when the exact project image.png head cannot be deleted", async () => {
+    const fixture = fakePool((text) => {
+      if (text.startsWith("SELECT h.tenant_id") && text.includes("FROM public.project_png_heads h")) {
+        return { rowCount: 1, rows: [headRow()] };
+      }
+      if (text.startsWith("DELETE FROM public.project_png_heads")) return { rowCount: 0, rows: [] };
+      throw new Error(`Unexpected query: ${text}`);
+    });
+
+    await expect(
+      detachProjectPngHeadInTransactionV1(fixture.client, { projectId: PROJECT, tenantId: TENANT }),
+    ).rejects.toThrow("head changed");
+    expect(fixture.query.mock.calls.some(([text]) => text.startsWith("UPDATE"))).toBe(false);
   });
 
   it("publishes an initial candidate with generation one under a project CAS", async () => {

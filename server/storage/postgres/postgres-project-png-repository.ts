@@ -135,6 +135,9 @@ async function readProjectPngHeadInTransactionV1(client: PoolClient, tenant: str
     `SELECT h.tenant_id, h.project_id, h.generation::text AS generation,
             o.digest, o.object_key, o.version_id, o.object_generation, o.etag, o.byte_size
        FROM public.project_png_heads h
+       JOIN public.workspace_projects p
+         ON p.tenant_id = h.tenant_id AND p.project_id = h.project_id
+        AND p.deleted_at IS NULL
        JOIN public.project_png_generations g
          ON g.tenant_id = h.tenant_id AND g.project_id = h.project_id
         AND g.generation = h.generation AND g.digest = h.digest
@@ -147,6 +150,83 @@ async function readProjectPngHeadInTransactionV1(client: PoolClient, tenant: str
     [tenant, project],
   );
   return result.rows[0] ? headFromRow(result.rows[0]) : null;
+}
+
+/**
+ * Detaches the current project PNG head using the caller's transaction.
+ *
+ * The caller must already hold the active workspace-project row lock. That
+ * row is the serialization point shared with head replacement, so this helper
+ * intentionally does not acquire the project-level advisory lock itself.
+ */
+export async function detachProjectPngHeadInTransactionV1(
+  client: PoolClient,
+  input: Readonly<{ projectId: string; tenantId: string }>,
+) {
+  const tenant = tenantId(input.tenantId);
+  const project = projectId(input.projectId);
+  const current = await readProjectPngHeadInTransactionV1(client, tenant, project, true);
+  if (!current) return null;
+
+  await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+    `project-png-object:${tenant}:${current.receipt.objectKey}:${projectPngLocatorIdentityV1(current.receipt)}`,
+  ]);
+  const detached = await client.query(
+    `DELETE FROM public.project_png_heads
+      WHERE tenant_id = $1 AND project_id = $2
+        AND generation = $3::bigint AND digest = $4`,
+    [tenant, project, current.generation.toString(), current.receipt.digest],
+  );
+  if (detached.rowCount !== 1) {
+    throw new Error("The project image.png head changed before it could be detached.");
+  }
+
+  const orphaned = await client.query(
+    `UPDATE public.project_png_generations g
+        SET orphaned_at = COALESCE(g.orphaned_at, clock_timestamp())
+      WHERE g.tenant_id = $1 AND g.project_id = $2
+        AND g.generation = $3::bigint AND g.digest = $4
+        AND NOT EXISTS (
+          SELECT 1 FROM public.project_png_heads h
+           WHERE h.tenant_id = g.tenant_id AND h.project_id = g.project_id
+             AND h.generation = g.generation AND h.digest = g.digest
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM public.render_sessions s
+           WHERE s.tenant_id = g.tenant_id AND s.project_id = g.project_id
+             AND s.project_png_generation = g.generation AND s.project_png_digest = g.digest
+        )`,
+    [tenant, project, current.generation.toString(), current.receipt.digest],
+  );
+  if (orphaned.rowCount === 1) return current;
+  if (orphaned.rowCount !== 0) {
+    throw new Error("PostgreSQL updated an unexpected number of project image.png generations.");
+  }
+
+  const retained = await client.query(
+    `SELECT 1
+       FROM public.project_png_generations g
+      WHERE g.tenant_id = $1 AND g.project_id = $2
+        AND g.generation = $3::bigint AND g.digest = $4
+        AND (
+          EXISTS (
+            SELECT 1 FROM public.project_png_heads h
+             WHERE h.tenant_id = g.tenant_id AND h.project_id = g.project_id
+               AND h.generation = g.generation AND h.digest = g.digest
+          )
+          OR EXISTS (
+            SELECT 1 FROM public.render_sessions s
+             WHERE s.tenant_id = g.tenant_id AND s.project_id = g.project_id
+               AND s.project_png_generation = g.generation AND s.project_png_digest = g.digest
+          )
+        )
+      FOR UPDATE OF g`,
+    [tenant, project, current.generation.toString(), current.receipt.digest],
+  );
+  if (retained.rowCount !== 1) {
+    throw new Error("The detached project image.png generation lost its retention evidence.");
+  }
+  return current;
 }
 
 /**

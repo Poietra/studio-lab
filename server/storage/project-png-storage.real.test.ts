@@ -431,6 +431,106 @@ describe.skipIf(!E2E_CONFIGURED)("PostgreSQL + MinIO project image.png storage",
       );
       expect(purged.rows[0]?.count).toBe(0);
 
+      const deletedProject = "project-delete-pin";
+      const deletedProjectSource = `${source}\n# workspace deletion with a retained PNG pin\n`;
+      const deletedProjectSourceBlob = await sourceStore.putSource(tenant, deletedProjectSource);
+      const deletedProjectPatchedBlob = await sourceStore.putSource(
+        tenant,
+        `${deletedProjectSource}\n# abandoned render input\n`,
+      );
+      await reopenedSourceRepository.createManagedProject({
+        name: "Deleted workspace PNG pin proof",
+        projectId: deletedProject,
+        source: { blob: deletedProjectSourceBlob, path: "main.py" },
+        tenantId: tenant,
+      });
+      const deletedProjectSourceHead = await reopenedSourceRepository.readSourceHead(tenant, deletedProject, "main.py");
+      const deletedProjectReceipt = await pngStore.put(tenant, deletedProject, png(64));
+      const deletedProjectHead = await reopenedPngRepository.compareAndSwapHead({
+        candidate: deletedProjectReceipt,
+        expected: null,
+        projectId: deletedProject,
+        tenantId: tenant,
+      });
+      const deletedProjectSession = await reopenedRenderRepository.createSession({
+        commitCorrelationKey: "png-deleted-workspace-pin-proof",
+        executionTimeoutMs: 30_000,
+        id: randomUUID(),
+        originalHead: deletedProjectSourceHead,
+        patch: { anchorLine: 1, anchorLines: [1], insertedCode: "" },
+        patchedBlob: deletedProjectPatchedBlob,
+        programBatchId: "batch-deleted-workspace",
+        programTransactionId: "transaction-deleted-workspace",
+        renderRequestId: "request-deleted-workspace",
+        sceneName: "MainScene",
+        tenantId: tenant,
+      });
+      expect(deletedProjectSession.projectPng).toEqual(deletedProjectHead);
+      await expect(
+        reopenedRenderRepository.abandonSession(tenant, deletedProjectSession.id, "request-deleted-workspace"),
+      ).resolves.toBe(true);
+
+      await reopenedSourceRepository.softDeleteProject(tenant, deletedProject);
+      await expect(reopenedPngRepository.readHead(tenant, deletedProject)).resolves.toBeNull();
+      const retainedAfterDelete = await inspectionPool.query<{
+        head_count: number;
+        orphaned_at: Date | null;
+      }>(
+        `SELECT
+           (SELECT count(*)::integer
+              FROM public.project_png_heads
+             WHERE tenant_id = $1 AND project_id = $2) AS head_count,
+           orphaned_at
+          FROM public.project_png_generations
+         WHERE tenant_id = $1 AND project_id = $2 AND generation = $3::bigint AND digest = $4`,
+        [tenant, deletedProject, deletedProjectHead.generation.toString(), deletedProjectHead.receipt.digest],
+      );
+      expect(retainedAfterDelete.rows[0]).toEqual({ head_count: 0, orphaned_at: null });
+      expect(
+        await runProjectPngGcV1({
+          cutoff: new Date(Date.now() + 2_000),
+          graceMs: 0,
+          maximum: 32,
+          repository: reopenedPngRepository,
+          store: pngStore,
+          tenantId: tenant,
+        }),
+      ).toMatchObject({ deleted: 0, queued: 0 });
+      await expect(pngStore.read(tenant, deletedProject, deletedProjectReceipt)).resolves.toEqual(
+        Uint8Array.from(png(64)),
+      );
+
+      await inspectionPool.query(
+        `UPDATE public.render_sessions
+            SET updated_at = clock_timestamp() - interval '2 hours'
+          WHERE tenant_id = $1 AND session_id = $2::uuid`,
+        [tenant, deletedProjectSession.id],
+      );
+      await expect(
+        reopenedRenderRepository.releaseExpiredInputs({ maximum: 1, retentionMs: 60_000, tenantId: tenant }),
+      ).resolves.toEqual({
+        projectPngGenerationsOrphaned: 1,
+        releasedSessionIds: [deletedProjectSession.id],
+        sourceBlobsOrphaned: 1,
+      });
+      await inspectionPool.query(
+        `UPDATE public.project_png_generations
+            SET orphaned_at = clock_timestamp() - interval '2 hours'
+          WHERE tenant_id = $1 AND project_id = $2 AND generation = $3::bigint`,
+        [tenant, deletedProject, deletedProjectHead.generation.toString()],
+      );
+      expect(
+        await runProjectPngGcV1({
+          cutoff: new Date(Date.now() + 60_000),
+          graceMs: 60_000,
+          maximum: 32,
+          repository: reopenedPngRepository,
+          store: pngStore,
+          tenantId: tenant,
+        }),
+      ).toMatchObject({ deleted: 1, queued: 1 });
+      await expect(pngStore.read(tenant, deletedProject, deletedProjectReceipt)).rejects.toThrow();
+
       await expect(reopenedPngRepository.readHead("tenant-b", project)).resolves.toBeNull();
       await expect(pngStore.read("tenant-b", project, firstReceipt)).rejects.toThrow(/receipt/i);
       await expect(pngStore.read(tenant, project, { ...firstReceipt, versionId: "wrong-version" })).rejects.toThrow();
