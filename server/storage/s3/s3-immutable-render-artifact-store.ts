@@ -13,7 +13,11 @@ import {
   parseImmutableRenderArtifactObjectKeyV1,
   parseImmutableRenderArtifactReceiptV1,
 } from "../immutable-render-artifact-storage";
-import { MAX_RENDER_ARTIFACT_BYTES_V1, RenderArtifactReadErrorV1 } from "../render-artifact-repository";
+import {
+  MAX_RENDER_ARTIFACT_BYTES_V1,
+  RenderArtifactReadErrorV1,
+  type RenderArtifactReceiptV1,
+} from "../render-artifact-repository";
 import {
   acquirePrivateImmutableS3BucketTransportV1,
   type PrivateImmutableObjectResponseV1,
@@ -197,7 +201,7 @@ export class S3ImmutableRenderArtifactStoreV1 implements ImmutableRenderArtifact
     throw new Error("Could not allocate a unique immutable render artifact generation after three attempts.");
   }
 
-  async head(tenantId: string, receiptValue: ImmutableRenderArtifactReceiptV1, signal?: AbortSignal) {
+  async head(tenantId: string, receiptValue: RenderArtifactReceiptV1, signal?: AbortSignal) {
     const receipt = parseImmutableRenderArtifactReceiptV1(tenantId, receiptValue);
     let response;
     try {
@@ -219,7 +223,7 @@ export class S3ImmutableRenderArtifactStoreV1 implements ImmutableRenderArtifact
 
   async open(
     tenantId: string,
-    receiptValue: ImmutableRenderArtifactReceiptV1,
+    receiptValue: RenderArtifactReceiptV1,
     range: Readonly<{ end: number; start: number }> | null,
     signal?: AbortSignal,
   ) {
@@ -261,7 +265,7 @@ export class S3ImmutableRenderArtifactStoreV1 implements ImmutableRenderArtifact
     return { nextCursor: page.nextCursor, objects };
   }
 
-  async deleteObject(tenantId: string, receiptValue: ImmutableRenderArtifactReceiptV1, signal?: AbortSignal) {
+  async deleteObject(tenantId: string, receiptValue: RenderArtifactReceiptV1, signal?: AbortSignal) {
     const receipt = parseImmutableRenderArtifactReceiptV1(tenantId, receiptValue);
     await this.#transport.operation(signal).deleteObject(receipt.objectKey);
   }

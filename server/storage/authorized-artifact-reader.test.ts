@@ -4,10 +4,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AuthorizedArtifactReaderV1 } from "./authorized-artifact-reader";
 import {
-  renderArtifactObjectKeyV1,
+  immutableRenderArtifactObjectKeyV1,
   type RenderArtifactReadClaimV1,
   type RenderArtifactRepositoryV1,
   type RenderArtifactStoreV1,
+  renderArtifactObjectKeyV1,
 } from "./render-artifact-repository";
 
 const TENANT = "tenant-a";
@@ -49,13 +50,31 @@ function claim(): RenderArtifactReadClaimV1 {
   };
 }
 
+function immutableClaim(): RenderArtifactReadClaimV1 {
+  const selected = claim();
+  const { etag, versionId: _versionId, ...identity } = selected.artifact.receipt;
+  const objectGeneration = "00000000-0000-4000-8000-0000000000aa";
+  return {
+    ...selected,
+    artifact: {
+      ...selected.artifact,
+      receipt: {
+        ...identity,
+        etag,
+        objectGeneration,
+        objectKey: immutableRenderArtifactObjectKeyV1(TENANT, identity, objectGeneration),
+      },
+    },
+  };
+}
+
 function fixture(
   open: RenderArtifactStoreV1["open"] = async () =>
     (async function* () {
       yield BYTES;
     })(),
+  selected: RenderArtifactReadClaimV1 = claim(),
 ) {
-  const selected = claim();
   const releaseReadClaim = vi.fn(async () => undefined);
   const renewReadClaim = vi.fn(async () => new Date(Date.now() + 1_200));
   const repository = partial<RenderArtifactRepositoryV1>({
@@ -146,5 +165,18 @@ describe("AuthorizedArtifactReaderV1", () => {
 
     await expect(reader.sessionVideo("00000000-0000-4000-8000-000000000003")).rejects.toThrow("S3 unavailable");
     expect(releaseReadClaim).toHaveBeenCalledOnce();
+  });
+
+  it("pins an immutable receipt through HEAD and Range GET", async () => {
+    const selected = immutableClaim();
+    const { reader, store } = fixture(undefined, selected);
+    const range = { end: 2, start: 1 };
+
+    const asset = await reader.sessionVideo("00000000-0000-4000-8000-000000000003");
+    await asset.open(range);
+    await asset.close();
+
+    expect(store.head).toHaveBeenCalledWith(TENANT, selected.artifact.receipt, expect.any(AbortSignal));
+    expect(store.open).toHaveBeenCalledWith(TENANT, selected.artifact.receipt, range, expect.any(AbortSignal));
   });
 });

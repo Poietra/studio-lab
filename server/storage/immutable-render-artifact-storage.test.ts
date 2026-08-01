@@ -70,6 +70,9 @@ describe("immutable render artifact storage contract", () => {
     expect(() =>
       parseImmutableRenderArtifactReceiptV1(TENANT, { ...receipt(), versionId: "provider-version" }),
     ).toThrow(/receipt/i);
+    expect(() => parseImmutableRenderArtifactReceiptV1(TENANT, { ...receipt(), unexpected: true })).toThrow(
+      /unknown field/i,
+    );
     expect(() =>
       parseImmutableRenderArtifactReceiptV1(TENANT, {
         ...receipt(),

@@ -1,31 +1,19 @@
 import { manimTenantIdSchema } from "../manim-request-principal";
+import { immutableObjectGenerationV1, parseImmutableObjectLocatorV1 } from "./immutable-object-contract";
 import {
-  createImmutableObjectGenerationV1,
-  immutableObjectGenerationV1,
-  immutableObjectKeyV1,
-  parseImmutableObjectLocatorV1,
-} from "./immutable-object-contract";
-import {
-  MAX_RENDER_ARTIFACT_BYTES_V1,
-  MAX_RENDER_THUMBNAIL_BYTES_V1,
+  createImmutableRenderArtifactLocatorV1,
+  type ImmutableRenderArtifactReceiptV1,
+  immutableRenderArtifactObjectKeyV1,
+  parseImmutableRenderArtifactReceiptV1,
+  parseRenderArtifactIdentityV1,
   RENDER_ARTIFACT_KINDS_V1,
+  type RenderArtifactIdentityV1,
   type RenderArtifactKindV1,
+  type RenderArtifactStoreV1,
+  renderArtifactMediaTypeV1,
   renderArtifactObjectKeyV1,
+  sameRenderArtifactReceiptV1,
 } from "./render-artifact-repository";
-
-const RECEIPT_FIELDS = [
-  "artifactDigest",
-  "byteSize",
-  "etag",
-  "kind",
-  "mediaType",
-  "objectGeneration",
-  "objectKey",
-  "profileDigest",
-  "requestDigest",
-  "runtimeDigest",
-  "sourceDigest",
-] as const;
 
 const IDENTITY_FIELDS = [
   "artifactDigest",
@@ -48,23 +36,8 @@ const METADATA_FIELDS = {
   sourceDigest: "source-digest",
 } as const;
 
-export type ImmutableRenderArtifactIdentityV1 = Readonly<{
-  artifactDigest: string;
-  byteSize: number;
-  kind: RenderArtifactKindV1;
-  mediaType: "image/png" | "video/mp4";
-  profileDigest: string;
-  requestDigest: string;
-  runtimeDigest: string;
-  sourceDigest: string;
-}>;
-
-export type ImmutableRenderArtifactReceiptV1 = ImmutableRenderArtifactIdentityV1 &
-  Readonly<{
-    etag: string;
-    objectGeneration: string;
-    objectKey: string;
-  }>;
+export type ImmutableRenderArtifactIdentityV1 = RenderArtifactIdentityV1;
+export type { ImmutableRenderArtifactReceiptV1 };
 
 export type ImmutableRenderArtifactObjectIdentityV1 = Omit<
   ImmutableRenderArtifactReceiptV1,
@@ -81,30 +54,7 @@ export type ImmutableRenderArtifactObjectPageV1 = Readonly<{
   objects: readonly ImmutableRenderArtifactObjectV1[];
 }>;
 
-export interface ImmutableRenderArtifactStoreV1 {
-  close(): Promise<void>;
-  deleteObject(tenantId: string, receipt: ImmutableRenderArtifactReceiptV1, signal?: AbortSignal): Promise<void>;
-  head(tenantId: string, receipt: ImmutableRenderArtifactReceiptV1, signal?: AbortSignal): Promise<void>;
-  listObjects(
-    tenantId: string,
-    cutoff: Date,
-    maximum: number,
-    cursor?: string | null,
-    signal?: AbortSignal,
-  ): Promise<ImmutableRenderArtifactObjectPageV1>;
-  open(
-    tenantId: string,
-    receipt: ImmutableRenderArtifactReceiptV1,
-    range: Readonly<{ end: number; start: number }> | null,
-    signal?: AbortSignal,
-  ): Promise<AsyncIterable<Uint8Array>>;
-  put(
-    tenantId: string,
-    input: ImmutableRenderArtifactIdentityV1 & Readonly<{ bytes: Uint8Array }>,
-    signal?: AbortSignal,
-  ): Promise<ImmutableRenderArtifactReceiptV1>;
-  ready(signal?: AbortSignal): Promise<boolean>;
-}
+export type ImmutableRenderArtifactStoreV1 = RenderArtifactStoreV1;
 
 function tenantIdV1(value: unknown) {
   const parsed = manimTenantIdSchema.safeParse(value);
@@ -113,10 +63,7 @@ function tenantIdV1(value: unknown) {
 }
 
 export function immutableRenderArtifactMediaTypeV1(kind: unknown) {
-  if (!RENDER_ARTIFACT_KINDS_V1.includes(kind as RenderArtifactKindV1)) {
-    throw new TypeError("Immutable render artifact kind is invalid.");
-  }
-  return kind === "video" ? ("video/mp4" as const) : ("image/png" as const);
+  return renderArtifactMediaTypeV1(kind);
 }
 
 export function parseImmutableRenderArtifactIdentityV1(
@@ -134,32 +81,7 @@ export function parseImmutableRenderArtifactIdentityV1(
   ) {
     throw new TypeError("Immutable render artifact identity is invalid.");
   }
-  return parseIdentityFieldsV1(tenantId, candidate);
-}
-
-function parseIdentityFieldsV1(tenantId: string, candidate: Record<string, unknown>) {
-  const identity = {
-    artifactDigest: candidate.artifactDigest,
-    byteSize: candidate.byteSize,
-    kind: candidate.kind,
-    mediaType: candidate.mediaType,
-    profileDigest: candidate.profileDigest,
-    requestDigest: candidate.requestDigest,
-    runtimeDigest: candidate.runtimeDigest,
-    sourceDigest: candidate.sourceDigest,
-  } as ImmutableRenderArtifactIdentityV1;
-  const expectedMediaType = immutableRenderArtifactMediaTypeV1(identity.kind);
-  const maximum = identity.kind === "thumbnail" ? MAX_RENDER_THUMBNAIL_BYTES_V1 : MAX_RENDER_ARTIFACT_BYTES_V1;
-  if (
-    identity.mediaType !== expectedMediaType ||
-    !Number.isSafeInteger(identity.byteSize) ||
-    identity.byteSize < 1 ||
-    identity.byteSize > maximum
-  ) {
-    throw new TypeError("Immutable render artifact identity is invalid.");
-  }
-  renderArtifactObjectKeyV1(tenantId, identity);
-  return identity;
+  return parseRenderArtifactIdentityV1(tenantId, candidate);
 }
 
 export function immutableRenderArtifactContentAddressedKeyV1(
@@ -171,73 +93,17 @@ export function immutableRenderArtifactContentAddressedKeyV1(
   return renderArtifactObjectKeyV1(tenantId, identity);
 }
 
-export function immutableRenderArtifactObjectKeyV1(
-  tenantValue: string,
-  value: ImmutableRenderArtifactIdentityV1,
-  objectGeneration: string,
-) {
-  const tenantId = tenantIdV1(tenantValue);
-  const identity = parseImmutableRenderArtifactIdentityV1(tenantId, value);
-  return immutableObjectKeyV1({
-    contentAddressedKey: renderArtifactObjectKeyV1(tenantId, identity),
-    contentDigest: identity.artifactDigest,
-    objectGeneration,
-    tenantId,
-  });
-}
-
-export function createImmutableRenderArtifactLocatorV1(tenantValue: string, value: ImmutableRenderArtifactIdentityV1) {
-  const objectGeneration = createImmutableObjectGenerationV1();
-  return {
-    objectGeneration,
-    objectKey: immutableRenderArtifactObjectKeyV1(tenantValue, value, objectGeneration),
-  } as const;
-}
-
-function receiptEtagV1(value: unknown) {
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    Buffer.byteLength(value, "utf8") > 512 ||
-    /[\u0000-\u001f\u007f]/u.test(value)
-  ) {
-    throw new TypeError("Immutable render artifact ETag is invalid.");
-  }
-  return value;
-}
-
-export function parseImmutableRenderArtifactReceiptV1(
-  tenantValue: string,
-  value: unknown,
-): ImmutableRenderArtifactReceiptV1 {
-  const tenantId = tenantIdV1(tenantValue);
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError("Immutable render artifact receipt is invalid.");
-  }
-  const candidate = value as Record<string, unknown>;
-  if (
-    Object.keys(candidate).length !== RECEIPT_FIELDS.length ||
-    RECEIPT_FIELDS.some((field) => !Object.hasOwn(candidate, field))
-  ) {
-    throw new TypeError("Immutable render artifact receipt is invalid.");
-  }
-  const identity = parseIdentityFieldsV1(tenantId, candidate);
-  const locator = parseImmutableObjectLocatorV1(
-    {
-      contentAddressedKey: renderArtifactObjectKeyV1(tenantId, identity),
-      contentDigest: identity.artifactDigest,
-      tenantId,
-    },
-    candidate,
-  );
-  return { ...identity, etag: receiptEtagV1(candidate.etag), ...locator };
-}
+export {
+  createImmutableRenderArtifactLocatorV1,
+  immutableRenderArtifactObjectKeyV1,
+  parseImmutableRenderArtifactReceiptV1,
+};
 
 export function sameImmutableRenderArtifactReceiptV1(
   left: ImmutableRenderArtifactReceiptV1,
   right: ImmutableRenderArtifactReceiptV1,
 ) {
-  return RECEIPT_FIELDS.every((field) => left[field] === right[field]);
+  return sameRenderArtifactReceiptV1(left, right);
 }
 
 export function immutableRenderArtifactMetadataV1(

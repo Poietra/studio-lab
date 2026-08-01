@@ -610,7 +610,7 @@ async function publishThroughRealOci(
           stagingRoot,
           tenantId: session.tenantId,
         });
-      const versionsBeforeMismatch = await artifacts.listVersions(session.tenantId, new Date(Date.now() + 60_000), 256);
+      const versionsBeforeMismatch = await artifacts.listObjects(session.tenantId, new Date(Date.now() + 60_000), 256);
       await expect(
         createPublisher("f".repeat(64)).publish({
           locators,
@@ -619,11 +619,11 @@ async function publishThroughRealOci(
           session,
         }),
       ).rejects.toThrow(/profile/i);
-      const versionsAfterMismatch = await artifacts.listVersions(session.tenantId, new Date(Date.now() + 60_000), 256);
-      const matchingVersions = (versions: typeof versionsBeforeMismatch.versions) =>
+      const versionsAfterMismatch = await artifacts.listObjects(session.tenantId, new Date(Date.now() + 60_000), 256);
+      const matchingVersions = (versions: typeof versionsBeforeMismatch.objects) =>
         versions.filter(({ receipt }) => requestDigests.includes(receipt.requestDigest));
-      expect(matchingVersions(versionsBeforeMismatch.versions)).toEqual([]);
-      expect(matchingVersions(versionsAfterMismatch.versions)).toEqual([]);
+      expect(matchingVersions(versionsBeforeMismatch.objects)).toEqual([]);
+      expect(matchingVersions(versionsAfterMismatch.objects)).toEqual([]);
 
       const publisher = createPublisher(runner.profileDigest);
       if (!invalidateFence) {
@@ -642,12 +642,12 @@ async function publishThroughRealOci(
               session,
             }),
           ).rejects.toThrow(/verification/i);
-          const versionsAfterDigestMismatch = await artifacts.listVersions(
+          const versionsAfterDigestMismatch = await artifacts.listObjects(
             session.tenantId,
             new Date(Date.now() + 60_000),
             256,
           );
-          expect(matchingVersions(versionsAfterDigestMismatch.versions)).toEqual([]);
+          expect(matchingVersions(versionsAfterDigestMismatch.objects)).toEqual([]);
           await expect(publications.acquireSessionVideo(session.tenantId, session.id, 1_000)).rejects.toMatchObject({
             status: 404,
           });
@@ -664,8 +664,8 @@ async function publishThroughRealOci(
       });
       if (invalidateFence) {
         await expect(publication).rejects.toMatchObject({ status: 409 });
-        const orphaned = await artifacts.listVersions(session.tenantId, new Date(Date.now() + 60_000), 256);
-        expect(matchingVersions(orphaned.versions)).toHaveLength(2);
+        const orphaned = await artifacts.listObjects(session.tenantId, new Date(Date.now() + 60_000), 256);
+        expect(matchingVersions(orphaned.objects)).toHaveLength(2);
       } else {
         await publication;
       }
@@ -906,7 +906,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
         rowLockTwo.release();
       }
       if (!deletion) throw new Error("The queue-first race did not produce a deletion tombstone.");
-      await artifacts.deleteVersion(tenantA, deletion.receipt);
+      await artifacts.deleteObject(tenantA, deletion.receipt);
       await repository.acknowledgeDeletion(tenantA, deletion.deletionId);
 
       const gc = await runRenderArtifactGcV1({

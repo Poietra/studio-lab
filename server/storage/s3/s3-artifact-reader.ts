@@ -3,11 +3,14 @@ import { createHash } from "node:crypto";
 import { manimTenantIdSchema } from "../../manim-request-principal";
 import {
   MAX_RENDER_ARTIFACT_BYTES_V1,
-  parseRenderArtifactReceiptV1,
+  parseRenderArtifactIdentityV1,
+  parseVersionedRenderArtifactReceiptV1,
+  type RenderArtifactIdentityV1,
   RenderArtifactReadErrorV1,
-  renderArtifactObjectKeyV1,
   type RenderArtifactReceiptV1,
-  type RenderArtifactStoreV1,
+  renderArtifactObjectKeyV1,
+  type VersionedRenderArtifactReceiptV1,
+  type VersionedRenderArtifactStoreV1,
 } from "../render-artifact-repository";
 import {
   acquirePrivateVersionedS3BucketTransportV1,
@@ -118,7 +121,7 @@ function bodyIterable(body: unknown): AsyncIterable<unknown> {
   return body as AsyncIterable<unknown>;
 }
 
-function responseMetadata(value: Record<string, string> | undefined, expected: RenderArtifactReceiptV1) {
+function responseMetadata(value: Record<string, string> | undefined, expected: VersionedRenderArtifactReceiptV1) {
   return (
     value?.[METADATA.artifactDigest] === expected.artifactDigest &&
     value[METADATA.kind] === expected.kind &&
@@ -130,7 +133,7 @@ function responseMetadata(value: Record<string, string> | undefined, expected: R
   );
 }
 
-function objectMetadata(receipt: RenderArtifactReceiptV1) {
+function objectMetadata(receipt: RenderArtifactIdentityV1) {
   return {
     [METADATA.artifactDigest]: receipt.artifactDigest,
     [METADATA.kind]: receipt.kind,
@@ -141,13 +144,13 @@ function objectMetadata(receipt: RenderArtifactReceiptV1) {
   };
 }
 
-function contentType(kind: RenderArtifactReceiptV1["kind"]) {
+function contentType(kind: RenderArtifactIdentityV1["kind"]) {
   return kind === "video" ? "video/mp4" : "image/png";
 }
 
 function receiptFromResponse(
   tenant: string,
-  input: Omit<RenderArtifactReceiptV1, "etag" | "objectKey" | "versionId">,
+  input: RenderArtifactIdentityV1,
   response: Readonly<{
     ContentLength?: number;
     ContentType?: string;
@@ -156,7 +159,7 @@ function receiptFromResponse(
     VersionId?: string;
   }>,
 ) {
-  const candidate = parseRenderArtifactReceiptV1(tenant, {
+  const candidate = parseVersionedRenderArtifactReceiptV1(tenant, {
     ...input,
     etag: normalizedEtag(response.ETag),
     objectKey: renderArtifactObjectKeyV1(tenant, input),
@@ -204,7 +207,7 @@ function encodeCursor(key: string, version: string, tenant: string) {
   return Buffer.from(JSON.stringify([key, version]), "utf8").toString("base64url");
 }
 
-async function collectAndVerify(body: unknown, receipt: RenderArtifactReceiptV1, signal: AbortSignal) {
+async function collectAndVerify(body: unknown, receipt: VersionedRenderArtifactReceiptV1, signal: AbortSignal) {
   const hash = createHash("sha256");
   let bytes = 0;
   try {
@@ -248,8 +251,8 @@ function verifiedStream(body: unknown, expectedBytes: number, signal: AbortSigna
 
 export type S3ArtifactReaderOptionsV1 = PrivateVersionedS3BucketConsumerOptionsV1;
 
-/** Immutable media writer plus version-pinned HEAD/range reader over the shared private S3 transport. */
-export class S3ArtifactReaderV1 implements RenderArtifactStoreV1 {
+/** Legacy versioned media writer plus version-pinned HEAD/range reader. */
+export class S3ArtifactReaderV1 implements VersionedRenderArtifactStoreV1 {
   readonly #transport: PrivateVersionedS3BucketTransportLeaseV1;
 
   constructor(options: S3ArtifactReaderOptionsV1) {
@@ -266,7 +269,7 @@ export class S3ArtifactReaderV1 implements RenderArtifactStoreV1 {
     range: Readonly<{ end: number; start: number }> | null,
     operation: PrivateVersionedS3BucketOperationV1,
   ) {
-    const receipt = parseRenderArtifactReceiptV1(tenant, receiptValue);
+    const receipt = parseVersionedRenderArtifactReceiptV1(tenant, receiptValue);
     const expectedBytes = range ? range.end - range.start + 1 : receipt.byteSize;
     let response;
     try {
@@ -299,11 +302,7 @@ export class S3ArtifactReaderV1 implements RenderArtifactStoreV1 {
     }
   }
 
-  async #readCurrent(
-    tenant: string,
-    input: Omit<RenderArtifactReceiptV1, "etag" | "objectKey" | "versionId">,
-    operation: PrivateVersionedS3BucketOperationV1,
-  ) {
+  async #readCurrent(tenant: string, input: RenderArtifactIdentityV1, operation: PrivateVersionedS3BucketOperationV1) {
     const objectKey = renderArtifactObjectKeyV1(tenant, input);
     let response;
     try {
@@ -312,7 +311,7 @@ export class S3ArtifactReaderV1 implements RenderArtifactStoreV1 {
       if (isMissing(error)) throw new RenderArtifactReadErrorV1("missing");
       throw error;
     }
-    let receipt: RenderArtifactReceiptV1;
+    let receipt: VersionedRenderArtifactReceiptV1;
     try {
       receipt = receiptFromResponse(tenant, input, response);
     } catch (error) {
@@ -325,23 +324,24 @@ export class S3ArtifactReaderV1 implements RenderArtifactStoreV1 {
 
   async put(
     tenantValue: string,
-    input: Omit<RenderArtifactReceiptV1, "etag" | "objectKey" | "versionId"> & Readonly<{ bytes: Uint8Array }>,
+    input: RenderArtifactIdentityV1 & Readonly<{ bytes: Uint8Array }>,
     signal?: AbortSignal,
   ) {
     const tenant = tenantId(tenantValue);
+    const identity = parseRenderArtifactIdentityV1(tenant, input);
     if (!(input.bytes instanceof Uint8Array) || input.bytes.byteLength !== input.byteSize) {
       throw new TypeError("Render artifact bytes are invalid.");
     }
     // The verified publisher already owns this immutable buffer for the
     // duration of the call. Copying it would double the 128 MiB worker cap.
     const bytes = input.bytes;
-    if (createHash("sha256").update(bytes).digest("hex") !== input.artifactDigest) {
+    if (createHash("sha256").update(bytes).digest("hex") !== identity.artifactDigest) {
       throw new TypeError("Render artifact bytes do not match their digest.");
     }
-    const provisional = parseRenderArtifactReceiptV1(tenant, {
-      ...input,
+    const provisional = parseVersionedRenderArtifactReceiptV1(tenant, {
+      ...identity,
       etag: "pending",
-      objectKey: renderArtifactObjectKeyV1(tenant, input),
+      objectKey: renderArtifactObjectKeyV1(tenant, identity),
       versionId: "pending",
     });
     const operation = this.#transport.operation(signal);
@@ -359,13 +359,13 @@ export class S3ArtifactReaderV1 implements RenderArtifactStoreV1 {
         });
         break;
       } catch (error) {
-        if (isPreconditionFailed(error)) return this.#readCurrent(tenant, input, operation);
+        if (isPreconditionFailed(error)) return this.#readCurrent(tenant, identity, operation);
         if (!isConditionalConflict(error) || attempt === MAX_CONDITIONAL_PUT_ATTEMPTS) throw error;
         operation.signal.throwIfAborted();
       }
     }
     if (!response) throw new Error("S3 did not settle the bounded render artifact upload.");
-    const receipt = parseRenderArtifactReceiptV1(tenant, {
+    const receipt = parseVersionedRenderArtifactReceiptV1(tenant, {
       ...provisional,
       etag: normalizedEtag(response.ETag),
       versionId: response.VersionId ?? "",
@@ -377,7 +377,7 @@ export class S3ArtifactReaderV1 implements RenderArtifactStoreV1 {
 
   async head(tenantValue: string, receiptValue: RenderArtifactReceiptV1, signal?: AbortSignal) {
     const tenant = tenantId(tenantValue);
-    const receipt = parseRenderArtifactReceiptV1(tenant, receiptValue);
+    const receipt = parseVersionedRenderArtifactReceiptV1(tenant, receiptValue);
     let response;
     try {
       response = await this.#transport.operation(signal).headObject({
@@ -406,7 +406,7 @@ export class S3ArtifactReaderV1 implements RenderArtifactStoreV1 {
     signal?: AbortSignal,
   ) {
     const tenant = tenantId(tenantValue);
-    const receipt = parseRenderArtifactReceiptV1(tenant, receiptValue);
+    const receipt = parseVersionedRenderArtifactReceiptV1(tenant, receiptValue);
     if (
       range &&
       (!Number.isSafeInteger(range.start) ||
@@ -456,7 +456,7 @@ export class S3ArtifactReaderV1 implements RenderArtifactStoreV1 {
       return [
         {
           lastModified: version.LastModified,
-          receipt: parseRenderArtifactReceiptV1(tenant, {
+          receipt: parseVersionedRenderArtifactReceiptV1(tenant, {
             ...identity,
             byteSize: version.Size,
             etag: normalizedEtag(version.ETag),
@@ -471,13 +471,22 @@ export class S3ArtifactReaderV1 implements RenderArtifactStoreV1 {
     return { nextCursor, versions };
   }
 
-  async deleteVersion(tenantValue: string, receiptValue: RenderArtifactReceiptV1, signal?: AbortSignal) {
+  async deleteVersion(tenantValue: string, receiptValue: VersionedRenderArtifactReceiptV1, signal?: AbortSignal) {
     const tenant = tenantId(tenantValue);
-    const receipt = parseRenderArtifactReceiptV1(tenant, receiptValue);
+    const receipt = parseVersionedRenderArtifactReceiptV1(tenant, receiptValue);
     await this.#transport.operation(signal).deleteObjectVersion({
       Key: receipt.objectKey,
       VersionId: receipt.versionId,
     });
+  }
+
+  async listObjects(tenantId: string, cutoff: Date, maximum: number, cursor?: string | null, signal?: AbortSignal) {
+    const page = await this.listVersions(tenantId, cutoff, maximum, cursor, signal);
+    return { nextCursor: page.nextCursor, objects: page.versions };
+  }
+
+  deleteObject(tenantId: string, receipt: RenderArtifactReceiptV1, signal?: AbortSignal) {
+    return this.deleteVersion(tenantId, parseVersionedRenderArtifactReceiptV1(tenantId, receipt), signal);
   }
 
   close() {
