@@ -19,6 +19,7 @@ import {
   type StaticSemanticState,
   type TimelineEvent,
 } from "../studio/model";
+import { referencedPythonReferences } from "./python-reference-analysis";
 import { analyzePythonSource, isPythonStatementStart, isStandalonePythonComment } from "./python-source-analysis";
 
 export type ImportedManimEntity = Readonly<{
@@ -799,6 +800,12 @@ function endPresence(entity: MutableEntity, at: number) {
   active.end = Math.max(active.start, at);
 }
 
+function referencedPresenceVariables(argumentsSource: string, variables: ReadonlySet<string>) {
+  const analysis = analyzePythonSource(argumentsSource);
+  if (!analysis.valid) return new Set<string>();
+  return new Set(analysis.lines.flatMap((line) => referencedPythonReferences(line, variables)));
+}
+
 function durationFrom(statement: string, fallback = 1) {
   const match = statement.match(new RegExp(`\\brun_time\\s*=\\s*(${UNSIGNED_NUMBER_LITERAL})(?![A-Za-z0-9_.])`));
   return match ? (unsignedNumberLiteral(match[1]) ?? fallback) : fallback;
@@ -1329,6 +1336,7 @@ export function importManimScene(
     }
   }
 
+  const presenceVariables = new Set(mutableEntities.map((entity) => entity.sourceVariable));
   let cursor = 0;
   let firstPlayEnd: number | null = null;
   let insideIncomingEvents = false;
@@ -1644,17 +1652,17 @@ export function importManimScene(
     }
     const add = statement.text.match(/^self\.add\((.*)\)$/s)?.[1];
     if (add) {
+      const references = referencedPresenceVariables(add, presenceVariables);
       for (const entity of mutableEntities) {
-        const variablePattern = entity.sourceVariable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        if (new RegExp(`\\b${variablePattern}\\b`).test(add)) beginPresence(entity, cursor);
+        if (references.has(entity.sourceVariable)) beginPresence(entity, cursor);
       }
       continue;
     }
     const remove = statement.text.match(/^self\.remove\((.*)\)$/s)?.[1];
     if (remove) {
+      const references = referencedPresenceVariables(remove, presenceVariables);
       for (const entity of mutableEntities) {
-        const variablePattern = entity.sourceVariable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        if (new RegExp(`\\b${variablePattern}\\b`).test(remove)) endPresence(entity, cursor);
+        if (references.has(entity.sourceVariable)) endPresence(entity, cursor);
       }
       continue;
     }
