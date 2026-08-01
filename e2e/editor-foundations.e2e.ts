@@ -27,6 +27,16 @@ async function exportedSource(page: Page) {
   return readFile(path, "utf8");
 }
 
+async function exportedSourceBytes(page: Page) {
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export .py" }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/\.py$/);
+  const path = await download.path();
+  if (!path) throw new Error("The exported source was not persisted by Playwright.");
+  return readFile(path);
+}
+
 async function applyCurrentDraft(page: Page) {
   await page.getByRole("button", { name: /^(Apply|Replace) program$/ }).click();
 }
@@ -439,6 +449,42 @@ test("submits one browser-selected Python file and keeps import diagnostics besi
   expect(importBody).not.toHaveProperty("objectKey");
   await expect(dialog.getByRole("alert")).toContainText("asset and archive import are not supported");
   await expect(filePicker).toHaveAttribute("aria-describedby", "workspace-import-help add-workspace-error");
+});
+
+test("opens and byte-preserves a browser-imported Python file through export", async ({ page }) => {
+  const sourceBytes = Buffer.from(
+    "\ufefffrom manim import *\nclass ImportedScene(Scene):\n    def construct(self):\n        self.wait(1)\n",
+    "utf8",
+  );
+  let projectId: string | null = null;
+  try {
+    await page.goto("/");
+    await page.getByRole("button", { name: "Add workspace" }).click();
+    const dialog = page.getByRole("dialog", { name: "Add workspace" });
+    await dialog.getByRole("radio", { name: /Import Python/ }).check();
+    await dialog.getByRole("textbox", { name: "Workspace name" }).fill("Imported byte fixture");
+    await dialog.getByLabel("Manim Python file").setInputFiles({
+      buffer: sourceBytes,
+      mimeType: "text/x-python",
+      name: "lesson.py",
+    });
+    const importResponsePromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" && new URL(response.url()).pathname === "/api/manim/project-imports",
+    );
+    await dialog.getByRole("button", { name: "Import workspace" }).click();
+    const importResponse = await importResponsePromise;
+    const imported = (await importResponse.json()) as { project: { id: string } };
+    projectId = imported.project.id;
+
+    await expect(page.getByLabel("Current workspace")).toHaveText("Imported byte fixture");
+    await expect(page.getByRole("combobox", { name: "Active imported Scene" })).toContainText(
+      "lesson.py · ImportedScene",
+    );
+    await expect(exportedSourceBytes(page)).resolves.toEqual(sourceBytes);
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
 });
 
 test("creates, persists, renames, and deletes a browser-managed workspace", async ({ page }) => {

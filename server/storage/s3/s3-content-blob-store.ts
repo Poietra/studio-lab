@@ -32,7 +32,7 @@ function exactSourceBytes(source: string) {
   if (bytes.byteLength > MAX_MANIM_SOURCE_BYTES_V1) throw new RangeError("The Python source exceeds 2 MiB.");
   let decoded: string;
   try {
-    decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    decoded = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch {
     throw new TypeError("The Python source must be exact UTF-8 text.");
   }
@@ -316,7 +316,7 @@ export class S3ContentBlobStoreV1 implements SourceContentBlobStoreV1 {
     validateReceipt(tenant, blob);
     const bytes = await this.#readBytes(tenant, blob, this.#transport.operation(signal));
     try {
-      return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
     } catch {
       throw new Error("The versioned S3 source is not valid UTF-8.");
     }

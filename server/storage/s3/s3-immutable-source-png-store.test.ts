@@ -24,7 +24,7 @@ const GENERATIONS = [
   "323e4567-e89b-42d3-a456-426614174000",
   "423e4567-e89b-42d3-a456-426614174000",
 ] as const;
-const SOURCE = "from manim import *\n";
+const SOURCE = "\ufefffrom manim import *\n";
 const SOURCE_BYTES = new TextEncoder().encode(SOURCE);
 const SOURCE_DIGEST = createHash("sha256").update(SOURCE_BYTES).digest("hex");
 

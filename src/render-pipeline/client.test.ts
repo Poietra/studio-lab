@@ -695,6 +695,8 @@ describe("Manim API client contracts", () => {
   });
 
   it("downloads an unchanged Python source when there is no EditProgram", async () => {
+    const source = "\ufefffrom manim import *\n";
+    const sourceBytes = new TextEncoder().encode(source);
     const fetch = vi.fn(async (url: string, init: RequestInit) => {
       expect(url).toBe("/api/manim/projects/project-a/export");
       expect(init.method).toBe("POST");
@@ -703,8 +705,9 @@ describe("Manim API client contracts", () => {
         sourceHash: "a".repeat(64),
         sourcePath: "nested/scene.py",
       });
-      return new Response("from manim import *\n", {
+      return new Response(sourceBytes, {
         headers: {
+          "content-length": String(sourceBytes.byteLength),
           "content-disposition": 'attachment; filename="scene.py"',
           "content-type": "text/x-python; charset=utf-8",
           "x-poietra-project-id": "project-a",
@@ -723,8 +726,33 @@ describe("Manim API client contracts", () => {
     ).resolves.toEqual({
       fileName: "scene.py",
       projectId: "project-a",
-      source: "from manim import *\n",
+      source,
     });
+  });
+
+  it("preserves an AbortError raised while reading an export body", async () => {
+    const aborted = new DOMException("The operation was aborted.", "AbortError");
+    const response = new Response("from manim import *\n", {
+      headers: {
+        "content-disposition": 'attachment; filename="scene.py"',
+        "content-type": "text/x-python; charset=utf-8",
+        "x-poietra-project-id": "project-a",
+      },
+      status: 200,
+    });
+    vi.spyOn(response, "arrayBuffer").mockRejectedValue(aborted);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => response),
+    );
+
+    await expect(
+      exportOriginalManimSource({
+        projectId: "project-a",
+        sourceHash: "a".repeat(64),
+        sourcePath: "nested/scene.py",
+      }),
+    ).rejects.toBe(aborted);
   });
 
   it("encodes render identities and forwards abort signals to mutation requests", async () => {

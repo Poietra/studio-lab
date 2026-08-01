@@ -326,10 +326,19 @@ async function readPythonExport(response: Response, projectId: string): Promise<
   if (response.headers.get("x-poietra-project-id") !== projectId) {
     throw new Error("The server returned an export for a different project.");
   }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  let source: string;
+  try {
+    // Fetch Response.text() strips a leading UTF-8 BOM. Decode the owned bytes
+    // explicitly so a browser import can round-trip the exact Python source.
+    source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    throw new Error("The server returned an export that is not valid UTF-8.");
+  }
   return {
     fileName: attachmentFileName(response),
     projectId,
-    source: await response.text(),
+    source,
   };
 }
 
