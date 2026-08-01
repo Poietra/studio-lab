@@ -47,6 +47,14 @@
         "limit": 120,
         "period": 60
       }
+    },
+    {
+      "name": "EDITOR_PRESENCE_RATE_LIMITER",
+      "namespace_id": "34901",
+      "simple": {
+        "limit": 1200,
+        "period": 60
+      }
     }
   ],
   "durable_objects": {

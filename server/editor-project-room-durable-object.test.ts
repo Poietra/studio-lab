@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { encodeEditorLiveClientMessageV1 } from "../src/collaboration/editor-live-contract";
+import {
+  type EditorLivePresenceV1,
+  encodeEditorLiveClientMessageV1,
+  MAX_EDITOR_LIVE_PARTICIPANTS_V1,
+  parseEditorLiveServerMessageV1,
+} from "../src/collaboration/editor-live-contract";
 import {
   type CloudflareRoomStateV1,
   type CloudflareRoomWebSocketPairV1,
@@ -9,6 +14,7 @@ import {
   EDITOR_LIVE_INTERNAL_HEADERS_V1,
   EDITOR_LIVE_INTERNAL_ROUTE_V1,
   EditorProjectRoomDurableObjectV1,
+  MAX_EDITOR_LIVE_ROOM_CONNECTIONS_V1,
 } from "./editor-project-room-durable-object";
 
 const identity = {
@@ -18,6 +24,20 @@ const identity = {
   projectId: "project-a",
 } as const;
 const subjectId = "22222222-2222-4222-8222-222222222222";
+const peerSubjectId = "44444444-4444-4444-8444-444444444444";
+const presence: EditorLivePresenceV1 = {
+  cursor: { x: 0.25, y: 0.75 },
+  playheadSeconds: 12.5,
+  selectedEntityIds: ["source:scene.py#Demo:circle"],
+};
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((accept) => {
+    resolve = accept;
+  });
+  return { promise, resolve };
+}
 
 class FakeSocket implements CloudflareRoomWebSocketV1 {
   attachment: unknown = null;
@@ -44,6 +64,7 @@ function request(
     epoch?: string;
     organizationId?: string;
     projectId?: string;
+    subjectId?: string;
   }> = {},
 ) {
   const value = { ...identity, ...overrides };
@@ -55,7 +76,7 @@ function request(
       [headers.epoch]: value.epoch,
       [headers.organizationId]: value.organizationId,
       [headers.projectId]: value.projectId,
-      [headers.subjectId]: subjectId,
+      [headers.subjectId]: overrides.subjectId ?? subjectId,
       upgrade: "websocket",
     },
   });
@@ -69,7 +90,7 @@ function harness() {
     getWebSockets: () => accepted,
   };
   let nextConnection = 1;
-  const room = () =>
+  const room = (options: Parameters<typeof createEditorProjectRoomV1>[1] = {}) =>
     createEditorProjectRoomV1(state, {
       createPair: () => {
         const pair: CloudflareRoomWebSocketPairV1 = { client: new FakeSocket(), server: new FakeSocket() };
@@ -78,6 +99,7 @@ function harness() {
       },
       createUpgradeResponse: () => new Response(null, { status: 200 }),
       randomUuid: () => `33333333-3333-4333-8333-${String(nextConnection++).padStart(12, "0")}`,
+      ...options,
     });
   return { accepted, clients, room, state };
 }
@@ -111,6 +133,138 @@ describe("Editor project Durable Object room", () => {
     expect(Object.keys(value.state)).toEqual(["acceptWebSocket", "getWebSockets"]);
   });
 
+  it("sends a server-attested canonical roster and collapses duplicate tabs", async () => {
+    const value = harness();
+    const first = await connect(value);
+    const second = await connect(value);
+    const peer = await connect(value, request({ subjectId: peerSubjectId }));
+
+    const ready = parseEditorLiveServerMessageV1(peer.messages[0]);
+    const snapshot = parseEditorLiveServerMessageV1(peer.messages[1]);
+    expect(ready).toMatchObject({ kind: "ready", memberId: peerSubjectId });
+    expect(snapshot).toMatchObject({
+      identity,
+      kind: "presence-snapshot",
+      participants: [{ member: { id: subjectId } }, { member: { id: peerSubjectId } }],
+    });
+    expect(first.attachment).toMatchObject({ subjectId });
+    expect(second.attachment).toMatchObject({ subjectId });
+  });
+
+  it("attests presence to the socket member and canonicalizes selected entities", async () => {
+    const value = harness();
+    const sender = await connect(value);
+    const peer = await connect(value, request({ subjectId: peerSubjectId }));
+    sender.messages.length = 0;
+    peer.messages.length = 0;
+
+    await value.room().webSocketMessage(
+      sender,
+      encodeEditorLiveClientMessageV1({
+        kind: "presence-update",
+        presence: { ...presence, selectedEntityIds: ["z", "a"] },
+        protocolVersion: 1,
+      }),
+    );
+
+    expect(parseEditorLiveServerMessageV1(peer.messages[0])).toMatchObject({
+      identity,
+      kind: "presence-update",
+      participant: {
+        member: { id: subjectId },
+        presence: { ...presence, selectedEntityIds: ["a", "z"] },
+      },
+    });
+    await value.room().webSocketMessage(
+      sender,
+      JSON.stringify({
+        kind: "presence-update",
+        memberId: peerSubjectId,
+        presence,
+        protocolVersion: 1,
+      }),
+    );
+    expect(sender.close).toHaveBeenCalledWith(1008, "invalid-message");
+  });
+
+  it("rebuilds updated presence from hibernated socket attachments", async () => {
+    const value = harness();
+    const sender = await connect(value);
+    await value
+      .room()
+      .webSocketMessage(
+        sender,
+        encodeEditorLiveClientMessageV1({ kind: "presence-update", presence, protocolVersion: 1 }),
+      );
+
+    const peer = await connect(value, request({ subjectId: peerSubjectId }));
+    const snapshot = parseEditorLiveServerMessageV1(peer.messages[1]);
+    expect(snapshot).toMatchObject({
+      kind: "presence-snapshot",
+      participants: [{ member: { id: subjectId }, presence }, { member: { id: peerSubjectId } }],
+    });
+  });
+
+  it("selects the latest tab deterministically and updates instead of leaving when another tab remains", async () => {
+    const value = harness();
+    const first = await connect(value);
+    const second = await connect(value);
+    const peer = await connect(value, request({ subjectId: peerSubjectId }));
+    peer.messages.length = 0;
+
+    await value
+      .room()
+      .webSocketMessage(
+        first,
+        encodeEditorLiveClientMessageV1({ kind: "presence-update", presence, protocolVersion: 1 }),
+      );
+    expect(parseEditorLiveServerMessageV1(peer.messages.at(-1))).toMatchObject({
+      kind: "presence-update",
+      participant: { member: { id: subjectId }, presence },
+    });
+
+    peer.messages.length = 0;
+    value.room().webSocketClose(first);
+    expect(parseEditorLiveServerMessageV1(peer.messages[0])).toMatchObject({
+      kind: "presence-update",
+      participant: {
+        member: { id: subjectId },
+        presence: { cursor: null, playheadSeconds: 0, selectedEntityIds: [] },
+      },
+    });
+    expect(peer.messages.some((message) => JSON.parse(message).kind === "presence-leave")).toBe(false);
+
+    value.accepted.splice(value.accepted.indexOf(first), 1);
+    peer.messages.length = 0;
+    value.room().webSocketClose(second);
+    expect(parseEditorLiveServerMessageV1(peer.messages[0])).toMatchObject({
+      kind: "presence-leave",
+      memberId: subjectId,
+    });
+  });
+
+  it("enforces bounded participant and connection counts", async () => {
+    const value = harness();
+    const memberIds = Array.from(
+      { length: MAX_EDITOR_LIVE_PARTICIPANTS_V1 },
+      (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    );
+    for (const memberId of memberIds) await connect(value, request({ subjectId: memberId }));
+
+    const participantOverflow = await value
+      .room()
+      .fetch(request({ subjectId: "ffffffff-ffff-4fff-8fff-ffffffffffff" }));
+    expect(participantOverflow.status).toBe(503);
+    expect(participantOverflow.headers.get("cache-control")).toBe("no-store");
+    expect((await participantOverflow.text()).length).toBeLessThan(256);
+
+    for (let index = value.accepted.length; index < MAX_EDITOR_LIVE_ROOM_CONNECTIONS_V1; index += 1) {
+      await connect(value, request({ subjectId: memberIds[0] }));
+    }
+    const connectionOverflow = await value.room().fetch(request({ subjectId: memberIds[0] }));
+    expect(connectionOverflow.status).toBe(503);
+  });
+
   it("restores routing only from hibernated socket attachments", async () => {
     const value = harness();
     const sender = await connect(value);
@@ -136,12 +290,9 @@ describe("Editor project Durable Object room", () => {
     for (const mismatch of mismatches) {
       const value = harness();
       const sender = await connect(value);
-      const peer = await connect(value, request(mismatch));
-      peer.messages.length = 0;
-      await value
-        .room()
-        .webSocketMessage(sender, encodeEditorLiveClientMessageV1({ kind: "head", protocolVersion: 1, revision: "1" }));
-      expect(peer.messages, JSON.stringify(mismatch)).toEqual([]);
+      const response = await value.room().fetch(request(mismatch));
+      expect(response.status, JSON.stringify(mismatch)).toBe(503);
+      expect(sender.close, JSON.stringify(mismatch)).not.toHaveBeenCalled();
     }
   });
 
@@ -169,6 +320,18 @@ describe("Editor project Durable Object room", () => {
     expect(value.accepted).toEqual([]);
   });
 
+  it("fails closed when a hibernated socket attachment is malformed", async () => {
+    const value = harness();
+    const existing = await connect(value);
+    existing.attachment = { connectionId: "not-an-attachment" };
+
+    const response = await value.room().fetch(request());
+
+    expect(response.status).toBe(503);
+    expect(existing.close).toHaveBeenCalledWith(1008, "room-mismatch");
+    expect(value.accepted).toHaveLength(1);
+  });
+
   it("closes a publisher when the head limiter denies or fails", async () => {
     const denied = harness();
     const deniedSender = await connect(denied);
@@ -191,14 +354,145 @@ describe("Editor project Durable Object room", () => {
     expect(failedSender.close).toHaveBeenCalledWith(1008, "unavailable");
   });
 
-  it("uses the runtime head binding before broadcasting", async () => {
+  it("uses a separate limiter for presence without requiring write access", async () => {
+    const value = harness();
+    const readOnly = await connect(value, request({ canWrite: false }));
+    const peer = await connect(value, request({ subjectId: peerSubjectId }));
+    peer.messages.length = 0;
+    const allowPresence = vi.fn(async () => true);
+
+    await value
+      .room({ allowPresence })
+      .webSocketMessage(
+        readOnly,
+        encodeEditorLiveClientMessageV1({ kind: "presence-update", presence, protocolVersion: 1 }),
+      );
+
+    expect(allowPresence).toHaveBeenCalledOnce();
+    expect(readOnly.close).not.toHaveBeenCalledWith(1008, "read-only");
+    expect(parseEditorLiveServerMessageV1(peer.messages[0])).toMatchObject({ kind: "presence-update" });
+
+    await value
+      .room({ allowPresence: async () => false })
+      .webSocketMessage(
+        readOnly,
+        encodeEditorLiveClientMessageV1({ kind: "presence-update", presence, protocolVersion: 1 }),
+      );
+    expect(readOnly.close).toHaveBeenCalledWith(1008, "rate-limited");
+  });
+
+  it("preserves same-socket presence order across an asynchronous limiter", async () => {
     const value = harness();
     const sender = await connect(value);
-    const peer = await connect(value);
+    const peer = await connect(value, request({ subjectId: peerSubjectId }));
     peer.messages.length = 0;
-    const limit = vi.fn(async () => ({ success: true }));
+    const gates: ReturnType<typeof deferred<boolean>>[] = [];
+    const room = value.room({
+      allowPresence: () => {
+        const gate = deferred<boolean>();
+        gates.push(gate);
+        return gate.promise;
+      },
+    });
+    const firstPresence = { ...presence, playheadSeconds: 1 };
+    const latestPresence = { ...presence, playheadSeconds: 2 };
+
+    const first = room.webSocketMessage(
+      sender,
+      encodeEditorLiveClientMessageV1({ kind: "presence-update", presence: firstPresence, protocolVersion: 1 }),
+    );
+    const latest = room.webSocketMessage(
+      sender,
+      encodeEditorLiveClientMessageV1({ kind: "presence-update", presence: latestPresence, protocolVersion: 1 }),
+    );
+    await vi.waitFor(() => expect(gates).toHaveLength(1));
+
+    gates[0]!.resolve(true);
+    await first;
+    await vi.waitFor(() => expect(gates).toHaveLength(2));
+    gates[1]!.resolve(true);
+    await latest;
+
+    expect(sender.attachment).toMatchObject({ presence: latestPresence });
+    expect(parseEditorLiveServerMessageV1(peer.messages.at(-1))).toMatchObject({
+      kind: "presence-update",
+      participant: { presence: latestPresence },
+    });
+  });
+
+  it("preserves cross-tab ingress order when limiter completions reverse", async () => {
+    const value = harness();
+    const firstTab = await connect(value);
+    const latestTab = await connect(value);
+    const peer = await connect(value, request({ subjectId: peerSubjectId }));
+    peer.messages.length = 0;
+    const gates: {
+      connectionId: string;
+      gate: ReturnType<typeof deferred<boolean>>;
+    }[] = [];
+    const room = value.room({
+      allowPresence: (attachment) => {
+        const gate = deferred<boolean>();
+        gates.push({ connectionId: attachment.connectionId, gate });
+        return gate.promise;
+      },
+    });
+    const firstPresence = { ...presence, playheadSeconds: 10 };
+    const latestPresence = { ...presence, playheadSeconds: 20 };
+
+    const first = room.webSocketMessage(
+      firstTab,
+      encodeEditorLiveClientMessageV1({ kind: "presence-update", presence: firstPresence, protocolVersion: 1 }),
+    );
+    const latest = room.webSocketMessage(
+      latestTab,
+      encodeEditorLiveClientMessageV1({ kind: "presence-update", presence: latestPresence, protocolVersion: 1 }),
+    );
+    await vi.waitFor(() => expect(gates).toHaveLength(2));
+
+    gates.find(({ connectionId }) => connectionId.endsWith("000000000002"))!.gate.resolve(true);
+    await latest;
+    gates.find(({ connectionId }) => connectionId.endsWith("000000000001"))!.gate.resolve(true);
+    await first;
+
+    expect(parseEditorLiveServerMessageV1(peer.messages.at(-1))).toMatchObject({
+      kind: "presence-update",
+      participant: { member: { id: subjectId }, presence: latestPresence },
+    });
+  });
+
+  it("does not revive presence when a socket closes during limiter I/O", async () => {
+    const value = harness();
+    const sender = await connect(value);
+    const peer = await connect(value, request({ subjectId: peerSubjectId }));
+    peer.messages.length = 0;
+    const gate = deferred<boolean>();
+    const room = value.room({ allowPresence: () => gate.promise });
+
+    const pending = room.webSocketMessage(
+      sender,
+      encodeEditorLiveClientMessageV1({ kind: "presence-update", presence, protocolVersion: 1 }),
+    );
+    room.webSocketClose(sender);
+    gate.resolve(true);
+    await pending;
+
+    expect(peer.messages.map((message) => parseEditorLiveServerMessageV1(message)?.kind)).toEqual(["presence-leave"]);
+    expect(sender.attachment).toMatchObject({
+      presence: { cursor: null, playheadSeconds: 0, selectedEntityIds: [] },
+    });
+  });
+
+  it("uses distinct runtime head and presence bindings before broadcasting", async () => {
+    const value = harness();
+    const sender = await connect(value);
+    const peer = await connect(value, request({ subjectId: peerSubjectId }));
+    peer.messages.length = 0;
+    const headLimit = vi.fn(async () => ({ success: true }));
+    const presenceLimit = vi.fn(async () => ({ success: true }));
     const runtime = new EditorProjectRoomDurableObjectV1(value.state, {
-      EDITOR_HEAD_RATE_LIMITER: { limit },
+      EDITOR_HEAD_RATE_LIMITER: { limit: headLimit },
+      EDITOR_PRESENCE_RATE_LIMITER: { limit: presenceLimit },
     });
 
     await runtime.webSocketMessage(
@@ -206,7 +500,15 @@ describe("Editor project Durable Object room", () => {
       encodeEditorLiveClientMessageV1({ kind: "head", protocolVersion: 1, revision: "2" }),
     );
 
-    expect(limit).toHaveBeenCalledWith({ key: `editor-head:${identity.organizationId}:${subjectId}` });
-    expect(peer.messages).toHaveLength(1);
+    await runtime.webSocketMessage(
+      sender,
+      encodeEditorLiveClientMessageV1({ kind: "presence-update", presence, protocolVersion: 1 }),
+    );
+
+    expect(headLimit).toHaveBeenCalledWith({ key: `editor-head:${identity.organizationId}:${subjectId}` });
+    expect(presenceLimit).toHaveBeenCalledWith({
+      key: `editor-presence:${identity.organizationId}:${subjectId}:33333333-3333-4333-8333-000000000001`,
+    });
+    expect(peer.messages.map((message) => JSON.parse(message).kind)).toEqual(["head", "presence-update"]);
   });
 });

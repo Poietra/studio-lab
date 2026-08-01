@@ -116,7 +116,7 @@ Realtime Editor head notification is a third, separately deployed edge at
 `server/cloudflare-editor-collaboration-worker.ts`. Copy
 `wrangler.editor-collaboration.example.jsonc` to the ignored
 `wrangler.editor-collaboration.jsonc`, then replace its route, zone, Hyperdrive
-ID, and the two account-unique rate-limit namespace IDs. Run
+ID, and the three account-unique rate-limit namespace IDs. Run
 `pnpm build:collaboration-worker` for a local dry-run bundle
 and `pnpm deploy:collaboration-worker` only with the reviewed deployment file.
 The route must remain limited to same-origin `/api/collaboration/*`; Worker
@@ -130,7 +130,13 @@ Object. Use a caching-disabled Hyperdrive configuration: revoked sessions,
 memberships, and deleted projects must not be admitted from a stale cache. The
 connect limiter is checked before PostgreSQL and again against the authenticated
 member; a separate head limiter bounds notification-to-tail-read amplification.
-Missing or malformed limiter bindings fail closed. The
+The per-connection presence limiter separately bounds ephemeral cursor,
+selection, and playhead fanout without making a member's second tab consume the
+first tab's budget. Presence is reconstructed only from bounded hibernated socket
+attachments: up to 32 members and 64 connections are admitted to one exact
+document epoch, duplicate tabs collapse to one member, and no presence value is
+written to PostgreSQL or advances the Editor revision. Missing or malformed
+limiter bindings fail closed. The
 Durable Object persists no Program, event, or revision. Its strict head message
 is only a lossy wake-up; every browser applies changes exclusively by reading
 the authenticated PostgreSQL event tail. Consequently a duplicate, stale, or
