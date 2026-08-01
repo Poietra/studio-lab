@@ -53,7 +53,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
         );
         await setup.query(
           `INSERT INTO public.organizations (tenant_id, display_name, status)
-           VALUES ('organization-active', 'Active organization', 'active'),
+            VALUES ('organization-active', 'Active organization', 'active'),
                   ('organization-user-suspended', 'Suspended user organization', 'active'),
                   ('organization-suspended', 'Suspended organization', 'suspended'),
                   ('organization-membership-suspended', 'Suspended membership organization', 'active'),
@@ -61,14 +61,15 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
         );
         await setup.query(
           `INSERT INTO public.organization_memberships (tenant_id, user_id, role, status)
-           VALUES ('organization-active', $1, 'owner', 'active'),
+            VALUES ('organization-active', $1, 'owner', 'active'),
                   ('organization-user-suspended', $2, 'owner', 'active'),
                   ('organization-user-suspended', $3, 'member', 'active'),
                   ('organization-suspended', $2, 'owner', 'active'),
                   ('organization-suspended', $4, 'member', 'active'),
                   ('organization-membership-suspended', $2, 'owner', 'active'),
                   ('organization-membership-suspended', $5, 'member', 'suspended'),
-                  ('organization-secondary', $1, 'member', 'active')`,
+                  ('organization-secondary', $1, 'member', 'active'),
+                  ('organization-secondary', $2, 'owner', 'active')`,
           Object.values(users),
         );
         await setup.query("COMMIT");
@@ -152,9 +153,21 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
         activeOrganizationId: "organization-active",
         version: 3,
       });
+      await expect(sessions.switchActiveOrganization(activeHash, "organization-user-suspended", 3)).resolves.toEqual({
+        kind: "organization-unavailable",
+      });
+      await expect(sessions.resolveActiveSession(activeHash)).resolves.toMatchObject({
+        sessionOrganizationId: "organization-active",
+      });
       await expect(sessions.resolveActiveSession(expiredHash)).resolves.toBeNull();
       await expect(sessions.resolveActiveSession(revokedHash)).resolves.toBeNull();
       await expect(sessions.resolveActiveSession(cascadeHash)).resolves.toBeNull();
+      await expect(sessions.revokeAccountSession(activeHash)).resolves.toBeUndefined();
+      await expect(sessions.resolveActiveSession(activeHash)).resolves.toBeNull();
+      await expect(sessions.switchActiveOrganization(activeHash, "organization-active", 3)).resolves.toEqual({
+        kind: "invalid-session",
+      });
+      await expect(sessions.revokeAccountSession(activeHash)).resolves.toBeUndefined();
 
       const stateHash = Buffer.alloc(32, 6);
       const browserBindingHash = Buffer.alloc(32, 7);
