@@ -19,6 +19,7 @@ const USER_ID = "00000000-0000-4000-8000-000000000001";
 const CUSTOMER_ID = "cus_service_customer";
 const SUBSCRIPTION_ID = "sub_service_subscription";
 const PRICE_ID = "price_service_pro";
+const PORTAL_CONFIGURATION_ID = "bpc_service_portal";
 const WEBHOOK_SECRET = "whsec_service_test_secret";
 const NOW = new Date("2026-08-01T12:00:00.000Z");
 const PERIOD_START = new Date("2026-08-01T00:00:00.000Z");
@@ -366,6 +367,7 @@ function serviceFixture(
     clock: options.clock ?? (() => new Date(NOW)),
     gateway,
     livemode: options.livemode ?? false,
+    portalConfigurationId: PORTAL_CONFIGURATION_ID,
     publicOrigin: "https://studio.poietra.example",
     repository: repository.repository,
     webhookSigningSecret: WEBHOOK_SECRET,
@@ -436,6 +438,95 @@ async function startCheckout(fixture: ReturnType<typeof serviceFixture>) {
 }
 
 describe("Stripe billing service", () => {
+  it("opens a fixed Customer Portal for the durable customer without consulting subscription status", async () => {
+    const fixture = serviceFixture();
+    fixture.repository.state.account = {
+      createdAt: NOW,
+      entitlementGeneration: 1n,
+      livemode: false,
+      observationGeneration: 1n,
+      reconcileGeneration: 1n,
+      reconciledAt: NOW,
+      stripeCustomerId: CUSTOMER_ID,
+      tenantId: TENANT_ID,
+      updatedAt: NOW,
+    };
+    fixture.repository.state.subscription = {
+      cancelAtPeriodEnd: false,
+      canonicalDigest: "a".repeat(64),
+      canonicalRetrievedAt: NOW,
+      createdAt: NOW,
+      currentPeriodEnd: PERIOD_END,
+      currentPeriodStart: PERIOD_START,
+      entitlementSnapshotId: "00000000-0000-4000-8000-000000000777",
+      entitlementSourceGeneration: 1n,
+      livemode: false,
+      planKey: "pro",
+      reconcileGeneration: 1n,
+      sourceEventId: "evt_portal_canceled",
+      status: "canceled",
+      stripeCustomerId: CUSTOMER_ID,
+      stripeSubscriptionId: SUBSCRIPTION_ID,
+      tenantId: TENANT_ID,
+      updatedAt: NOW,
+    };
+
+    const principal = await ownerPrincipal();
+    const [first, second] = await Promise.all([
+      fixture.service.openPortal({ principal }),
+      fixture.service.openPortal({ principal }),
+    ]);
+    expect(first.portalUrl).toMatch(/^https:\/\/billing\.stripe\.test\/p\/session\//u);
+    expect(second.portalUrl).toMatch(/^https:\/\/billing\.stripe\.test\/p\/session\//u);
+    expect(second.portalUrl).not.toBe(first.portalUrl);
+    const portalRequests = fixture.gateway.portalRequests();
+    expect(portalRequests).toHaveLength(2);
+    expect(new Set(portalRequests.map((request) => request.requestId)).size).toBe(2);
+    for (const request of portalRequests) {
+      expect(request).toEqual({
+        configurationId: PORTAL_CONFIGURATION_ID,
+        customerId: CUSTOMER_ID,
+        requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
+        returnUrl: "https://studio.poietra.example/?billing=portal-return",
+      });
+    }
+    expect(fixture.repository.repository.readCurrentSubscription).not.toHaveBeenCalled();
+  });
+
+  it("rejects Customer Portal before Stripe when the durable customer binding is absent or in another mode", async () => {
+    const unbound = serviceFixture();
+    await expect(unbound.service.openPortal({ principal: await ownerPrincipal() })).rejects.toMatchObject({
+      status: 409,
+    });
+    expect(unbound.gateway.portalRequests()).toEqual([]);
+
+    const mismatched = serviceFixture();
+    mismatched.repository.state.account = {
+      createdAt: NOW,
+      entitlementGeneration: 0n,
+      livemode: true,
+      observationGeneration: 0n,
+      reconcileGeneration: 0n,
+      reconciledAt: null,
+      stripeCustomerId: CUSTOMER_ID,
+      tenantId: TENANT_ID,
+      updatedAt: NOW,
+    };
+    await expect(mismatched.service.openPortal({ principal: await ownerPrincipal() })).rejects.toMatchObject({
+      status: 409,
+    });
+    expect(mismatched.gateway.portalRequests()).toEqual([]);
+
+    const invalidProviderMode = serviceFixture({ gatewayLivemode: true });
+    invalidProviderMode.repository.state.account = {
+      ...mismatched.repository.state.account,
+      livemode: false,
+    };
+    await expect(invalidProviderMode.service.openPortal({ principal: await ownerPrincipal() })).rejects.toMatchObject({
+      status: 503,
+    });
+  });
+
   it("uses one durable Checkout intent across parallel and post-response retries", async () => {
     const fixture = serviceFixture();
     const principal = await ownerPrincipal();
@@ -474,6 +565,7 @@ describe("Stripe billing service", () => {
       clock: () => new Date(NOW),
       gateway: fixture.gateway,
       livemode: false,
+      portalConfigurationId: PORTAL_CONFIGURATION_ID,
       publicOrigin: "https://studio.poietra.example",
       repository: fixture.repository.repository,
       webhookSigningSecret: WEBHOOK_SECRET,

@@ -4,15 +4,15 @@ import type { BillingControlPlaneServiceV1 } from "../billing-control-plane";
 import { HttpError } from "../http/json";
 import { isVerifiedManimPrincipal } from "../manim-request-principal";
 import type { EntitlementSnapshotV1 } from "./entitlement-repository";
-import type { StripeCheckoutPlanDefinitionV1, StripeCheckoutPlanCatalogV1 } from "./plan-catalog";
+import type { StripeCheckoutPlanCatalogV1, StripeCheckoutPlanDefinitionV1 } from "./plan-catalog";
 import type {
   BillingCheckoutAttemptV1,
   BillingSubscriptionV1,
   StripeBillingRepositoryV1,
 } from "./stripe-billing-repository";
 import {
-  canonicalStripeSubscriptionBytesV1,
   type CanonicalStripeSubscriptionV1,
+  canonicalStripeSubscriptionBytesV1,
   type StripeBillingGatewayV1,
   StripeGatewayErrorV1,
 } from "./stripe-gateway";
@@ -40,6 +40,11 @@ const optionsSchemaV1 = z
       .min(60 * 60 * 1_000)
       .max(30 * 24 * 60 * 60 * 1_000)
       .default(DEFAULT_PAST_DUE_GRACE_MS_V1),
+    portalConfigurationId: z
+      .string()
+      .regex(/^bpc_[A-Za-z0-9_]{1,247}$/u)
+      .nullable()
+      .default(null),
     publicOrigin: z.string().url(),
     webhookSigningSecret: z
       .string()
@@ -62,6 +67,7 @@ export type StripeBillingServiceOptionsV1 = Readonly<{
   gateway: StripeBillingGatewayV1;
   livemode: boolean;
   pastDueGraceMs?: number;
+  portalConfigurationId?: string;
   publicOrigin: string;
   repository: StripeBillingRepositoryV1;
   webhookSigningSecret: string;
@@ -210,6 +216,7 @@ function validateDependencies(options: StripeBillingServiceOptionsV1) {
     typeof options.catalog?.byPlanKey !== "function" ||
     typeof options.catalog.byStripePriceId !== "function" ||
     typeof options.gateway?.createCheckoutSession !== "function" ||
+    typeof options.gateway.createPortalSession !== "function" ||
     typeof options.gateway.retrieveSubscription !== "function" ||
     typeof options.repository?.readAccount !== "function" ||
     typeof options.repository.readAccountByStripeCustomerId !== "function" ||
@@ -238,6 +245,7 @@ export function createStripeBillingServiceV1(options: StripeBillingServiceOption
   const parsedOptions = optionsSchemaV1.parse({
     livemode: options.livemode,
     pastDueGraceMs: options.pastDueGraceMs,
+    portalConfigurationId: options.portalConfigurationId ?? null,
     publicOrigin: options.publicOrigin,
     webhookSigningSecret: options.webhookSigningSecret,
   });
@@ -519,6 +527,37 @@ export function createStripeBillingServiceV1(options: StripeBillingServiceOption
             }
           : null,
       };
+    },
+    async openPortal({ principal }, signal) {
+      const verified = assertPrincipal(principal);
+      const configurationId = parsedOptions.portalConfigurationId;
+      if (configurationId === null) throw new HttpError("Stripe Customer Portal is not configured.", 503);
+      const account = await options.repository.readAccount(verified.tenantId, signal);
+      if (account?.stripeCustomerId === null || account?.stripeCustomerId === undefined || account.livemode === null) {
+        throw new HttpError("Stripe customer is not bound.", 409);
+      }
+      if (account.livemode !== parsedOptions.livemode) {
+        throw new HttpError("Stripe billing mode changed.", 409);
+      }
+      const returnUrl = new URL("/?billing=portal-return", publicOrigin).href;
+      const portal = await options.gateway.createPortalSession(
+        {
+          configurationId,
+          customerId: account.stripeCustomerId,
+          requestId: cryptoProvider.randomUUID(),
+          returnUrl,
+        },
+        signal,
+      );
+      if (
+        portal.configurationId !== configurationId ||
+        portal.customerId !== account.stripeCustomerId ||
+        portal.livemode !== parsedOptions.livemode ||
+        portal.returnUrl !== returnUrl
+      ) {
+        throw new HttpError("Stripe Customer Portal Session is invalid.", 503);
+      }
+      return { portalUrl: portal.url };
     },
     ready(signal) {
       return options.repository.ready(signal);

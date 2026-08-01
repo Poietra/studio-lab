@@ -1,4 +1,14 @@
-import { z } from "zod";
+import type { ZodType } from "zod";
+import {
+  type BillingCheckoutViewV1,
+  type BillingPortalViewV1,
+  type BillingStatusViewV1,
+  billingCheckoutRequestSchemaV1,
+  billingCheckoutViewSchemaV1,
+  billingPortalRequestSchemaV1,
+  billingPortalViewSchemaV1,
+  billingStatusViewSchemaV1,
+} from "../src/billing/billing-contract";
 import { MAX_STRIPE_WEBHOOK_BYTES_V1 } from "./billing/stripe-webhook";
 import { HttpError } from "./http/json";
 import type { ProductionAdmissionRequest, ProductionRequestAdmission } from "./manim-production-server";
@@ -6,77 +16,20 @@ import { authenticateManimPrincipal, type VerifiedManimPrincipal } from "./manim
 
 export const BILLING_STATUS_ROUTE_V1 = "/api/billing/status";
 export const BILLING_CHECKOUT_ROUTE_V1 = "/api/billing/checkout";
+export const BILLING_PORTAL_ROUTE_V1 = "/api/billing/portal";
 export const STRIPE_BILLING_WEBHOOK_ROUTE_V1 = "/api/billing/stripe/webhook";
 
 const ORGANIZATION_HEADER_V1 = "x-poietra-organization-id";
 const STRIPE_SIGNATURE_HEADER_V1 = "stripe-signature";
-const MAX_CHECKOUT_BODY_BYTES_V1 = 1_024;
+const MAX_BILLING_MUTATION_BODY_BYTES_V1 = 1_024;
 const MAX_STRIPE_SIGNATURE_BYTES_V1 = 8 * 1_024;
-
-const checkoutRequestSchemaV1 = z
-  .object({
-    planKey: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/u),
-  })
-  .strict();
-
-const checkoutViewSchemaV1 = z
-  .object({
-    checkoutUrl: z
-      .string()
-      .max(2_048)
-      .refine((value) => {
-        try {
-          const url = new URL(value);
-          return url.protocol === "https:" && !url.username && !url.password;
-        } catch {
-          return false;
-        }
-      }),
-  })
-  .strict();
-
-const billingStatusViewSchemaV1 = z
-  .object({
-    configured: z.boolean(),
-    entitlement: z
-      .object({
-        accessState: z.enum(["active", "grace", "blocked"]),
-        accessUntil: z.iso.datetime(),
-        periodEnd: z.iso.datetime(),
-        periodStart: z.iso.datetime(),
-        planKey: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/u),
-        renderEnabled: z.boolean(),
-        renderJobLimit: z.number().int().min(0).max(1_000_000),
-        sourceGeneration: z.string().regex(/^[1-9][0-9]*$/u),
-      })
-      .strict()
-      .nullable(),
-    subscription: z
-      .object({
-        cancelAtPeriodEnd: z.boolean(),
-        periodEnd: z.iso.datetime(),
-        periodStart: z.iso.datetime(),
-        planKey: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/u),
-        status: z.enum([
-          "active",
-          "canceled",
-          "incomplete",
-          "incomplete_expired",
-          "past_due",
-          "paused",
-          "trialing",
-          "unpaid",
-        ]),
-      })
-      .strict()
-      .nullable(),
-  })
-  .strict();
-
-export type BillingStatusViewV1 = Readonly<z.infer<typeof billingStatusViewSchemaV1>>;
 
 export type BillingControlPlaneServiceV1 = Readonly<{
   acceptWebhook(input: Readonly<{ rawBody: Uint8Array; stripeSignature: string }>, signal?: AbortSignal): Promise<void>;
+  openPortal(
+    input: Readonly<{ principal: VerifiedManimPrincipal }>,
+    signal?: AbortSignal,
+  ): Promise<BillingPortalViewV1>;
   readStatus(
     input: Readonly<{ principal: VerifiedManimPrincipal }>,
     signal?: AbortSignal,
@@ -84,7 +37,7 @@ export type BillingControlPlaneServiceV1 = Readonly<{
   startCheckout(
     input: Readonly<{ planKey: string; principal: VerifiedManimPrincipal }>,
     signal?: AbortSignal,
-  ): Promise<Readonly<{ checkoutUrl: string }>>;
+  ): Promise<BillingCheckoutViewV1>;
 }>;
 
 export type BillingControlPlaneFetchV1 = Readonly<{
@@ -221,22 +174,25 @@ function requireCheckoutMutation(request: Request, publicOrigin: string) {
   }
 }
 
-async function checkoutBody(request: Request) {
-  const rawBody = await readBoundedRawBody(request, MAX_CHECKOUT_BODY_BYTES_V1);
-  let decoded: string;
-  try {
-    decoded = new TextDecoder("utf-8", { fatal: true }).decode(rawBody);
-  } catch {
-    throw new BillingRequestErrorV1("Checkout request is invalid.", 400);
+function requirePortalMutation(request: Request, publicOrigin: string) {
+  if (request.headers.get("origin") !== publicOrigin || request.headers.get("sec-fetch-site") !== "same-origin") {
+    throw new BillingRequestErrorV1("Customer Portal requires a same-origin request.", 403);
   }
+  if (contentType(request) !== "application/json") {
+    throw new BillingRequestErrorV1("Customer Portal requires an application/json request.", 415);
+  }
+}
+
+async function mutationBody<T>(request: Request, schema: ZodType<T>, errorMessage: string) {
+  const rawBody = await readBoundedRawBody(request, MAX_BILLING_MUTATION_BODY_BYTES_V1);
   let value: unknown;
   try {
-    value = JSON.parse(decoded) as unknown;
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(rawBody)) as unknown;
   } catch {
-    throw new BillingRequestErrorV1("Checkout request is invalid.", 400);
+    throw new BillingRequestErrorV1(errorMessage, 400);
   }
-  const parsed = checkoutRequestSchemaV1.safeParse(value);
-  if (!parsed.success) throw new BillingRequestErrorV1("Checkout request is invalid.", 400);
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) throw new BillingRequestErrorV1(errorMessage, 400);
   return parsed.data;
 }
 
@@ -278,6 +234,7 @@ export function createBillingControlPlaneV1(
   if (
     typeof service?.readStatus !== "function" ||
     typeof service.startCheckout !== "function" ||
+    typeof service.openPortal !== "function" ||
     typeof service.acceptWebhook !== "function"
   ) {
     throw new TypeError("Billing control-plane requires a complete service.");
@@ -293,6 +250,7 @@ export function createBillingControlPlaneV1(
         if (
           pathname !== BILLING_STATUS_ROUTE_V1 &&
           pathname !== BILLING_CHECKOUT_ROUTE_V1 &&
+          pathname !== BILLING_PORTAL_ROUTE_V1 &&
           pathname !== STRIPE_BILLING_WEBHOOK_ROUTE_V1
         ) {
           throw new BillingRequestErrorV1("Billing endpoint not found.", 404);
@@ -318,17 +276,33 @@ export function createBillingControlPlaneV1(
             return jsonResponse(405, { error: "Method not allowed." }, "POST");
           }
           requireCheckoutMutation(request, publicOrigin);
-          const body = await checkoutBody(request);
+          const body = await mutationBody(request, billingCheckoutRequestSchemaV1, "Checkout request is invalid.");
           const principal = await authenticateManimPrincipal(
             admission,
             billingAdmissionRequest(request, pathname),
             request.signal,
           );
-          const checkout = checkoutViewSchemaV1.safeParse(
+          const checkout = billingCheckoutViewSchemaV1.safeParse(
             await service.startCheckout({ planKey: body.planKey, principal }, request.signal),
           );
           if (!checkout.success) throw new TypeError("Billing service returned an invalid Checkout URL.");
           return jsonResponse(200, checkout.data);
+        }
+
+        if (pathname === BILLING_PORTAL_ROUTE_V1) {
+          if (request.method !== "POST") {
+            return jsonResponse(405, { error: "Method not allowed." }, "POST");
+          }
+          requirePortalMutation(request, publicOrigin);
+          await mutationBody(request, billingPortalRequestSchemaV1, "Customer Portal request is invalid.");
+          const principal = await authenticateManimPrincipal(
+            admission,
+            billingAdmissionRequest(request, pathname),
+            request.signal,
+          );
+          const portal = billingPortalViewSchemaV1.safeParse(await service.openPortal({ principal }, request.signal));
+          if (!portal.success) throw new TypeError("Billing service returned an invalid Customer Portal URL.");
+          return jsonResponse(200, portal.data);
         }
 
         if (request.method !== "POST") {

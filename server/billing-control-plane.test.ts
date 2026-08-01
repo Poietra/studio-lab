@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   BILLING_CHECKOUT_ROUTE_V1,
+  BILLING_PORTAL_ROUTE_V1,
   BILLING_STATUS_ROUTE_V1,
   type BillingControlPlaneServiceV1,
   createBillingControlPlaneV1,
@@ -28,11 +29,15 @@ function harness(overrides: Partial<BillingControlPlaneServiceV1> = {}) {
     entitlement: null,
     subscription: null,
   }));
+  const openPortal = vi.fn<BillingControlPlaneServiceV1["openPortal"]>(async () => ({
+    portalUrl: "https://billing.stripe.com/p/session/test_portal",
+  }));
   const startCheckout = vi.fn<BillingControlPlaneServiceV1["startCheckout"]>(async () => ({
     checkoutUrl: "https://checkout.stripe.com/c/pay_test",
   }));
   const service: BillingControlPlaneServiceV1 = {
     acceptWebhook,
+    openPortal,
     readStatus,
     startCheckout,
     ...overrides,
@@ -42,6 +47,7 @@ function harness(overrides: Partial<BillingControlPlaneServiceV1> = {}) {
     admission,
     authenticate,
     handler: createBillingControlPlaneV1(admission, service, ORIGIN),
+    openPortal,
     readStatus,
     startCheckout,
   };
@@ -159,6 +165,60 @@ describe("billing control-plane Fetch boundary", () => {
     expect(authenticate).toHaveBeenCalledOnce();
   });
 
+  it("opens Customer Portal only for an exact same-origin empty request", async () => {
+    const { authenticate, handler, openPortal } = harness();
+    const valid = await handler.fetch(
+      new Request(`${ORIGIN}${BILLING_PORTAL_ROUTE_V1}`, {
+        body: "{}",
+        headers: authenticatedHeaders({
+          "content-type": "application/json; charset=utf-8",
+          origin: ORIGIN,
+          "sec-fetch-site": "same-origin",
+        }),
+        method: "POST",
+      }),
+    );
+
+    expect(valid.status).toBe(200);
+    await expect(valid.json()).resolves.toEqual({
+      portalUrl: "https://billing.stripe.com/p/session/test_portal",
+    });
+    expect(openPortal).toHaveBeenCalledWith(
+      { principal: expect.objectContaining({ subjectId: "billing-user", tenantId: ORGANIZATION_ID }) },
+      expect.any(AbortSignal),
+    );
+    expect(authenticate).toHaveBeenCalledWith(
+      expect.objectContaining({ method: "POST", pathname: BILLING_PORTAL_ROUTE_V1 }),
+      expect.any(AbortSignal),
+    );
+
+    for (const request of [
+      new Request(`${ORIGIN}${BILLING_PORTAL_ROUTE_V1}`, {
+        body: "{}",
+        headers: authenticatedHeaders({
+          "content-type": "application/json",
+          origin: "https://attacker.example",
+          "sec-fetch-site": "cross-site",
+        }),
+        method: "POST",
+      }),
+      new Request(`${ORIGIN}${BILLING_PORTAL_ROUTE_V1}`, {
+        body: JSON.stringify({ customerId: "cus_client_controlled" }),
+        headers: authenticatedHeaders({
+          "content-type": "application/json",
+          origin: ORIGIN,
+          "sec-fetch-site": "same-origin",
+        }),
+        method: "POST",
+      }),
+    ]) {
+      const response = await handler.fetch(request);
+      expect(response.status).toBe(request.headers.get("origin") === ORIGIN ? 400 : 403);
+    }
+    expect(openPortal).toHaveBeenCalledOnce();
+    expect(authenticate).toHaveBeenCalledOnce();
+  });
+
   it("passes the signed webhook body byte-for-byte without session admission", async () => {
     const { acceptWebhook, authenticate, handler } = harness();
     const rawBody = new Uint8Array([0x7b, 0x22, 0x80, 0xff, 0x22, 0x7d]);
@@ -221,6 +281,7 @@ describe("billing control-plane Fetch boundary", () => {
     for (const request of requests) expect((await rejected.handler.fetch(request)).status).toBeGreaterThanOrEqual(400);
     expect(rejected.readStatus).not.toHaveBeenCalled();
     expect(rejected.startCheckout).not.toHaveBeenCalled();
+    expect(rejected.openPortal).not.toHaveBeenCalled();
     expect(rejected.acceptWebhook).not.toHaveBeenCalled();
   });
 });
