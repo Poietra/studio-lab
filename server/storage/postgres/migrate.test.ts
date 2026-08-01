@@ -34,6 +34,8 @@ import {
   RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE,
   RENDER_SESSION_MIGRATION_V2_SOURCE,
   RENDER_SESSION_RETENTION_MIGRATION_V6_SOURCE,
+  RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM,
+  RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE,
   SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE,
   SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE,
   WORKSPACE_SOURCE_MIGRATION_V1_SOURCE,
@@ -80,10 +82,10 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 14 });
-    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 15 });
+    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 14 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 15 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -98,7 +100,8 @@ describe("durable storage migrations", () => {
     expect(db.queries.filter(({ text }) => text === ACCOUNT_SESSION_MIGRATION_V12_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === OIDC_LOGIN_MIGRATION_V13_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(28);
+    expect(db.queries.filter(({ text }) => text === RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(30);
   });
 
   it("rejects a missing prerequisite under the same advisory lock", async () => {
@@ -268,6 +271,36 @@ describe("durable storage migrations", () => {
     );
     expect(BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE).toContain("CREATE TABLE public.usage_events");
     expect(BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE).toContain("Usage events are append-only.");
+  });
+
+  it("fails closed when legacy binaries omit render usage lifecycle writes in v15", () => {
+    expect(durableStorageMigrationChecksum(RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE)).toBe(
+      RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM,
+    );
+    expect(RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE).toContain(
+      "CREATE CONSTRAINT TRIGGER render_sessions_require_usage_state_v15",
+    );
+    expect(RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE).toContain(
+      "AFTER INSERT OR UPDATE OF status ON public.render_sessions",
+    );
+    expect(RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE).toContain("DEFERRABLE INITIALLY DEFERRED");
+    expect(RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE).toContain("operation_kind = 'render'");
+    expect(RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE).toContain(
+      "A new render session requires its render usage reservation.",
+    );
+    expect(RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE).toContain(
+      "current_status IN ('preparing', 'rendering') AND reservation_state <> 'reserved'",
+    );
+    expect(RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE).toContain(
+      "current_status IN ('ready', 'committed', 'undone') AND reservation_state <> 'committed'",
+    );
+    expect(RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE).toContain(
+      "current_status IN ('cancelled', 'failed') AND reservation_state <> 'released'",
+    );
+    expect(RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE).toContain(
+      "current_status = 'discarded' AND reservation_state NOT IN ('committed', 'released')",
+    );
+    expect(RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE).toContain("IF TG_OP = 'UPDATE' THEN");
   });
 
   it("defines bounded identities, memberships, and a deferred last-owner invariant in v11", () => {

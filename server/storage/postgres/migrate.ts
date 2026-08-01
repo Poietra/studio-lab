@@ -19,6 +19,7 @@ import accountOrganizationSqlV11 from "./migrations/0011_accounts_organizations.
 import accountSessionSqlV12 from "./migrations/0012_account_sessions.sql?raw";
 import oidcLoginSqlV13 from "./migrations/0013_oidc_login.sql?raw";
 import billingEntitlementSqlV14 from "./migrations/0014_billing_entitlements.sql?raw";
+import renderSessionUsageSqlV15 from "./migrations/0015_render_session_usage.sql?raw";
 import { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
@@ -28,6 +29,7 @@ import { WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM } from "./postgres-workspace-sou
 import { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
 import { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-session-cpu-failure-schema";
 import { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
+import { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-usage-schema";
 import { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
 
 export { ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM } from "./account-organization-schema";
@@ -38,6 +40,7 @@ export { SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM } from "./postgres-snapshot-
 export { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
 export { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-session-cpu-failure-schema";
 export { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
+export { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-usage-schema";
 export { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
 
 const DURABLE_STORAGE_MIGRATION_LOCK = "5784133447825795121";
@@ -77,6 +80,7 @@ export const ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE = accountOrganizationSqlV
 export const ACCOUNT_SESSION_MIGRATION_V12_SOURCE = accountSessionSqlV12;
 export const OIDC_LOGIN_MIGRATION_V13_SOURCE = oidcLoginSqlV13;
 export const BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE = billingEntitlementSqlV14;
+export const RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE = renderSessionUsageSqlV15;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -219,6 +223,16 @@ const billingEntitlementMigrationV14: DurableStorageMigration<14> = Object.freez
   version: 14,
 });
 
+const renderSessionUsageMigrationV15: DurableStorageMigration<15> = Object.freeze({
+  checksum: RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM,
+  checksumMismatch: "The render-session usage migration checksum is invalid.",
+  installedMismatch: "The installed render-session usage schema does not match migration v15.",
+  missingPrerequisite: "Render-session usage migration v15 requires durable storage migrations v1 through v14.",
+  prerequisiteMismatch: "Render-session usage migration v15 requires exact durable storage migrations v1 through v14.",
+  source: RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE,
+  version: 15,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
@@ -234,6 +248,7 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   accountSessionMigrationV12,
   oidcLoginMigrationV13,
   billingEntitlementMigrationV14,
+  renderSessionUsageMigrationV15,
 ]);
 
 function validateSource(migration: DurableStorageMigration) {

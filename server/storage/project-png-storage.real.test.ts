@@ -5,6 +5,10 @@ import { CreateBucketCommand, PutBucketVersioningCommand, S3Client } from "@aws-
 import { Pool } from "pg";
 import { describe, expect, it } from "vitest";
 
+import {
+  mutateRenderSessionWithUsageFixtureV1,
+  seedActiveRenderEntitlementFixtureV1,
+} from "./billing-entitlement-real-test-fixture";
 import { applyBundledDurableStorageMigrations } from "./postgres/migrate";
 import { PostgresProjectPngRepositoryV1 } from "./postgres/postgres-project-png-repository";
 import { PostgresRenderSessionRepositoryV1 } from "./postgres/postgres-render-session-repository";
@@ -116,6 +120,7 @@ describe.skipIf(!E2E_CONFIGURED)("PostgreSQL + MinIO project image.png storage",
     let reopenedPngRepository: PostgresProjectPngRepositoryV1 | null = null;
     try {
       await sourceRepository.ensureTenant(tenant);
+      await seedActiveRenderEntitlementFixtureV1(inspectionPool, tenant);
       const source = "from manim import *\n\nclass MainScene(Scene):\n    def construct(self):\n        self.wait(1)\n";
       const sourceBlob = await sourceStore.putSource(tenant, source);
       const livePatchedBlob = await sourceStore.putSource(tenant, `${source}\n# retained by a live session\n`);
@@ -244,12 +249,30 @@ describe.skipIf(!E2E_CONFIGURED)("PostgreSQL + MinIO project image.png storage",
           WHERE tenant_id = $1 AND session_id = ANY($2::uuid[])`,
         [tenant, [liveSession.id, terminalSession.id, committedSession.id]],
       );
-      await inspectionPool.query(
-        `UPDATE public.render_sessions
-            SET status = 'committed'
-          WHERE tenant_id = $1 AND session_id = $2::uuid`,
-        [tenant, committedSession.id],
-      );
+      await mutateRenderSessionWithUsageFixtureV1(inspectionPool, {
+        mutate: (client) =>
+          client.query(
+            `UPDATE public.render_sessions
+                SET status = 'committed'
+              WHERE tenant_id = $1 AND session_id = $2::uuid`,
+            [tenant, committedSession.id],
+          ),
+        sessionId: committedSession.id,
+        target: "committed",
+        tenantId: tenant,
+      });
+      await expect(
+        inspectionPool.query<{ outcome: string; state: string }>(
+          `SELECT reservation.state, event.outcome
+             FROM public.usage_reservations reservation
+             JOIN public.usage_events event
+               ON event.tenant_id = reservation.tenant_id
+              AND event.operation_kind = reservation.operation_kind
+              AND event.operation_id = reservation.operation_id
+            WHERE reservation.tenant_id = $1 AND reservation.operation_id = $2::uuid`,
+          [tenant, committedSession.id],
+        ),
+      ).resolves.toMatchObject({ rows: [{ outcome: "committed", state: "committed" }] });
 
       const replacementGc = await runProjectPngGcV1({
         cutoff: new Date(Date.now() + 2_000),

@@ -49,7 +49,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL billing entitlements", () => {
       poolConfig: { connectionString: DATABASE_URL, max: 4 },
     });
     try {
-      expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: true, version: 14 });
+      expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: true, version: 15 });
       await createOrganizations(pool);
       await expect(repositoryA.ready()).resolves.toBe(true);
       await expect(repositoryB.ready()).resolves.toBe(true);

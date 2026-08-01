@@ -12,6 +12,10 @@ import {
 } from "../durable-manim-render-worker";
 import { HttpError } from "../http/json";
 import {
+  mutateRenderSessionWithUsageFixtureV1,
+  seedActiveRenderEntitlementFixtureV1,
+} from "./billing-entitlement-real-test-fixture";
+import {
   applyBundledDurableStorageMigrations,
   RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_SOURCE,
   RENDER_SESSION_FAILURE_MIGRATION_V8_SOURCE,
@@ -411,6 +415,25 @@ async function capturedError(operation: Promise<unknown>) {
   }
 }
 
+async function renderUsageEvidence(pool: Pool, tenantId: string, sessionId: string) {
+  const result = await pool.query<{ event_count: number; outcome: string | null; state: string }>(
+    `SELECT reservation.state,
+            count(event.operation_id)::integer AS event_count,
+            min(event.outcome) AS outcome
+       FROM public.usage_reservations reservation
+       LEFT JOIN public.usage_events event
+         ON event.tenant_id = reservation.tenant_id
+        AND event.operation_kind = reservation.operation_kind
+        AND event.operation_id = reservation.operation_id
+      WHERE reservation.tenant_id = $1
+        AND reservation.operation_kind = 'render'
+        AND reservation.operation_id = $2::uuid
+      GROUP BY reservation.state`,
+    [tenantId, sessionId],
+  );
+  return result.rows[0] ?? null;
+}
+
 async function verifyRenderCpuFailureMigration(pool: Pool) {
   const client = await pool.connect();
   let began = false;
@@ -479,6 +502,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
       );
       await sources.ensureTenant(tenantId);
       await sources.ensureTenant(otherTenantId);
+      await seedActiveRenderEntitlementFixtureV1(setupPool, tenantId);
       await sources.createManagedProject({
         name: "Durable render workspace",
         projectId,
@@ -486,6 +510,29 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
         tenantId,
       });
       const originalHead = await sources.readSourceHead(tenantId, projectId, "main.py");
+      const guardedSessionId = randomUUID();
+      await renders.createSession({
+        commitCorrelationKey: "usage-guard-candidate",
+        executionTimeoutMs: 120_000,
+        id: guardedSessionId,
+        originalHead,
+        patch: { anchorLine: 4, anchorLines: [4], insertedCode: "        self.wait(2)\n" },
+        patchedBlob,
+        programBatchId: "batch-usage-guard",
+        programTransactionId: "transaction-usage-guard",
+        renderRequestId: "request-usage-guard",
+        sceneName: "MainScene",
+        tenantId,
+      });
+      await expect(
+        setupPool.query(
+          `UPDATE public.render_sessions SET status = 'ready'
+            WHERE tenant_id = $1 AND session_id = $2::uuid`,
+          [tenantId, guardedSessionId],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+      await expect(renders.readSession(tenantId, guardedSessionId)).resolves.toMatchObject({ status: "preparing" });
+      await expect(renders.cancelSession(tenantId, guardedSessionId)).resolves.toMatchObject({ status: "cancelled" });
       const commonChildEnvironment = {
         POIETRA_RENDER_SESSION_E2E_COMMIT_KEY: commitCorrelationKey,
         POIETRA_RENDER_SESSION_E2E_ORIGINAL_HEAD: JSON.stringify(serializeHead(originalHead)),
@@ -565,6 +612,11 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
         tenantId,
       });
       expect(ready).toMatchObject({ artifactLocator: "artifact:verified", status: "ready" });
+      await expect(renderUsageEvidence(setupPool, tenantId, sessionId)).resolves.toEqual({
+        event_count: 1,
+        outcome: "committed",
+        state: "committed",
+      });
 
       const expiredSessionId = randomUUID();
       await renders.createSession({
@@ -624,6 +676,9 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
         failureCode: "memory-limit",
         status: "discarded",
       });
+      const failedUsage = await renderUsageEvidence(setupPool, tenantId, expiredSessionId);
+      expect(failedUsage).toMatchObject({ event_count: 1, state: "released" });
+      expect(["expired", "released"]).toContain(failedUsage?.outcome);
 
       const sweepSessionId = randomUUID();
       await renders.createSession({
@@ -652,6 +707,9 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
         lease: null,
         status: "failed",
       });
+      const expiredUsage = await renderUsageEvidence(setupPool, tenantId, sweepSessionId);
+      expect(expiredUsage).toMatchObject({ event_count: 1, state: "released" });
+      expect(["expired", "released"]).toContain(expiredUsage?.outcome);
 
       const createRollingSession = (id: string, label: string) =>
         renders.createSession({
@@ -669,13 +727,19 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
         });
       const rollingFailureSessionId = randomUUID();
       await createRollingSession(rollingFailureSessionId, "rolling-failure-code");
-      await setupPool.query(
-        `UPDATE public.render_sessions
-            SET status = 'failed',
-                error = 'Render exceeded its process limit.'
-          WHERE tenant_id = $1 AND session_id = $2::uuid`,
-        [tenantId, rollingFailureSessionId],
-      );
+      await mutateRenderSessionWithUsageFixtureV1(setupPool, {
+        mutate: (client) =>
+          client.query(
+            `UPDATE public.render_sessions
+                SET status = 'failed',
+                    error = 'Render exceeded its process limit.'
+              WHERE tenant_id = $1 AND session_id = $2::uuid`,
+            [tenantId, rollingFailureSessionId],
+          ),
+        sessionId: rollingFailureSessionId,
+        target: "released",
+        tenantId,
+      });
       await expect(renders.readSession(tenantId, rollingFailureSessionId)).resolves.toMatchObject({
         failureCode: "pids-limit",
         status: "failed",
@@ -693,12 +757,18 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
 
       const rollingUnknownDiscardSessionId = randomUUID();
       await createRollingSession(rollingUnknownDiscardSessionId, "rolling-unknown-discard");
-      await setupPool.query(
-        `UPDATE public.render_sessions
-            SET status = 'discarded'
-          WHERE tenant_id = $1 AND session_id = $2::uuid`,
-        [tenantId, rollingUnknownDiscardSessionId],
-      );
+      await mutateRenderSessionWithUsageFixtureV1(setupPool, {
+        mutate: (client) =>
+          client.query(
+            `UPDATE public.render_sessions
+                SET status = 'discarded'
+              WHERE tenant_id = $1 AND session_id = $2::uuid`,
+            [tenantId, rollingUnknownDiscardSessionId],
+          ),
+        sessionId: rollingUnknownDiscardSessionId,
+        target: "released",
+        tenantId,
+      });
       await expect(renders.readSession(tenantId, rollingUnknownDiscardSessionId)).resolves.toMatchObject({
         failureCode: null,
         status: "discarded",
@@ -793,6 +863,11 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
         executionAttempts: 2,
         status: "ready",
       });
+      await expect(renderUsageEvidence(setupPool, tenantId, brokerSessionId)).resolves.toEqual({
+        event_count: 1,
+        outcome: "committed",
+        state: "committed",
+      });
 
       const commitActionId = randomUUID();
       const commitUndoGate = "8135001";
@@ -871,6 +946,11 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
         expect(finalHead.blob.digest).toBe(competingBlob.digest);
         expect(finalSession.status).toBe("committed");
       }
+      await expect(renderUsageEvidence(setupPool, tenantId, sessionId)).resolves.toEqual({
+        event_count: 1,
+        outcome: "committed",
+        state: "committed",
+      });
 
       const crossTenantError = await capturedError(renders.readSession(otherTenantId, sessionId));
       const missingError = await capturedError(renders.readSession(tenantId, randomUUID()));
@@ -900,6 +980,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
     try {
       await applyBundledDurableStorageMigrations(setupPool);
       await sources.ensureTenant(tenantId);
+      await seedActiveRenderEntitlementFixtureV1(setupPool, tenantId);
       await sources.createManagedProject({
         name: "Cancellation authority workspace",
         projectId,
@@ -1054,6 +1135,11 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL durab
       await expect(apiRepository.discardSession(tenantId, sessionId)).resolves.toMatchObject({
         failureCode: "cancelled",
         status: "discarded",
+      });
+      await expect(renderUsageEvidence(setupPool, tenantId, sessionId)).resolves.toEqual({
+        event_count: 1,
+        outcome: "released",
+        state: "released",
       });
       await apiRepository.close();
       reopenedRepository = renderRepository();
