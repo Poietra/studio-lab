@@ -48,7 +48,7 @@ const resolvedAnchorSchema = z.object({
   ]),
 });
 
-const programSchema = z.object({
+export const canonicalEditProgramSchemaV1 = z.object({
   anchor: resolvedAnchorSchema,
   intentCount: z.number().int().min(1).max(16),
   loweringStatus: z.enum(["illustrative", "supported", "unsupported"]),
@@ -133,8 +133,8 @@ function validateSourceBindings(
 
 export const programRenderRequestSchema = programRenderRequestBaseSchema
   .extend({
-    program: programSchema,
-    programs: z.array(programSchema).min(1).max(32).optional(),
+    program: canonicalEditProgramSchemaV1,
+    programs: z.array(canonicalEditProgramSchemaV1).min(1).max(32).optional(),
   })
   .strict()
   .superRefine((request, context) => {
@@ -207,7 +207,7 @@ function contentHash(value: unknown, seed: number) {
 }
 
 export function renderProgramBatchId(programs: readonly CanonicalEditProgram[]) {
-  const canonicalPrograms = programs.map((program) => programSchema.parse(program));
+  const canonicalPrograms = programs.map((program) => canonicalEditProgramSchemaV1.parse(program));
   return `batch-${canonicalPrograms.length}-${contentHash(canonicalPrograms, 2_166_136_261)}-${contentHash(canonicalPrograms, 2_654_435_761)}`;
 }
 
