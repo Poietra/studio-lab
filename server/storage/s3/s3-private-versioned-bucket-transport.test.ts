@@ -2,7 +2,10 @@ import { S3Client } from "@aws-sdk/client-s3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { S3ContentBlobStoreV1 } from "./s3-content-blob-store";
-import { PrivateVersionedS3BucketTransportV1 } from "./s3-private-versioned-bucket-transport";
+import {
+  acquirePrivateVersionedS3BucketTransportV1,
+  PrivateVersionedS3BucketTransportV1,
+} from "./s3-private-versioned-bucket-transport";
 import { S3SnapshotArtifactStoreV1 } from "./s3-snapshot-artifact-store";
 
 const BUCKET = "poietra-private-artifacts";
@@ -32,6 +35,19 @@ afterEach(() => {
 });
 
 describe("PrivateVersionedS3BucketTransportV1", () => {
+  it("closes a transport owned by a direct consumer lease", async () => {
+    const close = vi.spyOn(PrivateVersionedS3BucketTransportV1.prototype, "close");
+    const lease = acquirePrivateVersionedS3BucketTransportV1({
+      bucket: BUCKET,
+      client: { destroy() {}, send: vi.fn() } as unknown as S3Client,
+      deployment: "test",
+    });
+
+    await lease.close();
+
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it("rejects abort before I/O and applies one bounded deadline to an operation", async () => {
     const { send, transport } = testTransport(
       (_command, options) =>

@@ -370,9 +370,18 @@ export class PrivateVersionedS3BucketTransportV1 {
 }
 
 export function acquirePrivateVersionedS3BucketTransportV1(options: PrivateVersionedS3BucketConsumerOptionsV1) {
-  const transport = "transport" in options ? options.transport : new PrivateVersionedS3BucketTransportV1(options);
+  const shared = "transport" in options;
+  const transport = shared ? options.transport : new PrivateVersionedS3BucketTransportV1(options);
   if (!(transport instanceof PrivateVersionedS3BucketTransportV1)) {
     throw new TypeError("The private S3 bucket transport is invalid.");
   }
-  return transport.acquire();
+  const lease = transport.acquire();
+  if (shared) return lease;
+  return {
+    ...lease,
+    async close() {
+      await lease.close();
+      await transport.close();
+    },
+  };
 }

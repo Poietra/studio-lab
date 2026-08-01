@@ -7,6 +7,7 @@ import { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlemen
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import { EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM } from "./editor-document-schema";
 import { EDITOR_MUTATION_MIGRATION_V18_CHECKSUM } from "./editor-mutation-schema";
+import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
 import workspaceSourceSqlV1 from "./migrations/0001_workspace_source.sql?raw";
 import renderSessionSqlV2 from "./migrations/0002_render_sessions.sql?raw";
 import snapshotPublicationSqlV3 from "./migrations/0003_snapshot_publications.sql?raw";
@@ -26,6 +27,7 @@ import stripeBillingSqlV16 from "./migrations/0016_stripe_billing_control_plane.
 import editorDocumentSqlV17 from "./migrations/0017_editor_documents.sql?raw";
 import editorMutationSqlV18 from "./migrations/0018_editor_mutation_semantics.sql?raw";
 import renderSessionSceneNameSqlV19 from "./migrations/0019_render_session_scene_name.sql?raw";
+import immutableObjectGenerationSqlV20 from "./migrations/0020_immutable_object_generations.sql?raw";
 import { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
@@ -45,6 +47,7 @@ export { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema
 export { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
 export { EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM } from "./editor-document-schema";
 export { EDITOR_MUTATION_MIGRATION_V18_CHECKSUM } from "./editor-mutation-schema";
+export { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
 export { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 export { SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM } from "./postgres-snapshot-publication-repository";
 export { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
@@ -97,6 +100,7 @@ export const STRIPE_BILLING_MIGRATION_V16_SOURCE = stripeBillingSqlV16;
 export const EDITOR_DOCUMENT_MIGRATION_V17_SOURCE = editorDocumentSqlV17;
 export const EDITOR_MUTATION_MIGRATION_V18_SOURCE = editorMutationSqlV18;
 export const RENDER_SESSION_SCENE_NAME_MIGRATION_V19_SOURCE = renderSessionSceneNameSqlV19;
+export const IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE = immutableObjectGenerationSqlV20;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -290,6 +294,17 @@ const renderSessionSceneNameMigrationV19: DurableStorageMigration<19> = Object.f
   version: 19,
 });
 
+const immutableObjectGenerationMigrationV20: DurableStorageMigration<20> = Object.freeze({
+  checksum: IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM,
+  checksumMismatch: "The immutable object-generation migration checksum is invalid.",
+  installedMismatch: "The installed immutable object-generation schema does not match migration v20.",
+  missingPrerequisite: "Immutable object-generation migration v20 requires durable storage migrations v1 through v19.",
+  prerequisiteMismatch:
+    "Immutable object-generation migration v20 requires exact durable storage migrations v1 through v19.",
+  source: IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE,
+  version: 20,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
@@ -310,6 +325,7 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   editorDocumentMigrationV17,
   editorMutationMigrationV18,
   renderSessionSceneNameMigrationV19,
+  immutableObjectGenerationMigrationV20,
 ]);
 
 function bundledMigrationsThrough(version: number) {
@@ -538,6 +554,10 @@ export function applyEditorMutationMigrationV18(pool: Pool, source: string) {
 
 export function applyRenderSessionSceneNameMigrationV19(pool: Pool, source: string) {
   return applyMigration(pool, { ...renderSessionSceneNameMigrationV19, source }, bundledMigrationsBefore(19));
+}
+
+export function applyImmutableObjectGenerationMigrationV20(pool: Pool, source: string) {
+  return applyMigration(pool, { ...immutableObjectGenerationMigrationV20, source }, bundledMigrationsBefore(20));
 }
 
 /** Apply bundled migrations in order through one exact, validated catalog version. */

@@ -14,6 +14,7 @@ import {
   type applyBundledWorkspaceSourceMigrationV1,
   applyEditorDocumentMigrationV17,
   applyEditorMutationMigrationV18,
+  applyImmutableObjectGenerationMigrationV20,
   applyOidcLoginMigrationV13,
   applyProjectPngMigrationV5,
   applyRenderArtifactMigrationV4,
@@ -33,6 +34,8 @@ import {
   EDITOR_DOCUMENT_MIGRATION_V17_SOURCE,
   EDITOR_MUTATION_MIGRATION_V18_CHECKSUM,
   EDITOR_MUTATION_MIGRATION_V18_SOURCE,
+  IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM,
+  IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE,
   OIDC_LOGIN_MIGRATION_V13_CHECKSUM,
   OIDC_LOGIN_MIGRATION_V13_SOURCE,
   PROJECT_PNG_MIGRATION_V5_SOURCE,
@@ -94,10 +97,10 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 19 });
-    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 20 });
+    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 19 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 20 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -117,7 +120,8 @@ describe("durable storage migrations", () => {
     expect(db.queries.filter(({ text }) => text === EDITOR_DOCUMENT_MIGRATION_V17_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === EDITOR_MUTATION_MIGRATION_V18_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_SCENE_NAME_MIGRATION_V19_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(38);
+    expect(db.queries.filter(({ text }) => text === IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(40);
   });
 
   it("applies an exact bundled prefix before a later cutover", async () => {
@@ -148,8 +152,8 @@ describe("durable storage migrations", () => {
 
   it("rejects an unknown bundled target before acquiring a connection", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 20)).rejects.toThrow(
-      /migration v20 is not bundled/i,
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 21)).rejects.toThrow(
+      /migration v21 is not bundled/i,
     );
     expect(db.connect).not.toHaveBeenCalled();
   });
@@ -492,6 +496,37 @@ describe("durable storage migrations", () => {
       applyRenderSessionSceneNameMigrationV19(db.pool, RENDER_SESSION_SCENE_NAME_MIGRATION_V19_SOURCE),
     ).rejects.toThrow(/requires durable storage migrations v1 through v18/i);
     expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("requires all nineteen prerequisites before adding immutable object generations in v20", async () => {
+    const db = database();
+    await expect(
+      applyImmutableObjectGenerationMigrationV20(db.pool, IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE),
+    ).rejects.toThrow(/requires durable storage migrations v1 through v19/i);
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("adds an explicit rolling locator mode without converting provider versions", () => {
+    expect(durableStorageMigrationChecksum(IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE)).toBe(
+      IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM,
+    );
+    expect(IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE).toContain(
+      "CREATE DOMAIN public.immutable_object_generation_v1 AS uuid",
+    );
+    expect(IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE).toContain(
+      "ADD COLUMN object_generation public.immutable_object_generation_v1",
+    );
+    expect(IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE).toContain(
+      "[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}",
+    );
+    expect(IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE).toContain(
+      "num_nonnulls(version_id, object_generation) = 1",
+    );
+    expect(IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE).toContain("'/g/' || object_generation::text");
+    expect(IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE).not.toContain("UPDATE public.source_blob_objects");
+    expect(IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE).not.toContain("UPDATE public.snapshot_artifact_objects");
+    expect(IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE).not.toContain("UPDATE public.render_artifact_objects");
+    expect(IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE).not.toContain("UPDATE public.project_png_objects");
   });
 
   it("expands only the forward render-session Scene-name constraint to the canonical 240-character boundary", () => {

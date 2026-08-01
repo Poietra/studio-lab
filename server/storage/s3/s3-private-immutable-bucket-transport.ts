@@ -734,9 +734,18 @@ export class PrivateImmutableS3BucketTransportV1 {
 }
 
 export function acquirePrivateImmutableS3BucketTransportV1(options: PrivateImmutableS3BucketConsumerOptionsV1) {
-  const transport = "transport" in options ? options.transport : new PrivateImmutableS3BucketTransportV1(options);
+  const shared = "transport" in options;
+  const transport = shared ? options.transport : new PrivateImmutableS3BucketTransportV1(options);
   if (!(transport instanceof PrivateImmutableS3BucketTransportV1)) {
     throw new TypeError("The private immutable S3 transport is invalid.");
   }
-  return transport.acquire();
+  const lease = transport.acquire();
+  if (shared) return lease;
+  return {
+    ...lease,
+    async close() {
+      await lease.close();
+      await transport.close();
+    },
+  };
 }
